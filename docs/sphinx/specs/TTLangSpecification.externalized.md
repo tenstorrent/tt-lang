@@ -72,53 +72,7 @@ An operation can also be written with explicit kernels, where the author writes 
 
 #### Program example
 
-```py
-@ttl.operation(grid=(1, 1))
-def __add(
-    a: ttnn.Tensor,  # input tensor
-    b: ttnn.Tensor,  # input tensor
-    out: ttnn.Tensor,  # output tensor
-) -> None:
-    # Dataflow buffers shared by the threads.
-    a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
-    b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)
-    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
-
-    # One body: the compiler places the copies on the data movement threads
-    # and the addition on the compute thread.
-    a_dst_blk = a_dfb.reserve()
-    b_dst_blk = b_dfb.reserve()
-    a_tx = ttl.copy(a[0:1, 0:1], a_dst_blk)
-    b_tx = ttl.copy(b[0:1, 0:1], b_dst_blk)
-    a_tx.wait()
-    b_tx.wait()
-    a_dst_blk.push()
-    b_dst_blk.push()
-
-    out_blk = out_dfb.reserve()
-    a_blk = a_dfb.wait()
-    b_blk = b_dfb.wait()
-    out_blk.store(a_blk + b_blk)
-    a_blk.pop()
-    b_blk.pop()
-
-    out_tx = ttl.copy(out_dfb.wait(), out[0:1, 0:1])
-    out_tx.wait()
-    out_blk.push()
-
-
-# Simple wrapper to allow returning output tensor in TT-NN style
-def add(a: ttnn.Tensor, b: ttnn.Tensor) -> ttnn.Tensor:
-    out = ttnn.zeros(a.shape, layout=ttnn.TILE_LAYOUT)
-    __add(a, b, out)
-    return out
-
-
-x = ttnn.rand(ttnn.Shape([32, 32]), layout=ttnn.TILE_LAYOUT)
-
-# TT-Lang operations mix freely with built-in TT-NN operations.
-y = ttnn.exp(add(ttnn.abs(x), x))
-```
+<!-- @spec:example operation_function/operation_function.py -->
 
 
 ### Runtime and compile-time arguments
@@ -161,44 +115,7 @@ A *multi-kernel operation* is an alternative form in which the author writes the
 
 #### Program example
 
-```py
-@ttl.operation(grid=(1, 1))
-def __foo(
-    x: ttnn.Tensor,  # input tensor
-    y: ttnn.Tensor,  # output tensor
-) -> None:
-    # ...
-
-    @ttl.compute()
-    def some_compute():
-        # ...
-
-    @ttl.datamovement()
-    def some_dm0():
-        # ...
-
-    @ttl.datamovement()
-    def some_dm1():
-        # ...
-
-device = ttnn.open_device(device_id=0)
-
-try:
-    # Simple wrapper to allow returning output tensor in TT-NN style
-    def foo(x: ttnn.Tensor) -> ttnn.Tensor:
-        y = ttnn.zeros(x.shape, layout=ttnn.TILE_LAYOUT, device=device)
-        __foo(x, y)
-        return y
-
-    shape = ttnn.Shape([128, 128])
-
-    x = ttnn.rand(shape, layout=ttnn.TILE_LAYOUT, device=device)
-
-    y = ttnn.exp(foo(ttnn.abs(x)), fast_and_approximate_mode=True)
-
-finally:
-    ttnn.close_device(device)
-```
+<!-- @spec:example operation_function/multi_kernel_operation.py -->
 
 
 ## Grid
@@ -219,16 +136,7 @@ The `ttl.grid_size` function returns the size of the grid. The function takes an
 
 #### Grid size example
 
-```py
-# for (8, 8) single chip or SPMD grid gets x_size = 64
-x_size = ttl.grid_size(dims=1)
-
-# for (8, 8, 8) multi-chip grid gets x_size = 8, y_size = 64
-x_size, y_size = ttl.grid_size(dims=2)
-
-# for (8, 8) single-chip or SPMD grid gets x_size = 8, y_size = 8, z_size = 1
-x_size, y_size, z_size = ttl.grid_size(dims=3)
-```
+<!-- @spec:example grid/grid_size.py -->
 
 
 ### Node function
@@ -244,16 +152,7 @@ The `ttl.node` function returns *node coordinates* of the current node. Node coo
 
 #### Node example
 
-```py
-# for (8, 8) single chip or SPMD grid gets x = [0, 64)
-x = ttl.node(dims=1)
-
-# for (8, 8, 8) multi-chip grid gets x = [0, 8), y = [0, 64)
-x, y = ttl.node(dims=2)
-
-# for (8, 8) single-chip or SPMD grid gets x = [0, 8), y = [0, 8), z = 0
-x, y, z = ttl.node(dims=3)
-```
+<!-- @spec:example grid/node.py -->
 
 
 ## Dataflow buffer
@@ -264,57 +163,13 @@ The shape is expressed as a tuple with outermost dimension first and innermost d
 
 #### Tiled tensor shape example
 
-```py
-def from_torch(tensor: torch.Tensor) -> ttnn.Tensor:
-    return ttnn.from_torch(
-        tensor,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-    )
-
-def shape_in_tiles(tensor: ttnn.Tensor) -> list[int]:
-    padded_shape = list(tensor.padded_shape)
-    tile_shape = list(tensor.tile.tile_shape)
-    return padded_shape[:-2] + [
-        dim // tile_dim for dim, tile_dim in zip(padded_shape[-2:], tile_shape)
-    ]
-
-assert shape_in_tiles(from_torch(torch.randn(()))) == [1, 1]
-assert shape_in_tiles(from_torch(torch.randn((128)))) == [1, 4]
-assert shape_in_tiles(from_torch(torch.randn((1, 128)))) == [1, 4]
-assert shape_in_tiles(from_torch(torch.randn((32, 128)))) == [1, 4]
-assert shape_in_tiles(from_torch(torch.randn((128, 1)))) == [4, 1]
-assert shape_in_tiles(from_torch(torch.randn((128, 32)))) == [4, 1]
-assert shape_in_tiles(from_torch(torch.randn((2, 128, 32)))) == [2, 4, 1]
-assert shape_in_tiles(from_torch(torch.randn((2, 2, 128, 32)))) == [2, 2, 4, 1]
-assert shape_in_tiles(from_torch(torch.randn((2, 2, 120, 30)))) == [2, 2, 4, 1]
-```
+<!-- @spec:example dataflow_buffer/tiled_tensor_shape.py -->
 
 If tensor has a row-major layout the shape unit is a scalar element. For the TT-NN tensor with Torch shape of `(2, 2, 120, 30)` the corresponding block that fits this entire tensor will have shape of `(2, 2, 120, 30)`.
 
 #### Row-major tensor shape example
 
-```py
-def from_torch(tensor: torch.Tensor) -> ttnn.Tensor:
-    return ttnn.from_torch(
-        tensor,
-        layout=ttnn.ROW_MAJOR_LAYOUT,
-        device=device,
-    )
-
-def row_major_shape(tensor: ttnn.Tensor) -> list[int]:
-    return list(tensor.padded_shape)
-
-assert row_major_shape(from_torch(torch.randn(()))) == [1]
-assert row_major_shape(from_torch(torch.randn((128)))) == [128]
-assert row_major_shape(from_torch(torch.randn((1, 128)))) == [1, 128]
-assert row_major_shape(from_torch(torch.randn((32, 128)))) == [32, 128]
-assert row_major_shape(from_torch(torch.randn((128, 1)))) == [128, 1]
-assert row_major_shape(from_torch(torch.randn((128, 32)))) == [128, 32]
-assert row_major_shape(from_torch(torch.randn((2, 128, 32)))) == [2, 128, 32]
-assert row_major_shape(from_torch(torch.randn((2, 2, 128, 32)))) == [2, 2, 128, 32]
-assert row_major_shape(from_torch(torch.randn((2, 2, 120, 30)))) == [2, 2, 120, 30]
-```
+<!-- @spec:example dataflow_buffer/row_major_tensor_shape.py -->
 
 Shape determines the shape of a *block* returned by one of the *acquisition functions*: `wait` and `reserve`. The size of a block in L1 memory is determined by shape, shape unit and data type. For example, for a block with shape `(2, 2, 4, 1)`, shape unit of a tile (32 by 32 scalar elements) and BF16 data type (2 bytes), its size in L1 will be `2 * 2 * (4 * 32) * (1 * 32) * 2 = 32768` bytes. The block count determines the total size of L1 memory allocated for a dataflow buffer. This size is a product of a block size and block count. For the most common case block count defaults to 2 to support double buffering. With double buffered dataflow buffer one thread can write to a block while another is reading from a block thus enabling the pipelining. For the example above, this means there will be a total of 32768 bytes of L1 memory allocated for the dataflow buffer.
 
@@ -322,31 +177,7 @@ A dataflow buffer is constructed in the scope of an operation function but its o
 
 #### Dataflow buffer example
 
-```py
-x_dfb = ttl.make_dataflow_buffer_like(
-    x, shape=(2, 2), block_count=2
-)  # This can be omitted since block_count defaults to 2
-
-@ttl.datamovement()
-def some_read():
-    # Reserve x_blk from x_dfb
-    with x_dfb.reserve() as x_blk:
-
-        # Load data into x_blk
-        # ...
-
-        # Push x_blk implicitly at the end of the "with" scope
-
-@ttl.compute()
-def some_compute():
-    # Wait for x_blk from x_dfb
-    x_blk = x_dfb.wait()
-
-    # Consume data in x_blk
-    # ...
-
-    x_blk.pop()  # Pop x_blk explicitly
-```
+<!-- @spec:example dataflow_buffer/dataflow_buffer.py -->
 
 | Type alias/Function | Description |
 | :---- | :---- |
@@ -363,390 +194,11 @@ A *block* represents memory acquired from a dataflow buffer. Block size is deter
 
 #### Tiled element-wise with broadcast and reduce example
 
-```py
-# ---------------------
-# Tiled element-wise with broadcast and reduce:
-#
-# y[n] = ∑(√(a[n, m]² + b[n]² + c[m]² + d²))
-#        j
-#
-# z[m] = ∑(√(a[n, m]² - b[n]² - c[m]² - d²))
-#        i
-#
-# Tensor   Torch shape   Note
-# a        N, M          N >> M
-# b        N, 1          Column-wise vector — broadcast to match a along M
-# c        M             Row-wise vector — broadcast to match a along N
-# d        ()            Scalar value — broadcast to match a along N and M
-# y        N, 1
-# z        M
-#
-# All tensors have tiled layout
-
-# Shape in tiles (N and M are evenly divisible by TILE_SIZE)
-N_TILES = N // TILE_SIZE
-M_TILES = M // TILE_SIZE
-
-# Shape in blocks (N_TILES is evenly divisible by N_BLOCK_SIZE)
-N_BLOCKS = N_TILES // N_BLOCK_SIZE
-
-a_dfb = ttl.make_dataflow_buffer_like(a, shape=(N_BLOCK_SIZE, M_TILES))
-
-# Tiled DFB shape needs to be at least two-dimensional;
-# When tiled, the vector b of shape (N, 1) is placed in column 0
-# of each tile in a column of N_TILES tiles
-b_dfb = ttl.make_dataflow_buffer_like(b, shape=(N_BLOCK_SIZE, 1))
-# When tiled, the vector c of shape M is placed in row 0
-# of each tile in a row of M_TILES tiles
-c_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, M_TILES))
-# When tiled, the scalar value d of shape () is placed at position (0, 0)
-# of a single tile
-d_dfb = ttl.make_dataflow_buffer_like(d, shape=(1, 1))
-# When untiled, the vector y is formed from column 0
-# of each tile in a column of N_TILES tiles
-y_dfb = ttl.make_dataflow_buffer_like(y, shape=(N_BLOCK_SIZE, 1))
-# When untiled, the vector z is formed from row 0
-# of each tile in a row of M_TILES tiles
-z_dfb = ttl.make_dataflow_buffer_like(z, shape=(1, M_TILES))
-
-
-@ttl.datamovement()
-def elwise_read():
-
-    # Reserve c_blk and d_blk blocks
-    with (
-        c_dfb.reserve() as c_blk,
-        d_dfb.reserve() as d_blk,
-    ):
-        # Load entire (1×M_TILES) of c;
-        # When tiled, the vector c of shape M is placed in row 0
-        # of each tile in a row of M_TILES tiles
-        c_xf = ttl.copy(c[0, :], c_blk)
-
-        # Load entire (1×1) d;
-        # When tiled, the scalar value d of shape () is placed at position (0, 0)
-        # of a single tile
-        d_xf = ttl.copy(d[0, 0], d_blk)
-
-        c_xf.wait()
-        d_xf.wait()
-
-        # End of "with" scope:
-        # Push c_blk and d_blk to make them ready for elwise_compute
-
-    for n_block in range(N_BLOCKS):
-
-        # Reserve a_blk and b_blk blocks
-        with (
-            a_dfb.reserve() as a_blk,
-            b_dfb.reserve() as b_blk,
-        ):
-            # Load N_BLOCK_SIZE×M_TILES block of a
-            a_xf = ttl.copy(
-                a[n_block * N_BLOCK_SIZE : (n_block + 1) * N_BLOCK_SIZE, :], a_blk
-            )
-
-            # Load N_BLOCK_SIZE×1 block of b;
-            # When tiled, the vector b of shape (N, 1) is placed in column 0
-            # of each tile in a column of N_TILES tiles
-            b_xf = ttl.copy(
-                b[n_block * N_BLOCK_SIZE : (n_block + 1) * N_BLOCK_SIZE, 0], b_blk
-            )
-
-            a_xf.wait()
-            b_xf.wait()
-
-            # End of "with" scope:
-            # Push a_blk and b_blk to make them ready for elwise_compute
-
-
-@ttl.compute()
-def elwise_compute():
-
-    # Wait for c_blk and d_blk to be loaded and pushed by elwise_read;
-    # Reserve z_blk
-    with (
-        c_dfb.wait() as c_blk,
-        d_dfb.wait() as d_blk,
-        z_dfb.reserve() as z_blk,
-    ):
-        c_squared = c_blk**2
-        d_squared = d_blk**2
-
-        # Broadcast c_squared along dimension 0 (first) to get N_BLOCK_SIZE×M_TILES;
-        # This first broadcasts column 0 to fill each of M_TILES tiles
-        # then it broadcasts column of M_TILES tiles to get N_BLOCK_SIZE×M_TILES tiles
-        c_squared_bcast = ttl.block.broadcast(
-            c_squared, dims=[0], shape=(N_BLOCK_SIZE, M_TILES)
-        )
-
-        # Broadcast d_squared along all dimensions (0 and 1) to N_BLOCK_SIZE×M_TILES;
-        # This first broadcasts single scalar value at position (0, 0) to fill a single tile
-        # then it broadcasts single tile to get N_BLOCK_SIZE×M_TILES tiles
-        d_squared_bcast = ttl.block.broadcast(
-            d_squared, dims=[0, 1], shape=(N_BLOCK_SIZE, M_TILES)
-        )
-
-        # Zero-initialize the accumulator z before summing N_BLOCKS partial sums
-        z_final = ttl.block.fill(0, shape=(1, M_TILES))
-
-        for _ in range(N_BLOCKS):
-
-            # Wait for a_blk and b_blk to be loaded and pushed by elwise_read;
-            # Reserve y_blk
-            with (
-                a_dfb.wait() as a_blk,
-                b_dfb.wait() as b_blk,
-                y_dfb.reserve() as y_blk,
-            ):
-                a_squared = a_blk**2
-                b_squared = b_blk**2
-
-                # Broadcast b_squared along dim -1 (last) to get N_BLOCK_SIZE×M_TILES;
-                # This first broadcasts row 0 to fill each of N_BLOCK_SIZE tiles
-                # then it broadcasts row of N_BLOCK_SIZE tiles to get N_BLOCK_SIZE×M_TILES tiles
-                b_squared_bcast = ttl.block.broadcast(
-                    b_squared, dims=[-1], shape=(N_BLOCK_SIZE, M_TILES)
-                )
-
-                # Perform elementwise math on N_BLOCK_SIZE×M_TILES tiles
-                expanded_y = ttl.math.sqrt(
-                    a_squared + b_squared_bcast + c_squared_bcast + d_squared_bcast
-                )
-                expanded_z = ttl.math.sqrt(
-                    a_squared - b_squared_bcast - c_squared_bcast - d_squared_bcast
-                )
-
-                # Reduce expanded_y along dim -1 (last) to get N_BLOCK_SIZE×1 row of tiles
-                y_final = ttl.math.reduce_sum(
-                    expanded_y, dims=[-1], shape=(N_BLOCK_SIZE, 1)
-                )
-
-                # Reduce expanded_z along dim 0 (first) to get 1×M_TILES column of tiles;
-                z_partial = ttl.math.reduce_sum(
-                    expanded_z, dims=[0], shape=(1, M_TILES)
-                )
-
-                # Store y_final
-                y_blk.store(y_final)
-
-                # Accumulate-add partial z_final
-                z_final += z_partial
-
-                # End of "with" scope:
-                # Pop a_blk and b_dfb to make them available for elwise_read to load and push next blocks;
-                # Push y_blk to make it ready for elwise_write
-
-        # Store z_final
-        z_blk.store(z_final)
-
-        # End of "with" scope:
-        # Pop c_blk and d_blk;
-        # Push z_blk to make it ready for elwise_write
-
-
-@ttl.datamovement()
-def elwise_write():
-
-    # Wait for elwise_compute to store and push z_blk
-    with z_dfb.wait() as z_blk:
-
-        # Store entire (1xM_TILES) of z;
-        # When untiled, the vector z is formed from row 0
-        # of each tile in a row of M_TILES tiles
-        z_xf = ttl.copy(z_blk, z[0, :])
-        z_xf.wait()
-
-        # End of "with" scope:
-        # Pop z_blk
-
-    for n_block in range(N_BLOCKS):
-        n_slice = slice(n_block * N_BLOCK_SIZE, (n_block + 1) * N_BLOCK_SIZE)
-
-        # Wait for elwise_compute to store and push y_blk
-        with y_dfb.wait() as y_blk:
-
-            # Store N_BLOCK_SIZExM_TILES of y;
-            # When untiled, the vector y is formed from column 0
-            # of each tile in a column of N_TILES tiles
-            y_xf = ttl.copy(y_blk, y[n_slice, :])
-            y_xf.wait()
-
-            # End of "with" scope:
-            # Pop y_blk to make it available for elwise_compute to store and push next block
-
-
-```
+<!-- @spec:example block/elementwise_broadcast_reduce.py -->
 
 #### Batched matrix multiplication with bias example
 
-```py
-# ---------------------
-# Batched matrix multiplication with bias:
-#
-# y[l, m, n] = ∑(a[l, m, k] * b[k, n]) + c[m, n]
-#              k
-#
-# Tensor   Torch shape   Note
-# a        L, M, K       Batched a matrix (e.g. input activations)
-# b        K, N          Non-batched b matrix (e.g. weights)
-# c        M, N          Non-batched bias matrix c (e.g. weights)
-# y        L, M, N       Batched y matrix (e.g. output activations)
-#
-# All tensors have tiled layout
-
-# Shape in tiles (M, N and K are evenly divisible by TILE_SIZE)
-M_TILES = M // TILE_SIZE
-N_TILES = N // TILE_SIZE
-K_TILES = K // TILE_SIZE
-
-# Shape in blocks (L, M_TILES, N_TILES and K_TILES are evenly
-# divisible by L_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE and K_BLOCK_SIZE)
-L_BLOCKS = L // L_BLOCK_SIZE
-M_BLOCKS = M_TILES // M_BLOCK_SIZE
-N_BLOCKS = N_TILES // N_BLOCK_SIZE
-K_BLOCKS = K_TILES // K_BLOCK_SIZE
-
-a_dfb = ttl.make_dataflow_buffer_like(
-    a, shape=(L_BLOCK_SIZE, M_BLOCK_SIZE, K_BLOCK_SIZE)
-)
-b_dfb = ttl.make_dataflow_buffer_like(b, shape=(K_BLOCK_SIZE, N_BLOCK_SIZE))
-c_dfb = ttl.make_dataflow_buffer_like(c, shape=(M_BLOCK_SIZE, N_BLOCK_SIZE))
-y_dfb = ttl.make_dataflow_buffer_like(
-    y, shape=(L_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE)
-)
-
-
-@ttl.datamovement()
-def matmul_read():
-    for l_block in range(L_BLOCKS):
-        l_slice = slice(l_block * L_BLOCK_SIZE, (l_block + 1) * L_BLOCK_SIZE)
-
-        for m_block in range(M_BLOCKS):
-            m_slice = slice(m_block * M_BLOCK_SIZE, (m_block + 1) * M_BLOCK_SIZE)
-
-            for n_block in range(N_BLOCKS):
-                n_slice = slice(n_block * N_BLOCK_SIZE, (n_block + 1) * N_BLOCK_SIZE)
-
-                # Reserve c_blk
-                with c_dfb.reserve() as c_blk:
-
-                    # Load M_BLOCK_SIZE×N_BLOCK_SIZE block of c into c_blk
-                    c_xf = ttl.copy(c[m_slice, n_slice], c_blk)
-                    c_xf.wait()
-
-                    # End of "with" scope:
-                    # Push c_blk to make it ready for matmul_compute
-
-                # Repeat for each K block
-                for k_block in range(K_BLOCKS):
-                    k_slice = slice(
-                        k_block * K_BLOCK_SIZE, (k_block + 1) * K_BLOCK_SIZE
-                    )
-
-                    # Reserve a_blk and b_blk
-                    with (
-                        a_dfb.reserve() as a_blk,
-                        b_dfb.reserve() as b_blk,
-                    ):
-                        # Load L_BLOCK_SIZE×M_BLOCK_SIZE×K_BLOCK_SIZE of a into a_blk
-                        # and K_BLOCK_SIZE×N_BLOCK_SIZE of b into b_blk
-                        a_xf = ttl.copy(a[l_slice, m_slice, k_slice], a_blk)
-                        b_xf = ttl.copy(b[k_slice, n_slice], b_blk)
-
-                        a_xf.wait()
-                        b_xf.wait()
-
-                        # End of "with" scope:
-                        # Push a_blk and b_blk to make it ready for matmul_compute
-
-
-@ttl.compute()
-def matmul_compute():
-    for _ in range(L_BLOCKS):
-        for _ in range(M_BLOCKS):
-            for _ in range(N_BLOCKS):
-
-                # Reserve y_blk
-                with y_dfb.reserve() as y_blk:
-
-                    # Zero-initialize the accumulator y_final before summing K_BLOCKS partial products
-                    y_final = ttl.block.fill(
-                        0, shape=(L_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE)
-                    )
-
-                    # Repeat for each K block
-                    for _ in range(K_BLOCKS):
-
-                        # Wait for a_blk and b_blk to be loaded and pushed by matmul_read
-                        with (
-                            a_dfb.wait() as a_blk,
-                            b_dfb.wait() as b_blk,
-                        ):
-                            # b_blk has shape K_BLOCK_SIZE×N_BLOCK_SIZE;
-                            # Unsqueeze it to 1×K_BLOCK_SIZE×N_BLOCK_SIZE and then
-                            # broadcast it over dim 0 to L_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE
-                            b_bcast = ttl.block.broadcast(
-                                ttl.block.unsqueeze(b_blk, dims=[0]),
-                                dims=[0],
-                                shape=(L_BLOCK_SIZE, K_BLOCK_SIZE, N_BLOCK_SIZE),
-                            )
-
-                            # Accumulate dot product between L_BLOCK_SIZE×M_BLOCK_SIZE×K_BLOCK_SIZE a_blk and
-                            # L_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE b_bcast in y_final
-                            y_final += a_blk @ b_bcast
-
-                            # End of "with" scope:
-                            # Pop a_blk and b_blk to make them available for matmul_read to load and push next blocks
-
-                    # Wait for c_blk to be loaded and pushed by matmul_read
-                    with c_dfb.wait() as c_blk:
-
-                        # c_blk has shape M_BLOCK_SIZE×N_BLOCK_SIZE;
-                        # Unsqueeze it to 1×M_BLOCK_SIZE×N_BLOCK_SIZE and then
-                        # broadcast it over dim 0 to L_BLOCK_SIZE×M_BLOCK_SIZE×N_BLOCK_SIZE
-                        c_bcast = ttl.block.broadcast(
-                            ttl.block.unsqueeze(c_blk, dims=[0]),
-                            dims=[0],
-                            shape=(L_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE),
-                        )
-
-                        y_final = y_final + c_bcast
-
-                        # End of "with" scope:
-                        # Pop c_blk to make it available for matmul_read to load and push next block
-
-                    y_blk.store(y_final)
-
-                    # End of "with" scope:
-                    # Push y_blk to make it ready for matmul_write
-
-
-@ttl.datamovement()
-def matmul_write():
-    for l_block in range(L_BLOCKS):
-        for m_block in range(M_BLOCKS):
-            for n_block in range(N_BLOCKS):
-
-                # Wait for matmul_compute to store and push y_blk
-                with y_dfb.wait() as y_blk:
-
-                    # Store L_BLOCK_SIZE×M_BLOCK_SIZE×N_BLOCK_SIZE y_blk block into y
-                    y_xf = ttl.copy(
-                        y_blk,
-                        y[
-                            l_block * L_BLOCK_SIZE : (l_block + 1) * L_BLOCK_SIZE,
-                            m_block * M_BLOCK_SIZE : (m_block + 1) * M_BLOCK_SIZE,
-                            n_block * N_BLOCK_SIZE : (n_block + 1) * N_BLOCK_SIZE,
-                        ],
-                    )
-                    y_xf.wait()
-
-                    # End of "with" scope:
-                    # Pop y_blk to make it available for matmul_compute to store and push next block
-
-
-```
+<!-- @spec:example block/batched_matmul_bias.py -->
 
 | Function | Description |
 | :---- | :---- |
@@ -831,235 +283,19 @@ The active predicates are only required for code that includes pipe-coupled comp
 
 #### Gather example
 
-```py
-# Grid:
-#
-# column
-# x == 0
-#   |
-#   V
-# (0, 0) (1, 0) (2, 0) (3, 0) <-- row y == 0
-# (0, 1) (1, 1) (2, 1) (3, 1)
-# (0, 2) (1, 2) (2, 2) (3, 2)
-# (0, 3) (1, 3) (2, 3) (3, 3)
-
-# ---------------------
-# gather from row y to (0, y) with unicast.
-#
-# The pipe net is sized from the active set, not the launch extent.
-# ROWS and COLS describe the rectangle that bounds the active set.
-# Nodes outside the active rectangle (row 0..ROWS-1, column 0..COLS-1)
-# skip the operation body.
-
-ROWS = ...  # rows participating in the gather
-COLS = ...  # columns participating in the gather
-
-net = ttl.PipeNet(
-    [ttl.Pipe(src=(x, y), dst=(0, y)) for x in range(1, COLS) for y in range(ROWS)]
-)
-
-# (1, 0) -> (0, 0) |             |
-# (2, 0) -> (0, 0) | sequential  |
-# (3, 0) -> (0, 0) |             |
-# ...              |             | concurrent
-#                                |
-# (1, 1) -> (0, 1)               |
-# ...                            |
-
-
-@ttl.datamovement()
-def dm():
-    with dfb.reserve() as blk:
-
-        def pipe_src(pipe):
-
-            # write data into blk
-            # ...
-
-            # then copy blk to pipe:
-
-            xf = ttl.copy(blk, pipe)
-            xf.wait()
-
-        def pipe_dst(pipe):
-
-            # copy blk from pipe:
-
-            xf = ttl.copy(pipe, blk)
-            xf.wait()
-
-            # then read data from blk
-            # ...
-
-        net.if_src(pipe_src)
-        net.if_dst(pipe_dst)
-
-
-```
+<!-- @spec:example pipe/gather.py -->
 
 #### Scatter example
 
-```py
-# ---------------------
-# scatter from (x, 0) to column x with multicast
-
-grid_x, grid_y = ttl.grid_size()
-
-net = ttl.PipeNet(
-    [ttl.Pipe(src=(x, 0), dst=(x, slice(1, grid_y))) for x in range(grid_x)]
-)
-
-# (0, 0) => (0, 1) (0, 2) (0, 3) ... |
-# (1, 0) => (1, 1) (1, 2) (1, 3) ... | concurrent
-# ...                                |
-
-
-@ttl.datamovement()
-def dm():
-    with dfb.reserve() as blk:
-
-        def pipe_src(pipe):
-
-            # write data into blk
-            # ...
-
-            # then copy blk to pipe:
-
-            xf = ttl.copy(blk, pipe)
-            xf.wait()
-
-        def pipe_dst(pipe):
-
-            # copy blk from pipe:
-
-            xf = ttl.copy(pipe, blk)
-            xf.wait()
-
-            # then read data from blk
-            # ...
-
-        net.if_src(pipe_src)
-        net.if_dst(pipe_dst)
-
-
-```
+<!-- @spec:example pipe/scatter.py -->
 
 #### Scatter-gather example
 
-```py
-# ---------------------
-# scatter-gather column x with multicast/loopback
-
-grid_x, grid_y = ttl.grid_size()
-
-net = ttl.PipeNet(
-    [
-        ttl.Pipe(src=(x, y), dst=(x, slice(0, grid_y)))
-        for x in range(grid_x)
-        for y in range(grid_y)
-    ]
-)
-
-# (0, 0) => (0, 0) (0, 1) (0, 2) ... |            |
-# (0, 1) => (0, 0) (0, 1) (0, 2) ... | sequential |
-# (0, 2) => (0, 0) (0, 1) (0, 2) ... |            |
-# ...                                |            | concurrent
-#                                                 |
-# (1, 0) => (1, 0) (1, 1) (1, 2) ...              |
-# ...                                             |
-
-
-@ttl.datamovement()
-def dm():
-    with dfb.reserve() as blk:
-
-        def pipe_src(pipe):
-
-            # write data into blk
-            # ...
-
-            # then copy blk to pipe:
-
-            xf = ttl.copy(blk, pipe)
-            xf.wait()
-
-        def pipe_dst(pipe):
-
-            # copy blk from pipe:
-
-            xf = ttl.copy(pipe, blk)
-            xf.wait()
-
-            # then read data from blk
-            # ...
-
-        net.if_src(pipe_src)
-        net.if_dst(pipe_dst)
-
-
-```
+<!-- @spec:example pipe/scatter_gather.py -->
 
 #### Forward to a \+1 neighbor example
 
-```py
-# ---------------------
-# forward to a +1 neighbor in a column x
-
-grid_x, grid_y = ttl.grid_size()
-
-net = ttl.PipeNet(
-    [
-        ttl.Pipe(src=(x, y), dst=(x, (y + 1) % grid_y))
-        for x in range(grid_x)
-        for y in range(grid_y)
-    ]
-)
-
-# (0, 0) => (0, 1)  |
-# (0, 1) => (0, 2)  |
-# ...               |
-# (0, 7)* => (0, 0) |
-# ...               | concurrent
-#                   |
-# (1, 0) => (1, 1)  |
-# ...               |
-#
-# * - assuming (8, 8) grid
-
-
-@ttl.datamovement()
-def dm():
-
-    with (
-        dfb_to_send.reserve() as blk_to_send,
-        dfb_received.reserve() as blk_received,
-    ):
-
-        def pipe_src(pipe):
-
-            # write data into blk_to_send
-            # ...
-
-            # then copy blk_to_send to pipe:
-
-            xf = ttl.copy(blk_to_send, pipe)
-            xf.wait()
-
-        def pipe_dst(pipe):
-
-            # copy blk_received from pipe:
-
-            xf = ttl.copy(pipe, blk_received)
-            xf.wait()
-
-            # then read data from blk_received
-            # ...
-
-        net.if_src(pipe_src)
-        net.if_dst(pipe_dst)
-
-
-```
+<!-- @spec:example pipe/forward_neighbor.py -->
 
 
 ## Tensor slice
@@ -1072,36 +308,7 @@ A *tensor slice* is a view into a TT-NN tensor defined in terms of a dimension s
 
 #### Tensor slice example
 
-```py
-g = 2  # granularity
-a_dfb = ttl.make_dataflow_buffer_like(A, shape=(g, 1))
-
-row_tiles = A.shape[0] // ttl.TILE_SHAPE[0]
-col_tiles = A.shape[1] // ttl.TILE_SHAPE[1]
-cols_per_node = math.ceil(col_tiles / (grid_size(dims=1)))
-
-node_num = ttl.node(dims=1)
-start_ct = node_num * cols_per_node
-end_ct = min(start_ct + cols_per_node, col_tiles)
-
-
-@ttl.datamovement()
-def dm():
-    for ct in range(start_ct, end_ct):
-        for rt in range(row_tiles // g):
-
-            # acquire a_blk from a_dfb:
-
-            with a_dfb.reserve() as a_blk:
-
-                # then copy from a tensor slice of matching shape:
-
-                row_slice = slice(rt * g, (rt + 1) * g)  # explicit row slice
-                a_xf = ttl.copy(A[row_slice, ct : ct + 1], a_blk)  # in-line col slice
-                a_xf.wait()
-
-
-```
+<!-- @spec:example tensor_slice/tensor_slice.py -->
 
 
 ## Copy
@@ -1115,69 +322,7 @@ When `ttl.copy` function is called multiple times, instead of waiting on each tr
 
 #### Group transfer example
 
-```py
-# ---------------------
-# Nearest Neighbor Upsample
-#
-# Tensor              Torch shape
-# input_images        N, HI, WI, C
-# output_images       N, HO, WO, C
-#
-# All tensors have row-major layout
-
-HO = HI * H_SCALE_FACTOR
-WO = WI * W_SCALE_FACTOR
-
-io_dfb = ttl.make_dataflow_buffer_like(input_images, shape=(C,), block_count=2)
-
-
-@ttl.datamovement()
-def reader():
-    for n in range(N):
-        for hi in range(HI):
-            for wi in range(WI):
-                with io_dfb.reserve() as io_blk:
-
-                    # Load input pixel channels
-
-                    xf = ttl.copy(input_t[n, hi, wi, :], io_blk)
-
-                    xf.wait()
-
-
-@ttl.datamovement()
-def writer():
-    for n in range(N):
-        for hi in range(HI):
-            for wi in range(WI):
-                with io_dfb.wait() as io_blk:
-                    gxf = ttl.GroupTransfer()
-
-                    for h_scale_index in range(H_SCALE_FACTOR):
-                        for w_scale_index in range(W_SCALE_FACTOR):
-
-                            # Copy output pixel channels
-
-                            xf = ttl.copy(
-                                io_blk,
-                                output[
-                                    n,
-                                    hi * H_SCALE_FACTOR + h_scale_index,
-                                    wi * W_SCALE_FACTOR + w_scale_index,
-                                    :,
-                                ],
-                            )
-
-                            # Add transfer handle to a group
-
-                            gxf.add(xf)
-
-                    # Wait for all transfers to complete
-
-                    gxf.wait_all()
-
-
-```
+<!-- @spec:example copy/group_transfer.py -->
 
 | Function | Description |
 | :---- | :---- |
@@ -1195,50 +340,11 @@ A *semaphore* is a communication primitive for general synchronization between n
 
 #### One-to-many barrier example
 
-```py
-node_num = ttl.node(dims=1)
-my_barrier = ttl.Semaphore()
-all_barrier = my_barrier.get_remote_multicast()
-
-
-@ttl.datamovement()
-def dm():
-    if node_num == 0:
-
-        # do something on node 0 while non-0 nodes wait...
-
-        all_barrier.set(1)
-    else:
-        my_barrier.wait_eq(1)
-
-        # node 0 is done
-
-
-```
+<!-- @spec:example semaphore/one_to_many_barrier.py -->
 
 #### Many-to-one barrier example
 
-```py
-node_num = ttl.node(dims=1)
-my_barrier = ttl.Semaphore()
-node_0_barrier = my_barrier.get_remote((0, 0))
-non_0_node_count = grid_size(dims=1) - 1
-
-
-@ttl.datamovement()
-def dm():
-    if node_num != 0:
-
-        # do something on non-0 nodes while node 0 waits...
-
-        node_0_barrier.inc(1)
-    else:
-        my_barrier.wait_eq(non_0_node_count)
-
-        # non-0 nodes are done
-
-
-```
+<!-- @spec:example semaphore/many_to_one_barrier.py -->
 
 | Function | Description |
 | :---- | :---- |
@@ -1264,49 +370,7 @@ Profiling signpost is a language construct that allows the user to specify a blo
 
 #### Signpost example
 
-```py
-@ttl.datamovement()
-def matmul_read():
-    for i_tile in range(I_TILES):
-        for m_tile in range(M_TILES):
-            for n_tile in range(N_TILES):
-
-                # Measure the entire iteration
-
-                with ttl.signpost("i_m_n iteration"):
-
-                    # Measure from reserve to push
-
-                    with ttl.signpost("push c"):
-                        with c_dfb.reserve() as c_blk:
-
-                            # Measure only copy
-
-                            with ttl.signpost("read c"):
-                                c_xf = ttl.copy(c[m_tile, n_tile], c_blk)
-                                c_xf.wait()
-
-                    for k_tile in range(K_TILES):
-                        with ttl.signpost("push a and b"):
-
-                            # Measure from reserve to push
-
-                            with (
-                                a_dfb.reserve() as a_blk,
-                                b_dfb.reserve() as b_blk,
-                            ):
-
-                                # Measure only copy
-
-                                with ttl.signpost("read a and b"):
-                                    a_xf = ttl.copy(a[i_tile, m_tile, k_tile], a_blk)
-                                    b_xf = ttl.copy(b[k_tile, n_tile], b_blk)
-
-                                    a_xf.wait()
-                                    b_xf.wait()
-
-
-```
+<!-- @spec:example performance_and_debugging/signpost.py -->
 
 | Function | Description |
 | :---- | :---- |
@@ -1319,74 +383,7 @@ TT-Lang includes ability to print information to the standard output for debuggi
 
 #### Debug printing example
 
-```py
-@ttl.datamovement()
-def matmul_read():
-    # Print first two pages of c
-
-    print("c: ", c, num_pages=2)
-
-    # Print first page of a and b
-
-    print("a: ", a)
-    print("b: ", b)
-
-    for i_tile in range(I_TILES):
-        for m_tile in range(M_TILES):
-            for n_tile in range(N_TILES):
-                with c_dfb.reserve() as c_blk:
-
-                    # Print state of c_dfb dataflow buffer after reserve
-
-                    print("c_dfb after reserve: ", c_dfb)
-
-                    # Print iteration state and the content of c_blk block
-
-                    print(
-                        "i_tile=",
-                        i_tile,
-                        " m_tile=",
-                        m_tile,
-                        "n_tile=",
-                        n_tile,
-                        " c_blk: ",
-                        c_blk,
-                    )
-
-                    c_xf = ttl.copy(c[m_tile, n_tile], c_blk)
-                    c_xf.wait()
-
-                # Print state of c_dfb dataflow buffer after push
-
-                print("c_dfb after push: ", c_dfb)
-
-                for k_tile in range(K_TILES):
-                    with (
-                        a_dfb.reserve() as a_blk,
-                        b_dfb.reserve() as b_blk,
-                    ):
-                        # Print iteration state
-
-                        print("k_tile=", k_tile)
-
-                        # Print the content of a_blk block
-
-                        print("a_blk:")
-                        print(a_blk)
-
-                        # Print the content of b_blk block
-
-                        print("b_blk:")
-                        print(b_blk)
-
-                        a_xf = ttl.copy(a[i_tile, m_tile, k_tile], a_blk)
-                        b_xf = ttl.copy(b[k_tile, n_tile], b_blk)
-
-                        a_xf.wait()
-                        b_xf.wait()
-
-
-```
+<!-- @spec:example performance_and_debugging/debug_printing.py -->
 
 | Type | `print` function behavior |
 | :---- | :---- |
