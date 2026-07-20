@@ -9,7 +9,8 @@
 #  - tt-metal's install_dependencies.sh downloads an amd64-only OpenMPI-ULFM
 #    .deb; --no-distributed skips it (not needed for single-device sim).
 #  - A wrong-arch (x86-64) cmake can shadow the apt arm64 cmake in /usr/local/bin.
-#  - apt installs versioned clang-20 only; tt-lang's CMake wants bare clang/clang++.
+#  - Clang comes from apt.llvm.org as a versioned package (clang-N); register the
+#    newest installed one as bare clang/clang++ for tt-lang's CMake.
 #  - tt-metal writes into its own source tree (CPM cache, firmware ELFs); those
 #    writes fail over the virtiofs mount, so build from a VM-local ext4 copy.
 set -euo pipefail
@@ -37,9 +38,12 @@ for t in cmake ctest cpack ccmake; do
   if [ -f "/usr/local/bin/$t" ] && file "/usr/local/bin/$t" | grep -q "x86-64"; then sudo rm -f "/usr/local/bin/$t"; fi
 done
 
-echo "=== provide unversioned clang/clang++ ==="
-sudo update-alternatives --install /usr/bin/clang   clang   /usr/bin/clang-20   100
-sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-20 100
+echo "=== register unversioned clang/clang++ -> newest installed clang-N ==="
+clang_ver=$(ls -1 /usr/bin/clang-[0-9]* 2>/dev/null | sed -E 's#.*/clang-([0-9]+)$#\1#' | sort -n | tail -1)
+if [ -n "${clang_ver:-}" ]; then
+  sudo update-alternatives --install /usr/bin/clang   clang   "/usr/bin/clang-$clang_ver"   100
+  sudo update-alternatives --install /usr/bin/clang++ clang++ "/usr/bin/clang++-$clang_ver" 100
+fi
 
 echo "=== clean slate ==="
 rm -rf "$VM_LOCAL/build-toolchain" "$VM_LOCAL/cpmcache" "$VM_LOCAL/tt-lang" "$VM_LOCAL/craq-sim"

@@ -33,7 +33,7 @@ for compile-only tests and MLIR lit tests on the host; runtime tests need the VM
 # Ensure the install prefix is writable (see build.md).
 sudo mkdir -p /opt/ttlang-toolchain && sudo chown "$USER" /opt/ttlang-toolchain
 
-./scripts/build-and-install.sh --toolchain-only --python "$(brew --prefix)/bin/python3.11"
+./scripts/build-and-install.sh --toolchain-only --python "$(brew --prefix)/bin/python3.12"
 ```
 
 Notes:
@@ -120,8 +120,9 @@ space and is not reclaimed by deleting files inside the VM (see disk note).
   `.deb`; run it with `--no-distributed` (single-device sim needs no MPI).
 - A wrong-arch **x86-64 `cmake`** in `/usr/local/bin` can shadow the apt arm64
   one; remove it.
-- apt installs versioned `clang-20` only, but tt-lang's CMake wants bare
-  `clang`/`clang++` -- add them with `update-alternatives`.
+- `install_dependencies.sh` installs Clang from apt.llvm.org as a versioned
+  package (e.g. `clang-20`); tt-lang's CMake wants bare `clang`/`clang++`, so
+  register the newest installed `clang-N` with `update-alternatives`.
 - The toolchain build runs from a VM-local copy, not the mount: tt-metal writes
   into its own tree and those writes fail over virtiofs. tt-lang itself builds
   fine over virtiofs, so `build-lima` uses your real checkout directly.
@@ -133,8 +134,9 @@ common **TT root** that the VM mounts -- default `~/tt`, set by the `mounts:` en
 in `test/hw-sim/craqsim-vm.yaml` (change it if your clones live elsewhere).
 
 ```bash
-# 1. Init tt-metal's submodules (umd, tracy) so the build finds them.
-git -C third-party/tt-metal submodule update --init --depth 1
+# 1. Check out tt-metal and its submodules (umd, tracy) so the build finds them
+#    (works even if the repo was cloned without --recurse-submodules).
+git submodule update --init --recursive --depth 1 third-party/tt-metal
 
 # 2. Create the VM (Ubuntu 24.04 aarch64). Config path is relative to the repo root.
 limactl start --tty=false --name=ttlang-craqsim test/hw-sim/craqsim-vm.yaml
