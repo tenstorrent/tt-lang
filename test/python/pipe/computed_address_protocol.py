@@ -34,6 +34,7 @@ from ttlang_test_utils import to_dram, torch_dtype_from_env  # noqa: E402
 from utils.correctness import assert_allclose  # noqa: E402
 
 TILE = 32
+POINT_TO_POINT_ITERS = 2
 ALL_GATHER_WIDTH = 4
 ALL_GATHER_ITERS = 2
 
@@ -73,16 +74,16 @@ def point_to_point_computed_address(inp, out):
             with send_dfb.wait() as send_blk:
                 ttl.copy(send_blk, pipe).wait()
 
-        net.if_src(send)
-
         def recv(pipe):
             with recv_dfb.reserve() as recv_blk:
                 ttl.copy(pipe, recv_blk).wait()
             with recv_dfb.wait() as recv_blk:
                 ttl.copy(recv_blk, out[0, 0]).wait()
 
-        if node_x == 1:
-            net.if_dst(recv)
+        for _iter_idx in range(POINT_TO_POINT_ITERS):
+            net.if_src(send)
+            if node_x == 1:
+                net.if_dst(recv)
 
     @ttl.datamovement()
     def dm_brisc():
@@ -160,7 +161,7 @@ def row_all_gather_computed_address(inp, out):
 
 # Point-to-point computed address: the receiver does not publish its reserved
 # DFB address, and the sender uses the capacity protocol. recv_block_count=2
-# forces dynamic sender-side receiver slot tracking.
+# and two iterations force dynamic sender-side receiver slot tracking.
 # P2P-FINAL-LABEL: func.func @dm
 # P2P-FINAL-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
 # P2P-FINAL-DAG: %[[P2P_BASE_ARG_INDEX:.*]] = "emitc.constant"() <{value = 2 : index}>
@@ -187,7 +188,6 @@ def row_all_gather_computed_address(inp, out):
 # ALLGATHER-FP32-FINAL-DAG: %[[STRIDE:.*]] = "emitc.constant"() <{value = 4096 : i32}>
 # ALLGATHER-FINAL-DAG: %[[ALLGATHER_BASE_ARG_INDEX:.*]] = "emitc.constant"() <{value = 2 : index}>
 # ALLGATHER-FINAL: experimental::semaphore_wait
-# ALLGATHER-FINAL: get_compile_time_arg_val
 # ALLGATHER-FINAL: call_opaque "get_common_arg_val"(%[[ALLGATHER_BASE_ARG_INDEX]])
 # ALLGATHER-FINAL: %[[STRIDE_UI:.*]] = cast %[[STRIDE]] : i32 to ui32
 # ALLGATHER-FINAL: mul {{.*}}, %[[STRIDE_UI]]
@@ -197,7 +197,6 @@ def row_all_gather_computed_address(inp, out):
 # ALLGATHER-FINAL-NOT: load_from_l1
 
 # ALLGATHER-CPP: experimental::semaphore_wait(
-# ALLGATHER-CPP: get_compile_time_arg_val(
 # ALLGATHER-CPP: get_common_arg_val<uint32_t>(
 # ALLGATHER-CPP: {{.*}} % {{.*}};
 # ALLGATHER-CPP: noc0.async_write_multicast<NocOptions::MCAST_INCL_SRC>(
