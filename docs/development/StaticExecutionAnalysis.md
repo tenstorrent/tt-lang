@@ -106,8 +106,9 @@ operation_count =
               for frame in control_frames)
 ```
 
-The product is valid only when every factor is exact. An exact zero ends the
-proof because the nested operation is unreachable in that analysis context.
+The analysis evaluates factors from outermost to innermost. It returns unknown
+when the next factor is not exact. An exact zero reached before that point ends
+the proof because the nested operation is unreachable in that analysis context.
 
 An induction environment maps each enclosing loop induction variable to the
 value for one statically evaluated iteration. A loop is statically enumerable
@@ -188,8 +189,9 @@ The analysis runs MLIR sparse constant propagation and dead-code analysis once
 for the root operation. These standard analyses provide context-independent
 constant and executability facts. The per-query integer evaluator can prove
 additional branch operands from consumer facts and enclosing induction values.
-Dead-code analysis determines whether a block or edge may execute; it does not
-determine how many times it executes.
+It also reads integer constants that sparse constant propagation forwards
+through block and region arguments. Dead-code analysis determines whether a
+block or edge may execute; it does not determine how many times it executes.
 
 For each region and induction environment, the analysis constructs a possible
 block control-flow graph (CFG). Its nodes are the region's blocks. Its edges
@@ -225,6 +227,8 @@ cycle may execute repeatedly or never exit.
 The analysis computes one SCC decomposition and one post-dominator tree for
 each distinct possible block CFG in a region. It caches all block results from
 that graph. Induction environments that select the same edges reuse the result.
+All operations in one block execute once per block invocation, so queries for
+operations in the same block also reuse the complete structured-control proof.
 
 Structured loops remain supported through `LoopLikeOpInterface` because their
 trip counts are modeled explicitly outside the block CFG analysis.

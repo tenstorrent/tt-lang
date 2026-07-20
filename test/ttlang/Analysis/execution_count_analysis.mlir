@@ -126,11 +126,16 @@ func.func @induction_dependent_branch() {
         test.expected_count = 3 : i64,
         test.label = "induction_dependent_branch"
       } : index
+      %same_block = arith.subi %iteration, %iteration {
+        test.expected_count = 3 : i64,
+        test.label = "induction_dependent_branch_same_block"
+      } : index
     }
   }
   return
 }
 // CHECK-LABEL: induction_dependent_branch = 3
+// CHECK-NEXT: induction_dependent_branch_same_block = 3
 
 // An unselected region has an exact count of zero.
 func.func @unselected_region() {
@@ -379,6 +384,75 @@ func.func @constant_block_branch() {
 // CHECK-LABEL: constant_block_branch_selected = 1
 // CHECK-LABEL: constant_block_branch_unselected = 0
 // CHECK-LABEL: constant_block_branch_merge = 1
+
+// Sparse constant propagation forwards a selector through a block argument to
+// prove the selected and unselected structured regions.
+func.func @block_argument_region_selector() {
+  %true = arith.constant true
+  %zero = arith.constant 0 : index
+  cf.br ^select(%true : i1)
+
+^select(%condition: i1):
+  scf.if %condition {
+    %selected = arith.addi %zero, %zero {
+      test.expected_count = 1 : i64,
+      test.label = "block_argument_region_selector_selected"
+    } : index
+  } else {
+    %unselected = arith.addi %zero, %zero {
+      test.expected_count = 0 : i64,
+      test.label = "block_argument_region_selector_unselected"
+    } : index
+  }
+  return
+}
+// CHECK-LABEL: block_argument_region_selector_selected = 1
+// CHECK-NEXT: block_argument_region_selector_unselected = 0
+
+// Equal constants from runtime-selected predecessor blocks remain constant at
+// their merge and select the nested structured region.
+func.func @joined_block_argument_region_selector(%runtime_condition: i1) {
+  %false = arith.constant false
+  %zero = arith.constant 0 : index
+  cf.cond_br %runtime_condition, ^left, ^right
+
+^left:
+  cf.br ^merge(%false : i1)
+
+^right:
+  cf.br ^merge(%false : i1)
+
+^merge(%condition: i1):
+  scf.if %condition {
+    %target = arith.addi %zero, %zero {
+      test.expected_count = 0 : i64,
+      test.label = "joined_block_argument_region_selector"
+    } : index
+  }
+  return
+}
+// CHECK-LABEL: joined_block_argument_region_selector = 0
+
+// Sparse constant propagation preserves a loop-carried constant used by a
+// nested structured region.
+func.func @loop_carried_region_selector() {
+  %false = arith.constant false
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %three = arith.constant 3 : index
+  %result = scf.for %iteration = %zero to %three step %one
+      iter_args(%condition = %false) -> i1 {
+    scf.if %condition {
+      %target = arith.addi %iteration, %iteration {
+        test.expected_count = 0 : i64,
+        test.label = "loop_carried_region_selector"
+      } : index
+    }
+    scf.yield %condition : i1
+  }
+  return
+}
+// CHECK-LABEL: loop_carried_region_selector = 0
 
 // The merge post-dominates the entry and therefore executes once even though
 // neither branch count is exact.

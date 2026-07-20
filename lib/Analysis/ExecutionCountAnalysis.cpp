@@ -4,6 +4,7 @@
 
 #include "ttlang/Analysis/ExecutionCountAnalysis.h"
 
+#include "mlir/Analysis/DataFlow/ConstantPropagationAnalysis.h"
 #include "mlir/Analysis/DataFlow/DeadCodeAnalysis.h"
 #include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Analysis/DataFlowFramework.h"
@@ -212,15 +213,21 @@ public:
     if (!operation) {
       return std::nullopt;
     }
-    auto cached = executionCountCache.find(operation);
-    if (cached != executionCountCache.end()) {
+    Block *operationBlock = operation->getBlock();
+    if (!operationBlock) {
+      return std::nullopt;
+    }
+    // Every operation in a block executes once per block invocation, so reuse
+    // the control-flow proof for all operations in that block.
+    auto cached = blockExecutionCountCache.find(operationBlock);
+    if (cached != blockExecutionCountCache.end()) {
       return cached->second;
     }
 
     SmallVector<ControlFrame> frames;
     Block *rootBlock = nullptr;
     if (!collectControlFrames(operation, frames, rootBlock)) {
-      executionCountCache.try_emplace(operation, std::nullopt);
+      blockExecutionCountCache.try_emplace(operationBlock, std::nullopt);
       return std::nullopt;
     }
 
@@ -239,7 +246,7 @@ public:
                                                   *maybeNestedCount)
                        : std::nullopt;
     }
-    executionCountCache.try_emplace(operation, maybeCount);
+    blockExecutionCountCache.try_emplace(operationBlock, maybeCount);
     return maybeCount;
   }
 
@@ -279,9 +286,28 @@ private:
               inductionValue != inductionValues.end()) {
             return inductionValue->second;
           }
+          if (std::optional<llvm::APInt> maybeConstant =
+                  getDataFlowIntegerConstant(value)) {
+            return maybeConstant;
+          }
           return symbolValueEvaluator ? symbolValueEvaluator(value)
                                       : std::nullopt;
         });
+  }
+
+  /// Return an integer constant propagated through block and region arguments.
+  std::optional<llvm::APInt> getDataFlowIntegerConstant(Value value) const {
+    if (!dataFlowSolver) {
+      return std::nullopt;
+    }
+    using ConstantLattice = dataflow::Lattice<dataflow::ConstantValue>;
+    const auto *lattice = dataFlowSolver->lookupState<ConstantLattice>(value);
+    if (!lattice || lattice->getValue().isUninitialized()) {
+      return std::nullopt;
+    }
+    auto integerAttr =
+        dyn_cast_or_null<IntegerAttr>(lattice->getValue().getConstantValue());
+    return integerAttr ? std::optional(integerAttr.getValue()) : std::nullopt;
   }
 
   SmallVector<Attribute> evaluateOperands(
@@ -708,7 +734,8 @@ private:
   RegionInvocationCountEvaluator regionInvocationCountEvaluator;
   Options options;
   std::unique_ptr<DataFlowSolver> dataFlowSolver;
-  llvm::DenseMap<Operation *, std::optional<std::uint64_t>> executionCountCache;
+  llvm::DenseMap<Block *, std::optional<std::uint64_t>>
+      blockExecutionCountCache;
   /// Reuse block counts when different induction values select the same edges.
   llvm::DenseMap<Region *, llvm::DenseMap<BlockFlowKey, BlockCountResult>>
       blockCountCache;

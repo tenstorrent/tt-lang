@@ -61,7 +61,7 @@ public:
   /// Returns the exact number of executions, or nullopt when it is not proven.
   /// This includes null operations, parentless operations, and operations
   /// outside `rootRegion`. The analyzed IR and callback results must remain
-  /// unchanged between queries because results are cached by operation.
+  /// unchanged between queries because results are cached by enclosing block.
   std::optional<std::uint64_t> getExecutionCount(Operation *operation);
 
 private:
