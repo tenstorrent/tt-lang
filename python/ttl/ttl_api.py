@@ -547,6 +547,7 @@ class CompiledTTNNKernel:
         num_tensors,
         core_ranges,
         kernel_tensor_indices,
+        kernel_core_ranges=None,
         cb_configs=None,
         program_hash=None,
         source_lines=None,
@@ -567,6 +568,10 @@ class CompiledTTNNKernel:
             num_tensors: Number of input/output tensors
             core_ranges: CoreRangeSet for kernel execution
             kernel_tensor_indices: List of global tensor indices used by each kernel
+            kernel_core_ranges: Optional list of per-kernel CoreRangeSet aligned
+                with kernel_paths. Set by the per-core specialization path so
+                each specialized clone is dispatched only to its own core; None
+                entries fall back to the whole-grid core_ranges.
             cb_configs: List of (shape, block_count) tuples for each CB, indexed by cb_index
             program_hash: Hash for tt-metal program cache
             source_lines: Source code lines for auto-profiling reports (deprecated)
@@ -586,6 +591,7 @@ class CompiledTTNNKernel:
         self.num_tensors = num_tensors
         self.core_ranges = core_ranges
         self.kernel_tensor_indices = kernel_tensor_indices
+        self.kernel_core_ranges = kernel_core_ranges or [None] * len(kernel_paths)
         self.cb_configs = cb_configs or []
         self.program_hash = program_hash
         self.source_lines = source_lines
@@ -623,6 +629,7 @@ class CompiledTTNNKernel:
                 thread_type=thread_type,
                 tensor_indices=tensor_indices,
                 config=config,
+                core_ranges=self.kernel_core_ranges[kernel_idx],
             )
             kernel_specs.append(spec)
 
@@ -747,6 +754,71 @@ def _get_kernel_i32_array_attr(module, kernel_name: str, attr_name: str):
     return list(attr)
 
 
+def _get_kernel_core_coords(module, kernel_name: str):
+    """Read the `ttl.core_coord` attribute set by `ttkernel-specialize-cores`.
+
+    We expect the array to be of length 2 since node dim currently only supports 2D.
+    The attribute is the launch coordinates a kernel is dispatched to.
+
+    Returns the list of `(x, y)` launch coordinates for a specialized clone, or
+    None when the kernel was not specialized (the whole-grid default path).
+    """
+    operation = _lookup_kernel_func_op(module, kernel_name)
+    attr = operation.attributes.get("ttl.core_coord", None)
+    if attr is None:
+        return None
+    if not isinstance(attr, ArrayAttr):
+        raise ValueError(
+            f"Expected an array for 'ttl.core_coord' on kernel "
+            f"'{kernel_name}', got {attr}"
+        )
+    coords = []
+    for pair in attr:
+        pair = ArrayAttr(pair)
+        if len(pair) != 2:
+            raise ValueError(
+                f"Expected length-2 [x, y] entries in 'ttl.core_coord' on "
+                f"kernel '{kernel_name}', got {pair}"
+            )
+        coords.append(
+            (int(IntegerAttr(pair[0]).value), int(IntegerAttr(pair[1]).value))
+        )
+    return coords
+
+
+def _get_kernel_noc_index(module, kernel_name: str):
+    """Read the `ttl.noc_index` attribute (0 = reader, 1 = writer).
+
+    The frontend tags every datamovement thread with this attribute, required here so
+    reader/writer role assignment is attribute-based rather than positional.
+    """
+    operation = _lookup_kernel_func_op(module, kernel_name)
+    attr = operation.attributes.get("ttl.noc_index", None)
+    if attr is None:
+        raise ValueError(
+            f"Missing 'ttl.noc_index' on datamovement kernel '{kernel_name}'"
+        )
+    return int(IntegerAttr(attr).value)
+
+
+def _get_kernel_crta_indices(module, kernel_name: str):
+    """Read the `ttl.crta_indices` attribute as a list of global tensor indices.
+
+    Used by the per-core specialization path where clones cannot be aligned
+    positionally with the original thread list. Raises an error if the attribute is missing.
+    """
+    operation = _lookup_kernel_func_op(module, kernel_name)
+    attr = operation.attributes.get("ttl.crta_indices", None)
+    if attr is None:
+        raise ValueError(f"No CRTA indices found for kernel {kernel_name}")
+    if not isinstance(attr, ArrayAttr):
+        raise ValueError(
+            f"Expected ArrayAttr for 'ttl.crta_indices' on kernel "
+            f"'{kernel_name}', got {attr}"
+        )
+    return [int(IntegerAttr(idx).value) for idx in attr]
+
+
 def _compile_ttnn_kernel(
     module,
     args,
@@ -810,17 +882,45 @@ def _compile_ttnn_kernel(
                     f"Use ttnn.to_layout(tensor, ttnn.TILE_LAYOUT) to convert."
                 )
 
-    # Validate kernel count: for now we must have exactly 3 kernels (1 compute + 2 data movement).
-    # Each core has only 2 NOCs, so more than 2 DM kernels causes NOC conflicts.
-    # TODO: in the future we should figure out how to map arbitrary kernels.
-    if len(kernel_info) != 3:
-        compute_count = sum(1 for _, t in kernel_info if t == "compute")
-        dm_count = sum(1 for _, t in kernel_info if t == "noc")
-        raise ValueError(
-            f"TTNN interop requires exactly 3 kernels (1 compute + 2 data movement), "
-            f"got {len(kernel_info)} kernels ({compute_count} compute, {dm_count} data movement). "
-            f"Each core has only 2 NOCs, so more than 2 DM kernels causes NOC conflicts."
-        )
+    # Detect the per-core specialization path: ttkernel-specialize-cores tags each
+    # clone with ttl.core_coord (the list of coordinates the clone serves).
+    # When present, get_ttkernel_names returns per-coordinate clones instead of
+    # a single (compute + reader + writer) triple.
+    kernel_coords = [_get_kernel_core_coords(module, name) for name, _ in kernel_info]
+    specialize_cores = any(coords is not None for coords in kernel_coords)
+
+    compute_count = sum(1 for _, t in kernel_info if t == "compute")
+    dm_count = sum(1 for _, t in kernel_info if t == "noc")
+    if not specialize_cores:
+        # Validate kernel count: for now we must have exactly 3 kernels (1 compute + 2 data movement).
+        # Each core has only 2 NOCs, so more than 2 DM kernels causes NOC conflicts.
+        # TODO: in the future we should figure out how to map arbitrary kernels.
+        if len(kernel_info) != 3:
+            raise ValueError(
+                f"TTNN interop requires exactly 3 kernels (1 compute + 2 data movement), "
+                f"got {len(kernel_info)} kernels ({compute_count} compute, {dm_count} data movement). "
+                f"Each core has only 2 NOCs, so more than 2 DM kernels causes NOC conflicts."
+            )
+    else:
+        # Check no core has more than one compute or two NOC kernels.
+        grid_cols, grid_rows = grid
+        all_cores = [(x, y) for y in range(grid_rows) for x in range(grid_cols)]
+        per_core_counts = {}
+        for (name, thread_type), coords in zip(kernel_info, kernel_coords):
+            covered = coords if coords is not None else all_cores
+            for coord in covered:
+                counts = per_core_counts.setdefault(tuple(coord), [0, 0])
+                if thread_type == "compute":
+                    counts[0] += 1
+                elif thread_type == "noc":
+                    counts[1] += 1
+        for coord, (n_compute, n_noc) in per_core_counts.items():
+            if n_compute > 1 or n_noc > 2:
+                raise ValueError(
+                    f"Per-core specialization assigned {n_compute} compute and "
+                    f"{n_noc} data movement kernels to core {coord}. Each core "
+                    f"supports at most one compute and two NOC kernels."
+                )
 
     if verbose:
         print("=" * 60)
@@ -850,7 +950,10 @@ def _compile_ttnn_kernel(
     kernel_paths = []
     kernel_configs = []
     kernel_arg_specs = []
-    noc_kernel_idx = 0
+    # Per-kernel single-core ranges (specialization path) and tensor indices
+    # read from ttl.crta_indices. Both stay aligned with kernel_info order.
+    kernel_core_ranges = []
+    specialized_tensor_indices = []
     kernel_config_attrs = {
         name: {
             "fp32_dest_acc_en": _get_kernel_bool_attr(module, name, "fp32_dest_acc_en"),
@@ -866,10 +969,14 @@ def _compile_ttnn_kernel(
     # Maps RISC thread names to kernel names
     thread_to_kernel = {}
 
-    for name, thread_type in kernel_info:
+    for idx, (name, thread_type) in enumerate(kernel_info):
         cpp_source = ttkernel_to_cpp_by_name(module, name)
         kernel_path = _write_kernel_to_tmp(name, cpp_source)
         kernel_paths.append((kernel_path, thread_type))
+
+        # The specialized clone's launch coordinates (None on the default,
+        # whole-grid path). Used to build the per-kernel dispatch range below.
+        coords = kernel_coords[idx]
 
         if thread_type == "compute":
             config = ttnn.ComputeConfigDescriptor()
@@ -889,16 +996,35 @@ def _compile_ttnn_kernel(
             thread_to_kernel["TRISC_1"] = name
             thread_to_kernel["TRISC_2"] = name
         elif thread_type == "noc":
-            if noc_kernel_idx == 0:
+            noc_role = _get_kernel_noc_index(module, name)
+            if noc_role == 0:
                 config = ttnn.ReaderConfigDescriptor()
                 thread_to_kernel["NCRISC"] = name  # Reader
             else:
                 config = ttnn.WriterConfigDescriptor()
                 thread_to_kernel["BRISC"] = name  # Writer
-            noc_kernel_idx += 1
         else:
             config = ttnn.ReaderConfigDescriptor()
         kernel_configs.append(config)
+
+        # Turn the specialized clone's coordinates into a CoreRangeSet
+        if coords is not None:
+            kernel_core_ranges.append(
+                ttnn.CoreRangeSet(
+                    [
+                        ttnn.CoreRange(ttnn.CoreCoord(cx, cy), ttnn.CoreCoord(cx, cy))
+                        for (cx, cy) in coords
+                    ]
+                )
+            )
+        else:
+            kernel_core_ranges.append(None)
+        # Clones cannot be aligned positionally with the original thread list,
+        # so recover each kernel's global tensor indices from ttl.crta_indices.
+        # Only needed on the specialization path; the default path uses the
+        # positional thread_tensor_indices instead.
+        if specialize_cores:
+            specialized_tensor_indices.append(_get_kernel_crta_indices(module, name))
 
         # Extract runtime args from kernel's arg_spec attribute
         arg_spec = get_ttkernel_arg_spec(module, name)
@@ -908,13 +1034,21 @@ def _compile_ttnn_kernel(
         else:
             kernel_arg_specs.append([])
 
+    # On the specialization path get_ttkernel_names returns 3*N clones, so the
+    # positional thread_tensor_indices (one entry per original thread) no longer
+    # lines up; use the per-clone indices recovered from ttl.crta_indices.
+    kernel_tensor_indices = (
+        specialized_tensor_indices if specialize_cores else thread_tensor_indices
+    )
+
     compiled_kernel = CompiledTTNNKernel(
         kernel_paths=kernel_paths,
         kernel_configs=kernel_configs,
         kernel_arg_specs=kernel_arg_specs,
         num_tensors=len(args),
         core_ranges=core_ranges,
-        kernel_tensor_indices=thread_tensor_indices,
+        kernel_tensor_indices=kernel_tensor_indices,
+        kernel_core_ranges=kernel_core_ranges,
         cb_configs=cb_configs,
         program_hash=program_hash,
         source_lines=source_lines,
@@ -934,12 +1068,13 @@ def _compile_ttnn_kernel(
     if emit_runner_path:
         kernel_specs_for_emit = []
         for kernel_idx, (kernel_path, thread_type) in enumerate(kernel_paths):
-            tensor_indices = thread_tensor_indices[kernel_idx]
+            tensor_indices = kernel_tensor_indices[kernel_idx]
             spec = KernelSpec(
                 path=kernel_path,
                 thread_type=thread_type,
                 tensor_indices=tensor_indices,
                 config=kernel_configs[kernel_idx],
+                core_ranges=kernel_core_ranges[kernel_idx],
             )
             kernel_specs_for_emit.append(spec)
 
@@ -1583,8 +1718,8 @@ def _lower_program_to_kernel(
                 ctx,
             )
 
-            # Tag noc functions with their index so pipe semaphore
-            # allocation can distinguish threads.
+            # Tag noc functions with their index so pipe semaphore allocation
+            # and TTNN reader/writer role assignment can distinguish threads.
             if ct.kernel_type == "datamovement":
                 ct.func_entry.attributes["ttl.noc_index"] = IntegerAttr.get(
                     IntegerType.get_signless(32, ctx), noc_kernel_idx
@@ -1731,6 +1866,14 @@ def _lower_program_to_kernel(
             "cse",
             "lower-affine",
             "ttl-lower-signpost-to-emitc",
+        ]
+        if compiler_options.specialize_cores:
+            pipeline_passes += [
+                "ttkernel-specialize-cores",
+                "canonicalize",
+                "cse",
+            ]
+        pipeline_passes += [
             "func.func(convert-ttkernel-to-emitc)",
             "symbol-dce",
         ]
