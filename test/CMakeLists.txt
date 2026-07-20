@@ -38,6 +38,11 @@ set(TTLANG_TEST_DEPENDS
   ttlang-translate
 )
 
+# Hardware jobs invoke llvm-lit directly, so expose its executable dependencies
+# through a target that the workflow can build explicitly.
+add_custom_target(ttlang-test-tools DEPENDS ${TTLANG_TEST_DEPENDS})
+set_target_properties(ttlang-test-tools PROPERTIES FOLDER "Tests")
+
 # Common llvm-lit options for consistent output across tt-lang test suites.
 set(TTLANG_LIT_COMMON_ARGS
   --verbose
