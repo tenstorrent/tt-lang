@@ -206,6 +206,49 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
+// Equal unresolved loop syntax does not prove equal multiplicity when the
+// runtime upper bound also depends on the launch node.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @unresolved_node_dependent_rendezvous_count(%runtime: index)
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %core_x = ttl.core_x : index
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %upper = arith.addi %runtime, %core_x : index
+    scf.for %iteration = %c0 to %upper step %c1 {
+      ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+        // expected-error @below {{cannot prove a one-to-one synchronization schedule on PipeNet net_0 for receiver core_x=1, core_y=0; receiver post and send occurrences do not have matching proven execution counts and conditions}}
+        %send = ttl.copy %send_cb, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+               !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
+      ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+        %recv_reserve = ttl.cb_reserve %recv_cb
+            : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+            -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        // expected-note @below {{matching receiver post occurrence is here}}
+        %recv = ttl.copy %pipe, %recv_reserve
+            : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+               tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> !ttl.transfer_handle
+        ttl.wait %recv : !ttl.transfer_handle
+      }
+    }
+    func.return
+  }
+}
+
+// -----
+
 // A loop-IV condition restricts the send to the first iteration while the
 // receiver posts on both iterations.
 

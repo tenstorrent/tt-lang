@@ -7,11 +7,12 @@
 The point-to-point pipe is eligible for computed receiver addresses by default;
 --no-ttl-pipe-capacity-sync selects receiver-post synchronization, and
 --no-ttl-pipe-computed-addresses selects receiver-published addresses. All
-three protocols must match torch and each other across dtypes. A receiver block
-count greater than one exercises dynamic sender-side slot indices. The schedule
-regressions require receiver-published addresses when dynamic control flow or a
-repeated PipeKey prevents static receiver-slot assignment. Invalid schedule
-regressions reject receiver DFB divergence and unequal dynamic rendezvous
+three protocols must match torch and each other across dtypes. Repeated
+transfers into a receiver with multiple blocks exercise sender-side slot
+counters. The schedule regressions require receiver-published addresses when
+control flow prevents static receiver-slot assignment, while distinct static
+transfers for one PipeKey retain distinct computed addresses. Invalid schedule
+regressions reject receiver address-sequence divergence and unequal rendezvous
 counts.
 """
 
@@ -309,6 +310,58 @@ def asymmetric_multicast_receiver_traffic(inp, out):
         pass
 
 
+@ttl.operation(grid=(3, 1))
+def repeated_nonuniform_multicast(inp, out):
+    collective = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(slice(1, 3), 0))])
+    receiver_one = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(1, 0))])
+    send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    recv_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        pass
+
+    @ttl.datamovement()
+    def dm():
+        for _iteration in range(2):
+
+            def send_collective(pipe):
+                with send_dfb.reserve() as send_blk:
+                    ttl.copy(inp[0, 0], send_blk).wait()
+                with send_dfb.wait() as send_blk:
+                    ttl.copy(send_blk, pipe).wait()
+
+            collective.if_src(send_collective)
+
+            def receive_collective(pipe):
+                with recv_dfb.reserve() as recv_blk:
+                    ttl.copy(pipe, recv_blk).wait()
+                with recv_dfb.wait() as _discarded_blk:
+                    pass
+
+            collective.if_dst(receive_collective)
+
+            def send_receiver_one(pipe):
+                with send_dfb.reserve() as send_blk:
+                    ttl.copy(inp[0, 0], send_blk).wait()
+                with send_dfb.wait() as send_blk:
+                    ttl.copy(send_blk, pipe).wait()
+
+            receiver_one.if_src(send_receiver_one)
+
+            def receive_receiver_one(pipe):
+                with recv_dfb.reserve() as recv_blk:
+                    ttl.copy(pipe, recv_blk).wait()
+                with recv_dfb.wait() as _discarded_blk:
+                    pass
+
+            receiver_one.if_dst(receive_receiver_one)
+
+    @ttl.datamovement()
+    def dm_brisc():
+        pass
+
+
 @ttl.operation(grid=(2, 1))
 def mismatched_pipe_occurrences(inp, out):
     net = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(1, 0))])
@@ -445,7 +498,7 @@ def test_branch_order_uses_published_addresses(device, dtype):
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
-def test_repeated_pipe_key_uses_published_addresses(device, dtype):
+def test_repeated_pipe_key_uses_computed_addresses(device, dtype):
     inp_torch = _random_tiles(3, dtype)
     output = to_dram(torch.zeros((TILE, TILE), dtype=dtype), device)
 
@@ -462,12 +515,29 @@ def test_multicast_rejects_asymmetric_receiver_dfb_traffic(device):
     with pytest.raises(
         Exception,
         match=(
-            "collective pipe receiver DFB write pointers are not proven equal; "
-            "TT-Metal NoC multicast requires one destination SRAM address for "
-            "all receivers"
+            "collective pipe receiver address sequences are not proven equal "
+            "for every transfer occurrence; TT-Metal NoC multicast requires "
+            "one destination SRAM address for all receivers"
         ),
     ):
         asymmetric_multicast_receiver_traffic(to_dram(inp_torch, device), output)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+def test_multicast_rejects_repeated_nonuniform_addresses(device, dtype):
+    inp_torch = _random_tiles(1, dtype)
+    inp = to_dram(inp_torch, device)
+    output = to_dram(torch.zeros((TILE, 2 * TILE), dtype=dtype), device)
+
+    with pytest.raises(
+        Exception,
+        match=(
+            "collective pipe receiver address sequences are not proven equal "
+            "for every transfer occurrence; TT-Metal NoC multicast requires "
+            "one destination SRAM address for all receivers"
+        ),
+    ):
+        repeated_nonuniform_multicast(inp, output)
 
 
 def test_pipe_rejects_different_rendezvous_execution_contexts(device):

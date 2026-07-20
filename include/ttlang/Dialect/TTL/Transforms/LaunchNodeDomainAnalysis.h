@@ -21,12 +21,16 @@
 #include "mlir/Analysis/DataFlowFramework.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
+#include "ttlang/Analysis/ExecutionCountAnalysis.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <cstdint>
 #include <functional>
+#include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -127,6 +131,12 @@ struct LaunchNodeDomainState {
   llvm::DenseMap<int64_t, LaunchNodeDomain> netDestinationDomains;
   llvm::DenseMap<int64_t, SmallVector<Location>> pipeNetLocs;
   llvm::DenseMap<int64_t, std::string> pipeNetNames;
+  /// Reuse each function-and-coordinate analysis across all operations in the
+  /// function. `ExecutionCountAnalysis` caches block-level results.
+  mutable llvm::DenseMap<
+      Operation *,
+      std::map<LaunchNodeCoord, std::unique_ptr<ExecutionCountAnalysis>>>
+      executionCountAnalyses;
   bool sawError = false;
   bool hasLaunchGrid = false;
 
@@ -154,6 +164,24 @@ evaluateLaunchNodeContextValue(Value value, LaunchNodeCoord coord,
 std::optional<bool>
 evaluatePredicateAtLaunchNode(Value value, LaunchNodeCoord coord,
                               const LaunchNodeDomainState &state);
+
+/// Return the exact execution count of `op` at `coord`. Launch-coordinate facts
+/// specialize PipeNet predicates before `ExecutionCountAnalysis` evaluates the
+/// enclosing structured and control-flow regions. Return null when the count is
+/// not proven.
+std::optional<std::uint64_t>
+getStaticExecutionCount(Operation *op, LaunchNodeCoord coord,
+                        const LaunchNodeDomainState &state);
+
+/// Return true when two operations have equal execution multiplicity at their
+/// respective launch nodes. Equal exact counts prove the relation directly;
+/// otherwise both operations must share one structured-control context whose
+/// unresolved control values are proven equal at the two nodes.
+bool haveProvenEqualExecutionMultiplicity(Operation *lhs,
+                                          LaunchNodeCoord lhsCoord,
+                                          Operation *rhs,
+                                          LaunchNodeCoord rhsCoord,
+                                          const LaunchNodeDomainState &state);
 
 /// Return the operation with the earlier source location.
 ///

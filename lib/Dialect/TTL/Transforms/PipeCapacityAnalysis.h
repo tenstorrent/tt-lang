@@ -5,22 +5,25 @@
 #ifndef TTLANG_DIALECT_TTL_TRANSFORMS_PIPECAPACITYANALYSIS_H
 #define TTLANG_DIALECT_TTL_TRANSFORMS_PIPECAPACITYANALYSIS_H
 
-// PipeCapacityAnalysis is a proof over a PipeNet capacity graph. The graph has
-// one node for each finalized receiver dataflow buffer on a receiver core and
-// one receiver endpoint for each logical pipe write to that dataflow buffer.
-// Multiple SSA `ttl.pipe_transfer.create` materializations of the same logical
-// pipe are represented by one PipeGraph edge with the same receiver endpoints.
+// PipeCapacityAnalysis proves when a local point-to-point transfer can use a
+// sender-side capacity counter. PipeGraph contains one transfer node per send
+// and its corresponding receiver posts, one endpoint per receiver, and one
+// physical DFB node per receiver coordinate and finalized DFB index. Transfer
+// nodes remain distinct even when they have the same PipeKey.
 //
 // The safety invariant is graph-local: a receiver dataflow buffer pop may
 // release sender capacity only when its receiver dataflow buffer node has
-// exactly one writer endpoint and a proven pipe-only stream. A pipe-only stream
-// has every receiver-domain push owned by one receiver reserve with one
-// matching `ttl.pipe_transfer.post`, every matching post followed by a receive
-// wait before the push, and every receiver-domain pop owned by a matching
-// `ttl.cb_wait`. With one writer endpoint, each valid pop frees one capacity
-// unit for that endpoint's sender. If the node has zero or multiple writer
-// endpoints, a pop names only the receiver dataflow buffer, so the analysis
-// cannot prove which sender should receive capacity.
+// exactly one writer endpoint and a proven pipe-only producer stream. Every
+// producer-side DFB advance must be owned by a receiver reserve whose matching
+// pipe posts complete before the advance. Capacity analysis separately requires
+// every receiver pop to have a matching `ttl.cb_wait`. With one writer
+// endpoint, each valid one-block pop frees one capacity unit for that
+// endpoint's sender. With zero or multiple writer endpoints, the pop identifies
+// only the DFB, so its sender is ambiguous.
+//
+// Fabric transfers use routing-plane flow control and do not use this protocol.
+// Fabric integration must preserve that exclusion when selecting capacity
+// candidates.
 //
 // This analysis must run after `ttl-insert-cb-sync` and
 // `ttl-finalize-dfb-indices`. The proof depends on finalized receiver dataflow
@@ -29,31 +32,31 @@
 //
 // Pseudocode:
 //
-//   state = collectLaunchNodeDomains(module)
-//
 //   for endpoint in pipeGraph.getPipeReceiverEndpoints():
 //     node = pipeGraph.getReceiverDFBNode(endpoint.receiverDFBNode)
 //     require node.writerEndpoints.size() == 1
 //     require every endpoint post to target the receiver DFB from the receiver
 //             NOC thread
-//     require the receiver DFB node to have a proven pipe-only stream
+//     require the receiver DFB node to have a proven pipe-only producer stream
 //     require every send to run on the sender NOC thread
 //     require every receiver-overlapping pop of the DFB to be owned by a
 //             receiver-domain wait and free one block
 //
-//   for pipeEdge in pipeGraph.getPipeEdges():
-//     require every receiver endpoint of pipeEdge to be proven and lowerable
+//   for transferNode in pipeGraph.getPipeTransferNodes():
+//     require the transfer to use the local point-to-point NoC transport
+//     require every receiver endpoint to have proven lowerable capacity facts
 //     initialize one sender-local capacity semaphore per receiver endpoint to
-//             that endpoint receiver dataflow buffer's block_count
+//             that receiver dataflow buffer's block_count
 //     record one capacity acquire per endpoint for each send
 //     record one capacity release to the sender for each endpoint pop
-//     mark the transfer creates as using the capacity protocol
+//     mark the transfer's send and receiver posts as using the capacity
+//     protocol
 //
 // If an endpoint requirement is not proven, that endpoint has no capacity
-// fact. If any endpoint of a pipe edge is missing a proven lowerable fact, the
-// analysis records no facts for that pipe edge. The current consumer is
-// TTL-to-TTKernel lowering, which uses proven facts to replace
-// receiver-published sender readiness with sender-local capacity semaphores.
+// fact. If any endpoint of a transfer node is missing a proven lowerable fact,
+// the analysis records no facts for that transfer. TTL-to-TTKernel lowering
+// uses proven facts to replace receiver-post sender readiness with sender-local
+// capacity semaphores.
 
 #include "PipeGraph.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -97,7 +100,8 @@ public:
 
   ArrayRef<PipeCapacityReleaseInfo> lookupReleases(CBPopOp op) const;
 
-  bool usesCapacityProtocol(PipeTransferCreateOp op) const;
+  bool usesCapacityProtocol(PipeTransferSendOp op) const;
+  bool usesCapacityProtocol(PipeTransferPostOp op) const;
 
   const llvm::MapVector<func::FuncOp, SmallVector<PipeCapacityInitInfo>> &
   getInitializations() const {
@@ -111,7 +115,8 @@ public:
   void addAcquire(PipeTransferSendOp op, PipeCapacityAcquireInfo info);
   void addRelease(CBPopOp op, PipeCapacityReleaseInfo info);
   void addInitialization(func::FuncOp func, PipeCapacityInitInfo info);
-  void markCapacityTransfer(PipeTransferCreateOp op);
+  void markCapacityTransfer(PipeTransferSendOp op);
+  void markCapacityTransfer(PipeTransferPostOp op);
   void initializeSemaphoreAllocation(int64_t firstSemaphoreIndex);
   int64_t allocateSemaphoreIndex();
   int64_t getSyncSemaphoreCount() const { return nextSemaphoreIndex; }
@@ -121,7 +126,7 @@ private:
   llvm::MapVector<Operation *, SmallVector<PipeCapacityReleaseInfo>> releases;
   llvm::MapVector<func::FuncOp, SmallVector<PipeCapacityInitInfo>>
       initializations;
-  llvm::SmallPtrSet<Operation *, 16> capacityTransfers;
+  llvm::SmallPtrSet<Operation *, 16> capacityTransferOps;
   int64_t nextSemaphoreIndex = 0;
 };
 

@@ -12,6 +12,7 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/SmallPtrSet.h"
 
 #include <optional>
 
@@ -31,16 +32,15 @@ struct PipeSramAddressTableInfo {
   int64_t byteOffset;
 };
 
-/// Sender-side recipe for computing a receiver DFB address. The graph proves a
-/// sequential receiver reservation schedule and assigns `receiverSlotIndex`;
-/// a dynamic counter is needed when execution repeats the proven schedule.
+/// Sender-side receiver address formula:
+/// `base + slot(i) * blockStrideBytes + staticTileByteOffset`.
 struct PipeComputedAddressInfo {
   int64_t receiverDFBIndex = 0;
   int64_t baseRuntimeCommonArgIndex = 0;
   /// Initial physical receiver DFB block assigned to this transfer.
-  int64_t receiverSlotIndex = 0;
-  /// Number of receiver DFB blocks reserved by one statically proven batch.
-  int64_t receiverBatchSize = 1;
+  int64_t initialSlot = 0;
+  /// `slot(i + 1) = (slot(i) + repeatStride) % blockCount`.
+  int64_t repeatStride = 0;
   int64_t blockCount = 1;
   int64_t blockStrideBytes = 0;
   /// Byte offset for the destination tile within the selected DFB block.
@@ -147,14 +147,13 @@ struct PipeAddressStorageInfo {
   std::optional<PipeComputedAddressInfo> computedAddress;
 };
 
-/// Lowering information for a set of ttl.pipe_transfer.create ops sharing one
-/// PipeKey. This keeps address storage separate from readiness counting so
-/// physical allocation can choose local semaphores or GlobalSemaphore-backed
-/// counters independently.
+/// Lowering information shared by one pipe send and its receiver posts.
+/// Address storage and readiness synchronization are independent protocol
+/// choices: computed addresses do not determine which ready counter is used.
 struct PipeResourceInfo {
   PipeKey pipe;
   PipeTransferContract transferContract;
-  /// Absent when the transfer is proven to use sender-capacity protocol.
+  /// Absent when the transfer does not use receiver-post sender readiness.
   std::optional<PipeReadyCounterInfo> readyCounter;
   PipeAddressStorageInfo addressStorage;
 };
@@ -192,9 +191,14 @@ struct PipeSramScratchInfo {
 struct PipeResourcePlan {
   PipeSramScratchInfo sramScratch;
   llvm::MapVector<int64_t, PipeCompletionWaitInfo> completionWaits;
+  /// Maps each pipe send and receiver-post operation to its transfer's shared
+  /// resources.
   llvm::MapVector<Operation *, PipeResourceInfo> resources;
-  /// Entry-block counter initializers are part of the resource plan so all
-  /// computed-address sends sharing one allocation unit share one slot state.
+  /// Protocol operations proven unreachable at their pipe endpoint. Lowering
+  /// removes these operations without allocating rendezvous resources.
+  llvm::SmallPtrSet<Operation *, 8> staticallyInactiveOps;
+  /// One entry-block counter preserves slot state across repeated sends from
+  /// the same transfer definition.
   llvm::MapVector<func::FuncOp, SmallVector<PipeComputedAddressCounterInitInfo>>
       computedAddressCounterInitializations;
 };

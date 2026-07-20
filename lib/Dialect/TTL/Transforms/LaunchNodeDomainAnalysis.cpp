@@ -8,21 +8,26 @@
 
 #include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
 
+#include "ttlang/Analysis/ExecutionCountAnalysis.h"
 #include "ttlang/Analysis/IntegerExpressionEvaluator.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/IntegerSet.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <iterator>
 #include <tuple>
 #include <utility>
@@ -45,6 +50,10 @@ struct BranchLaunchNodeDomains {
 };
 
 } // namespace
+
+static LaunchNodeDomainResult
+getAffineIfLaunchNodeDomain(affine::AffineIfOp ifOp,
+                            const LaunchNodeDomain &baseDomain);
 
 bool LaunchNodeCoord::operator<(const LaunchNodeCoord &rhs) const {
   return std::tie(x, y) < std::tie(rhs.x, rhs.y);
@@ -206,6 +215,7 @@ LaunchNodeDomain LaunchNodeDomainState::getRoleDomain(int64_t netId,
 }
 
 void LaunchNodeDomainState::initialize(ModuleOp module) {
+  executionCountAnalyses.clear();
   module.walk([&](CreatePipeOp pipe) {
     PipeType pipeType = mlir::cast<PipeType>(pipe.getResult().getType());
     int64_t pipeNetId = pipeType.getPipeNetId();
@@ -279,6 +289,94 @@ evaluatePredicateAtLaunchNode(Value value, LaunchNodeCoord coord,
     return std::nullopt;
   }
   return maybeValue->getBoolValue();
+}
+
+namespace {
+
+static llvm::APInt getIntegerValue(Value value, int64_t integerValue) {
+  std::uint32_t bitWidth = 64;
+  if (auto integerType = dyn_cast<IntegerType>(value.getType())) {
+    bitWidth = integerType.getWidth();
+  }
+  return llvm::APInt(bitWidth, static_cast<std::uint64_t>(integerValue),
+                     /*isSigned=*/integerValue < 0);
+}
+
+static std::optional<llvm::APInt>
+evaluateExecutionCountSymbol(Value value, LaunchNodeCoord coord,
+                             const LaunchNodeDomainState &state) {
+  if (value.getDefiningOp<CoreXOp>()) {
+    return getIntegerValue(value, coord.x);
+  }
+  if (value.getDefiningOp<CoreYOp>()) {
+    return getIntegerValue(value, coord.y);
+  }
+  if (auto predicate = value.getDefiningOp<PipeNetPredicateOpInterface>()) {
+    bool selected = knownLaunchNodeDomainContains(
+        state.getRoleDomain(predicate.getReferencedPipeNetId(),
+                            predicate.getReferencedRole()),
+        coord);
+    return getIntegerValue(value, selected);
+  }
+  return std::nullopt;
+}
+
+static std::optional<std::uint64_t>
+evaluateExecutionCountRegion(Region &region, LaunchNodeCoord coord,
+                             const LaunchNodeDomainState &state) {
+  Operation *parent = region.getParentOp();
+  if (isa<PipeNetScopeOp>(parent)) {
+    return 1;
+  }
+  if (auto ifSrcOp = dyn_cast<IfSrcOp>(parent)) {
+    auto pipeType = cast<PipeType>(ifSrcOp.getPipe().getType());
+    return knownLaunchNodeDomainContains(
+               getPipeSourceLaunchNodeDomain(pipeType), coord)
+               ? 1
+               : 0;
+  }
+  if (auto ifDstOp = dyn_cast<IfDstOp>(parent)) {
+    auto pipeType = cast<PipeType>(ifDstOp.getPipe().getType());
+    return knownLaunchNodeDomainContains(
+               getPipeDestinationLaunchNodeDomain(pipeType), coord)
+               ? 1
+               : 0;
+  }
+  if (auto affineIfOp = dyn_cast<affine::AffineIfOp>(parent)) {
+    LaunchNodeDomainResult trueDomain =
+        getAffineIfLaunchNodeDomain(affineIfOp, state.baseDomain);
+    if (!trueDomain.domain.known || region.getRegionNumber() > 1) {
+      return std::nullopt;
+    }
+    bool selectsThen = knownLaunchNodeDomainContains(trueDomain.domain, coord);
+    return selectsThen == (region.getRegionNumber() == 0) ? 1 : 0;
+  }
+  return std::nullopt;
+}
+
+} // namespace
+
+std::optional<std::uint64_t>
+getStaticExecutionCount(Operation *op, LaunchNodeCoord coord,
+                        const LaunchNodeDomainState &state) {
+  func::FuncOp function = op->getParentOfType<func::FuncOp>();
+  if (!function) {
+    return std::nullopt;
+  }
+  auto &analysesByCoord = state.executionCountAnalyses[function.getOperation()];
+  auto analysisIt = analysesByCoord.find(coord);
+  if (analysisIt == analysesByCoord.end()) {
+    auto analysis = std::make_unique<ExecutionCountAnalysis>(
+        function.getBody(),
+        [coord, &state](Value value) {
+          return evaluateExecutionCountSymbol(value, coord, state);
+        },
+        [coord, &state](Region &region) {
+          return evaluateExecutionCountRegion(region, coord, state);
+        });
+    analysisIt = analysesByCoord.emplace(coord, std::move(analysis)).first;
+  }
+  return analysisIt->second->getExecutionCount(op);
 }
 
 /// Return true if evaluating `value` can depend on the current launch
@@ -361,6 +459,194 @@ getAffineIfLaunchNodeDomain(affine::AffineIfOp ifOp,
     }
   }
   return {result, nullptr};
+}
+
+namespace {
+
+/// Structured-control frames and values that determine an unresolved count.
+struct UnresolvedControlContext {
+  func::FuncOp function;
+  SmallVector<std::pair<Operation *, std::size_t>> frames;
+  SmallVector<Value> controlValues;
+
+  bool operator==(const UnresolvedControlContext &rhs) const {
+    return function == rhs.function && frames == rhs.frames &&
+           controlValues == rhs.controlValues;
+  }
+};
+
+static std::optional<UnresolvedControlContext>
+getUnresolvedControlContext(Operation *op, LaunchNodeCoord coord,
+                            const LaunchNodeDomainState &state) {
+  UnresolvedControlContext context;
+  Operation *current = op;
+  while (Block *block = current->getBlock()) {
+    Operation *parent = block->getParentOp();
+    if (auto function = dyn_cast_if_present<func::FuncOp>(parent)) {
+      if (block != &function.getBody().front()) {
+        return std::nullopt;
+      }
+      context.function = function;
+      break;
+    }
+    if (!parent) {
+      return std::nullopt;
+    }
+
+    Region *region = block->getParent();
+    if (isa<PipeNetScopeOp>(parent)) {
+      current = parent;
+      continue;
+    }
+    if (auto ifSrcOp = dyn_cast<IfSrcOp>(parent)) {
+      auto pipeType = cast<PipeType>(ifSrcOp.getPipe().getType());
+      if (!knownLaunchNodeDomainContains(
+              getPipeSourceLaunchNodeDomain(pipeType), coord)) {
+        return std::nullopt;
+      }
+      current = parent;
+      continue;
+    }
+    if (auto ifDstOp = dyn_cast<IfDstOp>(parent)) {
+      auto pipeType = cast<PipeType>(ifDstOp.getPipe().getType());
+      if (!knownLaunchNodeDomainContains(
+              getPipeDestinationLaunchNodeDomain(pipeType), coord)) {
+        return std::nullopt;
+      }
+      current = parent;
+      continue;
+    }
+    if (auto ifOp = dyn_cast<scf::IfOp>(parent)) {
+      std::optional<bool> maybeSelected =
+          evaluatePredicateAtLaunchNode(ifOp.getCondition(), coord, state);
+      if (maybeSelected) {
+        if (region->getRegionNumber() != (*maybeSelected ? 0 : 1)) {
+          return std::nullopt;
+        }
+        current = parent;
+        continue;
+      }
+      context.frames.push_back({parent, region->getRegionNumber()});
+      context.controlValues.push_back(ifOp.getCondition());
+    } else if (auto affineIfOp = dyn_cast<affine::AffineIfOp>(parent);
+               affineIfOp && state.hasLaunchGrid) {
+      LaunchNodeDomainResult trueDomain =
+          getAffineIfLaunchNodeDomain(affineIfOp, state.baseDomain);
+      if (trueDomain.domain.known) {
+        bool selectsThen =
+            knownLaunchNodeDomainContains(trueDomain.domain, coord);
+        if (region->getRegionNumber() != (selectsThen ? 0 : 1)) {
+          return std::nullopt;
+        }
+        current = parent;
+        continue;
+      }
+      context.frames.push_back({parent, region->getRegionNumber()});
+      llvm::append_range(context.controlValues, affineIfOp.getOperands());
+    } else if (auto forOp = dyn_cast<scf::ForOp>(parent)) {
+      context.frames.push_back({parent, region->getRegionNumber()});
+      context.controlValues.push_back(forOp.getLowerBound());
+      context.controlValues.push_back(forOp.getUpperBound());
+      context.controlValues.push_back(forOp.getStep());
+    } else if (isa<scf::ExecuteRegionOp>(parent)) {
+      current = parent;
+      continue;
+    } else {
+      return std::nullopt;
+    }
+    current = parent;
+  }
+  if (!context.function) {
+    return std::nullopt;
+  }
+  return context;
+}
+
+/// Return true when one SSA value has the same runtime value at two launch
+/// nodes. Function arguments are common runtime arguments. Pure expressions
+/// preserve equality; coordinate queries, memory reads, and unsupported block
+/// arguments require a concrete evaluation.
+static bool haveProvenEqualRuntimeValue(Value value, LaunchNodeCoord lhsCoord,
+                                        LaunchNodeCoord rhsCoord,
+                                        const LaunchNodeDomainState &state,
+                                        llvm::DenseMap<Value, bool> &cache) {
+  if (lhsCoord == rhsCoord) {
+    return true;
+  }
+  if (auto it = cache.find(value); it != cache.end()) {
+    return it->second;
+  }
+
+  std::optional<llvm::APInt> maybeLhsValue =
+      createLaunchNodeIntegerEvaluator(lhsCoord, &state).evaluate(value);
+  std::optional<llvm::APInt> maybeRhsValue =
+      createLaunchNodeIntegerEvaluator(rhsCoord, &state).evaluate(value);
+  if (maybeLhsValue && maybeRhsValue) {
+    bool equal = *maybeLhsValue == *maybeRhsValue;
+    cache[value] = equal;
+    return equal;
+  }
+
+  if (auto argument = dyn_cast<BlockArgument>(value)) {
+    Block *owner = argument.getOwner();
+    auto function = dyn_cast_if_present<func::FuncOp>(owner->getParentOp());
+    bool equal = function && owner == &function.getBody().front();
+    if (!equal) {
+      if (auto forOp = dyn_cast_if_present<scf::ForOp>(owner->getParentOp());
+          forOp && value == forOp.getInductionVar()) {
+        equal = haveProvenEqualRuntimeValue(forOp.getLowerBound(), lhsCoord,
+                                            rhsCoord, state, cache) &&
+                haveProvenEqualRuntimeValue(forOp.getUpperBound(), lhsCoord,
+                                            rhsCoord, state, cache) &&
+                haveProvenEqualRuntimeValue(forOp.getStep(), lhsCoord, rhsCoord,
+                                            state, cache);
+      }
+    }
+    cache[value] = equal;
+    return equal;
+  }
+
+  Operation *definingOp = value.getDefiningOp();
+  if (!definingOp || definingOp->getNumRegions() != 0 ||
+      definingOp->getNumOperands() == 0 || !isMemoryEffectFree(definingOp)) {
+    cache[value] = false;
+    return false;
+  }
+  bool equal = llvm::all_of(definingOp->getOperands(), [&](Value operand) {
+    return haveProvenEqualRuntimeValue(operand, lhsCoord, rhsCoord, state,
+                                       cache);
+  });
+  cache[value] = equal;
+  return equal;
+}
+
+} // namespace
+
+bool haveProvenEqualExecutionMultiplicity(Operation *lhs,
+                                          LaunchNodeCoord lhsCoord,
+                                          Operation *rhs,
+                                          LaunchNodeCoord rhsCoord,
+                                          const LaunchNodeDomainState &state) {
+  std::optional<std::uint64_t> maybeLhsCount =
+      getStaticExecutionCount(lhs, lhsCoord, state);
+  std::optional<std::uint64_t> maybeRhsCount =
+      getStaticExecutionCount(rhs, rhsCoord, state);
+  if (maybeLhsCount && maybeRhsCount) {
+    return maybeLhsCount == maybeRhsCount;
+  }
+  std::optional<UnresolvedControlContext> maybeLhsContext =
+      getUnresolvedControlContext(lhs, lhsCoord, state);
+  std::optional<UnresolvedControlContext> maybeRhsContext =
+      getUnresolvedControlContext(rhs, rhsCoord, state);
+  if (!maybeLhsContext || !maybeRhsContext ||
+      !(*maybeLhsContext == *maybeRhsContext)) {
+    return false;
+  }
+  llvm::DenseMap<Value, bool> equalValueCache;
+  return llvm::all_of(maybeLhsContext->controlValues, [&](Value value) {
+    return haveProvenEqualRuntimeValue(value, lhsCoord, rhsCoord, state,
+                                       equalValueCache);
+  });
 }
 
 /// Find a source file location through common composed MLIR location wrappers.

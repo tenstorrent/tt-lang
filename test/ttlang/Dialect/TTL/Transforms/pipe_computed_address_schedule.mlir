@@ -65,6 +65,68 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 
 // -----
 
+// Pipe A occurs once and uses slot 0 at every receiver. Receivers 1 and 2 also
+// reserve slot 1 for Pipe B, but that later reservation cannot change Pipe A's
+// one-element address sequence.
+
+// CHECK-LABEL: func.func @partial_overlap_one_shot_computes_addresses
+// CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
+// CHECK-COUNT-2: ttkernel.noc_async_write_multicast
+// CHECK-NOT: ttkernel.load_from_l1
+// CHECK-NOT: arith.remui
+// CHECK: return
+module attributes {ttl.launch_grid = array<i64: 6, 1>} {
+  func.func @partial_overlap_one_shot_computes_addresses() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %pipe_a = ttl.create_pipe src(0, 0) dst(1, 0) to(4, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(4, 0) net 0>
+    %pipe_b = ttl.create_pipe src(5, 0) dst(1, 0) to(2, 0) net 1
+        : !ttl.pipe<src(5, 0) dst(1, 0) to(2, 0) net 1>
+    ttl.if_dst %pipe_a : !ttl.pipe<src(0, 0) dst(1, 0) to(4, 0) net 0> {
+      %recv_a = ttl.cb_reserve %dst
+          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      %post_a = ttl.copy %pipe_a, %recv_a
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(4, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.transfer_handle
+      ttl.wait %post_a : !ttl.transfer_handle
+      ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    }
+    ttl.if_dst %pipe_b : !ttl.pipe<src(5, 0) dst(1, 0) to(2, 0) net 1> {
+      %recv_b = ttl.cb_reserve %dst
+          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      %post_b = ttl.copy %pipe_b, %recv_b
+          : (!ttl.pipe<src(5, 0) dst(1, 0) to(2, 0) net 1>,
+             tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.transfer_handle
+      ttl.wait %post_b : !ttl.transfer_handle
+      ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    }
+    ttl.if_src %pipe_a : !ttl.pipe<src(0, 0) dst(1, 0) to(4, 0) net 0> {
+      %send_a = ttl.copy %src, %pipe_a
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(4, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send_a : !ttl.transfer_handle<write>
+    }
+    ttl.if_src %pipe_b : !ttl.pipe<src(5, 0) dst(1, 0) to(2, 0) net 1> {
+      %send_b = ttl.copy %src, %pipe_b
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+             !ttl.pipe<src(5, 0) dst(1, 0) to(2, 0) net 1>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send_b : !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}
+
+// -----
+
 // A consumer thread can pop the receiver DFB without changing the reservation
 // order established by the data-movement thread. The cross-thread pop must not
 // disable the uniform computed address required by multicast.
@@ -124,10 +186,10 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 // Mutually exclusive branches do not establish an order between receiver
 // posts, even when their regions have a fixed lexical order.
 
-// CHECK-LABEL: func.func @branch_order_falls_back() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
+// CHECK-LABEL: func.func @branch_order_falls_back(%{{.*}}: i1) attributes {ttkernel.thread = #ttkernel.thread<noc>} {
 // CHECK-COUNT-2: ttkernel.load_from_l1
 module attributes {ttl.launch_grid = array<i64: 3, 1>} {
-  func.func @branch_order_falls_back() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  func.func @branch_order_falls_back(%condition: i1) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %src = ttl.bind_cb {cb_index = 0, block_count = 2}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %dst = ttl.bind_cb {cb_index = 1, block_count = 2}
@@ -136,7 +198,6 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
         : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>
     %pipe_b = ttl.create_pipe src(1, 0) dst(2, 0) to(2, 0) net 1
         : !ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 1>
-    %condition = arith.constant true
     scf.if %condition {
       ttl.if_dst %pipe_a : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0> {
         %recv_a = ttl.cb_reserve %dst
@@ -182,14 +243,15 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 
 // -----
 
-// Two static occurrences of one PipeKey cannot be represented by one initial
-// receiver slot and one batch stride. Every writer to the shared DFB falls
-// back, including the following distinct PipeKey.
+// Distinct transfer definitions for one PipeKey receive distinct initial slots
+// and therefore use independent computed-address state.
 
-// CHECK-LABEL: func.func @repeated_pipe_key_falls_back() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
-// CHECK-COUNT-3: ttkernel.load_from_l1
+// CHECK-LABEL: func.func @repeated_pipe_key_computes_addresses
+// CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
+// CHECK-NOT: ttkernel.load_from_l1
+// CHECK: return
 module attributes {ttl.launch_grid = array<i64: 3, 1>} {
-  func.func @repeated_pipe_key_falls_back() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  func.func @repeated_pipe_key_computes_addresses() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %src = ttl.bind_cb {cb_index = 0, block_count = 2}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %dst = ttl.bind_cb {cb_index = 1, block_count = 4}
@@ -248,8 +310,8 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 
 // -----
 
-// Posts in one loop body execute in a fixed per-iteration order. The common
-// control context proves the two-slot receiver batch.
+// Posts in one loop body execute in a fixed per-iteration order. The two posts
+// advance the DFB by two slots per iteration, which wraps a two-slot DFB.
 
 // CHECK-LABEL: func.func @common_loop_computes_addresses
 // CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
@@ -304,6 +366,50 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
                !ttl.pipe<src(1, 0) dst(2, 0) to(2, 0) net 1>)
             -> !ttl.transfer_handle<write>
         ttl.wait %send_b : !ttl.transfer_handle<write>
+      }
+    }
+    func.return
+  }
+}
+
+// -----
+
+// An unknown loop trip count still permits computed addressing when every
+// iteration follows the same receiver reservation recurrence.
+
+// CHECK-LABEL: func.func @invariant_dynamic_loop_computes_addresses
+// CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
+// CHECK-NOT: ttkernel.load_from_l1
+// CHECK: arith.remui
+// CHECK: return
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @invariant_dynamic_loop_computes_addresses(%upper: index) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %zero = arith.constant 0 : index
+    %one = arith.constant 1 : index
+    scf.for %iter = %zero to %upper step %one {
+      ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+        %recv = ttl.cb_reserve %dst
+            : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+            -> tensor<1x1x!ttcore.tile<32x32, f32>>
+        %post = ttl.copy %pipe, %recv
+            : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+               tensor<1x1x!ttcore.tile<32x32, f32>>)
+            -> !ttl.transfer_handle
+        ttl.wait %post : !ttl.transfer_handle
+        ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      }
+      ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+        %send = ttl.copy %src, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+               !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
       }
     }
     func.return
