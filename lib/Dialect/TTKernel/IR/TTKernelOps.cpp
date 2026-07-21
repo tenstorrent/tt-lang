@@ -629,4 +629,21 @@ void UnpackStallOnPackOp::getCanonicalizationPatterns(
   });
 }
 
+::mlir::LogicalResult OpaqueCallOp::verify() {
+  for (Value taVal : getTemplateArgVals()) {
+    Operation *defOp = taVal.getDefiningOp();
+    if (!defOp)
+      return emitOpError("template arg must be a compile-time evaluable "
+                         "value (arith.constant or ttkernel.get_dfb_id), got "
+                         "a block argument");
+    if (!mlir::isa<arith::ConstantOp>(defOp) &&
+        !mlir::isa<GetDfbIdOp>(defOp))
+      return emitOpError("template arg must be a compile-time evaluable "
+                         "value (arith.constant or ttkernel.get_dfb_id), "
+                         "got '")
+             << defOp->getName() << "'";
+  }
+  return mlir::success();
+}
+
 } // namespace mlir::tt::ttkernel

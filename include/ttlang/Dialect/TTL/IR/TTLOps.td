@@ -1667,6 +1667,7 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call", [AttrSizedOperandSegments]> {
     `(` $arg_operands `)` attr-dict `:`
     functional-type($arg_operands, results)
   }];
+  let hasVerifier = 1;
 }
 
 //===----------------------------------------------------------------------===//

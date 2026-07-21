@@ -6,6 +6,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 
 #include "TTLOpsVerifyUtils.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Utils/StructuredOpsUtils.h"
 #include "mlir/IR/AffineMap.h"
@@ -2001,4 +2002,20 @@ void mlir::tt::ttl::PipeNetScopeOp::getSuccessorRegions(
     return;
   }
   regions.push_back(RegionSuccessor(getOperation()));
+}
+
+mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
+  for (Value taVal : getTemplateArgVals()) {
+    Operation *defOp = taVal.getDefiningOp();
+    if (!defOp)
+      return emitOpError("template arg must be a compile-time evaluable "
+                         "value (arith.constant or ttl.get_dfb_id), got a "
+                         "block argument");
+    if (!mlir::isa<arith::ConstantOp>(defOp) &&
+        !mlir::isa<GetDfbIdOp>(defOp))
+      return emitOpError("template arg must be a compile-time evaluable "
+                         "value (arith.constant or ttl.get_dfb_id), got '")
+             << defOp->getName() << "'";
+  }
+  return success();
 }

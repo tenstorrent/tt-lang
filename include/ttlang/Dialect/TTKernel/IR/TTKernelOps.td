@@ -4849,6 +4849,7 @@ def TTKernel_OpaqueCallOp : TTKernel_Op<"opaque_call",
       `(` $arg_operands `)` attr-dict `:`
       functional-type($arg_operands, results)
     }];
+    let hasVerifier = 1;
 }
 
 #endif
