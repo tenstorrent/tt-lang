@@ -338,6 +338,7 @@ def _make_input(shape, dtype):
     return torch.arange(num_elements, dtype=torch.float32).reshape(shape).to(dtype)
 
 
+# Three sequential unicast receives must safely reuse one receiver DFB block.
 @pytest.mark.parametrize("dtype", DTYPES, ids=DTYPE_IDS)
 def test_gather_one_receiver_single_slot(device, dtype):
     inp_torch = _make_input((TILE, GATHER_SOURCES * GATHER_BLOCK_TILES * TILE), dtype)
@@ -352,6 +353,7 @@ def test_gather_one_receiver_single_slot(device, dtype):
     assert_pcc(inp_torch.float(), result.float())
 
 
+# A row all-gather must reuse a two-block receiver DFB in two batches.
 @pytest.mark.parametrize("dtype", DTYPES, ids=DTYPE_IDS)
 def test_row_all_gather_two_slot_batches(device, dtype):
     inp_torch = _make_input((TILE, ROW_ALL_GATHER_WIDTH * TILE), dtype)
@@ -366,6 +368,7 @@ def test_row_all_gather_two_slot_batches(device, dtype):
     assert_pcc(inp_torch.float(), result.float())
 
 
+# A row all-gather must consume each receive before reusing one DFB block.
 @pytest.mark.parametrize("dtype", DTYPES, ids=DTYPE_IDS)
 def test_row_all_gather_single_slot_batches(device, dtype):
     inp_torch = _make_input((TILE, ROW_ALL_GATHER_WIDTH * TILE), dtype)
@@ -380,6 +383,7 @@ def test_row_all_gather_single_slot_batches(device, dtype):
     assert_pcc(inp_torch.float(), result.float())
 
 
+# Independent columns in a 2D grid must safely reuse one receiver DFB block.
 @pytest.mark.parametrize("dtype", DTYPES, ids=DTYPE_IDS)
 def test_column_all_gather_2d_single_slot_batches(device, dtype):
     inp_torch = _make_input(

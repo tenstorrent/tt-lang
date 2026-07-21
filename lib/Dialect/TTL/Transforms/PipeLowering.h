@@ -18,11 +18,6 @@
 
 namespace mlir::tt::ttl {
 
-/// Receiver-completion semaphores are indexed by PipeNet id.
-inline int64_t getReceiverCompletionSemIdx(int64_t pipeNetId) {
-  return pipeNetId;
-}
-
 struct PipeInfo {
   PipeType pipeType;
   PipeTransferContract transferContract;
@@ -118,9 +113,9 @@ private:
   int64_t index;
 };
 
-struct PipeCompletionWaitInfo {
-  int64_t pipeNetId;
-  int64_t receiverCompletionSemIdx;
+/// Receiver-side completion state for one transfer definition.
+struct PipeCompletionInfo {
+  int64_t semaphoreIndex;
 };
 
 /// Address storage used by one transfer-allocation unit.
@@ -147,20 +142,22 @@ struct PipeAddressStorageInfo {
   std::optional<PipeComputedAddressInfo> computedAddress;
 };
 
-/// Lowering information shared by one pipe send and its receiver posts.
+/// Lowering information shared by one transfer definition's send, receiver
+/// posts, and receiver waits.
 /// Address storage and readiness synchronization are independent protocol
 /// choices: computed addresses do not determine which ready counter is used.
 struct PipeResourceInfo {
   PipeKey pipe;
   PipeTransferContract transferContract;
+  PipeCompletionInfo completion;
   /// Absent when the transfer does not use receiver-post sender readiness.
   std::optional<PipeReadyCounterInfo> readyCounter;
   PipeAddressStorageInfo addressStorage;
 };
 
-/// Per-function map: pipeNetId -> kernel-local i32 counter for cumulative
-/// pipe receive wait_min progress.
-using PipeNetCounterMap =
+/// Per-function map from a semaphore index to its kernel-local cumulative
+/// progress counter.
+using PipeSemaphoreCounterMap =
     llvm::MapVector<func::FuncOp, llvm::MapVector<int64_t, Value>>;
 
 /// Initial value for one sender-local computed-address slot counter.
@@ -184,15 +181,12 @@ struct PipeSramScratchInfo {
   int64_t bytes = 0;
 };
 
-/// Static resource allocation used by pipe lowering. Receiver-completion
-/// semaphore indices are per PipeNet. Sender-ready indices and address-table
-/// offsets are per source core and only need to be unique across concurrently
-/// live transfer intervals.
+/// Static resource allocation used by pipe lowering. Each protocol operation
+/// maps to its transfer-specific completion, readiness, and address resources.
 struct PipeResourcePlan {
   PipeSramScratchInfo sramScratch;
-  llvm::MapVector<int64_t, PipeCompletionWaitInfo> completionWaits;
-  /// Maps each pipe send and receiver-post operation to its transfer's shared
-  /// resources.
+  /// Maps each pipe send, receiver post, and receiver wait to the resources
+  /// shared by that transfer definition.
   llvm::MapVector<Operation *, PipeResourceInfo> resources;
   /// Protocol operations proven unreachable at their pipe endpoint. Lowering
   /// removes these operations without allocating rendezvous resources.
@@ -244,7 +238,7 @@ buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
 /// the receiver's remote increment stays the only writer of the shared word.
 void initializePipeCapacitySemaphores(
     const PipeCapacityPlan &pipeCapacityPlan,
-    PipeNetCounterMap &senderCapacityCounters);
+    PipeSemaphoreCounterMap &senderCapacityCounters);
 
 /// Emit sender-local slot counters for computed receiver addresses whose
 /// physical receiver DFB slot advances at runtime.
@@ -252,16 +246,18 @@ void initializePipeComputedAddressCounters(
     const PipeResourcePlan &pipeResourcePlan,
     PipeComputedAddressCounterMap &computedAddressCounters);
 
-/// At each function entry, emit one zero-initialized `memref<1xi32>` per
-/// pipeNetId used by a pipe receive.
-void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters);
+/// At each receiver function entry, emit one zero-initialized expected-count
+/// value for every completion semaphore used by that function.
+void initializePipeCompletionCounters(
+    const PipeResourcePlan &pipeResourcePlan,
+    PipeSemaphoreCounterMap &completionCounters);
 
 /// Lower the sender-side pipe transfer and signal receiver completion.
 LogicalResult lowerPipeTransferSend(
     PipeTransferSendOp op, Value srcCB, bool isConsumerCB,
     const PipeResourcePlan &pipeResourcePlan,
     const PipeCapacityPlan *pipeCapacityPlan,
-    const PipeNetCounterMap *senderCapacityCounters,
+    const PipeSemaphoreCounterMap *senderCapacityCounters,
     const PipeComputedAddressCounterMap *computedAddressCounters,
     ConversionPatternRewriter &rewriter);
 
@@ -277,10 +273,11 @@ LogicalResult lowerCBPop(CBPopOp op, Value cb,
                          ConversionPatternRewriter &rewriter);
 
 /// Lower the receiver-side pipe receive completion wait.
-LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op,
-                                    const PipeNetCounterMap *counters,
-                                    const PipeResourcePlan &pipeResourcePlan,
-                                    ConversionPatternRewriter &rewriter);
+LogicalResult
+lowerPipeTransferWait(PipeTransferWaitOp op,
+                      const PipeSemaphoreCounterMap *completionCounters,
+                      const PipeResourcePlan &pipeResourcePlan,
+                      ConversionPatternRewriter &rewriter);
 
 /// Add pipe-specific lowering patterns (IfSrc, IfDst, CreatePipe) to the set.
 /// `pipeNetIndex` is borrowed and must outlive `patterns`; the is_src /

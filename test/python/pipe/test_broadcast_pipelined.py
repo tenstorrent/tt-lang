@@ -67,6 +67,8 @@ def _broadcast_op(recv_block_count):
     return broadcast_loop
 
 
+# Repeated multicast must preserve data while the receiver advances through a
+# multi-block DFB.
 @pytest.mark.parametrize("recv_block_count", [2, 3], ids=["bc2", "bc3"])
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 def test_broadcast_loop(device, dtype, recv_block_count):

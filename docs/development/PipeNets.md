@@ -368,13 +368,20 @@ Table 1. Pipe transfer resources, backing storage, and allocation scale.
 | Address table | Compiler-managed SRAM scratch on each source node; 4 bytes per entry, with the total table allocation rounded up to 32-byte alignment. | Per source node: one entry per concurrently live transfer sourced by that node. |
 | Sender-ready counter | Source-node 4-byte SRAM semaphore slot or GlobalSemaphore-backed SRAM semaphore. | Per source node: one counter per concurrently live transfer sourced by that node. |
 | Sender-capacity counter | Source-node local semaphore. | One counter per proven receiver endpoint in `CA/CC` mode. |
-| Receiver-completion counter | Destination-node 4-byte SRAM semaphore slot. | One counter per PipeNet. |
+| Receiver-completion counter | Destination-node 4-byte SRAM semaphore slot. | One logical counter per transfer node at each receiver. Transfers with disjoint receiver sets may reuse one semaphore index. |
 
 Here, source node means a physical node in the launched device grid. It
 does not mean one allocation per static pipe. Many transfers from the
 same source node reuse the same allocation slot unless their live
 intervals overlap. The number of source nodes is bounded by the launched
 device grid, not by the number of static pipes.
+
+Receiver-completion allocation follows the physical receiver sets. Two
+transfer nodes that share any receiver use distinct semaphore indices because
+either send may complete first. Transfer nodes with disjoint receiver sets may
+use the same index because local semaphore storage is independent on each
+physical node. Repeated dynamic executions of one transfer node reuse its
+assigned semaphore and advance a cumulative expected-count value.
 
 The address table and semaphore-backed counters all reside in Tensix L1
 SRAM, but they use different allocation mechanisms. TTKernel local
@@ -437,7 +444,7 @@ only pre-send state: the receiver-published DFB address and the count
 proving that the required receivers have posted. After the send resets
 the ready counter and, for `RA/RP`, reads the address-table entry, those
 source-node resources no longer contain state needed by that transfer.
-Receive completion is tracked separately by the per-PipeNet
+Receive completion is tracked separately by the transfer node's
 receiver-completion counter, so the transfer handle returned by
 `ttl.copy(pipe, dst_blk)` can remain live until `ttl.wait` without
 extending the source-node address-table or sender-ready-counter lifetime.
@@ -480,8 +487,9 @@ Distinct transfer nodes for the same `PipeKey` may be live concurrently;
 resource coloring gives overlapping nodes distinct sender-ready counters and,
 for `RA/RP`, distinct address-table entries. This supports receive-ahead code
 with multiple transfer definitions without merging their synchronization
-state. Repeated dynamic executions of one transfer node reuse that node's
-state.
+state. Completion state is also transfer-specific: completing one transfer
+cannot satisfy another transfer's wait. Repeated dynamic executions of one
+transfer node reuse that node's state.
 
 ### RA/RP: receiver-authored address
 
@@ -584,8 +592,8 @@ release cannot race with a sender update.
    `%capacity_sem` before computing `%dst_addr` and issuing the payload
    NoC write.
 3. The sender still signals receiver completion after the payload write
-   barrier, using the per-PipeNet receiver-completion counter shared by
-   all three modes.
+   barrier, using the transfer node's receiver-completion counter. All three
+   modes use the same completion mechanism.
 4. The receiver executes its normal receive wait, push, wait-front, and
    pop sequence.
 5. Lowering emits `ttkernel.noc_semaphore_inc` to the source-node
@@ -1088,12 +1096,14 @@ Otherwise all sender-ready counters in the module use
 GlobalSemaphore-backed counters, and the compiler records the required
 count in `ttl.pipe_global_semaphore_count`.
 
-Receiver completion uses the per-PipeNet local semaphore in Table 1. It
-is cumulative for one program execution: sends increment it, and waits
-consume it with monotonically increasing `wait_min` thresholds instead
-of resetting it per transfer. The host runtime creates these local
-semaphores with initial value 0, and pipe lowering separately
-initializes the per-PipeNet in-kernel wait-progress counter to 0.
+Receiver completion uses the transfer-specific local semaphore in Table 1. It
+is cumulative across repeated dynamic executions of that transfer node: sends
+increment it, and waits consume it with monotonically increasing `wait_min`
+thresholds instead of resetting it per execution. The host runtime creates
+these local semaphores with initial value 0, and pipe lowering separately
+initializes the in-kernel wait-progress counter for each completion semaphore
+to 0. Transfers that share a physical receiver never share a completion
+semaphore index.
 Address-table storage, ready counting, and completion wait are allocated
 independently so address publication does not consume local semaphore
 ids.
@@ -1111,8 +1121,7 @@ those posted addresses must all be the same value because the NoC
 multicast write has only one destination address operand. The sender
 waits until the counter reaches the destination count, reads that one
 destination address from the table, issues one multicast payload write,
-and signals receiver completion with the existing per-PipeNet completion
-counter.
+and signals receiver completion with that transfer node's completion counter.
 
 TT-Metal NoC multicast has one destination SRAM address for all receivers. All
 receivers for one collective pipe must therefore publish the same destination
@@ -1126,12 +1135,13 @@ TTKernel lowering. Per-receiver destination addresses are not a multicast
 feature in the current TT-Metal NoC architecture.
 
 `ttl.wait` on the transfer handle returned by `ttl.copy(pipe, dst_blk)`
-expands to `ttl.pipe_transfer.wait`. TTKernel lowering implements that
-wait as a per-PipeNet cumulative completion wait. The receiver keeps a
-local runtime counter and waits until the receiver-completion counter is
-at least that local count, so repeated point-to-point and collective
-receives in loops advance across iterations without reusing stale
-completion state.
+expands to `ttl.pipe_transfer.wait`. TTKernel lowering resolves the defining
+receive post to its transfer node and waits on that transfer's cumulative
+completion state. The receiver keeps a local runtime counter and waits until
+the receiver-completion counter is at least that local count, so repeated
+point-to-point and collective receives in loops advance across iterations
+without reusing stale completion state. Completion of another transfer in the
+same PipeNet cannot satisfy this wait.
 
 `RA/RP` fixes the multi-iteration write-pointer issue by making
 the receiver-owned DFB address authoritative. It also makes same-thread
@@ -1206,10 +1216,10 @@ ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
 
 For `RA/RP`, TTKernel lowering emits receiver-side code that publishes
 the destination DFB address to the source-node address table and
-increments the sender-ready counter. Each receiver keeps a local count
-of how many payload completions it has consumed. On each receive wait,
-lowering increments that local count and waits until the shared
-per-PipeNet receiver-completion counter is at least that value.
+increments the sender-ready counter. Each receiver keeps a local count of how
+many payload completions it has consumed for this transfer node. On each
+receive wait, lowering increments that local count and waits until the
+transfer-specific receiver-completion counter is at least that value.
 The TTKernel snippets below show only pipe-protocol operations and omit
 type annotations.
 
@@ -1218,12 +1228,12 @@ This example uses three synchronization values:
 | Name | Storage | Initial value | Updated by | Read by |
 | --- | --- | --- | --- | --- |
 | Sender-ready counter | Source-node semaphore at `%ready_sem_index`. If local semaphore ids are exhausted, this is a GlobalSemaphore-backed SRAM address passed as a common runtime argument. | 0 | Each receiver post increments it by 1 after publishing the destination DFB address. The sender resets it to 0 after waiting for all expected posts. | Sender send waits for it to equal `%expected_receivers`. |
-| Receiver-completion counter | Destination-node local semaphore at `%completion_sem_index`, shared by one PipeNet. | 0 | Each completed send increments it by 1 after the payload write barrier. | Receiver wait uses `semaphore_wait_min` against the receiver's next expected cumulative count. |
-| Receiver wait-progress counter | Kernel-local `memref<1xi32>` on the receiver. | 0 at function entry | Each `ttl.pipe_transfer.wait` increments it by 1 before waiting. | The receiver uses it as the threshold for `semaphore_wait_min`. |
+| Receiver-completion counter | Destination-node local semaphore at `%completion_sem_index`, assigned to one transfer node at this receiver. | 0 | Each dynamic execution of that transfer's send increments it by 1 after the payload write barrier. | The matching receiver wait uses `semaphore_wait_min` against its next expected cumulative count. |
+| Receiver wait-progress counter | Kernel-local `memref<1xi32>` on the receiver, shared only by waits that use the same completion semaphore. | 0 at function entry | Each matching `ttl.pipe_transfer.wait` increments it by 1 before waiting. | The receiver uses it as the threshold for `semaphore_wait_min`. |
 
 The sender-ready counter is a reusable pre-send rendezvous counter. The
-receiver-completion counter is cumulative for the whole kernel execution
-and is not reset by pipe lowering.
+receiver-completion counter is cumulative across executions of its transfer
+node for the whole kernel execution and is not reset by pipe lowering.
 
 ```mlir
 // Receiver node (1, 0).
@@ -1346,22 +1356,21 @@ the end of the DFB block ring. There is no synchronous serialization
 between senders in one batch: they run concurrently and land in
 distinct slots.
 
-### Arrival counter
+### Completion counters
 
-The handshake uses two counters. Each destination node has a per-PipeNet
-SRAM semaphore that senders increment once per arrival. The receiver
-kernel also keeps a local expected-arrival count and advances it by 1
-per expected arrival per iteration. The receiver blocks until the SRAM
-semaphore reaches the local expected count. Consequences:
+Each transfer node has independent logical completion state at every
+destination node. Its sender increments that state once per payload arrival.
+The receiver keeps a local expected count for repeated executions of the same
+transfer and blocks until the corresponding semaphore reaches that count.
+Consequences:
 
-- A receiver in `N` pipes' destination ranges observes `N` arrivals per
-  round, not 1.
-- The user's `if_dst` callback runs once per pipe whose destination
-  includes the current node; each callback advances the local counter
-  by 1.
-- `N` senders targeting one receiver do not coordinate with each other;
-  they only need to increment the receiver's SRAM semaphore
-  independently.
+- A receiver in `N` pipes' destination ranges observes `N` distinct transfer
+  completions per round.
+- The user's `if_dst` callback runs once per pipe whose destination includes
+  the current node; each callback waits for its corresponding transfer.
+- `N` senders targeting one receiver do not coordinate with each other. They
+  increment distinct completion semaphores, so one sender cannot satisfy
+  another sender's receive wait.
 
 TT-Metal primitive details for `noc_semaphore_inc_multicast`,
 `noc_async_atomic_barrier`, `experimental::semaphore_wait_min`, and the
@@ -1384,28 +1393,29 @@ collective. The proof tracks four points in the lowered IR:
    counter. The sender then performs its NoC write and increments the
    receiver completion semaphore. No sender reads a semaphore signaled by
    another sender.
-3. Receiver completion semaphores are per-PipeNet. Sender-ready
+3. Receiver completion semaphores identify transfer nodes at each physical
+   receiver. Transfers that share a receiver have distinct semaphore indices;
+   transfers with disjoint receiver sets may reuse an index. Sender-ready
    semaphores are per source-node transfer interval, so two same-source
-   transfers that overlap get distinct state and non-overlapping
-   same-source transfers can reuse state. Address-table entries and the
-   corresponding inline 32-bit NoC writes exist only in `RA/RP`.
-4. Receiver uses cumulative `semaphore_wait_min`. The receiver waits
-   for a count of total arrivals, not for specific senders. Senders
-   increment the counter in any order; the receiver only cares about the
-   cumulative total reaching its expected value.
+   transfers that overlap get distinct state and non-overlapping same-source
+   transfers can reuse state. Address-table entries and the corresponding
+   inline 32-bit NoC writes exist only in `RA/RP`.
+4. Receiver uses cumulative `semaphore_wait_min` for repeated executions of
+   one transfer node. Independent senders may complete in either order, but
+   each receiver wait observes only its matching transfer's completion state.
 
 The only places execution can stall are:
 
 - An `RP` sender waiting for its receivers to post.
 - A `CC` sender waiting for receiver DFB capacity.
-- A receiver waiting for the cumulative arrival count to reach its
-  expected value.
+- A receiver waiting for its transfer's completion count to reach the expected
+  value.
 - Hardware NoC bandwidth contention (physical, not compiler-inserted).
 
 Sender of pipe A and sender of pipe B (on different nodes) never share
 a synchronization point. They write concurrently to distinct slots,
-and the receivers' cumulative counter handles ordering-agnostic
-accumulation. The cost comparison:
+and transfer-specific completion counters preserve their independent arrival
+order. The cost comparison:
 
 | Pattern | Data writes | Signal ops |
 |---|---|---|
@@ -1436,24 +1446,20 @@ Compile-time slot assignment:
   Pipe B -> slot 1
   => block_count(recv_cb) must be >= 2
 
-State at each receiver (R2 and R3 identical; recv_sem starts at 0):
+State at each receiver (R2 and R3 identical; both semaphores start at 0):
 
-  time   recv_cb           recv_sem   counter   action
-  ----   ---------------   --------   -------   ----------------------
-  t0     [  .  |  .  ]          0         0    initial
-  t1     [  A  |  .  ]          1         0    S0 wrote slot 0, inc
-  t2     [  A  |  B  ]          2         0    S1 wrote slot 1, inc
-  t3     [  A  |  B  ]          2         1    compute: ++counter,
-                                                wait_min(sem, 1) -> ok,
-                                                consume slot 0
-  t4     [  A  |  B  ]          2         2    compute: ++counter,
-                                                wait_min(sem, 2) -> ok,
-                                                consume slot 1
+  time   recv_cb           sem_A   sem_B   action
+  ----   ---------------   -----   -----   -----------------------------
+  t0     [  .  |  .  ]       0       0    initial
+  t1     [  A  |  .  ]       1       0    S0 wrote slot 0, inc sem_A
+  t2     [  A  |  B  ]       1       1    S1 wrote slot 1, inc sem_B
+  t3     [  A  |  B  ]       1       1    wait_min(sem_A, 1), consume A
+  t4     [  A  |  B  ]       1       1    wait_min(sem_B, 1), consume B
 ```
 
-t1 and t2 may swap (the two senders are independent). The end state at
-t2 is unchanged because writes target different slots and
-`inc_multicast` is atomic.
+t1 and t2 may swap because the two senders are independent. A wait for A still
+cannot complete until S0 increments `sem_A`; B's earlier completion affects
+only `sem_B`.
 
 ## Operation PipeNets
 
@@ -1477,9 +1483,10 @@ closure, and module-scope PipeNets through `__globals__`. See the
 [language specification](https://github.com/tenstorrent/tt-lang/blob/main/docs/sphinx/specs/TTLangSpecification.md) for
 the enclosing-scope capture rule.
 
-Operation-local ids keep `ttl.create_pipe` ids stable across
-invocations, anchor receiver completion semaphore indices, and keep
-the sender-ready/address-table layout deterministic. The `OperationPipeNets`
+Operation-local ids keep `ttl.create_pipe` ids stable across invocations and
+keep graph construction deterministic. Completion semaphore indices are
+allocated from transfer nodes and their physical receiver sets. The
+`OperationPipeNets`
 instance is built and validated before MLIR emission on the compiler
 side and before `Program(...)` runs on the simulator side.
 `PipeNet.__init__` also builds a one-PipeNet `OperationPipeNets` and
@@ -1985,7 +1992,7 @@ compile-time properties not runtime-observable.
 | 58 | Verifier rejects unguarded pipe-coupled op in `scf.for` / `scf.execute_region` |  |  |  X  |
 | 59 | Lowering: overlapping collective senders get distinct slot offsets in IR |  |  |  X  |
 | 60 | Lowering: slot assignment is order-independent under user pipe reordering |  |  |  X  |
-| 61 | Lowering: two receives at one node share a single per-PipeNet counter; two PipeNets get distinct counters |  |  |  X  |
+| 61 | Lowering: transfers sharing a receiver use distinct completion counters; disjoint receiver sets may reuse one semaphore index |  |  |  X  |
 | 62 | Lowering: loopback collective uses `noc_async_write_multicast_loopback_src` + local receiver-completion increment |  |  |  X  |
 | 63 | Address graph rejects a reserve that exceeds `block_count`, wraps, or reuses a live slot |  |  |  X  |
 | 64 | Lowering: aggregate collective receive posts increment one sender-ready count when `CA/CC` is not selected |  |  |  X  |
@@ -2013,6 +2020,9 @@ compile-time properties not runtime-observable.
 | 86 | Statically analyzable loops produce `KnownCount(N)` and compare only reachable occurrences | | | X |
 | 87 | Unknown-count loops with an invariant reservation recurrence compare one complete modular period | | | X |
 | 88 | Runtime-dependent reservation recurrence selects `RA/RP` for point-to-point and rejects collective | X | | X |
+| 89 | Completion of one same-PipeNet transfer cannot satisfy another transfer's receive wait | X | | X |
+| 90 | Sixteen overlapping completion resources move sender-ready counters to GlobalSemaphore storage | | | X |
+| 91 | Seventeen overlapping completion resources exceed the hardware semaphore limit | | | X |
 
 (1) Device-only due to a simulator divergence outside PipeNet
 verification: the simulator's block-state machine accepts
@@ -2048,10 +2058,10 @@ The current lowering has four API-specific binding points:
   TTNN-created GlobalSemaphores whose addresses are passed as common
   runtime arguments. A typed semaphore object API should bind those
   counters directly from the same compiler resource plan.
-- [Device 2.0] Receiver completion currently uses a per-PipeNet local
-  semaphore counter. A typed completion object can replace the local
-  semaphore binding, but completion remains separate from address
-  storage and sender-ready counting.
+- [Device 2.0] Receiver completion currently uses transfer-specific local
+  semaphore counters. A typed completion object can replace the local
+  semaphore binding, but completion remains separate from address storage and
+  sender-ready counting.
 - [Device 2.0] `CA/CC` uses local semaphores today. A typed semaphore
   object API should preserve the same acquire-before-send and
   release-after-pop protocol.
@@ -2228,8 +2238,8 @@ The shared graph and proof must preserve these fabric invariants:
 
   Out of scope for parametric PipeNets: per-iteration data-dependent runtime
   routing decided inside a kernel function. The TTKernel multicast handshake
-  allocates receiver-completion semaphores per PipeNet and
-  sender-ready counters plus address-table entries per pipe at kernel
+  allocates receiver-completion semaphores per transfer node and
+  sender-ready counters plus address-table entries per transfer at kernel
   compile time. Reconfiguring an
   mcast group mid-kernel is not a tt-metal-supported operation; data-
   dependent routing would be expressed as a point-to-point transfer with

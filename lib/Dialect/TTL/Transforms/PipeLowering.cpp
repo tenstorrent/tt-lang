@@ -118,15 +118,6 @@ lookupPipeResourceInfo(Operation *protocolOp,
   return it->second;
 }
 
-static PipeCompletionWaitInfo
-lookupPipeCompletionWaitInfo(PipeType pipeType,
-                             const PipeResourcePlan &pipeResourcePlan) {
-  auto it = pipeResourcePlan.completionWaits.find(pipeType.getPipeNetId());
-  assert(it != pipeResourcePlan.completionWaits.end() &&
-         "pipe net missing from pipe completion info");
-  return it->second;
-}
-
 static int64_t alignTo(int64_t value, int64_t alignment) {
   assert(alignment > 0 && "alignment must be positive");
   return ((value + alignment - 1) / alignment) * alignment;
@@ -480,34 +471,25 @@ buildReceiverPublishedAddress(Value dst, Location loc,
 }
 
 //===----------------------------------------------------------------------===//
-// Per-PipeNet receiver counter allocation
+// Receiver completion counter initialization
 //===----------------------------------------------------------------------===//
 
-void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters) {
-  // Each kernel function tracks its own receive-wait progress. Walk the
-  // function bodies to find the PipeNets that may complete receives there.
-  mod.walk([&](FuncOp func) {
-    // Collect unique pipeNetIds that have at least one receive in this
-    // function. A runtime counter is required because receive waits may be
-    // dynamically re-executed inside loops.
-    llvm::SmallSetVector<int64_t, 4> pipeNetIds;
-    func.walk([&](Operation *op) {
-      if (auto post = mlir::dyn_cast<PipeTransferPostOp>(op)) {
-        FailureOr<PipeTransferCreateOp> maybeCreateOp =
-            findPipeTransferCreateForTransfer(post.getTransfer());
-        assert(succeeded(maybeCreateOp) &&
-               "pipe transfer post missing traced create op");
-        auto pipeTy = mlir::cast<PipeType>(maybeCreateOp->getPipe().getType());
-        if (getAttachedCB(post.getDst())) {
-          pipeNetIds.insert(pipeTy.getPipeNetId());
-        }
-      }
-    });
-    if (pipeNetIds.empty()) {
-      return;
+void initializePipeCompletionCounters(
+    const PipeResourcePlan &pipeResourcePlan,
+    PipeSemaphoreCounterMap &completionCounters) {
+  llvm::MapVector<FuncOp, llvm::SmallSetVector<int64_t, 4>> semaphoresByFunc;
+  for (const auto &[protocolOp, resource] : pipeResourcePlan.resources) {
+    auto waitOp = dyn_cast<PipeTransferWaitOp>(protocolOp);
+    if (!waitOp) {
+      continue;
     }
-    // Allocas + zero-stores at function entry dominate every receive post,
-    // including posts inside scf.if from `if_dst`.
+    FuncOp func = waitOp->getParentOfType<FuncOp>();
+    assert(func && "pipe transfer wait must be inside a function");
+    semaphoresByFunc[func].insert(resource.completion.semaphoreIndex);
+  }
+
+  for (auto &[func, semaphoreSet] : semaphoresByFunc) {
+    // These entry-block values dominate waits nested in receiver control flow.
     OpBuilder builder(func.getContext());
     builder.setInsertionPointToStart(&func.getBody().front());
     Location loc = func.getLoc();
@@ -516,21 +498,22 @@ void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters) {
     Value zeroIdx = arith::ConstantIndexOp::create(builder, loc, 0);
     Value zeroI32 = arith::ConstantOp::create(builder, loc, i32Ty,
                                               builder.getI32IntegerAttr(0));
-    auto &perFunc = counters[func];
-    SmallVector<int64_t> sortedPipeNetIds(pipeNetIds.begin(), pipeNetIds.end());
-    llvm::sort(sortedPipeNetIds);
-    for (int64_t pipeNetId : sortedPipeNetIds) {
-      auto alloca = memref::AllocaOp::create(builder, loc, memrefTy);
-      memref::StoreOp::create(builder, loc, zeroI32, alloca,
+    auto &countersForFunc = completionCounters[func];
+    SmallVector<int64_t> semaphoreIndices(semaphoreSet.begin(),
+                                          semaphoreSet.end());
+    llvm::sort(semaphoreIndices);
+    for (int64_t semaphoreIndex : semaphoreIndices) {
+      auto counter = memref::AllocaOp::create(builder, loc, memrefTy);
+      memref::StoreOp::create(builder, loc, zeroI32, counter,
                               ValueRange{zeroIdx});
-      perFunc[pipeNetId] = alloca.getResult();
+      countersForFunc[semaphoreIndex] = counter.getResult();
     }
-  });
+  }
 }
 
 void initializePipeCapacitySemaphores(
     const PipeCapacityPlan &pipeCapacityPlan,
-    PipeNetCounterMap &senderCapacityCounters) {
+    PipeSemaphoreCounterMap &senderCapacityCounters) {
   for (const auto &entry : pipeCapacityPlan.getInitializations()) {
     FuncOp func = entry.first;
     const SmallVector<PipeCapacityInitInfo> &initializations = entry.second;
@@ -607,7 +590,7 @@ LogicalResult lowerPipeTransferSend(
     PipeTransferSendOp op, Value srcCB, bool isConsumerCB,
     const PipeResourcePlan &pipeResourcePlan,
     const PipeCapacityPlan *pipeCapacityPlan,
-    const PipeNetCounterMap *senderCapacityCounters,
+    const PipeSemaphoreCounterMap *senderCapacityCounters,
     const PipeComputedAddressCounterMap *computedAddressCounters,
     ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
@@ -628,8 +611,7 @@ LogicalResult lowerPipeTransferSend(
     return failure();
   }
   PipeResourceInfo pipeResource = *maybePipeResource;
-  PipeCompletionWaitInfo completionInfo =
-      lookupPipeCompletionWaitInfo(pipeType, pipeResourcePlan);
+  PipeCompletionInfo completionInfo = pipeResource.completion;
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
 
   auto cbType = getTTLCBType(srcCB);
@@ -829,7 +811,7 @@ LogicalResult lowerPipeTransferSend(
   if (pipeType.hasSingleReceiver()) {
     // Point-to-point increments the destination receiver-completion counter.
     auto receiverCompletionCounterSemIdx = arith::ConstantIndexOp::create(
-        rewriter, loc, completionInfo.receiverCompletionSemIdx);
+        rewriter, loc, completionInfo.semaphoreIndex);
     auto receiverCompletionCounterAddr = ttk::GetSemaphoreOp::create(
         rewriter, loc, receiverCompletionCounterSemIdx);
     auto completionIncrement = arith::ConstantIndexOp::create(rewriter, loc, 1);
@@ -843,7 +825,7 @@ LogicalResult lowerPipeTransferSend(
     // Collective increments every receiver-completion counter. The receiver
     // pairs this with a cumulative wait_min threshold.
     auto receiverCompletionCounterSemIdx = arith::ConstantIndexOp::create(
-        rewriter, loc, completionInfo.receiverCompletionSemIdx);
+        rewriter, loc, completionInfo.semaphoreIndex);
     auto receiverCompletionCounterAddr = ttk::GetSemaphoreOp::create(
         rewriter, loc, receiverCompletionCounterSemIdx);
 
@@ -1034,34 +1016,32 @@ LogicalResult lowerCBPop(CBPopOp op, Value cb,
   return success();
 }
 
-/// Lower the receiver completion wait with a per-PipeNet runtime counter.
-LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op,
-                                    const PipeNetCounterMap *counters,
-                                    const PipeResourcePlan &pipeResourcePlan,
-                                    ConversionPatternRewriter &rewriter) {
+/// Lower a receiver completion wait using its transfer's completion state.
+LogicalResult
+lowerPipeTransferWait(PipeTransferWaitOp op,
+                      const PipeSemaphoreCounterMap *completionCounters,
+                      const PipeResourcePlan &pipeResourcePlan,
+                      ConversionPatternRewriter &rewriter) {
   if (pipeResourcePlan.staticallyInactiveOps.contains(op.getOperation())) {
     rewriter.eraseOp(op);
     return success();
   }
   auto loc = op.getLoc();
-  auto tokenType = mlir::cast<PipeTokenType>(op.getToken().getType());
-  auto completionIt =
-      pipeResourcePlan.completionWaits.find(tokenType.getPipeNetId());
-  if (completionIt == pipeResourcePlan.completionWaits.end()) {
-    op.emitError("pipe transfer wait references PipeNet ")
-        << tokenType.getPipeNetId() << " with no completion resource";
+  FailureOr<PipeResourceInfo> maybePipeResource =
+      lookupPipeResourceInfo(op.getOperation(), pipeResourcePlan);
+  if (failed(maybePipeResource)) {
     return failure();
   }
-  PipeCompletionWaitInfo completionInfo = completionIt->second;
+  PipeCompletionInfo completionInfo = maybePipeResource->completion;
 
   Value waitProgressCounter;
-  if (counters) {
+  if (completionCounters) {
     auto func = op->getParentOfType<func::FuncOp>();
-    auto fIt = counters->find(func);
-    if (fIt != counters->end()) {
-      auto pIt = fIt->second.find(tokenType.getPipeNetId());
-      if (pIt != fIt->second.end()) {
-        waitProgressCounter = pIt->second;
+    auto funcIt = completionCounters->find(func);
+    if (funcIt != completionCounters->end()) {
+      auto semaphoreIt = funcIt->second.find(completionInfo.semaphoreIndex);
+      if (semaphoreIt != funcIt->second.end()) {
+        waitProgressCounter = semaphoreIt->second;
       }
     }
   }
@@ -1069,8 +1049,8 @@ LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op,
     // Counter pre-allocation is a hard precondition. A match failure would
     // replace the specific pipeline-ordering error with a generic legalization
     // failure.
-    op.emitError("pipe receive without per-PipeNet counter; "
-                 "allocatePipeNetReceiveCounters must run before "
+    op.emitError("pipe receive without a completion progress counter; "
+                 "initializePipeCompletionCounters must run before "
                  "convert-ttl-to-ttkernel");
     return failure();
   }
@@ -1079,7 +1059,7 @@ LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op,
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
 
   auto receiverCompletionCounterSemIdx = arith::ConstantIndexOp::create(
-      rewriter, loc, completionInfo.receiverCompletionSemIdx);
+      rewriter, loc, completionInfo.semaphoreIndex);
   auto receiverCompletionCounterAddr = ttk::GetSemaphoreOp::create(
       rewriter, loc, receiverCompletionCounterSemIdx);
   // [Device 2.0] Completion waits should consume the allocated completion
@@ -1332,14 +1312,15 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
 
 namespace {
 
-/// Allocation unit for source-node pipe rendezvous resources.
+/// Allocation unit for all resources owned by one transfer definition.
 ///
 /// One send and its corresponding receiver posts share an address mechanism
-/// and sender-ready counter. The interval bounds those resources from the first
-/// receiver post through the send.
+/// and sender-ready counter. Each receiver wait uses the completion semaphore
+/// assigned to the same unit.
 struct PipeTransferAllocationUnit {
   PipeTransferNodeId transferNodeId = 0;
   Operation *sendOp = nullptr;
+  /// Send, receiver-post, and receiver-wait operations for this transfer.
   SmallVector<Operation *> protocolOps;
 
   /// Logical pipe whose source node owns this unit's rendezvous resources.
@@ -1357,6 +1338,9 @@ struct PipeTransferAllocationUnit {
 
   /// Assigned first-fit color within the source node's allocation group.
   int64_t resourceColor = 0;
+
+  /// Local semaphore index used to signal this transfer's completion.
+  std::optional<int64_t> maybeCompletionSemaphoreIndex;
 
   /// Deterministic order used by first-fit interval coloring.
   bool operator<(const PipeTransferAllocationUnit &rhs) const {
@@ -1386,6 +1370,7 @@ collectPipeTransferAllocationUnits(
     llvm::SmallPtrSetImpl<Operation *> &staticallyInactiveOps) {
   SmallVector<PipeTransferAllocationUnit> units;
   llvm::DenseMap<Operation *, int64_t> operationOrdinals;
+  llvm::DenseMap<Operation *, SmallVector<Operation *>> waitOpsByPost;
   int64_t nextOperationOrdinal = 0;
   mod.walk([&](Operation *op) {
     if (isa<PipeTransferPostOp, PipeTransferSendOp>(op)) {
@@ -1398,10 +1383,14 @@ collectPipeTransferAllocationUnits(
     if (auto waitOp = dyn_cast<PipeTransferWaitOp>(op)) {
       PipeTransferPostOp postOp =
           findPipeTransferPostForToken(waitOp.getToken());
-      if (postOp &&
-          !pipeGraph.getPipeTransferNodeForProtocolOp(postOp.getOperation())) {
-        staticallyInactiveOps.insert(op);
+      if (!postOp) {
+        return;
       }
+      if (!pipeGraph.getPipeTransferNodeForProtocolOp(postOp.getOperation())) {
+        staticallyInactiveOps.insert(op);
+        return;
+      }
+      waitOpsByPost[postOp.getOperation()].push_back(op);
     }
   });
 
@@ -1435,6 +1424,10 @@ collectPipeTransferAllocationUnits(
       assert(ordinalIt != operationOrdinals.end() &&
              "receiver post is missing an operation ordinal");
       unit.protocolOps.push_back(postOp);
+      auto waitIt = waitOpsByPost.find(postOp);
+      if (waitIt != waitOpsByPost.end()) {
+        unit.protocolOps.append(waitIt->second.begin(), waitIt->second.end());
+      }
       updateIntervalStart(unit.interval, postOp, ordinalIt->second,
                           dominanceInfo);
     }
@@ -1480,6 +1473,32 @@ assignLiveIntervalColors(MutableArrayRef<PipeTransferAllocationUnit> units,
   }
 
   return colorUsersBySource;
+}
+
+/// Return whether two closed destination rectangles share a receiver.
+static bool receiverSetsOverlap(const PipeKey &lhs, const PipeKey &rhs) {
+  return lhs.dstStartX <= rhs.dstEndX && rhs.dstStartX <= lhs.dstEndX &&
+         lhs.dstStartY <= rhs.dstEndY && rhs.dstStartY <= lhs.dstEndY;
+}
+
+/// Reuse a semaphore index only across disjoint physical receiver sets.
+/// Transfers sharing a receiver need distinct state because either send may
+/// complete first.
+static int64_t allocateCompletionSemaphore(
+    const PipeKey &pipe,
+    SmallVectorImpl<SmallVector<PipeKey>> &pipesBySemaphoreIndex) {
+  for (auto indexedPipes : llvm::enumerate(pipesBySemaphoreIndex)) {
+    bool overlapsAssignedReceiverSet =
+        llvm::any_of(indexedPipes.value(), [&](const PipeKey &allocatedPipe) {
+          return receiverSetsOverlap(pipe, allocatedPipe);
+        });
+    if (!overlapsAssignedReceiverSet) {
+      indexedPipes.value().push_back(pipe);
+      return static_cast<int64_t>(indexedPipes.index());
+    }
+  }
+  pipesBySemaphoreIndex.push_back(SmallVector<PipeKey>{pipe});
+  return static_cast<int64_t>(pipesBySemaphoreIndex.size() - 1);
 }
 
 static bool usesSenderReadyCounter(const PipeTransferAllocationUnit &unit,
@@ -1744,23 +1763,13 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
   info.computedAddressCounterInitializations =
       computedAddressPlan.counterInitializations;
 
-  llvm::SmallSetVector<int64_t, 4> activePipeNetIds;
-  for (const PipeTransferAllocationUnit &unit : units) {
-    activePipeNetIds.insert(unit.pipe.pipeNetId);
+  SmallVector<SmallVector<PipeKey>> pipesByCompletionSemaphoreIndex;
+  for (PipeTransferAllocationUnit &unit : units) {
+    unit.maybeCompletionSemaphoreIndex =
+        allocateCompletionSemaphore(unit.pipe, pipesByCompletionSemaphoreIndex);
   }
-
-  SmallVector<int64_t> sortedPipeNetIds(activePipeNetIds.begin(),
-                                        activePipeNetIds.end());
-  llvm::sort(sortedPipeNetIds);
-
-  int64_t firstSourceLocalReadyCounterSemIdx = 0;
-  for (int64_t pipeNetId : sortedPipeNetIds) {
-    int64_t receiverCompletionSemIdx = getReceiverCompletionSemIdx(pipeNetId);
-    info.completionWaits[pipeNetId] =
-        PipeCompletionWaitInfo{pipeNetId, receiverCompletionSemIdx};
-    firstSourceLocalReadyCounterSemIdx = std::max(
-        firstSourceLocalReadyCounterSemIdx, receiverCompletionSemIdx + 1);
-  }
+  int64_t firstSourceLocalReadyCounterSemIdx =
+      static_cast<int64_t>(pipesByCompletionSemaphoreIndex.size());
 
   auto [readyColorBySourceColor, maxReadyCountersPerSource] =
       compactColors(colorUsersBySource, [&](unsigned unitIndex) {
@@ -1796,6 +1805,8 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
 
   for (auto indexedUnit : llvm::enumerate(units)) {
     const PipeTransferAllocationUnit &unit = indexedUnit.value();
+    assert(unit.maybeCompletionSemaphoreIndex &&
+           "pipe transfer is missing a completion semaphore");
     PipeSourceKey sourceKey = getPipeSourceKey(unit.pipeType);
     std::optional<PipeReadyCounterInfo> maybeReadyCounter;
     if (usesSenderReadyCounter(unit, pipeCapacityPlan)) {
@@ -1832,6 +1843,7 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
     PipeResourceInfo pipeResource{
         unit.pipe,
         unit.transferContract,
+        PipeCompletionInfo{*unit.maybeCompletionSemaphoreIndex},
         maybeReadyCounter,
         addressStorage,
     };
@@ -1868,12 +1880,9 @@ getPipeResourceRequirements(const PipeResourcePlan &info,
   };
 
   RequirementsObserver observer;
-  for (const auto &[pipeNetId, completion] : info.completionWaits) {
-    (void)pipeNetId;
-    observer.observeLocalSemaphore(completion.receiverCompletionSemIdx);
-  }
-  for (const auto &[transferCreateOp, resource] : info.resources) {
-    (void)transferCreateOp;
+  for (const auto &[protocolOp, resource] : info.resources) {
+    (void)protocolOp;
+    observer.observeLocalSemaphore(resource.completion.semaphoreIndex);
     if (resource.readyCounter) {
       resource.readyCounter->observe(observer);
     }
@@ -1925,16 +1934,13 @@ verifyPipeResourcePlanFitsHardware(ModuleOp mod, const PipeResourcePlan &info,
   };
 
   HighestSemaphore highest;
-  for (const auto &[pipeNetId, completion] : info.completionWaits) {
-    (void)pipeNetId;
-    if (completion.receiverCompletionSemIdx > highest.index) {
-      highest =
-          HighestSemaphore{completion.receiverCompletionSemIdx,
-                           PipeSemaphoreKind::ReceiverCompletion, std::nullopt};
+  for (const auto &[protocolOp, resource] : info.resources) {
+    (void)protocolOp;
+    if (resource.completion.semaphoreIndex > highest.index) {
+      highest = HighestSemaphore{resource.completion.semaphoreIndex,
+                                 PipeSemaphoreKind::ReceiverCompletion,
+                                 resource.pipe};
     }
-  }
-  for (const auto &[transferCreateOp, resource] : info.resources) {
-    (void)transferCreateOp;
     if (resource.readyCounter) {
       SenderReadyObserver observer(highest, resource.pipe);
       resource.readyCounter->observe(observer);
@@ -1967,7 +1973,9 @@ verifyPipeResourcePlanFitsHardware(ModuleOp mod, const PipeResourcePlan &info,
 
   switch (highest.kind) {
   case PipeSemaphoreKind::ReceiverCompletion:
-    note << "receiver-completion counter";
+    note << "receiver-completion counter for ";
+    assert(highest.pipe && "receiver-completion resource must have a pipe");
+    appendPipe(*highest.pipe);
     break;
   case PipeSemaphoreKind::SenderReady:
     note << "sender-ready counter for ";

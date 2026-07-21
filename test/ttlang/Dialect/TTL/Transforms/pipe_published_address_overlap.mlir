@@ -3,33 +3,37 @@
 // Summary: Verifies receiver-published synchronization for overlapping
 // collective destinations and loopback collectives.
 
-// Two receives on one DFB share a cumulative completion counter.
-// CHECK-LABEL: func.func @overlap_two_receives_share_counter
-// CHECK: %[[CTR:.*]] = memref.alloca() : memref<1xi32>
-// CHECK: memref.store {{.*}}, %[[CTR]]
+// Transfers that share physical receivers use distinct completion semaphores.
+// CHECK-LABEL: func.func @overlap_two_receives_use_distinct_completion
+// CHECK-DAG: %[[SEM_A:.*]] = arith.constant 0 : index
+// CHECK-DAG: %[[SEM_B:.*]] = arith.constant 1 : index
+// CHECK-DAG: %[[CTR_A:.*]] = memref.alloca() : memref<1xi32>
+// CHECK-DAG: %[[CTR_B:.*]] = memref.alloca() : memref<1xi32>
 // CHECK: %[[DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK: ttkernel.cb_reserve_back(%[[DFB]]
 // CHECK: %[[WP1:.*]] = ttkernel.get_write_ptr(%[[DFB]])
 // CHECK: ttkernel.noc_inline_dw_write({{.*}}, %[[WP1]]
 // CHECK: ttkernel.noc_semaphore_inc
-// CHECK: %[[WAIT_PTR1:.*]] = ttkernel.reinterpret_cast
-// CHECK: %[[V1:.*]] = memref.load %[[CTR]]
+// CHECK: %[[COMP_A:.*]] = ttkernel.get_semaphore(%[[SEM_A]])
+// CHECK: %[[WAIT_PTR1:.*]] = ttkernel.reinterpret_cast(%[[COMP_A]])
+// CHECK: %[[V1:.*]] = memref.load %[[CTR_A]]
 // CHECK: %[[N1:.*]] = arith.addi %[[V1]]
-// CHECK: memref.store %[[N1]], %[[CTR]]
+// CHECK: memref.store %[[N1]], %[[CTR_A]]
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[WAIT_PTR1]], %[[N1]])
 // CHECK: ttkernel.cb_push_back(%[[DFB]]
 // CHECK: ttkernel.cb_reserve_back(%[[DFB]]
 // CHECK: %[[WP2:.*]] = ttkernel.get_write_ptr(%[[DFB]])
 // CHECK: ttkernel.noc_inline_dw_write({{.*}}, %[[WP2]]
 // CHECK: ttkernel.noc_semaphore_inc
-// CHECK: %[[WAIT_PTR2:.*]] = ttkernel.reinterpret_cast
-// CHECK: %[[V2:.*]] = memref.load %[[CTR]]
+// CHECK: %[[COMP_B:.*]] = ttkernel.get_semaphore(%[[SEM_B]])
+// CHECK: %[[WAIT_PTR2:.*]] = ttkernel.reinterpret_cast(%[[COMP_B]])
+// CHECK: %[[V2:.*]] = memref.load %[[CTR_B]]
 // CHECK: %[[N2:.*]] = arith.addi %[[V2]]
-// CHECK: memref.store %[[N2]], %[[CTR]]
+// CHECK: memref.store %[[N2]], %[[CTR_B]]
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[WAIT_PTR2]], %[[N2]])
 // CHECK: ttkernel.cb_push_back(%[[DFB]]
 module attributes {ttl.launch_grid = array<i64: 3, 4>} {
-  func.func @overlap_two_receives_share_counter()
+  func.func @overlap_two_receives_use_distinct_completion()
       attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
     %dst = ttl.bind_cb {cb_index = 0, block_count = 4}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
@@ -62,7 +66,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 4>} {
     func.return
   }
 
-  func.func @overlap_two_receives_share_counter_senders()
+  func.func @overlap_two_receives_use_distinct_completion_senders()
       attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
     %src = ttl.bind_cb {cb_index = 1, block_count = 1}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
@@ -90,20 +94,20 @@ module attributes {ttl.launch_grid = array<i64: 3, 4>} {
 
 // -----
 
-// Independent PipeNets use distinct completion counters.
-// CHECK-LABEL: func.func @two_pipenets_two_counters
-// CHECK: %[[CTR_A:.*]] = memref.alloca() : memref<1xi32>
-// CHECK: %[[CTR_B:.*]] = memref.alloca() : memref<1xi32>
-// CHECK: %[[VA:.*]] = memref.load %[[CTR_A]]
+// Transfers with disjoint physical receivers may reuse one semaphore index.
+// CHECK-LABEL: func.func @disjoint_receivers_reuse_completion
+// CHECK: %[[CTR:.*]] = memref.alloca() : memref<1xi32>
+// CHECK-NOT: memref.alloca
+// CHECK: %[[VA:.*]] = memref.load %[[CTR]]
 // CHECK: %[[NA:.*]] = arith.addi %[[VA]]
-// CHECK: memref.store %[[NA]], %[[CTR_A]]
+// CHECK: memref.store %[[NA]], %[[CTR]]
 // CHECK: ttkernel.experimental.semaphore_wait_min({{.*}}, %[[NA]])
-// CHECK: %[[VB:.*]] = memref.load %[[CTR_B]]
+// CHECK: %[[VB:.*]] = memref.load %[[CTR]]
 // CHECK: %[[NB:.*]] = arith.addi %[[VB]]
-// CHECK: memref.store %[[NB]], %[[CTR_B]]
+// CHECK: memref.store %[[NB]], %[[CTR]]
 // CHECK: ttkernel.experimental.semaphore_wait_min({{.*}}, %[[NB]])
 module attributes {ttl.launch_grid = array<i64: 3, 4>} {
-  func.func @two_pipenets_two_counters()
+  func.func @disjoint_receivers_reuse_completion()
       attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
     %dst = ttl.bind_cb {cb_index = 0, block_count = 2}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
@@ -136,7 +140,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 4>} {
     func.return
   }
 
-  func.func @two_pipenets_two_counters_senders()
+  func.func @disjoint_receivers_reuse_completion_senders()
       attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
     %src = ttl.bind_cb {cb_index = 1, block_count = 1}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>

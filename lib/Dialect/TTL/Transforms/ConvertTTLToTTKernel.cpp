@@ -1117,7 +1117,7 @@ struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
       const TypeConverter &typeConverter, MLIRContext *context,
       const PipeResourcePlan &pipeResourcePlan,
       const PipeCapacityPlan &pipeCapacityPlan,
-      const PipeNetCounterMap *senderCapacityCounters,
+      const PipeSemaphoreCounterMap *senderCapacityCounters,
       const PipeComputedAddressCounterMap *computedAddressCounters)
       : OpConversionPattern(typeConverter, context),
         pipeResourcePlan(pipeResourcePlan), pipeCapacityPlan(pipeCapacityPlan),
@@ -1146,27 +1146,28 @@ struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
 private:
   const PipeResourcePlan &pipeResourcePlan;
   const PipeCapacityPlan &pipeCapacityPlan;
-  const PipeNetCounterMap *senderCapacityCounters;
+  const PipeSemaphoreCounterMap *senderCapacityCounters;
   const PipeComputedAddressCounterMap *computedAddressCounters;
 };
 
 struct PipeTransferWaitLowering : OpConversionPattern<PipeTransferWaitOp> {
   PipeTransferWaitLowering(const TypeConverter &typeConverter,
                            MLIRContext *context,
-                           const PipeNetCounterMap *pipeNetCounters,
+                           const PipeSemaphoreCounterMap *completionCounters,
                            const PipeResourcePlan &pipeResourcePlan)
       : OpConversionPattern(typeConverter, context),
-        pipeNetCounters(pipeNetCounters), pipeResourcePlan(pipeResourcePlan) {}
+        completionCounters(completionCounters),
+        pipeResourcePlan(pipeResourcePlan) {}
 
   LogicalResult
   matchAndRewrite(PipeTransferWaitOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    return lowerPipeTransferWait(op, pipeNetCounters, pipeResourcePlan,
+    return lowerPipeTransferWait(op, completionCounters, pipeResourcePlan,
                                  rewriter);
   }
 
 private:
-  const PipeNetCounterMap *pipeNetCounters;
+  const PipeSemaphoreCounterMap *completionCounters;
   const PipeResourcePlan &pipeResourcePlan;
 };
 
@@ -1600,10 +1601,6 @@ static LogicalResult lowerTTLOpsToTTKernel(
     return failure();
   }
 
-  // Per-PipeNet runtime counters for cumulative receive wait_min.
-  PipeNetCounterMap pipeNetCounters;
-  allocatePipeNetReceiveCounters(mod, pipeNetCounters);
-
   // Per-net-id pipe list, shared by IsSrc/IsDst/IsActive lowerings so they
   // don't walk the module per match.
   PipeNetIndex pipeNetIndex;
@@ -1664,8 +1661,10 @@ static LogicalResult lowerTTLOpsToTTKernel(
   // are the current host/runtime ABI for pipe resource binding. Keep the
   // allocation decision in this compiler plan so future typed device APIs only
   // change runtime binding code.
-  PipeNetCounterMap senderCapacityCounters;
+  PipeSemaphoreCounterMap senderCapacityCounters;
   initializePipeCapacitySemaphores(pipeCapacityPlan, senderCapacityCounters);
+  PipeSemaphoreCounterMap completionCounters;
+  initializePipeCompletionCounters(pipeResourcePlan, completionCounters);
   PipeComputedAddressCounterMap computedAddressCounters;
   initializePipeComputedAddressCounters(pipeResourcePlan,
                                         computedAddressCounters);
@@ -1677,8 +1676,8 @@ static LogicalResult lowerTTLOpsToTTKernel(
   patterns.add<PipeTransferSendLowering>(
       typeConverter, &ctx, pipeResourcePlan, pipeCapacityPlan,
       &senderCapacityCounters, &computedAddressCounters);
-  patterns.add<PipeTransferWaitLowering>(typeConverter, &ctx, &pipeNetCounters,
-                                         pipeResourcePlan);
+  patterns.add<PipeTransferWaitLowering>(typeConverter, &ctx,
+                                         &completionCounters, pipeResourcePlan);
   patterns.add<BindCBLowering, TensorSliceLowering, WaitLowering,
                CBReserveLowering, CBPushLowering, CBWaitLowering,
                TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering,
