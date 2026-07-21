@@ -121,7 +121,11 @@ jobs:
         strategy:
             fail-fast: false
             matrix:
-                runner: [n150, bh-loudbox-viommu]
+                include:
+                    - runner: n150
+                      labels: '["tt-ubuntu-2204-n150-stable"]'
+                    - runner: galaxy-bh
+                      labels: '["in-service", "galaxy-bh"]'
         uses: ./.github/workflows/call-test-hardware.yml
         secrets: inherit
         with:
