@@ -25,55 +25,56 @@ TILE = 32
 N_ITERS = 4
 
 
-def _point_to_point(inp, out, recv_block_count):
-    net = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(1, 0))])
-    send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
-    recv_dfb = ttl.make_dataflow_buffer_like(
-        out, shape=(1, 1), block_count=recv_block_count
-    )
+def _make_point_to_point(recv_block_count, options=None):
+    @ttl.operation(grid=(2, 1), options=options)
+    def point_to_point(inp, out):
+        net = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(1, 0))])
+        send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        recv_dfb = ttl.make_dataflow_buffer_like(
+            out, shape=(1, 1), block_count=recv_block_count
+        )
 
-    @ttl.compute()
-    def compute():
-        pass
+        @ttl.compute()
+        def compute():
+            pass
 
-    @ttl.datamovement()
-    def dm():
-        node_x, _node_y = ttl.node(dims=2)
+        @ttl.datamovement()
+        def dm():
+            node_x, _node_y = ttl.node(dims=2)
 
-        for _iter_idx in range(N_ITERS):
+            for _iter_idx in range(N_ITERS):
 
-            def send(pipe):
-                with send_dfb.reserve() as send_blk:
-                    ttl.copy(inp[0, 0], send_blk).wait()
-                with send_dfb.wait() as send_blk:
-                    ttl.copy(send_blk, pipe).wait()
+                def send(pipe):
+                    with send_dfb.reserve() as send_blk:
+                        ttl.copy(inp[0, 0], send_blk).wait()
+                    with send_dfb.wait() as send_blk:
+                        ttl.copy(send_blk, pipe).wait()
 
-            net.if_src(send)
+                net.if_src(send)
 
-            def recv(pipe):
-                with recv_dfb.reserve() as recv_blk:
-                    ttl.copy(pipe, recv_blk).wait()
-                with recv_dfb.wait() as recv_blk:
-                    ttl.copy(recv_blk, out[0, 0]).wait()
+                def recv(pipe):
+                    with recv_dfb.reserve() as recv_blk:
+                        ttl.copy(pipe, recv_blk).wait()
+                    with recv_dfb.wait() as recv_blk:
+                        ttl.copy(recv_blk, out[0, 0]).wait()
 
-            if node_x == 1:
-                net.if_dst(recv)
+                if node_x == 1:
+                    net.if_dst(recv)
 
-    @ttl.datamovement()
-    def dm_brisc():
-        pass
+        @ttl.datamovement()
+        def dm_brisc():
+            pass
+
+    return point_to_point
 
 
 def _make_point_to_point_ops(recv_block_count):
-    @ttl.operation(grid=(2, 1))
-    def computed(inp, out):
-        _point_to_point(inp, out, recv_block_count)
-
-    @ttl.operation(grid=(2, 1), options="--no-ttl-pipe-computed-addresses")
-    def published(inp, out):
-        _point_to_point(inp, out, recv_block_count)
-
-    return computed, published
+    return (
+        _make_point_to_point(recv_block_count),
+        _make_point_to_point(
+            recv_block_count, options="--no-ttl-pipe-computed-addresses"
+        ),
+    )
 
 
 @pytest.mark.parametrize("recv_block_count", [1, 2], ids=["bc1", "bc2"])
