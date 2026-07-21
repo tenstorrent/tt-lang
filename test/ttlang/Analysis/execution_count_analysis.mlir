@@ -693,6 +693,214 @@ func.func @disconnected_cycle_to_reachable_block(%condition: i1) {
 }
 // CHECK-LABEL: disconnected_cycle_to_reachable_block = 1
 
+// A self-loop with a constant lower bound, step, and exit bound gets an exact trip count.
+func.func @block_cfg_loop_constant_bound() {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %four = arith.constant 4 : index
+  cf.br ^loop(%zero : index)
+
+^loop(%i: index):
+  %target = arith.addi %i, %i {
+    test.expected_count = 4 : i64,
+    test.label = "block_cfg_loop_constant_bound"
+  } : index
+  %next = arith.addi %i, %one : index
+  %again = arith.cmpi slt, %next, %four : index
+  cf.cond_br %again, ^loop(%next : index), ^exit
+
+^exit:
+  return
+}
+// CHECK-LABEL: block_cfg_loop_constant_bound = 4
+
+// A descending induction variable with a negative step works the same way.
+func.func @block_cfg_loop_descending() {
+  %five = arith.constant 5 : index
+  %neg_one = arith.constant -1 : index
+  %zero = arith.constant 0 : index
+  cf.br ^loop(%five : index)
+
+^loop(%i: index):
+  %target = arith.addi %i, %i {
+    test.expected_count = 5 : i64,
+    test.label = "block_cfg_loop_descending"
+  } : index
+  %next = arith.addi %i, %neg_one : index
+  %again = arith.cmpi sgt, %next, %zero : index
+  cf.cond_br %again, ^loop(%next : index), ^exit
+
+^exit:
+  return
+}
+// CHECK-LABEL: block_cfg_loop_descending = 5
+
+// A function-argument value supplied by the analysis context can define an exact trip count.
+func.func @block_cfg_loop_context_bound(%bound: index {test.value = 5 : i64}) {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  cf.br ^loop(%zero : index)
+
+^loop(%i: index):
+  %target = arith.addi %i, %i {
+    test.expected_count = 5 : i64,
+    test.label = "block_cfg_loop_context_bound"
+  } : index
+  %next = arith.addi %i, %one : index
+  %again = arith.cmpi slt, %next, %bound : index
+  cf.cond_br %again, ^loop(%next : index), ^exit
+
+^exit:
+  return
+}
+// CHECK-LABEL: block_cfg_loop_context_bound = 5
+
+// A data-dependent bound leaves the loop, and the block after it, unknown.
+func.func @block_cfg_loop_data_dependent_bound(%bound: index) {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  cf.br ^loop(%zero : index)
+
+^loop(%i: index):
+  %target = arith.addi %i, %i {
+    test.expected_count = "unknown",
+    test.label = "block_cfg_loop_data_dependent_bound"
+  } : index
+  %next = arith.addi %i, %one : index
+  %again = arith.cmpi slt, %next, %bound : index
+  cf.cond_br %again, ^loop(%next : index), ^exit
+
+^exit:
+  %exit_target = arith.addi %zero, %zero {
+    test.expected_count = "unknown",
+    test.label = "block_cfg_loop_data_dependent_bound_exit"
+  } : index
+  return
+}
+// CHECK-LABEL: block_cfg_loop_data_dependent_bound = unknown
+// CHECK-LABEL: block_cfg_loop_data_dependent_bound_exit = unknown
+
+// A cycle entered through two different blocks is irreducible and stays unknown.
+func.func @block_cfg_loop_multi_entry(%enter_left: i1) {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %four = arith.constant 4 : index
+  cf.cond_br %enter_left, ^left(%zero : index), ^right(%zero : index)
+
+^left(%i_left: index):
+  %left_target = arith.addi %i_left, %i_left {
+    test.expected_count = "unknown",
+    test.label = "block_cfg_loop_multi_entry_left"
+  } : index
+  %left_next = arith.addi %i_left, %one : index
+  %left_cond = arith.cmpi slt, %left_next, %four : index
+  cf.cond_br %left_cond, ^right(%left_next : index), ^exit
+
+^right(%i_right: index):
+  %right_target = arith.addi %i_right, %i_right {
+    test.expected_count = "unknown",
+    test.label = "block_cfg_loop_multi_entry_right"
+  } : index
+  %right_next = arith.addi %i_right, %one : index
+  %right_cond = arith.cmpi slt, %right_next, %four : index
+  cf.cond_br %right_cond, ^left(%right_next : index), ^exit
+
+^exit:
+  return
+}
+// CHECK-LABEL: block_cfg_loop_multi_entry_left = unknown
+// CHECK-LABEL: block_cfg_loop_multi_entry_right = unknown
+
+// Two predecessor edges into the header mean no single lower bound, so it stays unknown.
+func.func @block_cfg_loop_ambiguous_preheader(%enter_left: i1) {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %four = arith.constant 4 : index
+  cf.cond_br %enter_left, ^left, ^right
+
+^left:
+  cf.br ^loop(%zero : index)
+
+^right:
+  cf.br ^loop(%zero : index)
+
+^loop(%i: index):
+  %target = arith.addi %i, %i {
+    test.expected_count = "unknown",
+    test.label = "block_cfg_loop_ambiguous_preheader"
+  } : index
+  %next = arith.addi %i, %one : index
+  %again = arith.cmpi slt, %next, %four : index
+  cf.cond_br %again, ^loop(%next : index), ^exit
+
+^exit:
+  return
+}
+// CHECK-LABEL: block_cfg_loop_ambiguous_preheader = unknown
+
+// A multi-block loop (header, body, latch) gets an exact trip count for the header and body.
+func.func @block_cfg_loop_multi_block() {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %three = arith.constant 3 : index
+  cf.br ^header(%zero : index)
+
+^header(%i: index):
+  %header_target = arith.addi %i, %i {
+    test.expected_count = 3 : i64,
+    test.label = "block_cfg_loop_multi_block_header"
+  } : index
+  cf.br ^body
+
+^body:
+  %body_target = arith.addi %i, %i {
+    test.expected_count = 3 : i64,
+    test.label = "block_cfg_loop_multi_block_body"
+  } : index
+  cf.br ^latch
+
+^latch:
+  %next = arith.addi %i, %one : index
+  %again = arith.cmpi slt, %next, %three : index
+  cf.cond_br %again, ^header(%next : index), ^exit
+
+^exit:
+  %exit_target = arith.addi %zero, %zero {
+    test.expected_count = 1 : i64,
+    test.label = "block_cfg_loop_multi_block_exit"
+  } : index
+  return
+}
+// CHECK-LABEL: block_cfg_loop_multi_block_header = 3
+// CHECK-LABEL: block_cfg_loop_multi_block_body = 3
+// CHECK-LABEL: block_cfg_loop_multi_block_exit = 1
+
+// A block-CFG loop's bound can depend on an enclosing scf.for's induction variable.
+func.func @block_cfg_loop_outer_induction_bound() attributes {
+    test.max_enumerated_iterations = 8 : i64} {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %three = arith.constant 3 : index
+  scf.for %outer = %zero to %three step %one {
+    %bound = arith.addi %outer, %one : index
+    cf.br ^header(%zero : index)
+
+  ^header(%i: index):
+    %target = arith.addi %i, %i {
+      test.expected_count = 6 : i64,
+      test.label = "block_cfg_loop_outer_induction_bound"
+    } : index
+    %next = arith.addi %i, %one : index
+    %again = arith.cmpi slt, %next, %bound : index
+    cf.cond_br %again, ^header(%next : index), ^exit
+
+  ^exit:
+    scf.yield
+  }
+  return
+}
+// CHECK-LABEL: block_cfg_loop_outer_induction_bound = 6
+
 // A non-exiting CFG cycle inside a structured loop must not produce an exact
 // sibling count multiplied by the loop trip count.
 func.func @nested_non_exiting_cycle(%condition: i1) {

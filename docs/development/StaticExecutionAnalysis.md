@@ -207,10 +207,50 @@ post-dominates the entry when every terminating or nonterminating continuation
 from the entry passes through that block.
 
 Within one region invocation, an unreachable block has count zero. A block in a
-reachable cyclic SCC may execute more than once. The SCC may also never exit,
-so every block reachable from it has an unknown count. Every other reachable
-block executes at most once. Its count is one exactly when it post-dominates the
+reachable cyclic SCC may execute more than once. Every other reachable block
+executes at most once. Its count is one exactly when it post-dominates the
 entry block in the possible CFG; otherwise, its count is unknown.
+
+### Counted block-CFG loops
+
+By default a cyclic SCC and everything reachable from it get an unknown
+count, since the SCC might execute repeatedly or never exit. Before falling
+back to that default, the analysis tries to prove an exact trip count for a
+reducible single-entry cyclic SCC -- the block-CFG equivalent of `scf.for`
+bound evaluation above.
+
+A cyclic SCC entered through only one block is a natural loop, with that
+block as its header. The header dominates the whole SCC for free, since every
+path into the SCC has to pass through it first. The analysis also requires a
+single preheader edge (one edge into the header from outside the SCC), so the
+induction variable has one well-defined start value; a header reachable from
+multiple outside blocks is left unknown.
+
+The analysis looks for an induction variable among the header's block
+arguments: an argument whose value on every backward edge is `arith.addi` of
+itself and a step operand defined outside the SCC, with every edge agreeing
+on the same step. Exactly one SCC block may carry the exit test: the header
+itself (only when it's the SCC's only block), or a latch (a block with a
+backward edge to the header). A pure test block dispatching into a separately
+entered body isn't modeled, since its header could run one more time than the
+body -- that shape stays unknown. The exit test is an `arith.cmpi` with
+predicate `slt`, `ult`, or `sgt`, comparing the induction variable (or its
+freshly computed next value) against a loop-invariant bound.
+
+Every proven shape is a do-while: the header, plus anything proven to run
+exactly once per pass through the SCC, executes before the first exit test.
+So the trip count is `max(1, standard_trip_count(lower_bound, bound, step))`,
+using the same bound evaluation as `scf.for`. An SCC block that can't be
+proven to run exactly once per pass stays unknown -- nested block-CFG loops
+aren't recognized. A block after the loop is only classified as running once
+when the loop's trip count is provable for that query's induction
+environment; an unprovable bound (e.g. one depending on non-constant data)
+leaves it unknown too, since the loop might never terminate.
+
+The trip count itself isn't cached with the rest of the block CFG, since the
+bound operands can depend on an enclosing induction variable or a
+consumer-supplied context value. It's recomputed per query, same as
+`scf.for`.
 
 LLVM's SCC analysis identifies cycles. LLVM's post-dominator construction
 treats ordinary exits and nonterminating loops as successors of a common
