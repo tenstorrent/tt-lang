@@ -88,6 +88,7 @@ jobs:
         run: |
           source build/env/activate
           cmake --build build
+          cmake --build build --target ttlang-test-tools
 
       - name: Install test dependencies
         run: |
