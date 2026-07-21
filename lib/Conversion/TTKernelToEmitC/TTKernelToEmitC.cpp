@@ -235,6 +235,35 @@ static std::string ensureCBDeclaration(Value cb, Operation *useOp,
   return cbName;
 }
 
+/// Chase through UnrealizedConversionCastOps to find the real producer.
+static Value unwrapCasts(Value v) {
+  while (auto cast = v.getDefiningOp<mlir::UnrealizedConversionCastOp>()) {
+    if (cast.getInputs().size() == 1) {
+      v = cast.getInputs()[0];
+    } else {
+      break;
+    }
+  }
+  return v;
+}
+
+/// Resolve a DFB (CB) SSA value to its compile-time argument index.
+/// Works both before and after GetCompileArgValOp is lowered to emitc.literal.
+static std::optional<int> resolveDfbIndex(Value dfb) {
+  dfb = unwrapCasts(dfb);
+  Operation *defOp = dfb.getDefiningOp();
+  if (!defOp) {
+    return std::nullopt;
+  }
+  if (auto attr = defOp->getAttrOfType<IntegerAttr>("ttkernel.cb_ctarg_idx")) {
+    return attr.getInt();
+  }
+  if (auto getArg = dyn_cast<ttkernel::GetCompileArgValOp>(defOp)) {
+    return getArg.getArgIndex();
+  }
+  return std::nullopt;
+}
+
 static StringRef getL1PtrOpaqueTypeName(unsigned elementWidth) {
   switch (elementWidth) {
   case 8:
@@ -2038,30 +2067,7 @@ public:
       return rewriter.notifyMatchFailure(op, "failed to convert result type");
     }
 
-    // The DFB operand traces back to a GetCompileArgValOp whose argIndex
-    // is the DFB slot.  After that op has been lowered to an emitc.literal
-    // the index lives in the ttkernel.cb_ctarg_idx attribute; before
-    // lowering it is available directly on the op.
-    Value dfb = adaptor.getDfb();
-    while (auto cast = dfb.getDefiningOp<mlir::UnrealizedConversionCastOp>()) {
-      if (cast.getInputs().size() == 1) {
-        dfb = cast.getInputs()[0];
-      } else {
-        break;
-      }
-    }
-    Operation *defOp = dfb.getDefiningOp();
-    if (!defOp) {
-      return rewriter.notifyMatchFailure(op, "DFB operand has no defining op");
-    }
-
-    std::optional<int> dfbIdx;
-    if (auto attr =
-            defOp->getAttrOfType<IntegerAttr>("ttkernel.cb_ctarg_idx")) {
-      dfbIdx = attr.getInt();
-    } else if (auto getArg = dyn_cast<ttkernel::GetCompileArgValOp>(defOp)) {
-      dfbIdx = getArg.getArgIndex();
-    }
+    auto dfbIdx = resolveDfbIndex(adaptor.getDfb());
     if (!dfbIdx) {
       return rewriter.notifyMatchFailure(
           op, "get_dfb_id operand must trace to get_compile_time_arg_val");
@@ -2123,18 +2129,6 @@ public:
 private:
   std::reference_wrapper<TTKernelToEmitCConversionState> state;
 
-  /// Chase through UnrealizedConversionCastOps to find the real producer.
-  static Value unwrapCasts(Value v) {
-    while (auto cast = v.getDefiningOp<mlir::UnrealizedConversionCastOp>()) {
-      if (cast.getInputs().size() == 1) {
-        v = cast.getInputs()[0];
-      } else {
-        break;
-      }
-    }
-    return v;
-  }
-
   /// Resolve a template arg SSA value to a concrete integer.  Handles
   /// arith.constant, emitc.constant (from ArithToEmitC), ttkernel.get_dfb_id,
   /// and already-converted emitc.literal producers.
@@ -2151,7 +2145,6 @@ private:
       if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue())) {
         return intAttr.getInt();
       }
-      return std::nullopt;
     }
 
     if (auto emitcConst = dyn_cast<emitc::ConstantOp>(defOp)) {
@@ -2169,34 +2162,20 @@ private:
     }
 
     if (auto getDfbId = dyn_cast<ttkernel::GetDfbIdOp>(defOp)) {
-      Value dfb = getDfbId.getDfb();
-      dfb = unwrapCasts(dfb);
-      Operation *dfbDef = dfb.getDefiningOp();
-      if (!dfbDef) {
-        return std::nullopt;
-      }
-
-      std::optional<int> idx;
-      if (auto attr =
-              dfbDef->getAttrOfType<IntegerAttr>("ttkernel.cb_ctarg_idx")) {
-        idx = attr.getInt();
-      } else if (auto getArg = dyn_cast<ttkernel::GetCompileArgValOp>(dfbDef)) {
-        idx = getArg.getArgIndex();
-      }
+      auto idx = resolveDfbIndex(getDfbId.getDfb());
       if (!idx) {
         return std::nullopt;
       }
-
+      Value dfb = unwrapCasts(getDfbId.getDfb());
       ensureCBDeclaration(dfb, op.getOperation(), rewriter, state);
       return static_cast<int64_t>(*idx);
     }
 
     if (auto litOp = dyn_cast<emitc::LiteralOp>(defOp)) {
       int64_t v;
-      if (!llvm::to_integer(litOp.getValue(), v)) {
-        return std::nullopt;
+      if (llvm::to_integer(litOp.getValue(), v)) {
+        return v;
       }
-      return v;
     }
 
     return std::nullopt;

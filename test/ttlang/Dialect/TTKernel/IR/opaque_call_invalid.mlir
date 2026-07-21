@@ -1,5 +1,21 @@
-// Verify that opaque_call rejects non-constant template args.
+// Verify that opaque_call rejects invalid inputs.
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics
+
+// -----
+// Test: empty callee name
+func.func @empty_callee() {
+  // expected-error @below {{'ttkernel.opaque_call' op callee name must not be empty}}
+  ttkernel.opaque_call "" () {header = "h.hpp"} : () -> ()
+  return
+}
+
+// -----
+// Test: empty header path
+func.func @empty_header() {
+  // expected-error @below {{'ttkernel.opaque_call' op header path must not be empty}}
+  ttkernel.opaque_call "foo" () {header = ""} : () -> ()
+  return
+}
 
 // -----
 // Test: block argument used as template arg

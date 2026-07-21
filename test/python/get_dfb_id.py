@@ -8,8 +8,8 @@
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 
 """
-Verify that get_dfb_id() in template_args emits ttl.get_dfb_id in the initial
-MLIR and lowers to a raw integer literal in the generated C++.
+Verify that ttl.get_dfb_id() in template_args emits ttl.get_dfb_id in the
+initial MLIR and lowers to a raw integer literal in the generated C++.
 """
 
 import os
@@ -36,10 +36,10 @@ def get_dfb_id_kernel(inp, out):
         tx.wait()
         blk.push()
 
-        call_extern_func(
+        ttl.call_extern_func(
             FAKE_HEADER,
             "my_shim",
-            template_args=[get_dfb_id(scratch), get_dfb_id(out_dfb), 1],
+            template_args=[ttl.get_dfb_id(scratch), ttl.get_dfb_id(out_dfb), 1],
             include_paths=[],
         )
 

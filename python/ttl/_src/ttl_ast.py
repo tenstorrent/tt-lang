@@ -174,8 +174,8 @@ class TTLGenericCompiler(TTCompilerBase):
         # so the verifier can name PipeNets by user-facing identifier.
         self._pipe_net_names: dict[int, str] = {}
 
-        # Include paths collected from call_extern_func invocations, forwarded
-        # to the JIT compiler as -I flags.
+        # Include paths collected from ttl.call_extern_func invocations,
+        # forwarded to the JIT compiler as -I flags.
         self._opaque_include_paths: list[str] = []
 
     def _set_var(self, var_name, value):
@@ -321,18 +321,10 @@ class TTLGenericCompiler(TTCompilerBase):
                 ):
                     return self.visit_Print(node.args, node.keywords)
 
-                if (
-                    not isinstance(node.func, ast.Attribute)
-                    and hasattr(node.func, "id")
-                    and node.func.id == "call_extern_func"
-                ):
+                if self._is_call_extern_func(node):
                     return self.visit_Call_Extern_Func(node, node.args, node.keywords)
 
-                if (
-                    not isinstance(node.func, ast.Attribute)
-                    and hasattr(node.func, "id")
-                    and node.func.id == "get_dfb_id"
-                ):
+                if self._is_get_dfb_id(node):
                     return self._visit_get_dfb_id(node)
 
                 # Check for PipeNet.if_src/if_dst calls
@@ -616,6 +608,36 @@ class TTLGenericCompiler(TTCompilerBase):
             and node.value.value.id == "ttl"
             and node.value.attr == "block"
         )
+
+    @staticmethod
+    def _is_call_extern_func(node):
+        """Match both ``call_extern_func(...)`` and ``ttl.call_extern_func(...)``."""
+        func = node.func
+        if isinstance(func, ast.Name) and func.id == "call_extern_func":
+            return True
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr == "call_extern_func"
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "ttl"
+        ):
+            return True
+        return False
+
+    @staticmethod
+    def _is_get_dfb_id(node):
+        """Match both ``get_dfb_id(...)`` and ``ttl.get_dfb_id(...)``."""
+        func = node.func
+        if isinstance(func, ast.Name) and func.id == "get_dfb_id":
+            return True
+        if (
+            isinstance(func, ast.Attribute)
+            and func.attr == "get_dfb_id"
+            and isinstance(func.value, ast.Name)
+            and func.value.id == "ttl"
+        ):
+            return True
+        return False
 
     # Spec change-log 0.17 (TTLangSpecification.md) moved these names from
     # ttl.math/ttl to the ttl.block namespace. Each entry restricts the names
@@ -1402,15 +1424,11 @@ class TTLGenericCompiler(TTCompilerBase):
     def _resolve_template_arg_value(self, node):
         """Try to resolve a template_args element to an MLIR SSA Value.
 
-        Returns an ``ir.Value`` for ``get_dfb_id(dfb)`` calls, or ``None``
+        Returns an ``ir.Value`` for ``ttl.get_dfb_id(dfb)`` calls, or ``None``
         when the node is a plain integer that ``_resolve_int_value`` should
         handle instead.
         """
-        if (
-            isinstance(node, ast.Call)
-            and hasattr(node.func, "id")
-            and node.func.id == "get_dfb_id"
-        ):
+        if isinstance(node, ast.Call) and self._is_get_dfb_id(node):
             return self._visit_get_dfb_id(node)
         return None
 
@@ -1430,7 +1448,7 @@ class TTLGenericCompiler(TTCompilerBase):
                 return val
         self._raise_error(
             node,
-            f"call_extern_func() {param_name} must be an integer "
+            f"ttl.call_extern_func() {param_name} must be an integer "
             f"literal or a module-level integer variable",
         )
 
@@ -1448,7 +1466,7 @@ class TTLGenericCompiler(TTCompilerBase):
                 return val
         self._raise_error(
             node,
-            f"call_extern_func() {param_name} must be a string "
+            f"ttl.call_extern_func() {param_name} must be a string "
             f"literal or a module-level string variable",
         )
 
@@ -1457,23 +1475,24 @@ class TTLGenericCompiler(TTCompilerBase):
         if not isinstance(node, ast.List):
             self._raise_error(
                 node,
-                f"call_extern_func() {param_name} must be a list",
+                f"ttl.call_extern_func() {param_name} must be a list",
             )
         return [self._resolve_string_value(elt, param_name) for elt in node.elts]
 
     def _visit_get_dfb_id(self, node):
         """Emit ttl.get_dfb_id for the DFB argument, return the i32 MLIR result."""
         if len(node.args) != 1:
-            self._raise_error(node, "get_dfb_id() requires exactly 1 argument")
+            self._raise_error(node, "ttl.get_dfb_id() requires exactly 1 argument")
         dfb_val = self.visit(node.args[0])
         return ttl.get_dfb_id(dfb_val)
 
     def visit_Call_Extern_Func(self, node, args, keywords=None):
-        """Handle call_extern_func(header, callee, ...) by emitting ttl.opaque_call.
+        """Handle ttl.call_extern_func(header, callee, ...) by emitting
+        ttl.opaque_call.
 
         Signature::
 
-            call_extern_func(
+            ttl.call_extern_func(
                 header_path,                    # string (literal or variable)
                 callee_name,                    # string (literal or variable)
                 template_args=[1, 2],           # C++ template arguments
@@ -1484,13 +1503,13 @@ class TTLGenericCompiler(TTCompilerBase):
         if len(args) < 2:
             self._raise_error(
                 node,
-                "call_extern_func() requires at least 2 positional arguments: "
+                "ttl.call_extern_func() requires at least 2 positional arguments: "
                 "header path and callee name",
             )
         if len(args) > 2:
             self._raise_error(
                 node,
-                "call_extern_func() accepts only 2 positional arguments "
+                "ttl.call_extern_func() accepts only 2 positional arguments "
                 "(header, callee). Use template_args=[] and func_args=[] "
                 "keyword arguments for call arguments.",
             )
@@ -1508,7 +1527,7 @@ class TTLGenericCompiler(TTCompilerBase):
             ta_node = kw_map["template_args"]
             if not isinstance(ta_node, ast.List):
                 self._raise_error(
-                    ta_node, "call_extern_func() template_args must be a list"
+                    ta_node, "ttl.call_extern_func() template_args must be a list"
                 )
             i32_ty = IntegerType.get_signless(32, self.ctx)
             for elt in ta_node.elts:
@@ -1523,7 +1542,7 @@ class TTLGenericCompiler(TTCompilerBase):
             fa_node = kw_map["func_args"]
             if not isinstance(fa_node, ast.List):
                 self._raise_error(
-                    fa_node, "call_extern_func() func_args must be a list"
+                    fa_node, "ttl.call_extern_func() func_args must be a list"
                 )
             func_args = [self.visit(elt) for elt in fa_node.elts]
 

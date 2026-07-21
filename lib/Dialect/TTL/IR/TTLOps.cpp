@@ -2005,17 +2005,25 @@ void mlir::tt::ttl::PipeNetScopeOp::getSuccessorRegions(
 }
 
 mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
+  if (getCallee().empty()) {
+    return emitOpError("callee name must not be empty");
+  }
+  if (getHeader().empty()) {
+    return emitOpError("header path must not be empty");
+  }
+
   for (Value taVal : getTemplateArgVals()) {
     Operation *defOp = taVal.getDefiningOp();
-    if (!defOp)
+    if (!defOp) {
       return emitOpError("template arg must be a compile-time evaluable "
                          "value (arith.constant or ttl.get_dfb_id), got a "
                          "block argument");
-    if (!mlir::isa<arith::ConstantOp>(defOp) &&
-        !mlir::isa<GetDfbIdOp>(defOp))
+    }
+    if (!mlir::isa<arith::ConstantOp>(defOp) && !mlir::isa<GetDfbIdOp>(defOp)) {
       return emitOpError("template arg must be a compile-time evaluable "
                          "value (arith.constant or ttl.get_dfb_id), got '")
              << defOp->getName() << "'";
+    }
   }
   return success();
 }
