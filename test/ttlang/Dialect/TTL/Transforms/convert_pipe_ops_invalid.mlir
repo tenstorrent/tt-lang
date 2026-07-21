@@ -281,6 +281,180 @@ func.func @collective_destination_address_dynamic_offset_rejected(%offset: index
 
 // -----
 
+// Collective receiver posts in mutually exclusive branches do not establish
+// one uniform multicast destination slot.
+
+module attributes {ttl.launch_grid = array<i64: 3, 1>} {
+  func.func @collective_branch_schedule_rejected()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %dst = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %pipe_a = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
+    %pipe_b = ttl.create_pipe src(2, 0) dst(1, 0) to(2, 0) net 1
+        : !ttl.pipe<src(2, 0) dst(1, 0) to(2, 0) net 1>
+    %condition = arith.constant true
+    scf.if %condition {
+      %recv_a = ttl.cb_reserve %dst
+          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      // expected-error @below {{collective pipe receiver posts do not have one proven DFB slot; TT-Metal NoC multicast requires one destination SRAM address for all receivers}}
+      %post_a = ttl.copy %pipe_a, %recv_a
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.transfer_handle
+    } else {
+      %recv_b = ttl.cb_reserve %dst
+          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      %post_b = ttl.copy %pipe_b, %recv_b
+          : (!ttl.pipe<src(2, 0) dst(1, 0) to(2, 0) net 1>,
+             tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.transfer_handle
+    }
+    func.return
+  }
+}
+
+// -----
+
+// Multicast cannot use a receiver-published address when one receiver can
+// advance its destination DFB independently. The published addresses can then
+// differ even though every receiver uses the same DFB index and tile offset.
+
+module attributes {ttl.launch_grid = array<i64: 3, 1>} {
+  func.func @collective_asymmetric_non_pipe_traffic_rejected()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %collective = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
+    %receiver_one = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 1
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 1>
+    %transfer = ttl.pipe_transfer.create %collective
+        {expectedReceivers = 2 : i64, kind = #ttl.pipe_transfer_kind<collective>}
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> -> !ttl.pipe_transfer
+    ttl.if_dst %receiver_one
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 1> {
+      %local = ttl.cb_reserve %dst
+          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      %local_ready = ttl.cb_wait %dst
+          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      ttl.cb_pop %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    }
+    ttl.if_dst %collective
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> {
+      %recv = ttl.cb_reserve %dst
+          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      // expected-error @below {{collective pipe receiver DFB write pointers are not proven equal; TT-Metal NoC multicast requires one destination SRAM address for all receivers}}
+      %token = ttl.pipe_transfer.post %transfer, %recv
+          : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.pipe_token<net 0>
+      ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
+      ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      %ready = ttl.cb_wait %dst
+          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      ttl.cb_pop %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    }
+    ttl.if_src %collective
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> {
+      %send = ttl.pipe_transfer.send %transfer, %src
+          : (!ttl.pipe_transfer,
+             !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}
+
+// -----
+
+// Multicast receiver DFBs must advance by the same number of blocks per loop
+// iteration. Otherwise later iterations publish different destination slots.
+
+module attributes {ttl.launch_grid = array<i64: 3, 1>} {
+  func.func @collective_nonuniform_receiver_batch_rejected()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %collective = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
+    %receiver_one = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 1
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 1>
+    %collective_transfer = ttl.pipe_transfer.create %collective
+        {expectedReceivers = 2 : i64, kind = #ttl.pipe_transfer_kind<collective>}
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> -> !ttl.pipe_transfer
+    %receiver_one_transfer = ttl.pipe_transfer.create %receiver_one
+        {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 1> -> !ttl.pipe_transfer
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 2 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.if_dst %collective
+          : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> {
+        %recv = ttl.cb_reserve %dst
+            : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+            -> tensor<1x1x!ttcore.tile<32x32, f32>>
+        // expected-error @below {{collective pipe receiver DFB write pointers are not proven equal; TT-Metal NoC multicast requires one destination SRAM address for all receivers}}
+        %token = ttl.pipe_transfer.post %collective_transfer, %recv
+            : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
+            -> !ttl.pipe_token<net 0>
+        ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
+        ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        %ready = ttl.cb_wait %dst
+            : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+            -> tensor<1x1x!ttcore.tile<32x32, f32>>
+        ttl.cb_pop %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      }
+      ttl.if_src %collective
+          : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> {
+        %send = ttl.pipe_transfer.send %collective_transfer, %src
+            : (!ttl.pipe_transfer,
+               !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
+      ttl.if_dst %receiver_one
+          : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 1> {
+        %recv = ttl.cb_reserve %dst
+            : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+            -> tensor<1x1x!ttcore.tile<32x32, f32>>
+        %token = ttl.pipe_transfer.post %receiver_one_transfer, %recv
+            : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
+            -> !ttl.pipe_token<net 1>
+        ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 1>
+        ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        %ready = ttl.cb_wait %dst
+            : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+            -> tensor<1x1x!ttcore.tile<32x32, f32>>
+        ttl.cb_pop %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      }
+      ttl.if_src %receiver_one
+          : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 1> {
+        %send = ttl.pipe_transfer.send %receiver_one_transfer, %src
+            : (!ttl.pipe_transfer,
+               !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
+    }
+    func.return
+  }
+}
+
+// -----
+
 // The current lowering has queue depth 1 for each logical pipe. A second
 // receive post before the first send would overwrite the sender-visible
 // destination address table entry.

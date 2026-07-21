@@ -155,11 +155,11 @@ struct ReceiverDFBInfo {
   CircularBufferType dfbType; // Receiver DFB type
   bool hasStaticTileOffset;   // Whether staticTileOffset is known.
   int64_t staticTileOffset;   // Static destination tile offset within the DFB
+  /// Physical block in a proven receiver batch, if one exists.
   std::optional<int64_t> receiverSlotIndex;
   int64_t receiverSlotSpanBlocks;
   int64_t blockCount; // DFB block_count
   Location loc;       // Source location for error reporting
-  Operation *receiverReserveOp;
   PipeTransferContract transferContract;
   SmallVector<Operation *> transferCreateOps;
 };
@@ -185,7 +185,6 @@ struct PipeReceiverEndpoint {
   PipeReceiverDFBNodeId receiverDFBNode = 0;
   PipeReceiverCoord receiver;
   PipeReceiverDFBKey receiverDFB;
-  int64_t receiverSlotIndex = 0;
 };
 
 /// One receiver-local dataflow buffer node in the PipeNet graph.
@@ -193,8 +192,13 @@ struct PipeReceiverDFBNode {
   PipeReceiverDFBNodeId id = 0;
   PipeReceiverDFBKey receiverDFB;
   SmallVector<PipeReceiverEndpointId> writerEndpoints;
-  int64_t receiverBatchSize = 1;
-  bool hasProvenPipeOnlyStream = false;
+  /// Number of blocks in one proven receiver reservation sequence, or null
+  /// when the graph cannot prove one receiver order.
+  std::optional<int64_t> receiverBatchSize;
+  /// Every producer-side DFB advance belongs to a pipe receive. Consumer
+  /// releases are validated separately because they do not move the write
+  /// pointer.
+  bool hasProvenPipeOnlyProducerStream = false;
 };
 
 /// Return the semantic transfer contract used by pipe synchronization. The
@@ -230,18 +234,20 @@ public:
   bool hasPipes() const { return !receiverDFBs.empty(); }
 
   /// Add a receiver DFB mapping for a pipe.
-  LogicalResult addReceiverDFB(
-      int64_t srcX, int64_t srcY, int64_t dstStartX, int64_t dstStartY,
-      int64_t dstEndX, int64_t dstEndY, int64_t pipeNetId, int64_t dfbIndex,
-      CircularBufferType dfbType, bool hasStaticTileOffset,
-      int64_t staticTileOffset, int64_t receiverSlotSpanBlocks,
-      Operation *receiverReserveOp, PipeTransferContract transferContract,
-      ArrayRef<Operation *> transferCreateOps, int64_t blockCount,
-      Location loc);
+  LogicalResult addReceiverDFB(int64_t srcX, int64_t srcY, int64_t dstStartX,
+                               int64_t dstStartY, int64_t dstEndX,
+                               int64_t dstEndY, int64_t pipeNetId,
+                               int64_t dfbIndex, CircularBufferType dfbType,
+                               bool hasStaticTileOffset,
+                               int64_t staticTileOffset,
+                               int64_t receiverSlotSpanBlocks,
+                               PipeTransferContract transferContract,
+                               ArrayRef<Operation *> transferCreateOps,
+                               int64_t blockCount, Location loc);
 
-  /// Verify that each receiver post was assigned a non-wrapping physical DFB
-  /// slot.
-  LogicalResult verifyReceiverDFBBlockCounts() const;
+  /// Verify that every multicast receiver uses the same runtime DFB address.
+  /// Point-to-point pipes may publish an otherwise unproven address.
+  LogicalResult verifyCollectiveReceiverAddresses() const;
 
   const ReceiverDFBInfo *lookupReceiverDFB(const PipeKey &key) const;
 
@@ -283,6 +289,11 @@ public:
     return receiverDFBNodes[id];
   }
 
+  /// Return the repeated receiver schedule size when every receiver DFB
+  /// advances only through modeled pipe receives and all schedule sizes agree.
+  std::optional<int64_t>
+  getProvenUniformReceiverBatchSize(PipeEdgeId pipeEdge) const;
+
   ArrayRef<PipeReceiverEndpointId>
   getReceiverDFBWriterEndpoints(PipeReceiverDFBNodeId receiverDFBNode) const {
     return getReceiverDFBNode(receiverDFBNode).writerEndpoints;
@@ -301,16 +312,17 @@ public:
   }
 
 private:
-  /// Assign each pipe the physical DFB slot reserved by the corresponding
-  /// receiver post. Multicast pipes require the same receiver slot at every
-  /// receiver because TT-Metal NoC multicast carries one destination address.
+  /// Assign receiver slots when one sequential receiver schedule determines
+  /// every writer's position in the DFB ring. Leave unproven point-to-point
+  /// slots unset so lowering uses receiver-published addresses.
   LogicalResult assignReceiverSlotIndices(ModuleOp mod,
                                           PipeGraphAnalysisState &state);
 
   void rebuildEndpointGraph();
 
-  LogicalResult provePipeOnlyReceiverStreams(ModuleOp mod,
-                                             PipeGraphAnalysisState &state);
+  LogicalResult
+  provePipeOnlyReceiverProducerStreams(ModuleOp mod,
+                                       PipeGraphAnalysisState &state);
 
   llvm::MapVector<PipeKey, ReceiverDFBInfo> receiverDFBs;
   SmallVector<PipeEdge, 0> pipeEdges;

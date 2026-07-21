@@ -586,7 +586,7 @@ class CompiledTTNNKernel:
             num_pipe_global_semaphores: Number of GlobalSemaphore-backed
                 PipeNet ready counters used by this kernel.
             kernel_pipe_computed_address_dfb_indices: Per-kernel receiver DFB indices whose
-                L1 bases are supplied as compile-time args.
+                L1 bases are supplied as common runtime args.
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
@@ -962,7 +962,6 @@ def _compile_ttnn_kernel(
     # read from ttl.crta_indices. Both stay aligned with kernel_info order.
     kernel_core_ranges = []
     specialized_tensor_indices = []
-    noc_kernel_idx = 0
     kernel_config_attrs = {
         name: {
             "fp32_dest_acc_en": _get_kernel_bool_attr(module, name, "fp32_dest_acc_en"),
@@ -1871,9 +1870,10 @@ def _lower_program_to_kernel(
 
         reduce_fp32_flag = int(compiler_options.reduce_full_fp32)
         pipe_computed_flag = int(compiler_options.pipe_computed_addresses)
+        pipe_capacity_sync_flag = int(compiler_options.pipe_capacity_sync)
         pipeline_passes += [
             "ttl-lower-dprint-to-emitc",
-            f"convert-ttl-to-ttkernel{{reduce-full-fp32={reduce_fp32_flag} pipe-computed-addresses={pipe_computed_flag}}}",
+            f"convert-ttl-to-ttkernel{{reduce-full-fp32={reduce_fp32_flag} pipe-computed-addresses={pipe_computed_flag} pipe-capacity-sync={pipe_capacity_sync_flag}}}",
             "func.func(ttkernel-lower-scalar-fp-types)",
             "ttkernel-insert-inits",
             "ttkernel-insert-l1-accumulation",

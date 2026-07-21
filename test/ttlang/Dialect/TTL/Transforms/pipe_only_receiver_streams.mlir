@@ -1,17 +1,19 @@
-// Summary: PipeGraph debug output reports why a receiver DFB stream is or is
-// not proven pipe-only before pipe capacity analysis consumes the graph fact.
+// Summary: PipeGraph debug output reports why a receiver DFB producer stream
+// is or is not proven pipe-only before pipe capacity analysis consumes the
+// graph fact.
 // RUN: ttlang-opt %s --split-input-file -convert-ttl-to-ttkernel -debug-only=ttl-pipe-graph 2>&1 >/dev/null | FileCheck %s --check-prefix=GRAPH
 
-// GRAPH: PipeGraph: accept pipe-only stream for receiver(1, 0) DFB 1
-// GRAPH: PipeGraph: reject pipe-only stream for receiver(1, 0) DFB 1: push reserve owns no matching receiver post
-// GRAPH: PipeGraph: reject pipe-only stream for receiver(1, 0) DFB 1: post has no receive wait before push
-// GRAPH: PipeGraph: reject pipe-only stream for receiver(1, 0) DFB 1: wait and pop use different block counts
-// GRAPH: PipeGraph: reject pipe-only stream for receiver(1, 0) DFB 1: post is not consumed by a receiver push
-// GRAPH: PipeGraph: reject pipe-only stream for receiver(1, 0) DFB 1: pop has no unique receiver wait owner
-// GRAPH: PipeGraph: reject pipe-only stream for receiver(1, 0) DFB 1: push has no unique receiver reserve owner
+// GRAPH: PipeGraph: accept pipe-only producer stream for receiver(1, 0) DFB 1
+// GRAPH: PipeGraph: accept pipe-only producer stream for receiver(1, 0) DFB 1
+// GRAPH: PipeGraph: reject pipe-only producer stream for receiver(1, 0) DFB 1: push reserve owns no matching receiver post
+// GRAPH: PipeGraph: reject pipe-only producer stream for receiver(1, 0) DFB 1: post has no receive wait before push
+// GRAPH: PipeGraph: accept pipe-only producer stream for receiver(1, 0) DFB 1
+// GRAPH: PipeGraph: reject pipe-only producer stream for receiver(1, 0) DFB 1: post is not consumed by a receiver push
+// GRAPH: PipeGraph: accept pipe-only producer stream for receiver(1, 0) DFB 1
+// GRAPH: PipeGraph: reject pipe-only producer stream for receiver(1, 0) DFB 1: push has no unique receiver reserve owner
 
-// Purpose: the canonical one-post, one-push, one-wait, one-pop stream is
-// proven pipe-only.
+// Purpose: the canonical one-post, one-push producer stream is proven
+// pipe-only.
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @accepted_pipe_only_stream()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
@@ -28,6 +30,37 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
       ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
       %ready = ttl.cb_wait %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
       ttl.cb_pop %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    }
+    ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %send = ttl.pipe_transfer.send %transfer, %src_cb
+          : (!ttl.pipe_transfer, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}
+
+// -----
+
+// Purpose: a node-selected receiver wrapper does not interrupt the proven
+// post, completion wait, and push order on that receiver.
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @receiver_wait_inside_role_wrapper()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %transfer = ttl.pipe_transfer.create %pipe {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> -> !ttl.pipe_transfer
+    %is_dst = ttl.is_dst {pipe_net_id = 0 : i64}
+    scf.if %is_dst {
+      %recv = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+        %token = ttl.pipe_transfer.post %transfer, %recv
+            : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.pipe_token<net 0>
+        ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
+      }
+      ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
     }
     ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
       %send = ttl.pipe_transfer.send %transfer, %src_cb
@@ -102,8 +135,8 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
-// Purpose: the receiver wait and pop must consume the same number of DFB
-// blocks, otherwise the pop cannot be mapped to one capacity release.
+// Purpose: consumer wait and pop counts do not affect the producer write
+// pointer proof. Capacity analysis validates their release accounting.
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @wait_pop_count_mismatch()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
@@ -159,8 +192,8 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
-// Purpose: a receiver pop without an owned receiver wait cannot release sender
-// capacity.
+// Purpose: a pop without a wait owner does not affect the producer write
+// pointer proof. Capacity analysis rejects it as a sender-capacity release.
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @pop_without_wait_owner()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {

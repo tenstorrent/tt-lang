@@ -131,7 +131,7 @@ static int64_t alignTo(int64_t value, int64_t alignment) {
 }
 
 /// Count tensor arguments because TTKernel common runtime args list tensor
-/// buffer addresses before compiler-managed pipe resources.
+/// buffer addresses before computed DFB bases and compiler-managed resources.
 static int64_t getNumTensorFunctionArgs(FuncOp func) {
   int64_t numTensorArgs = 0;
   for (BlockArgument argument : func.getArguments()) {
@@ -142,15 +142,22 @@ static int64_t getNumTensorFunctionArgs(FuncOp func) {
   return numTensorArgs;
 }
 
-/// Pipe kernels receive common runtime args for tensor buffer addresses first,
-/// followed by compiler-managed pipe resources.
+static int64_t getNumComputedAddressRuntimeArgs(FuncOp func) {
+  auto dfbIndices = func->getAttrOfType<DenseI32ArrayAttr>(
+      kPipeComputedAddressDFBIndicesAttrName);
+  return dfbIndices ? static_cast<int64_t>(dfbIndices.size()) : 0;
+}
+
+/// Pipe kernels receive tensor buffer addresses, computed receiver DFB bases,
+/// and then compiler-managed pipe resources as common runtime arguments.
 /// [Device 2.0] Keep this as a resource-plan lookup so the final device API
 /// lowering can replace common-arg plumbing without changing pipe semantics.
 static int64_t getPipeRuntimeCommonArgIndex(Operation *op,
                                             int64_t pipeRuntimeArgIndex) {
   FuncOp func = op->getParentOfType<FuncOp>();
   assert(func && "pipe op is not inside a function");
-  return getNumTensorFunctionArgs(func) + pipeRuntimeArgIndex;
+  return getNumTensorFunctionArgs(func) +
+         getNumComputedAddressRuntimeArgs(func) + pipeRuntimeArgIndex;
 }
 
 static Value buildPipeRuntimeCommonArg(Location loc,
@@ -347,13 +354,12 @@ static Value buildComputedReceiverDFBDestinationAddress(
     PipeTransferSendOp op, Location loc, const PipeComputedAddressInfo &info,
     const PipeComputedAddressCounterMap *computedAddressCounters,
     ConversionPatternRewriter &rewriter) {
-  auto baseAddress = ttk::GetCompileArgValOp::create(
-      rewriter, loc, rewriter.getI32Type(),
-      static_cast<int32_t>(info.baseCompileTimeArgIndex));
+  Value baseAddress =
+      buildPipeRuntimeCommonArg(loc, rewriter, info.baseRuntimeCommonArgIndex);
   if (!info.usesDynamicSlotCounter()) {
     int64_t byteOffset = info.receiverSlotIndex * info.blockStrideBytes +
                          info.staticTileByteOffset;
-    return addByteOffset(loc, baseAddress.getResult(), byteOffset, rewriter);
+    return addByteOffset(loc, baseAddress, byteOffset, rewriter);
   }
 
   Value zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
@@ -365,8 +371,8 @@ static Value buildComputedReceiverDFBDestinationAddress(
       arith::ConstantIntOp::create(rewriter, loc, info.blockStrideBytes, 32);
   Value blockByteOffset =
       arith::MulIOp::create(rewriter, loc, currentSlot, blockStrideBytes);
-  Value receiverAddress = arith::AddIOp::create(
-      rewriter, loc, baseAddress.getResult(), blockByteOffset);
+  Value receiverAddress =
+      arith::AddIOp::create(rewriter, loc, baseAddress, blockByteOffset);
   receiverAddress =
       addByteOffset(loc, receiverAddress, info.staticTileByteOffset, rewriter);
 
@@ -982,6 +988,9 @@ LogicalResult lowerCBPop(CBPopOp op, Value cb,
   Value numTiles = computeDFBPopNumTiles(op, originalCb, rewriter, loc);
   ttk::CBPopFrontOp::create(rewriter, loc, *convertedCb, numTiles);
 
+  // A receiver DFB pop makes one slot available to its sender. Emit the
+  // release immediately after the pop so both execute under the same control
+  // flow.
   ArrayRef<PipeCapacityReleaseInfo> releases =
       pipeCapacityPlan ? pipeCapacityPlan->lookupReleases(op)
                        : ArrayRef<PipeCapacityReleaseInfo>{};
@@ -1688,40 +1697,6 @@ static int64_t getReceiverDFBStaticByteOffset(const ReceiverDFBInfo &info) {
   return info.staticTileOffset * tileType.getSizeBytes();
 }
 
-static std::optional<int64_t>
-getUniformReceiverBatchSize(const PipeGraph &pipeGraph,
-                            const PipeEdge &pipeEdge) {
-  std::optional<int64_t> receiverBatchSize;
-  for (PipeReceiverEndpointId endpointId :
-       pipeGraph.getPipeReceiverEndpoints(pipeEdge.id)) {
-    const PipeReceiverEndpoint &endpoint =
-        pipeGraph.getPipeReceiverEndpoint(endpointId);
-    const PipeReceiverDFBNode &receiverDFBNode =
-        pipeGraph.getReceiverDFBNode(endpoint.receiverDFBNode);
-    if (receiverBatchSize &&
-        *receiverBatchSize != receiverDFBNode.receiverBatchSize) {
-      return std::nullopt;
-    }
-    receiverBatchSize = receiverDFBNode.receiverBatchSize;
-  }
-  return receiverBatchSize;
-}
-
-static bool hasProvenPipeOnlyReceiverStreams(const PipeGraph &pipeGraph,
-                                             const PipeEdge &pipeEdge) {
-  for (PipeReceiverEndpointId endpointId :
-       pipeGraph.getPipeReceiverEndpoints(pipeEdge.id)) {
-    const PipeReceiverEndpoint &endpoint =
-        pipeGraph.getPipeReceiverEndpoint(endpointId);
-    const PipeReceiverDFBNode &receiverDFBNode =
-        pipeGraph.getReceiverDFBNode(endpoint.receiverDFBNode);
-    if (!receiverDFBNode.hasProvenPipeOnlyStream) {
-      return false;
-    }
-  }
-  return true;
-}
-
 /// Return metadata for receiver addresses the sender can compute without
 /// receiver publication. Rejections preserve the receiver-published protocol.
 static std::optional<PipeComputedAddressInfo>
@@ -1749,11 +1724,8 @@ getComputedAddressInfo(const PipeTransferAllocationUnit &unit,
   // assignment. Non-pipe DFB traffic can advance the hardware ring without a
   // pipe post, so computed addressing requires the graph to prove that the
   // receiver stream contains only pipe-delivered blocks.
-  if (!hasProvenPipeOnlyReceiverStreams(pipeGraph, *pipeEdge)) {
-    return std::nullopt;
-  }
   std::optional<int64_t> receiverBatchSize =
-      getUniformReceiverBatchSize(pipeGraph, *pipeEdge);
+      pipeGraph.getProvenUniformReceiverBatchSize(pipeEdge->id);
   if (!receiverBatchSize) {
     return std::nullopt;
   }
@@ -1781,7 +1753,7 @@ getComputedAddressInfo(const PipeTransferAllocationUnit &unit,
     return std::nullopt;
   }
   return PipeComputedAddressInfo{receiverInfo.dfbIndex,
-                                 /*baseCompileTimeArgIndex=*/0,
+                                 /*baseRuntimeCommonArgIndex=*/0,
                                  *receiverInfo.receiverSlotIndex,
                                  *receiverBatchSize,
                                  receiverInfo.blockCount,
@@ -1838,19 +1810,11 @@ buildComputedAddressPlan(ModuleOp mod,
   }
 
   OpBuilder builder(mod.getContext());
-  int64_t defaultBaseCTA = getNextAvailableDFBIndex(mod);
-  llvm::DenseMap<FuncOp, int64_t> baseCTAByFunc;
   llvm::DenseMap<FuncOp, SmallVector<int64_t>> sortedDFBIndicesByFunc;
   for (auto &[func, dfbSet] : dfbIndicesByFunc) {
     SmallVector<int64_t> sortedDFBIndices(dfbSet.begin(), dfbSet.end());
     llvm::sort(sortedDFBIndices);
     sortedDFBIndicesByFunc[func] = sortedDFBIndices;
-
-    int64_t baseCTA = defaultBaseCTA;
-    if (auto attr = func->getAttrOfType<IntegerAttr>(kBaseCTAIndexAttrName)) {
-      baseCTA = attr.getInt();
-    }
-    baseCTAByFunc[func] = baseCTA;
 
     SmallVector<int32_t> dfbAttrs =
         llvm::map_to_vector(sortedDFBIndices, [](int64_t dfbIndex) {
@@ -1859,9 +1823,6 @@ buildComputedAddressPlan(ModuleOp mod,
     if (updateFunctionAttrs) {
       func->setAttr(kPipeComputedAddressDFBIndicesAttrName,
                     builder.getDenseI32ArrayAttr(dfbAttrs));
-      func->setAttr(
-          kBaseCTAIndexAttrName,
-          builder.getI32IntegerAttr(baseCTA + sortedDFBIndices.size()));
     }
   }
 
@@ -1872,8 +1833,9 @@ buildComputedAddressPlan(ModuleOp mod,
     PipeComputedAddressInfo computedAddress = candidate.computedAddress;
     auto dfbIt = llvm::find(dfbIndices, computedAddress.receiverDFBIndex);
     assert(dfbIt != dfbIndices.end() && "candidate DFB missing from func list");
-    computedAddress.baseCompileTimeArgIndex =
-        baseCTAByFunc[senderFunc] + std::distance(dfbIndices.begin(), dfbIt);
+    computedAddress.baseRuntimeCommonArgIndex =
+        getNumTensorFunctionArgs(senderFunc) +
+        std::distance(dfbIndices.begin(), dfbIt);
 
     if (computedAddress.blockCount != computedAddress.receiverBatchSize) {
       int64_t counterIndex = nextDynamicSlotCounterIndexByFunc[senderFunc]++;

@@ -163,15 +163,16 @@ def row_all_gather_computed_address(inp, out):
 # forces dynamic sender-side receiver slot tracking.
 # P2P-FINAL-LABEL: func.func @dm
 # P2P-FINAL-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
+# P2P-FINAL-DAG: %[[P2P_BASE_ARG_INDEX:.*]] = "emitc.constant"() <{value = 2 : index}>
 # P2P-FINAL: call_opaque "experimental::semaphore_wait_min"
-# P2P-FINAL: literal "get_compile_time_arg_val(2)" : i32
+# P2P-FINAL: call_opaque "get_common_arg_val"(%[[P2P_BASE_ARG_INDEX]])
 # P2P-FINAL: = rem {{.*}} : (ui32, ui32) -> ui32
 # P2P-FINAL: noc0.async_write
 # P2P-FINAL-NOT: noc_inline_dw_write
 # P2P-FINAL-NOT: load_from_l1
 
 # P2P-CPP: experimental::semaphore_wait_min(
-# P2P-CPP: get_compile_time_arg_val(2)
+# P2P-CPP: get_common_arg_val<uint32_t>(
 # P2P-CPP: {{.*}} % {{.*}};
 # P2P-CPP: noc0.async_write(
 # P2P-CPP-NOT: noc_inline_dw_write
@@ -184,9 +185,10 @@ def row_all_gather_computed_address(inp, out):
 # ALLGATHER-FINAL-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
 # ALLGATHER-BF16-FINAL-DAG: %[[STRIDE:.*]] = "emitc.constant"() <{value = 2048 : i32}>
 # ALLGATHER-FP32-FINAL-DAG: %[[STRIDE:.*]] = "emitc.constant"() <{value = 4096 : i32}>
+# ALLGATHER-FINAL-DAG: %[[ALLGATHER_BASE_ARG_INDEX:.*]] = "emitc.constant"() <{value = 2 : index}>
 # ALLGATHER-FINAL: experimental::semaphore_wait
 # ALLGATHER-FINAL: get_compile_time_arg_val
-# ALLGATHER-FINAL: literal "get_compile_time_arg_val(2)" : i32
+# ALLGATHER-FINAL: call_opaque "get_common_arg_val"(%[[ALLGATHER_BASE_ARG_INDEX]])
 # ALLGATHER-FINAL: %[[STRIDE_UI:.*]] = cast %[[STRIDE]] : i32 to ui32
 # ALLGATHER-FINAL: mul {{.*}}, %[[STRIDE_UI]]
 # ALLGATHER-FINAL: = rem {{.*}} : (ui32, ui32) -> ui32
@@ -196,6 +198,7 @@ def row_all_gather_computed_address(inp, out):
 
 # ALLGATHER-CPP: experimental::semaphore_wait(
 # ALLGATHER-CPP: get_compile_time_arg_val(
+# ALLGATHER-CPP: get_common_arg_val<uint32_t>(
 # ALLGATHER-CPP: {{.*}} % {{.*}};
 # ALLGATHER-CPP: noc0.async_write_multicast<NocOptions::MCAST_INCL_SRC>(
 # ALLGATHER-CPP-NOT: noc_inline_dw_write

@@ -104,12 +104,12 @@ public:
 /// resolved thread type from whichever attribute exists.
 static std::optional<ttk::ThreadType> convertThreadAttr(Operation *op) {
   if (auto a =
-          op->getAttrOfType<ttk::ThreadTypeAttr>(kTTKernelThreadAttrName)) {
+          op->getAttrOfType<ttk::ThreadTypeAttr>(ttk::ThreadTypeAttr::name)) {
     return a.getValue();
   }
   if (auto a = op->getAttrOfType<ttk::ThreadTypeAttr>(kKernelThreadAttrName)) {
     op->removeAttr(kKernelThreadAttrName);
-    op->setAttr(kTTKernelThreadAttrName, a);
+    op->setAttr(ttk::ThreadTypeAttr::name, a);
     return a.getValue();
   }
   return std::nullopt;
@@ -1535,10 +1535,9 @@ struct RawElementWriteLowering : OpConversionPattern<RawElementWriteOp> {
 //===----------------------------------------------------------------------===//
 
 /// Phase 1: Lower TTL ops (bind_cb, copy, wait, cb ops, store) to TTKernel.
-static LogicalResult
-lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
-                      TTLToTTKernelTypeConverter &typeConverter,
-                      StringRef passName, bool pipeComputedAddresses) {
+static LogicalResult lowerTTLOpsToTTKernel(
+    ModuleOp mod, MLIRContext &ctx, TTLToTTKernelTypeConverter &typeConverter,
+    StringRef passName, bool pipeComputedAddresses, bool pipeCapacitySync) {
   ConversionTarget target(ctx);
   target.addIllegalDialect<tt::ttl::TTLDialect>();
   target.addLegalDialect<affine::AffineDialect, arith::ArithDialect,
@@ -1609,35 +1608,36 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   // don't walk the module per match.
   PipeNetIndex pipeNetIndex;
   buildPipeNetIndex(mod, pipeNetIndex);
-  // The resource plan and the capacity plan are mutually dependent:
-  // ready-counter allocation skips edges the capacity plan owns, while capacity
-  // eligibility requires the resource plan to have selected computed receiver
-  // addresses. This converges in two passes because computed-address
-  // eligibility depends only on the graph and the option, not on the capacity
-  // plan, so the preliminary and final capacity plans agree on which edges use
-  // the protocol; only the ready-counter semaphore base shrinks once capacity
-  // edges stop reserving ready counters. The final resource and capacity plans
-  // are the ones lowering uses.
-  PipeResourcePlan preliminaryPipeResourcePlan;
-  if (failed(buildPipeResourcePlan(mod, *pipeGraphOrErr,
-                                   preliminaryPipeResourcePlan,
-                                   pipeComputedAddresses,
-                                   /*pipeCapacityPlan=*/nullptr,
-                                   /*updateComputedAddressAttrs=*/false))) {
-    return failure();
-  }
-  PipeCapacityPlan preliminaryPipeCapacityPlan;
-  buildPipeCapacityPlan(mod, *pipeGraphOrErr, preliminaryPipeResourcePlan,
-                        preliminaryPipeCapacityPlan);
   PipeResourcePlan pipeResourcePlan;
-  if (failed(buildPipeResourcePlan(mod, *pipeGraphOrErr, pipeResourcePlan,
-                                   pipeComputedAddresses,
-                                   &preliminaryPipeCapacityPlan))) {
+  PipeCapacityPlan pipeCapacityPlan;
+  if (pipeCapacitySync) {
+    // Ready-counter allocation skips edges owned by the capacity plan, while
+    // capacity eligibility requires computed receiver addresses. Two planning
+    // iterations produce compact semaphore indices without changing protocol
+    // eligibility between iterations.
+    PipeResourcePlan preliminaryPipeResourcePlan;
+    if (failed(buildPipeResourcePlan(mod, *pipeGraphOrErr,
+                                     preliminaryPipeResourcePlan,
+                                     pipeComputedAddresses,
+                                     /*pipeCapacityPlan=*/nullptr,
+                                     /*updateComputedAddressAttrs=*/false))) {
+      return failure();
+    }
+    PipeCapacityPlan preliminaryPipeCapacityPlan;
+    buildPipeCapacityPlan(mod, *pipeGraphOrErr, preliminaryPipeResourcePlan,
+                          preliminaryPipeCapacityPlan);
+    if (failed(buildPipeResourcePlan(mod, *pipeGraphOrErr, pipeResourcePlan,
+                                     pipeComputedAddresses,
+                                     &preliminaryPipeCapacityPlan))) {
+      return failure();
+    }
+    buildPipeCapacityPlan(mod, *pipeGraphOrErr, pipeResourcePlan,
+                          pipeCapacityPlan);
+  } else if (failed(buildPipeResourcePlan(
+                 mod, *pipeGraphOrErr, pipeResourcePlan, pipeComputedAddresses,
+                 /*pipeCapacityPlan=*/nullptr))) {
     return failure();
   }
-  PipeCapacityPlan pipeCapacityPlan;
-  buildPipeCapacityPlan(mod, *pipeGraphOrErr, pipeResourcePlan,
-                        pipeCapacityPlan);
   PipeResourceRequirements pipeResourceRequirements =
       getPipeResourceRequirements(pipeResourcePlan, &pipeCapacityPlan);
   if (failed(verifyPipeResourcePlanFitsHardware(mod, pipeResourcePlan,
@@ -1936,7 +1936,8 @@ struct TTLConvertTTLToTTKernelPass
 
     // Phase 1: Lower TTL ops to TTKernel (bind_cb, copy, wait, cb ops, store)
     if (failed(lowerTTLOpsToTTKernel(mod, ctx, typeConverter, getName(),
-                                     pipeComputedAddresses))) {
+                                     pipeComputedAddresses,
+                                     pipeCapacitySync))) {
       signalPassFailure();
       return;
     }

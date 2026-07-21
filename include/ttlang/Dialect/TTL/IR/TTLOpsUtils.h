@@ -48,7 +48,7 @@ getKernelThreadType(mlir::func::FuncOp func) {
     return std::nullopt;
   }
   if (auto attr = func->getAttrOfType<mlir::tt::ttkernel::ThreadTypeAttr>(
-          kTTKernelThreadAttrName)) {
+          mlir::tt::ttkernel::ThreadTypeAttr::name)) {
     return attr.getValue();
   }
   if (auto attr = func->getAttrOfType<mlir::tt::ttkernel::ThreadTypeAttr>(
