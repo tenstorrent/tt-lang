@@ -276,7 +276,7 @@ def main() -> None:
         type=int,
         metavar="N",
         dest="max_dfbs",
-        help="Maximum number of DataflowBuffers (CBs) per node (default: 32)",
+        help="Maximum number of DataflowBuffers (CBs) per node (default: 64)",
     )
 
     parser.add_argument(

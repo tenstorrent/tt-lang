@@ -658,7 +658,7 @@ def TTLFinalizeDFBIndices
     the same physical index. See docs/development/DFBManagement.md.
 
     After reuse, verifies the total DFB count does not exceed
-    kMaxCircularBuffers (32), updates ttl.base_cta_index on every
+    kMaxCircularBuffers (64), updates ttl.base_cta_index on every
     function, and builds the ttl.compiler_allocated_dfbs module
     attribute for the Python runtime.
   }];

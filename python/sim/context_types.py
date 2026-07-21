@@ -28,7 +28,7 @@ DEFAULT_MAX_L1_BYTES: int = 1432 * 1024
 class SimulatorConfig:
     """Simulator configuration settings."""
 
-    max_dfbs: int = 32
+    max_dfbs: int = 64
     scheduler_algorithm: str = "fair"
     default_full_grid: Shape = (8, 8)
     max_l1_bytes: int = DEFAULT_MAX_L1_BYTES

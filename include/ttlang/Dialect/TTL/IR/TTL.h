@@ -22,7 +22,7 @@ namespace mlir::tt::ttl {
 /// Default tile dimensions used for TTL tensors.
 inline constexpr int32_t kDefaultTileHeight = 32;
 inline constexpr int32_t kDefaultTileWidth = 32;
-inline constexpr int32_t kMaxCircularBuffers = 32;
+inline constexpr int32_t kMaxCircularBuffers = 64;
 /// TT kernel hardware semaphore id capacity. Mirrored by
 /// python/ttl/constants.py for simulator-side resource checks.
 inline constexpr int64_t kMaxHardwareSemaphoreIds = 16;
