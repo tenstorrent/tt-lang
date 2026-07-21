@@ -1743,9 +1743,7 @@ def _lower_program_to_kernel(
         # Collect include paths from call_extern_func across all threads.
         opaque_include_paths = []
         for ct in compiled_threads:
-            opaque_include_paths.extend(
-                getattr(ct, "_opaque_include_paths", [])
-            )
+            opaque_include_paths.extend(getattr(ct, "_opaque_include_paths", []))
 
         module = Module.create(loc)
         module.operation.attributes["ttl.launch_grid"] = ArrayAttr.get(
