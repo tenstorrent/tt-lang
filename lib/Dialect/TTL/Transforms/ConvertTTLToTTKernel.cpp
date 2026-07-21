@@ -1229,6 +1229,23 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
         continue;
       }
 
+      // Tensor -> i32 DRAM buffer address via get_common_arg_val. The address
+      // is a per-invocation runtime arg (see kernel_runner common_runtime_args),
+      // so passing a tensor into func_args is cache-safe: a different tensor of
+      // the same shape/dtype reuses the compiled kernel but supplies its own
+      // address at runtime.
+      if (mlir::isa<RankedTensorType>(origTy)) {
+        auto argIdx = getTensorFuncArgIndex(origArg);
+        if (failed(argIdx)) {
+          return rewriter.notifyMatchFailure(
+              op, "opaque_call tensor operand is not a kernel function "
+                  "argument; cannot resolve its runtime buffer address");
+        }
+        convertedArgs.push_back(
+            getBufferAddressFromRuntimeArg(*argIdx, loc, rewriter));
+        continue;
+      }
+
       // Scalar floats are forwarded as-is; ttkernel-lower-scalar-fp-types
       // converts them to integer bit patterns uniformly.
       convertedArgs.push_back(adaptedArg);
