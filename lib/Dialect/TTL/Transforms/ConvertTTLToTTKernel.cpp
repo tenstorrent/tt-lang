@@ -1256,8 +1256,14 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
         continue;
       }
 
-      // Scalar floats are forwarded as-is; ttkernel-lower-scalar-fp-types
-      // converts them to integer bit patterns uniformly.
+      // Scalar floats are forwarded as-is. Following tt-metal's kernel
+      // scalar-argument convention, a float reaches the callee as its raw
+      // IEEE-754 bit pattern held in an integer register -- the C++ header
+      // may declare the parameter as `float`/`bf16` or as an unsigned
+      // integer and reinterpret; the bits are identical either way. The
+      // ttkernel-lower-scalar-fp-types pass rewrites scalar-float producers
+      // (e.g. a float arith.constant) into that integer bit pattern later
+      // in the pipeline.
       convertedArgs.push_back(adaptedArg);
     }
 

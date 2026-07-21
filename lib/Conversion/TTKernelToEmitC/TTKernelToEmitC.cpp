@@ -2145,6 +2145,7 @@ private:
       if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue())) {
         return intAttr.getInt();
       }
+      return std::nullopt;
     }
 
     if (auto emitcConst = dyn_cast<emitc::ConstantOp>(defOp)) {

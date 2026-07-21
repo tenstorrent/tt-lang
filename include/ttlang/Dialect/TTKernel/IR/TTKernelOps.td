@@ -4823,8 +4823,10 @@ def TTKernel_OpaqueCallOp : TTKernel_Op<"opaque_call",
       Emits a call to an opaque external C/C++ function whose declaration is
       provided by a user-specified header file. The `callee` attribute names
       the function and `header` specifies the `#include` path. Arguments are
-      forwarded positionally. Scalar float arguments are converted to integer
-      bit patterns by the ttkernel-lower-scalar-fp-types pass.
+      forwarded positionally. Scalar float arguments follow tt-metal's
+      scalar-arg convention: they are passed as their raw IEEE-754 bit
+      pattern in an integer register. The ttkernel-lower-scalar-fp-types
+      pass performs the float-to-bits rewrite for float constants.
 
       The `template_arg_vals` operands are i32 SSA values that become C++
       template arguments on the emitted call.  They are resolved to integer

@@ -1499,6 +1499,15 @@ class TTLGenericCompiler(TTCompilerBase):
                 func_args=[a, b],               # C++ function arguments
                 include_paths=["/path/to/inc"], # -I flags for JIT compiler
             )
+
+        DFBs can appear in either template_args or func_args:
+
+        - ``template_args=[ttl.get_dfb_id(dfb)]`` -- the DFB's CB index is
+          resolved at compile time and baked into the C++ template parameter
+          as an integer literal.
+        - ``func_args=[dfb]`` -- the DFB is passed as a runtime
+          ``get_compile_time_arg_val(N)`` call, providing the CB index as a
+          function argument.
         """
         if len(args) < 2:
             self._raise_error(
@@ -1521,6 +1530,16 @@ class TTLGenericCompiler(TTCompilerBase):
         if keywords:
             for kw in keywords:
                 kw_map[kw.arg] = kw.value
+
+        _valid_kwargs = {"template_args", "func_args", "include_paths"}
+        unexpected = set(kw_map) - _valid_kwargs
+        if unexpected:
+            self._raise_error(
+                node,
+                f"ttl.call_extern_func() got unexpected keyword argument(s): "
+                f"{', '.join(sorted(unexpected))}. "
+                f"Valid keywords are: {', '.join(sorted(_valid_kwargs))}",
+            )
 
         template_arg_vals = []
         if "template_args" in kw_map:
