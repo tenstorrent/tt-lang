@@ -70,9 +70,8 @@ func.func @wait_with_distinct_pipe_receive_sources(%condition: i1)
 
 // -----
 
-// Two unicast pipes converging on node (1, 0) need distinct slots in the
-// receiver DFB. With block_count=1 the second pipe's assigned slot exceeds the
-// DFB capacity.
+// Two unicast pipes converging on node (1, 0) cannot reuse the same physical
+// receiver DFB slot until a receiver pop releases the previous receive.
 
 func.func @gather_block_count_too_small()
     attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
@@ -93,13 +92,130 @@ func.func @gather_block_count_too_small()
   %recv2 = ttl.cb_reserve %cb
       : <[1, 1], !ttcore.tile<32x32, f32>, 1>
       -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  // expected-error @below {{gather pipe receiver DFB has block_count=1 but slot 1 is assigned to this pipe; block_count must be >= 2}}
+  // expected-error @below {{gather pipe receiver DFB reuses slot 0 before a receiver pop releases it; add a receiver pop before reusing the DFB slot or increase block_count}}
   %xf2 = ttl.copy %p2, %recv2
       : (!ttl.pipe<src(2, 0) dst(1, 0) to(1, 0) net 0>,
          tensor<1x1x!ttcore.tile<32x32, f32>>)
       -> !ttl.transfer_handle
   ttl.wait %xf2 : !ttl.transfer_handle
   func.return
+}
+
+// -----
+
+// A multi-block receive cannot wrap around the physical DFB ring. The receiver
+// must pop before reusing earlier slots or use a larger block_count.
+
+func.func @gather_receive_span_would_wrap_block_count()
+    attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 3}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 3>
+  %p1 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %p2 = ttl.create_pipe src(2, 0) dst(1, 0) to(1, 0) net 0
+      : !ttl.pipe<src(2, 0) dst(1, 0) to(1, 0) net 0>
+  %recv1 = ttl.cb_reserve %cb {num_tiles = 2 : i64}
+      : <[1, 1], !ttcore.tile<32x32, f32>, 3>
+      -> tensor<1x2x!ttcore.tile<32x32, f32>>
+  %xf1 = ttl.copy %p1, %recv1
+      : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+         tensor<1x2x!ttcore.tile<32x32, f32>>)
+      -> !ttl.transfer_handle
+  ttl.wait %xf1 : !ttl.transfer_handle
+  %recv2 = ttl.cb_reserve %cb {num_tiles = 2 : i64}
+      : <[1, 1], !ttcore.tile<32x32, f32>, 3>
+      -> tensor<1x2x!ttcore.tile<32x32, f32>>
+  // expected-error @below {{gather pipe receiver DFB reserve at slot 2 spans 2 block(s), which would wrap block_count=3}}
+  %xf2 = ttl.copy %p2, %recv2
+      : (!ttl.pipe<src(2, 0) dst(1, 0) to(1, 0) net 0>,
+         tensor<1x2x!ttcore.tile<32x32, f32>>)
+      -> !ttl.transfer_handle
+  ttl.wait %xf2 : !ttl.transfer_handle
+  func.return
+}
+
+// -----
+
+// A receiver pop cannot release part of a live pipe receive slot. Partial
+// release would make the low blocks reusable while the high blocks remain live.
+
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @gather_partial_receiver_pop_rejected()
+      attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %recv = ttl.cb_reserve %cb {num_tiles = 2 : i64}
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x2x!ttcore.tile<32x32, f32>>
+    %xf = ttl.copy %p, %recv
+        : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+           tensor<1x2x!ttcore.tile<32x32, f32>>)
+        -> !ttl.transfer_handle
+    ttl.wait %xf : !ttl.transfer_handle
+    // expected-error @below {{pipe receiver DFB pop releases 1 block(s), but oldest live receive slot spans 2 block(s); receiver pops must release whole DFB slots}}
+    ttl.cb_pop %cb {num_tiles = 1 : i64}
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    func.return
+  }
+}
+
+// -----
+
+// An extra receiver DFB pop after the tracked pipe receive has already been
+// released cannot be mapped to a live pipe slot.
+
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @gather_extra_receiver_pop_rejected()
+      attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %recv = ttl.cb_reserve %cb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %xf = ttl.copy %p, %recv
+        : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+           tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.transfer_handle
+    ttl.wait %xf : !ttl.transfer_handle
+    ttl.cb_pop %cb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    // expected-error @below {{pipe receiver DFB pop releases 1 block(s), but only 0 live pipe receive block(s) are tracked; receiver pops must release only live pipe receive slots}}
+    ttl.cb_pop %cb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    func.return
+  }
+}
+
+// -----
+
+// A receiver pop cannot release blocks that are not tracked as live pipe receive
+// slots. Otherwise the compiler cannot keep static receiver slots synchronized
+// with the hardware DFB ring.
+
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @gather_overlarge_receiver_pop_rejected()
+      attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %recv = ttl.cb_reserve %cb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %xf = ttl.copy %p, %recv
+        : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+           tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.transfer_handle
+    ttl.wait %xf : !ttl.transfer_handle
+    // expected-error @below {{pipe receiver DFB pop releases 2 block(s), but only 1 live pipe receive block(s) are tracked; receiver pops must release only live pipe receive slots}}
+    ttl.cb_pop %cb {num_tiles = 2 : i64}
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    func.return
+  }
 }
 
 // -----
@@ -430,9 +546,9 @@ module {
 
 // -----
 
-// Two collective pipes whose destinations overlap at node (1, 0) each need a
-// distinct slot in the receiver DFB. With block_count=1 the second pipe's
-// assigned slot (1) exceeds the DFB capacity.
+// Two collective pipes whose destinations overlap at node (1, 0) cannot reuse
+// the same physical receiver DFB slot until a receiver pop releases the
+// previous receive.
 
 func.func @collective_overlap_block_count_too_small()
     attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
@@ -453,7 +569,7 @@ func.func @collective_overlap_block_count_too_small()
   %recv2 = ttl.cb_reserve %cb
       : <[1, 1], !ttcore.tile<32x32, f32>, 1>
       -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  // expected-error @below {{collective overlap pipe receiver DFB has block_count=1 but slot 1 is assigned to this pipe; block_count must be >= 2}}
+  // expected-error @below {{collective overlap pipe receiver DFB reuses slot 0 before a receiver pop releases it; add a receiver pop before reusing the DFB slot or increase block_count}}
   %xf2 = ttl.copy %p2, %recv2
       : (!ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>,
          tensor<1x1x!ttcore.tile<32x32, f32>>)

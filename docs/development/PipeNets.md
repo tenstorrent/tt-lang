@@ -59,9 +59,11 @@ Pipe transfers have the following operational semantics:
 
 - A pipe has no hidden in-transit buffer. The destination storage is the
   DFB block the user reserves in the receiver callback.
-- `ttl.copy(pipe, dst_blk)` posts a receive. It makes `dst_blk`'s
-  current write pointer the destination storage for the matching send
-  and returns a transfer handle.
+- `ttl.copy(pipe, dst_blk)` posts a receive. It records receiver
+  readiness and identifies `dst_blk` as the destination storage for the
+  matching send, then returns a transfer handle. The selected address
+  protocol determines whether the receiver writes a runtime destination
+  address or the sender computes the destination address statically.
 - Waiting on that transfer handle waits for the sender's completion
   signal for that posted receive.
 - `ttl.copy(src_blk, pipe)` starts a send. Current TTKernel lowering
@@ -95,7 +97,7 @@ stateDiagram-v2
     state "Receiver may use dst_blk" as ReceiverMayUseBlock
 
     [*] --> NoReceivePosted
-    NoReceivePosted --> ReceivePosted: ttl.copy(pipe, dst_blk) publishes address
+    NoReceivePosted --> ReceivePosted: ttl.copy(pipe, dst_blk) posts receive
     ReceivePosted --> ReceiveComplete: matching send signals completion
     ReceiveComplete --> ReceiverMayUseBlock: recv_tx.wait() returns
     ReceivePosted --> ReceivePosted: recv_tx.wait() blocks
@@ -114,27 +116,27 @@ Current TTKernel lowering executes the send transfer created by
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#1e3a8a", "primaryTextColor": "#ffffff", "primaryBorderColor": "#93c5fd", "lineColor": "#94a3b8", "textColor": "#cbd5e1", "labelTextColor": "#cbd5e1", "edgeLabelBackground": "transparent", "fontSize": "14px"}}}%%
 stateDiagram-v2
     state "Send not started" as NoSendPosted
-    state "Inside ttl.copy: waiting for destination addresses" as WaitingForDestinationAddresses
+    state "Inside ttl.copy: waiting for receive posts" as WaitingForReceivePosts
     state "Inside ttl.copy: payload write in progress" as PayloadWriteInProgress
     state "Send complete" as SendComplete
     state "Send handle returned" as SendHandleReturned
     state "send_tx.wait() returned" as SourceBlockMayBeReleased
 
     [*] --> NoSendPosted
-    NoSendPosted --> WaitingForDestinationAddresses: ttl.copy(src_blk, pipe) begins
-    WaitingForDestinationAddresses --> PayloadWriteInProgress: destination addresses are posted
+    NoSendPosted --> WaitingForReceivePosts: ttl.copy(src_blk, pipe) begins
+    WaitingForReceivePosts --> PayloadWriteInProgress: receive posts are visible
     PayloadWriteInProgress --> SendComplete: payload writes complete
     SendComplete --> SendHandleReturned: ttl.copy returns handle
     SendHandleReturned --> SourceBlockMayBeReleased: send_tx.wait() is no op
 
     classDef pipeState fill:#1e3a8a,stroke:#93c5fd,color:#ffffff
-    class NoSendPosted,WaitingForDestinationAddresses,PayloadWriteInProgress,SendComplete,SendHandleReturned,SourceBlockMayBeReleased pipeState
+    class NoSendPosted,WaitingForReceivePosts,PayloadWriteInProgress,SendComplete,SendHandleReturned,SourceBlockMayBeReleased pipeState
 ```
 
 The source thread cannot execute `send_tx.wait()` before `SendComplete`
 because the handle is produced only after the lowered send operation
 returns. The possible stall is inside `ttl.copy(src_blk, pipe)` while it
-waits for destination addresses or payload-write completion.
+waits for receive posts or payload-write completion.
 
 When a single data-movement kernel executes both a send and a receive
 for the same PipeNet, program order in that kernel must satisfy the
@@ -143,7 +145,7 @@ is also one of the destinations; in relay kernels, a node receives from
 one pipe and sends to another.
 
 For example, the loopback schedule below is invalid because the same thread
-tries to send before it posts its own destination address:
+tries to send before it posts its own receive:
 
 ```python
 @ttl.datamovement()
@@ -163,14 +165,14 @@ def transfer():
             net.if_dst(recv)
 ```
 
-The send waits until every destination has published a reserved DFB slot
-address. In this same-thread loopback schedule, that publication is placed
-after the blocking send, so the thread can never reach it:
+The send waits until every destination has posted its receive. In this
+same-thread loopback schedule, that post is placed after the blocking send,
+so the thread can never reach it:
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#1e3a8a", "primaryTextColor": "#ffffff", "primaryBorderColor": "#93c5fd", "lineColor": "#94a3b8", "textColor": "#cbd5e1", "fontSize": "14px"}}}%%
 flowchart LR
-    send_wait["1. Send waits for address"]
+    send_wait["1. Send waits for receive post"]
     recv_post["2. Receive post"]
 
     send_wait --> recv_post
@@ -184,7 +186,7 @@ flowchart LR
 
 The solid edge is same-kernel program order. The dashed edge is the
 wait-for dependency: the send started by `ttl.copy(src_blk, pipe)` needs
-the destination address from `ttl.copy(pipe, dst_blk)`.
+the receive post from `ttl.copy(pipe, dst_blk)`.
 
 Valid same-thread loopback schedules post the receive first, run the
 send, then wait for receive completion.
@@ -208,9 +210,8 @@ def transfer():
             net.if_dst(recv)
 ```
 
-The receive post publishes the destination address before the send can
-block on that address. The receive wait runs only after the send
-operation has run:
+The receive post executes before the send can block on that post. The
+receive wait runs only after the send operation has run:
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#1e3a8a", "primaryTextColor": "#ffffff", "primaryBorderColor": "#93c5fd", "lineColor": "#94a3b8", "textColor": "#cbd5e1", "fontSize": "14px"}}}%%
@@ -272,6 +273,7 @@ Table 1. Pipe transfer resources, backing storage, and allocation scale.
 | Destination payload block (`dst_blk`) | User-reserved DFB block on the destination node. | User DFB reserve depth. |
 | Address table | Compiler-managed SRAM scratch on each source node; 4 bytes per entry, with the total table allocation rounded up to 32-byte alignment. | Per source node: one entry per concurrently live transfer sourced by that node. |
 | Sender-ready counter | Source-node 4-byte SRAM semaphore slot or GlobalSemaphore-backed SRAM semaphore. | Per source node: one counter per concurrently live transfer sourced by that node. |
+| Sender-capacity counter | Source-node local semaphore. | One counter per proven receiver endpoint when lowering selects the computed receiver-address capacity protocol. |
 | Receiver-completion counter | Destination-node 4-byte SRAM semaphore slot. | One counter per PipeNet. |
 
 Here, source node means a physical node in the launched device grid. It
@@ -419,6 +421,118 @@ pipe, lowering unions their intervals into one allocation unit so
 repeated uses preserve the existing per-pipe protocol state.
 Address-table storage is L1 scratch, not semaphore storage, so it does
 not consume semaphore ids.
+
+### Computed receiver-address protocol
+
+Some transfers do not need receiver-authored address publication. When
+the compiler can prove the receiver DFB base address and slot geometry
+statically, the sender computes the destination address directly from
+compile-time arguments:
+
+```mlir
+%receiver_slot = %static_receiver_slot_index
+%dst_addr = %receiver_dfb_base
+          + %receiver_slot * %receiver_block_stride_bytes
+          + %static_byte_offset
+```
+
+For ordinary point-to-point transfers, `%static_receiver_slot_index` is
+0. For gather or allgather-style receivers, `PipeGraph` assigns a
+physical receiver slot to each receive post from the receiver DFB
+reserve order.
+Receiver DFB pops release physical slots, so a later batch can reuse the
+same slot after the compiler has observed the pop. Static tensor
+subviews add `%static_byte_offset` inside the selected DFB block.
+
+When the receiver DFB `block_count` is larger than one proven receiver
+batch, the sender uses a local slot counter instead of a single constant
+slot. The counter is initialized to the graph-assigned slot for that
+transfer and advances after each send:
+
+```mlir
+%receiver_slot = load %sender_slot_counter
+%next_slot = (%receiver_slot + %receiver_batch_size) mod %block_count
+store %next_slot, %sender_slot_counter
+```
+
+The current lowering emits one contiguous NOC write per send, so dynamic
+computed addressing requires the receiver batch size to divide
+`block_count`. Otherwise a later repeated batch could straddle the DFB
+ring boundary and require split-write lowering.
+
+Computed addressing is independent of back-pressure selection. If the
+compiler can compute the address but cannot prove a receiver pop maps to
+one sender, the receive post still increments the sender-ready counter
+and the sender still waits for readiness. In that mode the address-table
+write and read are removed, while the existing ready counter remains the
+proof that the receiver has reserved the slot.
+
+When the compiler also proves capacity ownership, lowering replaces the
+sender-ready rendezvous with a sender-local capacity protocol. The
+capacity semaphore is initialized to the receiver DFB `block_count`, and
+the receiver's remote increment after a pop is its only writer. The
+sender tracks its own cumulative acquired count in a kernel-local counter
+and waits for the capacity semaphore to reach that count before each
+payload write; it never writes the semaphore. Because the receiver
+increment is the only writer, a release cannot be lost to a concurrent
+sender update.
+
+The protocol uses these events:
+
+1. Function entry initializes `%capacity_sem` to the receiver DFB
+   `block_count` with `ttkernel.noc_semaphore_set` on the local
+   semaphore pointer, and allocates a zero-initialized kernel-local
+   cumulative-acquire counter for the sender.
+2. Before each payload write, the sender loads its cumulative-acquire
+   counter, adds the acquire count, stores the incremented value back,
+   and waits until `%capacity_sem` reaches that value with
+   `ttkernel.experimental.semaphore_wait_min`. The sender never writes
+   `%capacity_sem` before computing `%dst_addr` and issuing the payload
+   NoC write.
+3. The sender still signals receiver completion after the payload write
+   barrier, using the same per-PipeNet receiver-completion counter as
+   the receiver-authored address-table protocol.
+4. The receiver executes its normal receive wait, push, wait-front, and
+   pop sequence.
+5. Lowering emits `ttkernel.noc_semaphore_inc` to the source-node
+   capacity semaphore after the proven receiver pop, followed by
+   `ttkernel.noc_async_atomic_barrier`.
+
+This protocol removes both receiver-side writes to the source-node
+address table and receiver-side increments of the sender-ready counter.
+The receiver-completion counter remains unchanged because it reports
+payload arrival, not sender capacity.
+
+The proof is over PipeGraph receiver endpoints. A receiver DFB pop may
+release capacity to a sender only when the receiver DFB node has exactly
+one writer endpoint. With one writer endpoint, every pop from that
+receiver DFB releases one capacity unit for that endpoint's sender. If
+the receiver DFB has multiple writer endpoints, the pop names only the
+receiver DFB; lowering cannot identify which sender should receive the
+capacity release.
+
+Protocol selection is all-or-none per logical pipe edge. Every receiver
+endpoint written by the send must have a proven pop-to-sender mapping
+and lowerable computed-address resources. If any endpoint is not proven
+or not lowerable, lowering keeps sender-ready back-pressure for that
+pipe edge. If the address formula itself is not proven, lowering keeps
+the receiver-authored address-table protocol.
+
+Multicast receivers keep sender-ready back-pressure. When one sender
+writes to a receiver rectangle, each receiver pops independently, so a
+single logical ring slot is released by all N receivers rather than one.
+The capacity counter's one-release-per-slot accounting does not hold, and
+a summed release count is unsafe when receivers drain at different rates,
+so multicast transfers keep the receiver-ready counter. Computed
+multicast addressing still applies; only the capacity back-pressure is
+withheld. Generalizing capacity to multicast requires per-receiver,
+minimum-gated release accounting, tracked in
+https://github.com/tenstorrent/tt-lang/issues/728.
+
+The `--ttl-pipe-computed-addresses` option, enabled by default, selects
+computed addressing for eligible transfers.
+`--no-ttl-pipe-computed-addresses` forces the receiver-authored
+address-table protocol for every transfer.
 
 ### Ready-counter allocation
 
@@ -651,43 +765,50 @@ When two or more pipes in the same PipeNet target the same receiver
 node, the receiver observes every arrival cumulatively and each
 sender's data lands in its own slot of the receiver's dataflow buffer.
 
-### Data layout: slot per sender
+### Data layout: physical receiver slots
 
-Slot assignment is deterministic. The compiler sorts pipes by `(srcX,
-srcY, dstStartX, dstStartY, dstEndX, dstEndY, pipeNetId)` and assigns
-each pipe the lowest slot index not yet taken at any of its receivers.
-User IR order does not affect slot assignment. For a receiver that lies
-in the destination range of `N` pipes within one PipeNet, those pipes
-get slot indices `0..N-1`. Two pipes whose destination ranges intersect
-on even one node get distinct slots; pipes whose ranges are disjoint may
-reuse slot 0.
+Slot assignment is deterministic for the lowered receive sequence.
+`PipeGraph` walks receiver posts in IR order, assigns the next physical
+slot in each receiver DFB, and releases slots when it observes a proven
+receiver DFB pop. For multicast, every receiver for the same pipe must
+reserve the same physical slot because TT-Metal NoC multicast carries
+one destination address. Pipes that are simultaneously live at one
+receiver use distinct physical slots. After the receiver consumes and
+pops a batch, later receive posts can reuse those physical slots.
 
-Each receive post identifies one concrete DFB write pointer. The
-receiver writes that address to a sender-visible SRAM address-table
-entry before incrementing the sender-ready counter. Lowering allocates
-table entries and sender-ready counters from the live transfer
-intervals. Uniform collective uses one table entry per live transfer
+Each receive post identifies one concrete DFB write pointer. When the
+static slot proof succeeds, the sender computes the same address from
+the receiver DFB base and graph-assigned physical slot index. If the
+same transfer allocation unit can execute again after the receiver DFB
+ring has advanced, the sender tracks that slot progress in a local
+counter. Otherwise the receiver writes the concrete address to a
+sender-visible SRAM address-table entry before incrementing the
+sender-ready counter.
+Uniform collective uses one destination address per live transfer
 interval because TT-Metal NoC multicast writes to the same destination
-SRAM address on every receiver. If receivers publish different
+SRAM address on every receiver. If receivers would use different
 destination addresses, the transfer is not a legal multicast. Current
 lowering rejects that form before TTKernel lowering. Future support
 would need to decompose the operation into separate writes or groups
 with uniform destination addresses.
 
 Overlapping arrivals are safe because the user reserves one DFB block
-per receive callback and slot assignment proves the receiver DFB has
-enough blocks.
+per receive callback. Slot assignment follows receiver post order and
+proves that every receiver in a multicast reserves the same DFB slot for
+the same pipe.
 
-This is the same layout rule point-to-point gather uses: `N`
-point-to-point pipes to one destination get slot indices `0..N-1`.
-Collective overlap differs only in the completion signal: it uses the
-hardware multicast completion signal (`noc_semaphore_inc_multicast`; see
-`PipeOptimizations.md`, section 2) rather than per-destination
-`noc_semaphore_inc`. The receiver DFB `block_count` is the number of
-payload blocks available at that receiver. The compiler rejects any
-receiver DFB whose `block_count` is less than `max(gatherSlotIdx) + 1`
-for its pipes. There is no synchronous serialization between senders:
-they run concurrently and land in distinct slots.
+This is the same layout rule point-to-point gather uses:
+simultaneously live point-to-point pipes to one destination use distinct
+physical receiver slots. Collective overlap differs only in the
+completion signal: it uses the hardware multicast completion signal
+(`noc_semaphore_inc_multicast`; see `PipeOptimizations.md`, section 2)
+rather than per-destination `noc_semaphore_inc`. The receiver DFB
+`block_count` is the number of payload blocks available at that
+receiver. The compiler rejects any receive post that would reuse a live
+slot before a receiver DFB pop releases it, or that would reserve past
+the end of the DFB block ring. There is no synchronous serialization
+between senders in one batch: they run concurrently and land in
+distinct slots.
 
 ### Arrival counter
 
@@ -716,22 +837,25 @@ hardware multicast loopback case are documented in
 Slot-per-sender preserves every parallelism property of a non-overlapping
 collective. The proof tracks four points in the lowered IR:
 
-1. Slot assignment is static. `assignGatherSlotIndices`
-   (`PipeGraph.cpp`) runs at compile time, assigns each pipe a slot
-   index `0..N-1`, and verifies the receiver DFB has enough blocks for
-   all concurrently live arrivals. Sends use the receiver-published
-   DFB write pointer recorded in the source node's SRAM address table.
-   Future batched slot reuse could allow fewer receiver DFB blocks by
-   scheduling overlapping senders in capacity-bounded groups.
+1. Receiver slot assignment is static within each live batch.
+   `PipeGraph` follows receiver post order, assigns each pipe a physical
+   receiver DFB slot index, releases slots when a receiver DFB pop is
+   proven, and verifies that every multicast receiver uses the same slot
+   for that pipe. When the computed-address predicate succeeds, sends
+   use that slot index directly or use a sender-local slot counter that
+   advances by one receiver batch per repeated execution. Otherwise
+   sends use the receiver-published DFB write pointer recorded in the
+   source node's SRAM address table.
 2. No inter-sender wait. Each sender waits only for its own receivers to
-   publish destination addresses, performs its own NoC write, then
-   increments the receiver completion semaphore. No sender reads a
-   semaphore signaled by another sender.
+   publish readiness or for its own proven capacity counter, performs
+   its own NoC write, then increments the receiver completion semaphore.
+   No sender reads a semaphore signaled by another sender.
 3. Receiver completion semaphores are per-PipeNet. Sender-ready
-   semaphores and address-table entries are per source-node transfer
-   interval, so two same-source transfers that overlap get distinct
-   state and non-overlapping same-source transfers can reuse state.
-   Receive posts publish DFB addresses with inline 32-bit NoC writes,
+   semaphores are per source-node transfer interval, so two same-source
+   transfers that overlap get distinct state and non-overlapping
+   same-source transfers can reuse state. Address-table entries are
+   allocated only for fallback transfers. Receive posts publish DFB
+   addresses with inline 32-bit NoC writes in the fallback protocol,
    so address publication writes the value directly.
 4. Receiver uses cumulative `semaphore_wait_min`. The receiver waits
    for a count of total arrivals, not for specific senders. Senders
@@ -760,10 +884,10 @@ A hypothetical "merged" multicast that combines payloads from N
 different sender nodes into one NoC operation is not a hardware
 primitive. Each sender therefore emits one multicast NoC op for its data
 plus one for its signal, exactly like a non-overlapping collective. The
-resource cost of overlapping arrivals is receiver DFB capacity
-(`N * page_size * cb_num_tiles` of receiver SRAM instead of one block),
-which the compile-time `verifyReceiverDFBBlockCounts` makes the user
-acknowledge by sizing `block_count >= N`.
+resource cost of overlapping arrivals is receiver DFB capacity for the
+largest simultaneously live receive batch. Receivers that consume and
+pop one batch before posting the next batch can use fewer physical DFB
+blocks than the total number of logical incoming pipes.
 
 #### Example timeline
 
@@ -775,8 +899,8 @@ PipeNet([
   Pipe A: src=(0, 0)  dst=(slice(2, 4), 0),
 ])
 
-Compile-time slot assignment (sorted by (srcX, srcY)):
-  Pipe A -> slot 0     (src (0, 0) sorts before (1, 0))
+Compile-time slot assignment:
+  Pipe A -> slot 0
   Pipe B -> slot 1
   => block_count(recv_cb) must be >= 2
 
@@ -1249,13 +1373,13 @@ compile-time properties not runtime-observable.
 | 61 | Lowering: two receives at one node share a single per-PipeNet counter; two PipeNets get distinct counters |  |  |  X  |
 | 62 | Lowering: loopback collective uses `noc_async_write_multicast_loopback_src` + local receiver-completion increment |  |  |  X  |
 | 63 | Lowering rejects `block_count < max(gather slot) + 1` with diagnostic prefix `"collective overlap"` (and `"gather"` for point-to-point) |  |  |  X  |
-| 64 | Lowering: aggregate collective receive posts publish address-table entries and increment one sender-ready count |  |  |  X  |
-| 65 | Lowering: non-loopback collective uses receiver-authored SRAM address tables | X | | X |
+| 64 | Lowering: aggregate collective receive posts increment one sender-ready count when capacity is not proven |  |  |  X  |
+| 65 | Lowering: non-loopback collective uses a computed receiver address when the static or dynamic slot proof succeeds | X | | X |
 | 66 | Semaphore counting: collective address storage does not allocate semaphore ids | | X | |
 | 67 | Schedule verifier rejects receive wait before the send that completes it | X | | X |
 | 68 | Schedule verifier rejects same-thread send before destination address publication | X | | X |
-| 69 | Lowering: overlapping same-source transfers allocate distinct ready counters and address-table slots |  |  |  X  |
-| 70 | Lowering: non-overlapping same-source transfers reuse ready counters and address-table slots |  |  |  X  |
+| 69 | Lowering: overlapping same-source transfers allocate distinct ready counters |  |  |  X  |
+| 70 | Lowering: non-overlapping same-source transfers reuse ready counters |  |  |  X  |
 
 (1) Device-only due to a simulator divergence outside PipeNet
 verification: the simulator's block-state machine accepts
@@ -1274,8 +1398,9 @@ rejection contract; it `pytest.skip`s on the simulator runner.
 ## Device API transition notes
 
 PipeNet IR and verifier rules describe receiver-owned payload storage,
-receiver-authored address publication, counted readiness, and completion
-waits. They do not depend on the current TTNN or TTKernel API spelling.
+computed or receiver-authored destination addressing, counted readiness or
+capacity, and completion waits. They do not depend on the current TTNN or
+TTKernel API spelling.
 The current lowering has four API-specific binding points:
 
 - [Device 2.0] Address-table storage is allocated today as host-created
@@ -1294,6 +1419,9 @@ The current lowering has four API-specific binding points:
   semaphore counter. A typed completion object can replace the local
   semaphore binding, but completion remains separate from address
   storage and sender-ready counting.
+- [Device 2.0] Capacity-proven computed-address transfers use local
+  semaphores today. A typed semaphore object API should preserve the same
+  acquire-before-send and release-after-pop protocol.
 
 ## Relation to upstream designs
 
@@ -1404,15 +1532,12 @@ can be live concurrently.
   `std::set<Coord>` representation should be replaced with a Presburger
   set or axis-aligned rectangle set so domain operations stay
   tractable.
-* Batched receive-slot reuse for overlapping arrivals. The current
-  slot assignment requires the receiver DFB to have one block for every
-  concurrently live sender that can target that receiver within one
-  PipeNet. A future scheduler could partition those senders into
-  batches no larger than the receiver DFB capacity, post receives for
-  one batch, wait for those arrivals, release the consumed slots, then
-  reuse the same slots for the next batch. That would trade sender
-  concurrency for lower receiver SRAM usage without changing the
-  receiver-published address protocol.
+* Automatic receive-batch scheduling. Current lowering supports
+  receive-slot reuse when user code posts one batch, waits for the
+  arrivals, consumes and pops those DFB entries, then posts the next
+  batch. It does not reorder or partition a user-written schedule that
+  posts all arrivals at once; that schedule still needs DFB capacity for
+  all simultaneously live arrivals.
 * Parametric PipeNets - runtime-bound pipe coordinates resolved at
   kernel-launch time rather than `@ttl.operation` decoration time. The
   current pipeline resolves `ttl.Pipe(src=..., dst=...)` arguments to

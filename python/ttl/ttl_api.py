@@ -557,6 +557,7 @@ class CompiledTTNNKernel:
         num_pipe_sync_semaphores=0,
         pipe_sram_scratch_bytes=0,
         num_pipe_global_semaphores=0,
+        kernel_pipe_computed_address_dfb_indices=None,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -584,6 +585,8 @@ class CompiledTTNNKernel:
                 PipeNet metadata.
             num_pipe_global_semaphores: Number of GlobalSemaphore-backed
                 PipeNet ready counters used by this kernel.
+            kernel_pipe_computed_address_dfb_indices: Per-kernel receiver DFB indices whose
+                L1 bases are supplied as compile-time args.
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
@@ -601,6 +604,9 @@ class CompiledTTNNKernel:
         self.num_pipe_sync_semaphores = num_pipe_sync_semaphores
         self.pipe_sram_scratch_bytes = pipe_sram_scratch_bytes
         self.num_pipe_global_semaphores = num_pipe_global_semaphores
+        self.kernel_pipe_computed_address_dfb_indices = (
+            kernel_pipe_computed_address_dfb_indices or [[] for _ in kernel_paths]
+        )
         self._pipe_global_semaphore_lifetime = []
 
     def __call__(self, *args):
@@ -629,6 +635,9 @@ class CompiledTTNNKernel:
                 thread_type=thread_type,
                 tensor_indices=tensor_indices,
                 config=config,
+                pipe_computed_address_dfb_indices=self.kernel_pipe_computed_address_dfb_indices[
+                    kernel_idx
+                ],
                 core_ranges=self.kernel_core_ranges[kernel_idx],
             )
             kernel_specs.append(spec)
@@ -738,9 +747,7 @@ def _get_kernel_bool_attr(module, kernel_name: str, attr_name: str) -> bool:
 def _get_kernel_i32_array_attr(module, kernel_name: str, attr_name: str):
     """Read a `DenseI32ArrayAttr` func.func attribute as a list of ints.
 
-    Returns an empty list when the attribute is missing. Used by the runtime
-    bridge to consume the per-CB UnpackToDestFp32 selection emitted by
-    `ttl-set-compute-kernel-config`.
+    Returns an empty list when the attribute is missing.
     """
     operation = _lookup_kernel_func_op(module, kernel_name)
     attr = operation.attributes.get(attr_name, None)
@@ -950,10 +957,12 @@ def _compile_ttnn_kernel(
     kernel_paths = []
     kernel_configs = []
     kernel_arg_specs = []
+    kernel_pipe_computed_address_dfb_indices = []
     # Per-kernel single-core ranges (specialization path) and tensor indices
     # read from ttl.crta_indices. Both stay aligned with kernel_info order.
     kernel_core_ranges = []
     specialized_tensor_indices = []
+    noc_kernel_idx = 0
     kernel_config_attrs = {
         name: {
             "fp32_dest_acc_en": _get_kernel_bool_attr(module, name, "fp32_dest_acc_en"),
@@ -973,6 +982,11 @@ def _compile_ttnn_kernel(
         cpp_source = ttkernel_to_cpp_by_name(module, name)
         kernel_path = _write_kernel_to_tmp(name, cpp_source)
         kernel_paths.append((kernel_path, thread_type))
+        kernel_pipe_computed_address_dfb_indices.append(
+            _get_kernel_i32_array_attr(
+                module, name, _ttl_ir.PIPE_COMPUTED_ADDRESS_DFB_INDICES_ATTR
+            )
+        )
 
         # The specialized clone's launch coordinates (None on the default,
         # whole-grid path). Used to build the per-kernel dispatch range below.
@@ -1058,6 +1072,7 @@ def _compile_ttnn_kernel(
         num_pipe_sync_semaphores=num_pipe_sync_semaphores,
         pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
         num_pipe_global_semaphores=num_pipe_global_semaphores,
+        kernel_pipe_computed_address_dfb_indices=kernel_pipe_computed_address_dfb_indices,
     )
 
     if verbose:
@@ -1074,6 +1089,9 @@ def _compile_ttnn_kernel(
                 thread_type=thread_type,
                 tensor_indices=tensor_indices,
                 config=kernel_configs[kernel_idx],
+                pipe_computed_address_dfb_indices=kernel_pipe_computed_address_dfb_indices[
+                    kernel_idx
+                ],
                 core_ranges=kernel_core_ranges[kernel_idx],
             )
             kernel_specs_for_emit.append(spec)
@@ -1852,9 +1870,10 @@ def _lower_program_to_kernel(
             pipeline_passes.append(f'ttl-dump-cb-flow-graph{{output="{cb_flow_json}"}}')
 
         reduce_fp32_flag = int(compiler_options.reduce_full_fp32)
+        pipe_computed_flag = int(compiler_options.pipe_computed_addresses)
         pipeline_passes += [
             "ttl-lower-dprint-to-emitc",
-            f"convert-ttl-to-ttkernel{{reduce-full-fp32={reduce_fp32_flag}}}",
+            f"convert-ttl-to-ttkernel{{reduce-full-fp32={reduce_fp32_flag} pipe-computed-addresses={pipe_computed_flag}}}",
             "func.func(ttkernel-lower-scalar-fp-types)",
             "ttkernel-insert-inits",
             "ttkernel-insert-l1-accumulation",

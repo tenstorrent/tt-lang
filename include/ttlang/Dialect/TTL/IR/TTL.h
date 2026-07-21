@@ -95,6 +95,10 @@ constexpr llvm::StringLiteral
 /// the attribute value is a `ttkernel.thread` enum.
 constexpr llvm::StringLiteral kKernelThreadAttrName("ttl.kernel_thread");
 
+/// TTKernel-side thread tag, set during TTL -> TTKernel conversion and read by
+/// analyses that run after the attr rewrite.
+constexpr llvm::StringLiteral kTTKernelThreadAttrName("ttkernel.thread");
+
 /// Number of tiles per DST sync region.
 constexpr llvm::StringLiteral kUnrollFactorAttrName("ttl.unroll_factor");
 
@@ -149,6 +153,11 @@ constexpr llvm::StringLiteral
     kPipeGlobalSemaphoreCountAttrName("ttl.pipe_global_semaphore_count");
 constexpr llvm::StringLiteral
     kPipeSramScratchBytesAttrName("ttl.pipe_sram_scratch_bytes");
+
+/// Function attribute listing receiver DFB indices whose L1 base addresses are
+/// passed after DFB-index compile-time args for computed pipe addressing.
+constexpr llvm::StringLiteral kPipeComputedAddressDFBIndicesAttrName(
+    "ttl.pipe_computed_address_dfb_indices");
 
 /// Marker on BindCBOp to distinguish compiler-allocated DFBs from user-declared
 /// ones.

@@ -78,6 +78,31 @@ class _FakeTTNN:
             self.common_runtime_args = common_runtime_args
             self.config = config
 
+    class CBFormatDescriptor:
+        def __init__(self, buffer_index, data_format, page_size):
+            self.buffer_index = buffer_index
+            self.data_format = data_format
+            self.page_size = page_size
+
+    class CBDescriptor:
+        def __init__(self, total_size, core_ranges, format_descriptors):
+            self.total_size = total_size
+            self.core_ranges = core_ranges
+            self.format_descriptors = format_descriptors
+            self.backing_desc = None
+
+        def set_buffer_from_cb(self, backing_desc):
+            self.backing_desc = backing_desc
+
+    @staticmethod
+    def cb_descriptor_from_sharded_tensor(cb_index, tensor, total_size, core_ranges):
+        return {
+            "cb_index": cb_index,
+            "tensor": tensor,
+            "total_size": total_size,
+            "core_ranges": core_ranges,
+        }
+
     @staticmethod
     def generic_op(tensors, program):
         return {
@@ -223,6 +248,36 @@ def test_build_kernel_descriptors_checks_pipe_runtime_arg_count(monkeypatch):
         )
 
 
+def test_build_kernel_descriptors_orders_compile_time_args(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="noc",
+        tensor_indices=[],
+        config=object(),
+        pipe_computed_address_dfb_indices=[1, 3],
+    )
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[],
+        tensor_accessor_args=[0x44, 0x55],
+        core_ranges=object(),
+        grid_cols=1,
+        grid_rows=1,
+        num_cbs=2,
+        pipe_computed_address_base_addresses={1: 0x8000, 3: 0x9000},
+    )
+
+    dfb_indices = [0, 1]
+    pipe_dfb_bases = [0x8000, 0x9000]
+    tensor_accessor_args = [0x44, 0x55]
+    assert (
+        descriptors[0].compile_time_args
+        == dfb_indices + pipe_dfb_bases + tensor_accessor_args
+    )
+
+
 def test_run_kernel_without_pipe_resources_does_not_require_device(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     tensor = _FakeTensorWithoutDevice()
@@ -314,6 +369,44 @@ def test_run_kernel_global_semaphore_lifetime_is_bounded(monkeypatch):
 
     assert len(fake_ttnn.create_calls) == 4
     assert lifetime == fake_ttnn.create_calls[-2:]
+
+
+def test_build_cb_descriptors_excludes_computed_address_backing_tensors(
+    monkeypatch,
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 1024
+    )
+
+    cb_configs = [
+        ((1, 1), 1, object(), 512, 512),
+        ((1, 1), 1, object(), 800, 800),
+    ]
+
+    # DFB 1 (800 bytes) is a computed-address backing tensor, already allocated
+    # separately, so it is excluded from the budget; only DFB 0 (512) counts and
+    # stays under 1024.
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensor(object())],
+        cb_configs=cb_configs,
+        core_ranges=_FakeCoreRanges(),
+        pipe_computed_address_backing_tensors={1: object()},
+    )
+    assert len(descriptors) == 2
+
+    # Without the backing exclusion the same DFBs (512 + 800) exceed 1024, so
+    # non-backing DFBs are still charged.
+    with pytest.raises(
+        ValueError,
+        match="Total circular buffer allocation \\(1312 bytes\\) exceeds L1 budget \\(1024 bytes\\)",
+    ):
+        kernel_runner.build_cb_descriptors(
+            tensors=[_FakeTensor(object())],
+            cb_configs=cb_configs,
+            core_ranges=_FakeCoreRanges(),
+            pipe_computed_address_backing_tensors={},
+        )
 
 
 def test_emit_runner_source_uses_shared_pipe_resource_helpers():

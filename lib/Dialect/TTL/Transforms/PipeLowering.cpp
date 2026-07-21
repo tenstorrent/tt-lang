@@ -4,6 +4,7 @@
 
 #include "PipeLowering.h"
 
+#include "PipeCapacityAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -26,6 +27,7 @@
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
 #include <functional>
@@ -64,13 +66,6 @@ static Value makeZeroI32(Location loc, ConversionPatternRewriter &rewriter) {
   return arith::ConstantIntOp::create(rewriter, loc, 0, 32);
 }
 
-static PipeKey getPipeKey(PipeType pipeType) {
-  return {pipeType.getSrcX(),      pipeType.getSrcY(),
-          pipeType.getDstStartX(), pipeType.getDstStartY(),
-          pipeType.getDstEndX(),   pipeType.getDstEndY(),
-          pipeType.getPipeNetId()};
-}
-
 struct PipeSourceKey {
   int64_t srcX;
   int64_t srcY;
@@ -91,6 +86,7 @@ struct DenseMapInfo<mlir::tt::ttl::PipeSourceKey> {
   }
   static bool isEqual(const Key &lhs, const Key &rhs) { return lhs == rhs; }
 };
+
 } // namespace llvm
 
 namespace mlir::tt::ttl {
@@ -166,6 +162,23 @@ static Value buildPipeRuntimeCommonArg(Location loc,
       .getResult();
 }
 
+static Value buildLocalSemaphoreAddress(Location loc, OpBuilder &builder,
+                                        int64_t semaphoreIndex) {
+  Value semaphoreIndexValue =
+      arith::ConstantIndexOp::create(builder, loc, semaphoreIndex);
+  return ttk::GetSemaphoreOp::create(builder, loc, semaphoreIndexValue)
+      .getResult();
+}
+
+static Value buildLocalSemaphorePtr(Location loc, OpBuilder &builder,
+                                    int64_t semaphoreIndex) {
+  auto l1PtrTy = ttk::L1AddrPtrType::get(builder.getContext(), 32);
+  Value semaphoreAddress =
+      buildLocalSemaphoreAddress(loc, builder, semaphoreIndex);
+  return ttk::CastToL1PtrOp::create(builder, loc, l1PtrTy, semaphoreAddress)
+      .getResult();
+}
+
 /// Return the first pipe-resource runtime arg index used for GlobalSemaphore
 /// ready-counter addresses.
 static int64_t
@@ -218,7 +231,9 @@ void PipeReadyCounterInfo::observe(PipeReadyCounterObserver &observer) const {
 static ReadyCounterAddressInfo
 getReadyCounterAddressInfo(Operation *op, const PipeResourceInfo &pipeResource,
                            const PipeResourcePlan &pipeResourcePlan) {
-  return pipeResource.readyCounter.getAddressInfo(op, pipeResourcePlan);
+  assert(pipeResource.readyCounter &&
+         "sender-ready protocol selected without a sender-ready counter");
+  return pipeResource.readyCounter->getAddressInfo(op, pipeResourcePlan);
 }
 
 /// Build the L1 address for the sender-ready counter for either storage kind.
@@ -269,9 +284,15 @@ struct AddressTableInfo {
 /// the resource plan.
 static AddressTableInfo
 getAddressTableInfo(Operation *op, const PipeResourceInfo &pipeResource) {
+  assert(pipeResource.addressStorage.mode ==
+             PipeAddressMode::ReceiverPublishedAddressTable &&
+         "address-table info requested for computed-address pipe");
+  assert(pipeResource.addressStorage.sramAddressTable.has_value() &&
+         "fallback pipe missing address-table storage");
   int64_t scratchArgIndex = getPipeRuntimeCommonArgIndex(op, 0);
   return AddressTableInfo{
-      scratchArgIndex, pipeResource.addressStorage.sramAddressTable.byteOffset};
+      scratchArgIndex,
+      pipeResource.addressStorage.sramAddressTable->byteOffset};
 }
 
 /// Build the L1 address of this transfer's source-core address-table slot.
@@ -299,6 +320,95 @@ buildAddressTableDestinationAddress(Location loc, const AddressTableInfo &info,
   return ttk::LoadFromL1Op::create(rewriter, loc, rewriter.getI32Type(),
                                    tablePtr, zeroI32)
       .getResult();
+}
+
+/// Find the slot counter allocated during resource planning. Missing state is
+/// a pass-ordering bug because computed-address sends are planned before
+/// conversion patterns mutate the IR.
+static Value lookupComputedAddressCounter(
+    PipeTransferSendOp op, int64_t counterIndex,
+    const PipeComputedAddressCounterMap *computedAddressCounters) {
+  assert(computedAddressCounters &&
+         "computed-address counter allocation must run before pipe lowering");
+  FuncOp senderFunc = op->getParentOfType<FuncOp>();
+  auto funcIt = computedAddressCounters->find(senderFunc);
+  assert(funcIt != computedAddressCounters->end() &&
+         "sender function missing computed-address counters");
+  auto counterIt = funcIt->second.find(counterIndex);
+  assert(counterIt != funcIt->second.end() &&
+         "computed-address counter missing from sender function");
+  return counterIt->second;
+}
+
+/// Compute the receiver DFB destination address selected for this send. Static
+/// cases use only the graph-assigned slot; dynamic cases add sender-local ring
+/// progress for repeated executions of the same transfer allocation unit.
+static Value buildComputedReceiverDFBDestinationAddress(
+    PipeTransferSendOp op, Location loc, const PipeComputedAddressInfo &info,
+    const PipeComputedAddressCounterMap *computedAddressCounters,
+    ConversionPatternRewriter &rewriter) {
+  auto baseAddress = ttk::GetCompileArgValOp::create(
+      rewriter, loc, rewriter.getI32Type(),
+      static_cast<int32_t>(info.baseCompileTimeArgIndex));
+  if (!info.usesDynamicSlotCounter()) {
+    int64_t byteOffset = info.receiverSlotIndex * info.blockStrideBytes +
+                         info.staticTileByteOffset;
+    return addByteOffset(loc, baseAddress.getResult(), byteOffset, rewriter);
+  }
+
+  Value zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  Value slotCounter = lookupComputedAddressCounter(
+      op, *info.dynamicSlotCounterIndex, computedAddressCounters);
+  Value currentSlot =
+      memref::LoadOp::create(rewriter, loc, slotCounter, ValueRange{zeroIdx});
+  Value blockStrideBytes =
+      arith::ConstantIntOp::create(rewriter, loc, info.blockStrideBytes, 32);
+  Value blockByteOffset =
+      arith::MulIOp::create(rewriter, loc, currentSlot, blockStrideBytes);
+  Value receiverAddress = arith::AddIOp::create(
+      rewriter, loc, baseAddress.getResult(), blockByteOffset);
+  receiverAddress =
+      addByteOffset(loc, receiverAddress, info.staticTileByteOffset, rewriter);
+
+  Value receiverBatchSize =
+      arith::ConstantIntOp::create(rewriter, loc, info.receiverBatchSize, 32);
+  Value blockCount =
+      arith::ConstantIntOp::create(rewriter, loc, info.blockCount, 32);
+  // Advance by one proven receiver batch so the next execution predicts the
+  // same physical slot sequence as the receiver DFB ring.
+  Value nextSlotUnwrapped =
+      arith::AddIOp::create(rewriter, loc, currentSlot, receiverBatchSize);
+  Value nextSlot =
+      arith::RemUIOp::create(rewriter, loc, nextSlotUnwrapped, blockCount);
+  memref::StoreOp::create(rewriter, loc, nextSlot, slotCounter,
+                          ValueRange{zeroIdx});
+  return receiverAddress;
+}
+
+static void lowerPipeCapacityRelease(Location loc,
+                                     const PipeCapacityReleaseInfo &release,
+                                     Value nocVal,
+                                     ConversionPatternRewriter &rewriter) {
+  const PipeCapacityReleaseTarget &target = release.target;
+  auto indexTy = rewriter.getIndexType();
+  Value semaphoreAddress =
+      buildLocalSemaphoreAddress(loc, rewriter, release.semaphoreIndex);
+  Value sourceXLogical =
+      arith::ConstantIndexOp::create(rewriter, loc, target.logicalX);
+  Value sourceYLogical =
+      arith::ConstantIndexOp::create(rewriter, loc, target.logicalY);
+  Value sourceXTranslated = ttk::ConvertLogicalXToTranslatedOp::create(
+      rewriter, loc, indexTy, sourceXLogical);
+  Value sourceYTranslated = ttk::ConvertLogicalYToTranslatedOp::create(
+      rewriter, loc, indexTy, sourceYLogical);
+  Value releaseCount =
+      arith::ConstantIntOp::create(rewriter, loc, release.count, 32);
+  Value remoteCapacityNocAddr =
+      ttk::GetNocAddrOp::create(rewriter, loc, sourceXTranslated,
+                                sourceYTranslated, semaphoreAddress, nocVal)
+          .getResult();
+  ttk::NocSemaphoreIncOp::create(rewriter, loc, remoteCapacityNocAddr,
+                                 releaseCount, nocVal, /*posted=*/BoolAttr());
 }
 
 struct ReceiverPublishedAddressInfo {
@@ -411,12 +521,88 @@ void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters) {
   });
 }
 
-/// Lower CB -> Pipe copy: write source DFB data to the receiver-published
-/// destination address, then signal arrival.
-LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
-                                    bool isConsumerCB,
-                                    const PipeResourcePlan &pipeResourcePlan,
-                                    ConversionPatternRewriter &rewriter) {
+void initializePipeCapacitySemaphores(
+    const PipeCapacityPlan &pipeCapacityPlan,
+    PipeNetCounterMap &senderCapacityCounters) {
+  for (const auto &entry : pipeCapacityPlan.getInitializations()) {
+    FuncOp func = entry.first;
+    const SmallVector<PipeCapacityInitInfo> &initializations = entry.second;
+    SmallVector<PipeCapacityInitInfo> sortedInitializations(initializations);
+    llvm::sort(sortedInitializations, [](const PipeCapacityInitInfo &lhs,
+                                         const PipeCapacityInitInfo &rhs) {
+      return lhs.semaphoreIndex < rhs.semaphoreIndex;
+    });
+
+    OpBuilder builder(func.getContext());
+    builder.setInsertionPointToStart(&func.getBody().front());
+    Location loc = func.getLoc();
+    auto counterMemrefTy = MemRefType::get({1}, builder.getI32Type());
+    Value zeroIdx = arith::ConstantIndexOp::create(builder, loc, 0);
+    Value zeroI32 = arith::ConstantIntOp::create(builder, loc, 0, 32);
+    auto &perFuncCounters = senderCapacityCounters[func];
+    for (const PipeCapacityInitInfo &init : sortedInitializations) {
+      Value capacitySemaphorePtr =
+          buildLocalSemaphorePtr(loc, builder, init.semaphoreIndex);
+      Value initialCapacity =
+          arith::ConstantIntOp::create(builder, loc, init.initialCapacity, 32);
+      ttk::NocSemaphoreSetOp::create(builder, loc, capacitySemaphorePtr,
+                                     initialCapacity);
+      // The sender tracks its cumulative acquired count in a kernel-local
+      // counter and waits for the capacity semaphore to reach it, so the
+      // receiver's remote increment stays the only writer of the shared word.
+      auto counter = memref::AllocaOp::create(builder, loc, counterMemrefTy);
+      memref::StoreOp::create(builder, loc, zeroI32, counter,
+                              ValueRange{zeroIdx});
+      perFuncCounters[init.semaphoreIndex] = counter.getResult();
+    }
+  }
+}
+
+void initializePipeComputedAddressCounters(
+    const PipeResourcePlan &pipeResourcePlan,
+    PipeComputedAddressCounterMap &computedAddressCounters) {
+  for (const auto &entry :
+       pipeResourcePlan.computedAddressCounterInitializations) {
+    FuncOp func = entry.first;
+    const SmallVector<PipeComputedAddressCounterInitInfo> &initializations =
+        entry.second;
+    SmallVector<PipeComputedAddressCounterInitInfo> sortedInitializations(
+        initializations);
+    llvm::sort(sortedInitializations,
+               [](const PipeComputedAddressCounterInitInfo &lhs,
+                  const PipeComputedAddressCounterInitInfo &rhs) {
+                 return lhs.counterIndex < rhs.counterIndex;
+               });
+
+    OpBuilder builder(func.getContext());
+    builder.setInsertionPointToStart(&func.getBody().front());
+    Location loc = func.getLoc();
+    auto counterMemrefTy = MemRefType::get({1}, builder.getI32Type());
+    Value zeroIdx = arith::ConstantIndexOp::create(builder, loc, 0);
+    auto &perFuncCounters = computedAddressCounters[func];
+    for (const PipeComputedAddressCounterInitInfo &init :
+         sortedInitializations) {
+      // Entry-block allocation dominates loop-carried sends while keeping the
+      // slot state private to the sender kernel.
+      auto counter = memref::AllocaOp::create(builder, loc, counterMemrefTy);
+      Value initialSlot =
+          arith::ConstantIntOp::create(builder, loc, init.initialSlot, 32);
+      memref::StoreOp::create(builder, loc, initialSlot, counter,
+                              ValueRange{zeroIdx});
+      perFuncCounters[init.counterIndex] = counter.getResult();
+    }
+  }
+}
+
+/// Lower CB -> Pipe copy: write source DFB data to the selected destination
+/// address, then signal arrival.
+LogicalResult lowerPipeTransferSend(
+    PipeTransferSendOp op, Value srcCB, bool isConsumerCB,
+    const PipeResourcePlan &pipeResourcePlan,
+    const PipeCapacityPlan *pipeCapacityPlan,
+    const PipeNetCounterMap *senderCapacityCounters,
+    const PipeComputedAddressCounterMap *computedAddressCounters,
+    ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
   // buildPipeResourcePlan rejects transfers without a unique create op.
   FailureOr<PipeTransferCreateOp> maybeCreateOp =
@@ -444,10 +630,6 @@ LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
   }
   int64_t pageSizeBytes = tileType.getSizeBytes();
 
-  ReadyCounterAddressInfo readyCounterInfo =
-      getReadyCounterAddressInfo(op, pipeResource, pipeResourcePlan);
-  AddressTableInfo addressTableInfo = getAddressTableInfo(op, pipeResource);
-
   int64_t dstStartX = pipeType.getDstStartX();
   int64_t dstStartY = pipeType.getDstStartY();
   int64_t dstEndX = pipeType.getDstEndX();
@@ -464,20 +646,67 @@ LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
   Value nocVal = arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
                                            rewriter.getI8IntegerAttr(nocIdx));
 
-  int64_t expectedReceiverPosts =
-      isCollectiveTransfer(pipeResource.transferContract) ? numDests : 1;
-  Value senderReadyCounterAddr =
-      buildReadyCounterAddress(loc, readyCounterInfo, rewriter);
-  auto senderReadyCounterPtr = ttk::CastToL1PtrOp::create(
-      rewriter, loc, l1PtrTy, senderReadyCounterAddr);
-  auto expectedReadyCount = arith::ConstantOp::create(
-      rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(expectedReceiverPosts));
-  ttk::SemaphoreWaitOp::create(rewriter, loc, senderReadyCounterPtr,
-                               expectedReadyCount);
-  auto readyCounterResetValue =
-      arith::ConstantIndexOp::create(rewriter, loc, 0);
-  ttk::NocSemaphoreSetOp::create(rewriter, loc, senderReadyCounterPtr,
-                                 readyCounterResetValue);
+  ArrayRef<PipeCapacityAcquireInfo> capacityAcquires =
+      pipeCapacityPlan ? pipeCapacityPlan->lookupAcquires(op)
+                       : ArrayRef<PipeCapacityAcquireInfo>{};
+  if (!capacityAcquires.empty()) {
+    FuncOp senderFunc = op->getParentOfType<FuncOp>();
+    Value zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    for (const PipeCapacityAcquireInfo &capacityAcquire : capacityAcquires) {
+      Value capacitySemaphorePtr =
+          buildLocalSemaphorePtr(loc, rewriter, capacityAcquire.semaphoreIndex);
+      Value senderCapacityCounter;
+      if (senderCapacityCounters) {
+        auto funcIt = senderCapacityCounters->find(senderFunc);
+        if (funcIt != senderCapacityCounters->end()) {
+          auto counterIt = funcIt->second.find(capacityAcquire.semaphoreIndex);
+          if (counterIt != funcIt->second.end()) {
+            senderCapacityCounter = counterIt->second;
+          }
+        }
+      }
+      if (!senderCapacityCounter) {
+        // Counter pre-allocation in initializePipeCapacitySemaphores is a hard
+        // precondition; a missing counter is a pipeline-ordering bug, not a
+        // legalization miss.
+        op.emitError("pipe capacity acquire without sender counter; "
+                     "initializePipeCapacitySemaphores must run before "
+                     "convert-ttl-to-ttkernel");
+        return failure();
+      }
+      // Advance the sender's cumulative acquired count and block until the
+      // capacity semaphore reaches it. The receiver's remote increment is the
+      // only writer of the shared semaphore, so the acquire never writes it.
+      Value previousAcquired = memref::LoadOp::create(
+          rewriter, loc, senderCapacityCounter, ValueRange{zeroIdx});
+      Value capacityCount = arith::ConstantIntOp::create(
+          rewriter, loc, capacityAcquire.count, 32);
+      Value nextAcquired =
+          arith::AddIOp::create(rewriter, loc, previousAcquired, capacityCount);
+      memref::StoreOp::create(rewriter, loc, nextAcquired,
+                              senderCapacityCounter, ValueRange{zeroIdx});
+      ttk::SemaphoreWaitMinOp::create(rewriter, loc, capacitySemaphorePtr,
+                                      nextAcquired);
+    }
+  } else {
+    ReadyCounterAddressInfo readyCounterInfo =
+        getReadyCounterAddressInfo(op, pipeResource, pipeResourcePlan);
+    int64_t expectedReceiverPosts =
+        isCollectiveTransfer(pipeResource.transferContract) ? numDests : 1;
+    Value senderReadyCounterAddr =
+        buildReadyCounterAddress(loc, readyCounterInfo, rewriter);
+    auto senderReadyCounterPtr = ttk::CastToL1PtrOp::create(
+        rewriter, loc, l1PtrTy, senderReadyCounterAddr);
+    auto expectedReadyCount = arith::ConstantOp::create(
+        rewriter, loc, i32Ty,
+        rewriter.getI32IntegerAttr(expectedReceiverPosts));
+    ttk::SemaphoreWaitOp::create(rewriter, loc, senderReadyCounterPtr,
+                                 expectedReadyCount);
+    auto readyCounterResetValue =
+        arith::ConstantIndexOp::create(rewriter, loc, 0);
+    ttk::NocSemaphoreSetOp::create(rewriter, loc, senderReadyCounterPtr,
+                                   readyCounterResetValue);
+  }
 
   SmallVector<int64_t> cbBounds(cbShape.begin(), cbShape.end());
   int64_t cbNumTiles = 1;
@@ -535,8 +764,18 @@ LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
 
   Value srcAddr = arith::IndexCastOp::create(rewriter, loc, i32Ty, srcPtrIdx);
 
-  Value dstAddr =
-      buildAddressTableDestinationAddress(loc, addressTableInfo, rewriter);
+  Value dstAddr;
+  if (pipeResource.addressStorage.usesComputedReceiverDFB()) {
+    assert(pipeResource.addressStorage.computedAddress.has_value() &&
+           "computed pipe missing computed-address info");
+    dstAddr = buildComputedReceiverDFBDestinationAddress(
+        op, loc, *pipeResource.addressStorage.computedAddress,
+        computedAddressCounters, rewriter);
+  } else {
+    AddressTableInfo addressTableInfo = getAddressTableInfo(op, pipeResource);
+    dstAddr =
+        buildAddressTableDestinationAddress(loc, addressTableInfo, rewriter);
+  }
 
   // TODO(ttl): Select unicast or multicast from a compiler optimization over
   // the transfer plan instead of directly preserving the user's tt-lang syntax.
@@ -633,6 +872,7 @@ LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
 
 LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
                                     const PipeResourcePlan &pipeResourcePlan,
+                                    const PipeCapacityPlan *pipeCapacityPlan,
                                     ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
   // buildPipeResourcePlan rejects transfers without a unique create op.
@@ -644,17 +884,24 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
   auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
   PipeResourceInfo pipeResource =
       lookupPipeResourceInfo(createOp, pipeResourcePlan);
-  FailureOr<ReceiverPublishedAddressInfo> publishedAddressInfo =
-      getReceiverPublishedAddressInfo(op, dst, rewriter);
-  if (failed(publishedAddressInfo)) {
-    return failure();
-  }
-  AddressTableInfo addressTableInfo = getAddressTableInfo(op, pipeResource);
-  ReadyCounterAddressInfo readyCounterInfo =
-      getReadyCounterAddressInfo(op, pipeResource, pipeResourcePlan);
 
   int64_t nocIdx = getNocIndex(op);
   auto indexTy = rewriter.getIndexType();
+
+  // Preflight the only fallible validation before emitting any ops, so a match
+  // failure leaves no partially-built IR for the conversion driver to roll
+  // back.
+  bool usesComputedReceiverDFB =
+      pipeResource.addressStorage.usesComputedReceiverDFB();
+  std::optional<ReceiverPublishedAddressInfo> publishedAddressInfo;
+  if (!usesComputedReceiverDFB) {
+    FailureOr<ReceiverPublishedAddressInfo> info =
+        getReceiverPublishedAddressInfo(op, dst, rewriter);
+    if (failed(info)) {
+      return failure();
+    }
+    publishedAddressInfo = *info;
+  }
 
   Value nocVal = arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
                                            rewriter.getI8IntegerAttr(nocIdx));
@@ -668,32 +915,87 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
   auto srcYTranslated = ttk::ConvertLogicalYToTranslatedOp::create(
       rewriter, loc, indexTy, srcYLogical);
 
-  Value publishedAddress =
-      buildReceiverPublishedAddress(dst, loc, *publishedAddressInfo, rewriter);
-  Value tableAddress =
-      buildAddressTableAddress(loc, addressTableInfo, rewriter);
-  // [Device 2.0] This is a receiver-authored write to a typed address table;
-  // only this lowering should select the current inline NoC write primitive.
-  auto byteEnableAll = arith::ConstantOp::create(
-      rewriter, loc, rewriter.getI8Type(), rewriter.getI8IntegerAttr(0xF));
-  ttk::NocInlineDwWriteOp::create(rewriter, loc, srcXTranslated, srcYTranslated,
-                                  tableAddress, publishedAddress, byteEnableAll,
-                                  nocVal);
-  ttk::NocAsyncWriteBarrierOp::create(rewriter, loc, nocVal);
+  if (!usesComputedReceiverDFB) {
+    AddressTableInfo addressTableInfo = getAddressTableInfo(op, pipeResource);
+    Value publishedAddress = buildReceiverPublishedAddress(
+        dst, loc, *publishedAddressInfo, rewriter);
+    Value tableAddress =
+        buildAddressTableAddress(loc, addressTableInfo, rewriter);
+    // [Device 2.0] This is a receiver-authored write to a typed address table;
+    // only this lowering should select the current inline NoC write primitive.
+    auto byteEnableAll = arith::ConstantOp::create(
+        rewriter, loc, rewriter.getI8Type(), rewriter.getI8IntegerAttr(0xF));
+    ttk::NocInlineDwWriteOp::create(rewriter, loc, srcXTranslated,
+                                    srcYTranslated, tableAddress,
+                                    publishedAddress, byteEnableAll, nocVal);
+    ttk::NocAsyncWriteBarrierOp::create(rewriter, loc, nocVal);
+  }
 
-  Value senderReadyCounterAddr =
-      buildReadyCounterAddress(loc, readyCounterInfo, rewriter);
-  auto senderReadyCounterNocAddr =
-      ttk::GetNocAddrOp::create(rewriter, loc, srcXTranslated, srcYTranslated,
-                                senderReadyCounterAddr, nocVal);
-  auto readyCounterIncrement = arith::ConstantIndexOp::create(rewriter, loc, 1);
-  ttk::NocSemaphoreIncOp::create(
-      rewriter, loc, senderReadyCounterNocAddr.getResult(),
-      readyCounterIncrement, nocVal, /*posted=*/BoolAttr());
+  if (!pipeCapacityPlan || !pipeCapacityPlan->usesCapacityProtocol(createOp)) {
+    ReadyCounterAddressInfo readyCounterInfo =
+        getReadyCounterAddressInfo(op, pipeResource, pipeResourcePlan);
+    Value senderReadyCounterAddr =
+        buildReadyCounterAddress(loc, readyCounterInfo, rewriter);
+    auto senderReadyCounterNocAddr =
+        ttk::GetNocAddrOp::create(rewriter, loc, srcXTranslated, srcYTranslated,
+                                  senderReadyCounterAddr, nocVal);
+    auto readyCounterIncrement =
+        arith::ConstantIndexOp::create(rewriter, loc, 1);
+    ttk::NocSemaphoreIncOp::create(
+        rewriter, loc, senderReadyCounterNocAddr.getResult(),
+        readyCounterIncrement, nocVal, /*posted=*/BoolAttr());
+  }
 
   auto token = UnrealizedConversionCastOp::create(
       rewriter, loc, op.getToken().getType(), ValueRange{});
   rewriter.replaceOp(op, token.getResult(0));
+  return success();
+}
+
+static Value computeDFBPopNumTiles(CBPopOp op, Value originalCb,
+                                   ConversionPatternRewriter &rewriter,
+                                   Location loc) {
+  if (auto attr = op.getNumTilesAttr()) {
+    return arith::ConstantIntOp::create(rewriter, loc, attr.getInt(), 32);
+  }
+  auto ttlCbTy = getTTLCBType(originalCb);
+  assert(ttlCbTy && "lowerCBPop already verified the DFB type");
+  return arith::ConstantIntOp::create(rewriter, loc,
+                                      ttlCbTy.getElementsPerBlock(), 32);
+}
+
+LogicalResult lowerCBPop(CBPopOp op, Value cb,
+                         const PipeCapacityPlan *pipeCapacityPlan,
+                         ConversionPatternRewriter &rewriter) {
+  Location loc = op.getLoc();
+  Value originalCb = op.getCb();
+  auto ttlCbTy = getTTLCBType(originalCb);
+  if (!ttlCbTy) {
+    return rewriter.notifyMatchFailure(op, "failed to get TTL DFB type");
+  }
+
+  auto convertedCb = utils::convertTTLCBToTTKernel(cb, rewriter, loc);
+  if (failed(convertedCb)) {
+    return rewriter.notifyMatchFailure(op, "failed to convert DFB operand");
+  }
+
+  Value numTiles = computeDFBPopNumTiles(op, originalCb, rewriter, loc);
+  ttk::CBPopFrontOp::create(rewriter, loc, *convertedCb, numTiles);
+
+  ArrayRef<PipeCapacityReleaseInfo> releases =
+      pipeCapacityPlan ? pipeCapacityPlan->lookupReleases(op)
+                       : ArrayRef<PipeCapacityReleaseInfo>{};
+  if (!releases.empty()) {
+    int64_t nocIdx = getNocIndex(op);
+    Value nocVal = arith::ConstantOp::create(
+        rewriter, loc, rewriter.getI8Type(), rewriter.getI8IntegerAttr(nocIdx));
+    for (const PipeCapacityReleaseInfo &release : releases) {
+      lowerPipeCapacityRelease(loc, release, nocVal, rewriter);
+    }
+    ttk::NocAsyncAtomicBarrierOp::create(rewriter, loc, nocVal);
+  }
+
+  rewriter.eraseOp(op);
   return success();
 }
 
@@ -1326,7 +1628,295 @@ assignLiveIntervalColors(MutableArrayRef<PipeTransferAllocationUnit> units,
   return colorUsersBySource;
 }
 
-LogicalResult buildPipeResourcePlan(ModuleOp mod, PipeResourcePlan &info) {
+static std::pair<int64_t, int64_t>
+countPostAndSendEvents(const PipeTransferAllocationUnit &unit) {
+  int64_t postCount = 0;
+  int64_t sendCount = 0;
+  for (const PipeTransferRendezvousEvent &event : unit.rendezvousEvents) {
+    switch (event.kind) {
+    case PipeTransferRendezvousEventKind::Post:
+      ++postCount;
+      break;
+    case PipeTransferRendezvousEventKind::Send:
+      ++sendCount;
+      break;
+    }
+  }
+  return {postCount, sendCount};
+}
+
+static bool usesSenderReadyCounter(const PipeTransferAllocationUnit &unit,
+                                   const PipeCapacityPlan *pipeCapacityPlan) {
+  if (!pipeCapacityPlan) {
+    return true;
+  }
+  for (Operation *transferCreateOp : unit.transferCreateOps) {
+    if (!pipeCapacityPlan->usesCapacityProtocol(
+            llvm::cast<PipeTransferCreateOp>(transferCreateOp))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static std::optional<FuncOp>
+getSingleSenderFunc(const PipeTransferAllocationUnit &unit) {
+  std::optional<FuncOp> senderFunc;
+  for (const PipeTransferRendezvousEvent &event : unit.rendezvousEvents) {
+    if (event.kind != PipeTransferRendezvousEventKind::Send) {
+      continue;
+    }
+    FuncOp func = event.op->getParentOfType<FuncOp>();
+    if (!func) {
+      return std::nullopt;
+    }
+    if (senderFunc && *senderFunc != func) {
+      return std::nullopt;
+    }
+    senderFunc = func;
+  }
+  return senderFunc;
+}
+
+static int64_t getReceiverDFBBlockStrideBytes(const ReceiverDFBInfo &info) {
+  auto tileType = llvm::cast<ttcore::TileType>(info.dfbType.getElementType());
+  return info.dfbType.getElementsPerBlock() * tileType.getSizeBytes();
+}
+
+static int64_t getReceiverDFBStaticByteOffset(const ReceiverDFBInfo &info) {
+  auto tileType = llvm::cast<ttcore::TileType>(info.dfbType.getElementType());
+  return info.staticTileOffset * tileType.getSizeBytes();
+}
+
+static std::optional<int64_t>
+getUniformReceiverBatchSize(const PipeGraph &pipeGraph,
+                            const PipeEdge &pipeEdge) {
+  std::optional<int64_t> receiverBatchSize;
+  for (PipeReceiverEndpointId endpointId :
+       pipeGraph.getPipeReceiverEndpoints(pipeEdge.id)) {
+    const PipeReceiverEndpoint &endpoint =
+        pipeGraph.getPipeReceiverEndpoint(endpointId);
+    const PipeReceiverDFBNode &receiverDFBNode =
+        pipeGraph.getReceiverDFBNode(endpoint.receiverDFBNode);
+    if (receiverBatchSize &&
+        *receiverBatchSize != receiverDFBNode.receiverBatchSize) {
+      return std::nullopt;
+    }
+    receiverBatchSize = receiverDFBNode.receiverBatchSize;
+  }
+  return receiverBatchSize;
+}
+
+static bool hasProvenPipeOnlyReceiverStreams(const PipeGraph &pipeGraph,
+                                             const PipeEdge &pipeEdge) {
+  for (PipeReceiverEndpointId endpointId :
+       pipeGraph.getPipeReceiverEndpoints(pipeEdge.id)) {
+    const PipeReceiverEndpoint &endpoint =
+        pipeGraph.getPipeReceiverEndpoint(endpointId);
+    const PipeReceiverDFBNode &receiverDFBNode =
+        pipeGraph.getReceiverDFBNode(endpoint.receiverDFBNode);
+    if (!receiverDFBNode.hasProvenPipeOnlyStream) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/// Return metadata for receiver addresses the sender can compute without
+/// receiver publication. Rejections preserve the receiver-published protocol.
+static std::optional<PipeComputedAddressInfo>
+getComputedAddressInfo(const PipeTransferAllocationUnit &unit,
+                       const ReceiverDFBInfo &receiverInfo,
+                       const PipeGraph &pipeGraph) {
+  if (!receiverInfo.hasStaticTileOffset) {
+    return std::nullopt;
+  }
+  if (!llvm::isa<ttcore::TileType>(receiverInfo.dfbType.getElementType())) {
+    return std::nullopt;
+  }
+  if (!receiverInfo.receiverSlotIndex.has_value()) {
+    return std::nullopt;
+  }
+  auto [postCount, sendCount] = countPostAndSendEvents(unit);
+  if (postCount != 1 || sendCount != 1) {
+    return std::nullopt;
+  }
+  const PipeEdge *pipeEdge = pipeGraph.getPipeEdgeForPipe(unit.pipe);
+  if (!pipeEdge) {
+    return std::nullopt;
+  }
+  // Static receiver addresses are derived from the pipe graph's physical slot
+  // assignment. Non-pipe DFB traffic can advance the hardware ring without a
+  // pipe post, so computed addressing requires the graph to prove that the
+  // receiver stream contains only pipe-delivered blocks.
+  if (!hasProvenPipeOnlyReceiverStreams(pipeGraph, *pipeEdge)) {
+    return std::nullopt;
+  }
+  std::optional<int64_t> receiverBatchSize =
+      getUniformReceiverBatchSize(pipeGraph, *pipeEdge);
+  if (!receiverBatchSize) {
+    return std::nullopt;
+  }
+  if (*receiverBatchSize <= 0 || receiverInfo.blockCount <= 0) {
+    return std::nullopt;
+  }
+  // The dynamic-slot lowering emits one contiguous NOC write. If the repeating
+  // receiver batch does not divide the physical DFB ring, a later batch can
+  // straddle the ring boundary and would require split-write lowering.
+  if (receiverInfo.blockCount % *receiverBatchSize != 0) {
+    return std::nullopt;
+  }
+  int64_t blockStrideBytes = getReceiverDFBBlockStrideBytes(receiverInfo);
+  int64_t staticTileByteOffset = getReceiverDFBStaticByteOffset(receiverInfo);
+  if (blockStrideBytes <= 0 || !llvm::isInt<32>(blockStrideBytes) ||
+      !llvm::isInt<32>(staticTileByteOffset) ||
+      !llvm::isInt<32>(*receiverInfo.receiverSlotIndex) ||
+      !llvm::isInt<32>(*receiverBatchSize) ||
+      !llvm::isInt<32>(receiverInfo.blockCount)) {
+    return std::nullopt;
+  }
+  int64_t maxBlockByteOffset =
+      (receiverInfo.blockCount - 1) * blockStrideBytes + staticTileByteOffset;
+  if (!llvm::isInt<32>(maxBlockByteOffset)) {
+    return std::nullopt;
+  }
+  return PipeComputedAddressInfo{receiverInfo.dfbIndex,
+                                 /*baseCompileTimeArgIndex=*/0,
+                                 *receiverInfo.receiverSlotIndex,
+                                 *receiverBatchSize,
+                                 receiverInfo.blockCount,
+                                 blockStrideBytes,
+                                 staticTileByteOffset,
+                                 std::nullopt};
+}
+
+/// Temporary computed-address allocation before the final resource plan is
+/// copied onto each transfer-create op in an allocation unit.
+struct ComputedAddressPlan {
+  llvm::DenseMap<unsigned, PipeComputedAddressInfo> infoByUnitIndex;
+  llvm::MapVector<FuncOp, SmallVector<PipeComputedAddressCounterInitInfo>>
+      counterInitializations;
+};
+
+static ComputedAddressPlan
+buildComputedAddressPlan(ModuleOp mod,
+                         MutableArrayRef<PipeTransferAllocationUnit> units,
+                         const PipeGraph &pipeGraph, bool updateFunctionAttrs) {
+  ComputedAddressPlan plan;
+
+  struct Candidate {
+    unsigned unitIndex = 0;
+    FuncOp senderFunc;
+    PipeComputedAddressInfo computedAddress;
+  };
+  SmallVector<Candidate> candidates;
+  llvm::MapVector<FuncOp, llvm::SmallSetVector<int64_t, 4>> dfbIndicesByFunc;
+
+  for (auto indexedUnit : llvm::enumerate(units)) {
+    PipeTransferAllocationUnit &unit = indexedUnit.value();
+    const ReceiverDFBInfo *receiverInfo =
+        pipeGraph.lookupReceiverDFB(unit.pipe);
+    if (!receiverInfo) {
+      continue;
+    }
+    std::optional<PipeComputedAddressInfo> computedAddress =
+        getComputedAddressInfo(unit, *receiverInfo, pipeGraph);
+    if (!computedAddress) {
+      continue;
+    }
+    std::optional<FuncOp> senderFunc = getSingleSenderFunc(unit);
+    if (!senderFunc) {
+      continue;
+    }
+    candidates.push_back(Candidate{static_cast<unsigned>(indexedUnit.index()),
+                                   *senderFunc, *computedAddress});
+    dfbIndicesByFunc[*senderFunc].insert(receiverInfo->dfbIndex);
+  }
+
+  if (candidates.empty()) {
+    return plan;
+  }
+
+  OpBuilder builder(mod.getContext());
+  int64_t defaultBaseCTA = getNextAvailableDFBIndex(mod);
+  llvm::DenseMap<FuncOp, int64_t> baseCTAByFunc;
+  llvm::DenseMap<FuncOp, SmallVector<int64_t>> sortedDFBIndicesByFunc;
+  for (auto &[func, dfbSet] : dfbIndicesByFunc) {
+    SmallVector<int64_t> sortedDFBIndices(dfbSet.begin(), dfbSet.end());
+    llvm::sort(sortedDFBIndices);
+    sortedDFBIndicesByFunc[func] = sortedDFBIndices;
+
+    int64_t baseCTA = defaultBaseCTA;
+    if (auto attr = func->getAttrOfType<IntegerAttr>(kBaseCTAIndexAttrName)) {
+      baseCTA = attr.getInt();
+    }
+    baseCTAByFunc[func] = baseCTA;
+
+    SmallVector<int32_t> dfbAttrs =
+        llvm::map_to_vector(sortedDFBIndices, [](int64_t dfbIndex) {
+          return static_cast<int32_t>(dfbIndex);
+        });
+    if (updateFunctionAttrs) {
+      func->setAttr(kPipeComputedAddressDFBIndicesAttrName,
+                    builder.getDenseI32ArrayAttr(dfbAttrs));
+      func->setAttr(
+          kBaseCTAIndexAttrName,
+          builder.getI32IntegerAttr(baseCTA + sortedDFBIndices.size()));
+    }
+  }
+
+  llvm::MapVector<FuncOp, int64_t> nextDynamicSlotCounterIndexByFunc;
+  for (const Candidate &candidate : candidates) {
+    FuncOp senderFunc = candidate.senderFunc;
+    const SmallVector<int64_t> &dfbIndices = sortedDFBIndicesByFunc[senderFunc];
+    PipeComputedAddressInfo computedAddress = candidate.computedAddress;
+    auto dfbIt = llvm::find(dfbIndices, computedAddress.receiverDFBIndex);
+    assert(dfbIt != dfbIndices.end() && "candidate DFB missing from func list");
+    computedAddress.baseCompileTimeArgIndex =
+        baseCTAByFunc[senderFunc] + std::distance(dfbIndices.begin(), dfbIt);
+
+    if (computedAddress.blockCount != computedAddress.receiverBatchSize) {
+      int64_t counterIndex = nextDynamicSlotCounterIndexByFunc[senderFunc]++;
+      computedAddress.dynamicSlotCounterIndex = counterIndex;
+      plan.counterInitializations[senderFunc].push_back(
+          PipeComputedAddressCounterInitInfo{
+              counterIndex, computedAddress.receiverSlotIndex});
+    }
+    plan.infoByUnitIndex[candidate.unitIndex] = computedAddress;
+  }
+
+  return plan;
+}
+
+// Compact the per-source colors whose units need a resource into a dense
+// 0..N-1 index range, keyed by original color index. Returns the compacted map
+// and the maximum compacted count across sources.
+template <typename PredT>
+static std::pair<
+    llvm::MapVector<PipeSourceKey, llvm::DenseMap<int64_t, int64_t>>, int64_t>
+compactColors(const SourceColorMap &colorUsersBySource,
+              PredT unitNeedsResource) {
+  llvm::MapVector<PipeSourceKey, llvm::DenseMap<int64_t, int64_t>>
+      compactedBySource;
+  int64_t maxPerSource = 0;
+  for (const auto &[sourceKey, colorUsers] : colorUsersBySource) {
+    int64_t nextColor = 0;
+    llvm::DenseMap<int64_t, int64_t> &compacted = compactedBySource[sourceKey];
+    for (auto indexedColor : llvm::enumerate(colorUsers)) {
+      if (llvm::any_of(indexedColor.value(), unitNeedsResource)) {
+        compacted[static_cast<int64_t>(indexedColor.index())] = nextColor++;
+      }
+    }
+    maxPerSource = std::max(maxPerSource, nextColor);
+  }
+  return {std::move(compactedBySource), maxPerSource};
+}
+
+LogicalResult buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
+                                    PipeResourcePlan &info,
+                                    bool enableComputedAddresses,
+                                    const PipeCapacityPlan *pipeCapacityPlan,
+                                    bool updateComputedAddressAttrs) {
   DominanceInfo dominanceInfo(mod);
   PostDominanceInfo postDominanceInfo(mod);
   FailureOr<SmallVector<PipeTransferAllocationUnit>> maybeUnits =
@@ -1337,6 +1927,13 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, PipeResourcePlan &info) {
   SmallVector<PipeTransferAllocationUnit> &units = *maybeUnits;
   SourceColorMap colorUsersBySource =
       assignLiveIntervalColors(units, dominanceInfo);
+  ComputedAddressPlan computedAddressPlan;
+  if (enableComputedAddresses) {
+    computedAddressPlan = buildComputedAddressPlan(mod, units, pipeGraph,
+                                                   updateComputedAddressAttrs);
+  }
+  info.computedAddressCounterInitializations =
+      computedAddressPlan.counterInitializations;
 
   llvm::SmallSetVector<int64_t, 4> activePipeNetIds;
   for (const PipeTransferAllocationUnit &unit : units) {
@@ -1356,12 +1953,10 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, PipeResourcePlan &info) {
         firstSourceLocalReadyCounterSemIdx, receiverCompletionSemIdx + 1);
   }
 
-  int64_t maxReadyCountersPerSource = 0;
-  for (const auto &[sourceKey, colorUsers] : colorUsersBySource) {
-    (void)sourceKey;
-    maxReadyCountersPerSource =
-        std::max<int64_t>(maxReadyCountersPerSource, colorUsers.size());
-  }
+  auto [readyColorBySourceColor, maxReadyCountersPerSource] =
+      compactColors(colorUsersBySource, [&](unsigned unitIndex) {
+        return usesSenderReadyCounter(units[unitIndex], pipeCapacityPlan);
+      });
 
   // Use one ready-counter kind per kernel so host allocation has one compact
   // descriptor layout.
@@ -1372,41 +1967,64 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, PipeResourcePlan &info) {
   llvm::MapVector<PipeSourceKey, SmallVector<int64_t>> globalIndexBySourceColor;
   int64_t nextGlobalSemaphoreIndex = 0;
   if (useGlobalReadyCounters) {
-    for (const auto &[sourceKey, colorUsers] : colorUsersBySource) {
+    for (const auto &[sourceKey, readyColors] : readyColorBySourceColor) {
       SmallVector<int64_t> &indices = globalIndexBySourceColor[sourceKey];
-      indices.reserve(colorUsers.size());
-      for (unsigned color = 0, colorCount = colorUsers.size();
+      indices.reserve(readyColors.size());
+      for (unsigned color = 0, colorCount = readyColors.size();
            color < colorCount; ++color) {
         indices.push_back(nextGlobalSemaphoreIndex++);
       }
     }
   }
 
-  int64_t maxAddressTableBytes = 0;
-  for (const auto &[sourceKey, colorUsers] : colorUsersBySource) {
-    (void)sourceKey;
-    maxAddressTableBytes = std::max<int64_t>(
-        maxAddressTableBytes, colorUsers.size() * kPipeAddressWordBytes);
-  }
+  auto [addressColorBySourceColor, maxAddressColorsPerSource] =
+      compactColors(colorUsersBySource, [&](unsigned unitIndex) {
+        return computedAddressPlan.infoByUnitIndex.find(unitIndex) ==
+               computedAddressPlan.infoByUnitIndex.end();
+      });
+  int64_t maxAddressTableBytes =
+      maxAddressColorsPerSource * kPipeAddressWordBytes;
 
-  for (const PipeTransferAllocationUnit &unit : units) {
+  for (auto indexedUnit : llvm::enumerate(units)) {
+    const PipeTransferAllocationUnit &unit = indexedUnit.value();
     PipeSourceKey sourceKey = getPipeSourceKey(unit.pipeType);
-    PipeReadyCounterInfo readyCounter = PipeReadyCounterInfo::localSemaphore(
-        firstSourceLocalReadyCounterSemIdx + unit.resourceColor);
-    if (useGlobalReadyCounters) {
-      auto globalIt = globalIndexBySourceColor.find(sourceKey);
-      assert(globalIt != globalIndexBySourceColor.end());
-      assert(unit.resourceColor <
-             static_cast<int64_t>(globalIt->second.size()));
-      readyCounter = PipeReadyCounterInfo::globalSemaphore(
-          globalIt->second[unit.resourceColor]);
+    std::optional<PipeReadyCounterInfo> readyCounter;
+    if (usesSenderReadyCounter(unit, pipeCapacityPlan)) {
+      auto sourceIt = readyColorBySourceColor.find(sourceKey);
+      assert(sourceIt != readyColorBySourceColor.end());
+      auto colorIt = sourceIt->second.find(unit.resourceColor);
+      assert(colorIt != sourceIt->second.end());
+      int64_t readyColor = colorIt->second;
+      readyCounter = PipeReadyCounterInfo::localSemaphore(
+          firstSourceLocalReadyCounterSemIdx + readyColor);
+      if (useGlobalReadyCounters) {
+        auto globalIt = globalIndexBySourceColor.find(sourceKey);
+        assert(globalIt != globalIndexBySourceColor.end());
+        assert(readyColor < static_cast<int64_t>(globalIt->second.size()));
+        readyCounter =
+            PipeReadyCounterInfo::globalSemaphore(globalIt->second[readyColor]);
+      }
+    }
+
+    auto computedIt = computedAddressPlan.infoByUnitIndex.find(
+        static_cast<unsigned>(indexedUnit.index()));
+    PipeAddressStorageInfo addressStorage;
+    if (computedIt != computedAddressPlan.infoByUnitIndex.end()) {
+      addressStorage =
+          PipeAddressStorageInfo::computedReceiverDFB(computedIt->second);
+    } else {
+      auto sourceIt = addressColorBySourceColor.find(sourceKey);
+      assert(sourceIt != addressColorBySourceColor.end());
+      auto colorIt = sourceIt->second.find(unit.resourceColor);
+      assert(colorIt != sourceIt->second.end());
+      addressStorage = PipeAddressStorageInfo::receiverPublishedAddressTable(
+          PipeSramAddressTableInfo{colorIt->second * kPipeAddressWordBytes});
     }
     PipeResourceInfo pipeResource{
         unit.pipe,
         unit.transferContract,
         readyCounter,
-        PipeAddressStorageInfo{PipeSramAddressTableInfo{unit.resourceColor *
-                                                        kPipeAddressWordBytes}},
+        addressStorage,
     };
     for (Operation *transferCreateOp : unit.transferCreateOps) {
       info.resources.insert({transferCreateOp, pipeResource});
@@ -1421,7 +2039,8 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, PipeResourcePlan &info) {
 }
 
 PipeResourceRequirements
-getPipeResourceRequirements(const PipeResourcePlan &info) {
+getPipeResourceRequirements(const PipeResourcePlan &info,
+                            const PipeCapacityPlan *pipeCapacityPlan) {
   struct RequirementsObserver final : PipeReadyCounterObserver {
     int64_t highestSyncSemaphoreIndex = -1;
     int64_t highestGlobalSemaphoreIndex = -1;
@@ -1443,11 +2062,19 @@ getPipeResourceRequirements(const PipeResourcePlan &info) {
   }
   for (const auto &[transferCreateOp, resource] : info.resources) {
     (void)transferCreateOp;
-    resource.readyCounter.observe(observer);
+    if (resource.readyCounter) {
+      resource.readyCounter->observe(observer);
+    }
+  }
+
+  int64_t syncSemaphoreCount = observer.highestSyncSemaphoreIndex + 1;
+  if (pipeCapacityPlan) {
+    syncSemaphoreCount =
+        std::max(syncSemaphoreCount, pipeCapacityPlan->getSyncSemaphoreCount());
   }
 
   return PipeResourceRequirements{
-      observer.highestSyncSemaphoreIndex + 1,
+      syncSemaphoreCount,
       observer.highestGlobalSemaphoreIndex + 1,
       info.sramScratch.bytes,
   };
@@ -1457,10 +2084,12 @@ getPipeResourceRequirements(const PipeResourcePlan &info) {
 /// highest-id owner is tracked only to make over-limit diagnostics actionable.
 LogicalResult
 verifyPipeResourcePlanFitsHardware(ModuleOp mod, const PipeResourcePlan &info,
+                                   const PipeCapacityPlan *pipeCapacityPlan,
                                    const PipeResourceRequirements &reqs) {
   enum class PipeSemaphoreKind {
     ReceiverCompletion,
     SenderReady,
+    SenderCapacity,
   };
 
   struct HighestSemaphore {
@@ -1494,8 +2123,15 @@ verifyPipeResourcePlanFitsHardware(ModuleOp mod, const PipeResourcePlan &info,
   }
   for (const auto &[transferCreateOp, resource] : info.resources) {
     (void)transferCreateOp;
-    SenderReadyObserver observer(highest, resource.pipe);
-    resource.readyCounter.observe(observer);
+    if (resource.readyCounter) {
+      SenderReadyObserver observer(highest, resource.pipe);
+      resource.readyCounter->observe(observer);
+    }
+  }
+  if (pipeCapacityPlan &&
+      pipeCapacityPlan->getSyncSemaphoreCount() - 1 > highest.index) {
+    highest = HighestSemaphore{pipeCapacityPlan->getSyncSemaphoreCount() - 1,
+                               PipeSemaphoreKind::SenderCapacity, std::nullopt};
   }
 
   int64_t requiredSemaphoreIds = reqs.syncSemaphoreCount;
@@ -1525,6 +2161,9 @@ verifyPipeResourcePlanFitsHardware(ModuleOp mod, const PipeResourcePlan &info,
     note << "sender-ready counter for ";
     assert(highest.pipe && "sender-ready resource must have a pipe");
     appendPipe(*highest.pipe);
+    break;
+  case PipeSemaphoreKind::SenderCapacity:
+    note << "sender-capacity counter";
     break;
   }
 
