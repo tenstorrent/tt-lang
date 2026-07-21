@@ -13,7 +13,7 @@ This module provides a single reusable implementation of kernel argument
 building and execution.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -99,6 +99,7 @@ class KernelSpec:
         core_ranges: Optional per-kernel ttnn.CoreRangeSet. When set, this
             specialized kernel binary is dispatched only to these cores. When None,
             the whole-grid core_ranges passed to build_kernel_descriptors is used.
+        compiler_include_paths: Additional -I paths for the JIT compiler.
     """
 
     path: str
@@ -106,6 +107,7 @@ class KernelSpec:
     tensor_indices: List[int]
     config: Any
     core_ranges: Optional[Any] = None
+    compiler_include_paths: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -217,6 +219,7 @@ def build_kernel_descriptors(
             compile_time_args=kernel_compile_time_args,
             common_runtime_args=common_runtime_args,
             config=spec.config,
+            compiler_include_paths=spec.compiler_include_paths,
         )
         kernel_descriptors.append(kernel_desc)
 

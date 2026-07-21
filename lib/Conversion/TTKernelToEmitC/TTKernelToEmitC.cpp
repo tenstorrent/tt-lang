@@ -2018,6 +2018,50 @@ public:
 } // namespace
 
 namespace {
+class TTKernelToEmitCOpaqueCallRewriter
+    : public OpConversionPattern<ttkernel::OpaqueCallOp> {
+public:
+  using OpConversionPattern<ttkernel::OpaqueCallOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ttkernel::OpaqueCallOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    SmallVector<Type> resultTypes;
+    for (Type resTy : op.getResultTypes()) {
+      Type converted = getTypeConverter()->convertType(resTy);
+      if (!converted) {
+        return rewriter.notifyMatchFailure(op,
+                                           "failed to convert result type");
+      }
+      resultTypes.push_back(converted);
+    }
+
+    ArrayAttr emitcTemplateArgs;
+    if (auto srcTA = op.getTemplateArgs()) {
+      SmallVector<Attribute> opaqueArgs;
+      for (Attribute a : *srcTA) {
+        auto intAttr = mlir::dyn_cast<IntegerAttr>(a);
+        if (!intAttr) {
+          return rewriter.notifyMatchFailure(
+              op, "template_args elements must be integer attributes");
+        }
+        opaqueArgs.push_back(emitc::OpaqueAttr::get(
+            op.getContext(), std::to_string(intAttr.getInt())));
+      }
+      emitcTemplateArgs = ArrayAttr::get(op.getContext(), opaqueArgs);
+    }
+
+    auto callOp = rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, resultTypes, op.getCallee(), nullptr, emitcTemplateArgs,
+        adaptor.getArgOperands());
+    callOp->setAttr("ttlang.opaque_header",
+                    rewriter.getStringAttr(op.getHeader()));
+    return success();
+  }
+};
+} // namespace
+
+namespace {
 template <typename Op, typename Adaptor = typename Op::Adaptor>
 class TTKernelMacroOpToEmitCOpRewriter : public OpConversionPattern<Op> {
 public:
@@ -2643,6 +2687,7 @@ public:
         TTKernelToEmitCArgValRewriter<ttkernel::GetArgValOp>,
         TTKernelToEmitCArgValRewriter<ttkernel::GetCommonArgValOp>,
         TTKernelToEmitCDPrintRewriter,
+        TTKernelToEmitCOpaqueCallRewriter,
         TTKernelToEmitCGetMyLogicalMeshPositionOpRewriter,
         TTKernelMacroOpToEmitCOpRewriter<ttkernel::MemZerosBaseOp>,
         TTKernelMacroOpToEmitCOpRewriter<ttkernel::MemZerosSizeOp>,
