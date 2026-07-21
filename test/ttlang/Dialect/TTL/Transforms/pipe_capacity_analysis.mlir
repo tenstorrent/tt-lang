@@ -106,7 +106,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
-// Purpose: when one receiver DFB is written by two pipe edges, a receiver pop
+// Purpose: when one receiver DFB is written by two transfer nodes, a receiver pop
 // names only the DFB, so the analysis cannot attribute the released capacity to
 // one sender. Both endpoints are rejected for having more than one writer
 // endpoint, the central safety predicate for the capacity protocol.

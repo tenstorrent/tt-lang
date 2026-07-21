@@ -431,8 +431,8 @@ struct PipeScheduleNode {
   SmallVector<PipeScheduleEdge> successors;
 };
 
-/// Retain static occurrences because one PipeKey can represent repeated FIFO
-/// rendezvous.
+/// Retain every send for one logical pipe in IR order so receiver posts can be
+/// paired with the corresponding send.
 struct PipeSendOccurrences {
   PipeType pipeType;
   SmallVector<PipeScheduleNodeId> nodes;
@@ -563,9 +563,9 @@ bool cycleContainsEdge(ArrayRef<PipeScheduleNode> nodes,
     if (cycle[idx] != predecessor || cycle[idx + 1] != successor) {
       continue;
     }
-    std::optional<PipeScheduleEdgeKind> actualKind =
+    std::optional<PipeScheduleEdgeKind> maybeActualKind =
         getPipeScheduleEdgeKind(nodes, predecessor, successor);
-    if (actualKind && *actualKind == kind) {
+    if (maybeActualKind && *maybeActualKind == kind) {
       return true;
     }
   }
@@ -580,9 +580,10 @@ bool cycleHasProgramOrderPath(ArrayRef<PipeScheduleNode> nodes,
   assert(startCycleIndex < endCycleIndex &&
          "expected a forward range within the reported cycle");
   for (std::size_t idx = startCycleIndex; idx < endCycleIndex; ++idx) {
-    std::optional<PipeScheduleEdgeKind> edgeKind =
+    std::optional<PipeScheduleEdgeKind> maybeEdgeKind =
         getPipeScheduleEdgeKind(nodes, cycle[idx], cycle[idx + 1]);
-    if (!edgeKind || *edgeKind != PipeScheduleEdgeKind::ProgramOrder) {
+    if (!maybeEdgeKind ||
+        *maybeEdgeKind != PipeScheduleEdgeKind::ProgramOrder) {
       return false;
     }
   }
@@ -698,15 +699,15 @@ void emitPipeScheduleCycleNotes(InFlightDiagnostic &diag,
   for (std::size_t idx = 0, count = cycle.size() - 1; idx < count; ++idx) {
     PipeScheduleNodeId predecessorId = cycle[idx];
     PipeScheduleNodeId successorId = cycle[idx + 1];
-    std::optional<PipeScheduleEdgeKind> edgeKind =
+    std::optional<PipeScheduleEdgeKind> maybeEdgeKind =
         getPipeScheduleEdgeKind(nodes, predecessorId, successorId);
-    if (!edgeKind) {
+    if (!maybeEdgeKind) {
       continue;
     }
     const PipeScheduleNode &predecessor = nodes[predecessorId];
     const PipeScheduleNode &successor = nodes[successorId];
     diag.attachNote(successor.op->getLoc())
-        << describePipeScheduleEdge(predecessor, successor, *edgeKind);
+        << describePipeScheduleEdge(predecessor, successor, *maybeEdgeKind);
     if (idx + 1 >= kMaxPipeScheduleCycleNotes) {
       break;
     }
@@ -912,9 +913,9 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
     }
   }
 
-  if (std::optional<SmallVector<PipeScheduleNodeId>> cycle =
+  if (std::optional<SmallVector<PipeScheduleNodeId>> maybeCycle =
           findPipeScheduleCycle(nodes)) {
-    emitPipeScheduleCycleDiagnostic(nodes, *cycle, state);
+    emitPipeScheduleCycleDiagnostic(nodes, *maybeCycle, state);
   }
 }
 
