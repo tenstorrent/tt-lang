@@ -124,8 +124,8 @@ jobs:
                 include:
                     - runner: n150
                       labels: '["tt-ubuntu-2204-n150-stable"]'
-                    - runner: qb2-blackhole
-                      labels: '["in-service", "qb2-blackhole"]'
+                    - runner: galaxy-bh
+                      labels: '["in-service", "galaxy-bh"]'
         uses: ./.github/workflows/call-test-hardware.yml
         secrets: inherit
         with:
