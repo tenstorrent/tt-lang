@@ -133,7 +133,7 @@ jobs:
       - name: Tutorial examples
         run: |
           source build/env/activate
-          bash .github/scripts/run-tutorials.sh .
+          .github/scripts/run-hardware-pytests.sh test/tutorial build/test/tutorial-report
 
       - name: Upload test reports
         uses: actions/upload-artifact@v7
@@ -145,4 +145,5 @@ jobs:
             build/test/python-lit-report*.xml
             build/test/pytest-report*.xml
             build/test/sim-report.xml
+            build/test/tutorial-report*.xml
           retention-days: 7
