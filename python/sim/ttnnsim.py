@@ -1304,6 +1304,18 @@ def _dtype_element_size(dtype: torch.dtype) -> int:
     return torch.tensor([], dtype=dtype).element_size()
 
 
+class Tile:
+    """Minimal stand-in for ``ttnn.Tile`` exposing ``tile_shape``.
+
+    The simulator models every tensor with the single fixed ``TILE_SHAPE``
+    (32x32), so this carries no per-tensor state.
+    """
+
+    @property
+    def tile_shape(self) -> Shape:
+        return TILE_SHAPE
+
+
 class Tensor:
     """TTNN-like Tensor wrapper built on torch.Tensor.
 
@@ -1349,6 +1361,25 @@ class Tensor:
     @property
     def shape(self) -> Shape:
         return tuple(self._tensor.shape)
+
+    @property
+    def padded_shape(self) -> Shape:
+        """Shape after tile-alignment padding.
+
+        Mirrors ``ttnn.Tensor.padded_shape``: the shape of the stored data,
+        including any zero padding added to reach ``TILE_SHAPE`` multiples for
+        ``TILE_LAYOUT`` tensors. For ``ROW_MAJOR_LAYOUT`` this equals ``shape``.
+        """
+        return tuple(self._tensor.shape)
+
+    @property
+    def tile(self) -> Tile:
+        """Tile descriptor, mirroring ``ttnn.Tensor.tile``.
+
+        Exposes ``tile_shape`` (the 32x32 ``TILE_SHAPE``); the simulator uses a
+        single fixed tile size for every tensor.
+        """
+        return Tile()
 
     @property
     def dtype(self) -> Any:
@@ -1989,6 +2020,22 @@ def from_torch(
     else:
         eff_dtype = dtype
         eff_mc = memory_config if memory_config is not None else DRAM_MEMORY_CONFIG
+
+    # Accept rank-0 (scalar) and rank-1 (vector) inputs and pad them up, as ttnn
+    # does: tt-metal's nightly reduction suite feeds 0-D / 1-D (and 0-volume)
+    # shapes straight through ttnn.from_torch(..., layout=ttnn.TILE_LAYOUT,
+    # device=device) (tests/ttnn/nightly/unit_tests/operations/reduction/
+    # test_reduction_ops.py, test_generic_ops). A TILE_LAYOUT tensor needs at
+    # least two dimensions to tile, so leading unit dimensions are prepended
+    # (a length-N vector becomes a single 1xN row) before tile-alignment padding
+    # fills each 32x32 tile. ROW_MAJOR_LAYOUT keeps rank-1 as-is and only lifts a
+    # bare scalar to a length-1 vector. Unlike ttnn, the simulator does not track
+    # a separate logical shape, so `.shape`/`.padded_shape` report the padded
+    # shape (consistent with tile-aligned 2-D inputs).
+    if layout == TILE_LAYOUT and tensor.ndim < 2:
+        tensor = tensor.reshape((1,) * (2 - tensor.ndim) + tuple(tensor.shape))
+    elif layout == ROW_MAJOR_LAYOUT and tensor.ndim == 0:
+        tensor = tensor.reshape(1)
 
     tensor = _pad_to_tile_alignment(tensor, layout)
 

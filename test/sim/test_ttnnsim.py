@@ -873,9 +873,33 @@ def test_from_torch_tile_layout_pads_non_tile_aligned_shapes():
     assert torch.all(odd.to_torch()[4:, :] == 0)
     assert torch.all(odd.to_torch()[:, 4:] == 0)
 
-    # 1-D tensors still cannot be tile-laid out (no second tile dim to pad).
-    with pytest.raises(ValueError, match="at least 2 dimensions"):
-        ttnn.from_torch(torch.ones((32,)), layout=ttnn.TILE_LAYOUT)
+    # 0-D / 1-D inputs are accepted and padded up to a full tile, matching ttnn:
+    # tt-metal's nightly reduction suite feeds 0-D / 1-D (and 0-volume) shapes
+    # straight through ttnn.from_torch(..., layout=ttnn.TILE_LAYOUT, device=device)
+    # (tests/ttnn/nightly/unit_tests/operations/reduction/test_reduction_ops.py,
+    # test_generic_ops parametrizes tensor_shape over (), (2,), ...). A rank-1
+    # vector is treated as a single 1xN row; the simulator reports the padded
+    # shape as .shape (as it does for tile-aligned 2-D inputs above), and
+    # .padded_shape / .tile expose the tile geometry the spec examples read.
+    vec = ttnn.from_torch(
+        torch.arange(32, dtype=torch.float32), layout=ttnn.TILE_LAYOUT
+    )
+    assert vec.shape == (32, 32)
+    assert vec.padded_shape == (32, 32)
+    assert vec.tile.tile_shape == (32, 32)
+    assert torch.equal(vec.to_torch()[0, :], torch.arange(32, dtype=torch.float32))
+    assert torch.all(vec.to_torch()[1:, :] == 0)
+
+    long_vec = ttnn.from_torch(torch.ones((128,)), layout=ttnn.TILE_LAYOUT)
+    assert long_vec.shape == (32, 128)
+
+    scalar_0d = ttnn.from_torch(
+        torch.tensor(3.5, dtype=torch.float32), layout=ttnn.TILE_LAYOUT
+    )
+    assert scalar_0d.shape == (32, 32)
+    assert scalar_0d.to_torch()[0, 0].item() == 3.5
+    assert torch.all(scalar_0d.to_torch()[1:, :] == 0)
+    assert torch.all(scalar_0d.to_torch()[:, 1:] == 0)
 
     # rand / empty take a shape directly; they pad transparently too.
     assert ttnn.rand((32, 1)).shape == (32, 32)
