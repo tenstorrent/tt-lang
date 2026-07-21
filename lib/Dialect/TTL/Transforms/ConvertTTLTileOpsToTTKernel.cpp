@@ -740,17 +740,12 @@ struct TTLTileReduceToTTKernel : OpConversionPattern<TileReduceOp> {
         ttk::ReduceTypeAttr::get(op.getContext(), ttkReduceType),
         ttk::ReduceDimAttr::get(op.getContext(), op.getReduceDim()));
 
-    bool useFullFp32 = shouldUseFullFp32Reduce(op, fullFp32);
     if (fullFp32 && isBlackholeTarget(op) &&
         op.getReduceDim() == ttk::ReduceDim::Row) {
       op.emitWarning()
-          << "full-fp32 row reduce is disabled on Blackhole because of issue "
-             "#533; using non-full-fp32 reduce lowering";
+          << "full-fp32 row reduce is unavailable on Blackhole (tt-metal "
+             "#47311); using non-full-fp32 reduce lowering";
     }
-    if (useFullFp32 && getKernelBoolAttr(op, kFp32DestAccEnAttrName)) {
-      reduceOp->setAttr("full_fp32", rewriter.getUnitAttr());
-    }
-
     // Propagate output CB index for per-op init insertion.
     if (auto cbIdxAttr =
             op->getAttrOfType<IntegerAttr>(kReduceOutputCBIndexAttrName)) {

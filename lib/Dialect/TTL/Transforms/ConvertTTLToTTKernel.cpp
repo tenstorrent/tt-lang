@@ -1313,7 +1313,6 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
       return failure();
     }
     op->removeAttr(kKernelThreadAttrName);
-    op->removeAttr(kNocIndexAttrName);
     op->setAttr("ttkernel.thread", ttlAttr);
 
     // If function has arguments, we need to transform them

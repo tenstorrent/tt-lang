@@ -1395,7 +1395,7 @@ def TTL_TileMatmulBlockOp : TTL_TileOp<"tile_matmul_block",
     is forwarded to matmul_block's transpose argument and selects the
     transposed per-K addressing during TTKernel lowering.
 
-    Maps to ttkernel.mm_block_init + ttkernel.experimental::matmul_block.
+    Maps to ttkernel.mm_block_init + ttkernel.matmul_block.
   }];
   let arguments = (ins TTL_TileOrTensor:$lhs, TTL_TileOrTensor:$rhs,
                        Optional<TTL_TileOrTensor>:$accumulator,
