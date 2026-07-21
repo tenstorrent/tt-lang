@@ -8,6 +8,11 @@ on:
         required: false
         type: string
         default: 'n150'
+      runner_labels:
+        description: 'JSON array of runner labels, e.g. ["in-service","qb2-blackhole"]'
+        required: false
+        type: string
+        default: '["tt-ubuntu-2204-n150-stable"]'
       timeout:
         description: 'Job timeout in minutes'
         required: false
@@ -24,6 +29,11 @@ on:
         required: false
         type: string
         default: 'n150'
+      runner_labels:
+        description: 'JSON array of runner labels, e.g. ["in-service","qb2-blackhole"]'
+        required: false
+        type: string
+        default: '["tt-ubuntu-2204-n150-stable"]'
       timeout:
         description: 'Job timeout in minutes'
         required: false
@@ -41,7 +51,7 @@ permissions:
 jobs:
   test-n150:
     name: "Hardware Tests (${{ inputs.runs-on }})"
-    runs-on: ${{ format('tt-ubuntu-2204-{0}-stable', inputs.runs-on) }}
+    runs-on: ${{ fromJSON(inputs.runner_labels) }}
     timeout-minutes: ${{ fromJSON(inputs.timeout) }}
 
     container:
