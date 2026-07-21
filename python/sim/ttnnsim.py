@@ -50,7 +50,13 @@ except ImportError:
 
 from .constants import TILE_SHAPE
 from .trace import TRACE
-from .typedefs import Count, IndexType, Selector, Shape, TensorKey
+from .typedefs import Count, IndexType, Selector, Size, TensorKey
+
+# Number of shards along each tensor dimension for a sharded tensor;
+# math.prod(ShardGrid) equals the number of participating cores. This is a
+# distinct concept from a tensor Shape and from a physical CoreGrid, and ttnn
+# has no public named type for it, so the simulator names it here.
+ShardGrid = Tuple[Size, ...]
 
 # Public constants (mirror TTL constants)
 TILE_SIZE: int = TILE_SHAPE[0]
@@ -156,7 +162,7 @@ class ShardSpec:
     def __init__(
         self,
         *args: Any,
-        shard_grid: Optional[Shape] = None,
+        shard_grid: Optional[ShardGrid] = None,
         shard_shape: Optional[Sequence[int]] = None,
         orientation: ShardOrientation = ShardOrientation.ROW_MAJOR,
         grid: Optional["CoreRangeSet"] = None,
@@ -192,7 +198,7 @@ class ShardSpec:
             )
 
     @property
-    def shard_grid(self) -> Shape:
+    def shard_grid(self) -> ShardGrid:
         if self._shard_grid is None:
             raise ValueError(
                 "ShardSpec uses a CoreRangeSet grid; build MemoryConfig(TensorMemoryLayout, BufferType, spec) to resolve shard_grid"
@@ -210,7 +216,7 @@ class ShardSpec:
             TensorMemoryLayout.HEIGHT_SHARDED,
             TensorMemoryLayout.WIDTH_SHARDED,
         ):
-            sg: Shape = (cg.num_cores,)
+            sg: ShardGrid = (cg.num_cores,)
         elif layout == TensorMemoryLayout.BLOCK_SHARDED:
             sg = (cg.y, cg.x)
         else:
@@ -271,7 +277,7 @@ class NdShardSpec:
 
     shard_shape: Shape
     core_ranges: Optional["CoreRangeSet"] = None
-    shard_grid: Optional[Shape] = None
+    shard_grid: Optional[ShardGrid] = None
     distribution: ShardDistributionStrategy = ShardDistributionStrategy.ROUND_ROBIN_1D
     num_cores: Optional[int] = None
 
@@ -711,7 +717,7 @@ def _nd_shard_spec_for_dims(
         for i in range(ndim)
     )
     return NdShardSpec(
-        shard_shape=shard_shape,
+        shard_shape=Shape(shard_shape),
         shard_grid=shard_grid_t,
         distribution=ShardDistributionStrategy.GRID_2D,
         core_ranges=core_ranges,
@@ -792,7 +798,7 @@ class TensorSpec:
         core_ranges: CoreRangeSet,
     ) -> TensorSpec:
         """Experimental ND sharding across the given tensor dimensions."""
-        nd = _nd_shard_spec_for_dims(self.shape, dims, core_ranges)
+        nd = _nd_shard_spec_for_dims(Shape(self.shape), dims, core_ranges)
         mc = MemoryConfig(strategy=ShardingStrategy.ND_SHARDED, nd_shard_spec=nd)
         return replace(
             self,
@@ -816,7 +822,7 @@ class TensorSpec:
         For ND sharding derived from ``shard_dims`` and core count instead, use
         :meth:`sharded_across_dims`.
         """
-        nd = NdShardSpec(shard_shape=tuple(shard_shape), core_ranges=core_ranges)
+        nd = NdShardSpec(shard_shape=Shape(shard_shape), core_ranges=core_ranges)
         mc = MemoryConfig(strategy=ShardingStrategy.ND_SHARDED, nd_shard_spec=nd)
         return replace(
             self,
@@ -1206,13 +1212,13 @@ def tile_shape_from_shape(shape: Shape) -> Shape:
     if len(shape) == 1:
         w = shape[0]
         tk = 1 if w == 1 else w // TILE_SHAPE[0]
-        return (tk,)
+        return Shape((tk,))
     h, w = shape[-2], shape[-1]
     tm = 1 if h == 1 else h // TILE_SHAPE[0]
     tk = 1 if w == 1 else w // TILE_SHAPE[1]
     if len(shape) > 2:
-        return (*shape[:-2], tm, tk)
-    return (tm, tk)
+        return Shape((*shape[:-2], tm, tk))
+    return Shape((tm, tk))
 
 
 def tile_count_from_shape(layout: IndexType, shape: Shape) -> int:
@@ -1299,6 +1305,22 @@ def _maybe_resolve_nd_shard_spec_for_tensor(
     )
 
 
+class Shape(tuple[int, ...]):
+    """Constructible tuple of dimensions, mirroring ``ttnn.Shape``.
+
+    Accepts ``Shape([d0, d1, ...])``, ``Shape((d0, d1, ...))``, or
+    ``Shape(d0, d1, ...)``. Instances are ordinary tuples, so they interoperate
+    with the tuple-based shapes (``Shape``) used throughout the simulator:
+    indexing, equality with plain tuples, passing to ``torch`` factory
+    functions, etc.
+    """
+
+    def __new__(cls, *dims: "int | Sequence[int]") -> "Shape":
+        if len(dims) == 1 and isinstance(dims[0], (list, tuple)):
+            return super().__new__(cls, dims[0])
+        return super().__new__(cls, cast("Sequence[int]", dims))
+
+
 def _dtype_element_size(dtype: torch.dtype) -> int:
     """Return the element size in bytes for a torch dtype."""
     return torch.tensor([], dtype=dtype).element_size()
@@ -1313,7 +1335,7 @@ class Tile:
 
     @property
     def tile_shape(self) -> Shape:
-        return TILE_SHAPE
+        return Shape(TILE_SHAPE)
 
 
 class Tensor:
@@ -1337,7 +1359,7 @@ class Tensor:
         self._layout: IndexType = layout
         if memory_config.strategy == ShardingStrategy.ND_SHARDED:
             self.memory_config: MemoryConfig = _maybe_resolve_nd_shard_spec_for_tensor(
-                tuple(tensor.shape), memory_config
+                Shape(tensor.shape), memory_config
             )
         else:
             self.memory_config: MemoryConfig = memory_config
@@ -1360,7 +1382,7 @@ class Tensor:
 
     @property
     def shape(self) -> Shape:
-        return tuple(self._tensor.shape)
+        return Shape(self._tensor.shape)
 
     @property
     def padded_shape(self) -> Shape:
@@ -1370,7 +1392,7 @@ class Tensor:
         including any zero padding added to reach ``TILE_SHAPE`` multiples for
         ``TILE_LAYOUT`` tensors. For ``ROW_MAJOR_LAYOUT`` this equals ``shape``.
         """
-        return tuple(self._tensor.shape)
+        return Shape(self._tensor.shape)
 
     @property
     def tile(self) -> Tile:
@@ -1602,7 +1624,7 @@ class Tensor:
                     f"element_slice_starts requires explicit slice bounds on dimension {i}, got {s!r}"
                 )
             starts.append(s.start)
-        return tuple(starts)
+        return Shape(starts)
 
     def __getitem__(self, key: TensorKey) -> "Tensor":
         # Python passes a bare int/slice (not a tuple) for single-element indexing.
@@ -1947,6 +1969,18 @@ def empty(
     return Tensor(_pad_to_tile_alignment(raw, layout), layout, dtype=dtype)
 
 
+def zeros(
+    shape: Shape,
+    dtype: DType = bfloat16,
+    layout: IndexType = TILE_LAYOUT,
+    device: object = None,
+    memory_config: object = None,
+) -> Tensor:
+    """Create a zero-filled tensor with given shape, dtype, and layout."""
+    raw = torch.zeros(shape, dtype=_promote_dtype(dtype))
+    return Tensor(_pad_to_tile_alignment(raw, layout), layout, dtype=dtype)
+
+
 def to_torch(
     t: Union[Tensor, torch.Tensor],
     mesh_composer: Optional[ConcatMeshToTensor] = None,
@@ -2120,7 +2154,7 @@ def create_sharded_memory_config(
 
     match strategy:
         case ShardStrategy.HEIGHT | ShardStrategy.WIDTH:
-            shard_grid: Shape = (core_grid.num_cores,)
+            shard_grid: ShardGrid = (core_grid.num_cores,)
         case ShardStrategy.BLOCK:
             shard_grid = (core_grid.y, core_grid.x)
 
@@ -2188,6 +2222,24 @@ def relu(a: Tensor) -> Tensor:
     if _is_dry_run():
         return a._zeros_like()
     return Tensor(torch.relu(a.to_torch()))
+
+
+def abs(a: Tensor) -> Tensor:
+    """Element-wise absolute value (simulator shim for ttnn.abs)."""
+    if _is_dry_run():
+        return a._zeros_like()
+    return Tensor(torch.abs(a.to_torch()))
+
+
+def exp(a: Tensor, fast_and_approximate_mode: bool = False) -> Tensor:
+    """Element-wise exponential (simulator shim for ttnn.exp).
+
+    ``fast_and_approximate_mode`` is accepted for ttnn API compatibility and
+    ignored; the simulator always computes the exact ``torch.exp``.
+    """
+    if _is_dry_run():
+        return a._zeros_like()
+    return Tensor(torch.exp(a.to_torch()))
 
 
 def split_work_to_cores(
