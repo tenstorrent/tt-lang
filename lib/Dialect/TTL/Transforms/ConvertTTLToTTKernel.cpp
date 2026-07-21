@@ -1200,6 +1200,33 @@ struct CoreYLowering : OpConversionPattern<CoreYOp> {
 };
 
 //===----------------------------------------------------------------------===//
+// DFB index query lowering
+//===----------------------------------------------------------------------===//
+
+struct GetDfbIdLowering : OpConversionPattern<GetDfbIdOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(GetDfbIdOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto dfbIdx = getCBIndex(op.getDfb());
+    if (!dfbIdx) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot resolve DFB index for get_dfb_id operand");
+    }
+    auto convertedDfb =
+        utils::convertTTLCBToTTKernel(adaptor.getDfb(), rewriter, op.getLoc());
+    if (failed(convertedDfb)) {
+      return rewriter.notifyMatchFailure(op, "failed to convert DFB type");
+    }
+    auto newOp = ttk::GetDfbIdOp::create(rewriter, op.getLoc(),
+                                         rewriter.getI32Type(), *convertedDfb);
+    rewriter.replaceOp(op, newOp.getResult());
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
 // Opaque call lowering
 //===----------------------------------------------------------------------===//
 
@@ -1239,15 +1266,17 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
     for (Type resTy : op.getResultTypes()) {
       Type converted = getTypeConverter()->convertType(resTy);
       if (!converted) {
-        return rewriter.notifyMatchFailure(op,
-                                           "failed to convert result type");
+        return rewriter.notifyMatchFailure(op, "failed to convert result type");
       }
       resultTypes.push_back(converted);
     }
 
+    // Template arg SSA values pass through directly (i32 -> i32).
+    SmallVector<Value> templateArgVals(adaptor.getTemplateArgVals());
+
     auto newOp = ttk::OpaqueCallOp::create(
         rewriter, loc, resultTypes, op.getCalleeAttr(), op.getHeaderAttr(),
-        convertedArgs, op.getTemplateArgsAttr());
+        convertedArgs, templateArgVals);
     (void)newOp;
     rewriter.eraseOp(op);
     return success();
@@ -1656,11 +1685,12 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
       typeConverter, &ctx, pipeResourcePlan);
   patterns.add<PipeTransferWaitLowering>(typeConverter, &ctx, &pipeNetCounters,
                                          pipeResourcePlan);
-  patterns.add<BindCBLowering, TensorSliceLowering, WaitLowering,
-               CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
-               TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering,
-               RawElementReadLowering, RawElementWriteLowering,
-               OpaqueCallLowering>(typeConverter, &ctx);
+  patterns
+      .add<BindCBLowering, TensorSliceLowering, WaitLowering, CBReserveLowering,
+           CBPushLowering, CBWaitLowering, CBPopLowering, TileStoreLowering,
+           StoreLowering, CoreXLowering, CoreYLowering, RawElementReadLowering,
+           RawElementWriteLowering, OpaqueCallLowering, GetDfbIdLowering>(
+          typeConverter, &ctx);
   populatePipeLoweringPatterns(patterns, typeConverter, pipeNetIndex);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);

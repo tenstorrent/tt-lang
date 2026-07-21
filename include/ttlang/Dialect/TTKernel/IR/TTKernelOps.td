@@ -4801,8 +4801,23 @@ def TTKernel_DPrintOp : TTKernel_Op<"dprint", [MemoryEffects<[MemRead, MemWrite]
     }];
 }
 
+//===----------------------------------------------------------------------===//
+// DFB index query
+//===----------------------------------------------------------------------===//
+
+def TTKernel_GetDfbIdOp : TTKernel_Op<"get_dfb_id", [Pure]> {
+    let summary = "Get the integer index for a dataflow buffer";
+    let description = [{
+      Returns the integer DFB index for the given dataflow buffer as an
+      i32 SSA value. Lowered to a raw integer literal at EmitC time.
+    }];
+    let arguments = (ins TTKernel_CB:$dfb);
+    let results = (outs I32:$result);
+    let assemblyFormat = "$dfb attr-dict `:` type($dfb)";
+}
+
 def TTKernel_OpaqueCallOp : TTKernel_Op<"opaque_call",
-    [MemoryEffects<[MemRead, MemWrite]>]> {
+    [MemoryEffects<[MemRead, MemWrite]>, AttrSizedOperandSegments]> {
     let summary = "Call an external C/C++ function declared in a user header.";
     let description = [{
       Emits a call to an opaque external C/C++ function whose declaration is
@@ -4811,24 +4826,27 @@ def TTKernel_OpaqueCallOp : TTKernel_Op<"opaque_call",
       forwarded positionally. Scalar float arguments are converted to integer
       bit patterns by the ttkernel-lower-scalar-fp-types pass.
 
-      The `template_args` attribute holds an optional array of integer
-      attributes that become C++ template arguments on the emitted call.
+      The `template_arg_vals` operands are i32 SSA values that become C++
+      template arguments on the emitted call.  They are resolved to integer
+      literals at EmitC lowering time.
 
       Example:
       ```
-      ttkernel.opaque_call "my_func" {header = "my_header.hpp",
-          template_args = [1 : i64]} (%a, %b) : (f32, f32) -> ()
+      %c1 = arith.constant 1 : i32
+      ttkernel.opaque_call "my_func" template_args(%c1)
+          (%a, %b) {header = "my_header.hpp"} : (f32, f32) -> ()
       ```
     }];
     let arguments = (ins
       StrAttr:$callee,
       StrAttr:$header,
       Variadic<AnyType>:$arg_operands,
-      OptionalAttr<ArrayAttr>:$template_args
+      Variadic<I32>:$template_arg_vals
     );
     let results = (outs Variadic<AnyType>);
     let assemblyFormat = [{
-      $callee `(` $arg_operands `)` attr-dict `:`
+      $callee (`template_args` `(` $template_arg_vals^ `)`)?
+      `(` $arg_operands `)` attr-dict `:`
       functional-type($arg_operands, results)
     }];
 }

@@ -328,6 +328,13 @@ class TTLGenericCompiler(TTCompilerBase):
                 ):
                     return self.visit_Call_Extern_Func(node, node.args, node.keywords)
 
+                if (
+                    not isinstance(node.func, ast.Attribute)
+                    and hasattr(node.func, "id")
+                    and node.func.id == "get_dfb_id"
+                ):
+                    return self._visit_get_dfb_id(node)
+
                 # Check for PipeNet.if_src/if_dst calls
                 if self._is_pipenet_callback_call(node):
                     return self._handle_pipenet_callback(node)
@@ -1392,6 +1399,21 @@ class TTLGenericCompiler(TTCompilerBase):
                 implicit=True,
             )
 
+    def _resolve_template_arg_value(self, node):
+        """Try to resolve a template_args element to an MLIR SSA Value.
+
+        Returns an ``ir.Value`` for ``get_dfb_id(dfb)`` calls, or ``None``
+        when the node is a plain integer that ``_resolve_int_value`` should
+        handle instead.
+        """
+        if (
+            isinstance(node, ast.Call)
+            and hasattr(node.func, "id")
+            and node.func.id == "get_dfb_id"
+        ):
+            return self._visit_get_dfb_id(node)
+        return None
+
     def _resolve_int_value(self, node, param_name):
         """Resolve an AST node to a Python int.
 
@@ -1439,6 +1461,13 @@ class TTLGenericCompiler(TTCompilerBase):
             )
         return [self._resolve_string_value(elt, param_name) for elt in node.elts]
 
+    def _visit_get_dfb_id(self, node):
+        """Emit ttl.get_dfb_id for the DFB argument, return the i32 MLIR result."""
+        if len(node.args) != 1:
+            self._raise_error(node, "get_dfb_id() requires exactly 1 argument")
+        dfb_val = self.visit(node.args[0])
+        return ttl.get_dfb_id(dfb_val)
+
     def visit_Call_Extern_Func(self, node, args, keywords=None):
         """Handle call_extern_func(header, callee, ...) by emitting ttl.opaque_call.
 
@@ -1474,24 +1503,20 @@ class TTLGenericCompiler(TTCompilerBase):
             for kw in keywords:
                 kw_map[kw.arg] = kw.value
 
-        template_args_attr = None
+        template_arg_vals = []
         if "template_args" in kw_map:
             ta_node = kw_map["template_args"]
             if not isinstance(ta_node, ast.List):
                 self._raise_error(
                     ta_node, "call_extern_func() template_args must be a list"
                 )
-            ta_values = []
+            i32_ty = IntegerType.get_signless(32, self.ctx)
             for elt in ta_node.elts:
-                ta_values.append(
-                    self._resolve_int_value(elt, "template_args element")
-                )
-            template_args_attr = ArrayAttr.get(
-                [
-                    IntegerAttr.get(IntegerType.get_signless(64, self.ctx), v)
-                    for v in ta_values
-                ]
-            )
+                val = self._resolve_template_arg_value(elt)
+                if not isinstance(val, Value):
+                    int_val = self._resolve_int_value(elt, "template_args element")
+                    val = arith.ConstantOp(i32_ty, int_val).result
+                template_arg_vals.append(val)
 
         func_args = []
         if "func_args" in kw_map:
@@ -1503,9 +1528,7 @@ class TTLGenericCompiler(TTCompilerBase):
             func_args = [self.visit(elt) for elt in fa_node.elts]
 
         if "include_paths" in kw_map:
-            paths = self._resolve_string_list(
-                kw_map["include_paths"], "include_paths"
-            )
+            paths = self._resolve_string_list(kw_map["include_paths"], "include_paths")
             self._opaque_include_paths.extend(paths)
 
         ttl.opaque_call(
@@ -1513,7 +1536,7 @@ class TTLGenericCompiler(TTCompilerBase):
             callee,
             header,
             func_args,
-            template_args=template_args_attr,
+            template_arg_vals,
         )
 
     def visit_With(self, node):
