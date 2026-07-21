@@ -315,12 +315,7 @@ def _get_cb_descriptor_rows(cb_configs: List[Any]) -> List[Any]:
                 )
             )
         else:
-            ref_tensor = cb.tensor
-            if hasattr(ref_tensor, "dtype") and hasattr(ref_tensor.dtype, "name"):
-                data_format = ref_tensor.dtype
-            else:
-                data_format = torch_dtype_to_ttnn_datatype(ref_tensor.dtype)
-
+            data_format = _cb_data_format(cb)
             page_size = tile_bytes_from_dtype(data_format)
             num_tiles = cb.shape[0] * cb.shape[1] * cb.block_count
             total_size = num_tiles * page_size
