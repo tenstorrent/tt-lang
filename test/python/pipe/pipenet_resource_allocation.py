@@ -311,15 +311,17 @@ def make_ksplit_resource_allocation_kernel(grid_dim):
     return ksplit_resource_allocation
 
 
+# Transfers with disjoint receiver sets reuse completion semaphores. The six
+# completion semaphores are followed by the sender-ready semaphore at index 6.
 # FINAL-LABEL: module attributes
-# FINAL-SAME: ttl.pipe_sync_semaphore_count = 11 : i64
+# FINAL-SAME: ttl.pipe_sync_semaphore_count = 7 : i64
 # FINAL-NOT: ttl.pipe_sram_scratch_bytes
 # FINAL-NOT: ttl.pipe_global_semaphore_count
 # FINAL: func.func @post_receives_and_send
 # FINAL-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 0, 1>
 #
 # CHECK-CPP-LABEL: === post_receives_and_send kernel written to {{.*}} ===
-# CHECK-CPP-DAG: {{(size_t|int32_t)}} [[READY:v[0-9]+]] = 10;
+# CHECK-CPP-DAG: {{(size_t|int32_t)}} [[READY:v[0-9]+]] = 6;
 # CHECK-CPP: get_semaphore([[READY]])
 # CHECK-CPP: reinterpret_cast<tt_l1_ptr uint32_t*>
 # CHECK-CPP: experimental::semaphore_wait
