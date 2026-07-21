@@ -121,7 +121,8 @@ jobs:
         strategy:
             fail-fast: false
             matrix:
-                runner: [n150, bh-loudbox-viommu]
+                # TODO: restore bh-loudbox-viommu (multi-device runner) when it is back online.
+                runner: [n150, p150b]
         uses: ./.github/workflows/call-test-hardware.yml
         secrets: inherit
         with:
