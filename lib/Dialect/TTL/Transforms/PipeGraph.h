@@ -366,7 +366,7 @@ private:
                                      PipeGraphAnalysisState &state);
 
   LogicalResult
-  provePipeOnlyReceiverProducerStreams(PipeGraphAnalysisState &state);
+  provePipeOnlyReceiverProducerStreams(PipeGraphAnalysisState &analysisState);
 
   llvm::MapVector<Operation *, ReceiverDFBInfo> receiverDFBByPost;
   SmallVector<PipeTransferNode, 0> pipeTransferNodes;
