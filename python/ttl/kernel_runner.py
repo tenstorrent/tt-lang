@@ -246,12 +246,23 @@ def build_kernel_descriptors(
         else:
             thread_name = "brisc"
 
+        thread_runtime_args = runtime_args_by_thread.get(thread_name, [])
+        if spec.core_ranges is not None:
+            # A specialized descriptor may cover only one core or one logical
+            # row. TTNN requires every per-core runtime-argument entry to fall
+            # inside that descriptor's CoreRangeSet.
+            thread_runtime_args = [
+                entry
+                for entry in thread_runtime_args
+                if kernel_ranges.contains(entry[0])
+            ]
+
         kernel_desc = ttnn.KernelDescriptor(
             kernel_source=spec.path,
             core_ranges=kernel_ranges,
             compile_time_args=kernel_compile_time_args,
             defines=defines_by_thread.get(thread_name, []),
-            runtime_args=runtime_args_by_thread.get(thread_name, []),
+            runtime_args=thread_runtime_args,
             common_runtime_args=common_runtime_args,
             config=spec.config,
             compiler_include_paths=spec.compiler_include_paths,

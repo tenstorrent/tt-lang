@@ -42,6 +42,14 @@ class _FakeCoreRanges:
         return _FakeBoundingBox()
 
 
+class _FakeSubsetCoreRanges:
+    def __init__(self, members):
+        self.members = set(members)
+
+    def contains(self, core):
+        return core in self.members
+
+
 class _FakeTTNN:
     def __init__(self):
         self.create_calls = []
@@ -233,6 +241,34 @@ def test_build_kernel_descriptors_checks_pipe_runtime_arg_count(monkeypatch):
             extra_common_runtime_args=[0x3000],
             expected_extra_common_runtime_args=2,
         )
+
+
+def test_build_kernel_descriptors_filters_specialized_runtime_args(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    selected_ranges = _FakeSubsetCoreRanges({"core-1"})
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="noc",
+        tensor_indices=[],
+        config=fake_ttnn.WriterConfigDescriptor(),
+        core_ranges=selected_ranges,
+    )
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[],
+        tensor_accessor_args=[],
+        core_ranges=_FakeCoreRanges(),
+        grid_cols=2,
+        grid_rows=1,
+        num_cbs=0,
+        runtime_args_by_thread={
+            "brisc": [("core-0", [10]), ("core-1", [11])]
+        },
+    )
+
+    assert descriptors[0].runtime_args == [("core-1", [11])]
 
 
 def test_run_kernel_without_pipe_resources_does_not_require_device(monkeypatch):
