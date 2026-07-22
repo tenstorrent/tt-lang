@@ -21,5 +21,6 @@ UPLIFT_PATHS=(
     third-party/tt-metal
     .github/containers/Dockerfile.base
     .github/containers/Dockerfile.wheel-manylinux-2-34
+    bin/tt-triage
     requirements-runtime.txt
 )

@@ -89,6 +89,10 @@ container_input_one_path() {
     container_input_one_path "requirements-runtime.txt"
 }
 
+@test "container input change in bin/tt-triage -> -<hash> form" {
+    container_input_one_path "bin/tt-triage"
+}
+
 # --- Hash determinism: same content yields same tag ---
 
 @test "hash determinism across independent repos with same content" {
@@ -249,6 +253,7 @@ container_input_one_path() {
 #!/bin/bash
 UPLIFT_PATHS=(
     requirements-runtime.txt
+    bin/tt-triage
     .github/containers/Dockerfile.base
     .github/containers/Dockerfile.wheel-manylinux-2-34
     third-party/tt-metal

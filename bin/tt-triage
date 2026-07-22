@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Run tt-metal's triage utility from a source or wheel installation."""
+
+from importlib.util import find_spec
+import os
+from pathlib import Path
+import runpy
+import sys
+
+
+def _find_triage_directory() -> Path:
+    runtime_root = (
+        os.environ.get("TT_METAL_RUNTIME_ROOT", "").strip()
+        or os.environ.get("TT_METAL_HOME", "").strip()
+    )
+    if runtime_root:
+        triage_directory = Path(runtime_root) / "tools" / "triage"
+        if (triage_directory / "triage.py").is_file():
+            return triage_directory
+
+    triage_spec = find_spec("triage")
+    if triage_spec is not None and triage_spec.submodule_search_locations:
+        for package_directory in triage_spec.submodule_search_locations:
+            triage_directory = Path(package_directory)
+            if (triage_directory / "triage.py").is_file():
+                return triage_directory
+
+    raise SystemExit(
+        "tt-triage could not find tools/triage in the installed tt-metal runtime"
+    )
+
+
+def main() -> None:
+    triage_directory = _find_triage_directory()
+    sys.path.insert(0, str(triage_directory))
+    runpy.run_path(str(triage_directory / "triage.py"), run_name="__main__")
+
+
+if __name__ == "__main__":
+    main()

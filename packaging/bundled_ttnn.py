@@ -129,6 +129,10 @@ def stage_bundled_ttnn_python_packages(
         stage_root / "tracy",
         required=False,
     )
+    _copy_python_package(
+        tt_metal_root / "tools" / "triage",
+        stage_root / "triage",
+    )
 
     packages = find_packages(
         where=str(stage_root), exclude=("ttnn.examples", "ttnn.examples.*")
@@ -138,6 +142,7 @@ def stage_bundled_ttnn_python_packages(
     }
     if (stage_root / "tracy" / "__init__.py").is_file():
         package_dir["tracy"] = os.path.relpath(stage_root / "tracy", repo_root)
+    package_dir["triage"] = os.path.relpath(stage_root / "triage", repo_root)
 
     return BundledTTNNMetadata(packages=packages, package_dir=package_dir)
 
@@ -179,6 +184,10 @@ def copy_bundled_ttnn(tt_metal_root: Path, build_lib: Path) -> None:
         tt_metal_root / "python_packages" / "tools" / "tracy",
         build_lib / "tracy",
         required=False,
+    )
+    _copy_python_package(
+        tt_metal_root / "tools" / "triage",
+        build_lib / "triage",
     )
 
     lib_dir = ttnn_package / "build" / "lib"

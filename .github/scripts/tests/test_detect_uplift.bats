@@ -74,6 +74,13 @@ setup() {
     assert_equal "$(run_detect "$BASE" "$head")" "true"
 }
 
+@test "diff in bin/tt-triage marks uplift=true" {
+    echo "modified" >> "$REPO/bin/tt-triage"
+    commit_all "$REPO" "uplift"
+    head=$(cd "$REPO" && git rev-parse HEAD)
+    assert_equal "$(run_detect "$BASE" "$head")" "true"
+}
+
 # --- No-diff case ---
 
 @test "same base and head -> uplift=false" {
