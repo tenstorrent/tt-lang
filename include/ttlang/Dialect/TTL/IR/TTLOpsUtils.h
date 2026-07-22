@@ -16,8 +16,8 @@
 #include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
-#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
+#include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 
@@ -53,111 +53,6 @@ inline mlir::Value traceUnrealizedCasts(mlir::Value value) {
   return value;
 }
 
-/// Trace a transfer handle through tensor containers and loop-carried values
-/// to the first value accepted by `match`.
-template <typename ResultT, typename MatchFn>
-inline ResultT
-traceTransferHandleSource(mlir::Value value, MatchFn match,
-                          llvm::SmallPtrSetImpl<mlir::Value> &seen) {
-  value = traceUnrealizedCasts(value);
-  if (!seen.insert(value).second) {
-    return ResultT();
-  }
-
-  if (ResultT result = match(value)) {
-    return result;
-  }
-  if (auto extractOp = value.getDefiningOp<mlir::tensor::ExtractOp>()) {
-    return traceTransferHandleSource<ResultT>(extractOp.getTensor(), match,
-                                              seen);
-  }
-  if (auto insertOp = value.getDefiningOp<mlir::tensor::InsertOp>()) {
-    return traceTransferHandleSource<ResultT>(insertOp.getScalar(), match,
-                                              seen);
-  }
-  if (auto result = mlir::dyn_cast<mlir::OpResult>(value)) {
-    if (auto loop =
-            mlir::dyn_cast<mlir::LoopLikeOpInterface>(result.getOwner())) {
-      auto yieldedOpt = loop.getYieldedValuesMutable();
-      auto resultsOpt = loop.getLoopResults();
-      if (yieldedOpt && resultsOpt) {
-        auto yielded = *yieldedOpt;
-        auto results = *resultsOpt;
-        for (unsigned idx = 0; idx < results.size(); ++idx) {
-          if (results[idx] == result) {
-            return traceTransferHandleSource<ResultT>(yielded[idx].get(), match,
-                                                      seen);
-          }
-        }
-      }
-    }
-    // Trace through region-branch ops (scf.if and other multi-region
-    // control flow) -- every region that can yield to the parent must
-    // independently trace its yield operand (at the result's index) through
-    // match to a non-null ResultT. All branches must agree on the same
-    // source op; divergent sources (e.g. different pipes on then/else) fail
-    // the trace because callers extract metadata (pipe coordinates, resource
-    // plan) from the returned op and would silently use the wrong branch's
-    // data. Each branch gets its own visited set to avoid false negatives
-    // when multiple branches yield the same outer value.
-    // Loops are excluded (handled above via LoopLikeOpInterface).
-    if (!mlir::isa<mlir::LoopLikeOpInterface>(result.getOwner())) {
-      if (auto regionOp = mlir::dyn_cast<mlir::RegionBranchOpInterface>(
-              result.getOwner())) {
-        unsigned idx = result.getResultNumber();
-        ResultT firstResult;
-        for (mlir::Region &region : regionOp->getRegions()) {
-          llvm::SmallVector<mlir::RegionSuccessor> successors;
-          regionOp.getSuccessorRegions(region, successors);
-          bool yieldsToParent =
-              llvm::any_of(successors, [](const mlir::RegionSuccessor &s) {
-                return !s.isRegion();
-              });
-          if (!yieldsToParent) {
-            continue;
-          }
-
-          auto *terminator = region.front().getTerminator();
-          if (idx >= terminator->getNumOperands()) {
-            continue;
-          }
-
-          llvm::SmallPtrSet<mlir::Value, 16> branchSeen(seen.begin(),
-                                                        seen.end());
-          ResultT branchResult = traceTransferHandleSource<ResultT>(
-              terminator->getOperand(idx), match, branchSeen);
-          if (!branchResult) {
-            return ResultT();
-          }
-          if (!firstResult) {
-            firstResult = branchResult;
-          } else if (firstResult != branchResult) {
-            return ResultT();
-          }
-        }
-        if (firstResult) {
-          return firstResult;
-        }
-      }
-    }
-  }
-  if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
-    mlir::Operation *parent = blockArg.getOwner()->getParentOp();
-    if (auto loop = mlir::dyn_cast_or_null<mlir::LoopLikeOpInterface>(parent)) {
-      auto iterArgs = loop.getRegionIterArgs();
-      auto inits = loop.getInitsMutable();
-      for (unsigned idx = 0; idx < iterArgs.size(); ++idx) {
-        if (iterArgs[idx] == blockArg) {
-          return traceTransferHandleSource<ResultT>(inits[idx].get(), match,
-                                                    seen);
-        }
-      }
-    }
-  }
-
-  return ResultT();
-}
-
 /// Trace a tensor value back to its originating CB acquire operation
 /// (CBWaitOp or CBReserveOp). Traces through unrealized_conversion_cast,
 /// AttachCBOp, and tensor.extract_slice. Returns the acquire Operation*,
@@ -179,31 +74,6 @@ inline mlir::Operation *findCBAcquireOp(mlir::Value tensor) {
     }
   }
   return nullptr;
-}
-
-/// Trace a pipe transfer value through casts, tensor containers, and
-/// loop-carried values to the transfer creation op.
-inline PipeTransferCreateOp
-findPipeTransferCreateForTransfer(mlir::Value transfer) {
-  llvm::SmallPtrSet<mlir::Value, 16> seen;
-  return traceTransferHandleSource<PipeTransferCreateOp>(
-      transfer,
-      [](mlir::Value source) {
-        return source.getDefiningOp<PipeTransferCreateOp>();
-      },
-      seen);
-}
-
-/// Trace a pipe token through casts, tensor containers, and loop-carried values
-/// to the receive post that created it.
-inline PipeTransferPostOp findPipeTransferPostForToken(mlir::Value token) {
-  llvm::SmallPtrSet<mlir::Value, 16> seen;
-  return traceTransferHandleSource<PipeTransferPostOp>(
-      token,
-      [](mlir::Value source) {
-        return source.getDefiningOp<PipeTransferPostOp>();
-      },
-      seen);
 }
 
 /// Walk through `tensor.extract_slice` ops and return the underlying

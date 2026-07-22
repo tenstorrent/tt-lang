@@ -60,6 +60,9 @@ EOF
     run cat "$CALLS"
     assert_line --partial "env:1 cache-root:$PWD/build/test/pytest-report-tt-metal-cache args:-m pytest"
     assert_line --partial "pytest test/python -m not multi_device -n 4"
+    # Crash-restart disabled and flaky-retry enabled on the parallel phase.
+    assert_line --partial "-n 4 --max-worker-restart=0"
+    assert_line --partial "--reruns 3"
     assert_line --partial "pytest-report-parallel.xml"
     assert_line --partial "env: cache-root: args:-m pytest test/python -m multi_device"
     assert_line --partial "pytest-report-multidevice.xml"
@@ -88,6 +91,9 @@ EOF
     refute_output --partial "env:1"
     refute_output --partial "cache-root:build"
     refute_output --partial " -n "
+    # Flaky-retry applies to the serial run too; the xdist-only restart flag does not.
+    assert_output --partial "--reruns 3"
+    refute_output --partial "max-worker-restart"
     refute_output --partial "multi_device"
     assert_output --partial "pytest-report.xml"
     [ "${#lines[@]}" -eq 1 ]

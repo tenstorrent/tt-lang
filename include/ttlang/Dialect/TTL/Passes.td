@@ -580,6 +580,20 @@ def TTLVerifyPipeNetGuards
   ];
 }
 
+def TTLVerifyTransferProvenance
+    : Pass<"ttl-verify-transfer-provenance", "::mlir::ModuleOp"> {
+  let summary = "Verify transfer values have consistent reachable origins";
+  let description = [{
+    Checks non-local provenance required by transfer lowering. Transfer objects
+    must resolve to one `ttl.pipe_transfer.create`; pipe receive destinations
+    must derive from `ttl.cb_reserve`; public transfer handles must have one
+    supported wait behavior; and every pipe token must derive from a receive
+    post in the token's PipeNet. Statically unreachable operations are ignored.
+  }];
+
+  let dependentDialects = [];
+}
+
 def TTLVerifyDFBSPSC
     : Pass<"ttl-verify-dfb-spsc", "::mlir::ModuleOp"> {
   let summary = "Reject DFBs with overlapping producer or consumer launch domains";

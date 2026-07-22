@@ -1,0 +1,40 @@
+# Lima VM for building the current tt-lang toolchain (LLVM + tt-metal from
+# submodules) and running tt-lang runtime tests against a ttsim libttsim.so.
+# Ubuntu 24.04 aarch64: native cmake 3.28+ and gcc 13 (meets build.md prereqs).
+#
+# Create with:
+#   limactl start --tty=false --name=ttlang-ttsim <path>/ttsim-vm.yaml
+minimumLimaVersion: "1.0.0"
+
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: "aarch64"
+
+cpus: 10
+memory: "16GiB"
+disk: "120GiB"
+
+vmType: "vz"
+mountType: "virtiofs"
+
+# Mount your TT root -- the parent dir holding the tt-lang clone (and any custom
+# simulator source tree). Default is ~/tt; change the location below otherwise. Lima
+# mounts it at the host's absolute path in the guest, and the build scripts
+# discover it (they look for the virtiofs mount that contains tt-lang).
+mounts:
+  - location: "~/tt"
+    writable: true
+
+ssh:
+  loadDotSSHPubKeys: true
+
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux -o pipefail
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update
+      apt-get install -y \
+        build-essential cmake ninja-build git wget curl xz-utils file \
+        pkg-config python3-dev python3-pip python3-venv ccache psmisc
