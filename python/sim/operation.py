@@ -87,14 +87,27 @@ def operation(
         new_globals = func.__globals__.copy()
         new_globals["grid"] = actual_grid
 
-        # Create a new function with the modified globals
-        modified_func = types.FunctionType(
-            func.__code__,
-            new_globals,
-            func.__name__,
-            func.__defaults__,
-            func.__closure__,
-        )
+        # A thread-unified operation body (no hand-written @ttl.compute /
+        # @ttl.datamovement kernels) is rewritten into an equivalent
+        # multi-kernel function by reusing the compiler's thread-assignment
+        # splitter; the rest of this decorator then runs it unchanged. A
+        # multi-kernel body keeps the original code (and its source lines).
+        from .unified_operation import build_multikernel_function, is_unified_body
+
+        if is_unified_body(func):
+            try:
+                modified_func = build_multikernel_function(func, new_globals)
+            except ValueError as error:
+                raise ValueError(f"@ttl.operation({func.__name__}): {error}") from error
+        else:
+            # Create a new function with the modified globals
+            modified_func = types.FunctionType(
+                func.__code__,
+                new_globals,
+                func.__name__,
+                func.__defaults__,
+                func.__closure__,
+            )
 
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             # Import here to avoid circular dependency

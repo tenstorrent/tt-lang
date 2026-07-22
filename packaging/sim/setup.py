@@ -87,6 +87,11 @@ def stage() -> None:
     )
 
     shutil.copytree(REPO_ROOT / "python" / "sim", ttl / "sim")
+    # The simulator reuses the compiler frontend's thread-assignment splitter to
+    # run unified @ttl.operation bodies. It is stdlib-only and loaded by path, so
+    # bundle just this one module next to the sim package (ttl._src is otherwise
+    # not shipped in the sim wheel).
+    shutil.copy(src_ttl / "_src" / "atom_split.py", ttl / "sim" / "atom_split.py")
     shutil.copytree(src_ttl / "_pipenets", ttl / "_pipenets")
     shutil.copytree(src_ttl / "_setup", ttl / "_setup")
     shutil.copytree(REPO_ROOT / "python" / "utils", ttl / "utils")
