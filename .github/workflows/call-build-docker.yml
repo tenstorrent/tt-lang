@@ -187,17 +187,17 @@ jobs:
               bash .github/containers/cleanup-toolchain.sh /opt/ttlang-toolchain
             "
 
+      - name: Clean up Docker build cache before ird image build
+        run: |
+          docker builder prune -af || true
+          df -h
+
       # The ird image captures the toolchain WITHOUT the freshly built tt-lang,
       # so it must be built before "Build + install tt-lang" installs tt-lang
       # into /opt. Building it directly from /opt here (instead of snapshotting
       # /opt to a directory with cp -a) avoids a full second copy of the
       # multi-GB toolchain on disk during the dist image build. dist-toolchain
       # is unused when targeting ird but must be a valid path.
-      - name: Clean up Docker build cache before ird image build
-        run: |
-          docker builder prune -af || true
-          df -h
-
       - name: Build ird Docker image (local only)
         id: build-ird
         env:
@@ -364,6 +364,9 @@ jobs:
         run: |
           echo "=== Disk Usage ==="
           df -h
+          echo ""
+          echo "=== Toolchain size (largest consumer, outside the workspace) ==="
+          du -sh /opt/ttlang-toolchain 2>/dev/null || true
           echo ""
           echo "=== Disk Usage by Directory ==="
           du -h --max-depth=2 ${{ github.workspace }} 2>/dev/null | sort -hr | head -20 || true
