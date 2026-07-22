@@ -127,6 +127,9 @@ _BLOCK_METHODS: Dict[str, str] = {
     "store": "trisc",
     "pop": "deferred",
     "push": "deferred",
+    # Opaque TRISC code can fill a pre-reserved block without an ordinary
+    # TT-Lang compute value to anchor the producer side.
+    "push_compute": "trisc",
 }
 
 # Methods on a DFB name that produce a block.
@@ -746,8 +749,8 @@ def _collect_block_users(
 
     An anchor-relevant use:
       - argument to a ttl.* / pipenet method call -> that call's thread
-      - receiver of ``.store(...)`` -> trisc
-      - receiver of ``.pop()``/``.push()`` -> does not pin (sync helper)
+      - receiver of a concrete ``_BLOCK_METHODS`` entry -> that thread
+      - receiver of deferred ``.pop()``/``.push()`` -> does not pin
       - operand of MatMult ``@`` or any other BinOp -> trisc
       - target of an AugAssign -> trisc
     """
@@ -772,9 +775,10 @@ def _collect_block_users(
             if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
                 recv = func.value.id
                 method = func.attr
-                if thread is None and recv in visible and method == "store":
-                    users[recv].add("trisc")
-                    thread = "trisc"
+                block_thread = _BLOCK_METHODS.get(method)
+                if thread is None and recv in visible and block_thread in THREADS:
+                    users[recv].add(block_thread)
+                    thread = block_thread
                 if method in _PIPENET_METHODS:
                     sub_dm = _PIPENET_METHODS[method]
             if thread is not None:

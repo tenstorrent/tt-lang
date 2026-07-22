@@ -255,6 +255,22 @@ class TensorBlock:
         cb = _get_cb_from_block(ast_self)
         ttl.cb_push(cb)
 
+    def push_compute(ast_self: TensorBlock) -> None:
+        """Release a reserved block explicitly owned by the compute thread.
+
+        External TRISC code may pack directly into storage acquired by
+        ``reserve()`` without producing a TT-Lang tensor value.  This escape
+        hatch lowers to the same CB push as :meth:`push`; its distinct name
+        only supplies the unified-body splitter's missing compute anchor.
+        """
+        if not _is_block(ast_self):
+            raise ValueError(
+                "push_compute() must be called on a block acquired from reserve(), "
+                "not a regular tensor"
+            )
+        cb = _get_cb_from_block(ast_self)
+        ttl.cb_push(cb)
+
     def pop(ast_self: TensorBlock) -> None:
         """
         Signal that data has been consumed (consumer release).

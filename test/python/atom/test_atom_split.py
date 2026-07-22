@@ -49,6 +49,24 @@ def test_producer_with_no_uses_is_rejected():
         split_function_body(fn, dfb_param_names=set(), local_dfb_names={"a_cb"})
 
 
+def test_push_compute_anchors_opaque_producer_to_trisc():
+    fn = _fn(
+        """
+        def k():
+            blk = out_cb.reserve()
+            call_extern_func("opaque.hpp", "fill_reserved", func_args=[out_cb])
+            blk.push_compute()
+        """
+    )
+    result = split_function_body(
+        fn, dfb_param_names=set(), local_dfb_names={"out_cb"})
+    trisc = _thread_src(result, "trisc")
+    assert "blk = out_cb.reserve()" in trisc
+    assert "blk.push_compute()" in trisc
+    assert "out_cb.reserve()" not in _thread_src(result, "ncrisc")
+    assert "out_cb.reserve()" not in _thread_src(result, "brisc")
+
+
 def test_producer_split_across_ncrisc_and_brisc_is_rejected():
     """A single reserve whose block feeds both an if_src (BRISC) and an
     if_dst (NCRISC) callback would double-reserve the CB."""
