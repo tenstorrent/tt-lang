@@ -40,10 +40,17 @@ REQUIRES_MESH_TAG = "requires-multi-device"
 # single, partially harvested chip (see run-tutorials.sh); multi-device hosts
 # finish each in 20-30s. TUTORIAL_TIMEOUT_SECONDS overrides it.
 SUBPROCESS_TIMEOUT_SECONDS = int(os.environ.get("TUTORIAL_TIMEOUT_SECONDS", "300"))
-# pytest-timeout backstop, kept above the subprocess budget so subprocess.run
-# terminates a hung child first. The thread-method pytest timeout hard-crashes
-# the worker, which would turn the step_7 xfail into a worker crash.
-PYTEST_TIMEOUT_BACKSTOP_SECONDS = SUBPROCESS_TIMEOUT_SECONDS + 60
+# Grace window between SIGTERM and SIGKILL when a tutorial exceeds its budget,
+# matching the retired run-tutorials.sh (`timeout --signal=TERM --kill-after=10`)
+# so tt-metal can close the device instead of being hard-killed mid-operation.
+SIGTERM_GRACE_SECONDS = 10
+# pytest-timeout backstop, kept above the worst-case child lifetime (budget plus
+# the SIGTERM grace) so the child is always terminated first. The thread-method
+# pytest timeout hard-crashes the worker, which would turn the step_7 xfail into
+# a worker crash.
+PYTEST_TIMEOUT_BACKSTOP_SECONDS = (
+    SUBPROCESS_TIMEOUT_SECONDS + SIGTERM_GRACE_SECONDS + 60
+)
 
 # step_7's all_reduce over a Galaxy-scale mesh hangs on a known upstream fabric
 # bug (tt-lang#585, tt-metal#43749 / #41794); the killed process leaves the
@@ -134,12 +141,18 @@ if not TUTORIALS:
 @pytest.mark.parametrize("script", TUTORIALS)
 def test_tutorial(script: Path):
     """Run a tutorial to completion and require a zero exit status."""
-    completed = subprocess.run(
-        [sys.executable, str(script)],
-        cwd=REPO_ROOT,
-        timeout=SUBPROCESS_TIMEOUT_SECONDS,
-        check=False,
-    )
-    assert (
-        completed.returncode == 0
-    ), f"{script.relative_to(REPO_ROOT)} exited with {completed.returncode}"
+    process = subprocess.Popen([sys.executable, str(script)], cwd=REPO_ROOT)
+    try:
+        returncode = process.wait(timeout=SUBPROCESS_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        # SIGTERM first so tt-metal can close the device, then SIGKILL only if
+        # the child ignores the grace window. subprocess.run(timeout=) would
+        # SIGKILL immediately, leaving the chip more likely wedged.
+        process.terminate()
+        try:
+            process.wait(timeout=SIGTERM_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        raise
+    assert returncode == 0, f"{script.relative_to(REPO_ROOT)} exited with {returncode}"
