@@ -2,6 +2,10 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+// This test driver parses generic test operations, resolves the possible
+// origins of each test.query operand, and compares their labels with the
+// test.expected_origins attribute used by MLIR lit tests.
+
 #include "ttlang/Analysis/ValueOriginAnalysis.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -16,6 +20,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -68,7 +73,8 @@ std::optional<llvm::StringRef> getOriginLabel(mlir::Value value) {
 }
 
 /// Compare one query's computed origins with its expected labels.
-bool verifyQuery(mlir::Operation *query) {
+bool verifyQuery(mlir::Operation *query,
+                 mlir::tt::ValueOriginAnalysis &defaultAnalysis) {
   auto expected =
       query->getAttrOfType<mlir::ArrayAttr>(kExpectedOriginsAttrName);
   if (!expected || query->getNumOperands() != 1) {
@@ -84,10 +90,17 @@ bool verifyQuery(mlir::Operation *query) {
                  options.maxEnumeratedIndexTuples)) {
     return false;
   }
-  mlir::tt::ValueOriginAnalysis analysis(options);
+  std::unique_ptr<mlir::tt::ValueOriginAnalysis> customAnalysis;
+  mlir::tt::ValueOriginAnalysis *analysis = &defaultAnalysis;
+  if (query->hasAttr(kMaxLoopIterationsAttrName) ||
+      query->hasAttr(kMaxIndexTuplesAttrName)) {
+    customAnalysis = std::make_unique<mlir::tt::ValueOriginAnalysis>(
+        query->getParentOfType<mlir::func::FuncOp>(), options);
+    analysis = customAnalysis.get();
+  }
 
   llvm::SmallVector<llvm::StringRef> actualLabels;
-  for (mlir::Value origin : analysis.getOrigins(query->getOperand(0))) {
+  for (mlir::Value origin : analysis->getOrigins(query->getOperand(0))) {
     std::optional<llvm::StringRef> maybeLabel = getOriginLabel(origin);
     if (!maybeLabel) {
       query->emitError() << "origin lacks a test.label attribute";
@@ -142,10 +155,13 @@ int main(int argumentCount, char **argumentValues) {
   }
 
   bool succeeded = true;
-  module->walk([&](mlir::Operation *operation) {
-    if (operation->hasAttr(kExpectedOriginsAttrName)) {
-      succeeded &= verifyQuery(operation);
-    }
+  module->walk([&](mlir::func::FuncOp function) {
+    mlir::tt::ValueOriginAnalysis analysis(function);
+    function.walk([&](mlir::Operation *operation) {
+      if (operation->hasAttr(kExpectedOriginsAttrName)) {
+        succeeded &= verifyQuery(operation, analysis);
+      }
+    });
   });
   return succeeded ? 0 : 1;
 }
