@@ -63,20 +63,30 @@ class _FakeTTNN:
             self.semaphores = semaphores
             self.custom_program_hash = None
 
+    class ReaderConfigDescriptor:
+        pass
+
+    class WriterConfigDescriptor:
+        pass
+
     class KernelDescriptor:
         def __init__(
             self,
             kernel_source,
             core_ranges,
             compile_time_args,
+            runtime_args,
             common_runtime_args,
             config,
+            compiler_include_paths,
         ):
             self.kernel_source = kernel_source
             self.core_ranges = core_ranges
             self.compile_time_args = compile_time_args
+            self.runtime_args = runtime_args
             self.common_runtime_args = common_runtime_args
             self.config = config
+            self.compiler_include_paths = compiler_include_paths
 
     @staticmethod
     def generic_op(tensors, program):
@@ -314,6 +324,44 @@ def test_run_kernel_global_semaphore_lifetime_is_bounded(monkeypatch):
 
     assert len(fake_ttnn.create_calls) == 4
     assert lifetime == fake_ttnn.create_calls[-2:]
+
+
+def test_run_kernel_applies_runtime_resource_factory(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    tensor = _FakeTensorWithoutDevice()
+    owner = object()
+    lifetime = []
+    reader_args = [("core-0", [3, 2, 4, 5])]
+
+    def factory(*, tensors, core_ranges, first_free_semaphore_id):
+        assert tensors == [tensor]
+        assert isinstance(core_ranges, _FakeCoreRanges)
+        assert first_free_semaphore_id == 0
+        return kernel_runner.ProgramRuntimeResources(
+            semaphore_descriptors=["fabric-sem-0", "fabric-sem-1"],
+            runtime_args_by_thread={"ncrisc": reader_args},
+            lifetimes=[owner],
+        )
+
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="noc",
+        tensor_indices=[],
+        config=fake_ttnn.ReaderConfigDescriptor(),
+    )
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[spec],
+        tensors=[tensor],
+        cb_configs=[],
+        core_ranges=_FakeCoreRanges(),
+        runtime_resource_factory=factory,
+        runtime_resource_lifetime=lifetime,
+    )
+
+    assert result["program"].kernels[0].runtime_args == reader_args
+    assert result["program"].semaphores == ["fabric-sem-0", "fabric-sem-1"]
+    assert lifetime == [owner]
 
 
 def test_emit_runner_source_uses_shared_pipe_resource_helpers():

@@ -558,6 +558,7 @@ class CompiledTTNNKernel:
         pipe_sram_scratch_bytes=0,
         num_pipe_global_semaphores=0,
         opaque_include_paths=None,
+        runtime_resource_factory=None,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -603,6 +604,8 @@ class CompiledTTNNKernel:
         self.pipe_sram_scratch_bytes = pipe_sram_scratch_bytes
         self.num_pipe_global_semaphores = num_pipe_global_semaphores
         self._pipe_global_semaphore_lifetime = []
+        self.runtime_resource_factory = runtime_resource_factory
+        self._runtime_resource_lifetime = []
         self.opaque_include_paths = opaque_include_paths or []
 
     def __call__(self, *args):
@@ -647,6 +650,8 @@ class CompiledTTNNKernel:
             pipe_sram_scratch_bytes=self.pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=self.num_pipe_global_semaphores,
             pipe_global_semaphore_lifetime=self._pipe_global_semaphore_lifetime,
+            runtime_resource_factory=self.runtime_resource_factory,
+            runtime_resource_lifetime=self._runtime_resource_lifetime,
         )
 
 
@@ -840,6 +845,7 @@ def _compile_ttnn_kernel(
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
     opaque_include_paths: Optional[List[str]] = None,
+    runtime_resource_factory=None,
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -1063,6 +1069,7 @@ def _compile_ttnn_kernel(
         pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
         num_pipe_global_semaphores=num_pipe_global_semaphores,
         opaque_include_paths=opaque_include_paths or [],
+        runtime_resource_factory=runtime_resource_factory,
     )
 
     if verbose:
@@ -1521,6 +1528,7 @@ def _compile_kernel(
     dst_full_sync_en: Optional[bool] = None,
     target_arch: Optional[str] = None,
     compiler_options: CompilerOptions = CompilerOptions(),
+    runtime_resource_factory=None,
 ) -> Optional[CompiledTTNNKernel]:
     """
     Compile kernel function to MLIR and return CompiledTTNNKernel.
@@ -1651,6 +1659,7 @@ def _compile_kernel(
         l1_budget_override=l1_budget_override,
         kernel_source_file=kernel_source_file,
         kernel_line_offset=kernel_line_offset,
+        runtime_resource_factory=runtime_resource_factory,
     )
 
 
@@ -1670,6 +1679,7 @@ def _lower_program_to_kernel(
     l1_budget_override,
     kernel_source_file,
     kernel_line_offset,
+    runtime_resource_factory=None,
 ):
     """Lower compiled threads to a CompiledTTNNKernel.
 
@@ -1985,6 +1995,7 @@ def _lower_program_to_kernel(
             pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=pipe_global_semaphore_count,
             opaque_include_paths=opaque_include_paths,
+            runtime_resource_factory=runtime_resource_factory,
         )
         return compiled_kernel
 
@@ -2132,6 +2143,7 @@ def pykernel_gen(
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
     options: Optional[str] = None,
+    runtime_resource_factory=None,
     _prepare_call: Optional[Callable] = None,
 ) -> Callable:
     """
@@ -2206,6 +2218,7 @@ def pykernel_gen(
                 dst_full_sync_en=dst_full_sync_en,
                 target_arch=target_arch,
                 compiler_options=compiler_options,
+                runtime_resource_factory=runtime_resource_factory,
             )
 
         return _make_operation_wrapper(

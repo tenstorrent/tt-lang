@@ -52,6 +52,7 @@ else:
         TensorBlock,
     )
     from ttl.pipe import Pipe, PipeNet
+    from ttl.kernel_runner import ProgramRuntimeResources
 
     __all__ = [
         "__version__",
@@ -68,6 +69,7 @@ else:
         "CopyTransferHandler",
         "Pipe",
         "PipeNet",
+        "ProgramRuntimeResources",
         "make_dataflow_buffer_like",
         "make_dfb",
         "copy",

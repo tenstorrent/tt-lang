@@ -542,6 +542,7 @@ def _compile_atom(
     dst_full_sync_en: Optional[bool],
     target_arch: Optional[str],
     compiler_options: CompilerOptions,
+    runtime_resource_factory=None,
 ):
 
     # The shared operation wrapper supplies values in signature order.
@@ -658,6 +659,7 @@ def _compile_atom(
         l1_budget_override=l1_budget_override,
         kernel_source_file=spec.source_file,
         kernel_line_offset=spec.line_offset,
+        runtime_resource_factory=runtime_resource_factory,
     )
 
 
@@ -684,6 +686,7 @@ def _compile_unified_operation(
         dst_full_sync_en=decorator_options["dst_full_sync_en"],
         target_arch=target_arch,
         compiler_options=compiler_options,
+        runtime_resource_factory=decorator_options["runtime_resource_factory"],
     )
 
 
@@ -738,6 +741,7 @@ def _unified_operation(
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
     options: Optional[str] = None,
+    runtime_resource_factory=None,
 ) -> Callable:
     """Build the unified-body form selected by ``@ttl.operation``.
 
@@ -759,6 +763,7 @@ def _unified_operation(
                 "fp32_dest_acc_en": fp32_dest_acc_en,
                 "dst_full_sync_en": dst_full_sync_en,
                 "options": options,
+                "runtime_resource_factory": runtime_resource_factory,
             },
         )
 
@@ -775,6 +780,7 @@ def operation(
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
     options: Optional[str] = None,
+    runtime_resource_factory=None,
 ) -> Callable:
     """Define a unified-body or explicit multi-kernel operation."""
 
@@ -793,6 +799,7 @@ def operation(
                 fp32_dest_acc_en=fp32_dest_acc_en,
                 dst_full_sync_en=dst_full_sync_en,
                 options=options,
+                runtime_resource_factory=runtime_resource_factory,
                 _prepare_call=prepare_call,
             )(fn)
             wrapped._ttl_operation_kind = "multi_kernel"
@@ -806,6 +813,7 @@ def operation(
             fp32_dest_acc_en=fp32_dest_acc_en,
             dst_full_sync_en=dst_full_sync_en,
             options=options,
+            runtime_resource_factory=runtime_resource_factory,
         )(fn)
 
     return _decorator

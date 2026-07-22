@@ -15,7 +15,7 @@ building and execution.
 
 from dataclasses import dataclass, field
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 ttnn = None  # Lazy-loaded via _ensure_ttnn()
 
@@ -120,6 +120,24 @@ class PipeRuntimeResources:
     expected_extra_common_runtime_args: int
 
 
+@dataclass
+class ProgramRuntimeResources:
+    """Optional host resources supplied by an ``@ttl.operation`` factory.
+
+    This is the narrow escape hatch used by opaque kernels whose TT-Metal ABI
+    needs host-created resources that the TT-Lang dialect does not model yet
+    (currently fabric connection arguments and program semaphores). Runtime
+    arguments are keyed by unified thread name and use TTNN's normal
+    ``[(CoreCoord, [args...]), ...]`` representation.
+    """
+
+    semaphore_descriptors: List[Any] = field(default_factory=list)
+    runtime_args_by_thread: Dict[str, List[Tuple[Any, List[int]]]] = field(
+        default_factory=dict
+    )
+    lifetimes: List[Any] = field(default_factory=list)
+
+
 def build_tensor_accessor_args(tensors: List[Any]) -> List[int]:
     """
     Build compile-time args for tensor accessors.
@@ -151,6 +169,7 @@ def build_kernel_descriptors(
     num_cbs: int,
     extra_common_runtime_args: Optional[List[int]] = None,
     expected_extra_common_runtime_args: Optional[int] = None,
+    runtime_args_by_thread: Optional[Dict[str, List[Tuple[Any, List[int]]]]] = None,
 ) -> List[Any]:
     """
     Build kernel descriptors for ttnn.generic_op.
@@ -192,6 +211,8 @@ def build_kernel_descriptors(
             f"got {len(extra_args)}"
         )
 
+    runtime_args_by_thread = runtime_args_by_thread or {}
+
     for spec in kernel_specs:
         # Build common_runtime_args using tensor_indices.
         # C++ indexes by function-local position, we provide addresses in that order.
@@ -213,10 +234,18 @@ def build_kernel_descriptors(
             spec.core_ranges if spec.core_ranges is not None else core_ranges
         )
 
+        if spec.thread_type == "compute":
+            thread_name = "trisc"
+        elif isinstance(spec.config, ttnn.ReaderConfigDescriptor):
+            thread_name = "ncrisc"
+        else:
+            thread_name = "brisc"
+
         kernel_desc = ttnn.KernelDescriptor(
             kernel_source=spec.path,
             core_ranges=kernel_ranges,
             compile_time_args=kernel_compile_time_args,
+            runtime_args=runtime_args_by_thread.get(thread_name, []),
             common_runtime_args=common_runtime_args,
             config=spec.config,
             compiler_include_paths=spec.compiler_include_paths,
@@ -509,6 +538,8 @@ def run_kernel_on_device(
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
     pipe_global_semaphore_lifetime: Optional[List[Any]] = None,
+    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
+    runtime_resource_lifetime: Optional[List[Any]] = None,
 ) -> Any:
     """
     Execute kernels on device using ttnn.generic_op.
@@ -560,6 +591,21 @@ def run_kernel_on_device(
     if pipe_global_semaphore_lifetime is not None:
         pipe_global_semaphore_lifetime[:] = pipe_runtime_resources.global_semaphores
 
+    program_resources = ProgramRuntimeResources()
+    if runtime_resource_factory is not None:
+        program_resources = runtime_resource_factory(
+            tensors=list(tensors),
+            core_ranges=core_ranges,
+            first_free_semaphore_id=num_pipe_sync_semaphores,
+        )
+        if not isinstance(program_resources, ProgramRuntimeResources):
+            raise TypeError(
+                "runtime_resource_factory must return ProgramRuntimeResources, "
+                f"got {type(program_resources).__name__}"
+            )
+    if runtime_resource_lifetime is not None:
+        runtime_resource_lifetime[:] = program_resources.lifetimes
+
     # Build kernel descriptors.
     kernel_descriptors = build_kernel_descriptors(
         kernel_specs=kernel_specs,
@@ -573,6 +619,7 @@ def run_kernel_on_device(
         expected_extra_common_runtime_args=(
             pipe_runtime_resources.expected_extra_common_runtime_args
         ),
+        runtime_args_by_thread=program_resources.runtime_args_by_thread,
     )
 
     # Build CB descriptors.
@@ -586,6 +633,7 @@ def run_kernel_on_device(
         core_ranges=core_ranges,
         count=num_pipe_sync_semaphores,
     )
+    semaphore_descriptors.extend(program_resources.semaphore_descriptors)
 
     # Build and execute program.
     program = ttnn.ProgramDescriptor(
