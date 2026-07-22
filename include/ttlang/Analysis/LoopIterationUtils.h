@@ -35,8 +35,7 @@ using LoopInductionBindings = llvm::DenseMap<Value, llvm::APInt>;
 class EnumerationBudget {
 public:
   /// Set the number of items that the enumeration may still examine.
-  explicit EnumerationBudget(std::uint64_t remaining)
-      : remaining(remaining) {}
+  explicit EnumerationBudget(std::uint64_t remaining) : remaining(remaining) {}
 
   /// Return whether `count` additional items fit without consuming them.
   bool canConsume(std::uint64_t count) const { return count <= remaining; }

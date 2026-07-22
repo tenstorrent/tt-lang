@@ -16,11 +16,9 @@ namespace mlir::tt {
 namespace {
 
 /// Evaluate an attribute or SSA expression for one enumerated iteration.
-std::optional<llvm::APInt>
-evaluateInteger(OpFoldResult expression,
-                const LoopInductionBindings &bindings,
-                const IntegerExpressionEvaluator::ValueEvaluator
-                    &valueEvaluator) {
+std::optional<llvm::APInt> evaluateInteger(
+    OpFoldResult expression, const LoopInductionBindings &bindings,
+    const IntegerExpressionEvaluator::ValueEvaluator &valueEvaluator) {
   if (auto integer = dyn_cast<Attribute>(expression)) {
     auto integerAttr = dyn_cast<IntegerAttr>(integer);
     return integerAttr ? std::optional(integerAttr.getValue()) : std::nullopt;
@@ -109,8 +107,7 @@ LogicalResult enumerateLoopNestImpl(
     if (!maybeLower || !maybeUpper || !maybeStep ||
         maybeLower->getBitWidth() != maybeUpper->getBitWidth() ||
         maybeLower->getBitWidth() != maybeStep->getBitWidth() ||
-        (isUnsigned ? maybeStep->isZero()
-                    : !maybeStep->isStrictlyPositive())) {
+        (isUnsigned ? maybeStep->isZero() : !maybeStep->isStrictlyPositive())) {
       return failure();
     }
 
@@ -169,14 +166,14 @@ IntegerExpressionEvaluator createLoopIntegerEvaluator(
       });
 }
 
-std::optional<std::uint64_t> getLoopTripCount(
-    LoopLikeOpInterface loop, const LoopInductionBindings &bindings,
-    IntegerExpressionEvaluator::ValueEvaluator valueEvaluator) {
+std::optional<std::uint64_t>
+getLoopTripCount(LoopLikeOpInterface loop,
+                 const LoopInductionBindings &bindings,
+                 IntegerExpressionEvaluator::ValueEvaluator valueEvaluator) {
   std::optional<llvm::APInt> maybeTripCount = loop.getStaticTripCount();
   if (!maybeTripCount) {
     if (auto forOp = dyn_cast<scf::ForOp>(loop.getOperation())) {
-      maybeTripCount =
-          getSCFForTripCount(forOp, bindings, valueEvaluator);
+      maybeTripCount = getSCFForTripCount(forOp, bindings, valueEvaluator);
     }
   }
   if (!maybeTripCount || maybeTripCount->getActiveBits() > 64) {
