@@ -75,6 +75,7 @@ class _FakeTTNN:
             kernel_source,
             core_ranges,
             compile_time_args,
+            defines,
             runtime_args,
             common_runtime_args,
             config,
@@ -83,6 +84,7 @@ class _FakeTTNN:
             self.kernel_source = kernel_source
             self.core_ranges = core_ranges
             self.compile_time_args = compile_time_args
+            self.defines = defines
             self.runtime_args = runtime_args
             self.common_runtime_args = common_runtime_args
             self.config = config
@@ -341,6 +343,7 @@ def test_run_kernel_applies_runtime_resource_factory(monkeypatch):
         return kernel_runner.ProgramRuntimeResources(
             semaphore_descriptors=["fabric-sem-0", "fabric-sem-1"],
             runtime_args_by_thread={"ncrisc": reader_args},
+            defines_by_thread={"ncrisc": [("FABRIC_1D", "1")]},
             lifetimes=[owner],
         )
 
@@ -360,6 +363,7 @@ def test_run_kernel_applies_runtime_resource_factory(monkeypatch):
     )
 
     assert result["program"].kernels[0].runtime_args == reader_args
+    assert result["program"].kernels[0].defines == [("FABRIC_1D", "1")]
     assert result["program"].semaphores == ["fabric-sem-0", "fabric-sem-1"]
     assert lifetime == [owner]
 

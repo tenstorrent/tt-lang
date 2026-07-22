@@ -135,6 +135,9 @@ class ProgramRuntimeResources:
     runtime_args_by_thread: Dict[str, List[Tuple[Any, List[int]]]] = field(
         default_factory=dict
     )
+    defines_by_thread: Dict[str, List[Tuple[str, str]]] = field(
+        default_factory=dict
+    )
     lifetimes: List[Any] = field(default_factory=list)
 
 
@@ -170,6 +173,7 @@ def build_kernel_descriptors(
     extra_common_runtime_args: Optional[List[int]] = None,
     expected_extra_common_runtime_args: Optional[int] = None,
     runtime_args_by_thread: Optional[Dict[str, List[Tuple[Any, List[int]]]]] = None,
+    defines_by_thread: Optional[Dict[str, List[Tuple[str, str]]]] = None,
 ) -> List[Any]:
     """
     Build kernel descriptors for ttnn.generic_op.
@@ -212,6 +216,7 @@ def build_kernel_descriptors(
         )
 
     runtime_args_by_thread = runtime_args_by_thread or {}
+    defines_by_thread = defines_by_thread or {}
 
     for spec in kernel_specs:
         # Build common_runtime_args using tensor_indices.
@@ -245,6 +250,7 @@ def build_kernel_descriptors(
             kernel_source=spec.path,
             core_ranges=kernel_ranges,
             compile_time_args=kernel_compile_time_args,
+            defines=defines_by_thread.get(thread_name, []),
             runtime_args=runtime_args_by_thread.get(thread_name, []),
             common_runtime_args=common_runtime_args,
             config=spec.config,
@@ -620,6 +626,7 @@ def run_kernel_on_device(
             pipe_runtime_resources.expected_extra_common_runtime_args
         ),
         runtime_args_by_thread=program_resources.runtime_args_by_thread,
+        defines_by_thread=program_resources.defines_by_thread,
     )
 
     # Build CB descriptors.
