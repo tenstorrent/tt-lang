@@ -5,7 +5,7 @@
 """Layout creation utilities for tensor distribution across cores."""
 
 from dataclasses import dataclass
-from typing import List
+from typing import List, Tuple
 
 from ttl.dialects import ttcore
 
@@ -21,6 +21,7 @@ class LayoutConfig:
     grid: List[int]
     dtype: str
     memory_layout: int = 0  # Default: TENSOR_MEMORY_LAYOUT_INTERLEAVED
+    tile: Tuple[int, int] = (DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)
 
 
 # BufferType enum values (match TTLOpsEnums.td)
@@ -81,9 +82,7 @@ def create_layout(ctx, config: LayoutConfig):
     mlir_grid = [grid_rows, grid_cols]
 
     ttcore_dtype = tensor_dtype_to_ttcore_datatype(config.dtype)
-    element_type = ttcore.ir.TileType.get(
-        ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype
-    )
+    element_type = ttcore.ir.TileType.get(ctx, config.tile[0], config.tile[1], ttcore_dtype)
 
     # Import ttl.ir from our _ttlang extension module
     from ttl._mlir_libs._ttlang import ttl_ir
