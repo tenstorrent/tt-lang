@@ -598,11 +598,11 @@ LogicalResult lowerPipeTransferSend(
     rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
     return success();
   }
-  // buildPipeResourcePlan rejects transfers without a unique create op.
   FailureOr<PipeTransferCreateOp> maybeCreateOp =
-      findPipeTransferCreateForTransfer(op.getTransfer());
-  assert(succeeded(maybeCreateOp) &&
-         "pipe resource plan analysis already validated transfer provenance");
+      getPipeTransferCreate(op.getOperation(), op.getTransfer());
+  if (failed(maybeCreateOp)) {
+    return failure();
+  }
   PipeTransferCreateOp createOp = *maybeCreateOp;
   auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
   FailureOr<PipeResourceInfo> maybePipeResource =
@@ -885,11 +885,11 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
     rewriter.replaceOp(op, token.getResult(0));
     return success();
   }
-  // buildPipeResourcePlan rejects transfers without a unique create op.
   FailureOr<PipeTransferCreateOp> maybeCreateOp =
-      findPipeTransferCreateForTransfer(op.getTransfer());
-  assert(succeeded(maybeCreateOp) &&
-         "pipe resource plan analysis already validated transfer provenance");
+      getPipeTransferCreate(op.getOperation(), op.getTransfer());
+  if (failed(maybeCreateOp)) {
+    return failure();
+  }
   PipeTransferCreateOp createOp = *maybeCreateOp;
   auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
   FailureOr<PipeResourceInfo> maybePipeResource =
@@ -1372,27 +1372,35 @@ collectPipeTransferAllocationUnits(
   llvm::DenseMap<Operation *, int64_t> operationOrdinals;
   llvm::DenseMap<Operation *, SmallVector<Operation *>> waitOpsByPost;
   int64_t nextOperationOrdinal = 0;
-  mod.walk([&](Operation *op) {
+  WalkResult provenanceWalkResult = mod.walk([&](Operation *op) {
     if (isa<PipeTransferPostOp, PipeTransferSendOp>(op)) {
       operationOrdinals[op] = nextOperationOrdinal++;
       if (!pipeGraph.getPipeTransferNodeForProtocolOp(op)) {
         staticallyInactiveOps.insert(op);
       }
-      return;
+      return WalkResult::advance();
     }
     if (auto waitOp = dyn_cast<PipeTransferWaitOp>(op)) {
-      PipeTransferPostOp postOp =
+      FailureOr<PipeTransferPostOp> maybePostOp =
           findPipeTransferPostForToken(waitOp.getToken());
-      if (!postOp) {
-        return;
+      if (failed(maybePostOp)) {
+        waitOp.emitError(
+            "pipe transfer wait requires every possible token value to derive "
+            "from the same ttl.pipe_transfer.post");
+        return WalkResult::interrupt();
       }
+      PipeTransferPostOp postOp = *maybePostOp;
       if (!pipeGraph.getPipeTransferNodeForProtocolOp(postOp.getOperation())) {
         staticallyInactiveOps.insert(op);
-        return;
+        return WalkResult::advance();
       }
       waitOpsByPost[postOp.getOperation()].push_back(op);
     }
+    return WalkResult::advance();
   });
+  if (provenanceWalkResult.wasInterrupted()) {
+    return failure();
+  }
 
   units.reserve(pipeGraph.getPipeTransferNodes().size());
   for (const PipeTransferNode &transferNode :
