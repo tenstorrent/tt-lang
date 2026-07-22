@@ -28,6 +28,10 @@
 - **Namespaces**: Lowercase, avoid `using namespace`, no aliases in headers
 - **Error Handling**: Early returns to reduce nesting, no alternative tokens (&&
   not and)
+- **Callback Naming**: Name callbacks by the computation they perform, following
+  upstream MLIR conventions such as `computeUbMinusLb`, not by when they are
+  consulted. Use `ValueEvaluator` / `valueEvaluator` for integer value
+  evaluation callbacks; do not call them fallbacks.
 - **Unicode**: Avoid Unicode characters in code and documentation. Use ASCII
   equivalents instead (e.g., `->` instead of `→`). This ensures compatibility
   across different editors, terminals, and build environments.

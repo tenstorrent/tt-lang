@@ -1,5 +1,5 @@
 // RUN: ttlang-opt --verify-diagnostics --split-input-file %s
-// Summary: Invalid ttl.copy cases rejected by the CopyOp verifier.
+// Summary: Invalid ttl.copy and ttl.wait operands rejected by op verifiers.
 
 // -----
 
@@ -111,6 +111,36 @@ module {
     %handles0 = tensor.empty(%c1) : tensor<?x!ttl.transfer_handle<read>>
     %handles = tensor.insert %xf into %handles0[%c0] : tensor<?x!ttl.transfer_handle<read>>
     %loaded = tensor.extract %handles[%c0] : tensor<?x!ttl.transfer_handle<read>>
+    // expected-error @below {{expects operand to be derived from ttl.copy}}
+    ttl.wait %loaded : !ttl.transfer_handle<read>
+    func.return
+  }
+}
+
+// -----
+
+// A valid copy inserted at another tensor index does not make the extracted
+// non-copy handle valid.
+#layout_indexed = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, bf16>,
+                              buffer = l1, grid = [1, 1], memory = interleaved>
+
+module {
+  func.func @wait_from_wrong_container_element_invalid(
+      %src: tensor<1x1x!ttcore.tile<32x32, bf16>, #layout_indexed>,
+      %bogus: !ttl.transfer_handle<read>
+  ) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %copy = ttl.copy %src, %cb
+        : (tensor<1x1x!ttcore.tile<32x32, bf16>, #layout_indexed>,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> !ttl.transfer_handle<read>
+    %handles0 = tensor.empty(%c2) : tensor<?x!ttl.transfer_handle<read>>
+    %handles1 = tensor.insert %bogus into %handles0[%c0] : tensor<?x!ttl.transfer_handle<read>>
+    %handles2 = tensor.insert %copy into %handles1[%c1] : tensor<?x!ttl.transfer_handle<read>>
+    %loaded = tensor.extract %handles2[%c0] : tensor<?x!ttl.transfer_handle<read>>
     // expected-error @below {{expects operand to be derived from ttl.copy}}
     ttl.wait %loaded : !ttl.transfer_handle<read>
     func.return

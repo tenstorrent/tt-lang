@@ -99,6 +99,7 @@ if llvm_config is not None:
 tools = [
     "ttlang-execution-count-test",
     "ttlang-op-stats",
+    "ttlang-value-origin-test",
     "ttlang-opt",
     "ttlang-translate",
 ]

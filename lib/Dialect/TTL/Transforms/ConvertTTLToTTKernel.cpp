@@ -491,29 +491,16 @@ static bool isPipeSendCopy(CopyOp op) {
          llvm::isa<PipeType>(op.getDst().getType());
 }
 
-static CopyOp findPipeReceiveCopy(Value value) {
-  llvm::SmallPtrSet<Value, 16> seen;
-  return traceTransferHandleSource<CopyOp>(
-      value,
-      [](Value source) {
-        auto copyOp = source.getDefiningOp<CopyOp>();
-        if (!copyOp) {
-          return CopyOp();
-        }
-        if (isPipeReceiveCopy(copyOp)) {
-          return copyOp;
-        }
-        return CopyOp();
-      },
-      seen);
+static FailureOr<CopyOp> findPipeReceiveCopy(Value value) {
+  return findUniqueTransferValueSource<CopyOp>(value, isPipeReceiveCopy);
 }
 
-static PipeTransferSendOp findPipeTransferSend(Value value) {
-  llvm::SmallPtrSet<Value, 16> seen;
-  return traceTransferHandleSource<PipeTransferSendOp>(
-      value,
-      [](Value source) { return source.getDefiningOp<PipeTransferSendOp>(); },
-      seen);
+static bool isDerivedOnlyFromPipeTransferSends(Value value) {
+  ValueOriginAnalysis analysis;
+  SmallVector<Value> origins = analysis.getOrigins(value);
+  return !origins.empty() && llvm::all_of(origins, [](Value origin) {
+    return origin.getDefiningOp<PipeTransferSendOp>() != nullptr;
+  });
 }
 
 static PipeTransferKind getPipeTransferKind(PipeTransferContract contract) {
@@ -521,30 +508,46 @@ static PipeTransferKind getPipeTransferKind(PipeTransferContract contract) {
                                         : PipeTransferKind::PointToPoint;
 }
 
-static CreatePipeOp findCreatePipeForPipeValue(Value pipe) {
-  llvm::SmallPtrSet<Value, 16> seen;
-  return traceTransferHandleSource<CreatePipeOp>(
-      pipe, [](Value source) { return source.getDefiningOp<CreatePipeOp>(); },
-      seen);
-}
-
-static PipeTransferContract getPipeTransferContractForPipeValue(Value pipe) {
-  if (CreatePipeOp createPipe = findCreatePipeForPipeValue(pipe)) {
-    return getPipeTransferContract(createPipe);
+/// Return the contract shared by every possible value of a pipe operand.
+///
+/// A defining create op preserves a degenerate one-receiver collective. A
+/// block argument has no create op, so its pipe type supplies the contract.
+static FailureOr<PipeTransferContract>
+getPipeTransferContractForPipeValue(Value pipe) {
+  ValueOriginAnalysis analysis;
+  SmallVector<Value> origins = analysis.getOrigins(pipe);
+  std::optional<PipeTransferContract> maybeContract;
+  for (Value origin : origins) {
+    PipeTransferContract contract;
+    if (auto createPipe = origin.getDefiningOp<CreatePipeOp>()) {
+      contract = getPipeTransferContract(createPipe);
+    } else if (isa<BlockArgument>(origin) && isa<PipeType>(origin.getType())) {
+      contract = cast<PipeType>(origin.getType()).hasMultipleReceivers()
+                     ? PipeTransferContract::Collective
+                     : PipeTransferContract::PointToPoint;
+    } else {
+      return failure();
+    }
+    if (maybeContract && *maybeContract != contract) {
+      return failure();
+    }
+    maybeContract = contract;
   }
-  // Function and block arguments do not carry CreatePipeOp attrs; use the
-  // PipeType-derived contract only when no defining pipe op can be traced.
-  auto pipeType = mlir::cast<PipeType>(traceUnrealizedCasts(pipe).getType());
-  return pipeType.hasMultipleReceivers() ? PipeTransferContract::Collective
-                                         : PipeTransferContract::PointToPoint;
+  if (!maybeContract) {
+    return failure();
+  }
+  return *maybeContract;
 }
 
 static PipeTransferCreateOp createPipeTransfer(OpBuilder &builder, Location loc,
                                                Value pipe) {
   auto pipeType = mlir::cast<PipeType>(traceUnrealizedCasts(pipe).getType());
-  PipeTransferContract contract = getPipeTransferContractForPipeValue(pipe);
-  auto kindAttr = PipeTransferKindAttr::get(builder.getContext(),
-                                            getPipeTransferKind(contract));
+  FailureOr<PipeTransferContract> maybeContract =
+      getPipeTransferContractForPipeValue(pipe);
+  assert(succeeded(maybeContract) &&
+         "pipe copy validation must establish one transfer contract");
+  auto kindAttr = PipeTransferKindAttr::get(
+      builder.getContext(), getPipeTransferKind(*maybeContract));
   auto expectedReceiversAttr =
       builder.getI64IntegerAttr(pipeType.getNumDests());
   return PipeTransferCreateOp::create(
@@ -576,26 +579,24 @@ static Value getOrCreatePipeTransfer(
 
 static LogicalResult verifyPipeTransferWaits(ModuleOp mod) {
   LogicalResult result = success();
-  mod.walk(
-      [&](PipeTransferWaitOp waitOp) {
-        PipeTransferPostOp postOp =
-            findPipeTransferPostForToken(waitOp.getToken());
-        if (!postOp) {
-          waitOp.emitError()
-              << "requires token derived from ttl.pipe_transfer.post";
-          result = failure();
-          return;
-        }
-        auto waitTokenType =
-            mlir::cast<PipeTokenType>(waitOp.getToken().getType());
-        auto postTokenType =
-            mlir::cast<PipeTokenType>(postOp.getToken().getType());
-        if (waitTokenType.getPipeNetId() != postTokenType.getPipeNetId()) {
-          waitOp.emitError()
-              << "token pipeNetId must match pipe transfer post pipeNetId";
-          result = failure();
-        }
-      });
+  mod.walk([&](PipeTransferWaitOp waitOp) {
+    FailureOr<PipeTransferPostOp> maybePostOp =
+        findPipeTransferPostForToken(waitOp.getToken());
+    if (failed(maybePostOp)) {
+      waitOp.emitError() << "requires every possible token value to derive "
+                            "from the same ttl.pipe_transfer.post";
+      result = failure();
+      return;
+    }
+    PipeTransferPostOp postOp = *maybePostOp;
+    auto waitTokenType = mlir::cast<PipeTokenType>(waitOp.getToken().getType());
+    auto postTokenType = mlir::cast<PipeTokenType>(postOp.getToken().getType());
+    if (waitTokenType.getPipeNetId() != postTokenType.getPipeNetId()) {
+      waitOp.emitError()
+          << "token pipeNetId must match pipe transfer post pipeNetId";
+      result = failure();
+    }
+  });
   return result;
 }
 
@@ -605,41 +606,56 @@ static LogicalResult expandPipeTransferOps(ModuleOp mod) {
 
   SmallVector<CopyOp> receiveCopies;
   SmallVector<CopyOp> sendCopies;
+  LogicalResult result = success();
   mod.walk([&](CopyOp op) {
     if (isPipeReceiveCopy(op)) {
       receiveCopies.push_back(op);
+      if (failed(getPipeTransferContractForPipeValue(op.getSrc()))) {
+        op.emitError()
+            << "requires a consistent transfer contract for all possible "
+               "pipe values";
+        result = failure();
+      }
       return;
     }
     if (isPipeSendCopy(op)) {
       sendCopies.push_back(op);
+      if (failed(getPipeTransferContractForPipeValue(op.getDst()))) {
+        op.emitError()
+            << "requires a consistent transfer contract for all possible "
+               "pipe values";
+        result = failure();
+      }
     }
   });
+  if (failed(result)) {
+    return failure();
+  }
 
   struct ReceiveWaitExpansion {
     WaitOp waitOp;
     int64_t pipeNetId;
   };
   SmallVector<ReceiveWaitExpansion> receiveWaits;
-  LogicalResult result = success();
-  mod.walk(
-      [&](WaitOp waitOp) {
-        auto handleType =
-            mlir::dyn_cast<TransferHandleType>(waitOp.getXf().getType());
-        if (!handleType || handleType.getKind()) {
-          return;
-        }
-        CopyOp copyOp = findPipeReceiveCopy(waitOp.getXf());
-        if (!copyOp) {
-          waitOp.emitError()
-              << "untyped transfer handle wait must reference a pipe receive "
-                 "ttl.copy";
-          result = failure();
-          return;
-        }
-        auto pipeType = mlir::cast<PipeType>(
-            traceUnrealizedCasts(copyOp.getSrc()).getType());
-        receiveWaits.push_back({waitOp, pipeType.getPipeNetId()});
-      });
+  mod.walk([&](WaitOp waitOp) {
+    auto handleType =
+        mlir::dyn_cast<TransferHandleType>(waitOp.getXf().getType());
+    if (!handleType || handleType.getKind()) {
+      return;
+    }
+    FailureOr<CopyOp> maybeCopyOp = findPipeReceiveCopy(waitOp.getXf());
+    if (failed(maybeCopyOp)) {
+      waitOp.emitError() << "untyped transfer handle wait requires every "
+                            "possible source to be the same pipe receive "
+                            "ttl.copy";
+      result = failure();
+      return;
+    }
+    CopyOp copyOp = *maybeCopyOp;
+    auto pipeType =
+        mlir::cast<PipeType>(traceUnrealizedCasts(copyOp.getSrc()).getType());
+    receiveWaits.push_back({waitOp, pipeType.getPipeNetId()});
+  });
   if (failed(result)) {
     return failure();
   }
@@ -1131,7 +1147,7 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
   LogicalResult
   matchAndRewrite(WaitOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (findPipeTransferSend(op.getXf())) {
+    if (isDerivedOnlyFromPipeTransferSends(op.getXf())) {
       // Pipe sends wait for the payload write before signaling receiver
       // completion, so the send handle is complete when the send op returns.
       rewriter.eraseOp(op);

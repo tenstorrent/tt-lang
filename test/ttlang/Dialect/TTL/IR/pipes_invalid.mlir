@@ -56,6 +56,23 @@ func.func @pipe_transfer_point_to_point_multi_receiver() {
 
 // -----
 
+// A receive post cannot use a transfer value with no creating operation.
+func.func @pipe_transfer_post_requires_created_transfer() {
+  %transfer_unknown = builtin.unrealized_conversion_cast to !ttl.pipe_transfer
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %dst = ttl.cb_reserve %cb
+      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  // expected-error @below {{'ttl.pipe_transfer.post' op requires every possible transfer value to derive from the same ttl.pipe_transfer.create}}
+  %token = ttl.pipe_transfer.post %transfer_unknown, %dst
+      : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.pipe_token<net 0>
+  func.return
+}
+
+// -----
+
 // Test: pipe transfer post requires a token for the same PipeNet.
 func.func @pipe_transfer_post_token_net_mismatch() {
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -91,10 +108,59 @@ func.func @pipe_transfer_send_requires_write_handle() {
 
 // -----
 
+// A send cannot use a transfer value with no creating operation.
+func.func @pipe_transfer_send_requires_created_transfer() {
+  %transfer_unknown = builtin.unrealized_conversion_cast to !ttl.pipe_transfer
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  // expected-error @below {{'ttl.pipe_transfer.send' op requires every possible transfer value to derive from the same ttl.pipe_transfer.create}}
+  %xf = ttl.pipe_transfer.send %transfer_unknown, %cb
+      : (!ttl.pipe_transfer, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+      -> !ttl.transfer_handle<write>
+  func.return
+}
+
+// -----
+
 // Test: pipe transfer wait requires a token produced by a post.
 func.func @pipe_transfer_wait_requires_post_token() {
   %token = builtin.unrealized_conversion_cast to !ttl.pipe_token<net 0>
-  // expected-error @+1 {{'ttl.pipe_transfer.wait' op requires token derived from ttl.pipe_transfer.post}}
+  // expected-error @+1 {{'ttl.pipe_transfer.wait' op requires every possible token value to derive from the same ttl.pipe_transfer.post}}
+  ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
+  func.return
+}
+
+// -----
+
+// A wait cannot merge completion tokens from distinct receive posts.
+func.func @pipe_transfer_wait_requires_one_post(%condition: i1) {
+  %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %transfer = ttl.pipe_transfer.create %pipe {
+      expectedReceivers = 1 : i64,
+      kind = #ttl.pipe_transfer_kind<point_to_point>}
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+      -> !ttl.pipe_transfer
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %dst0 = ttl.cb_reserve %cb
+      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %token0 = ttl.pipe_transfer.post %transfer, %dst0
+      : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.pipe_token<net 0>
+  %dst1 = ttl.cb_reserve %cb
+      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %token1 = ttl.pipe_transfer.post %transfer, %dst1
+      : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.pipe_token<net 0>
+  %token = scf.if %condition -> (!ttl.pipe_token<net 0>) {
+    scf.yield %token0 : !ttl.pipe_token<net 0>
+  } else {
+    scf.yield %token1 : !ttl.pipe_token<net 0>
+  }
+  // expected-error @below {{'ttl.pipe_transfer.wait' op requires every possible token value to derive from the same ttl.pipe_transfer.post}}
   ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
   func.return
 }

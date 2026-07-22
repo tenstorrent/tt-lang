@@ -6,26 +6,22 @@
 
 #include "TTLOpsVerifyUtils.h"
 
+#include "ttlang/Analysis/ValueOriginAnalysis.h"
+
 #include "mlir/Support/LogicalResult.h"
-#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
-#include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/STLExtras.h"
 
 namespace mlir::tt::ttl::verify {
 namespace {
 
-// Return true when `v` is a transfer handle produced by an operation with
-// `ttl.wait` semantics, allowing the handle to flow through tensor containers
-// and loop-carried values.
+// Return true when every possible origin has `ttl.wait` semantics.
 static bool isDerivedFromTransfer(mlir::Value value) {
-  llvm::SmallPtrSet<mlir::Value, 16> seen;
-  return mlir::tt::ttl::traceTransferHandleSource<bool>(
-      value,
-      [](mlir::Value source) {
-        return source.getDefiningOp<mlir::tt::ttl::CopyOp>() != nullptr ||
-               source.getDefiningOp<mlir::tt::ttl::PipeTransferSendOp>() !=
-                   nullptr;
-      },
-      seen);
+  mlir::tt::ValueOriginAnalysis analysis;
+  llvm::SmallVector<mlir::Value> origins = analysis.getOrigins(value);
+  return !origins.empty() && llvm::all_of(origins, [](mlir::Value origin) {
+    return origin.getDefiningOp<mlir::tt::ttl::CopyOp>() != nullptr ||
+           origin.getDefiningOp<mlir::tt::ttl::PipeTransferSendOp>() != nullptr;
+  });
 }
 
 } // namespace

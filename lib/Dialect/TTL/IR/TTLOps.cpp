@@ -285,12 +285,13 @@ mlir::LogicalResult mlir::tt::ttl::PipeTransferPostOp::verify() {
   if (!findCBReserveForPipeReceive(getDst())) {
     return emitOpError() << "requires a cb_reserve destination";
   }
-  auto createOp = findPipeTransferCreateForTransfer(getTransfer());
-  if (!createOp) {
-    return emitOpError()
-           << "requires transfer derived from ttl.pipe_transfer.create";
+  FailureOr<PipeTransferCreateOp> maybeCreateOp =
+      findPipeTransferCreateForTransfer(getTransfer());
+  if (failed(maybeCreateOp)) {
+    return emitOpError() << "requires every possible transfer value to derive "
+                            "from the same ttl.pipe_transfer.create";
   }
-  auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
+  auto pipeType = mlir::cast<PipeType>(maybeCreateOp->getPipe().getType());
   auto tokenType = mlir::cast<PipeTokenType>(getToken().getType());
   if (tokenType.getPipeNetId() != pipeType.getPipeNetId()) {
     return emitOpError() << "token pipeNetId must match transfer pipeNetId";
@@ -300,9 +301,9 @@ mlir::LogicalResult mlir::tt::ttl::PipeTransferPostOp::verify() {
 }
 
 mlir::LogicalResult mlir::tt::ttl::PipeTransferSendOp::verify() {
-  if (!findPipeTransferCreateForTransfer(getTransfer())) {
-    return emitOpError()
-           << "requires transfer derived from ttl.pipe_transfer.create";
+  if (failed(findPipeTransferCreateForTransfer(getTransfer()))) {
+    return emitOpError() << "requires every possible transfer value to derive "
+                            "from the same ttl.pipe_transfer.create";
   }
   auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
   if (!handleType || handleType.getKind() != TransferKind::write) {
@@ -313,16 +314,16 @@ mlir::LogicalResult mlir::tt::ttl::PipeTransferSendOp::verify() {
 }
 
 mlir::LogicalResult mlir::tt::ttl::PipeTransferWaitOp::verify() {
-  mlir::tt::ttl::PipeTransferPostOp postOp =
+  FailureOr<mlir::tt::ttl::PipeTransferPostOp> maybePostOp =
       mlir::tt::ttl::findPipeTransferPostForToken(getToken());
-  if (!postOp) {
-    return emitOpError()
-           << "requires token derived from ttl.pipe_transfer.post";
+  if (failed(maybePostOp)) {
+    return emitOpError() << "requires every possible token value to derive "
+                            "from the same ttl.pipe_transfer.post";
   }
   auto waitTokenType =
       mlir::cast<mlir::tt::ttl::PipeTokenType>(getToken().getType());
-  auto postTokenType =
-      mlir::cast<mlir::tt::ttl::PipeTokenType>(postOp.getToken().getType());
+  auto postTokenType = mlir::cast<mlir::tt::ttl::PipeTokenType>(
+      maybePostOp->getToken().getType());
   if (waitTokenType.getPipeNetId() != postTokenType.getPipeNetId()) {
     return emitOpError()
            << "token pipeNetId must match pipe transfer post pipeNetId";

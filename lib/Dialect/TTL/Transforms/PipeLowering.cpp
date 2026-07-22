@@ -101,13 +101,14 @@ static PipeSourceKey getPipeSourceKey(PipeType pipeType) {
 
 static FailureOr<PipeTransferCreateOp> getPipeTransferCreate(Operation *op,
                                                              Value transfer) {
-  auto createOp = findPipeTransferCreateForTransfer(transfer);
-  if (!createOp) {
+  FailureOr<PipeTransferCreateOp> maybeCreateOp =
+      findPipeTransferCreateForTransfer(transfer);
+  if (failed(maybeCreateOp)) {
     return op->emitError() << op->getName()
-                           << " must use a transfer derived from "
-                              "ttl.pipe_transfer.create";
+                           << " requires every possible transfer value to "
+                              "derive from the same ttl.pipe_transfer.create";
   }
-  return createOp;
+  return *maybeCreateOp;
 }
 
 static PipeResourceInfo
@@ -375,9 +376,11 @@ void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters) {
     llvm::SmallSetVector<int64_t, 4> pipeNetIds;
     func.walk([&](Operation *op) {
       if (auto post = mlir::dyn_cast<PipeTransferPostOp>(op)) {
-        auto createOp = findPipeTransferCreateForTransfer(post.getTransfer());
-        assert(createOp && "pipe transfer post missing traced create op");
-        auto pipeTy = mlir::cast<PipeType>(createOp.getPipe().getType());
+        FailureOr<PipeTransferCreateOp> maybeCreateOp =
+            findPipeTransferCreateForTransfer(post.getTransfer());
+        assert(succeeded(maybeCreateOp) &&
+               "pipe transfer post missing traced create op");
+        auto pipeTy = mlir::cast<PipeType>(maybeCreateOp->getPipe().getType());
         if (getAttachedCB(post.getDst())) {
           pipeNetIds.insert(pipeTy.getPipeNetId());
         }
@@ -415,10 +418,12 @@ LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
                                     const PipeResourcePlan &pipeResourcePlan,
                                     ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
-  PipeTransferCreateOp createOp =
+  // buildPipeResourcePlan rejects transfers without a unique create op.
+  FailureOr<PipeTransferCreateOp> maybeCreateOp =
       findPipeTransferCreateForTransfer(op.getTransfer());
-  assert(createOp &&
+  assert(succeeded(maybeCreateOp) &&
          "pipe resource plan analysis already validated transfer provenance");
+  PipeTransferCreateOp createOp = *maybeCreateOp;
   auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
   PipeResourceInfo pipeResource =
       lookupPipeResourceInfo(createOp, pipeResourcePlan);
@@ -630,10 +635,12 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
                                     const PipeResourcePlan &pipeResourcePlan,
                                     ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
-  PipeTransferCreateOp createOp =
+  // buildPipeResourcePlan rejects transfers without a unique create op.
+  FailureOr<PipeTransferCreateOp> maybeCreateOp =
       findPipeTransferCreateForTransfer(op.getTransfer());
-  assert(createOp &&
+  assert(succeeded(maybeCreateOp) &&
          "pipe resource plan analysis already validated transfer provenance");
+  PipeTransferCreateOp createOp = *maybeCreateOp;
   auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
   PipeResourceInfo pipeResource =
       lookupPipeResourceInfo(createOp, pipeResourcePlan);

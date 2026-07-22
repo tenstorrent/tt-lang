@@ -321,14 +321,15 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
       collectPipeTransferContracts(mod);
 
   WalkResult walkResult = mod.walk([&](PipeTransferPostOp postOp) {
-    auto createOp = findPipeTransferCreateForTransfer(postOp.getTransfer());
-    if (!createOp) {
+    FailureOr<PipeTransferCreateOp> maybeCreateOp =
+        findPipeTransferCreateForTransfer(postOp.getTransfer());
+    if (failed(maybeCreateOp)) {
       postOp.emitError(
-          "pipe transfer post must reference a transfer derived from "
-          "ttl.pipe_transfer.create");
+          "pipe transfer post requires every possible transfer value to derive "
+          "from the same ttl.pipe_transfer.create");
       return WalkResult::interrupt();
     }
-    auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
+    auto pipeType = mlir::cast<PipeType>(maybeCreateOp->getPipe().getType());
     PipeKey key = getPipeKey(pipeType);
     auto contractIt = transferContracts.find(key);
     if (contractIt == transferContracts.end()) {

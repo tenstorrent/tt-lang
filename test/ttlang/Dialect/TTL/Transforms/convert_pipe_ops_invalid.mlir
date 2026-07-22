@@ -1,7 +1,74 @@
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics -convert-ttl-to-ttkernel
 
-// Summary: Negative tests for pipe receiver DFB validation and pipe synchronization
-// resource diagnostics in ttl-convert-ttl-to-ttkernel.
+// Summary: Negative tests for pipe value provenance, receiver DFB validation,
+// and synchronization resource diagnostics in ttl-convert-ttl-to-ttkernel.
+
+// Pipe values with conflicting transfer contracts cannot select one lowering
+// protocol safely.
+
+func.func @conflicting_pipe_transfer_contracts(%condition: i1)
+    attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+  %point_to_point = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %collective = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 {
+      isCollective = true}
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %pipe = scf.if %condition
+      -> (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) {
+    scf.yield %point_to_point
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  } else {
+    scf.yield %collective
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  }
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %dst = ttl.cb_reserve %cb
+      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  // expected-error @below {{requires a consistent transfer contract for all possible pipe values}}
+  %xf = ttl.copy %pipe, %dst
+      : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+         tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.transfer_handle
+  func.return
+}
+
+// -----
+
+// An untyped wait cannot select between two distinct pipe receive operations.
+
+func.func @wait_with_distinct_pipe_receive_sources(%condition: i1)
+    attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+  %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %dst0 = ttl.cb_reserve %cb
+      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %xf0 = ttl.copy %pipe, %dst0
+      : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+         tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.transfer_handle
+  %dst1 = ttl.cb_reserve %cb
+      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %xf1 = ttl.copy %pipe, %dst1
+      : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+         tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.transfer_handle
+  %xf = scf.if %condition -> (!ttl.transfer_handle) {
+    scf.yield %xf0 : !ttl.transfer_handle
+  } else {
+    scf.yield %xf1 : !ttl.transfer_handle
+  }
+  // expected-error @below {{untyped transfer handle wait requires every possible source to be the same pipe receive ttl.copy}}
+  ttl.wait %xf : !ttl.transfer_handle
+  func.return
+}
+
+// -----
 
 // Two unicast pipes converging on node (1, 0) need distinct slots in the
 // receiver DFB. With block_count=1 the second pipe's assigned slot exceeds the
