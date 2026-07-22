@@ -1,6 +1,8 @@
 # Lit Test configuration
 # (TTLANG_HAS_DEVICE and TTLANG_HAS_DEVICE_INT are set by top-level CMakeLists.txt)
 
+add_subdirectory(lib/Analysis)
+
 # Generate pytest.ini with correct build directory paths.
 configure_file(
   ${CMAKE_CURRENT_SOURCE_DIR}/pytest.ini.in
@@ -30,9 +32,16 @@ configure_lit_site_cfg(
 
 
 set(TTLANG_TEST_DEPENDS
+  ttlang-execution-count-test
+  ttlang-op-stats
   ttlang-opt
   ttlang-translate
 )
+
+# Hardware jobs invoke llvm-lit directly, so expose its executable dependencies
+# through a target that the workflow can build explicitly.
+add_custom_target(ttlang-test-tools DEPENDS ${TTLANG_TEST_DEPENDS})
+set_target_properties(ttlang-test-tools PROPERTIES FOLDER "Tests")
 
 # Common llvm-lit options for consistent output across tt-lang test suites.
 set(TTLANG_LIT_COMMON_ARGS
@@ -96,10 +105,22 @@ add_custom_target(check-ttlang
   COMMENT "Running ttlang tests that never require a TT device"
 )
 
+# When configured against the simulator (TT_METAL_SIMULATOR set), run the device
+# pytest suites in parallel: each pytest-xdist worker starts its own libttsim.so
+# device. Each is memory-heavy (~2-3 GiB), so the default of 2 suits the 16 GiB
+# reference VM; raise it (and the VM's memory) with -DTTLANG_SIM_PYTEST_JOBS=<N>.
+set(TTLANG_SIM_PYTEST_JOBS "2" CACHE STRING
+  "pytest-xdist worker count for simulator (TT_METAL_SIMULATOR) test runs")
+set(_ttlang_pytest_parallel "")
+if(DEFINED ENV{TT_METAL_SIMULATOR})
+  set(_ttlang_pytest_parallel -n ${TTLANG_SIM_PYTEST_JOBS})
+endif()
+
 # Pytest tests (test/python/test_*.py files).
 add_custom_target(check-ttlang-pytest
   COMMAND ${Python3_EXECUTABLE} -m pytest
     ${CMAKE_CURRENT_SOURCE_DIR}/python
+    ${_ttlang_pytest_parallel}
     -v --tb=short
     --junitxml=${CMAKE_CURRENT_BINARY_DIR}/pytest-report.xml
   DEPENDS ${TTLANG_PYTHON_TEST_DEPENDS}
@@ -113,6 +134,7 @@ set_target_properties(check-ttlang-pytest PROPERTIES FOLDER "Tests")
 add_custom_target(check-ttlang-me2e
   COMMAND ${Python3_EXECUTABLE} -m pytest
     ${CMAKE_CURRENT_SOURCE_DIR}/me2e
+    ${_ttlang_pytest_parallel}
     -v --tb=short
     --junitxml=${CMAKE_CURRENT_BINARY_DIR}/me2e-report.xml
   DEPENDS ${TTLANG_PYTHON_TEST_DEPENDS}

@@ -8,15 +8,16 @@
 
 #include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
 
+#include "ttlang/Analysis/IntegerExpressionEvaluator.h"
+#include "ttlang/Dialect/TTL/IR/TTL.h"
+
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
-#include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/IntegerSet.h"
-#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/raw_ostream.h"
@@ -219,100 +220,19 @@ void LaunchNodeDomainState::initialize(ModuleOp module) {
   baseDomain = getFullLaunchNodeDomain(launchGrid[0], launchGrid[1]);
 }
 
-/// Evaluate index expressions that are affine over `ttl.core_x`,
-/// `ttl.core_y`, and integer constants for one launch coordinate.
-static std::optional<int64_t> evalIndex(Value value, LaunchNodeCoord coord) {
-  if (value.getDefiningOp<CoreXOp>()) {
-    return coord.x;
-  }
-  if (value.getDefiningOp<CoreYOp>()) {
-    return coord.y;
-  }
-  if (auto constant = getConstantIntValue(value)) {
-    return *constant;
-  }
-  if (auto castOp = value.getDefiningOp<arith::IndexCastOp>()) {
-    return evalIndex(castOp.getIn(), coord);
-  }
-  if (auto addOp = value.getDefiningOp<arith::AddIOp>()) {
-    auto lhs = evalIndex(addOp.getLhs(), coord);
-    auto rhs = evalIndex(addOp.getRhs(), coord);
-    if (lhs && rhs) {
-      return *lhs + *rhs;
-    }
-  }
-  if (auto subOp = value.getDefiningOp<arith::SubIOp>()) {
-    auto lhs = evalIndex(subOp.getLhs(), coord);
-    auto rhs = evalIndex(subOp.getRhs(), coord);
-    if (lhs && rhs) {
-      return *lhs - *rhs;
-    }
-  }
-  if (auto mulOp = value.getDefiningOp<arith::MulIOp>()) {
-    auto lhs = evalIndex(mulOp.getLhs(), coord);
-    auto rhs = evalIndex(mulOp.getRhs(), coord);
-    if (lhs && rhs) {
-      return *lhs * *rhs;
-    }
-  }
-  return std::nullopt;
-}
-
-/// Evaluate boolean predicates composed from statically evaluable comparisons
-/// and integer boolean operations for one launch coordinate.
-static std::optional<bool> evalBool(Value value, LaunchNodeCoord coord) {
-  if (value.getType().isInteger(1)) {
-    if (auto constant = getConstantIntValue(value)) {
-      return *constant != 0;
-    }
-  }
-  if (auto cmpOp = value.getDefiningOp<arith::CmpIOp>()) {
-    auto lhs = evalIndex(cmpOp.getLhs(), coord);
-    auto rhs = evalIndex(cmpOp.getRhs(), coord);
-    if (!lhs || !rhs) {
-      return std::nullopt;
-    }
-    switch (cmpOp.getPredicate()) {
-    case arith::CmpIPredicate::eq:
-      return *lhs == *rhs;
-    case arith::CmpIPredicate::ne:
-      return *lhs != *rhs;
-    case arith::CmpIPredicate::slt:
-    case arith::CmpIPredicate::ult:
-      return *lhs < *rhs;
-    case arith::CmpIPredicate::sle:
-    case arith::CmpIPredicate::ule:
-      return *lhs <= *rhs;
-    case arith::CmpIPredicate::sgt:
-    case arith::CmpIPredicate::ugt:
-      return *lhs > *rhs;
-    case arith::CmpIPredicate::sge:
-    case arith::CmpIPredicate::uge:
-      return *lhs >= *rhs;
-    }
-  }
-  if (auto andOp = value.getDefiningOp<arith::AndIOp>()) {
-    auto lhs = evalBool(andOp.getLhs(), coord);
-    auto rhs = evalBool(andOp.getRhs(), coord);
-    if (lhs && rhs) {
-      return *lhs && *rhs;
-    }
-  }
-  if (auto orOp = value.getDefiningOp<arith::OrIOp>()) {
-    auto lhs = evalBool(orOp.getLhs(), coord);
-    auto rhs = evalBool(orOp.getRhs(), coord);
-    if (lhs && rhs) {
-      return *lhs || *rhs;
-    }
-  }
-  if (auto xorOp = value.getDefiningOp<arith::XOrIOp>()) {
-    auto lhs = evalBool(xorOp.getLhs(), coord);
-    auto rhs = evalBool(xorOp.getRhs(), coord);
-    if (lhs && rhs) {
-      return *lhs != *rhs;
-    }
-  }
-  return std::nullopt;
+/// Substitute the given launch coordinates while evaluating integer values.
+IntegerExpressionEvaluator
+createLaunchNodeIntegerEvaluator(LaunchNodeCoord coord) {
+  return IntegerExpressionEvaluator(
+      [coord](Value value) -> std::optional<llvm::APInt> {
+        if (value.getDefiningOp<CoreXOp>()) {
+          return llvm::APInt(IndexType::kInternalStorageBitWidth, coord.x);
+        }
+        if (value.getDefiningOp<CoreYOp>()) {
+          return llvm::APInt(IndexType::kInternalStorageBitWidth, coord.y);
+        }
+        return std::nullopt;
+      });
 }
 
 /// Return true if evaluating `value` can depend on the current launch
@@ -358,14 +278,18 @@ getAffineIfLaunchNodeDomain(affine::AffineIfOp ifOp,
   LaunchNodeDomain result;
   SmallVector<Attribute> operandConstants(set.getNumInputs());
   for (LaunchNodeCoord coord : baseDomain.nodes) {
+    IntegerExpressionEvaluator integerEvaluator =
+        createLaunchNodeIntegerEvaluator(coord);
     bool resolved = true;
     for (unsigned idx = 0; idx < set.getNumInputs(); ++idx) {
-      auto value = evalIndex(operands[idx], coord);
-      if (!value) {
+      std::optional<llvm::APInt> maybeValue =
+          integerEvaluator.evaluate(operands[idx]);
+      if (!maybeValue) {
         resolved = false;
         break;
       }
-      operandConstants[idx] = IntegerAttr::get(IndexType::get(ctx), *value);
+      operandConstants[idx] =
+          IntegerAttr::get(operands[idx].getType(), *maybeValue);
     }
     if (!resolved) {
       return {LaunchNodeDomain::unknown(), ifOp};
@@ -487,12 +411,15 @@ getBranchDomainsImpl(Value condition, const LaunchNodeDomain &current,
   }
   LaunchNodeDomain trueDomain;
   for (LaunchNodeCoord coord : state.baseDomain.nodes) {
-    std::optional<bool> value = evalBool(condition, coord);
-    if (!value) {
+    IntegerExpressionEvaluator integerEvaluator =
+        createLaunchNodeIntegerEvaluator(coord);
+    std::optional<llvm::APInt> maybeValue =
+        integerEvaluator.evaluate(condition);
+    if (!maybeValue || maybeValue->getBitWidth() != 1) {
       return {LaunchNodeDomain::unknown(), LaunchNodeDomain::unknown(),
               condition.getDefiningOp()};
     }
-    if (*value) {
+    if (maybeValue->getBoolValue()) {
       trueDomain.nodes.insert(coord);
     }
   }
