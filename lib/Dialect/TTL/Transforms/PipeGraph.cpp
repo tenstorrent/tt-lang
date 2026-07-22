@@ -618,8 +618,7 @@ static int64_t advanceReceiverSlot(int64_t slot, int64_t stride,
 }
 
 LogicalResult PipeGraph::assignReceiverAddressSequences(
-    ValueOriginAnalysis &analysis,
-    PipeGraphAnalysisState &analysisState) {
+    ValueOriginAnalysis &analysis, PipeGraphAnalysisState &analysisState) {
   FailureOr<ReceiverPostsByDFB> maybePostsByReceiverDFB =
       collectReceiverPostsByDFB(analysis, receiverDFBByPost, analysisState);
   if (failed(maybePostsByReceiverDFB)) {

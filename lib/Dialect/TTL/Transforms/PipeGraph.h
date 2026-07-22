@@ -365,8 +365,8 @@ private:
   LogicalResult rebuildEndpointGraph(ValueOriginAnalysis &analysis,
                                      PipeGraphAnalysisState &state);
 
-  LogicalResult provePipeOnlyReceiverProducerStreams(
-      PipeGraphAnalysisState &analysisState);
+  LogicalResult
+  provePipeOnlyReceiverProducerStreams(PipeGraphAnalysisState &analysisState);
 
   llvm::MapVector<Operation *, ReceiverDFBInfo> receiverDFBByPost;
   SmallVector<PipeTransferNode, 0> pipeTransferNodes;
