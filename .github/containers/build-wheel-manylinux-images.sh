@@ -169,7 +169,8 @@ for python_tag in $(printf '%s\n' "$PYTHON_TAGS" | tr ',' ' '); do
         # moved here too, otherwise it lags at a since-reverted tag.
         if [ "${GITHUB_REF:-}" = "refs/heads/main" ]; then
             ${DOCKER:-docker} buildx imagetools create \
-                -t "${registry_image%:*}:latest" "$registry_image" || true
+                -t "${registry_image%:*}:latest" "$registry_image" \
+                || echo "WARNING: could not retag ${registry_image%:*}:latest (is 'docker buildx' available?)" >&2
         fi
         continue
     fi
