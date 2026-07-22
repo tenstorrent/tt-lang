@@ -64,6 +64,12 @@ IntegerExpressionEvaluator createLoopIntegerEvaluator(
     const LoopInductionBindings &bindings,
     IntegerExpressionEvaluator::ValueEvaluator valueEvaluator = {});
 
+/// Evaluate an integer expression as a signed 64-bit value.
+std::optional<std::int64_t> evaluateIndexExpression(
+    OpFoldResult expression,
+    const LoopInductionBindings &bindings = LoopInductionBindings(),
+    IntegerExpressionEvaluator::ValueEvaluator valueEvaluator = {});
+
 /// Return the exact trip count under the current induction-variable bindings.
 ///
 /// The LoopLike interface supplies static counts. For `scf.for`, evaluable

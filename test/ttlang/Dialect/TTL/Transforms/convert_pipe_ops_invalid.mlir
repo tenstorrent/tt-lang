@@ -194,6 +194,53 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
+// A completion wait cannot select between independent transfer completion
+// semaphores.
+func.func @pipe_wait_requires_one_static_post(%condition: i1)
+    attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+  %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %dst = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %transfer = ttl.pipe_transfer.create %pipe {
+      expectedReceivers = 1 : i64,
+      kind = #ttl.pipe_transfer_kind<point_to_point>}
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+      -> !ttl.pipe_transfer
+  %reserved0 = ttl.cb_reserve %dst
+      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %token0 = ttl.pipe_transfer.post %transfer, %reserved0
+      : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.pipe_token<net 0>
+  %send0 = ttl.pipe_transfer.send %transfer, %src
+      : (!ttl.pipe_transfer,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+      -> !ttl.transfer_handle<write>
+  %reserved1 = ttl.cb_reserve %dst
+      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %token1 = ttl.pipe_transfer.post %transfer, %reserved1
+      : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.pipe_token<net 0>
+  %send1 = ttl.pipe_transfer.send %transfer, %src
+      : (!ttl.pipe_transfer,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+      -> !ttl.transfer_handle<write>
+  %token = scf.if %condition -> (!ttl.pipe_token<net 0>) {
+    scf.yield %token0 : !ttl.pipe_token<net 0>
+  } else {
+    scf.yield %token1 : !ttl.pipe_token<net 0>
+  }
+  // expected-error @below {{requires every possible token value to derive from the same ttl.pipe_transfer.post}}
+  ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
+  func.return
+}
+
+// -----
+
 // An extra receiver DFB pop after the tracked pipe receive has already been
 // released cannot be mapped to a live pipe slot.
 

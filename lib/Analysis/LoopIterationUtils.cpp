@@ -9,14 +9,13 @@
 #include "mlir/IR/BuiltinAttributes.h"
 #include "llvm/ADT/ScopeExit.h"
 
-#include <functional>
 #include <utility>
 
 namespace mlir::tt {
 namespace {
 
 /// Evaluate an attribute or SSA expression for one enumerated iteration.
-std::optional<llvm::APInt> evaluateInteger(
+std::optional<llvm::APInt> evaluateIntegerAPInt(
     OpFoldResult expression, const LoopInductionBindings &bindings,
     const IntegerExpressionEvaluator::ValueEvaluator &valueEvaluator) {
   if (auto integer = dyn_cast<Attribute>(expression)) {
@@ -35,11 +34,11 @@ std::optional<llvm::APInt> getSCFForTripCount(
     scf::ForOp forOp, const LoopInductionBindings &bindings,
     const IntegerExpressionEvaluator::ValueEvaluator &valueEvaluator) {
   std::optional<llvm::APInt> maybeLowerBound =
-      evaluateInteger(forOp.getLowerBound(), bindings, valueEvaluator);
+      evaluateIntegerAPInt(forOp.getLowerBound(), bindings, valueEvaluator);
   std::optional<llvm::APInt> maybeUpperBound =
-      evaluateInteger(forOp.getUpperBound(), bindings, valueEvaluator);
+      evaluateIntegerAPInt(forOp.getUpperBound(), bindings, valueEvaluator);
   std::optional<llvm::APInt> maybeStep =
-      evaluateInteger(forOp.getStep(), bindings, valueEvaluator);
+      evaluateIntegerAPInt(forOp.getStep(), bindings, valueEvaluator);
   if (!maybeLowerBound || !maybeUpperBound || !maybeStep ||
       maybeStep->isZero()) {
     return std::nullopt;
@@ -56,54 +55,42 @@ std::optional<llvm::APInt> getSCFForTripCount(
                            scf::computeUbMinusLb);
 }
 
-/// Recursively enumerate loop nesting and multi-dimensional loop interfaces.
-///
-/// Every active induction variable is present in `bindings` when
-/// `visitAssignment` runs. A scope guard restores a pre-existing binding, which
-/// permits enumeration inside an already-bound enclosing iteration.
 LogicalResult enumerateLoopNestImpl(
     ArrayRef<LoopLikeOpInterface> loops, std::size_t loopIndex,
     LoopInductionBindings &bindings, EnumerationBudget &budget,
     function_ref<LogicalResult(const LoopInductionBindings &)> visitAssignment,
-    const IntegerExpressionEvaluator::ValueEvaluator &valueEvaluator) {
-  if (loopIndex == loops.size()) {
-    return visitAssignment(bindings);
-  }
+    const IntegerExpressionEvaluator::ValueEvaluator &valueEvaluator);
 
-  LoopLikeOpInterface loop = loops[loopIndex];
-  std::optional<SmallVector<Value>> maybeInductionVariables =
-      loop.getLoopInductionVars();
-  std::optional<SmallVector<OpFoldResult>> maybeLowerBounds =
-      loop.getLoopLowerBounds();
-  std::optional<SmallVector<OpFoldResult>> maybeUpperBounds =
-      loop.getLoopUpperBounds();
-  std::optional<SmallVector<OpFoldResult>> maybeSteps = loop.getLoopSteps();
-  if (!maybeInductionVariables || !maybeLowerBounds || !maybeUpperBounds ||
-      !maybeSteps ||
-      maybeInductionVariables->size() != maybeLowerBounds->size() ||
-      maybeInductionVariables->size() != maybeUpperBounds->size() ||
-      maybeInductionVariables->size() != maybeSteps->size()) {
-    return failure();
-  }
+/// Enumerate every induction-variable dimension exposed by one loop.
+class LoopDimensionEnumerator {
+public:
+  LoopDimensionEnumerator(
+      ArrayRef<LoopLikeOpInterface> loops, std::size_t loopIndex,
+      ArrayRef<Value> inductionVariables, ArrayRef<OpFoldResult> lowerBounds,
+      ArrayRef<OpFoldResult> upperBounds, ArrayRef<OpFoldResult> steps,
+      bool isUnsigned, LoopInductionBindings &bindings,
+      EnumerationBudget &budget,
+      function_ref<LogicalResult(const LoopInductionBindings &)>
+          visitAssignment,
+      const IntegerExpressionEvaluator::ValueEvaluator &valueEvaluator)
+      : loops(loops), loopIndex(loopIndex),
+        inductionVariables(inductionVariables), lowerBounds(lowerBounds),
+        upperBounds(upperBounds), steps(steps), isUnsigned(isUnsigned),
+        bindings(bindings), budget(budget), visitAssignment(visitAssignment),
+        valueEvaluator(valueEvaluator) {}
 
-  bool isUnsigned = false;
-  if (auto forOp = dyn_cast<scf::ForOp>(loop.getOperation())) {
-    isUnsigned = forOp.getUnsignedCmp();
-  }
-
-  std::function<LogicalResult(std::size_t)> enumerateDimension =
-      [&](std::size_t dimension) -> LogicalResult {
-    if (dimension == maybeInductionVariables->size()) {
+  LogicalResult enumerate(std::size_t dimension) {
+    if (dimension == inductionVariables.size()) {
       return enumerateLoopNestImpl(loops, loopIndex + 1, bindings, budget,
                                    visitAssignment, valueEvaluator);
     }
 
-    std::optional<llvm::APInt> maybeLower = evaluateInteger(
-        (*maybeLowerBounds)[dimension], bindings, valueEvaluator);
-    std::optional<llvm::APInt> maybeUpper = evaluateInteger(
-        (*maybeUpperBounds)[dimension], bindings, valueEvaluator);
+    std::optional<llvm::APInt> maybeLower =
+        evaluateIntegerAPInt(lowerBounds[dimension], bindings, valueEvaluator);
+    std::optional<llvm::APInt> maybeUpper =
+        evaluateIntegerAPInt(upperBounds[dimension], bindings, valueEvaluator);
     std::optional<llvm::APInt> maybeStep =
-        evaluateInteger((*maybeSteps)[dimension], bindings, valueEvaluator);
+        evaluateIntegerAPInt(steps[dimension], bindings, valueEvaluator);
     if (!maybeLower || !maybeUpper || !maybeStep ||
         maybeLower->getBitWidth() != maybeUpper->getBitWidth() ||
         maybeLower->getBitWidth() != maybeStep->getBitWidth() ||
@@ -111,7 +98,7 @@ LogicalResult enumerateLoopNestImpl(
       return failure();
     }
 
-    Value inductionVariable = (*maybeInductionVariables)[dimension];
+    Value inductionVariable = inductionVariables[dimension];
     auto previousBinding = bindings.find(inductionVariable);
     std::optional<llvm::APInt> maybePreviousBinding =
         previousBinding == bindings.end()
@@ -134,7 +121,7 @@ LogicalResult enumerateLoopNestImpl(
         return failure();
       }
       bindings[inductionVariable] = value;
-      if (failed(enumerateDimension(dimension + 1))) {
+      if (failed(enumerate(dimension + 1))) {
         return failure();
       }
 
@@ -146,9 +133,60 @@ LogicalResult enumerateLoopNestImpl(
       }
     }
     return success();
-  };
+  }
 
-  return enumerateDimension(0);
+private:
+  ArrayRef<LoopLikeOpInterface> loops;
+  std::size_t loopIndex;
+  ArrayRef<Value> inductionVariables;
+  ArrayRef<OpFoldResult> lowerBounds;
+  ArrayRef<OpFoldResult> upperBounds;
+  ArrayRef<OpFoldResult> steps;
+  bool isUnsigned;
+  LoopInductionBindings &bindings;
+  EnumerationBudget &budget;
+  function_ref<LogicalResult(const LoopInductionBindings &)> visitAssignment;
+  const IntegerExpressionEvaluator::ValueEvaluator &valueEvaluator;
+};
+
+/// Recursively enumerate loop nesting and multi-dimensional loop interfaces.
+///
+/// Every active induction variable is present in `bindings` when
+/// `visitAssignment` runs. Existing bindings are restored before return.
+LogicalResult enumerateLoopNestImpl(
+    ArrayRef<LoopLikeOpInterface> loops, std::size_t loopIndex,
+    LoopInductionBindings &bindings, EnumerationBudget &budget,
+    function_ref<LogicalResult(const LoopInductionBindings &)> visitAssignment,
+    const IntegerExpressionEvaluator::ValueEvaluator &valueEvaluator) {
+  if (loopIndex == loops.size()) {
+    return visitAssignment(bindings);
+  }
+
+  LoopLikeOpInterface loop = loops[loopIndex];
+  std::optional<SmallVector<Value>> inductionVariables =
+      loop.getLoopInductionVars();
+  std::optional<SmallVector<OpFoldResult>> lowerBounds =
+      loop.getLoopLowerBounds();
+  std::optional<SmallVector<OpFoldResult>> upperBounds =
+      loop.getLoopUpperBounds();
+  std::optional<SmallVector<OpFoldResult>> steps = loop.getLoopSteps();
+  if (!inductionVariables || !lowerBounds || !upperBounds || !steps ||
+      inductionVariables->size() != lowerBounds->size() ||
+      inductionVariables->size() != upperBounds->size() ||
+      inductionVariables->size() != steps->size()) {
+    return failure();
+  }
+
+  bool isUnsigned = false;
+  if (auto forOp = dyn_cast<scf::ForOp>(loop.getOperation())) {
+    isUnsigned = forOp.getUnsignedCmp();
+  }
+  // Other LoopLike implementations expose no unsigned-comparison property.
+  return LoopDimensionEnumerator(loops, loopIndex, *inductionVariables,
+                                 *lowerBounds, *upperBounds, *steps, isUnsigned,
+                                 bindings, budget, visitAssignment,
+                                 valueEvaluator)
+      .enumerate(0);
 }
 
 } // namespace
@@ -164,6 +202,17 @@ IntegerExpressionEvaluator createLoopIntegerEvaluator(
         }
         return valueEvaluator ? valueEvaluator(value) : std::nullopt;
       });
+}
+
+std::optional<std::int64_t> evaluateIndexExpression(
+    OpFoldResult expression, const LoopInductionBindings &bindings,
+    IntegerExpressionEvaluator::ValueEvaluator valueEvaluator) {
+  std::optional<llvm::APInt> maybeValue =
+      evaluateIntegerAPInt(expression, bindings, std::move(valueEvaluator));
+  if (!maybeValue || !maybeValue->isSignedIntN(64)) {
+    return std::nullopt;
+  }
+  return maybeValue->getSExtValue();
 }
 
 std::optional<std::uint64_t>

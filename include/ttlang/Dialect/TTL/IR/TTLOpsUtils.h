@@ -5,7 +5,6 @@
 #ifndef TTLANG_DIALECT_TTL_IR_TTLOPSUTILS_H
 #define TTLANG_DIALECT_TTL_IR_TTLOPSUTILS_H
 
-#include "ttlang/Analysis/ValueOriginAnalysis.h"
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
@@ -81,39 +80,6 @@ inline mlir::Value traceUnrealizedCasts(mlir::Value value) {
   return value;
 }
 
-/// Return one source operation only when every possible origin is the same
-/// operation of type `ResultT` and satisfies `accept`.
-template <typename ResultT, typename AcceptFn>
-inline mlir::FailureOr<ResultT> findUniqueTransferValueSource(mlir::Value value,
-                                                              AcceptFn accept) {
-  mlir::tt::ValueOriginAnalysis analysis;
-  std::optional<ResultT> maybeUniqueSource;
-  for (mlir::Value origin : analysis.getOrigins(value)) {
-    mlir::Operation *definition = origin.getDefiningOp();
-    if (!definition || !mlir::isa<ResultT>(definition)) {
-      return mlir::failure();
-    }
-    ResultT source = mlir::cast<ResultT>(definition);
-    if (!accept(source) ||
-        (maybeUniqueSource && *maybeUniqueSource != source)) {
-      return mlir::failure();
-    }
-    maybeUniqueSource = source;
-  }
-  if (!maybeUniqueSource) {
-    return mlir::failure();
-  }
-  return *maybeUniqueSource;
-}
-
-/// Return one source operation only when every possible origin has that type.
-template <typename ResultT>
-inline mlir::FailureOr<ResultT>
-findUniqueTransferValueSource(mlir::Value value) {
-  return findUniqueTransferValueSource<ResultT>(value,
-                                                [](ResultT) { return true; });
-}
-
 /// Trace a tensor value back to its originating CB acquire operation
 /// (CBWaitOp or CBReserveOp). Traces through unrealized_conversion_cast,
 /// AttachCBOp, and tensor.extract_slice. Returns the acquire Operation*,
@@ -135,18 +101,6 @@ inline mlir::Operation *findCBAcquireOp(mlir::Value tensor) {
     }
   }
   return nullptr;
-}
-
-/// Return the transfer creation op when every possible origin is that op.
-inline mlir::FailureOr<PipeTransferCreateOp>
-findPipeTransferCreateForTransfer(mlir::Value transfer) {
-  return findUniqueTransferValueSource<PipeTransferCreateOp>(transfer);
-}
-
-/// Return the receive post when every possible token origin is that post.
-inline mlir::FailureOr<PipeTransferPostOp>
-findPipeTransferPostForToken(mlir::Value token) {
-  return findUniqueTransferValueSource<PipeTransferPostOp>(token);
 }
 
 /// Walk through `tensor.extract_slice` ops and return the underlying

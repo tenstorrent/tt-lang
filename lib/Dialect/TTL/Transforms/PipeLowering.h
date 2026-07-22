@@ -16,6 +16,10 @@
 
 #include <optional>
 
+namespace mlir::tt {
+class ValueOriginAnalysis;
+}
+
 namespace mlir::tt::ttl {
 
 struct PipeInfo {
@@ -225,8 +229,8 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 /// cannot be bounded by dominance are conservatively treated as conflicting
 /// with every other transfer interval from the same source core.
 LogicalResult
-buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
-                      PipeResourcePlan &info,
+buildPipeResourcePlan(ModuleOp mod, ValueOriginAnalysis &analysis,
+                      const PipeGraph &pipeGraph, PipeResourcePlan &info,
                       bool enableComputedAddresses = true,
                       const PipeCapacityPlan *pipeCapacityPlan = nullptr,
                       bool updateComputedAddressAttrs = true);
@@ -246,16 +250,16 @@ void initializePipeComputedAddressCounters(
     const PipeResourcePlan &pipeResourcePlan,
     PipeComputedAddressCounterMap &computedAddressCounters);
 
-/// At each receiver function entry, emit one zero-initialized expected-count
-/// value for every completion semaphore used by that function.
-void initializePipeCompletionCounters(
+/// At each receiver function entry, emit one zero-initialized sequence counter
+/// for every completion semaphore used by that function.
+void initializePipePostSequenceCounters(
     const PipeResourcePlan &pipeResourcePlan,
-    PipeSemaphoreCounterMap &completionCounters);
+    PipeSemaphoreCounterMap &postSequenceCounters);
 
 /// Lower the sender-side pipe transfer and signal receiver completion.
 LogicalResult lowerPipeTransferSend(
     PipeTransferSendOp op, Value srcCB, bool isConsumerCB,
-    const PipeResourcePlan &pipeResourcePlan,
+    ValueOriginAnalysis &analysis, const PipeResourcePlan &pipeResourcePlan,
     const PipeCapacityPlan *pipeCapacityPlan,
     const PipeSemaphoreCounterMap *senderCapacityCounters,
     const PipeComputedAddressCounterMap *computedAddressCounters,
@@ -263,6 +267,8 @@ LogicalResult lowerPipeTransferSend(
 
 /// Lower the receiver-side pipe rendezvous.
 LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
+                                    ValueOriginAnalysis &analysis,
+                                    const PipeSemaphoreCounterMap &counters,
                                     const PipeResourcePlan &pipeResourcePlan,
                                     const PipeCapacityPlan *pipeCapacityPlan,
                                     ConversionPatternRewriter &rewriter);
@@ -273,11 +279,9 @@ LogicalResult lowerCBPop(CBPopOp op, Value cb,
                          ConversionPatternRewriter &rewriter);
 
 /// Lower the receiver-side pipe receive completion wait.
-LogicalResult
-lowerPipeTransferWait(PipeTransferWaitOp op,
-                      const PipeSemaphoreCounterMap *completionCounters,
-                      const PipeResourcePlan &pipeResourcePlan,
-                      ConversionPatternRewriter &rewriter);
+LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op, Value tokenSequence,
+                                    const PipeResourcePlan &pipeResourcePlan,
+                                    ConversionPatternRewriter &rewriter);
 
 /// Add pipe-specific lowering patterns (IfSrc, IfDst, CreatePipe) to the set.
 /// `pipeNetIndex` is borrowed and must outlive `patterns`; the is_src /

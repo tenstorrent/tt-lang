@@ -14,22 +14,22 @@
 // CHECK: %[[WP1:.*]] = ttkernel.get_write_ptr(%[[DFB]])
 // CHECK: ttkernel.noc_inline_dw_write({{.*}}, %[[WP1]]
 // CHECK: ttkernel.noc_semaphore_inc
-// CHECK: %[[COMP_A:.*]] = ttkernel.get_semaphore(%[[SEM_A]])
-// CHECK: %[[WAIT_PTR1:.*]] = ttkernel.reinterpret_cast(%[[COMP_A]])
 // CHECK: %[[V1:.*]] = memref.load %[[CTR_A]]
 // CHECK: %[[N1:.*]] = arith.addi %[[V1]]
 // CHECK: memref.store %[[N1]], %[[CTR_A]]
+// CHECK: %[[COMP_A:.*]] = ttkernel.get_semaphore(%[[SEM_A]])
+// CHECK: %[[WAIT_PTR1:.*]] = ttkernel.reinterpret_cast(%[[COMP_A]])
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[WAIT_PTR1]], %[[N1]])
 // CHECK: ttkernel.cb_push_back(%[[DFB]]
 // CHECK: ttkernel.cb_reserve_back(%[[DFB]]
 // CHECK: %[[WP2:.*]] = ttkernel.get_write_ptr(%[[DFB]])
 // CHECK: ttkernel.noc_inline_dw_write({{.*}}, %[[WP2]]
 // CHECK: ttkernel.noc_semaphore_inc
-// CHECK: %[[COMP_B:.*]] = ttkernel.get_semaphore(%[[SEM_B]])
-// CHECK: %[[WAIT_PTR2:.*]] = ttkernel.reinterpret_cast(%[[COMP_B]])
 // CHECK: %[[V2:.*]] = memref.load %[[CTR_B]]
 // CHECK: %[[N2:.*]] = arith.addi %[[V2]]
 // CHECK: memref.store %[[N2]], %[[CTR_B]]
+// CHECK: %[[COMP_B:.*]] = ttkernel.get_semaphore(%[[SEM_B]])
+// CHECK: %[[WAIT_PTR2:.*]] = ttkernel.reinterpret_cast(%[[COMP_B]])
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[WAIT_PTR2]], %[[N2]])
 // CHECK: ttkernel.cb_push_back(%[[DFB]]
 module attributes {ttl.launch_grid = array<i64: 3, 4>} {

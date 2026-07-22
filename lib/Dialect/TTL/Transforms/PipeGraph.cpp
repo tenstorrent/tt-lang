@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "PipeGraph.h"
+#include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
 
 #include "DFBAcquireReleaseAnalysis.h"
 #include "mlir/Analysis/DataFlow/Utils.h"
@@ -114,11 +115,11 @@ static std::optional<int64_t> getReceiverSlotSpanBlocksForPost(
 }
 
 static LogicalResult collectReceiveWaitsByPost(
-    ModuleOp mod,
+    ModuleOp mod, ValueOriginAnalysis &analysis,
     llvm::DenseMap<Operation *, SmallVector<PipeTransferWaitOp>> &waitsByPost) {
   WalkResult walkResult = mod.walk([&](PipeTransferWaitOp waitOp) {
     FailureOr<PipeTransferPostOp> maybePostOp =
-        findPipeTransferPostForToken(waitOp.getToken());
+        findPipeTransferPostForToken(analysis, waitOp.getToken());
     if (failed(maybePostOp)) {
       waitOp.emitError(
           "requires every possible token value to derive from the same "
@@ -302,13 +303,13 @@ static bool hasMatchingReceiveWaitBeforePush(
 
 /// Group posts by physical DFB because its writers share one reservation ring.
 static FailureOr<ReceiverPostsByDFB> collectReceiverPostsByDFB(
-    ModuleOp mod,
+    ModuleOp mod, ValueOriginAnalysis &analysis,
     const llvm::MapVector<Operation *, ReceiverDFBInfo> &receiverDFBByPost,
     PipeGraphAnalysisState &analysisState) {
   ReceiverPostsByDFB postsByReceiverDFB;
   WalkResult walkResult = mod.walk([&](PipeTransferPostOp postOp) {
     FailureOr<PipeTransferCreateOp> maybeCreateOp =
-        findPipeTransferCreateForTransfer(postOp.getTransfer());
+        findPipeTransferCreateForTransfer(analysis, postOp.getTransfer());
     if (failed(maybeCreateOp)) {
       postOp.emitError(
           "requires every possible transfer value to derive from the same "
@@ -477,9 +478,11 @@ static int64_t advanceReceiverSlot(int64_t slot, int64_t stride,
 }
 
 LogicalResult PipeGraph::assignReceiverAddressSequences(
-    ModuleOp mod, PipeGraphAnalysisState &analysisState) {
+    ModuleOp mod, ValueOriginAnalysis &analysis,
+    PipeGraphAnalysisState &analysisState) {
   FailureOr<ReceiverPostsByDFB> maybePostsByReceiverDFB =
-      collectReceiverPostsByDFB(mod, receiverDFBByPost, analysisState);
+      collectReceiverPostsByDFB(mod, analysis, receiverDFBByPost,
+                                analysisState);
   if (failed(maybePostsByReceiverDFB)) {
     return failure();
   }
@@ -489,7 +492,7 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
   for (const auto &entry : receiverDFBByPost) {
     auto postOp = llvm::cast<PipeTransferPostOp>(entry.first);
     FailureOr<PipeTransferCreateOp> maybeCreateOp =
-        findPipeTransferCreateForTransfer(postOp.getTransfer());
+        findPipeTransferCreateForTransfer(analysis, postOp.getTransfer());
     if (failed(maybeCreateOp)) {
       postOp.emitError(
           "requires every possible transfer value to derive from the same "
@@ -732,9 +735,10 @@ verifyTransferPayloadCompatibility(const PipeTransferNode &transferNode) {
 }
 
 LogicalResult PipeGraph::provePipeOnlyReceiverProducerStreams(
-    ModuleOp mod, PipeGraphAnalysisState &analysisState) {
+    ModuleOp mod, ValueOriginAnalysis &analysis,
+    PipeGraphAnalysisState &analysisState) {
   llvm::DenseMap<Operation *, SmallVector<PipeTransferWaitOp>> waitsByPost;
-  if (failed(collectReceiveWaitsByPost(mod, waitsByPost))) {
+  if (failed(collectReceiveWaitsByPost(mod, analysis, waitsByPost))) {
     return failure();
   }
 
@@ -977,7 +981,7 @@ const PipeReceiverEndpoint *PipeGraph::getProvenReceiverAddressEndpoint(
 }
 
 LogicalResult
-PipeGraph::rebuildEndpointGraph(ModuleOp mod,
+PipeGraph::rebuildEndpointGraph(ModuleOp mod, ValueOriginAnalysis &analysis,
                                 PipeGraphAnalysisState &analysisState) {
   pipeTransferNodes.clear();
   transferNodeIdByProtocolOp.clear();
@@ -997,7 +1001,7 @@ PipeGraph::rebuildEndpointGraph(ModuleOp mod,
   WalkResult collectResult = mod.walk([&](Operation *op) {
     if (auto sendOp = dyn_cast<PipeTransferSendOp>(op)) {
       FailureOr<PipeTransferCreateOp> maybeCreateOp =
-          findPipeTransferCreateForTransfer(sendOp.getTransfer());
+          findPipeTransferCreateForTransfer(analysis, sendOp.getTransfer());
       if (failed(maybeCreateOp)) {
         sendOp.emitError(
             "requires every possible transfer value to derive from the same "
@@ -1037,7 +1041,7 @@ PipeGraph::rebuildEndpointGraph(ModuleOp mod,
       return WalkResult::advance();
     }
     FailureOr<PipeTransferCreateOp> maybeCreateOp =
-        findPipeTransferCreateForTransfer(postOp.getTransfer());
+        findPipeTransferCreateForTransfer(analysis, postOp.getTransfer());
     if (failed(maybeCreateOp)) {
       postOp.emitError(
           "requires every possible transfer value to derive from the same "
@@ -1152,7 +1156,7 @@ PipeGraph::rebuildEndpointGraph(ModuleOp mod,
       std::size_t sendIndex = indexedSend.index();
       PipeTransferSendOp sendOp = indexedSend.value();
       FailureOr<PipeTransferCreateOp> maybeSendCreate =
-          findPipeTransferCreateForTransfer(sendOp.getTransfer());
+          findPipeTransferCreateForTransfer(analysis, sendOp.getTransfer());
       if (failed(maybeSendCreate)) {
         sendOp.emitError(
             "requires every possible transfer value to derive from the same "
@@ -1164,7 +1168,7 @@ PipeGraph::rebuildEndpointGraph(ModuleOp mod,
       for (auto [receiver, postOp] : endpointsBySend[sendIndex]) {
         (void)receiver;
         FailureOr<PipeTransferCreateOp> maybePostCreate =
-            findPipeTransferCreateForTransfer(postOp.getTransfer());
+            findPipeTransferCreateForTransfer(analysis, postOp.getTransfer());
         if (failed(maybePostCreate)) {
           postOp.emitError(
               "requires every possible transfer value to derive from the same "
@@ -1409,12 +1413,13 @@ LogicalResult PipeGraph::addPipeReceiver(Operation *op,
   return success();
 }
 
-FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
+FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod,
+                                      ValueOriginAnalysis &analysis) {
   PipeGraph graph;
 
   WalkResult walkResult = mod.walk([&](PipeTransferPostOp postOp) {
     FailureOr<PipeTransferCreateOp> maybeCreateOp =
-        findPipeTransferCreateForTransfer(postOp.getTransfer());
+        findPipeTransferCreateForTransfer(analysis, postOp.getTransfer());
     if (failed(maybeCreateOp)) {
       postOp.emitError(
           "pipe transfer post requires every possible transfer value to derive "
@@ -1437,13 +1442,15 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
     return failure();
   }
 
-  if (failed(graph.rebuildEndpointGraph(mod, analysisState))) {
+  if (failed(graph.rebuildEndpointGraph(mod, analysis, analysisState))) {
     return failure();
   }
-  if (failed(graph.assignReceiverAddressSequences(mod, analysisState))) {
+  if (failed(
+          graph.assignReceiverAddressSequences(mod, analysis, analysisState))) {
     return failure();
   }
-  if (failed(graph.provePipeOnlyReceiverProducerStreams(mod, analysisState))) {
+  if (failed(graph.provePipeOnlyReceiverProducerStreams(mod, analysis,
+                                                        analysisState))) {
     return failure();
   }
   if (failed(graph.verifyCollectiveReceiverAddresses())) {

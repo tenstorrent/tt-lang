@@ -22,6 +22,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/LiveIntervalUtils.h"
+#include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
 #include "llvm/ADT/DenseMapInfo.h"
 #include "llvm/ADT/Hashing.h"
@@ -96,10 +97,11 @@ static PipeSourceKey getPipeSourceKey(PipeType pipeType) {
   return {pipeType.getSrcX(), pipeType.getSrcY()};
 }
 
-static FailureOr<PipeTransferCreateOp> getPipeTransferCreate(Operation *op,
-                                                             Value transfer) {
+static FailureOr<PipeTransferCreateOp>
+getPipeTransferCreate(Operation *op, Value transfer,
+                      ValueOriginAnalysis &analysis) {
   FailureOr<PipeTransferCreateOp> maybeCreateOp =
-      findPipeTransferCreateForTransfer(transfer);
+      findPipeTransferCreateForTransfer(analysis, transfer);
   if (failed(maybeCreateOp)) {
     return op->emitError() << op->getName()
                            << " requires every possible transfer value to "
@@ -471,20 +473,20 @@ buildReceiverPublishedAddress(Value dst, Location loc,
 }
 
 //===----------------------------------------------------------------------===//
-// Receiver completion counter initialization
+// Receiver post sequence counter initialization
 //===----------------------------------------------------------------------===//
 
-void initializePipeCompletionCounters(
+void initializePipePostSequenceCounters(
     const PipeResourcePlan &pipeResourcePlan,
-    PipeSemaphoreCounterMap &completionCounters) {
+    PipeSemaphoreCounterMap &postSequenceCounters) {
   llvm::MapVector<FuncOp, llvm::SmallSetVector<int64_t, 4>> semaphoresByFunc;
   for (const auto &[protocolOp, resource] : pipeResourcePlan.resources) {
-    auto waitOp = dyn_cast<PipeTransferWaitOp>(protocolOp);
-    if (!waitOp) {
+    auto postOp = dyn_cast<PipeTransferPostOp>(protocolOp);
+    if (!postOp) {
       continue;
     }
-    FuncOp func = waitOp->getParentOfType<FuncOp>();
-    assert(func && "pipe transfer wait must be inside a function");
+    FuncOp func = postOp->getParentOfType<FuncOp>();
+    assert(func && "pipe transfer post must be inside a function");
     semaphoresByFunc[func].insert(resource.completion.semaphoreIndex);
   }
 
@@ -498,7 +500,7 @@ void initializePipeCompletionCounters(
     Value zeroIdx = arith::ConstantIndexOp::create(builder, loc, 0);
     Value zeroI32 = arith::ConstantOp::create(builder, loc, i32Ty,
                                               builder.getI32IntegerAttr(0));
-    auto &countersForFunc = completionCounters[func];
+    auto &countersForFunc = postSequenceCounters[func];
     SmallVector<int64_t> semaphoreIndices(semaphoreSet.begin(),
                                           semaphoreSet.end());
     llvm::sort(semaphoreIndices);
@@ -588,7 +590,7 @@ void initializePipeComputedAddressCounters(
 /// address, then signal arrival.
 LogicalResult lowerPipeTransferSend(
     PipeTransferSendOp op, Value srcCB, bool isConsumerCB,
-    const PipeResourcePlan &pipeResourcePlan,
+    ValueOriginAnalysis &analysis, const PipeResourcePlan &pipeResourcePlan,
     const PipeCapacityPlan *pipeCapacityPlan,
     const PipeSemaphoreCounterMap *senderCapacityCounters,
     const PipeComputedAddressCounterMap *computedAddressCounters,
@@ -599,7 +601,7 @@ LogicalResult lowerPipeTransferSend(
     return success();
   }
   FailureOr<PipeTransferCreateOp> maybeCreateOp =
-      getPipeTransferCreate(op.getOperation(), op.getTransfer());
+      getPipeTransferCreate(op.getOperation(), op.getTransfer(), analysis);
   if (failed(maybeCreateOp)) {
     return failure();
   }
@@ -875,6 +877,8 @@ LogicalResult lowerPipeTransferSend(
 }
 
 LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
+                                    ValueOriginAnalysis &analysis,
+                                    const PipeSemaphoreCounterMap &counters,
                                     const PipeResourcePlan &pipeResourcePlan,
                                     const PipeCapacityPlan *pipeCapacityPlan,
                                     ConversionPatternRewriter &rewriter) {
@@ -886,7 +890,7 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
     return success();
   }
   FailureOr<PipeTransferCreateOp> maybeCreateOp =
-      getPipeTransferCreate(op.getOperation(), op.getTransfer());
+      getPipeTransferCreate(op.getOperation(), op.getTransfer(), analysis);
   if (failed(maybeCreateOp)) {
     return failure();
   }
@@ -898,6 +902,20 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
     return failure();
   }
   PipeResourceInfo pipeResource = *maybePipeResource;
+  auto func = op->getParentOfType<func::FuncOp>();
+  auto functionCounters = counters.find(func);
+  if (functionCounters == counters.end()) {
+    op.emitError("pipe receive post has no sequence counter allocation");
+    return failure();
+  }
+  auto sequenceCounter =
+      functionCounters->second.find(pipeResource.completion.semaphoreIndex);
+  if (sequenceCounter == functionCounters->second.end()) {
+    op.emitError("pipe receive post has no sequence counter for completion "
+                 "semaphore ")
+        << pipeResource.completion.semaphoreIndex;
+    return failure();
+  }
 
   int64_t nocIdx = getNocIndex(op);
   auto indexTy = rewriter.getIndexType();
@@ -960,9 +978,16 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
         readyCounterIncrement, nocVal, /*posted=*/BoolAttr());
   }
 
-  auto token = UnrealizedConversionCastOp::create(
-      rewriter, loc, op.getToken().getType(), ValueRange{});
-  rewriter.replaceOp(op, token.getResult(0));
+  auto zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  auto previousSequence = memref::LoadOp::create(
+      rewriter, loc, sequenceCounter->second, ValueRange{zeroIndex});
+  auto oneI32 = arith::ConstantOp::create(rewriter, loc, rewriter.getI32Type(),
+                                          rewriter.getI32IntegerAttr(1));
+  auto tokenSequence =
+      arith::AddIOp::create(rewriter, loc, previousSequence, oneI32);
+  memref::StoreOp::create(rewriter, loc, tokenSequence, sequenceCounter->second,
+                          ValueRange{zeroIndex});
+  rewriter.replaceOp(op, tokenSequence.getResult());
   return success();
 }
 
@@ -1016,12 +1041,10 @@ LogicalResult lowerCBPop(CBPopOp op, Value cb,
   return success();
 }
 
-/// Lower a receiver completion wait using its transfer's completion state.
-LogicalResult
-lowerPipeTransferWait(PipeTransferWaitOp op,
-                      const PipeSemaphoreCounterMap *completionCounters,
-                      const PipeResourcePlan &pipeResourcePlan,
-                      ConversionPatternRewriter &rewriter) {
+/// Lower the receiver completion wait using the posted token's sequence.
+LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op, Value tokenSequence,
+                                    const PipeResourcePlan &pipeResourcePlan,
+                                    ConversionPatternRewriter &rewriter) {
   if (pipeResourcePlan.staticallyInactiveOps.contains(op.getOperation())) {
     rewriter.eraseOp(op);
     return success();
@@ -1034,28 +1057,6 @@ lowerPipeTransferWait(PipeTransferWaitOp op,
   }
   PipeCompletionInfo completionInfo = maybePipeResource->completion;
 
-  Value waitProgressCounter;
-  if (completionCounters) {
-    auto func = op->getParentOfType<func::FuncOp>();
-    auto funcIt = completionCounters->find(func);
-    if (funcIt != completionCounters->end()) {
-      auto semaphoreIt = funcIt->second.find(completionInfo.semaphoreIndex);
-      if (semaphoreIt != funcIt->second.end()) {
-        waitProgressCounter = semaphoreIt->second;
-      }
-    }
-  }
-  if (!waitProgressCounter) {
-    // Counter pre-allocation is a hard precondition. A match failure would
-    // replace the specific pipeline-ordering error with a generic legalization
-    // failure.
-    op.emitError("pipe receive without a completion progress counter; "
-                 "initializePipeCompletionCounters must run before "
-                 "convert-ttl-to-ttkernel");
-    return failure();
-  }
-
-  auto i32Ty = rewriter.getI32Type();
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
 
   auto receiverCompletionCounterSemIdx = arith::ConstantIndexOp::create(
@@ -1067,17 +1068,8 @@ lowerPipeTransferWait(PipeTransferWaitOp op,
   auto receiverCompletionCounterPtr = ttk::CastToL1PtrOp::create(
       rewriter, loc, l1PtrTy, receiverCompletionCounterAddr);
 
-  auto zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
-  auto previousWaitCount = memref::LoadOp::create(
-      rewriter, loc, waitProgressCounter, ValueRange{zeroIdx});
-  auto oneI32 = arith::ConstantOp::create(rewriter, loc, i32Ty,
-                                          rewriter.getI32IntegerAttr(1));
-  auto nextWaitCount =
-      arith::AddIOp::create(rewriter, loc, previousWaitCount, oneI32);
-  memref::StoreOp::create(rewriter, loc, nextWaitCount, waitProgressCounter,
-                          ValueRange{zeroIdx});
   ttk::SemaphoreWaitMinOp::create(rewriter, loc, receiverCompletionCounterPtr,
-                                  nextWaitCount);
+                                  tokenSequence);
 
   rewriter.eraseOp(op);
   return success();
@@ -1364,7 +1356,7 @@ static bool pipeTransferIntervalsOverlap(const PipeTransferAllocationUnit &lhs,
 
 static FailureOr<SmallVector<PipeTransferAllocationUnit>>
 collectPipeTransferAllocationUnits(
-    ModuleOp mod, const PipeGraph &pipeGraph,
+    ModuleOp mod, ValueOriginAnalysis &analysis, const PipeGraph &pipeGraph,
     const DominanceInfo &dominanceInfo,
     const PostDominanceInfo &postDominanceInfo,
     llvm::SmallPtrSetImpl<Operation *> &staticallyInactiveOps) {
@@ -1382,7 +1374,7 @@ collectPipeTransferAllocationUnits(
     }
     if (auto waitOp = dyn_cast<PipeTransferWaitOp>(op)) {
       FailureOr<PipeTransferPostOp> maybePostOp =
-          findPipeTransferPostForToken(waitOp.getToken());
+          findPipeTransferPostForToken(analysis, waitOp.getToken());
       if (failed(maybePostOp)) {
         waitOp.emitError(
             "pipe transfer wait requires every possible token value to derive "
@@ -1412,8 +1404,8 @@ collectPipeTransferAllocationUnits(
                 "pipe transfer graph node has no send operation");
       return failure();
     }
-    FailureOr<PipeTransferCreateOp> createOp =
-        getPipeTransferCreate(sendOp.getOperation(), sendOp.getTransfer());
+    FailureOr<PipeTransferCreateOp> createOp = getPipeTransferCreate(
+        sendOp.getOperation(), sendOp.getTransfer(), analysis);
     if (failed(createOp)) {
       return failure();
     }
@@ -1746,7 +1738,8 @@ compactColors(const SourceColorMap &colorUsersBySource,
   return {std::move(compactedBySource), maxPerSource};
 }
 
-LogicalResult buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
+LogicalResult buildPipeResourcePlan(ModuleOp mod, ValueOriginAnalysis &analysis,
+                                    const PipeGraph &pipeGraph,
                                     PipeResourcePlan &info,
                                     bool enableComputedAddresses,
                                     const PipeCapacityPlan *pipeCapacityPlan,
@@ -1754,8 +1747,8 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, const PipeGraph &pipeGraph,
   DominanceInfo dominanceInfo(mod);
   PostDominanceInfo postDominanceInfo(mod);
   FailureOr<SmallVector<PipeTransferAllocationUnit>> maybeUnits =
-      collectPipeTransferAllocationUnits(mod, pipeGraph, dominanceInfo,
-                                         postDominanceInfo,
+      collectPipeTransferAllocationUnits(mod, analysis, pipeGraph,
+                                         dominanceInfo, postDominanceInfo,
                                          info.staticallyInactiveOps);
   if (failed(maybeUnits)) {
     return failure();

@@ -16,18 +16,18 @@
 // CHECK: %[[DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK: ttkernel.cb_reserve_back(%[[DFB]]
 // CHECK-NOT: ttkernel.noc_inline_dw_write
-// CHECK: %[[WAIT_PTR1:.*]] = ttkernel.reinterpret_cast
 // CHECK: %[[V1:.*]] = memref.load %[[CTR1]]
 // CHECK: %[[N1:.*]] = arith.addi %[[V1]]
 // CHECK: memref.store %[[N1]], %[[CTR1]]
+// CHECK: %[[WAIT_PTR1:.*]] = ttkernel.reinterpret_cast
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[WAIT_PTR1]], %[[N1]])
 // CHECK: ttkernel.cb_push_back(%[[DFB]]
 // CHECK: ttkernel.cb_reserve_back(%[[DFB]]
 // CHECK-NOT: ttkernel.noc_inline_dw_write
-// CHECK: %[[WAIT_PTR2:.*]] = ttkernel.reinterpret_cast
 // CHECK: %[[V2:.*]] = memref.load %[[CTR2]]
 // CHECK: %[[N2:.*]] = arith.addi %[[V2]]
 // CHECK: memref.store %[[N2]], %[[CTR2]]
+// CHECK: %[[WAIT_PTR2:.*]] = ttkernel.reinterpret_cast
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[WAIT_PTR2]], %[[N2]])
 // CHECK: ttkernel.cb_push_back(%[[DFB]]
 module attributes {ttl.launch_grid = array<i64: 3, 4>} {

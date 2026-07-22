@@ -27,6 +27,10 @@
 #include <cstdint>
 #include <optional>
 
+namespace mlir::tt {
+class ValueOriginAnalysis;
+}
+
 namespace mlir::tt::ttl {
 
 struct PipeGraphAnalysisState;
@@ -245,7 +249,8 @@ public:
   /// Analyze a module to find all pipe receivers and build the graph.
   /// Returns failure if validation detects an error (e.g., gather DFB too
   /// small).
-  static FailureOr<PipeGraph> build(ModuleOp mod);
+  static FailureOr<PipeGraph> build(ModuleOp mod,
+                                    ValueOriginAnalysis &analysis);
 
   /// Check if any pipes were found.
   bool hasPipes() const { return !pipeTransferNodes.empty(); }
@@ -326,13 +331,16 @@ private:
   /// sequential order. Unproven point-to-point sequences use
   /// receiver-published addresses.
   LogicalResult assignReceiverAddressSequences(ModuleOp mod,
+                                               ValueOriginAnalysis &analysis,
                                                PipeGraphAnalysisState &state);
 
   LogicalResult rebuildEndpointGraph(ModuleOp mod,
+                                     ValueOriginAnalysis &analysis,
                                      PipeGraphAnalysisState &state);
 
   LogicalResult
   provePipeOnlyReceiverProducerStreams(ModuleOp mod,
+                                       ValueOriginAnalysis &analysis,
                                        PipeGraphAnalysisState &state);
 
   llvm::MapVector<Operation *, ReceiverDFBInfo> receiverDFBByPost;

@@ -151,6 +151,26 @@ func.func @while_loop_carried_origins(%condition: i1) {
 // CHECK: while_argument = [while_initial, while_update]
 // CHECK: while_result = [while_initial, while_update]
 
+// Tensor elements follow scf.while initial and backedge values.
+func.func @while_tensor_element(%condition: i1) {
+  %zero = arith.constant 0 : index
+  %base = "test.tensor_source"() {test.label = "while_tensor_base"} : () -> tensor<2xi32>
+  %result:2 = scf.while (%tensor = %base, %index = %zero)
+      : (tensor<2xi32>, index) -> (tensor<2xi32>, index) {
+    scf.condition(%condition) %tensor, %index : tensor<2xi32>, index
+  } do {
+  ^bb0(%tensor: tensor<2xi32>, %index: index):
+    %inserted = "test.source"() {test.label = "while_tensor_insert"} : () -> i32
+    %updated = tensor.insert %inserted into %tensor[%index] : tensor<2xi32>
+    scf.yield %updated, %index : tensor<2xi32>, index
+  }
+  %value = tensor.extract %result#0[%zero] : tensor<2xi32>
+  "test.query"(%value) {test.expected_origins = ["while_tensor_base", "while_tensor_insert"], test.label = "while_tensor"} : (i32) -> ()
+  return
+}
+
+// CHECK: while_tensor = [while_tensor_base, while_tensor_insert]
+
 // Equal constant indices select the inserted scalar, not prior tensor data.
 func.func @equal_constant_index() {
   %zero = arith.constant 0 : index
@@ -340,6 +360,63 @@ func.func @zero_trip_equal_indices() {
 
 // CHECK: zero_equal = [zero_equal_base]
 
+// Multiple writes in one recurrence retain every possible final definition.
+func.func @multiple_writes_in_recurrence() {
+  %zero = arith.constant 0 : index
+  %four = arith.constant 4 : index
+  %one = arith.constant 1 : index
+  %base = "test.tensor_source"() {test.label = "multiple_base"} : () -> tensor<4xi32>
+  %updated = scf.for %index = %zero to %four step %one iter_args(%tensor = %base) -> tensor<4xi32> {
+    %fixed = "test.source"() {test.label = "multiple_fixed"} : () -> i32
+    %fixed_update = tensor.insert %fixed into %tensor[%zero] : tensor<4xi32>
+    %varying = "test.source"() {test.label = "multiple_varying"} : () -> i32
+    %varying_update = tensor.insert %varying into %fixed_update[%index] : tensor<4xi32>
+    scf.yield %varying_update : tensor<4xi32>
+  }
+  %value = tensor.extract %updated[%zero] : tensor<4xi32>
+  "test.query"(%value) {test.expected_origins = ["multiple_fixed", "multiple_varying"], test.label = "multiple_writes"} : (i32) -> ()
+  return
+}
+
+// CHECK: multiple_writes = [multiple_fixed, multiple_varying]
+
+// A loop-body block argument has no dynamic origin when the loop is known not
+// to execute.
+func.func @zero_trip_body_argument() {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %initial = "test.source"() {test.label = "zero_body_initial"} : () -> i32
+  %result = scf.for %index = %zero to %zero step %one iter_args(%current = %initial) -> i32 {
+    "test.query"(%current) {test.expected_origins = [], test.label = "zero_body_argument"} : (i32) -> ()
+    scf.yield %current : i32
+  }
+  return
+}
+
+// CHECK: zero_body_argument = []
+
+// A statically empty nested loop cannot establish aggregate coverage for an
+// enclosing recurrence.
+func.func @nested_zero_trip_write() {
+  %zero = arith.constant 0 : index
+  %four = arith.constant 4 : index
+  %one = arith.constant 1 : index
+  %base = "test.tensor_source"() {test.label = "nested_zero_base"} : () -> tensor<4xi32>
+  %updated = scf.for %outer = %zero to %four step %one iter_args(%outer_tensor = %base) -> tensor<4xi32> {
+    %inner_result = scf.for %inner = %zero to %zero step %one iter_args(%inner_tensor = %outer_tensor) -> tensor<4xi32> {
+      %inserted = "test.source"() {test.label = "nested_zero_insert"} : () -> i32
+      %next = tensor.insert %inserted into %inner_tensor[%outer] : tensor<4xi32>
+      scf.yield %next : tensor<4xi32>
+    }
+    scf.yield %inner_result : tensor<4xi32>
+  }
+  %value = tensor.extract %updated[%zero] : tensor<4xi32>
+  "test.query"(%value) {test.expected_origins = ["nested_zero_base"], test.label = "nested_zero"} : (i32) -> ()
+  return
+}
+
+// CHECK: nested_zero = [nested_zero_base]
+
 // Exhausting the enumeration limit conservatively retains the inserted value
 // and the tensor's previous contents.
 func.func @enumeration_limit() {
@@ -348,8 +425,9 @@ func.func @enumeration_limit() {
   %one = arith.constant 1 : index
   %base = "test.tensor_source"() {test.label = "limit_base"} : () -> tensor<4xi32>
   %updated = scf.for %write_index = %zero to %four step %one iter_args(%tensor = %base) -> tensor<4xi32> {
+    %write_expression = arith.addi %write_index, %zero : index
     %inserted = "test.source"() {test.label = "limit_insert"} : () -> i32
-    %next = tensor.insert %inserted into %tensor[%write_index] : tensor<4xi32>
+    %next = tensor.insert %inserted into %tensor[%write_expression] : tensor<4xi32>
     scf.yield %next : tensor<4xi32>
   }
   %value = tensor.extract %updated[%zero] : tensor<4xi32>
@@ -397,6 +475,23 @@ func.func @correlated_indices() {
 }
 
 // CHECK: correlated = [correlated_base]
+
+// A multi-dimensional LoopLike operation enumerates all induction-variable
+// assignments while preserving pointwise index correlation.
+func.func @multi_iv_loop() {
+  %one = arith.constant 1 : index
+  %base = "test.tensor_source"() {test.label = "multi_iv_base"} : () -> tensor<2x2xi32>
+  scf.forall (%row, %column) in (2, 2) {
+    %reverse_column = arith.subi %one, %column : index
+    %inserted = "test.source"() {test.label = "multi_iv_insert"} : () -> i32
+    %updated = tensor.insert %inserted into %base[%row, %column] : tensor<2x2xi32>
+    %value = tensor.extract %updated[%row, %reverse_column] : tensor<2x2xi32>
+    "test.query"(%value) {test.expected_origins = ["multi_iv_base"], test.label = "multi_iv"} : (i32) -> ()
+  }
+  return
+}
+
+// CHECK: multi_iv = [multi_iv_base]
 
 // A read may observe an insertion from a prior loop iteration even when the
 // current iteration writes a different index.
