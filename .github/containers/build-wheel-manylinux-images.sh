@@ -114,10 +114,7 @@ for python_tag in $(printf '%s\n' "$PYTHON_TAGS" | tr ',' ' '); do
     registry_image="ghcr.io/${repo}/${image_name}:${docker_tag}"
 
     # Skip the multi-hour LLVM + tt-metal rebuild when an image already exists
-    # at this tag. get-version-tag.sh derives the tag from the container inputs
-    # (llvm-project, tt-metal, this Dockerfile, requirements-runtime.txt via
-    # UPLIFT_PATHS), so a matching tag means the toolchain is unchanged and the
-    # image is up to date. Mirrors build-docker-images.sh --check-only.
+    # for the repository inputs listed in UPLIFT_PATHS.
     if [ "$NO_PUSH" != true ] && ${DOCKER:-docker} manifest inspect "$registry_image" >/dev/null 2>&1; then
         echo "Image already exists, skipping build: $registry_image"
         # Keep :latest pointing at this tag (server-side retag, no pull). A

@@ -80,7 +80,15 @@ mkrepo() {
         git init -q -b main
         git config user.email t@t
         git config user.name t
-        mkdir -p third-party/llvm-project third-party/tt-metal .github/containers python/sim
+        mkdir -p \
+            third-party/llvm-project \
+            third-party/tt-metal \
+            .github/containers \
+            .github/scripts \
+            cmake/modules \
+            docs \
+            python/sim \
+            scripts
         # Sourceable shell snippet matching the real third-party/tt-metal-version
         # schema.
         write_tt_metal_version_file third-party/tt-metal-version \
@@ -93,7 +101,20 @@ mkrepo() {
 FROM ubuntu:24.04
 RUN echo "base v1"
 EOF
+        echo "normalize toolchain" > .github/scripts/normalize-toolchain-install.sh
+        echo "cmake_minimum_required(VERSION 3.28)" > CMakeLists.txt
+        echo "build llvm" > cmake/modules/BuildLLVM.cmake
+        echo "build tt-metal" > cmake/modules/BuildTTMetal.cmake
+        echo "compiler setup" > cmake/modules/TTLangCompilerSetup.cmake
+        echo "python setup" > cmake/modules/TTLangPython.cmake
+        echo "cmake helpers" > cmake/modules/TTLangUtils.cmake
+        echo "pytest" > dev-requirements.txt
+        echo "sphinx" > docs/requirements.txt
+        echo "-r requirements-runtime.txt" > requirements.txt
         echo "greenlet>=3.0.0" > requirements-runtime.txt
+        echo "copy runtime artifacts" > scripts/copy-ttmetal-runtime-artifacts.sh
+        echo "install tt-metal" > scripts/install-ttmetal.sh
+        echo "verify sha" > scripts/verify-sha.sh
         echo "// kernel placeholder" > python/sim/example.py
         git add -A
         git commit -q -m "initial"
