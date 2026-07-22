@@ -101,6 +101,26 @@ container_input_one_path() {
     container_input_one_path "bin/tt-triage"
 }
 
+@test "container input change in build-wheel-manylinux-images.sh -> -<hash> form" {
+    container_input_one_path ".github/containers/build-wheel-manylinux-images.sh"
+}
+
+@test "container input change in cache-wheel-manylinux-component.sh -> -<hash> form" {
+    container_input_one_path ".github/containers/cache-wheel-manylinux-component.sh"
+}
+
+@test "container input change in BuildLLVM.cmake -> -<hash> form" {
+    container_input_one_path "cmake/modules/BuildLLVM.cmake"
+}
+
+@test "container input change in requirements.txt -> -<hash> form" {
+    container_input_one_path "requirements.txt"
+}
+
+@test "container input change in build-and-install.sh -> -<hash> form" {
+    container_input_one_path "scripts/build-and-install.sh"
+}
+
 # --- Hash determinism: same content yields same tag ---
 
 @test "hash determinism across independent repos with same content" {
@@ -257,37 +277,16 @@ container_input_one_path() {
     echo "new-dep" >> "$REPO/requirements-runtime.txt"
     commit_all "$REPO" "multi-container-input"
     tag_forward=$(get_tag "$REPO")
-    cat > "$REPO/.github/scripts/uplift-paths.sh" <<'EOF'
-#!/bin/bash
-UPLIFT_PATHS=(
-    scripts/install-ttmetal.sh
-    scripts/copy-ttmetal-runtime-artifacts.sh
-    scripts/build-and-install.sh
-    requirements-runtime.txt
-    requirements.txt
-    bin/tt-triage
-    .github/scripts/normalize-toolchain-install.sh
-    .github/containers/cleanup-toolchain.sh
-    .github/containers/Dockerfile
-    .github/containers/Dockerfile.base
-    .github/containers/Dockerfile.wheel-manylinux-2-34
-    .github/containers/CMakeLists.wheel-toolchain
-    third-party/patches
-    third-party/tt-metal
-    third-party/llvm-project
-    third-party/tt-metal-version
-    cmake/modules/TTLangUtils.cmake
-    cmake/modules/TTLangPython.cmake
-    cmake/modules/TTLangCompilerSetup.cmake
-    cmake/modules/TTLangToolchainOptions.cmake
-    cmake/modules/TTLangToolchainComponent.cmake
-    cmake/modules/GetVersionFromGit.cmake
-    cmake/modules/BuildTTMetal.cmake
-    cmake/modules/BuildLLVM.cmake
-    CMakeLists.txt
-    .dockerignore
-)
-EOF
+    mapfile -t reversed_paths < <(
+        bash -c 'source "$1"; printf "%s\n" "${UPLIFT_PATHS[@]}"' \
+            _ "$REPO/.github/scripts/uplift-paths.sh" | tac
+    )
+    {
+        echo '#!/bin/bash'
+        echo 'UPLIFT_PATHS=('
+        printf '    %q\n' "${reversed_paths[@]}"
+        echo ')'
+    } > "$REPO/.github/scripts/uplift-paths.sh"
     tag_reversed=$(get_tag "$REPO")
     assert_equal "$tag_forward" "$tag_reversed"
 }

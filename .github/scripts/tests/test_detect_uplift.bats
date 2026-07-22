@@ -88,6 +88,41 @@ setup() {
     assert_equal "$(run_detect "$BASE" "$head")" "true"
 }
 
+@test "diff in build-wheel-manylinux-images.sh marks uplift=true" {
+    echo "modified" >> "$REPO/.github/containers/build-wheel-manylinux-images.sh"
+    commit_all "$REPO" "uplift"
+    head=$(cd "$REPO" && git rev-parse HEAD)
+    assert_equal "$(run_detect "$BASE" "$head")" "true"
+}
+
+@test "diff in cache-wheel-manylinux-component.sh marks uplift=true" {
+    echo "modified" >> "$REPO/.github/containers/cache-wheel-manylinux-component.sh"
+    commit_all "$REPO" "uplift"
+    head=$(cd "$REPO" && git rev-parse HEAD)
+    assert_equal "$(run_detect "$BASE" "$head")" "true"
+}
+
+@test "diff in BuildLLVM.cmake marks uplift=true" {
+    echo "modified" >> "$REPO/cmake/modules/BuildLLVM.cmake"
+    commit_all "$REPO" "uplift"
+    head=$(cd "$REPO" && git rev-parse HEAD)
+    assert_equal "$(run_detect "$BASE" "$head")" "true"
+}
+
+@test "diff in requirements.txt marks uplift=true" {
+    echo "modified" >> "$REPO/requirements.txt"
+    commit_all "$REPO" "uplift"
+    head=$(cd "$REPO" && git rev-parse HEAD)
+    assert_equal "$(run_detect "$BASE" "$head")" "true"
+}
+
+@test "diff in build-and-install.sh marks uplift=true" {
+    echo "modified" >> "$REPO/scripts/build-and-install.sh"
+    commit_all "$REPO" "uplift"
+    head=$(cd "$REPO" && git rev-parse HEAD)
+    assert_equal "$(run_detect "$BASE" "$head")" "true"
+}
+
 # --- No-diff case ---
 
 @test "same base and head -> uplift=false" {

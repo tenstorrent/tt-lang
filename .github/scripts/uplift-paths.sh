@@ -34,12 +34,17 @@ UPLIFT_PATHS=(
     .github/containers/Dockerfile.base
     .github/containers/Dockerfile.wheel-manylinux-2-34
     .github/containers/CMakeLists.wheel-toolchain
+    .github/containers/build-wheel-manylinux-images.sh
+    .github/containers/cache-wheel-manylinux-component.sh
     .github/containers/cleanup-toolchain.sh
     .github/scripts/normalize-toolchain-install.sh
     bin/tt-triage
+    dev-requirements.txt
+    docs/requirements.txt
     requirements.txt
     requirements-runtime.txt
     scripts/build-and-install.sh
     scripts/copy-ttmetal-runtime-artifacts.sh
     scripts/install-ttmetal.sh
+    scripts/verify-sha.sh
 )
