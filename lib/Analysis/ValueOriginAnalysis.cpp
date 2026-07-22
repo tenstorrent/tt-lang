@@ -648,7 +648,9 @@ private:
 
 class ValueOriginAnalysis::Impl {
 public:
-  Impl(Operation *root, Options options) : root(root), options(options) {}
+  Impl(Operation *root, Options options) : root(root), options(options) {
+    assert(root && "value-origin analysis requires a root operation");
+  }
 
   const OriginSet &getOrigins(Value value) const {
     auto cached = origins.find(value);
@@ -660,7 +662,7 @@ public:
     if (!valueScope) {
       valueScope = cast<BlockArgument>(value).getOwner()->getParentOp();
     }
-    assert((!root || valueScope == root || root->isAncestor(valueScope)) &&
+    assert((valueScope == root || root->isAncestor(valueScope)) &&
            "queried value must be nested under the analysis root");
 
     auto result =
@@ -673,12 +675,6 @@ private:
   Options options;
   mutable llvm::DenseMap<Value, std::unique_ptr<OriginSet>> origins;
 };
-
-ValueOriginAnalysis::ValueOriginAnalysis()
-    : ValueOriginAnalysis(/*root=*/nullptr, Options()) {}
-
-ValueOriginAnalysis::ValueOriginAnalysis(Options options)
-    : ValueOriginAnalysis(/*root=*/nullptr, options) {}
 
 ValueOriginAnalysis::ValueOriginAnalysis(Operation *root)
     : ValueOriginAnalysis(root, Options()) {}

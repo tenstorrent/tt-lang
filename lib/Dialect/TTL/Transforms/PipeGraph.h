@@ -16,6 +16,10 @@
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
 
+namespace mlir::tt {
+class ValueOriginAnalysis;
+}
+
 namespace mlir::tt::ttl {
 
 //===----------------------------------------------------------------------===//
@@ -100,7 +104,8 @@ public:
   /// Analyze a module to find all pipe receivers and build the graph.
   /// Returns failure if validation detects an error (e.g., gather DFB too
   /// small).
-  static FailureOr<PipeGraph> build(ModuleOp mod);
+  static FailureOr<PipeGraph> build(ModuleOp mod,
+                                    ValueOriginAnalysis &analysis);
 
   /// Check if any pipes were found.
   bool hasPipes() const { return !receiverDFBs.empty(); }

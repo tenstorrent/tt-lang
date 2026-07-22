@@ -104,8 +104,6 @@ public:
     std::uint64_t maxEnumeratedIndexTuples = 4096;
   };
 
-  ValueOriginAnalysis();
-  explicit ValueOriginAnalysis(Options options);
   explicit ValueOriginAnalysis(Operation *root);
   ValueOriginAnalysis(Operation *root, Options options);
   ~ValueOriginAnalysis();

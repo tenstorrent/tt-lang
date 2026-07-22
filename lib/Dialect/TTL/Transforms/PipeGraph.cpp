@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "PipeGraph.h"
+#include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
 
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/BuiltinTypes.h"
@@ -315,14 +316,15 @@ static LogicalResult addPipeReceiver(PipeGraph &graph, Operation *op,
       dfbType.getBlockCount(), op->getLoc());
 }
 
-FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod) {
+FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod,
+                                      ValueOriginAnalysis &analysis) {
   PipeGraph graph;
   llvm::MapVector<PipeKey, PipeTransferContract> transferContracts =
       collectPipeTransferContracts(mod);
 
   WalkResult walkResult = mod.walk([&](PipeTransferPostOp postOp) {
     FailureOr<PipeTransferCreateOp> maybeCreateOp =
-        findPipeTransferCreateForTransfer(postOp.getTransfer());
+        findPipeTransferCreateForTransfer(analysis, postOp.getTransfer());
     if (failed(maybeCreateOp)) {
       postOp.emitError(
           "pipe transfer post requires every possible transfer value to derive "
