@@ -1,6 +1,8 @@
 # Lit Test configuration
 # (TTLANG_HAS_DEVICE and TTLANG_HAS_DEVICE_INT are set by top-level CMakeLists.txt)
 
+add_subdirectory(lib/Analysis)
+
 # Generate pytest.ini with correct build directory paths.
 configure_file(
   ${CMAKE_CURRENT_SOURCE_DIR}/pytest.ini.in
@@ -30,9 +32,16 @@ configure_lit_site_cfg(
 
 
 set(TTLANG_TEST_DEPENDS
+  ttlang-execution-count-test
+  ttlang-op-stats
   ttlang-opt
   ttlang-translate
 )
+
+# Hardware jobs invoke llvm-lit directly, so expose its executable dependencies
+# through a target that the workflow can build explicitly.
+add_custom_target(ttlang-test-tools DEPENDS ${TTLANG_TEST_DEPENDS})
+set_target_properties(ttlang-test-tools PROPERTIES FOLDER "Tests")
 
 # Common llvm-lit options for consistent output across tt-lang test suites.
 set(TTLANG_LIT_COMMON_ARGS

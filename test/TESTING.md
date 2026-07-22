@@ -223,17 +223,37 @@ pytest test/python/
 
 ### Pytest timeouts in CI
 
-`call-test-hardware.yml` and `call-test-dist-tutorials.yml` pass
-`--timeout=60 --timeout-method=signal` to every pytest invocation so a hung
-test exits within ~60 seconds instead of holding the single `n150` runner
-until the 90-minute job timeout. Tests that legitimately need longer should
-set their own `@pytest.mark.timeout(...)` override. Local runs use the
-default (no timeout) unless you pass `--timeout` yourself.
+`call-test-hardware.yml` bounds every pytest run so a hung test cannot hold the
+hardware runner until the job timeout. The simulator step passes
+`--timeout=60 --timeout-method=signal`; the device suites (`test/python`,
+`test/me2e`, `test/tutorial`) run through
+`.github/scripts/run-hardware-pytests.sh`, which passes
+`--timeout=300 --timeout-method=thread` — the thread method interrupts C-level
+device deadlocks that `SIGALRM` cannot. Tests that legitimately need longer set
+their own `@pytest.mark.timeout(...)` override; the tutorial suite raises its
+backstop above the per-script subprocess timeout for this reason. Local runs use
+the default (no timeout) unless you pass `--timeout` yourself.
 
 Middle end-to-end tests (requires ttnn and a TT device or simulator):
 ```bash
 pytest -v test/me2e/
 ```
+
+Tutorial examples on hardware (requires ttnn and a TT device):
+```bash
+pytest test/tutorial/
+```
+
+Each script under `examples/{elementwise-tutorial,matmul-tutorial,tutorial}/`
+runs as one parametrized case that executes it in a fresh subprocess, so a crash
+or device wedge in one tutorial cannot poison the others. On the hardware CI job
+`.github/scripts/run-hardware-pytests.sh` shards single-device tutorials across
+chips and runs mesh tutorials serially with every chip visible. A tutorial that
+opens a device mesh must declare it with a header tag in its first 80 lines:
+`# TTLANG_TUTORIAL_CI: multi-device`, or `# TTLANG_TUTORIAL_CI: requires-multi-device`
+to additionally skip it below two chips. The same tags drive
+`.github/scripts/run-tutorials.sh`, which runs the tutorials serially on the
+single-device dist-container and wheel jobs.
 
 Simulations (software simulation of runtime behavior):
 ```bash
