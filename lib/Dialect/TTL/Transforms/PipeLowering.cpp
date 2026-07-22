@@ -994,8 +994,8 @@ void initializePipePostSequenceCounters(
     PipeCounterAddressInfo addressInfo =
         resource.completion.counter.getAddressInfo(postOp, pipeResourcePlan);
     SmallVector<PipeCounterAddressInfo> &addresses = countersByFunc[func];
-    bool alreadyRecorded = llvm::any_of(
-        addresses, [&](const PipeCounterAddressInfo &existing) {
+    bool alreadyRecorded =
+        llvm::any_of(addresses, [&](const PipeCounterAddressInfo &existing) {
           return existing.storage == addressInfo.storage &&
                  existing.index == addressInfo.index;
         });
@@ -1408,8 +1408,8 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
     transport->emitAddressPublishBarrier();
   }
 
-  if (!usesFabric && (!pipeCapacityPlan ||
-                      !pipeCapacityPlan->usesCapacityProtocol(op))) {
+  if (!usesFabric &&
+      (!pipeCapacityPlan || !pipeCapacityPlan->usesCapacityProtocol(op))) {
     PipeCounterAddressInfo readyCounterInfo =
         getReadyCounterAddressInfo(op, pipeResource, pipeResourcePlan);
     Value senderReadyCounterAddr =
@@ -2421,9 +2421,8 @@ verifyPipeResourcePlanFitsHardware(ModuleOp mod, const PipeResourcePlan &info,
   HighestSemaphore highest;
   for (const auto &[protocolOp, resource] : info.resources) {
     (void)protocolOp;
-    LocalSemaphoreObserver observer(highest,
-                                    PipeSemaphoreKind::ReceiverCompletion,
-                                    resource.pipe);
+    LocalSemaphoreObserver observer(
+        highest, PipeSemaphoreKind::ReceiverCompletion, resource.pipe);
     resource.completion.counter.observe(observer);
     if (resource.readyCounter) {
       LocalSemaphoreObserver observer(highest, PipeSemaphoreKind::SenderReady,

@@ -1293,8 +1293,8 @@ struct PipeTransferPostLowering : OpConversionPattern<PipeTransferPostOp> {
                            const FabricRuntimeMap *fabricRuntime)
       : OpConversionPattern(typeConverter, context), analysis(analysis),
         counters(counters), pipeResourcePlan(pipeResourcePlan),
-        pipeCapacityPlan(pipeCapacityPlan),
-        fabricRoutePlan(fabricRoutePlan), fabricRuntime(fabricRuntime) {}
+        pipeCapacityPlan(pipeCapacityPlan), fabricRoutePlan(fabricRoutePlan),
+        fabricRuntime(fabricRuntime) {}
 
   LogicalResult
   matchAndRewrite(PipeTransferPostOp op, OpAdaptor,
@@ -1345,11 +1345,10 @@ struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
                  user->getOperand(0) == op.getSrc() &&
                  domInfo.dominates(user, op);
         });
-    return lowerPipeTransferSend(op, adaptor.getSrc(), isConsumerCB, analysis,
-                                 pipeResourcePlan, &pipeCapacityPlan,
-                                 senderCapacityCounters,
-                                 computedAddressCounters, fabricRoutePlan,
-                                 fabricRuntime, rewriter);
+    return lowerPipeTransferSend(
+        op, adaptor.getSrc(), isConsumerCB, analysis, pipeResourcePlan,
+        &pipeCapacityPlan, senderCapacityCounters, computedAddressCounters,
+        fabricRoutePlan, fabricRuntime, rewriter);
   }
 
 private:
@@ -1912,10 +1911,9 @@ static LogicalResult lowerTTLOpsToTTKernel(
                TensorOpTypeConversion<tensor::ExtractOp>,
                TensorOpTypeConversion<tensor::CastOp>>(typeConverter, &ctx);
   patterns.add<CopyLowering>(typeConverter, &ctx);
-  patterns.add<PipeTransferPostLowering>(typeConverter, &ctx, transferAnalysis,
-                                         postSequenceCounters, pipeResourcePlan,
-                                         pipeCapacityPlan, &fabricRoutePlan,
-                                         &fabricRuntime);
+  patterns.add<PipeTransferPostLowering>(
+      typeConverter, &ctx, transferAnalysis, postSequenceCounters,
+      pipeResourcePlan, pipeCapacityPlan, &fabricRoutePlan, &fabricRuntime);
   patterns.add<PipeTransferSendLowering>(
       typeConverter, &ctx, transferAnalysis, pipeResourcePlan, pipeCapacityPlan,
       &senderCapacityCounters, &computedAddressCounters, &fabricRoutePlan,
@@ -1925,9 +1923,9 @@ static LogicalResult lowerTTLOpsToTTKernel(
   patterns.add<BindCBLowering, TensorSliceLowering, CBReserveLowering,
                CBPushLowering, CBWaitLowering, TileStoreLowering, StoreLowering,
                CoreXLowering, CoreYLowering, RawElementReadLowering,
-               RawElementWriteLowering,
-               IsDeviceLowering, CurrentDeviceIndexLowering,
-               IsDeviceInRangeLowering>(typeConverter, &ctx);
+               RawElementWriteLowering, IsDeviceLowering,
+               CurrentDeviceIndexLowering, IsDeviceInRangeLowering>(
+      typeConverter, &ctx);
   patterns.add<CBPopLowering>(typeConverter, &ctx, pipeCapacityPlan);
   populatePipeLoweringPatterns(patterns, typeConverter, pipeNetIndex);
   populateFunctionOpInterfaceTypeConversionPattern(
