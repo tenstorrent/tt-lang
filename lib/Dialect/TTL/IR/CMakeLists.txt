@@ -16,5 +16,4 @@ add_mlir_dialect_library(MLIRTTLDialect
     MLIRIndexingMapOpInterface
     MLIRTTCoreDialect
     MLIRTilingInterface
-    TTLangAnalysis
 )
