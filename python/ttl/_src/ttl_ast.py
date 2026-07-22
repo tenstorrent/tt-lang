@@ -92,6 +92,10 @@ def _build_tensor_type(ctx, tensor, grid, tiled, memory_space):
     if is_ttnn_tensor(tensor):
         mem_layout = detect_memory_layout(tensor)
 
+    tile = (DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)
+    if is_ttnn_tensor(tensor) and hasattr(tensor, "get_tile"):
+        tile = tuple(tensor.get_tile().tile_shape)
+
     layout = create_layout(
         ctx,
         LayoutConfig(
@@ -99,19 +103,18 @@ def _build_tensor_type(ctx, tensor, grid, tiled, memory_space):
             grid=grid,
             dtype=tensor.dtype,
             memory_layout=mem_layout,
+            tile=tile,
         ),
     )
 
     ttcore_dtype = tensor_dtype_to_ttcore_datatype(tensor.dtype)
-    element_type = ttcore.ir.TileType.get(
-        ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype
-    )
+    element_type = ttcore.ir.TileType.get(ctx, tile[0], tile[1], ttcore_dtype)
 
     # Device shape: batch dims preserved, last 2 dims converted to tile counts
     batch_dims = shape[:-2]
     tensor_rows, tensor_cols = shape[-2], shape[-1]
-    total_row_tiles = _ceil_div(tensor_rows, DEFAULT_TILE_SIZE)
-    total_col_tiles = _ceil_div(tensor_cols, DEFAULT_TILE_SIZE)
+    total_row_tiles = _ceil_div(tensor_rows, tile[0])
+    total_col_tiles = _ceil_div(tensor_cols, tile[1])
     device_shape = batch_dims + [total_row_tiles, total_col_tiles]
 
     return RankedTensorType.get(device_shape, element_type, layout)
@@ -846,7 +849,7 @@ class TTLGenericCompiler(TTCompilerBase):
         """Emit ttl.bind_cb for a captured DataflowBuffer instance."""
         ttcore_dtype = tensor_dtype_to_ttcore_datatype(cb.dtype)
         element_type = ttcore.ir.TileType.get(
-            self.ctx, DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, ttcore_dtype
+            self.ctx, cb.tile[0], cb.tile[1], ttcore_dtype
         )
         cb_type = ttl.CircularBufferType.get(
             self.ctx,
