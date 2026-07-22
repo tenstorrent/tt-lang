@@ -15,6 +15,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinDialect.h"
@@ -65,24 +66,39 @@ constexpr llvm::StringLiteral kExpandLinearizeIndexAttr =
 class TTLToTTKernelTypeConverter : public TypeConverter {
 public:
   TTLToTTKernelTypeConverter() {
-    // Specific conversions first; identity fallback last.
+    // TypeConverter invokes the most recently registered applicable callback.
+    addConversion([](Type type) { return type; });
+
+    // Layout-encoded tensors remain available to CopyLowering until their
+    // runtime TensorAccessor has been materialized. Other tensors recursively
+    // convert their element type so tensors of pipe tokens remain legal.
+    addConversion([this](RankedTensorType t) -> Type {
+      if (t.getEncoding() && mlir::isa<tt::ttl::LayoutAttr>(t.getEncoding())) {
+        return t;
+      }
+      Type convertedElementType = convertType(t.getElementType());
+      if (!convertedElementType || convertedElementType == t.getElementType()) {
+        return t;
+      }
+      return RankedTensorType::get(t.getShape(), convertedElementType,
+                                   t.getEncoding());
+    });
+
     // CB: lower to TTKernel CB type with flattened element count.
     addConversion([](CircularBufferType t) -> Type {
       return ttk::CBType::get(t.getContext(), t.getTotalElements(),
                               t.getElementType());
     });
-    // Tensor -> TensorAccessor for TTKernel when TTL layout is present.
-    addConversion([](RankedTensorType t) -> Type {
-      if (t.getEncoding() && mlir::isa<tt::ttl::LayoutAttr>(t.getEncoding())) {
-        return ttk::TensorAccessorType::get(t.getContext());
-      }
-      return t;
+    addConversion([](PipeTokenType type) -> Type {
+      return IntegerType::get(type.getContext(), 32);
     });
-    // Preserve transfer handle types so ttl.wait can inspect transfer
-    // direction. TRID-aware lowering will be added later.
-    addConversion([](TransferHandleType t) -> Type { return t; });
-    // Identity fallback must be last.
-    addConversion([](Type t) { return t; });
+    // Public pipe copies expose TransferHandleType and may carry the dynamic
+    // post sequence through SCF or tensor containers. DMA handles use the same
+    // runtime representation, but their waits depend only on precomputed
+    // provenance and lower to barriers without inspecting this value.
+    addConversion([](TransferHandleType type) -> Type {
+      return IntegerType::get(type.getContext(), 32);
+    });
 
     auto castMaterialization = [](OpBuilder &builder, Type resultType,
                                   ValueRange inputs, Location loc) -> Value {
@@ -92,6 +108,56 @@ public:
     };
     addSourceMaterialization(castMaterialization);
     addTargetMaterialization(castMaterialization);
+  }
+};
+
+static Value createConvertedTensorOp(tensor::EmptyOp op,
+                                     tensor::EmptyOp::Adaptor adaptor,
+                                     Type convertedType,
+                                     ConversionPatternRewriter &rewriter) {
+  return tensor::EmptyOp::create(rewriter, op.getLoc(), convertedType,
+                                 adaptor.getDynamicSizes());
+}
+
+static Value createConvertedTensorOp(tensor::InsertOp op,
+                                     tensor::InsertOp::Adaptor adaptor,
+                                     Type convertedType,
+                                     ConversionPatternRewriter &rewriter) {
+  return tensor::InsertOp::create(rewriter, op.getLoc(), convertedType,
+                                  adaptor.getScalar(), adaptor.getDest(),
+                                  adaptor.getIndices());
+}
+
+static Value createConvertedTensorOp(tensor::ExtractOp op,
+                                     tensor::ExtractOp::Adaptor adaptor,
+                                     Type convertedType,
+                                     ConversionPatternRewriter &rewriter) {
+  return tensor::ExtractOp::create(rewriter, op.getLoc(), convertedType,
+                                   adaptor.getTensor(), adaptor.getIndices());
+}
+
+static Value createConvertedTensorOp(tensor::CastOp op,
+                                     tensor::CastOp::Adaptor adaptor,
+                                     Type convertedType,
+                                     ConversionPatternRewriter &rewriter) {
+  return tensor::CastOp::create(rewriter, op.getLoc(), convertedType,
+                                adaptor.getSource());
+}
+
+template <typename TensorOp>
+struct TensorOpTypeConversion : OpConversionPattern<TensorOp> {
+  using OpConversionPattern<TensorOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TensorOp op, typename TensorOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Type convertedType = this->getTypeConverter()->convertType(op.getType());
+    if (!convertedType) {
+      return rewriter.notifyMatchFailure(op, "failed to convert result type");
+    }
+    rewriter.replaceOp(
+        op, createConvertedTensorOp(op, adaptor, convertedType, rewriter));
+    return success();
   }
 };
 
@@ -1160,7 +1226,7 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
     // MVP behavior: emit the corresponding global barrier based on transfer
     // direction. Pipe receive waits are expanded to ttl.pipe_transfer.wait
     // before this conversion.
-    auto kind = getTransferKindFromHandleType(adaptor.getXf().getType());
+    auto kind = getTransferKindFromHandleType(op.getXf().getType());
     if (!kind) {
       return op.emitError("untyped transfer handle survived pipe receive "
                           "expansion");
@@ -1514,8 +1580,7 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   target.addIllegalDialect<tt::ttl::TTLDialect>();
   target.addLegalDialect<affine::AffineDialect, arith::ArithDialect,
                          BuiltinDialect, memref::MemRefDialect, scf::SCFDialect,
-                         func::FuncDialect, tensor::TensorDialect,
-                         ttkernel::TTKernelDialect>();
+                         func::FuncDialect, ttkernel::TTKernelDialect>();
 
   // Structural ops remain legal (converted elsewhere or kept as-is).
   target.addLegalOp<ComputeOp, YieldOp, AttachCBOp, DstIndexOp>();
@@ -1611,6 +1676,14 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   // change runtime binding code.
 
   RewritePatternSet patterns(&ctx);
+  scf::populateSCFStructuralTypeConversionsAndLegality(typeConverter, patterns,
+                                                       target);
+  target.addDynamicallyLegalDialect<tensor::TensorDialect>(
+      [&](Operation *op) { return typeConverter.isLegal(op); });
+  patterns.add<TensorOpTypeConversion<tensor::EmptyOp>,
+               TensorOpTypeConversion<tensor::InsertOp>,
+               TensorOpTypeConversion<tensor::ExtractOp>,
+               TensorOpTypeConversion<tensor::CastOp>>(typeConverter, &ctx);
   patterns.add<CopyLowering>(typeConverter, &ctx);
   patterns.add<PipeTransferPostLowering, PipeTransferSendLowering>(
       typeConverter, &ctx, pipeResourcePlan);
