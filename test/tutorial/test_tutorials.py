@@ -40,14 +40,10 @@ REQUIRES_MESH_TAG = "requires-multi-device"
 # single, partially harvested chip (see run-tutorials.sh); multi-device hosts
 # finish each in 20-30s. TUTORIAL_TIMEOUT_SECONDS overrides it.
 SUBPROCESS_TIMEOUT_SECONDS = int(os.environ.get("TUTORIAL_TIMEOUT_SECONDS", "300"))
-# Grace window between SIGTERM and SIGKILL when a tutorial exceeds its budget,
-# matching the retired run-tutorials.sh (`timeout --signal=TERM --kill-after=10`)
-# so tt-metal can close the device instead of being hard-killed mid-operation.
+# SIGTERM-to-SIGKILL grace on timeout, so tt-metal can close the device.
 SIGTERM_GRACE_SECONDS = 10
-# pytest-timeout backstop, kept above the worst-case child lifetime (budget plus
-# the SIGTERM grace) so the child is always terminated first. The thread-method
-# pytest timeout hard-crashes the worker, which would turn the step_7 xfail into
-# a worker crash.
+# Above the worst-case child lifetime (budget + grace) so the subprocess handles
+# the timeout; pytest-timeout's thread method aborts the whole worker.
 PYTEST_TIMEOUT_BACKSTOP_SECONDS = (
     SUBPROCESS_TIMEOUT_SECONDS + SIGTERM_GRACE_SECONDS + 60
 )
@@ -145,9 +141,8 @@ def test_tutorial(script: Path):
     try:
         returncode = process.wait(timeout=SUBPROCESS_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
-        # SIGTERM first so tt-metal can close the device, then SIGKILL only if
-        # the child ignores the grace window. subprocess.run(timeout=) would
-        # SIGKILL immediately, leaving the chip more likely wedged.
+        # SIGTERM first so tt-metal can close the device; SIGKILL only if it
+        # outlasts the grace window.
         process.terminate()
         try:
             process.wait(timeout=SIGTERM_GRACE_SECONDS)
