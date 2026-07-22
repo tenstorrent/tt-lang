@@ -1265,8 +1265,7 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
     auto newOp = ttk::OpaqueCallOp::create(
         rewriter, loc, resultTypes, op.getCalleeAttr(), op.getHeaderAttr(),
         convertedArgs, op.getTemplateArgsAttr());
-    (void)newOp;
-    rewriter.eraseOp(op);
+    rewriter.replaceOp(op, newOp.getResults());
     return success();
   }
 };

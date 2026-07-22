@@ -130,7 +130,24 @@ _BLOCK_METHODS: Dict[str, str] = {
     # Opaque TRISC code can fill a pre-reserved block without an ordinary
     # TT-Lang compute value to anchor the producer side.
     "push_compute": "trisc",
+    # Opaque BRISC code can likewise DMA into a pre-reserved block.
+    "push_brisc": "brisc",
+    # Opaque NCRISC code can copy between pre-acquired blocks.
+    "push_ncrisc": "ncrisc",
+    "pop_ncrisc": "ncrisc",
 }
+
+
+def _explicit_extern_thread(call: ast.Call) -> Optional[str]:
+    """Return call_extern_func(..., thread="...") ownership metadata."""
+    if not isinstance(call.func, ast.Name) or call.func.id != "call_extern_func":
+        return None
+    for kw in call.keywords:
+        if kw.arg == "thread" and isinstance(kw.value, ast.Constant):
+            value = kw.value.value
+            if value in THREADS:
+                return value
+    return None
 
 # Methods on a DFB name that produce a block.
 _DFB_PRODUCING_METHODS: Set[str] = {"wait", "reserve"}
@@ -486,7 +503,9 @@ class _AnchorTagger:
         to ``_classify_ttl_call``; resolves ``<block>.store/pop/push`` here,
         since deferred block methods need this scope's inferred block threads.
         """
-        thread = _classify_ttl_call(call.func, self._dm_thread)
+        thread = _explicit_extern_thread(call)
+        if thread is None:
+            thread = _classify_ttl_call(call.func, self._dm_thread)
         if thread is not None:
             return thread
 
@@ -495,8 +514,8 @@ class _AnchorTagger:
         if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
             if func.value.id in self._producers:
                 method = _BLOCK_METHODS.get(func.attr)
-                if method == "trisc":
-                    return "trisc"
+                if method in THREADS:
+                    return method
                 if method == "deferred":
                     bt = self.block_threads.get(func.value.id)
                     if bt and len(bt) == 1:
@@ -770,7 +789,9 @@ def _collect_block_users(
     def visit(node, visible, dm):
         if isinstance(node, ast.Call):
             func = node.func
-            thread = _classify_ttl_call(func, dm)
+            thread = _explicit_extern_thread(node)
+            if thread is None:
+                thread = _classify_ttl_call(func, dm)
             sub_dm = dm
             if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
                 recv = func.value.id

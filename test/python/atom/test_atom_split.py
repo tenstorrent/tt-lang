@@ -67,6 +67,50 @@ def test_push_compute_anchors_opaque_producer_to_trisc():
     assert "out_cb.reserve()" not in _thread_src(result, "brisc")
 
 
+@pytest.mark.parametrize(
+    ("method", "thread"),
+    [("push_brisc", "brisc"), ("push_ncrisc", "ncrisc")],
+)
+def test_explicit_dm_push_anchors_opaque_producer(method, thread):
+    fn = _fn(
+        f"""
+        def k():
+            blk = out_cb.reserve()
+            call_extern_func(
+                "opaque.hpp", "fill_reserved", func_args=[out_cb],
+                thread="{thread}")
+            blk.{method}()
+        """
+    )
+    result = split_function_body(
+        fn, dfb_param_names=set(), local_dfb_names={"out_cb"})
+    owned = _thread_src(result, thread)
+    assert "blk = out_cb.reserve()" in owned
+    assert f"blk.{method}()" in owned
+    for other in {"trisc", "ncrisc", "brisc"} - {thread}:
+        assert "out_cb.reserve()" not in _thread_src(result, other)
+        assert "fill_reserved" not in _thread_src(result, other)
+
+
+def test_explicit_ncrisc_pop_anchors_opaque_consumer():
+    fn = _fn(
+        """
+        def k():
+            blk = in_cb.wait()
+            call_extern_func(
+                "opaque.hpp", "consume", func_args=[in_cb], thread="ncrisc")
+            blk.pop_ncrisc()
+        """
+    )
+    result = split_function_body(
+        fn, dfb_param_names=set(), local_dfb_names={"in_cb"})
+    ncrisc = _thread_src(result, "ncrisc")
+    assert "blk = in_cb.wait()" in ncrisc
+    assert "blk.pop_ncrisc()" in ncrisc
+    assert "in_cb.wait()" not in _thread_src(result, "trisc")
+    assert "in_cb.wait()" not in _thread_src(result, "brisc")
+
+
 def test_producer_split_across_ncrisc_and_brisc_is_rejected():
     """A single reserve whose block feeds both an if_src (BRISC) and an
     if_dst (NCRISC) callback would double-reserve the CB."""

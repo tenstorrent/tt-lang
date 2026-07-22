@@ -1458,6 +1458,8 @@ class TTLGenericCompiler(TTCompilerBase):
                 template_args=[1, 2],           # C++ template arguments
                 func_args=[a, b],               # C++ function arguments
                 include_paths=["/path/to/inc"], # -I flags for JIT compiler
+                result_type="i64",              # optional scalar result
+                thread="ncrisc",                # optional split ownership
             )
         """
         if len(args) < 2:
@@ -1481,6 +1483,14 @@ class TTLGenericCompiler(TTCompilerBase):
         if keywords:
             for kw in keywords:
                 kw_map[kw.arg] = kw.value
+
+        if "thread" in kw_map:
+            thread = self._resolve_string_value(kw_map["thread"], "thread")
+            if thread not in ("trisc", "ncrisc", "brisc"):
+                self._raise_error(
+                    kw_map["thread"],
+                    "call_extern_func() thread must be 'trisc', 'ncrisc', or 'brisc'",
+                )
 
         template_args_attr = None
         if "template_args" in kw_map:
@@ -1516,13 +1526,30 @@ class TTLGenericCompiler(TTCompilerBase):
             )
             self._opaque_include_paths.extend(paths)
 
-        ttl.opaque_call(
-            [],
+        result_types = []
+        if "result_type" in kw_map:
+            result_type = self._resolve_string_value(
+                kw_map["result_type"], "result_type"
+            )
+            result_widths = {"i32": 32, "i64": 64}
+            if result_type not in result_widths:
+                self._raise_error(
+                    kw_map["result_type"],
+                    "call_extern_func() result_type supports 'i32' or 'i64'",
+                )
+            result_types.append(
+                IntegerType.get_signless(result_widths[result_type], self.ctx)
+            )
+
+        opaque_call = ttl.opaque_call(
+            result_types,
             callee,
             header,
             func_args,
             template_args=template_args_attr,
         )
+        if result_types:
+            return opaque_call
 
     def visit_With(self, node):
         """
