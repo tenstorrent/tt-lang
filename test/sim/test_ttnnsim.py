@@ -262,11 +262,10 @@ def test_tensor_0d_raises():
 
 def test_tensor_tile_indexing_invalid_shape():
     """Test that tile indexing fails for key length mismatches."""
-    # Passing slice(None, 1) (stop-only, no start) to a 1-D tensor reaches
-    # _validate_tile_slice, which requires an explicit start value and raises.
+    # Passing slice(None, 1) (stop-only, no start) to a 1-D tensor resolves the
+    # open start to tile 0, selecting the first tile.
     t1d = ttnn.Tensor(torch.randn(64))
-    with pytest.raises(ValueError, match="must have explicit start value"):
-        _ = t1d[slice(None, 1)]  # missing start -> our validation catches it
+    assert t1d[slice(None, 1)].shape == (32,)
 
     # 2-element key on a 4-D tensor: rank mismatch must be caught explicitly
     # rather than silently treating only the last two dims.
@@ -1390,15 +1389,22 @@ class TestTensorTileIndexing:
 
     # --- slice format validation ---
 
-    def test_slice_none_start_raises(self) -> None:
+    def test_slice_none_start_resolves_to_zero(self) -> None:
+        """An open start defaults to tile 0 (full extent up to stop)."""
         t = ttnn.Tensor(torch.zeros(64, 64))
-        with pytest.raises(ValueError, match="must have explicit start value"):
-            _ = t[slice(None, 1), slice(0, 1)]
+        # Open row start -> tile 0; one column tile selected.
+        assert t[slice(None, 1), slice(0, 1)].shape == (32, 32)
 
-    def test_slice_none_stop_raises(self) -> None:
+    def test_slice_none_stop_resolves_to_full_extent(self) -> None:
+        """An open stop defaults to the full tile count along the dimension."""
         t = ttnn.Tensor(torch.zeros(64, 64))
-        with pytest.raises(ValueError, match="must have explicit stop value"):
-            _ = t[slice(0, None), slice(0, 1)]
+        # Open row stop -> all row tiles (2 tiles == 64 rows).
+        assert t[slice(0, None), slice(0, 1)].shape == (64, 32)
+
+    def test_open_slice_selects_full_row_of_tiles(self) -> None:
+        """``t[i, :]`` selects the whole row of tiles (ttnn-compatible)."""
+        t = ttnn.Tensor(torch.zeros(64, 64))
+        assert t[0, :].shape == (32, 64)
 
     def test_slice_with_step_raises(self) -> None:
         t = ttnn.Tensor(torch.zeros(64, 64))

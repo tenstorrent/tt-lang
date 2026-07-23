@@ -1500,27 +1500,25 @@ class Tensor:
         return normalize_selector_to_slice(selector)
 
     @staticmethod
-    def _validate_tile_slice(s: slice, dim_name: str) -> None:
-        """Validate a tile-coordinate slice has explicit bounds and no step.
+    def _resolve_tile_slice(s: slice, tile_count: int, dim_name: str) -> Tuple[int, int]:
+        """Resolve a tile-coordinate slice to explicit ``(start, stop)`` tile bounds.
+
+        Open ends follow Python slice semantics: a missing start defaults to 0
+        and a missing stop defaults to ``tile_count`` (the full extent along the
+        dimension). This lets ``t[i, :]`` / ``t[:, j]`` select whole rows/columns
+        of tiles, matching ttnn. Steps remain unsupported.
 
         Raises:
-            ValueError: If start or stop is None, or step is set.
+            ValueError: If ``step`` is set.
         """
-        if s.start is None:
-            raise ValueError(
-                f"Tile slice '{dim_name}' must have explicit start value, "
-                f"got slice({s.start}, {s.stop}, {s.step})"
-            )
-        if s.stop is None:
-            raise ValueError(
-                f"Tile slice '{dim_name}' must have explicit stop value, "
-                f"got slice({s.start}, {s.stop}, {s.step})"
-            )
         if s.step is not None:
             raise ValueError(
                 f"Tile slice '{dim_name}' must not have a step value, "
                 f"got slice({s.start}, {s.stop}, {s.step}). Only simple slices are supported."
             )
+        start = 0 if s.start is None else s.start
+        stop = tile_count if s.stop is None else s.stop
+        return start, stop
 
     def _to_element_key(self, key: Tuple[Selector, ...]) -> Tuple[Selector, ...]:
         """Translate a coordinate key to an element-space index tuple.
@@ -1588,20 +1586,18 @@ class Tensor:
             self._validate_tile_alignment()
             self._tile_alignment_checked = True
         if ndim == 1:
-            self._validate_tile_slice(normalized[0], "col")
-            return (
-                slice(
-                    normalized[0].start * TILE_SHAPE[0],
-                    normalized[0].stop * TILE_SHAPE[0],
-                ),
-            )
+            col_tiles = self._tensor.shape[0] // TILE_SHAPE[0]
+            start, stop = self._resolve_tile_slice(normalized[0], col_tiles, "col")
+            return (slice(start * TILE_SHAPE[0], stop * TILE_SHAPE[0]),)
         *batch_s, row_s, col_s = normalized
-        self._validate_tile_slice(row_s, "row")
-        self._validate_tile_slice(col_s, "col")
+        row_tiles = self._tensor.shape[-2] // TILE_SHAPE[0]
+        col_tiles = self._tensor.shape[-1] // TILE_SHAPE[1]
+        row_start, row_stop = self._resolve_tile_slice(row_s, row_tiles, "row")
+        col_start, col_stop = self._resolve_tile_slice(col_s, col_tiles, "col")
         return (
             *batch_s,
-            slice(row_s.start * TILE_SHAPE[0], row_s.stop * TILE_SHAPE[0]),
-            slice(col_s.start * TILE_SHAPE[1], col_s.stop * TILE_SHAPE[1]),
+            slice(row_start * TILE_SHAPE[0], row_stop * TILE_SHAPE[0]),
+            slice(col_start * TILE_SHAPE[1], col_stop * TILE_SHAPE[1]),
         )
 
     def element_slice_starts(self, key: TensorKey) -> Shape:
