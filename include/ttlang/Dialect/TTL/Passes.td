@@ -707,7 +707,19 @@ def TTLFinalizeDFBIndices
     kMaxCircularBuffers (32), updates ttl.base_cta_index on every
     function, and builds the ttl.compiler_allocated_dfbs module
     attribute for the Python runtime.
+
+    The experimental `reuse-user-dfbs` option runs a read-only module analysis
+    over all logical DFBs, including declarations shared across kernel-thread
+    functions. It rewrites indices only after the analysis has computed and
+    verified a complete physical assignment. The standard pipeline leaves this
+    option disabled.
   }];
+
+  let options = [
+    Option<"reuseUserDFBs", "reuse-user-dfbs", "bool", "false",
+           "Experimentally reuse user DFB indices across proven "
+           "multithreaded happens-before cuts.">
+  ];
 }
 
 def TTLValidateCBBudget
