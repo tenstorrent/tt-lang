@@ -82,7 +82,9 @@ def create_layout(ctx, config: LayoutConfig):
     mlir_grid = [grid_rows, grid_cols]
 
     ttcore_dtype = tensor_dtype_to_ttcore_datatype(config.dtype)
-    element_type = ttcore.ir.TileType.get(ctx, config.tile[0], config.tile[1], ttcore_dtype)
+    element_type = ttcore.ir.TileType.get(
+        ctx, config.tile[0], config.tile[1], ttcore_dtype
+    )
 
     # Import ttl.ir from our _ttlang extension module
     from ttl._mlir_libs._ttlang import ttl_ir
