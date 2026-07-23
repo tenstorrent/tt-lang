@@ -778,6 +778,42 @@ with one entry per unique physical index, deduplicated from the potentially
 many `BindCBOp`s that now share an index. The Python runtime reads this
 attribute to allocate L1 buffers at dispatch time.
 
+### Experimental multithreaded analysis
+
+The `reuse-user-dfbs` finalizer option enables a read-only module analysis that
+includes user and compiler-created DFBs in one physical assignment. The option
+is disabled in the standard pipeline because the Python runtime does not yet
+consume remapped user DFB descriptors.
+
+User declarations with the same provisional `cb_index` form one logical DFB
+across kernel functions. Each compiler-created declaration remains a separate
+logical DFB. Exact `CircularBufferType` equality is required for physical
+reuse.
+
+The analysis gives each function-level operation separate entry and completion
+events. Program order connects events within a kernel function. For a
+statically matched one-shot lifecycle, `cb_push` completion precedes the
+corresponding blocking `cb_wait` completion. The existing DFB acquire/release
+ownership analysis verifies that `cb_push` and `cb_pop` follow all uses of
+their acquired tensor views.
+
+A balanced one-shot DFB has an earliest-event antichain and a terminal
+`cb_pop` completion. Logical DFB A may precede logical DFB B only when A's
+terminal event happens before every event in B's earliest antichain. Otherwise
+they interfere. This all-frontier condition accounts for operations that begin
+independently in different threads, including a blocking wait that enters
+before another thread reaches a synchronization point.
+
+The initial analysis does not infer dynamic occurrence matching for loops,
+multi-acquire protocols, conditional lifecycle operations, or credit-return
+ordering from `cb_pop` to `cb_reserve`. Such DFBs are unbounded and interfere
+with every same-type logical DFB. Nested non-lifecycle uses project to their
+enclosing function-level operation.
+
+When enabled, the finalizer applies the completed assignment, updates
+`ttl.base_cta_index`, and emits `ttl.dfb_allocations` with one descriptor per
+physical index. The analysis itself does not modify IR.
+
 ## Limitations and Future Work
 
 The linear scan operates on a flat sequence of function-level operations. It
@@ -786,10 +822,11 @@ exclusive branches are treated as overlapping. This is conservative for
 physical index reuse. More precise reuse across mutually exclusive regions
 would need branch-sensitive liveness.
 
-Index reuse is restricted to compiler-allocated DFBs. User-declared DFBs retain
-their original indices because the same CB index is referenced by multiple
-threads (reader, compute, writer) to implement cross-thread data flow. Reusing
-a user index in one function would invalidate references in the others.
+Standard-pipeline index reuse is restricted to compiler-allocated DFBs.
+User-declared DFBs retain their original indices because the same CB index is
+referenced by multiple threads (reader, compute, writer) to implement
+cross-thread data flow. Reusing a user index in one function would invalidate
+references in the others.
 
 Liveness is computed at function-level granularity. If an acquire or `CBPopOp`
 is inside a structured op, it is projected to its enclosing function-level

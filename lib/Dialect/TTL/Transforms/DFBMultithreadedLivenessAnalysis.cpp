@@ -4,11 +4,11 @@
 
 #include "DFBMultithreadedLivenessAnalysis.h"
 
+#include "DFBAcquireReleaseAnalysis.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
-#include "DFBAcquireReleaseAnalysis.h"
 #include "ttlang/Dialect/TTL/Transforms/LiveIntervalUtils.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -143,8 +143,8 @@ collectLogicalDFBs(ModuleOp moduleOp, SmallVectorImpl<LogicalDFB> &logicalDFBs,
       logicalDFBs.push_back(std::move(logicalDFB));
     } else {
       int64_t provisionalIndex = bindOp.getCbIndex().getSExtValue();
-      auto [logicalIt, inserted] = userIndexToLogicalDFB.insert(
-          {provisionalIndex, logicalDFBs.size()});
+      auto [logicalIt, inserted] =
+          userIndexToLogicalDFB.insert({provisionalIndex, logicalDFBs.size()});
       logicalIndex = logicalIt->second;
       if (inserted) {
         LogicalDFB logicalDFB;
@@ -239,16 +239,14 @@ static std::optional<EventPair>
 getProjectedEvents(Operation *operation,
                    const DenseMap<Operation *, EventPair> &operationEvents) {
   func::FuncOp funcOp = operation->getParentOfType<func::FuncOp>();
-  if (!funcOp || funcOp.getBody().empty() ||
-      !funcOp.getBody().hasOneBlock()) {
+  if (!funcOp || funcOp.getBody().empty() || !funcOp.getBody().hasOneBlock()) {
     return std::nullopt;
   }
 
   Block &functionBody = funcOp.getBody().front();
-  Operation *projected =
-      operation->getBlock() == &functionBody
-          ? operation
-          : functionBody.findAncestorOpInBlock(*operation);
+  Operation *projected = operation->getBlock() == &functionBody
+                             ? operation
+                             : functionBody.findAncestorOpInBlock(*operation);
   if (!projected) {
     return std::nullopt;
   }
@@ -268,11 +266,9 @@ static bool isDirectFunctionBodyOperation(Operation *operation) {
 
 static bool releaseFollowsOwnedUses(Operation *acquire, Operation *release) {
   SmallVector<Operation *> acquires = {acquire};
-  DFBAcquireInterval interval =
-      makeDFBAcquireInterval(acquire, acquires);
+  DFBAcquireInterval interval = makeDFBAcquireInterval(acquire, acquires);
   Operation *lastOwnedUse = findLastDFBAcquireOwnedUse(interval);
-  return lastOwnedUse == acquire ||
-         lastOwnedUse->isBeforeInBlock(release);
+  return lastOwnedUse == acquire || lastOwnedUse->isBeforeInBlock(release);
 }
 
 static int64_t getDefaultTileCount(Operation *operation) {
@@ -304,8 +300,7 @@ static int64_t getTileCount(Operation *operation) {
         waitOp.getNumTiles().value_or(defaultTileCount));
   }
   auto popOp = cast<CBPopOp>(operation);
-  return static_cast<int64_t>(
-      popOp.getNumTiles().value_or(defaultTileCount));
+  return static_cast<int64_t>(popOp.getNumTiles().value_or(defaultTileCount));
 }
 
 static bool hasMatchedOneShotLifecycle(const LogicalDFB &logicalDFB) {
@@ -325,8 +320,8 @@ static bool hasMatchedOneShotLifecycle(const LogicalDFB &logicalDFB) {
     return false;
   }
   if (reserve->getBlock() != push->getBlock() ||
-      wait->getBlock() != pop->getBlock() ||
-      !reserve->isBeforeInBlock(push) || !wait->isBeforeInBlock(pop)) {
+      wait->getBlock() != pop->getBlock() || !reserve->isBeforeInBlock(push) ||
+      !wait->isBeforeInBlock(pop)) {
     return false;
   }
   if (!releaseFollowsOwnedUses(reserve, push) ||
@@ -345,23 +340,19 @@ findMinimalEvents(ArrayRef<unsigned> events,
                   const HappensBeforeGraph &happensBeforeGraph) {
   SmallVector<unsigned> minimalEvents;
   for (unsigned candidate : events) {
-    bool hasPredecessor =
-        llvm::any_of(events, [&](unsigned otherEvent) {
-          return happensBeforeGraph.strictlyPrecedes(otherEvent, candidate);
-        });
-    if (!hasPredecessor &&
-        !llvm::is_contained(minimalEvents, candidate)) {
+    bool hasPredecessor = llvm::any_of(events, [&](unsigned otherEvent) {
+      return happensBeforeGraph.strictlyPrecedes(otherEvent, candidate);
+    });
+    if (!hasPredecessor && !llvm::is_contained(minimalEvents, candidate)) {
       minimalEvents.push_back(candidate);
     }
   }
   return minimalEvents;
 }
 
-static void
-computeLogicalDFBFrontiers(LogicalDFB &logicalDFB,
-                           const HappensBeforeGraph &happensBeforeGraph,
-                           const DenseMap<Operation *, EventPair>
-                               &operationEvents) {
+static void computeLogicalDFBFrontiers(
+    LogicalDFB &logicalDFB, const HappensBeforeGraph &happensBeforeGraph,
+    const DenseMap<Operation *, EventPair> &operationEvents) {
   if (!hasMatchedOneShotLifecycle(logicalDFB)) {
     return;
   }
@@ -393,14 +384,12 @@ computeLogicalDFBFrontiers(LogicalDFB &logicalDFB,
     }
   }
 
-  logicalDFB.earliestEvents =
-      findMinimalEvents(useEntries, happensBeforeGraph);
+  logicalDFB.earliestEvents = findMinimalEvents(useEntries, happensBeforeGraph);
   logicalDFB.terminalEvents = {popEvents->completion};
   logicalDFB.bounded = !logicalDFB.earliestEvents.empty();
 }
 
-static bool isOrderedBefore(const LogicalDFB &before,
-                            const LogicalDFB &after,
+static bool isOrderedBefore(const LogicalDFB &before, const LogicalDFB &after,
                             const HappensBeforeGraph &happensBeforeGraph) {
   if (!before.bounded || !after.bounded) {
     return false;
@@ -516,10 +505,8 @@ DFBMultithreadedLivenessAnalysis::DFBMultithreadedLivenessAnalysis(
       continue;
     }
     matchedLifecycle[indexedLogicalDFB.index()] = true;
-    EventPair pushEvents =
-        operationEvents.lookup(logicalDFB.pushes.front());
-    EventPair waitEvents =
-        operationEvents.lookup(logicalDFB.waits.front());
+    EventPair pushEvents = operationEvents.lookup(logicalDFB.pushes.front());
+    EventPair waitEvents = operationEvents.lookup(logicalDFB.waits.front());
     happensBeforeGraph.addEdge(pushEvents.completion, waitEvents.completion);
   }
 
@@ -542,13 +529,11 @@ DFBMultithreadedLivenessAnalysis::DFBMultithreadedLivenessAnalysis(
   }
 
   for (auto indexedLogicalDFB : llvm::enumerate(logicalDFBs)) {
-    int32_t physicalIndex =
-        (*physicalAssignments)[indexedLogicalDFB.index()];
+    int32_t physicalIndex = (*physicalAssignments)[indexedLogicalDFB.index()];
     physicalSlotCount = std::max(physicalSlotCount, physicalIndex + 1);
     const LogicalDFB &logicalDFB = indexedLogicalDFB.value();
-    assignments.push_back(
-        {logicalDFB.logicalId, physicalIndex, logicalDFB.type,
-         logicalDFB.declarations, logicalDFB.bounded});
+    assignments.push_back({logicalDFB.logicalId, physicalIndex, logicalDFB.type,
+                           logicalDFB.declarations, logicalDFB.bounded});
   }
 }
 
