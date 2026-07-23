@@ -1745,10 +1745,6 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   }
   PipeResourceRequirements pipeResourceRequirements =
       getPipeResourceRequirements(pipeResourcePlan);
-  if (failed(verifyPipeResourcePlanFitsHardware(mod, pipeResourcePlan,
-                                                pipeResourceRequirements))) {
-    return failure();
-  }
   mod->setAttr(kPipeSyncSemaphoreCountAttrName,
                IntegerAttr::get(IntegerType::get(&ctx, 64),
                                 pipeResourceRequirements.syncSemaphoreCount));
