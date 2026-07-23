@@ -52,32 +52,6 @@ def test_launcher_runs_triage(tmp_path: Path, wheel_package: bool) -> None:
     assert result.stdout == "loaded argument\n"
 
 
-def test_launcher_uses_isolated_container_python(tmp_path: Path) -> None:
-    toolchain_directory = tmp_path / "toolchain"
-    triage_environment = toolchain_directory / "tt-triage-venv"
-    triage_python = triage_environment / "bin" / "python"
-    triage_python.parent.mkdir(parents=True)
-    triage_python.write_text("#!/bin/sh\n" 'printf "%s %s\\n" "$VIRTUAL_ENV" "$2"\n')
-    triage_python.chmod(0o700)
-
-    environment = os.environ.copy()
-    environment["TTLANG_TOOLCHAIN_DIR"] = str(toolchain_directory)
-    environment.pop("TT_METAL_RUNTIME_ROOT", None)
-    environment.pop("TT_METAL_HOME", None)
-    environment.pop("PYTHONPATH", None)
-
-    result = subprocess.run(
-        [sys.executable, str(REPO_ROOT / "bin" / "tt-triage"), "argument"],
-        env=environment,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert result.stdout == f"{triage_environment} argument\n"
-
-
 def test_launcher_runs_triage_from_container_toolchain(tmp_path: Path) -> None:
     toolchain_directory = tmp_path / "toolchain"
     triage_environment = toolchain_directory / "tt-triage-venv"
@@ -87,7 +61,10 @@ def test_launcher_runs_triage_from_container_toolchain(tmp_path: Path) -> None:
     triage_directory.mkdir(parents=True)
     (triage_directory / "utils.py").write_text("VALUE = 'loaded'\n")
     (triage_directory / "triage.py").write_text(
-        "import sys\n" "import utils\n" "print(utils.VALUE, sys.argv[1])\n"
+        "import os\n"
+        "import sys\n"
+        "import utils\n"
+        "print(utils.VALUE, os.environ['VIRTUAL_ENV'], sys.argv[1])\n"
     )
 
     environment = os.environ.copy()
@@ -105,4 +82,4 @@ def test_launcher_runs_triage_from_container_toolchain(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout == "loaded argument\n"
+    assert result.stdout == f"loaded {triage_environment} argument\n"
