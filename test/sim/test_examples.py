@@ -83,9 +83,10 @@ _NO_PROMOTION_SCRIPTS: frozenset[str] = frozenset(
         "eltwise_add_3d.py",
         "eltwise_pipe.py",
         "eltwise_pipe_node3.py",
-        # Runnable spec example: unified authoring shown in the spec, wrapped in
+        # Runnable spec examples: the authoring shown in the spec, wrapped in
         # @ttl.operation + a torch golden outside the spec:begin/end markers.
         "spec/block/batched_matmul_bias.py",
+        "spec/block/elementwise_broadcast_reduce.py",
         pytest.param(
             "matmul.py",
             marks=pytest.mark.xfail(reason="Required broadcast not yet supported"),

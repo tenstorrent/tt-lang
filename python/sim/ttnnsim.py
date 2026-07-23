@@ -1722,9 +1722,7 @@ class Tensor:
         the result's ``.shape`` matches what ttnn reports even when the operands
         are non-tile-aligned or low-rank.
         """
-        return tuple(
-            torch.broadcast_shapes(tuple(self.shape), tuple(other.shape))
-        )
+        return tuple(torch.broadcast_shapes(tuple(self.shape), tuple(other.shape)))
 
     def _matmul_logical_shape(self, other: "Tensor") -> Tuple[int, ...]:
         """Logical result shape of ``self @ other`` over the logical shapes.

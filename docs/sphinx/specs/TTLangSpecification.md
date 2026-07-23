@@ -409,7 +409,6 @@ y_dfb = ttl.make_dataflow_buffer_like(y, shape=(N_BLOCK_SIZE, 1))
 # of each tile in a row of M_TILES tiles
 z_dfb = ttl.make_dataflow_buffer_like(z, shape=(1, M_TILES))
 
-
 @ttl.datamovement()
 def elwise_read():
 
@@ -458,7 +457,6 @@ def elwise_read():
 
             # End of "with" scope:
             # Push a_blk and b_blk to make them ready for elwise_compute
-
 
 @ttl.compute()
 def elwise_compute():
@@ -544,7 +542,6 @@ def elwise_compute():
         # Pop c_blk and d_blk;
         # Push z_blk to make it ready for elwise_write
 
-
 @ttl.datamovement()
 def elwise_write():
 
@@ -574,7 +571,6 @@ def elwise_write():
 
             # End of "with" scope:
             # Pop y_blk to make it available for elwise_compute to store and push next block
-
 
 ```
 
