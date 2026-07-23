@@ -14,6 +14,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "DFBMultithreadedLivenessAnalysis.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
@@ -26,6 +27,7 @@
 #include "mlir/IR/BuiltinOps.h"
 
 #include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/Support/Debug.h"
 
 #include <algorithm>
@@ -176,11 +178,123 @@ static int32_t assignPhysicalDFBIndices(func::FuncOp funcOp,
   return nextSlotOffset;
 }
 
+static SmallVector<BindCBOp>
+collectBindOps(ModuleOp moduleOp,
+               llvm::function_ref<bool(BindCBOp)> shouldCollect) {
+  SmallVector<BindCBOp> bindOps;
+  moduleOp->walk([&](BindCBOp bindOp) {
+    if (shouldCollect(bindOp)) {
+      bindOps.push_back(bindOp);
+    }
+  });
+  return bindOps;
+}
+
+static void emitDFBMetadata(ModuleOp moduleOp, OpBuilder &builder,
+                            StringRef attributeName,
+                            ArrayRef<BindCBOp> bindOps) {
+  if (bindOps.empty()) {
+    moduleOp->removeAttr(attributeName);
+    return;
+  }
+
+  llvm::DenseMap<int32_t, BindCBOp> uniqueByIndex;
+  for (BindCBOp bindOp : bindOps) {
+    int32_t dfbIndex = static_cast<int32_t>(bindOp.getCbIndex().getSExtValue());
+    auto [existingIt, inserted] = uniqueByIndex.try_emplace(dfbIndex, bindOp);
+    if (!inserted) {
+      assert(existingIt->second.getResult().getType() ==
+                 bindOp.getResult().getType() &&
+             "DFBs sharing a physical index must have the same "
+             "CircularBufferType");
+    }
+  }
+
+  SmallVector<std::pair<int32_t, BindCBOp>> sorted(uniqueByIndex.begin(),
+                                                   uniqueByIndex.end());
+  llvm::sort(sorted, [](const auto &lhs, const auto &rhs) {
+    return lhs.first < rhs.first;
+  });
+
+  MLIRContext *context = moduleOp.getContext();
+  SmallVector<Attribute> entries;
+  for (auto &[dfbIndex, bindOp] : sorted) {
+    auto dfbType = cast<CircularBufferType>(bindOp.getResult().getType());
+    SmallVector<NamedAttribute> entryAttributes;
+    entryAttributes.push_back(
+        builder.getNamedAttr("dfb_index", builder.getI32IntegerAttr(dfbIndex)));
+    entryAttributes.push_back(builder.getNamedAttr(
+        "num_tiles", builder.getI32IntegerAttr(
+                         static_cast<int32_t>(dfbType.getElementsPerBlock()))));
+    entryAttributes.push_back(builder.getNamedAttr(
+        "element_type", TypeAttr::get(dfbType.getElementType())));
+    entryAttributes.push_back(builder.getNamedAttr(
+        "block_count", builder.getI32IntegerAttr(
+                           static_cast<int32_t>(dfbType.getBlockCount()))));
+    entries.push_back(DictionaryAttr::get(context, entryAttributes));
+  }
+
+  moduleOp->setAttr(attributeName, ArrayAttr::get(context, entries));
+}
+
 struct TTLFinalizeDFBIndicesPass
     : public impl::TTLFinalizeDFBIndicesBase<TTLFinalizeDFBIndicesPass> {
+  using Base::Base;
+
   void runOnOperation() override {
     auto moduleOp = getOperation();
     OpBuilder builder(moduleOp.getContext());
+
+    if (reuseUserDFBs) {
+      const auto &analysis = getAnalysis<DFBMultithreadedLivenessAnalysis>();
+      if (!analysis.succeeded()) {
+        Operation *errorOperation = analysis.getErrorOperation();
+        if (!errorOperation) {
+          errorOperation = moduleOp.getOperation();
+        }
+        errorOperation->emitOpError() << analysis.getErrorMessage();
+        signalPassFailure();
+        return;
+      }
+
+      MLIRContext *context = moduleOp.getContext();
+      for (const DFBPhysicalIndexAssignment &assignment :
+           analysis.getAssignments()) {
+        for (BindCBOp bindOp : assignment.declarations) {
+          bindOp.setCbIndexAttr(IntegerAttr::get(IndexType::get(context),
+                                                 assignment.physicalIndex));
+        }
+        LLVM_DEBUG({
+          llvm::dbgs() << "Multithreaded DFB reuse: logical DFB "
+                       << assignment.logicalId << " -> physical index "
+                       << assignment.physicalIndex
+                       << (assignment.bounded ? " (bounded)\n"
+                                              : " (unbounded)\n");
+        });
+      }
+
+      int32_t numDFBs = analysis.getPhysicalSlotCount();
+      LLVM_DEBUG(llvm::dbgs() << "Total DFB count: " << numDFBs << "\n");
+
+      moduleOp->removeAttr(kCompilerAllocatedDFBsAttrName);
+      SmallVector<BindCBOp> allBindOps =
+          collectBindOps(moduleOp, [](BindCBOp) { return true; });
+      emitDFBMetadata(moduleOp, builder, kDFBAllocationsAttrName, allBindOps);
+
+      if (numDFBs <= 0) {
+        return;
+      }
+
+      moduleOp->walk([&](func::FuncOp funcOp) {
+        if (funcOp->hasAttr(kBaseCTAIndexAttrName)) {
+          funcOp->setAttr(kBaseCTAIndexAttrName,
+                          builder.getI32IntegerAttr(numDFBs));
+        }
+      });
+      return;
+    }
+
+    moduleOp->removeAttr(kDFBAllocationsAttrName);
 
     // Collect compiler-allocated BindCBOps grouped by parent function.
     llvm::MapVector<func::FuncOp, SmallVector<BindCBOp>> funcToDFBs;
@@ -238,60 +352,13 @@ struct TTLFinalizeDFBIndicesPass
       }
     });
 
-    // Re-collect compiler-allocated ops (indices may have changed).
-    SmallVector<BindCBOp> compilerAllocatedOps;
-    moduleOp->walk([&](BindCBOp bindOp) {
-      if (bindOp->hasAttr(kCompilerAllocatedAttrName)) {
-        compilerAllocatedOps.push_back(bindOp);
-      }
-    });
-
-    if (compilerAllocatedOps.empty()) {
-      return;
-    }
-
-    // Deduplicate entries by physical index. After reuse, multiple
-    // BindCBOps may share the same index. The module attribute needs
-    // one entry per unique physical DFB.
-    llvm::DenseMap<int32_t, BindCBOp> uniqueByIndex;
-    for (BindCBOp bindOp : compilerAllocatedOps) {
-      int32_t dfbIdx = static_cast<int32_t>(bindOp.getCbIndex().getSExtValue());
-      auto [it, inserted] = uniqueByIndex.try_emplace(dfbIdx, bindOp);
-      if (!inserted) {
-        assert(it->second.getResult().getType() ==
-                   bindOp.getResult().getType() &&
-               "compiler-allocated DFBs sharing an index must have the "
-               "same CircularBufferType");
-      }
-    }
-
-    // Sort by index for deterministic output.
-    SmallVector<std::pair<int32_t, BindCBOp>> sorted(uniqueByIndex.begin(),
-                                                     uniqueByIndex.end());
-    llvm::sort(sorted,
-               [](auto &lhs, auto &rhs) { return lhs.first < rhs.first; });
-
-    MLIRContext *ctx = moduleOp.getContext();
-    SmallVector<Attribute> entries;
-    for (auto &[dfbIdx, bindOp] : sorted) {
-      auto cbType =
-          mlir::cast<CircularBufferType>(bindOp.getResult().getType());
-      SmallVector<NamedAttribute> entryAttrs;
-      entryAttrs.push_back(
-          builder.getNamedAttr("dfb_index", builder.getI32IntegerAttr(dfbIdx)));
-      entryAttrs.push_back(builder.getNamedAttr(
-          "num_tiles", builder.getI32IntegerAttr(static_cast<int32_t>(
-                           cbType.getElementsPerBlock()))));
-      entryAttrs.push_back(builder.getNamedAttr(
-          "element_type", TypeAttr::get(cbType.getElementType())));
-      entryAttrs.push_back(builder.getNamedAttr(
-          "block_count", builder.getI32IntegerAttr(
-                             static_cast<int32_t>(cbType.getBlockCount()))));
-      entries.push_back(DictionaryAttr::get(ctx, entryAttrs));
-    }
-
-    moduleOp->setAttr(kCompilerAllocatedDFBsAttrName,
-                      ArrayAttr::get(ctx, entries));
+    // Re-collect compiler-allocated ops because their indices may have changed.
+    SmallVector<BindCBOp> compilerAllocatedOps =
+        collectBindOps(moduleOp, [](BindCBOp bindOp) {
+          return bindOp->hasAttr(kCompilerAllocatedAttrName);
+        });
+    emitDFBMetadata(moduleOp, builder, kCompilerAllocatedDFBsAttrName,
+                    compilerAllocatedOps);
   }
 };
 
