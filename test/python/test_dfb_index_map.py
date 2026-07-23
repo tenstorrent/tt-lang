@@ -6,7 +6,14 @@
 
 from types import SimpleNamespace
 
-from ttl.dataflow_buffer import CompilerAllocatedDFBConfig
+import pytest
+
+from ttl.dataflow_buffer import (
+    CompilerAllocatedDFBConfig,
+    _reset_cb_counter,
+    get_cb_count,
+    make_dfb,
+)
 from ttl.ttl_api import _apply_dfb_index_map, _merge_dfb_configs
 
 
@@ -67,3 +74,52 @@ def test_larger_user_config_wins_over_compiler_member():
     )
 
     assert _merge_dfb_configs([user], [compiler]) == [user]
+
+
+def test_explicit_reuse_key_shares_one_logical_index():
+    _reset_cb_counter()
+
+    first = make_dfb("bf16", (1, 8), block_count=2, reuse="workspace.q")
+    independent = make_dfb("bf16", (1, 1), block_count=1)
+    second = make_dfb("bf16", (1, 8), block_count=2, reuse="workspace.q")
+
+    assert first._cb_index == second._cb_index == 0
+    assert independent._cb_index == 1
+    assert get_cb_count() == 2
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"shape": (1, 4), "block_count": 2},
+        {"shape": (1, 8), "block_count": 1},
+        {"shape": (1, 8), "block_count": 2, "tile": (8, 32)},
+        {"dtype": "bfp8", "shape": (1, 8), "block_count": 2},
+    ],
+)
+def test_explicit_reuse_rejects_incompatible_geometry(kwargs):
+    _reset_cb_counter()
+    make_dfb("bf16", (1, 8), block_count=2, reuse="workspace.q")
+
+    dtype = kwargs.pop("dtype", "bf16")
+    shape = kwargs.pop("shape")
+    with pytest.raises(ValueError, match="incompatible declarations"):
+        make_dfb(dtype, shape, reuse="workspace.q", **kwargs)
+
+
+@pytest.mark.parametrize("reuse", ["", 7])
+def test_explicit_reuse_requires_nonempty_string(reuse):
+    _reset_cb_counter()
+    with pytest.raises(ValueError, match="non-empty string"):
+        make_dfb("bf16", (1, 1), reuse=reuse)
+
+
+def test_explicit_reuse_registry_is_per_compilation():
+    _reset_cb_counter()
+    make_dfb("bf16", (1, 8), reuse="workspace.q")
+
+    _reset_cb_counter()
+    fresh = make_dfb("bf16", (1, 4), reuse="workspace.q")
+
+    assert fresh._cb_index == 0
+    assert get_cb_count() == 1

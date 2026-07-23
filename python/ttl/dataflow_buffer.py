@@ -14,19 +14,35 @@ from ttl.dialects import ttl
 
 # Module-level counter for DFB index assignment in creation order
 _cb_index_counter = 0
+_dfb_reuse_indices = {}
 
 
 def _reset_cb_counter():
     """Reset the DFB index counter. Called at kernel start."""
-    global _cb_index_counter
+    global _cb_index_counter, _dfb_reuse_indices
     _cb_index_counter = 0
+    _dfb_reuse_indices = {}
 
 
-def _next_cb_index():
+def _next_cb_index(reuse, signature):
     """Get next DFB index and increment counter."""
     global _cb_index_counter
+    if reuse is not None:
+        if not isinstance(reuse, str) or not reuse:
+            raise ValueError("DFB reuse must be a non-empty string")
+        previous = _dfb_reuse_indices.get(reuse)
+        if previous is not None:
+            index, previous_signature = previous
+            if previous_signature != signature:
+                raise ValueError(
+                    f"DFB reuse key {reuse!r} has incompatible declarations: "
+                    f"{previous_signature!r} != {signature!r}"
+                )
+            return index
     idx = _cb_index_counter
     _cb_index_counter += 1
+    if reuse is not None:
+        _dfb_reuse_indices[reuse] = (idx, signature)
     return idx
 
 
@@ -62,6 +78,7 @@ class DataflowBuffer:
         block_count: int,
         dtype: Any = None,
         tile: Tuple[int, int] = (32, 32),
+        reuse: str | None = None,
     ):
         if len(shape) < 2:
             raise ValueError(f"DFB shape must have at least 2 dimensions, got {shape}")
@@ -81,7 +98,14 @@ class DataflowBuffer:
         self.block_count = block_count
         self._dtype = dtype
         self.tile = tuple(tile)
-        self._cb_index = _next_cb_index()
+        signature = (
+            str(_resolve_dfb_dtype(self.dtype)),
+            tuple(shape),
+            block_count,
+            tuple(tile),
+        )
+        self._cb_index = _next_cb_index(reuse, signature)
+        self.reuse = reuse
 
     @property
     def dtype(self):
@@ -158,6 +182,7 @@ def make_dataflow_buffer_like(
     tensor: Any,
     shape: Tuple[int, ...],
     block_count: int = 2,
+    reuse: str | None = None,
 ) -> DataflowBuffer:
     """
     Create a dataflow buffer with properties derived from a tensor.
@@ -166,6 +191,9 @@ def make_dataflow_buffer_like(
         tensor: Tensor that determines the DFB's data type
         shape: Tile counts per dimension for wait/reserve operations
         block_count: Capacity multiplier (default 2 for double-buffering)
+        reuse: Optional explicit physical-FIFO identity. Declarations with the
+            same key must have identical geometry. The caller must prove each
+            earlier epoch is fully drained before the next declaration is used.
 
     Returns:
         DataflowBuffer for use in thread function closures
@@ -173,7 +201,7 @@ def make_dataflow_buffer_like(
     tile = (32, 32)
     if hasattr(tensor, "get_tile"):
         tile = tuple(tensor.get_tile().tile_shape)
-    return DataflowBuffer(tensor, shape, block_count, tile=tile)
+    return DataflowBuffer(tensor, shape, block_count, tile=tile, reuse=reuse)
 
 
 def _resolve_dfb_dtype(dtype: Any):
@@ -196,6 +224,7 @@ def make_dfb(
     shape: Tuple[int, ...],
     block_count: int = 2,
     tile: Tuple[int, int] = (32, 32),
+    reuse: str | None = None,
 ) -> DataflowBuffer:
     """
     Create a dataflow buffer from an explicit dtype, with no backing tensor.
@@ -207,6 +236,9 @@ def make_dfb(
             ("bf16", "float32", ...), a ttnn dtype, or a torch dtype.
         shape: Tile counts per dimension for wait/reserve operations
         block_count: Capacity multiplier (default 2 for double-buffering)
+        reuse: Optional explicit physical-FIFO identity. Declarations with the
+            same key must have identical geometry. The caller must prove each
+            earlier epoch is fully drained before the next declaration is used.
 
     Returns:
         DataflowBuffer for use in thread function closures
@@ -217,4 +249,5 @@ def make_dfb(
         block_count=block_count,
         dtype=_resolve_dfb_dtype(dtype),
         tile=tile,
+        reuse=reuse,
     )
