@@ -30,10 +30,51 @@ module {
 
 // -----
 
+#selected_layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                               buffer = dram, grid = [1, 1], memory = interleaved>
+
+// A wait may select between handles from different valid copies. The selected
+// handle still has copy provenance on every branch.
+// TTKERNEL-LABEL: func.func @wait_selected_copy
+// TTKERNEL-COUNT-2: ttkernel.noc_async_read_tile
+// TTKERNEL: ttkernel.noc_async_read_barrier
+module {
+  func.func @wait_selected_copy(
+      %src: tensor<1x1x!ttcore.tile<32x32, f32>, #selected_layout>,
+      %condition: i1)
+      attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %zero = arith.constant 0 : index
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %slice = ttl.tensor_slice %src[%zero, %zero]
+        : tensor<1x1x!ttcore.tile<32x32, f32>, #selected_layout>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>, #selected_layout>
+    %copy0 = ttl.copy %slice, %cb
+        : (tensor<1x1x!ttcore.tile<32x32, f32>, #selected_layout>,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> !ttl.transfer_handle<read>
+    %copy1 = ttl.copy %slice, %cb
+        : (tensor<1x1x!ttcore.tile<32x32, f32>, #selected_layout>,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> !ttl.transfer_handle<read>
+    %selected = scf.if %condition -> (!ttl.transfer_handle<read>) {
+      scf.yield %copy0 : !ttl.transfer_handle<read>
+    } else {
+      scf.yield %copy1 : !ttl.transfer_handle<read>
+    }
+    ttl.wait %selected : !ttl.transfer_handle<read>
+    func.return
+  }
+}
+
+// -----
+
 #layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
                       buffer = dram, grid = [1, 1], memory = interleaved>
 
+// Preserve the NOC index used by runtime reader/writer dispatch.
 // TTKERNEL-LABEL: func.func @cb_to_tensor
+// TTKERNEL-SAME: ttl.noc_index = 1 : i64
 // TTKERNEL-DAG: %[[C0_IDX:.*]] = arith.constant 0 : index
 // TTKERNEL-DAG: %[[NOC:.*]] = arith.constant 1 : i8
 // TTKERNEL: %[[CB:.*]] = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<2, !ttcore.tile<32x32, f32>>

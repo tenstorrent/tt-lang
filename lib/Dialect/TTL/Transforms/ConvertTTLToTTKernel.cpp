@@ -169,12 +169,13 @@ struct TensorOpTypeConversion : OpConversionPattern<TensorOp> {
 /// Convert ttl.kernel_thread -> ttkernel.thread if present, returning the
 /// resolved thread type from whichever attribute exists.
 static std::optional<ttk::ThreadType> convertThreadAttr(Operation *op) {
-  if (auto a = op->getAttrOfType<ttk::ThreadTypeAttr>("ttkernel.thread")) {
+  if (auto a =
+          op->getAttrOfType<ttk::ThreadTypeAttr>(ttk::ThreadTypeAttr::name)) {
     return a.getValue();
   }
   if (auto a = op->getAttrOfType<ttk::ThreadTypeAttr>(kKernelThreadAttrName)) {
     op->removeAttr(kKernelThreadAttrName);
-    op->setAttr("ttkernel.thread", a);
+    op->setAttr(ttk::ThreadTypeAttr::name, a);
     return a.getValue();
   }
   return std::nullopt;
@@ -1126,7 +1127,7 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
 struct PipeTransferPostLowering : OpConversionPattern<PipeTransferPostOp> {
   PipeTransferPostLowering(const TypeConverter &typeConverter,
                            MLIRContext *context, ValueOriginAnalysis &analysis,
-                           const PipePostSequenceCounterMap &counters,
+                           const PipeCounterProgressMap &counters,
                            const PipeResourcePlan &pipeResourcePlan)
       : OpConversionPattern(typeConverter, context), analysis(analysis),
         counters(counters), pipeResourcePlan(pipeResourcePlan) {}
@@ -1143,16 +1144,18 @@ struct PipeTransferPostLowering : OpConversionPattern<PipeTransferPostOp> {
 
 private:
   ValueOriginAnalysis &analysis;
-  const PipePostSequenceCounterMap &counters;
+  const PipeCounterProgressMap &counters;
   const PipeResourcePlan &pipeResourcePlan;
 };
 
 struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
-  PipeTransferSendLowering(const TypeConverter &typeConverter,
-                           MLIRContext *context, ValueOriginAnalysis &analysis,
-                           const PipeResourcePlan &pipeResourcePlan)
+  PipeTransferSendLowering(
+      const TypeConverter &typeConverter, MLIRContext *context,
+      ValueOriginAnalysis &analysis, const PipeResourcePlan &pipeResourcePlan,
+      const PipeComputedAddressCounterMap &computedAddressCounters)
       : OpConversionPattern(typeConverter, context), analysis(analysis),
-        pipeResourcePlan(pipeResourcePlan) {}
+        pipeResourcePlan(pipeResourcePlan),
+        computedAddressCounters(computedAddressCounters) {}
 
   LogicalResult
   matchAndRewrite(PipeTransferSendOp op, OpAdaptor adaptor,
@@ -1169,12 +1172,14 @@ struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
                  domInfo.dominates(user, op);
         });
     return lowerPipeTransferSend(op, adaptor.getSrc(), isConsumerCB, analysis,
-                                 pipeResourcePlan, rewriter);
+                                 pipeResourcePlan, computedAddressCounters,
+                                 rewriter);
   }
 
 private:
   ValueOriginAnalysis &analysis;
   const PipeResourcePlan &pipeResourcePlan;
+  const PipeComputedAddressCounterMap &computedAddressCounters;
 };
 
 struct PipeTransferWaitLowering : OpConversionPattern<PipeTransferWaitOp> {
@@ -1389,7 +1394,7 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
       return failure();
     }
     op->removeAttr(kKernelThreadAttrName);
-    op->setAttr("ttkernel.thread", ttlAttr);
+    op->setAttr(ttk::ThreadTypeAttr::name, ttlAttr);
 
     // If function has arguments, we need to transform them
     if (op.getNumArguments() > 0) {
@@ -1658,7 +1663,7 @@ struct RawElementWriteLowering : OpConversionPattern<RawElementWriteOp> {
 static LogicalResult
 lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                       TTLToTTKernelTypeConverter &typeConverter,
-                      StringRef passName) {
+                      StringRef passName, bool pipeComputedAddresses) {
   ConversionTarget target(ctx);
   target.addIllegalDialect<tt::ttl::TTLDialect>();
   target.addLegalDialect<affine::AffineDialect, arith::ArithDialect,
@@ -1732,17 +1737,13 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
     return failure();
   }
 
-  // Per-PipeNet runtime sequences preserve the identity of dynamic posts.
-  PipePostSequenceCounterMap pipePostSequenceCounters;
-  allocatePipePostSequenceCounters(mod, transferAnalysis,
-                                   pipePostSequenceCounters);
-
   // Per-net-id pipe list, shared by IsSrc/IsDst/IsActive lowerings so they
   // don't walk the module per match.
   PipeNetIndex pipeNetIndex;
   buildPipeNetIndex(mod, pipeNetIndex);
   PipeResourcePlan pipeResourcePlan;
-  if (failed(buildPipeResourcePlan(mod, transferAnalysis, pipeResourcePlan))) {
+  if (failed(buildPipeResourcePlan(mod, transferAnalysis, *pipeGraphOrErr,
+                                   pipeResourcePlan, pipeComputedAddresses))) {
     return failure();
   }
   PipeResourceRequirements pipeResourceRequirements =
@@ -1770,6 +1771,11 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   // are the current host/runtime ABI for pipe resource binding. Keep the
   // allocation decision in this compiler plan so future typed device APIs only
   // change runtime binding code.
+  PipeCounterProgressMap postSequenceCounters;
+  initializePipePostSequenceCounters(pipeResourcePlan, postSequenceCounters);
+  PipeComputedAddressCounterMap computedAddressCounters;
+  initializePipeComputedAddressCounters(pipeResourcePlan,
+                                        computedAddressCounters);
 
   RewritePatternSet patterns(&ctx);
   scf::populateSCFStructuralTypeConversionsAndLegality(typeConverter, patterns,
@@ -1782,10 +1788,11 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                TensorOpTypeConversion<tensor::CastOp>>(typeConverter, &ctx);
   patterns.add<CopyLowering>(typeConverter, &ctx);
   patterns.add<PipeTransferPostLowering>(typeConverter, &ctx, transferAnalysis,
-                                         pipePostSequenceCounters,
+                                         postSequenceCounters,
                                          pipeResourcePlan);
   patterns.add<PipeTransferSendLowering>(typeConverter, &ctx, transferAnalysis,
-                                         pipeResourcePlan);
+                                         pipeResourcePlan,
+                                         computedAddressCounters);
   patterns.add<PipeTransferWaitLowering>(typeConverter, &ctx, pipeResourcePlan);
   patterns.add<WaitLowering>(typeConverter, &ctx, completedPipeSendWaits);
   patterns
@@ -2044,7 +2051,8 @@ struct TTLConvertTTLToTTKernelPass
     expandDstSections(mod);
 
     // Phase 1: Lower TTL ops to TTKernel (bind_cb, copy, wait, cb ops, store)
-    if (failed(lowerTTLOpsToTTKernel(mod, ctx, typeConverter, getName()))) {
+    if (failed(lowerTTLOpsToTTKernel(mod, ctx, typeConverter, getName(),
+                                     pipeComputedAddresses))) {
       signalPassFailure();
       return;
     }

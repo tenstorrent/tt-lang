@@ -23,6 +23,11 @@ findPipeTransferCreateForTransfer(ValueOriginAnalysis &analysis,
   return analysis.getOrigins(transfer).uniqueDefiningOp<PipeTransferCreateOp>();
 }
 
+FailureOr<PipeTransferPostOp>
+findPipeTransferPostForToken(ValueOriginAnalysis &analysis, Value token) {
+  return analysis.getOrigins(token).uniqueDefiningOp<PipeTransferPostOp>();
+}
+
 namespace {
 
 bool isReachable(DataFlowSolver &solver, Operation *operation) {

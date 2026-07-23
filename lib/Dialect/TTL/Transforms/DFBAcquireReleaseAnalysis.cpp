@@ -127,6 +127,38 @@ Value getDFBReleaseDFB(Operation *op) {
   return cast<CBPopOp>(op).getCb();
 }
 
+static std::optional<int64_t> getDFBBlockCount(Value dfb,
+                                               IntegerAttr numTilesAttr) {
+  auto dfbType = dyn_cast<CircularBufferType>(dfb.getType());
+  if (!dfbType) {
+    return std::nullopt;
+  }
+  int64_t elementsPerBlock = dfbType.getElementsPerBlock();
+  if (elementsPerBlock <= 0) {
+    return std::nullopt;
+  }
+  int64_t tiles = elementsPerBlock;
+  if (numTilesAttr) {
+    tiles = numTilesAttr.getInt();
+  }
+  if (tiles <= 0 || tiles % elementsPerBlock != 0) {
+    return std::nullopt;
+  }
+  return tiles / elementsPerBlock;
+}
+
+std::optional<int64_t> getWaitedBlockCount(CBWaitOp waitOp) {
+  return getDFBBlockCount(waitOp.getCb(), waitOp.getNumTilesAttr());
+}
+
+std::optional<int64_t> getReleasedBlockCount(CBPopOp popOp) {
+  return getDFBBlockCount(popOp.getCb(), popOp.getNumTilesAttr());
+}
+
+std::optional<int64_t> getPushedBlockCount(CBPushOp pushOp) {
+  return getDFBBlockCount(pushOp.getCb(), pushOp.getNumTilesAttr());
+}
+
 static std::optional<DFBAcquireReleaseKind>
 getDFBAcquireReleaseKind(Operation *op) {
   if (isa<CBReserveOp, CBPushOp>(op)) {
@@ -276,6 +308,44 @@ findOwnedDFBReleases(DFBAcquireInterval interval, Operation *lastOwnedUse,
   }
 
   return result;
+}
+
+static void buildDFBReleaseOwnerMap(
+    ArrayRef<Operation *> acquires, ArrayRef<Operation *> releases,
+    llvm::DenseMap<Operation *, Operation *> &acquireByRelease) {
+  // Multiple owners indicate invalid or unanalyzable lifecycle structure; store
+  // null so consumers cannot use the release as proof. Same-level and nested
+  // releases follow the same ambiguity rule.
+  auto recordOwner = [&](Operation *release, Operation *acquire) {
+    auto [it, inserted] = acquireByRelease.try_emplace(release, acquire);
+    if (!inserted && it->second != acquire) {
+      it->second = nullptr;
+    }
+  };
+  for (Operation *acquire : acquires) {
+    DFBAcquireInterval interval = makeDFBAcquireInterval(acquire, acquires);
+    Operation *lastOwnedUse = findLastDFBAcquireOwnedUse(interval);
+    DFBReleaseSearch releaseSearch =
+        findOwnedDFBReleases(interval, lastOwnedUse, releases);
+    for (Operation *release : releaseSearch.sameLevelReleases) {
+      recordOwner(release, acquire);
+    }
+    for (Operation *release : releaseSearch.nestedReleases) {
+      recordOwner(release, acquire);
+    }
+  }
+}
+
+void buildDFBReleaseOwnerMaps(ModuleOp mod, DFBReleaseOwnerMaps &ownerMaps) {
+  mod.walk([&](func::FuncOp func) {
+    SmallVector<Operation *> reserves;
+    SmallVector<Operation *> waits;
+    SmallVector<Operation *> pushes;
+    SmallVector<Operation *> pops;
+    collectDFBAcquireReleaseOps(func, reserves, waits, pushes, pops);
+    buildDFBReleaseOwnerMap(reserves, pushes, ownerMaps.reserveByPush);
+    buildDFBReleaseOwnerMap(waits, pops, ownerMaps.waitByPop);
+  });
 }
 
 } // namespace mlir::tt::ttl

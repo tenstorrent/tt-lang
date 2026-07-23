@@ -6,10 +6,10 @@
 # RUN: not %python %s 2>&1 | FileCheck %s
 
 """
-Validation test: gather receiver DFB block_count must be >= number of senders.
+Validation test: gather receiver DFB slots cannot be reused before pop.
 
-Each sender writes to a separate slot in the receiver's DFB. If block_count is
-too small, writes will land outside the DFB's allocated memory.
+The receiver may batch incoming transfers through a smaller DFB than the total
+sender count, but each physical slot must be popped before it is reused.
 """
 
 import os
@@ -30,7 +30,8 @@ def bad_gather(inp, out):
         ]
     )
 
-    # block_count=1 is too small: 2 senders need at least 2 blocks
+    # block_count=1 is too small because this program receives two blocks
+    # before the first receiver-side pop.
     recv_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=1)
     out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
@@ -67,7 +68,7 @@ def bad_gather(inp, out):
                 ttl.copy(blk, out[0, 0]).wait()
 
 
-# CHECK: gather pipe receiver DFB has block_count=1 but slot 1 is assigned to this pipe; block_count must be >= 2
+# CHECK: gather pipe receiver DFB reuses slot 0 before a receiver pop releases it; add a receiver pop before reusing the DFB slot or increase block_count
 
 device = ttnn.open_device(device_id=0)
 try:
