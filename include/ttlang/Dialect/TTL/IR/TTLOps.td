@@ -686,7 +686,6 @@ def TTL_PipeTransferPostOp : TTL_Op<"pipe_transfer.post",
   );
   let results = (outs TTL_PipeToken:$token);
   let assemblyFormat = "$transfer `,` $dst attr-dict `:` functional-type(operands, results)";
-  let hasVerifier = 1;
 }
 
 def TTL_PipeTransferSendOp : TTL_Op<"pipe_transfer.send",
@@ -719,7 +718,6 @@ def TTL_PipeTransferWaitOp : TTL_Op<"pipe_transfer.wait",
     TTL_PipeToken:$token
   );
   let assemblyFormat = "$token attr-dict `:` type($token)";
-  let hasVerifier = 1;
 }
 
 def TTL_PipeNetScopeOp : TTL_Op<"pipenet_scope",

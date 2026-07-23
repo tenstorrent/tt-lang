@@ -8,6 +8,11 @@ on:
         required: false
         type: string
         default: 'n150'
+      runner_labels:
+        description: 'JSON array of runner labels, e.g. ["in-service","qb2-blackhole"]'
+        required: false
+        type: string
+        default: '["tt-ubuntu-2204-n150-stable"]'
       timeout:
         description: 'Job timeout in minutes'
         required: false
@@ -24,6 +29,11 @@ on:
         required: false
         type: string
         default: 'n150'
+      runner_labels:
+        description: 'JSON array of runner labels, e.g. ["in-service","qb2-blackhole"]'
+        required: false
+        type: string
+        default: '["tt-ubuntu-2204-n150-stable"]'
       timeout:
         description: 'Job timeout in minutes'
         required: false
@@ -41,7 +51,7 @@ permissions:
 jobs:
   test-n150:
     name: "Hardware Tests (${{ inputs.runs-on }})"
-    runs-on: ${{ format('tt-ubuntu-2204-{0}-stable', inputs.runs-on) }}
+    runs-on: ${{ fromJSON(inputs.runner_labels) }}
     timeout-minutes: ${{ fromJSON(inputs.timeout) }}
 
     container:
@@ -134,7 +144,7 @@ jobs:
       - name: Tutorial examples
         run: |
           source build/env/activate
-          bash .github/scripts/run-tutorials.sh .
+          .github/scripts/run-hardware-pytests.sh test/tutorial build/test/tutorial-report
 
       - name: Upload test reports
         uses: actions/upload-artifact@v7
@@ -146,4 +156,5 @@ jobs:
             build/test/python-lit-report*.xml
             build/test/pytest-report*.xml
             build/test/sim-report.xml
+            build/test/tutorial-report*.xml
           retention-days: 7

@@ -291,6 +291,24 @@ func.func @unsigned_loop_crossing_zero() {
 }
 // CHECK-LABEL: unsigned_loop_crossing_zero = 0
 
+// An induction-dependent branch forces enumeration with unsigned loop semantics.
+func.func @unsigned_loop_enumeration() {
+  %lower = arith.constant -2 : i8
+  %upper = arith.constant -1 : i8
+  %step = arith.constant 1 : i8
+  scf.for unsigned %iteration = %lower to %upper step %step : i8 {
+    %selected = arith.cmpi ult, %iteration, %upper : i8
+    scf.if %selected {
+      %target = arith.addi %iteration, %iteration {
+        test.expected_count = 1 : i64,
+        test.label = "unsigned_loop_enumeration"
+      } : i8
+    }
+  }
+  return
+}
+// CHECK-LABEL: unsigned_loop_enumeration = 1
+
 // Runtime loop bounds and branch conditions produce unknown counts.
 func.func @dynamic_loop_bound(%upper: index) {
   %zero = arith.constant 0 : index

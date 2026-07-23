@@ -121,11 +121,15 @@ jobs:
         strategy:
             fail-fast: false
             matrix:
-                # TODO: restore bh-loudbox-viommu (multi-device runner) when it is back online.
-                runner: [n150, p150b]
+                include:
+                    - runner: n150
+                      labels: '["tt-ubuntu-2204-n150-stable"]'
+                    - runner: galaxy-bh
+                      labels: '["in-service", "galaxy-bh"]'
         uses: ./.github/workflows/call-test-hardware.yml
         secrets: inherit
         with:
             runs-on: ${{ matrix.runner }}
+            runner_labels: ${{ matrix.labels }}
             timeout: 90
             docker_tag: ${{ inputs.docker_tag }}

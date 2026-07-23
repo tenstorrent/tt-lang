@@ -925,6 +925,9 @@ def _write_bundled_wheel(dist_dir: Path, *, complete: bool) -> Path:
         wheel.writestr("ttnn/__init__.py", "")
         wheel.writestr("ttnn/_ttnn.so", b"")
         if complete:
+            wheel.writestr("triage/inspector.capnp", "")
+            wheel.writestr("triage/requirements.txt", "")
+            wheel.writestr("triage/triage.py", "")
             wheel.writestr("ttnn/build/lib/_ttnncpp.so", b"")
             wheel.writestr("ttnn/build/lib/libtt_metal.so", b"")
     return wheel_path

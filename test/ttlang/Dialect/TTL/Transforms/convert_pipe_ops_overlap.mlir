@@ -17,10 +17,10 @@
 // CHECK: %[[WP1:.*]] = ttkernel.get_write_ptr(%[[DFB]])
 // CHECK: ttkernel.noc_inline_dw_write({{.*}}, %[[WP1]]
 // CHECK: ttkernel.noc_semaphore_inc
-// CHECK: %[[WAIT_PTR1:.*]] = ttkernel.reinterpret_cast
 // CHECK: %[[V1:.*]] = memref.load %[[CTR]]
 // CHECK: %[[N1:.*]] = arith.addi %[[V1]]
 // CHECK: memref.store %[[N1]], %[[CTR]]
+// CHECK: %[[WAIT_PTR1:.*]] = ttkernel.reinterpret_cast
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[WAIT_PTR1]], %[[N1]])
 // CHECK: ttkernel.cb_push_back(%[[DFB]]
 
@@ -30,10 +30,10 @@
 // CHECK: %[[WP2:.*]] = ttkernel.get_write_ptr(%[[DFB]])
 // CHECK: ttkernel.noc_inline_dw_write({{.*}}, %[[WP2]]
 // CHECK: ttkernel.noc_semaphore_inc
-// CHECK: %[[WAIT_PTR2:.*]] = ttkernel.reinterpret_cast
 // CHECK: %[[V2:.*]] = memref.load %[[CTR]]
 // CHECK: %[[N2:.*]] = arith.addi %[[V2]]
 // CHECK: memref.store %[[N2]], %[[CTR]]
+// CHECK: %[[WAIT_PTR2:.*]] = ttkernel.reinterpret_cast
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[WAIT_PTR2]], %[[N2]])
 // CHECK: ttkernel.cb_push_back(%[[DFB]]
 func.func @overlap_two_receives_share_counter() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {

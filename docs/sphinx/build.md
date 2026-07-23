@@ -252,6 +252,12 @@ Public PyPI publishing requires these tags to have the same `vX.Y.Z` component;
 S3-hosted bundled wheels can use a newer `TT_METAL_TAG` before a compatible
 public `ttnn` wheel is available.
 
+Also update the simulator pin. The macOS/simulator harness downloads a pinned
+`tenstorrent/ttsim` release whose `libttsim.so` must be ABI-compatible with the
+tt-metal being built, so set `TTSIM_VERSION` in `test/hw-sim/vm-install-sim.sh` to
+a ttsim release compatible with the new tt-metal (see the
+[libttsim API](https://github.com/tenstorrent/ttsim/blob/main/docs/libttsim_api.md)).
+
 Background: `third-party/tt-metal-version` is the single source of truth for
 the `ttnn` dependency version, the public `ttnn` provenance tag, and the
 tt-metal tag passed to `Dockerfile.base`. CI runs
