@@ -1,8 +1,8 @@
 // Tests for ttl-insert-intermediate-dfbs pass.
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-insert-intermediate-dfbs)' | FileCheck %s
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-insert-intermediate-dfbs,func.func(ttl-insert-cb-sync,convert-ttl-to-compute))' | FileCheck %s --check-prefix=PIPELINE
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-insert-intermediate-dfbs,func.func(ttl-insert-cb-sync),ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=FINALIZE
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-insert-intermediate-dfbs,func.func(ttl-insert-cb-sync),ttl-finalize-dfb-indices)' -debug-only=ttl-finalize-dfb-indices 2>&1 | FileCheck %s --check-prefix=DBG
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-insert-intermediate-dfbs))' | FileCheck %s
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-insert-intermediate-dfbs,ttl-insert-cb-sync,convert-ttl-to-compute))' | FileCheck %s --check-prefix=PIPELINE
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-insert-intermediate-dfbs,ttl-insert-cb-sync),ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=FINALIZE
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-insert-intermediate-dfbs,ttl-insert-cb-sync),ttl-finalize-dfb-indices)' -debug-only=ttl-finalize-dfb-indices 2>&1 | FileCheck %s --check-prefix=DBG
 
 // -----
 

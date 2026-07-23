@@ -8,6 +8,7 @@
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=NOPOP
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=THREE
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=SINGLE
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=GLOBAL
 
 // -----
 
@@ -274,8 +275,8 @@ func.func @three_sequential_one_slot()
 
 // -----
 
-// Single compiler-allocated DFB. The reuse algorithm early-returns
-// (size <= 1). Index and module attribute should be unchanged.
+// A single compiler-allocated DFB is assigned the first physical index after
+// the user-declared range.
 
 // SINGLE: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 3 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}]}
 
@@ -292,5 +293,47 @@ func.func @single_dfb_no_reuse()
   %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %alloc3 = ttl.bind_cb {cb_index = 3, block_count = 2} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.cb_pop %alloc3 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
+
+// -----
+
+// Function passes may assign the same provisional compiler DFB index in
+// sibling functions. Finalization must assign disjoint physical indices after
+// the highest user-declared index, including user indices in other functions.
+
+// GLOBAL: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 5 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}, {block_count = 2 : i32, dfb_index = 6 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}]}
+
+// GLOBAL-LABEL: func.func @global_user_index
+// GLOBAL-SAME: ttl.base_cta_index = 7 : i32
+// GLOBAL: ttl.bind_cb{cb_index = 4,
+func.func @global_user_index()
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.base_cta_index = 5 : i32,
+                ttl.crta_indices = []} {
+  %user4 = ttl.bind_cb {cb_index = 4, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
+
+// GLOBAL-LABEL: func.func @first_provisional_index
+// GLOBAL-SAME: ttl.base_cta_index = 7 : i32
+// GLOBAL: ttl.bind_cb{cb_index = 5, {{.*}}} {ttl.compiler_allocated}
+func.func @first_provisional_index()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>, ttl.base_cta_index = 1 : i32,
+                ttl.crta_indices = []} {
+  %user0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %compiler1 = ttl.bind_cb {cb_index = 1, block_count = 2} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_pop %compiler1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
+
+// GLOBAL-LABEL: func.func @second_provisional_index
+// GLOBAL-SAME: ttl.base_cta_index = 7 : i32
+// GLOBAL: ttl.bind_cb{cb_index = 6, {{.*}}} {ttl.compiler_allocated}
+func.func @second_provisional_index()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>, ttl.base_cta_index = 1 : i32,
+                ttl.crta_indices = []} {
+  %user0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %compiler1 = ttl.bind_cb {cb_index = 1, block_count = 2} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_pop %compiler1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   return
 }

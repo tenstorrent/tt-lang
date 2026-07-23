@@ -228,7 +228,7 @@ def TTLAnnotateL1AccLoops
 }
 
 def TTLInsertIntermediateDFBs
-    : Pass<"ttl-insert-intermediate-dfbs", "::mlir::ModuleOp"> {
+    : Pass<"ttl-insert-intermediate-dfbs", "::mlir::func::FuncOp"> {
   let summary = "Insert intermediate dataflow buffers at fusion split points";
   let description = [{
     Walks ops implementing `DFBInputOpInterface` and checks whether the
@@ -246,8 +246,6 @@ def TTLInsertIntermediateDFBs
       bind_cb -> cb_reserve -> store -> cb_wait -> attach_cb
 
     All DFBs created by this pass are marked with `ttl.compiler_allocated`.
-    Functions are processed serially because temporary DFB index allocation
-    examines all `ttl.bind_cb` operations in the module.
 
     When `enable` is false, the pass verifies that no operations require
     compiler-allocated DFBs. If any `DFBInputOpInterface` op has a
@@ -693,14 +691,17 @@ def TTLFinalizeDFBIndices
     : Pass<"ttl-finalize-dfb-indices", "::mlir::ModuleOp"> {
   let summary = "Reuse compiler-allocated DFB indices and emit DFB metadata";
   let description = [{
-    Module-level pass that runs after all DFB-creating passes. Must
-    precede ttl-annotate-cb-associations (which copies cb_index onto
-    tile ops and would capture stale pre-reuse indices).
+    Module-level pass that runs after all DFB-creating and synchronization
+    passes. Must precede `ttl-set-compute-kernel-config` and
+    `ttl-annotate-cb-associations`, which copy DFB indices into attributes and
+    would otherwise capture provisional indices.
 
-    Applies lifetime-based index reuse to compiler-allocated DFBs via
-    linear scan allocation, partitioned by CircularBufferType. DFBs
-    whose lifetimes (bind_cb to last cb_pop) do not overlap are assigned
-    the same physical index. See docs/development/DFBManagement.md.
+    Compiler-allocated DFBs enter this pass with function-local provisional
+    indices. The pass assigns each function a disjoint module-wide index range,
+    then applies lifetime-based index reuse via linear scan allocation,
+    partitioned by CircularBufferType. DFBs whose lifetimes (bind_cb to last
+    cb_pop) do not overlap are assigned the same physical index. See
+    docs/development/DFBManagement.md.
 
     After reuse, verifies the total DFB count does not exceed
     kMaxCircularBuffers (32), updates ttl.base_cta_index on every

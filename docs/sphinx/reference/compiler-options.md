@@ -155,7 +155,7 @@ Insert compiler-allocated intermediate DFBs at fusion split points.
 | `enable` | bool | `true` | Insert compiler-allocated DFBs. When false, emit an error if any operation requires one. |
 
 ```bash
-ttlang-opt input.mlir -p 'ttl-insert-intermediate-dfbs{enable=false}'
+ttlang-opt input.mlir -p 'func.func(ttl-insert-intermediate-dfbs{enable=false})'
 ```
 
 #### `ttl-set-compute-kernel-config`
