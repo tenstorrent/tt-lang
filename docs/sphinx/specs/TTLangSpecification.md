@@ -1124,7 +1124,6 @@ WO = WI * W_SCALE_FACTOR
 
 io_dfb = ttl.make_dataflow_buffer_like(input_images, shape=(C,), block_count=2)
 
-
 @ttl.datamovement()
 def reader():
     for n in range(N):
@@ -1137,7 +1136,6 @@ def reader():
                     xf = ttl.copy(input_t[n, hi, wi, :], io_blk)
 
                     xf.wait()
-
 
 @ttl.datamovement()
 def writer():
@@ -1169,7 +1167,6 @@ def writer():
                     # Wait for all transfers to complete
 
                     gxf.wait_all()
-
 
 ```
 
