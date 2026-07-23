@@ -50,6 +50,12 @@ def _find_triage_directory() -> Path:
         if (triage_directory / "triage.py").is_file():
             return triage_directory
 
+    toolchain_directory = os.environ.get("TTLANG_TOOLCHAIN_DIR", "").strip()
+    if toolchain_directory:
+        triage_directory = Path(toolchain_directory) / "tt-metal" / "tools" / "triage"
+        if (triage_directory / "triage.py").is_file():
+            return triage_directory
+
     triage_spec = find_spec("triage")
     if triage_spec is not None and triage_spec.submodule_search_locations:
         for package_directory in triage_spec.submodule_search_locations:

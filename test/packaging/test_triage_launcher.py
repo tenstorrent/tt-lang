@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import venv
 
 import pytest
 
@@ -57,7 +58,7 @@ def test_launcher_uses_isolated_container_python(tmp_path: Path) -> None:
     triage_python = triage_environment / "bin" / "python"
     triage_python.parent.mkdir(parents=True)
     triage_python.write_text("#!/bin/sh\n" 'printf "%s %s\\n" "$VIRTUAL_ENV" "$2"\n')
-    triage_python.chmod(0o755)
+    triage_python.chmod(0o700)
 
     environment = os.environ.copy()
     environment["TTLANG_TOOLCHAIN_DIR"] = str(toolchain_directory)
@@ -75,3 +76,33 @@ def test_launcher_uses_isolated_container_python(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == f"{triage_environment} argument\n"
+
+
+def test_launcher_runs_triage_from_container_toolchain(tmp_path: Path) -> None:
+    toolchain_directory = tmp_path / "toolchain"
+    triage_environment = toolchain_directory / "tt-triage-venv"
+    venv.EnvBuilder(with_pip=False).create(triage_environment)
+
+    triage_directory = toolchain_directory / "tt-metal" / "tools" / "triage"
+    triage_directory.mkdir(parents=True)
+    (triage_directory / "utils.py").write_text("VALUE = 'loaded'\n")
+    (triage_directory / "triage.py").write_text(
+        "import sys\n" "import utils\n" "print(utils.VALUE, sys.argv[1])\n"
+    )
+
+    environment = os.environ.copy()
+    environment["TTLANG_TOOLCHAIN_DIR"] = str(toolchain_directory)
+    environment.pop("TT_METAL_RUNTIME_ROOT", None)
+    environment.pop("TT_METAL_HOME", None)
+    environment.pop("PYTHONPATH", None)
+
+    result = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "bin" / "tt-triage"), "argument"],
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "loaded argument\n"
