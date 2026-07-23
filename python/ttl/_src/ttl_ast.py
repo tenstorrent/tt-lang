@@ -4,6 +4,7 @@
 
 import ast
 import inspect
+import struct
 from dataclasses import dataclass
 from typing import List, Optional, Set
 
@@ -321,10 +322,10 @@ class TTLGenericCompiler(TTCompilerBase):
                 ):
                     return self.visit_Print(node.args, node.keywords)
 
-                if self._is_call_extern_func(node):
+                if self._is_ttl_api_call(node, "call_extern_func"):
                     return self.visit_Call_Extern_Func(node, node.args, node.keywords)
 
-                if self._is_get_dfb_id(node):
+                if self._is_ttl_api_call(node, "get_dfb_id"):
                     return self._visit_get_dfb_id(node)
 
                 # Check for PipeNet.if_src/if_dst calls
@@ -610,29 +611,14 @@ class TTLGenericCompiler(TTCompilerBase):
         )
 
     @staticmethod
-    def _is_call_extern_func(node):
-        """Match both ``call_extern_func(...)`` and ``ttl.call_extern_func(...)``."""
+    def _is_ttl_api_call(node, name):
+        """Match both ``name(...)`` and ``ttl.name(...)`` call forms."""
         func = node.func
-        if isinstance(func, ast.Name) and func.id == "call_extern_func":
+        if isinstance(func, ast.Name) and func.id == name:
             return True
         if (
             isinstance(func, ast.Attribute)
-            and func.attr == "call_extern_func"
-            and isinstance(func.value, ast.Name)
-            and func.value.id == "ttl"
-        ):
-            return True
-        return False
-
-    @staticmethod
-    def _is_get_dfb_id(node):
-        """Match both ``get_dfb_id(...)`` and ``ttl.get_dfb_id(...)``."""
-        func = node.func
-        if isinstance(func, ast.Name) and func.id == "get_dfb_id":
-            return True
-        if (
-            isinstance(func, ast.Attribute)
-            and func.attr == "get_dfb_id"
+            and func.attr == name
             and isinstance(func.value, ast.Name)
             and func.value.id == "ttl"
         ):
@@ -1427,34 +1413,60 @@ class TTLGenericCompiler(TTCompilerBase):
             )
 
     def _resolve_template_arg_value(self, node):
-        """Try to resolve a template_args element to an MLIR SSA Value.
+        """Resolve a template_args element to an i32 MLIR SSA Value.
 
-        Returns an ``ir.Value`` for ``ttl.get_dfb_id(dfb)`` calls, or ``None``
-        when the node is a plain integer that ``_resolve_int_value`` should
-        handle instead.
+        Accepts:
+        - ``ttl.get_dfb_id(dfb)`` -- DFB CB index
+        - ``int`` literals / module-level ints -- passed through as i32
+        - ``bool`` literals / module-level bools -- encoded as i32 0/1
+        - ``float`` literals / module-level floats -- IEEE-754 bit pattern as i32
         """
-        if isinstance(node, ast.Call) and self._is_get_dfb_id(node):
+        if isinstance(node, ast.Call) and self._is_ttl_api_call(node, "get_dfb_id"):
             return self._visit_get_dfb_id(node)
-        return None
 
-    def _resolve_int_value(self, node, param_name):
-        """Resolve an AST node to a Python int.
+        i32_ty = IntegerType.get_signless(32, self.ctx)
 
-        Accepts ``ast.Constant(int)``, signed literals via ``_signed_int_literal``,
-        or ``ast.Name`` that maps to an ``int`` in ``self.fn_globals``
-        (module-level variables / closure captures).
-        """
-        v = self._signed_int_literal(node)
-        if v is not None:
-            return v
+        def _i32_const(py_int: int):
+            return arith.ConstantOp(i32_ty, py_int).result
+
+        def _float_bits(py_float: float) -> int:
+            return struct.unpack("<I", struct.pack("<f", py_float))[0]
+
+        if isinstance(node, ast.Constant):
+            # bool is a subclass of int; check explicitly first.
+            if type(node.value) is bool:
+                return _i32_const(int(node.value))
+            if type(node.value) is int:
+                return _i32_const(node.value)
+            if isinstance(node.value, float):
+                return _i32_const(_float_bits(node.value))
+
+        int_val = self._signed_int_literal(node)
+        if int_val is not None:
+            return _i32_const(int_val)
+
+        # Fold unary-minus float literals (e.g. ``-1.5``).
+        if (
+            isinstance(node, ast.UnaryOp)
+            and isinstance(node.op, ast.USub)
+            and isinstance(node.operand, ast.Constant)
+            and isinstance(node.operand.value, float)
+        ):
+            return _i32_const(_float_bits(-node.operand.value))
+
         if isinstance(node, ast.Name) and node.id in self.fn_globals:
             val = self.fn_globals[node.id]
-            if isinstance(val, int):
-                return val
+            if type(val) is bool:
+                return _i32_const(int(val))
+            if type(val) is int:
+                return _i32_const(val)
+            if isinstance(val, float):
+                return _i32_const(_float_bits(val))
+
         self._raise_error(
             node,
-            f"ttl.call_extern_func() {param_name} must be an integer "
-            f"literal or a module-level integer variable",
+            "ttl.call_extern_func() template_args element must be an int, "
+            "bool, float, or ttl.get_dfb_id(...)",
         )
 
     def _resolve_string_value(self, node, param_name):
@@ -1500,7 +1512,7 @@ class TTLGenericCompiler(TTCompilerBase):
             ttl.call_extern_func(
                 header_path,                    # string (literal or variable)
                 callee_name,                    # string (literal or variable)
-                template_args=[1, 2],           # C++ template arguments
+                template_args=[1, True, 1.5],   # C++ template arguments
                 func_args=[a, b],               # C++ function arguments
                 include_paths=["/path/to/inc"], # -I flags for JIT compiler
             )
@@ -1513,6 +1525,9 @@ class TTLGenericCompiler(TTCompilerBase):
         - ``func_args=[dfb]`` -- the DFB is passed as a runtime
           ``get_compile_time_arg_val(N)`` call, providing the CB index as a
           function argument.
+
+        Template args accept ``int``, ``bool`` (as 0/1), and ``float`` (as
+        IEEE-754 bit pattern). Func args accept those scalars plus DFBs.
         """
         if len(args) < 2:
             self._raise_error(
@@ -1553,13 +1568,8 @@ class TTLGenericCompiler(TTCompilerBase):
                 self._raise_error(
                     ta_node, "ttl.call_extern_func() template_args must be a list"
                 )
-            i32_ty = IntegerType.get_signless(32, self.ctx)
             for elt in ta_node.elts:
-                val = self._resolve_template_arg_value(elt)
-                if not isinstance(val, Value):
-                    int_val = self._resolve_int_value(elt, "template_args element")
-                    val = arith.ConstantOp(i32_ty, int_val).result
-                template_arg_vals.append(val)
+                template_arg_vals.append(self._resolve_template_arg_value(elt))
 
         func_args = []
         if "func_args" in kw_map:

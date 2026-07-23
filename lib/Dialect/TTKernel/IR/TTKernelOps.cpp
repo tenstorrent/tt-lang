@@ -6,6 +6,7 @@
 
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
+#include "ttlang/Dialect/Utils/OpaqueCallVerifyUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -630,28 +631,8 @@ void UnpackStallOnPackOp::getCanonicalizationPatterns(
 }
 
 ::mlir::LogicalResult OpaqueCallOp::verify() {
-  if (getCallee().empty()) {
-    return emitOpError("callee name must not be empty");
-  }
-  if (getHeader().empty()) {
-    return emitOpError("header path must not be empty");
-  }
-
-  for (Value taVal : getTemplateArgVals()) {
-    Operation *defOp = taVal.getDefiningOp();
-    if (!defOp) {
-      return emitOpError("template arg must be a compile-time evaluable "
-                         "value (arith.constant or ttkernel.get_dfb_id), got "
-                         "a block argument");
-    }
-    if (!mlir::isa<arith::ConstantOp>(defOp) && !mlir::isa<GetDfbIdOp>(defOp)) {
-      return emitOpError("template arg must be a compile-time evaluable "
-                         "value (arith.constant or ttkernel.get_dfb_id), "
-                         "got '")
-             << defOp->getName() << "'";
-    }
-  }
-  return mlir::success();
+  return mlir::tt::utils::verifyOpaqueCall<GetDfbIdOp>(
+      getOperation(), getCallee(), getHeader(), getTemplateArgVals());
 }
 
 } // namespace mlir::tt::ttkernel
