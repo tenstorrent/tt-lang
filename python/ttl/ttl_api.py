@@ -1691,6 +1691,14 @@ def _compile_kernel(
     )
 
 
+def _make_mlir_context():
+    """Create the lowering context with optional deterministic pass execution."""
+    ctx = Context()
+    if os.environ.get("TTLANG_DISABLE_MLIR_THREADING", "0") == "1":
+        ctx.enable_multithreading(False)
+    return ctx
+
+
 def _lower_program_to_kernel(
     *,
     program,
@@ -1719,7 +1727,12 @@ def _lower_program_to_kernel(
     # TTLANG_DEBUG_LOCATIONS only controls whether locations are printed in MLIR output
     print_debug_locations = os.environ.get("TTLANG_DEBUG_LOCATIONS", "0") == "1"
 
-    ctx = Context()
+    # Some large composed modules expose latent thread-safety bugs in
+    # function-pass implementations. Keep normal parallel compilation as the
+    # default, but provide the standard MLIR single-threaded escape hatch for
+    # reducing and unblocking those compiler bugs without enabling verbose IR
+    # printing.
+    ctx = _make_mlir_context()
     loc = Location.unknown(ctx)
     with ctx, loc:
         compiled_threads = []
