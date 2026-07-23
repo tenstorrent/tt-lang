@@ -135,3 +135,23 @@ func.func @user_compiler_capacity_merge()
   ttl.cb_pop %compiler : <[2, 4], !ttcore.tile<32x32, bf16>, 4>
   return
 }
+
+// -----
+
+// A direct DFB argument to foreign code has no producer/consumer metadata.
+// Even surrounding explicit accesses cannot make its inferred lifetime safe.
+// CHECK-LABEL: func.func @opaque_access_is_dedicated
+// CHECK-SAME: ttl.base_cta_index = 2 : i32
+// CHECK: ttl.bind_cb{cb_index = 0,
+// CHECK: ttl.bind_cb{cb_index = 1,
+func.func @opaque_access_is_dedicated()
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.base_cta_index = 2 : i32} {
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %r0 = ttl.cb_reserve %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.opaque_call "foreign_cb_access"(%cb0) {header = "foreign.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> ()
+  ttl.cb_push %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %r1 = ttl.cb_reserve %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}

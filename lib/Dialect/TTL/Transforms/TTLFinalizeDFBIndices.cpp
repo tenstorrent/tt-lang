@@ -221,6 +221,13 @@ struct TTLFinalizeDFBIndicesPass
 
       for (Operation *user : bindOp.getResult().getUsers()) {
         extendInterval(dfb, user, func, *order);
+        // A direct DFB operand to foreign code may reserve, wait, push, pop,
+        // or retain pages, but OpaqueCallOp intentionally carries no memory
+        // effects or producer/consumer role metadata. Never infer a lifetime
+        // or thread-local role from the surrounding TT-Lang operations.
+        if (isa<OpaqueCallOp>(user)) {
+          dfb.eligible = false;
+        }
         if (isPipeOp(user)) {
           dfb.eligible = false;
         }
