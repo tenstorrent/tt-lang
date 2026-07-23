@@ -176,22 +176,21 @@ func.func @four_dfbs_nested_reuse()
 
 // -----
 
-// Mixed shapes, one element type: capacity is a >= constraint, so the [1,1]
-// and [2,4] buffers share one slot sized to the largest member (8 tiles per
-// block); every reserve/wait carries its own block size.
+// Compiler DFBs preserve the established CircularBufferType partitioning.
+// The two [1,1] buffers share one slot, while the [2,4] buffer remains in a
+// separate slot even though all three have the same element type.
 
-// DEBUG: DFB reuse: cb4 -> cb3
 // DEBUG: DFB reuse: cb5 -> cb3
-// DEBUG: Total DFB count: 4
+// DEBUG: Total DFB count: 5
 
-// MIXED: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 3 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 8 : i32}]}
+// MIXED: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 3 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}, {block_count = 2 : i32, dfb_index = 4 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 8 : i32}]}
 
 // MIXED-LABEL: func.func @mixed_shapes_share_slot
-// MIXED-SAME: ttl.base_cta_index = 4 : i32
+// MIXED-SAME: ttl.base_cta_index = 5 : i32
 // MIXED: ttl.bind_cb{cb_index = 3, {{.*}}} {ttl.compiler_allocated} : <[1, 1],
-// MIXED: ttl.bind_cb{cb_index = 3, {{.*}}} {ttl.compiler_allocated} : <[2, 4],
+// MIXED: ttl.bind_cb{cb_index = 4, {{.*}}} {ttl.compiler_allocated} : <[2, 4],
 // MIXED: ttl.bind_cb{cb_index = 3, {{.*}}} {ttl.compiler_allocated} : <[1, 1],
-// MIXED-NOT: cb_index = 4
+// MIXED-NOT: cb_index = 5
 // MIXED: return
 func.func @mixed_shapes_share_slot()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>, ttl.base_cta_index = 3 : i32,
@@ -289,42 +288,30 @@ func.func @single_dfb_no_reuse()
 
 // -----
 
-// User DFBs with the same producer thread (reader) and consumer thread
-// (compute) and disjoint lifetimes share one index. The pass emits
-// ttl.dfb_index_map for the runtime.
+// Fully balanced user DFBs local to one kernel thread and with disjoint
+// lifetimes share one index. The pass emits ttl.dfb_index_map for the runtime.
 
 // DEBUG: DFB reuse: cb1 -> cb0
 // DEBUG: Total DFB count: 1
 
 // USER: module attributes {ttl.dfb_index_map = [{new_index = 0 : i32, old_index = 1 : i32}]}
 
-// USER-LABEL: func.func @user_reader
+// USER-LABEL: func.func @thread_local_user
 // USER-SAME: ttl.base_cta_index = 1 : i32
 // USER-COUNT-2: ttl.bind_cb{cb_index = 0,
 // USER-NOT: cb_index = 1
-// USER-LABEL: func.func @user_compute
-// USER-COUNT-2: ttl.bind_cb{cb_index = 0,
-// USER-NOT: cb_index = 1
 // USER: return
-func.func @user_reader()
+func.func @thread_local_user()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.base_cta_index = 2 : i32,
                 ttl.crta_indices = []} {
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %r0 = ttl.cb_reserve %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.cb_push %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %r1 = ttl.cb_reserve %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  ttl.cb_push %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  return
-}
-
-func.func @user_compute()
-    attributes {ttl.kernel_thread = #ttkernel.thread<compute>, ttl.base_cta_index = 2 : i32,
-                ttl.crta_indices = []} {
-  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %w0 = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.cb_pop %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %r1 = ttl.cb_reserve %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %w1 = ttl.cb_wait %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.cb_pop %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   return

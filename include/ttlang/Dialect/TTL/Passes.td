@@ -646,16 +646,18 @@ def TTLLowerSignpostToEmitC
 
 def TTLFinalizeDFBIndices
     : Pass<"ttl-finalize-dfb-indices", "::mlir::ModuleOp"> {
-  let summary = "Reuse compiler-allocated DFB indices and emit DFB metadata";
+  let summary = "Reuse safe DFB indices and emit DFB metadata";
   let description = [{
     Module-level pass that runs after all DFB-creating passes. Must
     precede ttl-annotate-cb-associations (which copies cb_index onto
     tile ops and would capture stale pre-reuse indices).
 
-    Applies lifetime-based index reuse to compiler-allocated DFBs via
-    linear scan allocation, partitioned by CircularBufferType. DFBs
-    whose lifetimes (bind_cb to last cb_pop) do not overlap are assigned
-    the same physical index. See docs/development/DFBManagement.md.
+    Applies module-wide lifetime allocation to compiler-created DFBs within
+    exact CircularBufferType partitions. Separately, fully balanced user DFBs
+    local to one kernel thread may share a physical index when their lifetimes
+    do not overlap. Cross-thread user synchronization DFBs, one-sided user
+    DFBs, pipes, opaque accesses, and user/compiler sharing remain dedicated.
+    See docs/development/DFBManagement.md.
 
     After reuse, verifies the total DFB count does not exceed
     kMaxCircularBuffers (64), updates ttl.base_cta_index on every

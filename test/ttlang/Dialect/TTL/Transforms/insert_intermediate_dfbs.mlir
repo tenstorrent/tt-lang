@@ -133,11 +133,12 @@ func.func @shared_materialization()
 // CHECK: ttl.mul
 // CHECK: ttl.reduce
 
-// After finalize, the output-only user DFB and both sequential compiler DFBs
-// share index 0. The physical DFB count drops from six to four.
-// FINALIZE: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 3 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}], ttl.dfb_index_map = [{new_index = 0 : i32, old_index = 3 : i32}]}
+// After finalize, the sequential compiler DFBs share index 4. The output-only
+// user DFB remains dedicated because it does not prove a balanced local CB
+// epoch. The physical DFB count drops from six to five.
+// FINALIZE: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 4 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}]}
 // FINALIZE-LABEL: func.func @sequential_intermediates_reuse
-// FINALIZE-SAME: ttl.base_cta_index = 4 : i32
+// FINALIZE-SAME: ttl.base_cta_index = 5 : i32
 // FINALIZE-NOT: cb_index = 5
 // FINALIZE: return
 func.func @sequential_intermediates_reuse()

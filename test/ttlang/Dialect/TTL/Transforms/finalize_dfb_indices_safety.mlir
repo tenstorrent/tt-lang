@@ -114,13 +114,14 @@ func.func @different_page_types()
 
 // -----
 
-// A larger compiler DFB may reuse a drained user slot. Runtime metadata must
-// resize the physical slot to the compiler member's full capacity.
-// CHECK: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 4 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 8 : i32}]}
+// Compiler-generated DFBs never share user arena slots, even when the static
+// intervals look disjoint. Their lowering-specific allocation contract is
+// preserved independently.
+// CHECK: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 4 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 8 : i32}]}
 // CHECK-LABEL: func.func @user_compiler_capacity_merge
-// CHECK-SAME: ttl.base_cta_index = 1 : i32
-// CHECK-COUNT-2: ttl.bind_cb{cb_index = 0,
-// CHECK-NOT: cb_index = 1
+// CHECK-SAME: ttl.base_cta_index = 2 : i32
+// CHECK: ttl.bind_cb{cb_index = 0,
+// CHECK: ttl.bind_cb{cb_index = 1,
 func.func @user_compiler_capacity_merge()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>, ttl.base_cta_index = 2 : i32} {
   %user = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>

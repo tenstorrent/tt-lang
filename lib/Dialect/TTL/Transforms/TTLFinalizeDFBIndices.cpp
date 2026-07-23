@@ -6,26 +6,22 @@
 // TTL Finalize DFB Indices
 //===----------------------------------------------------------------------===//
 //
-// Module-level pass that runs after all DFB-creating passes. Reuses DFB
-// indices when lifetimes do not overlap, then computes the true DFB count,
-// updates ttl.base_cta_index on every function, and publishes the final
-// index assignment for the Python runtime (ttl.dfb_index_map for
-// user-declared DFBs, ttl.compiler_allocated_dfbs for compiler-allocated
-// ones).
+// Module-level pass that runs after all DFB-creating passes. Reuses
+// compiler-created DFBs within exact CircularBufferType partitions and
+// balanced user DFBs local to one kernel thread. It then computes the true
+// DFB count, updates ttl.base_cta_index on every function, and publishes the
+// final index assignment for the Python runtime.
 //
 // A logical DFB is one cb_index, bound by one bind_cb per kernel thread that
 // touches it. The same physical CB index has shared pages_received /
 // pages_acked counters and per-RISC read/write pointers, so two logical DFBs
 // may share an index only when:
-//   - both have the same producer thread and the same consumer thread,
+//   - both have the same producer thread and the same consumer thread;
+//     user DFBs additionally require producer == consumer,
 //   - their per-thread lifetimes are disjoint in both threads' program order,
-//   - they have the same element type (uniform page size). Capacity is a
-//     >= check, not equality: the slot is sized to the member needing the
-//     most pages, and every reserve/wait carries its own block size.
-// With matching thread identity, per-thread program order plus reserve/wait
-// blocking make disjoint program-order lifetimes sound at runtime; sharing
-// across different producer or consumer threads is never sound without a
-// counter/pointer reset and is therefore not attempted.
+//   - compiler DFBs have the same complete CB type; user DFBs have the same
+//     page type and use a slot sized to their largest member.
+// User and compiler DFBs never share a physical index.
 //
 //===----------------------------------------------------------------------===//
 
@@ -66,6 +62,7 @@ struct LogicalDFB {
   func::FuncOp consumer;
   llvm::SmallDenseMap<Operation *, ThreadInterval, 4> intervals;
   llvm::SmallDenseMap<Operation *, int64_t, 4> firstAcquire;
+  Type cbType;
   Type elemType;
   int64_t blockCount = 0;
   int64_t elemsPerBlock = 0;
@@ -166,6 +163,13 @@ struct TTLFinalizeDFBIndicesPass
       dfb.binds.push_back(bindOp);
       auto cbType =
           mlir::cast<CircularBufferType>(bindOp.getResult().getType());
+      if (!dfb.cbType) {
+        dfb.cbType = cbType;
+      } else if (dfb.cbType != cbType) {
+        // One logical DFB must have one physical ring geometry on every
+        // thread that binds it.
+        dfb.eligible = false;
+      }
       dfb.elemType = cbType.getElementType();
       dfb.blockCount = cbType.getBlockCount();
       dfb.elemsPerBlock =
@@ -269,14 +273,19 @@ struct TTLFinalizeDFBIndicesPass
       return;
     }
 
-    // A DFB with no acquire and no release anywhere (declared but unused)
-    // keeps its index. One-sided DFBs reuse within the thread that touches
-    // them. Lifetime starts at the first acquire in each thread; without one
-    // the hoisted bind position stands, conservatively from function entry.
+    // User DFBs enter the arena only when one kernel thread both produces and
+    // consumes them. Cross-thread user CBs are synchronization channels, and
+    // static operation order cannot prove that independently executing RISCs
+    // have drained them. Compiler-created DFBs retain their lowering-defined
+    // role contract, including one-sided internal intermediates.
     for (auto &[idx, dfb] : dfbs) {
       if (!dfb.producer && !dfb.consumer) {
         dfb.eligible = false;
         continue;
+      }
+      if (!dfb.compilerAllocated &&
+          (!dfb.producer || !dfb.consumer || dfb.producer != dfb.consumer)) {
+        dfb.eligible = false;
       }
       if (!dfb.producer) {
         dfb.producer = dfb.consumer;
@@ -292,19 +301,20 @@ struct TTLFinalizeDFBIndicesPass
       }
     }
 
-    // Group eligible DFBs into reuse classes; keep deterministic order by
-    // original index. Class members may differ in block count and tiles per
-    // block: capacity is a >= constraint, the slot is sized to the member
-    // needing the most pages, and per-op tile counts come from each bind_cb's
-    // own type.
-    // User and compiler DFBs share slots freely; the runtime keeps the
-    // larger config when both describe one index.
-    using ClassKey = std::tuple<Type, Operation *, Operation *>;
+    // Compiler DFBs are partitioned by the complete CircularBufferType. Their
+    // lowering may depend on the exact physical ring geometry; widening this
+    // to element type caused a silent global-attention regression. Balanced
+    // thread-local user DFBs may share different capacities with the same page
+    // type because the runtime sizes their arena slot to the largest member.
+    // The final boolean keeps user and compiler storage strictly separate.
+    using ClassKey = std::tuple<Type, Operation *, Operation *, int64_t>;
     llvm::MapVector<ClassKey, SmallVector<LogicalDFB *>> classes;
     for (auto &[idx, dfb] : dfbs) {
       if (dfb.eligible) {
-        classes[{dfb.elemType, dfb.producer.getOperation(),
-                 dfb.consumer.getOperation()}]
+        Type storageType = dfb.compilerAllocated ? dfb.cbType : dfb.elemType;
+        classes[{storageType, dfb.producer.getOperation(),
+                 dfb.consumer.getOperation(),
+                 static_cast<int64_t>(dfb.compilerAllocated)}]
             .push_back(&dfb);
       } else {
         dfb.finalIndex = dfb.origIndex;
