@@ -1320,6 +1320,36 @@ def _extract_pipe_global_semaphore_count(module) -> int:
     return int(attr)
 
 
+def _dfb_l1_tiles(cb):
+    """Total tiles a DFB occupies in L1 (per-block tiles x block count)."""
+    if isinstance(cb, CompilerAllocatedDFBConfig):
+        return cb.num_tiles * cb.block_count
+    tiles = cb.block_count
+    for dim in cb.shape:
+        tiles *= dim
+    return tiles
+
+
+def _apply_dfb_index_map(cb_configs, module):
+    """Apply post-inlining user-DFB reuse and size each slot to its maximum."""
+    attr = module.operation.attributes.get("ttl.dfb_index_map", None)
+    if attr is None:
+        return cb_configs
+    moved = {int(entry["old_index"]): int(entry["new_index"]) for entry in attr}
+
+    by_index = {}
+    for old_index, cb in enumerate(cb_configs):
+        if cb is None:
+            continue
+        new_index = moved.get(old_index, old_index)
+        current = by_index.get(new_index)
+        if current is None or _dfb_l1_tiles(cb) > _dfb_l1_tiles(current):
+            by_index[new_index] = cb
+    if not by_index:
+        return []
+    return [by_index.get(index) for index in range(max(by_index) + 1)]
+
+
 def _merge_dfb_configs(cb_configs, compiler_allocated_dfbs):
     """Merge compiler-allocated DFBs into the CB config list.
 
@@ -1335,11 +1365,9 @@ def _merge_dfb_configs(cb_configs, compiler_allocated_dfbs):
 
     merged = list(cb_configs) + [None] * (total - len(cb_configs))
     for dfb in compiler_allocated_dfbs:
-        if merged[dfb.dfb_index] is not None:
-            raise ValueError(
-                f"Compiler-allocated DFB index {dfb.dfb_index} collides with "
-                f"an existing DFB."
-            )
+        existing = merged[dfb.dfb_index]
+        if existing is not None and _dfb_l1_tiles(existing) >= _dfb_l1_tiles(dfb):
+            continue
         merged[dfb.dfb_index] = dfb
     return merged
 
@@ -1753,9 +1781,7 @@ def _lower_program_to_kernel(
         # Collect include paths from call_extern_func across all threads.
         opaque_include_paths = []
         for ct in compiled_threads:
-            opaque_include_paths.extend(
-                getattr(ct, "_opaque_include_paths", [])
-            )
+            opaque_include_paths.extend(getattr(ct, "_opaque_include_paths", []))
 
         module = Module.create(loc)
         module.operation.attributes["ttl.launch_grid"] = ArrayAttr.get(
@@ -1963,7 +1989,8 @@ def _lower_program_to_kernel(
             first_thread = next(iter(all_source_lines.keys()))
             profile_source_lines = all_source_lines[first_thread]
 
-        # Merge compiler-allocated DFBs into the CB config list.
+        # Apply user-DFB index coloring before merging compiler-owned slots.
+        cb_configs = _apply_dfb_index_map(cb_configs, module)
         compiler_allocated_dfbs = _extract_compiler_allocated_dfbs(module)
         cb_configs = _merge_dfb_configs(cb_configs, compiler_allocated_dfbs)
         pipe_sync_semaphore_count = _extract_pipe_sync_semaphore_count(module)

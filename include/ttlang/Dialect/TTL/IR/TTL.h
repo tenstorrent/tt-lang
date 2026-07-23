@@ -142,6 +142,10 @@ constexpr llvm::StringLiteral kPlaceholderCopyAttrName("ttl.placeholder_copy");
 constexpr llvm::StringLiteral
     kCompilerAllocatedDFBsAttrName("ttl.compiler_allocated_dfbs");
 
+/// Module attribute mapping user DFB indices renumbered by index reuse
+/// (array of {old_index, new_index} dictionaries).
+constexpr llvm::StringLiteral kDFBIndexMapAttrName("ttl.dfb_index_map");
+
 /// Module attributes carrying compiler-owned pipe resource allocation.
 constexpr llvm::StringLiteral
     kPipeSyncSemaphoreCountAttrName("ttl.pipe_sync_semaphore_count");
