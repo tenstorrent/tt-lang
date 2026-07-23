@@ -110,6 +110,13 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Use computed receiver DFB addresses for eligible pipe transfers; receiver-published multicast still requires proven equal runtime addresses (default: enabled).",
     )
     p.add_argument(
+        "--ttl-pipe-capacity-sync",
+        default=None,
+        dest="pipe_capacity_sync",
+        action=argparse.BooleanOptionalAction,
+        help="Use capacity-counter synchronization for eligible pipe transfers; disabling uses receiver-post synchronization (default: enabled).",
+    )
+    p.add_argument(
         "--ttl-reuse-user-dfbs",
         default=None,
         dest="reuse_user_dfbs",
@@ -190,6 +197,7 @@ class CompilerOptions:
     strict_f32_acc: bool = False
     compiler_dfbs: bool = True
     pipe_computed_addresses: bool = True
+    pipe_capacity_sync: bool = True
     reuse_user_dfbs: bool = True
     dfb_exact_coloring_search_limit: int = 1_000_000
     specialize_cores: bool = False

@@ -331,6 +331,10 @@ public:
 
   LaunchNodeDomain getOperationLaunchDomain(Operation *op) const;
 
+  const DFBReleaseOwnerMaps &getDFBReleaseOwnerMaps() const {
+    return dfbReleaseOwners;
+  }
+
 private:
   /// Record the DFB geometry and destination offset for one receive post.
   LogicalResult addPipeReceiver(Operation *op,

@@ -6,7 +6,7 @@
 // Two sequential collective receives use computed addresses for one DFB.
 //===----------------------------------------------------------------------===//
 
-// Transfers that share physical receivers use distinct completion semaphores
+// Transfers that share physical receivers use distinct completion counters
 // and independent expected-count state.
 // CHECK-LABEL: func.func @overlap_two_receives_use_distinct_completion
 // CHECK: %[[CTR1:.*]] = memref.alloca() : memref<1xi32>
