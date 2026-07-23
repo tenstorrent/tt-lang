@@ -281,29 +281,7 @@ mlir::LogicalResult mlir::tt::ttl::PipeTransferCreateOp::verify() {
   return success();
 }
 
-mlir::LogicalResult mlir::tt::ttl::PipeTransferPostOp::verify() {
-  if (!findCBReserveForPipeReceive(getDst())) {
-    return emitOpError() << "requires a cb_reserve destination";
-  }
-  auto createOp = findPipeTransferCreateForTransfer(getTransfer());
-  if (!createOp) {
-    return emitOpError()
-           << "requires transfer derived from ttl.pipe_transfer.create";
-  }
-  auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
-  auto tokenType = mlir::cast<PipeTokenType>(getToken().getType());
-  if (tokenType.getPipeNetId() != pipeType.getPipeNetId()) {
-    return emitOpError() << "token pipeNetId must match transfer pipeNetId";
-  }
-
-  return success();
-}
-
 mlir::LogicalResult mlir::tt::ttl::PipeTransferSendOp::verify() {
-  if (!findPipeTransferCreateForTransfer(getTransfer())) {
-    return emitOpError()
-           << "requires transfer derived from ttl.pipe_transfer.create";
-  }
   auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
   if (!handleType || handleType.getKind() != TransferKind::write) {
     return emitOpError() << "requires a write transfer handle result";
@@ -312,27 +290,9 @@ mlir::LogicalResult mlir::tt::ttl::PipeTransferSendOp::verify() {
   return success();
 }
 
-mlir::LogicalResult mlir::tt::ttl::PipeTransferWaitOp::verify() {
-  mlir::tt::ttl::PipeTransferPostOp postOp =
-      mlir::tt::ttl::findPipeTransferPostForToken(getToken());
-  if (!postOp) {
-    return emitOpError()
-           << "requires token derived from ttl.pipe_transfer.post";
-  }
-  auto waitTokenType =
-      mlir::cast<mlir::tt::ttl::PipeTokenType>(getToken().getType());
-  auto postTokenType =
-      mlir::cast<mlir::tt::ttl::PipeTokenType>(postOp.getToken().getType());
-  if (waitTokenType.getPipeNetId() != postTokenType.getPipeNetId()) {
-    return emitOpError()
-           << "token pipeNetId must match pipe transfer post pipeNetId";
-  }
-  return success();
-}
-
 mlir::LogicalResult mlir::tt::ttl::WaitOp::verify() {
-  if (failed(
-          mlir::tt::ttl::verify::isValidWaitOperand(getOperation(), getXf()))) {
+  if (failed(mlir::tt::ttl::verify::verifyWaitOperandType(getOperation(),
+                                                          getXf()))) {
     return failure();
   }
   return success();

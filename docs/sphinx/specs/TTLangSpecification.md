@@ -75,9 +75,9 @@ An operation can also be written with explicit kernels, where the author writes 
 ```py
 @ttl.operation(grid=(1, 1))
 def __add(
-    a: ttnn.Tensor,   # input tensor
-    b: ttnn.Tensor,   # input tensor
-    out: ttnn.Tensor, # output tensor
+    a: ttnn.Tensor,  # input tensor
+    b: ttnn.Tensor,  # input tensor
+    out: ttnn.Tensor,  # output tensor
 ) -> None:
     # Dataflow buffers shared by the threads.
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
@@ -112,6 +112,7 @@ def add(a: ttnn.Tensor, b: ttnn.Tensor) -> ttnn.Tensor:
     out = ttnn.zeros(a.shape, layout=ttnn.TILE_LAYOUT)
     __add(a, b, out)
     return out
+
 
 x = ttnn.rand(ttnn.Shape([32, 32]), layout=ttnn.TILE_LAYOUT)
 
@@ -161,10 +162,10 @@ A *multi-kernel operation* is an alternative form in which the author writes the
 #### Program example
 
 ```py
-@ttl.operation()
+@ttl.operation(grid=(1, 1))
 def __foo(
-    x: ttnn.Tensor, # input tensor
-    y: ttnn.Tensor, # output tensor
+    x: ttnn.Tensor,  # input tensor
+    y: ttnn.Tensor,  # output tensor
 ) -> None:
     # ...
 
@@ -180,17 +181,23 @@ def __foo(
     def some_dm1():
         # ...
 
-# Simple wrapper to allow returning output tensor in TT-NN style
-def foo(x: ttnn.Tensor) -> ttnn.Tensor:
-    y = ttnn.zeros(x.shape, layout=ttnn.TILE_LAYOUT)
-    __foo(x, y)
-    return y
+device = ttnn.open_device(device_id=0)
 
-shape = ttnn.Shape([128, 128])
+try:
+    # Simple wrapper to allow returning output tensor in TT-NN style
+    def foo(x: ttnn.Tensor) -> ttnn.Tensor:
+        y = ttnn.zeros(x.shape, layout=ttnn.TILE_LAYOUT, device=device)
+        __foo(x, y)
+        return y
 
-x = ttnn.rand(shape, layout=ttnn.TILE_LAYOUT)
+    shape = ttnn.Shape([128, 128])
 
-ttnn.exp(y, foo(ttnn.abs(x)), fast_and_approximate_mode=True)
+    x = ttnn.rand(shape, layout=ttnn.TILE_LAYOUT, device=device)
+
+    y = ttnn.exp(foo(ttnn.abs(x)), fast_and_approximate_mode=True)
+
+finally:
+    ttnn.close_device(device)
 ```
 
 
@@ -214,13 +221,13 @@ The `ttl.grid_size` function returns the size of the grid. The function takes an
 
 ```py
 # for (8, 8) single chip or SPMD grid gets x_size = 64
-x_size = ttl.grid_size(dims = 1)
+x_size = ttl.grid_size(dims=1)
 
 # for (8, 8, 8) multi-chip grid gets x_size = 8, y_size = 64
-x_size, y_size = ttl.grid_size(dims = 2)
+x_size, y_size = ttl.grid_size(dims=2)
 
 # for (8, 8) single-chip or SPMD grid gets x_size = 8, y_size = 8, z_size = 1
-x_size, y_size, z_size = ttl.grid_size(dims = 3)
+x_size, y_size, z_size = ttl.grid_size(dims=3)
 ```
 
 
@@ -239,13 +246,13 @@ The `ttl.node` function returns *node coordinates* of the current node. Node coo
 
 ```py
 # for (8, 8) single chip or SPMD grid gets x = [0, 64)
-x = ttl.node(dims = 1)
+x = ttl.node(dims=1)
 
 # for (8, 8, 8) multi-chip grid gets x = [0, 8), y = [0, 64)
-x, y = ttl.node(dims = 2)
+x, y = ttl.node(dims=2)
 
 # for (8, 8) single-chip or SPMD grid gets x = [0, 8), y = [0, 8), z = 0
-x, y, z = ttl.node(dims = 3)
+x, y, z = ttl.node(dims=3)
 ```
 
 
@@ -268,17 +275,19 @@ def from_torch(tensor: torch.Tensor) -> ttnn.Tensor:
 def shape_in_tiles(tensor: ttnn.Tensor) -> list[int]:
     padded_shape = list(tensor.padded_shape)
     tile_shape = list(tensor.tile.tile_shape)
-    return padded_shape[:-2] + [dim // tile_dim for dim, tile_dim in zip(padded_shape[-2:], tile_shape)]
+    return padded_shape[:-2] + [
+        dim // tile_dim for dim, tile_dim in zip(padded_shape[-2:], tile_shape)
+    ]
 
-shape_in_tiles(from_torch(torch.randn(()))) #              prints [1, 1]
-shape_in_tiles(from_torch(torch.randn((128)))) #           prints [1, 4]
-shape_in_tiles(from_torch(torch.randn((1, 128)))) #        prints [1, 4]
-shape_in_tiles(from_torch(torch.randn((32, 128)))) #       prints [1, 4]
-shape_in_tiles(from_torch(torch.randn((128, 1)))) #        prints [4, 1]
-shape_in_tiles(from_torch(torch.randn((128, 32)))) #       prints [4, 1]
-shape_in_tiles(from_torch(torch.randn((2, 128, 32)))) #    prints [2, 4, 1]
-shape_in_tiles(from_torch(torch.randn((2, 2, 128, 32)))) # prints [2, 2, 4, 1]
-shape_in_tiles(from_torch(torch.randn((2, 2, 120, 30)))) # prints [2, 2, 4, 1]
+assert shape_in_tiles(from_torch(torch.randn(()))) == [1, 1]
+assert shape_in_tiles(from_torch(torch.randn((128)))) == [1, 4]
+assert shape_in_tiles(from_torch(torch.randn((1, 128)))) == [1, 4]
+assert shape_in_tiles(from_torch(torch.randn((32, 128)))) == [1, 4]
+assert shape_in_tiles(from_torch(torch.randn((128, 1)))) == [4, 1]
+assert shape_in_tiles(from_torch(torch.randn((128, 32)))) == [4, 1]
+assert shape_in_tiles(from_torch(torch.randn((2, 128, 32)))) == [2, 4, 1]
+assert shape_in_tiles(from_torch(torch.randn((2, 2, 128, 32)))) == [2, 2, 4, 1]
+assert shape_in_tiles(from_torch(torch.randn((2, 2, 120, 30)))) == [2, 2, 4, 1]
 ```
 
 If tensor has a row-major layout the shape unit is a scalar element. For the TT-NN tensor with Torch shape of `(2, 2, 120, 30)` the corresponding block that fits this entire tensor will have shape of `(2, 2, 120, 30)`.
@@ -296,15 +305,15 @@ def from_torch(tensor: torch.Tensor) -> ttnn.Tensor:
 def row_major_shape(tensor: ttnn.Tensor) -> list[int]:
     return list(tensor.padded_shape)
 
-row_major_shape(from_torch(torch.randn(()))) #              prints [1]
-row_major_shape(from_torch(torch.randn((128)))) #           prints [128]
-row_major_shape(from_torch(torch.randn((1, 128)))) #        prints [1, 128]
-row_major_shape(from_torch(torch.randn((32, 128)))) #       prints [32, 128]
-row_major_shape(from_torch(torch.randn((128, 1)))) #        prints [128, 1]
-row_major_shape(from_torch(torch.randn((128, 32)))) #       prints [128, 32]
-row_major_shape(from_torch(torch.randn((2, 128, 32)))) #    prints [2, 128, 32]
-row_major_shape(from_torch(torch.randn((2, 2, 128, 32)))) # prints [2, 2, 128, 32]
-row_major_shape(from_torch(torch.randn((2, 2, 120, 30)))) # prints [2, 2, 120, 30]
+assert row_major_shape(from_torch(torch.randn(()))) == [1]
+assert row_major_shape(from_torch(torch.randn((128)))) == [128]
+assert row_major_shape(from_torch(torch.randn((1, 128)))) == [1, 128]
+assert row_major_shape(from_torch(torch.randn((32, 128)))) == [32, 128]
+assert row_major_shape(from_torch(torch.randn((128, 1)))) == [128, 1]
+assert row_major_shape(from_torch(torch.randn((128, 32)))) == [128, 32]
+assert row_major_shape(from_torch(torch.randn((2, 128, 32)))) == [2, 128, 32]
+assert row_major_shape(from_torch(torch.randn((2, 2, 128, 32)))) == [2, 2, 128, 32]
+assert row_major_shape(from_torch(torch.randn((2, 2, 120, 30)))) == [2, 2, 120, 30]
 ```
 
 Shape determines the shape of a *block* returned by one of the *acquisition functions*: `wait` and `reserve`. The size of a block in L1 memory is determined by shape, shape unit and data type. For example, for a block with shape `(2, 2, 4, 1)`, shape unit of a tile (32 by 32 scalar elements) and BF16 data type (2 bytes), its size in L1 will be `2 * 2 * (4 * 32) * (1 * 32) * 2 = 32768` bytes. The block count determines the total size of L1 memory allocated for a dataflow buffer. This size is a product of a block size and block count. For the most common case block count defaults to 2 to support double buffering. With double buffered dataflow buffer one thread can write to a block while another is reading from a block thus enabling the pipelining. For the example above, this means there will be a total of 32768 bytes of L1 memory allocated for the dataflow buffer.
@@ -314,9 +323,9 @@ A dataflow buffer is constructed in the scope of an operation function but its o
 #### Dataflow buffer example
 
 ```py
-x_dfb = ttl.make_dataflow_buffer_like(x,
-    shape = (2, 2),
-    block_count = 2) # This can be omitted since block_count defaults to 2
+x_dfb = ttl.make_dataflow_buffer_like(
+    x, shape=(2, 2), block_count=2
+)  # This can be omitted since block_count defaults to 2
 
 @ttl.datamovement()
 def some_read():
@@ -336,7 +345,7 @@ def some_compute():
     # Consume data in x_blk
     # ...
 
-    x_blk.pop() # Pop x_blk explicitly
+    x_blk.pop()  # Pop x_blk explicitly
 ```
 
 | Type alias/Function | Description |
@@ -381,24 +390,25 @@ M_TILES = M // TILE_SIZE
 # Shape in blocks (N_TILES is evenly divisible by N_BLOCK_SIZE)
 N_BLOCKS = N_TILES // N_BLOCK_SIZE
 
-a_dfb = ttl.make_dataflow_buffer_like(a, shape = (N_BLOCK_SIZE, M_TILES))
+a_dfb = ttl.make_dataflow_buffer_like(a, shape=(N_BLOCK_SIZE, M_TILES))
 
 # Tiled DFB shape needs to be at least two-dimensional;
 # When tiled, the vector b of shape (N, 1) is placed in column 0
 # of each tile in a column of N_TILES tiles
-b_dfb = ttl.make_dataflow_buffer_like(b, shape = (N_BLOCK_SIZE, 1))
+b_dfb = ttl.make_dataflow_buffer_like(b, shape=(N_BLOCK_SIZE, 1))
 # When tiled, the vector c of shape M is placed in row 0
 # of each tile in a row of M_TILES tiles
-c_dfb = ttl.make_dataflow_buffer_like(c, shape = (1, M_TILES))
+c_dfb = ttl.make_dataflow_buffer_like(c, shape=(1, M_TILES))
 # When tiled, the scalar value d of shape () is placed at position (0, 0)
 # of a single tile
-d_dfb = ttl.make_dataflow_buffer_like(d, shape = (1, 1))
+d_dfb = ttl.make_dataflow_buffer_like(d, shape=(1, 1))
 # When untiled, the vector y is formed from column 0
 # of each tile in a column of N_TILES tiles
-y_dfb = ttl.make_dataflow_buffer_like(y, shape = (N_BLOCK_SIZE, 1))
+y_dfb = ttl.make_dataflow_buffer_like(y, shape=(N_BLOCK_SIZE, 1))
 # When untiled, the vector z is formed from row 0
 # of each tile in a row of M_TILES tiles
-z_dfb = ttl.make_dataflow_buffer_like(z, shape = (1, M_TILES))
+z_dfb = ttl.make_dataflow_buffer_like(z, shape=(1, M_TILES))
+
 
 @ttl.datamovement()
 def elwise_read():
@@ -432,18 +442,23 @@ def elwise_read():
             b_dfb.reserve() as b_blk,
         ):
             # Load N_BLOCK_SIZE×M_TILES block of a
-            a_xf = ttl.copy(a[n_block * N_BLOCK_SIZE : (n_block + 1) * N_BLOCK_SIZE, :], a_blk)
+            a_xf = ttl.copy(
+                a[n_block * N_BLOCK_SIZE : (n_block + 1) * N_BLOCK_SIZE, :], a_blk
+            )
 
             # Load N_BLOCK_SIZE×1 block of b;
             # When tiled, the vector b of shape (N, 1) is placed in column 0
             # of each tile in a column of N_TILES tiles
-            b_xf = ttl.copy(b[n_block * N_BLOCK_SIZE : (n_block + 1) * N_BLOCK_SIZE, 0], b_blk)
+            b_xf = ttl.copy(
+                b[n_block * N_BLOCK_SIZE : (n_block + 1) * N_BLOCK_SIZE, 0], b_blk
+            )
 
             a_xf.wait()
             b_xf.wait()
 
             # End of "with" scope:
             # Push a_blk and b_blk to make them ready for elwise_compute
+
 
 @ttl.compute()
 def elwise_compute():
@@ -455,18 +470,22 @@ def elwise_compute():
         d_dfb.wait() as d_blk,
         z_dfb.reserve() as z_blk,
     ):
-        c_squared = c_blk ** 2
-        d_squared = d_blk ** 2
+        c_squared = c_blk**2
+        d_squared = d_blk**2
 
         # Broadcast c_squared along dimension 0 (first) to get N_BLOCK_SIZE×M_TILES;
         # This first broadcasts column 0 to fill each of M_TILES tiles
         # then it broadcasts column of M_TILES tiles to get N_BLOCK_SIZE×M_TILES tiles
-        c_squared_bcast = ttl.block.broadcast(c_squared, dims=[0], shape=(N_BLOCK_SIZE, M_TILES))
+        c_squared_bcast = ttl.block.broadcast(
+            c_squared, dims=[0], shape=(N_BLOCK_SIZE, M_TILES)
+        )
 
         # Broadcast d_squared along all dimensions (0 and 1) to N_BLOCK_SIZE×M_TILES;
         # This first broadcasts single scalar value at position (0, 0) to fill a single tile
         # then it broadcasts single tile to get N_BLOCK_SIZE×M_TILES tiles
-        d_squared_bcast = ttl.block.broadcast(d_squared, dims=[0, 1], shape=(N_BLOCK_SIZE, M_TILES))
+        d_squared_bcast = ttl.block.broadcast(
+            d_squared, dims=[0, 1], shape=(N_BLOCK_SIZE, M_TILES)
+        )
 
         # Zero-initialize the accumulator z before summing N_BLOCKS partial sums
         z_final = ttl.block.fill(0, shape=(1, M_TILES))
@@ -480,23 +499,33 @@ def elwise_compute():
                 b_dfb.wait() as b_blk,
                 y_dfb.reserve() as y_blk,
             ):
-                a_squared = a_blk ** 2
-                b_squared = b_blk ** 2
+                a_squared = a_blk**2
+                b_squared = b_blk**2
 
                 # Broadcast b_squared along dim -1 (last) to get N_BLOCK_SIZE×M_TILES;
                 # This first broadcasts row 0 to fill each of N_BLOCK_SIZE tiles
                 # then it broadcasts row of N_BLOCK_SIZE tiles to get N_BLOCK_SIZE×M_TILES tiles
-                b_squared_bcast = ttl.block.broadcast(b_squared, dims=[-1], shape=(N_BLOCK_SIZE, M_TILES))
+                b_squared_bcast = ttl.block.broadcast(
+                    b_squared, dims=[-1], shape=(N_BLOCK_SIZE, M_TILES)
+                )
 
                 # Perform elementwise math on N_BLOCK_SIZE×M_TILES tiles
-                expanded_y = ttl.math.sqrt(a_squared + b_squared_bcast + c_squared_bcast + d_squared_bcast)
-                expanded_z = ttl.math.sqrt(a_squared - b_squared_bcast - c_squared_bcast - d_squared_bcast)
+                expanded_y = ttl.math.sqrt(
+                    a_squared + b_squared_bcast + c_squared_bcast + d_squared_bcast
+                )
+                expanded_z = ttl.math.sqrt(
+                    a_squared - b_squared_bcast - c_squared_bcast - d_squared_bcast
+                )
 
                 # Reduce expanded_y along dim -1 (last) to get N_BLOCK_SIZE×1 row of tiles
-                y_final = ttl.math.reduce_sum(expanded_y, dims=[-1], shape=(N_BLOCK_SIZE, 1))
+                y_final = ttl.math.reduce_sum(
+                    expanded_y, dims=[-1], shape=(N_BLOCK_SIZE, 1)
+                )
 
                 # Reduce expanded_z along dim 0 (first) to get 1×M_TILES column of tiles;
-                z_partial = ttl.math.reduce_sum(expanded_z, dims=[0], shape=(1, M_TILES))
+                z_partial = ttl.math.reduce_sum(
+                    expanded_z, dims=[0], shape=(1, M_TILES)
+                )
 
                 # Store y_final
                 y_blk.store(y_final)
@@ -514,6 +543,7 @@ def elwise_compute():
         # End of "with" scope:
         # Pop c_blk and d_blk;
         # Push z_blk to make it ready for elwise_write
+
 
 @ttl.datamovement()
 def elwise_write():
@@ -544,6 +574,7 @@ def elwise_write():
 
             # End of "with" scope:
             # Pop y_blk to make it available for elwise_compute to store and push next block
+
 
 ```
 
@@ -576,10 +607,15 @@ M_BLOCKS = M_TILES // M_BLOCK_SIZE
 N_BLOCKS = N_TILES // N_BLOCK_SIZE
 K_BLOCKS = K_TILES // K_BLOCK_SIZE
 
-a_dfb = ttl.make_dataflow_buffer_like(a, shape = (L_BLOCK_SIZE, M_BLOCK_SIZE, K_BLOCK_SIZE))
-b_dfb = ttl.make_dataflow_buffer_like(b, shape = (K_BLOCK_SIZE, N_BLOCK_SIZE))
-c_dfb = ttl.make_dataflow_buffer_like(c, shape = (M_BLOCK_SIZE, N_BLOCK_SIZE))
-y_dfb = ttl.make_dataflow_buffer_like(y, shape = (L_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
+a_dfb = ttl.make_dataflow_buffer_like(
+    a, shape=(L_BLOCK_SIZE, M_BLOCK_SIZE, K_BLOCK_SIZE)
+)
+b_dfb = ttl.make_dataflow_buffer_like(b, shape=(K_BLOCK_SIZE, N_BLOCK_SIZE))
+c_dfb = ttl.make_dataflow_buffer_like(c, shape=(M_BLOCK_SIZE, N_BLOCK_SIZE))
+y_dfb = ttl.make_dataflow_buffer_like(
+    y, shape=(L_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE)
+)
+
 
 @ttl.datamovement()
 def matmul_read():
@@ -604,7 +640,9 @@ def matmul_read():
 
                 # Repeat for each K block
                 for k_block in range(K_BLOCKS):
-                    k_slice = slice(k_block * K_BLOCK_SIZE, (k_block + 1) * K_BLOCK_SIZE)
+                    k_slice = slice(
+                        k_block * K_BLOCK_SIZE, (k_block + 1) * K_BLOCK_SIZE
+                    )
 
                     # Reserve a_blk and b_blk
                     with (
@@ -622,6 +660,7 @@ def matmul_read():
                         # End of "with" scope:
                         # Push a_blk and b_blk to make it ready for matmul_compute
 
+
 @ttl.compute()
 def matmul_compute():
     for _ in range(L_BLOCKS):
@@ -632,7 +671,9 @@ def matmul_compute():
                 with y_dfb.reserve() as y_blk:
 
                     # Zero-initialize the accumulator y_final before summing K_BLOCKS partial products
-                    y_final = ttl.block.fill(0, shape=(L_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
+                    y_final = ttl.block.fill(
+                        0, shape=(L_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE)
+                    )
 
                     # Repeat for each K block
                     for _ in range(K_BLOCKS):
@@ -645,7 +686,11 @@ def matmul_compute():
                             # b_blk has shape K_BLOCK_SIZE×N_BLOCK_SIZE;
                             # Unsqueeze it to 1×K_BLOCK_SIZE×N_BLOCK_SIZE and then
                             # broadcast it over dim 0 to L_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE
-                            b_bcast = ttl.block.broadcast(ttl.block.unsqueeze(b_blk, dims=[0]), dims=[0], shape=(L_BLOCK_SIZE, K_BLOCK_SIZE, N_BLOCK_SIZE))
+                            b_bcast = ttl.block.broadcast(
+                                ttl.block.unsqueeze(b_blk, dims=[0]),
+                                dims=[0],
+                                shape=(L_BLOCK_SIZE, K_BLOCK_SIZE, N_BLOCK_SIZE),
+                            )
 
                             # Accumulate dot product between L_BLOCK_SIZE×M_BLOCK_SIZE×K_BLOCK_SIZE a_blk and
                             # L_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE b_bcast in y_final
@@ -660,7 +705,11 @@ def matmul_compute():
                         # c_blk has shape M_BLOCK_SIZE×N_BLOCK_SIZE;
                         # Unsqueeze it to 1×M_BLOCK_SIZE×N_BLOCK_SIZE and then
                         # broadcast it over dim 0 to L_BLOCK_SIZE×M_BLOCK_SIZE×N_BLOCK_SIZE
-                        c_bcast = ttl.block.broadcast(ttl.block.unsqueeze(c_blk, dims=[0]), dims=[0], shape=(L_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE))
+                        c_bcast = ttl.block.broadcast(
+                            ttl.block.unsqueeze(c_blk, dims=[0]),
+                            dims=[0],
+                            shape=(L_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE),
+                        )
 
                         y_final = y_final + c_bcast
 
@@ -672,6 +721,7 @@ def matmul_compute():
                     # End of "with" scope:
                     # Push y_blk to make it ready for matmul_write
 
+
 @ttl.datamovement()
 def matmul_write():
     for l_block in range(L_BLOCKS):
@@ -682,14 +732,20 @@ def matmul_write():
                 with y_dfb.wait() as y_blk:
 
                     # Store L_BLOCK_SIZE×M_BLOCK_SIZE×N_BLOCK_SIZE y_blk block into y
-                    y_xf = ttl.copy(y_blk, y[
-                        l_block * L_BLOCK_SIZE : (l_block + 1) * L_BLOCK_SIZE,
-                        m_block * M_BLOCK_SIZE : (m_block + 1) * M_BLOCK_SIZE,
-                        n_block * N_BLOCK_SIZE : (n_block + 1) * N_BLOCK_SIZE])
+                    y_xf = ttl.copy(
+                        y_blk,
+                        y[
+                            l_block * L_BLOCK_SIZE : (l_block + 1) * L_BLOCK_SIZE,
+                            m_block * M_BLOCK_SIZE : (m_block + 1) * M_BLOCK_SIZE,
+                            n_block * N_BLOCK_SIZE : (n_block + 1) * N_BLOCK_SIZE,
+                        ],
+                    )
                     y_xf.wait()
 
                     # End of "with" scope:
                     # Pop y_blk to make it available for matmul_compute to store and push next block
+
+
 ```
 
 | Function | Description |
@@ -798,9 +854,9 @@ The active predicates are only required for code that includes pipe-coupled comp
 ROWS = ...  # rows participating in the gather
 COLS = ...  # columns participating in the gather
 
-net = ttl.PipeNet([ttl.Pipe(
-    src = (x, y),
-    dst = (0, y)) for x in range(1, COLS) for y in range(ROWS)])
+net = ttl.PipeNet(
+    [ttl.Pipe(src=(x, y), dst=(0, y)) for x in range(1, COLS) for y in range(ROWS)]
+)
 
 # (1, 0) -> (0, 0) |             |
 # (2, 0) -> (0, 0) | sequential  |
@@ -809,6 +865,7 @@ net = ttl.PipeNet([ttl.Pipe(
 #                                |
 # (1, 1) -> (0, 1)               |
 # ...                            |
+
 
 @ttl.datamovement()
 def dm():
@@ -836,6 +893,8 @@ def dm():
 
         net.if_src(pipe_src)
         net.if_dst(pipe_dst)
+
+
 ```
 
 #### Scatter example
@@ -846,13 +905,14 @@ def dm():
 
 grid_x, grid_y = ttl.grid_size()
 
-net = ttl.PipeNet([ttl.Pipe(
-    src = (x, 0),
-    dst = (x, slice(1, grid_y))) for x in range(grid_x)])
+net = ttl.PipeNet(
+    [ttl.Pipe(src=(x, 0), dst=(x, slice(1, grid_y))) for x in range(grid_x)]
+)
 
 # (0, 0) => (0, 1) (0, 2) (0, 3) ... |
 # (1, 0) => (1, 1) (1, 2) (1, 3) ... | concurrent
 # ...                                |
+
 
 @ttl.datamovement()
 def dm():
@@ -880,6 +940,8 @@ def dm():
 
         net.if_src(pipe_src)
         net.if_dst(pipe_dst)
+
+
 ```
 
 #### Scatter-gather example
@@ -890,9 +952,13 @@ def dm():
 
 grid_x, grid_y = ttl.grid_size()
 
-net = ttl.PipeNet([ttl.Pipe(
-    src = (x, y),
-    dst = (x, slice(0, grid_y))) for x in range(grid_x) for y in range(grid_y)])
+net = ttl.PipeNet(
+    [
+        ttl.Pipe(src=(x, y), dst=(x, slice(0, grid_y)))
+        for x in range(grid_x)
+        for y in range(grid_y)
+    ]
+)
 
 # (0, 0) => (0, 0) (0, 1) (0, 2) ... |            |
 # (0, 1) => (0, 0) (0, 1) (0, 2) ... | sequential |
@@ -901,6 +967,7 @@ net = ttl.PipeNet([ttl.Pipe(
 #                                                 |
 # (1, 0) => (1, 0) (1, 1) (1, 2) ...              |
 # ...                                             |
+
 
 @ttl.datamovement()
 def dm():
@@ -928,6 +995,8 @@ def dm():
 
         net.if_src(pipe_src)
         net.if_dst(pipe_dst)
+
+
 ```
 
 #### Forward to a \+1 neighbor example
@@ -938,9 +1007,13 @@ def dm():
 
 grid_x, grid_y = ttl.grid_size()
 
-net = ttl.PipeNet([ttl.Pipe(
-    src = (x, y),
-    dst = (x, (y + 1) % grid_y)) for x in range(grid_x) for y in range(grid_y)])
+net = ttl.PipeNet(
+    [
+        ttl.Pipe(src=(x, y), dst=(x, (y + 1) % grid_y))
+        for x in range(grid_x)
+        for y in range(grid_y)
+    ]
+)
 
 # (0, 0) => (0, 1)  |
 # (0, 1) => (0, 2)  |
@@ -952,6 +1025,7 @@ net = ttl.PipeNet([ttl.Pipe(
 # ...               |
 #
 # * - assuming (8, 8) grid
+
 
 @ttl.datamovement()
 def dm():
@@ -983,6 +1057,8 @@ def dm():
 
         net.if_src(pipe_src)
         net.if_dst(pipe_dst)
+
+
 ```
 
 
@@ -997,16 +1073,17 @@ A *tensor slice* is a view into a TT-NN tensor defined in terms of a dimension s
 #### Tensor slice example
 
 ```py
-g = 2 # granularity
-a_dfb = ttl.make_dataflow_buffer_like(A, shape = (g, 1))
+g = 2  # granularity
+a_dfb = ttl.make_dataflow_buffer_like(A, shape=(g, 1))
 
 row_tiles = A.shape[0] // ttl.TILE_SHAPE[0]
 col_tiles = A.shape[1] // ttl.TILE_SHAPE[1]
-cols_per_node = math.ceil(col_tiles / (grid_size(dims = 1)))
+cols_per_node = math.ceil(col_tiles / (grid_size(dims=1)))
 
-node_num = ttl.node(dims = 1)
+node_num = ttl.node(dims=1)
 start_ct = node_num * cols_per_node
 end_ct = min(start_ct + cols_per_node, col_tiles)
+
 
 @ttl.datamovement()
 def dm():
@@ -1019,11 +1096,11 @@ def dm():
 
                 # then copy from a tensor slice of matching shape:
 
-                row_slice = slice(rt * g, (rt + 1) * g) # explicit row slice
-                a_xf = ttl.copy(
-                    A[row_slice, ct:ct + 1], # in-line col slice
-                    a_blk)
+                row_slice = slice(rt * g, (rt + 1) * g)  # explicit row slice
+                a_xf = ttl.copy(A[row_slice, ct : ct + 1], a_blk)  # in-line col slice
                 a_xf.wait()
+
+
 ```
 
 
@@ -1051,9 +1128,8 @@ When `ttl.copy` function is called multiple times, instead of waiting on each tr
 HO = HI * H_SCALE_FACTOR
 WO = WI * W_SCALE_FACTOR
 
-io_dfb = ttl.make_dataflow_buffer_like(
-    input_images, shape=(C,), block_count=2
-)
+io_dfb = ttl.make_dataflow_buffer_like(input_images, shape=(C,), block_count=2)
+
 
 @ttl.datamovement()
 def reader():
@@ -1068,6 +1144,7 @@ def reader():
 
                     xf.wait()
 
+
 @ttl.datamovement()
 def writer():
     for n in range(N):
@@ -1081,7 +1158,15 @@ def writer():
 
                             # Copy output pixel channels
 
-                            xf = ttl.copy(io_blk, output[n, hi * H_SCALE_FACTOR + h_scale_index, wi * W_SCALE_FACTOR + w_scale_index, :])
+                            xf = ttl.copy(
+                                io_blk,
+                                output[
+                                    n,
+                                    hi * H_SCALE_FACTOR + h_scale_index,
+                                    wi * W_SCALE_FACTOR + w_scale_index,
+                                    :,
+                                ],
+                            )
 
                             # Add transfer handle to a group
 
@@ -1090,6 +1175,8 @@ def writer():
                     # Wait for all transfers to complete
 
                     gxf.wait_all()
+
+
 ```
 
 | Function | Description |
@@ -1109,9 +1196,10 @@ A *semaphore* is a communication primitive for general synchronization between n
 #### One-to-many barrier example
 
 ```py
-node_num = ttl.node(dims = 1)
+node_num = ttl.node(dims=1)
 my_barrier = ttl.Semaphore()
 all_barrier = my_barrier.get_remote_multicast()
+
 
 @ttl.datamovement()
 def dm():
@@ -1124,15 +1212,18 @@ def dm():
         my_barrier.wait_eq(1)
 
         # node 0 is done
+
+
 ```
 
 #### Many-to-one barrier example
 
 ```py
-node_num = ttl.node(dims = 1)
+node_num = ttl.node(dims=1)
 my_barrier = ttl.Semaphore()
 node_0_barrier = my_barrier.get_remote((0, 0))
-non_0_node_count = grid_size(dims = 1) - 1
+non_0_node_count = grid_size(dims=1) - 1
+
 
 @ttl.datamovement()
 def dm():
@@ -1145,6 +1236,8 @@ def dm():
         my_barrier.wait_eq(non_0_node_count)
 
         # non-0 nodes are done
+
+
 ```
 
 | Function | Description |
@@ -1211,6 +1304,8 @@ def matmul_read():
 
                                     a_xf.wait()
                                     b_xf.wait()
+
+
 ```
 
 | Function | Description |
@@ -1247,7 +1342,16 @@ def matmul_read():
 
                     # Print iteration state and the content of c_blk block
 
-                    print("i_tile=", i_tile, " m_tile=", m_tile, "n_tile=", n_tile, " c_blk: ", c_blk)
+                    print(
+                        "i_tile=",
+                        i_tile,
+                        " m_tile=",
+                        m_tile,
+                        "n_tile=",
+                        n_tile,
+                        " c_blk: ",
+                        c_blk,
+                    )
 
                     c_xf = ttl.copy(c[m_tile, n_tile], c_blk)
                     c_xf.wait()
@@ -1280,6 +1384,8 @@ def matmul_read():
 
                         a_xf.wait()
                         b_xf.wait()
+
+
 ```
 
 | Type | `print` function behavior |

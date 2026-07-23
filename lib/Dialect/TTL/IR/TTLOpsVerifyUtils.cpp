@@ -7,31 +7,11 @@
 #include "TTLOpsVerifyUtils.h"
 
 #include "mlir/Support/LogicalResult.h"
-#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
-#include "llvm/ADT/SmallPtrSet.h"
 
 namespace mlir::tt::ttl::verify {
-namespace {
 
-// Return true when `v` is a transfer handle produced by an operation with
-// `ttl.wait` semantics, allowing the handle to flow through tensor containers
-// and loop-carried values.
-static bool isDerivedFromTransfer(mlir::Value value) {
-  llvm::SmallPtrSet<mlir::Value, 16> seen;
-  return mlir::tt::ttl::traceTransferHandleSource<bool>(
-      value,
-      [](mlir::Value source) {
-        return source.getDefiningOp<mlir::tt::ttl::CopyOp>() != nullptr ||
-               source.getDefiningOp<mlir::tt::ttl::PipeTransferSendOp>() !=
-                   nullptr;
-      },
-      seen);
-}
-
-} // namespace
-
-mlir::LogicalResult isValidWaitOperand(mlir::Operation *op,
-                                       mlir::Value handle) {
+mlir::LogicalResult verifyWaitOperandType(mlir::Operation *op,
+                                          mlir::Value handle) {
   // Accept typed and untyped transfer handles. Untyped handles model async
   // pipe receive completion and are expanded before lowering.
   if (!mlir::isa<mlir::tt::ttl::TransferHandleType>(handle.getType())) {
@@ -40,12 +20,7 @@ mlir::LogicalResult isValidWaitOperand(mlir::Operation *op,
            << handle.getType();
   }
 
-  if (isDerivedFromTransfer(handle)) {
-    return mlir::success();
-  }
-
-  return op->emitOpError() << "expects operand to be derived from ttl.copy or "
-                              "ttl.pipe_transfer.send.";
+  return mlir::success();
 }
 
 } // namespace mlir::tt::ttl::verify

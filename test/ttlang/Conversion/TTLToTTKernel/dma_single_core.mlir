@@ -144,14 +144,14 @@ module {
 //
 // TTKERNEL-LABEL: func.func @dma_single_tile_two_phase_loops
 // TTKERNEL-DAG: %[[NOC:.*]] = arith.constant 0 : i8
-// TTKERNEL: %[[HANDLES0:.*]] = tensor.empty() : tensor<4x!ttl.transfer_handle<read>>
-// TTKERNEL: %[[CAST:.*]] = tensor.cast %[[HANDLES0]] : tensor<4x!ttl.transfer_handle<read>> to tensor<?x!ttl.transfer_handle<read>>
-// TTKERNEL: %[[HANDLES:.*]] = scf.for {{.*}} iter_args(%[[H:.*]] = %[[CAST]]) -> (tensor<?x!ttl.transfer_handle<read>>) {
+// TTKERNEL-DAG: %[[ZERO:.*]] = arith.constant 0 : i32
+// TTKERNEL: %[[HANDLES0:.*]] = tensor.empty() : tensor<4xi32>
+// TTKERNEL: %[[CAST:.*]] = tensor.cast %[[HANDLES0]] : tensor<4xi32> to tensor<?xi32>
+// TTKERNEL: %[[HANDLES:.*]] = scf.for {{.*}} iter_args(%[[H:.*]] = %[[CAST]]) -> (tensor<?xi32>) {
 // TTKERNEL:   ttkernel.get_write_ptr({{.*}}) : (!ttkernel.cb<2, !ttcore.tile<32x32, f32>>) -> i32
 // TTKERNEL:   ttkernel.noc_async_read_tile({{.*}}, %[[NOC]]) : (i32, !ttkernel.TensorAccessor, i32, i8) -> ()
-// TTKERNEL:   %[[XF:.*]] = builtin.unrealized_conversion_cast {{.*}} : i32 to !ttl.transfer_handle<read>
-// TTKERNEL:   %[[INS:.*]] = tensor.insert %[[XF]] into %[[H]]{{\[}}{{.*}}{{\]}} : tensor<?x!ttl.transfer_handle<read>>
-// TTKERNEL:   scf.yield %[[INS]] : tensor<?x!ttl.transfer_handle<read>>
+// TTKERNEL:   %[[INS:.*]] = tensor.insert %[[ZERO]] into %[[H]]{{\[}}{{.*}}{{\]}} : tensor<?xi32>
+// TTKERNEL:   scf.yield %[[INS]] : tensor<?xi32>
 // TTKERNEL: }
 // TTKERNEL: scf.for {{.*}} {
 // TTKERNEL:   ttkernel.noc_async_read_barrier(%[[NOC]]) : (i8) -> ()

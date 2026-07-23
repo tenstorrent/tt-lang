@@ -23,6 +23,46 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
+// A wait that can observe two receive copies has no unique completion event for
+// the wait-for graph.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @wait_with_distinct_receive_sources(%condition: i1)
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.if_dst %pipe
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %dst0 = ttl.cb_reserve %cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %recv0 = ttl.copy %pipe, %dst0
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.transfer_handle
+      %dst1 = ttl.cb_reserve %cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %recv1 = ttl.copy %pipe, %dst1
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.transfer_handle
+      %recv = scf.if %condition -> (!ttl.transfer_handle) {
+        scf.yield %recv0 : !ttl.transfer_handle
+      } else {
+        scf.yield %recv1 : !ttl.transfer_handle
+      }
+      // expected-error @below {{'ttl.wait' op requires either every possible source to be the same pipe receive ttl.copy or no source to be a pipe receive}}
+      ttl.wait %recv : !ttl.transfer_handle
+    }
+    func.return
+  }
+}
+
+// -----
+
 // A pipe-to-DFB copy must execute only on pipe destination nodes.
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {

@@ -56,25 +56,6 @@ func.func @pipe_transfer_point_to_point_multi_receiver() {
 
 // -----
 
-// Test: pipe transfer post requires a token for the same PipeNet.
-func.func @pipe_transfer_post_token_net_mismatch() {
-  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-  %transfer = ttl.pipe_transfer.create %p {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
-      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> -> !ttl.pipe_transfer
-  %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
-      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-  %dst = ttl.cb_reserve %cb
-      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
-      -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  // expected-error @+1 {{'ttl.pipe_transfer.post' op token pipeNetId must match transfer pipeNetId}}
-  %token = ttl.pipe_transfer.post %transfer, %dst
-      : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
-      -> !ttl.pipe_token<net 1>
-  func.return
-}
-
-// -----
-
 // Test: pipe transfer send result is a write handle.
 func.func @pipe_transfer_send_requires_write_handle() {
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -86,16 +67,6 @@ func.func @pipe_transfer_send_requires_write_handle() {
   %xf = ttl.pipe_transfer.send %transfer, %cb
       : (!ttl.pipe_transfer, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
       -> !ttl.transfer_handle<read>
-  func.return
-}
-
-// -----
-
-// Test: pipe transfer wait requires a token produced by a post.
-func.func @pipe_transfer_wait_requires_post_token() {
-  %token = builtin.unrealized_conversion_cast to !ttl.pipe_token<net 0>
-  // expected-error @+1 {{'ttl.pipe_transfer.wait' op requires token derived from ttl.pipe_transfer.post}}
-  ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
   func.return
 }
 

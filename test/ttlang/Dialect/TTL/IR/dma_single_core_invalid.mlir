@@ -1,5 +1,5 @@
 // RUN: ttlang-opt --verify-diagnostics --split-input-file %s
-// Summary: Invalid ttl.copy cases rejected by the CopyOp verifier.
+// Summary: Invalid ttl.copy and ttl.wait operands rejected by op verifiers.
 
 // -----
 
@@ -85,63 +85,6 @@ module {
     // expected-error @below {{tensor shape dimension 0 (2) must match CB shape dimension (1)}}
     %xf = ttl.copy %arg0, %cb : (tensor<2x1x!ttcore.tile<32x32, f32>, #layout_2x1>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<read>
     ttl.wait %xf : !ttl.transfer_handle<read>
-    func.return
-  }
-}
-
-// -----
-
-// Wait without a corresponding copy is invalid.
-module {
-  func.func @wait_without_copy_invalid(%xf: !ttl.transfer_handle<read>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    // expected-error @below {{expects operand to be derived from ttl.copy}}
-    ttl.wait %xf : !ttl.transfer_handle<read>
-    func.return
-  }
-}
-
-// -----
-
-// Wait on a handle that is routed through a tensor container but does not come
-// from ttl.copy is invalid. This exercises the container-aware verifier.
-module {
-  func.func @wait_from_container_without_copy_invalid(%xf: !ttl.transfer_handle<read>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %c0 = arith.constant 0 : index
-    %c1 = arith.constant 1 : index
-    %handles0 = tensor.empty(%c1) : tensor<?x!ttl.transfer_handle<read>>
-    %handles = tensor.insert %xf into %handles0[%c0] : tensor<?x!ttl.transfer_handle<read>>
-    %loaded = tensor.extract %handles[%c0] : tensor<?x!ttl.transfer_handle<read>>
-    // expected-error @below {{expects operand to be derived from ttl.copy}}
-    ttl.wait %loaded : !ttl.transfer_handle<read>
-    func.return
-  }
-}
-
-// -----
-
-// Wait on an scf.if result where one branch yields a non-copy handle is
-// invalid. The verifier traces both branches independently.
-#layout_if = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, bf16>,
-                         buffer = l1, grid = [1, 1], memory = interleaved>
-
-module {
-  func.func @wait_scf_if_one_branch_invalid(
-      %cond: i1,
-      %src: tensor<1x1x!ttcore.tile<32x32, bf16>, #layout_if>,
-      %bogus: !ttl.transfer_handle<read>
-  ) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %tx_good = ttl.copy %src, %cb
-        : (tensor<1x1x!ttcore.tile<32x32, bf16>, #layout_if>,
-           !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
-        -> !ttl.transfer_handle<read>
-    %result = scf.if %cond -> (!ttl.transfer_handle<read>) {
-      scf.yield %tx_good : !ttl.transfer_handle<read>
-    } else {
-      scf.yield %bogus : !ttl.transfer_handle<read>
-    }
-    // expected-error @below {{expects operand to be derived from ttl.copy}}
-    ttl.wait %result : !ttl.transfer_handle<read>
     func.return
   }
 }

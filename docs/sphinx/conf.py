@@ -61,7 +61,14 @@ napoleon_numpy_docstring = True
 
 autosummary_generate = True
 
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+exclude_patterns = [
+    "_build",
+    "Thumbs.db",
+    ".DS_Store",
+    # Authoring source for the spec; build_spec.py expands it into
+    # TTLangSpecification.md, which is what Sphinx renders.
+    "specs/TTLangSpecification.externalized.md",
+]
 
 html_theme = "sphinx_rtd_theme"
 html_theme_options = {
