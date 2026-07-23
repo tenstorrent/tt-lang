@@ -87,6 +87,14 @@ _NO_PROMOTION_SCRIPTS: frozenset[str] = frozenset(
         # @ttl.operation + a torch golden outside the spec:begin/end markers.
         "spec/block/batched_matmul_bias.py",
         "spec/block/elementwise_broadcast_reduce.py",
+        # Runnable spec examples that stand on their own (shape introspection,
+        # a multi-kernel operation, and the debugging/perf snippets).
+        "spec/dataflow_buffer/tiled_tensor_shape.py",
+        "spec/dataflow_buffer/row_major_tensor_shape.py",
+        "spec/dataflow_buffer/dataflow_buffer.py",
+        "spec/operation_function/multi_kernel_operation.py",
+        "spec/performance_and_debugging/debug_printing.py",
+        "spec/performance_and_debugging/signpost.py",
         pytest.param(
             "matmul.py",
             marks=pytest.mark.xfail(reason="Required broadcast not yet supported"),
