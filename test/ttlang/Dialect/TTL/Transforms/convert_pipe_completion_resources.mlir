@@ -1,7 +1,8 @@
 // RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=false})' | FileCheck %s
+// RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=true})' | FileCheck %s --check-prefix=CAPACITY
 
 // Summary: Verifies shared local and GlobalSemaphore allocation for PipeNet
-// completion and sender-ready counters.
+// completion, sender-ready, and capacity counters.
 
 // Sixteen transfers sharing a receiver consume all local semaphore ids. The
 // sender-ready counter uses one GlobalSemaphore address whose per-core
@@ -346,6 +347,20 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 // CHECK: %[[GLOBAL_COMPLETION_SEND:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_COMPLETION_INDEX]])
 // CHECK: %[[GLOBAL_COMPLETION_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[GLOBAL_COMPLETION_SEND]], {{.*}})
 // CHECK: ttkernel.noc_semaphore_inc(%[[GLOBAL_COMPLETION_NOC]]
+// The computed-address configuration also proves capacity synchronization for
+// p15. Its capacity counter follows the two existing global counters.
+// CAPACITY: module attributes {{.*}}ttl.pipe_global_semaphore_count = 3 : i64{{.*}}ttl.pipe_sync_semaphore_count = 16 : i64
+// CAPACITY-LABEL: func.func @completion_overflow_uses_global_counter
+// CAPACITY: %[[CAPACITY_ADDRESS:.*]] = ttkernel.get_common_arg_val(%[[CAPACITY_ARG_INDEX:.*]])
+// CAPACITY: %[[CAPACITY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[CAPACITY_ADDRESS]])
+// CAPACITY: ttkernel.noc_semaphore_set(%[[CAPACITY_PTR]]
+// CAPACITY: ttkernel.cb_pop_front
+// CAPACITY: %[[RELEASE_ADDRESS:.*]] = ttkernel.get_common_arg_val(%[[CAPACITY_ARG_INDEX]])
+// CAPACITY: %[[RELEASE_NOC_ADDRESS:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[RELEASE_ADDRESS]], {{.*}})
+// CAPACITY: ttkernel.noc_semaphore_inc(%[[RELEASE_NOC_ADDRESS]]
+// CAPACITY: %[[ACQUIRE_ADDRESS:.*]] = ttkernel.get_common_arg_val(%[[CAPACITY_ARG_INDEX]])
+// CAPACITY: %[[ACQUIRE_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[ACQUIRE_ADDRESS]])
+// CAPACITY: ttkernel.experimental.semaphore_wait_min(%[[ACQUIRE_PTR]]
 module attributes {ttl.launch_grid = array<i64: 17, 1>} {
   func.func @completion_overflow_uses_global_counter()
       attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
