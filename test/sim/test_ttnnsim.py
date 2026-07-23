@@ -850,24 +850,30 @@ def test_from_torch_tile_layout_pads_non_tile_aligned_shapes():
     ``(1, 1)`` scalars at position ``(0, 0)``; broadcast / reduce then
     overwrite the padding (steps 1 and 2 respectively) when needed.
     """
+    # ``.shape`` reports the logical (unpadded) shape, mirroring ttnn.Tensor.shape;
+    # ``.padded_shape`` reports the tile-aligned physical storage.
     col = ttnn.from_torch(torch.arange(32, dtype=torch.float32).reshape(32, 1))
-    assert col.shape == (32, 32)
+    assert col.shape == (32, 1)
+    assert col.padded_shape == (32, 32)
     assert torch.equal(col.to_torch()[:, 0], torch.arange(32, dtype=torch.float32))
     assert torch.all(col.to_torch()[:, 1:] == 0)
 
     row = ttnn.from_torch(torch.arange(32, dtype=torch.float32).reshape(1, 32))
-    assert row.shape == (32, 32)
+    assert row.shape == (1, 32)
+    assert row.padded_shape == (32, 32)
     assert torch.equal(row.to_torch()[0, :], torch.arange(32, dtype=torch.float32))
     assert torch.all(row.to_torch()[1:, :] == 0)
 
     scalar = ttnn.from_torch(torch.tensor([[3.5]], dtype=torch.float32))
-    assert scalar.shape == (32, 32)
+    assert scalar.shape == (1, 1)
+    assert scalar.padded_shape == (32, 32)
     assert scalar.to_torch()[0, 0].item() == 3.5
     assert torch.all(scalar.to_torch()[1:, :] == 0)
     assert torch.all(scalar.to_torch()[:, 1:] == 0)
 
     odd = ttnn.from_torch(torch.ones((4, 4), dtype=torch.float32))
-    assert odd.shape == (32, 32)
+    assert odd.shape == (4, 4)
+    assert odd.padded_shape == (32, 32)
     assert torch.all(odd.to_torch()[:4, :4] == 1.0)
     assert torch.all(odd.to_torch()[4:, :] == 0)
     assert torch.all(odd.to_torch()[:, 4:] == 0)
@@ -876,42 +882,55 @@ def test_from_torch_tile_layout_pads_non_tile_aligned_shapes():
     # tt-metal's nightly reduction suite feeds 0-D / 1-D (and 0-volume) shapes
     # straight through ttnn.from_torch(..., layout=ttnn.TILE_LAYOUT, device=device)
     # (tests/ttnn/nightly/unit_tests/operations/reduction/test_reduction_ops.py,
-    # test_generic_ops parametrizes tensor_shape over (), (2,), ...). A rank-1
-    # vector is treated as a single 1xN row; the simulator reports the padded
-    # shape as .shape (as it does for tile-aligned 2-D inputs above), and
-    # .padded_shape / .tile expose the tile geometry the spec examples read.
+    # test_generic_ops parametrizes tensor_shape over (), (2,), ...). ``.shape``
+    # preserves the logical rank (a length-N vector stays ``(N,)``), while
+    # ``.padded_shape`` / ``.tile`` expose the lifted tile geometry the spec
+    # examples read (a length-N vector tiles as a single ``1xN`` row).
     vec = ttnn.from_torch(
         torch.arange(32, dtype=torch.float32), layout=ttnn.TILE_LAYOUT
     )
-    assert vec.shape == (32, 32)
+    assert vec.shape == (32,)
     assert vec.padded_shape == (32, 32)
     assert vec.tile.tile_shape == (32, 32)
     assert torch.equal(vec.to_torch()[0, :], torch.arange(32, dtype=torch.float32))
     assert torch.all(vec.to_torch()[1:, :] == 0)
 
     long_vec = ttnn.from_torch(torch.ones((128,)), layout=ttnn.TILE_LAYOUT)
-    assert long_vec.shape == (32, 128)
+    assert long_vec.shape == (128,)
+    assert long_vec.padded_shape == (32, 128)
 
     scalar_0d = ttnn.from_torch(
         torch.tensor(3.5, dtype=torch.float32), layout=ttnn.TILE_LAYOUT
     )
-    assert scalar_0d.shape == (32, 32)
+    assert scalar_0d.shape == ()
+    assert scalar_0d.padded_shape == (32, 32)
     assert scalar_0d.to_torch()[0, 0].item() == 3.5
     assert torch.all(scalar_0d.to_torch()[1:, :] == 0)
     assert torch.all(scalar_0d.to_torch()[:, 1:] == 0)
 
-    # rand / empty / zeros take a shape directly; they lift low-rank shapes and
-    # pad transparently, identically to from_torch, so ttnn.rand(Shape([M])) and
-    # from_torch(torch.rand(M)) agree.
-    assert ttnn.rand((32, 1)).shape == (32, 32)
-    assert ttnn.empty((4, 4)).shape == (32, 32)
-    assert ttnn.rand(ttnn.Shape([32])).shape == (32, 32)
-    assert ttnn.zeros(ttnn.Shape([128])).shape == (32, 128)
-    assert ttnn.empty(ttnn.Shape([3])).shape == (32, 32)
-    assert ttnn.zeros(ttnn.Shape([])).shape == (32, 32)
-    # Row-major creation lifts only a bare scalar to a length-1 vector.
-    assert ttnn.zeros(ttnn.Shape([]), layout=ttnn.ROW_MAJOR_LAYOUT).shape == (1,)
-    assert ttnn.zeros(ttnn.Shape([5]), layout=ttnn.ROW_MAJOR_LAYOUT).shape == (5,)
+    # rand / empty / zeros take a shape directly; they track the logical shape
+    # and lift/pad for storage identically to from_torch, so ttnn.rand(Shape([M]))
+    # and from_torch(torch.rand(M)) agree on both .shape and .padded_shape.
+    assert ttnn.rand((32, 1)).shape == (32, 1)
+    assert ttnn.rand((32, 1)).padded_shape == (32, 32)
+    assert ttnn.empty((4, 4)).shape == (4, 4)
+    assert ttnn.empty((4, 4)).padded_shape == (32, 32)
+    assert ttnn.rand(ttnn.Shape([32])).shape == (32,)
+    assert ttnn.rand(ttnn.Shape([32])).padded_shape == (32, 32)
+    assert ttnn.zeros(ttnn.Shape([128])).shape == (128,)
+    assert ttnn.zeros(ttnn.Shape([128])).padded_shape == (32, 128)
+    assert ttnn.empty(ttnn.Shape([3])).shape == (3,)
+    assert ttnn.empty(ttnn.Shape([3])).padded_shape == (32, 32)
+    assert ttnn.zeros(ttnn.Shape([])).shape == ()
+    assert ttnn.zeros(ttnn.Shape([])).padded_shape == (32, 32)
+    # Row-major creation keeps the logical shape; storage lifts only a bare
+    # scalar to a length-1 vector, which shows up in .padded_shape.
+    rm_scalar = ttnn.zeros(ttnn.Shape([]), layout=ttnn.ROW_MAJOR_LAYOUT)
+    assert rm_scalar.shape == ()
+    assert rm_scalar.padded_shape == (1,)
+    rm_vec = ttnn.zeros(ttnn.Shape([5]), layout=ttnn.ROW_MAJOR_LAYOUT)
+    assert rm_vec.shape == (5,)
+    assert rm_vec.padded_shape == (5,)
 
     # Row-major preserves the original shape exactly.
     assert ttnn.from_torch(torch.ones((32, 1)), layout=ttnn.ROW_MAJOR_LAYOUT).shape == (
@@ -945,7 +964,8 @@ def test_pad_to_tile_alignment_3d_last_two_unaligned():
     """
     src = torch.arange(2 * 5 * 7, dtype=torch.float32).reshape(2, 5, 7)
     t = ttnn.from_torch(src)
-    assert t.shape == (2, 32, 32)
+    assert t.shape == (2, 5, 7)
+    assert t.padded_shape == (2, 32, 32)
     out = t.to_torch()
     assert torch.equal(out[:, :5, :7], src)
     assert torch.all(out[:, 5:, :] == 0)
@@ -959,7 +979,8 @@ def test_pad_to_tile_alignment_3d_column_vector_per_slice():
     """
     src = torch.arange(2 * 3, dtype=torch.float32).reshape(2, 3, 1)
     t = ttnn.from_torch(src)
-    assert t.shape == (2, 32, 32)
+    assert t.shape == (2, 3, 1)
+    assert t.padded_shape == (2, 32, 32)
     out = t.to_torch()
     assert torch.equal(out[:, :3, 0:1], src)
     assert torch.all(out[:, :, 1:] == 0)
@@ -970,7 +991,8 @@ def test_pad_to_tile_alignment_3d_row_vector_per_slice():
     """3-D ``(B, 1, M)`` pads to ``(B, 32, 32)`` with data in row 0."""
     src = torch.arange(2 * 3, dtype=torch.float32).reshape(2, 1, 3)
     t = ttnn.from_torch(src)
-    assert t.shape == (2, 32, 32)
+    assert t.shape == (2, 1, 3)
+    assert t.padded_shape == (2, 32, 32)
     out = t.to_torch()
     assert torch.equal(out[:, 0:1, :3], src)
     assert torch.all(out[:, 1:, :] == 0)
@@ -985,7 +1007,8 @@ def test_pad_to_tile_alignment_4d_pads_only_last_two_dims():
     """
     src = torch.arange(2 * 3 * 5 * 7, dtype=torch.float32).reshape(2, 3, 5, 7)
     t = ttnn.from_torch(src)
-    assert t.shape == (2, 3, 32, 32)
+    assert t.shape == (2, 3, 5, 7)
+    assert t.padded_shape == (2, 3, 32, 32)
     out = t.to_torch()
     assert torch.equal(out[:, :, :5, :7], src)
     assert torch.all(out[:, :, 5:, :] == 0)

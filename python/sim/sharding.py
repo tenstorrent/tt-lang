@@ -218,7 +218,7 @@ def count_local_remote_l1_dram(
 
     For sharded tensors, returned counts are **element** totals.  For interleaved
     tensors, the third component is the total number of elements in ``t``
-    (same as ``math.prod(t.shape)`` for physical storage).
+    (``math.prod(t.padded_shape)``, i.e. the physical/tile-aligned storage).
 
     Args:
         t: Tensor view (often a slice of a larger sharded tensor).
@@ -228,9 +228,9 @@ def count_local_remote_l1_dram(
     """
     mc = t.memory_config
     if mc.strategy == ShardingStrategy.INTERLEAVED:
-        return (0, 0, math.prod(t.shape))
+        return (0, 0, math.prod(t.padded_shape))
 
-    eshape = t.shape
+    eshape = t.padded_shape
     origin = (
         origin_in_parent_elements
         if origin_in_parent_elements is not None
@@ -245,7 +245,7 @@ def count_local_remote_l1_dram(
         )
 
     if mc.shard_spec is None:
-        return (0, 0, math.prod(t.shape))
+        return (0, 0, math.prod(t.padded_shape))
 
     counter = _SHARD_ELEMENT_COUNTERS.get(mc.strategy)
     if counter is None:

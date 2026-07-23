@@ -54,7 +54,7 @@ def _copy_trace_fields(src: CopyEndpoint, dst: CopyEndpoint) -> dict:
         # For TILE_LAYOUT: elements_per_tile = prod(shape) / tile_count.
         # For ROW_MAJOR_LAYOUT: elements_per_tile = 1 (each element is a unit).
         # Integer division is exact for standard tile-aligned sharding.
-        total_elems = math.prod(tensor.shape)
+        total_elems = math.prod(tensor.padded_shape)
         if total_elems > 0:
             fields["local_l1"] = local_elems * tiles // total_elems
             fields["remote_l1"] = remote_elems * tiles // total_elems

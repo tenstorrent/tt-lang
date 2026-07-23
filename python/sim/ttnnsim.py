@@ -1235,14 +1235,22 @@ def tile_count_from_shape(layout: IndexType, shape: Shape) -> int:
 
 def tile_shape_from_tensor(t: "Tensor") -> Shape:
     """Return the tile-grid shape of a tensor (thin wrapper over
-    :func:`tile_shape_from_shape`)."""
-    return tile_shape_from_shape(t.shape)
+    :func:`tile_shape_from_shape`).
+
+    Uses the physical :attr:`~Tensor.padded_shape` because tile geometry is a
+    property of the stored (tile-aligned) data, not the logical shape.
+    """
+    return tile_shape_from_shape(t.padded_shape)
 
 
 def tile_count_from_tensor(t: "Tensor") -> int:
     """Return the number of logical units a Tensor represents (thin wrapper
-    over :func:`tile_count_from_shape`)."""
-    return tile_count_from_shape(t.layout, t.shape)
+    over :func:`tile_count_from_shape`).
+
+    Uses the physical :attr:`~Tensor.padded_shape` so tile/element counts
+    reflect the stored data, independent of the logical shape.
+    """
+    return tile_count_from_shape(t.layout, t.padded_shape)
 
 
 def check_count_match(
@@ -1352,11 +1360,25 @@ class Tensor:
         layout: IndexType = TILE_LAYOUT,
         memory_config: MemoryConfig = DRAM_MEMORY_CONFIG,
         dtype: Any = None,
+        logical_shape: Optional[Sequence[int]] = None,
     ) -> None:
         if tensor.ndim < 1:
             raise ValueError(f"Tensor must have at least 1 dimension, got 0-d scalar")
         self._tensor: torch.Tensor = tensor
         self._layout: IndexType = layout
+        # The logical (user-visible) shape, mirroring ttnn.Tensor.shape: the
+        # dimensions of the actual data, before tile-alignment padding and
+        # before low-rank inputs are lifted for storage.  ``padded_shape``
+        # reports the physical stored shape.  ``logical_shape`` defaults to the
+        # backing tensor's shape for tensors produced by internal ops (e.g.
+        # arithmetic / slicing), whose data is already at physical extent; the
+        # creation entry points (from_torch / rand / empty / zeros) pass the
+        # caller's original shape so ``.shape`` matches ttnn.
+        self._logical_shape: Tuple[int, ...] = (
+            tuple(int(d) for d in logical_shape)
+            if logical_shape is not None
+            else tuple(tensor.shape)
+        )
         if memory_config.strategy == ShardingStrategy.ND_SHARDED:
             self.memory_config: MemoryConfig = _maybe_resolve_nd_shard_spec_for_tensor(
                 Shape(tensor.shape), memory_config
@@ -1382,7 +1404,13 @@ class Tensor:
 
     @property
     def shape(self) -> Shape:
-        return Shape(self._tensor.shape)
+        """Logical (unpadded) shape, mirroring ``ttnn.Tensor.shape``.
+
+        Reflects the dimensions of the actual data as supplied by the caller,
+        which for ``TILE_LAYOUT`` tensors can be smaller (and lower-rank) than
+        the tile-aligned :attr:`padded_shape` used for physical storage.
+        """
+        return Shape(self._logical_shape)
 
     @property
     def padded_shape(self) -> Shape:
@@ -1390,7 +1418,9 @@ class Tensor:
 
         Mirrors ``ttnn.Tensor.padded_shape``: the shape of the stored data,
         including any zero padding added to reach ``TILE_SHAPE`` multiples for
-        ``TILE_LAYOUT`` tensors. For ``ROW_MAJOR_LAYOUT`` this equals ``shape``.
+        ``TILE_LAYOUT`` tensors and any leading unit dimensions added to lift a
+        low-rank input to a tileable rank. For ``ROW_MAJOR_LAYOUT`` this equals
+        ``shape`` apart from lifting a bare scalar to a length-1 vector.
         """
         return Shape(self._tensor.shape)
 
@@ -1644,7 +1674,7 @@ class Tensor:
             # which is called from _copy_trace_fields() inside if TRACE.enabled:
             # guards in copy.py, so tracking it is a no-op when tracing is off.
             parent_origin: Tuple[int, ...] = getattr(
-                self, "_element_origin", (0,) * len(self.shape)
+                self, "_element_origin", (0,) * self._tensor.ndim
             )
             starts: list[int] = []
             valid = True
@@ -1973,7 +2003,12 @@ def rand(
 ) -> Tensor:
     """Create a random tensor with given shape, dtype, and layout."""
     raw = torch.rand(shape, dtype=_promote_dtype(dtype))
-    return Tensor(_pad_to_tile_alignment(raw, layout), layout, dtype=dtype)
+    return Tensor(
+        _pad_to_tile_alignment(raw, layout),
+        layout,
+        dtype=dtype,
+        logical_shape=tuple(shape),
+    )
 
 
 def empty(
@@ -1985,7 +2020,12 @@ def empty(
 ) -> Tensor:
     """Create an uninitialized tensor with given shape, dtype, and layout."""
     raw = torch.empty(shape, dtype=_promote_dtype(dtype))
-    return Tensor(_pad_to_tile_alignment(raw, layout), layout, dtype=dtype)
+    return Tensor(
+        _pad_to_tile_alignment(raw, layout),
+        layout,
+        dtype=dtype,
+        logical_shape=tuple(shape),
+    )
 
 
 def zeros(
@@ -1997,7 +2037,12 @@ def zeros(
 ) -> Tensor:
     """Create a zero-filled tensor with given shape, dtype, and layout."""
     raw = torch.zeros(shape, dtype=_promote_dtype(dtype))
-    return Tensor(_pad_to_tile_alignment(raw, layout), layout, dtype=dtype)
+    return Tensor(
+        _pad_to_tile_alignment(raw, layout),
+        layout,
+        dtype=dtype,
+        logical_shape=tuple(shape),
+    )
 
 
 def to_torch(
@@ -2074,6 +2119,10 @@ def from_torch(
         eff_dtype = dtype
         eff_mc = memory_config if memory_config is not None else DRAM_MEMORY_CONFIG
 
+    # Preserve the caller's logical shape (mirroring ttnn.Tensor.shape) before
+    # rank lifting / tile padding rewrites the storage extent below.
+    logical_shape = tuple(tensor.shape)
+
     # Rank lifting for low-rank (0-D / 1-D) inputs and tile-alignment padding are
     # centralized in _pad_to_tile_alignment so from_torch and the creation ops
     # (rand / empty / zeros) accept the same shapes and produce identical layouts.
@@ -2083,9 +2132,17 @@ def from_torch(
         case _ if eff_dtype is not None:
             backing = _promote_dtype(eff_dtype)
             converted = tensor if tensor.dtype == backing else tensor.to(backing)
-            result = Tensor(converted, layout, memory_config=eff_mc, dtype=eff_dtype)
+            result = Tensor(
+                converted,
+                layout,
+                memory_config=eff_mc,
+                dtype=eff_dtype,
+                logical_shape=logical_shape,
+            )
         case _:
-            result = Tensor(tensor, layout, memory_config=eff_mc)
+            result = Tensor(
+                tensor, layout, memory_config=eff_mc, logical_shape=logical_shape
+            )
 
     if isinstance(mesh_mapper, ShardTensorToMesh):
         n = mesh_mapper.mesh.num_devices
