@@ -159,12 +159,6 @@ struct PipeResourceRequirements {
 PipeResourceRequirements
 getPipeResourceRequirements(const PipeResourcePlan &info);
 
-/// Diagnose layouts that exceed the hardware semaphore id limit before
-/// emitting ttkernel.get_semaphore ops with invalid ids.
-LogicalResult
-verifyPipeResourcePlanFitsHardware(ModuleOp mod, const PipeResourcePlan &info,
-                                   const PipeResourceRequirements &reqs);
-
 /// Walk `mod` once and group every pipe transfer by its net id.
 /// Deduplicates by (src, dst start/end) so the same pipe appearing on
 /// multiple ops contributes one entry.

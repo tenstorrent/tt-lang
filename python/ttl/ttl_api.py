@@ -585,7 +585,7 @@ class CompiledTTNNKernel:
             pipe_sram_scratch_bytes: Per-core SRAM scratch bytes used by
                 PipeNet metadata.
             num_pipe_global_semaphores: Number of GlobalSemaphore-backed
-                PipeNet ready counters used by this kernel.
+                PipeNet counters used by this kernel.
             kernel_pipe_computed_address_dfb_indices: Per-kernel receiver DFB indices whose
                 L1 bases are supplied as common runtime args.
         """
