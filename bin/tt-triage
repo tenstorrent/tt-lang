@@ -12,6 +12,34 @@ import runpy
 import sys
 
 
+def _reexec_in_container_triage_environment() -> None:
+    toolchain_directory = os.environ.get("TTLANG_TOOLCHAIN_DIR", "").strip()
+    if not toolchain_directory:
+        return
+
+    triage_environment = Path(toolchain_directory) / "tt-triage-venv"
+    if Path(sys.prefix).resolve() == triage_environment.resolve():
+        return
+
+    triage_python = triage_environment / "bin" / "python"
+    if not triage_python.is_file():
+        return
+
+    # Device-management packages in the container have independent version
+    # constraints, so triage runs with its isolated dependencies.
+    environment = os.environ.copy()
+    environment["VIRTUAL_ENV"] = str(triage_environment)
+    existing_path = environment.get("PATH", "")
+    environment["PATH"] = str(triage_environment / "bin") + (
+        f"{os.pathsep}{existing_path}" if existing_path else ""
+    )
+    os.execve(
+        str(triage_python),
+        [str(triage_python), str(Path(__file__).resolve()), *sys.argv[1:]],
+        environment,
+    )
+
+
 def _find_triage_directory() -> Path:
     runtime_root = (
         os.environ.get("TT_METAL_RUNTIME_ROOT", "").strip()
@@ -35,6 +63,7 @@ def _find_triage_directory() -> Path:
 
 
 def main() -> None:
+    _reexec_in_container_triage_environment()
     triage_directory = _find_triage_directory()
     sys.path.insert(0, str(triage_directory))
     runpy.run_path(str(triage_directory / "triage.py"), run_name="__main__")

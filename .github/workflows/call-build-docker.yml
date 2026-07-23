@@ -265,8 +265,7 @@ jobs:
             export PATH=/opt/ttlang-toolchain/venv/bin:/opt/ttlang-toolchain/bin:$PATH
             tt-lang-sim --help
             tt-lang-sim-stats --help
-            test -s /opt/ttlang-toolchain/bin/tt-triage
-            test -f /opt/ttlang-toolchain/tt-metal/tools/triage/triage.py
+            tt-triage --help
           '
 
       - name: Push dist image to GHCR
@@ -326,8 +325,7 @@ jobs:
             mlir-opt --version
             FileCheck --version
             python3 --version
-            test -s /opt/ttlang-toolchain/bin/tt-triage
-            test -f /opt/ttlang-toolchain/tt-metal/tools/triage/triage.py
+            tt-triage --help
           '
 
       - name: Push ird image to GHCR

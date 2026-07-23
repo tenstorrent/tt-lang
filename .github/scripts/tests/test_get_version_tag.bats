@@ -81,6 +81,10 @@ container_input_one_path() {
     container_input_one_path ".github/containers/Dockerfile.base"
 }
 
+@test "container input change in .github/containers/Dockerfile -> -<hash> form" {
+    container_input_one_path ".github/containers/Dockerfile"
+}
+
 @test "container input change in .github/containers/Dockerfile.wheel-manylinux-2-34 -> -<hash> form" {
     container_input_one_path ".github/containers/Dockerfile.wheel-manylinux-2-34"
 }
@@ -254,6 +258,7 @@ container_input_one_path() {
 UPLIFT_PATHS=(
     requirements-runtime.txt
     bin/tt-triage
+    .github/containers/Dockerfile
     .github/containers/Dockerfile.base
     .github/containers/Dockerfile.wheel-manylinux-2-34
     third-party/tt-metal
