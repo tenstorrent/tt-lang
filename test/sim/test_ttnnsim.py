@@ -943,6 +943,66 @@ def test_from_torch_tile_layout_pads_non_tile_aligned_shapes():
     )
 
 
+def test_arithmetic_propagates_logical_shape():
+    """Element-wise / matmul results report ttnn-logical shapes.
+
+    Derived tensors broadcast the operands' *logical* shapes (not the padded
+    storage), so ``.shape`` matches ttnn even when operands are non-tile-aligned
+    or low-rank; ``.padded_shape`` still reports the tile-aligned storage.
+    """
+    a = ttnn.from_torch(torch.rand(3, 5), layout=ttnn.TILE_LAYOUT)
+    assert a.shape == (3, 5)
+    assert a.padded_shape == (32, 32)
+
+    # Tensor-tensor element-wise: logical broadcast, padded stays tile-aligned.
+    assert (a + a).shape == (3, 5)
+    assert (a + a).padded_shape == (32, 32)
+    assert (a * a).shape == (3, 5)
+
+    # Scalar, reverse-scalar, and unary ops preserve the logical shape.
+    assert (a * 2).shape == (3, 5)
+    assert (2 + a).shape == (3, 5)
+    assert (2 - a).shape == (3, 5)
+    assert (-a).shape == (3, 5)
+    assert abs(a).shape == (3, 5)
+
+    # Broadcasting operands of differing logical shape.
+    row = ttnn.from_torch(torch.rand(1, 5), layout=ttnn.TILE_LAYOUT)
+    col = ttnn.from_torch(torch.rand(3, 1), layout=ttnn.TILE_LAYOUT)
+    assert (row + col).shape == (3, 5)
+    assert (row + col).padded_shape == (32, 32)
+
+    # Low-rank (1-D) operands keep their logical rank.
+    vec = ttnn.from_torch(torch.rand(5), layout=ttnn.TILE_LAYOUT)
+    assert vec.shape == (5,)
+    assert (vec + vec).shape == (5,)
+    assert (vec * 3).shape == (5,)
+
+    # Matmul over logical shapes: (3,5) @ (5,7) -> (3,7).
+    y = ttnn.from_torch(torch.rand(5, 7), layout=ttnn.TILE_LAYOUT)
+    prod = a @ y
+    assert prod.shape == (3, 7)
+    assert prod.padded_shape == (32, 32)
+
+
+def test_arithmetic_logical_shape_matches_under_dry_run():
+    """Dry-run and real paths agree on the logical result shape."""
+    from sim.context import set_dry_run
+
+    a = ttnn.from_torch(torch.rand(3, 5), layout=ttnn.TILE_LAYOUT)
+    y = ttnn.from_torch(torch.rand(5, 7), layout=ttnn.TILE_LAYOUT)
+    real_add = (a + a).shape
+    real_mm = (a @ y).shape
+
+    set_dry_run(True)
+    try:
+        assert (a + a).shape == real_add == (3, 5)
+        assert (a @ y).shape == real_mm == (3, 7)
+        assert (a * 2).shape == (3, 5)
+    finally:
+        set_dry_run(False)
+
+
 # ---- TILE_LAYOUT shim behaviour ----
 #
 # These tests pin down the auto-pad contract on the multi-dimensional and

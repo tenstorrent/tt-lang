@@ -1715,9 +1715,39 @@ class Tensor:
 
     # ---- Dry-run helpers ----
 
+    def _broadcast_logical_shape(self, other: "Tensor") -> Tuple[int, ...]:
+        """Logical result shape of an element-wise op, mirroring ttnn broadcasting.
+
+        Broadcasts the operands' *logical* shapes (not the padded storage), so
+        the result's ``.shape`` matches what ttnn reports even when the operands
+        are non-tile-aligned or low-rank.
+        """
+        return tuple(
+            torch.broadcast_shapes(tuple(self.shape), tuple(other.shape))
+        )
+
+    def _matmul_logical_shape(self, other: "Tensor") -> Tuple[int, ...]:
+        """Logical result shape of ``self @ other`` over the logical shapes.
+
+        Uses meta tensors so torch's batched/broadcast matmul rules (and its
+        errors on incompatible dims) apply to the logical shapes without
+        allocating storage.
+        """
+        return tuple(
+            torch.matmul(
+                torch.empty(tuple(self.shape), device="meta"),
+                torch.empty(tuple(other.shape), device="meta"),
+            ).shape
+        )
+
     def _zeros_like(self) -> "Tensor":
         """Return a zero tensor with the same shape, dtype, and layout."""
-        return Tensor(torch.zeros_like(self._tensor), self._layout, dtype=self._dtype)
+        return Tensor(
+            torch.zeros_like(self._tensor),
+            self._layout,
+            dtype=self._dtype,
+            logical_shape=self._logical_shape,
+        )
 
     def _zeros_broadcast(self, other: "Tensor") -> "Tensor":
         """Return zeros shaped by broadcasting self and other."""
@@ -1726,6 +1756,7 @@ class Tensor:
             torch.zeros(out_shape, dtype=self._tensor.dtype),
             self._layout,
             dtype=self._dtype,
+            logical_shape=self._broadcast_logical_shape(other),
         )
 
     def _zeros_matmul(self, other: "Tensor") -> "Tensor":
@@ -1744,6 +1775,7 @@ class Tensor:
             torch.zeros(out_shape, dtype=self._tensor.dtype),
             self._layout,
             dtype=self._dtype,
+            logical_shape=self._matmul_logical_shape(other),
         )
 
     # ---- Binary operations (element-wise) ----
@@ -1754,11 +1786,19 @@ class Tensor:
             case Tensor():
                 if _is_dry_run():
                     return self._zeros_broadcast(other)
-                return Tensor(self._tensor + other._tensor, self._layout)
+                return Tensor(
+                    self._tensor + other._tensor,
+                    self._layout,
+                    logical_shape=self._broadcast_logical_shape(other),
+                )
             case float() | int():
                 if _is_dry_run():
                     return self._zeros_like()
-                return Tensor(self._tensor + other, self._layout)
+                return Tensor(
+                    self._tensor + other,
+                    self._layout,
+                    logical_shape=self._logical_shape,
+                )
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -1768,11 +1808,19 @@ class Tensor:
             case Tensor():
                 if _is_dry_run():
                     return self._zeros_broadcast(other)
-                return Tensor(self._tensor - other._tensor, self._layout)
+                return Tensor(
+                    self._tensor - other._tensor,
+                    self._layout,
+                    logical_shape=self._broadcast_logical_shape(other),
+                )
             case float() | int():
                 if _is_dry_run():
                     return self._zeros_like()
-                return Tensor(self._tensor - other, self._layout)
+                return Tensor(
+                    self._tensor - other,
+                    self._layout,
+                    logical_shape=self._logical_shape,
+                )
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -1782,11 +1830,19 @@ class Tensor:
             case Tensor():
                 if _is_dry_run():
                     return self._zeros_broadcast(other)
-                return Tensor(self._tensor * other._tensor, self._layout)
+                return Tensor(
+                    self._tensor * other._tensor,
+                    self._layout,
+                    logical_shape=self._broadcast_logical_shape(other),
+                )
             case float() | int():
                 if _is_dry_run():
                     return self._zeros_like()
-                return Tensor(self._tensor * other, self._layout)
+                return Tensor(
+                    self._tensor * other,
+                    self._layout,
+                    logical_shape=self._logical_shape,
+                )
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -1796,11 +1852,19 @@ class Tensor:
             case Tensor():
                 if _is_dry_run():
                     return self._zeros_broadcast(other)
-                return Tensor(self._tensor / other._tensor, self._layout)
+                return Tensor(
+                    self._tensor / other._tensor,
+                    self._layout,
+                    logical_shape=self._broadcast_logical_shape(other),
+                )
             case float() | int():
                 if _is_dry_run():
                     return self._zeros_like()
-                return Tensor(self._tensor / other, self._layout)
+                return Tensor(
+                    self._tensor / other,
+                    self._layout,
+                    logical_shape=self._logical_shape,
+                )
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -1810,11 +1874,19 @@ class Tensor:
             case Tensor():
                 if _is_dry_run():
                     return self._zeros_broadcast(other)
-                return Tensor(self._tensor // other._tensor, self._layout)
+                return Tensor(
+                    self._tensor // other._tensor,
+                    self._layout,
+                    logical_shape=self._broadcast_logical_shape(other),
+                )
             case float() | int():
                 if _is_dry_run():
                     return self._zeros_like()
-                return Tensor(self._tensor // other, self._layout)
+                return Tensor(
+                    self._tensor // other,
+                    self._layout,
+                    logical_shape=self._logical_shape,
+                )
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -1824,11 +1896,19 @@ class Tensor:
             case Tensor():
                 if _is_dry_run():
                     return self._zeros_broadcast(other)
-                return Tensor(self._tensor % other._tensor, self._layout)
+                return Tensor(
+                    self._tensor % other._tensor,
+                    self._layout,
+                    logical_shape=self._broadcast_logical_shape(other),
+                )
             case float() | int():
                 if _is_dry_run():
                     return self._zeros_like()
-                return Tensor(self._tensor % other, self._layout)
+                return Tensor(
+                    self._tensor % other,
+                    self._layout,
+                    logical_shape=self._logical_shape,
+                )
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -1838,11 +1918,19 @@ class Tensor:
             case Tensor():
                 if _is_dry_run():
                     return self._zeros_broadcast(other)
-                return Tensor(self._tensor**other._tensor, self._layout)
+                return Tensor(
+                    self._tensor**other._tensor,
+                    self._layout,
+                    logical_shape=self._broadcast_logical_shape(other),
+                )
             case float() | int():
                 if _is_dry_run():
                     return self._zeros_like()
-                return Tensor(self._tensor**other, self._layout)
+                return Tensor(
+                    self._tensor**other,
+                    self._layout,
+                    logical_shape=self._logical_shape,
+                )
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -1852,7 +1940,11 @@ class Tensor:
             case Tensor():
                 if _is_dry_run():
                     return self._zeros_matmul(other)
-                return Tensor(self._tensor @ other._tensor, self._layout)
+                return Tensor(
+                    self._tensor @ other._tensor,
+                    self._layout,
+                    logical_shape=self._matmul_logical_shape(other),
+                )
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -1860,13 +1952,15 @@ class Tensor:
         """Unary negation."""
         if _is_dry_run():
             return self._zeros_like()
-        return Tensor(-self._tensor, self._layout)
+        return Tensor(-self._tensor, self._layout, logical_shape=self._logical_shape)
 
     def __abs__(self) -> "Tensor":
         """Absolute value."""
         if _is_dry_run():
             return self._zeros_like()
-        return Tensor(torch.abs(self._tensor), self._layout)
+        return Tensor(
+            torch.abs(self._tensor), self._layout, logical_shape=self._logical_shape
+        )
 
     # ---- Reverse binary operations ----
 
@@ -1876,7 +1970,11 @@ class Tensor:
             case float() | int():
                 if _is_dry_run():
                     return self._zeros_like()
-                return Tensor(other + self._tensor, self._layout)
+                return Tensor(
+                    other + self._tensor,
+                    self._layout,
+                    logical_shape=self._logical_shape,
+                )
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -1886,7 +1984,11 @@ class Tensor:
             case float() | int():
                 if _is_dry_run():
                     return self._zeros_like()
-                return Tensor(other - self._tensor, self._layout)
+                return Tensor(
+                    other - self._tensor,
+                    self._layout,
+                    logical_shape=self._logical_shape,
+                )
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -1896,7 +1998,11 @@ class Tensor:
             case float() | int():
                 if _is_dry_run():
                     return self._zeros_like()
-                return Tensor(other * self._tensor, self._layout)
+                return Tensor(
+                    other * self._tensor,
+                    self._layout,
+                    logical_shape=self._logical_shape,
+                )
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -1906,7 +2012,11 @@ class Tensor:
             case float() | int():
                 if _is_dry_run():
                     return self._zeros_like()
-                return Tensor(other / self._tensor, self._layout)
+                return Tensor(
+                    other / self._tensor,
+                    self._layout,
+                    logical_shape=self._logical_shape,
+                )
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -1916,7 +2026,11 @@ class Tensor:
             case float() | int():
                 if _is_dry_run():
                     return self._zeros_like()
-                return Tensor(other // self._tensor, self._layout)
+                return Tensor(
+                    other // self._tensor,
+                    self._layout,
+                    logical_shape=self._logical_shape,
+                )
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -1926,7 +2040,11 @@ class Tensor:
             case float() | int():
                 if _is_dry_run():
                     return self._zeros_like()
-                return Tensor(other % self._tensor, self._layout)
+                return Tensor(
+                    other % self._tensor,
+                    self._layout,
+                    logical_shape=self._logical_shape,
+                )
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
@@ -1936,7 +2054,11 @@ class Tensor:
             case float() | int():
                 if _is_dry_run():
                     return self._zeros_like()
-                return Tensor(other**self._tensor, self._layout)
+                return Tensor(
+                    other**self._tensor,
+                    self._layout,
+                    logical_shape=self._logical_shape,
+                )
             case _:  # type: ignore[reportUnnecessaryComparison]
                 return NotImplemented
 
