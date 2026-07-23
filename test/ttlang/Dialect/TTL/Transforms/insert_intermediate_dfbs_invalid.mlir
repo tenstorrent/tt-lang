@@ -1,7 +1,7 @@
 // Negative test: exceeding maximum circular buffer count.
 // The insert pass creates compiler-allocated DFBs without checking the limit;
 // the finalize pass enforces the hardware maximum after index reuse.
-// RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(func.func(ttl-insert-intermediate-dfbs,ttl-insert-cb-sync),ttl-finalize-dfb-indices)'
+// RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-insert-intermediate-dfbs,func.func(ttl-insert-cb-sync),ttl-finalize-dfb-indices)'
 
 // -----
 

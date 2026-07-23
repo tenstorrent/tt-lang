@@ -1800,7 +1800,7 @@ def _lower_program_to_kernel(
             "func.func(ttl-insert-copy-wait)",
             "func.func(ttl-annotate-l1-acc-loops)",
             "func.func(ttl-form-producer-compute)",
-            f"func.func(ttl-insert-intermediate-dfbs{{enable={compiler_dfbs_flag}}})",
+            f"ttl-insert-intermediate-dfbs{{enable={compiler_dfbs_flag}}}",
             "func.func(convert-ttl-to-compute)",
             "func.func(ttl-auto-sync)",
             set_compute_config_pass,
