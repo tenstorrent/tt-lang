@@ -14,7 +14,7 @@ namespace {
 
 FailureOr<DFBMaterializedValue>
 materializeTensorValueToDFB(Value intermediate, func::FuncOp funcOp,
-                            ModuleOp moduleOp, OpBuilder &builder) {
+                            OpBuilder &builder) {
   auto tensorType = cast<RankedTensorType>(intermediate.getType());
   Location loc = intermediate.getLoc();
 
@@ -23,7 +23,7 @@ materializeTensorValueToDFB(Value intermediate, func::FuncOp funcOp,
   assert(funcOp && "intermediate must be inside a func::FuncOp");
 
   BindCBOp bindDFB =
-      createCompilerAllocatedDFB(tensorType, loc, funcOp, moduleOp, builder);
+      createCompilerAllocatedDFB(tensorType, loc, funcOp, builder);
 
   builder.setInsertionPointAfter(defOp);
   createDFBStore(intermediate, bindDFB.getResult(), builder);
@@ -36,8 +36,7 @@ materializeTensorValueToDFB(Value intermediate, func::FuncOp funcOp,
 } // namespace
 
 BindCBOp createCompilerAllocatedDFB(RankedTensorType tensorType, Location loc,
-                                    func::FuncOp funcOp, ModuleOp moduleOp,
-                                    OpBuilder &builder) {
+                                    func::FuncOp funcOp, OpBuilder &builder) {
   MLIRContext *ctx = builder.getContext();
 
   SmallVector<int64_t> shape(tensorType.getShape());
@@ -45,12 +44,13 @@ BindCBOp createCompilerAllocatedDFB(RankedTensorType tensorType, Location loc,
   int64_t blockCount = 1;
   auto dfbType = CircularBufferType::get(ctx, shape, elementType, blockCount);
 
-  int32_t dfbIndex = getNextAvailableDFBIndex(moduleOp);
+  // Function-local allocation preserves pass isolation. The module finalizer
+  // replaces this provisional index before index annotations are emitted.
+  int32_t dfbIndex = getNextAvailableDFBIndex(funcOp.getOperation());
 
-  // BindCBOp lives at function entry: cb_index is function-scoped and
-  // finalize-dfb-indices requires that placement. Reserve/store/wait/attach
-  // stay at the def site to preserve per-invocation accounting inside loops
-  // and conditional branches.
+  // BindCBOp lives at function entry because finalize-dfb-indices requires that
+  // placement. Reserve/store/wait/attach stay at the def site to preserve
+  // per-invocation accounting inside loops and conditional branches.
   Block &body = funcOp.getBody().front();
   Operation *insertAfter = nullptr;
   for (Operation &op : body) {
@@ -89,15 +89,13 @@ AttachCBOp createDFBWaitAndAttach(Value dfb, RankedTensorType tensorType,
   return AttachCBOp::create(builder, loc, tensorType, wait.getResult(), dfb);
 }
 
-FailureOr<DFBMaterializedValue> materializeToDFB(Value intermediate,
-                                                 func::FuncOp funcOp,
-                                                 ModuleOp moduleOp,
-                                                 OpBuilder &builder) {
+FailureOr<DFBMaterializedValue>
+materializeToDFB(Value intermediate, func::FuncOp funcOp, OpBuilder &builder) {
   auto result = dyn_cast<OpResult>(intermediate);
   assert((!result || !isa<ComputeOp>(result.getOwner())) &&
          "compute results are materialized atomically by "
          "TTLInsertIntermediateDFBs");
-  return materializeTensorValueToDFB(intermediate, funcOp, moduleOp, builder);
+  return materializeTensorValueToDFB(intermediate, funcOp, builder);
 }
 
 } // namespace mlir::tt::ttl

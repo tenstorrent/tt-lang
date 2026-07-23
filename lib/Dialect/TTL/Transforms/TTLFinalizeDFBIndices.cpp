@@ -40,14 +40,23 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-/// Reuse compiler-allocated DFB indices within a function when their
-/// lifetimes do not overlap. Groups DFBs by CircularBufferType and runs
-/// linear scan allocation per group.
-static void reuseDFBIndices(func::FuncOp funcOp, ArrayRef<BindCBOp> dfbOps) {
-  if (dfbOps.size() <= 1) {
-    return;
-  }
+static int32_t getFirstCompilerDFBIndex(ModuleOp moduleOp) {
+  int32_t maxUserIndex = -1;
+  moduleOp->walk([&](BindCBOp bindOp) {
+    if (bindOp->hasAttr(kCompilerAllocatedAttrName)) {
+      return;
+    }
+    maxUserIndex = std::max(
+        maxUserIndex, static_cast<int32_t>(bindOp.getCbIndex().getSExtValue()));
+  });
+  return maxUserIndex + 1;
+}
 
+/// Assign physical indices to one function's compiler-allocated DFBs,
+/// reusing indices when lifetimes do not overlap.
+static int32_t assignPhysicalDFBIndices(func::FuncOp funcOp,
+                                        ArrayRef<BindCBOp> dfbOps,
+                                        int32_t firstPhysicalIndex) {
   Block &body = funcOp.getBody().front();
 
   // Assign sequential indices to all operations in the body block.
@@ -117,15 +126,8 @@ static void reuseDFBIndices(func::FuncOp funcOp, ArrayRef<BindCBOp> dfbOps) {
     valueToBindOp[cbVal] = bindOp;
   }
 
-  // Find the base index (smallest compiler-allocated index).
-  int32_t baseIndex = INT32_MAX;
-  for (BindCBOp bindOp : dfbOps) {
-    int32_t cbIdx = static_cast<int32_t>(bindOp.getCbIndex().getSExtValue());
-    baseIndex = std::min(baseIndex, cbIdx);
-  }
-
   // Linear scan per type partition. Each partition gets a contiguous
-  // block of physical DFB indices starting at baseIndex + cumulative
+  // block of physical DFB indices starting at firstPhysicalIndex + cumulative
   // offset from prior partitions.
   MLIRContext *ctx = funcOp.getContext();
   int32_t nextSlotOffset = 0;
@@ -158,7 +160,7 @@ static void reuseDFBIndices(func::FuncOp funcOp, ArrayRef<BindCBOp> dfbOps) {
 
     // Rewrite BindCBOp indices to the assigned physical slot.
     for (auto &[value, slot] : slotAssignment) {
-      int32_t newIndex = baseIndex + nextSlotOffset + slot;
+      int32_t newIndex = firstPhysicalIndex + nextSlotOffset + slot;
       BindCBOp bindOp = valueToBindOp[value];
       bindOp.setCbIndexAttr(IntegerAttr::get(IndexType::get(ctx), newIndex));
     }
@@ -171,6 +173,7 @@ static void reuseDFBIndices(func::FuncOp funcOp, ArrayRef<BindCBOp> dfbOps) {
                  << " compiler-allocated DFBs -> " << nextSlotOffset
                  << " physical slot(s)\n";
   });
+  return nextSlotOffset;
 }
 
 struct TTLFinalizeDFBIndicesPass
@@ -188,13 +191,17 @@ struct TTLFinalizeDFBIndicesPass
       }
     });
 
-    // Run DFB index reuse per function.
+    // Provisional compiler indices are function-local. Assign disjoint
+    // module-wide ranges after the highest user-declared index.
+    int32_t nextCompilerDFBIndex = getFirstCompilerDFBIndex(moduleOp);
     for (auto &[funcOp, dfbOps] : funcToDFBs) {
-      reuseDFBIndices(funcOp, dfbOps);
+      int32_t physicalSlotCount =
+          assignPhysicalDFBIndices(funcOp, dfbOps, nextCompilerDFBIndex);
+      nextCompilerDFBIndex += physicalSlotCount;
     }
 
     // Recompute DFB count after reuse may have changed indices.
-    int32_t numDFBs = getNextAvailableDFBIndex(moduleOp);
+    int32_t numDFBs = getNextAvailableDFBIndex(moduleOp.getOperation());
     if (numDFBs <= 0) {
       return;
     }

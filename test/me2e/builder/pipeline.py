@@ -43,27 +43,28 @@ def compile_ttl_to_ttkernel(
         f"ttl-set-compute-kernel-config{{enable-fpu-binary-ops={fpu_flag}}}"
     )
 
-    # DFB materialization must follow producer compute formation and precede
-    # consumer lowering.
-    producer_func_passes = [
+    # Finalize DFB indices before compute configuration copies them into
+    # function attributes.
+    dfb_func_passes = [
         "ttl-materialize-loop-state",
         "ttl-insert-copy-wait",
         "ttl-form-producer-compute",
-    ]
-    consumer_func_passes = [
+        "ttl-insert-intermediate-dfbs",
         "convert-ttl-to-compute",
         "ttl-auto-sync",
+    ]
+    lowering_func_passes = [
         set_compute_config_pass,
         "ttl-assign-dst",
     ]
     if maximize_dst:
-        consumer_func_passes.append("ttl-subblock-compute-for-dst")
+        lowering_func_passes.append("ttl-subblock-compute-for-dst")
     dst_acc_str = "true" if maximize_dst else "false"
-    consumer_func_passes.append(f"ttl-lower-to-loops{{dst-accumulation={dst_acc_str}}}")
+    lowering_func_passes.append(f"ttl-lower-to-loops{{dst-accumulation={dst_acc_str}}}")
     if maximize_dst:
-        consumer_func_passes.append("ttl-schedule-operations")
-    producer_func_pipeline = ",".join(producer_func_passes)
-    consumer_func_pipeline = ",".join(consumer_func_passes)
+        lowering_func_passes.append("ttl-schedule-operations")
+    dfb_func_pipeline = ",".join(dfb_func_passes)
+    lowering_func_pipeline = ",".join(lowering_func_passes)
 
     specialize_passes = ""
     if specialize_cores:
@@ -71,10 +72,9 @@ def compile_ttl_to_ttkernel(
 
     pipeline_str = (
         f"builtin.module("
-        f"func.func({producer_func_pipeline}),"
-        f"ttl-insert-intermediate-dfbs,"
-        f"func.func({consumer_func_pipeline}),"
+        f"func.func({dfb_func_pipeline}),"
         f"ttl-finalize-dfb-indices,"
+        f"func.func({lowering_func_pipeline}),"
         f"func.func(ttl-annotate-cb-associations),"
         f"ttl-verify-pipenet-guards,"
         f"ttl-verify-dfb-spsc,"

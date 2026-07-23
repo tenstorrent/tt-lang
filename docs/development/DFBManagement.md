@@ -6,7 +6,11 @@ This document describes how the tt-lang compiler manages dataflow buffers (DFBs)
 
 DFBs originate from two sources. User-declared DFBs are created explicitly in the DSL via `make_dataflow_buffer_like` and correspond to the programmer's data movement plan. Compiler-allocated DFBs are inserted automatically at fusion split points where a tensor-level operation requires a CB-attached operand but receives the result of a fused expression chain.
 
-The hardware supports at most 32 DFBs per node (indices 0--31). User and compiler-allocated DFBs share this index space. The compiler assigns indices sequentially during insertion (starting *after* the last user-declared DFB), then applies lifetime-based index reuse to reduce the physical DFB count.
+The hardware supports at most 32 DFBs per node (indices 0--31). User and
+compiler-allocated DFBs share this index space. DFB-creating function passes
+assign compiler DFBs function-local provisional indices. The module-level
+finalization pass assigns module-wide physical indices after the last
+user-declared DFB and applies lifetime-based index reuse.
 
 ## Pipeline
 
@@ -17,18 +21,24 @@ ttl-materialize-loop-state     (FuncOp)   Remove ranked-tensor scf.for iter_args
 ttl-insert-copy-wait           (FuncOp)   Insert missing ttl.wait ops
 ttl-annotate-l1-acc-loops      (FuncOp)   Mark user accumulation loops
 ttl-form-producer-compute      (FuncOp)   Form producer compute regions
-ttl-insert-intermediate-dfbs   (ModuleOp) Materialize compiler-allocated DFBs
+ttl-insert-intermediate-dfbs   (FuncOp)   Materialize compiler-allocated DFBs
 convert-ttl-to-compute         (FuncOp)   Lower remaining tensor ops
 ttl-auto-sync                  (FuncOp)   Insert/coalesce remaining DFB sync
-  ... compute lowering, DST assignment, loop lowering ...
 ttl-finalize-dfb-indices       (Module)   Index reuse + limit check
+ttl-set-compute-kernel-config  (FuncOp)   Set per-kernel configuration
+  ... DST assignment, loop lowering, scheduling ...
 ttl-annotate-cb-associations   (FuncOp)   Copy CB indices to tile ops
 ttl-verify-dfb-spsc            (Module)   Reject DFBs shared across threads
 convert-ttl-to-ttkernel        (Module)   Lower to TTKernel dialect
 ttkernel-insert-inits          (Module)   Insert hardware init calls
 ```
 
-`ttl-finalize-dfb-indices` must precede `ttl-annotate-cb-associations` because annotation copies the `cb_index` attribute from `BindCBOp` onto tile operations (`bcast`, `reduce`, `transpose`). If annotation runs before finalization, the copied indices become stale after reuse rewrites them.
+`ttl-finalize-dfb-indices` must precede
+`ttl-set-compute-kernel-config` and `ttl-annotate-cb-associations`.
+Compute configuration copies selected indices into
+`ttl.unpack_to_dest_fp32`; association annotation copies `cb_index` onto tile
+operations (`bcast`, `reduce`, `transpose`). Running either pass first would
+leave stale attributes after finalization rewrites the indices.
 
 `ttl-verify-dfb-spsc` must run after `ttl-finalize-dfb-indices` so every `bind_cb` carries its final `cb_index`. The pass asserts on unresolvable indices.
 
@@ -278,6 +288,9 @@ result of the same producer.
 `TTLMaterializeLoopState` uses the same compiler-DFB materialization helper
 (`include/ttlang/Dialect/TTL/Transforms/DFBMaterialization.h`) to remove
 ranked-tensor `scf.for` iter_args before compute lowering.
+The helper chooses a provisional index by scanning only the enclosing function,
+so DFB-creating function passes do not inspect sibling functions while MLIR
+executes them concurrently.
 
 Non-compute producers use the tensor-level fallback. The helper emits the
 reserve/store and wait/attach at the tensor definition site, while
@@ -666,8 +679,9 @@ ttl-coalesce-dfb-acquires))'`) verifies this.
 
 `TTLFinalizeDFBIndices` reduces the physical DFB count by assigning the same
 index to compiler-allocated DFBs whose lifetimes do not overlap. The algorithm
-runs per function. Compiler-allocated DFBs are intra-thread, so their lifetimes
-are independent across functions.
+runs per function. It ignores the function-local provisional indices and
+assigns each function a disjoint physical index range after the highest
+user-declared index in the module.
 
 Two DFBs may share an index only if they have identical `CircularBufferType`
 (shape, element type, block count). Since `CircularBufferType` is an MLIR
@@ -677,7 +691,14 @@ type and runs a linear scan within each partition.
 ### Algorithm
 
 ```
-reuseDFBIndices(funcOp, compilerAllocatedBindCBOps):
+nextCompilerIndex = max(userDeclaredDFBIndices) + 1
+for funcOp in module:
+  slots = assignPhysicalDFBIndices(
+      funcOp, compilerAllocatedBindCBOps[funcOp], nextCompilerIndex)
+  nextCompilerIndex += slots
+
+assignPhysicalDFBIndices(
+    funcOp, compilerAllocatedBindCBOps, firstPhysicalIndex):
   // Assign sequential indices to function-level operations.
   for op in funcOp.entryBlock:
     opIndex[op] = nextIdx++
@@ -696,7 +717,7 @@ reuseDFBIndices(funcOp, compilerAllocatedBindCBOps):
     intervals[bindOp.type].append({start, end, bindOp.result})
 
   // Linear scan per type partition. Each partition gets a contiguous
-  // block of indices starting at baseIndex + offset.
+  // block of indices starting at firstPhysicalIndex + offset.
   offset = 0
   for (type, typeIntervals) in intervals:
     sort typeIntervals by start
@@ -711,8 +732,10 @@ reuseDFBIndices(funcOp, compilerAllocatedBindCBOps):
 
     // Rewrite BindCBOp cb_index attributes for this partition.
     for (value, s) in partitionAssignments:
-      bindOp[value].cb_index = baseIndex + offset + s
+      bindOp[value].cb_index = firstPhysicalIndex + offset + s
     offset += maxSlot + 1
+
+  return offset
 ```
 
 The expiration condition `active.end <= interval.start` matches the DST
