@@ -616,7 +616,6 @@ y_dfb = ttl.make_dataflow_buffer_like(
     y, shape=(L_BLOCK_SIZE, M_BLOCK_SIZE, N_BLOCK_SIZE)
 )
 
-
 @ttl.datamovement()
 def matmul_read():
     for l_block in range(L_BLOCKS):
@@ -626,7 +625,9 @@ def matmul_read():
             m_slice = slice(m_block * M_BLOCK_SIZE, (m_block + 1) * M_BLOCK_SIZE)
 
             for n_block in range(N_BLOCKS):
-                n_slice = slice(n_block * N_BLOCK_SIZE, (n_block + 1) * N_BLOCK_SIZE)
+                n_slice = slice(
+                    n_block * N_BLOCK_SIZE, (n_block + 1) * N_BLOCK_SIZE
+                )
 
                 # Reserve c_blk
                 with c_dfb.reserve() as c_blk:
@@ -659,7 +660,6 @@ def matmul_read():
 
                         # End of "with" scope:
                         # Push a_blk and b_blk to make it ready for matmul_compute
-
 
 @ttl.compute()
 def matmul_compute():
@@ -721,7 +721,6 @@ def matmul_compute():
                     # End of "with" scope:
                     # Push y_blk to make it ready for matmul_write
 
-
 @ttl.datamovement()
 def matmul_write():
     for l_block in range(L_BLOCKS):
@@ -744,7 +743,6 @@ def matmul_write():
 
                     # End of "with" scope:
                     # Pop y_blk to make it available for matmul_compute to store and push next block
-
 
 ```
 
