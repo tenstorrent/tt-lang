@@ -1500,7 +1500,9 @@ class Tensor:
         return normalize_selector_to_slice(selector)
 
     @staticmethod
-    def _resolve_tile_slice(s: slice, tile_count: int, dim_name: str) -> Tuple[int, int]:
+    def _resolve_tile_slice(
+        s: slice, tile_count: int, dim_name: str
+    ) -> Tuple[int, int]:
         """Resolve a tile-coordinate slice to explicit ``(start, stop)`` tile bounds.
 
         Open ends follow Python slice semantics: a missing start defaults to 0
@@ -1909,27 +1911,48 @@ class Tensor:
                 return NotImplemented
 
 
-def _pad_to_tile_alignment(tensor: torch.Tensor, layout: IndexType) -> torch.Tensor:
-    """Pad a user tensor's last two dims to ``TILE_SHAPE`` multiples.
+def _normalize_rank_for_layout(tensor: torch.Tensor, layout: IndexType) -> torch.Tensor:
+    """Lift a low-rank tensor to the minimum rank a layout can represent.
 
-    Per the TT-Lang specification every tile is exactly ``TILE_SHAPE``
-    (32x32) scalar elements (see TTLangSpecification.md, tiled-block
-    section).  Logical shapes that are not already tile-aligned have
-    their data placed in the top-left of each output tile by spec
-    convention - ``(N, 1)`` column vectors live in column 0, ``(1, M)``
-    row vectors live in row 0, ``(1, 1)`` scalars at position
-    ``(0, 0)`` - and the remainder of the tile is padding.  The
-    two-step ``block.broadcast`` and ``math.reduce_*`` ops then
-    overwrite that padding when needed.  ``ROW_MAJOR_LAYOUT`` tensors
-    are returned untouched.
+    Mirrors ttnn: a ``TILE_LAYOUT`` tensor needs at least two dimensions to
+    tile, so 0-D / 1-D inputs get leading unit dimensions prepended (a length-N
+    vector becomes a single ``1xN`` row; a bare scalar becomes ``1x1``) before
+    tile-alignment padding fills each 32x32 tile.  ``ROW_MAJOR_LAYOUT`` keeps
+    rank-1 as-is and only lifts a bare scalar to a length-1 vector.
+
+    tt-metal's nightly reduction suite feeds 0-D / 1-D (and 0-volume) shapes
+    straight through ``ttnn.from_torch(..., layout=ttnn.TILE_LAYOUT,
+    device=device)`` (tests/ttnn/nightly/unit_tests/operations/reduction/
+    test_reduction_ops.py, test_generic_ops), so creation ops and ``from_torch``
+    accept them alike.  Unlike ttnn, the simulator does not track a separate
+    logical shape, so ``.shape`` / ``.padded_shape`` report the padded shape
+    (consistent with tile-aligned 2-D inputs).
     """
+    if layout == TILE_LAYOUT and tensor.ndim < 2:
+        return tensor.reshape((1,) * (2 - tensor.ndim) + tuple(tensor.shape))
+    if layout == ROW_MAJOR_LAYOUT and tensor.ndim == 0:
+        return tensor.reshape(1)
+    return tensor
+
+
+def _pad_to_tile_alignment(tensor: torch.Tensor, layout: IndexType) -> torch.Tensor:
+    """Lift rank then pad a user tensor's last two dims to ``TILE_SHAPE`` multiples.
+
+    Low-rank inputs are first normalized via :func:`_normalize_rank_for_layout`
+    so 0-D / 1-D tensors are accepted (matching ttnn), then per the TT-Lang
+    specification every tile is exactly ``TILE_SHAPE`` (32x32) scalar elements
+    (see TTLangSpecification.md, tiled-block section).  Logical shapes that are
+    not already tile-aligned have their data placed in the top-left of each
+    output tile by spec convention - ``(N, 1)`` column vectors live in column 0,
+    ``(1, M)`` row vectors live in row 0, ``(1, 1)`` scalars at position
+    ``(0, 0)`` - and the remainder of the tile is padding.  The two-step
+    ``block.broadcast`` and ``math.reduce_*`` ops then overwrite that padding
+    when needed.  ``ROW_MAJOR_LAYOUT`` tensors are returned untouched apart from
+    lifting a bare scalar to a length-1 vector.
+    """
+    tensor = _normalize_rank_for_layout(tensor, layout)
     if layout != TILE_LAYOUT:
         return tensor
-    if tensor.ndim < 2:
-        raise ValueError(
-            f"TILE_LAYOUT tensors must have at least 2 dimensions, got shape "
-            f"{tuple(tensor.shape)}"
-        )
     h, w = tensor.shape[-2], tensor.shape[-1]
     pad_h = (-h) % TILE_SHAPE[0]
     pad_w = (-w) % TILE_SHAPE[1]
@@ -2051,22 +2074,9 @@ def from_torch(
         eff_dtype = dtype
         eff_mc = memory_config if memory_config is not None else DRAM_MEMORY_CONFIG
 
-    # Accept rank-0 (scalar) and rank-1 (vector) inputs and pad them up, as ttnn
-    # does: tt-metal's nightly reduction suite feeds 0-D / 1-D (and 0-volume)
-    # shapes straight through ttnn.from_torch(..., layout=ttnn.TILE_LAYOUT,
-    # device=device) (tests/ttnn/nightly/unit_tests/operations/reduction/
-    # test_reduction_ops.py, test_generic_ops). A TILE_LAYOUT tensor needs at
-    # least two dimensions to tile, so leading unit dimensions are prepended
-    # (a length-N vector becomes a single 1xN row) before tile-alignment padding
-    # fills each 32x32 tile. ROW_MAJOR_LAYOUT keeps rank-1 as-is and only lifts a
-    # bare scalar to a length-1 vector. Unlike ttnn, the simulator does not track
-    # a separate logical shape, so `.shape`/`.padded_shape` report the padded
-    # shape (consistent with tile-aligned 2-D inputs).
-    if layout == TILE_LAYOUT and tensor.ndim < 2:
-        tensor = tensor.reshape((1,) * (2 - tensor.ndim) + tuple(tensor.shape))
-    elif layout == ROW_MAJOR_LAYOUT and tensor.ndim == 0:
-        tensor = tensor.reshape(1)
-
+    # Rank lifting for low-rank (0-D / 1-D) inputs and tile-alignment padding are
+    # centralized in _pad_to_tile_alignment so from_torch and the creation ops
+    # (rand / empty / zeros) accept the same shapes and produce identical layouts.
     tensor = _pad_to_tile_alignment(tensor, layout)
 
     match eff_dtype:

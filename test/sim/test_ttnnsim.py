@@ -900,9 +900,18 @@ def test_from_torch_tile_layout_pads_non_tile_aligned_shapes():
     assert torch.all(scalar_0d.to_torch()[1:, :] == 0)
     assert torch.all(scalar_0d.to_torch()[:, 1:] == 0)
 
-    # rand / empty take a shape directly; they pad transparently too.
+    # rand / empty / zeros take a shape directly; they lift low-rank shapes and
+    # pad transparently, identically to from_torch, so ttnn.rand(Shape([M])) and
+    # from_torch(torch.rand(M)) agree.
     assert ttnn.rand((32, 1)).shape == (32, 32)
     assert ttnn.empty((4, 4)).shape == (32, 32)
+    assert ttnn.rand(ttnn.Shape([32])).shape == (32, 32)
+    assert ttnn.zeros(ttnn.Shape([128])).shape == (32, 128)
+    assert ttnn.empty(ttnn.Shape([3])).shape == (32, 32)
+    assert ttnn.zeros(ttnn.Shape([])).shape == (32, 32)
+    # Row-major creation lifts only a bare scalar to a length-1 vector.
+    assert ttnn.zeros(ttnn.Shape([]), layout=ttnn.ROW_MAJOR_LAYOUT).shape == (1,)
+    assert ttnn.zeros(ttnn.Shape([5]), layout=ttnn.ROW_MAJOR_LAYOUT).shape == (5,)
 
     # Row-major preserves the original shape exactly.
     assert ttnn.from_torch(torch.ones((32, 1)), layout=ttnn.ROW_MAJOR_LAYOUT).shape == (
