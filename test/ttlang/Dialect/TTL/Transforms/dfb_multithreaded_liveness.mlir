@@ -103,3 +103,179 @@ func.func @unordered_compute()
   ttl.cb_pop %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   return
 }
+
+// -----
+
+// B's consumer wait enters before A's terminal pop. The acknowledgment orders
+// B's producer entry after A, but cannot retroactively order the blocking wait
+// entry. A, the acknowledgment, and B require separate physical indices.
+
+// REUSE: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, {{.*}}}, {block_count = 2 : i32, dfb_index = 1 : i32, {{.*}}}, {block_count = 2 : i32, dfb_index = 2 : i32, {{.*}}}]}
+// REUSE-LABEL: func.func @early_wait_producer
+// REUSE-SAME: ttl.base_cta_index = 3 : i32
+// REUSE: ttl.bind_cb{cb_index = 0,
+// REUSE: ttl.bind_cb{cb_index = 1,
+// REUSE: ttl.bind_cb{cb_index = 2,
+// REUSE-LABEL: func.func @early_wait_compute
+// REUSE-SAME: ttl.base_cta_index = 3 : i32
+// REUSE-LABEL: func.func @early_wait_consumer
+// REUSE-SAME: ttl.base_cta_index = 3 : i32
+
+func.func @early_wait_producer()
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                ttl.base_cta_index = 3 : i32, ttl.crta_indices = []} {
+  %a = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %ack = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %b = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %a_view = ttl.cb_reserve %a : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %a : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %ack_view = ttl.cb_wait %ack : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_pop %ack : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %b_view = ttl.cb_reserve %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
+
+func.func @early_wait_compute()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                ttl.base_cta_index = 3 : i32, ttl.crta_indices = []} {
+  %a = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %ack = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %a_view = ttl.cb_wait %a : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_pop %a : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %ack_view = ttl.cb_reserve %ack : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %ack : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
+
+func.func @early_wait_consumer()
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                ttl.base_cta_index = 3 : i32, ttl.crta_indices = []} {
+  %b = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %b_view = ttl.cb_wait %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_pop %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
+
+// -----
+
+// A missing pop leaves A unbounded. Source order alone cannot permit A and B
+// to share a physical index.
+
+// REUSE: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, {{.*}}}, {block_count = 2 : i32, dfb_index = 1 : i32, {{.*}}}]}
+// REUSE-LABEL: func.func @unbalanced_dm
+// REUSE-SAME: ttl.base_cta_index = 2 : i32
+// REUSE: ttl.bind_cb{cb_index = 0,
+// REUSE: ttl.bind_cb{cb_index = 1,
+// REUSE-LABEL: func.func @unbalanced_compute
+// REUSE-SAME: ttl.base_cta_index = 2 : i32
+// REUSE: ttl.bind_cb{cb_index = 0,
+// REUSE: ttl.bind_cb{cb_index = 1,
+
+func.func @unbalanced_dm()
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+  %a = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %b = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %a_view = ttl.cb_reserve %a : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %a : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %b_view = ttl.cb_reserve %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
+
+func.func @unbalanced_compute()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+  %a = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %b = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %a_view = ttl.cb_wait %a : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %b_view = ttl.cb_wait %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_pop %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
+
+// -----
+
+// Sequential DFBs with different exact types cannot share an index.
+
+// REUSE: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, {{.*}}}, {block_count = 2 : i32, dfb_index = 1 : i32, {{.*}}}]}
+// REUSE-LABEL: func.func @different_types
+// REUSE-SAME: ttl.base_cta_index = 2 : i32
+// REUSE: ttl.bind_cb{cb_index = 0, {{.*}}} : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+// REUSE: ttl.bind_cb{cb_index = 1, {{.*}}} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+
+func.func @different_types()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+  %a = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %b = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %a_producer = ttl.cb_reserve %a : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  ttl.cb_push %a : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %a_consumer = ttl.cb_wait %a : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  ttl.cb_pop %a : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %b_producer = ttl.cb_reserve %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %b_consumer = ttl.cb_wait %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_pop %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
+
+// -----
+
+// Equal provisional indices identify user DFBs across functions, but not
+// compiler-created DFBs. The two unbounded compiler DFBs remain distinct.
+
+// REUSE: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, {{.*}}}, {block_count = 2 : i32, dfb_index = 1 : i32, {{.*}}}]}
+// REUSE-LABEL: func.func @first_compiler_dfb
+// REUSE-SAME: ttl.base_cta_index = 2 : i32
+// REUSE: ttl.bind_cb{cb_index = 0, {{.*}}} {ttl.compiler_allocated}
+// REUSE-LABEL: func.func @second_compiler_dfb
+// REUSE-SAME: ttl.base_cta_index = 2 : i32
+// REUSE: ttl.bind_cb{cb_index = 1, {{.*}}} {ttl.compiler_allocated}
+
+func.func @first_compiler_dfb()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                ttl.base_cta_index = 1 : i32, ttl.crta_indices = []} {
+  %compiler_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
+
+func.func @second_compiler_dfb()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                ttl.base_cta_index = 1 : i32, ttl.crta_indices = []} {
+  %compiler_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
+
+// -----
+
+// Repeated lifecycle operations do not receive one-shot synchronization edges.
+// The loop DFB remains unbounded even though B starts after the loop completes.
+
+// REUSE: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, {{.*}}}, {block_count = 2 : i32, dfb_index = 1 : i32, {{.*}}}]}
+// REUSE-LABEL: func.func @loop_lifecycle
+// REUSE-SAME: ttl.base_cta_index = 2 : i32
+// REUSE: ttl.bind_cb{cb_index = 0,
+// REUSE: ttl.bind_cb{cb_index = 1,
+
+func.func @loop_lifecycle()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+  %loop_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %b = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %lower_bound = arith.constant 0 : index
+  %upper_bound = arith.constant 4 : index
+  %step = arith.constant 1 : index
+  scf.for %iteration = %lower_bound to %upper_bound step %step {
+    %producer_view = ttl.cb_reserve %loop_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %loop_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %consumer_view = ttl.cb_wait %loop_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_pop %loop_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  }
+  %b_producer = ttl.cb_reserve %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %b_consumer = ttl.cb_wait %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_pop %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
