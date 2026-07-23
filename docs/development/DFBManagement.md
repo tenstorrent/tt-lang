@@ -17,7 +17,7 @@ ttl-materialize-loop-state     (FuncOp)   Remove ranked-tensor scf.for iter_args
 ttl-insert-copy-wait           (FuncOp)   Insert missing ttl.wait ops
 ttl-annotate-l1-acc-loops      (FuncOp)   Mark user accumulation loops
 ttl-form-producer-compute      (FuncOp)   Form producer compute regions
-ttl-insert-intermediate-dfbs   (FuncOp)   Materialize compiler-allocated DFBs
+ttl-insert-intermediate-dfbs   (ModuleOp) Materialize compiler-allocated DFBs
 convert-ttl-to-compute         (FuncOp)   Lower remaining tensor ops
 ttl-auto-sync                  (FuncOp)   Insert/coalesce remaining DFB sync
   ... compute lowering, DST assignment, loop lowering ...

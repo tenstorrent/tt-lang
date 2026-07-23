@@ -43,24 +43,27 @@ def compile_ttl_to_ttkernel(
         f"ttl-set-compute-kernel-config{{enable-fpu-binary-ops={fpu_flag}}}"
     )
 
-    # Build per-function passes.
-    func_passes = [
+    # DFB materialization must follow producer compute formation and precede
+    # consumer lowering.
+    producer_func_passes = [
         "ttl-materialize-loop-state",
         "ttl-insert-copy-wait",
         "ttl-form-producer-compute",
-        "ttl-insert-intermediate-dfbs",
+    ]
+    consumer_func_passes = [
         "convert-ttl-to-compute",
         "ttl-auto-sync",
         set_compute_config_pass,
         "ttl-assign-dst",
     ]
     if maximize_dst:
-        func_passes.append("ttl-subblock-compute-for-dst")
+        consumer_func_passes.append("ttl-subblock-compute-for-dst")
     dst_acc_str = "true" if maximize_dst else "false"
-    func_passes.append(f"ttl-lower-to-loops{{dst-accumulation={dst_acc_str}}}")
+    consumer_func_passes.append(f"ttl-lower-to-loops{{dst-accumulation={dst_acc_str}}}")
     if maximize_dst:
-        func_passes.append("ttl-schedule-operations")
-    func_pipeline = ",".join(func_passes)
+        consumer_func_passes.append("ttl-schedule-operations")
+    producer_func_pipeline = ",".join(producer_func_passes)
+    consumer_func_pipeline = ",".join(consumer_func_passes)
 
     specialize_passes = ""
     if specialize_cores:
@@ -68,7 +71,9 @@ def compile_ttl_to_ttkernel(
 
     pipeline_str = (
         f"builtin.module("
-        f"func.func({func_pipeline}),"
+        f"func.func({producer_func_pipeline}),"
+        f"ttl-insert-intermediate-dfbs,"
+        f"func.func({consumer_func_pipeline}),"
         f"ttl-finalize-dfb-indices,"
         f"func.func(ttl-annotate-cb-associations),"
         f"ttl-verify-pipenet-guards,"

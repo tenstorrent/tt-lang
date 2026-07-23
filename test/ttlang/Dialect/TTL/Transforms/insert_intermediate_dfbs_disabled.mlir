@@ -3,7 +3,7 @@
 // When enable=false, the pass verifies that no ops require compiler-allocated
 // DFBs. Fused computations feeding DFBInputOpInterface ops trigger an error.
 // Inputs already attached to user-declared DFBs pass without error.
-// RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(func.func(ttl-insert-intermediate-dfbs{enable=false}))'
+// RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-insert-intermediate-dfbs{enable=false})'
 
 // -----
 

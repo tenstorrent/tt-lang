@@ -228,7 +228,7 @@ def TTLAnnotateL1AccLoops
 }
 
 def TTLInsertIntermediateDFBs
-    : Pass<"ttl-insert-intermediate-dfbs", "::mlir::func::FuncOp"> {
+    : Pass<"ttl-insert-intermediate-dfbs", "::mlir::ModuleOp"> {
   let summary = "Insert intermediate dataflow buffers at fusion split points";
   let description = [{
     Walks ops implementing `DFBInputOpInterface` and checks whether the
@@ -246,6 +246,8 @@ def TTLInsertIntermediateDFBs
       bind_cb -> cb_reserve -> store -> cb_wait -> attach_cb
 
     All DFBs created by this pass are marked with `ttl.compiler_allocated`.
+    Functions are processed serially because temporary DFB index allocation
+    examines all `ttl.bind_cb` operations in the module.
 
     When `enable` is false, the pass verifies that no operations require
     compiler-allocated DFBs. If any `DFBInputOpInterface` op has a

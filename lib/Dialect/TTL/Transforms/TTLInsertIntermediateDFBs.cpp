@@ -362,90 +362,93 @@ static LogicalResult materializeStandaloneTensorUses(
   return success();
 }
 
-struct TTLInsertIntermediateDFBsPass
-    : public impl::TTLInsertIntermediateDFBsBase<
-          TTLInsertIntermediateDFBsPass> {
-  using TTLInsertIntermediateDFBsBase::TTLInsertIntermediateDFBsBase;
+static LogicalResult insertIntermediateDFBs(func::FuncOp funcOp,
+                                            ModuleOp moduleOp, bool enable) {
+  SmallVector<DFBInputOpInterface> candidates;
+  funcOp.walk([&](DFBInputOpInterface op) { candidates.push_back(op); });
 
-  void runOnOperation() override {
-    auto funcOp = getOperation();
-    auto moduleOp = funcOp->getParentOfType<ModuleOp>();
-    if (!moduleOp) {
-      return;
-    }
-
-    SmallVector<DFBInputOpInterface> candidates;
-    funcOp.walk([&](DFBInputOpInterface op) { candidates.push_back(op); });
-
-    // When compiler DFBs are disabled, verify that no operations require
-    // them and emit an actionable error if any do.
-    if (!enable) {
-      for (DFBInputOpInterface dfbInputOp : candidates) {
-        Operation *op = dfbInputOp.getOperation();
-        auto requiredIndices = dfbInputOp.getDFBInputOperandIndices();
-
-        for (unsigned idx : requiredIndices) {
-          Value operand = op->getOperand(idx);
-          if (getAttachedCB(operand)) {
-            continue;
-          }
-          op->emitOpError("operand #")
-              << idx
-              << " requires a DFB-attached value but compiler-allocated DFBs "
-                 "are disabled (--no-ttl-compiler-dfbs); either enable "
-                 "compiler DFBs or store the intermediate to a user-declared "
-                 "DFB before this operation";
-          signalPassFailure();
-          return;
-        }
-      }
-      return;
-    }
-
-    OpBuilder builder(funcOp.getContext());
-    SmallVector<ComputeMaterializationPlan> computePlans;
-    SmallVector<StandaloneTensorMaterializationUse> standaloneTensorUses;
-
+  // When compiler DFBs are disabled, verify that no operations require
+  // them and emit an actionable error if any do.
+  if (!enable) {
     for (DFBInputOpInterface dfbInputOp : candidates) {
       Operation *op = dfbInputOp.getOperation();
       auto requiredIndices = dfbInputOp.getDFBInputOperandIndices();
 
       for (unsigned idx : requiredIndices) {
         Value operand = op->getOperand(idx);
-
         if (getAttachedCB(operand)) {
           continue;
         }
-
-        // Compute results are materialized by rebuilding the producer once,
-        // even when several results or consumers require DFB-attached values.
-        if (std::optional<ComputeResult> computeResult =
-                getComputeResult(operand)) {
-          ComputeMaterializationPlan &computePlan =
-              getOrCreateComputePlan(computePlans, computeResult->producer);
-          ResultMaterializationPlan &resultPlan =
-              getOrCreateResultPlan(computePlan, computeResult->resultIndex);
-          resultPlan.uses.push_back({op, idx});
-          continue;
-        }
-
-        // Other tensor producers use standalone reserve/store/wait/attach.
-        standaloneTensorUses.push_back({op, idx});
+        op->emitOpError("operand #")
+            << idx
+            << " requires a DFB-attached value but compiler-allocated DFBs "
+               "are disabled (--no-ttl-compiler-dfbs); either enable "
+               "compiler DFBs or store the intermediate to a user-declared "
+               "DFB before this operation";
+        return failure();
       }
     }
+    return success();
+  }
 
-    for (ComputeMaterializationPlan &computePlan : computePlans) {
-      if (failed(materializeComputePlan(computePlan, moduleOp, builder))) {
+  OpBuilder builder(funcOp.getContext());
+  SmallVector<ComputeMaterializationPlan> computePlans;
+  SmallVector<StandaloneTensorMaterializationUse> standaloneTensorUses;
+
+  for (DFBInputOpInterface dfbInputOp : candidates) {
+    Operation *op = dfbInputOp.getOperation();
+    auto requiredIndices = dfbInputOp.getDFBInputOperandIndices();
+
+    for (unsigned idx : requiredIndices) {
+      Value operand = op->getOperand(idx);
+
+      if (getAttachedCB(operand)) {
+        continue;
+      }
+
+      // Compute results are materialized by rebuilding the producer once,
+      // even when several results or consumers require DFB-attached values.
+      if (std::optional<ComputeResult> computeResult =
+              getComputeResult(operand)) {
+        ComputeMaterializationPlan &computePlan =
+            getOrCreateComputePlan(computePlans, computeResult->producer);
+        ResultMaterializationPlan &resultPlan =
+            getOrCreateResultPlan(computePlan, computeResult->resultIndex);
+        resultPlan.uses.push_back({op, idx});
+        continue;
+      }
+
+      // Other tensor producers use standalone reserve/store/wait/attach.
+      standaloneTensorUses.push_back({op, idx});
+    }
+  }
+
+  for (ComputeMaterializationPlan &computePlan : computePlans) {
+    if (failed(materializeComputePlan(computePlan, moduleOp, builder))) {
+      return failure();
+    }
+  }
+
+  DominanceInfo dominanceInfo(funcOp);
+  return materializeStandaloneTensorUses(standaloneTensorUses, funcOp, moduleOp,
+                                         builder, dominanceInfo);
+}
+
+struct TTLInsertIntermediateDFBsPass
+    : public impl::TTLInsertIntermediateDFBsBase<
+          TTLInsertIntermediateDFBsPass> {
+  using TTLInsertIntermediateDFBsBase::TTLInsertIntermediateDFBsBase;
+
+  void runOnOperation() override {
+    ModuleOp moduleOp = getOperation();
+
+    // Temporary indices must observe prior function rewrites, so process
+    // functions serially within this module pass.
+    for (func::FuncOp funcOp : moduleOp.getOps<func::FuncOp>()) {
+      if (failed(insertIntermediateDFBs(funcOp, moduleOp, enable))) {
         signalPassFailure();
         return;
       }
-    }
-
-    DominanceInfo dominanceInfo(funcOp);
-    if (failed(materializeStandaloneTensorUses(
-            standaloneTensorUses, funcOp, moduleOp, builder, dominanceInfo))) {
-      signalPassFailure();
-      return;
     }
   }
 };
