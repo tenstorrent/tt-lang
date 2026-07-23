@@ -1,5 +1,6 @@
 // Summary: PipeGraph debug output reports why a receiver DFB producer stream
-// is or is not proven pipe-only for computed-address analysis.
+// is or is not proven pipe-only before pipe capacity analysis consumes the
+// graph fact.
 // RUN: ttlang-opt %s --split-input-file -convert-ttl-to-ttkernel -debug-only=ttl-pipe-graph 2>&1 >/dev/null | FileCheck %s --check-prefix=GRAPH
 
 // GRAPH: PipeGraph: accept pipe-only producer stream for receiver(1, 0) DFB 1
@@ -135,7 +136,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 // -----
 
 // Purpose: consumer wait and pop counts do not affect the producer write
-// pointer proof.
+// pointer proof. Capacity analysis validates their release accounting.
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @wait_pop_count_mismatch()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
