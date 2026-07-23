@@ -95,31 +95,43 @@ origins(tensor.extract tensor[read_indices])
     = element_origins(tensor, read_indices)
 ```
 
-For `tensor.insert`, the read access domain is compared with the write access
-domain:
+For `tensor.insert`, the analysis computes separate possible-definition and
+definite-definition properties:
 
 ```text
-if read_domain is a subset of write_domain:
-    element_origins = origins(inserted_scalar)
-else if read_domain and write_domain are disjoint:
-    element_origins = element_origins(previous_tensor, read_indices)
-else:
-    element_origins = origins(inserted_scalar)
-                      union element_origins(previous_tensor, read_indices)
+relation = compare_access_domains(read_indices, write_indices)
+
+element_origins = {}
+if relation.mayDefine:
+    element_origins += origins(inserted_scalar)
+if not relation.mustDefine:
+    element_origins += element_origins(previous_tensor, read_indices)
 ```
 
-The subset rule models a loop-carried tensor updated at multiple indices. For
-example, a writer loop that inserts at every index in `[0, 4)` fully defines a
-later reader loop that extracts every index in `[0, 4)`. Partial writer
-coverage retains the initial tensor as a possible origin.
+`mayDefine` is true unless the read and write domains are proven disjoint.
+`mustDefine` requires each dynamic access instance to read and write the same
+single index. Aggregate coverage across multiple writer-loop iterations does
+not make any individual insertion a definite definition.
+
+When a writer loop collectively covers every read index, the analysis records
+the outermost writer loop not shared with the read. Traversal continues through
+the loop-carried tensor updates but omits that loop's initial predecessor. This
+removes the pre-loop tensor only after complete aggregate coverage has been
+proven. Partial or unknown coverage retains the initial tensor as a possible
+origin.
 
 ## Conservative results
 
-Finite index domains are evaluated with `LoopIterationUtils`. Separate limits
-bound the loop iterations examined and index tuples produced. Bounds or index
-expressions that cannot be evaluated, unsupported loop interfaces, and
-exhaustion of either limit make the access relation unknown. An unknown
-relation follows both the inserted scalar and the previous tensor contents.
+Eligible one-dimensional induction-variable domains are compared as
+closed-form finite arithmetic sequences. Other finite domains are evaluated
+with `LoopIterationUtils`, preserving correlations between shared enclosing
+loops.
+
+Each origin query may examine at most 4096 loop iterations and produce at most
+4096 index tuples by default. Bounds or index expressions that cannot be
+evaluated, unsupported loop interfaces, and exhaustion of either limit make
+the access relation unknown. An unknown relation follows both the inserted
+scalar and the previous tensor contents.
 
 Unmodeled tensor producers remain origins. This preserves soundness: a
 consumer that requires a specific origin rejects the result instead of
