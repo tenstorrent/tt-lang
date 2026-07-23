@@ -1788,11 +1788,12 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                                          pipeResourcePlan);
   patterns.add<PipeTransferWaitLowering>(typeConverter, &ctx, pipeResourcePlan);
   patterns.add<WaitLowering>(typeConverter, &ctx, completedPipeSendWaits);
-  patterns.add<BindCBLowering, TensorSliceLowering, CBReserveLowering,
-               CBPushLowering, CBWaitLowering, CBPopLowering, TileStoreLowering,
-               StoreLowering, CoreXLowering, CoreYLowering,
-               RawElementReadLowering, RawElementWriteLowering,
-               OpaqueCallLowering, GetDfbIdLowering>(typeConverter, &ctx);
+  patterns
+      .add<BindCBLowering, TensorSliceLowering, CBReserveLowering,
+           CBPushLowering, CBWaitLowering, CBPopLowering, TileStoreLowering,
+           StoreLowering, CoreXLowering, CoreYLowering, RawElementReadLowering,
+           RawElementWriteLowering, OpaqueCallLowering, GetDfbIdLowering>(
+          typeConverter, &ctx);
   populatePipeLoweringPatterns(patterns, typeConverter, pipeNetIndex);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);
