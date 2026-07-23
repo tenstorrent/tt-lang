@@ -197,6 +197,23 @@ def open_fabric_mesh(requested_mesh_shape: tuple[int, int] | None = None):
 # =============================================================================
 
 
+def torch_dtype_from_name(name: str):
+    """Parse common test dtype names into PyTorch dtypes."""
+    import torch
+
+    normalized = name.lower()
+    if normalized in ("bf16", "bfloat16"):
+        return torch.bfloat16
+    if normalized in ("fp32", "f32", "float32"):
+        return torch.float32
+    raise ValueError(f"Unsupported torch dtype name {name!r}")
+
+
+def torch_dtype_from_env(var_name: str, default: str = "bf16"):
+    """Read a PyTorch dtype name from an environment variable."""
+    return torch_dtype_from_name(os.environ.get(var_name, default))
+
+
 def to_dram(torch_tensor, device):
     """Create a TTNN tensor in DRAM from a torch tensor.
 
@@ -413,6 +430,8 @@ __all__ = [
     "is_hardware_available",
     "require_ttnn",
     "require_hardware",
+    "torch_dtype_from_name",
+    "torch_dtype_from_env",
     "to_dram",
     "to_l1",
     "to_l1_sharded",

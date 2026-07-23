@@ -44,12 +44,13 @@ primitive based on the Pipe shape. The mapping is:
 | Loopback multicast (`src` in dst range) | `noc_async_write_multicast_loopback_src` + remote `inc_multicast` + local `noc_semaphore_inc` | same as above |
 
 When several pipes target the same receiver and share its dataflow
-buffer, the receiver-side slot allocation is handled by
-`PipeGraph::assignGatherSlotIndices` (in
-`lib/Dialect/TTL/Transforms/PipeGraph.h`). It greedy-colors the pipes
-that share a `(receiver, cbIndex)` pair so each pipe gets a distinct
-slot index in the receiver dataflow buffer. `verifyReceiverDFBBlockCounts`
-then requires `block_count >= max_slot_idx + 1` per receiver. This
+buffer, the receiver-side slot allocation is handled by `PipeGraph` (in
+`lib/Dialect/TTL/Transforms/PipeGraph.h`). It follows receiver post
+order so each pipe gets the DFB slot reserved by its receive post, and
+requires multicast receivers to reserve the same slot for a given pipe
+because TT-Metal NoC multicast carries one destination address.
+`verifyReceiverDFBBlockCounts` then requires
+`block_count >= max_slot_idx + 1` per receiver. This
 makes overlapping multicast unrepresentable when more than 32 pipes
 target the same receiver: the tt-metal per-Tensix CB cap is 32
 (`NUM_CIRCULAR_BUFFERS` in
@@ -86,8 +87,7 @@ expectation in `recv_counter[0]` (one entry per `(receiver, PipeNet)`
 pair) and waits with `experimental::semaphore_wait_min` until the
 remote semaphore reaches at least that count. Each sender writes its
 data to a distinct slot in the receiver's CB (slot assignment from
-`PipeGraph::assignGatherSlotIndices`), so the data writes themselves
-also do not collide.
+`PipeGraph`), so the data writes themselves also do not collide.
 
 Loopback (`src` in `dst` range) skips the increment on the source
 core itself: the sender's `if_src` callback has already deposited the
