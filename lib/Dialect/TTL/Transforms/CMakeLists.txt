@@ -5,6 +5,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   DFBAcquireReleaseAnalysis.cpp
   DFBValueLifetimeAnalysis.cpp
   DFBMaterialization.cpp
+  PipeCounter.cpp
   PipeGraph.cpp
   PipeLowering.cpp
   PipeTransferAnalysis.cpp

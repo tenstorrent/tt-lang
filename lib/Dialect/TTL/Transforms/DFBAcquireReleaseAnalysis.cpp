@@ -151,6 +151,22 @@ static int64_t getDFBLifecycleTileCount(Operation *operation) {
   return cast<CircularBufferType>(dfb.getType()).getElementsPerBlock();
 }
 
+std::optional<int64_t> getDFBTransactionBlockCount(Operation *operation) {
+  assert((isDFBAcquireOp(operation) || isDFBReleaseOp(operation)) &&
+         "DFB transaction block count requires a lifecycle operation");
+  Value dfb = isDFBAcquireOp(operation) ? getDFBAcquireDFB(operation)
+                                        : getDFBReleaseDFB(operation);
+  auto dfbType = dyn_cast<CircularBufferType>(dfb.getType());
+  if (!dfbType || dfbType.getElementsPerBlock() <= 0) {
+    return std::nullopt;
+  }
+  int64_t numTiles = getDFBLifecycleTileCount(operation);
+  if (numTiles <= 0 || numTiles % dfbType.getElementsPerBlock() != 0) {
+    return std::nullopt;
+  }
+  return numTiles / dfbType.getElementsPerBlock();
+}
+
 struct OutstandingDFBAcquisition {
   /// Acquisition contributing the oldest remaining FIFO tiles.
   Operation *operation = nullptr;

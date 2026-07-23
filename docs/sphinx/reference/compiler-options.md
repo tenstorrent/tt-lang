@@ -19,6 +19,7 @@ python my_kernel.py --no-ttl-maximize-dst
 | `--ttl-combine-pack-tiles` / `--no-ttl-combine-pack-tiles` | enabled | Combine consecutive `pack_tile` ops on the same DFB with contiguous DST and DFB indices into a single `pack_tile_block` call. |
 | `--ttl-strict-f32-acc` / `--no-ttl-strict-f32-acc` | disabled | Error at compile time if a `+=` accumulation loop's output block exceeds f32 DST capacity (4 tiles with double-buffering). When enabled, guarantees each accumulation step fits in a single DST section without subblocking. |
 | `--ttl-compiler-dfbs` / `--no-ttl-compiler-dfbs` | enabled | Insert compiler-allocated intermediate DFBs when an operation requires DFB-attached inputs or fusion would read a source after its DFB is released. When disabled, the compiler emits an error if either materialization is required. |
+| `--ttl-pipe-computed-addresses` / `--no-ttl-pipe-computed-addresses` | enabled | Use computed receiver DFB addresses for eligible PipeNet transfers. When disabled, transfers use receiver-published destination addresses; multicast still requires proven equal runtime receiver addresses. |
 | `--ttl-specialize-cores` / `--no-ttl-specialize-cores` | disabled | Clone each TTKernel function whose control flow branches on a core coordinate once per launch coordinate (`ttkernel-specialize-cores`), replacing `my_logical_x_` / `my_logical_y_` with constants and tagging clones with `ttl.core_coord` for per-core dispatch. Opt-in. |
 
 ### Other Ways to Set These
@@ -116,6 +117,7 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 | `combine-pack-tiles` | bool | `true` | Combine consecutive `pack_tile` ops into `pack_tile_block`. |
 | `strict-f32-acc` | bool | `false` | Error if a `+=` accumulation loop's output block exceeds f32 DST capacity. |
 | `compiler-dfbs` | bool | `true` | Insert compiler-allocated intermediate DFBs for DFB-only operands and source-lifetime preservation. Error if disabled and any operation requires one. |
+| `pipe-computed-addresses` | bool | `true` | Use computed receiver DFB addresses for eligible PipeNet transfers. When disabled, transfers use receiver-published destination addresses; multicast still requires proven equal runtime receiver addresses. |
 | `specialize-cores` | bool | `false` | Clone TTKernel functions that branch on a core coordinate once per launch coordinate (`ttkernel-specialize-cores`), then run `canonicalize` / `cse`. Maps from `--ttl-specialize-cores`. |
 | `lower-to-emitc` | bool | `false` | Run the TTKernel-to-EmitC backend (produces C++ source). |
 
@@ -127,7 +129,9 @@ The pipeline runs these passes in order:
 - `ttl-create-producer-compute` -- create producer `ttl.compute` operations before intermediate materialization
 - `ttl-insert-intermediate-dfbs` -- materialize DFB-only operands and values that must be preserved before source release; verify and error when `compiler-dfbs=false`
 - `convert-ttl-to-compute` -- lower TTL elementwise tensor ops to `ttl.compute` with tile ops
-- `ttl-insert-cb-sync`, then `ttl-coalesce-dfb-acquires` -- insert missing releases and coalesce compatible DFB acquires
+- `ttl-insert-cb-sync` -- insert missing DFB synchronization operations
+- `ttl-verify-pipenet-guards`, then `ttl-verify-pipenet-schedule` -- verify PipeNet launch domains and synchronization schedules while logical DFB identities remain distinct
+- `ttl-coalesce-dfb-acquires` -- coalesce compatible DFB acquisitions
 - `ttl-finalize-dfb-indices` -- allocate physical compiler DFB indices, validate capacity, and emit runtime metadata
 - `ttl-set-compute-kernel-config` -- set `fp32_dest_acc_en` / `dst_full_sync_en` defaults
 - `ttl-assign-dst` -- DST register allocation (linear scan with copy insertion)
@@ -135,10 +139,10 @@ The pipeline runs these passes in order:
 - `ttl-lower-to-loops` -- lower `ttl.compute` to `scf.for` loops; matmul computes are expanded inline via `generateMatmulCompute`
 - `ttl-schedule-operations` -- reorder tile ops by dependency depth and kind *(only if `maximize-dst=true`)*
 - `ttl-annotate-cb-associations` -- annotate block args with DFB indices
-- `ttl-verify-pipenet-guards`, then `ttl-verify-dfb-spsc` -- verify PipeNet synchronization and per-node DFB producer/consumer uniqueness
+- `ttl-verify-dfb-spsc` -- verify per-node DFB producer/consumer uniqueness
 - `ttl-erase-pipenet-scopes` -- remove verified PipeNet structural markers
 - `ttl-validate-cb-budget` -- verify static DFB storage fits the per-core L1 budget
-- `convert-ttl-to-ttkernel` -- lower TTL DMA ops to TTKernel
+- `convert-ttl-to-ttkernel` -- lower TTL DMA and PipeNet operations to TTKernel, selecting receiver-published or computed destination addressing
 - `ttkernel-insert-inits` -- insert hardware init ops before compute ops
 - `ttkernel-insert-l1-accumulation` -- insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops
 - `ttkernel-combine-pack-tiles` -- combine consecutive `pack_tile` into `pack_tile_block` *(only if `combine-pack-tiles=true`)*

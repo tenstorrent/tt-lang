@@ -139,6 +139,12 @@ Value getDFBAcquireDFB(Operation *op);
 /// Returns the DFB operand of a `ttl.cb_push` or `ttl.cb_pop`.
 Value getDFBReleaseDFB(Operation *op);
 
+/// Returns the number of whole DFB blocks acquired or released by `op`.
+///
+/// Returns `std::nullopt` when the transaction size is not a positive multiple
+/// of the DFB block size.
+std::optional<int64_t> getDFBTransactionBlockCount(Operation *op);
+
 /// Collects DFB lifecycle operations from `func` in walk order.
 void collectDFBAcquireReleaseOps(func::FuncOp func,
                                  SmallVectorImpl<Operation *> &reserves,

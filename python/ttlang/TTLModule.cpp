@@ -32,6 +32,9 @@ void populateTTLModule(nb::module_ &m) {
   m.attr("PIPE_SRAM_SCRATCH_BYTES_ATTR") =
       nb::str(kPipeSramScratchBytesAttrName.data(),
               kPipeSramScratchBytesAttrName.size());
+  m.attr("PIPE_COMPUTED_ADDRESS_DFB_INDICES_ATTR") =
+      nb::str(kPipeComputedAddressDFBIndicesAttrName.data(),
+              kPipeComputedAddressDFBIndicesAttrName.size());
 
   //===--------------------------------------------------------------------===//
   // SliceAttr
