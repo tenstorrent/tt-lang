@@ -183,6 +183,15 @@ struct TTLVerifyDFBSPSCPass
   void runOnOperation() override {
     ModuleOp module = getOperation();
 
+    // This is an explicit escape hatch for compositions whose external
+    // synchronization/lifetime contract is stronger than the launch-domain
+    // analysis can currently prove.  Returning before diagnostics are emitted
+    // is essential: emitting errors and merely declining to fail the pass
+    // leaves unconsumed Python diagnostic captures and aborts the compiler.
+    if (std::getenv("TTL_RELAX_DFB_SPSC")) {
+      return;
+    }
+
     ModuleState state;
     state.initialize(module);
 
@@ -274,12 +283,6 @@ struct TTLVerifyDFBSPSCPass
     }
 
     if (sawError) {
-      // TTL_RELAX_DFB_SPSC=1 downgrades SPSC violations to warnings while
-      // valid-but-rejected patterns (node-disjoint roles, per-buffer DM
-      // thread splits) are collected to refine the verifier.
-      if (std::getenv("TTL_RELAX_DFB_SPSC")) {
-        return;
-      }
       signalPassFailure();
     }
   }
