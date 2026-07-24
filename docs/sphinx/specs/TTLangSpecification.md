@@ -1183,7 +1183,6 @@ node_num = ttl.node(dims=1)
 my_barrier = ttl.Semaphore()
 all_barrier = my_barrier.get_remote_multicast()
 
-
 @ttl.datamovement()
 def dm():
     if node_num == 0:
@@ -1196,7 +1195,6 @@ def dm():
 
         # node 0 is done
 
-
 ```
 
 #### Many-to-one barrier example
@@ -1206,7 +1204,6 @@ node_num = ttl.node(dims=1)
 my_barrier = ttl.Semaphore()
 node_0_barrier = my_barrier.get_remote((0, 0))
 non_0_node_count = grid_size(dims=1) - 1
-
 
 @ttl.datamovement()
 def dm():
@@ -1219,7 +1216,6 @@ def dm():
         my_barrier.wait_eq(non_0_node_count)
 
         # non-0 nodes are done
-
 
 ```
 

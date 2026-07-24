@@ -287,6 +287,39 @@ def test_copy_source_lock_error_fails_with_expected_error(scheduler: str) -> Non
 
 @pytest.mark.parametrize("scheduler", ["greedy", "fair"])
 @pytest.mark.parametrize(
+    "script_name",
+    [
+        "spec/semaphore/many_to_one_barrier.py",
+        "spec/semaphore/one_to_many_barrier.py",
+    ],
+)
+def test_semaphore_examples_fail_at_unimplemented_interface(
+    script_name: str, scheduler: str
+) -> None:
+    """The ttl.Semaphore barrier API used by these spec examples is not
+    implemented in the simulator (or the compiler) yet.
+
+    Each example is wrapped so its node-dependent setup runs, but it must fail
+    *specifically* at the ttl.Semaphore() call. A success -- or a failure for
+    any other reason -- means the situation changed (most likely semaphores
+    were implemented) and the example should be promoted to a real,
+    golden-checked test rather than an expect-failure one.
+    """
+    code, out = run_script_in_process(EXAMPLES_DIR / script_name, scheduler)
+    assert code != 0, (
+        f"{script_name} unexpectedly succeeded. The ttl.Semaphore barrier API "
+        f"appears to be implemented now -- promote this to a real golden test.\n"
+        f"Output:\n{out}"
+    )
+    assert "no attribute 'Semaphore'" in out, (
+        f"{script_name} failed, but not at the unimplemented ttl.Semaphore "
+        f"interface. The failure mode changed; investigate and update the "
+        f"example/test.\nOutput:\n{out}"
+    )
+
+
+@pytest.mark.parametrize("scheduler", ["greedy", "fair"])
+@pytest.mark.parametrize(
     "error_script", ["copy_lock_error.py", "copy_source_lock_error.py"]
 )
 def test_operation_kernel_errors_do_not_print_simulator_stack_frames(
