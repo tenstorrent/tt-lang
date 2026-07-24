@@ -95,6 +95,7 @@ _TTL_OPS: Dict[str, str] = {
     "sign": "trisc",
     "sigmoid": "trisc",
     "gelu": "trisc",
+    "silu": "trisc",
     # Compile-time / scalar producers: duplicated, not anchored.
     "Pipe": "control",
     "PipeNet": "control",

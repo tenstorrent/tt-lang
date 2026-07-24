@@ -38,6 +38,19 @@ def test_unknown_ttl_op_is_rejected():
         split_function_body(fn, dfb_param_names=set())
 
 
+def test_silu_routes_to_compute_thread():
+    fn = _fn(
+        """
+        def k(a):
+            result = ttl.silu(a)
+        """
+    )
+    result = split_function_body(fn, dfb_param_names=set())
+    assert "ttl.silu(a)" in _thread_src(result, "trisc")
+    assert "ttl.silu(a)" not in _thread_src(result, "ncrisc")
+    assert "ttl.silu(a)" not in _thread_src(result, "brisc")
+
+
 def test_producer_with_no_uses_is_rejected():
     fn = _fn(
         """
