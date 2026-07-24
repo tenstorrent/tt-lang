@@ -96,6 +96,14 @@ def get_max_l1_bytes() -> int:
 def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
     """Program class that combines compute and data movement functions.
 
+    This is the "kernels-given-directly" entry point (used by tests and any
+    caller that already holds the three kernel templates).  Per-node state is
+    produced by cloning: DataflowBuffers are re-instantiated per node and the
+    kernels are rebound to the per-node context.  The ``@ttl.operation`` path
+    instead uses :func:`run_operation`, which re-runs the operation body per
+    node so that node-dependent setup (``ttl.node()`` / ``ttl.grid_size()``)
+    works.
+
     Args:
         *funcs: Compute and data movement function templates
         grid: Grid size tuple
@@ -133,15 +141,25 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
                                     pass
 
             grid = self.context.get("grid", (1, 1))
-            # Calculate total nodes for any dimension grid
-            total_nodes = 1
-            for dim_size in grid:
-                total_nodes *= dim_size
+            total_nodes = _total_nodes(grid)
 
-            compute_func_tmpl, dm0_tmpl, dm1_tmpl = self.functions
+            ordered = self.functions
 
-            # Run in cooperative mode.
-            self._run_cooperative(total_nodes, compute_func_tmpl, dm0_tmpl, dm1_tmpl)
+            # Per-node context is produced by cloning the discovered kernel
+            # closures; the kernel templates themselves are shared across nodes.
+            def node_plan_for(node: int) -> tuple[Dict[str, Any], Any]:
+                return self._build_node_context(node), ordered
+
+            ctx = get_context()
+            _schedule_and_run(
+                node_plan_for=node_plan_for,
+                candidate_nodes=range(total_nodes),
+                analysis_templates=ordered,
+                pipenets=self.pipenets,
+                grid=grid,
+                dfb_count=ctx.kernel_dfb_count,
+                l1_bytes=ctx.kernel_l1_bytes,
+            )
 
         def _build_node_context(self, node: int) -> Dict[str, Any]:
             """Build per-node context with fresh DataflowBuffers and deep-copied state.
@@ -189,201 +207,363 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
 
             return node_context
 
-        def _run_cooperative(
-            self,
-            total_nodes: int,
-            compute_func_tmpl: BindableTemplate,
-            dm0_tmpl: BindableTemplate,
-            dm1_tmpl: BindableTemplate,
-        ) -> None:
-            """Cooperative scheduling execution mode using greenlets."""
+    return ProgramImpl(*funcs)
 
-            # Warn if the number of DataflowBuffers exceeds the hardware limit.
-            dfb_count = get_context().kernel_dfb_count
-            max_dfbs = get_max_dfbs()
-            if dfb_count > max_dfbs:
-                warnings.warn(
-                    f"Kernel defines {dfb_count} dataflow buffers, "
-                    f"but the hardware limit is {max_dfbs}. "
-                    f"Reduce the number of ttl.make_dataflow_buffer_like() calls.",
-                    stacklevel=2,
-                )
 
-            # Warn if total L1 capacity exceeds the configured limit.
-            total_l1_bytes = get_context().kernel_l1_bytes
-            max_l1 = get_max_l1_bytes()
-            if total_l1_bytes > max_l1:
-                warnings.warn(
-                    f"Total DataflowBuffer capacity per node ({total_l1_bytes} bytes) "
-                    f"exceeds the L1 memory limit of {max_l1} bytes. "
-                    f"Memory is accounted using declared dtypes, so this reflects "
-                    f"the on-hardware footprint of the kernel.",
-                    stacklevel=2,
-                )
+def _total_nodes(grid: Shape) -> int:
+    """Number of linear nodes for an arbitrary-rank grid."""
+    total = 1
+    for dim_size in grid:
+        total *= dim_size
+    return total
 
-            # Create scheduler
-            scheduler = GreenletScheduler()
-            set_scheduler(scheduler)
 
-            # Analyse all three kernel functions (and any reachable helpers)
-            # once before iterating over nodes.  A shared visited set prevents
-            # duplicate analysis when helpers are called by more than one kernel.
-            ctx = get_context()
-            _empty = KernelAnalysis(injection_points=(), bare_copy_linenos=frozenset())
-            _visited: set[int] = set()
-            injection_map: dict[types.CodeType, KernelAnalysis] = {}
-            all_violations: List[PatternViolation] = []
+def _order_kernels(kernels: List[BindableTemplate]) -> tuple[BindableTemplate, ...]:
+    """Validate and order registered kernels as (compute, dm0, dm1).
 
-            for tmpl in [compute_func_tmpl, dm0_tmpl, dm1_tmpl]:
-                analyses = collect_reachable_analyses(tmpl.__wrapped__, _visited)
-                injection_map.update(analyses)
-                top = analyses.get(tmpl.__wrapped__.__code__, _empty)
-                ctx.injection_points_cache[tmpl.__wrapped__] = top
-                all_violations.extend(top.violations)
+    Raises:
+        ValueError: If the operation did not register exactly one compute and
+            two data-movement kernels.
+    """
+    if len(kernels) != 3:
+        raise ValueError(
+            f"Operation must define exactly 3 kernels (compute, dm0, dm1), got {len(kernels)}"
+        )
+    compute_kernels = [
+        t for t in kernels if getattr(t, "kernel_type", None) == KernelType.COMPUTE
+    ]
+    dm_kernels = [
+        t for t in kernels if getattr(t, "kernel_type", None) == KernelType.DM
+    ]
+    if len(compute_kernels) != 1:
+        raise ValueError(
+            f"Kernel must define exactly 1 compute kernel, got {len(compute_kernels)}"
+        )
+    if len(dm_kernels) != 2:
+        raise ValueError(
+            f"Kernel must define exactly 2 datamovement kernels, got {len(dm_kernels)}"
+        )
+    return (compute_kernels[0], dm_kernels[0], dm_kernels[1])
 
-            # Report any unsupported copy patterns before running the kernel.
-            # All violations are collected first so the user sees every problem.
-            if all_violations:
-                for v in all_violations:
-                    print_diagnostic_error(
-                        v.func_name,
-                        v.message,
-                        v.source_file,
-                        v.lineno,
-                        v.col,
-                    )
-                n = len(all_violations)
-                raise RuntimeError(
-                    f"Found {n} unsupported pattern{'s' if n > 1 else ''} in kernel "
-                    "function(s). See errors above for details."
-                )
 
-            # Compute the PipeNet active set: linear node indices that
-            # participate in any pipe as source or destination. Inactive nodes
-            # skip every kernel kernel, mirroring the compiler's scf.if guard.
-            grid = self.context.get("grid", (1, 1))
-            active_nodes = (
-                self.pipenets.active_node_set(tuple(grid))
-                if self.pipenets is not None
-                else None
-            )
+def _operation_node_context(
+    node: int, grid: Shape, ordered: tuple[BindableTemplate, ...]
+) -> Dict[str, Any]:
+    """Build the bind context for a node whose kernels were produced by running
+    the operation body under that node's context.
 
-            def _is_active(node: int) -> bool:
-                return active_nodes is None or node in active_nodes
-
+    The kernels already close over this node's DataflowBuffers and setup
+    scalars, so the bind context only needs ``_node`` / ``grid`` / ``print``
+    (so ``ttl.node()`` etc. resolve at kernel-execution time) plus the node's
+    DataflowBuffers by name (so end-of-run auto-push/pop and validation can
+    reach them).  Tensor freevars are named too so trace/locality stats can
+    attribute copies to the operation's parameter names.
+    """
+    node_context: Dict[str, Any] = {}
+    for tmpl in ordered:
+        # BindableTemplate declares __wrapped__ (the original kernel function);
+        # typed Any here so closure/code introspection below stays untyped.
+        func: Any = tmpl.__wrapped__
+        closure = func.__closure__ or ()
+        for name, cell in zip(func.__code__.co_freevars, closure):
             try:
-                # Track all per-node contexts for validation
-                all_node_contexts: List[Dict[str, Any]] = []
+                value: Any = cell.cell_contents
+            except ValueError:
+                continue
+            # DataflowBuffers are named so end-of-run auto-push/pop and
+            # validation can reach them; Tensors so trace/locality stats can
+            # attribute copies to the operation's parameter names.
+            if isinstance(value, (DataflowBuffer, Tensor)):
+                setattr(value, "_name", name)
+                node_context[name] = value
+    node_context["_node"] = node
+    node_context["grid"] = grid
+    node_context["print"] = ttlang_print
+    return node_context
 
-                for node in range(total_nodes):
-                    # Skip nodes that are not in any PipeNet's active set.
-                    if not _is_active(node):
-                        continue
 
-                    # Build per-node context
-                    node_context = self._build_node_context(node)
-                    all_node_contexts.append(node_context)
+def _dedupe_pipe_nets(nets: List[Any]) -> List[Any]:
+    """Deduplicate discovered PipeNets by content.
 
-                    # Add kernels to scheduler (one compute + two DM per node).
-                    # Identity is (node, kind, __name__); the two DM kernels on
-                    # a node must have distinct __name__s -- the scheduler
-                    # rejects duplicates with a user-facing error.
-                    for tmpl in (compute_func_tmpl, dm0_tmpl, dm1_tmpl):
-                        # Get KernelType directly from template's kernel_type attribute
-                        kernel_type = getattr(tmpl, "kernel_type", None)
-                        match kernel_type:
-                            case KernelType.COMPUTE | KernelType.DM:
-                                pass
-                            case _:
-                                raise RuntimeError(
-                                    f"Template {tmpl} has invalid kernel_type '{kernel_type}'. "
-                                    f"Expected KernelType enum (COMPUTE or DM)."
-                                )
+    Re-running the operation body per node creates a fresh PipeNet object each
+    time; when the pipe set is node-independent (the common case, matching the
+    compiler) they are identical and collapse to one.  Deduping by the tuple of
+    pipes (Pipe is a frozen, hashable dataclass) keeps one entry per distinct
+    pipe set and preserves encounter order.
+    """
+    seen: set[Any] = set()
+    unique: List[Any] = []
+    for net in nets:
+        key = tuple(getattr(net, "_pipes", ()))
+        if key not in seen:
+            seen.add(key)
+            unique.append(net)
+    return unique
 
-                        # Bind template to node context
-                        bound_func = tmpl.bind(node_context)
 
-                        # Wrap to tag the greenlet with its linear node index so
-                        # locality analysis in copy.py can read it via getcurrent().
-                        def _tagged(
-                            fn: Callable[[], Any] = bound_func,
-                            n: int = node,
-                            node_ctx: Dict[str, Any] = node_context,
-                        ) -> None:
-                            getcurrent()._sim_node = n  # type: ignore[attr-defined]
-                            fn()
-                            # Auto-push/pop any blocks still pending when the kernel
-                            # function returns normally (final-iteration cleanup).
-                            # This must not run during exception propagation, so it
-                            # is placed after fn() rather than in a finally block.
-                            for _val in node_ctx.values():
-                                if isinstance(_val, DataflowBuffer):
-                                    _val.auto_push_block()
-                                    _val.auto_pop_block()
+def run_operation(
+    body: Callable[..., Any],
+    grid: Shape,
+    args: tuple[Any, ...],
+    kwargs: Dict[str, Any],
+) -> None:
+    """Execute an ``@ttl.operation`` body across the grid, single-phase.
 
-                        scheduler.add_kernel(
-                            KernelId(node, kernel_type, tmpl.__name__),
-                            _tagged,
+    The operation body (everything inside ``@ttl.operation`` but outside the
+    nested compute/datamovement kernels) is re-run once per node with that
+    node's context injected, so node-dependent setup -- ``ttl.node()``,
+    ``ttl.grid_size()``, and any scalars derived from them -- is computed
+    per node.  Each run produces that node's DataflowBuffers (shared among the
+    node's kernels) and its three kernels (whose closures capture the per-node
+    state).  PipeNets discovered across the per-node runs are aggregated to
+    compute the active-node set.
+    """
+    from .decorators import clear_kernel_registry, get_registered_kernels
+    from .pipe import build_pipenets, discover_pipe_nets_from_closures
+
+    total_nodes = _total_nodes(grid)
+    ctx = get_context()
+
+    node_plans: Dict[int, tuple[Dict[str, Any], tuple[BindableTemplate, ...]]] = {}
+    all_nets: List[Any] = []
+    dfb_count = 0
+    l1_bytes = 0
+
+    body_globals = getattr(body, "__globals__", {})
+    try:
+        for node in range(total_nodes):
+            # Inject per-node context so ttl.node()/ttl.grid_size() resolve in
+            # the body's setup (they walk frames for `_node` / `grid`).
+            body_globals["_node"] = node
+            body_globals["grid"] = grid
+
+            clear_kernel_registry()
+            ctx.kernel_dfb_count = 0
+            ctx.kernel_l1_bytes = 0
+
+            body(*args, **kwargs)
+
+            ordered = _order_kernels(get_registered_kernels())
+            node_context = _operation_node_context(node, grid, ordered)
+            node_plans[node] = (node_context, ordered)
+
+            # DFB/L1 footprint is per node; record the first node's counts for
+            # the hardware-limit warnings (setup is uniform across nodes).
+            if node == 0:
+                dfb_count = ctx.kernel_dfb_count
+                l1_bytes = ctx.kernel_l1_bytes
+
+            kernel_funcs = [getattr(t, "__wrapped__", None) for t in ordered]
+            all_nets.extend(discover_pipe_nets_from_closures(body, *kernel_funcs))
+    finally:
+        # Do not leave the injected node index on the shared body globals.
+        body_globals.pop("_node", None)
+
+    pipenets = build_pipenets(_dedupe_pipe_nets(all_nets))
+    pipenets.validate()
+
+    _schedule_and_run(
+        node_plan_for=lambda n: node_plans[n],
+        candidate_nodes=range(total_nodes),
+        analysis_templates=node_plans[0][1],
+        pipenets=pipenets,
+        grid=grid,
+        dfb_count=dfb_count,
+        l1_bytes=l1_bytes,
+    )
+
+
+def _schedule_and_run(
+    *,
+    node_plan_for: Callable[[int], tuple[Dict[str, Any], Any]],
+    candidate_nodes: Any,
+    analysis_templates: Any,
+    pipenets: Any,
+    grid: Shape,
+    dfb_count: int,
+    l1_bytes: int,
+) -> None:
+    """Analyse kernels, schedule active nodes, run the scheduler, and validate.
+
+    ``node_plan_for(node)`` returns ``(node_context, ordered_templates)`` for a
+    node: the context is the bind context (and the source of DataflowBuffers for
+    end-of-run cleanup/validation), and ``ordered_templates`` is (compute, dm0,
+    dm1).  ``analysis_templates`` is any representative (compute, dm0, dm1)
+    triple used once for copy-pattern analysis (kernel code objects are shared
+    across nodes).
+    """
+    # Warn if the number of DataflowBuffers exceeds the hardware limit.
+    max_dfbs = get_max_dfbs()
+    if dfb_count > max_dfbs:
+        warnings.warn(
+            f"Kernel defines {dfb_count} dataflow buffers, "
+            f"but the hardware limit is {max_dfbs}. "
+            f"Reduce the number of ttl.make_dataflow_buffer_like() calls.",
+            stacklevel=2,
+        )
+
+    # Warn if total L1 capacity exceeds the configured limit.
+    max_l1 = get_max_l1_bytes()
+    if l1_bytes > max_l1:
+        warnings.warn(
+            f"Total DataflowBuffer capacity per node ({l1_bytes} bytes) "
+            f"exceeds the L1 memory limit of {max_l1} bytes. "
+            f"Memory is accounted using declared dtypes, so this reflects "
+            f"the on-hardware footprint of the kernel.",
+            stacklevel=2,
+        )
+
+    scheduler = GreenletScheduler()
+    set_scheduler(scheduler)
+
+    # Analyse the three kernel functions (and any reachable helpers) once.  A
+    # shared visited set prevents duplicate analysis when helpers are called by
+    # more than one kernel.  Kernel code objects are identical across nodes, so
+    # a single representative triple covers every node.
+    ctx = get_context()
+    _empty = KernelAnalysis(injection_points=(), bare_copy_linenos=frozenset())
+    _visited: set[int] = set()
+    injection_map: dict[types.CodeType, KernelAnalysis] = {}
+    all_violations: List[PatternViolation] = []
+
+    for tmpl in analysis_templates:
+        analyses = collect_reachable_analyses(tmpl.__wrapped__, _visited)
+        injection_map.update(analyses)
+        top = analyses.get(tmpl.__wrapped__.__code__, _empty)
+        ctx.injection_points_cache[tmpl.__wrapped__] = top
+        all_violations.extend(top.violations)
+
+    if all_violations:
+        for v in all_violations:
+            print_diagnostic_error(
+                v.func_name,
+                v.message,
+                v.source_file,
+                v.lineno,
+                v.col,
+            )
+        n = len(all_violations)
+        raise RuntimeError(
+            f"Found {n} unsupported pattern{'s' if n > 1 else ''} in kernel "
+            "function(s). See errors above for details."
+        )
+
+    # Compute the PipeNet active set: linear node indices that participate in
+    # any pipe as source or destination. Inactive nodes skip every kernel,
+    # mirroring the compiler's scf.if guard.
+    active_nodes = (
+        pipenets.active_node_set(tuple(grid)) if pipenets is not None else None
+    )
+
+    def _is_active(node: int) -> bool:
+        return active_nodes is None or node in active_nodes
+
+    try:
+        # Track all per-node contexts for validation.
+        all_node_contexts: List[Dict[str, Any]] = []
+
+        for node in candidate_nodes:
+            # Skip nodes that are not in any PipeNet's active set.
+            if not _is_active(node):
+                continue
+
+            node_context, ordered = node_plan_for(node)
+            all_node_contexts.append(node_context)
+
+            # Add kernels to scheduler (one compute + two DM per node).
+            # Identity is (node, kind, __name__); the two DM kernels on a node
+            # must have distinct __name__s -- the scheduler rejects duplicates
+            # with a user-facing error.
+            for tmpl in ordered:
+                kernel_type = getattr(tmpl, "kernel_type", None)
+                match kernel_type:
+                    case KernelType.COMPUTE | KernelType.DM:
+                        pass
+                    case _:
+                        raise RuntimeError(
+                            f"Template {tmpl} has invalid kernel_type '{kernel_type}'. "
+                            f"Expected KernelType enum (COMPUTE or DM)."
                         )
 
-                # Install injection hooks for all discovered code objects (kernel
-                # functions, nested defs, and module-scope helpers).
-                install_copy_wait_hooks(injection_map)
+                # Bind template to node context.
+                bound_func = tmpl.bind(node_context)
 
-                # Iterator over the nodes that actually run kernels.
-                # Inactive nodes (filtered above) are not traced.
-                running_nodes = [n for n in range(total_nodes) if _is_active(n)]
+                # Wrap to tag the greenlet with its linear node index so
+                # locality analysis in copy.py can read it via getcurrent().
+                def _tagged(
+                    fn: Callable[[], Any] = bound_func,
+                    n: int = node,
+                    node_ctx: Dict[str, Any] = node_context,
+                ) -> None:
+                    getcurrent()._sim_node = n  # type: ignore[attr-defined]
+                    fn()
+                    # Auto-push/pop any blocks still pending when the kernel
+                    # function returns normally (final-iteration cleanup).
+                    # This must not run during exception propagation, so it
+                    # is placed after fn() rather than in a finally block.
+                    for _val in node_ctx.values():
+                        if isinstance(_val, DataflowBuffer):
+                            _val.auto_push_block()
+                            _val.auto_pop_block()
 
-                # Emit operation_start for each node before the scheduler runs.
-                if TRACE.enabled:
-                    for n in running_nodes:
-                        trace("operation_start", node=n)
-
-                # Run scheduler; if any kernel raises, the exception propagates
-                # immediately and the validation below is intentionally skipped.
-                # Reporting a "simulator bug" for unpushed blocks only makes sense
-                # when all kernels completed normally (auto-push/pop should have fired).
-                scheduler.run()
-
-                # Emit operation_end for each node now that all kernels completed.
-                if TRACE.enabled:
-                    for n in running_nodes:
-                        trace("operation_end", node=n)
-
-                # Validate all DataflowBuffers have no pending blocks.
-                # Only reached on normal exit from the scheduler.
-                self._validate_dataflow_buffers(all_node_contexts)
-            finally:
-                # Clear scheduler
-                set_scheduler(None)
-
-        def _validate_dataflow_buffers(
-            self, all_node_contexts: List[Dict[str, Any]]
-        ) -> None:
-            """Validate that all DataflowBuffers have no pending blocks at end of execution.
-
-            Args:
-                all_node_contexts: List of per-node contexts containing DataflowBuffers
-
-            Raises:
-                RuntimeError: If any DataflowBuffer has pending blocks
-            """
-            errors: List[str] = []
-            for node_idx, node_context in enumerate(all_node_contexts):
-                for key, value in node_context.items():
-                    match value:
-                        case DataflowBuffer():
-                            try:
-                                value.validate_no_pending_blocks()
-                            except RuntimeError as e:
-                                errors.append(f"node{node_idx}.{key}: {e}")
-                        case _:
-                            pass
-
-            if errors:
-                raise RuntimeError(
-                    "Kernel execution completed with incomplete DataflowBuffer operations:\n"
-                    + "\n".join(errors)
+                scheduler.add_kernel(
+                    KernelId(node, kernel_type, tmpl.__name__),
+                    _tagged,
                 )
 
-    return ProgramImpl(*funcs)
+        # Install injection hooks for all discovered code objects (kernel
+        # functions, nested defs, and module-scope helpers).
+        install_copy_wait_hooks(injection_map)
+
+        # Nodes that actually run kernels. Inactive nodes are not traced.
+        running_nodes = [n for n in candidate_nodes if _is_active(n)]
+
+        # Emit operation_start for each node before the scheduler runs.
+        if TRACE.enabled:
+            for n in running_nodes:
+                trace("operation_start", node=n)
+
+        # Run scheduler; if any kernel raises, the exception propagates
+        # immediately and the validation below is intentionally skipped.
+        # Reporting a "simulator bug" for unpushed blocks only makes sense when
+        # all kernels completed normally (auto-push/pop should have fired).
+        scheduler.run()
+
+        # Emit operation_end for each node now that all kernels completed.
+        if TRACE.enabled:
+            for n in running_nodes:
+                trace("operation_end", node=n)
+
+        # Validate all DataflowBuffers have no pending blocks.
+        # Only reached on normal exit from the scheduler.
+        _validate_dataflow_buffers(all_node_contexts)
+    finally:
+        set_scheduler(None)
+
+
+def _validate_dataflow_buffers(all_node_contexts: List[Dict[str, Any]]) -> None:
+    """Validate that all DataflowBuffers have no pending blocks at end of execution.
+
+    Args:
+        all_node_contexts: List of per-node contexts containing DataflowBuffers
+
+    Raises:
+        RuntimeError: If any DataflowBuffer has pending blocks
+    """
+    errors: List[str] = []
+    for node_idx, node_context in enumerate(all_node_contexts):
+        for key, value in node_context.items():
+            match value:
+                case DataflowBuffer():
+                    try:
+                        value.validate_no_pending_blocks()
+                    except RuntimeError as e:
+                        errors.append(f"node{node_idx}.{key}: {e}")
+                case _:
+                    pass
+
+    if errors:
+        raise RuntimeError(
+            "Kernel execution completed with incomplete DataflowBuffer operations:\n"
+            + "\n".join(errors)
+        )

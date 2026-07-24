@@ -1078,7 +1078,6 @@ node_num = ttl.node(dims=1)
 start_ct = node_num * cols_per_node
 end_ct = min(start_ct + cols_per_node, col_tiles)
 
-
 @ttl.datamovement()
 def dm():
     for ct in range(start_ct, end_ct):
@@ -1091,9 +1090,10 @@ def dm():
                 # then copy from a tensor slice of matching shape:
 
                 row_slice = slice(rt * g, (rt + 1) * g)  # explicit row slice
-                a_xf = ttl.copy(A[row_slice, ct : ct + 1], a_blk)  # in-line col slice
+                a_xf = ttl.copy(
+                    A[row_slice, ct : ct + 1], a_blk
+                )  # in-line col slice
                 a_xf.wait()
-
 
 ```
 

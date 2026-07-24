@@ -11,7 +11,6 @@ specified grid configurations.
 import types
 from typing import Any, Callable, Optional, Union, cast
 
-from .blockstate import KernelType
 from .typedefs import Shape
 from .context import get_context, cleanup_run_context
 
@@ -110,68 +109,18 @@ def operation(
             )
 
         def wrapper(*args: Any, **kwargs: Any) -> Any:
-            # Import here to avoid circular dependency
-            from .decorators import clear_kernel_registry, get_registered_kernels
-            from .program import Program
-            from .pipe import build_pipenets, discover_pipe_nets_from_closures
+            # Import here to avoid circular dependency.
+            from .program import run_operation
 
-            clear_kernel_registry()
-            get_context().kernel_dfb_count = 0
-            get_context().kernel_l1_bytes = 0
-
-            # Call the modified function (grid is already in globals)
-            # This executes the operation body which defines and registers kernels
-            modified_func(*args, **kwargs)
-
-            # Get registered compute/DM kernels
-            kernels = get_registered_kernels()
-
-            # All device operations must register compute, dm0, and dm1.
-            if len(kernels) != 3:
-                raise ValueError(
-                    f"Operation must define exactly 3 kernels (compute, dm0, dm1), got {len(kernels)}"
-                )
-
-            # Sort kernels by role to ensure consistent ordering regardless of definition order
-            # Program expects: compute, dm0, dm1
-            compute_kernels = [
-                t
-                for t in kernels
-                if getattr(t, "kernel_type", None) == KernelType.COMPUTE
-            ]
-            dm_kernels = [
-                t for t in kernels if getattr(t, "kernel_type", None) == KernelType.DM
-            ]
-
-            if len(compute_kernels) != 1:
-                raise ValueError(
-                    f"Kernel must define exactly 1 compute kernel, got {len(compute_kernels)}"
-                )
-            if len(dm_kernels) != 2:
-                raise ValueError(
-                    f"Kernel must define exactly 2 datamovement kernels, got {len(dm_kernels)}"
-                )
-
-            # Arrange in expected order: compute, dm0, dm1
-            ordered_kernels = [compute_kernels[0], dm_kernels[0], dm_kernels[1]]
-
-            # Build the operation-level PipeNet graph. PipeNets are discovered
-            # by walking closures of the operation function and each kernel's
-            # body, so captured PipeNets show up identically to body-local
-            # ones. Validation runs against the assembled graph.
-            kernel_funcs = [getattr(t, "__wrapped__", None) for t in ordered_kernels]
-            pipe_nets = discover_pipe_nets_from_closures(modified_func, *kernel_funcs)
-            pipenets = build_pipenets(pipe_nets)
-            pipenets.validate()
-
-            # Execute the program with grid parameter.  After the run,
-            # clean up execution-specific state so subsequent runs start
-            # from a clean slate.  This is the outermost session boundary:
-            # kernel_registry was already consumed by get_registered_kernels()
-            # above, so clearing it here is safe.
+            # Execute the operation single-phase: the body is re-run once per
+            # node with that node's context injected (so node-dependent setup
+            # such as ttl.node() / ttl.grid_size() works), producing per-node
+            # DataflowBuffers and kernels; run_operation then aggregates the
+            # discovered PipeNets, schedules the active nodes, and runs them.
+            # cleanup_run_context() resets execution-specific state afterwards
+            # so subsequent runs start from a clean slate.
             try:
-                program = Program(*ordered_kernels, grid=actual_grid, pipenets=pipenets)
-                program(*args, **kwargs)
+                run_operation(modified_func, actual_grid, args, kwargs)
             finally:
                 cleanup_run_context()
 
