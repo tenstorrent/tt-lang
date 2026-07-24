@@ -89,6 +89,10 @@ _NO_PROMOTION_SCRIPTS: frozenset[str] = frozenset(
         "spec/block/elementwise_broadcast_reduce.py",
         "spec/copy/group_transfer.py",
         "spec/tensor_slice/tensor_slice.py",
+        "spec/pipe/scatter.py",
+        "spec/pipe/scatter_gather.py",
+        "spec/pipe/forward_neighbor.py",
+        "spec/pipe/gather.py",
         # Runnable spec examples that stand on their own (shape introspection,
         # a multi-kernel operation, and the debugging/perf snippets).
         "spec/dataflow_buffer/tiled_tensor_shape.py",

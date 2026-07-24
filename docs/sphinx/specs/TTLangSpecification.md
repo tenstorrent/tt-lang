@@ -860,7 +860,6 @@ net = ttl.PipeNet(
 # (1, 1) -> (0, 1)               |
 # ...                            |
 
-
 @ttl.datamovement()
 def dm():
     with dfb.reserve() as blk:
@@ -887,7 +886,6 @@ def dm():
 
         net.if_src(pipe_src)
         net.if_dst(pipe_dst)
-
 
 ```
 
@@ -907,7 +905,6 @@ net = ttl.PipeNet(
 # (1, 0) => (1, 1) (1, 2) (1, 3) ... | concurrent
 # ...                                |
 
-
 @ttl.datamovement()
 def dm():
     with dfb.reserve() as blk:
@@ -934,7 +931,6 @@ def dm():
 
         net.if_src(pipe_src)
         net.if_dst(pipe_dst)
-
 
 ```
 
@@ -962,7 +958,6 @@ net = ttl.PipeNet(
 # (1, 0) => (1, 0) (1, 1) (1, 2) ...              |
 # ...                                             |
 
-
 @ttl.datamovement()
 def dm():
     with dfb.reserve() as blk:
@@ -989,7 +984,6 @@ def dm():
 
         net.if_src(pipe_src)
         net.if_dst(pipe_dst)
-
 
 ```
 
@@ -1019,7 +1013,6 @@ net = ttl.PipeNet(
 # ...               |
 #
 # * - assuming (8, 8) grid
-
 
 @ttl.datamovement()
 def dm():
@@ -1051,7 +1044,6 @@ def dm():
 
         net.if_src(pipe_src)
         net.if_dst(pipe_dst)
-
 
 ```
 
