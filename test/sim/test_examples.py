@@ -99,6 +99,7 @@ _NO_PROMOTION_SCRIPTS: frozenset[str] = frozenset(
         "spec/dataflow_buffer/row_major_tensor_shape.py",
         "spec/dataflow_buffer/dataflow_buffer.py",
         "spec/operation_function/multi_kernel_operation.py",
+        "spec/operation_function/operation_function.py",
         "spec/performance_and_debugging/debug_printing.py",
         "spec/performance_and_debugging/signpost.py",
         # Grid/node introspection: node-dependent setup runs per node.

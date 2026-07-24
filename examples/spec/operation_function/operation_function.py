@@ -36,10 +36,8 @@ def __add(
     # and the addition on the compute thread.
     a_dst_blk = a_dfb.reserve()
     b_dst_blk = b_dfb.reserve()
-    a_tx = ttl.copy(a[0:1, 0:1], a_dst_blk)
-    b_tx = ttl.copy(b[0:1, 0:1], b_dst_blk)
-    a_tx.wait()
-    b_tx.wait()
+    ttl.copy(a[0:1, 0:1], a_dst_blk).wait()
+    ttl.copy(b[0:1, 0:1], b_dst_blk).wait()
     a_dst_blk.push()
     b_dst_blk.push()
 
@@ -50,8 +48,7 @@ def __add(
     a_blk.pop()
     b_blk.pop()
 
-    out_tx = ttl.copy(out_dfb.wait(), out[0:1, 0:1])
-    out_tx.wait()
+    ttl.copy(out_dfb.wait(), out[0:1, 0:1]).wait()
     out_blk.push()
 
 
