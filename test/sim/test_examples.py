@@ -97,6 +97,9 @@ _NO_PROMOTION_SCRIPTS: frozenset[str] = frozenset(
         "spec/operation_function/multi_kernel_operation.py",
         "spec/performance_and_debugging/debug_printing.py",
         "spec/performance_and_debugging/signpost.py",
+        # Grid/node introspection: node-dependent setup runs per node.
+        "spec/grid/grid_size.py",
+        "spec/grid/node.py",
         pytest.param(
             "matmul.py",
             marks=pytest.mark.xfail(reason="Required broadcast not yet supported"),
