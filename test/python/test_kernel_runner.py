@@ -4,9 +4,12 @@
 
 """Python-only tests for ttl.kernel_runner resource allocation helpers."""
 
+from types import SimpleNamespace
+
 import pytest
 
 from ttl import kernel_runner
+from ttl.dataflow_buffer import CompilerAllocatedDFBConfig
 
 
 class _FakeTensor:
@@ -455,6 +458,64 @@ def test_emit_runner_source_preserves_positional_options():
     assert "NUM_PIPE_SYNC_SEMAPHORES = 2" in source
     assert "PIPE_SRAM_SCRATCH_BYTES = 64" in source
     assert "NUM_PIPE_GLOBAL_SEMAPHORES = 3" in source
+
+
+def test_emit_runner_source_preserves_subtile_page_size(monkeypatch):
+    class FakeTile:
+        def __init__(self, shape):
+            self.shape = shape
+
+        def get_tile_size(self, _data_format):
+            return self.shape[0] * self.shape[1] * 2
+
+    fake_ttnn = SimpleNamespace(Tile=FakeTile)
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    cb = SimpleNamespace(
+        dtype=SimpleNamespace(name="bfloat16"),
+        tile=(8, 32),
+        shape=(1, 9),
+        block_count=4,
+    )
+
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[],
+        cb_configs=[cb],
+        grid_cols=1,
+        grid_rows=1,
+        num_tensors=1,
+    )
+
+    assert "((1, 9), 4, ttnn.bfloat16, 512, 18432),  # CB 0" in source
+
+
+def test_emit_runner_source_handles_compiler_allocated_cb(monkeypatch):
+    data_format = SimpleNamespace(name="bfloat16")
+    monkeypatch.setattr(
+        kernel_runner,
+        "format_name_to_ttnn_dtype",
+        lambda _name: data_format,
+    )
+    monkeypatch.setattr(
+        kernel_runner,
+        "tile_bytes_from_dtype",
+        lambda _dtype: 2048,
+    )
+    cb = CompilerAllocatedDFBConfig(
+        dfb_index=0,
+        num_tiles=3,
+        data_format="bfloat16",
+        block_count=2,
+    )
+
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[],
+        cb_configs=[cb],
+        grid_cols=1,
+        grid_rows=1,
+        num_tensors=1,
+    )
+
+    assert "((1, 3), 2, ttnn.bfloat16, 2048, 12288),  # CB 0" in source
 
 
 def test_emit_runner_file_preserves_positional_options(tmp_path):

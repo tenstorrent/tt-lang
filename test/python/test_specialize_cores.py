@@ -29,8 +29,9 @@ Coverage:
     `test/ttlang/Dialect/TTKernel/Transforms/specialize_cores.mlir`).
   * emit_runner_no_crash: `TTLANG_EMIT_RUNNER` must not IndexError when
     kernels are cloned (per-clone tensor indices / core ranges).
-  * emit_runner_executes: emitted runner, run cold, reproduces the swap
-    (per-kernel core ranges and NOC roles baked into the template).
+  * emit_runner_executes: an x-only branching reader is emitted and run cold,
+    proving that equal y-coordinate clones share one descriptor per x branch
+    while per-kernel core ranges and NOC roles remain correct.
 """
 
 import os
@@ -199,6 +200,42 @@ def _make_branch_swap_op():
     return branch_swap
 
 
+def _make_branch_broadcast_op():
+    """Reader branches on x but is intentionally independent of y.
+
+    Specialization still creates one clone per coordinate, but after folding
+    the two y clones at each x have identical IR and runtime contracts.
+    """
+
+    @ttl.operation(grid=(GRID_X, GRID_Y))
+    def branch_broadcast(a, out):
+        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute_fn():
+            with a_dfb.wait() as a_tile, out_dfb.reserve() as o:
+                o.store(a_tile)
+
+        @ttl.datamovement()
+        def dm_read():
+            x, _ = ttl.node(dims=2)
+            with a_dfb.reserve() as blk:
+                tx = ttl.copy(a[0, 0], blk)
+                if x == 0:
+                    tx = ttl.copy(a[0, 1], blk)
+                tx.wait()
+
+        @ttl.datamovement()
+        def dm_write():
+            x, y = ttl.node(dims=2)
+            with out_dfb.wait() as blk:
+                tx = ttl.copy(blk, out[y, x])
+                tx.wait()
+
+    return branch_broadcast
+
+
 branch_swap_default = _make_branch_swap_op()
 branch_swap_specialized = _make_branch_swap_op()
 
@@ -212,6 +249,21 @@ def _make_swap_inputs(device):
     expected = torch.cat([right, left], dim=1).contiguous()
     a = to_dram(a_torch, device)
     return a, expected
+
+
+def _make_broadcast_inputs(device):
+    shape = (GRID_Y * TILE_SIZE, GRID_X * TILE_SIZE)
+    a_torch = torch.randn(shape, dtype=torch.bfloat16)
+    first_tile_row = a_torch[:TILE_SIZE]
+    expected_tile_row = torch.cat(
+        (
+            first_tile_row[:, TILE_SIZE:],
+            first_tile_row[:, :TILE_SIZE],
+        ),
+        dim=1,
+    )
+    expected = expected_tile_row.repeat(GRID_Y, 1).contiguous()
+    return to_dram(a_torch, device), expected
 
 
 def _assert_reader_cloned(final_mlir_path):
@@ -295,13 +347,23 @@ def test_specialize_cores_emit_runner_executes(device, monkeypatch, tmp_path):
     monkeypatch.setenv("TTLANG_COMPILE_ONLY", "1")
     runner_path = tmp_path / "runner.py"
     monkeypatch.setenv("TTLANG_EMIT_RUNNER", str(runner_path))
-    a, expected = _make_swap_inputs(device)
+    a, expected = _make_broadcast_inputs(device)
     out = to_dram(torch.zeros_like(expected), device)
-    _make_branch_swap_op()(a, out, options="--ttl-specialize-cores")
+    _make_branch_broadcast_op()(a, out, options="--ttl-specialize-cores")
 
     spec = importlib.util.spec_from_file_location("emitted_runner", str(runner_path))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    # Compute and writer remain whole-grid. The four reader clones have only
+    # two post-fold bodies (one per x branch), each covering both y values.
+    assert len(module.KERNEL_PATHS) == 4
+    specialized_ranges = [
+        ranges
+        for ranges in module.KERNEL_CORE_RANGES
+        if ranges is not None
+    ]
+    assert len(specialized_ranges) == 2
+    assert sorted(len(ranges) for ranges in specialized_ranges) == [2, 2]
     monkeypatch.delenv("TTLANG_COMPILE_ONLY", raising=False)
     module.run([a, out], device=device)
     assert_pcc(expected, ttnn.to_torch(out))

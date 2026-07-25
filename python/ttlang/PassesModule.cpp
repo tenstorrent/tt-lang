@@ -15,14 +15,34 @@
 
 using namespace mlir;
 
+static void prepareTTKernelToEmitC(MlirModule module) {
+  mlir::ModuleOp mod = llvm::cast<mlir::ModuleOp>(unwrap(module));
+  constexpr llvm::StringLiteral emitCPreparedAttr =
+      "ttlang.ttkernel_emitc_prepared";
+
+  // TTKernelToEmitC lowers the whole module. Remember that the module is
+  // prepared so per-kernel translation does not rerun the same whole-module
+  // pipeline for every specialized clone.
+  if (!mod->hasAttr(emitCPreparedAttr)) {
+    if (!ttlangRunTTKernelToEmitC(module)) {
+      throw std::runtime_error("Failed to run TTKernelToEmitC pass");
+    }
+    mod->setAttr(emitCPreparedAttr, mlir::UnitAttr::get(mod.getContext()));
+  }
+}
+
 void populatePassesModule(nb::module_ &m) {
+
+  m.def(
+      "prepare_ttkernel_to_cpp",
+      [](MlirModule module) { prepareTTKernelToEmitC(module); },
+      nb::arg("module"),
+      "Run the whole-module TTKernelToEmitC preparation exactly once.");
 
   m.def(
       "ttkernel_to_cpp_by_name",
       [](MlirModule module, const std::string &kernelName) -> std::string {
-        if (!ttlangRunTTKernelToEmitC(module)) {
-          throw std::runtime_error("Failed to run TTKernelToEmitC pass");
-        }
+        prepareTTKernelToEmitC(module);
 
         char *result = ttlangTranslateKernelToCpp(module, kernelName.c_str());
         if (!result) {

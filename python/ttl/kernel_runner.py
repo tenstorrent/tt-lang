@@ -819,17 +819,27 @@ def emit_runner_source(
     lines.append("")
 
     lines.append("CB_CONFIGS = [")
+    _ensure_ttnn()
+    if ttnn is None and cb_configs:
+        raise RuntimeError("ttnn is not available")
     for i, cb in enumerate(cb_configs):
         if cb is None:
             lines.append(f"    None,  # CB {i}")
             continue
-        data_format = _cb_data_format(cb)
-        page_size = tile_bytes_from_dtype(data_format)
+        if isinstance(cb, CompilerAllocatedDFBConfig):
+            data_format = format_name_to_ttnn_dtype(cb.data_format)
+            page_size = tile_bytes_from_dtype(data_format)
+            num_tiles = cb.num_tiles * cb.block_count
+            shape = (1, cb.num_tiles)
+        else:
+            data_format = _cb_data_format(cb)
+            page_size = ttnn.Tile(cb.tile).get_tile_size(data_format)
+            num_tiles = cb.shape[0] * cb.shape[1] * cb.block_count
+            shape = cb.shape
         dtype_str = _dtype_to_ttnn_str(data_format)
-        num_tiles = cb.shape[0] * cb.shape[1] * cb.block_count
         total_size = num_tiles * page_size
         lines.append(
-            f"    ({cb.shape!r}, {cb.block_count}, {dtype_str}, {page_size}, {total_size}),  # CB {i}"
+            f"    ({shape!r}, {cb.block_count}, {dtype_str}, {page_size}, {total_size}),  # CB {i}"
         )
     lines.append("]")
     lines.append("")

@@ -45,6 +45,7 @@ from ttl.ir import DenseI32ArrayAttr
 from ttl.passes import (
     get_ttkernel_arg_spec,
     get_ttkernel_names,
+    prepare_ttkernel_to_cpp,
     ttkernel_to_cpp_by_name,
 )
 from ttl.passmanager import PassManager
@@ -706,6 +707,27 @@ def _lookup_kernel_func_op(module, kernel_name: str):
     raise RuntimeError(f"Could not find TTKernel function '{kernel_name}'")
 
 
+def _get_kernel_equivalence_ir(module, kernel_name: str) -> str:
+    """Return function IR with clone-only identity attributes normalized.
+
+    Specialized clones whose normalized post-EmitC IR and runtime contracts are
+    identical emit the same C++ kernel, so they can share one Metal descriptor.
+    """
+    operation = _lookup_kernel_func_op(module, kernel_name)
+    attributes = operation.attributes
+    original_name = attributes["sym_name"]
+    original_coord = attributes.get("ttl.core_coord", None)
+    try:
+        attributes["sym_name"] = StringAttr.get("__ttlang_kernel__")
+        if original_coord is not None:
+            del attributes["ttl.core_coord"]
+        return str(operation)
+    finally:
+        attributes["sym_name"] = original_name
+        if original_coord is not None:
+            attributes["ttl.core_coord"] = original_coord
+
+
 def _set_unpack_to_dest_fp32(config, ttnn_mod, cb_indices) -> None:
     """Configure UnpackToDestFp32 for the listed CB indices.
 
@@ -960,9 +982,10 @@ def _compile_ttnn_kernel(
     kernel_paths = []
     kernel_configs = []
     kernel_arg_specs = []
-    # Per-kernel single-core ranges (specialization path) and tensor indices
-    # read from ttl.crta_indices. Both stay aligned with kernel_info order.
-    kernel_core_ranges = []
+    # Per-kernel coordinate groups (specialization path) and tensor indices
+    # read from ttl.crta_indices. Identical specialized bodies are coalesced
+    # below so one Metal descriptor can cover every core with the same role.
+    kernel_coord_groups = []
     specialized_tensor_indices = []
     kernel_config_attrs = {
         name: {
@@ -978,71 +1001,113 @@ def _compile_ttnn_kernel(
     # Build thread-to-kernel mapping for profiling
     # Maps RISC thread names to kernel names
     thread_to_kernel = {}
+    specialized_kernel_groups = {}
+
+    # Lower the whole module once before deriving structural equivalence keys.
+    # This lets identical specialized clones share a C++ translation and Metal
+    # descriptor instead of discovering duplicates only after translation.
+    prepare_ttkernel_to_cpp(module)
 
     for idx, (name, thread_type) in enumerate(kernel_info):
-        cpp_source = ttkernel_to_cpp_by_name(module, name)
-        kernel_path = _write_kernel_to_tmp(name, cpp_source)
-        kernel_paths.append((kernel_path, thread_type))
-
-        # The specialized clone's launch coordinates (None on the default,
-        # whole-grid path). Used to build the per-kernel dispatch range below.
+        # The specialized clone's launch coordinates (None on the default
+        # whole-grid path).
         coords = kernel_coords[idx]
 
+        noc_role = None
         if thread_type == "compute":
-            config = ttnn.ComputeConfigDescriptor()
-            if fp32_dest_acc_en is not None:
-                config.fp32_dest_acc_en = fp32_dest_acc_en
-            elif kernel_config_attrs[name]["fp32_dest_acc_en"]:
-                config.fp32_dest_acc_en = True
-            if dst_full_sync_en is not None:
-                config.dst_full_sync_en = dst_full_sync_en
-            elif kernel_config_attrs[name]["dst_full_sync_en"]:
-                config.dst_full_sync_en = True
-            unpack_fp32_cbs = kernel_config_attrs[name]["unpack_to_dest_fp32"]
-            if unpack_fp32_cbs:
-                _set_unpack_to_dest_fp32(config, ttnn, unpack_fp32_cbs)
-            # Compute kernels run on TRISC threads
-            thread_to_kernel["TRISC_0"] = name
-            thread_to_kernel["TRISC_1"] = name
-            thread_to_kernel["TRISC_2"] = name
+            pass
         elif thread_type == "noc":
             noc_role = _get_kernel_noc_index(module, name)
-            if noc_role == 0:
-                config = ttnn.ReaderConfigDescriptor()
-                thread_to_kernel["NCRISC"] = name  # Reader
-            else:
-                config = ttnn.WriterConfigDescriptor()
-                thread_to_kernel["BRISC"] = name  # Writer
-        else:
-            config = ttnn.ReaderConfigDescriptor()
-        kernel_configs.append(config)
 
-        # Turn the specialized clone's coordinates into a CoreRangeSet
-        if coords is not None:
-            kernel_core_ranges.append(
-                ttnn.CoreRangeSet(
-                    [
-                        ttnn.CoreRange(ttnn.CoreCoord(cx, cy), ttnn.CoreCoord(cx, cy))
-                        for (cx, cy) in coords
-                    ]
-                )
-            )
-        else:
-            kernel_core_ranges.append(None)
         # Clones cannot be aligned positionally with the original thread list,
         # so recover each kernel's global tensor indices from ttl.crta_indices.
-        # Only needed on the specialization path; the default path uses the
-        # positional thread_tensor_indices instead.
+        tensor_indices = None
         if specialize_cores:
-            specialized_tensor_indices.append(_get_kernel_crta_indices(module, name))
+            tensor_indices = _get_kernel_crta_indices(module, name)
 
         # Extract runtime args from kernel's arg_spec attribute
         arg_spec = get_ttkernel_arg_spec(module, name)
         if arg_spec is not None:
             arg_spec = ttkernel.ir.ArgSpecAttr.maybe_downcast(arg_spec)
-            kernel_arg_specs.append(arg_spec.rt_args if arg_spec else [])
+            runtime_arg_spec = arg_spec.rt_args if arg_spec else []
         else:
-            kernel_arg_specs.append([])
+            runtime_arg_spec = []
+
+        config_attrs = kernel_config_attrs[name]
+        equivalence_ir = _get_kernel_equivalence_ir(module, name)
+        group_key = (
+            thread_type,
+            noc_role,
+            equivalence_ir,
+            config_attrs["fp32_dest_acc_en"],
+            config_attrs["dst_full_sync_en"],
+            tuple(config_attrs["unpack_to_dest_fp32"]),
+            tuple(tensor_indices or ()),
+            str(runtime_arg_spec),
+        )
+        if (
+            specialize_cores
+            and coords is not None
+            and group_key in specialized_kernel_groups
+        ):
+            group_idx = specialized_kernel_groups[group_key]
+            kernel_coord_groups[group_idx].extend(coords)
+            continue
+
+        if specialize_cores and coords is not None:
+            specialized_kernel_groups[group_key] = len(kernel_paths)
+
+        cpp_source = ttkernel_to_cpp_by_name(module, name)
+        kernel_path = _write_kernel_to_tmp(name, cpp_source)
+        kernel_paths.append((kernel_path, thread_type))
+
+        if thread_type == "compute":
+            config = ttnn.ComputeConfigDescriptor()
+            if fp32_dest_acc_en is not None:
+                config.fp32_dest_acc_en = fp32_dest_acc_en
+            elif config_attrs["fp32_dest_acc_en"]:
+                config.fp32_dest_acc_en = True
+            if dst_full_sync_en is not None:
+                config.dst_full_sync_en = dst_full_sync_en
+            elif config_attrs["dst_full_sync_en"]:
+                config.dst_full_sync_en = True
+            unpack_fp32_cbs = config_attrs["unpack_to_dest_fp32"]
+            if unpack_fp32_cbs:
+                _set_unpack_to_dest_fp32(config, ttnn, unpack_fp32_cbs)
+            thread_to_kernel["TRISC_0"] = name
+            thread_to_kernel["TRISC_1"] = name
+            thread_to_kernel["TRISC_2"] = name
+        elif thread_type == "noc":
+            if noc_role == 0:
+                config = ttnn.ReaderConfigDescriptor()
+                thread_to_kernel["NCRISC"] = name
+            else:
+                config = ttnn.WriterConfigDescriptor()
+                thread_to_kernel["BRISC"] = name
+        else:
+            config = ttnn.ReaderConfigDescriptor()
+        kernel_configs.append(config)
+        kernel_arg_specs.append(runtime_arg_spec)
+        kernel_coord_groups.append(list(coords) if coords is not None else None)
+        if specialize_cores:
+            specialized_tensor_indices.append(tensor_indices)
+
+    kernel_core_ranges = []
+    for coords in kernel_coord_groups:
+        if coords is None:
+            kernel_core_ranges.append(None)
+            continue
+        kernel_core_ranges.append(
+            ttnn.CoreRangeSet(
+                [
+                    ttnn.CoreRange(
+                        ttnn.CoreCoord(cx, cy),
+                        ttnn.CoreCoord(cx, cy),
+                    )
+                    for (cx, cy) in coords
+                ]
+            )
+        )
 
     # On the specialization path get_ttkernel_names returns 3*N clones, so the
     # positional thread_tensor_indices (one entry per original thread) no longer
