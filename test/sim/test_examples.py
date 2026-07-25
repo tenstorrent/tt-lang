@@ -65,6 +65,50 @@ _NO_PROMOTION_SCRIPTS: frozenset[str] = frozenset(
     ]
 )
 
+# --- Spec-example coverage (single source of truth) ---------------------------
+#
+# Every file under examples/spec/**/*.py must be listed here (or in
+# _SPEC_EXAMPLES_EXPECT_FAILURE). test_all_spec_examples_are_covered enforces
+# this: a spec example added without a simulator test fails the suite. This is
+# how we force each new spec example to ship with a test.
+#
+# _SPEC_EXAMPLES_PASSING: run successfully on the simulator (golden- or
+# structurally-checked); they are parametrized into test_example_cli below.
+_SPEC_EXAMPLES_PASSING = [
+    # Wrapped in @ttl.operation + a torch golden outside the spec:begin/end
+    # markers (the marked lines are dedented on render, so the spec is unchanged).
+    "spec/block/batched_matmul_bias.py",
+    "spec/block/elementwise_broadcast_reduce.py",
+    "spec/copy/group_transfer.py",
+    "spec/tensor_slice/tensor_slice.py",
+    # Pipe data movement (unicast / multicast / loopback) with goldens.
+    "spec/pipe/scatter.py",
+    "spec/pipe/scatter_gather.py",
+    "spec/pipe/forward_neighbor.py",
+    "spec/pipe/gather.py",
+    # Stand-alone: shape introspection, a multi-kernel operation, unified op,
+    # and the debugging/perf snippets.
+    "spec/dataflow_buffer/tiled_tensor_shape.py",
+    "spec/dataflow_buffer/row_major_tensor_shape.py",
+    "spec/dataflow_buffer/dataflow_buffer.py",
+    "spec/operation_function/multi_kernel_operation.py",
+    "spec/operation_function/operation_function.py",
+    "spec/performance_and_debugging/debug_printing.py",
+    "spec/performance_and_debugging/signpost.py",
+    # Grid/node introspection: node-dependent setup runs per node.
+    "spec/grid/grid_size.py",
+    "spec/grid/node.py",
+]
+
+# _SPEC_EXAMPLES_EXPECT_FAILURE: exercise an interface that is not implemented
+# in the simulator yet; each is asserted to fail *at that interface* by
+# test_semaphore_examples_fail_at_unimplemented_interface. When the feature
+# lands, that test flips red and the example should move to _SPEC_EXAMPLES_PASSING.
+_SPEC_EXAMPLES_EXPECT_FAILURE = [
+    "spec/semaphore/many_to_one_barrier.py",
+    "spec/semaphore/one_to_many_barrier.py",
+]
+
 
 @pytest.mark.parametrize(
     "script_name",
@@ -83,28 +127,8 @@ _NO_PROMOTION_SCRIPTS: frozenset[str] = frozenset(
         "eltwise_add_3d.py",
         "eltwise_pipe.py",
         "eltwise_pipe_node3.py",
-        # Runnable spec examples: the authoring shown in the spec, wrapped in
-        # @ttl.operation + a torch golden outside the spec:begin/end markers.
-        "spec/block/batched_matmul_bias.py",
-        "spec/block/elementwise_broadcast_reduce.py",
-        "spec/copy/group_transfer.py",
-        "spec/tensor_slice/tensor_slice.py",
-        "spec/pipe/scatter.py",
-        "spec/pipe/scatter_gather.py",
-        "spec/pipe/forward_neighbor.py",
-        "spec/pipe/gather.py",
-        # Runnable spec examples that stand on their own (shape introspection,
-        # a multi-kernel operation, and the debugging/perf snippets).
-        "spec/dataflow_buffer/tiled_tensor_shape.py",
-        "spec/dataflow_buffer/row_major_tensor_shape.py",
-        "spec/dataflow_buffer/dataflow_buffer.py",
-        "spec/operation_function/multi_kernel_operation.py",
-        "spec/operation_function/operation_function.py",
-        "spec/performance_and_debugging/debug_printing.py",
-        "spec/performance_and_debugging/signpost.py",
-        # Grid/node introspection: node-dependent setup runs per node.
-        "spec/grid/grid_size.py",
-        "spec/grid/node.py",
+        # Runnable spec examples (single source of truth: _SPEC_EXAMPLES_PASSING).
+        *_SPEC_EXAMPLES_PASSING,
         pytest.param(
             "matmul.py",
             marks=pytest.mark.xfail(reason="Required broadcast not yet supported"),
@@ -287,13 +311,7 @@ def test_copy_source_lock_error_fails_with_expected_error(scheduler: str) -> Non
 
 
 @pytest.mark.parametrize("scheduler", ["greedy", "fair"])
-@pytest.mark.parametrize(
-    "script_name",
-    [
-        "spec/semaphore/many_to_one_barrier.py",
-        "spec/semaphore/one_to_many_barrier.py",
-    ],
-)
+@pytest.mark.parametrize("script_name", _SPEC_EXAMPLES_EXPECT_FAILURE)
 def test_semaphore_examples_fail_at_unimplemented_interface(
     script_name: str, scheduler: str
 ) -> None:
@@ -316,6 +334,45 @@ def test_semaphore_examples_fail_at_unimplemented_interface(
         f"{script_name} failed, but not at the unimplemented ttl.Semaphore "
         f"interface. The failure mode changed; investigate and update the "
         f"example/test.\nOutput:\n{out}"
+    )
+
+
+def test_all_spec_examples_are_covered() -> None:
+    """Enforce that every spec example ships with a simulator test.
+
+    Discovers every ``examples/spec/**/*.py`` on disk and requires each to be
+    registered as a simulator test -- either in ``_SPEC_EXAMPLES_PASSING`` (run
+    + golden/structural check via ``test_example_cli``) or, if it exercises an
+    interface the simulator does not implement yet, in
+    ``_SPEC_EXAMPLES_EXPECT_FAILURE`` (asserted to fail at that interface).
+
+    A new spec example therefore cannot land without a test: this guard fails
+    until the author adds it to one of those lists. It also flags registered
+    entries whose files were removed or renamed.
+    """
+    spec_root = EXAMPLES_DIR / "spec"
+    on_disk = {
+        p.relative_to(EXAMPLES_DIR).as_posix()
+        for p in spec_root.rglob("*.py")
+        if p.name != "__init__.py"
+    }
+    registered = set(_SPEC_EXAMPLES_PASSING) | set(_SPEC_EXAMPLES_EXPECT_FAILURE)
+
+    unregistered = sorted(on_disk - registered)
+    assert not unregistered, (
+        "These spec examples have no simulator test. Every example under "
+        "examples/spec/ must ship with one: add each path to "
+        "_SPEC_EXAMPLES_PASSING (if it runs on the simulator) or to "
+        "_SPEC_EXAMPLES_EXPECT_FAILURE (if it must fail at an unimplemented "
+        "interface) in test_examples.py:\n"
+        + "\n".join(f"  - {s}" for s in unregistered)
+    )
+
+    stale = sorted(registered - on_disk)
+    assert not stale, (
+        "These spec examples are registered in test_examples.py but no longer "
+        "exist on disk (removed or renamed?). Update the lists:\n"
+        + "\n".join(f"  - {s}" for s in stale)
     )
 
 
