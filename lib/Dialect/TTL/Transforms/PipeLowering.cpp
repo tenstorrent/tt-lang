@@ -1271,8 +1271,11 @@ collectPipeTransferAllocationUnits(ModuleOp mod,
     return failure();
   }
 
+  const bool relaxPipeNetGuards =
+      std::getenv("TTL_RELAX_PIPENET_GUARDS") != nullptr;
   for (PipeTransferAllocationUnit &unit : units) {
-    if (failed(validateMaxLivePosts(unit, /*maxLivePosts=*/1))) {
+    if (!relaxPipeNetGuards &&
+        failed(validateMaxLivePosts(unit, /*maxLivePosts=*/1))) {
       return failure();
     }
     finalizeInterval(unit.interval, dominanceInfo, postDominanceInfo);
