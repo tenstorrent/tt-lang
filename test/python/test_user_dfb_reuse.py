@@ -26,9 +26,7 @@ def _user_dfb_reuse_kernel(first, second, out):
     acknowledgment_dfb = ttl.make_dataflow_buffer_like(
         first, shape=(1, 1), block_count=2
     )
-    second_dfb = ttl.make_dataflow_buffer_like(
-        second, shape=(1, 1), block_count=2
-    )
+    second_dfb = ttl.make_dataflow_buffer_like(second, shape=(1, 1), block_count=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
     @ttl.compute()
@@ -87,13 +85,9 @@ def _physical_allocation_indices(final_mlir):
 def test_user_dfb_reuse_runtime(
     device, dtype, memory_config, to_device, tmp_path, monkeypatch
 ):
-    element_indices = torch.arange(TILE * TILE, dtype=torch.float32).reshape(
-        TILE, TILE
-    )
+    element_indices = torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE)
     first_host = ((element_indices.remainder(257) - 128) / 64).to(dtype)
-    second_host = (((17 * element_indices).remainder(509) - 254) / 128).to(
-        dtype
-    )
+    second_host = (((17 * element_indices).remainder(509) - 254) / 128).to(dtype)
     out_host = torch.zeros((TILE, TILE), dtype=dtype)
 
     first = to_device(first_host, device)

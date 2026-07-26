@@ -80,9 +80,7 @@ def test_absent_complete_allocations_use_legacy_compiler_metadata():
         ),
     ],
 )
-def test_invalid_complete_physical_allocations_are_rejected(
-    allocations, message
-):
+def test_invalid_complete_physical_allocations_are_rejected(allocations, message):
     module = _FakeModule({"ttl.dfb_allocations": allocations})
 
     with pytest.raises(ValueError, match=message):
