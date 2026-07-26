@@ -210,19 +210,20 @@ func.func @unbalanced_compute()
 
 // -----
 
-// Sequential DFBs with different exact types cannot share an index.
+// Sequential DFBs with different exact types cannot share an index. Their
+// physical indices remain stable when declarations are not in logical-ID order.
 
 // REUSE: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, {{.*}}}, {block_count = 2 : i32, dfb_index = 1 : i32, {{.*}}}]}
 // REUSE-LABEL: func.func @different_types
 // REUSE-SAME: ttl.base_cta_index = 2 : i32
-// REUSE: ttl.bind_cb{cb_index = 0, {{.*}}} : <[1, 1], !ttcore.tile<32x32, f32>, 2>
 // REUSE: ttl.bind_cb{cb_index = 1, {{.*}}} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+// REUSE: ttl.bind_cb{cb_index = 0, {{.*}}} : <[1, 1], !ttcore.tile<32x32, f32>, 2>
 
 func.func @different_types()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
                 ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
-  %a = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %b = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %a = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %a_producer = ttl.cb_reserve %a : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
   ttl.cb_push %a : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   %a_consumer = ttl.cb_wait %a : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
