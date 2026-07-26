@@ -315,6 +315,32 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 
 // -----
 
+// A producer for another logical DFB cannot satisfy a wait after both DFBs
+// receive the same physical index.
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @producer_for_reused_index() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 10 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    func.return
+  }
+
+  func.func @wait_on_distinct_dfb() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 11 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-error @below {{this `cb_wait` reads from a dataflow buffer that no other thread fills}}
+    %view = ttl.cb_wait %cb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    func.return
+  }
+}
+
+// -----
+
 // A wait whose execution domain is broader than the producer domain is rejected.
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {

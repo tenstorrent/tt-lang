@@ -100,6 +100,20 @@ inline std::optional<int64_t> getCBIndex(mlir::Value cb) {
   return std::nullopt;
 }
 
+/// Resolve the logical DFB identity attached to `cb`. Legacy IR uses its
+/// current CB index and therefore must not merge distinct logical DFBs first.
+inline std::optional<int64_t> getDFBId(mlir::Value cb) {
+  cb = traceUnrealizedCasts(cb);
+  auto bindOp = cb.getDefiningOp<BindCBOp>();
+  if (!bindOp) {
+    return std::nullopt;
+  }
+  if (auto dfbId = bindOp.getDfbId()) {
+    return dfbId->getSExtValue();
+  }
+  return bindOp.getCbIndex().getSExtValue();
+}
+
 /// Return the element type for a ttcore::TileType.
 inline std::optional<mlir::Type> getTileElementType(mlir::Type type) {
   if (auto tileType = mlir::dyn_cast<ttcore::TileType>(type)) {

@@ -36,6 +36,21 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
+// One logical DFB must have one finalized physical index.
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @inconsistent_physical_indices() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %first = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 10 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-error @below {{logical DFB 10 has inconsistent finalized cb_index values 0 and 1}}
+    %second = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 10 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    func.return
+  }
+}
+
+// -----
+
 // Two producer threads overlap on core (1, 0), so the DFB is not SPSC.
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {

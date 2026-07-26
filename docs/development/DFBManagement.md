@@ -12,6 +12,11 @@ assign compiler DFBs function-local provisional indices. The module-level
 finalization pass assigns module-wide physical indices after the last
 user-declared DFB and applies lifetime-based index reuse.
 
+`ttl.bind_cb` separates logical and physical identity. `dfb_id` identifies one
+logical DFB across kernel functions, while `cb_index` names its assigned
+hardware slot. Keeping both identities allows non-overlapping logical DFBs to
+share one physical index without merging their producer/consumer protocols.
+
 ## Pipeline
 
 The DFB-related passes in `ttl-to-ttkernel-pipeline` execute in this order:
@@ -40,7 +45,10 @@ Compute configuration copies selected indices into
 operations (`bcast`, `reduce`, `transpose`). Running either pass first would
 leave stale attributes after finalization rewrites the indices.
 
-`ttl-verify-dfb-spsc` must run after `ttl-finalize-dfb-indices` so every `bind_cb` carries its final `cb_index`. The pass asserts on unresolvable indices.
+`ttl-verify-dfb-spsc` must run after `ttl-finalize-dfb-indices` so every
+`bind_cb` carries its final `cb_index`. Reuse finalization also preserves the
+stable `dfb_id`; legacy IR falls back to its current `cb_index`. The pass
+asserts on unresolvable identities.
 
 ## DFB Lifecycle
 
@@ -212,13 +220,17 @@ consumer for that DFB.
 
 The `ttl-verify-dfb-spsc` module-level pass runs after
 `ttl-annotate-cb-associations`. It walks every `cb_reserve` and `cb_wait` op,
-groups them by `cb_index` and enclosing `ttl.kernel_thread`-tagged
-`func.func`, and tracks the launch-node domain for each producer or consumer.
+groups them by logical `dfb_id` and enclosing
+`ttl.kernel_thread`-tagged `func.func`, and tracks the launch-node domain for
+each producer or consumer. Legacy IR without `dfb_id` uses `cb_index`.
+Distinct logical DFBs therefore remain separate after physical allocation
+assigns them the same `cb_index`.
+
 The pass rejects a DFB when two producer domains overlap or when two consumer
 domains overlap. If multiple threads participate and a coordinate-dependent
 predicate cannot be analyzed statically, the pass rejects the DFB rather than
-assuming disjointness. The diagnostic identifies the cb_index, the role
-(producer or consumer), an overlapping launched node when available, the
+assuming disjointness. The diagnostic identifies the physical `cb_index`, the
+role (producer or consumer), an overlapping launched node when available, the
 participating operation sites, and the originating `ttl.bind_cb`.
 
 See `test/ttlang/Dialect/TTL/Transforms/verify_dfb_spsc_invalid.mlir` for the rejected patterns and `verify_dfb_spsc.mlir` for the accepted ones.
@@ -785,10 +797,13 @@ includes user and compiler-created DFBs in one physical assignment. The option
 is disabled in the standard pipeline because the Python runtime does not yet
 consume remapped user DFB descriptors.
 
-User declarations with the same provisional `cb_index` form one logical DFB
-across kernel functions. Each compiler-created declaration remains a separate
-logical DFB. Exact `CircularBufferType` equality is required for physical
-reuse.
+The frontend assigns each user-declared DFB a stable `dfb_id` and copies it to
+the declarations in every participating kernel function. Legacy IR without
+`dfb_id` uses the provisional `cb_index`. Each compiler-created declaration
+receives a distinct logical identity. The finalizer records every resolved
+logical identity on `ttl.bind_cb` before rewriting `cb_index`, so repeated
+finalization cannot merge logical DFBs that already share a physical slot.
+Exact `CircularBufferType` equality is required for physical reuse.
 
 The analysis gives each function-level operation separate entry and completion
 events. Program order connects events within a kernel function. For a

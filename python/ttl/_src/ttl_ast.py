@@ -857,8 +857,13 @@ class TTLGenericCompiler(TTCompilerBase):
             element_type,
             cb.block_count,
         )
-        # Emit: %cb = ttl.bind_cb {cb_index = N, block_count = M} : !ttl.cb<...>
-        return ttl.bind_cb(cb_type, cb._cb_index, block_count=cb.block_count)
+        # Separate logical identity from the physical index selected later.
+        return ttl.bind_cb(
+            cb_type,
+            cb._cb_index,
+            block_count=cb.block_count,
+            dfb_id=cb._cb_index,
+        )
 
     def _emit_pipe_from_capture(
         self, pipe, pipe_net_name=None, source_file=None, source_line=None

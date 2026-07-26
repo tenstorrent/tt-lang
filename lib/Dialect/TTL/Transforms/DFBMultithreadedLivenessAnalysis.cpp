@@ -120,13 +120,20 @@ static bool
 collectLogicalDFBs(ModuleOp moduleOp, SmallVectorImpl<LogicalDFB> &logicalDFBs,
                    DenseMap<Operation *, unsigned> &bindToLogicalDFB,
                    AnalysisFailure &analysisFailure) {
-  llvm::MapVector<int64_t, unsigned> userIndexToLogicalDFB;
-  int64_t nextCompilerLogicalId = 0;
+  llvm::MapVector<int64_t, unsigned> idToLogicalDFB;
+  int64_t nextLogicalId = 0;
 
   moduleOp.walk([&](BindCBOp bindOp) {
-    nextCompilerLogicalId =
-        std::max(nextCompilerLogicalId,
-                 bindOp.getCbIndex().getSExtValue() + static_cast<int64_t>(1));
+    if (auto dfbId = bindOp.getDfbId()) {
+      nextLogicalId =
+          std::max(nextLogicalId, dfbId->getSExtValue() + int64_t{1});
+      return;
+    }
+    if (!bindOp->hasAttr(kCompilerAllocatedAttrName)) {
+      nextLogicalId =
+          std::max(nextLogicalId, bindOp.getCbIndex().getSExtValue() +
+                                      static_cast<int64_t>(1));
+    }
   });
 
   moduleOp.walk([&](BindCBOp bindOp) {
@@ -134,33 +141,32 @@ collectLogicalDFBs(ModuleOp moduleOp, SmallVectorImpl<LogicalDFB> &logicalDFBs,
       return;
     }
     Type dfbType = bindOp.getResult().getType();
-    unsigned logicalIndex = 0;
-    if (bindOp->hasAttr(kCompilerAllocatedAttrName)) {
-      logicalIndex = logicalDFBs.size();
+    int64_t logicalId;
+    if (auto dfbId = bindOp.getDfbId()) {
+      logicalId = dfbId->getSExtValue();
+    } else if (bindOp->hasAttr(kCompilerAllocatedAttrName)) {
+      logicalId = nextLogicalId++;
+    } else {
+      logicalId = bindOp.getCbIndex().getSExtValue();
+    }
+
+    auto [logicalIt, inserted] =
+        idToLogicalDFB.insert({logicalId, logicalDFBs.size()});
+    unsigned logicalIndex = logicalIt->second;
+    if (inserted) {
       LogicalDFB logicalDFB;
-      logicalDFB.logicalId = nextCompilerLogicalId++;
+      logicalDFB.logicalId = logicalId;
       logicalDFB.type = dfbType;
       logicalDFBs.push_back(std::move(logicalDFB));
-    } else {
-      int64_t provisionalIndex = bindOp.getCbIndex().getSExtValue();
-      auto [logicalIt, inserted] =
-          userIndexToLogicalDFB.insert({provisionalIndex, logicalDFBs.size()});
-      logicalIndex = logicalIt->second;
-      if (inserted) {
-        LogicalDFB logicalDFB;
-        logicalDFB.logicalId = provisionalIndex;
-        logicalDFB.type = dfbType;
-        logicalDFBs.push_back(std::move(logicalDFB));
-      } else if (logicalDFBs[logicalIndex].type != dfbType) {
-        std::string message;
-        llvm::raw_string_ostream messageStream(message);
-        messageStream
-            << "logical DFB " << provisionalIndex
-            << " has inconsistent types across thread functions: expected "
-            << logicalDFBs[logicalIndex].type << " but found " << dfbType;
-        analysisFailure.set(bindOp, messageStream.str());
-        return;
-      }
+    } else if (logicalDFBs[logicalIndex].type != dfbType) {
+      std::string message;
+      llvm::raw_string_ostream messageStream(message);
+      messageStream
+          << "logical DFB " << logicalId
+          << " has inconsistent types across thread functions: expected "
+          << logicalDFBs[logicalIndex].type << " but found " << dfbType;
+      analysisFailure.set(bindOp, messageStream.str());
+      return;
     }
 
     logicalDFBs[logicalIndex].declarations.push_back(bindOp);
