@@ -7,7 +7,7 @@
 # those top-level wheel objects, not physical copies. With --overwrite, replace
 # existing direct wheel objects.
 #
-# Usage: publish-s3-wheels.sh [--overwrite] --prefix <tt-lang/YYYY-MM|tt-lang/releases> <dist_dir>
+# Usage: publish-s3-wheels.sh [--overwrite] [--overwrite-if true|false] --prefix <tt-lang/YYYY-MM|tt-lang/releases> <dist_dir>
 
 set -euo pipefail
 
@@ -16,7 +16,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$script_dir/lib/s3-index.sh"
 
 usage() {
-    echo "Usage: $0 [--overwrite] --prefix <tt-lang/YYYY-MM|tt-lang/releases> <dist_dir>" >&2
+    echo "Usage: $0 [--overwrite] [--overwrite-if true|false] --prefix <tt-lang/YYYY-MM|tt-lang/releases> <dist_dir>" >&2
     exit 2
 }
 
@@ -27,6 +27,15 @@ while [[ $# -gt 0 ]]; do
         --overwrite)
             overwrite=1
             shift
+            ;;
+        --overwrite-if)
+            [[ $# -ge 2 ]] || usage
+            case "$2" in
+                true) overwrite=1 ;;
+                false) overwrite=0 ;;
+                *) usage ;;
+            esac
+            shift 2
             ;;
         --prefix)
             [[ $# -ge 2 ]] || usage

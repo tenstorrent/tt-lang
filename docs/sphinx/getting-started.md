@@ -15,18 +15,17 @@ functional simulator (no compiler or hardware support) and does not depend on
 `ttnn`.
 
 First, create an isolated Python environment (venv, conda, etc.) with Python
-matching the selected wheel. Public PyPI hardware wheels currently use Python
-3.12; S3 light wheels are built for Python 3.10 and Python 3.12. The wheel
-targets a specific CPython ABI, so the venv's Python must match. Invoke
-`python3.12` (or `python3.10` for a light wheel) explicitly rather than the
-system default `python3`:
+matching the selected wheel. Public PyPI and S3 light hardware wheels are built
+for Python 3.10 and Python 3.12. The wheel targets a specific CPython ABI, so
+the venv's Python must match. Invoke `python3.12` or `python3.10` explicitly
+rather than the system default `python3`:
 
 ```bash
 python3.12 -m venv --prompt ttlang ttlang-venv
 source ttlang-venv/bin/activate
 ```
 
-On Linux machines with Tenstorrent hardware (Linux x86_64 / aarch64):
+On Linux x86_64 machines with Tenstorrent hardware:
 
 ```bash
 pip install tt-lang

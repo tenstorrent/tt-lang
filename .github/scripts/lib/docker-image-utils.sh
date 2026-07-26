@@ -8,6 +8,23 @@ ttlang_docker() {
     ${DOCKER:-docker} "$@"
 }
 
+ttlang_validate_docker_tag() {
+    if [ "$#" -ne 1 ] || [ -z "$1" ]; then
+        return 1
+    fi
+    ttlang_docker_tag="$1"
+    if [ "${#ttlang_docker_tag}" -gt 128 ]; then
+        return 1
+    fi
+    case "$ttlang_docker_tag" in
+        *[!A-Za-z0-9_.-]*) return 1 ;;
+    esac
+    case "$ttlang_docker_tag" in
+        [A-Za-z0-9_]*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 ttlang_image_for_tag() {
     if [ "$#" -lt 2 ] || [ "$#" -gt 3 ]; then
         echo "Usage: ttlang_image_for_tag <image-name> <tag> [registry]" >&2

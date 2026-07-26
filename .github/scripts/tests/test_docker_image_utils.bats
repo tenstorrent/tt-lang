@@ -22,6 +22,24 @@ EOF
     export DOCKER="$MOCK_DOCKER"
 }
 
+@test "ttlang_validate_docker_tag accepts the registry tag grammar" {
+    run bash -c "source '$LIB'; ttlang_validate_docker_tag 'v1.2.3_rc1-build'"
+
+    assert_success
+}
+
+@test "ttlang_validate_docker_tag rejects unsafe and oversized values" {
+    run bash -c "source '$LIB'; ttlang_validate_docker_tag 'bad/tag'"
+    assert_failure
+
+    run bash -c "source '$LIB'; ttlang_validate_docker_tag '-bad'"
+    assert_failure
+
+    long_tag="$(printf 'a%.0s' {1..129})"
+    run bash -c "source '$LIB'; ttlang_validate_docker_tag '$long_tag'"
+    assert_failure
+}
+
 @test "ttlang_image_for_tag prefers a local image when it exists" {
     write_mock_docker 0
 

@@ -319,11 +319,7 @@ jobs:
           TTLANG_EXTERNAL_TT_METAL_DIR: /tmp/ttmetal-install
           TTLANG_GIT_COMMIT: ${{ needs.find-compatible.outputs.winner_sha }}
           TT_METAL_COMMIT: ${{ needs.find-compatible.outputs.ttmetal_sha }}
-        run: |
-          .github/scripts/build-s3-light-core-wheel.sh \
-            --python-tag "${{ matrix.python_tag }}" \
-            --version "${{ needs.find-compatible.outputs.winner_version }}" \
-            --dist-dir dist
+        run: .github/scripts/build-s3-light-core-wheel.sh --python-tag "${{ matrix.python_tag }}" --version "${{ needs.find-compatible.outputs.winner_version }}" --dist-dir dist
 
       - name: Upload per-ABI wheels
         if: ${{ steps.gate.outputs.build == 'true' }}
