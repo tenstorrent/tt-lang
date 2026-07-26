@@ -1,0 +1,155 @@
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# RUN: %python -m pytest %s -v
+
+"""Off-device tests for statically indexed DFB collections in operations."""
+
+import ast
+import importlib
+import textwrap
+import types
+
+import pytest
+
+import ttl
+
+
+atom_module = importlib.import_module("ttl.atom")
+
+
+class _FakeDFB:
+    pass
+
+
+def _function(source: str) -> ast.FunctionDef:
+    return ast.parse(textwrap.dedent(source)).body[0]
+
+
+def _lift(source: str, monkeypatch):
+    def make_dfb(*positional_args, **keyword_args):
+        return _FakeDFB()
+
+    monkeypatch.setattr(atom_module, "DataflowBuffer", _FakeDFB)
+    fake_ttl = types.SimpleNamespace(make_dfb=make_dfb)
+    return atom_module._lift_setup(
+        _function(source),
+        {"ttl": fake_ttl},
+        "collection_test",
+    )
+
+
+def test_dfb_collection_is_flattened_into_static_captures(monkeypatch):
+    stripped, dfbs, pipe_nets = _lift(
+        """
+        def kernel():
+            buffers = [
+                ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+                for buffer_index in range(3)
+            ]
+            first = buffers[0].wait()
+            second = buffers[1].reserve()
+            third = buffers[2].wait()
+        """,
+        monkeypatch,
+    )
+
+    assert list(dfbs) == ["buffers_0", "buffers_1", "buffers_2"]
+    assert pipe_nets == {}
+    stripped_source = ast.unparse(stripped)
+    assert "buffers =" not in stripped_source
+    assert "buffers_0.wait()" in stripped_source
+    assert "buffers_1.reserve()" in stripped_source
+    assert "buffers_2.wait()" in stripped_source
+
+
+@pytest.mark.parametrize(
+    ("index_expression", "message"),
+    [
+        ("buffer_index", "requires a non-negative integer literal index"),
+        ("-1", "requires a non-negative integer literal index"),
+        ("True", "requires a non-negative integer literal index"),
+        ("2", "index 2 is out of range for 2 elements"),
+    ],
+)
+def test_dfb_collection_rejects_non_static_or_out_of_range_indices(
+    index_expression, message, monkeypatch
+):
+    with pytest.raises(ValueError, match=message):
+        _lift(
+            f"""
+            def kernel():
+                buffers = [
+                    ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+                    for collection_index in range(2)
+                ]
+                buffer_index = 0
+                block = buffers[{index_expression}].wait()
+            """,
+            monkeypatch,
+        )
+
+
+def test_dfb_collection_rejects_empty_comprehension(monkeypatch):
+    with pytest.raises(ValueError, match="must contain at least one DFB"):
+        _lift(
+            """
+            def kernel():
+                buffers = [
+                    ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+                    for collection_index in range(0)
+                ]
+            """,
+            monkeypatch,
+        )
+
+
+def test_dfb_collection_rejects_generated_name_collision(monkeypatch):
+    with pytest.raises(ValueError, match="element name 'buffers_0' conflicts"):
+        _lift(
+            """
+            def kernel():
+                buffers = [
+                    ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+                    for collection_index in range(2)
+                ]
+                buffers_0 = 0
+                block = buffers[0].wait()
+            """,
+            monkeypatch,
+        )
+
+
+def test_dfb_collection_rejects_bare_collection_use(monkeypatch):
+    with pytest.raises(ValueError, match="must be accessed with"):
+        _lift(
+            """
+            def kernel():
+                buffers = [
+                    ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+                    for collection_index in range(2)
+                ]
+                alias = buffers
+            """,
+            monkeypatch,
+        )
+
+
+def test_composed_operation_accepts_static_dfb_collection_elements():
+    @ttl.operation()
+    def copy_stage(source: ttl.DFB, destination: ttl.DFB):
+        source_block = source.wait()
+        destination_block = destination.reserve()
+        destination_block.store(source_block)
+
+    @ttl.operation(grid=(1, 1))
+    def chain():
+        buffers = [
+            ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+            for buffer_index in range(2)
+        ]
+        copy_stage(buffers[0], buffers[1])
+
+    assert "buffers[0].wait()" in chain._spec.source
+    assert "buffers[1].reserve()" in chain._spec.source

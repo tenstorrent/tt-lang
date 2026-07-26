@@ -17,15 +17,16 @@ buffers used within a top-level operation are declared in its body. An
 operation with resource parameters is expand-only and cannot be called as a
 TT-NN operation.
 
-DFB declarations sit inline with the compute/copy work in a unified
-body, so after the split they land inside each thread body. The existing
-per-thread compiler is capture-based (thread functions take no
-parameters; DFBs arrive as closure captures), so before splitting we
-lift the top-level ``name = make_dfb(...)`` assigns out of the body,
-evaluate them to DataflowBuffer objects, and pass them as captures --
-the same shape the @ttl.operation flow produces by running its setup
-body. After that the per-thread compile, CB sizing, pass pipeline, and
-runner are identical to @ttl.operation.
+DFB declarations sit inline with the compute/copy work in a unified body, so
+after the split they land inside each thread body. Declarations may be single
+assignments, list/tuple declarations, or list comprehensions whose elements are
+accessed with non-negative integer literal indices. The existing per-thread compiler is
+capture-based (thread functions take no parameters; DFBs arrive as closure
+captures), so before splitting we lift these declarations out of the body,
+evaluate them to DataflowBuffer objects, and pass them as captures -- the same
+form the @ttl.operation flow produces by running its setup body. After that the
+per-thread compile, DFB sizing, pass pipeline, and runner are identical to
+@ttl.operation.
 """
 
 from __future__ import annotations
@@ -353,16 +354,32 @@ def _is_pipe_list_expr(node: ast.expr) -> bool:
     return False
 
 
-def _setup_assign_target(stmt: ast.stmt) -> Optional[str]:
-    """If ``stmt`` is a DFB/Pipe/PipeNet construction assign, return its name.
+def _is_dfb_collection_expr(node: ast.expr) -> bool:
+    """A list/tuple/comprehension containing only DFB factory calls."""
+    if isinstance(node, (ast.List, ast.Tuple)):
+        return bool(node.elts) and all(
+            _call_name(element) in _DFB_FACTORY_NAMES for element in node.elts
+        )
+    if isinstance(node, ast.ListComp):
+        return _call_name(node.elt) in _DFB_FACTORY_NAMES
+    return False
 
-    Recognizes ``name = <dfb/pipe-factory>(...)`` and ``name = [<pipes>]``
-    (a pipe list feeding a later PipeNet)."""
+
+def _setup_assign_target(stmt: ast.stmt) -> Optional[str]:
+    """Return the name assigned by a top-level resource declaration.
+
+    Recognizes direct DFB/Pipe/PipeNet factory calls, DFB collections, and pipe
+    lists that feed a later PipeNet.
+    """
     if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
         return None
     if not isinstance(stmt.targets[0], ast.Name):
         return None
-    if _call_name(stmt.value) in _SETUP_FACTORY_NAMES or _is_pipe_list_expr(stmt.value):
+    if (
+        _call_name(stmt.value) in _SETUP_FACTORY_NAMES
+        or _is_dfb_collection_expr(stmt.value)
+        or _is_pipe_list_expr(stmt.value)
+    ):
         return stmt.targets[0].id
     return None
 
@@ -437,9 +454,58 @@ def _validate_resource_declarations(
         )
 
 
+class _DFBCollectionSubscriptRewriter(ast.NodeTransformer):
+    def __init__(
+        self,
+        collection_elements: Dict[str, List[str]],
+        operation_name: str,
+    ):
+        self.collection_elements = collection_elements
+        self.operation_name = operation_name
+
+    def visit_Subscript(self, node):
+        if not isinstance(node.value, ast.Name):
+            return self.generic_visit(node)
+        collection_name = node.value.id
+        if collection_name not in self.collection_elements:
+            return self.generic_visit(node)
+        if (
+            not isinstance(node.slice, ast.Constant)
+            or isinstance(node.slice.value, bool)
+            or not isinstance(node.slice.value, int)
+            or node.slice.value < 0
+        ):
+            raise ValueError(
+                f"@ttl.operation {self.operation_name!r}: DFB collection "
+                f"{collection_name!r} requires a non-negative integer literal "
+                "index"
+            )
+
+        index = node.slice.value
+        elements = self.collection_elements[collection_name]
+        if index >= len(elements):
+            raise ValueError(
+                f"@ttl.operation {self.operation_name!r}: DFB collection "
+                f"{collection_name!r} index {index} is out of range for "
+                f"{len(elements)} elements"
+            )
+        replacement = ast.Name(id=elements[index], ctx=ast.Load())
+        return ast.copy_location(replacement, node)
+
+    def visit_Name(self, node):
+        if isinstance(node.ctx, ast.Load) and node.id in self.collection_elements:
+            raise ValueError(
+                f"@ttl.operation {self.operation_name!r}: DFB collection "
+                f"{node.id!r} must be accessed with a non-negative integer "
+                "literal index"
+            )
+        return node
+
+
 def _lift_setup(
     fn_def: ast.FunctionDef,
     scope: Dict[str, Any],
+    operation_name: str,
 ) -> Tuple[ast.FunctionDef, Dict[str, DataflowBuffer], Dict[str, PipeNet]]:
     """Strip and evaluate the top-level DFB / Pipe / PipeNet construction
     assigns.
@@ -460,6 +526,10 @@ def _lift_setup(
 
     dfbs: Dict[str, DataflowBuffer] = {}
     nets: Dict[str, PipeNet] = {}
+    collection_elements: Dict[str, List[str]] = {}
+    reserved_names = {
+        node.id for node in ast.walk(fn_def) if isinstance(node, ast.Name)
+    }
     kept: List[ast.stmt] = []
     for stmt in fn_def.body:
         name = _setup_assign_target(stmt)
@@ -470,13 +540,44 @@ def _lift_setup(
         ns[name] = value
         if isinstance(value, DataflowBuffer):
             dfbs[name] = value
+        elif _is_dfb_collection_expr(stmt.value):
+            if not isinstance(value, (list, tuple)) or not value:
+                raise ValueError(
+                    f"@ttl.operation {operation_name!r}: DFB collection "
+                    f"{name!r} must contain at least one DFB"
+                )
+            if not all(isinstance(element, DataflowBuffer) for element in value):
+                raise TypeError(
+                    f"@ttl.operation {operation_name!r}: DFB collection "
+                    f"{name!r} contains a non-DFB element"
+                )
+
+            element_names = []
+            for index, element in enumerate(value):
+                element_name = f"{name}_{index}"
+                if element_name in reserved_names:
+                    raise ValueError(
+                        f"@ttl.operation {operation_name!r}: generated DFB "
+                        f"collection element name {element_name!r} conflicts "
+                        "with another operation identifier"
+                    )
+                reserved_names.add(element_name)
+                element_names.append(element_name)
+                ns[element_name] = element
+                dfbs[element_name] = element
+            collection_elements[name] = element_names
         elif isinstance(value, PipeNet):
             nets[name] = value
         # A bare Pipe stays in ns for a later PipeNet reference but is not a
         # capture; only DataflowBuffers and PipeNets are bound on threads.
 
     new_fn = copy.copy(fn_def)
-    new_fn.body = kept
+    rewriter = _DFBCollectionSubscriptRewriter(
+        collection_elements,
+        operation_name,
+    )
+    new_fn.body = [rewriter.visit(statement) for statement in kept]
+    ast.fix_missing_locations(new_fn)
     return new_fn, dfbs, nets
 
 
@@ -574,7 +675,11 @@ def _compile_atom(
     _reset_cb_counter()
     _set_current_grid(grid)
 
-    stripped_fn, dfbs, nets = _lift_setup(copy.deepcopy(spec.fn_ast), eval_scope)
+    stripped_fn, dfbs, nets = _lift_setup(
+        copy.deepcopy(spec.fn_ast),
+        eval_scope,
+        spec.name,
+    )
 
     # Assign each PipeNet a distinct operation-local id (and validate), the
     # same graph @ttl.operation builds; it also yields the runner's pipe
