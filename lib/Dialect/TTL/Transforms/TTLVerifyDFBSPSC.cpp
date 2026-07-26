@@ -6,9 +6,10 @@
 // TTL Verify DFB SPSC
 //===----------------------------------------------------------------------===//
 //
-// Rejects modules in which a dataflow buffer (identified by its `cb_index`) has
-// more than one producer or consumer kernel thread active on the same launched
-// node. tt-metal CBs are single-producer single-consumer at the API level; see
+// Rejects modules in which a logical dataflow buffer has more than one producer
+// or consumer kernel thread active on the same launched node. Logical identity
+// remains distinct when non-overlapping DFBs share a physical `cb_index`.
+// tt-metal CBs are single-producer single-consumer at the API level; see
 // `docs/development/DFBManagement.md` for the rationale.
 //
 //===----------------------------------------------------------------------===//
@@ -188,18 +189,34 @@ struct TTLVerifyDFBSPSCPass
 
     bool hasAcquire = false;
     llvm::DenseMap<int64_t, Operation *> bindSites;
+    llvm::DenseMap<int64_t, int64_t> physicalIndices;
+    bool hasInconsistentIndex = false;
 
     module.walk([&](Operation *op) {
       if (isa<CBReserveOp, CBWaitOp>(op) && getEnclosingKernelThread(op)) {
         hasAcquire = true;
       } else if (auto bindOp = dyn_cast<BindCBOp>(op)) {
-        std::optional<int64_t> idx = getCBIndex(bindOp.getResult());
-        if (idx.has_value()) {
-          bindSites.try_emplace(*idx, op);
+        std::optional<int64_t> dfbId = getDFBId(bindOp.getResult());
+        std::optional<int64_t> cbIndex = getCBIndex(bindOp.getResult());
+        if (!dfbId || !cbIndex) {
+          return;
+        }
+        bindSites.try_emplace(*dfbId, op);
+        auto [indexIt, inserted] =
+            physicalIndices.try_emplace(*dfbId, *cbIndex);
+        if (!inserted && indexIt->second != *cbIndex) {
+          bindOp.emitOpError() << "logical DFB " << *dfbId
+                               << " has inconsistent finalized cb_index values "
+                               << indexIt->second << " and " << *cbIndex;
+          hasInconsistentIndex = true;
         }
       }
     });
 
+    if (hasInconsistentIndex) {
+      signalPassFailure();
+      return;
+    }
     if (!hasAcquire) {
       return;
     }
@@ -231,46 +248,46 @@ struct TTLVerifyDFBSPSCPass
       return;
     }
 
-    llvm::MapVector<int64_t, DFBParticipantSet> producers;
-    llvm::MapVector<int64_t, DFBParticipantSet> consumers;
+    llvm::MapVector<int64_t, DFBParticipantSet> producersByDFB;
+    llvm::MapVector<int64_t, DFBParticipantSet> consumersByDFB;
 
-    auto record = [&](llvm::MapVector<int64_t, DFBParticipantSet> &perCB,
+    auto record = [&](llvm::MapVector<int64_t, DFBParticipantSet> &perDFB,
                       Operation *op, Value cb) {
       func::FuncOp thread = getEnclosingKernelThread(op);
       if (!thread) {
         return;
       }
-      std::optional<int64_t> idx = getCBIndex(cb);
-      assert(idx.has_value() &&
-             "ttl-verify-dfb-spsc requires finalized cb_index; run "
+      std::optional<int64_t> dfbId = getDFBId(cb);
+      assert(dfbId.has_value() &&
+             "ttl-verify-dfb-spsc requires resolvable DFB identity; run "
              "ttl-finalize-dfb-indices first");
       auto domainIt = state.acquireDomains.find(op);
       AcquireDomain acquireDomain =
           domainIt == state.acquireDomains.end()
               ? AcquireDomain{LaunchNodeDomain::unknown(), op}
               : domainIt->second;
-      addParticipant(perCB[*idx], thread, op, acquireDomain.domain,
+      addParticipant(perDFB[*dfbId], thread, op, acquireDomain.domain,
                      acquireDomain.unanalyzableOp);
     };
 
     module.walk([&](Operation *op) {
       if (auto reserveOp = dyn_cast<CBReserveOp>(op)) {
-        record(producers, op, reserveOp.getCb());
+        record(producersByDFB, op, reserveOp.getCb());
       } else if (auto waitOp = dyn_cast<CBWaitOp>(op)) {
-        record(consumers, op, waitOp.getCb());
+        record(consumersByDFB, op, waitOp.getCb());
       }
     });
 
     bool sawError = false;
-    for (auto &entry : producers) {
-      sawError |= verifyParticipantSet(entry.first, entry.second,
-                                       bindSites.lookup(entry.first),
-                                       "producer", "reserved");
+    for (auto &entry : producersByDFB) {
+      sawError |= verifyParticipantSet(
+          physicalIndices.lookup(entry.first), entry.second,
+          bindSites.lookup(entry.first), "producer", "reserved");
     }
-    for (auto &entry : consumers) {
-      sawError |= verifyParticipantSet(entry.first, entry.second,
-                                       bindSites.lookup(entry.first),
-                                       "consumer", "waited on");
+    for (auto &entry : consumersByDFB) {
+      sawError |= verifyParticipantSet(
+          physicalIndices.lookup(entry.first), entry.second,
+          bindSites.lookup(entry.first), "consumer", "waited on");
     }
 
     if (sawError) {

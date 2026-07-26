@@ -261,6 +261,8 @@ struct TTLFinalizeDFBIndicesPass
       for (const DFBPhysicalIndexAssignment &assignment :
            analysis.getAssignments()) {
         for (BindCBOp bindOp : assignment.declarations) {
+          bindOp.setDfbIdAttr(
+              IntegerAttr::get(IndexType::get(context), assignment.logicalId));
           bindOp.setCbIndexAttr(IntegerAttr::get(IndexType::get(context),
                                                  assignment.physicalIndex));
         }

@@ -49,7 +49,7 @@ constexpr unsigned kMaxPipeScheduleCycleNotes = 8;
 struct WaitUse {
   CBWaitOp op;
   LaunchNodeDomain domain;
-  int64_t cbIndex;
+  int64_t dfbId;
 };
 
 /// Return true if `copyOp` publishes a destination dataflow buffer slot for a
@@ -98,7 +98,7 @@ struct ModuleState : LaunchNodeDomainState {
   explicit ModuleState(ModuleOp module) : valueOrigins(module) {}
 
   ValueOriginAnalysis valueOrigins;
-  llvm::DenseMap<int64_t, LaunchNodeDomain> cbProducerDomains;
+  llvm::DenseMap<int64_t, LaunchNodeDomain> dfbProducerDomains;
   SmallVector<WaitUse> waitUses;
   SmallVector<PipeEvent> pipeEvents;
   llvm::DenseMap<Operation *, unsigned> pipeEventIndices;
@@ -352,14 +352,14 @@ void recordGuardOperation(Operation *op, const LaunchNodeDomain &domain,
         state.recordPipeWaitEvent(wait, domain, unanalyzableOp);
       })
       .Case<CBPushOp>([&](CBPushOp push) {
-        if (auto cbIndex = getCBIndex(push.getCb())) {
-          state.cbProducerDomains[*cbIndex] =
-              state.cbProducerDomains[*cbIndex].unionWith(domain);
+        if (auto dfbId = getDFBId(push.getCb())) {
+          state.dfbProducerDomains[*dfbId] =
+              state.dfbProducerDomains[*dfbId].unionWith(domain);
         }
       })
       .Case<CBWaitOp>([&](CBWaitOp wait) {
-        if (auto cbIndex = getCBIndex(wait.getCb())) {
-          state.waitUses.push_back({wait, domain, *cbIndex});
+        if (auto dfbId = getDFBId(wait.getCb())) {
+          state.waitUses.push_back({wait, domain, *dfbId});
         }
       });
 }
@@ -369,8 +369,8 @@ void recordGuardOperation(Operation *op, const LaunchNodeDomain &domain,
 // covered by any producer (deadlock-prone IR).
 void verifyCBWaits(ModuleState &state) {
   for (WaitUse &use : state.waitUses) {
-    auto it = state.cbProducerDomains.find(use.cbIndex);
-    if (it == state.cbProducerDomains.end()) {
+    auto it = state.dfbProducerDomains.find(use.dfbId);
+    if (it == state.dfbProducerDomains.end()) {
       use.op.emitOpError()
           << "this `cb_wait` reads from a dataflow buffer that no other "
              "thread fills; check that another `@ttl.compute()` or "

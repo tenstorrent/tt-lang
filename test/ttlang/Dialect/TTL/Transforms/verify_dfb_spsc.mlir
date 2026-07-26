@@ -211,6 +211,51 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
+// Two logical DFBs may share a physical index when each remains SPSC.
+// CHECK-LABEL: func.func @first_reused_producer
+// CHECK-LABEL: func.func @first_reused_consumer
+// CHECK-LABEL: func.func @second_reused_producer
+// CHECK-LABEL: func.func @second_reused_consumer
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @first_reused_producer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 10 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %slot = ttl.cb_reserve %cb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    func.return
+  }
+
+  func.func @first_reused_consumer() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 10 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %view = ttl.cb_wait %cb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    func.return
+  }
+
+  func.func @second_reused_producer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 11 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %slot = ttl.cb_reserve %cb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    func.return
+  }
+
+  func.func @second_reused_consumer() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 11 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %view = ttl.cb_wait %cb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    func.return
+  }
+}
+
+// -----
+
 // PipeNet role domains may make two consumer threads disjoint.
 // CHECK-LABEL: func.func @consumer_dst
 // CHECK-LABEL: func.func @consumer_src
