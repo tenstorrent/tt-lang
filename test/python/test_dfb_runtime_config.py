@@ -42,6 +42,25 @@ def test_complete_physical_allocations_replace_frontend_configs():
     ]
 
 
+@pytest.mark.parametrize(
+    ("element_type", "data_format"),
+    [
+        ("!ttcore.tile<32x32, bfp_bf4>", "bfloat4_b"),
+        ("!ttcore.tile<32x32, bfp_bf8>", "bfloat8_b"),
+        ("!ttcore.tile<32x32, u8>", "uint8"),
+        ("!ttcore.tile<32x32, u16>", "uint16"),
+        ("!ttcore.tile<32x32, u32>", "uint32"),
+        ("!ttcore.tile<32x32, si32>", "int32"),
+    ],
+)
+def test_complete_physical_allocations_support_tile_types(element_type, data_format):
+    module = _FakeModule(
+        {"ttl.dfb_allocations": [_entry(0, element_type=element_type)]}
+    )
+
+    assert _resolve_dfb_configs(module, []) == [PhysicalDFBConfig(0, 1, data_format, 2)]
+
+
 def test_empty_complete_physical_allocations_replace_frontend_configs():
     module = _FakeModule({"ttl.dfb_allocations": []})
 

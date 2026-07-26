@@ -647,7 +647,11 @@ def run_kernel_on_device(
 def _dtype_to_ttnn_str(data_format) -> str:
     """Convert a data format to ttnn.dtype string for code emission."""
     dtype_str = str(data_format)
-    if "bfloat16" in dtype_str.lower():
+    if "bfloat4" in dtype_str.lower():
+        return "ttnn.bfloat4_b"
+    elif "bfloat8" in dtype_str.lower():
+        return "ttnn.bfloat8_b"
+    elif "bfloat16" in dtype_str.lower():
         return "ttnn.bfloat16"
     elif "float32" in dtype_str.lower():
         return "ttnn.float32"
@@ -657,9 +661,11 @@ def _dtype_to_ttnn_str(data_format) -> str:
         return "ttnn.uint32"
     elif "uint16" in dtype_str.lower():
         return "ttnn.uint16"
+    elif "uint8" in dtype_str.lower():
+        return "ttnn.uint8"
     elif "int32" in dtype_str.lower():
         return "ttnn.int32"
-    return "ttnn.bfloat16"
+    raise ValueError(f"Unsupported data format for runner emission: {data_format}")
 
 
 def _serialize_core_ranges(
