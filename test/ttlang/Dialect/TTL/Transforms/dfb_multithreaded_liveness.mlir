@@ -1,6 +1,7 @@
 // Tests conservative DFB reuse across concurrently executing kernel functions.
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true})' | FileCheck %s --check-prefix=REUSE
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=DEFAULT
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=REUSE
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false})' | FileCheck %s --check-prefix=DISABLED
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true},ttl-finalize-dfb-indices{reuse-user-dfbs=true})' | FileCheck %s --check-prefix=REPEAT
 
 // An acknowledgment DFB orders both thread frontiers between A and B. A and B
@@ -35,17 +36,17 @@
 // REPEAT: ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 1 : index}
 // REPEAT: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 2 : index}
 
-// DEFAULT-NOT: ttl.dfb_allocations
-// DEFAULT-LABEL: func.func @synchronized_dm
-// DEFAULT-SAME: ttl.base_cta_index = 3 : i32
-// DEFAULT: ttl.bind_cb{cb_index = 0,
-// DEFAULT: ttl.bind_cb{cb_index = 1,
-// DEFAULT: ttl.bind_cb{cb_index = 2,
-// DEFAULT-LABEL: func.func @synchronized_compute
-// DEFAULT-SAME: ttl.base_cta_index = 3 : i32
-// DEFAULT: ttl.bind_cb{cb_index = 0,
-// DEFAULT: ttl.bind_cb{cb_index = 1,
-// DEFAULT: ttl.bind_cb{cb_index = 2,
+// DISABLED-NOT: ttl.dfb_allocations
+// DISABLED-LABEL: func.func @synchronized_dm
+// DISABLED-SAME: ttl.base_cta_index = 3 : i32
+// DISABLED: ttl.bind_cb{cb_index = 0,
+// DISABLED: ttl.bind_cb{cb_index = 1,
+// DISABLED: ttl.bind_cb{cb_index = 2,
+// DISABLED-LABEL: func.func @synchronized_compute
+// DISABLED-SAME: ttl.base_cta_index = 3 : i32
+// DISABLED: ttl.bind_cb{cb_index = 0,
+// DISABLED: ttl.bind_cb{cb_index = 1,
+// DISABLED: ttl.bind_cb{cb_index = 2,
 
 func.func @synchronized_dm()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>,

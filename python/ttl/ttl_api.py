@@ -39,7 +39,7 @@ def _ensure_ttnn():
 import ttl._mlir_libs._ttlang  # Register tt-lang passes
 from ttl._mlir_libs._ttlang import ttl_ir as _ttl_ir
 from ttl.pykernel._src.utils import _cleanup_source_code
-from ttl.dialects import ttkernel
+from ttl.dialects import ttcore, ttkernel
 from ttl.ir import *
 from ttl.ir import DenseI32ArrayAttr
 from ttl.passes import (
@@ -70,8 +70,8 @@ from ._src.tensor_registry import (
 from ._src.ttl_ast import TTLGenericCompiler
 from .dataflow_buffer import (
     CircularBuffer,
-    CompilerAllocatedDFBConfig,
     DataflowBuffer,
+    PhysicalDFBConfig,
     get_cb_count,
 )
 from .pipe import Pipe, PipeNet
@@ -1237,52 +1237,118 @@ _MLIR_TYPE_TO_FORMAT = {
 }
 
 
-def _parse_mlir_element_type(type_str: str) -> str:
-    """Extract the base data format name from an MLIR TypeAttr string.
+def _parse_mlir_element_type(element_type) -> tuple[str, tuple[int, int]]:
+    """Extract the data format and tile dimensions from an MLIR TypeAttr.
 
     The TypeAttr prints as e.g. "bf16" or "!ttcore.tile<32x32, bf16>".
-    This function extracts the trailing type mnemonic and maps it to a
-    ttnn-compatible format name.
+    Actual MLIR attributes use the TileType binding for dimensions. String
+    parsing supports lightweight test attributes.
     """
+    tile = (32, 32)
+    type_value = getattr(element_type, "value", None)
+    if type_value is not None:
+        tile_type = ttcore.ir.TileType.maybe_downcast(type_value)
+        if tile_type is not None:
+            tile = tuple(tile_type.shape)
+
     # For compound types like "!ttcore.tile<32x32, bf16>", extract the
     # type after the last comma. For bare types like "bf16", use as-is.
+    type_str = str(element_type)
     token = type_str.strip()
     if "," in token:
+        if type_value is None and token.startswith("!ttcore.tile<"):
+            tile_shape = token.removeprefix("!ttcore.tile<").split(",", 1)[0]
+            tile = tuple(int(dimension) for dimension in tile_shape.split("x"))
+            if len(tile) != 2 or any(dimension <= 0 for dimension in tile):
+                raise ValueError(f"Invalid tile dimensions '{tile_shape}'")
         token = token.rsplit(",", 1)[1].strip().rstrip(">").strip()
     fmt = _MLIR_TYPE_TO_FORMAT.get(token)
     if fmt is not None:
-        return fmt
+        return fmt, tile
     raise ValueError(
         f"Unrecognized MLIR element type '{token}' (from '{type_str}'). "
         f"Known types: {list(_MLIR_TYPE_TO_FORMAT.keys())}"
     )
 
 
-def _extract_compiler_allocated_dfbs(module):
-    """Read ttl.compiler_allocated_dfbs module attribute.
-
-    Returns an empty list when the attribute is absent (no compiler-allocated
-    DFBs). Each entry is a DictionaryAttr with dfb_index, num_tiles,
-    element_type, and block_count.
-    """
-    attr = module.operation.attributes.get("ttl.compiler_allocated_dfbs", None)
+def _extract_dfb_config_attribute(module, attribute_name):
+    """Read and validate an optional array of physical DFB configurations."""
+    attr = module.operation.attributes.get(attribute_name, None)
     if attr is None:
-        return []
+        return None
 
     configs = []
-    for entry in attr:
-        dfb_index = int(entry["dfb_index"])
-        num_tiles = int(entry["num_tiles"])
-        block_count = int(entry["block_count"])
-        data_format = _parse_mlir_element_type(str(entry["element_type"]))
+    seen_indices = set()
+    required_fields = ("dfb_index", "num_tiles", "element_type", "block_count")
+    for position, entry in enumerate(attr):
+        try:
+            values = {field: entry[field] for field in required_fields}
+        except KeyError as error:
+            missing_field = error.args[0]
+            raise ValueError(
+                f"{attribute_name}[{position}] is missing '{missing_field}'"
+            ) from None
 
+        try:
+            dfb_index = int(values["dfb_index"])
+            num_tiles = int(values["num_tiles"])
+            block_count = int(values["block_count"])
+            data_format, tile = _parse_mlir_element_type(values["element_type"])
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"Invalid {attribute_name}[{position}]: {error}") from None
+
+        if dfb_index < 0:
+            raise ValueError(
+                f"{attribute_name}[{position}].dfb_index must be non-negative, "
+                f"got {dfb_index}"
+            )
+        if dfb_index in seen_indices:
+            raise ValueError(
+                f"{attribute_name} contains duplicate dfb_index {dfb_index}"
+            )
+        if num_tiles <= 0:
+            raise ValueError(
+                f"{attribute_name}[{position}].num_tiles must be positive, "
+                f"got {num_tiles}"
+            )
+        if block_count <= 0:
+            raise ValueError(
+                f"{attribute_name}[{position}].block_count must be positive, "
+                f"got {block_count}"
+            )
+
+        seen_indices.add(dfb_index)
         configs.append(
-            CompilerAllocatedDFBConfig(
+            PhysicalDFBConfig(
                 dfb_index=dfb_index,
                 num_tiles=num_tiles,
                 data_format=data_format,
                 block_count=block_count,
+                tile=tile,
             )
+        )
+
+    return sorted(configs, key=lambda config: config.dfb_index)
+
+
+def _extract_compiler_allocated_dfbs(module):
+    """Read legacy compiler-only DFB allocation metadata."""
+    configs = _extract_dfb_config_attribute(module, "ttl.compiler_allocated_dfbs")
+    return configs if configs is not None else []
+
+
+def _extract_dfb_allocations(module):
+    """Read the complete physical DFB allocation table, when present."""
+    configs = _extract_dfb_config_attribute(module, "ttl.dfb_allocations")
+    if configs is None:
+        return None
+
+    indices = [config.dfb_index for config in configs]
+    expected_indices = list(range(len(configs)))
+    if indices != expected_indices:
+        raise ValueError(
+            "ttl.dfb_allocations must contain a dense physical index range "
+            f"{expected_indices}, got {indices}"
         )
     return configs
 
@@ -1335,6 +1401,16 @@ def _merge_dfb_configs(cb_configs, compiler_allocated_dfbs):
             )
         merged[dfb.dfb_index] = dfb
     return merged
+
+
+def _resolve_dfb_configs(module, cb_configs):
+    """Resolve final runtime configurations from module allocation metadata."""
+    physical_allocations = _extract_dfb_allocations(module)
+    if physical_allocations is not None:
+        return physical_allocations
+
+    compiler_allocated_dfbs = _extract_compiler_allocated_dfbs(module)
+    return _merge_dfb_configs(cb_configs, compiler_allocated_dfbs)
 
 
 def _run_thread_compiler(
@@ -1952,9 +2028,7 @@ def _lower_program_to_kernel(
             first_thread = next(iter(all_source_lines.keys()))
             profile_source_lines = all_source_lines[first_thread]
 
-        # Merge compiler-allocated DFBs into the CB config list.
-        compiler_allocated_dfbs = _extract_compiler_allocated_dfbs(module)
-        cb_configs = _merge_dfb_configs(cb_configs, compiler_allocated_dfbs)
+        cb_configs = _resolve_dfb_configs(module, cb_configs)
         pipe_sync_semaphore_count = _extract_pipe_sync_semaphore_count(module)
         if pipe_sync_semaphore_count is None:
             raise RuntimeError(

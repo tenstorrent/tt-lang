@@ -7,6 +7,7 @@
 import pytest
 
 from ttl import kernel_runner
+from ttl.dataflow_buffer import PhysicalDFBConfig
 
 
 class _FakeTensor:
@@ -337,6 +338,29 @@ def test_emit_runner_source_uses_shared_pipe_resource_helpers():
     assert "build_generic_op_io_tensors(" in source
     assert "program.custom_program_hash = PROGRAM_HASH" in source
     assert "ttnn.create_global_semaphore(device, core_ranges, 0)" not in source
+
+
+def test_emit_runner_source_accepts_physical_dfb_configs():
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[],
+        cb_configs=[
+            PhysicalDFBConfig(
+                dfb_index=0,
+                num_tiles=3,
+                data_format="bfloat16",
+                block_count=2,
+            )
+        ],
+        grid_cols=1,
+        grid_rows=1,
+        num_tensors=1,
+    )
+
+    assert "(3, 2, ttnn.bfloat16, 2048, 12288),  # CB 0" in source
+    assert (
+        "for i, (num_tiles, block_count, dtype, page_size, total_size) "
+        "in enumerate(CB_CONFIGS):"
+    ) in source
 
 
 def test_emit_runner_source_omits_program_hash_by_default():
