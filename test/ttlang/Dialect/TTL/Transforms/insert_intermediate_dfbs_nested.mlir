@@ -4,7 +4,7 @@
 // (scf.for, scf.if), only bind_cb hoists; reserve/store/wait/attach
 // stay at the def site to keep per-invocation accounting intact.
 
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-insert-intermediate-dfbs,ttl-insert-cb-sync),ttl-finalize-dfb-indices)' | FileCheck %s
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-insert-intermediate-dfbs,ttl-insert-cb-sync),ttl-finalize-dfb-indices{reuse-user-dfbs=false})' | FileCheck %s
 
 // -----
 

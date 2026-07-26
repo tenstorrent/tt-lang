@@ -692,35 +692,31 @@ def TTLLowerSignpostToEmitC
 
 def TTLFinalizeDFBIndices
     : Pass<"ttl-finalize-dfb-indices", "::mlir::ModuleOp"> {
-  let summary = "Reuse compiler-allocated DFB indices and emit DFB metadata";
+  let summary = "Assign physical DFB indices and emit allocation metadata";
   let description = [{
     Module-level pass that runs after all DFB-creating and synchronization
     passes. Must precede `ttl-set-compute-kernel-config` and
     `ttl-annotate-cb-associations`, which copy DFB indices into attributes and
     would otherwise capture provisional indices.
 
-    Compiler-allocated DFBs enter this pass with function-local provisional
-    indices. The pass assigns each function a disjoint module-wide index range,
-    then applies lifetime-based index reuse via linear scan allocation,
-    partitioned by CircularBufferType. DFBs whose lifetimes (bind_cb to last
-    cb_pop) do not overlap are assigned the same physical index. See
-    docs/development/DFBManagement.md.
+    The pass runs a read-only module analysis over all logical DFBs, including
+    declarations shared across kernel-thread functions. It rewrites indices
+    only after the analysis has computed and verified a complete physical
+    assignment. Exact CircularBufferType equality is required for reuse.
 
     After reuse, verifies the total DFB count does not exceed
     kMaxCircularBuffers (32), updates ttl.base_cta_index on every
-    function, and builds the ttl.compiler_allocated_dfbs module
-    attribute for the Python runtime.
+    function, and builds the ttl.dfb_allocations module attribute for the
+    Python runtime. The attribute contains one descriptor per physical index.
 
-    The experimental `reuse-user-dfbs` option runs a read-only module analysis
-    over all logical DFBs, including declarations shared across kernel-thread
-    functions. It rewrites indices only after the analysis has computed and
-    verified a complete physical assignment. The standard pipeline leaves this
-    option disabled.
+    Disabling `reuse-user-dfbs` retains the compiler-only linear-scan allocator
+    for compatibility with legacy pipelines and emits
+    ttl.compiler_allocated_dfbs.
   }];
 
   let options = [
-    Option<"reuseUserDFBs", "reuse-user-dfbs", "bool", "false",
-           "Experimentally reuse user DFB indices across proven "
+    Option<"reuseUserDFBs", "reuse-user-dfbs", "bool", "true",
+           "Reuse user DFB indices across proven "
            "multithreaded happens-before cuts.">
   ];
 }

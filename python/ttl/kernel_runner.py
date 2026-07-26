@@ -14,6 +14,7 @@ building and execution.
 """
 
 from dataclasses import dataclass, field
+import math
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -34,11 +35,10 @@ def _ensure_ttnn():
     return ttnn
 
 
-from .dataflow_buffer import CompilerAllocatedDFBConfig
+from .dataflow_buffer import PhysicalDFBConfig
 from .constants import DEFAULT_L1_CB_BUDGET_BYTES
 from .dtype_utils import (
     format_name_to_ttnn_dtype,
-    tile_bytes_from_dtype,
     torch_dtype_to_ttnn_datatype,
 )
 
@@ -49,6 +49,45 @@ def _cb_data_format(cb):
     if hasattr(dtype, "name"):  # already a ttnn.DataType enum
         return dtype
     return torch_dtype_to_ttnn_datatype(dtype)
+
+
+@dataclass(frozen=True)
+class _DFBAllocation:
+    data_format: Any
+    num_tiles: int
+    block_count: int
+    tile: Tuple[int, int]
+    page_size: int
+    total_size: int
+
+
+def _get_dfb_allocation(config: Any) -> _DFBAllocation:
+    """Normalize frontend and final physical DFB configurations."""
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+
+    if isinstance(config, PhysicalDFBConfig):
+        data_format = format_name_to_ttnn_dtype(config.data_format)
+        num_tiles = config.num_tiles
+        block_count = config.block_count
+        tile_shape = config.tile
+    else:
+        data_format = _cb_data_format(config)
+        num_tiles = math.prod(config.shape)
+        block_count = config.block_count
+        tile_shape = config.tile
+
+    tile = ttnn.Tile(tile_shape)
+    page_size = tile.get_tile_size(data_format)
+    return _DFBAllocation(
+        data_format=data_format,
+        num_tiles=num_tiles,
+        block_count=block_count,
+        tile=tile_shape,
+        page_size=page_size,
+        total_size=num_tiles * block_count * page_size,
+    )
 
 
 def get_min_remaining_l1_for_device(device):
@@ -391,8 +430,7 @@ def build_cb_descriptors(
         tensors: List of ttnn.Tensor objects. Each tensor's position (0, 1, 2, ...)
             corresponds to its CB index. For intermediate CBs (not backed by
             input/output tensors), pass None in the corresponding position.
-        cb_configs: List of DataflowBuffer objects for each DFB, indexed by DFB index.
-            Each DFB has shape, block_count, tensor (for dtype), and _cb_index attributes.
+        cb_configs: Runtime configurations indexed by physical DFB index.
         core_ranges: ttnn.CoreRangeSet for DFB allocation.
 
     Returns:
@@ -412,38 +450,32 @@ def build_cb_descriptors(
                 f"All DFB indices must have associated DataflowBuffer configurations."
             )
 
-        if isinstance(cb, CompilerAllocatedDFBConfig):
-            data_format = format_name_to_ttnn_dtype(cb.data_format)
-            page_size = tile_bytes_from_dtype(data_format)
-            total_size = cb.num_tiles * cb.block_count * page_size
-            rows.append(
-                (
-                    data_format,
-                    page_size,
-                    total_size,
-                    None,
-                    f"  CB[{i}]: compiler-allocated num_tiles={cb.num_tiles} "
-                    f"block_count={cb.block_count} format={cb.data_format} -> {total_size} bytes",
-                )
+        allocation = _get_dfb_allocation(cb)
+        if isinstance(cb, PhysicalDFBConfig):
+            description = (
+                f"  DFB[{i}]: num_tiles={allocation.num_tiles} "
+                f"block_count={allocation.block_count} "
+                f"format={cb.data_format} tile={allocation.tile} -> "
+                f"{allocation.total_size} bytes"
             )
         else:
-            data_format = _cb_data_format(cb)
-            tile = ttnn.Tile(cb.tile)
-            tile_descriptor = ttnn.TileDescriptor(tile)
-            page_size = tile.get_tile_size(data_format)
-            num_tiles = cb.shape[0] * cb.shape[1] * cb.block_count
-            total_size = num_tiles * page_size
-            rows.append(
-                (
-                    data_format,
-                    page_size,
-                    total_size,
-                    tile_descriptor,
-                    f"  CB[{i}]: shape={cb.shape} block_count={cb.block_count} -> {total_size} bytes",
-                )
+            description = (
+                f"  DFB[{i}]: shape={cb.shape} "
+                f"block_count={allocation.block_count} tile={allocation.tile} -> "
+                f"{allocation.total_size} bytes"
             )
+        tile_descriptor = ttnn.TileDescriptor(ttnn.Tile(allocation.tile))
+        rows.append(
+            (
+                allocation.data_format,
+                allocation.page_size,
+                allocation.total_size,
+                tile_descriptor,
+                description,
+            )
+        )
 
-        total_cb_bytes += total_size
+        total_cb_bytes += allocation.total_size
 
     remaining_bytes = DEFAULT_L1_CB_BUDGET_BYTES
     for tensor in tensors:
@@ -757,13 +789,12 @@ def emit_runner_source(
         if cb is None:
             lines.append(f"    None,  # CB {i}")
             continue
-        data_format = _cb_data_format(cb)
-        page_size = tile_bytes_from_dtype(data_format)
-        dtype_str = _dtype_to_ttnn_str(data_format)
-        num_tiles = cb.shape[0] * cb.shape[1] * cb.block_count
-        total_size = num_tiles * page_size
+        allocation = _get_dfb_allocation(cb)
+        dtype_str = _dtype_to_ttnn_str(allocation.data_format)
         lines.append(
-            f"    ({cb.shape!r}, {cb.block_count}, {dtype_str}, {page_size}, {total_size}),  # CB {i}"
+            f"    ({allocation.num_tiles}, {allocation.block_count}, "
+            f"{dtype_str}, {allocation.tile!r}, {allocation.page_size}, "
+            f"{allocation.total_size}),  # CB {i}"
         )
     lines.append("]")
     lines.append("")
@@ -797,12 +828,15 @@ def emit_runner_source(
 
     lines.append("    cb_descriptors = []")
     lines.append(
-        "    for i, (shape, block_count, dtype, page_size, total_size) in enumerate(CB_CONFIGS):"
+        "    for i, (num_tiles, block_count, dtype, tile_shape, page_size, "
+        "total_size) in enumerate(CB_CONFIGS):"
     )
+    lines.append("        tile = ttnn.Tile(tile_shape)")
     lines.append("        cb_format = ttnn.CBFormatDescriptor(")
     lines.append("            buffer_index=i,")
     lines.append("            data_format=dtype,")
     lines.append("            page_size=page_size,")
+    lines.append("            tile=ttnn.TileDescriptor(tile),")
     lines.append("        )")
     lines.append("        cb_desc = ttnn.CBDescriptor(")
     lines.append("            total_size=total_size,")

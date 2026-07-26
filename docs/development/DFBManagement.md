@@ -690,164 +690,82 @@ ttl-coalesce-dfb-acquires))'`) verifies this.
 ## Index Reuse
 
 `TTLFinalizeDFBIndices` reduces the physical DFB count by assigning the same
-index to compiler-allocated DFBs whose lifetimes do not overlap. The algorithm
-runs per function. It ignores the function-local provisional indices and
-assigns each function a disjoint physical index range after the highest
-user-declared index in the module.
+index to logical DFBs whose lifetimes cannot overlap. The default analysis
+considers all kernel functions concurrently, including user-declared DFBs
+shared across data movement and compute threads.
 
 Two DFBs may share an index only if they have identical `CircularBufferType`
-(shape, element type, block count). Since `CircularBufferType` is an MLIR
-uniqued type, this is a pointer comparison. The algorithm partitions DFBs by
-type and runs a linear scan within each partition.
+(shape, element type, block count). This ensures one physical allocation has
+one page size, capacity, and data format.
 
-### Algorithm
-
-```
-nextCompilerIndex = max(userDeclaredDFBIndices) + 1
-for funcOp in module:
-  slots = assignPhysicalDFBIndices(
-      funcOp, compilerAllocatedBindCBOps[funcOp], nextCompilerIndex)
-  nextCompilerIndex += slots
-
-assignPhysicalDFBIndices(
-    funcOp, compilerAllocatedBindCBOps, firstPhysicalIndex):
-  // Assign sequential indices to function-level operations.
-  for op in funcOp.entryBlock:
-    opIndex[op] = nextIdx++
-
-  // Build intervals: [first acquire position, last cb_pop position].
-  // Nested acquires and pops are projected to their function-level ancestor.
-  // If no acquire exists, start = bind_cb position (synthetic IR fallback).
-  // If no cb_pop exists, end = last operation (conservative).
-  for bindOp in compilerAllocatedBindCBOps:
-    start = min(getBodyIndex(acq) for acq in reserveOrWaitUsers(bindOp))
-    end = max(getBodyIndex(pop) for pop in cbPopUsers(bindOp))
-    if no acquire:
-      start = opIndex[bindOp]
-    if end <= start:
-      end = lastOpIdx
-    intervals[bindOp.type].append({start, end, bindOp.result})
-
-  // Linear scan per type partition. Each partition gets a contiguous
-  // block of indices starting at firstPhysicalIndex + offset.
-  offset = 0
-  for (type, typeIntervals) in intervals:
-    sort typeIntervals by start
-    maxSlot = 0
-    for interval in typeIntervals:
-      // Expire: free slots where active.end <= interval.start
-      for active in activeList:
-        if active.end <= interval.start:
-          free(slot[active])
-      slot[interval] = allocateFirstFreeSlot()
-      maxSlot = max(maxSlot, slot[interval])
-
-    // Rewrite BindCBOp cb_index attributes for this partition.
-    for (value, s) in partitionAssignments:
-      bindOp[value].cb_index = firstPhysicalIndex + offset + s
-    offset += maxSlot + 1
-
-  return offset
-```
-
-The expiration condition `active.end <= interval.start` matches the DST
-register allocator's convention. Because operation indices are integers
-assigned to distinct operations, strict inequality and non-strict inequality
-produce the same result.
-
-### Correctness with control flow
-
-The algorithm assigns sequential indices to function-level operations only.
-Structured operations (`scf.for`, `scf.if`, `ttl.compute`) occupy a single
-index in this sequence; their contents are not individually numbered. Any
-nested acquire or `cb_pop` is projected to its enclosing function-level
-operation with `Block::findAncestorOpInBlock`.
-
-Projection overestimates liveness because an interval covers the enclosing
-structured operation rather than the exact nested operation. This can miss
-reuse opportunities across loop bodies or mutually exclusive branches, but it
-cannot assign one physical DFB index to lifetimes that may overlap at runtime.
-
-Two DFBs consumed simultaneously by the same operation (e.g., both operands of
-a matmul) necessarily have overlapping intervals because their acquires
-precede the consumer and their pops follow it. The linear scan assigns them
-different slots.
-
-### Module attribute and runtime integration
-
-After rewriting indices, the pass calls `getNextAvailableDFBIndex`, which
-returns `max(cb_index) + 1` across all `BindCBOp`s in the module. This is the
-index space usage, not a count of distinct DFBs (sparse indices inflate it).
-The pass verifies this does not exceed `kMaxCircularBuffers` (32).
-
-The pass then sets `ttl.base_cta_index` on every function. Compile-time
-arguments (CTAs) to each kernel are laid out as `[CB indices..., other args...]`.
-`base_cta_index` is the starting index of the non-CB arguments -- equivalently,
-one past the last CB index. CB indices occupy `[0, base_cta_index)`.
-
-Finally, the pass builds the `ttl.compiler_allocated_dfbs` module attribute
-with one entry per unique physical index, deduplicated from the potentially
-many `BindCBOp`s that now share an index. The Python runtime reads this
-attribute to allocate L1 buffers at dispatch time.
-
-### Experimental multithreaded analysis
-
-The `reuse-user-dfbs` finalizer option enables a read-only module analysis that
-includes user and compiler-created DFBs in one physical assignment. The option
-is disabled in the standard pipeline because the Python runtime does not yet
-consume remapped user DFB descriptors.
+### Logical identity
 
 The frontend assigns each user-declared DFB a stable `dfb_id` and copies it to
-the declarations in every participating kernel function. Legacy IR without
-`dfb_id` uses the provisional `cb_index`. Each compiler-created declaration
-receives a distinct logical identity. The finalizer records every resolved
-logical identity on `ttl.bind_cb` before rewriting `cb_index`, so repeated
-finalization cannot merge logical DFBs that already share a physical slot.
-Exact `CircularBufferType` equality is required for physical reuse.
+the declaration in every participating kernel function. Compiler-created
+declarations receive distinct logical identities. Legacy IR without `dfb_id`
+uses the provisional `cb_index`.
 
-The analysis gives each function-level operation separate entry and completion
-events. Program order connects events within a kernel function. For a
-statically matched one-shot lifecycle, `cb_push` completion precedes the
-corresponding blocking `cb_wait` completion. The existing DFB acquire/release
-ownership analysis verifies that `cb_push` and `cb_pop` follow all uses of
-their acquired tensor views.
+The finalizer records every resolved logical identity on `ttl.bind_cb` before
+rewriting `cb_index`. Repeated finalization therefore cannot merge logical
+DFBs that already share a physical slot.
+
+### Multithreaded lifetime analysis
+
+The analysis constructs one entry event and one completion event for each
+function-level operation. Program order connects consecutive operations in
+each kernel function. For a statically matched one-shot DFB lifecycle,
+`cb_push` completion precedes the corresponding blocking `cb_wait`
+completion. The existing acquire/release ownership analysis verifies that
+`cb_push` and `cb_pop` follow all uses of their acquired tensor views.
 
 A balanced one-shot DFB has an earliest-event antichain and a terminal
-`cb_pop` completion. Logical DFB A may precede logical DFB B only when A's
+`cb_pop` completion. Logical DFB A precedes logical DFB B only when A's
 terminal event happens before every event in B's earliest antichain. Otherwise
-they interfere. This all-frontier condition accounts for operations that begin
-independently in different threads, including a blocking wait that enters
-before another thread reaches a synchronization point.
+the DFBs interfere. Requiring the complete frontier prevents reuse when an
+operation in another thread can begin before the synchronization ordering A
+and B.
 
-The initial analysis does not infer dynamic occurrence matching for loops,
+The analysis does not infer dynamic occurrence matching for loops,
 multi-acquire protocols, conditional lifecycle operations, or credit-return
 ordering from `cb_pop` to `cb_reserve`. Such DFBs are unbounded and interfere
 with every same-type logical DFB. Nested non-lifecycle uses project to their
 enclosing function-level operation.
 
-When enabled, the finalizer applies the completed assignment, updates
-`ttl.base_cta_index`, and emits `ttl.dfb_allocations` with one descriptor per
-physical index. The analysis itself does not modify IR.
+The analysis partitions logical DFBs by exact type and greedily colors each
+interference graph. Each color is one physical index. The allocator verifies
+that no interfering pair received the same index and that the final count does
+not exceed the hardware limit. The analysis object does not modify IR; the
+finalizer applies the complete verified assignment afterward.
+
+### Module attribute and runtime integration
+
+The finalizer updates `ttl.base_cta_index` on every function and emits
+`ttl.dfb_allocations` with one descriptor per physical index. Each descriptor
+contains `dfb_index`, `num_tiles`, `element_type`, and `block_count`.
+Compile-time arguments to each kernel reserve `[0, base_cta_index)` for these
+physical DFB indices.
+
+The Python runtime validates that the descriptors form a dense index range and
+builds all `ttnn.CBDescriptor` objects from this final allocation table. It
+does not use the frontend's logical DFB list after physical assignment. This
+also makes standalone runner emission use the same physical sizes and data
+formats as direct execution.
+
+Setting `reuse-user-dfbs=false` selects the legacy compiler-only allocator. It
+retains user indices, applies per-function linear-scan allocation to
+compiler-created DFBs, and emits `ttl.compiler_allocated_dfbs`. The runtime
+continues to support that attribute for compatibility.
 
 ## Limitations and Future Work
 
-The linear scan operates on a flat sequence of function-level operations. It
-cannot distinguish between branches of an `scf.if`, so DFBs used in mutually
-exclusive branches are treated as overlapping. This is conservative for
-physical index reuse. More precise reuse across mutually exclusive regions
-would need branch-sensitive liveness.
+Liveness is computed at function-level granularity. Operations nested in
+structured control flow project to the enclosing function-level operation.
+This prevents unsafe reuse but may keep a physical index live longer than its
+executed lifetime.
 
-Standard-pipeline index reuse is restricted to compiler-allocated DFBs.
-User-declared DFBs retain their original indices because the same CB index is
-referenced by multiple threads (reader, compute, writer) to implement
-cross-thread data flow. Reusing a user index in one function would invalidate
-references in the others.
-
-Liveness is computed at function-level granularity. If an acquire or `CBPopOp`
-is inside a structured op, it is projected to its enclosing function-level
-operation. This is used by loop-state materialization and by later lowering
-passes that can place lifecycle ops in nested regions. The projection is safe
-but may keep a physical DFB index live longer than necessary.
+Loops, conditional lifecycles, and repeated acquire/release protocols remain
+unbounded because the analysis does not match dynamic event occurrences. They
+cannot reuse an index with another logical DFB of the same type.
 
 The type compatibility constraint prevents reuse across DFBs with different
 shapes or element types, even when L1 footprints happen to match. A size-based

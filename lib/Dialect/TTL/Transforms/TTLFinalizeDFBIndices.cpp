@@ -6,11 +6,10 @@
 // TTL Finalize DFB Indices
 //===----------------------------------------------------------------------===//
 //
-// Module-level pass that runs after all DFB-creating passes. Reuses
-// compiler-allocated DFB indices when lifetimes do not overlap, then
-// computes the true DFB count, updates ttl.base_cta_index on every
-// function, and collects compiler-allocated DFBs into the
-// ttl.compiler_allocated_dfbs module attribute for the Python runtime.
+// Module-level pass that runs after all DFB-creating passes. Assigns physical
+// indices to logical DFBs using module-wide liveness, updates
+// ttl.base_cta_index, and emits the physical allocation table consumed by the
+// Python runtime.
 //
 //===----------------------------------------------------------------------===//
 
