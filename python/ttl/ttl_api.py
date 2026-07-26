@@ -689,9 +689,10 @@ def _write_kernel_to_tmp(name: str, source: str) -> str:
                 os.unlink(temp_path)
             except FileNotFoundError:
                 pass
-    print(f"=== {name} kernel written to {path} ===")
-    print(source)
-    print("=" * 60)
+    if os.environ.get("TTLANG_VERBOSE_KERNELS", "1") != "0":
+        print(f"=== {name} kernel written to {path} ===")
+        print(source)
+        print("=" * 60)
     return str(path)
 
 
@@ -1947,8 +1948,13 @@ def _lower_program_to_kernel(
             pipeline_passes.append("func.func(ttl-schedule-operations)")
         pipeline_passes.append("ttl-finalize-dfb-indices")
         pipeline_passes.append("func.func(ttl-annotate-cb-associations)")
-        pipeline_passes.append("ttl-verify-pipenet-guards")
-        pipeline_passes.append("ttl-verify-dfb-spsc")
+        # Keep the two verifier escape hatches independent. Some valid fused
+        # programs use externally synchronized, temporally rebound DFB indices
+        # that the current whole-module analyses conservatively conflate.
+        if not os.environ.get("TTL_RELAX_PIPENET_GUARDS"):
+            pipeline_passes.append("ttl-verify-pipenet-guards")
+        if not os.environ.get("TTL_RELAX_DFB_SPSC"):
+            pipeline_passes.append("ttl-verify-dfb-spsc")
         pipeline_passes.append("ttl-erase-pipenet-scopes")
         if l1_budget_override > 0:
             pipeline_passes.append(
@@ -2093,6 +2099,7 @@ def _lower_program_to_kernel(
             program_hash=program_hash,
             fp32_dest_acc_en=fp32_dest_acc_en,
             dst_full_sync_en=dst_full_sync_en,
+            verbose=os.environ.get("TTLANG_VERBOSE_KERNELS", "1") != "0",
             source_lines=profile_source_lines,
             all_source_lines=all_source_lines,
             kernel_line_offsets=kernel_line_offsets,
