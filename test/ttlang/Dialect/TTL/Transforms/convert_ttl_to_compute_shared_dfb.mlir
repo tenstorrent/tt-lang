@@ -174,3 +174,35 @@ func.func @interleaved_pushes_wrong_order()
   ttl.cb_pop  %in : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   return
 }
+
+// -----
+
+// Test 4: fused elementwise lowering must preserve an existing sub-tile
+// descriptor instead of reconstructing the default 32x32 tile from its dtype.
+
+// CHECK-LABEL: func.func @subtile_sigmoid_gate
+// CHECK:       ttl.compute
+// CHECK-SAME:  tensor<1x4x!ttcore.tile<8x32, bf16>>
+// CHECK:       ^bb0(%{{.*}}: !ttcore.tile<8x32, bf16>, %{{.*}}: !ttcore.tile<8x32, bf16>, %{{.*}}: !ttcore.tile<8x32, bf16>):
+// CHECK:         ttl.tile_sigmoid {{.*}} : !ttcore.tile<8x32, bf16> -> !ttcore.tile<8x32, bf16>
+// CHECK:         ttl.tile_mul {{.*}} : !ttcore.tile<8x32, bf16>, !ttcore.tile<8x32, bf16> -> !ttcore.tile<8x32, bf16>
+// CHECK:         ttl.tile_store {{.*}} : !ttcore.tile<8x32, bf16>, tensor<1x4x!ttcore.tile<8x32, bf16>>
+func.func @subtile_sigmoid_gate()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %value = ttl.bind_cb{cb_index = 0, block_count = 1} : !ttl.cb<[1, 4], !ttcore.tile<8x32, bf16>, 1>
+  %gate = ttl.bind_cb{cb_index = 1, block_count = 1} : !ttl.cb<[1, 4], !ttcore.tile<8x32, bf16>, 1>
+  %out = ttl.bind_cb{cb_index = 2, block_count = 1} : !ttl.cb<[1, 4], !ttcore.tile<8x32, bf16>, 1>
+
+  %value_t = ttl.cb_wait %value : <[1, 4], !ttcore.tile<8x32, bf16>, 1> -> tensor<1x4x!ttcore.tile<8x32, bf16>>
+  %value_a = ttl.attach_cb %value_t, %value : (tensor<1x4x!ttcore.tile<8x32, bf16>>, !ttl.cb<[1, 4], !ttcore.tile<8x32, bf16>, 1>) -> tensor<1x4x!ttcore.tile<8x32, bf16>>
+  %gate_t = ttl.cb_wait %gate : <[1, 4], !ttcore.tile<8x32, bf16>, 1> -> tensor<1x4x!ttcore.tile<8x32, bf16>>
+  %gate_a = ttl.attach_cb %gate_t, %gate : (tensor<1x4x!ttcore.tile<8x32, bf16>>, !ttl.cb<[1, 4], !ttcore.tile<8x32, bf16>, 1>) -> tensor<1x4x!ttcore.tile<8x32, bf16>>
+  %out_t = ttl.cb_reserve %out : <[1, 4], !ttcore.tile<8x32, bf16>, 1> -> tensor<1x4x!ttcore.tile<8x32, bf16>>
+  %sigmoid = ttl.sigmoid %gate_a : tensor<1x4x!ttcore.tile<8x32, bf16>> -> tensor<1x4x!ttcore.tile<8x32, bf16>>
+  %gated = ttl.mul %value_a, %sigmoid : tensor<1x4x!ttcore.tile<8x32, bf16>>, tensor<1x4x!ttcore.tile<8x32, bf16>> -> tensor<1x4x!ttcore.tile<8x32, bf16>>
+  ttl.store %gated, %out_t : tensor<1x4x!ttcore.tile<8x32, bf16>>, tensor<1x4x!ttcore.tile<8x32, bf16>>
+  ttl.cb_push %out : <[1, 4], !ttcore.tile<8x32, bf16>, 1>
+  ttl.cb_pop %gate : <[1, 4], !ttcore.tile<8x32, bf16>, 1>
+  ttl.cb_pop %value : <[1, 4], !ttcore.tile<8x32, bf16>, 1>
+  return
+}

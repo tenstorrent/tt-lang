@@ -28,6 +28,19 @@ static RankedTensorType getTensorType(Value v) {
   return dyn_cast<RankedTensorType>(v.getType());
 }
 
+/// Preserve an existing sub-tile shape while deriving a compute-body tile.
+///
+/// Ranked tensors produced by the TT-Lang frontend already use
+/// `ttcore::TileType` elements. Calling `TileType::get(Type)` on that element
+/// keeps its data format but reconstructs the default 32x32 shape. Scalar
+/// element types still need wrapping in a default hardware tile.
+static ttcore::TileType getTileTypeForElement(Type elementType) {
+  if (auto tileType = dyn_cast<ttcore::TileType>(elementType)) {
+    return tileType;
+  }
+  return ttcore::TileType::get(elementType);
+}
+
 /// Derive the hardware tile-level BcastType from the normalized broadcast
 /// dims. Returns std::nullopt when no innermost dimension is broadcast (the
 /// broadcast is then purely inter-tile and the body just passes the input
@@ -243,7 +256,7 @@ static Type getFusedResultTileType(Operation *sourceOp) {
   if (!resultTensor) {
     return Type();
   }
-  return ttcore::TileType::get(resultTensor.getElementType());
+  return getTileTypeForElement(resultTensor.getElementType());
 }
 
 /// Returns the result Value, or null if the source op is unsupported.
@@ -549,10 +562,10 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   // tensor's element type so mixed-dtype fusion (e.g., bf16 input + f32
   // intermediate produced by a fused `ttl.typecast`) preserves per-value
   // precision. The output block arg type matches the sink tensor.
-  Type outputTileType = ttcore::TileType::get(type.getElementType());
+  Type outputTileType = getTileTypeForElement(type.getElementType());
   auto getInputTileType = [&](Value root) -> Type {
     auto inputTensor = getTensorType(root);
-    return ttcore::TileType::get(inputTensor ? inputTensor.getElementType()
+    return getTileTypeForElement(inputTensor ? inputTensor.getElementType()
                                              : type.getElementType());
   };
 
@@ -865,9 +878,10 @@ static LogicalResult buildComputeFromInputs(
     if (!inputType) {
       return rewriter.notifyMatchFailure(op, "input is not a ranked tensor");
     }
-    inputTileTypes.push_back(ttcore::TileType::get(inputType.getElementType()));
+    inputTileTypes.push_back(
+        getTileTypeForElement(inputType.getElementType()));
   }
-  Type outputTileType = ttcore::TileType::get(outputType.getElementType());
+  Type outputTileType = getTileTypeForElement(outputType.getElementType());
 
   SmallVector<Attribute> maps(inputMaps);
   for (size_t i = 0; i < outCbs.size(); ++i) {
@@ -1210,7 +1224,7 @@ struct LowerBlockBroadcastToCompute : OpRewritePattern<BlockBroadcastOp> {
 
     Block *body = rewriter.createBlock(&computeOp.getBody());
     Type scalarType = outputType.getElementType();
-    Type tileType = ttcore::TileType::get(scalarType);
+    Type tileType = getTileTypeForElement(scalarType);
     // Body arguments: input tile, init/output tile.
     body->addArgument(tileType, loc);
     body->addArgument(tileType, loc);
@@ -1352,7 +1366,7 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
 
     Block *body = rewriter.createBlock(&computeOp.getBody());
     Type scalarType = inputType.getElementType();
-    Type tileType = ttcore::TileType::get(scalarType);
+    Type tileType = getTileTypeForElement(scalarType);
     body->addArgument(tileType, loc);
     body->addArgument(tileType, loc);
 
@@ -1587,7 +1601,7 @@ struct LowerFillToCompute : OpRewritePattern<FillOp> {
         rewriter.getArrayAttr(iterTypes));
 
     Block *body = rewriter.createBlock(&computeOp.getBody());
-    Type tileType = ttcore::TileType::get(type.getElementType());
+    Type tileType = getTileTypeForElement(type.getElementType());
     for (size_t i = 0; i < outCbs.size(); ++i) {
       body->addArgument(tileType, loc);
     }
