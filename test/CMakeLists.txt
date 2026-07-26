@@ -3,6 +3,13 @@
 
 add_subdirectory(lib/Analysis)
 
+# Generate pytest.ini with correct build directory paths.
+configure_file(
+  ${CMAKE_CURRENT_SOURCE_DIR}/pytest.ini.in
+  ${CMAKE_CURRENT_SOURCE_DIR}/pytest.ini
+  @ONLY
+)
+
 configure_lit_site_cfg(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.site.cfg.py.in
   ${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg.py
