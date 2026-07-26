@@ -88,6 +88,8 @@ private:
 struct LogicalDFB {
   int64_t logicalId = 0;
   Type type;
+  func::FuncOp producerThread;
+  func::FuncOp consumerThread;
   SmallVector<BindCBOp> declarations;
   SmallVector<Operation *> reserves;
   SmallVector<Operation *> pushes;
@@ -363,6 +365,13 @@ static void computeLogicalDFBFrontiers(
     return;
   }
 
+  logicalDFB.producerThread =
+      logicalDFB.reserves.front()->getParentOfType<func::FuncOp>();
+  logicalDFB.consumerThread =
+      logicalDFB.waits.front()->getParentOfType<func::FuncOp>();
+  assert(logicalDFB.producerThread && logicalDFB.consumerThread &&
+         "direct DFB lifecycle operations must have enclosing functions");
+
   SmallVector<unsigned> useEntries;
   SmallVector<unsigned> useCompletions;
   for (Operation *runtimeUse : logicalDFB.runtimeUses) {
@@ -409,7 +418,11 @@ static bool isOrderedBefore(const LogicalDFB &before, const LogicalDFB &after,
 
 static bool logicalDFBsConflict(const LogicalDFB &lhs, const LogicalDFB &rhs,
                                 const HappensBeforeGraph &happensBeforeGraph) {
-  if (lhs.type != rhs.type) {
+  // TT-Metal keeps each physical DFB's cumulative counters and ring pointers
+  // in its producer and consumer kernel threads. An empty cut does not transfer
+  // that state to different threads.
+  if (lhs.type != rhs.type || lhs.producerThread != rhs.producerThread ||
+      lhs.consumerThread != rhs.consumerThread) {
     return true;
   }
   return !isOrderedBefore(lhs, rhs, happensBeforeGraph) &&

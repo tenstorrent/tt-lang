@@ -126,8 +126,12 @@ otherwise precede the new compute is replaced after the compute. This keeps the
 generated DFB lifecycle in write-then-publish order: `cb_reserve`,
 `ttl.compute` with `tile_store`, then `cb_push`.
 
-A DFB's L1 memory is reclaimable after its last `cb_pop`. This defines the
-interval used for index reuse.
+A DFB's L1 contents are dead after its last `cb_pop`. This defines the interval
+used for index reuse. Two logical DFBs may share a physical index only when they
+also have the same producer and consumer kernel threads. TT-Metal initializes
+each kernel thread's local DFB counters and ring pointers independently. A
+happens-before cut proves zero occupancy, but it does not transfer this local
+state to a different producer or consumer.
 
 ## Single-producer Single-consumer Semantics
 
