@@ -320,6 +320,8 @@ Shape determines the shape of a *block* returned by one of the *acquisition func
 
 A dataflow buffer is constructed in the scope of an operation function but its object functions run on threads. Acquisition functions can be used with Python `with` statement, which will automatically release acquired blocks at the end of the `with` scope. Alternatively, if acquisition functions are used without the `with` the user must explicitly call a corresponding release function on the acquired block: `pop` for `wait` and `push` for `reserve`.
 
+An operation may declare a list or tuple of dataflow buffers, including through a list comprehension of `ttl.make_dataflow_buffer_like` or `ttl.make_dfb` calls. Each element is a distinct dataflow buffer and must be accessed with a non-negative integer literal index. Dynamic indexing is not supported because the dataflow buffer identity is resolved during compilation.
+
 #### Dataflow buffer example
 
 ```py
