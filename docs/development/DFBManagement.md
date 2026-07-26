@@ -711,7 +711,8 @@ uses the provisional `cb_index`.
 
 The finalizer records every resolved logical identity on `ttl.bind_cb` before
 rewriting `cb_index`. Repeated finalization therefore cannot merge logical
-DFBs that already share a physical slot.
+DFBs that already share a physical slot. Allocation visits DFBs in logical-ID
+order, preserving their existing indices when no reuse is possible.
 
 ### Multithreaded lifetime analysis
 

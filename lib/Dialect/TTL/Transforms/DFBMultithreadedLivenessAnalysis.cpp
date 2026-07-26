@@ -434,42 +434,40 @@ computePhysicalAssignments(ArrayRef<LogicalDFB> logicalDFBs,
                            const HappensBeforeGraph &happensBeforeGraph,
                            ModuleOp moduleOp,
                            AnalysisFailure &analysisFailure) {
-  llvm::MapVector<Type, SmallVector<unsigned>> typeToLogicalDFBs;
-  for (auto indexedLogicalDFB : llvm::enumerate(logicalDFBs)) {
-    typeToLogicalDFBs[indexedLogicalDFB.value().type].push_back(
-        indexedLogicalDFB.index());
-  }
+  SmallVector<unsigned> logicalIndices =
+      llvm::to_vector(llvm::seq<unsigned>(0, logicalDFBs.size()));
+  SmallVector<SmallVector<unsigned>> colors =
+      assignGreedyIntervalColors<unsigned>(
+          logicalIndices,
+          [&](unsigned lhsIndex, unsigned rhsIndex) {
+            const LogicalDFB &lhs = logicalDFBs[lhsIndex];
+            const LogicalDFB &rhs = logicalDFBs[rhsIndex];
+            return lhs.logicalId != rhs.logicalId
+                       ? lhs.logicalId < rhs.logicalId
+                       : lhsIndex < rhsIndex;
+          },
+          [&](unsigned lhsIndex, unsigned rhsIndex) {
+            return logicalDFBsConflict(logicalDFBs[lhsIndex],
+                                       logicalDFBs[rhsIndex],
+                                       happensBeforeGraph);
+          });
 
-  SmallVector<int32_t> assignments(logicalDFBs.size(), -1);
-  int32_t nextPhysicalIndex = 0;
-  for (auto &typeEntry : typeToLogicalDFBs) {
-    SmallVector<SmallVector<unsigned>> colors =
-        assignGreedyIntervalColors<unsigned>(
-            typeEntry.second, std::less<unsigned>(),
-            [&](unsigned lhsIndex, unsigned rhsIndex) {
-              return logicalDFBsConflict(logicalDFBs[lhsIndex],
-                                         logicalDFBs[rhsIndex],
-                                         happensBeforeGraph);
-            });
-
-    for (auto indexedColor : llvm::enumerate(colors)) {
-      int32_t physicalIndex =
-          nextPhysicalIndex + static_cast<int32_t>(indexedColor.index());
-      for (unsigned logicalIndex : indexedColor.value()) {
-        assignments[logicalIndex] = physicalIndex;
-      }
-    }
-    nextPhysicalIndex += static_cast<int32_t>(colors.size());
-  }
-
-  if (nextPhysicalIndex > kMaxCircularBuffers) {
+  if (colors.size() > kMaxCircularBuffers) {
     std::string message;
     llvm::raw_string_ostream messageStream(message);
-    messageStream << "multithreaded DFB allocation needs " << nextPhysicalIndex
+    messageStream << "multithreaded DFB allocation needs " << colors.size()
                   << " physical indices but hardware supports at most "
                   << kMaxCircularBuffers;
     analysisFailure.set(moduleOp, messageStream.str());
     return std::nullopt;
+  }
+
+  SmallVector<int32_t> assignments(logicalDFBs.size(), -1);
+  for (auto indexedColor : llvm::enumerate(colors)) {
+    int32_t physicalIndex = static_cast<int32_t>(indexedColor.index());
+    for (unsigned logicalIndex : indexedColor.value()) {
+      assignments[logicalIndex] = physicalIndex;
+    }
   }
 
   for (unsigned lhsIndex = 0; lhsIndex < logicalDFBs.size(); ++lhsIndex) {
