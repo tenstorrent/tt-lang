@@ -136,6 +136,7 @@ def _make_cache_key(
     resolved_grid: Union[tuple, List[int]],
     fp32_dest_acc_en: Optional[bool],
     dst_full_sync_en: Optional[bool],
+    math_fidelity: Optional[str],
     target_arch: Optional[str],
     compiler_options: CompilerOptions = CompilerOptions(),
 ) -> tuple:
@@ -157,6 +158,7 @@ def _make_cache_key(
         grid_key,
         fp32_dest_acc_en,
         dst_full_sync_en,
+        math_fidelity,
         target_arch,
         compiler_options,
     )
@@ -860,6 +862,7 @@ def _compile_ttnn_kernel(
     program_hash=None,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
+    math_fidelity: Optional[str] = None,
     verbose=True,
     source_lines=None,
     all_source_lines=None,
@@ -1064,6 +1067,20 @@ def _compile_ttnn_kernel(
 
         if thread_type == "compute":
             config = ttnn.ComputeConfigDescriptor()
+            if math_fidelity is not None:
+                fidelity_values = {
+                    "LoFi": ttnn.MathFidelity.LoFi,
+                    "HiFi2": ttnn.MathFidelity.HiFi2,
+                    "HiFi3": ttnn.MathFidelity.HiFi3,
+                    "HiFi4": ttnn.MathFidelity.HiFi4,
+                }
+                try:
+                    config.math_fidelity = fidelity_values[math_fidelity]
+                except KeyError:
+                    raise ValueError(
+                        "math_fidelity must be one of "
+                        "'LoFi', 'HiFi2', 'HiFi3', or 'HiFi4'"
+                    ) from None
             if fp32_dest_acc_en is not None:
                 config.fp32_dest_acc_en = fp32_dest_acc_en
             elif config_attrs["fp32_dest_acc_en"]:
@@ -1620,6 +1637,7 @@ def _compile_kernel(
     program_hash: int,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
+    math_fidelity: Optional[str] = None,
     target_arch: Optional[str] = None,
     compiler_options: CompilerOptions = CompilerOptions(),
     runtime_resource_factory=None,
@@ -1748,6 +1766,7 @@ def _compile_kernel(
         target_arch=target_arch,
         fp32_dest_acc_en=fp32_dest_acc_en,
         dst_full_sync_en=dst_full_sync_en,
+        math_fidelity=math_fidelity,
         compiler_options=compiler_options,
         program_hash=program_hash,
         l1_budget_override=l1_budget_override,
@@ -1776,6 +1795,7 @@ def _lower_program_to_kernel(
     target_arch,
     fp32_dest_acc_en,
     dst_full_sync_en,
+    math_fidelity,
     compiler_options,
     program_hash,
     l1_budget_override,
@@ -2099,6 +2119,7 @@ def _lower_program_to_kernel(
             program_hash=program_hash,
             fp32_dest_acc_en=fp32_dest_acc_en,
             dst_full_sync_en=dst_full_sync_en,
+            math_fidelity=math_fidelity,
             verbose=os.environ.get("TTLANG_VERBOSE_KERNELS", "1") != "0",
             source_lines=profile_source_lines,
             all_source_lines=all_source_lines,
@@ -2146,6 +2167,7 @@ def _make_operation_wrapper(
     grid,
     fp32_dest_acc_en: Optional[bool],
     dst_full_sync_en: Optional[bool],
+    math_fidelity: Optional[str],
     options: Optional[str],
     prepare_call: Optional[Callable] = None,
 ) -> Callable:
@@ -2177,6 +2199,7 @@ def _make_operation_wrapper(
             resolved_grid=resolved_grid,
             fp32_dest_acc_en=fp32_dest_acc_en,
             dst_full_sync_en=dst_full_sync_en,
+            math_fidelity=math_fidelity,
             target_arch=target_arch,
             compiler_options=compiler_options,
         )
@@ -2254,6 +2277,7 @@ def pykernel_gen(
     tiled: bool = True,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
+    math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
     runtime_resource_factory=None,
     _prepare_call: Optional[Callable] = None,
@@ -2328,6 +2352,7 @@ def pykernel_gen(
                 program_hash,
                 fp32_dest_acc_en=fp32_dest_acc_en,
                 dst_full_sync_en=dst_full_sync_en,
+                math_fidelity=math_fidelity,
                 target_arch=target_arch,
                 compiler_options=compiler_options,
                 runtime_resource_factory=runtime_resource_factory,
@@ -2339,6 +2364,7 @@ def pykernel_gen(
             grid=grid,
             fp32_dest_acc_en=fp32_dest_acc_en,
             dst_full_sync_en=dst_full_sync_en,
+            math_fidelity=math_fidelity,
             options=options,
             prepare_call=_prepare_call,
         )
