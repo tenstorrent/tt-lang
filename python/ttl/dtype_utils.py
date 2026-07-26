@@ -177,16 +177,22 @@ def format_name_to_ttnn_dtype(name: str):
     match name:
         case "bfloat16" | "bf16":
             return ttnn.DataType.BFLOAT16
+        case "bfloat4_b" | "bfp_bf4":
+            return ttnn.DataType.BFLOAT4_B
+        case "bfloat8_b" | "bfp_bf8":
+            return ttnn.DataType.BFLOAT8_B
         case "float16" | "f16":
             return ttnn.DataType.BFLOAT16  # hardware implements f16 as bf16
         case "float32" | "f32":
             return ttnn.DataType.FLOAT32
-        case "int32" | "i32":
+        case "int32" | "i32" | "si32":
             return ttnn.DataType.INT32
-        case "uint32" | "u32":
+        case "uint32" | "u32" | "ui32":
             return ttnn.DataType.UINT32
-        case "uint16" | "u16":
+        case "uint16" | "u16" | "ui16":
             return ttnn.DataType.UINT16
+        case "uint8" | "u8" | "ui8":
+            return ttnn.DataType.UINT8
         case _:
             raise ValueError(
                 f"Unrecognized data format name '{name}' for ttnn.DataType"

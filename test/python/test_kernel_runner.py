@@ -363,6 +363,51 @@ def test_emit_runner_source_accepts_physical_dfb_configs():
     ) in source
 
 
+@pytest.mark.parametrize(
+    ("data_format", "emitted_dtype"),
+    [
+        ("bfloat4_b", "ttnn.bfloat4_b"),
+        ("bfloat8_b", "ttnn.bfloat8_b"),
+        ("uint8", "ttnn.uint8"),
+    ],
+)
+def test_emit_runner_source_preserves_physical_dfb_format(data_format, emitted_dtype):
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[],
+        cb_configs=[
+            PhysicalDFBConfig(
+                dfb_index=0,
+                num_tiles=1,
+                data_format=data_format,
+                block_count=2,
+            )
+        ],
+        grid_cols=1,
+        grid_rows=1,
+        num_tensors=1,
+    )
+
+    assert f"(1, 2, {emitted_dtype}," in source
+
+
+def test_emit_runner_source_rejects_unknown_physical_dfb_format():
+    with pytest.raises(ValueError, match="Unrecognized data format"):
+        kernel_runner.emit_runner_source(
+            kernel_specs=[],
+            cb_configs=[
+                PhysicalDFBConfig(
+                    dfb_index=0,
+                    num_tiles=1,
+                    data_format="unknown",
+                    block_count=2,
+                )
+            ],
+            grid_cols=1,
+            grid_rows=1,
+            num_tensors=1,
+        )
+
+
 def test_emit_runner_source_omits_program_hash_by_default():
     source = kernel_runner.emit_runner_source(
         kernel_specs=[],

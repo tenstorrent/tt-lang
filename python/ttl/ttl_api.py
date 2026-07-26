@@ -1229,9 +1229,16 @@ def _collect_cb_configs(threads):
 # Keyed by exact MLIR type mnemonic (no substring matching).
 _MLIR_TYPE_TO_FORMAT = {
     "bf16": "bfloat16",
+    "bfp_bf4": "bfloat4_b",
+    "bfp_bf8": "bfloat8_b",
     "f16": "float16",
     "f32": "float32",
     "i32": "int32",
+    "si32": "int32",
+    "u8": "uint8",
+    "u16": "uint16",
+    "u32": "uint32",
+    "ui8": "uint8",
     "ui32": "uint32",
     "ui16": "uint16",
 }
