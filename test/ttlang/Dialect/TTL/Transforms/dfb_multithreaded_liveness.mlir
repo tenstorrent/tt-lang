@@ -292,3 +292,86 @@ func.func @loop_lifecycle()
   ttl.cb_pop %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   return
 }
+
+// -----
+
+// Ordered lifetimes cannot share an index when the producer or consumer
+// kernel changes. TT-Metal's per-kernel DFB state does not transfer at the
+// happens-before cut.
+
+// REUSE: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, {{.*}}}, {block_count = 2 : i32, dfb_index = 1 : i32, {{.*}}}]}
+// REUSE-LABEL: func.func @producer_transition_dm
+// REUSE-SAME: ttl.base_cta_index = 2 : i32
+// REUSE: ttl.bind_cb{cb_index = 0, {{.*}}} {dfb_id = 0 : index}
+// REUSE-LABEL: func.func @producer_transition_compute
+// REUSE-SAME: ttl.base_cta_index = 2 : i32
+// REUSE: ttl.bind_cb{cb_index = 0, {{.*}}} {dfb_id = 0 : index}
+// REUSE: ttl.bind_cb{cb_index = 1, {{.*}}} {dfb_id = 1 : index, ttl.compiler_allocated}
+
+func.func @producer_transition_dm()
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+  %input = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %input_producer = ttl.cb_reserve %input : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %input : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
+
+func.func @producer_transition_compute()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+  %input = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %intermediate = ttl.bind_cb {cb_index = 1, block_count = 2} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %input_consumer = ttl.cb_wait %input : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_pop %input : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %intermediate_producer = ttl.cb_reserve %intermediate : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %intermediate : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %intermediate_consumer = ttl.cb_wait %intermediate : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_pop %intermediate : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
+
+// -----
+
+// The same restriction applies when the producer remains unchanged but the
+// consumer kernel changes. The acknowledgment orders both B frontiers after A.
+
+// REUSE: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, {{.*}}}, {block_count = 2 : i32, dfb_index = 1 : i32, {{.*}}}, {block_count = 2 : i32, dfb_index = 2 : i32, {{.*}}}]}
+// REUSE-LABEL: func.func @consumer_transition_compute
+// REUSE-SAME: ttl.base_cta_index = 3 : i32
+// REUSE: ttl.bind_cb{cb_index = 0, {{.*}}} {dfb_id = 0 : index}
+// REUSE: ttl.bind_cb{cb_index = 1, {{.*}}} {dfb_id = 1 : index}
+// REUSE: ttl.bind_cb{cb_index = 2, {{.*}}} {dfb_id = 2 : index}
+// REUSE-LABEL: func.func @consumer_transition_dm
+// REUSE-SAME: ttl.base_cta_index = 3 : i32
+// REUSE: ttl.bind_cb{cb_index = 1, {{.*}}} {dfb_id = 1 : index}
+// REUSE: ttl.bind_cb{cb_index = 2, {{.*}}} {dfb_id = 2 : index}
+
+func.func @consumer_transition_compute()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                ttl.base_cta_index = 3 : i32, ttl.crta_indices = []} {
+  %a = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %ack = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %b = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %a_producer = ttl.cb_reserve %a : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %a : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %a_consumer = ttl.cb_wait %a : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_pop %a : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %ack_producer = ttl.cb_reserve %ack : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %ack : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %b_producer = ttl.cb_reserve %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
+
+func.func @consumer_transition_dm()
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                ttl.base_cta_index = 3 : i32, ttl.crta_indices = []} {
+  %ack = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %b = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %ack_consumer = ttl.cb_wait %ack : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_pop %ack : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %b_consumer = ttl.cb_wait %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_pop %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}

@@ -702,7 +702,9 @@ def TTLFinalizeDFBIndices
     The pass runs a read-only module analysis over all logical DFBs, including
     declarations shared across kernel-thread functions. It rewrites indices
     only after the analysis has computed and verified a complete physical
-    assignment. Exact CircularBufferType equality is required for reuse.
+    assignment. Reuse requires exact CircularBufferType equality and identical
+    producer and consumer kernel threads. Preserving both participants retains
+    TT-Metal's thread-local DFB counter and ring-pointer state.
 
     After reuse, verifies the total DFB count does not exceed
     kMaxCircularBuffers (32), updates ttl.base_cta_index on every
