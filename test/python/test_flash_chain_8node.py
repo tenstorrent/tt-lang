@@ -29,7 +29,8 @@ vDHt = 8
 Sk_chunk_t = 4
 N_CHUNKS = 1
 NNODES = 8
-KERNEL_CONFIG_BUFFER_SIZE = 96 * 1024
+# The generated Wormhole program is about 99 KiB, above the default buffer.
+KERNEL_CONFIG_BUFFER_RESERVE_BYTES = 128 * 1024
 
 St_per_node = Sk_chunk_t * N_CHUNKS
 HEAD_DIM = DHt * TILE
@@ -545,7 +546,7 @@ def flash_device():
         pytest.skip("No Tenstorrent device available")
 
     max_worker_l1_size = ttnn.device.get_max_worker_l1_unreserved_size()
-    worker_l1_size = max_worker_l1_size - KERNEL_CONFIG_BUFFER_SIZE
+    worker_l1_size = max_worker_l1_size - KERNEL_CONFIG_BUFFER_RESERVE_BYTES
     device = ttnn.open_device(device_id=0, worker_l1_size=worker_l1_size)
     yield device
     ttnn.close_device(device)
