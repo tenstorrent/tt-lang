@@ -21,8 +21,6 @@ from typing import Iterable
 BUCKET = "tenstorrent-pypi"
 PREFIX = "tt-lang/"
 DEV_DATE_RE = re.compile(r"\.dev(?P<date>[0-9]{8})(?:\+[^-]+)?-")
-MONTH_RE = re.compile(r"^[0-9]{4}-(?:0[1-9]|1[0-2])$")
-REFRESH_SCRIPT = Path(__file__).with_name("refresh-s3-wheel-views.sh").resolve()
 CONFIRMATIONS = {
     "deduplicate": "delete-duplicate-versions",
     "remove-dev-range": "delete-dev-versions",
@@ -306,15 +304,11 @@ def _write_summary(
     print("\n".join(lines))
 
 
-def _refresh_views(months: list[str]) -> None:
-    if not months:
-        return
-    if any(MONTH_RE.fullmatch(month) is None for month in months):
-        raise RuntimeError("invalid month passed to S3 wheel view refresh")
-    subprocess.run(
-        [str(REFRESH_SCRIPT), "--months", ",".join(months)],
-        check=True,
-    )
+def _write_outputs(refresh_months: list[str]) -> None:
+    output_path = os.environ.get("GITHUB_OUTPUT")
+    if output_path:
+        with Path(output_path).open("a") as output:
+            print(f"refresh-months={','.join(refresh_months)}", file=output)
 
 
 def _validate(args: argparse.Namespace) -> None:
@@ -378,11 +372,13 @@ def main() -> int:
         if not args.dry_run:
             if deletions:
                 delete_versions(deletions, args.bucket)
-            if args.operation == "remove-dev-range":
-                _refresh_views(months)
+        refresh_months = (
+            months if args.operation == "remove-dev-range" and not args.dry_run else []
+        )
+        _write_outputs(refresh_months)
         _write_summary(args.operation, args.dry_run, deletions, months)
         return 0
-    except (RuntimeError, subprocess.CalledProcessError) as error:
+    except RuntimeError as error:
         print(error, file=sys.stderr)
         return 1
 

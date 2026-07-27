@@ -11,8 +11,6 @@ import json
 import sys
 from pathlib import Path
 
-import pytest
-
 from conftest import REPO_ROOT
 
 SCRIPT = REPO_ROOT / ".github" / "scripts" / "s3-wheel-maintenance.py"
@@ -213,11 +211,6 @@ def test_dry_run_does_not_delete_or_refresh(monkeypatch) -> None:
         lambda *_: (_ for _ in ()).throw(AssertionError("delete called")),
     )
     monkeypatch.setattr(
-        maintenance,
-        "_refresh_views",
-        lambda *_: (_ for _ in ()).throw(AssertionError("refresh called")),
-    )
-    monkeypatch.setattr(
         sys,
         "argv",
         [
@@ -231,41 +224,6 @@ def test_dry_run_does_not_delete_or_refresh(monkeypatch) -> None:
     )
 
     assert maintenance.main() == 0
-
-
-def test_refresh_views_uses_repository_owned_script(monkeypatch) -> None:
-    calls = []
-    monkeypatch.setattr(
-        maintenance.subprocess,
-        "run",
-        lambda command, check: calls.append((command, check)),
-    )
-
-    maintenance._refresh_views(["2026-07", "2026-08"])
-
-    assert calls == [
-        (
-            [
-                str(SCRIPT.with_name("refresh-s3-wheel-views.sh").resolve()),
-                "--months",
-                "2026-07,2026-08",
-            ],
-            True,
-        )
-    ]
-
-
-def test_refresh_views_rejects_invalid_month_before_running(monkeypatch) -> None:
-    monkeypatch.setattr(
-        maintenance.subprocess,
-        "run",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("subprocess called")
-        ),
-    )
-
-    with pytest.raises(RuntimeError, match="invalid month"):
-        maintenance._refresh_views(["2026-07;echo unexpected"])
 
 
 def test_live_date_removal_requires_confirmation_before_listing(
@@ -298,6 +256,7 @@ def test_live_date_removal_requires_confirmation_before_listing(
 
 def test_live_date_removal_deletes_and_refreshes_affected_month(
     monkeypatch,
+    tmp_path: Path,
 ) -> None:
     versions = [
         _version(
@@ -307,18 +266,14 @@ def test_live_date_removal_deletes_and_refreshes_affected_month(
         )
     ]
     deleted = []
-    refreshed = []
+    output_path = tmp_path / "output"
     monkeypatch.setattr(maintenance, "list_object_versions", lambda _: versions)
     monkeypatch.setattr(
         maintenance,
         "delete_versions",
         lambda deletions, bucket: deleted.extend(deletions),
     )
-    monkeypatch.setattr(
-        maintenance,
-        "_refresh_views",
-        lambda months: refreshed.extend(months),
-    )
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
     monkeypatch.setattr(
         sys,
         "argv",
@@ -340,24 +295,21 @@ def test_live_date_removal_deletes_and_refreshes_affected_month(
 
     assert maintenance.main() == 0
     assert [deletion.version.version_id for deletion in deleted] == ["version"]
-    assert refreshed == ["2026-07"]
+    assert output_path.read_text() == "refresh-months=2026-07\n"
 
 
 def test_live_date_removal_refreshes_range_after_prior_deletion(
     monkeypatch,
+    tmp_path: Path,
 ) -> None:
-    refreshed = []
+    output_path = tmp_path / "output"
     monkeypatch.setattr(maintenance, "list_object_versions", lambda _: [])
     monkeypatch.setattr(
         maintenance,
         "delete_versions",
         lambda *_: (_ for _ in ()).throw(AssertionError("delete called")),
     )
-    monkeypatch.setattr(
-        maintenance,
-        "_refresh_views",
-        lambda months: refreshed.extend(months),
-    )
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output_path))
     monkeypatch.setattr(
         sys,
         "argv",
@@ -378,7 +330,7 @@ def test_live_date_removal_refreshes_range_after_prior_deletion(
     )
 
     assert maintenance.main() == 0
-    assert refreshed == ["2026-07", "2026-08"]
+    assert output_path.read_text() == "refresh-months=2026-07,2026-08\n"
 
 
 def test_maintenance_workflow_is_dry_by_default_and_has_no_inline_shell() -> None:
@@ -391,3 +343,8 @@ def test_maintenance_workflow_is_dry_by_default_and_has_no_inline_shell() -> Non
             assert "${{ inputs." not in line
     assert "delete-duplicate-versions or delete-dev-versions" in workflow
     assert ".github/scripts/s3-wheel-maintenance.py" in workflow
+    assert "id: maintenance" in workflow
+    assert (
+        "AFFECTED_MONTHS: ${{ steps.maintenance.outputs.refresh-months }}" in workflow
+    )
+    assert 'refresh-s3-wheel-views.sh --months "$AFFECTED_MONTHS"' in workflow
