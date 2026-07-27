@@ -738,7 +738,7 @@ when the IR provides no shared identity.
 The finalizer records every resolved logical identity on `ttl.bind_cb` before
 rewriting `cb_index`. Repeated finalization therefore cannot merge logical
 DFBs that already share a physical slot. Allocation visits DFBs in logical-ID
-order, preserving their existing indices when no reuse is possible.
+order, making the assignment deterministic.
 
 ### Concurrent-kernel lifetime analysis
 
@@ -941,7 +941,7 @@ analyzeDFBs(module):
 ```
 
 Each color is one physical index. Logical-ID order makes the result
-deterministic and preserves existing indices when no reuse is possible.
+deterministic.
 
 #### Correctness sketch
 
@@ -1007,10 +1007,10 @@ physical DFB indices.
 The Python runtime validates that the descriptors form a dense index range and
 builds all `ttnn.CBDescriptor` objects from this final allocation table. It
 does not use the frontend's logical DFB list after physical assignment. This
-preserves the full `TileType`, including subtile dimensions, when computing
-page sizes and constructing `ttnn.TileDescriptor` objects. Standalone runner
-emission uses the same physical sizes, tile dimensions, and data formats as
-direct execution.
+preserves the full `TileType`, including subtile dimensions. The runtime uses
+`ttnn.Tile.get_tile_size()` for the physical page size and constructs the
+corresponding `ttnn.TileDescriptor`. Standalone runner emission uses the same
+physical sizes, tile dimensions, and data formats as direct execution.
 
 Setting `reuse-user-dfbs=false` selects the compiler-only allocator. It retains
 user indices and applies per-kernel linear-scan allocation to

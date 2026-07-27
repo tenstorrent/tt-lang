@@ -260,7 +260,7 @@ def test_dfb_collection_rejects_element_rebinding(monkeypatch):
         )
 
 
-def test_dfb_collection_rejects_nested_thread_declaration():
+def test_dfb_collection_rejects_nested_kernel_declaration():
     function = _function(
         """
         def kernel():
@@ -278,6 +278,31 @@ def test_dfb_collection_rejects_nested_thread_declaration():
         match="resource declaration 'make_dfb' must be a simple top-level assignment",
     ):
         atom_module._validate_resource_declarations(function, "collection_test")
+
+
+def test_dfb_collection_elements_are_rewritten_inside_nested_kernel(monkeypatch):
+    stripped, dfbs, pipe_nets = _lift(
+        """
+        def kernel():
+            buffers = [
+                ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+                for buffer_index in range(2)
+            ]
+
+            @ttl.compute()
+            def compute():
+                source = buffers[0].wait()
+                destination = buffers[1].reserve()
+                destination.store(source)
+        """,
+        monkeypatch,
+    )
+
+    assert list(dfbs) == ["buffers_0", "buffers_1"]
+    assert pipe_nets == {}
+    stripped_source = ast.unparse(stripped)
+    assert "buffers_0.wait()" in stripped_source
+    assert "buffers_1.reserve()" in stripped_source
 
 
 def test_composed_operation_accepts_static_dfb_collection_elements():

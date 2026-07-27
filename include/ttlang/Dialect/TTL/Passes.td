@@ -630,9 +630,9 @@ def TTLVerifyDFBSPSC
     Walks every `ttl.cb_reserve` and `ttl.cb_wait`, groups them by module-wide
     logical `dfb_id` and enclosing `ttl.kernel_thread`-tagged `func.func`, and
     tracks the launch-node domain for each producer or consumer participant.
-    A DFB is valid when, for each launched node, at most one producer thread
-    reserves it and at most one consumer thread waits on it. Disjoint domains
-    across different kernel-thread functions are accepted. Distinct logical
+    A DFB is valid when, for each launched node, at most one producer kernel
+    reserves it and at most one consumer kernel waits on it. Disjoint domains
+    across different kernel functions are accepted. Distinct logical
     DFBs remain separate when physical allocation assigns them the same
     `cb_index`.
 

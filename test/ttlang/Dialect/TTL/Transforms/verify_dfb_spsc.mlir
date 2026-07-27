@@ -127,7 +127,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 
 // -----
 
-// Two logical DFBs are each SPSC across the same two threads. Their distinct
+// Two logical DFBs are each SPSC across the same two kernels. Their distinct
 // `dfb_id` values keep their participant sets separate.
 // CHECK-LABEL: func.func @two_cb_producer
 // CHECK-LABEL: func.func @two_cb_consumer

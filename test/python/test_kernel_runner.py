@@ -389,6 +389,25 @@ def test_dfb_allocation_requires_finalized_config(monkeypatch):
 
 
 @pytest.mark.parametrize(
+    "cb_configs",
+    [
+        [None],
+        [PhysicalDFBConfig(1, 1, "bfloat16", 2)],
+    ],
+    ids=["missing-config", "wrong-index"],
+)
+def test_emit_runner_source_rejects_invalid_physical_dfb_sequence(cb_configs):
+    with pytest.raises(ValueError, match="DFB config at physical index 0"):
+        kernel_runner.emit_runner_source(
+            kernel_specs=[],
+            cb_configs=cb_configs,
+            grid_cols=1,
+            grid_rows=1,
+            num_tensors=1,
+        )
+
+
+@pytest.mark.parametrize(
     ("data_format", "emitted_dtype"),
     [
         ("bfloat4_b", "ttnn.bfloat4_b"),

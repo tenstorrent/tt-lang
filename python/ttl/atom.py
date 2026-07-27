@@ -18,15 +18,15 @@ operation with resource parameters is expand-only and cannot be called as a
 TT-NN operation.
 
 DFB declarations sit inline with the compute/copy work in a unified body, so
-after the split they land inside each thread body. Declarations may be single
+after the split they land inside each kernel body. Declarations may be single
 assignments, list/tuple declarations, list comprehensions whose elements are
 accessed with non-negative integer literal indices, or named destructuring of a
-DFB collection. The existing per-thread compiler is capture-based (thread
+DFB collection. The existing per-kernel compiler is capture-based (kernel
 functions take no parameters; DFBs arrive as closure captures), so before
 splitting we lift these declarations out of the body, evaluate them to
 DataflowBuffer objects, and pass them as captures -- the same form the
 @ttl.operation flow produces by running its setup body. After that the
-per-thread compile, DFB sizing, pass pipeline, and runner are identical to
+per-kernel compile, DFB sizing, pass pipeline, and runner are identical to
 @ttl.operation.
 """
 

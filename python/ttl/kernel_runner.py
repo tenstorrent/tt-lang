@@ -36,7 +36,7 @@ def _ensure_ttnn():
 
 from .dataflow_buffer import PhysicalDFBConfig
 from .constants import DEFAULT_L1_CB_BUDGET_BYTES
-from .dtype_utils import format_name_to_ttnn_dtype, tile_bytes_from_dtype
+from .dtype_utils import format_name_to_ttnn_dtype
 
 
 @dataclass(frozen=True)
@@ -47,6 +47,23 @@ class _DFBAllocation:
     tile: Tuple[int, int]
     page_size: int
     total_size: int
+
+
+def _validate_physical_dfb_config(
+    config: Any, physical_index: int
+) -> PhysicalDFBConfig:
+    """Enforce dense table order required by compile-time DFB indices."""
+    if not isinstance(config, PhysicalDFBConfig):
+        raise ValueError(
+            f"DFB config at physical index {physical_index} must be a "
+            f"PhysicalDFBConfig, got {type(config).__name__}"
+        )
+    if config.dfb_index != physical_index:
+        raise ValueError(
+            f"DFB config at physical index {physical_index} has dfb_index "
+            f"{config.dfb_index}"
+        )
+    return config
 
 
 def _get_dfb_allocation(config: PhysicalDFBConfig) -> _DFBAllocation:
@@ -65,7 +82,7 @@ def _get_dfb_allocation(config: PhysicalDFBConfig) -> _DFBAllocation:
     block_count = config.block_count
     tile_shape = config.tile
 
-    page_size = tile_bytes_from_dtype(data_format, tile_shape)
+    page_size = ttnn.Tile(tile_shape).get_tile_size(data_format)
     return _DFBAllocation(
         data_format=data_format,
         num_tiles=num_tiles,
@@ -406,7 +423,7 @@ def normalize_program_hash(program_hash: Optional[int]) -> Optional[int]:
 
 def build_cb_descriptors(
     tensors: List[Any],
-    cb_configs: List[Any],
+    cb_configs: List[PhysicalDFBConfig],
     core_ranges: Any,
 ) -> List[Any]:
     """
@@ -416,7 +433,8 @@ def build_cb_descriptors(
         tensors: List of ttnn.Tensor objects. Each tensor's position (0, 1, 2, ...)
             corresponds to its CB index. For intermediate CBs (not backed by
             input/output tensors), pass None in the corresponding position.
-        cb_configs: Runtime configurations indexed by physical DFB index.
+        cb_configs: Finalized runtime configurations indexed by physical DFB
+            index.
         core_ranges: ttnn.CoreRangeSet for DFB allocation.
 
     Returns:
@@ -429,18 +447,13 @@ def build_cb_descriptors(
     # Compute sizes first so we fail before allocating ttnn descriptors on overflow.
     rows = []
     total_cb_bytes = 0
-    for i, cb in enumerate(cb_configs):
-        if cb is None:
-            raise ValueError(
-                f"Missing CB config for index {i}. "
-                f"All DFB indices must have associated DataflowBuffer configurations."
-            )
-
-        allocation = _get_dfb_allocation(cb)
+    for physical_index, config in enumerate(cb_configs):
+        config = _validate_physical_dfb_config(config, physical_index)
+        allocation = _get_dfb_allocation(config)
         description = (
-            f"  DFB[{i}]: num_tiles={allocation.num_tiles} "
+            f"  DFB[{physical_index}]: num_tiles={allocation.num_tiles} "
             f"block_count={allocation.block_count} "
-            f"format={cb.data_format} tile={allocation.tile} -> "
+            f"format={config.data_format} tile={allocation.tile} -> "
             f"{allocation.total_size} bytes"
         )
         rows.append(
@@ -512,7 +525,7 @@ def build_generic_op_io_tensors(
 def run_kernel_on_device(
     kernel_specs: List[KernelSpec],
     tensors: List[Any],
-    cb_configs: List[Any],
+    cb_configs: List[PhysicalDFBConfig],
     core_ranges: Any,
     program_hash: Optional[int] = None,
     num_pipe_sync_semaphores: int = 0,
@@ -531,9 +544,8 @@ def run_kernel_on_device(
         tensors: List of ttnn.Tensor objects. Position in this list determines the
             global tensor index. Individual kernels access subsets via tensor_indices
             in each KernelSpec.
-        cb_configs: List of DataflowBuffer objects for each DFB, indexed by DFB index.
-            Includes both tensor-backed DFBs and intermediate DFBs. Each DFB has shape,
-            block_count, tensor (for dtype), and _cb_index attributes.
+        cb_configs: Finalized physical DFB configurations, in physical-index
+            order.
         core_ranges: ttnn.CoreRangeSet for kernel execution.
         program_hash: Hash for tt-metal program cache.
         num_pipe_sync_semaphores: Number of pipe synchronization semaphores
@@ -689,7 +701,7 @@ def _serialize_noc_role(spec: KernelSpec) -> Optional[int]:
 
 def emit_runner_source(
     kernel_specs: List[KernelSpec],
-    cb_configs: List[Any],
+    cb_configs: List[PhysicalDFBConfig],
     grid_cols: int,
     grid_rows: int,
     num_tensors: int,
@@ -769,16 +781,14 @@ def emit_runner_source(
     lines.append("")
 
     lines.append("CB_CONFIGS = [")
-    for i, cb in enumerate(cb_configs):
-        if cb is None:
-            lines.append(f"    None,  # CB {i}")
-            continue
-        allocation = _get_dfb_allocation(cb)
+    for physical_index, config in enumerate(cb_configs):
+        config = _validate_physical_dfb_config(config, physical_index)
+        allocation = _get_dfb_allocation(config)
         dtype_str = _dtype_to_ttnn_str(allocation.data_format)
         lines.append(
             f"    ({allocation.num_tiles}, {allocation.block_count}, "
             f"{dtype_str}, {allocation.tile!r}, {allocation.page_size}, "
-            f"{allocation.total_size}),  # CB {i}"
+            f"{allocation.total_size}),  # CB {physical_index}"
         )
     lines.append("]")
     lines.append("")
@@ -914,7 +924,7 @@ def emit_runner_source(
 
 def emit_runner_file(
     kernel_specs: List[KernelSpec],
-    cb_configs: List[Any],
+    cb_configs: List[PhysicalDFBConfig],
     grid_cols: int,
     grid_rows: int,
     num_tensors: int,

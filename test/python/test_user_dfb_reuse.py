@@ -32,6 +32,43 @@ def _make_exp_via_scratch_atom(data_format, shape=(1, 1)):
     return exp_via_scratch
 
 
+@ttl.operation()
+def _increment_in_place(source: ttl.DFB, result: ttl.DFB):
+    source_block = source.wait()
+    result_block = result.reserve()
+    result_block.store(
+        ttl.add(
+            source_block,
+            ttl.block.fill(
+                1,
+                shape=source_block.shape,
+                dtype=source_block.dtype,
+            ),
+        )
+    )
+
+
+def _make_in_place_atom_kernel(data_format):
+    @ttl.operation(grid=(1, 1))
+    def in_place_atom_kernel(input_tensor, output_tensor):
+        input_dfb, state_dfb, output_dfb = [
+            ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+            for buffer_index in range(3)
+        ]
+
+        ttl.copy(input_tensor[0, 0], input_dfb.reserve()).wait()
+        input_block = input_dfb.wait()
+        state_block = state_dfb.reserve()
+        state_block.store(input_block)
+        _increment_in_place(state_dfb, state_dfb)
+        state_block = state_dfb.wait()
+        output_block = output_dfb.reserve()
+        output_block.store(state_block)
+        ttl.copy(output_dfb.wait(), output_tensor[0, 0]).wait()
+
+    return in_place_atom_kernel
+
+
 def _make_repeated_dfb_atom_kernel(data_format):
     exp_via_scratch = _make_exp_via_scratch_atom(data_format)
 
@@ -90,6 +127,8 @@ def _make_over_capacity_atom_kernel(data_format):
 
 _repeated_bf16_atom_kernel = _make_repeated_dfb_atom_kernel("bf16")
 _repeated_f32_atom_kernel = _make_repeated_dfb_atom_kernel("float32")
+_in_place_bf16_atom_kernel = _make_in_place_atom_kernel("bf16")
+_in_place_f32_atom_kernel = _make_in_place_atom_kernel("float32")
 _over_capacity_bf16_atom_kernel = _make_over_capacity_atom_kernel("bf16")
 _over_capacity_f32_atom_kernel = _make_over_capacity_atom_kernel("float32")
 
@@ -220,6 +259,39 @@ def test_repeated_dfb_declaring_atom_runtime(
         assert_allclose(actual, expected, rtol=0.05, atol=1.0)
     else:
         assert_allclose(actual, expected, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+@pytest.mark.parametrize(
+    ("operation", "dtype"),
+    [
+        (_in_place_bf16_atom_kernel, torch.bfloat16),
+        (_in_place_f32_atom_kernel, torch.float32),
+    ],
+    ids=["bf16", "f32"],
+)
+def test_atom_accepts_same_dfb_as_source_and_result(
+    device, memory_config, to_device, operation, dtype
+):
+    input_host = (
+        torch.arange(TILE * TILE, dtype=torch.float32).remainder(7).reshape(TILE, TILE)
+        - 3
+    ).to(dtype)
+    input_tensor = to_device(input_host, device)
+    output_tensor = to_device(torch.zeros_like(input_host), device)
+
+    operation(input_tensor, output_tensor)
+
+    actual = ttnn.to_torch(output_tensor).float()
+    expected = input_host.float() + 1
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, expected, rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
 
 
 @pytest.mark.parametrize(
