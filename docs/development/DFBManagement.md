@@ -920,9 +920,10 @@ analyzeDFBs(module):
     return not isOrderedBefore(A, B)
        and not isOrderedBefore(B, A)
 
-  colors = greedyFirstFit(
-      logicalDFBs ordered by logical ID,
-      mayShare = not conflicts)
+  interferenceGraph = graph(logicalDFBs, conflicts)
+  colors = coloring.color(
+      interferenceGraph,
+      logicalDFBs ordered by logical ID)
 
   reject if colors.size > 32
   verify every pair in one color does not conflict
@@ -1064,10 +1065,11 @@ declarations.
   max-capacity descriptor merge for DFBs with the same element type but
   different block counts or elements per block.
 
-- **Coloring quality.** Deterministic greedy first-fit coloring is sound but
-  not optimal for a general partial-order interference graph. A stronger graph
-  coloring algorithm could reduce the physical count without changing the
-  liveness proof.
+- **Coloring quality.** `InterferenceGraphColoring` separates interference-graph
+  construction from physical-index assignment. Deterministic greedy first-fit
+  is the default implementation, but is not optimal for a general partial-order
+  interference graph. A stronger implementation could reduce the physical
+  count without changing the liveness proof.
 
 - **Reachability cost.** The current bit-vector transitive closure is suitable
   for the small number of operations in one kernel launch. Its cost depends on

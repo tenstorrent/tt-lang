@@ -9,7 +9,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
-#include "ttlang/Dialect/TTL/Transforms/LiveIntervalUtils.h"
+#include "ttlang/Dialect/TTL/Transforms/InterferenceGraphColoring.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Operation.h"
@@ -470,46 +470,64 @@ static bool logicalDFBsConflict(const LogicalDFB &lhs, const LogicalDFB &rhs,
          !isOrderedBefore(rhs, lhs, happensBeforeGraph);
 }
 
-/// Colors the interference graph and validates every shared physical index.
+/// Builds the interference graph, delegates coloring, and validates the result.
 static std::optional<SmallVector<int32_t>>
 computePhysicalAssignments(ArrayRef<LogicalDFB> logicalDFBs,
                            const HappensBeforeGraph &happensBeforeGraph,
+                           const InterferenceGraphColoring &coloring,
                            ModuleOp moduleOp,
                            AnalysisFailure &analysisFailure) {
   SmallVector<unsigned> logicalIndices =
       llvm::to_vector(llvm::seq<unsigned>(0, logicalDFBs.size()));
-  SmallVector<SmallVector<unsigned>> colors =
-      assignGreedyIntervalColors<unsigned>(
-          logicalIndices,
-          [&](unsigned lhsIndex, unsigned rhsIndex) {
-            const LogicalDFB &lhs = logicalDFBs[lhsIndex];
-            const LogicalDFB &rhs = logicalDFBs[rhsIndex];
-            return lhs.logicalId != rhs.logicalId
-                       ? lhs.logicalId < rhs.logicalId
-                       : lhsIndex < rhsIndex;
-          },
-          [&](unsigned lhsIndex, unsigned rhsIndex) {
-            return logicalDFBsConflict(logicalDFBs[lhsIndex],
-                                       logicalDFBs[rhsIndex],
-                                       happensBeforeGraph);
-          });
+  llvm::sort(logicalIndices, [&](unsigned lhsIndex, unsigned rhsIndex) {
+    const LogicalDFB &lhs = logicalDFBs[lhsIndex];
+    const LogicalDFB &rhs = logicalDFBs[rhsIndex];
+    return lhs.logicalId != rhs.logicalId ? lhs.logicalId < rhs.logicalId
+                                          : lhsIndex < rhsIndex;
+  });
 
-  if (colors.size() > kMaxCircularBuffers) {
+  InterferenceGraph interferenceGraph(logicalDFBs.size());
+  for (unsigned lhsIndex = 0; lhsIndex < logicalDFBs.size(); ++lhsIndex) {
+    for (unsigned rhsIndex = lhsIndex + 1; rhsIndex < logicalDFBs.size();
+         ++rhsIndex) {
+      if (logicalDFBsConflict(logicalDFBs[lhsIndex], logicalDFBs[rhsIndex],
+                              happensBeforeGraph)) {
+        interferenceGraph.addInterference(lhsIndex, rhsIndex);
+      }
+    }
+  }
+
+  SmallVector<unsigned> colors =
+      coloring.color(interferenceGraph, logicalIndices);
+  assert(colors.size() == logicalDFBs.size() &&
+         "coloring must assign every logical DFB");
+
+  unsigned colorCount = 0;
+  for (unsigned color : colors) {
+    assert(color < logicalDFBs.size() &&
+           "a dense coloring cannot use more colors than vertices");
+    colorCount = std::max(colorCount, color + 1);
+  }
+  llvm::BitVector usedColors(colorCount);
+  for (unsigned color : colors) {
+    usedColors.set(color);
+  }
+  assert(usedColors.all() && "coloring must use dense zero-based colors");
+
+  if (colorCount > kMaxCircularBuffers) {
     std::string message;
     llvm::raw_string_ostream messageStream(message);
-    messageStream << "multithreaded DFB allocation needs " << colors.size()
+    messageStream << "multithreaded DFB allocation needs " << colorCount
                   << " physical indices but hardware supports at most "
                   << kMaxCircularBuffers;
     analysisFailure.set(moduleOp, messageStream.str());
     return std::nullopt;
   }
 
-  SmallVector<int32_t> assignments(logicalDFBs.size(), -1);
-  for (auto indexedColor : llvm::enumerate(colors)) {
-    int32_t physicalIndex = static_cast<int32_t>(indexedColor.index());
-    for (unsigned logicalIndex : indexedColor.value()) {
-      assignments[logicalIndex] = physicalIndex;
-    }
+  SmallVector<int32_t> assignments;
+  assignments.reserve(colors.size());
+  for (unsigned color : colors) {
+    assignments.push_back(static_cast<int32_t>(color));
   }
 
   for (unsigned lhsIndex = 0; lhsIndex < logicalDFBs.size(); ++lhsIndex) {
@@ -518,8 +536,7 @@ computePhysicalAssignments(ArrayRef<LogicalDFB> logicalDFBs,
       if (assignments[lhsIndex] != assignments[rhsIndex]) {
         continue;
       }
-      if (logicalDFBsConflict(logicalDFBs[lhsIndex], logicalDFBs[rhsIndex],
-                              happensBeforeGraph)) {
+      if (interferenceGraph.interferes(lhsIndex, rhsIndex)) {
         std::string message;
         llvm::raw_string_ostream messageStream(message);
         messageStream << "DFB allocator assigned interfering logical DFBs "
@@ -621,7 +638,12 @@ int64_t DFBLogicalIdentityAnalysis::getLogicalId(BindCBOp bindOp) const {
 }
 
 DFBMultithreadedLivenessAnalysis::DFBMultithreadedLivenessAnalysis(
-    Operation *operation) {
+    Operation *operation)
+    : DFBMultithreadedLivenessAnalysis(
+          operation, getGreedyFirstFitInterferenceGraphColoring()) {}
+
+DFBMultithreadedLivenessAnalysis::DFBMultithreadedLivenessAnalysis(
+    Operation *operation, const InterferenceGraphColoring &coloring) {
   ModuleOp moduleOp = cast<ModuleOp>(operation);
   DFBLogicalIdentityAnalysis identityAnalysis(operation);
   if (!identityAnalysis.succeeded()) {
@@ -675,8 +697,8 @@ DFBMultithreadedLivenessAnalysis::DFBMultithreadedLivenessAnalysis(
   }
 
   std::optional<SmallVector<int32_t>> physicalAssignments =
-      computePhysicalAssignments(logicalDFBs, happensBeforeGraph, moduleOp,
-                                 analysisFailure);
+      computePhysicalAssignments(logicalDFBs, happensBeforeGraph, coloring,
+                                 moduleOp, analysisFailure);
   if (!physicalAssignments.has_value()) {
     errorOperation = analysisFailure.operation;
     errorMessage = std::move(analysisFailure.message);

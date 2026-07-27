@@ -30,6 +30,8 @@
 
 namespace mlir::tt::ttl {
 
+class InterferenceGraphColoring;
+
 /// Resolved logical identity for one `ttl.bind_cb` declaration.
 struct DFBLogicalIdentityAssignment {
   /// The declaration to annotate after analysis succeeds.
@@ -96,6 +98,10 @@ struct DFBPhysicalIndexAssignment {
 class DFBMultithreadedLivenessAnalysis {
 public:
   explicit DFBMultithreadedLivenessAnalysis(Operation *operation);
+
+  /// Computes an assignment with the requested graph-coloring strategy.
+  DFBMultithreadedLivenessAnalysis(Operation *operation,
+                                   const InterferenceGraphColoring &coloring);
 
   /// Returns true when a complete physical assignment was computed.
   bool succeeded() const { return errorMessage.empty(); }
