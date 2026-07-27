@@ -31,9 +31,11 @@ config.test_source_root = os.path.dirname(__file__)
 
 # test_exec_root: The root path where tests should be run.
 if not hasattr(config, "ttlang_obj_root"):
-    from ttl.config import BUILD_DIR
+    config.ttlang_obj_root = os.environ.get("TTLANG_OBJ_ROOT")
+    if not config.ttlang_obj_root:
+        from ttl.config import BUILD_DIR
 
-    config.ttlang_obj_root = os.environ.get("TTLANG_OBJ_ROOT", os.fspath(BUILD_DIR))
+        config.ttlang_obj_root = os.fspath(BUILD_DIR)
 config.ttlang_source_dir = getattr(
     config,
     "ttlang_source_dir",
