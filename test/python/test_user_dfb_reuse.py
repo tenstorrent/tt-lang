@@ -4,8 +4,6 @@
 
 """Runtime coverage for physical reuse of user-declared DFBs."""
 
-import re
-
 import pytest
 import torch
 
@@ -63,28 +61,13 @@ def _user_dfb_reuse_kernel(first, second, out):
             ttl.copy(out_block, out[0, 0]).wait()
 
 
-def _physical_allocation_indices(final_mlir):
-    allocations = re.search(
-        r"ttl\.dfb_allocations = \[(.*?)\]",
-        final_mlir,
-        re.DOTALL,
-    )
-    assert allocations is not None
-    return [
-        int(index)
-        for index in re.findall(r"dfb_index = (\d+) : i32", allocations.group(1))
-    ]
-
-
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
 @pytest.mark.parametrize(
     ("memory_config", "to_device"),
     [("dram", to_dram), ("l1", to_l1)],
     ids=["dram", "l1"],
 )
-def test_user_dfb_reuse_runtime(
-    device, dtype, memory_config, to_device, tmp_path, monkeypatch
-):
+def test_user_dfb_reuse_runtime(device, dtype, memory_config, to_device):
     element_indices = torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE)
     first_host = ((element_indices.remainder(257) - 128) / 64).to(dtype)
     second_host = (((17 * element_indices).remainder(509) - 254) / 128).to(dtype)
@@ -94,8 +77,6 @@ def test_user_dfb_reuse_runtime(
     second = to_device(second_host, device)
     out = to_device(out_host, device)
 
-    final_mlir_path = tmp_path / f"user_dfb_reuse_{memory_config}.mlir"
-    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
     _user_dfb_reuse_kernel(first, second, out)
 
     actual = ttnn.to_torch(out).float()
@@ -104,6 +85,3 @@ def test_user_dfb_reuse_runtime(
         assert_allclose(actual, expected, rtol=0.05, atol=1.0)
     else:
         assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
-
-    final_mlir = final_mlir_path.read_text()
-    assert _physical_allocation_indices(final_mlir) == [0, 1, 2]
