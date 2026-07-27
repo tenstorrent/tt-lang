@@ -378,6 +378,16 @@ def test_physical_dfb_allocation_scales_with_subtile_area():
     assert two_half_tiles.total_size == full_tile.total_size
 
 
+def test_dfb_allocation_requires_finalized_config(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+
+    with pytest.raises(
+        TypeError,
+        match="must be a finalized PhysicalDFBConfig",
+    ):
+        kernel_runner._get_dfb_allocation(object())
+
+
 @pytest.mark.parametrize(
     ("data_format", "emitted_dtype"),
     [

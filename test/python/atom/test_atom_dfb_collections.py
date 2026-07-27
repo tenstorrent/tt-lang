@@ -199,6 +199,24 @@ def test_dfb_collection_rejects_bare_collection_use(monkeypatch):
         )
 
 
+def test_dfb_collection_rejects_element_rebinding(monkeypatch):
+    with pytest.raises(
+        ValueError,
+        match="DFB collection 'buffers' elements cannot be rebound",
+    ):
+        _lift(
+            """
+            def kernel():
+                buffers = [
+                    ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+                    for collection_index in range(2)
+                ]
+                buffers[0] = buffers[1]
+            """,
+            monkeypatch,
+        )
+
+
 def test_composed_operation_accepts_static_dfb_collection_elements():
     @ttl.operation()
     def copy_stage(source: ttl.DFB, destination: ttl.DFB):

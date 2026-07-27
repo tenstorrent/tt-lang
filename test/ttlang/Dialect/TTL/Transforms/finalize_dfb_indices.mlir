@@ -13,9 +13,9 @@
 // -----
 
 // User DFBs at indices 0, 1, 2 and a compiler-allocated DFB at index 3.
-// The pass should update base_cta_index to 4 and emit ttl.compiler_allocated_dfbs.
+// The pass should update base_cta_index to 4 and emit both allocation tables.
 
-// CHECK: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 3 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}]}
+// CHECK: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 3 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}], ttl.dfb_allocations = {{.*}}}
 
 // CHECK-LABEL: func.func @reader
 // CHECK-SAME: ttl.base_cta_index = 4 : i32
@@ -54,6 +54,7 @@ func.func @writer()
 // but should still update base_cta_index to the true DFB count (3).
 
 // CHECK-NOT: ttl.compiler_allocated_dfbs
+// CHECK: module attributes {ttl.dfb_allocations = {{.*}}}
 
 // CHECK-LABEL: func.func @compute_only
 // CHECK-SAME: ttl.base_cta_index = 3 : i32
@@ -74,7 +75,7 @@ func.func @compute_only()
 // DEBUG: DFB reuse: 2 compiler-allocated DFBs -> 1 physical slot(s)
 // DEBUG: Total DFB count: 4
 
-// REUSE: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 3 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}]}
+// REUSE: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 3 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}], ttl.dfb_allocations = {{.*}}}
 
 // REUSE-LABEL: func.func @non_overlapping_reuse
 // REUSE-SAME: ttl.base_cta_index = 4 : i32
@@ -102,7 +103,7 @@ func.func @non_overlapping_reuse()
 // DEBUG: DFB reuse: 2 compiler-allocated DFBs -> 2 physical slot(s)
 // DEBUG: Total DFB count: 5
 
-// OVERLAP: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 3 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}, {block_count = 2 : i32, dfb_index = 4 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}]}
+// OVERLAP: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 3 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}, {block_count = 2 : i32, dfb_index = 4 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}], ttl.dfb_allocations = {{.*}}}
 
 // OVERLAP-LABEL: func.func @overlapping_no_reuse
 // OVERLAP-SAME: ttl.base_cta_index = 5 : i32
@@ -135,7 +136,7 @@ func.func @overlapping_no_reuse()
 // DEBUG: DFB reuse: 4 compiler-allocated DFBs -> 2 physical slot(s)
 // DEBUG: Total DFB count: 5
 
-// FOUR: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 3 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}, {block_count = 2 : i32, dfb_index = 4 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}]}
+// FOUR: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 3 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}, {block_count = 2 : i32, dfb_index = 4 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}], ttl.dfb_allocations = {{.*}}}
 
 // FOUR-LABEL: func.func @four_dfbs_nested_reuse
 // FOUR-SAME: ttl.base_cta_index = 5 : i32
@@ -186,7 +187,7 @@ func.func @four_dfbs_nested_reuse()
 // DEBUG: DFB reuse: 3 compiler-allocated DFBs -> 2 physical slot(s)
 // DEBUG: Total DFB count: 5
 
-// MIXED: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 3 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}, {block_count = 2 : i32, dfb_index = 4 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 8 : i32}]}
+// MIXED: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 3 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}, {block_count = 2 : i32, dfb_index = 4 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 8 : i32}], ttl.dfb_allocations = {{.*}}}
 
 // MIXED-LABEL: func.func @mixed_types_no_cross_reuse
 // MIXED-SAME: ttl.base_cta_index = 5 : i32
@@ -224,7 +225,7 @@ func.func @mixed_types_no_cross_reuse()
 // DEBUG: DFB reuse: 2 compiler-allocated DFBs -> 2 physical slot(s)
 // DEBUG: Total DFB count: 5
 
-// NOPOP: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 3 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}, {block_count = 2 : i32, dfb_index = 4 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}]}
+// NOPOP: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 3 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}, {block_count = 2 : i32, dfb_index = 4 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}], ttl.dfb_allocations = {{.*}}}
 
 // NOPOP-LABEL: func.func @no_cb_pop_conservative
 // NOPOP-SAME: ttl.base_cta_index = 5 : i32
@@ -251,7 +252,7 @@ func.func @no_cb_pop_conservative()
 // DEBUG: DFB reuse: 3 compiler-allocated DFBs -> 1 physical slot(s)
 // DEBUG: Total DFB count: 4
 
-// THREE: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 3 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}]}
+// THREE: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 3 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}], ttl.dfb_allocations = {{.*}}}
 
 // THREE-LABEL: func.func @three_sequential_one_slot
 // THREE-SAME: ttl.base_cta_index = 4 : i32
@@ -278,7 +279,7 @@ func.func @three_sequential_one_slot()
 // A single compiler-allocated DFB is assigned the first physical index after
 // the user-declared range.
 
-// SINGLE: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 3 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}]}
+// SINGLE: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 3 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}], ttl.dfb_allocations = {{.*}}}
 
 // SINGLE-LABEL: func.func @single_dfb_no_reuse
 // SINGLE-SAME: ttl.base_cta_index = 4 : i32
@@ -302,7 +303,7 @@ func.func @single_dfb_no_reuse()
 // sibling functions. Finalization must assign disjoint physical indices after
 // the highest user-declared index, including user indices in other functions.
 
-// GLOBAL: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 5 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}, {block_count = 2 : i32, dfb_index = 6 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}]}
+// GLOBAL: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 5 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}, {block_count = 2 : i32, dfb_index = 6 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}], ttl.dfb_allocations = {{.*}}}
 
 // GLOBAL-LABEL: func.func @global_user_index
 // GLOBAL-SAME: ttl.base_cta_index = 7 : i32

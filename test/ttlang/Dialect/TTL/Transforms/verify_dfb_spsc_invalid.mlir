@@ -9,7 +9,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     // expected-note @+1 {{dataflow buffer declared here}}
     %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    // expected-error @below {{dataflow buffer cb_index=0 has multiple consumer threads active on the same launched node}}
+    // expected-error @below {{logical DFB 0 has multiple consumer threads active on the same launched node}}
     // expected-note @below {{example overlapping node: core_x=0, core_y=0}}
     // expected-note @below {{tt-metal CBs are single-producer single-consumer; allocate one DFB per consumer}}
     %view = ttl.cb_wait %cb
@@ -58,7 +58,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     // expected-note @+1 {{dataflow buffer declared here}}
     %cb = ttl.bind_cb {cb_index = 1, block_count = 2}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    // expected-error @below {{dataflow buffer cb_index=1 has multiple producer threads active on the same launched node}}
+    // expected-error @below {{logical DFB 1 has multiple producer threads active on the same launched node}}
     // expected-note @below {{example overlapping node: core_x=1, core_y=0}}
     // expected-note @below {{tt-metal CBs are single-producer single-consumer; allocate one DFB per producer}}
     %slot = ttl.cb_reserve %cb
@@ -101,7 +101,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     scf.if %cond {
       %is_x0 = arith.cmpi eq, %core_x, %zero : index
       scf.if %is_x0 {
-        // expected-error @below {{dataflow buffer cb_index=2 has multiple consumer threads, but SPSC could not be statically proven}}
+        // expected-error @below {{logical DFB 2 has multiple consumer threads, but SPSC could not be statically proven}}
         // expected-note @below {{tt-metal CBs are single-producer single-consumer; allocate one DFB per consumer}}
         %view = ttl.cb_wait %cb
             : <[1, 1], !ttcore.tile<32x32, bf16>, 2>

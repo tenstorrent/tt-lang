@@ -36,7 +36,7 @@
 // REPEAT: ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 1 : index}
 // REPEAT: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 2 : index}
 
-// DISABLED-NOT: ttl.dfb_allocations
+// DISABLED: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<1x16, bf16>, {{.*}}}, {block_count = 2 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<1x16, bf16>, {{.*}}}, {block_count = 2 : i32, dfb_index = 2 : i32, element_type = !ttcore.tile<1x16, bf16>, {{.*}}}]}
 // DISABLED-LABEL: func.func @synchronized_dm
 // DISABLED-SAME: ttl.base_cta_index = 3 : i32
 // DISABLED: ttl.bind_cb{cb_index = 0,

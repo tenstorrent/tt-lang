@@ -14,7 +14,6 @@ building and execution.
 """
 
 from dataclasses import dataclass, field
-import math
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -37,18 +36,7 @@ def _ensure_ttnn():
 
 from .dataflow_buffer import PhysicalDFBConfig
 from .constants import DEFAULT_L1_CB_BUDGET_BYTES
-from .dtype_utils import (
-    format_name_to_ttnn_dtype,
-    torch_dtype_to_ttnn_datatype,
-)
-
-
-def _cb_data_format(cb):
-    """ttnn data format for a DataflowBuffer, from its (torch or ttnn) dtype."""
-    dtype = cb.dtype
-    if hasattr(dtype, "name"):  # already a ttnn.DataType enum
-        return dtype
-    return torch_dtype_to_ttnn_datatype(dtype)
+from .dtype_utils import format_name_to_ttnn_dtype
 
 
 @dataclass(frozen=True)
@@ -61,22 +49,21 @@ class _DFBAllocation:
     total_size: int
 
 
-def _get_dfb_allocation(config: Any) -> _DFBAllocation:
-    """Normalize frontend and final physical DFB configurations."""
+def _get_dfb_allocation(config: PhysicalDFBConfig) -> _DFBAllocation:
+    """Compute one finalized physical DFB allocation."""
     _ensure_ttnn()
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
+    if not isinstance(config, PhysicalDFBConfig):
+        raise TypeError(
+            "DFB runtime configuration must be a finalized PhysicalDFBConfig, "
+            f"got {type(config).__name__}"
+        )
 
-    if isinstance(config, PhysicalDFBConfig):
-        data_format = format_name_to_ttnn_dtype(config.data_format)
-        num_tiles = config.num_tiles
-        block_count = config.block_count
-        tile_shape = config.tile
-    else:
-        data_format = _cb_data_format(config)
-        num_tiles = math.prod(config.shape)
-        block_count = config.block_count
-        tile_shape = config.tile
+    data_format = format_name_to_ttnn_dtype(config.data_format)
+    num_tiles = config.num_tiles
+    block_count = config.block_count
+    tile_shape = config.tile
 
     tile = ttnn.Tile(tile_shape)
     page_size = tile.get_tile_size(data_format)
@@ -451,19 +438,12 @@ def build_cb_descriptors(
             )
 
         allocation = _get_dfb_allocation(cb)
-        if isinstance(cb, PhysicalDFBConfig):
-            description = (
-                f"  DFB[{i}]: num_tiles={allocation.num_tiles} "
-                f"block_count={allocation.block_count} "
-                f"format={cb.data_format} tile={allocation.tile} -> "
-                f"{allocation.total_size} bytes"
-            )
-        else:
-            description = (
-                f"  DFB[{i}]: shape={cb.shape} "
-                f"block_count={allocation.block_count} tile={allocation.tile} -> "
-                f"{allocation.total_size} bytes"
-            )
+        description = (
+            f"  DFB[{i}]: num_tiles={allocation.num_tiles} "
+            f"block_count={allocation.block_count} "
+            f"format={cb.data_format} tile={allocation.tile} -> "
+            f"{allocation.total_size} bytes"
+        )
         tile_descriptor = ttnn.TileDescriptor(ttnn.Tile(allocation.tile))
         rows.append(
             (

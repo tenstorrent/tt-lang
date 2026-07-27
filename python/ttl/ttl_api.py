@@ -573,7 +573,7 @@ class CompiledTTNNKernel:
                 with kernel_paths. Set by the per-core specialization path so
                 each specialized clone is dispatched only to its own core; None
                 entries fall back to the whole-grid core_ranges.
-            cb_configs: List of (shape, block_count) tuples for each CB, indexed by cb_index
+            cb_configs: Final physical DFB configurations indexed by cb_index
             program_hash: Hash for tt-metal program cache
             source_lines: Source code lines for auto-profiling reports (deprecated)
             all_source_lines: Dict mapping kernel name to source lines
@@ -1202,29 +1202,6 @@ def _collect_captures(
     }
 
 
-def _collect_cb_configs(threads):
-    """Extract DataflowBuffer objects from thread closures, indexed by dfb index.
-
-    Returns a list of DataflowBuffer objects indexed by dfb index. Each DFB has
-    shape, block_count, tensor (for dtype), and _cb_index attributes.
-    """
-    cb_configs_dict = {}
-    for thread_fn in threads:
-        wrapped = getattr(thread_fn, "__wrapped__", None)
-        closure = getattr(wrapped, "__closure__", None) if wrapped else None
-        if not closure:
-            continue
-        for cell in closure:
-            val = cell.cell_contents
-            if isinstance(val, DataflowBuffer):
-                cb_configs_dict[val._cb_index] = val
-
-    if not cb_configs_dict:
-        return []
-    max_idx = max(cb_configs_dict.keys())
-    return [cb_configs_dict.get(i) for i in range(max_idx + 1)]
-
-
 # Map MLIR element type names to ttnn-compatible data format names.
 # Keyed by exact MLIR type mnemonic (no substring matching).
 _MLIR_TYPE_TO_FORMAT = {
@@ -1338,12 +1315,6 @@ def _extract_dfb_config_attribute(module, attribute_name):
     return sorted(configs, key=lambda config: config.dfb_index)
 
 
-def _extract_compiler_allocated_dfbs(module):
-    """Read legacy compiler-only DFB allocation metadata."""
-    configs = _extract_dfb_config_attribute(module, "ttl.compiler_allocated_dfbs")
-    return configs if configs is not None else []
-
-
 def _extract_dfb_allocations(module):
     """Read the complete physical DFB allocation table, when present."""
     configs = _extract_dfb_config_attribute(module, "ttl.dfb_allocations")
@@ -1386,38 +1357,15 @@ def _extract_pipe_global_semaphore_count(module) -> int:
     return int(attr)
 
 
-def _merge_dfb_configs(cb_configs, compiler_allocated_dfbs):
-    """Merge compiler-allocated DFBs into the CB config list.
-
-    Extends cb_configs to cover all DFB indices. Compiler-allocated DFBs
-    are placed at their dfb_index positions.
-    """
-    if not compiler_allocated_dfbs:
-        return cb_configs
-
-    user_max = len(cb_configs) - 1 if cb_configs else -1
-    alloc_max = max(dfb.dfb_index for dfb in compiler_allocated_dfbs)
-    total = max(user_max, alloc_max) + 1
-
-    merged = list(cb_configs) + [None] * (total - len(cb_configs))
-    for dfb in compiler_allocated_dfbs:
-        if merged[dfb.dfb_index] is not None:
-            raise ValueError(
-                f"Compiler-allocated DFB index {dfb.dfb_index} collides with "
-                f"an existing DFB."
-            )
-        merged[dfb.dfb_index] = dfb
-    return merged
-
-
-def _resolve_dfb_configs(module, cb_configs):
+def _resolve_dfb_configs(module):
     """Resolve final runtime configurations from module allocation metadata."""
     physical_allocations = _extract_dfb_allocations(module)
-    if physical_allocations is not None:
-        return physical_allocations
-
-    compiler_allocated_dfbs = _extract_compiler_allocated_dfbs(module)
-    return _merge_dfb_configs(cb_configs, compiler_allocated_dfbs)
+    if physical_allocations is None:
+        raise ValueError(
+            "compiled module is missing ttl.dfb_allocations; "
+            "ttl-finalize-dfb-indices must run before runtime construction"
+        )
+    return physical_allocations
 
 
 def _run_thread_compiler(
@@ -1705,8 +1653,6 @@ def _compile_kernel(
 
     launch_grid = grid
 
-    cb_configs = _collect_cb_configs(threads)
-
     injected_program_kwargs = {
         "grid": grid,
         "memory_space": memory_space,
@@ -1724,7 +1670,6 @@ def _compile_kernel(
         args=args,
         launch_grid=launch_grid,
         num_outs=num_outs,
-        cb_configs=cb_configs,
         pipenets=pipenets,
         target_arch=target_arch,
         fp32_dest_acc_en=fp32_dest_acc_en,
@@ -1743,7 +1688,6 @@ def _lower_program_to_kernel(
     args,
     launch_grid,
     num_outs,
-    cb_configs,
     pipenets,
     target_arch,
     fp32_dest_acc_en,
@@ -2035,7 +1979,7 @@ def _lower_program_to_kernel(
             first_thread = next(iter(all_source_lines.keys()))
             profile_source_lines = all_source_lines[first_thread]
 
-        cb_configs = _resolve_dfb_configs(module, cb_configs)
+        cb_configs = _resolve_dfb_configs(module)
         pipe_sync_semaphore_count = _extract_pipe_sync_semaphore_count(module)
         if pipe_sync_semaphore_count is None:
             raise RuntimeError(

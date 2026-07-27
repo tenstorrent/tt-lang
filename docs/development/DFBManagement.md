@@ -713,15 +713,22 @@ considers all kernel functions concurrently, including user-declared DFBs
 shared across data movement and compute threads.
 
 Two DFBs may share an index only if they have identical `CircularBufferType`
-(shape, element type, block count). This ensures one physical allocation has
-one page size, capacity, and data format.
+(shape, element type, block count), equal transaction tile counts, and a
+transaction count that divides the physical capacity. These conditions ensure
+one physical allocation has one page size, capacity, data format, and legal
+ring-pointer progression.
 
 ### Logical identity
 
 The frontend assigns each user-declared DFB a stable `dfb_id` and copies it to
 the declaration in every participating kernel function. Compiler-created
-declarations receive distinct logical identities. Legacy IR without `dfb_id`
-uses the provisional `cb_index`.
+declarations receive distinct logical identities. Legacy declarations without
+`dfb_id` are grouped by provisional `cb_index` in a separate identity domain,
+so an explicit `dfb_id` cannot collide with a fallback identity.
+
+Compiler-created DFBs are currently function-local. A module transformation
+that distributes one compiler-created DFB across multiple kernel functions
+must assign the same explicit `dfb_id` to every declaration.
 
 The finalizer records every resolved logical identity on `ttl.bind_cb` before
 rewriting `cb_index`. Repeated finalization therefore cannot merge logical
@@ -793,13 +800,18 @@ Failure to prove any condition leaves the DFB unbounded.
 
 `num_tiles` counts tiles of the DFB's `TileType`. TT-Lang configures each
 tiled CB page from the byte size of that tile. Two 16x32 bf16 tiles therefore
-consume the same bytes as one 32x32 bf16 tile. The lifecycle proof compares
-tile counts only within one DFB. Tile dimensions remain part of the
-`CircularBufferType`, so DFBs with different tile dimensions cannot share a
-physical index.
+consume the same bytes as one 32x32 bf16 tile. Tile dimensions remain part of
+the `CircularBufferType`, so DFBs with different tile dimensions cannot share
+a physical index.
 
 TT-Metal advances each ring pointer by
 [`num_pages * fifo_page_size`](https://github.com/tenstorrent/tt-metal/blob/e908c31332b60860ed0d4186452dc880cdd5a81d/tt_metal/hw/inc/api/dataflow/dataflow_api.h#L208-L214).
+The pointer wraps only when it reaches the end of the physical DFB. Logical
+DFBs sharing one physical index therefore use the same transaction tile count,
+and that count divides `block_count * elements_per_block`. This keeps every
+reserve, push, wait, and pop within the allocation and places each pointer on a
+legal wrap boundary.
+
 tt-blaze likewise derives page size from the tile and data format, then
 allocates
 [`num_pages * page_size`](https://github.com/tenstorrent/tt-blaze/blob/59f1478e287fb6b5895a66e3ddaabe96162dcb01/blaze/program.py#L428-L451).
@@ -878,7 +890,8 @@ analyzeDFBs(module):
       add previous completion -> entry
 
   for each logical DFB:
-    if hasMatchedOneShotLifecycle(DFB):
+    if getMatchedOneShotTileCount(DFB) returns transactionTileCount:
+      DFB.transactionTileCount = transactionTileCount
       add DFB.push.completion -> DFB.wait.completion
 
   compute transitive graph reachability
@@ -892,6 +905,10 @@ analyzeDFBs(module):
 
   conflicts(A, B):
     if A.type != B.type:
+      return true
+    if A.transactionTileCount != B.transactionTileCount:
+      return true
+    if A.type.totalElements % A.transactionTileCount != 0:
       return true
     if A.producerThread != B.producerThread:
       return true
@@ -920,19 +937,22 @@ Every happens-before edge is a required execution order:
 - one matched push must complete before its blocking one-shot wait can
   complete.
 
-For a bounded DFB, equal tile counts and one push/pop pair imply zero occupancy
-at `cb_pop` completion. The owned-use checks prove that neither the producer
-nor the consumer accesses the slot after its corresponding release. Every
-runtime use is reachable from at least one event in the earliest-event
-antichain and completes no later than the terminal pop.
+For a bounded DFB, matching lifecycle tile counts and one push/pop pair imply
+zero occupancy at `cb_pop` completion. The owned-use checks prove that neither
+the producer nor the consumer accesses the slot after its corresponding
+release. Every runtime use is reachable from at least one event in the
+earliest-event antichain and completes no later than the terminal pop.
 
 Suppose A and B receive the same physical index, with A ordered before B.
 The conflict predicate proves:
 
 1. A and B have the same page shape, data format, and block count.
-2. They use the same producer and consumer kernel functions, so cumulative
+2. They use the same transaction tile count, and that count divides their
+   physical capacity. Their ring pointers therefore advance by equal increments
+   and wrap only at the allocation boundary.
+3. They use the same producer and consumer kernel functions, so cumulative
    counters and ring pointers remain in the same thread-local state.
-3. A's terminal pop completes before every earliest use of B.
+4. A's terminal pop completes before every earliest use of B.
 
 Therefore A has zero occupancy and no remaining access before any producer or
 consumer can begin B. An early B wait cannot consume A's data because its entry
@@ -975,10 +995,12 @@ page sizes and constructing `ttnn.TileDescriptor` objects. Standalone runner
 emission uses the same physical sizes, tile dimensions, and data formats as
 direct execution.
 
-Setting `reuse-user-dfbs=false` selects the legacy compiler-only allocator. It
-retains user indices, applies per-function linear-scan allocation to
-compiler-created DFBs, and emits `ttl.compiler_allocated_dfbs`. The runtime
-continues to support that attribute for compatibility.
+Setting `reuse-user-dfbs=false` selects the compiler-only allocator. It retains
+user indices and applies per-function linear-scan allocation to
+compiler-created DFBs. Both allocation modes emit the complete
+`ttl.dfb_allocations` table. The disabled mode additionally emits
+`ttl.compiler_allocated_dfbs` for IR compatibility; the Python runtime does
+not merge legacy frontend and compiler allocation records.
 
 ## Limitations and Future Work
 

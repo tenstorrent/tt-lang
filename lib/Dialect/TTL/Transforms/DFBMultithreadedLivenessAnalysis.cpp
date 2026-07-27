@@ -16,6 +16,7 @@
 
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -24,6 +25,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <optional>
 
 namespace mlir::tt::ttl {
@@ -98,6 +100,7 @@ struct LogicalDFB {
   SmallVector<Operation *> runtimeUses;
   SmallVector<unsigned> earliestEvents;
   SmallVector<unsigned> terminalEvents;
+  std::optional<int64_t> transactionTileCount;
   bool bounded = false;
 };
 
@@ -123,20 +126,49 @@ collectLogicalDFBs(ModuleOp moduleOp, SmallVectorImpl<LogicalDFB> &logicalDFBs,
                    DenseMap<Operation *, unsigned> &bindToLogicalDFB,
                    AnalysisFailure &analysisFailure) {
   llvm::MapVector<int64_t, unsigned> idToLogicalDFB;
-  int64_t nextLogicalId = 0;
+  llvm::SmallDenseSet<int64_t> explicitIds;
+  llvm::SmallDenseSet<int64_t> seenFallbackIndices;
+  SmallVector<int64_t> fallbackIndices;
+  int64_t maxReservedId = -1;
+  int64_t compilerDeclarationCount = 0;
 
   moduleOp.walk([&](BindCBOp bindOp) {
     if (auto dfbId = bindOp.getDfbId()) {
-      nextLogicalId =
-          std::max(nextLogicalId, dfbId->getSExtValue() + int64_t{1});
+      int64_t explicitId = dfbId->getSExtValue();
+      explicitIds.insert(explicitId);
+      maxReservedId = std::max(maxReservedId, explicitId);
       return;
     }
-    if (!bindOp->hasAttr(kCompilerAllocatedAttrName)) {
-      nextLogicalId =
-          std::max(nextLogicalId, bindOp.getCbIndex().getSExtValue() +
-                                      static_cast<int64_t>(1));
+    if (bindOp->hasAttr(kCompilerAllocatedAttrName)) {
+      ++compilerDeclarationCount;
+      return;
+    }
+    int64_t fallbackIndex = bindOp.getCbIndex().getSExtValue();
+    maxReservedId = std::max(maxReservedId, fallbackIndex);
+    if (seenFallbackIndices.insert(fallbackIndex).second) {
+      fallbackIndices.push_back(fallbackIndex);
     }
   });
+
+  int64_t generatedIdCount = compilerDeclarationCount;
+  for (int64_t fallbackIndex : fallbackIndices) {
+    generatedIdCount += explicitIds.contains(fallbackIndex);
+  }
+  if (generatedIdCount > 0 &&
+      maxReservedId > std::numeric_limits<int64_t>::max() - generatedIdCount) {
+    analysisFailure.set(
+        moduleOp,
+        "logical DFB identifiers leave no space for generated identities");
+    return false;
+  }
+
+  int64_t nextLogicalId = generatedIdCount > 0 ? maxReservedId + 1 : 0;
+  DenseMap<int64_t, int64_t> fallbackLogicalIds;
+  for (int64_t fallbackIndex : fallbackIndices) {
+    int64_t logicalId =
+        explicitIds.contains(fallbackIndex) ? nextLogicalId++ : fallbackIndex;
+    fallbackLogicalIds[fallbackIndex] = logicalId;
+  }
 
   moduleOp.walk([&](BindCBOp bindOp) {
     if (!analysisFailure.message.empty()) {
@@ -149,7 +181,11 @@ collectLogicalDFBs(ModuleOp moduleOp, SmallVectorImpl<LogicalDFB> &logicalDFBs,
     } else if (bindOp->hasAttr(kCompilerAllocatedAttrName)) {
       logicalId = nextLogicalId++;
     } else {
-      logicalId = bindOp.getCbIndex().getSExtValue();
+      auto fallbackIt =
+          fallbackLogicalIds.find(bindOp.getCbIndex().getSExtValue());
+      assert(fallbackIt != fallbackLogicalIds.end() &&
+             "every untagged user DFB must have a fallback identity");
+      logicalId = fallbackIt->second;
     }
 
     auto [logicalIt, inserted] =
@@ -311,10 +347,11 @@ static int64_t getTileCount(Operation *operation) {
   return static_cast<int64_t>(popOp.getNumTiles().value_or(defaultTileCount));
 }
 
-static bool hasMatchedOneShotLifecycle(const LogicalDFB &logicalDFB) {
+static std::optional<int64_t>
+getMatchedOneShotTileCount(const LogicalDFB &logicalDFB) {
   if (logicalDFB.reserves.size() != 1 || logicalDFB.pushes.size() != 1 ||
       logicalDFB.waits.size() != 1 || logicalDFB.pops.size() != 1) {
-    return false;
+    return std::nullopt;
   }
 
   Operation *reserve = logicalDFB.reserves.front();
@@ -325,22 +362,24 @@ static bool hasMatchedOneShotLifecycle(const LogicalDFB &logicalDFB) {
       !isDirectFunctionBodyOperation(push) ||
       !isDirectFunctionBodyOperation(wait) ||
       !isDirectFunctionBodyOperation(pop)) {
-    return false;
+    return std::nullopt;
   }
   if (reserve->getBlock() != push->getBlock() ||
       wait->getBlock() != pop->getBlock() || !reserve->isBeforeInBlock(push) ||
       !wait->isBeforeInBlock(pop)) {
-    return false;
+    return std::nullopt;
   }
   if (!releaseFollowsOwnedUses(reserve, push) ||
       !releaseFollowsOwnedUses(wait, pop)) {
-    return false;
+    return std::nullopt;
   }
 
   int64_t reserveTiles = getTileCount(reserve);
-  return reserveTiles == getTileCount(push) &&
-         reserveTiles == getTileCount(wait) &&
-         reserveTiles == getTileCount(pop);
+  if (reserveTiles <= 0 || reserveTiles != getTileCount(push) ||
+      reserveTiles != getTileCount(wait) || reserveTiles != getTileCount(pop)) {
+    return std::nullopt;
+  }
+  return reserveTiles;
 }
 
 static SmallVector<unsigned>
@@ -361,7 +400,7 @@ findMinimalEvents(ArrayRef<unsigned> events,
 static void computeLogicalDFBFrontiers(
     LogicalDFB &logicalDFB, const HappensBeforeGraph &happensBeforeGraph,
     const DenseMap<Operation *, EventPair> &operationEvents) {
-  if (!hasMatchedOneShotLifecycle(logicalDFB)) {
+  if (!logicalDFB.transactionTileCount.has_value()) {
     return;
   }
 
@@ -423,6 +462,14 @@ static bool logicalDFBsConflict(const LogicalDFB &lhs, const LogicalDFB &rhs,
   // that state to different threads.
   if (lhs.type != rhs.type || lhs.producerThread != rhs.producerThread ||
       lhs.consumerThread != rhs.consumerThread) {
+    return true;
+  }
+  if (!lhs.transactionTileCount.has_value() ||
+      lhs.transactionTileCount != rhs.transactionTileCount) {
+    return true;
+  }
+  auto dfbType = cast<CircularBufferType>(lhs.type);
+  if (dfbType.getTotalElements() % *lhs.transactionTileCount != 0) {
     return true;
   }
   return !isOrderedBefore(lhs, rhs, happensBeforeGraph) &&
@@ -515,25 +562,29 @@ DFBMultithreadedLivenessAnalysis::DFBMultithreadedLivenessAnalysis(
   DenseMap<Operation *, EventPair> operationEvents;
   buildProgramOrderGraph(moduleOp, happensBeforeGraph, operationEvents);
 
-  SmallVector<bool> matchedLifecycle(logicalDFBs.size(), false);
-  for (auto indexedLogicalDFB : llvm::enumerate(logicalDFBs)) {
-    const LogicalDFB &logicalDFB = indexedLogicalDFB.value();
-    if (!hasMatchedOneShotLifecycle(logicalDFB)) {
+  for (LogicalDFB &logicalDFB : logicalDFBs) {
+    std::optional<int64_t> transactionTileCount =
+        getMatchedOneShotTileCount(logicalDFB);
+    if (!transactionTileCount.has_value()) {
       continue;
     }
-    matchedLifecycle[indexedLogicalDFB.index()] = true;
-    EventPair pushEvents = operationEvents.lookup(logicalDFB.pushes.front());
-    EventPair waitEvents = operationEvents.lookup(logicalDFB.waits.front());
+    logicalDFB.transactionTileCount = transactionTileCount;
+    auto pushEventsIt = operationEvents.find(logicalDFB.pushes.front());
+    auto waitEventsIt = operationEvents.find(logicalDFB.waits.front());
+    assert(pushEventsIt != operationEvents.end() &&
+           waitEventsIt != operationEvents.end() &&
+           "one-shot lifecycle operations must have direct event pairs");
+    EventPair pushEvents = pushEventsIt->second;
+    EventPair waitEvents = waitEventsIt->second;
     happensBeforeGraph.addEdge(pushEvents.completion, waitEvents.completion);
   }
 
   happensBeforeGraph.computeReachability();
-  for (auto indexedLogicalDFB : llvm::enumerate(logicalDFBs)) {
-    if (!matchedLifecycle[indexedLogicalDFB.index()]) {
+  for (LogicalDFB &logicalDFB : logicalDFBs) {
+    if (!logicalDFB.transactionTileCount.has_value()) {
       continue;
     }
-    computeLogicalDFBFrontiers(indexedLogicalDFB.value(), happensBeforeGraph,
-                               operationEvents);
+    computeLogicalDFBFrontiers(logicalDFB, happensBeforeGraph, operationEvents);
   }
 
   std::optional<SmallVector<int32_t>> physicalAssignments =

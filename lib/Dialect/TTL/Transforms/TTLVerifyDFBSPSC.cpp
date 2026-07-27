@@ -53,7 +53,7 @@ struct DFBParticipant {
   Operation *unanalyzableOp = nullptr;
 };
 
-/// Producers or consumers for one finalized dataflow buffer index.
+/// Producers or consumers for one logical dataflow buffer.
 struct DFBParticipantSet {
   llvm::SmallMapVector<func::FuncOp, DFBParticipant, 2> participants;
 };
@@ -99,13 +99,13 @@ void attachCommonNotes(InFlightDiagnostic &diag, Operation *bindSite,
 }
 
 /// Emit the error for two participant domains with a proven common launch node.
-void emitOverlapError(int64_t cbIndex, const DFBParticipant &lhs,
+void emitOverlapError(int64_t logicalId, const DFBParticipant &lhs,
                       const DFBParticipant &rhs,
                       const LaunchNodeDomain &overlap, Operation *bindSite,
                       llvm::StringRef role, llvm::StringRef verbedHere) {
   InFlightDiagnostic diag = lhs.op->emitError()
-                            << "dataflow buffer cb_index=" << cbIndex << " has "
-                            << "multiple " << role
+                            << "logical DFB " << logicalId << " has multiple "
+                            << role
                             << " threads active on the same launched node";
   if (!overlap.nodes.empty()) {
     LaunchNodeCoord example = *overlap.nodes.begin();
@@ -118,7 +118,7 @@ void emitOverlapError(int64_t cbIndex, const DFBParticipant &lhs,
 
 /// Emit the conservative error used when a domain-dependent predicate could not
 /// be evaluated statically.
-void emitUnknownDomainError(int64_t cbIndex, const DFBParticipantSet &set,
+void emitUnknownDomainError(int64_t logicalId, const DFBParticipantSet &set,
                             Operation *bindSite, llvm::StringRef role,
                             llvm::StringRef verbedHere) {
   auto unknownIt = llvm::find_if(set.participants, [](const auto &entry) {
@@ -128,10 +128,11 @@ void emitUnknownDomainError(int64_t cbIndex, const DFBParticipantSet &set,
          "expected at least one unknown participant domain");
 
   const DFBParticipant &primary = unknownIt->second;
-  InFlightDiagnostic diag =
-      primary.op->emitError()
-      << "dataflow buffer cb_index=" << cbIndex << " has multiple " << role
-      << " threads, but SPSC could not be statically proven";
+  InFlightDiagnostic diag = primary.op->emitError()
+                            << "logical DFB " << logicalId << " has multiple "
+                            << role
+                            << " threads, but SPSC could not be statically "
+                               "proven";
   if (primary.unanalyzableOp) {
     diag.attachNote(primary.unanalyzableOp->getLoc())
         << "this expression is not statically analyzable";
@@ -149,7 +150,7 @@ void emitUnknownDomainError(int64_t cbIndex, const DFBParticipantSet &set,
 
 /// Verify one dataflow buffer role after participants have been coalesced by
 /// kernel thread.
-bool verifyParticipantSet(int64_t cbIndex, const DFBParticipantSet &set,
+bool verifyParticipantSet(int64_t logicalId, const DFBParticipantSet &set,
                           Operation *bindSite, llvm::StringRef role,
                           llvm::StringRef verbedHere) {
   if (set.participants.size() <= 1) {
@@ -163,7 +164,7 @@ bool verifyParticipantSet(int64_t cbIndex, const DFBParticipantSet &set,
       const DFBParticipant &rhs = rhsIt->second;
       LaunchNodeDomain overlap = lhs.domain.intersectWith(rhs.domain);
       if (overlap.known && !overlap.nodes.empty()) {
-        emitOverlapError(cbIndex, lhs, rhs, overlap, bindSite, role,
+        emitOverlapError(logicalId, lhs, rhs, overlap, bindSite, role,
                          verbedHere);
         return true;
       }
@@ -173,7 +174,7 @@ bool verifyParticipantSet(int64_t cbIndex, const DFBParticipantSet &set,
   if (llvm::any_of(set.participants, [](const auto &entry) {
         return !entry.second.domain.known;
       })) {
-    emitUnknownDomainError(cbIndex, set, bindSite, role, verbedHere);
+    emitUnknownDomainError(logicalId, set, bindSite, role, verbedHere);
     return true;
   }
   return false;
@@ -280,14 +281,14 @@ struct TTLVerifyDFBSPSCPass
 
     bool sawError = false;
     for (auto &entry : producersByDFB) {
-      sawError |= verifyParticipantSet(
-          physicalIndices.lookup(entry.first), entry.second,
-          bindSites.lookup(entry.first), "producer", "reserved");
+      sawError |= verifyParticipantSet(entry.first, entry.second,
+                                       bindSites.lookup(entry.first),
+                                       "producer", "reserved");
     }
     for (auto &entry : consumersByDFB) {
-      sawError |= verifyParticipantSet(
-          physicalIndices.lookup(entry.first), entry.second,
-          bindSites.lookup(entry.first), "consumer", "waited on");
+      sawError |= verifyParticipantSet(entry.first, entry.second,
+                                       bindSites.lookup(entry.first),
+                                       "consumer", "waited on");
     }
 
     if (sawError) {

@@ -24,8 +24,7 @@ def _entry(dfb_index, *, num_tiles=1, element_type="bf16", block_count=2):
     }
 
 
-def test_complete_physical_allocations_replace_frontend_configs():
-    frontend_configs = [object(), object(), object()]
+def test_complete_physical_allocations_are_sorted():
     module = _FakeModule(
         {
             "ttl.dfb_allocations": [
@@ -36,7 +35,7 @@ def test_complete_physical_allocations_replace_frontend_configs():
         }
     )
 
-    assert _resolve_dfb_configs(module, frontend_configs) == [
+    assert _resolve_dfb_configs(module) == [
         PhysicalDFBConfig(0, 2, "bfloat16", 2),
         PhysicalDFBConfig(1, 4, "float32", 3),
     ]
@@ -61,7 +60,7 @@ def test_complete_physical_allocations_preserve_tile_types(
         {"ttl.dfb_allocations": [_entry(0, element_type=element_type)]}
     )
 
-    assert _resolve_dfb_configs(module, []) == [
+    assert _resolve_dfb_configs(module) == [
         PhysicalDFBConfig(0, 1, data_format, 2, tile)
     ]
 
@@ -69,19 +68,14 @@ def test_complete_physical_allocations_preserve_tile_types(
 def test_empty_complete_physical_allocations_replace_frontend_configs():
     module = _FakeModule({"ttl.dfb_allocations": []})
 
-    assert _resolve_dfb_configs(module, [object()]) == []
+    assert _resolve_dfb_configs(module) == []
 
 
-def test_absent_complete_allocations_use_legacy_compiler_metadata():
-    frontend_config = object()
-    module = _FakeModule(
-        {"ttl.compiler_allocated_dfbs": [_entry(1, element_type="f32")]}
-    )
+def test_missing_complete_allocations_are_rejected():
+    module = _FakeModule({"ttl.compiler_allocated_dfbs": [_entry(0)]})
 
-    assert _resolve_dfb_configs(module, [frontend_config]) == [
-        frontend_config,
-        PhysicalDFBConfig(1, 1, "float32", 2),
-    ]
+    with pytest.raises(ValueError, match="missing ttl.dfb_allocations"):
+        _resolve_dfb_configs(module)
 
 
 @pytest.mark.parametrize(
@@ -112,4 +106,4 @@ def test_invalid_complete_physical_allocations_are_rejected(allocations, message
     module = _FakeModule({"ttl.dfb_allocations": allocations})
 
     with pytest.raises(ValueError, match=message):
-        _resolve_dfb_configs(module, [])
+        _resolve_dfb_configs(module)

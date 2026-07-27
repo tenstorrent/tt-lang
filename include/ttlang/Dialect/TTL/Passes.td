@@ -702,9 +702,10 @@ def TTLFinalizeDFBIndices
     The pass runs a read-only module analysis over all logical DFBs, including
     declarations shared across kernel-thread functions. It rewrites indices
     only after the analysis has computed and verified a complete physical
-    assignment. Reuse requires exact CircularBufferType equality and identical
-    producer and consumer kernel threads. Preserving both participants retains
-    TT-Metal's thread-local DFB counter and ring-pointer state.
+    assignment. Reuse requires exact CircularBufferType equality, equal
+    transaction tile counts that divide the physical DFB capacity, and
+    identical producer and consumer kernel threads. Preserving these properties
+    retains TT-Metal's thread-local counter and ring-pointer state.
 
     After reuse, verifies the total DFB count does not exceed
     kMaxCircularBuffers (32), updates ttl.base_cta_index on every
@@ -712,8 +713,9 @@ def TTLFinalizeDFBIndices
     Python runtime. The attribute contains one descriptor per physical index.
 
     Disabling `reuse-user-dfbs` retains the compiler-only linear-scan allocator
-    for compatibility with legacy pipelines and emits
-    ttl.compiler_allocated_dfbs.
+    for compatibility with legacy pipelines. Both modes emit the complete
+    `ttl.dfb_allocations` table consumed by the Python runtime. The disabled
+    mode also emits `ttl.compiler_allocated_dfbs` for IR compatibility.
   }];
 
   let options = [

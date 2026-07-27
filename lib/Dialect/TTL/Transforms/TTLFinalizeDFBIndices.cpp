@@ -189,23 +189,31 @@ collectBindOps(ModuleOp moduleOp,
   return bindOps;
 }
 
-static void emitDFBMetadata(ModuleOp moduleOp, OpBuilder &builder,
-                            StringRef attributeName,
-                            ArrayRef<BindCBOp> bindOps) {
+static LogicalResult emitDFBMetadata(ModuleOp moduleOp, OpBuilder &builder,
+                                     StringRef attributeName,
+                                     ArrayRef<BindCBOp> bindOps,
+                                     bool emitEmpty = false) {
   if (bindOps.empty()) {
-    moduleOp->removeAttr(attributeName);
-    return;
+    if (emitEmpty) {
+      moduleOp->setAttr(attributeName,
+                        ArrayAttr::get(moduleOp.getContext(), {}));
+    } else {
+      moduleOp->removeAttr(attributeName);
+    }
+    return success();
   }
 
   llvm::DenseMap<int32_t, BindCBOp> uniqueByIndex;
   for (BindCBOp bindOp : bindOps) {
     int32_t dfbIndex = static_cast<int32_t>(bindOp.getCbIndex().getSExtValue());
     auto [existingIt, inserted] = uniqueByIndex.try_emplace(dfbIndex, bindOp);
-    if (!inserted) {
-      assert(existingIt->second.getResult().getType() ==
-                 bindOp.getResult().getType() &&
-             "DFBs sharing a physical index must have the same "
-             "CircularBufferType");
+    if (!inserted && existingIt->second.getResult().getType() !=
+                         bindOp.getResult().getType()) {
+      return bindOp.emitOpError()
+             << "physical DFB index " << dfbIndex
+             << " has inconsistent CircularBufferType values "
+             << existingIt->second.getResult().getType() << " and "
+             << bindOp.getResult().getType();
     }
   }
 
@@ -234,6 +242,7 @@ static void emitDFBMetadata(ModuleOp moduleOp, OpBuilder &builder,
   }
 
   moduleOp->setAttr(attributeName, ArrayAttr::get(context, entries));
+  return success();
 }
 
 struct TTLFinalizeDFBIndicesPass
@@ -280,7 +289,11 @@ struct TTLFinalizeDFBIndicesPass
       moduleOp->removeAttr(kCompilerAllocatedDFBsAttrName);
       SmallVector<BindCBOp> allBindOps =
           collectBindOps(moduleOp, [](BindCBOp) { return true; });
-      emitDFBMetadata(moduleOp, builder, kDFBAllocationsAttrName, allBindOps);
+      if (failed(emitDFBMetadata(moduleOp, builder, kDFBAllocationsAttrName,
+                                 allBindOps, /*emitEmpty=*/true))) {
+        signalPassFailure();
+        return;
+      }
 
       if (numDFBs <= 0) {
         return;
@@ -294,8 +307,6 @@ struct TTLFinalizeDFBIndicesPass
       });
       return;
     }
-
-    moduleOp->removeAttr(kDFBAllocationsAttrName);
 
     // Collect compiler-allocated BindCBOps grouped by parent function.
     llvm::MapVector<func::FuncOp, SmallVector<BindCBOp>> funcToDFBs;
@@ -317,11 +328,9 @@ struct TTLFinalizeDFBIndicesPass
 
     // Recompute DFB count after reuse may have changed indices.
     int32_t numDFBs = getNextAvailableDFBIndex(moduleOp.getOperation());
-    if (numDFBs <= 0) {
-      return;
+    if (numDFBs > 0) {
+      LLVM_DEBUG(llvm::dbgs() << "Total DFB count: " << numDFBs << "\n");
     }
-
-    LLVM_DEBUG(llvm::dbgs() << "Total DFB count: " << numDFBs << "\n");
 
     // Verify the final DFB count does not exceed the hardware limit.
     if (numDFBs > kMaxCircularBuffers) {
@@ -346,20 +355,33 @@ struct TTLFinalizeDFBIndicesPass
     }
 
     // Update ttl.base_cta_index on every function that has it.
-    moduleOp->walk([&](func::FuncOp funcOp) {
-      if (funcOp->hasAttr(kBaseCTAIndexAttrName)) {
-        funcOp->setAttr(kBaseCTAIndexAttrName,
-                        builder.getI32IntegerAttr(numDFBs));
-      }
-    });
+    if (numDFBs > 0) {
+      moduleOp->walk([&](func::FuncOp funcOp) {
+        if (funcOp->hasAttr(kBaseCTAIndexAttrName)) {
+          funcOp->setAttr(kBaseCTAIndexAttrName,
+                          builder.getI32IntegerAttr(numDFBs));
+        }
+      });
+    }
 
     // Re-collect compiler-allocated ops because their indices may have changed.
     SmallVector<BindCBOp> compilerAllocatedOps =
         collectBindOps(moduleOp, [](BindCBOp bindOp) {
           return bindOp->hasAttr(kCompilerAllocatedAttrName);
         });
-    emitDFBMetadata(moduleOp, builder, kCompilerAllocatedDFBsAttrName,
-                    compilerAllocatedOps);
+    if (failed(emitDFBMetadata(moduleOp, builder,
+                               kCompilerAllocatedDFBsAttrName,
+                               compilerAllocatedOps))) {
+      signalPassFailure();
+      return;
+    }
+
+    SmallVector<BindCBOp> allBindOps =
+        collectBindOps(moduleOp, [](BindCBOp) { return true; });
+    if (failed(emitDFBMetadata(moduleOp, builder, kDFBAllocationsAttrName,
+                               allBindOps, /*emitEmpty=*/true))) {
+      signalPassFailure();
+    }
   }
 };
 

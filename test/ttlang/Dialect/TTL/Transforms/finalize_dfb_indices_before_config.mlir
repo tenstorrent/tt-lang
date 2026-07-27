@@ -16,7 +16,7 @@ func.func @global_user_index()
 // 1. Finalization moves it to physical index 5 before compute configuration
 // records the SFPU f32 input index.
 
-// CHECK: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 5 : i32, element_type = !ttcore.tile<32x32, f32>, num_tiles = 1 : i32}]}
+// CHECK: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 5 : i32, element_type = !ttcore.tile<32x32, f32>, num_tiles = 1 : i32}], ttl.dfb_allocations = {{.*}}}
 // CHECK-LABEL: func.func @compiler_f32_sfpu
 // CHECK-SAME: ttl.base_cta_index = 6 : i32
 // CHECK-SAME: ttl.unpack_to_dest_fp32 = array<i32: 5>

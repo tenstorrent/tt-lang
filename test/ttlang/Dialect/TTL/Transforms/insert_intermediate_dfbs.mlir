@@ -138,7 +138,7 @@ func.func @shared_materialization()
 // CHECK: ttl.reduce
 
 // After finalize with reuse: both DFBs get index 4 (one physical slot).
-// FINALIZE: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 1 : i32, dfb_index = 4 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}]}
+// FINALIZE: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 1 : i32, dfb_index = 4 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}], ttl.dfb_allocations = {{.*}}}
 // FINALIZE-LABEL: func.func @sequential_intermediates_reuse
 // FINALIZE-SAME: ttl.base_cta_index = 5 : i32
 // FINALIZE-NOT: cb_index = 5
