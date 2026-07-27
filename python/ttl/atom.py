@@ -19,12 +19,13 @@ TT-NN operation.
 
 DFB declarations sit inline with the compute/copy work in a unified body, so
 after the split they land inside each thread body. Declarations may be single
-assignments, list/tuple declarations, or list comprehensions whose elements are
-accessed with non-negative integer literal indices. The existing per-thread compiler is
-capture-based (thread functions take no parameters; DFBs arrive as closure
-captures), so before splitting we lift these declarations out of the body,
-evaluate them to DataflowBuffer objects, and pass them as captures -- the same
-form the @ttl.operation flow produces by running its setup body. After that the
+assignments, list/tuple declarations, list comprehensions whose elements are
+accessed with non-negative integer literal indices, or named destructuring of a
+DFB collection. The existing per-thread compiler is capture-based (thread
+functions take no parameters; DFBs arrive as closure captures), so before
+splitting we lift these declarations out of the body, evaluate them to
+DataflowBuffer objects, and pass them as captures -- the same form the
+@ttl.operation flow produces by running its setup body. After that the
 per-thread compile, DFB sizing, pass pipeline, and runner are identical to
 @ttl.operation.
 """
@@ -365,22 +366,37 @@ def _is_dfb_collection_expr(node: ast.expr) -> bool:
     return False
 
 
-def _setup_assign_target(stmt: ast.stmt) -> Optional[str]:
-    """Return the name assigned by a top-level resource declaration.
+def _destructured_names(target: ast.expr) -> Optional[List[str]]:
+    if not isinstance(target, (ast.List, ast.Tuple)):
+        return None
+    if not target.elts or not all(
+        isinstance(element, ast.Name) for element in target.elts
+    ):
+        return None
+    return [element.id for element in target.elts]
+
+
+def _setup_assign_targets(stmt: ast.stmt) -> Optional[List[str]]:
+    """Return names assigned by a top-level resource declaration.
 
     Recognizes direct DFB/Pipe/PipeNet factory calls, DFB collections, and pipe
-    lists that feed a later PipeNet.
+    lists that feed a later PipeNet. DFB collections may destructure into
+    multiple simple names.
     """
     if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
         return None
-    if not isinstance(stmt.targets[0], ast.Name):
-        return None
-    if (
+    target = stmt.targets[0]
+    is_dfb_collection = _is_dfb_collection_expr(stmt.value)
+    if not (
         _call_name(stmt.value) in _SETUP_FACTORY_NAMES
-        or _is_dfb_collection_expr(stmt.value)
+        or is_dfb_collection
         or _is_pipe_list_expr(stmt.value)
     ):
-        return stmt.targets[0].id
+        return None
+    if isinstance(target, ast.Name):
+        return [target.id]
+    if is_dfb_collection:
+        return _destructured_names(target)
     return None
 
 
@@ -396,7 +412,7 @@ def _collect_assignment_targets(target: ast.expr, names: set) -> None:
 def _non_resource_assignment_names(fn_def: ast.FunctionDef) -> set:
     names = set()
     for statement in fn_def.body:
-        if _setup_assign_target(statement) is not None:
+        if _setup_assign_targets(statement) is not None:
             continue
         if isinstance(statement, ast.Assign):
             for target in statement.targets:
@@ -421,8 +437,14 @@ def _validate_resource_declarations(
     allowed_calls = set()
     resource_statements = []
     for statement in fn_def.body:
-        if _setup_assign_target(statement) is None:
+        target_names = _setup_assign_targets(statement)
+        if target_names is None:
             continue
+        if len(target_names) != len(set(target_names)):
+            raise ValueError(
+                f"@ttl.operation {operation_name!r}: DFB collection "
+                "destructuring targets must be unique"
+            )
         resource_statements.append(statement)
         for node in ast.walk(statement):
             if not isinstance(node, ast.Call):
@@ -532,11 +554,35 @@ def _lift_setup(
     }
     kept: List[ast.stmt] = []
     for stmt in fn_def.body:
-        name = _setup_assign_target(stmt)
-        if name is None:
+        target_names = _setup_assign_targets(stmt)
+        if target_names is None:
             kept.append(stmt)
             continue
         value = eval(ast.unparse(stmt.value), ns)  # noqa: S307
+        target = stmt.targets[0]
+        if not isinstance(target, ast.Name):
+            if not isinstance(value, (list, tuple)) or not value:
+                raise ValueError(
+                    f"@ttl.operation {operation_name!r}: DFB collection "
+                    "destructuring requires at least one DFB"
+                )
+            if not all(isinstance(element, DataflowBuffer) for element in value):
+                raise TypeError(
+                    f"@ttl.operation {operation_name!r}: DFB collection "
+                    "destructuring contains a non-DFB element"
+                )
+            if len(target_names) != len(value):
+                raise ValueError(
+                    f"@ttl.operation {operation_name!r}: DFB collection "
+                    f"destructuring has {len(target_names)} targets for "
+                    f"{len(value)} elements"
+                )
+            for element_name, element in zip(target_names, value):
+                ns[element_name] = element
+                dfbs[element_name] = element
+            continue
+
+        name = target_names[0]
         ns[name] = value
         if isinstance(value, DataflowBuffer):
             dfbs[name] = value
@@ -551,7 +597,6 @@ def _lift_setup(
                     f"@ttl.operation {operation_name!r}: DFB collection "
                     f"{name!r} contains a non-DFB element"
                 )
-
             element_names = []
             for index, element in enumerate(value):
                 element_name = f"{name}_{index}"

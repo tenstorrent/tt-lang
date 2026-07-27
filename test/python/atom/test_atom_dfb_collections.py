@@ -4,7 +4,7 @@
 
 # RUN: %python -m pytest %s -v
 
-"""Off-device tests for statically indexed DFB collections in operations."""
+"""Off-device tests for DFB collections in operations."""
 
 import ast
 import importlib
@@ -62,6 +62,69 @@ def test_dfb_collection_is_flattened_into_static_captures(monkeypatch):
     assert "buffers_0.wait()" in stripped_source
     assert "buffers_1.reserve()" in stripped_source
     assert "buffers_2.wait()" in stripped_source
+
+
+@pytest.mark.parametrize(("open_target", "close_target"), [("(", ")"), ("[", "]")])
+def test_dfb_collection_destructuring_preserves_names(
+    open_target, close_target, monkeypatch
+):
+    stripped, dfbs, pipe_nets = _lift(
+        f"""
+        def kernel():
+            {open_target}
+            first_buffer,
+            second_buffer,
+            third_buffer,
+            {close_target} = [
+                ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+                for buffer_index in range(3)
+            ]
+            first = first_buffer.wait()
+            second = second_buffer.reserve()
+            third = third_buffer.wait()
+        """,
+        monkeypatch,
+    )
+
+    assert list(dfbs) == ["first_buffer", "second_buffer", "third_buffer"]
+    assert pipe_nets == {}
+    stripped_source = ast.unparse(stripped)
+    assert "ttl.make_dfb" not in stripped_source
+    assert "first_buffer.wait()" in stripped_source
+    assert "second_buffer.reserve()" in stripped_source
+    assert "third_buffer.wait()" in stripped_source
+
+
+def test_dfb_collection_destructuring_rejects_arity_mismatch(monkeypatch):
+    with pytest.raises(
+        ValueError,
+        match="destructuring has 2 targets for 3 elements",
+    ):
+        _lift(
+            """
+            def kernel():
+                first_buffer, second_buffer = [
+                    ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+                    for buffer_index in range(3)
+                ]
+            """,
+            monkeypatch,
+        )
+
+
+def test_dfb_collection_destructuring_rejects_duplicate_targets(monkeypatch):
+    function = _function(
+        """
+        def kernel():
+            buffer, buffer = [
+                ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+                for buffer_index in range(2)
+            ]
+        """
+    )
+
+    with pytest.raises(ValueError, match="destructuring targets must be unique"):
+        atom_module._validate_resource_declarations(function, "collection_test")
 
 
 @pytest.mark.parametrize(

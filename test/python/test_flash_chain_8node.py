@@ -63,55 +63,40 @@ def flash_shard_kd(
     transposed_key_dfb = ttl.make_dataflow_buffer_like(
         key, shape=(DHt, Sk_chunk_t), block_count=2
     )
-    scores_dfb = ttl.make_dataflow_buffer_like(
-        key, shape=(PNHt, Sk_chunk_t), block_count=2
-    )
-    scores_for_reduce_dfb = ttl.make_dataflow_buffer_like(
-        key, shape=(PNHt, Sk_chunk_t), block_count=2
-    )
-    scores_for_exp_dfb = ttl.make_dataflow_buffer_like(
-        key, shape=(PNHt, Sk_chunk_t), block_count=2
-    )
-    chunk_max_dfb = ttl.make_dataflow_buffer_like(key, shape=(PNHt, 1), block_count=2)
-    merged_max_for_alpha_dfb = ttl.make_dataflow_buffer_like(
-        key, shape=(PNHt, 1), block_count=2
-    )
-    merged_max_for_broadcast_dfb = ttl.make_dataflow_buffer_like(
-        key, shape=(PNHt, 1), block_count=2
-    )
-    merged_max_for_state_dfb = ttl.make_dataflow_buffer_like(
-        key, shape=(PNHt, 1), block_count=2
-    )
-    max_broadcast_dfb = ttl.make_dataflow_buffer_like(
-        key, shape=(PNHt, Sk_chunk_t), block_count=2
-    )
-    exp_scores_for_reduce_dfb = ttl.make_dataflow_buffer_like(
-        key, shape=(PNHt, Sk_chunk_t), block_count=2
-    )
-    exp_scores_for_matmul_dfb = ttl.make_dataflow_buffer_like(
-        key, shape=(PNHt, Sk_chunk_t), block_count=2
-    )
-    chunk_sum_dfb = ttl.make_dataflow_buffer_like(key, shape=(PNHt, 1), block_count=2)
-    alpha_for_sum_dfb = ttl.make_dataflow_buffer_like(
-        key, shape=(PNHt, 1), block_count=2
-    )
-    alpha_for_broadcast_dfb = ttl.make_dataflow_buffer_like(
-        key, shape=(PNHt, 1), block_count=2
-    )
-    alpha_broadcast_dfb = ttl.make_dataflow_buffer_like(
-        key, shape=(PNHt, vDHt), block_count=2
-    )
-    corrected_output_dfb = ttl.make_dataflow_buffer_like(
-        key, shape=(PNHt, vDHt), block_count=2
-    )
-    partial_value_dfb = ttl.make_dataflow_buffer_like(
-        key, shape=(PNHt, vDHt), block_count=2
-    )
-    running_max_dfb = ttl.make_dataflow_buffer_like(key, shape=(PNHt, 1), block_count=2)
-    running_sum_dfb = ttl.make_dataflow_buffer_like(key, shape=(PNHt, 1), block_count=2)
-    running_output_dfb = ttl.make_dataflow_buffer_like(
-        key, shape=(PNHt, vDHt), block_count=2
-    )
+    (
+        scores_dfb,
+        scores_for_reduce_dfb,
+        scores_for_exp_dfb,
+        max_broadcast_dfb,
+        exp_scores_for_reduce_dfb,
+        exp_scores_for_matmul_dfb,
+    ) = [
+        ttl.make_dataflow_buffer_like(key, shape=(PNHt, Sk_chunk_t), block_count=2)
+        for score_dfb_index in range(6)
+    ]
+    (
+        chunk_max_dfb,
+        merged_max_for_alpha_dfb,
+        merged_max_for_broadcast_dfb,
+        merged_max_for_state_dfb,
+        chunk_sum_dfb,
+        alpha_for_sum_dfb,
+        alpha_for_broadcast_dfb,
+        running_max_dfb,
+        running_sum_dfb,
+    ) = [
+        ttl.make_dataflow_buffer_like(key, shape=(PNHt, 1), block_count=2)
+        for scalar_dfb_index in range(9)
+    ]
+    (
+        alpha_broadcast_dfb,
+        corrected_output_dfb,
+        partial_value_dfb,
+        running_output_dfb,
+    ) = [
+        ttl.make_dataflow_buffer_like(key, shape=(PNHt, vDHt), block_count=2)
+        for output_dfb_index in range(4)
+    ]
 
     initial_max = running_max_dfb.reserve()
     initial_max.store(ttl.block.fill(-1e30, shape=(PNHt, 1)))
@@ -290,6 +275,18 @@ def _merge_softmax_state(
 
 
 @ttl.operation()
+def _transfer_state_component(
+    pipe_net: ttl.PipeNet,
+    send_dfb: ttl.DFB,
+    received_dfb: ttl.DFB,
+):
+    pipe_net.if_src(lambda state_pipe: ttl.copy(send_dfb.wait(), state_pipe).wait())
+    pipe_net.if_dst(
+        lambda state_pipe: ttl.copy(state_pipe, received_dfb.reserve()).wait()
+    )
+
+
+@ttl.operation()
 def _transfer_softmax_state(
     max_pipe_net: ttl.PipeNet,
     sum_pipe_net: ttl.PipeNet,
@@ -302,21 +299,9 @@ def _transfer_softmax_state(
     received_output_dfb: ttl.DFB,
 ):
     """Transfer one streaming-softmax state over a tree level."""
-    max_pipe_net.if_src(lambda max_pipe: ttl.copy(send_max_dfb.wait(), max_pipe).wait())
-    sum_pipe_net.if_src(lambda sum_pipe: ttl.copy(send_sum_dfb.wait(), sum_pipe).wait())
-    output_pipe_net.if_src(
-        lambda output_pipe: ttl.copy(send_output_dfb.wait(), output_pipe).wait()
-    )
-
-    max_pipe_net.if_dst(
-        lambda max_pipe: ttl.copy(max_pipe, received_max_dfb.reserve()).wait()
-    )
-    sum_pipe_net.if_dst(
-        lambda sum_pipe: ttl.copy(sum_pipe, received_sum_dfb.reserve()).wait()
-    )
-    output_pipe_net.if_dst(
-        lambda output_pipe: ttl.copy(output_pipe, received_output_dfb.reserve()).wait()
-    )
+    _transfer_state_component(max_pipe_net, send_max_dfb, received_max_dfb)
+    _transfer_state_component(sum_pipe_net, send_sum_dfb, received_sum_dfb)
+    _transfer_state_component(output_pipe_net, send_output_dfb, received_output_dfb)
 
 
 @ttl.operation()
@@ -349,16 +334,25 @@ def flash_tree_reduce_8(
     level_two_sum = ttl.PipeNet([ttl.Pipe(src=(4, 0), dst=(0, 0))])
     level_two_output = ttl.PipeNet([ttl.Pipe(src=(4, 0), dst=(0, 0))])
 
-    send_max_dfb = ttl.make_dfb("bf16", shape=(PNHt, 1), block_count=2)
-    send_sum_dfb = ttl.make_dfb("bf16", shape=(PNHt, 1), block_count=2)
-    send_output_dfb = ttl.make_dfb("bf16", shape=(PNHt, vDHt), block_count=2)
-    received_max_dfb = ttl.make_dfb("bf16", shape=(PNHt, 1), block_count=3)
-    received_sum_dfb = ttl.make_dfb("bf16", shape=(PNHt, 1), block_count=3)
+    (
+        send_max_dfb,
+        send_sum_dfb,
+        merged_max_dfb,
+        left_scale_dfb,
+        right_scale_dfb,
+    ) = [
+        ttl.make_dfb("bf16", shape=(PNHt, 1), block_count=2)
+        for scalar_dfb_index in range(5)
+    ]
+    send_output_dfb, normalized_output_dfb = [
+        ttl.make_dfb("bf16", shape=(PNHt, vDHt), block_count=2)
+        for output_dfb_index in range(2)
+    ]
+    received_max_dfb, received_sum_dfb = [
+        ttl.make_dfb("bf16", shape=(PNHt, 1), block_count=3)
+        for scalar_dfb_index in range(2)
+    ]
     received_output_dfb = ttl.make_dfb("bf16", shape=(PNHt, vDHt), block_count=3)
-    merged_max_dfb = ttl.make_dfb("bf16", shape=(PNHt, 1), block_count=2)
-    left_scale_dfb = ttl.make_dfb("bf16", shape=(PNHt, 1), block_count=2)
-    right_scale_dfb = ttl.make_dfb("bf16", shape=(PNHt, 1), block_count=2)
-    normalized_output_dfb = ttl.make_dfb("bf16", shape=(PNHt, vDHt), block_count=2)
 
     if level_zero_max.is_src():
         local_max = local_max_dfb.wait()
@@ -520,8 +514,10 @@ def flash_tree_reduce_8(
 @ttl.operation(grid=(NNODES, 1), fp32_dest_acc_en=False)
 def flash_chain_8node(query, key, value, output):
     """Compose local flash attention with an eight-node tree reduction."""
-    local_max_dfb = ttl.make_dataflow_buffer_like(key, shape=(PNHt, 1), block_count=2)
-    local_sum_dfb = ttl.make_dataflow_buffer_like(key, shape=(PNHt, 1), block_count=2)
+    local_max_dfb, local_sum_dfb = [
+        ttl.make_dataflow_buffer_like(key, shape=(PNHt, 1), block_count=2)
+        for scalar_dfb_index in range(2)
+    ]
     local_output_dfb = ttl.make_dataflow_buffer_like(
         key, shape=(PNHt, vDHt), block_count=2
     )
