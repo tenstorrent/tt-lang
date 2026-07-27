@@ -332,7 +332,14 @@ producer push, so consumers originally dominated by the compute result remain
 dominated by the materialized value. This includes branch-local consumers when
 the producer is outside the branch. General occupancy-balance proofs for
 placing compiler-created waits and pops inside arbitrary structured control
-flow are future work ([#724](https://github.com/tenstorrent/tt-lang/issues/724)).
+flow remain tracked by
+[#724](https://github.com/tenstorrent/tt-lang/issues/724).
+[PR #687](https://github.com/tenstorrent/tt-lang/pull/687) uses upstream
+`insideMutuallyExclusiveRegions` to prove branch-exclusive store fanout, but
+does not place DFB lifecycle operations in those branches.
+[PR #700](https://github.com/tenstorrent/tt-lang/pull/700) matches structured
+PipeNet protocol occurrences with `ExecutionCountAnalysis`; that analysis is
+applicable to the remaining occupancy proof.
 
 Compiler-allocated intermediate DFBs are created with `blockCount=1`. A
 compute kernel's Unpack, Math, and Pack stages are separate RISC-V cores that
@@ -691,6 +698,13 @@ ttl-coalesce-dfb-acquires))'`) verifies this.
   does not span control flow within an `scf.if` or `scf.for` (loop-body
   coalescing still works because the body is its own block).
 
+[PR #700](https://github.com/tenstorrent/tt-lang/pull/700) uses structured
+execution counts for PipeNet schedules, and
+[PR #764](https://github.com/tenstorrent/tt-lang/pull/764) extends those counts
+to reducible block-CFG loops. Neither changes acquire coalescing, which also
+requires proof that every grouped acquire executes in one contiguous DFB
+interval.
+
 ## Index Reuse
 
 `TTLFinalizeDFBIndices` reduces the physical DFB count by assigning the same
@@ -745,6 +759,22 @@ transitive reachability. Cyclic events are not considered ordered:
 `strictlyPrecedes(A, B)` requires reachability from A to B and no reachability
 from B to A.
 
+This construction follows Lamport's
+[happened-before relation](https://lamport.azurewebsites.net/pubs/time-clocks.pdf):
+per-process order and communication order generate a partial order over events.
+The [LLVM concurrent memory model](https://llvm.org/docs/LangRef.html#memory-model-for-concurrent-operations)
+uses the analogous construction from single-thread program order and
+`synchronizes-with` edges. DFB push-to-wait completion is the protocol-specific
+communication edge in this analysis.
+
+Every kernel function forms a separate event sequence. Function identity
+distinguishes the two data movement functions even though both carry
+`#ttkernel.thread<noc>`. A logical DFB identifies its producer function from
+`cb_reserve` and its consumer function from `cb_wait`. Protocol edges from all
+logical DFBs share one module graph, so transitive order can pass through any
+number of intermediate functions. The analysis supports any number of function
+sequences; three threads is not hard-coded.
+
 #### Bounded one-shot lifetimes
 
 A logical DFB is bounded only when all of these conditions hold:
@@ -768,6 +798,14 @@ tile counts only within one DFB. Tile dimensions remain part of the
 `CircularBufferType`, so DFBs with different tile dimensions cannot share a
 physical index.
 
+TT-Metal advances each ring pointer by
+[`num_pages * fifo_page_size`](https://github.com/tenstorrent/tt-metal/blob/e908c31332b60860ed0d4186452dc880cdd5a81d/tt_metal/hw/inc/api/dataflow/dataflow_api.h#L208-L214).
+tt-blaze likewise derives page size from the tile and data format, then
+allocates
+[`num_pages * page_size`](https://github.com/tenstorrent/tt-blaze/blob/59f1478e287fb6b5895a66e3ddaabe96162dcb01/blaze/program.py#L428-L451).
+Its 16x32 bf16 coverage uses a
+[1024-byte page](https://github.com/tenstorrent/tt-blaze/blob/59f1478e287fb6b5895a66e3ddaabe96162dcb01/tests/blaze/infra/test_cb_overlap.py#L416-L433).
+
 For a bounded DFB, every operation with a direct DFB operand is projected to a
 top-level function operation. `attach_cb` is excluded because it does not
 change the hardware protocol. The analysis records:
@@ -787,6 +825,34 @@ isOrderedBefore(A, B):
      and every A.terminalEvent strictly precedes
          every B.earliestEvent
 ```
+
+For example, a second data movement function can relay completion from the
+compute function back to the first data movement function:
+
+```text
+DM0 producer:  push A --------------------------- wait ack2 -> reserve B
+                  |                                   ^
+Compute:       wait A -> pop A -> push ack1           |        wait B
+                                      |               |
+DM1 relay:                       wait ack1 -> push ack2
+```
+
+Program order and the two acknowledgment DFBs establish:
+
+```text
+A.pop[Compute]
+  -> ack1.push[Compute]
+  -> ack1.wait.completion[DM1]
+  -> ack2.push[DM1]
+  -> ack2.wait.completion[DM0]
+  -> B.reserve.entry[DM0]
+```
+
+Compute program order separately establishes
+`A.pop[Compute] -> B.wait.entry[Compute]`. Therefore A's terminal pop precedes
+both producer-side and consumer-side events in B's earliest-event frontier. An
+unrelated third function adds no cross-thread edge. A `B.wait` entered before
+`A.pop` also remains unordered and prevents reuse.
 
 The producer and consumer kernel functions are also part of the allocation
 state. TT-Metal maintains cumulative DFB counters and ring pointers within
@@ -918,23 +984,46 @@ continues to support that attribute for compatibility.
 
 - **Structured control flow.** Lifecycle operations inside `scf.if`,
   `scf.for`, or multi-block functions are unbounded. Other nested uses project
-  to the enclosing top-level operation. A control-flow-aware event graph using
-  `RegionBranchOpInterface`, dominance, and post-dominance could prove branch
-  exclusivity and bounded region lifetimes.
+  to the enclosing top-level operation. The required local analyses already
+  exist: `OperationLiveInterval` validates bounds with dominance and
+  post-dominance; [Static Execution Analysis](StaticExecutionAnalysis.md) uses
+  `RegionBranchOpInterface` and block-CFG reachability; and
+  [PR #687](https://github.com/tenstorrent/tt-lang/pull/687) uses upstream
+  `insideMutuallyExclusiveRegions` for branch exclusivity.
+  [PR #632](https://github.com/tenstorrent/tt-lang/pull/632) also contains a
+  PipeNet-specific event traversal that keeps sibling `scf.if` frontiers
+  unordered. The missing work is to integrate these facts into the
+  cross-function DFB happens-before graph and prove bounded region lifetimes.
+  MLIR
+  [One-Shot Bufferize](https://github.com/llvm/llvm-project/blob/main/mlir/lib/Dialect/Bufferization/Transforms/OneShotAnalysis.cpp)
+  applies the same conservative restriction when repeated regions invalidate a
+  dominance-based `happensBefore` result.
 
 - **Repeated protocols.** The analysis accepts one reserve/push/wait/pop
   occurrence per logical DFB. Loops and multi-acquire protocols require
   symbolic occurrence matching so a push, wait, and pop from the same
   iteration are related without conflating different iterations.
+  [PR #700](https://github.com/tenstorrent/tt-lang/pull/700) already matches
+  repeated PipeNet protocol occurrences and derives DFB reservation
+  recurrences using `ExecutionCountAnalysis`.
+  [PR #764](https://github.com/tenstorrent/tt-lang/pull/764) extends exact
+  execution counts to reducible block-CFG loops.
 
 - **Credit-return ordering.** Only push-to-wait completion is modeled across
   threads. Proving additional pop-to-reserve ordering could shorten later
   producer frontiers, but requires exact protocol and occurrence matching.
+  The capacity proof in
+  [PR #700](https://github.com/tenstorrent/tt-lang/pull/700) already validates
+  matching whole-block reserve, post, wait, push, and pop ownership for
+  PipeNet receiver DFBs.
 
 - **Launch-node domains.** Reuse currently requires the same producer and
   consumer functions even when different DFBs execute on disjoint node
   domains. Integrating `LaunchNodeDomainAnalysis` could permit domain-local
   reuse when no physical node observes both lifetimes.
+  [PR #700](https://github.com/tenstorrent/tt-lang/pull/700) specializes static
+  execution counts by launch coordinate and is the relevant integration
+  reference.
 
 - **Kernel participant changes.** A happens-before cut does not transfer
   TT-Metal's thread-local counters or ring pointers. Reuse across different
@@ -946,6 +1035,10 @@ continues to support that attribute for compatibility.
   counts. A broader compatibility relation would need one physical descriptor
   that satisfies every logical DFB assigned to it, including page size,
   capacity, and data format.
+  [PR #688](https://github.com/tenstorrent/tt-lang/pull/688) and
+  [PR #689](https://github.com/tenstorrent/tt-lang/pull/689) contain an earlier
+  max-capacity descriptor merge for DFBs with the same element type but
+  different block counts or elements per block.
 
 - **Coloring quality.** Deterministic greedy first-fit coloring is sound but
   not optimal for a general partial-order interference graph. A stronger graph
@@ -953,9 +1046,10 @@ continues to support that attribute for compatibility.
   liveness proof.
 
 - **Reachability cost.** The current bit-vector transitive closure is suitable
-  for the small number of operations in one three-thread kernel launch. An SCC
-  condensation followed by topological bit-set propagation would scale better
-  for substantially larger generated programs.
+  for the small number of operations in one kernel launch. Its cost depends on
+  the total operations across all function sequences, not a fixed thread
+  count. An SCC condensation followed by topological bit-set propagation would
+  scale better for substantially larger generated programs.
 
 ## Scalar Element Access to DFBs
 
