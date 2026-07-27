@@ -6,6 +6,7 @@
 
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
+#include "ttlang/Dialect/Utils/OpaqueCallVerifyUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -627,6 +628,11 @@ void UnpackStallOnPackOp::getCanonicalizationPatterns(
     rewriter.eraseOp(op);
     return mlir::success();
   });
+}
+
+::mlir::LogicalResult OpaqueCallOp::verify() {
+  return mlir::tt::utils::verifyOpaqueCall<GetDfbIdOp>(
+      getOperation(), getCallee(), getHeader(), getTemplateArgVals());
 }
 
 } // namespace mlir::tt::ttkernel

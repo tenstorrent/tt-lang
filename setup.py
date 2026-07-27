@@ -255,7 +255,7 @@ class CMakeBuild(build_ext):
 
     def _remove_bundled_ttnn(self, install_dir):
         """Remove stale bundled payloads left by earlier wheel builds."""
-        for package_name in ("ttnn", "tracy"):
+        for package_name in ("ttnn", "tracy", "triage"):
             package_dir = install_dir / package_name
             if package_dir.exists():
                 shutil.rmtree(package_dir)
@@ -500,6 +500,8 @@ setup(
         "sim_stats": "python/sim_stats",
     }
     | _bundled_package_dir,
+    package_data={"triage": ["inspector.capnp", "requirements.txt"]},
+    scripts=["bin/tt-triage"],
     ext_modules=[ttlang_c],
     cmdclass={"build_ext": CMakeBuild, "sdist": NoSdist},
     zip_safe=False,
