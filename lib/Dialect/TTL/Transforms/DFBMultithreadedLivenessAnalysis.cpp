@@ -16,7 +16,6 @@
 
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -28,17 +27,30 @@
 #include <limits>
 #include <optional>
 
+//===----------------------------------------------------------------------===//
+// Multithreaded DFB Liveness Analysis
+//===----------------------------------------------------------------------===//
+
 namespace mlir::tt::ttl {
 
 namespace {
 
+/// Entry and completion event indices for one top-level kernel operation.
+///
+/// Every pair has an entry-to-completion edge. Program order and DFB protocol
+/// edges connect pairs from the same or different kernel functions.
 struct EventPair {
   unsigned entry = 0;
   unsigned completion = 0;
 };
 
+/// Directed event graph used to answer strict happens-before queries.
+///
+/// `strictlyPrecedes` excludes events in the same cycle because a cyclic model
+/// does not prove that either event completes first.
 class HappensBeforeGraph {
 public:
+  /// Adds an operation's entry and completion events and their required edge.
   EventPair addOperation() {
     unsigned entry = addEvent();
     unsigned completion = addEvent();
@@ -46,11 +58,13 @@ public:
     return {entry, completion};
   }
 
+  /// Adds one required ordering edge between existing events.
   void addEdge(unsigned source, unsigned destination) {
     assert(source < successors.size() && destination < successors.size());
     successors[source].push_back(destination);
   }
 
+  /// Computes transitive reachability for all event pairs.
   void computeReachability() {
     unsigned eventCount = successors.size();
     reachable.assign(eventCount, llvm::BitVector(eventCount));
@@ -70,6 +84,7 @@ public:
     }
   }
 
+  /// Returns true only when `source` reaches `destination` without a cycle.
   bool strictlyPrecedes(unsigned source, unsigned destination) const {
     assert(source < reachable.size() && destination < reachable.size());
     return source != destination && reachable[source].test(destination) &&
@@ -87,23 +102,36 @@ private:
   SmallVector<llvm::BitVector> reachable;
 };
 
+/// Module-wide state collected for one logical dataflow buffer.
+///
+/// Declarations are grouped by `logicalId`. A bounded DFB has one matched
+/// lifecycle, stable producer and consumer functions, and non-empty earliest
+/// and terminal event frontiers.
 struct LogicalDFB {
   int64_t logicalId = 0;
   Type type;
   func::FuncOp producerThread;
   func::FuncOp consumerThread;
+
   SmallVector<BindCBOp> declarations;
   SmallVector<Operation *> reserves;
   SmallVector<Operation *> pushes;
   SmallVector<Operation *> waits;
   SmallVector<Operation *> pops;
   SmallVector<Operation *> runtimeUses;
+
+  // These fields are populated only after the one-shot lifecycle and event
+  // projection checks succeed.
   SmallVector<unsigned> earliestEvents;
   SmallVector<unsigned> terminalEvents;
   std::optional<int64_t> transactionTileCount;
   bool bounded = false;
 };
 
+/// First diagnostic discovered by an analysis walk.
+///
+/// Analysis helpers record failures instead of emitting diagnostics. Retaining
+/// the first failure preserves the operation that violated the input contract.
 struct AnalysisFailure {
   Operation *operation = nullptr;
   std::string message;
@@ -117,76 +145,26 @@ struct AnalysisFailure {
   }
 };
 
+/// Returns the declaration reached through unrealized conversion casts.
 static BindCBOp getBindOp(Value dfb) {
   return traceUnrealizedCasts(dfb).getDefiningOp<BindCBOp>();
 }
 
+/// Groups declarations and runtime operations by resolved logical identity.
+///
+/// A DFB operand that does not resolve to `ttl.bind_cb` violates the
+/// finalizer's input contract and terminates collection.
 static bool
-collectLogicalDFBs(ModuleOp moduleOp, SmallVectorImpl<LogicalDFB> &logicalDFBs,
+collectLogicalDFBs(ModuleOp moduleOp,
+                   const DFBLogicalIdentityAnalysis &identityAnalysis,
+                   SmallVectorImpl<LogicalDFB> &logicalDFBs,
                    DenseMap<Operation *, unsigned> &bindToLogicalDFB,
                    AnalysisFailure &analysisFailure) {
   llvm::MapVector<int64_t, unsigned> idToLogicalDFB;
-  llvm::SmallDenseSet<int64_t> explicitIds;
-  llvm::SmallDenseSet<int64_t> seenFallbackIndices;
-  SmallVector<int64_t> fallbackIndices;
-  int64_t maxReservedId = -1;
-  int64_t compilerDeclarationCount = 0;
 
   moduleOp.walk([&](BindCBOp bindOp) {
-    if (auto dfbId = bindOp.getDfbId()) {
-      int64_t explicitId = dfbId->getSExtValue();
-      explicitIds.insert(explicitId);
-      maxReservedId = std::max(maxReservedId, explicitId);
-      return;
-    }
-    if (bindOp->hasAttr(kCompilerAllocatedAttrName)) {
-      ++compilerDeclarationCount;
-      return;
-    }
-    int64_t fallbackIndex = bindOp.getCbIndex().getSExtValue();
-    maxReservedId = std::max(maxReservedId, fallbackIndex);
-    if (seenFallbackIndices.insert(fallbackIndex).second) {
-      fallbackIndices.push_back(fallbackIndex);
-    }
-  });
-
-  int64_t generatedIdCount = compilerDeclarationCount;
-  for (int64_t fallbackIndex : fallbackIndices) {
-    generatedIdCount += explicitIds.contains(fallbackIndex);
-  }
-  if (generatedIdCount > 0 &&
-      maxReservedId > std::numeric_limits<int64_t>::max() - generatedIdCount) {
-    analysisFailure.set(
-        moduleOp,
-        "logical DFB identifiers leave no space for generated identities");
-    return false;
-  }
-
-  int64_t nextLogicalId = generatedIdCount > 0 ? maxReservedId + 1 : 0;
-  DenseMap<int64_t, int64_t> fallbackLogicalIds;
-  for (int64_t fallbackIndex : fallbackIndices) {
-    int64_t logicalId =
-        explicitIds.contains(fallbackIndex) ? nextLogicalId++ : fallbackIndex;
-    fallbackLogicalIds[fallbackIndex] = logicalId;
-  }
-
-  moduleOp.walk([&](BindCBOp bindOp) {
-    if (!analysisFailure.message.empty()) {
-      return;
-    }
     Type dfbType = bindOp.getResult().getType();
-    int64_t logicalId;
-    if (auto dfbId = bindOp.getDfbId()) {
-      logicalId = dfbId->getSExtValue();
-    } else if (bindOp->hasAttr(kCompilerAllocatedAttrName)) {
-      logicalId = nextLogicalId++;
-    } else {
-      auto fallbackIt =
-          fallbackLogicalIds.find(bindOp.getCbIndex().getSExtValue());
-      assert(fallbackIt != fallbackLogicalIds.end() &&
-             "every untagged user DFB must have a fallback identity");
-      logicalId = fallbackIt->second;
-    }
+    int64_t logicalId = identityAnalysis.getLogicalId(bindOp);
 
     auto [logicalIt, inserted] =
         idToLogicalDFB.insert({logicalId, logicalDFBs.size()});
@@ -196,26 +174,15 @@ collectLogicalDFBs(ModuleOp moduleOp, SmallVectorImpl<LogicalDFB> &logicalDFBs,
       logicalDFB.logicalId = logicalId;
       logicalDFB.type = dfbType;
       logicalDFBs.push_back(std::move(logicalDFB));
-    } else if (logicalDFBs[logicalIndex].type != dfbType) {
-      std::string message;
-      llvm::raw_string_ostream messageStream(message);
-      messageStream
-          << "logical DFB " << logicalId
-          << " has inconsistent types across thread functions: expected "
-          << logicalDFBs[logicalIndex].type << " but found " << dfbType;
-      analysisFailure.set(bindOp, messageStream.str());
-      return;
     }
 
     logicalDFBs[logicalIndex].declarations.push_back(bindOp);
     bindToLogicalDFB[bindOp.getOperation()] = logicalIndex;
   });
 
-  if (!analysisFailure.message.empty()) {
-    return false;
-  }
-
   moduleOp.walk([&](Operation *operation) {
+    // `ttl.attach_cb` associates tensor SSA with a DFB but does not access the
+    // hardware buffer or change its protocol state.
     if (!analysisFailure.message.empty() || isa<AttachCBOp>(operation)) {
       return;
     }
@@ -231,7 +198,7 @@ collectLogicalDFBs(ModuleOp moduleOp, SmallVectorImpl<LogicalDFB> &logicalDFBs,
             operation,
             "DFB operand must resolve to ttl.bind_cb before physical index "
             "allocation");
-        continue;
+        return;
       }
       auto logicalIt = bindToLogicalDFB.find(bindOp.getOperation());
       assert(logicalIt != bindToLogicalDFB.end() &&
@@ -259,6 +226,10 @@ collectLogicalDFBs(ModuleOp moduleOp, SmallVectorImpl<LogicalDFB> &logicalDFBs,
   return analysisFailure.message.empty();
 }
 
+/// Adds program-order events for every single-block kernel function.
+///
+/// Functions remain unordered until DFB protocol edges connect their event
+/// sequences.
 static void
 buildProgramOrderGraph(ModuleOp moduleOp, HappensBeforeGraph &graph,
                        DenseMap<Operation *, EventPair> &operationEvents) {
@@ -279,6 +250,10 @@ buildProgramOrderGraph(ModuleOp moduleOp, HappensBeforeGraph &graph,
   }
 }
 
+/// Projects a nested operation to the top-level operation that contains it.
+///
+/// Multi-block functions and operations without a top-level ancestor cannot be
+/// represented by the current event model.
 static std::optional<EventPair>
 getProjectedEvents(Operation *operation,
                    const DenseMap<Operation *, EventPair> &operationEvents) {
@@ -302,12 +277,14 @@ getProjectedEvents(Operation *operation,
   return eventIt->second;
 }
 
+/// Returns true when `operation` has an event pair without projection.
 static bool isDirectFunctionBodyOperation(Operation *operation) {
   func::FuncOp funcOp = operation->getParentOfType<func::FuncOp>();
   return funcOp && funcOp.getBody().hasOneBlock() &&
          operation->getBlock() == &funcOp.getBody().front();
 }
 
+/// Returns true when `release` follows every use owned by `acquire`.
 static bool releaseFollowsOwnedUses(Operation *acquire, Operation *release) {
   SmallVector<Operation *> acquires = {acquire};
   DFBAcquireInterval interval = makeDFBAcquireInterval(acquire, acquires);
@@ -315,6 +292,7 @@ static bool releaseFollowsOwnedUses(Operation *acquire, Operation *release) {
   return lastOwnedUse == acquire || lastOwnedUse->isBeforeInBlock(release);
 }
 
+/// Returns the implicit transaction count used when `num_tiles` is absent.
 static int64_t getDefaultTileCount(Operation *operation) {
   Value dfb;
   if (auto reserveOp = dyn_cast<CBReserveOp>(operation)) {
@@ -329,6 +307,7 @@ static int64_t getDefaultTileCount(Operation *operation) {
   return cast<CircularBufferType>(dfb.getType()).getElementsPerBlock();
 }
 
+/// Returns the explicit or implicit transaction count of a lifecycle op.
 static int64_t getTileCount(Operation *operation) {
   int64_t defaultTileCount = getDefaultTileCount(operation);
   if (auto reserveOp = dyn_cast<CBReserveOp>(operation)) {
@@ -347,6 +326,11 @@ static int64_t getTileCount(Operation *operation) {
   return static_cast<int64_t>(popOp.getNumTiles().value_or(defaultTileCount));
 }
 
+/// Returns the common transaction count for a matched one-shot lifecycle.
+///
+/// A lifecycle is matched only when it has one direct reserve, push, wait, and
+/// pop in protocol order, with releases following their owned uses. Returning
+/// no value keeps the DFB unbounded and prevents physical reuse.
 static std::optional<int64_t>
 getMatchedOneShotTileCount(const LogicalDFB &logicalDFB) {
   if (logicalDFB.reserves.size() != 1 || logicalDFB.pushes.size() != 1 ||
@@ -382,6 +366,7 @@ getMatchedOneShotTileCount(const LogicalDFB &logicalDFB) {
   return reserveTiles;
 }
 
+/// Returns the minimal antichain of `events` under happens-before.
 static SmallVector<unsigned>
 findMinimalEvents(ArrayRef<unsigned> events,
                   const HappensBeforeGraph &happensBeforeGraph) {
@@ -397,6 +382,10 @@ findMinimalEvents(ArrayRef<unsigned> events,
   return minimalEvents;
 }
 
+/// Computes the lifetime frontiers used to prove storage reuse.
+///
+/// Every runtime use must have a projected event whose completion does not
+/// follow the terminal pop. Otherwise the DFB remains unbounded.
 static void computeLogicalDFBFrontiers(
     LogicalDFB &logicalDFB, const HappensBeforeGraph &happensBeforeGraph,
     const DenseMap<Operation *, EventPair> &operationEvents) {
@@ -443,6 +432,7 @@ static void computeLogicalDFBFrontiers(
   logicalDFB.bounded = !logicalDFB.earliestEvents.empty();
 }
 
+/// Returns true when `before` ends before every earliest event of `after`.
 static bool isOrderedBefore(const LogicalDFB &before, const LogicalDFB &after,
                             const HappensBeforeGraph &happensBeforeGraph) {
   if (!before.bounded || !after.bounded) {
@@ -455,6 +445,10 @@ static bool isOrderedBefore(const LogicalDFB &before, const LogicalDFB &after,
   });
 }
 
+/// Returns true unless two logical DFBs can safely share physical storage.
+///
+/// Sharing requires identical storage, transaction, and kernel-participant
+/// state plus a proven lifetime order in one direction.
 static bool logicalDFBsConflict(const LogicalDFB &lhs, const LogicalDFB &rhs,
                                 const HappensBeforeGraph &happensBeforeGraph) {
   // TT-Metal keeps each physical DFB's cumulative counters and ring pointers
@@ -476,6 +470,7 @@ static bool logicalDFBsConflict(const LogicalDFB &lhs, const LogicalDFB &rhs,
          !isOrderedBefore(rhs, lhs, happensBeforeGraph);
 }
 
+/// Colors the interference graph and validates every shared physical index.
 static std::optional<SmallVector<int32_t>>
 computePhysicalAssignments(ArrayRef<LogicalDFB> logicalDFBs,
                            const HappensBeforeGraph &happensBeforeGraph,
@@ -542,14 +537,104 @@ computePhysicalAssignments(ArrayRef<LogicalDFB> logicalDFBs,
 
 } // namespace
 
+DFBLogicalIdentityAnalysis::DFBLogicalIdentityAnalysis(Operation *operation) {
+  ModuleOp moduleOp = cast<ModuleOp>(operation);
+  int64_t maxExplicitId = -1;
+  int64_t compilerDeclarationCount = 0;
+  BindCBOp firstCompilerDeclaration;
+
+  // Discover the complete explicit ID range before generating IDs. A single
+  // walk that assigned IDs immediately could collide with a later declaration.
+  moduleOp.walk([&](BindCBOp bindOp) {
+    if (!errorMessage.empty()) {
+      return;
+    }
+    if (auto dfbId = bindOp.getDfbId()) {
+      int64_t logicalId = dfbId->getSExtValue();
+      maxExplicitId = std::max(maxExplicitId, logicalId);
+      return;
+    }
+    if (!bindOp->hasAttr(kCompilerAllocatedAttrName)) {
+      errorOperation = bindOp;
+      errorMessage =
+          "user-declared DFB requires dfb_id before physical allocation";
+      return;
+    }
+    if (!firstCompilerDeclaration) {
+      firstCompilerDeclaration = bindOp;
+    }
+    if (compilerDeclarationCount == std::numeric_limits<int64_t>::max()) {
+      errorOperation = bindOp;
+      errorMessage = "too many compiler-created DFB declarations";
+      return;
+    }
+    ++compilerDeclarationCount;
+  });
+  if (!errorMessage.empty()) {
+    return;
+  }
+
+  if (compilerDeclarationCount > 0 &&
+      maxExplicitId >
+          std::numeric_limits<int64_t>::max() - compilerDeclarationCount) {
+    errorOperation = firstCompilerDeclaration;
+    errorMessage =
+        "logical DFB identifiers leave no space for compiler-created DFBs";
+    return;
+  }
+
+  int64_t nextCompilerId = compilerDeclarationCount > 0 ? maxExplicitId + 1 : 0;
+  llvm::DenseMap<int64_t, BindCBOp> firstDeclarationById;
+  // Type consistency is an identity invariant: declarations with one ID
+  // describe one logical allocation even when they occur in different threads.
+  moduleOp.walk([&](BindCBOp bindOp) {
+    if (!errorMessage.empty()) {
+      return;
+    }
+    auto dfbId = bindOp.getDfbId();
+    int64_t logicalId = dfbId ? dfbId->getSExtValue() : nextCompilerId++;
+    auto [firstIt, inserted] =
+        firstDeclarationById.try_emplace(logicalId, bindOp);
+    if (!inserted &&
+        firstIt->second.getResult().getType() != bindOp.getResult().getType()) {
+      std::string message;
+      llvm::raw_string_ostream messageStream(message);
+      messageStream
+          << "logical DFB " << logicalId
+          << " has inconsistent types across thread functions: expected "
+          << firstIt->second.getResult().getType() << " but found "
+          << bindOp.getResult().getType();
+      errorOperation = bindOp;
+      errorMessage = messageStream.str();
+      return;
+    }
+    assignments.push_back({bindOp, logicalId});
+    identities[bindOp.getOperation()] = logicalId;
+  });
+}
+
+int64_t DFBLogicalIdentityAnalysis::getLogicalId(BindCBOp bindOp) const {
+  auto identityIt = identities.find(bindOp.getOperation());
+  assert(identityIt != identities.end() &&
+         "every DFB declaration must have a resolved logical identity");
+  return identityIt->second;
+}
+
 DFBMultithreadedLivenessAnalysis::DFBMultithreadedLivenessAnalysis(
     Operation *operation) {
   ModuleOp moduleOp = cast<ModuleOp>(operation);
+  DFBLogicalIdentityAnalysis identityAnalysis(operation);
+  if (!identityAnalysis.succeeded()) {
+    errorOperation = identityAnalysis.getErrorOperation();
+    errorMessage = identityAnalysis.getErrorMessage().str();
+    return;
+  }
+
   AnalysisFailure analysisFailure;
   SmallVector<LogicalDFB, 0> logicalDFBs;
   DenseMap<Operation *, unsigned> bindToLogicalDFB;
-  if (!collectLogicalDFBs(moduleOp, logicalDFBs, bindToLogicalDFB,
-                          analysisFailure)) {
+  if (!collectLogicalDFBs(moduleOp, identityAnalysis, logicalDFBs,
+                          bindToLogicalDFB, analysisFailure)) {
     errorOperation = analysisFailure.operation;
     errorMessage = std::move(analysisFailure.message);
     return;
@@ -576,6 +661,8 @@ DFBMultithreadedLivenessAnalysis::DFBMultithreadedLivenessAnalysis(
            "one-shot lifecycle operations must have direct event pairs");
     EventPair pushEvents = pushEventsIt->second;
     EventPair waitEvents = waitEventsIt->second;
+    // A wait may begin before its producer publishes data. Only wait
+    // completion is ordered after push completion.
     happensBeforeGraph.addEdge(pushEvents.completion, waitEvents.completion);
   }
 

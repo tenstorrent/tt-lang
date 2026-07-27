@@ -6,7 +6,7 @@ module {
   func.func @bf16_declaration()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                   ttl.base_cta_index = 1 : i32, ttl.crta_indices = []} {
-    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     return
   }
@@ -15,7 +15,7 @@ module {
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
                   ttl.base_cta_index = 1 : i32, ttl.crta_indices = []} {
     // expected-error @below {{physical DFB index 0 has inconsistent CircularBufferType values}}
-    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     return
   }

@@ -7,7 +7,7 @@
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @consumer_all_nodes() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     // expected-note @+1 {{dataflow buffer declared here}}
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     // expected-error @below {{logical DFB 0 has multiple consumer threads active on the same launched node}}
     // expected-note @below {{example overlapping node: core_x=0, core_y=0}}
@@ -19,7 +19,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   }
 
   func.func @consumer_x0() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %core_x = ttl.core_x : index
     %zero = arith.constant 0 : index
@@ -56,7 +56,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @producer_all_nodes() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     // expected-note @+1 {{dataflow buffer declared here}}
-    %cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     // expected-error @below {{logical DFB 1 has multiple producer threads active on the same launched node}}
     // expected-note @below {{example overlapping node: core_x=1, core_y=0}}
@@ -68,7 +68,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   }
 
   func.func @producer_x1() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %core_x = ttl.core_x : index
     %one = arith.constant 1 : index
@@ -91,7 +91,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @unknown_consumer(%runtime: index) attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     // expected-note @+1 {{dataflow buffer declared here}}
-    %cb = ttl.bind_cb {cb_index = 2, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %core_x = ttl.core_x : index
     %scaled = arith.muli %core_x, %runtime : index
@@ -112,7 +112,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   }
 
   func.func @other_consumer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %cb = ttl.bind_cb {cb_index = 2, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     // expected-note @below {{also waited on here}}
     %view = ttl.cb_wait %cb
@@ -129,7 +129,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // expected-error @below {{ttl-verify-dfb-spsc requires a `ttl.launch_grid` module attribute}}
 module {
   func.func @missing_launch_grid() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
-    %cb = ttl.bind_cb {cb_index = 3, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 3, block_count = 2} {dfb_id = 3 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %view = ttl.cb_wait %cb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -145,7 +145,7 @@ module {
 // expected-error @below {{ttl-verify-dfb-spsc requires a `ttl.launch_grid` module attribute}}
 module attributes {ttl.launch_grid = [0 : i64, 1 : i64]} {
   func.func @malformed_launch_grid() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
-    %cb = ttl.bind_cb {cb_index = 4, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 4, block_count = 2} {dfb_id = 4 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %view = ttl.cb_wait %cb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -161,7 +161,7 @@ module attributes {ttl.launch_grid = [0 : i64, 1 : i64]} {
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @malformed_pipenet_scope() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
-    %cb = ttl.bind_cb {cb_index = 5, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 5, block_count = 2} {dfb_id = 5 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     // expected-error @below {{has invalid PipeNet role 7}}
     ttl.pipenet_scope attributes {ttl.pipe_net_ids = [0 : i64], ttl.pipe_net_roles = [7 : i64]} {

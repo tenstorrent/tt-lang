@@ -34,13 +34,16 @@ def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
 
     - `cb_index` is the circular buffer hardware slot index (0-31).
     - `block_count` is the number of blocks (default 2 for double buffering).
-    - `dfb_id`, when present, identifies the logical dataflow buffer. Bindings
-      in different kernel threads with the same `dfb_id` refer to the same
-      logical buffer even when physical allocation changes `cb_index`.
+    - `dfb_id` identifies the logical dataflow buffer. User declarations carry
+      this identity. Compiler-created declarations may omit it while their
+      identity is unresolved. Bindings in different kernel threads with the
+      same `dfb_id` refer to the same logical buffer even when physical
+      allocation changes `cb_index`.
     Example:
 
     ```mlir
     %cb = ttl.bind_cb {cb_index = 0 : index, block_count = 2}
+          {dfb_id = 0 : index}
           : !ttl.cb<[1, 1], f32, 2>
     ```
   }];

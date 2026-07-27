@@ -13,8 +13,8 @@
 func.func @uniform_page_count()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
                 ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
-  %first = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2>
-  %second = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2>
+  %first = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2>
+  %second = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2>
   %first_reserved = ttl.cb_reserve %first : <[1, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x2x!ttcore.tile<32x32, bf16>>
   ttl.cb_push %first : <[1, 2], !ttcore.tile<32x32, bf16>, 2>
   %first_waited = ttl.cb_wait %first : <[1, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x2x!ttcore.tile<32x32, bf16>>
@@ -39,8 +39,8 @@ func.func @uniform_page_count()
 func.func @mixed_page_count()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
                 ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
-  %partial = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2>
-  %full = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2>
+  %partial = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2>
+  %full = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2>
   %partial_reserved = ttl.cb_reserve %partial {num_tiles = 1 : i64} : <[1, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.cb_push %partial {num_tiles = 1 : i64} : <[1, 2], !ttcore.tile<32x32, bf16>, 2>
   %partial_waited = ttl.cb_wait %partial {num_tiles = 1 : i64} : <[1, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -66,9 +66,9 @@ func.func @mixed_page_count()
 func.func @compatible_subset()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
                 ttl.base_cta_index = 3 : i32, ttl.crta_indices = []} {
-  %one = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2>
-  %two = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2>
-  %three = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2>
+  %one = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2>
+  %two = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2>
+  %three = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2>
   %one_reserved = ttl.cb_reserve %one {num_tiles = 1 : i64} : <[1, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.cb_push %one {num_tiles = 1 : i64} : <[1, 2], !ttcore.tile<32x32, bf16>, 2>
   %one_waited = ttl.cb_wait %one {num_tiles = 1 : i64} : <[1, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -97,8 +97,8 @@ func.func @compatible_subset()
 func.func @page_count_does_not_divide_capacity()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
                 ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
-  %first = ttl.bind_cb {cb_index = 0, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 4>
-  %second = ttl.bind_cb {cb_index = 1, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 4>
+  %first = ttl.bind_cb {cb_index = 0, block_count = 4} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 4>
+  %second = ttl.bind_cb {cb_index = 1, block_count = 4} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 4>
   %first_reserved = ttl.cb_reserve %first {num_tiles = 3 : i64} : <[1, 1], !ttcore.tile<32x32, bf16>, 4> -> tensor<1x3x!ttcore.tile<32x32, bf16>>
   ttl.cb_push %first {num_tiles = 3 : i64} : <[1, 1], !ttcore.tile<32x32, bf16>, 4>
   %first_waited = ttl.cb_wait %first {num_tiles = 3 : i64} : <[1, 1], !ttcore.tile<32x32, bf16>, 4> -> tensor<1x3x!ttcore.tile<32x32, bf16>>

@@ -13,17 +13,18 @@
 // -----
 
 // User DFBs at indices 0, 1, 2 and a compiler-allocated DFB at index 3.
-// The pass should update base_cta_index to 4 and emit both allocation tables.
+// The pass should update base_cta_index to 4 and emit the complete allocation
+// table.
 
-// CHECK: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 3 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}], ttl.dfb_allocations = {{.*}}}
+// CHECK: module attributes {ttl.dfb_allocations = {{.*}}}
 
 // CHECK-LABEL: func.func @reader
 // CHECK-SAME: ttl.base_cta_index = 4 : i32
 func.func @reader()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.base_cta_index = 3 : i32,
                 ttl.crta_indices = [0 : i32, 1 : i32]} {
-  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   return
 }
 
@@ -32,9 +33,9 @@ func.func @reader()
 func.func @compute()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>, ttl.base_cta_index = 3 : i32,
                 ttl.crta_indices = []} {
-  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %alloc = ttl.bind_cb {cb_index = 3, block_count = 2} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   return
 }
@@ -44,16 +45,15 @@ func.func @compute()
 func.func @writer()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.base_cta_index = 3 : i32,
                 ttl.crta_indices = [0 : i32, 1 : i32]} {
-  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   return
 }
 
 // -----
 
-// No compiler-allocated DFBs: pass should not add ttl.compiler_allocated_dfbs,
-// but should still update base_cta_index to the true DFB count (3).
+// With no compiler-allocated DFBs, the pass still updates base_cta_index to
+// the true DFB count (3).
 
-// CHECK-NOT: ttl.compiler_allocated_dfbs
 // CHECK: module attributes {ttl.dfb_allocations = {{.*}}}
 
 // CHECK-LABEL: func.func @compute_only
@@ -61,9 +61,9 @@ func.func @writer()
 func.func @compute_only()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>, ttl.base_cta_index = 2 : i32,
                 ttl.crta_indices = []} {
-  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   return
 }
 
@@ -75,7 +75,7 @@ func.func @compute_only()
 // DEBUG: DFB reuse: 2 compiler-allocated DFBs -> 1 physical slot(s)
 // DEBUG: Total DFB count: 4
 
-// REUSE: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 3 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}], ttl.dfb_allocations = {{.*}}}
+// REUSE: module attributes {ttl.dfb_allocations = {{.*}}}
 
 // REUSE-LABEL: func.func @non_overlapping_reuse
 // REUSE-SAME: ttl.base_cta_index = 4 : i32
@@ -85,9 +85,9 @@ func.func @compute_only()
 func.func @non_overlapping_reuse()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>, ttl.base_cta_index = 3 : i32,
                 ttl.crta_indices = []} {
-  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %alloc3 = ttl.bind_cb {cb_index = 3, block_count = 2} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.cb_pop %alloc3 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %alloc4 = ttl.bind_cb {cb_index = 4, block_count = 2} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -103,7 +103,7 @@ func.func @non_overlapping_reuse()
 // DEBUG: DFB reuse: 2 compiler-allocated DFBs -> 2 physical slot(s)
 // DEBUG: Total DFB count: 5
 
-// OVERLAP: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 3 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}, {block_count = 2 : i32, dfb_index = 4 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}], ttl.dfb_allocations = {{.*}}}
+// OVERLAP: module attributes {ttl.dfb_allocations = {{.*}}}
 
 // OVERLAP-LABEL: func.func @overlapping_no_reuse
 // OVERLAP-SAME: ttl.base_cta_index = 5 : i32
@@ -114,9 +114,9 @@ func.func @non_overlapping_reuse()
 func.func @overlapping_no_reuse()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>, ttl.base_cta_index = 3 : i32,
                 ttl.crta_indices = []} {
-  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %alloc3 = ttl.bind_cb {cb_index = 3, block_count = 2} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %alloc4 = ttl.bind_cb {cb_index = 4, block_count = 2} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.cb_pop %alloc4 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -136,21 +136,21 @@ func.func @overlapping_no_reuse()
 // DEBUG: DFB reuse: 4 compiler-allocated DFBs -> 2 physical slot(s)
 // DEBUG: Total DFB count: 5
 
-// FOUR: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 3 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}, {block_count = 2 : i32, dfb_index = 4 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}], ttl.dfb_allocations = {{.*}}}
+// FOUR: module attributes {ttl.dfb_allocations = {{.*}}}
 
 // FOUR-LABEL: func.func @four_dfbs_nested_reuse
 // FOUR-SAME: ttl.base_cta_index = 5 : i32
 //
 // DFB-A -> slot 0 (index 3)
-// FOUR: ttl.bind_cb{cb_index = 3, {{.*}}} {ttl.compiler_allocated}
+// FOUR: ttl.bind_cb{cb_index = 3, {{.*}}} {dfb_id = 3 : index, ttl.compiler_allocated}
 // DFB-B -> slot 1 (index 4)
-// FOUR: ttl.bind_cb{cb_index = 4, {{.*}}} {ttl.compiler_allocated}
+// FOUR: ttl.bind_cb{cb_index = 4, {{.*}}} {dfb_id = 4 : index, ttl.compiler_allocated}
 // FOUR: ttl.cb_pop
 // FOUR: ttl.cb_pop
 // DFB-C -> slot 0 (index 3, reused from A)
-// FOUR: ttl.bind_cb{cb_index = 3, {{.*}}} {ttl.compiler_allocated}
+// FOUR: ttl.bind_cb{cb_index = 3, {{.*}}} {dfb_id = 5 : index, ttl.compiler_allocated}
 // DFB-D -> slot 1 (index 4, reused from B)
-// FOUR: ttl.bind_cb{cb_index = 4, {{.*}}} {ttl.compiler_allocated}
+// FOUR: ttl.bind_cb{cb_index = 4, {{.*}}} {dfb_id = 6 : index, ttl.compiler_allocated}
 // FOUR: ttl.cb_pop
 // FOUR: ttl.cb_pop
 // FOUR-NOT: cb_index = 5
@@ -159,9 +159,9 @@ func.func @overlapping_no_reuse()
 func.func @four_dfbs_nested_reuse()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>, ttl.base_cta_index = 3 : i32,
                 ttl.crta_indices = []} {
-  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %allocA = ttl.bind_cb {cb_index = 3, block_count = 2} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %allocB = ttl.bind_cb {cb_index = 4, block_count = 2} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.cb_pop %allocB : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -187,24 +187,24 @@ func.func @four_dfbs_nested_reuse()
 // DEBUG: DFB reuse: 3 compiler-allocated DFBs -> 2 physical slot(s)
 // DEBUG: Total DFB count: 5
 
-// MIXED: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 3 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}, {block_count = 2 : i32, dfb_index = 4 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 8 : i32}], ttl.dfb_allocations = {{.*}}}
+// MIXED: module attributes {ttl.dfb_allocations = {{.*}}}
 
 // MIXED-LABEL: func.func @mixed_types_no_cross_reuse
 // MIXED-SAME: ttl.base_cta_index = 5 : i32
 // [1,1] partition slot
-// MIXED: ttl.bind_cb{cb_index = 3, {{.*}}} {ttl.compiler_allocated} : <[1, 1],
+// MIXED: ttl.bind_cb{cb_index = 3, {{.*}}} {dfb_id = 3 : index, ttl.compiler_allocated} : <[1, 1],
 // [2,4] partition slot
-// MIXED: ttl.bind_cb{cb_index = 4, {{.*}}} {ttl.compiler_allocated} : <[2, 4],
+// MIXED: ttl.bind_cb{cb_index = 4, {{.*}}} {dfb_id = 4 : index, ttl.compiler_allocated} : <[2, 4],
 // [1,1] partition slot reused
-// MIXED: ttl.bind_cb{cb_index = 3, {{.*}}} {ttl.compiler_allocated} : <[1, 1],
+// MIXED: ttl.bind_cb{cb_index = 3, {{.*}}} {dfb_id = 5 : index, ttl.compiler_allocated} : <[1, 1],
 // MIXED-NOT: cb_index = 5
 // MIXED: return
 func.func @mixed_types_no_cross_reuse()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>, ttl.base_cta_index = 3 : i32,
                 ttl.crta_indices = []} {
-  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   // [1,1] DFB
   %alloc3 = ttl.bind_cb {cb_index = 3, block_count = 2} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.cb_pop %alloc3 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -225,7 +225,7 @@ func.func @mixed_types_no_cross_reuse()
 // DEBUG: DFB reuse: 2 compiler-allocated DFBs -> 2 physical slot(s)
 // DEBUG: Total DFB count: 5
 
-// NOPOP: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 3 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}, {block_count = 2 : i32, dfb_index = 4 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}], ttl.dfb_allocations = {{.*}}}
+// NOPOP: module attributes {ttl.dfb_allocations = {{.*}}}
 
 // NOPOP-LABEL: func.func @no_cb_pop_conservative
 // NOPOP-SAME: ttl.base_cta_index = 5 : i32
@@ -236,9 +236,9 @@ func.func @mixed_types_no_cross_reuse()
 func.func @no_cb_pop_conservative()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>, ttl.base_cta_index = 3 : i32,
                 ttl.crta_indices = []} {
-  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %alloc3 = ttl.bind_cb {cb_index = 3, block_count = 2} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %alloc4 = ttl.bind_cb {cb_index = 4, block_count = 2} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   return
@@ -252,7 +252,7 @@ func.func @no_cb_pop_conservative()
 // DEBUG: DFB reuse: 3 compiler-allocated DFBs -> 1 physical slot(s)
 // DEBUG: Total DFB count: 4
 
-// THREE: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 3 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}], ttl.dfb_allocations = {{.*}}}
+// THREE: module attributes {ttl.dfb_allocations = {{.*}}}
 
 // THREE-LABEL: func.func @three_sequential_one_slot
 // THREE-SAME: ttl.base_cta_index = 4 : i32
@@ -262,9 +262,9 @@ func.func @no_cb_pop_conservative()
 func.func @three_sequential_one_slot()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>, ttl.base_cta_index = 3 : i32,
                 ttl.crta_indices = []} {
-  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %alloc3 = ttl.bind_cb {cb_index = 3, block_count = 2} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.cb_pop %alloc3 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %alloc4 = ttl.bind_cb {cb_index = 4, block_count = 2} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -279,19 +279,19 @@ func.func @three_sequential_one_slot()
 // A single compiler-allocated DFB is assigned the first physical index after
 // the user-declared range.
 
-// SINGLE: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 3 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}], ttl.dfb_allocations = {{.*}}}
+// SINGLE: module attributes {ttl.dfb_allocations = {{.*}}}
 
 // SINGLE-LABEL: func.func @single_dfb_no_reuse
 // SINGLE-SAME: ttl.base_cta_index = 4 : i32
-// SINGLE: ttl.bind_cb{cb_index = 3, {{.*}}} {ttl.compiler_allocated}
+// SINGLE: ttl.bind_cb{cb_index = 3, {{.*}}} {dfb_id = 3 : index, ttl.compiler_allocated}
 // SINGLE-NOT: cb_index = 4
 // SINGLE: return
 func.func @single_dfb_no_reuse()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>, ttl.base_cta_index = 3 : i32,
                 ttl.crta_indices = []} {
-  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %alloc3 = ttl.bind_cb {cb_index = 3, block_count = 2} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.cb_pop %alloc3 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   return
@@ -303,7 +303,7 @@ func.func @single_dfb_no_reuse()
 // sibling functions. Finalization must assign disjoint physical indices after
 // the highest user-declared index, including user indices in other functions.
 
-// GLOBAL: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 5 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}, {block_count = 2 : i32, dfb_index = 6 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}], ttl.dfb_allocations = {{.*}}}
+// GLOBAL: module attributes {ttl.dfb_allocations = {{.*}}}
 
 // GLOBAL-LABEL: func.func @global_user_index
 // GLOBAL-SAME: ttl.base_cta_index = 7 : i32
@@ -311,17 +311,17 @@ func.func @single_dfb_no_reuse()
 func.func @global_user_index()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.base_cta_index = 5 : i32,
                 ttl.crta_indices = []} {
-  %user4 = ttl.bind_cb {cb_index = 4, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %user4 = ttl.bind_cb {cb_index = 4, block_count = 2} {dfb_id = 4 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   return
 }
 
 // GLOBAL-LABEL: func.func @first_provisional_index
 // GLOBAL-SAME: ttl.base_cta_index = 7 : i32
-// GLOBAL: ttl.bind_cb{cb_index = 5, {{.*}}} {ttl.compiler_allocated}
+// GLOBAL: ttl.bind_cb{cb_index = 5, {{.*}}} {dfb_id = 5 : index, ttl.compiler_allocated}
 func.func @first_provisional_index()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>, ttl.base_cta_index = 1 : i32,
                 ttl.crta_indices = []} {
-  %user0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %user0 = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %compiler1 = ttl.bind_cb {cb_index = 1, block_count = 2} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.cb_pop %compiler1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   return
@@ -329,11 +329,11 @@ func.func @first_provisional_index()
 
 // GLOBAL-LABEL: func.func @second_provisional_index
 // GLOBAL-SAME: ttl.base_cta_index = 7 : i32
-// GLOBAL: ttl.bind_cb{cb_index = 6, {{.*}}} {ttl.compiler_allocated}
+// GLOBAL: ttl.bind_cb{cb_index = 6, {{.*}}} {dfb_id = 6 : index, ttl.compiler_allocated}
 func.func @second_provisional_index()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>, ttl.base_cta_index = 1 : i32,
                 ttl.crta_indices = []} {
-  %user0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %user0 = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %compiler1 = ttl.bind_cb {cb_index = 1, block_count = 2} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.cb_pop %compiler1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   return

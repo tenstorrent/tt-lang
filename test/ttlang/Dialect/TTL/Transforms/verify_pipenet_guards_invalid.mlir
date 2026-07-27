@@ -9,7 +9,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     // expected-note @below {{PipeNet net_0 declared here}}
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     // expected-error @below {{this `ttl.copy(buffer, pipe)` sends data on PipeNet net_0 from a node that is not a source}}
     // expected-note @below {{example node where the guard does not hold: core_x=1}}
@@ -31,7 +31,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.if_dst %pipe
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
@@ -70,7 +70,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     // expected-note @below {{PipeNet net_0 declared here}}
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %recv_reserve = ttl.cb_reserve %cb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -119,7 +119,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     // expected-note @below {{PipeNet net_0 declared here}}
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     scf.if %flag {
     } else {
@@ -142,7 +142,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @unsupported_predicate(%runtime: index) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %core_x = ttl.core_x : index
     %scaled = arith.muli %core_x, %runtime : index
@@ -170,7 +170,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @pipe_receive_wait_unanalyzable_guard(%runtime: index) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
       %reserve = ttl.cb_reserve %cb
@@ -209,7 +209,7 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
   func.func @two_unanalyzable_predicates_andi(%runtime: index) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %core_x = ttl.core_x : index
     %core_y = ttl.core_y : index
@@ -242,7 +242,7 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
   func.func @source_order_beats_operand_position(%runtime: index) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %core_x = ttl.core_x : index
     %core_y = ttl.core_y : index
@@ -273,7 +273,7 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
   func.func @two_unanalyzable_predicates_ori(%runtime: index) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %core_x = ttl.core_x : index
     %core_y = ttl.core_y : index
@@ -303,7 +303,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
   func.func @wait_without_producer() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
         : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     // expected-error @below {{this `cb_wait` reads from a dataflow buffer that no other thread fills}}
     %view = ttl.cb_wait %cb
@@ -347,7 +347,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @producer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 7, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 7, block_count = 2} {dfb_id = 7 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
       ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -358,7 +358,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @consumer() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 7, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 7, block_count = 2} {dfb_id = 7 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     // expected-error @below {{this `cb_wait` runs on launched nodes where no thread pushes data to the buffer}}
     // expected-note @below {{example node where the guard does not hold: core_x=1}}
@@ -387,7 +387,7 @@ module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
     %pb = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 1
         {pipeNetName = "net_b"}
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 1>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %cond = ttl.is_dst {pipe_net_id = 1 : i64}
     scf.if %cond {
@@ -439,7 +439,7 @@ module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
         : !ttl.pipe<src(0, 0) dst(0, 1) to(0, 3) net 0>
     %pb = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 1
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 1>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %a_active = ttl.is_active {pipe_net_id = 0 : i64}
     scf.if %a_active {
@@ -477,7 +477,7 @@ module attributes {ttl.launch_grid = [8 : i64, 1 : i64]} {
     // expected-note @below {{PipeNet net_0 declared here}}
     %pipe = ttl.create_pipe src(0, 0) dst(4, 0) to(7, 0) net 0
         : !ttl.pipe<src(0, 0) dst(4, 0) to(7, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     affine.if #multiWide(%x) {
@@ -500,7 +500,7 @@ module attributes {ttl.launch_grid = [8 : i64, 1 : i64]} {
     // expected-note @below {{PipeNet net_0 declared here}}
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     affine.if #wideSet(%x) {
@@ -525,7 +525,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @unknown_pipenet_id() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     // expected-error @below {{references unknown PipeNet net_7}}
     %cond = ttl.is_src {pipe_net_id = 7 : i64}
@@ -550,7 +550,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @affine_if_div_by_zero() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     // expected-note @below {{this expression is not statically analyzable}}
@@ -574,7 +574,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @unknown_pipenet_id_dst() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     // expected-error @below {{references unknown PipeNet net_9}}
     %cond = ttl.is_dst {pipe_net_id = 9 : i64}
@@ -603,7 +603,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @unknown_pipenet_id_active() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     // expected-error @below {{references unknown PipeNet net_5}}
     %cond = ttl.is_active {pipe_net_id = 5 : i64}
@@ -675,7 +675,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     // expected-note @below {{PipeNet net_0 declared here}}
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     %c0 = arith.constant 0 : index
@@ -702,7 +702,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     // expected-note @below {{PipeNet net_0 declared here}}
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %c0 = arith.constant 0 : index
     %c4 = arith.constant 4 : index
@@ -728,7 +728,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     // expected-note @below {{PipeNet net_0 declared here}}
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     scf.execute_region {
       // expected-error @below {{this `ttl.copy(buffer, pipe)` sends data on PipeNet net_0 from a node that is not a source}}
@@ -765,7 +765,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     // expected-note @below {{PipeNet net_0 declared here}}
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     func.call @send_helper(%cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
     func.return

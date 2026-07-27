@@ -154,10 +154,6 @@ class PhysicalDFBConfig:
     tile: Tuple[int, int] = (32, 32)
 
 
-# Compatibility for callers that construct compiler-only metadata directly.
-CompilerAllocatedDFBConfig = PhysicalDFBConfig
-
-
 def make_dataflow_buffer_like(
     tensor: Any,
     shape: Tuple[int, ...],

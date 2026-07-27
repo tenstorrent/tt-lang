@@ -51,9 +51,9 @@
 func.func @synchronized_dm()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                 ttl.base_cta_index = 3 : i32, ttl.crta_indices = []} {
-  %a = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
-  %ack = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
-  %b = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
+  %a = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
+  %ack = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
+  %b = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
   %a_view = ttl.cb_reserve %a : <[1, 1], !ttcore.tile<1x16, bf16>, 2> -> tensor<1x1x!ttcore.tile<1x16, bf16>>
   ttl.cb_push %a : <[1, 1], !ttcore.tile<1x16, bf16>, 2>
   %ack_view = ttl.cb_wait %ack : <[1, 1], !ttcore.tile<1x16, bf16>, 2> -> tensor<1x1x!ttcore.tile<1x16, bf16>>
@@ -66,9 +66,9 @@ func.func @synchronized_dm()
 func.func @synchronized_compute()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
                 ttl.base_cta_index = 3 : i32, ttl.crta_indices = []} {
-  %a = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
-  %ack = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
-  %b = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
+  %a = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
+  %ack = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
+  %b = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
   %a_view = ttl.cb_wait %a : <[1, 1], !ttcore.tile<1x16, bf16>, 2> -> tensor<1x1x!ttcore.tile<1x16, bf16>>
   ttl.cb_pop %a : <[1, 1], !ttcore.tile<1x16, bf16>, 2>
   %ack_view = ttl.cb_reserve %ack : <[1, 1], !ttcore.tile<1x16, bf16>, 2> -> tensor<1x1x!ttcore.tile<1x16, bf16>>
@@ -102,9 +102,9 @@ func.func @synchronized_compute()
 func.func @three_thread_producer()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                 ttl.base_cta_index = 4 : i32, ttl.crta_indices = []} {
-  %first_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %relay_to_producer = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %second_dfb = ttl.bind_cb {cb_index = 3, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %first_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %relay_to_producer = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %second_dfb = ttl.bind_cb {cb_index = 3, block_count = 2} {dfb_id = 3 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %first_reserved = ttl.cb_reserve %first_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.cb_push %first_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %producer_ack = ttl.cb_wait %relay_to_producer : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -117,9 +117,9 @@ func.func @three_thread_producer()
 func.func @three_thread_consumer()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
                 ttl.base_cta_index = 4 : i32, ttl.crta_indices = []} {
-  %first_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %consumer_to_relay = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %second_dfb = ttl.bind_cb {cb_index = 3, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %first_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %consumer_to_relay = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %second_dfb = ttl.bind_cb {cb_index = 3, block_count = 2} {dfb_id = 3 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %first_waited = ttl.cb_wait %first_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.cb_pop %first_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %relay_reserved = ttl.cb_reserve %consumer_to_relay : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -132,8 +132,8 @@ func.func @three_thread_consumer()
 func.func @three_thread_relay()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                 ttl.base_cta_index = 4 : i32, ttl.crta_indices = []} {
-  %consumer_to_relay = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %relay_to_producer = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %consumer_to_relay = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %relay_to_producer = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %consumer_ack = ttl.cb_wait %consumer_to_relay : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.cb_pop %consumer_to_relay : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %producer_ack = ttl.cb_reserve %relay_to_producer : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -159,8 +159,8 @@ func.func @three_thread_relay()
 func.func @unordered_dm()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                 ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
-  %a = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %b = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %a = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %b = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %a_view = ttl.cb_reserve %a : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.cb_push %a : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %b_view = ttl.cb_reserve %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -171,8 +171,8 @@ func.func @unordered_dm()
 func.func @unordered_compute()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
                 ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
-  %a = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %b = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %a = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %b = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %a_view = ttl.cb_wait %a : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.cb_pop %a : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %b_view = ttl.cb_wait %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -200,9 +200,9 @@ func.func @unordered_compute()
 func.func @early_wait_producer()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                 ttl.base_cta_index = 3 : i32, ttl.crta_indices = []} {
-  %a = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %ack = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %b = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %a = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %ack = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %b = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %a_view = ttl.cb_reserve %a : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.cb_push %a : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %ack_view = ttl.cb_wait %ack : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -215,8 +215,8 @@ func.func @early_wait_producer()
 func.func @early_wait_compute()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
                 ttl.base_cta_index = 3 : i32, ttl.crta_indices = []} {
-  %a = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %ack = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %a = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %ack = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %a_view = ttl.cb_wait %a : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.cb_pop %a : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %ack_view = ttl.cb_reserve %ack : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -227,7 +227,7 @@ func.func @early_wait_compute()
 func.func @early_wait_consumer()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                 ttl.base_cta_index = 3 : i32, ttl.crta_indices = []} {
-  %b = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %b = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %b_view = ttl.cb_wait %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.cb_pop %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   return
@@ -251,8 +251,8 @@ func.func @early_wait_consumer()
 func.func @unbalanced_dm()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                 ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
-  %a = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %b = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %a = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %b = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %a_view = ttl.cb_reserve %a : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.cb_push %a : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %b_view = ttl.cb_reserve %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -263,8 +263,8 @@ func.func @unbalanced_dm()
 func.func @unbalanced_compute()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
                 ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
-  %a = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %b = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %a = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %b = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %a_view = ttl.cb_wait %a : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   %b_view = ttl.cb_wait %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.cb_pop %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -285,8 +285,8 @@ func.func @unbalanced_compute()
 func.func @different_types()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
                 ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
-  %b = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %a = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %b = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %a = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %a_producer = ttl.cb_reserve %a : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
   ttl.cb_push %a : <[1, 1], !ttcore.tile<32x32, f32>, 2>
   %a_consumer = ttl.cb_wait %a : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
@@ -300,8 +300,9 @@ func.func @different_types()
 
 // -----
 
-// Equal provisional indices identify user DFBs across functions, but not
-// compiler-created DFBs. The two unbounded compiler DFBs remain distinct.
+// Explicit dfb_id values identify user DFBs across functions. Compiler-created
+// declarations receive distinct identities even when their provisional
+// cb_index values match.
 
 // REUSE: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, {{.*}}}, {block_count = 2 : i32, dfb_index = 1 : i32, {{.*}}}]}
 // REUSE-LABEL: func.func @first_compiler_dfb
@@ -339,8 +340,8 @@ func.func @second_compiler_dfb()
 func.func @loop_lifecycle()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
                 ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
-  %loop_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %b = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %loop_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %b = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %lower_bound = arith.constant 0 : index
   %upper_bound = arith.constant 4 : index
   %step = arith.constant 1 : index
@@ -375,7 +376,7 @@ func.func @loop_lifecycle()
 func.func @producer_transition_dm()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                 ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
-  %input = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %input = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %input_producer = ttl.cb_reserve %input : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.cb_push %input : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   return
@@ -384,7 +385,7 @@ func.func @producer_transition_dm()
 func.func @producer_transition_compute()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
                 ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
-  %input = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %input = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %intermediate = ttl.bind_cb {cb_index = 1, block_count = 2} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %input_consumer = ttl.cb_wait %input : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.cb_pop %input : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -414,9 +415,9 @@ func.func @producer_transition_compute()
 func.func @consumer_transition_compute()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
                 ttl.base_cta_index = 3 : i32, ttl.crta_indices = []} {
-  %a = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %ack = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %b = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %a = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %ack = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %b = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %a_producer = ttl.cb_reserve %a : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.cb_push %a : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %a_consumer = ttl.cb_wait %a : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -431,8 +432,8 @@ func.func @consumer_transition_compute()
 func.func @consumer_transition_dm()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                 ttl.base_cta_index = 3 : i32, ttl.crta_indices = []} {
-  %ack = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %b = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %ack = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %b = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %ack_consumer = ttl.cb_wait %ack : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.cb_pop %ack : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %b_consumer = ttl.cb_wait %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>

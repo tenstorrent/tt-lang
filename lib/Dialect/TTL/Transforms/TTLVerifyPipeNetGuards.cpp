@@ -352,15 +352,12 @@ void recordGuardOperation(Operation *op, const LaunchNodeDomain &domain,
         state.recordPipeWaitEvent(wait, domain, unanalyzableOp);
       })
       .Case<CBPushOp>([&](CBPushOp push) {
-        if (auto dfbId = getDFBId(push.getCb())) {
-          state.dfbProducerDomains[*dfbId] =
-              state.dfbProducerDomains[*dfbId].unionWith(domain);
-        }
+        int64_t dfbId = getDFBId(push.getCb());
+        state.dfbProducerDomains[dfbId] =
+            state.dfbProducerDomains[dfbId].unionWith(domain);
       })
       .Case<CBWaitOp>([&](CBWaitOp wait) {
-        if (auto dfbId = getDFBId(wait.getCb())) {
-          state.waitUses.push_back({wait, domain, *dfbId});
-        }
+        state.waitUses.push_back({wait, domain, getDFBId(wait.getCb())});
       });
 }
 

@@ -8,7 +8,7 @@
 func.func @global_user_index()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.base_cta_index = 5 : i32,
                 ttl.crta_indices = []} {
-  %user4 = ttl.bind_cb {cb_index = 4, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %user4 = ttl.bind_cb {cb_index = 4, block_count = 2} {dfb_id = 4 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   return
 }
 
@@ -16,11 +16,11 @@ func.func @global_user_index()
 // 1. Finalization moves it to physical index 5 before compute configuration
 // records the SFPU f32 input index.
 
-// CHECK: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 5 : i32, element_type = !ttcore.tile<32x32, f32>, num_tiles = 1 : i32}], ttl.dfb_allocations = {{.*}}}
+// CHECK: module attributes {ttl.dfb_allocations = {{.*}}}
 // CHECK-LABEL: func.func @compiler_f32_sfpu
 // CHECK-SAME: ttl.base_cta_index = 6 : i32
 // CHECK-SAME: ttl.unpack_to_dest_fp32 = array<i32: 5>
-// CHECK: %[[COMPILER_DFB:.*]] = ttl.bind_cb{cb_index = 5, {{.*}}} {ttl.compiler_allocated}
+// CHECK: %[[COMPILER_DFB:.*]] = ttl.bind_cb{cb_index = 5, {{.*}}} {dfb_id = 5 : index, ttl.compiler_allocated}
 func.func @compiler_f32_sfpu(
     %input: tensor<1x1x!ttcore.tile<32x32, f32>>)
     -> tensor<1x1x!ttcore.tile<32x32, f32>>
@@ -29,7 +29,7 @@ func.func @compiler_f32_sfpu(
   %c0 = arith.constant 0 : index
   %init = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, f32>>
 
-  %output_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %output_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %compiler_dfb = ttl.bind_cb {cb_index = 1, block_count = 2} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
 
   %input_attached = ttl.attach_cb %input, %compiler_dfb

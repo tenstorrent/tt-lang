@@ -100,18 +100,19 @@ inline std::optional<int64_t> getCBIndex(mlir::Value cb) {
   return std::nullopt;
 }
 
-/// Resolve the logical DFB identity attached to `cb`. Legacy IR uses its
-/// current CB index and therefore must not merge distinct logical DFBs first.
-inline std::optional<int64_t> getDFBId(mlir::Value cb) {
+/// Return the stable logical DFB identity attached to `cb`.
+///
+/// Requires `ttl-finalize-dfb-indices` to have resolved `cb` to a
+/// `ttl.bind_cb` carrying `dfb_id`.
+inline int64_t getDFBId(mlir::Value cb) {
   cb = traceUnrealizedCasts(cb);
   auto bindOp = cb.getDefiningOp<BindCBOp>();
-  if (!bindOp) {
-    return std::nullopt;
-  }
-  if (auto dfbId = bindOp.getDfbId()) {
-    return dfbId->getSExtValue();
-  }
-  return bindOp.getCbIndex().getSExtValue();
+  assert(bindOp &&
+         "DFB value must resolve to ttl.bind_cb before identity lookup");
+  auto dfbId = bindOp.getDfbId();
+  assert(dfbId.has_value() &&
+         "ttl-finalize-dfb-indices must assign every logical DFB identity");
+  return dfbId->getSExtValue();
 }
 
 /// Return the element type for a ttcore::TileType.

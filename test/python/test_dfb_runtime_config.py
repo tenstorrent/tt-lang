@@ -7,38 +7,38 @@
 import pytest
 
 from ttl.dataflow_buffer import PhysicalDFBConfig
+from ttl.dialects import ttcore  # noqa: F401
+from ttl.ir import Context, Module
 from ttl.ttl_api import _resolve_dfb_configs
 
 
-class _FakeModule:
-    def __init__(self, attributes):
-        self.operation = type("Operation", (), {"attributes": attributes})()
-
-
 def _entry(dfb_index, *, num_tiles=1, element_type="bf16", block_count=2):
-    return {
-        "dfb_index": dfb_index,
-        "num_tiles": num_tiles,
-        "element_type": element_type,
-        "block_count": block_count,
-    }
+    return (
+        f"{{dfb_index = {dfb_index} : i32, num_tiles = {num_tiles} : i32, "
+        f"element_type = {element_type}, block_count = {block_count} : i32}}"
+    )
+
+
+def _module(allocations=None):
+    if allocations is None:
+        return Module.parse("module {}")
+    entries = ", ".join(allocations)
+    return Module.parse(f"module attributes {{ttl.dfb_allocations = [{entries}]}} {{}}")
 
 
 def test_complete_physical_allocations_are_sorted():
-    module = _FakeModule(
-        {
-            "ttl.dfb_allocations": [
+    with Context():
+        module = _module(
+            [
                 _entry(1, num_tiles=4, element_type="f32", block_count=3),
                 _entry(0, num_tiles=2),
-            ],
-            "ttl.compiler_allocated_dfbs": [_entry(2)],
-        }
-    )
+            ]
+        )
 
-    assert _resolve_dfb_configs(module) == [
-        PhysicalDFBConfig(0, 2, "bfloat16", 2),
-        PhysicalDFBConfig(1, 4, "float32", 3),
-    ]
+        assert _resolve_dfb_configs(module) == [
+            PhysicalDFBConfig(0, 2, "bfloat16", 2),
+            PhysicalDFBConfig(1, 4, "float32", 3),
+        ]
 
 
 @pytest.mark.parametrize(
@@ -56,26 +56,27 @@ def test_complete_physical_allocations_are_sorted():
 def test_complete_physical_allocations_preserve_tile_types(
     element_type, data_format, tile
 ):
-    module = _FakeModule(
-        {"ttl.dfb_allocations": [_entry(0, element_type=element_type)]}
-    )
+    with Context():
+        module = _module([_entry(0, element_type=element_type)])
 
-    assert _resolve_dfb_configs(module) == [
-        PhysicalDFBConfig(0, 1, data_format, 2, tile)
-    ]
+        assert _resolve_dfb_configs(module) == [
+            PhysicalDFBConfig(0, 1, data_format, 2, tile)
+        ]
 
 
 def test_empty_complete_physical_allocations_replace_frontend_configs():
-    module = _FakeModule({"ttl.dfb_allocations": []})
+    with Context():
+        module = _module([])
 
-    assert _resolve_dfb_configs(module) == []
+        assert _resolve_dfb_configs(module) == []
 
 
 def test_missing_complete_allocations_are_rejected():
-    module = _FakeModule({"ttl.compiler_allocated_dfbs": [_entry(0)]})
+    with Context():
+        module = _module()
 
-    with pytest.raises(ValueError, match="missing ttl.dfb_allocations"):
-        _resolve_dfb_configs(module)
+        with pytest.raises(ValueError, match="missing ttl.dfb_allocations"):
+            _resolve_dfb_configs(module)
 
 
 @pytest.mark.parametrize(
@@ -84,26 +85,18 @@ def test_missing_complete_allocations_are_rejected():
         ([_entry(-1)], "dfb_index must be non-negative"),
         ([_entry(0, num_tiles=0)], "num_tiles must be positive"),
         ([_entry(0, block_count=0)], "block_count must be positive"),
-        (
-            [_entry(0, element_type="!ttcore.tile<1, bf16>")],
-            "Invalid tile dimensions",
-        ),
+        ([_entry(0, element_type="i1")], "Unrecognized MLIR element type"),
         ([_entry(0), _entry(0)], "duplicate dfb_index 0"),
         ([_entry(1)], "dense physical index range"),
         (
-            [
-                {
-                    "dfb_index": 0,
-                    "num_tiles": 1,
-                    "element_type": "bf16",
-                }
-            ],
+            ["{dfb_index = 0 : i32, num_tiles = 1 : i32, " "element_type = bf16}"],
             "missing 'block_count'",
         ),
     ],
 )
 def test_invalid_complete_physical_allocations_are_rejected(allocations, message):
-    module = _FakeModule({"ttl.dfb_allocations": allocations})
+    with Context():
+        module = _module(allocations)
 
-    with pytest.raises(ValueError, match=message):
-        _resolve_dfb_configs(module)
+        with pytest.raises(ValueError, match=message):
+            _resolve_dfb_configs(module)

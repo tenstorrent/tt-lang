@@ -26,7 +26,6 @@
 #include "mlir/IR/BuiltinOps.h"
 
 #include "llvm/ADT/MapVector.h"
-#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/Support/Debug.h"
 
 #include <algorithm>
@@ -177,29 +176,15 @@ static int32_t assignPhysicalDFBIndices(func::FuncOp funcOp,
   return nextSlotOffset;
 }
 
-static SmallVector<BindCBOp>
-collectBindOps(ModuleOp moduleOp,
-               llvm::function_ref<bool(BindCBOp)> shouldCollect) {
-  SmallVector<BindCBOp> bindOps;
-  moduleOp->walk([&](BindCBOp bindOp) {
-    if (shouldCollect(bindOp)) {
-      bindOps.push_back(bindOp);
-    }
-  });
-  return bindOps;
-}
-
+/// Emits the complete physical DFB allocation table consumed by the runtime.
+///
+/// Multiple logical DFBs may share one physical index, but every declaration
+/// at that index must have the same type so one runtime descriptor suffices.
 static LogicalResult emitDFBMetadata(ModuleOp moduleOp, OpBuilder &builder,
-                                     StringRef attributeName,
-                                     ArrayRef<BindCBOp> bindOps,
-                                     bool emitEmpty = false) {
+                                     ArrayRef<BindCBOp> bindOps) {
   if (bindOps.empty()) {
-    if (emitEmpty) {
-      moduleOp->setAttr(attributeName,
-                        ArrayAttr::get(moduleOp.getContext(), {}));
-    } else {
-      moduleOp->removeAttr(attributeName);
-    }
+    moduleOp->setAttr(kDFBAllocationsAttrName,
+                      ArrayAttr::get(moduleOp.getContext(), {}));
     return success();
   }
 
@@ -241,7 +226,7 @@ static LogicalResult emitDFBMetadata(ModuleOp moduleOp, OpBuilder &builder,
     entries.push_back(DictionaryAttr::get(context, entryAttributes));
   }
 
-  moduleOp->setAttr(attributeName, ArrayAttr::get(context, entries));
+  moduleOp->setAttr(kDFBAllocationsAttrName, ArrayAttr::get(context, entries));
   return success();
 }
 
@@ -266,6 +251,8 @@ struct TTLFinalizeDFBIndicesPass
       }
 
       MLIRContext *context = moduleOp.getContext();
+      // Commit the complete assignment only after the read-only analysis has
+      // proven that every logical DFB has a valid physical index.
       for (const DFBPhysicalIndexAssignment &assignment :
            analysis.getAssignments()) {
         for (BindCBOp bindOp : assignment.declarations) {
@@ -286,11 +273,9 @@ struct TTLFinalizeDFBIndicesPass
       int32_t numDFBs = analysis.getPhysicalSlotCount();
       LLVM_DEBUG(llvm::dbgs() << "Total DFB count: " << numDFBs << "\n");
 
-      moduleOp->removeAttr(kCompilerAllocatedDFBsAttrName);
-      SmallVector<BindCBOp> allBindOps =
-          collectBindOps(moduleOp, [](BindCBOp) { return true; });
-      if (failed(emitDFBMetadata(moduleOp, builder, kDFBAllocationsAttrName,
-                                 allBindOps, /*emitEmpty=*/true))) {
+      SmallVector<BindCBOp> allBindOps;
+      moduleOp->walk([&](BindCBOp bindOp) { allBindOps.push_back(bindOp); });
+      if (failed(emitDFBMetadata(moduleOp, builder, allBindOps))) {
         signalPassFailure();
         return;
       }
@@ -305,6 +290,18 @@ struct TTLFinalizeDFBIndicesPass
                           builder.getI32IntegerAttr(numDFBs));
         }
       });
+      return;
+    }
+
+    // Resolve identities before the compiler-only allocator mutates indices.
+    DFBLogicalIdentityAnalysis identityAnalysis(moduleOp);
+    if (!identityAnalysis.succeeded()) {
+      Operation *errorOperation = identityAnalysis.getErrorOperation();
+      if (!errorOperation) {
+        errorOperation = moduleOp.getOperation();
+      }
+      errorOperation->emitOpError() << identityAnalysis.getErrorMessage();
+      signalPassFailure();
       return;
     }
 
@@ -354,6 +351,16 @@ struct TTLFinalizeDFBIndicesPass
       return;
     }
 
+    // Delay identity materialization until allocation and capacity validation
+    // succeed so those failures leave the identity attributes unchanged.
+    MLIRContext *context = moduleOp.getContext();
+    for (const DFBLogicalIdentityAssignment &assignment :
+         identityAnalysis.getAssignments()) {
+      BindCBOp declaration = assignment.declaration;
+      declaration.setDfbIdAttr(
+          IntegerAttr::get(IndexType::get(context), assignment.logicalId));
+    }
+
     // Update ttl.base_cta_index on every function that has it.
     if (numDFBs > 0) {
       moduleOp->walk([&](func::FuncOp funcOp) {
@@ -364,22 +371,9 @@ struct TTLFinalizeDFBIndicesPass
       });
     }
 
-    // Re-collect compiler-allocated ops because their indices may have changed.
-    SmallVector<BindCBOp> compilerAllocatedOps =
-        collectBindOps(moduleOp, [](BindCBOp bindOp) {
-          return bindOp->hasAttr(kCompilerAllocatedAttrName);
-        });
-    if (failed(emitDFBMetadata(moduleOp, builder,
-                               kCompilerAllocatedDFBsAttrName,
-                               compilerAllocatedOps))) {
-      signalPassFailure();
-      return;
-    }
-
-    SmallVector<BindCBOp> allBindOps =
-        collectBindOps(moduleOp, [](BindCBOp) { return true; });
-    if (failed(emitDFBMetadata(moduleOp, builder, kDFBAllocationsAttrName,
-                               allBindOps, /*emitEmpty=*/true))) {
+    SmallVector<BindCBOp> allBindOps;
+    moduleOp->walk([&](BindCBOp bindOp) { allBindOps.push_back(bindOp); });
+    if (failed(emitDFBMetadata(moduleOp, builder, allBindOps))) {
       signalPassFailure();
     }
   }

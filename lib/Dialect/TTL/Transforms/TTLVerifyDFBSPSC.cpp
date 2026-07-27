@@ -197,18 +197,14 @@ struct TTLVerifyDFBSPSCPass
       if (isa<CBReserveOp, CBWaitOp>(op) && getEnclosingKernelThread(op)) {
         hasAcquire = true;
       } else if (auto bindOp = dyn_cast<BindCBOp>(op)) {
-        std::optional<int64_t> dfbId = getDFBId(bindOp.getResult());
-        std::optional<int64_t> cbIndex = getCBIndex(bindOp.getResult());
-        if (!dfbId || !cbIndex) {
-          return;
-        }
-        bindSites.try_emplace(*dfbId, op);
-        auto [indexIt, inserted] =
-            physicalIndices.try_emplace(*dfbId, *cbIndex);
-        if (!inserted && indexIt->second != *cbIndex) {
-          bindOp.emitOpError() << "logical DFB " << *dfbId
+        int64_t dfbId = getDFBId(bindOp.getResult());
+        int64_t cbIndex = bindOp.getCbIndex().getSExtValue();
+        bindSites.try_emplace(dfbId, op);
+        auto [indexIt, inserted] = physicalIndices.try_emplace(dfbId, cbIndex);
+        if (!inserted && indexIt->second != cbIndex) {
+          bindOp.emitOpError() << "logical DFB " << dfbId
                                << " has inconsistent finalized cb_index values "
-                               << indexIt->second << " and " << *cbIndex;
+                               << indexIt->second << " and " << cbIndex;
           hasInconsistentIndex = true;
         }
       }
@@ -258,16 +254,13 @@ struct TTLVerifyDFBSPSCPass
       if (!thread) {
         return;
       }
-      std::optional<int64_t> dfbId = getDFBId(cb);
-      assert(dfbId.has_value() &&
-             "ttl-verify-dfb-spsc requires resolvable DFB identity; run "
-             "ttl-finalize-dfb-indices first");
+      int64_t dfbId = getDFBId(cb);
       auto domainIt = state.acquireDomains.find(op);
       AcquireDomain acquireDomain =
           domainIt == state.acquireDomains.end()
               ? AcquireDomain{LaunchNodeDomain::unknown(), op}
               : domainIt->second;
-      addParticipant(perDFB[*dfbId], thread, op, acquireDomain.domain,
+      addParticipant(perDFB[dfbId], thread, op, acquireDomain.domain,
                      acquireDomain.unanalyzableOp);
     };
 

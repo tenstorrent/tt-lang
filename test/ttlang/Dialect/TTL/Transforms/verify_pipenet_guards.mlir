@@ -20,7 +20,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @copy_roles_valid() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
       %send = ttl.copy %cb, %pipe
@@ -81,7 +81,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @producer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 4, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 4, block_count = 2} {dfb_id = 4 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
       ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -92,7 +92,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @consumer() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 4, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 4, block_count = 2} {dfb_id = 4 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
       %view = ttl.cb_wait %cb
@@ -116,7 +116,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @producer_chained_cb_casts() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 5, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 5, block_count = 2} {dfb_id = 5 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %cast1 = builtin.unrealized_conversion_cast %cb
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -133,7 +133,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @consumer_chained_cb_casts() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 5, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 5, block_count = 2} {dfb_id = 5 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
       %view = ttl.cb_wait %cb
@@ -156,7 +156,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @is_src_predicate() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %cond = ttl.is_src {pipe_net_id = 0 : i64}
     scf.if %cond {
@@ -181,7 +181,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @is_dst_predicate() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %cond = ttl.is_dst {pipe_net_id = 0 : i64}
     scf.if %cond {
@@ -213,7 +213,7 @@ module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
         : !ttl.pipe<src(0, 0) dst(0, 1) to(0, 3) net 0>
     %pb = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 1
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 1>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.if_dst %pa : !ttl.pipe<src(0, 0) dst(0, 1) to(0, 3) net 0> {
       %recv_a_dst = ttl.cb_reserve %cb
@@ -249,7 +249,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @scf_for_no_predicate() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %c0 = arith.constant 0 : index
     %c4 = arith.constant 4 : index
@@ -279,7 +279,7 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
   func.func @affine_if_guard() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     affine.if #srcSet(%x) {
@@ -304,7 +304,7 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
   func.func @is_active_scope() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %cond = ttl.is_active {pipe_net_id = 0 : i64}
     scf.if %cond {
@@ -331,7 +331,7 @@ module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
         : !ttl.pipe<src(0, 0) dst(0, 1) to(0, 3) net 0>
     %pb = ttl.create_pipe src(0, 1) dst(1, 1) to(3, 1) net 1
         : !ttl.pipe<src(0, 1) dst(1, 1) to(3, 1) net 1>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %a_active = ttl.is_active {pipe_net_id = 0 : i64}
     scf.if %a_active {
@@ -364,7 +364,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @unsigned_wrapped_coordinate_guard() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     %zero = arith.constant 0 : index
@@ -393,7 +393,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @remainder_coordinate_guard() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     %zero = arith.constant 0 : index
@@ -422,7 +422,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @cmpi_ne_guard() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     %c1 = arith.constant 1 : index
@@ -448,7 +448,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @cmpi_sle_guard() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     %c0 = arith.constant 0 : index
@@ -475,7 +475,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @cmpi_sgt_guard() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     %c0 = arith.constant 0 : index
@@ -505,7 +505,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @cmpi_sge_guard() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     %c1 = arith.constant 1 : index
@@ -534,7 +534,7 @@ module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
   func.func @andi_two_coords() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     %y = ttl.core_y : index
@@ -565,7 +565,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @ori_two_coords() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     %c0 = arith.constant 0 : index
@@ -604,7 +604,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @xori_guard() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     %c0 = arith.constant 0 : index
@@ -640,7 +640,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @evalindex_subi_indexcast() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     %x_i32 = arith.index_cast %x : index to i32
@@ -670,7 +670,7 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
   func.func @affine_if_mul() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     affine.if #mulSet(%x) {
@@ -698,7 +698,7 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
   func.func @affine_if_mod() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     affine.if #modSet(%x) {
@@ -726,7 +726,7 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
   func.func @affine_if_floordiv() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     affine.if #floordivSet(%x) {
@@ -755,7 +755,7 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
   func.func @affine_if_ceildiv() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     affine.if #ceildivSet(%x) {
@@ -782,7 +782,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @affine_if_symbol() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     %s0 = arith.constant 0 : index
@@ -811,7 +811,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @multi_block(%flag: i1) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     cf.cond_br %flag, ^bb1, ^bb2
   ^bb1:
@@ -843,7 +843,7 @@ module attributes {ttl.launch_grid = [3 : i64, 2 : i64]} {
   func.func @mixed_predicate_andi() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %is_src = ttl.is_src {pipe_net_id = 0 : i64}
     %y = ttl.core_y : index
@@ -878,7 +878,7 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
   func.func @andi_else_domain() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(1, 1) net 0
         : !ttl.pipe<src(0, 0) dst(0, 0) to(1, 1) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     %y = ttl.core_y : index
@@ -920,7 +920,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @affine_if_else_branch() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     affine.if #srcOnly(%x) {
@@ -953,7 +953,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @scf_while_no_predicate() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %c0 = arith.constant 0 : index
     %c4 = arith.constant 4 : index
@@ -988,7 +988,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @scf_execute_region_no_predicate() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %cond = ttl.is_src {pipe_net_id = 0 : i64}
     scf.if %cond {
@@ -1017,7 +1017,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @scf_while_top_level() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %c0 = arith.constant 0 : index
     %c4 = arith.constant 4 : index
@@ -1051,7 +1051,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @affine_for_no_predicate() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %cond = ttl.is_src {pipe_net_id = 0 : i64}
     scf.if %cond {
@@ -1090,7 +1090,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @kernel_caller_guards() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
       func.call @send_helper(%cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
@@ -1115,7 +1115,7 @@ module attributes {ttl.launch_grid = [3 : i64, 1 : i64]} {
   func.func @affine_if_inequality() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     affine.if #dstRange(%x) {
@@ -1145,7 +1145,7 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
   func.func @affine_if_multi_constraint() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     affine.if #twoConstraints(%x) {
@@ -1173,7 +1173,7 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
   func.func @affine_if_multi_dim() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 1) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 1) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     %y = ttl.core_y : index
@@ -1204,7 +1204,7 @@ module attributes {ttl.launch_grid = [3 : i64, 1 : i64]} {
   func.func @affine_if_inequality_else() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     affine.if #dstHalf(%x) {

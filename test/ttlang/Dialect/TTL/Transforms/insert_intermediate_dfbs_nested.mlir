@@ -12,7 +12,7 @@
 // entry, the rest of the materialization bundle stays inside the loop.
 
 // CHECK-LABEL: func.func @intermediate_in_scf_for
-// CHECK: ttl.bind_cb{cb_index = 3, block_count = 1} {ttl.compiler_allocated}
+// CHECK: ttl.bind_cb{cb_index = 3, block_count = 1} {dfb_id = 3 : index, ttl.compiler_allocated}
 // CHECK: scf.for
 // CHECK:   ttl.add
 // CHECK:   ttl.cb_reserve
@@ -30,9 +30,9 @@ func.func @intermediate_in_scf_for()
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   %c4 = arith.constant 4 : index
-  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb_scaler = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb_scaler = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
 
   scf.for %iv = %c0 to %c4 step %c1 {
     %a_wait = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -58,7 +58,7 @@ func.func @intermediate_in_scf_for()
 // function body entry, not inside the if region.
 
 // CHECK-LABEL: func.func @intermediate_in_scf_if
-// CHECK: ttl.bind_cb{cb_index = 3, block_count = 1} {ttl.compiler_allocated}
+// CHECK: ttl.bind_cb{cb_index = 3, block_count = 1} {dfb_id = 3 : index, ttl.compiler_allocated}
 // CHECK: scf.if
 // CHECK-NOT: ttl.compiler_allocated
 // CHECK:   ttl.add
@@ -72,9 +72,9 @@ func.func @intermediate_in_scf_for()
 func.func @intermediate_in_scf_if(%cond: i1)
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
                 ttl.base_cta_index = 3 : i32, ttl.crta_indices = []} {
-  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb_scaler = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb_scaler = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
 
   scf.if %cond {
     %a_wait = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -101,7 +101,7 @@ func.func @intermediate_in_scf_if(%cond: i1)
 // Before the fix, this crashed in TTLFinalizeDFBIndices.
 
 // CHECK-LABEL: func.func @intermediate_in_nested_for_if
-// CHECK: ttl.bind_cb{cb_index = 3, block_count = 1} {ttl.compiler_allocated}
+// CHECK: ttl.bind_cb{cb_index = 3, block_count = 1} {dfb_id = 3 : index, ttl.compiler_allocated}
 // CHECK: scf.for
 // CHECK:   scf.if
 // CHECK-NOT: ttl.compiler_allocated
@@ -116,9 +116,9 @@ func.func @intermediate_in_nested_for_if(%cond: i1)
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   %c4 = arith.constant 4 : index
-  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %cb_scaler = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb_scaler = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
 
   scf.for %iv = %c0 to %c4 step %c1 {
     scf.if %cond {

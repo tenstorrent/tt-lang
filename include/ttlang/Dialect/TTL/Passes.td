@@ -630,11 +630,11 @@ def TTLVerifyDFBSPSC
     Walks every `ttl.cb_reserve` and `ttl.cb_wait`, groups them by stable
     logical `dfb_id` and enclosing `ttl.kernel_thread`-tagged `func.func`, and
     tracks the launch-node domain for each producer or consumer participant.
-    Legacy IR without `dfb_id` uses its current `cb_index`. A DFB is valid
-    when, for each launched node, at most one producer thread reserves it and
-    at most one consumer thread waits on it. Disjoint domains across different
-    kernel-thread functions are accepted. Distinct logical DFBs remain separate
-    when physical allocation assigns them the same `cb_index`.
+    A DFB is valid when, for each launched node, at most one producer thread
+    reserves it and at most one consumer thread waits on it. Disjoint domains
+    across different kernel-thread functions are accepted. Distinct logical
+    DFBs remain separate when physical allocation assigns them the same
+    `cb_index`.
 
     tt-metal circular buffers expose a counter pair (`pages_received`,
     `pages_acked`) that is not multi-writer safe on either side, so the
@@ -645,10 +645,9 @@ def TTLVerifyDFBSPSC
     cannot be proven statically.
 
     Prerequisite: `ttl-finalize-dfb-indices` must run first so that every
-    `bind_cb` carries a concrete `cb_index`. Reuse finalization also preserves
-    each stable `dfb_id`; legacy IR falls back to its current `cb_index`.
-    Modules with DFB acquire ops must carry a valid `ttl.launch_grid`
-    attribute. The pass asserts on unresolvable identities.
+    `bind_cb` carries a concrete `cb_index` and `dfb_id`. Modules with DFB
+    acquire ops must carry a valid `ttl.launch_grid` attribute. The pass
+    asserts on unresolvable identities.
   }];
 
   let dependentDialects = [];
@@ -712,10 +711,10 @@ def TTLFinalizeDFBIndices
     function, and builds the ttl.dfb_allocations module attribute for the
     Python runtime. The attribute contains one descriptor per physical index.
 
-    Disabling `reuse-user-dfbs` retains the compiler-only linear-scan allocator
-    for compatibility with legacy pipelines. Both modes emit the complete
-    `ttl.dfb_allocations` table consumed by the Python runtime. The disabled
-    mode also emits `ttl.compiler_allocated_dfbs` for IR compatibility.
+    Disabling `reuse-user-dfbs` retains each user DFB's physical index and runs
+    the function-local linear-scan allocator only for compiler-created DFBs.
+    Both modes assign missing compiler-created `dfb_id` values and emit the
+    complete `ttl.dfb_allocations` table consumed by the Python runtime.
   }];
 
   let options = [

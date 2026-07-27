@@ -84,7 +84,6 @@ from .diagnostics import (
 )
 from .dtype_utils import (
     is_ttnn_tensor,
-    tile_bytes_from_dtype,
     torch_dtype_to_ttnn_datatype,
 )
 from .kernel_runner import (
@@ -1225,26 +1224,20 @@ def _parse_mlir_element_type(element_type) -> tuple[str, tuple[int, int]]:
     """Extract the data format and tile dimensions from an MLIR TypeAttr.
 
     The TypeAttr prints as e.g. "bf16" or "!ttcore.tile<32x32, bf16>".
-    Actual MLIR attributes use the TileType binding for dimensions. String
-    parsing supports lightweight test attributes.
     """
     tile = (32, 32)
     type_value = getattr(element_type, "value", None)
-    if type_value is not None:
-        tile_type = ttcore.ir.TileType.maybe_downcast(type_value)
-        if tile_type is not None:
-            tile = tuple(tile_type.shape)
+    if type_value is None:
+        raise TypeError(f"element_type must be an MLIR TypeAttr, got {element_type!r}")
+    tile_type = ttcore.ir.TileType.maybe_downcast(type_value)
+    if tile_type is not None:
+        tile = tuple(tile_type.shape)
 
     # For compound types like "!ttcore.tile<32x32, bf16>", extract the
     # type after the last comma. For bare types like "bf16", use as-is.
     type_str = str(element_type)
     token = type_str.strip()
     if "," in token:
-        if type_value is None and token.startswith("!ttcore.tile<"):
-            tile_shape = token.removeprefix("!ttcore.tile<").split(",", 1)[0]
-            tile = tuple(int(dimension) for dimension in tile_shape.split("x"))
-            if len(tile) != 2 or any(dimension <= 0 for dimension in tile):
-                raise ValueError(f"Invalid tile dimensions '{tile_shape}'")
         token = token.rsplit(",", 1)[1].strip().rstrip(">").strip()
     fmt = _MLIR_TYPE_TO_FORMAT.get(token)
     if fmt is not None:
@@ -1265,13 +1258,10 @@ def _extract_dfb_config_attribute(module, attribute_name):
     seen_indices = set()
     required_fields = ("dfb_index", "num_tiles", "element_type", "block_count")
     for position, entry in enumerate(attr):
-        try:
-            values = {field: entry[field] for field in required_fields}
-        except KeyError as error:
-            missing_field = error.args[0]
-            raise ValueError(
-                f"{attribute_name}[{position}] is missing '{missing_field}'"
-            ) from None
+        for field in required_fields:
+            if field not in entry:
+                raise ValueError(f"{attribute_name}[{position}] is missing '{field}'")
+        values = {field: entry[field] for field in required_fields}
 
         try:
             dfb_index = int(values["dfb_index"])
