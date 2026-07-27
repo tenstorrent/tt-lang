@@ -716,31 +716,175 @@ order, preserving their existing indices when no reuse is possible.
 
 ### Multithreaded lifetime analysis
 
-The analysis constructs one entry event and one completion event for each
-function-level operation. Program order connects consecutive operations in
-each kernel function. For a statically matched one-shot DFB lifecycle,
-`cb_push` completion precedes the corresponding blocking `cb_wait`
-completion. The existing acquire/release ownership analysis verifies that
-`cb_push` and `cb_pop` follow all uses of their acquired tensor views.
+`DFBMultithreadedLivenessAnalysis` models the concurrently executing kernel
+functions as a happens-before graph. Each top-level operation in a
+single-block kernel function receives an entry event and a completion event:
 
-A balanced one-shot DFB has an earliest-event antichain and a terminal
-`cb_pop` completion. Logical DFB A precedes logical DFB B only when A's
-terminal event happens before every event in B's earliest antichain. Otherwise
-the DFBs interfere. Requiring the complete frontier prevents reuse when an
-operation in another thread can begin before the synchronization ordering A
-and B.
+```text
+op.entry -> op.completion -> next.entry
+```
 
-The analysis does not infer dynamic occurrence matching for loops,
-multi-acquire protocols, conditional lifecycle operations, or credit-return
-ordering from `cb_pop` to `cb_reserve`. Such DFBs are unbounded and interfere
-with every same-type logical DFB. Nested non-lifecycle uses project to their
-enclosing function-level operation.
+Program-order edges connect consecutive operations within each function. For
+a statically matched one-shot DFB, the blocking protocol adds this
+cross-thread edge:
 
-The analysis partitions logical DFBs by exact type and greedily colors each
-interference graph. Each color is one physical index. The allocator verifies
-that no interfering pair received the same index and that the final count does
-not exceed the hardware limit. The analysis object does not modify IR; the
-finalizer applies the complete verified assignment afterward.
+```text
+producer thread:  ... -> cb_push.completion -----------------+
+                                                             |
+consumer thread:  cb_wait.entry -> (blocked) -> cb_wait.completion -> ...
+```
+
+The edge targets wait completion, not wait entry. A consumer may enter
+`cb_wait` before the producer publishes data, but it cannot complete that wait
+before the matching push completes. Treating the push as preceding wait entry
+would permit a later logical DFB to reuse the physical slot while its consumer
+is already waiting and could consume the earlier DFB's data.
+
+After adding all sound program-order and protocol edges, the analysis computes
+transitive reachability. Cyclic events are not considered ordered:
+`strictlyPrecedes(A, B)` requires reachability from A to B and no reachability
+from B to A.
+
+#### Bounded one-shot lifetimes
+
+A logical DFB is bounded only when all of these conditions hold:
+
+- exactly one `cb_reserve`, `cb_push`, `cb_wait`, and `cb_pop` reference it;
+- all four lifecycle operations are direct children of single-block kernel
+  functions;
+- reserve precedes push, and wait precedes pop;
+- push follows all uses owned by the reserve;
+- pop follows all uses owned by the wait;
+- reserve, push, wait, and pop transfer the same tile count.
+
+The acquire/release ownership analysis described in
+[DFB Sync Insertion](#dfb-sync-insertion) supplies the owned-use checks.
+Failure to prove any condition leaves the DFB unbounded.
+
+For a bounded DFB, every operation with a direct DFB operand is projected to a
+top-level function operation. `attach_cb` is excluded because it does not
+change the hardware protocol. The analysis records:
+
+- `earliestEvents`: the minimal use-entry events under happens-before;
+- `terminalEvents`: the `cb_pop` completion event.
+
+`earliestEvents` can contain operations from several threads. It is an
+antichain: no recorded event strictly precedes another. Requiring the terminal
+event of DFB A to precede every earliest event of DFB B proves that A is dead
+before any thread can begin using B.
+
+```text
+isOrderedBefore(A, B):
+  return A is bounded
+     and B is bounded
+     and every A.terminalEvent strictly precedes
+         every B.earliestEvent
+```
+
+The producer and consumer kernel functions are also part of the allocation
+state. TT-Metal maintains cumulative DFB counters and ring pointers within
+those functions. A zero-occupancy cut orders storage reuse, but does not move
+that thread-local state into another kernel function.
+
+#### Analysis algorithm
+
+The analysis is read-only. It computes a complete assignment before
+`TTLFinalizeDFBIndices` changes any `dfb_id`, `cb_index`, or module attribute.
+
+```text
+analyzeDFBs(module):
+  logicalDFBs = group bind_cb declarations by logical dfb_id
+  reject one logical ID with inconsistent CircularBufferType values
+  collect every lifecycle operation and direct runtime use
+
+  graph = empty happens-before graph
+  for each single-block kernel function:
+    for each top-level operation in program order:
+      add operation entry and completion events
+      add entry -> completion
+      add previous completion -> entry
+
+  for each logical DFB:
+    if hasMatchedOneShotLifecycle(DFB):
+      add DFB.push.completion -> DFB.wait.completion
+
+  compute transitive graph reachability
+
+  for each logical DFB with a matched one-shot lifecycle:
+    uses = project every runtime use to a top-level operation
+    if every use completion precedes DFB.pop.completion:
+      DFB.earliestEvents = minimal entry events in uses
+      DFB.terminalEvents = {DFB.pop.completion}
+      DFB.bounded = true
+
+  conflicts(A, B):
+    if A.type != B.type:
+      return true
+    if A.producerThread != B.producerThread:
+      return true
+    if A.consumerThread != B.consumerThread:
+      return true
+    return not isOrderedBefore(A, B)
+       and not isOrderedBefore(B, A)
+
+  colors = greedyFirstFit(
+      logicalDFBs ordered by logical ID,
+      mayShare = not conflicts)
+
+  reject if colors.size > 32
+  verify every pair in one color does not conflict
+  return logical DFB -> color
+```
+
+Each color is one physical index. Logical-ID order makes the result
+deterministic and preserves existing indices when no reuse is possible.
+
+#### Correctness sketch
+
+Every happens-before edge is a required execution order:
+
+- function program order is preserved by each kernel;
+- one matched push must complete before its blocking one-shot wait can
+  complete.
+
+For a bounded DFB, equal tile counts and one push/pop pair imply zero occupancy
+at `cb_pop` completion. The owned-use checks prove that neither the producer
+nor the consumer accesses the slot after its corresponding release. Every
+runtime use is reachable from at least one event in the earliest-event
+antichain and completes no later than the terminal pop.
+
+Suppose A and B receive the same physical index, with A ordered before B.
+The conflict predicate proves:
+
+1. A and B have the same page shape, data format, and block count.
+2. They use the same producer and consumer kernel functions, so cumulative
+   counters and ring pointers remain in the same thread-local state.
+3. A's terminal pop completes before every earliest use of B.
+
+Therefore A has zero occupancy and no remaining access before any producer or
+consumer can begin B. An early B wait cannot consume A's data because its entry
+is at or after one of B's earliest use events. The physical allocation is
+sufficient for both logical DFBs.
+
+Greedy coloring places two DFBs in one color only when this relation holds in
+one direction. The final pairwise verification independently checks the
+conflict predicate for every shared color. If a lifetime or ordering proof is
+missing, the DFB is unbounded and conflicts with every candidate; this can
+increase the physical count but cannot create unsafe reuse.
+
+#### Representative example
+
+`test/python/test_flash_chain_8node.py` composes a per-node flash-attention
+atom with a three-level tree-reduction atom over eight nodes. The composed
+operation contains 36 logical DFBs across the compute and data movement
+threads. Proven non-overlapping lifetimes reduce the allocation to 29 physical
+indices, below the hardware limit of 32. The device test compares the final
+result with PyTorch scaled dot-product attention.
+
+`test/ttlang/Dialect/TTL/Transforms/dfb_multithreaded_liveness.mlir` isolates
+the cross-thread ordering rules. The capacity-boundary test constructs 34
+logical DFBs that require exactly 32 physical indices, while the invalid test
+confirms that 33 unbounded lifetimes are rejected.
 
 ### Module attribute and runtime integration
 
@@ -763,19 +907,46 @@ continues to support that attribute for compatibility.
 
 ## Limitations and Future Work
 
-Liveness is computed at function-level granularity. Operations nested in
-structured control flow project to the enclosing function-level operation.
-This prevents unsafe reuse but may keep a physical index live longer than its
-executed lifetime.
+- **Structured control flow.** Lifecycle operations inside `scf.if`,
+  `scf.for`, or multi-block functions are unbounded. Other nested uses project
+  to the enclosing top-level operation. A control-flow-aware event graph using
+  `RegionBranchOpInterface`, dominance, and post-dominance could prove branch
+  exclusivity and bounded region lifetimes.
 
-Loops, conditional lifecycles, and repeated acquire/release protocols remain
-unbounded because the analysis does not match dynamic event occurrences. They
-cannot reuse an index with another logical DFB of the same type.
+- **Repeated protocols.** The analysis accepts one reserve/push/wait/pop
+  occurrence per logical DFB. Loops and multi-acquire protocols require
+  symbolic occurrence matching so a push, wait, and pop from the same
+  iteration are related without conflating different iterations.
 
-The type compatibility constraint prevents reuse across DFBs with different
-shapes or element types, even when L1 footprints happen to match. A size-based
-rather than type-based compatibility check could recover some reuse
-opportunities.
+- **Credit-return ordering.** Only push-to-wait completion is modeled across
+  threads. Proving additional pop-to-reserve ordering could shorten later
+  producer frontiers, but requires exact protocol and occurrence matching.
+
+- **Launch-node domains.** Reuse currently requires the same producer and
+  consumer functions even when different DFBs execute on disjoint node
+  domains. Integrating `LaunchNodeDomainAnalysis` could permit domain-local
+  reuse when no physical node observes both lifetimes.
+
+- **Kernel participant changes.** A happens-before cut does not transfer
+  TT-Metal's thread-local counters or ring pointers. Reuse across different
+  producer or consumer functions would require an explicit state reset or a
+  proof that both functions share the same hardware state.
+
+- **Storage compatibility.** Exact `CircularBufferType` equality forbids reuse
+  across different shapes, element types, or block counts. A broader
+  compatibility relation would need one physical descriptor that satisfies
+  every logical DFB assigned to it, including page size, capacity, and data
+  format.
+
+- **Coloring quality.** Deterministic greedy first-fit coloring is sound but
+  not optimal for a general partial-order interference graph. A stronger graph
+  coloring algorithm could reduce the physical count without changing the
+  liveness proof.
+
+- **Reachability cost.** The current bit-vector transitive closure is suitable
+  for the small number of operations in one three-thread kernel launch. An SCC
+  condensation followed by topological bit-set propagation would scale better
+  for substantially larger generated programs.
 
 ## Scalar Element Access to DFBs
 
