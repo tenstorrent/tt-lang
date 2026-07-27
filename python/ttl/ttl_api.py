@@ -1249,7 +1249,7 @@ def _parse_mlir_element_type(element_type) -> tuple[str, tuple[int, int]]:
 
 
 def _extract_dfb_config_attribute(module, attribute_name):
-    """Read and validate an optional array of physical DFB configurations."""
+    """Read `attribute_name` as validated physical DFB configurations."""
     attr = module.operation.attributes.get(attribute_name, None)
     if attr is None:
         return None
@@ -1306,7 +1306,7 @@ def _extract_dfb_config_attribute(module, attribute_name):
 
 
 def _extract_dfb_allocations(module):
-    """Read the complete physical DFB allocation table, when present."""
+    """Read `ttl.dfb_allocations` and require dense physical indices."""
     configs = _extract_dfb_config_attribute(module, "ttl.dfb_allocations")
     if configs is None:
         return None
@@ -1348,7 +1348,7 @@ def _extract_pipe_global_semaphore_count(module) -> int:
 
 
 def _resolve_dfb_configs(module):
-    """Resolve final runtime configurations from module allocation metadata."""
+    """Return finalized physical DFB configurations from required metadata."""
     physical_allocations = _extract_dfb_allocations(module)
     if physical_allocations is None:
         raise ValueError(

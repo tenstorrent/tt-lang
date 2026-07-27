@@ -50,7 +50,7 @@ class _DFBAllocation:
 
 
 def _get_dfb_allocation(config: PhysicalDFBConfig) -> _DFBAllocation:
-    """Compute one finalized physical DFB allocation."""
+    """Derive the runtime layout and L1 size of one physical DFB."""
     if not isinstance(config, PhysicalDFBConfig):
         raise TypeError(
             "DFB runtime configuration must be a finalized PhysicalDFBConfig, "
@@ -464,8 +464,8 @@ def build_cb_descriptors(
             remaining_bytes = get_min_remaining_l1_for_device(device)
             break
 
-    # Must stay aligned with MLIR ttl-validate-cb-budget
-    # (TileType::getSizeBytes); see issue #511.
+    # Keep this L1 calculation identical to ttl-validate-cb-budget's
+    # TileType::getSizeBytes calculation; see issue #511.
     if total_cb_bytes > remaining_bytes:
         breakdown = "\n".join(r[-1] for r in rows)
         raise ValueError(

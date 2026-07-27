@@ -36,8 +36,8 @@ def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
     - `block_count` is the number of blocks (default 2 for double buffering).
     - `dfb_id` identifies the logical dataflow buffer. User declarations carry
       this identity. Compiler-created declarations may omit it while their
-      identity is unresolved. Bindings in different kernel threads with the
-      same `dfb_id` refer to the same logical buffer even when physical
+      identity is unresolved. Bindings in different kernels with the same
+      `dfb_id` refer to the same logical buffer even when physical
       allocation changes `cb_index`.
     Example:
 

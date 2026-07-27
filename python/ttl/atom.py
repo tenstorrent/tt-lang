@@ -356,7 +356,7 @@ def _is_pipe_list_expr(node: ast.expr) -> bool:
 
 
 def _is_dfb_collection_expr(node: ast.expr) -> bool:
-    """A list/tuple/comprehension containing only DFB factory calls."""
+    """Return whether `node` uses a supported DFB collection syntax."""
     if isinstance(node, (ast.List, ast.Tuple)):
         return bool(node.elts) and all(
             _call_name(element) in _DFB_FACTORY_NAMES for element in node.elts

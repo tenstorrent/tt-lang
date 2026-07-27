@@ -7,7 +7,7 @@
 Each node computes streaming-softmax state for its K/V shard. A binary tree
 combines the per-node states before node 0 normalizes and writes the result.
 Frontend composition inlines both atoms into one operation whose logical DFB
-count exceeds the hardware limit; multithreaded liveness maps the logical DFBs
+count exceeds the hardware limit; concurrent-kernel liveness maps the logical DFBs
 to a legal set of physical indices.
 """
 
@@ -29,7 +29,7 @@ vDHt = 8
 Sk_chunk_t = 4
 N_CHUNKS = 1
 NNODES = 8
-# The generated Wormhole program is about 99 KiB, above the default buffer.
+# The generated Wormhole program exceeds the 96 KiB kernel-config default.
 KERNEL_CONFIG_BUFFER_RESERVE_BYTES = 128 * 1024
 
 St_per_node = Sk_chunk_t * N_CHUNKS

@@ -13,7 +13,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "DFBMultithreadedLivenessAnalysis.h"
+#include "DFBConcurrentKernelLivenessAnalysis.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
@@ -239,7 +239,7 @@ struct TTLFinalizeDFBIndicesPass
     OpBuilder builder(moduleOp.getContext());
 
     if (reuseUserDFBs) {
-      const auto &analysis = getAnalysis<DFBMultithreadedLivenessAnalysis>();
+      const auto &analysis = getAnalysis<DFBConcurrentKernelLivenessAnalysis>();
       if (!analysis.succeeded()) {
         Operation *errorOperation = analysis.getErrorOperation();
         if (!errorOperation) {
@@ -251,8 +251,8 @@ struct TTLFinalizeDFBIndicesPass
       }
 
       MLIRContext *context = moduleOp.getContext();
-      // Commit the complete assignment only after the read-only analysis has
-      // proven that every logical DFB has a valid physical index.
+      // Delaying all mutations until analysis succeeds prevents an error from
+      // leaving partially finalized DFB declarations.
       for (const DFBPhysicalIndexAssignment &assignment :
            analysis.getAssignments()) {
         for (BindCBOp bindOp : assignment.declarations) {
@@ -262,9 +262,8 @@ struct TTLFinalizeDFBIndicesPass
                                                  assignment.physicalIndex));
         }
         LLVM_DEBUG({
-          llvm::dbgs() << "Multithreaded DFB reuse: logical DFB "
-                       << assignment.logicalId << " -> physical index "
-                       << assignment.physicalIndex
+          llvm::dbgs() << "DFB reuse: logical DFB " << assignment.logicalId
+                       << " -> physical index " << assignment.physicalIndex
                        << (assignment.bounded ? " (bounded)\n"
                                               : " (unbounded)\n");
         });
@@ -293,7 +292,8 @@ struct TTLFinalizeDFBIndicesPass
       return;
     }
 
-    // Resolve identities before the compiler-only allocator mutates indices.
+    // Validate logical identities before mutating compiler DFB indices so an
+    // identity error cannot leave partially finalized IR.
     DFBLogicalIdentityAnalysis identityAnalysis(moduleOp);
     if (!identityAnalysis.succeeded()) {
       Operation *errorOperation = identityAnalysis.getErrorOperation();
@@ -361,7 +361,6 @@ struct TTLFinalizeDFBIndicesPass
           IntegerAttr::get(IndexType::get(context), assignment.logicalId));
     }
 
-    // Update ttl.base_cta_index on every function that has it.
     if (numDFBs > 0) {
       moduleOp->walk([&](func::FuncOp funcOp) {
         if (funcOp->hasAttr(kBaseCTAIndexAttrName)) {

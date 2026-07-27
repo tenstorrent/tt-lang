@@ -352,12 +352,15 @@ void recordGuardOperation(Operation *op, const LaunchNodeDomain &domain,
         state.recordPipeWaitEvent(wait, domain, unanalyzableOp);
       })
       .Case<CBPushOp>([&](CBPushOp push) {
-        int64_t dfbId = getDFBId(push.getCb());
-        state.dfbProducerDomains[dfbId] =
-            state.dfbProducerDomains[dfbId].unionWith(domain);
+        FailureOr<int64_t> dfbId = getDFBId(push.getCb());
+        assert(succeeded(dfbId) && "DFB identities were verified");
+        state.dfbProducerDomains[*dfbId] =
+            state.dfbProducerDomains[*dfbId].unionWith(domain);
       })
       .Case<CBWaitOp>([&](CBWaitOp wait) {
-        state.waitUses.push_back({wait, domain, getDFBId(wait.getCb())});
+        FailureOr<int64_t> dfbId = getDFBId(wait.getCb());
+        assert(succeeded(dfbId) && "DFB identities were verified");
+        state.waitUses.push_back({wait, domain, *dfbId});
       });
 }
 
@@ -869,6 +872,10 @@ struct TTLVerifyPipeNetGuardsPass
       return;
     }
     if (!state.hasPipes()) {
+      return;
+    }
+    if (failed(verifyResolvedDFBIdentities(module, getArgument()))) {
+      signalPassFailure();
       return;
     }
 

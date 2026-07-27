@@ -2,8 +2,8 @@
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s
 
 // Thirty-one unbounded DFBs interfere with every other DFB. The last three
-// have ordered one-shot lifetimes and share physical index 31, reducing 34
-// logical DFBs to exactly 32 physical indices.
+// each have one reserve, push, wait, and pop. Their ordered lifetimes share
+// physical index 31, reducing 34 logical DFBs to exactly 32 physical indices.
 
 // CHECK: module attributes {ttl.dfb_allocations = [
 // CHECK-COUNT-32: dfb_index = {{[0-9]+}} : i32

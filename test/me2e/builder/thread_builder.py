@@ -441,7 +441,7 @@ class StringBasedThreadBuilder:
     # =========================================================================
 
     def _bind_cb_str(self, result_var: str, cb_index: int) -> str:
-        """Preserve one logical identity across matching thread declarations."""
+        """Use one logical ID for this DFB in every participating kernel."""
         return (
             f"{result_var} = ttl.bind_cb "
             f"{{cb_index = {cb_index}, block_count = {self._block_count}}} "

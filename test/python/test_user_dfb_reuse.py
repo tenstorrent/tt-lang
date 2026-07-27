@@ -16,6 +16,8 @@ from utils.correctness import assert_allclose  # noqa: E402
 pytestmark = pytest.mark.requires_device
 
 TILE = 32
+OVER_CAPACITY_COMPOSITION_LEVELS = 5
+OVER_CAPACITY_LOGICAL_DFBS = (1 << OVER_CAPACITY_COMPOSITION_LEVELS) + 1
 
 
 def _make_exp_via_scratch_atom(data_format, shape=(1, 1)):
@@ -48,8 +50,50 @@ def _make_repeated_dfb_atom_kernel(data_format):
     return repeated_dfb_atom_kernel
 
 
+def _make_nested_copy_atom(data_format, level_count):
+    @ttl.operation()
+    def copy_stage(source: ttl.DFB, destination: ttl.DFB):
+        destination_block = destination.reserve()
+        destination_block.store(source.wait())
+
+    nested_copy = copy_stage
+    for composition_level in range(level_count):
+        inner_copy = nested_copy
+
+        @ttl.operation()
+        def doubled_copy(source: ttl.DFB, destination: ttl.DFB):
+            intermediate_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+            inner_copy(source, intermediate_dfb)
+            inner_copy(intermediate_dfb, destination)
+
+        nested_copy = doubled_copy
+
+    return nested_copy
+
+
+def _make_over_capacity_atom_kernel(data_format):
+    nested_copy = _make_nested_copy_atom(data_format, OVER_CAPACITY_COMPOSITION_LEVELS)
+
+    @ttl.operation(grid=(1, 1))
+    def over_capacity_atom_kernel(input_tensor, output_tensor):
+        first_stage_dfb, last_stage_dfb = [
+            ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+            for endpoint_index in range(2)
+        ]
+
+        ttl.copy(input_tensor[0, 0], first_stage_dfb.reserve()).wait()
+        nested_copy(first_stage_dfb, last_stage_dfb)
+        ttl.copy(last_stage_dfb.wait(), output_tensor[0, 0]).wait()
+
+    return over_capacity_atom_kernel
+
+
 _repeated_bf16_atom_kernel = _make_repeated_dfb_atom_kernel("bf16")
 _repeated_f32_atom_kernel = _make_repeated_dfb_atom_kernel("float32")
+_over_capacity_bf16_atom_kernel = _make_over_capacity_atom_kernel("bf16")
+_over_capacity_f32_atom_kernel = _make_over_capacity_atom_kernel("float32")
+
+assert OVER_CAPACITY_LOGICAL_DFBS > 32
 
 
 _exp_scalar_via_scratch = _make_exp_via_scratch_atom("bf16", shape=(1, 1))
@@ -176,6 +220,39 @@ def test_repeated_dfb_declaring_atom_runtime(
         assert_allclose(actual, expected, rtol=0.05, atol=1.0)
     else:
         assert_allclose(actual, expected, rtol=1e-2, atol=1e-2)
+
+
+@pytest.mark.parametrize(
+    ("memory_config", "to_device"),
+    [("dram", to_dram), ("l1", to_l1)],
+    ids=["dram", "l1"],
+)
+@pytest.mark.parametrize(
+    ("operation", "dtype"),
+    [
+        (_over_capacity_bf16_atom_kernel, torch.bfloat16),
+        (_over_capacity_f32_atom_kernel, torch.float32),
+    ],
+    ids=["bf16", "f32"],
+)
+def test_over_capacity_atom_composition_requires_dfb_reuse(
+    device, memory_config, to_device, operation, dtype
+):
+    input_host = torch.linspace(-1.0, 1.0, TILE * TILE, dtype=torch.float32).reshape(
+        TILE, TILE
+    )
+    input_host = input_host.to(dtype)
+    input_tensor = to_device(input_host, device)
+    output_tensor = to_device(torch.zeros_like(input_host), device)
+
+    operation(input_tensor, output_tensor)
+
+    actual = ttnn.to_torch(output_tensor).float()
+    expected = input_host.float()
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, expected, rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, expected, rtol=1e-3, atol=1e-4)
 
 
 @pytest.mark.parametrize(

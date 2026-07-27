@@ -2,7 +2,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   ConvertTTLToTTKernel.cpp
   DFBAcquireReleaseAnalysis.cpp
   DFBMaterialization.cpp
-  DFBMultithreadedLivenessAnalysis.cpp
+  DFBConcurrentKernelLivenessAnalysis.cpp
   PipeGraph.cpp
   PipeLowering.cpp
   ConvertTTLToCompute.cpp

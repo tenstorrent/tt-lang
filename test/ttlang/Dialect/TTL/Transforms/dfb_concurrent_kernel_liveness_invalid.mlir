@@ -1,7 +1,7 @@
-// Tests invalid logical DFB declarations for multithreaded liveness analysis.
+// Tests invalid logical DFB declarations for concurrent-kernel liveness.
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)'
 
-// One logical DFB must have one exact type across all thread functions.
+// One logical DFB must have one exact type across all kernel functions.
 
 func.func @type_mismatch_producer()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
@@ -11,9 +11,47 @@ func.func @type_mismatch_producer()
 
 func.func @type_mismatch_consumer()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
-  // expected-error @below {{logical DFB 0 has inconsistent types across thread functions}}
+  // expected-error @below {{logical DFB 0 has inconsistent types across kernel functions}}
   %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   return
+}
+
+// -----
+
+// A compiler-created DFB with a producer acquire but no consumer acquire cannot
+// complete its protocol.
+
+module {
+  func.func @producer_only()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {ttl.compiler_allocated}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-error @below {{compiler-created logical DFB 0 has ttl.cb_reserve but no ttl.cb_wait}}
+    %reserved = ttl.cb_reserve %dfb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    return
+  }
+}
+
+// -----
+
+// A compiler-created DFB with a consumer acquire but no producer acquire cannot
+// complete its protocol.
+
+module {
+  func.func @consumer_only()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {ttl.compiler_allocated}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-error @below {{compiler-created logical DFB 0 has ttl.cb_wait but no ttl.cb_reserve}}
+    %available = ttl.cb_wait %dfb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    return
+  }
 }
 
 // -----
@@ -21,7 +59,7 @@ func.func @type_mismatch_consumer()
 // An unbounded lifetime conflicts with every other lifetime. Thirty-three
 // unbounded logical DFBs must be rejected rather than unsafely compacted.
 
-// expected-error @below {{multithreaded DFB allocation needs 33 physical indices but hardware supports at most 32}}
+// expected-error @below {{DFB allocation needs 33 physical indices but hardware supports at most 32}}
 module {
   func.func @unbounded_over_capacity()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>,

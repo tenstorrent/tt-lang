@@ -1,10 +1,12 @@
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics -ttl-verify-pipenet-guards
 
 // Summary: Negative tests for ttl-verify-pipenet-guards diagnostics.
+// Each split module includes the finalization metadata required by the
+// verifier; its descriptor contents are irrelevant to guard analysis.
 
 // A DFB-to-pipe copy must execute only on the pipe source node.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @unguarded_source_copy() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     // expected-note @below {{PipeNet net_0 declared here}}
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
@@ -26,7 +28,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // A wait that can observe two receive copies has no unique completion event for
 // the wait-for graph.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @wait_with_distinct_receive_sources(%condition: i1)
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
@@ -65,7 +67,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // A pipe-to-DFB copy must execute only on pipe destination nodes.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @unguarded_destination_copy() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     // expected-note @below {{PipeNet net_0 declared here}}
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
@@ -93,7 +95,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // The scope predicate must be contained in the declared role domain.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @unguarded_scope() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     // expected-note @below {{PipeNet net_0 declared here}}
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
@@ -114,7 +116,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // must not let the else-branch's domain collapse to empty. Without conservative
 // branch handling the verifier would silently accept the pipe op below.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @uniform_unknown_else(%flag: i1) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     // expected-note @below {{PipeNet net_0 declared here}}
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
@@ -138,7 +140,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // Unsupported predicates are rejected instead of treated as valid guards.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @unsupported_predicate(%runtime: index) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -166,7 +168,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // unanalyzable coordinate-dependent predicate is rejected instead of being
 // omitted from the wait-for graph.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @pipe_receive_wait_unanalyzable_guard(%runtime: index) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -205,7 +207,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // "not statically analyzable" note to the source-earliest predicate, so the
 // diagnostic is the same regardless of dataflow visit order.
 
-module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 2 : i64]} {
   func.func @two_unanalyzable_predicates_andi(%runtime: index) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -238,7 +240,7 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
 // the `arith.andi`; a "pick lhs" implementation would attach the note to
 // `%cond_y` instead and the test would fail.
 
-module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 2 : i64]} {
   func.func @source_order_beats_operand_position(%runtime: index) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -269,7 +271,7 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
 // Same as above, but with `arith.ori`. The note still attaches to the
 // source-earliest unanalyzable predicate.
 
-module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 2 : i64]} {
   func.func @two_unanalyzable_predicates_ori(%runtime: index) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -299,7 +301,7 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
 
 // Waiting on a DFB with no producer domain is rejected.
 
-module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [1 : i64, 1 : i64]} {
   func.func @wait_without_producer() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
         : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
@@ -318,7 +320,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 // A producer for another logical DFB cannot satisfy a wait after both DFBs
 // receive the same physical index.
 
-module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [1 : i64, 1 : i64]} {
   func.func @producer_for_reused_index() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
         : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
@@ -343,7 +345,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 
 // A wait whose execution domain is broader than the producer domain is rejected.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @producer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -378,7 +380,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // Python variable names (`net_a`, `net_b`) instead of synthesizing
 // `net_<id>`.
 
-module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [4 : i64, 4 : i64]} {
   func.func @cross_net_guard() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     // expected-note @below {{PipeNet net_a declared here}}
     %pa = ttl.create_pipe src(0, 0) dst(0, 1) to(0, 3) net 0
@@ -432,7 +434,7 @@ module {
 // A copy from a pipe (i.e. expecting a destination role) is rejected
 // because (0, 0) is outside net_a's destination range.
 
-module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [4 : i64, 4 : i64]} {
   func.func @nested_is_active_misses_role() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     // expected-note @below {{PipeNet net_0 declared here}}
     %pa = ttl.create_pipe src(0, 0) dst(0, 1) to(0, 3) net 0
@@ -472,7 +474,7 @@ module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
 // path with a domain that the verifier must reject.
 
 #multiWide = affine_set<(d0) : (d0 >= 0, 3 - d0 >= 0)>
-module attributes {ttl.launch_grid = [8 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [8 : i64, 1 : i64]} {
   func.func @affine_if_multi_constraint_too_wide() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     // expected-note @below {{PipeNet net_0 declared here}}
     %pipe = ttl.create_pipe src(0, 0) dst(4, 0) to(7, 0) net 0
@@ -495,7 +497,7 @@ module attributes {ttl.launch_grid = [8 : i64, 1 : i64]} {
 // -----
 
 #wideSet = affine_set<(d0) : (d0 - 4 >= 0)>
-module attributes {ttl.launch_grid = [8 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [8 : i64, 1 : i64]} {
   func.func @affine_if_too_wide() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     // expected-note @below {{PipeNet net_0 declared here}}
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0
@@ -521,7 +523,7 @@ module attributes {ttl.launch_grid = [8 : i64, 1 : i64]} {
 // rejected. Without this check, the empty role domain would silently accept
 // any pipe-coupled op nested under the bogus guard.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @unknown_pipenet_id() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -546,7 +548,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // verified, so the verifier emits the "cannot prove" diagnostic.
 
 #divByZero = affine_set<(d0) : (d0 floordiv 0 - 1 >= 0)>
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @affine_if_div_by_zero() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -570,7 +572,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // `is_dst` referencing an unknown PipeNet id is rejected, mirroring the
 // `is_src` check.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @unknown_pipenet_id_dst() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -599,7 +601,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // `is_active` referencing an unknown PipeNet id is rejected.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @unknown_pipenet_id_active() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -622,7 +624,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // `pipenet_scope` referencing an unknown PipeNet id is rejected before
 // downstream role-domain analysis runs.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @unknown_pipenet_id_scope() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -637,7 +639,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // `pipenet_scope` with mismatched-length id and role arrays is rejected.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @scope_length_mismatch() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -652,7 +654,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // `pipenet_scope` with a role value outside {0, 1} is rejected.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @scope_role_out_of_range() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
@@ -670,7 +672,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // However, a SRC-side copy from inside this guard is not — the guard does not
 // imply src.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @cmpi_ne_insufficient_for_src() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     // expected-note @below {{PipeNet net_0 declared here}}
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
@@ -697,7 +699,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // Pipe-coupled op inside `scf.for` with no surrounding guard. The loop adds
 // no narrowing, so the body's domain is the full launch grid.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @scf_for_unguarded() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     // expected-note @below {{PipeNet net_0 declared here}}
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
@@ -723,7 +725,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // Pipe-coupled op inside `scf.execute_region` with no surrounding guard.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @scf_execute_region_unguarded() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     // expected-note @below {{PipeNet net_0 declared here}}
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
@@ -749,7 +751,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // without any role guard. The helper's entry domain is the caller's
 // lattice (the full launch grid here), so the copy is rejected.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func private @send_helper(%cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
                                   %pipe: !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) {
     // expected-error @below {{this `ttl.copy(buffer, pipe)` sends data on PipeNet net_0 from a node that is not a source}}

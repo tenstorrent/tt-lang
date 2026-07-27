@@ -2,16 +2,16 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#ifndef TTLANG_DIALECT_TTL_TRANSFORMS_DFBMULTITHREADEDLIVENESSANALYSIS_H
-#define TTLANG_DIALECT_TTL_TRANSFORMS_DFBMULTITHREADEDLIVENESSANALYSIS_H
+#ifndef TTLANG_DIALECT_TTL_TRANSFORMS_DFBCONCURRENTKERNELLIVENESSANALYSIS_H
+#define TTLANG_DIALECT_TTL_TRANSFORMS_DFBCONCURRENTKERNELLIVENESSANALYSIS_H
 
 //===----------------------------------------------------------------------===//
-// Multithreaded DFB Liveness Analysis
+// Concurrent Kernel DFB Liveness Analysis
 //===----------------------------------------------------------------------===//
 //
-// These analyses resolve module-wide logical DFB identity and compute a
-// physical index assignment without modifying IR. The finalization pass
-// materializes the returned identities and indices only after analysis
+// These analyses resolve module-wide logical DFB identity and assign one
+// physical index to every logical DFB without modifying IR. The finalization
+// pass materializes the returned identities and indices only after analysis
 // succeeds, so an error cannot leave a partially rewritten module.
 //
 //===----------------------------------------------------------------------===//
@@ -34,17 +34,17 @@ class InterferenceGraphColoring;
 
 /// Resolved logical identity for one `ttl.bind_cb` declaration.
 struct DFBLogicalIdentityAssignment {
-  /// The declaration to annotate after analysis succeeds.
+  /// DFB declaration associated with `logicalId`.
   BindCBOp declaration;
 
   /// Module-wide identity shared by declarations of the same logical DFB.
   int64_t logicalId = 0;
 };
 
-/// Read-only module analysis that resolves every DFB declaration to a stable
-/// logical identity. User declarations must carry `dfb_id`. Compiler-created
-/// declarations receive deterministic identities after all explicit IDs. A
-/// failed analysis records the operation that violates the identity contract.
+/// Read-only module analysis that assigns a module-wide logical ID to every DFB
+/// declaration. User declarations must carry `dfb_id`. Compiler-created
+/// declarations receive deterministic IDs after all user IDs. A failed
+/// analysis records the operation that violates the identity contract.
 class DFBLogicalIdentityAnalysis {
 public:
   explicit DFBLogicalIdentityAnalysis(Operation *operation);
@@ -58,7 +58,7 @@ public:
   /// Returns the operation to which the analysis diagnostic should attach.
   Operation *getErrorOperation() const { return errorOperation; }
 
-  /// Returns one resolved identity assignment per DFB declaration.
+  /// Returns each DFB declaration and its resolved logical ID.
   ArrayRef<DFBLogicalIdentityAssignment> getAssignments() const {
     return assignments;
   }
@@ -87,23 +87,25 @@ struct DFBPhysicalIndexAssignment {
   /// All declarations that refer to this logical DFB.
   SmallVector<BindCBOp> declarations;
 
-  /// Whether the analysis proved finite earliest and terminal frontiers.
+  /// Whether the analysis proved a finite lifetime for this logical DFB.
   bool bounded = false;
 };
 
-/// Read-only module analysis that computes a conservative physical DFB index
-/// assignment from multithreaded happens-before relations. DFBs share an index
-/// only when their storage and thread participants match and one proven
+/// Read-only module analysis that assigns a physical index to every logical DFB
+/// from happens-before relations across concurrent kernels. DFBs share an index
+/// only when their storage and kernel participants match and one proven
 /// lifetime ends before the other begins.
-class DFBMultithreadedLivenessAnalysis {
+class DFBConcurrentKernelLivenessAnalysis {
 public:
-  explicit DFBMultithreadedLivenessAnalysis(Operation *operation);
+  /// Assigns physical DFB indices using deterministic greedy first-fit
+  /// coloring.
+  explicit DFBConcurrentKernelLivenessAnalysis(Operation *operation);
 
-  /// Computes an assignment with the requested graph-coloring strategy.
-  DFBMultithreadedLivenessAnalysis(Operation *operation,
-                                   const InterferenceGraphColoring &coloring);
+  /// Assigns one physical DFB index per logical DFB using `coloring`.
+  DFBConcurrentKernelLivenessAnalysis(
+      Operation *operation, const InterferenceGraphColoring &coloring);
 
-  /// Returns true when a complete physical assignment was computed.
+  /// Returns true when every logical DFB was assigned a physical index.
   bool succeeded() const { return errorMessage.empty(); }
 
   /// Returns the diagnostic message recorded for a failed analysis.
@@ -112,12 +114,12 @@ public:
   /// Returns the operation to which the analysis diagnostic should attach.
   Operation *getErrorOperation() const { return errorOperation; }
 
-  /// Returns one physical assignment per logical DFB.
+  /// Returns the physical index and allocation metadata for each logical DFB.
   ArrayRef<DFBPhysicalIndexAssignment> getAssignments() const {
     return assignments;
   }
 
-  /// Returns the number of physical indices used by `getAssignments()`.
+  /// Returns the number of distinct physical DFB indices assigned.
   int32_t getPhysicalSlotCount() const { return physicalSlotCount; }
 
 private:
@@ -129,4 +131,4 @@ private:
 
 } // namespace mlir::tt::ttl
 
-#endif // TTLANG_DIALECT_TTL_TRANSFORMS_DFBMULTITHREADEDLIVENESSANALYSIS_H
+#endif // TTLANG_DIALECT_TTL_TRANSFORMS_DFBCONCURRENTKERNELLIVENESSANALYSIS_H

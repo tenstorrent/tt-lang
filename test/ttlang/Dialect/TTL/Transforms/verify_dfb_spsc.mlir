@@ -1,4 +1,4 @@
-// RUN: ttlang-opt %s --split-input-file -ttl-verify-dfb-spsc | FileCheck %s
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices,ttl-verify-dfb-spsc)' | FileCheck %s
 
 // Producer in one thread, consumer in another: classic SPSC, accepted.
 // CHECK-LABEL: func.func @producer
@@ -127,8 +127,8 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 
 // -----
 
-// Two distinct CBs each correctly SPSC across the same two threads: the
-// verifier disambiguates by `cb_index` and accepts both.
+// Two logical DFBs are each SPSC across the same two threads. Their distinct
+// `dfb_id` values keep their participant sets separate.
 // CHECK-LABEL: func.func @two_cb_producer
 // CHECK-LABEL: func.func @two_cb_consumer
 module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {

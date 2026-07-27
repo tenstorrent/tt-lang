@@ -189,24 +189,30 @@ struct TTLVerifyDFBSPSCPass
     state.initialize(module);
 
     bool hasAcquire = false;
+    module.walk([&](Operation *op) {
+      hasAcquire |=
+          isa<CBReserveOp, CBWaitOp>(op) && getEnclosingKernelThread(op);
+    });
+    if (failed(verifyResolvedDFBIdentities(module, getArgument()))) {
+      signalPassFailure();
+      return;
+    }
+
     llvm::DenseMap<int64_t, Operation *> bindSites;
     llvm::DenseMap<int64_t, int64_t> physicalIndices;
     bool hasInconsistentIndex = false;
 
-    module.walk([&](Operation *op) {
-      if (isa<CBReserveOp, CBWaitOp>(op) && getEnclosingKernelThread(op)) {
-        hasAcquire = true;
-      } else if (auto bindOp = dyn_cast<BindCBOp>(op)) {
-        int64_t dfbId = getDFBId(bindOp.getResult());
-        int64_t cbIndex = bindOp.getCbIndex().getSExtValue();
-        bindSites.try_emplace(dfbId, op);
-        auto [indexIt, inserted] = physicalIndices.try_emplace(dfbId, cbIndex);
-        if (!inserted && indexIt->second != cbIndex) {
-          bindOp.emitOpError() << "logical DFB " << dfbId
-                               << " has inconsistent finalized cb_index values "
-                               << indexIt->second << " and " << cbIndex;
-          hasInconsistentIndex = true;
-        }
+    module.walk([&](BindCBOp bindOp) {
+      FailureOr<int64_t> dfbId = getDFBId(bindOp.getResult());
+      assert(succeeded(dfbId) && "DFB identities were verified");
+      int64_t cbIndex = bindOp.getCbIndex().getSExtValue();
+      bindSites.try_emplace(*dfbId, bindOp);
+      auto [indexIt, inserted] = physicalIndices.try_emplace(*dfbId, cbIndex);
+      if (!inserted && indexIt->second != cbIndex) {
+        bindOp.emitOpError() << "logical DFB " << *dfbId
+                             << " has inconsistent finalized cb_index values "
+                             << indexIt->second << " and " << cbIndex;
+        hasInconsistentIndex = true;
       }
     });
 
@@ -254,13 +260,14 @@ struct TTLVerifyDFBSPSCPass
       if (!thread) {
         return;
       }
-      int64_t dfbId = getDFBId(cb);
+      FailureOr<int64_t> dfbId = getDFBId(cb);
+      assert(succeeded(dfbId) && "DFB identities were verified");
       auto domainIt = state.acquireDomains.find(op);
       AcquireDomain acquireDomain =
           domainIt == state.acquireDomains.end()
               ? AcquireDomain{LaunchNodeDomain::unknown(), op}
               : domainIt->second;
-      addParticipant(perDFB[dfbId], thread, op, acquireDomain.domain,
+      addParticipant(perDFB[*dfbId], thread, op, acquireDomain.domain,
                      acquireDomain.unanalyzableOp);
     };
 

@@ -13,14 +13,14 @@
 
 namespace mlir::tt::ttl {
 
-/// Undirected conflict graph for logical resources that require distinct
-/// physical assignments.
+/// Undirected graph whose edges prohibit assigning the same color to both
+/// endpoint vertices.
 class InterferenceGraph {
 public:
   explicit InterferenceGraph(unsigned vertexCount)
       : adjacency(vertexCount, llvm::BitVector(vertexCount)) {}
 
-  /// Returns the number of logical resources in the graph.
+  /// Returns the number of vertices in the graph.
   unsigned size() const { return adjacency.size(); }
 
   /// Records that two distinct vertices cannot receive the same color.
@@ -40,22 +40,22 @@ private:
   llvm::SmallVector<llvm::BitVector> adjacency;
 };
 
-/// Strategy interface for assigning physical colors to an interference graph.
+/// Strategy interface for coloring an interference graph.
 ///
-/// `priorityOrder` contains every vertex exactly once and provides a stable
-/// tie breaker. Implementations return one dense, zero-based color per vertex.
+/// Implementations must assign different colors to interfering vertices and
+/// return dense, zero-based colors. `priorityOrder` lists every vertex exactly
+/// once from highest to lowest priority.
 class InterferenceGraphColoring {
 public:
   virtual ~InterferenceGraphColoring() = default;
 
-  /// Assigns one color per vertex using `priorityOrder` as a stable tie
-  /// breaker.
+  /// Returns one color per vertex, indexed by vertex number.
   virtual llvm::SmallVector<unsigned>
   color(const InterferenceGraph &graph,
         llvm::ArrayRef<unsigned> priorityOrder) const = 0;
 };
 
-/// Deterministic greedy first-fit interference-graph coloring.
+/// Visits vertices in priority order and assigns the lowest available color.
 class GreedyFirstFitInterferenceGraphColoring final
     : public InterferenceGraphColoring {
 public:
@@ -96,7 +96,7 @@ public:
   }
 };
 
-/// Returns the default deterministic coloring strategy.
+/// Returns the shared deterministic greedy first-fit coloring strategy.
 inline const InterferenceGraphColoring &
 getGreedyFirstFitInterferenceGraphColoring() {
   static const GreedyFirstFitInterferenceGraphColoring coloring;

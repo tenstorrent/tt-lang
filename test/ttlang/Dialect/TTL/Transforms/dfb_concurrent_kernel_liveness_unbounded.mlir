@@ -1,9 +1,9 @@
 // Tests each conservative condition that leaves a DFB lifetime unbounded.
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s
 
-// The valid baseline proves that two ordered one-shot lifetimes share one
-// physical index. Each following section changes one condition and requires
-// separate indices.
+// The valid baseline proves that two ordered lifetimes with one reserve, push,
+// wait, and pop share one physical index. Each following section changes one
+// condition and requires separate indices.
 
 // CHECK-LABEL: func.func @bounded_baseline
 // CHECK-SAME: ttl.base_cta_index = 1 : i32
@@ -30,7 +30,7 @@ module {
 
 // -----
 
-// More than one operation of a lifecycle kind is not a one-shot lifetime.
+// More than one reserve prevents matching one reserve/push and wait/pop pair.
 
 // CHECK-LABEL: func.func @multiple_reserves
 // CHECK-SAME: ttl.base_cta_index = 2 : i32
@@ -58,8 +58,8 @@ module {
 
 // -----
 
-// A nested lifecycle operation is not assigned one execution occurrence even
-// when its enclosing region executes exactly once.
+// The analysis does not model operations inside nested regions, so the DFB's
+// lifetime remains unbounded even though the region executes exactly once.
 
 // CHECK-LABEL: func.func @nested_reserve
 // CHECK-SAME: ttl.base_cta_index = 2 : i32

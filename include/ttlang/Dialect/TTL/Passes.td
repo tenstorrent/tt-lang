@@ -597,9 +597,9 @@ def TTLVerifyPipeNetGuards
 
     The pass expects one module per `@ttl.operation`, a well-formed
     `ttl.launch_grid` (i64 array of length 2 with positive entries), static
-    `I64Attr` coordinates on `ttl.create_pipe`, and finalized DFB indices
-    (i.e. `ttl-annotate-cb-associations` and `ttl-finalize-dfb-indices`
-    have run).
+    `I64Attr` coordinates on `ttl.create_pipe`, and the
+    `ttl.dfb_allocations` metadata emitted by `ttl-finalize-dfb-indices`.
+    `ttl-annotate-cb-associations` must also have run.
   }];
 
   let dependentDialects = [
@@ -627,7 +627,7 @@ def TTLVerifyDFBSPSC
     : Pass<"ttl-verify-dfb-spsc", "::mlir::ModuleOp"> {
   let summary = "Reject DFBs with overlapping producer or consumer launch domains";
   let description = [{
-    Walks every `ttl.cb_reserve` and `ttl.cb_wait`, groups them by stable
+    Walks every `ttl.cb_reserve` and `ttl.cb_wait`, groups them by module-wide
     logical `dfb_id` and enclosing `ttl.kernel_thread`-tagged `func.func`, and
     tracks the launch-node domain for each producer or consumer participant.
     A DFB is valid when, for each launched node, at most one producer thread
@@ -644,10 +644,10 @@ def TTLVerifyDFBSPSC
     domains, and for unknown domains when multiple threads participate and SPSC
     cannot be proven statically.
 
-    Prerequisite: `ttl-finalize-dfb-indices` must run first so that every
-    `bind_cb` carries a concrete `cb_index` and `dfb_id`. Modules with DFB
-    acquire ops must carry a valid `ttl.launch_grid` attribute. The pass
-    asserts on unresolvable identities.
+    The module must contain the `ttl.dfb_allocations` metadata emitted by
+    `ttl-finalize-dfb-indices`, and every DFB declaration and lifecycle operand
+    must resolve to a `ttl.bind_cb` with `dfb_id`. Modules with DFB acquire ops
+    must also carry a valid `ttl.launch_grid` attribute.
   }];
 
   let dependentDialects = [];
@@ -699,12 +699,12 @@ def TTLFinalizeDFBIndices
     would otherwise capture provisional indices.
 
     The pass runs a read-only module analysis over all logical DFBs, including
-    declarations shared across kernel-thread functions. It rewrites indices
-    only after the analysis has computed and verified a complete physical
-    assignment. Reuse requires exact CircularBufferType equality, equal
+    declarations shared across kernel functions. It rewrites indices
+    only after the analysis has assigned a valid physical index to every
+    logical DFB. Reuse requires exact CircularBufferType equality, equal
     transaction tile counts that divide the physical DFB capacity, and
-    identical producer and consumer kernel threads. Preserving these properties
-    retains TT-Metal's thread-local counter and ring-pointer state.
+    identical producer and consumer kernels. Preserving these properties
+    retains TT-Metal's kernel-local counter and ring-pointer state.
 
     After reuse, verifies the total DFB count does not exceed
     kMaxCircularBuffers (32), updates ttl.base_cta_index on every
@@ -712,15 +712,15 @@ def TTLFinalizeDFBIndices
     Python runtime. The attribute contains one descriptor per physical index.
 
     Disabling `reuse-user-dfbs` retains each user DFB's physical index and runs
-    the function-local linear-scan allocator only for compiler-created DFBs.
+    the kernel-local linear-scan allocator only for compiler-created DFBs.
     Both modes assign missing compiler-created `dfb_id` values and emit the
     complete `ttl.dfb_allocations` table consumed by the Python runtime.
   }];
 
   let options = [
     Option<"reuseUserDFBs", "reuse-user-dfbs", "bool", "true",
-           "Reuse user DFB indices across proven "
-           "multithreaded happens-before cuts.">
+           "Reuse physical DFB indices for logical DFBs with proven "
+           "non-overlapping lifetimes across concurrent kernels.">
   ];
 }
 

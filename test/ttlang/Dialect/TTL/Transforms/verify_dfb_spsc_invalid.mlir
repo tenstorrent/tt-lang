@@ -1,4 +1,4 @@
-// RUN: ttlang-opt %s --split-input-file --verify-diagnostics -ttl-verify-dfb-spsc
+// RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-finalize-dfb-indices,ttl-verify-dfb-spsc)'
 
 // Summary: Negative tests for per-launch-node DFB SPSC verification.
 
@@ -30,21 +30,6 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
           : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     }
-    func.return
-  }
-}
-
-// -----
-
-// One logical DFB must have one finalized physical index.
-
-module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
-  func.func @inconsistent_physical_indices() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
-    %first = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 10 : index}
-        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    // expected-error @below {{logical DFB 10 has inconsistent finalized cb_index values 0 and 1}}
-    %second = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 10 : index}
-        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     func.return
   }
 }

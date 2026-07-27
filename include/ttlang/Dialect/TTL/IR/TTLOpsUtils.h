@@ -100,20 +100,16 @@ inline std::optional<int64_t> getCBIndex(mlir::Value cb) {
   return std::nullopt;
 }
 
-/// Return the stable logical DFB identity attached to `cb`.
+/// Returns the logical DFB ID on the `ttl.bind_cb` reached from `cb`.
 ///
-/// Requires `ttl-finalize-dfb-indices` to have resolved `cb` to a
-/// `ttl.bind_cb` carrying `dfb_id`.
-inline int64_t getDFBId(mlir::Value cb) {
-  cb = traceUnrealizedCasts(cb);
-  auto bindOp = cb.getDefiningOp<BindCBOp>();
-  assert(bindOp &&
-         "DFB value must resolve to ttl.bind_cb before identity lookup");
-  auto dfbId = bindOp.getDfbId();
-  assert(dfbId.has_value() &&
-         "ttl-finalize-dfb-indices must assign every logical DFB identity");
-  return dfbId->getSExtValue();
-}
+/// Returns failure when `cb` does not resolve to a declaration with `dfb_id`.
+FailureOr<int64_t> getDFBId(mlir::Value cb);
+
+/// Verifies that DFB finalization completed and every logical ID is resolvable.
+///
+/// Passes that consume logical DFB IDs call this before reading any ID.
+LogicalResult verifyResolvedDFBIdentities(ModuleOp moduleOp,
+                                          StringRef consumerPass);
 
 /// Return the element type for a ttcore::TileType.
 inline std::optional<mlir::Type> getTileElementType(mlir::Type type) {

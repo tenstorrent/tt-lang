@@ -48,8 +48,10 @@ operations (`bcast`, `reduce`, `transpose`). Running either pass first would
 leave stale attributes after finalization rewrites the indices.
 
 `ttl-verify-dfb-spsc` must run after `ttl-finalize-dfb-indices` so every
-`bind_cb` carries its final `cb_index` and stable `dfb_id`. The pass asserts on
-unresolvable identities.
+`bind_cb` carries its final `cb_index` and module-wide logical `dfb_id`. The
+pass requires the `ttl.dfb_allocations` module attribute emitted by successful
+finalization, then verifies that every declaration and lifecycle operand has a
+resolved logical ID.
 
 ## DFB Lifecycle
 
@@ -129,8 +131,8 @@ generated DFB lifecycle in write-then-publish order: `cb_reserve`,
 
 A DFB's L1 contents are dead after its last `cb_pop`. This defines the interval
 used for index reuse. Two logical DFBs may share a physical index only when they
-also have the same producer and consumer kernel threads. TT-Metal initializes
-each kernel thread's local DFB counters and ring pointers independently. A
+also have the same producer and consumer kernels. TT-Metal initializes each
+kernel's local DFB counters and ring pointers independently. A
 happens-before cut proves zero occupancy, but it does not transfer this local
 state to a different producer or consumer.
 
@@ -423,7 +425,7 @@ Compute threads work through SSA tile handles
 ownership applies and the next-acquire boundary is irrelevant -- SSA already
 distinguishes which slot the use refers to. DM threads use direct CB
 references (`ttl.copy %cb, %slice`) where no tile handle exists, so direct-CB
-ownership is the fallback and the boundary is essential to disambiguate
+ownership applies and the boundary is essential to disambiguate
 consecutive direct uses on the same CB. Unifying would require changing
 `ttl.copy` to take the attached tensor instead of the CB, a dialect change
 tracked as future work.
@@ -710,7 +712,7 @@ interval.
 `TTLFinalizeDFBIndices` reduces the physical DFB count by assigning the same
 index to logical DFBs whose lifetimes cannot overlap. The default analysis
 considers all kernel functions concurrently, including user-declared DFBs
-shared across data movement and compute threads.
+shared across data-movement and compute kernels.
 
 Two DFBs may share an index only if they have identical `CircularBufferType`
 (shape, element type, block count), equal transaction tile counts, and a
@@ -720,24 +722,27 @@ ring-pointer progression.
 
 ### Logical identity
 
-The frontend assigns each user-declared DFB a stable `dfb_id` and copies it to
-the declaration in every participating kernel function. Compiler-created
-declarations receive distinct logical identities after the largest explicit
-ID. A user declaration without `dfb_id` is rejected before physical
-allocation.
+The frontend assigns each user-declared DFB a module-wide logical `dfb_id` and
+copies that ID to the declaration in every participating kernel.
+Compiler-created declarations receive distinct logical identities after the
+largest explicit ID. A user declaration without `dfb_id` is rejected before
+physical allocation.
 
-Compiler-created DFBs are currently function-local. A module transformation
-that distributes one compiler-created DFB across multiple kernel functions
+Compiler-created DFBs are currently kernel-local. A module transformation
+that distributes one compiler-created DFB across multiple kernels
 must assign the same explicit `dfb_id` to every declaration.
+The analysis rejects a compiler-created logical DFB with `cb_reserve` but no
+`cb_wait`, or the reverse. It does not infer a relation between declarations
+when the IR provides no shared identity.
 
 The finalizer records every resolved logical identity on `ttl.bind_cb` before
 rewriting `cb_index`. Repeated finalization therefore cannot merge logical
 DFBs that already share a physical slot. Allocation visits DFBs in logical-ID
 order, preserving their existing indices when no reuse is possible.
 
-### Multithreaded lifetime analysis
+### Concurrent-kernel lifetime analysis
 
-`DFBMultithreadedLivenessAnalysis` models the concurrently executing kernel
+`DFBConcurrentKernelLivenessAnalysis` models the concurrently executing kernel
 functions as a happens-before graph. Each top-level operation in a
 single-block kernel function receives an entry event and a completion event:
 
@@ -745,14 +750,14 @@ single-block kernel function receives an entry event and a completion event:
 op.entry -> op.completion -> next.entry
 ```
 
-Program-order edges connect consecutive operations within each function. For
-a statically matched one-shot DFB, the blocking protocol adds this
-cross-thread edge:
+Program-order edges connect consecutive operations within each kernel. When a
+logical DFB has exactly one `cb_push` and one `cb_wait`, the blocking protocol
+adds this cross-kernel edge:
 
 ```text
-producer thread:  ... -> cb_push.completion -----------------+
+producer kernel:  ... -> cb_push.completion -----------------+
                                                              |
-consumer thread:  cb_wait.entry -> (blocked) -> cb_wait.completion -> ...
+consumer kernel:  cb_wait.entry -> (blocked) -> cb_wait.completion -> ...
 ```
 
 The edge targets wait completion, not wait entry. A consumer may enter
@@ -776,13 +781,17 @@ communication edge in this analysis.
 
 Every kernel function forms a separate event sequence. Function identity
 distinguishes the two data movement functions even though both carry
-`#ttkernel.thread<noc>`. A logical DFB identifies its producer function from
-`cb_reserve` and its consumer function from `cb_wait`. Protocol edges from all
-logical DFBs share one module graph, so transitive order can pass through any
-number of intermediate functions. The analysis supports any number of function
-sequences; three threads is not hard-coded.
+`#ttkernel.thread<noc>`. A logical `dfb_id` is only an equivalence key attached
+to `ttl.bind_cb` declarations; it does not encode participant kernels. The
+analysis associates each lifecycle operation with the ID of the declaration
+reached from its DFB operand. For each group with exactly one `cb_reserve` and
+one `cb_wait`, the analysis records the kernel containing the reserve as the
+producer and the kernel containing the wait as the consumer. Protocol edges
+from all logical DFBs share one module graph, so transitive order can pass
+through any number of intermediate kernels. The analysis supports any number
+of kernel sequences; three kernels is not hard-coded.
 
-#### Bounded one-shot lifetimes
+#### Lifetimes with one reserve/push and wait/pop pair
 
 A logical DFB is bounded only when all of these conditions hold:
 
@@ -825,10 +834,10 @@ change the hardware protocol. The analysis records:
 - `earliestEvents`: the minimal use-entry events under happens-before;
 - `terminalEvents`: the `cb_pop` completion event.
 
-`earliestEvents` can contain operations from several threads. It is an
+`earliestEvents` can contain operations from several kernels. It is an
 antichain: no recorded event strictly precedes another. Requiring the terminal
 event of DFB A to precede every earliest event of DFB B proves that A is dead
-before any thread can begin using B.
+before any kernel can begin using B.
 
 ```text
 isOrderedBefore(A, B):
@@ -863,18 +872,19 @@ A.pop[Compute]
 Compute program order separately establishes
 `A.pop[Compute] -> B.wait.entry[Compute]`. Therefore A's terminal pop precedes
 both producer-side and consumer-side events in B's earliest-event frontier. An
-unrelated third function adds no cross-thread edge. A `B.wait` entered before
+unrelated third kernel adds no cross-kernel edge. A `B.wait` entered before
 `A.pop` also remains unordered and prevents reuse.
 
-The producer and consumer kernel functions are also part of the allocation
-state. TT-Metal maintains cumulative DFB counters and ring pointers within
-those functions. A zero-occupancy cut orders storage reuse, but does not move
-that thread-local state into another kernel function.
+The producer and consumer kernels are also part of the allocation state.
+TT-Metal maintains cumulative DFB counters and ring pointers for each kernel.
+Proving zero occupancy before reuse does not move that kernel-local state to
+another processor running a different kernel.
 
 #### Analysis algorithm
 
-The analysis is read-only. It computes a complete assignment before
-`TTLFinalizeDFBIndices` changes any `dfb_id`, `cb_index`, or module attribute.
+The analysis is read-only. It assigns a physical index to every logical DFB
+before `TTLFinalizeDFBIndices` changes any `dfb_id`, `cb_index`, or module
+attribute.
 
 ```text
 analyzeDFBs(module):
@@ -893,13 +903,13 @@ analyzeDFBs(module):
       add previous completion -> entry
 
   for each logical DFB:
-    if getMatchedOneShotTileCount(DFB) returns transactionTileCount:
+    if exactly one reserve, push, wait, and pop form a matched lifecycle:
       DFB.transactionTileCount = transactionTileCount
       add DFB.push.completion -> DFB.wait.completion
 
   compute transitive graph reachability
 
-  for each logical DFB with a matched one-shot lifecycle:
+  for each logical DFB with a matched lifecycle:
     uses = project every runtime use to a top-level operation
     if every use completion precedes DFB.pop.completion:
       DFB.earliestEvents = minimal entry events in uses
@@ -913,9 +923,9 @@ analyzeDFBs(module):
       return true
     if A.type.totalElements % A.transactionTileCount != 0:
       return true
-    if A.producerThread != B.producerThread:
+    if A.producerKernel != B.producerKernel:
       return true
-    if A.consumerThread != B.consumerThread:
+    if A.consumerKernel != B.consumerKernel:
       return true
     return not isOrderedBefore(A, B)
        and not isOrderedBefore(B, A)
@@ -925,7 +935,7 @@ analyzeDFBs(module):
       interferenceGraph,
       logicalDFBs ordered by logical ID)
 
-  reject if colors.size > 32
+  reject if the number of distinct colors exceeds 32
   verify every pair in one color does not conflict
   return logical DFB -> color
 ```
@@ -937,9 +947,8 @@ deterministic and preserves existing indices when no reuse is possible.
 
 Every happens-before edge is a required execution order:
 
-- function program order is preserved by each kernel;
-- one matched push must complete before its blocking one-shot wait can
-  complete.
+- program order within each kernel is preserved;
+- the matched push must complete before the matched blocking wait can complete.
 
 For a bounded DFB, matching lifecycle tile counts and one push/pop pair imply
 zero occupancy at `cb_pop` completion. The owned-use checks prove that neither
@@ -954,8 +963,8 @@ The conflict predicate proves:
 2. They use the same transaction tile count, and that count divides their
    physical capacity. Their ring pointers therefore advance by equal increments
    and wrap only at the allocation boundary.
-3. They use the same producer and consumer kernel functions, so cumulative
-   counters and ring pointers remain in the same thread-local state.
+3. They use the same producer and consumer kernels, so cumulative
+   counters and ring pointers remain in the same kernel-local state.
 4. A's terminal pop completes before every earliest use of B.
 
 Therefore A has zero occupancy and no remaining access before any producer or
@@ -974,14 +983,18 @@ increase the physical count but cannot create unsafe reuse.
 `test/python/test_flash_chain_8node.py` composes a per-node flash-attention
 atom with a three-level tree-reduction atom over eight nodes. The composed
 operation contains 36 logical DFBs across the compute and data movement
-threads. Proven non-overlapping lifetimes reduce the allocation to 29 physical
+kernels. Proven non-overlapping lifetimes reduce the allocation to 29 physical
 indices, below the hardware limit of 32. The device test compares the final
 result with PyTorch scaled dot-product attention.
 
-`test/ttlang/Dialect/TTL/Transforms/dfb_multithreaded_liveness.mlir` isolates
-the cross-thread ordering rules. The capacity-boundary test constructs 34
+`test/ttlang/Dialect/TTL/Transforms/dfb_concurrent_kernel_liveness.mlir` isolates
+the cross-kernel ordering rules. The capacity-boundary test constructs 34
 logical DFBs that require exactly 32 physical indices, while the invalid test
 confirms that 33 unbounded lifetimes are rejected.
+
+`test/python/test_user_dfb_reuse.py` recursively composes copy atoms into an
+operation with 33 logical DFBs. The operation compiles and executes only when
+reuse reduces the physical allocation below the hardware limit.
 
 ### Module attribute and runtime integration
 
@@ -1000,7 +1013,7 @@ emission uses the same physical sizes, tile dimensions, and data formats as
 direct execution.
 
 Setting `reuse-user-dfbs=false` selects the compiler-only allocator. It retains
-user indices and applies per-function linear-scan allocation to
+user indices and applies per-kernel linear-scan allocation to
 compiler-created DFBs. Both allocation modes emit the complete
 `ttl.dfb_allocations` table and assign identities to compiler-created
 declarations.
@@ -1018,7 +1031,7 @@ declarations.
   [PR #632](https://github.com/tenstorrent/tt-lang/pull/632) also contains a
   PipeNet-specific event traversal that keeps sibling `scf.if` frontiers
   unordered. The missing work is to integrate these facts into the
-  cross-function DFB happens-before graph and prove bounded region lifetimes.
+  cross-kernel DFB happens-before graph and prove bounded region lifetimes.
   MLIR
   [One-Shot Bufferize](https://github.com/llvm/llvm-project/blob/main/mlir/lib/Dialect/Bufferization/Transforms/OneShotAnalysis.cpp)
   applies the same conservative restriction when repeated regions invalidate a
@@ -1035,7 +1048,7 @@ declarations.
   execution counts to reducible block-CFG loops.
 
 - **Credit-return ordering.** Only push-to-wait completion is modeled across
-  threads. Proving additional pop-to-reserve ordering could shorten later
+  kernels. Proving additional pop-to-reserve ordering could shorten later
   producer frontiers, but requires exact protocol and occurrence matching.
   The capacity proof in
   [PR #700](https://github.com/tenstorrent/tt-lang/pull/700) already validates
@@ -1043,17 +1056,17 @@ declarations.
   PipeNet receiver DFBs.
 
 - **Launch-node domains.** Reuse currently requires the same producer and
-  consumer functions even when different DFBs execute on disjoint node
+  consumer kernels even when different DFBs execute on disjoint node
   domains. Integrating `LaunchNodeDomainAnalysis` could permit domain-local
   reuse when no physical node observes both lifetimes.
   [PR #700](https://github.com/tenstorrent/tt-lang/pull/700) specializes static
   execution counts by launch coordinate and is the relevant integration
   reference.
 
-- **Kernel participant changes.** A happens-before cut does not transfer
-  TT-Metal's thread-local counters or ring pointers. Reuse across different
-  producer or consumer functions would require an explicit state reset or a
-  proof that both functions share the same hardware state.
+- **Kernel participant changes.** Proving zero occupancy does not transfer
+  TT-Metal's kernel-local counters or ring pointers. Reuse across different
+  producer or consumer kernels would require an explicit state reset or a
+  mechanism that shares this state across their processors.
 
 - **Storage compatibility.** Exact `CircularBufferType` equality forbids reuse
   across different block shapes, tile dimensions, element types, or block
@@ -1073,7 +1086,7 @@ declarations.
 
 - **Reachability cost.** The current bit-vector transitive closure is suitable
   for the small number of operations in one kernel launch. Its cost depends on
-  the total operations across all function sequences, not a fixed thread
+  the total operations across all kernel sequences, not a fixed kernel
   count. An SCC condensation followed by topological bit-set propagation would
   scale better for substantially larger generated programs.
 

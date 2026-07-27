@@ -857,7 +857,8 @@ class TTLGenericCompiler(TTCompilerBase):
             element_type,
             cb.block_count,
         )
-        # Separate logical identity from the physical index selected later.
+        # The frontend index identifies the logical DFB; finalization may
+        # replace cb_index when reusing physical storage.
         return ttl.bind_cb(
             cb_type,
             cb._cb_index,
