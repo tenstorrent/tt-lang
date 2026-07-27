@@ -55,8 +55,10 @@ output_value() {
 }
 
 @test "version input is validated and normalized" {
-    DISPATCH_VERSION_OVERRIDE="not a version" run -1 "$SCRIPT"
+    malicious_version='<script>alert(1)</script>'
+    DISPATCH_VERSION_OVERRIDE="$malicious_version" run -1 "$SCRIPT"
     assert_output --partial "Invalid PEP 440 version"
+    refute_output --partial "$malicious_version"
 
     DISPATCH_VERSION_OVERRIDE=1.2.3-rc1 run -0 "$SCRIPT"
     assert_equal "$(output_value version_override)" "1.2.3rc1"

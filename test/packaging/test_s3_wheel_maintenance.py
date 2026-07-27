@@ -11,6 +11,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 from conftest import REPO_ROOT
 
 SCRIPT = REPO_ROOT / ".github" / "scripts" / "s3-wheel-maintenance.py"
@@ -231,6 +233,41 @@ def test_dry_run_does_not_delete_or_refresh(monkeypatch) -> None:
     assert maintenance.main() == 0
 
 
+def test_refresh_views_uses_repository_owned_script(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(
+        maintenance.subprocess,
+        "run",
+        lambda command, check: calls.append((command, check)),
+    )
+
+    maintenance._refresh_views(["2026-07", "2026-08"])
+
+    assert calls == [
+        (
+            [
+                str(SCRIPT.with_name("refresh-s3-wheel-views.sh").resolve()),
+                "--months",
+                "2026-07,2026-08",
+            ],
+            True,
+        )
+    ]
+
+
+def test_refresh_views_rejects_invalid_month_before_running(monkeypatch) -> None:
+    monkeypatch.setattr(
+        maintenance.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("subprocess called")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="invalid month"):
+        maintenance._refresh_views(["2026-07;echo unexpected"])
+
+
 def test_live_date_removal_requires_confirmation_before_listing(
     monkeypatch,
 ) -> None:
@@ -280,7 +317,7 @@ def test_live_date_removal_deletes_and_refreshes_affected_month(
     monkeypatch.setattr(
         maintenance,
         "_refresh_views",
-        lambda months, script: refreshed.extend(months),
+        lambda months: refreshed.extend(months),
     )
     monkeypatch.setattr(
         sys,
@@ -319,7 +356,7 @@ def test_live_date_removal_refreshes_range_after_prior_deletion(
     monkeypatch.setattr(
         maintenance,
         "_refresh_views",
-        lambda months, script: refreshed.extend(months),
+        lambda months: refreshed.extend(months),
     )
     monkeypatch.setattr(
         sys,

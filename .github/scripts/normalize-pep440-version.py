@@ -13,12 +13,12 @@ from packaging.version import InvalidVersion, Version
 
 def main() -> int:
     if len(sys.argv) != 2:
-        print(f"Usage: {sys.argv[0]} <version>", file=sys.stderr)
+        print("Usage: normalize-pep440-version.py <version>", file=sys.stderr)
         return 2
     try:
         version = Version(sys.argv[1])
     except InvalidVersion:
-        print(f"Invalid PEP 440 version: {sys.argv[1]!r}", file=sys.stderr)
+        print("Invalid PEP 440 version", file=sys.stderr)
         return 1
     print(version)
     return 0

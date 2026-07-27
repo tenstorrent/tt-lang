@@ -21,6 +21,8 @@ from typing import Iterable
 BUCKET = "tenstorrent-pypi"
 PREFIX = "tt-lang/"
 DEV_DATE_RE = re.compile(r"\.dev(?P<date>[0-9]{8})(?:\+[^-]+)?-")
+MONTH_RE = re.compile(r"^[0-9]{4}-(?:0[1-9]|1[0-2])$")
+REFRESH_SCRIPT = Path(__file__).with_name("refresh-s3-wheel-views.sh").resolve()
 CONFIRMATIONS = {
     "deduplicate": "delete-duplicate-versions",
     "remove-dev-range": "delete-dev-versions",
@@ -304,11 +306,13 @@ def _write_summary(
     print("\n".join(lines))
 
 
-def _refresh_views(months: list[str], script: str) -> None:
+def _refresh_views(months: list[str]) -> None:
     if not months:
         return
+    if any(MONTH_RE.fullmatch(month) is None for month in months):
+        raise RuntimeError("invalid month passed to S3 wheel view refresh")
     subprocess.run(
-        [script, "--months", ",".join(months)],
+        [str(REFRESH_SCRIPT), "--months", ",".join(months)],
         check=True,
     )
 
@@ -343,10 +347,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--confirm", default="")
     parser.add_argument("--github-ref", default=os.environ.get("GITHUB_REF", ""))
     parser.add_argument("--bucket", default=os.environ.get("TTLANG_S3_BUCKET", BUCKET))
-    parser.add_argument(
-        "--refresh-script",
-        default=str(Path(__file__).with_name("refresh-s3-wheel-views.sh")),
-    )
     return parser
 
 
@@ -379,7 +379,7 @@ def main() -> int:
             if deletions:
                 delete_versions(deletions, args.bucket)
             if args.operation == "remove-dev-range":
-                _refresh_views(months, args.refresh_script)
+                _refresh_views(months)
         _write_summary(args.operation, args.dry_run, deletions, months)
         return 0
     except (RuntimeError, subprocess.CalledProcessError) as error:
