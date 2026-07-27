@@ -1106,7 +1106,10 @@ def test_tile_layout_shim_multiply_column_vectors():
     b_src = torch.arange(33, 65, dtype=torch.float32).reshape(32, 1)
     a = ttnn.from_torch(a_src)
     b = ttnn.from_torch(b_src)
-    assert a.shape == b.shape == (32, 32)
+    # .shape is the logical (unpadded) column-vector shape; .padded_shape is the
+    # tile-aligned storage that carries the data in column 0.
+    assert a.shape == b.shape == (32, 1)
+    assert a.padded_shape == b.padded_shape == (32, 32)
 
     c = ttnn.multiply(a, b)
     assert c.shape == (32, 32)
@@ -1127,7 +1130,10 @@ def test_tile_layout_shim_add_row_vectors():
     b_src = torch.arange(101, 133, dtype=torch.float32).reshape(1, 32)
     a = ttnn.from_torch(a_src)
     b = ttnn.from_torch(b_src)
-    assert a.shape == b.shape == (32, 32)
+    # .shape is the logical (unpadded) row-vector shape; .padded_shape is the
+    # tile-aligned storage that carries the data in row 0.
+    assert a.shape == b.shape == (1, 32)
+    assert a.padded_shape == b.padded_shape == (32, 32)
 
     c = ttnn.add(a, b)
     assert c.shape == (32, 32)
@@ -1157,7 +1163,10 @@ def test_tile_layout_shim_multiply_corner_block():
     b_src = torch.full((4, 4), 2.0, dtype=torch.float32)
     a = ttnn.from_torch(a_src)
     b = ttnn.from_torch(b_src)
-    assert a.shape == b.shape == (32, 32)
+    # .shape is the logical (unpadded) 4x4 shape; .padded_shape is the
+    # tile-aligned storage that carries the data in the top-left corner.
+    assert a.shape == b.shape == (4, 4)
+    assert a.padded_shape == b.padded_shape == (32, 32)
 
     c = ttnn.multiply(a, b)
     out = c.to_torch()
