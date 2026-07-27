@@ -36,7 +36,7 @@ def _ensure_ttnn():
 
 from .dataflow_buffer import PhysicalDFBConfig
 from .constants import DEFAULT_L1_CB_BUDGET_BYTES
-from .dtype_utils import format_name_to_ttnn_dtype
+from .dtype_utils import format_name_to_ttnn_dtype, tile_bytes_from_dtype
 
 
 @dataclass(frozen=True)
@@ -51,22 +51,21 @@ class _DFBAllocation:
 
 def _get_dfb_allocation(config: PhysicalDFBConfig) -> _DFBAllocation:
     """Compute one finalized physical DFB allocation."""
-    _ensure_ttnn()
-    if ttnn is None:
-        raise RuntimeError("ttnn is not available")
     if not isinstance(config, PhysicalDFBConfig):
         raise TypeError(
             "DFB runtime configuration must be a finalized PhysicalDFBConfig, "
             f"got {type(config).__name__}"
         )
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
 
     data_format = format_name_to_ttnn_dtype(config.data_format)
     num_tiles = config.num_tiles
     block_count = config.block_count
     tile_shape = config.tile
 
-    tile = ttnn.Tile(tile_shape)
-    page_size = tile.get_tile_size(data_format)
+    page_size = tile_bytes_from_dtype(data_format, tile_shape)
     return _DFBAllocation(
         data_format=data_format,
         num_tiles=num_tiles,
@@ -444,13 +443,12 @@ def build_cb_descriptors(
             f"format={cb.data_format} tile={allocation.tile} -> "
             f"{allocation.total_size} bytes"
         )
-        tile_descriptor = ttnn.TileDescriptor(ttnn.Tile(allocation.tile))
         rows.append(
             (
                 allocation.data_format,
                 allocation.page_size,
                 allocation.total_size,
-                tile_descriptor,
+                allocation.tile,
                 description,
             )
         )
@@ -466,8 +464,8 @@ def build_cb_descriptors(
             remaining_bytes = get_min_remaining_l1_for_device(device)
             break
 
-    # Must stay aligned with MLIR ttl-validate-cb-budget (TileType::getSizeBytes) and
-    # tile_bytes_from_dtype; see issue #511.
+    # Must stay aligned with MLIR ttl-validate-cb-budget
+    # (TileType::getSizeBytes); see issue #511.
     if total_cb_bytes > remaining_bytes:
         breakdown = "\n".join(r[-1] for r in rows)
         raise ValueError(
@@ -481,7 +479,7 @@ def build_cb_descriptors(
     cb_descriptors = []
     for i, row in enumerate(rows):
         data_format, page_size, total_size = row[:3]
-        tile_descriptor = row[3]
+        tile_descriptor = ttnn.TileDescriptor(ttnn.Tile(row[3]))
         cb_format = ttnn.CBFormatDescriptor(
             buffer_index=i,
             data_format=data_format,

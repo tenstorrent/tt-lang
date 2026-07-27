@@ -199,15 +199,16 @@ def format_name_to_ttnn_dtype(name: str):
             )
 
 
-def tile_bytes_from_dtype(dtype) -> int:
+def tile_bytes_from_dtype(dtype, tile_shape=(32, 32)) -> int:
     """
-    Calculate tile size in bytes from ttnn dtype.
+    Calculate tile size in bytes from ttnn dtype and tile dimensions.
 
-    For tiled tensors, each tile is 32x32 elements. The byte size depends on
-    the data type's element size plus any format-specific overhead.
+    The calculation matches ``ttcore::TileType::getSizeBytes``. Block floating
+    point formats currently require full 32x32 tiles in that implementation.
 
     Args:
         dtype: ttnn.DataType enum value
+        tile_shape: Tile height and width
 
     Returns:
         Tile size in bytes
@@ -215,18 +216,24 @@ def tile_bytes_from_dtype(dtype) -> int:
     Raises:
         ValueError: If dtype is not supported
     """
+    if len(tile_shape) != 2 or any(dimension <= 0 for dimension in tile_shape):
+        raise ValueError(f"Invalid tile dimensions: {tile_shape}")
+
+    tile_elements = tile_shape[0] * tile_shape[1]
     dtype_int = dtype.value
-    # Map ttnn DataType enum values to tile sizes
-    # Reference: tt-metal/tt_metal/common/constants.hpp
     if dtype_int in (0, 6):  # BFloat16, UInt16
-        return 32 * 32 * 2  # 2048
+        return tile_elements * 2
     elif dtype_int in (1, 2, 7):  # Float32, Int32, UInt32
-        return 32 * 32 * 4  # 4096
+        return tile_elements * 4
     elif dtype_int == 3:  # BFP8
-        return 32 * 32 + 64  # 1088
+        if tuple(tile_shape) != (32, 32):
+            raise ValueError("BFP8 tiles must be 32x32")
+        return 1088
     elif dtype_int == 5:  # UInt8/Int8
-        return 32 * 32  # 1024
+        return tile_elements
     elif dtype_int == 4:  # BFP4
-        return 512 + 64  # 576
+        if tuple(tile_shape) != (32, 32):
+            raise ValueError("BFP4 tiles must be 32x32")
+        return 576
     else:
         raise ValueError(f"Unsupported dtype for tile size calculation: {dtype}")
