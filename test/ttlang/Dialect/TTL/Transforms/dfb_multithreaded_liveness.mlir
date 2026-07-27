@@ -80,6 +80,69 @@ func.func @synchronized_compute()
 
 // -----
 
+// A relay through the second data movement thread orders both frontiers of the
+// second DFB after the first DFB's terminal pop. The first and second DFBs use
+// the same producer and consumer functions and may share physical index 0.
+
+// REUSE-LABEL: func.func @three_thread_producer
+// REUSE-SAME: ttl.base_cta_index = 3 : i32
+// REUSE: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+// REUSE: ttl.bind_cb{cb_index = 2, block_count = 2} {dfb_id = 2 : index}
+// REUSE: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 3 : index}
+// REUSE-LABEL: func.func @three_thread_consumer
+// REUSE-SAME: ttl.base_cta_index = 3 : i32
+// REUSE: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+// REUSE: ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+// REUSE: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 3 : index}
+// REUSE-LABEL: func.func @three_thread_relay
+// REUSE-SAME: ttl.base_cta_index = 3 : i32
+// REUSE: ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+// REUSE: ttl.bind_cb{cb_index = 2, block_count = 2} {dfb_id = 2 : index}
+
+func.func @three_thread_producer()
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                ttl.base_cta_index = 4 : i32, ttl.crta_indices = []} {
+  %first_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %relay_to_producer = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %second_dfb = ttl.bind_cb {cb_index = 3, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %first_reserved = ttl.cb_reserve %first_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %first_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %producer_ack = ttl.cb_wait %relay_to_producer : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_pop %relay_to_producer : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %second_reserved = ttl.cb_reserve %second_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %second_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
+
+func.func @three_thread_consumer()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                ttl.base_cta_index = 4 : i32, ttl.crta_indices = []} {
+  %first_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %consumer_to_relay = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %second_dfb = ttl.bind_cb {cb_index = 3, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %first_waited = ttl.cb_wait %first_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_pop %first_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %relay_reserved = ttl.cb_reserve %consumer_to_relay : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %consumer_to_relay : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %second_waited = ttl.cb_wait %second_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_pop %second_dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
+
+func.func @three_thread_relay()
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                ttl.base_cta_index = 4 : i32, ttl.crta_indices = []} {
+  %consumer_to_relay = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %relay_to_producer = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %consumer_ack = ttl.cb_wait %consumer_to_relay : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_pop %consumer_to_relay : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %producer_ack = ttl.cb_reserve %relay_to_producer : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %relay_to_producer : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
+
+// -----
+
 // Source order in both threads does not order A's consumer completion before
 // B's producer entry. The two DFBs must retain separate physical indices.
 
