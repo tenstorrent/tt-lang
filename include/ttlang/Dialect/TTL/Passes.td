@@ -709,7 +709,8 @@ def TTLFinalizeDFBIndices
     After reuse, verifies the total DFB count does not exceed
     kMaxCircularBuffers (32), updates ttl.base_cta_index on every
     function, and builds the ttl.dfb_allocations module attribute for the
-    Python runtime. The attribute contains one descriptor per physical index.
+    Python runtime. The attribute contains one descriptor per physical index,
+    including the page size computed from the finalized element type.
 
     Disabling `reuse-user-dfbs` retains each user DFB's physical index and runs
     the kernel-local linear-scan allocator only for compiler-created DFBs.

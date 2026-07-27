@@ -201,6 +201,7 @@ def _run_op(
             num_tiles=1,
             data_format=data_format,
             block_count=1,
+            page_size=ttnn.tile_size(io_tensors[0].dtype),
         )
         for dfb_index in range(len(io_tensors))
     ]

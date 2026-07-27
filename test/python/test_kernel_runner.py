@@ -349,6 +349,7 @@ def test_emit_runner_source_accepts_physical_dfb_configs():
                 num_tiles=3,
                 data_format="bfloat16",
                 block_count=2,
+                page_size=32,
                 tile=(1, 16),
             )
         ],
@@ -368,10 +369,10 @@ def test_emit_runner_source_accepts_physical_dfb_configs():
 
 def test_physical_dfb_allocation_scales_with_subtile_area():
     full_tile = kernel_runner._get_dfb_allocation(
-        PhysicalDFBConfig(0, 1, "bfloat16", 2, (32, 32))
+        PhysicalDFBConfig(0, 1, "bfloat16", 2, 2048, (32, 32))
     )
     two_half_tiles = kernel_runner._get_dfb_allocation(
-        PhysicalDFBConfig(0, 2, "bfloat16", 2, (16, 32))
+        PhysicalDFBConfig(0, 2, "bfloat16", 2, 1024, (16, 32))
     )
 
     assert two_half_tiles.page_size * 2 == full_tile.page_size
@@ -392,7 +393,7 @@ def test_dfb_allocation_requires_finalized_config(monkeypatch):
     "cb_configs",
     [
         [None],
-        [PhysicalDFBConfig(1, 1, "bfloat16", 2)],
+        [PhysicalDFBConfig(1, 1, "bfloat16", 2, 2048)],
     ],
     ids=["missing-config", "wrong-index"],
 )
@@ -408,14 +409,16 @@ def test_emit_runner_source_rejects_invalid_physical_dfb_sequence(cb_configs):
 
 
 @pytest.mark.parametrize(
-    ("data_format", "emitted_dtype"),
+    ("data_format", "emitted_dtype", "page_size"),
     [
-        ("bfloat4_b", "ttnn.bfloat4_b"),
-        ("bfloat8_b", "ttnn.bfloat8_b"),
-        ("uint8", "ttnn.uint8"),
+        ("bfloat4_b", "ttnn.bfloat4_b", 576),
+        ("bfloat8_b", "ttnn.bfloat8_b", 1088),
+        ("uint8", "ttnn.uint8", 1024),
     ],
 )
-def test_emit_runner_source_preserves_physical_dfb_format(data_format, emitted_dtype):
+def test_emit_runner_source_preserves_physical_dfb_format(
+    data_format, emitted_dtype, page_size
+):
     source = kernel_runner.emit_runner_source(
         kernel_specs=[],
         cb_configs=[
@@ -424,6 +427,7 @@ def test_emit_runner_source_preserves_physical_dfb_format(data_format, emitted_d
                 num_tiles=1,
                 data_format=data_format,
                 block_count=2,
+                page_size=page_size,
             )
         ],
         grid_cols=1,
@@ -444,6 +448,7 @@ def test_emit_runner_source_rejects_unknown_physical_dfb_format():
                     num_tiles=1,
                     data_format="unknown",
                     block_count=2,
+                    page_size=2048,
                 )
             ],
             grid_cols=1,

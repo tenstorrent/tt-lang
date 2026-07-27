@@ -151,6 +151,7 @@ class PhysicalDFBConfig:
     num_tiles: int
     data_format: str  # e.g., "bfloat16", "float32", "float16"
     block_count: int
+    page_size: int
     tile: Tuple[int, int] = (32, 32)
 
 

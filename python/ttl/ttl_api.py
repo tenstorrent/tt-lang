@@ -1256,7 +1256,13 @@ def _extract_dfb_config_attribute(module, attribute_name):
 
     configs = []
     seen_indices = set()
-    required_fields = ("dfb_index", "num_tiles", "element_type", "block_count")
+    required_fields = (
+        "dfb_index",
+        "num_tiles",
+        "element_type",
+        "block_count",
+        "page_size",
+    )
     for position, entry in enumerate(attr):
         for field in required_fields:
             if field not in entry:
@@ -1267,6 +1273,7 @@ def _extract_dfb_config_attribute(module, attribute_name):
             dfb_index = int(values["dfb_index"])
             num_tiles = int(values["num_tiles"])
             block_count = int(values["block_count"])
+            page_size = int(values["page_size"])
             data_format, tile = _parse_mlir_element_type(values["element_type"])
         except (TypeError, ValueError) as error:
             raise ValueError(f"Invalid {attribute_name}[{position}]: {error}") from None
@@ -1290,6 +1297,11 @@ def _extract_dfb_config_attribute(module, attribute_name):
                 f"{attribute_name}[{position}].block_count must be positive, "
                 f"got {block_count}"
             )
+        if page_size <= 0:
+            raise ValueError(
+                f"{attribute_name}[{position}].page_size must be positive, "
+                f"got {page_size}"
+            )
 
         seen_indices.add(dfb_index)
         configs.append(
@@ -1298,6 +1310,7 @@ def _extract_dfb_config_attribute(module, attribute_name):
                 num_tiles=num_tiles,
                 data_format=data_format,
                 block_count=block_count,
+                page_size=page_size,
                 tile=tile,
             )
         )

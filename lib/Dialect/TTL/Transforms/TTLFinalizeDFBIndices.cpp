@@ -14,6 +14,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "DFBConcurrentKernelLivenessAnalysis.h"
+#include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
@@ -220,6 +221,10 @@ static LogicalResult emitDFBMetadata(ModuleOp moduleOp, OpBuilder &builder,
                          static_cast<int32_t>(dfbType.getElementsPerBlock()))));
     entryAttributes.push_back(builder.getNamedAttr(
         "element_type", TypeAttr::get(dfbType.getElementType())));
+    entryAttributes.push_back(builder.getNamedAttr(
+        "page_size",
+        builder.getI32IntegerAttr(static_cast<int32_t>(
+            ttcore::getElementSizeBytes(dfbType.getElementType())))));
     entryAttributes.push_back(builder.getNamedAttr(
         "block_count", builder.getI32IntegerAttr(
                            static_cast<int32_t>(dfbType.getBlockCount()))));

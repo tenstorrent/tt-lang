@@ -1000,17 +1000,20 @@ reuse reduces the physical allocation below the hardware limit.
 
 The finalizer updates `ttl.base_cta_index` on every function and emits
 `ttl.dfb_allocations` with one descriptor per physical index. Each descriptor
-contains `dfb_index`, `num_tiles`, `element_type`, and `block_count`.
+contains `dfb_index`, `num_tiles`, `element_type`, `page_size`, and
+`block_count`. The finalizer computes `page_size` with
+`ttcore::getElementSizeBytes()` on the finalized element type, so subtile
+dimensions affect the physical allocation without requiring runtime device
+initialization.
 Compile-time arguments to each kernel reserve `[0, base_cta_index)` for these
 physical DFB indices.
 
 The Python runtime validates that the descriptors form a dense index range and
 builds all `ttnn.CBDescriptor` objects from this final allocation table. It
 does not use the frontend's logical DFB list after physical assignment. This
-preserves the full `TileType`, including subtile dimensions. The runtime uses
-`ttnn.Tile.get_tile_size()` for the physical page size and constructs the
-corresponding `ttnn.TileDescriptor`. Standalone runner emission uses the same
-physical sizes, tile dimensions, and data formats as direct execution.
+preserves the compiler-computed page size and full `TileType`, including
+subtile dimensions. Standalone runner emission uses the same physical sizes,
+tile dimensions, and data formats as direct execution.
 
 Setting `reuse-user-dfbs=false` selects the compiler-only allocator. It retains
 user indices and applies per-kernel linear-scan allocation to

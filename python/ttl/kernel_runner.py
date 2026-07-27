@@ -81,8 +81,7 @@ def _get_dfb_allocation(config: PhysicalDFBConfig) -> _DFBAllocation:
     num_tiles = config.num_tiles
     block_count = config.block_count
     tile_shape = config.tile
-
-    page_size = ttnn.Tile(tile_shape).get_tile_size(data_format)
+    page_size = config.page_size
     return _DFBAllocation(
         data_format=data_format,
         num_tiles=num_tiles,

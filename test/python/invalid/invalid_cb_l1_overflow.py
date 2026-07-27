@@ -27,6 +27,7 @@ build_cb_descriptors(
             num_tiles=400,
             data_format="bfloat16",
             block_count=2,
+            page_size=ttnn.tile_size(ttnn.bfloat16),
         )
     ],
     None,

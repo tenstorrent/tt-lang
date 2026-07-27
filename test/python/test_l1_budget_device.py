@@ -34,7 +34,7 @@ pytestmark = pytest.mark.skipif(
     not is_hardware_available(), reason="No Tenstorrent device available"
 )
 
-TILE_BYTES = 2048  # bf16 tile: 32 * 32 * 2
+TILE_BYTES = ttnn.tile_size(ttnn.bfloat16)
 
 
 def _overflow_config(remaining_bytes):
@@ -45,6 +45,7 @@ def _overflow_config(remaining_bytes):
         num_tiles=overflow_tiles,
         data_format="bfloat16",
         block_count=1,
+        page_size=TILE_BYTES,
     )
 
 
