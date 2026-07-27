@@ -64,6 +64,49 @@ def test_dfb_collection_is_flattened_into_static_captures(monkeypatch):
     assert "buffers_2.wait()" in stripped_source
 
 
+def test_dfb_collection_accepts_list_literal(monkeypatch):
+    stripped, dfbs, pipe_nets = _lift(
+        """
+        def kernel():
+            buffers = [
+                ttl.make_dfb("bf16", shape=(1, 1), block_count=2),
+                ttl.make_dfb("bf16", shape=(1, 1), block_count=2),
+            ]
+            first = buffers[0].wait()
+            second = buffers[1].reserve()
+        """,
+        monkeypatch,
+    )
+
+    assert list(dfbs) == ["buffers_0", "buffers_1"]
+    assert pipe_nets == {}
+    stripped_source = ast.unparse(stripped)
+    assert "buffers_0.wait()" in stripped_source
+    assert "buffers_1.reserve()" in stripped_source
+
+
+def test_dfb_collection_accepts_static_comprehension_filter(monkeypatch):
+    stripped, dfbs, pipe_nets = _lift(
+        """
+        def kernel():
+            buffers = [
+                ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+                for buffer_index in range(4)
+                if buffer_index % 2 == 0
+            ]
+            first = buffers[0].wait()
+            second = buffers[1].reserve()
+        """,
+        monkeypatch,
+    )
+
+    assert list(dfbs) == ["buffers_0", "buffers_1"]
+    assert pipe_nets == {}
+    stripped_source = ast.unparse(stripped)
+    assert "buffers_0.wait()" in stripped_source
+    assert "buffers_1.reserve()" in stripped_source
+
+
 @pytest.mark.parametrize(("open_target", "close_target"), [("(", ")"), ("[", "]")])
 def test_dfb_collection_destructuring_preserves_names(
     open_target, close_target, monkeypatch
@@ -217,6 +260,26 @@ def test_dfb_collection_rejects_element_rebinding(monkeypatch):
         )
 
 
+def test_dfb_collection_rejects_nested_thread_declaration():
+    function = _function(
+        """
+        def kernel():
+            @ttl.compute()
+            def compute():
+                buffers = [
+                    ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+                    for buffer_index in range(2)
+                ]
+        """
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="resource declaration 'make_dfb' must be a simple top-level assignment",
+    ):
+        atom_module._validate_resource_declarations(function, "collection_test")
+
+
 def test_composed_operation_accepts_static_dfb_collection_elements():
     @ttl.operation()
     def copy_stage(source: ttl.DFB, destination: ttl.DFB):
@@ -234,3 +297,24 @@ def test_composed_operation_accepts_static_dfb_collection_elements():
 
     assert "buffers[0].wait()" in chain._spec.source
     assert "buffers[1].reserve()" in chain._spec.source
+
+
+def test_composed_operation_rejects_dynamic_dfb_collection_index():
+    @ttl.operation()
+    def copy_stage(source: ttl.DFB, destination: ttl.DFB):
+        source_block = source.wait()
+        destination_block = destination.reserve()
+        destination_block.store(source_block)
+
+    with pytest.raises(
+        TypeError,
+        match="must be a resource name or statically indexed DFB collection element",
+    ):
+
+        @ttl.operation(grid=(1, 1))
+        def chain(buffer_index):
+            buffers = [
+                ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+                for collection_index in range(2)
+            ]
+            copy_stage(buffers[buffer_index], buffers[0])
