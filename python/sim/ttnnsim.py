@@ -2379,39 +2379,64 @@ def to_memory_config(tensor: Tensor, memory_config: MemoryConfig) -> Tensor:
     return result
 
 
+def _elementwise_logical_shape(
+    result: torch.Tensor, inputs: Sequence[Any]
+) -> Optional[Tuple[int, ...]]:
+    """Logical shape for an elementwise op result, mirroring ttnn.
+
+    Broadcasts the ``Tensor`` inputs' logical shapes so a module-level op (e.g.
+    ``ttnn.multiply``) reports the same logical ``.shape`` as the equivalent
+    operator (``a * b``) and as real ttnn.  Returns ``None`` -- i.e. keep the
+    physical shape as the logical default -- when there are no ``Tensor``
+    inputs, or when the op was not elementwise (the torch result shape does not
+    equal the broadcast of the inputs' padded shapes), so shape-changing ops
+    still report their physical shape.
+    """
+    tensors = [t for t in inputs if isinstance(t, Tensor)]
+    if not tensors:
+        return None
+    logical = tuple(torch.broadcast_shapes(*[tuple(t.shape) for t in tensors]))
+    padded = tuple(torch.broadcast_shapes(*[tuple(t.padded_shape) for t in tensors]))
+    return logical if tuple(result.shape) == padded else None
+
+
 def add(a: Tensor, b: Tensor) -> Tensor:
     """Element-wise add (simulator shim for ttnn.add)."""
     if _is_dry_run():
         return a._zeros_broadcast(b)
-    return Tensor(a.to_torch() + b.to_torch())
+    return Tensor(
+        a.to_torch() + b.to_torch(), logical_shape=a._broadcast_logical_shape(b)
+    )
 
 
 def multiply(a: Tensor, b: Tensor) -> Tensor:
     """Element-wise multiply (simulator shim for ttnn.multiply)."""
     if _is_dry_run():
         return a._zeros_broadcast(b)
-    return Tensor(a.to_torch() * b.to_torch())
+    return Tensor(
+        a.to_torch() * b.to_torch(), logical_shape=a._broadcast_logical_shape(b)
+    )
 
 
 def matmul(a: Tensor, b: Tensor) -> Tensor:
     """Matrix multiply (simulator shim for ttnn.matmul)."""
     if _is_dry_run():
         return a._zeros_matmul(b)
-    return Tensor(a.to_torch() @ b.to_torch())
+    return Tensor(a.to_torch() @ b.to_torch(), logical_shape=a._matmul_logical_shape(b))
 
 
 def relu(a: Tensor) -> Tensor:
     """Element-wise ReLU (simulator shim for ttnn.relu)."""
     if _is_dry_run():
         return a._zeros_like()
-    return Tensor(torch.relu(a.to_torch()))
+    return Tensor(torch.relu(a.to_torch()), logical_shape=a._logical_shape)
 
 
 def abs(a: Tensor) -> Tensor:
     """Element-wise absolute value (simulator shim for ttnn.abs)."""
     if _is_dry_run():
         return a._zeros_like()
-    return Tensor(torch.abs(a.to_torch()))
+    return Tensor(torch.abs(a.to_torch()), logical_shape=a._logical_shape)
 
 
 def exp(a: Tensor, fast_and_approximate_mode: bool = False) -> Tensor:
@@ -2422,7 +2447,7 @@ def exp(a: Tensor, fast_and_approximate_mode: bool = False) -> Tensor:
     """
     if _is_dry_run():
         return a._zeros_like()
-    return Tensor(torch.exp(a.to_torch()))
+    return Tensor(torch.exp(a.to_torch()), logical_shape=a._logical_shape)
 
 
 def split_work_to_cores(
@@ -2827,10 +2852,15 @@ def _create_golden_wrapper(
         # Call golden function
         result = golden_fn(*torch_args, **torch_kwargs)
 
-        # Wrap result in Tensor if it's a torch.Tensor
+        # Wrap result in Tensor if it's a torch.Tensor, propagating the logical
+        # shape for elementwise ops so ``.shape`` matches real ttnn (see
+        # _elementwise_logical_shape).
         match result:
             case torch.Tensor():
-                return Tensor(result)
+                logical = _elementwise_logical_shape(
+                    result, list(args) + list(kwargs.values())
+                )
+                return Tensor(result, logical_shape=logical)
             case _:
                 return result
 

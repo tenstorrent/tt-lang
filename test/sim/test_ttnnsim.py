@@ -1112,7 +1112,9 @@ def test_tile_layout_shim_multiply_column_vectors():
     assert a.padded_shape == b.padded_shape == (32, 32)
 
     c = ttnn.multiply(a, b)
-    assert c.shape == (32, 32)
+    # Elementwise multiply broadcasts the logical column-vector shapes.
+    assert c.shape == (32, 1)
+    assert c.padded_shape == (32, 32)
     out = c.to_torch()
     assert torch.equal(out[:, 0:1], a_src * b_src)
     assert torch.all(out[:, 1:] == 0)
@@ -1136,7 +1138,9 @@ def test_tile_layout_shim_add_row_vectors():
     assert a.padded_shape == b.padded_shape == (32, 32)
 
     c = ttnn.add(a, b)
-    assert c.shape == (32, 32)
+    # Elementwise add broadcasts the logical row-vector shapes.
+    assert c.shape == (1, 32)
+    assert c.padded_shape == (32, 32)
     out = c.to_torch()
     assert torch.equal(out[0:1, :], a_src + b_src)
     assert torch.all(out[1:, :] == 0)
