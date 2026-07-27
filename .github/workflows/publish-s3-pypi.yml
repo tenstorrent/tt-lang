@@ -6,8 +6,8 @@ name: Publish S3 PyPI Wheels
 
 on:
   schedule:
-    # Nightly S3-only wheel publish. GitHub cron uses UTC.
-    - cron: "0 8 * * *"
+    # Weekly S3-only publish: 08:00 UTC Monday (00:00 PST / 01:00 PDT).
+    - cron: "0 8 * * 1"
   workflow_dispatch:
     inputs:
       docker_tag:
@@ -16,7 +16,7 @@ on:
         default: ""
         required: false
       version_override:
-        description: "PEP 440 wheel version. Empty computes a nightly dev version."
+        description: "PEP 440 wheel version. Empty computes a date-based dev version."
         type: string
         default: ""
         required: false
@@ -76,6 +76,7 @@ jobs:
       manylinux_wheel_matrix: ${{ steps.resolve.outputs.manylinux_wheel_matrix }}
       overwrite_releases: ${{ steps.resolve.outputs.overwrite_releases }}
       publish_needed: ${{ steps.nightly.outputs.publish-needed }}
+      publish_prefix: ${{ steps.publish-prefix.outputs.prefix }}
       ttlang_sha: ${{ steps.nightly.outputs.ttlang-sha }}
       version_override: ${{ steps.resolve.outputs.version_override }}
       wheel_variant: ${{ steps.resolve.outputs.wheel_variant }}
@@ -111,6 +112,12 @@ jobs:
           DISPATCH_WHEEL_VARIANT: ${{ github.event_name == 'workflow_dispatch' && inputs.wheel_variant || '' }}
           EVENT_NAME: ${{ github.event_name }}
         run: .wheel-workflow-src/.github/scripts/resolve-s3-publish-inputs.sh
+
+      - name: Resolve publish prefix
+        id: publish-prefix
+        env:
+          TTLANG_WHEEL_VERSION: ${{ steps.resolve.outputs.version_override }}
+        run: .wheel-workflow-src/.github/scripts/resolve-s3-publish-prefix.sh "$TTLANG_WHEEL_VERSION"
 
       - name: Configure AWS Credentials
         if: ${{ github.event_name == 'schedule' }}
@@ -236,12 +243,6 @@ jobs:
           TTLANG_WHEEL_VERSION: ${{ needs.preflight.outputs.version_override }}
         run: .wheel-workflow-src/.github/scripts/prepare-selected-s3-publish-dist.sh "$TTLANG_WHEEL_VERSION" wheel-artifacts dist
 
-      - name: Resolve publish prefix
-        id: publish-prefix
-        env:
-          TTLANG_WHEEL_VERSION: ${{ needs.preflight.outputs.version_override }}
-        run: .wheel-workflow-src/.github/scripts/resolve-s3-publish-prefix.sh "$TTLANG_WHEEL_VERSION"
-
       - name: Configure AWS Credentials
         if: ${{ needs.preflight.outputs.dry_run != 'true' }}
         uses: ./.wheel-workflow-src/.github/actions/configure-tt-s3-credentials
@@ -250,7 +251,7 @@ jobs:
         if: ${{ needs.preflight.outputs.dry_run != 'true' }}
         env:
           OVERWRITE_RELEASES: ${{ needs.preflight.outputs.overwrite_releases }}
-          PUBLISH_PREFIX: ${{ steps.publish-prefix.outputs.prefix }}
+          PUBLISH_PREFIX: ${{ needs.preflight.outputs.publish_prefix }}
         run: .wheel-workflow-src/.github/scripts/publish-s3-wheels.sh --overwrite-if "$OVERWRITE_RELEASES" --prefix "$PUBLISH_PREFIX" dist
 
       - name: Install Markdown renderer
@@ -260,7 +261,7 @@ jobs:
       - name: Restore S3 index README
         if: ${{ needs.preflight.outputs.dry_run != 'true' }}
         env:
-          PUBLISH_PREFIX: ${{ steps.publish-prefix.outputs.prefix }}
+          PUBLISH_PREFIX: ${{ needs.preflight.outputs.publish_prefix }}
         run: .wheel-workflow-src/.github/scripts/inject-s3-publish-readme.sh "$PUBLISH_PREFIX" dist
 
       - name: Record scheduled publish state
@@ -273,7 +274,7 @@ jobs:
       - name: Report install command
         env:
           DRY_RUN: ${{ needs.preflight.outputs.dry_run }}
-          PUBLISH_PREFIX: ${{ steps.publish-prefix.outputs.prefix }}
+          PUBLISH_PREFIX: ${{ needs.preflight.outputs.publish_prefix }}
           TTLANG_WHEEL_VERSION: ${{ needs.preflight.outputs.version_override }}
           WHEEL_VARIANT: ${{ needs.preflight.outputs.wheel_variant }}
         run: .wheel-workflow-src/.github/scripts/publish-s3-summary.sh --dry-run-if "$DRY_RUN" --find-links-subdir "$PUBLISH_PREFIX" "$WHEEL_VARIANT" "$TTLANG_WHEEL_VERSION"

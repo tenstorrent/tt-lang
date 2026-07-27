@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Resolve the inputs of the S3 PyPI publish workflow into a single set of
-# step outputs. Scheduled runs compute a nightly version and force
-# `overwrite_releases=true`; workflow_dispatch runs use their explicit inputs.
+# step outputs. Scheduled runs compute a date-based development version and
+# force `overwrite_releases=true`; workflow_dispatch runs use explicit inputs.
 #
 # Required env:
 #   DISPATCH_DOCKER_TAG          May be empty (workflow_dispatch input).

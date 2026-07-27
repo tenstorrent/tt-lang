@@ -133,7 +133,7 @@ def test_s3_workflow_routes_light_wheels_to_manylinux_builder() -> None:
     assert ".github/scripts/test-s3-light-wheels.sh" in shared_build
     assert ".github/scripts/inject-s3-index-readme.sh" not in workflow
     assert ".github/scripts/inject-s3-publish-readme.sh" in workflow
-    assert "PUBLISH_PREFIX: ${{ steps.publish-prefix.outputs.prefix }}" in workflow
+    assert "PUBLISH_PREFIX: ${{ needs.preflight.outputs.publish_prefix }}" in workflow
     assert '--find-links-subdir "$PUBLISH_PREFIX"' in workflow
     assert "python3 -m pip install s3pypi" not in workflow
     assert "manylinux_wheel_matrix" in workflow
@@ -380,6 +380,12 @@ def test_publish_s3_supports_pinned_ref_and_wheel_patches() -> None:
 def test_scheduled_s3_publish_skips_unchanged_source_sha() -> None:
     workflow = PUBLISH_S3_PYPI_WORKFLOW.read_text()
 
+    assert (
+        "# Weekly S3-only publish: 08:00 UTC Monday (00:00 PST / 01:00 PDT)."
+        in workflow
+    )
+    assert '- cron: "0 8 * * 1"' in workflow
+    assert '- cron: "0 8 * * *"' not in workflow
     assert "publish_needed: ${{ steps.nightly.outputs.publish-needed }}" in workflow
     assert "s3-nightly-state.py check" in workflow
     for job_name in (
@@ -396,6 +402,23 @@ def test_scheduled_s3_publish_skips_unchanged_source_sha() -> None:
     assert workflow.index("Record scheduled publish state") > workflow.index(
         "Restore S3 index README"
     )
+
+
+def test_s3_publish_resolves_prefix_before_building() -> None:
+    workflow = PUBLISH_S3_PYPI_WORKFLOW.read_text()
+    preflight_job = workflow.split("\n  preflight:", 1)[1].split(
+        "\n  build-docker:", 1
+    )[0]
+    publish_job = workflow.split("\n  publish:", 1)[1].split(
+        "\n  ttmetal-light-detect:", 1
+    )[0]
+
+    assert preflight_job.count("resolve-s3-publish-prefix.sh") == 1
+    assert "publish_prefix: ${{ steps.publish-prefix.outputs.prefix }}" in (
+        preflight_job
+    )
+    assert "resolve-s3-publish-prefix.sh" not in publish_job
+    assert publish_job.count("needs.preflight.outputs.publish_prefix") == 3
 
 
 def test_s3_publish_requires_every_selected_wheel_build_to_succeed() -> None:
@@ -490,7 +513,7 @@ def test_on_demand_requires_tt_metal_sha_when_ttlang_ref_pinned() -> None:
     assert "TTLANG_REF: ${{ inputs.ttlang_ref }}" in workflow
 
 
-def test_nightly_light_wheel_soft_fails_without_failing_publish() -> None:
+def test_scheduled_light_wheel_soft_fails_without_failing_publish() -> None:
     publish = PUBLISH_S3_PYPI_WORKFLOW.read_text()
     reusable = CALL_TTMETAL_LIGHT_WHEEL_WORKFLOW.read_text()
     # The scheduled detect job tolerates its own failure, and the reusable

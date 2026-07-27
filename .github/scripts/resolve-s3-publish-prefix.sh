@@ -15,13 +15,22 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$script_dir/lib/s3-publish-prefix.sh"
 
 version="$1"
+public_version="${version%%+*}"
 prefix=tt-lang/releases
-if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.dev([0-9]{4})([0-9]{2})[0-9]{2} ]]; then
+if [[ "$public_version" =~ \.dev([0-9]+)$ ]]; then
+    dev_number="${BASH_REMATCH[1]}"
+    if [[ ! "$dev_number" =~ ^([0-9]{4})([0-9]{2})[0-9]{2}$ ]]; then
+        echo "S3 dev versions must use an 8-digit YYYYMMDD dev number: $version" >&2
+        exit 2
+    fi
     prefix="tt-lang/${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"
     if ! ttlang_s3_valid_publish_prefix "$prefix"; then
         echo "Invalid calendar month in dev version: $version" >&2
         exit 2
     fi
+elif [[ "$public_version" == *".dev"* ]]; then
+    echo "Invalid dev version: $version" >&2
+    exit 2
 fi
 
 echo "prefix=$prefix" >> "${GITHUB_OUTPUT:-/dev/stdout}"

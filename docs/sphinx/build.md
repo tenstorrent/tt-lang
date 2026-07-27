@@ -282,7 +282,7 @@ first:
 2. **Latest phase.** On top of the first, bump `TT_METAL_TAG` to the latest
    tt-metal tag and leave `TTNN_PYPI`/`TTNN_PYPI_TT_METAL_TAG` unchanged. The tags
    now diverge on `vX.Y.Z`, so the wheel is S3-only until a matching public
-   `ttnn` ships (S3 publishing runs from the nightly schedule or a manual
+   `ttnn` ships (S3 publishing runs from the weekly schedule or a manual
    dispatch on `main`, never a tag push).
 
 Build, validate, and commit each phase separately (see [Rebuilding and
@@ -626,8 +626,9 @@ and `<DOCKER_TAG>` an existing manylinux wheel-builder tag):
 #### Publishing to S3 PyPI
 
 `publish-s3-pypi.yml` publishes S3-hosted wheels to the Tenstorrent S3 PyPI
-index at `https://pypi.eng.aws.tenstorrent.com/`. It runs nightly on a GitHub
-schedule and can also be dispatched manually. Publishing is restricted to
+index at `https://pypi.eng.aws.tenstorrent.com/`. It runs weekly at 08:00 UTC
+on Monday (00:00 PST / 01:00 PDT) and can also be dispatched manually.
+Publishing is restricted to
 workflow runs on `refs/heads/main` because the AWS OIDC role is limited to
 main-branch refs; a manual dispatch from another ref can only perform a dry run.
 The workflow uses GitHub OIDC for AWS access. Regular publishes upload wheel
@@ -661,7 +662,7 @@ S3 publishing uses this policy:
 - Do not mix public PyPI and S3 indexes for a `tt-lang` version whose artifacts
   have different dependency semantics. Use the S3 install command emitted by the
   workflow summary for S3 release wheels.
-- Nightly builds do not create Git tags. The scheduled workflow computes a
+- Scheduled builds do not create Git tags. The workflow computes a
   PEP 440 development version of the form `<MAJOR.MINOR.PATCH>.dev<YYYYMMDD>`,
   where the base version matches the latest stable tag reachable from `HEAD`,
   and the numeric suffix is a UTC date.
@@ -762,7 +763,7 @@ because auto-detection reads the dispatch ref's `third-party/tt-metal-version`
 rather than the pinned ref's. With `dry_run: true` the workflow builds and
 validates without publishing and needs no S3 credentials, so it can run from a
 feature branch; the scheduled per-tt-metal-SHA build in `publish-s3-pypi.yml`
-is best-effort and does not fail the nightly publish.
+is best-effort and does not fail the scheduled publish.
 
 Successful per-SHA publishes place the wheel files (both tt-lang and
 tt-lang-light) under `https://pypi.eng.aws.tenstorrent.com/tt-lang/ttmetal/<ttmetal7>/`

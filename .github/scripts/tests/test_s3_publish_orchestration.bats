@@ -25,6 +25,16 @@ load test_helper
     grep -qx 'prefix=tt-lang/releases' "$output_file"
 }
 
+@test "local label text does not classify a final version as dev" {
+    output_file="$BATS_TEST_TMPDIR/output"
+    run env GITHUB_OUTPUT="$output_file" \
+        "$SCRIPTS_DIR/resolve-s3-publish-prefix.sh" \
+        1.2.3+foo.dev1
+
+    assert_success
+    grep -qx 'prefix=tt-lang/releases' "$output_file"
+}
+
 @test "dev version rejects an out-of-range month" {
     output_file="$BATS_TEST_TMPDIR/output"
     run env GITHUB_OUTPUT="$output_file" \
@@ -33,6 +43,18 @@ load test_helper
 
     assert_failure 2
     assert_output --partial "Invalid calendar month in dev version"
+    [[ ! -e "$output_file" ]]
+}
+
+@test "dev version rejects a non-date dev number" {
+    output_file="$BATS_TEST_TMPDIR/output"
+    run env GITHUB_OUTPUT="$output_file" \
+        "$SCRIPTS_DIR/resolve-s3-publish-prefix.sh" \
+        1.2.3.dev1
+
+    assert_failure 2
+    assert_output --partial \
+        "S3 dev versions must use an 8-digit YYYYMMDD dev number"
     [[ ! -e "$output_file" ]]
 }
 
