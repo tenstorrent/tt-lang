@@ -349,6 +349,7 @@ def test_emit_runner_source_accepts_physical_dfb_configs():
                 num_tiles=3,
                 data_format="bfloat16",
                 block_count=2,
+                tile=(1, 16),
             )
         ],
         grid_cols=1,
@@ -356,11 +357,25 @@ def test_emit_runner_source_accepts_physical_dfb_configs():
         num_tensors=1,
     )
 
-    assert "(3, 2, ttnn.bfloat16, 2048, 12288),  # CB 0" in source
+    assert "(3, 2, ttnn.bfloat16, (1, 16), 32, 192),  # CB 0" in source
     assert (
-        "for i, (num_tiles, block_count, dtype, page_size, total_size) "
+        "for i, (num_tiles, block_count, dtype, tile_shape, page_size, "
+        "total_size) "
         "in enumerate(CB_CONFIGS):"
     ) in source
+    assert "tile=ttnn.TileDescriptor(tile)," in source
+
+
+def test_physical_dfb_allocation_scales_with_subtile_area():
+    full_tile = kernel_runner._get_dfb_allocation(
+        PhysicalDFBConfig(0, 1, "bfloat16", 2, (32, 32))
+    )
+    two_half_tiles = kernel_runner._get_dfb_allocation(
+        PhysicalDFBConfig(0, 2, "bfloat16", 2, (16, 32))
+    )
+
+    assert two_half_tiles.page_size * 2 == full_tile.page_size
+    assert two_half_tiles.total_size == full_tile.total_size
 
 
 @pytest.mark.parametrize(

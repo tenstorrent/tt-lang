@@ -755,11 +755,18 @@ A logical DFB is bounded only when all of these conditions hold:
 - reserve precedes push, and wait precedes pop;
 - push follows all uses owned by the reserve;
 - pop follows all uses owned by the wait;
-- reserve, push, wait, and pop transfer the same tile count.
+- reserve, push, wait, and pop transfer the same tile count (`num_tiles`).
 
 The acquire/release ownership analysis described in
 [DFB Sync Insertion](#dfb-sync-insertion) supplies the owned-use checks.
 Failure to prove any condition leaves the DFB unbounded.
+
+`num_tiles` counts tiles of the DFB's `TileType`. TT-Lang configures each
+tiled CB page from the byte size of that tile. Two 16x32 bf16 tiles therefore
+consume the same bytes as one 32x32 bf16 tile. The lifecycle proof compares
+tile counts only within one DFB. Tile dimensions remain part of the
+`CircularBufferType`, so DFBs with different tile dimensions cannot share a
+physical index.
 
 For a bounded DFB, every operation with a direct DFB operand is projected to a
 top-level function operation. `attach_cb` is excluded because it does not
@@ -897,8 +904,10 @@ physical DFB indices.
 The Python runtime validates that the descriptors form a dense index range and
 builds all `ttnn.CBDescriptor` objects from this final allocation table. It
 does not use the frontend's logical DFB list after physical assignment. This
-also makes standalone runner emission use the same physical sizes and data
-formats as direct execution.
+preserves the full `TileType`, including subtile dimensions, when computing
+page sizes and constructing `ttnn.TileDescriptor` objects. Standalone runner
+emission uses the same physical sizes, tile dimensions, and data formats as
+direct execution.
 
 Setting `reuse-user-dfbs=false` selects the legacy compiler-only allocator. It
 retains user indices, applies per-function linear-scan allocation to
@@ -933,10 +942,10 @@ continues to support that attribute for compatibility.
   proof that both functions share the same hardware state.
 
 - **Storage compatibility.** Exact `CircularBufferType` equality forbids reuse
-  across different shapes, element types, or block counts. A broader
-  compatibility relation would need one physical descriptor that satisfies
-  every logical DFB assigned to it, including page size, capacity, and data
-  format.
+  across different block shapes, tile dimensions, element types, or block
+  counts. A broader compatibility relation would need one physical descriptor
+  that satisfies every logical DFB assigned to it, including page size,
+  capacity, and data format.
 
 - **Coloring quality.** Deterministic greedy first-fit coloring is sound but
   not optimal for a general partial-order interference graph. A stronger graph

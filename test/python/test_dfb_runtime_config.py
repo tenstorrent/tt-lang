@@ -43,22 +43,27 @@ def test_complete_physical_allocations_replace_frontend_configs():
 
 
 @pytest.mark.parametrize(
-    ("element_type", "data_format"),
+    ("element_type", "data_format", "tile"),
     [
-        ("!ttcore.tile<32x32, bfp_bf4>", "bfloat4_b"),
-        ("!ttcore.tile<32x32, bfp_bf8>", "bfloat8_b"),
-        ("!ttcore.tile<32x32, u8>", "uint8"),
-        ("!ttcore.tile<32x32, u16>", "uint16"),
-        ("!ttcore.tile<32x32, u32>", "uint32"),
-        ("!ttcore.tile<32x32, si32>", "int32"),
+        ("!ttcore.tile<32x32, bfp_bf4>", "bfloat4_b", (32, 32)),
+        ("!ttcore.tile<32x32, bfp_bf8>", "bfloat8_b", (32, 32)),
+        ("!ttcore.tile<1x16, bf16>", "bfloat16", (1, 16)),
+        ("!ttcore.tile<1x16, u8>", "uint8", (1, 16)),
+        ("!ttcore.tile<32x32, u16>", "uint16", (32, 32)),
+        ("!ttcore.tile<32x32, u32>", "uint32", (32, 32)),
+        ("!ttcore.tile<32x32, si32>", "int32", (32, 32)),
     ],
 )
-def test_complete_physical_allocations_support_tile_types(element_type, data_format):
+def test_complete_physical_allocations_preserve_tile_types(
+    element_type, data_format, tile
+):
     module = _FakeModule(
         {"ttl.dfb_allocations": [_entry(0, element_type=element_type)]}
     )
 
-    assert _resolve_dfb_configs(module, []) == [PhysicalDFBConfig(0, 1, data_format, 2)]
+    assert _resolve_dfb_configs(module, []) == [
+        PhysicalDFBConfig(0, 1, data_format, 2, tile)
+    ]
 
 
 def test_empty_complete_physical_allocations_replace_frontend_configs():
@@ -85,6 +90,10 @@ def test_absent_complete_allocations_use_legacy_compiler_metadata():
         ([_entry(-1)], "dfb_index must be non-negative"),
         ([_entry(0, num_tiles=0)], "num_tiles must be positive"),
         ([_entry(0, block_count=0)], "block_count must be positive"),
+        (
+            [_entry(0, element_type="!ttcore.tile<1, bf16>")],
+            "Invalid tile dimensions",
+        ),
         ([_entry(0), _entry(0)], "duplicate dfb_index 0"),
         ([_entry(1)], "dense physical index range"),
         (
