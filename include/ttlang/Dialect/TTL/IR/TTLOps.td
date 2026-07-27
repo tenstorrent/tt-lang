@@ -1620,6 +1620,72 @@ def TTL_RawElementWriteOp : TTL_Op<"raw_element_write",
   let hasVerifier = 1;
 }
 
+//===----------------------------------------------------------------------===//
+// External function call (opaque)
+//===----------------------------------------------------------------------===//
+
+def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
+    [MemoryEffects<[MemRead, MemWrite]>, AttrSizedOperandSegments]> {
+  let summary = "Call an external C/C++ function by name";
+  let description = [{
+    `ttl.opaque_call` emits a call to an external C/C++ function whose
+    declaration is provided by a user-specified header file. The callee
+    name and header path are string attributes; the call is opaque to the
+    compiler (no inlining, no type checking of the foreign signature).
+
+    The `header` attribute specifies the path to the C/C++ header that
+    declares the callee. The lowering pass emits a `#include` directive
+    for this header in the generated kernel source.
+
+    The `template_arg_vals` operands are i32 SSA values that become C++
+    template arguments on the emitted call. They are resolved to integer
+    literals at EmitC lowering time, e.g. `my_func<1, 2>(a, b)`.
+
+    The `arg_operands` are forwarded as function arguments to the callee.
+    Results are optional; when absent the call is treated as a void
+    function invocation.
+
+    Example:
+    ```mlir
+    ttl.opaque_call "my_func" () {header = "my_header.hpp"} : () -> ()
+    %c1 = arith.constant 1 : i32
+    %c2 = arith.constant 2 : i32
+    ttl.opaque_call "add_vals" template_args(%c1, %c2)
+        (%a, %b) {header = "math_utils.hpp"} : (i64, i64) -> ()
+    ```
+  }];
+  let arguments = (ins
+    StrAttr:$callee,
+    StrAttr:$header,
+    Variadic<AnyType>:$arg_operands,
+    Variadic<I32>:$template_arg_vals
+  );
+  let results = (outs Variadic<AnyType>);
+  let assemblyFormat = [{
+    $callee (`template_args` `(` $template_arg_vals^ `)`)?
+    `(` $arg_operands `)` attr-dict `:`
+    functional-type($arg_operands, results)
+  }];
+  let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
+// DFB index query
+//===----------------------------------------------------------------------===//
+
+def TTL_GetDfbIdOp : TTL_Op<"get_dfb_id", [Pure]> {
+  let summary = "Get the integer index for a dataflow buffer";
+  let description = [{
+    Returns the integer DFB index for the given dataflow buffer as an
+    i32 SSA value. Typically consumed by `ttl.opaque_call` template
+    args, which keeps the DFB live through SSA dataflow. At EmitC time
+    this resolves to a raw integer literal.
+  }];
+  let arguments = (ins TTL_CircularBuffer:$dfb);
+  let results = (outs I32:$result);
+  let assemblyFormat = "$dfb attr-dict `:` type($dfb)";
+}
+
 def TTL_TileStoreOp : TTL_Op<"tile_store",
     [MemoryEffects<[MemWrite]>, TTL_DstResultOpTrait,
      TTL_DstAccessOpInterface]> {

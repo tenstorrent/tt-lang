@@ -61,6 +61,7 @@ class DataflowBuffer:
         shape: Tuple[int, ...],
         block_count: int,
         dtype: Any = None,
+        tile: Tuple[int, int] = (32, 32),
     ):
         if len(shape) < 2:
             raise ValueError(f"DFB shape must have at least 2 dimensions, got {shape}")
@@ -79,6 +80,7 @@ class DataflowBuffer:
         self.shape = shape
         self.block_count = block_count
         self._dtype = dtype
+        self.tile = tuple(tile)
         self._cb_index = _next_cb_index()
 
     @property
@@ -168,7 +170,10 @@ def make_dataflow_buffer_like(
     Returns:
         DataflowBuffer for use in thread function closures
     """
-    return DataflowBuffer(tensor, shape, block_count)
+    tile = (32, 32)
+    if hasattr(tensor, "get_tile"):
+        tile = tuple(tensor.get_tile().tile_shape)
+    return DataflowBuffer(tensor, shape, block_count, tile=tile)
 
 
 def _resolve_dfb_dtype(dtype: Any):
@@ -190,6 +195,7 @@ def make_dfb(
     dtype: Any,
     shape: Tuple[int, ...],
     block_count: int = 2,
+    tile: Tuple[int, int] = (32, 32),
 ) -> DataflowBuffer:
     """
     Create a dataflow buffer from an explicit dtype, with no backing tensor.
@@ -210,4 +216,5 @@ def make_dfb(
         shape=shape,
         block_count=block_count,
         dtype=_resolve_dfb_dtype(dtype),
+        tile=tile,
     )
