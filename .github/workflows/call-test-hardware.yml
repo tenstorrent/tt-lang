@@ -24,6 +24,11 @@ on:
         type: string
   workflow_call:
     inputs:
+      defer_result_check:
+        description: 'Allow the calling workflow to check the aggregate hardware result.'
+        required: false
+        type: boolean
+        default: false
       runs-on:
         description: 'Hardware type to run on'
         required: false
@@ -53,6 +58,7 @@ jobs:
     name: "Hardware Tests (${{ inputs.runs-on }})"
     runs-on: ${{ fromJSON(inputs.runner_labels) }}
     timeout-minutes: ${{ fromJSON(inputs.timeout) }}
+    continue-on-error: ${{ inputs.defer_result_check }}
 
     container:
       image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04:${{ inputs.docker_tag }}
@@ -158,3 +164,6 @@ jobs:
             build/test/sim-report.xml
             build/test/tutorial-report*.xml
           retention-days: 7
+
+      - name: Mark hardware tests complete
+        run: echo "Hardware tests completed successfully."
