@@ -3,17 +3,12 @@
 
 add_subdirectory(lib/Analysis)
 
-# Generate pytest.ini with correct build directory paths.
+# Generate pytest.ini with correct build directory paths. Keep the configured
+# file in the build tree so independent build directories do not overwrite each
+# other's pytest import configuration.
 configure_file(
   ${CMAKE_CURRENT_SOURCE_DIR}/pytest.ini.in
-  ${CMAKE_CURRENT_SOURCE_DIR}/pytest.ini
-  @ONLY
-)
-
-# Generate me2e/config.py so ME2E_OUTPUT_ROOT points at the active build tree.
-configure_file(
-  ${CMAKE_CURRENT_SOURCE_DIR}/me2e/config.py.in
-  ${CMAKE_CURRENT_SOURCE_DIR}/me2e/config.py
+  ${CMAKE_CURRENT_BINARY_DIR}/pytest.ini
   @ONLY
 )
 
@@ -120,6 +115,8 @@ endif()
 # Pytest tests (test/python/test_*.py files).
 add_custom_target(check-ttlang-pytest
   COMMAND ${Python3_EXECUTABLE} -m pytest
+    -c ${CMAKE_CURRENT_BINARY_DIR}/pytest.ini
+    --rootdir=${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/python
     ${_ttlang_pytest_parallel}
     -v --tb=short
@@ -134,6 +131,8 @@ set_target_properties(check-ttlang-pytest PROPERTIES FOLDER "Tests")
 # Middle end to end tests (test/me2e/).
 add_custom_target(check-ttlang-me2e
   COMMAND ${Python3_EXECUTABLE} -m pytest
+    -c ${CMAKE_CURRENT_BINARY_DIR}/pytest.ini
+    --rootdir=${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/me2e
     ${_ttlang_pytest_parallel}
     -v --tb=short
