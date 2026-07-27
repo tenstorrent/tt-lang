@@ -101,6 +101,20 @@ EOF
     assert_output --partial "Usage: ttlang_wheel_builder_image"
 }
 
+@test "ttlang_wheel_builder_registry_image uses an explicit registry" {
+    run bash -c "source '$LIB'; ttlang_wheel_builder_registry_image cp312 some-tag ghcr.io/example/project"
+
+    assert_success
+    assert_output "ghcr.io/example/project/tt-lang-wheel-manylinux-2-34-cp312:some-tag"
+}
+
+@test "ttlang_wheel_builder_registry_image rejects unsupported Python tags" {
+    run bash -c "source '$LIB'; ttlang_wheel_builder_registry_image cp311 some-tag"
+
+    assert_failure
+    assert_output --partial "Unsupported Python tag: cp311"
+}
+
 @test "ttlang_python_tags validates and lists every requested tag" {
     run bash -c "source '$LIB'; ttlang_python_tags cp310,cp312"
 

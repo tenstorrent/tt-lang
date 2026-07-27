@@ -11,7 +11,7 @@ set -eu
 dist_dir=dist
 ttnn_dep_mode=""
 python_bin=/opt/python/cp312-cp312/bin/python
-repo_root="$(git rev-parse --show-toplevel)"
+repo_root=""
 tutorial_script=""
 
 usage() {
@@ -58,6 +58,7 @@ case "$ttnn_dep_mode" in
 esac
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
+repo_root="${repo_root:-$(git rev-parse --show-toplevel)}"
 tutorial_script="${tutorial_script:-$script_dir/run-tutorials.sh}"
 core_wheel="$(find "$dist_dir" -maxdepth 1 -type f \
     -name 'tt_lang-*-cp312-cp312-manylinux_2_34_x86_64.whl' \

@@ -10,14 +10,23 @@ make_aws_mock() {
     cat > "$mock" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >> "$FAKE_AWS_CALLS"
+if [ "$1 $2" = "s3api head-object" ]; then
+    case "${FAKE_AWS_MODE:-existing}" in
+        missing)
+            echo "An error occurred (404) when calling the HeadObject operation: Not Found" >&2
+            exit 1
+            ;;
+        misleading-404)
+            echo "An error occurred (AccessDenied) when calling the HeadObject operation: request ID 404-example" >&2
+            exit 1
+            ;;
+    esac
+    exit 0
+fi
 if [ "$1 $2 $3" = "s3 cp s3://test-bucket/state.json" ]; then
     case "${FAKE_AWS_MODE:-existing}" in
         existing)
             printf '{"ttlang_sha":"%s","version":"1.2.3.dev20260725"}\n' "$FAKE_MARKER_SHA"
-            ;;
-        missing)
-            echo "fatal error: An error occurred (NoSuchKey)" >&2
-            exit 1
             ;;
         invalid)
             echo "not-json"
@@ -115,6 +124,18 @@ output_value() {
 
     assert_failure
     assert_output --partial "AccessDenied"
+}
+
+@test "unrelated 404 text is not treated as a missing marker" {
+    FAKE_AWS_MODE=misleading-404 run "$SCRIPT" check \
+        --event schedule \
+        --sha "$CURRENT_SHA" \
+        --bucket test-bucket \
+        --key state.json
+
+    assert_failure
+    assert_output --partial "AccessDenied"
+    assert_output --partial "404-example"
 }
 
 @test "invalid marker JSON fails" {

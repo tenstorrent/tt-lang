@@ -18,12 +18,15 @@ if(NOT TTLANG_TOOLCHAIN_COMPONENT IN_LIST _TTLANG_TOOLCHAIN_COMPONENTS)
     "TTLANG_TOOLCHAIN_COMPONENT must be one of: all, llvm, tt-metal")
 endif()
 
-# This override permits rebuilding tt-metal while consuming LLVM from a
-# pre-built toolchain.
+# Per-component toolchain overrides follow TTLANG_USE_TOOLCHAIN by default but
+# can be set independently to rebuild tt-metal while consuming pre-built LLVM.
 option(TTLANG_USE_TOOLCHAIN_TTMETAL
   "Use pre-built tt-metal from ttlang toolchain (defaults to TTLANG_USE_TOOLCHAIN)"
   ${TTLANG_USE_TOOLCHAIN})
 
+# An external tt-metal install uses the install-ttmetal.sh layout and takes
+# precedence over TTLANG_USE_TOOLCHAIN_TTMETAL. BuildTTMetal.cmake documents
+# the required directory structure.
 set(TTLANG_EXTERNAL_TT_METAL_DIR "" CACHE PATH
   "Path to an existing tt-metal installation; overrides the toolchain or submodule build.")
 if(NOT DEFINED TTLANG_TOOLCHAIN_DIR)

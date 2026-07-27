@@ -42,7 +42,7 @@ jobs:
     runs-on: ${{ format('tt-ubuntu-2204-{0}-stable', inputs.runs-on) }}
     timeout-minutes: ${{ fromJSON(inputs.timeout) }}
     container:
-      image: ghcr.io/tenstorrent/tt-lang/tt-lang-wheel-manylinux-2-34-cp312:${{ inputs.docker_tag }}
+      image: ghcr.io/${{ github.repository }}/tt-lang-wheel-manylinux-2-34-cp312:${{ inputs.docker_tag }}
       options: --device /dev/tenstorrent
       volumes:
         - /dev/hugepages:/dev/hugepages

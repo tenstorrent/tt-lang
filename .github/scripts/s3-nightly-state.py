@@ -18,6 +18,9 @@ from pathlib import Path
 DEFAULT_BUCKET = "tenstorrent-pypi"
 DEFAULT_KEY = "tt-lang/nightly-state.json"
 SHA_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+HEAD_OBJECT_ERROR_RE = re.compile(
+    r"An error occurred \((?P<code>[^)]+)\) " r"when calling the HeadObject operation"
+)
 
 
 def _sha(value: str | None) -> str:
@@ -53,6 +56,26 @@ def _aws(*args: str, input_text: str | None = None) -> subprocess.CompletedProce
 
 
 def _read_marker(bucket: str, key: str) -> dict[str, object] | None:
+    head_result = _aws(
+        "s3api",
+        "head-object",
+        "--bucket",
+        bucket,
+        "--key",
+        key,
+    )
+    if head_result.returncode != 0:
+        error_match = HEAD_OBJECT_ERROR_RE.search(head_result.stderr)
+        if error_match and error_match.group("code") in {
+            "404",
+            "NoSuchKey",
+            "NotFound",
+        }:
+            return None
+        raise RuntimeError(
+            f"failed to inspect s3://{bucket}/{key}: {head_result.stderr.strip()}"
+        )
+
     result = _aws(
         "s3",
         "cp",
@@ -60,22 +83,17 @@ def _read_marker(bucket: str, key: str) -> dict[str, object] | None:
         "-",
         "--only-show-errors",
     )
-    if result.returncode == 0:
-        try:
-            marker = json.loads(result.stdout)
-        except json.JSONDecodeError as error:
-            raise RuntimeError(f"invalid nightly marker JSON: {error}") from error
-        if not isinstance(marker, dict):
-            raise RuntimeError("invalid nightly marker JSON: expected an object")
-        return marker
-
-    error_text = result.stderr
-    if any(
-        missing_text in error_text
-        for missing_text in ("NoSuchKey", "Not Found", "404", "does not exist")
-    ):
-        return None
-    raise RuntimeError(f"failed to read s3://{bucket}/{key}: {error_text.strip()}")
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"failed to read s3://{bucket}/{key}: {result.stderr.strip()}"
+        )
+    try:
+        marker = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"invalid nightly marker JSON: {error}") from error
+    if not isinstance(marker, dict):
+        raise RuntimeError("invalid nightly marker JSON: expected an object")
+    return marker
 
 
 def check(args: argparse.Namespace) -> int:

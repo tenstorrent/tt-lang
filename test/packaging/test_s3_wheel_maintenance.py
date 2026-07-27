@@ -11,6 +11,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 from conftest import REPO_ROOT
 
 SCRIPT = REPO_ROOT / ".github" / "scripts" / "s3-wheel-maintenance.py"
@@ -118,6 +120,43 @@ def test_date_range_is_inclusive_and_limited_to_top_level_dev_wheels() -> None:
     assert maintenance._affected_months(deletions) == ["2026-07"]
 
 
+def test_unparsable_dev_date_is_not_selected() -> None:
+    versions = [
+        _version(
+            "tt-lang/tt_lang-1.2.3.dev20261332-py3-none-any.whl",
+            "impossible-date",
+            modified="2026-07-01T00:00:00Z",
+        ),
+        _version(
+            "tt-lang/tt_lang-1.2.3.dev20260715-py3-none-any.whl",
+            "real-date",
+            modified="2026-07-15T00:00:00Z",
+        ),
+    ]
+
+    deletions = maintenance.date_range_deletions(
+        versions,
+        maintenance._date("2026-07-01"),
+        maintenance._date("2026-07-31"),
+    )
+
+    assert [deletion.version.version_id for deletion in deletions] == ["real-date"]
+    assert maintenance._affected_months(deletions) == ["2026-07"]
+
+
+def test_unparsable_dev_date_does_not_break_deduplicate() -> None:
+    key = "tt-lang/tt_lang-1.2.3.dev12345678-py3-none-any.whl"
+    versions = [
+        _version(key, "old", modified="2026-07-01T00:00:00Z"),
+        _version(key, "new", modified="2026-07-02T00:00:00Z", latest=True),
+    ]
+
+    deletions = maintenance.duplicate_deletions(versions)
+
+    assert [deletion.version.version_id for deletion in deletions] == ["old"]
+    assert maintenance._affected_months(deletions) == []
+
+
 def test_month_range_includes_every_month_across_year_boundary() -> None:
     assert maintenance._months_in_range(
         maintenance._date("2026-12-31"),
@@ -196,6 +235,47 @@ def test_delete_versions_batches_at_s3_limit(monkeypatch) -> None:
     second_request = json.loads(calls[1][calls[1].index("--delete") + 1])
     assert len(first_request["Objects"]) == 1000
     assert len(second_request["Objects"]) == 1
+
+
+def test_delete_versions_rejects_partial_s3_failures(monkeypatch) -> None:
+    monkeypatch.setattr(
+        maintenance,
+        "_run_aws_json",
+        lambda *_: {
+            "Errors": [
+                {
+                    "Key": "tt-lang/wheel.whl",
+                    "VersionId": "version",
+                    "Code": "AccessDenied",
+                }
+            ]
+        },
+    )
+    deletions = [
+        maintenance.Deletion(
+            _version(
+                "tt-lang/wheel.whl",
+                "version",
+                modified="2026-07-01T00:00:00Z",
+            ),
+            "test",
+        )
+    ]
+
+    with pytest.raises(RuntimeError, match="S3 version deletion failed"):
+        maintenance.delete_versions(deletions, "bucket")
+
+
+def test_deduplicate_summary_does_not_imply_month_view_refresh(
+    monkeypatch, capsys
+) -> None:
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+
+    maintenance._write_summary("deduplicate", True, [], ["2026-07"])
+
+    output = capsys.readouterr().out
+    assert "Duplicate wheel months: `2026-07`" in output
+    assert "Affected month views" not in output
 
 
 def test_dry_run_does_not_delete_or_refresh(monkeypatch) -> None:

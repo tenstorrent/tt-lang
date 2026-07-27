@@ -28,11 +28,13 @@ done
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/s3-index.sh
 . "$script_dir/lib/s3-index.sh"
+# shellcheck source=lib/s3-publish-prefix.sh
+. "$script_dir/lib/s3-publish-prefix.sh"
 bucket="${TTLANG_S3_BUCKET:-tenstorrent-pypi}"
 
 IFS=, read -r -a month_values <<< "$months"
 for month in "${month_values[@]}"; do
-    [[ "$month" =~ ^[0-9]{4}-[0-9]{2}$ ]] || {
+    ttlang_s3_valid_year_month "$month" || {
         echo "Invalid year-month: $month" >&2
         exit 2
     }

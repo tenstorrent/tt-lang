@@ -14,11 +14,10 @@ BUILD_PARALLEL_LEVEL=""
 LLVM_CACHE_REF=""
 TTMETAL_CACHE_REF=""
 WORKFLOW_SOURCE="."
-PUBLISH_LATEST=""
 
 usage() {
     cat >&2 <<'EOF'
-Usage: build-wheel-manylinux-images.sh [--no-push] [--image-tag <tag>] [--python-tags cp310,cp312] [--build-parallel-level <jobs>] [--llvm-cache-ref <ref> --ttmetal-cache-ref <ref>] [--workflow-source <dir>] [--publish-latest true|false]
+Usage: build-wheel-manylinux-images.sh [--no-push] [--image-tag <tag>] [--python-tags cp310,cp312] [--build-parallel-level <jobs>] [--llvm-cache-ref <ref> --ttmetal-cache-ref <ref>] [--workflow-source <dir>]
 EOF
     exit 2
 }
@@ -71,13 +70,6 @@ while [ "$#" -gt 0 ]; do
             WORKFLOW_SOURCE="$2"
             shift 2
             ;;
-        --publish-latest)
-            if [ "$#" -lt 2 ]; then
-                usage
-            fi
-            PUBLISH_LATEST="$2"
-            shift 2
-            ;;
         *)
             usage
             ;;
@@ -99,17 +91,8 @@ esac
     echo "Workflow source not found: $WORKFLOW_SOURCE" >&2
     exit 2
 }
-if [ -z "$PUBLISH_LATEST" ]; then
-    if [ "${GITHUB_REF:-}" = refs/heads/main ]; then
-        PUBLISH_LATEST=true
-    else
-        PUBLISH_LATEST=false
-    fi
-fi
-case "$PUBLISH_LATEST" in
-    true | false) ;;
-    *) usage ;;
-esac
+# shellcheck source=../scripts/lib/docker-image-utils.sh
+. "$script_dir/../scripts/lib/docker-image-utils.sh"
 
 # shellcheck source=/dev/null
 . "$repo_root/third-party/tt-metal-version"
@@ -137,7 +120,17 @@ if [ -n "$LLVM_CACHE_REF" ] || [ -n "$TTMETAL_CACHE_REF" ]; then
     fi
 fi
 
-docker_build_args() {
+for python_tag in $(printf '%s\n' "$PYTHON_TAGS" | tr ',' ' '); do
+    image_name="$(ttlang_wheel_builder_image_name "$python_tag")"
+    local_image="${image_name}:${docker_tag}"
+    registry_image="$(ttlang_wheel_builder_registry_image \
+        "$python_tag" "$docker_tag" "ghcr.io/${repo}")"
+
+    if [ "$NO_PUSH" != true ] && ${DOCKER:-docker} manifest inspect "$registry_image" >/dev/null 2>&1; then
+        echo "Image already exists, skipping build: $registry_image"
+        continue
+    fi
+
     set -- \
         --progress=plain \
         --target wheel-builder \
@@ -148,39 +141,6 @@ docker_build_args() {
     if [ -n "$BUILD_PARALLEL_LEVEL" ]; then
         set -- "$@" --build-arg "TTLANG_BUILD_PARALLEL_LEVEL=$BUILD_PARALLEL_LEVEL"
     fi
-    printf '%s\n' "$@"
-}
-
-for python_tag in $(printf '%s\n' "$PYTHON_TAGS" | tr ',' ' '); do
-    case "$python_tag" in
-        cp310 | cp312) ;;
-        *)
-            echo "Unsupported Python tag: $python_tag" >&2
-            exit 2
-            ;;
-    esac
-
-    image_name="tt-lang-wheel-manylinux-2-34-${python_tag}"
-    local_image="${image_name}:${docker_tag}"
-    registry_image="ghcr.io/${repo}/${image_name}:${docker_tag}"
-
-    if [ "$NO_PUSH" != true ] && ${DOCKER:-docker} manifest inspect "$registry_image" >/dev/null 2>&1; then
-        echo "Image already exists, skipping build: $registry_image"
-        if [ "$PUBLISH_LATEST" = true ]; then
-            latest="${registry_image%:*}:latest"
-            if ! ${DOCKER:-docker} buildx imagetools create -t "$latest" "$registry_image"; then
-                echo "WARNING: could not retag $registry_image as $latest" >&2
-            fi
-        fi
-        continue
-    fi
-
-    set --
-    while IFS= read -r build_arg; do
-        set -- "$@" "$build_arg"
-    done <<EOF
-$(docker_build_args)
-EOF
 
     if [ -n "$LLVM_CACHE_REF" ]; then
         set -- "$@" \
@@ -192,10 +152,6 @@ EOF
         else
             echo "Building registry image from component caches: $registry_image"
             set -- "$@" --push -t "$registry_image"
-            if [ "$PUBLISH_LATEST" = true ]; then
-                latest="${registry_image%:*}:latest"
-                set -- "$@" -t "$latest"
-            fi
             ${DOCKER:-docker} buildx build "$@" -f "$dockerfile" "$repo_root"
         fi
         continue
@@ -211,10 +167,5 @@ EOF
 
     if [ "$NO_PUSH" != true ]; then
         ${DOCKER:-docker} push "$registry_image"
-        if [ "$PUBLISH_LATEST" = true ]; then
-            latest="${registry_image%:*}:latest"
-            ${DOCKER:-docker} tag "$registry_image" "$latest"
-            ${DOCKER:-docker} push "$latest"
-        fi
     fi
 done

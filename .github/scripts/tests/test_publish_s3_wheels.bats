@@ -99,6 +99,8 @@ EOF
     assert_output --partial "Publish prefix must be tt-lang/<YYYY-MM> or tt-lang/releases"
     run -2 "$SCRIPT" --prefix tt-lang/ttmetal "$dir"
     assert_output --partial "Publish prefix must be tt-lang/<YYYY-MM> or tt-lang/releases"
+    run -2 "$SCRIPT" --prefix tt-lang/2026-13 "$dir"
+    assert_output --partial "Publish prefix must be tt-lang/<YYYY-MM> or tt-lang/releases"
 }
 
 @test "--prefix publishes top-level wheels and regenerates a month view" {

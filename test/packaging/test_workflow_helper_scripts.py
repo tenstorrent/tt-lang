@@ -637,6 +637,22 @@ def test_shared_manylinux_workflows_have_no_multiline_shell(
             assert "${{ inputs." not in line
 
 
+@pytest.mark.parametrize(
+    "workflow",
+    [
+        CALL_BUILD_MANYLINUX_WHEELS_WORKFLOW,
+        CALL_TEST_MANYLINUX_WHEELS_WORKFLOW,
+        CALL_TTMETAL_LIGHT_WHEEL_WORKFLOW,
+    ],
+)
+def test_manylinux_consumers_use_the_current_repository_namespace(
+    workflow: Path,
+) -> None:
+    workflow_text = workflow.read_text()
+    assert "ghcr.io/${{ github.repository }}/tt-lang-wheel-manylinux" in workflow_text
+    assert "ghcr.io/tenstorrent/tt-lang/tt-lang-wheel-manylinux" not in workflow_text
+
+
 def test_manylinux_builder_images_are_opt_in_for_docker_workflows() -> None:
     build_docker_workflow = CALL_BUILD_DOCKER_WORKFLOW.read_text()
     wheel_images_workflow = CALL_BUILD_WHEEL_IMAGES_WORKFLOW.read_text()
@@ -673,7 +689,9 @@ def test_manylinux_builder_images_are_opt_in_for_docker_workflows() -> None:
         'build-wheel-manylinux-images.sh --python-tags "$PYTHON_TAG"'
         ' --image-tag "$DOCKER_TAG"'
     ) in wheel_images_workflow
-    assert '--publish-latest "$PUBLISH_LATEST"' in wheel_images_workflow
+    assert "publish-latest:" in wheel_images_workflow
+    assert ".github/scripts/publish-wheel-builder-latest.sh" in wheel_images_workflow
+    assert "--publish-latest" not in wheel_images_workflow
     assert "--build-parallel-level 2" in wheel_images_workflow
     assert "ARG WORKFLOW_SOURCE=." in manylinux_dockerfile
     assert (

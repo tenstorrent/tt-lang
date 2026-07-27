@@ -162,10 +162,40 @@ jobs:
       - name: Assemble and push manylinux wheel-builder image
         env:
           DOCKER_TAG: ${{ needs.resolve.outputs.docker-tag }}
-          PUBLISH_LATEST: ${{ needs.resolve.outputs.update-latest }}
           PYTHON_TAG: ${{ matrix.python_tag }}
-        run: .wheel-workflow-src/.github/containers/build-wheel-manylinux-images.sh --python-tags "$PYTHON_TAG" --image-tag "$DOCKER_TAG" --llvm-cache-ref "${WHEEL_CACHE_IMAGE}:linux-amd64-llvm-${PYTHON_TAG}" --ttmetal-cache-ref "${WHEEL_CACHE_IMAGE}:linux-amd64-ttmetal-cp312" --build-parallel-level 2 --workflow-source .wheel-workflow-src --publish-latest "$PUBLISH_LATEST"
+        run: .wheel-workflow-src/.github/containers/build-wheel-manylinux-images.sh --python-tags "$PYTHON_TAG" --image-tag "$DOCKER_TAG" --llvm-cache-ref "${WHEEL_CACHE_IMAGE}:linux-amd64-llvm-${PYTHON_TAG}" --ttmetal-cache-ref "${WHEEL_CACHE_IMAGE}:linux-amd64-ttmetal-cp312" --build-parallel-level 2 --workflow-source .wheel-workflow-src
 
       - name: Show disk usage on failure
         if: failure()
         run: .wheel-workflow-src/.github/scripts/report-docker-disk-usage.sh
+
+  publish-latest:
+    name: "Publish latest manylinux wheel images"
+    needs: [resolve, build-manylinux-wheel-images]
+    if: ${{ always() && needs.resolve.result == 'success' && needs.resolve.outputs.update-latest == 'true' && (needs.resolve.outputs.all-images-exist == 'true' || needs.build-manylinux-wheel-images.result == 'success') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout wheel image workflow source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: |
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ github.token }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Publish latest manifests
+        env:
+          DOCKER_TAG: ${{ needs.resolve.outputs.docker-tag }}
+          REPOSITORY: ${{ github.repository }}
+        run: .github/scripts/publish-wheel-builder-latest.sh --repository "$REPOSITORY" --docker-tag "$DOCKER_TAG"

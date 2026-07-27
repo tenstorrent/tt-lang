@@ -70,7 +70,7 @@ setup() {
     grep -q 'All images exist: `false`' "$summary_file"
 }
 
-@test "builder resolver updates both latest tags on main" {
+@test "builder resolver reports latest publication policy without mutation" {
     output_file="$BATS_TEST_TMPDIR/output"
 
     run env \
@@ -83,9 +83,40 @@ setup() {
 
     assert_success
     grep -qx 'all-images-exist=true' "$output_file"
+    grep -qx 'update-latest=true' "$output_file"
+    ! grep -q '^buildx imagetools create' "$FAKE_DOCKER_CALLS"
+}
+
+@test "latest publisher updates both ABI manifests" {
+    run env DOCKER="$DOCKER_MOCK" \
+        "$SCRIPTS_DIR/publish-wheel-builder-latest.sh" \
+            --repository example/project \
+            --docker-tag test-tag
+
+    assert_success
     run grep -c '^buildx imagetools create -t .*:latest .*:test-tag$' "$FAKE_DOCKER_CALLS"
     assert_success
     assert_output "2"
+    grep -qx \
+        'buildx imagetools create -t ghcr.io/example/project/tt-lang-wheel-manylinux-2-34-cp310:latest ghcr.io/example/project/tt-lang-wheel-manylinux-2-34-cp310:test-tag' \
+        "$FAKE_DOCKER_CALLS"
+    grep -qx \
+        'buildx imagetools create -t ghcr.io/example/project/tt-lang-wheel-manylinux-2-34-cp312:latest ghcr.io/example/project/tt-lang-wheel-manylinux-2-34-cp312:test-tag' \
+        "$FAKE_DOCKER_CALLS"
+}
+
+@test "latest publisher makes no changes when an ABI image is missing" {
+    run env \
+        DOCKER="$DOCKER_MOCK" \
+        FAKE_MISSING_IMAGE=cp312 \
+        "$SCRIPTS_DIR/publish-wheel-builder-latest.sh" \
+            --repository example/project \
+            --docker-tag test-tag
+
+    assert_failure
+    assert_output --partial \
+        "Required image does not exist: ghcr.io/example/project/tt-lang-wheel-manylinux-2-34-cp312:test-tag"
+    ! grep -q '^buildx imagetools create' "$FAKE_DOCKER_CALLS"
 }
 
 @test "builder resolver distinguishes an older target from workflow source" {
@@ -253,6 +284,37 @@ EOF
     assert_output --partial "Unexpected manylinux wheel: unrelated-1.0-py3-none-any.whl"
 }
 
+@test "wheel-set verification rejects an incomplete ABI set" {
+    wheel_dir="$(make_wheel_dir \
+        tt_lang-1.2.3-cp312-cp312-manylinux_2_34_x86_64.whl)"
+
+    run "$SCRIPTS_DIR/verify-manylinux-wheel-set.sh" \
+        --ttnn-dep-mode pypi \
+        --build-sim false \
+        1.2.3 \
+        "$wheel_dir"
+
+    assert_failure
+    assert_output --partial \
+        "Expected manylinux wheel was not produced: tt_lang-1.2.3-cp310-cp310-manylinux_2_34_x86_64.whl"
+}
+
+@test "wheel-set verification requires the light metapackage in external mode" {
+    wheel_dir="$(make_wheel_dir \
+        tt_lang-1.2.3.dev20260726+light-cp310-cp310-manylinux_2_34_x86_64.whl \
+        tt_lang-1.2.3.dev20260726+light-cp312-cp312-manylinux_2_34_x86_64.whl)"
+
+    run "$SCRIPTS_DIR/verify-manylinux-wheel-set.sh" \
+        --ttnn-dep-mode external \
+        --build-sim false \
+        1.2.3.dev20260726 \
+        "$wheel_dir"
+
+    assert_failure
+    assert_output --partial \
+        "Expected manylinux wheel was not produced: tt_lang_light-1.2.3.dev20260726-py3-none-any.whl"
+}
+
 @test "component cache exporter keeps LLVM and tt-metal cache references separate" {
     repo="$(mkrepo)"
     cd "$repo"
@@ -320,6 +382,9 @@ EOF
     export FAKE_TUTORIAL_CALLS="$BATS_TEST_TMPDIR/tutorial.calls"
     : > "$FAKE_PYTHON_CALLS"
     : > "$FAKE_TUTORIAL_CALLS"
+    outside_repo="$BATS_TEST_TMPDIR/outside-repo"
+    mkdir -p "$outside_repo"
+    cd "$outside_repo"
 
     run env \
         FAKE_PYTHON_CALLS="$FAKE_PYTHON_CALLS" \

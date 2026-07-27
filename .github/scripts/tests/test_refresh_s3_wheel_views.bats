@@ -66,3 +66,11 @@ EOF
     assert_output --partial "Invalid year-month"
     [[ ! -s "$CALLS" ]]
 }
+
+@test "refresh rejects out-of-range months before writing" {
+    run "$SCRIPT" --months 2026-13
+
+    assert_failure 2
+    assert_output --partial "Invalid year-month"
+    [[ ! -s "$CALLS" ]]
+}

@@ -200,7 +200,12 @@ def _dev_date(key: str) -> datetime.date | None:
     match = DEV_DATE_RE.search(key_path.name)
     if match is None:
         return None
-    return datetime.datetime.strptime(match.group("date"), "%Y%m%d").date()
+    try:
+        return datetime.datetime.strptime(match.group("date"), "%Y%m%d").date()
+    except ValueError:
+        # PEP 440 dev releases are arbitrary integers, even when they contain
+        # eight digits. Only calendar-date dev releases belong to month views.
+        return None
 
 
 def date_range_deletions(
@@ -296,7 +301,12 @@ def _write_summary(
         f"- Selected bytes: `{total_bytes}`",
     ]
     if months:
-        lines.append(f"- Affected month views: `{','.join(months)}`")
+        month_label = (
+            "Affected month views"
+            if operation == "remove-dev-range"
+            else "Duplicate wheel months"
+        )
+        lines.append(f"- {month_label}: `{','.join(months)}`")
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_path:
         with Path(summary_path).open("a") as summary:
@@ -378,7 +388,7 @@ def main() -> int:
         _write_outputs(refresh_months)
         _write_summary(args.operation, args.dry_run, deletions, months)
         return 0
-    except RuntimeError as error:
+    except (RuntimeError, ValueError) as error:
         print(error, file=sys.stderr)
         return 1
 

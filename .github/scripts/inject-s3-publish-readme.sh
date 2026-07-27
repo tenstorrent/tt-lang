@@ -12,15 +12,15 @@ set -eu
 
 prefix="$1"
 dist_dir="$2"
-case "$prefix" in
-    tt-lang/releases | tt-lang/[0-9][0-9][0-9][0-9]-[0-9][0-9]) ;;
-    *)
-        echo "Invalid S3 publish prefix: $prefix" >&2
-        exit 2
-        ;;
-esac
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/s3-publish-prefix.sh
+. "$script_dir/lib/s3-publish-prefix.sh"
+if ! ttlang_s3_valid_publish_prefix "$prefix"; then
+    echo "Invalid S3 publish prefix: $prefix" >&2
+    exit 2
+fi
+
 workflow_root="$(cd "$script_dir/../.." && pwd)"
 parent="$(dirname "$prefix")"
 "$script_dir/inject-s3-index-readme.sh" \

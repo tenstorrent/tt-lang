@@ -25,6 +25,17 @@ load test_helper
     grep -qx 'prefix=tt-lang/releases' "$output_file"
 }
 
+@test "dev version rejects an out-of-range month" {
+    output_file="$BATS_TEST_TMPDIR/output"
+    run env GITHUB_OUTPUT="$output_file" \
+        "$SCRIPTS_DIR/resolve-s3-publish-prefix.sh" \
+        1.2.3.dev20261332
+
+    assert_failure 2
+    assert_output --partial "Invalid calendar month in dev version"
+    [[ ! -e "$output_file" ]]
+}
+
 @test "selected publish preparation rejects an empty artifact root" {
     artifact_root="$BATS_TEST_TMPDIR/artifacts"
     mkdir -p "$artifact_root"

@@ -46,6 +46,8 @@ case "$repository" in
 esac
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib/docker-image-utils.sh
+. "$script_dir/lib/docker-image-utils.sh"
 if [ -z "$docker_tag" ]; then
     docker_tag="$("$script_dir/../containers/get-version-tag.sh")"
     if [ -n "$workflow_source" ]; then
@@ -67,13 +69,10 @@ fi
 all_images_exist=true
 
 for python_tag in cp310 cp312; do
-    image="ghcr.io/${repository}/tt-lang-wheel-manylinux-2-34-${python_tag}:${docker_tag}"
+    image="$(ttlang_wheel_builder_registry_image \
+        "$python_tag" "$docker_tag" "ghcr.io/${repository}")"
     if ${DOCKER:-docker} manifest inspect "$image" >/dev/null 2>&1; then
         echo "Image exists: $image"
-        if [ "$update_latest" = true ]; then
-            latest="${image%:*}:latest"
-            ${DOCKER:-docker} buildx imagetools create -t "$latest" "$image"
-        fi
     else
         echo "Image missing: $image"
         all_images_exist=false

@@ -137,6 +137,9 @@ RUN test -n "${TT_METAL_TAG}" && \
       -e "s|\\\$Format:%h\\\$|${TT_METAL_SHORT_SHA}|g" \
       third-party/tt-metal/cmake/version.cmake
 
+# tt-metal requires a venv while configuring its cp312 Python bindings. The
+# final builder uses the ABI-specific LLVM venv, so only the tt-metal install
+# directory is shared between cp310 and cp312 images.
 RUN python_dir="/opt/python/${TTMETAL_PYTHON_TAG}-${TTMETAL_PYTHON_TAG}" && \
     test -x "${python_dir}/bin/python" && \
     "${python_dir}/bin/python" -m pip install --no-cache-dir cmake==3.28.4 && \
@@ -157,6 +160,10 @@ ARG PYTHON_TAG=cp312
 ARG TTLANG_BUILD_PARALLEL_LEVEL=""
 
 COPY --from=llvm-toolchain /opt/ttlang-toolchain/ /opt/ttlang-toolchain/
+# The shared install contains cp312 extension modules because CMake uses
+# _ttnn.so to identify the install layout. Core wheel builds consume its C++
+# headers and libraries but do not import ttnn; the wheel dependency mode
+# supplies the runtime ttnn package.
 COPY --from=ttmetal-toolchain /opt/ttlang-toolchain/tt-metal/ /opt/ttlang-toolchain/tt-metal/
 COPY requirements.txt requirements-runtime.txt /tmp/ttlang-requirements/
 
