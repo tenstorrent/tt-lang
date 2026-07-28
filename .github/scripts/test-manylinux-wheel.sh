@@ -58,7 +58,13 @@ case "$ttnn_dep_mode" in
 esac
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
-repo_root="${repo_root:-$(git rev-parse --show-toplevel)}"
+if [ -z "$repo_root" ]; then
+    if [ -n "${GITHUB_WORKSPACE:-}" ]; then
+        repo_root="$GITHUB_WORKSPACE"
+    else
+        repo_root="$(git rev-parse --show-toplevel)"
+    fi
+fi
 tutorial_script="${tutorial_script:-$script_dir/run-tutorials.sh}"
 core_wheel="$(find "$dist_dir" -maxdepth 1 -type f \
     -name 'tt_lang-*-cp312-cp312-manylinux_2_34_x86_64.whl' \

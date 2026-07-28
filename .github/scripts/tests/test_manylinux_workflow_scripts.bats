@@ -42,6 +42,47 @@ EOF
     echo "$mock"
 }
 
+setup_hardware_wheel_test() {
+    hardware_wheel_dir="$(make_wheel_dir \
+        tt_lang-1.2.3-cp312-cp312-manylinux_2_34_x86_64.whl)"
+    hardware_python_mock="$(make_python_mock)"
+    hardware_tutorial_mock="$BATS_TEST_TMPDIR/tutorial"
+    cat > "$hardware_tutorial_mock" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$FAKE_TUTORIAL_CALLS"
+EOF
+    chmod +x "$hardware_tutorial_mock"
+    export FAKE_PYTHON_CALLS="$BATS_TEST_TMPDIR/python.calls"
+    export FAKE_TUTORIAL_CALLS="$BATS_TEST_TMPDIR/tutorial.calls"
+    : > "$FAKE_PYTHON_CALLS"
+    : > "$FAKE_TUTORIAL_CALLS"
+    hardware_outside_repo="$BATS_TEST_TMPDIR/outside-repo"
+    mkdir -p "$hardware_outside_repo"
+    cd "$hardware_outside_repo"
+}
+
+run_hardware_wheel_test() {
+    local resolution_mode="$1"
+    local github_workspace=""
+    local -a repo_root_args=()
+    case "$resolution_mode" in
+        explicit) repo_root_args=(--repo-root "$TTLANG_REPO_ROOT") ;;
+        github-workspace) github_workspace="$TTLANG_REPO_ROOT" ;;
+        *) return 2 ;;
+    esac
+
+    run env \
+        FAKE_PYTHON_CALLS="$FAKE_PYTHON_CALLS" \
+        FAKE_TUTORIAL_CALLS="$FAKE_TUTORIAL_CALLS" \
+        GITHUB_WORKSPACE="$github_workspace" \
+        "$SCRIPTS_DIR/test-manylinux-wheel.sh" \
+            --dist-dir "$hardware_wheel_dir" \
+            --ttnn-dep-mode pypi \
+            --python "$hardware_python_mock" \
+            --tutorial-script "$hardware_tutorial_mock" \
+            "${repo_root_args[@]}"
+}
+
 setup() {
     export FAKE_DOCKER_CALLS="$BATS_TEST_TMPDIR/docker.calls"
     : > "$FAKE_DOCKER_CALLS"
@@ -369,37 +410,21 @@ EOF
 }
 
 @test "hardware wheel test script orchestrates install and tutorials" {
-    wheel_dir="$(make_wheel_dir \
-        tt_lang-1.2.3-cp312-cp312-manylinux_2_34_x86_64.whl)"
-    python_mock="$(make_python_mock)"
-    tutorial_mock="$BATS_TEST_TMPDIR/tutorial"
-    cat > "$tutorial_mock" <<'EOF'
-#!/bin/sh
-printf '%s\n' "$*" >> "$FAKE_TUTORIAL_CALLS"
-EOF
-    chmod +x "$tutorial_mock"
-    export FAKE_PYTHON_CALLS="$BATS_TEST_TMPDIR/python.calls"
-    export FAKE_TUTORIAL_CALLS="$BATS_TEST_TMPDIR/tutorial.calls"
-    : > "$FAKE_PYTHON_CALLS"
-    : > "$FAKE_TUTORIAL_CALLS"
-    outside_repo="$BATS_TEST_TMPDIR/outside-repo"
-    mkdir -p "$outside_repo"
-    cd "$outside_repo"
-
-    run env \
-        FAKE_PYTHON_CALLS="$FAKE_PYTHON_CALLS" \
-        FAKE_TUTORIAL_CALLS="$FAKE_TUTORIAL_CALLS" \
-        "$SCRIPTS_DIR/test-manylinux-wheel.sh" \
-            --dist-dir "$wheel_dir" \
-            --ttnn-dep-mode pypi \
-            --python "$python_mock" \
-            --repo-root "$TTLANG_REPO_ROOT" \
-            --tutorial-script "$tutorial_mock"
+    setup_hardware_wheel_test
+    run_hardware_wheel_test explicit
 
     assert_success
     grep -q -- "-m pip install .*tt_lang-1.2.3-cp312" "$FAKE_PYTHON_CALLS"
     grep -q -- "check-installed-ttnn.py --mode pypi" "$FAKE_PYTHON_CALLS"
     grep -q -- "smoke-test-wheel.py" "$FAKE_PYTHON_CALLS"
+    grep -qx "$TTLANG_REPO_ROOT" "$FAKE_TUTORIAL_CALLS"
+}
+
+@test "hardware wheel test script uses GitHub workspace outside a Git checkout" {
+    setup_hardware_wheel_test
+    run_hardware_wheel_test github-workspace
+
+    assert_success
     grep -qx "$TTLANG_REPO_ROOT" "$FAKE_TUTORIAL_CALLS"
 }
 
