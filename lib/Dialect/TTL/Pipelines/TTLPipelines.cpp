@@ -18,7 +18,7 @@ namespace mlir::tt::ttl {
 
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
-  pm.addNestedPass<func::FuncOp>(createTTLMaterializeLoopState());
+  buildTTLTensorRecurrencePipeline(pm.nest<func::FuncOp>());
   pm.addNestedPass<func::FuncOp>(createTTLInsertCopyWait());
   pm.addPass(createTTLAnnotateL1AccLoops());
   pm.addPass(createTTLFormProducerCompute());
@@ -80,6 +80,15 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     pm.addPass(createCanonicalizerPass());
     pm.addPass(mlir::emitc::createFormExpressionsPass());
   }
+}
+
+void buildTTLTensorRecurrencePipeline(OpPassManager &pm) {
+  // Accumulation lowering must run before loop-state materialization removes
+  // tensor iter_args. Materialized DFB state is the fallback for recurrences
+  // that are not DST-resident.
+  pm.addPass(createTTLFormAccumulationScopes());
+  pm.addPass(createTTLLowerAccumulationScopes());
+  pm.addPass(createTTLMaterializeLoopState());
 }
 
 void buildTTLAutoSyncPipeline(OpPassManager &pm) {

@@ -1829,8 +1829,14 @@ def _lower_program_to_kernel(
         assign_dst_pass = "ttl-assign-dst"
 
         compiler_dfbs_flag = int(compiler_options.compiler_dfbs)
+        # Must run before loop-state materialization removes tensor iter_args.
+        tensor_recurrence_pipeline = (
+            "ttl-form-accumulation-scopes,"
+            "ttl-lower-accumulation-scopes,"
+            "ttl-materialize-loop-state"
+        )
         pipeline_passes = [
-            "func.func(ttl-materialize-loop-state)",
+            f"func.func({tensor_recurrence_pipeline})",
             "func.func(ttl-insert-copy-wait)",
             "func.func(ttl-annotate-l1-acc-loops)",
             "func.func(ttl-form-producer-compute)",

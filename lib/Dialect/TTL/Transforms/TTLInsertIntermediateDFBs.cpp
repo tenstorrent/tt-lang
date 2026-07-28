@@ -399,6 +399,24 @@ struct TTLInsertIntermediateDFBsPass
     SmallVector<ComputeMaterializationPlan> computePlans;
     SmallVector<StandaloneTensorMaterializationUse> standaloneTensorUses;
 
+    // Elementwise values that depend on a released producer DFB must be stored
+    // before the pop, because later consumers cannot legally reread that DFB
+    // slot.
+    funcOp.walk([&](Operation *op) {
+      if (!isElementwiseOp(op)) {
+        return;
+      }
+      for (OpOperand &operand : op->getOpOperands()) {
+        Value value = operand.get();
+        if (getAttachedCB(value)) {
+          continue;
+        }
+        if (fusableValueCrossesDFBRelease(value, op)) {
+          standaloneTensorUses.push_back({op, operand.getOperandNumber()});
+        }
+      }
+    });
+
     for (DFBInputOpInterface dfbInputOp : candidates) {
       Operation *op = dfbInputOp.getOperation();
       auto requiredIndices = dfbInputOp.getDFBInputOperandIndices();

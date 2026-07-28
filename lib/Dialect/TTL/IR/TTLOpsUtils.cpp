@@ -115,6 +115,10 @@ SmallVector<DstFootprint, 2> getDefaultDstReadFootprints(Operation *op) {
     appendDstOperandFootprint(footprints, store.getTile());
     return footprints;
   }
+  if (auto accumulate = dyn_cast<TileAccumulateOp>(op)) {
+    appendDstOperandFootprint(footprints, accumulate.getAccumulator());
+    return footprints;
+  }
   if (op->hasTrait<TTLDSTInputsTrait>() ||
       (op->hasTrait<TTLStrategyDependentBinaryOpTrait>() &&
        !isFPUEligibleBinaryOp(op))) {
@@ -344,6 +348,39 @@ FusionTraceResult traceFusionToRoots(mlir::Value value) {
   result.opsInOrder.insert(defOp);
 
   return result;
+}
+
+bool fusableValueCrossesDFBRelease(mlir::Value value,
+                                   mlir::Operation *consumer) {
+  FusionTraceResult trace = traceFusionToRoots(value);
+  if (trace.failureReason != TraceFailureReason::Success) {
+    return false;
+  }
+
+  for (Value root : trace.rootInputs) {
+    Value dfb = getAttachedCB(root);
+    if (!dfb) {
+      continue;
+    }
+
+    Operation *rootDef = root.getDefiningOp();
+    if (!rootDef || rootDef->getBlock() != consumer->getBlock() ||
+        !rootDef->isBeforeInBlock(consumer)) {
+      continue;
+    }
+
+    // A DFB-attached tensor is only valid until the matching pop. Fusion that
+    // delays the tile read past the pop would make generated compute consume a
+    // released producer slot.
+    for (Operation *cursor = rootDef->getNextNode();
+         cursor && cursor != consumer; cursor = cursor->getNextNode()) {
+      auto pop = dyn_cast<CBPopOp>(cursor);
+      if (pop && pop.getCb() == dfb) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 llvm::StringRef describeTraceFailure(TraceFailureReason reason) {
