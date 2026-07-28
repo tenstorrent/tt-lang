@@ -145,8 +145,8 @@ def test_launch_ring_is_bounded_and_skips_repeats(clean_env, monkeypatch):
     assert len(os.environ[hang.LAUNCH_ENV].split(",")) == hang.LAUNCH_RING
 
 
-def test_elf_discovery_from_generated_source_names(tmp_path):
-    """Kernel ELFs are found by generated source stem, ignoring xip and weakened."""
+def _build_fake_cache(tmp_path):
+    """A tt-metal kernel cache laid out the way tt-metal lays one out."""
     for risc, stem in (
         ("brisc", "ttlang_kernel_add__brisc_aaaa"),
         ("trisc0", "ttlang_kernel_mul__trisc_bbbb"),
@@ -160,10 +160,15 @@ def test_elf_discovery_from_generated_source_names(tmp_path):
     (firmware / "ncrisc.elf").write_bytes(b"fw")
     (firmware / "ncrisc_weakened.elf").write_bytes(b"skipped")
 
-    programs = [
+    return [
         {"kernels": [{"path": "/tmp/u/ttlang_kernel_add__brisc_aaaa.cpp"}]},
         {"kernels": [{"path": "/tmp/u/ttlang_kernel_mul__trisc_bbbb.cpp"}]},
     ]
+
+
+def test_elf_discovery_from_generated_source_names(tmp_path):
+    """Kernel ELFs are found by generated source stem, ignoring xip and weakened."""
+    programs = _build_fake_cache(tmp_path)
     found = hang_collect.kernel_elfs(programs, str(tmp_path))
     assert sorted(found) == ["brisc", "trisc0"]
     assert all(len(paths) == 1 for paths in found.values())
@@ -176,3 +181,33 @@ def test_devices_default_to_the_first_only(clean_env):
     assert hang_collect.select_devices() == [0]
     clean_env.setenv(hang.DEVICES_ENV, "0,3")
     assert hang_collect.select_devices() == [0, 3]
+
+
+def test_cache_root_is_the_parent_of_the_cache(clean_env, tmp_path):
+    """TT_METAL_CACHE names the parent: tt-metal appends the tt-metal-cache component.
+
+    Getting this wrong finds no ELF at all, so nothing symbolizes, which is the
+    failure that looks like the feature being broken rather than misconfigured.
+    """
+    cache = tmp_path / "tt-metal-cache"
+    _build_fake_cache(cache)
+    clean_env.setenv("TT_METAL_CACHE", str(tmp_path))
+    report = hang_collect.Report()
+    assert hang_collect.resolve_cache_root(report) == cache
+
+    # A root pointed straight at the cache also resolves.
+    clean_env.setenv("TT_METAL_CACHE", str(cache))
+    assert hang_collect.resolve_cache_root(hang_collect.Report()) == cache
+
+
+def test_unbuilt_cache_root_is_reported_not_guessed(clean_env, tmp_path):
+    clean_env.setenv("TT_METAL_CACHE", str(tmp_path))
+    clean_env.setenv("HOME", str(tmp_path))
+    report = hang_collect.Report()
+    assert hang_collect.resolve_cache_root(report) is None
+    assert "Tried:" in report.text()
+
+
+def test_recover_is_a_valid_mode(clean_env):
+    clean_env.setenv(hang.MODE_ENV, hang.MODE_RECOVER)
+    assert hang.mode() == hang.MODE_RECOVER

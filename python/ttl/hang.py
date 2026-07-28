@@ -17,13 +17,13 @@ waits entirely, so it neither counts as progress nor consumes the window.
 
 tt-lang arms it and points it at ``ttl/hang_collect.py``, which tt-metal runs
 synchronously inside the hung process before it throws. This module handles what
-happens after that throw: report, try to hand back a clean device, and exit with
-a code that says which of those two happened.
+happens after that throw: report where the evidence is, and exit with a code that
+says whether the next run can start immediately or needs a reset first.
 
 Exiting is deliberate. A dispatch timeout leaves the process holding tensors on a
-device whose kernels were killed, so there is nothing useful to continue with;
-the value on offer is that the *next* process starts on a clean device instead of
-paying a full reset.
+device whose kernels were killed, so there is nothing useful to continue with.
+What the default mode does *not* do is close the device: see _FAST_EXPLANATION for
+why a graceful close is a net loss on a hung mesh.
 """
 
 import json
@@ -42,6 +42,7 @@ from .hang_collect import (
     MODE_ENV,
     MODE_FAST,
     MODE_OFF,
+    MODE_RECOVER,
     MODES,
     PROGRAMS_FILE,
     incident_dir,
@@ -58,8 +59,28 @@ FORCE_REINIT_ENV = "TTLANG_FORCE_REINIT"
 # configure_metal_env before lowering it further.
 DEFAULT_TIMEOUT_SECONDS = 5.0
 
-EXIT_RECOVERED = 2
+EXIT_RUN_AGAIN = 2
 EXIT_RESET_REQUIRED = 3
+
+# Why fast mode does not close the device. On a hung mesh every chip's dispatch
+# cores are stuck waiting on workers that will not finish, so a graceful close
+# pays the full timeout per device: 32 chips at a 5s window is 160s, worse than
+# the tt-smi reset it is trying to avoid, and it buys nothing because tt-metal
+# already catches and ignores that timeout during teardown. Exiting without
+# closing costs nothing, and the next open re-initializes under FORCE_REINIT with
+# every init wait bounded by the same window, so a device that really is wedged
+# now fails in seconds instead of hanging.
+_FAST_EXPLANATION = (
+    "Device left as it was found; no close was attempted, because on a hung mesh",
+    "every chip's dispatch cores are stuck and a graceful close costs the full",
+    "timeout per chip while tt-metal discards the result anyway.",
+    "",
+    "Just run again. The next open re-initializes the device (FORCE_REINIT) and",
+    "resets the RISCs, and every init wait is bounded by the hang window, so if",
+    "the device really needs a reset the next open fails in seconds and says so.",
+    f"Use {MODE_ENV}={MODE_RECOVER} to have tt-lang close, reopen and smoke test",
+    "instead, at the cost of that per-chip timeout.",
+)
 
 # Recovery itself can wedge (a teardown that waits on the same dead core). A
 # deadline keeps the worst case bounded, which is the whole point of the feature.
@@ -83,8 +104,9 @@ def mode() -> str:
         raise ValueError(
             f"{MODE_ENV}={value!r} is not one of {', '.join(MODES)}. "
             f"'{MODE_OFF}' restores tt-metal's default of waiting forever, "
-            f"'{MODE_FAST}' collects without halting and recovers the device, "
-            f"'{MODE_DEEP}' also unwinds real stack frames and forfeits the device."
+            f"'{MODE_FAST}' collects without halting and leaves the device alone, "
+            f"'{MODE_RECOVER}' also closes, reopens and smoke tests it, "
+            f"'{MODE_DEEP}' unwinds real stack frames and forfeits the device."
         )
     return value
 
@@ -235,13 +257,15 @@ def _handle_hang(error: BaseException, device=None):
         "",
     ]
 
-    _arm_deadline()
-
     if active_mode == MODE_DEEP:
         mark_device_dirty("deep hang collection halted cores")
         lines.append("Deep mode halted cores to unwind stacks, so no recovery was")
         lines.append("attempted. FULL DEVICE RESET REQUIRED before the next run.")
         _finish(directory, lines, EXIT_RESET_REQUIRED)
+
+    if active_mode == MODE_FAST:
+        lines.extend(_FAST_EXPLANATION)
+        _finish(directory, lines, EXIT_RUN_AGAIN)
 
     target = device if device is not None else _last_device
     if target is None:
@@ -250,6 +274,7 @@ def _handle_hang(error: BaseException, device=None):
         lines.append("FULL DEVICE RESET REQUIRED before the next run.")
         _finish(directory, lines, EXIT_RESET_REQUIRED)
 
+    _arm_deadline()
     try:
         _recover(target, lines)
     except Exception as recovery_error:
@@ -263,7 +288,7 @@ def _handle_hang(error: BaseException, device=None):
 
     _clear_dirty()
     lines.append("Device closed, reopened and smoke tested. Safe to run again.")
-    _finish(directory, lines, EXIT_RECOVERED)
+    _finish(directory, lines, EXIT_RUN_AGAIN)
 
 
 def _recover(device, lines: list) -> None:
@@ -352,7 +377,7 @@ def _clear_dirty() -> None:
 
 def _finish(directory: Path, lines: list, code: int):
     """Write the recovery record, say where everything is, and exit."""
-    verdict = "device recovered" if code == EXIT_RECOVERED else "reset required"
+    verdict = "run again" if code == EXIT_RUN_AGAIN else "reset required"
     lines.append("")
     lines.append(f"incident directory {directory}")
     lines.append(f"exit code {code} ({verdict})")

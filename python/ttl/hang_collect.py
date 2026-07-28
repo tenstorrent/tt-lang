@@ -15,10 +15,10 @@ is already stuck is both slow and a chance to fail while reporting a failure.
 For the same reason it must never raise: anything it cannot collect is written
 into the report as a named failure.
 
-Fast mode reads each PC through the debug bus, which needs no halt, so the
-device is left exactly as the hang found it and recovery is still possible. Deep
-mode halts each core to walk real stack frames, which on Blackhole is terminal:
-after a deep collection the device needs a full reset.
+Every read is halt-free except in deep mode: PCs come off the debug bus, so the
+device is left exactly as the hang found it. Deep mode halts each core to walk
+real stack frames, which on Blackhole is terminal, so after a deep collection the
+device needs a full reset.
 """
 
 import json
@@ -43,8 +43,9 @@ DEVICES_ENV = "TTLANG_HANG_DEVICES"
 
 MODE_OFF = "off"
 MODE_FAST = "fast"
+MODE_RECOVER = "recover"
 MODE_DEEP = "deep"
-MODES = (MODE_OFF, MODE_FAST, MODE_DEEP)
+MODES = (MODE_OFF, MODE_FAST, MODE_RECOVER, MODE_DEEP)
 
 PROGRAMS_FILE = "programs.jsonl"
 REPORT_FILE = "report.txt"
@@ -133,7 +134,7 @@ def select_programs(programs: list) -> list:
     return list(reversed(programs))
 
 
-def kernel_elfs(programs: list, cache_root: str) -> dict:
+def kernel_elfs(programs: list, cache_root) -> dict:
     """Map risc name to candidate ELFs built from tt-lang's generated sources.
 
     tt-metal lays the cache out as
@@ -163,7 +164,7 @@ def kernel_elfs(programs: list, cache_root: str) -> dict:
     return by_risc
 
 
-def firmware_elfs(cache_root: str) -> dict:
+def firmware_elfs(cache_root) -> dict:
     """Map risc name to firmware ELFs, for PCs that stopped outside the kernel."""
     by_risc = {}
     for elf in Path(cache_root).glob("*/firmware/*/*.elf"):
@@ -186,6 +187,42 @@ def select_cores(programs: list) -> list:
                     if (x, y) not in cores:
                         cores.append((x, y))
     return cores
+
+
+def cache_roots() -> list:
+    """Candidate roots holding the tt-metal kernel cache, best guess first.
+
+    TT_METAL_CACHE is the *parent* of the cache: tt-metal appends the
+    "tt-metal-cache" component itself (``rtoptions.cpp:409``,
+    ``normalize_path(value, "tt-metal-cache")``), so the variable's value alone is
+    one directory short of the ELFs.
+    """
+    candidates = []
+    configured = os.environ.get("TT_METAL_CACHE")
+    if configured:
+        candidates.append(Path(configured) / "tt-metal-cache")
+        candidates.append(Path(configured))
+    home = os.environ.get("HOME")
+    if home:
+        candidates.append(Path(home) / ".cache" / "tt-metal-cache")
+    return candidates
+
+
+def resolve_cache_root(report: Report) -> Path:
+    """The first candidate root that actually holds a built cache.
+
+    Tested by looking for a firmware directory rather than by trusting the
+    variable, because a wrong root silently yields no ELFs and therefore no
+    symbols, which is the failure that looks like a broken feature.
+    """
+    tried = []
+    for candidate in cache_roots():
+        tried.append(str(candidate))
+        if any(candidate.glob("*/firmware")):
+            report.say(f"kernel cache: {candidate}")
+            return candidate
+    report.say(f"no built kernel cache found; PCs only. Tried: {', '.join(tried)}")
+    return None
 
 
 def select_devices() -> list:
@@ -356,7 +393,7 @@ def guard(report: Report, what: str, action, fallback=None):
         return fallback
 
 
-def resolve_elfs(selected: list, cache_root: str) -> dict:
+def resolve_elfs(selected: list, cache_root) -> dict:
     """Kernel ELFs for the selected programs, plus firmware, capped per risc."""
     elfs = kernel_elfs(selected, cache_root)
     for risc, paths in firmware_elfs(cache_root).items():
@@ -414,16 +451,14 @@ def main() -> int:
         [],
     )
 
-    cache_root = os.environ.get("TT_METAL_CACHE")
-    manifest["cache_root"] = cache_root
+    cache_root = guard(report, "resolve kernel cache", lambda: resolve_cache_root(report))
+    manifest["cache_root"] = str(cache_root) if cache_root else None
     elfs = {}
-    if not cache_root:
-        report.say("TT_METAL_CACHE is unset, so no ELF can be found; PCs only")
-    else:
+    if cache_root is not None:
         elfs = guard(report, "find ELFs", lambda: resolve_elfs(selected, cache_root), {})
         manifest["elfs"] = elfs
         found = ", ".join(f"{risc}:{len(paths)}" for risc, paths in sorted(elfs.items()))
-        report.say(f"ELFs found under {cache_root}: {found or 'none'}")
+        report.say(f"ELFs found: {found or 'none'}")
 
     cores = select_cores(selected)
     if len(cores) > MAX_CORES:

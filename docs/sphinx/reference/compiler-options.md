@@ -133,7 +133,7 @@ the symptom of the window being too tight, not a device fault.
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
-| `TTLANG_ON_HANG` | `off`/`fast`/`deep` | `fast` | What to do on a dispatch timeout. |
+| `TTLANG_ON_HANG` | `off`/`fast`/`recover`/`deep` | `fast` | What to do on a dispatch timeout. |
 | `TTLANG_HANG_TIMEOUT_SECONDS` | seconds | `5` | Time without *any* dispatch progress that counts as a hang. |
 | `TTLANG_HANG_DIR` | directory | `/tmp/ttlang_hang` | Where the incident is written. |
 | `TTLANG_HANG_DEVICES` | id list | `0` | Devices to sample. Widen with `0,1,2`; a 32-chip sweep takes minutes. |
@@ -142,14 +142,31 @@ the symptom of the window being too tight, not a device fault.
 | Mode | Collects | Device after | Exit |
 |---|---|---|---|
 | `off` | nothing | hung | tt-metal waits forever, as it does without tt-lang |
-| `fast` | PC per RISC, motion verdict, inlined frames | closed, reopened, smoke tested | `2` recovered, `3` reset required |
+| `fast` | PC per RISC, motion verdict, inlined frames | left as found, not closed | `2` run again |
+| `recover` | same | closed, reopened, smoke tested | `2` run again, `3` reset required |
 | `deep` | also real unwound frames | forfeited: halting is terminal on Blackhole | `3` |
 
-Both modes always exit the process. After a timeout the process holds tensors on
-a device whose kernels were killed, so there is nothing useful to continue with;
-what is on offer is that the *next* process starts on a clean device instead of
-paying a full `tt-smi` reset. Exit code `3` and `/tmp/ttlang_device_dirty` both
-mean "reset before the next run".
+Every mode exits the process. After a timeout the process holds tensors on a
+device whose kernels were killed, so there is nothing useful to continue with.
+Exit `2` means start the next run immediately; exit `3` and
+`/tmp/ttlang_device_dirty` both mean reset first.
+
+### Why `fast` does not close the device
+
+On a hung mesh every chip's dispatch cores are stuck waiting on workers that will
+never finish, so a graceful close pays the full timeout *per device*: 32 chips at
+a five second window is 160 seconds, worse than the `tt-smi` reset it is trying to
+avoid. It also buys nothing, because tt-metal already catches and discards that
+teardown timeout to keep cleanup going
+(`dispatch_kernel_initializer.cpp:249-251`).
+
+Exiting without closing costs nothing, and the next open re-initializes the device
+under `TT_METAL_FORCE_REINIT`, which resets the RISCs and reloads firmware. Every
+init wait is now bounded by the same window, so a device that genuinely needs a
+reset fails the next open in seconds and says which cores did not come up, instead
+of hanging. `TTLANG_ON_HANG=recover` opts into the close, reopen and smoke test if
+you would rather have tt-lang prove the device is usable and pay the per-chip
+timeout to find out.
 
 The incident directory holds:
 
