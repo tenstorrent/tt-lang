@@ -374,6 +374,17 @@ def _fresh_name(base: str, suffix: str, reserved_names: Set[str]) -> str:
     return candidate
 
 
+def _is_static_dfb_collection_element(node: ast.expr) -> bool:
+    return (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Name)
+        and isinstance(node.slice, ast.Constant)
+        and not isinstance(node.slice.value, bool)
+        and isinstance(node.slice.value, int)
+        and node.slice.value >= 0
+    )
+
+
 def _bind_args_to_params(spec, call: ast.Call, caller_name: str) -> Dict[str, ast.expr]:
     if any(isinstance(argument, ast.Starred) for argument in call.args):
         raise ValueError(
@@ -425,13 +436,22 @@ def _bind_args_to_params(spec, call: ast.Call, caller_name: str) -> Dict[str, as
             )
         bindings[parameter.name] = keyword_arguments[parameter.name]
 
+    parameters = {parameter.name: parameter for parameter in spec.params}
     for name, argument in bindings.items():
-        if not isinstance(argument, ast.Name):
-            raise TypeError(
-                f"@ttl.operation: argument {name!r} while composing "
-                f"{spec.name!r} into {caller_name!r} must be a tensor or "
-                "resource name"
-            )
+        if isinstance(argument, ast.Name):
+            continue
+        parameter = parameters[name]
+        if parameter.kind == "dfb" and _is_static_dfb_collection_element(argument):
+            continue
+        requirement = (
+            "a resource name or statically indexed DFB collection element"
+            if parameter.kind == "dfb"
+            else "a tensor or resource name"
+        )
+        raise TypeError(
+            f"@ttl.operation: argument {name!r} while composing "
+            f"{spec.name!r} into {caller_name!r} must be {requirement}"
+        )
     return bindings
 
 
@@ -526,8 +546,7 @@ def _validate_nested_bindings(
     protected_names = set(bindings)
     protected_names.update(local_names)
     for replacement in bindings.values():
-        if isinstance(replacement, ast.Name):
-            protected_names.add(replacement.id)
+        protected_names.update(_loaded_names([replacement]))
 
     for scope in ast.walk(spec.fn_ast):
         if scope is spec.fn_ast or not isinstance(scope, _NESTED_SCOPES):
