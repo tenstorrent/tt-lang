@@ -318,10 +318,23 @@ def TTLAnnotateL1AccLoops
 
 def TTLInsertIntermediateDFBs
     : Pass<"ttl-insert-intermediate-dfbs", "::mlir::func::FuncOp"> {
-  let summary = "Insert intermediate dataflow buffers at fusion split points";
+  let summary = "Resolve DFB attachment and cross-block store fanout";
   let description = [{
     Walks ops implementing `DFBInputOpInterface` and checks whether the
     operands they declare as requiring DFB-attached values are satisfied.
+    It also collects direct `ttl.store` users of non-DFB-attached tensor
+    values when stores occupy at least two blocks. This is the condition that
+    can make `convert-ttl-to-compute` compare operation order across blocks.
+
+    The pass classifies cross-block store fanout before mutating IR.
+    Clone-supported backward slices are relocated into store blocks only when
+    upstream `mlir::insideMutuallyExclusiveRegions` proves every pair of store
+    block representatives mutually exclusive, every external use of the slice
+    is one of the rewritten stores, and no loop sits between the producer scope
+    and a rewritten store. Other cross-block store fanout is materialized with
+    a compiler-allocated DFB, and all direct stores of the source value are
+    rewritten to consume the attached DFB value.
+
     When an operand comes from `ttl.compute`, the pass materializes it as an
     extra compute output backed by a compiler-allocated DFB. The pass creates
     the DFB, reserves the output slot, clones the compute with an extra
@@ -336,10 +349,11 @@ def TTLInsertIntermediateDFBs
 
     All DFBs created by this pass are marked with `ttl.compiler_allocated`.
 
-    When `enable` is false, the pass verifies that no operations require
-    compiler-allocated DFBs. If any `DFBInputOpInterface` op has a
-    non-DFB-attached operand, the pass emits an error diagnostic and
-    signals failure.
+    When `enable` is false, cloneable cross-block store fanout is still
+    rewritten because it does not allocate a compiler DFB. If any
+    `DFBInputOpInterface` op has a non-DFB-attached operand, or if
+    non-cloneable cross-block store fanout requires DFB materialization, the
+    pass emits an error diagnostic and signals failure.
   }];
 
   let options = [
@@ -349,7 +363,8 @@ def TTLInsertIntermediateDFBs
   ];
 
   let dependentDialects = [
-    "::mlir::tensor::TensorDialect"
+    "::mlir::tensor::TensorDialect",
+    "::mlir::tt::ttl::TTLDialect"
   ];
 }
 

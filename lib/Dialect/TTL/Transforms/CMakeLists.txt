@@ -1,6 +1,7 @@
 add_mlir_dialect_library(TTLangTTLTransforms
   AccumulationUtils.cpp
   ConvertTTLToTTKernel.cpp
+  ControlFlowUtils.cpp
   DFBAcquireReleaseAnalysis.cpp
   DFBLogicalIdentityAnalysis.cpp
   DFBMaterialization.cpp
@@ -46,6 +47,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   MLIRAnalysis
   MLIRAffineTransforms
   MLIRArithDialect
+  MLIRControlFlowInterfaces
   MLIREmitCDialect
   MLIRFuncDialect
   MLIRLinalgDialect
