@@ -358,9 +358,9 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 // CHECK: %[[READY1_PTR:.*]] = ttkernel.reinterpret_cast(%[[READY1_SEND]])
 // CHECK: ttkernel.experimental.semaphore_wait(%[[READY1_PTR]]
 // CHECK: ttkernel.noc_semaphore_set(%[[READY1_PTR]]
-// CHECK: ttkernel.noc_async_write
+// CHECK-DAG: ttkernel.noc_async_write
+// CHECK-DAG: %[[GLOBAL_COMPLETION_SEND:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_COMPLETION_INDEX]])
 // CHECK: ttkernel.noc_async_write_barrier
-// CHECK: %[[GLOBAL_COMPLETION_SEND:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_COMPLETION_INDEX]])
 // CHECK: %[[GLOBAL_COMPLETION_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[GLOBAL_COMPLETION_SEND]], {{.*}})
 // CHECK: ttkernel.noc_semaphore_inc(%[[GLOBAL_COMPLETION_NOC]]
 // CHECK: return
