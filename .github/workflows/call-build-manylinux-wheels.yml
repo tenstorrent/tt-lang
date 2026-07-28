@@ -74,6 +74,9 @@ jobs:
       run:
         shell: bash
     steps:
+      - name: Maximize space
+        uses: tenstorrent/tt-github-actions/.github/actions/maximize_space@main
+
       - name: Checkout tt-lang
         uses: actions/checkout@v6
         with:

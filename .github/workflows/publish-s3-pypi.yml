@@ -194,13 +194,35 @@ jobs:
   publish:
     name: "Publish wheels to S3 PyPI"
     needs: [preflight, build-bundled-wheels, build-manylinux-wheels]
-    if: ${{ always() && needs.preflight.result == 'success' && needs.preflight.outputs.publish_needed == 'true' && (needs.preflight.outputs.bundled_selected != 'true' || needs.build-bundled-wheels.result == 'success') && (needs.preflight.outputs.manylinux_selected != 'true' || needs.build-manylinux-wheels.result == 'success') && (needs.preflight.outputs.dry_run == 'true' || github.ref == 'refs/heads/main') }}
+    # Attempt to publish on every main-branch or dry-run trigger. The first step
+    # verifies that each requested wheel variant was actually produced and fails
+    # with an explicit message otherwise, instead of surfacing an upstream build
+    # failure here as a cryptic artifact download failure.
+    if: ${{ always() && needs.preflight.result == 'success' && needs.preflight.outputs.publish_needed == 'true' && (needs.preflight.outputs.dry_run == 'true' || github.ref == 'refs/heads/main') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
       id-token: write
     steps:
+      - name: Verify upstream wheel builds succeeded
+        env:
+          BUNDLED_RESULT: ${{ needs.build-bundled-wheels.result }}
+          MANYLINUX_RESULT: ${{ needs.build-manylinux-wheels.result }}
+          NEEDS_BUNDLED: ${{ needs.preflight.outputs.bundled_selected }}
+          NEEDS_MANYLINUX: ${{ needs.preflight.outputs.manylinux_selected }}
+        run: |
+          fail=0
+          if [[ "$NEEDS_BUNDLED" == "true" && "$BUNDLED_RESULT" != "success" ]]; then
+            echo "::error::Bundled wheel build did not succeed (result=$BUNDLED_RESULT); not publishing. See the build-docker / build-bundled-wheels jobs for the underlying failure."
+            fail=1
+          fi
+          if [[ "$NEEDS_MANYLINUX" == "true" && "$MANYLINUX_RESULT" != "success" ]]; then
+            echo "::error::Manylinux wheel build did not succeed (result=$MANYLINUX_RESULT); not publishing. See the build-wheel-images / build-manylinux-wheels jobs for the underlying failure."
+            fail=1
+          fi
+          exit "$fail"
+
       - name: Checkout tt-lang
         uses: actions/checkout@v6
         with:
