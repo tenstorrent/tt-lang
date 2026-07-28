@@ -1729,6 +1729,7 @@ def _compile_kernel(
         target_arch: Optional TT device architecture for target-specific lowering
         compiler_options: Compiler pipeline options
         l1_budget_override: Explicit or device-derived L1 allocation budget
+        device_domain: Optional logical device domain for mesh execution
 
     Returns:
         CompiledTTNNKernel ready for execution
@@ -1829,6 +1830,8 @@ def _compile_kernel(
         l1_budget_override=l1_budget_override,
         kernel_source_file=kernel_source_file,
         kernel_line_offset=kernel_line_offset,
+        mesh_program_placements=mesh_program_placements,
+        device_domain=device_domain,
     )
 
 
@@ -1847,6 +1850,8 @@ def _lower_program_to_kernel(
     l1_budget_override,
     kernel_source_file,
     kernel_line_offset,
+    mesh_program_placements,
+    device_domain,
 ):
     """Lower compiled threads to a CompiledTTNNKernel.
 
