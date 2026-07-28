@@ -106,17 +106,35 @@ when one trips. tt-lang arms both.
 Two consequences worth knowing before trusting the window. Host-side work,
 compilation included, is outside the guarded waits, so it neither counts as
 progress nor consumes the window: a two-minute JIT compile cannot trip a
-one-minute timeout. But the counter only moves when a command *completes*, so a
+five-second timeout. But the counter only moves when a command *completes*, so a
 single dispatch command that legitimately runs longer than the window is
 indistinguishable from a hang. tt-lang programs run in microseconds to
-milliseconds, hence the 60 second default; raise
-`TTLANG_HANG_TIMEOUT_SECONDS` if you deliberately launch something that occupies
-the device for longer than that in one command.
+milliseconds, hence the five second default; raise `TTLANG_HANG_TIMEOUT_SECONDS`
+if you deliberately launch something that occupies the device for longer than
+that in one command, or if you enable DPRINT heavily enough that draining the
+buffer stalls a kernel.
+
+### Why the window is not shorter still
+
+`TT_METAL_OPERATION_TIMEOUT_SECONDS`, the variable this sets, is overloaded. It
+also bounds two things that are not hangs, as plain wall clock rather than
+progress-gated:
+
+- `wait_until_cores_done` at device init and teardown, which is *unbounded* when
+  the variable is unset (`llrt.cpp:376-382`).
+- the fabric topology mapping rendezvous, whose own default when the variable is
+  unset is 120 seconds (`control_plane.cpp:437-440`).
+
+Setting it at all therefore bounds device open for the first time. The fabric
+rendezvous is a cross-host all-gather, so it costs nothing at `world_size 1`, and
+core-done polling is milliseconds per chip. If a device open starts failing with
+cores not done, or with a topology mapping timeout, raise this variable: that is
+the symptom of the window being too tight, not a device fault.
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
 | `TTLANG_ON_HANG` | `off`/`fast`/`deep` | `fast` | What to do on a dispatch timeout. |
-| `TTLANG_HANG_TIMEOUT_SECONDS` | seconds | `60` | Time without *any* dispatch progress that counts as a hang. |
+| `TTLANG_HANG_TIMEOUT_SECONDS` | seconds | `5` | Time without *any* dispatch progress that counts as a hang. |
 | `TTLANG_HANG_DIR` | directory | `/tmp/ttlang_hang` | Where the incident is written. |
 | `TTLANG_HANG_DEVICES` | id list | `0` | Devices to sample. Widen with `0,1,2`; a 32-chip sweep takes minutes. |
 | `TTLANG_FORCE_REINIT` | `0`/`1` | `1` | Set `TT_METAL_FORCE_REINIT`, which is what makes in-process recovery possible. |

@@ -52,9 +52,11 @@ from .hang_collect import (
 TIMEOUT_ENV = "TTLANG_HANG_TIMEOUT_SECONDS"
 FORCE_REINIT_ENV = "TTLANG_FORCE_REINIT"
 
-# Generous by default. The timeout is progress-gated, so this is "no dispatch
-# progress at all for a minute", not "one operation took a minute".
-DEFAULT_TIMEOUT_SECONDS = 60.0
+# Short, because this is "no dispatch command completed at all for five seconds",
+# not "one operation took five seconds", and our programs run in microseconds to
+# milliseconds. Read the overload warning on TT_METAL_OPERATION_TIMEOUT_SECONDS in
+# configure_metal_env before lowering it further.
+DEFAULT_TIMEOUT_SECONDS = 5.0
 
 EXIT_RECOVERED = 2
 EXIT_RESET_REQUIRED = 3
@@ -107,6 +109,14 @@ def configure_metal_env() -> None:
     These three are env-only: tt-metal reads them once when RunTimeOptions is
     constructed, at the first device open, and exposes no setter. setdefault
     throughout, so an explicitly set tt-metal variable always wins.
+
+    TT_METAL_OPERATION_TIMEOUT_SECONDS is overloaded, which is why the window is
+    not smaller. Besides the progress-gated dispatch waits it also bounds, as
+    plain wall clock, ``wait_until_cores_done`` at device init and teardown (which
+    is otherwise unbounded) and the fabric topology mapping rendezvous (whose own
+    default is 120s). The rendezvous is a cross-host all-gather, so it is instant
+    at world_size 1; the exposure worth watching is a device open that starts
+    reporting cores not done.
     """
     if os.environ.get(FORCE_REINIT_ENV, "1") != "0":
         # tt-metal enables this on mere presence, so setting it to "0" would
