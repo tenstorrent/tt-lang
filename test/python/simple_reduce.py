@@ -71,7 +71,7 @@ def reduce_kernel(inp, out):
 # C++ Kernel Checks - Verify generated compute kernel
 # =============================================================================
 
-# CHECK-CPP: // reduce_compute
+# CHECK-CPP: === reduce_compute kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP-DAG: CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
 # CHECK-CPP-DAG: CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));

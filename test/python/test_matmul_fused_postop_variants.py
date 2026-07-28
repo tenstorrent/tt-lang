@@ -17,9 +17,6 @@ Coverage matrix:
   - Multi-node grid: fused post-ops with grid="full"
 """
 
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import pytest
 import torch
 import ttl
@@ -592,13 +589,6 @@ def _make_multinode_matmul_relu_bias(m_blk, k_blk, n_blk):
 # ---------------------------------------------------------------------------
 # Fixtures and helpers
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="module")
-def device():
-    dev = ttnn.open_device(device_id=0)
-    yield dev
-    ttnn.close_device(dev)
 
 
 def _random_inputs(device, seed=42):

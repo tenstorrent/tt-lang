@@ -22,8 +22,8 @@ import torch
 import ttl
 
 
-# CHECK: error: push() must be called on a block acquired from reserve(), not a regular tensor
-# CHECK-NEXT:   --> {{.*}}invalid_push_pop_on_tensor.py:41:{{[0-9]+}}
+# CHECK: TypeError: @ttl.operation runtime argument 'lhs'
+# CHECK-SAME: must be a TT-NN tensor, got Tensor
 @ttl.operation(grid=(1, 1))
 def invalid_push_kernel(lhs, rhs, out):
     """This kernel should fail because push() is called on a non-block tensor."""

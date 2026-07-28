@@ -20,16 +20,3 @@ See: https://github.com/llvm/llvm-project/blob/main/LICENSE.TXT
 The LLVM Project provides compiler infrastructure and related tools, including
 MLIR (Multi-Level Intermediate Representation), which forms the foundation of
 the tt-lang compilation pipeline.
-
---------------------------------------------------------------------------------
-tt-mlir
---------------------------------------------------------------------------------
-
-Copyright 2024 Tenstorrent AI ULC
-
-Licensed under the Apache License, Version 2.0.
-See: https://github.com/tenstorrent/tt-mlir/blob/main/LICENSE
-
-tt-mlir provides the MLIR dialect infrastructure and compilation passes for
-Tenstorrent hardware. tt-lang builds upon tt-mlir to provide a Python-based
-DSL for authoring custom kernels.

@@ -5,19 +5,19 @@
 #ifndef TTLANG_DIALECT_TTL_IR_TTLOPSUTILS_H
 #define TTLANG_DIALECT_TTL_IR_TTLOPSUTILS_H
 
+#include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
-#include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
-#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
+#include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 
@@ -53,62 +53,6 @@ inline mlir::Value traceUnrealizedCasts(mlir::Value value) {
   return value;
 }
 
-/// Trace a transfer handle through tensor containers and loop-carried values
-/// to the first value accepted by `match`.
-template <typename ResultT, typename MatchFn>
-inline ResultT
-traceTransferHandleSource(mlir::Value value, MatchFn match,
-                          llvm::SmallPtrSetImpl<mlir::Value> &seen) {
-  value = traceUnrealizedCasts(value);
-  if (!seen.insert(value).second) {
-    return ResultT();
-  }
-
-  if (ResultT result = match(value)) {
-    return result;
-  }
-  if (auto extractOp = value.getDefiningOp<mlir::tensor::ExtractOp>()) {
-    return traceTransferHandleSource<ResultT>(extractOp.getTensor(), match,
-                                              seen);
-  }
-  if (auto insertOp = value.getDefiningOp<mlir::tensor::InsertOp>()) {
-    return traceTransferHandleSource<ResultT>(insertOp.getScalar(), match,
-                                              seen);
-  }
-  if (auto result = mlir::dyn_cast<mlir::OpResult>(value)) {
-    if (auto loop =
-            mlir::dyn_cast<mlir::LoopLikeOpInterface>(result.getOwner())) {
-      auto yieldedOpt = loop.getYieldedValuesMutable();
-      auto resultsOpt = loop.getLoopResults();
-      if (yieldedOpt && resultsOpt) {
-        auto yielded = *yieldedOpt;
-        auto results = *resultsOpt;
-        for (unsigned idx = 0; idx < results.size(); ++idx) {
-          if (results[idx] == result) {
-            return traceTransferHandleSource<ResultT>(yielded[idx].get(), match,
-                                                      seen);
-          }
-        }
-      }
-    }
-  }
-  if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
-    mlir::Operation *parent = blockArg.getOwner()->getParentOp();
-    if (auto loop = mlir::dyn_cast_or_null<mlir::LoopLikeOpInterface>(parent)) {
-      auto iterArgs = loop.getRegionIterArgs();
-      auto inits = loop.getInitsMutable();
-      for (unsigned idx = 0; idx < iterArgs.size(); ++idx) {
-        if (iterArgs[idx] == blockArg) {
-          return traceTransferHandleSource<ResultT>(inits[idx].get(), match,
-                                                    seen);
-        }
-      }
-    }
-  }
-
-  return ResultT();
-}
-
 /// Trace a tensor value back to its originating CB acquire operation
 /// (CBWaitOp or CBReserveOp). Traces through unrealized_conversion_cast,
 /// AttachCBOp, and tensor.extract_slice. Returns the acquire Operation*,
@@ -130,31 +74,6 @@ inline mlir::Operation *findCBAcquireOp(mlir::Value tensor) {
     }
   }
   return nullptr;
-}
-
-/// Trace a pipe transfer value through casts, tensor containers, and
-/// loop-carried values to the transfer creation op.
-inline PipeTransferCreateOp
-findPipeTransferCreateForTransfer(mlir::Value transfer) {
-  llvm::SmallPtrSet<mlir::Value, 16> seen;
-  return traceTransferHandleSource<PipeTransferCreateOp>(
-      transfer,
-      [](mlir::Value source) {
-        return source.getDefiningOp<PipeTransferCreateOp>();
-      },
-      seen);
-}
-
-/// Trace a pipe token through casts, tensor containers, and loop-carried values
-/// to the receive post that created it.
-inline PipeTransferPostOp findPipeTransferPostForToken(mlir::Value token) {
-  llvm::SmallPtrSet<mlir::Value, 16> seen;
-  return traceTransferHandleSource<PipeTransferPostOp>(
-      token,
-      [](mlir::Value source) {
-        return source.getDefiningOp<PipeTransferPostOp>();
-      },
-      seen);
 }
 
 /// Walk through `tensor.extract_slice` ops and return the underlying
@@ -187,6 +106,34 @@ inline std::optional<mlir::Type> getTileElementType(mlir::Type type) {
     return tileType.getElementType();
   }
   return std::nullopt;
+}
+
+/// Check tilization consistency between two element types.
+/// - Both non-tile: success (no tilization to compare).
+/// - Exactly one side tiled: error (mixed tile/scalar is invalid).
+/// - Both tiled with differing HxW: error.
+/// - Both tiled with matching HxW: success.
+inline LogicalResult emitIfTileShapeMismatch(Operation *op, Type lhs, Type rhs,
+                                             StringRef lhsName,
+                                             StringRef rhsName) {
+  auto lhsTile = dyn_cast<ttcore::TileType>(lhs);
+  auto rhsTile = dyn_cast<ttcore::TileType>(rhs);
+  if (!lhsTile && !rhsTile) {
+    return success();
+  }
+  if (!lhsTile || !rhsTile) {
+    return op->emitOpError()
+           << "cannot mix tiled and non-tiled element types; got " << lhsName
+           << "=" << lhs << ", " << rhsName << "=" << rhs;
+  }
+  if (lhsTile.getHeight() == rhsTile.getHeight() &&
+      lhsTile.getWidth() == rhsTile.getWidth()) {
+    return success();
+  }
+  return op->emitOpError() << lhsName << " tile shape (" << lhsTile.getHeight()
+                           << "x" << lhsTile.getWidth() << ") must match "
+                           << rhsName << " tile shape (" << rhsTile.getHeight()
+                           << "x" << rhsTile.getWidth() << ")";
 }
 
 /// Return true when `tensor` was acquired from a CB via ttl.cb_wait or
@@ -265,7 +212,9 @@ inline bool isFullFp32ReduceSupported(TileReduceOp reduceOp) {
     return false;
   }
 
-  // TODO(#533): Blackhole REDUCE_ROW full-fp32 produces incorrect results.
+  // Blackhole cannot write the low 16 bits while the 32-bit dest is enabled, so
+  // the row-reduce LLK disables fp32 accumulation internally (tt-metal #47311).
+  // Report unsupported so DST_ACCUM_MODE is not enabled for it.
   return !isBlackholeTarget(reduceOp) ||
          reduceOp.getReduceDim() != mlir::tt::ttkernel::ReduceDim::Row;
 }
@@ -294,6 +243,18 @@ inline bool getKernelBoolAttr(mlir::Operation *op, llvm::StringRef attrName) {
     return attr.getValue();
   }
   return false;
+}
+
+/// NOC index for the kernel enclosing `op`: 0 = reader/NCRISC, 1 =
+/// writer/BRISC. A func without `ttl.noc_index` (e.g. test IR fed straight to
+/// lowering) takes the reader default, not an error.
+inline int64_t getNocIndex(mlir::Operation *op) {
+  auto funcOp = op->getParentOfType<mlir::func::FuncOp>();
+  assert(funcOp && "getNocIndex called on op outside of func.func");
+  if (auto attr = funcOp->getAttrOfType<mlir::IntegerAttr>(kNocIndexAttrName)) {
+    return attr.getInt();
+  }
+  return 0;
 }
 
 /// Return true when an add/sub/mul tile op is eligible to lower to its FPU

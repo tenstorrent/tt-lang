@@ -1153,23 +1153,9 @@ def test_producer_three_reserves_deferred_stores_in_loop(device):
     _run(device, repro, TOTAL, expected)
 
 
-# ---------------------------------------------------------------------------
-# xfail (#540). Tensor recurrence (acc = acc + ...) carrying an acquired
-# tile through scf.for iter_args. The DSL today does not lower this
-# pattern consistently; PR #540 adds the missing materialization. Once
-# #540 is merged, the auto-pop pass must follow uses through the iter_arg
-# block argument so the pop is placed after the loop, not before. Mirrors
-# lit test 30 in insert_cb_sync.mlir.
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.requires_device
-@pytest.mark.xfail(
-    strict=True,
-    reason="Tensor recurrence carrying an acquired tile through scf.for "
-    "iter_args. Lifted by #540 (materialize tensor loop state).",
-)
 def test_wait_result_through_for_iter_args(device):
+    """Auto-pop must preserve the waited tile through a tensor recurrence."""
     N = 4
 
     @ttl.operation(grid=(1, 1))

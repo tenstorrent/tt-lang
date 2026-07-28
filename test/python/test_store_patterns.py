@@ -5,10 +5,6 @@
 """Tests for store patterns: passthrough, double store, multi-output, and
 store-then-forward (one producer fans out to two per-consumer DFBs)."""
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import pytest
 import torch
 
@@ -242,13 +238,6 @@ def store_then_forward_kernel(a, b, out_main, out_copy):
         with copy_dfb.wait() as blk:
             tx = ttl.copy(blk, out_copy[0, 0])
             tx.wait()
-
-
-@pytest.fixture
-def device():
-    dev = ttnn.open_device(device_id=0)
-    yield dev
-    ttnn.close_device(dev)
 
 
 def test_passthrough(device):

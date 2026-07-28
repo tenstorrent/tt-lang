@@ -5,13 +5,13 @@ add_llvm_executable(ttlang-opt
 llvm_update_compile_flags(ttlang-opt)
 
 target_link_libraries(ttlang-opt PRIVATE
-  ${TTMLIR_MINIMAL_LIBS}
+  ${TTLANG_DIALECT_LIBS}
   MLIROptLib
-  MLIRRegisterAllPasses
   MLIRRegisterAllDialects
-  TTLangTTLTransforms
-  TTLangTTLPipelines
+  MLIRRegisterAllPasses
   MLIRTTLDialect
+  TTLangTTLPipelines
+  TTLangTTLTransforms
 )
 
 mlir_check_link_libraries(ttlang-opt)

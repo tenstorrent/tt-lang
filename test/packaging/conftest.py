@@ -83,6 +83,14 @@ def make_fake_tt_metal_install(tmp_path: Path) -> Callable[..., Path]:
         tracy_package = tt_metal / "python_packages" / "tools" / "tracy"
         tracy_package.mkdir(parents=True)
         (tracy_package / "__init__.py").write_text("")
+        triage_package = tt_metal / "tools" / "triage"
+        triage_package.mkdir(parents=True)
+        (triage_package / "__init__.py").write_text("")
+        (triage_package / "inspector.capnp").write_text("")
+        (triage_package / "requirements.txt").write_text(
+            "pycapnp==2.0.0\ntt-umd==0.9.6\ntt-exalens==0.3.21\n"
+        )
+        (triage_package / "triage.py").write_text("")
         (tt_metal / "lib").mkdir()
         (tt_metal / "runtime").mkdir()
         (tt_metal / "tt_metal").mkdir()

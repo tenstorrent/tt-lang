@@ -20,8 +20,10 @@ setup() {
 # --- Rejection cases ---
 
 @test "rejects branch ref" {
-    GITHUB_REF="refs/heads/main" run "$SCRIPT"
+    GITHUB_REF="refs/heads/main" run --separate-stderr "$SCRIPT"
     assert_failure
+    [[ "$stderr" == *"pass 'refs/tags/vX.Y.Z' as release-ref"* ]] \
+        || fail "stderr missing recovery instructions: $stderr"
 }
 
 @test "rejects empty ref" {
@@ -37,6 +39,11 @@ setup() {
 @test "rejects tag without leading v" {
     GITHUB_REF="refs/tags/1.0.0" run "$SCRIPT"
     assert_failure
+}
+
+@test "explicit release ref overrides GITHUB_REF" {
+    GITHUB_REF="refs/heads/main" run -0 "$SCRIPT" "$REF"
+    assert_output "$BASE"
 }
 
 @test "rejects malformed PEP 440 segment with a clean message" {
@@ -86,14 +93,14 @@ setup() {
     assert_output "${BASE}.post1"
 }
 
-@test "local version label (+uplift)" {
-    GITHUB_REF="${REF}+uplift" run -0 "$SCRIPT"
-    assert_output "${BASE}+uplift"
+@test "rejects local version label (+uplift)" {
+    GITHUB_REF="${REF}+uplift" run "$SCRIPT"
+    assert_failure
 }
 
-@test "dev + local combined" {
-    GITHUB_REF="${REF}-dev20260515+ci123" run -0 "$SCRIPT"
-    assert_output "${BASE}.dev20260515+ci123"
+@test "rejects dev + local combined" {
+    GITHUB_REF="${REF}-dev20260515+ci123" run "$SCRIPT"
+    assert_failure
 }
 
 # PEP 440 specifies that pre-release segment markers are case-insensitive and

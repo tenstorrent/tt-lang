@@ -8,9 +8,6 @@ Pure Python tests: no device, no MLIR. Pin the user-visible error
 contract for invalid PipeNet shapes.
 """
 
-# REQUIRES: ttnn
-# RUN: %python -m pytest %s -v
-
 import pytest
 import ttl
 

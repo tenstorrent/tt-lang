@@ -4,8 +4,6 @@
 # tt-lang base image: Ubuntu 24.04 with Python 3.12, Clang 18, and system
 # libraries required by tt-lang and tt-metal.
 #
-# Aligned with tt-mlir's Dockerfile.base to maintain compatibility.
-
 FROM ubuntu:24.04
 SHELL ["/bin/bash", "-c"]
 
@@ -26,7 +24,7 @@ RUN printf '%s\n' \
       'Acquire::https::Timeout "240";' \
       > /etc/apt/apt.conf.d/99-retries-timeout
 
-# System packages (mirrors tt-mlir Dockerfile.base)
+# System packages needed to build tt-lang and tt-metal.
 RUN <<EOT
 set -e
 apt-get update -qq

@@ -132,7 +132,7 @@ def add_with_kernel(lhs, rhs, out):
 # C++ Kernel Checks - Verify generated code
 # =============================================================================
 
-# CHECK-CPP: // add_compute
+# CHECK-CPP: === add_compute kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP-DAG: CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
 # CHECK-CPP-DAG: CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
@@ -160,25 +160,25 @@ def add_with_kernel(lhs, rhs, out):
 # CHECK-CPP: [[CB1]].pop_front(
 # CHECK-CPP: [[CB0]].pop_front(
 
-# CHECK-CPP: // dm_read
+# CHECK-CPP: === dm_read kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP: .reserve_back(
-# CHECK-CPP: noc_async_read_tile(
-# CHECK-CPP: noc.async_read_barrier<Noc::BarrierMode::FULL>();
+# CHECK-CPP: async_read(
+# CHECK-CPP: async_read_barrier();
 # CHECK-CPP: .push_back(
 
-# CHECK-CPP: // dm_write
+# CHECK-CPP: === dm_write kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP: .wait_front(
-# CHECK-CPP: noc_async_write_tile(
-# CHECK-CPP: noc.async_write_barrier<Noc::BarrierMode::FULL>();
+# CHECK-CPP: async_write(
+# CHECK-CPP: async_write_barrier();
 # CHECK-CPP: .pop_front(
 
 # =============================================================================
 # FPU path checks (default: --ttl-maximize-dst --ttl-fpu-binary-ops)
 # =============================================================================
 
-# CHECK-CPP-FPU: // add_compute
+# CHECK-CPP-FPU: === add_compute kernel written to {{.*}} ===
 # CHECK-CPP-FPU: void kernel_main()
 # CHECK-CPP-FPU-DAG: CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
 # CHECK-CPP-FPU-DAG: CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));

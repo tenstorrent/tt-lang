@@ -128,7 +128,7 @@ on FPU binary init functions (`add_tiles_init`, `sub_tiles_init`,
 accumulates (`DST[i] += A op B`) or overwrites (`DST[i] = A op B`).
 The default is `acc_to_dest=false` (overwrite). However, TTKernel's
 `AddTilesInitOp` and `SubTilesInitOp` do not yet expose this parameter
-([FIXME in TTKernelOps.td](https://github.com/tenstorrent/tt-mlir/blob/main/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td#L397)),
+([FIXME in TTKernelOps.td](../../include/ttlang/Dialect/TTKernel/IR/TTKernelOps.td)),
 so the emitted C++ calls `add_tiles_init(cb0, cb1)` without an explicit
 `acc_to_dest=false`.
 
@@ -174,9 +174,9 @@ This is tested in `dst_fpu_binary.mlir` Test 6
 `tile_add` and `tile_mul`.
 
 > **TODO** (tracked by #343): The long-term fix is to pass
-> `acc_to_dest=false` explicitly to FPU init functions in tt-mlir's
-> TTKernel dialect. `AddTilesInitOp` and `SubTilesInitOp` have a
-> [FIXME](https://github.com/tenstorrent/tt-mlir/blob/main/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td#L397)
+> `acc_to_dest=false` explicitly to FPU init functions in the TTKernel
+> dialect. `AddTilesInitOp` and `SubTilesInitOp` have a
+> [FIXME](../../include/ttlang/Dialect/TTKernel/IR/TTKernelOps.td)
 > where the `acc_to_dst` parameter is commented out; `MulTilesInitOp`
 > omits it entirely. The tt-metal API flows `acc_to_dest` down to a
 > hardware bit
@@ -605,7 +605,7 @@ that make per-op init consolidation maximally effective.
 `TTLLowerMatmulBlock`
 ([source](https://github.com/tenstorrent/tt-lang/blob/main/lib/Dialect/TTL/Transforms/TTLLowerMatmulBlock.cpp))
 replaces `ttl.tile_matmul_block` ops with calls to
-`experimental::matmul_block`, which performs block-level
+`matmul_block`, which performs block-level
 multiply-accumulate in hardware. Gated by the `use-block-matmul`
 pipeline option (default: true). The matmul block op carries
 `TTLCBInputTileOpTrait` (both A and B read from CBs) and accumulates
@@ -707,7 +707,7 @@ pipeline option to gate the optimization passes.
 |--------|---------|-------------|
 | `maximize-dst` | true | Enable subblock partitioning and operation scheduling |
 | `enable-fpu-binary-ops` | true | Use FPU execution for binary add/sub/mul when both operands are CB-backed |
-| `use-block-matmul` | true | Lower matmul to block-level hardware calls (`experimental::matmul_block`) instead of per-tile loops |
+| `use-block-matmul` | true | Lower matmul to block-level hardware calls (`matmul_block`) instead of per-tile loops |
 | `subblock-sync` | false | Refine DFB reserve/push to per-subblock granularity; when disabled, user-placed reserve/push is preserved |
 | `combine-pack-tiles` | true | Combine consecutive `pack_tile` ops into `pack_tile_block` |
 | `lower-to-emitc` | false | Lower TTKernel to EmitC (for C++ translation) |
@@ -768,7 +768,7 @@ emits `init_sfpu` instead of `binary_op_init_common`.
 With `--no-ttl-block-matmul`:
 
 The `lower-matmul-block` pass is skipped. `TileMatmulBlockOp` ops are
-not lowered to `experimental::matmul_block` and instead follow the
+not lowered to `matmul_block` and instead follow the
 per-tile matmul path.
 
 With `--no-ttl-combine-pack-tiles`:
@@ -804,7 +804,7 @@ they invoke passes directly, not through the pipeline.
    expanded into loops.
 4. `lower-matmul-block` runs after sync insertion and before
    `lower-to-loops`. It replaces `TileMatmulBlockOp` with
-   `experimental::matmul_block` hardware calls.
+   `matmul_block` hardware calls.
 5. `lower-to-loops` performs lowering, unrolling, and store reordering
    (component 10): it reads `ttl.full_linearization_strides`, creates
    tile loops, unrolls via `loopUnrollByFactor`, and moves `tile_store`

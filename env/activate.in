@@ -41,7 +41,7 @@ export LLVM_INSTALL_DIR="@LLVM_INSTALL_DIR@"
 # hardcodes the original creation path, which may be stale after relocation.
 export PATH="@CMAKE_BINARY_DIR@/bin:${TT_LANG_HOME}/bin:${LLVM_INSTALL_DIR}/bin:@TTLANG_PYTHON_VENV@/bin:$PATH"
 
-# Python packages: built MLIR + tt-mlir + ttlang bindings, plus source trees.
+# Python packages: built MLIR and tt-lang bindings, plus source trees.
 export PYTHONPATH="\
 @CMAKE_BINARY_DIR@/python_packages:\
 ${TT_LANG_HOME}/python:\

@@ -144,13 +144,6 @@ SHAPES = [
 ]
 
 
-@pytest.fixture(scope="module")
-def device():
-    dev = ttnn.open_device(device_id=0)
-    yield dev
-    ttnn.close_device(dev)
-
-
 @pytest.mark.parametrize("block_shape", SHAPES)
 def test_matmul_bias_multinode(device, block_shape):
     m_blk, k_blk, n_blk = block_shape

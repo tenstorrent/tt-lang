@@ -729,7 +729,7 @@ class TestPipeKeywordConstruction:
 
     def test_pipenet_with_keyword_pipes(self) -> None:
         """PipeNet built from keyword-constructed Pipes works end-to-end."""
-        from python.sim.pipe import PipeNet
+        from sim.pipe import PipeNet
 
         grid_x, grid_y = 3, 2
         net = PipeNet(

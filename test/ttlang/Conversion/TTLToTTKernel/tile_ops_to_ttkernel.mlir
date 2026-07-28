@@ -102,7 +102,7 @@ func.func @tile_max(%a: !ttcore.tile<32x32, f32>, %b: !ttcore.tile<32x32, f32>) 
   func.return %max : !ttcore.tile<32x32, f32>
 }
 
-// Test native TTKernel comparison ops from tt-mlir.
+// Test native TTKernel comparison ops.
 // CHECK-LABEL: func.func @tile_compare_ops
 // CHECK: ttkernel.tile_regs_acquire
 // CHECK: ttkernel.eq_binary_tile_init
