@@ -78,9 +78,8 @@ jobs:
     with:
       push: true
 
-  # Wheel-builder images are only consumed by the S3 light-wheel publish, never
-  # by hardware tests or standard wheels. Build them alongside build-docker so
-  # the `build` job (hardware tests) does not wait on this 360-min build.
+  # Manylinux wheel-builder images are independent of the IRD image. Build them
+  # alongside build-docker so hardware tests do not wait for toolchain caches.
   build-wheel-images:
     needs: resolve-docker-tag
     if: ${{ needs.resolve-docker-tag.outputs.needs_rebuild == 'true' }}

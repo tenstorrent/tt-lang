@@ -69,6 +69,10 @@ container_input_one_path() {
     container_input_one_path "third-party/tt-metal-version"
 }
 
+@test "container input change in CMakeLists.txt -> -<hash> form" {
+    container_input_one_path "CMakeLists.txt"
+}
+
 @test "container input change in third-party/llvm-project/sentinel -> -<hash> form" {
     container_input_one_path "third-party/llvm-project/sentinel"
 }
@@ -256,14 +260,32 @@ container_input_one_path() {
     cat > "$REPO/.github/scripts/uplift-paths.sh" <<'EOF'
 #!/bin/bash
 UPLIFT_PATHS=(
+    scripts/install-ttmetal.sh
+    scripts/copy-ttmetal-runtime-artifacts.sh
+    scripts/build-and-install.sh
     requirements-runtime.txt
+    requirements.txt
     bin/tt-triage
+    .github/scripts/normalize-toolchain-install.sh
+    .github/containers/cleanup-toolchain.sh
     .github/containers/Dockerfile
     .github/containers/Dockerfile.base
     .github/containers/Dockerfile.wheel-manylinux-2-34
+    .github/containers/CMakeLists.wheel-toolchain
+    third-party/patches
     third-party/tt-metal
     third-party/llvm-project
     third-party/tt-metal-version
+    cmake/modules/TTLangUtils.cmake
+    cmake/modules/TTLangPython.cmake
+    cmake/modules/TTLangCompilerSetup.cmake
+    cmake/modules/TTLangToolchainOptions.cmake
+    cmake/modules/TTLangToolchainComponent.cmake
+    cmake/modules/GetVersionFromGit.cmake
+    cmake/modules/BuildTTMetal.cmake
+    cmake/modules/BuildLLVM.cmake
+    CMakeLists.txt
+    .dockerignore
 )
 EOF
     tag_reversed=$(get_tag "$REPO")

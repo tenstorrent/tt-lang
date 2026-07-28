@@ -155,11 +155,12 @@ if(NOT _VENV_PYTHON)
   )
 endif()
 
-# Install/update tt-lang Python requirements on every configure (pip is a
-# no-op when packages are already satisfied).  requirements.txt includes all
-# runtime dependencies: MLIR bindings, tt-metal/ttnn, and tt-lang itself.
-ttlang_pip_install_requirements("${_VENV_PYTHON}"
-  "${CMAKE_SOURCE_DIR}/requirements.txt" FATAL)
+# Component-only wheel builds install runtime requirements in a later Docker
+# layer so requirement changes do not invalidate the LLVM compilation cache.
+if(TTLANG_INSTALL_RUNTIME_REQUIREMENTS)
+  ttlang_pip_install_requirements("${_VENV_PYTHON}"
+    "${CMAKE_SOURCE_DIR}/requirements.txt" FATAL)
+endif()
 
 set(Python3_EXECUTABLE "${_VENV_PYTHON}")
 message(STATUS "Python venv: ${TTLANG_PYTHON_VENV}")

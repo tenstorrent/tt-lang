@@ -10,12 +10,12 @@
 # With no $GITHUB_STEP_SUMMARY set, output goes to stdout for local
 # invocations/tests.
 #
-# Usage: publish-s3-summary.sh [--dry-run] [--index-subdir <subdir>] [--find-links-subdir <subdir>] <wheel_variant> <version_override>
+# Usage: publish-s3-summary.sh [--dry-run] [--dry-run-if true|false] [--index-subdir <subdir>] [--find-links-subdir <subdir>] <wheel_variant> <version_override>
 
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 [--dry-run] [--index-subdir <subdir>] [--find-links-subdir <subdir>] <wheel_variant> <version_override>" >&2
+    echo "Usage: $0 [--dry-run] [--dry-run-if true|false] [--index-subdir <subdir>] [--find-links-subdir <subdir>] <wheel_variant> <version_override>" >&2
     exit 2
 }
 
@@ -27,6 +27,15 @@ while [[ $# -gt 0 ]]; do
         --dry-run)
             dry_run=1
             shift
+            ;;
+        --dry-run-if)
+            [[ $# -ge 2 ]] || usage
+            case "$2" in
+                true) dry_run=1 ;;
+                false) dry_run=0 ;;
+                *) usage ;;
+            esac
+            shift 2
             ;;
         --index-subdir)
             [[ $# -ge 2 ]] || usage
