@@ -163,6 +163,150 @@ struct TensorOpTypeConversion : OpConversionPattern<TensorOp> {
   }
 };
 
+static int64_t getPipeRuntimeArgCount(ModuleOp module) {
+  int64_t count = 0;
+  if (auto scratchBytes =
+          module->getAttrOfType<IntegerAttr>(kPipeSramScratchBytesAttrName)) {
+    count += scratchBytes.getInt() > 0 ? 1 : 0;
+  }
+  if (auto globalSemaphoreCount = module->getAttrOfType<IntegerAttr>(
+          kPipeGlobalSemaphoreCountAttrName)) {
+    count += globalSemaphoreCount.getInt();
+  }
+  return count;
+}
+
+static int64_t getDeviceCoordinateCommonArgBase(Operation *op) {
+  FuncOp func = op->getParentOfType<FuncOp>();
+  assert(func && "logical device operation must be inside a function");
+  int64_t tensorArgumentCount =
+      llvm::count_if(func.getArguments(), [](BlockArgument argument) {
+        return mlir::isa<RankedTensorType>(argument.getType());
+      });
+  return tensorArgumentCount +
+         getPipeRuntimeArgCount(op->getParentOfType<ModuleOp>());
+}
+
+static Value buildDeviceCoordinate(Location loc,
+                                   ConversionPatternRewriter &rewriter,
+                                   int64_t commonArgIndex) {
+  Value argIndex =
+      arith::ConstantIndexOp::create(rewriter, loc, commonArgIndex);
+  return ttk::GetCommonArgValOp::create(rewriter, loc, rewriter.getI32Type(),
+                                        argIndex)
+      .getResult();
+}
+
+static SmallVector<Value>
+buildDeviceReferencePredicates(Operation *op, DeviceDomainAttr domain,
+                               DeviceRefAttr reference,
+                               ConversionPatternRewriter &rewriter) {
+  SmallVector<Value> predicates;
+  int64_t commonArgIndex = getDeviceCoordinateCommonArgBase(op);
+  for (auto [component, coordinates] :
+       llvm::zip_equal(domain.getComponents(), reference.getCoordinates())) {
+    assert(component.getExtent().size() == coordinates.size() &&
+           "verified device reference rank must match domain");
+    for (int64_t expected : coordinates.asArrayRef()) {
+      Value coordinate =
+          buildDeviceCoordinate(op->getLoc(), rewriter, commonArgIndex++);
+      Value expectedValue =
+          arith::ConstantIntOp::create(rewriter, op->getLoc(), expected, 32);
+      predicates.push_back(arith::CmpIOp::create(rewriter, op->getLoc(),
+                                                 arith::CmpIPredicate::eq,
+                                                 coordinate, expectedValue));
+    }
+  }
+  return predicates;
+}
+
+static Value combinePredicates(Location loc,
+                               ConversionPatternRewriter &rewriter,
+                               ArrayRef<Value> predicates) {
+  assert(!predicates.empty() && "device domain must have at least one axis");
+  Value result = predicates.front();
+  for (Value predicate : predicates.drop_front()) {
+    result = arith::AndIOp::create(rewriter, loc, result, predicate);
+  }
+  return result;
+}
+
+struct IsDeviceLowering : OpConversionPattern<IsDeviceOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(IsDeviceOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    SmallVector<Value> predicates = buildDeviceReferencePredicates(
+        op, op.getDomain(), op.getDevice(), rewriter);
+    rewriter.replaceOp(op,
+                       combinePredicates(op.getLoc(), rewriter, predicates));
+    return success();
+  }
+};
+
+struct CurrentDeviceIndexLowering : OpConversionPattern<CurrentDeviceIndexOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(CurrentDeviceIndexOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value index = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
+    int64_t commonArgIndex = getDeviceCoordinateCommonArgBase(op);
+    for (DeviceDomainComponentAttr component : op.getDomain().getComponents()) {
+      for (int64_t extent : component.getExtent().asArrayRef()) {
+        Value extentValue =
+            arith::ConstantIntOp::create(rewriter, loc, extent, 32);
+        Value coordinate =
+            buildDeviceCoordinate(loc, rewriter, commonArgIndex++);
+        index = arith::MulIOp::create(rewriter, loc, index, extentValue);
+        index = arith::AddIOp::create(rewriter, loc, index, coordinate);
+      }
+    }
+    rewriter.replaceOpWithNewOp<arith::IndexCastOp>(op, rewriter.getIndexType(),
+                                                    index);
+    return success();
+  }
+};
+
+struct IsDeviceInRangeLowering : OpConversionPattern<IsDeviceInRangeOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(IsDeviceInRangeOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    SmallVector<Value> predicates;
+    int64_t commonArgIndex = getDeviceCoordinateCommonArgBase(op);
+    for (auto [component, loCoordinates, hiCoordinates] :
+         llvm::zip_equal(op.getDomain().getComponents(),
+                         op.getRange().getLo().getCoordinates(),
+                         op.getRange().getHi().getCoordinates())) {
+      assert(component.getExtent().size() == loCoordinates.size() &&
+             loCoordinates.size() == hiCoordinates.size() &&
+             "verified device range rank must match domain");
+      for (auto [lo, hi] : llvm::zip_equal(loCoordinates.asArrayRef(),
+                                           hiCoordinates.asArrayRef())) {
+        Value coordinate =
+            buildDeviceCoordinate(op.getLoc(), rewriter, commonArgIndex++);
+        Value loValue =
+            arith::ConstantIntOp::create(rewriter, op.getLoc(), lo, 32);
+        Value hiValue =
+            arith::ConstantIntOp::create(rewriter, op.getLoc(), hi, 32);
+        predicates.push_back(arith::CmpIOp::create(rewriter, op.getLoc(),
+                                                   arith::CmpIPredicate::sge,
+                                                   coordinate, loValue));
+        predicates.push_back(arith::CmpIOp::create(rewriter, op.getLoc(),
+                                                   arith::CmpIPredicate::slt,
+                                                   coordinate, hiValue));
+      }
+    }
+    rewriter.replaceOp(op,
+                       combinePredicates(op.getLoc(), rewriter, predicates));
+    return success();
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // Helper utilities.
 //===----------------------------------------------------------------------===//
@@ -1142,12 +1286,15 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
 struct PipeTransferPostLowering : OpConversionPattern<PipeTransferPostOp> {
   PipeTransferPostLowering(const TypeConverter &typeConverter,
                            MLIRContext *context, ValueOriginAnalysis &analysis,
-                           const PipeSemaphoreCounterMap &counters,
+                           const PipePostSequenceCounterMap &counters,
                            const PipeResourcePlan &pipeResourcePlan,
-                           const PipeCapacityPlan &pipeCapacityPlan)
+                           const PipeCapacityPlan &pipeCapacityPlan,
+                           const FabricRoutePlan *fabricRoutePlan,
+                           const FabricRuntimeMap *fabricRuntime)
       : OpConversionPattern(typeConverter, context), analysis(analysis),
         counters(counters), pipeResourcePlan(pipeResourcePlan),
-        pipeCapacityPlan(pipeCapacityPlan) {}
+        pipeCapacityPlan(pipeCapacityPlan), fabricRoutePlan(fabricRoutePlan),
+        fabricRuntime(fabricRuntime) {}
 
   LogicalResult
   matchAndRewrite(PipeTransferPostOp op, OpAdaptor,
@@ -1156,14 +1303,17 @@ struct PipeTransferPostLowering : OpConversionPattern<PipeTransferPostOp> {
     // (`ttl.cb_reserve`, `ttl.attach_cb`, and slice offset), so this lowering
     // must use the original SSA value rather than the converted adaptor value.
     return lowerPipeTransferPost(op, op.getDst(), analysis, counters,
-                                 pipeResourcePlan, &pipeCapacityPlan, rewriter);
+                                 pipeResourcePlan, &pipeCapacityPlan,
+                                 fabricRoutePlan, fabricRuntime, rewriter);
   }
 
 private:
   ValueOriginAnalysis &analysis;
-  const PipeSemaphoreCounterMap &counters;
+  const PipePostSequenceCounterMap &counters;
   const PipeResourcePlan &pipeResourcePlan;
   const PipeCapacityPlan &pipeCapacityPlan;
+  const FabricRoutePlan *fabricRoutePlan;
+  const FabricRuntimeMap *fabricRuntime;
 };
 
 struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
@@ -1172,11 +1322,14 @@ struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
       ValueOriginAnalysis &analysis, const PipeResourcePlan &pipeResourcePlan,
       const PipeCapacityPlan &pipeCapacityPlan,
       const PipeSemaphoreCounterMap *senderCapacityCounters,
-      const PipeComputedAddressCounterMap *computedAddressCounters)
+      const PipeComputedAddressCounterMap *computedAddressCounters,
+      const FabricRoutePlan *fabricRoutePlan,
+      const FabricRuntimeMap *fabricRuntime)
       : OpConversionPattern(typeConverter, context), analysis(analysis),
         pipeResourcePlan(pipeResourcePlan), pipeCapacityPlan(pipeCapacityPlan),
         senderCapacityCounters(senderCapacityCounters),
-        computedAddressCounters(computedAddressCounters) {}
+        computedAddressCounters(computedAddressCounters),
+        fabricRoutePlan(fabricRoutePlan), fabricRuntime(fabricRuntime) {}
 
   LogicalResult
   matchAndRewrite(PipeTransferSendOp op, OpAdaptor adaptor,
@@ -1192,10 +1345,10 @@ struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
                  user->getOperand(0) == op.getSrc() &&
                  domInfo.dominates(user, op);
         });
-    return lowerPipeTransferSend(op, adaptor.getSrc(), isConsumerCB, analysis,
-                                 pipeResourcePlan, &pipeCapacityPlan,
-                                 senderCapacityCounters,
-                                 computedAddressCounters, rewriter);
+    return lowerPipeTransferSend(
+        op, adaptor.getSrc(), isConsumerCB, analysis, pipeResourcePlan,
+        &pipeCapacityPlan, senderCapacityCounters, computedAddressCounters,
+        fabricRoutePlan, fabricRuntime, rewriter);
   }
 
 private:
@@ -1204,6 +1357,8 @@ private:
   const PipeCapacityPlan &pipeCapacityPlan;
   const PipeSemaphoreCounterMap *senderCapacityCounters;
   const PipeComputedAddressCounterMap *computedAddressCounters;
+  const FabricRoutePlan *fabricRoutePlan;
+  const FabricRuntimeMap *fabricRuntime;
 };
 
 struct PipeTransferWaitLowering : OpConversionPattern<PipeTransferWaitOp> {
@@ -1743,6 +1898,10 @@ static LogicalResult lowerTTLOpsToTTKernel(
   if (failed(verifyTransferProvenance(mod, transferAnalysis))) {
     return failure();
   }
+  FabricRoutePlan fabricRoutePlan;
+  if (failed(buildFabricRoutePlan(mod, transferAnalysis, fabricRoutePlan))) {
+    return failure();
+  }
 
   llvm::SmallPtrSet<Operation *, 8> completedPipeSendWaits;
   mod.walk([&](WaitOp waitOp) {
@@ -1780,14 +1939,15 @@ static LogicalResult lowerTTLOpsToTTKernel(
       return failure();
     }
     PipeCapacityPlan preliminaryPipeCapacityPlan;
-    buildPipeCapacityPlan(mod, *pipeGraphOrErr, preliminaryPipeResourcePlan,
+    buildPipeCapacityPlan(transferAnalysis, *pipeGraphOrErr,
+                          preliminaryPipeResourcePlan,
                           preliminaryPipeCapacityPlan);
     if (failed(buildPipeResourcePlan(mod, transferAnalysis, *pipeGraphOrErr,
                                      pipeResourcePlan, pipeComputedAddresses,
                                      &preliminaryPipeCapacityPlan))) {
       return failure();
     }
-    buildPipeCapacityPlan(mod, *pipeGraphOrErr, pipeResourcePlan,
+    buildPipeCapacityPlan(transferAnalysis, *pipeGraphOrErr, pipeResourcePlan,
                           pipeCapacityPlan);
   } else if (failed(buildPipeResourcePlan(
                  mod, transferAnalysis, *pipeGraphOrErr, pipeResourcePlan,
@@ -1822,11 +1982,13 @@ static LogicalResult lowerTTLOpsToTTKernel(
   // change runtime binding code.
   PipeSemaphoreCounterMap senderCapacityCounters;
   initializePipeCapacitySemaphores(pipeCapacityPlan, senderCapacityCounters);
-  PipeSemaphoreCounterMap postSequenceCounters;
+  PipePostSequenceCounterMap postSequenceCounters;
   initializePipePostSequenceCounters(pipeResourcePlan, postSequenceCounters);
   PipeComputedAddressCounterMap computedAddressCounters;
   initializePipeComputedAddressCounters(pipeResourcePlan,
                                         computedAddressCounters);
+  FabricRuntimeMap fabricRuntime;
+  initializeFabricRuntime(fabricRoutePlan, fabricRuntime);
 
   RewritePatternSet patterns(&ctx);
   scf::populateSCFStructuralTypeConversionsAndLegality(typeConverter, patterns,
@@ -1838,20 +2000,21 @@ static LogicalResult lowerTTLOpsToTTKernel(
                TensorOpTypeConversion<tensor::ExtractOp>,
                TensorOpTypeConversion<tensor::CastOp>>(typeConverter, &ctx);
   patterns.add<CopyLowering>(typeConverter, &ctx);
-  patterns.add<PipeTransferPostLowering>(typeConverter, &ctx, transferAnalysis,
-                                         postSequenceCounters, pipeResourcePlan,
-                                         pipeCapacityPlan);
+  patterns.add<PipeTransferPostLowering>(
+      typeConverter, &ctx, transferAnalysis, postSequenceCounters,
+      pipeResourcePlan, pipeCapacityPlan, &fabricRoutePlan, &fabricRuntime);
   patterns.add<PipeTransferSendLowering>(
       typeConverter, &ctx, transferAnalysis, pipeResourcePlan, pipeCapacityPlan,
-      &senderCapacityCounters, &computedAddressCounters);
+      &senderCapacityCounters, &computedAddressCounters, &fabricRoutePlan,
+      &fabricRuntime);
   patterns.add<PipeTransferWaitLowering>(typeConverter, &ctx, pipeResourcePlan);
   patterns.add<WaitLowering>(typeConverter, &ctx, completedPipeSendWaits);
-  patterns
-      .add<BindCBLowering, TensorSliceLowering, CBReserveLowering,
-           CBPushLowering, CBWaitLowering, TileStoreLowering, StoreLowering,
-           CoreXLowering, CoreYLowering, RawElementReadLowering,
-           RawElementWriteLowering, OpaqueCallLowering, GetDfbIdLowering>(
-          typeConverter, &ctx);
+  patterns.add<BindCBLowering, TensorSliceLowering, CBReserveLowering,
+               CBPushLowering, CBWaitLowering, TileStoreLowering, StoreLowering,
+               CoreXLowering, CoreYLowering, RawElementReadLowering,
+               RawElementWriteLowering, OpaqueCallLowering, GetDfbIdLowering,
+               IsDeviceLowering, CurrentDeviceIndexLowering,
+               IsDeviceInRangeLowering>(typeConverter, &ctx);
   patterns.add<CBPopLowering>(typeConverter, &ctx, pipeCapacityPlan);
   populatePipeLoweringPatterns(patterns, typeConverter, pipeNetIndex);
   populateFunctionOpInterfaceTypeConversionPattern(

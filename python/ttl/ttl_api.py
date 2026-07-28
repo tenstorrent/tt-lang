@@ -39,9 +39,9 @@ def _ensure_ttnn():
 import ttl._mlir_libs._ttlang  # Register tt-lang passes
 from ttl._mlir_libs._ttlang import ttl_ir as _ttl_ir
 from ttl.pykernel._src.utils import _cleanup_source_code
-from ttl.dialects import ttcore, ttkernel
+from ttl.dialects import ttcore, ttl, ttkernel
 from ttl.ir import *
-from ttl.ir import DenseI32ArrayAttr
+from ttl.ir import DenseI32ArrayAttr, DenseI64ArrayAttr, DictAttr
 from ttl.passes import (
     get_ttkernel_arg_spec,
     get_ttkernel_names,
@@ -87,7 +87,10 @@ from .dtype_utils import (
     torch_dtype_to_ttnn_datatype,
 )
 from .kernel_runner import (
+    _FabricDirectionCache,
+    FabricRouteSpec,
     KernelSpec,
+    MeshProgramPlacement,
     get_min_remaining_l1_for_device,
     run_kernel_on_device,
     emit_runner_file,
@@ -362,6 +365,58 @@ def _is_mesh_tensor(tensor) -> bool:
     return prod(shape) > 1
 
 
+def _default_mesh_program_placements(args: tuple):
+    """Return a full-mesh placement for mesh tensor execution."""
+    for arg in args:
+        if not _is_mesh_tensor(arg):
+            continue
+        mesh_shape = tuple(int(dim) for dim in arg.device().shape)
+        start = tuple(0 for _ in mesh_shape)
+        end = tuple(dim - 1 for dim in mesh_shape)
+        return [MeshProgramPlacement(start, end)]
+    return None
+
+
+def _mesh_program_placements_from_device_domain(device_domain):
+    """Return the default mesh placement for a logical device domain."""
+    if device_domain is None:
+        return None
+
+    from math import prod
+    from .domains import DeviceDomain
+
+    if not isinstance(device_domain, DeviceDomain):
+        raise TypeError(
+            f"device_domain must be a DeviceDomain, got {type(device_domain).__name__}"
+        )
+
+    extent = tuple(
+        int(dimension)
+        for component in device_domain.components
+        for dimension in component.extent
+    )
+    if prod(extent) <= 1:
+        return None
+    start = tuple(0 for _ in extent)
+    end = tuple(dim - 1 for dim in extent)
+    return [MeshProgramPlacement(start, end)]
+
+
+def _default_mesh_program_placements_with_domain(args: tuple, device_domain):
+    """Return mesh placements from tensors, or from device_domain metadata."""
+    tensor_placements = _default_mesh_program_placements(args)
+    domain_placements = _mesh_program_placements_from_device_domain(device_domain)
+    if tensor_placements is None:
+        return domain_placements
+    if domain_placements is None:
+        return tensor_placements
+    if tensor_placements != domain_placements:
+        raise ValueError(
+            "mesh tensor shape does not match operation device_domain extent"
+        )
+    return tensor_placements
+
+
 def _detect_memory_space_from_tensor(tensor, default: str) -> str:
     """Detect memory space (L1/DRAM) from a ttnn tensor's buffer type."""
     mem_config = tensor.memory_config()
@@ -557,6 +612,9 @@ class CompiledTTNNKernel:
         pipe_sram_scratch_bytes=0,
         num_pipe_global_semaphores=0,
         kernel_pipe_computed_address_dfb_indices=None,
+        kernel_fabric_routes=None,
+        mesh_program_placements=None,
+        device_domain=None,
         opaque_include_paths=None,
     ):
         """
@@ -587,6 +645,8 @@ class CompiledTTNNKernel:
                 PipeNet ready counters used by this kernel.
             kernel_pipe_computed_address_dfb_indices: Per-kernel receiver DFB indices whose
                 L1 bases are supplied as common runtime args.
+            mesh_program_placements: Optional mesh device ranges. When present,
+                execution uses ttnn.MeshProgramDescriptor.
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
@@ -607,7 +667,11 @@ class CompiledTTNNKernel:
         self.kernel_pipe_computed_address_dfb_indices = (
             kernel_pipe_computed_address_dfb_indices or [[] for _ in kernel_paths]
         )
+        self.kernel_fabric_routes = kernel_fabric_routes or [[] for _ in kernel_paths]
+        self.mesh_program_placements = mesh_program_placements
+        self.device_domain = device_domain
         self._pipe_global_semaphore_lifetime = []
+        self._fabric_direction_cache = _FabricDirectionCache()
         self.opaque_include_paths = opaque_include_paths or []
 
     def __call__(self, *args):
@@ -655,6 +719,10 @@ class CompiledTTNNKernel:
             pipe_sram_scratch_bytes=self.pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=self.num_pipe_global_semaphores,
             pipe_global_semaphore_lifetime=self._pipe_global_semaphore_lifetime,
+            mesh_program_placements=self.mesh_program_placements,
+            device_domain=self.device_domain,
+            kernel_fabric_routes=self.kernel_fabric_routes,
+            fabric_direction_cache=self._fabric_direction_cache,
         )
 
 
@@ -828,6 +896,41 @@ def _get_kernel_crta_indices(module, kernel_name: str):
     return [int(IntegerAttr(idx).value) for idx in attr]
 
 
+def _get_kernel_fabric_routes(module, kernel_name: str):
+    operation = _lookup_kernel_func_op(module, kernel_name)
+    attr = operation.attributes.get("ttl.fabric_routes", None)
+    if attr is None:
+        return []
+
+    routes = []
+    for route_attr in ArrayAttr(attr):
+        route = DictAttr(route_attr)
+        local = ttl.DeviceRefAttr.maybe_downcast(route["local"])
+        remote = ttl.DeviceRefAttr.maybe_downcast(route["remote"])
+        if local is None or remote is None:
+            raise ValueError(
+                f"Expected DeviceRefAttr entries in ttl.fabric_routes on "
+                f"kernel '{kernel_name}'"
+            )
+        source_nodes = tuple(
+            tuple(DenseI64ArrayAttr(source_node))
+            for source_node in ArrayAttr(route["source_nodes"])
+        )
+        routes.append(
+            FabricRouteSpec(
+                local_device=tuple(
+                    value for coordinate in local.coordinates for value in coordinate
+                ),
+                remote_device=tuple(
+                    value for coordinate in remote.coordinates for value in coordinate
+                ),
+                source_nodes=source_nodes,
+                route_index=int(route["route_index"]),
+            )
+        )
+    return routes
+
+
 def _compile_ttnn_kernel(
     module,
     args,
@@ -845,6 +948,8 @@ def _compile_ttnn_kernel(
     num_pipe_sync_semaphores: int = 0,
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
+    mesh_program_placements=None,
+    device_domain=None,
     opaque_include_paths: Optional[List[str]] = None,
 ):
     """
@@ -965,6 +1070,7 @@ def _compile_ttnn_kernel(
     # read from ttl.crta_indices. Both stay aligned with kernel_info order.
     kernel_core_ranges = []
     specialized_tensor_indices = []
+    kernel_fabric_routes = []
     kernel_config_attrs = {
         name: {
             "fp32_dest_acc_en": _get_kernel_bool_attr(module, name, "fp32_dest_acc_en"),
@@ -989,6 +1095,7 @@ def _compile_ttnn_kernel(
                 module, name, _ttl_ir.PIPE_COMPUTED_ADDRESS_DFB_INDICES_ATTR
             )
         )
+        kernel_fabric_routes.append(_get_kernel_fabric_routes(module, name))
 
         # The specialized clone's launch coordinates (None on the default,
         # whole-grid path). Used to build the per-kernel dispatch range below.
@@ -1075,6 +1182,9 @@ def _compile_ttnn_kernel(
         pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
         num_pipe_global_semaphores=num_pipe_global_semaphores,
         kernel_pipe_computed_address_dfb_indices=kernel_pipe_computed_address_dfb_indices,
+        kernel_fabric_routes=kernel_fabric_routes,
+        mesh_program_placements=mesh_program_placements,
+        device_domain=device_domain,
         opaque_include_paths=opaque_include_paths or [],
     )
 
@@ -1118,6 +1228,7 @@ def _compile_ttnn_kernel(
             num_pipe_sync_semaphores=num_pipe_sync_semaphores,
             pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=num_pipe_global_semaphores,
+            mesh_program_placements=mesh_program_placements,
         )
 
     return compiled_kernel
@@ -1171,6 +1282,12 @@ def _build_pipenet_graph(nets):
 
     graph = OperationPipeNets()
     for net in nets:
+        if net.is_graph:
+            net_use = graph.add_graph_pipe_net(net.graph)
+            net._graph_edges = net_use.edges
+            net._graph_pipe_net_ids = net_use.pipe_net_ids
+            net.pipe_net_id = net_use.pipe_net_ids[0]
+            continue
         net_use = graph.add_pipe_net(_pipe_to_pipe_use(p) for p in net.pipes)
         net.pipe_net_id = net_use.id
         # Assign every Pipe in this net the operation-local id so the AST
@@ -1203,6 +1320,8 @@ def _collect_captures(
         return {}
 
     def convert(name, val):
+        from .domains import DeviceDomain
+
         if isinstance(val, (int, float)):
             return val
         elif is_ttnn_tensor(val):
@@ -1213,7 +1332,9 @@ def _collect_captures(
             return val
         elif isinstance(val, PipeNet):
             return val
-        elif any(_iter_pipe_nets_in_value(val, set())):
+        elif any(_iter_pipe_nets_in_value(val, set())) or isinstance(
+            val, DeviceDomain
+        ):
             return val
         else:
             raise TypeError(f"Unhandled capture for vars of type({type(val)})")
@@ -1571,6 +1692,7 @@ def _compile_kernel(
     dst_full_sync_en: Optional[bool] = None,
     target_arch: Optional[str] = None,
     compiler_options: CompilerOptions = CompilerOptions(),
+    device_domain=None,
 ) -> Optional[CompiledTTNNKernel]:
     """
     Compile kernel function to MLIR and return CompiledTTNNKernel.
@@ -1606,10 +1728,10 @@ def _compile_kernel(
 
     has_ttnn_tensors = any(is_ttnn_tensor(arg) for arg in args)
 
-    # For mesh tensors, tensor.shape already returns the per-device shard
-    # dimensions, so no wrapping is needed.
-    is_mesh = has_ttnn_tensors and any(_is_mesh_tensor(arg) for arg in args)
     compile_args = args
+    mesh_program_placements = _default_mesh_program_placements_with_domain(
+        args, device_domain
+    )
 
     # For TTNN tensors, detect memory space from tensor's buffer type.
     # L1 tensors use simple NOC addressing, DRAM uses bank-aware addressing.
@@ -2035,6 +2157,8 @@ def _lower_program_to_kernel(
             num_pipe_sync_semaphores=pipe_sync_semaphore_count,
             pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=pipe_global_semaphore_count,
+            mesh_program_placements=mesh_program_placements,
+            device_domain=device_domain,
             opaque_include_paths=opaque_include_paths,
         )
         return compiled_kernel
@@ -2184,6 +2308,7 @@ def pykernel_gen(
     dst_full_sync_en: Optional[bool] = None,
     options: Optional[str] = None,
     _prepare_call: Optional[Callable] = None,
+    device_domain=None,
 ) -> Callable:
     """
     Decorator for generating TTL kernels from Python functions.
@@ -2202,6 +2327,7 @@ def pykernel_gen(
         fp32_dest_acc_en: Optional override for fp32_dest_acc_en
         dst_full_sync_en: Optional override for dst_full_sync_en
         options: Compiler option string (e.g., "--no-ttl-maximize-dst")
+        device_domain: Optional logical device domain for mesh execution.
 
     Returns:
         Decorated function that compiles and executes the kernel
@@ -2257,6 +2383,7 @@ def pykernel_gen(
                 dst_full_sync_en=dst_full_sync_en,
                 target_arch=target_arch,
                 compiler_options=compiler_options,
+                device_domain=device_domain,
             )
 
         return _make_operation_wrapper(

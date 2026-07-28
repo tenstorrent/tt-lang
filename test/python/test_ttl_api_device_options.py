@@ -8,6 +8,7 @@ from unittest import mock
 
 import pytest
 
+import ttl
 import ttl.ttl_api as ttl_api
 
 
@@ -17,6 +18,37 @@ class _TensorWithDevice:
 
     def device(self):
         return self._device
+
+
+class _GridSize:
+    x = 1
+    y = 1
+
+
+class _BoundingBox:
+    @staticmethod
+    def grid_size():
+        return _GridSize()
+
+
+class _CoreRanges:
+    @staticmethod
+    def bounding_box():
+        return _BoundingBox()
+
+
+class _DeviceGrid:
+    x = 8
+    y = 8
+
+
+class _DeviceWithMeshShape:
+    def __init__(self, shape):
+        self.shape = shape
+
+    @staticmethod
+    def compute_with_storage_grid_size():
+        return _DeviceGrid()
 
 
 class _DeviceWithArchMethod:
@@ -80,3 +112,84 @@ class TestDeviceTargetArch:
             ttl_api._device_target_arch((_TensorWithDevice(_DeviceWithRaisingArch()),))
             is None
         )
+
+
+class TestMeshProgramPlacement:
+    @pytest.fixture(autouse=True)
+    def _patch_tensor_detection(self):
+        with mock.patch.object(
+            ttl_api, "is_ttnn_tensor", lambda arg: isinstance(arg, _TensorWithDevice)
+        ):
+            yield
+
+    def test_default_mesh_program_placement_covers_mesh(self):
+        tensor = _TensorWithDevice(_DeviceWithMeshShape((2, 4)))
+
+        placements = ttl_api._default_mesh_program_placements((tensor,))
+
+        assert len(placements) == 1
+        assert placements[0].start == (0, 0)
+        assert placements[0].end == (1, 3)
+
+    def test_default_mesh_program_placement_skips_single_device(self):
+        tensor = _TensorWithDevice(_DeviceWithMeshShape((1, 1)))
+
+        assert ttl_api._default_mesh_program_placements((tensor,)) is None
+
+    def test_device_domain_mesh_program_placement_covers_domain(self):
+        domain = ttl.DeviceDomain((1, 4))
+
+        placements = ttl_api._default_mesh_program_placements_with_domain((), domain)
+
+        assert len(placements) == 1
+        assert placements[0].start == (0, 0)
+        assert placements[0].end == (0, 3)
+
+    def test_device_domain_mesh_program_placement_matches_mesh_tensor(self):
+        domain = ttl.DeviceDomain((1, 4))
+        tensor = _TensorWithDevice(_DeviceWithMeshShape((1, 4)))
+
+        placements = ttl_api._default_mesh_program_placements_with_domain(
+            (tensor,), domain
+        )
+
+        assert placements == [ttl_api.MeshProgramPlacement((0, 0), (0, 3))]
+
+    def test_device_domain_mesh_program_placement_rejects_mismatch(self):
+        domain = ttl.DeviceDomain((1, 2))
+        tensor = _TensorWithDevice(_DeviceWithMeshShape((1, 4)))
+
+        with pytest.raises(ValueError, match="does not match"):
+            ttl_api._default_mesh_program_placements_with_domain((tensor,), domain)
+
+    def test_device_domain_mesh_program_placement_supports_product(self):
+        domain = ttl.DeviceDomain.product(board=(1,), device=(4,))
+
+        placements = ttl_api._default_mesh_program_placements_with_domain((), domain)
+
+        assert placements == [ttl_api.MeshProgramPlacement((0, 0), (0, 3))]
+
+    def test_compiled_kernel_forwards_mesh_program_placements(self, monkeypatch):
+        placement = ttl_api.MeshProgramPlacement((0, 0), (0, 3))
+        calls = []
+
+        def fake_run_kernel_on_device(**kwargs):
+            calls.append(kwargs)
+            return "result"
+
+        monkeypatch.setattr(ttl_api, "run_kernel_on_device", fake_run_kernel_on_device)
+        compiled_kernel = ttl_api.CompiledTTNNKernel(
+            kernel_paths=[],
+            kernel_configs=[],
+            kernel_arg_specs=[],
+            num_tensors=1,
+            core_ranges=_CoreRanges(),
+            kernel_tensor_indices=[],
+            mesh_program_placements=[placement],
+        )
+
+        result = compiled_kernel(_TensorWithDevice(_DeviceWithMeshShape((1, 4))))
+
+        assert result == "result"
+        assert calls[0]["mesh_program_placements"] == [placement]
+        assert calls[0]["fabric_route_cache"] is compiled_kernel._fabric_route_cache

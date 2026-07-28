@@ -28,7 +28,6 @@
 // meaning to those releases.
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
@@ -164,9 +163,13 @@ findOwnedDFBReleases(DFBAcquireInterval interval, Operation *lastOwnedUse,
                      ArrayRef<Operation *> releases,
                      const llvm::DenseSet<Operation *> *erased = nullptr);
 
-/// Builds producer and consumer release-owner maps for every function in
-/// `mod`.
-void buildDFBReleaseOwnerMaps(ModuleOp mod, DFBReleaseOwnerMaps &ownerMaps);
+/// Builds producer and consumer release-owner maps from lifecycle operations
+/// collected from one function.
+void buildDFBReleaseOwnerMaps(ArrayRef<Operation *> reserves,
+                              ArrayRef<Operation *> waits,
+                              ArrayRef<Operation *> pushes,
+                              ArrayRef<Operation *> pops,
+                              DFBReleaseOwnerMaps &ownerMaps);
 
 } // namespace mlir::tt::ttl
 
