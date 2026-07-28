@@ -732,7 +732,9 @@ def TTL_PipeTransferCreateOp : TTL_Op<"pipe_transfer.create", [Pure]> {
     transfer consists of one send and one corresponding post for each receiver.
     The sender and receiver callbacks may use different references because each
     constructs its pipe value independently. The attributes record the common
-    point-to-point or collective contract.
+    point-to-point or collective contract and the optional logical-device
+    transfer. The logical-device transfer is absent for transfers within one
+    device.
 
     `block_span` is the number of consecutive original DFB blocks delivered by
     one transfer. Scalar transfers use the default span of one. Grouping
@@ -748,6 +750,7 @@ def TTL_PipeTransferCreateOp : TTL_Op<"pipe_transfer.create", [Pure]> {
     TTL_Pipe:$pipe,
     TTL_PipeTransferKindAttr:$kind,
     I64Attr:$expectedReceivers,
+    OptionalAttr<TTL_DeviceTransferAttr>:$deviceTransfer,
     DefaultValuedAttr<ConfinedAttr<I64Attr, [IntPositive]>, "1">:$block_span,
     DefaultValuedAttr<ConfinedAttr<I64Attr, [IntPositive]>, "1">:
         $destination_group_depth

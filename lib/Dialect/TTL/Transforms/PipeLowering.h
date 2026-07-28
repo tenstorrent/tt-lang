@@ -231,8 +231,9 @@ getPipeResourceRequirements(const PipeResourcePlan &info,
 /// multiple ops contributes one entry.
 void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 
-/// Build per-kernel routing-plane records from typed device transfers.
-LogicalResult buildFabricRoutePlan(ModuleOp mod, ValueOriginAnalysis &analysis,
+/// Build per-kernel routing-plane records from transfers validated by
+/// PipeGraph.
+LogicalResult buildFabricRoutePlan(const PipeGraph &pipeGraph,
                                    FabricRoutePlan &plan);
 
 /// Materialize the function attributes recorded by `plan`.
@@ -311,8 +312,7 @@ LogicalResult lowerPipeTransferSend(
     const PipeCapacityPlan &pipeCapacityPlan,
     const PipeCounterProgressMap &senderCapacityCounters,
     const PipeComputedAddressCounterMap &computedAddressCounters,
-    const FabricRuntimeMap &fabricRuntime,
-    ConversionPatternRewriter &rewriter);
+    const FabricRuntimeMap &fabricRuntime, ConversionPatternRewriter &rewriter);
 
 /// Remove a receiver post proven unreachable at its pipe endpoint.
 void lowerInactivePipeTransferPost(PipeTransferPostOp op,

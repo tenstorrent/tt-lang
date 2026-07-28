@@ -1230,6 +1230,7 @@ PipeGraph::rebuildEndpointGraph(ModuleOp mod, ValueOriginAnalysis &analysis,
           transferIndex.getTransferCreate(sendOp.getOperation());
       PipeTransferContract transferContract =
           getPipeTransferContract(sendCreate);
+      DeviceTransferAttr deviceTransfer = sendCreate.getDeviceTransferAttr();
       int64_t blockSpan = getPipeTransferBlockSpan(sendCreate);
       int64_t destinationGroupDepth =
           getPipeTransferDestinationGroupDepth(sendCreate);
@@ -1240,6 +1241,13 @@ PipeGraph::rebuildEndpointGraph(ModuleOp mod, ValueOriginAnalysis &analysis,
         if (getPipeTransferContract(postCreate) != transferContract) {
           postOp.emitError(
               "pipe send and receiver post use different transfer contracts");
+          return failure();
+        }
+        if (postCreate.getDeviceTransferAttr() != deviceTransfer) {
+          auto diagnostic = postOp.emitError(
+              "pipe send and receiver post use different device transfers");
+          diagnostic.attachNote(sendOp.getLoc())
+              << "corresponding pipe send is here";
           return failure();
         }
         if (getPipeTransferBlockSpan(postCreate) != blockSpan) {
@@ -1266,6 +1274,7 @@ PipeGraph::rebuildEndpointGraph(ModuleOp mod, ValueOriginAnalysis &analysis,
       pipeTransferNodes.push_back(PipeTransferNode{transferNodeId,
                                                    pipeKey,
                                                    transferContract,
+                                                   deviceTransfer,
                                                    blockSpan,
                                                    destinationGroupDepth,
                                                    sendOp.getOperation(),

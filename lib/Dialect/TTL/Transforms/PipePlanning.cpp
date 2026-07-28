@@ -191,11 +191,9 @@ static void debugRejectEndpoint(const PipeCapacityEndpointFacts &endpointFacts,
   });
 }
 
-static bool
-isCapacityProtocolLowerable(const PipeCapacityEndpointFacts &endpointFacts,
-                            const PipeGraph &pipeGraph,
-                            const PipeResourcePlan &resources,
-                            const FabricRoutePlan *fabricRoutePlan) {
+static bool isCapacityProtocolLowerable(
+    const PipeCapacityEndpointFacts &endpointFacts, const PipeGraph &pipeGraph,
+    const PipeResourcePlan &resources, const FabricRoutePlan *fabricRoutePlan) {
   const PipeTransferNode &transferNode =
       pipeGraph.getPipeTransferNode(endpointFacts.transferNode);
   if (fabricRoutePlan &&
@@ -220,11 +218,9 @@ isCapacityProtocolLowerable(const PipeCapacityEndpointFacts &endpointFacts,
   return true;
 }
 
-static SmallVector<PipeTransferNodeId>
-selectCapacityTransfers(const PipeCapacityAnalysisResult &capacityFacts,
-                        const PipeGraph &pipeGraph,
-                        const PipeResourcePlan &resources,
-                        const FabricRoutePlan *fabricRoutePlan) {
+static SmallVector<PipeTransferNodeId> selectCapacityTransfers(
+    const PipeCapacityAnalysisResult &capacityFacts, const PipeGraph &pipeGraph,
+    const PipeResourcePlan &resources, const FabricRoutePlan *fabricRoutePlan) {
   SmallVector<PipeTransferNodeId> selectedTransfers;
   for (const PipeTransferNode &transferNode :
        pipeGraph.getPipeTransferNodes()) {
@@ -236,8 +232,7 @@ selectCapacityTransfers(const PipeCapacityAnalysisResult &capacityFacts,
         break;
       }
       if (!isCapacityProtocolLowerable(capacityFacts.getEndpointFacts(endpoint),
-                                       pipeGraph, resources,
-                                       fabricRoutePlan)) {
+                                       pipeGraph, resources, fabricRoutePlan)) {
         allEndpointsProven = false;
         break;
       }
@@ -350,7 +345,8 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
   const FabricRoutePlan *fabricRoutePlan = options.fabricRoutePlan;
   if (fabricRoutePlan) {
     synchronizationSelection.fabricTransferOps.insert(
-        fabricRoutePlan->transferOps.begin(), fabricRoutePlan->transferOps.end());
+        fabricRoutePlan->transferOps.begin(),
+        fabricRoutePlan->transferOps.end());
   }
 
   if (options.enableCapacitySynchronization) {
@@ -452,10 +448,9 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
     bool usesCapacityProtocol =
         synchronizationSelection.usesCapacityProtocol(operation);
     PipeSynchronizationProtocol synchronizationProtocol =
-        usesFabricProtocol
-            ? PipeSynchronizationProtocol::Fabric
-            : usesCapacityProtocol ? PipeSynchronizationProtocol::Capacity
-                                   : PipeSynchronizationProtocol::ReceiverPost;
+        usesFabricProtocol     ? PipeSynchronizationProtocol::Fabric
+        : usesCapacityProtocol ? PipeSynchronizationProtocol::Capacity
+                               : PipeSynchronizationProtocol::ReceiverPost;
     if (usesFabricProtocol &&
         !resources.addressStorage.usesComputedReceiverDFB()) {
       operation->emitError(

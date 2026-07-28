@@ -1760,15 +1760,16 @@ static LogicalResult lowerTTLOpsToTTKernel(
     return failure();
   }
   const PipeTransferIndex &transferIndex = **maybeTransferIndex;
-  FabricRoutePlan fabricRoutePlan;
-  if (failed(buildFabricRoutePlan(mod, transferAnalysis, fabricRoutePlan))) {
-    return failure();
-  }
 
   // Validate receiver DFB consistency before lowering emits the pipe
   // synchronization protocol.
   auto pipeGraphOrErr = PipeGraph::build(mod, transferAnalysis, transferIndex);
   if (failed(pipeGraphOrErr)) {
+    return failure();
+  }
+
+  FabricRoutePlan fabricRoutePlan;
+  if (failed(buildFabricRoutePlan(*pipeGraphOrErr, fabricRoutePlan))) {
     return failure();
   }
 

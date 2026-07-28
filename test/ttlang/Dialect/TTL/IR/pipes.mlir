@@ -221,3 +221,28 @@ func.func @pipe_transfer_kind_printing() {
 
   func.return
 }
+
+// -----
+
+// Test: a pipe transfer reference preserves the logical-device transfer.
+// CHECK-LABEL: func.func @pipe_transfer_device_transfer
+// CHECK: %[[PIPE:.*]] = ttl.create_pipe
+// CHECK-SAME: deviceTransfer = #ttl.device_transfer
+// CHECK: ttl.pipe_transfer.create %[[PIPE]]
+// CHECK-SAME: deviceTransfer = #ttl.device_transfer
+#device_transfer = #ttl.device_transfer<
+    domain = <components = <name = "device", extent = [1, 2]>>,
+    edge = <source = <coordinates = [0, 0]>,
+            destination = <coordinates = [0, 1]>>>
+func.func @pipe_transfer_device_transfer() {
+  %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0 {
+      deviceTransfer = #device_transfer}
+      : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+  %transfer = ttl.pipe_transfer.create %pipe {
+      deviceTransfer = #device_transfer,
+      expectedReceivers = 1 : i64,
+      kind = #ttl.pipe_transfer_kind<point_to_point>}
+      : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+      -> !ttl.pipe_transfer
+  func.return
+}
