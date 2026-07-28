@@ -569,8 +569,7 @@ public:
     ttk::NocAsyncWriteBarrierOp::create(rewriter, loc, nocVal);
   }
 
-  LogicalResult
-  emitReceiverCompletionIncrement(
+  LogicalResult emitReceiverCompletionIncrement(
       Value receiverCompletionCounterAddr) override {
     auto completionIncrement = arith::ConstantIndexOp::create(rewriter, loc, 1);
 
