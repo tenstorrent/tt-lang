@@ -101,12 +101,6 @@ static FailureOr<PipeTransferCreateOp>
 getPipeTransferCreate(Operation *op, Value transfer,
                       ValueOriginAnalysis &analysis);
 
-static DeviceTransferAttr
-getDeviceTransfer(PipeTransferCreateOp transferCreate) {
-  auto createPipe = transferCreate.getPipe().getDefiningOp<CreatePipeOp>();
-  return createPipe ? createPipe.getDeviceTransferAttr() : DeviceTransferAttr();
-}
-
 static std::size_t addFabricRoute(SmallVectorImpl<FabricRoute> &routes,
                                   DeviceRefAttr localDevice,
                                   DeviceRefAttr remoteDevice,
@@ -140,22 +134,23 @@ static std::size_t getFabricRouteCount(ArrayRef<FabricRoute> routes) {
   return routeCount;
 }
 
-LogicalResult buildFabricRoutePlan(ModuleOp mod, ValueOriginAnalysis &analysis,
+LogicalResult buildFabricRoutePlan(const PipeGraph &pipeGraph,
                                    FabricRoutePlan &plan) {
   LogicalResult result = success();
 
-  auto recordRoute = [&](PipeTransferSendOp send,
-                         PipeTransferCreateOp transferCreate) {
-    DeviceTransferAttr transfer = getDeviceTransfer(transferCreate);
+  for (const PipeTransferNode &transferNode :
+       pipeGraph.getPipeTransferNodes()) {
+    DeviceTransferAttr transfer = transferNode.deviceTransfer;
     if (!transfer) {
-      return;
+      continue;
     }
+    auto send = mlir::cast<PipeTransferSendOp>(transferNode.sendOp);
     DeviceRefAttr destination = transfer.getEdge().getDestination();
     if (!destination) {
       send.emitError(
           "device-range fabric transfers require multicast target lowering");
       result = failure();
-      return;
+      continue;
     }
 
     FuncOp func = send->getParentOfType<FuncOp>();
@@ -164,44 +159,20 @@ LogicalResult buildFabricRoutePlan(ModuleOp mod, ValueOriginAnalysis &analysis,
       send.emitError(
           "all device transfers in one kernel must use the same device domain");
       result = failure();
-      return;
+      continue;
     }
     functionDomain = transfer.getDomain();
 
     DeviceRefAttr source = transfer.getEdge().getSource();
-    auto pipeType = mlir::cast<PipeType>(transferCreate.getPipe().getType());
-    std::size_t routeIndex =
-        addFabricRoute(plan.routesByFunction[func], source, destination,
-                       getPipeSourceKey(pipeType));
+    std::size_t routeIndex = addFabricRoute(
+        plan.routesByFunction[func], source, destination,
+        PipeSourceKey{transferNode.pipe.srcX, transferNode.pipe.srcY});
     plan.sendRouteIndex[send] = routeIndex;
     plan.transferOps.insert(send);
-  };
-
-  mod.walk([&](Operation *operation) {
-    if (auto send = mlir::dyn_cast<PipeTransferSendOp>(operation)) {
-      FailureOr<PipeTransferCreateOp> maybeTransferCreate =
-          getPipeTransferCreate(send.getOperation(), send.getTransfer(),
-                                analysis);
-      if (failed(maybeTransferCreate)) {
-        result = failure();
-        return;
-      }
-      recordRoute(send, *maybeTransferCreate);
-      return;
+    for (Operation *postOp : transferNode.receiverPostOps) {
+      plan.transferOps.insert(postOp);
     }
-    if (auto post = mlir::dyn_cast<PipeTransferPostOp>(operation)) {
-      FailureOr<PipeTransferCreateOp> maybeTransferCreate =
-          getPipeTransferCreate(post.getOperation(), post.getTransfer(),
-                                analysis);
-      if (failed(maybeTransferCreate)) {
-        result = failure();
-        return;
-      }
-      if (getDeviceTransfer(*maybeTransferCreate)) {
-        plan.transferOps.insert(post);
-      }
-    }
-  });
+  }
   if (failed(result)) {
     return failure();
   }
@@ -1145,9 +1116,9 @@ LogicalResult lowerPipeTransferSend(
                     PipeSynchronizationProtocol::Fabric;
   assert(usesFabric == sendPlan.fabricRouteIndex.has_value() &&
          "fabric transfer plan is missing its route");
-  assert((!usesFabric ||
-          pipeResource.addressStorage.usesComputedReceiverDFB()) &&
-         "fabric transfer plan uses a receiver-published address");
+  assert(
+      (!usesFabric || pipeResource.addressStorage.usesComputedReceiverDFB()) &&
+      "fabric transfer plan uses a receiver-published address");
 
   bool usesCapacityProtocol = transferPlan.getSynchronizationProtocol() ==
                               PipeSynchronizationProtocol::Capacity;
@@ -1691,9 +1662,6 @@ struct PipeTransferAllocationUnit {
 
   PipeType pipeType;
 
-  /// Fabric completion counters require a common L1 address across devices.
-  bool usesFabric = false;
-
   PipeTransferContract transferContract = PipeTransferContract::PointToPoint;
 
   /// Stable tie-breaker for deterministic allocation.
@@ -1782,7 +1750,7 @@ collectPipeTransferAllocationUnits(
     unit.sendOp = sendOp.getOperation();
     unit.pipe = transferNode.pipe;
     unit.pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
-    unit.usesFabric = static_cast<bool>(getDeviceTransfer(createOp));
+    unit.usesFabric = static_cast<bool>(transferNode.deviceTransfer);
     unit.transferContract = transferNode.transferContract;
     unit.ordinal = static_cast<int64_t>(transferNode.id);
     unit.protocolOps.push_back(sendOp.getOperation());
@@ -1843,6 +1811,16 @@ assignLiveIntervalColors(MutableArrayRef<PipeTransferAllocationUnit> units,
   return colorUsersBySource;
 }
 
+static bool usesFabricProtocol(
+    const PipeTransferAllocationUnit &unit,
+    const PipeSynchronizationSelection *synchronizationSelection) {
+  if (!synchronizationSelection) {
+    return false;
+  }
+  PipeTransferSendOp sendOp = llvm::cast<PipeTransferSendOp>(unit.sendOp);
+  return synchronizationSelection->usesFabricProtocol(sendOp);
+}
+
 static bool usesSenderReadyCounter(
     const PipeTransferAllocationUnit &unit,
     const PipeSynchronizationSelection *synchronizationSelection) {
@@ -1851,7 +1829,7 @@ static bool usesSenderReadyCounter(
   }
   PipeTransferSendOp sendOp = llvm::cast<PipeTransferSendOp>(unit.sendOp);
   return !synchronizationSelection->usesCapacityProtocol(sendOp) &&
-         !synchronizationSelection->usesFabricProtocol(sendOp);
+         !usesFabricProtocol(unit, synchronizationSelection);
 }
 
 static SmallVector<PipeCounterLocation>
@@ -2128,8 +2106,9 @@ LogicalResult buildPipeResourcePlan(
     SmallVector<PipeCounterLocation> completionLocations =
         getCompletionCounterLocations(unit, pipeGraph);
     SmallVector<SmallVector<PipeCounterLocation>> &locationsByColor =
-        unit.usesFabric ? fabricCompletionLocationsByColor
-                        : nodeLocalCompletionLocationsByColor;
+        usesFabricProtocol(unit, synchronizationSelection)
+            ? fabricCompletionLocationsByColor
+            : nodeLocalCompletionLocationsByColor;
     unit.maybeCompletionCounterColor =
         allocateCompletionCounterColor(completionLocations, locationsByColor);
   }
@@ -2195,7 +2174,7 @@ LogicalResult buildPipeResourcePlan(
            "pipe transfer is missing a completion counter color");
     int64_t completionColor = *unit.maybeCompletionCounterColor;
     ArrayRef<PipeCounterInfo> completionCounters =
-        unit.usesFabric
+        usesFabricProtocol(unit, synchronizationSelection)
             ? ArrayRef<PipeCounterInfo>(fabricCompletionCounters)
             : ArrayRef<PipeCounterInfo>(nodeLocalCompletionCounters);
     assert(completionColor < static_cast<int64_t>(completionCounters.size()));
