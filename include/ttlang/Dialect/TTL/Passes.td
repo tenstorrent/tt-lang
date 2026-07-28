@@ -177,6 +177,7 @@ def TTLConvertTTLToTTKernel
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
     "::mlir::scf::SCFDialect",
+    "::mlir::tensor::TensorDialect",
     "::mlir::tt::ttkernel::TTKernelDialect"
   ];
 }
