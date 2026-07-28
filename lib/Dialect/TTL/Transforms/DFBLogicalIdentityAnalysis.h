@@ -8,6 +8,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 
@@ -49,8 +50,12 @@ public:
     return assignments;
   }
 
+  /// Returns the logical ID resolved for `declaration`.
+  int64_t getLogicalId(BindCBOp declaration) const;
+
 private:
   SmallVector<DFBLogicalIdentityAssignment> assignments;
+  DenseMap<Operation *, int64_t> logicalIds;
   Operation *errorOperation = nullptr;
   std::string errorMessage;
 };

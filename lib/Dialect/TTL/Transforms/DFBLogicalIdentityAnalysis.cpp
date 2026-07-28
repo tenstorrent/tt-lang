@@ -12,6 +12,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -90,7 +91,15 @@ DFBLogicalIdentityAnalysis::DFBLogicalIdentityAnalysis(Operation *operation) {
       return;
     }
     assignments.push_back({bindOp, logicalId});
+    logicalIds[bindOp.getOperation()] = logicalId;
   });
+}
+
+int64_t DFBLogicalIdentityAnalysis::getLogicalId(BindCBOp declaration) const {
+  auto logicalId = logicalIds.find(declaration.getOperation());
+  assert(logicalId != logicalIds.end() &&
+         "every DFB declaration must have a resolved logical identity");
+  return logicalId->second;
 }
 
 } // namespace mlir::tt::ttl

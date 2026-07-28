@@ -121,18 +121,27 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 
 The pipeline runs these passes in order:
 
+- `ttl-materialize-loop-state`: materialize loop-carried tensor state
+- `ttl-insert-copy-wait`: insert missing waits for asynchronous copies
+- `ttl-annotate-l1-acc-loops`: identify user L1 accumulation loops
+- `ttl-form-producer-compute`: form producer-side compute regions
 - `ttl-insert-intermediate-dfbs` — allocate compiler-managed DFBs for intermediate values (transposes, etc.); verify and error when `compiler-dfbs=false`
-- `ttl-insert-copy-wait` — insert missing `ttl.wait` after `ttl.copy` ops whose transfer handle has no wait user
-- `ttl-insert-cb-sync` — insert DFB wait/pop/reserve/push around compute regions
-- `ttl-annotate-l1-acc-loops` — detect `+=` accumulation loops and annotate for L1 packer accumulation
 - `convert-ttl-to-compute` — lower TTL elementwise tensor ops to `ttl.compute` with tile ops
+- `ttl-insert-cb-sync`: insert DFB wait/pop/reserve/push around compute regions
+- `ttl-coalesce-dfb-acquires`: combine adjacent DFB transactions before
+  physical allocation
+- `ttl-finalize-dfb-indices`: assign logical DFBs to physical indices and emit
+  runtime allocation metadata
 - `ttl-set-compute-kernel-config` — set `fp32_dest_acc_en` / `dst_full_sync_en` defaults
 - `ttl-assign-dst` — DST register allocation (linear scan with copy insertion)
 - `ttl-subblock-compute-for-dst` — tile `ttl.compute` into DST-sized subblocks *(only if `maximize-dst=true`)*; optionally refine reserve/push to per-subblock granularity *(only if `subblock-sync=true`)*
-- `ttl-insert-tile-regs-sync` — insert math/pack thread synchronization
 - `ttl-lower-to-loops` — lower `ttl.compute` to `scf.for` loops; matmul computes are expanded inline via `generateMatmulCompute`
 - `ttl-schedule-operations` — reorder tile ops by dependency depth and kind *(only if `maximize-dst=true`)*
 - `ttl-annotate-cb-associations` — annotate block args with DFB indices
+- `ttl-verify-pipenet-guards`: verify PipeNet execution and synchronization
+- `ttl-verify-dfb-spsc`: verify one producer and one consumer per launched node
+- `ttl-erase-pipenet-scopes`: remove verified PipeNet scope markers
+- `ttl-validate-cb-budget`: validate physical DFB storage against L1 capacity
 - `convert-ttl-to-ttkernel` — lower TTL DMA ops to TTKernel
 - `ttkernel-insert-inits` — insert hardware init ops before compute ops
 - `ttkernel-insert-l1-accumulation` — insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops
@@ -156,6 +165,19 @@ Insert compiler-allocated intermediate DFBs at fusion split points.
 
 ```bash
 ttlang-opt input.mlir -p 'func.func(ttl-insert-intermediate-dfbs{enable=false})'
+```
+
+#### `ttl-finalize-dfb-indices`
+
+Assign physical indices to logical DFBs and emit the complete runtime
+allocation table.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `reuse-user-dfbs` | bool | `true` | Reuse a physical index when concurrent-kernel liveness proves that two compatible logical DFB lifetimes cannot overlap. When false, retain user DFB indices and reuse only compiler-created DFBs within each kernel. |
+
+```bash
+ttlang-opt input.mlir -p 'builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false})'
 ```
 
 #### `ttl-set-compute-kernel-config`
