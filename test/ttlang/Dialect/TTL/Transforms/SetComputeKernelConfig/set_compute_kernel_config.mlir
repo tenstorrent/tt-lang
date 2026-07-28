@@ -230,8 +230,8 @@ func.func @bf16_reduce_row_auto_fp32(
 
 #map_reduce_row = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: Blackhole ROW reduce does not trigger fp32_dest_acc_en while issue
-// #533 remains open.
+// Purpose: Blackhole ROW reduce does not trigger fp32_dest_acc_en, because
+// tt-metal disables fp32 accumulation in the row-reduce LLK (tt-metal #47311).
 // BLACKHOLE-LABEL: func.func @blackhole_bf16_reduce_row_no_auto_fp32
 // BLACKHOLE-SAME: ttl.kernel_thread = #ttkernel.thread<compute>
 module attributes {ttl.target_arch = "blackhole"} {

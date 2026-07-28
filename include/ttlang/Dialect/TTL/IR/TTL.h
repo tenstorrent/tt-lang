@@ -99,8 +99,9 @@ constexpr llvm::StringLiteral kKernelThreadAttrName("ttl.kernel_thread");
 constexpr llvm::StringLiteral kUnrollFactorAttrName("ttl.unroll_factor");
 
 /// Func-level: NOC index (0 = reader/NCRISC, 1 = writer/BRISC) of a
-/// datamovement kernel; set by the frontend, read via getNocIndex.
-/// Mirrored in python/ttl/ttl_api.py.
+/// datamovement kernel; set by the frontend, read via getNocIndex during
+/// TTL->TTKernel lowering and by the ttnn runtime bridge for reader/writer
+/// config assignment. Mirrored in python/ttl/ttl_api.py.
 constexpr llvm::StringLiteral kNocIndexAttrName("ttl.noc_index");
 
 /// Marks an scf.for as a compiler-generated subblock loop. Integer value is

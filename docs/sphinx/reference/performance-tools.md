@@ -92,7 +92,7 @@ export TTLANG_AUTO_PROFILE=1
 
 **Example:**
 ```bash
-export TT_METAL_HOME=/workspace/tt-mlir/third_party/tt-metal/src/tt-metal
+export TT_METAL_HOME=/workspace/tt-lang/third-party/tt-metal
 export TT_METAL_DEVICE_PROFILER=1
 export TT_METAL_PROFILER_MID_RUN_DUMP=1
 export TTLANG_AUTO_PROFILE=1

@@ -9,8 +9,7 @@ Provides unified feature detection (ttnn availability, hardware detection),
 tensor creation helpers, and comparison utilities. Used across pytest conftest
 files, lit configuration, and test scripts.
 
-Device availability is determined by checking environment variables and
-/dev/tenstorrent* files, avoiding the slow ttnn.GetNumAvailableDevices() call.
+Device availability is checked without importing ttnn.
 """
 
 import glob
@@ -24,12 +23,19 @@ from typing import Any, Sequence
 # Feature detection
 # =============================================================================
 
-# Check device availability: env vars first (for simulator), then CMake config.
+# Prefer runtime state over the wheel's build-time device flag.
 _hardware_available = False
+
+
+def _has_tenstorrent_device_node() -> bool:
+    return bool(glob.glob("/dev/tenstorrent/*") or glob.glob("/dev/tenstorrent[0-9]*"))
+
 
 if os.environ.get("TT_METAL_SIMULATOR"):
     _hardware_available = True
 elif os.environ.get("TTLANG_HAS_DEVICE") == "1":
+    _hardware_available = True
+elif _has_tenstorrent_device_node():
     _hardware_available = True
 else:
     try:
@@ -37,7 +43,7 @@ else:
 
         _hardware_available = HAS_TT_DEVICE
     except ImportError:
-        _hardware_available = bool(glob.glob("/dev/tenstorrent*"))
+        _hardware_available = False
 
 # Set compile-only mode if no hardware.
 if not _hardware_available:
@@ -87,7 +93,11 @@ def is_hardware_available() -> bool:
     Checks in order:
     1. TT_METAL_SIMULATOR environment variable (simulation mode)
     2. TTLANG_HAS_DEVICE environment variable (set by CMake)
-    3. Physical device files (/dev/tenstorrent*)
+    3. Runtime device nodes (/dev/tenstorrent/* or /dev/tenstorrent[0-9]*)
+    4. ttl.config.HAS_TT_DEVICE, the wheel's build-time value (fallback)
+
+    Step 3 precedes step 4 so an installed light wheel, built with no device
+    and therefore HAS_TT_DEVICE=False, still runs on a host that has a chip.
 
     Returns:
         True if hardware or simulator is available, False otherwise.
@@ -149,21 +159,25 @@ class FabricMeshUnavailable(RuntimeError):
 
 @contextmanager
 def open_fabric_mesh(requested_mesh_shape: tuple[int, int] | None = None):
-    """Open a fabric-enabled mesh. With requested_mesh_shape=None, use the
-    control-plane-discovered shape (SystemMeshDescriptor); a forced shape that
-    mismatches the physical fabric can hang. Set TT_MESH_GRAPH_DESC_PATH to
-    override topology discovery.
-    """
+    """Open a 1D fabric mesh spanning every visible device by default."""
     ttnn_module = _get_ttnn()
     if ttnn_module is None:
         raise FabricMeshUnavailable("TTNN not available")
 
     if requested_mesh_shape is None:
-        requested_mesh_shape = tuple(
-            ttnn_module._ttnn.multi_device.SystemMeshDescriptor().shape()
-        )
+        # FABRIC_1D requires a 1D topology even when physical discovery is 2-D.
+        requested_mesh_shape = (1, ttnn_module.get_num_devices())
     else:
         requested_mesh_shape = tuple(requested_mesh_shape)
+    if (
+        len(requested_mesh_shape) != 2
+        or requested_mesh_shape[0] != 1
+        or requested_mesh_shape[1] < 1
+    ):
+        raise ValueError(
+            "FABRIC_1D requires a logical mesh shape of (1, num_devices) with "
+            "num_devices greater than zero"
+        )
 
     mesh_device = None
     try:

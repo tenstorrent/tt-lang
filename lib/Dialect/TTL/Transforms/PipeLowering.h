@@ -13,6 +13,10 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "llvm/ADT/MapVector.h"
 
+namespace mlir::tt {
+class ValueOriginAnalysis;
+}
+
 namespace mlir::tt::ttl {
 
 /// Receiver-completion semaphores are indexed by PipeNet id.
@@ -111,9 +115,8 @@ struct PipeResourceInfo {
   PipeAddressStorageInfo addressStorage;
 };
 
-/// Per-function map: pipeNetId -> kernel-local i32 counter for cumulative
-/// pipe receive wait_min progress.
-using PipeNetCounterMap =
+/// Per-function map: pipeNetId -> kernel-local i32 sequence assigned to posts.
+using PipePostSequenceCounterMap =
     llvm::MapVector<func::FuncOp, llvm::MapVector<int64_t, Value>>;
 
 /// pipeNetId -> deduplicated list of pipes in that net. Built once
@@ -160,27 +163,32 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 /// Build the pipe resource plan used by pipe lowering. Transfer intervals that
 /// cannot be bounded by dominance are conservatively treated as conflicting
 /// with every other transfer interval from the same source core.
-LogicalResult buildPipeResourcePlan(ModuleOp mod, PipeResourcePlan &info);
+LogicalResult buildPipeResourcePlan(ModuleOp mod, ValueOriginAnalysis &analysis,
+                                    PipeResourcePlan &info);
 
 /// At each function entry, emit one zero-initialized `memref<1xi32>` per
-/// pipeNetId used by a pipe receive.
-void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters);
+/// pipeNetId used by a pipe receive post.
+void allocatePipePostSequenceCounters(ModuleOp mod,
+                                      ValueOriginAnalysis &analysis,
+                                      PipePostSequenceCounterMap &counters);
 
 /// Lower the sender-side pipe transfer. Uses receiver-published destination
 /// addresses and signals receiver completion.
 LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
                                     bool isConsumerCB,
+                                    ValueOriginAnalysis &analysis,
                                     const PipeResourcePlan &pipeResourcePlan,
                                     ConversionPatternRewriter &rewriter);
 
 /// Lower the receiver-side pipe destination address publication.
 LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
+                                    ValueOriginAnalysis &analysis,
+                                    const PipePostSequenceCounterMap &counters,
                                     const PipeResourcePlan &pipeResourcePlan,
                                     ConversionPatternRewriter &rewriter);
 
 /// Lower the receiver-side pipe receive completion wait.
-LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op,
-                                    const PipeNetCounterMap *counters,
+LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op, Value tokenSequence,
                                     const PipeResourcePlan &pipeResourcePlan,
                                     ConversionPatternRewriter &rewriter);
 

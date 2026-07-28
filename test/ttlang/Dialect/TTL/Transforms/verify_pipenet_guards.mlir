@@ -354,6 +354,64 @@ module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
 
 // -----
 
+// Unsigned comparison uses the index bit pattern. At core 0, `x - 1` is the
+// maximum unsigned index value and is greater than zero.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @unsigned_wrapped_coordinate_guard
+  // CHECK: arith.cmpi ugt
+  // CHECK: ttl.copy
+  func.func @unsigned_wrapped_coordinate_guard() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %x = ttl.core_x : index
+    %zero = arith.constant 0 : index
+    %one = arith.constant 1 : index
+    %wrapped = arith.subi %x, %one : index
+    %is_src = arith.cmpi ugt, %wrapped, %zero : index
+    scf.if %is_src {
+      %send = ttl.copy %cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}
+
+// -----
+
+// Standard integer folding evaluates remainder expressions in launch-node
+// predicates. On a two-core row, `x % 2 == 0` selects only the source core.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @remainder_coordinate_guard
+  // CHECK: arith.remsi
+  // CHECK: ttl.copy
+  func.func @remainder_coordinate_guard() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %x = ttl.core_x : index
+    %zero = arith.constant 0 : index
+    %two = arith.constant 2 : index
+    %remainder = arith.remsi %x, %two : index
+    %is_src = arith.cmpi eq, %remainder, %zero : index
+    scf.if %is_src {
+      %send = ttl.copy %cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}
+
+// -----
+
 // `arith.cmpi ne`: the guard `x != 1` is true on coords {0}, which is the
 // pipe source.
 

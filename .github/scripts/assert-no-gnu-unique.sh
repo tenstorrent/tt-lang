@@ -5,10 +5,9 @@
 # Fail if a built wheel exports STB_GNU_UNIQUE symbols.
 #
 # GCC emits LLVM/MLIR singletons as STB_GNU_UNIQUE, which glibc merges
-# process-wide even under RTLD_LOCAL, so importing tt-lang and a standalone
-# tt-mlir together aborts ("Option 'greedy' already exists!"). The build
-# compiles with -fno-gnu-unique to keep them weak; this guards against that
-# regressing.
+# process-wide even under RTLD_LOCAL. Importing multiple MLIR extension modules
+# can then abort with duplicate option registration. The build compiles with
+# -fno-gnu-unique to keep them weak; this guards against that regressing.
 #
 # Usage: assert-no-gnu-unique.sh <wheel>
 

@@ -60,6 +60,13 @@ setup() {
     assert_equal "$(run_detect "$BASE" "$head")" "true"
 }
 
+@test "diff in .github/containers/Dockerfile marks uplift=true" {
+    echo "modified" >> "$REPO/.github/containers/Dockerfile"
+    commit_all "$REPO" "uplift"
+    head=$(cd "$REPO" && git rev-parse HEAD)
+    assert_equal "$(run_detect "$BASE" "$head")" "true"
+}
+
 @test "diff in .github/containers/Dockerfile.wheel-manylinux-2-34 marks uplift=true" {
     echo "modified" >> "$REPO/.github/containers/Dockerfile.wheel-manylinux-2-34"
     commit_all "$REPO" "uplift"
@@ -69,6 +76,13 @@ setup() {
 
 @test "diff in requirements-runtime.txt marks uplift=true" {
     echo "modified" >> "$REPO/requirements-runtime.txt"
+    commit_all "$REPO" "uplift"
+    head=$(cd "$REPO" && git rev-parse HEAD)
+    assert_equal "$(run_detect "$BASE" "$head")" "true"
+}
+
+@test "diff in bin/tt-triage marks uplift=true" {
+    echo "modified" >> "$REPO/bin/tt-triage"
     commit_all "$REPO" "uplift"
     head=$(cd "$REPO" && git rev-parse HEAD)
     assert_equal "$(run_detect "$BASE" "$head")" "true"
@@ -86,17 +100,6 @@ setup() {
     mkdir -p "$REPO/lib"
     echo "kernel change" > "$REPO/lib/something.cpp"
     commit_all "$REPO" "kernel"
-    head=$(cd "$REPO" && git rev-parse HEAD)
-    assert_equal "$(run_detect "$BASE" "$head")" "false"
-}
-
-# --- Regression: tt-mlir is NOT uplift (built fresh by call-build.yml) ---
-# Guards against a future "is tt-mlir uplift?" mistake re-adding it to
-# UPLIFT_PATHS.
-@test "diff in third-party/tt-mlir alone -> uplift=false" {
-    mkdir -p "$REPO/third-party/tt-mlir"
-    echo "tt-mlir bump" > "$REPO/third-party/tt-mlir/sentinel"
-    commit_all "$REPO" "tt-mlir-only"
     head=$(cd "$REPO" && git rev-parse HEAD)
     assert_equal "$(run_detect "$BASE" "$head")" "false"
 }

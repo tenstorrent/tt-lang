@@ -556,7 +556,7 @@ def TTLLowerToLoops
            "accumulation. reduce_max always uses DST accumulation.">,
     Option<"useBlockMatmul", "use-block-matmul", "bool", "true",
            "Lower matmul to block-level hardware calls "
-           "(experimental::matmul_block) instead of per-tile loops.">
+           "(matmul_block) instead of per-tile loops.">
   ];
 
   let dependentDialects = [
@@ -674,6 +674,20 @@ def TTLVerifyPipeNetGuards
     "::mlir::scf::SCFDialect",
     "::mlir::tt::ttl::TTLDialect"
   ];
+}
+
+def TTLVerifyTransferProvenance
+    : Pass<"ttl-verify-transfer-provenance", "::mlir::ModuleOp"> {
+  let summary = "Verify transfer values have consistent reachable origins";
+  let description = [{
+    Checks non-local provenance required by transfer lowering. Transfer objects
+    must resolve to one `ttl.pipe_transfer.create`; pipe receive destinations
+    must derive from `ttl.cb_reserve`; public transfer handles must have one
+    supported wait behavior; and every pipe token must derive from a receive
+    post in the token's PipeNet. Statically unreachable operations are ignored.
+  }];
+
+  let dependentDialects = [];
 }
 
 def TTLVerifyDFBSPSC
@@ -829,39 +843,38 @@ def TTLDumpCBFlowGraph
   ];
 }
 
-def TTLLowerScalarCmpF
-    : Pass<"ttl-lower-scalar-cmpf", "::mlir::ModuleOp"> {
-  let summary = "Lower arith.cmpf on scalar floats to TTKernel soft-float ops";
+def TTKernelLowerScalarFpTypes
+    : Pass<"ttkernel-lower-scalar-fp-types", "::mlir::func::FuncOp"> {
+  let summary = "Lower scalar float types to integer bit patterns";
   let description = [{
-    Converts `arith.cmpf` operations on scalar floats (from `raw_element_read`
-    lowering) to TTKernel soft-float comparison ops. After
-    `convert-ttl-to-ttkernel`, float values from L1 loads are represented as
-    integer bit patterns with `unrealized_conversion_cast` bridging to float
-    types. This pass resolves those casts and emits the appropriate TTKernel
-    comparison op.
+    Converts all scalar float types to integer bit-pattern types using MLIR
+    dialect conversion. After `convert-ttl-to-ttkernel`, float values from L1
+    loads are represented as integer bit patterns bridged by
+    `unrealized_conversion_cast(iN -> fN)`. This pass eliminates those bridges
+    by converting all scalar `FloatType` values to the corresponding
+    `IntegerType` (f32 -> i32, bf16 -> i16).
 
-    Supported predicates:
-    - `ogt` -> `ttkernel.float32_greater` / `ttkernel.bfloat16_greater`
-    - `olt` -> same ops with swapped operands
+    The following conversions are performed:
 
-    All other predicates (`oeq`, `one`, `oge`, `ole`, and all unordered
-    predicates `uno`, `ueq`, `ugt`, `uge`, `ult`, `ule`, `une`) emit an
-    error diagnostic and signal pass failure.
+    1. **arith.cmpf**: Converts scalar float comparisons to TTKernel soft-float
+       comparison ops (`ttkernel.float32_greater` / `ttkernel.bfloat16_greater`).
+       Supported predicates: `ogt` and `olt` (swapped operands). Unsupported
+       predicates cause the pass to fail.
 
-    Operand requirements: each `arith.cmpf` operand must resolve to an
-    integer bit pattern via one of two sources:
-    1. `unrealized_conversion_cast(iN -> fN)` from a prior
-       `RawElementReadLowering` (unwraps to the integer directly).
-    2. `arith.constant <float>` (materializes the IEEE-754 bit pattern
-       as an integer constant).
+    2. **arith.truncf**: Converts float truncation (e.g. f32 -> bf16) to
+       integer bit extraction via `arith.shrui` + `arith.trunci`.
 
-    Operands from other sources (e.g., `arith.addf` results) cannot be
-    resolved and cause a diagnostic: "could not resolve float operand to
-    integer bit pattern".
+    3. **arith.constant**: Converts float constants to their integer bit-pattern
+       equivalents.
+
+    4. **SCF control flow**: Propagates integer types through `scf.if`,
+       `scf.for`, `scf.while`, and `scf.yield` using upstream SCF structural
+       type conversion patterns.
   }];
 
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
+    "::mlir::scf::SCFDialect",
     "::mlir::tt::ttkernel::TTKernelDialect"
   ];
 }
@@ -927,6 +940,78 @@ def TTKernelInsertInits
 
   let dependentDialects = [
     "::mlir::tt::ttkernel::TTKernelDialect"
+  ];
+}
+
+def TTKernelSpecializeCores
+    : Pass<"ttkernel-specialize-cores", "::mlir::ModuleOp"> {
+  let summary = "Clone kernels per core when control flow branches on a coordinate";
+  let description = [{
+    Per-core specialization for TTKernel functions. Requires the
+    `ttl.launch_grid` attribute, missing or malformed `ttl.launch_grid` is a hard error.
+
+    For each kernel whose scf.if region branches on a core coordinate, clones
+    the function once per launch coordinate, replaces
+    ttkernel.my_logical_x_ / ttkernel.my_logical_y_ with arith.constant's
+    for that core, and tags the cloned function with ttl.core_coord (the coordinate it
+    serves). Downstream canonicalize / cse then fold the now-constant
+    branch conditions and delete untaken regions. The runtime bridge reads
+    ttl.core_coord to build per-kernel core ranges for dispatch.
+
+    NOTE: functions with symbol uses (e.g. `func.call` targets) are left
+    unspecialized with a warning so erasing the original does not leave dangling
+    `SymbolRefAttr`s; unrelated functions in the module are still specialized.
+
+    Example (`ttl.launch_grid = [1, 2]`):
+    ```mlir
+    // Before:
+    func.func @k() -> index {
+      %c0 = arith.constant 0 : index
+      %c7 = arith.constant 7 : index
+      %c9 = arith.constant 9 : index
+      %y = ttkernel.my_logical_y_ : () -> index
+      %pred = arith.cmpi eq, %y, %c0 : index
+      %r = scf.if %pred -> (index) {
+        scf.yield %c7 : index
+      } else {
+        scf.yield %c9 : index
+      }
+      return %r : index
+    }
+
+    // After:
+    func.func @k_c0_0() -> index attributes {ttl.core_coord = [[0, 0]]} {
+      %c0 = arith.constant 0 : index
+      %c7 = arith.constant 7 : index
+      %c9 = arith.constant 9 : index
+      %y = arith.constant 0 : index
+      %pred = arith.cmpi eq, %y, %c0 : index
+      %r = scf.if %pred -> (index) {
+        scf.yield %c7 : index
+      } else {
+        scf.yield %c9 : index
+      }
+      return %r : index
+    }
+    func.func @k_c0_1() -> index attributes {ttl.core_coord = [[0, 1]]} {
+      %c0 = arith.constant 0 : index
+      %c7 = arith.constant 7 : index
+      %c9 = arith.constant 9 : index
+      %y = arith.constant 1 : index
+      %pred = arith.cmpi eq, %y, %c0 : index
+      %r = scf.if %pred -> (index) {
+        scf.yield %c7 : index
+      } else {
+        scf.yield %c9 : index
+      }
+      return %r : index
+    }
+    ```
+  }];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::func::FuncDialect"
   ];
 }
 

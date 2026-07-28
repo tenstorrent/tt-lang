@@ -16,7 +16,7 @@ Usage: build-s3-light-metapackage-wheel.sh --version <version> [options]
 
 Options:
   --dist-dir <dir>                Final wheel directory. Default: dist.
-  --allow-final-internal-version  Allow final release versions for internal light wheels.
+  --allow-final-internal-version  Allow final release versions for S3 light wheels.
 EOF
     exit 2
 }

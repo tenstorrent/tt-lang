@@ -6,6 +6,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 
 #include "TTLOpsVerifyUtils.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Utils/StructuredOpsUtils.h"
 #include "mlir/IR/AffineMap.h"
@@ -13,11 +14,12 @@
 #include "mlir/IR/DialectImplementation.h" // IWYU pragma: keep
 #include "mlir/Interfaces/TilingInterface.h"
 #include "mlir/Support/LogicalResult.h"
+#include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h" // IWYU pragma: keep
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h" // IWYU pragma: keep
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
-#include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
+#include "ttlang/Dialect/Utils/OpaqueCallVerifyUtils.h"
 #include "llvm/ADT/TypeSwitch.h" // IWYU pragma: keep
 #include <cstdint>
 #include <functional>
@@ -247,6 +249,21 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
     }
   }
 
+  // Reject mismatched tilization before the generic element-type check so the
+  // diagnostic names tile shapes rather than opaque TileType spellings.
+  if (failed(emitIfTileShapeMismatch(getOperation(),
+                                     transferTensorTy.getElementType(),
+                                     cbTy.getElementType(), "tensor", "CB"))) {
+    return failure();
+  }
+
+  auto layoutAttr = mlir::cast<LayoutAttr>(enc);
+  if (failed(emitIfTileShapeMismatch(getOperation(),
+                                     layoutAttr.getElementType(),
+                                     cbTy.getElementType(), "layout", "CB"))) {
+    return failure();
+  }
+
   if (transferTensorTy.getElementType() != cbTy.getElementType()) {
     return emitOpError() << "tensor element type ("
                          << transferTensorTy.getElementType()
@@ -281,29 +298,7 @@ mlir::LogicalResult mlir::tt::ttl::PipeTransferCreateOp::verify() {
   return success();
 }
 
-mlir::LogicalResult mlir::tt::ttl::PipeTransferPostOp::verify() {
-  if (!findCBReserveForPipeReceive(getDst())) {
-    return emitOpError() << "requires a cb_reserve destination";
-  }
-  auto createOp = findPipeTransferCreateForTransfer(getTransfer());
-  if (!createOp) {
-    return emitOpError()
-           << "requires transfer derived from ttl.pipe_transfer.create";
-  }
-  auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
-  auto tokenType = mlir::cast<PipeTokenType>(getToken().getType());
-  if (tokenType.getPipeNetId() != pipeType.getPipeNetId()) {
-    return emitOpError() << "token pipeNetId must match transfer pipeNetId";
-  }
-
-  return success();
-}
-
 mlir::LogicalResult mlir::tt::ttl::PipeTransferSendOp::verify() {
-  if (!findPipeTransferCreateForTransfer(getTransfer())) {
-    return emitOpError()
-           << "requires transfer derived from ttl.pipe_transfer.create";
-  }
   auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
   if (!handleType || handleType.getKind() != TransferKind::write) {
     return emitOpError() << "requires a write transfer handle result";
@@ -312,27 +307,9 @@ mlir::LogicalResult mlir::tt::ttl::PipeTransferSendOp::verify() {
   return success();
 }
 
-mlir::LogicalResult mlir::tt::ttl::PipeTransferWaitOp::verify() {
-  mlir::tt::ttl::PipeTransferPostOp postOp =
-      mlir::tt::ttl::findPipeTransferPostForToken(getToken());
-  if (!postOp) {
-    return emitOpError()
-           << "requires token derived from ttl.pipe_transfer.post";
-  }
-  auto waitTokenType =
-      mlir::cast<mlir::tt::ttl::PipeTokenType>(getToken().getType());
-  auto postTokenType =
-      mlir::cast<mlir::tt::ttl::PipeTokenType>(postOp.getToken().getType());
-  if (waitTokenType.getPipeNetId() != postTokenType.getPipeNetId()) {
-    return emitOpError()
-           << "token pipeNetId must match pipe transfer post pipeNetId";
-  }
-  return success();
-}
-
 mlir::LogicalResult mlir::tt::ttl::WaitOp::verify() {
-  if (failed(
-          mlir::tt::ttl::verify::isValidWaitOperand(getOperation(), getXf()))) {
+  if (failed(mlir::tt::ttl::verify::verifyWaitOperandType(getOperation(),
+                                                          getXf()))) {
     return failure();
   }
   return success();
@@ -705,6 +682,16 @@ mlir::tt::ttl::ComputeOp::getTiledImplementation(
   result.tiledValues = tiledOp.getResults();
   result.generatedSlices = std::move(generatedSlices);
   return result;
+}
+
+// ttl.compute does not consult pack/unpack inner-tile alignment hints; forward
+// to the hint-less overload (matches the TilingInterface default).
+llvm::FailureOr<mlir::TilingResult>
+mlir::tt::ttl::ComputeOp::getTiledImplementation(
+    mlir::OpBuilder &b, llvm::ArrayRef<mlir::OpFoldResult> offsets,
+    llvm::ArrayRef<mlir::OpFoldResult> sizes,
+    llvm::ArrayRef<mlir::InnerTileAlignment>) {
+  return getTiledImplementation(b, offsets, sizes);
 }
 
 /// Map iteration-domain offsets/sizes to the result tensor's offsets/sizes
@@ -1472,6 +1459,14 @@ mlir::LogicalResult mlir::tt::ttl::StoreOp::verify() {
   auto tensorTy = mlir::cast<RankedTensorType>(getTensor().getType());
   auto viewTy = mlir::cast<RankedTensorType>(getView().getType());
 
+  // CB->CB identity stores (dst.reserve().store(src.wait())) must use the same
+  // tile shape; mismatched tilization is not a supported retile.
+  if (failed(emitIfTileShapeMismatch(getOperation(), tensorTy.getElementType(),
+                                     viewTy.getElementType(), "source",
+                                     "destination CB"))) {
+    return failure();
+  }
+
   if (tensorTy.getElementType() != viewTy.getElementType()) {
     return emitOpError() << "tensor element type (" << tensorTy.getElementType()
                          << ") must match view element type ("
@@ -2075,4 +2070,9 @@ void mlir::tt::ttl::PipeNetScopeOp::getSuccessorRegions(
     return;
   }
   regions.push_back(RegionSuccessor(getOperation()));
+}
+
+mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
+  return mlir::tt::utils::verifyOpaqueCall<GetDfbIdOp>(
+      getOperation(), getCallee(), getHeader(), getTemplateArgVals());
 }

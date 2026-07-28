@@ -4,8 +4,8 @@
 
 #include "ttlang/Dialect/TTL/Pipelines/TTLPipelines.h"
 
+#include "ttlang/Conversion/TTKernelToEmitC/TTKernelToEmitC.h"
 #include "ttlang/Dialect/TTL/Passes.h"
-#include "ttmlir/Conversion/TTKernelToEmitC/TTKernelToEmitC.h"
 
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Dialect/EmitC/Transforms/Passes.h"
@@ -91,6 +91,11 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   }
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
+  if (options.specializeCores) {
+    pm.addPass(createTTKernelSpecializeCores());
+    pm.addPass(createCanonicalizerPass());
+    pm.addPass(createCSEPass());
+  }
   if (options.lowerToEmitC) {
     pm.addPass(createLowerAffinePass());
     pm.addNestedPass<func::FuncOp>(::mlir::tt::createConvertTTKernelToEmitC());

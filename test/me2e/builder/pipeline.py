@@ -21,6 +21,7 @@ def compile_ttl_to_ttkernel(
     maximize_dst: bool = True,
     accumulation_strategy: str = "auto",
     enable_fpu_binary_ops: bool = True,
+    specialize_cores: bool = False,
 ) -> Module:
     """
     Run the TTL-to-TTKernel pass pipeline on the module.
@@ -33,6 +34,8 @@ def compile_ttl_to_ttkernel(
         maximize_dst: Enable DST maximization (subblocking + scheduling).
         accumulation_strategy: Accumulation storage strategy.
         enable_fpu_binary_ops: Enable FPU binary op detection (add_tiles, etc).
+        specialize_cores: Clone kernels that branch on a core coordinate
+            once per launch coordinate (ttkernel-specialize-cores).
 
     Returns:
         Compiled module with TTKernel/EmitC ops.
@@ -67,6 +70,10 @@ def compile_ttl_to_ttkernel(
         func_passes.append("ttl-schedule-operations")
     func_pipeline = ",".join(func_passes)
 
+    specialize_passes = ""
+    if specialize_cores:
+        specialize_passes = "ttkernel-specialize-cores,canonicalize,cse,"
+
     pipeline_str = (
         f"builtin.module("
         f"func.func({func_pipeline}),"
@@ -81,6 +88,7 @@ def compile_ttl_to_ttkernel(
         f"ttkernel-insert-l1-accumulation,"
         f"canonicalize,"
         f"cse,"
+        f"{specialize_passes}"
         f"lower-affine,"
         f"func.func(convert-ttkernel-to-emitc),"
         f"canonicalize"

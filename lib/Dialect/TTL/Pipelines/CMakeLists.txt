@@ -5,11 +5,11 @@ add_mlir_dialect_library(TTLangTTLPipelines
   ${PROJECT_SOURCE_DIR}/include/ttlang
 
   LINK_LIBS PUBLIC
-  MLIRPass
-  MLIRTransforms
-  MLIRFuncDialect
   MLIRArithDialect
   MLIREmitCTransforms
+  MLIRFuncDialect
+  MLIRPass
+  MLIRTransforms
+  TTLangTTKernelToEmitC
   TTLangTTLTransforms
-  TTMLIRTTKernelToEmitC
 )

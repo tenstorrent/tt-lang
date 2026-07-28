@@ -56,6 +56,16 @@ on:
         type: string
         default: tt-lang-wheels
         required: false
+      ttlang_sha_override:
+        description: "tt-lang SHA/tag to build from. Leave empty to use the caller's ref."
+        type: string
+        default: ""
+        required: false
+      apply_patches:
+        description: "Apply wheel patches from .github/wheel-patches/ before building."
+        type: boolean
+        default: false
+        required: false
 
 permissions:
   contents: read
@@ -74,14 +84,35 @@ jobs:
         shell: bash
 
     steps:
+      - name: Maximize space
+        uses: tenstorrent/tt-github-actions/.github/actions/maximize_space@main
+
       - name: Checkout tt-lang
         uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.ttlang_sha_override || github.sha }}
           fetch-depth: 0
           fetch-tags: true
 
       - name: Fix git safe directory
         run: git config --global --add safe.directory '*'
+
+      # The patch runner and patches come from the workflow commit, not the
+      # (possibly older) target ref being rebuilt, which may predate them.
+      - name: Check out wheel patches from the workflow commit
+        if: ${{ inputs.apply_patches }}
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: .wheel-patch-src
+          sparse-checkout: |
+            .github/scripts/apply-wheel-patches.sh
+            .github/wheel-patches
+          sparse-checkout-cone-mode: false
+
+      - name: Apply wheel patches
+        if: ${{ inputs.apply_patches }}
+        run: .wheel-patch-src/.github/scripts/apply-wheel-patches.sh --target-dir "$GITHUB_WORKSPACE"
 
       - name: Validate wheel inputs and resolve versions
         id: versions
@@ -144,6 +175,12 @@ jobs:
           source /opt/ttlang-toolchain/venv/bin/activate
           python .github/scripts/check-wheel-bundled-payload.py --dist-dir dist
 
+      - name: Free disk space before wheel installation tests
+        run: |
+          rm -rf /tmp/ttlang-prefix build dist-raw .wheel-patch-src
+          python3.12 -m pip cache purge || true
+          df -h
+
       - name: Test tt-lang wheel
         run: |
           python3.12 -m venv /tmp/test-venv-hw
@@ -154,10 +191,11 @@ jobs:
             dist/tt_lang-*.whl
           python .github/scripts/check-installed-ttnn.py --mode "${{ inputs.ttnn_dep_mode }}"
           python .github/scripts/smoke-test-wheel.py
+          command -v tt-triage
 
       - name: Free disk space before remaining wheel tests
         run: |
-          rm -rf /tmp/test-venv-hw /tmp/ttlang-prefix build dist-raw
+          rm -rf /tmp/test-venv-hw
           python3.12 -m pip cache purge || true
           df -h
 

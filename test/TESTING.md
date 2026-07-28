@@ -223,17 +223,37 @@ pytest test/python/
 
 ### Pytest timeouts in CI
 
-`call-test-hardware.yml` and `call-test-dist-tutorials.yml` pass
-`--timeout=60 --timeout-method=signal` to every pytest invocation so a hung
-test exits within ~60 seconds instead of holding the single `n150` runner
-until the 90-minute job timeout. Tests that legitimately need longer should
-set their own `@pytest.mark.timeout(...)` override. Local runs use the
-default (no timeout) unless you pass `--timeout` yourself.
+`call-test-hardware.yml` bounds every pytest run so a hung test cannot hold the
+hardware runner until the job timeout. The simulator step passes
+`--timeout=60 --timeout-method=signal`; the device suites (`test/python`,
+`test/me2e`, `test/tutorial`) run through
+`.github/scripts/run-hardware-pytests.sh`, which passes
+`--timeout=300 --timeout-method=thread` — the thread method interrupts C-level
+device deadlocks that `SIGALRM` cannot. Tests that legitimately need longer set
+their own `@pytest.mark.timeout(...)` override; the tutorial suite raises its
+backstop above the per-script subprocess timeout for this reason. Local runs use
+the default (no timeout) unless you pass `--timeout` yourself.
 
 Middle end-to-end tests (requires ttnn and a TT device or simulator):
 ```bash
 pytest -v test/me2e/
 ```
+
+Tutorial examples on hardware (requires ttnn and a TT device):
+```bash
+pytest test/tutorial/
+```
+
+Each script under `examples/{elementwise-tutorial,matmul-tutorial,tutorial}/`
+runs as one parametrized case that executes it in a fresh subprocess, so a crash
+or device wedge in one tutorial cannot poison the others. On the hardware CI job
+`.github/scripts/run-hardware-pytests.sh` shards single-device tutorials across
+chips and runs mesh tutorials serially with every chip visible. A tutorial that
+opens a device mesh must declare it with a header tag in its first 80 lines:
+`# TTLANG_TUTORIAL_CI: multi-device`, or `# TTLANG_TUTORIAL_CI: requires-multi-device`
+to additionally skip it below two chips. The same tags drive
+`.github/scripts/run-tutorials.sh`, which runs the tutorials serially on the
+single-device dist-container and wheel jobs.
 
 Simulations (software simulation of runtime behavior):
 ```bash
@@ -249,20 +269,38 @@ too slow for the simulator at the default matrix size.
 pytest test/sim/test_examples.py --run-matmul-tutorial-dry -m matmul_tutorial
 ```
 
-### Running with Simulator
+### Running with a simulator
 
-For testing without hardware, set `TT_METAL_SIMULATOR` to enable the TT device
-simulator. This makes the `tt-device` lit feature available and enables
-device-requiring tests:
+Device-requiring tests (`REQUIRES: tt-device`; the me2e suite) can run without
+silicon two ways. In both, `TT_METAL_SIMULATOR` being *set* is what flips the
+`tt-device` gate on -- but they differ in what actually executes the kernel:
 
-```bash
-export TT_METAL_SIMULATOR=1
-```
+- *Functional simulator* -- tt-lang's pure-Python backend (`tt-lang-sim`); no
+  tt-metal, runs on any host. It is driven by its own launcher/targets, not by
+  setting `TT_METAL_SIMULATOR` by hand; see
+  [simulator.md](../docs/sphinx/simulator.md).
+- *Hardware simulator* -- ttsim's `libttsim.so`, which tt-metal loads and runs.
+  Point `TT_METAL_SIMULATOR` at the `.so` (its directory must also hold
+  `soc_descriptor.yaml`), then run pytest/lit as usual:
 
-Then run tests as normal. ME2E tests with simulator:
-```bash
-TT_METAL_SIMULATOR=1 pytest -v test/me2e/
-```
+  ```bash
+  export TT_METAL_SIMULATOR=/path/to/sim/libttsim.so
+  pytest -v test/python/test_bcast_add.py               # a pytest
+  llvm-lit -v build/test/python/dram_interleaved_add.py # a python lit test
+  ```
+
+  pytest runs against the source `test/...`; lit runs against the configured
+  build tree (`build/test/...`, where the generated `lit.site.cfg.py` lives).
+
+`TT_METAL_SIMULATOR` must be a real `.so` path: a bare `TT_METAL_SIMULATOR=1`
+satisfies the gate but then fails at device open
+(`RuntimeError: bad file: 1/soc_descriptor.yaml`). On Linux, get the `.so` from
+[`tenstorrent/ttsim`](https://github.com/tenstorrent/ttsim) releases (e.g.
+`libttsim_wh.so` for x86_64) and copy the matching tt-metal SOC descriptor beside
+it as `soc_descriptor.yaml`. macOS tt-metal is Linux-only, so run the hardware
+simulator in a Lima VM -- see
+[macOS simulator testing](../docs/sphinx/macos-simulator-testing.md), whose
+`vm-install-sim.sh` fetches and stages the `.so` for you.
 
 ## Shell-script unit tests (bats)
 
@@ -354,7 +392,7 @@ TTLANG_KEEP_GENERATED_KERNELS=1 pytest -v test/python/test_uneven_grids.py
 
 | Variable | Description |
 |----------|-------------|
-| `TTLANG_AUTO_PROFILE` | Enable automatic profiling with signposts (requires tt-mlir configured with performance tracing). |
+| `TTLANG_AUTO_PROFILE` | Enable automatic profiling with signposts (requires performance tracing). |
 | `TTLANG_PERF_DUMP` | Print NOC traffic and per-thread wall time summary after kernel execution. Requires `TT_METAL_DEVICE_PROFILER=1` and related Metal env vars. |
 | `TTLANG_PROFILE_CSV` | Path to save profiling data as CSV. |
 

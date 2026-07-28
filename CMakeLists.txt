@@ -165,10 +165,7 @@ include(BuildLLVM)
 include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
 include_directories(SYSTEM ${MLIR_INCLUDE_DIRS})
 
-# ---------------------------------------------------------------------------
-# Minimal tt-mlir build (from submodule)
-# ---------------------------------------------------------------------------
-include(BuildTTMLIRMinimal)
+include(BuildTTLangDialects)
 
 # Detect Python dev packages (Python3, pybind11, nanobind) using MLIR's
 # helpers. Must run after BuildLLVM and before add_subdirectory(python).
@@ -263,9 +260,10 @@ install(DIRECTORY python/sim_stats DESTINATION python_packages
         FILES_MATCHING PATTERN "*.py"
         PATTERN "__pycache__" EXCLUDE)
 
-# Install tt-lang-sim script to bin directory
+# Install command-line scripts to the bin directory.
 install(PROGRAMS "${CMAKE_SOURCE_DIR}/bin/tt-lang-sim" DESTINATION bin)
 install(PROGRAMS "${CMAKE_SOURCE_DIR}/bin/tt-lang-sim-stats" DESTINATION bin)
+install(PROGRAMS "${CMAKE_SOURCE_DIR}/bin/tt-triage" DESTINATION bin)
 
 # ---------------------------------------------------------------------------
 # Configuration summary

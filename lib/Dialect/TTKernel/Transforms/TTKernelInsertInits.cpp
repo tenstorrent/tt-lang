@@ -26,9 +26,9 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
-#include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelTraits.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernelTraits.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -151,12 +151,9 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
     auto reduceOp = cast<ttk::ReduceTileOp>(computeOp);
     Value outputCB = resolveOutputCB(computeOp, kReduceOutputCBIndexAttrName);
     assert(outputCB && "output CB required for reduce_init");
-    auto initOp = ttk::ReduceInitOp::create(
-        b, l, reduceOp.getInCb(), reduceOp.getScalingCb(), outputCB,
-        reduceOp.getReduceTypeAttr(), reduceOp.getReduceDimAttr());
-    if (reduceOp.getFullFp32()) {
-      initOp.setFullFp32(true);
-    }
+    ttk::ReduceInitOp::create(b, l, reduceOp.getInCb(), reduceOp.getScalingCb(),
+                              outputCB, reduceOp.getReduceTypeAttr(),
+                              reduceOp.getReduceDimAttr());
   }};
 
   map[mlir::TypeID::get<ttk::FillTileOp>()] = {
@@ -231,12 +228,9 @@ static InitKey computeInitKey(Operation *op) {
         typeId, {bcast.getInCb()}, static_cast<int64_t>(bcast.getBcastType())};
   }
 
-  // Different full_fp32 modes select a different LLK kernel branch and must
-  // not share an init.
   if (auto reduce = dyn_cast<ttk::ReduceTileOp>(op)) {
     int64_t disc = (static_cast<int64_t>(reduce.getReduceType()) << 16) |
-                   (static_cast<int64_t>(reduce.getReduceDim()) << 8) |
-                   static_cast<int64_t>(reduce.getFullFp32());
+                   static_cast<int64_t>(reduce.getReduceDim());
     return {typeId, {reduce.getInCb(), reduce.getScalingCb()}, disc};
   }
 
@@ -493,11 +487,8 @@ struct TTKernelInsertInitsPass
     auto computeToInit = buildComputeToInitMap();
 
     auto emitReduceUninit = [](OpBuilder &builder, Location loc,
-                               ttk::ReduceTileOp prevReduce) {
-      auto uninit = ttk::ReduceUninitOp::create(builder, loc);
-      if (prevReduce && prevReduce.getFullFp32()) {
-        uninit.setFullFp32(true);
-      }
+                               ttk::ReduceTileOp) {
+      ttk::ReduceUninitOp::create(builder, loc);
     };
 
     auto processOp = [&](Operation &topOp, std::optional<InitKey> &prevKey,
