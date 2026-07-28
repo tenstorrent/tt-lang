@@ -432,7 +432,9 @@ def main() -> int:
         "launched": os.environ.get(LAUNCH_ENV, ""),
     }
 
-    programs = guard(report, "read program registry", lambda: load_programs(directory), [])
+    programs = guard(
+        report, "read program registry", lambda: load_programs(directory), []
+    )
     selected = select_programs(programs)
     manifest["programs_compiled"] = len(programs)
     manifest["programs_selected"] = [p["key"] for p in selected]
@@ -451,13 +453,19 @@ def main() -> int:
         [],
     )
 
-    cache_root = guard(report, "resolve kernel cache", lambda: resolve_cache_root(report))
+    cache_root = guard(
+        report, "resolve kernel cache", lambda: resolve_cache_root(report)
+    )
     manifest["cache_root"] = str(cache_root) if cache_root else None
     elfs = {}
     if cache_root is not None:
-        elfs = guard(report, "find ELFs", lambda: resolve_elfs(selected, cache_root), {})
+        elfs = guard(
+            report, "find ELFs", lambda: resolve_elfs(selected, cache_root), {}
+        )
         manifest["elfs"] = elfs
-        found = ", ".join(f"{risc}:{len(paths)}" for risc, paths in sorted(elfs.items()))
+        found = ", ".join(
+            f"{risc}:{len(paths)}" for risc, paths in sorted(elfs.items())
+        )
         report.say(f"ELFs found: {found or 'none'}")
 
     cores = select_cores(selected)
