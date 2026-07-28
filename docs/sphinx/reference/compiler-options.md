@@ -137,6 +137,7 @@ the symptom of the window being too tight, not a device fault.
 | `TTLANG_HANG_TIMEOUT_SECONDS` | seconds | `5` | Time without *any* dispatch progress that counts as a hang. |
 | `TTLANG_HANG_DIR` | directory | `/tmp/ttlang_hang` | Where the incident is written. |
 | `TTLANG_HANG_DEVICES` | id list | `0` | Devices to sample. Widen with `0,1,2`; a 32-chip sweep takes minutes. |
+| `TTLANG_HANG_KILL` | `0`/`1` | `1` | Stop the hung process once the incident is written, instead of letting it unwind. |
 | `TTLANG_FORCE_REINIT` | `0`/`1` | `1` | Set `TT_METAL_FORCE_REINIT`, which is what makes in-process recovery possible. |
 
 | Mode | Collects | Device after | Exit |
@@ -151,22 +152,31 @@ device whose kernels were killed, so there is nothing useful to continue with.
 Exit `2` means start the next run immediately; exit `3` and
 `/tmp/ttlang_device_dirty` both mean reset first.
 
-### Why `fast` does not close the device
+### Why `fast` stops the process instead of closing the device
 
 On a hung mesh every chip's dispatch cores are stuck waiting on workers that will
-never finish, so a graceful close pays the full timeout *per device*: 32 chips at
+never finish, so closing the device pays the full timeout *per device*: 32 chips at
 a five second window is 160 seconds, worse than the `tt-smi` reset it is trying to
-avoid. It also buys nothing, because tt-metal already catches and discards that
-teardown timeout to keep cleanup going
+avoid, and each one logs a backtrace. It also buys nothing, because tt-metal
+already catches and discards that teardown timeout to keep cleanup going
 (`dispatch_kernel_initializer.cpp:249-251`).
 
-Exiting without closing costs nothing, and the next open re-initializes the device
-under `TT_METAL_FORCE_REINIT`, which resets the RISCs and reloads firmware. Every
-init wait is now bounded by the same window, so a device that genuinely needs a
-reset fails the next open in seconds and says which cores did not come up, instead
-of hanging. `TTLANG_ON_HANG=recover` opts into the close, reopen and smoke test if
-you would rather have tt-lang prove the device is usable and pay the per-chip
-timeout to find out.
+That close is not usually tt-lang's to skip. Dispatch is asynchronous, so the
+timeout normally surfaces in whatever the caller does next, and the exception then
+unwinds through a `finally` or a pytest fixture that closes the device. Python
+cannot preempt a caller's `finally`. The one place that can is the collector, which
+tt-metal runs *before* the throw propagates: it writes the incident, prints where
+everything is, and then stops the hung process. `TTLANG_HANG_KILL=0` leaves the
+process to unwind if you want the close.
+
+Nothing is lost by skipping it. The teardown wait cannot succeed while workers are
+stuck, and the next open re-initializes under `TT_METAL_FORCE_REINIT`, resetting the
+RISCs and reloading firmware. Every init wait is bounded by the same window, so a
+device that genuinely needs a reset fails the next open in seconds and names the
+cores that did not come up, instead of hanging.
+
+`TTLANG_ON_HANG=recover` keeps the process alive and has tt-lang close, reopen and
+smoke test the device, at the cost of that per-chip timeout.
 
 The incident directory holds:
 

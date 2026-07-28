@@ -211,3 +211,25 @@ def test_unbuilt_cache_root_is_reported_not_guessed(clean_env, tmp_path):
 def test_recover_is_a_valid_mode(clean_env):
     clean_env.setenv(hang.MODE_ENV, hang.MODE_RECOVER)
     assert hang.mode() == hang.MODE_RECOVER
+
+
+def test_recover_mode_never_stops_the_process(clean_env):
+    """recover hands the hang to Python, which needs the process alive."""
+    report = hang_collect.Report()
+    assert hang_collect.stop_target(report, hang.MODE_RECOVER) == 0
+
+
+def test_stopping_can_be_turned_off(clean_env):
+    clean_env.setenv(hang_collect.KILL_ENV, "0")
+    report = hang_collect.Report()
+    assert hang_collect.stop_target(report, hang.MODE_FAST) == 0
+    assert hang_collect.KILL_ENV in report.text()
+
+
+@pytest.mark.skipif(not os.path.isdir("/proc"), reason="needs /proc")
+def test_hung_pid_skips_the_shell():
+    """std::system leaves a shell in between, which must not be the target."""
+    pid = hang_collect.hung_pid()
+    assert pid > 0
+    comm = open(f"/proc/{pid}/comm").read().strip()
+    assert comm not in ("sh", "bash", "dash", "zsh")

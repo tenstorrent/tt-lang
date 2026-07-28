@@ -40,6 +40,7 @@ DIR_ENV = "TTLANG_HANG_DIR"
 MODE_ENV = "TTLANG_ON_HANG"
 LAUNCH_ENV = "TTLANG_HANG_LAUNCHES"
 DEVICES_ENV = "TTLANG_HANG_DEVICES"
+KILL_ENV = "TTLANG_HANG_KILL"
 
 MODE_OFF = "off"
 MODE_FAST = "fast"
@@ -187,6 +188,64 @@ def select_cores(programs: list) -> list:
                     if (x, y) not in cores:
                         cores.append((x, y))
     return cores
+
+
+def hung_pid() -> int:
+    """The process to stop: our nearest ancestor that is not the shell.
+
+    ``std::system`` runs ``/bin/sh -c``, which may or may not exec the command in
+    place, so the hung process is one or two levels up. Walking to the first
+    non-shell ancestor finds it either way. Deliberately not passed in through the
+    environment: a forked pytest-xdist worker would inherit its controller's pid
+    and we would stop the wrong process.
+    """
+    pid = os.getppid()
+    for _ in range(4):
+        comm = Path(f"/proc/{pid}/comm").read_text().strip()
+        if comm not in ("sh", "bash", "dash", "zsh"):
+            return pid
+        pid = int(Path(f"/proc/{pid}/stat").read_text().split()[3])
+    return 0
+
+
+def stop_target(report: Report, active_mode: str) -> int:
+    """The pid to stop once everything is on disk, or 0 to leave it alone.
+
+    Deciding and killing are separate so the report can record the decision before
+    the process it describes goes away.
+
+    The unwind is what costs minutes. Whatever closes the device on the way out,
+    a caller's ``finally`` or a pytest fixture, waits the full timeout for every
+    chip's stuck dispatch cores: 32 chips at a 5s window is 160s, and tt-metal
+    discards the result anyway to keep cleanup going. Python cannot preempt a
+    caller's ``finally``, so the only place that can skip it is out here, before
+    the throw propagates.
+
+    SIGKILL rather than SIGTERM because a handled signal still unwinds. The device
+    is left as the hang found it either way: the teardown wait cannot succeed while
+    workers are stuck, and the next open resets the RISCs under FORCE_REINIT.
+    """
+    if active_mode not in (MODE_FAST, MODE_DEEP):
+        return 0
+    if os.environ.get(KILL_ENV, "1") == "0":
+        report.say(f"{KILL_ENV}=0, so the hung process was left to unwind")
+        return 0
+
+    pid = hung_pid()
+    if not pid:
+        report.say("could not identify the hung process, so it was left to unwind")
+        return 0
+
+    comm = Path(f"/proc/{pid}/comm").read_text().strip()
+    if "python" not in comm:
+        report.say(
+            f"nearest non-shell ancestor is {comm} (pid {pid}), not a python "
+            f"process, so it was left alone"
+        )
+        return 0
+
+    report.say(f"stopping the hung process, pid {pid} ({comm}), to skip its unwind")
+    return pid
 
 
 def cache_roots() -> list:
@@ -526,6 +585,11 @@ def main() -> int:
         Path(CB_TABLE_PATH),
     ):
         report.say(f"  {describe_file(path)}")
+
+    target = guard(
+        report, "choose a process to stop", lambda: stop_target(report, active_mode), 0
+    )
+
     try:
         (directory / REPORT_FILE).write_text(report.text())
     except OSError as error:
@@ -538,6 +602,23 @@ def main() -> int:
             f"tt-lang: {len(report.failures)} collection step(s) failed; "
             f"see {REPORT_FILE}"
         )
+    if active_mode == MODE_DEEP:
+        print(
+            "tt-lang: cores were halted to unwind stacks. Reset before the next run."
+        )
+    elif active_mode == MODE_FAST:
+        print(
+            "tt-lang: device left as the hang found it. Just run again; the next "
+            "open resets the RISCs. If that open fails, reset the device."
+        )
+
+    # Last, and only after stdout is flushed: our stdout can be a pipe that process
+    # owns, and everything worth keeping is already on disk.
+    if target:
+        import signal
+
+        sys.stdout.flush()
+        os.kill(target, signal.SIGKILL)
     return 0
 
 
