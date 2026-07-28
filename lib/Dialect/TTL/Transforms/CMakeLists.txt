@@ -1,6 +1,7 @@
 add_mlir_dialect_library(TTLangTTLTransforms
   ConvertTTLToTTKernel.cpp
   DFBAcquireReleaseAnalysis.cpp
+  DFBLogicalIdentityAnalysis.cpp
   DFBMaterialization.cpp
   PipeGraph.cpp
   PipeLowering.cpp
