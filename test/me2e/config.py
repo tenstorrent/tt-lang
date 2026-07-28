@@ -14,6 +14,10 @@ from enum import Enum
 from typing import Tuple
 
 import torch
+from ttl.config import BUILD_DIR
+
+
+ME2E_OUTPUT_ROOT = BUILD_DIR / "test" / "me2e"
 
 ME2E_MAXIMUM_ULP_THRESHOLDS = {
     torch.float32: 2**14,

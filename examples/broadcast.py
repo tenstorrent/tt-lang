@@ -24,13 +24,18 @@ TILE_SIZE = 32
 GRANULARITY = 4
 
 
-@ttl.operation(grid=(8, 8))
+@ttl.operation(grid="full")
 def __demo_kernel(a, b, c, y):
     row_tiles_per_block = GRANULARITY
     col_tiles_per_block = GRANULARITY
+    row_blocks = a.shape[0] // TILE_SIZE // row_tiles_per_block
+    col_blocks = a.shape[1] // TILE_SIZE // col_tiles_per_block
     grid_x, grid_y = ttl.grid_size(dims=2)
-    rows_per_node = a.shape[0] // TILE_SIZE // grid_x // row_tiles_per_block
-    cols_per_node = a.shape[1] // TILE_SIZE // grid_y // col_tiles_per_block
+    # divceil so a grid that does not evenly divide the blocks (e.g. an 8x7
+    # compute grid, where fabric reserves a core row) still covers every block;
+    # the bounds checks below drop the surplus nodes.
+    row_blocks_per_node = -(-row_blocks // grid_x)
+    col_blocks_per_node = -(-col_blocks // grid_y)
     a_dfb = ttl.make_dataflow_buffer_like(
         a, shape=(row_tiles_per_block, col_tiles_per_block), block_count=2
     )
@@ -46,81 +51,91 @@ def __demo_kernel(a, b, c, y):
 
     @ttl.compute()
     def demo_compute():
-        for _ in range(rows_per_node):
-            for _ in range(cols_per_node):
-                with (
-                    a_dfb.wait() as a_blk,
-                    b_dfb.wait() as b_blk,
-                    c_dfb.wait() as c_blk,
-                    y_dfb.reserve() as y_blk,
-                ):
-                    # c_blk has shape (4, 1), broadcast along innermost (cols) to match y_blk
-                    y_blk.store(
-                        a_blk * b_blk
-                        + ttl.block.broadcast(c_blk, dims=[-1], shape=y_blk.shape)
-                    )
+        node_x, node_y = ttl.node(dims=2)
+        for local_row_block in range(row_blocks_per_node):
+            row_block = node_x * row_blocks_per_node + local_row_block
+            if row_block < row_blocks:
+                for local_col_block in range(col_blocks_per_node):
+                    col_block = node_y * col_blocks_per_node + local_col_block
+                    if col_block < col_blocks:
+                        with (
+                            a_dfb.wait() as a_blk,
+                            b_dfb.wait() as b_blk,
+                            c_dfb.wait() as c_blk,
+                            y_dfb.reserve() as y_blk,
+                        ):
+                            y_blk.store(
+                                a_blk * b_blk
+                                + ttl.block.broadcast(
+                                    c_blk, dims=[-1], shape=y_blk.shape
+                                )
+                            )
 
     @ttl.datamovement()
     def demo_read():
         node_x, node_y = ttl.node(dims=2)
-        for node_row in range(rows_per_node):
-            row = node_x * rows_per_node + node_row
-            start_row_tile = row * row_tiles_per_block
-            end_row_tile = (row + 1) * row_tiles_per_block
-            for node_col in range(cols_per_node):
-                col = node_y * cols_per_node + node_col
-                start_col_tile = col * col_tiles_per_block
-                end_col_tile = (col + 1) * col_tiles_per_block
-                with (
-                    a_dfb.reserve() as a_blk,
-                    b_dfb.reserve() as b_blk,
-                    c_dfb.reserve() as c_blk,
-                ):
-                    tx_a = ttl.copy(
-                        a[
-                            start_row_tile:end_row_tile,
-                            start_col_tile:end_col_tile,
-                        ],
-                        a_blk,
-                    )
-                    tx_b = ttl.copy(
-                        b[
-                            start_row_tile:end_row_tile,
-                            start_col_tile:end_col_tile,
-                        ],
-                        b_blk,
-                    )
-                    tx_c = ttl.copy(
-                        c[
-                            start_row_tile:end_row_tile,
-                            0,
-                        ],
-                        c_blk,
-                    )
-                    tx_a.wait()
-                    tx_b.wait()
-                    tx_c.wait()
+        for local_row_block in range(row_blocks_per_node):
+            row_block = node_x * row_blocks_per_node + local_row_block
+            if row_block < row_blocks:
+                start_row_tile = row_block * row_tiles_per_block
+                end_row_tile = (row_block + 1) * row_tiles_per_block
+                for local_col_block in range(col_blocks_per_node):
+                    col_block = node_y * col_blocks_per_node + local_col_block
+                    if col_block < col_blocks:
+                        start_col_tile = col_block * col_tiles_per_block
+                        end_col_tile = (col_block + 1) * col_tiles_per_block
+                        with (
+                            a_dfb.reserve() as a_blk,
+                            b_dfb.reserve() as b_blk,
+                            c_dfb.reserve() as c_blk,
+                        ):
+                            tx_a = ttl.copy(
+                                a[
+                                    start_row_tile:end_row_tile,
+                                    start_col_tile:end_col_tile,
+                                ],
+                                a_blk,
+                            )
+                            tx_b = ttl.copy(
+                                b[
+                                    start_row_tile:end_row_tile,
+                                    start_col_tile:end_col_tile,
+                                ],
+                                b_blk,
+                            )
+                            tx_c = ttl.copy(
+                                c[
+                                    start_row_tile:end_row_tile,
+                                    0,
+                                ],
+                                c_blk,
+                            )
+                            tx_a.wait()
+                            tx_b.wait()
+                            tx_c.wait()
 
     @ttl.datamovement()
     def demo_write():
         node_x, node_y = ttl.node(dims=2)
-        for node_row in range(rows_per_node):
-            row = node_x * rows_per_node + node_row
-            start_row_tile = row * row_tiles_per_block
-            end_row_tile = (row + 1) * row_tiles_per_block
-            for node_col in range(cols_per_node):
-                col = node_y * cols_per_node + node_col
-                start_col_tile = col * col_tiles_per_block
-                end_col_tile = (col + 1) * col_tiles_per_block
-                with y_dfb.wait() as y_blk:
-                    tx = ttl.copy(
-                        y_blk,
-                        y[
-                            start_row_tile:end_row_tile,
-                            start_col_tile:end_col_tile,
-                        ],
-                    )
-                    tx.wait()
+        for local_row_block in range(row_blocks_per_node):
+            row_block = node_x * row_blocks_per_node + local_row_block
+            if row_block < row_blocks:
+                start_row_tile = row_block * row_tiles_per_block
+                end_row_tile = (row_block + 1) * row_tiles_per_block
+                for local_col_block in range(col_blocks_per_node):
+                    col_block = node_y * col_blocks_per_node + local_col_block
+                    if col_block < col_blocks:
+                        start_col_tile = col_block * col_tiles_per_block
+                        end_col_tile = (col_block + 1) * col_tiles_per_block
+                        with y_dfb.wait() as y_blk:
+                            tx = ttl.copy(
+                                y_blk,
+                                y[
+                                    start_row_tile:end_row_tile,
+                                    start_col_tile:end_col_tile,
+                                ],
+                            )
+                            tx.wait()
 
 
 def demo_kernel(a, b, c):

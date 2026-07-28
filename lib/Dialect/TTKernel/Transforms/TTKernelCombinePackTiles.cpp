@@ -11,10 +11,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/Passes.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"

@@ -1,5 +1,7 @@
 add_mlir_library(TTLangCAPI
   Dialects.cpp
+  TTCoreAttrs.cpp
+  TTKernelTypes.cpp
   TTLAttrs.cpp
 
   EXCLUDE_FROM_LIBMLIR
@@ -9,11 +11,33 @@ add_mlir_library(TTLangCAPI
   MLIRTTLOpsAttributesIncGen
 
   LINK_LIBS PUBLIC
+  MLIRAffineDialect
+  MLIRAffineToStandard
+  MLIRArithDialect
   MLIRCAPIIR
-  MLIRIR
-  MLIRSupport
+  MLIRCAPITransforms
+  MLIRControlFlowDialect
+  MLIREmitCDialect
   MLIRFuncDialect
+  MLIRIR
+  MLIRIndexDialect
+  MLIRMathDialect
+  MLIRMemRefDialect
+  MLIRSCFDialect
+  MLIRSupport
+  MLIRTTCoreDialect
+  MLIRTTKernelDialect
   MLIRTTLDialect
-  TTLangTTLTransforms
+  MLIRTransforms
+  MLIRUBDialect
+  TTKernelTargetCpp
+  TTLangTTKernelToEmitC
   TTLangTTLPipelines
+  TTLangTTLTransforms
+)
+
+target_compile_options(TTLangCAPI PRIVATE
+  -Wno-covered-switch-default
+  -Wno-deprecated-declarations
+  -Wno-switch
 )

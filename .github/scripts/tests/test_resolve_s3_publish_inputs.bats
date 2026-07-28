@@ -56,6 +56,7 @@ output_value() {
     assert_equal "$(output_value wheel_variant)" "light"
     assert_equal "$(output_value wheel_variants)" '["light"]'
     assert_equal "$(output_value wheel_matrix)" '{"include":[{"wheel_variant":"light","ttnn_dep_mode":"external"}]}'
+    assert_equal "$(output_value standard_wheel_matrix)" '{"include":[]}'
     assert_output --partial "Using existing docker_tag=mytag"
 }
 
@@ -65,6 +66,7 @@ output_value() {
     assert_equal "$(output_value wheel_variant)" "bundled-and-light"
     assert_equal "$(output_value wheel_variants)" '["bundled","light"]'
     assert_equal "$(output_value wheel_matrix)" '{"include":[{"wheel_variant":"bundled","ttnn_dep_mode":"bundled"},{"wheel_variant":"light","ttnn_dep_mode":"external"}]}'
+    assert_equal "$(output_value standard_wheel_matrix)" '{"include":[{"wheel_variant":"bundled","ttnn_dep_mode":"bundled"}]}'
     assert_output --partial 'Resolved wheel_variants=["bundled","light"]'
 }
 
@@ -87,6 +89,7 @@ output_value() {
     DISPATCH_WHEEL_VARIANT="" EVENT_NAME=schedule run -0 "$SCRIPT"
     assert_equal "$(output_value wheel_variant)" "bundled-and-light"
     assert_equal "$(output_value wheel_variants)" '["bundled","light"]'
+    assert_equal "$(output_value standard_wheel_matrix)" '{"include":[{"wheel_variant":"bundled","ttnn_dep_mode":"bundled"}]}'
 }
 
 @test "schedule event keeps overwrite_releases=true if already set" {
@@ -99,41 +102,9 @@ output_value() {
     assert_equal "$(output_value overwrite_releases)" "false"
 }
 
-@test "stable tag push publishes bundled and light when public PyPI is blocked" {
-    version_file=$(make_tt_metal_version_file \
-        "$TEST_TT_METAL_RC1_TAG" \
-        "$TEST_TT_METAL_NEXT_TAG")
-
-    DISPATCH_VERSION_OVERRIDE="" \
-    DISPATCH_WHEEL_VARIANT="" \
-    EVENT_NAME=push \
-    GITHUB_REF=refs/tags/v1.2.3 \
-    TTLANG_TT_METAL_VERSION_FILE="$version_file" \
-        run -0 "$SCRIPT"
-
-    assert_equal "$(output_value version_override)" "1.2.3"
-    assert_equal "$(output_value wheel_variant)" "bundled-and-light"
-    assert_equal "$(output_value wheel_variants)" '["bundled","light"]'
-    assert_equal "$(output_value overwrite_releases)" "false"
-    assert_equal "$(output_value allow_final_internal_version)" "true"
-}
-
-@test "stable tag push publishes only light when public PyPI is aligned" {
-    version_file=$(make_tt_metal_version_file \
-        "$TEST_TT_METAL_RC2_TAG" \
-        "$TEST_TT_METAL_TAG")
-
-    DISPATCH_VERSION_OVERRIDE="" \
-    DISPATCH_WHEEL_VARIANT="" \
-    EVENT_NAME=push \
-    GITHUB_REF=refs/tags/v1.2.3 \
-    TTLANG_TT_METAL_VERSION_FILE="$version_file" \
-        run -0 "$SCRIPT"
-
-    assert_equal "$(output_value version_override)" "1.2.3"
-    assert_equal "$(output_value wheel_variant)" "light"
-    assert_equal "$(output_value wheel_variants)" '["light"]'
-    assert_equal "$(output_value allow_final_internal_version)" "true"
+@test "push event is rejected" {
+    EVENT_NAME=push run -1 "$SCRIPT"
+    assert_output --partial "S3 PyPI publishing does not run for push events"
 }
 
 @test "stable manual bundled publish is rejected when public PyPI is aligned" {
@@ -150,14 +121,9 @@ output_value() {
     assert_output --partial "Refusing to publish bundled tt-lang==1.2.3 to S3"
 }
 
-@test "push event rejects non-stable tag when version is unset" {
-    DISPATCH_VERSION_OVERRIDE="" \
-    DISPATCH_WHEEL_VARIANT="" \
-    EVENT_NAME=push \
-    GITHUB_REF=refs/tags/v1.2.3-rc1 \
-        run -1 "$SCRIPT"
-
-    assert_output --partial "S3 release-tag publish requires a stable tag"
+@test "unsupported event is rejected" {
+    EVENT_NAME=pull_request run -1 "$SCRIPT"
+    assert_output --partial "Unsupported S3 PyPI publish event: pull_request"
 }
 
 @test "empty version_override invokes compute-nightly-version.py" {
@@ -189,6 +155,7 @@ EOF
     assert_output --partial "version_override=42.42.42.dev20260527"
     assert_output --partial "wheel_variant=bundled"
     assert_output --partial 'wheel_variants=["bundled"]'
+    assert_output --partial 'standard_wheel_matrix={"include":[{"wheel_variant":"bundled","ttnn_dep_mode":"bundled"}]}'
     assert_output --partial "allow_final_internal_version=false"
 }
 

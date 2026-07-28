@@ -4,7 +4,7 @@
 
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "llvm/ADT/STLExtras.h"
 
 namespace mlir::tt::ttl {

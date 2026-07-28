@@ -95,7 +95,7 @@ def tile_index_kernel(lhs, rhs, out):
 # C++ Kernel Checks - Verify correct tile offsets in NOC ops
 # =============================================================================
 
-# CHECK-CPP: // dm_read
+# CHECK-CPP: === dm_read kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 
 # Constants are hoisted to the top of the function
@@ -104,17 +104,20 @@ def tile_index_kernel(lhs, rhs, out):
 # CHECK-CPP: int32_t [[V1:[a-z0-9]+]] = 1;
 
 # First read at tile [0, 1]: offset = 1
-# CHECK-CPP: noc_async_read_tile([[V1]],
+# CHECK-CPP: async_read(
+# CHECK-CPP-SAME: .page_id = static_cast<uint32_t>([[V1]])
 
 # Second read at tile [0, 2]: offset = 2
-# CHECK-CPP: noc_async_read_tile([[V2]],
+# CHECK-CPP: async_read(
+# CHECK-CPP-SAME: .page_id = static_cast<uint32_t>([[V2]])
 
-# CHECK-CPP: // dm_write
+# CHECK-CPP: === dm_write kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 
 # Write at tile [0, 3]: offset = 3
 # CHECK-CPP: int32_t [[V3:[a-z0-9]+]] = 3;
-# CHECK-CPP: noc_async_write_tile([[V3]],
+# CHECK-CPP: async_write(
+# CHECK-CPP-SAME: .page_id = static_cast<uint32_t>([[V3]])
 
 
 if __name__ == "__main__":

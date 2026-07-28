@@ -8,22 +8,37 @@ on:
         required: false
         type: string
         default: 'n150'
+      runner_labels:
+        description: 'JSON array of runner labels, e.g. ["in-service","qb2-blackhole"]'
+        required: false
+        type: string
+        default: '["tt-ubuntu-2204-n150-stable"]'
       timeout:
         description: 'Job timeout in minutes'
         required: false
         type: number
-        default: 90
+        default: 120
       docker_tag:
         description: 'Docker image tag for the ird container.'
         required: true
         type: string
   workflow_call:
     inputs:
+      defer_result_check:
+        description: 'Allow the calling workflow to check the aggregate hardware result.'
+        required: false
+        type: boolean
+        default: false
       runs-on:
         description: 'Hardware type to run on'
         required: false
         type: string
         default: 'n150'
+      runner_labels:
+        description: 'JSON array of runner labels, e.g. ["in-service","qb2-blackhole"]'
+        required: false
+        type: string
+        default: '["tt-ubuntu-2204-n150-stable"]'
       timeout:
         description: 'Job timeout in minutes'
         required: false
@@ -41,8 +56,9 @@ permissions:
 jobs:
   test-n150:
     name: "Hardware Tests (${{ inputs.runs-on }})"
-    runs-on: ${{ format('tt-ubuntu-2204-{0}-stable', inputs.runs-on) }}
+    runs-on: ${{ fromJSON(inputs.runner_labels) }}
     timeout-minutes: ${{ fromJSON(inputs.timeout) }}
+    continue-on-error: ${{ inputs.defer_result_check }}
 
     container:
       image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04:${{ inputs.docker_tag }}
@@ -88,6 +104,7 @@ jobs:
         run: |
           source build/env/activate
           cmake --build build
+          cmake --build build --target ttlang-test-tools
 
       - name: Install test dependencies
         run: |
@@ -112,17 +129,17 @@ jobs:
       - name: Python lit tests
         run: |
           source build/env/activate
-          cmake --build build --target check-ttlang-python-lit
+          .github/scripts/run-hardware-lit.sh build/test/python build/test/python-lit-report
 
       - name: Pytests (Python DSL end-to-end tests)
         run: |
           source build/env/activate
-          python3 -m pytest test/python -v --tb=long --timeout=60 --timeout-method=signal --junitxml=build/test/pytest-report.xml
+          .github/scripts/run-hardware-pytests.sh test/python build/test/pytest-report
 
       - name: ME2E tests (MLIR input end-to-end tests)
         run: |
           source build/env/activate
-          python3 -m pytest test/me2e -v --tb=short --timeout=60 --timeout-method=signal --junitxml=build/test/me2e-report.xml
+          .github/scripts/run-hardware-pytests.sh test/me2e build/test/me2e-report
 
       - name: Hardware compiler example scripts
         run: |
@@ -133,7 +150,7 @@ jobs:
       - name: Tutorial examples
         run: |
           source build/env/activate
-          bash .github/scripts/run-tutorials.sh .
+          .github/scripts/run-hardware-pytests.sh test/tutorial build/test/tutorial-report
 
       - name: Upload test reports
         uses: actions/upload-artifact@v7
@@ -141,7 +158,12 @@ jobs:
         with:
           name: hardware-test-reports-${{ inputs.runs-on }}
           path: |
-            build/test/me2e-report.xml
-            build/test/pytest-report.xml
+            build/test/me2e-report*.xml
+            build/test/python-lit-report*.xml
+            build/test/pytest-report*.xml
             build/test/sim-report.xml
+            build/test/tutorial-report*.xml
           retention-days: 7
+
+      - name: Mark hardware tests complete
+        run: echo "Hardware tests completed successfully."

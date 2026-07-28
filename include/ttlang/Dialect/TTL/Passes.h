@@ -5,7 +5,7 @@
 #ifndef TTLANG_DIALECT_TTL_PASSES_H
 #define TTLANG_DIALECT_TTL_PASSES_H
 
-#include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"

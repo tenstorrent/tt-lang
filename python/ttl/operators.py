@@ -99,6 +99,17 @@ def _get_constant_float(val) -> float:
     return v
 
 
+def _tile_hw(elem_type) -> Optional[Tuple[int, int]]:
+    """Return (H, W) when ``elem_type`` is a TileType, else None."""
+    from ttl.dialects import ttcore
+
+    tile = ttcore.ir.TileType.maybe_downcast(elem_type)
+    if tile is None:
+        return None
+    shape = list(tile.shape)
+    return (int(shape[0]), int(shape[1]))
+
+
 # Type aliases for common patterns
 CoreCoordinate = Tuple[int, int]
 IndexedTensor = Union["TensorBlock", Tuple["TensorBlock", Tuple[int, ...]]]
@@ -196,17 +207,10 @@ class TensorBlock:
         """Matrix multiplication using ttl.matmul.
 
         Computes C[M,N] = A[M,K] * B[K,N]. Both operands must be
-        CB-attached tensors of tiles.
+        CB-attached tensors of tiles. This is sugar for the non-transposed
+        ``ttl.matmul`` free function.
         """
-        lhs_type = ast_self.type
-        rhs_type = rhs.type
-        lhs_shape = list(lhs_type.shape)
-        rhs_shape = list(rhs_type.shape)
-        result_shape = [lhs_shape[0], rhs_shape[1]]
-        result_type = RankedTensorType.get(
-            result_shape, lhs_type.element_type, lhs_type.encoding
-        )
-        return ttl.matmul(result_type, ast_self, rhs)
+        return _build_matmul(ast_self, rhs, transpose_rhs=False)
 
     def __getitem__(ast_self: TensorBlock, indices) -> TensorBlock:
         """Return a tile-granular subview of a DFB-attached block."""
@@ -223,6 +227,12 @@ class TensorBlock:
                 "store() must be called on a block acquired from reserve(), not a regular tensor"
             )
         reserve = _get_reserve_from_block(ast_self)
+        _require_matching_tile_shapes(
+            rhs.type.element_type,
+            reserve.type.element_type,
+            "source",
+            "destination CB",
+        )
         ttl.store(rhs, reserve)
 
     def __iadd__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
@@ -436,11 +446,14 @@ def _is_block(value) -> bool:
     """Check if a value is a block (result of cb.reserve() or cb.wait()).
 
     A block is a tensor with an attached CB, produced by ttl.attach_cb.
+    BlockArguments (e.g. scf.for iter_args) report a `Block` as their
+    owner, not an `Operation`, so they are never blocks in this sense.
     """
     if not hasattr(value, "owner") or value.owner is None:
         return False
-    owner_name = value.owner.name
-    return owner_name == "ttl.attach_cb"
+    if not hasattr(value.owner, "name"):
+        return False
+    return value.owner.name == "ttl.attach_cb"
 
 
 def _get_reserve_from_block(block):
@@ -471,6 +484,28 @@ def _get_cb_shape(cb_val):
     if cb_type is None:
         raise ValueError(f"Expected CircularBufferType, got {cb_val.type}")
     return list(cb_type.shape)
+
+
+def _require_matching_tile_shapes(lhs_elem, rhs_elem, lhs_name: str, rhs_name: str):
+    """Reject copies/stores with inconsistent tilization.
+
+    Both non-tile is allowed. Mixing tile and non-tile, or two different
+    tile shapes, is an error.
+    """
+    lhs = _tile_hw(lhs_elem)
+    rhs = _tile_hw(rhs_elem)
+    if lhs is None and rhs is None:
+        return
+    if lhs is None or rhs is None:
+        raise ValueError(
+            f"cannot mix tiled and non-tiled element types; got "
+            f"{lhs_name}={lhs_elem}, {rhs_name}={rhs_elem}"
+        )
+    if lhs != rhs:
+        raise ValueError(
+            f"{lhs_name} tile shape {lhs[0]}x{lhs[1]} must match "
+            f"{rhs_name} tile shape {rhs[0]}x{rhs[1]}"
+        )
 
 
 def _process_tensor_subscript(subscript_tuple, cb_shape):
@@ -663,10 +698,22 @@ def copy(src, dst) -> CopyTransferHandler:
 
     if dst_is_block and not src_is_block:
         # Read: device tensor/slice -> block (CB)
+        dst_cb_ty = ttl.CircularBufferType.maybe_downcast(dst_cb.type)
+        if dst_cb_ty is None:
+            raise ValueError(f"Expected CircularBufferType, got {dst_cb.type}")
+        _require_matching_tile_shapes(
+            src.type.element_type, dst_cb_ty.element_type, "tensor", "CB"
+        )
         xf_type = Type.parse("!ttl.transfer_handle<read>", ctx)
         return ttl.copy(xf_type, src, dst_cb)
     elif src_is_block and not dst_is_block:
         # Write: block (CB) -> device tensor/slice
+        src_cb_ty = ttl.CircularBufferType.maybe_downcast(src_cb.type)
+        if src_cb_ty is None:
+            raise ValueError(f"Expected CircularBufferType, got {src_cb.type}")
+        _require_matching_tile_shapes(
+            dst.type.element_type, src_cb_ty.element_type, "tensor", "CB"
+        )
         xf_type = Type.parse("!ttl.transfer_handle<write>", ctx)
         return ttl.copy(xf_type, src_cb, dst)
     else:
@@ -704,6 +751,7 @@ def node(*, dims):
     return (ttl.core_x(), ttl.core_y())
 
 
+@syntax("grid_size")
 def grid_size(*, dims):
     """
     Get the size of the grid.
@@ -880,6 +928,69 @@ def reduce_max(input: TensorBlock, *, dims: List[int]) -> TensorBlock:
     To scale the result by a constant, multiply: `c * reduce_max(x, dims=...)`.
     """
     return _reduce_impl(input, dims, reduce_type=1)
+
+
+def _resolve_transpose_flag(val) -> bool:
+    """Resolve a transpose keyword into a Python bool.
+
+    Inside ``@ttl.compute``, ``True``/``False`` literals are lowered to i1
+    ``arith.constant`` SSA values by the AST compiler, so accept either a
+    Python bool (from the default argument) or a constant int/i1 value.
+    """
+    if isinstance(val, bool):
+        return val
+    iv = get_constant_int_value(val)
+    if iv is not None:
+        return bool(iv)
+    raise ValueError("transpose_rhs must be a compile-time boolean constant")
+
+
+def _build_matmul(lhs: TensorBlock, rhs: TensorBlock, *, transpose_rhs: bool):
+    """Build a ttl.matmul op, computing the result shape from the operands.
+
+    For the non-transposed form ``rhs`` is ``[K, N]``; for the transposed
+    form (``transpose_rhs``) ``rhs`` is ``[N, K]`` and the matmul computes
+    ``C[M, N] = A[M, K] * B[N, K]^T``.
+    """
+    transpose = _resolve_transpose_flag(transpose_rhs)
+    lhs_type = lhs.type
+    rhs_type = rhs.type
+    lhs_shape = list(lhs_type.shape)
+    rhs_shape = list(rhs_type.shape)
+    if len(lhs_shape) != 2 or len(rhs_shape) != 2:
+        raise ValueError(
+            f"matmul requires rank-2 operands, got lhs rank {len(lhs_shape)} "
+            f"and rhs rank {len(rhs_shape)}"
+        )
+
+    # K is lhs columns. For transposed rhs [N, K], K is rhs.shape[1] and N is
+    # rhs.shape[0]; otherwise rhs is [K, N], so K is rhs.shape[0] and N is
+    # rhs.shape[1].
+    rhs_k = rhs_shape[1] if transpose else rhs_shape[0]
+    if lhs_shape[1] != rhs_k:
+        raise ValueError(
+            f"matmul K dimension mismatch: lhs has {lhs_shape[1]} columns but "
+            f"rhs has {rhs_k} {'columns' if transpose else 'rows'}"
+        )
+    n = rhs_shape[0] if transpose else rhs_shape[1]
+    result_shape = [lhs_shape[0], n]
+    result_type = RankedTensorType.get(
+        result_shape, lhs_type.element_type, lhs_type.encoding
+    )
+    if transpose:
+        return ttl.matmul(result_type, lhs, rhs, transpose_rhs=True)
+    return ttl.matmul(result_type, lhs, rhs)
+
+
+@syntax("matmul")
+def matmul(lhs: TensorBlock, rhs: TensorBlock, *, transpose_rhs=False) -> TensorBlock:
+    """Matrix multiply two CB-attached tensors of tiles.
+
+    Computes ``C[M, N] = A[M, K] * B[K, N]``. When ``transpose_rhs`` is set,
+    ``rhs`` is provided as ``[N, K]`` and the matmul computes
+    ``C[M, N] = A[M, K] * B[N, K]^T`` using the hardware transpose path.
+    """
+    return _build_matmul(lhs, rhs, transpose_rhs=transpose_rhs)
 
 
 @syntax("transpose")
@@ -1121,6 +1232,7 @@ __all__ = [
     "core",
     "grid_size",
     "signpost",
+    "matmul",
     "fill",
     "typecast",
     "raw_element_read",

@@ -28,7 +28,7 @@ struct TTLToTTKernelPipelineOptions
   Option<bool> useBlockMatmul{
       *this, "use-block-matmul",
       llvm::cl::desc("Lower matmul to block-level hardware calls "
-                     "(experimental::matmul_block) instead of per-tile loops."),
+                     "(matmul_block) instead of per-tile loops."),
       llvm::cl::init(true)};
   Option<bool> subblockSync{
       *this, "subblock-sync",
@@ -54,6 +54,12 @@ struct TTLToTTKernelPipelineOptions
                      "computations. When disabled, emit an error if any "
                      "operation requires a compiler-allocated DFB."),
       llvm::cl::init(true)};
+  Option<bool> specializeCores{
+      *this, "specialize-cores",
+      llvm::cl::desc(
+          "Clone TTKernel functions that branch on a core coordinate once "
+          "per launch coordinate (ttkernel-specialize-cores)."),
+      llvm::cl::init(false)};
 };
 
 void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,

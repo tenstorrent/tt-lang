@@ -1,8 +1,8 @@
 // Integration tests: raw element read/write combined with scalar float
-// comparisons through the full --convert-ttl-to-ttkernel + --ttl-lower-scalar-cmpf
+// comparisons through the full --convert-ttl-to-ttkernel + --ttkernel-lower-scalar-fp-types
 // pipeline. Covers ogt/olt for f32 and bf16, comparisons against constants,
 // and comparisons within loops.
-// RUN: ttlang-opt --convert-ttl-to-ttkernel --ttl-lower-scalar-cmpf --canonicalize -cse --split-input-file %s | FileCheck %s
+// RUN: ttlang-opt --convert-ttl-to-ttkernel --ttkernel-lower-scalar-fp-types --canonicalize -cse --split-input-file %s | FileCheck %s
 
 // -----
 

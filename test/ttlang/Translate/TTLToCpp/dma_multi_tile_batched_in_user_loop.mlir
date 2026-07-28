@@ -14,12 +14,12 @@
 //   for user_iter in 0..3:
 //     for tile_y in 0..2:
 //       for tile_x in 0..2:
-//         noc_async_read_tile(offset, accessor1, ...)
+//         noc0.async_read(offset, accessor1, ...)
 //     for tile_y in 0..2:
 //       for tile_x in 0..2:
-//         noc_async_read_tile(offset, accessor2, ...)
-//     noc_async_read_barrier()
-//     noc_async_read_barrier()
+//         noc0.async_read(offset, accessor2, ...)
+//     noc0.async_read_barrier()
+//     noc0.async_read_barrier()
 //
 // Future optimization: Custom loop fusion pass could merge loops with identical bounds
 // to batch both DMAs in the same tile loop body. MLIR's built-in --affine-loop-fusion
@@ -29,8 +29,8 @@
 #layout = #ttl.layout<shape = [2, 2], element_type = !ttcore.tile<32x32, f32>,
                       buffer = dram, grid = [1, 1], memory = interleaved>
 
-// CHECK-LABEL: // batched_multi_tile_user_loop
-// CHECK: void kernel_main() {
+// CHECK-LABEL: void kernel_main() {
+// CHECK:   Noc noc0(0);
 // CHECK-DAG:   size_t [[TILES_BOUND:v[0-9]+]] = 2;
 // CHECK-DAG:   size_t [[PAGE_SIZE:v[0-9]+]] = 4096;
 // CHECK-DAG:   int32_t [[ADDR:v[0-9]+]] = 4096;
@@ -65,7 +65,7 @@
 // CHECK:         int32_t [[TILE1_OFFSET:v[0-9]+]] = (int32_t) [[TILE1_OFFSET_PTR]];
 // CHECK:         ptrdiff_t [[CB_ADDR1_PTR:v[0-9]+]] = (ptrdiff_t) [[CB_ADDR1_IDX]];
 // CHECK:         int32_t [[CB_ADDR1:v[0-9]+]] = (int32_t) [[CB_ADDR1_PTR]];
-// CHECK:         noc_async_read_tile([[TILE1_OFFSET]], [[ACC1]], [[CB_ADDR1]]);
+// CHECK:         noc0.async_read([[ACC1]], CoreLocalMem<uint32_t>([[CB_ADDR1]]), [[ACC1]].get_aligned_page_size(), {.page_id = static_cast<uint32_t>([[TILE1_OFFSET]])}, {});
 // CHECK:       }
 // CHECK:     }
 
@@ -89,12 +89,12 @@
 // CHECK:         int32_t [[TILE2_OFFSET:v[0-9]+]] = (int32_t) [[TILE2_OFFSET_PTR]];
 // CHECK:         ptrdiff_t [[CB_ADDR2_PTR:v[0-9]+]] = (ptrdiff_t) [[CB_ADDR2_IDX]];
 // CHECK:         int32_t [[CB_ADDR2:v[0-9]+]] = (int32_t) [[CB_ADDR2_PTR]];
-// CHECK:         noc_async_read_tile([[TILE2_OFFSET]], [[ACC2]], [[CB_ADDR2]]);
+// CHECK:         noc0.async_read([[ACC2]], CoreLocalMem<uint32_t>([[CB_ADDR2]]), [[ACC2]].get_aligned_page_size(), {.page_id = static_cast<uint32_t>([[TILE2_OFFSET]])}, {});
 // CHECK:       }
 // CHECK:     }
 
 // Consecutive barriers deduplicated to single barrier.
-// CHECK:     noc.async_read_barrier<Noc::BarrierMode::FULL>();
+// CHECK:     noc0.async_read_barrier();
 // CHECK:   }
 // CHECK:   return;
 // CHECK-NEXT: }

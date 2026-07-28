@@ -7,10 +7,6 @@ Smoke test for TTLANG_EMIT_RUNNER: compile a kernel, emit a runner file,
 import it, and verify it can execute the kernel independently.
 """
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import os
 import importlib.util
 import tempfile

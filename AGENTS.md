@@ -4,7 +4,7 @@
 - **Environment**: `source build/env/activate` (activate virtual environment first, use actual build dir)
 - **Configure**: `cmake -G Ninja -B build`;
   with pre-built LLVM: `cmake -G Ninja -B build -DMLIR_PREFIX=/path/to/llvm-install`;
-  with ttmlir toolchain: `cmake -G Ninja -B build -DTTLANG_USE_TOOLCHAIN=ON`
+  with tt-lang toolchain: `cmake -G Ninja -B build -DTTLANG_USE_TOOLCHAIN=ON`
 - **Build**: `cmake --build build`
 - **Lint**: `pre-commit run --all-files` (includes clang-format, black,
   copyright checks)
@@ -28,6 +28,10 @@
 - **Namespaces**: Lowercase, avoid `using namespace`, no aliases in headers
 - **Error Handling**: Early returns to reduce nesting, no alternative tokens (&&
   not and)
+- **Callback Naming**: Name callbacks by the computation they perform, following
+  upstream MLIR conventions such as `computeUbMinusLb`, not by when they are
+  consulted. Use `ValueEvaluator` / `valueEvaluator` for integer value
+  evaluation callbacks; do not call them fallbacks.
 - **Unicode**: Avoid Unicode characters in code and documentation. Use ASCII
   equivalents instead (e.g., `->` instead of `→`). This ensures compatibility
   across different editors, terminals, and build environments.

@@ -74,7 +74,7 @@ def typecast_kernel(inp, out):
 # C++ Kernel Checks
 # =============================================================================
 
-# CHECK-CPP: // compute_fn
+# CHECK-CPP: === compute_fn kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 
 # init_sfpu uses the input (bf16) and output (f32) CB formats.

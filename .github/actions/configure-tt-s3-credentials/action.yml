@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+# SPDX-License-Identifier: Apache-2.0
+
+# Assume the IAM role that grants access to the tenstorrent-pypi S3 bucket.
+# Single source of truth for the role ARN and region across publish jobs.
+# The calling job must set `permissions: id-token: write`.
+name: Configure tt S3 credentials
+description: Assume GitHubActionsS3AccessRole for the tenstorrent-pypi S3 bucket.
+
+runs:
+  using: composite
+  steps:
+    - uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: arn:aws:iam::767397912691:role/GitHubActionsS3AccessRole
+        aws-region: us-east-2
