@@ -594,3 +594,32 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
     func.return
   }
 }
+
+// -----
+
+// Pipe payload writes require a tile element type because the NoC transfer size
+// is derived from the tile storage size.
+
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @pipe_payload_requires_tile_element_type()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %src = ttl.bind_cb {cb_index = 0, block_count = 1}
+        : !ttl.cb<[1, 1], f32, 1>
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 1}
+        : !ttl.cb<[1, 1], f32, 1>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %recv = ttl.cb_reserve %dst
+        : <[1, 1], f32, 1> -> tensor<1x1xf32>
+    %post = ttl.copy %pipe, %recv
+        : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+           tensor<1x1xf32>)
+        -> !ttl.transfer_handle
+    // expected-error @below {{pipe transfer source DFB element type must be tile}}
+    %send = ttl.copy %src, %pipe
+        : (!ttl.cb<[1, 1], f32, 1>,
+           !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+        -> !ttl.transfer_handle<write>
+    func.return
+  }
+}

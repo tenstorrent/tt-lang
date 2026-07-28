@@ -346,13 +346,13 @@ that can complete the receive.
 
 ## Pipe transfer resource model and TTKernel lowering
 
-Pipe lowering first expands public pipe operations to Pipe Transfer IR:
+Pipe lowering first expands high-level pipe operations to Pipe Transfer IR:
 
 - `ttl.copy(pipe, dst_blk)` expands to `ttl.pipe_transfer.post`.
 - `ttl.copy(src_blk, pipe)` expands to `ttl.pipe_transfer.send`.
 - `ttl.wait` on a pipe receive handle expands to
   `ttl.pipe_transfer.wait`.
-- `ttl.wait` on a pipe send handle remains a public `ttl.wait` until
+- `ttl.wait` on a pipe send handle remains a high-level `ttl.wait` until
   TTKernel conversion, where it is erased because `ttl.pipe_transfer.send`
   has already waited for the payload write and signaled completion.
 
@@ -471,7 +471,8 @@ future typed device APIs should change only the runtime binding
 mechanism, not the IR-level resource model.
 
 The `RA/RP` address-table entry and `RP` sender-ready counter do not
-remain live until the public transfer handle is waited on. They carry
+remain live until the transfer handle returned by `ttl.copy` is waited
+on. They carry
 only pre-send state: the receiver-published DFB address and the count
 proving that the required receivers have posted. After the send resets
 the ready counter and, for `RA/RP`, reads the address-table entry, those
@@ -1527,7 +1528,8 @@ The analyses have non-overlapping responsibilities:
 | DFB acquire/release ownership | Relate reserves, posts, waits, pushes, waits-front, and pops without inferring ownership from lexical proximity. |
 | Pipe rendezvous schedule | Verify one-to-one send/post occurrence counts and the wait-for dependencies of exact receive handles. |
 | `PipeGraph` | Match each send with one post per receiver, connect its endpoints to physical receiver DFBs, and prove endpoint address sequences. |
-| Pipe resource plan | Select protocols and allocate counters, address storage, and sender-local sequence state from graph facts. |
+| Pipe capacity analysis | Prove which receiver endpoints have unambiguous one-block capacity releases. |
+| Pipe module plan | Select protocols and allocate counters, address storage, and sender-local sequence state from analysis facts. |
 
 Synchronization verification and `PipeGraph` share execution-multiplicity
 proofs. The verifier diagnoses invalid occurrence correspondence. `PipeGraph`
