@@ -61,13 +61,13 @@ func.func @sender_uses_published_unicast_address_receiver() attributes { "ttl.ke
 // write and must not advance any receiver DFB.
 // CHECK-LABEL: func.func @sender_uses_published_multicast_addresses
 // CHECK: %[[NOC:.+]] = arith.constant 0 : i8
-// CHECK: ttkernel.experimental.semaphore_wait
-// CHECK-NOT: ttkernel.cb_reserve_back
-// CHECK: %[[SRC_WP:.+]] = ttkernel.get_write_ptr
 // CHECK: %[[DST_X_START:.+]] = ttkernel.experimental.convert_logical_x_to_translated
 // CHECK: %[[DST_Y_START:.+]] = ttkernel.experimental.convert_logical_y_to_translated
 // CHECK: %[[DST_X_END:.+]] = ttkernel.experimental.convert_logical_x_to_translated
 // CHECK: %[[DST_Y_END:.+]] = ttkernel.experimental.convert_logical_y_to_translated
+// CHECK: ttkernel.experimental.semaphore_wait
+// CHECK-NOT: ttkernel.cb_reserve_back
+// CHECK: %[[SRC_WP:.+]] = ttkernel.get_write_ptr
 // CHECK: %[[DST_WP:.+]] = ttkernel.load_from_l1
 // CHECK-NOT: ttkernel.get_noc_multicast_addr({{.*}}, %[[DST_WP]]
 // CHECK: ttkernel.noc_async_write_multicast(%[[SRC_WP]], {{.*}}, {{.*}}, start_xy[%[[DST_X_START]], %[[DST_Y_START]]], end_xy[%[[DST_X_END]], %[[DST_Y_END]]], %[[DST_WP]], noc %[[NOC]])
@@ -169,6 +169,7 @@ func.func @receiver_publishes_reserved_dfb_address_sender() attributes { "ttl.ke
 // CHECK: %[[CTR:.+]] = memref.alloca() : memref<1xi32>
 // CHECK: memref.store {{.*}}, %[[CTR]]
 // CHECK: %[[DST_DFB:.+]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK: %[[DONE_PTR:.+]] = ttkernel.reinterpret_cast
 // CHECK: scf.for
 // CHECK: ttkernel.cb_reserve_back(%[[DST_DFB]]
 // CHECK: %[[DST_ADDR:.+]] = ttkernel.get_write_ptr(%[[DST_DFB]])
@@ -177,7 +178,6 @@ func.func @receiver_publishes_reserved_dfb_address_sender() attributes { "ttl.ke
 // CHECK: memref.load %[[CTR]]
 // CHECK: %[[NEXT:.+]] = arith.addi
 // CHECK: memref.store %[[NEXT]], %[[CTR]]
-// CHECK: %[[DONE_PTR:.+]] = ttkernel.reinterpret_cast
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[DONE_PTR]], %[[NEXT]])
 // CHECK: ttkernel.cb_push_back(%[[DST_DFB]]
 func.func @receiver_advances_wait_counter_inside_loop() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
