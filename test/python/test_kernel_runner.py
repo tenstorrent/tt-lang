@@ -71,12 +71,14 @@ class _FakeTTNN:
             compile_time_args,
             common_runtime_args,
             config,
+            compiler_include_paths=None,
         ):
             self.kernel_source = kernel_source
             self.core_ranges = core_ranges
             self.compile_time_args = compile_time_args
             self.common_runtime_args = common_runtime_args
             self.config = config
+            self.compiler_include_paths = compiler_include_paths or []
 
     class CBFormatDescriptor:
         def __init__(self, buffer_index, data_format, page_size):

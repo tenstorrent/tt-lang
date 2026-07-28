@@ -149,8 +149,13 @@ jobs:
           key: ${{ needs.configure-deps.outputs.cache-key }}
           fail-on-cache-miss: true
 
-      - name: Patch missing runtime artifacts into cached toolchain
-        run: bash scripts/copy-ttmetal-runtime-artifacts.sh third-party/tt-metal /opt/ttlang-toolchain
+      - name: Patch missing runtime artifacts and tt-triage into cached toolchain
+        run: |
+          bash scripts/copy-ttmetal-runtime-artifacts.sh third-party/tt-metal /opt/ttlang-toolchain
+          rm -rf /opt/ttlang-toolchain/tt-metal/tools/triage
+          install -d /opt/ttlang-toolchain/tt-metal/tools
+          cp -a third-party/tt-metal/tools/triage /opt/ttlang-toolchain/tt-metal/tools/
+          install -m 755 bin/tt-triage /opt/ttlang-toolchain/bin/tt-triage
 
       - name: Pull base image
         run: |
@@ -260,6 +265,7 @@ jobs:
             export PATH=/opt/ttlang-toolchain/venv/bin:/opt/ttlang-toolchain/bin:$PATH
             tt-lang-sim --help
             tt-lang-sim-stats --help
+            tt-triage --help
           '
 
       - name: Push dist image to GHCR
@@ -319,6 +325,7 @@ jobs:
             mlir-opt --version
             FileCheck --version
             python3 --version
+            tt-triage --help
           '
 
       - name: Push ird image to GHCR

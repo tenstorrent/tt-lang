@@ -80,7 +80,7 @@ mkrepo() {
         git init -q -b main
         git config user.email t@t
         git config user.name t
-        mkdir -p third-party/llvm-project third-party/tt-metal .github/containers python/sim
+        mkdir -p third-party/llvm-project third-party/tt-metal .github/containers bin python/sim
         # Sourceable shell snippet matching the real third-party/tt-metal-version
         # schema.
         write_tt_metal_version_file third-party/tt-metal-version \
@@ -93,6 +93,7 @@ mkrepo() {
 FROM ubuntu:24.04
 RUN echo "base v1"
 EOF
+        echo "tt-triage launcher" > bin/tt-triage
         echo "greenlet>=3.0.0" > requirements-runtime.txt
         echo "// kernel placeholder" > python/sim/example.py
         git add -A

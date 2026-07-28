@@ -81,12 +81,20 @@ container_input_one_path() {
     container_input_one_path ".github/containers/Dockerfile.base"
 }
 
+@test "container input change in .github/containers/Dockerfile -> -<hash> form" {
+    container_input_one_path ".github/containers/Dockerfile"
+}
+
 @test "container input change in .github/containers/Dockerfile.wheel-manylinux-2-34 -> -<hash> form" {
     container_input_one_path ".github/containers/Dockerfile.wheel-manylinux-2-34"
 }
 
 @test "container input change in requirements-runtime.txt -> -<hash> form" {
     container_input_one_path "requirements-runtime.txt"
+}
+
+@test "container input change in bin/tt-triage -> -<hash> form" {
+    container_input_one_path "bin/tt-triage"
 }
 
 # --- Hash determinism: same content yields same tag ---
@@ -249,6 +257,8 @@ container_input_one_path() {
 #!/bin/bash
 UPLIFT_PATHS=(
     requirements-runtime.txt
+    bin/tt-triage
+    .github/containers/Dockerfile
     .github/containers/Dockerfile.base
     .github/containers/Dockerfile.wheel-manylinux-2-34
     third-party/tt-metal
