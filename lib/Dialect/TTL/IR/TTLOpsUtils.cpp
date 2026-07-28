@@ -9,6 +9,69 @@
 
 namespace mlir::tt::ttl {
 
+FailureOr<int64_t> getDFBId(Value cb) {
+  cb = traceUnrealizedCasts(cb);
+  auto bindOp = cb.getDefiningOp<BindCBOp>();
+  if (!bindOp) {
+    return failure();
+  }
+  auto dfbId = bindOp.getDfbId();
+  if (!dfbId.has_value()) {
+    return failure();
+  }
+  return dfbId->getSExtValue();
+}
+
+LogicalResult verifyResolvedDFBIdentities(ModuleOp moduleOp,
+                                          StringRef consumerPass) {
+  bool hasDFB = false;
+  moduleOp.walk([&](Operation *operation) {
+    hasDFB |=
+        isa<BindCBOp, CBReserveOp, CBPushOp, CBWaitOp, CBPopOp>(operation);
+  });
+  if (!hasDFB) {
+    return success();
+  }
+
+  if (!moduleOp->hasAttr(kDFBAllocationsAttrName)) {
+    moduleOp.emitOpError()
+        << "`" << consumerPass
+        << "` requires finalized DFB allocation metadata; run "
+           "`ttl-finalize-dfb-indices` first";
+    return failure();
+  }
+
+  WalkResult result =
+      moduleOp.walk([&](Operation *nestedOperation) {
+        if (auto bindOp = dyn_cast<BindCBOp>(nestedOperation);
+            bindOp && !bindOp.getDfbId().has_value()) {
+          bindOp.emitOpError()
+              << "`" << consumerPass
+              << "` requires every `ttl.bind_cb` to have `dfb_id` after "
+                 "finalization";
+          return WalkResult::interrupt();
+        }
+
+        if (!isa<CBReserveOp, CBPushOp, CBWaitOp, CBPopOp>(nestedOperation)) {
+          return WalkResult::advance();
+        }
+        for (Value operand : nestedOperation->getOperands()) {
+          if (!isa<CircularBufferType>(operand.getType())) {
+            continue;
+          }
+          if (failed(getDFBId(operand))) {
+            nestedOperation->emitOpError()
+                << "`" << consumerPass
+                << "` requires every DFB lifecycle operand to resolve to "
+                   "`ttl.bind_cb` with `dfb_id` after finalization";
+            return WalkResult::interrupt();
+          }
+        }
+        return WalkResult::advance();
+      });
+  return failure(result.wasInterrupted());
+}
+
 //===----------------------------------------------------------------------===//
 // DST access interface defaults
 //===----------------------------------------------------------------------===//
