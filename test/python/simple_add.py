@@ -70,9 +70,9 @@ def add_kernel(lhs, rhs, out):
 # CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}
 
 # Bind circular buffers (alphabetical order of capture names: lhs_cb, out_cb, rhs_cb)
-# CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
-# CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2
-# CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
+# CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+# CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2, block_count = 2} {dfb_id = 2 : index}
+# CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 1 : index}
 
 # Wait for input CBs
 # CHECK: %[[L:.+]] = ttl.cb_wait %[[CB0]]
@@ -104,8 +104,8 @@ def add_kernel(lhs, rhs, out):
 # CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [0 : i32, 1 : i32], ttl.kernel_thread = #ttkernel.thread<noc>, ttl.noc_index = 0 : i32}
 
 # Bind CBs (alphabetical order: lhs_cb, rhs_cb)
-# CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
-# CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
+# CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+# CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 1 : index}
 
 # First input: reserve, slice, copy, wait, push
 # CHECK: ttl.cb_reserve %[[CB0]]
@@ -126,7 +126,7 @@ def add_kernel(lhs, rhs, out):
 # CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [2 : i32], ttl.kernel_thread = #ttkernel.thread<noc>, ttl.noc_index = 1 : i32}
 
 # Wait for output DFB, slice, copy to device, pop
-# CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2
+# CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2, block_count = 2} {dfb_id = 2 : index}
 # CHECK: ttl.cb_wait %[[CB2]]
 # CHECK: %[[SLICE2:.+]] = ttl.tensor_slice %arg0
 # CHECK: %[[TX:.+]] = ttl.copy %[[CB2]], %[[SLICE2]] : {{.*}} -> !ttl.transfer_handle<write>
