@@ -1575,17 +1575,13 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, ValueOriginAnalysis &analysis,
     }
   }
 
-  llvm::MapVector<PipeSourceKey, SmallVector<PipeCounterInfo>>
-      globalCounterBySourceColor;
+  SmallVector<PipeCounterInfo> globalReadyCounterByColor;
   if (useGlobalReadyCounters) {
-    for (const auto &[sourceKey, readyColors] : readyColorBySourceColor) {
-      SmallVector<PipeCounterInfo> &counters =
-          globalCounterBySourceColor[sourceKey];
-      counters.reserve(readyColors.size());
-      for (std::size_t color = 0, colorCount = readyColors.size();
-           color < colorCount; ++color) {
-        counters.push_back(counterAllocator.allocateGlobal());
-      }
+    // A global semaphore index refers to distinct storage on each source core.
+    // Only counters live on the same source need distinct indices.
+    globalReadyCounterByColor.reserve(maxReadyCountersPerSource);
+    for (int64_t color = 0; color < maxReadyCountersPerSource; ++color) {
+      globalReadyCounterByColor.push_back(counterAllocator.allocateGlobal());
     }
   }
 
@@ -1611,10 +1607,9 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, ValueOriginAnalysis &analysis,
     int64_t readyColor = colorIt->second;
     PipeCounterInfo readyCounter = [&]() {
       if (useGlobalReadyCounters) {
-        auto globalIt = globalCounterBySourceColor.find(sourceKey);
-        assert(globalIt != globalCounterBySourceColor.end());
-        assert(readyColor < static_cast<int64_t>(globalIt->second.size()));
-        return globalIt->second[readyColor];
+        assert(readyColor <
+               static_cast<int64_t>(globalReadyCounterByColor.size()));
+        return globalReadyCounterByColor[readyColor];
       }
       assert(readyColor <
              static_cast<int64_t>(localReadyCounterByColor.size()));
