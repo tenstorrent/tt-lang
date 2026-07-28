@@ -31,6 +31,7 @@ import sys
 from pathlib import Path
 
 from .hang_collect import (
+    DEVICES_ENV,
     DIR_ENV,
     INCIDENT_DIR,
     LAUNCH_ENV,
