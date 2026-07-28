@@ -600,9 +600,9 @@ Job-by-job:
    versions, dependency metadata, and the `manylinux_2_34` platform tag before
    uploading the `tt-lang-wheels` artifact.
 4. **`test-wheels`**: installs the Python 3.12 public wheel and its PyPI `ttnn`
-   dependency in an isolated environment on an `n150` runner, then runs the
-   smoke test and tutorials. It runs during dry runs and must pass before
-   `publish`.
+   dependency in an isolated environment on an `n150` runner, installs the sfpi
+   release recorded by `ttnn`, then runs the smoke test and tutorials. It runs
+   during dry runs and must pass before `publish`.
 5. **`publish`**: runs only for a manual dispatch from `main` when `dry_run` is
    false and `test-wheels` succeeded. Downloads the artifact, verifies
    every wheel filename's version field matches `preflight.outputs.tag_version`,
