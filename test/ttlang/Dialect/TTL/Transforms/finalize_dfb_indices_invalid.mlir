@@ -1,6 +1,6 @@
 // Tests invalid logical identities and physical DFB allocation metadata.
 //
-// RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)'
+// RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false})'
 
 module {
   func.func @bf16_declaration()
