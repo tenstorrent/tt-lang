@@ -18,6 +18,10 @@ FailureOr<PipeTransferCreateOp>
 findPipeTransferCreateForTransfer(ValueOriginAnalysis &analysis,
                                   Value transfer);
 
+/// Return the receive post shared by every possible token origin.
+FailureOr<PipeTransferPostOp>
+findPipeTransferPostForToken(ValueOriginAnalysis &analysis, Value token);
+
 /// Validate non-local transfer, handle, and token provenance.
 LogicalResult verifyTransferProvenance(ModuleOp module);
 LogicalResult verifyTransferProvenance(ModuleOp module,

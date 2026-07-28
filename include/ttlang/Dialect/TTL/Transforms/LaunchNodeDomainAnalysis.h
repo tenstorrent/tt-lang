@@ -21,11 +21,16 @@
 #include "mlir/Analysis/DataFlowFramework.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
+#include "ttlang/Analysis/ExecutionCountAnalysis.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <cstdint>
 #include <functional>
+#include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -91,6 +96,20 @@ LaunchNodeDomain getPipeSourceLaunchNodeDomain(PipeType pipeType);
 /// `pipeType`.
 LaunchNodeDomain getPipeDestinationLaunchNodeDomain(PipeType pipeType);
 
+/// Return the domain containing exactly `coord`.
+LaunchNodeDomain getSingleLaunchNodeDomain(LaunchNodeCoord coord);
+
+/// Return true if two launch-node domains may share at least one node.
+///
+/// Unknown domains are treated as overlapping because callers cannot prove
+/// disjointness from incomplete facts.
+bool launchNodeDomainsOverlap(const LaunchNodeDomain &lhs,
+                              const LaunchNodeDomain &rhs);
+
+/// Return true if `domain` is known and contains `coord`.
+bool knownLaunchNodeDomainContains(const LaunchNodeDomain &domain,
+                                   LaunchNodeCoord coord);
+
 /// Read the PipeNet ids selected by a `ttl.pipenet_scope`.
 bool readPipeNetScopeIds(PipeNetScopeOp scopeOp, SmallVectorImpl<int64_t> &ids);
 
@@ -112,6 +131,12 @@ struct LaunchNodeDomainState {
   llvm::DenseMap<int64_t, LaunchNodeDomain> netDestinationDomains;
   llvm::DenseMap<int64_t, SmallVector<Location>> pipeNetLocs;
   llvm::DenseMap<int64_t, std::string> pipeNetNames;
+  /// Reuse each function-and-coordinate analysis across all operations in the
+  /// function. `ExecutionCountAnalysis` caches block-level results.
+  mutable llvm::DenseMap<
+      Operation *,
+      std::map<LaunchNodeCoord, std::unique_ptr<ExecutionCountAnalysis>>>
+      executionCountAnalysesByFunctionAndCoord;
   bool sawError = false;
   bool hasLaunchGrid = false;
 
@@ -127,6 +152,35 @@ struct LaunchNodeDomainState {
   /// Populate launch-grid and PipeNet role domains from the module.
   void initialize(ModuleOp module);
 };
+
+/// Return the value supplied by launch-node context for a core coordinate or
+/// PipeNet role predicate. PipeNet predicates require `state`.
+std::optional<llvm::APInt>
+evaluateLaunchNodeContextValue(Value value, LaunchNodeCoord coord,
+                               const LaunchNodeDomainState *state = nullptr);
+
+/// Evaluate a predicate at one launch coordinate using PipeNet role domains in
+/// addition to integer constants and core-coordinate expressions.
+std::optional<bool>
+evaluatePredicateAtLaunchNode(Value value, LaunchNodeCoord coord,
+                              const LaunchNodeDomainState &state);
+
+/// Return the exact execution count of `op` at `coord`. Launch-node facts
+/// specialize coordinate and PipeNet predicates before the generic execution
+/// count analysis evaluates the enclosing control flow. Return `std::nullopt`
+/// when the count is not proven.
+std::optional<std::uint64_t>
+getExactExecutionCountAtLaunchNode(Operation *op, LaunchNodeCoord coord,
+                                   const LaunchNodeDomainState &state);
+
+/// Prove that two operations execute equally often at their launch nodes.
+/// Exact counts prove equality directly. Otherwise, the operations must share
+/// the same unresolved control flow with equal control values at both nodes.
+bool proveEqualExecutionCountAtLaunchNodes(Operation *lhs,
+                                           LaunchNodeCoord lhsCoord,
+                                           Operation *rhs,
+                                           LaunchNodeCoord rhsCoord,
+                                           const LaunchNodeDomainState &state);
 
 /// Return the operation with the earlier source location.
 ///

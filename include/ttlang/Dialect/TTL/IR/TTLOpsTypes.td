@@ -58,12 +58,12 @@ def TTL_TransferHandle : TTL_Type<"TransferHandle", "transfer_handle"> {
 }
 
 def TTL_PipeTransfer : TTL_Type<"PipeTransfer", "pipe_transfer"> {
-  let summary = "Pipe transfer contract";
+  let summary = "Pipe transfer reference";
   let description = [{
-    Represents one logical receiver-posted pipe transfer before physical
-    synchronization resources are assigned. The transfer value identifies the
-    source/receiver relation and the point-to-point or collective contract; it
-    is not a TTKernel semaphore, SRAM table, GlobalSemaphore, or DFB slot.
+    Represents a reference used by a pipe send or receiver post. One logical
+    transfer may have distinct reference values when the sender and receiver
+    callbacks declare the pipe independently. The value is not a TTKernel
+    semaphore, SRAM table, GlobalSemaphore, or DFB slot.
   }];
 }
 

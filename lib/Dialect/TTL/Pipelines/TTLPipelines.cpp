@@ -60,6 +60,8 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   {
     TTLConvertTTLToTTKernelOptions ttkOpts;
     ttkOpts.reduceFullFp32 = options.reduceFullFp32;
+    ttkOpts.pipeComputedAddresses = options.pipeComputedAddresses;
+    ttkOpts.pipeCapacitySync = options.pipeCapacitySync;
     pm.addPass(createTTLConvertTTLToTTKernel(ttkOpts));
   }
   pm.addPass(createTTKernelInsertInits());

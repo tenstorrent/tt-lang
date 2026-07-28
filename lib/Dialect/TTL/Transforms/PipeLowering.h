@@ -12,17 +12,15 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/SmallPtrSet.h"
+
+#include <optional>
 
 namespace mlir::tt {
 class ValueOriginAnalysis;
 }
 
 namespace mlir::tt::ttl {
-
-/// Receiver-completion semaphores are indexed by PipeNet id.
-inline int64_t getReceiverCompletionSemIdx(int64_t pipeNetId) {
-  return pipeNetId;
-}
 
 struct PipeInfo {
   PipeType pipeType;
@@ -33,7 +31,34 @@ struct PipeSramAddressTableInfo {
   int64_t byteOffset;
 };
 
+/// Sender-side receiver address formula:
+/// `base + slot(i) * blockStrideBytes + staticTileByteOffset`.
+struct PipeComputedAddressInfo {
+  int64_t receiverDFBIndex = 0;
+  int64_t baseRuntimeCommonArgIndex = 0;
+  /// Initial physical receiver DFB block assigned to this transfer.
+  int64_t initialSlot = 0;
+  /// `slot(i + 1) = (slot(i) + repeatStride) % blockCount`.
+  int64_t repeatStride = 0;
+  int64_t blockCount = 1;
+  int64_t blockStrideBytes = 0;
+  /// Byte offset for the destination tile within the selected DFB block.
+  int64_t staticTileByteOffset = 0;
+  std::optional<int64_t> dynamicSlotCounterIndex;
+
+  /// Return whether the sender must track physical slot progress at runtime.
+  bool usesDynamicSlotCounter() const {
+    return dynamicSlotCounterIndex.has_value();
+  }
+};
+
+enum class PipeAddressMode {
+  ReceiverPublishedAddressTable,
+  ComputedReceiverDFB,
+};
+
 struct PipeResourcePlan;
+class PipeCapacityPlan;
 
 /// Resolved lowering-address form of a ready counter. A GlobalSemaphore counter
 /// resolves to a runtime-arg index because its address is bound at runtime.
@@ -92,31 +117,63 @@ private:
   int64_t index;
 };
 
-struct PipeCompletionWaitInfo {
-  int64_t pipeNetId;
-  int64_t receiverCompletionSemIdx;
+/// Receiver-side completion state for one transfer definition.
+struct PipeCompletionInfo {
+  int64_t semaphoreIndex;
 };
 
-/// Address storage used by one transfer-allocation unit. Each receiver
-/// publishes its DFB write address into the source core's SRAM table before
-/// incrementing the sender-ready counter.
+/// Address storage used by one transfer-allocation unit.
 struct PipeAddressStorageInfo {
-  PipeSramAddressTableInfo sramAddressTable;
+  static PipeAddressStorageInfo
+  receiverPublishedAddressTable(PipeSramAddressTableInfo sramAddressTable) {
+    return PipeAddressStorageInfo{
+        PipeAddressMode::ReceiverPublishedAddressTable, sramAddressTable,
+        std::nullopt};
+  }
+
+  static PipeAddressStorageInfo
+  computedReceiverDFB(PipeComputedAddressInfo computedAddress) {
+    return PipeAddressStorageInfo{PipeAddressMode::ComputedReceiverDFB,
+                                  std::nullopt, computedAddress};
+  }
+
+  bool usesComputedReceiverDFB() const {
+    return mode == PipeAddressMode::ComputedReceiverDFB;
+  }
+
+  PipeAddressMode mode = PipeAddressMode::ReceiverPublishedAddressTable;
+  std::optional<PipeSramAddressTableInfo> sramAddressTable;
+  std::optional<PipeComputedAddressInfo> computedAddress;
 };
 
-/// Lowering information for a set of ttl.pipe_transfer.create ops sharing one
-/// PipeKey. This keeps address storage separate from readiness counting so
-/// physical allocation can choose local semaphores or GlobalSemaphore-backed
-/// counters independently.
+/// Lowering information shared by one transfer definition's send, receiver
+/// posts, and receiver waits.
+/// Address storage and readiness synchronization are independent protocol
+/// choices: computed addresses do not determine which ready counter is used.
 struct PipeResourceInfo {
   PipeKey pipe;
   PipeTransferContract transferContract;
-  PipeReadyCounterInfo readyCounter;
+  PipeCompletionInfo completion;
+  /// Absent when the transfer does not use receiver-post sender readiness.
+  std::optional<PipeReadyCounterInfo> readyCounter;
   PipeAddressStorageInfo addressStorage;
 };
 
-/// Per-function map: pipeNetId -> kernel-local i32 sequence assigned to posts.
-using PipePostSequenceCounterMap =
+/// Per-function map from a semaphore index to its kernel-local cumulative
+/// progress counter.
+using PipeSemaphoreCounterMap =
+    llvm::MapVector<func::FuncOp, llvm::MapVector<int64_t, Value>>;
+
+/// Initial value for one sender-local computed-address slot counter.
+struct PipeComputedAddressCounterInitInfo {
+  int64_t counterIndex = 0;
+  int64_t initialSlot = 0;
+};
+
+/// Per-function map: computed-address slot counter index -> kernel-local i32
+/// counter used by senders whose receiver DFB ring position advances at
+/// runtime.
+using PipeComputedAddressCounterMap =
     llvm::MapVector<func::FuncOp, llvm::MapVector<int64_t, Value>>;
 
 /// pipeNetId -> deduplicated list of pipes in that net. Built once
@@ -128,14 +185,20 @@ struct PipeSramScratchInfo {
   int64_t bytes = 0;
 };
 
-/// Static resource allocation used by pipe lowering. Receiver-completion
-/// semaphore indices are per PipeNet. Sender-ready indices and address-table
-/// offsets are per source core and only need to be unique across concurrently
-/// live transfer intervals.
+/// Static resource allocation used by pipe lowering. Each protocol operation
+/// maps to its transfer-specific completion, readiness, and address resources.
 struct PipeResourcePlan {
   PipeSramScratchInfo sramScratch;
-  llvm::MapVector<int64_t, PipeCompletionWaitInfo> completionWaits;
+  /// Maps each pipe send, receiver post, and receiver wait to the resources
+  /// shared by that transfer definition.
   llvm::MapVector<Operation *, PipeResourceInfo> resources;
+  /// Protocol operations proven unreachable at their pipe endpoint. Lowering
+  /// removes these operations without allocating rendezvous resources.
+  llvm::SmallPtrSet<Operation *, 8> staticallyInactiveOps;
+  /// One entry-block counter preserves slot state across repeated sends from
+  /// the same transfer definition.
+  llvm::MapVector<func::FuncOp, SmallVector<PipeComputedAddressCounterInitInfo>>
+      computedAddressCounterInitializations;
 };
 
 /// Resource totals consumed by TTKernel lowering and runtime setup.
@@ -147,12 +210,14 @@ struct PipeResourceRequirements {
 
 /// Return all pipe resource totals derived from the selected allocation plan.
 PipeResourceRequirements
-getPipeResourceRequirements(const PipeResourcePlan &info);
+getPipeResourceRequirements(const PipeResourcePlan &info,
+                            const PipeCapacityPlan *pipeCapacityPlan = nullptr);
 
 /// Diagnose layouts that exceed the hardware semaphore id limit before
 /// emitting ttkernel.get_semaphore ops with invalid ids.
 LogicalResult
 verifyPipeResourcePlanFitsHardware(ModuleOp mod, const PipeResourcePlan &info,
+                                   const PipeCapacityPlan *pipeCapacityPlan,
                                    const PipeResourceRequirements &reqs);
 
 /// Walk `mod` once and group every pipe transfer by its net id.
@@ -163,29 +228,55 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 /// Build the pipe resource plan used by pipe lowering. Transfer intervals that
 /// cannot be bounded by dominance are conservatively treated as conflicting
 /// with every other transfer interval from the same source core.
-LogicalResult buildPipeResourcePlan(ModuleOp mod, ValueOriginAnalysis &analysis,
-                                    PipeResourcePlan &info);
+LogicalResult
+buildPipeResourcePlan(ModuleOp mod, ValueOriginAnalysis &analysis,
+                      const PipeGraph &pipeGraph, PipeResourcePlan &info,
+                      bool enableComputedAddresses = true,
+                      const PipeCapacityPlan *pipeCapacityPlan = nullptr,
+                      bool updateComputedAddressAttrs = true);
 
-/// At each function entry, emit one zero-initialized `memref<1xi32>` per
-/// pipeNetId used by a pipe receive post.
-void allocatePipePostSequenceCounters(ModuleOp mod,
-                                      ValueOriginAnalysis &analysis,
-                                      PipePostSequenceCounterMap &counters);
+/// Emit sender-side capacity semaphore initial values at kernel entry, and
+/// allocate one zero-initialized `memref<1xi32>` per capacity semaphore that
+/// tracks the sender's cumulative acquired count (keyed by capacity semaphore
+/// index). The sender waits for the capacity semaphore to reach that count, so
+/// the receiver's remote increment stays the only writer of the shared word.
+void initializePipeCapacitySemaphores(
+    const PipeCapacityPlan &pipeCapacityPlan,
+    PipeSemaphoreCounterMap &senderCapacityCounters);
 
-/// Lower the sender-side pipe transfer. Uses receiver-published destination
-/// addresses and signals receiver completion.
-LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
-                                    bool isConsumerCB,
-                                    ValueOriginAnalysis &analysis,
-                                    const PipeResourcePlan &pipeResourcePlan,
-                                    ConversionPatternRewriter &rewriter);
+/// Emit sender-local slot counters for computed receiver addresses whose
+/// physical receiver DFB slot advances at runtime.
+void initializePipeComputedAddressCounters(
+    const PipeResourcePlan &pipeResourcePlan,
+    PipeComputedAddressCounterMap &computedAddressCounters);
 
-/// Lower the receiver-side pipe destination address publication.
+/// At each receiver function entry, emit one zero-initialized sequence counter
+/// for every completion semaphore used by that function.
+void initializePipePostSequenceCounters(
+    const PipeResourcePlan &pipeResourcePlan,
+    PipeSemaphoreCounterMap &postSequenceCounters);
+
+/// Lower the sender-side pipe transfer and signal receiver completion.
+LogicalResult lowerPipeTransferSend(
+    PipeTransferSendOp op, Value srcCB, bool isConsumerCB,
+    ValueOriginAnalysis &analysis, const PipeResourcePlan &pipeResourcePlan,
+    const PipeCapacityPlan *pipeCapacityPlan,
+    const PipeSemaphoreCounterMap *senderCapacityCounters,
+    const PipeComputedAddressCounterMap *computedAddressCounters,
+    ConversionPatternRewriter &rewriter);
+
+/// Lower the receiver-side pipe rendezvous.
 LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
                                     ValueOriginAnalysis &analysis,
-                                    const PipePostSequenceCounterMap &counters,
+                                    const PipeSemaphoreCounterMap &counters,
                                     const PipeResourcePlan &pipeResourcePlan,
+                                    const PipeCapacityPlan *pipeCapacityPlan,
                                     ConversionPatternRewriter &rewriter);
+
+/// Lower a dataflow buffer pop and emit any proven pipe capacity releases.
+LogicalResult lowerCBPop(CBPopOp op, Value cb,
+                         const PipeCapacityPlan *pipeCapacityPlan,
+                         ConversionPatternRewriter &rewriter);
 
 /// Lower the receiver-side pipe receive completion wait.
 LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op, Value tokenSequence,
