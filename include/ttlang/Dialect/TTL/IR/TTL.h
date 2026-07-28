@@ -138,9 +138,8 @@ constexpr llvm::StringLiteral
 /// Placeholder marker on copy_tile (replaced during DST assignment).
 constexpr llvm::StringLiteral kPlaceholderCopyAttrName("ttl.placeholder_copy");
 
-/// Module attribute carrying compiler-allocated DFB metadata.
-constexpr llvm::StringLiteral
-    kCompilerAllocatedDFBsAttrName("ttl.compiler_allocated_dfbs");
+/// Module attribute containing one runtime descriptor per physical DFB index.
+constexpr llvm::StringLiteral kDFBAllocationsAttrName("ttl.dfb_allocations");
 
 /// Module attributes carrying compiler-owned pipe resource allocation.
 constexpr llvm::StringLiteral
