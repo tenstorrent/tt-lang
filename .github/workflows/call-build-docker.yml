@@ -238,6 +238,9 @@ jobs:
             tt-triage --help
           '
 
+      # Push after the ird smoke test so the local image can be removed before
+      # the larger dist build. Keeping it until the dist smoke test would
+      # retain both image layer sets and raise the peak disk requirement.
       - name: Push ird image to GHCR
         if: ${{ inputs.push }}
         run: |

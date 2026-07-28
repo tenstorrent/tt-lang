@@ -59,7 +59,7 @@ fresh_tagged_repo() {
 container_input_one_path() {
     local path_to_change="$1"
     REPO=$(fresh_tagged_repo)
-    echo "modified" >> "$REPO/$path_to_change"
+    modify_repo_path "$REPO" "$path_to_change"
     commit_all "$REPO" "container input $path_to_change"
     run -0 bash -c "cd '$REPO' && .github/containers/get-version-tag.sh"
     [[ "$output" =~ ^v99\.99\.99-[a-f0-9]{8}$ ]]
@@ -101,14 +101,6 @@ container_input_one_path() {
     container_input_one_path "bin/tt-triage"
 }
 
-@test "container input change in build-wheel-manylinux-images.sh -> -<hash> form" {
-    container_input_one_path ".github/containers/build-wheel-manylinux-images.sh"
-}
-
-@test "container input change in cache-wheel-manylinux-component.sh -> -<hash> form" {
-    container_input_one_path ".github/containers/cache-wheel-manylinux-component.sh"
-}
-
 @test "container input change in BuildLLVM.cmake -> -<hash> form" {
     container_input_one_path "cmake/modules/BuildLLVM.cmake"
 }
@@ -119,6 +111,24 @@ container_input_one_path() {
 
 @test "container input change in build-and-install.sh -> -<hash> form" {
     container_input_one_path "scripts/build-and-install.sh"
+}
+
+@test "each UPLIFT_PATHS entry produces hashed tag form" {
+    while IFS= read -r uplift_path; do
+        REPO=$(fresh_tagged_repo)
+        modify_repo_path "$REPO" "$uplift_path"
+        commit_all "$REPO" "container input $uplift_path"
+        run -0 bash -c "cd '$REPO' && .github/containers/get-version-tag.sh"
+        [[ "$output" =~ ^v99\.99\.99-[a-f0-9]{8}$ ]]
+    done < <(list_uplift_paths "$SCRIPTS_DIR/uplift-paths.sh")
+}
+
+@test "wheel-builder driver change does not change shared docker tag" {
+    REPO=$(fresh_tagged_repo)
+    echo "modified" >> "$REPO/.github/containers/build-wheel-manylinux-images.sh"
+    commit_all "$REPO" "wheel builder driver"
+    run -0 bash -c "cd '$REPO' && .github/containers/get-version-tag.sh"
+    assert_output "$BASE_TAG"
 }
 
 # --- Hash determinism: same content yields same tag ---
@@ -278,8 +288,7 @@ container_input_one_path() {
     commit_all "$REPO" "multi-container-input"
     tag_forward=$(get_tag "$REPO")
     mapfile -t reversed_paths < <(
-        bash -c 'source "$1"; printf "%s\n" "${UPLIFT_PATHS[@]}"' \
-            _ "$REPO/.github/scripts/uplift-paths.sh" | tac
+        list_uplift_paths "$REPO/.github/scripts/uplift-paths.sh" | tac
     )
     {
         echo '#!/bin/bash'
@@ -298,5 +307,5 @@ container_input_one_path() {
 UPLIFT_PATHS=()
 EOF
     run -1 bash -c "cd '$REPO' && .github/containers/get-version-tag.sh"
-    assert_output --partial "UPLIFT_PATHS is empty"
+    assert_output --partial "path list is empty"
 }

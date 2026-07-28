@@ -81,6 +81,7 @@ mkrepo() {
         git config user.email t@t
         git config user.name t
         mkdir -p \
+            third-party/patches \
             third-party/llvm-project \
             third-party/tt-metal \
             .github/containers \
@@ -98,7 +99,9 @@ mkrepo() {
             "$TEST_TT_METAL_TAG"
         echo "llvm-content-v1" > third-party/llvm-project/sentinel
         echo "tt-metal-content-v1" > third-party/tt-metal/sentinel
+        echo "patch-content-v1" > third-party/patches/sentinel
         echo "cmake_minimum_required(VERSION 3.28)" > CMakeLists.txt
+        echo "build/" > .dockerignore
         cat > .github/containers/Dockerfile.base <<'EOF'
 FROM ubuntu:24.04
 RUN echo "base v1"
@@ -154,4 +157,22 @@ commit_all() {
     local repo="$1"
     local msg="$2"
     (cd "$repo" && git add -A && git commit -q -m "$msg")
+}
+
+list_uplift_paths() {
+    bash -c 'source "$1"; printf "%s\n" "${UPLIFT_PATHS[@]}"' \
+        _ "$1"
+}
+
+modify_repo_path() {
+    local repo="$1"
+    local path_to_change="$2"
+    local target="$repo/$path_to_change"
+
+    if [ -d "$target" ]; then
+        echo "modified" >> "$target/sentinel"
+    else
+        mkdir -p "$(dirname "$target")"
+        echo "modified" >> "$target"
+    fi
 }
