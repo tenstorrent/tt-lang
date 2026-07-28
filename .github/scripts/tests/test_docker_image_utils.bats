@@ -22,6 +22,24 @@ EOF
     export DOCKER="$MOCK_DOCKER"
 }
 
+@test "ttlang_validate_docker_tag accepts the registry tag grammar" {
+    run bash -c "source '$LIB'; ttlang_validate_docker_tag 'v1.2.3_rc1-build'"
+
+    assert_success
+}
+
+@test "ttlang_validate_docker_tag rejects unsafe and oversized values" {
+    run bash -c "source '$LIB'; ttlang_validate_docker_tag 'bad/tag'"
+    assert_failure
+
+    run bash -c "source '$LIB'; ttlang_validate_docker_tag '-bad'"
+    assert_failure
+
+    long_tag="$(printf 'a%.0s' {1..129})"
+    run bash -c "source '$LIB'; ttlang_validate_docker_tag '$long_tag'"
+    assert_failure
+}
+
 @test "ttlang_image_for_tag prefers a local image when it exists" {
     write_mock_docker 0
 
@@ -81,6 +99,20 @@ EOF
 
     assert_failure
     assert_output --partial "Usage: ttlang_wheel_builder_image"
+}
+
+@test "ttlang_wheel_builder_registry_image uses an explicit registry" {
+    run bash -c "source '$LIB'; ttlang_wheel_builder_registry_image cp312 some-tag ghcr.io/example/project"
+
+    assert_success
+    assert_output "ghcr.io/example/project/tt-lang-wheel-manylinux-2-34-cp312:some-tag"
+}
+
+@test "ttlang_wheel_builder_registry_image rejects unsupported Python tags" {
+    run bash -c "source '$LIB'; ttlang_wheel_builder_registry_image cp311 some-tag"
+
+    assert_failure
+    assert_output --partial "Unsupported Python tag: cp311"
 }
 
 @test "ttlang_python_tags validates and lists every requested tag" {
