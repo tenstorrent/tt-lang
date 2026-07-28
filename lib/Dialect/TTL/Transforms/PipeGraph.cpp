@@ -96,11 +96,7 @@ static LaunchNodeCoord getLaunchNodeCoord(PipeReceiverCoord receiver) {
 }
 
 static DeviceRefAttr getReceiverDevice(PipeTransferCreateOp transferCreate) {
-  auto createPipe = transferCreate.getPipe().getDefiningOp<CreatePipeOp>();
-  if (!createPipe) {
-    return {};
-  }
-  DeviceTransferAttr transfer = createPipe.getDeviceTransferAttr();
+  DeviceTransferAttr transfer = transferCreate.getDeviceTransferAttr();
   return transfer ? transfer.getEdge().getDestination() : DeviceRefAttr();
 }
 
@@ -1343,6 +1339,8 @@ PipeGraph::rebuildEndpointGraph(ValueOriginAnalysis &analysis,
       }
       PipeTransferContract transferContract =
           getPipeTransferContract(*maybeSendCreate);
+      DeviceTransferAttr deviceTransfer =
+          maybeSendCreate->getDeviceTransferAttr();
       for (const auto &endpoint : endpointsBySend[sendIndex]) {
         PipeTransferPostOp postOp = endpoint.second;
         FailureOr<PipeTransferCreateOp> maybePostCreate =
@@ -1358,12 +1356,20 @@ PipeGraph::rebuildEndpointGraph(ValueOriginAnalysis &analysis,
               "pipe send and receiver post use different transfer contracts");
           return failure();
         }
+        if (maybePostCreate->getDeviceTransferAttr() != deviceTransfer) {
+          auto diagnostic = postOp.emitError(
+              "pipe send and receiver post use different device transfers");
+          diagnostic.attachNote(sendOp.getLoc())
+              << "corresponding pipe send is here";
+          return failure();
+        }
       }
 
       PipeTransferNodeId transferNodeId = pipeTransferNodes.size();
       pipeTransferNodes.push_back(PipeTransferNode{transferNodeId,
                                                    pipeKey,
                                                    transferContract,
+                                                   deviceTransfer,
                                                    sendOp.getOperation(),
                                                    {},
                                                    {}});

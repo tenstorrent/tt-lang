@@ -164,8 +164,9 @@ def TTLConvertTTLToTTKernel
   let description = [{
     Converts TTL DFB, copy, wait, and PipeNet operations to TTKernel DFB, NoC,
     and semaphore operations. PipeNet lowering selects receiver-published or
-    computed destination addresses and receiver-post or capacity-counter
-    synchronization according to the pass options and transfer eligibility.
+    computed destination addresses and receiver-post, capacity-counter, or
+    fabric synchronization according to the pass options, transfer eligibility,
+    and logical-device transfer.
   }];
 
   let options = [

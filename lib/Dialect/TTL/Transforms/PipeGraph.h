@@ -210,12 +210,13 @@ struct ReceiverAddressSequenceProof {
 
 /// One transfer definition: one send and its corresponding receiver posts.
 /// The sender and receiver operations may reference distinct
-/// `ttl.pipe_transfer.create` declarations; those declarations do not define
-/// transfer identity.
+/// `ttl.pipe_transfer.create` declarations. The graph verifies and records
+/// their common transfer contract and logical-device transfer.
 struct PipeTransferNode {
   PipeTransferNodeId id = 0;
   PipeKey pipe;
   PipeTransferContract transferContract = PipeTransferContract::PointToPoint;
+  DeviceTransferAttr deviceTransfer;
   Operation *sendOp = nullptr;
   SmallVector<Operation *> receiverPostOps;
   SmallVector<PipeReceiverEndpointId> receiverEndpoints;
