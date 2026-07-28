@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Hang detection, reporting and fast device recovery.
+"""Hang detection: arm tt-metal's timeout, and record what a collector will need.
 
 tt-metal already has the hard part: its dispatch waits are progress-gated against
 a device-side counter of dispatch commands completed, so a queue that is still
@@ -16,38 +16,31 @@ exactly like a hang. Host-side work such as JIT compilation is outside the guard
 waits entirely, so it neither counts as progress nor consumes the window.
 
 tt-lang arms it and points it at ``ttl/hang_collect.py``, which tt-metal runs
-synchronously inside the hung process before it throws. This module handles what
-happens after that throw: report where the evidence is, and exit with a code that
-says whether the next run can start immediately or needs a reset first.
+synchronously inside the hung process, before it throws. That collector reads PCs
+and symbolizes them without halting anything, writes an incident directory, and
+says where it is. Then tt-metal's throw propagates as it always would.
 
-Exiting is deliberate. A dispatch timeout leaves the process holding tensors on a
-device whose kernels were killed, so there is nothing useful to continue with.
-What the default mode does *not* do is close the device: see _FAST_EXPLANATION for
-why a graceful close is a net loss on a hung mesh.
+Nothing here touches the device or the process. Inspecting the incident, killing
+the process and resetting the device are all the caller's calls to make, on the
+evidence the collector left behind.
 """
 
 import json
 import os
 import sys
-import threading
 from pathlib import Path
 
 from .hang_collect import (
-    DEVICES_ENV,
     DIR_ENV,
-    DIRTY_SENTINEL,
     INCIDENT_DIR,
     LAUNCH_ENV,
-    MODE_DEEP,
     MODE_ENV,
-    MODE_FAST,
     MODE_OFF,
-    MODE_RECOVER,
+    MODE_ON,
     MODES,
-    RETIRED_MODES,
     PROGRAMS_FILE,
+    RETIRED_MODES,
     incident_dir,
-    mark_device_dirty,
     utc_stamp,
 )
 
@@ -60,58 +53,28 @@ FORCE_REINIT_ENV = "TTLANG_FORCE_REINIT"
 # configure_metal_env before lowering it further.
 DEFAULT_TIMEOUT_SECONDS = 5.0
 
-EXIT_RUN_AGAIN = 2
-EXIT_RESET_REQUIRED = 3
-
-# Why fast mode does not close the device. On a hung mesh every chip's dispatch
-# cores are stuck waiting on workers that will not finish, so a graceful close
-# pays the full timeout per device: 32 chips at a 5s window is 160s, worse than
-# the tt-smi reset it is trying to avoid, and it buys nothing because tt-metal
-# already catches and ignores that timeout during teardown. Exiting without
-# closing costs nothing, and the next open re-initializes under FORCE_REINIT with
-# every init wait bounded by the same window, so a device that really is wedged
-# now fails in seconds instead of hanging.
-_FAST_EXPLANATION = (
-    "Device left as it was found; no close was attempted, because on a hung mesh",
-    "every chip's dispatch cores are stuck and a graceful close costs the full",
-    "timeout per chip while tt-metal discards the result anyway.",
-    "",
-    "Just run again. The next open re-initializes the device (FORCE_REINIT) and",
-    "resets the RISCs, and every init wait is bounded by the hang window, so if",
-    "the device really needs a reset the next open fails in seconds and says so.",
-    f"Use {MODE_ENV}={MODE_RECOVER} to have tt-lang close, reopen and smoke test",
-    "instead, at the cost of that per-chip timeout.",
-)
-
-# Recovery itself can wedge (a teardown that waits on the same dead core). A
-# deadline keeps the worst case bounded, which is the whole point of the feature.
-RECOVERY_DEADLINE_SECONDS = 180.0
-
 # Only the last few launches are worth symbolizing against, and the ring is a
 # heuristic anyway: dispatch is asynchronous, so the device may be behind.
 LAUNCH_RING = 8
 
-RECOVERY_FILE = "recovery.txt"
-
 _launch_ring: list = []
 _registry_started = False
-_last_device = None
 
 
 def mode() -> str:
     """The configured hang mode, validated."""
-    value = os.environ.get(MODE_ENV, MODE_DEEP).strip().lower()
+    value = os.environ.get(MODE_ENV, MODE_ON).strip().lower()
     if value in RETIRED_MODES:
         raise NotImplementedError(
-            f"{MODE_ENV}={value} is not implemented. '{MODE_FAST}' left the device "
-            f"hung, and recovering it in process is tt-smi's job. Use "
-            f"'{MODE_DEEP}' (the default) or '{MODE_OFF}'."
+            f"{MODE_ENV}={value} is no longer a mode. Collection is halt-free and "
+            f"acts on nothing: it reports the hang and leaves the process and the "
+            f"device to you. Use '{MODE_ON}' (the default) or '{MODE_OFF}'."
         )
     if value not in MODES:
         raise ValueError(
             f"{MODE_ENV}={value!r} is not one of {', '.join(MODES)}. "
-            f"'{MODE_OFF}' restores tt-metal's default of waiting forever, "
-            f"'{MODE_DEEP}' unwinds real stack frames and forfeits the device."
+            f"'{MODE_ON}' reports a dispatch timeout and collects stacks, "
+            f"'{MODE_OFF}' restores tt-metal's default of waiting forever."
         )
     return value
 
@@ -131,9 +94,9 @@ def timeout_seconds() -> float:
 
 
 def configure_metal_env() -> None:
-    """Arm tt-metal's timeout and recovery before the first device open.
+    """Arm tt-metal's timeout and collector before the first device open.
 
-    These three are env-only: tt-metal reads them once when RunTimeOptions is
+    These are env-only: tt-metal reads them once when RunTimeOptions is
     constructed, at the first device open, and exposes no setter. setdefault
     throughout, so an explicitly set tt-metal variable always wins.
 
@@ -217,190 +180,3 @@ def note_launch(key: str) -> None:
     _launch_ring.append(key)
     del _launch_ring[:-LAUNCH_RING]
     os.environ[LAUNCH_ENV] = ",".join(_launch_ring)
-
-
-def note_device(device) -> None:
-    """Remember the device a kernel was launched on, so recovery can reopen it."""
-    global _last_device
-    _last_device = device
-
-
-def is_dispatch_timeout(error: BaseException) -> bool:
-    """True for the two tt-metal dispatch-timeout throws.
-
-    Matched on the message because tt-metal raises a plain RuntimeError for
-    everything; both sites start with "TIMEOUT:".
-    """
-    return "TIMEOUT:" in str(error) and "potential hang detected" in str(error)
-
-
-def handle_hang(error: BaseException, device=None):
-    """Report a dispatch timeout, try to hand back a clean device, and exit.
-
-    Never returns, and never raises: replacing a hang report with a traceback
-    about the reporter would leave the user with strictly less than they had.
-    """
-    try:
-        _handle_hang(error, device)
-    except BaseException as reporter_error:
-        sys.stderr.write(
-            f"tt-lang: hang handling itself failed with {reporter_error!r}. "
-            f"FULL DEVICE RESET REQUIRED.\n"
-        )
-        sys.stderr.flush()
-        os._exit(EXIT_RESET_REQUIRED)
-
-
-def _handle_hang(error: BaseException, device=None):
-    active_mode = mode()
-    directory = incident_dir()
-    lines = [
-        f"tt-lang hang recovery, {utc_stamp()}",
-        f"  mode      {active_mode}",
-        f"  pid       {os.getpid()}",
-        f"  error     {error}",
-        "",
-    ]
-
-    if active_mode == MODE_DEEP:
-        mark_device_dirty("deep hang collection halted cores")
-        lines.append("Deep mode halted cores to unwind stacks, so no recovery was")
-        lines.append("attempted. FULL DEVICE RESET REQUIRED before the next run.")
-        _finish(directory, lines, EXIT_RESET_REQUIRED)
-
-    if active_mode == MODE_FAST:
-        lines.extend(_FAST_EXPLANATION)
-        _finish(directory, lines, EXIT_RUN_AGAIN)
-
-    target = device if device is not None else _last_device
-    if target is None:
-        mark_device_dirty("no device handle available for recovery")
-        lines.append("No device handle was available, so recovery was not attempted.")
-        lines.append("FULL DEVICE RESET REQUIRED before the next run.")
-        _finish(directory, lines, EXIT_RESET_REQUIRED)
-
-    _arm_deadline()
-    try:
-        _recover(target, lines)
-    except Exception as recovery_error:
-        lines.append(
-            f"  recovery failed: "
-            f"{type(recovery_error).__name__}: {recovery_error}"
-        )
-        mark_device_dirty(f"recovery failed: {recovery_error}")
-        lines.append("FULL DEVICE RESET REQUIRED before the next run.")
-        _finish(directory, lines, EXIT_RESET_REQUIRED)
-
-    _clear_dirty()
-    lines.append("Device closed, reopened and smoke tested. Safe to run again.")
-    _finish(directory, lines, EXIT_RUN_AGAIN)
-
-
-def _recover(device, lines: list) -> None:
-    """Close, reopen and prove the device can run a program again.
-
-    Reopened with default parameters rather than the caller's: the reopened
-    device only has to pass the smoke test before we exit, and a parameter
-    mismatch just costs one extra teardown inside tt-metal.
-    """
-    import ttnn
-
-    is_mesh = isinstance(device, ttnn.MeshDevice)
-    lines.append(f"  closing {'mesh ' if is_mesh else ''}device")
-    if is_mesh:
-        shape = device.shape
-        ttnn.close_mesh_device(device)
-        fresh = ttnn.open_mesh_device(mesh_shape=shape)
-        close = ttnn.close_mesh_device
-    else:
-        device_id = device.id()
-        ttnn.close_device(device)
-        fresh = ttnn.open_device(device_id=device_id)
-        close = ttnn.close_device
-    lines.append("  reopened")
-
-    try:
-        _smoke_test(fresh, is_mesh)
-        lines.append("  smoke test passed")
-    finally:
-        close(fresh)
-    lines.append("  closed")
-
-
-def _smoke_test(device, is_mesh: bool) -> None:
-    """Run one real program end to end.
-
-    Firmware coming back proves the RISCs were reset; it does not prove dispatch,
-    the command queue or fabric still work. Only launching something does. This
-    is a ttnn op rather than a tt-lang kernel so that recovery never depends on
-    the compiler, which is a lot of machinery to lean on while cleaning up.
-    """
-    import torch
-    import ttnn
-
-    expected = 4.0
-    host = torch.full((32, 32), expected / 2, dtype=torch.bfloat16)
-    kwargs = {"dtype": ttnn.bfloat16, "layout": ttnn.TILE_LAYOUT, "device": device}
-    if is_mesh:
-        kwargs["mesh_mapper"] = ttnn.ReplicateTensorToMesh(device)
-    operand = ttnn.from_torch(host, **kwargs)
-    result = ttnn.add(operand, operand)
-    if is_mesh:
-        out = ttnn.to_torch(
-            result, mesh_composer=ttnn.ConcatMeshToTensor(device, dim=0)
-        )
-    else:
-        out = ttnn.to_torch(result)
-    if not torch.allclose(out.float(), torch.full(out.shape, expected), atol=0.1):
-        saw = out.float().flatten()[:4].tolist()
-        raise RuntimeError(f"smoke test produced {saw}, expected {expected}")
-
-
-def _arm_deadline() -> None:
-    """Force an exit if recovery itself wedges."""
-
-    def expire():
-        sys.stderr.write(
-            f"tt-lang: hang recovery exceeded {RECOVERY_DEADLINE_SECONDS}s, "
-            f"giving up. FULL DEVICE RESET REQUIRED.\n"
-        )
-        sys.stderr.flush()
-        mark_device_dirty("recovery exceeded its deadline")
-        os._exit(EXIT_RESET_REQUIRED)
-
-    timer = threading.Timer(RECOVERY_DEADLINE_SECONDS, expire)
-    timer.daemon = True
-    timer.start()
-
-
-def _clear_dirty() -> None:
-    try:
-        os.unlink(DIRTY_SENTINEL)
-    except FileNotFoundError:
-        pass
-
-
-def _finish(directory: Path, lines: list, code: int):
-    """Write the recovery record, say where everything is, and exit."""
-    verdict = "run again" if code == EXIT_RUN_AGAIN else "reset required"
-    lines.append("")
-    lines.append(f"incident directory {directory}")
-    lines.append(f"exit code {code} ({verdict})")
-    text = "\n".join(lines) + "\n"
-    try:
-        (directory / RECOVERY_FILE).write_text(text)
-    except OSError:
-        pass
-    # The tt-metal variable, not ours: it is the value actually in force, and it
-    # is readable even if someone edited the tt-lang variable mid-run.
-    window = os.environ.get("TT_METAL_OPERATION_TIMEOUT_SECONDS", "unset")
-    sys.stderr.write("\n" + text)
-    sys.stderr.write(
-        f"tt-lang: dispatch timeout after {window}s without progress. "
-        f"Set {MODE_ENV}={MODE_OFF} to wait forever instead, "
-        f"{TIMEOUT_ENV} to change the window, "
-        f"or {DEVICES_ENV} to sample more chips.\n"
-    )
-    sys.stderr.flush()
-    sys.stdout.flush()
-    os._exit(code)

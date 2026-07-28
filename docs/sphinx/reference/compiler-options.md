@@ -133,50 +133,28 @@ the symptom of the window being too tight, not a device fault.
 
 | Variable | Type | Default | Description |
 |---|---|---|---|
-| `TTLANG_ON_HANG` | `off`/`fast`/`recover`/`deep` | `fast` | What to do on a dispatch timeout. |
+| `TTLANG_ON_HANG` | `off`/`on` | `on` | Whether a dispatch timeout is detected and collected. |
 | `TTLANG_HANG_TIMEOUT_SECONDS` | seconds | `5` | Time without *any* dispatch progress that counts as a hang. |
 | `TTLANG_HANG_DIR` | directory | `/tmp/ttlang_hang` | Where the incident is written. |
 | `TTLANG_HANG_DEVICES` | id list | `0` | Devices to sample. Widen with `0,1,2`; a 32-chip sweep takes minutes. |
-| `TTLANG_HANG_KILL` | `0`/`1` | `1` | Stop the hung process once the incident is written, instead of letting it unwind. |
-| `TTLANG_FORCE_REINIT` | `0`/`1` | `1` | Set `TT_METAL_FORCE_REINIT`, which is what makes in-process recovery possible. |
+| `TTLANG_FORCE_REINIT` | `0`/`1` | `1` | Set `TT_METAL_FORCE_REINIT`, so the next device open resets the RISCs. |
 
-| Mode | Collects | Device after | Exit |
-|---|---|---|---|
-| `off` | nothing | hung | tt-metal waits forever, as it does without tt-lang |
-| `fast` | PC per RISC, motion verdict, inlined frames | left as found, not closed | `2` run again |
-| `recover` | same | closed, reopened, smoke tested | `2` run again, `3` reset required |
-| `deep` | also real unwound frames | forfeited: halting is terminal on Blackhole | `3` |
+`on` reports the hang and collects; `off` restores tt-metal's default of waiting
+forever.
 
-Every mode exits the process. After a timeout the process holds tensors on a
-device whose kernels were killed, so there is nothing useful to continue with.
-Exit `2` means start the next run immediately; exit `3` and
-`/tmp/ttlang_device_dirty` both mean reset first.
+Collection **acts on nothing**. It reads every PC off the debug bus and resolves
+frames from DWARF, so no core is halted, the process is not stopped, and the device
+is left exactly as the hang found it. tt-metal's timeout then throws as it always
+would. Inspecting the incident, killing the process and resetting the device are
+yours to decide, in that order.
 
-### Why `fast` stops the process instead of closing the device
-
-On a hung mesh every chip's dispatch cores are stuck waiting on workers that will
-never finish, so closing the device pays the full timeout *per device*: 32 chips at
-a five second window is 160 seconds, worse than the `tt-smi` reset it is trying to
-avoid, and each one logs a backtrace. It also buys nothing, because tt-metal
-already catches and discards that teardown timeout to keep cleanup going
-(`dispatch_kernel_initializer.cpp:249-251`).
-
-That close is not usually tt-lang's to skip. Dispatch is asynchronous, so the
-timeout normally surfaces in whatever the caller does next, and the exception then
-unwinds through a `finally` or a pytest fixture that closes the device. Python
-cannot preempt a caller's `finally`. The one place that can is the collector, which
-tt-metal runs *before* the throw propagates: it writes the incident, prints where
-everything is, and then stops the hung process. `TTLANG_HANG_KILL=0` leaves the
-process to unwind if you want the close.
-
-Nothing is lost by skipping it. The teardown wait cannot succeed while workers are
-stuck, and the next open re-initializes under `TT_METAL_FORCE_REINIT`, resetting the
-RISCs and reloading firmware. Every init wait is bounded by the same window, so a
-device that genuinely needs a reset fails the next open in seconds and names the
-cores that did not come up, instead of hanging.
-
-`TTLANG_ON_HANG=recover` keeps the process alive and has tt-lang close, reopen and
-smoke test the device, at the cost of that per-chip timeout.
+Two things follow from that. Halting a core to unwind frames further up the stack
+is terminal on Blackhole, so only the top frame and its inlined frames are
+collected. And whatever closes the device on the way out (a caller's `finally`, a
+pytest fixture) will wait the full timeout for every chip's stuck dispatch cores,
+because that teardown wait cannot succeed while workers are stuck; tt-metal catches
+and discards the result anyway (`dispatch_kernel_initializer.cpp:249-251`). Reset
+with `tt-smi` rather than waiting it out.
 
 The incident directory holds:
 
@@ -185,7 +163,6 @@ report.txt        what happened, and where everything else is
 stacks.txt        per RISC: PC, STATIONARY or ADVANCING, symbolized frames
 manifest.json     identity, ELFs used, cores sampled, per-step failures
 programs.jsonl    every program compiled in this process
-recovery.txt      what recovery attempted and how it ended
 kernels/*.cpp     copies of the generated sources, which live in /tmp
 ```
 

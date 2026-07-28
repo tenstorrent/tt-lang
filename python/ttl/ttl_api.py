@@ -649,31 +649,22 @@ class CompiledTTNNKernel:
             )
             kernel_specs.append(spec)
 
-        hang.note_device(device)
         hang.note_launch(self._hang_key)
 
         # Use shared kernel execution logic.
-        try:
-            return run_kernel_on_device(
-                kernel_specs=kernel_specs,
-                tensors=list(args),
-                cb_configs=self.cb_configs,
-                core_ranges=self.core_ranges,
-                program_hash=self.program_hash,
-                num_pipe_sync_semaphores=self.num_pipe_sync_semaphores,
-                pipe_sram_scratch_bytes=self.pipe_sram_scratch_bytes,
-                num_pipe_global_semaphores=self.num_pipe_global_semaphores,
-                pipe_global_semaphore_lifetime=self._pipe_global_semaphore_lifetime,
-                runtime_resource_factory=self.runtime_resource_factory,
-                runtime_resource_lifetime=self._runtime_resource_lifetime,
-            )
-        except RuntimeError as error:
-            # Dispatch is asynchronous, so a timeout can also surface in whatever
-            # the caller does next. That case is covered by the pytest plugin, or
-            # by calling ttl.hang.handle_hang directly.
-            if hang.is_dispatch_timeout(error):
-                hang.handle_hang(error, device)
-            raise
+        return run_kernel_on_device(
+            kernel_specs=kernel_specs,
+            tensors=list(args),
+            cb_configs=self.cb_configs,
+            core_ranges=self.core_ranges,
+            program_hash=self.program_hash,
+            num_pipe_sync_semaphores=self.num_pipe_sync_semaphores,
+            pipe_sram_scratch_bytes=self.pipe_sram_scratch_bytes,
+            num_pipe_global_semaphores=self.num_pipe_global_semaphores,
+            pipe_global_semaphore_lifetime=self._pipe_global_semaphore_lifetime,
+            runtime_resource_factory=self.runtime_resource_factory,
+            runtime_resource_lifetime=self._runtime_resource_lifetime,
+        )
 
 
 def _write_kernel_to_tmp(name: str, source: str) -> str:

@@ -5,9 +5,8 @@
 """Out-of-process hang collector, and the incident-directory contract.
 
 tt-metal runs this from its dispatch-timeout hook, through ``std::system``, from
-inside the hung process and before it throws. Collection therefore always
-precedes recovery, which is the required order: launching anything overwrites
-the evidence.
+inside the hung process and before it throws. Collecting first is the required
+order: launching anything overwrites the evidence.
 
 It is a standalone script on purpose. It must not import the ``ttl`` package,
 because loading the MLIR extension and ttnn a second time inside a process that
@@ -15,10 +14,11 @@ is already stuck is both slow and a chance to fail while reporting a failure.
 For the same reason it must never raise: anything it cannot collect is written
 into the report as a named failure.
 
-Every read is halt-free except in deep mode: PCs come off the debug bus, so the
-device is left exactly as the hang found it. Deep mode halts each core to walk
-real stack frames, which on Blackhole is terminal, so after a deep collection the
-device needs a full reset.
+Every read is halt-free. PCs come off the debug bus and frames come from DWARF,
+so the device is left exactly as the hang found it and nothing here decides its
+fate. Halting a core to unwind real frames is terminal on Blackhole, which is why
+this does not do it. Inspecting the incident, killing the process and resetting
+the device are the caller's calls to make.
 """
 
 import json
@@ -33,24 +33,21 @@ from pathlib import Path
 # wrapper script or a follow-up shell always knows where to look. Every file in
 # it carries a UTC stamp so a leftover from an earlier run reads as stale.
 INCIDENT_DIR = "/tmp/ttlang_hang"
-DIRTY_SENTINEL = "/tmp/ttlang_device_dirty"
 CB_TABLE_PATH = "/tmp/ttlang_cb_table.txt"
 
 DIR_ENV = "TTLANG_HANG_DIR"
 MODE_ENV = "TTLANG_ON_HANG"
 LAUNCH_ENV = "TTLANG_HANG_LAUNCHES"
 DEVICES_ENV = "TTLANG_HANG_DEVICES"
-KILL_ENV = "TTLANG_HANG_KILL"
 
 MODE_OFF = "off"
-MODE_DEEP = "deep"
-MODES = (MODE_OFF, MODE_DEEP)
+MODE_ON = "on"
+MODES = (MODE_OFF, MODE_ON)
 
-# Selectable earlier, kept only so choosing one can say what happened to it: fast
-# left the device hung, and recovering it in process is tt-smi's job.
-MODE_FAST = "fast"
-MODE_RECOVER = "recover"
-RETIRED_MODES = (MODE_FAST, MODE_RECOVER)
+# Selectable earlier, kept only so choosing one says what happened to it rather
+# than reading as a typo. All three acted on the hang: fast and deep stopped the
+# process, recover closed and reopened the device, deep halted cores to unwind.
+RETIRED_MODES = ("fast", "recover", "deep")
 
 PROGRAMS_FILE = "programs.jsonl"
 REPORT_FILE = "report.txt"
@@ -73,9 +70,10 @@ def utc_stamp() -> str:
 
 
 def mode() -> str:
-    value = os.environ.get(MODE_ENV, MODE_DEEP).strip().lower()
+    """The configured mode, never raising: ttl.hang.mode is what validates."""
+    value = os.environ.get(MODE_ENV, MODE_ON).strip().lower()
     if value not in MODES:
-        return MODE_DEEP
+        return MODE_ON
     return value
 
 
@@ -83,11 +81,6 @@ def incident_dir() -> Path:
     path = Path(os.environ.get(DIR_ENV, INCIDENT_DIR))
     path.mkdir(parents=True, exist_ok=True)
     return path
-
-
-def mark_device_dirty(reason: str) -> None:
-    """Record that the device needs a full reset before the next run."""
-    Path(DIRTY_SENTINEL).write_text(f"{utc_stamp()} pid {os.getpid()} {reason}\n")
 
 
 class Report:
@@ -194,64 +187,6 @@ def select_cores(programs: list) -> list:
     return cores
 
 
-def hung_pid() -> int:
-    """The process to stop: our nearest ancestor that is not the shell.
-
-    ``std::system`` runs ``/bin/sh -c``, which may or may not exec the command in
-    place, so the hung process is one or two levels up. Walking to the first
-    non-shell ancestor finds it either way. Deliberately not passed in through the
-    environment: a forked pytest-xdist worker would inherit its controller's pid
-    and we would stop the wrong process.
-    """
-    pid = os.getppid()
-    for _ in range(4):
-        comm = Path(f"/proc/{pid}/comm").read_text().strip()
-        if comm not in ("sh", "bash", "dash", "zsh"):
-            return pid
-        pid = int(Path(f"/proc/{pid}/stat").read_text().split()[3])
-    return 0
-
-
-def stop_target(report: Report, active_mode: str) -> int:
-    """The pid to stop once everything is on disk, or 0 to leave it alone.
-
-    Deciding and killing are separate so the report can record the decision before
-    the process it describes goes away.
-
-    The unwind is what costs minutes. Whatever closes the device on the way out,
-    a caller's ``finally`` or a pytest fixture, waits the full timeout for every
-    chip's stuck dispatch cores: 32 chips at a 5s window is 160s, and tt-metal
-    discards the result anyway to keep cleanup going. Python cannot preempt a
-    caller's ``finally``, so the only place that can skip it is out here, before
-    the throw propagates.
-
-    SIGKILL rather than SIGTERM because a handled signal still unwinds. The device
-    is left as the hang found it either way: the teardown wait cannot succeed while
-    workers are stuck, and the next open resets the RISCs under FORCE_REINIT.
-    """
-    if active_mode not in (MODE_FAST, MODE_DEEP):
-        return 0
-    if os.environ.get(KILL_ENV, "1") == "0":
-        report.say(f"{KILL_ENV}=0, so the hung process was left to unwind")
-        return 0
-
-    pid = hung_pid()
-    if not pid:
-        report.say("could not identify the hung process, so it was left to unwind")
-        return 0
-
-    comm = Path(f"/proc/{pid}/comm").read_text().strip()
-    if "python" not in comm:
-        report.say(
-            f"nearest non-shell ancestor is {comm} (pid {pid}), not a python "
-            f"process, so it was left alone"
-        )
-        return 0
-
-    report.say(f"stopping the hung process, pid {pid} ({comm}), to skip its unwind")
-    return pid
-
-
 def cache_roots() -> list:
     """Candidate roots holding the tt-metal kernel cache, best guess first.
 
@@ -349,7 +284,6 @@ def collect_stacks(
     time.sleep(PC_RESAMPLE_SECONDS)
     second = sample_pcs(context, device_id, cores, report)
 
-    deep = mode() == MODE_DEEP
     for (x, y, risc_name), (error, pc) in first.items():
         label = f"device {device_id} core {x},{y} {risc_name}"
         if pc is None:
@@ -358,16 +292,17 @@ def collect_stacks(
         later = second.get((x, y, risc_name), (None, None))[1]
         motion = "STATIONARY" if later == pc else f"ADVANCING (then 0x{later:08x})"
         lines.append(f"{label}: pc=0x{pc:08x} {motion}")
-        lines.extend(
-            symbolize(context, device_id, x, y, risc_name, pc, elfs, deep, report)
-        )
+        lines.extend(symbolize(context, x, y, risc_name, pc, elfs, report))
     return lines
 
 
-def symbolize(
-    context, device_id, x, y, risc_name, pc, elfs, deep: bool, report: Report
-) -> list:
-    """Frames for one PC: inline frames always, real frames only in deep mode."""
+def symbolize(context, x, y, risc_name, pc, elfs, report: Report) -> list:
+    """Frames for one PC, from DWARF alone.
+
+    ``top_callstack`` resolves the PC and its inlined frames without touching the
+    core. Walking further up the stack needs the core halted to read registers,
+    which on Blackhole is terminal, so the top frames are all this collects.
+    """
     candidates = elfs.get(risc_name, [])
     if not candidates:
         return ["    (no ELF found for this risc; PC is unsymbolized)"]
@@ -382,25 +317,6 @@ def symbolize(
             lines.append("    (PC did not resolve in any candidate ELF)")
     except Exception as error:
         report.fail(f"top_callstack for {risc_name} at {x},{y}", error)
-
-    if not deep:
-        return lines
-
-    try:
-        from ttexalens.tt_exalens_lib import callstack
-
-        frames = callstack(
-            f"{x},{y}",
-            candidates,
-            risc_name=risc_name,
-            device_id=device_id,
-            context=context,
-            extract_variables=False,
-        )
-        lines.append("    -- unwound frames (core was halted) --")
-        lines.extend(f"    {frame_text(frame)}" for frame in frames)
-    except Exception as error:
-        report.fail(f"unwind for {risc_name} at {x},{y}", error)
     return lines
 
 
@@ -483,7 +399,9 @@ def main() -> int:
 
     report.say(f"tt-lang hang incident, collected {started}")
     report.say(f"  mode          {active_mode}")
-    report.say(f"  collector pid {os.getpid()}, hung process pid {os.getppid()}")
+    # Parent, not "hung process": std::system may leave a /bin/sh in between, so
+    # the hung python is one or two levels up.
+    report.say(f"  collector pid {os.getpid()}, parent pid {os.getppid()}")
     report.say(f"  incident dir  {directory}")
     report.say()
 
@@ -491,7 +409,7 @@ def main() -> int:
         "collected": started,
         "mode": active_mode,
         "collector_pid": os.getpid(),
-        "hung_pid": os.getppid(),
+        "parent_pid": os.getppid(),
         "launched": os.environ.get(LAUNCH_ENV, ""),
     }
 
@@ -557,15 +475,6 @@ def main() -> int:
             [],
         )
 
-    if active_mode == MODE_DEEP:
-        guard(
-            report,
-            "mark device dirty",
-            lambda: mark_device_dirty("deep hang collection halted cores"),
-        )
-        report.say()
-        report.say("Cores were halted to unwind stacks. FULL DEVICE RESET REQUIRED.")
-
     manifest["cb_table"] = file_stamp(CB_TABLE_PATH)
     manifest["failures"] = report.failures
     manifest["finished"] = utc_stamp()
@@ -590,39 +499,25 @@ def main() -> int:
     ):
         report.say(f"  {describe_file(path)}")
 
-    target = guard(
-        report, "choose a process to stop", lambda: stop_target(report, active_mode), 0
-    )
-
     try:
         (directory / REPORT_FILE).write_text(report.text())
     except OSError as error:
         print(f"tt-lang: could not write {REPORT_FILE}: {error}")
         return 1
 
-    print(f"tt-lang: hang incident written to {directory} (mode {active_mode})")
+    print(f"tt-lang: HANG DETECTED, no dispatch progress. Incident: {directory}")
+    print(f"tt-lang:   stacks    {directory / STACKS_FILE}")
+    print(f"tt-lang:   report    {directory / REPORT_FILE}")
+    print(f"tt-lang:   CB table  {CB_TABLE_PATH}")
     if report.failures:
         print(
             f"tt-lang: {len(report.failures)} collection step(s) failed; "
             f"see {REPORT_FILE}"
         )
-    if active_mode == MODE_DEEP:
-        print(
-            "tt-lang: cores were halted to unwind stacks. Reset before the next run."
-        )
-    elif active_mode == MODE_FAST:
-        print(
-            "tt-lang: device left as the hang found it. Just run again; the next "
-            "open resets the RISCs. If that open fails, reset the device."
-        )
-
-    # Last, and only after stdout is flushed: our stdout can be a pipe that process
-    # owns, and everything worth keeping is already on disk.
-    if target:
-        import signal
-
-        sys.stdout.flush()
-        os.kill(target, signal.SIGKILL)
+    print("tt-lang: nothing was halted, killed or reset. YOU MUST, before rerunning:")
+    print("tt-lang:   1. kill this process (it will not recover; the device is stuck)")
+    print("tt-lang:   2. reset the device: tt-smi -glx_reset_auto on a galaxy,")
+    print("tt-lang:      tt-smi -r otherwise, then wait for it to settle")
     return 0
 
 

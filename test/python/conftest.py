@@ -10,9 +10,6 @@ import sys
 
 import pytest
 
-# Handle a dispatch timeout wherever it surfaces, not just at a tt-lang launch.
-pytest_plugins = ["ttl.hang_pytest"]
-
 # =============================================================================
 # Temp file cleanup for dynamically generated kernels
 # =============================================================================
