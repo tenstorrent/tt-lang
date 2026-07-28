@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
+
+include_guard(GLOBAL)
+
+set(TTLANG_TOOLCHAIN_COMPONENT_CONFIGURED OFF)
+if(TTLANG_TOOLCHAIN_COMPONENT STREQUAL "llvm")
+  include(BuildLLVM)
+  set(TTLANG_TOOLCHAIN_COMPONENT_CONFIGURED ON)
+elseif(TTLANG_TOOLCHAIN_COMPONENT STREQUAL "tt-metal")
+  include(BuildTTMetal)
+  set(TTLANG_TOOLCHAIN_COMPONENT_CONFIGURED ON)
+endif()
