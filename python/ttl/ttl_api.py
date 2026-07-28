@@ -89,6 +89,7 @@ from .dtype_utils import (
     torch_dtype_to_ttnn_datatype,
 )
 from .cb_table import record_dfb_name, resolve_cb_names, write_cb_table
+from . import hang
 from .kernel_runner import (
     KernelSpec,
     get_min_remaining_l1_for_device,
@@ -615,6 +616,7 @@ class CompiledTTNNKernel:
         self.runtime_resource_factory = runtime_resource_factory
         self._runtime_resource_lifetime = []
         self.opaque_include_paths = opaque_include_paths or []
+        self._hang_key = hang.program_key(kernel_paths) if kernel_paths else ""
 
     def __call__(self, *args):
         """Execute the kernel with the given tensors."""
@@ -647,20 +649,31 @@ class CompiledTTNNKernel:
             )
             kernel_specs.append(spec)
 
+        hang.note_device(device)
+        hang.note_launch(self._hang_key)
+
         # Use shared kernel execution logic.
-        return run_kernel_on_device(
-            kernel_specs=kernel_specs,
-            tensors=list(args),
-            cb_configs=self.cb_configs,
-            core_ranges=self.core_ranges,
-            program_hash=self.program_hash,
-            num_pipe_sync_semaphores=self.num_pipe_sync_semaphores,
-            pipe_sram_scratch_bytes=self.pipe_sram_scratch_bytes,
-            num_pipe_global_semaphores=self.num_pipe_global_semaphores,
-            pipe_global_semaphore_lifetime=self._pipe_global_semaphore_lifetime,
-            runtime_resource_factory=self.runtime_resource_factory,
-            runtime_resource_lifetime=self._runtime_resource_lifetime,
-        )
+        try:
+            return run_kernel_on_device(
+                kernel_specs=kernel_specs,
+                tensors=list(args),
+                cb_configs=self.cb_configs,
+                core_ranges=self.core_ranges,
+                program_hash=self.program_hash,
+                num_pipe_sync_semaphores=self.num_pipe_sync_semaphores,
+                pipe_sram_scratch_bytes=self.pipe_sram_scratch_bytes,
+                num_pipe_global_semaphores=self.num_pipe_global_semaphores,
+                pipe_global_semaphore_lifetime=self._pipe_global_semaphore_lifetime,
+                runtime_resource_factory=self.runtime_resource_factory,
+                runtime_resource_lifetime=self._runtime_resource_lifetime,
+            )
+        except RuntimeError as error:
+            # Dispatch is asynchronous, so a timeout can also surface in whatever
+            # the caller does next. That case is covered by the pytest plugin, or
+            # by calling ttl.hang.handle_hang directly.
+            if hang.is_dispatch_timeout(error):
+                hang.handle_hang(error, device)
+            raise
 
 
 def _write_kernel_to_tmp(name: str, source: str) -> str:
@@ -1161,6 +1174,11 @@ def _compile_ttnn_kernel(
         opaque_include_paths=opaque_include_paths or [],
         runtime_resource_factory=runtime_resource_factory,
     )
+
+    # Recorded at compile time, not per launch: the hang collector needs the
+    # generated source names to find kernel ELFs and the grid to know which
+    # cores to sample.
+    hang.note_program(program_hash, kernel_paths, core_ranges)
 
     if verbose:
         print(f"\nCompiled kernel ready (compiled {len(kernel_paths)} threads)")

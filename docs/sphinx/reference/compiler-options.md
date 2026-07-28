@@ -95,6 +95,66 @@ last block is the program that ran last, and the stamp identifies stale files.
 `<compiler>` marks a slot the compiler allocated for an intermediate, which has
 no user-visible name.
 
+## Hang detection
+
+tt-metal's dispatch waits are progress-gated against a device-side counter that
+the dispatch kernel increments as it completes each command, so a queue that is
+still retiring work never trips the timeout however long the host waits. By
+default there is no window at all (`0.0` means wait forever) and nothing runs
+when one trips. tt-lang arms both.
+
+Two consequences worth knowing before trusting the window. Host-side work,
+compilation included, is outside the guarded waits, so it neither counts as
+progress nor consumes the window: a two-minute JIT compile cannot trip a
+one-minute timeout. But the counter only moves when a command *completes*, so a
+single dispatch command that legitimately runs longer than the window is
+indistinguishable from a hang. tt-lang programs run in microseconds to
+milliseconds, hence the 60 second default; raise
+`TTLANG_HANG_TIMEOUT_SECONDS` if you deliberately launch something that occupies
+the device for longer than that in one command.
+
+| Variable | Type | Default | Description |
+|---|---|---|---|
+| `TTLANG_ON_HANG` | `off`/`fast`/`deep` | `fast` | What to do on a dispatch timeout. |
+| `TTLANG_HANG_TIMEOUT_SECONDS` | seconds | `60` | Time without *any* dispatch progress that counts as a hang. |
+| `TTLANG_HANG_DIR` | directory | `/tmp/ttlang_hang` | Where the incident is written. |
+| `TTLANG_HANG_DEVICES` | id list | `0` | Devices to sample. Widen with `0,1,2`; a 32-chip sweep takes minutes. |
+| `TTLANG_FORCE_REINIT` | `0`/`1` | `1` | Set `TT_METAL_FORCE_REINIT`, which is what makes in-process recovery possible. |
+
+| Mode | Collects | Device after | Exit |
+|---|---|---|---|
+| `off` | nothing | hung | tt-metal waits forever, as it does without tt-lang |
+| `fast` | PC per RISC, motion verdict, inlined frames | closed, reopened, smoke tested | `2` recovered, `3` reset required |
+| `deep` | also real unwound frames | forfeited: halting is terminal on Blackhole | `3` |
+
+Both modes always exit the process. After a timeout the process holds tensors on
+a device whose kernels were killed, so there is nothing useful to continue with;
+what is on offer is that the *next* process starts on a clean device instead of
+paying a full `tt-smi` reset. Exit code `3` and `/tmp/ttlang_device_dirty` both
+mean "reset before the next run".
+
+The incident directory holds:
+
+```
+report.txt        what happened, and where everything else is
+stacks.txt        per RISC: PC, STATIONARY or ADVANCING, symbolized frames
+manifest.json     identity, ELFs used, cores sampled, per-step failures
+programs.jsonl    every program compiled in this process
+recovery.txt      what recovery attempted and how it ended
+kernels/*.cpp     copies of the generated sources, which live in /tmp
+```
+
+`STATIONARY` versus `ADVANCING` is the first thing to read: a stationary PC
+inside a `cb_wait_front` is a starved consumer, while an advancing PC is a
+livelock. Frames resolve into hand-written `call_extern_func` headers too,
+because those are `#include`d into the generated kernel.
+
+A timeout that surfaces outside a tt-lang launch (dispatch is asynchronous, so it
+can land in the next ttnn call) is still collected, but recovery needs the
+exception. Add `pytest_plugins = ["ttl.hang_pytest"]` to a repository's
+`conftest.py` to handle it wherever it lands in a test, or call
+`ttl.hang.handle_hang(error)` directly.
+
 Profiling-related environment variables (`TTLANG_AUTO_PROFILE`,
 `TTLANG_PERF_DUMP`, `TTLANG_PERF_SERV`, `TTLANG_SIGNPOST_PROFILE`,
 `TTLANG_PROFILE_CSV`) are documented in the

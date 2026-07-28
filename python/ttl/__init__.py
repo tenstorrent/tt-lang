@@ -53,6 +53,13 @@ else:
     )
     from ttl.pipe import Pipe, PipeNet
     from ttl.kernel_runner import ProgramRuntimeResources
+    from ttl.hang import configure_metal_env as _configure_metal_env
+
+    # Arm tt-metal's dispatch timeout here, at import, because the variables it
+    # reads are consumed once when RunTimeOptions is built at the first device
+    # open and there is no setter. Importing ttl after opening a device is the
+    # one ordering this cannot fix.
+    _configure_metal_env()
 
     __all__ = [
         "__version__",
