@@ -219,9 +219,11 @@ def _write_jsonl_trace(path: Path, events: list) -> None:
     Each line is a self-contained JSON object with flat fields:
     event, tick, kernel, node, device, and any event-specific data.
 
-    ``node`` is the linear-node label and ``device`` is the device-mesh
-    coordinate (a list of ints; empty for single-device grids).  Both are
-    omitted from a record when unset.
+    ``node`` is the *global* linear-node label (``"node{N}"``), where ``N`` is
+    the node's row-major index over the entire launch grid -- not a within-device
+    local index.  ``device`` is the device-mesh coordinate that node belongs to
+    (a list of ints; empty for single-device grids).  Both are omitted from a
+    record when unset.
 
     Args:
         path: Output file path.

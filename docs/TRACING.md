@@ -74,13 +74,16 @@ Instant events at each pipe send/receive:
 - **pipe_recv** -- a `copy(pipe, block)` drained a payload from a pipe. Fields: pipe
   name, tile count, `fabric`, node, kernel.
 
-The boolean **fabric** field classifies the transfer by topology, derived from the
-pipe's endpoints and the launch grid: a grid's leading `len(grid) - 2` dimensions are
-device-mesh axes and its trailing two are the Tensix core grid. A pipe is `fabric:
-true` when its source and any destination differ on a mesh axis (a cross-device hop,
-lowering to fabric on hardware) and `fabric: false` when it stays within one device's
-core grid (an on-chip NoC transfer). On a single-device grid (rank <= 2, no mesh axes)
-every pipe is `fabric: false`.
+The boolean **fabric** field classifies the transfer using the simulator's own
+grid convention (it does not model any specific hardware topology). The
+classification is derived purely from the pipe's endpoints and the launch grid: a
+grid's leading `len(grid) - 2` dimensions are treated as device-mesh axes and its
+trailing two as the Tensix core grid. A pipe is `fabric: true` when its source and
+any destination differ on a mesh axis (a cross-device hop, which would lower to
+fabric on hardware) and `fabric: false` when it stays within one device's core grid
+(an on-chip NoC transfer). On a single-device grid (rank <= 2, no mesh axes) every
+pipe is `fabric: false`. The field is a simulator-side annotation only; it does not
+affect transfer semantics.
 
 This distinction reflects the simulator's cross-device contract: a device may read
 mesh-sharded **tensor** data only within its own shard (enforced by

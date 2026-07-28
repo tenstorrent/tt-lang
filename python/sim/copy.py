@@ -128,16 +128,10 @@ class CopyTransaction:
 
         # Enforce that a mesh-sharded tensor is only accessed within the slice
         # owned by the current node's device-mesh coordinate.
-        match src:
-            case Tensor():
-                validate_mesh_access(src, "read")
-            case _:
-                pass
-        match dst:
-            case Tensor():
-                validate_mesh_access(dst, "write")
-            case _:
-                pass
+        if isinstance(src, Tensor):
+            validate_mesh_access(src, "read")
+        if isinstance(dst, Tensor):
+            validate_mesh_access(dst, "write")
 
         if TRACE.enabled:
             trace(

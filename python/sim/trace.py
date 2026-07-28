@@ -146,12 +146,14 @@ def trace(event: str, **data: Any) -> None:
         # If a call site also passes an explicit ``node``, it must match the
         # currently scheduled kernel. A mismatch means the event is being
         # attributed to the wrong node (an instrumentation bug), so fail loudly
-        # rather than silently preferring the kernel's node.
-        assert explicit_node is None or explicit_node == linear_node, (
-            f"trace('{event}') node mismatch: explicit node {explicit_node} "
-            f"does not match the scheduled kernel "
-            f"'{scheduler.get_current_kernel_name()}' (node {linear_node})."
-        )
+        # rather than silently preferring the kernel's node. Raise unconditionally
+        # (not ``assert``) so the check survives running under ``-O``.
+        if explicit_node is not None and explicit_node != linear_node:
+            raise RuntimeError(
+                f"trace('{event}') node mismatch: explicit node {explicit_node} "
+                f"does not match the scheduled kernel "
+                f"'{scheduler.get_current_kernel_name()}' (node {linear_node})."
+            )
     else:
         linear_node = explicit_node
 
