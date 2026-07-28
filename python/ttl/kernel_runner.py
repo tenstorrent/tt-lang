@@ -425,6 +425,79 @@ def normalize_program_hash(program_hash: Optional[int]) -> Optional[int]:
     return int(program_hash) & ((1 << 64) - 1)
 
 
+@dataclass(frozen=True)
+class CBGeometry:
+    """Physical layout of one CB slot.
+
+    Single source of truth for CB sizing: both the ttnn descriptors handed to
+    generic_op and the debug CB table are derived from these fields, so the
+    table cannot disagree with what the device is configured with.
+    """
+
+    data_format: Any  # ttnn.DataType
+    page_size: int  # bytes per page (one tile)
+    num_pages: int
+    total_size: int  # bytes
+    tile_descriptor: Any  # ttnn.TileDescriptor, None when compiler-allocated
+    tile: Optional[Tuple[int, int]]  # None when compiler-allocated
+    shape: Optional[Tuple[int, ...]]  # None when compiler-allocated
+    block_count: int
+    breakdown: str  # one-line human summary, used in the L1 budget error
+
+
+def cb_geometry(index: int, cb: Any) -> CBGeometry:
+    """Resolve one DFB config to the physical CB layout it will be given."""
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+
+    if cb is None:
+        raise ValueError(
+            f"Missing CB config for index {index}. "
+            f"All DFB indices must have associated DataflowBuffer configurations."
+        )
+
+    if isinstance(cb, CompilerAllocatedDFBConfig):
+        data_format = format_name_to_ttnn_dtype(cb.data_format)
+        page_size = tile_bytes_from_dtype(data_format)
+        num_pages = cb.num_tiles * cb.block_count
+        total_size = num_pages * page_size
+        return CBGeometry(
+            data_format=data_format,
+            page_size=page_size,
+            num_pages=num_pages,
+            total_size=total_size,
+            tile_descriptor=None,
+            tile=None,
+            shape=None,
+            block_count=cb.block_count,
+            breakdown=(
+                f"  CB[{index}]: compiler-allocated num_tiles={cb.num_tiles} "
+                f"block_count={cb.block_count} format={cb.data_format} -> {total_size} bytes"
+            ),
+        )
+
+    data_format = _cb_data_format(cb)
+    tile = ttnn.Tile(cb.tile)
+    page_size = tile.get_tile_size(data_format)
+    num_pages = cb.shape[0] * cb.shape[1] * cb.block_count
+    total_size = num_pages * page_size
+    return CBGeometry(
+        data_format=data_format,
+        page_size=page_size,
+        num_pages=num_pages,
+        total_size=total_size,
+        tile_descriptor=ttnn.TileDescriptor(tile),
+        tile=tuple(cb.tile),
+        shape=tuple(cb.shape),
+        block_count=cb.block_count,
+        breakdown=(
+            f"  CB[{index}]: shape={cb.shape} block_count={cb.block_count} "
+            f"-> {total_size} bytes"
+        ),
+    )
+
+
 def build_cb_descriptors(
     tensors: List[Any],
     cb_configs: List[Any],
@@ -449,47 +522,8 @@ def build_cb_descriptors(
         raise RuntimeError("ttnn is not available")
 
     # Compute sizes first so we fail before allocating ttnn descriptors on overflow.
-    rows = []
-    total_cb_bytes = 0
-    for i, cb in enumerate(cb_configs):
-        if cb is None:
-            raise ValueError(
-                f"Missing CB config for index {i}. "
-                f"All DFB indices must have associated DataflowBuffer configurations."
-            )
-
-        if isinstance(cb, CompilerAllocatedDFBConfig):
-            data_format = format_name_to_ttnn_dtype(cb.data_format)
-            page_size = tile_bytes_from_dtype(data_format)
-            total_size = cb.num_tiles * cb.block_count * page_size
-            rows.append(
-                (
-                    data_format,
-                    page_size,
-                    total_size,
-                    None,
-                    f"  CB[{i}]: compiler-allocated num_tiles={cb.num_tiles} "
-                    f"block_count={cb.block_count} format={cb.data_format} -> {total_size} bytes",
-                )
-            )
-        else:
-            data_format = _cb_data_format(cb)
-            tile = ttnn.Tile(cb.tile)
-            tile_descriptor = ttnn.TileDescriptor(tile)
-            page_size = tile.get_tile_size(data_format)
-            num_tiles = cb.shape[0] * cb.shape[1] * cb.block_count
-            total_size = num_tiles * page_size
-            rows.append(
-                (
-                    data_format,
-                    page_size,
-                    total_size,
-                    tile_descriptor,
-                    f"  CB[{i}]: shape={cb.shape} block_count={cb.block_count} -> {total_size} bytes",
-                )
-            )
-
-        total_cb_bytes += total_size
+    geometries = [cb_geometry(i, cb) for i, cb in enumerate(cb_configs)]
+    total_cb_bytes = sum(g.total_size for g in geometries)
 
     remaining_bytes = DEFAULT_L1_CB_BUDGET_BYTES
     for tensor in tensors:
@@ -503,7 +537,7 @@ def build_cb_descriptors(
     # Must stay aligned with MLIR ttl-validate-cb-budget (TileType::getSizeBytes) and
     # tile_bytes_from_dtype; see issue #511.
     if total_cb_bytes > remaining_bytes:
-        breakdown = "\n".join(r[-1] for r in rows)
+        breakdown = "\n".join(g.breakdown for g in geometries)
         raise ValueError(
             "Total circular buffer allocation ("
             f"{total_cb_bytes} bytes) exceeds L1 budget ({remaining_bytes} bytes). "
@@ -513,17 +547,19 @@ def build_cb_descriptors(
         )
 
     cb_descriptors = []
-    for i, row in enumerate(rows):
-        data_format, page_size, total_size = row[:3]
-        tile_descriptor = row[3]
+    for i, geometry in enumerate(geometries):
         cb_format = ttnn.CBFormatDescriptor(
             buffer_index=i,
-            data_format=data_format,
-            page_size=page_size,
-            **({"tile": tile_descriptor} if tile_descriptor is not None else {}),
+            data_format=geometry.data_format,
+            page_size=geometry.page_size,
+            **(
+                {"tile": geometry.tile_descriptor}
+                if geometry.tile_descriptor is not None
+                else {}
+            ),
         )
         cb_desc = ttnn.CBDescriptor(
-            total_size=total_size,
+            total_size=geometry.total_size,
             core_ranges=core_ranges,
             format_descriptors=[cb_format],
         )
@@ -1015,11 +1051,13 @@ def emit_runner_file(
 
 
 __all__ = [
+    "CBGeometry",
     "KernelSpec",
     "PipeRuntimeResources",
     "build_tensor_accessor_args",
     "build_kernel_descriptors",
     "build_cb_descriptors",
+    "cb_geometry",
     "build_pipe_sram_scratch_tensors",
     "build_pipe_global_semaphores",
     "build_pipe_runtime_resources",

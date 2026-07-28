@@ -70,6 +70,30 @@ They are independent of the code generation flags above.
 | `TTLANG_DEBUG_LOCATIONS` | `0`/`1` | `0` | Include source locations in printed MLIR (locations are always tracked internally for error messages). |
 | `TTLANG_VERBOSE_ERRORS` | `0`/`1` | `0` | Include raw MLIR diagnostics in error output. |
 | `TTLANG_SIM_ONLY` | `0`/`1` | `0` | Force `import ttl` to skip loading the compiled MLIR extension. Used when running the simulator from a source tree without an installed `tt-lang-sim` wheel (which ships the same signal as a marker module). |
+| `TTLANG_CB_TABLE` | file path or `0` | `/tmp/ttlang_cb_table.txt` | Destination for the CB table (see below). `0` disables the write. |
+
+### The CB table
+
+Every compile appends a table of its circular buffers to
+`/tmp/ttlang_cb_table.txt`. It answers "which physical CB is `acc`?", which the
+kernel source cannot: `ttl-finalize-dfb-indices` reuse-colors user DFBs and then
+compacts the survivors, so ids are renumbered and several logical names can
+share one slot. Each row lists every name that landed on the slot, so an id
+naming two DFBs means those two were merged.
+
+```
+=== 2026-07-28T15:42:10Z pid 95555 program_hash 1234 source add.py ===
+tt-lang CB table: 3 CBs, 69632 bytes of L1 backing store
+  id  names          shape  tile   blk  dtype     page  pages  bytes
+  0   lhs_dfb        1x1    32x32  2    BFLOAT16  2048  2      4096
+  1   acc, acc_wide  2x4    32x32  3    BFLOAT16  2048  24     49152
+  2   <compiler>     -      -      2    BFLOAT16  2048  8      16384
+```
+
+The first compile in a process truncates the file and later ones append, so the
+last block is the program that ran last, and the stamp identifies stale files.
+`<compiler>` marks a slot the compiler allocated for an intermediate, which has
+no user-visible name.
 
 Profiling-related environment variables (`TTLANG_AUTO_PROFILE`,
 `TTLANG_PERF_DUMP`, `TTLANG_PERF_SERV`, `TTLANG_SIGNPOST_PROFILE`,

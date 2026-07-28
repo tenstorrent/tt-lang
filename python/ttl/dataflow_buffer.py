@@ -106,6 +106,9 @@ class DataflowBuffer:
         )
         self._cb_index = _next_cb_index(reuse, signature)
         self.reuse = reuse
+        # Python identifiers this buffer was captured under. Filled in when the
+        # compiler walks thread closures; used only for debug output.
+        self.debug_names: Tuple[str, ...] = ()
 
     @property
     def dtype(self):

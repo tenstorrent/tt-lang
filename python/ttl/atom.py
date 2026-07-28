@@ -46,6 +46,7 @@ from ttl.pykernel._src.utils import _cleanup_source_code
 from ._src.atom_inline import inline_atom_calls
 from ._src.atom_split import split_function_body
 from ._src.tensor_registry import register_tensor_name
+from .cb_table import record_dfb_name
 from .compiler_options import CompilerOptions
 from .dataflow_buffer import (
     DataflowBuffer,
@@ -502,6 +503,8 @@ def _synthesize_thread_module(fn_name: str, body: List[ast.stmt]) -> ast.Module:
 
 def _cb_configs_from_lifted(lifted: Dict[str, DataflowBuffer]):
     """DataflowBuffer list indexed by CB index, matching _collect_cb_configs."""
+    for name, dfb in lifted.items():
+        record_dfb_name(dfb, name)
     by_index = {dfb._cb_index: dfb for dfb in lifted.values()}
     if not by_index:
         return []

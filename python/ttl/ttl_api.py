@@ -88,6 +88,7 @@ from .dtype_utils import (
     tile_bytes_from_dtype,
     torch_dtype_to_ttnn_datatype,
 )
+from .cb_table import record_dfb_name, resolve_cb_names, write_cb_table
 from .kernel_runner import (
     KernelSpec,
     get_min_remaining_l1_for_device,
@@ -552,6 +553,7 @@ class CompiledTTNNKernel:
         kernel_tensor_indices,
         kernel_core_ranges=None,
         cb_configs=None,
+        cb_names=None,
         program_hash=None,
         source_lines=None,
         all_source_lines=None,
@@ -578,6 +580,8 @@ class CompiledTTNNKernel:
                 each specialized clone is dispatched only to its own core; None
                 entries fall back to the whole-grid core_ranges.
             cb_configs: List of (shape, block_count) tuples for each CB, indexed by cb_index
+            cb_names: Dict mapping final CB index to the logical DFB names that
+                landed on it, including the ones reuse coloring merged away
             program_hash: Hash for tt-metal program cache
             source_lines: Source code lines for auto-profiling reports (deprecated)
             all_source_lines: Dict mapping kernel name to source lines
@@ -598,6 +602,7 @@ class CompiledTTNNKernel:
         self.kernel_tensor_indices = kernel_tensor_indices
         self.kernel_core_ranges = kernel_core_ranges or [None] * len(kernel_paths)
         self.cb_configs = cb_configs or []
+        self.cb_names = cb_names or {}
         self.program_hash = program_hash
         self.source_lines = source_lines
         self.all_source_lines = all_source_lines or {}
@@ -859,6 +864,7 @@ def _compile_ttnn_kernel(
     num_outs,
     thread_tensor_indices,
     cb_configs=None,
+    cb_names=None,
     program_hash=None,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
@@ -1143,6 +1149,7 @@ def _compile_ttnn_kernel(
         kernel_tensor_indices=kernel_tensor_indices,
         kernel_core_ranges=kernel_core_ranges,
         cb_configs=cb_configs,
+        cb_names=cb_names,
         program_hash=program_hash,
         source_lines=source_lines,
         all_source_lines=all_source_lines,
@@ -1304,10 +1311,11 @@ def _collect_cb_configs(threads):
         closure = getattr(wrapped, "__closure__", None) if wrapped else None
         if not closure:
             continue
-        for cell in closure:
+        for name, cell in zip(wrapped.__code__.co_freevars, closure):
             val = cell.cell_contents
             if isinstance(val, DataflowBuffer):
                 cb_configs_dict[val._cb_index] = val
+                record_dfb_name(val, name)
 
     if not cb_configs_dict:
         return []
@@ -1413,12 +1421,23 @@ def _dfb_l1_tiles(cb):
     return tiles
 
 
-def _apply_dfb_index_map(cb_configs, module):
-    """Apply post-inlining user-DFB reuse and size each slot to its maximum."""
+def _dfb_index_map(module):
+    """Provisional-to-final user-DFB index map from ttl-finalize-dfb-indices.
+
+    None when the pass recorded no map at all, which is distinct from an empty
+    (identity) map.
+    """
     attr = module.operation.attributes.get("ttl.dfb_index_map", None)
     if attr is None:
+        return None
+    return {int(entry["old_index"]): int(entry["new_index"]) for entry in attr}
+
+
+def _apply_dfb_index_map(cb_configs, module):
+    """Apply post-inlining user-DFB reuse and size each slot to its maximum."""
+    moved = _dfb_index_map(module)
+    if moved is None:
         return cb_configs
-    moved = {int(entry["old_index"]): int(entry["new_index"]) for entry in attr}
 
     by_index = {}
     for old_index, cb in enumerate(cb_configs):
@@ -2093,10 +2112,18 @@ def _lower_program_to_kernel(
             first_thread = next(iter(all_source_lines.keys()))
             profile_source_lines = all_source_lines[first_thread]
 
+        # Resolve names before the coloring drops the DFBs it merges away.
+        cb_names = resolve_cb_names(cb_configs, _dfb_index_map(module) or {})
         # Apply user-DFB index coloring before merging compiler-owned slots.
         cb_configs = _apply_dfb_index_map(cb_configs, module)
         compiler_allocated_dfbs = _extract_compiler_allocated_dfbs(module)
         cb_configs = _merge_dfb_configs(cb_configs, compiler_allocated_dfbs)
+        write_cb_table(
+            cb_configs,
+            cb_names,
+            program_hash=program_hash,
+            source_file=kernel_source_file,
+        )
         pipe_sync_semaphore_count = _extract_pipe_sync_semaphore_count(module)
         if pipe_sync_semaphore_count is None:
             raise RuntimeError(
@@ -2116,6 +2143,7 @@ def _lower_program_to_kernel(
             num_outs,
             thread_tensor_indices,
             cb_configs,
+            cb_names=cb_names,
             program_hash=program_hash,
             fp32_dest_acc_en=fp32_dest_acc_en,
             dst_full_sync_en=dst_full_sync_en,
