@@ -240,13 +240,6 @@ def store_then_forward_kernel(a, b, out_main, out_copy):
             tx.wait()
 
 
-@pytest.fixture
-def device():
-    dev = ttnn.open_device(device_id=0)
-    yield dev
-    ttnn.close_device(dev)
-
-
 def test_passthrough(device):
     inp = to_dram(torch.full((32, 32), 42.0, dtype=torch.bfloat16), device)
     out = to_dram(torch.zeros((32, 32), dtype=torch.bfloat16), device)

@@ -60,6 +60,13 @@ setup() {
     assert_equal "$(run_detect "$BASE" "$head")" "true"
 }
 
+@test "diff in .github/containers/Dockerfile marks uplift=true" {
+    echo "modified" >> "$REPO/.github/containers/Dockerfile"
+    commit_all "$REPO" "uplift"
+    head=$(cd "$REPO" && git rev-parse HEAD)
+    assert_equal "$(run_detect "$BASE" "$head")" "true"
+}
+
 @test "diff in .github/containers/Dockerfile.wheel-manylinux-2-34 marks uplift=true" {
     echo "modified" >> "$REPO/.github/containers/Dockerfile.wheel-manylinux-2-34"
     commit_all "$REPO" "uplift"
@@ -69,6 +76,13 @@ setup() {
 
 @test "diff in requirements-runtime.txt marks uplift=true" {
     echo "modified" >> "$REPO/requirements-runtime.txt"
+    commit_all "$REPO" "uplift"
+    head=$(cd "$REPO" && git rev-parse HEAD)
+    assert_equal "$(run_detect "$BASE" "$head")" "true"
+}
+
+@test "diff in bin/tt-triage marks uplift=true" {
+    echo "modified" >> "$REPO/bin/tt-triage"
     commit_all "$REPO" "uplift"
     head=$(cd "$REPO" && git rev-parse HEAD)
     assert_equal "$(run_detect "$BASE" "$head")" "true"

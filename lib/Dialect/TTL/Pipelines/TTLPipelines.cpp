@@ -68,6 +68,11 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   }
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
+  if (options.specializeCores) {
+    pm.addPass(createTTKernelSpecializeCores());
+    pm.addPass(createCanonicalizerPass());
+    pm.addPass(createCSEPass());
+  }
   if (options.lowerToEmitC) {
     pm.addPass(createLowerAffinePass());
     pm.addNestedPass<func::FuncOp>(::mlir::tt::createConvertTTKernelToEmitC());

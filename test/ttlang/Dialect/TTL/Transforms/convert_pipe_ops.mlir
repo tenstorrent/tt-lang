@@ -104,11 +104,11 @@ func.func @copy_cb_to_pipe() attributes { "ttl.kernel_thread" = #ttkernel.thread
 // CHECK: %[[ADDR_READY_SEM:.*]] = ttkernel.get_semaphore
 // CHECK: %[[ADDR_READY_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[ADDR_READY_SEM]], %[[NOC]])
 // CHECK: ttkernel.noc_semaphore_inc(%[[ADDR_READY_NOC]], {{.*}}, %[[NOC]])
-// CHECK: %[[DONE_SEM:.*]] = ttkernel.get_semaphore
-// CHECK: %[[DONE_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[DONE_SEM]])
 // CHECK: %[[OLD:.*]] = memref.load %[[CTR]]
 // CHECK: %[[NEW:.*]] = arith.addi %[[OLD]]
 // CHECK: memref.store %[[NEW]], %[[CTR]]
+// CHECK: %[[DONE_SEM:.*]] = ttkernel.get_semaphore
+// CHECK: %[[DONE_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[DONE_SEM]])
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[DONE_PTR]], %[[NEW]])
 // CHECK: ttkernel.cb_push_back(%[[DST_DFB]]
 func.func @copy_pipe_to_cb() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
@@ -144,6 +144,31 @@ func.func @copy_loop_carried_pipe_to_cb() attributes { "ttl.kernel_thread" = #tt
       -> !ttl.transfer_handle
   ttl.wait %xf : !ttl.transfer_handle
   ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  func.return
+}
+
+// -----
+
+// A wait in a zero-trip loop has no dynamic transfer-handle origin and is
+// removed without rejecting the enclosing function.
+// CHECK-LABEL: func.func @zero_trip_receive_wait
+// CHECK-NOT: ttl.wait
+// CHECK-NOT: ttl.pipe_transfer
+// CHECK-NOT: unrealized_conversion_cast
+func.func @zero_trip_receive_wait() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %recv = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %xf = ttl.copy %p, %recv
+      : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.transfer_handle
+  scf.for %iter = %zero to %zero step %one iter_args(%xf_arg = %xf)
+      -> (!ttl.transfer_handle) {
+    ttl.wait %xf_arg : !ttl.transfer_handle
+    scf.yield %xf_arg : !ttl.transfer_handle
+  }
   func.return
 }
 
@@ -900,11 +925,11 @@ func.func @degenerate_multicast_aggregate_ready_counting() attributes { "ttl.ker
 // CHECK: %[[ADDR_READY_SEM:.*]] = ttkernel.get_semaphore
 // CHECK: %[[ADDR_READY_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[ADDR_READY_SEM]], %[[NOC]])
 // CHECK: ttkernel.noc_semaphore_inc(%[[ADDR_READY_NOC]], {{.*}}, %[[NOC]])
-// CHECK: %[[DONE_SEM:.*]] = ttkernel.get_semaphore
-// CHECK: %[[DONE_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[DONE_SEM]])
 // CHECK: %[[V:.*]] = memref.load %[[CTR]]
 // CHECK: %[[NEW:.*]] = arith.addi %[[V]]
 // CHECK: memref.store %[[NEW]], %[[CTR]]
+// CHECK: %[[DONE_SEM:.*]] = ttkernel.get_semaphore
+// CHECK: %[[DONE_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[DONE_SEM]])
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[DONE_PTR]], %[[NEW]])
 // CHECK: ttkernel.cb_push_back(%[[DST_DFB]]
 // CHECK-NOT: ttkernel.experimental.semaphore_wait(
@@ -915,5 +940,172 @@ func.func @copy_pipe_to_cb_multicast() attributes { "ttl.kernel_thread" = #ttker
   %xf = ttl.copy %p, %recv : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
   ttl.wait %xf : !ttl.transfer_handle
   ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  func.return
+}
+
+// -----
+
+// Tokens retain the dynamic post sequence when stored in a tensor and consumed
+// in reverse order.
+// CHECK-LABEL: func.func @reversed_pipe_tokens
+// CHECK: %[[INITIAL:.*]] = tensor.empty() : tensor<2xi32>
+// CHECK: %[[TOKENS:.*]] = scf.for {{.*}} iter_args(%[[CARRIED:.*]] = %[[INITIAL]]) -> (tensor<2xi32>) {
+// CHECK: %[[OLD_SEQUENCE:.*]] = memref.load
+// CHECK: %[[SEQUENCE:.*]] = arith.addi %[[OLD_SEQUENCE]]
+// CHECK: %[[NEXT:.*]] = tensor.insert %[[SEQUENCE]] into %[[CARRIED]]
+// CHECK: scf.yield %[[NEXT]] : tensor<2xi32>
+// CHECK: scf.for
+// CHECK: %[[REVERSE_INDEX:.*]] = arith.subi
+// CHECK: %[[SELECTED_SEQUENCE:.*]] = tensor.extract %[[TOKENS]][%[[REVERSE_INDEX]]] : tensor<2xi32>
+// CHECK: ttkernel.experimental.semaphore_wait_min({{.*}}, %[[SELECTED_SEQUENCE]])
+func.func @reversed_pipe_tokens()
+    attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %two = arith.constant 2 : index
+  %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %transfer = ttl.pipe_transfer.create %pipe {
+      expectedReceivers = 1 : i64,
+      kind = #ttl.pipe_transfer_kind<point_to_point>}
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+      -> !ttl.pipe_transfer
+  %initial = tensor.empty() : tensor<2x!ttl.pipe_token<net 0>>
+  %tokens = scf.for %write_index = %zero to %two step %one
+      iter_args(%carried = %initial) -> tensor<2x!ttl.pipe_token<net 0>> {
+    %dst = ttl.cb_reserve %dst_cb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %token = ttl.pipe_transfer.post %transfer, %dst
+        : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.pipe_token<net 0>
+    %send = ttl.pipe_transfer.send %transfer, %src_cb
+        : (!ttl.pipe_transfer,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send : !ttl.transfer_handle<write>
+    %next = tensor.insert %token into %carried[%write_index]
+        : tensor<2x!ttl.pipe_token<net 0>>
+    scf.yield %next : tensor<2x!ttl.pipe_token<net 0>>
+  }
+  scf.for %read_index = %zero to %two step %one {
+    %reverse_index = arith.subi %one, %read_index : index
+    %token = tensor.extract %tokens[%reverse_index]
+        : tensor<2x!ttl.pipe_token<net 0>>
+    ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
+  }
+  func.return
+}
+
+// -----
+
+// A control-flow merge preserves the sequence produced by the executed post.
+// CHECK-LABEL: func.func @selected_pipe_token
+// CHECK: %[[SELECTED:.*]] = scf.if {{.*}} -> (i32) {
+// CHECK: %[[THEN_SEQUENCE:.*]] = arith.addi
+// CHECK: scf.yield %[[THEN_SEQUENCE]] : i32
+// CHECK: } else {
+// CHECK: %[[ELSE_SEQUENCE:.*]] = arith.addi
+// CHECK: scf.yield %[[ELSE_SEQUENCE]] : i32
+// CHECK: ttkernel.experimental.semaphore_wait_min({{.*}}, %[[SELECTED]])
+func.func @selected_pipe_token(%condition: i1)
+    attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+  %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %transfer = ttl.pipe_transfer.create %pipe {
+      expectedReceivers = 1 : i64,
+      kind = #ttl.pipe_transfer_kind<point_to_point>}
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+      -> !ttl.pipe_transfer
+  %token = scf.if %condition -> (!ttl.pipe_token<net 0>) {
+    %dst = ttl.cb_reserve %dst_cb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %then_token = ttl.pipe_transfer.post %transfer, %dst
+        : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.pipe_token<net 0>
+    scf.yield %then_token : !ttl.pipe_token<net 0>
+  } else {
+    %dst = ttl.cb_reserve %dst_cb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %else_token = ttl.pipe_transfer.post %transfer, %dst
+        : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.pipe_token<net 0>
+    scf.yield %else_token : !ttl.pipe_token<net 0>
+  }
+  %send = ttl.pipe_transfer.send %transfer, %src_cb
+      : (!ttl.pipe_transfer,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+      -> !ttl.transfer_handle<write>
+  ttl.wait %send : !ttl.transfer_handle<write>
+  ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
+  func.return
+}
+
+// -----
+
+// Reusing a token waits for the same completion threshold.
+// CHECK-LABEL: func.func @wait_twice_for_pipe_token
+// CHECK: %[[SEQUENCE:.*]] = arith.addi
+// CHECK: ttkernel.experimental.semaphore_wait_min({{.*}}, %[[SEQUENCE]])
+// CHECK: ttkernel.experimental.semaphore_wait_min({{.*}}, %[[SEQUENCE]])
+func.func @wait_twice_for_pipe_token()
+    attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+  %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %transfer = ttl.pipe_transfer.create %pipe {
+      expectedReceivers = 1 : i64,
+      kind = #ttl.pipe_transfer_kind<point_to_point>}
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+      -> !ttl.pipe_transfer
+  %dst = ttl.cb_reserve %dst_cb
+      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %token = ttl.pipe_transfer.post %transfer, %dst
+      : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.pipe_token<net 0>
+  %send = ttl.pipe_transfer.send %transfer, %src_cb
+      : (!ttl.pipe_transfer,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+      -> !ttl.transfer_handle<write>
+  ttl.wait %send : !ttl.transfer_handle<write>
+  ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
+  ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
+  func.return
+}
+
+// -----
+
+// A pipe function argument supplies the point-to-point transfer contract.
+// CHECK-LABEL: func.func @pipe_block_argument
+// CHECK: ttkernel.noc_inline_dw_write
+// CHECK: ttkernel.experimental.semaphore_wait_min
+// CHECK-NOT: ttl.pipe_transfer
+func.func @pipe_block_argument(
+    %pipe: !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+    attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+  %dst_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %dst = ttl.cb_reserve %dst_cb
+      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %handle = ttl.copy %pipe, %dst
+      : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+         tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.transfer_handle
+  ttl.wait %handle : !ttl.transfer_handle
   func.return
 }

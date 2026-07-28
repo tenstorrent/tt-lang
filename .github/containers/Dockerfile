@@ -21,6 +21,17 @@ ARG BASE_IMAGE
 FROM scratch AS ird-toolchain
 FROM scratch AS dist-toolchain
 
+# Keep triage's debugger stack separate from the main toolchain venv. tt-smi
+# and tt-exalens can require different tt-umd versions.
+FROM ${BASE_IMAGE} AS tt-triage-python
+ENV TT_TRIAGE_VENV=/opt/ttlang-toolchain/tt-triage-venv
+COPY third-party/tt-metal/tools/triage/requirements.txt /tmp/tt-triage-requirements.txt
+RUN python3.12 -m venv "$TT_TRIAGE_VENV" && \
+    "$TT_TRIAGE_VENV/bin/python" -m pip install \
+        --no-cache-dir -r /tmp/tt-triage-requirements.txt && \
+    "$TT_TRIAGE_VENV/bin/python" -m pip check && \
+    rm /tmp/tt-triage-requirements.txt
+
 # =============================================================================
 # IRD (for developers who will clone and build their own tt-lang)
 # =============================================================================
@@ -29,6 +40,8 @@ SHELL ["/bin/bash", "-c"]
 
 ENV TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain
 ENV DEBIAN_FRONTEND=noninteractive
+
+COPY --from=tt-triage-python /opt/ttlang-toolchain/tt-triage-venv $TTLANG_TOOLCHAIN_DIR/tt-triage-venv/
 
 # Split toolchain into multiple layers for parallel pulls.
 # Largest directories get their own layer; the rest go in one layer.
@@ -76,6 +89,8 @@ FROM ${BASE_IMAGE} AS dist
 SHELL ["/bin/bash", "-c"]
 
 ENV TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain
+
+COPY --from=tt-triage-python /opt/ttlang-toolchain/tt-triage-venv $TTLANG_TOOLCHAIN_DIR/tt-triage-venv/
 
 # Split toolchain into multiple layers for parallel pulls.
 COPY --from=dist-toolchain --chmod=777 /bin $TTLANG_TOOLCHAIN_DIR/bin/

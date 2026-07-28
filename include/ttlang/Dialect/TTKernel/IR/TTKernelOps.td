@@ -651,8 +651,7 @@ def TTKernel_ReduceInitOp : TTKernel_InitOp<"reduce_init"> {
                          TTKernel_CB:$scaling_cb,
                          TTKernel_CB:$out_cb,
                          TTKernel_ReduceTypeAttr:$reduce_type,
-                         TTKernel_ReduceDimAttr:$reduce_dim,
-                         UnitAttr:$full_fp32);
+                         TTKernel_ReduceDimAttr:$reduce_dim);
 
     let assemblyFormat = [{
       `(` $in_cb `,` $scaling_cb `,` $out_cb `,` $reduce_type `,` $reduce_dim `)` attr-dict `:` functional-type(operands, results)
@@ -667,14 +666,8 @@ def TTKernel_ReduceUninitOp : TTKernel_InitOp<"reduce_uninit"> {
        same dimension, this call can be omitted. If this function is not called, the packer will continue to use the edge masks set
        by the latest reduce_init call, which may lead to incorrect packing behavior in subsequent operations.
 
-       The `full_fp32` attribute emits reduce_uninit<true>, which performs the extra cleanup required after some
-       full-fp32 reduce sequences. Without the attribute, lowering emits reduce_uninit(), matching tt-metal's
-       default false behavior.
-
        This function is not in line with our programming mode. To be removed by end of 2025. tt-metal#22904.
     }];
-
-    let arguments = (ins UnitAttr:$full_fp32);
 
     let assemblyFormat = [{
       `(` `)` attr-dict `:` functional-type(operands, results)
@@ -702,8 +695,7 @@ def TTKernel_ReduceTileOp : TTKernel_FPUOp<"reduce_tile", [TTKernel_TernaryOpTra
                          IndexLike:$scaling_tile_index,
                          IndexLike:$dst_index,
                          TTKernel_ReduceTypeAttr:$reduce_type,
-                         TTKernel_ReduceDimAttr:$reduce_dim,
-                         UnitAttr:$full_fp32);
+                         TTKernel_ReduceDimAttr:$reduce_dim);
 
     let assemblyFormat = [{
       `(` $in_cb `,` $scaling_cb `,` $in_tile_index `,` $scaling_tile_index `,` $dst_index `,` $reduce_type `,` $reduce_dim `)` attr-dict `:` functional-type(operands, results)
@@ -4799,6 +4791,59 @@ def TTKernel_DPrintOp : TTKernel_Op<"dprint", [MemoryEffects<[MemRead, MemWrite]
         return build(odsBuilder, odsState, StringRef(fmt), ValueRange{std::forward<Args>(argv)...});
       }
     }];
+}
+
+//===----------------------------------------------------------------------===//
+// DFB index query
+//===----------------------------------------------------------------------===//
+
+def TTKernel_GetDfbIdOp : TTKernel_Op<"get_dfb_id", [Pure]> {
+    let summary = "Get the integer index for a dataflow buffer";
+    let description = [{
+      Returns the integer DFB index for the given dataflow buffer as an
+      i32 SSA value. Lowered to a raw integer literal at EmitC time.
+    }];
+    let arguments = (ins TTKernel_CB:$dfb);
+    let results = (outs I32:$result);
+    let assemblyFormat = "$dfb attr-dict `:` type($dfb)";
+}
+
+def TTKernel_OpaqueCallOp : TTKernel_Op<"opaque_call",
+    [MemoryEffects<[MemRead, MemWrite]>, AttrSizedOperandSegments]> {
+    let summary = "Call an external C/C++ function declared in a user header.";
+    let description = [{
+      Emits a call to an opaque external C/C++ function whose declaration is
+      provided by a user-specified header file. The `callee` attribute names
+      the function and `header` specifies the `#include` path. Arguments are
+      forwarded positionally. Scalar float arguments follow tt-metal's
+      scalar-arg convention: they are passed as their raw IEEE-754 bit
+      pattern in an integer register. The ttkernel-lower-scalar-fp-types
+      pass performs the float-to-bits rewrite for float constants.
+
+      The `template_arg_vals` operands are i32 SSA values that become C++
+      template arguments on the emitted call.  They are resolved to integer
+      literals at EmitC lowering time.
+
+      Example:
+      ```
+      %c1 = arith.constant 1 : i32
+      ttkernel.opaque_call "my_func" template_args(%c1)
+          (%a, %b) {header = "my_header.hpp"} : (f32, f32) -> ()
+      ```
+    }];
+    let arguments = (ins
+      StrAttr:$callee,
+      StrAttr:$header,
+      Variadic<AnyType>:$arg_operands,
+      Variadic<I32>:$template_arg_vals
+    );
+    let results = (outs Variadic<AnyType>);
+    let assemblyFormat = [{
+      $callee (`template_args` `(` $template_arg_vals^ `)`)?
+      `(` $arg_operands `)` attr-dict `:`
+      functional-type($arg_operands, results)
+    }];
+    let hasVerifier = 1;
 }
 
 #endif

@@ -13,7 +13,7 @@ This module provides a single reusable implementation of kernel argument
 building and execution.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -41,6 +41,14 @@ from .dtype_utils import (
     tile_bytes_from_dtype,
     torch_dtype_to_ttnn_datatype,
 )
+
+
+def _cb_data_format(cb):
+    """ttnn data format for a DataflowBuffer, from its (torch or ttnn) dtype."""
+    dtype = cb.dtype
+    if hasattr(dtype, "name"):  # already a ttnn.DataType enum
+        return dtype
+    return torch_dtype_to_ttnn_datatype(dtype)
 
 
 def get_min_remaining_l1_for_device(device):
@@ -88,12 +96,18 @@ class KernelSpec:
             common_runtime_args, in order.
         config: Kernel config descriptor (ComputeConfigDescriptor,
             ReaderConfigDescriptor, WriterConfigDescriptor, or EthernetConfigDescriptor).
+        compiler_include_paths: Additional -I paths for the JIT compiler.
+        core_ranges: Optional per-kernel ttnn.CoreRangeSet. When set, this
+            specialized kernel binary is dispatched only to these cores. When None,
+            the whole-grid core_ranges passed to build_kernel_descriptors is used.
     """
 
     path: str
     thread_type: str
     tensor_indices: List[int]
     config: Any
+    compiler_include_paths: List[str] = field(default_factory=list)
+    core_ranges: Optional[Any] = None
 
 
 @dataclass
@@ -193,12 +207,19 @@ def build_kernel_descriptors(
         else:
             kernel_compile_time_args = cb_indices + list(tensor_accessor_args)
 
+        # Prefer per-kernel core_ranges (specialize-cores clones); otherwise
+        # fall back to the whole-grid core_ranges.
+        kernel_ranges = (
+            spec.core_ranges if spec.core_ranges is not None else core_ranges
+        )
+
         kernel_desc = ttnn.KernelDescriptor(
             kernel_source=spec.path,
-            core_ranges=core_ranges,
+            core_ranges=kernel_ranges,
             compile_time_args=kernel_compile_time_args,
             common_runtime_args=common_runtime_args,
             config=spec.config,
+            compiler_include_paths=spec.compiler_include_paths,
         )
         kernel_descriptors.append(kernel_desc)
 
@@ -400,18 +421,16 @@ def build_cb_descriptors(
                     data_format,
                     page_size,
                     total_size,
+                    None,
                     f"  CB[{i}]: compiler-allocated num_tiles={cb.num_tiles} "
                     f"block_count={cb.block_count} format={cb.data_format} -> {total_size} bytes",
                 )
             )
         else:
-            ref_tensor = cb.tensor
-            if hasattr(ref_tensor, "dtype") and hasattr(ref_tensor.dtype, "name"):
-                data_format = ref_tensor.dtype
-            else:
-                data_format = torch_dtype_to_ttnn_datatype(ref_tensor.dtype)
-
-            page_size = tile_bytes_from_dtype(data_format)
+            data_format = _cb_data_format(cb)
+            tile = ttnn.Tile(cb.tile)
+            tile_descriptor = ttnn.TileDescriptor(tile)
+            page_size = tile.get_tile_size(data_format)
             num_tiles = cb.shape[0] * cb.shape[1] * cb.block_count
             total_size = num_tiles * page_size
             rows.append(
@@ -419,6 +438,7 @@ def build_cb_descriptors(
                     data_format,
                     page_size,
                     total_size,
+                    tile_descriptor,
                     f"  CB[{i}]: shape={cb.shape} block_count={cb.block_count} -> {total_size} bytes",
                 )
             )
@@ -437,7 +457,7 @@ def build_cb_descriptors(
     # Must stay aligned with MLIR ttl-validate-cb-budget (TileType::getSizeBytes) and
     # tile_bytes_from_dtype; see issue #511.
     if total_cb_bytes > remaining_bytes:
-        breakdown = "\n".join(r[3] for r in rows)
+        breakdown = "\n".join(r[-1] for r in rows)
         raise ValueError(
             "Total circular buffer allocation ("
             f"{total_cb_bytes} bytes) exceeds L1 budget ({remaining_bytes} bytes). "
@@ -447,11 +467,14 @@ def build_cb_descriptors(
         )
 
     cb_descriptors = []
-    for i, (data_format, page_size, total_size, _) in enumerate(rows):
+    for i, row in enumerate(rows):
+        data_format, page_size, total_size = row[:3]
+        tile_descriptor = row[3]
         cb_format = ttnn.CBFormatDescriptor(
             buffer_index=i,
             data_format=data_format,
             page_size=page_size,
+            **({"tile": tile_descriptor} if tile_descriptor is not None else {}),
         )
         cb_desc = ttnn.CBDescriptor(
             total_size=total_size,
@@ -607,6 +630,47 @@ def _dtype_to_ttnn_str(data_format) -> str:
     return "ttnn.bfloat16"
 
 
+def _serialize_core_ranges(
+    core_ranges: Optional[Any],
+) -> Optional[List[Tuple[Tuple[int, int], Tuple[int, int]]]]:
+    """Serialize a ttnn.CoreRangeSet to nested ((sx, sy), (ex, ey)) tuples.
+
+    Returns None when core_ranges is None (whole-grid fallback in the runner).
+    """
+    if core_ranges is None:
+        return None
+    serialized = []
+    for core_range in core_ranges.ranges():
+        serialized.append(
+            (
+                (int(core_range.start.x), int(core_range.start.y)),
+                (int(core_range.end.x), int(core_range.end.y)),
+            )
+        )
+    return serialized
+
+
+def _serialize_noc_role(spec: KernelSpec) -> Optional[int]:
+    """Map KernelSpec.config to the ttl.noc_index role for the emitted runner.
+
+    Returns None for compute, 0 for reader, 1 for writer. The emitted file has
+    no MLIR module, so the role already resolved from ttl.noc_index in
+    _compile_ttnn_kernel is baked in here (same idea as KERNEL_CORE_RANGES).
+    """
+    if spec.thread_type == "compute":
+        return None
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+    if isinstance(spec.config, ttnn.ReaderConfigDescriptor):
+        return 0
+    if isinstance(spec.config, ttnn.WriterConfigDescriptor):
+        return 1
+    raise TypeError(
+        f"Unsupported NOC config on kernel '{spec.path}': {type(spec.config)!r}"
+    )
+
+
 def emit_runner_source(
     kernel_specs: List[KernelSpec],
     cb_configs: List[Any],
@@ -669,16 +733,31 @@ def emit_runner_source(
     lines.append("]")
     lines.append("")
 
+    # Per-kernel dispatch ranges from KernelSpec.core_ranges. None means use
+    # the whole-grid core_ranges below; a list of ((sx, sy), (ex, ey)) pairs
+    # rebuilds a CoreRangeSet for specialize-cores clones.
+    lines.append("KERNEL_CORE_RANGES = [")
+    for spec in kernel_specs:
+        lines.append(
+            f"    {_serialize_core_ranges(spec.core_ranges)!r},  # {spec.thread_type}"
+        )
+    lines.append("]")
+    lines.append("")
+
+    # Per-kernel NOC roles from KernelSpec.config (set from ttl.noc_index in
+    # _compile_ttnn_kernel). None = compute, 0 = reader, 1 = writer.
+    lines.append("KERNEL_NOC_INDICES = [")
+    for spec in kernel_specs:
+        lines.append(f"    {_serialize_noc_role(spec)!r},  # {spec.thread_type}")
+    lines.append("]")
+    lines.append("")
+
     lines.append("CB_CONFIGS = [")
     for i, cb in enumerate(cb_configs):
         if cb is None:
             lines.append(f"    None,  # CB {i}")
             continue
-        ref_tensor = cb.tensor
-        if hasattr(ref_tensor, "dtype") and hasattr(ref_tensor.dtype, "name"):
-            data_format = ref_tensor.dtype
-        else:
-            data_format = torch_dtype_to_ttnn_datatype(ref_tensor.dtype)
+        data_format = _cb_data_format(cb)
         page_size = tile_bytes_from_dtype(data_format)
         dtype_str = _dtype_to_ttnn_str(data_format)
         num_tiles = cb.shape[0] * cb.shape[1] * cb.block_count
@@ -733,20 +812,28 @@ def emit_runner_source(
     lines.append("        cb_descriptors.append(cb_desc)")
     lines.append("")
 
+    lines.append("    def _core_ranges_from_spec(ranges_spec):")
+    lines.append("        if ranges_spec is None:")
+    lines.append("            return None")
+    lines.append("        return ttnn.CoreRangeSet([")
+    lines.append("            ttnn.CoreRange(")
+    lines.append("                ttnn.CoreCoord(sx, sy), ttnn.CoreCoord(ex, ey)")
+    lines.append("            )")
+    lines.append("            for (sx, sy), (ex, ey) in ranges_spec")
+    lines.append("        ])")
+    lines.append("")
     lines.append("    kernel_specs = []")
-    lines.append("    noc_idx = 0")
     lines.append("")
     lines.append(
         "    for kernel_idx, (kernel_path, thread_type) in enumerate(KERNEL_PATHS):"
     )
-    lines.append("        if thread_type == 'compute':")
+    lines.append("        noc_index = KERNEL_NOC_INDICES[kernel_idx]")
+    lines.append("        if thread_type == 'compute' or noc_index is None:")
     lines.append("            config = ttnn.ComputeConfigDescriptor()")
+    lines.append("        elif noc_index == 0:")
+    lines.append("            config = ttnn.ReaderConfigDescriptor()")
     lines.append("        else:")
-    lines.append("            if noc_idx == 0:")
-    lines.append("                config = ttnn.ReaderConfigDescriptor()")
-    lines.append("            else:")
-    lines.append("                config = ttnn.WriterConfigDescriptor()")
-    lines.append("            noc_idx += 1")
+    lines.append("            config = ttnn.WriterConfigDescriptor()")
     lines.append("")
     lines.append("        kernel_specs.append(")
     lines.append("            KernelSpec(")
@@ -754,6 +841,10 @@ def emit_runner_source(
     lines.append("                thread_type=thread_type,")
     lines.append("                tensor_indices=KERNEL_TENSOR_INDICES[kernel_idx],")
     lines.append("                config=config,")
+    lines.append(
+        "                core_ranges=_core_ranges_from_spec("
+        "KERNEL_CORE_RANGES[kernel_idx]),"
+    )
     lines.append("            )")
     lines.append("        )")
     lines.append("    kernel_descriptors = build_kernel_descriptors(")

@@ -30,6 +30,7 @@ TT-Lang Documentation
    :caption: Contributor Guide
 
    build
+   macos-simulator-testing
    guidelines
    contributor-guide
    implementation

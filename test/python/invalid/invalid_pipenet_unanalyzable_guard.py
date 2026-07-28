@@ -8,13 +8,10 @@
 """End-to-end coverage for the `could not statically analyze the PipeNet
 guard` diagnostic from `ttl-verify-pipenet-guards`.
 
-The pipe-coupled `ttl.copy(blk, pipe)` is wrapped in `if (x % 2) == 0`.
-The verifier's per-coord folder (`evalIndex` / `evalBool`) handles
-add/sub/mul of constants and core coords but not `arith.remsi`, so the
-predicate is unanalyzable per launch coord. The verifier rejects the
-program and attaches a note to the predicate it couldn't fold; that note
-is the artifact `pickEarlierBySourceLoc` chooses deterministically when
-two unanalyzable predicates feed the same lattice merge.
+The pipe-coupled `ttl.copy(blk, pipe)` is guarded by a predicate read from
+runtime tensor data. The verifier cannot evaluate that predicate for each
+launch coordinate. It rejects the program and attaches a note to the
+predicate it could not fold.
 """
 
 # The Python frontend's diagnostic formatter renders the primary error
@@ -44,6 +41,7 @@ def _host_ttnn(shape):
 def unanalyzable_guard_pipe(inp, out):
     net = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(1, 0))])
 
+    guard_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
     inp_cb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
     out_cb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
@@ -56,10 +54,17 @@ def unanalyzable_guard_pipe(inp, out):
 
     @ttl.datamovement()
     def dm_read():
-        x, _ = ttl.node(dims=2)
-        # `x % 2` lowers to `arith.remsi`, which the verifier cannot fold
-        # per launch coord, so the guard is unanalyzable.
-        if (x % 2) == 0:
+        node_x, _node_y = ttl.node(dims=2)
+        with guard_cb.reserve() as guard_blk:
+            ttl.copy(inp[0, 0], guard_blk).wait()
+
+        with guard_cb.wait() as guard_blk:
+            runtime_lhs = ttl.raw_element_read(guard_blk, 0, 0)
+            runtime_rhs = ttl.raw_element_read(guard_blk, 0, 1)
+            runtime_selected = runtime_lhs > runtime_rhs
+        coordinate_selected = node_x == 0
+
+        if coordinate_selected != runtime_selected:
             with inp_cb.reserve() as blk:
                 ttl.copy(inp[0, 0], blk).wait()
 
