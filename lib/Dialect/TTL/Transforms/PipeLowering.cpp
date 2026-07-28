@@ -427,6 +427,105 @@ buildReceiverPublishedAddress(Value dst, Location loc,
       .getResult();
 }
 
+/// Build the source-role predicate for `pipeType` from the current logical
+/// core.
+static Value buildSrcMatch(OpBuilder &builder, Location loc, Value coreX,
+                           Value coreY, PipeType pipeType) {
+  auto sourceX =
+      arith::ConstantIndexOp::create(builder, loc, pipeType.getSrcX());
+  auto sourceY =
+      arith::ConstantIndexOp::create(builder, loc, pipeType.getSrcY());
+  auto matchX = arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::eq,
+                                      coreX, sourceX);
+  auto matchY = arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::eq,
+                                      coreY, sourceY);
+  return arith::AndIOp::create(builder, loc, matchX, matchY);
+}
+
+/// Values shared by the pre-loop command setup and the per-transfer write.
+struct StatefulOnePacketWriteState {
+  Value nocVal;
+  Value dstStartXVal;
+  Value dstStartYVal;
+  Value dstAddr;
+};
+
+/// Return whether a pipe send can reuse one resident NoC command across loop
+/// iterations.
+///
+/// The one-packet write API keeps destination command fields in hardware
+/// command registers. This rewrite is legal only when no other send in the
+/// same loop can overwrite that state and when the receiver address is static
+/// for every iteration of this transfer.
+static bool
+canUseStatefulOnePacketWrite(PipeTransferSendOp op, PipeType pipeType,
+                             const PipeResourceInfo &pipeResource,
+                             const PipeResourcePlan &pipeResourcePlan,
+                             int64_t cbNumTiles, int64_t totalSizeBytes) {
+  if (!pipeType.hasSingleReceiver() || cbNumTiles != 1 ||
+      totalSizeBytes > getTargetNocMaxBurstBytes(op.getOperation()) ||
+      !pipeResource.addressStorage.usesComputedReceiverDFB() ||
+      !pipeResourcePlan.singleSendLoopSends.contains(op.getOperation())) {
+    return false;
+  }
+
+  assert(pipeResource.addressStorage.computedAddress.has_value() &&
+         "computed pipe missing computed-address info");
+  return !pipeResource.addressStorage.computedAddress->usesDynamicSlotCounter();
+}
+
+/// Emit source-predicated NoC command setup before the transfer loop.
+///
+/// The setup programs the invariant destination node and byte count once. The
+/// per-iteration send supplies the source DFB pointer and destination DFB byte
+/// offset, which are the fields that can change between transfers.
+static StatefulOnePacketWriteState buildStatefulOnePacketWriteState(
+    PipeTransferSendOp op, PipeType pipeType,
+    const PipeComputedAddressInfo &computedAddress,
+    const PipeComputedAddressCounterMap *computedAddressCounters,
+    int64_t totalSizeBytes, int64_t nocIdx,
+    ConversionPatternRewriter &rewriter) {
+  auto loop = op->getParentOfType<scf::ForOp>();
+  assert(loop && "single-send loop analysis only records sends inside scf.for");
+
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(loop);
+
+  Location loc = op.getLoc();
+  auto indexTy = rewriter.getIndexType();
+  auto i32Ty = rewriter.getI32Type();
+
+  Value nocVal = arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
+                                           rewriter.getI8IntegerAttr(nocIdx));
+  auto dstStartXLogical =
+      arith::ConstantIndexOp::create(rewriter, loc, pipeType.getDstStartX());
+  auto dstStartYLogical =
+      arith::ConstantIndexOp::create(rewriter, loc, pipeType.getDstStartY());
+  Value dstStartXVal = ttk::ConvertLogicalXToTranslatedOp::create(
+      rewriter, loc, indexTy, dstStartXLogical);
+  Value dstStartYVal = ttk::ConvertLogicalYToTranslatedOp::create(
+      rewriter, loc, indexTy, dstStartYLogical);
+  Value dstAddr = buildComputedReceiverDFBDestinationAddress(
+      op, loc, computedAddress, computedAddressCounters, rewriter);
+  Value dstNocAddr = ttk::GetNocAddrOp::create(rewriter, loc, dstStartXVal,
+                                               dstStartYVal, dstAddr, nocVal)
+                         .getResult();
+  Value coreX = ttk::MyLogicalXOp::create(rewriter, loc, indexTy);
+  Value coreY = ttk::MyLogicalYOp::create(rewriter, loc, indexTy);
+  Value isSrc = buildSrcMatch(rewriter, loc, coreX, coreY, pipeType);
+  auto sourceIf = scf::IfOp::create(rewriter, loc, isSrc,
+                                    /*withElseRegion=*/false);
+
+  rewriter.setInsertionPointToStart(&sourceIf.getThenRegion().front());
+  Value totalSizeVal = arith::ConstantOp::create(
+      rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(totalSizeBytes));
+  ttk::NocAsyncWriteOnePacketSetStateOp::create(rewriter, loc, dstNocAddr,
+                                                totalSizeVal, nocVal);
+
+  return StatefulOnePacketWriteState{nocVal, dstStartXVal, dstStartYVal,
+                                     dstAddr};
+}
+
 //===----------------------------------------------------------------------===//
 // Receiver post sequence counter initialization
 //===----------------------------------------------------------------------===//
@@ -644,8 +743,6 @@ LogicalResult lowerPipeTransferSend(
   assert(succeeded(cbConverted) && "preflight checked source DFB type");
 
   int64_t nocIdx = getNocIndex(op);
-  Value nocVal = arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
-                                           rewriter.getI8IntegerAttr(nocIdx));
 
   if (usesCapacityProtocol) {
     Value zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
@@ -693,6 +790,28 @@ LogicalResult lowerPipeTransferSend(
   for (int64_t dimension : cbBounds) {
     cbNumTiles *= dimension;
   }
+  // Transfer the entire block in one NoC write. Tiles are contiguous in the
+  // DFB, and destination DFB layout is uniform across nodes, so lowering sends
+  // all tiles at once instead of one per tile.
+  int64_t totalSizeBytes = cbNumTiles * pageSizeBytes;
+  std::optional<StatefulOnePacketWriteState> statefulWriteState;
+  if (canUseStatefulOnePacketWrite(op, pipeType, pipeResource, pipeResourcePlan,
+                                   cbNumTiles, totalSizeBytes)) {
+    assert(pipeResource.addressStorage.computedAddress.has_value() &&
+           "computed pipe missing computed-address info");
+    statefulWriteState = buildStatefulOnePacketWriteState(
+        op, pipeType, *pipeResource.addressStorage.computedAddress,
+        computedAddressCounters, totalSizeBytes, nocIdx, rewriter);
+  }
+
+  Value nocVal;
+  if (statefulWriteState) {
+    nocVal = statefulWriteState->nocVal;
+  } else {
+    nocVal = arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
+                                       rewriter.getI8IntegerAttr(nocIdx));
+  }
+
   // Producer source address is at the source DFB's write_ptr (data is staged
   // there before push_back); consumer source address is at its read_ptr.
   Value srcPtrIdx;
@@ -704,48 +823,53 @@ LogicalResult lowerPipeTransferSend(
     srcPtrIdx = arith::IndexCastOp::create(rewriter, loc, indexTy, srcWritePtr);
   }
 
-  // Hardware multicast destination coordinates use translated NOC coords.
-  auto dstStartXLogical =
-      arith::ConstantIndexOp::create(rewriter, loc, dstStartX);
-  auto dstStartYLogical =
-      arith::ConstantIndexOp::create(rewriter, loc, dstStartY);
-  auto dstEndXLogical = arith::ConstantIndexOp::create(rewriter, loc, dstEndX);
-  auto dstEndYLogical = arith::ConstantIndexOp::create(rewriter, loc, dstEndY);
+  Value dstStartXVal;
+  Value dstStartYVal;
+  Value mcastStartXVal;
+  Value mcastStartYVal;
+  Value mcastEndXVal;
+  Value mcastEndYVal;
+  if (statefulWriteState) {
+    dstStartXVal = statefulWriteState->dstStartXVal;
+    dstStartYVal = statefulWriteState->dstStartYVal;
+  } else {
+    // Hardware multicast destination coordinates use translated NoC coords.
+    auto dstStartXLogical =
+        arith::ConstantIndexOp::create(rewriter, loc, dstStartX);
+    auto dstStartYLogical =
+        arith::ConstantIndexOp::create(rewriter, loc, dstStartY);
+    auto dstEndXLogical =
+        arith::ConstantIndexOp::create(rewriter, loc, dstEndX);
+    auto dstEndYLogical =
+        arith::ConstantIndexOp::create(rewriter, loc, dstEndY);
 
-  // NoC operations require translated coordinates.
-  auto dstStartXVal = ttk::ConvertLogicalXToTranslatedOp::create(
-      rewriter, loc, indexTy, dstStartXLogical);
-  auto dstStartYVal = ttk::ConvertLogicalYToTranslatedOp::create(
-      rewriter, loc, indexTy, dstStartYLogical);
-  auto dstEndXVal = ttk::ConvertLogicalXToTranslatedOp::create(
-      rewriter, loc, indexTy, dstEndXLogical);
-  auto dstEndYVal = ttk::ConvertLogicalYToTranslatedOp::create(
-      rewriter, loc, indexTy, dstEndYLogical);
-  Value mcastStartXVal = dstStartXVal;
-  Value mcastStartYVal = dstStartYVal;
-  Value mcastEndXVal = dstEndXVal;
-  Value mcastEndYVal = dstEndYVal;
-  // TTKernel multicast ops follow tt-metal's NOC1 convention: callers pass
-  // the rectangle with start/end reversed after coordinate translation.
-  if (nocIdx == 1) {
-    std::swap(mcastStartXVal, mcastEndXVal);
-    std::swap(mcastStartYVal, mcastEndYVal);
+    // NoC operations require translated coordinates.
+    dstStartXVal = ttk::ConvertLogicalXToTranslatedOp::create(
+        rewriter, loc, indexTy, dstStartXLogical);
+    dstStartYVal = ttk::ConvertLogicalYToTranslatedOp::create(
+        rewriter, loc, indexTy, dstStartYLogical);
+    auto dstEndXVal = ttk::ConvertLogicalXToTranslatedOp::create(
+        rewriter, loc, indexTy, dstEndXLogical);
+    auto dstEndYVal = ttk::ConvertLogicalYToTranslatedOp::create(
+        rewriter, loc, indexTy, dstEndYLogical);
+    mcastStartXVal = dstStartXVal;
+    mcastStartYVal = dstStartYVal;
+    mcastEndXVal = dstEndXVal;
+    mcastEndYVal = dstEndYVal;
+    // TTKernel multicast ops follow tt-metal's NOC1 convention: callers pass
+    // the rectangle with start/end reversed after coordinate translation.
+    if (nocIdx == 1) {
+      std::swap(mcastStartXVal, mcastEndXVal);
+      std::swap(mcastStartYVal, mcastEndYVal);
+    }
   }
-
-  auto numDestsVal = arith::ConstantOp::create(
-      rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(numDests));
-
-  // Transfer the entire block in one NoC write. Tiles are contiguous in the
-  // DFB, and destination DFB layout is uniform across nodes, so lowering sends
-  // all tiles at once instead of one per tile.
-  int64_t totalSizeBytes = cbNumTiles * pageSizeBytes;
-  auto totalSizeVal = arith::ConstantOp::create(
-      rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(totalSizeBytes));
 
   Value srcAddr = arith::IndexCastOp::create(rewriter, loc, i32Ty, srcPtrIdx);
 
   Value dstAddr;
-  if (pipeResource.addressStorage.usesComputedReceiverDFB()) {
+  if (statefulWriteState) {
+    dstAddr = statefulWriteState->dstAddr;
+  } else if (pipeResource.addressStorage.usesComputedReceiverDFB()) {
     assert(pipeResource.addressStorage.computedAddress.has_value() &&
            "computed pipe missing computed-address info");
     dstAddr = buildComputedReceiverDFBDestinationAddress(
@@ -759,11 +883,20 @@ LogicalResult lowerPipeTransferSend(
 
   // TODO(ttl): Select unicast or multicast from a compiler optimization over
   // the transfer plan instead of directly preserving the user's tt-lang syntax.
-  if (pipeType.hasSingleReceiver()) {
+  if (statefulWriteState) {
+    ttk::NocAsyncWriteOnePacketWithStateOp::create(rewriter, loc, srcAddr,
+                                                   dstAddr, nocVal);
+  } else if (pipeType.hasSingleReceiver()) {
+    auto totalSizeVal = arith::ConstantOp::create(
+        rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(totalSizeBytes));
     ttk::NocAsyncWriteOp::create(rewriter, loc, srcAddr,
                                  ValueRange{dstStartXVal, dstStartYVal},
                                  ValueRange{}, dstAddr, totalSizeVal, nocVal);
   } else {
+    auto numDestsVal = arith::ConstantOp::create(
+        rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(numDests));
+    auto totalSizeVal = arith::ConstantOp::create(
+        rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(totalSizeBytes));
     if (pipeType.srcInDstRange()) {
       ttk::NocAsyncWriteMulticastLoopbackSrcOp::create(
           rewriter, loc, srcAddr, totalSizeVal, numDestsVal, mcastStartXVal,
@@ -1058,19 +1191,6 @@ static void lowerToScfIf(Op op, Value cond,
   rewriter.eraseOp(op);
 }
 
-static Value buildSrcMatch(OpBuilder &builder, Location loc, Value coreX,
-                           Value coreY, PipeType pipeType) {
-  auto sourceX =
-      arith::ConstantIndexOp::create(builder, loc, pipeType.getSrcX());
-  auto sourceY =
-      arith::ConstantIndexOp::create(builder, loc, pipeType.getSrcY());
-  auto matchX = arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::eq,
-                                      coreX, sourceX);
-  auto matchY = arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::eq,
-                                      coreY, sourceY);
-  return arith::AndIOp::create(builder, loc, matchX, matchY);
-}
-
 static Value buildDstMatch(OpBuilder &builder, Location loc, Value coreX,
                            Value coreY, PipeType pipeType) {
   int64_t minX = std::min(pipeType.getDstStartX(), pipeType.getDstEndX());
@@ -1259,6 +1379,26 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
       }
     }
   });
+}
+
+/// Record pipe sends whose nearest `scf.for` contains no other pipe send.
+static void populateSingleSendLoopSends(ModuleOp mod, PipeResourcePlan &info) {
+  llvm::DenseMap<Operation *, SmallVector<Operation *, 4>> sendsByLoop;
+  mod.walk([&](PipeTransferSendOp sendOp) {
+    auto loop = sendOp->getParentOfType<scf::ForOp>();
+    if (!loop) {
+      return;
+    }
+    sendsByLoop[loop.getOperation()].push_back(sendOp.getOperation());
+  });
+
+  info.singleSendLoopSends.clear();
+  for (auto &entry : sendsByLoop) {
+    SmallVector<Operation *, 4> &sendOps = entry.second;
+    if (sendOps.size() == 1) {
+      info.singleSendLoopSends.insert(sendOps.front());
+    }
+  }
 }
 
 namespace {
@@ -1834,6 +1974,7 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, ValueOriginAnalysis &analysis,
       maxAddressTableBytes == 0
           ? 0
           : alignTo(maxAddressTableBytes, kPipeSramScratchAlignmentBytes);
+  populateSingleSendLoopSends(mod, info);
   return success();
 }
 
