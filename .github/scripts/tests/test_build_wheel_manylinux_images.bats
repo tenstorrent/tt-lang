@@ -2,15 +2,16 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 #
-# Tests for the skip-if-exists / :latest-retag logic in
-# .github/containers/build-wheel-manylinux-images.sh.
+# Tests for the skip-if-exists logic in
+# .github/containers/build-wheel-manylinux-images.sh. The workflow publishes
+# :latest only after every selected manylinux image exists.
 
 load test_helper
 
 # Fake `docker`, injected via the DOCKER env var the script honors. Records
 # every invocation's argv to $FAKE_DOCKER_CALLS. `manifest inspect` exit is
-# controlled by FAKE_IMAGE_EXISTS (1 -> image present, else absent); `buildx
-# imagetools` exit by FAKE_BUILDX_FAIL. Everything else succeeds.
+# controlled by FAKE_IMAGE_EXISTS (1 -> image present, else absent). Everything
+# else succeeds.
 make_docker_mock() {
     local mock="$BATS_TEST_TMPDIR/fake-docker"
     cat > "$mock" <<'EOF'
@@ -21,10 +22,6 @@ case "$1 $2" in
         [ "${FAKE_IMAGE_EXISTS:-0}" = "1" ] && exit 0
         exit 1
         ;;
-    "buildx imagetools")
-        [ "${FAKE_BUILDX_FAIL:-0}" = "1" ] && exit 1
-        exit 0
-        ;;
 esac
 exit 0
 EOF
@@ -34,7 +31,6 @@ EOF
 
 TAG="v99.99.99-abcd1234"
 IMG="ghcr.io/tenstorrent/tt-lang/tt-lang-wheel-manylinux-2-34-cp312:${TAG}"
-LATEST="ghcr.io/tenstorrent/tt-lang/tt-lang-wheel-manylinux-2-34-cp312:latest"
 
 setup() {
     SCRIPT="$CONTAINERS_DIR/build-wheel-manylinux-images.sh"
@@ -46,14 +42,14 @@ setup() {
     cd "$REPO"
 }
 
-@test "push + image exists on main: skips build and retags :latest" {
+@test "push + image exists on main: skips build and does not retag :latest" {
     run env FAKE_IMAGE_EXISTS=1 GITHUB_REF=refs/heads/main \
         "$SCRIPT" --image-tag "$TAG" --python-tags cp312
     assert_success
     assert_output --partial "Image already exists, skipping build"
     run cat "$FAKE_DOCKER_CALLS"
     assert_line --partial "manifest inspect $IMG"
-    assert_line --partial "buildx imagetools create -t $LATEST"
+    refute_output --partial "buildx"
     refute_output --partial "build --progress"
     refute_output --partial "push"
 }
@@ -88,13 +84,4 @@ setup() {
     refute_output --partial "buildx"
     assert_line --partial "build --progress"
     refute_output --partial "push"
-}
-
-@test "push + image exists on main but buildx unavailable: warns, still succeeds" {
-    run env FAKE_IMAGE_EXISTS=1 FAKE_BUILDX_FAIL=1 GITHUB_REF=refs/heads/main \
-        "$SCRIPT" --image-tag "$TAG" --python-tags cp312
-    assert_success
-    assert_output --partial "WARNING: could not retag"
-    run cat "$FAKE_DOCKER_CALLS"
-    refute_output --partial "build --progress"
 }

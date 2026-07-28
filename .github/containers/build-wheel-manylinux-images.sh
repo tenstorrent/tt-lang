@@ -130,14 +130,6 @@ for python_tag in $(printf '%s\n' "$PYTHON_TAGS" | tr ',' ' '); do
     # listed in UPLIFT_PATHS.
     if [ "$NO_PUSH" != true ] && ${DOCKER:-docker} manifest inspect "$registry_image" >/dev/null 2>&1; then
         echo "Image already exists, skipping build: $registry_image"
-        # Keep :latest pointing at this tag (server-side retag, no pull). A
-        # revert to a prior tag reuses the existing image, so :latest must be
-        # moved here too, otherwise it lags at a since-reverted tag.
-        if [ "${GITHUB_REF:-}" = "refs/heads/main" ]; then
-            ${DOCKER:-docker} buildx imagetools create \
-                -t "${registry_image%:*}:latest" "$registry_image" \
-                || echo "WARNING: could not retag ${registry_image%:*}:latest (is 'docker buildx' available?)" >&2
-        fi
         continue
     fi
 
