@@ -191,6 +191,7 @@ jobs:
             dist/tt_lang-*.whl
           python .github/scripts/check-installed-ttnn.py --mode "${{ inputs.ttnn_dep_mode }}"
           python .github/scripts/smoke-test-wheel.py
+          command -v tt-triage
 
       - name: Free disk space before remaining wheel tests
         run: |

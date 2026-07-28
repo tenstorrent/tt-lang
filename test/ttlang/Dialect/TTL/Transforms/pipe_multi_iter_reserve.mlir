@@ -115,10 +115,10 @@ func.func @receiver_publishes_reserved_dfb_address() attributes { "ttl.kernel_th
 // CHECK: %[[DST_ADDR:.+]] = ttkernel.get_write_ptr(%[[DST_DFB]])
 // CHECK: ttkernel.noc_inline_dw_write({{.*}}, %[[DST_ADDR]]
 // CHECK: ttkernel.noc_semaphore_inc
-// CHECK: %[[DONE_PTR:.+]] = ttkernel.reinterpret_cast
 // CHECK: memref.load %[[CTR]]
 // CHECK: %[[NEXT:.+]] = arith.addi
 // CHECK: memref.store %[[NEXT]], %[[CTR]]
+// CHECK: %[[DONE_PTR:.+]] = ttkernel.reinterpret_cast
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[DONE_PTR]], %[[NEXT]])
 // CHECK: ttkernel.cb_push_back(%[[DST_DFB]]
 func.func @receiver_advances_wait_counter_inside_loop() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {

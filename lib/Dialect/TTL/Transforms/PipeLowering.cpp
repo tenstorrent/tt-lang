@@ -21,6 +21,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/LiveIntervalUtils.h"
+#include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
 #include "llvm/ADT/DenseMapInfo.h"
 #include "llvm/ADT/Hashing.h"
@@ -99,15 +100,17 @@ static PipeSourceKey getPipeSourceKey(PipeType pipeType) {
   return {pipeType.getSrcX(), pipeType.getSrcY()};
 }
 
-static FailureOr<PipeTransferCreateOp> getPipeTransferCreate(Operation *op,
-                                                             Value transfer) {
-  auto createOp = findPipeTransferCreateForTransfer(transfer);
-  if (!createOp) {
+static FailureOr<PipeTransferCreateOp>
+getPipeTransferCreate(Operation *op, Value transfer,
+                      ValueOriginAnalysis &analysis) {
+  FailureOr<PipeTransferCreateOp> maybeCreateOp =
+      findPipeTransferCreateForTransfer(analysis, transfer);
+  if (failed(maybeCreateOp)) {
     return op->emitError() << op->getName()
-                           << " must use a transfer derived from "
-                              "ttl.pipe_transfer.create";
+                           << " requires every possible transfer value to "
+                              "derive from the same ttl.pipe_transfer.create";
   }
-  return createOp;
+  return *maybeCreateOp;
 }
 
 static PipeResourceInfo
@@ -362,22 +365,25 @@ buildReceiverPublishedAddress(Value dst, Location loc,
 }
 
 //===----------------------------------------------------------------------===//
-// Per-PipeNet receiver counter allocation
+// Per-PipeNet post-sequence allocation
 //===----------------------------------------------------------------------===//
 
-void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters) {
-  // Each kernel function tracks its own receive-wait progress. Walk the
-  // function bodies to find the PipeNets that may complete receives there.
+void allocatePipePostSequenceCounters(ModuleOp mod,
+                                      ValueOriginAnalysis &analysis,
+                                      PipePostSequenceCounterMap &counters) {
+  // The sequence is assigned where a post executes so the token retains the
+  // completion threshold of that dynamic receive.
   mod.walk([&](FuncOp func) {
-    // Collect unique pipeNetIds that have at least one receive in this
-    // function. A runtime counter is required because receive waits may be
-    // dynamically re-executed inside loops.
+    // A runtime counter is required because posts may execute in loops or
+    // conditional regions.
     llvm::SmallSetVector<int64_t, 4> pipeNetIds;
     func.walk([&](Operation *op) {
       if (auto post = mlir::dyn_cast<PipeTransferPostOp>(op)) {
-        auto createOp = findPipeTransferCreateForTransfer(post.getTransfer());
-        assert(createOp && "pipe transfer post missing traced create op");
-        auto pipeTy = mlir::cast<PipeType>(createOp.getPipe().getType());
+        FailureOr<PipeTransferCreateOp> maybeCreateOp =
+            findPipeTransferCreateForTransfer(analysis, post.getTransfer());
+        assert(succeeded(maybeCreateOp) &&
+               "pipe transfer post missing traced create op");
+        auto pipeTy = mlir::cast<PipeType>(maybeCreateOp->getPipe().getType());
         if (getAttachedCB(post.getDst())) {
           pipeNetIds.insert(pipeTy.getPipeNetId());
         }
@@ -412,13 +418,16 @@ void allocatePipeNetReceiveCounters(ModuleOp mod, PipeNetCounterMap &counters) {
 /// destination address, then signal arrival.
 LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
                                     bool isConsumerCB,
+                                    ValueOriginAnalysis &analysis,
                                     const PipeResourcePlan &pipeResourcePlan,
                                     ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
-  PipeTransferCreateOp createOp =
-      findPipeTransferCreateForTransfer(op.getTransfer());
-  assert(createOp &&
+  // buildPipeResourcePlan rejects transfers without a unique create op.
+  FailureOr<PipeTransferCreateOp> maybeCreateOp =
+      findPipeTransferCreateForTransfer(analysis, op.getTransfer());
+  assert(succeeded(maybeCreateOp) &&
          "pipe resource plan analysis already validated transfer provenance");
+  PipeTransferCreateOp createOp = *maybeCreateOp;
   auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
   PipeResourceInfo pipeResource =
       lookupPipeResourceInfo(createOp, pipeResourcePlan);
@@ -627,14 +636,30 @@ LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
 }
 
 LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
+                                    ValueOriginAnalysis &analysis,
+                                    const PipePostSequenceCounterMap &counters,
                                     const PipeResourcePlan &pipeResourcePlan,
                                     ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
-  PipeTransferCreateOp createOp =
-      findPipeTransferCreateForTransfer(op.getTransfer());
-  assert(createOp &&
+  // buildPipeResourcePlan rejects transfers without a unique create op.
+  FailureOr<PipeTransferCreateOp> maybeCreateOp =
+      findPipeTransferCreateForTransfer(analysis, op.getTransfer());
+  assert(succeeded(maybeCreateOp) &&
          "pipe resource plan analysis already validated transfer provenance");
+  PipeTransferCreateOp createOp = *maybeCreateOp;
   auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
+  auto func = op->getParentOfType<func::FuncOp>();
+  auto functionCounters = counters.find(func);
+  if (functionCounters == counters.end()) {
+    op.emitError("pipe receive post has no sequence counter allocation");
+    return failure();
+  }
+  auto sequenceCounter = functionCounters->second.find(pipeType.getPipeNetId());
+  if (sequenceCounter == functionCounters->second.end()) {
+    op.emitError("pipe receive post has no sequence counter for PipeNet ")
+        << pipeType.getPipeNetId();
+    return failure();
+  }
   PipeResourceInfo pipeResource =
       lookupPipeResourceInfo(createOp, pipeResourcePlan);
   FailureOr<ReceiverPublishedAddressInfo> publishedAddressInfo =
@@ -684,15 +709,21 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
       rewriter, loc, senderReadyCounterNocAddr.getResult(),
       readyCounterIncrement, nocVal, /*posted=*/BoolAttr());
 
-  auto token = UnrealizedConversionCastOp::create(
-      rewriter, loc, op.getToken().getType(), ValueRange{});
-  rewriter.replaceOp(op, token.getResult(0));
+  auto zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  auto previousSequence = memref::LoadOp::create(
+      rewriter, loc, sequenceCounter->second, ValueRange{zeroIndex});
+  auto oneI32 = arith::ConstantOp::create(rewriter, loc, rewriter.getI32Type(),
+                                          rewriter.getI32IntegerAttr(1));
+  auto tokenSequence =
+      arith::AddIOp::create(rewriter, loc, previousSequence, oneI32);
+  memref::StoreOp::create(rewriter, loc, tokenSequence, sequenceCounter->second,
+                          ValueRange{zeroIndex});
+  rewriter.replaceOp(op, tokenSequence.getResult());
   return success();
 }
 
-/// Lower the receiver completion wait with a per-PipeNet runtime counter.
-LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op,
-                                    const PipeNetCounterMap *counters,
+/// Lower the receiver completion wait using the posted token's sequence.
+LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op, Value tokenSequence,
                                     const PipeResourcePlan &pipeResourcePlan,
                                     ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
@@ -706,29 +737,6 @@ LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op,
   }
   PipeCompletionWaitInfo completionInfo = completionIt->second;
 
-  Value waitProgressCounter;
-  if (counters) {
-    auto func = op->getParentOfType<func::FuncOp>();
-    auto fIt = counters->find(func);
-    if (fIt != counters->end()) {
-      auto pIt = fIt->second.find(tokenType.getPipeNetId());
-      if (pIt != fIt->second.end()) {
-        waitProgressCounter = pIt->second;
-      }
-    }
-  }
-  if (!waitProgressCounter) {
-    // Counter pre-allocation is a hard precondition. Surfacing this as
-    // notifyMatchFailure would let the partial-conversion driver report
-    // a generic legalization failure instead of the actual pipeline-ordering
-    // bug; emit a real error.
-    op.emitError("pipe receive without per-PipeNet counter; "
-                 "allocatePipeNetReceiveCounters must run before "
-                 "convert-ttl-to-ttkernel");
-    return failure();
-  }
-
-  auto i32Ty = rewriter.getI32Type();
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
 
   auto receiverCompletionCounterSemIdx = arith::ConstantIndexOp::create(
@@ -740,17 +748,8 @@ LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op,
   auto receiverCompletionCounterPtr = ttk::CastToL1PtrOp::create(
       rewriter, loc, l1PtrTy, receiverCompletionCounterAddr);
 
-  auto zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
-  auto previousWaitCount = memref::LoadOp::create(
-      rewriter, loc, waitProgressCounter, ValueRange{zeroIdx});
-  auto oneI32 = arith::ConstantOp::create(rewriter, loc, i32Ty,
-                                          rewriter.getI32IntegerAttr(1));
-  auto nextWaitCount =
-      arith::AddIOp::create(rewriter, loc, previousWaitCount, oneI32);
-  memref::StoreOp::create(rewriter, loc, nextWaitCount, waitProgressCounter,
-                          ValueRange{zeroIdx});
   ttk::SemaphoreWaitMinOp::create(rewriter, loc, receiverCompletionCounterPtr,
-                                  nextWaitCount);
+                                  tokenSequence);
 
   rewriter.eraseOp(op);
   return success();
@@ -1185,7 +1184,7 @@ static bool pipeTransferIntervalsOverlap(const PipeTransferAllocationUnit &lhs,
 }
 
 static FailureOr<SmallVector<PipeTransferAllocationUnit>>
-collectPipeTransferAllocationUnits(ModuleOp mod,
+collectPipeTransferAllocationUnits(ModuleOp mod, ValueOriginAnalysis &analysis,
                                    const DominanceInfo &dominanceInfo,
                                    const PostDominanceInfo &postDominanceInfo) {
   SmallVector<PipeTransferAllocationUnit> units;
@@ -1198,7 +1197,7 @@ collectPipeTransferAllocationUnits(ModuleOp mod,
       [&](Operation *protocolOp,
           Value transfer) -> FailureOr<PipeTransferAllocationUnit *> {
     FailureOr<PipeTransferCreateOp> createOp =
-        getPipeTransferCreate(protocolOp, transfer);
+        getPipeTransferCreate(protocolOp, transfer, analysis);
     if (failed(createOp)) {
       return failure();
     }
@@ -1319,11 +1318,13 @@ assignLiveIntervalColors(MutableArrayRef<PipeTransferAllocationUnit> units,
   return colorUsersBySource;
 }
 
-LogicalResult buildPipeResourcePlan(ModuleOp mod, PipeResourcePlan &info) {
+LogicalResult buildPipeResourcePlan(ModuleOp mod, ValueOriginAnalysis &analysis,
+                                    PipeResourcePlan &info) {
   DominanceInfo dominanceInfo(mod);
   PostDominanceInfo postDominanceInfo(mod);
   FailureOr<SmallVector<PipeTransferAllocationUnit>> maybeUnits =
-      collectPipeTransferAllocationUnits(mod, dominanceInfo, postDominanceInfo);
+      collectPipeTransferAllocationUnits(mod, analysis, dominanceInfo,
+                                         postDominanceInfo);
   if (failed(maybeUnits)) {
     return failure();
   }

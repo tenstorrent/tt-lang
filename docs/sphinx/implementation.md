@@ -5,6 +5,7 @@ This section collects design documents and pipeline traces that describe how TT-
 ## Design Documents
 
 - [Static Execution Analysis](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/StaticExecutionAnalysis.md) - exact operation cardinality in structured control flow
+- [Value Origin Analysis](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/ValueOriginAnalysis.md) - conservative SSA value origins through control flow and tensor updates
 - [DST Register Allocation](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/DST_Allocation.md) — how the `TTLAssignDST` pass assigns destination registers to tile operations
 - [DST Register Utilization](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/DST_Utilization.md) — maximizing tile throughput per DST synchronization cycle
 

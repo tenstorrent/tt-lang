@@ -260,9 +260,10 @@ install(DIRECTORY python/sim_stats DESTINATION python_packages
         FILES_MATCHING PATTERN "*.py"
         PATTERN "__pycache__" EXCLUDE)
 
-# Install tt-lang-sim script to bin directory
+# Install command-line scripts to the bin directory.
 install(PROGRAMS "${CMAKE_SOURCE_DIR}/bin/tt-lang-sim" DESTINATION bin)
 install(PROGRAMS "${CMAKE_SOURCE_DIR}/bin/tt-lang-sim-stats" DESTINATION bin)
+install(PROGRAMS "${CMAKE_SOURCE_DIR}/bin/tt-triage" DESTINATION bin)
 
 # ---------------------------------------------------------------------------
 # Configuration summary

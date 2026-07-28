@@ -85,6 +85,7 @@ mkrepo() {
             third-party/tt-metal \
             .github/containers \
             .github/scripts \
+            bin \
             cmake/modules \
             docs \
             python/sim \
@@ -102,6 +103,7 @@ FROM ubuntu:24.04
 RUN echo "base v1"
 EOF
         echo "normalize toolchain" > .github/scripts/normalize-toolchain-install.sh
+        echo "tt-triage launcher" > bin/tt-triage
         echo "cmake_minimum_required(VERSION 3.28)" > CMakeLists.txt
         echo "build llvm" > cmake/modules/BuildLLVM.cmake
         echo "build tt-metal" > cmake/modules/BuildTTMetal.cmake

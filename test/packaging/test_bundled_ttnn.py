@@ -23,7 +23,7 @@ from bundled_ttnn import (  # noqa: E402
 )
 
 
-def test_staged_metadata_discovers_ttnn_and_tracy_packages(
+def test_staged_metadata_discovers_ttnn_tracy_and_triage_packages(
     tmp_path: Path,
     make_fake_tt_metal_install: Callable[..., Path],
 ) -> None:
@@ -37,8 +37,11 @@ def test_staged_metadata_discovers_ttnn_and_tracy_packages(
     assert "ttnn.operations" in metadata.packages
     assert "ttnn.examples" not in metadata.packages
     assert "tracy" in metadata.packages
+    assert "triage" in metadata.packages
     assert metadata.package_dir["ttnn"] == "stage/ttnn"
+    assert metadata.package_dir["triage"] == "stage/triage"
     assert (tmp_path / "stage" / "ttnn" / "__init__.py").is_file()
+    assert (tmp_path / "stage" / "triage" / "requirements.txt").is_file()
     assert not (tmp_path / "stage" / "ttnn" / "_ttnn.so").exists()
 
 
@@ -95,3 +98,6 @@ def test_copy_bundled_ttnn_uses_pip_wheel_layout(
     ).is_file()
     assert (build_lib / "ttnn" / "tt_metal" / "hw" / "kernel.cpp").is_file()
     assert (build_lib / "tracy" / "__init__.py").is_file()
+    assert (build_lib / "triage" / "triage.py").is_file()
+    assert (build_lib / "triage" / "inspector.capnp").is_file()
+    assert (build_lib / "triage" / "requirements.txt").is_file()

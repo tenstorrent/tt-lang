@@ -557,6 +557,7 @@ class CompiledTTNNKernel:
         num_pipe_sync_semaphores=0,
         pipe_sram_scratch_bytes=0,
         num_pipe_global_semaphores=0,
+        opaque_include_paths=None,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -602,6 +603,7 @@ class CompiledTTNNKernel:
         self.pipe_sram_scratch_bytes = pipe_sram_scratch_bytes
         self.num_pipe_global_semaphores = num_pipe_global_semaphores
         self._pipe_global_semaphore_lifetime = []
+        self.opaque_include_paths = opaque_include_paths or []
 
     def __call__(self, *args):
         """Execute the kernel with the given tensors."""
@@ -629,6 +631,7 @@ class CompiledTTNNKernel:
                 thread_type=thread_type,
                 tensor_indices=tensor_indices,
                 config=config,
+                compiler_include_paths=self.opaque_include_paths,
                 core_ranges=self.kernel_core_ranges[kernel_idx],
             )
             kernel_specs.append(spec)
@@ -836,6 +839,7 @@ def _compile_ttnn_kernel(
     num_pipe_sync_semaphores: int = 0,
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
+    opaque_include_paths: Optional[List[str]] = None,
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -1058,6 +1062,7 @@ def _compile_ttnn_kernel(
         num_pipe_sync_semaphores=num_pipe_sync_semaphores,
         pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
         num_pipe_global_semaphores=num_pipe_global_semaphores,
+        opaque_include_paths=opaque_include_paths or [],
     )
 
     if verbose:
@@ -1074,6 +1079,7 @@ def _compile_ttnn_kernel(
                 thread_type=thread_type,
                 tensor_indices=tensor_indices,
                 config=kernel_configs[kernel_idx],
+                compiler_include_paths=opaque_include_paths or [],
                 core_ranges=kernel_core_ranges[kernel_idx],
             )
             kernel_specs_for_emit.append(spec)
@@ -1734,6 +1740,11 @@ def _lower_program_to_kernel(
             if hasattr(ct, "line_offset"):
                 kernel_line_offsets[ct.name] = ct.line_offset
 
+        # Collect include paths from call_extern_func across all threads.
+        opaque_include_paths = []
+        for ct in compiled_threads:
+            opaque_include_paths.extend(getattr(ct, "_opaque_include_paths", []))
+
         module = Module.create(loc)
         module.operation.attributes["ttl.launch_grid"] = ArrayAttr.get(
             [
@@ -1971,6 +1982,7 @@ def _lower_program_to_kernel(
             num_pipe_sync_semaphores=pipe_sync_semaphore_count,
             pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=pipe_global_semaphore_count,
+            opaque_include_paths=opaque_include_paths,
         )
         return compiled_kernel
 

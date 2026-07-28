@@ -4,12 +4,12 @@
 
 #include "ttlang/Analysis/ExecutionCountAnalysis.h"
 
+#include "ttlang/Analysis/LoopIterationUtils.h"
+
 #include "mlir/Analysis/DataFlow/ConstantPropagationAnalysis.h"
 #include "mlir/Analysis/DataFlow/DeadCodeAnalysis.h"
 #include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Analysis/DataFlowFramework.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
@@ -18,7 +18,6 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SCCIterator.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/CheckedArithmetic.h"
@@ -136,30 +135,6 @@ struct BlockCountResult {
   llvm::DenseMap<Block *, std::optional<std::uint64_t>> blockCounts;
 };
 
-/// Bounds the loop iterations examined while proving one operation count.
-class EnumerationBudget {
-public:
-  explicit EnumerationBudget(std::uint64_t remainingIterations)
-      : remainingIterations(remainingIterations) {}
-
-  /// Return whether the requested iterations fit without consuming them.
-  bool canConsume(std::uint64_t iterationCount) const {
-    return iterationCount <= remainingIterations;
-  }
-
-  /// Consume one iteration, or return false when no budget remains.
-  bool tryConsume() {
-    if (remainingIterations == 0) {
-      return false;
-    }
-    --remainingIterations;
-    return true;
-  }
-
-private:
-  std::uint64_t remainingIterations;
-};
-
 /// Return whether the parent may transition between the two child regions.
 bool isRegionReachable(RegionBranchOpInterface branch, Region &sourceRegion,
                        Region &targetRegion) {
@@ -231,7 +206,7 @@ public:
       return std::nullopt;
     }
 
-    llvm::DenseMap<Value, llvm::APInt> inductionValues;
+    LoopInductionBindings inductionValues;
     EnumerationBudget enumerationBudget(options.maxEnumeratedIterations);
     std::optional<std::uint64_t> maybeRootBlockCount =
         getExactBlockInvocationCount(rootRegion, rootBlock, inductionValues);
@@ -278,21 +253,20 @@ private:
     return true;
   }
 
-  IntegerExpressionEvaluator createIntegerEvaluator(
-      const llvm::DenseMap<Value, llvm::APInt> &inductionValues) const {
-    return IntegerExpressionEvaluator(
-        [this, &inductionValues](Value value) -> std::optional<llvm::APInt> {
-          if (auto inductionValue = inductionValues.find(value);
-              inductionValue != inductionValues.end()) {
-            return inductionValue->second;
-          }
-          if (std::optional<llvm::APInt> maybeConstant =
-                  getDataFlowIntegerConstant(value)) {
-            return maybeConstant;
-          }
-          return symbolValueEvaluator ? symbolValueEvaluator(value)
-                                      : std::nullopt;
-        });
+  IntegerExpressionEvaluator
+  createIntegerEvaluator(const LoopInductionBindings &inductionValues) const {
+    return createLoopIntegerEvaluator(inductionValues, [this](Value value) {
+      return evaluateContextValue(value);
+    });
+  }
+
+  /// Evaluate values established outside the current induction bindings.
+  std::optional<llvm::APInt> evaluateContextValue(Value value) const {
+    if (std::optional<llvm::APInt> maybeConstant =
+            getDataFlowIntegerConstant(value)) {
+      return maybeConstant;
+    }
+    return symbolValueEvaluator ? symbolValueEvaluator(value) : std::nullopt;
   }
 
   /// Return an integer constant propagated through block and region arguments.
@@ -310,9 +284,9 @@ private:
     return integerAttr ? std::optional(integerAttr.getValue()) : std::nullopt;
   }
 
-  SmallVector<Attribute> evaluateOperands(
-      Operation *operation,
-      const llvm::DenseMap<Value, llvm::APInt> &inductionValues) const {
+  SmallVector<Attribute>
+  evaluateOperands(Operation *operation,
+                   const LoopInductionBindings &inductionValues) const {
     SmallVector<Attribute> operands;
     operands.reserve(operation->getNumOperands());
     IntegerExpressionEvaluator integerEvaluator =
@@ -355,9 +329,9 @@ private:
   }
 
   /// Return the target block's exact count from its possible control-flow CFG.
-  std::optional<std::uint64_t> getExactBlockInvocationCount(
-      Region &region, Block *targetBlock,
-      const llvm::DenseMap<Value, llvm::APInt> &inductionValues) {
+  std::optional<std::uint64_t>
+  getExactBlockInvocationCount(Region &region, Block *targetBlock,
+                               const LoopInductionBindings &inductionValues) {
     if (!targetBlock || targetBlock->getParent() != &region || region.empty()) {
       return std::nullopt;
     }
@@ -385,9 +359,9 @@ private:
   }
 
   /// Encode the successor edges possible under the current induction values.
-  FailureOr<BlockFlowKey> getBlockFlowKey(
-      Region &region,
-      const llvm::DenseMap<Value, llvm::APInt> &inductionValues) const {
+  FailureOr<BlockFlowKey>
+  getBlockFlowKey(Region &region,
+                  const LoopInductionBindings &inductionValues) const {
     BlockFlowKey flowKey;
     for (Block &block : region) {
       Operation *terminator = block.getTerminator();
@@ -510,8 +484,7 @@ private:
   }
 
   std::optional<std::uint64_t> getExactRegionInvocationCount(
-      ControlFrame frame,
-      const llvm::DenseMap<Value, llvm::APInt> &inductionValues) const {
+      ControlFrame frame, const LoopInductionBindings &inductionValues) const {
     if (regionInvocationCountEvaluator) {
       if (std::optional<std::uint64_t> maybeCount =
               regionInvocationCountEvaluator(*frame.region)) {
@@ -571,56 +544,9 @@ private:
     return *maybeUpperBound;
   }
 
-  std::optional<llvm::APInt> getSCFForTripCount(
-      scf::ForOp forOp,
-      const llvm::DenseMap<Value, llvm::APInt> &inductionValues) const {
-    if (std::optional<llvm::APInt> maybeTripCount =
-            forOp.getStaticTripCount()) {
-      return maybeTripCount;
-    }
-
-    IntegerExpressionEvaluator integerEvaluator =
-        createIntegerEvaluator(inductionValues);
-    std::optional<llvm::APInt> maybeLowerBound =
-        integerEvaluator.evaluate(forOp.getLowerBound());
-    std::optional<llvm::APInt> maybeUpperBound =
-        integerEvaluator.evaluate(forOp.getUpperBound());
-    std::optional<llvm::APInt> maybeStep =
-        integerEvaluator.evaluate(forOp.getStep());
-    if (!maybeLowerBound || !maybeUpperBound || !maybeStep ||
-        maybeStep->isZero()) {
-      return std::nullopt;
-    }
-
-    IntegerAttr lowerBoundAttr =
-        IntegerAttr::get(forOp.getLowerBound().getType(), *maybeLowerBound);
-    IntegerAttr upperBoundAttr =
-        IntegerAttr::get(forOp.getUpperBound().getType(), *maybeUpperBound);
-    IntegerAttr stepAttr =
-        IntegerAttr::get(forOp.getStep().getType(), *maybeStep);
-    return constantTripCount(lowerBoundAttr, upperBoundAttr, stepAttr,
-                             /*isSigned=*/!forOp.getUnsignedCmp(),
-                             scf::computeUbMinusLb);
-  }
-
-  std::optional<std::uint64_t> getLoopTripCount(
-      LoopLikeOpInterface loop,
-      const llvm::DenseMap<Value, llvm::APInt> &inductionValues) const {
-    std::optional<llvm::APInt> maybeTripCount = loop.getStaticTripCount();
-    if (!maybeTripCount) {
-      if (auto forOp = dyn_cast<scf::ForOp>(loop.getOperation())) {
-        maybeTripCount = getSCFForTripCount(forOp, inductionValues);
-      }
-    }
-    if (!maybeTripCount || maybeTripCount->getActiveBits() > 64) {
-      return std::nullopt;
-    }
-    return maybeTripCount->getZExtValue();
-  }
-
   std::optional<std::uint64_t>
   countInsideFrame(ArrayRef<ControlFrame> frames, std::size_t frameIndex,
-                   llvm::DenseMap<Value, llvm::APInt> &inductionValues,
+                   LoopInductionBindings &inductionValues,
                    EnumerationBudget &enumerationBudget) {
     ControlFrame frame = frames[frameIndex];
     std::optional<std::uint64_t> maybeBlockCount = getExactBlockInvocationCount(
@@ -637,7 +563,7 @@ private:
 
   std::optional<std::uint64_t>
   countExecutions(ArrayRef<ControlFrame> frames, std::size_t frameIndex,
-                  llvm::DenseMap<Value, llvm::APInt> &inductionValues,
+                  LoopInductionBindings &inductionValues,
                   EnumerationBudget &enumerationBudget) {
     if (frameIndex == frames.size()) {
       return 1;
@@ -666,7 +592,9 @@ private:
     }
 
     std::optional<std::uint64_t> maybeTripCount =
-        getLoopTripCount(loop, inductionValues);
+        tt::getLoopTripCount(loop, inductionValues, [this](Value value) {
+          return evaluateContextValue(value);
+        });
     if (!maybeTripCount) {
       return std::nullopt;
     }
@@ -688,43 +616,30 @@ private:
       return llvm::checkedMulUnsigned(*maybeTripCount, *maybeNestedCount);
     }
 
-    auto forOp = dyn_cast<scf::ForOp>(frame.parent);
-    if (!forOp || !enumerationBudget.canConsume(*maybeTripCount)) {
+    if (!enumerationBudget.canConsume(*maybeTripCount)) {
       return std::nullopt;
     }
-    IntegerExpressionEvaluator integerEvaluator =
-        createIntegerEvaluator(inductionValues);
-    std::optional<llvm::APInt> maybeInductionValue =
-        integerEvaluator.evaluate(forOp.getLowerBound());
-    std::optional<llvm::APInt> maybeStep =
-        integerEvaluator.evaluate(forOp.getStep());
-    if (!maybeInductionValue || !maybeStep) {
-      return std::nullopt;
-    }
-
-    assert(maybeInductionValue->getBitWidth() == maybeStep->getBitWidth() &&
-           "loop bounds and step must have the same bit width");
-    llvm::scope_exit restoreInductionValue(
-        [&] { inductionValues.erase(forOp.getInductionVar()); });
     std::uint64_t total = 0;
-    for (std::uint64_t iteration = 0; iteration < *maybeTripCount;
-         ++iteration) {
-      if (!enumerationBudget.tryConsume()) {
-        return std::nullopt;
-      }
-      inductionValues[forOp.getInductionVar()] = *maybeInductionValue;
-      maybeNestedCount = countInsideFrame(frames, frameIndex, inductionValues,
-                                          enumerationBudget);
-      if (!maybeNestedCount) {
-        return std::nullopt;
-      }
-      std::optional<std::uint64_t> maybeNextTotal =
-          llvm::checkedAddUnsigned(total, *maybeNestedCount);
-      if (!maybeNextTotal) {
-        return std::nullopt;
-      }
-      total = *maybeNextTotal;
-      *maybeInductionValue += *maybeStep;
+    SmallVector<LoopLikeOpInterface, 1> loops{loop};
+    LogicalResult enumerationResult = enumerateLoopNest(
+        loops, inductionValues, enumerationBudget,
+        [&](const LoopInductionBindings &) {
+          maybeNestedCount = countInsideFrame(
+              frames, frameIndex, inductionValues, enumerationBudget);
+          if (!maybeNestedCount) {
+            return failure();
+          }
+          std::optional<std::uint64_t> maybeNextTotal =
+              llvm::checkedAddUnsigned(total, *maybeNestedCount);
+          if (!maybeNextTotal) {
+            return failure();
+          }
+          total = *maybeNextTotal;
+          return success();
+        },
+        [this](Value value) { return evaluateContextValue(value); });
+    if (failed(enumerationResult)) {
+      return std::nullopt;
     }
     return total;
   }

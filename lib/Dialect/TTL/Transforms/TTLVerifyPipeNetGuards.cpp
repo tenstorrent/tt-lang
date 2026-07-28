@@ -13,6 +13,7 @@
 
 #include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Analysis/DataFlowFramework.h"
+#include "ttlang/Analysis/ValueOriginAnalysis.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
@@ -58,19 +59,21 @@ bool isPipeReceiveCopy(CopyOp copyOp) {
          getAttachedCB(copyOp.getDst());
 }
 
-/// Trace a `ttl.wait` transfer handle back to its receive-side pipe copy.
-std::optional<CopyOp> findDefiningPipeReceiveCopy(Value value) {
-  llvm::SmallPtrSet<Value, 16> seen;
-  return traceTransferHandleSource<std::optional<CopyOp>>(
-      value,
-      [](Value source) {
-        auto copyOp = source.getDefiningOp<CopyOp>();
-        if (copyOp && isPipeReceiveCopy(copyOp)) {
-          return std::optional<CopyOp>(copyOp);
+/// Return the unique pipe receive copied by a wait, or no value for a non-pipe
+/// wait. Fail when different possible sources require different events.
+FailureOr<std::optional<CopyOp>>
+findDefiningPipeReceiveCopy(ValueOriginAnalysis &analysis, Value value) {
+  return analysis.getOrigins(value).uniqueMapped<std::optional<CopyOp>>(
+      [](Value origin) -> FailureOr<std::optional<CopyOp>> {
+        if (auto copyOp = origin.getDefiningOp<CopyOp>()) {
+          return isPipeReceiveCopy(copyOp) ? std::optional<CopyOp>(copyOp)
+                                           : std::optional<CopyOp>();
         }
-        return std::optional<CopyOp>();
-      },
-      seen);
+        if (origin.getDefiningOp<PipeTransferSendOp>()) {
+          return std::optional<CopyOp>();
+        }
+        return failure();
+      });
 }
 
 /// Pipe synchronization event used by the wait-for graph verifier.
@@ -92,6 +95,9 @@ void checkKnownSubset(Operation *op, const LaunchNodeDomain &current,
                       ModuleState &state);
 
 struct ModuleState : LaunchNodeDomainState {
+  explicit ModuleState(ModuleOp module) : valueOrigins(module) {}
+
+  ValueOriginAnalysis valueOrigins;
   llvm::DenseMap<int64_t, LaunchNodeDomain> cbProducerDomains;
   SmallVector<WaitUse> waitUses;
   SmallVector<PipeEvent> pipeEvents;
@@ -132,11 +138,20 @@ struct ModuleState : LaunchNodeDomainState {
   /// destination-guarded.
   void recordPipeWaitEvent(WaitOp waitOp, const LaunchNodeDomain &domain,
                            Operation *unanalyzableOp) {
-    std::optional<CopyOp> copyOp = findDefiningPipeReceiveCopy(waitOp.getXf());
-    if (!copyOp.has_value()) {
+    FailureOr<std::optional<CopyOp>> maybeCopyOp =
+        findDefiningPipeReceiveCopy(valueOrigins, waitOp.getXf());
+    if (failed(maybeCopyOp)) {
+      waitOp.emitOpError()
+          << "requires either every possible source to be the same pipe "
+             "receive ttl.copy or no source to be a pipe receive";
+      sawError = true;
       return;
     }
-    auto pipeType = mlir::cast<PipeType>(copyOp->getSrc().getType());
+    if (!maybeCopyOp->has_value()) {
+      return;
+    }
+    CopyOp copyOp = **maybeCopyOp;
+    auto pipeType = mlir::cast<PipeType>(copyOp.getSrc().getType());
 
     int64_t netId = pipeType.getPipeNetId();
     std::string name = netName(netId);
@@ -846,7 +861,7 @@ struct TTLVerifyPipeNetGuardsPass
   void runOnOperation() override {
     ModuleOp module = getOperation();
 
-    ModuleState state;
+    ModuleState state(module);
     state.initialize(module);
     if (state.hasPipes() && !state.hasLaunchGrid) {
       module.emitError()

@@ -20,11 +20,13 @@ UPLIFT_PATHS=(
     third-party/tt-metal-version
     third-party/llvm-project
     third-party/tt-metal
+    .github/containers/Dockerfile
     .github/containers/Dockerfile.base
     .github/containers/Dockerfile.wheel-manylinux-2-34
     .github/containers/build-wheel-manylinux-images.sh
     .github/containers/cleanup-toolchain.sh
     .github/scripts/normalize-toolchain-install.sh
+    bin/tt-triage
     CMakeLists.txt
     cmake/modules/BuildLLVM.cmake
     cmake/modules/BuildTTMetal.cmake

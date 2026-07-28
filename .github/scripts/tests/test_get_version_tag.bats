@@ -81,6 +81,10 @@ container_input_one_path() {
     container_input_one_path ".github/containers/Dockerfile.base"
 }
 
+@test "container input change in .github/containers/Dockerfile -> -<hash> form" {
+    container_input_one_path ".github/containers/Dockerfile"
+}
+
 @test "container input change in .github/containers/Dockerfile.wheel-manylinux-2-34 -> -<hash> form" {
     container_input_one_path ".github/containers/Dockerfile.wheel-manylinux-2-34"
 }
@@ -99,6 +103,10 @@ container_input_one_path() {
 
 @test "container input change in requirements.txt -> -<hash> form" {
     container_input_one_path "requirements.txt"
+}
+
+@test "container input change in bin/tt-triage -> -<hash> form" {
+    container_input_one_path "bin/tt-triage"
 }
 
 @test "container input change in build-and-install.sh -> -<hash> form" {
