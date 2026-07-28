@@ -649,6 +649,8 @@ def _compile_atom(
         l1_budget_override=l1_budget_override,
         kernel_source_file=spec.source_file,
         kernel_line_offset=spec.line_offset,
+        mesh_program_placements=None,
+        device_domain=None,
     )
 
 
