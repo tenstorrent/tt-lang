@@ -27,8 +27,8 @@
 // CHECK:   ptrdiff_t [[CB_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB]].get_write_ptr();
 // CHECK:   size_t [[CB_PTR_IDX:v[0-9]+]] = (size_t) [[CB_PTR_PTRDIFF]];
 // CHECK:   for (size_t [[TILE_Y:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE_Y]] < [[TILES_BOUND]]; [[TILE_Y]] += [[TILE_STEP]]) {
+// CHECK:     size_t [[TILE_OFFSET_Y:v[0-9]+]] = [[TILE_Y]] * [[TILES_BOUND]];
 // CHECK:     for (size_t [[TILE_X:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE_X]] < [[TILES_BOUND]]; [[TILE_X]] += [[TILE_STEP]]) {
-// CHECK:       size_t [[TILE_OFFSET_Y:v[0-9]+]] = [[TILE_Y]] * [[TILES_BOUND]];
 // CHECK:       size_t [[TILE_OFFSET_X:v[0-9]+]] = [[TILE_OFFSET_Y]] + [[TILE_X]];
 // CB address computation: cb_ptr + tile_offset * page_size (all size_t arithmetic)
 // CHECK:       size_t [[BYTE_OFF:v[0-9]+]] = [[TILE_OFFSET_X]] * [[PAGE_SIZE]];
