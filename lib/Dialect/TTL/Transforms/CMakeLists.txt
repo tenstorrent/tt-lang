@@ -14,6 +14,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   InterferenceGraphColoring.cpp
   PipeGraph.cpp
   PipeLowering.cpp
+  PipePlanning.cpp
   PipeTransferAnalysis.cpp
   ConvertTTLToCompute.cpp
   ConvertTTLComputeToSCF.cpp
