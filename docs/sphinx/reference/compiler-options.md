@@ -143,18 +143,23 @@ the symptom of the window being too tight, not a device fault.
 forever.
 
 Collection **acts on nothing**. It reads every PC off the debug bus and resolves
-frames from DWARF, so no core is halted, the process is not stopped, and the device
-is left exactly as the hang found it. tt-metal's timeout then throws as it always
-would. Inspecting the incident, killing the process and resetting the device are
-yours to decide, in that order.
+frames from DWARF, so no core is halted and the device is left exactly as the hang
+found it. Halting a core to unwind frames further up the stack is terminal on
+Blackhole, so only the top frame and its inlined frames are collected.
 
-Two things follow from that. Halting a core to unwind frames further up the stack
-is terminal on Blackhole, so only the top frame and its inlined frames are
-collected. And whatever closes the device on the way out (a caller's `finally`, a
-pytest fixture) will wait the full timeout for every chip's stuck dispatch cores,
-because that teardown wait cannot succeed while workers are stuck; tt-metal catches
-and discards the result anyway (`dispatch_kernel_initializer.cpp:249-251`). Reset
-with `tt-smi` rather than waiting it out.
+Then it **parks**, holding the device open until you kill it. tt-metal runs the
+collector through a blocking `std::system` and throws only once it returns, so
+never returning means the exception never unwinds: nothing closes the device, and
+no chip pays a teardown wait. That matters because those waits are bounded by this
+same variable and are paid *per chip* — a 32-chip mesh at a five second window is
+160 seconds of sequential timeouts, each logging a backtrace, and tt-metal catches
+and discards the result anyway (`dispatch_kernel_initializer.cpp:249-251`). Parking
+separates hang detection from device teardown: the detector still fires after five
+seconds without progress, and the device simply stays open.
+
+So inspect it live from another shell while it is parked, then kill the process and
+reset with `tt-smi`. Ctrl-C unparks instead, and the throw and the teardown waits
+follow.
 
 The incident directory holds:
 

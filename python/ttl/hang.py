@@ -17,8 +17,11 @@ waits entirely, so it neither counts as progress nor consumes the window.
 
 tt-lang arms it and points it at ``ttl/hang_collect.py``, which tt-metal runs
 synchronously inside the hung process, before it throws. That collector reads PCs
-and symbolizes them without halting anything, writes an incident directory, and
-says where it is. Then tt-metal's throw propagates as it always would.
+and symbolizes them without halting anything, writes an incident directory, says
+where it is, and then parks forever. Parking is what separates detection from the
+device: tt-metal throws only once the hook returns, so never returning means the
+exception never unwinds, nothing closes the device, and no chip pays a teardown
+wait.
 
 Nothing here touches the device or the process. Inspecting the incident, killing
 the process and resetting the device are all the caller's calls to make, on the

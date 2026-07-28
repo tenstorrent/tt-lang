@@ -17,8 +17,11 @@ into the report as a named failure.
 Every read is halt-free. PCs come off the debug bus and frames come from DWARF,
 so the device is left exactly as the hang found it and nothing here decides its
 fate. Halting a core to unwind real frames is terminal on Blackhole, which is why
-this does not do it. Inspecting the incident, killing the process and resetting
-the device are the caller's calls to make.
+this does not do it.
+
+Then it parks: see park() for why never returning is what keeps the device open
+and the teardown waits from firing. Killing the process and resetting the device
+are the caller's calls to make.
 """
 
 import json
@@ -514,11 +517,34 @@ def main() -> int:
             f"tt-lang: {len(report.failures)} collection step(s) failed; "
             f"see {REPORT_FILE}"
         )
-    print("tt-lang: nothing was halted, killed or reset. YOU MUST, before rerunning:")
-    print("tt-lang:   1. kill this process (it will not recover; the device is stuck)")
-    print("tt-lang:   2. reset the device: tt-smi -glx_reset_auto on a galaxy,")
-    print("tt-lang:      tt-smi -r otherwise, then wait for it to settle")
+    park()
     return 0
+
+
+def park() -> None:
+    """Block here forever, holding the device open, until the user kills us.
+
+    tt-metal runs this collector through a blocking ``std::system`` and throws
+    only once it returns (``metal_context.cpp:793``). Never returning means the
+    throw never happens, so no caller ``finally`` and no pytest fixture closes the
+    device: no teardown wait per chip, and no 32-chip cascade of them. The device
+    stays exactly as the hang left it, which is what makes a live tt-exalens read
+    from another shell worth doing.
+
+    Ctrl-C exits instead, and then the throw and the teardown waits follow.
+    """
+    print("tt-lang: PARKED, holding the device open so you can inspect it live.")
+    print("tt-lang:   attach from another shell (halt-free, safe while parked);")
+    print("tt-lang:   see 'Inspecting a stuck CB or semaphore' in CLAUDE.md.")
+    print("tt-lang: when done, kill this process, then reset the device:")
+    print("tt-lang:   tt-smi -glx_reset_auto on a galaxy, tt-smi -r otherwise.")
+    sys.stdout.flush()
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        print("tt-lang: unparked. tt-metal will now throw and close the device.")
+        sys.stdout.flush()
 
 
 if __name__ == "__main__":
