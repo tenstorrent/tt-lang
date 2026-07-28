@@ -12,7 +12,7 @@ import inspect
 import os
 import random
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 ttnn = None  # Lazy-loaded on first access via _ensure_ttnn()
 
@@ -74,7 +74,7 @@ from .dataflow_buffer import (
     PhysicalDFBConfig,
     get_cb_count,
 )
-from .pipe import Pipe, PipeNet
+from .pipe import Pipe, PipeNet, _iter_pipe_nets_in_value
 from .constants import SUPPORTED_MEMORY_SPACES
 from .diagnostics import (
     TTLangCompileError,
@@ -1128,12 +1128,14 @@ def _build_operation_pipenets(f: Callable, threads):
                 value = cell.cell_contents
             except ValueError:
                 continue
-            if isinstance(value, PipeNet) and id(value) not in seen:
-                seen[id(value)] = value
+            for net in _iter_pipe_nets_in_value(value, set()):
+                if id(net) not in seen:
+                    seen[id(net)] = net
         fn_globals = getattr(func, "__globals__", None) or {}
         for value in fn_globals.values():
-            if isinstance(value, PipeNet) and id(value) not in seen:
-                seen[id(value)] = value
+            for net in _iter_pipe_nets_in_value(value, set()):
+                if id(net) not in seen:
+                    seen[id(net)] = net
 
     visit(f)
     for thread in threads:
@@ -1165,7 +1167,7 @@ def _build_pipenet_graph(nets):
 
 def _collect_captures(
     f: Callable,
-) -> Dict[str, Union[int, DataflowBuffer, Pipe]]:
+) -> Dict[str, Any]:
     """
     Collect and convert captured variables from function closure.
 
@@ -1173,7 +1175,9 @@ def _collect_captures(
         f: Function with closure to inspect
 
     Returns:
-        Dictionary mapping variable names to converted values
+        Dictionary mapping variable names to accepted capture values. Captures
+        may be scalars, tensors, DFBs, Pipes, PipeNets, or Python containers
+        that contain at least one PipeNet.
 
     Raises:
         TypeError: If closure contains unsupported variable types
@@ -1191,6 +1195,8 @@ def _collect_captures(
         elif isinstance(val, Pipe):
             return val
         elif isinstance(val, PipeNet):
+            return val
+        elif any(_iter_pipe_nets_in_value(val, set())):
             return val
         else:
             raise TypeError(f"Unhandled capture for vars of type({type(val)})")
