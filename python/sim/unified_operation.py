@@ -80,9 +80,21 @@ def _load_atom_split() -> types.ModuleType:
 
 
 def _parse_operation_funcdef(func: Callable[..., Any]) -> ast.FunctionDef:
-    """Parse ``func``'s source and return its top-level ``FunctionDef``."""
-    source = textwrap.dedent("".join(inspect.getsourcelines(func)[0]))
+    """Parse ``func``'s source and return its top-level ``FunctionDef``.
+
+    Line numbers are rebased onto the enclosing file, because the synthesized
+    kernels are compiled under that file's name and the rest of the simulator
+    reads them as absolute: ``analysis.py`` re-derives each kernel's source with
+    ``inspect.getsourcelines`` (which starts from ``co_firstlineno``) and keys
+    copy-wait injection points on absolute line numbers, and the splitter quotes
+    line numbers in its error messages. Leaving the parse numbered from 1 makes
+    that lookup read the top of the file instead of the operation body, so no
+    injection points match and diagnostics point at unrelated lines.
+    """
+    source_lines, file_start_line = inspect.getsourcelines(func)
+    source = textwrap.dedent("".join(source_lines))
     tree = ast.parse(source)
+    ast.increment_lineno(tree, file_start_line - 1)
     for node in tree.body:
         if isinstance(node, ast.FunctionDef):
             return node
