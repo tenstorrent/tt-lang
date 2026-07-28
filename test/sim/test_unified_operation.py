@@ -16,6 +16,7 @@ absolute line numbers.
 from __future__ import annotations
 
 import ast
+import re
 import sys
 from pathlib import Path
 from typing import Any, Optional
@@ -27,9 +28,12 @@ from sim.copy import copy as renamed_copy
 from sim.decorators import compute, datamovement
 from sim.dfb import make_dataflow_buffer_like
 from sim.unified_operation import (  # type: ignore[reportPrivateUsage]
+    _is_setup_stmt,
+    _local_dfb_names,
     _parse_operation_funcdef,
     _reject_aliased_api,
-    _symbol_table,
+    _reject_unsupported_setup,
+    _rules,
     build_multikernel_function,
     is_unified_body,
 )
@@ -293,7 +297,7 @@ def _rejection_reason(body: Any) -> Optional[str]:
     """The guard's complaint about ``body``, or None if it accepts it."""
     fn_def = _parse_operation_funcdef(body)
     try:
-        _reject_aliased_api(fn_def, _symbol_table(body))
+        _reject_aliased_api(fn_def, _rules().function_scope(body))
     except ValueError as error:
         return str(error)
     return None
@@ -378,6 +382,298 @@ def test_unified_body_with_aliased_api_is_rejected(fixture: str) -> None:
     code, out = run_script_in_process(FIXTURES_DIR / fixture)
     assert code != 0, f"aliased unified body unexpectedly ran:\n{out}"
     assert "must reference it as 'ttl'" in out, f"unexpected failure mode:\n{out}"
+
+
+USE_LARGE_BUFFER = True  # compile-time switch for the sample bodies below
+
+
+def _unified_body_dfb_under_if(a: Any, out: Any) -> None:
+    """A DFB constructed on both arms of a compile-time condition."""
+    if USE_LARGE_BUFFER:
+        dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=4)
+    else:
+        dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+    blk = dfb.reserve()
+    ttl.copy(a[0:1, 0:1], blk).wait()
+    blk.push()
+    out_blk = dfb.wait()
+    ttl.copy(out_blk, out[0:1, 0:1]).wait()
+    out_blk.pop()
+
+
+def _unified_body_dfb_in_loop(a: Any, out: Any) -> None:
+    """A DFB reconstructed on every iteration of a loop."""
+    for i in range(2):
+        dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+        blk = dfb.reserve()
+        ttl.copy(a[i : i + 1, 0:1], blk).wait()
+        blk.push()
+        out_blk = dfb.wait()
+        ttl.copy(out_blk, out[i : i + 1, 0:1]).wait()
+        out_blk.pop()
+
+
+def _unified_body_dfb_tuple_target(a: Any, out: Any) -> None:
+    """Two DFBs bound by a single tuple-target assignment."""
+    in_dfb, out_dfb = (
+        ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2),
+        ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2),
+    )
+    in_blk = in_dfb.reserve()
+    ttl.copy(a[0:1, 0:1], in_blk).wait()
+    in_blk.push()
+    out_blk = out_dfb.reserve()
+    out_blk.store(in_dfb.wait())
+    ttl.copy(out_blk, out[0:1, 0:1]).wait()
+
+
+def _unified_body_dfb_unpacked(a: Any, out: Any) -> None:
+    """One factory call unpacked into two names."""
+    first, second = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+    blk = first.reserve()
+    ttl.copy(a[0:1, 0:1], blk).wait()
+    blk.push()
+    out_blk = second.wait()
+    ttl.copy(out_blk, out[0:1, 0:1]).wait()
+    out_blk.pop()
+
+
+def _unified_body_dfb_never_named(a: Any, out: Any) -> None:
+    """A DFB used inline, so no name refers to it afterwards."""
+    blk = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2).reserve()
+    ttl.copy(a[0:1, 0:1], blk).wait()
+    blk.push()
+
+
+def _unified_body_dfb_in_callback(a: Any, out: Any) -> None:
+    """A DFB constructed inside a pipe callback."""
+    net = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(0, 1))])
+
+    def send(pipe: Any) -> None:
+        dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+        with dfb.reserve() as blk:
+            ttl.copy(a[0:1, 0:1], blk).wait()
+            ttl.copy(blk, pipe).wait()
+
+    net.if_src(send)
+
+
+def _unified_body_dfb_from_local_value(a: Any, out: Any) -> None:
+    """A buffer whose depth is computed by the body."""
+    depth = 2
+    dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=depth)
+    blk = dfb.reserve()
+    ttl.copy(a[0:1, 0:1], blk).wait()
+    blk.push()
+    out_blk = dfb.wait()
+    ttl.copy(out_blk, out[0:1, 0:1]).wait()
+    out_blk.pop()
+
+
+def _unified_body_pipe_list_from_local_grid(a: Any, out: Any) -> None:
+    """A PipeNet sized by a grid query the body makes."""
+    grid_x, _ = ttl.grid_size()
+    net = ttl.PipeNet([ttl.Pipe(src=(x, 0), dst=(x, 1)) for x in range(grid_x)])
+    dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+
+    def receive(pipe: Any) -> None:
+        with dfb.reserve() as blk:
+            ttl.copy(pipe, blk).wait()
+            ttl.copy(blk, out[0:1, 0:1]).wait()
+
+    net.if_dst(receive)
+
+
+def _unified_body_with_inline_pipe_list(a: Any, out: Any) -> None:
+    """A PipeNet built from a comprehension in the call, as the spec writes it."""
+    net = ttl.PipeNet([ttl.Pipe(src=(x, 0), dst=(x, 1)) for x in range(2)])
+    dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+
+    def receive(pipe: Any) -> None:
+        with dfb.reserve() as blk:
+            ttl.copy(pipe, blk).wait()
+            ttl.copy(blk, out[0:1, 0:1]).wait()
+
+    net.if_dst(receive)
+
+
+def _unified_body_with_named_pipe_list(a: Any, out: Any) -> None:
+    """A PipeNet built from a separately named pipe list.
+
+    The list has to be hoisted along with the net that consumes it: hoisting only
+    the net leaves it evaluated in a scope where the list does not exist.
+    """
+    pipes = [ttl.Pipe(src=(0, 0), dst=(0, 1))]
+    net = ttl.PipeNet(pipes)
+    dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+
+    def receive(pipe: Any) -> None:
+        with dfb.reserve() as blk:
+            ttl.copy(pipe, blk).wait()
+            ttl.copy(blk, out[0:1, 0:1]).wait()
+
+    net.if_dst(receive)
+
+
+# Every construction shape ruled on below, accepted and rejected alike.
+_SETUP_CORPUS = (
+    _unified_body,
+    _unified_body_with_inline_pipe_list,
+    _unified_body_with_named_pipe_list,
+    _unified_body_dfb_under_if,
+    _unified_body_dfb_in_loop,
+    _unified_body_dfb_tuple_target,
+    _unified_body_dfb_unpacked,
+    _unified_body_dfb_never_named,
+    _unified_body_dfb_in_callback,
+    _unified_body_dfb_from_local_value,
+    _unified_body_pipe_list_from_local_grid,
+)
+
+
+def _setup_rejection_reason(body: Any) -> Optional[str]:
+    """The setup guard's complaint about ``body``, or None if it accepts it."""
+    fn_def = _parse_operation_funcdef(body)
+    try:
+        _reject_unsupported_setup(fn_def)
+    except ValueError as error:
+        return str(error)
+    return None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        _unified_body_dfb_under_if,
+        _unified_body_dfb_in_loop,
+        _unified_body_dfb_tuple_target,
+        _unified_body_dfb_unpacked,
+        _unified_body_dfb_never_named,
+        _unified_body_dfb_in_callback,
+    ],
+    ids=[
+        "under_if",
+        "in_loop",
+        "tuple_target",
+        "unpacked",
+        "never_named",
+        "in_callback",
+    ],
+)
+def test_unhoistable_buffer_construction_is_rejected(body: Any) -> None:
+    """Construction the simulator cannot hoist is turned away at decoration.
+
+    Only a top-level ``name = <factory>(...)`` is lifted into the shared scope, so
+    any other form is duplicated into all three kernels and each reserves a buffer
+    of its own. That surfaces as a dataflow-state error against a buffer the body
+    never named, so the error here has to quote the construction to fix.
+    """
+    reason = _setup_rejection_reason(body)
+    assert reason is not None, f"{body.__name__} was accepted"
+    assert "make_dataflow_buffer_like" in reason, f"unexpected reason:\n{reason}"
+    assert "must be a simple top-level assignment" in reason, f"reason:\n{reason}"
+
+    quoted = re.search(r"on line (\d+)", reason)
+    assert quoted is not None, f"error does not quote a line:\n{reason}"
+    own_lines = Path(__file__).read_text(encoding="utf-8").splitlines()
+    assert "make_dataflow_buffer_like" in own_lines[int(quoted.group(1)) - 1]
+
+
+@pytest.mark.parametrize(
+    "body, value",
+    [
+        (_unified_body_dfb_from_local_value, "depth"),
+        (_unified_body_pipe_list_from_local_grid, "grid_x"),
+    ],
+    ids=["buffer_depth", "pipe_net_width"],
+)
+def test_construction_reading_a_body_local_value_is_rejected(
+    body: Any, value: str
+) -> None:
+    """A construction cannot read a value the body computes for itself.
+
+    Hoisting moves the construction ahead of the kernels, while the value stays
+    behind in them, so the hoisted statement runs against a name that does not
+    exist there. The compiler applies the same rule, and rejecting here reports it
+    against the declaration instead of as a ``NameError`` mid-run.
+    """
+    reason = _setup_rejection_reason(body)
+    assert reason is not None, f"{body.__name__} was accepted"
+    assert repr(value) in reason, f"error does not name the value:\n{reason}"
+    assert "computes for itself" in reason, f"unexpected reason:\n{reason}"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        _unified_body,
+        _unified_body_with_inline_pipe_list,
+        _unified_body_with_named_pipe_list,
+    ],
+    ids=["dfb_only", "inline_pipe_list", "named_pipe_list"],
+)
+def test_hoistable_setup_is_accepted(body: Any) -> None:
+    """Callbacks and pipe lists are fine; only the construction site is ruled on.
+
+    A pipe list bound to its own name is hoisted like a factory call, because the
+    ``PipeNet(...)`` reading it is hoisted too.
+    """
+    assert _setup_rejection_reason(body) is None, f"{body.__name__} was rejected"
+
+
+def test_setup_guard_agrees_with_the_compilers_validator() -> None:
+    """The guard turns away exactly the bodies the compiler's validator does.
+
+    Both read their rules from ``atom_rules``, so this pins the wiring rather than
+    the logic: a sim-side condition added on top of the shared rules would make a
+    body unrunnable in simulation while it still compiles, or the reverse. Wordings
+    are compared only for their verdict, since the compiler's message is pinned by
+    its own test while this one quotes the line to fix.
+    """
+    validate = _rules().validate_resource_declarations
+    for body in _SETUP_CORPUS:
+        try:
+            validate(_parse_operation_funcdef(body), body.__name__)
+        except ValueError as error:
+            compiler_verdict: Optional[str] = str(error)
+        else:
+            compiler_verdict = None
+        simulator_verdict = _setup_rejection_reason(body)
+        assert (simulator_verdict is None) == (compiler_verdict is None), (
+            f"{body.__name__}: simulator said {simulator_verdict!r}, "
+            f"compiler said {compiler_verdict!r}"
+        )
+
+
+def test_hoisting_and_buffer_registration_agree() -> None:
+    """A construction is hoisted only when its name is registered as a buffer.
+
+    These were separate conditions -- hoisting accepted any assignment while
+    registration required a single ``Name`` target -- so an unpacked factory call
+    was lifted out of the body while the splitter never learned the names were
+    buffers, leaving the reserve/wait calls on them anchored to no thread.
+    """
+    supported = _parse_operation_funcdef(_unified_body)
+    assert sum(_is_setup_stmt(s) for s in supported.body) == 1
+    assert _local_dfb_names(supported) == {"dfb"}
+
+    unpacked = _parse_operation_funcdef(_unified_body_dfb_unpacked)
+    assert not any(_is_setup_stmt(s) for s in unpacked.body)
+    assert _local_dfb_names(unpacked) == set()
+
+
+def test_unified_body_with_nested_dfb_is_rejected() -> None:
+    """End to end, a DFB built under an ``if`` fails at decoration with a reason.
+
+    Unguarded, the run reaches the dataflow protocol and dies on a state error
+    against a per-kernel buffer, which names neither the construction nor its
+    line.
+    """
+    code, out = run_script_in_process(FIXTURES_DIR / "unified_nested_dfb.py")
+    assert code != 0, f"unified body with a nested DFB unexpectedly ran:\n{out}"
+    assert (
+        "must be a simple top-level assignment" in out
+    ), f"unexpected failure mode:\n{out}"
 
 
 @pytest.mark.parametrize("scheduler", ["greedy", "fair"])

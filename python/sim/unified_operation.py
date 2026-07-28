@@ -18,24 +18,20 @@ outer scope, three nested ``@ttl.compute`` / ``@ttl.datamovement`` kernels
 capturing those buffers), which the existing multi-kernel machinery then runs
 unchanged.
 
-The splitter is loaded from its source file rather than imported as
-``ttl._src.atom_split`` because the simulator shadows ``sys.modules["ttl"]`` with
-its own namespace object, which has no importable submodules.
+The syntactic rules this needs -- which statements construct the shared dataflow
+buffers and pipe nets, whether a body writes its threads by hand, whether a
+construction sits where it can be lifted out of the body -- come from
+``ttl._src.atom_rules``, the module the compiler frontend applies them from as
+well. They are shared rather than restated so the two frontends cannot answer the
+same question differently, which would mean a program behaving differently in
+simulation than compiled.
 
-Duplicated rules
-----------------
-Several AST-level rules here restate ones the compiler frontend already has in
-``python/ttl/atom.py``, which cannot be imported: its module-level imports pull
-in the MLIR bindings (``ttl.ttl_api``) and the compiler's own DataflowBuffer,
-neither of which ships in the ``tt-lang-sim`` wheel. The counterparts are named
-at each site below (``_SETUP_FACTORY_NAMES``, ``_symbol_table``,
-``_has_kernel_decorator_spelling``, ``_factory_name``).
-
-The rules themselves are stdlib-only, so they can become shared code that both
-frontends call, parameterized on the facts that differ per frontend (the kernel
-decorator objects to compare against, and the names that refer to the API). That
-touches compiler-owned code with its own coverage, so it is left as a follow-up:
-TODO(#779). Keep the duplicates in sync until then.
+Both frontend modules are loaded from their source files rather than imported as
+``ttl._src.*`` because the simulator shadows ``sys.modules["ttl"]`` with its own
+namespace object, which has no importable submodules. Only what the simulator
+decides with those answers lives here: kernel decorators are additionally
+resolved to their runtime objects, aliased API access is refused, and diagnostics
+are worded and located for the simulator's users.
 """
 
 from __future__ import annotations
@@ -46,19 +42,9 @@ import functools
 import importlib.util
 import inspect
 import sys
-import textwrap
 import types
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
-
-# DFB / pipe factory calls whose results are shared across threads and must be
-# constructed once in the outer scope. Duplicates ttl/atom.py's identically
-# named sets (see "Duplicated rules" above).
-_DFB_FACTORY_NAMES: Set[str] = {"make_dataflow_buffer_like", "make_dfb"}
-_PIPE_FACTORY_NAMES: Set[str] = {"Pipe", "PipeNet"}
-_SETUP_FACTORY_NAMES: Set[str] = _DFB_FACTORY_NAMES | _PIPE_FACTORY_NAMES
-
-_KERNEL_DECORATORS: Set[str] = {"compute", "datamovement"}
 
 # Names the synthesized kernel decorators are bound to in the generated
 # function's namespace. Generated code must not depend on how the operation's
@@ -72,25 +58,24 @@ _UNRESOLVED: Any = object()
 
 
 @functools.cache
-def _load_atom_split() -> types.ModuleType:
-    """Load ``atom_split`` from its source file (cached).
+def _load_frontend_module(filename: str) -> types.ModuleType:
+    """Load a stdlib-only compiler frontend module from its source file (cached).
 
     Tries the bundled copy next to the simulator package first (installed
-    ``tt-lang-sim`` wheel), then the compiler frontend location in the source
-    tree (``python/ttl/_src/atom_split.py``). It is loaded by path rather than
-    imported as ``ttl._src.atom_split`` because the simulator shadows
+    ``tt-lang-sim`` wheel), then the frontend location in the source tree
+    (``python/ttl/_src/``). Loading by path rather than importing
+    ``ttl._src.<name>`` is necessary because the simulator shadows
     ``sys.modules["ttl"]`` with a namespace object that has no submodules.
     """
     here = Path(__file__).resolve().parent
     candidates = [
-        here / "atom_split.py",  # bundled into the sim package (wheel)
-        here.parent / "ttl" / "_src" / "atom_split.py",  # source tree
+        here / filename,  # bundled into the sim package (wheel)
+        here.parent / "ttl" / "_src" / filename,  # source tree
     ]
     for path in candidates:
         if path.is_file():
-            spec = importlib.util.spec_from_file_location(
-                "ttl_sim_atom_split", str(path)
-            )
+            name = f"ttl_sim_{Path(filename).stem}"
+            spec = importlib.util.spec_from_file_location(name, str(path))
             assert spec is not None and spec.loader is not None
             module = importlib.util.module_from_spec(spec)
             # Register before exec so @dataclass in the module can resolve its
@@ -100,9 +85,19 @@ def _load_atom_split() -> types.ModuleType:
             return module
 
     raise RuntimeError(
-        "could not locate atom_split.py to split a unified @ttl.operation body; "
+        f"could not locate {filename} to run a unified @ttl.operation body; "
         f"looked in: {', '.join(str(c) for c in candidates)}"
     )
+
+
+def _load_atom_split() -> types.ModuleType:
+    """The compiler frontend's thread-assignment splitter."""
+    return _load_frontend_module("atom_split.py")
+
+
+def _rules() -> types.ModuleType:
+    """The syntactic rules both frontends apply to an operation body."""
+    return _load_frontend_module("atom_rules.py")
 
 
 def _parse_operation_funcdef(func: Callable[..., Any]) -> ast.FunctionDef:
@@ -117,24 +112,10 @@ def _parse_operation_funcdef(func: Callable[..., Any]) -> ast.FunctionDef:
     that lookup read the top of the file instead of the operation body, so no
     injection points match and diagnostics point at unrelated lines.
     """
-    source_lines, file_start_line = inspect.getsourcelines(func)
-    source = textwrap.dedent("".join(source_lines))
-    tree = ast.parse(source)
-    ast.increment_lineno(tree, file_start_line - 1)
-    for node in tree.body:
-        if isinstance(node, ast.FunctionDef):
-            return node
-    raise ValueError(f"could not parse @ttl.operation function {func.__name__!r}")
-
-
-def _symbol_table(func: Callable[..., Any]) -> Dict[str, Any]:
-    """Names visible to ``func``: its globals plus its captured free variables.
-
-    Duplicates ``ttl/atom.py::_function_scope`` (see "Duplicated rules" above).
-    """
-    table: Dict[str, Any] = dict(getattr(func, "__globals__", {}))
-    table.update(_closure_dict(func))
-    return table
+    fn_def = _rules().parse_function_definition(func, rebase_lines=True)
+    if fn_def is None:
+        raise ValueError(f"could not parse @ttl.operation function {func.__name__!r}")
+    return fn_def
 
 
 def _resolve_expr(node: ast.expr, symbols: Dict[str, Any]) -> Any:
@@ -164,25 +145,6 @@ def _kernel_decorator_objects() -> tuple[Any, ...]:
     return (compute, datamovement)
 
 
-def _has_kernel_decorator_spelling(node: ast.expr) -> bool:
-    """True when ``node`` is spelled like a kernel decorator, ignoring the receiver.
-
-    Used only as a fallback when the decorator cannot be resolved to an object;
-    matching on the attribute alone (``<anything>.compute``) errs toward
-    classifying a body as multi-kernel, which is the safe direction.
-
-    This is exactly the rule ``ttl/atom.py::_decorator_name`` /
-    ``_has_explicit_kernels`` applies (see "Duplicated rules" above); resolving
-    the object first, as :func:`_is_kernel_decorator` does, additionally
-    distinguishes an unrelated decorator that happens to be named ``compute``.
-    """
-    if isinstance(node, ast.Attribute):
-        return node.attr in _KERNEL_DECORATORS
-    if isinstance(node, ast.Name):
-        return node.id in _KERNEL_DECORATORS
-    return False
-
-
 def _is_kernel_decorator(dec: ast.expr, symbols: Dict[str, Any]) -> bool:
     """True when ``dec`` decorates a hand-written compute / datamovement kernel.
 
@@ -190,18 +152,21 @@ def _is_kernel_decorator(dec: ast.expr, symbols: Dict[str, Any]) -> bool:
     spelling, so ``@ttl.compute()``, ``@T.compute()`` after ``import ttl as T``,
     and ``@compute()`` after ``from ttl import compute`` are all recognized.
     Misclassifying a multi-kernel body as unified splits it and silently
-    produces a wrong answer, so unresolvable decorators fall back to a
-    spelling check, which errs toward "multi-kernel".
+    produces a wrong answer, so unresolvable decorators fall back to the shared
+    spelling rule, which errs toward "multi-kernel" -- and which is all the
+    compiler applies (``atom_rules.defines_kernels_by_spelling``), so resolving
+    first only ever adds recognition.
     """
+    rules = _rules()
     node = dec.func if isinstance(dec, ast.Call) else dec
     resolved = _resolve_expr(node, symbols)
     if resolved is _UNRESOLVED:
-        return _has_kernel_decorator_spelling(node)
+        return rules.is_kernel_decorator_spelling(node)
     if any(resolved is obj for obj in _kernel_decorator_objects()):
         return True
     # A decorator from a different build of the API (unshadowed ttl, reloaded
     # module) is not object-identical to ours but still names a kernel.
-    return getattr(resolved, "__name__", None) in _KERNEL_DECORATORS
+    return getattr(resolved, "__name__", None) in rules.KERNEL_DECORATORS
 
 
 def _receiver_root_name(func: ast.expr) -> Optional[str]:
@@ -260,9 +225,8 @@ def _reject_aliased_api(fn_def: ast.FunctionDef, symbols: Dict[str, Any]) -> Non
     """Reject a unified body that reaches the API under a name the splitter ignores.
 
     ``atom_split`` decides which thread a statement belongs to by matching the
-    receiver name ``ttl`` (``atom_split._classify_ttl_call``), and
-    :func:`_factory_name` recognizes DFB construction the same way, so a call
-    spelled ``T.copy(...)`` anchors nothing. The body is then split on incomplete
+    receiver name ``ttl`` (``atom_split._classify_ttl_call``), so a call spelled
+    ``T.copy(...)`` anchors nothing. The body is then split on incomplete
     information: an unanchored statement is replicated onto all three threads, or
     the split fails claiming a block has no uses when its only use is the call
     that went unrecognized. Name the spelling to fix instead.
@@ -270,11 +234,13 @@ def _reject_aliased_api(fn_def: ast.FunctionDef, symbols: Dict[str, Any]) -> Non
     Not detected, because the receiver does not resolve to the API module: a name
     bound to one of its namespaces (``M = ttl.math`` and then ``M.exp(...)``).
 
-    There is no counterpart in ``ttl/atom.py``: the compiler is exposed to the
-    same gap, and to a sharper form of it, since it recognizes aliased DFB
-    construction (its ``_call_name`` ignores the receiver) and so reaches the
-    splitter with anchors missing. Teaching ``_classify_ttl_call`` the set of
-    names that refer to the API would fix both and retire this guard -- see #779.
+    There is no counterpart in the compiler, which is exposed to the same gap and
+    reaches the splitter with anchors missing. Construction is not what saves
+    either of them: ``atom_rules.call_name`` ignores the receiver, so both
+    frontends do recognize ``T.make_dfb(...)`` as construction; it is the ops the
+    splitter classifies that go unrecognized. Teaching ``_classify_ttl_call`` the
+    set of names that refer to the API would fix both and retire this guard --
+    see #779.
 
     Rejecting rather than resolving the alias is deliberate on two grounds. The
     compiler cannot split an aliased body either, so accepting one here would let
@@ -314,61 +280,97 @@ def is_unified_body(func: Callable[..., Any]) -> bool:
     A multi-kernel operation defines nested compute / datamovement kernels and is
     left on the legacy execution path. Anything whose source cannot be parsed is
     treated as multi-kernel (legacy), never split.
+
+    Which definitions are searched is the shared walk; only the test applied to
+    each decorator is the simulator's own.
     """
+    rules = _rules()
     try:
         fn_def = _parse_operation_funcdef(func)
     except (OSError, TypeError, ValueError):
         return False
-    symbols = _symbol_table(func)
-    for node in ast.walk(fn_def):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            if any(_is_kernel_decorator(d, symbols) for d in node.decorator_list):
-                return False
-    return True
+    symbols = rules.function_scope(func)
+    return not rules.defines_kernels(
+        fn_def, lambda dec: _is_kernel_decorator(dec, symbols)
+    )
 
 
-def _factory_name(value: ast.expr) -> Optional[str]:
-    """Return the factory name if ``value`` is a ``ttl.<factory>(...)`` or bare
-    ``<factory>(...)`` call for a known DFB/pipe factory, else None.
+def _reject_unsupported_setup(fn_def: ast.FunctionDef) -> None:
+    """Reject DFB / pipe construction that cannot be hoisted out of the body.
 
-    Requiring the ``ttl`` receiver matches how the splitter resolves calls, and is
-    safe only because :func:`_reject_aliased_api` turns any other spelling away
-    first; without that, an aliased factory would silently leave its DFB out of
-    ``local_dfb_names`` and unanchor the whole body. Note ``ttl/atom.py``'s
-    counterpart, ``_call_name``, ignores the receiver instead, so the two
-    frontends fail differently on the same aliased body (#779).
+    Only a top-level ``name = <factory>(...)`` assignment is hoisted, and hoisting
+    is what gives all three kernels the same object: the reserve/wait handshake is
+    keyed on identity, so a buffer each kernel builds for itself is a different
+    buffer. Construction that is nested in control flow, in a callback, or in
+    another scope -- or bound to something other than a single name -- is left in
+    the body and duplicated into every kernel, which fails later as a dataflow
+    state error against the wrong buffer, pointing nowhere near the cause.
+
+    Hoisting also fixes when the construction runs: before the kernels, and
+    outside them. A construction that reads a value the body computes for itself
+    therefore cannot be hoisted either -- that value lives in the kernels the body
+    becomes -- and is rejected as well, rather than left to fail as a ``NameError``
+    from a statement the user never wrote in that position.
+
+    Both conditions are decided by ``atom_rules``, the same code the compiler
+    validates with (``atom_rules.validate_resource_declarations``), so the two
+    frontends cannot disagree about which bodies are constructible. Only the
+    wording differs: the compiler's message is pinned by its own test, while these
+    quote the line to fix, which is what the simulator's users get shown.
+
+    Neither rule comes from the spec, which places this construction alongside
+    loops and index arithmetic as a compile-time construct "shared by the threads
+    that need them" ("Thread assignment") and puts no condition on where it
+    appears. Both frontends are narrower because they lift the construction
+    textually and evaluate it ahead of the split, so it can only read names bound
+    outside the body. Accepting the general form is a feature both would have to
+    grow, and until then rejecting is better than mis-splitting silently.
+
+    Raises:
+        ValueError: If a construction is not a hoistable top-level assignment, or
+            reads a value that only exists inside the body.
     """
-    if not isinstance(value, ast.Call):
-        return None
-    func = value.func
-    if (
-        isinstance(func, ast.Attribute)
-        and isinstance(func.value, ast.Name)
-        and func.value.id == "ttl"
-        and func.attr in _SETUP_FACTORY_NAMES
-    ):
-        return func.attr
-    if isinstance(func, ast.Name) and func.id in _SETUP_FACTORY_NAMES:
-        return func.id
-    return None
+    rules = _rules()
+
+    dependency = rules.find_local_dependency(fn_def)
+    if dependency is not None:
+        read = ", ".join(repr(n) for n in dependency.names)
+        raise ValueError(
+            f"the construction of '{dependency.target}' on line "
+            f"{dependency.statement.lineno} reads {read}, which the operation body "
+            f"computes for itself. Construction is hoisted out of the body and "
+            f"runs before the kernels, so it cannot see anything the body "
+            f"computes; the value has to come from outside the operation."
+        )
+
+    unhoistable = rules.find_unhoistable_resource(fn_def)
+    if unhoistable is not None:
+        factory = unhoistable.factory
+        raise ValueError(
+            f"'{factory}(...)' on line {unhoistable.call.lineno} must be a simple "
+            f"top-level assignment in the operation body "
+            f"('name = {factory}(...)'), because dataflow buffers and pipes are "
+            f"constructed once and shared by all three kernels. Construction "
+            f"inside control flow, a callback, or a nested scope, or bound to more "
+            f"than one name, cannot be shared: each kernel would build its own."
+        )
 
 
 def _is_setup_stmt(stmt: ast.stmt) -> bool:
     """True for a top-level ``name = <dfb/pipe factory>(...)`` assignment."""
-    return isinstance(stmt, ast.Assign) and _factory_name(stmt.value) is not None
+    return _rules().setup_assign_target(stmt) is not None
 
 
 def _local_dfb_names(fn_def: ast.FunctionDef) -> Set[str]:
     """Names bound to ``make_dataflow_buffer_like`` / ``make_dfb`` results."""
+    rules = _rules()
     names: Set[str] = set()
     for stmt in fn_def.body:
-        if (
-            isinstance(stmt, ast.Assign)
-            and len(stmt.targets) == 1
-            and isinstance(stmt.targets[0], ast.Name)
-            and _factory_name(stmt.value) in _DFB_FACTORY_NAMES
-        ):
-            names.add(stmt.targets[0].id)
+        name = rules.setup_assign_target(stmt)
+        if name is None or not isinstance(stmt, ast.Assign):
+            continue
+        if rules.call_name(stmt.value) in rules.DFB_FACTORY_NAMES:
+            names.add(name)
     return names
 
 
@@ -406,31 +408,12 @@ def _make_kernel_def(
     return ast.FunctionDef(
         name=name,
         args=empty_args,
-        body=body or [ast.Pass()],
+        body=body,
         decorator_list=[decorator],
         returns=None,
         type_comment=None,
         type_params=[],
     )
-
-
-def _closure_dict(func: Callable[..., Any]) -> Dict[str, Any]:
-    """Map ``func``'s captured free variables to their current values.
-
-    Lets compile-time captures resolve by name in the synthesized function,
-    which is compiled at module scope (no enclosing cells).
-    """
-    closure = getattr(func, "__closure__", None)
-    if not closure:
-        return {}
-    freevars = func.__code__.co_freevars
-    result: Dict[str, Any] = {}
-    for name, cell in zip(freevars, closure):
-        try:
-            result[name] = cell.cell_contents
-        except ValueError:
-            pass
-    return result
 
 
 def build_multikernel_function(
@@ -444,12 +427,14 @@ def build_multikernel_function(
     to multiple threads, mixed compute/DM statement, unsupported assigned copy
     handle).
     """
+    rules = _rules()
     atom_split = _load_atom_split()
-    symbols = _symbol_table(func)
+    symbols = rules.function_scope(func)
 
     fn_def = _parse_operation_funcdef(func)
     fn_def.decorator_list = []  # drop @ttl.operation; do not re-decorate
     _reject_aliased_api(fn_def, symbols)
+    _reject_unsupported_setup(fn_def)
 
     local_dfbs = _local_dfb_names(fn_def)
 
@@ -486,8 +471,10 @@ def build_multikernel_function(
         filename = f"<ttl-unified-operation:{func.__name__}>"
 
     code = compile(module, filename, "exec")
+    # The synthesized function is compiled at module scope, with no enclosing
+    # cells, so what the original captured has to be passed in by name.
     exec_ns: Dict[str, Any] = dict(namespace)
-    exec_ns.update(_closure_dict(func))
+    exec_ns.update(rules.closure_values(func))
     compute_decorator, datamovement_decorator = _kernel_decorator_objects()
     exec_ns[_COMPUTE_BINDING] = compute_decorator
     exec_ns[_DATAMOVEMENT_BINDING] = datamovement_decorator
