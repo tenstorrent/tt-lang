@@ -11,17 +11,35 @@
 #   - System packages + SFPI/firmware (driven by tt-metal-version)
 #   - Pre-built LLVM artifacts        (driven by third-party/llvm-project)
 #   - Pre-built tt-metal artifacts    (driven by third-party/tt-metal)
-#   - Python runtime deps             (requirements-runtime.txt)
+#   - Toolchain build logic and deps  (CMake modules, scripts, requirements)
 # tt-lang is built fresh by call-build.yml against the pre-built LLVM inside
 # the container, so ordinary source changes are NOT in this list.
 
 UPLIFT_PATHS=(
+    .dockerignore
+    CMakeLists.txt
+    cmake/modules/BuildLLVM.cmake
+    cmake/modules/BuildTTMetal.cmake
+    cmake/modules/GetVersionFromGit.cmake
+    cmake/modules/TTLangCompilerSetup.cmake
+    cmake/modules/TTLangPython.cmake
+    cmake/modules/TTLangToolchainComponent.cmake
+    cmake/modules/TTLangToolchainOptions.cmake
+    cmake/modules/TTLangUtils.cmake
     third-party/tt-metal-version
     third-party/llvm-project
     third-party/tt-metal
+    third-party/patches
     .github/containers/Dockerfile
     .github/containers/Dockerfile.base
     .github/containers/Dockerfile.wheel-manylinux-2-34
+    .github/containers/CMakeLists.wheel-toolchain
+    .github/containers/cleanup-toolchain.sh
+    .github/scripts/normalize-toolchain-install.sh
     bin/tt-triage
+    requirements.txt
     requirements-runtime.txt
+    scripts/build-and-install.sh
+    scripts/copy-ttmetal-runtime-artifacts.sh
+    scripts/install-ttmetal.sh
 )

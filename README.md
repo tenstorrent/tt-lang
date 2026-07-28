@@ -45,8 +45,8 @@ TT-Lang bridges this gap through progressive disclosure: simple kernels require 
 We provide two tt-lang packages: the [tt-lang](https://pypi.org/project/tt-lang/) package includes the tt-lang compiler, Tenstorrent hardware support and depends on the `ttnn`, `pytorch` and several smaller python packages, while [tt-lang-sim](https://pypi.org/project/tt-lang-sim/) includes only the functional simulator (no compiler or hardware support) and does not depend on `ttnn`.
 
 First, create an isolated Python environment (venv, conda, etc.) with Python
-matching the selected wheel. Public PyPI hardware wheels currently use Python
-3.12; S3 light wheels are built for Python 3.10 and Python 3.12. For example:
+matching the selected wheel. Public PyPI and S3 light hardware wheels are built
+for Python 3.10 and Python 3.12. For example:
 
 ```bash
 python3 -m venv --prompt ttlang ttlang-venv

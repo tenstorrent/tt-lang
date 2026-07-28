@@ -57,8 +57,9 @@ if [ -z "$VERSION" ]; then
 fi
 
 repo_root="$(git rev-parse --show-toplevel)"
+script_dir="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/docker-image-utils.sh
-. "$repo_root/.github/scripts/lib/docker-image-utils.sh"
+. "$script_dir/lib/docker-image-utils.sh"
 docker_tag="${DOCKER_TAG:-$("$repo_root/.github/containers/get-version-tag.sh")}"
 dist_dir="$(cd "$DIST_DIR" && pwd)"
 
@@ -72,6 +73,7 @@ for python_tag in $python_tags; do
     ttlang_docker run --rm \
         -v "$repo_root:/workspace" \
         -v "$dist_dir:/dist" \
+        -v "$script_dir:/workflow-scripts:ro" \
         -w /workspace \
         -e "PYTHON_TAG=$python_tag" \
         -e "TTLANG_VERSION=$VERSION" \
@@ -88,7 +90,7 @@ for python_tag in $python_tags; do
             --find-links=/dist \
             --extra-index-url https://download.pytorch.org/whl/cpu \
             "tt-lang-light==${TTLANG_VERSION}"
-          python .github/scripts/check-installed-ttnn.py --mode external
-          python .github/scripts/smoke-test-wheel.py
+          python /workflow-scripts/check-installed-ttnn.py --mode external
+          python /workflow-scripts/smoke-test-wheel.py
         '
 done
