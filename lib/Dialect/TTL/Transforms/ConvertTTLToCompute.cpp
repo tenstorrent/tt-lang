@@ -17,6 +17,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
 
 #define DEBUG_TYPE "ttl-convert-ttl-to-compute"
 
@@ -278,6 +279,70 @@ replaceOutputPushesBeforeCompute(PatternRewriter &rewriter, ComputeOp computeOp,
   }
 }
 
+static void
+moveOutputConsumersAfterCompute(ComputeOp computeOp,
+                                const OutputPublicationInfo &outputs) {
+  for (StoreOp store : outputs.stores) {
+    assert(store->getBlock() == computeOp->getBlock() &&
+           "stores absorbed into a compute must be siblings of that compute");
+    Value viewCB = getAttachedCB(store.getView());
+    if (!viewCB) {
+      continue;
+    }
+
+    llvm::SmallPtrSet<Operation *, 8> opsToMove;
+    SmallVector<Operation *> worklist;
+    for (Operation *cursor = store->getNextNode();
+         cursor && cursor->isBeforeInBlock(computeOp);
+         cursor = cursor->getNextNode()) {
+      if (auto reserve = dyn_cast<CBReserveOp>(cursor)) {
+        if (reserve.getCb() == viewCB) {
+          break;
+        }
+        continue;
+      }
+
+      Value opCB;
+      if (auto push = dyn_cast<CBPushOp>(cursor)) {
+        opCB = push.getCb();
+      } else if (auto wait = dyn_cast<CBWaitOp>(cursor)) {
+        opCB = wait.getCb();
+      } else if (auto pop = dyn_cast<CBPopOp>(cursor)) {
+        opCB = pop.getCb();
+      }
+      if (opCB == viewCB && opsToMove.insert(cursor).second) {
+        worklist.push_back(cursor);
+      }
+    }
+
+    while (!worklist.empty()) {
+      Operation *movedOp = worklist.pop_back_val();
+      for (Value result : movedOp->getResults()) {
+        for (Operation *user : result.getUsers()) {
+          if (user->getBlock() == computeOp->getBlock() &&
+              user->isBeforeInBlock(computeOp) &&
+              opsToMove.insert(user).second) {
+            worklist.push_back(user);
+          }
+        }
+      }
+    }
+
+    SmallVector<Operation *> orderedOps;
+    for (Operation &blockOp : *computeOp->getBlock()) {
+      if (opsToMove.contains(&blockOp)) {
+        orderedOps.push_back(&blockOp);
+      }
+    }
+
+    Operation *insertAfter = computeOp;
+    for (Operation *op : orderedOps) {
+      op->moveAfter(insertAfter);
+      insertAfter = op;
+    }
+  }
+}
+
 static void eraseAbsorbedOutputOps(PatternRewriter &rewriter,
                                    const OutputPublicationInfo &outputs,
                                    ComputeOp computeOp,
@@ -292,6 +357,37 @@ static void eraseAbsorbedOutputOps(PatternRewriter &rewriter,
            "pushes absorbed into a compute must be siblings of that compute");
     rewriter.eraseOp(push);
   }
+}
+
+static bool replacementDominatesRemainingUses(Operation *replacementOp,
+                                              Operation *sourceOp) {
+  for (Value result : sourceOp->getResults()) {
+    for (OpOperand &use : result.getUses()) {
+      Operation *user = use.getOwner();
+      if (user->getBlock() != replacementOp->getBlock()) {
+        return false;
+      }
+      if (user->isBeforeInBlock(replacementOp)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+// Replace `sourceOp` with the absorbing compute only if that preserves SSA
+// dominance; otherwise leave it in place -- it is re-fused into each consumer's
+// compute and erased once their stores lower (see mixed_store_users.mlir).
+static void replaceOpIfSafe(PatternRewriter &rewriter, Operation *sourceOp,
+                            ValueRange replacements) {
+  assert(!replacements.empty() &&
+         "replaceOpIfSafe requires replacement values");
+  Operation *replacementOp = replacements.front().getDefiningOp();
+  assert(replacementOp && "replacement must be produced by an operation");
+  if (!replacementDominatesRemainingUses(replacementOp, sourceOp)) {
+    return;
+  }
+  rewriter.replaceOp(sourceOp, replacements);
 }
 
 //===----------------------------------------------------------------------===//
@@ -878,11 +974,12 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   }
 
   YieldOp::create(rewriter, loc);
+  moveOutputConsumersAfterCompute(computeOp, outputs);
   SmallVector<CBPushOp> replacedPushes;
   replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
                                    replacedPushes);
   eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
-  rewriter.replaceOp(sinkOp, computeOp.getResult(0));
+  replaceOpIfSafe(rewriter, sinkOp, computeOp.getResult(0));
 
   // Erase the fused ops in reverse topological order (sink to roots).
   // This ensures each op's users are erased before the op itself.
@@ -972,11 +1069,12 @@ static LogicalResult buildComputeFromInputs(
   Value result = emitTileOp(rewriter, loc, outputTileType, body);
   emitTileStores(rewriter, loc, result, computeOp, outputs);
   YieldOp::create(rewriter, loc);
+  moveOutputConsumersAfterCompute(computeOp, outputs);
   SmallVector<CBPushOp> replacedPushes;
   replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
                                    replacedPushes);
   eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
-  rewriter.replaceOp(op, computeOp.getResult(0));
+  replaceOpIfSafe(rewriter, op, computeOp.getResult(0));
   return success();
 }
 
@@ -1177,16 +1275,6 @@ static LogicalResult validateBlockBroadcastOp(BlockBroadcastOp op,
     return success(); // pattern will handle gracefully
   }
 
-  if (!getAttachedCB(op.getInput())) {
-    if (mode == TTLToComputeMode::ComputeFormation) {
-      return success();
-    }
-    return op.emitOpError(
-        "broadcast input must come directly from a circular buffer, not from "
-        "an elementwise result; move the broadcast to its own compute block "
-        "or make it the first operation in a fused sequence");
-  }
-
   int64_t rank = inputType.getRank();
   auto broadcastDims = normalizeDimsToSet(op.getDims(), rank);
 
@@ -1246,7 +1334,7 @@ struct LowerBlockBroadcastToCompute : OpRewritePattern<BlockBroadcastOp> {
 
     Value inputCb = getAttachedCB(op.getInput());
     if (!inputCb) {
-      return rewriter.notifyMatchFailure(op, "input not CB-attached");
+      return tryFusion(op, rewriter);
     }
     OutputPublicationInfo outputs =
         collectOutputPublicationInfo(op.getOperation());
@@ -1317,11 +1405,12 @@ struct LowerBlockBroadcastToCompute : OpRewritePattern<BlockBroadcastOp> {
     }
     emitTileStores(rewriter, loc, bodyResult, computeOp, outputs);
     YieldOp::create(rewriter, loc);
+    moveOutputConsumersAfterCompute(computeOp, outputs);
     SmallVector<CBPushOp> replacedPushes;
     replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
                                      replacedPushes);
     eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
-    rewriter.replaceOp(op, computeOp.getResult(0));
+    replaceOpIfSafe(rewriter, op, computeOp.getResult(0));
     return success();
   }
 };
@@ -1695,11 +1784,12 @@ struct LowerFillToCompute : OpRewritePattern<FillOp> {
         rewriter, loc, tileType, op.getValueAttr());
     emitTileStores(rewriter, loc, fillTileOp, computeOp, outputs);
     YieldOp::create(rewriter, loc);
+    moveOutputConsumersAfterCompute(computeOp, outputs);
     SmallVector<CBPushOp> replacedPushes;
     replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
                                      replacedPushes);
     eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
-    rewriter.replaceOp(op, computeOp.getResult(0));
+    replaceOpIfSafe(rewriter, op, computeOp.getResults());
     return success();
   }
 };
