@@ -615,6 +615,13 @@ mlir::LogicalResult mlir::tt::ttl::PipeTransferCreateOp::verify() {
     break;
   }
 
+  if (auto createPipe = getPipe().getDefiningOp<CreatePipeOp>();
+      createPipe &&
+      createPipe.getDeviceTransferAttr() != getDeviceTransferAttr()) {
+    return emitOpError()
+           << "deviceTransfer must match the defining ttl.create_pipe";
+  }
+
   return success();
 }
 
