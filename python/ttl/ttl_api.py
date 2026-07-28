@@ -1681,6 +1681,7 @@ def _compile_kernel(
         dst_full_sync_en: Optional override for dst_full_sync_en
         target_arch: Optional TT device architecture for target-specific lowering
         compiler_options: Compiler pipeline options
+        device_domain: Optional logical device domain for mesh execution
 
     Returns:
         CompiledTTNNKernel ready for execution
@@ -1792,6 +1793,8 @@ def _compile_kernel(
         l1_budget_override=l1_budget_override,
         kernel_source_file=kernel_source_file,
         kernel_line_offset=kernel_line_offset,
+        mesh_program_placements=mesh_program_placements,
+        device_domain=device_domain,
     )
 
 
@@ -1811,6 +1814,8 @@ def _lower_program_to_kernel(
     l1_budget_override,
     kernel_source_file,
     kernel_line_offset,
+    mesh_program_placements,
+    device_domain,
 ):
     """Lower compiled threads to a CompiledTTNNKernel.
 
