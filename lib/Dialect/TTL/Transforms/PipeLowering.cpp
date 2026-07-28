@@ -905,8 +905,7 @@ public:
 
   void emitPayloadWriteBarrier() override {}
 
-  LogicalResult
-  emitReceiverCompletionIncrement(
+  LogicalResult emitReceiverCompletionIncrement(
       Value receiverCompletionCounterAddr) override {
     assert(sourceAddress && destinationAddress && sizeBytes &&
            "fabric payload must be prepared before completion signaling");
@@ -2174,8 +2173,8 @@ LogicalResult buildPipeResourcePlan(
     SmallVector<SmallVector<PipeCounterLocation>> &locationsByColor =
         unit.usesFabric ? fabricCompletionLocationsByColor
                         : nodeLocalCompletionLocationsByColor;
-    unit.maybeCompletionCounterColor = allocateCompletionCounterColor(
-        completionLocations, locationsByColor);
+    unit.maybeCompletionCounterColor =
+        allocateCompletionCounterColor(completionLocations, locationsByColor);
   }
 
   PipeCounterAllocator counterAllocator;
@@ -2239,9 +2238,9 @@ LogicalResult buildPipeResourcePlan(
            "pipe transfer is missing a completion counter color");
     int64_t completionColor = *unit.maybeCompletionCounterColor;
     ArrayRef<PipeCounterInfo> completionCounters =
-        unit.usesFabric ? ArrayRef<PipeCounterInfo>(fabricCompletionCounters)
-                        : ArrayRef<PipeCounterInfo>(
-                              nodeLocalCompletionCounters);
+        unit.usesFabric
+            ? ArrayRef<PipeCounterInfo>(fabricCompletionCounters)
+            : ArrayRef<PipeCounterInfo>(nodeLocalCompletionCounters);
     assert(completionColor < static_cast<int64_t>(completionCounters.size()));
     PipeSourceKey sourceKey = getPipeSourceKey(unit.pipeType);
     std::optional<PipeCounterInfo> maybeReadyCounter;
