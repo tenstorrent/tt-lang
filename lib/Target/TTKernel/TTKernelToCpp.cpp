@@ -97,6 +97,11 @@ public:
         hasDevicePrint = true;
       }
 
+      if (auto headerAttr =
+              callOp->getAttrOfType<StringAttr>("ttlang.opaque_header")) {
+        headers.insert(headerAttr.getValue());
+      }
+
       // Our experimental kernel code snippets.
       if (callee == "experimental::unpack_stall_on_pack") {
         emitLlk(experimental_reg_api_generated,

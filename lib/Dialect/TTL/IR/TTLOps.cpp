@@ -6,6 +6,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 
 #include "TTLOpsVerifyUtils.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Utils/StructuredOpsUtils.h"
 #include "mlir/IR/AffineMap.h"
@@ -18,6 +19,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h" // IWYU pragma: keep
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h" // IWYU pragma: keep
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
+#include "ttlang/Dialect/Utils/OpaqueCallVerifyUtils.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/Twine.h"
@@ -562,6 +564,21 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
                            << ") must match CB shape dimension (" << cbShape[i]
                            << ")";
     }
+  }
+
+  // Reject mismatched tilization before the generic element-type check so the
+  // diagnostic names tile shapes rather than opaque TileType spellings.
+  if (failed(emitIfTileShapeMismatch(getOperation(),
+                                     transferTensorTy.getElementType(),
+                                     cbTy.getElementType(), "tensor", "CB"))) {
+    return failure();
+  }
+
+  auto layoutAttr = mlir::cast<LayoutAttr>(enc);
+  if (failed(emitIfTileShapeMismatch(getOperation(),
+                                     layoutAttr.getElementType(),
+                                     cbTy.getElementType(), "layout", "CB"))) {
+    return failure();
   }
 
   if (transferTensorTy.getElementType() != cbTy.getElementType()) {
@@ -1685,6 +1702,14 @@ mlir::LogicalResult mlir::tt::ttl::StoreOp::verify() {
   auto tensorTy = mlir::cast<RankedTensorType>(getTensor().getType());
   auto viewTy = mlir::cast<RankedTensorType>(getView().getType());
 
+  // CB->CB identity stores (dst.reserve().store(src.wait())) must use the same
+  // tile shape; mismatched tilization is not a supported retile.
+  if (failed(emitIfTileShapeMismatch(getOperation(), tensorTy.getElementType(),
+                                     viewTy.getElementType(), "source",
+                                     "destination CB"))) {
+    return failure();
+  }
+
   if (tensorTy.getElementType() != viewTy.getElementType()) {
     return emitOpError() << "tensor element type (" << tensorTy.getElementType()
                          << ") must match view element type ("
@@ -2288,4 +2313,9 @@ void mlir::tt::ttl::PipeNetScopeOp::getSuccessorRegions(
     return;
   }
   regions.push_back(RegionSuccessor(getOperation()));
+}
+
+mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
+  return mlir::tt::utils::verifyOpaqueCall<GetDfbIdOp>(
+      getOperation(), getCallee(), getHeader(), getTemplateArgVals());
 }
