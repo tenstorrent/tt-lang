@@ -43,10 +43,14 @@ DEVICES_ENV = "TTLANG_HANG_DEVICES"
 KILL_ENV = "TTLANG_HANG_KILL"
 
 MODE_OFF = "off"
+MODE_DEEP = "deep"
+MODES = (MODE_OFF, MODE_DEEP)
+
+# Selectable earlier, kept only so choosing one can say what happened to it: fast
+# left the device hung, and recovering it in process is tt-smi's job.
 MODE_FAST = "fast"
 MODE_RECOVER = "recover"
-MODE_DEEP = "deep"
-MODES = (MODE_OFF, MODE_FAST, MODE_RECOVER, MODE_DEEP)
+RETIRED_MODES = (MODE_FAST, MODE_RECOVER)
 
 PROGRAMS_FILE = "programs.jsonl"
 REPORT_FILE = "report.txt"
@@ -69,9 +73,9 @@ def utc_stamp() -> str:
 
 
 def mode() -> str:
-    value = os.environ.get(MODE_ENV, MODE_FAST).strip().lower()
+    value = os.environ.get(MODE_ENV, MODE_DEEP).strip().lower()
     if value not in MODES:
-        return MODE_FAST
+        return MODE_DEEP
     return value
 
 

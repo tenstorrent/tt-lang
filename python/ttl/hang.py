@@ -44,6 +44,7 @@ from .hang_collect import (
     MODE_OFF,
     MODE_RECOVER,
     MODES,
+    RETIRED_MODES,
     PROGRAMS_FILE,
     incident_dir,
     mark_device_dirty,
@@ -99,13 +100,17 @@ _last_device = None
 
 def mode() -> str:
     """The configured hang mode, validated."""
-    value = os.environ.get(MODE_ENV, MODE_FAST).strip().lower()
+    value = os.environ.get(MODE_ENV, MODE_DEEP).strip().lower()
+    if value in RETIRED_MODES:
+        raise NotImplementedError(
+            f"{MODE_ENV}={value} is not implemented. '{MODE_FAST}' left the device "
+            f"hung, and recovering it in process is tt-smi's job. Use "
+            f"'{MODE_DEEP}' (the default) or '{MODE_OFF}'."
+        )
     if value not in MODES:
         raise ValueError(
             f"{MODE_ENV}={value!r} is not one of {', '.join(MODES)}. "
             f"'{MODE_OFF}' restores tt-metal's default of waiting forever, "
-            f"'{MODE_FAST}' collects without halting and leaves the device alone, "
-            f"'{MODE_RECOVER}' also closes, reopens and smoke tests it, "
             f"'{MODE_DEEP}' unwinds real stack frames and forfeits the device."
         )
     return value
@@ -394,7 +399,6 @@ def _finish(directory: Path, lines: list, code: int):
         f"tt-lang: dispatch timeout after {window}s without progress. "
         f"Set {MODE_ENV}={MODE_OFF} to wait forever instead, "
         f"{TIMEOUT_ENV} to change the window, "
-        f"{MODE_ENV}={MODE_DEEP} for real stack frames at the cost of the device, "
         f"or {DEVICES_ENV} to sample more chips.\n"
     )
     sys.stderr.flush()

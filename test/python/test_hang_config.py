@@ -52,8 +52,8 @@ def _core_range_set(ranges):
     )
 
 
-def test_default_mode_is_fast(clean_env):
-    assert hang.mode() == hang.MODE_FAST
+def test_default_mode_is_deep(clean_env):
+    assert hang.mode() == hang.MODE_DEEP
 
 
 def test_unknown_mode_is_rejected(clean_env):
@@ -208,9 +208,11 @@ def test_unbuilt_cache_root_is_reported_not_guessed(clean_env, tmp_path):
     assert "Tried:" in report.text()
 
 
-def test_recover_is_a_valid_mode(clean_env):
-    clean_env.setenv(hang.MODE_ENV, hang.MODE_RECOVER)
-    assert hang.mode() == hang.MODE_RECOVER
+@pytest.mark.parametrize("retired", hang.RETIRED_MODES)
+def test_retired_modes_are_not_implemented(clean_env, retired):
+    clean_env.setenv(hang.MODE_ENV, retired)
+    with pytest.raises(NotImplementedError, match=retired):
+        hang.mode()
 
 
 def test_recover_mode_never_stops_the_process(clean_env):
