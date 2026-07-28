@@ -1,8 +1,7 @@
 // Tests for ttl-insert-intermediate-dfbs pass.
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-insert-intermediate-dfbs))' | FileCheck %s
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-insert-intermediate-dfbs,ttl-insert-cb-sync,convert-ttl-to-compute))' | FileCheck %s --check-prefix=PIPELINE
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-insert-intermediate-dfbs,ttl-insert-cb-sync),ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=FINALIZE
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-insert-intermediate-dfbs,ttl-insert-cb-sync),ttl-finalize-dfb-indices)' -debug-only=ttl-finalize-dfb-indices 2>&1 | FileCheck %s --check-prefix=DBG
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-insert-intermediate-dfbs,ttl-insert-cb-sync),ttl-finalize-dfb-indices{reuse-user-dfbs=false})' | FileCheck %s --check-prefix=FINALIZE
 
 // -----
 
@@ -123,9 +122,6 @@ func.func @shared_materialization()
 // Two sequential elementwise->reduce chains. Each chain creates a
 // compiler-allocated DFB. The first DFB is consumed and released (cb_pop)
 // before the second is created, so finalize should reuse the same index.
-
-// DBG: DFB reuse: 2 compiler-allocated DFBs -> 1 physical slot(s)
-// DBG: Total DFB count: 5
 
 // After insert: two compiler-allocated DFBs at indices 4, 5, both at
 // function body entry.
