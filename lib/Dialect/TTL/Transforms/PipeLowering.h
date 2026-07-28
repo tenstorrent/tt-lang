@@ -163,6 +163,11 @@ struct PipeResourcePlan {
   /// Protocol operations proven unreachable at their pipe endpoint. Lowering
   /// removes these operations without allocating synchronization resources.
   llvm::SmallPtrSet<Operation *, 8> staticallyInactiveOps;
+  /// Sends that are the only pipe send in their nearest `scf.for`.
+  ///
+  /// Stateful NoC command registers are shared by the kernel, so a loop with
+  /// multiple sends must keep programming the full write command per transfer.
+  llvm::SmallPtrSet<Operation *, 8> singleSendLoopSends;
   /// Each entry-block counter preserves slot state across repeated sends that
   /// share one computed-address allocation unit.
   llvm::MapVector<func::FuncOp, SmallVector<PipeComputedAddressCounterInitInfo>>
