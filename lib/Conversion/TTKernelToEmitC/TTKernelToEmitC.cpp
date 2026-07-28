@@ -26,6 +26,7 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
 
@@ -232,6 +233,35 @@ static std::string ensureCBDeclaration(Value cb, Operation *useOp,
   rewriter.create<emitc::VerbatimOp>(useOp->getLoc(), cbDecl, ValueRange{cb});
   declarations.insert(cbName);
   return cbName;
+}
+
+/// Chase through UnrealizedConversionCastOps to find the real producer.
+static Value unwrapCasts(Value v) {
+  while (auto cast = v.getDefiningOp<mlir::UnrealizedConversionCastOp>()) {
+    if (cast.getInputs().size() == 1) {
+      v = cast.getInputs()[0];
+    } else {
+      break;
+    }
+  }
+  return v;
+}
+
+/// Resolve a DFB (CB) SSA value to its compile-time argument index.
+/// Works both before and after GetCompileArgValOp is lowered to emitc.literal.
+static std::optional<int> resolveDfbIndex(Value dfb) {
+  dfb = unwrapCasts(dfb);
+  Operation *defOp = dfb.getDefiningOp();
+  if (!defOp) {
+    return std::nullopt;
+  }
+  if (auto attr = defOp->getAttrOfType<IntegerAttr>("ttkernel.cb_ctarg_idx")) {
+    return attr.getInt();
+  }
+  if (auto getArg = dyn_cast<ttkernel::GetCompileArgValOp>(defOp)) {
+    return getArg.getArgIndex();
+  }
+  return std::nullopt;
 }
 
 static StringRef getL1PtrOpaqueTypeName(unsigned elementWidth) {
@@ -2018,6 +2048,136 @@ public:
 } // namespace
 
 namespace {
+class GetDfbIdOpRewriter : public OpConversionPattern<ttkernel::GetDfbIdOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ttkernel::GetDfbIdOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+    if (!resultType) {
+      return rewriter.notifyMatchFailure(op, "failed to convert result type");
+    }
+
+    auto dfbIdx = resolveDfbIndex(adaptor.getDfb());
+    if (!dfbIdx) {
+      return rewriter.notifyMatchFailure(
+          op, "get_dfb_id operand must trace to get_compile_time_arg_val");
+    }
+
+    rewriter.replaceOpWithNewOp<emitc::LiteralOp>(op, resultType,
+                                                  std::to_string(*dfbIdx));
+    return success();
+  }
+};
+} // namespace
+
+namespace {
+class TTKernelToEmitCOpaqueCallRewriter
+    : public OpConversionPattern<ttkernel::OpaqueCallOp> {
+public:
+  TTKernelToEmitCOpaqueCallRewriter(TTKernelToEmitCTypeConverter &typeConverter,
+                                    MLIRContext *ctx,
+                                    TTKernelToEmitCConversionState &state)
+      : OpConversionPattern<ttkernel::OpaqueCallOp>(typeConverter, ctx),
+        state(state) {}
+
+  LogicalResult
+  matchAndRewrite(ttkernel::OpaqueCallOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    SmallVector<Type> resultTypes;
+    for (Type resTy : op.getResultTypes()) {
+      Type converted = getTypeConverter()->convertType(resTy);
+      if (!converted) {
+        return rewriter.notifyMatchFailure(op, "failed to convert result type");
+      }
+      resultTypes.push_back(converted);
+    }
+
+    ArrayAttr emitcTemplateArgs;
+    auto templateArgVals = adaptor.getTemplateArgVals();
+    if (!templateArgVals.empty()) {
+      SmallVector<Attribute> opaqueArgs;
+      for (Value taVal : templateArgVals) {
+        auto intVal = resolveTemplateArgInt(taVal, op, rewriter);
+        if (!intVal) {
+          return rewriter.notifyMatchFailure(
+              op, "cannot resolve template arg to integer constant");
+        }
+        opaqueArgs.push_back(
+            emitc::OpaqueAttr::get(op.getContext(), std::to_string(*intVal)));
+      }
+      emitcTemplateArgs = ArrayAttr::get(op.getContext(), opaqueArgs);
+    }
+
+    auto callOp = rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, resultTypes, op.getCallee(), nullptr, emitcTemplateArgs,
+        adaptor.getArgOperands());
+    callOp->setAttr("ttlang.opaque_header",
+                    rewriter.getStringAttr(op.getHeader()));
+    return success();
+  }
+
+private:
+  std::reference_wrapper<TTKernelToEmitCConversionState> state;
+
+  /// Resolve a template arg SSA value to a concrete integer.  Handles
+  /// arith.constant, emitc.constant (from ArithToEmitC), ttkernel.get_dfb_id,
+  /// and already-converted emitc.literal producers.
+  std::optional<int64_t>
+  resolveTemplateArgInt(Value val, ttkernel::OpaqueCallOp op,
+                        ConversionPatternRewriter &rewriter) const {
+    Value src = unwrapCasts(val);
+    Operation *defOp = src.getDefiningOp();
+    if (!defOp) {
+      return std::nullopt;
+    }
+
+    if (auto constOp = dyn_cast<arith::ConstantOp>(defOp)) {
+      if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue())) {
+        return intAttr.getInt();
+      }
+      return std::nullopt;
+    }
+
+    if (auto emitcConst = dyn_cast<emitc::ConstantOp>(defOp)) {
+      if (auto intAttr = dyn_cast<IntegerAttr>(emitcConst.getValue())) {
+        return intAttr.getInt();
+      }
+      if (auto opaqueAttr =
+              dyn_cast<emitc::OpaqueAttr>(emitcConst.getValue())) {
+        int64_t v;
+        if (llvm::to_integer(opaqueAttr.getValue(), v)) {
+          return v;
+        }
+      }
+      return std::nullopt;
+    }
+
+    if (auto getDfbId = dyn_cast<ttkernel::GetDfbIdOp>(defOp)) {
+      auto idx = resolveDfbIndex(getDfbId.getDfb());
+      if (!idx) {
+        return std::nullopt;
+      }
+      Value dfb = unwrapCasts(getDfbId.getDfb());
+      ensureCBDeclaration(dfb, op.getOperation(), rewriter, state);
+      return static_cast<int64_t>(*idx);
+    }
+
+    if (auto litOp = dyn_cast<emitc::LiteralOp>(defOp)) {
+      int64_t v;
+      if (llvm::to_integer(litOp.getValue(), v)) {
+        return v;
+      }
+    }
+
+    return std::nullopt;
+  }
+};
+} // namespace
+
+namespace {
 template <typename Op, typename Adaptor = typename Op::Adaptor>
 class TTKernelMacroOpToEmitCOpRewriter : public OpConversionPattern<Op> {
 public:
@@ -2638,6 +2798,8 @@ public:
     patterns
         .add<TTKernelToEmitCOpaqueRewriter<ttkernel::MatmulBlockInitShortOp>>(
             typeConverter, context, "matmul_block_init");
+    patterns.add<TTKernelToEmitCOpaqueCallRewriter>(typeConverter, context,
+                                                    state);
     patterns.add<
         TTKernelToEmitCArgValRewriter<ttkernel::GetCompileArgValOp>,
         TTKernelToEmitCArgValRewriter<ttkernel::GetArgValOp>,
@@ -2908,6 +3070,7 @@ public:
         TTKernelToEmitCOpaqueRewriter<ttkernel::TensorAccessorOp>>(
         typeConverter, context);
 
+    patterns.add<GetDfbIdOpRewriter>(typeConverter, context);
     patterns.add<TTKernelToEmitCCBVoidMethodRewriter<ttkernel::CBPushBackOp>>(
         typeConverter, context, state, "push_back");
     patterns.add<TTKernelToEmitCCBVoidMethodRewriter<ttkernel::CBPopFrontOp>>(

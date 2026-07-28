@@ -22,6 +22,7 @@ source "${SCRIPT_DIR}/hardware-test-common.sh"
 
 TEST_DIR="${1:?usage: run-hardware-pytests.sh <test-dir> <report-prefix>}"
 REPORT_PREFIX="${2:?usage: run-hardware-pytests.sh <test-dir> <report-prefix>}"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 
 chips="$(resolve_tt_chip_count "${HW_PYTEST_CHIPS:-}")" || {
     echo "run-hardware-pytests.sh: invalid ${chips:-chip count}" >&2
@@ -33,6 +34,10 @@ chips="$(resolve_tt_chip_count "${HW_PYTEST_CHIPS:-}")" || {
 # reporting failure. A worker segfault is a crash, not a rerunnable failure, so
 # it is unaffected.
 common=(-v --tb=long --timeout=300 --timeout-method=thread --reruns 3)
+pytest_config="$(absolute_path "$(dirname "$REPORT_PREFIX")/pytest.ini")"
+if [ -f "$pytest_config" ]; then
+    common=(-c "$pytest_config" --rootdir="${REPO_ROOT}/test" "${common[@]}")
+fi
 
 selected_phase_count=0
 run_pytest_phase() {

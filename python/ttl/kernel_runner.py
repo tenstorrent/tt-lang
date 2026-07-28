@@ -98,6 +98,7 @@ class KernelSpec:
             ReaderConfigDescriptor, WriterConfigDescriptor, or EthernetConfigDescriptor).
         pipe_computed_address_dfb_indices: Receiver DFB indices whose backing
             addresses are passed to this kernel.
+        compiler_include_paths: Additional -I paths for the JIT compiler.
         core_ranges: Optional per-kernel ttnn.CoreRangeSet. When set, this
             specialized kernel binary is dispatched only to these cores. When None,
             the whole-grid core_ranges passed to build_kernel_descriptors is used.
@@ -108,6 +109,7 @@ class KernelSpec:
     tensor_indices: List[int]
     config: Any
     pipe_computed_address_dfb_indices: List[int] = field(default_factory=list)
+    compiler_include_paths: List[str] = field(default_factory=list)
     core_ranges: Optional[Any] = None
 
 
@@ -238,6 +240,7 @@ def build_kernel_descriptors(
             compile_time_args=kernel_compile_time_args,
             common_runtime_args=common_runtime_args,
             config=spec.config,
+            compiler_include_paths=spec.compiler_include_paths,
         )
         kernel_descriptors.append(kernel_desc)
 
@@ -298,6 +301,7 @@ def _get_cb_descriptor_rows(cb_configs: List[Any]) -> List[Any]:
                     data_format,
                     page_size,
                     total_size,
+                    None,
                     f"  CB[{cb_index}]: shape={shape} block_count={block_count} -> {total_size} bytes",
                 )
             )
@@ -310,13 +314,16 @@ def _get_cb_descriptor_rows(cb_configs: List[Any]) -> List[Any]:
                     data_format,
                     page_size,
                     total_size,
+                    None,
                     f"  CB[{cb_index}]: compiler-allocated num_tiles={cb.num_tiles} "
                     f"block_count={cb.block_count} format={cb.data_format} -> {total_size} bytes",
                 )
             )
         else:
             data_format = _cb_data_format(cb)
-            page_size = tile_bytes_from_dtype(data_format)
+            tile = ttnn.Tile(cb.tile)
+            tile_descriptor = ttnn.TileDescriptor(tile)
+            page_size = tile.get_tile_size(data_format)
             num_tiles = cb.shape[0] * cb.shape[1] * cb.block_count
             total_size = num_tiles * page_size
             rows.append(
@@ -324,6 +331,7 @@ def _get_cb_descriptor_rows(cb_configs: List[Any]) -> List[Any]:
                     data_format,
                     page_size,
                     total_size,
+                    tile_descriptor,
                     f"  CB[{cb_index}]: shape={cb.shape} block_count={cb.block_count} -> {total_size} bytes",
                 )
             )
@@ -552,9 +560,9 @@ def build_cb_descriptors(
     counted_rows = [
         row for cb_index, row in enumerate(rows) if cb_index not in backing_tensors
     ]
-    static_cb_bytes = sum(total_size for _, _, total_size, _ in counted_rows)
+    static_cb_bytes = sum(row[2] for row in counted_rows)
     if static_cb_bytes > remaining_bytes:
-        breakdown = "\n".join(r[3] for r in counted_rows)
+        breakdown = "\n".join(r[-1] for r in counted_rows)
         raise ValueError(
             "Total circular buffer allocation ("
             f"{static_cb_bytes} bytes) exceeds L1 budget ({remaining_bytes} bytes). "
@@ -564,11 +572,14 @@ def build_cb_descriptors(
         )
 
     cb_descriptors = []
-    for cb_index, (data_format, page_size, total_size, _) in enumerate(rows):
+    for cb_index, (data_format, page_size, total_size, tile_descriptor, _) in enumerate(
+        rows
+    ):
         cb_format = ttnn.CBFormatDescriptor(
             buffer_index=cb_index,
             data_format=data_format,
             page_size=page_size,
+            **({"tile": tile_descriptor} if tile_descriptor is not None else {}),
         )
         cb_desc = ttnn.CBDescriptor(
             total_size=total_size,

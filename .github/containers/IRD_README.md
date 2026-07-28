@@ -31,7 +31,7 @@ ninja -C build check-ttlang-pytest   # Python pytest tests
 
 ## Available Tools
 
-`vim`, `nano`, `tmux`, `ssh`, `sudo`, `git`, `ccache`, `tt-smi`, `capture-release`, `csvexport-release` (Tracy profiler)
+`vim`, `nano`, `tmux`, `ssh`, `sudo`, `git`, `ccache`, `tt-smi`, `tt-triage`, `capture-release`, `csvexport-release` (Tracy profiler)
 
 ## Documentation
 

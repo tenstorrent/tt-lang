@@ -18,7 +18,7 @@ python $TTLANG_TOOLCHAIN_DIR/examples/elementwise-tutorial/step_4_multinode_grid
 
 ## Available Tools
 
-`vim`, `nano`, `python` (3.12), `pytest`, `tt-smi`, `capture-release`, `csvexport-release` (Tracy profiler)
+`vim`, `nano`, `python` (3.12), `pytest`, `tt-smi`, `tt-triage`, `capture-release`, `csvexport-release` (Tracy profiler)
 
 ## Documentation
 

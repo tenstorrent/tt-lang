@@ -30,13 +30,12 @@ config.suffixes = [".mlir", ".py"]
 config.test_source_root = os.path.dirname(__file__)
 
 # test_exec_root: The root path where tests should be run.
-_default_obj_root = os.environ.get("TTLANG_OBJ_ROOT")
-if not _default_obj_root:
-    _default_obj_root = os.path.abspath(
-        os.path.join(config.test_source_root, os.pardir, "build")
-    )
+if not hasattr(config, "ttlang_obj_root"):
+    config.ttlang_obj_root = os.environ.get("TTLANG_OBJ_ROOT")
+    if not config.ttlang_obj_root:
+        from ttl.config import BUILD_DIR
 
-config.ttlang_obj_root = getattr(config, "ttlang_obj_root", _default_obj_root)
+        config.ttlang_obj_root = os.fspath(BUILD_DIR)
 config.ttlang_source_dir = getattr(
     config,
     "ttlang_source_dir",
@@ -45,6 +44,7 @@ config.ttlang_source_dir = getattr(
         os.path.abspath(os.path.join(config.test_source_root, os.pardir)),
     ),
 )
+config.python_executable = getattr(config, "python_executable", sys.executable)
 
 config.test_exec_root = os.path.join(config.ttlang_obj_root, "test")
 
@@ -66,8 +66,6 @@ config.excludes = [
 ]
 
 # Exclude pytest-style tests (test_*.py) from lit collection.
-import os
-
 for _root, _dirs, _files in os.walk(config.test_source_root):
     for _f in _files:
         if _f.startswith("test_") and _f.endswith(".py"):
@@ -111,7 +109,7 @@ if llvm_config is not None:
 # Note: We cannot use %t directly in env var values because lit doesn't expand
 # substitutions recursively. Instead, tests should use %t explicitly:
 # RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir TTLANG_FINAL_MLIR=%t.final.mlir %python %s
-config.substitutions.append(("%python", sys.executable))
+config.substitutions.append(("%python", config.python_executable))
 
 # Get Python packages directory from site config, or fall back to default build location.
 build_python = getattr(config, "TTLANG_PYTHON_PACKAGES_DIR", None)

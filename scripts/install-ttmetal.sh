@@ -94,6 +94,15 @@ if [ -d "$SRC/tools/tracy" ]; then
     echo "Installed Tracy Python module"
 fi
 
+# --- tt-triage ---
+# Preserve this layout because triage modules import sibling files directly.
+if [ -d "$SRC/tools/triage" ]; then
+    rm -rf "$INSTALL/tools/triage"
+    mkdir -p "$INSTALL/tools"
+    cp -a "$SRC/tools/triage" "$INSTALL/tools/"
+    echo "Installed tt-triage"
+fi
+
 # --- Runtime artifacts (linker scripts, LLK headers, SoC/core descriptors, sfpi) ---
 # Some artifacts are build-generated (runtime/hw), others live only in the
 # source tree (runtime/sfpi).  Copy from the build dir first for
