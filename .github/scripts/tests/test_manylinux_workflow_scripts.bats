@@ -33,8 +33,15 @@ if [ "$1 $2" = "-m venv" ]; then
     venv_dir="$3"
     mkdir -p "$venv_dir/bin"
     cp "$0" "$venv_dir/bin/python"
+    cat > "$venv_dir/bin/tt-lang-setup-sfpi" <<'MOCK'
+#!/bin/sh
+echo called >> "$FAKE_SFPI_CALLS"
+MOCK
     : > "$venv_dir/bin/tt-triage"
-    chmod +x "$venv_dir/bin/python" "$venv_dir/bin/tt-triage"
+    chmod +x \
+        "$venv_dir/bin/python" \
+        "$venv_dir/bin/tt-lang-setup-sfpi" \
+        "$venv_dir/bin/tt-triage"
 fi
 exit 0
 EOF
@@ -53,8 +60,10 @@ printf '%s\n' "$*" >> "$FAKE_TUTORIAL_CALLS"
 EOF
     chmod +x "$hardware_tutorial_mock"
     export FAKE_PYTHON_CALLS="$BATS_TEST_TMPDIR/python.calls"
+    export FAKE_SFPI_CALLS="$BATS_TEST_TMPDIR/sfpi.calls"
     export FAKE_TUTORIAL_CALLS="$BATS_TEST_TMPDIR/tutorial.calls"
     : > "$FAKE_PYTHON_CALLS"
+    : > "$FAKE_SFPI_CALLS"
     : > "$FAKE_TUTORIAL_CALLS"
     hardware_outside_repo="$BATS_TEST_TMPDIR/outside-repo"
     mkdir -p "$hardware_outside_repo"
@@ -63,6 +72,7 @@ EOF
 
 run_hardware_wheel_test() {
     local resolution_mode="$1"
+    local ttnn_dep_mode="${2:-pypi}"
     local github_workspace=""
     local -a repo_root_args=()
     case "$resolution_mode" in
@@ -73,11 +83,12 @@ run_hardware_wheel_test() {
 
     run env \
         FAKE_PYTHON_CALLS="$FAKE_PYTHON_CALLS" \
+        FAKE_SFPI_CALLS="$FAKE_SFPI_CALLS" \
         FAKE_TUTORIAL_CALLS="$FAKE_TUTORIAL_CALLS" \
         GITHUB_WORKSPACE="$github_workspace" \
         "$SCRIPTS_DIR/test-manylinux-wheel.sh" \
             --dist-dir "$hardware_wheel_dir" \
-            --ttnn-dep-mode pypi \
+            --ttnn-dep-mode "$ttnn_dep_mode" \
             --python "$hardware_python_mock" \
             --tutorial-script "$hardware_tutorial_mock" \
             "${repo_root_args[@]}"
@@ -416,8 +427,18 @@ EOF
     assert_success
     grep -q -- "-m pip install .*tt_lang-1.2.3-cp312" "$FAKE_PYTHON_CALLS"
     grep -q -- "check-installed-ttnn.py --mode pypi" "$FAKE_PYTHON_CALLS"
+    grep -qx called "$FAKE_SFPI_CALLS"
     grep -q -- "smoke-test-wheel.py" "$FAKE_PYTHON_CALLS"
     grep -qx "$TTLANG_REPO_ROOT" "$FAKE_TUTORIAL_CALLS"
+}
+
+@test "hardware wheel test skips sfpi setup for external ttnn" {
+    setup_hardware_wheel_test
+    run_hardware_wheel_test explicit external
+
+    assert_success
+    grep -q -- "check-installed-ttnn.py --mode external" "$FAKE_PYTHON_CALLS"
+    test ! -s "$FAKE_SFPI_CALLS"
 }
 
 @test "hardware wheel test script uses GitHub workspace outside a Git checkout" {

@@ -84,6 +84,9 @@ test_python="$test_venv/bin/python"
     --extra-index-url https://download.pytorch.org/whl/cpu \
     "$core_wheel"
 "$test_python" "$script_dir/check-installed-ttnn.py" --mode "$ttnn_dep_mode"
+if [ "$ttnn_dep_mode" = pypi ]; then
+    "$test_venv/bin/tt-lang-setup-sfpi"
+fi
 "$test_python" "$script_dir/smoke-test-wheel.py"
 
 if [ ! -x "$test_venv/bin/tt-triage" ]; then
