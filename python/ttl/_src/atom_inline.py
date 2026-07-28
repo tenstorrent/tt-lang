@@ -124,6 +124,7 @@ def inline_atom_calls(
     fn_def: ast.FunctionDef,
     fn_globals: Dict[str, object],
     caller_name: str,
+    dfb_collection_names: Set[str],
 ) -> Dict[str, object]:
     reserved_names = _identifier_names(fn_def)
     external_pipenets = {}
@@ -133,6 +134,7 @@ def inline_atom_calls(
         caller_name,
         reserved_names,
         external_pipenets,
+        dfb_collection_names,
     )
     return external_pipenets
 
@@ -143,6 +145,7 @@ def _inline_statements(
     caller_name: str,
     reserved_names: Set[str],
     external_pipenets: Dict[str, object],
+    dfb_collection_names: Set[str],
 ) -> List[ast.stmt]:
     result: List[ast.stmt] = []
     for statement in statements:
@@ -152,6 +155,7 @@ def _inline_statements(
             caller_name,
             reserved_names,
             external_pipenets,
+            dfb_collection_names,
         )
         match = _standalone_operation_call(statement, scope)
         if match is None:
@@ -167,6 +171,7 @@ def _inline_statements(
                 scope,
                 reserved_names,
                 external_pipenets,
+                dfb_collection_names,
             )
         )
     return result
@@ -178,6 +183,7 @@ def _inline_compound_bodies(
     caller_name: str,
     reserved_names: Set[str],
     external_pipenets: Dict[str, object],
+    dfb_collection_names: Set[str],
 ) -> None:
     for attribute in ("body", "orelse", "finalbody"):
         body = getattr(statement, attribute, None)
@@ -191,6 +197,7 @@ def _inline_compound_bodies(
             caller_name,
             reserved_names,
             external_pipenets,
+            dfb_collection_names,
         )
         setattr(statement, attribute, inlined)
 
@@ -205,6 +212,7 @@ def _inline_compound_bodies(
                 caller_name,
                 reserved_names,
                 external_pipenets,
+                dfb_collection_names,
             )
 
 
@@ -278,9 +286,15 @@ def _expand_call(
     scope: Dict[str, object],
     reserved_names: Set[str],
     external_pipenets: Dict[str, object],
+    dfb_collection_names: Set[str],
 ) -> List[ast.stmt]:
     spec = callee._spec
-    bindings = _bind_args_to_params(spec, call, caller_name)
+    bindings = _bind_args_to_params(
+        spec,
+        call,
+        caller_name,
+        dfb_collection_names,
+    )
     suffix = f"__{spec.name}_inl{next(_inline_counter)}"
     _add_capture_bindings(spec, bindings)
     _add_external_pipenet_bindings(
@@ -374,18 +388,23 @@ def _fresh_name(base: str, suffix: str, reserved_names: Set[str]) -> str:
     return candidate
 
 
-def _is_static_dfb_collection_element(node: ast.expr) -> bool:
-    return (
-        isinstance(node, ast.Subscript)
-        and isinstance(node.value, ast.Name)
-        and isinstance(node.slice, ast.Constant)
-        and not isinstance(node.slice.value, bool)
-        and isinstance(node.slice.value, int)
-        and node.slice.value >= 0
-    )
+def _static_subscript_index(node: ast.expr) -> Optional[int]:
+    if not isinstance(node, ast.Subscript):
+        return None
+    if not isinstance(node.slice, ast.Constant):
+        return None
+    index = node.slice.value
+    if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+        return None
+    return index
 
 
-def _bind_args_to_params(spec, call: ast.Call, caller_name: str) -> Dict[str, ast.expr]:
+def _bind_args_to_params(
+    spec,
+    call: ast.Call,
+    caller_name: str,
+    dfb_collection_names: Set[str],
+) -> Dict[str, ast.expr]:
     if any(isinstance(argument, ast.Starred) for argument in call.args):
         raise ValueError(
             f"@ttl.operation: composing {spec.name!r} into {caller_name!r} "
@@ -436,13 +455,23 @@ def _bind_args_to_params(spec, call: ast.Call, caller_name: str) -> Dict[str, as
             )
         bindings[parameter.name] = keyword_arguments[parameter.name]
 
-    parameters = {parameter.name: parameter for parameter in spec.params}
     for name, argument in bindings.items():
         if isinstance(argument, ast.Name):
             continue
-        parameter = parameters[name]
-        if parameter.kind == "dfb" and _is_static_dfb_collection_element(argument):
-            continue
+        parameter = spec.params_by_name[name]
+        if (
+            parameter.kind == "dfb"
+            and isinstance(argument, ast.Subscript)
+            and isinstance(argument.value, ast.Name)
+            and argument.value.id in dfb_collection_names
+        ):
+            if _static_subscript_index(argument) is not None:
+                continue
+            raise ValueError(
+                f"@ttl.operation {caller_name!r}: DFB collection "
+                f"{argument.value.id!r} requires a non-negative integer "
+                "literal index"
+            )
         requirement = (
             "a resource name or statically indexed DFB collection element"
             if parameter.kind == "dfb"
@@ -470,6 +499,8 @@ def _identifier_names(root: ast.AST) -> Set[str]:
         elif isinstance(node, ast.arg):
             names.add(node.arg)
         elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            names.add(node.name)
+        elif isinstance(node, ast.ExceptHandler) and node.name is not None:
             names.add(node.name)
     return names
 

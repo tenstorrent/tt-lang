@@ -18,16 +18,14 @@ operation with resource parameters is expand-only and cannot be called as a
 TT-NN operation.
 
 DFB declarations sit inline with the compute/copy work in a unified body, so
-after the split they land inside each kernel body. Declarations may be single
-assignments, list/tuple declarations, list comprehensions whose elements are
-accessed with non-negative integer literal indices, or named destructuring of a
-DFB collection. The existing per-kernel compiler is capture-based (kernel
-functions take no parameters; DFBs arrive as closure captures), so before
-splitting we lift these declarations out of the body, evaluate them to
-DataflowBuffer objects, and pass them as captures -- the same form the
-@ttl.operation flow produces by running its setup body. After that the
-per-kernel compile, DFB sizing, pass pipeline, and runner are identical to
-@ttl.operation.
+after the split they land inside each thread body. Declarations may be
+individual assignments or statically indexed collections. The existing
+per-thread compiler is capture-based (thread functions take no parameters;
+DFBs arrive as closure captures), so before splitting we lift these
+declarations out of the body, evaluate them to DataflowBuffer objects, and pass
+them as captures -- the same shape the @ttl.operation flow produces by running
+its setup body. After that the per-thread compile, CB sizing, pass pipeline, and
+runner are identical to @ttl.operation.
 """
 
 from __future__ import annotations
@@ -45,7 +43,11 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import ttl as _ttl
 from ttl.pykernel._src.utils import _cleanup_source_code
 
-from ._src.atom_inline import inline_atom_calls
+from ._src.atom_inline import (
+    _identifier_names,
+    _static_subscript_index,
+    inline_atom_calls,
+)
 from ._src.atom_split import split_function_body
 from ._src.tensor_registry import register_tensor_name
 from .compiler_options import CompilerOptions
@@ -106,6 +108,7 @@ class _AtomSpec:
     line_offset: int
     fn_ast: ast.FunctionDef  # post-inline
     params: List[_ParamInfo]
+    params_by_name: Dict[str, _ParamInfo]
     dfb_param_names: List[str]
     compile_time_captures: Dict[str, Any]
     frozen_scope: Dict[str, Any]
@@ -271,7 +274,12 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
 
     # Inline statement-level calls to other unified operations, then keep
     # the post-inline AST + source.
-    inlined_pipenets = inline_atom_calls(fn_def, scope, caller_name=name)
+    inlined_pipenets = inline_atom_calls(
+        fn_def,
+        scope,
+        caller_name=name,
+        dfb_collection_names=_dfb_collection_names(fn_def),
+    )
     _validate_resource_declarations(fn_def, name)
 
     loaded_names = set()
@@ -314,6 +322,7 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
         line_offset=line_offset,
         fn_ast=fn_def,
         params=params,
+        params_by_name={parameter.name: parameter for parameter in params},
         dfb_param_names=[p.name for p in params if p.kind == "dfb"],
         compile_time_captures=compile_time_captures,
         frozen_scope=frozen_scope,
@@ -364,6 +373,30 @@ def _is_dfb_collection_expr(node: ast.expr) -> bool:
     if isinstance(node, ast.ListComp):
         return _call_name(node.elt) in _DFB_FACTORY_NAMES
     return False
+
+
+def _dfb_collection_declaration_name(stmt: ast.stmt) -> Optional[str]:
+    if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
+        return None
+    if not isinstance(stmt.targets[0], ast.Name):
+        return None
+    if not _is_dfb_collection_expr(stmt.value):
+        return None
+    return stmt.targets[0].id
+
+
+def _dfb_collection_names(fn_def: ast.FunctionDef) -> set:
+    return {
+        name
+        for statement in fn_def.body
+        if (name := _dfb_collection_declaration_name(statement)) is not None
+    }
+
+
+def _is_dfb_generator_expr(node: ast.AST) -> bool:
+    return isinstance(node, ast.GeneratorExp) and (
+        _call_name(node.elt) in _DFB_FACTORY_NAMES
+    )
 
 
 def _destructured_names(target: ast.expr) -> Optional[List[str]]:
@@ -434,9 +467,24 @@ def _validate_resource_declarations(
     fn_def: ast.FunctionDef, operation_name: str
 ) -> None:
     """Require resource construction to use simple top-level assignments."""
+    if any(_is_dfb_generator_expr(node) for node in ast.walk(fn_def)):
+        raise ValueError(
+            f"@ttl.operation {operation_name!r}: DFB collections do not "
+            "support generator expressions; use a list comprehension"
+        )
+
     allowed_calls = set()
+    collection_names = set()
     resource_statements = []
     for statement in fn_def.body:
+        collection_name = _dfb_collection_declaration_name(statement)
+        if collection_name is not None:
+            if collection_name in collection_names:
+                raise ValueError(
+                    f"@ttl.operation {operation_name!r}: DFB collection "
+                    f"{collection_name!r} is declared more than once"
+                )
+            collection_names.add(collection_name)
         target_names = _setup_assign_targets(statement)
         if target_names is None:
             continue
@@ -496,19 +544,14 @@ class _DFBCollectionSubscriptRewriter(ast.NodeTransformer):
                 f"@ttl.operation {self.operation_name!r}: DFB collection "
                 f"{collection_name!r} elements cannot be rebound"
             )
-        if (
-            not isinstance(node.slice, ast.Constant)
-            or isinstance(node.slice.value, bool)
-            or not isinstance(node.slice.value, int)
-            or node.slice.value < 0
-        ):
+        index = _static_subscript_index(node)
+        if index is None:
             raise ValueError(
                 f"@ttl.operation {self.operation_name!r}: DFB collection "
                 f"{collection_name!r} requires a non-negative integer literal "
                 "index"
             )
 
-        index = node.slice.value
         elements = self.collection_elements[collection_name]
         if index >= len(elements):
             raise ValueError(
@@ -520,7 +563,14 @@ class _DFBCollectionSubscriptRewriter(ast.NodeTransformer):
         return ast.copy_location(replacement, node)
 
     def visit_Name(self, node):
-        if isinstance(node.ctx, ast.Load) and node.id in self.collection_elements:
+        if node.id not in self.collection_elements:
+            return node
+        if isinstance(node.ctx, (ast.Store, ast.Del)):
+            raise ValueError(
+                f"@ttl.operation {self.operation_name!r}: DFB collection "
+                f"{node.id!r} cannot be rebound"
+            )
+        if isinstance(node.ctx, ast.Load):
             raise ValueError(
                 f"@ttl.operation {self.operation_name!r}: DFB collection "
                 f"{node.id!r} must be accessed with a non-negative integer "
@@ -554,19 +604,23 @@ def _lift_setup(
     dfbs: Dict[str, DataflowBuffer] = {}
     nets: Dict[str, PipeNet] = {}
     collection_elements: Dict[str, List[str]] = {}
-    reserved_names = {
-        node.id for node in ast.walk(fn_def) if isinstance(node, ast.Name)
-    }
+    reserved_names = _identifier_names(fn_def)
     kept: List[ast.stmt] = []
     for stmt in fn_def.body:
         target_names = _setup_assign_targets(stmt)
         if target_names is None:
             kept.append(stmt)
             continue
+        collection_name = _dfb_collection_declaration_name(stmt)
+        if collection_name is not None and collection_name in collection_elements:
+            raise ValueError(
+                f"@ttl.operation {operation_name!r}: DFB collection "
+                f"{collection_name!r} is declared more than once"
+            )
         value = eval(ast.unparse(stmt.value), ns)  # noqa: S307
         target = stmt.targets[0]
         if not isinstance(target, ast.Name):
-            if not isinstance(value, (list, tuple)) or not value:
+            if not value:
                 raise ValueError(
                     f"@ttl.operation {operation_name!r}: DFB collection "
                     "destructuring requires at least one DFB"
@@ -592,7 +646,7 @@ def _lift_setup(
         if isinstance(value, DataflowBuffer):
             dfbs[name] = value
         elif _is_dfb_collection_expr(stmt.value):
-            if not isinstance(value, (list, tuple)) or not value:
+            if not value:
                 raise ValueError(
                     f"@ttl.operation {operation_name!r}: DFB collection "
                     f"{name!r} must contain at least one DFB"
@@ -626,7 +680,7 @@ def _lift_setup(
         collection_elements,
         operation_name,
     )
-    new_fn.body = [rewriter.visit(statement) for statement in kept]
+    new_fn.body = [rewriter.visit(copy.deepcopy(statement)) for statement in kept]
     ast.fix_missing_locations(new_fn)
     return new_fn, dfbs, nets
 
@@ -656,7 +710,7 @@ def _cb_configs_from_lifted(lifted: Dict[str, DataflowBuffer]):
     by_index = {dfb._cb_index: dfb for dfb in lifted.values()}
     if not by_index:
         return []
-    return [by_index.get(index) for index in range(max(by_index) + 1)]
+    return [by_index.get(i) for i in range(max(by_index) + 1)]
 
 
 def _make_thread_callable(spec, kernel_type, fn_name, body, captures):
