@@ -90,6 +90,11 @@ def _pipe_is_fabric(pipe: AnyPipe) -> bool:
     Derived from the pipe's endpoints and the launch grid (its leading dims are
     mesh axes); on-chip NoC pipes and single-device grids return False.  Used
     only to annotate trace events; it does not affect transfer semantics.
+
+    Because this is a passive annotation, it never raises: an endpoint that
+    :func:`~sim.nodecontext.pipe_crosses_mesh` cannot map to mesh axes (an
+    ambiguous multi-element sub-rank coordinate) is reported as non-fabric
+    rather than crashing an otherwise-valid traced run.
     """
     from .nodecontext import pipe_crosses_mesh
 
@@ -97,7 +102,10 @@ def _pipe_is_fabric(pipe: AnyPipe) -> bool:
     grid = tuple(getattr(scheduler, "grid", ()) or ()) if scheduler is not None else ()
     if not grid:
         return False
-    return pipe_crosses_mesh(pipe.src, pipe.dst, grid)
+    try:
+        return pipe_crosses_mesh(pipe.src, pipe.dst, grid)
+    except ValueError:
+        return False
 
 
 class CopyTransferHandler(Protocol):

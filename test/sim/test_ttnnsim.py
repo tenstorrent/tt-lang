@@ -3120,6 +3120,22 @@ class TestMeshShapeNd:
         with pytest.raises(ValueError, match="at least one axis"):
             ttnn.MeshShape()
 
+    def test_non_positive_axis_raises(self) -> None:
+        with pytest.raises(ValueError, match="must be positive"):
+            ttnn.MeshShape(0)
+        with pytest.raises(ValueError, match="must be positive"):
+            ttnn.MeshShape(2, -1)
+
+    def test_equality_and_hashing(self) -> None:
+        assert ttnn.MeshShape(2, 2) == ttnn.MeshShape(2, 2)
+        assert ttnn.MeshShape(2, 2) != ttnn.MeshShape(2, 4)
+        assert ttnn.MeshShape(4) != ttnn.MeshShape(2, 2)
+        # Usable as dict keys / set members via a matching __hash__.
+        assert hash(ttnn.MeshShape(2, 2)) == hash(ttnn.MeshShape(2, 2))
+        assert len({ttnn.MeshShape(2, 2), ttnn.MeshShape(2, 2)}) == 1
+        # Comparisons against unrelated types are not equal (never raise).
+        assert ttnn.MeshShape(2, 2) != (2, 2)
+
 
 class TestShardTensorNdMesh:
     """ShardTensorNdMesh records N-axis MeshShardInfo via from_torch."""
@@ -3243,3 +3259,15 @@ class TestAllReduce2dMesh:
         # row half 0 -> 1 + 2 = 3; row half 1 -> 3 + 4 = 7, broadcast across columns.
         assert torch.allclose(r[0:2], torch.full((2, 4), 3.0))
         assert torch.allclose(r[2:4], torch.full((2, 4), 7.0))
+
+    def test_negative_cluster_axis_is_normalized(self) -> None:
+        # -1 on a 2-axis mesh is axis 1; must match the explicit axis-1 result.
+        neg = ttnn.all_reduce(self._tensor(), cluster_axis=-1).to_torch()
+        pos = ttnn.all_reduce(self._tensor(), cluster_axis=1).to_torch()
+        assert torch.allclose(neg, pos)
+
+    def test_out_of_range_cluster_axis_raises(self) -> None:
+        with pytest.raises(ValueError, match="cluster_axis 2 out of range"):
+            ttnn.all_reduce(self._tensor(), cluster_axis=2)
+        with pytest.raises(ValueError, match="cluster_axis -3 out of range"):
+            ttnn.all_gather(self._tensor(), dim=0, cluster_axis=-3)

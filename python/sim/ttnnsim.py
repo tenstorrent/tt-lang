@@ -1059,7 +1059,10 @@ class MeshShape:
             dims = tuple(dims[0])
         if not dims:
             raise ValueError("MeshShape requires at least one axis")
-        self.dims: tuple[int, ...] = tuple(int(d) for d in dims)
+        normalized = tuple(int(d) for d in dims)
+        if any(d <= 0 for d in normalized):
+            raise ValueError(f"MeshShape axis sizes must be positive, got {normalized}")
+        self.dims: tuple[int, ...] = normalized
 
     @property
     def rows(self) -> int:
@@ -1081,6 +1084,14 @@ class MeshShape:
 
     def __getitem__(self, index: int) -> int:
         return self.dims[index]
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, MeshShape):
+            return self.dims == other.dims
+        return NotImplemented
+
+    def __hash__(self) -> int:
+        return hash(self.dims)
 
     def __repr__(self) -> str:
         return f"MeshShape{self.dims}"
@@ -2423,6 +2434,27 @@ def split_work_to_cores(
     )
 
 
+def _resolve_cluster_axes(
+    cluster_axis: Optional[int], msi: "MeshShardInfo", op: str
+) -> "list[int] | range":
+    """Resolve ``cluster_axis`` to the mesh axes a collective iterates over.
+
+    Validates and normalizes a caller-supplied ``cluster_axis`` against the
+    mesh rank (accepting Python-style negative indices), raising a clear
+    ``ValueError`` instead of leaking an ``IndexError`` from a later
+    ``msi.dims[k]`` access.  ``None`` selects every mesh axis.
+    """
+    naxes = len(msi.mesh_shape)
+    if cluster_axis is None:
+        return range(naxes)
+    if not -naxes <= cluster_axis < naxes:
+        raise ValueError(
+            f"cluster_axis {cluster_axis} out of range for {op} on a "
+            f"{naxes}-axis mesh {tuple(msi.mesh_shape)}"
+        )
+    return [cluster_axis % naxes]
+
+
 def all_reduce(
     input_tensor: Tensor,
     cluster_axis: Optional[int] = None,
@@ -2441,18 +2473,18 @@ def all_reduce(
     corresponding slices element-wise across all partitions, then give every
     partition that same sum.
 
-    For 2D meshes, ``cluster_axis`` selects which mesh axis to reduce across:
+    ``cluster_axis`` selects which mesh axis to reduce across, for a mesh of
+    any rank:
 
-    * ``cluster_axis=0`` — reduce across the row axis (``msi.mesh_shape[0]``
-      devices, partitioned along ``msi.dims[0]``).
-    * ``cluster_axis=1`` — reduce across the column axis (``msi.mesh_shape[1]``
-      devices, partitioned along ``msi.dims[1]``).
+    * ``cluster_axis=k`` — reduce across mesh axis ``k`` (``msi.mesh_shape[k]``
+      devices, partitioned along ``msi.dims[k]``).  Negative indices count from
+      the last axis; an out-of-range value raises ``ValueError``.
     * ``cluster_axis=None`` — reduce across all active mesh axes sequentially.
 
     Args:
         input_tensor: Input tensor (must have been created with a mesh mapper).
-        cluster_axis: Which mesh axis to reduce across (0 or 1).  ``None``
-            reduces across all active axes.
+        cluster_axis: Which mesh axis to reduce across.  ``None`` reduces across
+            all active axes.
         mesh_device: Ignored (accepted for API compatibility).
         memory_config: Optional output memory config.
         dtype: Optional output dtype.
@@ -2468,7 +2500,7 @@ def all_reduce(
 
     t = input_tensor.to_torch()
 
-    axes = [cluster_axis] if cluster_axis is not None else range(len(msi.mesh_shape))
+    axes = _resolve_cluster_axes(cluster_axis, msi, "all_reduce")
     active_axes = [k for k in axes if msi.dims[k] is not None and msi.mesh_shape[k] > 1]
 
     result = t
@@ -2519,20 +2551,20 @@ def all_gather(
     matching what ``ttnn.to_torch(..., mesh_composer=ConcatMeshToTensor(...))``
     would produce.
 
-    For 2D meshes, ``cluster_axis`` selects which mesh axis to gather across:
+    ``cluster_axis`` selects which mesh axis to gather across, for a mesh of
+    any rank:
 
-    * ``cluster_axis=0`` — gather across the row axis (``msi.mesh_shape[0]``
-      devices, partitioned along ``msi.dims[0]``).
-    * ``cluster_axis=1`` — gather across the column axis (``msi.mesh_shape[1]``
-      devices, partitioned along ``msi.dims[1]``).
+    * ``cluster_axis=k`` — gather across mesh axis ``k`` (``msi.mesh_shape[k]``
+      devices, partitioned along ``msi.dims[k]``).  Negative indices count from
+      the last axis; an out-of-range value raises ``ValueError``.
     * ``cluster_axis=None`` — gather across all active mesh axes sequentially,
       applying the same ``dim`` for each.
 
     Args:
         input_tensor: Input tensor (must have been created with a mesh mapper).
         dim: Dimension along which to concatenate the gathered shards.
-        cluster_axis: Which mesh axis to gather across (0 or 1).  ``None``
-            gathers across all active axes.
+        cluster_axis: Which mesh axis to gather across.  ``None`` gathers across
+            all active axes.
         mesh_device: Ignored (accepted for API compatibility).
         memory_config: Optional output memory config.
         **kwargs: Additional keyword arguments accepted for API compatibility.
@@ -2547,7 +2579,7 @@ def all_gather(
 
     t = input_tensor.to_torch()
 
-    axes = [cluster_axis] if cluster_axis is not None else range(len(msi.mesh_shape))
+    axes = _resolve_cluster_axes(cluster_axis, msi, "all_gather")
     active_axes = [k for k in axes if msi.dims[k] is not None and msi.mesh_shape[k] > 1]
 
     result = t

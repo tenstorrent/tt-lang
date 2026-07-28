@@ -101,30 +101,48 @@ def pipe_crosses_mesh(src: NodeCoord, dst: Any, grid: Shape) -> bool:
     axis that covers any value other than the source's coordinate makes the pipe
     fabric.  Grids of rank <= 2 have no mesh axes, so the result is always False.
 
-    Both endpoints must be full grid rank: the mesh/core split (``grid[:-2]`` vs
-    the trailing two dims) only lines up with a coordinate's entries when the
-    coordinate addresses every grid axis.  A shorter coordinate is ambiguous --
-    the simulator flattens leading dims for sub-rank coordinates, so its entries
-    no longer correspond one-to-one with mesh axes -- and raises rather than
-    guess.
+    Endpoints are accepted in two unambiguous forms and normalized to full grid
+    coordinates before comparison:
+
+    * A bare linear index (an ``int`` or a 1-tuple): unflattened via
+      :func:`node_coord_from_linear`.  Both node-flattening conventions agree on
+      a single linear index, so this is unambiguous.
+    * A full grid-rank coordinate: used directly (this is the only form that may
+      carry ``slice`` multicast selectors).
+
+    A multi-element coordinate shorter than the grid rank is ambiguous: the
+    simulator's :func:`node` flattens the *leading* axes while
+    :func:`flatten_node_index` flattens differently, so its entries cannot be
+    mapped one-to-one to mesh axes.  Such a coordinate raises rather than guess;
+    the trace-only caller (:func:`sim.copyhandlers._pipe_is_fabric`) treats that
+    as non-fabric so tracing never crashes an otherwise-valid run.
 
     Raises:
-        ValueError: If ``src`` or ``dst`` does not have exactly ``len(grid)``
-            entries (and the grid has mesh axes).
+        ValueError: If ``src`` or ``dst`` is a multi-element coordinate whose
+            rank is neither 1 nor ``len(grid)`` (and the grid has mesh axes).
     """
     n_mesh = len(mesh_axes_of_grid(grid))
     if n_mesh == 0:
         return False
 
-    src_t = (src,) if isinstance(src, int) else tuple(src)
-    dst_t = (dst,) if isinstance(dst, int) else tuple(dst)
-
     rank = len(grid)
-    if len(src_t) != rank or len(dst_t) != rank:
+
+    def _to_full(coord: Any, what: str) -> tuple[Any, ...]:
+        if isinstance(coord, int):
+            return node_coord_from_linear(coord, grid)
+        coord_t = tuple(coord)
+        if len(coord_t) == 1 and not isinstance(coord_t[0], slice):
+            return node_coord_from_linear(coord_t[0], grid)
+        if len(coord_t) == rank:
+            return coord_t
         raise ValueError(
-            f"pipe endpoints must be full grid rank ({rank}) to classify mesh "
-            f"crossing; got src {src_t} and dst {dst_t} for grid {tuple(grid)}"
+            f"pipe {what} {coord_t} is rank {len(coord_t)} but grid {tuple(grid)} "
+            f"is rank {rank}; use a full-rank coordinate or a bare linear index "
+            f"to classify mesh crossing"
         )
+
+    src_t = _to_full(src, "src")
+    dst_t = _to_full(dst, "dst")
 
     for axis in range(n_mesh):
         src_coord = src_t[axis]

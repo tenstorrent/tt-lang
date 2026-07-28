@@ -203,11 +203,22 @@ class TestPipeCrossesMesh:
         # grid (2, 1, 1): mesh axis (2,). 0 -> 1 differs on the mesh axis.
         assert pipe_crosses_mesh((0, 0, 0), (1, 0, 0), (2, 1, 1)) is True
 
-    def test_sub_rank_coord_raises(self) -> None:
-        """A coordinate shorter than the grid rank is ambiguous and rejected."""
-        # grid rank 4 but endpoints are 1-tuples: cannot map entries to mesh axes.
-        with pytest.raises(ValueError, match="full grid rank"):
-            pipe_crosses_mesh((0,), (1,), (4, 8, 13, 10))
+    def test_linear_index_is_unflattened(self) -> None:
+        """A bare linear index is unambiguous: it is unflattened, not rejected."""
+        # grid (2, 1, 1): mesh axis (2,), 2 devices, 1 core each -> linear == device.
+        # Linear 0 and 1 land on different cards, so the pipe is fabric.
+        assert pipe_crosses_mesh(0, 1, (2, 1, 1)) is True
+        assert pipe_crosses_mesh((0,), (1,), (2, 1, 1)) is True
+        # Both on the same (only) card of a single-mesh-axis grid -> on-chip.
+        assert pipe_crosses_mesh(0, 0, (2, 1, 1)) is False
+
+    def test_multi_element_sub_rank_coord_raises(self) -> None:
+        """A multi-element coordinate shorter than grid rank is ambiguous."""
+        # grid rank 4 but endpoints are 2-tuples: node() flattens leading axes
+        # while flatten_node_index() flattens differently, so the entries cannot
+        # be mapped one-to-one to mesh axes.
+        with pytest.raises(ValueError, match="use a full-rank coordinate"):
+            pipe_crosses_mesh((0, 0), (1, 0), (4, 8, 13, 10))
 
 
 class TestCrossCardPipe:
