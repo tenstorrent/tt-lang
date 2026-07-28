@@ -21,7 +21,11 @@ from conftest import REPO_ROOT  # noqa: E402
 SCRIPTS_DIR = REPO_ROOT / ".github" / "scripts"
 CHECK_WHEEL_TTNN_METADATA = SCRIPTS_DIR / "check-wheel-ttnn-metadata.py"
 CHECK_LIGHT_METAPACKAGE = SCRIPTS_DIR / "check-light-metapackage.py"
-BUILD_S3_LIGHT_CORE_WHEEL = SCRIPTS_DIR / "build-s3-light-core-wheel.sh"
+BUILD_MANYLINUX_CORE_WHEEL = SCRIPTS_DIR / "build-manylinux-core-wheel.sh"
+RESOLVE_PYPI_PUBLISH_INPUTS = SCRIPTS_DIR / "resolve-pypi-publish-inputs.sh"
+RESOLVE_S3_PUBLISH_INPUTS = SCRIPTS_DIR / "resolve-s3-publish-inputs.sh"
+RESOLVE_S3_PUBLISH_PREFIX = SCRIPTS_DIR / "resolve-s3-publish-prefix.sh"
+INJECT_S3_PUBLISH_README = SCRIPTS_DIR / "inject-s3-publish-readme.sh"
 COMPUTE_NIGHTLY_VERSION = SCRIPTS_DIR / "compute-nightly-version.py"
 CHECK_INSTALLED_TTNN = SCRIPTS_DIR / "check-installed-ttnn.py"
 CHECK_BUNDLED_PAYLOAD = SCRIPTS_DIR / "check-wheel-bundled-payload.py"
@@ -33,6 +37,15 @@ CALL_BUILD_DOCKER_WORKFLOW = (
 )
 CALL_BUILD_WHEEL_IMAGES_WORKFLOW = (
     REPO_ROOT / ".github" / "workflows" / "call-build-wheel-images.yml"
+)
+CALL_BUILD_MANYLINUX_WHEELS_WORKFLOW = (
+    REPO_ROOT / ".github" / "workflows" / "call-build-manylinux-wheels.yml"
+)
+CALL_TEST_MANYLINUX_WHEELS_WORKFLOW = (
+    REPO_ROOT / ".github" / "workflows" / "call-test-manylinux-wheels.yml"
+)
+SETUP_WHEEL_IMAGE_BUILD_ACTION = (
+    REPO_ROOT / ".github" / "actions" / "setup-wheel-image-build" / "action.yml"
 )
 CALL_TTMETAL_LIGHT_WHEEL_WORKFLOW = (
     REPO_ROOT / ".github" / "workflows" / "call-ttmetal-light-wheel.yml"
@@ -54,6 +67,15 @@ TTMETAL_LIGHT_XLA_ON_DEMAND_WORKFLOW = (
 S3_PYPI_OPS_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "s3-pypi-ops.yml"
 MANYLINUX_WHEEL_DOCKERFILE = (
     REPO_ROOT / ".github" / "containers" / "Dockerfile.wheel-manylinux-2-34"
+)
+WHEEL_TOOLCHAIN_CMAKELISTS = (
+    REPO_ROOT / ".github" / "containers" / "CMakeLists.wheel-toolchain"
+)
+TOOLCHAIN_COMPONENT_MODULE = (
+    REPO_ROOT / "cmake" / "modules" / "TTLangToolchainComponent.cmake"
+)
+TOOLCHAIN_OPTIONS_MODULE = (
+    REPO_ROOT / "cmake" / "modules" / "TTLangToolchainOptions.cmake"
 )
 SETUP_PY = REPO_ROOT / "setup.py"
 
@@ -87,46 +109,55 @@ def _add_config_py(wheel_path: Path, *, tt_metal_commit: str) -> None:
         wheel.writestr("ttl/config.py", f'TT_METAL_COMMIT = "{tt_metal_commit}"\n')
 
 
+def test_manylinux_core_helper_resolves_sibling_scripts_from_its_directory() -> None:
+    helper = BUILD_MANYLINUX_CORE_WHEEL.read_text()
+
+    assert 'script_dir=$(CDPATH=\'\' cd -- "$(dirname -- "$0")" && pwd)' in helper
+    assert '"$script_dir/resolve-wheel-versions.sh"' in helper
+    assert '"$script_dir/configure-ttlang-build.sh"' in helper
+
+
 def test_s3_workflow_routes_light_wheels_to_manylinux_builder() -> None:
     workflow = PUBLISH_S3_PYPI_WORKFLOW.read_text()
+    shared_build = CALL_BUILD_MANYLINUX_WHEELS_WORKFLOW.read_text()
 
     assert (
         "github.event_name == 'workflow_dispatch' && inputs.wheel_variant || ''"
     ) in workflow
     assert "EVENT_NAME: ${{ github.event_name }}" in workflow
-    assert "tt-lang-wheel-manylinux-2-34-${{ matrix.python_tag }}" in workflow
-    assert "python_tag: [cp310, cp312]" in workflow
-    assert ".github/scripts/build-s3-light-core-wheel.sh" in workflow
-    assert ".github/scripts/build-s3-light-metapackage-wheel.sh" in workflow
-    assert ".github/scripts/test-s3-light-wheels.sh" in workflow
-    assert ".github/scripts/inject-s3-index-readme.sh" in workflow
-    assert '--key "$key"' in workflow
-    assert "--require-existing" in workflow
-    assert (
-        '--find-links-subdir "${{ steps.publish_prefix.outputs.prefix }}"' in workflow
-    )
+    assert "uses: ./.github/workflows/call-build-manylinux-wheels.yml" in workflow
+    assert "ttnn_dep_mode: ${{ matrix.ttnn_dep_mode }}" in workflow
+    assert "tt-lang-wheel-manylinux-2-34-${{ matrix.python_tag }}" in shared_build
+    assert "python_tag: [cp310, cp312]" in shared_build
+    assert ".github/scripts/build-manylinux-wheel-set-member.sh" in shared_build
+    assert ".github/scripts/test-s3-light-wheels.sh" in shared_build
+    assert ".github/scripts/inject-s3-index-readme.sh" not in workflow
+    assert ".github/scripts/inject-s3-publish-readme.sh" in workflow
+    assert "PUBLISH_PREFIX: ${{ needs.preflight.outputs.publish_prefix }}" in workflow
+    assert '--find-links-subdir "$PUBLISH_PREFIX"' in workflow
     assert "python3 -m pip install s3pypi" not in workflow
-    assert "standard_wheel_matrix" in workflow
+    assert "manylinux_wheel_matrix" in workflow
 
 
 def test_regular_s3_publish_prefix_routes_dev_to_month_and_final_to_releases() -> None:
     workflow = PUBLISH_S3_PYPI_WORKFLOW.read_text()
-    assert 'prefix="tt-lang/releases"' in workflow
-    assert 'prefix="tt-lang/${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"' in workflow
-    assert (
-        'publish_args+=(--prefix "${{ steps.publish_prefix.outputs.prefix }}")'
-        in workflow
-    )
+    resolver = RESOLVE_S3_PUBLISH_PREFIX.read_text()
+    assert "resolve-s3-publish-prefix.sh" in workflow
+    assert "prefix=tt-lang/releases" in resolver
+    assert 'prefix="tt-lang/${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"' in resolver
+    assert '--prefix "$PUBLISH_PREFIX"' in workflow
 
 
 def test_regular_s3_index_injection_targets_parent_slash_key() -> None:
     # Regular direct publishing regenerates the top tt-lang/ slash-key listing;
     # the README injection must target that parent listing, not the month dir.
     workflow = PUBLISH_S3_PYPI_WORKFLOW.read_text()
-    assert 'parent="$(dirname "$prefix")"' in workflow
-    assert 'key="$parent/"' in workflow
-    assert 'key="$prefix/index.html"' not in workflow
-    assert 'key="$prefix/"' not in workflow
+    injector = INJECT_S3_PUBLISH_README.read_text()
+    assert "inject-s3-publish-readme.sh" in workflow
+    assert 'parent="$(dirname "$prefix")"' in injector
+    assert '--key "$parent/"' in injector
+    assert 'key="$prefix/index.html"' not in injector
+    assert 'key="$prefix/"' not in injector
 
 
 def test_ttmetal_light_workflow_builds_and_validates_metapackage() -> None:
@@ -316,6 +347,8 @@ def test_pinned_ttlang_ref_skips_search_and_tt_metal_build() -> None:
 
 def test_publish_s3_supports_pinned_ref_and_wheel_patches() -> None:
     workflow = PUBLISH_S3_PYPI_WORKFLOW.read_text()
+    bundled_build = CALL_BUILD_WHEELS_WORKFLOW.read_text()
+    manylinux_build = CALL_BUILD_MANYLINUX_WHEELS_WORKFLOW.read_text()
     # Dispatch inputs to rebuild from a pinned ref and optionally patch it.
     assert "ttlang_ref:" in workflow
     assert "apply_patches:" in workflow
@@ -325,16 +358,18 @@ def test_publish_s3_supports_pinned_ref_and_wheel_patches() -> None:
     assert "ttlang_sha_override: ${{ inputs.ttlang_ref }}" in workflow
     # Patches come from the workflow commit (a checkout of github.sha), not the
     # target ref -- an older ref that needs a patch predates the patch files.
-    assert "ref: ${{ github.sha }}" in workflow
-    assert "path: .wheel-patch-src" in workflow
+    assert "ref: ${{ github.sha }}" in bundled_build
+    assert "path: .wheel-patch-src" in bundled_build
     assert (
         ".wheel-patch-src/.github/scripts/apply-wheel-patches.sh"
         ' --target-dir "$GITHUB_WORKSPACE"'
-    ) in workflow
-    # TTLANG_GIT_COMMIT records the resolved commit, not a tag/branch name.
-    assert 'TTLANG_GIT_COMMIT="$(git rev-parse HEAD)"' in workflow
-    assert "export TTLANG_GIT_COMMIT" in workflow
-    assert "TTLANG_GIT_COMMIT: ${{ inputs.ttlang_ref" not in workflow
+    ) in bundled_build
+    assert "ref: ${{ github.sha }}" in manylinux_build
+    assert "path: .wheel-workflow-src" in manylinux_build
+    assert (
+        ".wheel-workflow-src/.github/scripts/apply-wheel-patches.sh"
+        ' --target-dir "$GITHUB_WORKSPACE"'
+    ) in manylinux_build
     # apply_patches stays a valid boolean on push/schedule (no dispatch inputs).
     assert (
         "apply_patches: ${{ github.event_name == 'workflow_dispatch'"
@@ -342,10 +377,71 @@ def test_publish_s3_supports_pinned_ref_and_wheel_patches() -> None:
     ) in workflow
 
 
-def test_publish_pypi_supports_release_sha_from_main() -> None:
-    workflow = PUBLISH_PYPI_WORKFLOW.read_text()
+def test_scheduled_s3_publish_skips_unchanged_source_sha() -> None:
+    workflow = PUBLISH_S3_PYPI_WORKFLOW.read_text()
+
+    assert (
+        "# Weekly S3-only publish: 08:00 UTC Monday (00:00 PST / 01:00 PDT)."
+        in workflow
+    )
+    assert '- cron: "0 8 * * 1"' in workflow
+    assert '- cron: "0 8 * * *"' not in workflow
+    assert "publish_needed: ${{ steps.nightly.outputs.publish-needed }}" in workflow
+    assert "s3-nightly-state.py check" in workflow
+    for job_name in (
+        "build-docker",
+        "build-wheel-images",
+        "build-bundled-wheels",
+        "build-manylinux-wheels",
+        "publish",
+        "ttmetal-light-detect",
+        "ttmetal-light-build",
+    ):
+        job_prefix = workflow.split(f"\n  {job_name}:", 1)[1][:1000]
+        assert "needs.preflight.outputs.publish_needed == 'true'" in job_prefix
+    assert workflow.index("Record scheduled publish state") > workflow.index(
+        "Restore S3 index README"
+    )
+
+
+def test_s3_publish_resolves_prefix_before_building() -> None:
+    workflow = PUBLISH_S3_PYPI_WORKFLOW.read_text()
     preflight_job = workflow.split("\n  preflight:", 1)[1].split(
         "\n  build-docker:", 1
+    )[0]
+    publish_job = workflow.split("\n  publish:", 1)[1].split(
+        "\n  ttmetal-light-detect:", 1
+    )[0]
+
+    assert preflight_job.count("resolve-s3-publish-prefix.sh") == 1
+    assert "publish_prefix: ${{ steps.publish-prefix.outputs.prefix }}" in (
+        preflight_job
+    )
+    assert "resolve-s3-publish-prefix.sh" not in publish_job
+    assert publish_job.count("needs.preflight.outputs.publish_prefix") == 3
+
+
+def test_s3_publish_requires_every_selected_wheel_build_to_succeed() -> None:
+    workflow = PUBLISH_S3_PYPI_WORKFLOW.read_text()
+    publish_job = workflow.split("\n  publish:", 1)[1].split(
+        "\n  ttmetal-light-detect:", 1
+    )[0]
+
+    assert (
+        "needs.preflight.outputs.bundled_selected != 'true' || "
+        "needs.build-bundled-wheels.result == 'success'"
+    ) in publish_job
+    assert (
+        "needs.preflight.outputs.manylinux_selected != 'true' || "
+        "needs.build-manylinux-wheels.result == 'success'"
+    ) in publish_job
+
+
+def test_publish_pypi_supports_release_sha_from_main() -> None:
+    workflow = PUBLISH_PYPI_WORKFLOW.read_text()
+    resolver = RESOLVE_PYPI_PUBLISH_INPUTS.read_text()
+    preflight_job = workflow.split("\n  preflight:", 1)[1].split(
+        "\n  build-wheel-images:", 1
     )[0]
     publish_job = workflow.split("\n  publish:", 1)[1].split("\n  dry-run-summary:", 1)[
         0
@@ -354,15 +450,15 @@ def test_publish_pypi_supports_release_sha_from_main() -> None:
     assert "ttlang_sha:" in workflow
     assert "ref: ${{ inputs.ttlang_sha || github.sha }}" in workflow
     assert "path: release-source" in preflight_job
-    assert 'git -C "$release_source" rev-parse HEAD' in preflight_job
+    assert 'git -C "$RELEASE_SOURCE" rev-parse HEAD' in resolver
     assert "TTLANG_TT_METAL_VERSION_FILE:" in preflight_job
-    assert "ttlang_sha must be a full 40-character commit SHA" in workflow
+    assert "ttlang_sha must be a full 40-character commit SHA" in resolver
     assert (
-        'git -C "$release_source" merge-base --is-ancestor'
-        ' "$TTLANG_SHA" "$GITHUB_SHA"'
-    ) in workflow
-    assert "git -C \"$RELEASE_SOURCE\" tag --list 'v[0-9]*' --points-at" in workflow
-    assert '.github/scripts/require-release-tag.sh "$release_ref"' in workflow
+        'git -C "$RELEASE_SOURCE" merge-base --is-ancestor'
+        ' "$ttlang_sha" "${GITHUB_SHA:?GITHUB_SHA is required}"'
+    ) in resolver
+    assert "git -C \"$RELEASE_SOURCE\" tag --list 'v[0-9]*' --points-at" in resolver
+    assert '"$script_dir/require-release-tag.sh" "$release_ref"' in resolver
     assert workflow.count("ttlang_sha_override: ${{ inputs.ttlang_sha }}") == 3
     assert 'echo "dry_run=${{ inputs.dry_run }}"' not in workflow
     assert 'echo "docker_tag=${{ inputs.docker_tag }}"' not in workflow
@@ -386,7 +482,7 @@ def test_publish_pypi_terminal_jobs_override_skipped_docker_build_status() -> No
         assert "!cancelled()" in terminal_job
         assert "needs.preflight.result == 'success'" in terminal_job
         assert "needs.build-wheels.result == 'success'" in terminal_job
-    assert "needs.test-dist-tutorials.result == 'success'" in publish_job
+    assert "needs.test-wheels.result == 'success'" in publish_job
 
 
 def test_dist_tutorial_workflow_supports_pinned_ref() -> None:
@@ -417,7 +513,7 @@ def test_on_demand_requires_tt_metal_sha_when_ttlang_ref_pinned() -> None:
     assert "TTLANG_REF: ${{ inputs.ttlang_ref }}" in workflow
 
 
-def test_nightly_light_wheel_soft_fails_without_failing_publish() -> None:
+def test_scheduled_light_wheel_soft_fails_without_failing_publish() -> None:
     publish = PUBLISH_S3_PYPI_WORKFLOW.read_text()
     reusable = CALL_TTMETAL_LIGHT_WHEEL_WORKFLOW.read_text()
     # The scheduled detect job tolerates its own failure, and the reusable
@@ -533,10 +629,51 @@ def test_s3_pypi_ops_workflow_is_main_gated_and_dry_run_by_default() -> None:
 
 
 def test_light_core_builder_checks_tt_metal_provenance_when_exported() -> None:
-    script = BUILD_S3_LIGHT_CORE_WHEEL.read_text()
+    script = BUILD_MANYLINUX_CORE_WHEEL.read_text()
 
-    assert 'if [ -n "${TT_METAL_COMMIT:-}" ]; then' in script
+    assert (
+        'TT_METAL_COMMIT="${TT_METAL_COMMIT:-$(git rev-parse HEAD:third-party/tt-metal)}"'
+        in script
+    )
     assert '--expect-tt-metal-commit "$TT_METAL_COMMIT"' in script
+    assert '--expect-ttnn-version "$TTNN_PYPI"' in script
+
+
+@pytest.mark.parametrize(
+    "workflow",
+    [
+        CALL_BUILD_WHEEL_IMAGES_WORKFLOW,
+        CALL_BUILD_MANYLINUX_WHEELS_WORKFLOW,
+        CALL_TEST_MANYLINUX_WHEELS_WORKFLOW,
+        PUBLISH_PYPI_WORKFLOW,
+        PUBLISH_S3_PYPI_WORKFLOW,
+        SETUP_WHEEL_IMAGE_BUILD_ACTION,
+    ],
+)
+def test_shared_manylinux_workflows_have_no_multiline_shell(
+    workflow: Path,
+) -> None:
+    workflow_text = workflow.read_text()
+    assert "run: |" not in workflow_text
+    for line in workflow_text.splitlines():
+        if line.lstrip().startswith("run:"):
+            assert "${{ inputs." not in line
+
+
+@pytest.mark.parametrize(
+    "workflow",
+    [
+        CALL_BUILD_MANYLINUX_WHEELS_WORKFLOW,
+        CALL_TEST_MANYLINUX_WHEELS_WORKFLOW,
+        CALL_TTMETAL_LIGHT_WHEEL_WORKFLOW,
+    ],
+)
+def test_manylinux_consumers_use_the_current_repository_namespace(
+    workflow: Path,
+) -> None:
+    workflow_text = workflow.read_text()
+    assert "ghcr.io/${{ github.repository }}/tt-lang-wheel-manylinux" in workflow_text
+    assert "ghcr.io/tenstorrent/tt-lang/tt-lang-wheel-manylinux" not in workflow_text
 
 
 def test_manylinux_builder_images_are_opt_in_for_docker_workflows() -> None:
@@ -556,31 +693,153 @@ def test_manylinux_builder_images_are_opt_in_for_docker_workflows() -> None:
     # The wheel-builder images live in their own opt-in workflow.
     assert "build-manylinux-wheel-images:" in wheel_images_workflow
     assert "python_tag: [cp310, cp312]" in wheel_images_workflow
-    assert "id: docker-tag" in wheel_images_workflow
-    assert "registry-image=${registry_image}" in wheel_images_workflow
-    assert r"Image: \`${registry_image}\`" in wheel_images_workflow
+    assert "id: resolve" in wheel_images_workflow
+    assert ".github/scripts/resolve-wheel-builder-images.sh" in wheel_images_workflow
+    assert "cache-components:" in wheel_images_workflow
+    assert "component: ttmetal" in wheel_images_workflow
+    assert wheel_images_workflow.count("component: llvm") == 2
+    assert "linux-amd64-ttmetal-cp312" in wheel_images_workflow
+    assert "cache_tag: linux-amd64-llvm-cp310" in wheel_images_workflow
+    assert "cache_tag: linux-amd64-llvm-cp312" in wheel_images_workflow
+    assert "CACHE_REF: ${{ format(" in wheel_images_workflow
+    assert "path: .wheel-workflow-src" in wheel_images_workflow
+    assert "--workflow-source .wheel-workflow-src" in wheel_images_workflow
+    assert "PYTHON_TAG: ${{ matrix.python_tag }}" in wheel_images_workflow
+    assert "DOCKER_TAG: ${{ needs.resolve.outputs.docker-tag }}" in (
+        wheel_images_workflow
+    )
     assert (
-        "build-wheel-manylinux-images.sh --python-tags"
-        ' "${{ matrix.python_tag }}" --image-tag'
+        'build-wheel-manylinux-images.sh --python-tags "$PYTHON_TAG"'
+        ' --image-tag "$DOCKER_TAG"'
     ) in wheel_images_workflow
-    assert '"${{ steps.docker-tag.outputs.docker-tag }}"' in wheel_images_workflow
+    assert "publish-latest:" in wheel_images_workflow
+    assert ".github/scripts/publish-wheel-builder-latest.sh" in wheel_images_workflow
+    assert "--publish-latest" not in wheel_images_workflow
     assert "--build-parallel-level 2" in wheel_images_workflow
+    assert "ARG WORKFLOW_SOURCE=." in manylinux_dockerfile
+    assert (
+        "COPY ${WORKFLOW_SOURCE}/.github/containers/"
+        "CMakeLists.wheel-toolchain CMakeLists.txt"
+    ) in manylinux_dockerfile
+    assert "COPY ${WORKFLOW_SOURCE}/CMakeLists.txt" not in manylinux_dockerfile
+    llvm_stage = manylinux_dockerfile.split("FROM base AS llvm-toolchain", 1)[1].split(
+        "FROM base AS ttmetal-toolchain", 1
+    )[0]
+    ttmetal_stage = manylinux_dockerfile.split("FROM base AS ttmetal-toolchain", 1)[
+        1
+    ].split("FROM base AS wheel-builder", 1)[0]
+    final_stage = manylinux_dockerfile.split("FROM base AS wheel-builder", 1)[1]
+    assert "COPY requirements.txt requirements-runtime.txt" not in llvm_stage
+    assert "COPY requirements.txt requirements-runtime.txt" not in ttmetal_stage
+    assert (
+        "COPY requirements.txt requirements-runtime.txt " "/tmp/ttlang-requirements/"
+    ) in final_stage
+    assert "-r /tmp/ttlang-requirements/requirements.txt" in final_stage
+    assert "TTLANG_INSTALL_RUNTIME_REQUIREMENTS OFF" in (
+        WHEEL_TOOLCHAIN_CMAKELISTS.read_text()
+    )
+    assert (
+        "if(TTLANG_INSTALL_RUNTIME_REQUIREMENTS)"
+        in (REPO_ROOT / "cmake" / "modules" / "BuildLLVM.cmake").read_text()
+    )
     assert "ARG TTLANG_BUILD_PARALLEL_LEVEL" in manylinux_dockerfile
     assert (
         'ENV CMAKE_BUILD_PARALLEL_LEVEL="${TTLANG_BUILD_PARALLEL_LEVEL}"'
         in manylinux_dockerfile
     )
 
-    # CI opts in on image rebuild; the S3 publish opts in only for the light
-    # wheel variant; the PyPI publish never builds them.
+    # CI, S3 manylinux variants, and public PyPI all use the same builder.
     assert "uses: ./.github/workflows/call-build-wheel-images.yml" in ci_workflow
     assert "uses: ./.github/workflows/call-build-wheel-images.yml" in s3_workflow
-    assert (
-        "contains(fromJSON(needs.preflight.outputs.wheel_variants), 'light')"
-        in s3_workflow
+    assert "needs.preflight.outputs.manylinux_selected == 'true'" in s3_workflow
+    assert "uses: ./.github/workflows/call-build-wheel-images.yml" in pypi_workflow
+    assert "uses: ./.github/workflows/call-build-manylinux-wheels.yml" in pypi_workflow
+    assert "ttnn_dep_mode: pypi" in pypi_workflow
+
+
+@pytest.mark.parametrize(
+    ("component", "expected_marker"),
+    [("llvm", "llvm"), ("tt-metal", "tt-metal")],
+)
+def test_wheel_toolchain_cmake_configures_only_selected_component(
+    tmp_path: Path,
+    component: str,
+    expected_marker: str,
+) -> None:
+    source_dir = tmp_path / "source"
+    module_dir = source_dir / "cmake" / "modules"
+    module_dir.mkdir(parents=True)
+    (source_dir / "CMakeLists.txt").write_text(WHEEL_TOOLCHAIN_CMAKELISTS.read_text())
+    (module_dir / "TTLangToolchainComponent.cmake").write_text(
+        TOOLCHAIN_COMPONENT_MODULE.read_text()
     )
-    assert "call-build-wheel-images" not in pypi_workflow
-    assert "build_manylinux_wheel_images" not in pypi_workflow
+    (module_dir / "TTLangToolchainOptions.cmake").write_text(
+        TOOLCHAIN_OPTIONS_MODULE.read_text()
+    )
+    (module_dir / "TTLangUtils.cmake").write_text(
+        "function(ttlang_pip_install_requirements)\nendfunction()\n"
+    )
+    for module_name in ("TTLangCompilerSetup", "TTLangPython"):
+        (module_dir / f"{module_name}.cmake").write_text("")
+    (module_dir / "BuildLLVM.cmake").write_text(
+        'file(WRITE "${CMAKE_BINARY_DIR}/configured-component" "llvm")\n'
+    )
+    (module_dir / "BuildTTMetal.cmake").write_text(
+        'file(WRITE "${CMAKE_BINARY_DIR}/configured-component" "tt-metal")\n'
+    )
+
+    build_dir = tmp_path / "build"
+    result = subprocess.run(
+        [
+            "cmake",
+            "-S",
+            str(source_dir),
+            "-B",
+            str(build_dir),
+            "-DCMAKE_C_COMPILER=cc",
+            "-DCMAKE_CXX_COMPILER=c++",
+            f"-DTTLANG_TOOLCHAIN_COMPONENT={component}",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (build_dir / "configured-component").read_text() == expected_marker
+
+
+def test_wheel_toolchain_cmake_rejects_full_project_configuration(
+    tmp_path: Path,
+) -> None:
+    source_dir = tmp_path / "source"
+    module_dir = source_dir / "cmake" / "modules"
+    module_dir.mkdir(parents=True)
+    (source_dir / "CMakeLists.txt").write_text(WHEEL_TOOLCHAIN_CMAKELISTS.read_text())
+    for module in (
+        TOOLCHAIN_OPTIONS_MODULE,
+        REPO_ROOT / "cmake" / "modules" / "TTLangUtils.cmake",
+        REPO_ROOT / "cmake" / "modules" / "TTLangCompilerSetup.cmake",
+    ):
+        (module_dir / module.name).write_text(module.read_text())
+
+    result = subprocess.run(
+        [
+            "cmake",
+            "-S",
+            str(source_dir),
+            "-B",
+            str(tmp_path / "build"),
+            "-DCMAKE_C_COMPILER=cc",
+            "-DCMAKE_CXX_COMPILER=c++",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "requires llvm or tt-metal" in result.stdout + result.stderr
 
 
 def test_setup_py_removes_stale_native_payloads_before_wheel_install() -> None:
@@ -595,15 +854,15 @@ def test_setup_py_removes_stale_native_payloads_before_wheel_install() -> None:
 
 def test_s3_workflow_publishes_only_from_main_ref() -> None:
     workflow = PUBLISH_S3_PYPI_WORKFLOW.read_text()
+    resolver = RESOLVE_S3_PUBLISH_INPUTS.read_text()
     trigger_block = workflow.split("\nconcurrency:", maxsplit=1)[0]
 
     assert "push:" not in trigger_block
     assert "tags:" not in trigger_block
     assert "- 'v[0-9]+.[0-9]+.[0-9]+'" not in trigger_block
-    assert "github.ref != 'refs/heads/main'" in workflow
-    assert "steps.resolve.outputs.docker_tag == ''" in workflow
-    assert "Publishing is restricted to refs/heads/main" in workflow
-    assert "Non-main dry runs must provide docker_tag" in workflow
+    assert '"${GITHUB_REF:-}" != refs/heads/main' in resolver
+    assert "Publishing is restricted to refs/heads/main" in resolver
+    assert "Non-main dry runs must provide docker_tag" in resolver
     assert (
         "needs.preflight.outputs.dry_run == 'true' || github.ref == 'refs/heads/main'"
         in workflow
@@ -625,6 +884,55 @@ def test_check_wheel_ttnn_metadata_matches_requirement_name(tmp_path: Path) -> N
 
     assert result.returncode != 0
     assert "default wheel metadata must require ttnn" in result.stderr
+
+
+def test_check_wheel_ttnn_metadata_requires_exact_pypi_version(
+    tmp_path: Path,
+) -> None:
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    _write_wheel(
+        dist_dir,
+        "tt_lang-0.71.0.dev20260525-py3-none-any.whl",
+        "Metadata-Version: 2.1\nRequires-Dist: ttnn == 1.2.3\n",
+    )
+
+    result = _run_script(
+        CHECK_WHEEL_TTNN_METADATA,
+        "--mode",
+        "pypi",
+        "--dist-dir",
+        str(dist_dir),
+        "--expect-ttnn-version",
+        "1.2.4",
+    )
+
+    assert result.returncode != 0
+    assert "ttnn dependency mismatch: expected ==1.2.4, got ==1.2.3" in result.stderr
+
+
+def test_check_wheel_ttnn_metadata_accepts_exact_pypi_version(
+    tmp_path: Path,
+) -> None:
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    _write_wheel(
+        dist_dir,
+        "tt_lang-0.71.0.dev20260525-py3-none-any.whl",
+        "Metadata-Version: 2.1\nRequires-Dist: ttnn == 1.2.3\n",
+    )
+
+    result = _run_script(
+        CHECK_WHEEL_TTNN_METADATA,
+        "--mode",
+        "pypi",
+        "--dist-dir",
+        str(dist_dir),
+        "--expect-ttnn-version",
+        "1.2.3",
+    )
+
+    assert result.returncode == 0
 
 
 def test_check_wheel_ttnn_metadata_rejects_external_payload(tmp_path: Path) -> None:
@@ -803,8 +1111,28 @@ def _env_with_pythonpath_and_ldd(path: Path) -> dict[str, str]:
     )
 
 
-def test_check_installed_ttnn_pypi_mode_is_noop() -> None:
-    result = _run_script(CHECK_INSTALLED_TTNN, "--mode", "pypi")
+def test_check_installed_ttnn_pypi_fails_when_ttnn_absent(tmp_path: Path) -> None:
+    result = _run_script(
+        CHECK_INSTALLED_TTNN,
+        "--mode",
+        "pypi",
+        env=_env_with_pythonpath(tmp_path),
+    )
+    assert result.returncode != 0
+    assert "did not install its ttnn dependency" in result.stderr
+
+
+def test_check_installed_ttnn_pypi_passes_when_ttnn_present(
+    tmp_path: Path,
+) -> None:
+    _write_fake_ttnn(tmp_path, with_native_libs=False)
+
+    result = _run_script(
+        CHECK_INSTALLED_TTNN,
+        "--mode",
+        "pypi",
+        env=_env_with_pythonpath(tmp_path),
+    )
     assert result.returncode == 0, result.stderr
 
 

@@ -118,11 +118,11 @@ setup() {
     assert_equal "$(run_changed "$BASE" "$head")" "false"
 }
 
-@test "diff only in third-party uplift path -> false (covered by detect-uplift, not this script)" {
+@test "diff in a shared container input -> true" {
     printf '%s\n' "$TEST_TT_METAL_RC1_TAG" > "$REPO/third-party/tt-metal-version"
     commit_all "$REPO" "uplift only"
     head=$(cd "$REPO" && git rev-parse HEAD)
-    assert_equal "$(run_changed "$BASE" "$head")" "false"
+    assert_equal "$(run_changed "$BASE" "$head")" "true"
 }
 
 @test "no diff (same base and head) -> false" {

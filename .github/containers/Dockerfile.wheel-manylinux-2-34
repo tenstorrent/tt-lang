@@ -1,17 +1,17 @@
+# syntax=docker/dockerfile:1
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+#
 # SPDX-License-Identifier: Apache-2.0
 #
-# Build a tt-lang wheel-builder image for S3 light wheels. The toolchain is
-# built inside manylinux_2_34 base (matching tt-metal's base image) so the
-# toolchain and the wheel are compiled against the same glibc version.
+# Build the manylinux_2_34 wheel-builder images used by the public PyPI and S3
+# light-wheel workflows. LLVM and tt-metal are independent stages so BuildKit
+# can persist and restore their caches separately.
 
-FROM quay.io/pypa/manylinux_2_34_x86_64
+ARG WORKFLOW_SOURCE=.
+
+FROM quay.io/pypa/manylinux_2_34_x86_64 AS base
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-ARG PYTHON_TAG=cp312
-ARG TT_METAL_TAG
-ARG TT_METAL_SHORT_SHA
-ARG TTLANG_BUILD_PARALLEL_LEVEL=""
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain
 
@@ -63,22 +63,73 @@ RUN dnf install -y \
 #
 # LLVM_ENABLE_ZSTD=OFF drops LLVM's libzstd dependency, which the
 # tt-lang -> ttkernel -> emitc pipeline never uses. With zstd enabled the
-# MLIR/tt-lang .so files link the system libzstd, so `auditwheel repair`
-# bundles a renamed copy of libzstd into the wheel and runs
-# `patchelf --replace-needed` on every library to repoint it at that copy.
-# patchelf corrupts the very large MLIR/tt-lang libraries (hundreds of MB)
-# during that rewrite, producing a broken ELF that segfaults on `import ttl`.
-# Dropping the dependency leaves auditwheel nothing to vendor or patch.
+# MLIR/tt-lang .so files link the system libzstd, so auditwheel repair bundles
+# and rewrites libzstd references in the very large MLIR libraries. Disabling
+# the unused dependency avoids that rewrite.
 ENV TTLANG_LLVM_EXTRA_CMAKE_ARGS="-DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON;-DCMAKE_C_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/gcc;-DCMAKE_CXX_COMPILER=/opt/rh/gcc-toolset-14/root/usr/bin/g++;-DCMAKE_CXX_FLAGS=-fno-gnu-unique;-DLLVM_ENABLE_ZSTD=OFF"
 
-COPY . /workspace
+FROM base AS llvm-toolchain
+
+ARG PYTHON_TAG=cp312
+ARG TTLANG_BUILD_PARALLEL_LEVEL=""
+ARG WORKFLOW_SOURCE
+
 WORKDIR /workspace
+COPY ${WORKFLOW_SOURCE}/.github/containers/CMakeLists.wheel-toolchain CMakeLists.txt
+COPY ${WORKFLOW_SOURCE}/cmake/modules/BuildLLVM.cmake \
+     ${WORKFLOW_SOURCE}/cmake/modules/TTLangCompilerSetup.cmake \
+     ${WORKFLOW_SOURCE}/cmake/modules/TTLangPython.cmake \
+     ${WORKFLOW_SOURCE}/cmake/modules/TTLangToolchainComponent.cmake \
+     ${WORKFLOW_SOURCE}/cmake/modules/TTLangToolchainOptions.cmake \
+     ${WORKFLOW_SOURCE}/cmake/modules/TTLangUtils.cmake \
+     cmake/modules/
+COPY ${WORKFLOW_SOURCE}/scripts/build-and-install.sh scripts/
+COPY ${WORKFLOW_SOURCE}/.github/containers/cleanup-toolchain.sh .github/containers/
+COPY ${WORKFLOW_SOURCE}/.github/scripts/normalize-toolchain-install.sh .github/scripts/
+COPY third-party/llvm-project third-party/llvm-project
 
-RUN git config --global --add safe.directory '*'
+RUN python_dir="/opt/python/${PYTHON_TAG}-${PYTHON_TAG}" && \
+    test -x "${python_dir}/bin/python" && \
+    "${python_dir}/bin/python" -m pip install --no-cache-dir cmake==3.28.4 && \
+    if [ -n "${TTLANG_BUILD_PARALLEL_LEVEL}" ]; then \
+      export CMAKE_BUILD_PARALLEL_LEVEL="${TTLANG_BUILD_PARALLEL_LEVEL}"; \
+    fi && \
+    export PATH="${python_dir}/bin:${PATH}" && \
+    scripts/build-and-install.sh \
+      --llvm-toolchain-only \
+      --force-rebuild \
+      --python "${python_dir}/bin/python" \
+      --python-venv "${TTLANG_TOOLCHAIN_DIR}/venv" \
+      --remove-build-dir
 
-# Docker build contexts intentionally exclude .git. tt-metal's version.cmake is
-# marked export-subst, so reproduce the git-archive substitutions in the copied
-# source tree before configuring tt-metal.
+FROM base AS ttmetal-toolchain
+
+ARG TTMETAL_PYTHON_TAG=cp312
+ARG TT_METAL_TAG
+ARG TT_METAL_SHORT_SHA
+ARG TTLANG_BUILD_PARALLEL_LEVEL=""
+ARG WORKFLOW_SOURCE
+
+WORKDIR /workspace
+COPY ${WORKFLOW_SOURCE}/.github/containers/CMakeLists.wheel-toolchain CMakeLists.txt
+COPY ${WORKFLOW_SOURCE}/cmake/modules/BuildTTMetal.cmake \
+     ${WORKFLOW_SOURCE}/cmake/modules/TTLangCompilerSetup.cmake \
+     ${WORKFLOW_SOURCE}/cmake/modules/TTLangPython.cmake \
+     ${WORKFLOW_SOURCE}/cmake/modules/TTLangToolchainComponent.cmake \
+     ${WORKFLOW_SOURCE}/cmake/modules/TTLangToolchainOptions.cmake \
+     ${WORKFLOW_SOURCE}/cmake/modules/TTLangUtils.cmake \
+     cmake/modules/
+COPY ${WORKFLOW_SOURCE}/scripts/build-and-install.sh \
+     ${WORKFLOW_SOURCE}/scripts/copy-ttmetal-runtime-artifacts.sh \
+     ${WORKFLOW_SOURCE}/scripts/install-ttmetal.sh \
+     scripts/
+COPY ${WORKFLOW_SOURCE}/.github/containers/cleanup-toolchain.sh .github/containers/
+COPY ${WORKFLOW_SOURCE}/.github/scripts/normalize-toolchain-install.sh .github/scripts/
+COPY third-party/patches third-party/patches
+COPY third-party/tt-metal third-party/tt-metal
+
+# Docker build contexts exclude git metadata. Reproduce tt-metal's
+# git-archive substitutions before configuring it.
 RUN test -n "${TT_METAL_TAG}" && \
     test -n "${TT_METAL_SHORT_SHA}" && \
     sed -i \
@@ -86,29 +137,46 @@ RUN test -n "${TT_METAL_TAG}" && \
       -e "s|\\\$Format:%h\\\$|${TT_METAL_SHORT_SHA}|g" \
       third-party/tt-metal/cmake/version.cmake
 
-RUN python_dir="/opt/python/${PYTHON_TAG}-${PYTHON_TAG}" && \
+# tt-metal requires a venv while configuring its cp312 Python bindings. The
+# final builder uses the ABI-specific LLVM venv, so only the tt-metal install
+# directory is shared between cp310 and cp312 images.
+RUN python_dir="/opt/python/${TTMETAL_PYTHON_TAG}-${TTMETAL_PYTHON_TAG}" && \
     test -x "${python_dir}/bin/python" && \
-    "${python_dir}/bin/python" -m pip install --no-cache-dir \
-      auditwheel \
-      cmake==3.28.4 \
-      packaging \
-      patchelf \
-      wheel && \
+    "${python_dir}/bin/python" -m pip install --no-cache-dir cmake==3.28.4 && \
     if [ -n "${TTLANG_BUILD_PARALLEL_LEVEL}" ]; then \
       export CMAKE_BUILD_PARALLEL_LEVEL="${TTLANG_BUILD_PARALLEL_LEVEL}"; \
     fi && \
     export PATH="${python_dir}/bin:${PATH}" && \
     scripts/build-and-install.sh \
-      --toolchain-only \
+      --ttmetal-toolchain-only \
       --force-rebuild \
       --python "${python_dir}/bin/python" \
       --python-venv "${TTLANG_TOOLCHAIN_DIR}/venv" \
-      --remove-build-dir && \
+      --remove-build-dir
+
+FROM base AS wheel-builder
+
+ARG PYTHON_TAG=cp312
+ARG TTLANG_BUILD_PARALLEL_LEVEL=""
+
+COPY --from=llvm-toolchain /opt/ttlang-toolchain/ /opt/ttlang-toolchain/
+# The shared install contains cp312 extension modules because CMake uses
+# _ttnn.so to identify the install layout. Core wheel builds consume its C++
+# headers and libraries but do not import ttnn; the wheel dependency mode
+# supplies the runtime ttnn package.
+COPY --from=ttmetal-toolchain /opt/ttlang-toolchain/tt-metal/ /opt/ttlang-toolchain/tt-metal/
+COPY requirements.txt requirements-runtime.txt /tmp/ttlang-requirements/
+
+RUN python_dir="/opt/python/${PYTHON_TAG}-${PYTHON_TAG}" && \
+    test -x "${python_dir}/bin/python" && \
     "${TTLANG_TOOLCHAIN_DIR}/venv/bin/python" -m pip install --no-cache-dir \
+      -r /tmp/ttlang-requirements/requirements.txt \
       auditwheel \
+      cmake==3.28.4 \
       packaging \
       patchelf \
-      wheel
+      wheel && \
+    rm -rf /tmp/ttlang-requirements
 
 ENV PATH="/opt/ttlang-toolchain/venv/bin:/opt/ttlang-toolchain/bin:${PATH}"
 ENV CMAKE_BUILD_PARALLEL_LEVEL="${TTLANG_BUILD_PARALLEL_LEVEL}"

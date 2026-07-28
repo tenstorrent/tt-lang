@@ -1,0 +1,82 @@
+name: Test Manylinux Wheels
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: "Hardware type to run on."
+        required: false
+        type: string
+        default: n150
+      timeout:
+        description: "Job timeout in minutes."
+        required: false
+        type: number
+        default: 90
+      docker_tag:
+        description: "Tag for the cp312 manylinux wheel-builder image."
+        required: true
+        type: string
+      artifact_name:
+        description: "Combined wheel artifact to install."
+        required: true
+        type: string
+      ttnn_dep_mode:
+        description: "Expected installed ttnn dependency mode."
+        required: true
+        type: string
+      ttlang_sha_override:
+        description: "tt-lang SHA/tag to test. Empty uses the caller ref."
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  checks: write
+  contents: read
+  packages: read
+
+jobs:
+  test-manylinux-wheels:
+    name: "Manylinux wheel tutorials (${{ inputs.runs-on }})"
+    runs-on: ${{ format('tt-ubuntu-2204-{0}-stable', inputs.runs-on) }}
+    timeout-minutes: ${{ fromJSON(inputs.timeout) }}
+    container:
+      image: ghcr.io/${{ github.repository }}/tt-lang-wheel-manylinux-2-34-cp312:${{ inputs.docker_tag }}
+      options: --device /dev/tenstorrent
+      volumes:
+        - /dev/hugepages:/dev/hugepages
+        - /dev/hugepages-1G:/dev/hugepages-1G
+        - /etc/udev/rules.d:/etc/udev/rules.d
+        - /lib/modules:/lib/modules
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONDONTWRITEBYTECODE: 1
+      TTLANG_TEST_SEED: 42
+    steps:
+      - name: Checkout tt-lang
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ttlang_sha_override || github.sha }}
+          fetch-depth: 1
+
+      - name: Checkout workflow wheel helpers
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: .wheel-workflow-src
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Download wheels
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: dist
+
+      - name: Install and test cp312 wheel
+        env:
+          TTLANG_TTNN_DEP_MODE: ${{ inputs.ttnn_dep_mode }}
+        run: .wheel-workflow-src/.github/scripts/test-manylinux-wheel.sh --dist-dir dist --ttnn-dep-mode "$TTLANG_TTNN_DEP_MODE"
