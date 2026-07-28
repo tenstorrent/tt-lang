@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for device target-arch detection used by the TTL Python wrapper."""
+"""Unit tests for device options used by the TTL Python wrapper."""
 
 from unittest import mock
 
@@ -169,6 +169,45 @@ class TestMeshProgramPlacement:
 
         assert placements == [ttl_api.MeshProgramPlacement((0, 0), (0, 3))]
 
+    def test_compile_kernel_forwards_device_domain_to_lowering(self, monkeypatch):
+        domain = ttl.DeviceDomain((1, 2))
+        calls = []
+
+        monkeypatch.setattr(ttl_api, "_get_registered_threads", lambda: [object()])
+        monkeypatch.setattr(ttl_api, "_build_operation_pipenets", lambda *_: object())
+        monkeypatch.setattr(ttl_api, "_collect_cb_configs", lambda *_: [])
+
+        def fake_lower_program_to_kernel(**kwargs):
+            calls.append(kwargs)
+            return "compiled"
+
+        monkeypatch.setattr(
+            ttl_api, "_lower_program_to_kernel", fake_lower_program_to_kernel
+        )
+
+        def kernel():
+            pass
+
+        result = ttl_api._compile_kernel(
+            kernel,
+            (),
+            {},
+            (1, 1),
+            [],
+            [],
+            0,
+            "L1",
+            True,
+            0,
+            device_domain=domain,
+        )
+
+        assert result == "compiled"
+        assert calls[0]["device_domain"] is domain
+        assert calls[0]["mesh_program_placements"] == [
+            ttl_api.MeshProgramPlacement((0, 0), (0, 1))
+        ]
+
     def test_compiled_kernel_forwards_mesh_program_placements(self, monkeypatch):
         placement = ttl_api.MeshProgramPlacement((0, 0), (0, 3))
         calls = []
@@ -192,4 +231,7 @@ class TestMeshProgramPlacement:
 
         assert result == "result"
         assert calls[0]["mesh_program_placements"] == [placement]
-        assert calls[0]["fabric_route_cache"] is compiled_kernel._fabric_route_cache
+        assert (
+            calls[0]["fabric_direction_cache"]
+            is compiled_kernel._fabric_direction_cache
+        )
