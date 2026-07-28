@@ -71,10 +71,8 @@ logicalDFBsConflict(const DFBLogicalLifecycle &lhs,
 }
 
 /// Colors the concurrent-lifetime interference graph.
-static FailureOr<SmallVector<int32_t>>
-computeConcurrentAssignments(
-    ModuleOp moduleOp,
-    const DFBConcurrentKernelLivenessAnalysis &liveness,
+static FailureOr<SmallVector<int32_t>> computeConcurrentAssignments(
+    ModuleOp moduleOp, const DFBConcurrentKernelLivenessAnalysis &liveness,
     const InterferenceGraphColoring &coloring,
     AnalysisFailure &analysisFailure) {
   ArrayRef<DFBLogicalLifecycle> logicalDFBs =
@@ -167,9 +165,10 @@ static int32_t getFirstCompilerDFBIndex(ModuleOp moduleOp) {
 }
 
 /// Plans kernel-local linear-scan allocation for compiler-created DFBs.
-static int32_t planCompilerDFBIndices(
-    func::FuncOp kernel, ArrayRef<BindCBOp> dfbOps, int32_t firstPhysicalIndex,
-    DenseMap<Operation *, int32_t> &physicalIndices) {
+static int32_t
+planCompilerDFBIndices(func::FuncOp kernel, ArrayRef<BindCBOp> dfbOps,
+                       int32_t firstPhysicalIndex,
+                       DenseMap<Operation *, int32_t> &physicalIndices) {
   Block &body = kernel.getBody().front();
   DenseMap<Operation *, int64_t> operationIndices;
   int64_t nextOperationIndex = 0;
@@ -286,8 +285,7 @@ static FailureOr<CompilerOnlyAllocation> computeCompilerOnlyAllocation(
     BindCBOp declaration = identity.declaration;
     int32_t physicalIndex;
     if (declaration->hasAttr(kCompilerAllocatedAttrName)) {
-      auto physicalIndexIt =
-          physicalIndices.find(declaration.getOperation());
+      auto physicalIndexIt = physicalIndices.find(declaration.getOperation());
       assert(physicalIndexIt != physicalIndices.end() &&
              "every compiler-created DFB must have a physical index");
       physicalIndex = physicalIndexIt->second;
@@ -299,10 +297,11 @@ static FailureOr<CompilerOnlyAllocation> computeCompilerOnlyAllocation(
     auto [assignmentIt, inserted] = logicalIdToAssignment.insert(
         {identity.logicalId, allocation.assignments.size()});
     if (inserted) {
-      allocation.assignments.push_back(
-          {identity.logicalId, physicalIndex,
-           declaration.getResult().getType(),
-           {declaration}, false});
+      allocation.assignments.push_back({identity.logicalId,
+                                        physicalIndex,
+                                        declaration.getResult().getType(),
+                                        {declaration},
+                                        false});
     } else {
       DFBPhysicalIndexAssignment &assignment =
           allocation.assignments[assignmentIt->second];
@@ -383,8 +382,7 @@ DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
           getGreedyFirstFitInterferenceGraphColoring()) {}
 
 DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
-    Operation *operation, bool reuseUserDFBs,
-    AnalysisManager analysisManager,
+    Operation *operation, bool reuseUserDFBs, AnalysisManager analysisManager,
     const InterferenceGraphColoring &coloring) {
   ModuleOp moduleOp = cast<ModuleOp>(operation);
   const DFBLogicalIdentityAnalysis &logicalIdentityAnalysis =
@@ -420,9 +418,9 @@ DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
       int32_t physicalIndex = (*physicalIndices)[indexedLogicalDFB.index()];
       plan.physicalDFBCount =
           std::max(plan.physicalDFBCount, physicalIndex + 1);
-      plan.assignments.push_back(
-          {logicalDFB.logicalId, physicalIndex, logicalDFB.type,
-           logicalDFB.declarations, logicalDFB.bounded});
+      plan.assignments.push_back({logicalDFB.logicalId, physicalIndex,
+                                  logicalDFB.type, logicalDFB.declarations,
+                                  logicalDFB.bounded});
     }
   } else {
     FailureOr<CompilerOnlyAllocation> allocation =
@@ -449,8 +447,7 @@ DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
   if (plan.physicalDFBCount > 0) {
     moduleOp->walk([&](func::FuncOp kernel) {
       if (kernel->hasAttr(kBaseCTAIndexAttrName)) {
-        plan.kernelBaseIndices.push_back(
-            {kernel, plan.physicalDFBCount});
+        plan.kernelBaseIndices.push_back({kernel, plan.physicalDFBCount});
       }
     });
   }
