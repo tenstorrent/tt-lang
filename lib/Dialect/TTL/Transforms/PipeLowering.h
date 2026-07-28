@@ -61,6 +61,7 @@ enum class PipeAddressMode {
 };
 
 struct PipeResourcePlan;
+class PipeTransferPlan;
 
 /// Receiver-side completion state for one transfer definition.
 struct PipeCompletionInfo {
@@ -148,6 +149,8 @@ struct PipeResourcePlan {
   /// the same transfer definition.
   llvm::MapVector<func::FuncOp, SmallVector<PipeComputedAddressCounterInitInfo>>
       computedAddressCounterInitializations;
+  /// Receiver DFB indices supplied as common runtime arguments to each sender.
+  llvm::MapVector<func::FuncOp, SmallVector<int32_t>> computedAddressDFBIndices;
 };
 
 /// Resource totals consumed by TTKernel lowering and runtime setup.
@@ -188,16 +191,24 @@ void initializePipePostSequenceCounters(
     const PipeResourcePlan &pipeResourcePlan,
     PipeCounterProgressMap &postSequenceCounters);
 
+/// Remove a sender operation proven unreachable at its pipe endpoint.
+void lowerInactivePipeTransferSend(PipeTransferSendOp op,
+                                   ConversionPatternRewriter &rewriter);
+
 /// Lower the sender-side pipe transfer and signal receiver completion.
 LogicalResult lowerPipeTransferSend(
-    PipeTransferSendOp op, Value srcCB, bool isConsumerCB,
-    ValueOriginAnalysis &analysis, const PipeResourcePlan &pipeResourcePlan,
+    PipeTransferSendOp op, Value srcCB, const PipeTransferPlan &transferPlan,
+    const PipeResourcePlan &pipeResourcePlan,
     const PipeComputedAddressCounterMap &computedAddressCounters,
     ConversionPatternRewriter &rewriter);
 
+/// Remove a receiver post proven unreachable at its pipe endpoint.
+void lowerInactivePipeTransferPost(PipeTransferPostOp op,
+                                   ConversionPatternRewriter &rewriter);
+
 /// Lower the receiver-side pipe rendezvous.
 LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
-                                    ValueOriginAnalysis &analysis,
+                                    const PipeTransferPlan &transferPlan,
                                     const PipeCounterProgressMap &counters,
                                     const PipeResourcePlan &pipeResourcePlan,
                                     ConversionPatternRewriter &rewriter);
