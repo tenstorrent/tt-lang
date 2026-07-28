@@ -362,13 +362,13 @@ that can complete the receive.
 
 ## Pipe transfer resource model and TTKernel lowering
 
-Pipe lowering first expands public pipe operations to Pipe Transfer IR:
+Pipe lowering first expands high-level pipe operations to Pipe Transfer IR:
 
 - `ttl.copy(pipe, dst_blk)` expands to `ttl.pipe_transfer.post`.
 - `ttl.copy(src_blk, pipe)` expands to `ttl.pipe_transfer.send`.
 - `ttl.wait` on a pipe receive handle expands to
   `ttl.pipe_transfer.wait`.
-- `ttl.wait` on a pipe send handle remains a public `ttl.wait` until
+- `ttl.wait` on a pipe send handle remains a high-level `ttl.wait` until
   TTKernel conversion, where it is erased because `ttl.pipe_transfer.send`
   has already waited for the payload write and signaled completion.
 
@@ -489,7 +489,8 @@ future typed device APIs should change only the runtime binding
 mechanism, not the IR-level resource model.
 
 The `RA/RP` address-table entry and `RP` sender-ready counter do not
-remain live until the public transfer handle is waited on. They carry
+remain live until the transfer handle returned by `ttl.copy` is waited
+on. They carry
 only pre-send state: the receiver-published DFB address and the count
 proving that the required receivers have posted. After the send resets
 the ready counter and, for `RA/RP`, reads the address-table entry, those
@@ -1008,7 +1009,11 @@ the following predicates:
 | `valid_posts(E, D)` | At least one matching post exists. Every post overlapping the receiver node has exactly that node's domain, executes on its NOC thread, and targets `D`. |
 | `valid_sends(E)` | At least one matching send exists. Every send has exactly the source-node domain and executes on its NOC thread. |
 | `valid_pops(E, D)` | At least one matching pop exists. Every pop overlapping the receiver node has exactly that node's domain, executes on its NOC thread, releases one block, and has one owning DFB wait that has the same domain, thread, and block count. |
-| `lowerable(T)` | Every endpoint of transfer node `T` has all preceding facts, and `T` has computed receiver-address resources. |
+
+Capacity analysis records these predicates as `PipeCapacityEndpointFacts`. It
+does not inspect computed-address resources or allocate counters. The module
+planner selects `CA/CC` only when every endpoint of transfer node `T` has
+capacity facts and `T` has computed receiver-address resources.
 
 `single_writer(E, D)` makes each pop attributable to `E`:
 `ttl.cb_pop` identifies `D`, not the transfer node that supplied the popped
@@ -1028,13 +1033,21 @@ for E in pipe_graph.receiver_endpoints:
         continue
     proven[E] = {sends(E), pops(E, D), block_count(D)}
 
-for T in pipe_graph.transfer_nodes:
-    if not lowerable(T):
-        mode(T) = "CA/RP" if computed_address(T) else "RA/RP"
-        continue
+preliminary_resources = allocate_resources(capacity_selection={})
 
+for T in pipe_graph.transfer_nodes:
+    if not (all(E in proven for E in T.receiver_endpoints)
+            and computed_address(T, preliminary_resources)):
+        mode(T) = ("CA/RP" if computed_address(T, preliminary_resources)
+                   else "RA/RP")
+        continue
+    capacity_selection.add(T)
+
+final_resources = allocate_resources(capacity_selection)
+for T in capacity_selection:
     for E in T.receiver_endpoints:
-        capacity = allocate_counter(initial=proven[E].block_count)
+        capacity = allocate_counter_after(
+            final_resources, initial=proven[E].block_count)
         record_acquire_before(proven[E].sends, capacity, count=1)
         record_release_after(proven[E].pops, capacity, count=1)
     mode(T) = "CA/CC"
@@ -1720,7 +1733,8 @@ The analyses have non-overlapping responsibilities:
 | DFB acquire/release ownership | Relate reserves, posts, waits, pushes, waits-front, and pops without inferring ownership from lexical proximity. |
 | Pipe rendezvous schedule | Verify one-to-one send/post occurrence counts and the wait-for dependencies of exact receive handles. |
 | `PipeGraph` | Match each send with one post per receiver, connect its endpoints to physical receiver DFBs, and prove endpoint address sequences. |
-| Pipe resource plan | Select protocols and allocate counters, address storage, and sender-local sequence state from graph facts. |
+| Pipe capacity analysis | Prove which receiver endpoints have unambiguous one-block capacity releases. |
+| Pipe module plan | Select protocols and allocate counters, address storage, and sender-local sequence state from analysis facts. |
 
 Synchronization verification and `PipeGraph` share execution-multiplicity
 proofs. The verifier diagnoses invalid occurrence correspondence. `PipeGraph`
