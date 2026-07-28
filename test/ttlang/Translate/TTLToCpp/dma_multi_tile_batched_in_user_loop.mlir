@@ -42,20 +42,25 @@
 // CHECK:   CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
 // CHECK:   CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
 
+// First copy: 64x64 (2x2 tiles) → CB1
+// CHECK:   int32_t [[RT_ARG1:v[0-9]+]] = get_common_arg_val<uint32_t>([[LB]]);
+// CHECK:   auto [[ACC1_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 2>(), 0>();
+// CHECK:   TensorAccessor [[ACC1:v[0-9]+]] = TensorAccessor([[ACC1_ARGS]], [[RT_ARG1]], [[ADDR]]);
+// Second copy: 64x64 (2x2 tiles) → CB2
+// CHECK:   int32_t [[RT_ARG2:v[0-9]+]] = get_common_arg_val<uint32_t>([[STEP]]);
+// CHECK:   auto [[ACC2_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<1, 2>(), 1>();
+// CHECK:   TensorAccessor [[ACC2:v[0-9]+]] = TensorAccessor([[ACC2_ARGS]], [[RT_ARG2]], [[ADDR]]);
+
 // User loop from input MLIR (0..3)
 // CHECK:   for (size_t [[USER_ITER:[a-z][0-9]+]] = [[LB]]; [[USER_ITER]] < [[USER_UB]]; [[USER_ITER]] += [[STEP]]) {
 
-// First copy: 64x64 (2x2 tiles) → CB1
-// CHECK:     int32_t [[RT_ARG1:v[0-9]+]] = get_common_arg_val<uint32_t>([[LB]]);
-// CHECK:     auto [[ACC1_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 2>(), 0>();
-// CHECK:     TensorAccessor [[ACC1:v[0-9]+]] = TensorAccessor([[ACC1_ARGS]], [[RT_ARG1]], [[ADDR]]);
 // Cast CB ptr to size_t for index arithmetic
 // CHECK:     ptrdiff_t [[CB_PTR1_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB0]].get_write_ptr();
 // CHECK:     size_t [[CB_PTR1_IDX:v[0-9]+]] = (size_t) [[CB_PTR1_PTRDIFF]];
 // Tile loops: for tile_y in 0..2, for tile_x in 0..2
 // CHECK:     for (size_t [[TILE1_Y:[a-z][0-9]+]] = [[LB]]; [[TILE1_Y]] < [[TILES_BOUND]]; [[TILE1_Y]] += [[STEP]]) {
+// CHECK:       size_t [[TILE1_OFFSET_Y:v[0-9]+]] = [[TILE1_Y]] * [[TILES_BOUND]];
 // CHECK:       for (size_t [[TILE1_X:[a-z][0-9]+]] = [[LB]]; [[TILE1_X]] < [[TILES_BOUND]]; [[TILE1_X]] += [[STEP]]) {
-// CHECK:         size_t [[TILE1_OFFSET_Y:v[0-9]+]] = [[TILE1_Y]] * [[TILES_BOUND]];
 // CHECK:         size_t [[TILE1_OFFSET_X:v[0-9]+]] = [[TILE1_OFFSET_Y]] + [[TILE1_X]];
 // CB address computation: cb_ptr + tile_offset * page_size (all size_t arithmetic)
 // CHECK:         size_t [[BYTE_OFF1:v[0-9]+]] = [[TILE1_OFFSET_X]] * [[PAGE_SIZE]];
@@ -69,17 +74,13 @@
 // CHECK:       }
 // CHECK:     }
 
-// Second copy: 64x64 (2x2 tiles) → CB2
-// CHECK:     int32_t [[RT_ARG2:v[0-9]+]] = get_common_arg_val<uint32_t>([[STEP]]);
-// CHECK:     auto [[ACC2_ARGS:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<1, 2>(), 1>();
-// CHECK:     TensorAccessor [[ACC2:v[0-9]+]] = TensorAccessor([[ACC2_ARGS]], [[RT_ARG2]], [[ADDR]]);
 // Cast CB ptr to size_t for index arithmetic
 // CHECK:     ptrdiff_t [[CB_PTR2_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[CB1]].get_write_ptr();
 // CHECK:     size_t [[CB_PTR2_IDX:v[0-9]+]] = (size_t) [[CB_PTR2_PTRDIFF]];
 // Separate tile loops (same bounds 0..2 x 0..2 but not merged with first copy)
 // CHECK:     for (size_t [[TILE2_Y:[a-z][0-9]+]] = [[LB]]; [[TILE2_Y]] < [[TILES_BOUND]]; [[TILE2_Y]] += [[STEP]]) {
+// CHECK:       size_t [[TILE2_OFFSET_Y:v[0-9]+]] = [[TILE2_Y]] * [[TILES_BOUND]];
 // CHECK:       for (size_t [[TILE2_X:[a-z][0-9]+]] = [[LB]]; [[TILE2_X]] < [[TILES_BOUND]]; [[TILE2_X]] += [[STEP]]) {
-// CHECK:         size_t [[TILE2_OFFSET_Y:v[0-9]+]] = [[TILE2_Y]] * [[TILES_BOUND]];
 // CHECK:         size_t [[TILE2_OFFSET_X:v[0-9]+]] = [[TILE2_OFFSET_Y]] + [[TILE2_X]];
 // CB address computation: cb_ptr + tile_offset * page_size (all size_t arithmetic)
 // CHECK:         size_t [[BYTE_OFF2:v[0-9]+]] = [[TILE2_OFFSET_X]] * [[PAGE_SIZE]];

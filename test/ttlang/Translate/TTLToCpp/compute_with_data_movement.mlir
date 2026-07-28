@@ -44,9 +44,9 @@
 // FPU-NEXT:   ptrdiff_t [[CB0_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[FPU_R_CB0]].get_write_ptr();
 // FPU-NEXT:   size_t [[CB0_PTR_IDX:v[0-9]+]] = (size_t) [[CB0_PTR_PTRDIFF]];
 // FPU:   for (size_t [[I_A:.*]] = [[ZERO]]; [[I_A]] < [[BOUND]]; [[I_A]] += [[ONE]]) {
-// FPU-NEXT:     for (size_t [[J_A:.*]] = [[ZERO]]; [[J_A]] < [[BOUND]]; [[J_A]] += [[ONE]]) {
 // Tile offset: linearize 2D index (i * bound + j)
-// FPU:       size_t [[TILE_OFF_A_Y:v[0-9]+]] = [[I_A]] * [[BOUND]];
+// FPU:     size_t [[TILE_OFF_A_Y:v[0-9]+]] = [[I_A]] * [[BOUND]];
+// FPU:     for (size_t [[J_A:.*]] = [[ZERO]]; [[J_A]] < [[BOUND]]; [[J_A]] += [[ONE]]) {
 // FPU-NEXT:  size_t [[TILE_OFF_A:v[0-9]+]] = [[TILE_OFF_A_Y]] + [[J_A]];
 // Byte offset: tile_offset * page_size + cb_base
 // FPU-NEXT:  size_t [[BYTE_OFF_A:v[0-9]+]] = [[TILE_OFF_A]] * [[PAGE_SIZE]];
@@ -69,9 +69,9 @@
 // FPU-NEXT:   ptrdiff_t [[CB1_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[FPU_R_CB1]].get_write_ptr();
 // FPU-NEXT:   size_t [[CB1_PTR_IDX:v[0-9]+]] = (size_t) [[CB1_PTR_PTRDIFF]];
 // FPU:   for (size_t [[I_B:.*]] = [[ZERO]]; [[I_B]] < [[BOUND]]; [[I_B]] += [[ONE]]) {
-// FPU-NEXT:     for (size_t [[J_B:.*]] = [[ZERO]]; [[J_B]] < [[BOUND]]; [[J_B]] += [[ONE]]) {
 // Tile offset: linearize 2D index (i * bound + j)
-// FPU:       size_t [[TILE_OFF_B_Y:v[0-9]+]] = [[I_B]] * [[BOUND]];
+// FPU-NEXT:     size_t [[TILE_OFF_B_Y:v[0-9]+]] = [[I_B]] * [[BOUND]];
+// FPU-NEXT:     for (size_t [[J_B:.*]] = [[ZERO]]; [[J_B]] < [[BOUND]]; [[J_B]] += [[ONE]]) {
 // FPU-NEXT:  size_t [[TILE_OFF_B:v[0-9]+]] = [[TILE_OFF_B_Y]] + [[J_B]];
 // Byte offset: tile_offset * page_size + cb_base
 // FPU-NEXT:  size_t [[BYTE_OFF_B:v[0-9]+]] = [[TILE_OFF_B]] * [[PAGE_SIZE]];
@@ -146,9 +146,9 @@
 // FPU-NEXT:   ptrdiff_t [[WR_PTR_PD:v[0-9]+]] = (ptrdiff_t) [[FPU_W_CB2]].get_read_ptr();
 // FPU-NEXT:   size_t [[WR_PTR_IDX:v[0-9]+]] = (size_t) [[WR_PTR_PD]];
 // FPU:   for (size_t [[WI:.*]] = [[WZERO]]; [[WI]] < [[WBOUND]]; [[WI]] += [[WONE]]) {
-// FPU-NEXT:     for (size_t [[WJ:.*]] = [[WZERO]]; [[WJ]] < [[WBOUND]]; [[WJ]] += [[WONE]]) {
 // Tile offset: linearize 2D index (i * bound + j)
-// FPU:       size_t [[WTILE_Y:v[0-9]+]] = [[WI]] * [[WBOUND]];
+// FPU:     size_t [[WTILE_Y:v[0-9]+]] = [[WI]] * [[WBOUND]];
+// FPU:     for (size_t [[WJ:.*]] = [[WZERO]]; [[WJ]] < [[WBOUND]]; [[WJ]] += [[WONE]]) {
 // FPU-NEXT:  size_t [[WTILE_OFF:v[0-9]+]] = [[WTILE_Y]] + [[WJ]];
 // Byte offset: tile_offset * page_size + cb_base
 // FPU-NEXT:  size_t [[WBYTE_OFF:v[0-9]+]] = [[WTILE_OFF]] * [[WPAGE]];
@@ -185,9 +185,9 @@
 // SFPU-NEXT:   ptrdiff_t [[CB0_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[SFPU_R_CB0]].get_write_ptr();
 // SFPU-NEXT:   size_t [[CB0_PTR_IDX:v[0-9]+]] = (size_t) [[CB0_PTR_PTRDIFF]];
 // SFPU:   for (size_t [[I_A:.*]] = [[ZERO]]; [[I_A]] < [[BOUND]]; [[I_A]] += [[ONE]]) {
-// SFPU-NEXT:     for (size_t [[J_A:.*]] = [[ZERO]]; [[J_A]] < [[BOUND]]; [[J_A]] += [[ONE]]) {
 // Tile offset: linearize 2D index (i * bound + j)
-// SFPU:       size_t [[TILE_OFF_A_Y:v[0-9]+]] = [[I_A]] * [[BOUND]];
+// SFPU-NEXT:     size_t [[TILE_OFF_A_Y:v[0-9]+]] = [[I_A]] * [[BOUND]];
+// SFPU-NEXT:     for (size_t [[J_A:.*]] = [[ZERO]]; [[J_A]] < [[BOUND]]; [[J_A]] += [[ONE]]) {
 // SFPU-NEXT:  size_t [[TILE_OFF_A:v[0-9]+]] = [[TILE_OFF_A_Y]] + [[J_A]];
 // Byte offset: tile_offset * page_size + cb_base
 // SFPU-NEXT:  size_t [[BYTE_OFF_A:v[0-9]+]] = [[TILE_OFF_A]] * [[PAGE_SIZE]];
@@ -210,9 +210,9 @@
 // SFPU-NEXT:   ptrdiff_t [[CB1_PTR_PTRDIFF:v[0-9]+]] = (ptrdiff_t) [[SFPU_R_CB1]].get_write_ptr();
 // SFPU-NEXT:   size_t [[CB1_PTR_IDX:v[0-9]+]] = (size_t) [[CB1_PTR_PTRDIFF]];
 // SFPU:   for (size_t [[I_B:.*]] = [[ZERO]]; [[I_B]] < [[BOUND]]; [[I_B]] += [[ONE]]) {
-// SFPU-NEXT:     for (size_t [[J_B:.*]] = [[ZERO]]; [[J_B]] < [[BOUND]]; [[J_B]] += [[ONE]]) {
 // Tile offset: linearize 2D index (i * bound + j)
-// SFPU:       size_t [[TILE_OFF_B_Y:v[0-9]+]] = [[I_B]] * [[BOUND]];
+// SFPU-NEXT:     size_t [[TILE_OFF_B_Y:v[0-9]+]] = [[I_B]] * [[BOUND]];
+// SFPU-NEXT:     for (size_t [[J_B:.*]] = [[ZERO]]; [[J_B]] < [[BOUND]]; [[J_B]] += [[ONE]]) {
 // SFPU-NEXT:  size_t [[TILE_OFF_B:v[0-9]+]] = [[TILE_OFF_B_Y]] + [[J_B]];
 // Byte offset: tile_offset * page_size + cb_base
 // SFPU-NEXT:  size_t [[BYTE_OFF_B:v[0-9]+]] = [[TILE_OFF_B]] * [[PAGE_SIZE]];
@@ -287,9 +287,9 @@
 // SFPU-NEXT:   ptrdiff_t [[WR_PTR_PD:v[0-9]+]] = (ptrdiff_t) [[SFPU_W_CB2]].get_read_ptr();
 // SFPU-NEXT:   size_t [[WR_PTR_IDX:v[0-9]+]] = (size_t) [[WR_PTR_PD]];
 // SFPU:   for (size_t [[WI:.*]] = [[WZERO]]; [[WI]] < [[WBOUND]]; [[WI]] += [[WONE]]) {
-// SFPU-NEXT:     for (size_t [[WJ:.*]] = [[WZERO]]; [[WJ]] < [[WBOUND]]; [[WJ]] += [[WONE]]) {
 // Tile offset: linearize 2D index (i * bound + j)
-// SFPU:       size_t [[WTILE_Y:v[0-9]+]] = [[WI]] * [[WBOUND]];
+// SFPU-NEXT:     size_t [[WTILE_Y:v[0-9]+]] = [[WI]] * [[WBOUND]];
+// SFPU-NEXT:     for (size_t [[WJ:.*]] = [[WZERO]]; [[WJ]] < [[WBOUND]]; [[WJ]] += [[WONE]]) {
 // SFPU-NEXT:  size_t [[WTILE_OFF:v[0-9]+]] = [[WTILE_Y]] + [[WJ]];
 // Byte offset: tile_offset * page_size + cb_base
 // SFPU-NEXT:  size_t [[WBYTE_OFF:v[0-9]+]] = [[WTILE_OFF]] * [[WPAGE]];

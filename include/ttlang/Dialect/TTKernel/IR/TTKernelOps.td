@@ -3496,7 +3496,7 @@ def TTKernel_TransposeTileOp : TTKernel_Op<"transpose_wh_tile"> {
 // TTKernel NOC operations
 //===----------------------------------------------------------------------===//
 
-def TTKernel_GetNocAddrOp : TTKernel_Op<"get_noc_addr"> {
+def TTKernel_GetNocAddrOp : TTKernel_Op<"get_noc_addr", [Pure]> {
     let summary = "GetNocAddr";
     let description = [{
       GetNocAddr api including core coordinates.
@@ -3516,7 +3516,8 @@ def TTKernel_GetNocAddrOp : TTKernel_Op<"get_noc_addr"> {
     ];
 }
 
-def TTKernel_GetNocAddrFromBankIDOp: TTKernel_Op<"get_noc_addr_from_bank_id"> {
+def TTKernel_GetNocAddrFromBankIDOp
+    : TTKernel_Op<"get_noc_addr_from_bank_id", [Pure]> {
     let summary = "GetNocAddrFromBankID";
     let description = [{
       GetNocAddrFromBankID api
@@ -3711,6 +3712,46 @@ def TTKernel_NocAsyncWriteOnePacketWithTridOp : TTKernel_Op<"noc_async_write_one
     let hasVerifier = 1;
 }
 
+def TTKernel_NocAsyncWriteOnePacketSetStateOp : TTKernel_Op<"noc_async_write_one_packet_set_state"> {
+    let summary = "NocAsyncWriteOnePacketSetState";
+    let description = [{
+      Programs the stateful registers for subsequent one-packet asynchronous
+      writes to the same destination node and transfer size.
+
+      The destination operand is a full NoC address. The companion
+      `noc_async_write_one_packet_with_state` operation supplies the source L1
+      address and destination local L1 address that vary per transfer.
+    }];
+
+    let arguments = (ins TTKernel_NocAddr:$dstNocAddr,
+                         I32:$size,
+                         Optional<I8>:$noc);
+
+    let assemblyFormat = [{
+      `(` $dstNocAddr `,` $size (`,` `noc` $noc^)? `)` attr-dict `:` functional-type(operands, results)
+    }];
+}
+
+def TTKernel_NocAsyncWriteOnePacketWithStateOp : TTKernel_Op<"noc_async_write_one_packet_with_state"> {
+    let summary = "NocAsyncWriteOnePacketWithState";
+    let description = [{
+      Issues a one-packet asynchronous write using the state programmed by
+      `noc_async_write_one_packet_set_state`.
+
+      The destination local L1 address must refer to the same destination node
+      that was used to set the command state. The transfer size is the size
+      programmed by the set-state operation.
+    }];
+
+    let arguments = (ins I32:$srcLocalL1Addr,
+                         I32:$dstLocalL1Addr,
+                         Optional<I8>:$noc);
+
+    let assemblyFormat = [{
+      `(` $srcLocalL1Addr `,` $dstLocalL1Addr (`,` `noc` $noc^)? `)` attr-dict `:` functional-type(operands, results)
+    }];
+}
+
 def TTKernel_NocAsyncWriteBarrierOp : TTKernel_Op<"noc_async_write_barrier", [TTKernel_DeviceZoneOpTrait]> {
     let summary = "NocAsyncWriteBarrier";
     let description = [{
@@ -3765,7 +3806,7 @@ def TTKernel_NocAsyncWriteBarrierWithTridOp : TTKernel_Op<"noc_async_write_barri
     }];
 }
 
-def TTKernel_GetSemaphoreOp : TTKernel_Op<"get_semaphore"> {
+def TTKernel_GetSemaphoreOp : TTKernel_Op<"get_semaphore", [Pure]> {
     let summary = "GetSemaphoreOp";
     let description = [{
       Get L1 addr of the semaphore with specified semaphore id
@@ -4075,7 +4116,7 @@ def TTKernel_BitcastOp : TTKernel_Op<"bitcast", [Pure]> {
     }];
 }
 
-def TTKernel_CastToL1PtrOp : TTKernel_Op<"reinterpret_cast"> {
+def TTKernel_CastToL1PtrOp : TTKernel_Op<"reinterpret_cast", [Pure]> {
     let summary = "CastToL1Ptr";
     let description = [{
       Cast specified addr to L1 pointer.
@@ -4360,7 +4401,8 @@ def TTKernel_GetDeviceIdFromLogicalMeshPositionOp : TTKernel_Op<"experimental.ge
 // TTKernel Multicast NoC operations
 //===----------------------------------------------------------------------===//
 
-def TTKernel_GetNocMulticastAddrOp : TTKernel_Op<"get_noc_multicast_addr"> {
+def TTKernel_GetNocMulticastAddrOp
+    : TTKernel_Op<"get_noc_multicast_addr", [Pure]> {
   let summary = "GetNocMulticastAddr";
   let description = [{
     Default tt-metal get_noc_multicast_addr.
@@ -4483,7 +4525,7 @@ def TTKernel_NocAsyncWriteMulticastLoopbackSrcOp : TTKernel_Op<"noc_async_write_
 //===----------------------------------------------------------------------===//
 
 def TTKernel_TensorAccessorArgsOp : TTKernel_Op<"TensorAccessorArgs",
-    [AttrSizedOperandSegments]> {
+    [AttrSizedOperandSegments, Pure]> {
   let summary = "TensorAccessorArgs";
   let description = [{
     TensorAccessorArgs struct constructor.
@@ -4530,7 +4572,7 @@ def TTKernel_TensorAccessorArgsOp : TTKernel_Op<"TensorAccessorArgs",
   let hasVerifier = 1;
 }
 
-def TTKernel_TensorAccessorOp : TTKernel_Op<"TensorAccessor"> {
+def TTKernel_TensorAccessorOp : TTKernel_Op<"TensorAccessor", [Pure]> {
   let summary = "MakeTensorAccessorFromArgs";
   let description = [{
     TensorAccessor constructor.
@@ -4544,7 +4586,8 @@ def TTKernel_TensorAccessorOp : TTKernel_Op<"TensorAccessor"> {
   }];
 }
 
-def TTKernel_TensorAccessorGetNocAddrOp : TTKernel_Op<"tensor_accessor.get_noc_addr"> {
+def TTKernel_TensorAccessorGetNocAddrOp
+    : TTKernel_Op<"tensor_accessor.get_noc_addr", [Pure]> {
   let summary = "TensorAccessor's get_noc_addr";
   let description = [{
     get_noc_addr using information stored in the TensorAccessor.
@@ -4557,7 +4600,8 @@ def TTKernel_TensorAccessorGetNocAddrOp : TTKernel_Op<"tensor_accessor.get_noc_a
   }];
 }
 
-def TTKernel_TensorAccessorGetShardNocAddrOp : TTKernel_Op<"tensor_accessor.get_shard_noc_addr"> {
+def TTKernel_TensorAccessorGetShardNocAddrOp
+    : TTKernel_Op<"tensor_accessor.get_shard_noc_addr", [Pure]> {
   let summary = "TensorAccessor's get_shard_noc_addr";
   let description = [{
     Returns noc addr of a shard.
@@ -4570,7 +4614,8 @@ def TTKernel_TensorAccessorGetShardNocAddrOp : TTKernel_Op<"tensor_accessor.get_
   }];
 }
 
-def TTKernel_TensorAccessorGetBankAndOffsetOp : TTKernel_Op<"tensor_accessor.get_bank_and_offset"> {
+def TTKernel_TensorAccessorGetBankAndOffsetOp
+    : TTKernel_Op<"tensor_accessor.get_bank_and_offset", [Pure]> {
   let summary = "TensorAccessor's get_bank_and_offset";
   let description = [{
     Returns bank id and page offset.
@@ -4583,7 +4628,8 @@ def TTKernel_TensorAccessorGetBankAndOffsetOp : TTKernel_Op<"tensor_accessor.get
   }];
 }
 
-def TTKernel_TensorAccessorIsLocalBankOp : TTKernel_Op<"tensor_accessor.is_local_bank"> {
+def TTKernel_TensorAccessorIsLocalBankOp
+    : TTKernel_Op<"tensor_accessor.is_local_bank", [Pure]> {
   let summary = "TensorAccessor's is_local_bank";
   let description = [{
     Returns bool indicating bank locality.
@@ -4596,7 +4642,8 @@ def TTKernel_TensorAccessorIsLocalBankOp : TTKernel_Op<"tensor_accessor.is_local
   }];
 }
 
-def TTKernel_TensorAccessorIsLocalAddrOp : TTKernel_Op<"tensor_accessor.is_local_addr"> {
+def TTKernel_TensorAccessorIsLocalAddrOp
+    : TTKernel_Op<"tensor_accessor.is_local_addr", [Pure]> {
   let summary = "TensorAccessor's is_local_addr";
   let description = [{
     Returns bool indicating addr locality.
@@ -4609,7 +4656,8 @@ def TTKernel_TensorAccessorIsLocalAddrOp : TTKernel_Op<"tensor_accessor.is_local
   }];
 }
 
-def TTKernel_TensorAccessorIsLocalPageOp : TTKernel_Op<"tensor_accessor.is_local_page"> {
+def TTKernel_TensorAccessorIsLocalPageOp
+    : TTKernel_Op<"tensor_accessor.is_local_page", [Pure]> {
   let summary = "TensorAccessor's is_local_page";
   let description = [{
     Returns bool indicating page locality.
@@ -4622,7 +4670,8 @@ def TTKernel_TensorAccessorIsLocalPageOp : TTKernel_Op<"tensor_accessor.is_local
   }];
 }
 
-def TTKernel_TensorAccessorIsLocalShardOp : TTKernel_Op<"tensor_accessor.is_local_shard"> {
+def TTKernel_TensorAccessorIsLocalShardOp
+    : TTKernel_Op<"tensor_accessor.is_local_shard", [Pure]> {
   let summary = "TensorAccessor's is_local_shard";
   let description = [{
     Returns bool indicating shard locality.
