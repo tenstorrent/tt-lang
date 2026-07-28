@@ -3,10 +3,11 @@
 // Summary: Verifies shared local and GlobalSemaphore allocation for PipeNet
 // completion and sender-ready counters.
 
-// Sixteen transfers sharing a receiver consume all local semaphore ids, so
-// sender-ready counters use one GlobalSemaphore per source core.
+// Sixteen transfers sharing a receiver consume all local semaphore ids. The
+// sender-ready counter uses one GlobalSemaphore address whose per-core
+// instances provide independent state on the two source cores.
 // CHECK-LABEL: module attributes
-// CHECK-SAME: ttl.pipe_global_semaphore_count = 2 : i64
+// CHECK-SAME: ttl.pipe_global_semaphore_count = 1 : i64
 // CHECK-SAME: ttl.pipe_sram_scratch_bytes = 32 : i64
 // CHECK-SAME: ttl.pipe_sync_semaphore_count = 16 : i64
 // CHECK-LABEL: func.func @completion_limit_uses_global_ready_counters
@@ -37,10 +38,10 @@
 // CHECK: %[[DONE0_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[DONE0]], {{.*}})
 // CHECK: ttkernel.noc_semaphore_inc(%[[DONE0_NOC]]
 // CHECK-NOT: ttkernel.get_semaphore
-// CHECK: %[[SRC1_READY_POST:.*]] = ttkernel.get_common_arg_val(%[[SEM2]])
+// CHECK: %[[SRC1_READY_POST:.*]] = ttkernel.get_common_arg_val(%[[SEM1]])
 // CHECK: %[[SRC1_READY_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[SRC1_READY_POST]], {{.*}})
 // CHECK: ttkernel.noc_semaphore_inc(%[[SRC1_READY_NOC]]
-// CHECK: %[[SRC1_READY_SEND:.*]] = ttkernel.get_common_arg_val(%[[SEM2]])
+// CHECK: %[[SRC1_READY_SEND:.*]] = ttkernel.get_common_arg_val(%[[SEM1]])
 // CHECK: %[[SRC1_READY_PTR:.*]] = ttkernel.reinterpret_cast(%[[SRC1_READY_SEND]])
 // CHECK: ttkernel.experimental.semaphore_wait(%[[SRC1_READY_PTR]]
 // CHECK: ttkernel.noc_semaphore_set(%[[SRC1_READY_PTR]]
