@@ -857,7 +857,6 @@ def _compile_atom(
         args=args,
         launch_grid=grid,
         num_outs=num_outs,
-        cb_configs=_cb_configs_from_lifted(dfbs),
         pipenets=pipe_graph,
         target_arch=target_arch,
         fp32_dest_acc_en=fp32_dest_acc_en,
