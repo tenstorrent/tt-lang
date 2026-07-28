@@ -349,12 +349,10 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
     // addresses. Final allocation omits sender-ready counters for transfers
     // selected for capacity synchronization.
     PipeResourcePlan preliminaryResourcePlan;
-    if (failed(buildPipeResourcePlan(module, analysis, pipeGraph,
-                                     preliminaryResourcePlan,
-                                     options.enableComputedAddresses,
-                                     fabricRoutePlan
-                                         ? &synchronizationSelection
-                                         : nullptr))) {
+    if (failed(buildPipeResourcePlan(
+            module, analysis, pipeGraph, preliminaryResourcePlan,
+            options.enableComputedAddresses,
+            fabricRoutePlan ? &synchronizationSelection : nullptr))) {
       return failure();
     }
     SmallVector<PipeTransferNodeId> selectedCapacityTransfers =

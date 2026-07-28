@@ -174,10 +174,9 @@ checkSend(const PipeCapacityEndpointFacts &endpointFacts,
   return sendOp;
 }
 
-static bool
-collectAndCheckPops(const PipeCapacityEndpointFacts &endpointFacts,
-                    const PipeGraph &pipeGraph,
-                    SmallVectorImpl<CBPopOp> &pops) {
+static bool collectAndCheckPops(const PipeCapacityEndpointFacts &endpointFacts,
+                                const PipeGraph &pipeGraph,
+                                SmallVectorImpl<CBPopOp> &pops) {
   LaunchNodeDomain receiverDomain =
       getSingleLaunchNodeDomain({endpointFacts.receiverDFB.receiver.x,
                                  endpointFacts.receiverDFB.receiver.y});
