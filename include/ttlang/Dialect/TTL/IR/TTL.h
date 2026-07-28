@@ -48,6 +48,15 @@ constexpr llvm::StringLiteral
 constexpr llvm::StringLiteral kBlackholeArchName("blackhole");
 constexpr llvm::StringLiteral kWormholeB0ArchName("wormhole_b0");
 
+/// tt-metal `NOC_MAX_BURST_SIZE` values, measured in bytes.
+///
+/// The architecture headers define these as
+/// `NOC_MAX_BURST_WORDS * NOC_WORD_BYTES`: 8192 on Wormhole B0 and 16384 on
+/// Blackhole.
+inline constexpr int64_t kWormholeB0NocMaxBurstBytes = 8192;
+inline constexpr int64_t kBlackholeNocMaxBurstBytes = 16384;
+inline constexpr int64_t kDefaultNocMaxBurstBytes = kWormholeB0NocMaxBurstBytes;
+
 inline bool hasTargetArch(Operation *op, llvm::StringRef archName) {
   ModuleOp moduleOp = op->getParentOfType<ModuleOp>();
   if (!moduleOp) {
@@ -64,6 +73,17 @@ inline bool isBlackholeTarget(Operation *op) {
 
 inline bool isWormholeB0Target(Operation *op) {
   return hasTargetArch(op, kWormholeB0ArchName);
+}
+
+/// Return the maximum one-packet NoC transfer size for the module target.
+///
+/// Compile-only IR may omit `ttl.target_arch`; in that case this uses the
+/// minimum supported Wormhole B0/Blackhole value.
+inline int64_t getTargetNocMaxBurstBytes(Operation *op) {
+  if (isBlackholeTarget(op)) {
+    return kBlackholeNocMaxBurstBytes;
+  }
+  return kDefaultNocMaxBurstBytes;
 }
 
 /// PipeNet role exposed by `is_src` / `is_dst` / `is_active` predicate ops

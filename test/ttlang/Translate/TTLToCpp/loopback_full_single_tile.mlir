@@ -18,18 +18,18 @@
 // CHECK-DAG:   size_t [[LB:v[0-9]+]] = 0;
 // CB wrapper declared at top of kernel
 // CHECK:   CircularBuffer [[CB:.*]](get_compile_time_arg_val(0));
-// CHECK:   for (size_t [[IV:i[0-9]+]] = [[LB]]; [[IV]] < [[UB]]; [[IV]] += [[STEP]]) {
 // Read: tensor -> CB (uses get_write_ptr for CB destination)
-// CHECK:     int32_t [[RT_ARG_R:v[0-9]+]] = get_common_arg_val<uint32_t>([[LB]]);
-// CHECK:     auto [[ARGS_READ:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 1>(), 0>();
-// CHECK:     TensorAccessor [[ACC_READ:v[0-9]+]] = TensorAccessor([[ARGS_READ]], [[RT_ARG_R]], [[ADDR]]);
-// CHECK-NEXT:     noc0.async_read([[ACC_READ]], CoreLocalMem<uint32_t>([[CB]].get_write_ptr()), [[ACC_READ]].get_aligned_page_size(), {.page_id = static_cast<uint32_t>([[ZERO]])}, {});
-// CHECK:     noc0.async_read_barrier();
+// CHECK:   int32_t [[RT_ARG_R:v[0-9]+]] = get_common_arg_val<uint32_t>([[LB]]);
+// CHECK:   auto [[ARGS_READ:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 1>(), 0>();
+// CHECK:   TensorAccessor [[ACC_READ:v[0-9]+]] = TensorAccessor([[ARGS_READ]], [[RT_ARG_R]], [[ADDR]]);
 // Write: CB -> tensor (uses get_read_ptr for CB source)
-// CHECK:     int32_t [[RT_ARG_W:v[0-9]+]] = get_common_arg_val<uint32_t>([[STEP]]);
-// CHECK:     auto [[ARGS_WRITE:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<1, 1>(), 1>();
-// CHECK:     TensorAccessor [[ACC_WRITE:v[0-9]+]] = TensorAccessor([[ARGS_WRITE]], [[RT_ARG_W]], [[ADDR]]);
-// CHECK-NEXT:     noc0.async_write(CoreLocalMem<uint32_t>([[CB]].get_read_ptr()), [[ACC_WRITE]], [[ACC_WRITE]].get_aligned_page_size(), {} , {.page_id = static_cast<uint32_t>([[ZERO]])});
+// CHECK:   int32_t [[RT_ARG_W:v[0-9]+]] = get_common_arg_val<uint32_t>([[STEP]]);
+// CHECK:   auto [[ARGS_WRITE:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<1, 1>(), 1>();
+// CHECK:   TensorAccessor [[ACC_WRITE:v[0-9]+]] = TensorAccessor([[ARGS_WRITE]], [[RT_ARG_W]], [[ADDR]]);
+// CHECK:   for (size_t [[IV:i[0-9]+]] = [[LB]]; [[IV]] < [[UB]]; [[IV]] += [[STEP]]) {
+// CHECK:     noc0.async_read([[ACC_READ]], CoreLocalMem<uint32_t>([[CB]].get_write_ptr()), [[ACC_READ]].get_aligned_page_size(), {.page_id = static_cast<uint32_t>([[ZERO]])}, {});
+// CHECK:     noc0.async_read_barrier();
+// CHECK:     noc0.async_write(CoreLocalMem<uint32_t>([[CB]].get_read_ptr()), [[ACC_WRITE]], [[ACC_WRITE]].get_aligned_page_size(), {} , {.page_id = static_cast<uint32_t>([[ZERO]])});
 // CHECK:     noc0.async_write_barrier();
 // CHECK:   }
 // CHECK:   return;
