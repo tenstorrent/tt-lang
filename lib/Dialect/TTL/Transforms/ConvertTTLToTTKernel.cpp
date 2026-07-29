@@ -1728,12 +1728,14 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
     return failure();
   }
 
-  PipeCounterAllocationPolicy counterPolicy =
+  PipePlanningOptions pipePlanningOptions;
+  pipePlanningOptions.enableComputedAddresses = pipeComputedAddresses;
+  pipePlanningOptions.counterAllocationPolicy =
       pipeGlobalSemaphoresOnly ? PipeCounterAllocationPolicy::GlobalOnly
                                : PipeCounterAllocationPolicy::LocalThenGlobal;
   FailureOr<PipeModulePlan> maybePipeModulePlan =
       buildPipeModulePlan(mod, transferAnalysis, transferIndex, *pipeGraphOrErr,
-                          pipeComputedAddresses, counterPolicy);
+                          pipePlanningOptions);
   if (failed(maybePipeModulePlan)) {
     return failure();
   }
