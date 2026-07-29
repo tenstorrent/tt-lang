@@ -102,7 +102,10 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         dest="pipe_capacity_sync",
         action=argparse.BooleanOptionalAction,
-        help="Use capacity-counter synchronization for eligible pipe transfers; disabling uses receiver-post synchronization (default: enabled).",
+        help="Use capacity-counter synchronization when a computed-address "
+        "transfer's receiver wait and pop run on the receiver NOC thread and "
+        "pass the DFB ownership and count proofs; disabling uses receiver-post "
+        "synchronization (default: enabled).",
     )
     p.add_argument(
         "--ttl-specialize-cores",

@@ -52,8 +52,10 @@
 //   for transferNode in pipeGraph.getPipeTransferNodes():
 //     require the transfer to use the intra-device point-to-point NoC transport
 //     require every receiver endpoint to have proven lowerable capacity facts
-//     initialize one sender-local capacity counter per receiver endpoint to
-//             that receiver dataflow buffer's block_count
+//     initialize each receiver endpoint's sender-local capacity counter to that
+//             receiver dataflow buffer's block_count
+//     reuse counter storage across different source nodes only when their
+//             initial block counts match
 //     record one capacity acquire per endpoint for each send
 //     record one capacity release to the sender for each endpoint pop
 //     mark the transfer's send and receiver posts as using the capacity
@@ -130,6 +132,9 @@ public:
   bool empty() const {
     return acquires.empty() && releases.empty() && initializations.empty();
   }
+
+  /// Return whether two plans selected the same sends and receiver posts.
+  bool hasSameSelectedTransfers(const PipeCapacityPlan &other) const;
 
   /// Record one sender acquire for `op`.
   void addAcquire(PipeTransferSendOp op, PipeCapacityAcquireInfo info);
