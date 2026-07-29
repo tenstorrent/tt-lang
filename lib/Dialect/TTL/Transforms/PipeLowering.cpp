@@ -83,19 +83,6 @@ static PipeSourceKey getPipeSourceKey(PipeType pipeType) {
   return {pipeType.getSrcX(), pipeType.getSrcY()};
 }
 
-static FailureOr<PipeTransferCreateOp>
-getPipeTransferCreate(Operation *op, Value transfer,
-                      ValueOriginAnalysis &analysis) {
-  FailureOr<PipeTransferCreateOp> maybeCreateOp =
-      findPipeTransferCreateForTransfer(analysis, transfer);
-  if (failed(maybeCreateOp)) {
-    return op->emitError() << op->getName()
-                           << " requires every possible transfer value to "
-                              "derive from the same ttl.pipe_transfer.create";
-  }
-  return *maybeCreateOp;
-}
-
 static const PipeResourceInfo &
 lookupPipeResourceInfo(Operation *protocolOp,
                        const PipeResourcePlan &pipeResourcePlan) {
@@ -1726,13 +1713,11 @@ compactColors(const SourceColorMap &colorUsersBySource,
   return {std::move(compactedBySource), maxPerSource};
 }
 
-LogicalResult buildPipeResourcePlan(ModuleOp mod,
-                                    const PipeTransferIndex &transferIndex,
-                                    const PipeGraph &pipeGraph,
-                                    PipeResourcePlan &info,
-                                    bool enableComputedAddresses,
-                                    const PipeSynchronizationSelection
-                                        *synchronizationSelection) {
+LogicalResult buildPipeResourcePlan(
+    ModuleOp mod, const PipeTransferIndex &transferIndex,
+    const PipeGraph &pipeGraph, PipeResourcePlan &info,
+    bool enableComputedAddresses,
+    const PipeSynchronizationSelection *synchronizationSelection) {
   DominanceInfo dominanceInfo(mod);
   PostDominanceInfo postDominanceInfo(mod);
   FailureOr<SmallVector<PipeTransferAllocationUnit>> maybeUnits =
