@@ -7,6 +7,9 @@ Base: `origin/main` at `816df6269c16` (`[ci][build] Consolidate manylinux wheel 
 Backup before this refresh: `backup/demo-before-refresh-20260729-071352`
 at `ed4701c65e9e`.
 
+Backup before #734 integration: `backup/demo-before-pr734-20260729-112617`
+at `ce0b646c4a8d`.
+
 Purpose: disposable aggregate branch for demos and integration testing. This
 branch is not a PR review layer and must not become a parent for source PRs.
 
@@ -50,18 +53,14 @@ branch is not a PR review layer and must not become a parent for source PRs.
 | 13 | 780 | `bnorris/pipes-codegen-optimizations` | `51cb9909829e` | `36ddc010f`, `1cfbcb909` | PipeNet codegen cleanup and stateful one-packet write selection. |
 | 14 | 687 | `bnorris/fix-683` | `3809bc553c3e` | `c10f6eab9` | Cross-block store fanout through compiler-created DFBs. |
 | 15 | 680 | `bnorris/dfb-subviews-671` | `4588cf72d2fc` | `cc6f42636` | DFB block subviews and tensor-slice lowering. |
+| 16 | 734 | `bnorris/pipes-multidevice-integrated-poc` | `8eebd5f9375c` | `81d1103fd` | Fabric PipeNet POC and device-domain API. Applied as feature delta `698ebd38c13e..8eebd5f9375c` because the source branch still includes older PipeNet parent state. |
 
 Duplicate merge commits mean the source branch advanced during the refresh and
 was merged again after the first merge.
 
 ## Required Inputs Missing From Current Branch
 
-These inputs are part of the intended aggregate branch but are not currently
-contained in `bnorris/demo`.
-
-| PR | Branch | Status | Required action |
-|---:|---|---|---|
-| 734 | `bnorris/pipes-multidevice-integrated-poc` | Missing from current branch | Integrate after the current PipeNet planning/codegen stack. It is a child of #784 in `/home/bnorris/tt/PRs.md` and should not be treated as intentionally excluded. |
+None after #734 was added in `81d1103fd`.
 
 ## Excluded Inputs
 
@@ -87,6 +86,13 @@ contained in `bnorris/demo`.
 - #680 merge: added Tensor dialect registration for Python/CAPI use and split
   the fp32 running-max-subtract test input DFBs to avoid mixed unpack modes on
   one DFB.
+- #734 integration: a direct merge would replay older PR700/#740 parent-stack
+  state into the refreshed aggregate. The demo branch uses the feature delta
+  `698ebd38c13e..8eebd5f9375c` on top of the current PipeNet planning/codegen
+  stack instead.
+- #734 integration: kept the current computed-address DFB runtime-argument
+  allocation and added fabric runtime-argument bases after tensor, computed DFB,
+  and PipeNet synchronization arguments.
 
 ## Source PR Follow-Ups
 
@@ -130,6 +136,28 @@ source PRs when applicable rather than leaving them only on `bnorris/demo`.
 - #687 `bnorris/fix-683`: `control_flow_store_fanout.py` Python lit coverage
   must pass TT-NN device tensors to operation calls. Mark it
   `REQUIRES: ttnn, tt-device` and use `to_dram(...)` inputs before lowering.
+- #734 `bnorris/pipes-multidevice-integrated-poc`: rebase over the current
+  PipeNet planning/codegen stack so the source branch can merge normally into
+  `bnorris/demo`.
+- #734 `bnorris/pipes-multidevice-integrated-poc`: adapt fabric lowering to the
+  current `PipePlanning` and `PipeLowering` APIs. The aggregate adds explicit
+  `FabricRoutePlan` and `FabricRuntimeMap` plumbing instead of using the older
+  PR734 lowering entry points.
+- #734 `bnorris/pipes-multidevice-integrated-poc`: compute fabric route runtime
+  argument bases after tensor arguments, computed-address DFB runtime arguments,
+  and PipeNet synchronization arguments.
+- #734 `bnorris/pipes-multidevice-integrated-poc`: forward
+  `device_domain` through both explicit and unified `@ttl.operation` decorators
+  and into `_lower_program_to_kernel`.
+- #734 `bnorris/pipes-multidevice-integrated-poc`: keep fabric PipeNet transfers
+  on receiver-post synchronization until the capacity protocol supports
+  routing-plane capacity-release atomics.
+- #734 `bnorris/pipes-multidevice-integrated-poc`: keep the direct DFB helper in
+  `PipeCapacityAnalysis.cpp` for `ttl.cb_pop`, and use the receiver-DFB view
+  helper only for `ttl.pipe_transfer_post`.
+- #734 `bnorris/pipes-multidevice-integrated-poc`: update packaging test fake
+  `ttnn` modules with `SystemMeshDescriptor` and `FabricConfig`, and keep
+  `FABRIC_1D` validation restricted to linear logical meshes.
 
 ## Rebuild Procedure
 
@@ -171,6 +199,14 @@ git merge --no-ff --no-edit origin/bnorris/fix-683
 git merge --no-ff --no-edit origin/bnorris/dfb-subviews-671
 ```
 
+Until #734 is rebased over the active PipeNet parent stack, apply its feature
+delta after the normal source-branch merges:
+
+```bash
+git diff --binary 698ebd38c13e origin/bnorris/pipes-multidevice-integrated-poc --output=/tmp/pr734-feature-delta.patch
+git apply -3 /tmp/pr734-feature-delta.patch
+```
+
 After conflicts are resolved, update this file and validate. Push the refreshed
 aggregate with:
 
@@ -180,7 +216,23 @@ git push --force-with-lease origin bnorris/demo
 
 ## Validation
 
-Completed during this refresh:
+Completed after #734 integration:
+
+- `python3 -m py_compile python/ttl/_src/ttl_ast.py python/ttl/kernel_runner.py python/ttl/ttl_api.py python/ttl/atom.py python/ttl/pipe.py python/sim/pipe.py test/python/test_kernel_runner.py`: passed.
+- `git diff --check`: passed.
+- `ninja -C build check-ttlang-mlir`: 234 passed.
+- `ninja -C build check-ttlang-python-bindings`: 3 passed.
+- `ninja -C build check-ttlang-packaging`: 162 passed.
+- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird-fabric-v1.1.7 bash -lc 'source build-docker/env/activate && cmake --build build-docker --target check-ttlang-python-bindings'`: 3 passed.
+
+Blocked after #734 integration:
+
+- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird-fabric-v1.1.7 bash -lc 'set -o pipefail; source build-docker/env/activate && timeout 240 python -m pytest -c build-docker/test/pytest.ini --rootdir=/home/bnorris/tt/tt-lang4/test test/python/fabric/test_ping_pong.py -xvs 2>&1 | tee /tmp/device_test.log'`: failed before tt-lang kernel compilation because UMD reported `Sysmem mapped at unexpected NOC address`.
+- `/home/bnorris/.local/bin/tt-smi -r all`: reset PCI device `[1]`; the UMD sysmem error persisted.
+- `/usr/bin/zsh -lc 'TT_VISIBLE_DEVICES=0,1,2,3 /home/bnorris/.local/bin/tt-smi -r all'`: reset PCI devices `[0, 1, 2, 3]`; the UMD sysmem error persisted.
+- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird-fabric-v1.1.7 bash -lc 'set -o pipefail; source build-docker/env/activate && timeout 60 python - <<PY 2>&1 | tee /tmp/device_test.log ... ttnn.get_num_devices() ... PY'`: failed with the same UMD sysmem error, confirming the runtime blocker occurs before pytest-specific code.
+
+Completed earlier during this refresh, before #734:
 
 - `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird3-v1.1.7 bash -lc 'source build-docker/env/activate && cmake --build build-docker --target ttlang-opt'`
 - `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird3-v1.1.7 bash -lc 'source build-docker/env/activate && cmake --build build-docker --target ttlang-opt TTLangPythonModules'`
