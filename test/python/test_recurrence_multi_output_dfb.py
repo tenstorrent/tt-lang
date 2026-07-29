@@ -354,7 +354,10 @@ RUNNING_MAX_WT = 2
 
 @ttl.operation(grid=(1, 1))
 def running_max_subtract(x, neg_inf, out):
-    x_cb = ttl.make_dataflow_buffer_like(
+    x_reduce_cb = ttl.make_dataflow_buffer_like(
+        x, shape=(1, RUNNING_MAX_WT), block_count=2
+    )
+    x_sub_cb = ttl.make_dataflow_buffer_like(
         x, shape=(1, RUNNING_MAX_WT), block_count=2
     )
     out_cb = ttl.make_dataflow_buffer_like(
@@ -370,9 +373,10 @@ def running_max_subtract(x, neg_inf, out):
         m0 = m_state_cb.reserve()
         m0.store(seed)
         for _ in range(N_RUNNING_MAX_CHUNKS):
-            x_blk = x_cb.wait()
+            x_reduce_blk = x_reduce_cb.wait()
+            x_sub_blk = x_sub_cb.wait()
             cm_w = cm_cb.reserve()
-            cm_w.store(ttl.math.reduce_max(x_blk, dims=[1]))
+            cm_w.store(ttl.math.reduce_max(x_reduce_blk, dims=[1]))
             cm = cm_cb.wait()
             m_old = m_state_cb.wait()
             m_new = ttl.math.max(m_old, cm)
@@ -382,7 +386,7 @@ def running_max_subtract(x, neg_inf, out):
                 m_new, dims=[1], shape=(1, RUNNING_MAX_WT)
             )
             y_w = out_cb.reserve()
-            y_w.store(ttl.sub(x_blk, m_bc))
+            y_w.store(ttl.sub(x_sub_blk, m_bc))
         _ = m_state_cb.wait()
 
     @ttl.datamovement()
@@ -390,8 +394,11 @@ def running_max_subtract(x, neg_inf, out):
         seed_dst = seed_cb.reserve()
         ttl.copy(neg_inf[0:1, 0:1], seed_dst)
         for chunk_index in range(N_RUNNING_MAX_CHUNKS):
-            x_dst = x_cb.reserve()
-            ttl.copy(x[chunk_index : chunk_index + 1, 0:RUNNING_MAX_WT], x_dst)
+            x_reduce_dst = x_reduce_cb.reserve()
+            x_sub_dst = x_sub_cb.reserve()
+            x_chunk = x[chunk_index : chunk_index + 1, 0:RUNNING_MAX_WT]
+            ttl.copy(x_chunk, x_reduce_dst)
+            ttl.copy(x_chunk, x_sub_dst)
             y_blk = out_cb.wait()
             ttl.copy(y_blk, out[chunk_index : chunk_index + 1, 0:RUNNING_MAX_WT])
 

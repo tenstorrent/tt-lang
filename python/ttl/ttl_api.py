@@ -1729,10 +1729,6 @@ def _compile_kernel(
     has_ttnn_tensors = any(is_ttnn_tensor(arg) for arg in args)
 
     compile_args = args
-    mesh_program_placements = _default_mesh_program_placements_with_domain(
-        args, device_domain
-    )
-
     # For TTNN tensors, detect memory space from tensor's buffer type.
     # L1 tensors use simple NOC addressing, DRAM uses bank-aware addressing.
     # TODO: Check all tensors and handle mixed memory spaces.
@@ -1820,6 +1816,7 @@ def _compile_kernel(
         l1_budget_override=l1_budget_override,
         kernel_source_file=kernel_source_file,
         kernel_line_offset=kernel_line_offset,
+        device_domain=device_domain,
     )
 
 
@@ -1838,6 +1835,7 @@ def _lower_program_to_kernel(
     l1_budget_override,
     kernel_source_file,
     kernel_line_offset,
+    device_domain=None,
 ):
     """Lower compiled threads to a CompiledTTNNKernel.
 
@@ -1848,6 +1846,9 @@ def _lower_program_to_kernel(
     # Always generate source locations for error messages
     # TTLANG_DEBUG_LOCATIONS only controls whether locations are printed in MLIR output
     print_debug_locations = os.environ.get("TTLANG_DEBUG_LOCATIONS", "0") == "1"
+    mesh_program_placements = _default_mesh_program_placements_with_domain(
+        args, device_domain
+    )
 
     ctx = Context()
     loc = Location.unknown(ctx)

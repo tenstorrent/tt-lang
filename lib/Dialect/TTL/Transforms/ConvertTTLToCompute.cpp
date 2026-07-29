@@ -14,6 +14,7 @@
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/STLExtras.h"
@@ -361,13 +362,12 @@ static void eraseAbsorbedOutputOps(PatternRewriter &rewriter,
 
 static bool replacementDominatesRemainingUses(Operation *replacementOp,
                                               Operation *sourceOp) {
+  auto funcOp = sourceOp->getParentOfType<func::FuncOp>();
+  assert(funcOp && "ttl tensor ops must be inside a func::FuncOp");
+  DominanceInfo dominanceInfo(funcOp);
   for (Value result : sourceOp->getResults()) {
     for (OpOperand &use : result.getUses()) {
-      Operation *user = use.getOwner();
-      if (user->getBlock() != replacementOp->getBlock()) {
-        return false;
-      }
-      if (user->isBeforeInBlock(replacementOp)) {
+      if (!dominanceInfo.dominates(replacementOp, use.getOwner())) {
         return false;
       }
     }

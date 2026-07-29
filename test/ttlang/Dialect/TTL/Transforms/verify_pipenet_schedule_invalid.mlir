@@ -51,9 +51,9 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
       %recv_reserve = ttl.cb_reserve %recv_cb
@@ -92,9 +92,9 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
       %recv_reserve = ttl.cb_reserve %recv_cb
@@ -129,9 +129,9 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
       %recv_reserve = ttl.cb_reserve %recv_cb
@@ -171,9 +171,9 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %core_x = ttl.core_x : index
     %c0 = arith.constant 0 : index
@@ -214,9 +214,9 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %core_x = ttl.core_x : index
     %c0 = arith.constant 0 : index
@@ -257,9 +257,9 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %c0 = arith.constant 0 : index
     %c2 = arith.constant 2 : index

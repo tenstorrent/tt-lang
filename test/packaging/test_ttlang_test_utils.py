@@ -124,6 +124,10 @@ def test_fabric_1d_uses_linear_logical_mesh(monkeypatch) -> None:
         def __init__(self, shape):
             self.shape = tuple(shape)
 
+    class SystemMeshDescriptor:
+        def shape(self):
+            return (1, 8)
+
     fabric_config = types.SimpleNamespace(FABRIC_1D="fabric-1d", DISABLED="disabled")
     mesh_device = object()
 
@@ -140,6 +144,11 @@ def test_fabric_1d_uses_linear_logical_mesh(monkeypatch) -> None:
     fake_ttnn = types.SimpleNamespace(
         FabricConfig=fabric_config,
         MeshShape=MeshShape,
+        _ttnn=types.SimpleNamespace(
+            multi_device=types.SimpleNamespace(
+                SystemMeshDescriptor=SystemMeshDescriptor
+            )
+        ),
         get_num_devices=lambda: 8,
         set_fabric_config=set_fabric_config,
         open_mesh_device=open_mesh_device,
@@ -160,7 +169,8 @@ def test_fabric_1d_uses_linear_logical_mesh(monkeypatch) -> None:
 
 def test_fabric_1d_rejects_non_linear_logical_mesh(monkeypatch) -> None:
     module = _load_ttlang_test_utils(monkeypatch)
-    fake_ttnn = types.SimpleNamespace()
+    fabric_config = types.SimpleNamespace(FABRIC_1D="fabric-1d", DISABLED="disabled")
+    fake_ttnn = types.SimpleNamespace(FabricConfig=fabric_config)
     monkeypatch.setattr(module, "_get_ttnn", lambda: fake_ttnn)
 
     with pytest.raises(ValueError, match="FABRIC_1D requires"):

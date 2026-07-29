@@ -168,6 +168,21 @@ def get_fabric_mesh_shape() -> tuple[int, ...]:
     )
 
 
+def _is_fabric_1d_config(ttnn_module, fabric_config: Any) -> bool:
+    return fabric_config == ttnn_module.FabricConfig.FABRIC_1D
+
+
+def _validate_fabric_mesh_shape(
+    requested_mesh_shape: tuple[int, ...], ttnn_module, fabric_config: Any
+) -> None:
+    if _is_fabric_1d_config(ttnn_module, fabric_config) and (
+        len(requested_mesh_shape) != 2 or requested_mesh_shape[0] != 1
+    ):
+        raise ValueError(
+            "FABRIC_1D requires a linear logical mesh with shape (1, N)"
+        )
+
+
 @contextmanager
 def open_fabric_mesh(
     requested_mesh_shape: tuple[int, ...] | None = None,
@@ -190,6 +205,7 @@ def open_fabric_mesh(
         requested_mesh_shape = get_fabric_mesh_shape()
     else:
         requested_mesh_shape = tuple(requested_mesh_shape)
+    _validate_fabric_mesh_shape(requested_mesh_shape, ttnn_module, fabric_config)
 
     mesh_device = None
     try:

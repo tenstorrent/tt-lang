@@ -70,6 +70,15 @@ class _FakeTTNN:
         def get_compile_time_args():
             return []
 
+    class ComputeConfigDescriptor:
+        pass
+
+    class ReaderConfigDescriptor:
+        pass
+
+    class WriterConfigDescriptor:
+        pass
+
     class ProgramDescriptor:
         def __init__(self, kernels, cbs, semaphores):
             self.kernels = kernels
@@ -753,14 +762,17 @@ def test_build_cb_descriptors_excludes_computed_address_backing_tensors(
         )
 
 
-def test_emit_runner_source_uses_shared_pipe_resource_helpers():
+def test_emit_runner_source_uses_shared_pipe_resource_helpers(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+
     source = kernel_runner.emit_runner_source(
         kernel_specs=[
             kernel_runner.KernelSpec(
                 path="/tmp/reader.cpp",
                 thread_type="noc",
                 tensor_indices=[],
-                config=object(),
+                config=fake_ttnn.ReaderConfigDescriptor(),
                 extra_common_runtime_args=[7, 9],
             )
         ],
@@ -781,6 +793,8 @@ def test_emit_runner_source_uses_shared_pipe_resource_helpers():
     assert "build_pipe_sync_semaphore_descriptors(" in source
     assert "build_generic_op_io_tensors(" in source
     assert "program_descriptor.custom_program_hash = PROGRAM_HASH" in source
+    assert "KERNEL_NOC_INDICES = [" in source
+    assert "    0,  # noc" in source
     assert "KERNEL_EXTRA_COMMON_RUNTIME_ARGS = [" in source
     assert "    [7, 9],  # noc" in source
     assert (

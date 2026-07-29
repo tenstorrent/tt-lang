@@ -515,7 +515,9 @@ def test_resident_contribution_early_pop_does_not_form_dst(
     assert "binary_dest_reuse_tiles<" not in _extract_generated_kernel_source(
         output, "compute"
     )
-    assert "ttl.compiler_allocated" in final_ir
+    # Final DFB allocation removes ttl.compiler_allocated markers; the fallback
+    # still needs one materialized state DFB beyond the three user buffers.
+    assert final_ir.count("dfb_index =") == 4
 
 
 @pytest.mark.requires_device
@@ -693,8 +695,10 @@ def test_three_accumulators_in_one_loop(device, dtype):
 
 
 MULTI_TILE_SHAPE = (2, 2)
-MULTI_TILE_ROWS = MULTI_TILE_SHAPE[0] * TILE
-MULTI_TILE_COLS = MULTI_TILE_SHAPE[1] * TILE
+MULTI_TILE_TILE_ROWS = MULTI_TILE_SHAPE[0]
+MULTI_TILE_TILE_COLS = MULTI_TILE_SHAPE[1]
+MULTI_TILE_ROWS = MULTI_TILE_TILE_ROWS * TILE
+MULTI_TILE_COLS = MULTI_TILE_TILE_COLS * TILE
 
 
 def _make_multi_tile_block_kernel(iteration_count=N_ITERS):
@@ -723,19 +727,19 @@ def _make_multi_tile_block_kernel(iteration_count=N_ITERS):
         def reader():
             with a_cb.reserve() as blk:
                 ttl.copy(
-                    a_seed[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]], blk
+                    a_seed[0:MULTI_TILE_TILE_ROWS, 0:MULTI_TILE_TILE_COLS], blk
                 ).wait()
             for _ in range(iteration_count):
                 with delta_cb.reserve() as blk:
                     ttl.copy(
-                        delta[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]], blk
+                        delta[0:MULTI_TILE_TILE_ROWS, 0:MULTI_TILE_TILE_COLS], blk
                     ).wait()
 
         @ttl.datamovement()
         def writer():
             with out_cb.wait() as blk:
                 ttl.copy(
-                    blk, out[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]]
+                    blk, out[0:MULTI_TILE_TILE_ROWS, 0:MULTI_TILE_TILE_COLS]
                 ).wait()
 
     return kernel
@@ -878,12 +882,8 @@ def _make_multi_tile_distinct_kernel(iteration_count=N_ITERS):
         def reader():
             with a_cb.reserve() as blk:
                 ttl.copy(
-                    a_seed[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]], blk
+                    a_seed[0:MULTI_TILE_TILE_ROWS, 0:MULTI_TILE_TILE_COLS], blk
                 ).wait()
-            # The reader loop is traced (scf.for); the tracer resolves only the
-            # loop var and integer literals in a traced slice bound, so the
-            # per-iteration tile-row offset uses literals (MULTI_TILE_SHAPE is
-            # (2, 2)), not MULTI_TILE_SHAPE.
             for i in range(iteration_count):
                 with delta_cb.reserve() as blk:
                     ttl.copy(deltas[2 * i : 2 * i + 2, 0:2], blk).wait()
@@ -892,7 +892,7 @@ def _make_multi_tile_distinct_kernel(iteration_count=N_ITERS):
         def writer():
             with out_cb.wait() as blk:
                 ttl.copy(
-                    blk, out[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]]
+                    blk, out[0:MULTI_TILE_TILE_ROWS, 0:MULTI_TILE_TILE_COLS]
                 ).wait()
 
     return kernel
@@ -1291,35 +1291,35 @@ def _make_three_acc_multi_tile_kernel():
         def reader():
             with a_cb.reserve() as blk:
                 ttl.copy(
-                    a_seed[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]], blk
+                    a_seed[0:MULTI_TILE_TILE_ROWS, 0:MULTI_TILE_TILE_COLS], blk
                 ).wait()
             with b_cb.reserve() as blk:
                 ttl.copy(
-                    b_seed[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]], blk
+                    b_seed[0:MULTI_TILE_TILE_ROWS, 0:MULTI_TILE_TILE_COLS], blk
                 ).wait()
             with c_cb.reserve() as blk:
                 ttl.copy(
-                    c_seed[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]], blk
+                    c_seed[0:MULTI_TILE_TILE_ROWS, 0:MULTI_TILE_TILE_COLS], blk
                 ).wait()
             for _ in range(N_ITERS):
                 with delta_cb.reserve() as blk:
                     ttl.copy(
-                        delta[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]], blk
+                        delta[0:MULTI_TILE_TILE_ROWS, 0:MULTI_TILE_TILE_COLS], blk
                     ).wait()
 
         @ttl.datamovement()
         def writer():
             with out_a_cb.wait() as blk:
                 ttl.copy(
-                    blk, out_a[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]]
+                    blk, out_a[0:MULTI_TILE_TILE_ROWS, 0:MULTI_TILE_TILE_COLS]
                 ).wait()
             with out_b_cb.wait() as blk:
                 ttl.copy(
-                    blk, out_b[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]]
+                    blk, out_b[0:MULTI_TILE_TILE_ROWS, 0:MULTI_TILE_TILE_COLS]
                 ).wait()
             with out_c_cb.wait() as blk:
                 ttl.copy(
-                    blk, out_c[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]]
+                    blk, out_c[0:MULTI_TILE_TILE_ROWS, 0:MULTI_TILE_TILE_COLS]
                 ).wait()
 
     return kernel

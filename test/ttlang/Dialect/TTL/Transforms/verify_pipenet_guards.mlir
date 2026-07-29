@@ -299,15 +299,15 @@ module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [4 : i64, 1 : i64
 // Repeated occurrences of one PipeKey form independent FIFO rendezvous. The
 // first send must not acquire a dependency on the second receiver post.
 
-module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [1 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @repeated_pipe_key_schedule
   // CHECK: return
   func.func @repeated_pipe_key_schedule() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
         : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
-    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0> {
       %recv0 = ttl.cb_reserve %recv_cb
@@ -347,13 +347,13 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 // splitting. The receiver posts once, and the sender executes only on the last
 // loop iteration, so both endpoints execute one rendezvous event.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @post_outside_sender_loop
   // CHECK: return
   func.func @post_outside_sender_loop() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %is_dst = ttl.is_dst {pipe_net_id = 0 : i64}
     scf.if %is_dst {
@@ -374,7 +374,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @send_on_last_iteration() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %c0 = arith.constant 0 : index
     %c1 = arith.constant 1 : index

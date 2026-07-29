@@ -9,6 +9,7 @@ from unittest import mock
 import pytest
 
 import ttl
+import ttl.atom as atom_module
 import ttl.ttl_api as ttl_api
 
 
@@ -192,4 +193,49 @@ class TestMeshProgramPlacement:
 
         assert result == "result"
         assert calls[0]["mesh_program_placements"] == [placement]
-        assert calls[0]["fabric_route_cache"] is compiled_kernel._fabric_route_cache
+        assert (
+            calls[0]["fabric_direction_cache"]
+            is compiled_kernel._fabric_direction_cache
+        )
+
+
+class TestOperationDeviceDomain:
+    def test_unified_operation_forwards_device_domain(self, monkeypatch):
+        domain = ttl.DeviceDomain((1, 4))
+        observed_domains = []
+
+        def fake_compile_atom(*compile_args, device_domain=None, **compile_kwargs):
+            observed_domains.append(device_domain)
+            return None
+
+        monkeypatch.setattr(atom_module, "_compile_atom", fake_compile_atom)
+
+        @ttl.operation(grid=(1, 1), device_domain=domain)
+        def operation_under_test():
+            pass
+
+        operation_under_test()
+
+        assert observed_domains == [domain]
+
+    def test_explicit_operation_forwards_device_domain(self, monkeypatch):
+        domain = ttl.DeviceDomain((1, 4))
+        observed_domains = []
+
+        def fake_pykernel_gen(*, device_domain=None, **decorator_options):
+            observed_domains.append(device_domain)
+
+            def decorate_operation(function):
+                return function
+
+            return decorate_operation
+
+        monkeypatch.setattr(atom_module, "pykernel_gen", fake_pykernel_gen)
+
+        @ttl.operation(grid=(1, 1), device_domain=domain)
+        def operation_under_test(inp):
+            @ttl.compute()
+            def compute_thread():
+                pass
+
+        assert observed_domains == [domain]
