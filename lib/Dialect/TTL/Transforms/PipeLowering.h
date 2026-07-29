@@ -64,6 +64,7 @@ struct PipeResourcePlan;
 class PipeTransferPlan;
 class PipeCapacityPlan;
 class PipeSynchronizationSelection;
+class PipeTransportStream;
 
 /// Receiver-side completion state for one transfer definition.
 struct PipeCompletionInfo {
@@ -227,6 +228,7 @@ void lowerInactivePipeTransferSend(PipeTransferSendOp op,
 /// Lower the sender-side pipe transfer and signal receiver completion.
 LogicalResult lowerPipeTransferSend(
     PipeTransferSendOp op, Value srcCB, const PipeTransferPlan &transferPlan,
+    const PipeTransportStream &transportStream,
     const PipeResourcePlan &pipeResourcePlan,
     const PipeCapacityPlan &pipeCapacityPlan,
     const PipeCounterProgressMap &senderCapacityCounters,
