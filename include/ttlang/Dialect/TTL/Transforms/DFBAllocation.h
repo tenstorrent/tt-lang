@@ -37,6 +37,10 @@ struct DFBAllocationSummary {
   FailureOr<uint64_t>
   getTotalBytesWithMinimumAllocation(int64_t dfbIndex,
                                      uint64_t minimumBytes) const;
+
+  /// Return the total after applying per-index minimum allocations.
+  FailureOr<uint64_t> getTotalBytesWithMinimumAllocations(
+      const llvm::DenseMap<int64_t, uint64_t> &minimumBytesByIndex) const;
 };
 
 /// Return the usable L1 size selected for DFB allocations.
