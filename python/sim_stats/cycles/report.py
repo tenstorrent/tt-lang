@@ -207,7 +207,7 @@ def load_estimate(path: Path | str) -> CycleEstimate:
     tt-lang-sim-cycles report (including the common mistake of passing a raw
     JSON-Lines trace instead of a saved report).
     """
-    p = Path(path)
+    p = Path(path).resolve()
     try:
         text = p.read_text(encoding="utf-8")
     except FileNotFoundError:
