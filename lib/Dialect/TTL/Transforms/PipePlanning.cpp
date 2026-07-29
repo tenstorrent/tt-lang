@@ -387,6 +387,21 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
   plan.resourceRequirements =
       getPipeResourceRequirements(plan.resourcePlan, maybeCapacityPlan);
 
+  auto selectSynchronizationProtocol = [&](PipeTransferNodeId transferNodeId) {
+    const PipeTransferNode &transferNode =
+        pipeGraph.getPipeTransferNode(transferNodeId);
+    auto sendOp = cast<PipeTransferSendOp>(transferNode.sendOp);
+    return synchronizationSelection.usesCapacityProtocol(sendOp)
+               ? PipeSynchronizationProtocol::Capacity
+               : PipeSynchronizationProtocol::ReceiverPost;
+  };
+  FailureOr<PipeTransportPlan> maybeTransportPlan =
+      buildPipeTransportPlan(pipeGraph, selectSynchronizationProtocol);
+  if (failed(maybeTransportPlan)) {
+    return failure();
+  }
+  plan.transportPlan = std::move(*maybeTransportPlan);
+
   module.walk([&](WaitOp waitOp) {
     if (analysis.getOrigins(waitOp.getXf()).allMatch([](Value origin) {
           return static_cast<bool>(origin.getDefiningOp<PipeTransferSendOp>());
