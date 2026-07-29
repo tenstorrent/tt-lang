@@ -50,6 +50,7 @@ finally:
 # CHECK: COMPILED then_only
 # CHECK: COMPILED else_only
 # CHECK: COMPILED if_else
+# CHECK: COMPILED released_input
 # CHECK: COMPILED elif_chain
 # CHECK: COMPILED elif_gap
 # CHECK: COMPILED nested_if

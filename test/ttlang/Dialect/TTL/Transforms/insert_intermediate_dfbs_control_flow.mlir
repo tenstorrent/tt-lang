@@ -47,6 +47,54 @@ func.func @stored_value_across_scf_if(%cond: i1)
 
 // -----
 
+// An explicit root-input release before the branch stores disqualifies cloning.
+// The compiler-managed DFB keeps the root-input read before the release.
+
+// CHECK-LABEL: func.func @released_root_input_materializes
+// CHECK: %[[COMPILER_DFB:.+]] = ttl.bind_cb{{.*}}{ttl.compiler_allocated}
+// CHECK: %[[VALUE:.+]] = ttl.exp
+// CHECK: %[[RESERVED:.+]] = ttl.cb_reserve %[[COMPILER_DFB]]
+// CHECK: ttl.store %[[VALUE]], %[[RESERVED]]
+// CHECK: %[[WAITED:.+]] = ttl.cb_wait %[[COMPILER_DFB]]
+// CHECK: %[[ATTACHED:.+]] = ttl.attach_cb %[[WAITED]], %[[COMPILER_DFB]]
+// CHECK: ttl.cb_pop
+// CHECK: scf.if
+// CHECK-NOT: ttl.exp
+// CHECK: ttl.store %[[ATTACHED]]
+// CHECK: } else {
+// CHECK-NOT: ttl.exp
+// CHECK: ttl.store %[[ATTACHED]]
+// CHECK: return
+
+// PIPELINE-LABEL: func.func @released_root_input_materializes
+// PIPELINE: ttl.compute
+// PIPELINE-NOT: ttl.store
+// PIPELINE: return
+func.func @released_root_input_materializes(%cond: i1)
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                ttl.base_cta_index = 14 : i32, ttl.crta_indices = []} {
+  %input_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %then_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %else_cb = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+
+  %input_wait = ttl.cb_wait %input_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %input = ttl.attach_cb %input_wait, %input_cb : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %value = ttl.exp %input : tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_pop %input_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+
+  scf.if %cond {
+    %then_reserve = ttl.cb_reserve %then_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %value, %then_reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  } else {
+    %else_reserve = ttl.cb_reserve %else_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %value, %else_reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+
+  return
+}
+
+// -----
+
 // Nested if/else regions clone the producer when every store block is pairwise
 // mutually exclusive.
 

@@ -8,12 +8,14 @@
 //
 // Resolves DFB attachment and values stored from multiple blocks before
 // convert-ttl-to-compute. Cloneable backward slices feeding mutually exclusive
-// cross-block stores are relocated into those store blocks. Values whose
-// consumers require DFB-attached inputs, or whose stores cannot be proven
+// stores from multiple blocks are relocated into those store blocks. Values
+// whose consumers require DFB-attached inputs, or whose stores cannot be proven
 // mutually exclusive, are materialized through compiler-allocated intermediate
 // dataflow buffers.
 //
 //===----------------------------------------------------------------------===//
+
+#include "DFBAcquireReleaseAnalysis.h"
 
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
@@ -47,18 +49,32 @@ struct StoreBlockGroup {
   SmallVector<StoreOp> stores;
 };
 
-enum class CrossRegionStoreAction {
+enum class MultiBlockStoreAction {
   CloneBackwardSlice,
   MaterializeToDFB,
 };
 
-struct CrossRegionStorePlan {
+struct MultiBlockStorePlan {
   Value value;
-  SmallVector<StoreOp> crossRegionStores;
+  SmallVector<StoreOp> storesOutsideDefiningBlock;
   SmallVector<StoreOp> directStores;
-  CrossRegionStoreAction action = CrossRegionStoreAction::MaterializeToDFB;
+  MultiBlockStoreAction action = MultiBlockStoreAction::MaterializeToDFB;
   FusionTraceResult backwardSlice;
 };
+
+struct DFBLifecycleOps {
+  SmallVector<Operation *> reserves;
+  SmallVector<Operation *> waits;
+  SmallVector<Operation *> pushes;
+  SmallVector<Operation *> pops;
+};
+
+static DFBLifecycleOps collectDFBLifecycleOps(func::FuncOp funcOp) {
+  DFBLifecycleOps lifecycle;
+  collectDFBAcquireReleaseOps(funcOp, lifecycle.reserves, lifecycle.waits,
+                              lifecycle.pushes, lifecycle.pops);
+  return lifecycle;
+}
 
 static SmallVector<StoreBlockGroup>
 groupStoresByBlock(ArrayRef<StoreOp> stores) {
@@ -92,25 +108,25 @@ static SmallVector<StoreOp> getDirectStores(Value value) {
 // its stores span at least two distinct blocks -- the condition under which
 // convert-ttl-to-compute orders stores across blocks and asserts. Returns {}
 // for single-block store sets, which lower without help.
-static SmallVector<StoreOp> getCrossRegionStores(Value value) {
+static SmallVector<StoreOp> getStoresOutsideDefiningBlock(Value value) {
   Operation *definingOp = value.getDefiningOp();
   if (!definingOp) {
     return {};
   }
 
   Block *definingBlock = definingOp->getBlock();
-  SmallVector<StoreOp> crossRegionStores;
+  SmallVector<StoreOp> storesOutsideDefiningBlock;
   llvm::SmallPtrSet<Block *, 2> storeBlocks;
   for (StoreOp storeOp : getDirectStores(value)) {
     storeBlocks.insert(storeOp->getBlock());
     if (storeOp->getBlock() != definingBlock) {
-      crossRegionStores.push_back(storeOp);
+      storesOutsideDefiningBlock.push_back(storeOp);
     }
   }
   if (storeBlocks.size() < 2) {
     return {};
   }
-  return crossRegionStores;
+  return storesOutsideDefiningBlock;
 }
 
 // Distinct blocks that contain a direct `ttl.store` of `value`.
@@ -134,7 +150,7 @@ static bool hasLoopBetween(Operation *ancestor, Operation *descendant) {
 
 static bool areStoreBlocksPairwiseExclusive(ArrayRef<StoreOp> stores) {
   SmallVector<Operation *> representatives;
-  for (StoreBlockGroup &group : groupStoresByBlock(stores)) {
+  for (StoreBlockGroup group : groupStoresByBlock(stores)) {
     representatives.push_back(group.stores.front().getOperation());
   }
   // TODO(#685): Add predicate-based proof for analyzable sibling `scf.if`
@@ -154,11 +170,7 @@ static bool areStoreBlocksPairwiseExclusive(ArrayRef<StoreOp> stores) {
 static bool sliceExternalUsesAreStores(Value value,
                                        const FusionTraceResult &backwardSlice,
                                        ArrayRef<StoreOp> stores) {
-  llvm::SmallPtrSet<Operation *, 8> sliceOps;
   llvm::SmallPtrSet<Operation *, 8> storeOps;
-  for (Operation *op : backwardSlice.opsInOrder) {
-    sliceOps.insert(op);
-  }
   for (StoreOp storeOp : stores) {
     storeOps.insert(storeOp.getOperation());
   }
@@ -166,7 +178,7 @@ static bool sliceExternalUsesAreStores(Value value,
   for (Operation *op : backwardSlice.opsInOrder) {
     for (Value result : op->getResults()) {
       for (Operation *user : result.getUsers()) {
-        if (sliceOps.contains(user)) {
+        if (backwardSlice.opsInOrder.contains(user)) {
           continue;
         }
         if (result == value && storeOps.contains(user)) {
@@ -179,10 +191,114 @@ static bool sliceExternalUsesAreStores(Value value,
   return true;
 }
 
+static SmallVector<StoreOp> getEarliestStorePerBlock(ArrayRef<StoreOp> stores) {
+  SmallVector<StoreOp> earliestStores;
+  for (StoreBlockGroup group : groupStoresByBlock(stores)) {
+    StoreOp earliestStore = group.stores.front();
+    for (StoreOp storeOp : ArrayRef<StoreOp>(group.stores).drop_front()) {
+      if (storeOp->isBeforeInBlock(earliestStore)) {
+        earliestStore = storeOp;
+      }
+    }
+    earliestStores.push_back(earliestStore);
+  }
+  return earliestStores;
+}
+
+static ArrayRef<Operation *>
+getSameKindAcquires(Operation *acquire, const DFBLifecycleOps &lifecycle) {
+  if (isa<CBReserveOp>(acquire)) {
+    return lifecycle.reserves;
+  }
+  if (isa<CBWaitOp>(acquire)) {
+    return lifecycle.waits;
+  }
+  return {};
+}
+
+static ArrayRef<Operation *>
+getSameKindReleases(Operation *acquire, const DFBLifecycleOps &lifecycle) {
+  if (isa<CBReserveOp>(acquire)) {
+    return lifecycle.pushes;
+  }
+  if (isa<CBWaitOp>(acquire)) {
+    return lifecycle.pops;
+  }
+  return {};
+}
+
+static Operation *projectToBlock(Operation *op, Block *block) {
+  return op->getBlock() == block ? op : block->findAncestorOpInBlock(*op);
+}
+
+static bool releaseCanExecuteBeforeStore(Operation *release, StoreOp storeOp,
+                                         Block *orderingBlock) {
+  Operation *store = storeOp.getOperation();
+  if (release->getBlock() == store->getBlock()) {
+    return release->isBeforeInBlock(store);
+  }
+
+  Operation *projectedRelease = projectToBlock(release, orderingBlock);
+  Operation *projectedStore = projectToBlock(store, orderingBlock);
+  if (!projectedRelease || !projectedStore) {
+    return true;
+  }
+  if (projectedRelease == projectedStore) {
+    return true;
+  }
+  return projectedRelease->isBeforeInBlock(projectedStore);
+}
+
+static bool
+rootInputReleaseCanExecuteBeforeStore(Value rootInput, ArrayRef<StoreOp> stores,
+                                      const DFBLifecycleOps &lifecycle) {
+  Operation *acquire = findCBAcquireOp(rootInput);
+  if (!acquire) {
+    return true;
+  }
+
+  ArrayRef<Operation *> acquires = getSameKindAcquires(acquire, lifecycle);
+  ArrayRef<Operation *> releases = getSameKindReleases(acquire, lifecycle);
+  if (acquires.empty()) {
+    return true;
+  }
+  if (releases.empty()) {
+    return false;
+  }
+
+  DFBAcquireInterval interval = makeDFBAcquireInterval(acquire, acquires);
+  DFBReleaseSearch releaseSearch =
+      findOwnedDFBReleases(interval, /*lastOwnedUse=*/nullptr, releases);
+
+  Block *orderingBlock = acquire->getBlock();
+  auto releaseCanExecuteBeforeAnyStore = [&](Operation *release) {
+    return llvm::any_of(stores, [&](StoreOp storeOp) {
+      return releaseCanExecuteBeforeStore(release, storeOp, orderingBlock);
+    });
+  };
+  if (llvm::any_of(releaseSearch.sameLevelReleases,
+                   releaseCanExecuteBeforeAnyStore)) {
+    return true;
+  }
+  return llvm::any_of(releaseSearch.nestedReleases,
+                      releaseCanExecuteBeforeAnyStore);
+}
+
+static bool rootInputsLiveAtStoreSites(const FusionTraceResult &backwardSlice,
+                                       ArrayRef<StoreOp> stores,
+                                       const DFBLifecycleOps &lifecycle) {
+  SmallVector<StoreOp> cloneSites = getEarliestStorePerBlock(stores);
+  return llvm::none_of(backwardSlice.rootInputs, [&](Value rootInput) {
+    return rootInputReleaseCanExecuteBeforeStore(rootInput, cloneSites,
+                                                 lifecycle);
+  });
+}
+
 // Cloning is selected only when the original producer slice is completely
 // relocated into mutually exclusive store blocks. Otherwise materialization
 // preserves single producer execution without depending on predicate analysis.
 static bool getCloneableBackwardSlice(Value value, ArrayRef<StoreOp> stores,
+                                      const DFBLifecycleOps &lifecycle,
                                       FusionTraceResult &backwardSlice) {
   if (!areStoreBlocksPairwiseExclusive(stores)) {
     return false;
@@ -198,6 +314,9 @@ static bool getCloneableBackwardSlice(Value value, ArrayRef<StoreOp> stores,
   if (!sliceExternalUsesAreStores(value, backwardSlice, stores)) {
     return false;
   }
+  if (!rootInputsLiveAtStoreSites(backwardSlice, stores, lifecycle)) {
+    return false;
+  }
 
   Operation *producerScope = value.getDefiningOp()->getParentOp();
   return llvm::none_of(stores, [&](StoreOp storeOp) {
@@ -205,34 +324,38 @@ static bool getCloneableBackwardSlice(Value value, ArrayRef<StoreOp> stores,
   });
 }
 
-static CrossRegionStorePlan
-buildCrossRegionStorePlan(Value value, SmallVector<StoreOp> stores) {
-  CrossRegionStorePlan plan;
+static MultiBlockStorePlan
+buildMultiBlockStorePlan(Value value, SmallVector<StoreOp> stores,
+                         const DFBLifecycleOps &lifecycle) {
+  MultiBlockStorePlan plan;
   plan.value = value;
-  plan.crossRegionStores = std::move(stores);
+  plan.storesOutsideDefiningBlock = std::move(stores);
   plan.directStores = getDirectStores(value);
 
   FusionTraceResult backwardSlice;
-  if (getCloneableBackwardSlice(value, plan.crossRegionStores, backwardSlice)) {
-    plan.action = CrossRegionStoreAction::CloneBackwardSlice;
+  if (getCloneableBackwardSlice(value, plan.storesOutsideDefiningBlock,
+                                lifecycle, backwardSlice)) {
+    plan.action = MultiBlockStoreAction::CloneBackwardSlice;
     plan.backwardSlice = std::move(backwardSlice);
   }
   return plan;
 }
 
-static SmallVector<CrossRegionStorePlan, 4>
-collectCrossRegionStorePlans(func::FuncOp funcOp) {
-  SmallVector<CrossRegionStorePlan, 4> plans;
+static SmallVector<MultiBlockStorePlan, 4>
+collectMultiBlockStorePlans(func::FuncOp funcOp) {
+  SmallVector<MultiBlockStorePlan, 4> plans;
+  DFBLifecycleOps lifecycle = collectDFBLifecycleOps(funcOp);
   funcOp.walk([&](Operation *op) {
     for (Value result : op->getResults()) {
       if (!isa<RankedTensorType>(result.getType()) || getAttachedCB(result)) {
         continue;
       }
-      SmallVector<StoreOp> stores = getCrossRegionStores(result);
+      SmallVector<StoreOp> stores = getStoresOutsideDefiningBlock(result);
       if (stores.empty()) {
         continue;
       }
-      plans.push_back(buildCrossRegionStorePlan(result, std::move(stores)));
+      plans.push_back(
+          buildMultiBlockStorePlan(result, std::move(stores), lifecycle));
     }
   });
   return plans;
@@ -278,10 +401,9 @@ eraseUnusedBackwardSliceOps(const FusionTraceResult &backwardSlice) {
 static void cloneStores(Value value, ArrayRef<StoreOp> stores,
                         const FusionTraceResult &backwardSlice,
                         OpBuilder &builder) {
-  // Root inputs already dominate the stores. Rewriting store operands preserves
-  // branch control. Root-input DFB slots stay live at the clone sites because
-  // ttl-insert-cb-sync runs after this pass and releases after the cloned uses.
-  for (StoreBlockGroup &group : groupStoresByBlock(stores)) {
+  // Plans use cloning only when the root DFB slots are not explicitly released
+  // before the cloned use sites.
+  for (StoreBlockGroup group : groupStoresByBlock(stores)) {
     Value replacement = cloneBackwardSliceForStoreBlock(value, backwardSlice,
                                                         group.stores, builder);
     for (StoreOp storeOp : group.stores) {
@@ -293,17 +415,26 @@ static void cloneStores(Value value, ArrayRef<StoreOp> stores,
 
 static Value getOrCreateMaterializedDFB(Value value, ModuleOp moduleOp,
                                         OpBuilder &builder,
-                                        llvm::DenseMap<Value, Value> &cache);
+                                        llvm::DenseMap<Value, Value> &cache) {
+  if (auto iter = cache.find(value); iter != cache.end()) {
+    return iter->second;
+  }
+
+  OpBuilder::InsertionGuard guard(builder);
+  Value replacement = materializeToDFB(value, moduleOp, builder);
+  cache[value] = replacement;
+  return replacement;
+}
 
 static LogicalResult
-verifyCompilerDFBEnabledForPlans(ArrayRef<CrossRegionStorePlan> plans,
+verifyCompilerDFBEnabledForPlans(ArrayRef<MultiBlockStorePlan> plans,
                                  bool enableCompilerDFBs) {
   if (enableCompilerDFBs) {
     return success();
   }
 
-  for (const CrossRegionStorePlan &plan : plans) {
-    if (plan.action == CrossRegionStoreAction::CloneBackwardSlice) {
+  for (const MultiBlockStorePlan &plan : plans) {
+    if (plan.action == MultiBlockStoreAction::CloneBackwardSlice) {
       continue;
     }
 
@@ -318,17 +449,17 @@ verifyCompilerDFBEnabledForPlans(ArrayRef<CrossRegionStorePlan> plans,
   return success();
 }
 
-static LogicalResult applyCrossRegionStorePlans(
-    ArrayRef<CrossRegionStorePlan> plans, ModuleOp moduleOp, OpBuilder &builder,
+static LogicalResult applyMultiBlockStorePlans(
+    ArrayRef<MultiBlockStorePlan> plans, ModuleOp moduleOp, OpBuilder &builder,
     llvm::DenseMap<Value, Value> &materialized, bool enableCompilerDFBs) {
   if (failed(verifyCompilerDFBEnabledForPlans(plans, enableCompilerDFBs))) {
     return failure();
   }
 
-  for (const CrossRegionStorePlan &plan : plans) {
-    if (plan.action == CrossRegionStoreAction::CloneBackwardSlice) {
-      cloneStores(plan.value, plan.crossRegionStores, plan.backwardSlice,
-                  builder);
+  for (const MultiBlockStorePlan &plan : plans) {
+    if (plan.action == MultiBlockStoreAction::CloneBackwardSlice) {
+      cloneStores(plan.value, plan.storesOutsideDefiningBlock,
+                  plan.backwardSlice, builder);
       continue;
     }
 
@@ -375,26 +506,18 @@ verifyCompilerDFBInputs(ArrayRef<DFBInputOpInterface> candidates) {
   return success();
 }
 
-static Value getOrCreateMaterializedDFB(Value value, ModuleOp moduleOp,
-                                        OpBuilder &builder,
-                                        llvm::DenseMap<Value, Value> &cache) {
-  if (auto iter = cache.find(value); iter != cache.end()) {
-    return iter->second;
-  }
-
-  OpBuilder::InsertionGuard guard(builder);
-  Value replacement = materializeToDFB(value, moduleOp, builder);
-  cache[value] = replacement;
-  return replacement;
-}
-
 // A tensor block argument -- today only an `scf.for` iter_arg -- stored from
 // multiple blocks has no producer slice to clone and no defining op to
 // materialize, so this pass cannot normalize it. The frontend does not yet emit
 // loop-carried tensor recurrence (#540); emit an actionable error instead of
 // leaving the stores for convert-ttl-to-compute to drop silently.
 static LogicalResult diagnoseUnsupportedBlockArgStores(func::FuncOp funcOp) {
-  WalkResult walk = funcOp.walk([](Block *block) {
+  Block *entryBlock = &funcOp.getBody().front();
+  WalkResult walk = funcOp.walk([&](Block *block) {
+    if (block == entryBlock) {
+      return WalkResult::advance();
+    }
+
     for (BlockArgument arg : block->getArguments()) {
       if (!isa<RankedTensorType>(arg.getType()) || getAttachedCB(arg) ||
           distinctStoreBlockCount(arg) < 2) {
@@ -429,17 +552,17 @@ struct TTLInsertIntermediateDFBsPass
       return;
     }
 
-    // Snapshot all cross-region store decisions before rewriting. A
-    // clone rewrite can erase the original backward slice and rewrite its uses;
+    // Snapshot all multi-block store decisions before rewriting. A clone
+    // rewrite can erase the original backward slice and rewrite its uses;
     // eraseUnusedBackwardSliceOps only removes ops with no remaining users.
-    SmallVector<CrossRegionStorePlan, 4> crossRegionStorePlans =
-        collectCrossRegionStorePlans(funcOp);
+    SmallVector<MultiBlockStorePlan, 4> multiBlockStorePlans =
+        collectMultiBlockStorePlans(funcOp);
 
     OpBuilder builder(funcOp.getContext());
     llvm::DenseMap<Value, Value> materialized;
 
-    if (failed(applyCrossRegionStorePlans(crossRegionStorePlans, moduleOp,
-                                          builder, materialized, enable))) {
+    if (failed(applyMultiBlockStorePlans(multiBlockStorePlans, moduleOp,
+                                         builder, materialized, enable))) {
       signalPassFailure();
       return;
     }

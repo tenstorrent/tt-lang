@@ -235,7 +235,7 @@ def TTLInsertIntermediateDFBs
     operands they declare as requiring DFB-attached values are satisfied.
     It also collects direct `ttl.store` users of non-DFB-attached tensor
     values when the stores are in blocks other than the defining op's block.
-    A value is a cross-block store candidate only when its direct store users
+    A value needs multi-block store handling only when its direct store users
     occupy at least two distinct blocks, which is the condition that can make
     `convert-ttl-to-compute` compare operation order across blocks.
 
@@ -243,8 +243,9 @@ def TTLInsertIntermediateDFBs
     Clone-supported backward slices are relocated into store blocks only when
     upstream `mlir::insideMutuallyExclusiveRegions` proves every pair of store
     block representatives mutually exclusive, every external use of the slice
-    is one of the rewritten stores, and no loop sits between the producer scope
-    and a rewritten store. This accepts direct if/else and nested if/else
+    is one of the rewritten stores, no root-input DFB release can execute before
+    the clone site, and no loop sits between the producer scope and a rewritten
+    store. This accepts direct if/else and nested if/else
     trees, but rejects sibling `scf.if` operations that may both execute. The
     clone rewrite keeps output DFB reserve/store/push operations conditional
     and avoids an intermediate L1 round trip in the exclusive if/else case.
@@ -271,7 +272,7 @@ def TTLInsertIntermediateDFBs
     runtime.
 
     When `enable` is false, cloneable stores from multiple blocks are still
-    rewritten because it does not allocate a compiler DFB. If any
+    rewritten because cloning allocates no compiler DFB. If any
     `DFBInputOpInterface` op has a non-DFB-attached operand, or if
     non-cloneable stores from multiple blocks require DFB materialization,
     the pass emits an error diagnostic and signals failure.
@@ -280,7 +281,8 @@ def TTLInsertIntermediateDFBs
   let options = [
     Option<"enable", "enable", "bool", "true",
            "Insert compiler-allocated intermediate DFBs. When false, "
-           "emit an error if any operation requires a compiler-allocated DFB.">
+           "emit an error if materialization through a compiler-allocated "
+           "DFB is required.">
   ];
 
   let dependentDialects = [

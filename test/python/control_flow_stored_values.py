@@ -23,6 +23,7 @@ for case_name, _kernel, _grid_width, _output_count in CONTROL_FLOW_CASES:
 # CHECK: DEFINED then_only
 # CHECK: DEFINED else_only
 # CHECK: DEFINED if_else
+# CHECK: DEFINED released_input
 # CHECK: DEFINED elif_chain
 # CHECK: DEFINED elif_gap
 # CHECK: DEFINED nested_if

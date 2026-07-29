@@ -41,6 +41,35 @@ func.func @stored_value_across_scf_if_disabled_clones(%cond: i1)
 
 // -----
 
+// Function arguments are not loop-carried block arguments, so they are not
+// rejected by the loop-carried tensor diagnostic.
+
+// CHECK-LABEL: func.func @func_argument_stores_not_loop_arg
+// CHECK: scf.if
+// CHECK: ttl.store %arg0
+// CHECK: } else {
+// CHECK: ttl.store %arg0
+// CHECK: return
+func.func @func_argument_stores_not_loop_arg(
+    %arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>, %cond: i1)
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                ttl.base_cta_index = 15 : i32, ttl.crta_indices = []} {
+  %then_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %else_cb = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+
+  scf.if %cond {
+    %then_reserve = ttl.cb_reserve %then_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %arg0, %then_reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  } else {
+    %else_reserve = ttl.cb_reserve %else_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %arg0, %else_reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+
+  return
+}
+
+// -----
+
 // A single then-branch store has one store block, so disabling compiler-managed
 // DFBs must not reject the function.
 
