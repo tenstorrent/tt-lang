@@ -237,9 +237,7 @@ static void
 buildProgramOrderGraph(ModuleOp moduleOp,
                        ArrayRef<DFBLogicalLifecycle> logicalDFBs,
                        HappensBeforeGraph &graph,
-                       DenseMap<Operation *, EventPair> &operationEventMap,
-                       SmallVectorImpl<DFBOperationEventPair> &operationEvents,
-                       SmallVectorImpl<DFBEventEdge> &programOrderEdges) {
+                       DenseMap<Operation *, EventPair> &operationEventMap) {
   llvm::DenseSet<Operation *> modeledOperations;
   for (const DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
     for (Operation *runtimeUse : logicalDFB.runtimeUses) {
@@ -262,14 +260,8 @@ buildProgramOrderGraph(ModuleOp moduleOp,
       }
       EventPair currentEvents = graph.addOperation();
       operationEventMap[&operation] = currentEvents;
-      operationEvents.push_back(
-          {&operation, currentEvents.entry, currentEvents.completion});
-      programOrderEdges.push_back(
-          {currentEvents.entry, currentEvents.completion});
       if (previousEvents.has_value()) {
         graph.addEdge(previousEvents->completion, currentEvents.entry);
-        programOrderEdges.push_back(
-            {previousEvents->completion, currentEvents.entry});
       }
       previousEvents = currentEvents;
     }
@@ -506,7 +498,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
   HappensBeforeGraph happensBeforeGraph;
   DenseMap<Operation *, EventPair> operationEventMap;
   buildProgramOrderGraph(moduleOp, logicalDFBs, happensBeforeGraph,
-                         operationEventMap, operationEvents, programOrderEdges);
+                         operationEventMap);
 
   for (DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
     std::optional<int64_t> transactionTileCount =
@@ -525,10 +517,6 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     // A wait may begin before its producer publishes data. Only wait
     // completion is ordered after push completion.
     happensBeforeGraph.addEdge(pushEvents.completion, waitEvents.completion);
-    matchedLifecycleEdges.push_back(
-        {logicalDFB.logicalId, logicalDFB.pushes.front(),
-         logicalDFB.waits.front(), pushEvents.completion, waitEvents.completion,
-         *transactionTileCount});
   }
 
   happensBeforeGraph.computeReachability();
