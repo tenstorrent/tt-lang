@@ -138,6 +138,8 @@ def _run_op(
     """
     shape = list(inputs[0].shape)
     dtype = inputs[0].dtype
+    if any(input_tensor.dtype != dtype for input_tensor in inputs[1:]):
+        raise ValueError("ME2E runner requires all input tensors to have one dtype")
 
     # Create device tensors using to_dram (respects tensor dtype).
     device_inputs = []
@@ -201,9 +203,9 @@ def _run_op(
             num_tiles=1,
             data_format=data_format,
             block_count=1,
-            page_size=ttnn.tile_size(io_tensors[0].dtype),
+            page_size=ttnn.tile_size(io_tensor.dtype),
         )
-        for dfb_index in range(len(io_tensors))
+        for dfb_index, io_tensor in enumerate(io_tensors)
     ]
 
     # Execute using shared kernel runner.

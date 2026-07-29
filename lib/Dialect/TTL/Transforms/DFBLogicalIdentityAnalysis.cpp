@@ -26,32 +26,25 @@ DFBLogicalIdentityAnalysis::DFBLogicalIdentityAnalysis(Operation *operation) {
 
   // Discover the complete explicit ID range before generating IDs. Assigning
   // generated IDs during this walk could collide with a later declaration.
-  moduleOp.walk([&](BindCBOp bindOp) {
-    if (!errorMessage.empty()) {
-      return;
-    }
+  WalkResult discoveryResult = moduleOp.walk([&](BindCBOp bindOp) {
     if (auto dfbId = bindOp.getDfbId()) {
       int64_t logicalId = dfbId->getSExtValue();
       maxExplicitId = std::max(maxExplicitId, logicalId);
-      return;
+      return WalkResult::advance();
     }
     if (!bindOp->hasAttr(kCompilerAllocatedAttrName)) {
       errorOperation = bindOp;
       errorMessage =
           "user-declared DFB requires dfb_id before physical allocation";
-      return;
+      return WalkResult::interrupt();
     }
     if (!firstCompilerDeclaration) {
       firstCompilerDeclaration = bindOp;
     }
-    if (compilerDeclarationCount == std::numeric_limits<int64_t>::max()) {
-      errorOperation = bindOp;
-      errorMessage = "too many compiler-created DFB declarations";
-      return;
-    }
     ++compilerDeclarationCount;
+    return WalkResult::advance();
   });
-  if (!errorMessage.empty()) {
+  if (discoveryResult.wasInterrupted()) {
     return;
   }
 
@@ -69,9 +62,6 @@ DFBLogicalIdentityAnalysis::DFBLogicalIdentityAnalysis(Operation *operation) {
   // Declarations with one logical ID describe one allocation, so they must
   // agree on the complete DFB type in every participating kernel.
   moduleOp.walk([&](BindCBOp bindOp) {
-    if (!errorMessage.empty()) {
-      return;
-    }
     auto dfbId = bindOp.getDfbId();
     int64_t logicalId = dfbId ? dfbId->getSExtValue() : nextCompilerId++;
     auto [firstIt, inserted] =
@@ -87,9 +77,10 @@ DFBLogicalIdentityAnalysis::DFBLogicalIdentityAnalysis(Operation *operation) {
           << bindOp.getResult().getType();
       errorOperation = bindOp;
       errorMessage = messageStream.str();
-      return;
+      return WalkResult::interrupt();
     }
     assignments.push_back({bindOp, logicalId});
+    return WalkResult::advance();
   });
 }
 

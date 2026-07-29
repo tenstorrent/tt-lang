@@ -24,25 +24,18 @@ FailureOr<int64_t> getDFBId(Value cb) {
 
 LogicalResult verifyResolvedDFBIdentities(ModuleOp moduleOp,
                                           StringRef consumerPass) {
+  bool hasAllocationMetadata = moduleOp->hasAttr(kDFBAllocationsAttrName);
   bool hasDFB = false;
-  moduleOp.walk([&](Operation *operation) {
-    hasDFB |=
-        isa<BindCBOp, CBReserveOp, CBPushOp, CBWaitOp, CBPopOp>(operation);
-  });
-  if (!hasDFB) {
-    return success();
-  }
-
-  if (!moduleOp->hasAttr(kDFBAllocationsAttrName)) {
-    moduleOp.emitOpError()
-        << "`" << consumerPass
-        << "` requires finalized DFB allocation metadata; run "
-           "`ttl-finalize-dfb-indices` first";
-    return failure();
-  }
-
   WalkResult result =
       moduleOp.walk([&](Operation *nestedOperation) {
+        if (!isa<BindCBOp, CBReserveOp, CBPushOp, CBWaitOp, CBPopOp>(
+                nestedOperation)) {
+          return WalkResult::advance();
+        }
+        hasDFB = true;
+        if (!hasAllocationMetadata) {
+          return WalkResult::interrupt();
+        }
         if (auto bindOp = dyn_cast<BindCBOp>(nestedOperation);
             bindOp && !bindOp.getDfbId().has_value()) {
           bindOp.emitOpError()
@@ -69,6 +62,17 @@ LogicalResult verifyResolvedDFBIdentities(ModuleOp moduleOp,
         }
         return WalkResult::advance();
       });
+
+  if (!hasDFB) {
+    return success();
+  }
+  if (!hasAllocationMetadata) {
+    moduleOp.emitOpError()
+        << "`" << consumerPass
+        << "` requires finalized DFB allocation metadata; run "
+           "`ttl-finalize-dfb-indices` first";
+    return failure();
+  }
   return failure(result.wasInterrupted());
 }
 

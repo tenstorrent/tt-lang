@@ -10,6 +10,7 @@
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=SINGLE
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=GLOBAL
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=SUBTILE
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=RANK3
 
 // -----
 
@@ -316,6 +317,9 @@ func.func @single_dfb_no_reuse()
 func.func @global_user_index()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.base_cta_index = 5 : i32,
                 ttl.crta_indices = []} {
+  %user1 = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %user2 = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %user3 = ttl.bind_cb {cb_index = 3, block_count = 2} {dfb_id = 3 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %user4 = ttl.bind_cb {cb_index = 4, block_count = 2} {dfb_id = 4 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   return
 }
@@ -357,5 +361,20 @@ func.func @subtile_page_size()
                 ttl.base_cta_index = 1 : i32, ttl.crta_indices = []} {
   %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
+  return
+}
+
+// -----
+
+// The runtime allocation table records every dimension in the DFB block shape.
+
+// RANK3: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 8 : i32, page_size = 2048 : i32}
+// RANK3-SAME: ]}
+// RANK3-LABEL: func.func @rank_three_num_tiles
+func.func @rank_three_num_tiles()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                ttl.base_cta_index = 1 : i32, ttl.crta_indices = []} {
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+      : !ttl.cb<[2, 2, 2], !ttcore.tile<32x32, bf16>, 2>
   return
 }

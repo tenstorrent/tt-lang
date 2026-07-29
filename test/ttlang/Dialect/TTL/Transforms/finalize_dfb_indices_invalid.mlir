@@ -23,6 +23,23 @@ module {
 
 // -----
 
+// Final physical indices must form the dense range consumed by the runtime.
+
+module {
+  func.func @sparse_physical_indices()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.base_cta_index = 3 : i32, ttl.crta_indices = []} {
+    %first = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-error @below {{physical DFB indices must form a dense zero-based range; expected index 1 but found 2}}
+    %third = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    return
+  }
+}
+
+// -----
+
 // User-declared DFBs require an explicit module-wide logical identity.
 
 module {
