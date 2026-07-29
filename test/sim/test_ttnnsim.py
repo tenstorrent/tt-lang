@@ -14,7 +14,7 @@ from sim.sharding import (
     count_local_remote_l1_dram_for_getitem,
     shard_origin_from_key,
 )
-from sim.ttnnsim import (
+from sim.ttnnsim import (  # type: ignore[reportPrivateUsage]
     CoreGrid,
     MemoryConfig,
     NdShardSpec,
@@ -25,6 +25,7 @@ from sim.ttnnsim import (
     ShardingStrategy,
     TensorMemoryLayout,
     TensorSpec,
+    _create_golden_wrapper,
 )
 
 
@@ -1463,6 +1464,59 @@ def test_golden_function_wrappers_logical():
     result = ttnn.logical_or(a, b)
     expected = torch.tensor([[True, True], [True, False]])
     assert torch.equal(result.to_torch(), expected)
+
+
+# The two tests below build a wrapper from a stand-in golden function instead of
+# calling a wrapped ``ttnn`` op, so they run without ttnn installed.  The
+# module-level wrappers exist only when ttnn does (that is where the golden
+# functions come from), which is how a wrapper that raised on every matmul-shaped
+# op went unnoticed against a green suite.
+
+
+def test_golden_wrapper_handles_non_broadcastable_operands():
+    """A wrapped op whose operands do not broadcast still returns its result.
+
+    The logical-shape bookkeeping broadcasts the operand shapes to decide whether
+    the op was elementwise, and torch answers "these do not broadcast" by
+    raising.  Uncaught, that turns shape bookkeeping into a failed call for every
+    op shaped like a matmul.
+    """
+
+    def golden_linear(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        return x @ y
+
+    a = ttnn.from_torch(torch.rand(32, 64), layout=ttnn.TILE_LAYOUT)
+    w = ttnn.from_torch(torch.rand(64, 128), layout=ttnn.TILE_LAYOUT)
+
+    wrapped = _create_golden_wrapper("linear", golden_linear)
+    result = wrapped(a, w)
+
+    assert isinstance(result, ttnn.Tensor)
+    assert torch.equal(result.to_torch(), a.to_torch() @ w.to_torch())
+    # Not elementwise, so the result reports its own shape rather than a
+    # broadcast of the operands'.
+    assert result.shape == (32, 128)
+
+
+def test_golden_wrapper_reports_logical_shape_for_elementwise_operands():
+    """Operands that do broadcast still get the ttnn-logical result shape.
+
+    Pairs with the test above: dropping the logical shape whenever the operands
+    are awkward would also pass there, and would silently report padded shapes
+    for every wrapped elementwise op.
+    """
+
+    def golden_multiply(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        return x * y
+
+    a = ttnn.from_torch(torch.rand(3, 5), layout=ttnn.TILE_LAYOUT)
+    row = ttnn.from_torch(torch.rand(1, 5), layout=ttnn.TILE_LAYOUT)
+
+    wrapped = _create_golden_wrapper("multiply", golden_multiply)
+    result = wrapped(a, row)
+
+    assert result.shape == (3, 5)
+    assert result.padded_shape == (32, 32)
 
 
 class TestTensorTileIndexing:

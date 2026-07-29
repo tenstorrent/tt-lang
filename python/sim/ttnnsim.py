@@ -2388,15 +2388,28 @@ def _elementwise_logical_shape(
     ``ttnn.multiply``) reports the same logical ``.shape`` as the equivalent
     operator (``a * b``) and as real ttnn.  Returns ``None`` -- i.e. keep the
     physical shape as the logical default -- when there are no ``Tensor``
-    inputs, or when the op was not elementwise (the torch result shape does not
-    equal the broadcast of the inputs' padded shapes), so shape-changing ops
-    still report their physical shape.
+    inputs, or when the op was not elementwise, so shape-changing ops still
+    report their physical shape.  Not elementwise covers two cases: operands
+    that do not broadcast against each other at all (``linear``'s ``(32, 64)``
+    and ``(64, 128)``), and operands that do broadcast but whose broadcast does
+    not match the torch result.
     """
     tensors = [t for t in inputs if isinstance(t, Tensor)]
     if not tensors:
         return None
-    logical = tuple(torch.broadcast_shapes(*[tuple(t.shape) for t in tensors]))
-    padded = tuple(torch.broadcast_shapes(*[tuple(t.padded_shape) for t in tensors]))
+    try:
+        logical = tuple(torch.broadcast_shapes(*[tuple(t.shape) for t in tensors]))
+        padded = tuple(
+            torch.broadcast_shapes(*[tuple(t.padded_shape) for t in tensors])
+        )
+    except RuntimeError:
+        # torch reports non-broadcastable operands by raising rather than by
+        # returning, and every golden-wrapped op is routed through here, so
+        # without this the shape bookkeeping of an op like ``linear`` fails the
+        # call itself.  Non-broadcastable operands are not an elementwise op's,
+        # which is the same answer the comparison below reaches for the operands
+        # that do broadcast.
+        return None
     return logical if tuple(result.shape) == padded else None
 
 
