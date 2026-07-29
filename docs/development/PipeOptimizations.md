@@ -126,20 +126,33 @@ for base = 0; base < grouped_end; base += R:
   reserve R source DFB blocks
   issue R tensor reads
   wait once for the read group
+  acquire R receiver blocks
   send the contiguous R-block payload
   wait once for the write group
-  signal one completion
+  publish one data credit
+  consume the destination group
+  publish R free credits
+
+complete outstanding data and free credit updates
 
 run the remaining logical transfers in a scalar residual loop
 ```
 
 The generated TTKernel code uses one read barrier, one write barrier, and one
-completion per group. An overlapped unicast payload that exceeds the target
-one-packet limit is decomposed into pages. TTKernel cleanup programs the write
-command once outside the group loop and reuses it for every page. Payloads that
-fit one packet use one stateful contiguous write per group when command state
-is invariant. Other schedules and topologies retain the generic contiguous NoC
-write.
+receiver data-credit update per group. An overlapped unicast payload that
+exceeds the target one-packet limit is decomposed into pages. TTKernel cleanup
+programs the write command once outside the group loop and reuses it for every
+page. Payloads that fit one packet use one stateful contiguous write per group
+when command state is invariant. Other schedules and topologies retain the
+generic contiguous NoC write.
+
+Data and free credits use cumulative counters. An overlapped stream therefore
+does not require each non-posted credit update to complete before the next
+group starts. `PipeTransportPlan` records iteration-domain credit completion,
+and TTKernel lowering emits one NoC atomic barrier after the innermost source or
+receiver loop that issues those updates. Source and receiver roles in the same
+SPMD loop share one barrier. Scalar, receiver-post, and mixed-completion
+sequences retain immediate barriers.
 
 #### PipeTransport contract
 
@@ -153,6 +166,9 @@ write.
   that the schedule may leave resident in each receiver DFB.
 - Capacity counters use receiver DFB blocks as their unit. A send acquires the
   endpoint slot span, and the matching receiver pop releases that same span.
+- Credit completion is explicit. `Immediate` completes a credit update at its
+  operation; `IterationDomain` completes all outstanding updates after the
+  innermost loop containing the corresponding send or receiver DFB pop.
 
 This contract supports the common scalar-tile case, where source and receiver
 spans are both `R`, and transfers between different source and receiver DFB
@@ -219,12 +235,13 @@ protocols were bit-exact:
 
 | Transfers | Computed address total | Computed address per transfer | Published address total | Published address per transfer |
 | ---: | ---: | ---: | ---: | ---: |
-| 8 | 2.111 us | 0.264 us | 2.199 us | 0.275 us |
-| 32 | 3.321 us | 0.104 us | 3.370 us | 0.105 us |
-| 128 | 8.090 us | 0.063 us | 8.236 us | 0.064 us |
+| 8 | 1.950 us | 0.244 us | 2.204 us | 0.276 us |
+| 32 | 3.181 us | 0.099 us | 3.374 us | 0.105 us |
+| 128 | 7.945 us | 0.062 us | 8.244 us | 0.064 us |
 
 For 128 transfers, automatic selection uses `(R=64, K=2)`. The corresponding
-hand-written bounded ring takes 8.342 us. The unconstrained batched/stateful
+hand-written bounded ring takes 8.342 us. The computed PipeTransport sender is
+approximately 5% faster in this measurement. The unconstrained batched/stateful
 NoC ceiling takes 6.96 us, but does not enforce bounded receiver residency.
 The scalar C++ baseline is approximately 0.60 us per transfer.
 
