@@ -126,6 +126,8 @@ for python_tag in $(printf '%s\n' "$PYTHON_TAGS" | tr ',' ' '); do
     registry_image="$(ttlang_wheel_builder_registry_image \
         "$python_tag" "$docker_tag" "ghcr.io/${repo}")"
 
+    # Skip the rebuild when an image already exists for the repository inputs
+    # listed in UPLIFT_PATHS.
     if [ "$NO_PUSH" != true ] && ${DOCKER:-docker} manifest inspect "$registry_image" >/dev/null 2>&1; then
         echo "Image already exists, skipping build: $registry_image"
         continue

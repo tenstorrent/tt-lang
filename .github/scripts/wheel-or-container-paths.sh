@@ -3,18 +3,16 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Paths whose change should trigger PR-time wheel build + dist-container
-# tutorial coverage. Every container input requires that coverage, with
-# additional wheel-only inputs appended here.
+# tutorial coverage. Every shared or manylinux builder image input requires
+# that coverage, with additional wheel-only inputs appended here.
 
 wheel_path_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=uplift-paths.sh
-source "$wheel_path_script_dir/uplift-paths.sh"
+# shellcheck source=wheel-builder-tag-paths.sh
+source "$wheel_path_script_dir/wheel-builder-tag-paths.sh"
 
 WHEEL_OR_CONTAINER_PATHS=(
-    "${UPLIFT_PATHS[@]}"
+    "${WHEEL_BUILDER_TAG_PATHS[@]}"
     .github/actions/setup-wheel-image-build
-    .github/containers/build-wheel-manylinux-images.sh
-    .github/containers/cache-wheel-manylinux-component.sh
     .github/scripts/build-manylinux-core-wheel.sh
     .github/scripts/build-manylinux-wheel-set-member.sh
     .github/scripts/build-s3-light-core-wheel.sh

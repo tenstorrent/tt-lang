@@ -81,8 +81,8 @@ jobs:
   # Manylinux wheel-builder images are independent of the IRD image. Build them
   # alongside build-docker so hardware tests do not wait for toolchain caches.
   build-wheel-images:
-    needs: resolve-docker-tag
-    if: ${{ needs.resolve-docker-tag.outputs.needs_rebuild == 'true' }}
+    needs: [resolve-docker-tag, changes]
+    if: ${{ needs.resolve-docker-tag.outputs.needs_rebuild == 'true' || needs.changes.outputs.wheel_or_container == 'true' }}
     permissions:
       contents: read
       packages: write

@@ -24,36 +24,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../scripts/uplift-paths.sh
 source "${SCRIPT_DIR}/../scripts/uplift-paths.sh"
+# shellcheck source=../scripts/lib/version-tag-utils.sh
+source "${SCRIPT_DIR}/../scripts/lib/version-tag-utils.sh"
 
-if [[ ${#UPLIFT_PATHS[@]} -eq 0 ]]; then
-    echo "ERROR: UPLIFT_PATHS is empty (defined in ${SCRIPT_DIR}/../scripts/uplift-paths.sh)." >&2
-    echo "  Without a path list, git diff and git ls-tree would scan the whole tree," >&2
-    echo "  producing the hashed form for every commit." >&2
-    exit 1
-fi
-
-# Run from the repo root so UPLIFT_PATHS (relative to repo root) resolves
-# consistently regardless of the caller's CWD.
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
-if [ -z "$REPO_ROOT" ]; then
-    echo "ERROR: Not inside a git repository." >&2
-    exit 1
-fi
-cd "$REPO_ROOT"
-
-# `|| true` keeps `set -e` from killing the script when there are no matching
-# tags; we handle the empty-result case explicitly below.
-NEAREST_TAG_RAW=$(git describe --tags --match "v[0-9]*" --abbrev=0 2>/dev/null || true)
-if [ -z "$NEAREST_TAG_RAW" ]; then
-    echo "ERROR: Could not determine version tag from git tags." >&2
-    echo "  Ensure the CI checkout uses fetch-depth: 0 and fetch-tags: true." >&2
-    exit 1
-fi
-NEAREST_TAG=$(printf '%s' "$NEAREST_TAG_RAW" | tr '+' '-')
-
-if git diff --quiet "$NEAREST_TAG_RAW..HEAD" -- "${UPLIFT_PATHS[@]}"; then
-    echo "$NEAREST_TAG"
-else
-    HASH=$(git ls-tree HEAD -- "${UPLIFT_PATHS[@]}" | sha256sum | cut -c1-8)
-    echo "${NEAREST_TAG}-${HASH}"
-fi
+ttlang_compute_version_tag \
+    ".github/scripts/uplift-paths.sh" \
+    "${UPLIFT_PATHS[@]}"
