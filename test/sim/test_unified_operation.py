@@ -18,6 +18,7 @@ from __future__ import annotations
 import ast
 import re
 import sys
+import textwrap
 from pathlib import Path
 from typing import Any, Optional
 
@@ -28,6 +29,8 @@ from sim.copy import copy as renamed_copy
 from sim.decorators import compute, datamovement
 from sim.dfb import make_dataflow_buffer_like
 from sim.unified_operation import (  # type: ignore[reportPrivateUsage]
+    _clear_decorators,
+    _is_operation_decorator,
     _is_setup_stmt,
     _local_dfb_names,
     _parse_operation_funcdef,
@@ -674,6 +677,143 @@ def test_unified_body_with_nested_dfb_is_rejected() -> None:
     assert (
         "must be a simple top-level assignment" in out
     ), f"unexpected failure mode:\n{out}"
+
+
+def _passthrough(fn: Any) -> Any:
+    """A user decorator that a sample body can be stacked with."""
+    return fn
+
+
+# What a body's own module would have bound, for the decorator samples below.
+_DECORATOR_SYMBOLS: dict[str, Any] = {
+    "ttl": ttl_alias,
+    "T": ttl_alias,
+    "operation": ttl_alias.operation,
+    "profile": _passthrough,
+    "trace": _passthrough,
+}
+
+
+def _decorated_funcdef(*decorators: str) -> ast.FunctionDef:
+    """Parse a unified body carrying ``decorators``, listed top-down."""
+    lines = "\n".join(decorators)
+    source = textwrap.dedent(
+        """
+        def copy_through(src, dst):
+            dfb = ttl.make_dataflow_buffer_like(src, shape=(1, 1), block_count=2)
+            blk = dfb.reserve()
+            ttl.copy(src[0:1, 0:1], blk).wait()
+            blk.push()
+        """
+    ).strip()
+    parsed = ast.parse(f"{lines}\n{source}").body[0]
+    assert isinstance(parsed, ast.FunctionDef)
+    return parsed
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        "@ttl.operation(grid=(1, 1))",
+        "@T.operation(grid=(1, 1))",
+        "@operation(grid=(1, 1))",
+    ],
+    ids=["literal", "aliased_module", "direct_import"],
+)
+def test_decorators_above_the_operation_are_dropped_without_complaint(
+    spelling: str,
+) -> None:
+    """Python applies those itself, so the synthesized function must not repeat them.
+
+    They decorate whatever ``@ttl.operation`` returns, at the original definition
+    site. Leaving them on the rewritten body would run them a second time, once
+    per node. The operation decorator has to be recognized under any binding for
+    this to tell them apart from the case below.
+    """
+    fn_def = _decorated_funcdef("@profile", "@trace", spelling)
+    assert _is_operation_decorator(fn_def.decorator_list[-1], _DECORATOR_SYMBOLS)
+
+    _clear_decorators(fn_def, _DECORATOR_SYMBOLS)
+    assert fn_def.decorator_list == []
+
+
+def test_a_decorator_below_the_operation_is_rejected() -> None:
+    """Nothing would apply it, so it is refused instead of silently ignored.
+
+    The body it was written to wrap does not survive the rewrite as a function --
+    it becomes three kernels -- and the compiler drops it too, compiling the body
+    with its decorator lines removed. Being told beats being ignored.
+    """
+    fn_def = _decorated_funcdef("@ttl.operation(grid=(1, 1))", "@profile")
+    with pytest.raises(ValueError) as excinfo:
+        _clear_decorators(fn_def, _DECORATOR_SYMBOLS)
+
+    reason = str(excinfo.value)
+    assert "'@profile'" in reason, f"error does not name the decorator:\n{reason}"
+    assert "Move it above" in reason, f"error offers no fix:\n{reason}"
+
+
+@pytest.mark.parametrize(
+    "below, named, plural",
+    [
+        (("@trace",), ["'@trace' on line 3"], False),
+        (("@trace(level=2)",), ["'@trace(level=2)' on line 3"], False),
+        (
+            ("@trace", "@trace(level=2)"),
+            ["'@trace' on line 3", "'@trace(level=2)' on line 4"],
+            True,
+        ),
+    ],
+    ids=["bare", "called", "two"],
+)
+def test_decorators_on_both_sides_report_only_the_ones_below(
+    below: tuple[str, ...], named: list[str], plural: bool
+) -> None:
+    """With decorators on both sides, only those below are a problem.
+
+    The ones above are applied by Python and are meant to be dropped here, so
+    naming them too would send the author looking for a fault in a line that is
+    working. Each offender is quoted with its own line, since a stack of them is
+    otherwise hard to tell apart.
+    """
+    fn_def = _decorated_funcdef("@profile", "@ttl.operation(grid=(1, 1))", *below)
+    with pytest.raises(ValueError) as excinfo:
+        _clear_decorators(fn_def, _DECORATOR_SYMBOLS)
+
+    reason = str(excinfo.value)
+    for spelling in named:
+        assert spelling in reason, f"error does not quote {spelling}:\n{reason}"
+    assert "'@profile'" not in reason, f"error blames a decorator above:\n{reason}"
+
+    # Reads as a sentence either way: "the decorator ... sits", "... decorators ... sit".
+    assert ("the decorators " in reason) == plural, f"wrong agreement:\n{reason}"
+    assert ("the body they wrap" in reason) == plural, f"wrong agreement:\n{reason}"
+    assert ("Move them above" in reason) == plural, f"wrong agreement:\n{reason}"
+
+
+def test_decorators_are_dropped_when_the_operation_cannot_be_identified() -> None:
+    """An unrecognizable decorator list is cleared rather than rejected.
+
+    Placement can only be judged relative to ``@ttl.operation``. With nothing
+    identifiable to judge against, clearing matches the behavior that has always
+    applied, and is better than refusing a body that may be perfectly valid.
+    """
+    fn_def = _decorated_funcdef("@profile")
+    _clear_decorators(fn_def, _DECORATOR_SYMBOLS)
+    assert fn_def.decorator_list == []
+
+
+def test_unified_operation_under_a_stacked_decorator_runs_once() -> None:
+    """End to end, a decorator above ``@ttl.operation`` still wraps the call once.
+
+    This is why the rewrite clears the whole decorator list: the entry it drops is
+    already applied by Python at the definition site, and re-applying it here
+    would double every wrapper the user put on an operation.
+    """
+    code, out = run_script_in_process(FIXTURES_DIR / "unified_stacked_decorator.py")
+    assert code == 0, f"unified operation under a stacked decorator failed:\n{out}"
+    assert "wrapped calls: 1" in out, f"decorator did not run exactly once:\n{out}"
+    assert "copied region matches: True" in out, f"operation copied nothing:\n{out}"
 
 
 @pytest.mark.parametrize("scheduler", ["greedy", "fair"])

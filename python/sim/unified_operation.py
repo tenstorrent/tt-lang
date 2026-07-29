@@ -56,6 +56,8 @@ _DATAMOVEMENT_BINDING = "__ttl_sim_datamovement__"
 # Sentinel for "this expression does not resolve to a runtime object".
 _UNRESOLVED: Any = object()
 
+_OPERATION_DECORATOR = "operation"
+
 
 @functools.cache
 def _load_frontend_module(filename: str) -> types.ModuleType:
@@ -167,6 +169,75 @@ def _is_kernel_decorator(dec: ast.expr, symbols: Dict[str, Any]) -> bool:
     # A decorator from a different build of the API (unshadowed ttl, reloaded
     # module) is not object-identical to ours but still names a kernel.
     return getattr(resolved, "__name__", None) in rules.KERNEL_DECORATORS
+
+
+def _is_operation_decorator(dec: ast.expr, symbols: Dict[str, Any]) -> bool:
+    """True when ``dec`` is ``@ttl.operation``, however the API is bound."""
+    from .operation import operation
+
+    node = dec.func if isinstance(dec, ast.Call) else dec
+    resolved = _resolve_expr(node, symbols)
+    if resolved is _UNRESOLVED:
+        return _rules().decorator_name(dec) == _OPERATION_DECORATOR
+    if resolved is operation:
+        return True
+    return getattr(resolved, "__name__", None) == _OPERATION_DECORATOR
+
+
+def _clear_decorators(fn_def: ast.FunctionDef, symbols: Dict[str, Any]) -> None:
+    """Strip ``fn_def``'s decorators, refusing any that would go silently missing.
+
+    The synthesized function carries none of them, for a different reason on each
+    side of ``@ttl.operation``. Re-applying ``@ttl.operation`` would send the
+    result back through this rewrite. A decorator written above it is applied by
+    Python to whatever the operation decorator returns, at the original definition
+    site, so leaving it here would apply it twice.
+
+    A decorator written below it is the one that would otherwise be lost: nothing
+    else applies it, and the body it was written to wrap does not survive as a
+    function -- it becomes three kernels. Reproducing it would also mean running
+    something the compiler does not, since the compiler compiles an operation body
+    with its decorator lines removed (``pykernel._src.utils._cleanup_source_code``).
+    So it is refused, and the message points at the placement that does work.
+
+    Note the simulator's legacy path for hand-written kernels does run such a
+    decorator, because it rebuilds from the wrapper's code object rather than from
+    source. That difference is not resolved here.
+
+    Raises:
+        ValueError: If a decorator is listed below ``@ttl.operation``.
+    """
+    decorators = fn_def.decorator_list
+    fn_def.decorator_list = []
+
+    operation_positions = [
+        index
+        for index, dec in enumerate(decorators)
+        if _is_operation_decorator(dec, symbols)
+    ]
+    if not operation_positions:
+        return
+    below = decorators[operation_positions[-1] + 1 :]
+    if not below:
+        return
+
+    spellings = ", ".join(
+        f"'@{ast.unparse(dec)}' on line {dec.lineno}" for dec in below
+    )
+    if len(below) == 1:
+        placement = f"the decorator {spellings} sits"
+        pronoun, wraps = "it", "the body it wraps"
+    else:
+        placement = f"the decorators {spellings} sit"
+        pronoun, wraps = "them", "the body they wrap"
+
+    raise ValueError(
+        f"{placement} below '@ttl.operation', where neither the simulator nor the "
+        f"compiler applies {pronoun}: {wraps} is rewritten into one compute and two "
+        f"data movement kernels, and the compiler compiles that body with its "
+        f"decorators removed. Move {pronoun} above '@ttl.operation' to wrap the "
+        f"operation as a whole."
+    )
 
 
 def _receiver_root_name(func: ast.expr) -> Optional[str]:
@@ -290,9 +361,11 @@ def is_unified_body(func: Callable[..., Any]) -> bool:
     except (OSError, TypeError, ValueError):
         return False
     symbols = rules.function_scope(func)
-    return not rules.defines_kernels(
-        fn_def, lambda dec: _is_kernel_decorator(dec, symbols)
-    )
+
+    def is_kernel(dec: ast.expr) -> bool:
+        return _is_kernel_decorator(dec, symbols)
+
+    return not rules.defines_kernels(fn_def, is_kernel)
 
 
 def _reject_unsupported_setup(fn_def: ast.FunctionDef) -> None:
@@ -432,7 +505,7 @@ def build_multikernel_function(
     symbols = rules.function_scope(func)
 
     fn_def = _parse_operation_funcdef(func)
-    fn_def.decorator_list = []  # drop @ttl.operation; do not re-decorate
+    _clear_decorators(fn_def, symbols)
     _reject_aliased_api(fn_def, symbols)
     _reject_unsupported_setup(fn_def)
 
