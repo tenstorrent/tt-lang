@@ -648,7 +648,9 @@ def TTLVerifyPipeNetGuards
     `ttl.launch_grid` (i64 array of length 2 with positive entries), static
     `I64Attr` coordinates on `ttl.create_pipe`, and the
     `ttl.dfb_allocations` metadata emitted by `ttl-finalize-dfb-indices`.
-    `ttl-annotate-cb-associations` must also have run.
+    `ttl-annotate-cb-associations` must also have run. Pipe synchronization
+    checks accept both frontend `ttl.copy` / `ttl.wait` operations and explicit
+    `ttl.pipe_transfer.send` / `post` / `wait` operations.
   }];
 
   let dependentDialects = [

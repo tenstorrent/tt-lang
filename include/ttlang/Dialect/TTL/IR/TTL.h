@@ -146,6 +146,15 @@ template <typename ConcreteType>
 class TTLDataMovementOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, TTLDataMovementOpTrait> {};
 
+/// Trait for pipe transfer protocol events.
+///
+/// Post and send events have a pipe transfer operand; posts return a pipe
+/// token. Wait events have a pipe token operand.
+template <typename ConcreteType>
+class TTLPipeTransferEventOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType,
+                                      TTLPipeTransferEventOpTrait> {};
+
 /// Trait for tile compute operations (add, mul, exp, etc.).
 template <typename ConcreteType>
 class TTLTileComputeOpTrait

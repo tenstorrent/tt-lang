@@ -1130,10 +1130,17 @@ PipeGraph::rebuildEndpointGraph(ModuleOp mod, ValueOriginAnalysis &analysis,
                 sendOp.getOperation(), {pipeKey.srcX, pipeKey.srcY},
                 postOp.getOperation(), getLaunchNodeCoord(receiver),
                 analysisState)) {
-          auto diag = postOp.emitError()
-                      << "cannot prove matching execution counts for this "
-                         "receiver post and its pipe send";
-          diag.attachNote(sendOp.getLoc()) << "corresponding pipe send is here";
+          auto diag =
+              sendOp.emitError()
+              << "cannot prove a one-to-one synchronization schedule on "
+                 "PipeNet "
+              << analysisState.netName(pipeKey.pipeNetId)
+              << " for receiver core_x=" << receiver.x
+              << ", core_y=" << receiver.y
+              << "; receiver post and send occurrences do not have "
+                 "matching proven execution counts and conditions";
+          diag.attachNote(postOp.getLoc())
+              << "matching receiver post occurrence is here";
           correspondenceResult = failure();
           return;
         }

@@ -64,6 +64,8 @@ class TTL_Trait<string name, list<Trait> traits = []>
 
 def TTL_ComputeOpTrait : TTL_Trait<"TTLComputeOpTrait", []>;
 def TTL_DataMovementOpTrait : TTL_Trait<"TTLDataMovementOpTrait", []>;
+def TTL_PipeTransferEventOpTrait
+    : TTL_Trait<"TTLPipeTransferEventOpTrait", []>;
 def TTL_SynchronizationOpTrait : TTL_Trait<"TTLSynchronizationOpTrait", []>;
 def TTL_CircularBufferOpTrait : TTL_Trait<"TTLCircularBufferOpTrait", []>;
 def TTL_TileComputeOpTrait : TTL_Trait<"TTLTileComputeOpTrait", []>;

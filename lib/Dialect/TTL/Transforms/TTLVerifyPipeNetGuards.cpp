@@ -19,6 +19,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
+#include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
@@ -106,30 +107,16 @@ struct ModuleState : LaunchNodeDomainState {
   SmallVector<PipeEvent> pipeEvents;
   llvm::DenseMap<Operation *, std::size_t> pipeEventIndices;
 
-  /// Record pipe sends and receive posts from `ttl.copy` operations.
-  void recordPipeEvent(CopyOp copyOp, const LaunchNodeDomain &domain) {
-    PipeEvent event;
-    event.op = copyOp.getOperation();
-    if (auto pipeType = mlir::dyn_cast<PipeType>(copyOp.getDst().getType())) {
-      event.pipeType = pipeType;
-      event.kind = PipeEventKind::Send;
-      event.domain =
-          domain.intersectWith(getPipeSourceLaunchNodeDomain(pipeType));
-    } else if (auto pipeType =
-                   mlir::dyn_cast<PipeType>(copyOp.getSrc().getType())) {
-      if (!isPipeReceiveCopy(copyOp)) {
-        return;
-      }
-      event.pipeType = pipeType;
-      event.kind = PipeEventKind::ReceivePost;
-      event.domain =
-          domain.intersectWith(getPipeDestinationLaunchNodeDomain(pipeType));
-    } else {
-      return;
-    }
-
-    auto [it, inserted] =
-        pipeEventIndices.try_emplace(copyOp.getOperation(), pipeEvents.size());
+  /// Record one pipe event after its endpoint and role have been resolved.
+  void recordPipeEvent(Operation *op, PipeType pipeType, PipeEventKind kind,
+                       const LaunchNodeDomain &domain) {
+    LaunchNodeDomain eventDomain =
+        kind == PipeEventKind::Send
+            ? domain.intersectWith(getPipeSourceLaunchNodeDomain(pipeType))
+            : domain.intersectWith(
+                  getPipeDestinationLaunchNodeDomain(pipeType));
+    PipeEvent event{op, pipeType, kind, eventDomain};
+    auto [it, inserted] = pipeEventIndices.try_emplace(op, pipeEvents.size());
     if (inserted) {
       pipeEvents.push_back(event);
       return;
@@ -137,8 +124,41 @@ struct ModuleState : LaunchNodeDomainState {
     pipeEvents[it->second] = event;
   }
 
-  /// Record a receive completion wait and verify that it is
-  /// destination-guarded.
+  /// Record pipe sends and receive posts from `ttl.copy` operations.
+  void recordPipeEvent(CopyOp copyOp, const LaunchNodeDomain &domain) {
+    if (auto pipeType = mlir::dyn_cast<PipeType>(copyOp.getDst().getType())) {
+      recordPipeEvent(copyOp, pipeType, PipeEventKind::Send, domain);
+    } else if (auto pipeType =
+                   mlir::dyn_cast<PipeType>(copyOp.getSrc().getType())) {
+      if (!isPipeReceiveCopy(copyOp)) {
+        return;
+      }
+      recordPipeEvent(copyOp, pipeType, PipeEventKind::ReceivePost, domain);
+    }
+  }
+
+  /// Verify and record a frontend or explicit receive completion event.
+  void recordPipeReceiveWaitEvent(Operation *op, PipeType pipeType,
+                                  const LaunchNodeDomain &domain,
+                                  Operation *unanalyzableOp) {
+    int64_t netId = pipeType.getPipeNetId();
+    std::string name = netName(netId);
+    std::string msg;
+    llvm::raw_string_ostream(msg)
+        << "this `ttl.wait` waits for a pipe receive on launched nodes "
+           "that are not destinations of PipeNet "
+        << name << "; keep the wait under the same `if " << name
+        << ".is_dst(): ...` or `" << name
+        << ".if_dst(...)` guard as the receive copy";
+    checkKnownSubset(op, domain, getPipeDestinationLaunchNodeDomain(pipeType),
+                     unanalyzableOp, msg, {{netId, PipeRole::Destination}},
+                     *this);
+    if (!sawError) {
+      recordPipeEvent(op, pipeType, PipeEventKind::ReceiveWait, domain);
+    }
+  }
+
+  /// Resolve and record a receive completion represented by `ttl.wait`.
   void recordPipeWaitEvent(WaitOp waitOp, const LaunchNodeDomain &domain,
                            Operation *unanalyzableOp) {
     FailureOr<std::optional<CopyOp>> maybeCopyOp =
@@ -155,37 +175,7 @@ struct ModuleState : LaunchNodeDomainState {
     }
     CopyOp copyOp = **maybeCopyOp;
     auto pipeType = mlir::cast<PipeType>(copyOp.getSrc().getType());
-
-    int64_t netId = pipeType.getPipeNetId();
-    std::string name = netName(netId);
-    std::string msg;
-    llvm::raw_string_ostream(msg)
-        << "this `ttl.wait` waits for a pipe receive on launched nodes "
-           "that are not destinations of PipeNet "
-        << name << "; keep the wait under the same `if " << name
-        << ".is_dst(): ...` or `" << name
-        << ".if_dst(...)` guard as the receive copy";
-    checkKnownSubset(
-        waitOp, domain, getPipeDestinationLaunchNodeDomain(pipeType),
-        unanalyzableOp, msg, {{netId, PipeRole::Destination}}, *this);
-    if (sawError) {
-      return;
-    }
-
-    PipeEvent event;
-    event.op = waitOp.getOperation();
-    event.pipeType = pipeType;
-    event.kind = PipeEventKind::ReceiveWait;
-    event.domain =
-        domain.intersectWith(getPipeDestinationLaunchNodeDomain(pipeType));
-
-    auto [it, inserted] =
-        pipeEventIndices.try_emplace(waitOp.getOperation(), pipeEvents.size());
-    if (inserted) {
-      pipeEvents.push_back(event);
-      return;
-    }
-    pipeEvents[it->second] = event;
+    recordPipeReceiveWaitEvent(waitOp, pipeType, domain, unanalyzableOp);
   }
 };
 
@@ -276,39 +266,122 @@ void checkKnownSubset(Operation *op, const LaunchNodeDomain &current,
   state.sawError = true;
 }
 
-// Diagnose a `ttl.copy` whose endpoint is a pipe but whose enclosing domain
-// extends outside the pipe's source/destination set.
+/// Verify that a pipe send executes only on its source node.
+void verifyPipeSend(Operation *op, PipeType pipeType,
+                    const LaunchNodeDomain &current, Operation *unanalyzable,
+                    ModuleState &state) {
+  int64_t netId = pipeType.getPipeNetId();
+  std::string name = state.netName(netId);
+  std::string msg;
+  llvm::raw_string_ostream(msg)
+      << "this `ttl.copy(buffer, pipe)` sends data on PipeNet " << name
+      << " from a node that is not a source of any pipe in that net; "
+         "wrap the copy in `"
+      << name << ".if_src(...)` or guard with `if " << name
+      << ".is_src(): ...`";
+  checkKnownSubset(op, current, getPipeSourceLaunchNodeDomain(pipeType),
+                   unanalyzable, msg, {{netId, PipeRole::Source}}, state);
+}
+
+/// Verify that a pipe receive post executes only on its destination nodes.
+void verifyPipeReceivePost(Operation *op, PipeType pipeType,
+                           const LaunchNodeDomain &current,
+                           Operation *unanalyzable, ModuleState &state) {
+  int64_t netId = pipeType.getPipeNetId();
+  std::string name = state.netName(netId);
+  std::string msg;
+  llvm::raw_string_ostream(msg)
+      << "this `ttl.copy(pipe, buffer)` receives data from PipeNet " << name
+      << " on a node that is not a destination of any pipe in that "
+         "net; wrap the copy in `"
+      << name << ".if_dst(...)` or guard with `if " << name
+      << ".is_dst(): ...`";
+  checkKnownSubset(op, current, getPipeDestinationLaunchNodeDomain(pipeType),
+                   unanalyzable, msg, {{netId, PipeRole::Destination}}, state);
+}
+
+/// Diagnose a `ttl.copy` whose endpoint is outside its PipeNet role domain.
 void verifyCopy(CopyOp copyOp, const LaunchNodeDomain &current,
                 Operation *unanalyzable, ModuleState &state) {
-  if (auto dstPipeType = mlir::dyn_cast<PipeType>(copyOp.getDst().getType())) {
-    int64_t netId = dstPipeType.getPipeNetId();
-    std::string name = state.netName(netId);
-    std::string msg;
-    llvm::raw_string_ostream(msg)
-        << "this `ttl.copy(buffer, pipe)` sends data on PipeNet " << name
-        << " from a node that is not a source of any pipe in that net; "
-           "wrap the copy in `"
-        << name << ".if_src(...)` or guard with `if " << name
-        << ".is_src(): ...`";
-    checkKnownSubset(copyOp, current,
-                     getPipeSourceLaunchNodeDomain(dstPipeType), unanalyzable,
-                     msg, {{netId, PipeRole::Source}}, state);
+  if (auto pipeType = mlir::dyn_cast<PipeType>(copyOp.getDst().getType())) {
+    verifyPipeSend(copyOp, pipeType, current, unanalyzable, state);
+  } else if (auto pipeType =
+                 mlir::dyn_cast<PipeType>(copyOp.getSrc().getType())) {
+    verifyPipeReceivePost(copyOp, pipeType, current, unanalyzable, state);
+  }
+}
+
+/// Resolve the pipe type referenced by an explicit transfer value.
+FailureOr<PipeType> resolvePipeTypeForTransfer(Operation *eventOp,
+                                               Value transfer,
+                                               ModuleState &state) {
+  FailureOr<PipeTransferCreateOp> maybeCreate =
+      findPipeTransferCreateForTransfer(state.valueOrigins, transfer);
+  if (failed(maybeCreate)) {
+    eventOp->emitOpError()
+        << "requires every possible transfer value to derive from the same "
+           "ttl.pipe_transfer.create";
+    state.sawError = true;
+    return failure();
+  }
+  return mlir::cast<PipeType>(maybeCreate->getPipe().getType());
+}
+
+/// Resolve the pipe type referenced by an explicit receive token.
+FailureOr<PipeType> resolvePipeTypeForToken(Operation *eventOp, Value token,
+                                            ModuleState &state) {
+  FailureOr<PipeTransferPostOp> maybePost =
+      findPipeTransferPostForToken(state.valueOrigins, token);
+  if (failed(maybePost)) {
+    eventOp->emitOpError()
+        << "requires every possible token value to derive from the same "
+           "ttl.pipe_transfer.post";
+    state.sawError = true;
+    return failure();
+  }
+  return resolvePipeTypeForTransfer(eventOp, maybePost->getTransfer(), state);
+}
+
+/// Verify and record an operation marked as an explicit pipe transfer event.
+void recordPipeTransferEvent(Operation *op, const LaunchNodeDomain &domain,
+                             Operation *unanalyzable, ModuleState &state) {
+  assert(op->hasTrait<TTLPipeTransferEventOpTrait>() &&
+         "expected a pipe transfer event operation");
+  ValueRange operands = op->getOperands();
+  auto transferIt = llvm::find_if(operands, [](Value operand) {
+    return mlir::isa<PipeTransferType>(operand.getType());
+  });
+  auto tokenIt = llvm::find_if(operands, [](Value operand) {
+    return mlir::isa<PipeTokenType>(operand.getType());
+  });
+  bool hasTransfer = transferIt != operands.end();
+  bool hasToken = tokenIt != operands.end();
+  assert(hasTransfer != hasToken &&
+         "pipe transfer event must have one transfer or token operand");
+
+  if (hasToken) {
+    FailureOr<PipeType> pipeType = resolvePipeTypeForToken(op, *tokenIt, state);
+    if (succeeded(pipeType)) {
+      state.recordPipeReceiveWaitEvent(op, *pipeType, domain, unanalyzable);
+    }
     return;
   }
-  if (auto srcPipeType = mlir::dyn_cast<PipeType>(copyOp.getSrc().getType())) {
-    int64_t netId = srcPipeType.getPipeNetId();
-    std::string name = state.netName(netId);
-    std::string msg;
-    llvm::raw_string_ostream(msg)
-        << "this `ttl.copy(pipe, buffer)` receives data from PipeNet " << name
-        << " on a node that is not a destination of any pipe in that "
-           "net; wrap the copy in `"
-        << name << ".if_dst(...)` or guard with `if " << name
-        << ".is_dst(): ...`";
-    checkKnownSubset(
-        copyOp, current, getPipeDestinationLaunchNodeDomain(srcPipeType),
-        unanalyzable, msg, {{netId, PipeRole::Destination}}, state);
+
+  FailureOr<PipeType> pipeType =
+      resolvePipeTypeForTransfer(op, *transferIt, state);
+  if (failed(pipeType)) {
+    return;
   }
+  bool isReceivePost = llvm::any_of(op->getResultTypes(), [](Type type) {
+    return mlir::isa<PipeTokenType>(type);
+  });
+  if (isReceivePost) {
+    verifyPipeReceivePost(op, *pipeType, domain, unanalyzable, state);
+    state.recordPipeEvent(op, *pipeType, PipeEventKind::ReceivePost, domain);
+    return;
+  }
+  verifyPipeSend(op, *pipeType, domain, unanalyzable, state);
+  state.recordPipeEvent(op, *pipeType, PipeEventKind::Send, domain);
 }
 
 /// Verify that a `ttl.pipenet_scope` body only executes on nodes participating
@@ -364,6 +437,11 @@ void recordGuardOperation(Operation *op, const LaunchNodeDomain &domain,
         FailureOr<int64_t> dfbId = getDFBId(wait.getCb());
         assert(succeeded(dfbId) && "DFB identities were verified");
         state.waitUses.push_back({wait, domain, *dfbId});
+      })
+      .Default([&](Operation *operation) {
+        if (operation->hasTrait<TTLPipeTransferEventOpTrait>()) {
+          recordPipeTransferEvent(operation, domain, unanalyzableOp, state);
+        }
       });
 }
 

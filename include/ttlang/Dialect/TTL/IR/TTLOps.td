@@ -699,7 +699,7 @@ def TTL_PipeTransferCreateOp : TTL_Op<"pipe_transfer.create", [Pure]> {
 }
 
 def TTL_PipeTransferPostOp : TTL_Op<"pipe_transfer.post",
-    [MemoryEffects<[MemRead, MemWrite]>]> {
+    [MemoryEffects<[MemRead, MemWrite]>, TTL_PipeTransferEventOpTrait]> {
   let summary = "Post a pipe receive destination";
   let description = [{
     Registers the receiver-owned destination DFB slot for a pipe transfer and
@@ -716,7 +716,7 @@ def TTL_PipeTransferPostOp : TTL_Op<"pipe_transfer.post",
 }
 
 def TTL_PipeTransferSendOp : TTL_Op<"pipe_transfer.send",
-    [MemoryEffects<[MemRead, MemWrite]>]> {
+    [MemoryEffects<[MemRead, MemWrite]>, TTL_PipeTransferEventOpTrait]> {
   let summary = "Send a pipe transfer payload";
   let description = [{
     Waits until the selected synchronization condition is satisfied, then
@@ -734,7 +734,7 @@ def TTL_PipeTransferSendOp : TTL_Op<"pipe_transfer.send",
 }
 
 def TTL_PipeTransferWaitOp : TTL_Op<"pipe_transfer.wait",
-    [MemoryEffects<[MemRead, MemWrite]>]> {
+    [MemoryEffects<[MemRead, MemWrite]>, TTL_PipeTransferEventOpTrait]> {
   let summary = "Wait for pipe receive completion";
   let description = [{
     Blocks until the posted receive represented by the pipe token has completed.
