@@ -17,11 +17,12 @@ buffers used within a top-level operation are declared in its body. An
 operation with resource parameters is expand-only and cannot be called as a
 TT-NN operation.
 
-DFB declarations sit inline with the compute/copy work in a unified
-body, so after the split they land inside each thread body. The existing
+DFB declarations may sit inline with the compute/copy work in a unified
+body, including inside control flow. After inlining, declarations are
+hoisted to operation setup before the body is split. The existing
 per-thread compiler is capture-based (thread functions take no
 parameters; DFBs arrive as closure captures), so before splitting we
-lift the top-level ``name = make_dfb(...)`` assigns out of the body,
+lift the ``name = make_dfb(...)`` assigns out of the body,
 evaluate them to DataflowBuffer objects, and pass them as captures --
 the same shape the @ttl.operation flow produces by running its setup
 body. After that the per-thread compile, CB sizing, pass pipeline, and
@@ -271,6 +272,7 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
     # Inline statement-level calls to other unified operations, then keep
     # the post-inline AST + source.
     inlined_pipenets = inline_atom_calls(fn_def, scope, caller_name=name)
+    _hoist_setup_declarations(fn_def)
     _validate_resource_declarations(fn_def, name)
 
     loaded_names = set()
@@ -378,16 +380,41 @@ def _collect_assignment_targets(target: ast.expr, names: set) -> None:
 
 
 def _non_resource_assignment_names(fn_def: ast.FunctionDef) -> set:
-    names = set()
+    class Collector(ast.NodeVisitor):
+        def __init__(self):
+            self.names = set()
+
+        def visit_Name(self, node):
+            if isinstance(node.ctx, ast.Store):
+                self.names.add(node.id)
+
+        def visit_Assign(self, node):
+            if _setup_assign_target(node) is None:
+                for target in node.targets:
+                    _collect_assignment_targets(target, self.names)
+            self.generic_visit(node.value)
+
+        def visit_AnnAssign(self, node):
+            _collect_assignment_targets(node.target, self.names)
+            if node.value is not None:
+                self.visit(node.value)
+
+        def visit_FunctionDef(self, node):
+            return
+
+        def visit_AsyncFunctionDef(self, node):
+            return
+
+        def visit_Lambda(self, node):
+            return
+
+        def visit_ClassDef(self, node):
+            return
+
+    collector = Collector()
     for statement in fn_def.body:
-        if _setup_assign_target(statement) is not None:
-            continue
-        if isinstance(statement, ast.Assign):
-            for target in statement.targets:
-                _collect_assignment_targets(target, names)
-        elif isinstance(statement, ast.AnnAssign):
-            _collect_assignment_targets(statement.target, names)
-    return names
+        collector.visit(statement)
+    return collector.names
 
 
 def _loaded_names_in(node: ast.AST) -> set:
@@ -398,15 +425,64 @@ def _loaded_names_in(node: ast.AST) -> set:
     }
 
 
+class _SetupHoister(ast.NodeTransformer):
+    """Move setup assignments out of operation control flow.
+
+    Resources are statically allocated for the program, so a declaration in
+    control flow controls only its uses, not whether the resource exists.
+    Nested Python scopes remain independent and are deliberately not visited.
+    """
+
+    def __init__(self):
+        self.statements: List[ast.stmt] = []
+
+    def visit_Assign(self, node):
+        if _setup_assign_target(node) is None:
+            return self.generic_visit(node)
+        self.statements.append(node)
+        return ast.copy_location(ast.Pass(), node)
+
+    def visit_FunctionDef(self, node):
+        return node
+
+    def visit_AsyncFunctionDef(self, node):
+        return node
+
+    def visit_Lambda(self, node):
+        return node
+
+    def visit_ClassDef(self, node):
+        return node
+
+
+def _hoist_setup_declarations(fn_def: ast.FunctionDef) -> None:
+    hoister = _SetupHoister()
+    body = []
+    for statement in fn_def.body:
+        transformed = hoister.visit(statement)
+        if transformed is not None:
+            body.append(transformed)
+    fn_def.body = hoister.statements + body
+    ast.fix_missing_locations(fn_def)
+
+
 def _validate_resource_declarations(
     fn_def: ast.FunctionDef, operation_name: str
 ) -> None:
-    """Require resource construction to use simple top-level assignments."""
+    """Validate statically hoisted operation resource construction."""
     allowed_calls = set()
     resource_statements = []
+    resource_names = set()
     for statement in fn_def.body:
-        if _setup_assign_target(statement) is None:
+        resource_name = _setup_assign_target(statement)
+        if resource_name is None:
             continue
+        if resource_name in resource_names:
+            raise ValueError(
+                f"@ttl.operation {operation_name!r}: resource "
+                f"{resource_name!r} is declared more than once"
+            )
+        resource_names.add(resource_name)
         resource_statements.append(statement)
         for node in ast.walk(statement):
             if not isinstance(node, ast.Call):
@@ -432,9 +508,9 @@ def _validate_resource_declarations(
             continue
         raise ValueError(
             f"@ttl.operation {operation_name!r}: resource declaration "
-            f"{factory_name!r} must be a simple top-level assignment in the "
-            "operation body; declarations inside control flow, callbacks, or "
-            "nested scopes are not supported"
+            f"{factory_name!r} must be a simple assignment in the operation "
+            "body; declarations inside callbacks or nested scopes are not "
+            "supported"
         )
 
 

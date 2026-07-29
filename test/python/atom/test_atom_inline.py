@@ -52,6 +52,7 @@ def make_exp_block(block_count):
 
 
 _factory_exp_block = make_exp_block(block_count=2)
+_RUN_CONDITIONAL_FACTORY_EXP = True
 
 
 @ttl.operation(grid=(1, 1))
@@ -62,6 +63,17 @@ def atom_factory_exp(in_t, out_t):
     ttl.copy(in_t[0:1, 0:1], a_blk)
 
     _factory_exp_block(out=out_t, inp=a_cb)
+
+
+@ttl.operation(grid=(1, 1))
+def atom_conditional_factory_exp(in_t, out_t):
+    if _RUN_CONDITIONAL_FACTORY_EXP:
+        a_cb = ttl.make_dataflow_buffer_like(in_t, shape=(1, 1), block_count=2)
+
+        a_blk = a_cb.reserve()
+        ttl.copy(in_t[0:1, 0:1], a_blk)
+
+        _factory_exp_block(out=out_t, inp=a_cb)
 
 
 def test_atom_outer_exp(device):
@@ -87,6 +99,20 @@ def test_atom_factory_exp(device):
     out_t = to_l1(torch.zeros(tile, tile, dtype=torch.bfloat16), device)
 
     atom_factory_exp(in_t, out_t)
+
+    got = ttnn.to_torch(out_t).reshape(tile, tile).to(torch.bfloat16)
+    assert_allclose(got, expected, rtol=2e-2, atol=2e-2)
+
+
+def test_atom_conditional_factory_exp(device):
+    tile = ttnn.TILE_SIZE
+    inp_t = (torch.randn(tile, tile, dtype=torch.bfloat16) * 0.5).clamp(-1.0, 1.0)
+    expected = torch.exp(inp_t.float()).to(torch.bfloat16)
+
+    in_t = to_l1(inp_t, device)
+    out_t = to_l1(torch.zeros(tile, tile, dtype=torch.bfloat16), device)
+
+    atom_conditional_factory_exp(in_t, out_t)
 
     got = ttnn.to_torch(out_t).reshape(tile, tile).to(torch.bfloat16)
     assert_allclose(got, expected, rtol=2e-2, atol=2e-2)

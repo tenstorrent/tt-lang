@@ -10,7 +10,7 @@
 # RUN: not %python %s non-tensor 2>&1 | FileCheck %s --check-prefix=NON-TENSOR
 # RUN: not %python %s expand-only 2>&1 | FileCheck %s --check-prefix=EXPAND-ONLY
 # RUN: not %python %s external-dfb 2>&1 | FileCheck %s --check-prefix=EXTERNAL-DFB
-# RUN: not %python %s nested-resource 2>&1 | FileCheck %s --check-prefix=NESTED
+# RUN: not %python %s callback-resource 2>&1 | FileCheck %s --check-prefix=CALLBACK
 # RUN: not %python %s shadow 2>&1 | FileCheck %s --check-prefix=SHADOW
 # RUN: not %python %s expression 2>&1 | FileCheck %s --check-prefix=EXPRESSION
 
@@ -83,12 +83,12 @@ def external_dfb_capture():
         external_dfb.wait()
 
 
-# Resource declarations must remain at operation top level.
-def nested_resource_declaration():
-    # NESTED: ValueError: @ttl.operation 'invalid': resource declaration 'make_dfb' must be a simple top-level assignment
+# Resource declarations cannot escape a nested Python scope.
+def callback_resource_declaration():
+    # CALLBACK: ValueError: @ttl.operation 'invalid': resource declaration 'make_dfb' must be a simple assignment
     @ttl.operation(grid=(1, 1))
     def invalid():
-        if True:
+        def callback():
             scratch = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
 
 
@@ -125,7 +125,7 @@ CASES = {
     "non-tensor": non_tensor_argument,
     "expand-only": direct_expand_only_call,
     "external-dfb": external_dfb_capture,
-    "nested-resource": nested_resource_declaration,
+    "callback-resource": callback_resource_declaration,
     "shadow": nested_binding_shadow,
     "expression": composed_expression_argument,
 }
