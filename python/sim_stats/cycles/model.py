@@ -306,7 +306,7 @@ def load_profile_json(path: Path | str) -> HardwareProfile:
     All fields optional (defaults applied); unknown keys ignored. Raises
     FileNotFoundError / ValueError with the path on a missing or malformed profile.
     """
-    p = Path(path)
+    p = Path(path).resolve()
     try:
         data = json.loads(p.read_text(encoding="utf-8"))
     except FileNotFoundError:
