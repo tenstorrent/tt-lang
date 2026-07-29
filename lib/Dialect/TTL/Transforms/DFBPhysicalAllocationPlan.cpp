@@ -4,6 +4,7 @@
 
 #include "DFBPhysicalAllocationPlan.h"
 
+#include "DFBAnalysisFailure.h"
 #include "DFBConcurrentKernelLivenessAnalysis.h"
 #include "DFBLogicalIdentityAnalysis.h"
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
@@ -28,23 +29,6 @@
 namespace mlir::tt::ttl {
 
 namespace {
-
-/// First validation failure produced while constructing an allocation plan.
-///
-/// Planning continues through MLIR walks, so later failures must not replace
-/// the operation that first violated the allocation contract.
-struct AnalysisFailure {
-  Operation *operation = nullptr;
-  std::string message;
-
-  void set(Operation *failureOperation, std::string failureMessage) {
-    if (!message.empty()) {
-      return;
-    }
-    operation = failureOperation;
-    message = std::move(failureMessage);
-  }
-};
 
 /// Returns true unless two logical DFBs can share one physical allocation.
 static bool
@@ -74,7 +58,7 @@ logicalDFBsConflict(const DFBLogicalLifecycle &lhs,
 static FailureOr<SmallVector<int32_t>> computeConcurrentAssignments(
     ModuleOp moduleOp, const DFBConcurrentKernelLivenessAnalysis &liveness,
     const InterferenceGraphColoring &coloring,
-    AnalysisFailure &analysisFailure) {
+    DFBAnalysisFailure &analysisFailure) {
   ArrayRef<DFBLogicalLifecycle> logicalDFBs =
       liveness.getLogicalDFBLifecycles();
   SmallVector<unsigned> logicalIndices =
@@ -99,20 +83,42 @@ static FailureOr<SmallVector<int32_t>> computeConcurrentAssignments(
 
   SmallVector<unsigned> colors =
       coloring.color(interferenceGraph, logicalIndices);
-  assert(colors.size() == logicalDFBs.size() &&
-         "coloring must assign every logical DFB");
+  if (colors.size() != logicalDFBs.size()) {
+    std::string message;
+    llvm::raw_string_ostream messageStream(message);
+    messageStream << "DFB coloring returned " << colors.size()
+                  << " assignments for " << logicalDFBs.size()
+                  << " logical DFBs";
+    analysisFailure.set(moduleOp, messageStream.str());
+    return failure();
+  }
 
   unsigned colorCount = 0;
-  for (unsigned color : colors) {
-    assert(color < logicalDFBs.size() &&
-           "a dense coloring cannot use more colors than vertices");
+  for (auto [vertex, color] : llvm::enumerate(colors)) {
+    if (color >= logicalDFBs.size()) {
+      std::string message;
+      llvm::raw_string_ostream messageStream(message);
+      messageStream << "DFB coloring assigned out-of-range color " << color
+                    << " to vertex " << vertex << "; expected less than "
+                    << logicalDFBs.size();
+      analysisFailure.set(moduleOp, messageStream.str());
+      return failure();
+    }
     colorCount = std::max(colorCount, color + 1);
   }
   llvm::BitVector usedColors(colorCount);
   for (unsigned color : colors) {
     usedColors.set(color);
   }
-  assert(usedColors.all() && "coloring must use dense zero-based colors");
+  if (!usedColors.all()) {
+    unsigned missingColor = usedColors.find_first_unset();
+    std::string message;
+    llvm::raw_string_ostream messageStream(message);
+    messageStream << "DFB coloring must use dense zero-based colors; color "
+                  << missingColor << " is unused";
+    analysisFailure.set(moduleOp, messageStream.str());
+    return failure();
+  }
 
   if (colorCount > kMaxCircularBuffers) {
     std::string message;
@@ -258,7 +264,7 @@ struct CompilerOnlyAllocation {
 static FailureOr<CompilerOnlyAllocation> computeCompilerOnlyAllocation(
     ModuleOp moduleOp,
     const DFBLogicalIdentityAnalysis &logicalIdentityAnalysis,
-    AnalysisFailure &analysisFailure) {
+    DFBAnalysisFailure &analysisFailure) {
   llvm::MapVector<func::FuncOp, SmallVector<BindCBOp>> kernelDFBs;
   moduleOp->walk([&](BindCBOp bindOp) {
     if (bindOp->hasAttr(kCompilerAllocatedAttrName)) {
@@ -336,7 +342,7 @@ static FailureOr<CompilerOnlyAllocation> computeCompilerOnlyAllocation(
 
 static FailureOr<SmallVector<DFBPhysicalAllocationDescriptor>>
 buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
-                 AnalysisFailure &analysisFailure) {
+                 DFBAnalysisFailure &analysisFailure) {
   llvm::DenseMap<int32_t, const DFBPhysicalIndexAssignment *> uniqueByIndex;
   for (const DFBPhysicalIndexAssignment &assignment : assignments) {
     auto [existingIt, inserted] =
@@ -361,7 +367,19 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
 
   SmallVector<DFBPhysicalAllocationDescriptor> descriptors;
   descriptors.reserve(sorted.size());
-  for (auto [physicalIndex, assignment] : sorted) {
+  for (auto [expectedIndex, indexedAssignment] : llvm::enumerate(sorted)) {
+    auto [physicalIndex, assignment] = indexedAssignment;
+    if (physicalIndex != static_cast<int32_t>(expectedIndex)) {
+      std::string message;
+      llvm::raw_string_ostream messageStream(message);
+      messageStream
+          << "physical DFB indices must form a dense zero-based range; "
+             "expected index "
+          << expectedIndex << " but found " << physicalIndex;
+      analysisFailure.set(assignment->declarations.front(),
+                          messageStream.str());
+      return failure();
+    }
     auto dfbType = cast<CircularBufferType>(assignment->type);
     descriptors.push_back(
         {physicalIndex, static_cast<int32_t>(dfbType.getElementsPerBlock()),
@@ -393,7 +411,7 @@ DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
     return;
   }
 
-  AnalysisFailure analysisFailure;
+  DFBAnalysisFailure analysisFailure;
   if (reuseUserDFBs) {
     const DFBConcurrentKernelLivenessAnalysis &liveness =
         analysisManager.getAnalysis<DFBConcurrentKernelLivenessAnalysis>();

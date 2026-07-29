@@ -55,6 +55,7 @@ public:
 
 private:
   SmallVector<DFBLogicalIdentityAssignment> assignments;
+  // Allocation planning requires repeated declaration-to-identity queries.
   DenseMap<Operation *, int64_t> logicalIds;
   Operation *errorOperation = nullptr;
   std::string errorMessage;

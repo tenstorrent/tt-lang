@@ -5,6 +5,7 @@
 #include "DFBConcurrentKernelLivenessAnalysis.h"
 
 #include "DFBAcquireReleaseAnalysis.h"
+#include "DFBAnalysisFailure.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
@@ -15,6 +16,7 @@
 
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -99,23 +101,6 @@ private:
   SmallVector<llvm::BitVector> reachable;
 };
 
-/// First diagnostic discovered by an analysis walk.
-///
-/// Analysis helpers record failures instead of emitting diagnostics. Retaining
-/// the first failure preserves the operation that violated the input contract.
-struct AnalysisFailure {
-  Operation *operation = nullptr;
-  std::string message;
-
-  void set(Operation *failureOperation, std::string failureMessage) {
-    if (!message.empty()) {
-      return;
-    }
-    operation = failureOperation;
-    message = std::move(failureMessage);
-  }
-};
-
 /// Returns the declaration reached through unrealized conversion casts, or a
 /// null op when the value does not resolve to `ttl.bind_cb`.
 static BindCBOp getBindOp(Value dfb) {
@@ -131,7 +116,7 @@ collectLogicalDFBs(ModuleOp moduleOp,
                    const DFBLogicalIdentityAnalysis &identityAnalysis,
                    SmallVectorImpl<DFBLogicalLifecycle> &logicalDFBs,
                    DenseMap<Operation *, unsigned> &bindToLogicalDFB,
-                   AnalysisFailure &analysisFailure) {
+                   DFBAnalysisFailure &analysisFailure) {
   llvm::MapVector<int64_t, unsigned> idToLogicalDFB;
 
   moduleOp.walk([&](BindCBOp bindOp) {
@@ -156,7 +141,8 @@ collectLogicalDFBs(ModuleOp moduleOp,
 
   moduleOp.walk([&](Operation *operation) {
     // `ttl.attach_cb` associates tensor SSA with a DFB but does not access the
-    // hardware buffer or change its protocol state.
+    // hardware buffer or change its protocol state. Acquire ownership still
+    // prevents release before uses of the attached tensor complete.
     if (!analysisFailure.message.empty() || isa<AttachCBOp>(operation)) {
       return;
     }
@@ -207,7 +193,7 @@ collectLogicalDFBs(ModuleOp moduleOp,
 /// a transformation distributed one DFB without preserving its logical ID.
 static bool
 verifyCompilerDFBAcquirePairs(ArrayRef<DFBLogicalLifecycle> logicalDFBs,
-                              AnalysisFailure &analysisFailure) {
+                              DFBAnalysisFailure &analysisFailure) {
   for (const DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
     if (!logicalDFB.compilerCreated ||
         logicalDFB.reserves.empty() == logicalDFB.waits.empty()) {
@@ -229,15 +215,41 @@ verifyCompilerDFBAcquirePairs(ArrayRef<DFBLogicalLifecycle> logicalDFBs,
   return true;
 }
 
-/// Adds program-order events for every single-block kernel function.
+/// Returns the top-level operation containing `operation`.
+static Operation *getTopLevelKernelOperation(Operation *operation) {
+  func::FuncOp funcOp = operation->getParentOfType<func::FuncOp>();
+  if (!funcOp || funcOp.getBody().empty() || !funcOp.getBody().hasOneBlock()) {
+    return nullptr;
+  }
+
+  Block &functionBody = funcOp.getBody().front();
+  return operation->getBlock() == &functionBody
+             ? operation
+             : functionBody.findAncestorOpInBlock(*operation);
+}
+
+/// Adds program-order events for DFB-accessing operations.
 ///
 /// Functions remain unordered until DFB protocol edges connect their event
-/// sequences.
+/// sequences. Contracting unrelated operations preserves reachability between
+/// every event queried by the lifetime proof.
 static void
-buildProgramOrderGraph(ModuleOp moduleOp, HappensBeforeGraph &graph,
+buildProgramOrderGraph(ModuleOp moduleOp,
+                       ArrayRef<DFBLogicalLifecycle> logicalDFBs,
+                       HappensBeforeGraph &graph,
                        DenseMap<Operation *, EventPair> &operationEventMap,
                        SmallVectorImpl<DFBOperationEventPair> &operationEvents,
                        SmallVectorImpl<DFBEventEdge> &programOrderEdges) {
+  llvm::DenseSet<Operation *> modeledOperations;
+  for (const DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
+    for (Operation *runtimeUse : logicalDFB.runtimeUses) {
+      if (Operation *topLevelOperation =
+              getTopLevelKernelOperation(runtimeUse)) {
+        modeledOperations.insert(topLevelOperation);
+      }
+    }
+  }
+
   for (func::FuncOp funcOp : moduleOp.getOps<func::FuncOp>()) {
     if (funcOp.getBody().empty() || !funcOp.getBody().hasOneBlock()) {
       continue;
@@ -245,6 +257,9 @@ buildProgramOrderGraph(ModuleOp moduleOp, HappensBeforeGraph &graph,
 
     std::optional<EventPair> previousEvents;
     for (Operation &operation : funcOp.getBody().front()) {
+      if (!modeledOperations.contains(&operation)) {
+        continue;
+      }
       EventPair currentEvents = graph.addOperation();
       operationEventMap[&operation] = currentEvents;
       operationEvents.push_back(
@@ -268,15 +283,7 @@ buildProgramOrderGraph(ModuleOp moduleOp, HappensBeforeGraph &graph,
 static std::optional<EventPair>
 getProjectedEvents(Operation *operation,
                    const DenseMap<Operation *, EventPair> &operationEvents) {
-  func::FuncOp funcOp = operation->getParentOfType<func::FuncOp>();
-  if (!funcOp || funcOp.getBody().empty() || !funcOp.getBody().hasOneBlock()) {
-    return std::nullopt;
-  }
-
-  Block &functionBody = funcOp.getBody().front();
-  Operation *projected = operation->getBlock() == &functionBody
-                             ? operation
-                             : functionBody.findAncestorOpInBlock(*operation);
+  Operation *projected = getTopLevelKernelOperation(operation);
   if (!projected) {
     return std::nullopt;
   }
@@ -479,7 +486,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     Operation *operation,
     const DFBLogicalIdentityAnalysis &logicalIdentityAnalysis) {
   ModuleOp moduleOp = cast<ModuleOp>(operation);
-  AnalysisFailure analysisFailure;
+  DFBAnalysisFailure analysisFailure;
   DenseMap<Operation *, unsigned> bindToLogicalDFB;
   if (!collectLogicalDFBs(moduleOp, logicalIdentityAnalysis, logicalDFBs,
                           bindToLogicalDFB, analysisFailure)) {
@@ -498,8 +505,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
 
   HappensBeforeGraph happensBeforeGraph;
   DenseMap<Operation *, EventPair> operationEventMap;
-  buildProgramOrderGraph(moduleOp, happensBeforeGraph, operationEventMap,
-                         operationEvents, programOrderEdges);
+  buildProgramOrderGraph(moduleOp, logicalDFBs, happensBeforeGraph,
+                         operationEventMap, operationEvents, programOrderEdges);
 
   for (DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
     std::optional<int64_t> transactionTileCount =

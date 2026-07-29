@@ -205,7 +205,10 @@ def _user_dfb_reuse_kernel(first, second, out):
     [("dram", to_dram), ("l1", to_l1)],
     ids=["dram", "l1"],
 )
-def test_user_dfb_reuse_runtime(device, dtype, memory_config, to_device):
+@pytest.mark.parametrize("reuse_user_dfbs", [True, False], ids=["reuse", "distinct"])
+def test_user_dfb_allocation_runtime(
+    device, dtype, memory_config, to_device, reuse_user_dfbs
+):
     element_indices = torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE)
     first_host = ((element_indices.remainder(257) - 128) / 64).to(dtype)
     second_host = (((17 * element_indices).remainder(509) - 254) / 128).to(dtype)
@@ -215,7 +218,10 @@ def test_user_dfb_reuse_runtime(device, dtype, memory_config, to_device):
     second = to_device(second_host, device)
     out = to_device(out_host, device)
 
-    _user_dfb_reuse_kernel(first, second, out)
+    reuse_option = (
+        "--ttl-reuse-user-dfbs" if reuse_user_dfbs else "--no-ttl-reuse-user-dfbs"
+    )
+    _user_dfb_reuse_kernel(first, second, out, options=reuse_option)
 
     actual = ttnn.to_torch(out).float()
     expected = second_host.float()
