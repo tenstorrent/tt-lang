@@ -3531,7 +3531,9 @@ def TTKernel_GetNocAddrFromBankIDOp
     }];
 }
 
-def TTKernel_NocAsyncReadOp : TTKernel_Op<"noc_async_read", [AttrSizedOperandSegments]> {
+def TTKernel_NocAsyncReadOp
+    : TTKernel_NocReadCommandOp<"noc_async_read",
+                                [AttrSizedOperandSegments]> {
     let summary = "NocAsyncRead";
     let description = [{
       NocAsyncRead from either an L1 core coordinate or a DRAM bank.
@@ -3551,7 +3553,8 @@ def TTKernel_NocAsyncReadOp : TTKernel_Op<"noc_async_read", [AttrSizedOperandSeg
     let hasVerifier = 1;
 }
 
-def TTKernel_NocAsyncReadTileOp : TTKernel_Op<"noc_async_read_tile"> {
+def TTKernel_NocAsyncReadTileOp
+    : TTKernel_NocReadCommandOp<"noc_async_read_tile"> {
     let summary = "NocAsyncReadTile";
     let description = [{
       NocAsyncReadTile
@@ -3567,8 +3570,9 @@ def TTKernel_NocAsyncReadTileOp : TTKernel_Op<"noc_async_read_tile"> {
     }];
 }
 
-def TTKernel_NocAsyncReadOnePacketSetStateOp : TTKernel_Op<"noc_async_read_one_packet_set_state",
-                                                           [AttrSizedOperandSegments]> {
+def TTKernel_NocAsyncReadOnePacketSetStateOp
+    : TTKernel_NocReadCommandOp<"noc_async_read_one_packet_set_state",
+                                [AttrSizedOperandSegments]> {
     let summary = "NocAsyncReadOnePacketSetState";
     let description = [{
       NocAsyncReadOnePacketSetState
@@ -3587,8 +3591,11 @@ def TTKernel_NocAsyncReadOnePacketSetStateOp : TTKernel_Op<"noc_async_read_one_p
     let hasVerifier = 1;
 }
 
-def TTKernel_NocAsyncReadOnePacketWithStateOp : TTKernel_Op<"noc_async_read_one_packet_with_state",
-                                                            [AttrSizedOperandSegments]> {
+def TTKernel_NocAsyncReadOnePacketWithStateOp
+    : TTKernel_NocReadCommandOp<
+          "noc_async_read_one_packet_with_state",
+          [TTKernel_NocCommandStatePreservingOpTrait,
+           AttrSizedOperandSegments]> {
     let summary = "NocAsyncReadOnePacketWithState";
     let description = [{
       NocAsyncReadOnePacketWithState
@@ -3608,7 +3615,11 @@ def TTKernel_NocAsyncReadOnePacketWithStateOp : TTKernel_Op<"noc_async_read_one_
     let hasVerifier = 1;
 }
 
-def TTKernel_NocAsyncReadBarrierOp : TTKernel_Op<"noc_async_read_barrier", [TTKernel_DeviceZoneOpTrait]> {
+def TTKernel_NocAsyncReadBarrierOp
+    : TTKernel_NocReadCommandOp<
+          "noc_async_read_barrier",
+          [TTKernel_NocCommandStatePreservingOpTrait,
+           TTKernel_DeviceZoneOpTrait]> {
     let summary = "NocAsyncReadBarrier";
     let description = [{
       Waits for all outstanding read transactions on the given NOC.
@@ -3629,7 +3640,11 @@ def TTKernel_NocAsyncReadBarrierOp : TTKernel_Op<"noc_async_read_barrier", [TTKe
     let hasCanonicalizer = 1;
 }
 
-def TTKernel_NocAsyncReadBarrierWithTridOp : TTKernel_Op<"noc_async_read_barrier_with_trid", [TTKernel_DeviceZoneOpTrait, TTKernel_TridNocOpTrait]> {
+def TTKernel_NocAsyncReadBarrierWithTridOp
+    : TTKernel_NocReadCommandOp<
+          "noc_async_read_barrier_with_trid",
+          [TTKernel_NocCommandStatePreservingOpTrait,
+           TTKernel_DeviceZoneOpTrait, TTKernel_TridNocOpTrait]> {
     let summary = "NocAsyncReadBarrierWithTrid";
     let description = [{
       Waits for outstanding read transactions matching a transaction ID. TRID is 0-15, NOC is 0 or 1.
@@ -3647,7 +3662,9 @@ def TTKernel_NocAsyncReadBarrierWithTridOp : TTKernel_Op<"noc_async_read_barrier
     }];
 }
 
-def TTKernel_NocAsyncWriteOp : TTKernel_Op<"noc_async_write", [AttrSizedOperandSegments]> {
+def TTKernel_NocAsyncWriteOp
+    : TTKernel_NocWriteCommandOp<"noc_async_write",
+                                 [AttrSizedOperandSegments]> {
     let summary = "NocAsyncWrite";
     let description = [{
       NocAsyncWrite to either an L1 core coordinate or a DRAM bank.
@@ -3667,7 +3684,8 @@ def TTKernel_NocAsyncWriteOp : TTKernel_Op<"noc_async_write", [AttrSizedOperandS
     let hasVerifier = 1;
 }
 
-def TTKernel_NocAsyncWriteTileOp : TTKernel_Op<"noc_async_write_tile"> {
+def TTKernel_NocAsyncWriteTileOp
+    : TTKernel_NocWriteCommandOp<"noc_async_write_tile"> {
     let summary = "NocAsyncWriteTile";
     let description = [{
       NocAsyncWriteTilie
@@ -3683,8 +3701,10 @@ def TTKernel_NocAsyncWriteTileOp : TTKernel_Op<"noc_async_write_tile"> {
     }];
 }
 
-def TTKernel_NocAsyncWriteOnePacketWithTridOp : TTKernel_Op<"noc_async_write_one_packet_with_trid",
-                                                            [TTKernel_TridNocOpTrait, AttrSizedOperandSegments]> {
+def TTKernel_NocAsyncWriteOnePacketWithTridOp
+    : TTKernel_NocWriteCommandOp<
+          "noc_async_write_one_packet_with_trid",
+          [TTKernel_TridNocOpTrait, AttrSizedOperandSegments]> {
     let summary = "NocAsyncWriteOnePacketWithTrid";
     let description = [{
       Issues a one-packet NOC write with a specific transaction ID. TRID is 0-15, NOC is 0 or 1.
@@ -3712,7 +3732,9 @@ def TTKernel_NocAsyncWriteOnePacketWithTridOp : TTKernel_Op<"noc_async_write_one
     let hasVerifier = 1;
 }
 
-def TTKernel_NocAsyncWriteOnePacketSetStateOp : TTKernel_Op<"noc_async_write_one_packet_set_state"> {
+def TTKernel_NocAsyncWriteOnePacketSetStateOp
+    : TTKernel_NocWriteCommandOp<
+          "noc_async_write_one_packet_set_state"> {
     let summary = "NocAsyncWriteOnePacketSetState";
     let description = [{
       Programs the stateful registers for subsequent one-packet asynchronous
@@ -3732,7 +3754,10 @@ def TTKernel_NocAsyncWriteOnePacketSetStateOp : TTKernel_Op<"noc_async_write_one
     }];
 }
 
-def TTKernel_NocAsyncWriteOnePacketWithStateOp : TTKernel_Op<"noc_async_write_one_packet_with_state"> {
+def TTKernel_NocAsyncWriteOnePacketWithStateOp
+    : TTKernel_NocWriteCommandOp<
+          "noc_async_write_one_packet_with_state",
+          [TTKernel_NocCommandStatePreservingOpTrait]> {
     let summary = "NocAsyncWriteOnePacketWithState";
     let description = [{
       Issues a one-packet asynchronous write using the state programmed by
@@ -3752,7 +3777,11 @@ def TTKernel_NocAsyncWriteOnePacketWithStateOp : TTKernel_Op<"noc_async_write_on
     }];
 }
 
-def TTKernel_NocAsyncWriteBarrierOp : TTKernel_Op<"noc_async_write_barrier", [TTKernel_DeviceZoneOpTrait]> {
+def TTKernel_NocAsyncWriteBarrierOp
+    : TTKernel_NocWriteCommandOp<
+          "noc_async_write_barrier",
+          [TTKernel_NocCommandStatePreservingOpTrait,
+           TTKernel_DeviceZoneOpTrait]> {
     let summary = "NocAsyncWriteBarrier";
     let description = [{
       Waits for all outstanding write transactions on the given NOC.
@@ -3773,7 +3802,10 @@ def TTKernel_NocAsyncWriteBarrierOp : TTKernel_Op<"noc_async_write_barrier", [TT
     let hasCanonicalizer = 1;
 }
 
-def TTKernel_NocAsyncAtomicBarrierOp : TTKernel_Op<"noc_async_atomic_barrier"> {
+def TTKernel_NocAsyncAtomicBarrierOp
+    : TTKernel_NocAtomicCommandOp<
+          "noc_async_atomic_barrier",
+          [TTKernel_NocCommandStatePreservingOpTrait]> {
     let summary = "NocAsyncAtomicBarrier";
     let description = [{
       Block until all outstanding non-posted atomic operations on the given
@@ -3788,7 +3820,11 @@ def TTKernel_NocAsyncAtomicBarrierOp : TTKernel_Op<"noc_async_atomic_barrier"> {
     }];
 }
 
-def TTKernel_NocAsyncWriteBarrierWithTridOp : TTKernel_Op<"noc_async_write_barrier_with_trid", [TTKernel_DeviceZoneOpTrait, TTKernel_TridNocOpTrait]> {
+def TTKernel_NocAsyncWriteBarrierWithTridOp
+    : TTKernel_NocWriteCommandOp<
+          "noc_async_write_barrier_with_trid",
+          [TTKernel_NocCommandStatePreservingOpTrait,
+           TTKernel_DeviceZoneOpTrait, TTKernel_TridNocOpTrait]> {
     let summary = "NocAsyncWriteBarrierWithTrid";
     let description = [{
       Waits for outstanding write transactions matching a transaction ID. TRID is 0-15, NOC is 0 or 1.
@@ -3820,7 +3856,8 @@ def TTKernel_GetSemaphoreOp : TTKernel_Op<"get_semaphore", [Pure]> {
     }];
 }
 
-def TTKernel_NocSemaphoreIncOp : TTKernel_Op<"noc_semaphore_inc"> {
+def TTKernel_NocSemaphoreIncOp
+    : TTKernel_NocAtomicCommandOp<"noc_semaphore_inc"> {
     let summary = "NocSemaphoreInc";
     let description = [{
       The Tensix core executing this function call initiates an atomic increment
@@ -3857,7 +3894,9 @@ def TTKernel_NocSemaphoreIncOp : TTKernel_Op<"noc_semaphore_inc"> {
     ];
 }
 
-def TTKernel_NocSemaphoreSetOp : TTKernel_Op<"noc_semaphore_set"> {
+def TTKernel_NocSemaphoreSetOp
+    : TTKernel_NocOp<"noc_semaphore_set",
+                     [TTKernel_NocCommandStatePreservingOpTrait]> {
     let summary = "NocSemaphoreSet";
     let description = [{
       Sets the value of a local L1 memory address on the Tensix core executing
@@ -3873,7 +3912,8 @@ def TTKernel_NocSemaphoreSetOp : TTKernel_Op<"noc_semaphore_set"> {
     }];
 }
 
-def TTKernel_RemoteSramWriteU32Op : TTKernel_Op<"remote_sram_write_u32"> {
+def TTKernel_RemoteSramWriteU32Op
+    : TTKernel_NocWriteCommandOp<"remote_sram_write_u32"> {
     let summary = "RemoteSramWriteU32";
     let description = [{
       Initiates a 4-byte remote SRAM write of the u32 value stored at a local
@@ -3891,7 +3931,8 @@ def TTKernel_RemoteSramWriteU32Op : TTKernel_Op<"remote_sram_write_u32"> {
     }];
 }
 
-def TTKernel_NocInlineDwWriteOp : TTKernel_Op<"noc_inline_dw_write"> {
+def TTKernel_NocInlineDwWriteOp
+    : TTKernel_NocWriteCommandOp<"noc_inline_dw_write"> {
     let summary = "NocInlineDwWrite";
     let description = [{
       Initiates an inline 32-bit NOC write to a remote L1 address. The value is
@@ -3943,7 +3984,8 @@ def TTKernel_SemaphoreWaitMinOp : TTKernel_Op<"experimental.semaphore_wait_min">
     }];
 }
 
-def TTKernel_NocSemaphoreSetMulticastOp : TTKernel_Op<"noc_semaphore_set_multicast"> {
+def TTKernel_NocSemaphoreSetMulticastOp
+    : TTKernel_NocWriteCommandOp<"noc_semaphore_set_multicast"> {
     let summary = "NocSemaphoreSetMulticast";
     let description = [{
       Initiates an asynchronous write from a source address in L1 memory on the
@@ -3971,7 +4013,9 @@ def TTKernel_NocSemaphoreSetMulticastOp : TTKernel_Op<"noc_semaphore_set_multica
     }];
 }
 
-def TTKernel_NocSemaphoreSetMulticastLoopbackOp : TTKernel_Op<"noc_semaphore_set_multicast_loopback_src"> {
+def TTKernel_NocSemaphoreSetMulticastLoopbackOp
+    : TTKernel_NocWriteCommandOp<
+          "noc_semaphore_set_multicast_loopback_src"> {
     let summary = "NocSemaphoreSetMulticastLoopback";
     let description = [{
       Initiates an asynchronous write from a source address in L1 memory on the
@@ -3999,7 +4043,8 @@ def TTKernel_NocSemaphoreSetMulticastLoopbackOp : TTKernel_Op<"noc_semaphore_set
     }];
 }
 
-def TTKernel_NocSemaphoreIncMulticastOp : TTKernel_Op<"noc_semaphore_inc_multicast"> {
+def TTKernel_NocSemaphoreIncMulticastOp
+    : TTKernel_NocAtomicCommandOp<"noc_semaphore_inc_multicast"> {
     let summary = "NocSemaphoreIncMulticast";
     let description = [{
       Initiates an atomic increment (with 32-bit wrap) of a 4-byte L1 semaphore
@@ -4419,7 +4464,9 @@ def TTKernel_GetNocMulticastAddrOp
     }];
 }
 
-def TTKernel_NocAsyncWriteMulticastOnePacketOp : TTKernel_Op<"noc_async_write_multicast_one_packet"> {
+def TTKernel_NocAsyncWriteMulticastOnePacketOp
+    : TTKernel_NocWriteCommandOp<
+          "noc_async_write_multicast_one_packet"> {
   let summary = "NocAsyncWriteMulticastOnePacket";
   let description = [{
     NocAsyncWriteMulticastOnePacket
@@ -4445,7 +4492,8 @@ def TTKernel_NocAsyncWriteMulticastOnePacketOp : TTKernel_Op<"noc_async_write_mu
     }];
 }
 
-def TTKernel_NocAsyncWriteMulticastOp : TTKernel_Op<"noc_async_write_multicast"> {
+def TTKernel_NocAsyncWriteMulticastOp
+    : TTKernel_NocWriteCommandOp<"noc_async_write_multicast"> {
   let summary = "NocAsyncWriteMulticast";
   let description = [{
     Initiates an asynchronous write from a source address in L1 memory on the
@@ -4492,7 +4540,9 @@ def TTKernel_NocAsyncWriteMulticastOp : TTKernel_Op<"noc_async_write_multicast">
   }];
 }
 
-def TTKernel_NocAsyncWriteMulticastLoopbackSrcOp : TTKernel_Op<"noc_async_write_multicast_loopback_src"> {
+def TTKernel_NocAsyncWriteMulticastLoopbackSrcOp
+    : TTKernel_NocWriteCommandOp<
+          "noc_async_write_multicast_loopback_src"> {
   let summary = "NocAsyncWriteMulticastLoopbackSrc";
   let description = [{
     Multicast write that allows the sender to be part of the destinations.

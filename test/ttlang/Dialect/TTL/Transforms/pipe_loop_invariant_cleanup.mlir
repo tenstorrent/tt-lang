@@ -1,19 +1,26 @@
 // RUN: ttlang-opt %s --split-input-file -convert-ttl-to-ttkernel | FileCheck %s
 
 // Summary: Verifies that TTL-to-TTKernel cleanup hoists loop-invariant
-// PipeNet value construction out of transfer loops without moving DFB state
-// queries or NoC side-effect operations.
+// PipeNet value construction and selects stateful NoC writes when other NoC
+// commands execute on disjoint cores.
 
 // Sender-side pipe lowering inside a multi-tile transfer loop should compute
 // the role predicate and receiver coordinates once. The DFB write pointer
-// remains inside the loop because it depends on buffer state.
+// remains inside the loop because it depends on buffer state. The write command
+// state is configured once because receiver-side commands execute on a
+// different core.
 // CHECK-LABEL: func.func @sender_loop_hoists_pipe_invariants
 // CHECK-DAG: %[[C0:.+]] = arith.constant 0 : index
 // CHECK-DAG: %[[C1:.+]] = arith.constant 1 : index
+// CHECK-DAG: %[[C0_I32:.+]] = arith.constant 0 : i32
+// CHECK-DAG: %[[WRITE_SIZE:.+]] = arith.constant 8192 : i32
 // CHECK-DAG: %[[CORE_X:.+]] = ttkernel.my_logical_x_
 // CHECK-DAG: %[[CORE_Y:.+]] = ttkernel.my_logical_y_
 // CHECK: %[[DST_X:.+]] = ttkernel.experimental.convert_logical_x_to_translated(%[[C1]])
 // CHECK-NEXT: %[[DST_Y:.+]] = ttkernel.experimental.convert_logical_y_to_translated(%[[C0]])
+// CHECK: %[[SETUP_ADDR:.+]] = ttkernel.get_noc_addr(%[[DST_X]], %[[DST_Y]], %[[C0_I32]],
+// CHECK: scf.if %[[IS_SRC:.+]]
+// CHECK-NEXT: ttkernel.noc_async_write_one_packet_set_state(%[[SETUP_ADDR]], %[[WRITE_SIZE]],
 // CHECK: scf.for
 // CHECK-NOT: ttkernel.my_logical_x_
 // CHECK-NOT: ttkernel.my_logical_y_
@@ -23,7 +30,8 @@
 // CHECK-NOT: ttkernel.experimental.convert_logical_x_to_translated
 // CHECK-NOT: ttkernel.experimental.convert_logical_y_to_translated
 // CHECK: %[[SRC:.+]] = ttkernel.get_write_ptr
-// CHECK: ttkernel.noc_async_write %[[SRC]], core[%[[DST_X]], %[[DST_Y]]]
+// CHECK-NEXT: %[[DST_ADDR:.+]] = ttkernel.load_from_l1
+// CHECK-NEXT: ttkernel.noc_async_write_one_packet_with_state(%[[SRC]], %[[DST_ADDR]],
 func.func @sender_loop_hoists_pipe_invariants()
     attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
