@@ -19,6 +19,8 @@
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/LoopInvariantCodeMotionUtils.h"
 
+#include <optional>
+
 namespace mlir::tt::ttkernel {
 
 namespace {
@@ -112,6 +114,26 @@ struct DeduplicateConsecutiveBarriers : OpRewritePattern<BarrierOp> {
   }
 };
 
+/// Move pure value computations whose operands are defined outside `op`.
+static size_t hoistIfRegionInvariantValueOps(scf::IfOp op,
+                                             PatternRewriter &rewriter) {
+  SmallVector<Region *> regions{&op.getThenRegion()};
+  if (!op.getElseRegion().empty()) {
+    regions.push_back(&op.getElseRegion());
+  }
+  return moveLoopInvariantCode(
+      regions,
+      [](Value value, Region *region) {
+        return isDefinedOutsideRegion(value, region);
+      },
+      [](Operation *candidate, Region *) {
+        return isHoistableTTKernelValueComputation(candidate);
+      },
+      [&](Operation *candidate, Region *region) {
+        rewriter.moveOpBefore(candidate, region->getParentOp());
+      });
+}
+
 /// Hoist pure value computations from `scf.if` regions when all operands are
 /// already available before the conditional.
 struct HoistIfRegionInvariantValueOps : OpRewritePattern<scf::IfOp> {
@@ -119,24 +141,27 @@ struct HoistIfRegionInvariantValueOps : OpRewritePattern<scf::IfOp> {
 
   LogicalResult matchAndRewrite(scf::IfOp op,
                                 PatternRewriter &rewriter) const override {
-    SmallVector<Region *> regions{&op.getThenRegion()};
-    if (!op.getElseRegion().empty()) {
-      regions.push_back(&op.getElseRegion());
-    }
-    size_t numMoved = moveLoopInvariantCode(
-        regions,
-        [](Value value, Region *region) {
-          return isDefinedOutsideRegion(value, region);
-        },
-        [](Operation *candidate, Region *) {
-          return isHoistableTTKernelValueComputation(candidate);
-        },
-        [&](Operation *candidate, Region *region) {
-          rewriter.moveOpBefore(candidate, region->getParentOp());
-        });
-    return success(numMoved != 0);
+    return success(hoistIfRegionInvariantValueOps(op, rewriter) != 0);
   }
 };
+
+/// Move pure value computations whose operands are defined outside `loop`.
+static size_t hoistLoopInvariantValueOps(scf::ForOp loop,
+                                         PatternRewriter &rewriter) {
+  LoopLikeOpInterface loopInterface =
+      cast<LoopLikeOpInterface>(loop.getOperation());
+  return moveLoopInvariantCode(
+      loopInterface.getLoopRegions(),
+      [&](Value value, Region *) {
+        return loopInterface.isDefinedOutsideOfLoop(value);
+      },
+      [](Operation *candidate, Region *) {
+        return isHoistableTTKernelValueComputation(candidate);
+      },
+      [&](Operation *candidate, Region *) {
+        rewriter.moveOpBefore(candidate, loop);
+      });
+}
 
 /// Hoist pure value computations from loops when their operands are not defined
 /// by the loop body.
@@ -145,21 +170,82 @@ struct HoistLoopInvariantValueOps : OpRewritePattern<scf::ForOp> {
 
   LogicalResult matchAndRewrite(scf::ForOp op,
                                 PatternRewriter &rewriter) const override {
-    LoopLikeOpInterface loop = cast<LoopLikeOpInterface>(op.getOperation());
-    size_t numMoved = moveLoopInvariantCode(
-        loop.getLoopRegions(),
-        [&](Value value, Region *) {
-          return loop.isDefinedOutsideOfLoop(value);
-        },
-        [](Operation *candidate, Region *) {
-          return isHoistableTTKernelValueComputation(candidate);
-        },
-        [&](Operation *candidate, Region *) {
-          rewriter.moveOpBefore(candidate, op);
-        });
-    return success(numMoved != 0);
+    return success(hoistLoopInvariantValueOps(op, rewriter) != 0);
   }
 };
+
+/// A loop and the predicates that must guard its stateful write setup.
+struct StatefulWriteLoop {
+  scf::ForOp loop;
+  SmallVector<scf::IfOp> predicates;
+};
+
+/// Return whether `loop` preserves the write command and setup predicate.
+static LogicalResult analyzeStatefulWriteLoop(NocAsyncWriteOp op,
+                                              scf::ForOp loop,
+                                              StatefulWriteLoop &result) {
+  auto isLoopInvariant = [&](Value value) {
+    return !value || loop.isDefinedOutsideOfLoop(value);
+  };
+  if (!llvm::all_of(op.getDstCoreXY(), isLoopInvariant) ||
+      !isLoopInvariant(op.getSize()) || !isLoopInvariant(op.getNoc())) {
+    return failure();
+  }
+
+  SmallVector<scf::IfOp> enclosingPredicates;
+  for (Operation *ancestor = op->getParentOp();
+       ancestor && ancestor != loop.getOperation();
+       ancestor = ancestor->getParentOp()) {
+    if (auto ifOp = dyn_cast<scf::IfOp>(ancestor)) {
+      if (!ifOp.getElseRegion().empty() ||
+          !ifOp.getThenRegion().isAncestor(op->getParentRegion()) ||
+          !isLoopInvariant(ifOp.getCondition())) {
+        return failure();
+      }
+      enclosingPredicates.push_back(ifOp);
+      continue;
+    }
+    if (isa<scf::ForOp>(ancestor)) {
+      continue;
+    }
+    if (ancestor->getNumRegions() != 0) {
+      return failure();
+    }
+  }
+
+  WalkResult commandCheck = loop.walk([&](Operation *nestedOp) {
+    if (nestedOp == op.getOperation()) {
+      return WalkResult::advance();
+    }
+    if (mayReprogramNocCommand(nestedOp, NocCommandClass::Write) &&
+        !haveMutuallyExclusiveExecution(op, nestedOp, loop)) {
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  if (commandCheck.wasInterrupted()) {
+    return failure();
+  }
+
+  result = StatefulWriteLoop{loop, std::move(enclosingPredicates)};
+  return success();
+}
+
+/// Return the outermost loop across which write command state remains valid.
+static FailureOr<StatefulWriteLoop> findStatefulWriteLoop(NocAsyncWriteOp op) {
+  std::optional<StatefulWriteLoop> selected;
+  for (scf::ForOp loop = op->getParentOfType<scf::ForOp>(); loop;
+       loop = loop->getParentOfType<scf::ForOp>()) {
+    StatefulWriteLoop candidate;
+    if (succeeded(analyzeStatefulWriteLoop(op, loop, candidate))) {
+      selected = std::move(candidate);
+    }
+  }
+  if (!selected) {
+    return failure();
+  }
+  return std::move(*selected);
+}
 
 /// Select stateful one-packet writes when a loop preserves the resident write
 /// command.
@@ -168,11 +254,6 @@ struct UseStatefulNocWriteInLoop : OpRewritePattern<NocAsyncWriteOp> {
 
   LogicalResult matchAndRewrite(NocAsyncWriteOp op,
                                 PatternRewriter &rewriter) const override {
-    auto loop = op->getParentOfType<scf::ForOp>();
-    if (!loop) {
-      return rewriter.notifyMatchFailure(op, "write is not inside a loop");
-    }
-
     if (op.getDstCoreXY().size() != 2 || !op.getDstBankId().empty()) {
       return rewriter.notifyMatchFailure(op,
                                          "write is not a unicast core write");
@@ -185,61 +266,37 @@ struct UseStatefulNocWriteInLoop : OpRewritePattern<NocAsyncWriteOp> {
           op, "write size is not a valid one-packet transfer");
     }
 
-    auto isLoopInvariant = [&](Value value) {
-      return !value || loop.isDefinedOutsideOfLoop(value);
-    };
-    if (!llvm::all_of(op.getDstCoreXY(), isLoopInvariant) ||
-        !isLoopInvariant(op.getSize()) || !isLoopInvariant(op.getNoc())) {
-      return rewriter.notifyMatchFailure(
-          op, "write command configuration is not loop-invariant");
-    }
-
-    SmallVector<scf::IfOp> enclosingPredicates;
-    for (Operation *ancestor = op->getParentOp();
-         ancestor && ancestor != loop.getOperation();
+    size_t numMoved = 0;
+    for (Operation *ancestor = op->getParentOp(); ancestor;
          ancestor = ancestor->getParentOp()) {
       if (auto ifOp = dyn_cast<scf::IfOp>(ancestor)) {
-        if (!ifOp.getElseRegion().empty() ||
-            !ifOp.getThenRegion().isAncestor(op->getParentRegion()) ||
-            !isLoopInvariant(ifOp.getCondition())) {
-          return rewriter.notifyMatchFailure(
-              op, "write predicate cannot be preserved outside the loop");
-        }
-        enclosingPredicates.push_back(ifOp);
-        continue;
+        numMoved += hoistIfRegionInvariantValueOps(ifOp, rewriter);
       }
-      if (ancestor->getNumRegions() != 0) {
-        return rewriter.notifyMatchFailure(
-            op, "write has an unsupported enclosing region");
-      }
+    }
+    for (scf::ForOp loop = op->getParentOfType<scf::ForOp>(); loop;
+         loop = loop->getParentOfType<scf::ForOp>()) {
+      numMoved += hoistLoopInvariantValueOps(loop, rewriter);
     }
 
-    bool commandIsReprogrammed = false;
-    loop.walk([&](Operation *nestedOp) {
-      if (nestedOp == op.getOperation()) {
-        return WalkResult::advance();
+    FailureOr<StatefulWriteLoop> maybeStatefulLoop = findStatefulWriteLoop(op);
+    if (failed(maybeStatefulLoop)) {
+      if (numMoved != 0) {
+        return success();
       }
-      if (mayReprogramNocCommand(nestedOp, NocCommandClass::Write) &&
-          !haveMutuallyExclusiveExecution(op, nestedOp, loop)) {
-        commandIsReprogrammed = true;
-        return WalkResult::interrupt();
-      }
-      return WalkResult::advance();
-    });
-    if (commandIsReprogrammed) {
       return rewriter.notifyMatchFailure(
-          op, "another operation may reprogram the NoC write command");
+          op, "no enclosing loop preserves the NoC write command");
     }
+    StatefulWriteLoop &statefulLoop = *maybeStatefulLoop;
 
     OpBuilder::InsertionGuard insertionGuard(rewriter);
-    rewriter.setInsertionPoint(loop);
+    rewriter.setInsertionPoint(statefulLoop.loop);
     Location loc = op.getLoc();
     Value zero = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
     Value destinationNocAddress =
         GetNocAddrOp::create(rewriter, loc, op.getDstCoreXY()[0],
                              op.getDstCoreXY()[1], zero, op.getNoc());
 
-    for (scf::IfOp predicate : llvm::reverse(enclosingPredicates)) {
+    for (scf::IfOp predicate : llvm::reverse(statefulLoop.predicates)) {
       auto setupIf = scf::IfOp::create(rewriter, loc, predicate.getCondition(),
                                        /*withElseRegion=*/false);
       if (Attribute executionCoreRanges =

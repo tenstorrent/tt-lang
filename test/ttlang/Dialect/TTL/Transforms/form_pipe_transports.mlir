@@ -7,6 +7,8 @@
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=24576' | FileCheck %s --check-prefix=NOFIT
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=61440' | FileCheck %s --check-prefix=NONMONOTONIC
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports,convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=true})' -debug-only=ttl-pipe-transport-plan 2>&1 >/dev/null | FileCheck %s --check-prefix=OVERLAP
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports,convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=true})' | FileCheck %s --check-prefix=PAGES
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports,convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=false})' | FileCheck %s --check-prefix=GROUPED-WRITE
 
 #layout = #ttl.layout<
     shape = [32, 320], element_type = !ttcore.tile<32x32, f32>,
@@ -38,6 +40,35 @@
 // OVERLAP-NEXT: PipeTransport:   endpoint 0
 // OVERLAP-SAME: block_count=10 slot_span=5 group_depth=2
 // OVERLAP-SAME: address=recurrence(initial=0, stride=5, modulus=10, executions=2)
+
+// An overlapped payload larger than one NoC burst is decomposed into pages.
+// Setup executes once under the sender predicate; page source and destination
+// addresses advance by the same byte offset inside the group loop.
+// PAGES-LABEL: func.func @point_to_point
+// PAGES-DAG: %[[PAGE_BYTES:.*]] = arith.constant 4096 : i32
+// PAGES: scf.if %[[IS_SOURCE:.*]] {
+// PAGES-NEXT: ttkernel.noc_async_write_one_packet_set_state(%{{.*}}, %[[PAGE_BYTES]]
+// PAGES: scf.for %[[GROUP_ITER:.*]] =
+// PAGES-NOT: noc_async_write_one_packet_set_state
+// PAGES: scf.if %[[IS_SOURCE]] {
+// PAGES: %[[SOURCE_BASE:.*]] = ttkernel.get_read_ptr
+// PAGES: %[[DEST_BASE:.*]] = arith.addi
+// PAGES: scf.for %[[PAGE_ITER:.*]] =
+// PAGES: %[[PAGE_I32:.*]] = arith.index_cast %[[PAGE_ITER]] : index to i32
+// PAGES-NEXT: %[[PAGE_OFFSET:.*]] = arith.muli %[[PAGE_I32]], %[[PAGE_BYTES]]
+// PAGES-NEXT: %[[PAGE_SOURCE:.*]] = arith.addi %[[SOURCE_BASE]], %[[PAGE_OFFSET]]
+// PAGES-NEXT: %[[PAGE_DEST:.*]] = arith.addi %[[DEST_BASE]], %[[PAGE_OFFSET]]
+// PAGES-NEXT: ttkernel.noc_async_write_one_packet_with_state(%[[PAGE_SOURCE]], %[[PAGE_DEST]]
+// PAGES: }
+// PAGES-NEXT: ttkernel.noc_async_write_barrier
+
+// Grouped receiver-post execution retains one contiguous write because it does
+// not satisfy the bounded-overlap protocol.
+// GROUPED-WRITE-LABEL: func.func @point_to_point
+// GROUPED-WRITE-DAG: %[[PAYLOAD_BYTES:.*]] = arith.constant 20480 : i32
+// GROUPED-WRITE-NOT: noc_async_write_one_packet_set_state
+// GROUPED-WRITE: ttkernel.noc_async_write
+// GROUPED-WRITE-SAME: %[[PAYLOAD_BYTES]]
 
 // An explicit upper bound produces two groups of four and a two-transfer
 // scalar residual. The grouped and scalar loops use distinct transfer values.
