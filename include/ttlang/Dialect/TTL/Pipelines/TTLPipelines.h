@@ -68,6 +68,11 @@ struct TTLToTTKernelPipelineOptions
                      "transfers. When disabled, computed-address transfers "
                      "use receiver-post synchronization."),
       llvm::cl::init(true)};
+  Option<int64_t> pipeBatchTiles{
+      *this, "pipe-batch-tiles",
+      llvm::cl::desc("Limit logical transfers per PipeTransport group. "
+                     "Zero selects automatically; one disables grouping."),
+      llvm::cl::init(0)};
   Option<bool> reuseUserDFBs{
       *this, "reuse-user-dfbs",
       llvm::cl::desc("Reuse physical DFB indices when concurrent-kernel "

@@ -62,8 +62,26 @@ static StringRef stringifySchedule(PipeTransportSchedule schedule) {
     return "scalar";
   case PipeTransportSchedule::Grouped:
     return "grouped";
+  case PipeTransportSchedule::Overlapped:
+    return "overlapped";
   }
   llvm_unreachable("unknown pipe transport schedule");
+}
+
+/// Return whether every endpoint supports bounded producer/consumer overlap.
+static bool
+supportsOverlappedSchedule(ArrayRef<PipeTransportEndpoint> endpoints) {
+  return llvm::all_of(endpoints, [](const PipeTransportEndpoint &endpoint) {
+    if (endpoint.groupDepth < 2 || !endpoint.addressSequence.recurrence ||
+        !endpoint.addressSequence.executionCount ||
+        *endpoint.addressSequence.executionCount < 2) {
+      return false;
+    }
+    const ReceiverAddressRecurrence &recurrence =
+        *endpoint.addressSequence.recurrence;
+    return recurrence.repeatStride != 0 &&
+           recurrence.blockCount >= 2 * endpoint.slotSpanBlocks;
+  });
 }
 
 /// Return the stable debug spelling for a source-reuse condition.
@@ -184,7 +202,8 @@ FailureOr<PipeTransportPlan> buildPipeTransportPlan(
     stream.residualTransferCount = 0;
     stream.sourceIterationDomain = getIterationDomain(sendOp.getOperation());
     stream.sourceStorage = PipeTransportSourceStorage{
-        sourceDFBType.getBlockCount(), transferNode.blockSpan, 1};
+        sourceDFBType.getBlockCount(), transferNode.blockSpan,
+        sourceDFBType.getBlockCount() / transferNode.blockSpan};
     std::optional<int64_t> maybePageCount = llvm::checkedMul(
         sourceDFBType.getElementsPerBlock(), transferNode.blockSpan);
     if (!maybePageCount) {
@@ -226,6 +245,14 @@ FailureOr<PipeTransportPlan> buildPipeTransportPlan(
       endpoint.addressSequence = graphEndpoint.addressSequence;
       stream.endpoints.push_back(std::move(endpoint));
       stream.completionGroup.endpoints.push_back(endpointId);
+    }
+
+    if (stream.schedule == PipeTransportSchedule::Grouped &&
+        stream.synchronizationProtocol ==
+            PipeSynchronizationProtocol::Capacity &&
+        stream.transferContract == PipeTransferContract::PointToPoint &&
+        supportsOverlappedSchedule(stream.endpoints)) {
+      stream.schedule = PipeTransportSchedule::Overlapped;
     }
 
     auto recordStreamOperation = [&](Operation *operation) {
