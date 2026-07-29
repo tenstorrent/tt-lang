@@ -270,18 +270,15 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 
 // -----
 
-// Purpose: capacity accounting is one unit per send and one unit per receiver
-// pop. A receiver reserve spanning more than one DFB block is therefore
-// rejected locally even when the wait/pop pair releases the same multi-block
-// span.
+// Purpose: capacity accounting acquires and releases receiver DFB blocks,
+// independent of the source DFB block geometry.
 // DEBUG: PipeCapacity: 1 receiver DFB node(s), 1 receiver endpoint(s)
 // DEBUG: PipeCapacity: candidate src(0, 0) -> receiver(1, 0) DFB 4 capacity 2
-// DEBUG-NOT: PipeCapacity: accept src(0, 0) -> receiver(1, 0) DFB 4 capacity 2
-// DEBUG: PipeCapacity: reject src(0, 0) -> receiver(1, 0) DFB 4 capacity 2: receiver reserve spans 2 DFB blocks; capacity accounting assumes one
+// DEBUG: PipeCapacity: accept src(0, 0) -> receiver(1, 0) DFB 4 capacity 2: sends=1 pops=1
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
-  func.func @multi_block_receive_rejected_for_capacity()
+  func.func @grouped_receive_capacity()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %src_cb = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[1, 2], !ttcore.tile<32x32, f32>, 1>
     %dst_cb = ttl.bind_cb {cb_index = 4, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
     %transfer = ttl.pipe_transfer.create %pipe {kind = #ttl.pipe_transfer_kind<point_to_point>}
@@ -299,7 +296,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
     }
     ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
       %send = ttl.pipe_transfer.send %transfer, %src_cb
-          : (!ttl.pipe_transfer, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<write>
+          : (!ttl.pipe_transfer, !ttl.cb<[1, 2], !ttcore.tile<32x32, f32>, 1>) -> !ttl.transfer_handle<write>
       ttl.wait %send : !ttl.transfer_handle<write>
     }
     func.return

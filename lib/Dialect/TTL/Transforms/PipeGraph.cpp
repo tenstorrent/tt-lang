@@ -1380,6 +1380,8 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
       PipeTransferContract transferContract =
           getPipeTransferContract(sendCreate);
       int64_t blockSpan = getPipeTransferBlockSpan(sendCreate);
+      int64_t destinationGroupDepth =
+          getPipeTransferDestinationGroupDepth(sendCreate);
       for (const auto &endpoint : endpointsBySend[sendIndex]) {
         PipeTransferPostOp postOp = endpoint.second.op;
         PipeTransferCreateOp postCreate =
@@ -1397,6 +1399,16 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
               << "corresponding pipe send uses block_span=" << blockSpan;
           return failure();
         }
+        if (getPipeTransferDestinationGroupDepth(*maybePostCreate) !=
+            destinationGroupDepth) {
+          auto diagnostic = postOp.emitError(
+              "pipe send and receiver post use different destination group "
+              "depths");
+          diagnostic.attachNote(sendOp.getLoc())
+              << "corresponding pipe send uses destination_group_depth="
+              << destinationGroupDepth;
+          return failure();
+        }
       }
 
       PipeTransferNodeId transferNodeId = pipeTransferNodes.size();
@@ -1404,6 +1416,7 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
                                                    pipeKey,
                                                    transferContract,
                                                    blockSpan,
+                                                   destinationGroupDepth,
                                                    sendOp.getOperation(),
                                                    {},
                                                    {}});
