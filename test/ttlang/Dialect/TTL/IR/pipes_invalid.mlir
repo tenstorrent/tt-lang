@@ -23,6 +23,16 @@ func.func @pipe_receive_without_reserve(%t: tensor<32x32xf32>) {
 
 // -----
 
+// Test: an internal pipe transfer must deliver at least one original DFB block.
+func.func @pipe_transfer_block_span_positive() {
+  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  // expected-error @+1 {{'ttl.pipe_transfer.create' op attribute 'block_span' failed to satisfy constraint: 64-bit signless integer attribute whose value is positive}}
+  %transfer = ttl.pipe_transfer.create %p {block_span = 0 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> -> !ttl.pipe_transfer
+  func.return
+}
+
+// -----
 // Test: point-to-point pipe transfer cannot target multiple receivers.
 func.func @pipe_transfer_point_to_point_multi_receiver() {
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
