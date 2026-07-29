@@ -42,6 +42,7 @@ enum class PipeSynchronizationProtocol {
 enum class PipeTransportSchedule {
   Scalar,
   Grouped,
+  Overlapped,
 };
 
 /// Condition that permits source storage to be reused.
