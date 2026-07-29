@@ -55,38 +55,20 @@ include(TTLangCompilerSetup)
 # ---------------------------------------------------------------------------
 # Toolchain options (declared early because TTLangPython needs them).
 # ---------------------------------------------------------------------------
-option(TTLANG_USE_TOOLCHAIN "Use pre-built LLVM from ttlang toolchain" OFF)
-option(TTLANG_BUILD_TOOLCHAIN
-  "Build LLVM and tt-metal into a reusable toolchain directory" OFF)
-
-# Per-component toolchain overrides. By default they follow TTLANG_USE_TOOLCHAIN
-# but can be set independently, e.g. to rebuild tt-metal from submodule while
-# still consuming LLVM from a pre-built toolchain.
-option(TTLANG_USE_TOOLCHAIN_TTMETAL
-  "Use pre-built tt-metal from ttlang toolchain (defaults to TTLANG_USE_TOOLCHAIN)"
-  ${TTLANG_USE_TOOLCHAIN})
-
-# External tt-metal override: point at an existing tt-metal installation
-# (install-ttmetal.sh output layout) instead of the toolchain copy or the
-# submodule. Takes precedence over TTLANG_USE_TOOLCHAIN_TTMETAL. See
-# BuildTTMetal.cmake for the required directory layout.
-set(TTLANG_EXTERNAL_TT_METAL_DIR "" CACHE PATH
-  "Path to an existing tt-metal installation; overrides the toolchain or submodule build.")
-if(NOT DEFINED TTLANG_TOOLCHAIN_DIR)
-  if(DEFINED ENV{TTLANG_TOOLCHAIN_DIR})
-    set(TTLANG_TOOLCHAIN_DIR "$ENV{TTLANG_TOOLCHAIN_DIR}" CACHE PATH
-      "tt-lang toolchain directory")
-  elseif(TTLANG_USE_TOOLCHAIN)
-    set(TTLANG_TOOLCHAIN_DIR "/opt/ttlang-toolchain" CACHE PATH
-      "tt-lang toolchain directory" FORCE)
-  endif()
-endif()
+include(TTLangToolchainOptions)
 
 # ---------------------------------------------------------------------------
 # Python venv setup (must run before BuildLLVM so that find_package(Python3)
 # resolves against the venv, not a system Python).
 # ---------------------------------------------------------------------------
 include(TTLangPython)
+
+# Component builds produce independent cache artifacts without configuring
+# tt-lang targets.
+include(TTLangToolchainComponent)
+if(TTLANG_TOOLCHAIN_COMPONENT_CONFIGURED)
+  return()
+endif()
 
 # ---------------------------------------------------------------------------
 # Simulator-only mode: create venv, install requirements, generate activate

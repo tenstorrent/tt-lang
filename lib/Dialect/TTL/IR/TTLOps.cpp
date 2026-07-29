@@ -249,6 +249,21 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
     }
   }
 
+  // Reject mismatched tilization before the generic element-type check so the
+  // diagnostic names tile shapes rather than opaque TileType spellings.
+  if (failed(emitIfTileShapeMismatch(getOperation(),
+                                     transferTensorTy.getElementType(),
+                                     cbTy.getElementType(), "tensor", "CB"))) {
+    return failure();
+  }
+
+  auto layoutAttr = mlir::cast<LayoutAttr>(enc);
+  if (failed(emitIfTileShapeMismatch(getOperation(),
+                                     layoutAttr.getElementType(),
+                                     cbTy.getElementType(), "layout", "CB"))) {
+    return failure();
+  }
+
   if (transferTensorTy.getElementType() != cbTy.getElementType()) {
     return emitOpError() << "tensor element type ("
                          << transferTensorTy.getElementType()
@@ -1369,6 +1384,14 @@ mlir::LogicalResult mlir::tt::ttl::CBPopOp::verify() {
 mlir::LogicalResult mlir::tt::ttl::StoreOp::verify() {
   auto tensorTy = mlir::cast<RankedTensorType>(getTensor().getType());
   auto viewTy = mlir::cast<RankedTensorType>(getView().getType());
+
+  // CB->CB identity stores (dst.reserve().store(src.wait())) must use the same
+  // tile shape; mismatched tilization is not a supported retile.
+  if (failed(emitIfTileShapeMismatch(getOperation(), tensorTy.getElementType(),
+                                     viewTy.getElementType(), "source",
+                                     "destination CB"))) {
+    return failure();
+  }
 
   if (tensorTy.getElementType() != viewTy.getElementType()) {
     return emitOpError() << "tensor element type (" << tensorTy.getElementType()
