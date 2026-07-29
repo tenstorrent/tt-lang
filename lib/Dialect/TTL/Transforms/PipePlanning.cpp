@@ -92,33 +92,16 @@ static PipeType getPipeType(MLIRContext *context,
 }
 
 static FailureOr<PipeSendPlan>
-buildPipeSendPlan(PipeTransferSendOp sendOp,
-                  const DominanceInfo &dominanceInfo) {
-  FailureOr<CircularBufferType> maybeDFBType =
-      utils::getTTLCircularBufferType(sendOp.getSrc());
-  if (failed(maybeDFBType)) {
-    sendOp.emitError("pipe transfer source must have a TTL DFB type");
-    return failure();
-  }
-  auto tileType =
-      llvm::dyn_cast<ttcore::TileType>((*maybeDFBType).getElementType());
-  if (!tileType) {
-    sendOp.emitError("pipe transfer source DFB element type must be tile");
-    return failure();
-  }
-
+buildPipeSendPlan(PipeTransferSendOp sendOp, const DominanceInfo &dominanceInfo,
+                  const PipeTransportStream &transportStream) {
   bool readFromDFB =
       llvm::any_of(sendOp.getSrc().getUsers(), [&](Operation *user) {
         return isa<CBWaitOp>(user) && user->getOperand(0) == sendOp.getSrc() &&
                dominanceInfo.dominates(user, sendOp);
       });
 
-  int64_t elementCount = 1;
-  for (int64_t dimension : (*maybeDFBType).getShape()) {
-    elementCount *= dimension;
-  }
-  return PipeSendPlan{readFromDFB, elementCount * static_cast<int64_t>(
-                                                      tileType.getSizeBytes())};
+  return PipeSendPlan{readFromDFB,
+                      transportStream.getPacketization().getPayloadSizeBytes()};
 }
 
 static FailureOr<PipePostPlan>
@@ -369,6 +352,21 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
   plan.resourceRequirements =
       getPipeResourceRequirements(plan.resourcePlan, maybeCapacityPlan);
 
+  auto selectSynchronizationProtocol = [&](PipeTransferNodeId transferNodeId) {
+    const PipeTransferNode &transferNode =
+        pipeGraph.getPipeTransferNode(transferNodeId);
+    auto sendOp = cast<PipeTransferSendOp>(transferNode.sendOp);
+    return synchronizationSelection.usesCapacityProtocol(sendOp)
+               ? PipeSynchronizationProtocol::Capacity
+               : PipeSynchronizationProtocol::ReceiverPost;
+  };
+  FailureOr<PipeTransportPlan> maybeTransportPlan =
+      buildPipeTransportPlan(pipeGraph, selectSynchronizationProtocol);
+  if (failed(maybeTransportPlan)) {
+    return failure();
+  }
+  plan.transportPlan = std::move(*maybeTransportPlan);
+
   module.walk([&](WaitOp waitOp) {
     if (analysis.getOrigins(waitOp.getXf()).allMatch([](Value origin) {
           return static_cast<bool>(origin.getDefiningOp<PipeTransferSendOp>());
@@ -405,8 +403,10 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
     };
 
     if (sendOp) {
+      const PipeTransportStream &transportStream =
+          plan.transportPlan.getStreamForOperation(operation);
       FailureOr<PipeSendPlan> maybeSendPlan =
-          buildPipeSendPlan(sendOp, dominanceInfo);
+          buildPipeSendPlan(sendOp, dominanceInfo, transportStream);
       if (failed(maybeSendPlan)) {
         return failure();
       }
