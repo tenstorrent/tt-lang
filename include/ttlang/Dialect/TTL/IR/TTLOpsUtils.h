@@ -369,6 +369,16 @@ struct FusionTraceResult {
 /// `failedValue` are set.
 FusionTraceResult traceFusionToRoots(mlir::Value value);
 
+/// Return true if fusing `value` into `consumer` would move a wait-backed
+/// source tensor read past the pop that releases its dataflow buffer.
+///
+/// The query traces `value` through fusable producers, then scans the
+/// same-block operations between each source definition and `consumer` for a
+/// matching DFB release. Region-aware lifetime reasoning belongs in the DFB
+/// acquire/release analysis.
+bool fusableValueCrossesDFBRelease(mlir::Value value,
+                                   mlir::Operation *consumer);
+
 /// Return a human-readable description of a trace failure reason.
 llvm::StringRef describeTraceFailure(TraceFailureReason reason);
 

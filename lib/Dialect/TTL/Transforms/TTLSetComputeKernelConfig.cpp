@@ -41,6 +41,20 @@ static bool hasF32TileArgs(ComputeOp computeOp) {
   });
 }
 
+static bool hasF32TileOperandOrResult(Operation *op) {
+  auto isF32TileType = [](Type type) {
+    std::optional<mlir::Type> elementType = getTileElementType(type);
+    return elementType && elementType->isF32();
+  };
+
+  return llvm::any_of(op->getOperandTypes(), isF32TileType) ||
+         llvm::any_of(op->getResultTypes(), isF32TileType);
+}
+
+static bool isDirectDstTileOp(Operation *op) {
+  return isTileComputeOp(op) || isa<CopyTileOp, CopyDstOp, TileStoreOp>(op);
+}
+
 /// Resolve the CB index of `value` when it is an f32 input block argument of
 /// `computeOp` that is consumed directly from a circular buffer.
 static std::optional<int64_t>
@@ -64,6 +78,14 @@ getF32InputCBIndexForBlockArg(Value value, ComputeOp computeOp) {
   return getCBIndex(cb);
 }
 
+/// Return true for the operand that remains dataflow-buffer backed during
+/// destination-reuse lowering. It follows FPU unpack rules even though the
+/// accumulator itself is already in DST.
+static bool isAccumulateContributionOperand(Operation *op, Value operand) {
+  auto accumulate = dyn_cast<TileAccumulateOp>(op);
+  return accumulate && operand == accumulate.getContribution();
+}
+
 // TODO: Add TTLFPUOp and TTLSFPUOp traits to distinguish FPU and SFPU tile ops.
 // Then stop relying on the list of ops in "if (isa<TileReduceOp,
 // TileMatmulBlockOp>(op), ...) "
@@ -71,7 +93,7 @@ static bool isDstInputTileComputeOp(Operation *op) {
   if (!isTileComputeOp(op)) {
     return false;
   }
-  if (isa<TileReduceOp, TileMatmulBlockOp>(op)) {
+  if (isa<TileReduceOp, TileMatmulBlockOp, TileAccumulateOp>(op)) {
     return false;
   }
   if (isFPUEligibleBinaryOp(op)) {
@@ -86,9 +108,9 @@ static bool isDstInputTileComputeOp(Operation *op) {
 /// Return true if `op` benefits from `UnpackToDestFp32` when its input is an
 /// f32 tile fed directly from a CB. This is the SFPU subset of
 /// `isDstInputTileComputeOp`: tile_bcast and tile_transpose are also
-/// DST-input ops, but their LLK paths (unary_bcast, transpose_dest) do not
-/// support `UnpackToDestFp32` mode and produce incorrect results when it is
-/// enabled on their source CB (see tt-llk #1338). They are therefore
+/// DST-input ops, but their LLK implementations (unary_bcast, transpose_dest)
+/// do not support `UnpackToDestFp32` mode and produce incorrect results when
+/// it is enabled on their source CB (see tt-llk #1338). They are therefore
 /// excluded here so the CB stays in the default unpack mode.
 static inline bool wantsUnpackToDestFp32(Operation *op) {
   return isDstInputTileComputeOp(op) && !isa<TileBcastOp, TileTransposeOp>(op);
@@ -96,15 +118,16 @@ static inline bool wantsUnpackToDestFp32(Operation *op) {
 
 /// Return the CB index when `value` is an f32 input block argument of
 /// `computeOp` consumed by a tile op that must keep its source CB in `Default`
-/// unpack mode. FPU-style ops (reduce, matmul, FPU-eligible add/sub/mul) route
-/// the operand through SRCA/SRCB; `tile_bcast`/`tile_transpose` lower to
-/// `unary_bcast`/`transpose_dest`, which produce incorrect results under
-/// `UnpackToDestFp32` on their source CB (tt-llk #1338). Both are incompatible
-/// with the mode.
+/// unpack mode. FPU-style ops (reduce, matmul, FPU-eligible add/sub/mul, and
+/// the tile_accumulate contribution) route the operand through SRCA/SRCB;
+/// `tile_bcast`/`tile_transpose` lower to `unary_bcast`/`transpose_dest`, which
+/// produce incorrect results under `UnpackToDestFp32` on their source CB
+/// (tt-llk #1338). Both are incompatible with the mode.
 static std::optional<int64_t>
 getF32DefaultUnpackCBIndex(Operation *op, Value operand, ComputeOp computeOp) {
   if (!isa<TileReduceOp, TileMatmulBlockOp, TileBcastOp, TileTransposeOp>(op) &&
-      !isFPUEligibleBinaryOp(op)) {
+      !isFPUEligibleBinaryOp(op) &&
+      !isAccumulateContributionOperand(op, operand)) {
     return std::nullopt;
   }
   return getF32InputCBIndexForBlockArg(operand, computeOp);
@@ -119,11 +142,12 @@ struct F32InputCBUsage {
 
 /// Collect f32 input CB usage in one compute body.
 ///
-/// FPU consumers (reduce, matmul, and FPU-eligible add/sub/mul) read via
-/// SRCA/SRCB and must remain in `Default` unpack mode. SFPU consumers that read
-/// f32 directly into DST require `UnpackToDestFp32`. These modes are configured
-/// per kernel on the function, so conflicts must be diagnosed after aggregating
-/// usage across every ttl.compute in the func.func.
+/// FPU consumers (reduce, matmul, FPU-eligible add/sub/mul, and
+/// tile_accumulate contributions) read via SRCA/SRCB and must remain in
+/// `Default` unpack mode. SFPU consumers that read f32 directly into DST
+/// require `UnpackToDestFp32`. These modes are configured per kernel on the
+/// function, so conflicts must be diagnosed after aggregating usage across
+/// every ttl.compute in the func.func.
 static F32InputCBUsage collectF32InputCBUsage(ComputeOp computeOp) {
   F32InputCBUsage usage;
 
@@ -205,6 +229,19 @@ struct TTLSetComputeKernelConfigPass
       });
     }
 
+    if (!needsFp32) {
+      funcOp->walk([&](Operation *op) {
+        if (needsFp32) {
+          return WalkResult::interrupt();
+        }
+        if (isDirectDstTileOp(op) && hasF32TileOperandOrResult(op)) {
+          needsFp32 = true;
+          return WalkResult::interrupt();
+        }
+        return WalkResult::advance();
+      });
+    }
+
     // TODO(#454): Remove once tt-llk #1338 is fixed. unary_bcast produces
     // incorrect results with fp32_dest_acc_en and bf16 CBs. The same failure
     // mode appears when full-fp32 reduce enables fp32_dest_acc_en and the
@@ -242,7 +279,7 @@ struct TTLSetComputeKernelConfigPass
       kernelSFPUCBs.insert_range(usage.sfpuCBs);
       for (auto [cb, consumer] : usage.fpuCBConsumers) {
         // Keep the first FPU consumer for stable diagnostics when multiple
-        // compute regions consume the same CB through the FPU path.
+        // compute regions consume the same CB through FPU operands.
         kernelFPUCBConsumers.insert({cb, consumer});
       }
     });
