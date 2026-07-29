@@ -7,6 +7,8 @@
 
 #include "mlir/Pass/PassOptions.h"
 
+#include <cstdint>
+
 namespace mlir {
 class OpPassManager;
 } // namespace mlir
@@ -65,6 +67,11 @@ struct TTLToTTKernelPipelineOptions
                      "transfers. When disabled, computed-address transfers "
                      "use receiver-post synchronization."),
       llvm::cl::init(true)};
+  Option<int64_t> pipeBatchTiles{
+      *this, "pipe-batch-tiles",
+      llvm::cl::desc("Limit logical transfers per PipeTransport group. "
+                     "Zero selects automatically; one disables grouping."),
+      llvm::cl::init(0)};
   Option<bool> specializeCores{
       *this, "specialize-cores",
       llvm::cl::desc(
