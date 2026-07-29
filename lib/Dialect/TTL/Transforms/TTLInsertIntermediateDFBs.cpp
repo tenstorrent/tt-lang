@@ -429,8 +429,6 @@ struct TTLInsertIntermediateDFBsPass
       return;
     }
 
-    SmallVector<DFBInputOpInterface> candidates;
-    funcOp.walk([&](DFBInputOpInterface op) { candidates.push_back(op); });
     // Snapshot all cross-region store decisions before rewriting. A
     // clone rewrite can erase the original backward slice and rewrite its uses;
     // eraseUnusedBackwardSliceOps only removes ops with no remaining users.
@@ -445,6 +443,9 @@ struct TTLInsertIntermediateDFBsPass
       signalPassFailure();
       return;
     }
+
+    SmallVector<DFBInputOpInterface> candidates;
+    funcOp.walk([&](DFBInputOpInterface op) { candidates.push_back(op); });
 
     // When compiler DFBs are disabled, verify that no operations require
     // them and emit an actionable error if any do.

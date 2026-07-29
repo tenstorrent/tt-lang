@@ -7,7 +7,7 @@
 // Clone-supported stores from multiple branches still compile with
 // compiler-managed DFBs disabled because they do not allocate a compiler DFB.
 
-// CHECK-LABEL: func.func @store_fanout_across_scf_if_disabled_clones
+// CHECK-LABEL: func.func @stored_value_across_scf_if_disabled_clones
 // CHECK-NOT: ttl.compiler_allocated
 // CHECK-NOT: ttl.exp
 // CHECK: scf.if
@@ -17,7 +17,7 @@
 // CHECK: %[[ELSE_VALUE:.+]] = ttl.exp
 // CHECK: ttl.store %[[ELSE_VALUE]]
 // CHECK: return
-func.func @store_fanout_across_scf_if_disabled_clones(%cond: i1)
+func.func @stored_value_across_scf_if_disabled_clones(%cond: i1)
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
                 ttl.base_cta_index = 3 : i32, ttl.crta_indices = []} {
   %input_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>

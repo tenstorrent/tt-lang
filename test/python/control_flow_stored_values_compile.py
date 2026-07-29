@@ -17,7 +17,7 @@ import ttnn
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from Inputs.control_flow_store_fanout_kernels import (  # noqa: E402
+from Inputs.control_flow_stored_values_kernels import (  # noqa: E402
     CONTROL_FLOW_CASES,
     host_tensor,
 )

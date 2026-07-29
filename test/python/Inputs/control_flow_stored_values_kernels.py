@@ -111,7 +111,7 @@ def else_only_store_kernel(input_tensor, output_tensor):
 
 
 @ttl.operation(grid=(2, 1))
-def if_else_store_fanout_kernel(input_tensor, then_output, else_output):
+def if_else_stored_value_kernel(input_tensor, then_output, else_output):
     input_dfb = ttl.make_dataflow_buffer_like(input_tensor, shape=(1, 1), block_count=2)
     then_dfb = ttl.make_dataflow_buffer_like(then_output, shape=(1, 1), block_count=2)
     else_dfb = ttl.make_dataflow_buffer_like(else_output, shape=(1, 1), block_count=2)
@@ -165,7 +165,7 @@ def if_else_store_fanout_kernel(input_tensor, then_output, else_output):
 
 
 @ttl.operation(grid=(3, 1))
-def elif_chain_store_fanout_kernel(
+def elif_chain_stored_value_kernel(
     input_tensor, first_output, second_output, third_output
 ):
     input_dfb = ttl.make_dataflow_buffer_like(input_tensor, shape=(1, 1), block_count=2)
@@ -233,7 +233,7 @@ def elif_chain_store_fanout_kernel(
 
 
 @ttl.operation(grid=(3, 1))
-def elif_gap_store_fanout_kernel(input_tensor, first_output, third_output):
+def elif_gap_stored_value_kernel(input_tensor, first_output, third_output):
     input_dfb = ttl.make_dataflow_buffer_like(input_tensor, shape=(1, 1), block_count=2)
     first_dfb = ttl.make_dataflow_buffer_like(first_output, shape=(1, 1), block_count=2)
     third_dfb = ttl.make_dataflow_buffer_like(third_output, shape=(1, 1), block_count=2)
@@ -287,7 +287,7 @@ def elif_gap_store_fanout_kernel(input_tensor, first_output, third_output):
 
 
 @ttl.operation(grid=(3, 1))
-def nested_if_store_fanout_kernel(
+def nested_if_stored_value_kernel(
     input_tensor, first_output, second_output, third_output
 ):
     input_dfb = ttl.make_dataflow_buffer_like(input_tensor, shape=(1, 1), block_count=2)
@@ -358,7 +358,7 @@ def nested_if_store_fanout_kernel(
 
 
 @ttl.operation(grid=(3, 1))
-def sibling_if_store_fanout_kernel(
+def sibling_if_stored_value_kernel(
     input_tensor, first_output, second_output, third_output
 ):
     input_dfb = ttl.make_dataflow_buffer_like(input_tensor, shape=(1, 1), block_count=2)
@@ -426,7 +426,7 @@ def sibling_if_store_fanout_kernel(
 
 
 @ttl.operation(grid=(3, 1))
-def nested_def_store_fanout_kernel(
+def nested_def_stored_value_kernel(
     input_tensor, first_output, second_output, third_output
 ):
     input_dfb = ttl.make_dataflow_buffer_like(input_tensor, shape=(1, 1), block_count=2)
@@ -498,7 +498,7 @@ def nested_def_store_fanout_kernel(
 
 
 @ttl.operation(grid=(2, 1))
-def loop_wrapped_store_fanout_kernel(input_tensor, first_output, second_output):
+def loop_wrapped_stored_value_kernel(input_tensor, first_output, second_output):
     input_dfb = ttl.make_dataflow_buffer_like(input_tensor, shape=(1, 1), block_count=2)
     first_dfb = ttl.make_dataflow_buffer_like(first_output, shape=(1, 1), block_count=2)
     second_dfb = ttl.make_dataflow_buffer_like(
@@ -557,7 +557,7 @@ def loop_wrapped_store_fanout_kernel(input_tensor, first_output, second_output):
 
 
 @ttl.operation(grid=(2, 1))
-def external_use_store_fanout_kernel(
+def external_use_stored_value_kernel(
     input_tensor, first_output, second_output, side_output
 ):
     input_dfb = ttl.make_dataflow_buffer_like(input_tensor, shape=(1, 1), block_count=2)
@@ -625,7 +625,7 @@ def external_use_store_fanout_kernel(
 
 
 @ttl.operation(grid=(2, 1))
-def parent_and_branch_store_fanout_kernel(input_tensor, always_output, branch_output):
+def parent_and_branch_stored_value_kernel(input_tensor, always_output, branch_output):
     input_dfb = ttl.make_dataflow_buffer_like(input_tensor, shape=(1, 1), block_count=2)
     always_dfb = ttl.make_dataflow_buffer_like(
         always_output, shape=(1, 1), block_count=2
@@ -680,7 +680,7 @@ def parent_and_branch_store_fanout_kernel(input_tensor, always_output, branch_ou
 
 
 @ttl.operation(grid=(2, 1))
-def attached_input_store_fanout_kernel(input_tensor, first_output, second_output):
+def attached_input_stored_value_kernel(input_tensor, first_output, second_output):
     input_dfb = ttl.make_dataflow_buffer_like(input_tensor, shape=(1, 1), block_count=2)
     first_dfb = ttl.make_dataflow_buffer_like(first_output, shape=(1, 1), block_count=2)
     second_dfb = ttl.make_dataflow_buffer_like(
@@ -737,24 +737,24 @@ def attached_input_store_fanout_kernel(input_tensor, first_output, second_output
 CONTROL_FLOW_CASES = [
     ("then_only", then_only_store_kernel, 2, 1),
     ("else_only", else_only_store_kernel, 2, 1),
-    ("if_else", if_else_store_fanout_kernel, 2, 2),
-    ("elif_chain", elif_chain_store_fanout_kernel, 3, 3),
-    ("elif_gap", elif_gap_store_fanout_kernel, 3, 2),
-    ("nested_if", nested_if_store_fanout_kernel, 3, 3),
-    ("sibling_ifs", sibling_if_store_fanout_kernel, 3, 3),
-    ("nested_def", nested_def_store_fanout_kernel, 3, 3),
-    ("loop_wrapped", loop_wrapped_store_fanout_kernel, 2, 2),
-    ("external_use", external_use_store_fanout_kernel, 2, 3),
-    ("parent_and_branch", parent_and_branch_store_fanout_kernel, 2, 2),
-    ("attached_input", attached_input_store_fanout_kernel, 2, 2),
+    ("if_else", if_else_stored_value_kernel, 2, 2),
+    ("elif_chain", elif_chain_stored_value_kernel, 3, 3),
+    ("elif_gap", elif_gap_stored_value_kernel, 3, 2),
+    ("nested_if", nested_if_stored_value_kernel, 3, 3),
+    ("sibling_ifs", sibling_if_stored_value_kernel, 3, 3),
+    ("nested_def", nested_def_stored_value_kernel, 3, 3),
+    ("loop_wrapped", loop_wrapped_stored_value_kernel, 2, 2),
+    ("external_use", external_use_stored_value_kernel, 2, 3),
+    ("parent_and_branch", parent_and_branch_stored_value_kernel, 2, 2),
+    ("attached_input", attached_input_stored_value_kernel, 2, 2),
 ]
 
 RUNTIME_CASES = [
-    ("if_else", if_else_store_fanout_kernel, 2, 2),
-    ("elif_chain", elif_chain_store_fanout_kernel, 3, 3),
-    ("nested_if", nested_if_store_fanout_kernel, 3, 3),
-    ("sibling_ifs", sibling_if_store_fanout_kernel, 3, 3),
-    ("loop_wrapped", loop_wrapped_store_fanout_kernel, 2, 2),
+    ("if_else", if_else_stored_value_kernel, 2, 2),
+    ("elif_chain", elif_chain_stored_value_kernel, 3, 3),
+    ("nested_if", nested_if_stored_value_kernel, 3, 3),
+    ("sibling_ifs", sibling_if_stored_value_kernel, 3, 3),
+    ("loop_wrapped", loop_wrapped_stored_value_kernel, 2, 2),
 ]
 
 SINGLE_BRANCH_RUNTIME_CASES = [

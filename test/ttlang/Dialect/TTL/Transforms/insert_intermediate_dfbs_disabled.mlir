@@ -10,7 +10,7 @@
 // Cheap values stored from multiple blocks are rematerialized and do not
 // require a compiler-managed DFB.
 
-func.func @cheap_if_else_store_fanout_disabled(%cond: i1)
+func.func @cheap_if_else_stored_value_disabled(%cond: i1)
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
   %input_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %then_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>

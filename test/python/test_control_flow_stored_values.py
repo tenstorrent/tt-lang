@@ -13,14 +13,14 @@ from ttlang_test_utils import assert_allclose, to_dram
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from Inputs.control_flow_store_fanout_kernels import (  # noqa: E402
+from Inputs.control_flow_stored_values_kernels import (  # noqa: E402
     RUNTIME_CASES,
     SINGLE_BRANCH_RUNTIME_CASES,
-    attached_input_store_fanout_kernel,
-    elif_gap_store_fanout_kernel,
-    external_use_store_fanout_kernel,
-    nested_def_store_fanout_kernel,
-    parent_and_branch_store_fanout_kernel,
+    attached_input_stored_value_kernel,
+    elif_gap_stored_value_kernel,
+    external_use_stored_value_kernel,
+    nested_def_stored_value_kernel,
+    parent_and_branch_stored_value_kernel,
 )
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
@@ -52,7 +52,7 @@ def _source_tile(input_tensor, source_tile_index):
     RUNTIME_CASES,
     ids=[case_name for case_name, _kernel, _grid_width, _output_count in RUNTIME_CASES],
 )
-def test_control_flow_store_fanout_runs(
+def test_control_flow_stored_value_runs(
     _case_name, kernel, grid_width, output_count, device, monkeypatch
 ):
     monkeypatch.delenv("TTLANG_COMPILE_ONLY", raising=False)
@@ -97,14 +97,14 @@ def test_single_branch_store_runs(
 
 
 @pytest.mark.requires_device
-def test_elif_gap_store_fanout_runs(device, monkeypatch):
+def test_elif_gap_stored_value_runs(device, monkeypatch):
     monkeypatch.delenv("TTLANG_COMPILE_ONLY", raising=False)
     input_torch = _runtime_input(3)
     input_tensor = to_dram(input_torch, device)
     first_output = to_dram(torch.zeros((32, 32), dtype=torch.bfloat16), device)
     third_output = to_dram(torch.zeros((32, 32), dtype=torch.bfloat16), device)
 
-    elif_gap_store_fanout_kernel(input_tensor, first_output, third_output)
+    elif_gap_stored_value_kernel(input_tensor, first_output, third_output)
 
     assert_allclose(
         ttnn.to_torch(first_output).float(),
@@ -121,7 +121,7 @@ def test_elif_gap_store_fanout_runs(device, monkeypatch):
 
 
 @pytest.mark.requires_device
-def test_nested_def_store_fanout_runs(device, monkeypatch):
+def test_nested_def_stored_value_runs(device, monkeypatch):
     monkeypatch.delenv("TTLANG_COMPILE_ONLY", raising=False)
     input_torch = _runtime_input(3)
     input_tensor = to_dram(input_torch, device)
@@ -130,7 +130,7 @@ def test_nested_def_store_fanout_runs(device, monkeypatch):
         for _output_index in range(3)
     ]
 
-    nested_def_store_fanout_kernel(input_tensor, *output_tensors)
+    nested_def_stored_value_kernel(input_tensor, *output_tensors)
 
     expected_outputs = [
         torch.exp(_source_tile(input_torch, 0)),
@@ -147,7 +147,7 @@ def test_nested_def_store_fanout_runs(device, monkeypatch):
 
 
 @pytest.mark.requires_device
-def test_external_use_store_fanout_runs(device, monkeypatch):
+def test_external_use_stored_value_runs(device, monkeypatch):
     monkeypatch.delenv("TTLANG_COMPILE_ONLY", raising=False)
     input_torch = _runtime_input(2)
     input_tensor = to_dram(input_torch, device)
@@ -155,7 +155,7 @@ def test_external_use_store_fanout_runs(device, monkeypatch):
     second_output = to_dram(torch.zeros((32, 32), dtype=torch.bfloat16), device)
     side_output = to_dram(torch.zeros((32, 64), dtype=torch.bfloat16), device)
 
-    external_use_store_fanout_kernel(
+    external_use_stored_value_kernel(
         input_tensor, first_output, second_output, side_output
     )
 
@@ -181,14 +181,14 @@ def test_external_use_store_fanout_runs(device, monkeypatch):
 
 
 @pytest.mark.requires_device
-def test_parent_and_branch_store_fanout_runs(device, monkeypatch):
+def test_parent_and_branch_stored_value_runs(device, monkeypatch):
     monkeypatch.delenv("TTLANG_COMPILE_ONLY", raising=False)
     input_torch = _runtime_input(2)
     input_tensor = to_dram(input_torch, device)
     always_output = to_dram(torch.zeros((32, 64), dtype=torch.bfloat16), device)
     branch_output = to_dram(torch.zeros((32, 32), dtype=torch.bfloat16), device)
 
-    parent_and_branch_store_fanout_kernel(input_tensor, always_output, branch_output)
+    parent_and_branch_stored_value_kernel(input_tensor, always_output, branch_output)
 
     expected_full = torch.exp(input_torch.float())
     assert_allclose(
@@ -206,14 +206,14 @@ def test_parent_and_branch_store_fanout_runs(device, monkeypatch):
 
 
 @pytest.mark.requires_device
-def test_attached_input_store_fanout_runs(device, monkeypatch):
+def test_attached_input_stored_value_runs(device, monkeypatch):
     monkeypatch.delenv("TTLANG_COMPILE_ONLY", raising=False)
     input_torch = _runtime_input(2)
     input_tensor = to_dram(input_torch, device)
     first_output = to_dram(torch.zeros((32, 32), dtype=torch.bfloat16), device)
     second_output = to_dram(torch.zeros((32, 32), dtype=torch.bfloat16), device)
 
-    attached_input_store_fanout_kernel(input_tensor, first_output, second_output)
+    attached_input_stored_value_kernel(input_tensor, first_output, second_output)
 
     assert_allclose(
         ttnn.to_torch(first_output).float(),
