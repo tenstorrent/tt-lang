@@ -4,7 +4,12 @@ This document describes how the tt-lang compiler manages dataflow buffers (DFBs)
 
 ## Overview
 
-DFBs originate from two sources. User-declared DFBs are created explicitly in the DSL via `make_dataflow_buffer_like` and correspond to the programmer's data movement plan. Compiler-allocated DFBs are inserted automatically at fusion split points where a tensor-level operation requires a CB-attached operand but receives the result of a fused expression chain.
+DFBs originate from two sources. User-declared DFBs are created explicitly in
+the DSL via `make_dataflow_buffer_like` and correspond to the programmer's data
+movement plan. Compiler-allocated DFBs are inserted automatically when the
+compiler must provide concrete DFB storage for a tensor SSA value: either an
+operation requires a DFB-attached operand, or direct `ttl.store` users span
+multiple blocks and cannot be represented by branch-local cloning.
 
 The hardware supports at most 32 DFBs per node (indices 0--31). User and
 compiler-allocated DFBs share this index space. DFB-creating function passes
@@ -28,7 +33,7 @@ ttl-materialize-loop-state     (FuncOp)   Remove ranked-tensor scf.for iter_args
 ttl-insert-copy-wait           (FuncOp)   Insert missing ttl.wait ops
 ttl-annotate-l1-acc-loops      (FuncOp)   Mark user accumulation loops
 ttl-form-producer-compute      (FuncOp)   Form producer compute regions
-ttl-insert-intermediate-dfbs   (FuncOp)   Materialize compiler-allocated DFBs
+ttl-insert-intermediate-dfbs   (FuncOp)   Materialize or clone intermediate storage
 convert-ttl-to-compute         (FuncOp)   Lower remaining tensor ops
 ttl-auto-sync                  (FuncOp)   Insert/coalesce remaining DFB sync
 ttl-finalize-dfb-indices       (Module)   Finalize identities and allocations
@@ -255,6 +260,17 @@ checks whether the operand traces to an existing DFB via `getAttachedCB`. If
 not, the pass materializes the value through a fresh compiler-allocated DFB
 marked with `ttl.compiler_allocated`.
 
+The pass also normalizes direct stores of a non-DFB-attached value when those
+stores occupy at least two blocks. If upstream
+`insideMutuallyExclusiveRegions` proves the store blocks are pairwise
+exclusive, and the producer's backward slice has no remaining non-store uses,
+the slice is cloned into each store block and no compiler DFB is allocated.
+Otherwise, the value is materialized through a compiler-allocated DFB and every
+pre-existing direct store of that value is rewritten to consume the attached
+DFB value. Rewriting every direct store prevents a same-block store from
+causing `convert-ttl-to-compute` to place the producer compute after the DFB
+wait that reads this value.
+
 The standard pipeline runs this pass after `ttl-form-producer-compute`.
 Values produced by `ttl.compute` are materialized by the compiler-created
 intermediate lifecycle described above: the compute gains extra DFB outputs,
@@ -336,9 +352,9 @@ the producer is outside the branch. General occupancy-balance proofs for
 placing compiler-created waits and pops inside arbitrary structured control
 flow remain tracked by
 [#724](https://github.com/tenstorrent/tt-lang/issues/724).
-[PR #687](https://github.com/tenstorrent/tt-lang/pull/687) uses upstream
+The branch-local store rewrite uses upstream
 `insideMutuallyExclusiveRegions` to prove branch-exclusive store fanout, but
-does not place DFB lifecycle operations in those branches.
+does not place DFB lifecycle operations inside those branches.
 [PR #700](https://github.com/tenstorrent/tt-lang/pull/700) matches structured
 PipeNet protocol occurrences with `ExecutionCountAnalysis`; that analysis is
 applicable to the remaining occupancy proof.
