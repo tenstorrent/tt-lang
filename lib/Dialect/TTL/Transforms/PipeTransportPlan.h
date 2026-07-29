@@ -30,6 +30,8 @@ class raw_ostream;
 
 namespace mlir::tt::ttl {
 
+class PipeCapacityPlan;
+
 using PipeTransportStreamId = std::size_t;
 
 /// Synchronization performed before the sender writes a transfer payload.
@@ -45,12 +47,20 @@ enum class PipeTransportSchedule {
   Overlapped,
 };
 
+/// Required completion point for transport-owned credit updates.
+enum class PipeTransportCreditCompletion {
+  /// Complete the update before continuing past its operation.
+  Immediate,
+  /// Complete updates after the innermost loop in their iteration domain.
+  IterationDomain,
+};
+
 /// Condition that permits source storage to be reused.
 enum class PipeTransportSourceReuse {
   AfterCompletionGroup,
 };
 
-/// Loop operations that define one endpoint's repeated execution domain.
+/// Enclosing loops ordered from outermost to innermost.
 struct PipeTransportIterationDomain {
   SmallVector<Operation *, 2> enclosingLoops;
 };
@@ -112,6 +122,11 @@ public:
   /// Return the selected backend-independent schedule.
   PipeTransportSchedule getSchedule() const { return schedule; }
 
+  /// Return when transport-owned credit updates must complete.
+  PipeTransportCreditCompletion getCreditCompletion() const {
+    return creditCompletion;
+  }
+
   /// Return the number of original transfers represented by one group.
   int64_t getLogicalTransfersPerGroup() const {
     return logicalTransfersPerGroup;
@@ -138,6 +153,12 @@ public:
   /// Return receiver endpoint decisions in PipeGraph order.
   ArrayRef<PipeTransportEndpoint> getEndpoints() const { return endpoints; }
 
+  /// Return the iteration domains containing receiver capacity releases.
+  ArrayRef<PipeTransportIterationDomain>
+  getCapacityReleaseIterationDomains() const {
+    return capacityReleaseIterationDomains;
+  }
+
   /// Return the transfers that define source completion.
   const PipeTransportCompletionGroup &getCompletionGroup() const {
     return completionGroup;
@@ -151,7 +172,7 @@ public:
 
 private:
   friend FailureOr<class PipeTransportPlan> buildPipeTransportPlan(
-      const PipeGraph &,
+      const PipeGraph &, const PipeCapacityPlan &,
       function_ref<PipeSynchronizationProtocol(PipeTransferNodeId)>);
 
   PipeTransportStreamId id = 0;
@@ -161,12 +182,15 @@ private:
   PipeSynchronizationProtocol synchronizationProtocol =
       PipeSynchronizationProtocol::ReceiverPost;
   PipeTransportSchedule schedule = PipeTransportSchedule::Scalar;
+  PipeTransportCreditCompletion creditCompletion =
+      PipeTransportCreditCompletion::Immediate;
   int64_t logicalTransfersPerGroup = 1;
   int64_t residualTransferCount = 0;
   PipeTransportIterationDomain sourceIterationDomain;
   PipeTransportSourceStorage sourceStorage;
   PipeTransportPacketization packetization;
   SmallVector<PipeTransportEndpoint, 1> endpoints;
+  SmallVector<PipeTransportIterationDomain, 1> capacityReleaseIterationDomains;
   PipeTransportCompletionGroup completionGroup;
   PipeTransportSourceReuse sourceReuse =
       PipeTransportSourceReuse::AfterCompletionGroup;
@@ -181,6 +205,10 @@ public:
   /// Return the stream with `id`.
   const PipeTransportStream &getStream(PipeTransportStreamId id) const;
 
+  /// Return the stream for the PipeGraph transfer `transferNode`.
+  const PipeTransportStream &
+  getStreamForTransfer(PipeTransferNodeId transferNode) const;
+
   /// Return the stream that owns `operation`.
   const PipeTransportStream &getStreamForOperation(Operation *operation) const;
 
@@ -189,16 +217,17 @@ public:
 
 private:
   friend FailureOr<PipeTransportPlan> buildPipeTransportPlan(
-      const PipeGraph &,
+      const PipeGraph &, const PipeCapacityPlan &,
       function_ref<PipeSynchronizationProtocol(PipeTransferNodeId)>);
 
   SmallVector<PipeTransportStream, 0> streams;
+  llvm::DenseMap<PipeTransferNodeId, PipeTransportStreamId> streamByTransfer;
   llvm::DenseMap<Operation *, PipeTransportStreamId> streamByOperation;
 };
 
-/// Construct scalar transport streams from proven PipeGraph facts.
+/// Construct transport streams from proven PipeGraph and capacity facts.
 FailureOr<PipeTransportPlan> buildPipeTransportPlan(
-    const PipeGraph &pipeGraph,
+    const PipeGraph &pipeGraph, const PipeCapacityPlan &capacityPlan,
     function_ref<PipeSynchronizationProtocol(PipeTransferNodeId)>
         selectSynchronizationProtocol);
 

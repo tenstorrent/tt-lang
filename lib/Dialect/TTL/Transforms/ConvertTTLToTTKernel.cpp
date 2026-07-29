@@ -396,20 +396,23 @@ using CBWaitLowering =
 struct CBPopLowering : OpConversionPattern<CBPopOp> {
   CBPopLowering(const TypeConverter &typeConverter, MLIRContext *context,
                 const PipeCapacityPlan &pipeCapacityPlan,
+                const PipeTransportPlan &pipeTransportPlan,
                 const PipeResourcePlan &pipeResourcePlan)
       : OpConversionPattern(typeConverter, context),
-        pipeCapacityPlan(pipeCapacityPlan), pipeResourcePlan(pipeResourcePlan) {
-  }
+        pipeCapacityPlan(pipeCapacityPlan),
+        pipeTransportPlan(pipeTransportPlan),
+        pipeResourcePlan(pipeResourcePlan) {}
 
   LogicalResult
   matchAndRewrite(CBPopOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    return lowerCBPop(op, adaptor.getCb(), pipeCapacityPlan, pipeResourcePlan,
-                      rewriter);
+    return lowerCBPop(op, adaptor.getCb(), pipeCapacityPlan, pipeTransportPlan,
+                      pipeResourcePlan, rewriter);
   }
 
 private:
   const PipeCapacityPlan &pipeCapacityPlan;
+  const PipeTransportPlan &pipeTransportPlan;
   const PipeResourcePlan &pipeResourcePlan;
 };
 
@@ -2058,6 +2061,7 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   PipeComputedAddressCounterMap computedAddressCounters;
   initializePipeComputedAddressCounters(pipeResourcePlan,
                                         computedAddressCounters);
+  materializePipeTransportCompletionBarriers(pipeModulePlan.getTransportPlan());
 
   RewritePatternSet patterns(&ctx);
   scf::populateSCFStructuralTypeConversionsAndLegality(typeConverter, patterns,
@@ -2085,6 +2089,7 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                RawElementWriteLowering, RawAddrLowering, OpaqueCallLowering,
                GetDfbIdLowering>(typeConverter, &ctx);
   patterns.add<CBPopLowering>(typeConverter, &ctx, pipeCapacityPlan,
+                              pipeModulePlan.getTransportPlan(),
                               pipeResourcePlan);
   populatePipeLoweringPatterns(patterns, typeConverter,
                                pipeModulePlan.getPipeNetIndex());

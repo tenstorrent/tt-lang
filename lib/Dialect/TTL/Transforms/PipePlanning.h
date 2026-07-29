@@ -74,6 +74,8 @@ struct PipeCapacityAcquireInfo {
 
 /// Capacity returned to a sender after one receiver DFB pop.
 struct PipeCapacityReleaseInfo {
+  /// PipeGraph transfer whose receiver capacity is released.
+  PipeTransferNodeId transferNode = 0;
   PipeCapacityReleaseTarget target;
   PipeCounterInfo counter;
   int64_t count = 1;
@@ -93,6 +95,9 @@ public:
 
   /// Return the capacity released immediately after `op`.
   ArrayRef<PipeCapacityReleaseInfo> lookupReleases(CBPopOp op) const;
+
+  /// Find the DFB pops that release capacity for `transferNode`.
+  SmallVector<CBPopOp, 1> findReleaseOps(PipeTransferNodeId transferNode) const;
 
   /// Return the shared-counter initializations grouped by sender function.
   const llvm::MapVector<func::FuncOp, SmallVector<PipeCapacityInitInfo>> &
