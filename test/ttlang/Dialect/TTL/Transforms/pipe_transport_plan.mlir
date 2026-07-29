@@ -5,7 +5,7 @@
 
 // Purpose: a point-to-point stream records one logical transfer per group and
 // releases source storage after its only endpoint completes.
-// PLAN: PipeTransport: stream 0 transfer 0 src(0, 0) -> dst(1, 0) to (1, 0) net 0 contract=point_to_point synchronization=receiver_post schedule=scalar group=1 residual=0
+// PLAN: PipeTransport: stream 0 transfer 0 src(0, 0) -> dst(1, 0) to (1, 0) net 0 contract=point_to_point synchronization=receiver_post schedule=scalar credit_completion=immediate group=1 residual=0
 // PLAN-NEXT: PipeTransport:   source blocks=2 block_span=1 stage_depth=2 pages=1 page_bytes=4096 loops=0
 // PLAN-NEXT: PipeTransport:   endpoint 0 dst(1, 0) DFB 1 block_count=2 slot_span=1 group_depth=1 loops=0 address=recurrence(initial=0, stride=1, modulus=2, executions=1)
 // PLAN-NEXT: PipeTransport:   completion endpoints=[0] source_reuse=after_completion_group
@@ -56,7 +56,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // Purpose: a collective stream records one endpoint per receiver and requires
 // every destination transfer to complete before source storage is reused.
-// PLAN: PipeTransport: stream 0 transfer 0 src(0, 0) -> dst(1, 0) to (2, 0) net 0 contract=collective synchronization=receiver_post schedule=scalar group=1 residual=0
+// PLAN: PipeTransport: stream 0 transfer 0 src(0, 0) -> dst(1, 0) to (2, 0) net 0 contract=collective synchronization=receiver_post schedule=scalar credit_completion=immediate group=1 residual=0
 // PLAN-NEXT: PipeTransport:   source blocks=2 block_span=1 stage_depth=2 pages=1 page_bytes=4096 loops=0
 // PLAN-NEXT: PipeTransport:   endpoint 0 dst(1, 0) DFB 5 block_count=2 slot_span=1 group_depth=1 loops=0 address=recurrence(initial=0, stride=1, modulus=2, executions=1)
 // PLAN-NEXT: PipeTransport:   endpoint 1 dst(2, 0) DFB 5 block_count=2 slot_span=1 group_depth=1 loops=0 address=recurrence(initial=0, stride=1, modulus=2, executions=1)
@@ -109,7 +109,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 
 // Purpose: a grouped stream records the logical transfer count independently
 // from the selected receiver group depth.
-// PLAN: PipeTransport: stream 0 transfer 0 src(0, 0) -> dst(1, 0) to (1, 0) net 0 contract=point_to_point synchronization=receiver_post schedule=grouped group=2 residual=0
+// PLAN: PipeTransport: stream 0 transfer 0 src(0, 0) -> dst(1, 0) to (1, 0) net 0 contract=point_to_point synchronization=receiver_post schedule=grouped credit_completion=immediate group=2 residual=0
 // PLAN-NEXT: PipeTransport:   source blocks=4 block_span=2 stage_depth=2 pages=2 page_bytes=4096 loops=0
 // PLAN-NEXT: PipeTransport:   endpoint 0 dst(1, 0) DFB 1 block_count=4 slot_span=2 group_depth=2 loops=0 address=recurrence(initial=0, stride=2, modulus=4, executions=1)
 // PLAN-NEXT: PipeTransport:   completion endpoints=[0] source_reuse=after_completion_group
