@@ -10,6 +10,8 @@ gather, scatter, scatter-gather, and ring forward kernels with launch
 extent equal to work extent. The cases here cover regimes the
 `ttl-verify-pipenet-guards` verifier exercises under `grid="full"`:
 
+* Table-driven single-receiver collectives: five loopback-only collective
+  records verify that one-node ranges use unicast transport.
 * Scatter on a subgrid (`grid="full"`, work = 4 nodes in row 0):
   single PipeNet, single multicast pipe, dst rectangle smaller than the
   launch grid.
@@ -34,6 +36,72 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 from ttlang_test_utils import assert_pcc, to_dram
 
 TILE = 32
+
+
+# Five records use one loop body with record tables. Each range contains one
+# node, so transport lowering must use unicast while preserving collective
+# loopback semantics.
+TABLE_DRIVEN_COLLECTIVE_RECORDS = 5
+
+
+@ttl.operation(grid=(1, TABLE_DRIVEN_COLLECTIVE_RECORDS))
+def table_driven_single_receiver_collective_kernel(inp, out):
+    net = ttl.PipeNet(
+        [
+            ttl.Pipe(src=(0, row_idx), dst=(slice(0, 1), row_idx))
+            for row_idx in range(TABLE_DRIVEN_COLLECTIVE_RECORDS)
+        ]
+    )
+
+    recv_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        with recv_dfb.wait() as recv_blk, out_dfb.reserve() as out_blk:
+            out_blk.store(recv_blk)
+
+    @ttl.datamovement()
+    def post_and_send():
+        _, node_y = ttl.node(dims=2)
+        with send_dfb.reserve() as send_blk:
+            ttl.copy(inp[node_y : node_y + 1, 0:1], send_blk).wait()
+
+        with send_dfb.wait() as send_blk, recv_dfb.reserve() as recv_blk:
+
+            def receive_then_send(recv_pipe):
+                recv_tx = ttl.copy(recv_pipe, recv_blk)
+
+                def send(send_pipe):
+                    ttl.copy(send_blk, send_pipe).wait()
+
+                net.if_src(send)
+                recv_tx.wait()
+
+            net.if_dst(receive_then_send)
+
+    @ttl.datamovement()
+    def write_output():
+        _, node_y = ttl.node(dims=2)
+        with out_dfb.wait() as out_blk:
+            ttl.copy(out_blk, out[node_y : node_y + 1, 0:1]).wait()
+
+
+@pytest.mark.parametrize(
+    "torch_dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"]
+)
+def test_table_driven_single_receiver_collective(device, torch_dtype):
+    input_torch = torch.randn(
+        TABLE_DRIVEN_COLLECTIVE_RECORDS * TILE, TILE, dtype=torch_dtype
+    )
+    input_tensor = to_dram(input_torch, device)
+    output_tensor = to_dram(torch.zeros_like(input_torch), device)
+
+    table_driven_single_receiver_collective_kernel(input_tensor, output_tensor)
+
+    result = ttnn.to_torch(output_tensor).float()
+    assert_pcc(input_torch.float(), result)
 
 
 # ---------------------------------------------------------------------------

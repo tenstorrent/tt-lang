@@ -21,6 +21,7 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Types.h"
 #include "mlir/Support/LogicalResult.h"
@@ -42,8 +43,10 @@
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Casting.h"
 #include <cstdlib>
+#include <optional>
 #include <utility>
 
 namespace mlir::tt::ttl {
@@ -61,6 +64,10 @@ namespace ttk = mlir::tt::ttkernel;
 constexpr llvm::StringLiteral kCRTAIndicesAttr = "ttl.crta_indices";
 constexpr llvm::StringLiteral kExpandLinearizeIndexAttr =
     "ttlang.expand_linearize_index";
+// Duplicating up to four callback bodies avoids table lookups for small nets.
+// Larger nets use one loop so the transfer protocol body is not duplicated for
+// every record.
+constexpr size_t kPipeNetForeachDirectRecordLimit = 4;
 
 // PipeGraph is defined in PipeGraph.h.
 
@@ -93,10 +100,10 @@ public:
     addConversion([](PipeTokenType type) -> Type {
       return IntegerType::get(type.getContext(), 32);
     });
-    // High-level pipe copies return TransferHandleType. Their post sequence may
-    // pass through SCF or tensor containers. DMA handles use the same runtime
-    // representation, but their waits depend only on precomputed provenance
-    // and lower to barriers without inspecting this value.
+    // Public pipe copies expose TransferHandleType and may preserve the dynamic
+    // post sequence through SCF or tensor containers. DMA handles use the same
+    // runtime representation, but their waits depend only on precomputed
+    // provenance and lower to barriers without inspecting this value.
     addConversion([](TransferHandleType type) -> Type {
       return IntegerType::get(type.getContext(), 32);
     });
@@ -314,16 +321,33 @@ struct BindCBLowering : OpConversionPattern<BindCBOp> {
 // CB synchronization operation lowering patterns
 //===----------------------------------------------------------------------===//
 
+// Trace through unrealized casts to get the original TTL CB type.
+static CircularBufferType getTTLCBType(Value cb) {
+  if (auto ttlCbTy = mlir::dyn_cast<CircularBufferType>(cb.getType())) {
+    return ttlCbTy;
+  }
+  if (auto castOp = cb.getDefiningOp<UnrealizedConversionCastOp>()) {
+    if (castOp.getInputs().size() == 1) {
+      if (auto ttlCbTy = mlir::dyn_cast<CircularBufferType>(
+              castOp.getInputs()[0].getType())) {
+        return ttlCbTy;
+      }
+    }
+  }
+  return nullptr;
+}
+
 // Tile count: use the `num_tiles` attribute if present (per-subblock
 // reserve/push), otherwise derive from the DFB type shape (full block).
-static Value computeNumTiles(Operation *sourceOp, CircularBufferType dfbType,
+static Value computeNumTiles(Operation *sourceOp, Value cb,
                              ConversionPatternRewriter &rewriter,
                              Location loc) {
   if (auto attr = sourceOp->getAttrOfType<IntegerAttr>("num_tiles")) {
     return arith::ConstantIntOp::create(rewriter, loc, attr.getInt(), 32);
   }
-  return arith::ConstantIntOp::create(rewriter, loc,
-                                      dfbType.getElementsPerBlock(), 32);
+  auto ttlCbTy = getTTLCBType(cb);
+  int64_t numTiles = ttlCbTy ? ttlCbTy.getElementsPerBlock() : 1;
+  return arith::ConstantIntOp::create(rewriter, loc, numTiles, 32);
 }
 
 template <typename SourceOp, typename TargetOp, bool HasResult>
@@ -335,9 +359,8 @@ struct CBOpLowering : OpConversionPattern<SourceOp> {
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     Value originalCb = op.getCb();
-    FailureOr<CircularBufferType> maybeDFBType =
-        utils::getTTLCircularBufferType(originalCb);
-    if (failed(maybeDFBType)) {
+    auto ttlCbTy = getTTLCBType(originalCb);
+    if (!ttlCbTy) {
       return rewriter.notifyMatchFailure(op, "failed to get TTL CB type");
     }
 
@@ -347,7 +370,7 @@ struct CBOpLowering : OpConversionPattern<SourceOp> {
       return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
     }
 
-    Value numTiles = computeNumTiles(op, *maybeDFBType, rewriter, loc);
+    Value numTiles = computeNumTiles(op, originalCb, rewriter, loc);
     TargetOp::create(rewriter, loc, *convertedCb, numTiles);
 
     if constexpr (HasResult) {
@@ -527,7 +550,8 @@ static CopyOperandKind classifyOperand(Value v) {
   if (llvm::isa<CircularBufferType>(v.getType())) {
     return CopyOperandKind::CircularBuffer;
   }
-  if (llvm::isa<PipeType>(v.getType())) {
+  if (llvm::isa<PipeType, SelectedPipeSrcType, SelectedPipeDstType>(
+          v.getType())) {
     return CopyOperandKind::Pipe;
   }
   if (v.getDefiningOp<TensorSliceOp>()) {
@@ -563,14 +587,23 @@ static PipeTransferKind getPipeTransferKind(PipeTransferContract contract) {
 
 /// Return the contract shared by every possible value of a pipe operand.
 ///
-/// A defining create op preserves a degenerate one-receiver collective. A
-/// block argument has no create op, so its pipe type supplies the contract.
+/// Create and selected-pipe operations preserve an explicit collective
+/// contract. A block argument has no defining pipe op, so its type supplies
+/// the contract.
 static FailureOr<PipeTransferContract>
 getPipeTransferContractForPipeValue(ValueOriginAnalysis &analysis, Value pipe) {
   return analysis.getOrigins(pipe).uniqueMapped<PipeTransferContract>(
       [](Value origin) -> FailureOr<PipeTransferContract> {
         if (auto createPipe = origin.getDefiningOp<CreatePipeOp>()) {
           return getPipeTransferContract(createPipe);
+        }
+        if (auto selectedSrc = origin.getDefiningOp<SelectPipeSrcOp>()) {
+          return getPipeTransferContract(
+              selectedSrc.getRecords().getPipes().front());
+        }
+        if (auto selectedDst = origin.getDefiningOp<SelectPipeDstOp>()) {
+          return getPipeTransferContract(
+              selectedDst.getRecords().getPipes().front());
         }
         if (isa<BlockArgument>(origin) && isa<PipeType>(origin.getType())) {
           return cast<PipeType>(origin.getType()).hasMultipleReceivers()
@@ -584,14 +617,19 @@ getPipeTransferContractForPipeValue(ValueOriginAnalysis &analysis, Value pipe) {
 static PipeTransferCreateOp createPipeTransfer(OpBuilder &builder, Location loc,
                                                Value pipe,
                                                PipeTransferContract contract) {
-  auto pipeType = mlir::cast<PipeType>(traceUnrealizedCasts(pipe).getType());
   auto kindAttr = PipeTransferKindAttr::get(builder.getContext(),
                                             getPipeTransferKind(contract));
-  auto expectedReceiversAttr =
-      builder.getI64IntegerAttr(pipeType.getNumDests());
   return PipeTransferCreateOp::create(
-      builder, loc, PipeTransferType::get(builder.getContext()), pipe, kindAttr,
-      expectedReceiversAttr);
+      builder, loc, PipeTransferType::get(builder.getContext()), pipe,
+      kindAttr);
+}
+
+static FailureOr<int64_t> getPipeNetIdForPipeValue(Operation *op, Value pipe) {
+  FailureOr<PipeReference> pipeRef = getPipeReference(op, pipe);
+  if (failed(pipeRef)) {
+    return failure();
+  }
+  return (*pipeRef).getPipeNetId();
 }
 
 static Value getOrCreatePipeTransfer(
@@ -617,10 +655,291 @@ static Value getOrCreatePipeTransfer(
   return createPipeTransfer(builder, loc, pipe, contract).getTransfer();
 }
 
+static Value buildConstantTableLookup(OpBuilder &builder, Location loc,
+                                      ArrayRef<int64_t> values,
+                                      Value recordIndex) {
+  assert(!values.empty() && "PipeNet foreach records must not be empty");
+  return ttk::ConstantTableLookupOp::create(
+      builder, loc, builder.getIndexType(), recordIndex,
+      builder.getDenseI64ArrayAttr(values));
+}
+
+static bool shouldLowerPipeNetForeachDirect(PipeNetRecordsAttr records) {
+  return records.getPipes().size() <= kPipeNetForeachDirectRecordLimit;
+}
+
+struct PipeForeachTables {
+  SmallVector<int64_t> srcX;
+  SmallVector<int64_t> srcY;
+  SmallVector<int64_t> dstStartX;
+  SmallVector<int64_t> dstStartY;
+  SmallVector<int64_t> dstEndX;
+  SmallVector<int64_t> dstEndY;
+  SmallVector<int64_t> numDests;
+  SmallVector<int64_t> srcInDstRange;
+};
+
+static PipeForeachTables buildPipeForeachTables(OpBuilder &builder,
+                                                PipeNetRecordsAttr records) {
+  SmallVector<int64_t> srcX;
+  SmallVector<int64_t> srcY;
+  SmallVector<int64_t> dstStartX;
+  SmallVector<int64_t> dstStartY;
+  SmallVector<int64_t> dstEndX;
+  SmallVector<int64_t> dstEndY;
+  SmallVector<int64_t> numDests;
+  SmallVector<int64_t> srcInDstRange;
+  MLIRContext *context = builder.getContext();
+  for (PipeRecordAttr record : records.getPipes()) {
+    PipeType pipeType =
+        getPipeTypeFromRecord(context, record, records.getPipeNetId());
+    srcX.push_back(pipeType.getSrcX());
+    srcY.push_back(pipeType.getSrcY());
+    dstStartX.push_back(pipeType.getDstStartX());
+    dstStartY.push_back(pipeType.getDstStartY());
+    dstEndX.push_back(pipeType.getDstEndX());
+    dstEndY.push_back(pipeType.getDstEndY());
+    numDests.push_back(pipeType.getNumDests());
+    srcInDstRange.push_back(pipeType.srcInDstRange() ? 1 : 0);
+  }
+  return PipeForeachTables{std::move(srcX),      std::move(srcY),
+                           std::move(dstStartX), std::move(dstStartY),
+                           std::move(dstEndX),   std::move(dstEndY),
+                           std::move(numDests),  std::move(srcInDstRange)};
+}
+
+template <typename SelectOp, typename SelectedType>
+static SelectOp
+buildSelectedPipe(OpBuilder &builder, Location loc, PipeNetRecordsAttr records,
+                  const PipeForeachTables &tables, Value recordIndex) {
+  Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
+  Value srcInDstRangeIndex =
+      buildConstantTableLookup(builder, loc, tables.srcInDstRange, recordIndex);
+  Value srcInDstRange = arith::CmpIOp::create(
+      builder, loc, arith::CmpIPredicate::ne, srcInDstRangeIndex, zero);
+  return SelectOp::create(
+      builder, loc, SelectedType::get(builder.getContext()), recordIndex,
+      buildConstantTableLookup(builder, loc, tables.srcX, recordIndex),
+      buildConstantTableLookup(builder, loc, tables.srcY, recordIndex),
+      buildConstantTableLookup(builder, loc, tables.dstStartX, recordIndex),
+      buildConstantTableLookup(builder, loc, tables.dstStartY, recordIndex),
+      buildConstantTableLookup(builder, loc, tables.dstEndX, recordIndex),
+      buildConstantTableLookup(builder, loc, tables.dstEndY, recordIndex),
+      buildConstantTableLookup(builder, loc, tables.numDests, recordIndex),
+      srcInDstRange, records);
+}
+
+template <typename ForeachOp>
+static void clonePipeForeachBody(ForeachOp foreachOp, Value selectedPipe,
+                                 OpBuilder &builder) {
+  IRMapping mapping;
+  Block &sourceBlock = foreachOp.getBody().front();
+  mapping.map(sourceBlock.getArgument(0), selectedPipe);
+  for (Operation &bodyOp : sourceBlock) {
+    if (mlir::isa<YieldOp>(bodyOp)) {
+      continue;
+    }
+    builder.clone(bodyOp, mapping);
+  }
+}
+
+static Value buildIntegerMatch(RewriterBase &rewriter, Location loc, Value lhs,
+                               int64_t rhs) {
+  Value rhsValue = arith::ConstantIndexOp::create(rewriter, loc, rhs);
+  return arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::eq, lhs,
+                               rhsValue);
+}
+
+static Value buildIntegerRangeMatch(RewriterBase &rewriter, Location loc,
+                                    Value value, int64_t start, int64_t end) {
+  Value startValue = arith::ConstantIndexOp::create(rewriter, loc, start);
+  Value endValue = arith::ConstantIndexOp::create(rewriter, loc, end);
+  Value atStart = arith::CmpIOp::create(
+      rewriter, loc, arith::CmpIPredicate::sge, value, startValue);
+  Value atEnd = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::sle,
+                                      value, endValue);
+  return arith::AndIOp::create(rewriter, loc, atStart, atEnd);
+}
+
+static Value buildRecordSrcMatch(RewriterBase &rewriter, Location loc,
+                                 Value nodeX, Value nodeY,
+                                 PipeRecordAttr record) {
+  Value xMatches = buildIntegerMatch(rewriter, loc, nodeX, record.getSrcX());
+  Value yMatches = buildIntegerMatch(rewriter, loc, nodeY, record.getSrcY());
+  return arith::AndIOp::create(rewriter, loc, xMatches, yMatches);
+}
+
+static Value buildRecordDstMatch(RewriterBase &rewriter, Location loc,
+                                 Value nodeX, Value nodeY,
+                                 PipeRecordAttr record) {
+  Value xMatches = buildIntegerRangeMatch(
+      rewriter, loc, nodeX, record.getDstStartX(), record.getDstEndX());
+  Value yMatches = buildIntegerRangeMatch(
+      rewriter, loc, nodeY, record.getDstStartY(), record.getDstEndY());
+  return arith::AndIOp::create(rewriter, loc, xMatches, yMatches);
+}
+
+static CreatePipeOp buildStaticPipeForRecord(RewriterBase &rewriter,
+                                             Location loc,
+                                             PipeNetRecordsAttr records,
+                                             PipeRecordAttr record) {
+  PipeType pipeType =
+      getPipeTypeFromRecord(rewriter.getContext(), record,
+                            static_cast<int64_t>(records.getPipeNetId()));
+  BoolAttr isCollectiveAttr =
+      record.getIsCollective() ? rewriter.getBoolAttr(true) : BoolAttr();
+  return CreatePipeOp::create(
+      rewriter, loc, pipeType, rewriter.getI64IntegerAttr(record.getSrcX()),
+      rewriter.getI64IntegerAttr(record.getSrcY()),
+      rewriter.getI64IntegerAttr(record.getDstStartX()),
+      rewriter.getI64IntegerAttr(record.getDstStartY()),
+      rewriter.getI64IntegerAttr(record.getDstEndX()),
+      rewriter.getI64IntegerAttr(record.getDstEndY()),
+      rewriter.getI64IntegerAttr(records.getPipeNetId()),
+      records.getPipeNetName(), isCollectiveAttr);
+}
+
+template <typename ForeachOp>
+static LogicalResult lowerPipeNetForeachDirect(
+    ForeachOp op, RewriterBase &rewriter,
+    llvm::function_ref<Value(RewriterBase &, Location, Value, Value,
+                             PipeRecordAttr)>
+        buildRecordMatch) {
+  Location loc = op.getLoc();
+  PipeNetRecordsAttr records = op.getRecords();
+  rewriter.setInsertionPoint(op);
+  Value nodeX =
+      ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
+  Value nodeY =
+      ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
+  for (PipeRecordAttr record : records.getPipes()) {
+    Value staticPipe =
+        buildStaticPipeForRecord(rewriter, loc, records, record).getResult();
+    Value isActiveRecord =
+        buildRecordMatch(rewriter, loc, nodeX, nodeY, record);
+    auto ifOp = scf::IfOp::create(rewriter, loc, isActiveRecord,
+                                  /*withElseRegion=*/false);
+    rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
+    clonePipeForeachBody(op, staticPipe, rewriter);
+    rewriter.setInsertionPointAfter(ifOp);
+  }
+  rewriter.eraseOp(op);
+  return success();
+}
+
+static LogicalResult lowerPipeNetForeachSrc(PipeNetForeachSrcOp op,
+                                            RewriterBase &rewriter) {
+  Location loc = op.getLoc();
+  rewriter.setInsertionPoint(op);
+  PipeNetRecordsAttr records = op.getRecords();
+  if (shouldLowerPipeNetForeachDirect(records)) {
+    return lowerPipeNetForeachDirect(op, rewriter, buildRecordSrcMatch);
+  }
+
+  PipeForeachTables tables = buildPipeForeachTables(rewriter, records);
+  Value lower = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  Value upper =
+      arith::ConstantIndexOp::create(rewriter, loc, records.getPipes().size());
+  Value step = arith::ConstantIndexOp::create(rewriter, loc, 1);
+  auto forOp = scf::ForOp::create(rewriter, loc, lower, upper, step);
+
+  rewriter.setInsertionPointToStart(forOp.getBody());
+  Value recordIndex = forOp.getInductionVar();
+  auto selectedPipe = buildSelectedPipe<SelectPipeSrcOp, SelectedPipeSrcType>(
+      rewriter, loc, records, tables, recordIndex);
+  Value nodeX =
+      ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
+  Value nodeY =
+      ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
+  Value xMatches = arith::CmpIOp::create(
+      rewriter, loc, arith::CmpIPredicate::eq, nodeX, selectedPipe.getSrcX());
+  Value yMatches = arith::CmpIOp::create(
+      rewriter, loc, arith::CmpIPredicate::eq, nodeY, selectedPipe.getSrcY());
+  Value isSrc = arith::AndIOp::create(rewriter, loc, xMatches, yMatches);
+  auto ifOp = scf::IfOp::create(rewriter, loc, isSrc,
+                                /*withElseRegion=*/false);
+  rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
+  clonePipeForeachBody(op, selectedPipe.getPipe(), rewriter);
+  rewriter.eraseOp(op);
+  return success();
+}
+
+static LogicalResult lowerPipeNetForeachDst(PipeNetForeachDstOp op,
+                                            RewriterBase &rewriter) {
+  Location loc = op.getLoc();
+  rewriter.setInsertionPoint(op);
+  PipeNetRecordsAttr records = op.getRecords();
+  if (shouldLowerPipeNetForeachDirect(records)) {
+    return lowerPipeNetForeachDirect(op, rewriter, buildRecordDstMatch);
+  }
+
+  PipeForeachTables tables = buildPipeForeachTables(rewriter, records);
+  Value lower = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  Value upper =
+      arith::ConstantIndexOp::create(rewriter, loc, records.getPipes().size());
+  Value step = arith::ConstantIndexOp::create(rewriter, loc, 1);
+  auto forOp = scf::ForOp::create(rewriter, loc, lower, upper, step);
+
+  rewriter.setInsertionPointToStart(forOp.getBody());
+  Value recordIndex = forOp.getInductionVar();
+  auto selectedPipe = buildSelectedPipe<SelectPipeDstOp, SelectedPipeDstType>(
+      rewriter, loc, records, tables, recordIndex);
+  Value nodeX =
+      ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
+  Value nodeY =
+      ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
+  Value xAtStart =
+      arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::sge, nodeX,
+                            selectedPipe.getDstStartX());
+  Value xAtEnd = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::sle,
+                                       nodeX, selectedPipe.getDstEndX());
+  Value yAtStart =
+      arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::sge, nodeY,
+                            selectedPipe.getDstStartY());
+  Value yAtEnd = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::sle,
+                                       nodeY, selectedPipe.getDstEndY());
+  Value xInRange = arith::AndIOp::create(rewriter, loc, xAtStart, xAtEnd);
+  Value yInRange = arith::AndIOp::create(rewriter, loc, yAtStart, yAtEnd);
+  Value isDst = arith::AndIOp::create(rewriter, loc, xInRange, yInRange);
+  auto ifOp = scf::IfOp::create(rewriter, loc, isDst,
+                                /*withElseRegion=*/false);
+  rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
+  clonePipeForeachBody(op, selectedPipe.getPipe(), rewriter);
+  rewriter.eraseOp(op);
+  return success();
+}
+
+static LogicalResult lowerPipeNetForeachOps(ModuleOp mod) {
+  SmallVector<Operation *> foreachOps;
+  mod.walk<WalkOrder::PostOrder>([&](Operation *op) {
+    if (mlir::isa<PipeNetForeachSrcOp, PipeNetForeachDstOp>(op)) {
+      foreachOps.push_back(op);
+    }
+  });
+
+  // A module-wide greedy rewrite also deletes unrelated unused pure reads.
+  // Rewrite only foreach operations so this expansion cannot change other IR.
+  IRRewriter rewriter(mod.getContext());
+  for (Operation *op : foreachOps) {
+    if (auto foreachSrcOp = mlir::dyn_cast<PipeNetForeachSrcOp>(op)) {
+      if (failed(lowerPipeNetForeachSrc(foreachSrcOp, rewriter))) {
+        return failure();
+      }
+      continue;
+    }
+    if (failed(lowerPipeNetForeachDst(mlir::cast<PipeNetForeachDstOp>(op),
+                                      rewriter))) {
+      return failure();
+    }
+  }
+  return success();
+}
+
 /// High-level pipe copy and its proven transfer contract.
 struct PipeCopyExpansion {
   CopyOp copy;
   PipeTransferContract contract;
+  std::optional<int64_t> pipeNetId;
 };
 
 /// Receive-handle wait and the PipeNet id used to create its typed token.
@@ -654,7 +973,13 @@ buildPipeTransferExpansionPlan(ModuleOp mod, ValueOriginAnalysis &analysis) {
                "pipe values";
         result = failure();
       } else {
-        plan.receiveCopies.push_back({op, *contract});
+        FailureOr<int64_t> pipeNetId =
+            getPipeNetIdForPipeValue(op, op.getSrc());
+        if (failed(pipeNetId)) {
+          result = failure();
+        } else {
+          plan.receiveCopies.push_back({op, *contract, *pipeNetId});
+        }
       }
       return;
     }
@@ -667,7 +992,7 @@ buildPipeTransferExpansionPlan(ModuleOp mod, ValueOriginAnalysis &analysis) {
                "pipe values";
         result = failure();
       } else {
-        plan.sendCopies.push_back({op, *contract});
+        plan.sendCopies.push_back({op, *contract, std::nullopt});
       }
     }
   });
@@ -695,13 +1020,18 @@ buildPipeTransferExpansionPlan(ModuleOp mod, ValueOriginAnalysis &analysis) {
       return;
     }
     CopyOp copyOp = *maybeCopyOp;
-    auto pipeType =
-        mlir::cast<PipeType>(traceUnrealizedCasts(copyOp.getSrc()).getType());
-    plan.receiveWaits.push_back({waitOp, pipeType.getPipeNetId()});
+    FailureOr<int64_t> pipeNetId =
+        getPipeNetIdForPipeValue(waitOp, copyOp.getSrc());
+    if (failed(pipeNetId)) {
+      result = failure();
+      return;
+    }
+    plan.receiveWaits.push_back({waitOp, *pipeNetId});
   });
   if (failed(result)) {
     return failure();
   }
+
   return plan;
 }
 
@@ -727,16 +1057,16 @@ applyPipeTransferExpansionPlan(ModuleOp mod,
 
   for (const PipeCopyExpansion &expansion : plan.receiveCopies) {
     CopyOp copyOp = expansion.copy;
-    auto pipeType =
-        mlir::cast<PipeType>(traceUnrealizedCasts(copyOp.getSrc()).getType());
+    assert(expansion.pipeNetId && "receiver expansion is missing PipeNet id");
     builder.setInsertionPoint(copyOp);
     Value transfer =
         getOrCreatePipeTransfer(builder, copyOp.getLoc(), copyOp.getSrc(),
                                 expansion.contract, transferByDirectCreatePipe);
     auto postOp = PipeTransferPostOp::create(
         builder, copyOp.getLoc(),
-        PipeTokenType::get(builder.getContext(), pipeType.getPipeNetId()),
-        transfer, copyOp.getDst());
+        PipeTokenType::get(builder.getContext(), *expansion.pipeNetId),
+        transfer,
+        copyOp.getDst());
     auto handleCast = UnrealizedConversionCastOp::create(
         builder, copyOp.getLoc(), copyOp.getResult().getType(),
         ValueRange{postOp.getToken()});
@@ -768,6 +1098,7 @@ applyPipeTransferExpansionPlan(ModuleOp mod,
                                tokenCast.getResult(0));
     waitOp->erase();
   }
+
 }
 
 /// Compute CTA index for a tensor function argument.
@@ -936,16 +1267,15 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
     return failure();
   }
 
-  FailureOr<CircularBufferType> maybeDFBType =
-      utils::getTTLCircularBufferType(cb);
-  if (failed(maybeDFBType)) {
+  auto cbType = getTTLCBType(cb);
+  if (!cbType) {
     return rewriter.notifyMatchFailure(op, "failed to get CB type");
   }
 
   SmallVector<int64_t> tensorGridShape = getTileGridShapeFromValue(tensor);
   unsigned tensorRank = tensorGridShape.size();
 
-  auto cbShape = (*maybeDFBType).getShape();
+  auto cbShape = cbType.getShape();
 
   if (startIndices.size() != tensorRank) {
     return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
@@ -1131,32 +1461,35 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
 };
 
 struct PipeTransferPostLowering : OpConversionPattern<PipeTransferPostOp> {
-  PipeTransferPostLowering(const TypeConverter &typeConverter,
-                           MLIRContext *context,
-                           const PipeModulePlan &pipeModulePlan,
-                           const PipeCounterProgressMap &counters,
-                           const PipeResourcePlan &pipeResourcePlan)
+  PipeTransferPostLowering(
+      const TypeConverter &typeConverter, MLIRContext *context,
+      const PipeModulePlan &pipeModulePlan,
+      const PipeCounterProgressMap &counters,
+      const PipeSelectedPostSequenceMap &selectedPostSequenceCounters,
+      const PipeResourcePlan &pipeResourcePlan)
       : OpConversionPattern(typeConverter, context),
         pipeModulePlan(pipeModulePlan), counters(counters),
+        selectedPostSequenceCounters(selectedPostSequenceCounters),
         pipeResourcePlan(pipeResourcePlan) {}
 
   LogicalResult
   matchAndRewrite(PipeTransferPostOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    // Slice-offset materialization requires the original destination tensor,
-    // while the plan supplies the already-resolved receiver DFB.
     if (pipeResourcePlan.staticallyInactiveOps.contains(op.getOperation())) {
       lowerInactivePipeTransferPost(op, rewriter);
       return success();
     }
+    // Slice-offset materialization requires the original destination tensor,
+    // while the plan supplies the already-resolved receiver DFB.
     return lowerPipeTransferPost(
         op, op.getDst(), pipeModulePlan.getTransferPlan(op.getOperation()),
-        counters, pipeResourcePlan, rewriter);
+        counters, selectedPostSequenceCounters, pipeResourcePlan, rewriter);
   }
 
 private:
   const PipeModulePlan &pipeModulePlan;
   const PipeCounterProgressMap &counters;
+  const PipeSelectedPostSequenceMap &selectedPostSequenceCounters;
   const PipeResourcePlan &pipeResourcePlan;
 };
 
@@ -1198,18 +1531,27 @@ private:
 struct PipeTransferWaitLowering : OpConversionPattern<PipeTransferWaitOp> {
   PipeTransferWaitLowering(const TypeConverter &typeConverter,
                            MLIRContext *context,
+                           const PipeModulePlan &pipeModulePlan,
                            const PipeResourcePlan &pipeResourcePlan)
       : OpConversionPattern(typeConverter, context),
+        pipeModulePlan(pipeModulePlan),
         pipeResourcePlan(pipeResourcePlan) {}
 
   LogicalResult
   matchAndRewrite(PipeTransferWaitOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    return lowerPipeTransferWait(op, adaptor.getToken(), pipeResourcePlan,
-                                 rewriter);
+    if (pipeResourcePlan.staticallyInactiveOps.contains(op.getOperation())) {
+      rewriter.eraseOp(op);
+      return success();
+    }
+    return lowerPipeTransferWait(
+        op, adaptor.getToken(),
+        pipeModulePlan.getTransferPlan(op.getOperation()), pipeResourcePlan,
+        rewriter);
   }
 
 private:
+  const PipeModulePlan &pipeModulePlan;
   const PipeResourcePlan &pipeResourcePlan;
 };
 
@@ -1229,8 +1571,8 @@ struct WaitLowering : OpConversionPattern<WaitOp> {
       return success();
     }
 
-    // TODO(ttl): Lower ttl.wait to the TRID-specific barrier selected by the
-    // transfer handle direction (read or write). Issue: #87.
+    // TODO(ttl): Lower ttl.wait to TRID-specific barriers keyed by the transfer
+    // handle (read vs write barrier based on transfer direction). Issue: #87.
     //
     // MVP behavior: emit the corresponding global barrier based on transfer
     // direction. Pipe receive waits are expanded to ttl.pipe_transfer.wait
@@ -1685,7 +2027,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                          func::FuncDialect, ttkernel::TTKernelDialect>();
 
   // Structural ops remain legal (converted elsewhere or kept as-is).
-  target.addLegalOp<ComputeOp, YieldOp, AttachCBOp, DstIndexOp>();
+  target.addLegalOp<ComputeOp, YieldOp, AttachCBOp, DstIndexOp, SelectPipeSrcOp,
+                    SelectPipeDstOp>();
   target.addLegalOp<PipeTransferCreateOp>();
 
   // DST lifecycle ops are not tile compute ops; keep them legal until the
@@ -1718,6 +2061,10 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
     return typeConverter.isSignatureLegal(op.getFunctionType()) &&
            typeConverter.isLegal(&op.getBody());
   });
+
+  if (failed(lowerPipeNetForeachOps(mod))) {
+    return failure();
+  }
 
   // Validate explicit transfer IR and resolve every high-level pipe copy before
   // expansion mutates the values used by the analysis.
@@ -1778,7 +2125,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   initializePipeCapacityCounters(pipeCapacityPlan, pipeResourcePlan,
                                  senderCapacityCounters);
   PipeCounterProgressMap postSequenceCounters;
-  initializePipePostSequenceCounters(pipeResourcePlan, postSequenceCounters);
+  PipeSelectedPostSequenceMap selectedPostSequenceCounters;
+  initializePipePostSequenceCounters(pipeResourcePlan, postSequenceCounters,
+                                     selectedPostSequenceCounters);
   PipeComputedAddressCounterMap computedAddressCounters;
   initializePipeComputedAddressCounters(pipeResourcePlan,
                                         computedAddressCounters);
@@ -1793,13 +2142,14 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                TensorOpTypeConversion<tensor::ExtractOp>,
                TensorOpTypeConversion<tensor::CastOp>>(typeConverter, &ctx);
   patterns.add<CopyLowering>(typeConverter, &ctx);
-  patterns.add<PipeTransferPostLowering>(typeConverter, &ctx, pipeModulePlan,
-                                         postSequenceCounters,
-                                         pipeResourcePlan);
+  patterns.add<PipeTransferPostLowering>(
+      typeConverter, &ctx, pipeModulePlan, postSequenceCounters,
+      selectedPostSequenceCounters, pipeResourcePlan);
   patterns.add<PipeTransferSendLowering>(
       typeConverter, &ctx, pipeModulePlan, pipeResourcePlan, pipeCapacityPlan,
       senderCapacityCounters, computedAddressCounters);
-  patterns.add<PipeTransferWaitLowering>(typeConverter, &ctx, pipeResourcePlan);
+  patterns.add<PipeTransferWaitLowering>(typeConverter, &ctx, pipeModulePlan,
+                                         pipeResourcePlan);
   patterns.add<WaitLowering>(typeConverter, &ctx,
                              pipeModulePlan.getCompletedPipeSendWaits());
   patterns.add<BindCBLowering, TensorSliceLowering, CBReserveLowering,
@@ -1832,6 +2182,16 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
     op.erase();
   }
 
+  SmallVector<Operation *> deadSelectedPipes;
+  mod.walk([&](Operation *op) {
+    if (mlir::isa<SelectPipeSrcOp, SelectPipeDstOp>(op) && op->use_empty()) {
+      deadSelectedPipes.push_back(op);
+    }
+  });
+  for (Operation *op : deadSelectedPipes) {
+    op->erase();
+  }
+
   // Greedy cleanup also erases dead unrealized casts used as temporary
   // transfer-token materializations.
   RewritePatternSet cleanupPatterns(&ctx);
@@ -1844,7 +2204,7 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   return success();
 }
 
-/// Lower tile compute operations and DST lifecycle operations to TTKernel.
+/// Phase 2: Lower tile compute ops and DST lifecycle ops to TTKernel.
 /// Tile compute ops are identified by TTLTileComputeOpTrait. ttl.compute is
 /// kept legal here because it is lowered to loops in an earlier pass
 /// (ttl-lower-to-loops).
