@@ -74,9 +74,9 @@ def add_3d_kernel(lhs, rhs, out):
 # CHECK-LABEL: func.func @add_compute
 
 # 3D CB shapes
-# CHECK: ttl.bind_cb{cb_index = 0, block_count = 2} : <[2, 2, 2], !ttcore.tile<32x32, bf16>, 2>
-# CHECK: ttl.bind_cb{cb_index = 2, block_count = 2} : <[2, 2, 2], !ttcore.tile<32x32, bf16>, 2>
-# CHECK: ttl.bind_cb{cb_index = 1, block_count = 2} : <[2, 2, 2], !ttcore.tile<32x32, bf16>, 2>
+# CHECK: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index} : <[2, 2, 2], !ttcore.tile<32x32, bf16>, 2>
+# CHECK: ttl.bind_cb{cb_index = 2, block_count = 2} {dfb_id = 2 : index} : <[2, 2, 2], !ttcore.tile<32x32, bf16>, 2>
+# CHECK: ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 1 : index} : <[2, 2, 2], !ttcore.tile<32x32, bf16>, 2>
 
 # Wait/reserve produce 3D tensors of tiles
 # CHECK: ttl.cb_wait %{{.*}} : <[2, 2, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x2x2x!ttcore.tile<32x32, bf16>>
