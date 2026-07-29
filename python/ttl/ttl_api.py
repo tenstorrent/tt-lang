@@ -1841,6 +1841,7 @@ def _lower_program_to_kernel(
             "func.func(convert-ttl-to-compute)",
             "func.func(ttl-insert-cb-sync)",
             "ttl-verify-pipenet",
+            "ttl-form-pipe-transports",
             "func.func(ttl-coalesce-dfb-acquires)",
             "ttl-finalize-dfb-indices",
             set_compute_config_pass,

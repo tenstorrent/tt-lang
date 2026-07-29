@@ -60,6 +60,8 @@ static StringRef stringifySchedule(PipeTransportSchedule schedule) {
   switch (schedule) {
   case PipeTransportSchedule::Scalar:
     return "scalar";
+  case PipeTransportSchedule::Grouped:
+    return "grouped";
   }
   llvm_unreachable("unknown pipe transport schedule");
 }
@@ -162,8 +164,9 @@ FailureOr<PipeTransportPlan> buildPipeTransportPlan(
       sendOp.emitError("pipe transfer source DFB element type must be tile");
       return failure();
     }
-    if (transferNode.blockSpan != 1) {
-      sendOp.emitError("grouped pipe transfer lowering is not implemented");
+    if (sourceDFBType.getBlockCount() % transferNode.blockSpan != 0) {
+      sendOp.emitError("source DFB block count must be divisible by pipe "
+                       "transfer block span");
       return failure();
     }
 
@@ -174,7 +177,9 @@ FailureOr<PipeTransportPlan> buildPipeTransportPlan(
     stream.transferContract = transferNode.transferContract;
     stream.synchronizationProtocol =
         selectSynchronizationProtocol(transferNode.id);
-    stream.schedule = PipeTransportSchedule::Scalar;
+    stream.schedule = transferNode.blockSpan == 1
+                          ? PipeTransportSchedule::Scalar
+                          : PipeTransportSchedule::Grouped;
     stream.logicalTransfersPerGroup = transferNode.blockSpan;
     stream.residualTransferCount = 0;
     stream.sourceIterationDomain = getIterationDomain(sendOp.getOperation());
@@ -208,7 +213,15 @@ FailureOr<PipeTransportPlan> buildPipeTransportPlan(
       endpoint.slotSpanBlocks =
           graphEndpoint.receiverDFBInfo.receiverSlotSpanBlocks;
       endpoint.blockCount = graphEndpoint.receiverDFBInfo.blockCount;
-      endpoint.groupDepth = 1;
+      std::optional<int64_t> requiredReceiverBlocks = llvm::checkedMul(
+          endpoint.slotSpanBlocks, transferNode.destinationGroupDepth);
+      if (!requiredReceiverBlocks ||
+          endpoint.blockCount < *requiredReceiverBlocks) {
+        sendOp.emitError(
+            "receiver DFB cannot store every destination transfer group");
+        return failure();
+      }
+      endpoint.groupDepth = transferNode.destinationGroupDepth;
       endpoint.iterationDomain = getIterationDomain(graphEndpoint.postOp);
       endpoint.addressSequence = graphEndpoint.addressSequence;
       stream.endpoints.push_back(std::move(endpoint));

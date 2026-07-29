@@ -62,6 +62,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   MLIRPass
   MLIRTensorDialect
   MLIRTilingInterface
+  MLIRTransforms
   MLIRTTKernelDialect
   MLIRTTLDialect
   TTLangAnalysis

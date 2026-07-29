@@ -117,6 +117,7 @@ func.func @copy_pipe_to_cb() {
 // CHECK: %[[P:.*]] = ttl.create_pipe
 // CHECK: %[[TRANSFER:.*]] = ttl.pipe_transfer.create %[[P]]
 // CHECK-SAME: block_span = 4 : i64
+// CHECK-SAME: destination_group_depth = 3 : i64
 // CHECK-SAME: expectedReceivers = 1 : i64
 // CHECK-SAME: kind = #ttl.pipe_transfer_kind<point_to_point>
 // CHECK: %[[TOKEN:.*]] = ttl.pipe_transfer.post %[[TRANSFER]]
@@ -126,7 +127,7 @@ func.func @copy_pipe_to_cb() {
 func.func @pipe_transfer_ir() {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], f32, 2>
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-  %transfer = ttl.pipe_transfer.create %p {block_span = 4 : i64, expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+  %transfer = ttl.pipe_transfer.create %p {block_span = 4 : i64, destination_group_depth = 3 : i64, expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> -> !ttl.pipe_transfer
   %recv = ttl.cb_reserve %cb : <[1, 1], f32, 2> -> tensor<1x1xf32>
   %token = ttl.pipe_transfer.post %transfer, %recv
