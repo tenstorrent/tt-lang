@@ -26,6 +26,7 @@ are the caller's calls to make.
 
 import json
 import os
+import select
 import sys
 import time
 import traceback
@@ -532,19 +533,44 @@ def park() -> None:
     from another shell worth doing.
 
     Ctrl-C exits instead, and then the throw and the teardown waits follow.
+    Killing the hung process also exits automatically.  ``std::system`` inserts
+    a shell between that process and this collector, so watching only
+    ``getppid()`` would leak both the shell and collector after the hung process
+    is killed.
     """
     print("tt-lang: PARKED, holding the device open so you can inspect it live.")
     print("tt-lang:   attach from another shell (halt-free, safe while parked);")
     print("tt-lang:   see 'Inspecting a stuck CB or semaphore' in CLAUDE.md.")
-    print("tt-lang: when done, kill this process, then reset the device:")
+    print("tt-lang: when done, kill the hung process, then reset the device:")
     print("tt-lang:   tt-smi -glx_reset_auto on a galaxy, tt-smi -r otherwise.")
     sys.stdout.flush()
+    hung_pid = parent_pid(os.getppid())
     try:
-        while True:
-            time.sleep(3600)
+        if hung_pid is None:
+            while True:
+                time.sleep(3600)
+        with os.fdopen(os.pidfd_open(hung_pid)) as pidfd:
+            poller = select.poll()
+            poller.register(pidfd, select.POLLIN)
+            while not poller.poll(3_600_000):
+                pass
+        print("tt-lang: hung process exited; releasing collector resources.")
+        sys.stdout.flush()
     except KeyboardInterrupt:
         print("tt-lang: unparked. tt-metal will now throw and close the device.")
         sys.stdout.flush()
+
+
+def parent_pid(pid: int):
+    """Return a Linux process's parent, or ``None`` if it already exited."""
+    try:
+        status = Path(f"/proc/{pid}/status").read_text()
+    except OSError:
+        return None
+    for line in status.splitlines():
+        if line.startswith("PPid:"):
+            return int(line.split()[1])
+    return None
 
 
 if __name__ == "__main__":
