@@ -114,8 +114,8 @@ for each logical transfer:
 ```
 
 This sequence programs and synchronizes the NoC for every logical transfer.
-`ttl-form-pipe-transports` now proves eligible loops and strip-mines them into
-groups of `R` logical transfers:
+`ttl-form-pipe-transports` proves eligible loops and strip-mines them into
+groups of `R` logical transfers when the pass is invoked:
 
 ```text
 select R logical transfers per group
@@ -192,7 +192,7 @@ per group. It does not use a binary search over `R`.
 
 #### Pipeline placement and allocation
 
-The standard TTL lowering pipeline orders the relevant passes as follows:
+The required pass ordering is:
 
 ```text
 ttl-insert-cb-sync
@@ -204,15 +204,23 @@ ttl-insert-cb-sync
 
 Grouping runs after DFB synchronization is explicit because its proof requires
 the complete lifecycle. It runs before acquire coalescing and DFB finalization
-because it changes acquire widths and block counts. Finalization emits the
-`ttl.dfb_allocations` logical/physical DFB contract, so runtime allocation uses
-the grouped block counts without a separate PipeNet allocation mechanism.
+because it changes acquire widths and block counts. With finalized DFB
+allocation enabled, finalization emits the `ttl.dfb_allocations`
+logical/physical DFB contract, so runtime allocation uses the grouped block
+counts without a separate PipeNet allocation mechanism.
+
+The pass is not enabled in the standard pipeline until the runtime consumes
+that finalized allocation contract for user and compiler-created DFBs. The
+pre-finalization runtime allocates user DFBs from their Python declarations;
+enabling grouping there would make the kernel reserve the resized block count
+while the runtime allocates the original block count.
 
 #### Measured result
 
-The pipes microbenchmark was measured on Blackhole with bf16 distinct tiles,
-five warmup iterations, and twenty measured iterations. Both receiver-address
-protocols were bit-exact:
+The pipes microbenchmark was measured on a branch with finalized runtime DFB
+allocation enabled, using Blackhole with bf16 distinct tiles, five warmup
+iterations, and twenty measured iterations. Both receiver-address protocols
+were bit-exact:
 
 | Transfers | Computed address total | Computed address per transfer | Published address total | Published address per transfer |
 | ---: | ---: | ---: | ---: | ---: |
