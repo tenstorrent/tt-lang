@@ -10,6 +10,9 @@ at `ed4701c65e9e`.
 Backup before #734 integration: `backup/demo-before-pr734-20260729-112617`
 at `ce0b646c4a8d`.
 
+Backup before #687 refresh: `backup/demo-before-pr687-refresh-20260729-122648`
+at `c2817a9306e0`.
+
 Purpose: disposable aggregate branch for demos and integration testing. This
 branch is not a PR review layer and must not become a parent for source PRs.
 
@@ -51,7 +54,7 @@ branch is not a PR review layer and must not become a parent for source PRs.
 | 11 | 740 | `bnorris/pipes-transport-emitter-refactor` | `15158bbfdfff` | `086571984` | Pipe transport emitter refactor. |
 | 12 | 784 | `bnorris/pr700-3-pipe-planning` | `44feea30895f` | `88ce4f8a6` | PipeNet planning before lowering emission. |
 | 13 | 780 | `bnorris/pipes-codegen-optimizations` | `51cb9909829e` | `36ddc010f`, `1cfbcb909` | PipeNet codegen cleanup and stateful one-packet write selection. |
-| 14 | 687 | `bnorris/fix-683` | `3809bc553c3e` | `c10f6eab9` | Cross-block store fanout through compiler-created DFBs. |
+| 14 | 687 | `bnorris/fix-683` | `8df9692cec10` | `c10f6eab9`, `2ed41e60d` | Stored values across control flow through branch-local cloning or compiler-created DFBs. Latest refresh applied as feature delta `66f90ca53375..8df9692cec10`. |
 | 15 | 680 | `bnorris/dfb-subviews-671` | `4588cf72d2fc` | `cc6f42636` | DFB block subviews and tensor-slice lowering. |
 | 16 | 734 | `bnorris/pipes-multidevice-integrated-poc` | `8eebd5f9375c` | `81d1103fd` | Fabric PipeNet POC and device-domain API. Applied as feature delta `698ebd38c13e..8eebd5f9375c` because the source branch still includes older PipeNet parent state. |
 
@@ -93,6 +96,10 @@ None after #734 was added in `81d1103fd`.
 - #734 integration: kept the current computed-address DFB runtime-argument
   allocation and added fabric runtime-argument bases after tensor, computed DFB,
   and PipeNet synchronization arguments.
+- #687 refresh: old PR687 tip `3809bc553c3e` was already present through
+  `c10f6eab9`. The current source branch was applied as feature delta
+  `66f90ca53375..8df9692cec10` to add the released-root-input cloning guard
+  and renamed stored-value tests without replaying unrelated main-stack state.
 
 ## Source PR Follow-Ups
 
@@ -120,9 +127,6 @@ source PRs when applicable rather than leaving them only on `bnorris/demo`.
   `ConvertTTLToCompute.cpp` check replacement safety with `DominanceInfo`.
   Same-block ordering is too restrictive after compute formation when a
   replacement dominates branch-local consumers.
-- #687 `bnorris/fix-683`: avoid `return` statements inside `@ttl.operation`
-  functions in `control_flow_store_fanout_kernels.py`. Put the runtime
-  datamovement definitions in the `_is_compile_only()` `else` branch instead.
 - #733 `bnorris/4-tensor-recurrence-scopes`: update tensor recurrence tests to
   assert physical DFB allocation counts after finalize instead of checking the
   removed `ttl.compiler_allocated` marker.
@@ -133,9 +137,6 @@ source PRs when applicable rather than leaving them only on `bnorris/demo`.
 - #783 `bnorris/pr700-2-computed-pipe-addresses`: update kernel-runner tests to
   use finalized `PhysicalDFBConfig` objects and tile-shape tuples after the
   logical/physical DFB configuration split.
-- #687 `bnorris/fix-683`: `control_flow_store_fanout.py` Python lit coverage
-  must pass TT-NN device tensors to operation calls. Mark it
-  `REQUIRES: ttnn, tt-device` and use `to_dram(...)` inputs before lowering.
 - #734 `bnorris/pipes-multidevice-integrated-poc`: rebase over the current
   PipeNet planning/codegen stack so the source branch can merge normally into
   `bnorris/demo`.
@@ -199,6 +200,14 @@ git merge --no-ff --no-edit origin/bnorris/fix-683
 git merge --no-ff --no-edit origin/bnorris/dfb-subviews-671
 ```
 
+When refreshing an existing aggregate that already contains the old #687 tip,
+apply only the new #687 feature delta:
+
+```bash
+git diff --binary 66f90ca53375 origin/bnorris/fix-683 --output=/tmp/pr687-feature-delta.patch
+git apply -3 /tmp/pr687-feature-delta.patch
+```
+
 Until #734 is rebased over the active PipeNet parent stack, apply its feature
 delta after the normal source-branch merges:
 
@@ -215,6 +224,20 @@ git push --force-with-lease origin bnorris/demo
 ```
 
 ## Validation
+
+Completed after #687 refresh:
+
+- `git diff --check`: passed.
+- `ninja -C build check-ttlang-mlir`: 234 passed.
+- `ninja -C build check-ttlang-python-bindings`: 3 passed.
+- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird-fabric-v1.1.7 bash -lc 'source build-docker/env/activate && cmake --build build-docker'`: passed.
+- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird-fabric-v1.1.7 bash -lc 'source build-docker/env/activate && ninja -C build-docker check-ttlang-mlir'`: 234 passed.
+- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird-fabric-v1.1.7 bash -lc 'source build-docker/env/activate && ninja -C build-docker check-ttlang-python-bindings'`: 3 passed.
+
+Blocked after #687 refresh:
+
+- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird-fabric-v1.1.7 bash -lc 'source build-docker/env/activate && timeout 300 python -m pytest -c build-docker/test/pytest.ini --rootdir=/home/bnorris/tt/tt-lang4/test test/python/test_control_flow_stored_values.py -xvs 2>&1 | tee /tmp/device_test.log'`: failed before test execution because UMD reported `Sysmem mapped at unexpected NOC address`.
+- `ps -eo user,pid,ppid,stat,etime,comm,args | rg "1240137|1244310|check-ttlang-all|pytest -c /home/bnorris/tt/tt-lang/build-docker"`: found an active `check-ttlang-all` pytest in `bnorris-ird-v1.1.7` against `/home/bnorris/tt/tt-lang`, so the runtime blocker is device ownership rather than this branch's test body.
 
 Completed after #734 integration:
 
