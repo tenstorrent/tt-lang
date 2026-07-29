@@ -249,10 +249,28 @@ were bit-exact:
 | 128 | 7.945 us | 0.062 us | 8.244 us | 0.064 us |
 
 For 128 transfers, automatic selection uses `(R=64, K=2)`. The corresponding
-hand-written bounded ring takes 8.342 us. The computed PipeTransport sender is
-approximately 5% faster in this measurement. The unconstrained batched/stateful
-NoC ceiling takes 6.96 us, but does not enforce bounded receiver residency.
-The scalar C++ baseline is approximately 0.60 us per transfer.
+hand-written bounded ring takes 8.346 us. The computed PipeTransport sender is
+approximately 5% faster in this measurement.
+
+Forced group sizes compare the same bounded protocol at identical `R` and
+`K=2`. Negative differences indicate that tt-lang is faster:
+
+| Group size R | Computed PipeTransport | C++ bounded ring | Difference |
+| ---: | ---: | ---: | ---: |
+| 8 | 17.116 us | 16.927 us | +1.12% |
+| 16 | 11.956 us | 11.973 us | -0.14% |
+| 32 | 9.284 us | 9.672 us | -4.01% |
+| 64 | 7.934 us | 8.346 us | -4.93% |
+
+An R=8 sweep over `N=16,32,64,128,256` separates fixed kernel cost from
+communication cost. Linear regression gives `0.13203 us/transfer` for the
+computed PipeTransport and `0.13195 us/transfer` for the C++ bounded ring, a
+0.06% difference. The remaining approximately 0.22 us intercept difference is
+fixed generated-kernel overhead rather than per-transfer communication cost.
+
+The unconstrained batched/stateful NoC ceiling takes 6.96 us for 128 transfers,
+but does not enforce bounded receiver residency. The scalar C++ baseline is
+approximately 0.60 us per transfer.
 
 #### Metal 2.0 DFB integration
 
