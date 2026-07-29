@@ -691,6 +691,11 @@ type and runs a linear scan within each partition.
 ### Algorithm
 
 ```
+for bindOp in compilerAllocatedBindCBOps:
+  lifecycleOps = reserveOrWaitOrPushOrPopUsers(bindOp)
+  if lifecycleOps is not empty and any operation kind is missing:
+    reject the partial lifecycle
+
 nextCompilerIndex = max(userDeclaredDFBIndices) + 1
 for funcOp in module:
   slots = assignPhysicalDFBIndices(
@@ -703,17 +708,15 @@ assignPhysicalDFBIndices(
   for op in funcOp.entryBlock:
     opIndex[op] = nextIdx++
 
-  // Build intervals: [first acquire position, last cb_pop position].
+  // Build intervals from complete reserve/push/wait/pop lifecycles.
   // Nested acquires and pops are projected to their function-level ancestor.
-  // If no acquire exists, start = bind_cb position (synthetic IR fallback).
-  // If no cb_pop exists, end = last operation (conservative).
   for bindOp in compilerAllocatedBindCBOps:
+    if bindOp has no lifecycle operations:
+      intervals[bindOp.type].append(
+          {opIndex[bindOp], lastOpIdx, bindOp.result})
+      continue
     start = min(getBodyIndex(acq) for acq in reserveOrWaitUsers(bindOp))
     end = max(getBodyIndex(pop) for pop in cbPopUsers(bindOp))
-    if no acquire:
-      start = opIndex[bindOp]
-    if end <= start:
-      end = lastOpIdx
     intervals[bindOp.type].append({start, end, bindOp.result})
 
   // Linear scan per type partition. Each partition gets a contiguous
@@ -737,6 +740,11 @@ assignPhysicalDFBIndices(
 
   return offset
 ```
+
+Compiler-created DFBs emitted by the production pipeline have both lifecycle
+halves. Rejecting a partial lifecycle prevents the allocator from inferring a
+bounded interval from malformed IR. A declaration with no lifecycle operations
+is legal but conservatively remains live through the end of its kernel.
 
 The expiration condition `active.end <= interval.start` matches the DST
 register allocator's convention. Because operation indices are integers
