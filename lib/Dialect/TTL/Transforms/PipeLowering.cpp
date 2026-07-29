@@ -453,10 +453,10 @@ struct StatefulOnePacketWriteState {
 /// Return whether a pipe send can reuse one resident NoC command across loop
 /// iterations.
 ///
-/// The one-packet write API keeps destination command fields in hardware
-/// command registers. This rewrite is legal only when no other send in the
-/// same loop can overwrite that state and when the receiver address is static
-/// for every iteration of this transfer.
+/// The one-packet write API keeps destination fields in the NoC write command.
+/// Reuse is legal only when the nearest enclosing loop, including nested loop
+/// bodies, contains no other send or tensor write and the receiver address is
+/// iteration-invariant.
 static bool
 canUseStatefulOnePacketWrite(PipeTransferSendOp op, PipeType pipeType,
                              const PipeResourceInfo &pipeResource,
@@ -465,7 +465,7 @@ canUseStatefulOnePacketWrite(PipeTransferSendOp op, PipeType pipeType,
   if (!pipeType.hasSingleReceiver() || cbNumTiles != 1 ||
       totalSizeBytes > getTargetNocMaxBurstBytes(op.getOperation()) ||
       !pipeResource.addressStorage.usesComputedReceiverDFB() ||
-      !pipeResourcePlan.singleSendLoopSends.contains(op.getOperation())) {
+      !pipeResourcePlan.statefulWriteLoopSends.contains(op.getOperation())) {
     return false;
   }
 
@@ -482,7 +482,7 @@ canUseStatefulOnePacketWrite(PipeTransferSendOp op, PipeType pipeType,
 static StatefulOnePacketWriteState buildStatefulOnePacketWriteState(
     PipeTransferSendOp op, PipeType pipeType,
     const PipeComputedAddressInfo &computedAddress,
-    const PipeComputedAddressCounterMap *computedAddressCounters,
+    const PipeComputedAddressCounterMap &computedAddressCounters,
     int64_t totalSizeBytes, int64_t nocIdx,
     ConversionPatternRewriter &rewriter) {
   auto loop = op->getParentOfType<scf::ForOp>();
@@ -1381,24 +1381,41 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
   });
 }
 
-/// Record pipe sends whose nearest `scf.for` contains no other pipe send.
-static void populateSingleSendLoopSends(ModuleOp mod, PipeResourcePlan &info) {
-  llvm::DenseMap<Operation *, SmallVector<Operation *, 4>> sendsByLoop;
-  mod.walk([&](PipeTransferSendOp sendOp) {
-    auto loop = sendOp->getParentOfType<scf::ForOp>();
-    if (!loop) {
-      return;
-    }
-    sendsByLoop[loop.getOperation()].push_back(sendOp.getOperation());
-  });
-
-  info.singleSendLoopSends.clear();
-  for (auto &entry : sendsByLoop) {
-    SmallVector<Operation *, 4> &sendOps = entry.second;
-    if (sendOps.size() == 1) {
-      info.singleSendLoopSends.insert(sendOps.front());
-    }
+/// Return true when `op` lowers to a NoC write that reprograms the resident
+/// write command.
+static bool reprogramsNocWriteCommand(Operation *op) {
+  if (auto copyOp = dyn_cast<CopyOp>(op)) {
+    return copyOp.getDst().getDefiningOp<TensorSliceOp>() != nullptr;
   }
+  return false;
+}
+
+/// Record sends whose enclosing loop cannot overwrite resident NoC write
+/// command state between iterations.
+static void populateStatefulWriteLoopSends(ModuleOp mod,
+                                           PipeResourcePlan &info) {
+  info.statefulWriteLoopSends.clear();
+  mod.walk([&](scf::ForOp loop) {
+    PipeTransferSendOp onlySend;
+    bool reprogramsCommand = false;
+    loop.walk([&](Operation *nestedOp) {
+      if (auto sendOp = dyn_cast<PipeTransferSendOp>(nestedOp)) {
+        if (onlySend) {
+          reprogramsCommand = true;
+          return WalkResult::interrupt();
+        }
+        onlySend = sendOp;
+      } else if (reprogramsNocWriteCommand(nestedOp)) {
+        reprogramsCommand = true;
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+    if (!reprogramsCommand && onlySend &&
+        onlySend->getParentOfType<scf::ForOp>() == loop) {
+      info.statefulWriteLoopSends.insert(onlySend.getOperation());
+    }
+  });
 }
 
 namespace {
@@ -1974,7 +1991,7 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, ValueOriginAnalysis &analysis,
       maxAddressTableBytes == 0
           ? 0
           : alignTo(maxAddressTableBytes, kPipeSramScratchAlignmentBytes);
-  populateSingleSendLoopSends(mod, info);
+  populateStatefulWriteLoopSends(mod, info);
   return success();
 }
 
