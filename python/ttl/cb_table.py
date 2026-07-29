@@ -19,6 +19,7 @@ in that file is the program that hung. Each block is stamped with a UTC time,
 pid and program hash so a stale file is recognizable as stale.
 """
 
+import json
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -30,6 +31,7 @@ from .kernel_runner import _ensure_ttnn, cb_geometry
 # Fixed destination, overridable; "0" disables the write.
 CB_TABLE_PATH = "/tmp/ttlang_cb_table.txt"
 PATH_ENV = "TTLANG_CB_TABLE"
+LOGICAL_PATH_ENV = "TTLANG_LOGICAL_DFB_TABLE"
 
 COMPILER_ALLOCATED_NAME = "<compiler>"
 UNNAMED_NAME = "<unnamed>"
@@ -37,6 +39,32 @@ UNNAMED_NAME = "<unnamed>"
 # The first write in a process replaces the file left by an earlier run; later
 # compiles in the same process append.
 _started = False
+
+
+def write_logical_dfb_table(lifted: Dict[str, Any]) -> Optional[str]:
+    """Write every pre-coloring logical DFB as JSON for allocation analysis."""
+    path = os.environ.get(LOGICAL_PATH_ENV)
+    if not path:
+        return None
+    rows = []
+    for name, dfb in lifted.items():
+        pages = dfb.block_count
+        for dim in dfb.shape:
+            pages *= dim
+        rows.append({
+            "name": name,
+            "reuse": dfb.reuse,
+            "provisional_id": dfb._cb_index,
+            "dtype": str(dfb.dtype),
+            "shape": list(dfb.shape),
+            "tile": list(dfb.tile),
+            "block_count": dfb.block_count,
+            "pages": pages,
+        })
+    with open(path, "w") as fd:
+        json.dump(rows, fd, indent=2)
+        fd.write("\n")
+    return path
 
 
 @dataclass(frozen=True)

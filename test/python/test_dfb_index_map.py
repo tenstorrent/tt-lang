@@ -99,29 +99,46 @@ def test_explicit_reuse_accepts_different_capacity():
     )
 
     assert small._cb_index == large._cb_index == 0
-    assert _cb_configs_from_lifted({
+    config = _cb_configs_from_lifted({
         "small": small,
         "large": large,
-    }) == [large]
+    })[0]
+    assert config.tile == (32, 32)
+    assert config.shape == (1, 32)
+    assert config.block_count == 1
 
 
-@pytest.mark.parametrize(
-    "dtype,tile",
-    [
-        ("bf16", (8, 32)),
-        ("bfp8", (32, 32)),
-    ],
-)
-def test_explicit_reuse_rejects_incompatible_page_geometry(dtype, tile):
+def test_explicit_reuse_collapses_to_largest_page_and_page_count():
+    _reset_cb_counter()
+    full_tile = make_dfb(
+        "bf16", (1, 8), block_count=2, reuse="workspace.q"
+    )
+    many_subtiles = make_dfb(
+        "bf16",
+        (1, 48),
+        block_count=1,
+        tile=(8, 32),
+        reuse="workspace.q",
+    )
+
+    config = _cb_configs_from_lifted({
+        "full_tile": full_tile,
+        "many_subtiles": many_subtiles,
+    })[0]
+    assert config.tile == (32, 32)
+    assert config.shape == (1, 48)
+    assert config.block_count == 1
+
+
+def test_explicit_reuse_rejects_incompatible_dtype():
     _reset_cb_counter()
     make_dfb("bf16", (1, 8), block_count=2, reuse="workspace.q")
 
     with pytest.raises(ValueError, match="incompatible declarations"):
         make_dfb(
-            dtype,
+            "bfp8",
             (1, 8),
             block_count=2,
-            tile=tile,
             reuse="workspace.q",
         )
 

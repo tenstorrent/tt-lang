@@ -33,20 +33,15 @@ def _next_cb_index(reuse, signature):
         previous = _dfb_reuse_indices.get(reuse)
         if previous is not None:
             index, previous_signature = previous
-            # One physical CB may serve different logical capacities as long
-            # as its page format is unchanged. The runner allocates the
-            # largest member; shape and block_count only determine how many
-            # pages each logical user reserves/waits for.
-            previous_page_geometry = (
-                previous_signature[0],
-                previous_signature[3],
-            )
-            page_geometry = (signature[0], signature[3])
-            if previous_page_geometry != page_geometry:
+            # One physical CB may serve different logical capacities and tile
+            # geometries. The runner collapses the group to the largest page
+            # geometry and page count. Changing dtype additionally requires
+            # compute data-format reconfiguration, so keep that explicit.
+            if previous_signature[0] != signature[0]:
                 raise ValueError(
                     f"DFB reuse key {reuse!r} has incompatible declarations: "
-                    f"page geometry {previous_page_geometry!r} != "
-                    f"{page_geometry!r}"
+                    f"dtype {previous_signature[0]!r} != "
+                    f"{signature[0]!r}"
                 )
             return index
     idx = _cb_index_counter
@@ -205,8 +200,10 @@ def make_dataflow_buffer_like(
         shape: Tile counts per dimension for wait/reserve operations
         block_count: Capacity multiplier (default 2 for double-buffering)
         reuse: Optional explicit physical-FIFO identity. Declarations with the
-            same key must have identical geometry. The caller must prove each
-            earlier epoch is fully drained before the next declaration is used.
+            same key must have identical dtype. Tile geometry and capacity may
+            differ; the physical allocation uses the largest page and page
+            count. The caller must prove each earlier epoch is fully drained
+            before the next declaration is used.
 
     Returns:
         DataflowBuffer for use in thread function closures
@@ -250,8 +247,10 @@ def make_dfb(
         shape: Tile counts per dimension for wait/reserve operations
         block_count: Capacity multiplier (default 2 for double-buffering)
         reuse: Optional explicit physical-FIFO identity. Declarations with the
-            same key must have identical geometry. The caller must prove each
-            earlier epoch is fully drained before the next declaration is used.
+            same key must have identical dtype. Tile geometry and capacity may
+            differ; the physical allocation uses the largest page and page
+            count. The caller must prove each earlier epoch is fully drained
+            before the next declaration is used.
 
     Returns:
         DataflowBuffer for use in thread function closures

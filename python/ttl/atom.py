@@ -47,7 +47,7 @@ from ttl.pykernel._src.utils import _cleanup_source_code
 from ._src.atom_inline import inline_atom_calls
 from ._src.atom_split import split_function_body
 from ._src.tensor_registry import register_tensor_name
-from .cb_table import record_dfb_name
+from .cb_table import record_dfb_name, write_logical_dfb_table
 from .compiler_options import CompilerOptions
 from .dataflow_buffer import (
     DataflowBuffer,
@@ -579,24 +579,41 @@ def _synthesize_thread_module(fn_name: str, body: List[ast.stmt]) -> ast.Module:
 
 def _cb_configs_from_lifted(lifted: Dict[str, DataflowBuffer]):
     """DataflowBuffer list indexed by CB index, matching _collect_cb_configs."""
-    for name, dfb in lifted.items():
-        record_dfb_name(dfb, name)
-    by_index = {}
-    for dfb in lifted.values():
-        current = by_index.get(dfb._cb_index)
+    def page_count(dfb):
         pages = dfb.block_count
         for dim in dfb.shape:
             pages *= dim
-        current_pages = 0
-        if current is not None:
-            current_pages = current.block_count
-            for dim in current.shape:
-                current_pages *= dim
-        if current is None or pages > current_pages:
-            by_index[dfb._cb_index] = dfb
+        return pages
+
+    for name, dfb in lifted.items():
+        record_dfb_name(dfb, name)
+    write_logical_dfb_table(lifted)
+    by_index: Dict[int, List[DataflowBuffer]] = {}
+    for dfb in lifted.values():
+        by_index.setdefault(dfb._cb_index, []).append(dfb)
     if not by_index:
         return []
-    return [by_index.get(i) for i in range(max(by_index) + 1)]
+
+    configs = []
+    for index in range(max(by_index) + 1):
+        members = by_index.get(index)
+        if not members:
+            configs.append(None)
+            continue
+        config = copy.copy(max(
+            members,
+            key=lambda dfb: dfb.tile[0] * dfb.tile[1],
+        ))
+        config.debug_names = tuple(dict.fromkeys(
+            name
+            for dfb in members
+            for name in dfb.debug_names
+        ))
+        max_pages = max(page_count(dfb) for dfb in members)
+        config.shape = (1, max_pages)
+        config.block_count = 1
+        configs.append(config)
+    return configs
 
 
 def _make_thread_callable(spec, kernel_type, fn_name, body, captures):
