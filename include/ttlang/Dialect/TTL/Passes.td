@@ -123,10 +123,11 @@ def TTLFormPipeTransports
     the resulting allocations fit the same L1 accounting used by
     `ttl-validate-cb-budget`.
 
-    `group-size = 0` selects the legal group with the fewest completion groups
-    and capacity waits. `group-size = 1` disables grouping. A larger value is
-    an upper bound; the pass selects a smaller group when required by the loop
-    trip count or L1 capacity. Ineligible loops retain scalar transfer IR.
+    `group-size = 0` prefers a bounded schedule with at least two receiver
+    groups, then minimizes completion groups, capacity waits, and L1 allocation
+    bytes. `group-size = 1` disables grouping. A larger value is an upper
+    bound; the pass selects a smaller group when required by the loop trip
+    count or L1 capacity. Ineligible loops retain scalar transfer IR.
   }];
 
   let options = [
