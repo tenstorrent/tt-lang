@@ -4,6 +4,7 @@
 
 #include "PipeTransportPlan.h"
 
+#include "PipePlanning.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
@@ -22,6 +23,14 @@ const PipeTransportStream &
 PipeTransportPlan::getStream(PipeTransportStreamId id) const {
   assert(id < streams.size() && "invalid pipe transport stream id");
   return streams[id];
+}
+
+const PipeTransportStream &
+PipeTransportPlan::getStreamForTransfer(PipeTransferNodeId transferNode) const {
+  auto streamIt = streamByTransfer.find(transferNode);
+  assert(streamIt != streamByTransfer.end() &&
+         "pipe transfer has no transport stream");
+  return getStream(streamIt->second);
 }
 
 const PipeTransportStream &
@@ -68,20 +77,40 @@ static StringRef stringifySchedule(PipeTransportSchedule schedule) {
   llvm_unreachable("unknown pipe transport schedule");
 }
 
-/// Return whether every endpoint supports bounded producer/consumer overlap.
-static bool
-supportsOverlappedSchedule(ArrayRef<PipeTransportEndpoint> endpoints) {
-  return llvm::all_of(endpoints, [](const PipeTransportEndpoint &endpoint) {
-    if (endpoint.groupDepth < 2 || !endpoint.addressSequence.recurrence ||
-        !endpoint.addressSequence.executionCount ||
-        *endpoint.addressSequence.executionCount < 2) {
-      return false;
-    }
-    const ReceiverAddressRecurrence &recurrence =
-        *endpoint.addressSequence.recurrence;
-    return recurrence.repeatStride != 0 &&
-           recurrence.blockCount >= 2 * endpoint.slotSpanBlocks;
-  });
+/// Return the stable debug spelling for a credit completion point.
+static StringRef
+stringifyCreditCompletion(PipeTransportCreditCompletion completion) {
+  switch (completion) {
+  case PipeTransportCreditCompletion::Immediate:
+    return "immediate";
+  case PipeTransportCreditCompletion::IterationDomain:
+    return "iteration_domain";
+  }
+  llvm_unreachable("unknown pipe transport credit completion");
+}
+
+/// Return whether storage, address, and loop proofs permit bounded overlap.
+static bool supportsOverlappedSchedule(const PipeTransportStream &stream) {
+  if (stream.getSourceIterationDomain().enclosingLoops.empty() ||
+      stream.getCapacityReleaseIterationDomains().empty() ||
+      llvm::any_of(stream.getCapacityReleaseIterationDomains(),
+                   [](const PipeTransportIterationDomain &domain) {
+                     return domain.enclosingLoops.empty();
+                   })) {
+    return false;
+  }
+  return llvm::all_of(
+      stream.getEndpoints(), [](const PipeTransportEndpoint &endpoint) {
+        if (endpoint.groupDepth < 2 || !endpoint.addressSequence.recurrence ||
+            !endpoint.addressSequence.executionCount ||
+            *endpoint.addressSequence.executionCount < 2) {
+          return false;
+        }
+        const ReceiverAddressRecurrence &recurrence =
+            *endpoint.addressSequence.recurrence;
+        return recurrence.repeatStride != 0 &&
+               recurrence.blockCount >= 2 * endpoint.slotSpanBlocks;
+      });
 }
 
 /// Return the stable debug spelling for a source-reuse condition.
@@ -122,6 +151,7 @@ void PipeTransportStream::print(llvm::raw_ostream &os) const {
      << " synchronization="
      << stringifySynchronizationProtocol(synchronizationProtocol)
      << " schedule=" << stringifySchedule(schedule)
+     << " credit_completion=" << stringifyCreditCompletion(creditCompletion)
      << " group=" << logicalTransfersPerGroup
      << " residual=" << residualTransferCount << "\n";
   os << "PipeTransport:   source blocks=" << sourceStorage.blockCount
@@ -169,7 +199,7 @@ static PipeTransportIterationDomain getIterationDomain(Operation *operation) {
 }
 
 FailureOr<PipeTransportPlan> buildPipeTransportPlan(
-    const PipeGraph &pipeGraph,
+    const PipeGraph &pipeGraph, const PipeCapacityPlan &capacityPlan,
     function_ref<PipeSynchronizationProtocol(PipeTransferNodeId)>
         selectSynchronizationProtocol) {
   PipeTransportPlan plan;
@@ -247,13 +277,25 @@ FailureOr<PipeTransportPlan> buildPipeTransportPlan(
       stream.completionGroup.endpoints.push_back(endpointId);
     }
 
+    for (CBPopOp releaseOp : capacityPlan.findReleaseOps(transferNode.id)) {
+      stream.capacityReleaseIterationDomains.push_back(
+          getIterationDomain(releaseOp));
+    }
+
     if (stream.schedule == PipeTransportSchedule::Grouped &&
         stream.synchronizationProtocol ==
             PipeSynchronizationProtocol::Capacity &&
         stream.transferContract == PipeTransferContract::PointToPoint &&
-        supportsOverlappedSchedule(stream.endpoints)) {
+        supportsOverlappedSchedule(stream)) {
       stream.schedule = PipeTransportSchedule::Overlapped;
+      stream.creditCompletion = PipeTransportCreditCompletion::IterationDomain;
     }
+
+    auto [transferIt, transferInserted] =
+        plan.streamByTransfer.try_emplace(transferNode.id, stream.id);
+    (void)transferIt;
+    assert(transferInserted &&
+           "PipeGraph transfer belongs to multiple transport streams");
 
     auto recordStreamOperation = [&](Operation *operation) {
       auto [streamIt, inserted] =

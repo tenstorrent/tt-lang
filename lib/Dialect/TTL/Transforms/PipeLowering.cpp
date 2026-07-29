@@ -1216,6 +1216,39 @@ void initializePipePostSequenceCounters(
   }
 }
 
+void materializePipeTransportCompletionBarriers(
+    const PipeTransportPlan &pipeTransportPlan) {
+  llvm::SmallSetVector<Operation *, 8> completionLoops;
+  auto recordCompletionLoop =
+      [&](const PipeTransportIterationDomain &iterationDomain) {
+        assert(!iterationDomain.enclosingLoops.empty() &&
+               "iteration-domain completion requires an enclosing loop");
+        completionLoops.insert(iterationDomain.enclosingLoops.back());
+      };
+
+  for (const PipeTransportStream &stream : pipeTransportPlan.getStreams()) {
+    if (stream.getCreditCompletion() !=
+        PipeTransportCreditCompletion::IterationDomain) {
+      continue;
+    }
+    recordCompletionLoop(stream.getSourceIterationDomain());
+    for (const PipeTransportIterationDomain &iterationDomain :
+         stream.getCapacityReleaseIterationDomains()) {
+      recordCompletionLoop(iterationDomain);
+    }
+  }
+
+  for (Operation *loop : completionLoops) {
+    OpBuilder builder(loop);
+    builder.setInsertionPointAfter(loop);
+    Location loc = loop->getLoc();
+    int64_t nocIndex = getNocIndex(loop);
+    Value noc = arith::ConstantOp::create(builder, loc, builder.getI8Type(),
+                                          builder.getI8IntegerAttr(nocIndex));
+    ttk::NocAsyncAtomicBarrierOp::create(builder, loc, noc);
+  }
+}
+
 void initializePipeCapacityCounters(
     const PipeCapacityPlan &pipeCapacityPlan,
     const PipeResourcePlan &pipeResourcePlan,
@@ -1576,9 +1609,10 @@ LogicalResult lowerPipeTransferSend(
     return failure();
   }
 
-  // Completion signals use non-posted atomics. The send ttl.wait lowers to a
-  // no-op, so this barrier is the only flush before the kernel exits.
-  transport.emitCompletionSignalBarrier();
+  if (transportStream.getCreditCompletion() ==
+      PipeTransportCreditCompletion::Immediate) {
+    transport.emitCompletionSignalBarrier();
+  }
 
   rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
   return success();
@@ -1728,6 +1762,7 @@ static Value computeDFBPopNumTiles(CBPopOp op, CircularBufferType dfbType,
 
 LogicalResult lowerCBPop(CBPopOp op, Value cb,
                          const PipeCapacityPlan &pipeCapacityPlan,
+                         const PipeTransportPlan &pipeTransportPlan,
                          const PipeResourcePlan &pipeResourcePlan,
                          ConversionPatternRewriter &rewriter) {
   Location loc = op.getLoc();
@@ -1761,7 +1796,15 @@ LogicalResult lowerCBPop(CBPopOp op, Value cb,
       lowerPipeCapacityRelease(loc, func, release, pipeResourcePlan, nocVal,
                                rewriter);
     }
-    ttk::NocAsyncAtomicBarrierOp::create(rewriter, loc, nocVal);
+    bool requiresImmediateCompletion =
+        llvm::any_of(releases, [&](const PipeCapacityReleaseInfo &release) {
+          return pipeTransportPlan.getStreamForTransfer(release.transferNode)
+                     .getCreditCompletion() ==
+                 PipeTransportCreditCompletion::Immediate;
+        });
+    if (requiresImmediateCompletion) {
+      ttk::NocAsyncAtomicBarrierOp::create(rewriter, loc, nocVal);
+    }
   }
 
   rewriter.eraseOp(op);

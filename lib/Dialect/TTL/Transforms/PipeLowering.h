@@ -64,6 +64,7 @@ struct PipeResourcePlan;
 class PipeTransferPlan;
 class PipeCapacityPlan;
 class PipeSynchronizationSelection;
+class PipeTransportPlan;
 class PipeTransportStream;
 
 /// Receiver-side completion state for one transfer definition.
@@ -221,6 +222,11 @@ void initializePipePostSequenceCounters(
     PipeCounterProgressMap &postSequenceCounters,
     PipeSelectedPostSequenceMap &selectedPostSequenceCounters);
 
+/// Translate iteration-domain credit completion into NoC atomic barriers after
+/// the selected source and receiver loops.
+void materializePipeTransportCompletionBarriers(
+    const PipeTransportPlan &pipeTransportPlan);
+
 /// Remove a sender operation proven unreachable at its pipe endpoint.
 void lowerInactivePipeTransferSend(PipeTransferSendOp op,
                                    ConversionPatternRewriter &rewriter);
@@ -249,6 +255,7 @@ LogicalResult lowerPipeTransferPost(
 /// Lower a dataflow buffer pop and emit any proven pipe capacity releases.
 LogicalResult lowerCBPop(CBPopOp op, Value cb,
                          const PipeCapacityPlan &pipeCapacityPlan,
+                         const PipeTransportPlan &pipeTransportPlan,
                          const PipeResourcePlan &pipeResourcePlan,
                          ConversionPatternRewriter &rewriter);
 
