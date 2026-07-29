@@ -34,29 +34,6 @@
 
 namespace mlir::tt::ttl {
 
-/// Entry and completion event IDs assigned to one top-level kernel operation.
-struct DFBOperationEventPair {
-  Operation *operation = nullptr;
-  unsigned entry = 0;
-  unsigned completion = 0;
-};
-
-/// Directed edge in the event graph.
-struct DFBEventEdge {
-  unsigned source = 0;
-  unsigned destination = 0;
-};
-
-/// Protocol edge from producer push completion to consumer wait completion.
-struct DFBMatchedLifecycleEdge {
-  int64_t logicalId = 0;
-  Operation *push = nullptr;
-  Operation *wait = nullptr;
-  unsigned pushCompletionEvent = 0;
-  unsigned waitCompletionEvent = 0;
-  int64_t transactionTileCount = 0;
-};
-
 /// Immutable protocol and lifetime facts for one logical DFB.
 struct DFBLogicalLifecycle {
   int64_t logicalId = 0;
@@ -103,21 +80,6 @@ public:
   /// Returns the operation to which the analysis diagnostic should attach.
   Operation *getErrorOperation() const { return errorOperation; }
 
-  /// Returns event IDs for every modeled top-level kernel operation.
-  ArrayRef<DFBOperationEventPair> getOperationEvents() const {
-    return operationEvents;
-  }
-
-  /// Returns edges induced by execution order within each kernel.
-  ArrayRef<DFBEventEdge> getProgramOrderEdges() const {
-    return programOrderEdges;
-  }
-
-  /// Returns cross-kernel edges induced by matched DFB lifecycles.
-  ArrayRef<DFBMatchedLifecycleEdge> getMatchedLifecycleEdges() const {
-    return matchedLifecycleEdges;
-  }
-
   /// Returns protocol and lifetime facts in module declaration order.
   ArrayRef<DFBLogicalLifecycle> getLogicalDFBLifecycles() const {
     return logicalDFBs;
@@ -132,9 +94,6 @@ private:
   void analyze(Operation *operation,
                const DFBLogicalIdentityAnalysis &logicalIdentityAnalysis);
 
-  SmallVector<DFBOperationEventPair> operationEvents;
-  SmallVector<DFBEventEdge> programOrderEdges;
-  SmallVector<DFBMatchedLifecycleEdge> matchedLifecycleEdges;
   SmallVector<DFBLogicalLifecycle, 0> logicalDFBs;
   SmallVector<llvm::BitVector> orderedBefore;
   Operation *errorOperation = nullptr;
