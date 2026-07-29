@@ -163,11 +163,6 @@ struct PipeResourcePlan {
   /// Protocol operations proven unreachable at their pipe endpoint. Lowering
   /// removes these operations without allocating synchronization resources.
   llvm::SmallPtrSet<Operation *, 8> staticallyInactiveOps;
-  /// Sends whose enclosing loop preserves one resident NoC write command.
-  ///
-  /// The loop contains one send and no other operation that reprograms the NoC
-  /// write command between iterations.
-  llvm::SmallPtrSet<Operation *, 8> statefulWriteLoopSends;
   /// Each entry-block counter preserves slot state across repeated sends that
   /// share one computed-address allocation unit.
   llvm::MapVector<func::FuncOp, SmallVector<PipeComputedAddressCounterInitInfo>>
