@@ -429,6 +429,10 @@ buildReceiverPublishedAddress(Value dst, Location loc,
       .getResult();
 }
 
+namespace {
+
+/// Emits transport-specific PipeNet synchronization and payload operations.
+/// A transport returns failure when it cannot implement a selected operation.
 class PipeTransportEmitter {
 public:
   virtual ~PipeTransportEmitter() = default;
@@ -473,6 +477,8 @@ public:
     TranslatedCore sourceCore = getSourceCore();
     auto byteEnableAll = arith::ConstantOp::create(
         rewriter, loc, rewriter.getI8Type(), rewriter.getI8IntegerAttr(0xF));
+    // [Device 2.0] The receiver writes its DFB address to the sender's typed
+    // address table. Only this operation selects the inline NoC write.
     ttk::NocInlineDwWriteOp::create(rewriter, loc, sourceCore.x, sourceCore.y,
                                     senderTableAddress, publishedAddress,
                                     byteEnableAll, nocVal);
@@ -498,6 +504,8 @@ public:
   }
 
   void preparePayloadWrite() override {
+    // Materialize destination coordinates before computing the payload address
+    // so address selection does not change emitted operation order.
     if (pipeType.hasSingleReceiver()) {
       getDstStartCore();
       return;
@@ -619,6 +627,7 @@ private:
       return *destinationRange;
     }
     TranslatedCore dstStartTranslatedCore = getDstStartCore();
+    // Preserve the memoized start coordinate for unicast and completion uses.
     auto [dstStartX, dstStartY] = dstStartTranslatedCore;
     auto [dstEndX, dstEndY] =
         buildTranslatedCore(pipeType.getDstEndX(), pipeType.getDstEndY());
@@ -639,6 +648,8 @@ private:
   std::optional<TranslatedCore> dstStartCore;
   std::optional<DestinationRange> destinationRange;
 };
+
+} // namespace
 
 //===----------------------------------------------------------------------===//
 // Receiver post sequence counter initialization
