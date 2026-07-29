@@ -135,7 +135,6 @@ for python_tag in $(printf '%s\n' "$PYTHON_TAGS" | tr ',' ' '); do
 
     set -- \
         --progress=plain \
-        --target wheel-builder \
         --build-arg "WORKFLOW_SOURCE=$WORKFLOW_SOURCE" \
         --build-arg "PYTHON_TAG=$python_tag" \
         --build-arg "TT_METAL_TAG=$TT_METAL_TAG" \
@@ -146,18 +145,21 @@ for python_tag in $(printf '%s\n' "$PYTHON_TAGS" | tr ',' ' '); do
 
     if [ -n "$LLVM_CACHE_REF" ]; then
         set -- "$@" \
-            --cache-from "type=registry,ref=$LLVM_CACHE_REF" \
-            --cache-from "type=registry,ref=$TTMETAL_CACHE_REF"
+            --target wheel-builder-from-components \
+            --build-context "llvm-component=docker-image://$LLVM_CACHE_REF" \
+            --build-context "ttmetal-component=docker-image://$TTMETAL_CACHE_REF"
         if [ "$NO_PUSH" = true ]; then
-            echo "Building local image from component caches: $local_image"
+            echo "Building local image from component images: $local_image"
             ${DOCKER:-docker} buildx build "$@" --load -t "$local_image" -f "$dockerfile" "$repo_root"
         else
-            echo "Building registry image from component caches: $registry_image"
+            echo "Building registry image from component images: $registry_image"
             set -- "$@" --push -t "$registry_image"
             ${DOCKER:-docker} buildx build "$@" -f "$dockerfile" "$repo_root"
         fi
         continue
     fi
+
+    set -- "$@" --target wheel-builder
 
     if [ "$NO_PUSH" = true ]; then
         echo "Building local image: $local_image"

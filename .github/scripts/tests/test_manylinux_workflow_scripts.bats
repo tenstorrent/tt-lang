@@ -413,7 +413,7 @@ EOF
         "Expected manylinux wheel was not produced: tt_lang_light-1.2.3.dev20260726-py3-none-any.whl"
 }
 
-@test "component cache exporter keeps LLVM and tt-metal cache references separate" {
+@test "component image publisher keeps LLVM and tt-metal references separate" {
     repo="$(mkrepo)"
     cd "$repo"
 
@@ -435,15 +435,16 @@ EOF
 
     run cat "$FAKE_DOCKER_CALLS"
     assert_line --partial "--target llvm-toolchain"
-    assert_line --partial "--cache-to type=registry,ref=ghcr.io/example/cache:llvm-cp310,mode=max"
+    assert_line --partial "--cache-to type=inline"
+    assert_line --partial "--push -t ghcr.io/example/cache:llvm-cp310"
     assert_line --partial "--build-arg PYTHON_TAG=cp310"
     assert_line --partial "--build-arg WORKFLOW_SOURCE=."
     refute_line --regexp 'llvm-toolchain.*TT_METAL_TAG'
     assert_line --partial "--target ttmetal-toolchain"
-    assert_line --partial "--cache-to type=registry,ref=ghcr.io/example/cache:ttmetal-cp312,mode=max"
+    assert_line --partial "--push -t ghcr.io/example/cache:ttmetal-cp312"
 }
 
-@test "builder image consumes both component caches" {
+@test "builder image consumes both component images" {
     repo="$(mkrepo)"
     cd "$repo"
 
@@ -460,8 +461,9 @@ EOF
     assert_success
     run cat "$FAKE_DOCKER_CALLS"
     assert_line --partial "buildx build"
-    assert_line --partial "--cache-from type=registry,ref=ghcr.io/example/cache:llvm-cp312"
-    assert_line --partial "--cache-from type=registry,ref=ghcr.io/example/cache:ttmetal-cp312"
+    assert_line --partial "--target wheel-builder-from-components"
+    assert_line --partial "--build-context llvm-component=docker-image://ghcr.io/example/cache:llvm-cp312"
+    assert_line --partial "--build-context ttmetal-component=docker-image://ghcr.io/example/cache:ttmetal-cp312"
     assert_line --partial "--build-arg WORKFLOW_SOURCE=."
     assert_line --partial "--push -t ghcr.io/tenstorrent/tt-lang/tt-lang-wheel-manylinux-2-34-cp312:test-tag"
 }
