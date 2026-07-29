@@ -308,7 +308,12 @@ def _get_dfb_descriptor_configs(
                 f"All DFB indices must have associated DataflowBuffer configurations."
             )
 
-        if isinstance(dfb_config, tuple) and len(dfb_config) == 6:
+        if isinstance(dfb_config, tuple):
+            if len(dfb_config) != 6:
+                raise ValueError(
+                    f"Serialized CB config {cb_index} has {len(dfb_config)} "
+                    "fields; regenerate the runner with the current tt-lang"
+                )
             shape, block_count, data_format, tile_shape, page_size, total_size = (
                 dfb_config
             )

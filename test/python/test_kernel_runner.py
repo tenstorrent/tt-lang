@@ -460,6 +460,16 @@ def test_build_cb_descriptors_excludes_computed_address_backing_tensors(
         )
 
 
+def test_serialized_dfb_config_requires_current_format():
+    with pytest.raises(
+        ValueError,
+        match="Serialized CB config 0 has 5 fields; regenerate the runner",
+    ):
+        kernel_runner._get_dfb_descriptor_configs(
+            [((1, 1), 2, _FakeDataFormat(), (16, 16), 1024)]
+        )
+
+
 def test_build_cb_descriptors_preserves_subtile_geometry(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(

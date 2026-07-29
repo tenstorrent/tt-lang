@@ -26,6 +26,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string>
 
 namespace mlir::tt {
 class ValueOriginAnalysis;
@@ -220,6 +221,8 @@ struct PipeReceiverDFBNode {
   /// releases are validated separately because they do not move the write
   /// pointer.
   bool hasProvenPipeOnlyProducerStream = false;
+  /// Reason the producer stream was not proven. Empty after a successful proof.
+  std::string pipeOnlyProducerStreamFailureReason;
 };
 
 /// Return the semantic transfer contract used by pipe synchronization. The
@@ -235,6 +238,7 @@ inline PipeTransferContract getPipeTransferContract(CreatePipeOp op) {
              ? PipeTransferContract::Collective
              : PipeTransferContract::PointToPoint;
 }
+
 inline PipeTransferContract getPipeTransferContract(PipeTransferCreateOp op) {
   return op.getKind().getValue() == PipeTransferKind::Collective
              ? PipeTransferContract::Collective
