@@ -73,6 +73,7 @@ struct PipeTransportGrouping {
   int64_t destinationDepth = 1;
   int64_t fullGroupCount = 0;
   int64_t residualCount = 0;
+  bool overlapsReceiver = false;
   uint64_t allocationBytes = 0;
   llvm::DenseMap<Value, int64_t> blockCounts;
 
@@ -84,6 +85,28 @@ struct PipeTransportGrouping {
     return std::max<int64_t>(0, fullGroupCount - destinationDepth);
   }
 };
+
+/// Return the physical destination depth required for one group size.
+///
+/// Two destination groups let the sender fill one group while the receiver
+/// drains the other. Existing receiver storage establishes a larger minimum
+/// because grouping must preserve every declared DFB block.
+static int64_t
+getMinimumDestinationDepth(const PipeTransportLoopCandidate &candidate,
+                           int64_t groupSize, bool requireOverlap) {
+  int64_t minimumDepth = requireOverlap ? 2 : 1;
+  for (const TransportDFBUse &dfbUse : candidate.dfbUses) {
+    if (dfbUse.role != TransportDFBRole::Destination) {
+      continue;
+    }
+    auto dfbType = cast<CircularBufferType>(dfbUse.dfb.getType());
+    int64_t existingDepth =
+        dfbType.getBlockCount() / groupSize +
+        static_cast<int64_t>(dfbType.getBlockCount() % groupSize != 0);
+    minimumDepth = std::max(minimumDepth, existingDepth);
+  }
+  return minimumDepth;
+}
 
 /// Return the closest enclosing `scf.for`, if one exists.
 static scf::ForOp getEnclosingFor(Operation *operation) {
@@ -473,8 +496,7 @@ evaluateGrouping(PipeTransportLoopCandidate &candidate, int64_t groupSize,
     return std::nullopt;
   }
   int64_t fullGroupCount = candidate.transferCount / groupSize;
-  if (fullGroupCount <= 0 || destinationDepth <= 0 ||
-      destinationDepth > fullGroupCount) {
+  if (fullGroupCount <= 0 || destinationDepth <= 0) {
     return std::nullopt;
   }
 
@@ -483,6 +505,7 @@ evaluateGrouping(PipeTransportLoopCandidate &candidate, int64_t groupSize,
   grouping.destinationDepth = destinationDepth;
   grouping.fullGroupCount = fullGroupCount;
   grouping.residualCount = candidate.transferCount % groupSize;
+  grouping.overlapsReceiver = fullGroupCount >= 2 && destinationDepth >= 2;
 
   llvm::DenseMap<int64_t, uint64_t> allocationBytesByIndex;
   for (TransportDFBUse &dfbUse : candidate.dfbUses) {
@@ -538,29 +561,6 @@ evaluateGrouping(PipeTransportLoopCandidate &candidate, int64_t groupSize,
   return grouping;
 }
 
-/// Return the largest legal destination depth for `groupSize`.
-static std::optional<PipeTransportGrouping>
-selectDestinationDepth(PipeTransportLoopCandidate &candidate, int64_t groupSize,
-                       const DFBAllocationSummary &allocationSummary,
-                       uint64_t budgetBytes) {
-  int64_t upperDepth = candidate.transferCount / groupSize;
-  int64_t lower = 1;
-  int64_t upper = upperDepth;
-  std::optional<PipeTransportGrouping> selected;
-  while (lower <= upper) {
-    int64_t middle = lower + (upper - lower) / 2;
-    std::optional<PipeTransportGrouping> grouping = evaluateGrouping(
-        candidate, groupSize, middle, allocationSummary, budgetBytes);
-    if (grouping) {
-      selected = std::move(grouping);
-      lower = middle + 1;
-    } else {
-      upper = middle - 1;
-    }
-  }
-  return selected;
-}
-
 /// Bound exhaustive group-size checks by the storage required for one group.
 static std::optional<int64_t>
 getGroupSizeUpperBound(PipeTransportLoopCandidate &candidate,
@@ -601,6 +601,9 @@ getGroupSizeUpperBound(PipeTransportLoopCandidate &candidate,
 /// Return whether `candidate` improves on `selected`.
 static bool isBetterGrouping(const PipeTransportGrouping &candidate,
                              const PipeTransportGrouping &selected) {
+  if (candidate.overlapsReceiver != selected.overlapsReceiver) {
+    return candidate.overlapsReceiver;
+  }
   if (candidate.getCompletionGroupCount() !=
       selected.getCompletionGroupCount()) {
     return candidate.getCompletionGroupCount() <
@@ -628,21 +631,13 @@ static std::optional<PipeTransportGrouping> selectGrouping(
   }
   upperBound = *maybeUpperBound;
 
-  if (requestedGroupSize > 1) {
-    for (int64_t groupSize = upperBound; groupSize >= 2; --groupSize) {
-      std::optional<PipeTransportGrouping> grouping = selectDestinationDepth(
-          candidate, groupSize, allocationSummary, budgetBytes);
-      if (grouping) {
-        return grouping;
-      }
-    }
-    return std::nullopt;
-  }
-
   std::optional<PipeTransportGrouping> selected;
   for (int64_t groupSize = 2; groupSize <= upperBound; ++groupSize) {
-    std::optional<PipeTransportGrouping> grouping = selectDestinationDepth(
-        candidate, groupSize, allocationSummary, budgetBytes);
+    bool requireOverlap = candidate.transferCount / groupSize >= 2;
+    int64_t destinationDepth =
+        getMinimumDestinationDepth(candidate, groupSize, requireOverlap);
+    std::optional<PipeTransportGrouping> grouping = evaluateGrouping(
+        candidate, groupSize, destinationDepth, allocationSummary, budgetBytes);
     if (grouping && (!selected || isBetterGrouping(*grouping, *selected))) {
       selected = std::move(grouping);
     }

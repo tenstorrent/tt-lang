@@ -108,6 +108,13 @@ def _make_parser() -> argparse.ArgumentParser:
         "synchronization (default: enabled).",
     )
     p.add_argument(
+        "--ttl-pipe-batch-tiles",
+        default=None,
+        dest="pipe_batch_tiles",
+        type=int,
+        help="Limit logical transfers per PipeTransport group; 0 selects automatically and 1 disables grouping (default: 0).",
+    )
+    p.add_argument(
         "--ttl-specialize-cores",
         default=None,
         dest="specialize_cores",
@@ -173,6 +180,7 @@ class CompilerOptions:
     compiler_dfbs: bool = True
     pipe_computed_addresses: bool = True
     pipe_capacity_sync: bool = True
+    pipe_batch_tiles: int = 0
     specialize_cores: bool = False
     l1_budget: int = dataclasses.field(default=0, compare=False, hash=False)
 
