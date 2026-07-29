@@ -137,20 +137,6 @@ LaunchNodeDomain getPipeDestinationLaunchNodeDomain(PipeType pipeType) {
   return result;
 }
 
-LaunchNodeDomain getSingleLaunchNodeDomain(LaunchNodeCoord coord) {
-  LaunchNodeDomain result;
-  result.nodes.insert(coord);
-  return result;
-}
-
-bool launchNodeDomainsOverlap(const LaunchNodeDomain &lhs,
-                              const LaunchNodeDomain &rhs) {
-  if (!lhs.known || !rhs.known) {
-    return true;
-  }
-  return !lhs.intersectWith(rhs).nodes.empty();
-}
-
 bool knownLaunchNodeDomainContains(const LaunchNodeDomain &domain,
                                    LaunchNodeCoord coord) {
   return domain.known && domain.nodes.find(coord) != domain.nodes.end();
@@ -194,6 +180,7 @@ std::string LaunchNodeDomainState::netName(int64_t netId) const {
 
 LaunchNodeDomain LaunchNodeDomainState::getRoleDomain(int64_t netId,
                                                       PipeRole role) const {
+  assert(pipeNetLocs.contains(netId) && "PipeNet id must be declared");
   if (role == PipeRole::Source) {
     auto it = netSourceDomains.find(netId);
     return it == netSourceDomains.end() ? LaunchNodeDomain{} : it->second;
@@ -321,7 +308,7 @@ getRegionInvocationCountAtLaunchNode(Region &region, LaunchNodeCoord coord,
       return std::nullopt;
     }
     bool selectsThen = knownLaunchNodeDomainContains(trueDomain.domain, coord);
-    return selectsThen == (region.getRegionNumber() == 0) ? 1 : 0;
+    return (selectsThen == (region.getRegionNumber() == 0)) ? 1 : 0;
   }
   return std::nullopt;
 }

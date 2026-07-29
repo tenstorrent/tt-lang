@@ -96,16 +96,6 @@ LaunchNodeDomain getPipeSourceLaunchNodeDomain(PipeType pipeType);
 /// `pipeType`.
 LaunchNodeDomain getPipeDestinationLaunchNodeDomain(PipeType pipeType);
 
-/// Return the domain containing exactly `coord`.
-LaunchNodeDomain getSingleLaunchNodeDomain(LaunchNodeCoord coord);
-
-/// Return true if two launch-node domains may share at least one node.
-///
-/// Unknown domains are treated as overlapping because callers cannot prove
-/// disjointness from incomplete facts.
-bool launchNodeDomainsOverlap(const LaunchNodeDomain &lhs,
-                              const LaunchNodeDomain &rhs);
-
 /// Return true if `domain` is known and contains `coord`.
 bool knownLaunchNodeDomainContains(const LaunchNodeDomain &domain,
                                    LaunchNodeCoord coord);
@@ -132,7 +122,8 @@ struct LaunchNodeDomainState {
   llvm::DenseMap<int64_t, SmallVector<Location>> pipeNetLocs;
   llvm::DenseMap<int64_t, std::string> pipeNetNames;
   /// Reuse each function-and-coordinate analysis across all operations in the
-  /// function. `ExecutionCountAnalysis` caches block-level results.
+  /// function. The cached analyses reference the current IR and must not be
+  /// queried after a transformation mutates the function.
   mutable llvm::DenseMap<
       Operation *,
       std::map<LaunchNodeCoord, std::unique_ptr<ExecutionCountAnalysis>>>
@@ -146,7 +137,8 @@ struct LaunchNodeDomainState {
   /// Return the recorded PipeNet name, or a deterministic id-based fallback.
   std::string netName(int64_t netId) const;
 
-  /// Return the launch nodes that have `role` for the requested PipeNet.
+  /// Return the launch nodes that have `role` for the requested declared
+  /// PipeNet.
   LaunchNodeDomain getRoleDomain(int64_t netId, PipeRole role) const;
 
   /// Populate launch-grid and PipeNet role domains from the module.

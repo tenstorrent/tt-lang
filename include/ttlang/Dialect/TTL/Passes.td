@@ -567,6 +567,12 @@ def TTLVerifyPipeNetGuards
     domain checks have succeeded, so schedule-cycle reports are not mixed with
     earlier guard failures.
 
+    The schedule graph pairs receiver-post, send, and receive-wait operations
+    by IR order. Each paired operation may execute repeatedly, but each side
+    must contain the same number of operations and each pair must have equal
+    dynamic execution counts and equivalent enclosing conditions. One repeated
+    operation is not expanded to correspond to multiple distinct operations.
+
     The pass expects one module per `@ttl.operation`, a well-formed
     `ttl.launch_grid` (i64 array of length 2 with positive entries), static
     `I64Attr` coordinates on `ttl.create_pipe`, and finalized DFB indices

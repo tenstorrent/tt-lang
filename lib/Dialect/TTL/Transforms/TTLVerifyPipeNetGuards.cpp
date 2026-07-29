@@ -757,7 +757,8 @@ void emitPipeScheduleCycleDiagnostic(ArrayRef<PipeScheduleNode> nodes,
 }
 
 /// Pair predecessor and successor operations at the same IR-order position.
-/// Require equal execution counts because each pair may execute repeatedly.
+/// Each pair may execute repeatedly, so its operations must execute equally
+/// often under equivalent conditions.
 LogicalResult addPipeOccurrenceEdges(SmallVectorImpl<PipeScheduleNode> &nodes,
                                      ArrayRef<PipeScheduleNodeId> predecessors,
                                      ArrayRef<PipeScheduleNodeId> successors,
@@ -769,14 +770,26 @@ LogicalResult addPipeOccurrenceEdges(SmallVectorImpl<PipeScheduleNode> &nodes,
   assert(!predecessors.empty() && !successors.empty() &&
          "schedule correspondence requires both event kinds");
   if (predecessors.size() != successors.size()) {
-    Operation *diagnosticOp = nodes[successors.front()].op;
-    diagnosticOp->emitOpError()
-        << "cannot prove a one-to-one synchronization schedule on PipeNet "
-        << state.netName(nodes[successors.front()].pipeType.getPipeNetId())
-        << " for receiver core_x=" << receiverCoord.x
+    bool hasExtraPredecessor = predecessors.size() > successors.size();
+    PipeScheduleNodeId unmatchedNode = hasExtraPredecessor
+                                           ? predecessors[successors.size()]
+                                           : successors[predecessors.size()];
+    StringRef unmatchedName =
+        hasExtraPredecessor ? predecessorName : successorName;
+    StringRef missingName =
+        hasExtraPredecessor ? successorName : predecessorName;
+    auto diag =
+        nodes[unmatchedNode].op->emitOpError()
+        << "PipeNet "
+        << state.netName(nodes[unmatchedNode].pipeType.getPipeNetId())
+        << " requires one " << predecessorName << " operation for each "
+        << successorName << " operation at receiver core_x=" << receiverCoord.x
         << ", core_y=" << receiverCoord.y << "; found " << predecessors.size()
-        << " " << predecessorName << " occurrence(s) and " << successors.size()
-        << " " << successorName << " occurrence(s)";
+        << " " << predecessorName << " operation(s) and " << successors.size()
+        << " " << successorName << " operation(s)";
+    diag.attachNote(nodes[unmatchedNode].op->getLoc())
+        << "this " << unmatchedName << " operation has no corresponding "
+        << missingName << " operation";
     state.sawError = true;
     return failure();
   }
@@ -872,8 +885,7 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
     }
   });
 
-  for (const auto &entry : sendOccurrences) {
-    const PipeSendOccurrences &sends = entry.second;
+  for (const auto &[pipeIdentity, sends] : sendOccurrences) {
     LaunchNodeDomain destinations =
         getPipeDestinationLaunchNodeDomain(sends.pipeType);
     for (LaunchNodeCoord coord : destinations.nodes) {
@@ -884,7 +896,7 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
                 nodes, postIt->second, sends.nodes,
                 PipeScheduleEdgeKind::ReceivePostEnablesSend, "receiver post",
                 "send", coord, state))) {
-          return;
+          continue;
         }
       }
       auto waitIt = receiveWaitNodes.find(identity);
@@ -893,7 +905,7 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
                 nodes, sends.nodes, waitIt->second,
                 PipeScheduleEdgeKind::SendCompletesReceive, "send",
                 "receive wait", coord, state))) {
-          return;
+          continue;
         }
       }
     }

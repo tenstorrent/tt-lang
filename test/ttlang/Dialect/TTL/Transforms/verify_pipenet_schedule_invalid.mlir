@@ -66,12 +66,13 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       ttl.wait %recv : !ttl.transfer_handle
     }
     ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
-      // expected-error @below {{cannot prove a one-to-one synchronization schedule on PipeNet net_0 for receiver core_x=1, core_y=0; found 1 receiver post occurrence(s) and 2 send occurrence(s)}}
       %send0 = ttl.copy %send_cb, %pipe
           : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
              !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
           -> !ttl.transfer_handle<write>
       ttl.wait %send0 : !ttl.transfer_handle<write>
+      // expected-error @below {{PipeNet net_0 requires one receiver post operation for each send operation at receiver core_x=1, core_y=0; found 1 receiver post operation(s) and 2 send operation(s)}}
+      // expected-note @below {{this send operation has no corresponding receiver post operation}}
       %send1 = ttl.copy %send_cb, %pipe
           : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
              !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
@@ -104,8 +105,9 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
           -> !ttl.transfer_handle
-      // expected-error @below {{cannot prove a one-to-one synchronization schedule on PipeNet net_0 for receiver core_x=1, core_y=0; found 1 send occurrence(s) and 2 receive wait occurrence(s)}}
       ttl.wait %recv : !ttl.transfer_handle
+      // expected-error @below {{PipeNet net_0 requires one send operation for each receive wait operation at receiver core_x=1, core_y=0; found 1 send operation(s) and 2 receive wait operation(s)}}
+      // expected-note @below {{this receive wait operation has no corresponding send operation}}
       ttl.wait %recv : !ttl.transfer_handle
     }
     ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
@@ -121,8 +123,8 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
-// One static send inside a loop does not correspond to one static receiver post
-// outside the loop because their dynamic execution counts differ.
+// A send operation inside a loop does not correspond to a receiver-post
+// operation outside the loop because their dynamic execution counts differ.
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @different_rendezvous_loop_contexts()
@@ -379,6 +381,83 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
           -> !ttl.transfer_handle
       ttl.wait %recv : !ttl.transfer_handle
+    }
+    func.return
+  }
+}
+
+// -----
+
+// A correspondence error in one PipeNet must not suppress an independent
+// wait-for-cycle diagnostic in another PipeNet.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @independent_correspondence_error()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %recv_reserve = ttl.cb_reserve %recv_cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %recv = ttl.copy %pipe, %recv_reserve
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.transfer_handle
+      ttl.wait %recv : !ttl.transfer_handle
+    }
+    ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %send0 = ttl.copy %send_cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send0 : !ttl.transfer_handle<write>
+      // expected-error @below {{PipeNet net_0 requires one receiver post operation for each send operation at receiver core_x=1, core_y=0; found 1 receiver post operation(s) and 2 send operation(s)}}
+      // expected-note @below {{this send operation has no corresponding receiver post operation}}
+      %send1 = ttl.copy %send_cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send1 : !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+
+  func.func @independent_wait_for_cycle()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 1
+        {pipeNetName = "loopback"}
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>
+    %send_cb = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %recv_cb = ttl.bind_cb {cb_index = 3, block_count = 2} {dfb_id = 3 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1> {
+      %recv_reserve = ttl.cb_reserve %recv_cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %recv_view = ttl.attach_cb %recv_reserve, %recv_cb
+          : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+             !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %recv = ttl.copy %pipe, %recv_view
+          : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.transfer_handle
+      // expected-error @below {{receive wait occurs before the send that completes it on PipeNet loopback}}
+      // expected-note @below {{this wait blocks until the sender transfers into the posted destination dataflow buffer slot}}
+      // expected-note @below {{move the receive wait after the send, or place send and receive in separate data-movement threads}}
+      ttl.wait %recv : !ttl.transfer_handle
+      // expected-note @below {{this send is ordered after the wait in the same data-movement thread}}
+      %send = ttl.copy %send_cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
     }
     func.return
   }

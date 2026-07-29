@@ -82,6 +82,10 @@ Pipe transfers have the following operational semantics:
   receive-wait events. It rejects schedules whose same-thread ordering
   creates a wait-for cycle. Other runtime hangs can still have different
   causes.
+- The graph pairs receiver-post, send, and receive-wait operations by IR
+  order. Each pair may execute repeatedly, but the two sides must contain
+  the same number of operations and each pair must execute equally often
+  under equivalent conditions.
 
 The receive transfer created by `ttl.copy(pipe, dst_blk)` moves through
 these states:
