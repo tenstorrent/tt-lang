@@ -15,6 +15,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
@@ -595,103 +596,6 @@ private:
   std::optional<DestinationRange> destinationRange;
 };
 
-/// Build the source-role predicate for `pipeType` from the current logical
-/// core.
-static Value buildSrcMatch(OpBuilder &builder, Location loc, Value coreX,
-                           Value coreY, PipeType pipeType) {
-  auto sourceX =
-      arith::ConstantIndexOp::create(builder, loc, pipeType.getSrcX());
-  auto sourceY =
-      arith::ConstantIndexOp::create(builder, loc, pipeType.getSrcY());
-  auto matchX = arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::eq,
-                                      coreX, sourceX);
-  auto matchY = arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::eq,
-                                      coreY, sourceY);
-  return arith::AndIOp::create(builder, loc, matchX, matchY);
-}
-
-/// Values shared by the pre-loop command setup and the per-transfer write.
-struct StatefulOnePacketWriteState {
-  Value nocVal;
-  Value dstAddr;
-};
-
-/// Return whether a pipe send can reuse one resident NoC command across loop
-/// iterations.
-///
-/// The one-packet write API keeps destination fields in the NoC write command.
-/// Reuse is legal only when the nearest enclosing loop, including nested loop
-/// bodies, contains no other send or tensor write and the receiver address is
-/// iteration-invariant.
-static bool
-canUseStatefulOnePacketWrite(PipeTransferSendOp op, PipeType pipeType,
-                             const PipeResourceInfo &pipeResource,
-                             const PipeResourcePlan &pipeResourcePlan,
-                             int64_t payloadTileCount,
-                             int64_t payloadSizeBytes) {
-  if (!pipeType.hasSingleReceiver() || payloadTileCount != 1 ||
-      payloadSizeBytes > getTargetNocMaxBurstBytes(op.getOperation()) ||
-      !pipeResource.addressStorage.usesComputedReceiverDFB() ||
-      !pipeResourcePlan.statefulWriteLoopSends.contains(op.getOperation())) {
-    return false;
-  }
-
-  assert(pipeResource.addressStorage.computedAddress.has_value() &&
-         "computed pipe missing computed-address info");
-  return !pipeResource.addressStorage.computedAddress->usesDynamicSlotCounter();
-}
-
-/// Emit source-predicated NoC command setup before the transfer loop.
-///
-/// The setup programs the invariant destination node and byte count once. The
-/// per-iteration send supplies the source DFB pointer and destination DFB byte
-/// offset, which are the fields that can change between transfers.
-static StatefulOnePacketWriteState buildStatefulOnePacketWriteState(
-    PipeTransferSendOp op, PipeType pipeType,
-    const PipeComputedAddressInfo &computedAddress,
-    const PipeComputedAddressCounterMap &computedAddressCounters,
-    int64_t totalSizeBytes, int64_t nocIdx,
-    ConversionPatternRewriter &rewriter) {
-  auto loop = op->getParentOfType<scf::ForOp>();
-  assert(loop && "single-send loop analysis only records sends inside scf.for");
-
-  OpBuilder::InsertionGuard guard(rewriter);
-  rewriter.setInsertionPoint(loop);
-
-  Location loc = op.getLoc();
-  auto indexTy = rewriter.getIndexType();
-  auto i32Ty = rewriter.getI32Type();
-
-  Value nocVal = arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
-                                           rewriter.getI8IntegerAttr(nocIdx));
-  auto dstStartXLogical =
-      arith::ConstantIndexOp::create(rewriter, loc, pipeType.getDstStartX());
-  auto dstStartYLogical =
-      arith::ConstantIndexOp::create(rewriter, loc, pipeType.getDstStartY());
-  Value dstStartXVal = ttk::ConvertLogicalXToTranslatedOp::create(
-      rewriter, loc, indexTy, dstStartXLogical);
-  Value dstStartYVal = ttk::ConvertLogicalYToTranslatedOp::create(
-      rewriter, loc, indexTy, dstStartYLogical);
-  Value dstAddr = buildComputedReceiverDFBDestinationAddress(
-      op, loc, computedAddress, computedAddressCounters, rewriter);
-  Value dstNocAddr = ttk::GetNocAddrOp::create(rewriter, loc, dstStartXVal,
-                                               dstStartYVal, dstAddr, nocVal)
-                         .getResult();
-  Value coreX = ttk::MyLogicalXOp::create(rewriter, loc, indexTy);
-  Value coreY = ttk::MyLogicalYOp::create(rewriter, loc, indexTy);
-  Value isSrc = buildSrcMatch(rewriter, loc, coreX, coreY, pipeType);
-  auto sourceIf = scf::IfOp::create(rewriter, loc, isSrc,
-                                    /*withElseRegion=*/false);
-
-  rewriter.setInsertionPointToStart(&sourceIf.getThenRegion().front());
-  Value totalSizeVal = arith::ConstantOp::create(
-      rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(totalSizeBytes));
-  ttk::NocAsyncWriteOnePacketSetStateOp::create(rewriter, loc, dstNocAddr,
-                                                totalSizeVal, nocVal);
-
-  return StatefulOnePacketWriteState{nocVal, dstAddr};
-}
-
 //===----------------------------------------------------------------------===//
 // Receiver post sequence counter initialization
 //===----------------------------------------------------------------------===//
@@ -886,8 +790,6 @@ LogicalResult lowerPipeTransferSend(
   auto cbConverted = utils::convertTTLCBToTTKernel(srcCB, rewriter, loc);
   assert(succeeded(cbConverted) && "preflight checked source DFB type");
 
-  int64_t nocIdx = getNocIndex(op);
-
   if (usesCapacityProtocol) {
     Value zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
     for (auto [capacityAcquire, senderCapacityCounter] :
@@ -929,17 +831,6 @@ LogicalResult lowerPipeTransferSend(
                                    readyCounterResetValue);
   }
 
-  std::optional<StatefulOnePacketWriteState> statefulWriteState;
-  if (canUseStatefulOnePacketWrite(op, pipeType, pipeResource, pipeResourcePlan,
-                                   sendPlan.payloadTileCount,
-                                   sendPlan.payloadSizeBytes)) {
-    assert(pipeResource.addressStorage.computedAddress.has_value() &&
-           "computed pipe missing computed-address info");
-    statefulWriteState = buildStatefulOnePacketWriteState(
-        op, pipeType, *pipeResource.addressStorage.computedAddress,
-        computedAddressCounters, sendPlan.payloadSizeBytes, nocIdx, rewriter);
-  }
-
   // Producer source address is at the source DFB's write_ptr (data is staged
   // there before push_back); consumer source address is at its read_ptr.
   Value srcPtrIdx;
@@ -950,17 +841,19 @@ LogicalResult lowerPipeTransferSend(
     auto srcWritePtr = ttk::GetWritePtrOp::create(rewriter, loc, *cbConverted);
     srcPtrIdx = arith::IndexCastOp::create(rewriter, loc, indexTy, srcWritePtr);
   }
+  transport.preparePayloadWrite();
 
-  if (!statefulWriteState) {
-    transport.preparePayloadWrite();
-  }
+  // Transfer the entire block in one NoC write. Tiles are contiguous in the
+  // DFB, and destination DFB layout is uniform across nodes, so lowering sends
+  // all tiles at once instead of one per tile.
+  auto totalSizeVal = arith::ConstantOp::create(
+      rewriter, loc, i32Ty,
+      rewriter.getI32IntegerAttr(sendPlan.payloadSizeBytes));
 
   Value srcAddr = arith::IndexCastOp::create(rewriter, loc, i32Ty, srcPtrIdx);
 
   Value dstAddr;
-  if (statefulWriteState) {
-    dstAddr = statefulWriteState->dstAddr;
-  } else if (pipeResource.addressStorage.usesComputedReceiverDFB()) {
+  if (pipeResource.addressStorage.usesComputedReceiverDFB()) {
     assert(pipeResource.addressStorage.computedAddress.has_value() &&
            "computed pipe missing computed-address info");
     dstAddr = buildComputedReceiverDFBDestinationAddress(
@@ -972,18 +865,8 @@ LogicalResult lowerPipeTransferSend(
         buildAddressTableDestinationAddress(loc, addressTableInfo, rewriter);
   }
 
-  if (statefulWriteState) {
-    ttk::NocAsyncWriteOnePacketWithStateOp::create(
-        rewriter, loc, srcAddr, dstAddr, statefulWriteState->nocVal);
-  } else {
-    // Transfer the entire block in one NoC write. Tiles are contiguous in the
-    // DFB, and destination DFB layout is uniform across nodes.
-    auto totalSizeVal = arith::ConstantOp::create(
-        rewriter, loc, i32Ty,
-        rewriter.getI32IntegerAttr(sendPlan.payloadSizeBytes));
-    if (failed(transport.emitPayloadWrite(srcAddr, dstAddr, totalSizeVal))) {
-      return failure();
-    }
+  if (failed(transport.emitPayloadWrite(srcAddr, dstAddr, totalSizeVal))) {
+    return failure();
   }
 
   // Wait for payload writes to complete before signaling receiver completion.
@@ -1163,14 +1046,39 @@ LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op, Value tokenSequence,
 
 namespace {
 
-// Replace `op` with an `scf.if(cond)` whose then-region is the original
-// body. The body's `ttl.yield` terminator is dropped — `scf.if`'s own
-// yield closes the region.
+/// Return the rectangular logical core range selected by `pipeType`'s source.
+static ArrayAttr getSourceCoreRanges(MLIRContext *context, PipeType pipeType) {
+  auto source = ttcore::CoreCoordAttr::get(context, pipeType.getSrcY(),
+                                           pipeType.getSrcX());
+  auto range = ttcore::CoreRangeAttr::get(context, source, source);
+  return ArrayAttr::get(context, {range});
+}
+
+/// Return the rectangular logical core range selected by `pipeType`'s
+/// destinations.
+static ArrayAttr getDestinationCoreRanges(MLIRContext *context,
+                                          PipeType pipeType) {
+  int64_t minX = std::min(pipeType.getDstStartX(), pipeType.getDstEndX());
+  int64_t maxX = std::max(pipeType.getDstStartX(), pipeType.getDstEndX());
+  int64_t minY = std::min(pipeType.getDstStartY(), pipeType.getDstEndY());
+  int64_t maxY = std::max(pipeType.getDstStartY(), pipeType.getDstEndY());
+  auto start = ttcore::CoreCoordAttr::get(context, minY, minX);
+  auto end = ttcore::CoreCoordAttr::get(context, maxY, maxX);
+  auto range = ttcore::CoreRangeAttr::get(context, start, end);
+  return ArrayAttr::get(context, {range});
+}
+
+/// Replace `op` with an `scf.if` that records its static execution domain.
+///
+/// Retaining the core ranges lets later TTKernel transformations distinguish
+/// side effects that cannot execute on the same core without reconstructing
+/// role predicates from SSA.
 template <typename Op>
-static void lowerToScfIf(Op op, Value cond,
+static void lowerToScfIf(Op op, Value cond, ArrayAttr executionCoreRanges,
                          ConversionPatternRewriter &rewriter) {
   auto ifOp = scf::IfOp::create(rewriter, op.getLoc(), cond,
                                 /*withElseRegion=*/false);
+  ifOp->setAttr(ttk::kExecutionCoreRangesAttrName, executionCoreRanges);
   Block &srcBlock = op.getBody().front();
   Block &thenBlock = ifOp.getThenRegion().front();
   if (Operation *terminator = srcBlock.getTerminator();
@@ -1179,6 +1087,19 @@ static void lowerToScfIf(Op op, Value cond,
   }
   rewriter.inlineBlockBefore(&srcBlock, thenBlock.getTerminator());
   rewriter.eraseOp(op);
+}
+
+static Value buildSrcMatch(OpBuilder &builder, Location loc, Value coreX,
+                           Value coreY, PipeType pipeType) {
+  auto sourceX =
+      arith::ConstantIndexOp::create(builder, loc, pipeType.getSrcX());
+  auto sourceY =
+      arith::ConstantIndexOp::create(builder, loc, pipeType.getSrcY());
+  auto matchX = arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::eq,
+                                      coreX, sourceX);
+  auto matchY = arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::eq,
+                                      coreY, sourceY);
+  return arith::AndIOp::create(builder, loc, matchX, matchY);
 }
 
 static Value buildDstMatch(OpBuilder &builder, Location loc, Value coreX,
@@ -1219,7 +1140,9 @@ struct IfSrcLowering : OpConversionPattern<IfSrcOp> {
         ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
 
     Value isSrc = buildSrcMatch(rewriter, loc, coreX, coreY, pipeType);
-    lowerToScfIf(op, isSrc, rewriter);
+    lowerToScfIf(op, isSrc,
+                 getSourceCoreRanges(rewriter.getContext(), pipeType),
+                 rewriter);
     return success();
   }
 };
@@ -1239,7 +1162,9 @@ struct IfDstLowering : OpConversionPattern<IfDstOp> {
         ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
 
     Value isDst = buildDstMatch(rewriter, loc, coreX, coreY, pipeType);
-    lowerToScfIf(op, isDst, rewriter);
+    lowerToScfIf(op, isDst,
+                 getDestinationCoreRanges(rewriter.getContext(), pipeType),
+                 rewriter);
     return success();
   }
 };
@@ -1367,43 +1292,6 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
         pipeInfo.transferContract = PipeTransferContract::Collective;
         break;
       }
-    }
-  });
-}
-
-/// Return true when `op` lowers to a NoC write that reprograms the resident
-/// write command.
-static bool reprogramsNocWriteCommand(Operation *op) {
-  if (auto copyOp = dyn_cast<CopyOp>(op)) {
-    return copyOp.getDst().getDefiningOp<TensorSliceOp>() != nullptr;
-  }
-  return false;
-}
-
-/// Record sends whose enclosing loop cannot overwrite resident NoC write
-/// command state between iterations.
-static void populateStatefulWriteLoopSends(ModuleOp mod,
-                                           PipeResourcePlan &info) {
-  info.statefulWriteLoopSends.clear();
-  mod.walk([&](scf::ForOp loop) {
-    PipeTransferSendOp onlySend;
-    bool reprogramsCommand = false;
-    loop.walk([&](Operation *nestedOp) {
-      if (auto sendOp = dyn_cast<PipeTransferSendOp>(nestedOp)) {
-        if (onlySend) {
-          reprogramsCommand = true;
-          return WalkResult::interrupt();
-        }
-        onlySend = sendOp;
-      } else if (reprogramsNocWriteCommand(nestedOp)) {
-        reprogramsCommand = true;
-        return WalkResult::interrupt();
-      }
-      return WalkResult::advance();
-    });
-    if (!reprogramsCommand && onlySend &&
-        onlySend->getParentOfType<scf::ForOp>() == loop) {
-      info.statefulWriteLoopSends.insert(onlySend.getOperation());
     }
   });
 }
@@ -1976,7 +1864,6 @@ LogicalResult buildPipeResourcePlan(
       maxAddressTableBytes == 0
           ? 0
           : alignTo(maxAddressTableBytes, kPipeSramScratchAlignmentBytes);
-  populateStatefulWriteLoopSends(mod, info);
   return success();
 }
 

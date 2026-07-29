@@ -121,9 +121,8 @@ buildPipeSendPlan(PipeTransferSendOp sendOp,
   for (int64_t dimension : (*maybeDFBType).getShape()) {
     elementCount *= dimension;
   }
-  return PipeSendPlan{readFromDFB, elementCount,
-                      elementCount *
-                          static_cast<int64_t>(tileType.getSizeBytes())};
+  return PipeSendPlan{readFromDFB, elementCount * static_cast<int64_t>(
+                                                      tileType.getSizeBytes())};
 }
 
 static FailureOr<PipePostPlan>
