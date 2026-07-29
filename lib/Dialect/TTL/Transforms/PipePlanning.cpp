@@ -257,14 +257,17 @@ private:
                               PipeCounterInfo capacityCounter,
                               PipeCapacityPlan &plan) {
     plan.addAcquire(endpointFacts.send,
-                    PipeCapacityAcquireInfo{capacityCounter, 1});
+                    PipeCapacityAcquireInfo{
+                        capacityCounter,
+                        endpointFacts.receiverBlocksPerTransfer});
     plan.addInitialization(
         endpointFacts.send->getParentOfType<func::FuncOp>(),
         PipeCapacityInitInfo{capacityCounter, endpointFacts.initialCapacity});
     for (CBPopOp popOp : endpointFacts.pops) {
-      plan.addRelease(popOp,
-                      PipeCapacityReleaseInfo{endpointFacts.releaseTarget,
-                                              capacityCounter, 1});
+      plan.addRelease(
+          popOp, PipeCapacityReleaseInfo{
+                     endpointFacts.releaseTarget, capacityCounter,
+                     endpointFacts.receiverBlocksPerTransfer});
     }
   }
 

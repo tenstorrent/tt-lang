@@ -41,6 +41,7 @@ enum class PipeSynchronizationProtocol {
 /// Backend-independent schedule selected for one transfer stream.
 enum class PipeTransportSchedule {
   Scalar,
+  Grouped,
 };
 
 /// Condition that permits source storage to be reused.
