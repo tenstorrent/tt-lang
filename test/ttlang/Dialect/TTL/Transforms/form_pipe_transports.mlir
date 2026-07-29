@@ -3,7 +3,8 @@
 // RUN: ttlang-opt %s --ttl-form-pipe-transports | FileCheck %s --check-prefix=AUTO
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='group-size=4' | FileCheck %s --check-prefix=BOUND
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='group-size=1' | FileCheck %s --check-prefix=DISABLED
-// RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=12288' | FileCheck %s --check-prefix=NOFIT
+// RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=24576' | FileCheck %s --check-prefix=NOFIT
+// RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=40960' | FileCheck %s --check-prefix=NONMONOTONIC
 
 #layout = #ttl.layout<
     shape = [32, 320], element_type = !ttcore.tile<32x32, f32>,
@@ -13,7 +14,8 @@
 // AUTO-LABEL: func.func @point_to_point
 // AUTO: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 10}
 // AUTO-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 10}
-// AUTO: %[[GROUPED_TRANSFER:.*]] = ttl.pipe_transfer.create %{{.*}} {block_span = 10 : i64
+// AUTO: %[[PIPE:.*]] = ttl.create_pipe
+// AUTO: %[[GROUPED_TRANSFER:.*]] = ttl.pipe_transfer.create %[[PIPE]] {block_span = 10 : i64
 // AUTO: scf.for %[[ITER:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
 // AUTO: %[[SEND_RESERVE:.*]] = ttl.cb_reserve %[[SRC]] {num_tiles = 10 : i64}
 // AUTO-SAME: -> tensor<1x10x!ttcore.tile<32x32, f32>>
@@ -29,10 +31,10 @@
 // An explicit upper bound produces two groups of four and a two-transfer
 // scalar residual. The grouped and scalar loops use distinct transfer values.
 // BOUND-LABEL: func.func @point_to_point
-// BOUND: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 4}
+// BOUND: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 8}
 // BOUND-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 8}
 // BOUND: %[[SCALAR_TRANSFER:.*]] = ttl.pipe_transfer.create %{{.*}} {expectedReceivers
-// BOUND: %[[GROUPED_TRANSFER:.*]] = ttl.pipe_transfer.create %{{.*}} {block_span = 4 : i64
+// BOUND: %[[GROUPED_TRANSFER:.*]] = ttl.pipe_transfer.create %{{.*}} {block_span = 4 : i64, destination_group_depth = 2 : i64
 // BOUND: scf.for %[[GROUP_ITER:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
 // BOUND: ttl.tensor_slice %{{.*}}[%{{.*}}, %[[GROUP_ITER]]]
 // BOUND-SAME: -> tensor<1x4x!ttcore.tile<32x32, f32>,
@@ -46,7 +48,7 @@
 
 // Disabled grouping leaves the scalar protocol unchanged.
 // DISABLED-LABEL: func.func @point_to_point
-// DISABLED: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2}
+// DISABLED: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 5}
 // DISABLED-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 1}
 // DISABLED-NOT: block_span
 // DISABLED: scf.for
@@ -56,51 +58,61 @@
 
 // A budget that fits only the original allocations retains scalar transfers.
 // NOFIT-LABEL: func.func @point_to_point
-// NOFIT: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2}
+// NOFIT: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 5}
 // NOFIT-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 1}
 // NOFIT-NOT: block_span
 // NOFIT: scf.for
 // NOFIT: ttl.pipe_transfer.send
+
+// DFB block-count alignment makes allocation size non-monotonic in the group
+// size. R=5 fits this budget even though R=4 does not.
+// NONMONOTONIC-LABEL: func.func @point_to_point
+// NONMONOTONIC: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 5}
+// NONMONOTONIC-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 5}
+// NONMONOTONIC: %[[STEP:.*]] = arith.constant 5 : index
+// NONMONOTONIC: ttl.pipe_transfer.create %{{.*}} {block_span = 5 : i64
+// NONMONOTONIC: scf.for %{{.*}} = %{{.*}} to %{{.*}} step %[[STEP]]
+
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @point_to_point(
       %input: tensor<1x10x!ttcore.tile<32x32, f32>, #layout>,
       %output: tensor<1x10x!ttcore.tile<32x32, f32>, #layout>)
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
-        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 5}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 5>
     %dst_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
-    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
-        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
     %c0 = arith.constant 0 : index
     %c10 = arith.constant 10 : index
     %c1 = arith.constant 1 : index
     scf.for %iter = %c0 to %c10 step %c1 {
+      %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+          : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
       ttl.if_src %pipe
           : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
         %reserved = ttl.cb_reserve %src_dfb
-            : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+            : <[1, 1], !ttcore.tile<32x32, f32>, 5>
             -> tensor<1x1x!ttcore.tile<32x32, f32>>
         %input_slice = ttl.tensor_slice %input[%c0, %iter]
             : tensor<1x10x!ttcore.tile<32x32, f32>, #layout>
             -> tensor<1x1x!ttcore.tile<32x32, f32>, #layout>
         %read = ttl.copy %input_slice, %src_dfb
             : (tensor<1x1x!ttcore.tile<32x32, f32>, #layout>,
-               !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+               !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 5>)
             -> !ttl.transfer_handle<read>
         ttl.wait %read : !ttl.transfer_handle<read>
         ttl.cb_push %src_dfb
-            : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+            : <[1, 1], !ttcore.tile<32x32, f32>, 5>
         %ready = ttl.cb_wait %src_dfb
-            : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+            : <[1, 1], !ttcore.tile<32x32, f32>, 5>
             -> tensor<1x1x!ttcore.tile<32x32, f32>>
         %send = ttl.copy %src_dfb, %pipe
-            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 5>,
                !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
             -> !ttl.transfer_handle<write>
         ttl.wait %send : !ttl.transfer_handle<write>
         ttl.cb_pop %src_dfb
-            : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+            : <[1, 1], !ttcore.tile<32x32, f32>, 5>
       }
       ttl.if_dst %pipe
           : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
