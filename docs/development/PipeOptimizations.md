@@ -97,6 +97,158 @@ emits `noc_async_write_multicast_loopback_src` for the data write to
 keep the multicast topology uniform across all receivers including
 the source core.
 
+### Grouped PipeTransport lowering
+
+Repeated point-to-point transfers previously retained the scalar protocol
+inside the loop:
+
+```text
+for each logical transfer:
+  reserve one source DFB block
+  issue one tensor read
+  wait for the read
+  send one block
+  wait for the write
+  signal one completion
+  acquire and release one receiver slot
+```
+
+This sequence programs and synchronizes the NoC for every logical transfer.
+`ttl-form-pipe-transports` now proves eligible loops and strip-mines them into
+groups of `R` logical transfers:
+
+```text
+select R logical transfers per group
+select K resident destination groups
+resize source DFBs to a multiple of R blocks
+resize destination DFBs to at least R * K blocks
+
+for base = 0; base < grouped_end; base += R:
+  reserve R source DFB blocks
+  issue R tensor reads
+  wait once for the read group
+  send the contiguous R-block payload
+  wait once for the write group
+  signal one completion
+
+run the remaining logical transfers in a scalar residual loop
+```
+
+The generated TTKernel code uses one read barrier, one contiguous payload
+write, one write barrier, and one completion per group. The payload write uses
+stateful one-packet NoC operations when the payload satisfies that operation's
+hardware limits; larger groups use the generic contiguous NoC write. Grouping
+therefore removes the per-transfer barrier and command-programming cost in
+both cases.
+
+#### PipeTransport contract
+
+`PipeTransportPlan` separates logical scheduling from backend emission:
+
+- `block_span` records the number of original source DFB blocks represented by
+  one transfer.
+- Each receiver endpoint records its own DFB slot span. Source and receiver
+  block geometries are independent and must not be equated.
+- `destination_group_depth` records the maximum number of complete transfers
+  that the schedule may leave resident in each receiver DFB.
+- Capacity counters use receiver DFB blocks as their unit. A send acquires the
+  endpoint slot span, and the matching receiver pop releases that same span.
+
+This contract supports the common scalar-tile case, where source and receiver
+spans are both `R`, and transfers between different source and receiver DFB
+block geometries.
+
+#### Eligibility and selection
+
+The pass groups a loop only after proving all of the following:
+
+- The `scf.for` has constant bounds, unit step, no loop-carried values, and at
+  least two iterations.
+- Every grouped transfer is scalar before the rewrite and executes in the
+  candidate loop.
+- The source and receiver DFB values are direct `ttl.bind_cb` results whose
+  complete reserve/push/wait/pop lifecycles are inside the loop.
+- Each transport DFB has one contiguous loop-indexed tensor copy and no
+  unsupported uses.
+- The loop contains no unrelated side effects.
+- Every transfer value has unique, valid provenance.
+
+The pass uses MLIR's `moveLoopInvariantCode` utility to move pure setup
+operations out of candidate loops. A recursive purity proof accepts
+loop-invariant index expressions without enumerating specific operation
+classes.
+
+`group-size=0` selects automatically, `group-size=1` disables grouping, and a
+larger value limits `R`. The automatic policy minimizes completion groups,
+then capacity waits, then L1 allocation bytes. Destination depth `K` is the
+largest depth that fits the DFB L1 budget for a selected `R`.
+
+DFB block counts are rounded up to multiples of `R` so a grouped payload never
+wraps within a DFB allocation. This rounding makes allocation size
+non-monotonic in `R`; for example, `R=5` can fit an existing five-block DFB
+when `R=4` requires eight blocks. Selection therefore evaluates every `R`
+within a finite upper bound derived from the L1 budget and the mandatory bytes
+per group. It does not use a binary search over `R`.
+
+#### Pipeline placement and allocation
+
+The standard TTL lowering pipeline orders the relevant passes as follows:
+
+```text
+ttl-insert-cb-sync
+  -> ttl-form-pipe-transports
+  -> ttl-coalesce-dfb-acquires
+  -> ttl-finalize-dfb-indices
+  -> PipeNet planning and TTKernel lowering
+```
+
+Grouping runs after DFB synchronization is explicit because its proof requires
+the complete lifecycle. It runs before acquire coalescing and DFB finalization
+because it changes acquire widths and block counts. Finalization emits the
+`ttl.dfb_allocations` logical/physical DFB contract, so runtime allocation uses
+the grouped block counts without a separate PipeNet allocation mechanism.
+
+#### Measured result
+
+The pipes microbenchmark was measured on Blackhole with bf16 distinct tiles,
+five warmup iterations, and twenty measured iterations. Both receiver-address
+protocols were bit-exact:
+
+| Transfers | Computed address total | Computed address per transfer | Published address total | Published address per transfer |
+| ---: | ---: | ---: | ---: | ---: |
+| 8 | 1.276 us | 0.159 us | 1.282 us | 0.160 us |
+| 32 | 2.479 us | 0.077 us | 2.461 us | 0.077 us |
+| 128 | 7.204 us | 0.056 us | 7.213 us | 0.056 us |
+
+The hand-written batched/stateful NoC ceiling is 6.96 us for 128 transfers,
+or 0.054 us per transfer. Grouped PipeTransport lowering is approximately
+3.5 to 3.6 percent above that ceiling at 128 transfers. The scalar C++
+baseline is approximately 0.60 us per transfer, so the implemented lowering
+removes the dominant per-transfer synchronization and command-setup cost.
+
+#### Metal 2.0 DFB integration
+
+The proposed Metal 2.0 BLOCKED DFB interface in
+[tt-metal PR #47589](https://github.com/tenstorrent/tt-metal/pull/47589)
+adds `DFBAccessPattern::BLOCKED`, a `block_size` binding field, and
+`BlockedProducerOf` / `BlockedConsumerOf` helpers. This interface is
+experimental and is not the current PipeTransport backend.
+
+`PipeTransportPlan` is intentionally independent of that interface. A future
+Metal 2.0 backend can map a scalar-tile grouped schedule to
+`block_size = R` and at least `R * K` DFB entries when the target supports the
+required producer/consumer combination. General mappings must derive producer
+and consumer block sizes independently when their DFB block geometries differ.
+Metal 2.0 restrictions, including block-size limits, entry-count divisibility,
+thread-count ratios, and supported producer/consumer combinations, are backend
+capability predicates. They do not change PipeTransport semantics.
+
+Until that interface is available and validated for the required targets,
+tt-lang continues to lower grouped schedules to explicit batched NoC
+operations. BLOCKED DFB support can replace the final backend-specific
+synchronization and addressing without changing loop grouping, transport
+planning, capacity accounting, or logical/physical DFB allocation.
+
 ## 3. Optimization opportunities
 
 This section presents two kinds of design moves. §3.1 lists
