@@ -74,6 +74,36 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
+// An inline word write uses a separate NoC command buffer, so it does not
+// prevent reuse of the resident asynchronous-write command on the same core.
+// CHECK-LABEL: func.func @inline_word_write_preserves_async_write_state
+// CHECK: ttkernel.noc_async_write_one_packet_set_state
+// CHECK: scf.for
+// CHECK: ttkernel.noc_inline_dw_write
+// CHECK: ttkernel.noc_async_write_one_packet_with_state
+// CHECK-NOT: ttkernel.noc_async_write{{[ (]}}
+func.func @inline_word_write_preserves_async_write_state(
+    %src_addr: i32, %dst_addr: i32) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %c0_i8 = arith.constant 0 : i8
+  %c15_i8 = arith.constant 15 : i8
+  %value = arith.constant 1 : i32
+  %size = arith.constant 2048 : i32
+  scf.for %iteration = %c0 to %c4 step %c1 {
+    ttkernel.noc_inline_dw_write(
+        core[%c1, %c0], %dst_addr, %value, %c15_i8, noc %c0_i8)
+        : (index, index, i32, i32, i8, i8) -> ()
+    ttkernel.noc_async_write
+        %src_addr, core[%c1, %c0], %dst_addr, %size, noc %c0_i8
+        : (i32, index, index, i32, i32, i8) -> ()
+  }
+  func.return
+}
+
+// -----
+
 // The inner loop reprograms the NoC write command before the outer send, so
 // only the inner send can reuse resident command state.
 // CHECK-LABEL: func.func @nested_sends_use_generic_writes

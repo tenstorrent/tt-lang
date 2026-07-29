@@ -3932,12 +3932,15 @@ def TTKernel_RemoteSramWriteU32Op
 }
 
 def TTKernel_NocInlineDwWriteOp
-    : TTKernel_NocWriteCommandOp<"noc_inline_dw_write"> {
+    : TTKernel_NocWriteCommandOp<
+          "noc_inline_dw_write",
+          [TTKernel_NocCommandStatePreservingOpTrait]> {
     let summary = "NocInlineDwWrite";
     let description = [{
       Initiates an inline 32-bit NOC write to a remote L1 address. The value is
       provided as an SSA value, so the operation does not require a local SRAM
-      staging word.
+      staging word. The operation uses the dedicated write-at command and does
+      not change resident asynchronous-write state.
     }];
 
     let arguments = (ins IndexLike:$dstNocX,
