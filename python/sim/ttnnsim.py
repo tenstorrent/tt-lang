@@ -1128,10 +1128,16 @@ class MeshShardInfo:
 
     For a 1D mesh (MeshShape(n)) sharding along tensor dim d:
         mesh_shape=(n,), dims=(d,)
+    For a 1xn mesh (MeshShape(1, n)) sharding along tensor dim d:
+        mesh_shape=(1, n), dims=(None, d)
     For a 2D mesh (MeshShape(rows, cols)) sharding along dims (d0, d1):
         mesh_shape=(rows, cols), dims=(d0, d1)
     For a 3D mesh sharding only along its last axis:
         mesh_shape=(a, b, c), dims=(None, None, d)
+
+    Axis positions are meaningful: ``mesh_shape`` mirrors the mesh device that
+    was opened, so a ``cluster_axis`` passed to a collective indexes the same axis
+    it would in ``ttnn``.
 
     Kept separate from MemoryConfig to avoid conflating inter-device
     distribution with intra-device sharding strategies (HEIGHT_SHARDED, etc.).
@@ -1177,13 +1183,19 @@ class TensorToMesh:
 
 
 class ShardTensorToMesh(TensorToMesh):
-    """Mapper for from_torch: shards a tensor across a 1D mesh along ``dim``.
+    """Mapper for from_torch: shards a tensor along ``dim`` over the whole mesh.
+
+    The tensor is split into ``mesh.num_devices`` shards spread over every device
+    as one flat sequence, whatever the mesh's axis layout.
 
     When passed to :func:`from_torch`, the resulting :class:`Tensor` carries a
     :class:`MeshShardInfo` recording the partition axis and mesh shape.
     Collective operations (:func:`all_reduce`, :func:`all_gather`) read this
     metadata to determine the partition structure without consulting global
-    device-count state or intra-device sharding strategies.
+    device-count state or intra-device sharding strategies.  The mesh's axis
+    layout is preserved in that metadata where possible, so ``cluster_axis``
+    keeps indexing the mesh that was opened; see :func:`_shard_to_mesh_info` for
+    the one case (two or more axes larger than 1) that cannot be represented.
     """
 
     def __init__(self, mesh: MeshDevice, dim: int) -> None:
@@ -2049,6 +2061,35 @@ def to_torch(
             raise TypeError(f"Unsupported type for to_torch: {type(t)}")
 
 
+def _shard_to_mesh_info(mesh: MeshDevice, dim: int) -> MeshShardInfo:
+    """Describe a linear :class:`ShardTensorToMesh` split of ``dim`` over ``mesh``.
+
+    ``ShardTensorToMesh`` spreads a tensor over every device of the mesh as one
+    flat sequence, so the shard count is always ``mesh.num_devices``.  When the
+    mesh has at most one axis larger than 1 -- including the common
+    ``MeshShape(1, n)`` layout -- that axis is recorded in place, so a
+    ``cluster_axis`` naming it selects the partitioned axis exactly as it does in
+    ``ttnn`` (where ``cluster_axis`` indexes the opened mesh device).
+
+    A mesh with two or more axes larger than 1 cannot be described that way:
+    naming any single axis would imply fewer shards than there are devices (a
+    ``2x4`` mesh holds 8 shards, not 2 or 4).  Such a mesh collapses to one axis
+    of ``num_devices``, which keeps the shard count correct at the cost of losing
+    the per-axis structure, so only ``cluster_axis=0`` addresses it.
+    """
+    axes = tuple(mesh.shape.dims)
+    nontrivial = [i for i, size in enumerate(axes) if size > 1]
+    if len(nontrivial) > 1:
+        return MeshShardInfo(mesh_shape=(mesh.num_devices,), dims=(dim,))
+    # A mesh whose axes are all size 1 holds a single device; attribute the split
+    # to its last axis so the shape still mirrors the mesh that was opened.
+    shard_axis = nontrivial[0] if nontrivial else len(axes) - 1
+    return MeshShardInfo(
+        mesh_shape=axes,
+        dims=tuple(dim if i == shard_axis else None for i in range(len(axes))),
+    )
+
+
 def from_torch(
     tensor: torch.Tensor,
     dtype: Optional[DType] = None,
@@ -2106,9 +2147,8 @@ def from_torch(
             result = Tensor(tensor, layout, memory_config=eff_mc)
 
     if isinstance(mesh_mapper, ShardTensorToMesh):
-        n = mesh_mapper.mesh.num_devices
         d = mesh_mapper.dim % tensor.ndim
-        result.mesh_shard_info = MeshShardInfo(mesh_shape=(n,), dims=(d,))
+        result.mesh_shard_info = _shard_to_mesh_info(mesh_mapper.mesh, d)
     elif isinstance(mesh_mapper, (ShardTensor2dMesh, ShardTensorNdMesh)):
         norm_dims = tuple(
             None if d is None else d % tensor.ndim for d in mesh_mapper.dims
@@ -2481,6 +2521,11 @@ def all_reduce(
       the last axis; an out-of-range value raises ``ValueError``.
     * ``cluster_axis=None`` — reduce across all active mesh axes sequentially.
 
+    An axis that does not partition the tensor is a no-op.  On the common
+    ``MeshShape(1, n)`` mesh (recorded as ``dims=(None, d)``) ``cluster_axis=1``
+    therefore reduces across the ``n`` devices, while ``cluster_axis=0`` returns
+    the input unchanged because that axis holds a single device.
+
     Args:
         input_tensor: Input tensor (must have been created with a mesh mapper).
         cluster_axis: Which mesh axis to reduce across.  ``None`` reduces across
@@ -2559,6 +2604,11 @@ def all_gather(
       the last axis; an out-of-range value raises ``ValueError``.
     * ``cluster_axis=None`` — gather across all active mesh axes sequentially,
       applying the same ``dim`` for each.
+
+    An axis that does not partition the tensor is a no-op.  On the common
+    ``MeshShape(1, n)`` mesh (recorded as ``dims=(None, d)``) ``cluster_axis=1``
+    therefore gathers the ``n`` shards, while ``cluster_axis=0`` returns the input
+    unchanged because that axis holds a single device.
 
     Args:
         input_tensor: Input tensor (must have been created with a mesh mapper).

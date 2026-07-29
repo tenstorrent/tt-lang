@@ -327,6 +327,46 @@ class TestDeviceAttribution:
         assert devices_by_node.get("node0") == [0]
         assert devices_by_node.get("node1") == [1]
 
+    def test_explicit_node_mismatch_raises(self) -> None:
+        """An event whose explicit node disagrees with the scheduled kernel fails loudly.
+
+        Node attribution comes from the running kernel; a call site that also passes
+        ``node=`` is an instrumentation bug if the two disagree, and silently
+        preferring one would misattribute the event to the wrong device.
+        """
+        from sim.trace import trace
+
+        set_tracing(ALL_CATEGORIES)
+        inp = ttnn.rand((32, 32))
+        out = ttnn.empty((32, 32))
+
+        @ttl.operation(grid=(1, 1))
+        def mismatch_kernel(a: ttnn.Tensor, o: ttnn.Tensor):
+            dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+            out_dfb = ttl.make_dataflow_buffer_like(o, shape=(1, 1), block_count=2)
+
+            @ttl.compute()
+            def compute():
+                with dfb.wait() as blk, out_dfb.reserve() as out_blk:
+                    out_blk.store(blk + blk)
+                    # Node 7 is neither this kernel's node (0) nor on a (1, 1) grid.
+                    trace("dfb_wait_end", dfb="d", tiles=1, node=7)
+
+            @ttl.datamovement()
+            def dm_read():
+                with dfb.reserve() as blk:
+                    tx = ttl.copy(a[0, 0], blk)
+                    tx.wait()
+
+            @ttl.datamovement()
+            def dm_write():
+                with out_dfb.wait() as blk:
+                    tx = ttl.copy(blk, o[0, 0])
+                    tx.wait()
+
+        with pytest.raises(RuntimeError, match="node mismatch"):
+            mismatch_kernel(inp, out)
+
     def test_many_nodes_per_device_share_a_device_coord(self) -> None:
         """Device attribution is per-device, not per-node.
 

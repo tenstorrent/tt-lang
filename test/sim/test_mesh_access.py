@@ -171,6 +171,77 @@ class TestValidateMeshAccessUnit:
             with pytest.raises(MeshAccessError, match="Uneven mesh shard"):
                 validate_mesh_access(a, "read")
 
+    def test_two_mesh_axes_on_same_dim_raises(self) -> None:
+        """Hierarchical sharding (one tensor dim split by two mesh axes) is rejected.
+
+        With ``dims=(0, 0)`` each device really owns ``rows / (2 * 2)``, which the
+        one-axis-per-dim ownership model cannot express: taken per axis it would
+        report node 0 as owning rows [0:32) (too many) and node 1 as owning nothing.
+        A clear error beats contradictory ownership.
+        """
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2, 2))
+        a = ttnn.from_torch(
+            torch.zeros(64, 32),
+            mesh_mapper=ttnn.ShardTensor2dMesh(mesh, mesh_shape=(2, 2), dims=(0, 0)),
+        )
+        for node in range(4):
+            with _node_on_grid(node, (2, 2, 1, 1)):
+                with pytest.raises(MeshAccessError, match="Unsupported sharding"):
+                    validate_mesh_access(a[0, 0], "read")
+
+    def test_repeated_dim_on_degenerate_axis_allowed(self) -> None:
+        """A repeated dim is only hierarchical when both axes actually shard.
+
+        Mesh ``(1, 2)`` with ``dims=(0, 0)`` has a single-device first axis, so dim 0
+        is partitioned exactly once and ownership stays well-defined.
+        """
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(1, 2))
+        a = ttnn.from_torch(
+            torch.zeros(64, 32),
+            mesh_mapper=ttnn.ShardTensor2dMesh(mesh, mesh_shape=(1, 2), dims=(0, 0)),
+        )
+        with _node_on_grid(0, (1, 2, 1, 1)):
+            validate_mesh_access(a[0, 0], "read")  # rows [0:32) -> owned
+            with pytest.raises(MeshAccessError, match="Cross-device access"):
+                validate_mesh_access(a[1, 0], "read")  # rows [32:64) -> device (0,1)
+
+
+class TestRowVectorMeshGrid:
+    """Ownership on a ``MeshShape(1, n)`` mesh, whose leading axis is degenerate.
+
+    ``ShardTensorToMesh`` keeps that mesh's axis layout, so the tensor's mesh shape
+    is ``(1, n)`` and the launch grid must declare both axes: ``(1, n, rows, cols)``.
+    The grid's mesh axes are required to equal the mesh shape exactly, so the
+    degenerate ``1`` is not optional.
+    """
+
+    def _shard(self, rows: int, cols: int, n: int) -> ttnn.Tensor:
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(1, n))
+        return ttnn.from_torch(
+            torch.zeros(rows, cols),
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+
+    def test_each_device_reads_owned_tile(self) -> None:
+        """The size-1 leading axis is skipped; axis 1 drives ownership."""
+        a = self._shard(128, 32, n=4)  # device (0, j) owns rows [j*32, (j+1)*32)
+        for node in range(4):
+            with _node_on_grid(node, (1, 4, 1, 1)):
+                validate_mesh_access(a[node, 0], "read")
+
+    def test_foreign_tile_raises(self) -> None:
+        a = self._shard(128, 32, n=4)
+        with _node_on_grid(0, (1, 4, 1, 1)):
+            with pytest.raises(MeshAccessError, match="Cross-device access"):
+                validate_mesh_access(a[3, 0], "read")
+
+    def test_grid_must_declare_the_degenerate_axis(self) -> None:
+        """Dropping the leading 1 from the grid is a hard error, not an equivalence."""
+        a = self._shard(128, 32, n=4)
+        with _node_on_grid(0, (4, 1, 1)):
+            with pytest.raises(MeshAccessError, match="Mesh mismatch"):
+                validate_mesh_access(a[0, 0], "read")
+
 
 class TestTwoAxisMesh:
     """Validation across a 2-axis device mesh (the 4D launch-grid layout).

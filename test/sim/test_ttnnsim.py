@@ -3120,6 +3120,13 @@ class TestMeshShapeNd:
         with pytest.raises(ValueError, match="at least one axis"):
             ttnn.MeshShape()
 
+    def test_accepts_a_single_sequence(self) -> None:
+        """A lone tuple/list is unpacked, matching ttnn.MeshShape((1, n)) call sites."""
+        assert ttnn.MeshShape((1, 4)).dims == (1, 4)
+        assert ttnn.MeshShape([2, 2, 2]).dims == (2, 2, 2)
+        with pytest.raises(ValueError, match="at least one axis"):
+            ttnn.MeshShape(())
+
     def test_non_positive_axis_raises(self) -> None:
         with pytest.raises(ValueError, match="must be positive"):
             ttnn.MeshShape(0)
@@ -3135,6 +3142,65 @@ class TestMeshShapeNd:
         assert len({ttnn.MeshShape(2, 2), ttnn.MeshShape(2, 2)}) == 1
         # Comparisons against unrelated types are not equal (never raise).
         assert ttnn.MeshShape(2, 2) != (2, 2)
+
+
+class TestShardTensorToMeshAxisLayout:
+    """ShardTensorToMesh keeps the opened mesh's axis layout in its MeshShardInfo.
+
+    ``cluster_axis`` indexes the mesh device in ``ttnn``, so the recorded
+    ``mesh_shape`` must mirror the mesh that was opened for those indices to mean
+    the same thing here.  The shard count is always ``mesh.num_devices`` because
+    the split spreads over every device.
+    """
+
+    def _shard(self, *mesh_dims: int, dim: int = 0) -> Any:
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(*mesh_dims))
+        return ttnn.from_torch(
+            torch.arange(8.0).reshape(4, 2),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=dim),
+        )
+
+    def test_single_axis_mesh(self) -> None:
+        msi = self._shard(4).mesh_shard_info
+        assert (msi.mesh_shape, msi.dims) == ((4,), (0,))
+
+    def test_row_vector_mesh_keeps_axis_position(self) -> None:
+        """MeshShape(1, n) records the split on axis 1, as ttnn's cluster_axis=1 expects."""
+        msi = self._shard(1, 4).mesh_shard_info
+        assert (msi.mesh_shape, msi.dims) == ((1, 4), (None, 0))
+        assert msi.num_devices == 4
+
+    def test_column_vector_mesh_keeps_axis_position(self) -> None:
+        msi = self._shard(4, 1).mesh_shard_info
+        assert (msi.mesh_shape, msi.dims) == ((4, 1), (0, None))
+
+    def test_multi_axis_mesh_flattens_to_preserve_shard_count(self) -> None:
+        """A 2x4 mesh holds 8 shards, which no single axis of 2 or 4 can express."""
+        msi = self._shard(2, 4).mesh_shard_info
+        assert (msi.mesh_shape, msi.dims) == ((8,), (0,))
+        assert msi.num_devices == 8
+
+    def test_degenerate_mesh_mirrors_shape(self) -> None:
+        """An all-size-1 mesh is one device; the shape still mirrors what was opened."""
+        assert self._shard(1).mesh_shard_info.mesh_shape == (1,)
+        assert self._shard(1, 1).mesh_shard_info.mesh_shape == (1, 1)
+
+    def test_cluster_axis_matches_ttnn_on_row_vector_mesh(self) -> None:
+        """On MeshShape(1, n), axis 1 is the n-device axis and axis 0 is a no-op."""
+        t = self._shard(1, 4)
+        all_axes = ttnn.all_reduce(t, cluster_axis=None).to_torch()
+        assert torch.equal(ttnn.all_reduce(t, cluster_axis=1).to_torch(), all_axes)
+        # Axis 0 spans a single device, so there is nothing to combine across it.
+        assert torch.equal(ttnn.all_reduce(t, cluster_axis=0).to_torch(), t.to_torch())
+        # all_gather agrees on which axis carries the shards.
+        assert ttnn.all_gather(t, dim=0, cluster_axis=1).shape == (16, 2)
+
+    def test_flattened_mesh_rejects_second_axis(self) -> None:
+        """A flattened multi-axis mesh exposes one axis, so axis 1 is out of range."""
+        t = self._shard(2, 4)
+        with pytest.raises(ValueError, match="cluster_axis 1 out of range"):
+            ttnn.all_reduce(t, cluster_axis=1)
 
 
 class TestShardTensorNdMesh:
@@ -3169,6 +3235,11 @@ class TestShardTensorNdMesh:
         mesh = ttnn.open_mesh_device(ttnn.MeshShape(2, 2, 2))
         with pytest.raises(ValueError, match="same number of axes"):
             ttnn.ShardTensorNdMesh(mesh, mesh_shape=(2, 2, 2), dims=(0, 1))
+
+    def test_mesh_shard_info_rejects_mismatched_lengths(self) -> None:
+        """MeshShardInfo keeps mesh_shape and dims parallel however it is built."""
+        with pytest.raises(ValueError, match="same number of axes"):
+            ttnn.MeshShardInfo(mesh_shape=(2, 2), dims=(0,))
 
 
 class TestAllReduceNd:

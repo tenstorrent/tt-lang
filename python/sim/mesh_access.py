@@ -44,6 +44,14 @@ correctly on a real mesh:
   dimensions equal its mesh shape so each node maps to exactly one shard.
 * A sharded dimension is not evenly divisible by its mesh-axis device count:
   ownership boundaries are undefined unless every device owns an equal slice.
+* Two mesh axes partition the same tensor dimension (hierarchical sharding):
+  ownership is modelled as one mesh axis per tensor dimension.
+
+Known limitation: an access is described by its origin and shape, so a *strided*
+view (a slice with a step) is treated as the contiguous range it starts, and a
+step that hops over a shard boundary is not detected.  Kernel copies address
+contiguous tile ranges, and tile-layout row/column slices reject steps outright,
+so this affects only deliberately strided row-major views.
 """
 
 from __future__ import annotations
@@ -105,6 +113,24 @@ def validate_mesh_access(tensor: Tensor, direction: str) -> None:
             f"dimensions equal its mesh shape so each node maps to exactly one "
             f"device shard."
         )
+
+    # Two mesh axes partitioning the same tensor dim is hierarchical sharding:
+    # each device then owns dim_size / (n0 * n1), which this flat one-axis-per-dim
+    # ownership model cannot express -- it would report a device's own shard as
+    # partly foreign and a neighbour's shard as partly owned.  Reject it rather
+    # than emit contradictory ownership.
+    axis_of_dim: dict[int, int] = {}
+    for axis, dim in enumerate(msi.dims):
+        if dim is None or msi.mesh_shape[axis] <= 1:
+            continue
+        if dim in axis_of_dim:
+            raise MeshAccessError(
+                f"Unsupported sharding: tensor '{name}' dim {dim} is partitioned by "
+                f"both mesh axis {axis_of_dim[dim]} and mesh axis {axis}. Ownership "
+                f"validation models one mesh axis per tensor dimension, so shard each "
+                f"tensor dimension on at most one mesh axis."
+            )
+        axis_of_dim[dim] = axis
 
     mesh_coord = node_mesh_coord(node, grid)
 

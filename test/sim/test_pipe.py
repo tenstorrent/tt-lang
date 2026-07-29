@@ -221,6 +221,40 @@ class TestPipeCrossesMesh:
             pipe_crosses_mesh((0, 0), (1, 0), (4, 8, 13, 10))
 
 
+class TestPipeIsFabricNeverRaises:
+    """The trace-only ``fabric`` classifier degrades instead of raising.
+
+    ``pipe_crosses_mesh`` rejects an ambiguous multi-element sub-rank coordinate,
+    but that classification only annotates trace events, so an otherwise-valid
+    traced run must not crash on it.
+    """
+
+    def test_ambiguous_endpoint_reported_non_fabric(self) -> None:
+        from sim.copyhandlers import _pipe_is_fabric
+        from sim.greenlet_scheduler import GreenletScheduler
+
+        # Rank-2 endpoints on a rank-4 grid: neither a linear index nor full rank.
+        pipe = ttl.Pipe((0, 0), (1, 0))
+        ctx = get_context()
+        scheduler = GreenletScheduler()
+        scheduler.grid = (2, 2, 1, 1)
+        ctx.scheduler = scheduler
+        try:
+            with pytest.raises(ValueError, match="use a full-rank coordinate"):
+                pipe_crosses_mesh(pipe.src, pipe.dst, scheduler.grid)
+            assert _pipe_is_fabric(pipe) is False
+        finally:
+            ctx.scheduler = None
+
+    def test_no_scheduler_grid_is_non_fabric(self) -> None:
+        """With no launch grid recorded there are no mesh axes to cross."""
+        from sim.copyhandlers import _pipe_is_fabric
+
+        ctx = get_context()
+        ctx.scheduler = None
+        assert _pipe_is_fabric(ttl.Pipe((0, 0), (1, 0))) is False
+
+
 class TestCrossCardPipe:
     """End-to-end cross-device (fabric) pipe transfer on a grid with mesh axes.
 
