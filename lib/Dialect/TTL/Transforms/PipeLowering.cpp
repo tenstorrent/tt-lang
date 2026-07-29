@@ -1899,10 +1899,10 @@ getPipeResourceRequirements(const PipeResourcePlan &info,
   if (pipeCapacityPlan) {
     PipeCounterAllocationCounts capacityCounts =
         pipeCapacityPlan->getCounterAllocationCounts();
-    counts.localSemaphoreCount = std::max(counts.localSemaphoreCount,
-                                          capacityCounts.localSemaphoreCount);
-    counts.globalSemaphoreCount = std::max(counts.globalSemaphoreCount,
-                                           capacityCounts.globalSemaphoreCount);
+    assert(capacityCounts.localSemaphoreCount >= counts.localSemaphoreCount &&
+           capacityCounts.globalSemaphoreCount >= counts.globalSemaphoreCount &&
+           "capacity allocation must continue after pipe resource allocation");
+    counts = capacityCounts;
   }
 
   return PipeResourceRequirements{
