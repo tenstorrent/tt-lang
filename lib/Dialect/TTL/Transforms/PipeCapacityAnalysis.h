@@ -25,7 +25,7 @@
 // producer-side DFB advance must be owned by a receiver reserve whose matching
 // pipe posts complete before the advance. Capacity analysis separately requires
 // every receiver pop to have a matching `ttl.cb_wait`. With one writer
-// endpoint, each valid one-block pop frees one capacity unit for that
+// endpoint, each valid pop frees the transfer's receiver block span for that
 // endpoint's sender. With zero or multiple writer endpoints, the pop identifies
 // only the DFB, so its sender is ambiguous.
 //
@@ -43,13 +43,13 @@
 //     node = pipeGraph.getReceiverDFBNode(endpoint.receiverDFBNode)
 //     require endpoint.transferNode to be point-to-point
 //     require node.writerEndpoints.size() == 1
-//     require endpoint.receiverSlotSpanBlocks == 1
 //     require every endpoint post to target the receiver DFB from the receiver
 //             NOC thread
 //     require the receiver DFB node to have a proven pipe-only producer stream
 //     require every send to run on the sender NOC thread
 //     require every receiver-overlapping pop of the DFB to be owned by a
-//             receiver-domain wait and free one block
+//             receiver-domain wait and free endpoint.receiverSlotSpanBlocks
+//             blocks
 //
 // If an endpoint requirement is not proven, that endpoint has no capacity
 // fact. Protocol selection and counter allocation consume these facts but are
@@ -81,6 +81,7 @@ struct PipeCapacityEndpointFacts {
   PipeReceiverDFBKey receiverDFB;
   PipeCapacityReleaseTarget releaseTarget;
   int64_t initialCapacity = 0;
+  int64_t receiverBlocksPerTransfer = 1;
   PipeTransferSendOp send;
   SmallVector<CBPopOp> pops;
 

@@ -111,6 +111,7 @@ getCapacityEndpointFacts(const PipeGraph &pipeGraph,
       receiverEndpoint.receiverDFB,
       PipeCapacityReleaseTarget{transferNode.pipe.srcX, transferNode.pipe.srcY},
       receiverEndpoint.receiverDFBInfo.blockCount,
+      receiverEndpoint.receiverDFBInfo.receiverSlotSpanBlocks,
       PipeTransferSendOp(),
       {},
   };
@@ -197,8 +198,10 @@ static bool collectAndCheckPops(ArrayRef<CBPopOp> candidatePops,
       continue;
     }
     std::optional<int64_t> maybeReleasedBlocks = getReleasedBlockCount(popOp);
-    if (!maybeReleasedBlocks || *maybeReleasedBlocks != 1) {
-      debugRejectEndpoint(endpointFacts, "pop does not release one DFB block");
+    if (!maybeReleasedBlocks ||
+        *maybeReleasedBlocks != endpointFacts.receiverBlocksPerTransfer) {
+      debugRejectEndpoint(endpointFacts,
+                          "pop does not release the transfer's DFB block span");
       valid = false;
       continue;
     }
@@ -295,19 +298,6 @@ PipeCapacityAnalysisResult analyzePipeCapacity(ModuleOp mod,
       debugRejectEndpoint(endpointFacts,
                           "receiver DFB producer stream is not proven "
                           "pipe-only");
-      continue;
-    }
-
-    // Capacity adds one unit per pop, so each matching reserve must also
-    // consume one block. Enforce that invariant here even though pop validation
-    // currently rejects wider spans.
-    if (receiverEndpoint.receiverDFBInfo.receiverSlotSpanBlocks != 1) {
-      std::string reason =
-          "receiver reserve spans " +
-          std::to_string(
-              receiverEndpoint.receiverDFBInfo.receiverSlotSpanBlocks) +
-          " DFB blocks; capacity accounting assumes one";
-      debugRejectEndpoint(endpointFacts, reason);
       continue;
     }
 

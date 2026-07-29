@@ -1829,6 +1829,7 @@ def _lower_program_to_kernel(
             "func.func(ttl-insert-copy-wait)",
             "func.func(ttl-insert-cb-sync)",
             "ttl-verify-pipenet",
+            "ttl-form-pipe-transports",
             "func.func(ttl-coalesce-dfb-acquires)",
             "func.func(ttl-annotate-l1-acc-loops)",
             "func.func(convert-ttl-to-compute)",
