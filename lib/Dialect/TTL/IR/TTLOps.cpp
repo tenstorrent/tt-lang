@@ -405,13 +405,30 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
                          << ")";
   }
 
-  for (size_t i = 0; i < cbShape.size(); ++i) {
+  assert(!cbShape.empty() && "DFB block shape must have positive rank");
+  for (size_t i = 0; i + 1 < cbShape.size(); ++i) {
     if (cbShape[i] != tensorShape[i]) {
       return emitOpError() << "tensor shape dimension " << i << " ("
                            << tensorShape[i]
                            << ") must match CB shape dimension (" << cbShape[i]
                            << ")";
     }
+  }
+
+  int64_t cbInnermost = cbShape.back();
+  int64_t tensorInnermost = tensorShape.back();
+  if (cbInnermost <= 0 || tensorInnermost <= 0 ||
+      tensorInnermost % cbInnermost != 0) {
+    return emitOpError()
+           << "tensor innermost dimension (" << tensorInnermost
+           << ") must be a positive multiple of CB shape dimension ("
+           << cbInnermost << ")";
+  }
+  int64_t blockSpan = tensorInnermost / cbInnermost;
+  if (blockSpan > cbTy.getBlockCount()) {
+    return emitOpError() << "copy block span (" << blockSpan
+                         << ") exceeds DFB block count ("
+                         << cbTy.getBlockCount() << ")";
   }
 
   // Reject mismatched tilization before the generic element-type check so the
