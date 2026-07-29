@@ -32,6 +32,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   // Verify the complete high-level schedule while logical DFB identities are
   // still distinct and before later transformations rewrite pipe operations.
   buildTTLVerifyPipeNetPipeline(pm);
+  pm.addPass(createTTLFormPipeTransports());
   pm.addNestedPass<func::FuncOp>(createTTLCoalesceDFBAcquires());
   {
     TTLFinalizeDFBIndicesOptions finalizeOptions;
