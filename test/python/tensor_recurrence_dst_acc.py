@@ -31,9 +31,11 @@ from utils.correctness import assert_pcc  # noqa: E402
 TILE = 32
 N_ITERS = 400
 CONTRIBUTION_BLOCK_COUNT = 2
-MULTI_TILE_SHAPE = (2, 2)
-MULTI_TILE_ROWS = MULTI_TILE_SHAPE[0] * TILE
-MULTI_TILE_COLS = MULTI_TILE_SHAPE[1] * TILE
+MULTI_TILE_ROW_TILES = 2
+MULTI_TILE_COL_TILES = 2
+MULTI_TILE_SHAPE = (MULTI_TILE_ROW_TILES, MULTI_TILE_COL_TILES)
+MULTI_TILE_ROWS = MULTI_TILE_ROW_TILES * TILE
+MULTI_TILE_COLS = MULTI_TILE_COL_TILES * TILE
 DTYPE_CASES = (
     (torch.bfloat16, "BF16", 0.98),
     (torch.float32, "F32", 0.999),
@@ -94,13 +96,13 @@ def multi_tile_acc_recurrence(initial, delta, out):
     def multi_tile_reader():
         with initial_dfb.reserve() as initial_blk:
             ttl.copy(
-                initial[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]],
+                initial[0:MULTI_TILE_ROW_TILES, 0:MULTI_TILE_COL_TILES],
                 initial_blk,
             ).wait()
         for _ in range(N_ITERS):
             with delta_dfb.reserve() as delta_blk:
                 ttl.copy(
-                    delta[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]],
+                    delta[0:MULTI_TILE_ROW_TILES, 0:MULTI_TILE_COL_TILES],
                     delta_blk,
                 ).wait()
 
@@ -108,7 +110,7 @@ def multi_tile_acc_recurrence(initial, delta, out):
     def multi_tile_writer():
         with out_dfb.wait() as out_blk:
             ttl.copy(
-                out_blk, out[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]]
+                out_blk, out[0:MULTI_TILE_ROW_TILES, 0:MULTI_TILE_COL_TILES]
             ).wait()
 
 

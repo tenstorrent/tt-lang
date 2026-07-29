@@ -26,17 +26,6 @@ class _FakeTensorWithoutDevice:
     pass
 
 
-class _FakeDataFormat:
-    name = "bfloat16"
-
-
-class _FakeDFBConfig:
-    dtype = _FakeDataFormat()
-    shape = (1, 1)
-    block_count = 2
-    tile = (16, 16)
-
-
 class _FakeGridSize:
     x = 1
     y = 1
@@ -52,6 +41,17 @@ class _FakeCoreRanges:
     @staticmethod
     def bounding_box():
         return _FakeBoundingBox()
+
+
+def _subtile_physical_dfb_config():
+    return PhysicalDFBConfig(
+        dfb_index=0,
+        num_tiles=1,
+        data_format="bfloat16",
+        block_count=2,
+        page_size=512,
+        tile=(16, 16),
+    )
 
 
 class _FakeTTNN:
@@ -432,8 +432,8 @@ def test_build_cb_descriptors_excludes_computed_address_backing_tensors(
     )
 
     cb_configs = [
-        ((1, 1), 1, object(), None, 512, 512),
-        ((1, 1), 1, object(), None, 800, 800),
+        ((1, 1), 1, object(), (32, 32), 512, 512),
+        ((1, 1), 1, object(), (32, 32), 800, 800),
     ]
 
     # DFB 1 (800 bytes) is a computed-address backing tensor, already allocated
@@ -469,7 +469,7 @@ def test_build_cb_descriptors_preserves_subtile_geometry(monkeypatch):
 
     descriptors = kernel_runner.build_cb_descriptors(
         tensors=[_FakeTensor(object())],
-        cb_configs=[_FakeDFBConfig()],
+        cb_configs=[_subtile_physical_dfb_config()],
         core_ranges=_FakeCoreRanges(),
     )
 
@@ -485,13 +485,13 @@ def test_emit_runner_source_preserves_subtile_geometry(monkeypatch):
 
     source = kernel_runner.emit_runner_source(
         kernel_specs=[],
-        cb_configs=[_FakeDFBConfig()],
+        cb_configs=[_subtile_physical_dfb_config()],
         grid_cols=1,
         grid_rows=1,
         num_tensors=1,
     )
 
-    assert "((1, 1), 2, ttnn.bfloat16, (16, 16), 512, 1024)" in source
+    assert "(1, 2, ttnn.bfloat16, (16, 16), 512, 1024),  # CB 0" in source
 
 
 def test_emit_runner_source_uses_shared_pipe_resource_helpers():
@@ -534,12 +534,7 @@ def test_emit_runner_source_accepts_physical_dfb_configs():
     )
 
     assert "(3, 2, ttnn.bfloat16, (1, 16), 32, 192),  # CB 0" in source
-    assert (
-        "for i, (num_tiles, block_count, dtype, tile_shape, page_size, "
-        "total_size) "
-        "in enumerate(CB_CONFIGS):"
-    ) in source
-    assert "tile=ttnn.TileDescriptor(tile)," in source
+    assert "cb_configs=CB_CONFIGS" in source
 
 
 def test_physical_dfb_allocation_scales_with_subtile_area():
@@ -577,8 +572,8 @@ def test_dfb_allocation_requires_finalized_config(monkeypatch):
     [
         (
             [None],
-            TypeError,
-            "must be a finalized PhysicalDFBConfig",
+            ValueError,
+            "must be a PhysicalDFBConfig",
         ),
         (
             [PhysicalDFBConfig(1, 1, "bfloat16", 2, 2048)],

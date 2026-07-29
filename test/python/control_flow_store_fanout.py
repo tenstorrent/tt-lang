@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# REQUIRES: ttnn, tt-device
 # RUN: env TTLANG_COMPILE_ONLY=1 %python %s | FileCheck %s
 
 """Compile-only frontend coverage for control-flow store fanout."""
@@ -17,13 +18,22 @@ from Inputs.control_flow_store_fanout_kernels import (  # noqa: E402
     CONTROL_FLOW_CASES,
     host_tensor,
 )
+import ttnn  # noqa: E402
+from ttlang_test_utils import to_dram  # noqa: E402
 
-for case_name, kernel, grid_width, output_count in CONTROL_FLOW_CASES:
-    input_tensor = host_tensor((32, grid_width * 32))
-    output_tensors = [host_tensor((32, 32)) for _output_index in range(output_count)]
+device = ttnn.open_device(device_id=0)
+try:
+    for case_name, kernel, grid_width, output_count in CONTROL_FLOW_CASES:
+        input_tensor = to_dram(host_tensor((32, grid_width * 32)), device)
+        output_tensors = [
+            to_dram(host_tensor((32, 32)), device)
+            for _output_index in range(output_count)
+        ]
 
-    kernel(input_tensor, *output_tensors)
-    print(f"COMPILED {case_name}")
+        kernel(input_tensor, *output_tensors)
+        print(f"COMPILED {case_name}")
+finally:
+    ttnn.close_device(device)
 
 # CHECK: COMPILED then_only
 # CHECK: COMPILED else_only

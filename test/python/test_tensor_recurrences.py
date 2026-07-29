@@ -367,6 +367,11 @@ def _extract_generated_kernel_source(output, kernel_name):
     return output[start:next_marker]
 
 
+def _assert_physical_dfb_count(final_ir, expected_count):
+    assert "ttl.dfb_allocations = [" in final_ir
+    assert final_ir.count("dfb_index =") == expected_count
+
+
 def _assert_dst_accumulation_compute(
     output, final_ir, *, expected_tile_count, resident_contribution=False
 ):
@@ -377,7 +382,7 @@ def _assert_dst_accumulation_compute(
     assert "add_binary_tile" not in compute_source
     assert "pack_reconfig_l1_acc" not in compute_source
     assert "llk_pack_reconfig_l1_acc" not in compute_source
-    assert "ttl.compiler_allocated" not in final_ir
+    _assert_physical_dfb_count(final_ir, 3)
 
     loop_start = compute_source.index("for (")
     loop_end = compute_source.index("tile_regs_commit", loop_start)
@@ -515,7 +520,7 @@ def test_resident_contribution_early_pop_does_not_form_dst(
     assert "binary_dest_reuse_tiles<" not in _extract_generated_kernel_source(
         output, "compute"
     )
-    assert "ttl.compiler_allocated" in final_ir
+    _assert_physical_dfb_count(final_ir, 4)
 
 
 @pytest.mark.requires_device
@@ -692,9 +697,11 @@ def test_three_accumulators_in_one_loop(device, dtype):
     assert_allclose(result_c, expected_c.float(), **_DTYPE_TOL[dtype])
 
 
-MULTI_TILE_SHAPE = (2, 2)
-MULTI_TILE_ROWS = MULTI_TILE_SHAPE[0] * TILE
-MULTI_TILE_COLS = MULTI_TILE_SHAPE[1] * TILE
+MULTI_TILE_ROW_TILES = 2
+MULTI_TILE_COL_TILES = 2
+MULTI_TILE_SHAPE = (MULTI_TILE_ROW_TILES, MULTI_TILE_COL_TILES)
+MULTI_TILE_ROWS = MULTI_TILE_ROW_TILES * TILE
+MULTI_TILE_COLS = MULTI_TILE_COL_TILES * TILE
 
 
 def _make_multi_tile_block_kernel(iteration_count=N_ITERS):
@@ -723,19 +730,19 @@ def _make_multi_tile_block_kernel(iteration_count=N_ITERS):
         def reader():
             with a_cb.reserve() as blk:
                 ttl.copy(
-                    a_seed[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]], blk
+                    a_seed[0:MULTI_TILE_ROW_TILES, 0:MULTI_TILE_COL_TILES], blk
                 ).wait()
             for _ in range(iteration_count):
                 with delta_cb.reserve() as blk:
                     ttl.copy(
-                        delta[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]], blk
+                        delta[0:MULTI_TILE_ROW_TILES, 0:MULTI_TILE_COL_TILES], blk
                     ).wait()
 
         @ttl.datamovement()
         def writer():
             with out_cb.wait() as blk:
                 ttl.copy(
-                    blk, out[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]]
+                    blk, out[0:MULTI_TILE_ROW_TILES, 0:MULTI_TILE_COL_TILES]
                 ).wait()
 
     return kernel
@@ -878,12 +885,10 @@ def _make_multi_tile_distinct_kernel(iteration_count=N_ITERS):
         def reader():
             with a_cb.reserve() as blk:
                 ttl.copy(
-                    a_seed[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]], blk
+                    a_seed[0:MULTI_TILE_ROW_TILES, 0:MULTI_TILE_COL_TILES], blk
                 ).wait()
-            # The reader loop is traced (scf.for); the tracer resolves only the
-            # loop var and integer literals in a traced slice bound, so the
-            # per-iteration tile-row offset uses literals (MULTI_TILE_SHAPE is
-            # (2, 2)), not MULTI_TILE_SHAPE.
+            # The traced slice expression mixes the loop induction variable
+            # with the row stride, so it uses literals for the (2, 2) shape.
             for i in range(iteration_count):
                 with delta_cb.reserve() as blk:
                     ttl.copy(deltas[2 * i : 2 * i + 2, 0:2], blk).wait()
@@ -892,7 +897,7 @@ def _make_multi_tile_distinct_kernel(iteration_count=N_ITERS):
         def writer():
             with out_cb.wait() as blk:
                 ttl.copy(
-                    blk, out[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]]
+                    blk, out[0:MULTI_TILE_ROW_TILES, 0:MULTI_TILE_COL_TILES]
                 ).wait()
 
     return kernel
@@ -1291,35 +1296,35 @@ def _make_three_acc_multi_tile_kernel():
         def reader():
             with a_cb.reserve() as blk:
                 ttl.copy(
-                    a_seed[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]], blk
+                    a_seed[0:MULTI_TILE_ROW_TILES, 0:MULTI_TILE_COL_TILES], blk
                 ).wait()
             with b_cb.reserve() as blk:
                 ttl.copy(
-                    b_seed[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]], blk
+                    b_seed[0:MULTI_TILE_ROW_TILES, 0:MULTI_TILE_COL_TILES], blk
                 ).wait()
             with c_cb.reserve() as blk:
                 ttl.copy(
-                    c_seed[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]], blk
+                    c_seed[0:MULTI_TILE_ROW_TILES, 0:MULTI_TILE_COL_TILES], blk
                 ).wait()
             for _ in range(N_ITERS):
                 with delta_cb.reserve() as blk:
                     ttl.copy(
-                        delta[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]], blk
+                        delta[0:MULTI_TILE_ROW_TILES, 0:MULTI_TILE_COL_TILES], blk
                     ).wait()
 
         @ttl.datamovement()
         def writer():
             with out_a_cb.wait() as blk:
                 ttl.copy(
-                    blk, out_a[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]]
+                    blk, out_a[0:MULTI_TILE_ROW_TILES, 0:MULTI_TILE_COL_TILES]
                 ).wait()
             with out_b_cb.wait() as blk:
                 ttl.copy(
-                    blk, out_b[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]]
+                    blk, out_b[0:MULTI_TILE_ROW_TILES, 0:MULTI_TILE_COL_TILES]
                 ).wait()
             with out_c_cb.wait() as blk:
                 ttl.copy(
-                    blk, out_c[0 : MULTI_TILE_SHAPE[0], 0 : MULTI_TILE_SHAPE[1]]
+                    blk, out_c[0:MULTI_TILE_ROW_TILES, 0:MULTI_TILE_COL_TILES]
                 ).wait()
 
     return kernel
