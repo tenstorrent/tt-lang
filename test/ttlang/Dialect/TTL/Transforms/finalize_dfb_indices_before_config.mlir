@@ -32,7 +32,17 @@ func.func @compiler_f32_sfpu(
   %output_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %compiler_dfb = ttl.bind_cb {cb_index = 1, block_count = 2} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
 
-  %input_attached = ttl.attach_cb %input, %compiler_dfb
+  %compiler_reserve = ttl.cb_reserve %compiler_dfb
+      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  ttl.store %input, %compiler_reserve
+      : tensor<1x1x!ttcore.tile<32x32, f32>>,
+        tensor<1x1x!ttcore.tile<32x32, f32>>
+  ttl.cb_push %compiler_dfb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %compiler_wait = ttl.cb_wait %compiler_dfb
+      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %input_attached = ttl.attach_cb %compiler_wait, %compiler_dfb
       : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
         -> tensor<1x1x!ttcore.tile<32x32, f32>>
   %init_attached = ttl.attach_cb %init, %output_dfb
