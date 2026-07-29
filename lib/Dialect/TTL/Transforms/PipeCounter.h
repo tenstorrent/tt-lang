@@ -51,8 +51,7 @@ struct PipeCounterAllocationCounts {
 /// Allocates local semaphore ids first, then GlobalSemaphore storage.
 class PipeCounterAllocator {
 public:
-  explicit PipeCounterAllocator(PipeCounterAllocationCounts counts = {})
-      : counts(counts) {}
+  explicit PipeCounterAllocator(PipeCounterAllocationCounts counts = {});
 
   /// Allocate the next counter using the shared local-then-global policy.
   PipeCounterInfo allocate();

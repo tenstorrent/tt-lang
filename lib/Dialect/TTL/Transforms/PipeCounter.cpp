@@ -11,6 +11,15 @@
 
 namespace mlir::tt::ttl {
 
+PipeCounterAllocator::PipeCounterAllocator(PipeCounterAllocationCounts counts)
+    : counts(counts) {
+  assert(counts.localSemaphoreCount >= 0 &&
+         counts.localSemaphoreCount <= kMaxHardwareSemaphoreIds &&
+         "initial local semaphore count exceeds the hardware id range");
+  assert(counts.globalSemaphoreCount >= 0 &&
+         "initial global semaphore count must be nonnegative");
+}
+
 PipeCounterInfo PipeCounterInfo::localSemaphore(int64_t semaphoreIndex) {
   return PipeCounterInfo(PipeCounterStorage::LocalSemaphore, semaphoreIndex);
 }
@@ -21,8 +30,6 @@ PipeCounterInfo PipeCounterInfo::globalSemaphore(int64_t globalSemaphoreIndex) {
 }
 
 PipeCounterInfo PipeCounterAllocator::allocate() {
-  assert(counts.localSemaphoreCount <= kMaxHardwareSemaphoreIds &&
-         "pipe counter allocator has an invalid local semaphore count");
   if (counts.localSemaphoreCount < kMaxHardwareSemaphoreIds) {
     return PipeCounterInfo::localSemaphore(counts.localSemaphoreCount++);
   }
