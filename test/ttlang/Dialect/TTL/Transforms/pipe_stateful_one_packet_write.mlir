@@ -1,26 +1,38 @@
 // RUN: ttlang-opt %s --split-input-file -convert-ttl-to-ttkernel | FileCheck %s
 
-// Summary: Verifies that pipe send lowering uses stateful one-packet NoC
-// writes only when one loop owns a single eligible pipe send.
+// Summary: Verifies that TTKernel cleanup selects stateful one-packet NoC
+// writes only when the loop preserves the write command on every executing
+// core.
 
-// A one-tile unicast pipe with a computed receiver DFB address can program the
-// destination command state once before the loop and reuse it per transfer.
+// A one-tile unicast pipe can reuse write state while its destination address
+// advances through a receiver DFB. The receiver's tensor write executes on a
+// disjoint core and therefore does not invalidate the sender's command.
 // CHECK-LABEL: func.func @stateful_one_packet_write_in_loop
 // CHECK: ttkernel.noc_async_write_one_packet_set_state
+// CHECK: } {ttkernel.execution_core_ranges = [#ttcore.core_range<(0,0), (0,0)>]}
 // CHECK: scf.for
 // CHECK: ttkernel.experimental.semaphore_wait_min
+// CHECK: ttkernel.noc_async_write_tile
 // CHECK: %[[SRC:.+]] = ttkernel.get_write_ptr
 // CHECK: ttkernel.noc_async_write_one_packet_with_state(%[[SRC]]
 // CHECK: ttkernel.noc_async_write_barrier
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK-NOT: ttkernel.noc_async_write{{[ (]}}
+#output_layout = #ttl.layout<
+    shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+    buffer = dram, grid = [1, 1], memory = interleaved>
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
-  func.func @stateful_one_packet_write_in_loop()
-      attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+  func.func @stateful_one_packet_write_in_loop(
+      %output: tensor<1x1x!ttcore.tile<32x32, f32>, #output_layout>)
+      attributes {
+        ttl.base_cta_index = 1 : i32,
+        ttl.crta_indices = [0],
+        ttl.kernel_thread = #ttkernel.thread<noc>
+      } {
     %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 1}
-        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
     %transfer = ttl.pipe_transfer.create %pipe
@@ -32,14 +44,22 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
     scf.for %iter = %c0 to %c4 step %c1 {
       ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
         %recv = ttl.cb_reserve %dst_cb
-            : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+            : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
         %token = ttl.pipe_transfer.post %transfer, %recv
             : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.pipe_token<net 0>
         ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
-        ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
         %ready = ttl.cb_wait %dst_cb
-            : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-        ttl.cb_pop %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+            : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+        %slice = ttl.tensor_slice %output[%c0, %c0]
+            : tensor<1x1x!ttcore.tile<32x32, f32>, #output_layout>
+            -> tensor<1x1x!ttcore.tile<32x32, f32>, #output_layout>
+        %write = ttl.copy %dst_cb, %slice
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+               tensor<1x1x!ttcore.tile<32x32, f32>, #output_layout>)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %write : !ttl.transfer_handle<write>
+        ttl.cb_pop %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
       }
       ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
         %send = ttl.pipe_transfer.send %transfer, %src_cb
