@@ -362,16 +362,13 @@ static void buildDFBReleaseOwnerMap(
   }
 }
 
-void buildDFBReleaseOwnerMaps(ModuleOp mod, DFBReleaseOwnerMaps &ownerMaps) {
-  mod.walk([&](func::FuncOp func) {
-    SmallVector<Operation *> reserves;
-    SmallVector<Operation *> waits;
-    SmallVector<Operation *> pushes;
-    SmallVector<Operation *> pops;
-    collectDFBAcquireReleaseOps(func, reserves, waits, pushes, pops);
-    buildDFBReleaseOwnerMap(reserves, pushes, ownerMaps.reserveByPush);
-    buildDFBReleaseOwnerMap(waits, pops, ownerMaps.waitByPop);
-  });
+void buildDFBReleaseOwnerMaps(ArrayRef<Operation *> reserves,
+                              ArrayRef<Operation *> waits,
+                              ArrayRef<Operation *> pushes,
+                              ArrayRef<Operation *> pops,
+                              DFBReleaseOwnerMaps &ownerMaps) {
+  buildDFBReleaseOwnerMap(reserves, pushes, ownerMaps.reserveByPush);
+  buildDFBReleaseOwnerMap(waits, pops, ownerMaps.waitByPop);
 }
 
 } // namespace mlir::tt::ttl

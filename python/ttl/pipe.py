@@ -15,9 +15,22 @@ PipeNet supports the spec's callback API:
 
 import inspect
 import warnings
-from typing import Any, Callable, Iterable, List, Optional, Set, Tuple, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Iterable,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    Union,
+)
 
 from ttl._pipenets import iter_instances_in_metadata
+
+if TYPE_CHECKING:
+    from .domains import DeviceRange, DeviceRef
 
 # Type aliases matching the spec
 CoreCoord = Tuple[int, int]
@@ -42,6 +55,27 @@ class SrcPipeIdentity:
             return self._pipe.dst_start
         return (self._pipe.dst_start, self._pipe.dst_end)
 
+    @property
+    def destination_device(self) -> Union["DeviceRef", "DeviceRange"]:
+        """Return the destination device of a graph-based pipe."""
+        if not hasattr(self._pipe, "_device_edge"):
+            raise ValueError(
+                "destination_device is available only for graph-based PipeNets"
+            )
+        return self._pipe._device_edge.destination
+
+    @property
+    def destination_device_index(self) -> int:
+        """Return the destination's row-major order in the device domain."""
+        from .domains import DeviceRange
+
+        destination = self.destination_device
+        if isinstance(destination, DeviceRange):
+            raise ValueError(
+                "destination_device_index is unavailable for device ranges"
+            )
+        return self._pipe._device_domain.index_order(destination)
+
 
 class DstPipeIdentity:
     """
@@ -58,6 +92,18 @@ class DstPipeIdentity:
     def src(self) -> CoreCoord:
         """Get source core coordinate."""
         return self._pipe.src
+
+    @property
+    def source_device(self) -> "DeviceRef":
+        """Return the source device of a graph-based pipe."""
+        if not hasattr(self._pipe, "_device_edge"):
+            raise ValueError("source_device is available only for graph-based PipeNets")
+        return self._pipe._device_edge.source
+
+    @property
+    def source_device_index(self) -> int:
+        """Return the source's row-major order in the device domain."""
+        return self._pipe._device_domain.index_order(self.source_device)
 
 
 class Pipe:
@@ -227,22 +273,38 @@ class PipeNet:
         net.if_dst(lambda pipe: ttl.copy(pipe, blk).wait())
     """
 
-    def __init__(self, pipes: List[Pipe]):
+    def __init__(self, pipes: Optional[List[Pipe]] = None, *, graph=None):
         # Validate at construction time by building a one-net graph and
         # delegating to OperationPipeNets.validate(). Single source of
         # truth for empty/overlap/mixed-kind rules; the same graph is
         # rebuilt and re-validated at operation build time.
         from ._pipenets import OperationPipeNets
+        from .domains import TransferGraph
 
-        if not pipes:
-            raise ValueError("PipeNet requires at least one pipe")
-        graph = OperationPipeNets()
-        graph.add_pipe_net(_pipe_to_pipe_use(p) for p in pipes)
-        graph.validate()
+        if (pipes is None) == (graph is None):
+            raise ValueError("PipeNet requires exactly one of pipes or graph")
         # Operation-local id assigned by the OperationPipeNets builder
         # before AST emission (see _build_operation_pipenets).
         self.pipe_net_id = 0
-        self.pipes = pipes
+        self.pipes: List[Pipe] = []
+        self.graph: Optional[TransferGraph] = None
+        self._graph_edges = ()
+        self._graph_pipe_net_ids = ()
+        if graph is not None:
+            if not isinstance(graph, TransferGraph):
+                raise TypeError(
+                    f"PipeNet graph must be a TransferGraph, "
+                    f"got {type(graph).__name__}"
+                )
+            self.graph = graph
+        else:
+            assert pipes is not None
+            if not pipes:
+                raise ValueError("PipeNet requires at least one pipe")
+            validation_graph = OperationPipeNets()
+            validation_graph.add_pipe_net(_pipe_to_pipe_use(pipe) for pipe in pipes)
+            validation_graph.validate()
+            self.pipes = pipes
         # Capture the user's call site so `ttl.create_pipe` ops can carry
         # the declaration location.
         self._source_file: Optional[str] = None
@@ -253,6 +315,10 @@ class PipeNet:
             self._source_line = frame.lineno
         except (IndexError, AttributeError):
             pass
+
+    @property
+    def is_graph(self) -> bool:
+        return self.graph is not None
 
     def if_src(self, callback: Callable[["SrcPipeIdentity"], None]) -> None:
         """
@@ -303,7 +369,7 @@ class PipeNet:
 
         Lowers to `ttl.is_src` and is recognized structurally by the
         `ttl-verify-pipenet-guards` pass, so it can be used as the condition
-        of an `if` to gate pipe-coupled work."""
+        of an `if` guarding pipe-coupled work."""
         raise RuntimeError(
             "PipeNet.is_src() should only be called inside a TTL kernel. "
             "The compiler handles this method specially."

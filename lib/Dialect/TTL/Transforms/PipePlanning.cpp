@@ -189,6 +189,11 @@ isCapacityProtocolLowerable(const PipeCapacityEndpointFacts &endpointFacts,
     return false;
   }
   const PipeResourceInfo &resource = resourceIt->second;
+  if (resource.usesFabricTransport) {
+    debugSkipResource(resource,
+                      "fabric capacity releases require routing-plane atomics");
+    return false;
+  }
   if (!resource.addressStorage.usesComputedReceiverDFB()) {
     debugSkipResource(resource, "receiver address is not computed");
     return false;

@@ -95,6 +95,11 @@ static bool isReceiverDFBView(Value view,
   return maybeDFBIndex && *maybeDFBIndex == receiverDFB.dfbIndex;
 }
 
+static bool isReceiverDFB(Value dfb, const PipeReceiverDFBKey &receiverDFB) {
+  std::optional<int64_t> maybeDFBIndex = getCBIndex(dfb);
+  return maybeDFBIndex && *maybeDFBIndex == receiverDFB.dfbIndex;
+}
+
 static bool isMatchingTransfer(const PipeCapacityEndpointFacts &endpointFacts,
                                Operation *protocolOp,
                                const PipeGraph &pipeGraph) {

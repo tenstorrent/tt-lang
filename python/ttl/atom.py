@@ -23,8 +23,8 @@ per-thread compiler is capture-based (thread functions take no
 parameters; DFBs arrive as closure captures), so before splitting we
 lift the top-level ``name = make_dfb(...)`` assigns out of the body,
 evaluate them to DataflowBuffer objects, and pass them as captures --
-the same shape the @ttl.operation flow produces by running its setup
-body. After that the per-thread compile, CB sizing, pass pipeline, and
+the same setup artifact @ttl.operation produces from its setup body.
+After that the per-thread compile, CB sizing, pass pipeline, and
 runner are identical to @ttl.operation.
 """
 
@@ -534,6 +534,7 @@ def _compile_atom(
     dst_full_sync_en: Optional[bool],
     target_arch: Optional[str],
     compiler_options: CompilerOptions,
+    device_domain=None,
 ):
 
     # The shared operation wrapper supplies values in signature order.
@@ -606,7 +607,7 @@ def _compile_atom(
 
     # TTNN interop requires exactly 3 kernels (1 compute + 2 data movement);
     # emit all three even when a thread has no work, filling it with a pass
-    # body, the same shape @ttl.operation produces.
+    # body, matching the @ttl.operation thread structure.
     threads = []
     any_real_work = False
     for kernel_type, thread in (
@@ -649,6 +650,7 @@ def _compile_atom(
         l1_budget_override=l1_budget_override,
         kernel_source_file=spec.source_file,
         kernel_line_offset=spec.line_offset,
+        device_domain=device_domain,
     )
 
 
@@ -675,6 +677,7 @@ def _compile_unified_operation(
         dst_full_sync_en=decorator_options["dst_full_sync_en"],
         target_arch=target_arch,
         compiler_options=compiler_options,
+        device_domain=decorator_options["device_domain"],
     )
 
 
@@ -729,6 +732,7 @@ def _unified_operation(
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
     options: Optional[str] = None,
+    device_domain=None,
 ) -> Callable:
     """Build the unified-body form selected by ``@ttl.operation``.
 
@@ -750,6 +754,7 @@ def _unified_operation(
                 "fp32_dest_acc_en": fp32_dest_acc_en,
                 "dst_full_sync_en": dst_full_sync_en,
                 "options": options,
+                "device_domain": device_domain,
             },
         )
 
@@ -766,6 +771,7 @@ def operation(
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
     options: Optional[str] = None,
+    device_domain=None,
 ) -> Callable:
     """Define a unified-body or explicit multi-kernel operation."""
 
@@ -785,6 +791,7 @@ def operation(
                 dst_full_sync_en=dst_full_sync_en,
                 options=options,
                 _prepare_call=prepare_call,
+                device_domain=device_domain,
             )(fn)
             wrapped._ttl_operation_kind = "multi_kernel"
             return wrapped
@@ -797,6 +804,7 @@ def operation(
             fp32_dest_acc_en=fp32_dest_acc_en,
             dst_full_sync_en=dst_full_sync_en,
             options=options,
+            device_domain=device_domain,
         )(fn)
 
     return _decorator
