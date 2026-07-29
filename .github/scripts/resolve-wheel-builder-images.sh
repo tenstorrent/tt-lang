@@ -49,7 +49,7 @@ script_dir="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/docker-image-utils.sh
 . "$script_dir/lib/docker-image-utils.sh"
 if [ -z "$docker_tag" ]; then
-    docker_tag="$("$script_dir/../containers/get-version-tag.sh")"
+    docker_tag="$("$script_dir/../containers/get-wheel-builder-version-tag.sh")"
     if [ -n "$workflow_source" ]; then
         workflow_sha="$(git -C "$workflow_source" rev-parse HEAD)"
         target_sha="$(git rev-parse HEAD)"
