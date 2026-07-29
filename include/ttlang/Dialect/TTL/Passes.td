@@ -696,8 +696,8 @@ def TTLFinalizeDFBIndices
     `ttl-annotate-cb-associations`, which copy DFB indices into attributes and
     would otherwise capture provisional indices.
 
-    Compiler-allocated DFBs enter this pass with function-local provisional
-    indices. The pass assigns each function a disjoint module-wide index range,
+    Compiler-allocated DFBs enter this pass with kernel-local provisional
+    indices. The pass assigns each kernel a disjoint module-wide index range,
     then applies lifetime-based index reuse via linear scan allocation,
     partitioned by CircularBufferType. DFBs whose lifetimes (bind_cb to last
     cb_pop) do not overlap are assigned the same physical index. See
