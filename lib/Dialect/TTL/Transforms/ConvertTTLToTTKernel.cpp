@@ -1727,9 +1727,11 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
     return failure();
   }
 
+  PipePlanningOptions pipePlanningOptions;
+  pipePlanningOptions.enableComputedAddresses = pipeComputedAddresses;
   FailureOr<PipeModulePlan> maybePipeModulePlan =
       buildPipeModulePlan(mod, transferAnalysis, transferIndex, *pipeGraphOrErr,
-                          pipeComputedAddresses);
+                          pipePlanningOptions);
   if (failed(maybePipeModulePlan)) {
     return failure();
   }

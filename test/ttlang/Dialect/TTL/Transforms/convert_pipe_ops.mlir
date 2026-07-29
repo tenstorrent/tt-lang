@@ -1559,3 +1559,38 @@ func.func @pipe_block_argument_sender(
   ttl.wait %handle : !ttl.transfer_handle<write>
   func.return
 }
+
+// -----
+
+// Transfers in a zero-trip loop require no resources or transfer plans and are
+// removed without reaching active send, post, or wait lowering.
+// CHECK-LABEL: func.func @zero_trip_transfer
+// CHECK-NOT: ttl.pipe_transfer
+// CHECK-NOT: ttkernel.noc_
+func.func @zero_trip_transfer()
+    attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %src_cb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  scf.for %iteration = %zero to %zero step %one {
+    %dst = ttl.cb_reserve %dst_cb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %receive = ttl.copy %pipe, %dst
+        : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+           tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.transfer_handle
+    %send = ttl.copy %src_cb, %pipe
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+           !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send : !ttl.transfer_handle<write>
+    ttl.wait %receive : !ttl.transfer_handle
+  }
+  func.return
+}

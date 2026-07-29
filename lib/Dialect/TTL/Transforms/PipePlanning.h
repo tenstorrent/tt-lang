@@ -35,6 +35,11 @@ namespace mlir::tt::ttl {
 class PipeModulePlan;
 class PipeTransferIndex;
 
+/// Options that control PipeNet protocol and resource planning.
+struct PipePlanningOptions {
+  /// Compute receiver DFB addresses instead of publishing them at runtime.
+  bool enableComputedAddresses = false;
+};
 /// Sender-side DFB access and payload size for one transfer.
 struct PipeSendPlan {
   bool usesReadPointer = false;
@@ -79,10 +84,10 @@ public:
   }
 
 private:
-  friend FailureOr<PipeModulePlan> buildPipeModulePlan(ModuleOp,
-                                                       ValueOriginAnalysis &,
-                                                       const PipeTransferIndex &,
-                                                       const PipeGraph &, bool);
+  friend FailureOr<PipeModulePlan>
+  buildPipeModulePlan(ModuleOp, ValueOriginAnalysis &,
+                      const PipeTransferIndex &, const PipeGraph &,
+                      const PipePlanningOptions &);
 
   PipeTransferPlan(PipeType pipeType, const PipeResourceInfo &resources,
                    PipeSendPlan sendPlan)
@@ -122,10 +127,10 @@ public:
   const PipeTransferPlan &getTransferPlan(Operation *operation) const;
 
 private:
-  friend FailureOr<PipeModulePlan> buildPipeModulePlan(ModuleOp,
-                                                       ValueOriginAnalysis &,
-                                                       const PipeTransferIndex &,
-                                                       const PipeGraph &, bool);
+  friend FailureOr<PipeModulePlan>
+  buildPipeModulePlan(ModuleOp, ValueOriginAnalysis &,
+                      const PipeTransferIndex &, const PipeGraph &,
+                      const PipePlanningOptions &);
 
   PipeResourcePlan resourcePlan;
   PipeResourceRequirements resourceRequirements;
@@ -138,7 +143,8 @@ private:
 FailureOr<PipeModulePlan>
 buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
                     const PipeTransferIndex &transferIndex,
-                    const PipeGraph &pipeGraph, bool enableComputedAddresses);
+                    const PipeGraph &pipeGraph,
+                    const PipePlanningOptions &options);
 
 /// Materialize the module and function attributes recorded by `plan`.
 void applyPipeModuleAttributes(ModuleOp module, const PipeModulePlan &plan);

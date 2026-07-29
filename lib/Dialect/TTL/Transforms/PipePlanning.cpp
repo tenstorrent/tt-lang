@@ -91,13 +91,14 @@ buildPipePostPlan(PipeTransferPostOp postOp,
 FailureOr<PipeModulePlan>
 buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
                     const PipeTransferIndex &transferIndex,
-                    const PipeGraph &pipeGraph, bool enableComputedAddresses) {
+                    const PipeGraph &pipeGraph,
+                    const PipePlanningOptions &options) {
   PipeModulePlan plan;
   buildPipeNetIndex(module, plan.pipeNetIndex);
 
   if (failed(buildPipeResourcePlan(module, transferIndex, pipeGraph,
                                    plan.resourcePlan,
-                                   enableComputedAddresses))) {
+                                   options.enableComputedAddresses))) {
     return failure();
   }
 
@@ -115,6 +116,14 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
   for (const auto &resourceEntry : plan.resourcePlan.resources) {
     Operation *operation = resourceEntry.first;
     const PipeResourceInfo &resources = resourceEntry.second;
+    auto sendOp = dyn_cast<PipeTransferSendOp>(operation);
+    auto postOp = dyn_cast<PipeTransferPostOp>(operation);
+    if (!sendOp && !postOp) {
+      assert(isa<PipeTransferWaitOp>(operation) &&
+             "pipe resources assigned to an unsupported operation");
+      continue;
+    }
+
     auto addTransferPlan = [&](auto operationPlan) {
       PipeTransferPlan transferPlan(getPipeType(module.getContext(), resources),
                                     resources, std::move(operationPlan));
@@ -124,14 +133,14 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
       assert(inserted && "pipe operation has more than one transfer plan");
     };
 
-    if (auto sendOp = dyn_cast<PipeTransferSendOp>(operation)) {
+    if (sendOp) {
       FailureOr<PipeSendPlan> maybeSendPlan =
           buildPipeSendPlan(sendOp, dominanceInfo);
       if (failed(maybeSendPlan)) {
         return failure();
       }
       addTransferPlan(*maybeSendPlan);
-    } else if (auto postOp = dyn_cast<PipeTransferPostOp>(operation)) {
+    } else {
       FailureOr<PipePostPlan> maybePostPlan =
           buildPipePostPlan(postOp, resources);
       if (failed(maybePostPlan)) {
