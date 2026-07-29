@@ -1565,16 +1565,15 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod,
   PipeCounterAllocator counterAllocator;
   SmallVector<PipeCounterInfo> completionCounters;
   completionCounters.reserve(pipesByCompletionCounterColor.size());
-  for (std::size_t counterIndex = 0;
-       counterIndex < pipesByCompletionCounterColor.size(); ++counterIndex) {
+  while (completionCounters.size() < pipesByCompletionCounterColor.size()) {
     completionCounters.push_back(counterAllocator.allocate());
   }
 
   auto [readyColorBySourceColor, maxReadyCountersPerSource] =
       compactColors(colorUsersBySource, [](std::size_t) { return true; });
 
-  // Use one storage kind for all readiness counters so runtime binding is
-  // uniform within a kernel.
+  // The same ready color is reused on different source cores, so every source
+  // must interpret that color as the same storage kind.
   PipeCounterAllocationCounts counterCounts = counterAllocator.getCounts();
   bool useGlobalReadyCounters =
       counterCounts.localSemaphoreCount + maxReadyCountersPerSource >
@@ -1618,16 +1617,11 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod,
     auto colorIt = sourceIt->second.find(unit.resourceColor);
     assert(colorIt != sourceIt->second.end());
     int64_t readyColor = colorIt->second;
-    PipeCounterInfo readyCounter = [&]() {
-      if (useGlobalReadyCounters) {
-        assert(readyColor <
-               static_cast<int64_t>(globalReadyCounterByColor.size()));
-        return globalReadyCounterByColor[readyColor];
-      }
-      assert(readyColor <
-             static_cast<int64_t>(localReadyCounterByColor.size()));
-      return localReadyCounterByColor[readyColor];
-    }();
+    const SmallVector<PipeCounterInfo> &readyCounters =
+        useGlobalReadyCounters ? globalReadyCounterByColor
+                               : localReadyCounterByColor;
+    assert(readyColor < static_cast<int64_t>(readyCounters.size()));
+    PipeCounterInfo readyCounter = readyCounters[readyColor];
 
     auto computedIt =
         computedAddressPlan.infoByUnitIndex.find(indexedUnit.index());
