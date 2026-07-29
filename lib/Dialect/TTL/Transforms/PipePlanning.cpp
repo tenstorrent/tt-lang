@@ -107,14 +107,6 @@ PipeModulePlan::getTransferPlan(Operation *operation) const {
   return planIt->second;
 }
 
-static PipeType getPipeType(MLIRContext *context,
-                            const PipeResourceInfo &resources) {
-  const PipeKey &pipe = resources.pipe;
-  return PipeType::get(context, pipe.srcX, pipe.srcY, pipe.dstStartX,
-                       pipe.dstStartY, pipe.dstEndX, pipe.dstEndY,
-                       pipe.pipeNetId);
-}
-
 static FailureOr<PipeSendPlan>
 buildPipeSendPlan(PipeTransferSendOp sendOp, const DominanceInfo &dominanceInfo,
                   const PipeTransportStream &transportStream,
@@ -426,20 +418,20 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
   });
 
   DominanceInfo dominanceInfo(module);
-  for (const auto &resourceEntry : plan.resourcePlan.resources) {
-    Operation *operation = resourceEntry.first;
-    const PipeResourceInfo &resources = resourceEntry.second;
+  auto addTransferPlan =
+      [&](Operation *operation, PipeReference pipeReference,
+          PipeTransferPlan::Resources resources) -> LogicalResult {
     auto sendOp = dyn_cast<PipeTransferSendOp>(operation);
     auto postOp = dyn_cast<PipeTransferPostOp>(operation);
-    if (!sendOp && !postOp) {
-      assert(isa<PipeTransferWaitOp>(operation) &&
-             "pipe resources assigned to an unsupported operation");
-      continue;
-    }
+    auto waitOp = dyn_cast<PipeTransferWaitOp>(operation);
+    assert((sendOp || postOp || waitOp) &&
+           "pipe resources assigned to an unsupported operation");
     bool usesFabricProtocol =
-        sendOp ? synchronizationSelection.usesFabricProtocol(sendOp)
-               : synchronizationSelection.usesFabricProtocol(postOp);
+        sendOp   ? synchronizationSelection.usesFabricProtocol(sendOp)
+        : postOp ? synchronizationSelection.usesFabricProtocol(postOp)
+                 : false;
     bool usesCapacityProtocol =
+        (sendOp || postOp) &&
         synchronizationSelection.usesCapacityProtocol(operation);
     PipeSynchronizationProtocol synchronizationProtocol =
         usesFabricProtocol     ? PipeSynchronizationProtocol::Fabric
@@ -452,10 +444,10 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
       return failure();
     }
 
-    auto addTransferPlan = [&](auto operationPlan) {
-      PipeTransferPlan transferPlan(getPipeType(module.getContext(), resources),
-                                    resources, synchronizationProtocol,
-                                    std::move(operationPlan));
+    auto insertTransferPlan = [&](PipeTransferPlan::OperationPlan operationPlan) {
+      PipeTransferPlan transferPlan(
+          std::move(pipeReference), std::move(resources),
+          synchronizationProtocol, std::move(operationPlan));
       auto [planIt, inserted] =
           plan.transferPlans.insert({operation, std::move(transferPlan)});
       (void)planIt;
@@ -470,14 +462,49 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
       if (failed(maybeSendPlan)) {
         return failure();
       }
-      addTransferPlan(*maybeSendPlan);
-    } else {
+      insertTransferPlan(*maybeSendPlan);
+    } else if (postOp) {
+      const PipeResourceInfo &postResources =
+          std::holds_alternative<PipeResourceInfo>(resources)
+              ? std::get<PipeResourceInfo>(resources)
+              : std::get<SmallVector<PipeResourceInfo>>(resources).front();
       FailureOr<PipePostPlan> maybePostPlan =
-          buildPipePostPlan(postOp, resources);
+          buildPipePostPlan(postOp, postResources);
       if (failed(maybePostPlan)) {
         return failure();
       }
-      addTransferPlan(*maybePostPlan);
+      insertTransferPlan(*maybePostPlan);
+    } else {
+      insertTransferPlan(PipeWaitPlan{});
+    }
+    return success();
+  };
+
+  for (const auto &[operation, resources] : plan.resourcePlan.resources) {
+    FailureOr<PipeReference> maybePipeReference =
+        getPipeReferenceForProtocolOp(operation, transferIndex);
+    if (failed(maybePipeReference)) {
+      return failure();
+    }
+    assert(maybePipeReference->isStatic() &&
+           "static resources require a static pipe reference");
+    if (failed(addTransferPlan(operation, std::move(*maybePipeReference),
+                               resources))) {
+      return failure();
+    }
+  }
+  for (const auto &[operation, resources] :
+       plan.resourcePlan.selectedResources) {
+    FailureOr<PipeReference> maybePipeReference =
+        getPipeReferenceForProtocolOp(operation, transferIndex);
+    if (failed(maybePipeReference)) {
+      return failure();
+    }
+    assert(maybePipeReference->isSelected() &&
+           "selected resources require a selected pipe reference");
+    if (failed(addTransferPlan(operation, std::move(*maybePipeReference),
+                               SmallVector<PipeResourceInfo>(resources)))) {
+      return failure();
     }
   }
 
