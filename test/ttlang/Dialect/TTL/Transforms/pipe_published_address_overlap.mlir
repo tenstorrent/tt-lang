@@ -10,6 +10,8 @@
 // CHECK-DAG: %[[CTR_A:.*]] = memref.alloca() : memref<1xi32>
 // CHECK-DAG: %[[CTR_B:.*]] = memref.alloca() : memref<1xi32>
 // CHECK: %[[DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK: %[[COMP_A:.*]] = ttkernel.get_semaphore(%[[SEM_A]])
+// CHECK: %[[WAIT_PTR1:.*]] = ttkernel.reinterpret_cast(%[[COMP_A]])
 // CHECK: ttkernel.cb_reserve_back(%[[DFB]]
 // CHECK: %[[WP1:.*]] = ttkernel.get_write_ptr(%[[DFB]])
 // CHECK: ttkernel.noc_inline_dw_write({{.*}}, %[[WP1]]
@@ -17,10 +19,10 @@
 // CHECK: %[[V1:.*]] = memref.load %[[CTR_A]]
 // CHECK: %[[N1:.*]] = arith.addi %[[V1]]
 // CHECK: memref.store %[[N1]], %[[CTR_A]]
-// CHECK: %[[COMP_A:.*]] = ttkernel.get_semaphore(%[[SEM_A]])
-// CHECK: %[[WAIT_PTR1:.*]] = ttkernel.reinterpret_cast(%[[COMP_A]])
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[WAIT_PTR1]], %[[N1]])
 // CHECK: ttkernel.cb_push_back(%[[DFB]]
+// CHECK: %[[COMP_B:.*]] = ttkernel.get_semaphore(%[[SEM_B]])
+// CHECK: %[[WAIT_PTR2:.*]] = ttkernel.reinterpret_cast(%[[COMP_B]])
 // CHECK: ttkernel.cb_reserve_back(%[[DFB]]
 // CHECK: %[[WP2:.*]] = ttkernel.get_write_ptr(%[[DFB]])
 // CHECK: ttkernel.noc_inline_dw_write({{.*}}, %[[WP2]]
@@ -28,8 +30,6 @@
 // CHECK: %[[V2:.*]] = memref.load %[[CTR_B]]
 // CHECK: %[[N2:.*]] = arith.addi %[[V2]]
 // CHECK: memref.store %[[N2]], %[[CTR_B]]
-// CHECK: %[[COMP_B:.*]] = ttkernel.get_semaphore(%[[SEM_B]])
-// CHECK: %[[WAIT_PTR2:.*]] = ttkernel.reinterpret_cast(%[[COMP_B]])
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[WAIT_PTR2]], %[[N2]])
 // CHECK: ttkernel.cb_push_back(%[[DFB]]
 module attributes {ttl.launch_grid = array<i64: 3, 4>} {
@@ -172,19 +172,20 @@ module attributes {ttl.launch_grid = array<i64: 3, 4>} {
 // signals its local receiver with a separate point-to-point increment.
 // CHECK-LABEL: func.func @loopback_self_inc
 // CHECK: %[[NOC:.*]] = arith.constant {{.*}} : i8
-// CHECK: %[[SRC_ADDR:.*]] = ttkernel.get_write_ptr
 // CHECK: %[[DST_X_START:.*]] = ttkernel.experimental.convert_logical_x_to_translated
 // CHECK: %[[DST_Y_START:.*]] = ttkernel.experimental.convert_logical_y_to_translated
 // CHECK: %[[DST_X_END:.*]] = ttkernel.experimental.convert_logical_x_to_translated
 // CHECK: %[[DST_Y_END:.*]] = ttkernel.experimental.convert_logical_y_to_translated
+// CHECK: %[[DONE_SEM:.*]] = ttkernel.get_semaphore
+// CHECK: %[[REMOTE_DONE_NOC:.*]] = ttkernel.get_noc_multicast_addr(%[[DST_X_START]], %[[DST_Y_START]], %[[DST_X_END]], %[[DST_Y_END]], %[[DONE_SEM]], %[[NOC]])
+// CHECK: %[[LOCAL_DONE_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[DONE_SEM]], %[[NOC]])
+// CHECK: ttkernel.experimental.semaphore_wait
+// CHECK: %[[SRC_ADDR:.*]] = ttkernel.get_write_ptr
 // CHECK: %[[DST_ADDR:.*]] = ttkernel.load_from_l1
 // CHECK-NOT: ttkernel.get_noc_multicast_addr({{.*}}, %[[DST_ADDR]]
-// CHECK-DAG: ttkernel.noc_async_write_multicast_loopback_src(%[[SRC_ADDR]], {{.*}}, {{.*}}, start_xy[%[[DST_X_START]], %[[DST_Y_START]]], end_xy[%[[DST_X_END]], %[[DST_Y_END]]], %[[DST_ADDR]], noc %[[NOC]])
-// CHECK-DAG: %[[DONE_SEM:.*]] = ttkernel.get_semaphore
+// CHECK: ttkernel.noc_async_write_multicast_loopback_src(%[[SRC_ADDR]], {{.*}}, {{.*}}, start_xy[%[[DST_X_START]], %[[DST_Y_START]]], end_xy[%[[DST_X_END]], %[[DST_Y_END]]], %[[DST_ADDR]], noc %[[NOC]])
 // CHECK: ttkernel.noc_async_write_barrier(%[[NOC]])
-// CHECK: %[[REMOTE_DONE_NOC:.*]] = ttkernel.get_noc_multicast_addr(%[[DST_X_START]], %[[DST_Y_START]], %[[DST_X_END]], %[[DST_Y_END]], %[[DONE_SEM]], %[[NOC]])
 // CHECK: ttkernel.noc_semaphore_inc_multicast(%[[REMOTE_DONE_NOC]], {{.*}}, {{.*}}, %[[NOC]])
-// CHECK: %[[LOCAL_DONE_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[DONE_SEM]], %[[NOC]])
 // CHECK: ttkernel.noc_semaphore_inc(%[[LOCAL_DONE_NOC]], {{.*}}, %[[NOC]])
 // CHECK: ttkernel.noc_async_atomic_barrier(%[[NOC]])
 module attributes {ttl.launch_grid = array<i64: 1, 4>} {
