@@ -26,6 +26,7 @@
 #include "mlir/IR/BuiltinOps.h"
 
 #include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Debug.h"
 
 #include <algorithm>
@@ -70,25 +71,18 @@ static LogicalResult verifyCompilerDFBLifecycle(BindCBOp bindOp) {
   if (!hasReserve && !hasPush && !hasWait && !hasPop) {
     return success();
   }
-  if (!hasReserve) {
-    return bindOp.emitOpError()
-           << "compiler-allocated DFB has a partial lifecycle: missing "
-              "ttl.cb_reserve";
-  }
-  if (!hasPush) {
-    return bindOp.emitOpError()
-           << "compiler-allocated DFB has a partial lifecycle: missing "
-              "ttl.cb_push";
-  }
-  if (!hasWait) {
-    return bindOp.emitOpError()
-           << "compiler-allocated DFB has a partial lifecycle: missing "
-              "ttl.cb_wait";
-  }
-  if (!hasPop) {
-    return bindOp.emitOpError()
-           << "compiler-allocated DFB has a partial lifecycle: missing "
-              "ttl.cb_pop";
+  const std::pair<bool, StringLiteral> requiredOperations[] = {
+      {hasReserve, "ttl.cb_reserve"},
+      {hasPush, "ttl.cb_push"},
+      {hasWait, "ttl.cb_wait"},
+      {hasPop, "ttl.cb_pop"},
+  };
+  for (auto [present, operationName] : requiredOperations) {
+    if (!present) {
+      return bindOp.emitOpError()
+             << "compiler-allocated DFB has a partial lifecycle: missing "
+             << operationName;
+    }
   }
   return success();
 }
@@ -231,8 +225,8 @@ struct TTLFinalizeDFBIndicesPass
       }
     });
 
-    for (auto &entry : funcToDFBs) {
-      for (BindCBOp bindOp : entry.second) {
+    for (ArrayRef<BindCBOp> dfbOps : llvm::make_second_range(funcToDFBs)) {
+      for (BindCBOp bindOp : dfbOps) {
         if (failed(verifyCompilerDFBLifecycle(bindOp))) {
           signalPassFailure();
           return;
