@@ -33,10 +33,20 @@ def _next_cb_index(reuse, signature):
         previous = _dfb_reuse_indices.get(reuse)
         if previous is not None:
             index, previous_signature = previous
-            if previous_signature != signature:
+            # One physical CB may serve different logical capacities as long
+            # as its page format is unchanged. The runner allocates the
+            # largest member; shape and block_count only determine how many
+            # pages each logical user reserves/waits for.
+            previous_page_geometry = (
+                previous_signature[0],
+                previous_signature[3],
+            )
+            page_geometry = (signature[0], signature[3])
+            if previous_page_geometry != page_geometry:
                 raise ValueError(
                     f"DFB reuse key {reuse!r} has incompatible declarations: "
-                    f"{previous_signature!r} != {signature!r}"
+                    f"page geometry {previous_page_geometry!r} != "
+                    f"{page_geometry!r}"
                 )
             return index
     idx = _cb_index_counter

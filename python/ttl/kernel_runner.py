@@ -54,34 +54,26 @@ def _cb_data_format(cb):
 def get_min_remaining_l1_for_device(device):
     """Return the minimum remaining L1 CB budget (bytes) across all cores.
 
-    Accounts for reduced ``worker_l1_size`` and L1 tensor allocations.
-    Queries ``cb_limit`` (the hardware CB budget) and subtracts the maximum
-    per-core L1 buffer usage reported by the device.
-
-    ``get_buffer_pages`` is called on the original device rather than on
-    per-coordinate submeshes because ``create_submesh`` produces a new
-    device view that does not inherit buffer tracking from the parent.
-    For mesh devices this reports allocations for the first physical
-    device, which is representative because tt-lang distributes tensors
-    uniformly across the mesh. If individual physical devices need tracking,
-    ttnn.reports.get_buffer_pages would have to report allocations on the
-    parent mesh instead of the first device within the mesh.
+    TTNN reports ``cb_limit`` and L1 ``page_address`` as absolute addresses,
+    not byte counts. Static CBs grow upward from
+    ``address_at_first_l1_cb_buffer``, while tensor pages occupy the region
+    above them. The safe budget is therefore the address interval from the CB
+    base to the lowest allocated L1 page, or to ``cb_limit`` when no L1 tensor
+    exists. Using page placement also accounts for allocator alignment and
+    fragmentation instead of assuming packed tensor pages.
     """
     _ensure_ttnn()
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
 
     info = ttnn._ttnn.reports.get_device_info(device)
-    budget_bytes = info.cb_limit
-
-    bytes_per_core: dict[tuple[int, int], int] = {}
+    cb_base = int(info.address_at_first_l1_cb_buffer)
+    first_occupied = int(info.cb_limit)
     for page in ttnn._ttnn.reports.get_buffer_pages(device):
         if page.buffer_type == ttnn.BufferType.L1:
-            key = (page.core_y, page.core_x)
-            bytes_per_core[key] = bytes_per_core.get(key, 0) + page.page_size
+            first_occupied = min(first_occupied, int(page.page_address))
 
-    max_core_bytes = max(bytes_per_core.values()) if bytes_per_core else 0
-    return max(0, budget_bytes - max_core_bytes)
+    return max(0, first_occupied - cb_base)
 
 
 @dataclass

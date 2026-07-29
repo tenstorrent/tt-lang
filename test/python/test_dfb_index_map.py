@@ -14,6 +14,7 @@ from ttl.dataflow_buffer import (
     get_cb_count,
     make_dfb,
 )
+from ttl.atom import _cb_configs_from_lifted
 from ttl.ttl_api import _apply_dfb_index_map, _merge_dfb_configs
 
 
@@ -88,23 +89,41 @@ def test_explicit_reuse_key_shares_one_logical_index():
     assert get_cb_count() == 2
 
 
+def test_explicit_reuse_accepts_different_capacity():
+    _reset_cb_counter()
+    small = make_dfb(
+        "bf16", (1, 4), block_count=2, reuse="workspace.q"
+    )
+    large = make_dfb(
+        "bf16", (1, 8), block_count=4, reuse="workspace.q"
+    )
+
+    assert small._cb_index == large._cb_index == 0
+    assert _cb_configs_from_lifted({
+        "small": small,
+        "large": large,
+    }) == [large]
+
+
 @pytest.mark.parametrize(
-    "kwargs",
+    "dtype,tile",
     [
-        {"shape": (1, 4), "block_count": 2},
-        {"shape": (1, 8), "block_count": 1},
-        {"shape": (1, 8), "block_count": 2, "tile": (8, 32)},
-        {"dtype": "bfp8", "shape": (1, 8), "block_count": 2},
+        ("bf16", (8, 32)),
+        ("bfp8", (32, 32)),
     ],
 )
-def test_explicit_reuse_rejects_incompatible_geometry(kwargs):
+def test_explicit_reuse_rejects_incompatible_page_geometry(dtype, tile):
     _reset_cb_counter()
     make_dfb("bf16", (1, 8), block_count=2, reuse="workspace.q")
 
-    dtype = kwargs.pop("dtype", "bf16")
-    shape = kwargs.pop("shape")
     with pytest.raises(ValueError, match="incompatible declarations"):
-        make_dfb(dtype, shape, reuse="workspace.q", **kwargs)
+        make_dfb(
+            dtype,
+            (1, 8),
+            block_count=2,
+            tile=tile,
+            reuse="workspace.q",
+        )
 
 
 @pytest.mark.parametrize("reuse", ["", 7])

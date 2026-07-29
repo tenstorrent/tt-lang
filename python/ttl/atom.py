@@ -505,7 +505,19 @@ def _cb_configs_from_lifted(lifted: Dict[str, DataflowBuffer]):
     """DataflowBuffer list indexed by CB index, matching _collect_cb_configs."""
     for name, dfb in lifted.items():
         record_dfb_name(dfb, name)
-    by_index = {dfb._cb_index: dfb for dfb in lifted.values()}
+    by_index = {}
+    for dfb in lifted.values():
+        current = by_index.get(dfb._cb_index)
+        pages = dfb.block_count
+        for dim in dfb.shape:
+            pages *= dim
+        current_pages = 0
+        if current is not None:
+            current_pages = current.block_count
+            for dim in current.shape:
+                current_pages *= dim
+        if current is None or pages > current_pages:
+            by_index[dfb._cb_index] = dfb
     if not by_index:
         return []
     return [by_index.get(i) for i in range(max(by_index) + 1)]

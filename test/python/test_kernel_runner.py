@@ -124,6 +124,49 @@ class _FakeTTNN:
         return semaphore["address"]
 
 
+def test_remaining_l1_uses_absolute_cb_and_page_addresses(monkeypatch):
+    l1 = object()
+    reports = SimpleNamespace(
+        get_device_info=lambda _device: SimpleNamespace(
+            address_at_first_l1_cb_buffer=0x4A000,
+            cb_limit=0x130000,
+        ),
+        get_buffer_pages=lambda _device: [
+            SimpleNamespace(buffer_type=l1, page_address=0xEC000),
+            SimpleNamespace(buffer_type=l1, page_address=0xF0000),
+            SimpleNamespace(buffer_type=object(), page_address=0x1000),
+        ],
+    )
+    fake_ttnn = SimpleNamespace(
+        BufferType=SimpleNamespace(L1=l1),
+        _ttnn=SimpleNamespace(reports=reports),
+    )
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+
+    assert kernel_runner.get_min_remaining_l1_for_device(object()) == (
+        0xEC000 - 0x4A000
+    )
+
+
+def test_remaining_l1_without_tensors_uses_cb_address_interval(monkeypatch):
+    reports = SimpleNamespace(
+        get_device_info=lambda _device: SimpleNamespace(
+            address_at_first_l1_cb_buffer=0x4A000,
+            cb_limit=0x130000,
+        ),
+        get_buffer_pages=lambda _device: [],
+    )
+    fake_ttnn = SimpleNamespace(
+        BufferType=SimpleNamespace(L1=object()),
+        _ttnn=SimpleNamespace(reports=reports),
+    )
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+
+    assert kernel_runner.get_min_remaining_l1_for_device(object()) == (
+        0x130000 - 0x4A000
+    )
+
+
 def test_build_pipe_global_semaphores_empty_does_not_require_ttnn(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", None)
 
