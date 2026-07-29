@@ -1047,8 +1047,6 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
   SmallVector<int64_t> tensorGridShape = getTileGridShapeFromValue(tensor);
   unsigned tensorRank = tensorGridShape.size();
 
-  auto cbShape = (*maybeDFBType).getShape();
-
   if (startIndices.size() != tensorRank) {
     return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
       diag << "tensor_slice index count (" << startIndices.size()
@@ -1058,7 +1056,12 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
 
   // cbRank <= tensorRank is guaranteed upstream: CopyOp enforces DFB rank ==
   // slice result rank, and TensorSliceOp enforces result rank <= tensor rank.
-  assert(cbShape.size() <= tensorRank && "CB rank exceeds tensor rank");
+  auto transferTensorType = cast<RankedTensorType>(
+      direction == NocCopyDirection::Read ? op.getSrc().getType()
+                                          : op.getDst().getType());
+  ArrayRef<int64_t> transferShape = transferTensorType.getShape();
+  assert(transferShape.size() <= tensorRank &&
+         "transfer tensor rank exceeds source tensor rank");
 
   Value bankBase =
       getBufferAddressFromRuntimeArg(accessorInfo->argIdx, loc, rewriter);
@@ -1078,7 +1081,7 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
   // squeezed via scalar indices (validated at slice creation). CB iteration
   // vars map to the trailing dims; squeezed dims contribute startIndices[d]
   // directly with no IV adder.
-  unsigned cbRank = cbShape.size();
+  unsigned cbRank = transferShape.size();
   unsigned rankDiff = tensorRank - cbRank;
 
   auto indexTy = rewriter.getIndexType();
@@ -1090,7 +1093,7 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
   Value nocVal = arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
                                            rewriter.getI8IntegerAttr(nocIndex));
 
-  SmallVector<int64_t> cbBounds(cbShape.begin(), cbShape.end());
+  SmallVector<int64_t> cbBounds(transferShape.begin(), transferShape.end());
 
   emitTileLoop(
       rewriter, loc, cbBounds,

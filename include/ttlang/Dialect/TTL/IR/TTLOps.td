@@ -139,7 +139,13 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
 
     Exactly one operand must be a circular buffer (`!ttl.cb`). The other operand
     must be a ranked tensor (the result of a tensor slice) with TTL layout
-    encoding (transfers all tiles via loop).
+    encoding. The copy transfers the complete tensor in row-major tile order.
+
+    The tensor shape normally equals one dataflow buffer block. A copy may span
+    consecutive blocks by extending the tensor's innermost dimension by an
+    integer multiple of the block's innermost dimension. All outer dimensions
+    remain equal to the block shape. The span must not exceed the dataflow
+    buffer's block count.
 
     TODO(ttl): Add an optional TRID attribute (range 0..15) when TRID-specific
     TTKernel NOC ops are available. Issue: #87.
