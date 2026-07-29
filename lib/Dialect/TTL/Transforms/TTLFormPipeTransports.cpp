@@ -97,8 +97,8 @@ static bool isInsideLoop(scf::ForOp loop, Operation *operation) {
 
 /// Emit a debug-only explanation for retaining scalar transfer IR.
 static void debugReject(scf::ForOp loop, StringRef reason) {
-  LLVM_DEBUG(llvm::dbgs() << "PipeTransportFormation: reject "
-                          << loop.getLoc() << ": " << reason << "\n");
+  LLVM_DEBUG(llvm::dbgs() << "PipeTransportFormation: reject " << loop.getLoc()
+                          << ": " << reason << "\n");
 }
 
 /// Hoist pure loop-invariant setup so grouped transfers execute once per group
@@ -169,9 +169,10 @@ static bool isContiguousLoopSlice(TensorSliceOp slice, scf::ForOp loop,
 }
 
 /// Collect one DFB's complete scalar transport lifecycle.
-static LogicalResult collectDFBUsePattern(
-    PipeTransportLoopCandidate &candidate, TransportDFBUse &dfbUse,
-    const PipeGraph &pipeGraph, std::string &reason) {
+static LogicalResult collectDFBUsePattern(PipeTransportLoopCandidate &candidate,
+                                          TransportDFBUse &dfbUse,
+                                          const PipeGraph &pipeGraph,
+                                          std::string &reason) {
   scf::ForOp loop = candidate.loop;
   for (OpOperand &use : dfbUse.dfb.getUses()) {
     if (!isInsideLoop(loop, use.getOwner())) {
@@ -220,10 +221,9 @@ static LogicalResult collectDFBUsePattern(
   for (OpOperand &use : dfbUse.dfb.getUses()) {
     Operation *operation = use.getOwner();
     if (auto copy = dyn_cast<CopyOp>(operation)) {
-      bool expectedDirection =
-          dfbUse.role == TransportDFBRole::Source
-              ? copy.getDst() == dfbUse.dfb
-              : copy.getSrc() == dfbUse.dfb;
+      bool expectedDirection = dfbUse.role == TransportDFBRole::Source
+                                   ? copy.getDst() == dfbUse.dfb
+                                   : copy.getSrc() == dfbUse.dfb;
       if (expectedDirection) {
         tensorCopies.push_back(copy);
         continue;
@@ -299,24 +299,21 @@ getOrAddDFBUse(PipeTransportLoopCandidate &candidate, Value dfb,
 }
 
 /// Validate that changing the loop step does not remove unrelated effects.
-static LogicalResult validateLoopEffects(
-    PipeTransportLoopCandidate &candidate, ValueOriginAnalysis &analysis,
-    std::string &reason) {
+static LogicalResult validateLoopEffects(PipeTransportLoopCandidate &candidate,
+                                         ValueOriginAnalysis &analysis,
+                                         std::string &reason) {
   llvm::DenseSet<Operation *> asyncOperations;
   llvm::DenseSet<Operation *> allowedOperations;
   for (TransportDFBUse &dfbUse : candidate.dfbUses) {
     llvm::for_each(dfbUse.reserves, [&](CBReserveOp reserve) {
       allowedOperations.insert(reserve);
     });
-    llvm::for_each(dfbUse.pushes, [&](CBPushOp push) {
-      allowedOperations.insert(push);
-    });
-    llvm::for_each(dfbUse.waits, [&](CBWaitOp wait) {
-      allowedOperations.insert(wait);
-    });
-    llvm::for_each(dfbUse.pops, [&](CBPopOp pop) {
-      allowedOperations.insert(pop);
-    });
+    llvm::for_each(dfbUse.pushes,
+                   [&](CBPushOp push) { allowedOperations.insert(push); });
+    llvm::for_each(dfbUse.waits,
+                   [&](CBWaitOp wait) { allowedOperations.insert(wait); });
+    llvm::for_each(dfbUse.pops,
+                   [&](CBPopOp pop) { allowedOperations.insert(pop); });
     llvm::for_each(dfbUse.attaches, [&](AttachCBOp attach) {
       allowedOperations.insert(attach);
     });
@@ -361,10 +358,9 @@ static LogicalResult validateLoopEffects(
     if (isa<scf::ForOp>(operation)) {
       reason = "candidate loop contains a nested loop";
     } else {
-      reason =
-          ("candidate loop contains unrelated side effect " +
-           operation->getName().getStringRef())
-              .str();
+      reason = ("candidate loop contains unrelated side effect " +
+                operation->getName().getStringRef())
+                   .str();
     }
     return WalkResult::interrupt();
   });
@@ -372,10 +368,11 @@ static LogicalResult validateLoopEffects(
 }
 
 /// Build one complete loop candidate from PipeGraph transfer nodes.
-static FailureOr<PipeTransportLoopCandidate> buildLoopCandidate(
-    scf::ForOp loop, ArrayRef<const PipeTransferNode *> transfers,
-    const PipeGraph &pipeGraph, ValueOriginAnalysis &analysis,
-    std::string &reason) {
+static FailureOr<PipeTransportLoopCandidate>
+buildLoopCandidate(scf::ForOp loop,
+                   ArrayRef<const PipeTransferNode *> transfers,
+                   const PipeGraph &pipeGraph, ValueOriginAnalysis &analysis,
+                   std::string &reason) {
   PipeTransportLoopCandidate candidate;
   candidate.loop = loop;
   candidate.transfers.append(transfers.begin(), transfers.end());
@@ -397,15 +394,15 @@ static FailureOr<PipeTransportLoopCandidate> buildLoopCandidate(
 
   llvm::DenseSet<Operation *> seenCreates;
   for (const PipeTransferNode *transfer : transfers) {
-    if (transfer->blockSpan != 1 ||
-        getEnclosingFor(transfer->sendOp) != loop) {
-      reason = "transfer is not scalar or does not execute in the candidate loop";
+    if (transfer->blockSpan != 1 || getEnclosingFor(transfer->sendOp) != loop) {
+      reason =
+          "transfer is not scalar or does not execute in the candidate loop";
       return failure();
     }
     auto send = cast<PipeTransferSendOp>(transfer->sendOp);
-    FailureOr<TransportDFBUse *> source = getOrAddDFBUse(
-        candidate, send.getSrc(), TransportDFBRole::Source, transfer->id,
-        reason);
+    FailureOr<TransportDFBUse *> source =
+        getOrAddDFBUse(candidate, send.getSrc(), TransportDFBRole::Source,
+                       transfer->id, reason);
     if (failed(source)) {
       return failure();
     }
@@ -456,8 +453,7 @@ static FailureOr<PipeTransportLoopCandidate> buildLoopCandidate(
   }
 
   for (TransportDFBUse &dfbUse : candidate.dfbUses) {
-    if (failed(
-            collectDFBUsePattern(candidate, dfbUse, pipeGraph, reason))) {
+    if (failed(collectDFBUsePattern(candidate, dfbUse, pipeGraph, reason))) {
       return failure();
     }
   }
@@ -610,8 +606,7 @@ static bool isBetterGrouping(const PipeTransportGrouping &candidate,
            selected.getCompletionGroupCount();
   }
   if (candidate.getCapacityWaitCount() != selected.getCapacityWaitCount()) {
-    return candidate.getCapacityWaitCount() <
-           selected.getCapacityWaitCount();
+    return candidate.getCapacityWaitCount() < selected.getCapacityWaitCount();
   }
   if (candidate.allocationBytes != selected.allocationBytes) {
     return candidate.allocationBytes < selected.allocationBytes;
@@ -702,9 +697,9 @@ static void createGroupedTransfers(PipeTransportLoopCandidate &candidate,
 static void resizeDFB(TransportDFBUse &dfbUse, int64_t blockCount,
                       IRRewriter &rewriter) {
   auto oldType = cast<CircularBufferType>(dfbUse.dfb.getType());
-  auto newType = CircularBufferType::get(
-      oldType.getContext(), oldType.getShape(), oldType.getElementType(),
-      blockCount);
+  auto newType =
+      CircularBufferType::get(oldType.getContext(), oldType.getShape(),
+                              oldType.getElementType(), blockCount);
   rewriter.modifyOpInPlace(dfbUse.bind, [&] {
     dfbUse.bind.setBlockCount(blockCount);
     dfbUse.bind.getResult().setType(newType);
@@ -721,8 +716,7 @@ static void groupDFBLifecycle(TransportDFBUse &dfbUse, int64_t groupSize,
   IntegerAttr pageCountAttr = rewriter.getI64IntegerAttr(*pageCount);
 
   auto groupAcquire = [&](auto acquire) {
-    auto resultType =
-        cast<RankedTensorType>(acquire.getResult().getType());
+    auto resultType = cast<RankedTensorType>(acquire.getResult().getType());
     FailureOr<RankedTensorType> groupedType =
         getGroupedTensorType(resultType, groupSize);
     assert(succeeded(groupedType) &&
@@ -740,8 +734,8 @@ static void groupDFBLifecycle(TransportDFBUse &dfbUse, int64_t groupSize,
   }
 
   auto groupRelease = [&](auto release) {
-    rewriter.modifyOpInPlace(
-        release, [&] { release.setNumTilesAttr(pageCountAttr); });
+    rewriter.modifyOpInPlace(release,
+                             [&] { release.setNumTilesAttr(pageCountAttr); });
   };
   for (CBPushOp push : dfbUse.pushes) {
     groupRelease(push);
@@ -750,8 +744,9 @@ static void groupDFBLifecycle(TransportDFBUse &dfbUse, int64_t groupSize,
     groupRelease(pop);
   }
   for (AttachCBOp attach : dfbUse.attaches) {
-    rewriter.modifyOpInPlace(
-        attach, [&] { attach.getResult().setType(attach.getTensor().getType()); });
+    rewriter.modifyOpInPlace(attach, [&] {
+      attach.getResult().setType(attach.getTensor().getType());
+    });
   }
 
   auto sliceType =
@@ -773,8 +768,8 @@ static void applyGrouping(PipeTransportLoopCandidate &candidate,
   rewriter.setInsertionPoint(candidate.loop);
   int64_t groupedUpperBound =
       candidate.lowerBound + grouping.fullGroupCount * grouping.groupSize;
-  Value groupEnd = arith::ConstantIndexOp::create(
-      rewriter, location, groupedUpperBound);
+  Value groupEnd =
+      arith::ConstantIndexOp::create(rewriter, location, groupedUpperBound);
   Value groupStep =
       arith::ConstantIndexOp::create(rewriter, location, grouping.groupSize);
 
@@ -879,8 +874,7 @@ struct TTLFormPipeTransportsPass
       }
 
       LLVM_DEBUG(llvm::dbgs()
-                 << "PipeTransportFormation: select "
-                 << candidate.loop.getLoc()
+                 << "PipeTransportFormation: select " << candidate.loop.getLoc()
                  << " R=" << grouping->groupSize
                  << " K=" << grouping->destinationDepth
                  << " groups=" << grouping->fullGroupCount
