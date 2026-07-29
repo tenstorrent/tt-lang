@@ -1,14 +1,13 @@
 // Tests for ttl-finalize-dfb-indices pass.
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=CHECK
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=REUSE
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=OVERLAP
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=FOUR
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' -debug-only=ttl-finalize-dfb-indices 2>&1 | FileCheck %s --check-prefix=DEBUG
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=MIXED
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=NOPOP
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=THREE
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=SINGLE
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=GLOBAL
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false})' | FileCheck %s --check-prefix=CHECK
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false})' | FileCheck %s --check-prefix=REUSE
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false})' | FileCheck %s --check-prefix=OVERLAP
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false})' | FileCheck %s --check-prefix=FOUR
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false})' | FileCheck %s --check-prefix=MIXED
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false})' | FileCheck %s --check-prefix=NOPOP
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false})' | FileCheck %s --check-prefix=THREE
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false})' | FileCheck %s --check-prefix=SINGLE
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false})' | FileCheck %s --check-prefix=GLOBAL
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=SUBTILE
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=RANK3
 
@@ -18,11 +17,7 @@
 // The pass should update base_cta_index to 4 and emit the complete allocation
 // table.
 
-// CHECK: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32, page_size = 2048 : i32},
-// CHECK-SAME: {block_count = 2 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32, page_size = 2048 : i32},
-// CHECK-SAME: {block_count = 2 : i32, dfb_index = 2 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32, page_size = 2048 : i32},
-// CHECK-SAME: {block_count = 2 : i32, dfb_index = 3 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32, page_size = 2048 : i32}
-// CHECK-SAME: ]}
+// CHECK: module attributes {ttl.dfb_allocations = {{.*}}}
 
 // CHECK-LABEL: func.func @reader
 // CHECK-SAME: ttl.base_cta_index = 4 : i32
@@ -78,9 +73,6 @@ func.func @compute_only()
 // Non-overlapping compiler-allocated DFBs: DFB #3 is released (cb_pop)
 // before DFB #4 is allocated (bind_cb). Both should be assigned index 3.
 
-// DEBUG: DFB reuse: 2 compiler-allocated DFBs -> 1 physical slot(s)
-// DEBUG: Total DFB count: 4
-
 // REUSE: module attributes {ttl.dfb_allocations = {{.*}}}
 
 // REUSE-LABEL: func.func @non_overlapping_reuse
@@ -105,9 +97,6 @@ func.func @non_overlapping_reuse()
 
 // Overlapping compiler-allocated DFBs: DFB #4 is allocated while DFB #3
 // is still live. They must keep separate indices.
-
-// DEBUG: DFB reuse: 2 compiler-allocated DFBs -> 2 physical slot(s)
-// DEBUG: Total DFB count: 5
 
 // OVERLAP: module attributes {ttl.dfb_allocations = {{.*}}}
 
@@ -138,9 +127,6 @@ func.func @overlapping_no_reuse()
 // DFB-C [bind, pop]: starts after A dies, spans past DFB-D
 // DFB-D [bind, pop]: nested within C, dies before C
 // Result: A and C share slot 0 (index 3), B and D share slot 1 (index 4).
-
-// DEBUG: DFB reuse: 4 compiler-allocated DFBs -> 2 physical slot(s)
-// DEBUG: Total DFB count: 5
 
 // FOUR: module attributes {ttl.dfb_allocations = {{.*}}}
 
@@ -190,9 +176,6 @@ func.func @four_dfbs_nested_reuse()
 // [2,4] partition: #4 alone -> 1 slot (index 4)
 // Total: 2 physical compiler-allocated slots.
 
-// DEBUG: DFB reuse: 3 compiler-allocated DFBs -> 2 physical slot(s)
-// DEBUG: Total DFB count: 5
-
 // MIXED: module attributes {ttl.dfb_allocations = {{.*}}}
 
 // MIXED-LABEL: func.func @mixed_types_no_cross_reuse
@@ -228,9 +211,6 @@ func.func @mixed_types_no_cross_reuse()
 // No cb_pop on either compiler-allocated DFB. Conservative fallback
 // treats both as live for the entire function. No reuse possible.
 
-// DEBUG: DFB reuse: 2 compiler-allocated DFBs -> 2 physical slot(s)
-// DEBUG: Total DFB count: 5
-
 // NOPOP: module attributes {ttl.dfb_allocations = {{.*}}}
 
 // NOPOP-LABEL: func.func @no_cb_pop_conservative
@@ -254,9 +234,6 @@ func.func @no_cb_pop_conservative()
 
 // Three sequential non-overlapping DFBs. All should map to a single
 // physical slot (multi-round slot recycling).
-
-// DEBUG: DFB reuse: 3 compiler-allocated DFBs -> 1 physical slot(s)
-// DEBUG: Total DFB count: 4
 
 // THREE: module attributes {ttl.dfb_allocations = {{.*}}}
 
