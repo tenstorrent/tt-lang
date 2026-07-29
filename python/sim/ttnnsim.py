@@ -1352,6 +1352,13 @@ class Tensor:
     Exposes `.shape`, `.dtype`, and `.layout`.  The layout determines how
     indices are interpreted: TILE_LAYOUT uses tile-space indexing (each index
     unit = 32 elements); ROW_MAJOR_LAYOUT uses element-space indexing directly.
+
+    Two shapes are tracked, as ttnn does: :attr:`shape` is the logical one the
+    caller supplied, and :attr:`padded_shape` is the storage it is held in,
+    tile-aligned and at least rank 2 under TILE_LAYOUT.  They differ whenever a
+    logical shape is not tile-aligned -- a `(3, 5)` tensor is stored as
+    `(32, 32)` -- and the backing tensor, which :meth:`to_torch` returns, is the
+    padded one, with the logical data in its top-left.
     """
 
     def __init__(
@@ -2250,7 +2257,11 @@ def from_torch(
             sharding metadata is applied.
 
     Returns:
-        Tensor wrapping the input (potentially dtype-converted) torch tensor.
+        Tensor whose :attr:`~Tensor.shape` is the input's, backed by the input
+        (potentially dtype-converted) torch tensor -- rank-lifted and padded into
+        tile-aligned storage when the layout is ``TILE_LAYOUT`` and the input is
+        not already aligned, in which case :attr:`~Tensor.padded_shape` and the
+        backing tensor are larger than the shape passed in.
     """
     if spec is not None:
         if tuple(tensor.shape) != tuple(spec.shape):

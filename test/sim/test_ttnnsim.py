@@ -421,11 +421,13 @@ def test_tensor_binary_ops_reject_torch_tensor():
 #     tile layout.  Their inputs are small ad-hoc tensors (e.g. ``(2, 2)`` or
 #     ``(4, 4)``) chosen for readability of the expected values, not for tile
 #     alignment.
-#   - Under ``TILE_LAYOUT`` the shim auto-pads such inputs to ``(32, 32)``
-#     (per ``_pad_to_tile_alignment`` in ``ttnnsim.py``), which would muddy
-#     the exact-shape assertions used here.  We therefore pass
-#     ``layout=ttnn.ROW_MAJOR_LAYOUT`` explicitly so the original shape is
-#     round-trip-preserved.
+#   - Under ``TILE_LAYOUT`` the shim would store such inputs padded to
+#     ``(32, 32)`` (per ``_pad_to_tile_alignment`` in ``ttnnsim.py``).  ``.shape``
+#     would still read back as written, since it is the logical shape, but
+#     ``to_torch()`` returns the padded store, so the value comparisons here
+#     would need to slice the result rather than compare it whole.  We therefore
+#     pass ``layout=ttnn.ROW_MAJOR_LAYOUT`` explicitly, which stores the input
+#     as-is.
 #   - Coverage for the tile-layout shim behaviour (auto-pad + arithmetic on
 #     padded inputs) lives in the ``test_tile_layout_shim_*`` tests further
 #     down, alongside the ``_pad_to_tile_alignment`` tests.
@@ -435,8 +437,9 @@ def test_tensor_binary_ops_reject_torch_tensor():
 def test_multiply_basic():
     """Test basic element-wise multiplication.
 
-    Uses ROW_MAJOR_LAYOUT so the (2, 2) shape is round-trip-preserved; the
-    purpose here is to exercise the shim's multiply, not tile semantics.
+    Uses ROW_MAJOR_LAYOUT so the (2, 2) input is stored unpadded and the result
+    can be compared whole; the purpose here is to exercise the shim's multiply,
+    not tile semantics.
     """
     a = ttnn.from_torch(
         torch.tensor([[1.0, 2.0], [3.0, 4.0]], dtype=torch.bfloat16),

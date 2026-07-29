@@ -598,7 +598,10 @@ class Block:
             A temporary Block backed directly by t (no copy).
 
         Raises:
-            ValueError: If a TILE_LAYOUT tensor's dimensions are not tile-aligned.
+            ValueError: If a TILE_LAYOUT tensor's stored dimensions are not
+                tile-aligned.  This is ``padded_shape``, not ``shape``, so a
+                tensor whose logical shape is unaligned is accepted: the
+                simulator stores it padded, and blocks address the storage.
         """
         if t.layout == ROW_MAJOR_LAYOUT:
             return cls(
