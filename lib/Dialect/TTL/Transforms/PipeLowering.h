@@ -173,8 +173,7 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 /// cannot be bounded by dominance are conservatively treated as conflicting
 /// with every other transfer interval from the same source core.
 LogicalResult
-buildPipeResourcePlan(ModuleOp mod,
-                      const PipeTransferIndex &transferIndex,
+buildPipeResourcePlan(ModuleOp mod, const PipeTransferIndex &transferIndex,
                       const PipeGraph &pipeGraph, PipeResourcePlan &info,
                       bool enableComputedAddresses = true,
                       const PipeCapacityPlan *pipeCapacityPlan = nullptr,
