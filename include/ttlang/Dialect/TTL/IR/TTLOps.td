@@ -674,11 +674,17 @@ def TTL_PipeTransferCreateOp : TTL_Op<"pipe_transfer.create", [Pure]> {
     The sender and receiver callbacks may use different references because each
     constructs its pipe value independently. The attributes record the common
     point-to-point or collective contract.
+
+    `block_span` is the number of consecutive original DFB blocks delivered by
+    one transfer. Scalar transfers use the default span of one. Grouping
+    transformations increase the span while preserving the original DFB block
+    geometry.
   }];
   let arguments = (ins
     TTL_Pipe:$pipe,
     TTL_PipeTransferKindAttr:$kind,
-    I64Attr:$expectedReceivers
+    I64Attr:$expectedReceivers,
+    DefaultValuedAttr<ConfinedAttr<I64Attr, [IntPositive]>, "1">:$block_span
   );
   let results = (outs TTL_PipeTransfer:$transfer);
   let assemblyFormat = "$pipe attr-dict `:` type($pipe) `->` type($transfer)";
