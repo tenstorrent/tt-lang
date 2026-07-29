@@ -138,6 +138,8 @@ static int64_t getNumTensorFunctionArgs(FuncOp func) {
 }
 
 static int64_t getNumComputedAddressRuntimeArgs(FuncOp func) {
+  // Resource planning records the sorted receiver DFB list before lowering
+  // computes common runtime argument indices.
   auto dfbIndices = func->getAttrOfType<DenseI32ArrayAttr>(
       kPipeComputedAddressDFBIndicesAttrName);
   return dfbIndices ? static_cast<int64_t>(dfbIndices.size()) : 0;
@@ -375,7 +377,7 @@ buildReceiverPublishedAddress(Value dst, Location loc,
   auto receiverCBConverted =
       utils::convertTTLCBToTTKernel(info.receiverDFB, rewriter, loc);
   assert(succeeded(receiverCBConverted) &&
-         "preflight checked receiver DFB type");
+         "getTTLCBType guarantees a convertible receiver DFB");
 
   auto receiverWritePtr =
       ttk::GetWritePtrOp::create(rewriter, loc, *receiverCBConverted);
@@ -448,11 +450,11 @@ void initializePipePostSequenceCounters(
 void initializePipeComputedAddressCounters(
     const PipeResourcePlan &pipeResourcePlan,
     PipeComputedAddressCounterMap &computedAddressCounters) {
-  for (const auto &entry :
+  for (const auto &initializationEntry :
        pipeResourcePlan.computedAddressCounterInitializations) {
-    FuncOp func = entry.first;
+    func::FuncOp func = initializationEntry.first;
     const SmallVector<PipeComputedAddressCounterInitInfo> &initializations =
-        entry.second;
+        initializationEntry.second;
     SmallVector<PipeComputedAddressCounterInitInfo> sortedInitializations(
         initializations);
     llvm::sort(sortedInitializations,
@@ -554,7 +556,8 @@ LogicalResult lowerPipeTransferSend(
   auto i32Ty = rewriter.getI32Type();
 
   auto cbConverted = utils::convertTTLCBToTTKernel(srcCB, rewriter, loc);
-  assert(succeeded(cbConverted) && "preflight checked source DFB type");
+  assert(succeeded(cbConverted) &&
+         "getTTLCBType guarantees a convertible source DFB");
 
   int64_t nocIdx = getNocIndex(op);
   Value nocVal = arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
@@ -1402,7 +1405,7 @@ struct ComputedAddressPlan {
 static ComputedAddressPlan
 buildComputedAddressPlan(ModuleOp mod,
                          MutableArrayRef<PipeTransferAllocationUnit> units,
-                         const PipeGraph &pipeGraph, bool updateFunctionAttrs) {
+                         const PipeGraph &pipeGraph) {
   ComputedAddressPlan plan;
 
   /// One transfer whose recurrence can be materialized by its sender.
@@ -1453,10 +1456,8 @@ buildComputedAddressPlan(ModuleOp mod,
         llvm::map_to_vector(sortedDFBIndices, [](int64_t dfbIndex) {
           return static_cast<int32_t>(dfbIndex);
         });
-    if (updateFunctionAttrs) {
-      func->setAttr(kPipeComputedAddressDFBIndicesAttrName,
-                    builder.getDenseI32ArrayAttr(dfbAttrs));
-    }
+    func->setAttr(kPipeComputedAddressDFBIndicesAttrName,
+                  builder.getDenseI32ArrayAttr(dfbAttrs));
   }
 
   llvm::MapVector<FuncOp, int64_t> nextDynamicSlotCounterIndexByFunc;
@@ -1522,8 +1523,7 @@ compactColors(const SourceColorMap &colorUsersBySource,
 LogicalResult buildPipeResourcePlan(ModuleOp mod, ValueOriginAnalysis &analysis,
                                     const PipeGraph &pipeGraph,
                                     PipeResourcePlan &info,
-                                    bool enableComputedAddresses,
-                                    bool updateComputedAddressAttrs) {
+                                    bool enableComputedAddresses) {
   DominanceInfo dominanceInfo(mod);
   PostDominanceInfo postDominanceInfo(mod);
   FailureOr<SmallVector<PipeTransferAllocationUnit>> maybeUnits =
@@ -1538,8 +1538,7 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod, ValueOriginAnalysis &analysis,
       assignLiveIntervalColors(units, dominanceInfo);
   ComputedAddressPlan computedAddressPlan;
   if (enableComputedAddresses) {
-    computedAddressPlan = buildComputedAddressPlan(mod, units, pipeGraph,
-                                                   updateComputedAddressAttrs);
+    computedAddressPlan = buildComputedAddressPlan(mod, units, pipeGraph);
   }
   info.computedAddressCounterInitializations =
       computedAddressPlan.counterInitializations;

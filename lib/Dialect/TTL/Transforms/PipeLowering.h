@@ -176,8 +176,7 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 LogicalResult buildPipeResourcePlan(ModuleOp mod, ValueOriginAnalysis &analysis,
                                     const PipeGraph &pipeGraph,
                                     PipeResourcePlan &info,
-                                    bool enableComputedAddresses = true,
-                                    bool updateComputedAddressAttrs = true);
+                                    bool enableComputedAddresses = true);
 
 /// Emit sender-local slot counters for computed receiver addresses whose
 /// physical receiver DFB slot advances at runtime.
