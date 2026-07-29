@@ -364,6 +364,55 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 
 // -----
 
+// Matched sender and receiver definitions must describe the same number of
+// original DFB blocks.
+
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @mismatched_pipe_transfer_block_spans()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %send_transfer = ttl.pipe_transfer.create %pipe {
+        block_span = 2 : i64,
+        expectedReceivers = 1 : i64,
+        kind = #ttl.pipe_transfer_kind<point_to_point>}
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+        -> !ttl.pipe_transfer
+    %post_transfer = ttl.pipe_transfer.create %pipe {
+        expectedReceivers = 1 : i64,
+        kind = #ttl.pipe_transfer_kind<point_to_point>}
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+        -> !ttl.pipe_transfer
+    ttl.if_dst %pipe
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %recv = ttl.cb_reserve %dst
+          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      // expected-error @below {{pipe send and receiver post use different transfer block spans}}
+      %token = ttl.pipe_transfer.post %post_transfer, %recv
+          : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.pipe_token<net 0>
+      ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
+    }
+    ttl.if_src %pipe
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      // expected-note @below {{corresponding pipe send uses block_span=2}}
+      %send = ttl.pipe_transfer.send %send_transfer, %src
+          : (!ttl.pipe_transfer,
+             !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}
+
+// -----
+
 // Collective destination addresses must be statically traceable because NoC
 // multicast uses one destination SRAM address for all receivers.
 

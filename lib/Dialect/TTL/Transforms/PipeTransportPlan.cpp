@@ -136,8 +136,7 @@ void PipeTransportPlan::print(llvm::raw_ostream &os) const {
 }
 
 /// Collect enclosing loops from outermost to innermost.
-static PipeTransportIterationDomain
-getIterationDomain(Operation *operation) {
+static PipeTransportIterationDomain getIterationDomain(Operation *operation) {
   PipeTransportIterationDomain domain;
   for (Operation *parent = operation->getParentOp(); parent;
        parent = parent->getParentOp()) {
@@ -157,12 +156,14 @@ FailureOr<PipeTransportPlan> buildPipeTransportPlan(
   for (const PipeTransferNode &transferNode :
        pipeGraph.getPipeTransferNodes()) {
     auto sendOp = cast<PipeTransferSendOp>(transferNode.sendOp);
-    auto sourceDFBType =
-        cast<CircularBufferType>(sendOp.getSrc().getType());
-    auto tileType =
-        dyn_cast<ttcore::TileType>(sourceDFBType.getElementType());
+    auto sourceDFBType = cast<CircularBufferType>(sendOp.getSrc().getType());
+    auto tileType = dyn_cast<ttcore::TileType>(sourceDFBType.getElementType());
     if (!tileType) {
       sendOp.emitError("pipe transfer source DFB element type must be tile");
+      return failure();
+    }
+    if (transferNode.blockSpan != 1) {
+      sendOp.emitError("grouped pipe transfer lowering is not implemented");
       return failure();
     }
 
@@ -174,13 +175,18 @@ FailureOr<PipeTransportPlan> buildPipeTransportPlan(
     stream.synchronizationProtocol =
         selectSynchronizationProtocol(transferNode.id);
     stream.schedule = PipeTransportSchedule::Scalar;
-    stream.logicalTransfersPerGroup = 1;
+    stream.logicalTransfersPerGroup = transferNode.blockSpan;
     stream.residualTransferCount = 0;
-    stream.sourceIterationDomain =
-        getIterationDomain(sendOp.getOperation());
-    stream.sourceStorage =
-        PipeTransportSourceStorage{sourceDFBType.getBlockCount(), 1, 1};
-    int64_t pageCount = sourceDFBType.getElementsPerBlock();
+    stream.sourceIterationDomain = getIterationDomain(sendOp.getOperation());
+    stream.sourceStorage = PipeTransportSourceStorage{
+        sourceDFBType.getBlockCount(), transferNode.blockSpan, 1};
+    std::optional<int64_t> maybePageCount = llvm::checkedMul(
+        sourceDFBType.getElementsPerBlock(), transferNode.blockSpan);
+    if (!maybePageCount) {
+      sendOp.emitError("pipe transfer page count exceeds int64_t");
+      return failure();
+    }
+    int64_t pageCount = *maybePageCount;
     int64_t pageSizeBytes = tileType.getSizeBytes();
     std::optional<int64_t> maybePayloadSizeBytes =
         llvm::checkedMul(pageCount, pageSizeBytes);
@@ -188,13 +194,11 @@ FailureOr<PipeTransportPlan> buildPipeTransportPlan(
       sendOp.emitError("pipe transfer payload size exceeds int64_t");
       return failure();
     }
-    stream.packetization = PipeTransportPacketization{
-        pageCount, pageSizeBytes, *maybePayloadSizeBytes};
-    stream.sourceReuse =
-        PipeTransportSourceReuse::AfterCompletionGroup;
+    stream.packetization = PipeTransportPacketization{pageCount, pageSizeBytes,
+                                                      *maybePayloadSizeBytes};
+    stream.sourceReuse = PipeTransportSourceReuse::AfterCompletionGroup;
 
-    for (PipeReceiverEndpointId endpointId :
-         transferNode.receiverEndpoints) {
+    for (PipeReceiverEndpointId endpointId : transferNode.receiverEndpoints) {
       const PipeReceiverEndpoint &graphEndpoint =
           pipeGraph.getPipeReceiverEndpoint(endpointId);
       PipeTransportEndpoint endpoint;
@@ -205,8 +209,7 @@ FailureOr<PipeTransportPlan> buildPipeTransportPlan(
           graphEndpoint.receiverDFBInfo.receiverSlotSpanBlocks;
       endpoint.blockCount = graphEndpoint.receiverDFBInfo.blockCount;
       endpoint.groupDepth = 1;
-      endpoint.iterationDomain =
-          getIterationDomain(graphEndpoint.postOp);
+      endpoint.iterationDomain = getIterationDomain(graphEndpoint.postOp);
       endpoint.addressSequence = graphEndpoint.addressSequence;
       stream.endpoints.push_back(std::move(endpoint));
       stream.completionGroup.endpoints.push_back(endpointId);
@@ -216,8 +219,7 @@ FailureOr<PipeTransportPlan> buildPipeTransportPlan(
       auto [streamIt, inserted] =
           plan.streamByOperation.try_emplace(operation, stream.id);
       (void)streamIt;
-      assert(inserted &&
-             "pipe protocol operation belongs to multiple streams");
+      assert(inserted && "pipe protocol operation belongs to multiple streams");
     };
     recordStreamOperation(transferNode.sendOp);
     for (Operation *postOperation : transferNode.receiverPostOps) {

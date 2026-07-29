@@ -1165,6 +1165,7 @@ PipeGraph::rebuildEndpointGraph(ModuleOp mod, ValueOriginAnalysis &analysis,
       }
       PipeTransferContract transferContract =
           getPipeTransferContract(*maybeSendCreate);
+      int64_t blockSpan = getPipeTransferBlockSpan(*maybeSendCreate);
       for (auto [receiver, postOp] : endpointsBySend[sendIndex]) {
         (void)receiver;
         FailureOr<PipeTransferCreateOp> maybePostCreate =
@@ -1180,12 +1181,21 @@ PipeGraph::rebuildEndpointGraph(ModuleOp mod, ValueOriginAnalysis &analysis,
               "pipe send and receiver post use different transfer contracts");
           return failure();
         }
+        if (getPipeTransferBlockSpan(*maybePostCreate) != blockSpan) {
+          auto diagnostic =
+              postOp.emitError("pipe send and receiver post use different "
+                               "transfer block spans");
+          diagnostic.attachNote(sendOp.getLoc())
+              << "corresponding pipe send uses block_span=" << blockSpan;
+          return failure();
+        }
       }
 
       PipeTransferNodeId transferNodeId = pipeTransferNodes.size();
       pipeTransferNodes.push_back(PipeTransferNode{transferNodeId,
                                                    pipeKey,
                                                    transferContract,
+                                                   blockSpan,
                                                    sendOp.getOperation(),
                                                    {},
                                                    {}});
