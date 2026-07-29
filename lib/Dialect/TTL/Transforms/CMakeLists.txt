@@ -23,6 +23,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLCoalesceDFBAcquires.cpp
   TTLDumpCBFlowGraph.cpp
   TTLFinalizeDFBIndices.cpp
+  TTLFormPipeTransports.cpp
   TTLValidateCBBudget.cpp
   TTLInsertCBSync.cpp
   TTLInsertCopyWait.cpp

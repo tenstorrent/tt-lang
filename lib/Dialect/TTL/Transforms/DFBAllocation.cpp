@@ -17,20 +17,31 @@ namespace mlir::tt::ttl {
 
 FailureOr<uint64_t> DFBAllocationSummary::getTotalBytesWithMinimumAllocation(
     int64_t dfbIndex, uint64_t minimumBytes) const {
-  uint64_t currentBytes = 0;
-  auto allocation = allocations.find(dfbIndex);
-  if (allocation != allocations.end()) {
-    currentBytes = allocation->second.bytes;
+  llvm::DenseMap<int64_t, uint64_t> minimumBytesByIndex{
+      {dfbIndex, minimumBytes}};
+  return getTotalBytesWithMinimumAllocations(minimumBytesByIndex);
+}
+
+FailureOr<uint64_t> DFBAllocationSummary::getTotalBytesWithMinimumAllocations(
+    const llvm::DenseMap<int64_t, uint64_t> &minimumBytesByIndex) const {
+  uint64_t updatedTotal = totalBytes;
+  for (const auto &[dfbIndex, minimumBytes] : minimumBytesByIndex) {
+    uint64_t currentBytes = 0;
+    auto allocation = allocations.find(dfbIndex);
+    if (allocation != allocations.end()) {
+      currentBytes = allocation->second.bytes;
+    }
+    if (minimumBytes <= currentBytes) {
+      continue;
+    }
+    std::optional<uint64_t> total =
+        llvm::checkedAddUnsigned(updatedTotal, minimumBytes - currentBytes);
+    if (!total) {
+      return failure();
+    }
+    updatedTotal = *total;
   }
-  if (minimumBytes <= currentBytes) {
-    return totalBytes;
-  }
-  std::optional<uint64_t> total =
-      llvm::checkedAddUnsigned(totalBytes, minimumBytes - currentBytes);
-  if (!total) {
-    return failure();
-  }
-  return *total;
+  return updatedTotal;
 }
 
 uint64_t getL1DFBBudgetBytes(ModuleOp moduleOp, uint64_t overrideBytes) {
@@ -60,15 +71,14 @@ uint64_t getL1DFBBudgetBytes(ModuleOp moduleOp, uint64_t overrideBytes) {
   }));
 }
 
-FailureOr<uint64_t>
-getDFBAllocationSizeBytes(CircularBufferType dfbType) {
+FailureOr<uint64_t> getDFBAllocationSizeBytes(CircularBufferType dfbType) {
   uint64_t elementCount = 1;
   for (int64_t dimension : dfbType.getShape()) {
     if (dimension <= 0) {
       return failure();
     }
-    auto count =
-        llvm::checkedMulUnsigned(elementCount, static_cast<uint64_t>(dimension));
+    auto count = llvm::checkedMulUnsigned(elementCount,
+                                          static_cast<uint64_t>(dimension));
     if (!count) {
       return failure();
     }
@@ -88,8 +98,7 @@ getDFBAllocationSizeBytes(CircularBufferType dfbType) {
   if (auto tileType = dyn_cast<mlir::tt::ttcore::TileType>(elementType)) {
     elementBytes = tileType.getSizeBytes();
   } else {
-    elementBytes =
-        mlir::tt::ttcore::TileType::get(elementType).getSizeBytes();
+    elementBytes = mlir::tt::ttcore::TileType::get(elementType).getSizeBytes();
   }
   std::optional<uint64_t> allocationBytes =
       llvm::checkedMulUnsigned(*totalElements, elementBytes);
@@ -99,8 +108,7 @@ getDFBAllocationSizeBytes(CircularBufferType dfbType) {
   return *allocationBytes;
 }
 
-FailureOr<DFBAllocationSummary>
-getDFBAllocationSummary(ModuleOp moduleOp) {
+FailureOr<DFBAllocationSummary> getDFBAllocationSummary(ModuleOp moduleOp) {
   DFBAllocationSummary summary;
   WalkResult walkResult = moduleOp.walk([&](BindCBOp bindOp) {
     FailureOr<uint64_t> bytes = getDFBAllocationSizeBytes(
