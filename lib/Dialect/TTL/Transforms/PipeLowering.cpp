@@ -25,6 +25,7 @@
 #include "ttlang/Dialect/TTL/Transforms/LiveIntervalUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
+#include "ttlang/Target/TargetInfo.h"
 #include "llvm/ADT/DenseMapInfo.h"
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/STLExtras.h"
@@ -397,6 +398,10 @@ public:
   virtual void preparePayloadWrite() = 0;
   virtual LogicalResult emitPayloadWrite(Value srcAddr, Value dstAddr,
                                          Value totalSizeBytes) = 0;
+  /// Emit one payload write for each page in a contiguous unicast payload.
+  virtual LogicalResult emitPayloadPageWrites(Value srcAddr, Value dstAddr,
+                                              int64_t pageCount,
+                                              int64_t pageSizeBytes) = 0;
   virtual void emitPayloadWriteBarrier() = 0;
   virtual LogicalResult
   emitReceiverCompletionIncrement(Value receiverCompletionCounterAddr) = 0;
@@ -487,6 +492,40 @@ public:
         rewriter, loc, srcAddr, totalSizeBytes, numDests,
         destinationRange.startX, destinationRange.startY, destinationRange.endX,
         destinationRange.endY, dstAddr, nocVal, /*linked=*/nullptr);
+    return success();
+  }
+
+  /// Emit page-addressed unicast writes for one transport payload.
+  LogicalResult emitPayloadPageWrites(Value srcAddr, Value dstAddr,
+                                      int64_t pageCount,
+                                      int64_t pageSizeBytes) override {
+    assert(pipeType.hasSingleReceiver() &&
+           "page writes require a unicast transport");
+    assert(pageCount > 1 && pageSizeBytes > 0 &&
+           "page writes require a multi-page payload");
+
+    Value lowerBound = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value upperBound = arith::ConstantIndexOp::create(rewriter, loc, pageCount);
+    Value step = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    Value pageSize =
+        arith::ConstantIntOp::create(rewriter, loc, pageSizeBytes, 32);
+    auto pageLoop =
+        scf::ForOp::create(rewriter, loc, lowerBound, upperBound, step);
+
+    OpBuilder::InsertionGuard insertionGuard(rewriter);
+    rewriter.setInsertionPointToStart(pageLoop.getBody());
+    Value pageIndex = arith::IndexCastOp::create(
+        rewriter, loc, rewriter.getI32Type(), pageLoop.getInductionVar());
+    Value pageOffset =
+        arith::MulIOp::create(rewriter, loc, pageIndex, pageSize);
+    Value pageSrcAddr =
+        arith::AddIOp::create(rewriter, loc, srcAddr, pageOffset);
+    Value pageDstAddr =
+        arith::AddIOp::create(rewriter, loc, dstAddr, pageOffset);
+    TranslatedCore dstStartCore = getDstStartCore();
+    ttk::NocAsyncWriteOp::create(rewriter, loc, pageSrcAddr,
+                                 ValueRange{dstStartCore.x, dstStartCore.y},
+                                 ValueRange{}, pageDstAddr, pageSize, nocVal);
     return success();
   }
 
@@ -735,6 +774,19 @@ lookupPipeCounterProgress(const PipeCounterProgressMap &progress, FuncOp func,
   return progressIt->value;
 }
 
+/// Return whether an overlapped payload requires page-granular NoC writes.
+static bool
+shouldEmitPayloadPageWrites(PipeTransferSendOp op, PipeType pipeType,
+                            const PipeTransportStream &transportStream) {
+  const PipeTransportPacketization &packetization =
+      transportStream.getPacketization();
+  int64_t maxBurstBytes = getTargetNocMaxBurstBytes(op);
+  return transportStream.getSchedule() == PipeTransportSchedule::Overlapped &&
+         pipeType.hasSingleReceiver() && packetization.pageCount > 1 &&
+         packetization.pageSizeBytes <= maxBurstBytes &&
+         packetization.getPayloadSizeBytes() > maxBurstBytes;
+}
+
 void lowerInactivePipeTransferSend(PipeTransferSendOp op,
                                    ConversionPatternRewriter &rewriter) {
   rewriter.replaceOp(op, makeZeroI32(op.getLoc(), rewriter));
@@ -743,6 +795,7 @@ void lowerInactivePipeTransferSend(PipeTransferSendOp op,
 /// Write source DFB data to the selected destination and signal completion.
 LogicalResult lowerPipeTransferSend(
     PipeTransferSendOp op, Value srcCB, const PipeTransferPlan &transferPlan,
+    const PipeTransportStream &transportStream,
     const PipeResourcePlan &pipeResourcePlan,
     const PipeCapacityPlan &pipeCapacityPlan,
     const PipeCounterProgressMap &senderCapacityCounters,
@@ -755,6 +808,10 @@ LogicalResult lowerPipeTransferSend(
   PipeType pipeType = transferPlan.getPipeType();
   const PipeResourceInfo &pipeResource = transferPlan.getResources();
   const PipeSendPlan &sendPlan = transferPlan.getSend();
+  const PipeTransportPacketization &packetization =
+      transportStream.getPacketization();
+  assert(sendPlan.payloadSizeBytes == packetization.getPayloadSizeBytes() &&
+         "transport and send plans disagree on payload size");
   PipeCompletionInfo completionInfo = pipeResource.completion;
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
   NocPipeTransportEmitter nocTransport(op, pipeType, rewriter);
@@ -865,7 +922,15 @@ LogicalResult lowerPipeTransferSend(
         buildAddressTableDestinationAddress(loc, addressTableInfo, rewriter);
   }
 
-  if (failed(transport.emitPayloadWrite(srcAddr, dstAddr, totalSizeVal))) {
+  bool usePageWrites =
+      shouldEmitPayloadPageWrites(op, pipeType, transportStream);
+  LogicalResult writeResult =
+      usePageWrites
+          ? transport.emitPayloadPageWrites(srcAddr, dstAddr,
+                                            packetization.pageCount,
+                                            packetization.pageSizeBytes)
+          : transport.emitPayloadWrite(srcAddr, dstAddr, totalSizeVal);
+  if (failed(writeResult)) {
     return failure();
   }
 
