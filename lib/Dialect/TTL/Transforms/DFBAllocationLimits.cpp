@@ -13,6 +13,7 @@
 #include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <cassert>
 #include <optional>
 
@@ -107,6 +108,33 @@ uint64_t DFBAllocationFootprint::getTotalBytes() const {
   uint64_t totalBytes = 0;
   for (uint64_t allocationBytes : llvm::make_second_range(maxBytesByIndex)) {
     totalBytes += allocationBytes;
+  }
+  return totalBytes;
+}
+
+FailureOr<uint64_t>
+DFBAllocationFootprint::getTotalBytesWithMinimumAllocations(
+    const llvm::DenseMap<int64_t, uint64_t> &minimumBytesByIndex) const {
+  uint64_t totalBytes = 0;
+  for (const auto &[physicalIndex, allocationBytes] : maxBytesByIndex) {
+    uint64_t minimumBytes = minimumBytesByIndex.lookup(physicalIndex);
+    std::optional<uint64_t> updatedTotal = llvm::checkedAddUnsigned(
+        totalBytes, std::max(allocationBytes, minimumBytes));
+    if (!updatedTotal) {
+      return failure();
+    }
+    totalBytes = *updatedTotal;
+  }
+  for (const auto &[physicalIndex, minimumBytes] : minimumBytesByIndex) {
+    if (maxBytesByIndex.contains(physicalIndex)) {
+      continue;
+    }
+    std::optional<uint64_t> updatedTotal =
+        llvm::checkedAddUnsigned(totalBytes, minimumBytes);
+    if (!updatedTotal) {
+      return failure();
+    }
+    totalBytes = *updatedTotal;
   }
   return totalBytes;
 }

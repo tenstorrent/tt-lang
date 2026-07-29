@@ -113,8 +113,8 @@ struct TTLValidateCBBudgetPass
         }
       }
       uint64_t pct = budgetBytes ? (100 * totalBytes) / budgetBytes : 0;
-      diag << "\n  total: " << totalBytes << " / " << budgetBytes << " bytes ("
-           << pct << " percent)";
+      diag << "\n  total: " << totalBytes << " / " << budgetBytes
+           << " bytes (" << pct << " percent)";
       diag << "\n  hint: reduce DFB block shapes or block_count, or reduce "
               "compiler-inserted buffers (fusion splits)";
     };
