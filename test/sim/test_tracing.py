@@ -327,6 +327,30 @@ class TestDeviceAttribution:
         assert devices_by_node.get("node0") == [0]
         assert devices_by_node.get("node1") == [1]
 
+    def test_many_nodes_per_device_share_a_device_coord(self) -> None:
+        """Device attribution is per-device, not per-node.
+
+        On grid ``(2, 2, 2)`` the leading dim is a 2-device mesh axis over a 2x2
+        core grid, so each device hosts four nodes: nodes 0-3 map to device ``[0]``
+        and nodes 4-7 to device ``[1]``.  Real launch grids give each device a core
+        grid larger than 1x1, so several nodes must resolve to the same mesh
+        coordinate.
+        """
+        events = self._run_grid_kernel((2, 2, 2))
+        devices_by_node: dict[str, list[int]] = {}
+        for ev in events:
+            if ev.node is not None and ev.device is not None:
+                devices_by_node[ev.node] = ev.device
+
+        expected = {f"node{n}": [0 if n < 4 else 1] for n in range(8)}
+        assert devices_by_node == expected
+        # Four distinct nodes per device: attribution groups nodes by device.
+        nodes_per_device: dict[int, set[str]] = {0: set(), 1: set()}
+        for node, device in devices_by_node.items():
+            nodes_per_device[device[0]].add(node)
+        assert len(nodes_per_device[0]) == 4
+        assert len(nodes_per_device[1]) == 4
+
     def test_operation_events_carry_device(self) -> None:
         """operation_start / operation_end carry node and device fields."""
         events = self._run_grid_kernel((2, 1, 1))
