@@ -1754,9 +1754,11 @@ static LogicalResult lowerTTLOpsToTTKernel(
     return failure();
   }
 
-  FailureOr<PipeModulePlan> maybePipeModulePlan =
-      buildPipeModulePlan(mod, transferAnalysis, *pipeGraphOrErr,
-                          pipeComputedAddresses, pipeCapacitySync);
+  PipePlanningOptions pipePlanningOptions;
+  pipePlanningOptions.enableComputedAddresses = pipeComputedAddresses;
+  pipePlanningOptions.enableCapacitySynchronization = pipeCapacitySync;
+  FailureOr<PipeModulePlan> maybePipeModulePlan = buildPipeModulePlan(
+      mod, transferAnalysis, *pipeGraphOrErr, pipePlanningOptions);
   if (failed(maybePipeModulePlan)) {
     return failure();
   }
