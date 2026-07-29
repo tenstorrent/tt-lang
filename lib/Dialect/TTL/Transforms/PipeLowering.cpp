@@ -1353,7 +1353,7 @@ getComputedAddressInfo(const PipeReceiverEndpoint &receiverEndpoint) {
   // receiver stream contains only pipe-delivered blocks.
   const ReceiverAddressSequenceProof &sequence =
       receiverEndpoint.addressSequence;
-  if (!sequence.recurrence) {
+  if (sequence.getKind() == ReceiverAddressSequenceProofKind::FullyDynamic) {
     return std::nullopt;
   }
   const ReceiverAddressRecurrence &recurrence = *sequence.recurrence;
@@ -1480,7 +1480,9 @@ buildComputedAddressPlan(ModuleOp mod,
            "computed-address unit missing receiver address proof");
     const ReceiverAddressSequenceProof &sequence =
         receiverEndpoint->addressSequence;
-    bool canRepeat = !sequence.executionCount || *sequence.executionCount > 1;
+    bool canRepeat =
+        sequence.getKind() != ReceiverAddressSequenceProofKind::KnownCount ||
+        *sequence.executionCount > 1;
     if (canRepeat && computedAddress.repeatStride != 0) {
       int64_t counterIndex = nextDynamicSlotCounterIndexByFunc[senderFunc]++;
       computedAddress.dynamicSlotCounterIndex = counterIndex;
