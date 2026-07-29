@@ -101,6 +101,11 @@ struct PipeKey {
     return dstStartX == dstEndX && dstStartY == dstEndY;
   }
 
+  bool containsReceiver(PipeReceiverCoord receiver) const {
+    return receiver.x >= dstStartX && receiver.x <= dstEndX &&
+           receiver.y >= dstStartY && receiver.y <= dstEndY;
+  }
+
   template <typename Fn>
   void forEachReceiver(Fn &&callback) const {
     for (int64_t receiverY = dstStartY; receiverY <= dstEndY; ++receiverY) {
@@ -286,6 +291,83 @@ inline int64_t getPipeTransferDestinationGroupDepth(PipeTransferCreateOp op) {
   return static_cast<int64_t>(op.getDestinationGroupDepth());
 }
 
+inline PipeTransferContract getPipeTransferContract(PipeRecordAttr record) {
+  return record.getIsCollective() ? PipeTransferContract::Collective
+                                  : PipeTransferContract::PointToPoint;
+}
+
+inline PipeKey getPipeKey(PipeRecordAttr record, int64_t pipeNetId) {
+  return {record.getSrcX(),
+          record.getSrcY(),
+          record.getDstStartX(),
+          record.getDstStartY(),
+          record.getDstEndX(),
+          record.getDstEndY(),
+          pipeNetId};
+}
+
+inline PipeType getPipeTypeFromRecord(MLIRContext *context,
+                                      PipeRecordAttr record,
+                                      int64_t pipeNetId) {
+  return PipeType::get(context, record.getSrcX(), record.getSrcY(),
+                       record.getDstStartX(), record.getDstStartY(),
+                       record.getDstEndX(), record.getDstEndY(), pipeNetId);
+}
+
+struct PipeReference {
+  enum class Kind {
+    Static,
+    SelectedSrc,
+    SelectedDst,
+  };
+
+  Kind kind = Kind::Static;
+  PipeType pipeType;
+  SelectPipeSrcOp selectedSrc;
+  SelectPipeDstOp selectedDst;
+
+  bool isStatic() const { return kind == Kind::Static; }
+  bool isSelected() const { return !isStatic(); }
+  bool isSelectedSrc() const { return kind == Kind::SelectedSrc; }
+  bool isSelectedDst() const { return kind == Kind::SelectedDst; }
+
+  PipeNetRecordsAttr getRecords() const {
+    assert(isSelected() && "static pipe has no records attr");
+    if (selectedSrc) {
+      SelectPipeSrcOp op = selectedSrc;
+      return op.getRecords();
+    }
+    SelectPipeDstOp op = selectedDst;
+    return op.getRecords();
+  }
+
+  int64_t getPipeNetId() const {
+    if (pipeType) {
+      return pipeType.getPipeNetId();
+    }
+    if (selectedSrc) {
+      SelectPipeSrcOp op = selectedSrc;
+      return op.getRecords().getPipeNetId();
+    }
+    SelectPipeDstOp op = selectedDst;
+    return op.getRecords().getPipeNetId();
+  }
+};
+
+/// Return a static or selected pipe reference after tracing only unrealized
+/// conversion casts. Requiring direct select results keeps each selected value
+/// tied to the record table that defines it.
+FailureOr<PipeReference> getPipeReference(Operation *op, Value pipe);
+
+/// Return the pipe referenced by a send, receiver post, or receiver wait.
+FailureOr<PipeReference>
+getPipeReferenceForProtocolOp(Operation *protocolOp,
+                              const PipeTransferIndex &transferIndex);
+
+/// Enumerate the static pipe types represented by a pipe reference.
+SmallVector<PipeType> getPipeTypesFromReference(MLIRContext *context,
+                                                const PipeReference &ref);
+
 /// Graph of transfer definitions, receiver endpoints, physical receiver DFBs,
 /// and proven receiver address sequences.
 /// Built after pipe receive copies have been expanded to pipe transfer ops.
@@ -313,12 +395,16 @@ public:
     return pipeTransferNodes[id];
   }
 
-  const PipeTransferNode *
-  getPipeTransferNodeForProtocolOp(Operation *op) const {
-    auto it = transferNodeIdByProtocolOp.find(op);
-    return it == transferNodeIdByProtocolOp.end()
-               ? nullptr
-               : &pipeTransferNodes[it->second];
+  ArrayRef<PipeTransferNodeId>
+  getPipeTransferNodeIdsForProtocolOp(Operation *op) const {
+    auto it = transferNodeIdsByProtocolOp.find(op);
+    return it == transferNodeIdsByProtocolOp.end()
+               ? ArrayRef<PipeTransferNodeId>{}
+               : ArrayRef<PipeTransferNodeId>{it->second};
+  }
+
+  bool hasPipeTransferNodeForProtocolOp(Operation *op) const {
+    return !getPipeTransferNodeIdsForProtocolOp(op).empty();
   }
 
   ArrayRef<PipeReceiverEndpointId>
@@ -392,7 +478,9 @@ private:
 
   llvm::MapVector<Operation *, ReceiverDFBInfo> receiverDFBByPost;
   SmallVector<PipeTransferNode, 0> pipeTransferNodes;
-  llvm::DenseMap<Operation *, PipeTransferNodeId> transferNodeIdByProtocolOp;
+  // A table-driven protocol operation represents one transfer node per record.
+  llvm::DenseMap<Operation *, SmallVector<PipeTransferNodeId>>
+      transferNodeIdsByProtocolOp;
   SmallVector<PipeReceiverEndpoint> pipeReceiverEndpoints;
   SmallVector<PipeReceiverDFBNode> receiverDFBNodes;
   bool hasAnalyzedLaunchGrid = false;

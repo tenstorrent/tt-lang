@@ -151,7 +151,7 @@ func.func @pipe_transfer_loop_carried_token() {
   %one = arith.constant 1 : index
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], f32, 2>
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-  %transfer = ttl.pipe_transfer.create %p {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+  %transfer = ttl.pipe_transfer.create %p {kind = #ttl.pipe_transfer_kind<point_to_point>}
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> -> !ttl.pipe_transfer
   %recv = ttl.cb_reserve %cb : <[1, 1], f32, 2> -> tensor<1x1xf32>
   %token_init = ttl.pipe_transfer.post %transfer, %recv
@@ -202,21 +202,19 @@ func.func @pipe_transfer_one_iteration_selects_yield() {
 // CHECK-LABEL: func.func @pipe_transfer_kind_printing
 // CHECK: %[[PTP_PIPE:.*]] = ttl.create_pipe
 // CHECK: ttl.pipe_transfer.create %[[PTP_PIPE]]
-// CHECK-SAME: expectedReceivers = 1 : i64
 // CHECK-SAME: kind = #ttl.pipe_transfer_kind<point_to_point>
 // CHECK: %[[COLLECTIVE_PIPE:.*]] = ttl.create_pipe
 // CHECK: ttl.pipe_transfer.create %[[COLLECTIVE_PIPE]]
-// CHECK-SAME: expectedReceivers = 2 : i64
 // CHECK-SAME: kind = #ttl.pipe_transfer_kind<collective>
 func.func @pipe_transfer_kind_printing() {
   %ptp_pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-  %ptp_transfer = ttl.pipe_transfer.create %ptp_pipe {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+  %ptp_transfer = ttl.pipe_transfer.create %ptp_pipe {kind = #ttl.pipe_transfer_kind<point_to_point>}
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> -> !ttl.pipe_transfer
 
   %collective_pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0
       : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
-  %collective_transfer = ttl.pipe_transfer.create %collective_pipe {expectedReceivers = 2 : i64, kind = #ttl.pipe_transfer_kind<collective>}
+  %collective_transfer = ttl.pipe_transfer.create %collective_pipe {kind = #ttl.pipe_transfer_kind<collective>}
       : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> -> !ttl.pipe_transfer
 
   func.return
