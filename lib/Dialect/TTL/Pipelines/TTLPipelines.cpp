@@ -29,7 +29,11 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   }
   pm.addPass(createTTLConvertTTLToCompute());
   pm.addNestedPass<func::FuncOp>(createTTLInsertCBSync());
-  pm.addPass(createTTLFormPipeTransports());
+  {
+    TTLFormPipeTransportsOptions transportOpts;
+    transportOpts.groupSize = options.pipeBatchTiles;
+    pm.addPass(createTTLFormPipeTransports(transportOpts));
+  }
   pm.addNestedPass<func::FuncOp>(createTTLCoalesceDFBAcquires());
   pm.addPass(createTTLFinalizeDFBIndices());
   {

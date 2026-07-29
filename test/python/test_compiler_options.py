@@ -21,6 +21,7 @@ class TestDefaults:
         assert opts.subblock_sync is False
         assert opts.pipe_computed_addresses is True
         assert opts.pipe_capacity_sync is True
+        assert opts.pipe_batch_tiles == 0
         assert opts.specialize_cores is False
         assert opts._explicit == frozenset()
 
@@ -59,6 +60,11 @@ class TestFromString:
         opts = CompilerOptions.from_string("--no-ttl-pipe-capacity-sync")
         assert opts.pipe_capacity_sync is False
         assert "pipe_capacity_sync" in opts._explicit
+
+    def test_limit_pipe_batch_tiles(self):
+        opts = CompilerOptions.from_string("--ttl-pipe-batch-tiles 8")
+        assert opts.pipe_batch_tiles == 8
+        assert "pipe_batch_tiles" in opts._explicit
 
     def test_enable_subblock_sync(self):
         opts = CompilerOptions.from_string("--ttl-subblock-sync")
