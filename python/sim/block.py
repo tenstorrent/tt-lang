@@ -12,7 +12,7 @@ Functions: broadcast, fill, mask, mask_posinf, where, squeeze, unsqueeze,
 transpose.
 """
 
-from typing import Callable, List, Tuple
+from typing import Any, Callable, List, Tuple
 
 import torch
 
@@ -20,7 +20,7 @@ from .constants import TILE_SHAPE
 from .context import get_context
 from .dfb import Block, check_same_layout, track_source_blocks, _dry_run_result
 from .blockstate import BlockAcquisition, KernelType
-from .ttnnsim import ROW_MAJOR_LAYOUT, Tensor
+from .ttnnsim import ROW_MAJOR_LAYOUT, Tensor, _promote_dtype
 
 
 def _is_dry_run() -> bool:
@@ -230,12 +230,16 @@ def broadcast(
     return result_block
 
 
-def fill(value: float, shape: Tuple[int, ...]) -> Block:
+def fill(value: float, shape: Tuple[int, ...], dtype: Any = None) -> Block:
     """Return a temporary tiled block of the specified shape filled with value.
 
     Args:
         value: The scalar value to fill every element with.
         shape: Grid shape of the resulting block (at least 2-dimensional).
+        dtype: Optional declared dtype for the block. Defaults to bf16, matching
+            the ``ttl.block.fill`` default. Backing storage is promoted via
+            ``_promote_dtype`` (narrow floats back to float32); the declared
+            dtype is preserved for byte accounting and trace emission.
 
     Returns:
         A temporary Block of the specified shape with every element set to value.
@@ -253,13 +257,14 @@ def fill(value: float, shape: Tuple[int, ...]) -> Block:
     batch = shape[:-2]
     TM, TK = shape[-2], shape[-1]
 
+    declared = dtype if dtype is not None else torch.bfloat16
     elem = torch.full(
         (*batch, TM * tile_h, TK * tile_w),
         value,
-        dtype=torch.bfloat16,
+        dtype=_promote_dtype(declared),
     )
     return Block(
-        tensor=Tensor(elem),
+        tensor=Tensor(elem, dtype=declared),
         shape=shape,
         acquisition=BlockAcquisition.RESERVE,
         kernel_type=KernelType.COMPUTE,
