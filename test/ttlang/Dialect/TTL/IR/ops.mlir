@@ -43,6 +43,25 @@ func.func @copy_write_wait(%t: tensor<1x1x!ttcore.tile<32x32, f32>, #layout_inte
 
 // -----
 
+#layout_grouped = #ttl.layout<shape = [1, 4], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
+
+// A copy may transfer consecutive dataflow buffer blocks in one completion
+// group.
+// CHECK-LABEL: func.func @copy_grouped_blocks
+// CHECK-SAME: (%[[T:.*]]: tensor<1x4x!ttcore.tile<32x32, f32>, #ttl.layout<{{.*}}>>)
+// CHECK: %[[CB:.*]] = ttl.bind_cb{cb_index = 0, block_count = 4} : <[1, 1], !ttcore.tile<32x32, f32>, 4>
+// CHECK: %[[XF:.*]] = ttl.copy %[[T]], %[[CB]] : (tensor<1x4x!ttcore.tile<32x32, f32>, #ttl.layout<{{.*}}>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>) -> !ttl.transfer_handle<read>
+// CHECK: ttl.wait %[[XF]] : !ttl.transfer_handle<read>
+func.func @copy_grouped_blocks(%t: tensor<1x4x!ttcore.tile<32x32, f32>, #layout_grouped>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
+  %xf = ttl.copy %t, %cb : (tensor<1x4x!ttcore.tile<32x32, f32>, #layout_grouped>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>) -> !ttl.transfer_handle<read>
+  ttl.wait %xf : !ttl.transfer_handle<read>
+  func.return
+}
+
+// -----
+
 #layout_tile = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
                buffer = l1, grid = [1, 1], memory = single_bank>
 
