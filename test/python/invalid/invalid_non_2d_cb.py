@@ -21,7 +21,7 @@ import ttnn
 import ttl
 
 
-# CHECK: CB shape rank (3) must be <= tensor rank (2)
+# CHECK: DFB block rank 3 cannot exceed tensor rank 2
 @ttl.operation(grid=(1, 1))
 def mismatched_cb_rank_kernel(lhs, rhs, out):
     """This kernel should fail: 2D tensor but 3D CB shape."""
