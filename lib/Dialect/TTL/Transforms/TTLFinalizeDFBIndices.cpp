@@ -242,6 +242,17 @@ static FailureOr<ArrayAttr> buildDFBMetadata(ModuleOp moduleOp,
     return lhs.first < rhs.first;
   });
 
+  for (auto [expectedIndex, allocation] : llvm::enumerate(sorted)) {
+    auto [dfbIndex, bindOp] = allocation;
+    if (dfbIndex != static_cast<int32_t>(expectedIndex)) {
+      bindOp.emitOpError()
+          << "physical DFB indices must form a dense zero-based range; "
+             "expected index "
+          << expectedIndex << " but found " << dfbIndex;
+      return failure();
+    }
+  }
+
   MLIRContext *context = moduleOp.getContext();
   SmallVector<Attribute> entries;
   for (auto &[dfbIndex, bindOp] : sorted) {

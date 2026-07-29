@@ -21,6 +21,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 // -----
 
 // A finalized DFB declaration must contain its module-wide logical ID.
+// The empty allocation table is synthetic and isolates this precondition.
 
 module attributes {
   ttl.dfb_allocations = [],
@@ -41,6 +42,7 @@ module attributes {
 // -----
 
 // A finalized lifecycle operand must resolve to a DFB declaration.
+// The empty allocation table is synthetic and isolates this precondition.
 
 module attributes {
   ttl.dfb_allocations = [],
@@ -60,6 +62,7 @@ module attributes {
 // -----
 
 // One logical DFB must have one finalized physical index.
+// The empty allocation table is synthetic and isolates this precondition.
 
 module attributes {
   ttl.dfb_allocations = [],

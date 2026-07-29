@@ -50,20 +50,14 @@ class _DFBAllocation:
 
 
 def _validate_physical_dfb_config(
-    config: Any, physical_index: int
-) -> PhysicalDFBConfig:
+    config: PhysicalDFBConfig, physical_index: int
+) -> None:
     """Enforce dense table order required by compile-time DFB indices."""
-    if not isinstance(config, PhysicalDFBConfig):
-        raise ValueError(
-            f"DFB config at physical index {physical_index} must be a "
-            f"PhysicalDFBConfig, got {type(config).__name__}"
-        )
     if config.dfb_index != physical_index:
         raise ValueError(
             f"DFB config at physical index {physical_index} has dfb_index "
             f"{config.dfb_index}"
         )
-    return config
 
 
 def _get_dfb_allocation(config: PhysicalDFBConfig) -> _DFBAllocation:
@@ -447,8 +441,8 @@ def build_cb_descriptors(
     rows = []
     total_cb_bytes = 0
     for physical_index, config in enumerate(cb_configs):
-        config = _validate_physical_dfb_config(config, physical_index)
         allocation = _get_dfb_allocation(config)
+        _validate_physical_dfb_config(config, physical_index)
         description = (
             f"  DFB[{physical_index}]: num_tiles={allocation.num_tiles} "
             f"block_count={allocation.block_count} "
@@ -781,8 +775,8 @@ def emit_runner_source(
 
     lines.append("CB_CONFIGS = [")
     for physical_index, config in enumerate(cb_configs):
-        config = _validate_physical_dfb_config(config, physical_index)
         allocation = _get_dfb_allocation(config)
+        _validate_physical_dfb_config(config, physical_index)
         dtype_str = _dtype_to_ttnn_str(allocation.data_format)
         lines.append(
             f"    ({allocation.num_tiles}, {allocation.block_count}, "

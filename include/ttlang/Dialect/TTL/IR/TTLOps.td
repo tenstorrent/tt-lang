@@ -42,9 +42,8 @@ def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
     Example:
 
     ```mlir
-    %cb = ttl.bind_cb {cb_index = 0 : index, block_count = 2}
-          {dfb_id = 0 : index}
-          : !ttl.cb<[1, 1], f32, 2>
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     ```
   }];
   let arguments = (ins

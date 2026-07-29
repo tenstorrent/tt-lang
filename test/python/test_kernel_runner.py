@@ -379,6 +379,14 @@ def test_physical_dfb_allocation_scales_with_subtile_area():
     assert two_half_tiles.total_size == full_tile.total_size
 
 
+def test_physical_dfb_allocation_uses_complete_rank_three_shape():
+    allocation = kernel_runner._get_dfb_allocation(
+        PhysicalDFBConfig(0, 8, "bfloat16", 2, 2048, (32, 32))
+    )
+
+    assert allocation.total_size == 8 * 2 * 2048
+
+
 def test_dfb_allocation_requires_finalized_config(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
 
@@ -390,15 +398,25 @@ def test_dfb_allocation_requires_finalized_config(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "cb_configs",
+    ("cb_configs", "error_type", "message"),
     [
-        [None],
-        [PhysicalDFBConfig(1, 1, "bfloat16", 2, 2048)],
+        (
+            [None],
+            TypeError,
+            "must be a finalized PhysicalDFBConfig",
+        ),
+        (
+            [PhysicalDFBConfig(1, 1, "bfloat16", 2, 2048)],
+            ValueError,
+            "DFB config at physical index 0",
+        ),
     ],
     ids=["missing-config", "wrong-index"],
 )
-def test_emit_runner_source_rejects_invalid_physical_dfb_sequence(cb_configs):
-    with pytest.raises(ValueError, match="DFB config at physical index 0"):
+def test_emit_runner_source_rejects_invalid_physical_dfb_sequence(
+    cb_configs, error_type, message
+):
+    with pytest.raises(error_type, match=message):
         kernel_runner.emit_runner_source(
             kernel_specs=[],
             cb_configs=cb_configs,
