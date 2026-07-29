@@ -37,21 +37,26 @@ namespace mlir::tt::ttl {
 class PipeModulePlan;
 class PipeTransferIndex;
 
+/// Options that control PipeNet protocol and resource planning.
+struct PipePlanningOptions {
+  /// Compute receiver DFB addresses instead of publishing them at runtime.
+  bool enableComputedAddresses = false;
+
+  /// Use sender-local capacity counters for transfers proven safe.
+  bool enableCapacitySynchronization = false;
+};
+
 /// Protocol selection used while allocating readiness resources.
 class PipeSynchronizationSelection {
 public:
   /// Return whether `op` uses sender-side capacity synchronization.
-  bool usesCapacityProtocol(PipeTransferSendOp op) const;
-
-  /// Return whether `op` uses sender-side capacity synchronization.
-  bool usesCapacityProtocol(PipeTransferPostOp op) const;
+  bool usesCapacityProtocol(Operation *op) const;
 
 private:
-  friend FailureOr<PipeModulePlan> buildPipeModulePlan(ModuleOp,
-                                                       ValueOriginAnalysis &,
-                                                       const PipeTransferIndex &,
-                                                       const PipeGraph &, bool,
-                                                       bool);
+  friend FailureOr<PipeModulePlan>
+  buildPipeModulePlan(ModuleOp, ValueOriginAnalysis &,
+                      const PipeTransferIndex &, const PipeGraph &,
+                      const PipePlanningOptions &);
 
   llvm::SmallPtrSet<Operation *, 16> capacityTransferOps;
 };
@@ -95,6 +100,14 @@ public:
     return acquires.empty() && releases.empty() && initializations.empty();
   }
 
+  /// Return the combined completion, readiness, and capacity totals.
+  PipeCounterAllocationCounts getCounterAllocationCounts() const {
+    return counterAllocator.getCounts();
+  }
+
+private:
+  friend class PipeCapacityPlanBuilder;
+
   /// Record one sender acquire for `op`.
   void addAcquire(PipeTransferSendOp op, PipeCapacityAcquireInfo info);
 
@@ -110,12 +123,6 @@ public:
   /// Allocate storage for one proven sender-capacity counter.
   PipeCounterInfo allocateCounter();
 
-  /// Return the combined completion, readiness, and capacity totals.
-  PipeCounterAllocationCounts getCounterAllocationCounts() const {
-    return counterAllocator.getCounts();
-  }
-
-private:
   llvm::MapVector<Operation *, SmallVector<PipeCapacityAcquireInfo>> acquires;
   llvm::MapVector<Operation *, SmallVector<PipeCapacityReleaseInfo>> releases;
   llvm::MapVector<func::FuncOp, SmallVector<PipeCapacityInitInfo>>
@@ -178,11 +185,10 @@ public:
   }
 
 private:
-  friend FailureOr<PipeModulePlan> buildPipeModulePlan(ModuleOp,
-                                                       ValueOriginAnalysis &,
-                                                       const PipeTransferIndex &,
-                                                       const PipeGraph &, bool,
-                                                       bool);
+  friend FailureOr<PipeModulePlan>
+  buildPipeModulePlan(ModuleOp, ValueOriginAnalysis &,
+                      const PipeTransferIndex &, const PipeGraph &,
+                      const PipePlanningOptions &);
 
   PipeTransferPlan(PipeType pipeType, const PipeResourceInfo &resources,
                    PipeSynchronizationProtocol synchronizationProtocol,
@@ -230,11 +236,10 @@ public:
   const PipeTransferPlan &getTransferPlan(Operation *operation) const;
 
 private:
-  friend FailureOr<PipeModulePlan> buildPipeModulePlan(ModuleOp,
-                                                       ValueOriginAnalysis &,
-                                                       const PipeTransferIndex &,
-                                                       const PipeGraph &, bool,
-                                                       bool);
+  friend FailureOr<PipeModulePlan>
+  buildPipeModulePlan(ModuleOp, ValueOriginAnalysis &,
+                      const PipeTransferIndex &, const PipeGraph &,
+                      const PipePlanningOptions &);
 
   PipeResourcePlan resourcePlan;
   PipeCapacityPlan capacityPlan;
@@ -248,8 +253,8 @@ private:
 FailureOr<PipeModulePlan>
 buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
                     const PipeTransferIndex &transferIndex,
-                    const PipeGraph &pipeGraph, bool enableComputedAddresses,
-                    bool enableCapacitySynchronization);
+                    const PipeGraph &pipeGraph,
+                    const PipePlanningOptions &options);
 
 /// Materialize the module and function attributes recorded by `plan`.
 void applyPipeModuleAttributes(ModuleOp module, const PipeModulePlan &plan);
