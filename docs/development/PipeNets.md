@@ -627,8 +627,13 @@ Every sequence satisfies `block_count > 0`, `0 <= slot(E, i) < block_count`,
 materialization separately requires the final offsets and counter parameters
 to fit their 32-bit TTKernel representation.
 
-The synchronization proof classifies the occurrence domain `I(T)` by
-what is known at compile time:
+`ReceiverAddressSequenceProofKind` names the same three models in the
+implementation. `ReceiverAddressSequenceProof` stores a recurrence and, for
+`KnownCount(N)`, the exact count `N`; `getKind()` derives the model from those
+fields and asserts that a count never exists without a recurrence.
+
+The synchronization proof classifies the occurrence domain `I(T)` by what is
+known at compile time:
 
 | Occurrence model | Compile-time knowledge | Proof domain |
 | --- | --- | --- |

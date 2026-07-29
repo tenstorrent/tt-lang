@@ -177,14 +177,32 @@ struct ReceiverAddressRecurrence {
   int64_t blockCount = 1;
 };
 
-/// Proven receiver slots for one transfer endpoint. The recurrence may be
-/// restricted to an exact execution count. Without an execution count, it
-/// holds for every `i >= 0`. An absent recurrence means no sequence was proven.
+/// Compile-time model for a receiver address sequence.
+enum class ReceiverAddressSequenceProofKind {
+  KnownCount,
+  PeriodicUnknownCount,
+  FullyDynamic
+};
+
+/// Proven receiver slots for one transfer endpoint.
+///
+/// `KnownCount` has a recurrence and an exact execution count.
+/// `PeriodicUnknownCount` has a recurrence that holds for every `i >= 0`.
+/// `FullyDynamic` has neither because no recurrence was proven.
 struct ReceiverAddressSequenceProof {
   std::optional<std::uint64_t> executionCount;
   std::optional<ReceiverAddressRecurrence> recurrence;
 
-  bool isProven() const { return recurrence.has_value(); }
+  ReceiverAddressSequenceProofKind getKind() const {
+    assert((recurrence || !executionCount) &&
+           "an execution count requires a receiver address recurrence");
+    if (!recurrence) {
+      return ReceiverAddressSequenceProofKind::FullyDynamic;
+    }
+    return executionCount
+               ? ReceiverAddressSequenceProofKind::KnownCount
+               : ReceiverAddressSequenceProofKind::PeriodicUnknownCount;
+  }
 };
 
 /// One transfer definition: one send and its corresponding receiver posts.
