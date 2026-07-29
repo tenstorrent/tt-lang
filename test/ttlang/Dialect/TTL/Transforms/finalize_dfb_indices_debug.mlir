@@ -2,11 +2,11 @@
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false})' -debug-only=ttl-finalize-dfb-indices 2>&1 | FileCheck %s
 
 // CHECK: Total DFB count: 4
-// CHECK-NEXT: DFB reuse: logical DFB 0 -> physical index 0
-// CHECK-NEXT: DFB reuse: logical DFB 1 -> physical index 1
-// CHECK-NEXT: DFB reuse: logical DFB 2 -> physical index 2
-// CHECK-NEXT: DFB reuse: logical DFB 3 -> physical index 3
-// CHECK-NEXT: DFB reuse: logical DFB 4 -> physical index 3
+// CHECK-NEXT: DFB assignment: logical DFB 0 -> physical index 0
+// CHECK-NEXT: DFB assignment: logical DFB 1 -> physical index 1
+// CHECK-NEXT: DFB assignment: logical DFB 2 -> physical index 2
+// CHECK-NEXT: DFB assignment: logical DFB 3 -> physical index 3
+// CHECK-NEXT: DFB assignment: logical DFB 4 -> physical index 3
 
 module {
   func.func @non_overlapping_reuse()

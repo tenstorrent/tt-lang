@@ -19,6 +19,7 @@ python my_kernel.py --no-ttl-maximize-dst
 | `--ttl-combine-pack-tiles` / `--no-ttl-combine-pack-tiles` | enabled | Combine consecutive `pack_tile` ops on the same DFB with contiguous DST and DFB indices into a single `pack_tile_block` call. |
 | `--ttl-strict-f32-acc` / `--no-ttl-strict-f32-acc` | disabled | Error at compile time if a `+=` accumulation loop's output block exceeds f32 DST capacity (4 tiles with double-buffering). When enabled, guarantees each accumulation step fits in a single DST section without subblocking. |
 | `--ttl-compiler-dfbs` / `--no-ttl-compiler-dfbs` | enabled | Insert compiler-allocated intermediate DFBs at fusion split points where an operation requires DFB-attached inputs (reduce, broadcast, matmul, transpose). When disabled, the compiler emits an error if any fused computation requires an intermediate DFB. |
+| `--ttl-reuse-user-dfbs` / `--no-ttl-reuse-user-dfbs` | enabled | Reuse physical DFB indices when concurrent-kernel liveness proves that compatible logical DFB lifetimes do not overlap. Disabling retains user-declared physical indices. |
 | `--ttl-specialize-cores` / `--no-ttl-specialize-cores` | disabled | Clone each TTKernel function whose control flow branches on a core coordinate once per launch coordinate (`ttkernel-specialize-cores`), replacing `my_logical_x_` / `my_logical_y_` with constants and tagging clones with `ttl.core_coord` for per-core dispatch. Opt-in. |
 
 ### Other Ways to Set These
@@ -116,6 +117,7 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 | `combine-pack-tiles` | bool | `true` | Combine consecutive `pack_tile` ops into `pack_tile_block`. |
 | `strict-f32-acc` | bool | `false` | Error if a `+=` accumulation loop's output block exceeds f32 DST capacity. |
 | `compiler-dfbs` | bool | `true` | Insert compiler-allocated intermediate DFBs for fused computations. Error if disabled and any operation requires one. |
+| `reuse-user-dfbs` | bool | `true` | Reuse physical DFB indices for compatible logical DFBs with proven non-overlapping concurrent lifetimes. |
 | `specialize-cores` | bool | `false` | Clone TTKernel functions that branch on a core coordinate once per launch coordinate (`ttkernel-specialize-cores`), then run `canonicalize` / `cse`. Maps from `--ttl-specialize-cores`. |
 | `lower-to-emitc` | bool | `false` | Run the TTKernel-to-EmitC backend (produces C++ source). |
 
@@ -131,7 +133,7 @@ The pipeline runs these passes in order:
 - `ttl-coalesce-dfb-acquires`: combine adjacent DFB transactions before
   physical allocation
 - `ttl-finalize-dfb-indices`: assign logical DFBs to physical indices and emit
-  runtime allocation metadata
+  runtime allocation metadata; controlled by `reuse-user-dfbs`
 - `ttl-set-compute-kernel-config` — set `fp32_dest_acc_en` / `dst_full_sync_en` defaults
 - `ttl-assign-dst` — DST register allocation (linear scan with copy insertion)
 - `ttl-subblock-compute-for-dst` — tile `ttl.compute` into DST-sized subblocks *(only if `maximize-dst=true`)*; optionally refine reserve/push to per-subblock granularity *(only if `subblock-sync=true`)*

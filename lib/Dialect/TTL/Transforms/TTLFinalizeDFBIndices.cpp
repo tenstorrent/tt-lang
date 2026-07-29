@@ -42,7 +42,7 @@ applyPhysicalAllocationPlan(ModuleOp moduleOp, OpBuilder &builder,
           IntegerAttr::get(IndexType::get(context), assignment.physicalIndex));
     }
     LLVM_DEBUG({
-      llvm::dbgs() << "DFB reuse: logical DFB " << assignment.logicalId
+      llvm::dbgs() << "DFB assignment: logical DFB " << assignment.logicalId
                    << " -> physical index " << assignment.physicalIndex
                    << (assignment.bounded ? " (bounded)\n" : " (unbounded)\n");
     });

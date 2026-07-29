@@ -31,7 +31,7 @@ ttl-form-producer-compute      (FuncOp)   Form producer compute regions
 ttl-insert-intermediate-dfbs   (FuncOp)   Materialize compiler-allocated DFBs
 convert-ttl-to-compute         (FuncOp)   Lower remaining tensor ops
 ttl-auto-sync                  (FuncOp)   Insert/coalesce remaining DFB sync
-ttl-finalize-dfb-indices       (Module)   Index reuse + limit check
+ttl-finalize-dfb-indices       (Module)   Finalize identities and allocations
 ttl-set-compute-kernel-config  (FuncOp)   Set per-kernel configuration
   ... DST assignment, loop lowering, scheduling ...
 ttl-annotate-cb-associations   (FuncOp)   Copy CB indices to tile ops
@@ -803,6 +803,11 @@ A logical DFB is bounded only when all of these conditions hold:
 - pop follows all uses owned by the wait;
 - reserve, push, wait, and pop transfer the same tile count (`num_tiles`).
 
+The pass runs after `ttl-insert-copy-wait`. A transfer into or out of a DFB
+completes at its `ttl.wait`, whose transfer-handle operand does not identify the
+DFB. Inserting that wait before the corresponding push or pop ensures the
+lifecycle release follows transfer completion.
+
 The acquire/release ownership analysis described in
 [DFB Sync Insertion](#dfb-sync-insertion) supplies the owned-use checks.
 Failure to prove any condition leaves the DFB unbounded.
@@ -829,7 +834,11 @@ Its 16x32 bf16 coverage uses a
 
 For a bounded DFB, every operation with a direct DFB operand is projected to a
 top-level function operation. `attach_cb` is excluded because it does not
-change the hardware protocol. The analysis records:
+access the hardware buffer or change its protocol state; the owned-use check
+still rejects an attachment whose tensor use extends beyond release. Unrelated
+operations are contracted from each kernel sequence because this preserves
+reachability among all events queried by the lifetime proof. The analysis
+records:
 
 - `earliestEvents`: the minimal use-entry events under happens-before;
 - `terminalEvents`: the `cb_pop` completion event.
@@ -1151,11 +1160,11 @@ the end of its kernel.
   interference graph. A stronger implementation could reduce the physical
   count without changing the liveness proof.
 
-- **Reachability cost.** The current bit-vector transitive closure is suitable
-  for the small number of operations in one kernel launch. Its cost depends on
-  the total operations across all kernel sequences, not a fixed kernel
-  count. An SCC condensation followed by topological bit-set propagation would
-  scale better for substantially larger generated programs.
+- **Reachability cost.** The bit-vector transitive closure is cubic in the
+  number of top-level DFB-accessing operations across all kernel sequences.
+  Unrelated operations are excluded. An SCC condensation followed by
+  topological bit-set propagation would scale better for programs with many
+  DFB lifecycle operations.
 
 ## Scalar Element Access to DFBs
 
