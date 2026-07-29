@@ -10,3 +10,21 @@
 %count = arith.constant 1 : i32
 // expected-error @below {{'ttkernel.cb_push_back' op CBPushBackOp must be inside a kernel function}}
 ttkernel.cb_push_back(%cb, %count) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, i32) -> ()
+
+// -----
+
+// Test: constant lookup tables must contain at least one value.
+func.func @empty_constant_table(%index: index) -> index {
+  // expected-error @below {{'ttkernel.experimental.constant_table_lookup' op requires at least one table value}}
+  %value = ttkernel.experimental.constant_table_lookup %index, [] : index
+  return %value : index
+}
+
+// -----
+
+// Test: constant lookup tables contain only non-negative values.
+func.func @negative_constant_table_value(%index: index) -> index {
+  // expected-error @below {{'ttkernel.experimental.constant_table_lookup' op requires non-negative table values}}
+  %value = ttkernel.experimental.constant_table_lookup %index, [0, -1] : index
+  return %value : index
+}

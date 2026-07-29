@@ -412,7 +412,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
     %receiver_one = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 1
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 1>
     %transfer = ttl.pipe_transfer.create %collective
-        {expectedReceivers = 2 : i64, kind = #ttl.pipe_transfer_kind<collective>}
+        {kind = #ttl.pipe_transfer_kind<collective>}
         : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> -> !ttl.pipe_transfer
     ttl.if_dst %receiver_one
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 1> {
@@ -472,10 +472,10 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
     %receiver_one = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 1
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 1>
     %collective_transfer = ttl.pipe_transfer.create %collective
-        {expectedReceivers = 2 : i64, kind = #ttl.pipe_transfer_kind<collective>}
+        {kind = #ttl.pipe_transfer_kind<collective>}
         : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> -> !ttl.pipe_transfer
     %receiver_one_transfer = ttl.pipe_transfer.create %receiver_one
-        {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+        {kind = #ttl.pipe_transfer_kind<point_to_point>}
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 1> -> !ttl.pipe_transfer
     %lower = arith.constant 0 : index
     %upper = arith.constant 2 : index

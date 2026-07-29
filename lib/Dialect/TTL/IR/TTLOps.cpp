@@ -95,6 +95,28 @@ LayoutAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
   return llvm::success();
 }
 
+llvm::LogicalResult
+PipeRecordAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+                       int64_t srcX, int64_t srcY, int64_t dstStartX,
+                       int64_t dstStartY, int64_t dstEndX, int64_t dstEndY,
+                       bool isCollective) {
+  if (srcX < 0 || srcY < 0) {
+    return emitError() << "source coordinates must be non-negative";
+  }
+  if (dstStartX < 0 || dstStartY < 0 || dstEndX < 0 || dstEndY < 0) {
+    return emitError() << "destination coordinates must be non-negative";
+  }
+  if (dstStartX > dstEndX || dstStartY > dstEndY) {
+    return emitError()
+           << "destination start must not exceed destination end on any axis";
+  }
+  if (!isCollective && (dstStartX != dstEndX || dstStartY != dstEndY)) {
+    return emitError()
+           << "point-to-point pipe record must have exactly one receiver";
+  }
+  return llvm::success();
+}
+
 } // namespace mlir::tt::ttl
 
 mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
@@ -178,19 +200,35 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
   const bool dstIsCb = mlir::isa<CircularBufferType>(dstTy);
   const bool srcIsSlice = getSrc().getDefiningOp<TensorSliceOp>() != nullptr;
   const bool dstIsSlice = getDst().getDefiningOp<TensorSliceOp>() != nullptr;
-  const bool srcIsPipe = mlir::isa<PipeType>(srcTy);
-  const bool dstIsPipe = mlir::isa<PipeType>(dstTy);
+  const bool srcIsStaticPipe = mlir::isa<PipeType>(srcTy);
+  const bool dstIsStaticPipe = mlir::isa<PipeType>(dstTy);
+  const bool srcIsSelectedPipeSrc = mlir::isa<SelectedPipeSrcType>(srcTy);
+  const bool srcIsSelectedPipeDst = mlir::isa<SelectedPipeDstType>(srcTy);
+  const bool dstIsSelectedPipeSrc = mlir::isa<SelectedPipeSrcType>(dstTy);
+  const bool dstIsSelectedPipeDst = mlir::isa<SelectedPipeDstType>(dstTy);
+  const bool srcIsPipe =
+      srcIsStaticPipe || srcIsSelectedPipeSrc || srcIsSelectedPipeDst;
+  const bool dstIsPipe =
+      dstIsStaticPipe || dstIsSelectedPipeSrc || dstIsSelectedPipeDst;
 
   if (srcIsPipe || dstIsPipe) {
     if (srcIsPipe && dstIsPipe) {
       return emitOpError() << "cannot copy directly between pipes";
     }
     if (dstIsPipe) {
+      if (dstIsSelectedPipeDst) {
+        return emitOpError()
+               << "destination-selected pipe cannot be used as a send target";
+      }
       if (!srcIsCb) {
         return emitOpError()
                << "pipe send requires source operand to be !ttl.cb";
       }
       return success();
+    }
+    if (srcIsSelectedPipeSrc) {
+      return emitOpError()
+             << "source-selected pipe cannot be used as a receive source";
     }
     if (!findCBReserveForPipeReceive(getDst())) {
       return emitOpError() << "pipe receive requires a cb_reserve destination";
@@ -277,25 +315,153 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
   return success();
 }
 
-mlir::LogicalResult mlir::tt::ttl::PipeTransferCreateOp::verify() {
-  auto pipeType = mlir::cast<PipeType>(getPipe().getType());
-  int64_t expectedReceivers = static_cast<int64_t>(getExpectedReceivers());
-  if (expectedReceivers <= 0) {
-    return emitOpError() << "requires positive expectedReceivers";
+static mlir::LogicalResult verifyPipeNetForeachBody(
+    mlir::Operation *op, mlir::Region &body, mlir::Type expectedArgType,
+    llvm::function_ref<bool(mlir::OpOperand &, mlir::BlockArgument)>
+        isValidUse) {
+  if (!body.hasOneBlock()) {
+    return op->emitOpError() << "requires a single-block body";
   }
-  if (expectedReceivers != pipeType.getNumDests()) {
-    return emitOpError()
-           << "expectedReceivers must match the pipe receiver count";
+  mlir::Block &block = body.front();
+  if (block.getNumArguments() != 1) {
+    return op->emitOpError()
+           << "body must have exactly one selected-pipe argument";
+  }
+  mlir::BlockArgument pipeArg = block.getArgument(0);
+  if (pipeArg.getType() != expectedArgType) {
+    return op->emitOpError()
+           << "body argument must have type " << expectedArgType << ", got "
+           << pipeArg.getType();
+  }
+  for (mlir::OpOperand &use : pipeArg.getUses()) {
+    if (isValidUse(use, pipeArg)) {
+      continue;
+    }
+    return op->emitOpError() << "selected pipe argument has unsupported use by "
+                             << use.getOwner()->getName();
+  }
+  return mlir::success();
+}
+
+static mlir::LogicalResult
+verifyPipeNetForeachRecords(mlir::Operation *op,
+                            mlir::tt::ttl::PipeNetRecordsAttr records) {
+  ::llvm::ArrayRef<mlir::tt::ttl::PipeRecordAttr> pipes = records.getPipes();
+  if (pipes.empty()) {
+    return op->emitOpError() << "requires at least one pipe record";
+  }
+  bool isCollective = pipes.front().getIsCollective();
+  for (mlir::tt::ttl::PipeRecordAttr record : pipes) {
+    if (record.getIsCollective() != isCollective) {
+      return op->emitOpError()
+             << "all pipe records must be either point-to-point or collective";
+    }
+  }
+  return mlir::success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::PipeNetForeachSrcOp::verify() {
+  if (failed(verifyPipeNetForeachRecords(getOperation(), getRecords()))) {
+    return failure();
+  }
+  return verifyPipeNetForeachBody(
+      getOperation(), getBody(), SelectedPipeSrcType::get(getContext()),
+      [](mlir::OpOperand &use, mlir::BlockArgument pipeArg) {
+        auto copy = mlir::dyn_cast<CopyOp>(use.getOwner());
+        if (!copy) {
+          return false;
+        }
+        return copy.getDst() == pipeArg;
+      });
+}
+
+mlir::LogicalResult mlir::tt::ttl::PipeNetForeachDstOp::verify() {
+  if (failed(verifyPipeNetForeachRecords(getOperation(), getRecords()))) {
+    return failure();
+  }
+  return verifyPipeNetForeachBody(
+      getOperation(), getBody(), SelectedPipeDstType::get(getContext()),
+      [](mlir::OpOperand &use, mlir::BlockArgument pipeArg) {
+        auto copy = mlir::dyn_cast<CopyOp>(use.getOwner());
+        if (!copy) {
+          return false;
+        }
+        return copy.getSrc() == pipeArg;
+      });
+}
+
+mlir::LogicalResult mlir::tt::ttl::SelectPipeSrcOp::verify() {
+  return verifyPipeNetForeachRecords(getOperation(), getRecords());
+}
+
+mlir::LogicalResult mlir::tt::ttl::SelectPipeDstOp::verify() {
+  return verifyPipeNetForeachRecords(getOperation(), getRecords());
+}
+
+static mlir::Operation *getSelectedPipeDef(mlir::Value pipe) {
+  pipe = mlir::tt::ttl::traceUnrealizedCasts(pipe);
+  if (auto selectedSrc = pipe.getDefiningOp<mlir::tt::ttl::SelectPipeSrcOp>()) {
+    return selectedSrc.getOperation();
+  }
+  if (auto selectedDst = pipe.getDefiningOp<mlir::tt::ttl::SelectPipeDstOp>()) {
+    return selectedDst.getOperation();
+  }
+  return nullptr;
+}
+
+static mlir::LogicalResult verifySelectedPipeDirectDef(mlir::Operation *op,
+                                                       mlir::Value pipe) {
+  if (mlir::isa<mlir::tt::ttl::PipeType>(pipe.getType())) {
+    return mlir::success();
+  }
+  if (getSelectedPipeDef(pipe)) {
+    return mlir::success();
+  }
+  return op->emitOpError()
+         << "selected pipe operand must be a direct result of "
+            "ttl.select_pipe_src or ttl.select_pipe_dst";
+}
+
+static bool
+selectedPipeKindMatchesTransfer(mlir::Value pipe,
+                                mlir::tt::ttl::PipeTransferKind kind) {
+  pipe = mlir::tt::ttl::traceUnrealizedCasts(pipe);
+  mlir::tt::ttl::PipeNetRecordsAttr records;
+  if (auto selectedSrc = pipe.getDefiningOp<mlir::tt::ttl::SelectPipeSrcOp>()) {
+    records = selectedSrc.getRecords();
+  } else if (auto selectedDst =
+                 pipe.getDefiningOp<mlir::tt::ttl::SelectPipeDstOp>()) {
+    records = selectedDst.getRecords();
+  } else {
+    return true;
   }
 
-  switch (getKind().getValue()) {
-  case PipeTransferKind::PointToPoint:
-    if (!pipeType.hasSingleReceiver()) {
-      return emitOpError() << "point_to_point transfer requires one receiver";
+  bool isCollective = records.getPipes().front().getIsCollective();
+  return isCollective == (kind == mlir::tt::ttl::PipeTransferKind::Collective);
+}
+
+mlir::LogicalResult mlir::tt::ttl::PipeTransferCreateOp::verify() {
+  if (failed(verifySelectedPipeDirectDef(getOperation(), getPipe()))) {
+    return failure();
+  }
+
+  Value pipe = traceUnrealizedCasts(getPipe());
+  if (auto pipeType = mlir::dyn_cast<PipeType>(pipe.getType())) {
+    switch (getKind().getValue()) {
+    case PipeTransferKind::PointToPoint:
+      if (!pipeType.hasSingleReceiver()) {
+        return emitOpError() << "point_to_point transfer requires one receiver";
+      }
+      break;
+    case PipeTransferKind::Collective:
+      break;
     }
-    break;
-  case PipeTransferKind::Collective:
-    break;
+    return success();
+  }
+
+  if (!selectedPipeKindMatchesTransfer(getPipe(), getKind().getValue())) {
+    return emitOpError()
+           << "selected pipe transfer kind must match the records kind";
   }
 
   return success();
@@ -2008,6 +2174,26 @@ void mlir::tt::ttl::IfSrcOp::getSuccessorRegions(
 }
 
 void mlir::tt::ttl::IfDstOp::getSuccessorRegions(
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  if (point.isParent()) {
+    regions.push_back(RegionSuccessor(&getBody()));
+    regions.push_back(RegionSuccessor(getOperation()));
+    return;
+  }
+  regions.push_back(RegionSuccessor(getOperation()));
+}
+
+void mlir::tt::ttl::PipeNetForeachSrcOp::getSuccessorRegions(
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  if (point.isParent()) {
+    regions.push_back(RegionSuccessor(&getBody()));
+    regions.push_back(RegionSuccessor(getOperation()));
+    return;
+  }
+  regions.push_back(RegionSuccessor(getOperation()));
+}
+
+void mlir::tt::ttl::PipeNetForeachDstOp::getSuccessorRegions(
     RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
   if (point.isParent()) {
     regions.push_back(RegionSuccessor(&getBody()));
