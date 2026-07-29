@@ -4,6 +4,7 @@
 
 #include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
 
+#include "PipeGraph.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
@@ -126,9 +127,12 @@ LogicalResult verifyPost(PipeTransferPostOp op, ValueOriginAnalysis &analysis) {
            << "requires every possible transfer value to derive from the "
               "same ttl.pipe_transfer.create";
   }
-  auto pipeType = cast<PipeType>(create->getPipe().getType());
+  FailureOr<PipeReference> pipeRef = getPipeReference(op, create->getPipe());
+  if (failed(pipeRef)) {
+    return failure();
+  }
   auto tokenType = cast<PipeTokenType>(op.getToken().getType());
-  if (tokenType.getPipeNetId() != pipeType.getPipeNetId()) {
+  if (tokenType.getPipeNetId() != pipeRef->getPipeNetId()) {
     return op.emitOpError() << "token pipeNetId must match transfer pipeNetId";
   }
   return success();

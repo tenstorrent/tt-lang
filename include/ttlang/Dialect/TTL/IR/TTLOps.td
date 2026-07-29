@@ -332,11 +332,13 @@ def TTL_ComputeOp : TTL_Op<"compute", [
 
 def TTL_YieldOp : TTL_Op<"yield", [ReturnLike, Terminator,
     ParentOneOf<["ComputeOp", "DstSectionOp", "IfSrcOp", "IfDstOp",
+                 "PipeNetForeachSrcOp", "PipeNetForeachDstOp",
                  "PipeNetScopeOp", "AccumulationScopeOp"]>]> {
   let summary = "Terminate a TTL region body";
   let description = [{
     `ttl.yield` terminates the body of `ttl.compute`, `ttl.dst_section`,
-    `ttl.if_src`, `ttl.if_dst`, `ttl.pipenet_scope`, and
+    `ttl.if_src`, `ttl.if_dst`, `ttl.pipenet_foreach_src`,
+    `ttl.pipenet_foreach_dst`, `ttl.pipenet_scope`, and
     `ttl.accumulation_scope`. In `ttl.accumulation_scope`, it carries one
     updated value per accumulation output. Other TTL regions use an
     operand-less terminator.
@@ -661,6 +663,110 @@ def TTL_IfDstOp : TTL_Op<"if_dst",
   }];
 }
 
+def TTL_PipeNetForeachSrcOp : TTL_Op<"pipenet_foreach_src",
+    [SingleBlockImplicitTerminator<"YieldOp">,
+     DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
+  let summary = "Iterate over source pipe records in a PipeNet";
+  let description = [{
+    Executes the body region once for each static PipeNet record whose source
+    coordinate matches the current launch node. The body receives a
+    `!ttl.selected_pipe_src` argument representing the selected record for that
+    iteration.
+
+    The records in `$records` are ordered by user PipeNet construction
+    order. That order defines program order for a launch node that matches
+    multiple records.
+  }];
+
+  let arguments = (ins
+    TTL_PipeNetRecordsAttr:$records
+  );
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = "attr-dict-with-keyword $body";
+  let hasVerifier = 1;
+}
+
+def TTL_PipeNetForeachDstOp : TTL_Op<"pipenet_foreach_dst",
+    [SingleBlockImplicitTerminator<"YieldOp">,
+     DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
+  let summary = "Iterate over destination pipe records in a PipeNet";
+  let description = [{
+    Executes the body region once for each static PipeNet record whose
+    destination range contains the current launch node. The body receives a
+    `!ttl.selected_pipe_dst` argument representing the selected record for that
+    iteration.
+
+    The records in `$records` are ordered by user PipeNet construction
+    order. That order defines program order for a launch node that matches
+    multiple records.
+  }];
+
+  let arguments = (ins
+    TTL_PipeNetRecordsAttr:$records
+  );
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = "attr-dict-with-keyword $body";
+  let hasVerifier = 1;
+}
+
+def TTL_SelectPipeSrcOp : TTL_Op<"select_pipe_src", [Pure]> {
+  let summary = "Represent a selected source pipe";
+  let description = [{
+    Represents a source pipe selected from a PipeNet record table. The
+    operands contain the selected record fields for the current foreach
+    iteration. `$recordIndex` identifies the record in `$records`; the
+    remaining operands contain that record's coordinates and receiver count.
+  }];
+
+  let arguments = (ins
+    Index:$recordIndex,
+    Index:$srcX,
+    Index:$srcY,
+    Index:$dstStartX,
+    Index:$dstStartY,
+    Index:$dstEndX,
+    Index:$dstEndY,
+    Index:$numDests,
+    I1:$srcInDstRange,
+    TTL_PipeNetRecordsAttr:$records
+  );
+  let results = (outs TTL_SelectedPipeSrc:$pipe);
+  let assemblyFormat = [{
+    `record` `(` $recordIndex `)` `src` `(` $srcX `,` $srcY `)` `dst` `(` $dstStartX `,` $dstStartY `)` `to` `(` $dstEndX `,` $dstEndY `)`
+    `num_dests` `(` $numDests `)` `src_in_dst` `(` $srcInDstRange `)` attr-dict `:` type($pipe)
+  }];
+  let hasVerifier = 1;
+}
+
+def TTL_SelectPipeDstOp : TTL_Op<"select_pipe_dst", [Pure]> {
+  let summary = "Represent a selected destination pipe";
+  let description = [{
+    Represents a destination pipe selected from a PipeNet record table. The
+    operands contain the selected record fields for the current foreach
+    iteration. `$recordIndex` identifies the record in `$records`; the
+    remaining operands contain that record's coordinates and receiver count.
+  }];
+
+  let arguments = (ins
+    Index:$recordIndex,
+    Index:$srcX,
+    Index:$srcY,
+    Index:$dstStartX,
+    Index:$dstStartY,
+    Index:$dstEndX,
+    Index:$dstEndY,
+    Index:$numDests,
+    I1:$srcInDstRange,
+    TTL_PipeNetRecordsAttr:$records
+  );
+  let results = (outs TTL_SelectedPipeDst:$pipe);
+  let assemblyFormat = [{
+    `record` `(` $recordIndex `)` `src` `(` $srcX `,` $srcY `)` `dst` `(` $dstStartX `,` $dstStartY `)` `to` `(` $dstEndX `,` $dstEndY `)`
+    `num_dests` `(` $numDests `)` `src_in_dst` `(` $srcInDstRange `)` attr-dict `:` type($pipe)
+  }];
+  let hasVerifier = 1;
+}
+
 def TTL_PipeTransferCreateOp : TTL_Op<"pipe_transfer.create", [Pure]> {
   let summary = "Create a pipe transfer reference";
   let description = [{
@@ -671,9 +777,8 @@ def TTL_PipeTransferCreateOp : TTL_Op<"pipe_transfer.create", [Pure]> {
     point-to-point or collective contract.
   }];
   let arguments = (ins
-    TTL_Pipe:$pipe,
-    TTL_PipeTransferKindAttr:$kind,
-    I64Attr:$expectedReceivers
+    TTL_PipeReference:$pipe,
+    TTL_PipeTransferKindAttr:$kind
   );
   let results = (outs TTL_PipeTransfer:$transfer);
   let assemblyFormat = "$pipe attr-dict `:` type($pipe) `->` type($transfer)";

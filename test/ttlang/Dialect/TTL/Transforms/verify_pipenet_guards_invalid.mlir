@@ -507,9 +507,9 @@ module attributes {ttl.launch_grid = [8 : i64, 1 : i64]} {
 
 // -----
 
-// `is_src` referencing a PipeNet id that no `ttl.create_pipe` declares is
-// rejected. Without this check, the empty role domain would silently accept
-// any pipe-coupled op nested under the bogus guard.
+// `is_src` referencing a PipeNet id with no pipe or record-table declaration is
+// rejected. Otherwise the empty role domain would accept any pipe-coupled op
+// nested under the invalid guard.
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @unknown_pipenet_id() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
