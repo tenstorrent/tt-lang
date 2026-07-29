@@ -42,6 +42,20 @@ PipeCapacityPlan::lookupReleases(CBPopOp op) const {
   return releaseIt->second;
 }
 
+SmallVector<CBPopOp, 1>
+PipeCapacityPlan::findReleaseOps(PipeTransferNodeId transferNode) const {
+  SmallVector<CBPopOp, 1> releaseOps;
+  for (const auto &[operation, releaseInfos] : releases) {
+    if (llvm::any_of(releaseInfos,
+                     [&](const PipeCapacityReleaseInfo &releaseInfo) {
+                       return releaseInfo.transferNode == transferNode;
+                     })) {
+      releaseOps.push_back(cast<CBPopOp>(operation));
+    }
+  }
+  return releaseOps;
+}
+
 void PipeCapacityPlan::addAcquire(PipeTransferSendOp op,
                                   PipeCapacityAcquireInfo info) {
   acquires[op.getOperation()].push_back(info);
@@ -267,7 +281,8 @@ private:
     for (CBPopOp popOp : endpointFacts.pops) {
       plan.addRelease(
           popOp, PipeCapacityReleaseInfo{
-                     endpointFacts.releaseTarget, capacityCounter,
+                     endpointFacts.transferNode, endpointFacts.releaseTarget,
+                     capacityCounter,
                      endpointFacts.receiverBlocksPerTransfer});
     }
   }
@@ -363,8 +378,8 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
                ? PipeSynchronizationProtocol::Capacity
                : PipeSynchronizationProtocol::ReceiverPost;
   };
-  FailureOr<PipeTransportPlan> maybeTransportPlan =
-      buildPipeTransportPlan(pipeGraph, selectSynchronizationProtocol);
+  FailureOr<PipeTransportPlan> maybeTransportPlan = buildPipeTransportPlan(
+      pipeGraph, plan.capacityPlan, selectSynchronizationProtocol);
   if (failed(maybeTransportPlan)) {
     return failure();
   }

@@ -35,7 +35,7 @@
 // Capacity synchronization and the two proven receiver groups select bounded
 // overlap for the grouped stream.
 // OVERLAP: PipeTransport: stream 0 transfer 0
-// OVERLAP-SAME: synchronization=capacity schedule=overlapped group=5
+// OVERLAP-SAME: synchronization=capacity schedule=overlapped credit_completion=iteration_domain group=5
 // OVERLAP-NEXT: PipeTransport:   source blocks=5 block_span=5 stage_depth=1 pages=5
 // OVERLAP-NEXT: PipeTransport:   endpoint 0
 // OVERLAP-SAME: block_count=10 slot_span=5 group_depth=2
@@ -61,6 +61,12 @@
 // PAGES-NEXT: ttkernel.noc_async_write_one_packet_with_state(%[[PAGE_SOURCE]], %[[PAGE_DEST]]
 // PAGES: }
 // PAGES-NEXT: ttkernel.noc_async_write_barrier
+// PAGES: ttkernel.noc_semaphore_inc
+// PAGES-NOT: ttkernel.noc_async_atomic_barrier
+// PAGES: } {ttkernel.execution_core_ranges = [#ttcore.core_range<(0,1), (0,1)>]}
+// PAGES-NEXT: }
+// PAGES-NEXT: ttkernel.noc_async_atomic_barrier
+// PAGES-NEXT: return
 
 // Grouped receiver-post execution retains one contiguous write because it does
 // not satisfy the bounded-overlap protocol.
