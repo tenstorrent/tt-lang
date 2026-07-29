@@ -7,6 +7,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   PipeGraph.cpp
   PipeLowering.cpp
   PipePlanning.cpp
+  PipeTransportPlan.cpp
   ConvertTTLToCompute.cpp
   ConvertTTLComputeToSCF.cpp
   ConvertTTLTileOpsToTTKernel.cpp
