@@ -745,7 +745,8 @@ LogicalResult PipeGraph::verifyCollectiveReceiverAddresses() const {
               << receiverDFBNode.pipeOnlyProducerStreamFailureReason;
           break;
         }
-        if (!endpoint.addressSequence.isProven()) {
+        if (endpoint.addressSequence.getKind() ==
+            ReceiverAddressSequenceProofKind::FullyDynamic) {
           diag.attachNote(endpoint.receiverDFBInfo.loc)
               << "receiver core_x=" << endpoint.receiver.x
               << ", core_y=" << endpoint.receiver.y
@@ -942,7 +943,8 @@ getReceiverAddressByteOffset(const PipeReceiverEndpoint &endpoint,
 
 static std::optional<std::uint64_t>
 getReceiverSequencePeriod(const ReceiverAddressSequenceProof &sequence) {
-  if (!sequence.recurrence || sequence.recurrence->blockCount <= 0 ||
+  if (sequence.getKind() == ReceiverAddressSequenceProofKind::FullyDynamic ||
+      sequence.recurrence->blockCount <= 0 ||
       sequence.recurrence->initialSlot < 0 ||
       sequence.recurrence->initialSlot >= sequence.recurrence->blockCount ||
       sequence.recurrence->repeatStride < 0 ||
@@ -973,7 +975,8 @@ havePointwiseEqualReceiverAddressSequences(const PipeReceiverEndpoint &lhs,
                                            const PipeReceiverEndpoint &rhs) {
   const ReceiverAddressSequenceProof &lhsSequence = lhs.addressSequence;
   const ReceiverAddressSequenceProof &rhsSequence = rhs.addressSequence;
-  if (!lhsSequence.isProven() || !rhsSequence.isProven() ||
+  if (lhsSequence.getKind() == ReceiverAddressSequenceProofKind::FullyDynamic ||
+      rhsSequence.getKind() == ReceiverAddressSequenceProofKind::FullyDynamic ||
       lhsSequence.executionCount != rhsSequence.executionCount) {
     return false;
   }
@@ -1029,7 +1032,8 @@ const PipeReceiverEndpoint *PipeGraph::getProvenReceiverAddressEndpoint(
     const PipeReceiverDFBNode &receiverDFBNode =
         getReceiverDFBNode(endpoint.receiverDFBNode);
     if (!receiverDFBNode.hasProvenPipeOnlyProducerStream ||
-        !endpoint.addressSequence.isProven()) {
+        endpoint.addressSequence.getKind() ==
+            ReceiverAddressSequenceProofKind::FullyDynamic) {
       return nullptr;
     }
     if (representative && !havePointwiseEqualReceiverAddressSequences(
