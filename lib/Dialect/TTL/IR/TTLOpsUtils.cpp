@@ -9,6 +9,73 @@
 
 namespace mlir::tt::ttl {
 
+FailureOr<int64_t> getDFBId(Value cb) {
+  cb = traceUnrealizedCasts(cb);
+  auto bindOp = cb.getDefiningOp<BindCBOp>();
+  if (!bindOp) {
+    return failure();
+  }
+  auto dfbId = bindOp.getDfbId();
+  if (!dfbId.has_value()) {
+    return failure();
+  }
+  return dfbId->getSExtValue();
+}
+
+LogicalResult verifyResolvedDFBIdentities(ModuleOp moduleOp,
+                                          StringRef consumerPass) {
+  bool hasAllocationMetadata = moduleOp->hasAttr(kDFBAllocationsAttrName);
+  bool hasDFB = false;
+  WalkResult result =
+      moduleOp.walk([&](Operation *nestedOperation) {
+        if (!isa<BindCBOp, CBReserveOp, CBPushOp, CBWaitOp, CBPopOp>(
+                nestedOperation)) {
+          return WalkResult::advance();
+        }
+        hasDFB = true;
+        if (!hasAllocationMetadata) {
+          return WalkResult::interrupt();
+        }
+        if (auto bindOp = dyn_cast<BindCBOp>(nestedOperation);
+            bindOp && !bindOp.getDfbId().has_value()) {
+          bindOp.emitOpError()
+              << "`" << consumerPass
+              << "` requires every `ttl.bind_cb` to have `dfb_id` after "
+                 "finalization";
+          return WalkResult::interrupt();
+        }
+
+        if (!isa<CBReserveOp, CBPushOp, CBWaitOp, CBPopOp>(nestedOperation)) {
+          return WalkResult::advance();
+        }
+        for (Value operand : nestedOperation->getOperands()) {
+          if (!isa<CircularBufferType>(operand.getType())) {
+            continue;
+          }
+          if (failed(getDFBId(operand))) {
+            nestedOperation->emitOpError()
+                << "`" << consumerPass
+                << "` requires every DFB lifecycle operand to resolve to "
+                   "`ttl.bind_cb` with `dfb_id` after finalization";
+            return WalkResult::interrupt();
+          }
+        }
+        return WalkResult::advance();
+      });
+
+  if (!hasDFB) {
+    return success();
+  }
+  if (!hasAllocationMetadata) {
+    moduleOp.emitOpError()
+        << "`" << consumerPass
+        << "` requires finalized DFB allocation metadata; run "
+           "`ttl-finalize-dfb-indices` first";
+    return failure();
+  }
+  return failure(result.wasInterrupted());
+}
+
 //===----------------------------------------------------------------------===//
 // DST access interface defaults
 //===----------------------------------------------------------------------===//
@@ -423,10 +490,10 @@ SmallVector<LoopGroup> collectLoopGroups(
 // Compiler-allocated DFB utilities
 //===----------------------------------------------------------------------===//
 
-int32_t getNextAvailableDFBIndex(ModuleOp mod) {
+int32_t getNextAvailableDFBIndex(Operation *scopeOp) {
   int32_t maxIndex = -1;
 
-  mod->walk([&](BindCBOp bindOp) {
+  scopeOp->walk([&](BindCBOp bindOp) {
     int64_t idx = bindOp.getCbIndex().getSExtValue();
     if (static_cast<int32_t>(idx) > maxIndex) {
       maxIndex = static_cast<int32_t>(idx);

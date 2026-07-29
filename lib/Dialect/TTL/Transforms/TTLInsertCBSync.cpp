@@ -41,21 +41,16 @@ static void insertMissingReleases(ArrayRef<Operation *> acquires,
                                   CreateReleaseFn createRelease) {
   for (Operation *acquire : acquires) {
     DFBAcquireInterval interval = makeDFBAcquireInterval(acquire, acquires);
-    // Cheap check first: any release inside the strict next-acquire range?
-    DFBReleaseSearch releaseSearch = findOwnedDFBReleases(
-        interval, /*lastOwnedUse=*/nullptr, releases, &erased);
+
+    // Tensor SSA uses can keep this acquired slot live past the next same-DFB
+    // acquire. An existing release after that final use still belongs to this
+    // acquire, so pass the final use into the release search.
+    Operation *last = findLastDFBAcquireOwnedUse(interval);
+    DFBReleaseSearch releaseSearch =
+        findOwnedDFBReleases(interval, last, releases, &erased);
+
     if (releaseSearch.hasSameLevelRelease()) {
       continue;
-    }
-
-    // Compute the last owned use; it both bounds the idempotency recheck
-    // and pinpoints the insertion point.
-    Operation *last = findLastDFBAcquireOwnedUse(interval);
-    if (last != interval.acquire) {
-      releaseSearch = findOwnedDFBReleases(interval, last, releases, &erased);
-      if (releaseSearch.hasSameLevelRelease()) {
-        continue;
-      }
     }
 
     for (Operation *nestedRelease : releaseSearch.nestedReleases) {

@@ -1,4 +1,4 @@
-// RUN: ttlang-opt %s --split-input-file --verify-diagnostics -ttl-verify-pipenet-guards
+// RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-finalize-dfb-indices,ttl-verify-pipenet-guards)'
 
 // Summary: Negative tests for pipe schedules that would deadlock at runtime.
 

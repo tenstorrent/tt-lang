@@ -7,6 +7,7 @@
 import pytest
 
 from ttl import kernel_runner
+from ttl.dataflow_buffer import PhysicalDFBConfig
 
 
 class _FakeTensor:
@@ -23,17 +24,6 @@ class _FakeTensor:
 
 class _FakeTensorWithoutDevice:
     pass
-
-
-class _FakeDataFormat:
-    name = "bfloat16"
-
-
-class _FakeDFBConfig:
-    dtype = _FakeDataFormat()
-    shape = (1, 1)
-    block_count = 2
-    tile = (16, 16)
 
 
 class _FakeGridSize:
@@ -431,8 +421,8 @@ def test_build_cb_descriptors_excludes_computed_address_backing_tensors(
     )
 
     cb_configs = [
-        ((1, 1), 1, object(), None, 512, 512),
-        ((1, 1), 1, object(), None, 800, 800),
+        PhysicalDFBConfig(0, 1, "bfloat16", 1, 512, (16, 16)),
+        PhysicalDFBConfig(1, 1, "bfloat16", 1, 800, (20, 20)),
     ]
 
     # DFB 1 (800 bytes) is a computed-address backing tensor, already allocated
@@ -468,7 +458,7 @@ def test_build_cb_descriptors_preserves_subtile_geometry(monkeypatch):
 
     descriptors = kernel_runner.build_cb_descriptors(
         tensors=[_FakeTensor(object())],
-        cb_configs=[_FakeDFBConfig()],
+        cb_configs=[PhysicalDFBConfig(0, 1, "bfloat16", 2, 512, (16, 16))],
         core_ranges=_FakeCoreRanges(),
     )
 
@@ -484,13 +474,13 @@ def test_emit_runner_source_preserves_subtile_geometry(monkeypatch):
 
     source = kernel_runner.emit_runner_source(
         kernel_specs=[],
-        cb_configs=[_FakeDFBConfig()],
+        cb_configs=[PhysicalDFBConfig(0, 1, "bfloat16", 2, 512, (16, 16))],
         grid_cols=1,
         grid_rows=1,
         num_tensors=1,
     )
 
-    assert "((1, 1), 2, ttnn.bfloat16, (16, 16), 512, 1024)" in source
+    assert "page_size=512, tile=(16, 16)),  # DFB 0" in source
 
 
 def test_emit_runner_source_uses_shared_pipe_resource_helpers():
@@ -512,6 +502,140 @@ def test_emit_runner_source_uses_shared_pipe_resource_helpers():
     assert "build_generic_op_io_tensors(" in source
     assert "program.custom_program_hash = PROGRAM_HASH" in source
     assert "ttnn.create_global_semaphore(device, core_ranges, 0)" not in source
+
+
+def test_emit_runner_source_accepts_physical_dfb_configs():
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[],
+        cb_configs=[
+            PhysicalDFBConfig(
+                dfb_index=0,
+                num_tiles=3,
+                data_format="bfloat16",
+                block_count=2,
+                page_size=32,
+                tile=(1, 16),
+            )
+        ],
+        grid_cols=1,
+        grid_rows=1,
+        num_tensors=1,
+    )
+
+    assert "from ttl.dataflow_buffer import PhysicalDFBConfig" in source
+    assert (
+        "PhysicalDFBConfig(dfb_index=0, num_tiles=3, "
+        "data_format='bfloat16', block_count=2, page_size=32, "
+        "tile=(1, 16)),  # DFB 0"
+    ) in source
+    assert "cb_descriptors = build_cb_descriptors(" in source
+
+
+def test_physical_dfb_allocation_scales_with_subtile_area():
+    full_tile = kernel_runner._get_dfb_allocation(
+        PhysicalDFBConfig(0, 1, "bfloat16", 2, 2048, (32, 32))
+    )
+    two_half_tiles = kernel_runner._get_dfb_allocation(
+        PhysicalDFBConfig(0, 2, "bfloat16", 2, 1024, (16, 32))
+    )
+
+    assert two_half_tiles.page_size * 2 == full_tile.page_size
+    assert two_half_tiles.total_size == full_tile.total_size
+
+
+def test_physical_dfb_allocation_uses_complete_rank_three_shape():
+    allocation = kernel_runner._get_dfb_allocation(
+        PhysicalDFBConfig(0, 8, "bfloat16", 2, 2048, (32, 32))
+    )
+
+    assert allocation.total_size == 8 * 2 * 2048
+
+
+def test_dfb_allocation_requires_finalized_config(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+
+    with pytest.raises(
+        TypeError,
+        match="must be a finalized PhysicalDFBConfig",
+    ):
+        kernel_runner._get_dfb_allocation(object())
+
+
+@pytest.mark.parametrize(
+    ("cb_configs", "error_type", "message"),
+    [
+        (
+            [None],
+            TypeError,
+            "must be a finalized PhysicalDFBConfig",
+        ),
+        (
+            [PhysicalDFBConfig(1, 1, "bfloat16", 2, 2048)],
+            ValueError,
+            "DFB config at physical index 0",
+        ),
+    ],
+    ids=["missing-config", "wrong-index"],
+)
+def test_emit_runner_source_rejects_invalid_physical_dfb_sequence(
+    cb_configs, error_type, message
+):
+    with pytest.raises(error_type, match=message):
+        kernel_runner.emit_runner_source(
+            kernel_specs=[],
+            cb_configs=cb_configs,
+            grid_cols=1,
+            grid_rows=1,
+            num_tensors=1,
+        )
+
+
+@pytest.mark.parametrize(
+    ("data_format", "page_size"),
+    [
+        ("bfloat4_b", 576),
+        ("bfloat8_b", 1088),
+        ("uint8", 1024),
+    ],
+)
+def test_emit_runner_source_preserves_physical_dfb_format(data_format, page_size):
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[],
+        cb_configs=[
+            PhysicalDFBConfig(
+                dfb_index=0,
+                num_tiles=1,
+                data_format=data_format,
+                block_count=2,
+                page_size=page_size,
+            )
+        ],
+        grid_cols=1,
+        grid_rows=1,
+        num_tensors=1,
+    )
+
+    assert f"data_format={data_format!r}" in source
+    assert f"page_size={page_size}" in source
+
+
+def test_emit_runner_source_rejects_unknown_physical_dfb_format():
+    with pytest.raises(ValueError, match="Unrecognized data format"):
+        kernel_runner.emit_runner_source(
+            kernel_specs=[],
+            cb_configs=[
+                PhysicalDFBConfig(
+                    dfb_index=0,
+                    num_tiles=1,
+                    data_format="unknown",
+                    block_count=2,
+                    page_size=2048,
+                )
+            ],
+            grid_cols=1,
+            grid_rows=1,
+            num_tensors=1,
+        )
 
 
 def test_emit_runner_source_omits_program_hash_by_default():

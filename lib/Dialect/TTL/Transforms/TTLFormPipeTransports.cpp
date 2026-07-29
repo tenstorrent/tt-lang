@@ -96,8 +96,8 @@ static bool isInsideLoop(scf::ForOp loop, Operation *operation) {
 
 /// Emit a debug-only explanation for retaining scalar transfer IR.
 static void debugReject(scf::ForOp loop, StringRef reason) {
-  LLVM_DEBUG(llvm::dbgs() << "PipeTransportFormation: reject "
-                          << loop.getLoc() << ": " << reason << "\n");
+  LLVM_DEBUG(llvm::dbgs() << "PipeTransportFormation: reject " << loop.getLoc()
+                          << ": " << reason << "\n");
 }
 
 /// Return the tensor type for `blockSpan` consecutive DFB blocks.
@@ -132,14 +132,16 @@ static bool isContiguousLoopSlice(TensorSliceOp slice, scf::ForOp loop,
   if (indices.empty() || indices.back() != loop.getInductionVar()) {
     return false;
   }
-  return llvm::all_of(indices.drop_back(),
-                      [&](Value index) { return loop.isDefinedOutsideOfLoop(index); });
+  return llvm::all_of(indices.drop_back(), [&](Value index) {
+    return loop.isDefinedOutsideOfLoop(index);
+  });
 }
 
 /// Collect one DFB's complete scalar transport lifecycle.
-static LogicalResult collectDFBUsePattern(
-    PipeTransportLoopCandidate &candidate, TransportDFBUse &dfbUse,
-    const PipeGraph &pipeGraph, std::string &reason) {
+static LogicalResult collectDFBUsePattern(PipeTransportLoopCandidate &candidate,
+                                          TransportDFBUse &dfbUse,
+                                          const PipeGraph &pipeGraph,
+                                          std::string &reason) {
   scf::ForOp loop = candidate.loop;
   for (OpOperand &use : dfbUse.dfb.getUses()) {
     if (!isInsideLoop(loop, use.getOwner())) {
@@ -188,10 +190,9 @@ static LogicalResult collectDFBUsePattern(
   for (OpOperand &use : dfbUse.dfb.getUses()) {
     Operation *operation = use.getOwner();
     if (auto copy = dyn_cast<CopyOp>(operation)) {
-      bool expectedDirection =
-          dfbUse.role == TransportDFBRole::Source
-              ? copy.getDst() == dfbUse.dfb
-              : copy.getSrc() == dfbUse.dfb;
+      bool expectedDirection = dfbUse.role == TransportDFBRole::Source
+                                   ? copy.getDst() == dfbUse.dfb
+                                   : copy.getSrc() == dfbUse.dfb;
       if (expectedDirection) {
         tensorCopies.push_back(copy);
         continue;
@@ -267,24 +268,21 @@ getOrAddDFBUse(PipeTransportLoopCandidate &candidate, Value dfb,
 }
 
 /// Validate that changing the loop step does not remove unrelated effects.
-static LogicalResult validateLoopEffects(
-    PipeTransportLoopCandidate &candidate, ValueOriginAnalysis &analysis,
-    std::string &reason) {
+static LogicalResult validateLoopEffects(PipeTransportLoopCandidate &candidate,
+                                         ValueOriginAnalysis &analysis,
+                                         std::string &reason) {
   llvm::DenseSet<Operation *> asyncOperations;
   llvm::DenseSet<Operation *> allowedOperations;
   for (TransportDFBUse &dfbUse : candidate.dfbUses) {
     llvm::for_each(dfbUse.reserves, [&](CBReserveOp reserve) {
       allowedOperations.insert(reserve);
     });
-    llvm::for_each(dfbUse.pushes, [&](CBPushOp push) {
-      allowedOperations.insert(push);
-    });
-    llvm::for_each(dfbUse.waits, [&](CBWaitOp wait) {
-      allowedOperations.insert(wait);
-    });
-    llvm::for_each(dfbUse.pops, [&](CBPopOp pop) {
-      allowedOperations.insert(pop);
-    });
+    llvm::for_each(dfbUse.pushes,
+                   [&](CBPushOp push) { allowedOperations.insert(push); });
+    llvm::for_each(dfbUse.waits,
+                   [&](CBWaitOp wait) { allowedOperations.insert(wait); });
+    llvm::for_each(dfbUse.pops,
+                   [&](CBPopOp pop) { allowedOperations.insert(pop); });
     llvm::for_each(dfbUse.attaches, [&](AttachCBOp attach) {
       allowedOperations.insert(attach);
     });
@@ -329,10 +327,9 @@ static LogicalResult validateLoopEffects(
     if (isa<scf::ForOp>(operation)) {
       reason = "candidate loop contains a nested loop";
     } else {
-      reason =
-          ("candidate loop contains unrelated side effect " +
-           operation->getName().getStringRef())
-              .str();
+      reason = ("candidate loop contains unrelated side effect " +
+                operation->getName().getStringRef())
+                   .str();
     }
     return WalkResult::interrupt();
   });
@@ -340,10 +337,11 @@ static LogicalResult validateLoopEffects(
 }
 
 /// Build one complete loop candidate from PipeGraph transfer nodes.
-static FailureOr<PipeTransportLoopCandidate> buildLoopCandidate(
-    scf::ForOp loop, ArrayRef<const PipeTransferNode *> transfers,
-    const PipeGraph &pipeGraph, ValueOriginAnalysis &analysis,
-    std::string &reason) {
+static FailureOr<PipeTransportLoopCandidate>
+buildLoopCandidate(scf::ForOp loop,
+                   ArrayRef<const PipeTransferNode *> transfers,
+                   const PipeGraph &pipeGraph, ValueOriginAnalysis &analysis,
+                   std::string &reason) {
   PipeTransportLoopCandidate candidate;
   candidate.loop = loop;
   candidate.transfers.append(transfers.begin(), transfers.end());
@@ -365,15 +363,15 @@ static FailureOr<PipeTransportLoopCandidate> buildLoopCandidate(
 
   llvm::DenseSet<Operation *> seenCreates;
   for (const PipeTransferNode *transfer : transfers) {
-    if (transfer->blockSpan != 1 ||
-        getEnclosingFor(transfer->sendOp) != loop) {
-      reason = "transfer is not scalar or does not execute in the candidate loop";
+    if (transfer->blockSpan != 1 || getEnclosingFor(transfer->sendOp) != loop) {
+      reason =
+          "transfer is not scalar or does not execute in the candidate loop";
       return failure();
     }
     auto send = cast<PipeTransferSendOp>(transfer->sendOp);
-    FailureOr<TransportDFBUse *> source = getOrAddDFBUse(
-        candidate, send.getSrc(), TransportDFBRole::Source, transfer->id,
-        reason);
+    FailureOr<TransportDFBUse *> source =
+        getOrAddDFBUse(candidate, send.getSrc(), TransportDFBRole::Source,
+                       transfer->id, reason);
     if (failed(source)) {
       return failure();
     }
@@ -424,8 +422,7 @@ static FailureOr<PipeTransportLoopCandidate> buildLoopCandidate(
   }
 
   for (TransportDFBUse &dfbUse : candidate.dfbUses) {
-    if (failed(
-            collectDFBUsePattern(candidate, dfbUse, pipeGraph, reason))) {
+    if (failed(collectDFBUsePattern(candidate, dfbUse, pipeGraph, reason))) {
       return failure();
     }
   }
@@ -436,10 +433,11 @@ static FailureOr<PipeTransportLoopCandidate> buildLoopCandidate(
 }
 
 /// Compute storage and synchronization facts for one `(R, K)` choice.
-static std::optional<PipeTransportGrouping> evaluateGrouping(
-    PipeTransportLoopCandidate &candidate, int64_t groupSize,
-    int64_t destinationDepth, const DFBAllocationSummary &allocationSummary,
-    uint64_t budgetBytes) {
+static std::optional<PipeTransportGrouping>
+evaluateGrouping(PipeTransportLoopCandidate &candidate, int64_t groupSize,
+                 int64_t destinationDepth,
+                 const DFBAllocationSummary &allocationSummary,
+                 uint64_t budgetBytes) {
   if (groupSize <= 1 || groupSize > candidate.transferCount) {
     return std::nullopt;
   }
@@ -473,20 +471,17 @@ static std::optional<PipeTransportGrouping> evaluateGrouping(
       return std::nullopt;
     }
 
-    int64_t depth = dfbUse.role == TransportDFBRole::Source
-                        ? 1
-                        : destinationDepth;
-    std::optional<int64_t> requiredBlocks =
-        llvm::checkedMul(groupSize, depth);
+    int64_t depth =
+        dfbUse.role == TransportDFBRole::Source ? 1 : destinationDepth;
+    std::optional<int64_t> requiredBlocks = llvm::checkedMul(groupSize, depth);
     if (!requiredBlocks) {
       return std::nullopt;
     }
     auto oldType = cast<CircularBufferType>(dfbUse.dfb.getType());
-    int64_t blockCount =
-        std::max(oldType.getBlockCount(), *requiredBlocks);
-    auto resizedType = CircularBufferType::get(
-        oldType.getContext(), oldType.getShape(), oldType.getElementType(),
-        blockCount);
+    int64_t blockCount = std::max(oldType.getBlockCount(), *requiredBlocks);
+    auto resizedType =
+        CircularBufferType::get(oldType.getContext(), oldType.getShape(),
+                                oldType.getElementType(), blockCount);
     FailureOr<uint64_t> allocationBytes =
         getDFBAllocationSizeBytes(resizedType);
     if (failed(allocationBytes)) {
@@ -509,9 +504,10 @@ static std::optional<PipeTransportGrouping> evaluateGrouping(
 }
 
 /// Return the largest legal destination depth for `groupSize`.
-static std::optional<PipeTransportGrouping> selectDestinationDepth(
-    PipeTransportLoopCandidate &candidate, int64_t groupSize,
-    const DFBAllocationSummary &allocationSummary, uint64_t budgetBytes) {
+static std::optional<PipeTransportGrouping>
+selectDestinationDepth(PipeTransportLoopCandidate &candidate, int64_t groupSize,
+                       const DFBAllocationSummary &allocationSummary,
+                       uint64_t budgetBytes) {
   int64_t upperDepth = candidate.transferCount / groupSize;
   int64_t lower = 1;
   int64_t upper = upperDepth;
@@ -559,8 +555,7 @@ static bool isBetterGrouping(const PipeTransportGrouping &candidate,
            selected.getCompletionGroupCount();
   }
   if (candidate.getCapacityWaitCount() != selected.getCapacityWaitCount()) {
-    return candidate.getCapacityWaitCount() <
-           selected.getCapacityWaitCount();
+    return candidate.getCapacityWaitCount() < selected.getCapacityWaitCount();
   }
   if (candidate.allocationBytes != selected.allocationBytes) {
     return candidate.allocationBytes < selected.allocationBytes;
@@ -572,9 +567,8 @@ static bool isBetterGrouping(const PipeTransportGrouping &candidate,
 static std::optional<PipeTransportGrouping> selectGrouping(
     PipeTransportLoopCandidate &candidate, int64_t requestedGroupSize,
     const DFBAllocationSummary &allocationSummary, uint64_t budgetBytes) {
-  int64_t upperBound = requestedGroupSize > 1
-                           ? requestedGroupSize
-                           : candidate.transferCount;
+  int64_t upperBound =
+      requestedGroupSize > 1 ? requestedGroupSize : candidate.transferCount;
   int64_t largestLegal = getLargestLegalGroupSize(
       candidate, upperBound, allocationSummary, budgetBytes);
   if (largestLegal <= 1) {
@@ -590,10 +584,9 @@ static std::optional<PipeTransportGrouping> selectGrouping(
   int64_t first = 2;
   while (first <= largestLegal) {
     int64_t quotient = candidate.transferCount / first;
-    int64_t last =
-        std::min(largestLegal, candidate.transferCount / quotient);
-    std::optional<PipeTransportGrouping> grouping = selectDestinationDepth(
-        candidate, last, allocationSummary, budgetBytes);
+    int64_t last = std::min(largestLegal, candidate.transferCount / quotient);
+    std::optional<PipeTransportGrouping> grouping =
+        selectDestinationDepth(candidate, last, allocationSummary, budgetBytes);
     if (grouping && (!selected || isBetterGrouping(*grouping, *selected))) {
       selected = std::move(grouping);
     }
@@ -619,8 +612,7 @@ static void createResidualLoop(scf::ForOp loop, Value residualLowerBound,
 
 /// Give the grouped loop transfer values that do not affect scalar residuals.
 static void createGroupedTransfers(PipeTransportLoopCandidate &candidate,
-                                   int64_t groupSize,
-                                   IRRewriter &rewriter) {
+                                   int64_t groupSize, IRRewriter &rewriter) {
   llvm::DenseMap<Value, Value> groupedTransferByScalarTransfer;
   rewriter.setInsertionPoint(candidate.loop);
   for (PipeTransferCreateOp create : candidate.transferCreates) {
@@ -648,9 +640,9 @@ static void createGroupedTransfers(PipeTransportLoopCandidate &candidate,
 static void resizeDFB(TransportDFBUse &dfbUse, int64_t blockCount,
                       IRRewriter &rewriter) {
   auto oldType = cast<CircularBufferType>(dfbUse.dfb.getType());
-  auto newType = CircularBufferType::get(
-      oldType.getContext(), oldType.getShape(), oldType.getElementType(),
-      blockCount);
+  auto newType =
+      CircularBufferType::get(oldType.getContext(), oldType.getShape(),
+                              oldType.getElementType(), blockCount);
   rewriter.modifyOpInPlace(dfbUse.bind, [&] {
     dfbUse.bind.setBlockCount(blockCount);
     dfbUse.bind.getResult().setType(newType);
@@ -667,8 +659,7 @@ static void groupDFBLifecycle(TransportDFBUse &dfbUse, int64_t groupSize,
   IntegerAttr pageCountAttr = rewriter.getI64IntegerAttr(*pageCount);
 
   auto groupAcquire = [&](auto acquire) {
-    auto resultType =
-        cast<RankedTensorType>(acquire.getResult().getType());
+    auto resultType = cast<RankedTensorType>(acquire.getResult().getType());
     FailureOr<RankedTensorType> groupedType =
         getGroupedTensorType(resultType, groupSize);
     assert(succeeded(groupedType) &&
@@ -686,8 +677,8 @@ static void groupDFBLifecycle(TransportDFBUse &dfbUse, int64_t groupSize,
   }
 
   auto groupRelease = [&](auto release) {
-    rewriter.modifyOpInPlace(
-        release, [&] { release.setNumTilesAttr(pageCountAttr); });
+    rewriter.modifyOpInPlace(release,
+                             [&] { release.setNumTilesAttr(pageCountAttr); });
   };
   for (CBPushOp push : dfbUse.pushes) {
     groupRelease(push);
@@ -696,8 +687,9 @@ static void groupDFBLifecycle(TransportDFBUse &dfbUse, int64_t groupSize,
     groupRelease(pop);
   }
   for (AttachCBOp attach : dfbUse.attaches) {
-    rewriter.modifyOpInPlace(
-        attach, [&] { attach.getResult().setType(attach.getTensor().getType()); });
+    rewriter.modifyOpInPlace(attach, [&] {
+      attach.getResult().setType(attach.getTensor().getType());
+    });
   }
 
   auto sliceType =
@@ -719,8 +711,8 @@ static void applyGrouping(PipeTransportLoopCandidate &candidate,
   rewriter.setInsertionPoint(candidate.loop);
   int64_t groupedUpperBound =
       candidate.lowerBound + grouping.fullGroupCount * grouping.groupSize;
-  Value groupEnd = arith::ConstantIndexOp::create(
-      rewriter, location, groupedUpperBound);
+  Value groupEnd =
+      arith::ConstantIndexOp::create(rewriter, location, groupedUpperBound);
   Value groupStep =
       arith::ConstantIndexOp::create(rewriter, location, grouping.groupSize);
 
@@ -808,11 +800,9 @@ struct TTLFormPipeTransportsPass
         signalPassFailure();
         return;
       }
-      uint64_t budgetBytes =
-          getL1DFBBudgetBytes(module, l1BudgetOverride);
+      uint64_t budgetBytes = getL1DFBBudgetBytes(module, l1BudgetOverride);
       std::optional<PipeTransportGrouping> grouping =
-          selectGrouping(candidate, groupSize, *allocationSummary,
-                         budgetBytes);
+          selectGrouping(candidate, groupSize, *allocationSummary, budgetBytes);
       if (!grouping) {
         debugReject(candidate.loop,
                     "no group with R > 1 fits the L1 DFB budget");
@@ -820,8 +810,7 @@ struct TTLFormPipeTransportsPass
       }
 
       LLVM_DEBUG(llvm::dbgs()
-                 << "PipeTransportFormation: select "
-                 << candidate.loop.getLoc()
+                 << "PipeTransportFormation: select " << candidate.loop.getLoc()
                  << " R=" << grouping->groupSize
                  << " K=" << grouping->destinationDepth
                  << " groups=" << grouping->fullGroupCount

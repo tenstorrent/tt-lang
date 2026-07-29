@@ -177,3 +177,15 @@ module {
 }
 
 // tile_store tests moved to tile_store_invalid.mlir
+
+// -----
+
+// Logical DFB identities must be non-negative.
+module {
+  func.func @negative_dfb_id() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{dfb_id must be non-negative}}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = -1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    func.return
+  }
+}

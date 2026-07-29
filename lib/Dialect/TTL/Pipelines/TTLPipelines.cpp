@@ -19,15 +19,17 @@ namespace mlir::tt::ttl {
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
   pm.addNestedPass<func::FuncOp>(createTTLMaterializeLoopState());
+  pm.addNestedPass<func::FuncOp>(createTTLInsertCopyWait());
+  pm.addPass(createTTLAnnotateL1AccLoops());
+  pm.addPass(createTTLFormProducerCompute());
   {
     TTLInsertIntermediateDFBsOptions dfbOpts;
     dfbOpts.enable = options.compilerDFBs;
     pm.addNestedPass<func::FuncOp>(createTTLInsertIntermediateDFBs(dfbOpts));
   }
-  pm.addNestedPass<func::FuncOp>(createTTLInsertCopyWait());
-  buildTTLAutoSyncPipeline(pm.nest<func::FuncOp>());
-  pm.addPass(createTTLAnnotateL1AccLoops());
   pm.addPass(createTTLConvertTTLToCompute());
+  buildTTLAutoSyncPipeline(pm.nest<func::FuncOp>());
+  pm.addPass(createTTLFinalizeDFBIndices());
   {
     TTLSetComputeKernelConfigOptions configOpts;
     configOpts.reduceFullFp32 = options.reduceFullFp32;
@@ -50,7 +52,6 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   if (options.maximizeDST) {
     pm.addPass(createTTLScheduleOperations());
   }
-  pm.addPass(createTTLFinalizeDFBIndices());
   pm.addPass(createTTLAnnotateCBAssociations());
   pm.addPass(createTTLVerifyPipeNetGuards());
   pm.addPass(createTTLVerifyDFBSPSC());

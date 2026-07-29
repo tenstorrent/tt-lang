@@ -116,9 +116,8 @@ constexpr llvm::StringLiteral
 /// Placeholder marker on copy_tile (replaced during DST assignment).
 constexpr llvm::StringLiteral kPlaceholderCopyAttrName("ttl.placeholder_copy");
 
-/// Module attribute carrying compiler-allocated DFB metadata.
-constexpr llvm::StringLiteral
-    kCompilerAllocatedDFBsAttrName("ttl.compiler_allocated_dfbs");
+/// Module attribute containing one runtime descriptor per physical DFB index.
+constexpr llvm::StringLiteral kDFBAllocationsAttrName("ttl.dfb_allocations");
 
 /// Module attributes carrying compiler-owned pipe resource allocation.
 constexpr llvm::StringLiteral
@@ -257,8 +256,8 @@ inline std::optional<int64_t> getCBIndexAttr(mlir::Operation *compute,
 // Compiler-Allocated DFB Utilities
 //===----------------------------------------------------------------------===//
 
-/// Return the next available DFB index for the module.
-int32_t getNextAvailableDFBIndex(mlir::ModuleOp mod);
+/// Return the next available DFB index within an operation and its regions.
+int32_t getNextAvailableDFBIndex(mlir::Operation *scopeOp);
 
 } // namespace mlir::tt::ttl
 

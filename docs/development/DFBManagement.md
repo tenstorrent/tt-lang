@@ -6,7 +6,18 @@ This document describes how the tt-lang compiler manages dataflow buffers (DFBs)
 
 DFBs originate from two sources. User-declared DFBs are created explicitly in the DSL via `make_dataflow_buffer_like` and correspond to the programmer's data movement plan. Compiler-allocated DFBs are inserted automatically at fusion split points where a tensor-level operation requires a CB-attached operand but receives the result of a fused expression chain.
 
-The hardware supports at most 32 DFBs per node (indices 0--31). User and compiler-allocated DFBs share this index space. The compiler assigns indices sequentially during insertion (starting *after* the last user-declared DFB), then applies lifetime-based index reuse to reduce the physical DFB count.
+The hardware supports at most 32 DFBs per node (indices 0--31). User and
+compiler-allocated DFBs share this index space. DFB-creating function passes
+assign compiler DFBs function-local provisional indices. The module-level
+finalization pass assigns module-wide physical indices after the last
+user-declared DFB and applies lifetime-based index reuse.
+
+`ttl.bind_cb` separates logical and physical identity. `dfb_id` identifies one
+logical DFB across kernel functions, while `cb_index` identifies its assigned
+hardware slot. Keeping both identities allows non-overlapping logical DFBs to
+share one physical index without merging their producer and consumer
+protocols. Every user declaration carries `dfb_id`. Compiler-created
+declarations may omit it until module finalization assigns a unique ID.
 
 ## Pipeline
 
@@ -14,23 +25,42 @@ The DFB-related passes in `ttl-to-ttkernel-pipeline` execute in this order:
 
 ```
 ttl-materialize-loop-state     (FuncOp)   Remove ranked-tensor scf.for iter_args
-ttl-insert-intermediate-dfbs   (FuncOp)   Create compiler-allocated DFBs
-ttl-insert-cb-sync             (FuncOp)   Insert cb_push / cb_pop
-  ... compute lowering, DST assignment, loop lowering ...
-ttl-finalize-dfb-indices       (Module)   Index reuse + limit check
+ttl-insert-copy-wait           (FuncOp)   Insert missing ttl.wait ops
+ttl-annotate-l1-acc-loops      (FuncOp)   Mark user accumulation loops
+ttl-form-producer-compute      (FuncOp)   Form producer compute regions
+ttl-insert-intermediate-dfbs   (FuncOp)   Materialize compiler-allocated DFBs
+convert-ttl-to-compute         (FuncOp)   Lower remaining tensor ops
+ttl-auto-sync                  (FuncOp)   Insert/coalesce remaining DFB sync
+ttl-finalize-dfb-indices       (Module)   Finalize identities and allocations
+ttl-set-compute-kernel-config  (FuncOp)   Set per-kernel configuration
+  ... DST assignment, loop lowering, scheduling ...
 ttl-annotate-cb-associations   (FuncOp)   Copy CB indices to tile ops
 ttl-verify-dfb-spsc            (Module)   Reject DFBs shared across threads
 convert-ttl-to-ttkernel        (Module)   Lower to TTKernel dialect
 ttkernel-insert-inits          (Module)   Insert hardware init calls
 ```
 
-`ttl-finalize-dfb-indices` must precede `ttl-annotate-cb-associations` because annotation copies the `cb_index` attribute from `BindCBOp` onto tile operations (`bcast`, `reduce`, `transpose`). If annotation runs before finalization, the copied indices become stale after reuse rewrites them.
+`ttl-finalize-dfb-indices` must precede
+`ttl-set-compute-kernel-config` and `ttl-annotate-cb-associations`.
+Compute configuration copies selected indices into
+`ttl.unpack_to_dest_fp32`; association annotation copies `cb_index` onto tile
+operations (`bcast`, `reduce`, `transpose`). Running either pass first would
+leave stale attributes after finalization rewrites the indices.
 
-`ttl-verify-dfb-spsc` must run after `ttl-finalize-dfb-indices` so every `bind_cb` carries its final `cb_index`. The pass asserts on unresolvable indices.
+`ttl-verify-dfb-spsc` must run after `ttl-finalize-dfb-indices` so every
+`bind_cb` carries its final `cb_index` and module-wide logical `dfb_id`. The
+pass requires the `ttl.dfb_allocations` module attribute emitted by successful
+finalization, then verifies that every declaration and lifecycle operand has a
+resolved logical ID.
 
 ## DFB Lifecycle
 
-A DFB has two lifecycle halves: the producer (write) side driven by `cb_reserve`/`cb_push`, and the consumer (read) side driven by `cb_wait`/`cb_pop`. For user-declared DFBs these halves span different threads: data movement writes to the CB, compute reads from it, and both threads reference the same CB index. For compiler-allocated intermediate DFBs both halves are in the same compute function.
+A DFB has two lifecycle halves: the producer (write) side driven by
+`cb_reserve`/`cb_push`, and the consumer (read) side driven by
+`cb_wait`/`cb_pop`. For user-declared DFBs these halves span different
+threads: data movement writes to the CB, compute reads from it, and both
+threads reference the same CB index. For compiler-allocated intermediate DFBs
+both halves are in the same compute function.
 
 ```
 |
@@ -43,11 +73,64 @@ bind_cb   cb_reserve                cb_wait              L1 buffer held
           (slot returned) <-------- cb_pop               L1 buffer free
 ```
 
-`cb_reserve` claims a buffer slot for the packer; `cb_push` releases that slot to the unpacker. `cb_wait` blocks until the slot is available; `cb_pop` releases it back to the packer. `bind_cb` allocates the L1 backing storage and is shared by both sides.
+`cb_reserve` claims a buffer slot for the packer; `cb_push` releases that slot
+to the unpacker. `cb_wait` blocks until the slot is available; `cb_pop`
+releases it back to the packer. `bind_cb` allocates the L1 backing storage and
+is shared by both sides.
 
-For compiler-allocated DFBs, `InsertIntermediateDFBs` creates the full sequence from `bind_cb` through `attach_cb`. `InsertCBSync` adds `cb_push` (after the producer's last use) and `cb_pop` (after the consumer's last use).
+The hardware-visible occupancy of one DFB is the difference between published
+producer slots and released consumer slots. `cb_push` increases that occupancy
+by publishing a filled slot, and `cb_pop` decreases it by acknowledging that
+the consumer is finished with the slot. `cb_reserve` and `cb_wait` are blocking
+guards over that state: reserve requires an unoccupied slot, while wait
+requires an occupied slot. `attach_cb` has no protocol effect; it only turns
+the waited tensor into an SSA value that carries the DFB association for later
+tile-level lowering.
 
-A DFB's L1 memory is reclaimable after its last `cb_pop`. This defines the interval used for index reuse.
+For a compiler-created intermediate, the compiler must construct one balanced
+logical lifecycle for each materialized SSA value:
+
+```
+bind_cb {ttl.compiler_allocated}     // storage, no occupancy change
+cb_reserve                           // producer may claim a free slot
+ttl.compute {
+  tile_store ..., %reserved_slot      // pack writes the tile
+}
+cb_push                              // occupancy: 0 -> 1
+cb_wait                              // consumer may read the occupied slot
+attach_cb                            // tensor SSA view of the waited slot
+... consumers of attached tensor ...
+cb_pop                               // occupancy: 1 -> 0
+```
+
+The producer side is ordered so the slot is reserved before the compute that
+writes it and published only after the compute has packed the materialized
+tile. The consumer side is ordered so every rewritten operand is dominated by
+the attached tensor value, and the pop is placed after the final use of that
+attached value. With `blockCount=1`, this is also the complete capacity proof:
+there is never a second compiler-created push while the previous pushed slot is
+still outstanding.
+
+Every control-flow trace that executes a compiler-created `cb_push` must also
+execute the matching `cb_pop`, and no trace may execute the pop without the
+push. An unconditional push followed by a conditional wait/pop is therefore
+invalid: on traces that skip the condition, the DFB remains occupied and a
+later reserve can block. Until an explicit DFB occupancy dataflow analysis can
+prove more general structured-control-flow placements, compiler-created
+compute-result waits and attaches are emitted in the same straight-line
+sequence immediately after the producer push. This construction gives all
+traces the same occupancy transition and makes the attach dominate all original
+users dominated by the producer result.
+
+Producer compute formation follows the same publication rule for user DFBs.
+When `ttl-form-producer-compute` or `convert-ttl-to-compute` absorbs a
+block-level `ttl.store` into a `ttl.compute`, any producer release that would
+otherwise precede the new compute is replaced after the compute. This keeps the
+generated DFB lifecycle in write-then-publish order: `cb_reserve`,
+`ttl.compute` with `tile_store`, then `cb_push`.
+
+A DFB's L1 memory is reclaimable after its last `cb_pop`. This defines the
+interval used for index reuse.
 
 ## Single-producer Single-consumer Semantics
 
@@ -140,13 +223,16 @@ consumer for that DFB.
 
 The `ttl-verify-dfb-spsc` module-level pass runs after
 `ttl-annotate-cb-associations`. It walks every `cb_reserve` and `cb_wait` op,
-groups them by `cb_index` and enclosing `ttl.kernel_thread`-tagged
-`func.func`, and tracks the launch-node domain for each producer or consumer.
+groups them by logical `dfb_id` and enclosing
+`ttl.kernel_thread`-tagged `func.func`, and tracks the launch-node domain for
+each producer or consumer. Distinct logical DFBs therefore remain separate
+after physical allocation assigns them the same `cb_index`.
+
 The pass rejects a DFB when two producer domains overlap or when two consumer
 domains overlap. If multiple threads participate and a coordinate-dependent
 predicate cannot be analyzed statically, the pass rejects the DFB rather than
-assuming disjointness. The diagnostic identifies the cb_index, the role
-(producer or consumer), an overlapping launched node when available, the
+assuming disjointness. The diagnostic identifies the logical `dfb_id`, the
+role (producer or consumer), an overlapping launched node when available, the
 participating operation sites, and the originating `ttl.bind_cb`.
 
 See `test/ttlang/Dialect/TTL/Transforms/verify_dfb_spsc_invalid.mlir` for the rejected patterns and `verify_dfb_spsc.mlir` for the accepted ones.
@@ -157,13 +243,124 @@ users must duplicate explicitly via `make_dataflow_buffer_like`. Tracked in
 
 ## Intermediate DFB Insertion
 
-`TTLInsertIntermediateDFBs` walks all operations implementing `DFBInputOpInterface` (reduce, bcast, matmul, transpose). For each operand that the interface marks as requiring a CB-attached value, the pass checks whether the operand traces to an existing CB via `getAttachedCB`. If not, the pass materializes the value through a fresh DFB: `bind_cb`, `cb_reserve`, `store`, `cb_wait`, `attach_cb`. The new DFB receives the `ttl.compiler_allocated` marker attribute.
+`TTLInsertIntermediateDFBs` walks all operations implementing
+`DFBInputOpInterface`, including reduce, block broadcast, matmul, transpose,
+and selected elementwise forms that require DFB-attached operands. For each
+operand that the interface marks as requiring a DFB-attached value, the pass
+checks whether the operand traces to an existing DFB via `getAttachedCB`. If
+not, the pass materializes the value through a fresh compiler-allocated DFB
+marked with `ttl.compiler_allocated`.
 
-`TTLMaterializeLoopState` uses the same compiler-DFB materialization helper (`include/ttlang/Dialect/TTL/Transforms/DFBMaterialization.h`) to remove ranked-tensor `scf.for` iter_args before compute lowering.
+The standard pipeline runs this pass after `ttl-form-producer-compute`.
+Values produced by `ttl.compute` are materialized by the compiler-created
+intermediate lifecycle described above: the compute gains extra DFB outputs,
+and consumers receive attached tensor values instead of the original
+non-attached compute results. The final `convert-ttl-to-compute` pass lowers
+consumers that now receive DFB-attached operands. The following `ttl-auto-sync`
+run inserts the consumer `cb_pop`.
 
-When multiple `DFBInputOpInterface` operations consume the same non-CB-attached value, the materialization is shared -- only one DFB is created and the second consumer's operand is rewritten to the existing attached value.
+Compute-result materialization is planned before rewriting IR. The pass records
+each required consumer operand under its original producer result:
 
-Each DFB is created with `blockCount=2` (double-buffering) so the packer and unpacker can operate on different halves simultaneously within the same thread.
+```
+source = (producer ttl.compute, result number)
+use    = (consumer operation, operand number)
+```
+
+For each producer `ttl.compute`, the pass rebuilds the compute exactly once
+using this sequence:
+
+1. Preserve all original results in their existing result order.
+2. Append one compiler-allocated DFB output for each source result that needs
+   materialization, ordered by source result number.
+3. Clone the original compute body.
+4. For each cloned `ttl.tile_store` that writes the original source DFB, emit
+   a matching `ttl.tile_store` to the appended compiler DFB output.
+5. Replace uses of the original compute results with the corresponding results
+   of the replacement compute.
+6. Emit `cb_push`, `cb_wait`, and `attach_cb` for each appended compiler DFB
+   after the replacement compute.
+7. Rewrite all planned consumer operands for a source result to the same
+   attached value.
+
+This producer-centric plan makes materialization independent of consumer order
+and of other results from the same producer. For example:
+
+```python
+a, b = ttl.compute(...)
+ttl.compute(a)
+ttl.compute(b)
+ttl.compute(a)
+```
+
+The source results are `a = (producer, 0)` and `b = (producer, 1)`. The pass
+creates two compiler DFB outputs, not three, and both consumers of `a` use the
+same attached materialization. The producer compute is rebuilt once, so the
+plan is not affected by transient SSA values created while rewriting another
+result of the same producer.
+
+`TTLMaterializeLoopState` uses the same compiler-DFB materialization helper
+(`include/ttlang/Dialect/TTL/Transforms/DFBMaterialization.h`) to remove
+ranked-tensor `scf.for` iter_args before compute lowering.
+The helper chooses a provisional index by scanning only the enclosing function,
+so DFB-creating function passes do not inspect sibling functions while MLIR
+executes them concurrently.
+
+Non-compute producers use the tensor-level fallback. The helper emits the
+reserve/store and wait/attach at the tensor definition site, while
+`ttl-auto-sync` inserts the missing releases:
+
+```
+bind_cb {ttl.compiler_allocated}
+cb_reserve
+store
+cb_push
+cb_wait
+attach_cb
+... consumer ...
+cb_pop
+```
+
+When multiple `DFBInputOpInterface` operations consume the same non-compute
+value, a materialization is shared only when its attached value dominates the
+later consumer. Incomparable consumers receive separate compiler DFBs.
+
+For `ttl.compute` results, the attached value is created immediately after the
+producer push, so consumers originally dominated by the compute result remain
+dominated by the materialized value. This includes branch-local consumers when
+the producer is outside the branch. General occupancy-balance proofs for
+placing compiler-created waits and pops inside arbitrary structured control
+flow are future work ([#724](https://github.com/tenstorrent/tt-lang/issues/724)).
+
+Compiler-allocated intermediate DFBs are created with `blockCount=1`. A
+compute kernel's Unpack, Math, and Pack stages are separate RISC-V cores that
+run the same kernel program, compiled once per core and executed concurrently.
+They synchronize through the circular buffer: Pack executes
+`cb_reserve_back`/`cb_push_back`, and Unpack executes
+`cb_wait_front`/`cb_pop_front` ([METALIUM_GUIDE, three-core compilation],
+[annotated compute kernel]).
+
+That handshake is correct at any depth >= 1. Pack's `cb_reserve_back` blocks
+until a slot is free, and Unpack's `cb_wait_front` blocks until a tile is
+available, so one slot never lets Pack overwrite an unread tile or Unpack read
+an unwritten one. A second slot only lets Pack run ahead of Unpack to overlap
+data movement with compute, which is a throughput optimization with
+diminishing returns and an L1 cost ([METALIUM_GUIDE, buffer depth]).
+
+`blockCount=1` is always correct and minimizes L1, so it is the current default
+for compiler intermediates. Whether a deeper buffer would improve throughput
+for a given intermediate is workload-dependent: it depends on how much
+Pack/Unpack overlap the surrounding computation admits and on
+`dst_full_sync_en`, since single-buffer DST has no overlap to exploit. Deeper
+compiler-created DFBs should be selected per intermediate by benchmarking and
+a cost model rather than a fixed constant ([#727]). User-declared DFBs, which
+transfer between the reader/compute/writer kernels, keep their double
+buffering.
+
+[METALIUM_GUIDE, three-core compilation]: https://github.com/tenstorrent/tt-metal/blob/c04ae2758fc87f3a49ca19a7d339464db90e995d/METALIUM_GUIDE.md#L132
+[annotated compute kernel]: https://github.com/tenstorrent/tt-metal/blob/c04ae2758fc87f3a49ca19a7d339464db90e995d/METALIUM_GUIDE.md#L154-L170
+[METALIUM_GUIDE, buffer depth]: https://github.com/tenstorrent/tt-metal/blob/c04ae2758fc87f3a49ca19a7d339464db90e995d/METALIUM_GUIDE.md#L333
+[#727]: https://github.com/tenstorrent/tt-lang/issues/727
 
 ## DFB Sync Insertion
 
@@ -237,10 +434,10 @@ For each acquire `A`, the inserted release `R_A` must satisfy:
    advance it past slots whose data is still needed.
 
 (1) is enforced explicitly by the pass. (2) is enforced *implicitly* when
-consumers under criterion (a) appear in declaration order
-(`use(t1); use(t2); use(t3)`). Reordered consumes (`use(t2); use(t1)`) would
-violate FIFO monotonicity on their own, but in the current pipeline `TTLCoalesceDFBAcquires`
-runs immediately after `TTLInsertCBSync` and rewrites N consecutive same-DFB
+tile-SSA consumers appear in declaration order (`use(t1); use(t2); use(t3)`).
+Reordered consumes (`use(t2); use(t1)`) would violate FIFO monotonicity on
+their own, but in the current pipeline `TTLCoalesceDFBAcquires` runs
+immediately after `TTLInsertCBSync` and rewrites N consecutive same-DFB
 acquires into one multi-tile acquire plus per-block `tensor.extract_slice`
 views and a single coalesced release with `num_tiles = N*k`. Per-tile
 `src_idx` values fall out of `extract_slice` offsets, so consume order is
@@ -296,8 +493,9 @@ Consumer side:
 ```
 
 Each acquire owns exactly one interval. The release inserted for that interval
-must follow the last owned use and precede the next acquire in the same DFB sync
-class:
+must follow the last owned use. For direct-DFB ownership, the release must also
+precede the next acquire in the same DFB sync class because direct DFB uses are
+position-based:
 
 ```
 cb_wait A  ->  owned reads  ->  cb_pop A  ->  cb_wait B
@@ -328,20 +526,24 @@ insertReleases(acquires, releases, releaseOp):
     dfb = acquire.cb
     boundary = next acquire in the same DFB sync class, projected to acquire.block
 
-    matching = same-block release on dfb after acquire and before boundary
+    liveEnd = latest owned use:
+      direct-DFB uses are bounded by boundary
+      tensor-SSA uses ignore boundary
+
+    matching = same-block owned release on dfb
     nested = nested releases on dfb after acquire and before boundary
     if matching:
       continue
 
     erase nested releases
-    liveEnd = last transitive tensor or direction-matched direct DFB use
-              before boundary
     insert releaseOp(dfb) after liveEnd
 ```
 
-The same-block release check makes the pass idempotent. A release after the
-next acquire in the same DFB sync class belongs to that later interval and does
-not satisfy the earlier acquire.
+The same-block release check makes the pass idempotent. For direct-DFB
+ownership, a release after the next acquire in the same DFB sync class belongs
+to that later interval and does not satisfy the earlier acquire. For tile-SSA
+ownership, an existing release past the boundary still satisfies the earlier
+acquire when it follows that acquire's last owned tensor use.
 
 ## DFB Acquire Coalescing
 
@@ -379,16 +581,17 @@ same way.
 For a candidate group of acquires `G = {a_1, ..., a_N}` on DFB `c`, the
 rewrite is correct iff every op `O` between consecutive group members
 preserves the synchronization invariant of `c` under the coalesced
-schedule. The coalesced acquire blocks until `N*k` tiles are present
-*before* anything between original `a_i` and `a_{i+1}` runs; the
-coalesced release runs only after the last group member's last use.
+schedule. The coalesced acquire performs one `N*k`-slot acquire before
+anything between original `a_i` and `a_{i+1}` runs: `cb_wait` requires
+`N*k` tiles to be present, while `cb_reserve` requires `N*k` free slots.
+The coalesced release runs only after the last group member's last use.
 
 This holds iff no op between members causes a release on `c` (directly or
-transitively): the original IR may have allowed the producer to recycle
-slots between `a_i` and `a_{i+1}`, and the coalesced version forbids that
-until the very end. Forbidding inter-member releases is therefore
-necessary for correctness at low `block_count`, and sufficient when paired
-with the coalesced release placement.
+transitively): the original IR may have advanced the matching DFB pointer
+between `a_i` and `a_{i+1}`, and the coalesced version delays all releases
+until the end. Forbidding inter-member releases is therefore necessary for
+correctness at low `block_count`, and sufficient when paired with the
+coalesced release placement.
 
 A locally-checkable (sound, conservative) version of that criterion: an
 op `O` between members is safe to skip past iff none of:
@@ -428,12 +631,12 @@ the same op-order position, so the coalesced version is no worse.
 
 #### Why this is necessary
 
-If `O` is itself a release on `c` (e.g., a user-written `cb_pop`), the
-original IR lets the producer recycle one slot at `O`, but the coalesced
-acquire holds all `N*k` slots from the start. With `block_count` only
-slightly larger than the working set, the producer cannot push the next
-batch and the consumer cannot release until all members are consumed —
-deadlock. Same argument for transitive releases via group results.
+If `O` is itself a release on `c` (e.g., a user-written `cb_pop` for consumer
+acquires or `cb_push` for producer acquires), the original IR advances one
+slot at `O`, but the coalesced acquire holds all `N*k` slots from the start.
+With `block_count` only slightly larger than the working set, the matching
+thread cannot make progress until all members are released. Same argument for
+transitive releases via group results.
 
 ### Detection algorithm
 
@@ -488,31 +691,87 @@ ttl-coalesce-dfb-acquires))'`) verifies this.
 
 ## Index Reuse
 
-`TTLFinalizeDFBIndices` reduces the physical DFB count by assigning the same index to compiler-allocated DFBs whose lifetimes do not overlap. The algorithm runs per function. Compiler-allocated DFBs are intra-thread (both producer and consumer are in the same compute function), so their lifetimes are independent across functions.
+`TTLFinalizeDFBIndices` reduces the physical DFB count by assigning the same
+index to compiler-allocated DFBs whose lifetimes do not overlap. The algorithm
+runs per function. It ignores the function-local provisional indices and
+assigns each function a disjoint physical index range after the highest
+user-declared index in the module.
 
-Two DFBs may share an index only if they have identical `CircularBufferType` (shape, element type, block count). Since `CircularBufferType` is an MLIR uniqued type, this is a pointer comparison. The algorithm partitions DFBs by type and runs a linear scan within each partition.
+Two DFBs may share an index only if they have identical `CircularBufferType`
+(shape, element type, block count). Since `CircularBufferType` is an MLIR
+uniqued type, this is a pointer comparison. The algorithm partitions DFBs by
+type and runs a linear scan within each partition.
+
+### Logical identity
+
+The frontend assigns each user-declared DFB a module-wide logical `dfb_id` and
+copies that ID to the declaration in every participating kernel.
+Compiler-created declarations receive distinct logical IDs after the largest
+explicit ID. A user declaration without `dfb_id` is rejected before physical
+allocation.
+
+Declarations with one `dfb_id` must have the same `CircularBufferType`.
+Compiler-created DFBs are currently kernel-local and receive distinct logical
+IDs.
+
+Logical identity resolution is a read-only analysis. The finalizer
+materializes its complete assignment on `ttl.bind_cb` only after the identity
+and capacity checks succeed. Rewriting `cb_index` therefore does not merge
+the SPSC or PipeNet protocol state of distinct logical DFBs.
+
+```
+resolveLogicalDFBIdentities(module):
+  maxExplicitId = max(dfb_id for declarations that have dfb_id, default=-1)
+  reject any user declaration without dfb_id
+  compilerCount = count(compiler-created declarations without dfb_id)
+  reject if maxExplicitId + compilerCount exceeds the index domain
+  nextCompilerId = maxExplicitId + 1 if compilerCount > 0 else 0
+
+  for declaration in module traversal order:
+    logicalId = declaration.dfb_id
+    if declaration has no dfb_id:
+      logicalId = nextCompilerId++
+    reject logicalId if another declaration with that ID has a different type
+    assignments.append({declaration, logicalId})
+
+  return assignments
+```
+
+Generated IDs are strictly greater than every explicit ID, and each
+compiler-created declaration consumes the next ID exactly once. Generated and
+explicit identities therefore cannot collide. Equal types for repeated
+explicit IDs ensure that one logical identity denotes one DFB representation.
 
 ### Algorithm
 
 ```
-reuseDFBIndices(funcOp, compilerAllocatedBindCBOps):
+nextCompilerIndex = max(userDeclaredDFBIndices) + 1
+for funcOp in module:
+  slots = assignPhysicalDFBIndices(
+      funcOp, compilerAllocatedBindCBOps[funcOp], nextCompilerIndex)
+  nextCompilerIndex += slots
+
+assignPhysicalDFBIndices(
+    funcOp, compilerAllocatedBindCBOps, firstPhysicalIndex):
   // Assign sequential indices to function-level operations.
   for op in funcOp.entryBlock:
     opIndex[op] = nextIdx++
 
-  // Build intervals: [bind_cb position, last cb_pop position].
-  // CBPopOps inside nested regions (loops, compute) are projected
-  // to their function-level ancestor.
+  // Build intervals: [first acquire position, last cb_pop position].
+  // Nested acquires and pops are projected to their function-level ancestor.
+  // If no acquire exists, start = bind_cb position (synthetic IR fallback).
   // If no cb_pop exists, end = last operation (conservative).
   for bindOp in compilerAllocatedBindCBOps:
-    start = opIndex[bindOp]
+    start = min(getBodyIndex(acq) for acq in reserveOrWaitUsers(bindOp))
     end = max(getBodyIndex(pop) for pop in cbPopUsers(bindOp))
-    if end == start:
+    if no acquire:
+      start = opIndex[bindOp]
+    if end <= start:
       end = lastOpIdx
     intervals[bindOp.type].append({start, end, bindOp.result})
 
   // Linear scan per type partition. Each partition gets a contiguous
-  // block of indices starting at baseIndex + offset.
+  // block of indices starting at firstPhysicalIndex + offset.
   offset = 0
   for (type, typeIntervals) in intervals:
     sort typeIntervals by start
@@ -527,37 +786,104 @@ reuseDFBIndices(funcOp, compilerAllocatedBindCBOps):
 
     // Rewrite BindCBOp cb_index attributes for this partition.
     for (value, s) in partitionAssignments:
-      bindOp[value].cb_index = baseIndex + offset + s
+      bindOp[value].cb_index = firstPhysicalIndex + offset + s
     offset += maxSlot + 1
+
+  return offset
 ```
 
-The expiration condition `active.end <= interval.start` matches the DST register allocator's convention. Because operation indices are integers assigned to distinct operations, strict inequality and non-strict inequality produce the same result.
+The expiration condition `active.end <= interval.start` matches the DST
+register allocator's convention. Because operation indices are integers
+assigned to distinct operations, strict inequality and non-strict inequality
+produce the same result.
 
 ### Correctness with control flow
 
-The algorithm assigns sequential indices to function-level operations only. Structured operations (`scf.for`, `ttl.compute`) occupy a single index in this sequence; their contents are not individually numbered. This is sufficient because `InsertIntermediateDFBs` and `InsertCBSync` both run before `LowerToLoops`, placing `bind_cb` and `cb_pop` at function-level while the IR is flat. These operations remain at function-level after loop creation because they bracket compute regions.
+The algorithm assigns sequential indices to function-level operations only.
+Structured operations (`scf.for`, `scf.if`, `ttl.compute`) occupy a single
+index in this sequence; their contents are not individually numbered. Any
+nested acquire or `cb_pop` is projected to its enclosing function-level
+operation with `Block::findAncestorOpInBlock`.
 
-If a later pass restructures a `CBPopOp` into a nested region, it is projected to its enclosing operation at function-level via `Block::findAncestorOpInBlock`. This overestimates liveness -- the interval extends to the structured op rather than to the specific point where the pop occurs -- but never produces incorrect reuse.
+Projection overestimates liveness because an interval covers the enclosing
+structured operation rather than the exact nested operation. This can miss
+reuse opportunities across loop bodies or mutually exclusive branches, but it
+cannot assign one physical DFB index to lifetimes that may overlap at runtime.
 
-Two DFBs consumed simultaneously by the same operation (e.g., both operands of a matmul) necessarily have overlapping intervals because both `bind_cb` must precede the consumer and both `cb_pop` must follow it. The linear scan assigns them different slots.
+Two DFBs consumed simultaneously by the same operation (e.g., both operands of
+a matmul) necessarily have overlapping intervals because their acquires
+precede the consumer and their pops follow it. The linear scan assigns them
+different slots.
 
 ### Module attribute and runtime integration
 
-After rewriting indices, the pass calls `getNextAvailableDFBIndex`, which returns `max(cb_index) + 1` across all `BindCBOp`s in the module. This is the index space usage, not a count of distinct DFBs (sparse indices inflate it). The pass verifies this does not exceed `kMaxCircularBuffers` (32).
+After rewriting indices, the pass calls `getNextAvailableDFBIndex`, which
+returns `max(cb_index) + 1` across all `BindCBOp`s in the module. This is the
+index space usage, not a count of distinct DFBs (sparse indices inflate it).
+The pass verifies this does not exceed `kMaxCircularBuffers` (32).
 
-The pass then sets `ttl.base_cta_index` on every function. Compile-time arguments (CTAs) to each kernel are laid out as `[CB indices..., other args...]`. `base_cta_index` is the starting index of the non-CB arguments -- equivalently, one past the last CB index. CB indices occupy `[0, base_cta_index)`.
+The pass then sets `ttl.base_cta_index` on every function. Compile-time
+arguments (CTAs) to each kernel are laid out as `[CB indices..., other args...]`.
+`base_cta_index` is the starting index of the non-CB arguments -- equivalently,
+one past the last CB index. CB indices occupy `[0, base_cta_index)`.
 
-Finally, the pass builds the `ttl.compiler_allocated_dfbs` module attribute with one entry per unique physical index, deduplicated from the potentially many `BindCBOp`s that now share an index. The Python runtime reads this attribute to allocate L1 buffers at dispatch time.
+Finally, the pass builds the `ttl.dfb_allocations` module attribute with one
+descriptor per physical index. Each descriptor contains `dfb_index`,
+`num_tiles`, `element_type`, `page_size`, and `block_count`. The finalizer
+computes `page_size` with `ttcore::getElementSizeBytes()` on the finalized
+element type, so subtile dimensions affect the allocation without requiring
+runtime device initialization.
+
+```
+emitDFBAllocations(finalizedDeclarations):
+  for declaration in finalizedDeclarations:
+    index = declaration.cb_index
+    reject index if another declaration at that index has a different type
+    allocationByIndex.insert(index, declaration.type)
+
+  for (index, type) in allocationByIndex sorted by index:
+    emit {dfb_index = index,
+          num_tiles = type.elementsPerBlock,
+          element_type = type.elementType,
+          page_size = byteSize(type.elementType),
+          block_count = type.blockCount}
+```
+
+Every finalized declaration contributes to the table. Type equality makes
+each deduplicated descriptor valid for every declaration at that physical
+index, and deriving the page size from the same element type used by lowering
+keeps compiler and runtime allocation sizes equal.
+
+The Python runtime validates that the descriptors form a dense index range and
+builds all `ttnn.CBDescriptor` objects from this final allocation table. It
+does not use the frontend's logical DFB list after physical assignment. This
+preserves compiler-computed page sizes, tile dimensions, and data formats.
+Standalone runner emission uses the same physical configuration as direct
+execution.
 
 ## Limitations and Future Work
 
-The linear scan operates on a flat sequence of function-level operations. It cannot distinguish between branches of an `scf.if`, so DFBs used in mutually exclusive branches are treated as overlapping. The current pipeline does not produce conditional control flow around DFB lifecycle operations. The DSL evaluates Python `if` during tracing, so only the taken branch appears in the generated IR; runtime-conditional control flow (`scf.if` with conditions dependent on tensor values) is not supported by the frontend at this time.
+The linear scan operates on a flat sequence of function-level operations. It
+cannot distinguish between branches of an `scf.if`, so DFBs used in mutually
+exclusive branches are treated as overlapping. This is conservative for
+physical index reuse. More precise reuse across mutually exclusive regions
+would need branch-sensitive liveness.
 
-Index reuse is restricted to compiler-allocated DFBs. User-declared DFBs retain their original indices because the same CB index is referenced by multiple threads (reader, compute, writer) to implement cross-thread data flow. Reusing a user index in one function would invalidate references in the others.
+Index reuse is restricted to compiler-allocated DFBs. User-declared DFBs retain
+their original indices because the same CB index is referenced by multiple
+threads (reader, compute, writer) to implement cross-thread data flow. Reusing
+a user index in one function would invalidate references in the others.
 
-Liveness is computed at function-level granularity. If a `CBPopOp` is inside a structured op (loop, compute region), it is projected to its enclosing operation at function-level. The infrastructure for this exists (`Block::findAncestorOpInBlock`) but is not currently exercised: all compiler-allocated DFB lifecycle ops remain at function-level because `InsertIntermediateDFBs` and `InsertCBSync` run before loop creation, and Python control flow unrolls at trace time.
+Liveness is computed at function-level granularity. If an acquire or `CBPopOp`
+is inside a structured op, it is projected to its enclosing function-level
+operation. This is used by loop-state materialization and by later lowering
+passes that can place lifecycle ops in nested regions. The projection is safe
+but may keep a physical DFB index live longer than necessary.
 
-The type compatibility constraint prevents reuse across DFBs with different shapes or element types, even when L1 footprints happen to match. A size-based rather than type-based compatibility check could recover some reuse opportunities.
+The type compatibility constraint prevents reuse across DFBs with different
+shapes or element types, even when L1 footprints happen to match. A size-based
+rather than type-based compatibility check could recover some reuse
+opportunities.
 
 ## Scalar Element Access to DFBs
 
