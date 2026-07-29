@@ -67,13 +67,6 @@ setup() {
     assert_equal "$(run_detect "$BASE" "$head")" "true"
 }
 
-@test "diff in .github/containers/Dockerfile.wheel-manylinux-2-34 marks uplift=true" {
-    echo "modified" >> "$REPO/.github/containers/Dockerfile.wheel-manylinux-2-34"
-    commit_all "$REPO" "uplift"
-    head=$(cd "$REPO" && git rev-parse HEAD)
-    assert_equal "$(run_detect "$BASE" "$head")" "true"
-}
-
 @test "diff in requirements-runtime.txt marks uplift=true" {
     echo "modified" >> "$REPO/requirements-runtime.txt"
     commit_all "$REPO" "uplift"
@@ -156,6 +149,13 @@ setup() {
 @test "diff in wheel-builder driver alone -> uplift=false" {
     echo "modified" >> "$REPO/.github/containers/build-wheel-manylinux-images.sh"
     commit_all "$REPO" "wheel builder driver"
+    head=$(cd "$REPO" && git rev-parse HEAD)
+    assert_equal "$(run_detect "$BASE" "$head")" "false"
+}
+
+@test "diff in wheel-builder Dockerfile alone -> uplift=false" {
+    echo "modified" >> "$REPO/.github/containers/Dockerfile.wheel-manylinux-2-34"
+    commit_all "$REPO" "wheel builder Dockerfile"
     head=$(cd "$REPO" && git rev-parse HEAD)
     assert_equal "$(run_detect "$BASE" "$head")" "false"
 }

@@ -89,10 +89,6 @@ container_input_one_path() {
     container_input_one_path ".github/containers/Dockerfile"
 }
 
-@test "container input change in .github/containers/Dockerfile.wheel-manylinux-2-34 -> -<hash> form" {
-    container_input_one_path ".github/containers/Dockerfile.wheel-manylinux-2-34"
-}
-
 @test "container input change in requirements-runtime.txt -> -<hash> form" {
     container_input_one_path "requirements-runtime.txt"
 }
@@ -127,6 +123,14 @@ container_input_one_path() {
     REPO=$(fresh_tagged_repo)
     echo "modified" >> "$REPO/.github/containers/build-wheel-manylinux-images.sh"
     commit_all "$REPO" "wheel builder driver"
+    run -0 bash -c "cd '$REPO' && .github/containers/get-version-tag.sh"
+    assert_output "$BASE_TAG"
+}
+
+@test "wheel-builder Dockerfile change does not change shared docker tag" {
+    REPO=$(fresh_tagged_repo)
+    echo "modified" >> "$REPO/.github/containers/Dockerfile.wheel-manylinux-2-34"
+    commit_all "$REPO" "wheel builder Dockerfile"
     run -0 bash -c "cd '$REPO' && .github/containers/get-version-tag.sh"
     assert_output "$BASE_TAG"
 }

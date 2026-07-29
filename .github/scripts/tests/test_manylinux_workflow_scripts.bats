@@ -219,6 +219,29 @@ setup() {
     grep -Eq '^docker-tag=v99\.99\.99-[a-f0-9]{8}$' "$output_file"
 }
 
+@test "builder resolver hashes builder Dockerfile changes without changing shared docker tag" {
+    repo="$(mkrepo)"
+    install_scripts_in_repo "$repo"
+    (cd "$repo" && git tag v99.99.99)
+    echo "dockerfile change" >> "$repo/.github/containers/Dockerfile.wheel-manylinux-2-34"
+    commit_all "$repo" "dockerfile change"
+    output_file="$BATS_TEST_TMPDIR/output"
+
+    shared_tag=$(cd "$repo" && .github/containers/get-version-tag.sh)
+    assert_equal "$shared_tag" "v99.99.99"
+
+    cd "$repo"
+    run env \
+        DOCKER="$DOCKER_MOCK" \
+        GITHUB_OUTPUT="$output_file" \
+        GITHUB_REF=refs/heads/feature \
+        "$SCRIPTS_DIR/resolve-wheel-builder-images.sh" \
+            --repository example/project
+
+    assert_success
+    grep -Eq '^docker-tag=v99\.99\.99-[a-f0-9]{8}$' "$output_file"
+}
+
 @test "manylinux input validation accepts supported dependency modes" {
     run "$SCRIPTS_DIR/validate-manylinux-wheel-inputs.sh" pypi 1.2.3
     assert_success

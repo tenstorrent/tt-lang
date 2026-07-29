@@ -12,6 +12,8 @@ source "$wheel_builder_path_script_dir/uplift-paths.sh"
 
 WHEEL_BUILDER_TAG_PATHS=(
     "${UPLIFT_PATHS[@]}"
+    .github/containers/Dockerfile.wheel-manylinux-2-34
+    .github/containers/CMakeLists.wheel-toolchain
     .github/containers/build-wheel-manylinux-images.sh
     .github/containers/cache-wheel-manylinux-component.sh
 )

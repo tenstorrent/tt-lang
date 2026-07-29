@@ -472,9 +472,10 @@ every PR. The path-change detection is in
 
 Manylinux wheel-builder images use the same deterministic tag format, but
 their input list extends `.github/scripts/uplift-paths.sh` with the
-manylinux builder driver scripts. This keeps changes to those driver scripts
-from invalidating the shared ird/dist image tag while still producing a new
-manylinux builder tag when the builder assembly changes.
+manylinux builder Dockerfile, CMake driver, and builder driver scripts. This
+keeps changes to those builder-only files from invalidating the shared
+ird/dist image tag while still producing a new manylinux builder tag when the
+builder assembly changes.
 
 `call-build.yml` retains its `build_toolchain` input for manual
 `workflow_dispatch` runs, but the automated workflows no longer set it:
