@@ -26,6 +26,7 @@ from sim.ttnnsim import (  # type: ignore[reportPrivateUsage]
     TensorMemoryLayout,
     TensorSpec,
     _create_golden_wrapper,
+    _logical_view,
 )
 
 
@@ -1466,7 +1467,7 @@ def test_golden_function_wrappers_logical():
     assert torch.equal(result.to_torch(), expected)
 
 
-# The two tests below build a wrapper from a stand-in golden function instead of
+# The tests below build a wrapper from a stand-in golden function instead of
 # calling a wrapped ``ttnn`` op, so they run without ttnn installed.  The
 # module-level wrappers exist only when ttnn does (that is where the golden
 # functions come from), which is how a wrapper that raised on every matmul-shaped
@@ -1517,6 +1518,121 @@ def test_golden_wrapper_reports_logical_shape_for_elementwise_operands():
 
     assert result.shape == (3, 5)
     assert result.padded_shape == (32, 32)
+
+
+def _golden_matmul(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    return x @ y
+
+
+def _golden_row_sum(x: torch.Tensor) -> torch.Tensor:
+    return x.sum(dim=-1)
+
+
+def _golden_transpose(x: torch.Tensor) -> torch.Tensor:
+    return x.transpose(0, 1)
+
+
+@pytest.mark.parametrize(
+    "golden, logical_shapes, expected",
+    [
+        (_golden_matmul, [(3, 5), (5, 7)], (3, 7)),
+        (_golden_row_sum, [(3, 5)], (3,)),
+        (_golden_transpose, [(3, 5)], (5, 3)),
+    ],
+    ids=["matmul", "reduction", "transpose"],
+)
+def test_golden_wrapper_reports_logical_shape_for_shape_changing_ops(
+    golden: Callable[..., torch.Tensor],
+    logical_shapes: list[tuple[int, ...]],
+    expected: tuple[int, ...],
+):
+    """Padded operands get the op's own logical result shape, as ttnn reports it.
+
+    Running the op on the padded store would report a padded result shape, which
+    says nothing about the logical one, and broadcasting the operands cannot
+    supply it either: a matmul's operands do not broadcast, a reduction's result
+    is not their broadcast, and a transpose inside square padding would be
+    mistaken for an elementwise op and take its operand's shape unchanged.
+    """
+    sources = [torch.rand(*shape) for shape in logical_shapes]
+    inputs = [ttnn.from_torch(src, layout=ttnn.TILE_LAYOUT) for src in sources]
+    assert all(t.padded_shape == (32, 32) for t in inputs), "inputs must be padded"
+
+    result = _create_golden_wrapper("op", golden)(*inputs)
+
+    assert result.shape == expected
+    # Stored padded, like any tensor of this logical shape, and holding what the
+    # op computes from the logical data.
+    assert (
+        result.padded_shape
+        == ttnn.from_torch(golden(*sources), layout=ttnn.TILE_LAYOUT).padded_shape
+    )
+    assert torch.allclose(_logical_view(result), golden(*sources))
+
+
+def test_golden_wrapper_keeps_the_logical_data_readable_when_an_op_moves_it():
+    """A joining op leaves its result where the logical shape says it is.
+
+    Concatenating on the padded store would put the second operand's rows after
+    the first operand's *padding* -- at row 32 of a 64-row store whose logical
+    shape claims 5 rows -- leaving the result unreadable from its shape.  Running
+    on the logical data and padding the result keeps the store's one invariant:
+    logical data in the top-left, padding everywhere else.
+    """
+
+    def golden_concat(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        return torch.cat([x, y], dim=0)
+
+    top = torch.arange(15, dtype=torch.float32).reshape(3, 5)
+    bottom = torch.arange(100, 110, dtype=torch.float32).reshape(2, 5)
+    a = ttnn.from_torch(top, layout=ttnn.TILE_LAYOUT)
+    b = ttnn.from_torch(bottom, layout=ttnn.TILE_LAYOUT)
+
+    result = _create_golden_wrapper("concat", golden_concat)(a, b)
+
+    assert result.shape == (5, 5)
+    assert result.padded_shape == (32, 32)
+    stored = result.to_torch()
+    assert torch.equal(stored[0:5, 0:5], torch.cat([top, bottom], dim=0))
+    assert torch.all(stored[5:, :] == 0) and torch.all(stored[:, 5:] == 0)
+
+
+def test_golden_wrapper_does_not_compute_over_padding():
+    """Padding is storage, not data: an op must not reduce over it.
+
+    A mean taken on the store divides by the 1024 elements of a padded tile
+    instead of the 15 it was given, and a softmax normalizes over 1009 zeros
+    nobody passed.  Both are silently wrong answers of the right shape.
+    """
+    source = torch.arange(1, 16, dtype=torch.float32).reshape(3, 5)
+    a = ttnn.from_torch(source, layout=ttnn.TILE_LAYOUT)
+
+    mean = _create_golden_wrapper("mean", lambda x: x.mean())(a)
+    assert mean.shape == ()
+    assert torch.isclose(mean.to_torch()[0, 0], source.mean())
+
+    softmax = _create_golden_wrapper("softmax", lambda x: torch.softmax(x, dim=-1))(a)
+    assert softmax.shape == (3, 5)
+    assert torch.allclose(softmax.to_torch()[0:3, 0:5], torch.softmax(source, dim=-1))
+
+
+def test_golden_wrapper_falls_back_to_the_padded_store_when_logical_extents_fail():
+    """An op that only accepts the padded extents still runs, on those extents.
+
+    Computing on the logical data is preferable but not always possible -- an
+    argument can be derived from the padded shape, as this reshape is -- and a
+    call that the simulator used to serve must not start failing over it.
+    """
+
+    def golden_reshape(x: torch.Tensor) -> torch.Tensor:
+        return x.reshape(32 * 32)
+
+    a = ttnn.from_torch(torch.rand(3, 5), layout=ttnn.TILE_LAYOUT)
+
+    result = _create_golden_wrapper("reshape", golden_reshape)(a)
+
+    assert result.shape == (1024,)
+    assert torch.equal(result.to_torch(), a.to_torch().reshape(1024))
 
 
 class TestTensorTileIndexing:

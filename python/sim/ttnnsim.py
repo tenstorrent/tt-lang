@@ -1710,6 +1710,15 @@ class Tensor:
         declared dtype when float32 promotion is active.  Use the module-level
         ttnn.to_torch() function when the result needs to match the declared
         dtype (e.g. for comparison with native torch tensors).
+
+        This is the padded store, so its shape is :attr:`padded_shape` and not
+        :attr:`shape`: where real ttnn's ``to_torch`` un-pads, this deliberately
+        exposes the padding, because the padding is what a kernel sees and what
+        the simulator's tile-level accesses address.  The logical data occupies
+        the top-left of the store, so slicing each dimension to its :attr:`shape`
+        extent recovers it (see ``_pad_to_tile_alignment``, and
+        ``_logical_view``, which does exactly that); every tensor the simulator
+        produces keeps the logical data in that position.
         """
         return self._tensor
 
@@ -2074,9 +2083,8 @@ def _normalize_rank_for_layout(tensor: torch.Tensor, layout: IndexType) -> torch
     straight through ``ttnn.from_torch(..., layout=ttnn.TILE_LAYOUT,
     device=device)`` (tests/ttnn/nightly/unit_tests/operations/reduction/
     test_reduction_ops.py, test_generic_ops), so creation ops and ``from_torch``
-    accept them alike.  Unlike ttnn, the simulator does not track a separate
-    logical shape, so ``.shape`` / ``.padded_shape`` report the padded shape
-    (consistent with tile-aligned 2-D inputs).
+    accept them alike.  The lift is storage only: ``.shape`` keeps the rank the
+    caller passed, while ``.padded_shape`` reports the lifted, tile-aligned one.
     """
     if layout == TILE_LAYOUT and tensor.ndim < 2:
         return tensor.reshape((1,) * (2 - tensor.ndim) + tuple(tensor.shape))
@@ -2112,6 +2120,21 @@ def _pad_to_tile_alignment(tensor: torch.Tensor, layout: IndexType) -> torch.Ten
     # from the last dim; we pad zero on the right of the innermost dim and
     # the bottom of the next-to-innermost dim.
     return torch.nn.functional.pad(tensor, (0, pad_w, 0, pad_h), value=0.0)
+
+
+def _logical_view(tensor: Tensor) -> torch.Tensor:
+    """The logical data of a tensor, without its padding.
+
+    The inverse of :func:`_pad_to_tile_alignment`: that function places the
+    logical data in the top-left of the stored tiles and zero-fills the rest, so
+    the data is recovered by slicing each stored dimension back to its logical
+    extent and dropping the unit dimensions a low-rank input was lifted through.
+    Returns a view, not a copy.
+    """
+    logical = tuple(tensor.shape)
+    stored = tensor.to_torch()
+    lifted = (1,) * (stored.ndim - len(logical)) + logical
+    return stored[tuple(slice(0, extent) for extent in lifted)].reshape(logical)
 
 
 def rand(
@@ -2176,6 +2199,10 @@ def to_torch(
     code also uses float32 (torch.bfloat16 is rebound to torch.float32 at
     module load time), so comparison with natively created tensors works
     without an additional cast.
+
+    Unlike real ttnn's ``to_torch``, which un-pads, the tensor returned here
+    keeps its tile padding, so its shape is the tensor's ``padded_shape`` and the
+    logical data sits in the top-left of it.  See :meth:`Tensor.to_torch`.
 
     Args:
         t: Tensor to convert.
@@ -2379,6 +2406,60 @@ def to_memory_config(tensor: Tensor, memory_config: MemoryConfig) -> Tensor:
     return result
 
 
+def _golden_logical_result(
+    golden_fn: Callable[..., Any], args: Tuple[Any, ...], kwargs: Dict[str, Any]
+) -> Optional[torch.Tensor]:
+    """Result of a golden-wrapped op computed on its inputs' logical data.
+
+    ttnn's operations are defined on the logical tensor; tile padding is how the
+    simulator stores it, per :func:`_pad_to_tile_alignment`, which puts the
+    logical data in the top-left of the stored tiles and zeroes the rest.
+    Running the op on the padded store instead makes the padding part of the
+    computation, which gets both halves of a result wrong: its shape (a padded
+    ``(3, 5)`` by ``(5, 7)`` matmul reporting ``(32, 32)`` rather than
+    ``(3, 7)``), and, for anything that is not elementwise, its values -- a mean
+    divided by 1024 elements instead of 15, a softmax normalized over 1009
+    zeros it was never given.  It also loses the invariant above for ops that
+    move data: concatenating a padded ``(3, 5)`` onto a padded ``(2, 5)`` leaves
+    the second operand's rows at row 32 of the store, where nothing can read
+    them back as logical data.
+
+    Running on the logical data instead answers all three: the result is what
+    ttnn computes, its shape is the shape of that result, and re-padding it
+    restores the top-left invariant so the store stays readable.  The cost is
+    lower than the padded run's, since the logical data is the smaller tensor.
+
+    Returns ``None`` when this cannot be done, leaving the caller its padded
+    run: when no input is padded (the two runs are then the same computation),
+    when the op will not run on logical extents (an argument derived from the
+    padded ones), or when it does not return a single tensor.
+    """
+    tensors = [a for a in list(args) + list(kwargs.values()) if isinstance(a, Tensor)]
+    if not any(tuple(t.shape) != tuple(t.padded_shape) for t in tensors):
+        return None
+
+    def unpadded(arg: Any) -> Any:
+        match arg:
+            case Tensor():
+                return _logical_view(arg)
+            case _:
+                return arg
+
+    try:
+        result = golden_fn(
+            *(unpadded(a) for a in args),
+            **{k: unpadded(v) for k, v in kwargs.items()},
+        )
+    except Exception:
+        # Deliberately broad: this is arbitrary third-party code being offered
+        # inputs of a size it was not called with, and every way it can decline
+        # -- an unsupported extent, an argument that only makes sense at padded
+        # sizes -- leads here, to the padded run the caller would have made
+        # anyway.  Letting any of them escape would fail a supported call.
+        return None
+    return result if isinstance(result, torch.Tensor) else None
+
+
 def _elementwise_logical_shape(
     result: torch.Tensor, inputs: Sequence[Any]
 ) -> Optional[Tuple[int, ...]]:
@@ -2386,13 +2467,15 @@ def _elementwise_logical_shape(
 
     Broadcasts the ``Tensor`` inputs' logical shapes so a module-level op (e.g.
     ``ttnn.multiply``) reports the same logical ``.shape`` as the equivalent
-    operator (``a * b``) and as real ttnn.  Returns ``None`` -- i.e. keep the
-    physical shape as the logical default -- when there are no ``Tensor``
-    inputs, or when the op was not elementwise, so shape-changing ops still
-    report their physical shape.  Not elementwise covers two cases: operands
-    that do not broadcast against each other at all (``linear``'s ``(32, 64)``
-    and ``(64, 128)``), and operands that do broadcast but whose broadcast does
-    not match the torch result.
+    operator (``a * b``) and as real ttnn.  This is the fallback for the calls
+    :func:`_golden_logical_result` leaves to the padded run, which are the ones
+    whose operands carry no padding for it to differ over, plus the few it
+    cannot run.  Returns ``None`` -- i.e. keep the physical shape as the logical
+    default -- when there are no ``Tensor`` inputs, or when the op was not
+    elementwise, so shape-changing ops still report their physical shape.  Not
+    elementwise covers two cases: operands that do not broadcast against each
+    other at all (``linear``'s ``(32, 64)`` and ``(64, 128)``), and operands that
+    do broadcast but whose broadcast does not match the torch result.
     """
     tensors = [t for t in inputs if isinstance(t, Tensor)]
     if not tensors:
@@ -2851,6 +2934,16 @@ def _create_golden_wrapper(
     """
 
     def wrapper(*args: Any, **kwargs: Any) -> Any:
+        # Compute on the logical data where the inputs carry padding, and store
+        # the result padded again, so a wrapped op behaves as ttnn's does and
+        # leaves a tensor indistinguishable from a created one.
+        logical_result = _golden_logical_result(golden_fn, args, kwargs)
+        if logical_result is not None:
+            return Tensor(
+                _pad_to_tile_alignment(logical_result, TILE_LAYOUT),
+                logical_shape=tuple(logical_result.shape),
+            )
+
         # Convert Tensor arguments to torch.Tensor
         def convert_arg(arg: Any) -> Any:
             match arg:
@@ -2865,9 +2958,8 @@ def _create_golden_wrapper(
         # Call golden function
         result = golden_fn(*torch_args, **torch_kwargs)
 
-        # Wrap result in Tensor if it's a torch.Tensor, propagating the logical
-        # shape for elementwise ops so ``.shape`` matches real ttnn (see
-        # _elementwise_logical_shape).
+        # Wrap result in Tensor if it's a torch.Tensor, carrying the logical
+        # shape where the elementwise rule can supply one.
         match result:
             case torch.Tensor():
                 logical = _elementwise_logical_shape(
