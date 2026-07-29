@@ -21,10 +21,24 @@ module {
     %alloc3 = ttl.bind_cb {cb_index = 3, block_count = 2}
         {ttl.compiler_allocated}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %reserve3 = ttl.cb_reserve %alloc3
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %alloc3 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %wait3 = ttl.cb_wait %alloc3
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.cb_pop %alloc3 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %alloc4 = ttl.bind_cb {cb_index = 4, block_count = 2}
         {ttl.compiler_allocated}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %reserve4 = ttl.cb_reserve %alloc4
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %alloc4 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %wait4 = ttl.cb_wait %alloc4
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.cb_pop %alloc4 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     return
   }

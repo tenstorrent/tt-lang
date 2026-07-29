@@ -18,38 +18,42 @@ func.func @type_mismatch_consumer()
 
 // -----
 
-// A compiler-created DFB with a producer acquire but no consumer acquire cannot
-// complete its protocol.
+// Default-mode allocation rejects a compiler-created DFB without a consumer
+// acquire.
 
 module {
   func.func @producer_only()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    // expected-error @below {{'ttl.bind_cb' op compiler-allocated DFB has a partial lifecycle: missing ttl.cb_wait}}
     %dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
         {ttl.compiler_allocated}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    // expected-error @below {{compiler-created logical DFB 0 has ttl.cb_reserve but no ttl.cb_wait}}
     %reserved = ttl.cb_reserve %dfb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.cb_pop %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     return
   }
 }
 
 // -----
 
-// A compiler-created DFB with a consumer acquire but no producer acquire cannot
-// complete its protocol.
+// Default-mode allocation rejects a compiler-created DFB without a producer
+// acquire.
 
 module {
   func.func @consumer_only()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    // expected-error @below {{'ttl.bind_cb' op compiler-allocated DFB has a partial lifecycle: missing ttl.cb_reserve}}
     %dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
         {ttl.compiler_allocated}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    // expected-error @below {{compiler-created logical DFB 0 has ttl.cb_wait but no ttl.cb_reserve}}
+    ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %available = ttl.cb_wait %dfb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_pop %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     return
   }
 }

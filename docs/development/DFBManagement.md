@@ -731,9 +731,9 @@ physical allocation.
 Compiler-created DFBs are currently kernel-local. A module transformation
 that distributes one compiler-created DFB across multiple kernels
 must assign the same explicit `dfb_id` to every declaration.
-The analysis rejects a compiler-created logical DFB with `cb_reserve` but no
-`cb_wait`, or the reverse. It does not infer a relation between declarations
-when the IR provides no shared identity.
+The allocation planner rejects any used compiler-created DFB without a
+complete reserve, push, wait, and pop lifecycle. It does not infer a relation
+between declarations when the IR provides no shared identity.
 
 The finalizer records every resolved logical identity on `ttl.bind_cb` before
 rewriting `cb_index`. Repeated finalization therefore cannot merge logical
@@ -775,7 +775,7 @@ This construction follows Lamport's
 [happened-before relation](https://lamport.azurewebsites.net/pubs/time-clocks.pdf):
 per-process order and communication order generate a partial order over events.
 The [LLVM concurrent memory model](https://llvm.org/docs/LangRef.html#memory-model-for-concurrent-operations)
-uses the analogous construction from single-thread program order and
+uses the analogous construction from per-sequence program order and
 `synchronizes-with` edges. DFB push-to-wait completion is the protocol-specific
 communication edge in this analysis.
 

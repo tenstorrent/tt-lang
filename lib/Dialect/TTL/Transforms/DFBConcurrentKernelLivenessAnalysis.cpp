@@ -186,35 +186,6 @@ collectLogicalDFBs(ModuleOp moduleOp,
   return analysisFailure.message.empty();
 }
 
-/// Rejects incomplete compiler-created DFB acquire pairs.
-///
-/// A declaration with no acquires does not participate in the runtime protocol.
-/// Once either acquire exists, both are required; a missing role usually means
-/// a transformation distributed one DFB without preserving its logical ID.
-static bool
-verifyCompilerDFBAcquirePairs(ArrayRef<DFBLogicalLifecycle> logicalDFBs,
-                              DFBAnalysisFailure &analysisFailure) {
-  for (const DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
-    if (!logicalDFB.compilerCreated ||
-        logicalDFB.reserves.empty() == logicalDFB.waits.empty()) {
-      continue;
-    }
-
-    bool hasReserve = !logicalDFB.reserves.empty();
-    Operation *acquire =
-        hasReserve ? logicalDFB.reserves.front() : logicalDFB.waits.front();
-    std::string message;
-    llvm::raw_string_ostream messageStream(message);
-    messageStream << "compiler-created logical DFB " << logicalDFB.logicalId
-                  << " has " << (hasReserve ? "ttl.cb_reserve" : "ttl.cb_wait")
-                  << " but no "
-                  << (hasReserve ? "ttl.cb_wait" : "ttl.cb_reserve");
-    analysisFailure.set(acquire, messageStream.str());
-    return false;
-  }
-  return true;
-}
-
 /// Returns the top-level operation containing `operation`.
 static Operation *getTopLevelKernelOperation(Operation *operation) {
   func::FuncOp funcOp = operation->getParentOfType<func::FuncOp>();
@@ -482,11 +453,6 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
   DenseMap<Operation *, unsigned> bindToLogicalDFB;
   if (!collectLogicalDFBs(moduleOp, logicalIdentityAnalysis, logicalDFBs,
                           bindToLogicalDFB, analysisFailure)) {
-    errorOperation = analysisFailure.operation;
-    errorMessage = std::move(analysisFailure.message);
-    return;
-  }
-  if (!verifyCompilerDFBAcquirePairs(logicalDFBs, analysisFailure)) {
     errorOperation = analysisFailure.operation;
     errorMessage = std::move(analysisFailure.message);
     return;

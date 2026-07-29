@@ -3,7 +3,6 @@
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false})' | FileCheck %s --check-prefix=REUSE
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false})' | FileCheck %s --check-prefix=OVERLAP
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false})' | FileCheck %s --check-prefix=FOUR
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false})' -debug-only=ttl-finalize-dfb-indices 2>&1 | FileCheck %s --check-prefix=DEBUG
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false})' | FileCheck %s --check-prefix=MIXED
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false})' | FileCheck %s --check-prefix=UNUSED
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false})' | FileCheck %s --check-prefix=THREE
@@ -243,10 +242,6 @@ func.func @mixed_types_no_cross_reuse()
 
 // Unused compiler-allocated DFB declarations remain live for the entire
 // function. No reuse is possible.
-
-// DEBUG: DFB reuse: logical DFB 3 -> physical index 3 (unbounded)
-// DEBUG: DFB reuse: logical DFB 4 -> physical index 4 (unbounded)
-// DEBUG: Total DFB count: 5
 
 // UNUSED: module attributes {ttl.dfb_allocations = {{.*}}}
 
