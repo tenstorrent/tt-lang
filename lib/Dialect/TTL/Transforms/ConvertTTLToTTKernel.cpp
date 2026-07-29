@@ -1790,13 +1790,21 @@ static LogicalResult lowerTTLOpsToTTKernel(
     }
     buildPipeCapacityPlan(mod, *pipeGraphOrErr, pipeResourcePlan,
                           pipeCapacityPlan);
+    if (!pipeCapacityPlan.hasSameSelectedTransfers(
+            preliminaryPipeCapacityPlan)) {
+      return mod.emitError(
+          "PipeNet capacity protocol selection changed after resource "
+          "replanning");
+    }
   } else if (failed(buildPipeResourcePlan(
                  mod, transferIndex, *pipeGraphOrErr, pipeResourcePlan,
                  pipeComputedAddresses, /*pipeCapacityPlan=*/nullptr))) {
     return failure();
   }
+  const PipeCapacityPlan *maybeCapacityPlan =
+      pipeCapacitySync ? &pipeCapacityPlan : nullptr;
   PipeResourceRequirements pipeResourceRequirements =
-      getPipeResourceRequirements(pipeResourcePlan, &pipeCapacityPlan);
+      getPipeResourceRequirements(pipeResourcePlan, maybeCapacityPlan);
   mod->setAttr(kPipeSyncSemaphoreCountAttrName,
                IntegerAttr::get(IntegerType::get(&ctx, 64),
                                 pipeResourceRequirements.syncSemaphoreCount));

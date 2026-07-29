@@ -394,14 +394,14 @@ Table 1. Pipe transfer resources, backing storage, and allocation scale.
 | Destination payload block (`dst_blk`) | User-reserved DFB block on the destination node. | User DFB reserve depth. |
 | Address table | Compiler-managed SRAM scratch on each source node; 4 bytes per entry, with the total table allocation rounded up to 32-byte alignment. | Per source node: one entry per concurrently live transfer sourced by that node. |
 | Sender-ready counter | Source-node local semaphore or GlobalSemaphore-backed SRAM word. | Per source node: one counter per concurrently live transfer sourced by that node. |
-| Sender-capacity counter | Source-node local semaphore or GlobalSemaphore-backed SRAM word. | One counter per proven receiver endpoint in `CA/CC` mode. |
+| Sender-capacity counter | Source-node local semaphore or GlobalSemaphore-backed SRAM word. | Per source node, one counter per proven receiver endpoint in `CA/CC` mode. Different source nodes may reuse an allocation when their initial capacities match. |
 | Receiver-completion counter | Destination-node local semaphore or GlobalSemaphore-backed SRAM word. | One logical counter per transfer node at each receiver. Transfers with disjoint receiver sets may reuse one counter allocation. |
 
 Here, source node means a physical node in the launched device grid. It
-does not mean one allocation per static pipe. Many transfers from the
-same source node reuse the same allocation slot unless their live
-intervals overlap. The number of source nodes is bounded by the launched
-device grid, not by the number of static pipes.
+does not mean one allocation per static pipe. Address-table entries and
+sender-ready counters from the same source node reuse an allocation slot
+unless their live intervals overlap. The number of source nodes is bounded
+by the launched device grid, not by the number of static pipes.
 
 Receiver-completion allocation follows the physical receiver sets. Two
 transfer nodes that share any receiver use distinct counters because
@@ -640,6 +640,12 @@ release cannot race with a sender update.
 5. Lowering emits `ttkernel.noc_semaphore_inc` to the source-node
    capacity counter after the proven receiver pop, followed by
    `ttkernel.noc_async_atomic_barrier`.
+
+The receiver wait and pop must execute on the receiver's NOC thread because
+the capacity release is a NoC semaphore increment. A transfer whose consumer
+thread owns the pop retains receiver-post synchronization. Debug output from
+`-debug-only=ttl-pipe-capacity-analysis` reports why a transfer was not
+selected for `CA/CC`.
 
 `CA/CC` removes receiver writes to the source-node address table and
 receiver increments of the sender-ready counter. The receiver-completion
@@ -1147,9 +1153,13 @@ same storage interpretation for a ready color.
 
 Capacity counters are allocated after completion and readiness counters. Each
 capacity counter uses the next local semaphore id when one remains and otherwise
-uses the next GlobalSemaphore allocation. The compiler records the final local
-and global totals in `ttl.pipe_sync_semaphore_count` and
-`ttl.pipe_global_semaphore_count`.
+uses the next GlobalSemaphore allocation. A capacity counter remains live for
+the whole kernel, so endpoints on the same source node use distinct counters.
+Endpoints on different source nodes may reuse an allocation when their initial
+capacities match; the unconditional function-entry initialization then writes
+the same value to each source node's independent counter storage. The compiler
+records the final local and global totals in
+`ttl.pipe_sync_semaphore_count` and `ttl.pipe_global_semaphore_count`.
 
 Receiver completion is cumulative across repeated executions of a transfer
 node: sends increment its shared counter, and waits consume it with
