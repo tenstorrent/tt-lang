@@ -26,6 +26,17 @@ class _FakeTensorWithoutDevice:
     pass
 
 
+class _FakeDataFormat:
+    name = "bfloat16"
+
+
+class _FakeDFBConfig:
+    dtype = _FakeDataFormat()
+    shape = (1, 1)
+    block_count = 2
+    tile = (16, 16)
+
+
 class _FakeGridSize:
     x = 1
     y = 1
@@ -80,6 +91,44 @@ class _FakeTTNN:
             self.common_runtime_args = common_runtime_args
             self.config = config
             self.compiler_include_paths = compiler_include_paths or []
+
+    class Tile:
+        def __init__(self, tile_shape):
+            self.tile_shape = tuple(tile_shape)
+
+        def get_tile_size(self, _data_format):
+            tile_height, tile_width = self.tile_shape
+            return tile_height * tile_width * 2
+
+    class TileDescriptor:
+        def __init__(self, tile):
+            self.tile = tile
+
+    class CBFormatDescriptor:
+        def __init__(self, buffer_index, data_format, page_size, tile=None):
+            self.buffer_index = buffer_index
+            self.data_format = data_format
+            self.page_size = page_size
+            self.tile = tile
+
+    class CBDescriptor:
+        def __init__(self, total_size, core_ranges, format_descriptors):
+            self.total_size = total_size
+            self.core_ranges = core_ranges
+            self.format_descriptors = format_descriptors
+            self.backing_desc = None
+
+        def set_buffer_from_cb(self, backing_desc):
+            self.backing_desc = backing_desc
+
+    @staticmethod
+    def cb_descriptor_from_sharded_tensor(cb_index, tensor, total_size, core_ranges):
+        return {
+            "cb_index": cb_index,
+            "tensor": tensor,
+            "total_size": total_size,
+            "core_ranges": core_ranges,
+        }
 
     @staticmethod
     def generic_op(tensors, program):
@@ -226,6 +275,39 @@ def test_build_kernel_descriptors_checks_pipe_runtime_arg_count(monkeypatch):
         )
 
 
+def test_build_kernel_descriptors_passes_computed_addresses_as_runtime_args(
+    monkeypatch,
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="noc",
+        tensor_indices=[0],
+        config=object(),
+        pipe_computed_address_dfb_indices=[1, 3],
+    )
+    tensor = _FakeTensor(object(), address=0x2000)
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[tensor],
+        tensor_accessor_args=[0x44, 0x55],
+        core_ranges=object(),
+        grid_cols=1,
+        grid_rows=1,
+        num_cbs=2,
+        pipe_computed_address_base_addresses={1: 0x8000, 3: 0x9000},
+        extra_common_runtime_args=[0xA000],
+        expected_extra_common_runtime_args=1,
+    )
+
+    dfb_indices = [0, 1]
+    pipe_dfb_bases = [0x8000, 0x9000]
+    tensor_accessor_args = [0x44, 0x55]
+    assert descriptors[0].compile_time_args == dfb_indices + tensor_accessor_args
+    assert descriptors[0].common_runtime_args == [0x2000] + pipe_dfb_bases + [0xA000]
+
+
 def test_run_kernel_without_pipe_resources_does_not_require_device(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     tensor = _FakeTensorWithoutDevice()
@@ -296,6 +378,28 @@ def test_build_generic_op_io_tensors_duplicates_single_output():
     ]
 
 
+def test_build_generic_op_io_tensors_keeps_user_output_last():
+    inp = object()
+    output = object()
+    scratch = object()
+    computed_dfb_1 = object()
+    computed_dfb_3 = object()
+
+    io_tensors = kernel_runner.build_generic_op_io_tensors(
+        [inp, output],
+        [scratch],
+        {3: computed_dfb_3, 1: computed_dfb_1},
+    )
+
+    assert io_tensors == [scratch, computed_dfb_1, computed_dfb_3, inp, output]
+    assert io_tensors[-1] is output
+
+
+def test_build_generic_op_io_tensors_requires_user_output():
+    with pytest.raises(ValueError, match="kernel must have at least one output tensor"):
+        kernel_runner.build_generic_op_io_tensors([], [object()])
+
+
 def test_run_kernel_global_semaphore_lifetime_is_bounded(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
@@ -317,6 +421,77 @@ def test_run_kernel_global_semaphore_lifetime_is_bounded(monkeypatch):
 
     assert len(fake_ttnn.create_calls) == 4
     assert lifetime == fake_ttnn.create_calls[-2:]
+
+
+def test_build_cb_descriptors_excludes_computed_address_backing_tensors(
+    monkeypatch,
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 1024
+    )
+
+    cb_configs = [
+        ((1, 1), 1, object(), None, 512, 512),
+        ((1, 1), 1, object(), None, 800, 800),
+    ]
+
+    # DFB 1 (800 bytes) is a computed-address backing tensor, already allocated
+    # separately, so it is excluded from the budget; only DFB 0 (512) counts and
+    # stays under 1024.
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensor(object())],
+        cb_configs=cb_configs,
+        core_ranges=_FakeCoreRanges(),
+        pipe_computed_address_backing_tensors={1: object()},
+    )
+    assert len(descriptors) == 2
+
+    # Without the backing exclusion the same DFBs (512 + 800) exceed 1024, so
+    # non-backing DFBs are still charged.
+    with pytest.raises(
+        ValueError,
+        match="Total circular buffer allocation \\(1312 bytes\\) exceeds L1 budget \\(1024 bytes\\)",
+    ):
+        kernel_runner.build_cb_descriptors(
+            tensors=[_FakeTensor(object())],
+            cb_configs=cb_configs,
+            core_ranges=_FakeCoreRanges(),
+            pipe_computed_address_backing_tensors={},
+        )
+
+
+def test_build_cb_descriptors_preserves_subtile_geometry(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+    )
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensor(object())],
+        cb_configs=[_FakeDFBConfig()],
+        core_ranges=_FakeCoreRanges(),
+    )
+
+    descriptor = descriptors[0]
+    format_descriptor = descriptor.format_descriptors[0]
+    assert descriptor.total_size == 1024
+    assert format_descriptor.page_size == 512
+    assert format_descriptor.tile.tile.tile_shape == (16, 16)
+
+
+def test_emit_runner_source_preserves_subtile_geometry(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[],
+        cb_configs=[_FakeDFBConfig()],
+        grid_cols=1,
+        grid_rows=1,
+        num_tensors=1,
+    )
+
+    assert "((1, 1), 2, ttnn.bfloat16, (16, 16), 512, 1024)" in source
 
 
 def test_emit_runner_source_uses_shared_pipe_resource_helpers():
