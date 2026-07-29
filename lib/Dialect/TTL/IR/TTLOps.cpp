@@ -804,6 +804,11 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
       isReductionDim[idx] = true;
     }
   }
+  if (!llvm::is_contained(isReductionDim, true) &&
+      containsOp<TileAccumulateOp>()) {
+    return emitOpError(
+        "ttl.tile_accumulate requires at least one reduction iterator");
+  }
 
   if (!bodyBlock.mightHaveTerminator()) {
     return emitOpError("body block must have a terminator");

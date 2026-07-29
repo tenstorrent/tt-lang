@@ -229,17 +229,32 @@ struct TTLSetComputeKernelConfigPass
       });
     }
 
-    if (!needsFp32) {
-      funcOp->walk([&](Operation *op) {
-        if (needsFp32) {
-          return WalkResult::interrupt();
-        }
-        if (isDirectDstTileOp(op) && hasF32TileOperandOrResult(op)) {
-          needsFp32 = true;
-          return WalkResult::interrupt();
-        }
-        return WalkResult::advance();
-      });
+    Operation *directF32DstOp = nullptr;
+    funcOp->walk([&](Operation *op) {
+      if (isDirectDstTileOp(op) && hasF32TileOperandOrResult(op)) {
+        directF32DstOp = op;
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+    needsFp32 |= directF32DstOp != nullptr;
+
+    TileBcastOp bf16Bcast;
+    funcOp->walk([&](TileBcastOp bcastOp) -> WalkResult {
+      std::optional<Type> elementType =
+          getTileElementType(bcastOp.getInput().getType());
+      if (elementType && elementType->isBF16()) {
+        bf16Bcast = bcastOp;
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+    if (directF32DstOp && bf16Bcast) {
+      bf16Bcast.emitOpError(
+          "cannot share a kernel with a direct f32 DST operation because "
+          "fp32_dest_acc_en is kernel-wide");
+      signalPassFailure();
+      return;
     }
 
     // TODO(#454): Remove once tt-llk #1338 is fixed. unary_bcast produces
@@ -247,16 +262,7 @@ struct TTLSetComputeKernelConfigPass
     // mode appears when full-fp32 reduce enables fp32_dest_acc_en and the
     // fused body still feeds a bf16 unary_bcast (e.g. reduce then broadcast).
     if (fp32FromMatmul || fp32FromReduce) {
-      bool hasBf16Bcast = false;
-      funcOp->walk([&](TileBcastOp bcastOp) -> WalkResult {
-        auto elemType = getTileElementType(bcastOp.getInput().getType());
-        if (elemType && !elemType->isF32()) {
-          hasBf16Bcast = true;
-          return WalkResult::interrupt();
-        }
-        return WalkResult::advance();
-      });
-      if (hasBf16Bcast) {
+      if (bf16Bcast) {
         needsFp32 = false;
       }
     }

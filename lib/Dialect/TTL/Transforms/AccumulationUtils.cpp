@@ -110,6 +110,7 @@ static bool dominatesLoopInLinearSequence(Operation *operation,
 
 struct ResidentContributionReleaseInfo {
   CBPopOp existingPop;
+  Operation *lastOwnedUse;
 };
 
 /// Classify the resident wait's release with the same ownership computation
@@ -139,7 +140,7 @@ analyzeResidentContributionRelease(CBWaitOp contributionWait,
     existingPop = pop;
   }
 
-  return ResidentContributionReleaseInfo{existingPop};
+  return ResidentContributionReleaseInfo{existingPop, lastOwnedUse};
 }
 
 /// Return the logical DST capacity for a resident accumulator tensor. Scope
@@ -337,6 +338,7 @@ analyzeTensorAccumulationForDst(const TensorAccumulationMatch &match,
 
   TensorAccumulationContributionResidency contributionResidency;
   CBPopOp residentContributionPop;
+  Operation *residentContributionLastUse = nullptr;
   if (contributionWait->getParentOp() == loop) {
     if (attachedContribution && attachedContribution->getParentOp() != loop) {
       return failure();
@@ -371,6 +373,7 @@ analyzeTensorAccumulationForDst(const TensorAccumulationMatch &match,
       return failure();
     }
     residentContributionPop = releaseInfo->existingPop;
+    residentContributionLastUse = releaseInfo->lastOwnedUse;
     contributionResidency = TensorAccumulationContributionResidency::Resident;
   }
 
@@ -397,10 +400,12 @@ analyzeTensorAccumulationForDst(const TensorAccumulationMatch &match,
     return failure();
   }
 
-  return TensorDstAccumulationInfo{*unitTileCount,         initialValue,
-                                   contributionResidency,  contributionWait,
-                                   attachedContribution,   contributionType,
-                                   residentContributionPop};
+  return TensorDstAccumulationInfo{
+      *unitTileCount,          initialValue,
+      contributionResidency,   contributionWait,
+      attachedContribution,    contributionType,
+      residentContributionPop, residentContributionLastUse,
+  };
 }
 
 LogicalResult
@@ -510,7 +515,12 @@ lowerTensorAccumulationToDst(const TensorAccumulationMatch &match,
   if (info.contributionResidency ==
           TensorAccumulationContributionResidency::Resident &&
       !info.residentContributionPop) {
-    rewriter.setInsertionPointAfter(dstSection);
+    Operation *lastUse = info.residentContributionLastUse;
+    assert(lastUse && "resident contribution must have an owned use");
+    if (lastUse == loop.getOperation()) {
+      lastUse = dstSection.getOperation();
+    }
+    rewriter.setInsertionPointAfter(lastUse);
     CBPopOp::create(rewriter, loc, contributionWait.getCb(),
                     /*num_tiles=*/IntegerAttr{});
   }

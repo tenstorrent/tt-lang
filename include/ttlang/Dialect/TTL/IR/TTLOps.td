@@ -253,6 +253,10 @@ def TTL_ComputeOp : TTL_Op<"compute", [
     arguments are individual tiles (`!ttcore.tile<H, W, dtype>`) extracted from
     the input/output tensors at each iteration point.
 
+    A body containing `ttl.tile_accumulate` requires at least one reduction
+    iterator. The accumulator remains resident in DST across the corresponding
+    reduction iterations.
+
     In the pipeline, `ttl.compute` is lowered to `scf.for` loops by
     `ttl-lower-to-loops` BEFORE bufferization. The `ttl.tile_*` ops in the
     loop body are then converted to TTKernel ops after bufferization.

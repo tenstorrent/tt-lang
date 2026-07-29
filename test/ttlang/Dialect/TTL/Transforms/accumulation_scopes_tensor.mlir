@@ -91,6 +91,74 @@ func.func @resident_contribution_recurrence_scope() {
 
 // -----
 
+// A synthesized resident release follows every use owned by the pre-loop wait,
+// including uses after the recurrence.
+// FORM-LABEL: func.func @resident_contribution_used_after_recurrence
+// FORM: ttl.accumulation_scope outs({{.*}}) inits({{.*}}) {
+// FORM: scf.for
+// LOWER-LABEL: func.func @resident_contribution_used_after_recurrence
+// LOWER: %[[CONTRIB_CB:.*]] = ttl.bind_cb{{.*}}cb_index = 1
+// LOWER: %[[LATER_OUTPUT_CB:.*]] = ttl.bind_cb{{.*}}cb_index = 17
+// LOWER: %[[CONTRIB_WAIT:.*]] = ttl.cb_wait %[[CONTRIB_CB]]
+// LOWER: %[[CONTRIB:.*]] = ttl.attach_cb %[[CONTRIB_WAIT]], %[[CONTRIB_CB]]
+// LOWER: %[[LATER_OUTPUT:.*]] = ttl.cb_reserve %[[LATER_OUTPUT_CB]]
+// LOWER: ttl.dst_section
+// LOWER: ttl.store %[[CONTRIB]], %[[LATER_OUTPUT]]
+// LOWER-NEXT: ttl.cb_pop %[[CONTRIB_CB]]
+func.func @resident_contribution_used_after_recurrence() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c3 = arith.constant 3 : index
+  %init_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %contrib_cb = ttl.bind_cb {cb_index = 1, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  %out_cb = ttl.bind_cb {cb_index = 16, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %later_out_cb = ttl.bind_cb {cb_index = 17, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+
+  %init_wait = ttl.cb_wait %init_cb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %init = ttl.attach_cb %init_wait, %init_cb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %contrib_wait = ttl.cb_wait %contrib_cb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %contrib = ttl.attach_cb %contrib_wait, %contrib_cb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %out = ttl.cb_reserve %out_cb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %later_out = ttl.cb_reserve %later_out_cb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+  %result = scf.for %iv = %c0 to %c3 step %c1
+      iter_args(%acc = %init)
+      -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    %next = ttl.add %acc, %contrib
+        : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+          tensor<1x1x!ttcore.tile<32x32, bf16>>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    scf.yield %next : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  ttl.store %result, %out
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+        tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %contrib, %later_out
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+        tensor<1x1x!ttcore.tile<32x32, bf16>>
+  return
+}
+
+// -----
+
 // An explicit resident contribution pop is owned by the pre-loop wait and must
 // not be duplicated by accumulation lowering.
 // FORM-LABEL: func.func @resident_contribution_explicit_pop_scope

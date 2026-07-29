@@ -90,6 +90,9 @@ struct TensorDstAccumulationInfo {
 
   /// Existing owned resident release, when one is already present.
   CBPopOp residentContributionPop;
+
+  /// Last operation that uses the slot acquired by the resident wait.
+  Operation *residentContributionLastUse;
 };
 
 /// Placement constraint for the output reservation associated with a matched
