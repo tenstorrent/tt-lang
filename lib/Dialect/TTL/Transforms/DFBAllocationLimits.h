@@ -46,6 +46,9 @@ private:
   llvm::DenseMap<int64_t, uint64_t> maxBytesByIndex;
 };
 
+/// Returns the per-node DFB footprint of all declarations in `module`.
+FailureOr<DFBAllocationFootprint> getDFBAllocationFootprint(ModuleOp module);
+
 /// Returns the target's usable per-node L1 bytes or the supported fallback.
 uint64_t
 getUsableDFBL1Bytes(ModuleOp module,
