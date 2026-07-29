@@ -7,6 +7,7 @@
 #include "PipeGraph.h"
 #include "PipeLowering.h"
 #include "PipePlanning.h"
+#include "PipeTransferExpansion.h"
 #include "ttlang/Dialect/TTKernel/Transforms/TTKernelCleanupPatterns.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -558,86 +559,6 @@ static std::optional<TransferKind> getTransferKindFromHandleType(Type t) {
   return transferHandle.getKind();
 }
 
-static FailureOr<CopyOp> findPipeReceiveCopy(ValueOriginAnalysis &analysis,
-                                             Value value) {
-  return analysis.getOrigins(value).uniqueDefiningOp<CopyOp>(isPipeReceiveCopy);
-}
-
-static PipeTransferKind getPipeTransferKind(PipeTransferContract contract) {
-  return isCollectiveTransfer(contract) ? PipeTransferKind::Collective
-                                        : PipeTransferKind::PointToPoint;
-}
-
-/// Return the contract shared by every possible value of a pipe operand.
-///
-/// Create and selected-pipe operations preserve an explicit collective
-/// contract. A block argument has no defining pipe op, so its type supplies
-/// the contract.
-static FailureOr<PipeTransferContract>
-getPipeTransferContractForPipeValue(ValueOriginAnalysis &analysis, Value pipe) {
-  return analysis.getOrigins(pipe).uniqueMapped<PipeTransferContract>(
-      [](Value origin) -> FailureOr<PipeTransferContract> {
-        if (auto createPipe = origin.getDefiningOp<CreatePipeOp>()) {
-          return getPipeTransferContract(createPipe);
-        }
-        if (auto selectedSrc = origin.getDefiningOp<SelectPipeSrcOp>()) {
-          return getPipeTransferContract(
-              selectedSrc.getRecords().getPipes().front());
-        }
-        if (auto selectedDst = origin.getDefiningOp<SelectPipeDstOp>()) {
-          return getPipeTransferContract(
-              selectedDst.getRecords().getPipes().front());
-        }
-        if (isa<BlockArgument>(origin) && isa<PipeType>(origin.getType())) {
-          return cast<PipeType>(origin.getType()).hasMultipleReceivers()
-                     ? PipeTransferContract::Collective
-                     : PipeTransferContract::PointToPoint;
-        }
-        return failure();
-      });
-}
-
-static PipeTransferCreateOp createPipeTransfer(OpBuilder &builder, Location loc,
-                                               Value pipe,
-                                               PipeTransferContract contract) {
-  auto kindAttr = PipeTransferKindAttr::get(builder.getContext(),
-                                            getPipeTransferKind(contract));
-  return PipeTransferCreateOp::create(
-      builder, loc, PipeTransferType::get(builder.getContext()), pipe,
-      kindAttr);
-}
-
-static FailureOr<int64_t> getPipeNetIdForPipeValue(Operation *op, Value pipe) {
-  FailureOr<PipeReference> pipeRef = getPipeReference(op, pipe);
-  if (failed(pipeRef)) {
-    return failure();
-  }
-  return (*pipeRef).getPipeNetId();
-}
-
-static Value getOrCreatePipeTransfer(
-    OpBuilder &builder, Location loc, Value pipe, PipeTransferContract contract,
-    llvm::MapVector<Value, Value> &transferByDirectCreatePipe) {
-  Value key = traceUnrealizedCasts(pipe);
-  if (auto createPipe = key.getDefiningOp<CreatePipeOp>()) {
-    auto it = transferByDirectCreatePipe.find(key);
-    if (it != transferByDirectCreatePipe.end()) {
-      return it->second;
-    }
-    OpBuilder::InsertionGuard guard(builder);
-    builder.setInsertionPointAfter(createPipe);
-    auto transferOp =
-        createPipeTransfer(builder, createPipe.getLoc(), key, contract);
-    transferByDirectCreatePipe[key] = transferOp.getTransfer();
-    return transferOp.getTransfer();
-  }
-
-  // Non-direct pipe values can be block arguments or region results. A shared
-  // cached transfer for those values would need dominance analysis; creating it
-  // at the use site keeps the transfer local to the post/send that consumes it.
-  return createPipeTransfer(builder, loc, pipe, contract).getTransfer();
-}
-
 static Value buildConstantTableLookup(OpBuilder &builder, Location loc,
                                       ArrayRef<int64_t> values,
                                       Value recordIndex) {
@@ -948,170 +869,6 @@ lowerPipeNetForeachOps(ModuleOp mod,
                                    rewriter, foreachLoweringInfo))) {
       return failure();
     }
-  }
-}
-
-/// High-level pipe copy and its proven transfer contract.
-struct PipeCopyExpansion {
-  CopyOp copy;
-  PipeTransferContract contract;
-  std::optional<int64_t> pipeNetId;
-};
-
-/// Receive-handle wait and the PipeNet id used to create its typed token.
-struct PipeReceiveWaitExpansion {
-  WaitOp wait;
-  int64_t pipeNetId = 0;
-};
-
-/// Operations replaced when high-level pipe copies become Pipe Transfer IR.
-struct PipeTransferExpansionPlan {
-  SmallVector<CreatePipeOp> createPipes;
-  SmallVector<PipeCopyExpansion> receiveCopies;
-  SmallVector<PipeCopyExpansion> sendCopies;
-  SmallVector<PipeReceiveWaitExpansion> receiveWaits;
-  SmallVector<WaitOp> unreachableReceiveWaits;
-};
-
-static FailureOr<PipeTransferExpansionPlan>
-buildPipeTransferExpansionPlan(ModuleOp mod, ValueOriginAnalysis &analysis) {
-  PipeTransferExpansionPlan plan;
-  mod.walk([&](CreatePipeOp op) { plan.createPipes.push_back(op); });
-
-  LogicalResult result = success();
-  mod.walk([&](CopyOp op) {
-    if (isPipeReceiveCopy(op)) {
-      FailureOr<PipeTransferContract> contract =
-          getPipeTransferContractForPipeValue(analysis, op.getSrc());
-      if (failed(contract)) {
-        op.emitError()
-            << "requires a consistent transfer contract for all possible "
-               "pipe values";
-        result = failure();
-      } else {
-        FailureOr<int64_t> pipeNetId =
-            getPipeNetIdForPipeValue(op, op.getSrc());
-        if (failed(pipeNetId)) {
-          result = failure();
-        } else {
-          plan.receiveCopies.push_back({op, *contract, *pipeNetId});
-        }
-      }
-      return;
-    }
-    if (isPipeSendCopy(op)) {
-      FailureOr<PipeTransferContract> contract =
-          getPipeTransferContractForPipeValue(analysis, op.getDst());
-      if (failed(contract)) {
-        op.emitError()
-            << "requires a consistent transfer contract for all possible "
-               "pipe values";
-        result = failure();
-      } else {
-        plan.sendCopies.push_back({op, *contract, std::nullopt});
-      }
-    }
-  });
-  if (failed(result)) {
-    return failure();
-  }
-
-  mod.walk([&](WaitOp waitOp) {
-    auto handleType =
-        mlir::dyn_cast<TransferHandleType>(waitOp.getXf().getType());
-    if (!handleType || handleType.getKind()) {
-      return;
-    }
-    if (analysis.getOrigins(waitOp.getXf()).empty()) {
-      plan.unreachableReceiveWaits.push_back(waitOp);
-      return;
-    }
-    FailureOr<CopyOp> maybeCopyOp =
-        findPipeReceiveCopy(analysis, waitOp.getXf());
-    if (failed(maybeCopyOp)) {
-      waitOp.emitError() << "untyped transfer handle wait requires every "
-                            "possible source to be the same pipe receive "
-                            "ttl.copy";
-      result = failure();
-      return;
-    }
-    CopyOp copyOp = *maybeCopyOp;
-    FailureOr<int64_t> pipeNetId =
-        getPipeNetIdForPipeValue(waitOp, copyOp.getSrc());
-    if (failed(pipeNetId)) {
-      result = failure();
-      return;
-    }
-    plan.receiveWaits.push_back({waitOp, *pipeNetId});
-  });
-  if (failed(result)) {
-    return failure();
-  }
-
-  return plan;
-}
-
-static void
-applyPipeTransferExpansionPlan(ModuleOp mod,
-                               const PipeTransferExpansionPlan &plan) {
-  // Origin analysis proved that no reachable transfer handle reaches these
-  // waits, so they have no observable effect.
-  for (WaitOp waitOp : plan.unreachableReceiveWaits) {
-    waitOp.erase();
-  }
-
-  OpBuilder builder(mod.getContext());
-  llvm::MapVector<Value, Value> transferByDirectCreatePipe;
-  for (CreatePipeOp createPipe : plan.createPipes) {
-    builder.setInsertionPointAfter(createPipe);
-    auto transferOp =
-        createPipeTransfer(builder, createPipe.getLoc(), createPipe.getResult(),
-                           getPipeTransferContract(createPipe));
-    transferByDirectCreatePipe[createPipe.getResult()] =
-        transferOp.getTransfer();
-  }
-
-  for (const PipeCopyExpansion &expansion : plan.receiveCopies) {
-    CopyOp copyOp = expansion.copy;
-    assert(expansion.pipeNetId && "receiver expansion is missing PipeNet id");
-    builder.setInsertionPoint(copyOp);
-    Value transfer =
-        getOrCreatePipeTransfer(builder, copyOp.getLoc(), copyOp.getSrc(),
-                                expansion.contract, transferByDirectCreatePipe);
-    auto postOp = PipeTransferPostOp::create(
-        builder, copyOp.getLoc(),
-        PipeTokenType::get(builder.getContext(), *expansion.pipeNetId),
-        transfer, copyOp.getDst());
-    auto handleCast = UnrealizedConversionCastOp::create(
-        builder, copyOp.getLoc(), copyOp.getResult().getType(),
-        ValueRange{postOp.getToken()});
-    copyOp.getResult().replaceAllUsesWith(handleCast.getResult(0));
-    copyOp->erase();
-  }
-
-  for (const PipeCopyExpansion &expansion : plan.sendCopies) {
-    CopyOp copyOp = expansion.copy;
-    builder.setInsertionPoint(copyOp);
-    Value transfer =
-        getOrCreatePipeTransfer(builder, copyOp.getLoc(), copyOp.getDst(),
-                                expansion.contract, transferByDirectCreatePipe);
-    auto sendOp = PipeTransferSendOp::create(builder, copyOp.getLoc(),
-                                             copyOp.getResult().getType(),
-                                             transfer, copyOp.getSrc());
-    copyOp.getResult().replaceAllUsesWith(sendOp.getXf());
-    copyOp->erase();
-  }
-
-  for (const PipeReceiveWaitExpansion &wait : plan.receiveWaits) {
-    WaitOp waitOp = wait.wait;
-    builder.setInsertionPoint(waitOp);
-    auto tokenCast = UnrealizedConversionCastOp::create(
-        builder, waitOp.getLoc(),
-        PipeTokenType::get(builder.getContext(), wait.pipeNetId),
-        ValueRange{waitOp.getXf()});
-    PipeTransferWaitOp::create(builder, waitOp.getLoc(),
-                               tokenCast.getResult(0));
-    waitOp->erase();
   }
 }
 
@@ -2090,12 +1847,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
     if (failed(verifyTransferProvenance(mod, preExpansionAnalysis))) {
       return failure();
     }
-    FailureOr<PipeTransferExpansionPlan> maybeExpansionPlan =
-        buildPipeTransferExpansionPlan(mod, preExpansionAnalysis);
-    if (failed(maybeExpansionPlan)) {
+    if (failed(expandPipeTransfers(mod, preExpansionAnalysis))) {
       return failure();
     }
-    applyPipeTransferExpansionPlan(mod, *maybeExpansionPlan);
   }
 
   // All remaining provenance consumers share this root-scoped cache.

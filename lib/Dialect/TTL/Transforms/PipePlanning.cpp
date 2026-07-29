@@ -12,6 +12,7 @@
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "ttl-pipe-capacity-analysis"
@@ -83,19 +84,49 @@ PipeModulePlan::getTransferPlan(Operation *operation) const {
   return planIt->second;
 }
 
-static FailureOr<PipeSendPlan>
-buildPipeSendPlan(PipeTransferSendOp sendOp,
-                  const DominanceInfo &dominanceInfo) {
+FailureOr<PipeTransferPayload> getPipeTransferPayload(PipeTransferSendOp sendOp,
+                                                      int64_t blockSpan) {
   FailureOr<CircularBufferType> maybeDFBType =
       utils::getTTLCircularBufferType(sendOp.getSrc());
   if (failed(maybeDFBType)) {
     sendOp.emitError("pipe transfer source must have a TTL DFB type");
     return failure();
   }
-  auto tileType =
-      llvm::dyn_cast<ttcore::TileType>((*maybeDFBType).getElementType());
+  CircularBufferType dfbType = *maybeDFBType;
+  auto tileType = llvm::dyn_cast<ttcore::TileType>(dfbType.getElementType());
   if (!tileType) {
     sendOp.emitError("pipe transfer source DFB element type must be tile");
+    return failure();
+  }
+  if (blockSpan <= 0 || dfbType.getBlockCount() % blockSpan != 0) {
+    sendOp.emitError("source DFB block count must be divisible by pipe "
+                     "transfer block span");
+    return failure();
+  }
+
+  std::optional<int64_t> maybeElementCount =
+      llvm::checkedMul(dfbType.getElementsPerBlock(), blockSpan);
+  if (!maybeElementCount) {
+    sendOp.emitError("pipe transfer element count exceeds int64_t");
+    return failure();
+  }
+  int64_t elementSizeBytes = tileType.getSizeBytes();
+  std::optional<int64_t> maybeSizeBytes =
+      llvm::checkedMul(*maybeElementCount, elementSizeBytes);
+  if (!maybeSizeBytes) {
+    sendOp.emitError("pipe transfer payload size exceeds int64_t");
+    return failure();
+  }
+  return PipeTransferPayload{*maybeElementCount, elementSizeBytes,
+                             *maybeSizeBytes};
+}
+
+static FailureOr<PipeSendPlan>
+buildPipeSendPlan(PipeTransferSendOp sendOp,
+                  const DominanceInfo &dominanceInfo) {
+  FailureOr<PipeTransferPayload> maybePayload =
+      getPipeTransferPayload(sendOp, /*blockSpan=*/1);
+  if (failed(maybePayload)) {
     return failure();
   }
 
@@ -105,12 +136,7 @@ buildPipeSendPlan(PipeTransferSendOp sendOp,
                dominanceInfo.dominates(user, sendOp);
       });
 
-  int64_t elementCount = 1;
-  for (int64_t dimension : (*maybeDFBType).getShape()) {
-    elementCount *= dimension;
-  }
-  return PipeSendPlan{readFromDFB, elementCount * static_cast<int64_t>(
-                                                      tileType.getSizeBytes())};
+  return PipeSendPlan{readFromDFB, maybePayload->sizeBytes};
 }
 
 static FailureOr<PipePostPlan>

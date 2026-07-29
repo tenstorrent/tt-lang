@@ -141,6 +141,17 @@ enum class PipeSynchronizationProtocol {
   Capacity,
 };
 
+/// Element count and byte size transferred by one sender operation.
+struct PipeTransferPayload {
+  int64_t elementCount = 0;
+  int64_t elementSizeBytes = 0;
+  int64_t sizeBytes = 0;
+};
+
+/// Return the payload represented by `blockSpan` consecutive source DFB blocks.
+FailureOr<PipeTransferPayload> getPipeTransferPayload(PipeTransferSendOp sendOp,
+                                                      int64_t blockSpan);
+
 /// Sender-side DFB access and payload size for one transfer.
 struct PipeSendPlan {
   bool usesReadPointer = false;
