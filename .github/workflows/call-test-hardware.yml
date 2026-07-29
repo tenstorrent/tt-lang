@@ -117,6 +117,15 @@ jobs:
           python3 test/python/smoketest.py
 
       - name: Single test (just python)
+        if: inputs.runs-on != 'galaxy-bh'
+        run: |
+          source build/env/activate
+          python test/python/simple_add.py
+
+      - name: Single test (just python, Galaxy one chip)
+        if: inputs.runs-on == 'galaxy-bh'
+        env:
+          TT_VISIBLE_DEVICES: "0"
         run: |
           source build/env/activate
           python test/python/simple_add.py
