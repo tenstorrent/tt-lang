@@ -18,14 +18,10 @@
 
 namespace mlir::tt::ttl {
 
-bool PipeSynchronizationSelection::usesCapacityProtocol(
-    PipeTransferSendOp op) const {
-  return capacityTransferOps.contains(op.getOperation());
-}
-
-bool PipeSynchronizationSelection::usesCapacityProtocol(
-    PipeTransferPostOp op) const {
-  return capacityTransferOps.contains(op.getOperation());
+bool PipeSynchronizationSelection::usesCapacityProtocol(Operation *op) const {
+  assert((isa<PipeTransferSendOp, PipeTransferPostOp>(op)) &&
+         "only pipe transfer protocol operations select synchronization");
+  return capacityTransferOps.contains(op);
 }
 
 ArrayRef<PipeCapacityAcquireInfo>
@@ -223,21 +219,6 @@ selectCapacityTransfers(const PipeCapacityAnalysisResult &capacityFacts,
   return selectedTransfers;
 }
 
-static void
-recordEndpointCapacityFacts(const PipeCapacityEndpointFacts &endpointFacts,
-                            PipeCounterInfo capacityCounter,
-                            PipeCapacityPlan &plan) {
-  plan.addAcquire(endpointFacts.send,
-                  PipeCapacityAcquireInfo{capacityCounter, 1});
-  plan.addInitialization(
-      endpointFacts.send->getParentOfType<func::FuncOp>(),
-      PipeCapacityInitInfo{capacityCounter, endpointFacts.initialCapacity});
-  for (CBPopOp popOp : endpointFacts.pops) {
-    plan.addRelease(popOp, PipeCapacityReleaseInfo{endpointFacts.releaseTarget,
-                                                   capacityCounter, 1});
-  }
-}
-
 /// Capacity counters may share storage across source cores only when the
 /// unconditional sender-function initialization writes the same value.
 struct PipeCapacityCounterColor {
@@ -255,62 +236,84 @@ static bool containsSourceNode(ArrayRef<PipeCapacityReleaseTarget> sourceNodes,
                       });
 }
 
-static PipeCounterInfo allocateCapacityCounter(
-    const PipeCapacityEndpointFacts &endpointFacts,
-    SmallVectorImpl<PipeCapacityCounterColor> &counterColors,
-    PipeCapacityPlan &plan) {
-  for (PipeCapacityCounterColor &color : counterColors) {
-    if (color.initialCapacity == endpointFacts.initialCapacity &&
-        !containsSourceNode(color.sourceNodes, endpointFacts.releaseTarget)) {
-      color.sourceNodes.push_back(endpointFacts.releaseTarget);
-      return color.counter;
+class PipeCapacityPlanBuilder {
+public:
+  static void
+  buildSelectedCapacityPlan(ArrayRef<PipeTransferNodeId> selectedTransfers,
+                            const PipeCapacityAnalysisResult &capacityFacts,
+                            const PipeGraph &pipeGraph,
+                            const PipeResourcePlan &resources,
+                            PipeCapacityPlan &plan) {
+    PipeResourceRequirements requirements =
+        getPipeResourceRequirements(resources);
+    plan.initializeCounterAllocation(PipeCounterAllocationCounts{
+        requirements.syncSemaphoreCount, requirements.globalSemaphoreCount});
+    SmallVector<PipeCapacityCounterColor> counterColors;
+    for (PipeTransferNodeId transferNodeId : selectedTransfers) {
+      const PipeTransferNode &transferNode =
+          pipeGraph.getPipeTransferNode(transferNodeId);
+      auto resourceIt = resources.resources.find(transferNode.sendOp);
+      assert(resourceIt != resources.resources.end() &&
+             "selected capacity transfer is missing final resources");
+      assert(resourceIt->second.addressStorage.usesComputedReceiverDFB() &&
+             "selected capacity transfer lost computed receiver addresses");
+      for (PipeReceiverEndpointId endpoint :
+           pipeGraph.getPipeReceiverEndpoints(transferNode.id)) {
+        const PipeCapacityEndpointFacts &endpointFacts =
+            capacityFacts.getEndpointFacts(endpoint);
+        PipeCounterInfo capacityCounter =
+            allocateCapacityCounter(endpointFacts, counterColors, plan);
+        recordEndpointCapacityFacts(endpointFacts, capacityCounter, plan);
+      }
     }
   }
 
-  PipeCounterInfo counter = plan.allocateCounter();
-  counterColors.push_back(PipeCapacityCounterColor{
-      endpointFacts.initialCapacity, {endpointFacts.releaseTarget}, counter});
-  return counter;
-}
-
-static void buildSelectedCapacityPlan(
-    ArrayRef<PipeTransferNodeId> selectedTransfers,
-    const PipeCapacityAnalysisResult &capacityFacts, const PipeGraph &pipeGraph,
-    const PipeResourcePlan &resources, PipeCapacityPlan &plan) {
-  PipeResourceRequirements requirements =
-      getPipeResourceRequirements(resources);
-  plan.initializeCounterAllocation(PipeCounterAllocationCounts{
-      requirements.syncSemaphoreCount, requirements.globalSemaphoreCount});
-  SmallVector<PipeCapacityCounterColor> counterColors;
-  for (PipeTransferNodeId transferNodeId : selectedTransfers) {
-    const PipeTransferNode &transferNode =
-        pipeGraph.getPipeTransferNode(transferNodeId);
-    auto resourceIt = resources.resources.find(transferNode.sendOp);
-    assert(resourceIt != resources.resources.end() &&
-           "selected capacity transfer is missing final resources");
-    assert(resourceIt->second.addressStorage.usesComputedReceiverDFB() &&
-           "selected capacity transfer lost computed receiver addresses");
-    for (PipeReceiverEndpointId endpoint :
-         pipeGraph.getPipeReceiverEndpoints(transferNode.id)) {
-      const PipeCapacityEndpointFacts &endpointFacts =
-          capacityFacts.getEndpointFacts(endpoint);
-      PipeCounterInfo capacityCounter =
-          allocateCapacityCounter(endpointFacts, counterColors, plan);
-      recordEndpointCapacityFacts(endpointFacts, capacityCounter, plan);
+private:
+  static void
+  recordEndpointCapacityFacts(const PipeCapacityEndpointFacts &endpointFacts,
+                              PipeCounterInfo capacityCounter,
+                              PipeCapacityPlan &plan) {
+    plan.addAcquire(endpointFacts.send,
+                    PipeCapacityAcquireInfo{capacityCounter, 1});
+    plan.addInitialization(
+        endpointFacts.send->getParentOfType<func::FuncOp>(),
+        PipeCapacityInitInfo{capacityCounter, endpointFacts.initialCapacity});
+    for (CBPopOp popOp : endpointFacts.pops) {
+      plan.addRelease(popOp,
+                      PipeCapacityReleaseInfo{endpointFacts.releaseTarget,
+                                              capacityCounter, 1});
     }
   }
-}
+
+  static PipeCounterInfo allocateCapacityCounter(
+      const PipeCapacityEndpointFacts &endpointFacts,
+      SmallVectorImpl<PipeCapacityCounterColor> &counterColors,
+      PipeCapacityPlan &plan) {
+    for (PipeCapacityCounterColor &color : counterColors) {
+      if (color.initialCapacity == endpointFacts.initialCapacity &&
+          !containsSourceNode(color.sourceNodes, endpointFacts.releaseTarget)) {
+        color.sourceNodes.push_back(endpointFacts.releaseTarget);
+        return color.counter;
+      }
+    }
+
+    PipeCounterInfo counter = plan.allocateCounter();
+    counterColors.push_back(PipeCapacityCounterColor{
+        endpointFacts.initialCapacity, {endpointFacts.releaseTarget}, counter});
+    return counter;
+  }
+};
 
 FailureOr<PipeModulePlan>
 buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
                     const PipeTransferIndex &transferIndex,
-                    const PipeGraph &pipeGraph, bool enableComputedAddresses,
-                    bool enableCapacitySynchronization) {
+                    const PipeGraph &pipeGraph,
+                    const PipePlanningOptions &options) {
   PipeModulePlan plan;
   PipeSynchronizationSelection synchronizationSelection;
   buildPipeNetIndex(module, plan.pipeNetIndex);
 
-  if (enableCapacitySynchronization) {
+  if (options.enableCapacitySynchronization) {
     PipeCapacityAnalysisResult capacityFacts =
         analyzePipeCapacity(module, pipeGraph);
     // Preliminary resources determine which transfers have computed receiver
@@ -319,7 +322,7 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
     PipeResourcePlan preliminaryResourcePlan;
     if (failed(buildPipeResourcePlan(module, transferIndex, pipeGraph,
                                      preliminaryResourcePlan,
-                                     enableComputedAddresses,
+                                     options.enableComputedAddresses,
                                      /*synchronizationSelection=*/nullptr))) {
       return failure();
     }
@@ -335,9 +338,9 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
         synchronizationSelection.capacityTransferOps.insert(postOp);
       }
     }
-    if (failed(buildPipeResourcePlan(module, transferIndex, pipeGraph,
-                                     plan.resourcePlan, enableComputedAddresses,
-                                     &synchronizationSelection))) {
+    if (failed(buildPipeResourcePlan(
+            module, transferIndex, pipeGraph, plan.resourcePlan,
+            options.enableComputedAddresses, &synchronizationSelection))) {
       return failure();
     }
     SmallVector<PipeTransferNodeId> finalSelectedCapacityTransfers =
@@ -348,17 +351,18 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
           "replanning");
       return failure();
     }
-    buildSelectedCapacityPlan(selectedCapacityTransfers, capacityFacts,
-                              pipeGraph, plan.resourcePlan, plan.capacityPlan);
+    PipeCapacityPlanBuilder::buildSelectedCapacityPlan(
+        selectedCapacityTransfers, capacityFacts, pipeGraph, plan.resourcePlan,
+        plan.capacityPlan);
   } else if (failed(buildPipeResourcePlan(
                  module, transferIndex, pipeGraph, plan.resourcePlan,
-                 enableComputedAddresses,
+                 options.enableComputedAddresses,
                  /*synchronizationSelection=*/nullptr))) {
     return failure();
   }
 
   const PipeCapacityPlan *maybeCapacityPlan =
-      enableCapacitySynchronization ? &plan.capacityPlan : nullptr;
+      options.enableCapacitySynchronization ? &plan.capacityPlan : nullptr;
   plan.resourceRequirements =
       getPipeResourceRequirements(plan.resourcePlan, maybeCapacityPlan);
 
@@ -374,13 +378,15 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
   for (const auto &resourceEntry : plan.resourcePlan.resources) {
     Operation *operation = resourceEntry.first;
     const PipeResourceInfo &resources = resourceEntry.second;
+    auto sendOp = dyn_cast<PipeTransferSendOp>(operation);
+    auto postOp = dyn_cast<PipeTransferPostOp>(operation);
+    if (!sendOp && !postOp) {
+      assert(isa<PipeTransferWaitOp>(operation) &&
+             "pipe resources assigned to an unsupported operation");
+      continue;
+    }
     bool usesCapacityProtocol =
-        isa<PipeTransferSendOp>(operation)
-            ? synchronizationSelection.usesCapacityProtocol(
-                  cast<PipeTransferSendOp>(operation))
-            : isa<PipeTransferPostOp>(operation) &&
-                  synchronizationSelection.usesCapacityProtocol(
-                      cast<PipeTransferPostOp>(operation));
+        synchronizationSelection.usesCapacityProtocol(operation);
     PipeSynchronizationProtocol synchronizationProtocol =
         usesCapacityProtocol ? PipeSynchronizationProtocol::Capacity
                              : PipeSynchronizationProtocol::ReceiverPost;
@@ -395,14 +401,14 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
       assert(inserted && "pipe operation has more than one transfer plan");
     };
 
-    if (auto sendOp = dyn_cast<PipeTransferSendOp>(operation)) {
+    if (sendOp) {
       FailureOr<PipeSendPlan> maybeSendPlan =
           buildPipeSendPlan(sendOp, dominanceInfo);
       if (failed(maybeSendPlan)) {
         return failure();
       }
       addTransferPlan(*maybeSendPlan);
-    } else if (auto postOp = dyn_cast<PipeTransferPostOp>(operation)) {
+    } else {
       FailureOr<PipePostPlan> maybePostPlan =
           buildPipePostPlan(postOp, resources);
       if (failed(maybePostPlan)) {
