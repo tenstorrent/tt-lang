@@ -4,12 +4,16 @@
 
 #include "ttlang/Dialect/TTKernel/Transforms/TTKernelCleanupPatterns.h"
 
+#include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
+#include "ttlang/Target/TargetInfo.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Support/LogicalResult.h"
@@ -34,6 +38,58 @@ static bool isDefinedOutsideRegion(Value value, Region *region) {
     return true;
   }
   return !region->isAncestor(definingOp->getParentRegion());
+}
+
+/// Return execution-domain constraints between `op` and `limit`.
+static SmallVector<ArrayAttr>
+getEnclosingExecutionCoreRanges(Operation *op, Operation *limit) {
+  SmallVector<ArrayAttr> domains;
+  for (Operation *ancestor = op->getParentOp(); ancestor && ancestor != limit;
+       ancestor = ancestor->getParentOp()) {
+    if (auto ranges =
+            ancestor->getAttrOfType<ArrayAttr>(kExecutionCoreRangesAttrName)) {
+      domains.push_back(ranges);
+    }
+  }
+  return domains;
+}
+
+/// Return whether two core-range arrays have an empty intersection.
+static bool haveDisjointCoreRanges(ArrayAttr lhs, ArrayAttr rhs) {
+  if (lhs.empty() || rhs.empty()) {
+    return false;
+  }
+  for (Attribute lhsAttr : lhs) {
+    auto lhsRange = dyn_cast<ttcore::CoreRangeAttr>(lhsAttr);
+    if (!lhsRange) {
+      return false;
+    }
+    for (Attribute rhsAttr : rhs) {
+      auto rhsRange = dyn_cast<ttcore::CoreRangeAttr>(rhsAttr);
+      if (!rhsRange || lhsRange.intersects(rhsRange)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+/// Return whether two operations cannot execute on the same loop iteration.
+static bool haveMutuallyExclusiveExecution(Operation *lhs, Operation *rhs,
+                                           Operation *loop) {
+  if (insideMutuallyExclusiveRegions(lhs, rhs)) {
+    return true;
+  }
+
+  SmallVector<ArrayAttr> lhsDomains =
+      getEnclosingExecutionCoreRanges(lhs, loop);
+  SmallVector<ArrayAttr> rhsDomains =
+      getEnclosingExecutionCoreRanges(rhs, loop);
+  return llvm::any_of(lhsDomains, [&](ArrayAttr lhsDomain) {
+    return llvm::any_of(rhsDomains, [&](ArrayAttr rhsDomain) {
+      return haveDisjointCoreRanges(lhsDomain, rhsDomain);
+    });
+  });
 }
 
 /// Deduplicate consecutive barriers of the same type and NoC. Barriers only
@@ -105,6 +161,104 @@ struct HoistLoopInvariantValueOps : OpRewritePattern<scf::ForOp> {
   }
 };
 
+/// Select stateful one-packet writes when a loop preserves the resident write
+/// command.
+struct UseStatefulNocWriteInLoop : OpRewritePattern<NocAsyncWriteOp> {
+  using OpRewritePattern<NocAsyncWriteOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(NocAsyncWriteOp op,
+                                PatternRewriter &rewriter) const override {
+    auto loop = op->getParentOfType<scf::ForOp>();
+    if (!loop) {
+      return rewriter.notifyMatchFailure(op, "write is not inside a loop");
+    }
+
+    if (op.getDstCoreXY().size() != 2 || !op.getDstBankId().empty()) {
+      return rewriter.notifyMatchFailure(op,
+                                         "write is not a unicast core write");
+    }
+
+    std::optional<int64_t> transferSize = getConstantIntValue(op.getSize());
+    if (!transferSize || *transferSize <= 0 ||
+        *transferSize > getTargetNocMaxBurstBytes(op)) {
+      return rewriter.notifyMatchFailure(
+          op, "write size is not a valid one-packet transfer");
+    }
+
+    auto isLoopInvariant = [&](Value value) {
+      return !value || loop.isDefinedOutsideOfLoop(value);
+    };
+    if (!llvm::all_of(op.getDstCoreXY(), isLoopInvariant) ||
+        !isLoopInvariant(op.getSize()) || !isLoopInvariant(op.getNoc())) {
+      return rewriter.notifyMatchFailure(
+          op, "write command configuration is not loop-invariant");
+    }
+
+    SmallVector<scf::IfOp> enclosingPredicates;
+    for (Operation *ancestor = op->getParentOp();
+         ancestor && ancestor != loop.getOperation();
+         ancestor = ancestor->getParentOp()) {
+      if (auto ifOp = dyn_cast<scf::IfOp>(ancestor)) {
+        if (!ifOp.getElseRegion().empty() ||
+            !ifOp.getThenRegion().isAncestor(op->getParentRegion()) ||
+            !isLoopInvariant(ifOp.getCondition())) {
+          return rewriter.notifyMatchFailure(
+              op, "write predicate cannot be preserved outside the loop");
+        }
+        enclosingPredicates.push_back(ifOp);
+        continue;
+      }
+      if (ancestor->getNumRegions() != 0) {
+        return rewriter.notifyMatchFailure(
+            op, "write has an unsupported enclosing region");
+      }
+    }
+
+    bool commandIsReprogrammed = false;
+    loop.walk([&](Operation *nestedOp) {
+      if (nestedOp == op.getOperation()) {
+        return WalkResult::advance();
+      }
+      if (mayReprogramNocCommand(nestedOp, NocCommandClass::Write) &&
+          !haveMutuallyExclusiveExecution(op, nestedOp, loop)) {
+        commandIsReprogrammed = true;
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+    if (commandIsReprogrammed) {
+      return rewriter.notifyMatchFailure(
+          op, "another operation may reprogram the NoC write command");
+    }
+
+    OpBuilder::InsertionGuard insertionGuard(rewriter);
+    rewriter.setInsertionPoint(loop);
+    Location loc = op.getLoc();
+    Value zero = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
+    Value destinationNocAddress =
+        GetNocAddrOp::create(rewriter, loc, op.getDstCoreXY()[0],
+                             op.getDstCoreXY()[1], zero, op.getNoc());
+
+    for (scf::IfOp predicate : llvm::reverse(enclosingPredicates)) {
+      auto setupIf = scf::IfOp::create(rewriter, loc, predicate.getCondition(),
+                                       /*withElseRegion=*/false);
+      if (Attribute executionCoreRanges =
+              predicate->getAttr(kExecutionCoreRangesAttrName)) {
+        setupIf->setAttr(kExecutionCoreRangesAttrName, executionCoreRanges);
+      }
+      rewriter.setInsertionPointToStart(&setupIf.getThenRegion().front());
+    }
+    NocAsyncWriteOnePacketSetStateOp::create(
+        rewriter, loc, destinationNocAddress, op.getSize(), op.getNoc());
+
+    rewriter.setInsertionPoint(op);
+    NocAsyncWriteOnePacketWithStateOp::create(
+        rewriter, loc, op.getSrcLocalL1Addr(), op.getDstAddress(), op.getNoc());
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 } // namespace
 
 void populateTTKernelCleanupPatterns(RewritePatternSet &patterns) {
@@ -112,8 +266,8 @@ void populateTTKernelCleanupPatterns(RewritePatternSet &patterns) {
       patterns.getContext());
   patterns.add<DeduplicateConsecutiveBarriers<NocAsyncWriteBarrierOp>>(
       patterns.getContext());
-  patterns.add<HoistIfRegionInvariantValueOps, HoistLoopInvariantValueOps>(
-      patterns.getContext());
+  patterns.add<HoistIfRegionInvariantValueOps, HoistLoopInvariantValueOps,
+               UseStatefulNocWriteInLoop>(patterns.getContext());
 }
 
 } // namespace mlir::tt::ttkernel
