@@ -1291,6 +1291,7 @@ struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
     }
     return lowerPipeTransferSend(
         op, adaptor.getSrc(), pipeModulePlan.getTransferPlan(op.getOperation()),
+        pipeModulePlan.getTransportPlan().getStreamForOperation(op),
         pipeResourcePlan, pipeCapacityPlan, senderCapacityCounters,
         computedAddressCounters, rewriter);
   }

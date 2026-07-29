@@ -134,12 +134,13 @@ for base = 0; base < grouped_end; base += R:
 run the remaining logical transfers in a scalar residual loop
 ```
 
-The generated TTKernel code uses one read barrier, one contiguous payload
-write, one write barrier, and one completion per group. The payload write uses
-stateful one-packet NoC operations when the payload satisfies that operation's
-hardware limits; larger groups use the generic contiguous NoC write. Grouping
-therefore removes the per-transfer barrier and command-programming cost in
-both cases.
+The generated TTKernel code uses one read barrier, one write barrier, and one
+completion per group. An overlapped unicast payload that exceeds the target
+one-packet limit is decomposed into pages. TTKernel cleanup programs the write
+command once outside the group loop and reuses it for every page. Payloads that
+fit one packet use one stateful contiguous write per group when command state
+is invariant. Other schedules and topologies retain the generic contiguous NoC
+write.
 
 #### PipeTransport contract
 
