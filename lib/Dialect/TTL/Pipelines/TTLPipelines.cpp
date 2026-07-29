@@ -28,7 +28,9 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     pm.addNestedPass<func::FuncOp>(createTTLInsertIntermediateDFBs(dfbOpts));
   }
   pm.addPass(createTTLConvertTTLToCompute());
-  buildTTLAutoSyncPipeline(pm.nest<func::FuncOp>());
+  pm.addNestedPass<func::FuncOp>(createTTLInsertCBSync());
+  pm.addPass(createTTLFormPipeTransports());
+  pm.addNestedPass<func::FuncOp>(createTTLCoalesceDFBAcquires());
   pm.addPass(createTTLFinalizeDFBIndices());
   {
     TTLSetComputeKernelConfigOptions configOpts;

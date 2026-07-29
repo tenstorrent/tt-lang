@@ -211,14 +211,17 @@ recordEndpointCapacityFacts(const PipeCapacityEndpointFacts &endpointFacts,
                             PipeCounterInfo capacityCounter,
                             PipeCapacityPlan &plan) {
   for (PipeTransferSendOp sendOp : endpointFacts.sends) {
-    plan.addAcquire(sendOp, PipeCapacityAcquireInfo{capacityCounter, 1});
+    plan.addAcquire(
+        sendOp, PipeCapacityAcquireInfo{
+                    capacityCounter, endpointFacts.receiverBlocksPerTransfer});
     plan.addInitialization(
         sendOp->getParentOfType<func::FuncOp>(),
         PipeCapacityInitInfo{capacityCounter, endpointFacts.initialCapacity});
   }
   for (CBPopOp popOp : endpointFacts.pops) {
-    plan.addRelease(popOp, PipeCapacityReleaseInfo{endpointFacts.releaseTarget,
-                                                   capacityCounter, 1});
+    plan.addRelease(popOp, PipeCapacityReleaseInfo{
+                               endpointFacts.releaseTarget, capacityCounter,
+                               endpointFacts.receiverBlocksPerTransfer});
   }
 }
 

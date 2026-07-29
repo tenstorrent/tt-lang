@@ -679,12 +679,19 @@ def TTL_PipeTransferCreateOp : TTL_Op<"pipe_transfer.create", [Pure]> {
     one transfer. Scalar transfers use the default span of one. Grouping
     transformations increase the span while preserving the original DFB block
     geometry.
+
+    `destination_group_depth` is the number of complete transfers that the
+    transport schedule may leave resident in each receiver DFB. The default
+    depth of one preserves lockstep transfer semantics. A greater depth permits
+    multiple grouped transfers to occupy distinct receiver slots.
   }];
   let arguments = (ins
     TTL_Pipe:$pipe,
     TTL_PipeTransferKindAttr:$kind,
     I64Attr:$expectedReceivers,
-    DefaultValuedAttr<ConfinedAttr<I64Attr, [IntPositive]>, "1">:$block_span
+    DefaultValuedAttr<ConfinedAttr<I64Attr, [IntPositive]>, "1">:$block_span,
+    DefaultValuedAttr<ConfinedAttr<I64Attr, [IntPositive]>, "1">:
+        $destination_group_depth
   );
   let results = (outs TTL_PipeTransfer:$transfer);
   let assemblyFormat = "$pipe attr-dict `:` type($pipe) `->` type($transfer)";

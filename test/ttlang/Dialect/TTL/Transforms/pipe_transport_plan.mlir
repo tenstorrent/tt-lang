@@ -104,3 +104,56 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
     func.return
   }
 }
+
+// -----
+
+// Purpose: a grouped stream records the logical transfer count independently
+// from the selected receiver group depth.
+// PLAN: PipeTransport: stream 0 transfer 0 src(0, 0) -> dst(1, 0) to (1, 0) net 0 contract=point_to_point synchronization=receiver_post schedule=grouped group=2 residual=0
+// PLAN-NEXT: PipeTransport:   source blocks=4 block_span=2 stage_depth=1 pages=2 page_bytes=4096 loops=0
+// PLAN-NEXT: PipeTransport:   endpoint 0 dst(1, 0) DFB 1 block_count=4 slot_span=2 group_depth=2 loops=0 address=recurrence(initial=0, stride=2, modulus=4, executions=1)
+// PLAN-NEXT: PipeTransport:   completion endpoints=[0] source_reuse=after_completion_group
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @grouped_transport()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 4}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
+    %dst_dfb = ttl.bind_cb {cb_index = 1, block_count = 4}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %transfer = ttl.pipe_transfer.create %pipe {
+        block_span = 2 : i64,
+        destination_group_depth = 2 : i64,
+        expectedReceivers = 1 : i64,
+        kind = #ttl.pipe_transfer_kind<point_to_point>}
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+        -> !ttl.pipe_transfer
+    ttl.if_dst %pipe
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %recv = ttl.cb_reserve %dst_dfb {num_tiles = 2 : i64}
+          : <[1, 1], !ttcore.tile<32x32, f32>, 4>
+          -> tensor<1x2x!ttcore.tile<32x32, f32>>
+      %token = ttl.pipe_transfer.post %transfer, %recv
+          : (!ttl.pipe_transfer, tensor<1x2x!ttcore.tile<32x32, f32>>)
+          -> !ttl.pipe_token<net 0>
+      ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
+      ttl.cb_push %dst_dfb {num_tiles = 2 : i64}
+          : <[1, 1], !ttcore.tile<32x32, f32>, 4>
+      %ready = ttl.cb_wait %dst_dfb {num_tiles = 2 : i64}
+          : <[1, 1], !ttcore.tile<32x32, f32>, 4>
+          -> tensor<1x2x!ttcore.tile<32x32, f32>>
+      ttl.cb_pop %dst_dfb {num_tiles = 2 : i64}
+          : <[1, 1], !ttcore.tile<32x32, f32>, 4>
+    }
+    ttl.if_src %pipe
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %send = ttl.pipe_transfer.send %transfer, %src_dfb
+          : (!ttl.pipe_transfer,
+             !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}
