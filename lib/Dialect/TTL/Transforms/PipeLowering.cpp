@@ -428,6 +428,10 @@ buildReceiverPublishedAddress(Value dst, Location loc,
       .getResult();
 }
 
+namespace {
+
+/// Emits transport-specific PipeNet synchronization and payload operations.
+/// A transport returns failure when it cannot implement a selected operation.
 class PipeTransportEmitter {
 public:
   virtual ~PipeTransportEmitter() = default;
@@ -496,8 +500,8 @@ public:
         rewriter, loc, arith::CmpIPredicate::eq, currentY, logicalSourceCore.y);
     Value receiverIsSource =
         arith::AndIOp::create(rewriter, loc, xMatches, yMatches);
-    auto localPublish = scf::IfOp::create(
-        rewriter, loc, receiverIsSource, /*withElseRegion=*/true);
+    auto localPublish = scf::IfOp::create(rewriter, loc, receiverIsSource,
+                                          /*withElseRegion=*/true);
     {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(&localPublish.getThenRegion().front());
@@ -529,6 +533,8 @@ public:
   }
 
   void preparePayloadWrite() override {
+    // Materialize destination coordinates before computing the payload address
+    // so address selection does not change emitted operation order.
     if (pipeType.hasSingleReceiver()) {
       getDstStartCore();
       return;
@@ -621,8 +627,8 @@ private:
   void emitLocalReceiverAddressPublish(Value senderTableAddress,
                                        Value publishedAddress) {
     auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
-    Value tablePtr = ttk::CastToL1PtrOp::create(
-        rewriter, loc, l1PtrTy, senderTableAddress);
+    Value tablePtr =
+        ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, senderTableAddress);
     Value zero = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
     ttk::StoreToL1Op::create(rewriter, loc, publishedAddress, tablePtr, zero);
   }
@@ -676,6 +682,7 @@ private:
       return *destinationRange;
     }
     TranslatedCore dstStartTranslatedCore = getDstStartCore();
+    // Preserve the memoized start coordinate for unicast and completion uses.
     auto [dstStartX, dstStartY] = dstStartTranslatedCore;
     auto [dstEndX, dstEndY] =
         buildTranslatedCore(pipeType.getDstEndX(), pipeType.getDstEndY());
@@ -696,6 +703,8 @@ private:
   std::optional<TranslatedCore> dstStartCore;
   std::optional<DestinationRange> destinationRange;
 };
+
+} // namespace
 
 //===----------------------------------------------------------------------===//
 // Receiver post sequence counter initialization
