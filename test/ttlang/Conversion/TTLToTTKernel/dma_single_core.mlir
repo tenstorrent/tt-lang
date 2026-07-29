@@ -30,6 +30,37 @@ module {
 
 // -----
 
+#grouped_layout = #ttl.layout<shape = [1, 4], element_type = !ttcore.tile<32x32, f32>,
+                              buffer = dram, grid = [1, 1], memory = interleaved>
+
+// A multi-block copy emits all tile reads before one completion barrier.
+// TTKERNEL-LABEL: func.func @dma_grouped_block_read
+// TTKERNEL: %[[CB_PTR:.*]] = ttkernel.get_write_ptr
+// TTKERNEL: scf.for
+// TTKERNEL:   ttkernel.noc_async_read_tile
+// TTKERNEL: ttkernel.noc_async_read_barrier
+// TTKERNEL-NOT: ttkernel.noc_async_read_barrier
+module {
+  func.func @dma_grouped_block_read(
+      %arg0: tensor<1x4x!ttcore.tile<32x32, f32>, #grouped_layout>)
+      attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %c0 = arith.constant 0 : index
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 4}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
+    %slice = ttl.tensor_slice %arg0[%c0, %c0]
+        : tensor<1x4x!ttcore.tile<32x32, f32>, #grouped_layout>
+        -> tensor<1x4x!ttcore.tile<32x32, f32>, #grouped_layout>
+    %xf = ttl.copy %slice, %cb
+        : (tensor<1x4x!ttcore.tile<32x32, f32>, #grouped_layout>,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>)
+        -> !ttl.transfer_handle<read>
+    ttl.wait %xf : !ttl.transfer_handle<read>
+    func.return
+  }
+}
+
+// -----
+
 #selected_layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
                                buffer = dram, grid = [1, 1], memory = interleaved>
 
