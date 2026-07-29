@@ -179,7 +179,9 @@ def TTLConvertTTLToTTKernel
            "receiver addresses.">,
     Option<"pipeCapacitySync", "pipe-capacity-sync",
            "bool", "true",
-           "Use capacity-counter synchronization for eligible pipe transfers. "
+           "Use capacity-counter synchronization when the receiver wait and "
+           "pop execute on the receiver NOC thread and the computed-address "
+           "transfer passes the DFB ownership and count proofs. "
            "When disabled, computed-address transfers use receiver-post "
            "synchronization.">
   ];
