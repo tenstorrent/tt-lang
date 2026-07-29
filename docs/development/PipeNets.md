@@ -384,6 +384,12 @@ semaphore objects whose addresses are passed as common runtime arguments.
 Address-table storage is host-created L1 scratch containing only 32-bit
 receiver-published destination addresses.
 
+TT-Metal validates each kernel's combined unique and common runtime arguments
+against the target's kernel-configuration capacity. Its allocator separately
+validates L1 availability for GlobalSemaphore and address-table storage. These
+checks run during program construction, before dispatch, because their limits
+depend on the target and current device allocations.
+
 TTKernel conversion records the compiler-owned pipe resource plan with
 module attrs:
 
@@ -936,9 +942,9 @@ Completion colors consume the first local semaphore ids and then
 GlobalSemaphore storage. If every readiness color fits in the remaining local
 ids, readiness counters use those ids and the same color is reused on different
 source nodes. Otherwise all readiness counters use GlobalSemaphore storage,
-with one allocation per source-node color. This all-global readiness rule keeps
-one runtime descriptor form for a kernel's readiness counters. The compiler
-records the final local and global totals in
+with one allocation per source-node color. This all-global readiness rule gives
+every source node the same storage interpretation for a ready color. The
+compiler records the final local and global totals in
 `ttl.pipe_sync_semaphore_count` and `ttl.pipe_global_semaphore_count`.
 
 Receiver completion is cumulative across repeated executions of a transfer
