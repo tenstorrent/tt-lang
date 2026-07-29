@@ -27,7 +27,9 @@ branch is not a PR review layer and must not become a parent for source PRs.
 
 - Current branch state is the live `origin/bnorris/...` refs in this checkout.
 - Rebase status context: `/home/bnorris/tt/tt-lang-acc-3-defer-intermediate-dfbs/_updates.md`.
-- PR inventory context: `/home/bnorris/tt/PRs.md`. Some entries may be stale.
+- PR inventory context: `/home/bnorris/tt/PRs.md`. Some entries may be stale,
+  but the Pipes chain in that file is authoritative for which active Pipes PRs
+  belong in this aggregate branch unless listed as excluded below.
 
 ## Included Inputs
 
@@ -52,12 +54,20 @@ branch is not a PR review layer and must not become a parent for source PRs.
 Duplicate merge commits mean the source branch advanced during the refresh and
 was merged again after the first merge.
 
+## Required Inputs Missing From Current Branch
+
+These inputs are part of the intended aggregate branch but are not currently
+contained in `bnorris/demo`.
+
+| PR | Branch | Status | Required action |
+|---:|---|---|---|
+| 734 | `bnorris/pipes-multidevice-integrated-poc` | Missing from current branch | Integrate after the current PipeNet planning/codegen stack. It is a child of #784 in `/home/bnorris/tt/PRs.md` and should not be treated as intentionally excluded. |
+
 ## Excluded Inputs
 
 | PR | Branch | Status | Reason |
 |---:|---|---|---|
 | 777 | `bnorris/dfb-collection-indexing` | Closed | Excluded from this refresh. |
-| 734 | `bnorris/pipes-multidevice-integrated-poc` | Needs rebase | Conflicts heavily with the refreshed PR700 split through #784/#780. Rebase it over the current PipeNet planning/codegen stack before adding it back. |
 | 754 | `bnorris/pipes-issue-628-code-size` | Needs review | Large conflict set with the current PipeNet stack; needs separate design review before inclusion. |
 | 651 | `bnorris/accumulation-scope-redesign-mainmerge` | Reference branch | Combined/reference branch only. #733 is the active extracted branch included above. |
 
