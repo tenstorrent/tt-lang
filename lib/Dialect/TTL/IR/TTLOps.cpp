@@ -1912,6 +1912,22 @@ mlir::LogicalResult mlir::tt::ttl::RawElementWriteOp::verify() {
       "ttl.cb_reserve");
 }
 
+mlir::LogicalResult mlir::tt::ttl::RawAddrOp::verify() {
+  Value tensor = getTensor();
+  auto tensorTy = mlir::dyn_cast<RankedTensorType>(tensor.getType());
+  auto layoutAttr =
+      tensorTy
+          ? mlir::dyn_cast_or_null<tt::ttl::LayoutAttr>(tensorTy.getEncoding())
+          : nullptr;
+  auto blockArg = mlir::dyn_cast<BlockArgument>(tensor);
+  if (!layoutAttr || !blockArg || !blockArg.getParentBlock() ||
+      !blockArg.getParentBlock()->isEntryBlock()) {
+    return emitOpError("operand must be a function tensor argument with TTL "
+                       "layout encoding; slices/views are not supported");
+  }
+  return mlir::success();
+}
+
 //===----------------------------------------------------------------------===//
 // PipeNetPredicateOpInterface implementations.
 //===----------------------------------------------------------------------===//
@@ -1977,5 +1993,6 @@ void mlir::tt::ttl::PipeNetScopeOp::getSuccessorRegions(
 
 mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
   return mlir::tt::utils::verifyOpaqueCall<GetDfbIdOp>(
-      getOperation(), getCallee(), getHeader(), getTemplateArgVals());
+      getOperation(), getCallee(), getHeader(), getTemplateArgVals(),
+      "arith.constant or ttl.get_dfb_id");
 }

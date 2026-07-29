@@ -1302,6 +1302,25 @@ struct GetDfbIdLowering : OpConversionPattern<GetDfbIdOp> {
   }
 };
 
+struct RawAddrLowering : OpConversionPattern<RawAddrOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(RawAddrOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    FailureOr<TensorAccessorInfo> accessorInfo =
+        getTensorAccessorInfo(op.getTensor(), op, rewriter);
+    if (failed(accessorInfo)) {
+      return rewriter.notifyMatchFailure(
+          op, "raw_addr operand must be a function tensor argument");
+    }
+    Value bankBase = getBufferAddressFromRuntimeArg(accessorInfo->argIdx,
+                                                    op.getLoc(), rewriter);
+    rewriter.replaceOp(op, bankBase);
+    return success();
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // Opaque call lowering
 //===----------------------------------------------------------------------===//
@@ -1329,6 +1348,23 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
         auto cbVal = ttk::GetCompileArgValOp::create(
             rewriter, loc, rewriter.getI32Type(), *cbIdx);
         convertedArgs.push_back(cbVal);
+        continue;
+      }
+
+      // Bare tensor args default to TensorAccessor materialization.
+      if (mlir::isa<RankedTensorType>(origTy)) {
+        FailureOr<TensorAccessorInfo> accessorInfo =
+            getTensorAccessorInfo(origArg, op, rewriter);
+        if (failed(accessorInfo)) {
+          return rewriter.notifyMatchFailure(
+              op, "tensor opaque_call operand must be a function argument with "
+                  "TTL layout encoding");
+        }
+        Value bankBase =
+            getBufferAddressFromRuntimeArg(accessorInfo->argIdx, loc, rewriter);
+        Value accessor = materializeTensorAccessor(origArg, bankBase,
+                                                   *accessorInfo, rewriter);
+        convertedArgs.push_back(accessor);
         continue;
       }
 
@@ -1788,12 +1824,11 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                                          pipeResourcePlan);
   patterns.add<PipeTransferWaitLowering>(typeConverter, &ctx, pipeResourcePlan);
   patterns.add<WaitLowering>(typeConverter, &ctx, completedPipeSendWaits);
-  patterns
-      .add<BindCBLowering, TensorSliceLowering, CBReserveLowering,
-           CBPushLowering, CBWaitLowering, CBPopLowering, TileStoreLowering,
-           StoreLowering, CoreXLowering, CoreYLowering, RawElementReadLowering,
-           RawElementWriteLowering, OpaqueCallLowering, GetDfbIdLowering>(
-          typeConverter, &ctx);
+  patterns.add<BindCBLowering, TensorSliceLowering, CBReserveLowering,
+               CBPushLowering, CBWaitLowering, CBPopLowering, TileStoreLowering,
+               StoreLowering, CoreXLowering, CoreYLowering,
+               RawElementReadLowering, RawElementWriteLowering, RawAddrLowering,
+               OpaqueCallLowering, GetDfbIdLowering>(typeConverter, &ctx);
   populatePipeLoweringPatterns(patterns, typeConverter, pipeNetIndex);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);

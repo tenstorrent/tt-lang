@@ -31,6 +31,22 @@ from .auto_profile import (
 from .tensor_registry import get_tensor_global_index, get_tensor_source
 
 
+def _is_ttnn_global_semaphore(value) -> bool:
+    """Return true when value looks like a ttnn GlobalSemaphore object."""
+    return type(value).__module__ == "ttnn._ttnn.global_semaphore"
+
+
+def _try_get_ttnn_global_semaphore_address(value) -> Optional[int]:
+    """Return GlobalSemaphore address as int, or None when unavailable."""
+    if not _is_ttnn_global_semaphore(value):
+        return None
+    try:
+        import ttnn
+    except ImportError:
+        return None
+    return int(ttnn.get_global_semaphore_address(value))
+
+
 def _make_file_loc(ctx, source_file: str, node, line_offset: int = 0) -> Location:
     """Create an MLIR file location from an AST node."""
     if not hasattr(node, "lineno"):
@@ -324,6 +340,9 @@ class TTLGenericCompiler(TTCompilerBase):
 
                 if self._is_ttl_api_call(node, "call_extern_func"):
                     return self.visit_Call_Extern_Func(node, node.args, node.keywords)
+
+                if self._is_ttl_api_call(node, "raw_addr"):
+                    return self._visit_raw_addr(node)
 
                 if self._is_ttl_api_call(node, "get_dfb_id"):
                     return self._visit_get_dfb_id(node)
@@ -979,6 +998,15 @@ class TTLGenericCompiler(TTCompilerBase):
                     # Stamp variable name (first-seen wins) so the
                     # compiler can use it in diagnostics.
                     self._pipe_net_names.setdefault(id(val), name)
+                elif _is_ttnn_global_semaphore(val):
+                    sem_addr = _try_get_ttnn_global_semaphore_address(val)
+                    if sem_addr is None:
+                        self._raise_error(
+                            node,
+                            f"Failed to extract ttnn GlobalSemaphore address "
+                            f"for capture '{name}'",
+                        )
+                    self._set_var(name, arith.ConstantOp(self.i32, sem_addr).result)
                 else:
                     self._raise_error(
                         node, f"Invalid capture type for var {name}: {type(val)}"
@@ -1416,13 +1444,17 @@ class TTLGenericCompiler(TTCompilerBase):
         """Resolve a template_args element to an i32 MLIR SSA Value.
 
         Accepts:
-        - ``ttl.get_dfb_id(dfb)`` -- DFB CB index
+        - ``dfb`` -- DFB CB index (auto-resolved internally)
         - ``int`` literals / module-level ints -- passed through as i32
         - ``bool`` literals / module-level bools -- encoded as i32 0/1
         - ``float`` literals / module-level floats -- IEEE-754 bit pattern as i32
         """
         if isinstance(node, ast.Call) and self._is_ttl_api_call(node, "get_dfb_id"):
-            return self._visit_get_dfb_id(node)
+            self._raise_error(
+                node,
+                "ttl.call_extern_func() template_args does not accept "
+                "ttl.get_dfb_id(...); pass the DFB value directly",
+            )
 
         i32_ty = IntegerType.get_signless(32, self.ctx)
 
@@ -1462,11 +1494,50 @@ class TTLGenericCompiler(TTCompilerBase):
                 return _i32_const(val)
             if isinstance(val, float):
                 return _i32_const(_float_bits(val))
+            sem_addr = _try_get_ttnn_global_semaphore_address(val)
+            if sem_addr is not None:
+                return _i32_const(sem_addr)
+
+        resolved = self.visit(node)
+        if isinstance(resolved, tuple):
+            self._raise_error(
+                node,
+                "ttl.call_extern_func() does not support tensor slices/views in "
+                "extern arguments yet; pass the base tensor or "
+                "ttl.raw_addr(base_tensor)",
+            )
+        resolved_type = getattr(resolved, "type", None)
+        cb_type = ttl.CircularBufferType.maybe_downcast(resolved_type)
+        if cb_type is not None:
+            # Keep user syntax simple: template_args=[dfb].
+            return ttl.get_dfb_id(resolved)
+        if isinstance(resolved_type, IntegerType):
+            def_op = resolved.owner if hasattr(resolved, "owner") else None
+            if isinstance(def_op, arith.ConstantOp):
+                value_attr = def_op.value
+                if isinstance(value_attr, IntegerAttr):
+                    return _i32_const(int(value_attr.value))
+            self._raise_error(
+                node,
+                "ttl.call_extern_func() template_args integer values must be "
+                "compile-time constants",
+            )
+        if isinstance(resolved_type, IndexType):
+            def_op = resolved.owner if hasattr(resolved, "owner") else None
+            if isinstance(def_op, arith.ConstantOp):
+                value_attr = def_op.value
+                if isinstance(value_attr, IntegerAttr):
+                    return _i32_const(int(value_attr.value))
+            self._raise_error(
+                node,
+                "ttl.call_extern_func() template_args index values must be "
+                "compile-time constants",
+            )
 
         self._raise_error(
             node,
             "ttl.call_extern_func() template_args element must be an int, "
-            "bool, float, or ttl.get_dfb_id(...)",
+            "bool, float, a DFB, or an integer/index value",
         )
 
     def _resolve_string_value(self, node, param_name):
@@ -1503,6 +1574,21 @@ class TTLGenericCompiler(TTCompilerBase):
         dfb_val = self.visit(node.args[0])
         return ttl.get_dfb_id(dfb_val)
 
+    def _visit_raw_addr(self, node):
+        """Emit ttl.raw_addr for the tensor argument, return the i32 base address."""
+        if len(node.args) != 1:
+            self._raise_error(node, "ttl.raw_addr() requires exactly 1 argument")
+        tensor_val = self.visit(node.args[0])
+        if isinstance(tensor_val, tuple):
+            self._raise_error(
+                node,
+                "ttl.raw_addr() does not support slices/views; pass the base tensor",
+            )
+        tensor_ty = getattr(tensor_val, "type", None)
+        if not isinstance(tensor_ty, RankedTensorType):
+            self._raise_error(node, "ttl.raw_addr() argument must be a tensor value")
+        return ttl.raw_addr(tensor_val)
+
     def visit_Call_Extern_Func(self, node, args, keywords=None):
         """Handle ttl.call_extern_func(header, callee, ...) by emitting
         ttl.opaque_call.
@@ -1519,9 +1605,9 @@ class TTLGenericCompiler(TTCompilerBase):
 
         DFBs can appear in either template_args or func_args:
 
-        - ``template_args=[ttl.get_dfb_id(dfb)]`` -- the DFB's CB index is
-          resolved at compile time and baked into the C++ template parameter
-          as an integer literal.
+        - ``template_args=[dfb]`` -- the DFB's CB index is resolved at
+          compile time and baked into the C++ template parameter as an
+          integer literal.
         - ``func_args=[dfb]`` -- the DFB is passed as a runtime
           ``get_compile_time_arg_val(N)`` call, providing the CB index as a
           function argument.
@@ -1578,7 +1664,16 @@ class TTLGenericCompiler(TTCompilerBase):
                 self._raise_error(
                     fa_node, "ttl.call_extern_func() func_args must be a list"
                 )
-            func_args = [self.visit(elt) for elt in fa_node.elts]
+            for elt in fa_node.elts:
+                arg = self.visit(elt)
+                if isinstance(arg, tuple):
+                    self._raise_error(
+                        elt,
+                        "ttl.call_extern_func() does not support tensor "
+                        "slices/views in extern arguments yet; pass the base "
+                        "tensor or ttl.raw_addr(base_tensor)",
+                    )
+                func_args.append(arg)
 
         if "include_paths" in kw_map:
             paths = self._resolve_string_list(kw_map["include_paths"], "include_paths")

@@ -1557,6 +1557,27 @@ def matmul_read():
     - A prior `ttl.raw_element_read` on the same or another block
     - A Python float constant
 
+### External function interop
+
+| Function | Description |
+| :---- | :---- |
+| `ttl.call_extern_func(header_path: str, callee_name: str, template_args: list = [], func_args: list = [], include_paths: list = [])` | Emit an opaque external C/C++ call in kernel code. `header_path` is included in generated source, `callee_name` is emitted as the target function name. |
+| `ttl.raw_addr(tensor) -> int` | Return the raw i32 base address for a tensor function argument. Use this when a raw address must be passed to an external call instead of TensorAccessor materialization. |
+
+#### Argument mapping
+
+- `func_args=[tensor]` lowers the tensor to a `TensorAccessor` argument by default.
+- `func_args=[ttl.raw_addr(tensor)]` passes the raw i32 base address.
+- `func_args=[dfb]` passes the DFB as a CB index argument.
+- `template_args=[dfb]` resolves the DFB to a compile-time integer index.
+- `template_args=[ttl.get_dfb_id(dfb)]` is not supported in `ttl.call_extern_func`; pass the DFB directly.
+- `template_args` scalar values (`int`, `bool`, `float`) are resolved to compile-time i32 values (`float` uses IEEE-754 f32 bits).
+
+#### Current limitations
+
+- Tensor slice/view operands are not supported in external call arguments.
+- `ttl.raw_addr` accepts only base tensor function arguments; slice/view-like operands are rejected.
+
 ## Appendix C. Naming guidelines
 
 | Object | Guideline |
@@ -1609,6 +1630,8 @@ def matmul_read():
 | `ttl.block` shape manipulation functions: `squeeze`, `unsqueeze` | N/S | N/S |
 | `>` for result of `ttl.raw_element_read` | 1.0.0 | 1.0.0 |
 | `<` for result of `ttl.raw_element_read` | 1.0.0 | 1.0.0 |
+| `ttl.call_extern_func` with DFB template auto-detection | N/S | 1.0.0 |
+| `ttl.raw_addr` | N/S | 1.0.0 |
 | `==` for result of `ttl.raw_element_read` | N/S | N/S |
 | `!=` for result of `ttl.raw_element_read` | N/S | N/S |
 | `>=` for result of `ttl.raw_element_read` | N/S | N/S |

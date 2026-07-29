@@ -1,6 +1,7 @@
 // Verify opaque_call lowering from TTL to TTKernel.
-// Checks template arg forwarding, DFB-to-CB conversion for func_args, and
-// get_dfb_id lowering from ttl to ttkernel dialect.
+// Checks template arg forwarding, DFB-to-CB conversion for func_args,
+// get_dfb_id lowering, tensor func-arg TensorAccessor materialization,
+// and ttl.raw_addr lowering.
 // RUN: ttlang-opt --convert-ttl-to-ttkernel --split-input-file %s | FileCheck %s
 
 // Void call with no args lowers directly.
@@ -48,5 +49,38 @@ func.func @call_with_dfb_template_arg() attributes {ttl.kernel_thread = #ttkerne
 func.func @call_with_dfb_func_arg() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
   %cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.opaque_call "use_cb" (%cb) {header = "use_cb.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> ()
+  return
+}
+
+// -----
+
+#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
+
+// Bare tensor func_arg is lowered to a TensorAccessor.
+// CHECK-LABEL: func.func @call_with_tensor_func_arg
+// CHECK-DAG: %[[C0_IDX:.*]] = arith.constant 0 : index
+// CHECK-DAG: %[[BANK_BASE:.*]] = ttkernel.get_common_arg_val(%[[C0_IDX]]) : (index) -> i32
+// CHECK-DAG: %[[ACC_ARGS:.*]] = ttkernel.TensorAccessorArgs(
+// CHECK-DAG: %[[ACC:.*]] = ttkernel.TensorAccessor(%[[ACC_ARGS]], %[[BANK_BASE]], {{.*}}) : (!ttkernel.TensorAccessorArgs, i32, i32) -> !ttkernel.TensorAccessor
+// CHECK: ttkernel.opaque_call "use_tensor" (%[[ACC]]) {header = "use_tensor.hpp"} : (!ttkernel.TensorAccessor) -> ()
+func.func @call_with_tensor_func_arg(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
+  ttl.opaque_call "use_tensor" (%arg0) {header = "use_tensor.hpp"} : (tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) -> ()
+  return
+}
+
+// -----
+
+#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
+
+// ttl.raw_addr lowers to get_common_arg_val and forwards an i32 arg.
+// CHECK-LABEL: func.func @call_with_raw_addr_func_arg
+// CHECK-DAG: %[[C0_IDX:.*]] = arith.constant 0 : index
+// CHECK-DAG: %[[ADDR:.*]] = ttkernel.get_common_arg_val(%[[C0_IDX]]) : (index) -> i32
+// CHECK: ttkernel.opaque_call "use_addr" (%[[ADDR]]) {header = "use_addr.hpp"} : (i32) -> ()
+func.func @call_with_raw_addr_func_arg(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %addr = ttl.raw_addr %arg0 : tensor<1x1x!ttcore.tile<32x32, f32>, #layout> -> i32
+  ttl.opaque_call "use_addr" (%addr) {header = "use_addr.hpp"} : (i32) -> ()
   return
 }

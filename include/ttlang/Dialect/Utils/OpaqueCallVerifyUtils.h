@@ -16,10 +16,11 @@ namespace mlir::tt::utils {
 /// Shared verifier for `ttl.opaque_call` / `ttkernel.opaque_call`.
 ///
 /// Checks that callee and header are non-empty, and that each template arg
-/// is defined by `arith.constant` or the dialect's `get_dfb_id` op.
-template <typename GetDfbIdOpTy>
+/// is defined by `arith.constant` or one of the provided allowed defining ops.
+template <typename... AllowedTemplateArgOpTys>
 LogicalResult verifyOpaqueCall(Operation *op, StringRef callee,
-                               StringRef header, ValueRange templateArgVals) {
+                               StringRef header, ValueRange templateArgVals,
+                               StringRef allowedKindsDescription) {
   if (callee.empty()) {
     return op->emitOpError("callee name must not be empty");
   }
@@ -31,14 +32,14 @@ LogicalResult verifyOpaqueCall(Operation *op, StringRef callee,
     Operation *defOp = taVal.getDefiningOp();
     if (!defOp) {
       return op->emitOpError("template arg must be a compile-time evaluable "
-                             "value (arith.constant or ")
-             << GetDfbIdOpTy::getOperationName() << "), got a block argument";
+                             "value (")
+             << allowedKindsDescription << "), got a block argument";
     }
-    if (!isa<arith::ConstantOp>(defOp) && !isa<GetDfbIdOpTy>(defOp)) {
+    if (!isa<arith::ConstantOp, AllowedTemplateArgOpTys...>(defOp)) {
       return op->emitOpError("template arg must be a compile-time evaluable "
-                             "value (arith.constant or ")
-             << GetDfbIdOpTy::getOperationName() << "), got '"
-             << defOp->getName() << "'";
+                             "value (")
+             << allowedKindsDescription << "), got '" << defOp->getName()
+             << "'";
     }
   }
   return success();

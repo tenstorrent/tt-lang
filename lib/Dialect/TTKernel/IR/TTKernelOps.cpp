@@ -631,8 +631,9 @@ void UnpackStallOnPackOp::getCanonicalizationPatterns(
 }
 
 ::mlir::LogicalResult OpaqueCallOp::verify() {
-  return mlir::tt::utils::verifyOpaqueCall<GetDfbIdOp>(
-      getOperation(), getCallee(), getHeader(), getTemplateArgVals());
+  return mlir::tt::utils::verifyOpaqueCall<GetDfbIdOp, GetSemaphoreOp>(
+      getOperation(), getCallee(), getHeader(), getTemplateArgVals(),
+      "arith.constant, ttkernel.get_dfb_id, or ttkernel.get_semaphore");
 }
 
 } // namespace mlir::tt::ttkernel

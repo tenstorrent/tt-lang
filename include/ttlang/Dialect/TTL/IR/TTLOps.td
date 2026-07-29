@@ -1621,6 +1621,26 @@ def TTL_RawElementWriteOp : TTL_Op<"raw_element_write",
 }
 
 //===----------------------------------------------------------------------===//
+// Tensor raw address
+//===----------------------------------------------------------------------===//
+
+def TTL_RawAddrOp : TTL_Op<"raw_addr", [Pure]> {
+  let summary = "Get raw i32 base address for a tensor argument";
+  let description = [{
+    `ttl.raw_addr` returns the raw 32-bit base address associated with a
+    tensor function argument. This bypasses TensorAccessor materialization and
+    is intended for external-function interop where a raw pointer/address is
+    required.
+
+    Slice/view operands are intentionally unsupported.
+  }];
+  let arguments = (ins TTLLayoutTensor:$tensor);
+  let results = (outs I32:$result);
+  let assemblyFormat = "$tensor attr-dict `:` type($tensor) `->` type($result)";
+  let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
 // External function call (opaque)
 //===----------------------------------------------------------------------===//
 

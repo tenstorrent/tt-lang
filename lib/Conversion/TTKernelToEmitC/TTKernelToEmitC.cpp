@@ -2128,6 +2128,35 @@ private:
   std::optional<int64_t>
   resolveTemplateArgInt(Value val, ttkernel::OpaqueCallOp op,
                         ConversionPatternRewriter &rewriter) const {
+    auto resolveStaticIntegerValue =
+        [&](Value intLikeVal) -> std::optional<int64_t> {
+      Value unwrapped = unwrapCasts(intLikeVal);
+      if (auto constOp = unwrapped.getDefiningOp<arith::ConstantOp>()) {
+        if (auto intAttr = dyn_cast<IntegerAttr>(constOp.getValue())) {
+          return intAttr.getInt();
+        }
+      }
+      if (auto emitcConst = unwrapped.getDefiningOp<emitc::ConstantOp>()) {
+        if (auto intAttr = dyn_cast<IntegerAttr>(emitcConst.getValue())) {
+          return intAttr.getInt();
+        }
+        if (auto opaqueAttr =
+                dyn_cast<emitc::OpaqueAttr>(emitcConst.getValue())) {
+          int64_t v;
+          if (llvm::to_integer(opaqueAttr.getValue(), v)) {
+            return v;
+          }
+        }
+      }
+      if (auto litOp = unwrapped.getDefiningOp<emitc::LiteralOp>()) {
+        int64_t v;
+        if (llvm::to_integer(litOp.getValue(), v)) {
+          return v;
+        }
+      }
+      return std::nullopt;
+    };
+
     Value src = unwrapCasts(val);
     Operation *defOp = src.getDefiningOp();
     if (!defOp) {
@@ -2163,6 +2192,10 @@ private:
       Value dfb = unwrapCasts(getDfbId.getDfb());
       ensureCBDeclaration(dfb, op.getOperation(), rewriter, state);
       return static_cast<int64_t>(*idx);
+    }
+
+    if (auto getSemaphore = dyn_cast<ttkernel::GetSemaphoreOp>(defOp)) {
+      return resolveStaticIntegerValue(getSemaphore.getSemaphore());
     }
 
     if (auto litOp = dyn_cast<emitc::LiteralOp>(defOp)) {

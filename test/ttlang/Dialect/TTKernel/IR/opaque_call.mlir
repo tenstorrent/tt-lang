@@ -35,3 +35,14 @@ func.func @dfb_template_arg() {
   ttkernel.opaque_call "flush" template_args(%id) () {header = "flush.hpp"} : () -> ()
   return
 }
+
+// -----
+// Test: call with semaphore index template arg
+// CHECK-LABEL: func.func @semaphore_template_arg
+// CHECK: %[[C5:.*]] = arith.constant 5 : i32
+// CHECK-NEXT: ttkernel.opaque_call "sem_tpl" template_args(%[[C5]]) () {header = "sem_tpl.hpp"} : () -> ()
+func.func @semaphore_template_arg() {
+  %c5 = arith.constant 5 : i32
+  ttkernel.opaque_call "sem_tpl" template_args(%c5) () {header = "sem_tpl.hpp"} : () -> ()
+  return
+}

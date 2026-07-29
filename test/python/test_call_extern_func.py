@@ -6,7 +6,7 @@
 End-to-end tests for ttl.call_extern_func.
 
 Covers:
-- Struct-based compute header with DFB IDs as template args (negate).
+- Struct-based compute header with DFB template args (negate).
 - int/bool/float values as both template_args and func_args.
 - A DFB passed directly as a func_arg (CB index via get_compile_time_arg_val).
 """
@@ -41,8 +41,8 @@ def negate_extern(inp, out):
                 NEGATE_HEADER,
                 "negate_tile_shim",
                 template_args=[
-                    ttl.get_dfb_id(in_dfb),
-                    ttl.get_dfb_id(out_dfb),
+                    in_dfb,
+                    out_dfb,
                 ],
             )
 
@@ -66,7 +66,7 @@ def typed_args_extern(inp, out):
     """Exercise int/bool/float template+func args and a DFB as func_arg.
 
     template_args:
-      OutCB=get_dfb_id(out), IntScale=2, NegateTpl=True, ScaleTpl=0.5
+      OutCB=out_dfb, IntScale=2, NegateTpl=True, ScaleTpl=0.5
     func_args:
       in_dfb (DFB), scale_f=3.0, int_factor=2, also_negate=False
 
@@ -82,7 +82,7 @@ def typed_args_extern(inp, out):
                 TYPED_ARGS_HEADER,
                 "typed_args_shim",
                 template_args=[
-                    ttl.get_dfb_id(out_dfb),
+                    out_dfb,
                     2,  # int
                     True,  # bool
                     0.5,  # float (IEEE bits in template)

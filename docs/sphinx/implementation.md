@@ -8,6 +8,7 @@ This section collects design documents and pipeline traces that describe how TT-
 - [Value Origin Analysis](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/ValueOriginAnalysis.md) - conservative SSA value origins through control flow and tensor updates
 - [DST Register Allocation](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/DST_Allocation.md) — how the `TTLAssignDST` pass assigns destination registers to tile operations
 - [DST Register Utilization](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/DST_Utilization.md) — maximizing tile throughput per DST synchronization cycle
+- [External Function Interop Lowering](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/ExternalFuncInteropLowering.md) - argument mapping and delayed template evaluation for `ttl.call_extern_func`
 
 ## Lowering Pipeline Traces
 
