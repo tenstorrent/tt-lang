@@ -4,8 +4,8 @@
 
 // -----
 
-// Clone-supported branch fanout still compiles with compiler-managed DFBs
-// disabled because it does not allocate a compiler DFB.
+// Clone-supported stores from multiple branches still compile with
+// compiler-managed DFBs disabled because they do not allocate a compiler DFB.
 
 // CHECK-LABEL: func.func @store_fanout_across_scf_if_disabled_clones
 // CHECK-NOT: ttl.compiler_allocated
@@ -73,7 +73,7 @@ func.func @single_then_branch_reduce_store_disabled(%cond: i1)
 
 // -----
 
-// A single else-branch store has the same no-fanout property.
+// A single else-branch store also occupies only one store block.
 
 // CHECK-LABEL: func.func @single_else_branch_reduce_store_disabled
 // CHECK-NOT: ttl.compiler_allocated

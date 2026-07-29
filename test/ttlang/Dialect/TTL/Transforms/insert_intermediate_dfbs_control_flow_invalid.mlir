@@ -1,4 +1,5 @@
-// Tests invalid control-flow store fanout when compiler DFBs are disabled.
+// Tests invalid values stored from multiple control-flow blocks when compiler
+// DFBs are disabled.
 //
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(func.func(ttl-insert-intermediate-dfbs{enable=false}))'
 
@@ -34,8 +35,8 @@ func.func @reduce_fanout_across_scf_if_disabled(%cond: i1)
 
 // -----
 
-// Sibling-if fanout is not structurally mutually exclusive, so it needs
-// compiler storage.
+// Stores under sibling if operations are not structurally mutually exclusive,
+// so they need compiler storage.
 
 func.func @sibling_if_store_fanout_disabled(%cond_a: i1, %cond_b: i1)
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared control-flow store fanout kernels for lit and pytest coverage."""
+"""Shared control-flow store kernels for lit and pytest coverage."""
 
 import os
 
@@ -48,20 +48,20 @@ def then_only_store_kernel(input_tensor, output_tensor):
                 with output_dfb.wait() as _output_block:
                     pass
 
-        return
+    else:
 
-    @ttl.datamovement()
-    def dm_read():
-        node_x, node_y = ttl.node(dims=2)
-        with input_dfb.reserve() as input_block:
-            ttl.copy(input_tensor[node_y, node_x], input_block).wait()
+        @ttl.datamovement()
+        def dm_read():
+            node_x, node_y = ttl.node(dims=2)
+            with input_dfb.reserve() as input_block:
+                ttl.copy(input_tensor[node_y, node_x], input_block).wait()
 
-    @ttl.datamovement()
-    def dm_write():
-        node_x, node_y = ttl.node(dims=2)
-        if node_x == 0:
-            with output_dfb.wait() as output_block:
-                ttl.copy(output_block, output_tensor[node_y, 0]).wait()
+        @ttl.datamovement()
+        def dm_write():
+            node_x, node_y = ttl.node(dims=2)
+            if node_x == 0:
+                with output_dfb.wait() as output_block:
+                    ttl.copy(output_block, output_tensor[node_y, 0]).wait()
 
 
 @ttl.operation(grid=(2, 1))
@@ -94,20 +94,20 @@ def else_only_store_kernel(input_tensor, output_tensor):
                 with output_dfb.wait() as _output_block:
                     pass
 
-        return
+    else:
 
-    @ttl.datamovement()
-    def dm_read():
-        node_x, node_y = ttl.node(dims=2)
-        with input_dfb.reserve() as input_block:
-            ttl.copy(input_tensor[node_y, node_x], input_block).wait()
+        @ttl.datamovement()
+        def dm_read():
+            node_x, node_y = ttl.node(dims=2)
+            with input_dfb.reserve() as input_block:
+                ttl.copy(input_tensor[node_y, node_x], input_block).wait()
 
-    @ttl.datamovement()
-    def dm_write():
-        node_x, node_y = ttl.node(dims=2)
-        if node_x != 0:
-            with output_dfb.wait() as output_block:
-                ttl.copy(output_block, output_tensor[node_y, 0]).wait()
+        @ttl.datamovement()
+        def dm_write():
+            node_x, node_y = ttl.node(dims=2)
+            if node_x != 0:
+                with output_dfb.wait() as output_block:
+                    ttl.copy(output_block, output_tensor[node_y, 0]).wait()
 
 
 @ttl.operation(grid=(2, 1))
@@ -145,23 +145,23 @@ def if_else_store_fanout_kernel(input_tensor, then_output, else_output):
                 with else_dfb.wait() as _output_block:
                     pass
 
-        return
+    else:
 
-    @ttl.datamovement()
-    def dm_read():
-        node_x, node_y = ttl.node(dims=2)
-        with input_dfb.reserve() as input_block:
-            ttl.copy(input_tensor[node_y, node_x], input_block).wait()
+        @ttl.datamovement()
+        def dm_read():
+            node_x, node_y = ttl.node(dims=2)
+            with input_dfb.reserve() as input_block:
+                ttl.copy(input_tensor[node_y, node_x], input_block).wait()
 
-    @ttl.datamovement()
-    def dm_write():
-        node_x, node_y = ttl.node(dims=2)
-        if node_x == 0:
-            with then_dfb.wait() as output_block:
-                ttl.copy(output_block, then_output[node_y, 0]).wait()
-        else:
-            with else_dfb.wait() as output_block:
-                ttl.copy(output_block, else_output[node_y, 0]).wait()
+        @ttl.datamovement()
+        def dm_write():
+            node_x, node_y = ttl.node(dims=2)
+            if node_x == 0:
+                with then_dfb.wait() as output_block:
+                    ttl.copy(output_block, then_output[node_y, 0]).wait()
+            else:
+                with else_dfb.wait() as output_block:
+                    ttl.copy(output_block, else_output[node_y, 0]).wait()
 
 
 @ttl.operation(grid=(3, 1))
@@ -210,26 +210,26 @@ def elif_chain_store_fanout_kernel(
                 with third_dfb.wait() as _output_block:
                     pass
 
-        return
+    else:
 
-    @ttl.datamovement()
-    def dm_read():
-        node_x, node_y = ttl.node(dims=2)
-        with input_dfb.reserve() as input_block:
-            ttl.copy(input_tensor[node_y, node_x], input_block).wait()
+        @ttl.datamovement()
+        def dm_read():
+            node_x, node_y = ttl.node(dims=2)
+            with input_dfb.reserve() as input_block:
+                ttl.copy(input_tensor[node_y, node_x], input_block).wait()
 
-    @ttl.datamovement()
-    def dm_write():
-        node_x, node_y = ttl.node(dims=2)
-        if node_x == 0:
-            with first_dfb.wait() as output_block:
-                ttl.copy(output_block, first_output[node_y, 0]).wait()
-        elif node_x == 1:
-            with second_dfb.wait() as output_block:
-                ttl.copy(output_block, second_output[node_y, 0]).wait()
-        else:
-            with third_dfb.wait() as output_block:
-                ttl.copy(output_block, third_output[node_y, 0]).wait()
+        @ttl.datamovement()
+        def dm_write():
+            node_x, node_y = ttl.node(dims=2)
+            if node_x == 0:
+                with first_dfb.wait() as output_block:
+                    ttl.copy(output_block, first_output[node_y, 0]).wait()
+            elif node_x == 1:
+                with second_dfb.wait() as output_block:
+                    ttl.copy(output_block, second_output[node_y, 0]).wait()
+            else:
+                with third_dfb.wait() as output_block:
+                    ttl.copy(output_block, third_output[node_y, 0]).wait()
 
 
 @ttl.operation(grid=(3, 1))
@@ -267,23 +267,23 @@ def elif_gap_store_fanout_kernel(input_tensor, first_output, third_output):
                 with third_dfb.wait() as _output_block:
                     pass
 
-        return
+    else:
 
-    @ttl.datamovement()
-    def dm_read():
-        node_x, node_y = ttl.node(dims=2)
-        with input_dfb.reserve() as input_block:
-            ttl.copy(input_tensor[node_y, node_x], input_block).wait()
+        @ttl.datamovement()
+        def dm_read():
+            node_x, node_y = ttl.node(dims=2)
+            with input_dfb.reserve() as input_block:
+                ttl.copy(input_tensor[node_y, node_x], input_block).wait()
 
-    @ttl.datamovement()
-    def dm_write():
-        node_x, node_y = ttl.node(dims=2)
-        if node_x == 0:
-            with first_dfb.wait() as output_block:
-                ttl.copy(output_block, first_output[node_y, 0]).wait()
-        elif node_x == 2:
-            with third_dfb.wait() as output_block:
-                ttl.copy(output_block, third_output[node_y, 0]).wait()
+        @ttl.datamovement()
+        def dm_write():
+            node_x, node_y = ttl.node(dims=2)
+            if node_x == 0:
+                with first_dfb.wait() as output_block:
+                    ttl.copy(output_block, first_output[node_y, 0]).wait()
+            elif node_x == 2:
+                with third_dfb.wait() as output_block:
+                    ttl.copy(output_block, third_output[node_y, 0]).wait()
 
 
 @ttl.operation(grid=(3, 1))
@@ -334,27 +334,27 @@ def nested_if_store_fanout_kernel(
                 with third_dfb.wait() as _output_block:
                     pass
 
-        return
+    else:
 
-    @ttl.datamovement()
-    def dm_read():
-        node_x, node_y = ttl.node(dims=2)
-        with input_dfb.reserve() as input_block:
-            ttl.copy(input_tensor[node_y, node_x], input_block).wait()
+        @ttl.datamovement()
+        def dm_read():
+            node_x, node_y = ttl.node(dims=2)
+            with input_dfb.reserve() as input_block:
+                ttl.copy(input_tensor[node_y, node_x], input_block).wait()
 
-    @ttl.datamovement()
-    def dm_write():
-        node_x, node_y = ttl.node(dims=2)
-        if node_x < 2:
-            if node_x == 0:
-                with first_dfb.wait() as output_block:
-                    ttl.copy(output_block, first_output[node_y, 0]).wait()
+        @ttl.datamovement()
+        def dm_write():
+            node_x, node_y = ttl.node(dims=2)
+            if node_x < 2:
+                if node_x == 0:
+                    with first_dfb.wait() as output_block:
+                        ttl.copy(output_block, first_output[node_y, 0]).wait()
+                else:
+                    with second_dfb.wait() as output_block:
+                        ttl.copy(output_block, second_output[node_y, 0]).wait()
             else:
-                with second_dfb.wait() as output_block:
-                    ttl.copy(output_block, second_output[node_y, 0]).wait()
-        else:
-            with third_dfb.wait() as output_block:
-                ttl.copy(output_block, third_output[node_y, 0]).wait()
+                with third_dfb.wait() as output_block:
+                    ttl.copy(output_block, third_output[node_y, 0]).wait()
 
 
 @ttl.operation(grid=(3, 1))
@@ -403,26 +403,26 @@ def sibling_if_store_fanout_kernel(
                 with third_dfb.wait() as _output_block:
                     pass
 
-        return
+    else:
 
-    @ttl.datamovement()
-    def dm_read():
-        node_x, node_y = ttl.node(dims=2)
-        with input_dfb.reserve() as input_block:
-            ttl.copy(input_tensor[node_y, node_x], input_block).wait()
+        @ttl.datamovement()
+        def dm_read():
+            node_x, node_y = ttl.node(dims=2)
+            with input_dfb.reserve() as input_block:
+                ttl.copy(input_tensor[node_y, node_x], input_block).wait()
 
-    @ttl.datamovement()
-    def dm_write():
-        node_x, node_y = ttl.node(dims=2)
-        if node_x == 0:
-            with first_dfb.wait() as output_block:
-                ttl.copy(output_block, first_output[node_y, 0]).wait()
-        if node_x == 1:
-            with second_dfb.wait() as output_block:
-                ttl.copy(output_block, second_output[node_y, 0]).wait()
-        if node_x == 2:
-            with third_dfb.wait() as output_block:
-                ttl.copy(output_block, third_output[node_y, 0]).wait()
+        @ttl.datamovement()
+        def dm_write():
+            node_x, node_y = ttl.node(dims=2)
+            if node_x == 0:
+                with first_dfb.wait() as output_block:
+                    ttl.copy(output_block, first_output[node_y, 0]).wait()
+            if node_x == 1:
+                with second_dfb.wait() as output_block:
+                    ttl.copy(output_block, second_output[node_y, 0]).wait()
+            if node_x == 2:
+                with third_dfb.wait() as output_block:
+                    ttl.copy(output_block, third_output[node_y, 0]).wait()
 
 
 @ttl.operation(grid=(3, 1))
@@ -474,27 +474,27 @@ def nested_def_store_fanout_kernel(
                 with third_dfb.wait() as _output_block:
                     pass
 
-        return
+    else:
 
-    @ttl.datamovement()
-    def dm_read():
-        node_x, node_y = ttl.node(dims=2)
-        with input_dfb.reserve() as input_block:
-            ttl.copy(input_tensor[node_y, node_x], input_block).wait()
+        @ttl.datamovement()
+        def dm_read():
+            node_x, node_y = ttl.node(dims=2)
+            with input_dfb.reserve() as input_block:
+                ttl.copy(input_tensor[node_y, node_x], input_block).wait()
 
-    @ttl.datamovement()
-    def dm_write():
-        node_x, node_y = ttl.node(dims=2)
-        if node_x < 2:
-            if node_x == 0:
-                with first_dfb.wait() as output_block:
-                    ttl.copy(output_block, first_output[node_y, 0]).wait()
+        @ttl.datamovement()
+        def dm_write():
+            node_x, node_y = ttl.node(dims=2)
+            if node_x < 2:
+                if node_x == 0:
+                    with first_dfb.wait() as output_block:
+                        ttl.copy(output_block, first_output[node_y, 0]).wait()
+                else:
+                    with second_dfb.wait() as output_block:
+                        ttl.copy(output_block, second_output[node_y, 0]).wait()
             else:
-                with second_dfb.wait() as output_block:
-                    ttl.copy(output_block, second_output[node_y, 0]).wait()
-        else:
-            with third_dfb.wait() as output_block:
-                ttl.copy(output_block, third_output[node_y, 0]).wait()
+                with third_dfb.wait() as output_block:
+                    ttl.copy(output_block, third_output[node_y, 0]).wait()
 
 
 @ttl.operation(grid=(2, 1))
@@ -536,24 +536,24 @@ def loop_wrapped_store_fanout_kernel(input_tensor, first_output, second_output):
                     with second_dfb.wait() as _output_block:
                         pass
 
-        return
+    else:
 
-    @ttl.datamovement()
-    def dm_read():
-        node_x, node_y = ttl.node(dims=2)
-        with input_dfb.reserve() as input_block:
-            ttl.copy(input_tensor[node_y, node_x], input_block).wait()
+        @ttl.datamovement()
+        def dm_read():
+            node_x, node_y = ttl.node(dims=2)
+            with input_dfb.reserve() as input_block:
+                ttl.copy(input_tensor[node_y, node_x], input_block).wait()
 
-    @ttl.datamovement()
-    def dm_write():
-        node_x, node_y = ttl.node(dims=2)
-        for _iteration in range(2):
-            if node_x == 0:
-                with first_dfb.wait() as output_block:
-                    ttl.copy(output_block, first_output[node_y, 0]).wait()
-            else:
-                with second_dfb.wait() as output_block:
-                    ttl.copy(output_block, second_output[node_y, 0]).wait()
+        @ttl.datamovement()
+        def dm_write():
+            node_x, node_y = ttl.node(dims=2)
+            for _iteration in range(2):
+                if node_x == 0:
+                    with first_dfb.wait() as output_block:
+                        ttl.copy(output_block, first_output[node_y, 0]).wait()
+                else:
+                    with second_dfb.wait() as output_block:
+                        ttl.copy(output_block, second_output[node_y, 0]).wait()
 
 
 @ttl.operation(grid=(2, 1))
@@ -602,26 +602,26 @@ def external_use_store_fanout_kernel(
             with side_dfb.wait() as _output_block:
                 pass
 
-        return
+    else:
 
-    @ttl.datamovement()
-    def dm_read():
-        node_x, node_y = ttl.node(dims=2)
-        with input_dfb.reserve() as input_block:
-            ttl.copy(input_tensor[node_y, node_x], input_block).wait()
+        @ttl.datamovement()
+        def dm_read():
+            node_x, node_y = ttl.node(dims=2)
+            with input_dfb.reserve() as input_block:
+                ttl.copy(input_tensor[node_y, node_x], input_block).wait()
 
-    @ttl.datamovement()
-    def dm_write():
-        node_x, node_y = ttl.node(dims=2)
-        if node_x == 0:
-            with first_dfb.wait() as output_block:
-                ttl.copy(output_block, first_output[node_y, 0]).wait()
-        else:
-            with second_dfb.wait() as output_block:
-                ttl.copy(output_block, second_output[node_y, 0]).wait()
+        @ttl.datamovement()
+        def dm_write():
+            node_x, node_y = ttl.node(dims=2)
+            if node_x == 0:
+                with first_dfb.wait() as output_block:
+                    ttl.copy(output_block, first_output[node_y, 0]).wait()
+            else:
+                with second_dfb.wait() as output_block:
+                    ttl.copy(output_block, second_output[node_y, 0]).wait()
 
-        with side_dfb.wait() as output_block:
-            ttl.copy(output_block, side_output[node_y, node_x]).wait()
+            with side_dfb.wait() as output_block:
+                ttl.copy(output_block, side_output[node_y, node_x]).wait()
 
 
 @ttl.operation(grid=(2, 1))
@@ -661,22 +661,22 @@ def parent_and_branch_store_fanout_kernel(input_tensor, always_output, branch_ou
                 with branch_dfb.wait() as _output_block:
                     pass
 
-        return
+    else:
 
-    @ttl.datamovement()
-    def dm_read():
-        node_x, node_y = ttl.node(dims=2)
-        with input_dfb.reserve() as input_block:
-            ttl.copy(input_tensor[node_y, node_x], input_block).wait()
+        @ttl.datamovement()
+        def dm_read():
+            node_x, node_y = ttl.node(dims=2)
+            with input_dfb.reserve() as input_block:
+                ttl.copy(input_tensor[node_y, node_x], input_block).wait()
 
-    @ttl.datamovement()
-    def dm_write():
-        node_x, node_y = ttl.node(dims=2)
-        with always_dfb.wait() as output_block:
-            ttl.copy(output_block, always_output[node_y, node_x]).wait()
-        if node_x == 0:
-            with branch_dfb.wait() as output_block:
-                ttl.copy(output_block, branch_output[node_y, 0]).wait()
+        @ttl.datamovement()
+        def dm_write():
+            node_x, node_y = ttl.node(dims=2)
+            with always_dfb.wait() as output_block:
+                ttl.copy(output_block, always_output[node_y, node_x]).wait()
+            if node_x == 0:
+                with branch_dfb.wait() as output_block:
+                    ttl.copy(output_block, branch_output[node_y, 0]).wait()
 
 
 @ttl.operation(grid=(2, 1))
@@ -715,23 +715,23 @@ def attached_input_store_fanout_kernel(input_tensor, first_output, second_output
                 with second_dfb.wait() as _output_block:
                     pass
 
-        return
+    else:
 
-    @ttl.datamovement()
-    def dm_read():
-        node_x, node_y = ttl.node(dims=2)
-        with input_dfb.reserve() as input_block:
-            ttl.copy(input_tensor[node_y, node_x], input_block).wait()
+        @ttl.datamovement()
+        def dm_read():
+            node_x, node_y = ttl.node(dims=2)
+            with input_dfb.reserve() as input_block:
+                ttl.copy(input_tensor[node_y, node_x], input_block).wait()
 
-    @ttl.datamovement()
-    def dm_write():
-        node_x, node_y = ttl.node(dims=2)
-        if node_x == 0:
-            with first_dfb.wait() as output_block:
-                ttl.copy(output_block, first_output[node_y, 0]).wait()
-        else:
-            with second_dfb.wait() as output_block:
-                ttl.copy(output_block, second_output[node_y, 0]).wait()
+        @ttl.datamovement()
+        def dm_write():
+            node_x, node_y = ttl.node(dims=2)
+            if node_x == 0:
+                with first_dfb.wait() as output_block:
+                    ttl.copy(output_block, first_output[node_y, 0]).wait()
+            else:
+                with second_dfb.wait() as output_block:
+                    ttl.copy(output_block, second_output[node_y, 0]).wait()
 
 
 CONTROL_FLOW_CASES = [

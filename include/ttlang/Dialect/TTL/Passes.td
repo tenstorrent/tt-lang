@@ -229,7 +229,7 @@ def TTLAnnotateL1AccLoops
 
 def TTLInsertIntermediateDFBs
     : Pass<"ttl-insert-intermediate-dfbs", "::mlir::func::FuncOp"> {
-  let summary = "Resolve DFB attachment and cross-block store fanout";
+  let summary = "Resolve DFB attachment and values stored from multiple blocks";
   let description = [{
     Walks ops implementing `DFBInputOpInterface` and checks whether the
     operands they declare as requiring DFB-attached values are satisfied.
@@ -239,7 +239,7 @@ def TTLInsertIntermediateDFBs
     occupy at least two distinct blocks, which is the condition that can make
     `convert-ttl-to-compute` compare operation order across blocks.
 
-    The pass classifies cross-block store fanout before mutating IR.
+    The pass classifies values stored from multiple blocks before mutating IR.
     Clone-supported backward slices are relocated into store blocks only when
     upstream `mlir::insideMutuallyExclusiveRegions` proves every pair of store
     block representatives mutually exclusive, every external use of the slice
@@ -248,7 +248,7 @@ def TTLInsertIntermediateDFBs
     trees, but rejects sibling `scf.if` operations that may both execute. The
     clone rewrite keeps output DFB reserve/store/push operations conditional
     and avoids an intermediate L1 round trip in the exclusive if/else case.
-    Other cross-block store fanout, and ordinary `DFBInputOpInterface`
+    Other values stored from multiple blocks, and ordinary `DFBInputOpInterface`
     operands that require storage, are materialized with a compiler-allocated
     DFB:
 
@@ -270,10 +270,10 @@ def TTLInsertIntermediateDFBs
     that `ttl-finalize-dfb-indices` can register them for the Python
     runtime.
 
-    When `enable` is false, cloneable cross-block store fanout is still
+    When `enable` is false, cloneable stores from multiple blocks are still
     rewritten because it does not allocate a compiler DFB. If any
     `DFBInputOpInterface` op has a non-DFB-attached operand, or if
-    non-cloneable cross-block store fanout requires DFB materialization,
+    non-cloneable stores from multiple blocks require DFB materialization,
     the pass emits an error diagnostic and signals failure.
   }];
 

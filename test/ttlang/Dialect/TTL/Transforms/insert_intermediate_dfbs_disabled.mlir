@@ -7,8 +7,8 @@
 
 // -----
 
-// Cheap cross-block store fanout is rematerialized and does not require a
-// compiler-managed DFB.
+// Cheap values stored from multiple blocks are rematerialized and do not
+// require a compiler-managed DFB.
 
 func.func @cheap_if_else_store_fanout_disabled(%cond: i1)
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {

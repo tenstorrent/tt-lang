@@ -6,19 +6,18 @@
 // TTL Insert Intermediate DFBs
 //===----------------------------------------------------------------------===//
 //
-// Resolves DFB attachment and cross-block store fanout before
+// Resolves DFB attachment and values stored from multiple blocks before
 // convert-ttl-to-compute. Cloneable backward slices feeding mutually exclusive
 // cross-block stores are relocated into those store blocks. Values whose
-// consumers require DFB-attached inputs, or whose store fanout cannot be proven
-// exclusive, are materialized through compiler-allocated intermediate dataflow
-// buffers.
+// consumers require DFB-attached inputs, or whose stores cannot be proven
+// mutually exclusive, are materialized through compiler-allocated intermediate
+// dataflow buffers.
 //
 //===----------------------------------------------------------------------===//
 
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
-#include "ttlang/Dialect/TTL/Transforms/ControlFlowUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/DFBMaterialization.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -26,6 +25,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -137,7 +137,18 @@ static bool areStoreBlocksPairwiseExclusive(ArrayRef<StoreOp> stores) {
   for (StoreBlockGroup &group : groupStoresByBlock(stores)) {
     representatives.push_back(group.stores.front().getOperation());
   }
-  return arePairwiseInsideMutuallyExclusiveRegions(representatives);
+  // TODO(#685): Add predicate-based proof for analyzable sibling `scf.if`
+  // chains that upstream structural region analysis cannot prove.
+  for (unsigned lhsIndex = 0; lhsIndex < representatives.size(); ++lhsIndex) {
+    for (unsigned rhsIndex = lhsIndex + 1; rhsIndex < representatives.size();
+         ++rhsIndex) {
+      if (!mlir::insideMutuallyExclusiveRegions(representatives[lhsIndex],
+                                                representatives[rhsIndex])) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 static bool sliceExternalUsesAreStores(Value value,
@@ -378,13 +389,11 @@ static Value getOrCreateMaterializedDFB(Value value, ModuleOp moduleOp,
 }
 
 // A tensor block argument -- today only an `scf.for` iter_arg -- stored from
-// multiple blocks is cross-block store fanout with no producer slice to clone
-// and no defining op to materialize, so this pass cannot normalize it. The
-// frontend does not yet emit loop-carried tensor recurrence (#540); emit an
-// actionable error instead of leaving the stores for convert-ttl-to-compute to
-// drop silently.
-static LogicalResult
-diagnoseUnsupportedBlockArgStoreFanout(func::FuncOp funcOp) {
+// multiple blocks has no producer slice to clone and no defining op to
+// materialize, so this pass cannot normalize it. The frontend does not yet emit
+// loop-carried tensor recurrence (#540); emit an actionable error instead of
+// leaving the stores for convert-ttl-to-compute to drop silently.
+static LogicalResult diagnoseUnsupportedBlockArgStores(func::FuncOp funcOp) {
   WalkResult walk = funcOp.walk([](Block *block) {
     for (BlockArgument arg : block->getArguments()) {
       if (!isa<RankedTensorType>(arg.getType()) || getAttachedCB(arg) ||
@@ -415,7 +424,7 @@ struct TTLInsertIntermediateDFBsPass
       return;
     }
 
-    if (failed(diagnoseUnsupportedBlockArgStoreFanout(funcOp))) {
+    if (failed(diagnoseUnsupportedBlockArgStores(funcOp))) {
       signalPassFailure();
       return;
     }

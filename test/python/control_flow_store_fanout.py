@@ -4,7 +4,7 @@
 
 # RUN: env TTLANG_COMPILE_ONLY=1 %python %s | FileCheck %s
 
-"""Compile-only frontend coverage for control-flow store fanout."""
+"""Import-only frontend coverage for control-flow stored-value kernels."""
 
 import os
 import sys
@@ -15,25 +15,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from Inputs.control_flow_store_fanout_kernels import (  # noqa: E402
     CONTROL_FLOW_CASES,
-    host_tensor,
 )
 
-for case_name, kernel, grid_width, output_count in CONTROL_FLOW_CASES:
-    input_tensor = host_tensor((32, grid_width * 32))
-    output_tensors = [host_tensor((32, 32)) for _output_index in range(output_count)]
+for case_name, _kernel, _grid_width, _output_count in CONTROL_FLOW_CASES:
+    print(f"DEFINED {case_name}")
 
-    kernel(input_tensor, *output_tensors)
-    print(f"COMPILED {case_name}")
-
-# CHECK: COMPILED then_only
-# CHECK: COMPILED else_only
-# CHECK: COMPILED if_else
-# CHECK: COMPILED elif_chain
-# CHECK: COMPILED elif_gap
-# CHECK: COMPILED nested_if
-# CHECK: COMPILED sibling_ifs
-# CHECK: COMPILED nested_def
-# CHECK: COMPILED loop_wrapped
-# CHECK: COMPILED external_use
-# CHECK: COMPILED parent_and_branch
-# CHECK: COMPILED attached_input
+# CHECK: DEFINED then_only
+# CHECK: DEFINED else_only
+# CHECK: DEFINED if_else
+# CHECK: DEFINED elif_chain
+# CHECK: DEFINED elif_gap
+# CHECK: DEFINED nested_if
+# CHECK: DEFINED sibling_ifs
+# CHECK: DEFINED nested_def
+# CHECK: DEFINED loop_wrapped
+# CHECK: DEFINED external_use
+# CHECK: DEFINED parent_and_branch
+# CHECK: DEFINED attached_input
