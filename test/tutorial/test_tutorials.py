@@ -14,9 +14,9 @@ that worker's pinned chip during the per-chip parallel phase.
 
 Scheduling reuses .github/scripts/run-hardware-pytests.sh. Single-device
 tutorials run sharded across chips; tutorials that open a device mesh carry the
-multi_device marker and run serially with every chip visible. Classification
-comes from the same "# TTLANG_TUTORIAL_CI:" file tags that
-.github/scripts/run-tutorials.sh reads, keeping the two runners consistent.
+multi_device marker and run serially. Classification comes from the same
+"# TTLANG_TUTORIAL_CI:" file tags that .github/scripts/run-tutorials.sh reads,
+keeping the two runners consistent.
 """
 
 import os
@@ -48,10 +48,10 @@ PYTEST_TIMEOUT_BACKSTOP_SECONDS = (
     SUBPROCESS_TIMEOUT_SECONDS + SIGTERM_GRACE_SECONDS + 60
 )
 
-# step_7's all_reduce over a Galaxy-scale mesh hangs on a known upstream fabric
+# step_7's all_reduce over a full Galaxy mesh hangs on a known upstream fabric
 # bug (tt-lang#585, tt-metal#43749 / #41794); the killed process leaves the
 # board's ethernet dispatch firmware wedged. It sorts last within its directory,
-# so nothing runs after it in the serial phase, and it is xfailed on Galaxy.
+# so nothing runs after it in the serial phase.
 ALL_REDUCE_TUTORIAL = "step_7_multidevice_shard_k_all_reduce.py"
 
 
@@ -76,6 +76,28 @@ def _host_chip_count() -> int:
 def _on_galaxy() -> bool:
     """True on a Galaxy runner, detected from the CI-provided RUNS_ON label."""
     return "galaxy" in os.environ.get("RUNS_ON", "").lower()
+
+
+def _visible_chip_count() -> int:
+    """Number of chips visible to the tutorial subprocess."""
+    visible_devices = os.environ.get("TT_VISIBLE_DEVICES")
+    if visible_devices is None:
+        return _host_chip_count()
+    if not visible_devices.strip():
+        return 0
+    return sum(
+        1 for visible_device in visible_devices.split(",") if visible_device.strip()
+    )
+
+
+def _uses_full_galaxy_mesh() -> bool:
+    """True when the full Galaxy host is visible to a mesh tutorial."""
+    host_chip_count = _host_chip_count()
+    return (
+        _on_galaxy()
+        and host_chip_count >= 32
+        and _visible_chip_count() >= host_chip_count
+    )
 
 
 def _ci_tags(script: Path) -> set:
@@ -111,13 +133,13 @@ def _tutorial_param(script: Path) -> "pytest.ParameterSet":
         marks.append(
             pytest.mark.skipif(_host_chip_count() < 2, reason="requires >= 2 devices")
         )
-    if script.name == ALL_REDUCE_TUTORIAL and _on_galaxy():
+    if script.name == ALL_REDUCE_TUTORIAL and _uses_full_galaxy_mesh():
         marks.append(
             pytest.mark.xfail(
                 reason=(
-                    "Galaxy all_reduce/reduce_scatter fabric hang: tt-lang#585, "
-                    "tt-metal#43749 / #41794; the killed run wedges ethernet "
-                    "dispatch firmware"
+                    "Full-Galaxy all_reduce/reduce_scatter fabric hang: "
+                    "tt-lang#585, tt-metal#43749 / #41794; the killed run "
+                    "wedges ethernet dispatch firmware"
                 ),
                 strict=True,
             )
