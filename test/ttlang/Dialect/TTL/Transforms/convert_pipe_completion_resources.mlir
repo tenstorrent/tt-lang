@@ -358,10 +358,10 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 // CHECK: %[[READY1_PTR:.*]] = ttkernel.reinterpret_cast(%[[READY1_SEND]])
 // CHECK: ttkernel.experimental.semaphore_wait(%[[READY1_PTR]]
 // CHECK: ttkernel.noc_semaphore_set(%[[READY1_PTR]]
-// CHECK-DAG: ttkernel.noc_async_write
 // CHECK-DAG: %[[GLOBAL_COMPLETION_SEND:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_COMPLETION_INDEX]])
+// CHECK-DAG: %[[GLOBAL_COMPLETION_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[GLOBAL_COMPLETION_SEND]], {{.*}})
+// CHECK: ttkernel.noc_async_write
 // CHECK: ttkernel.noc_async_write_barrier
-// CHECK: %[[GLOBAL_COMPLETION_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[GLOBAL_COMPLETION_SEND]], {{.*}})
 // CHECK: ttkernel.noc_semaphore_inc(%[[GLOBAL_COMPLETION_NOC]]
 // CHECK: return
 // The computed-address configuration also proves capacity synchronization for
@@ -371,12 +371,12 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 // CAPACITY: %[[CAPACITY_ADDRESS:.*]] = ttkernel.get_common_arg_val(%[[CAPACITY_ARG_INDEX:.*]])
 // CAPACITY: %[[CAPACITY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[CAPACITY_ADDRESS]])
 // CAPACITY: ttkernel.noc_semaphore_set(%[[CAPACITY_PTR]]
+// CAPACITY-DAG: %[[RELEASE_ADDRESS:.*]] = ttkernel.get_common_arg_val(%[[CAPACITY_ARG_INDEX]])
+// CAPACITY-DAG: %[[RELEASE_NOC_ADDRESS:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[RELEASE_ADDRESS]], {{.*}})
 // CAPACITY: ttkernel.cb_pop_front
-// CAPACITY: %[[RELEASE_ADDRESS:.*]] = ttkernel.get_common_arg_val(%[[CAPACITY_ARG_INDEX]])
-// CAPACITY: %[[RELEASE_NOC_ADDRESS:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[RELEASE_ADDRESS]], {{.*}})
 // CAPACITY: ttkernel.noc_semaphore_inc(%[[RELEASE_NOC_ADDRESS]]
-// CAPACITY: %[[ACQUIRE_ADDRESS:.*]] = ttkernel.get_common_arg_val(%[[CAPACITY_ARG_INDEX]])
-// CAPACITY: %[[ACQUIRE_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[ACQUIRE_ADDRESS]])
+// CAPACITY-DAG: %[[ACQUIRE_ADDRESS:.*]] = ttkernel.get_common_arg_val(%[[CAPACITY_ARG_INDEX]])
+// CAPACITY-DAG: %[[ACQUIRE_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[ACQUIRE_ADDRESS]])
 // CAPACITY: ttkernel.experimental.semaphore_wait_min(%[[ACQUIRE_PTR]]
 module attributes {ttl.launch_grid = array<i64: 17, 1>} {
   func.func @completion_overflow_uses_global_counter()
