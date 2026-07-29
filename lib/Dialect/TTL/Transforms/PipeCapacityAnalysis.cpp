@@ -11,6 +11,7 @@
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Casting.h"
@@ -18,6 +19,7 @@
 
 #include <cstddef>
 #include <optional>
+#include <string>
 
 #define DEBUG_TYPE "ttl-pipe-capacity-analysis"
 
@@ -49,6 +51,14 @@ bool PipeCapacityPlan::usesCapacityProtocol(PipeTransferSendOp op) const {
 
 bool PipeCapacityPlan::usesCapacityProtocol(PipeTransferPostOp op) const {
   return capacityTransferOps.contains(op.getOperation());
+}
+
+bool PipeCapacityPlan::hasSameSelectedTransfers(
+    const PipeCapacityPlan &other) const {
+  return capacityTransferOps.size() == other.capacityTransferOps.size() &&
+         llvm::all_of(capacityTransferOps, [&](Operation *op) {
+           return other.capacityTransferOps.contains(op);
+         });
 }
 
 void PipeCapacityPlan::addAcquire(PipeTransferSendOp op,
@@ -108,8 +118,16 @@ struct PipeCapacityEndpoint {
 /// Operations that consume and release one endpoint's capacity units.
 struct PipeCapacityEndpointFacts {
   PipeCapacityEndpoint endpoint;
-  SmallVector<PipeTransferSendOp> sends;
+  PipeTransferSendOp send;
   SmallVector<CBPopOp> pops;
+};
+
+/// Capacity counters may share storage across source cores only when the
+/// unconditional sender-function initialization writes the same value.
+struct PipeCapacityCounterColor {
+  int64_t initialCapacity = 0;
+  SmallVector<PipeCapacityReleaseTarget> sourceNodes;
+  PipeCounterInfo counter;
 };
 
 static void printPipe(llvm::raw_ostream &os, const PipeKey &pipe) {
@@ -153,11 +171,11 @@ static void debugRejectEndpoint(const PipeCapacityEndpoint &endpoint,
 }
 
 static void debugAcceptEndpoint(const PipeCapacityEndpoint &endpoint,
-                                int64_t sendCount, int64_t popCount) {
+                                int64_t popCount) {
   LLVM_DEBUG({
     llvm::dbgs() << "PipeCapacity: accept ";
     printEndpoint(llvm::dbgs(), endpoint);
-    llvm::dbgs() << ": sends=" << sendCount << " pops=" << popCount << "\n";
+    llvm::dbgs() << ": sends=1 pops=" << popCount << "\n";
   });
 }
 
@@ -180,14 +198,6 @@ static bool isReceiverDFBView(Value view,
   return maybeDFBIndex && *maybeDFBIndex == receiverDFB.dfbIndex;
 }
 
-static bool isMatchingTransfer(const PipeCapacityEndpoint &endpoint,
-                               Operation *protocolOp,
-                               const PipeGraph &pipeGraph) {
-  const PipeTransferNode *transferNode =
-      pipeGraph.getPipeTransferNodeForProtocolOp(protocolOp);
-  return transferNode && transferNode->id == endpoint.transferNode->id;
-}
-
 static PipeCapacityEndpoint
 getCapacityEndpoint(const PipeGraph &pipeGraph,
                     const PipeReceiverEndpoint &receiverEndpoint) {
@@ -204,95 +214,82 @@ getCapacityEndpoint(const PipeGraph &pipeGraph,
   };
 }
 
-static bool collectAndCheckPosts(ModuleOp mod,
-                                 const PipeCapacityEndpoint &endpoint,
-                                 const PipeGraph &pipeGraph) {
+static bool checkPosts(const PipeCapacityEndpoint &endpoint,
+                       const PipeGraph &pipeGraph) {
   LaunchNodeDomain receiverDomain = getSingleLaunchNodeDomain(
       {endpoint.receiverDFB.receiver.x, endpoint.receiverDFB.receiver.y});
-  // Posts establish endpoint validity but carry no facts needed by the caller.
-  SmallVector<PipeTransferPostOp> posts;
+  bool sawPost = false;
   bool valid = true;
-  mod.walk([&](PipeTransferPostOp postOp) {
-    if (!isMatchingTransfer(endpoint, postOp.getOperation(), pipeGraph)) {
-      return;
-    }
+  for (Operation *postOperation : endpoint.transferNode->receiverPostOps) {
+    auto postOp = llvm::cast<PipeTransferPostOp>(postOperation);
     LaunchNodeDomain postDomain =
         pipeGraph.getOperationLaunchDomain(postOp.getOperation());
     if (!launchNodeDomainsOverlap(postDomain, receiverDomain)) {
-      return;
+      continue;
     }
-    if (!(postDomain == receiverDomain) || !isNocKernelThread(postOp)) {
+    if (!isExactlyDomain(postOp, receiverDomain, pipeGraph) ||
+        !isNocKernelThread(postOp)) {
       debugRejectEndpoint(endpoint, "post is not in the receiver NOC domain");
       valid = false;
-      return;
+      continue;
     }
     if (!isReceiverDFBView(postOp.getDst(), endpoint.receiverDFB)) {
       debugRejectEndpoint(endpoint, "post destination is not the receiver DFB");
       valid = false;
-      return;
+      continue;
     }
-    posts.push_back(postOp);
-  });
-  if (valid && posts.empty()) {
+    sawPost = true;
+  }
+  if (valid && !sawPost) {
     debugRejectEndpoint(endpoint, "no matching receiver posts");
     valid = false;
   }
   return valid;
 }
 
-static bool collectAndCheckSends(ModuleOp mod,
-                                 const PipeCapacityEndpoint &endpoint,
-                                 const PipeGraph &pipeGraph,
-                                 SmallVectorImpl<PipeTransferSendOp> &sends) {
+static FailureOr<PipeTransferSendOp>
+checkSend(const PipeCapacityEndpoint &endpoint, const PipeGraph &pipeGraph) {
   const PipeCapacityReleaseTarget &target = endpoint.releaseTarget;
   LaunchNodeDomain sourceDomain =
       getSingleLaunchNodeDomain({target.logicalX, target.logicalY});
-  bool valid = true;
-  mod.walk([&](PipeTransferSendOp sendOp) {
-    if (!isMatchingTransfer(endpoint, sendOp.getOperation(), pipeGraph)) {
-      return;
-    }
-    if (!isExactlyDomain(sendOp, sourceDomain, pipeGraph) ||
-        !isNocKernelThread(sendOp)) {
-      debugRejectEndpoint(endpoint, "send is not in the sender NOC domain");
-      valid = false;
-      return;
-    }
-    sends.push_back(sendOp);
-  });
-  if (valid && sends.empty()) {
+  auto sendOp =
+      llvm::dyn_cast<PipeTransferSendOp>(endpoint.transferNode->sendOp);
+  if (!sendOp) {
     debugRejectEndpoint(endpoint, "no matching sends");
-    valid = false;
+    return failure();
   }
-  return valid;
+  if (!isExactlyDomain(sendOp, sourceDomain, pipeGraph) ||
+      !isNocKernelThread(sendOp)) {
+    debugRejectEndpoint(endpoint, "send is not in the sender NOC domain");
+    return failure();
+  }
+  return sendOp;
 }
 
-static bool collectAndCheckPops(ModuleOp mod,
+static bool collectAndCheckPops(ArrayRef<CBPopOp> candidatePops,
                                 const PipeCapacityEndpoint &endpoint,
                                 const PipeGraph &pipeGraph,
                                 SmallVectorImpl<CBPopOp> &pops) {
   LaunchNodeDomain receiverDomain = getSingleLaunchNodeDomain(
       {endpoint.receiverDFB.receiver.x, endpoint.receiverDFB.receiver.y});
   bool valid = true;
-  mod.walk([&](CBPopOp popOp) {
-    if (!isReceiverDFB(popOp.getCb(), endpoint.receiverDFB)) {
-      return;
-    }
+  for (CBPopOp popOp : candidatePops) {
     LaunchNodeDomain popDomain =
         pipeGraph.getOperationLaunchDomain(popOp.getOperation());
     if (!launchNodeDomainsOverlap(popDomain, receiverDomain)) {
-      return;
+      continue;
     }
-    if (!(popDomain == receiverDomain) || !isNocKernelThread(popOp)) {
+    if (!isExactlyDomain(popOp, receiverDomain, pipeGraph) ||
+        !isNocKernelThread(popOp)) {
       debugRejectEndpoint(endpoint, "pop is not in the receiver NOC domain");
       valid = false;
-      return;
+      continue;
     }
     std::optional<int64_t> maybeReleasedBlocks = getReleasedBlockCount(popOp);
     if (!maybeReleasedBlocks || *maybeReleasedBlocks != 1) {
       debugRejectEndpoint(endpoint, "pop does not release one DFB block");
       valid = false;
-      return;
+      continue;
     }
     const DFBReleaseOwnerMaps &owners = pipeGraph.getDFBReleaseOwnerMaps();
     auto waitOp = lookupOwner<CBWaitOp>(owners.waitByPop, popOp.getOperation());
@@ -300,24 +297,25 @@ static bool collectAndCheckPops(ModuleOp mod,
       debugRejectEndpoint(endpoint,
                           "pop is not owned by a matching receiver wait");
       valid = false;
-      return;
+      continue;
     }
     LaunchNodeDomain waitDomain =
         pipeGraph.getOperationLaunchDomain(waitOp.getOperation());
-    if (!(waitDomain == receiverDomain) || !isNocKernelThread(waitOp)) {
+    if (!isExactlyDomain(waitOp, receiverDomain, pipeGraph) ||
+        !isNocKernelThread(waitOp)) {
       debugRejectEndpoint(endpoint, "wait is not in the receiver NOC domain");
       valid = false;
-      return;
+      continue;
     }
     std::optional<int64_t> maybeWaitedBlocks = getWaitedBlockCount(waitOp);
     if (!maybeWaitedBlocks || *maybeWaitedBlocks != *maybeReleasedBlocks) {
       debugRejectEndpoint(endpoint,
                           "wait and pop release different DFB block counts");
       valid = false;
-      return;
+      continue;
     }
     pops.push_back(popOp);
-  });
+  }
   if (valid && pops.empty()) {
     debugRejectEndpoint(endpoint, "no matching receiver pops");
     valid = false;
@@ -329,16 +327,41 @@ static void recordEndpointCapacityFacts(const PipeCapacityEndpointFacts &facts,
                                         PipeCounterInfo capacityCounter,
                                         PipeCapacityPlan &plan) {
   const PipeCapacityEndpoint &endpoint = facts.endpoint;
-  for (PipeTransferSendOp sendOp : facts.sends) {
-    plan.addAcquire(sendOp, PipeCapacityAcquireInfo{capacityCounter, 1});
-    plan.addInitialization(
-        sendOp->getParentOfType<FuncOp>(),
-        PipeCapacityInitInfo{capacityCounter, endpoint.initialCapacity});
-  }
+  plan.addAcquire(facts.send, PipeCapacityAcquireInfo{capacityCounter, 1});
+  plan.addInitialization(
+      facts.send->getParentOfType<FuncOp>(),
+      PipeCapacityInitInfo{capacityCounter, endpoint.initialCapacity});
   for (CBPopOp popOp : facts.pops) {
     plan.addRelease(popOp, PipeCapacityReleaseInfo{endpoint.releaseTarget,
                                                    capacityCounter, 1});
   }
+}
+
+static bool containsSourceNode(ArrayRef<PipeCapacityReleaseTarget> sourceNodes,
+                               const PipeCapacityReleaseTarget &sourceNode) {
+  return llvm::any_of(sourceNodes,
+                      [&](const PipeCapacityReleaseTarget &candidate) {
+                        return candidate.logicalX == sourceNode.logicalX &&
+                               candidate.logicalY == sourceNode.logicalY;
+                      });
+}
+
+static PipeCounterInfo allocateCapacityCounter(
+    const PipeCapacityEndpoint &endpoint,
+    SmallVectorImpl<PipeCapacityCounterColor> &counterColors,
+    PipeCapacityPlan &plan) {
+  for (PipeCapacityCounterColor &color : counterColors) {
+    if (color.initialCapacity == endpoint.initialCapacity &&
+        !containsSourceNode(color.sourceNodes, endpoint.releaseTarget)) {
+      color.sourceNodes.push_back(endpoint.releaseTarget);
+      return color.counter;
+    }
+  }
+
+  PipeCounterInfo counter = plan.allocateCounter();
+  counterColors.push_back(PipeCapacityCounterColor{
+      endpoint.initialCapacity, {endpoint.releaseTarget}, counter});
+  return counter;
 }
 
 static bool isCapacityProtocolLowerable(const PipeCapacityEndpoint &endpoint,
@@ -386,6 +409,14 @@ void buildPipeCapacityPlan(ModuleOp mod, const PipeGraph &pipeGraph,
                           << pipeGraph.getPipeReceiverEndpoints().size()
                           << " receiver endpoint(s)\n");
 
+  llvm::DenseMap<int64_t, SmallVector<CBPopOp>> popsByDFBIndex;
+  mod.walk([&](CBPopOp popOp) {
+    std::optional<int64_t> maybeDFBIndex = getCBIndex(popOp.getCb());
+    if (maybeDFBIndex) {
+      popsByDFBIndex[*maybeDFBIndex].push_back(popOp);
+    }
+  });
+
   SmallVector<PipeCapacityEndpointFacts> endpointFacts;
   llvm::DenseMap<PipeReceiverEndpointId, std::size_t> factsIndexByEndpoint;
   for (const PipeReceiverEndpoint &receiverEndpoint :
@@ -408,9 +439,10 @@ void buildPipeCapacityPlan(ModuleOp mod, const PipeGraph &pipeGraph,
     ArrayRef<PipeReceiverEndpointId> writerEndpoints =
         pipeGraph.getReceiverDFBWriterEndpoints(endpoint.receiverDFBNode);
     if (writerEndpoints.size() != 1) {
-      debugRejectEndpoint(endpoint, "receiver DFB has " +
-                                        llvm::Twine(writerEndpoints.size()) +
-                                        " writer endpoint(s)");
+      std::string reason = "receiver DFB has " +
+                           std::to_string(writerEndpoints.size()) +
+                           " writer endpoint(s)";
+      debugRejectEndpoint(endpoint, reason);
       continue;
     }
 
@@ -435,27 +467,32 @@ void buildPipeCapacityPlan(ModuleOp mod, const PipeGraph &pipeGraph,
       continue;
     }
 
-    if (!collectAndCheckPosts(mod, endpoint, pipeGraph)) {
+    if (!checkPosts(endpoint, pipeGraph)) {
       continue;
     }
 
-    SmallVector<PipeTransferSendOp> sends;
-    if (!collectAndCheckSends(mod, endpoint, pipeGraph, sends)) {
+    FailureOr<PipeTransferSendOp> maybeSendOp = checkSend(endpoint, pipeGraph);
+    if (failed(maybeSendOp)) {
       continue;
     }
 
     SmallVector<CBPopOp> pops;
-    if (!collectAndCheckPops(mod, endpoint, pipeGraph, pops)) {
+    auto candidatePopsIt = popsByDFBIndex.find(endpoint.receiverDFB.dfbIndex);
+    ArrayRef<CBPopOp> candidatePops;
+    if (candidatePopsIt != popsByDFBIndex.end()) {
+      candidatePops = candidatePopsIt->second;
+    }
+    if (!collectAndCheckPops(candidatePops, endpoint, pipeGraph, pops)) {
       continue;
     }
 
     factsIndexByEndpoint[endpoint.endpointId] = endpointFacts.size();
     endpointFacts.push_back(
-        PipeCapacityEndpointFacts{endpoint, std::move(sends), std::move(pops)});
-    debugAcceptEndpoint(endpoint, endpointFacts.back().sends.size(),
-                        endpointFacts.back().pops.size());
+        PipeCapacityEndpointFacts{endpoint, *maybeSendOp, std::move(pops)});
+    debugAcceptEndpoint(endpoint, endpointFacts.back().pops.size());
   }
 
+  SmallVector<PipeCapacityCounterColor> counterColors;
   for (const PipeTransferNode &transferNode :
        pipeGraph.getPipeTransferNodes()) {
     bool allEndpointsProven = true;
@@ -482,7 +519,8 @@ void buildPipeCapacityPlan(ModuleOp mod, const PipeGraph &pipeGraph,
       assert(factIt != factsIndexByEndpoint.end() &&
              "proven endpoint is missing capacity facts");
       const PipeCapacityEndpointFacts &facts = endpointFacts[factIt->second];
-      PipeCounterInfo capacityCounter = plan.allocateCounter();
+      PipeCounterInfo capacityCounter =
+          allocateCapacityCounter(facts.endpoint, counterColors, plan);
       recordEndpointCapacityFacts(facts, capacityCounter, plan);
     }
     markCapacityTransfer(transferNode, plan);
