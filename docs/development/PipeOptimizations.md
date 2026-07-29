@@ -179,9 +179,12 @@ loop-invariant index expressions without enumerating specific operation
 classes.
 
 `group-size=0` selects automatically, `group-size=1` disables grouping, and a
-larger value limits `R`. The automatic policy minimizes completion groups,
-then capacity waits, then L1 allocation bytes. Destination depth `K` is the
-largest depth that fits the DFB L1 budget for a selected `R`.
+larger value limits `R`. The Python option `--ttl-pipe-batch-tiles` configures
+the same bound. The automatic policy first prefers a schedule with at least
+two complete receiver groups, then minimizes completion groups, capacity
+waits, and L1 allocation bytes. It selects the minimum legal destination depth
+`K`: two groups for bounded overlap, or a larger depth when required to
+preserve existing receiver storage.
 
 DFB block counts are rounded up to multiples of `R` so a grouped payload never
 wraps within a DFB allocation. This rounding makes allocation size
@@ -224,15 +227,14 @@ were bit-exact:
 
 | Transfers | Computed address total | Computed address per transfer | Published address total | Published address per transfer |
 | ---: | ---: | ---: | ---: | ---: |
-| 8 | 1.276 us | 0.159 us | 1.282 us | 0.160 us |
-| 32 | 2.479 us | 0.077 us | 2.461 us | 0.077 us |
-| 128 | 7.204 us | 0.056 us | 7.213 us | 0.056 us |
+| 8 | 2.111 us | 0.264 us | 2.199 us | 0.275 us |
+| 32 | 3.321 us | 0.104 us | 3.370 us | 0.105 us |
+| 128 | 8.090 us | 0.063 us | 8.236 us | 0.064 us |
 
-The hand-written batched/stateful NoC ceiling is 6.96 us for 128 transfers,
-or 0.054 us per transfer. Grouped PipeTransport lowering is approximately
-3.5 to 3.6 percent above that ceiling at 128 transfers. The scalar C++
-baseline is approximately 0.60 us per transfer, so the implemented lowering
-removes the dominant per-transfer synchronization and command-setup cost.
+For 128 transfers, automatic selection uses `(R=64, K=2)`. The corresponding
+hand-written bounded ring takes 8.342 us. The unconstrained batched/stateful
+NoC ceiling takes 6.96 us, but does not enforce bounded receiver residency.
+The scalar C++ baseline is approximately 0.60 us per transfer.
 
 #### Metal 2.0 DFB integration
 

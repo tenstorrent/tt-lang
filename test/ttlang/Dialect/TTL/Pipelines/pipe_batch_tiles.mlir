@@ -1,0 +1,11 @@
+// Summary: Verify the TTL pipeline propagates its PipeTransport group bound.
+// RUN: ttlang-opt %s --ttl-to-ttkernel-pipeline --dump-pass-pipeline -o /dev/null 2>&1 | FileCheck %s --check-prefix=AUTO
+// RUN: ttlang-opt %s --ttl-to-ttkernel-pipeline='pipe-batch-tiles=4' --dump-pass-pipeline -o /dev/null 2>&1 | FileCheck %s --check-prefix=BOUND
+
+// The default leaves group selection to ttl-form-pipe-transports.
+// AUTO: ttl-form-pipe-transports{group-size=0 l1-budget-override=0}
+
+// A pipeline bound is forwarded to ttl-form-pipe-transports.
+// BOUND: ttl-form-pipe-transports{group-size=4 l1-budget-override=0}
+
+module {}
