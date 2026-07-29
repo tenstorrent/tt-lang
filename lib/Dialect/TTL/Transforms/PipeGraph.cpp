@@ -77,19 +77,17 @@ static LaunchNodeCoord getLaunchNodeCoord(PipeReceiverCoord receiver) {
   return {receiver.x, receiver.y};
 }
 
-static bool isPostForReceiverDFB(
-    PipeTransferPostOp postOp, const PipeReceiverDFBKey &receiverDFB,
-    const llvm::MapVector<Operation *, ReceiverDFBInfo> &receiverDFBByPost,
-    PipeGraphAnalysisState &state) {
-  auto receiverIt = receiverDFBByPost.find(postOp.getOperation());
-  if (receiverIt == receiverDFBByPost.end() ||
-      receiverIt->second.dfbIndex != receiverDFB.dfbIndex) {
-    return false;
+/// Index an operation for each launch node where it accesses `dfbIndex`.
+template <typename OpTy>
+static void indexOperationByReceiverDFB(
+    OpTy op, int64_t dfbIndex, const LaunchNodeDomain &domain,
+    llvm::DenseMap<PipeReceiverDFBKey, SmallVector<OpTy>> &operationsByDFB) {
+  assert(domain.known && "only known launch-node domains can be indexed");
+  for (LaunchNodeCoord coord : domain.nodes) {
+    PipeReceiverDFBKey receiverDFB{PipeReceiverCoord{coord.x, coord.y},
+                                   dfbIndex};
+    operationsByDFB[receiverDFB].push_back(op);
   }
-  LaunchNodeDomain postDomain =
-      lookupOperationLaunchDomain(postOp.getOperation(), state);
-  return knownLaunchNodeDomainContains(
-      postDomain, getLaunchNodeCoord(receiverDFB.receiver));
 }
 
 static SmallVector<PipeTransferPostOp>
@@ -761,18 +759,45 @@ LogicalResult PipeGraph::provePipeOnlyReceiverProducerStreams(
     return failure();
   }
 
+  llvm::DenseMap<PipeReceiverDFBKey, SmallVector<PipeTransferPostOp>>
+      postsByReceiverDFB;
+  for (auto [postOperation, receiverInfo] : receiverDFBByPost) {
+    auto postOp = llvm::cast<PipeTransferPostOp>(postOperation);
+    LaunchNodeDomain postDomain =
+        lookupOperationLaunchDomain(postOperation, analysisState);
+    if (postDomain.known) {
+      indexOperationByReceiverDFB(postOp, receiverInfo.dfbIndex, postDomain,
+                                  postsByReceiverDFB);
+    }
+  }
+
+  llvm::DenseMap<PipeReceiverDFBKey, SmallVector<CBPushOp>> pushesByReceiverDFB;
+  // An unknown-domain push may execute on any receiver with the same DFB
+  // index, so retain it as a candidate for each such receiver.
+  llvm::DenseMap<int64_t, SmallVector<CBPushOp>> unknownDomainPushesByDFBIndex;
+  mod.walk([&](CBPushOp pushOp) {
+    std::optional<int64_t> maybeDFBIndex = getCBIndex(pushOp.getCb());
+    if (!maybeDFBIndex) {
+      return;
+    }
+    LaunchNodeDomain pushDomain =
+        lookupOperationLaunchDomain(pushOp.getOperation(), analysisState);
+    if (!pushDomain.known) {
+      unknownDomainPushesByDFBIndex[*maybeDFBIndex].push_back(pushOp);
+      return;
+    }
+    indexOperationByReceiverDFB(pushOp, *maybeDFBIndex, pushDomain,
+                                pushesByReceiverDFB);
+  });
+
   for (PipeReceiverDFBNode &node : receiverDFBNodes) {
     PipeReceiverDFBKey receiverDFB = node.receiverDFB;
-    LaunchNodeDomain receiverDomain =
-        getSingleLaunchNodeDomain(getLaunchNodeCoord(receiverDFB.receiver));
 
-    SmallVector<PipeTransferPostOp> posts;
-    mod.walk([&](PipeTransferPostOp postOp) {
-      if (isPostForReceiverDFB(postOp, receiverDFB, receiverDFBByPost,
-                               analysisState)) {
-        posts.push_back(postOp);
-      }
-    });
+    auto postIt = postsByReceiverDFB.find(receiverDFB);
+    ArrayRef<PipeTransferPostOp> posts =
+        postIt == postsByReceiverDFB.end()
+            ? ArrayRef<PipeTransferPostOp>()
+            : ArrayRef<PipeTransferPostOp>(postIt->second);
     if (posts.empty()) {
       debugRejectPipeOnlyProducerStream(receiverDFB,
                                         "no matching receiver posts");
@@ -788,37 +813,44 @@ LogicalResult PipeGraph::provePipeOnlyReceiverProducerStreams(
     };
     llvm::DenseSet<Operation *> postsWithPush;
 
-    mod.walk([&](CBPushOp pushOp) {
-      if (!valid || !isReceiverDFB(pushOp.getCb(), receiverDFB)) {
-        return;
+    SmallVector<CBPushOp> candidatePushes;
+    auto pushIt = pushesByReceiverDFB.find(receiverDFB);
+    if (pushIt != pushesByReceiverDFB.end()) {
+      llvm::append_range(candidatePushes, pushIt->second);
+    }
+    auto unknownPushIt =
+        unknownDomainPushesByDFBIndex.find(receiverDFB.dfbIndex);
+    if (unknownPushIt != unknownDomainPushesByDFBIndex.end()) {
+      llvm::append_range(candidatePushes, unknownPushIt->second);
+    }
+    for (CBPushOp pushOp : candidatePushes) {
+      if (!valid) {
+        break;
       }
       LaunchNodeDomain pushDomain =
           lookupOperationLaunchDomain(pushOp.getOperation(), analysisState);
-      if (!launchNodeDomainsOverlap(pushDomain, receiverDomain)) {
-        return;
-      }
       if (!knownLaunchNodeDomainContains(
               pushDomain, getLaunchNodeCoord(receiverDFB.receiver)) ||
           !isNocKernelThread(pushOp)) {
         reject("push is not in the receiver NOC domain");
-        return;
+        continue;
       }
       std::optional<int64_t> maybePushedBlocks = getPushedBlockCount(pushOp);
       if (!maybePushedBlocks) {
         reject("push block count is not a whole DFB block count");
-        return;
+        continue;
       }
       auto reserveOp = lookupOwner<CBReserveOp>(
           analysisState.dfbReleaseOwners.reserveByPush, pushOp.getOperation());
       if (!reserveOp) {
         reject("push has no unique receiver reserve owner");
-        return;
+        continue;
       }
       SmallVector<PipeTransferPostOp> ownedPosts =
           getPostsOwnedByReserve(reserveOp, posts);
       if (ownedPosts.empty()) {
         reject("push reserve owns no matching receiver post");
-        return;
+        continue;
       }
       int64_t postedBlocks = 0;
       for (PipeTransferPostOp postOp : ownedPosts) {
@@ -826,24 +858,27 @@ LogicalResult PipeGraph::provePipeOnlyReceiverProducerStreams(
                                               receiverDFB.receiver,
                                               analysisState)) {
           reject("post has no receive wait before push");
-          return;
+          break;
         }
         std::optional<int64_t> maybeSpan =
             getReceiverSlotSpanBlocksForPost(postOp, receiverDFBByPost);
         if (!maybeSpan) {
           reject("post has no receiver slot span");
-          return;
+          break;
         }
         postedBlocks += *maybeSpan;
         if (!postsWithPush.insert(postOp.getOperation()).second) {
           reject("post is consumed by more than one push");
-          return;
+          break;
         }
+      }
+      if (!valid) {
+        continue;
       }
       if (*maybePushedBlocks != postedBlocks) {
         reject("push block count does not match posted receiver slot span");
       }
-    });
+    }
     if (!valid) {
       continue;
     }
