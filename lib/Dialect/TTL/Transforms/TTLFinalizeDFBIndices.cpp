@@ -52,7 +52,48 @@ static int32_t getFirstCompilerDFBIndex(ModuleOp moduleOp) {
   return maxUserIndex + 1;
 }
 
-/// Assign physical indices to one function's compiler-allocated DFBs,
+/// Rejects partial compiler-created lifecycles that cannot occur in the
+/// production pipeline and do not define a sound live interval.
+static LogicalResult verifyCompilerDFBLifecycle(BindCBOp bindOp) {
+  bool hasReserve = false;
+  bool hasPush = false;
+  bool hasWait = false;
+  bool hasPop = false;
+  for (OpOperand &use : bindOp.getResult().getUses()) {
+    Operation *user = use.getOwner();
+    hasReserve |= isa<CBReserveOp>(user);
+    hasPush |= isa<CBPushOp>(user);
+    hasWait |= isa<CBWaitOp>(user);
+    hasPop |= isa<CBPopOp>(user);
+  }
+
+  if (!hasReserve && !hasPush && !hasWait && !hasPop) {
+    return success();
+  }
+  if (!hasReserve) {
+    return bindOp.emitOpError()
+           << "compiler-allocated DFB has a partial lifecycle: missing "
+              "ttl.cb_reserve";
+  }
+  if (!hasPush) {
+    return bindOp.emitOpError()
+           << "compiler-allocated DFB has a partial lifecycle: missing "
+              "ttl.cb_push";
+  }
+  if (!hasWait) {
+    return bindOp.emitOpError()
+           << "compiler-allocated DFB has a partial lifecycle: missing "
+              "ttl.cb_wait";
+  }
+  if (!hasPop) {
+    return bindOp.emitOpError()
+           << "compiler-allocated DFB has a partial lifecycle: missing "
+              "ttl.cb_pop";
+  }
+  return success();
+}
+
+/// Assign physical indices to one kernel's compiler-allocated DFBs,
 /// reusing indices when lifetimes do not overlap.
 static int32_t assignPhysicalDFBIndices(func::FuncOp funcOp,
                                         ArrayRef<BindCBOp> dfbOps,
@@ -88,11 +129,10 @@ static int32_t assignPhysicalDFBIndices(func::FuncOp funcOp,
            "compiler-allocated BindCBOp must be in function body block");
 
     Value cbVal = bindOp.getResult();
-    // Lifetime starts at the first acquire (reserve/wait) on this CB, not
-    // at the bind_cb itself: bind_cb is just a declaration, and hoisting
-    // it to the function body entry would otherwise collapse all compiler-
-    // allocated DFB starts together and defeat reuse. If there is no
-    // acquire (synthetic IR, pop-only), fall back to the bind_cb position.
+    // Lifetime starts at the first acquire (reserve/wait) on this DFB, not at
+    // bind_cb: declarations are hoisted to function entry and would otherwise
+    // make all compiler-allocated lifetimes overlap. An unused declaration is
+    // conservatively live from bind_cb through the end of the function.
     int64_t start = lastOpIdx;
     int64_t end = opIndex[bindOp];
     bool sawAcquire = false;
@@ -191,7 +231,16 @@ struct TTLFinalizeDFBIndicesPass
       }
     });
 
-    // Provisional compiler indices are function-local. Assign disjoint
+    for (auto &entry : funcToDFBs) {
+      for (BindCBOp bindOp : entry.second) {
+        if (failed(verifyCompilerDFBLifecycle(bindOp))) {
+          signalPassFailure();
+          return;
+        }
+      }
+    }
+
+    // Provisional compiler indices are kernel-local. Assign disjoint
     // module-wide ranges after the highest user-declared index.
     int32_t nextCompilerDFBIndex = getFirstCompilerDFBIndex(moduleOp);
     for (auto &[funcOp, dfbOps] : funcToDFBs) {

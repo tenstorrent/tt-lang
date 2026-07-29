@@ -44,7 +44,7 @@ BindCBOp createCompilerAllocatedDFB(RankedTensorType tensorType, Location loc,
   int64_t blockCount = 1;
   auto dfbType = CircularBufferType::get(ctx, shape, elementType, blockCount);
 
-  // Function-local allocation preserves pass isolation. The module finalizer
+  // Kernel-local allocation preserves pass isolation. The module finalizer
   // replaces this provisional index before index annotations are emitted.
   int32_t dfbIndex = getNextAvailableDFBIndex(funcOp.getOperation());
 

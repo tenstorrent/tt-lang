@@ -182,6 +182,9 @@ static OutputPublicationInfo collectOutputPublicationInfo(Operation *op) {
       info.pushes.push_back(push);
     }
   }
+  llvm::sort(info.pushes, [](CBPushOp lhs, CBPushOp rhs) {
+    return lhs->isBeforeInBlock(rhs);
+  });
   return info;
 }
 

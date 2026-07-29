@@ -29,11 +29,11 @@ struct DFBMaterializedValue {
 /// Allocates a fresh compiler-managed dataflow buffer and emits its
 /// `bind_cb` at function entry, where `finalize-dfb-indices` requires every
 /// compiler-allocated bind to live. The assigned DFB index is provisional and
-/// unique within the function. `finalize-dfb-indices` assigns module-wide
+/// unique within the kernel. `finalize-dfb-indices` assigns module-wide
 /// physical indices, performs lifetime-based reuse, and validates the hardware
 /// DFB-index limit. Compiler-managed intermediates use one slot: they carry a
-/// single SSA value inside one compute thread, not a pipelined transfer between
-/// independently scheduled threads. The builder's insertion point is left at
+/// single SSA value inside one compute kernel, not a pipelined transfer between
+/// independently scheduled kernels. The builder's insertion point is left at
 /// the new `bind_cb`; callers that need to emit elsewhere should wrap the call
 /// in `OpBuilder::InsertionGuard`.
 BindCBOp createCompilerAllocatedDFB(RankedTensorType tensorType, Location loc,

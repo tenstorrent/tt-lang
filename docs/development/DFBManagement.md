@@ -8,7 +8,7 @@ DFBs originate from two sources. User-declared DFBs are created explicitly in th
 
 The hardware supports at most 32 DFBs per node (indices 0--31). User and
 compiler-allocated DFBs share this index space. DFB-creating function passes
-assign compiler DFBs function-local provisional indices. The module-level
+assign compiler DFBs kernel-local provisional indices. The module-level
 finalization pass assigns module-wide physical indices after the last
 user-declared DFB and applies lifetime-based index reuse.
 
@@ -47,9 +47,9 @@ leave stale attributes after finalization rewrites the indices.
 A DFB has two lifecycle halves: the producer (write) side driven by
 `cb_reserve`/`cb_push`, and the consumer (read) side driven by
 `cb_wait`/`cb_pop`. For user-declared DFBs these halves span different
-threads: data movement writes to the CB, compute reads from it, and both
-threads reference the same CB index. For compiler-allocated intermediate DFBs
-both halves are in the same compute function.
+kernels: a data movement kernel writes to the DFB, a compute kernel reads from
+it, and both kernels reference the same DFB index. For compiler-allocated
+intermediate DFBs, both halves are in the same compute kernel.
 
 ```
 |
@@ -288,8 +288,8 @@ result of the same producer.
 `TTLMaterializeLoopState` uses the same compiler-DFB materialization helper
 (`include/ttlang/Dialect/TTL/Transforms/DFBMaterialization.h`) to remove
 ranked-tensor `scf.for` iter_args before compute lowering.
-The helper chooses a provisional index by scanning only the enclosing function,
-so DFB-creating function passes do not inspect sibling functions while MLIR
+The helper chooses a provisional index by scanning only the enclosing kernel,
+so DFB-creating function passes do not inspect sibling kernels while MLIR
 executes them concurrently.
 
 Non-compute producers use the tensor-level fallback. The helper emits the
@@ -679,8 +679,8 @@ ttl-coalesce-dfb-acquires))'`) verifies this.
 
 `TTLFinalizeDFBIndices` reduces the physical DFB count by assigning the same
 index to compiler-allocated DFBs whose lifetimes do not overlap. The algorithm
-runs per function. It ignores the function-local provisional indices and
-assigns each function a disjoint physical index range after the highest
+runs per kernel. It ignores the kernel-local provisional indices and
+assigns each kernel a disjoint physical index range after the highest
 user-declared index in the module.
 
 Two DFBs may share an index only if they have identical `CircularBufferType`
@@ -691,6 +691,11 @@ type and runs a linear scan within each partition.
 ### Algorithm
 
 ```
+for bindOp in compilerAllocatedBindCBOps:
+  lifecycleOps = reserveOrWaitOrPushOrPopUsers(bindOp)
+  if lifecycleOps is not empty and any operation kind is missing:
+    reject the partial lifecycle
+
 nextCompilerIndex = max(userDeclaredDFBIndices) + 1
 for funcOp in module:
   slots = assignPhysicalDFBIndices(
@@ -703,17 +708,15 @@ assignPhysicalDFBIndices(
   for op in funcOp.entryBlock:
     opIndex[op] = nextIdx++
 
-  // Build intervals: [first acquire position, last cb_pop position].
+  // Build intervals from complete reserve/push/wait/pop lifecycles.
   // Nested acquires and pops are projected to their function-level ancestor.
-  // If no acquire exists, start = bind_cb position (synthetic IR fallback).
-  // If no cb_pop exists, end = last operation (conservative).
   for bindOp in compilerAllocatedBindCBOps:
+    if bindOp has no lifecycle operations:
+      intervals[bindOp.type].append(
+          {opIndex[bindOp], lastOpIdx, bindOp.result})
+      continue
     start = min(getBodyIndex(acq) for acq in reserveOrWaitUsers(bindOp))
     end = max(getBodyIndex(pop) for pop in cbPopUsers(bindOp))
-    if no acquire:
-      start = opIndex[bindOp]
-    if end <= start:
-      end = lastOpIdx
     intervals[bindOp.type].append({start, end, bindOp.result})
 
   // Linear scan per type partition. Each partition gets a contiguous
@@ -737,6 +740,11 @@ assignPhysicalDFBIndices(
 
   return offset
 ```
+
+Compiler-created DFBs emitted by the production pipeline have both lifecycle
+halves. Rejecting a partial lifecycle prevents the allocator from inferring a
+bounded interval from malformed IR. A declaration with no lifecycle operations
+is legal but conservatively remains live through the end of its kernel.
 
 The expiration condition `active.end <= interval.start` matches the DST
 register allocator's convention. Because operation indices are integers
@@ -788,8 +796,8 @@ would need branch-sensitive liveness.
 
 Index reuse is restricted to compiler-allocated DFBs. User-declared DFBs retain
 their original indices because the same CB index is referenced by multiple
-threads (reader, compute, writer) to implement cross-thread data flow. Reusing
-a user index in one function would invalidate references in the others.
+kernels (reader, compute, writer) to implement cross-kernel data flow. Reusing
+a user index in one kernel would invalidate references in the others.
 
 Liveness is computed at function-level granularity. If an acquire or `CBPopOp`
 is inside a structured op, it is projected to its enclosing function-level
