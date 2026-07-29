@@ -18,7 +18,7 @@ python my_kernel.py --no-ttl-maximize-dst
 | `--ttl-subblock-sync` / `--no-ttl-subblock-sync` | disabled | Refine DFB reserve/push to per-subblock granularity, enabling `pack_tile_block` for contiguous subblocks. When disabled, user-placed reserve/push is preserved as written. |
 | `--ttl-combine-pack-tiles` / `--no-ttl-combine-pack-tiles` | enabled | Combine consecutive `pack_tile` ops on the same DFB with contiguous DST and DFB indices into a single `pack_tile_block` call. |
 | `--ttl-strict-f32-acc` / `--no-ttl-strict-f32-acc` | disabled | Error at compile time if a `+=` accumulation loop's output block exceeds f32 DST capacity (4 tiles with double-buffering). When enabled, guarantees each accumulation step fits in a single DST section without subblocking. |
-| `--ttl-compiler-dfbs` / `--no-ttl-compiler-dfbs` | enabled | Insert compiler-allocated intermediate DFBs when an operation requires a DFB-attached input, or when cross-block store fanout cannot be handled by branch-local cloning. When disabled, the compiler emits an error if such materialization is required. |
+| `--ttl-compiler-dfbs` / `--no-ttl-compiler-dfbs` | enabled | Insert compiler-allocated intermediate DFBs when an operation requires a DFB-attached input, or when a value stored from multiple blocks cannot be handled by branch-local cloning. When disabled, the compiler emits an error if such materialization is required. |
 | `--ttl-reuse-user-dfbs` / `--no-ttl-reuse-user-dfbs` | enabled | Reuse physical DFB indices when concurrent-kernel liveness proves that compatible logical DFB lifetimes do not overlap. Disabling retains user-declared physical indices. |
 | `--ttl-pipe-computed-addresses` / `--no-ttl-pipe-computed-addresses` | enabled | Use computed receiver DFB addresses for eligible PipeNet transfers. When disabled, transfers use receiver-published destination addresses; multicast still requires proven equal runtime receiver addresses. |
 | `--ttl-pipe-capacity-sync` / `--no-ttl-pipe-capacity-sync` | enabled | Use capacity-counter synchronization for eligible computed-address PipeNet transfers. When disabled, computed-address transfers use receiver-post synchronization. |
@@ -118,7 +118,7 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 | `subblock-sync` | bool | `false` | Refine DFB reserve/push to per-subblock granularity. |
 | `combine-pack-tiles` | bool | `true` | Combine consecutive `pack_tile` ops into `pack_tile_block`. |
 | `strict-f32-acc` | bool | `false` | Error if a `+=` accumulation loop's output block exceeds f32 DST capacity. |
-| `compiler-dfbs` | bool | `true` | Insert compiler-allocated intermediate DFBs for DFB-attached operands and non-cloneable cross-block store fanout. Error if disabled and materialization is required. |
+| `compiler-dfbs` | bool | `true` | Insert compiler-allocated intermediate DFBs for DFB-attached operands and non-cloneable values stored from multiple blocks. Error if disabled and materialization is required. |
 | `reuse-user-dfbs` | bool | `true` | Reuse physical DFB indices for compatible logical DFBs with proven non-overlapping concurrent lifetimes. |
 | `pipe-computed-addresses` | bool | `true` | Use computed receiver DFB addresses for eligible PipeNet transfers. When disabled, transfers use receiver-published destination addresses; multicast still requires proven equal runtime receiver addresses. |
 | `pipe-capacity-sync` | bool | `true` | Use capacity-counter synchronization for eligible computed-address PipeNet transfers. When disabled, computed-address transfers use receiver-post synchronization. |
@@ -165,11 +165,11 @@ options are listed; the remaining passes have no options.
 
 #### `ttl-insert-intermediate-dfbs`
 
-Resolve DFB-attached operands and cross-block store fanout.
+Resolve DFB-attached operands and values stored from multiple blocks.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `enable` | bool | `true` | Insert compiler-allocated DFBs. When false, emit an error if any operation or cross-block store fanout requires one. |
+| `enable` | bool | `true` | Insert compiler-allocated DFBs. When false, emit an error if any operation or value stored from multiple blocks requires one. |
 
 ```bash
 ttlang-opt input.mlir -p 'func.func(ttl-insert-intermediate-dfbs{enable=false})'

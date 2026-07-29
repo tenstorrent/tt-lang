@@ -1,4 +1,5 @@
-// Tests invalid control-flow store fanout when compiler DFBs are disabled.
+// Tests invalid values stored from multiple control-flow blocks when compiler
+// DFBs are disabled.
 //
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(func.func(ttl-insert-intermediate-dfbs{enable=false}))'
 
@@ -7,7 +8,7 @@
 // A value outside the current clone-supported set cannot be stored from branch
 // blocks when compiler-managed DFBs are disabled.
 
-func.func @reduce_fanout_across_scf_if_disabled(%cond: i1)
+func.func @reduce_stored_value_across_scf_if_disabled(%cond: i1)
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
   %input_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %scale_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -34,10 +35,10 @@ func.func @reduce_fanout_across_scf_if_disabled(%cond: i1)
 
 // -----
 
-// Sibling-if fanout is not structurally mutually exclusive, so it needs
-// compiler storage.
+// Stores under sibling if operations are not structurally mutually exclusive,
+// so they need compiler storage.
 
-func.func @sibling_if_store_fanout_disabled(%cond_a: i1, %cond_b: i1)
+func.func @sibling_if_stored_value_disabled(%cond_a: i1, %cond_b: i1)
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
   %input_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %first_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -65,7 +66,7 @@ func.func @sibling_if_store_fanout_disabled(%cond_a: i1, %cond_b: i1)
 // A common containing if is not sufficient when one branch contains sibling
 // ifs that may both execute.
 
-func.func @nested_sibling_if_store_fanout_disabled(%outer_cond: i1, %cond_a: i1, %cond_b: i1)
+func.func @nested_sibling_if_stored_value_disabled(%outer_cond: i1, %cond_a: i1, %cond_b: i1)
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
   %input_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %first_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -99,7 +100,7 @@ func.func @nested_sibling_if_store_fanout_disabled(%outer_cond: i1, %cond_a: i1,
 // A value used after branch stores cannot be cloned without changing that
 // later use, so disabling compiler DFBs requires a diagnostic.
 
-func.func @store_fanout_with_external_use_disabled(%cond: i1)
+func.func @stored_value_with_external_use_disabled(%cond: i1)
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
   %input_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %then_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -131,7 +132,7 @@ func.func @store_fanout_with_external_use_disabled(%cond: i1)
 // Stores under a loop require compiler storage when the producer is outside the
 // loop.
 
-func.func @loop_wrapped_store_fanout_disabled(%cond: i1)
+func.func @loop_wrapped_stored_value_disabled(%cond: i1)
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
   %input_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %then_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -162,7 +163,7 @@ func.func @loop_wrapped_store_fanout_disabled(%cond: i1)
 
 // A defining-block store and a branch store are not mutually exclusive.
 
-func.func @store_fanout_defining_block_and_branch_disabled(%cond: i1)
+func.func @stored_value_defining_block_and_branch_disabled(%cond: i1)
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
   %input_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %always_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -192,7 +193,7 @@ func.func @store_fanout_defining_block_and_branch_disabled(%cond: i1)
 // convert-ttl-to-compute to drop. The frontend does not emit this yet (#540).
 // The diagnostic is independent of the compiler-DFB flag.
 
-func.func @loop_carried_iter_arg_store_fanout(%cond: i1)
+func.func @loop_carried_iter_arg_stored_value(%cond: i1)
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
   %input_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %then_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>

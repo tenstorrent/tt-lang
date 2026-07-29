@@ -319,7 +319,7 @@ def TTLAnnotateL1AccLoops
 
 def TTLInsertIntermediateDFBs
     : Pass<"ttl-insert-intermediate-dfbs", "::mlir::func::FuncOp"> {
-  let summary = "Resolve DFB attachment and cross-block store fanout";
+  let summary = "Resolve DFB attachment and values stored from multiple blocks";
   let description = [{
     Walks ops implementing `DFBInputOpInterface` and checks whether the
     operands they declare as requiring DFB-attached values are satisfied.
@@ -327,14 +327,15 @@ def TTLInsertIntermediateDFBs
     values when stores occupy at least two blocks. This is the condition that
     can make `convert-ttl-to-compute` compare operation order across blocks.
 
-    The pass classifies cross-block store fanout before mutating IR.
+    The pass classifies values stored from multiple blocks before mutating IR.
     Clone-supported backward slices are relocated into store blocks only when
     upstream `mlir::insideMutuallyExclusiveRegions` proves every pair of store
     block representatives mutually exclusive, every external use of the slice
-    is one of the rewritten stores, and no loop sits between the producer scope
-    and a rewritten store. Other cross-block store fanout is materialized with
-    a compiler-allocated DFB, and all direct stores of the source value are
-    rewritten to consume the attached DFB value.
+    is one of the rewritten stores, no root-input DFB release can execute
+    before the clone site, and no loop sits between the producer scope and a
+    rewritten store. Other values stored from multiple blocks are materialized
+    with a compiler-allocated DFB, and all direct stores of the source value
+    are rewritten to consume the attached DFB value.
 
     When an operand comes from `ttl.compute`, the pass materializes it as an
     extra compute output backed by a compiler-allocated DFB. The pass creates
@@ -350,11 +351,11 @@ def TTLInsertIntermediateDFBs
 
     All DFBs created by this pass are marked with `ttl.compiler_allocated`.
 
-    When `enable` is false, cloneable cross-block store fanout is still
+    When `enable` is false, cloneable values stored from multiple blocks are
     rewritten because it does not allocate a compiler DFB. If any
     `DFBInputOpInterface` op has a non-DFB-attached operand, or if
-    non-cloneable cross-block store fanout requires DFB materialization, the
-    pass emits an error diagnostic and signals failure.
+    non-cloneable values stored from multiple blocks require DFB
+    materialization, the pass emits an error diagnostic and signals failure.
   }];
 
   let options = [

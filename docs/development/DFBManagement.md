@@ -264,7 +264,8 @@ The pass also normalizes direct stores of a non-DFB-attached value when those
 stores occupy at least two blocks. If upstream
 `insideMutuallyExclusiveRegions` proves the store blocks are pairwise
 exclusive, and the producer's backward slice has no remaining non-store uses,
-the slice is cloned into each store block and no compiler DFB is allocated.
+and no root-input DFB release can execute before the clone site, the slice is
+cloned into each store block and no compiler DFB is allocated.
 Otherwise, the value is materialized through a compiler-allocated DFB and every
 pre-existing direct store of that value is rewritten to consume the attached
 DFB value. Rewriting every direct store prevents a same-block store from
@@ -353,8 +354,8 @@ placing compiler-created waits and pops inside arbitrary structured control
 flow remain tracked by
 [#724](https://github.com/tenstorrent/tt-lang/issues/724).
 The branch-local store rewrite uses upstream
-`insideMutuallyExclusiveRegions` to prove branch-exclusive store fanout, but
-does not place DFB lifecycle operations inside those branches.
+`insideMutuallyExclusiveRegions` to prove branch-exclusive stores, but does not
+place DFB lifecycle operations inside those branches.
 [PR #700](https://github.com/tenstorrent/tt-lang/pull/700) matches structured
 PipeNet protocol occurrences with `ExecutionCountAnalysis`; that analysis is
 applicable to the remaining occupancy proof.
