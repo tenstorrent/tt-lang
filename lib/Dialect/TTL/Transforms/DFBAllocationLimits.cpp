@@ -4,6 +4,8 @@
 
 #include "DFBAllocationLimits.h"
 
+#include "ttlang/Dialect/TTL/IR/TTLOps.h"
+
 #include "ttlang/Dialect/TTCore/IR/TTCoreOps.h"
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTCore/IR/Utils.h"
@@ -122,6 +124,22 @@ DFBAllocationFootprint::getSortedPhysicalIndices() const {
   }
   llvm::sort(physicalIndices);
   return physicalIndices;
+}
+
+FailureOr<DFBAllocationFootprint>
+getDFBAllocationFootprint(ModuleOp module) {
+  DFBAllocationFootprint footprint;
+  WalkResult walkResult = module.walk([&](BindCBOp bindOp) {
+    FailureOr<bool> increased = footprint.add(
+        bindOp.getCbIndex().getSExtValue(),
+        cast<CircularBufferType>(bindOp.getResult().getType()));
+    return failed(increased) ? WalkResult::interrupt()
+                             : WalkResult::advance();
+  });
+  if (walkResult.wasInterrupted()) {
+    return failure();
+  }
+  return footprint;
 }
 
 uint64_t getUsableDFBL1Bytes(ModuleOp module,
