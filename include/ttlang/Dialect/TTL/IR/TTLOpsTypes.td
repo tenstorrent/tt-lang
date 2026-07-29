@@ -165,4 +165,37 @@ def TTL_Pipe : TTL_Type<"Pipe", "pipe"> {
   }];
 }
 
+def TTL_SelectedPipeSrc : TTL_Type<"SelectedPipeSrc", "selected_pipe_src"> {
+  let summary = "Selected source pipe for PipeNet foreach iteration";
+  let description = [{
+    Represents a PipeNet record selected for source-side use. The type does not
+    encode the PipeNet id or coordinates; the enclosing foreach operation or
+    defining select operation supplies them.
+  }];
+}
+
+def TTL_SelectedPipeDst : TTL_Type<"SelectedPipeDst", "selected_pipe_dst"> {
+  let summary = "Selected destination pipe for PipeNet foreach iteration";
+  let description = [{
+    Represents a PipeNet record selected for destination-side use. The type
+    does not encode the PipeNet id or coordinates; the enclosing foreach
+    operation or defining select operation supplies them.
+  }];
+}
+
+def TTL_SelectedPipe : TypeConstraint<
+    Or<[
+      CPred<"llvm::isa<mlir::tt::ttl::SelectedPipeSrcType>($_self)">,
+      CPred<"llvm::isa<mlir::tt::ttl::SelectedPipeDstType>($_self)">
+    ]>,
+    "selected PipeNet iteration pipe">;
+
+def TTL_PipeReference : TypeConstraint<
+    Or<[
+      CPred<"llvm::isa<mlir::tt::ttl::PipeType>($_self)">,
+      CPred<"llvm::isa<mlir::tt::ttl::SelectedPipeSrcType>($_self)">,
+      CPred<"llvm::isa<mlir::tt::ttl::SelectedPipeDstType>($_self)">
+    ]>,
+    "static pipe or selected PipeNet iteration pipe">;
+
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSTYPES_TD

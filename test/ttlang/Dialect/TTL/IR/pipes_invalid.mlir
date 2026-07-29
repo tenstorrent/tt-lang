@@ -23,33 +23,11 @@ func.func @pipe_receive_without_reserve(%t: tensor<32x32xf32>) {
 
 // -----
 
-// Test: internal pipe transfer expected receiver count must be positive.
-func.func @pipe_transfer_expected_receiver_count_positive() {
-  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-  // expected-error @+1 {{'ttl.pipe_transfer.create' op requires positive expectedReceivers}}
-  %transfer = ttl.pipe_transfer.create %p {expectedReceivers = 0 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
-      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> -> !ttl.pipe_transfer
-  func.return
-}
-
-// -----
-
-// Test: internal pipe transfer expected receiver count must match the pipe.
-func.func @pipe_transfer_expected_receiver_count_mismatch() {
-  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
-  // expected-error @+1 {{'ttl.pipe_transfer.create' op expectedReceivers must match the pipe receiver count}}
-  %transfer = ttl.pipe_transfer.create %p {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<collective>}
-      : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> -> !ttl.pipe_transfer
-  func.return
-}
-
-// -----
-
 // Test: point-to-point pipe transfer cannot target multiple receivers.
 func.func @pipe_transfer_point_to_point_multi_receiver() {
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
   // expected-error @+1 {{'ttl.pipe_transfer.create' op point_to_point transfer requires one receiver}}
-  %transfer = ttl.pipe_transfer.create %p {expectedReceivers = 2 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+  %transfer = ttl.pipe_transfer.create %p {kind = #ttl.pipe_transfer_kind<point_to_point>}
       : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> -> !ttl.pipe_transfer
   func.return
 }
@@ -59,7 +37,7 @@ func.func @pipe_transfer_point_to_point_multi_receiver() {
 // Test: pipe transfer send result is a write handle.
 func.func @pipe_transfer_send_requires_write_handle() {
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-  %transfer = ttl.pipe_transfer.create %p {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+  %transfer = ttl.pipe_transfer.create %p {kind = #ttl.pipe_transfer_kind<point_to_point>}
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> -> !ttl.pipe_transfer
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
