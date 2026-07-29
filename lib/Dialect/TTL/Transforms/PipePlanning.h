@@ -127,9 +127,10 @@ enum class PipeSynchronizationProtocol {
   Capacity,
 };
 
-/// Sender-side DFB access and payload size for one transfer.
+/// Sender-side DFB access and payload dimensions for one transfer.
 struct PipeSendPlan {
   bool usesReadPointer = false;
+  int64_t payloadTileCount = 0;
   int64_t payloadSizeBytes = 0;
 };
 
