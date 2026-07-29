@@ -73,6 +73,11 @@ struct TTLToTTKernelPipelineOptions
       llvm::cl::desc("Allocate all compiler-managed PipeNet synchronization "
                      "counters in GlobalSemaphore storage."),
       llvm::cl::init(false)};
+  Option<int64_t> pipeBatchTiles{
+      *this, "pipe-batch-tiles",
+      llvm::cl::desc("Limit logical transfers per PipeTransport group. "
+                     "Zero selects automatically; one disables grouping."),
+      llvm::cl::init(0)};
   Option<bool> reuseUserDFBs{
       *this, "reuse-user-dfbs",
       llvm::cl::desc("Reuse physical DFB indices when concurrent-kernel "
