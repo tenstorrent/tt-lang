@@ -115,6 +115,42 @@ func.func @gather_block_count_too_small()
 
 // -----
 
+// PipeNet address analysis represents receiver reservations in whole DFB
+// blocks and must reject a partial block instead of rounding its span up.
+
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @partial_receiver_block_rejected()
+      attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+    %src = ttl.bind_cb {cb_index = 0, block_count = 1}
+        : !ttl.cb<[2, 1], !ttcore.tile<32x32, f32>, 1>
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 1}
+        : !ttl.cb<[4, 1], !ttcore.tile<32x32, f32>, 1>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %recv = ttl.cb_reserve %dst {num_tiles = 2 : i64}
+          : <[4, 1], !ttcore.tile<32x32, f32>, 1>
+          -> tensor<2x1x!ttcore.tile<32x32, f32>>
+      // expected-error @below {{PipeNet receiver DFB reserve must contain a whole number of DFB blocks; reserve contains 2 tile(s), but each DFB block contains 4 tile(s)}}
+      %post = ttl.copy %pipe, %recv
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+             tensor<2x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.transfer_handle
+      ttl.wait %post : !ttl.transfer_handle
+    }
+    ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %send = ttl.copy %src, %pipe
+          : (!ttl.cb<[2, 1], !ttcore.tile<32x32, f32>, 1>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}
+
+// -----
+
 // A multi-block receive cannot wrap around the physical DFB ring. The receiver
 // must pop before reusing earlier slots or use a larger block_count.
 
@@ -334,6 +370,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
       %recv = tensor.extract_slice %recv_group[0, 0] [1, 1] [1, 1]
           : tensor<1x2x!ttcore.tile<32x32, f32>>
           to tensor<1x1x!ttcore.tile<32x32, f32>>
+      // expected-note @below {{receiver core_x=1, core_y=0 uses DFB 1: post is not consumed by a receiver push}}
       %post = ttl.copy %p, %recv
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, f32>>)
@@ -419,6 +456,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
       %recv_a = ttl.cb_reserve %dst
           : <[1, 1], !ttcore.tile<32x32, f32>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      // expected-note @below {{receiver core_x=1, core_y=0 uses DFB 0: post is not consumed by a receiver push}}
       %post_a = ttl.copy %pipe_a, %recv_a
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, f32>>)
@@ -481,6 +519,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
       %recv = ttl.cb_reserve %dst
           : <[1, 1], !ttcore.tile<32x32, f32>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      // expected-note @below {{receiver core_x=1, core_y=0 uses DFB 1: push reserve owns no matching receiver post}}
       %token = ttl.pipe_transfer.post %transfer, %recv
           : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
           -> !ttl.pipe_token<net 0>

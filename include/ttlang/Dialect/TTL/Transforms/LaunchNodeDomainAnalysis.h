@@ -96,6 +96,16 @@ LaunchNodeDomain getPipeSourceLaunchNodeDomain(PipeType pipeType);
 /// `pipeType`.
 LaunchNodeDomain getPipeDestinationLaunchNodeDomain(PipeType pipeType);
 
+/// Return the domain containing exactly `coord`.
+LaunchNodeDomain getSingleLaunchNodeDomain(LaunchNodeCoord coord);
+
+/// Return true if two launch-node domains may share at least one node.
+///
+/// Unknown domains are treated as overlapping because callers cannot prove
+/// disjointness from incomplete facts.
+bool launchNodeDomainsOverlap(const LaunchNodeDomain &lhs,
+                              const LaunchNodeDomain &rhs);
+
 /// Return true if `domain` is known and contains `coord`.
 bool knownLaunchNodeDomainContains(const LaunchNodeDomain &domain,
                                    LaunchNodeCoord coord);
