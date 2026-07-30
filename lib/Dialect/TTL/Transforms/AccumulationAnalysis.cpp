@@ -358,9 +358,16 @@ AccumulationCost AccumulationCostModel::computeDstCost(
     const TensorDstAccumulationInfo &info) const {
   AccumulationCost cost;
   cost.iterations = info.tripCount;
-  cost.oneTimeDfbHops = 2;
-  cost.oneTimePackUnpackTiles =
-      info.totalContributionTiles + info.unitTileCount;
+  cost.oneTimeDfbHops = 1;
+  cost.oneTimePackUnpackTiles = info.unitTileCount;
+  if (info.contributionResidency ==
+      TensorAccumulationContributionResidency::Streamed) {
+    cost.perIterationDfbHops = 2;
+    cost.perIterationPackUnpackTiles = info.unitTileCount;
+  } else {
+    cost.oneTimeDfbHops += 1;
+    cost.oneTimePackUnpackTiles += info.unitTileCount;
+  }
   cost.dstLiveTiles = info.unitTileCount;
   cost.estimatedCost = estimateCost(cost, weights);
   return cost;

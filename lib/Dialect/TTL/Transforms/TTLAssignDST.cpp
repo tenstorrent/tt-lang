@@ -779,13 +779,14 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
           builder.setInsertionPoint(&op);
           Value dstIdxVal =
               arith::ConstantIndexOp::create(builder, op.getLoc(), dstIdx);
-          if (auto accumulateAdd = dyn_cast<TileAccumulateAddOp>(&op)) {
+          if (auto accumulate = dyn_cast<TileAccumulateOp>(&op)) {
+            // tile_accumulate result reuses the accumulator DST slot.
             auto accumulatorIt =
-                dstIndexForValue.find(accumulateAdd.getAccumulator());
+                dstIndexForValue.find(accumulate.getAccumulator());
             assert(accumulatorIt != dstIndexForValue.end() &&
-                   "tile_accumulate_add accumulator has no DST assignment");
+                   "tile_accumulate accumulator has no DST assignment");
             assert(accumulatorIt->second == dstIdx &&
-                   "tile_accumulate_add accumulator and result must share DST");
+                   "tile_accumulate accumulator and result must share DST");
           }
           setTileOpDstIndex(&op, dstIdxVal);
           op.removeAttr(kDstPlaceholderAttrName);

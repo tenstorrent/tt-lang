@@ -21,6 +21,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLDumpCBFlowGraph.cpp
   TTLErasePipeNetScopes.cpp
   TTLFinalizeDFBIndices.cpp
+  TTLFormAccumulationScopes.cpp
   TTLInsertAccumulationScopes.cpp
   TTLInsertCBSync.cpp
   TTLInsertCopyWait.cpp

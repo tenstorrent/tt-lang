@@ -71,6 +71,23 @@ struct DFBReleaseSearch {
   bool hasSameLevelRelease() const { return !sameLevelReleases.empty(); }
 };
 
+/// Function-level DFB lifecycle operation lists.
+///
+/// The index owns only operation pointers; callers must rebuild it after IR
+/// mutations that create, move, or erase acquire/release operations.
+struct DFBAcquireReleaseIndex {
+  SmallVector<Operation *> reserves;
+  SmallVector<Operation *> waits;
+  SmallVector<Operation *> pushes;
+  SmallVector<Operation *> pops;
+
+  DFBAcquireReleaseIndex() = default;
+  explicit DFBAcquireReleaseIndex(func::FuncOp func);
+
+  ArrayRef<Operation *> getAcquires(DFBAcquireReleaseKind kind) const;
+  ArrayRef<Operation *> getReleases(DFBAcquireReleaseKind kind) const;
+};
+
 /// Returns true for DFB acquire ops accepted by this analysis.
 bool isDFBAcquireOp(Operation *op);
 

@@ -117,6 +117,61 @@ def TTLInsertCopyWait
   let dependentDialects = [];
 }
 
+def TTLFormAccumulationScopes
+    : Pass<"ttl-form-accumulation-scopes", "::mlir::func::FuncOp"> {
+  let summary = "Form semantic accumulation scopes around tensor recurrences";
+  let description = [{
+    Wraps loop-carried additive tensor recurrences in
+    `ttl.accumulation_scope` so later passes can lower the recurrence from an
+    explicit accumulation policy instead of recovering it from ordinary tensor
+    stores.
+
+    Before:
+
+    ```mlir
+    %result = scf.for %iv = %lb to %ub step %step
+        iter_args(%acc = %init) -> (tensor<...>) {
+      %contribution = ...
+      %next = ttl.add %acc, %contribution : tensor<...>
+      scf.yield %next : tensor<...>
+    }
+    ttl.store %result, %out : tensor<...>, tensor<...>
+    ```
+
+    After:
+
+    ```mlir
+    ttl.accumulation_scope outs(%out : tensor<...>)
+        inits(%init : tensor<...>) {
+    ^bb0(%scope_acc: tensor<...>):
+      %result = scf.for %iv = %lb to %ub step %step
+          iter_args(%acc = %scope_acc) -> (tensor<...>) {
+        %contribution = ...
+        %next = ttl.add %acc, %contribution : tensor<...>
+        scf.yield %next : tensor<...>
+      }
+      ttl.store %result, %out : tensor<...>, tensor<...>
+      ttl.yield %result : tensor<...>
+    } initial_modes([init])
+    ```
+
+    The tensor form requires an init-backed recurrence, one final
+    non-accumulating store to a dataflow buffer reservation, a streamed or
+    resident dataflow-buffer-backed contribution, and an output tile count that
+    fits in one streaming DST section.
+  }];
+
+  let options = [
+    Option<"kind", "kind", "std::string", "\"tensor\"",
+           "Accumulation scope form to create. `dfb` is reserved and unsupported.">
+  ];
+
+  let dependentDialects = [
+    "::mlir::scf::SCFDialect",
+    "::mlir::tt::ttl::TTLDialect"
+  ];
+}
+
 def TTLMaterializeLoopState
     : Pass<"ttl-materialize-loop-state", "::mlir::func::FuncOp"> {
   let summary = "Materialize loop-carried tensor state";
@@ -126,7 +181,7 @@ def TTLMaterializeLoopState
     preserving non-tensor iter args.
 
     Additive tensor recurrences are handled earlier by
-    `ttl-insert-accumulation-scopes` and `ttl-lower-accumulation-scopes`.
+    `ttl-form-accumulation-scopes` and `ttl-lower-accumulation-scopes`.
     Any tensor recurrence that reaches this pass uses compiler-allocated
     dataflow buffer state:
     ```mlir
@@ -194,8 +249,8 @@ def TTLLowerAccumulationScopes
   let summary = "Lower semantic accumulation scopes";
   let description = [{
     Lowers `ttl.accumulation_scope` regions to a concrete storage strategy.
-    Tensor mode supports additive tensor recurrences inserted by
-    `ttl-insert-accumulation-scopes` and stateful tensor scopes that lower to
+    Tensor mode supports additive tensor recurrences formed by
+    `ttl-form-accumulation-scopes` and stateful tensor scopes that lower to
     explicit stores in `strategy=auto`. DFB mode lowers user-written
     accumulating stores to L1 packer metadata.
     L1-selected loops carry `ttl.l1_acc_initial` and `ttl.l1_acc_scope_id`

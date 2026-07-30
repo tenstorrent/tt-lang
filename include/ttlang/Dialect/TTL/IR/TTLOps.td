@@ -235,7 +235,6 @@ class TTL_ElementWiseUnary<string mnemonic, list<Trait> traits = []>
 def TTL_ComputeOp : TTL_Op<"compute", [
     AttrSizedOperandSegments,
     SingleBlockImplicitTerminator<"YieldOp">,
-    DeclareOpInterfaceMethods<TTL_AccumulationScopeOpInterface>,
     DeclareOpInterfaceMethods<DestinationStyleOpInterface>,
     IndexingMapOpInterface,
     DeclareOpInterfaceMethods<TilingInterface,
@@ -253,6 +252,10 @@ def TTL_ComputeOp : TTL_Op<"compute", [
     The operation takes tensors of tiles as inputs and outputs. The block
     arguments are individual tiles (`!ttcore.tile<H, W, dtype>`) extracted from
     the input/output tensors at each iteration point.
+
+    A body containing `ttl.tile_accumulate` requires at least one reduction
+    iterator. The accumulator remains resident in DST across the corresponding
+    reduction iterations.
 
     In the pipeline, `ttl.compute` is lowered to `scf.for` loops by
     `ttl-lower-to-loops` BEFORE bufferization. The `ttl.tile_*` ops in the
@@ -1018,26 +1021,32 @@ class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
   let assemblyFormat = "$input `into` `dst` `[` $dst_index `]` attr-dict `:` type($input) `->` type($result)";
 }
 
-def TTL_TileAccumulateAddOp : TTL_TileOp<"tile_accumulate_add",
+def TTL_TileAccumulateOp : TTL_TileOp<"tile_accumulate",
     [TTL_TileBinaryOpTrait, TTL_DSTInputsTrait, TTL_InPlaceOpTrait,
      TTL_AccumulatingOpTrait, TTL_DstResultOpTrait,
      AllTypesMatch<["accumulator", "contribution", "result"]>]> {
-  let summary = "In-DST additive tile recurrence";
+  let summary = "In-DST tile recurrence";
   let description = [{
-    Adds `contribution` into `accumulator` and writes the result back to the
-    accumulator DST register. The accumulator operand and result use the same
-    DST slot; the contribution operand is read from its own DST slot.
+    `ttl.tile_accumulate` models one tile-level recurrence update whose
+    accumulator is resident in DST. The operation applies `combiner` to
+    `accumulator` and `contribution`, writes the result into `dst_index`, and
+    returns the value resident in that same DST slot.
 
-    This operation represents recurrence semantics explicitly. It is distinct
-    from `ttl.tile_add`, whose result may be assigned to a different DST slot.
+    Example:
+
+    ```mlir
+    %idx = arith.constant 0 : index
+    %next = ttl.tile_accumulate %acc, %delta add into dst[%idx]
+        : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>
+          -> !ttcore.tile<32x32, bf16>
+    ```
   }];
-  let arguments = (ins TTL_TileType:$accumulator, TTL_TileType:$contribution,
+  let arguments = (ins TTL_TileType:$accumulator,
+                       TTL_TileType:$contribution,
+                       TTL_AccumulationCombinerAttr:$combiner,
                        Index:$dst_index);
   let results = (outs TTL_TileType:$result);
-  let assemblyFormat =
-      "$accumulator `,` $contribution `into` `dst` `[` $dst_index `]` "
-      "attr-dict `:` type($accumulator) `,` type($contribution) "
-      "`->` type($result)";
+  let hasCustomAssemblyFormat = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -1552,9 +1561,9 @@ def TTL_StoreOp : TTL_Op<"store", [MemoryEffects<[MemWrite]>]> {
     (accumulate). During `convert-ttl-to-compute`, this op is transformed
     into a `ttl.tile_store` inside the compute body.
 
-    When `accumulate` is set, accumulation scope insertion records the
-    enclosing loop's accumulation policy before concrete storage strategy
-    lowering.
+    When `accumulate` is set, the enclosing loop is annotated for L1
+    packer accumulation so that each iteration adds to the existing L1
+    value instead of overwriting.
 
     Example:
     ```mlir

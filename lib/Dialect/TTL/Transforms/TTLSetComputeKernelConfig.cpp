@@ -41,6 +41,20 @@ static bool hasF32TileArgs(ComputeOp computeOp) {
   });
 }
 
+static bool hasF32TileOperandOrResult(Operation *op) {
+  auto isF32TileType = [](Type type) {
+    std::optional<mlir::Type> elementType = getTileElementType(type);
+    return elementType && elementType->isF32();
+  };
+
+  return llvm::any_of(op->getOperandTypes(), isF32TileType) ||
+         llvm::any_of(op->getResultTypes(), isF32TileType);
+}
+
+static bool isDirectDstTileOp(Operation *op) {
+  return isTileComputeOp(op) || isa<CopyTileOp, CopyDstOp, TileStoreOp>(op);
+}
+
 /// Resolve the CB index of `value` when it is an f32 input block argument of
 /// `computeOp` that is consumed directly from a circular buffer.
 static std::optional<int64_t>
@@ -64,6 +78,14 @@ getF32InputCBIndexForBlockArg(Value value, ComputeOp computeOp) {
   return getCBIndex(cb);
 }
 
+/// Return true for the operand that remains dataflow-buffer backed during
+/// destination-reuse lowering. It follows FPU unpack rules even though the
+/// accumulator itself is already in DST.
+static bool isAccumulateContributionOperand(Operation *op, Value operand) {
+  auto accumulate = dyn_cast<TileAccumulateOp>(op);
+  return accumulate && operand == accumulate.getContribution();
+}
+
 // TODO: Add TTLFPUOp and TTLSFPUOp traits to distinguish FPU and SFPU tile ops.
 // Then stop relying on the list of ops in "if (isa<TileReduceOp,
 // TileMatmulBlockOp>(op), ...) "
@@ -71,7 +93,7 @@ static bool isDstInputTileComputeOp(Operation *op) {
   if (!isTileComputeOp(op)) {
     return false;
   }
-  if (isa<TileReduceOp, TileMatmulBlockOp>(op)) {
+  if (isa<TileReduceOp, TileMatmulBlockOp, TileAccumulateOp>(op)) {
     return false;
   }
   if (isFPUEligibleBinaryOp(op)) {
@@ -86,30 +108,21 @@ static bool isDstInputTileComputeOp(Operation *op) {
 /// Return true if `op` benefits from `UnpackToDestFp32` when its input is an
 /// f32 tile fed directly from a CB. This is the SFPU subset of
 /// `isDstInputTileComputeOp`: tile_bcast and tile_transpose are also
-/// DST-input ops, but their LLK paths (unary_bcast, transpose_dest) do not
-/// support `UnpackToDestFp32` mode and produce incorrect results when it is
-/// enabled on their source CB (see tt-llk #1338). They are therefore
+/// DST-input ops, but their LLK implementations (unary_bcast, transpose_dest)
+/// do not support `UnpackToDestFp32` mode and produce incorrect results when
+/// it is enabled on their source CB (see tt-llk #1338). They are therefore
 /// excluded here so the CB stays in the default unpack mode.
 static inline bool wantsUnpackToDestFp32(Operation *op) {
   return isDstInputTileComputeOp(op) && !isa<TileBcastOp, TileTransposeOp>(op);
 }
 
-/// Return true for the tile_accumulate_add contribution operand. When this
-/// operand is DFB-backed, TTKernel lowering reads it through
-/// binary_dest_reuse_tiles.
-static bool isAccumulateContributionOperand(Operation *op, Value operand) {
-  auto accumulateAdd = dyn_cast<TileAccumulateAddOp>(op);
-  return accumulateAdd && operand == accumulateAdd.getContribution();
-}
-
 /// Return the CB index when `value` is an f32 input block argument of
 /// `computeOp` consumed by a tile op that must keep its source CB in `Default`
-/// unpack mode. FPU-style ops (reduce, matmul, FPU-eligible add/sub/mul) route
-/// the operand through SRCA/SRCB; `tile_bcast`/`tile_transpose` lower to
-/// `unary_bcast`/`transpose_dest`, which produce incorrect results under
-/// `UnpackToDestFp32` on their source CB (tt-llk #1338). A DFB-backed
-/// tile_accumulate_add contribution also uses source registers via
-/// binary_dest_reuse_tiles. These consumers are incompatible with the mode.
+/// unpack mode. FPU-style ops (reduce, matmul, FPU-eligible add/sub/mul, and
+/// the tile_accumulate contribution) route the operand through SRCA/SRCB;
+/// `tile_bcast`/`tile_transpose` lower to `unary_bcast`/`transpose_dest`, which
+/// produce incorrect results under `UnpackToDestFp32` on their source CB
+/// (tt-llk #1338). Both are incompatible with the mode.
 static std::optional<int64_t>
 getF32DefaultUnpackCBIndex(Operation *op, Value operand, ComputeOp computeOp) {
   if (!isa<TileReduceOp, TileMatmulBlockOp, TileBcastOp, TileTransposeOp>(op) &&
@@ -129,11 +142,12 @@ struct F32InputCBUsage {
 
 /// Collect f32 input CB usage in one compute body.
 ///
-/// FPU consumers (reduce, matmul, and FPU-eligible add/sub/mul) read via
-/// SRCA/SRCB and must remain in `Default` unpack mode. SFPU consumers that read
-/// f32 directly into DST require `UnpackToDestFp32`. These modes are configured
-/// per kernel on the function, so conflicts must be diagnosed after aggregating
-/// usage across every ttl.compute in the func.func.
+/// FPU consumers (reduce, matmul, FPU-eligible add/sub/mul, and
+/// tile_accumulate contributions) read via SRCA/SRCB and must remain in
+/// `Default` unpack mode. SFPU consumers that read f32 directly into DST
+/// require `UnpackToDestFp32`. These modes are configured per kernel on the
+/// function, so conflicts must be diagnosed after aggregating usage across
+/// every ttl.compute in the func.func.
 static F32InputCBUsage collectF32InputCBUsage(ComputeOp computeOp) {
   F32InputCBUsage usage;
 
@@ -149,9 +163,6 @@ static F32InputCBUsage collectF32InputCBUsage(ComputeOp computeOp) {
       continue;
     }
     for (Value operand : op.getOperands()) {
-      if (isAccumulateContributionOperand(&op, operand)) {
-        continue;
-      }
       if (std::optional<int64_t> cbIdx =
               getF32InputCBIndexForBlockArg(operand, computeOp)) {
         usage.sfpuCBs.insert(*cbIdx);
@@ -218,21 +229,40 @@ struct TTLSetComputeKernelConfigPass
       });
     }
 
+    Operation *directF32DstOp = nullptr;
+    funcOp->walk([&](Operation *op) {
+      if (isDirectDstTileOp(op) && hasF32TileOperandOrResult(op)) {
+        directF32DstOp = op;
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+    needsFp32 |= directF32DstOp != nullptr;
+
+    TileBcastOp bf16Bcast;
+    funcOp->walk([&](TileBcastOp bcastOp) -> WalkResult {
+      std::optional<Type> elementType =
+          getTileElementType(bcastOp.getInput().getType());
+      if (elementType && elementType->isBF16()) {
+        bf16Bcast = bcastOp;
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+    if (directF32DstOp && bf16Bcast) {
+      bf16Bcast.emitOpError(
+          "cannot share a kernel with a direct f32 DST operation because "
+          "fp32_dest_acc_en is kernel-wide");
+      signalPassFailure();
+      return;
+    }
+
     // TODO(#454): Remove once tt-llk #1338 is fixed. unary_bcast produces
     // incorrect results with fp32_dest_acc_en and bf16 CBs. The same failure
     // mode appears when full-fp32 reduce enables fp32_dest_acc_en and the
     // fused body still feeds a bf16 unary_bcast (e.g. reduce then broadcast).
     if (fp32FromMatmul || fp32FromReduce) {
-      bool hasBf16Bcast = false;
-      funcOp->walk([&](TileBcastOp bcastOp) -> WalkResult {
-        auto elemType = getTileElementType(bcastOp.getInput().getType());
-        if (elemType && !elemType->isF32()) {
-          hasBf16Bcast = true;
-          return WalkResult::interrupt();
-        }
-        return WalkResult::advance();
-      });
-      if (hasBf16Bcast) {
+      if (bf16Bcast) {
         needsFp32 = false;
       }
     }
@@ -255,7 +285,7 @@ struct TTLSetComputeKernelConfigPass
       kernelSFPUCBs.insert_range(usage.sfpuCBs);
       for (auto [cb, consumer] : usage.fpuCBConsumers) {
         // Keep the first FPU consumer for stable diagnostics when multiple
-        // compute regions consume the same CB through the FPU path.
+        // compute regions consume the same CB through FPU operands.
         kernelFPUCBConsumers.insert({cb, consumer});
       }
     });

@@ -90,7 +90,8 @@ The current design preserves these invariants:
 
 - `ttl.accumulation_scope` declares accumulation outputs and policies. It
   does not encode DST, L1 packer, or explicit DFB state.
-- Conditional rejection belongs in `ttl-insert-accumulation-scopes`, not in
+- Conditional rejection belongs in `ttl-insert-accumulation-scopes{kind=dfb}`,
+  not in
   the `ttl.accumulation_scope` verifier. The verifier remains structural.
 - `ttl.l1_acc_loop` plus `ttl.l1_acc_initial` is static first-update
   lowering metadata, not the full accumulation model.
@@ -208,8 +209,8 @@ contract without forcing reductions to be wrapped in `ttl.accumulation_scope`.
 
 The TTL-to-TTKernel pipeline handles accumulation in this order:
 
-1. `ttl-insert-accumulation-scopes{kind=tensor}` runs before
-   `ttl-materialize-loop-state`. It inserts semantic scopes around recognized
+1. `ttl-form-accumulation-scopes{kind=tensor}` runs before
+   `ttl-materialize-loop-state`. It forms semantic scopes around recognized
    single-output additive tensor recurrences and records `init` initial mode.
 
 2. `ttl-lower-accumulation-scopes{kind=tensor}` consumes those scopes. It
@@ -321,7 +322,7 @@ The current tensor strategy candidates populate the features as follows:
 
 | Candidate | Feature model |
 | --- | --- |
-| DST-resident tensor accumulation | One coalesced contribution wait and one final output materialization; pack/unpack tile traffic is the coalesced contribution tiles plus the initial accumulator tiles; live DST tiles equals one accumulator tensor. |
+| DST-resident tensor accumulation | One initial accumulator materialization, streamed per-iteration contribution traffic or one resident contribution materialization, and live DST tiles equal to one accumulator tensor. |
 | L1 packer tensor accumulation | One initial output materialization, two DFB handoffs per iteration for accumulator read/update through L1, per-iteration pack/unpack traffic for accumulator update, and two packer reconfigurations. |
 
 The cost values are calibration inputs, not semantic requirements. They affect
@@ -563,7 +564,7 @@ described below.
 
 ### Lowering Strategies
 
-Additive tensor recurrences use `ttl-insert-accumulation-scopes` followed
+Additive tensor recurrences use `ttl-form-accumulation-scopes` followed
 by `ttl-lower-accumulation-scopes`.
 
 **DST strategy:** when the recurrence satisfies the DST legality rules,

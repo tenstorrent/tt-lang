@@ -1807,12 +1807,16 @@ def _lower_program_to_kernel(
 
         compiler_dfbs_flag = int(compiler_options.compiler_dfbs)
         accumulation_strategy = compiler_options.accumulation_strategy
+        # Must run before loop-state materialization removes tensor iter_args.
+        tensor_recurrence_pipeline = (
+            "ttl-form-accumulation-scopes,"
+            f"ttl-lower-accumulation-scopes{{strategy={accumulation_strategy}}},"
+            "ttl-materialize-loop-state"
+        )
         # Mirrors createTTLToTTKernelPipeline in TTLPipelines.cpp; keep the two
         # in sync when adding or reordering passes.
         pipeline_passes = [
-            "func.func(ttl-insert-accumulation-scopes)",
-            f"func.func(ttl-lower-accumulation-scopes{{strategy={accumulation_strategy}}})",
-            "func.func(ttl-materialize-loop-state)",
+            f"func.func({tensor_recurrence_pipeline})",
             "func.func(ttl-insert-copy-wait)",
             "func.func(ttl-auto-sync)",
             "func.func(ttl-insert-accumulation-scopes{kind=dfb})",
