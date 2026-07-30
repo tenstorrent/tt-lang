@@ -106,6 +106,13 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Insert compiler-allocated intermediate DFBs for fused computations (default: enabled).",
     )
     p.add_argument(
+        "--ttl-reuse-user-dfbs",
+        default=None,
+        dest="reuse_user_dfbs",
+        action=argparse.BooleanOptionalAction,
+        help="Reuse physical DFB indices for proven non-overlapping logical lifetimes (default: enabled).",
+    )
+    p.add_argument(
         "--ttl-specialize-cores",
         default=None,
         dest="specialize_cores",
@@ -177,6 +184,7 @@ class CompilerOptions:
     matmul_full_fp32: bool = True
     strict_f32_acc: bool = False
     compiler_dfbs: bool = True
+    reuse_user_dfbs: bool = True
     specialize_cores: bool = False
     l1_budget: int = dataclasses.field(default=0, compare=False, hash=False)
 

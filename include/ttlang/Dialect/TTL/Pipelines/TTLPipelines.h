@@ -63,6 +63,11 @@ struct TTLToTTKernelPipelineOptions
                      "computations. When disabled, emit an error if any "
                      "operation requires a compiler-allocated DFB."),
       llvm::cl::init(true)};
+  Option<bool> reuseUserDFBs{
+      *this, "reuse-user-dfbs",
+      llvm::cl::desc("Reuse physical DFB indices when concurrent-kernel "
+                     "liveness proves that logical lifetimes do not overlap."),
+      llvm::cl::init(true)};
   Option<bool> specializeCores{
       *this, "specialize-cores",
       llvm::cl::desc(

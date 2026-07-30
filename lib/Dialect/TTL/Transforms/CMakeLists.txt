@@ -1,7 +1,9 @@
 add_mlir_dialect_library(TTLangTTLTransforms
   AccumulationAnalysis.cpp
   AccumulationUtils.cpp
-  ConvertTTLToCompute.cpp
+  DFBConcurrentKernelLivenessAnalysis.cpp
+  DFBLogicalIdentityAnalysis.cpp
+  DFBPhysicalAllocationPlan.cpp
   ConvertTTLComputeToSCF.cpp
   ConvertTTLTileOpsToTTKernel.cpp
   ConvertTTLToCompute.cpp

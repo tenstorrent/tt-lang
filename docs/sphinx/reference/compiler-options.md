@@ -20,6 +20,7 @@ python my_kernel.py --no-ttl-maximize-dst
 | `--ttl-combine-pack-tiles` / `--no-ttl-combine-pack-tiles` | enabled | Combine consecutive `pack_tile` ops on the same DFB with contiguous DST and DFB indices into a single `pack_tile_block` call. |
 | `--ttl-strict-f32-acc` / `--no-ttl-strict-f32-acc` | disabled | Error at compile time if a `+=` accumulation loop's output block exceeds f32 DST capacity (4 tiles with double-buffering). When enabled, guarantees each accumulation step fits in a single DST section without subblocking. |
 | `--ttl-compiler-dfbs` / `--no-ttl-compiler-dfbs` | enabled | Insert compiler-allocated intermediate DFBs at fusion split points where an operation requires DFB-attached inputs (reduce, broadcast, matmul, transpose). When disabled, the compiler emits an error if any fused computation requires an intermediate DFB. |
+| `--ttl-reuse-user-dfbs` / `--no-ttl-reuse-user-dfbs` | enabled | Reuse physical DFB indices when concurrent-kernel liveness proves that compatible logical DFB lifetimes do not overlap. Disabling retains user-declared physical indices. |
 | `--ttl-specialize-cores` / `--no-ttl-specialize-cores` | disabled | Clone each TTKernel function whose control flow branches on a core coordinate once per launch coordinate (`ttkernel-specialize-cores`), replacing `my_logical_x_` / `my_logical_y_` with constants and tagging clones with `ttl.core_coord` for per-core dispatch. Opt-in. |
 
 **f32 accumulation precision:** `dst` keeps the accumulator in the DST register
@@ -125,31 +126,35 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 | `combine-pack-tiles` | bool | `true` | Combine consecutive `pack_tile` ops into `pack_tile_block`. |
 | `strict-f32-acc` | bool | `false` | Error if a `+=` accumulation loop's output block exceeds f32 DST capacity. |
 | `compiler-dfbs` | bool | `true` | Insert compiler-allocated intermediate DFBs for fused computations. Error if disabled and any operation requires one. |
+| `reuse-user-dfbs` | bool | `true` | Reuse physical DFB indices for compatible logical DFBs with proven non-overlapping concurrent lifetimes. |
 | `specialize-cores` | bool | `false` | Clone TTKernel functions that branch on a core coordinate once per launch coordinate (`ttkernel-specialize-cores`), then run `canonicalize` / `cse`. Maps from `--ttl-specialize-cores`. |
 | `lower-to-emitc` | bool | `false` | Run the TTKernel-to-EmitC backend (produces C++ source). |
 
 The pipeline runs these passes in order:
 
-- `ttl-insert-accumulation-scopes` - insert semantic accumulation scopes for eligible tensor recurrences
+- `ttl-form-accumulation-scopes` - form semantic accumulation scopes for eligible tensor recurrences
 - `ttl-lower-accumulation-scopes` - lower tensor accumulation scopes with `strategy=<accumulation-strategy>`
 - `ttl-materialize-loop-state` - remove ranked-tensor `scf.for` iter_args
-- `ttl-insert-intermediate-dfbs` - allocate compiler-managed DFBs for intermediate values (transposes, etc.); verify and error when `compiler-dfbs=false`
 - `ttl-insert-copy-wait` - insert missing `ttl.wait` after `ttl.copy` ops whose transfer handle has no wait user
 - `ttl-auto-sync` - run `ttl-insert-cb-sync` and `ttl-coalesce-dfb-acquires`
 - `ttl-insert-accumulation-scopes{kind=dfb}` - insert semantic accumulation scopes for user-written `+=` loops
 - `ttl-lower-accumulation-scopes{kind=dfb}` - lower user-written `+=` scopes to L1 packer metadata
+- `ttl-form-producer-compute` - form producer-side compute regions
+- `ttl-insert-intermediate-dfbs` - allocate compiler-managed DFBs for intermediate values (transposes, etc.); verify and error when `compiler-dfbs=false`
+- `ttl-insert-copy-wait` - insert missing waits after asynchronous copies introduced by materialization
 - `convert-ttl-to-compute` - lower TTL elementwise tensor ops to `ttl.compute` with tile ops
+- `ttl-auto-sync` - run `ttl-insert-cb-sync` and `ttl-coalesce-dfb-acquires`
+- `ttl-finalize-dfb-indices` - assign logical DFBs to physical indices and emit runtime allocation metadata; controlled by `reuse-user-dfbs`
 - `ttl-set-compute-kernel-config` - set `fp32_dest_acc_en` / `dst_full_sync_en` defaults
 - `ttl-assign-dst` - DST register allocation (linear scan with copy insertion)
 - `ttl-subblock-compute-for-dst` - tile `ttl.compute` into DST-sized subblocks *(only if `maximize-dst=true`)*; optionally refine reserve/push to per-subblock granularity *(only if `subblock-sync=true`)*
 - `ttl-lower-to-loops` - lower `ttl.compute` to `scf.for` loops; matmul computes are expanded inline via `generateMatmulCompute`
 - `ttl-schedule-operations` - reorder tile ops by dependency depth and kind *(only if `maximize-dst=true`)*
-- `ttl-finalize-dfb-indices` - assign concrete DFB indices to compiler-allocated buffers
 - `ttl-annotate-cb-associations` - annotate block args with DFB indices
-- `ttl-verify-pipenet-guards` - verify PipeNet guard structure
-- `ttl-verify-dfb-spsc` - verify single-producer/single-consumer DFB ownership
-- `ttl-erase-pipenet-scopes` - erase PipeNet verification-only scopes
-- `ttl-validate-cb-budget` - validate DFB allocation against L1 capacity
+- `ttl-verify-pipenet-guards` - verify PipeNet execution and synchronization
+- `ttl-verify-dfb-spsc` - verify one producer and one consumer per launched node
+- `ttl-erase-pipenet-scopes` - remove verified PipeNet scope markers
+- `ttl-validate-cb-budget` - validate physical DFB storage against L1 capacity
 - `convert-ttl-to-ttkernel` - lower TTL DMA ops to TTKernel
 - `ttkernel-insert-inits` - insert hardware init ops before compute ops
 - `ttkernel-insert-l1-accumulation` - insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops
@@ -198,6 +203,19 @@ Insert compiler-allocated intermediate DFBs at fusion split points.
 
 ```bash
 ttlang-opt input.mlir -p 'func.func(ttl-insert-intermediate-dfbs{enable=false})'
+```
+
+#### `ttl-finalize-dfb-indices`
+
+Assign physical indices to logical DFBs and emit the complete runtime
+allocation table.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `reuse-user-dfbs` | bool | `true` | Reuse a physical index when concurrent-kernel liveness proves that two compatible logical DFB lifetimes cannot overlap. When false, retain user DFB indices and reuse only compiler-created DFBs within each kernel. |
+
+```bash
+ttlang-opt input.mlir -p 'builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false})'
 ```
 
 #### `ttl-set-compute-kernel-config`
