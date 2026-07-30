@@ -18,11 +18,14 @@
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 
 namespace llvm {
 class raw_ostream;
@@ -47,6 +50,18 @@ enum class PipeTransportSchedule {
   Overlapped,
 };
 
+/// Component responsible for advancing one transport storage allocation.
+enum class PipeTransportStorageOwnership {
+  DFB,
+  Transport,
+};
+
+/// Transport role associated with one direct scratch storage access.
+enum class PipeTransportStorageRole {
+  Source,
+  Destination,
+};
+
 /// Required completion point for transport-owned credit updates.
 enum class PipeTransportCreditCompletion {
   /// Complete the update before continuing past its operation.
@@ -65,11 +80,29 @@ struct PipeTransportIterationDomain {
   SmallVector<Operation *, 2> enclosingLoops;
 };
 
-/// Backend-independent source DFB storage selected for one stream.
+/// Backend-independent source storage selected for one stream.
 struct PipeTransportSourceStorage {
   int64_t blockCount = 1;
   int64_t blocksPerTransfer = 1;
   int64_t stageDepth = 1;
+  int64_t scratchByteOffset = 0;
+  int64_t scratchBytes = 0;
+  PipeTransportStorageOwnership ownership = PipeTransportStorageOwnership::DFB;
+};
+
+/// Direct address calculation for one transport-owned tensor copy.
+struct PipeTransportStorageAccess {
+  PipeTransportStorageRole role = PipeTransportStorageRole::Source;
+  int64_t blockCount = 1;
+  int64_t blockStrideBytes = 0;
+  int64_t scratchByteOffset = 0;
+  std::optional<int64_t> dynamicSlotCounterIndex;
+};
+
+/// Initial value for one receiver-local transport storage slot counter.
+struct PipeTransportSlotCounterInitInfo {
+  int64_t counterIndex = 0;
+  int64_t initialSlot = 0;
 };
 
 /// Logical payload pages copied by one original transfer.
@@ -90,6 +123,9 @@ struct PipeTransportEndpoint {
   int64_t slotSpanBlocks = 1;
   int64_t blockCount = 1;
   int64_t groupDepth = 1;
+  int64_t scratchByteOffset = 0;
+  int64_t scratchBytes = 0;
+  PipeTransportStorageOwnership ownership = PipeTransportStorageOwnership::DFB;
   PipeTransportIterationDomain iterationDomain;
   ReceiverAddressSequenceProof addressSequence;
 };
@@ -140,7 +176,7 @@ public:
     return sourceIterationDomain;
   }
 
-  /// Return the source DFB storage decision.
+  /// Return the source storage decision.
   const PipeTransportSourceStorage &getSourceStorage() const {
     return sourceStorage;
   }
@@ -202,6 +238,9 @@ public:
   /// Return streams in deterministic PipeGraph order.
   ArrayRef<PipeTransportStream> getStreams() const { return streams; }
 
+  /// Return the per-core scratch bytes required by transport-owned storage.
+  int64_t getSramScratchBytes() const { return sramScratchBytes; }
+
   /// Return the stream with `id`.
   const PipeTransportStream &getStream(PipeTransportStreamId id) const;
 
@@ -211,6 +250,20 @@ public:
 
   /// Return the stream that owns `operation`.
   const PipeTransportStream &getStreamForOperation(Operation *operation) const;
+
+  /// Return whether transport synchronization replaces this DFB operation.
+  bool ownsDFBLifecycle(Operation *operation) const;
+
+  /// Return the direct storage decision for `operation`, if present.
+  const PipeTransportStorageAccess *
+  lookupStorageAccess(Operation *operation) const;
+
+  /// Return receiver-local slot counters grouped by kernel function.
+  const llvm::MapVector<func::FuncOp,
+                        SmallVector<PipeTransportSlotCounterInitInfo>> &
+  getSlotCounterInitializations() const {
+    return slotCounterInitializations;
+  }
 
   /// Print all stream decisions deterministically.
   void print(llvm::raw_ostream &os) const;
@@ -223,6 +276,12 @@ private:
   SmallVector<PipeTransportStream, 0> streams;
   llvm::DenseMap<PipeTransferNodeId, PipeTransportStreamId> streamByTransfer;
   llvm::DenseMap<Operation *, PipeTransportStreamId> streamByOperation;
+  llvm::DenseSet<Operation *> ownedDFBLifecycleOperations;
+  llvm::DenseMap<Operation *, PipeTransportStorageAccess>
+      storageAccessByOperation;
+  llvm::MapVector<func::FuncOp, SmallVector<PipeTransportSlotCounterInitInfo>>
+      slotCounterInitializations;
+  int64_t sramScratchBytes = 0;
 };
 
 /// Construct transport streams from proven PipeGraph and capacity facts.

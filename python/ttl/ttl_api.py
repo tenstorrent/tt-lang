@@ -1855,6 +1855,7 @@ def _lower_program_to_kernel(
         assign_dst_pass = "ttl-assign-dst"
 
         compiler_dfbs_flag = int(compiler_options.compiler_dfbs)
+        pipe_batch_tiles = compiler_options.pipe_batch_tiles
         reuse_user_dfbs_flag = int(compiler_options.reuse_user_dfbs)
         exact_coloring_search_limit = (
             compiler_options.dfb_exact_coloring_search_limit
@@ -1868,7 +1869,7 @@ def _lower_program_to_kernel(
             "func.func(convert-ttl-to-compute)",
             "func.func(ttl-insert-cb-sync)",
             "ttl-verify-pipenet",
-            "ttl-form-pipe-transports",
+            f"ttl-form-pipe-transports{{group-size={pipe_batch_tiles}}}",
             "func.func(ttl-coalesce-dfb-acquires)",
             "ttl-finalize-dfb-indices{"
             f"reuse-user-dfbs={reuse_user_dfbs_flag} "
