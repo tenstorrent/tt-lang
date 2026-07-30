@@ -28,3 +28,13 @@ func.func @negative_constant_table_value(%index: index) -> index {
   %value = ttkernel.experimental.constant_table_lookup %index, [0, -1] : index
   return %value : index
 }
+
+// -----
+
+// Test: a constant lookup index must identify an element in the table.
+func.func @constant_table_index_out_of_bounds() -> index {
+  %index = arith.constant 2 : index
+  // expected-error @below {{'ttkernel.experimental.constant_table_lookup' op constant index 2 is outside the table bounds [0, 2)}}
+  %value = ttkernel.experimental.constant_table_lookup %index, [10, 20] : index
+  return %value : index
+}
