@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "PipeGraph.h"
+#include "PipeLowering.h"
 #include "PipeTransferExpansion.h"
 #include "PipeTransportDFBAnalysis.h"
 #include "ttlang/Analysis/LoopIterationUtils.h"
@@ -758,6 +759,19 @@ struct TTLFormPipeTransportsPass
     }
     PipeGraph &pipeGraph = *maybePipeGraph;
 
+    // All-published planning bounds address-table storage independently of the
+    // receiver-address option selected by the later conversion pass.
+    PipeResourcePlan conservativeResourcePlan;
+    if (failed(buildPipeResourcePlan(module, analysis, pipeGraph,
+                                     conservativeResourcePlan,
+                                     /*enableComputedAddresses=*/false,
+                                     /*synchronizationSelection=*/nullptr))) {
+      signalPassFailure();
+      return;
+    }
+    assert(conservativeResourcePlan.sramScratch.bytes >= 0 &&
+           "pipe scratch allocation must be non-negative");
+
     llvm::MapVector<Operation *, SmallVector<const PipeTransferNode *>>
         transfersByLoop;
     for (const PipeTransferNode &transfer : pipeGraph.getPipeTransferNodes()) {
@@ -782,7 +796,8 @@ struct TTLFormPipeTransportsPass
     }
 
     IRRewriter rewriter(module.getContext());
-    uint64_t selectedScratchBytes = 0;
+    uint64_t selectedScratchBytes =
+        static_cast<uint64_t>(conservativeResourcePlan.sramScratch.bytes);
     for (PipeTransportLoopCandidate &candidate : candidates) {
       FailureOr<DFBAllocationSummary> allocationSummary =
           getDFBAllocationSummary(module);

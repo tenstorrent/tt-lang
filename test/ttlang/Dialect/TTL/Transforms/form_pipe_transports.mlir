@@ -6,6 +6,7 @@
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='group-size=1' | FileCheck %s --check-prefix=DISABLED
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=24576' | FileCheck %s --check-prefix=NOFIT
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=61440' | FileCheck %s --check-prefix=SCRATCH-BUDGET
+// RUN: ttlang-opt %s --ttl-form-pipe-transports='group-size=4 l1-budget-override=98304' | FileCheck %s --check-prefix=ADDRESS-BUDGET
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports,convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=true})' -debug-only=ttl-pipe-transport-plan 2>&1 >/dev/null | FileCheck %s --check-prefix=OVERLAP
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports,convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=true})' | FileCheck %s --check-prefix=PAGES
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports{group-size=4},convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=true})' | FileCheck %s --check-prefix=RESIDUAL
@@ -156,6 +157,16 @@
 // SCRATCH-BUDGET: %[[STEP:.*]] = arith.constant 2 : index
 // SCRATCH-BUDGET: ttl.pipe_transfer.create %{{.*}} {block_span = 2 : i64, destination_group_depth = 2 : i64
 // SCRATCH-BUDGET: scf.for %{{.*}} = %{{.*}} to %{{.*}} step %[[STEP]]
+
+// Receiver-published address metadata shares the L1 budget with DFB and
+// transport scratch allocations. R=4 needs 98336 bytes after final planning;
+// the exact 98304-byte bound therefore selects R=3.
+// ADDRESS-BUDGET-LABEL: func.func @point_to_point
+// ADDRESS-BUDGET: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 6}
+// ADDRESS-BUDGET-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 6}
+// ADDRESS-BUDGET: %[[STEP:.*]] = arith.constant 3 : index
+// ADDRESS-BUDGET: ttl.pipe_transfer.create %{{.*}} {block_span = 3 : i64, destination_group_depth = 2 : i64
+// ADDRESS-BUDGET: scf.for %{{.*}} = %{{.*}} to %{{.*}} step %[[STEP]]
 
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @point_to_point(
