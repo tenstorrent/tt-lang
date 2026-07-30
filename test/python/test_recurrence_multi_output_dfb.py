@@ -345,3 +345,124 @@ def test_branch_intermediate_consumers(device):
         result[:, TILE : TILE + 1],
         threshold=0.99,
     )
+
+
+N_RUNNING_MAX_CHUNKS = 4
+RUNNING_MAX_WIDTH_TILES = 2
+
+
+@ttl.operation(grid=(1, 1))
+def running_max_subtract(input_tensor, negative_infinity, output):
+    input_reduce_dfb = ttl.make_dataflow_buffer_like(
+        input_tensor, shape=(1, RUNNING_MAX_WIDTH_TILES), block_count=2
+    )
+    input_subtract_dfb = ttl.make_dataflow_buffer_like(
+        input_tensor, shape=(1, RUNNING_MAX_WIDTH_TILES), block_count=2
+    )
+    output_dfb = ttl.make_dataflow_buffer_like(
+        output, shape=(1, RUNNING_MAX_WIDTH_TILES), block_count=2
+    )
+    chunk_max_dfb = ttl.make_dataflow_buffer_like(
+        input_tensor, shape=(1, 1), block_count=2
+    )
+    max_state_dfb = ttl.make_dataflow_buffer_like(
+        input_tensor, shape=(1, 1), block_count=2
+    )
+    seed_dfb = ttl.make_dataflow_buffer_like(
+        negative_infinity, shape=(1, 1), block_count=2
+    )
+
+    @ttl.compute()
+    def compute():
+        seed = seed_dfb.wait()
+        initial_max = max_state_dfb.reserve()
+        initial_max.store(seed)
+        for _ in range(N_RUNNING_MAX_CHUNKS):
+            input_reduce_block = input_reduce_dfb.wait()
+            input_subtract_block = input_subtract_dfb.wait()
+            chunk_max_output = chunk_max_dfb.reserve()
+            chunk_max_output.store(
+                ttl.math.reduce_max(input_reduce_block, dims=[1])
+            )
+            chunk_max = chunk_max_dfb.wait()
+            previous_max = max_state_dfb.wait()
+            next_max = ttl.math.max(previous_max, chunk_max)
+            next_max_output = max_state_dfb.reserve()
+            next_max_output.store(next_max)
+            broadcast_max = ttl.block.broadcast(
+                next_max, dims=[1], shape=(1, RUNNING_MAX_WIDTH_TILES)
+            )
+            output_block = output_dfb.reserve()
+            output_block.store(ttl.sub(input_subtract_block, broadcast_max))
+        _ = max_state_dfb.wait()
+
+    @ttl.datamovement()
+    def data_movement():
+        seed_output = seed_dfb.reserve()
+        ttl.copy(negative_infinity[0:1, 0:1], seed_output)
+        for chunk_index in range(N_RUNNING_MAX_CHUNKS):
+            input_reduce_output = input_reduce_dfb.reserve()
+            input_subtract_output = input_subtract_dfb.reserve()
+            source = input_tensor[
+                chunk_index : chunk_index + 1, 0:RUNNING_MAX_WIDTH_TILES
+            ]
+            ttl.copy(source, input_reduce_output)
+            ttl.copy(source, input_subtract_output)
+            output_block = output_dfb.wait()
+            ttl.copy(
+                output_block,
+                output[
+                    chunk_index : chunk_index + 1, 0:RUNNING_MAX_WIDTH_TILES
+                ],
+            )
+
+    @ttl.datamovement()
+    def unused_data_movement():
+        pass
+
+
+@pytest.mark.parametrize(
+    "dtype, threshold",
+    [(torch.bfloat16, 0.99), (torch.float32, 0.9999)],
+    ids=["bf16", "fp32"],
+)
+@pytest.mark.requires_device
+def test_running_max_subtract(device, dtype, threshold):
+    torch.manual_seed(0)
+    input_tensor = torch.randn(
+        N_RUNNING_MAX_CHUNKS * TILE,
+        RUNNING_MAX_WIDTH_TILES * TILE,
+        dtype=dtype,
+    )
+
+    running_max = torch.full((TILE, 1), -1e30, dtype=torch.float32)
+    expected = torch.empty_like(input_tensor, dtype=torch.float32)
+    for chunk_index in range(N_RUNNING_MAX_CHUNKS):
+        input_chunk = input_tensor[
+            chunk_index * TILE : (chunk_index + 1) * TILE, :
+        ].float()
+        running_max = torch.maximum(
+            running_max, input_chunk.amax(dim=1, keepdim=True)
+        )
+        expected[chunk_index * TILE : (chunk_index + 1) * TILE, :] = (
+            input_chunk - running_max
+        )
+
+    input_dram = to_dram(input_tensor, device)
+    negative_infinity_dram = to_dram(
+        torch.full((TILE, TILE), -1e30, dtype=dtype), device
+    )
+    output_dram = to_dram(
+        torch.zeros(
+            N_RUNNING_MAX_CHUNKS * TILE,
+            RUNNING_MAX_WIDTH_TILES * TILE,
+            dtype=dtype,
+        ),
+        device,
+    )
+
+    running_max_subtract(input_dram, negative_infinity_dram, output_dram)
+    ttnn.synchronize_device(device)
+
+    result = ttnn.to_torch(output_dram).float()
+    assert_pcc(expected, result, threshold)
