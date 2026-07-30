@@ -179,16 +179,14 @@ if _ttnn_check.returncode == 0:
 if getattr(config, "ttlang_has_device", False) or os.environ.get("TT_METAL_SIMULATOR"):
     config.available_features.add("tt-device")
 
-# Add multi-device feature when >= 4 Tenstorrent chips are physically present.
+# Add multi-device feature when at least two Tenstorrent chips are physically present.
 # Count /dev/tenstorrent device nodes (cheap, no cluster open) instead of probing
-# ttnn, which would open the device at config time for every lit run. Tests that
-# need a fabric mesh expose all chips via `env -u TT_VISIBLE_DEVICES`, so the
-# physical chip count is what they will see.
+# ttnn, which would open the device at config time for every lit run.
 try:
     _tt_chip_count = sum(
         1 for entry in os.listdir("/dev/tenstorrent") if entry.isdigit()
     )
 except OSError:
     _tt_chip_count = 0
-if _tt_chip_count >= 4:
+if _tt_chip_count >= 2:
     config.available_features.add("multi-device")
