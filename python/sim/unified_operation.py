@@ -538,12 +538,9 @@ def build_multikernel_function(
     module = ast.Module(body=[fn_def], type_ignores=[])
     ast.fix_missing_locations(module)
 
-    try:
-        filename = inspect.getfile(func)
-    except (OSError, TypeError):
-        filename = f"<ttl-unified-operation:{func.__name__}>"
-
-    code = compile(module, filename, "exec")
+    # Reached only for a body that parsed, so it has a file to be compiled under:
+    # the original one, which is what makes the kernels' line numbers resolve.
+    code = compile(module, inspect.getfile(func), "exec")
     # The synthesized function is compiled at module scope, with no enclosing
     # cells, so what the original captured has to be passed in by name.
     exec_ns: Dict[str, Any] = dict(namespace)

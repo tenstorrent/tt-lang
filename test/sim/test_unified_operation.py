@@ -20,18 +20,22 @@ import re
 import sys
 import textwrap
 from pathlib import Path
-from typing import Any, Optional
+from types import SimpleNamespace
+from typing import Any, Callable, Optional
 
 import pytest
 
 from sim import ttl as ttl_alias
+from sim import unified_operation as sim_unified_operation
 from sim.copy import copy as renamed_copy
 from sim.decorators import compute, datamovement
 from sim.dfb import make_dataflow_buffer_like
 from sim.unified_operation import (  # type: ignore[reportPrivateUsage]
     _clear_decorators,
+    _is_kernel_decorator,
     _is_operation_decorator,
     _is_setup_stmt,
+    _load_frontend_module,
     _local_dfb_names,
     _parse_operation_funcdef,
     _reject_aliased_api,
@@ -74,6 +78,63 @@ def _unified_body(a: Any, out: Any) -> None:
     out_blk = dfb.wait()
     ttl.copy(out_blk, out[0:1, 0:1]).wait()
     out_blk.pop()
+
+
+def test_a_missing_frontend_module_names_the_places_it_looked() -> None:
+    """The shared rules and the splitter are compiler files, loaded by path.
+
+    They ship with the simulator wheel rather than being imported, so a packaging
+    change that stops copying one of them breaks every unified operation at
+    decoration time. Neither the file nor packaging appears in what a bare lookup
+    failure would report, so the error names both places it searched.
+    """
+    with pytest.raises(RuntimeError) as excinfo:
+        _load_frontend_module("atom_not_shipped.py")
+
+    reason = str(excinfo.value)
+    assert "atom_not_shipped.py" in reason, f"error does not name the file:\n{reason}"
+    frontend_dir = Path(_rules().__file__ or "").parent
+    assert (
+        str(frontend_dir) in reason
+    ), f"error does not name the source tree:\n{reason}"
+    assert (
+        str(Path(sim_unified_operation.__file__ or "").parent) in reason
+    ), f"error does not name the bundled location:\n{reason}"
+
+
+def _lambda_body() -> Callable[[Any, Any], Any]:
+    """A body Python can call but the simulator cannot read back as a ``def``."""
+    body: Callable[[Any, Any], Any] = lambda a, out: ttl.copy(a, out).wait()
+    return body
+
+
+@pytest.mark.parametrize(
+    "body",
+    [_lambda_body(), len],
+    ids=["lambda", "builtin"],
+)
+def test_a_body_that_does_not_read_back_as_a_def_stays_on_the_legacy_path(
+    body: Any,
+) -> None:
+    """Splitting needs the body's statements, so an unreadable body is left alone.
+
+    ``inspect.getsourcelines`` gives a lambda's enclosing statement and a builtin
+    nothing at all, neither of which parses as a ``def``. Calling such a body
+    unified would hand the splitter no statements to assign; the legacy path runs
+    it as written instead.
+    """
+    assert not is_unified_body(body)
+
+
+def test_parsing_a_body_that_is_not_a_def_names_the_function() -> None:
+    """The parse failure is reported against the operation, not as a stray None.
+
+    Every caller here treats a parsed body as a given, so the one that cannot be
+    parsed has to say which function it was reading.
+    """
+    with pytest.raises(ValueError) as excinfo:
+        _parse_operation_funcdef(_lambda_body())
+    assert "<lambda>" in str(excinfo.value)
 
 
 def test_parsed_body_uses_absolute_line_numbers() -> None:
@@ -182,6 +243,57 @@ def test_hand_written_kernels_are_not_classified_as_unified(body: Any) -> None:
     bodies as unified, which splits them and silently returns a wrong answer.
     """
     assert not is_unified_body(body)
+
+
+def _foreign_kernel_decorator() -> Any:
+    """A ``compute`` decorator from somewhere other than the running simulator."""
+
+    def compute() -> Any:
+        raise AssertionError("stands in for another build's decorator; never called")
+
+    return compute
+
+
+@pytest.mark.parametrize(
+    "spelling, symbols, recognized",
+    [
+        ("@ttl.compute()", {}, True),
+        ("@T.compute()", {}, True),
+        ("@ttl.compute()", {"ttl": object()}, True),
+        (
+            "@other.compute()",
+            {"other": SimpleNamespace(compute=_foreign_kernel_decorator())},
+            True,
+        ),
+        ("@registry['compute']()", {"registry": {"compute": compute}}, False),
+    ],
+    ids=[
+        "unknown_receiver",
+        "unknown_alias",
+        "receiver_without_the_attribute",
+        "another_build_of_the_api",
+        "spells_no_name",
+    ],
+)
+def test_a_decorator_that_does_not_resolve_falls_back_to_its_spelling(
+    spelling: str, symbols: dict[str, Any], recognized: bool
+) -> None:
+    """Where the decorator object is out of reach, the name it spells decides.
+
+    Resolution needs the body's own scope and the simulator's own decorator
+    objects, and a body can be short of either: bindings this cannot follow, or a
+    decorator from another build of the API. Since calling a multi-kernel body
+    unified splits it and returns a wrong answer, every fallback errs toward
+    "multi-kernel" -- which is also all the compiler does
+    (``atom_rules.defines_kernels_by_spelling``), so resolving first only adds
+    recognition.
+
+    The exception is a decorator that spells no name at all: neither rule can find
+    a kernel in ``@registry['compute']()``, and the compiler's spelling rule cannot
+    either, so both frontends read such a body as unified.
+    """
+    fn_def = _decorated_funcdef(spelling)
+    assert _is_kernel_decorator(fn_def.decorator_list[0], symbols) == recognized
 
 
 @pytest.mark.parametrize("scheduler", ["greedy", "fair"])
@@ -368,6 +480,21 @@ def test_unified_body_via_namespace_binding_is_rejected(shadowed_ttl: None) -> N
     the receiver is a namespace object rather than the API. It mis-splits.
     """
     assert _rejection_reason(_unified_body_via_namespace_binding) is not None
+
+
+def test_the_alias_guard_stands_down_when_the_api_is_not_installed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no ``ttl`` in ``sys.modules`` there is nothing to compare receivers to.
+
+    An alias is recognized as a name resolving to the same object ``ttl`` names, so
+    the guard needs the API the operation will run against. Only the simulator
+    entry point installs it, and it does so before any operation is decorated;
+    reached without it, accepting is the honest answer for a comparison that cannot
+    be made, rather than turning away every receiver that is not spelled ``ttl``.
+    """
+    monkeypatch.delitem(sys.modules, "ttl", raising=False)
+    assert _rejection_reason(_unified_body_via_alias) is None
 
 
 @pytest.mark.parametrize(
@@ -789,6 +916,23 @@ def test_decorators_on_both_sides_report_only_the_ones_below(
     assert ("the decorators " in reason) == plural, f"wrong agreement:\n{reason}"
     assert ("the body they wrap" in reason) == plural, f"wrong agreement:\n{reason}"
     assert ("Move them above" in reason) == plural, f"wrong agreement:\n{reason}"
+
+
+def test_the_operation_decorator_is_matched_by_name_when_unresolved() -> None:
+    """Placement is still judged for a body whose bindings are out of reach.
+
+    Which decorators are below ``@ttl.operation`` can only be read off relative to
+    it, so failing to locate it turns the rejection below into a silent drop -- the
+    outcome the check exists to prevent. Matching the name it spells keeps that
+    working, and there is nothing else a decorator named ``operation`` on an
+    operation body would be.
+    """
+    fn_def = _decorated_funcdef("@ttl.operation(grid=(1, 1))", "@profile")
+    assert _is_operation_decorator(fn_def.decorator_list[0], {})
+
+    with pytest.raises(ValueError) as excinfo:
+        _clear_decorators(fn_def, {})
+    assert "'@profile'" in str(excinfo.value)
 
 
 def test_decorators_are_dropped_when_the_operation_cannot_be_identified() -> None:
