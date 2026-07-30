@@ -68,6 +68,11 @@ class TestFromString:
         assert opts.pipe_batch_tiles == 8
         assert "pipe_batch_tiles" in opts._explicit
 
+    def test_override_l1_budget(self):
+        opts = CompilerOptions.from_string("--ttl-l1-budget 98304")
+        assert opts.l1_budget == 98304
+        assert "l1_budget" in opts._explicit
+
     def test_enable_subblock_sync(self):
         opts = CompilerOptions.from_string("--ttl-subblock-sync")
         assert opts.subblock_sync is True
