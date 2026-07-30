@@ -4911,7 +4911,8 @@ def TTKernel_GetDfbIdOp : TTKernel_Op<"get_dfb_id", [Pure]> {
 }
 
 def TTKernel_OpaqueCallOp : TTKernel_Op<"opaque_call",
-    [MemoryEffects<[MemRead, MemWrite]>, AttrSizedOperandSegments]> {
+    [MemoryEffects<[MemRead, MemWrite]>, AttrSizedOperandSegments,
+     TTKernel_NocCommandStateUnknownOpTrait]> {
     let summary = "Call an external C/C++ function declared in a user header.";
     let description = [{
       Emits a call to an opaque external C/C++ function whose declaration is
