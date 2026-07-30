@@ -267,6 +267,12 @@ evaluateLaunchNodeContextValue(Value value, LaunchNodeCoord coord,
       return llvm::APInt(/*numBits=*/1, selected);
     }
   }
+  if (value.getDefiningOp<IsDeviceOp>() ||
+      value.getDefiningOp<IsDeviceInRangeOp>()) {
+    // Launch-node analysis models core coordinates only. Logical-device
+    // predicates are enforced by mesh placement and graph-pipe lowering.
+    return llvm::APInt(/*numBits=*/1, true);
+  }
   return std::nullopt;
 }
 

@@ -1329,3 +1329,63 @@ module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [3 : i64, 1 : i64
     func.return
   }
 }
+
+// -----
+
+// Logical-device predicates select fabric endpoints. Launch-node schedule
+// analysis uses only core coordinates, so device predicates must not change
+// the proven send/receive occurrence counts.
+
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [1 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @fabric_source_device_guard
+  // CHECK: ttl.is_device
+  // CHECK: ttl.copy
+  // CHECK-LABEL: func.func @fabric_destination_device_guard
+  // CHECK: ttl.is_device
+  // CHECK: %[[RECV8:.*]] = ttl.cb_reserve
+  // CHECK: ttl.copy {{.*}}, %[[RECV8]]
+  func.func @fabric_source_device_guard() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+        {deviceTransfer = #ttl.device_transfer<domain = <components = <name = "device", extent = [2, 2]>>, edge = <source = <coordinates = [0, 0]>, destination = <coordinates = [0, 1]>>>}
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %is_source_device = ttl.is_device
+      <coordinates = [0, 0]> in
+      <components = <name = "device", extent = [2, 2]>> : i1
+    scf.if %is_source_device {
+      ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0> {
+        %send = ttl.copy %cb, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+               !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
+    }
+    func.return
+  }
+
+  func.func @fabric_destination_device_guard() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+        {deviceTransfer = #ttl.device_transfer<domain = <components = <name = "device", extent = [2, 2]>>, edge = <source = <coordinates = [0, 0]>, destination = <coordinates = [0, 1]>>>}
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %is_destination_device = ttl.is_device
+      <coordinates = [0, 1]> in
+      <components = <name = "device", extent = [2, 2]>> : i1
+    scf.if %is_destination_device {
+      ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0> {
+        %recv_reserve = ttl.cb_reserve %cb
+            : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+            -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        %recv = ttl.copy %pipe, %recv_reserve
+            : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+               tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> !ttl.transfer_handle
+        ttl.wait %recv : !ttl.transfer_handle
+      }
+    }
+    func.return
+  }
+}
