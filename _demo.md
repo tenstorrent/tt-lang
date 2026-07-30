@@ -1,6 +1,6 @@
 # Demo Integration Branch
 
-Branch: `bnorris/demo`.
+Aggregate branch: `bnorris/demo`.
 
 Base: `origin/main` at `816df6269c16` (`[ci][build] Consolidate manylinux wheel builds (#773)`).
 
@@ -15,6 +15,41 @@ at `c2817a9306e0`.
 
 Purpose: disposable aggregate branch for demos and integration testing. This
 branch is not a PR review layer and must not become a parent for source PRs.
+
+## Pinned Local Four-Device Demo
+
+Branch: `bnorris/demo-local-4-device-20260730`.
+
+Base snapshot: `d1e04970f22762d66102d29f3677621cb7abd0e3`.
+
+Validated checkout: `/home/bnorris/tt/tt-lang4-local-demo-20260730`.
+
+This dated branch preserves the PR734 computed-address fabric implementation
+for the local four-device QB demo. It intentionally excludes the in-progress
+PR754 integration. The PR754 reverse-publication runtime protocol still needs
+independent correction before replacing this pinned revision.
+
+The branch adds:
+
+- `examples/all_gather_minimal_matmul/` with direct, context-manager, and
+  shared utility modules.
+- Top-level compatibility launchers for both syntax variants.
+- An aggregate-only `LaunchNodeDomainAnalysis` correction that treats
+  `ttl.is_device` and `ttl.is_device_in_range` as true during core-only launch
+  scheduling. Device selection is enforced separately by the launch envelope.
+
+Validated with `bnorris-ird-fabric-v1.1.7` on a `(2, 2)` Blackhole mesh after
+resetting PCI devices `[0, 1, 2, 3]`:
+
+- Clean Docker build: passed.
+- `ninja -C build-docker check-ttlang-mlir`: 234 passed.
+- Direct all-gather matmul, `M=32`, `K=128`, `N=128`: PCC `0.999997`.
+- Context-manager all-gather matmul, `M=32`, `K=128`, `N=128`: PCC `0.999997`.
+
+The exact local commands are recorded in
+`examples/all_gather_minimal_matmul/README.md`. The dated branch is immutable
+after validation. The rolling `bnorris/demo-local-4-device` branch advances
+only after the replacement revision passes the same hardware commands.
 
 ## Policy
 
@@ -156,6 +191,9 @@ source PRs when applicable rather than leaving them only on `bnorris/demo`.
 - #734 `bnorris/pipes-multidevice-integrated-poc`: keep the direct DFB helper in
   `PipeCapacityAnalysis.cpp` for `ttl.cb_pop`, and use the receiver-DFB view
   helper only for `ttl.pipe_transfer_post`.
+- #734 `bnorris/pipes-multidevice-integrated-poc`: treat logical-device
+  predicates as true in core-only `LaunchNodeDomainAnalysis`; the launch
+  envelope applies device selection independently.
 - #734 `bnorris/pipes-multidevice-integrated-poc`: update packaging test fake
   `ttnn` modules with `SystemMeshDescriptor` and `FabricConfig`, and keep
   `FABRIC_1D` validation restricted to linear logical meshes.
