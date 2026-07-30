@@ -1,7 +1,7 @@
 // Tests that SPSC verification preserves distinct logical identities when
 // different kernels use one physical DFB index.
 //
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices,ttl-verify-dfb-spsc)' | FileCheck %s
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false},ttl-verify-dfb-spsc)' | FileCheck %s
 
 // Distinct logical DFBs may share one physical index without becoming one SPSC
 // participant set.

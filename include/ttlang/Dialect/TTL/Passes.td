@@ -703,19 +703,36 @@ def TTLFinalizeDFBIndices
     The logical identity remains independent of the physical `cb_index`, so
     later analyses can distinguish DFBs that share one hardware slot.
 
-    Compiler-created DFBs enter this pass with kernel-local provisional
-    indices. The pass assigns each kernel a disjoint module-wide index range,
-    then applies lifetime-based index reuse via linear scan allocation
-    partitioned by CircularBufferType. DFBs whose lifetimes do not overlap are
-    assigned the same physical index. See docs/development/DFBManagement.md.
+    With `reuse-user-dfbs` enabled, the pass analyzes all logical DFBs,
+    including declarations shared across kernels. Reuse requires exact
+    `CircularBufferType` equality, equal transaction tile counts that divide
+    the DFB capacity, and identical producer and consumer kernels. These
+    requirements preserve TT-Metal's kernel-local counter and ring-pointer
+    state.
 
-    After reuse, verifies the total DFB count does not exceed
-    kMaxCircularBuffers (32), updates ttl.base_cta_index on every
-    function, and builds the ttl.dfb_allocations module attribute for the
-    Python runtime. The attribute contains one descriptor per physical index,
+    Disabling `reuse-user-dfbs` retains each user DFB's physical index and
+    applies the kernel-local linear-scan allocator only to compiler-created
+    DFBs.
+
+    Every used compiler-created DFB must contain `ttl.cb_reserve`,
+    `ttl.cb_push`, `ttl.cb_wait`, and `ttl.cb_pop`. An unused declaration is
+    legal and remains live through the end of its kernel.
+
+    The pass validates the complete physical allocation plan before changing
+    the IR. The plan must use no more than kMaxCircularBuffers (32). Applying
+    the plan updates physical indices and ttl.base_cta_index, assigns missing
+    compiler-created logical IDs, and builds the ttl.dfb_allocations module
+    attribute for the Python runtime. The attribute contains one descriptor
+    per physical index,
     including user-declared and compiler-created DFBs. Each descriptor records
     the page size computed from the finalized element type.
   }];
+
+  let options = [
+    Option<"reuseUserDFBs", "reuse-user-dfbs", "bool", "true",
+           "Reuse physical DFB indices for logical DFBs with proven "
+           "non-overlapping lifetimes across concurrent kernels.">
+  ];
 }
 
 def TTLValidateCBBudget
