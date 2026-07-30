@@ -113,6 +113,32 @@ bool isDFBAcquireOp(Operation *op) { return isa<CBReserveOp, CBWaitOp>(op); }
 
 bool isDFBReleaseOp(Operation *op) { return isa<CBPushOp, CBPopOp>(op); }
 
+DFBAcquireReleaseIndex::DFBAcquireReleaseIndex(func::FuncOp func) {
+  collectDFBAcquireReleaseOps(func, reserves, waits, pushes, pops);
+}
+
+ArrayRef<Operation *>
+DFBAcquireReleaseIndex::getAcquires(DFBAcquireReleaseKind kind) const {
+  switch (kind) {
+  case DFBAcquireReleaseKind::Producer:
+    return reserves;
+  case DFBAcquireReleaseKind::Consumer:
+    return waits;
+  }
+  llvm_unreachable("unknown DFB acquire/release kind");
+}
+
+ArrayRef<Operation *>
+DFBAcquireReleaseIndex::getReleases(DFBAcquireReleaseKind kind) const {
+  switch (kind) {
+  case DFBAcquireReleaseKind::Producer:
+    return pushes;
+  case DFBAcquireReleaseKind::Consumer:
+    return pops;
+  }
+  llvm_unreachable("unknown DFB acquire/release kind");
+}
+
 Value getDFBAcquireDFB(Operation *op) {
   if (auto reserve = dyn_cast<CBReserveOp>(op)) {
     return reserve.getCb();

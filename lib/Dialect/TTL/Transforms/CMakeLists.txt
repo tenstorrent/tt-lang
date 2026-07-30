@@ -1,4 +1,5 @@
 add_mlir_dialect_library(TTLangTTLTransforms
+  AccumulationUtils.cpp
   ConvertTTLToTTKernel.cpp
   DFBAcquireReleaseAnalysis.cpp
   DFBLogicalIdentityAnalysis.cpp
@@ -24,6 +25,8 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLInsertCBSync.cpp
   TTLInsertCopyWait.cpp
   TTLInsertIntermediateDFBs.cpp
+  TTLFormAccumulationScopes.cpp
+  TTLLowerAccumulationScopes.cpp
   TTLMaterializeLoopState.cpp
   TTLVerifyDFBSPSC.cpp
   TTLVerifyPipeNetGuards.cpp

@@ -199,6 +199,17 @@ static StoreOp findLastStore(Operation *op) {
   return stores.empty() ? StoreOp{} : stores.back();
 }
 
+static bool fusionWouldReadReleasedDFB(Operation *op) {
+  StoreOp lastStore = findLastStore(op);
+  if (!lastStore) {
+    return false;
+  }
+  // Fused compute reads every traced root at the final store location, so any
+  // intervening pop would make the root value outlive its DFB slot.
+  return fusableValueCrossesDFBRelease(op->getResult(0),
+                                       lastStore.getOperation());
+}
+
 /// Position the rewriter before the last store so that the new compute op
 /// is placed after all reserves (which precede their stores).
 static void insertAtLastStore(PatternRewriter &rewriter, Operation *op) {
@@ -978,6 +989,12 @@ static LogicalResult tryFusion(Operation *op, PatternRewriter &rewriter) {
   auto traceResult = traceFusionToRoots(op->getResult(0));
   if (traceResult.failureReason == TraceFailureReason::Success &&
       !traceResult.opsInOrder.empty()) {
+    // Leave this expression unfused so ttl-insert-intermediate-dfbs can
+    // materialize the value before the producer DFB is released.
+    if (fusionWouldReadReleasedDFB(op)) {
+      return rewriter.notifyMatchFailure(
+          op, "fusion would read a dataflow buffer value after its pop");
+    }
     return buildFusedCompute(op, rewriter, traceResult);
   }
   return rewriter.notifyMatchFailure(
