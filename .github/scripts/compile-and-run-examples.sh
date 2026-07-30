@@ -23,6 +23,8 @@
 #   bash .github/scripts/compile-and-run-examples.sh
 #
 # Optional first argument: repo root (default: current directory).
+# Env: HW_SERIAL_TEST_VISIBLE_DEVICES restricts TT device visibility for each
+#      script. Unset preserves the caller's TT_VISIBLE_DEVICES.
 
 set -uo pipefail
 
@@ -75,6 +77,11 @@ fi
 
 declare -a RESULTS=()
 N_PASS=0  N_FAIL=0  N_SKIP=0  N_XFAIL=0  N_XPASS=0
+
+if [[ -n "${HW_SERIAL_TEST_VISIBLE_DEVICES:-}" ]]; then
+  export TT_VISIBLE_DEVICES="${HW_SERIAL_TEST_VISIBLE_DEVICES}"
+  echo "Restricting hardware examples to TT_VISIBLE_DEVICES=${TT_VISIBLE_DEVICES}"
+fi
 
 for script in "${SCRIPTS[@]}"; do
   path="${ROOT}/${script}"

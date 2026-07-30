@@ -47,7 +47,7 @@ def pytest_configure(config):
     )
     config.addinivalue_line(
         "markers",
-        "multi_device: needs all chips; excluded from per-chip parallel runs",
+        "multi_device: needs a fabric mesh; excluded from per-chip parallel runs",
     )
 
 
