@@ -95,7 +95,9 @@ try:
     x = ttnn.to_torch(x)
     y = ttnn.to_torch(y)
 
-    assert torch.allclose(x, y, rtol=1e-1, atol=1e-1), "Tensors do not match"
+    # x reaches y by copy alone, so the comparison is exact: a tolerance would
+    # accept y keeping some of the random values it started with.
+    assert torch.equal(x, y), "Tensors do not match"
 
 finally:
     ttnn.close_device(device)

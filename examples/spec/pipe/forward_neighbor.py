@@ -143,8 +143,11 @@ try:
                 x * GRID_Y + src_y + 1
             )
 
-    assert torch.allclose(
-        expected, result, rtol=1e-2, atol=1e-2
+    # Forwarding copies tiles without computing on them, so the comparison is
+    # exact: a tolerance would accept a tile that arrived from the wrong neighbor
+    # whenever the two payloads are close, or one that never arrived at all.
+    assert torch.equal(
+        expected, result
     ), "forward-neighbor ring did not match torch reference"
 
 finally:

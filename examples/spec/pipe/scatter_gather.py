@@ -132,8 +132,11 @@ try:
     for x in range(GRID_X):
         expected[x * TILE : (x + 1) * TILE, :] = float(x + 1)
 
-    assert torch.allclose(
-        expected, result, rtol=1e-2, atol=1e-2
+    # The loopback copies tiles without computing on them, so the comparison is
+    # exact: a tolerance would accept a node that gathered something slightly
+    # wrong, or that gathered nothing where the column's value is small.
+    assert torch.equal(
+        expected, result
     ), "scatter-gather column loopback did not match torch reference"
 
 finally:

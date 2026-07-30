@@ -154,9 +154,10 @@ try:
     for y in range(GRID_ROWS):
         expected[0:TILE, y * TILE : (y + 1) * TILE] = float(y + 1)
 
-    assert torch.allclose(
-        expected, result, rtol=1e-2, atol=1e-2
-    ), "gather did not match torch reference"
+    # The gather copies tiles without computing on them, so the comparison is
+    # exact: a tolerance could not tell a source node's output tile that stayed
+    # zero from one a mis-addressed unicast wrote something small into.
+    assert torch.equal(expected, result), "gather did not match torch reference"
 
 finally:
     ttnn.close_device(device)

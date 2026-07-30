@@ -123,8 +123,11 @@ try:
                 x + 1
             )
 
-    assert torch.allclose(
-        expected, result, rtol=1e-2, atol=1e-2
+    # The multicast copies tiles without computing on them, so the comparison is
+    # exact: a tolerance could not tell a column-0 tile that stayed zero from one
+    # written with something small.
+    assert torch.equal(
+        expected, result
     ), "scatter multicast did not match torch reference"
 
 finally:

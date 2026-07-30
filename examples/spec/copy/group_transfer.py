@@ -126,7 +126,9 @@ try:
     expected = input_torch.repeat_interleave(H_SCALE_FACTOR, dim=1).repeat_interleave(
         W_SCALE_FACTOR, dim=2
     )
-    assert torch.allclose(
+    # The upsample replicates pixels by copy alone, so the comparison is exact:
+    # each output pixel is the input pixel it came from, bit for bit.
+    assert torch.equal(
         expected, ttnn.to_torch(output_t)
     ), "nearest-neighbor upsample did not match torch reference"
 
