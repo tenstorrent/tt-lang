@@ -249,6 +249,58 @@ def test_operation_cache_separates_resolved_grid_changes(monkeypatch):
     assert first_result == repeated_first_result
 
 
+def test_operation_cache_separates_effective_l1_budgets(monkeypatch):
+    compile_calls = _install_recording_compile(monkeypatch)
+
+    @ttl_api.operation(grid=(1, 1))
+    def copy_kernel(input_tensor, output_tensor):
+        pass
+
+    input_tensor = _FakeTensor()
+    output_tensor = _FakeTensor()
+    first_result = copy_kernel(
+        input_tensor, output_tensor, options="--ttl-l1-budget 98304"
+    )
+    second_result = copy_kernel(
+        input_tensor, output_tensor, options="--ttl-l1-budget 73760"
+    )
+    repeated_first_result = copy_kernel(
+        input_tensor, output_tensor, options="--ttl-l1-budget 98304"
+    )
+
+    assert len(compile_calls) == 2
+    assert first_result != second_result
+    assert first_result == repeated_first_result
+    assert compile_calls[0]["compile_options"]["l1_budget_override"] == 98304
+    assert compile_calls[1]["compile_options"]["l1_budget_override"] == 73760
+
+
+def test_operation_cache_separates_device_derived_l1_budgets(monkeypatch):
+    compile_calls = _install_recording_compile(monkeypatch)
+    budgets = iter((98304, 73760, 98304))
+    monkeypatch.setattr(
+        ttl_api,
+        "_resolve_l1_budget",
+        lambda runtime_args, compiler_options: next(budgets),
+    )
+
+    @ttl_api.operation(grid=(1, 1))
+    def copy_kernel(input_tensor, output_tensor):
+        pass
+
+    input_tensor = _FakeTensor()
+    output_tensor = _FakeTensor()
+    first_result = copy_kernel(input_tensor, output_tensor)
+    second_result = copy_kernel(input_tensor, output_tensor)
+    repeated_first_result = copy_kernel(input_tensor, output_tensor)
+
+    assert len(compile_calls) == 2
+    assert first_result != second_result
+    assert first_result == repeated_first_result
+    assert compile_calls[0]["compile_options"]["l1_budget_override"] == 98304
+    assert compile_calls[1]["compile_options"]["l1_budget_override"] == 73760
+
+
 def _make_scaled_kernel(scale):
     @ttl_api.operation(grid=(1, 1))
     def scaled_kernel(input_tensor, output_tensor):
