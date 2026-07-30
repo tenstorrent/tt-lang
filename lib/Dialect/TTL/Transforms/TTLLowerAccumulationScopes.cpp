@@ -34,7 +34,6 @@ namespace {
 /// The recurrence matcher reports the loop-carried value inside the scope; DST
 /// lowering copies the external init tensor into the accumulator.
 struct TensorAccumulationScopeMatch {
-  scf::ForOp loop;
   TensorAccumulationMatch recurrence;
   Value initialValue;
 };
@@ -148,7 +147,7 @@ matchTensorAccumulationScope(AccumulationScopeOp scope) {
         "tensor accumulation scope policy must match the loop recurrence");
     return failure();
   }
-  return TensorAccumulationScopeMatch{*loop, *match, scope.getInits().front()};
+  return TensorAccumulationScopeMatch{*match, scope.getInits().front()};
 }
 
 /// Remove the region wrapper after its contents no longer depend on region
@@ -184,8 +183,8 @@ getTensorScopeLoweringPlan(AccumulationScopeOp scope,
   }
 
   FailureOr<TensorDstAccumulationInfo> dstInfo =
-      analyzeTensorAccumulationForDst(match->recurrence, match->loop,
-                                      match->initialValue, &dfbIndex);
+      analyzeTensorAccumulationForDst(match->recurrence, match->initialValue,
+                                      &dfbIndex);
   if (failed(dstInfo)) {
     (void)scope.emitOpError(
         "tensor accumulation lowering requires a DST-compatible same-type "
@@ -206,10 +205,7 @@ lowerTensorAccumulationScope(const TensorAccumulationScopeLoweringPlan &plan,
   AccumulationScopeOp scope = plan.scope;
   Value initialValue = scope.getInits().front();
   replaceYieldOperandsWithStateArguments(scope);
-  LogicalResult lowered = lowerTensorAccumulationToDst(
-      plan.match.recurrence, plan.dstInfo, plan.match.loop, rewriter);
-  assert(succeeded(lowered) && "precondition scan must prove DST lowering");
-  (void)lowered;
+  lowerTensorAccumulationToDst(plan.match.recurrence, plan.dstInfo, rewriter);
 
   eraseAccumulationScopeWrapper(scope, rewriter, initialValue);
 }

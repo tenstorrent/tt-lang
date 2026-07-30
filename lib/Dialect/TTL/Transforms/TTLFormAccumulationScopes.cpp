@@ -13,6 +13,7 @@
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/TTL/Transforms/AccumulationUtils.h"
 
@@ -34,31 +35,12 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-/// Immutable information collected before any loop is moved. The DFB lifecycle
-/// index is valid only for this pre-mutation function version.
-struct TensorAccumulationScopeInfo {
-  scf::ForOp loop;
-  TensorAccumulationMatch match;
-};
-
-/// Return true when a loop already carries TTL compiler metadata. Such loops
-/// are owned by another lowering decision, and moving them into a new region
-/// would make the metadata's scope ambiguous.
-static bool hasCompilerAnnotation(scf::ForOp loop) {
-  for (NamedAttribute attr : loop->getAttrs()) {
-    if (attr.getName().getValue().starts_with("ttl.")) {
-      return true;
-    }
-  }
-  return false;
-}
-
 /// Return true when the loop and final store form the complete accumulator
 /// publication sequence. The scope lowerer expects a normalized body, so only
 /// dead attachments to the reserved output may appear between them.
 static bool
-isContiguousSingleTensorAccumulator(scf::ForOp loop,
-                                    TensorAccumulationMatch &match) {
+isContiguousSingleTensorAccumulator(const TensorAccumulationMatch &match) {
+  scf::ForOp loop = match.loop;
   if (loop.getNumResults() != 1 || match.resultIndex != 0) {
     return false;
   }
@@ -66,8 +48,9 @@ isContiguousSingleTensorAccumulator(scf::ForOp loop,
     return false;
   }
 
+  CBReserveOp reserve = match.reserve;
   llvm::SmallPtrSet<Operation *, 4> removableOps;
-  removableOps.insert(match.reserve.getOperation());
+  removableOps.insert(reserve.getOperation());
   for (AttachCBOp attach : match.deadReserveAttachOps) {
     removableOps.insert(attach.getOperation());
   }
@@ -85,18 +68,20 @@ isContiguousSingleTensorAccumulator(scf::ForOp loop,
 /// Return the information needed to rewrite one tensor accumulation scope. The
 /// caller runs this during an immutable scan so DFB lifecycle analysis observes
 /// one function version.
-static FailureOr<TensorAccumulationScopeInfo>
-getTensorAccumulationScopeInfo(scf::ForOp loop,
-                               const DFBAcquireReleaseIndex &dfbIndex) {
+static FailureOr<TensorAccumulationMatch>
+getTensorAccumulationScopeMatch(scf::ForOp loop,
+                                const DFBAcquireReleaseIndex &dfbIndex) {
+  // TTL attributes identify loops owned by another lowering decision. Moving
+  // such a loop would make the attribute's scope ambiguous.
   if (loop->getParentOfType<AccumulationScopeOp>() ||
-      hasCompilerAnnotation(loop)) {
+      hasTTLDialectAttribute(loop)) {
     return failure();
   }
 
   FailureOr<TensorAccumulationMatch> match =
       matchAdditiveTensorAccumulation(loop, /*resultIndex=*/0);
-  if (failed(match) || !isContiguousSingleTensorAccumulator(loop, *match) ||
-      failed(analyzeTensorAccumulationForDst(*match, loop, &dfbIndex))) {
+  if (failed(match) || !isContiguousSingleTensorAccumulator(*match) ||
+      failed(analyzeTensorAccumulationForDst(*match, &dfbIndex))) {
     return failure();
   }
 
@@ -112,23 +97,22 @@ getTensorAccumulationScopeInfo(scf::ForOp loop,
     return failure();
   }
 
-  return TensorAccumulationScopeInfo{loop, *match};
+  return *match;
 }
 
 /// Apply one pre-verified tensor accumulation scope rewrite.
-static void
-rewriteTensorAccumulationScope(const TensorAccumulationScopeInfo &scopeInfo,
-                               RewriterBase &rewriter) {
-  scf::ForOp loop = scopeInfo.loop;
-  TensorAccumulationMatch match = scopeInfo.match;
+static void rewriteTensorAccumulationScope(const TensorAccumulationMatch &match,
+                                           RewriterBase &rewriter) {
+  scf::ForOp loop = match.loop;
+  CBReserveOp reserve = match.reserve;
 
   MLIRContext *context = loop.getContext();
   ArrayAttr initialModes =
       rewriter.getArrayAttr({AccumulationInitialModeAttr::get(
           context, AccumulationInitialMode::Init)});
 
-  if (!match.reserve->isBeforeInBlock(loop)) {
-    rewriter.moveOpBefore(match.reserve, loop);
+  if (!reserve->isBeforeInBlock(loop)) {
+    rewriter.moveOpBefore(reserve, loop);
   }
   for (AttachCBOp attach : match.deadReserveAttachOps) {
     rewriter.eraseOp(attach);
@@ -136,7 +120,7 @@ rewriteTensorAccumulationScope(const TensorAccumulationScopeInfo &scopeInfo,
 
   rewriter.setInsertionPoint(loop);
   auto scope = AccumulationScopeOp::create(
-      rewriter, loop.getLoc(), ValueRange{match.reserve.getResult()},
+      rewriter, loop.getLoc(), ValueRange{reserve.getResult()},
       ValueRange{match.initialValue}, initialModes);
 
   Block *body =
@@ -182,29 +166,29 @@ struct TTLFormAccumulationScopesPass
         [&](scf::ForOp loop) { loops.push_back(loop); });
 
     DFBAcquireReleaseIndex dfbIndex(getOperation());
-    SmallVector<TensorAccumulationScopeInfo> scopeInfos;
-    scopeInfos.reserve(loops.size());
+    SmallVector<TensorAccumulationMatch> matches;
+    matches.reserve(loops.size());
     for (scf::ForOp loop : loops) {
       // Rewriting both nested candidates would invalidate the outer match,
       // which was collected before any IR mutation.
-      bool containsSelectedLoop = llvm::any_of(
-          scopeInfos, [&](const TensorAccumulationScopeInfo &scopeInfo) {
-            return loop->isAncestor(scopeInfo.loop);
+      bool containsSelectedLoop =
+          llvm::any_of(matches, [&](const TensorAccumulationMatch &match) {
+            return loop->isAncestor(match.loop);
           });
       if (containsSelectedLoop) {
         continue;
       }
 
-      FailureOr<TensorAccumulationScopeInfo> scopeInfo =
-          getTensorAccumulationScopeInfo(loop, dfbIndex);
-      if (succeeded(scopeInfo)) {
-        scopeInfos.push_back(*scopeInfo);
+      FailureOr<TensorAccumulationMatch> match =
+          getTensorAccumulationScopeMatch(loop, dfbIndex);
+      if (succeeded(match)) {
+        matches.push_back(*match);
       }
     }
 
     IRRewriter rewriter(&getContext());
-    for (const TensorAccumulationScopeInfo &scopeInfo : scopeInfos) {
-      rewriteTensorAccumulationScope(scopeInfo, rewriter);
+    for (const TensorAccumulationMatch &match : matches) {
+      rewriteTensorAccumulationScope(match, rewriter);
     }
   }
 };

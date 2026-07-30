@@ -302,22 +302,21 @@ FailureOr<TensorAccumulationMatch> matchAdditiveTensorAccumulation(
   Value initialValue = loop.getInitArgs()[resultIndex];
   auto tensorType = cast<RankedTensorType>(initialValue.getType());
   return TensorAccumulationMatch{
-      resultIndex, tensorType, initialValue, finalStore,
-      reserve,     add,        contribution, deadReserveAttachOps};
+      loop,    resultIndex, tensorType,   initialValue,        finalStore,
+      reserve, add,         contribution, deadReserveAttachOps};
 }
 
 FailureOr<TensorDstAccumulationInfo>
 analyzeTensorAccumulationForDst(const TensorAccumulationMatch &match,
-                                scf::ForOp loop,
                                 const DFBAcquireReleaseIndex *dfbIndex) {
-  return analyzeTensorAccumulationForDst(match, loop, match.initialValue,
-                                         dfbIndex);
+  return analyzeTensorAccumulationForDst(match, match.initialValue, dfbIndex);
 }
 
 FailureOr<TensorDstAccumulationInfo>
 analyzeTensorAccumulationForDst(const TensorAccumulationMatch &match,
-                                scf::ForOp loop, Value initialValue,
+                                Value initialValue,
                                 const DFBAcquireReleaseIndex *dfbIndex) {
+  scf::ForOp loop = match.loop;
   if (initialValue.getType() != match.tensorType) {
     return failure();
   }
@@ -408,10 +407,10 @@ analyzeTensorAccumulationForDst(const TensorAccumulationMatch &match,
   };
 }
 
-LogicalResult
-lowerTensorAccumulationToDst(const TensorAccumulationMatch &match,
-                             const TensorDstAccumulationInfo &info,
-                             scf::ForOp loop, RewriterBase &rewriter) {
+void lowerTensorAccumulationToDst(const TensorAccumulationMatch &match,
+                                  const TensorDstAccumulationInfo &info,
+                                  RewriterBase &rewriter) {
+  scf::ForOp loop = match.loop;
   Location loc = loop.getLoc();
   CBReserveOp outputReserve = match.reserve;
   if (outputReserve->getBlock() == loop->getBlock() &&
@@ -530,7 +529,6 @@ lowerTensorAccumulationToDst(const TensorAccumulationMatch &match,
     rewriter.eraseOp(attach);
   }
   rewriter.eraseOp(loop);
-  return success();
 }
 
 } // namespace mlir::tt::ttl

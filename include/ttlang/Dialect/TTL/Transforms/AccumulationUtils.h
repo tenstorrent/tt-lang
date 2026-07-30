@@ -40,6 +40,9 @@ enum class TensorAccumulationContributionResidency {
 /// Connected operations that define one loop-carried additive tensor
 /// recurrence and its final dataflow buffer store.
 struct TensorAccumulationMatch {
+  /// Loop that carries the matched accumulator.
+  scf::ForOp loop;
+
   /// Loop result number that carries the accumulator.
   unsigned resultIndex;
 
@@ -120,22 +123,21 @@ FailureOr<TensorAccumulationMatch> matchAdditiveTensorAccumulation(
 /// Return DST-resident accumulation properties for `match` when the source
 /// loop can be deleted without dropping side effects.
 FailureOr<TensorDstAccumulationInfo> analyzeTensorAccumulationForDst(
-    const TensorAccumulationMatch &match, scf::ForOp loop,
+    const TensorAccumulationMatch &match,
     const DFBAcquireReleaseIndex *dfbIndex = nullptr);
 
 /// Return DST-resident accumulation properties using `initialValue` as the
 /// tensor copied into the accumulator before the source loop executes.
 FailureOr<TensorDstAccumulationInfo> analyzeTensorAccumulationForDst(
-    const TensorAccumulationMatch &match, scf::ForOp loop, Value initialValue,
+    const TensorAccumulationMatch &match, Value initialValue,
     const DFBAcquireReleaseIndex *dfbIndex = nullptr);
 
 /// Lower a matched additive tensor recurrence to a DST section whose
 /// accumulator stays resident across the original source loop. Contribution
 /// acquisition follows `info.contributionResidency`.
-LogicalResult
-lowerTensorAccumulationToDst(const TensorAccumulationMatch &match,
-                             const TensorDstAccumulationInfo &info,
-                             scf::ForOp loop, RewriterBase &rewriter);
+void lowerTensorAccumulationToDst(const TensorAccumulationMatch &match,
+                                  const TensorDstAccumulationInfo &info,
+                                  RewriterBase &rewriter);
 
 } // namespace mlir::tt::ttl
 

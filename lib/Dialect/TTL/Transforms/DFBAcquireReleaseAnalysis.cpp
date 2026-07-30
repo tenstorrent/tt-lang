@@ -22,6 +22,37 @@ static bool isBefore(Operation *before, Operation *after) {
   return before->isBeforeInBlock(after);
 }
 
+static bool isDFBAcquireOp(Operation *op) {
+  return isa<CBReserveOp, CBWaitOp>(op);
+}
+
+static bool isDFBReleaseOp(Operation *op) { return isa<CBPushOp, CBPopOp>(op); }
+
+static Value getDFBAcquireDFB(Operation *op) {
+  if (auto reserve = dyn_cast<CBReserveOp>(op)) {
+    return reserve.getCb();
+  }
+  return cast<CBWaitOp>(op).getCb();
+}
+
+static Value getDFBReleaseDFB(Operation *op) {
+  if (auto push = dyn_cast<CBPushOp>(op)) {
+    return push.getCb();
+  }
+  return cast<CBPopOp>(op).getCb();
+}
+
+static std::optional<DFBAcquireReleaseKind>
+getDFBAcquireReleaseKind(Operation *op) {
+  if (isa<CBReserveOp, CBPushOp>(op)) {
+    return DFBAcquireReleaseKind::Producer;
+  }
+  if (isa<CBWaitOp, CBPopOp>(op)) {
+    return DFBAcquireReleaseKind::Consumer;
+  }
+  return std::nullopt;
+}
+
 /// Direct DFB copies can use the same DFB value on either source or
 /// destination operands. Only the operand that corresponds to the acquire class
 /// consumes the acquired slot.
@@ -109,12 +140,18 @@ static Operation *findNextSameKindAcquire(Value dfb, Operation *acquire,
 
 } // namespace
 
-bool isDFBAcquireOp(Operation *op) { return isa<CBReserveOp, CBWaitOp>(op); }
-
-bool isDFBReleaseOp(Operation *op) { return isa<CBPushOp, CBPopOp>(op); }
-
 DFBAcquireReleaseIndex::DFBAcquireReleaseIndex(func::FuncOp func) {
-  collectDFBAcquireReleaseOps(func, reserves, waits, pushes, pops);
+  func.walk([&](Operation *op) {
+    if (isa<CBReserveOp>(op)) {
+      reserves.push_back(op);
+    } else if (isa<CBWaitOp>(op)) {
+      waits.push_back(op);
+    } else if (isa<CBPushOp>(op)) {
+      pushes.push_back(op);
+    } else if (isa<CBPopOp>(op)) {
+      pops.push_back(op);
+    }
+  });
 }
 
 ArrayRef<Operation *>
@@ -137,49 +174,6 @@ DFBAcquireReleaseIndex::getReleases(DFBAcquireReleaseKind kind) const {
     return pops;
   }
   llvm_unreachable("unknown DFB acquire/release kind");
-}
-
-Value getDFBAcquireDFB(Operation *op) {
-  if (auto reserve = dyn_cast<CBReserveOp>(op)) {
-    return reserve.getCb();
-  }
-  return cast<CBWaitOp>(op).getCb();
-}
-
-Value getDFBReleaseDFB(Operation *op) {
-  if (auto push = dyn_cast<CBPushOp>(op)) {
-    return push.getCb();
-  }
-  return cast<CBPopOp>(op).getCb();
-}
-
-static std::optional<DFBAcquireReleaseKind>
-getDFBAcquireReleaseKind(Operation *op) {
-  if (isa<CBReserveOp, CBPushOp>(op)) {
-    return DFBAcquireReleaseKind::Producer;
-  }
-  if (isa<CBWaitOp, CBPopOp>(op)) {
-    return DFBAcquireReleaseKind::Consumer;
-  }
-  return std::nullopt;
-}
-
-void collectDFBAcquireReleaseOps(func::FuncOp func,
-                                 SmallVectorImpl<Operation *> &reserves,
-                                 SmallVectorImpl<Operation *> &waits,
-                                 SmallVectorImpl<Operation *> &pushes,
-                                 SmallVectorImpl<Operation *> &pops) {
-  func.walk([&](Operation *op) {
-    if (isa<CBReserveOp>(op)) {
-      reserves.push_back(op);
-    } else if (isa<CBWaitOp>(op)) {
-      waits.push_back(op);
-    } else if (isa<CBPushOp>(op)) {
-      pushes.push_back(op);
-    } else if (isa<CBPopOp>(op)) {
-      pops.push_back(op);
-    }
-  });
 }
 
 DFBAcquireInterval makeDFBAcquireInterval(Operation *acquire,
