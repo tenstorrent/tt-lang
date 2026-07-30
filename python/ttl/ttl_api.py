@@ -1833,6 +1833,14 @@ def _lower_program_to_kernel(
 
         compiler_dfbs_flag = int(compiler_options.compiler_dfbs)
         pipe_batch_tiles = compiler_options.pipe_batch_tiles
+        pipe_transport_options = [f"group-size={pipe_batch_tiles}"]
+        if l1_budget_override > 0:
+            pipe_transport_options.append(
+                f"l1-budget-override={l1_budget_override}"
+            )
+        pipe_transport_pass = (
+            "ttl-form-pipe-transports{" + " ".join(pipe_transport_options) + "}"
+        )
         pipeline_passes = [
             "func.func(ttl-materialize-loop-state)",
             "func.func(ttl-insert-copy-wait)",
@@ -1842,7 +1850,7 @@ def _lower_program_to_kernel(
             "func.func(convert-ttl-to-compute)",
             "func.func(ttl-insert-cb-sync)",
             "ttl-verify-pipenet",
-            f"ttl-form-pipe-transports{{group-size={pipe_batch_tiles}}}",
+            pipe_transport_pass,
             "func.func(ttl-coalesce-dfb-acquires)",
             "ttl-finalize-dfb-indices",
             set_compute_config_pass,
