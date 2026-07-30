@@ -1808,11 +1808,13 @@ def _lower_program_to_kernel(
         compiler_dfbs_flag = int(compiler_options.compiler_dfbs)
         pipeline_passes = [
             "func.func(ttl-materialize-loop-state)",
-            f"func.func(ttl-insert-intermediate-dfbs{{enable={compiler_dfbs_flag}}})",
             "func.func(ttl-insert-copy-wait)",
-            "func.func(ttl-auto-sync)",
             "func.func(ttl-annotate-l1-acc-loops)",
+            "func.func(ttl-form-producer-compute)",
+            f"func.func(ttl-insert-intermediate-dfbs{{enable={compiler_dfbs_flag}}})",
             "func.func(convert-ttl-to-compute)",
+            "func.func(ttl-auto-sync)",
+            "ttl-finalize-dfb-indices",
             set_compute_config_pass,
             f"func.func({assign_dst_pass})",
         ]
@@ -1829,7 +1831,6 @@ def _lower_program_to_kernel(
         )
         if compiler_options.maximize_dst:
             pipeline_passes.append("func.func(ttl-schedule-operations)")
-        pipeline_passes.append("ttl-finalize-dfb-indices")
         pipeline_passes.append("func.func(ttl-annotate-cb-associations)")
         pipeline_passes.append("ttl-verify-pipenet-guards")
         pipeline_passes.append("ttl-verify-dfb-spsc")

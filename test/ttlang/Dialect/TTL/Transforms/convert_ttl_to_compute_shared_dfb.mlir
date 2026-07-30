@@ -1,7 +1,7 @@
 // Verifies that convert-ttl-to-compute preserves cb_push ordering when a
 // single CB is written across multiple compute blocks (fixes #519) and
-// when a single reserved slot is written by multiple stores absorbed
-// into one compute block (regression guard for PR #523 / #524).
+// when a single reserved slot is written by multiple stores before one
+// release (regression guard for PR #523 / #524).
 
 // RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute))' | FileCheck %s
 
@@ -76,13 +76,9 @@ func.func @two_reduces_shared_dfb()
 
 // -----
 
-// Test 2: one reserved slot written by TWO stores, followed by a SINGLE
-// cb_push at end of the scope (the layernorm `with reserve as v:
-// v.store(init); for _: v += ...; v.store(final)` pattern). Both stores
-// fuse into one ttl.compute. The cb_push is already positioned after
-// the generated compute and must NOT be relocated forward — doing so
-// would commit the slot before later stores pack their data. Regression
-// guard for the #523 fix over-reaching into this pattern (#524).
+// Test 2: one reserved slot written by two stores, followed by one cb_push.
+// The release belongs after all stores in the reserve interval, so the first
+// producer must not consume it.
 
 // CHECK-LABEL: func.func @multi_store_single_reserve
 // CHECK:       %[[OUT:.*]] = ttl.bind_cb{cb_index = 1
@@ -109,14 +105,13 @@ func.func @multi_store_single_reserve()
   %v1 = ttl.add %a, %a : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.store %v1, %r_t : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
 
-  // Second store into the SAME reserved slot — mirrors a user-written
+  // Second store into the same reserved slot. This mirrors a user-written
   // `with reserve: ... multi-store ...` block_expr scope.
   %v2 = ttl.mul %a, %a : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.store %v2, %r_t : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
 
-  // Single cb_push at end of the scope, already after where the pass
-  // will materialize the ttl.compute. Must not be moved forward past
-  // the later store.
+  // Single cb_push at the end of the scope. It publishes the whole reserved
+  // slot, not only the first store.
   ttl.cb_push %out : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.cb_pop  %x   : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   return
@@ -124,14 +119,9 @@ func.func @multi_store_single_reserve()
 
 // -----
 
-// Test 3: two reserves on two different CBs with stores interleaved,
-// cb_push ops in REVERSE order (push for y, then push for x). Both
-// pushes are already past the generated compute ops, so the push-move
-// guard (`isBeforeInBlock(computeOp)`) correctly leaves them in place.
-// Each CB is still pushed exactly once and each push follows the
-// corresponding pack, so the emitted ordering is functionally correct
-// even though the pushes are not "tightly" paired with their compute
-// op.
+// Test 3: two reserves on two different CBs with stores interleaved and
+// pushes in reverse store order. Both releases already follow their generated
+// compute ops, so conversion keeps their original relative order.
 
 // CHECK-LABEL: func.func @interleaved_pushes_wrong_order
 // CHECK:       %[[IN:.*]] = ttl.bind_cb{cb_index = 0
@@ -167,8 +157,7 @@ func.func @interleaved_pushes_wrong_order()
   %vy = ttl.mul %a, %a : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.store %vy, %ry_t : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
 
-  // Pushes in the OPPOSITE order of the stores — the walk must still
-  // pair each store with the push whose CB matches its view.
+  // Pushes in the opposite order of the stores.
   ttl.cb_push %y : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.cb_push %x : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.cb_pop  %in : <[1, 1], !ttcore.tile<32x32, bf16>, 2>

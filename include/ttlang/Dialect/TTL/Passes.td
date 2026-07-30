@@ -233,17 +233,19 @@ def TTLInsertIntermediateDFBs
   let description = [{
     Walks ops implementing `DFBInputOpInterface` and checks whether the
     operands they declare as requiring DFB-attached values are satisfied.
-    When an operand comes from a fused expression chain (not DFB-attached),
-    the pass inserts a compiler-allocated DFB:
+    When an operand comes from `ttl.compute`, the pass materializes it as an
+    extra compute output backed by a compiler-allocated DFB. The pass creates
+    the DFB, reserves the output slot, clones the compute with an extra
+    `ttl.tile_store`, emits the producer-side `cb_push`, and rewrites the
+    consumer operand to the attached waited value:
+
+      bind_cb -> cb_reserve -> ttl.compute tile_store -> cb_push -> cb_wait -> attach_cb
+
+    Non-compute producers use the tensor-level helper:
 
       bind_cb -> cb_reserve -> store -> cb_wait -> attach_cb
 
-    `cb_push` and `cb_pop` are omitted; `ttl-insert-cb-sync` inserts them
-    based on transitive use analysis.
-
-    Compiler-allocated DFBs are marked with `ttl.compiler_allocated` so
-    that `ttl-finalize-dfb-indices` can register them for the Python
-    runtime.
+    All DFBs created by this pass are marked with `ttl.compiler_allocated`.
 
     When `enable` is false, the pass verifies that no operations require
     compiler-allocated DFBs. If any `DFBInputOpInterface` op has a
@@ -258,7 +260,33 @@ def TTLInsertIntermediateDFBs
   ];
 
   let dependentDialects = [
-    "::mlir::tt::ttl::TTLDialect"
+    "::mlir::tensor::TensorDialect"
+  ];
+}
+
+def TTLFormProducerCompute
+    : Pass<"ttl-form-producer-compute", "::mlir::func::FuncOp"> {
+  let summary = "Form ttl.compute ops before compiler DFB materialization";
+  let description = [{
+    Runs the ttl.compute formation patterns before compiler-allocated
+    intermediate DFB insertion. Operations whose operands already satisfy DFB
+    requirements are converted to `ttl.compute`. Operations that still require
+    compiler DFB materialization are left unchanged so
+    `ttl-insert-intermediate-dfbs` can materialize the producer compute result
+    as an extra compute output.
+
+    When a block-level store is absorbed into a producer compute, this pass
+    replaces any corresponding producer release that would otherwise precede
+    the new compute. The constructed order is:
+
+      cb_reserve -> ttl.compute tile_store -> cb_push
+  }];
+
+  let dependentDialects = [
+    "::mlir::affine::AffineDialect",
+    "::mlir::arith::ArithDialect",
+    "::mlir::tensor::TensorDialect",
+    "::mlir::tt::ttkernel::TTKernelDialect"
   ];
 }
 
@@ -274,7 +302,8 @@ def TTLConvertTTLToCompute
   }];
 
   let dependentDialects = [
-    "::mlir::func::FuncDialect",
+    "::mlir::affine::AffineDialect",
+    "::mlir::arith::ArithDialect",
     "::mlir::tensor::TensorDialect",
     "::mlir::tt::ttkernel::TTKernelDialect"
   ];
@@ -662,14 +691,17 @@ def TTLFinalizeDFBIndices
     : Pass<"ttl-finalize-dfb-indices", "::mlir::ModuleOp"> {
   let summary = "Reuse compiler-allocated DFB indices and emit DFB metadata";
   let description = [{
-    Module-level pass that runs after all DFB-creating passes. Must
-    precede ttl-annotate-cb-associations (which copies cb_index onto
-    tile ops and would capture stale pre-reuse indices).
+    Module-level pass that runs after all DFB-creating and synchronization
+    passes. Must precede `ttl-set-compute-kernel-config` and
+    `ttl-annotate-cb-associations`, which copy DFB indices into attributes and
+    would otherwise capture provisional indices.
 
-    Applies lifetime-based index reuse to compiler-allocated DFBs via
-    linear scan allocation, partitioned by CircularBufferType. DFBs
-    whose lifetimes (bind_cb to last cb_pop) do not overlap are assigned
-    the same physical index. See docs/development/DFBManagement.md.
+    Compiler-allocated DFBs enter this pass with kernel-local provisional
+    indices. The pass assigns each kernel a disjoint module-wide index range,
+    then applies lifetime-based index reuse via linear scan allocation,
+    partitioned by CircularBufferType. DFBs whose lifetimes (bind_cb to last
+    cb_pop) do not overlap are assigned the same physical index. See
+    docs/development/DFBManagement.md.
 
     After reuse, verifies the total DFB count does not exceed
     kMaxCircularBuffers (32), updates ttl.base_cta_index on every
