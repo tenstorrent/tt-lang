@@ -294,7 +294,7 @@ func.func @compute_reduction(%a: tensor<2x3x!ttcore.tile<32x32, f32>>) -> tensor
 // CHECK-NEXT: scf.for %[[J:.*]] = %[[C0]] to %[[C3]] step %[[C1]]
 // CHECK-NEXT: %[[CONTRIB_TILE:.*]] = tensor.extract %[[CONTRIB_CB]][%[[I]], %[[J]]] : tensor<2x3x!ttcore.tile<32x32, f32>>
 // CHECK-NEXT: %{{.*}}, %[[CONTRIB_DST:.*]] = ttl.copy_tile %[[CONTRIB_TILE]][%[[I]], %[[J]]] into dst[%[[C1]]]
-// CHECK-NEXT: %[[NEXT:.*]] = ttl.tile_accumulate_add %[[ACC_TILE]], %[[CONTRIB_DST]] into dst[%[[C0]]]
+// CHECK-NEXT: %[[NEXT:.*]] = ttl.tile_accumulate %[[ACC_TILE]], %[[CONTRIB_DST]] add into dst[%[[C0]]]
 // CHECK-NEXT: }
 // CHECK-NEXT: %[[STORE_TILE:.*]] = builtin.unrealized_conversion_cast to !ttcore.tile<32x32, f32>
 // CHECK-NEXT: ttl.tile_store %[[STORE_TILE]], %{{.*}}[%[[I]]] from dst[%[[C0]]]
@@ -318,7 +318,7 @@ func.func @compute_accumulate_add_reduction(
     %c1 = arith.constant 1 : index
     %acc_token, %acc = ttl.copy_tile %init_tile[%i] into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttl.dst, !ttcore.tile<32x32, f32>
     %contrib_token, %contrib = ttl.copy_tile %contrib_tile[%i, %j] into dst[%c1] : !ttcore.tile<32x32, f32> -> !ttl.dst, !ttcore.tile<32x32, f32>
-    %next = ttl.tile_accumulate_add %acc, %contrib into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    %next = ttl.tile_accumulate %acc, %contrib add into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
     ttl.tile_store %next, %out_view[%i] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x!ttcore.tile<32x32, f32>>

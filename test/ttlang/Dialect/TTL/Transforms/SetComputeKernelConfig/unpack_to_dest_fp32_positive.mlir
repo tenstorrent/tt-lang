@@ -46,54 +46,6 @@ func.func @f32_sfpu_unary_sets_unpack(
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: tile_accumulate_add loads the accumulator DFB tile into DST, but its
-// contribution DFB tile is consumed through binary_dest_reuse_tiles source
-// registers. Only the accumulator DFB needs UnpackToDestFp32.
-// CHECK-LABEL: func.func @f32_accumulate_add_lists_accumulator_only
-// CHECK-SAME: ttl.unpack_to_dest_fp32 = array<i32: 0>
-func.func @f32_accumulate_add_lists_accumulator_only(
-    %acc: tensor<1x1x!ttcore.tile<32x32, f32>>,
-    %contribution: tensor<1x1x!ttcore.tile<32x32, f32>>)
-    -> tensor<1x1x!ttcore.tile<32x32, f32>> {
-  %c0 = arith.constant 0 : index
-  %init = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, f32>>
-
-  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-
-  %acc_cb = ttl.attach_cb %acc, %cb0
-      : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
-        -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  %contribution_cb = ttl.attach_cb %contribution, %cb1
-      : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
-        -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  %init_cb = ttl.attach_cb %init, %cb2
-      : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
-        -> tensor<1x1x!ttcore.tile<32x32, f32>>
-
-  %out_view = ttl.cb_reserve %cb2 : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  %res = ttl.compute
-      ins(%acc_cb, %contribution_cb : tensor<1x1x!ttcore.tile<32x32, f32>>,
-                                     tensor<1x1x!ttcore.tile<32x32, f32>>)
-      outs(%init_cb : tensor<1x1x!ttcore.tile<32x32, f32>>)
-      {indexing_maps = [#map, #map, #map],
-       iterator_types = ["parallel", "parallel"]} {
-    ^bb0(%acc_tile: !ttcore.tile<32x32, f32>, %contribution_tile: !ttcore.tile<32x32, f32>, %out_tile: !ttcore.tile<32x32, f32>):
-      %i = ttl.iter_index 0 : index
-      %j = ttl.iter_index 1 : index
-      %sum = ttl.tile_accumulate_add %acc_tile, %contribution_tile into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-      ttl.tile_store %sum, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
-      ttl.yield
-  } -> tensor<1x1x!ttcore.tile<32x32, f32>>
-
-  return %res : tensor<1x1x!ttcore.tile<32x32, f32>>
-}
-
-// -----
-
-#map = affine_map<(d0, d1) -> (d0, d1)>
-
 // Purpose: f32 -> bf16 typecast consumes an f32 CB0 tile through DST, so it
 // requires unpack-to-DST mode even though the output tile is bf16.
 // CHECK-LABEL: func.func @f32_to_bf16_typecast_sets_unpack

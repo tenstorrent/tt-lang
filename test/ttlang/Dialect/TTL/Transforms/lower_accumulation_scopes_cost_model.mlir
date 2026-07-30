@@ -5,7 +5,7 @@
 
 // Purpose: Blackhole uses the initial Track A DFB cost weights.
 // CHECK: accumulation cost model target_arch=blackhole
-// CHECK-NEXT:   candidate strategy=dst legal=true estimated_cost=688 one_time_dfb_hops=2 per_iteration_dfb_hops=0 one_time_pack_unpack_tiles=4 per_iteration_pack_unpack_tiles=0 dst_live_tiles=1 pack_reconfigs=0
+// CHECK-NEXT:   candidate strategy=dst legal=true estimated_cost=1738 one_time_dfb_hops=1 per_iteration_dfb_hops=2 one_time_pack_unpack_tiles=1 per_iteration_pack_unpack_tiles=1 dst_live_tiles=1 pack_reconfigs=0
 // CHECK-NEXT:   candidate strategy=l1-pack legal=true estimated_cost=1939 one_time_dfb_hops=1 per_iteration_dfb_hops=2 one_time_pack_unpack_tiles=1 per_iteration_pack_unpack_tiles=2 dst_live_tiles=0 pack_reconfigs=2
 // CHECK-NEXT:   selected strategy=dst
 module attributes {ttl.target_arch = "blackhole"} {
@@ -41,7 +41,7 @@ module attributes {ttl.target_arch = "blackhole"} {
 // Purpose: Wormhole uses higher traffic scores derived from tt-metal LLK perf
 // data.
 // CHECK: accumulation cost model target_arch=wormhole_b0
-// CHECK-NEXT:   candidate strategy=dst legal=true estimated_cost=1116 one_time_dfb_hops=2 per_iteration_dfb_hops=0 one_time_pack_unpack_tiles=4 per_iteration_pack_unpack_tiles=0 dst_live_tiles=1 pack_reconfigs=0
+// CHECK-NEXT:   candidate strategy=dst legal=true estimated_cost=2546 one_time_dfb_hops=1 per_iteration_dfb_hops=2 one_time_pack_unpack_tiles=1 per_iteration_pack_unpack_tiles=1 dst_live_tiles=1 pack_reconfigs=0
 // CHECK-NEXT:   candidate strategy=l1-pack legal=true estimated_cost=2954 one_time_dfb_hops=1 per_iteration_dfb_hops=2 one_time_pack_unpack_tiles=1 per_iteration_pack_unpack_tiles=2 dst_live_tiles=0 pack_reconfigs=2
 // CHECK-NEXT:   selected strategy=dst
 module attributes {ttl.target_arch = "wormhole_b0"} {

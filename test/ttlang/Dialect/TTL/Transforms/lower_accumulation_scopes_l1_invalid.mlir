@@ -15,7 +15,7 @@ func.func @tensor_scope_with_loop_local_store() {
   %c0 = arith.constant 0 : index
   %c4 = arith.constant 4 : index
   %c1 = arith.constant 1 : index
-  // expected-error @below {{cannot lower tensor accumulation scope to L1 packer accumulation: the accumulation loop contains a store not owned by the recurrence; select the automatic accumulation strategy, move that store outside the loop, or split the loop}}
+  // expected-error @below {{cannot lower tensor accumulation scope to L1 packer accumulation: expected one same-type additive recurrence with one final store; select the automatic accumulation strategy or rewrite the loop}}
   ttl.accumulation_scope outs(%reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>)
       inits(%init : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
   ^bb0(%state: tensor<1x1x!ttcore.tile<32x32, bf16>>):

@@ -9,13 +9,14 @@
 // semantic scope.
 // DST-LABEL: func.func @tensor_accumulation_scope
 // DST: %[[RESERVE:.*]] = ttl.cb_reserve
-// DST: ttl.cb_wait %{{.*}} {num_tiles = 3 : i64}
-// DST: ttl.compute
-// DST: ttl.tile_accumulate_add
+// DST: ttl.dst_section
+// DST: ttl.copy_tile
+// DST: scf.for
+// DST: ttl.cb_wait
+// DST: ttl.tile_accumulate
+// DST: ttl.cb_pop
 // DST: ttl.tile_store %{{.*}}, %[[RESERVE]]
-// DST: ttl.cb_pop %{{.*}} {num_tiles = 3 : i64}
 // DST-NOT: ttl.accumulation_scope
-// DST-NOT: scf.for
 //
 // L1 packer strategy materializes an explicit initial store and one
 // accumulating store inside an annotated loop.
@@ -30,8 +31,9 @@
 //
 // Auto selects DST when the scope satisfies the DST strategy legality rules.
 // AUTO-LABEL: func.func @tensor_accumulation_scope
-// AUTO: ttl.compute
-// AUTO: ttl.tile_accumulate_add
+// AUTO: ttl.dst_section
+// AUTO: scf.for
+// AUTO: ttl.tile_accumulate
 // AUTO-NOT: ttl.accumulation_scope
 func.func @tensor_accumulation_scope() {
   %cb_init = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -63,9 +65,9 @@ func.func @tensor_accumulation_scope() {
 // index. The DST strategy must handle that form without depending on a separate
 // canonicalization pass.
 // DST-LABEL: func.func @tensor_accumulation_scope_index_cast_bound
-// DST: ttl.cb_wait %{{.*}} {num_tiles = 3 : i64}
-// DST: ttl.compute
-// DST: ttl.tile_accumulate_add
+// DST: ttl.dst_section
+// DST: scf.for
+// DST: ttl.tile_accumulate
 // DST-NOT: ttl.accumulation_scope
 func.func @tensor_accumulation_scope_index_cast_bound() {
   %cb_init = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>

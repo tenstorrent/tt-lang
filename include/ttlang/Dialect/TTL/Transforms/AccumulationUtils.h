@@ -152,8 +152,9 @@ FailureOr<TensorDstAccumulationInfo> analyzeTensorAccumulationForDst(
     const DFBAcquireReleaseIndex *dfbIndex = nullptr);
 
 /// Return packer L1 accumulation properties for `match` when legal.
-FailureOr<TensorL1PackAccumulationInfo> analyzeTensorAccumulationForL1Pack(
-    const TensorAccumulationMatch &match, scf::ForOp loop);
+FailureOr<TensorL1PackAccumulationInfo>
+analyzeTensorAccumulationForL1Pack(const TensorAccumulationMatch &match,
+                                   scf::ForOp loop);
 
 /// Lower a matched additive tensor recurrence to a DST section whose
 /// accumulator stays resident across the original source loop. Contribution
@@ -166,9 +167,10 @@ lowerTensorAccumulationToDst(const TensorAccumulationMatch &match,
 /// Lower a matched additive tensor recurrence to one initial output store plus
 /// per-iteration accumulating stores. The generated loop is annotated for L1
 /// packer accumulation reconfiguration insertion.
-LogicalResult lowerTensorAccumulationToL1Pack(
-    const TensorAccumulationMatch &match, scf::ForOp loop, int64_t scopeId,
-    RewriterBase &rewriter);
+LogicalResult
+lowerTensorAccumulationToL1Pack(const TensorAccumulationMatch &match,
+                                scf::ForOp loop, int64_t scopeId,
+                                RewriterBase &rewriter);
 
 /// Return one more than the maximum L1 accumulation scope id under `root`.
 int64_t getNextL1AccScopeId(Operation *root);

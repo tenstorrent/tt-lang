@@ -14,7 +14,7 @@ func.func @stored_non_additive_scope_is_not_stateful_fallback() {
   %c0 = arith.constant 0 : index
   %c4 = arith.constant 4 : index
   %c1 = arith.constant 1 : index
-  // expected-error @below {{tensor accumulation lowering requires a loop-carried additive recurrence of the form acc = acc + contribution; rewrite the loop}}
+  // expected-error @below {{tensor accumulation lowering requires a loop-carried additive recurrence of the form acc = acc + contribution}}
   ttl.accumulation_scope outs(%reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>)
       inits(%init : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
   ^bb0(%state: tensor<1x1x!ttcore.tile<32x32, bf16>>):

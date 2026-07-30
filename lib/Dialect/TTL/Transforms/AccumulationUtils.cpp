@@ -646,8 +646,11 @@ lowerTensorAccumulationToL1Pack(const TensorAccumulationMatch &match,
     rewriter.moveOpBefore(outputReserve, loop);
   }
 
+  AddOp add = match.add;
+  StoreOp finalStore = match.finalStore;
+
   rewriter.setInsertionPoint(loop);
-  StoreOp::create(rewriter, match.finalStore.getLoc(), match.initialValue,
+  StoreOp::create(rewriter, finalStore.getLoc(), match.initialValue,
                   outputReserve.getResult(), /*accumulate=*/nullptr);
   auto newLoop =
       scf::ForOp::create(rewriter, loop.getLoc(), loop.getLowerBound(),
@@ -672,7 +675,7 @@ lowerTensorAccumulationToL1Pack(const TensorAccumulationMatch &match,
   rewriter.setInsertionPointToEnd(newBody);
   bool emittedAccumulatingStore = false;
   for (Operation &bodyOp : loop.getBody()->without_terminator()) {
-    if (&bodyOp == match.add.getOperation()) {
+    if (&bodyOp == add.getOperation()) {
       Value contribution = mapper.lookupOrDefault(match.contribution);
       StoreOp::create(rewriter, bodyOp.getLoc(), contribution,
                       outputReserve.getResult(), rewriter.getUnitAttr());

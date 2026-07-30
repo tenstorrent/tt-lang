@@ -33,9 +33,9 @@ func.func @accumulate_add_reduction(
     %init_arg: tensor<2x!ttcore.tile<32x32, f32>>,
     %contrib_arg: tensor<2x3x!ttcore.tile<32x32, f32>>) -> tensor<2x!ttcore.tile<32x32, f32>> {
   %out_init = tensor.empty() : tensor<2x!ttcore.tile<32x32, f32>>
-  %cbinit = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1], !ttcore.tile<32x32, f32>, 2>
-  %cbcontrib = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-  %cbout = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1], !ttcore.tile<32x32, f32>, 2>
+  %cbinit = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1], !ttcore.tile<32x32, f32>, 2>
+  %cbcontrib = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %cbout = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1], !ttcore.tile<32x32, f32>, 2>
   %init_att = ttl.attach_cb %init_arg, %cbinit : (tensor<2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x!ttcore.tile<32x32, f32>>
   %contrib_att = ttl.attach_cb %contrib_arg, %cbcontrib : (tensor<2x3x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x3x!ttcore.tile<32x32, f32>>
   %out_init_att = ttl.attach_cb %out_init, %cbout : (tensor<2x!ttcore.tile<32x32, f32>>, !ttl.cb<[1], !ttcore.tile<32x32, f32>, 2>) -> tensor<2x!ttcore.tile<32x32, f32>>
@@ -48,7 +48,7 @@ func.func @accumulate_add_reduction(
     %c1 = arith.constant 1 : index
     %acc_token, %acc = ttl.copy_tile %init_tile[%i] into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttl.dst, !ttcore.tile<32x32, f32>
     %contrib_token, %contrib = ttl.copy_tile %contrib_tile[%i, %j] into dst[%c1] : !ttcore.tile<32x32, f32> -> !ttl.dst, !ttcore.tile<32x32, f32>
-    %next = ttl.tile_accumulate_add %acc, %contrib into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    %next = ttl.tile_accumulate %acc, %contrib add into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
     ttl.tile_store %next, %out_view[%i] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x!ttcore.tile<32x32, f32>>

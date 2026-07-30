@@ -357,11 +357,9 @@ static LogicalResult lowerDFBAccumulationScope(AccumulationScopeOp scope,
 }
 
 /// Lower one tensor accumulation scope according to the selected strategy.
-static LogicalResult
-lowerTensorAccumulationScope(AccumulationScopeOp scope,
-                             AccumulationStrategy strategy, int64_t scopeId,
-                             const DFBAcquireReleaseIndex &dfbIndex,
-                             RewriterBase &rewriter) {
+static LogicalResult lowerTensorAccumulationScope(
+    AccumulationScopeOp scope, AccumulationStrategy strategy, int64_t scopeId,
+    const DFBAcquireReleaseIndex &dfbIndex, RewriterBase &rewriter) {
   FailureOr<TensorAccumulationScopeMatch> match =
       matchTensorAccumulationScope(scope, /*emitDiagnostics=*/false);
   if (failed(match)) {
@@ -377,9 +375,8 @@ lowerTensorAccumulationScope(AccumulationScopeOp scope,
 
   AccumulationCostModel costModel =
       AccumulationCostModel::forOperation(scope.getOperation());
-  FailureOr<AccumulationStrategyPlan> plan =
-      planTensorAccumulationStrategy(scope, recurrence, match->loop, strategy,
-                                     costModel);
+  FailureOr<AccumulationStrategyPlan> plan = planTensorAccumulationStrategy(
+      scope, recurrence, match->loop, strategy, costModel);
   AccumulationStrategy selectedStrategy = strategy;
   if (failed(plan)) {
     if (strategy == AccumulationStrategy::Dst) {
@@ -409,9 +406,8 @@ lowerTensorAccumulationScope(AccumulationScopeOp scope,
           "planning");
     }
     replaceYieldOperandsWithStateArguments(scope);
-    LogicalResult lowered =
-        lowerTensorAccumulationToDst(recurrence, *dstInfo, match->loop,
-                                     rewriter);
+    LogicalResult lowered = lowerTensorAccumulationToDst(recurrence, *dstInfo,
+                                                         match->loop, rewriter);
     if (failed(lowered)) {
       return scope.emitOpError(
           "cannot lower tensor accumulation scope to DST after strategy "

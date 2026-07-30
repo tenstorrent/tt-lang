@@ -1,5 +1,5 @@
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes))' --split-input-file | FileCheck %s --implicit-check-not='ttl.accumulation_scope'
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes, ttl-lower-accumulation-scopes, ttl-materialize-loop-state, ttl-insert-copy-wait, ttl-annotate-l1-acc-loops, ttl-form-producer-compute, ttl-insert-intermediate-dfbs, convert-ttl-to-compute, ttl-auto-sync))' --split-input-file | FileCheck %s --check-prefix=MAT
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes, ttl-lower-accumulation-scopes, ttl-materialize-loop-state, ttl-insert-copy-wait, ttl-auto-sync, ttl-insert-accumulation-scopes{kind=dfb}, ttl-lower-accumulation-scopes{kind=dfb}, ttl-form-producer-compute, ttl-insert-intermediate-dfbs, ttl-insert-copy-wait, convert-ttl-to-compute, ttl-auto-sync))' --split-input-file | FileCheck %s --check-prefix=MAT
 
 // Summary: Additive recurrences that are structurally matched but DST-illegal
 // must be left unformed for ttl-materialize-loop-state. Formation is
