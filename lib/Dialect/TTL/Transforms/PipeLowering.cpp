@@ -23,6 +23,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/LiveIntervalUtils.h"
+#include "ttlang/Dialect/TTL/Transforms/PipeConstants.h"
 #include "ttlang/Dialect/TTL/Transforms/PipeTransferAnalysis.h"
 #include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
@@ -36,6 +37,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <functional>
+#include <limits>
+#include <numeric>
 #include <optional>
 #include <tuple>
 #include <utility>
@@ -44,9 +47,6 @@ namespace mlir::tt::ttl {
 
 using mlir::func::FuncOp;
 namespace ttk = mlir::tt::ttkernel;
-
-static constexpr int64_t kPipeAddressWordBytes = 4;
-static constexpr int64_t kPipeSramScratchAlignmentBytes = 32;
 
 //===----------------------------------------------------------------------===//
 // Helpers
@@ -314,6 +314,22 @@ static Value loadIndexTableEntry(Location loc, ArrayRef<int64_t> values,
       rewriter.getDenseI64ArrayAttr(values));
 }
 
+Value buildPipeSramScratchAddress(Operation *operation, int64_t byteOffset,
+                                  OpBuilder &builder) {
+  int64_t scratchArgIndex = getPipeRuntimeCommonArgIndex(operation, 0);
+  Value scratchBase =
+      buildPipeRuntimeCommonArg(operation->getLoc(), builder, scratchArgIndex);
+  if (byteOffset == 0) {
+    return scratchBase;
+  }
+  auto offsetValue = arith::ConstantOp::create(
+      builder, operation->getLoc(), builder.getI32Type(),
+      builder.getI32IntegerAttr(byteOffset));
+  return arith::AddIOp::create(builder, operation->getLoc(), scratchBase,
+                               offsetValue)
+      .getResult();
+}
+
 /// Source-core address-table entry selected for one transfer allocation unit.
 /// The common arg contains the host-allocated SRAM scratch buffer address;
 /// byteOffset selects this transfer's 32-bit receiver-published address slot.
@@ -405,11 +421,20 @@ static Value lookupComputedAddressCounter(
 /// that can repeat with a nonzero stride uses a sender-local counter for
 /// `slot(i)`.
 static Value buildComputedReceiverDFBDestinationAddress(
-    PipeTransferSendOp op, Location loc, const PipeComputedAddressInfo &info,
+    PipeTransferSendOp op, Location loc,
+    const PipeAddressStorageInfo &addressStorage,
     const PipeComputedAddressCounterMap &computedAddressCounters,
     ConversionPatternRewriter &rewriter) {
+  assert(addressStorage.computedAddress.has_value() &&
+         "computed pipe missing computed-address info");
+  const PipeComputedAddressInfo &info = *addressStorage.computedAddress;
   Value baseAddress =
-      buildPipeRuntimeCommonArg(loc, rewriter, info.baseRuntimeCommonArgIndex);
+      addressStorage.usesTransportScratch()
+          ? buildPipeSramScratchAddress(op, info.baseByteOffset, rewriter)
+          : addByteOffset(loc,
+                          buildPipeRuntimeCommonArg(
+                              loc, rewriter, info.baseRuntimeCommonArgIndex),
+                          info.baseByteOffset, rewriter);
   if (!info.usesDynamicSlotCounter()) {
     int64_t byteOffset =
         info.initialSlot * info.blockStrideBytes + info.staticTileByteOffset;
@@ -1289,32 +1314,27 @@ void initializePipeCapacityCounters(
   }
 }
 
-void initializePipeComputedAddressCounters(
-    const PipeResourcePlan &pipeResourcePlan,
-    PipeComputedAddressCounterMap &computedAddressCounters) {
-  for (const auto &initializationEntry :
-       pipeResourcePlan.computedAddressCounterInitializations) {
-    func::FuncOp func = initializationEntry.first;
-    const SmallVector<PipeComputedAddressCounterInitInfo> &initializations =
-        initializationEntry.second;
-    SmallVector<PipeComputedAddressCounterInitInfo> sortedInitializations(
-        initializations);
-    llvm::sort(sortedInitializations,
-               [](const PipeComputedAddressCounterInitInfo &lhs,
-                  const PipeComputedAddressCounterInitInfo &rhs) {
-                 return lhs.counterIndex < rhs.counterIndex;
-               });
+/// Materialize deterministic entry-block state for indexed slot counters.
+template <typename InitializationInfo>
+static void initializePipeSlotCounters(
+    const llvm::MapVector<FuncOp, SmallVector<InitializationInfo>>
+        &initializationsByFunc,
+    PipeComputedAddressCounterMap &slotCounters) {
+  for (const auto &entry : initializationsByFunc) {
+    FuncOp func = entry.first;
+    SmallVector<InitializationInfo> sortedInitializations(entry.second);
+    llvm::sort(sortedInitializations, [](const InitializationInfo &lhs,
+                                         const InitializationInfo &rhs) {
+      return lhs.counterIndex < rhs.counterIndex;
+    });
 
     OpBuilder builder(func.getContext());
     builder.setInsertionPointToStart(&func.getBody().front());
     Location loc = func.getLoc();
     auto counterMemrefTy = MemRefType::get({1}, builder.getI32Type());
     Value zeroIdx = arith::ConstantIndexOp::create(builder, loc, 0);
-    auto &perFuncCounters = computedAddressCounters[func];
-    for (const PipeComputedAddressCounterInitInfo &init :
-         sortedInitializations) {
-      // Entry-block allocation dominates loop-carried sends while keeping the
-      // slot state private to the sender kernel.
+    auto &perFuncCounters = slotCounters[func];
+    for (const InitializationInfo &init : sortedInitializations) {
       auto counter = memref::AllocaOp::create(builder, loc, counterMemrefTy);
       Value initialSlot =
           arith::ConstantIntOp::create(builder, loc, init.initialSlot, 32);
@@ -1323,6 +1343,35 @@ void initializePipeComputedAddressCounters(
       perFuncCounters[init.counterIndex] = counter.getResult();
     }
   }
+}
+
+void initializePipeComputedAddressCounters(
+    const PipeResourcePlan &pipeResourcePlan,
+    PipeComputedAddressCounterMap &computedAddressCounters) {
+  initializePipeSlotCounters(
+      pipeResourcePlan.computedAddressCounterInitializations,
+      computedAddressCounters);
+}
+
+void initializePipeTransportSlotCounters(
+    const PipeTransportPlan &pipeTransportPlan,
+    PipeTransportSlotCounterMap &slotCounters) {
+  initializePipeSlotCounters(pipeTransportPlan.getSlotCounterInitializations(),
+                             slotCounters);
+}
+
+Value lookupPipeTransportSlotCounter(
+    Operation *operation, int64_t counterIndex,
+    const PipeTransportSlotCounterMap &slotCounters) {
+  FuncOp func = operation->getParentOfType<FuncOp>();
+  assert(func && "transport storage operation must be inside a function");
+  auto funcIt = slotCounters.find(func);
+  assert(funcIt != slotCounters.end() &&
+         "function is missing transport storage slot counters");
+  auto counterIt = funcIt->second.find(counterIndex);
+  assert(counterIt != funcIt->second.end() &&
+         "transport storage slot counter is missing");
+  return counterIt->second;
 }
 
 static FailureOr<PipeCounterProgress>
@@ -1507,10 +1556,6 @@ LogicalResult lowerPipeTransferSend(
   auto indexTy = rewriter.getIndexType();
   auto i32Ty = rewriter.getI32Type();
 
-  auto cbConverted = utils::convertTTLCBToTTKernel(srcCB, rewriter, loc);
-  assert(succeeded(cbConverted) &&
-         "pipe send planning guarantees a convertible source DFB");
-
   if (usesCapacityProtocol) {
     Value zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
     for (auto [capacityAcquire, senderCapacityCounter] :
@@ -1552,15 +1597,27 @@ LogicalResult lowerPipeTransferSend(
                                    readyCounterResetValue);
   }
 
-  // Producer source address is at the source DFB's write_ptr (data is staged
-  // there before push_back); consumer source address is at its read_ptr.
   Value srcPtrIdx;
-  if (sendPlan.usesReadPointer) {
-    auto cbReadPtr = ttk::GetReadPtrOp::create(rewriter, loc, *cbConverted);
-    srcPtrIdx = arith::IndexCastOp::create(rewriter, loc, indexTy, cbReadPtr);
+  if (transportStream.getSourceStorage().ownership ==
+      PipeTransportStorageOwnership::Transport) {
+    Value scratchAddress = buildPipeSramScratchAddress(
+        op, transportStream.getSourceStorage().scratchByteOffset, rewriter);
+    srcPtrIdx =
+        arith::IndexCastOp::create(rewriter, loc, indexTy, scratchAddress);
   } else {
-    auto srcWritePtr = ttk::GetWritePtrOp::create(rewriter, loc, *cbConverted);
-    srcPtrIdx = arith::IndexCastOp::create(rewriter, loc, indexTy, srcWritePtr);
+    auto cbConverted = utils::convertTTLCBToTTKernel(srcCB, rewriter, loc);
+    assert(succeeded(cbConverted) && "preflight checked source DFB type");
+    // A producer stages into the write pointer before publication. A consumer
+    // sends from the read pointer after waiting for publication.
+    if (sendPlan.usesReadPointer) {
+      auto cbReadPtr = ttk::GetReadPtrOp::create(rewriter, loc, *cbConverted);
+      srcPtrIdx = arith::IndexCastOp::create(rewriter, loc, indexTy, cbReadPtr);
+    } else {
+      auto srcWritePtr =
+          ttk::GetWritePtrOp::create(rewriter, loc, *cbConverted);
+      srcPtrIdx =
+          arith::IndexCastOp::create(rewriter, loc, indexTy, srcWritePtr);
+    }
   }
   transport.preparePayloadWrite();
 
@@ -1574,12 +1631,10 @@ LogicalResult lowerPipeTransferSend(
   Value srcAddr = arith::IndexCastOp::create(rewriter, loc, i32Ty, srcPtrIdx);
 
   Value dstAddr;
-  if (pipeResource.addressStorage.usesComputedReceiverDFB()) {
-    assert(pipeResource.addressStorage.computedAddress.has_value() &&
-           "computed pipe missing computed-address info");
+  if (pipeResource.addressStorage.usesComputedReceiverAddress()) {
     dstAddr = buildComputedReceiverDFBDestinationAddress(
-        op, loc, *pipeResource.addressStorage.computedAddress,
-        computedAddressCounters, rewriter);
+        op, loc, pipeResource.addressStorage, computedAddressCounters,
+        rewriter);
   } else {
     AddressTableInfo addressTableInfo = getAddressTableInfo(op, pipeResource);
     dstAddr =
@@ -1763,27 +1818,48 @@ static Value computeDFBPopNumTiles(CBPopOp op, CircularBufferType dfbType,
 LogicalResult lowerCBPop(CBPopOp op, Value cb,
                          const PipeCapacityPlan &pipeCapacityPlan,
                          const PipeTransportPlan &pipeTransportPlan,
+                         const PipeTransportSlotCounterMap &slotCounters,
                          const PipeResourcePlan &pipeResourcePlan,
                          ConversionPatternRewriter &rewriter) {
   Location loc = op.getLoc();
-  Value originalCb = op.getCb();
-  FailureOr<CircularBufferType> maybeDFBType =
-      utils::getTTLCircularBufferType(originalCb);
-  if (failed(maybeDFBType)) {
-    return rewriter.notifyMatchFailure(op, "failed to get TTL DFB type");
+  if (!pipeTransportPlan.ownsDFBLifecycle(op.getOperation())) {
+    Value originalCb = op.getCb();
+    FailureOr<CircularBufferType> maybeDFBType =
+        utils::getTTLCircularBufferType(originalCb);
+    if (failed(maybeDFBType)) {
+      return rewriter.notifyMatchFailure(op, "failed to get TTL DFB type");
+    }
+
+    auto convertedCb = utils::convertTTLCBToTTKernel(cb, rewriter, loc);
+    if (failed(convertedCb)) {
+      return rewriter.notifyMatchFailure(op, "failed to convert DFB operand");
+    }
+
+    Value numTiles = computeDFBPopNumTiles(op, *maybeDFBType, rewriter, loc);
+    ttk::CBPopFrontOp::create(rewriter, loc, *convertedCb, numTiles);
   }
 
-  auto convertedCb = utils::convertTTLCBToTTKernel(cb, rewriter, loc);
-  if (failed(convertedCb)) {
-    return rewriter.notifyMatchFailure(op, "failed to convert DFB operand");
+  const PipeTransportStorageAccess *storageAccess =
+      pipeTransportPlan.lookupStorageAccess(op);
+  if (storageAccess && storageAccess->dynamicSlotCounterIndex) {
+    Value slotCounter = lookupPipeTransportSlotCounter(
+        op, *storageAccess->dynamicSlotCounterIndex, slotCounters);
+    Value zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value currentSlot = memref::LoadOp::create(rewriter, loc, slotCounter,
+                                               ValueRange{zeroIndex});
+    Value one = arith::ConstantIntOp::create(rewriter, loc, 1, 32);
+    Value blockCount = arith::ConstantIntOp::create(
+        rewriter, loc, storageAccess->blockCount, 32);
+    Value nextSlotUnwrapped =
+        arith::AddIOp::create(rewriter, loc, currentSlot, one);
+    Value nextSlot =
+        arith::RemUIOp::create(rewriter, loc, nextSlotUnwrapped, blockCount);
+    memref::StoreOp::create(rewriter, loc, nextSlot, slotCounter,
+                            ValueRange{zeroIndex});
   }
 
-  Value numTiles = computeDFBPopNumTiles(op, *maybeDFBType, rewriter, loc);
-  ttk::CBPopFrontOp::create(rewriter, loc, *convertedCb, numTiles);
-
-  // A receiver DFB pop makes one slot available to its sender. Emit the
-  // release immediately after the pop so both execute under the same control
-  // flow.
+  // The release preserves the pop's control dependence even when transport
+  // synchronization replaces the local DFB state update.
   ArrayRef<PipeCapacityReleaseInfo> releases =
       pipeCapacityPlan.lookupReleases(op);
   if (!releases.empty()) {
@@ -2437,6 +2513,7 @@ getComputedAddressInfo(const PipeReceiverEndpoint &receiverEndpoint) {
   }
   return PipeComputedAddressInfo{receiverInfo.dfbIndex,
                                  /*baseRuntimeCommonArgIndex=*/0,
+                                 /*baseByteOffset=*/0,
                                  recurrence.initialSlot,
                                  recurrence.repeatStride,
                                  receiverInfo.blockCount,
@@ -2681,6 +2758,7 @@ LogicalResult buildPipeResourcePlan(
           PipeSramAddressTableInfo{colorIt->second * kPipeAddressWordBytes});
     }
     PipeResourceInfo pipeResource{
+        unit.transferNodeId,
         unit.pipe,
         unit.transferContract,
         PipeCompletionInfo{completionCounters[completionColor]},
@@ -2735,6 +2813,175 @@ LogicalResult buildPipeResourcePlan(
           ? 0
           : alignTo(maxAddressTableBytes, kPipeSramScratchAlignmentBytes);
   return success();
+}
+
+void finalizePipeTransportResources(const PipeTransportPlan &transportPlan,
+                                    PipeResourcePlan &pipeResourcePlan) {
+  int64_t transportScratchBytes = transportPlan.getSramScratchBytes();
+
+  llvm::MapVector<FuncOp, int64_t> nextComputedCounterIndex;
+  for (const auto &[function, initializations] :
+       pipeResourcePlan.computedAddressCounterInitializations) {
+    int64_t &nextIndex = nextComputedCounterIndex[function];
+    for (const PipeComputedAddressCounterInitInfo &initialization :
+         initializations) {
+      nextIndex = std::max(nextIndex, initialization.counterIndex + 1);
+    }
+  }
+
+  for (const PipeTransportStream &stream : transportPlan.getStreams()) {
+    if (stream.getSourceStorage().ownership !=
+            PipeTransportStorageOwnership::Transport ||
+        stream.getEndpoints().size() != 1 ||
+        stream.getEndpoints().front().ownership !=
+            PipeTransportStorageOwnership::Transport) {
+      continue;
+    }
+
+    const PipeTransportEndpoint &endpoint = stream.getEndpoints().front();
+    std::optional<int64_t> dynamicSlotCounterIndex;
+    if (stream.getSchedule() == PipeTransportSchedule::Overlapped) {
+      auto sendResource =
+          llvm::find_if(pipeResourcePlan.resources, [&](const auto &entry) {
+            return isa<PipeTransferSendOp>(entry.first) &&
+                   entry.second.transferNode == stream.getTransferNode();
+          });
+      assert(sendResource != pipeResourcePlan.resources.end() &&
+             "transport stream is missing sender resources");
+      if (sendResource->second.addressStorage.computedAddress) {
+        dynamicSlotCounterIndex = sendResource->second.addressStorage
+                                      .computedAddress->dynamicSlotCounterIndex;
+      }
+      if (!dynamicSlotCounterIndex) {
+        FuncOp senderFunc =
+            sendResource->first->getParentOfType<func::FuncOp>();
+        int64_t counterIndex = nextComputedCounterIndex[senderFunc]++;
+        dynamicSlotCounterIndex = counterIndex;
+        pipeResourcePlan.computedAddressCounterInitializations[senderFunc]
+            .push_back(PipeComputedAddressCounterInitInfo{counterIndex,
+                                                          /*initialSlot=*/0});
+      }
+    }
+
+    int64_t destinationGroupDepth =
+        stream.getSchedule() == PipeTransportSchedule::Overlapped
+            ? endpoint.groupDepth
+            : 1;
+    PipeComputedAddressInfo computedAddress{
+        endpoint.receiverDFB.dfbIndex,
+        /*baseRuntimeCommonArgIndex=*/0,
+        endpoint.scratchByteOffset,
+        /*initialSlot=*/0,
+        /*repeatStride=*/destinationGroupDepth > 1 ? 1 : 0,
+        /*blockCount=*/destinationGroupDepth,
+        stream.getPacketization().getPayloadSizeBytes(),
+        /*staticTileByteOffset=*/0,
+        dynamicSlotCounterIndex,
+    };
+    PipeAddressStorageInfo scratchAddress =
+        PipeAddressStorageInfo::transportScratch(computedAddress);
+    for (auto &[operation, resource] : pipeResourcePlan.resources) {
+      (void)operation;
+      if (resource.transferNode == stream.getTransferNode()) {
+        resource.addressStorage = scratchAddress;
+      }
+    }
+  }
+
+  llvm::MapVector<FuncOp, llvm::SmallSetVector<int64_t, 4>> dfbIndicesBySender;
+  for (const auto &[operation, resource] : pipeResourcePlan.resources) {
+    auto sendOp = dyn_cast<PipeTransferSendOp>(operation);
+    if (!sendOp || !resource.addressStorage.usesComputedReceiverDFB()) {
+      continue;
+    }
+    assert(resource.addressStorage.computedAddress.has_value() &&
+           "computed receiver DFB is missing address information");
+    dfbIndicesBySender[sendOp->getParentOfType<FuncOp>()].insert(
+        resource.addressStorage.computedAddress->receiverDFBIndex);
+  }
+
+  pipeResourcePlan.computedAddressDFBIndices.clear();
+  llvm::DenseMap<PipeTransferNodeId, PipeAddressStorageInfo>
+      addressStorageByTransfer;
+  for (auto &[senderFunc, dfbIndexSet] : dfbIndicesBySender) {
+    SmallVector<int64_t> dfbIndices(dfbIndexSet.begin(), dfbIndexSet.end());
+    llvm::sort(dfbIndices);
+    pipeResourcePlan.computedAddressDFBIndices[senderFunc] =
+        llvm::map_to_vector(dfbIndices, [](int64_t dfbIndex) {
+          return static_cast<int32_t>(dfbIndex);
+        });
+  }
+
+  for (auto &[operation, resource] : pipeResourcePlan.resources) {
+    auto sendOp = dyn_cast<PipeTransferSendOp>(operation);
+    if (!sendOp) {
+      continue;
+    }
+    if (resource.addressStorage.usesComputedReceiverDFB()) {
+      PipeComputedAddressInfo &computedAddress =
+          *resource.addressStorage.computedAddress;
+      FuncOp senderFunc = sendOp->getParentOfType<FuncOp>();
+      auto indicesIt =
+          pipeResourcePlan.computedAddressDFBIndices.find(senderFunc);
+      assert(indicesIt != pipeResourcePlan.computedAddressDFBIndices.end() &&
+             "sender is missing computed receiver DFB indices");
+      ArrayRef<int32_t> dfbIndices = indicesIt->second;
+      auto dfbIndexIt =
+          llvm::find(dfbIndices, computedAddress.receiverDFBIndex);
+      assert(dfbIndexIt != dfbIndices.end() &&
+             "computed receiver DFB is missing its runtime argument");
+      computedAddress.baseRuntimeCommonArgIndex =
+          getNumTensorFunctionArgs(senderFunc) +
+          std::distance(dfbIndices.begin(), dfbIndexIt);
+    }
+    auto [addressIt, inserted] = addressStorageByTransfer.try_emplace(
+        resource.transferNode, resource.addressStorage);
+    (void)addressIt;
+    assert(inserted && "pipe transfer has multiple sender resources");
+  }
+
+  for (auto &[operation, resource] : pipeResourcePlan.resources) {
+    (void)operation;
+    auto addressIt = addressStorageByTransfer.find(resource.transferNode);
+    assert(addressIt != addressStorageByTransfer.end() &&
+           "pipe transfer is missing sender address storage");
+    resource.addressStorage = addressIt->second;
+  }
+
+  llvm::DenseMap<PipeSourceKey, llvm::DenseMap<int64_t, int64_t>>
+      compactAddressOffsets;
+  int64_t addressTableBytes = 0;
+  for (auto &[operation, resource] : pipeResourcePlan.resources) {
+    (void)operation;
+    if (resource.addressStorage.mode !=
+        PipeAddressMode::ReceiverPublishedAddressTable) {
+      continue;
+    }
+    assert(resource.addressStorage.sramAddressTable.has_value() &&
+           "address-table pipe is missing SRAM storage");
+    int64_t oldOffset = resource.addressStorage.sramAddressTable->byteOffset;
+    auto &sourceOffsets = compactAddressOffsets[PipeSourceKey{
+        resource.pipe.srcX, resource.pipe.srcY}];
+    auto [offsetIt, inserted] = sourceOffsets.try_emplace(
+        oldOffset,
+        static_cast<int64_t>(sourceOffsets.size()) * kPipeAddressWordBytes);
+    (void)inserted;
+    int64_t compactOffset = offsetIt->second;
+    resource.addressStorage.sramAddressTable->byteOffset =
+        transportScratchBytes + compactOffset;
+    addressTableBytes =
+        std::max(addressTableBytes, compactOffset + kPipeAddressWordBytes);
+  }
+
+  int64_t alignedAddressTableBytes =
+      addressTableBytes == 0
+          ? 0
+          : alignTo(addressTableBytes, kPipeSramScratchAlignmentBytes);
+  assert(transportScratchBytes <=
+             std::numeric_limits<int64_t>::max() - alignedAddressTableBytes &&
+         "combined pipe scratch allocation exceeds int64_t");
+  pipeResourcePlan.sramScratch.bytes =
+      transportScratchBytes + alignedAddressTableBytes;
 }
 
 PipeResourceRequirements
