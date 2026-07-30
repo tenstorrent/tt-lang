@@ -14,6 +14,7 @@
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/STLExtras.h"
@@ -362,35 +363,28 @@ static void eraseAbsorbedOutputOps(PatternRewriter &rewriter,
   }
 }
 
-static bool replacementDominatesRemainingUses(Operation *replacementOp,
-                                              Operation *sourceOp) {
-  for (Value result : sourceOp->getResults()) {
-    for (OpOperand &use : result.getUses()) {
-      Operation *user = use.getOwner();
-      if (user->getBlock() != replacementOp->getBlock()) {
-        return false;
-      }
-      if (user->isBeforeInBlock(replacementOp)) {
-        return false;
-      }
-    }
-  }
-  return true;
-}
-
-// Replace `sourceOp` with the absorbing compute only if that preserves SSA
-// dominance; otherwise leave it in place -- it is re-fused into each consumer's
-// compute and erased once their stores lower (see mixed_store_users.mlir).
-static void replaceOpIfSafe(PatternRewriter &rewriter, Operation *sourceOp,
-                            ValueRange replacements) {
-  assert(!replacements.empty() &&
-         "replaceOpIfSafe requires replacement values");
+// Replace each use dominated by the absorbing compute. Earlier uses retain the
+// tensor op so mixed publication order remains valid, while nested consumers
+// receive the compute result when SSA dominance permits it.
+static void replaceDominatedUses(PatternRewriter &rewriter, Operation *sourceOp,
+                                 ValueRange replacements) {
+  assert(sourceOp->getNumResults() == replacements.size() &&
+         "replacement count must match source result count");
+  assert(!replacements.empty() && "replacement values must not be empty");
   Operation *replacementOp = replacements.front().getDefiningOp();
   assert(replacementOp && "replacement must be produced by an operation");
-  if (!replacementDominatesRemainingUses(replacementOp, sourceOp)) {
-    return;
+  auto function = sourceOp->getParentOfType<func::FuncOp>();
+  assert(function && "tensor compute formation requires a parent function");
+  DominanceInfo dominanceInfo(function);
+  for (auto [source, replacement] :
+       llvm::zip_equal(sourceOp->getResults(), replacements)) {
+    source.replaceUsesWithIf(replacement, [&](OpOperand &use) {
+      return dominanceInfo.dominates(replacementOp, use.getOwner());
+    });
   }
-  rewriter.replaceOp(sourceOp, replacements);
+  if (sourceOp->use_empty()) {
+    rewriter.eraseOp(sourceOp);
+  }
 }
 
 //===----------------------------------------------------------------------===//
@@ -982,7 +976,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
                                    replacedPushes);
   eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
-  replaceOpIfSafe(rewriter, sinkOp, computeOp.getResult(0));
+  replaceDominatedUses(rewriter, sinkOp, computeOp.getResult(0));
 
   // Erase the fused ops in reverse topological order (sink to roots).
   // This ensures each op's users are erased before the op itself.
@@ -1077,7 +1071,7 @@ static LogicalResult buildComputeFromInputs(
   replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
                                    replacedPushes);
   eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
-  replaceOpIfSafe(rewriter, op, computeOp.getResult(0));
+  replaceDominatedUses(rewriter, op, computeOp.getResult(0));
   return success();
 }
 
@@ -1413,7 +1407,7 @@ struct LowerBlockBroadcastToCompute : OpRewritePattern<BlockBroadcastOp> {
     replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
                                      replacedPushes);
     eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
-    replaceOpIfSafe(rewriter, op, computeOp.getResult(0));
+    replaceDominatedUses(rewriter, op, computeOp.getResult(0));
     return success();
   }
 };
@@ -1792,7 +1786,7 @@ struct LowerFillToCompute : OpRewritePattern<FillOp> {
     replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
                                      replacedPushes);
     eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
-    replaceOpIfSafe(rewriter, op, computeOp.getResults());
+    replaceDominatedUses(rewriter, op, computeOp.getResults());
     return success();
   }
 };

@@ -444,23 +444,12 @@ struct MaterializedOutput {
   unsigned storeCount = 0;
 };
 
-struct ComputeResult {
-  ComputeOp producer;
-  unsigned resultIndex;
-};
-
-static std::optional<ComputeResult> getComputeResult(Value value) {
+static std::optional<OpResult> getComputeResult(Value value) {
   auto result = dyn_cast<OpResult>(value);
-  if (!result) {
+  if (!result || !isa<ComputeOp>(result.getOwner())) {
     return std::nullopt;
   }
-
-  auto producer = dyn_cast<ComputeOp>(result.getOwner());
-  if (!producer) {
-    return std::nullopt;
-  }
-
-  return ComputeResult{producer, result.getResultNumber()};
+  return result;
 }
 
 static ComputeMaterializationPlan &
@@ -492,11 +481,12 @@ addMaterializationUse(Value operand, Operation *consumer, unsigned operandIndex,
                       SmallVectorImpl<ConsumerUse> &standaloneTensorUses) {
   // Compute results are materialized by rebuilding the producer once, even when
   // several results or consumers require DFB-attached values.
-  if (std::optional<ComputeResult> computeResult = getComputeResult(operand)) {
+  if (std::optional<OpResult> computeResult = getComputeResult(operand)) {
+    auto producer = cast<ComputeOp>(computeResult->getOwner());
     ComputeMaterializationPlan &computePlan =
-        getOrCreateComputePlan(computePlans, computeResult->producer);
+        getOrCreateComputePlan(computePlans, producer);
     ResultMaterializationPlan &resultPlan =
-        getOrCreateResultPlan(computePlan, computeResult->resultIndex);
+        getOrCreateResultPlan(computePlan, computeResult->getResultNumber());
     resultPlan.uses.push_back({consumer, operandIndex});
     return;
   }
@@ -796,7 +786,7 @@ static LogicalResult materializeComputePlan(ComputeMaterializationPlan &plan,
   return success();
 }
 
-static LogicalResult
+static void
 materializeStandaloneTensorUses(ArrayRef<ConsumerUse> standaloneTensorUses,
                                 func::FuncOp funcOp, OpBuilder &builder,
                                 DominanceInfo &dominanceInfo) {
@@ -833,17 +823,10 @@ materializeStandaloneTensorUses(ArrayRef<ConsumerUse> standaloneTensorUses,
     }
 
     // No existing materialization dominates this consumer.
-    FailureOr<DFBMaterializedValue> materialization =
-        materializeToDFB(operand, funcOp, builder);
-    if (failed(materialization)) {
-      return failure();
-    }
-
-    op->setOperand(use.operandIndex, materialization->materialized);
-    materialized[materialization->source].push_back(
-        materialization->materialized);
+    Value materializedValue = materializeToDFB(operand, funcOp, builder);
+    op->setOperand(use.operandIndex, materializedValue);
+    materialized[operand].push_back(materializedValue);
   }
-  return success();
 }
 
 struct TTLInsertIntermediateDFBsPass
@@ -929,11 +912,8 @@ struct TTLInsertIntermediateDFBsPass
     }
 
     DominanceInfo dominanceInfo(funcOp);
-    if (failed(materializeStandaloneTensorUses(standaloneTensorUses, funcOp,
-                                               builder, dominanceInfo))) {
-      signalPassFailure();
-      return;
-    }
+    materializeStandaloneTensorUses(standaloneTensorUses, funcOp, builder,
+                                    dominanceInfo);
   }
 };
 
