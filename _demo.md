@@ -1,6 +1,6 @@
 # Demo Integration Branch
 
-Branch: `bnorris/demo`.
+Branch: `integration/demo-20260730`.
 
 Base: `origin/main` at `816df6269c16` (`[ci][build] Consolidate manylinux wheel builds (#773)`).
 
@@ -13,15 +13,20 @@ at `ce0b646c4a8d`.
 Backup before #687 refresh: `backup/demo-before-pr687-refresh-20260729-122648`
 at `c2817a9306e0`.
 
+Backup before renaming and checkpointing the PR754 integration:
+`backup/integration-demo-pr754-20260730-pre-rename` at `922d1767`.
+
 Purpose: disposable aggregate branch for demos and integration testing. This
 branch is not a PR review layer and must not become a parent for source PRs.
 
 ## Policy
 
 - Maintain the source PR branches independently with Graphite.
-- Maintain `bnorris/demo` with explicit `git merge --no-ff` commits from live
+- Maintain the demo integration branch with explicit `git merge --no-ff`
+  commits from live
   `origin/bnorris/...` source tips.
-- Rebuild `bnorris/demo` from `origin/main` when source branches rebase or
+- Rebuild the demo integration branch from `origin/main` when source branches
+  rebase or
   force-push.
 - Do not use cherry-picks as the default update mechanism. If an emergency demo
   repair uses a cherry-pick, record it here and replace it with a source-branch
@@ -31,7 +36,8 @@ branch is not a PR review layer and must not become a parent for source PRs.
 
 ## Source Of Truth
 
-- Current branch state is the live `origin/bnorris/...` refs in this checkout.
+- The included-input table records the source snapshots integrated into this
+  dated demo branch. Live source refs can advance independently.
 - Rebase status context: `/home/bnorris/tt/tt-lang-acc-3-defer-intermediate-dfbs/_updates.md`.
 - PR inventory context: `/home/bnorris/tt/PRs.md`. Some entries may be stale,
   but the Pipes chain in that file is authoritative for which active Pipes PRs
@@ -57,20 +63,20 @@ branch is not a PR review layer and must not become a parent for source PRs.
 | 14 | 687 | `bnorris/fix-683` | `8df9692cec10` | `c10f6eab9`, `2ed41e60d` | Stored values across control flow through branch-local cloning or compiler-created DFBs. Latest refresh applied as feature delta `66f90ca53375..8df9692cec10`. |
 | 15 | 680 | `bnorris/dfb-subviews-671` | `4588cf72d2fc` | `cc6f42636` | DFB block subviews and tensor-slice lowering. |
 | 16 | 734 | `bnorris/pipes-multidevice-integrated-poc` | `8eebd5f9375c` | `81d1103fd` | Fabric PipeNet POC and device-domain API. Applied as feature delta `698ebd38c13e..8eebd5f9375c` because the source branch still includes older PipeNet parent state. |
+| 17 | 754 | `bnorris/pipes-issue-628-code-size` | `922d1767` | `2742e965` | Compact selected PipeNet transfer lowering adapted to the demo stack. |
 
 Duplicate merge commits mean the source branch advanced during the refresh and
 was merged again after the first merge.
 
 ## Required Inputs Missing From Current Branch
 
-None after #734 was added in `81d1103fd`.
+None after #754 was adapted in `2742e965`.
 
 ## Excluded Inputs
 
 | PR | Branch | Status | Reason |
 |---:|---|---|---|
 | 777 | `bnorris/dfb-collection-indexing` | Closed | Excluded from this refresh. |
-| 754 | `bnorris/pipes-issue-628-code-size` | Needs review | Large conflict set with the current PipeNet stack; needs separate design review before inclusion. |
 | 651 | `bnorris/accumulation-scope-redesign-mainmerge` | Reference branch | Combined/reference branch only. #733 is the active extracted branch included above. |
 
 ## Conflict Notes
@@ -100,6 +106,9 @@ None after #734 was added in `81d1103fd`.
   `c10f6eab9`. The current source branch was applied as feature delta
   `66f90ca53375..8df9692cec10` to add the released-root-input cloning guard
   and renamed stored-value tests without replaying unrelated main-stack state.
+- #754 integration: retained the current PipeNet planning, fabric routing, and
+  DFB allocation contracts while adapting compact selected-transfer lowering
+  and verifier scheduling to the aggregate branch.
 
 ## Source PR Follow-Ups
 
