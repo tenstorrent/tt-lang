@@ -5,9 +5,10 @@
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='group-size=8' | FileCheck %s --check-prefix=UPPER
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='group-size=1' | FileCheck %s --check-prefix=DISABLED
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=24576' | FileCheck %s --check-prefix=NOFIT
-// RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=61440' | FileCheck %s --check-prefix=NONMONOTONIC
+// RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=61440' | FileCheck %s --check-prefix=SCRATCH-BUDGET
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports,convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=true})' -debug-only=ttl-pipe-transport-plan 2>&1 >/dev/null | FileCheck %s --check-prefix=OVERLAP
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports,convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=true})' | FileCheck %s --check-prefix=PAGES
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports{group-size=4},convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=true})' | FileCheck %s --check-prefix=RESIDUAL
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports,convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=false})' | FileCheck %s --check-prefix=GROUPED-WRITE
 
 #layout = #ttl.layout<
@@ -36,28 +37,37 @@
 // overlap for the grouped stream.
 // OVERLAP: PipeTransport: stream 0 transfer 0
 // OVERLAP-SAME: synchronization=capacity schedule=overlapped credit_completion=iteration_domain group=5
-// OVERLAP-NEXT: PipeTransport:   source blocks=5 block_span=5 stage_depth=1 pages=5
+// OVERLAP-NEXT: PipeTransport:   source blocks=5 block_span=5 stage_depth=1 ownership=transport scratch_offset=0 scratch_bytes=20480 pages=5
 // OVERLAP-NEXT: PipeTransport:   endpoint 0
 // OVERLAP-SAME: block_count=10 slot_span=5 group_depth=2
+// OVERLAP-SAME: ownership=transport scratch_offset=0 scratch_bytes=40960
 // OVERLAP-SAME: address=recurrence(initial=0, stride=5, modulus=10, executions=2)
 
 // An overlapped payload larger than one NoC burst is decomposed into pages.
-// Setup executes once under the sender predicate; page source and destination
-// addresses advance by the same byte offset inside the group loop.
+// Transport scratch replaces the grouped DFB lifecycle. Setup executes once
+// under the sender predicate; page source and destination addresses advance by
+// the same byte offset inside the group loop.
+// PAGES: module attributes
+// PAGES-SAME: ttl.pipe_sram_scratch_bytes = 40960 : i64
 // PAGES-LABEL: func.func @point_to_point
+// PAGES-NOT: ttl.pipe_computed_address_dfb_indices
 // PAGES-DAG: %[[PAGE_BYTES:.*]] = arith.constant 4096 : i32
+// PAGES-DAG: %[[SCRATCH_ARG:.*]] = arith.constant 2 : index
+// PAGES: ttkernel.get_common_arg_val(%[[SCRATCH_ARG]])
+// PAGES-NOT: ttkernel.get_compile_time_arg_val
+// PAGES-NOT: ttkernel.cb_
+// PAGES-NOT: ttkernel.get_read_ptr
+// PAGES-NOT: ttkernel.get_write_ptr
 // PAGES: scf.if %[[IS_SOURCE:.*]] {
 // PAGES-NEXT: ttkernel.noc_async_write_one_packet_set_state(%{{.*}}, %[[PAGE_BYTES]]
 // PAGES: scf.for %[[GROUP_ITER:.*]] =
 // PAGES-NOT: noc_async_write_one_packet_set_state
 // PAGES: scf.if %[[IS_SOURCE]] {
-// PAGES: %[[SOURCE_BASE:.*]] = ttkernel.get_read_ptr
-// PAGES: %[[DEST_BASE:.*]] = arith.addi
 // PAGES: scf.for %[[PAGE_ITER:.*]] =
 // PAGES: %[[PAGE_I32:.*]] = arith.index_cast %[[PAGE_ITER]] : index to i32
 // PAGES-NEXT: %[[PAGE_OFFSET:.*]] = arith.muli %[[PAGE_I32]], %[[PAGE_BYTES]]
-// PAGES-NEXT: %[[PAGE_SOURCE:.*]] = arith.addi %[[SOURCE_BASE]], %[[PAGE_OFFSET]]
-// PAGES-NEXT: %[[PAGE_DEST:.*]] = arith.addi %[[DEST_BASE]], %[[PAGE_OFFSET]]
+// PAGES-NEXT: %[[PAGE_SOURCE:.*]] = arith.addi %{{.*}}, %[[PAGE_OFFSET]]
+// PAGES-NEXT: %[[PAGE_DEST:.*]] = arith.addi %{{.*}}, %[[PAGE_OFFSET]]
 // PAGES-NEXT: ttkernel.noc_async_write_one_packet_with_state(%[[PAGE_SOURCE]], %[[PAGE_DEST]]
 // PAGES: }
 // PAGES-NEXT: ttkernel.noc_async_write_barrier
@@ -66,7 +76,26 @@
 // PAGES: } {ttkernel.execution_core_ranges = [#ttcore.core_range<(0,1), (0,1)>]}
 // PAGES-NEXT: }
 // PAGES-NEXT: ttkernel.noc_async_atomic_barrier
+// PAGES-NOT: ttkernel.cb_
 // PAGES-NEXT: return
+
+// Grouped storage remains independent of a scalar residual that uses the
+// original DFB. The grouped loop uses a two-slot transport ring and batches its
+// credit completion; only the residual loop lowers DFB lifecycle operations.
+// RESIDUAL: module attributes
+// RESIDUAL-SAME: ttl.pipe_sram_scratch_bytes = 32800 : i64
+// RESIDUAL-LABEL: func.func @point_to_point
+// RESIDUAL-DAG: %[[ADDRESS_TABLE_OFFSET:.*]] = arith.constant 32768 : i32
+// RESIDUAL: scf.for %{{.*}} = %[[ZERO:.*]] to %[[GROUP_END:.*]] step %[[GROUP_STEP:.*]] {
+// RESIDUAL-NOT: ttkernel.cb_
+// RESIDUAL: ttkernel.noc_async_atomic_barrier
+// RESIDUAL: %[[SCRATCH_BASE:.*]] = ttkernel.get_common_arg_val(%c2)
+// RESIDUAL-NEXT: %[[ADDRESS_TABLE:.*]] = arith.addi %[[SCRATCH_BASE]], %[[ADDRESS_TABLE_OFFSET]]
+// RESIDUAL: scf.for %{{.*}} = %[[GROUP_END]] to %{{.*}} step %{{.*}} {
+// RESIDUAL: ttkernel.cb_reserve_back
+// RESIDUAL: ttkernel.cb_push_back
+// RESIDUAL: ttkernel.cb_wait_front
+// RESIDUAL: ttkernel.cb_pop_front
 
 // Grouped receiver-post execution retains one contiguous write because it does
 // not satisfy the bounded-overlap protocol.
@@ -118,15 +147,14 @@
 // NOFIT: scf.for
 // NOFIT: ttl.pipe_transfer.send
 
-// DFB block-count alignment makes allocation size non-monotonic in the group
-// size. R=5 with two destination groups fits this budget even though R=4 does
-// not.
-// NONMONOTONIC-LABEL: func.func @point_to_point
-// NONMONOTONIC: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 5}
-// NONMONOTONIC-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 10}
-// NONMONOTONIC: %[[STEP:.*]] = arith.constant 5 : index
-// NONMONOTONIC: ttl.pipe_transfer.create %{{.*}} {block_span = 5 : i64, destination_group_depth = 2 : i64
-// NONMONOTONIC: scf.for %{{.*}} = %{{.*}} to %{{.*}} step %[[STEP]]
+// Group selection counts the final DFB allocations and transport scratch
+// together. This budget admits R=2 but rejects every larger overlapping group.
+// SCRATCH-BUDGET-LABEL: func.func @point_to_point
+// SCRATCH-BUDGET: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 6}
+// SCRATCH-BUDGET-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 4}
+// SCRATCH-BUDGET: %[[STEP:.*]] = arith.constant 2 : index
+// SCRATCH-BUDGET: ttl.pipe_transfer.create %{{.*}} {block_span = 2 : i64, destination_group_depth = 2 : i64
+// SCRATCH-BUDGET: scf.for %{{.*}} = %{{.*}} to %{{.*}} step %[[STEP]]
 
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @point_to_point(
@@ -139,7 +167,8 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
     %dst_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     %c0 = arith.constant 0 : index
-    %c10 = arith.constant 10 : index
+    %c10_i64 = arith.constant 10 : i64
+    %c10 = arith.index_cast %c10_i64 : i64 to index
     %c1 = arith.constant 1 : index
     scf.for %iter = %c0 to %c10 step %c1 {
       %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0

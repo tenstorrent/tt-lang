@@ -1823,13 +1823,14 @@ def _lower_program_to_kernel(
         assign_dst_pass = "ttl-assign-dst"
 
         compiler_dfbs_flag = int(compiler_options.compiler_dfbs)
+        pipe_batch_tiles = compiler_options.pipe_batch_tiles
         pipeline_passes = [
             "func.func(ttl-materialize-loop-state)",
             f"func.func(ttl-insert-intermediate-dfbs{{enable={compiler_dfbs_flag}}})",
             "func.func(ttl-insert-copy-wait)",
             "func.func(ttl-insert-cb-sync)",
             "ttl-verify-pipenet",
-            "ttl-form-pipe-transports",
+            f"ttl-form-pipe-transports{{group-size={pipe_batch_tiles}}}",
             "func.func(ttl-coalesce-dfb-acquires)",
             "func.func(ttl-annotate-l1-acc-loops)",
             "func.func(convert-ttl-to-compute)",
