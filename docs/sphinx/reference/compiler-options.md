@@ -250,8 +250,9 @@ ttlang-opt input.mlir -p 'func.func(ttl-subblock-compute-for-dst{subblock-sync=t
 
 #### `ttl-form-pipe-transports`
 
-Group eligible repeated PipeNet transfers while preserving their DFB
-producer/consumer protocol.
+Group eligible repeated PipeNet transfers and select bounded receiver storage.
+Later PipeTransport planning replaces proven-private grouped DFB lifecycles
+with transport-owned scratch; scalar residuals retain the original lifecycle.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
