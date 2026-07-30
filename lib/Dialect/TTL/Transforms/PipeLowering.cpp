@@ -806,7 +806,7 @@ static SelectedPipeFields getSelectedPipeFields(const PipeReference &pipeRef) {
         op.getSrcInDstRange(),
         op.getSourceDeviceIndex(),
         op.getDestinationDeviceIndex(),
-        op.getIsMulticast(),
+        op.getIsCollective(),
     };
   }
   SelectPipeDstOp op = pipeRef.getSelectedDst();
@@ -822,7 +822,7 @@ static SelectedPipeFields getSelectedPipeFields(const PipeReference &pipeRef) {
       op.getSrcInDstRange(),
       op.getSourceDeviceIndex(),
       op.getDestinationDeviceIndex(),
-      op.getIsMulticast(),
+      op.getIsCollective(),
   };
 }
 
@@ -848,6 +848,11 @@ public:
 
 class NocPipeTransportEmitterBase : public PipeTransportEmitter {
 protected:
+  struct LogicalCore {
+    Value x;
+    Value y;
+  };
+
   struct TranslatedCore {
     Value x;
     Value y;
@@ -868,11 +873,33 @@ public:
                                          rewriter.getI8IntegerAttr(nocIdx))) {}
 
   LogicalResult emitReceiverAddressPublish(Value senderTableAddress,
-                                            Value publishedAddress) override {
-    emitRemoteReceiverAddressPublish(senderTableAddress, publishedAddress);
+                                           Value publishedAddress) override {
+    LogicalCore sourceCore = getSourceLogicalCore();
+    // The remote publish and the following ready signal reuse the translated
+    // source coordinates, so they must be created before either branch.
+    getSourceCore();
+    Value currentX =
+        ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
+    Value currentY =
+        ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
+    Value xMatches = arith::CmpIOp::create(
+        rewriter, loc, arith::CmpIPredicate::eq, currentX, sourceCore.x);
+    Value yMatches = arith::CmpIOp::create(
+        rewriter, loc, arith::CmpIPredicate::eq, currentY, sourceCore.y);
+    Value receiverIsSource =
+        arith::AndIOp::create(rewriter, loc, xMatches, yMatches);
+    auto localPublish = scf::IfOp::create(rewriter, loc, receiverIsSource,
+                                          /*withElseRegion=*/true);
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(&localPublish.getThenRegion().front());
+      emitLocalReceiverAddressPublish(senderTableAddress, publishedAddress);
+      rewriter.setInsertionPointToStart(&localPublish.getElseRegion().front());
+      emitRemoteReceiverAddressPublish(senderTableAddress, publishedAddress);
+    }
+    rewriter.setInsertionPointAfter(localPublish);
     return success();
   }
-
   void emitAddressPublishBarrier() override {
     ttk::NocAsyncWriteBarrierOp::create(rewriter, loc, nocVal);
   }
@@ -900,6 +927,7 @@ public:
   }
 
 protected:
+  virtual LogicalCore getSourceLogicalCore() = 0;
   virtual TranslatedCore getSourceCore() = 0;
 
   void emitLocalReceiverAddressPublish(Value senderTableAddress,
@@ -916,7 +944,8 @@ protected:
     TranslatedCore sourceCore = getSourceCore();
     auto byteEnableAll = arith::ConstantOp::create(
         rewriter, loc, rewriter.getI8Type(), rewriter.getI8IntegerAttr(0xF));
-    // Inline NoC writes do not update SRAM on their issuing core.
+    // An inline NoC write does not update the sender's local SRAM when the
+    // sender is also this receiver, so that case uses a direct L1 store.
     ttk::NocInlineDwWriteOp::create(rewriter, loc, sourceCore.x, sourceCore.y,
                                     senderTableAddress, publishedAddress,
                                     byteEnableAll, nocVal);
@@ -960,32 +989,8 @@ public:
       emitLocalReceiverAddressPublish(senderTableAddress, publishedAddress);
       return success();
     }
-
-    Value currentX =
-        ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
-    Value currentY =
-        ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
-    Value sourceX =
-        arith::ConstantIndexOp::create(rewriter, loc, pipeType.getSrcX());
-    Value sourceY =
-        arith::ConstantIndexOp::create(rewriter, loc, pipeType.getSrcY());
-    Value xMatches = arith::CmpIOp::create(
-        rewriter, loc, arith::CmpIPredicate::eq, currentX, sourceX);
-    Value yMatches = arith::CmpIOp::create(
-        rewriter, loc, arith::CmpIPredicate::eq, currentY, sourceY);
-    Value receiverIsSource =
-        arith::AndIOp::create(rewriter, loc, xMatches, yMatches);
-    auto localPublish = scf::IfOp::create(rewriter, loc, receiverIsSource,
-                                          /*withElseRegion=*/true);
-    {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(&localPublish.getThenRegion().front());
-      emitLocalReceiverAddressPublish(senderTableAddress, publishedAddress);
-      rewriter.setInsertionPointToStart(&localPublish.getElseRegion().front());
-      emitRemoteReceiverAddressPublish(senderTableAddress, publishedAddress);
-    }
-    rewriter.setInsertionPointAfter(localPublish);
-    return success();
+    return NocPipeTransportEmitterBase::emitReceiverAddressPublish(
+        senderTableAddress, publishedAddress);
   }
 
   void preparePayloadWrite() override {
@@ -1072,6 +1077,11 @@ public:
   }
 
 private:
+  LogicalCore getSourceLogicalCore() override {
+    return {arith::ConstantIndexOp::create(rewriter, loc, pipeType.getSrcX()),
+            arith::ConstantIndexOp::create(rewriter, loc, pipeType.getSrcY())};
+  }
+
   TranslatedCore getSourceCore() override {
     if (!sourceCore) {
       sourceCore = buildTranslatedCore(pipeType.getSrcX(), pipeType.getSrcY());
@@ -1116,52 +1126,6 @@ public:
   SelectedNocPipeTransportEmitter(Operation *op, SelectedPipeFields fields,
                                   ConversionPatternRewriter &rewriter)
       : NocPipeTransportEmitterBase(op, rewriter), fields(fields) {}
-
-  LogicalResult emitReceiverAddressPublish(Value senderTableAddress,
-                                           Value publishedAddress) override {
-    Value currentX =
-        ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
-    Value currentY =
-        ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
-    Value xMatches = arith::CmpIOp::create(
-        rewriter, loc, arith::CmpIPredicate::eq, currentX, fields.srcX);
-    Value yMatches = arith::CmpIOp::create(
-        rewriter, loc, arith::CmpIPredicate::eq, currentY, fields.srcY);
-    Value receiverIsSource =
-        arith::AndIOp::create(rewriter, loc, xMatches, yMatches);
-
-    auto sourceInDestination =
-        scf::IfOp::create(rewriter, loc, fields.srcInDstRange,
-                          /*withElseRegion=*/true);
-    {
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(
-          &sourceInDestination.getThenRegion().front());
-      auto singleReceiver =
-          scf::IfOp::create(rewriter, loc, getHasSingleReceiver(),
-                            /*withElseRegion=*/true);
-      rewriter.setInsertionPointToStart(
-          &singleReceiver.getThenRegion().front());
-      emitLocalReceiverAddressPublish(senderTableAddress, publishedAddress);
-      rewriter.setInsertionPointToStart(
-          &singleReceiver.getElseRegion().front());
-      auto receiverIsSourceIf =
-          scf::IfOp::create(rewriter, loc, receiverIsSource,
-                            /*withElseRegion=*/true);
-      rewriter.setInsertionPointToStart(
-          &receiverIsSourceIf.getThenRegion().front());
-      emitLocalReceiverAddressPublish(senderTableAddress, publishedAddress);
-      rewriter.setInsertionPointToStart(
-          &receiverIsSourceIf.getElseRegion().front());
-      emitRemoteReceiverAddressPublish(senderTableAddress, publishedAddress);
-
-      rewriter.setInsertionPointToStart(
-          &sourceInDestination.getElseRegion().front());
-      emitRemoteReceiverAddressPublish(senderTableAddress, publishedAddress);
-    }
-    rewriter.setInsertionPointAfter(sourceInDestination);
-    return success();
-  }
 
   void preparePayloadWrite() override {
     if (fields.isCollective) {
@@ -1224,6 +1188,10 @@ public:
   }
 
 private:
+  LogicalCore getSourceLogicalCore() override {
+    return {fields.srcX, fields.srcY};
+  }
+
   void emitUnicastPayloadWrite(Value srcAddr, Value dstAddr,
                                Value totalSizeBytes) {
     TranslatedCore destination = getDstStartCore();

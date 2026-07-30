@@ -1688,8 +1688,9 @@ LogicalResult PipeGraph::addPipeReceiver(Operation *op,
   return success();
 }
 
-FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod,
-                                      ValueOriginAnalysis &analysis) {
+FailureOr<PipeGraph>
+PipeGraph::build(ModuleOp mod, ValueOriginAnalysis &analysis,
+                 const PipeForeachLoweringInfo &foreachLoweringInfo) {
   PipeGraph graph;
   PipeGraphAnalysisState analysisState;
   if (failed(collectPipeGraphOperations(mod, analysis, analysisState))) {
@@ -1711,6 +1712,10 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod,
     }
   }
 
+  analysisState.selectedRecordControlOps.insert(
+      foreachLoweringInfo.controlOps.begin(),
+      foreachLoweringInfo.controlOps.end());
+  analysisState.selectedRecordIfThenDomains = foreachLoweringInfo.ifThenDomains;
   if (failed(collectLaunchNodeDomains(mod, analysisState))) {
     return failure();
   }

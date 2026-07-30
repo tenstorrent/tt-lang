@@ -19,6 +19,7 @@ def ensure_dialects_registered(ctx):
     ctx.append_dialect_registry(reg)
     # Trigger loading so attributes/ops are available immediately.
     _ = ctx.dialects["ttl"]
+    _ = ctx.dialects["tensor"]
 
 
 # Re-export C++-bound attributes/types for convenience.
@@ -29,8 +30,12 @@ DeviceRangeAttr = ir.DeviceRangeAttr
 DeviceRefAttr = ir.DeviceRefAttr
 DeviceTransferAttr = ir.DeviceTransferAttr
 TransferEdgeAttr = ir.TransferEdgeAttr
+PipeRecordAttr = ir.PipeRecordAttr
+PipeNetRecordsAttr = ir.PipeNetRecordsAttr
 CircularBufferType = ir.CircularBufferType
 PipeType = ir.PipeType
+SelectedPipeSrcType = ir.SelectedPipeSrcType
+SelectedPipeDstType = ir.SelectedPipeDstType
 
 __all__ = [  # noqa: F405
     *[name for name in globals().keys() if not name.startswith("_")],

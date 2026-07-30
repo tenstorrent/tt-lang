@@ -10,8 +10,8 @@ gather, scatter, scatter-gather, and ring forward kernels with launch
 extent equal to work extent. The cases here cover regimes the
 `ttl-verify-pipenet-guards` verifier exercises under `grid="full"`:
 
-* Compact single-receiver collectives: five loopback-only collective records
-  verify that one-node ranges use unicast transport.
+* Table-driven single-receiver collectives: five loopback-only collective
+  records verify that one-node ranges use unicast transport.
 * Scatter on a subgrid (`grid="full"`, work = 4 nodes in row 0):
   single PipeNet, single multicast pipe, dst rectangle smaller than the
   launch grid.
@@ -38,18 +38,18 @@ from ttlang_test_utils import assert_pcc, to_dram
 TILE = 32
 
 
-# Five collective records force compact PipeNet selection. Each range contains
-# one node, so transport lowering must use unicast while preserving collective
+# Five records use one loop body with record tables. Each range contains one
+# node, so transport lowering must use unicast while preserving collective
 # loopback semantics.
-COMPACT_COLLECTIVE_RECORDS = 5
+TABLE_DRIVEN_COLLECTIVE_RECORDS = 5
 
 
-@ttl.operation(grid=(1, COMPACT_COLLECTIVE_RECORDS))
-def compact_single_receiver_collective_kernel(inp, out):
+@ttl.operation(grid=(1, TABLE_DRIVEN_COLLECTIVE_RECORDS))
+def table_driven_single_receiver_collective_kernel(inp, out):
     net = ttl.PipeNet(
         [
             ttl.Pipe(src=(0, row_idx), dst=(slice(0, 1), row_idx))
-            for row_idx in range(COMPACT_COLLECTIVE_RECORDS)
+            for row_idx in range(TABLE_DRIVEN_COLLECTIVE_RECORDS)
         ]
     )
 
@@ -91,14 +91,14 @@ def compact_single_receiver_collective_kernel(inp, out):
 @pytest.mark.parametrize(
     "torch_dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"]
 )
-def test_compact_single_receiver_collective(device, torch_dtype):
+def test_table_driven_single_receiver_collective(device, torch_dtype):
     input_torch = torch.randn(
-        COMPACT_COLLECTIVE_RECORDS * TILE, TILE, dtype=torch_dtype
+        TABLE_DRIVEN_COLLECTIVE_RECORDS * TILE, TILE, dtype=torch_dtype
     )
     input_tensor = to_dram(input_torch, device)
     output_tensor = to_dram(torch.zeros_like(input_torch), device)
 
-    compact_single_receiver_collective_kernel(input_tensor, output_tensor)
+    table_driven_single_receiver_collective_kernel(input_tensor, output_tensor)
 
     result = ttnn.to_torch(output_tensor).float()
     assert_pcc(input_torch.float(), result)

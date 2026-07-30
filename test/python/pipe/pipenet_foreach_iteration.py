@@ -9,9 +9,9 @@
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 # RUN: FileCheck %s --check-prefix=CHECK-LOOPS < %t.output
 # RUN: FileCheck %s --check-prefix=CHECK-SIZE < %t.output
-# RUN: FileCheck %s --check-prefix=CHECK-NO-STACK < %t.output
+# RUN: FileCheck %s --check-prefix=CHECK-NO-DESCRIPTOR-ARRAYS < %t.output
 
-"""Compile-only coverage for compact PipeNet foreach callback lowering."""
+"""Compile-only coverage for table-driven PipeNet callback lowering."""
 
 import os
 import runpy
@@ -80,7 +80,7 @@ def compile_pipenet_foreach_iteration():
         SINGLETON_MULTICAST_NET.if_dst(recv)
 
 
-def report_compact_kernel_size():
+def report_table_driven_kernel_size():
     runner = runpy.run_path(os.environ["TTLANG_EMIT_RUNNER"])
     pipe_kernel_paths = [
         Path(kernel_path)
@@ -92,14 +92,14 @@ def report_compact_kernel_size():
     )
     assert largest_kernel_bytes < MAX_PIPE_KERNEL_SOURCE_BYTES
     print(
-        "COMPACT-PIPE-KERNEL-SOURCE-BYTES: "
+        "TABLE-DRIVEN-PIPE-KERNEL-SOURCE-BYTES: "
         f"{largest_kernel_bytes} / {MAX_PIPE_KERNEL_SOURCE_BYTES}"
     )
 
 
 if __name__ == "__main__":
     compile_pipenet_foreach_iteration()
-    report_compact_kernel_size()
+    report_table_driven_kernel_size()
 
 
 # CHECK-INITIAL-NOT: ttl.if_src
@@ -129,8 +129,10 @@ if __name__ == "__main__":
 # CHECK-LOOPS-COUNT-4: for (
 # CHECK-LOOPS-NOT: for (
 
-# CHECK-SIZE: COMPACT-PIPE-KERNEL-SOURCE-BYTES: {{[0-9]+}} / 24576
+# CHECK-SIZE: TABLE-DRIVEN-PIPE-KERNEL-SOURCE-BYTES: {{[0-9]+}} / 24576
 
-# CHECK-NO-STACK: TTNN INTEROP: Compiling kernel
-# CHECK-NO-STACK-NOT: {{size_t v[0-9]+\[[0-9]+\];}}
-# CHECK-NO-STACK: COMPACT-PIPE-KERNEL-SOURCE-BYTES:
+# Pipe-record fields must remain compile-time tables; only mutable progress
+# state requires local arrays.
+# CHECK-NO-DESCRIPTOR-ARRAYS: TTNN INTEROP: Compiling kernel
+# CHECK-NO-DESCRIPTOR-ARRAYS-NOT: {{size_t v[0-9]+\[[0-9]+\];}}
+# CHECK-NO-DESCRIPTOR-ARRAYS: TABLE-DRIVEN-PIPE-KERNEL-SOURCE-BYTES:

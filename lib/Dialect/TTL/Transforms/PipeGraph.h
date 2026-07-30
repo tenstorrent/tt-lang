@@ -37,6 +37,16 @@ namespace mlir::tt::ttl {
 
 struct PipeGraphAnalysisState;
 
+/// Compiler-generated control flow that implements PipeNet foreach callbacks.
+///
+/// `controlOps` identifies loops and conditions that select records rather than
+/// independent user control. `ifThenDomains` records the launch nodes that may
+/// enter each generated `scf.if` across all record-loop iterations.
+struct PipeForeachLoweringInfo {
+  SmallVector<Operation *> controlOps;
+  llvm::DenseMap<Operation *, LaunchNodeDomain> ifThenDomains;
+};
+
 //===----------------------------------------------------------------------===//
 // Pipe Graph: Tracks static transfers, receiver endpoints, physical receiver
 // DFBs, and the address sequence selected by each endpoint.
@@ -273,7 +283,7 @@ inline PipeTransferContract getPipeTransferContract(PipeTransferCreateOp op) {
 }
 
 inline PipeTransferContract getPipeTransferContract(PipeRecordAttr record) {
-  return record.getIsMulticast() ? PipeTransferContract::Collective
+  return record.getIsCollective() ? PipeTransferContract::Collective
                                  : PipeTransferContract::PointToPoint;
 }
 
@@ -359,7 +369,8 @@ public:
   /// Returns failure if validation detects an error (e.g., gather DFB too
   /// small).
   static FailureOr<PipeGraph> build(ModuleOp mod,
-                                    ValueOriginAnalysis &analysis);
+                                    ValueOriginAnalysis &analysis,
+                                    const PipeForeachLoweringInfo &foreachInfo);
 
   /// Check if any pipes were found.
   bool hasPipes() const { return !pipeTransferNodes.empty(); }

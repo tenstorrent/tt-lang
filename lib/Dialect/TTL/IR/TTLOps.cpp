@@ -416,7 +416,9 @@ llvm::LogicalResult
 PipeRecordAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
                        int64_t srcX, int64_t srcY, int64_t dstStartX,
                        int64_t dstStartY, int64_t dstEndX, int64_t dstEndY,
-                       bool isCollective) {
+                       bool isCollective, int64_t pipeNetId,
+                       DeviceTransferAttr deviceTransfer) {
+  (void)deviceTransfer;
   if (srcX < 0 || srcY < 0) {
     return emitError() << "source coordinates must be non-negative";
   }
@@ -430,6 +432,9 @@ PipeRecordAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
   if (!isCollective && (dstStartX != dstEndX || dstStartY != dstEndY)) {
     return emitError()
            << "point-to-point pipe record must have exactly one receiver";
+  }
+  if (pipeNetId < -1) {
+    return emitError() << "pipeNetId must be non-negative or omitted";
   }
   return llvm::success();
 }
@@ -668,10 +673,31 @@ verifyPipeNetForeachRecords(mlir::Operation *op,
     return op->emitOpError() << "requires at least one pipe record";
   }
   bool isCollective = pipes.front().getIsCollective();
+  bool hasDeviceTransfer = static_cast<bool>(pipes.front().getDeviceTransfer());
+  mlir::tt::ttl::DeviceDomainAttr deviceDomain =
+      hasDeviceTransfer ? pipes.front().getDeviceTransfer().getDomain()
+                        : mlir::tt::ttl::DeviceDomainAttr();
   for (mlir::tt::ttl::PipeRecordAttr record : pipes) {
     if (record.getIsCollective() != isCollective) {
       return op->emitOpError()
              << "all pipe records must be either point-to-point or collective";
+    }
+    if (static_cast<bool>(record.getDeviceTransfer()) != hasDeviceTransfer) {
+      return op->emitOpError()
+             << "all pipe records must either have logical-device transfers "
+                "or omit them";
+    }
+    if (hasDeviceTransfer &&
+        record.getDeviceTransfer().getDomain() != deviceDomain) {
+      return op->emitOpError()
+             << "all logical-device pipe records must use the same device "
+                "domain";
+    }
+    if (hasDeviceTransfer &&
+        !record.getDeviceTransfer().getEdge().getDestination()) {
+      return op->emitOpError()
+             << "logical-device range destinations are not supported by "
+                "PipeNet foreach";
     }
   }
   return mlir::success();
@@ -684,6 +710,11 @@ mlir::LogicalResult mlir::tt::ttl::PipeNetForeachSrcOp::verify() {
   return verifyPipeNetForeachBody(
       getOperation(), getBody(), SelectedPipeSrcType::get(getContext()),
       [](mlir::OpOperand &use, mlir::BlockArgument pipeArg) {
+        if (auto deviceIndex =
+                mlir::dyn_cast<SelectedPipeDestinationDeviceIndexOp>(
+                    use.getOwner())) {
+          return deviceIndex.getPipe() == pipeArg;
+        }
         auto copy = mlir::dyn_cast<CopyOp>(use.getOwner());
         if (!copy) {
           return false;
@@ -699,6 +730,10 @@ mlir::LogicalResult mlir::tt::ttl::PipeNetForeachDstOp::verify() {
   return verifyPipeNetForeachBody(
       getOperation(), getBody(), SelectedPipeDstType::get(getContext()),
       [](mlir::OpOperand &use, mlir::BlockArgument pipeArg) {
+        if (auto deviceIndex = mlir::dyn_cast<SelectedPipeSourceDeviceIndexOp>(
+                use.getOwner())) {
+          return deviceIndex.getPipe() == pipeArg;
+        }
         auto copy = mlir::dyn_cast<CopyOp>(use.getOwner());
         if (!copy) {
           return false;
@@ -707,12 +742,31 @@ mlir::LogicalResult mlir::tt::ttl::PipeNetForeachDstOp::verify() {
       });
 }
 
+static mlir::LogicalResult
+verifySelectedPipeRecords(mlir::Operation *op,
+                          mlir::tt::ttl::PipeNetRecordsAttr records,
+                          int64_t pipeNetId, bool isCollective) {
+  if (records.getPipeNetId() != pipeNetId) {
+    return op->emitOpError() << "records pipeNetId must match net attribute";
+  }
+  if (failed(verifyPipeNetForeachRecords(op, records))) {
+    return mlir::failure();
+  }
+  if (records.getPipes().front().getIsCollective() != isCollective) {
+    return op->emitOpError()
+           << "isCollective must match the uniform records kind";
+  }
+  return mlir::success();
+}
+
 mlir::LogicalResult mlir::tt::ttl::SelectPipeSrcOp::verify() {
-  return verifyPipeNetForeachRecords(getOperation(), getRecords());
+  return verifySelectedPipeRecords(getOperation(), getRecords(), getPipeNetId(),
+                                   getIsCollective());
 }
 
 mlir::LogicalResult mlir::tt::ttl::SelectPipeDstOp::verify() {
-  return verifyPipeNetForeachRecords(getOperation(), getRecords());
+  return verifySelectedPipeRecords(getOperation(), getRecords(), getPipeNetId(),
+                                   getIsCollective());
 }
 
 static mlir::Operation *getSelectedPipeDef(mlir::Value pipe) {
@@ -764,6 +818,15 @@ mlir::LogicalResult mlir::tt::ttl::PipeTransferCreateOp::verify() {
 
   Value pipe = traceUnrealizedCasts(getPipe());
   if (auto pipeType = mlir::dyn_cast<PipeType>(pipe.getType())) {
+    IntegerAttr expectedReceivers = getExpectedReceiversAttr();
+    if (!expectedReceivers) {
+      return emitOpError()
+             << "static pipe transfer requires expectedReceivers";
+    }
+    if (expectedReceivers.getInt() != pipeType.getNumDests()) {
+      return emitOpError()
+             << "expectedReceivers must match the pipe receiver count";
+    }
     switch (getKind().getValue()) {
     case PipeTransferKind::PointToPoint:
       if (!pipeType.hasSingleReceiver()) {
@@ -773,19 +836,26 @@ mlir::LogicalResult mlir::tt::ttl::PipeTransferCreateOp::verify() {
     case PipeTransferKind::Collective:
       break;
     }
+    if (auto createPipe = pipe.getDefiningOp<CreatePipeOp>();
+        createPipe &&
+        createPipe.getDeviceTransferAttr() != getDeviceTransferAttr()) {
+      return emitOpError()
+             << "deviceTransfer must match the defining ttl.create_pipe";
+    }
     return success();
   }
 
+  if (getExpectedReceiversAttr()) {
+    return emitOpError()
+           << "selected pipe transfer must not set expectedReceivers";
+  }
+  if (getDeviceTransferAttr()) {
+    return emitOpError()
+           << "selected pipe transfer must not set deviceTransfer";
+  }
   if (!selectedPipeKindMatchesTransfer(getPipe(), getKind().getValue())) {
     return emitOpError()
            << "selected pipe transfer kind must match the records kind";
-  }
-
-  if (auto createPipe = getPipe().getDefiningOp<CreatePipeOp>();
-      createPipe &&
-      createPipe.getDeviceTransferAttr() != getDeviceTransferAttr()) {
-    return emitOpError()
-           << "deviceTransfer must match the defining ttl.create_pipe";
   }
 
   return success();

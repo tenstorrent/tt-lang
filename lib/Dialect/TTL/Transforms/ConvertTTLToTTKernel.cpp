@@ -765,12 +765,12 @@ getPipeTransferContractForPipeValue(ValueOriginAnalysis &analysis, Value pipe) {
           return getPipeTransferContract(createPipe);
         }
         if (auto selectedSrc = origin.getDefiningOp<SelectPipeSrcOp>()) {
-          return selectedSrc.getIsMulticast()
+          return selectedSrc.getIsCollective()
                      ? PipeTransferContract::Collective
                      : PipeTransferContract::PointToPoint;
         }
         if (auto selectedDst = origin.getDefiningOp<SelectPipeDstOp>()) {
-          return selectedDst.getIsMulticast()
+          return selectedDst.getIsCollective()
                      ? PipeTransferContract::Collective
                      : PipeTransferContract::PointToPoint;
         }
@@ -959,7 +959,7 @@ buildSelectedPipe(OpBuilder &builder, Location loc, PipeNetRecordsAttr records,
       buildConstantTableLookup(builder, loc, tables.srcInDstRange, recordIndex);
   Value srcInDstRange = arith::CmpIOp::create(
       builder, loc, arith::CmpIPredicate::ne, srcInDstRangeIndex, zero);
-  bool isMulticast = records.getPipes().front().getIsMulticast();
+  bool isCollective = records.getPipes().front().getIsCollective();
   return SelectOp::create(
       builder, loc, SelectedType::get(builder.getContext()), recordIndex,
       buildConstantTableLookup(builder, loc, tables.srcX, recordIndex),
@@ -974,7 +974,7 @@ buildSelectedPipe(OpBuilder &builder, Location loc, PipeNetRecordsAttr records,
                                recordIndex),
       buildConstantTableLookup(builder, loc, tables.destinationDeviceIndex,
                                recordIndex),
-      builder.getBoolAttr(isMulticast),
+      builder.getBoolAttr(isCollective),
       builder.getI64IntegerAttr(records.getPipeNetId()), records);
 }
 
@@ -1037,7 +1037,7 @@ static CreatePipeOp buildStaticPipeForRecord(RewriterBase &rewriter,
                             static_cast<int64_t>(records.getPipeNetId()));
   int64_t pipeNetId = getRecordPipeNetId(record, records.getPipeNetId());
   BoolAttr isCollectiveAttr =
-      record.getIsMulticast() ? rewriter.getBoolAttr(true) : BoolAttr();
+      record.getIsCollective() ? rewriter.getBoolAttr(true) : BoolAttr();
   return CreatePipeOp::create(
       rewriter, loc, pipeType, rewriter.getI64IntegerAttr(record.getSrcX()),
       rewriter.getI64IntegerAttr(record.getSrcY()),
@@ -1051,7 +1051,8 @@ static CreatePipeOp buildStaticPipeForRecord(RewriterBase &rewriter,
 
 template <typename ForeachOp>
 static LogicalResult lowerPipeNetForeachDirect(
-    ForeachOp op, RewriterBase &rewriter,
+    ForeachOp op, RewriterBase &rewriter, PipeRole role,
+    PipeForeachLoweringInfo &foreachLoweringInfo,
     llvm::function_ref<Value(RewriterBase &, Location, Value, Value,
                              PipeRecordAttr)>
         buildRecordMatch) {
@@ -1067,6 +1068,11 @@ static LogicalResult lowerPipeNetForeachDirect(
         buildRecordMatch(rewriter, loc, nodeX, nodeY, record);
     auto ifOp = scf::IfOp::create(rewriter, loc, isActiveRecord,
                                   /*withElseRegion=*/false);
+    foreachLoweringInfo.controlOps.push_back(ifOp);
+    foreachLoweringInfo.ifThenDomains[ifOp] =
+        role == PipeRole::Source
+            ? getPipeRecordSourceLaunchNodeDomain(record)
+            : getPipeRecordDestinationLaunchNodeDomain(record);
     rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
     clonePipeForeachBody(op, staticPipe, rewriter);
     rewriter.setInsertionPointAfter(ifOp);
@@ -1075,13 +1081,15 @@ static LogicalResult lowerPipeNetForeachDirect(
   return success();
 }
 
-static LogicalResult lowerPipeNetForeachSrc(PipeNetForeachSrcOp op,
-                                            RewriterBase &rewriter) {
+static LogicalResult
+lowerPipeNetForeachSrc(PipeNetForeachSrcOp op, RewriterBase &rewriter,
+                       PipeForeachLoweringInfo &foreachLoweringInfo) {
   Location loc = op.getLoc();
   rewriter.setInsertionPoint(op);
   PipeNetRecordsAttr records = op.getRecords();
   if (shouldLowerPipeNetForeachDirect(records)) {
-    return lowerPipeNetForeachDirect(op, rewriter, buildRecordSrcMatch);
+    return lowerPipeNetForeachDirect(op, rewriter, PipeRole::Source,
+                                     foreachLoweringInfo, buildRecordSrcMatch);
   }
 
   PipeForeachTables tables = buildPipeForeachTables(rewriter, loc, records);
@@ -1113,19 +1121,25 @@ static LogicalResult lowerPipeNetForeachSrc(PipeNetForeachSrcOp op,
   }
   auto ifOp = scf::IfOp::create(rewriter, loc, isSrc,
                                 /*withElseRegion=*/false);
+  foreachLoweringInfo.controlOps.push_back(forOp);
+  foreachLoweringInfo.controlOps.push_back(ifOp);
+  foreachLoweringInfo.ifThenDomains[ifOp] =
+      getPipeRecordsRoleLaunchNodeDomain(records, PipeRole::Source);
   rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
   clonePipeForeachBody(op, selectedPipe.getPipe(), rewriter);
   rewriter.eraseOp(op);
   return success();
 }
 
-static LogicalResult lowerPipeNetForeachDst(PipeNetForeachDstOp op,
-                                            RewriterBase &rewriter) {
+static LogicalResult
+lowerPipeNetForeachDst(PipeNetForeachDstOp op, RewriterBase &rewriter,
+                       PipeForeachLoweringInfo &foreachLoweringInfo) {
   Location loc = op.getLoc();
   rewriter.setInsertionPoint(op);
   PipeNetRecordsAttr records = op.getRecords();
   if (shouldLowerPipeNetForeachDirect(records)) {
-    return lowerPipeNetForeachDirect(op, rewriter, buildRecordDstMatch);
+    return lowerPipeNetForeachDirect(op, rewriter, PipeRole::Destination,
+                                     foreachLoweringInfo, buildRecordDstMatch);
   }
 
   PipeForeachTables tables = buildPipeForeachTables(rewriter, loc, records);
@@ -1165,37 +1179,51 @@ static LogicalResult lowerPipeNetForeachDst(PipeNetForeachDstOp op,
   }
   auto ifOp = scf::IfOp::create(rewriter, loc, isDst,
                                 /*withElseRegion=*/false);
+  foreachLoweringInfo.controlOps.push_back(forOp);
+  foreachLoweringInfo.controlOps.push_back(ifOp);
+  foreachLoweringInfo.ifThenDomains[ifOp] =
+      getPipeRecordsRoleLaunchNodeDomain(records, PipeRole::Destination);
   rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
   clonePipeForeachBody(op, selectedPipe.getPipe(), rewriter);
   rewriter.eraseOp(op);
   return success();
 }
 
-struct PipeNetForeachSrcLowering : OpRewritePattern<PipeNetForeachSrcOp> {
-  using OpRewritePattern::OpRewritePattern;
+static LogicalResult
+lowerPipeNetForeachOps(ModuleOp mod,
+                       PipeForeachLoweringInfo &foreachLoweringInfo) {
+  // A module-wide greedy rewrite also deletes unrelated unused pure reads.
+  // Rewrite only foreach operations so this expansion cannot change other IR.
+  IRRewriter rewriter(mod.getContext());
+  while (true) {
+    Operation *foreachOp = nullptr;
+    mod.walk<WalkOrder::PreOrder>([&](Operation *candidate) {
+      if (!mlir::isa<PipeNetForeachSrcOp, PipeNetForeachDstOp>(candidate)) {
+        return WalkResult::advance();
+      }
+      foreachOp = candidate;
+      return WalkResult::interrupt();
+    });
+    if (!foreachOp) {
+      return success();
+    }
 
-  LogicalResult matchAndRewrite(PipeNetForeachSrcOp op,
-                                PatternRewriter &rewriter) const override {
-    return lowerPipeNetForeachSrc(op, rewriter);
+    // Lower an outer callback before its nested callbacks. The outer rewrite
+    // clones its body, so any recorded control operations then remain in the
+    // module and continue to identify the generated record selection.
+    if (auto foreachSrcOp = mlir::dyn_cast<PipeNetForeachSrcOp>(foreachOp)) {
+      if (failed(lowerPipeNetForeachSrc(foreachSrcOp, rewriter,
+                                        foreachLoweringInfo))) {
+        return failure();
+      }
+      continue;
+    }
+    if (failed(
+            lowerPipeNetForeachDst(mlir::cast<PipeNetForeachDstOp>(foreachOp),
+                                   rewriter, foreachLoweringInfo))) {
+      return failure();
+    }
   }
-};
-
-struct PipeNetForeachDstLowering : OpRewritePattern<PipeNetForeachDstOp> {
-  using OpRewritePattern::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(PipeNetForeachDstOp op,
-                                PatternRewriter &rewriter) const override {
-    return lowerPipeNetForeachDst(op, rewriter);
-  }
-};
-
-static LogicalResult lowerPipeNetForeachOps(ModuleOp mod) {
-  RewritePatternSet patterns(mod.getContext());
-  patterns.add<PipeNetForeachSrcLowering, PipeNetForeachDstLowering>(
-      mod.getContext());
-  FrozenRewritePatternSet frozenPatterns(std::move(patterns));
-  walkAndApplyPatterns(mod.getOperation(), frozenPatterns);
-  return success();
 }
 
 /// Receive-handle wait and the PipeNet id used to create its typed token.
@@ -2322,7 +2350,8 @@ static LogicalResult lowerTTLOpsToTTKernel(
            typeConverter.isLegal(&op.getBody());
   });
 
-  if (failed(lowerPipeNetForeachOps(mod))) {
+  PipeForeachLoweringInfo foreachLoweringInfo;
+  if (failed(lowerPipeNetForeachOps(mod, foreachLoweringInfo))) {
     return failure();
   }
 
@@ -2348,7 +2377,8 @@ static LogicalResult lowerTTLOpsToTTKernel(
   }
   // Validate receiver DFB consistency before lowering emits the pipe
   // synchronization protocol.
-  auto pipeGraphOrErr = PipeGraph::build(mod, transferAnalysis);
+  auto pipeGraphOrErr =
+      PipeGraph::build(mod, transferAnalysis, foreachLoweringInfo);
   if (failed(pipeGraphOrErr)) {
     return failure();
   }
