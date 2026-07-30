@@ -147,6 +147,14 @@ page. Payloads that fit one packet use one stateful contiguous write per group
 when command state is invariant. Other schedules and topologies retain the
 generic contiguous NoC write.
 
+Stateful write selection treats resident NoC command state as an explicit
+hardware effect. TTKernel NoC operations declare their command class and
+whether they preserve resident state through traits. A write is converted only
+when no operation that may reprogram the write command can execute between
+loop iterations on the same node. Resolved function calls are analyzed
+transitively. Unresolved calls and opaque external calls invalidate the state
+because their device implementation is not available to the compiler.
+
 Data and free credits use cumulative counters. An overlapped stream therefore
 does not require each non-posted credit update to complete before the next
 group starts. `PipeTransportPlan` records iteration-domain credit completion,
@@ -195,7 +203,8 @@ block geometries.
 The pass groups a loop only after proving all of the following:
 
 - The `scf.for` has constant bounds, unit step, no loop-carried values, and at
-  least two iterations.
+  least two iterations. Its transfer count must be representable as `int64_t`;
+  nonzero lower bounds are supported.
 - Every grouped transfer is scalar before the rewrite and executes in the
   candidate loop.
 - The source and receiver DFB values are direct `ttl.bind_cb` results whose
