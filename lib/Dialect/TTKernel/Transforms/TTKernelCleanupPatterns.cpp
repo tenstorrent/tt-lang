@@ -13,11 +13,13 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/LoopInvariantCodeMotionUtils.h"
+#include "llvm/ADT/DenseMap.h"
 
 #include <optional>
 
@@ -180,6 +182,53 @@ struct StatefulWriteLoop {
   SmallVector<scf::IfOp> predicates;
 };
 
+/// Cached transitive write-command effect for a callable operation.
+enum class CallableWriteCommandEffect {
+  Analyzing,
+  Preserves,
+  Reprograms,
+};
+
+/// Return whether `operation` or a called function may reprogram write state.
+static bool mayTransitivelyReprogramWriteCommand(
+    Operation *operation,
+    DenseMap<Operation *, CallableWriteCommandEffect> &callableEffects) {
+  if (mayReprogramNocCommand(operation, NocCommandClass::Write)) {
+    return true;
+  }
+
+  auto call = dyn_cast<CallOpInterface>(operation);
+  if (!call) {
+    return false;
+  }
+  Operation *callableOperation = call.resolveCallable();
+  auto callable = dyn_cast_or_null<CallableOpInterface>(callableOperation);
+  Region *callableRegion = callable ? callable.getCallableRegion() : nullptr;
+  if (!callableRegion) {
+    return true;
+  }
+
+  auto cachedEffect = callableEffects.find(callableOperation);
+  if (cachedEffect != callableEffects.end()) {
+    // Revisiting an active callable is recursion. Operations after the
+    // recursive call are still scanned by the first visit.
+    return cachedEffect->second == CallableWriteCommandEffect::Reprograms;
+  }
+
+  callableEffects[callableOperation] = CallableWriteCommandEffect::Analyzing;
+  WalkResult walkResult = callableRegion->walk([&](Operation *nested) {
+    if (mayTransitivelyReprogramWriteCommand(nested, callableEffects)) {
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  bool reprograms = walkResult.wasInterrupted();
+  callableEffects[callableOperation] =
+      reprograms ? CallableWriteCommandEffect::Reprograms
+                 : CallableWriteCommandEffect::Preserves;
+  return reprograms;
+}
+
 /// Return whether `loop` preserves the write command and setup predicate.
 static LogicalResult analyzeStatefulWriteLoop(NocAsyncWriteOp op,
                                               scf::ForOp loop,
@@ -213,11 +262,12 @@ static LogicalResult analyzeStatefulWriteLoop(NocAsyncWriteOp op,
     }
   }
 
+  DenseMap<Operation *, CallableWriteCommandEffect> callableEffects;
   WalkResult commandCheck = loop.walk([&](Operation *nestedOp) {
     if (nestedOp == op.getOperation()) {
       return WalkResult::advance();
     }
-    if (mayReprogramNocCommand(nestedOp, NocCommandClass::Write) &&
+    if (mayTransitivelyReprogramWriteCommand(nestedOp, callableEffects) &&
         !haveMutuallyExclusiveExecution(op, nestedOp, loop)) {
       return WalkResult::interrupt();
     }
