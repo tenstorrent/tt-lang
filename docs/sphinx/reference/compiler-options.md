@@ -211,11 +211,13 @@ ttlang-opt input.mlir -p 'func.func(ttl-subblock-compute-for-dst{subblock-sync=t
 Group eligible repeated PipeNet transfers and select bounded receiver storage.
 Later PipeTransport planning replaces proven-private grouped DFB lifecycles
 with transport-owned scratch; scalar residuals retain the original lifecycle.
+Selection accounts for DFB allocation, a conservative receiver-published
+address table, and transport scratch.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `group-size` | int64_t | `0` (auto) | Limit logical transfers per group. `0` selects automatically and `1` disables grouping. |
-| `l1-budget-override` | uint32_t | `0` (target default) | Override the L1 DFB budget used during grouping selection. |
+| `l1-budget-override` | uint32_t | `0` (target default) | Override the combined DFB and pipe scratch budget used during grouping selection. |
 
 ```bash
 ttlang-opt input.mlir --ttl-form-pipe-transports='group-size=8'
