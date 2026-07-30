@@ -72,6 +72,11 @@ struct TTLToTTKernelPipelineOptions
       llvm::cl::desc("Limit logical transfers per PipeTransport group. "
                      "Zero selects automatically; one disables grouping."),
       llvm::cl::init(0)};
+  Option<uint32_t> l1BudgetOverride{
+      *this, "l1-budget-override",
+      llvm::cl::desc("Override the L1 allocation budget used by DFB validation "
+                     "and PipeTransport selection."),
+      llvm::cl::init(0)};
   Option<bool> specializeCores{
       *this, "specialize-cores",
       llvm::cl::desc(
