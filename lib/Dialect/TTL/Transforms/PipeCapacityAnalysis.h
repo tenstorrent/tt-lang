@@ -6,8 +6,8 @@
 // Pipe Capacity Analysis
 //===----------------------------------------------------------------------===//
 //
-// This file declares the analysis and lowering plan for PipeNet transfers that
-// can replace receiver-post synchronization with sender capacity counters.
+// This file declares the analysis facts required to prove that receiver DFB
+// releases can replenish sender capacity counters.
 //
 //===----------------------------------------------------------------------===//
 
@@ -41,7 +41,9 @@
 //
 //   for endpoint in pipeGraph.getPipeReceiverEndpoints():
 //     node = pipeGraph.getReceiverDFBNode(endpoint.receiverDFBNode)
+//     require endpoint.transferNode to be point-to-point
 //     require node.writerEndpoints.size() == 1
+//     require endpoint.receiverSlotSpanBlocks == 1
 //     require every endpoint post to target the receiver DFB from the receiver
 //             NOC thread
 //     require the receiver DFB node to have a proven pipe-only producer stream
@@ -49,38 +51,20 @@
 //     require every receiver-overlapping pop of the DFB to be owned by a
 //             receiver-domain wait and free one block
 //
-//   for transferNode in pipeGraph.getPipeTransferNodes():
-//     require the transfer to use the intra-device point-to-point NoC transport
-//     require every receiver endpoint to have proven lowerable capacity facts
-//     initialize each receiver endpoint's sender-local capacity counter to that
-//             receiver dataflow buffer's block_count
-//     reuse counter storage across different source nodes only when their
-//             initial block counts match
-//     record one capacity acquire per endpoint for each send
-//     record one capacity release to the sender for each endpoint pop
-//     mark the transfer's send and receiver posts as using the capacity
-//     protocol
-//
 // If an endpoint requirement is not proven, that endpoint has no capacity
-// fact. If any endpoint of a transfer node is missing a proven lowerable fact,
-// the analysis records no facts for that transfer. TTL-to-TTKernel lowering
-// uses proven facts to replace receiver-post sender readiness with sender-local
-// capacity counters.
+// fact. Protocol selection and counter allocation consume these facts but are
+// not part of the analysis.
 
-#include "PipeCounter.h"
 #include "PipeGraph.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "mlir/Support/LogicalResult.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
-#include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/MapVector.h"
-#include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include <cstddef>
 
 namespace mlir::tt::ttl {
-
-struct PipeResourcePlan;
 
 /// Source node that receives a capacity-release increment over the NoC.
 struct PipeCapacityReleaseTarget {
@@ -88,93 +72,45 @@ struct PipeCapacityReleaseTarget {
   int64_t logicalY = 0;
 };
 
-/// Capacity consumed by one sender before issuing a payload write.
-struct PipeCapacityAcquireInfo {
-  PipeCounterInfo counter;
-  int64_t count = 1;
-};
-
-/// Capacity returned to a sender after one receiver DFB pop.
-struct PipeCapacityReleaseInfo {
-  PipeCapacityReleaseTarget target;
-  PipeCounterInfo counter;
-  int64_t count = 1;
-};
-
-/// Initial shared capacity and storage selected for one sender counter.
-struct PipeCapacityInitInfo {
-  PipeCounterInfo counter;
+/// Proven operations that consume and release one receiver endpoint's DFB
+/// capacity.
+struct PipeCapacityEndpointFacts {
+  PipeTransferNodeId transferNode = 0;
+  PipeReceiverEndpointId endpoint = 0;
+  PipeReceiverDFBNodeId receiverDFBNode = 0;
+  PipeReceiverDFBKey receiverDFB;
+  PipeCapacityReleaseTarget releaseTarget;
   int64_t initialCapacity = 0;
+  PipeTransferSendOp send;
+  SmallVector<CBPopOp> pops;
+
+  /// Print the endpoint and its initial capacity for diagnostics.
+  void print(llvm::raw_ostream &os) const;
 };
 
-/// Lowering plan for transfers proven safe to use capacity synchronization.
-class PipeCapacityPlan {
+/// Capacity facts proven independently of resource and address selection.
+class PipeCapacityAnalysisResult {
 public:
-  /// Return the capacity consumed before each execution of `op`.
-  ArrayRef<PipeCapacityAcquireInfo> lookupAcquires(PipeTransferSendOp op) const;
+  /// Return whether capacity accounting was proven for `endpoint`.
+  bool hasEndpointFacts(PipeReceiverEndpointId endpoint) const;
 
-  /// Return the capacity released immediately after `op`.
-  ArrayRef<PipeCapacityReleaseInfo> lookupReleases(CBPopOp op) const;
-
-  /// Return whether `op` belongs to a capacity-synchronized transfer.
-  bool usesCapacityProtocol(PipeTransferSendOp op) const;
-
-  /// Return whether `op` belongs to a capacity-synchronized transfer.
-  bool usesCapacityProtocol(PipeTransferPostOp op) const;
-
-  /// Return the shared-counter initializations grouped by sender function.
-  const llvm::MapVector<func::FuncOp, SmallVector<PipeCapacityInitInfo>> &
-  getInitializations() const {
-    return initializations;
-  }
-
-  /// Return whether no transfer has been assigned capacity resources.
-  bool empty() const {
-    return acquires.empty() && releases.empty() && initializations.empty();
-  }
-
-  /// Return whether two plans selected the same sends and receiver posts.
-  bool hasSameSelectedTransfers(const PipeCapacityPlan &other) const;
-
-  /// Record one sender acquire for `op`.
-  void addAcquire(PipeTransferSendOp op, PipeCapacityAcquireInfo info);
-
-  /// Record one receiver release for `op`.
-  void addRelease(CBPopOp op, PipeCapacityReleaseInfo info);
-
-  /// Record the initial shared count for `counter` in `func`.
-  void addInitialization(func::FuncOp func, PipeCapacityInitInfo info);
-
-  /// Select capacity synchronization for `op`.
-  void markCapacityTransfer(PipeTransferSendOp op);
-
-  /// Select capacity synchronization for `op`.
-  void markCapacityTransfer(PipeTransferPostOp op);
-
-  /// Continue allocation after the completion and readiness counters.
-  void initializeCounterAllocation(PipeCounterAllocationCounts counts);
-
-  /// Allocate storage for one proven sender-capacity counter.
-  PipeCounterInfo allocateCounter();
-
-  /// Return the combined completion, readiness, and capacity totals.
-  PipeCounterAllocationCounts getCounterAllocationCounts() const {
-    return counterAllocator.getCounts();
-  }
+  /// Return the proven facts for `endpoint`.
+  const PipeCapacityEndpointFacts &
+  getEndpointFacts(PipeReceiverEndpointId endpoint) const;
 
 private:
-  llvm::MapVector<Operation *, SmallVector<PipeCapacityAcquireInfo>> acquires;
-  llvm::MapVector<Operation *, SmallVector<PipeCapacityReleaseInfo>> releases;
-  llvm::MapVector<func::FuncOp, SmallVector<PipeCapacityInitInfo>>
-      initializations;
-  llvm::SmallPtrSet<Operation *, 16> capacityTransferOps;
-  PipeCounterAllocator counterAllocator;
+  friend PipeCapacityAnalysisResult analyzePipeCapacity(ModuleOp,
+                                                        const PipeGraph &);
+
+  void addEndpointFacts(PipeCapacityEndpointFacts facts);
+
+  SmallVector<PipeCapacityEndpointFacts> endpointFacts;
+  llvm::DenseMap<PipeReceiverEndpointId, std::size_t> factsIndexByEndpoint;
 };
 
-/// Build capacity synchronization facts for every proven transfer in `mod`.
-void buildPipeCapacityPlan(ModuleOp mod, const PipeGraph &pipeGraph,
-                           const PipeResourcePlan &resources,
-                           PipeCapacityPlan &plan);
+/// Prove capacity accounting facts for receiver endpoints in `module`.
+PipeCapacityAnalysisResult analyzePipeCapacity(ModuleOp module,
+                                               const PipeGraph &pipeGraph);
 
 } // namespace mlir::tt::ttl
 
