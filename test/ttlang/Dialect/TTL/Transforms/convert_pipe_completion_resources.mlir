@@ -342,9 +342,9 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 // CHECK: %[[GLOBAL_COMPLETION_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[GLOBAL_COMPLETION_WAIT]])
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[GLOBAL_COMPLETION_PTR]]
 // CHECK: ttkernel.cb_pop_front
-// CHECK: ttkernel.noc_async_write
+// CHECK-DAG: ttkernel.noc_async_write
+// CHECK-DAG: %[[GLOBAL_COMPLETION_SEND:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_COMPLETION_INDEX]])
 // CHECK: ttkernel.noc_async_write_barrier
-// CHECK: %[[GLOBAL_COMPLETION_SEND:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_COMPLETION_INDEX]])
 // CHECK: %[[GLOBAL_COMPLETION_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[GLOBAL_COMPLETION_SEND]], {{.*}})
 // CHECK: ttkernel.noc_semaphore_inc(%[[GLOBAL_COMPLETION_NOC]]
 // The computed-address configuration also proves capacity synchronization for
