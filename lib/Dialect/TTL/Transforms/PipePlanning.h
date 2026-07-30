@@ -201,6 +201,55 @@ private:
   std::variant<PipeSendPlan, PipePostPlan> operationPlan;
 };
 
+/// Lowering decisions for one operation over a runtime-selected PipeNet row.
+class SelectedPipeTransferPlan {
+public:
+  /// Return the selected pipe coordinates and record table.
+  const PipeReference &getPipeReference() const { return pipeReference; }
+
+  /// Return the resources indexed by the selected record.
+  ArrayRef<PipeResourceInfo> getResources() const { return resources; }
+
+  /// Return whether this plan describes a sender operation.
+  bool isSend() const {
+    return std::holds_alternative<PipeSendPlan>(operationPlan);
+  }
+
+  /// Return sender-only lowering information.
+  const PipeSendPlan &getSend() const {
+    assert(isSend() && "send plan requested for a receiver post");
+    return std::get<PipeSendPlan>(operationPlan);
+  }
+
+  /// Return receiver-post-only lowering information.
+  const PipePostPlan &getPost() const {
+    assert(!isSend() && "receiver-post plan requested for a send");
+    return std::get<PipePostPlan>(operationPlan);
+  }
+
+private:
+  friend FailureOr<PipeModulePlan> buildPipeModulePlan(ModuleOp,
+                                                       ValueOriginAnalysis &,
+                                                       const PipeGraph &, bool,
+                                                       bool);
+
+  SelectedPipeTransferPlan(PipeReference pipeReference,
+                           ArrayRef<PipeResourceInfo> resources,
+                           PipeSendPlan sendPlan)
+      : pipeReference(pipeReference), resources(resources),
+        operationPlan(std::move(sendPlan)) {}
+
+  SelectedPipeTransferPlan(PipeReference pipeReference,
+                           ArrayRef<PipeResourceInfo> resources,
+                           PipePostPlan postPlan)
+      : pipeReference(pipeReference), resources(resources),
+        operationPlan(std::move(postPlan)) {}
+
+  PipeReference pipeReference;
+  SmallVector<PipeResourceInfo> resources;
+  std::variant<PipeSendPlan, PipePostPlan> operationPlan;
+};
+
 /// PipeNet decisions shared by all lowering patterns for one module.
 class PipeModulePlan {
 public:
@@ -226,6 +275,15 @@ public:
   /// Return the lowering plan for an active send or receiver post.
   const PipeTransferPlan &getTransferPlan(Operation *operation) const;
 
+  /// Return whether `operation` transfers a runtime-selected PipeNet row.
+  bool hasSelectedTransferPlan(Operation *operation) const {
+    return selectedTransferPlans.contains(operation);
+  }
+
+  /// Return the lowering plan for a runtime-selected send or receiver post.
+  const SelectedPipeTransferPlan &
+  getSelectedTransferPlan(Operation *operation) const;
+
 private:
   friend FailureOr<PipeModulePlan> buildPipeModulePlan(ModuleOp,
                                                        ValueOriginAnalysis &,
@@ -238,6 +296,7 @@ private:
   PipeNetIndex pipeNetIndex;
   llvm::SmallPtrSet<Operation *, 8> completedPipeSendWaits;
   llvm::MapVector<Operation *, PipeTransferPlan> transferPlans;
+  llvm::MapVector<Operation *, SelectedPipeTransferPlan> selectedTransferPlans;
 };
 
 /// Compute all PipeNet decisions required after transfer IR expansion.

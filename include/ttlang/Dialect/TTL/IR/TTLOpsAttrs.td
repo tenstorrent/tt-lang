@@ -244,8 +244,9 @@ def TTL_PipeRecordAttr : TTL_Attr<"PipeRecord", "pipe_record"> {
   let description = [{
     Encodes one static PipeNet record for PipeNet foreach ops. The owning
     `#ttl.pipenet_records` attribute carries the PipeNet id; each record
-    carries source and destination coordinates plus the user-level destination
-    kind.
+    carries source and destination coordinates, the transfer's semantic
+    PipeNet id, optional logical-device transfer metadata, and the user-level
+    destination kind.
 
     `isMulticast` is a frontend-supplied flag, not derived from coordinates:
     `slice(i, i + 1)` is a singleton collective record with one destination
@@ -259,7 +260,9 @@ def TTL_PipeRecordAttr : TTL_Attr<"PipeRecord", "pipe_record"> {
     "int64_t":$dstStartY,
     "int64_t":$dstEndX,
     "int64_t":$dstEndY,
-    DefaultValuedParameter<"bool", "false">:$isMulticast
+    DefaultValuedParameter<"bool", "false">:$isMulticast,
+    DefaultValuedParameter<"int64_t", "-1">:$pipeNetId,
+    OptionalParameter<"DeviceTransferAttr">:$deviceTransfer
   );
 
   let assemblyFormat = "`<` struct(params) `>`";

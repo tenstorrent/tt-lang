@@ -775,6 +775,8 @@ def TTL_SelectPipeSrcOp : TTL_Op<"select_pipe_src", [Pure]> {
     Index:$dstEndY,
     Index:$numDests,
     I1:$srcInDstRange,
+    Index:$sourceDeviceIndex,
+    Index:$destinationDeviceIndex,
     BoolAttr:$isMulticast,
     I64Attr:$pipeNetId,
     TTL_PipeNetRecordsAttr:$records
@@ -782,7 +784,9 @@ def TTL_SelectPipeSrcOp : TTL_Op<"select_pipe_src", [Pure]> {
   let results = (outs TTL_SelectedPipeSrc:$pipe);
   let assemblyFormat = [{
     `net` $pipeNetId `record` `(` $recordIndex `)` `src` `(` $srcX `,` $srcY `)` `dst` `(` $dstStartX `,` $dstStartY `)` `to` `(` $dstEndX `,` $dstEndY `)`
-    `num_dests` `(` $numDests `)` `src_in_dst` `(` $srcInDstRange `)` attr-dict `:` type($pipe)
+    `num_dests` `(` $numDests `)` `src_in_dst` `(` $srcInDstRange `)`
+    `devices` `(` $sourceDeviceIndex `,` $destinationDeviceIndex `)`
+    attr-dict `:` type($pipe)
   }];
   let hasVerifier = 1;
 }
@@ -806,6 +810,8 @@ def TTL_SelectPipeDstOp : TTL_Op<"select_pipe_dst", [Pure]> {
     Index:$dstEndY,
     Index:$numDests,
     I1:$srcInDstRange,
+    Index:$sourceDeviceIndex,
+    Index:$destinationDeviceIndex,
     BoolAttr:$isMulticast,
     I64Attr:$pipeNetId,
     TTL_PipeNetRecordsAttr:$records
@@ -813,9 +819,35 @@ def TTL_SelectPipeDstOp : TTL_Op<"select_pipe_dst", [Pure]> {
   let results = (outs TTL_SelectedPipeDst:$pipe);
   let assemblyFormat = [{
     `net` $pipeNetId `record` `(` $recordIndex `)` `src` `(` $srcX `,` $srcY `)` `dst` `(` $dstStartX `,` $dstStartY `)` `to` `(` $dstEndX `,` $dstEndY `)`
-    `num_dests` `(` $numDests `)` `src_in_dst` `(` $srcInDstRange `)` attr-dict `:` type($pipe)
+    `num_dests` `(` $numDests `)` `src_in_dst` `(` $srcInDstRange `)`
+    `devices` `(` $sourceDeviceIndex `,` $destinationDeviceIndex `)`
+    attr-dict `:` type($pipe)
   }];
   let hasVerifier = 1;
+}
+
+def TTL_SelectedPipeSourceDeviceIndexOp :
+    TTL_Op<"selected_pipe_source_device_index", [Pure]> {
+  let summary = "Get the source device index of a selected destination pipe";
+  let description = [{
+    Returns the source device's row-major index from the logical-device
+    transfer record selected by `pipe`.
+  }];
+  let arguments = (ins TTL_SelectedPipeDst:$pipe);
+  let results = (outs Index:$result);
+  let assemblyFormat = "$pipe attr-dict `:` type($pipe)";
+}
+
+def TTL_SelectedPipeDestinationDeviceIndexOp :
+    TTL_Op<"selected_pipe_destination_device_index", [Pure]> {
+  let summary = "Get the destination device index of a selected source pipe";
+  let description = [{
+    Returns the destination device's row-major index from the logical-device
+    transfer record selected by `pipe`.
+  }];
+  let arguments = (ins TTL_SelectedPipeSrc:$pipe);
+  let results = (outs Index:$result);
+  let assemblyFormat = "$pipe attr-dict `:` type($pipe)";
 }
 
 def TTL_PipeTransferCreateOp : TTL_Op<"pipe_transfer.create", [Pure]> {
@@ -851,6 +883,7 @@ def TTL_PipeTransferPostOp : TTL_Op<"pipe_transfer.post",
   );
   let results = (outs TTL_PipeToken:$token);
   let assemblyFormat = "$transfer `,` $dst attr-dict `:` functional-type(operands, results)";
+  let hasVerifier = 1;
 }
 
 def TTL_PipeTransferSendOp : TTL_Op<"pipe_transfer.send",

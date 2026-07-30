@@ -70,12 +70,14 @@ func.func @select_pipe_ops() {
   // CHECK: ttl.select_pipe_src net 0 record(%{{.*}})
   %src = ttl.select_pipe_src net 0 record(%c0) src (%c0, %c0) dst (%c1, %c0) to (%c1, %c0)
       num_dests (%c1) src_in_dst (%false)
+      devices (%c0, %c0)
       {isMulticast = false, records = #ttl.pipenet_records<net 0 pipes [
         #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0>
       ]>} : !ttl.selected_pipe_src
   // CHECK: ttl.select_pipe_dst net 0 record(%{{.*}})
   %dst = ttl.select_pipe_dst net 0 record(%c0) src (%c0, %c0) dst (%c1, %c0) to (%c1, %c0)
       num_dests (%c1) src_in_dst (%false)
+      devices (%c0, %c0)
       {isMulticast = false, records = #ttl.pipenet_records<net 0 pipes [
         #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0>
       ]>} : !ttl.selected_pipe_dst

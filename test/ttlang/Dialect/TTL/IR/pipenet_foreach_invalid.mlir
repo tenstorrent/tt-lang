@@ -26,6 +26,7 @@ func.func @select_records_net_mismatch() {
   // expected-error @+1 {{'ttl.select_pipe_src' op records pipeNetId must match net attribute}}
   %src = ttl.select_pipe_src net 1 record(%c0) src (%c0, %c0) dst (%c1, %c0) to (%c1, %c0)
       num_dests (%c1) src_in_dst (%false)
+      devices (%c0, %c0)
       {isMulticast = false, records = #ttl.pipenet_records<net 0 pipes [
         #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0>
       ]>} : !ttl.selected_pipe_src
@@ -42,6 +43,7 @@ func.func @select_records_kind_mismatch() {
   // expected-error @+1 {{'ttl.select_pipe_dst' op isMulticast must match the uniform records kind}}
   %dst = ttl.select_pipe_dst net 0 record(%c0) src (%c0, %c0) dst (%c1, %c0) to (%c1, %c0)
       num_dests (%c1) src_in_dst (%false)
+      devices (%c0, %c0)
       {isMulticast = true, records = #ttl.pipenet_records<net 0 pipes [
         #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0>
       ]>} : !ttl.selected_pipe_dst
@@ -67,6 +69,7 @@ func.func @selected_transfer_kind_mismatch() {
   %false = arith.constant false
   %src = ttl.select_pipe_src net 0 record(%c0) src (%c0, %c0) dst (%c1, %c0) to (%c1, %c0)
       num_dests (%c1) src_in_dst (%false)
+      devices (%c0, %c0)
       {isMulticast = true, records = #ttl.pipenet_records<net 0 pipes [
         #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0, isMulticast = true>
       ]>} : !ttl.selected_pipe_src

@@ -254,22 +254,28 @@ inline PipeTransferContract getPipeTransferContract(PipeRecordAttr record) {
                                  : PipeTransferContract::PointToPoint;
 }
 
-inline PipeKey getPipeKey(PipeRecordAttr record, int64_t pipeNetId) {
+inline int64_t getRecordPipeNetId(PipeRecordAttr record,
+                                  int64_t fallbackPipeNetId) {
+  return record.getPipeNetId() >= 0 ? record.getPipeNetId() : fallbackPipeNetId;
+}
+
+inline PipeKey getPipeKey(PipeRecordAttr record, int64_t fallbackPipeNetId) {
   return {record.getSrcX(),
           record.getSrcY(),
           record.getDstStartX(),
           record.getDstStartY(),
           record.getDstEndX(),
           record.getDstEndY(),
-          pipeNetId};
+          getRecordPipeNetId(record, fallbackPipeNetId)};
 }
 
 inline PipeType getPipeTypeFromRecord(MLIRContext *context,
                                       PipeRecordAttr record,
-                                      int64_t pipeNetId) {
+                                      int64_t fallbackPipeNetId) {
   return PipeType::get(context, record.getSrcX(), record.getSrcY(),
                        record.getDstStartX(), record.getDstStartY(),
-                       record.getDstEndX(), record.getDstEndY(), pipeNetId);
+                       record.getDstEndX(), record.getDstEndY(),
+                       getRecordPipeNetId(record, fallbackPipeNetId));
 }
 
 struct PipeReference {

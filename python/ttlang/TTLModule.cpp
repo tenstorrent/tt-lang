@@ -158,21 +158,30 @@ void populateTTLModule(nb::module_ &m) {
           "get",
           [](MlirContext ctx, int64_t srcX, int64_t srcY, int64_t dstStartX,
              int64_t dstStartY, int64_t dstEndX, int64_t dstEndY,
-             bool isMulticast) {
-            return wrap(PipeRecordAttr::get(unwrap(ctx), srcX, srcY, dstStartX,
-                                            dstStartY, dstEndX, dstEndY,
-                                            isMulticast));
+             bool isMulticast, int64_t pipeNetId,
+             std::optional<MlirAttribute> deviceTransfer) {
+            DeviceTransferAttr deviceTransferAttr;
+            if (deviceTransfer) {
+              deviceTransferAttr =
+                  mlir::cast<DeviceTransferAttr>(unwrap(*deviceTransfer));
+            }
+            return wrap(PipeRecordAttr::get(
+                unwrap(ctx), srcX, srcY, dstStartX, dstStartY, dstEndX, dstEndY,
+                isMulticast, pipeNetId, deviceTransferAttr));
           },
           nb::arg("context"), nb::arg("src_x"), nb::arg("src_y"),
           nb::arg("dst_start_x"), nb::arg("dst_start_y"), nb::arg("dst_end_x"),
-          nb::arg("dst_end_y"), nb::arg("is_multicast") = false)
+          nb::arg("dst_end_y"), nb::arg("is_multicast") = false,
+          nb::arg("pipe_net_id") = -1,
+          nb::arg("device_transfer").none() = nb::none())
       .def_prop_ro("src_x", &PipeRecordAttr::getSrcX)
       .def_prop_ro("src_y", &PipeRecordAttr::getSrcY)
       .def_prop_ro("dst_start_x", &PipeRecordAttr::getDstStartX)
       .def_prop_ro("dst_start_y", &PipeRecordAttr::getDstStartY)
       .def_prop_ro("dst_end_x", &PipeRecordAttr::getDstEndX)
       .def_prop_ro("dst_end_y", &PipeRecordAttr::getDstEndY)
-      .def_prop_ro("is_multicast", &PipeRecordAttr::getIsMulticast);
+      .def_prop_ro("is_multicast", &PipeRecordAttr::getIsMulticast)
+      .def_prop_ro("pipe_net_id", &PipeRecordAttr::getPipeNetId);
 
   //===--------------------------------------------------------------------===//
   // PipeNetRecordsAttr

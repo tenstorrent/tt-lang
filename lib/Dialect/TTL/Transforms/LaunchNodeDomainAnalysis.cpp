@@ -244,62 +244,23 @@ LaunchNodeDomain LaunchNodeDomainState::getRoleDomain(int64_t netId,
   return src.unionWith(dst);
 }
 
-void LaunchNodeDomainState::recordPipeNet(PipeType pipeType, Location loc,
-                                          std::optional<StringRef> name) {
-  int64_t pipeNetId = pipeType.getPipeNetId();
-  netSourceDomains[pipeNetId] = netSourceDomains[pipeNetId].unionWith(
-      getPipeSourceLaunchNodeDomain(pipeType));
-  netDestinationDomains[pipeNetId] = netDestinationDomains[pipeNetId].unionWith(
-      getPipeDestinationLaunchNodeDomain(pipeType));
-  pipeNetLocs[pipeNetId].push_back(loc);
-  auto &storedName = pipeNetNames[pipeNetId];
-  if (storedName.empty() && name && !name->empty()) {
-    storedName = name->str();
-  }
-}
-
-void LaunchNodeDomainState::recordPipeNetRecords(PipeNetRecordsAttr records,
-                                                 Location loc) {
-  std::optional<StringRef> name;
-  if (StringAttr attr = records.getPipeNetName()) {
-    name = attr.getValue();
-  }
-  int64_t pipeNetId = records.getPipeNetId();
-  for (PipeRecordAttr record : records.getPipes()) {
-    netSourceDomains[pipeNetId] = netSourceDomains[pipeNetId].unionWith(
-        getPipeRecordSourceLaunchNodeDomain(record));
-    netDestinationDomains[pipeNetId] =
-        netDestinationDomains[pipeNetId].unionWith(
-            getPipeRecordDestinationLaunchNodeDomain(record));
-    pipeNetLocs[pipeNetId].push_back(loc);
-  }
-  auto &storedName = pipeNetNames[pipeNetId];
-  if (storedName.empty() && name && !name->empty()) {
-    storedName = name->str();
-  }
-}
-
 void LaunchNodeDomainState::initialize(ModuleOp module) {
   executionCountAnalysesByFunctionAndCoord.clear();
   module.walk([&](CreatePipeOp pipe) {
-    std::optional<StringRef> name;
-    if (auto attr = pipe.getPipeNetNameAttr()) {
-      name = attr.getValue();
+    PipeType pipeType = mlir::cast<PipeType>(pipe.getResult().getType());
+    int64_t pipeNetId = pipeType.getPipeNetId();
+    netSourceDomains[pipeNetId] = netSourceDomains[pipeNetId].unionWith(
+        getPipeSourceLaunchNodeDomain(pipeType));
+    netDestinationDomains[pipeNetId] =
+        netDestinationDomains[pipeNetId].unionWith(
+            getPipeDestinationLaunchNodeDomain(pipeType));
+    pipeNetLocs[pipeNetId].push_back(pipe.getLoc());
+    auto &name = pipeNetNames[pipeNetId];
+    if (name.empty()) {
+      if (auto attr = pipe.getPipeNetNameAttr()) {
+        name = attr.getValue().str();
+      }
     }
-    recordPipeNet(mlir::cast<PipeType>(pipe.getResult().getType()),
-                  pipe.getLoc(), name);
-  });
-  module.walk([&](PipeNetForeachSrcOp op) {
-    recordPipeNetRecords(op.getRecords(), op.getLoc());
-  });
-  module.walk([&](PipeNetForeachDstOp op) {
-    recordPipeNetRecords(op.getRecords(), op.getLoc());
-  });
-  module.walk([&](SelectPipeSrcOp op) {
-    recordPipeNetRecords(op.getRecords(), op.getLoc());
-  });
-  module.walk([&](SelectPipeDstOp op) {
-    recordPipeNetRecords(op.getRecords(), op.getLoc());
   });
 
   if (!module->hasAttr(kLaunchGridAttrName)) {
@@ -335,6 +296,12 @@ evaluateLaunchNodeContextValue(Value value, LaunchNodeCoord coord,
           coord);
       return llvm::APInt(/*numBits=*/1, selected);
     }
+  }
+  if (value.getDefiningOp<IsDeviceOp>() ||
+      value.getDefiningOp<IsDeviceInRangeOp>()) {
+    // Launch-node analysis models core coordinates only. Logical-device
+    // predicates are enforced by mesh placement and graph-pipe lowering.
+    return llvm::APInt(/*numBits=*/1, true);
   }
   return std::nullopt;
 }
@@ -963,16 +930,6 @@ void LaunchNodeDomainAnalysis::visitRegionBranchControlFlowTransfer(
         auto pipeType = mlir::cast<PipeType>(ifDst.getPipe().getType());
         narrowed = before.getDomain().intersectWith(
             getPipeDestinationLaunchNodeDomain(pipeType));
-      })
-      .Case<PipeNetForeachSrcOp>([&](PipeNetForeachSrcOp foreachSrc) {
-        narrowed =
-            before.getDomain().intersectWith(getPipeRecordsRoleLaunchNodeDomain(
-                foreachSrc.getRecords(), PipeRole::Source));
-      })
-      .Case<PipeNetForeachDstOp>([&](PipeNetForeachDstOp foreachDst) {
-        narrowed =
-            before.getDomain().intersectWith(getPipeRecordsRoleLaunchNodeDomain(
-                foreachDst.getRecords(), PipeRole::Destination));
       })
       .Case<PipeNetScopeOp>([&](PipeNetScopeOp scopeOp) {
         auto scope = getPipeNetScopeLaunchNodeDomains(scopeOp, state);

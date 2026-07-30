@@ -416,8 +416,10 @@ llvm::LogicalResult
 PipeRecordAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
                        int64_t srcX, int64_t srcY, int64_t dstStartX,
                        int64_t dstStartY, int64_t dstEndX, int64_t dstEndY,
-                       bool isMulticast) {
+                       bool isMulticast, int64_t pipeNetId,
+                       DeviceTransferAttr deviceTransfer) {
   (void)isMulticast;
+  (void)deviceTransfer;
   if (srcX < 0 || srcY < 0) {
     return emitError() << "source coordinates must be non-negative";
   }
@@ -427,6 +429,9 @@ PipeRecordAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
   if (dstStartX > dstEndX || dstStartY > dstEndY) {
     return emitError()
            << "destination start must not exceed destination end on any axis";
+  }
+  if (pipeNetId < -1) {
+    return emitError() << "pipeNetId must be non-negative or omitted";
   }
   return llvm::success();
 }
@@ -665,10 +670,31 @@ verifyPipeNetForeachRecords(mlir::Operation *op,
     return op->emitOpError() << "requires at least one pipe record";
   }
   bool isMulticast = pipes.front().getIsMulticast();
+  bool hasDeviceTransfer = static_cast<bool>(pipes.front().getDeviceTransfer());
+  mlir::tt::ttl::DeviceDomainAttr deviceDomain =
+      hasDeviceTransfer ? pipes.front().getDeviceTransfer().getDomain()
+                        : mlir::tt::ttl::DeviceDomainAttr();
   for (mlir::tt::ttl::PipeRecordAttr record : pipes) {
     if (record.getIsMulticast() != isMulticast) {
       return op->emitOpError()
              << "all pipe records must be either point-to-point or collective";
+    }
+    if (static_cast<bool>(record.getDeviceTransfer()) != hasDeviceTransfer) {
+      return op->emitOpError()
+             << "all pipe records must either have logical-device transfers "
+                "or omit them";
+    }
+    if (hasDeviceTransfer &&
+        record.getDeviceTransfer().getDomain() != deviceDomain) {
+      return op->emitOpError()
+             << "all logical-device pipe records must use the same device "
+                "domain";
+    }
+    if (hasDeviceTransfer &&
+        !record.getDeviceTransfer().getEdge().getDestination()) {
+      return op->emitOpError()
+             << "logical-device range destinations are not supported by "
+                "PipeNet foreach";
     }
   }
   return mlir::success();
@@ -704,9 +730,10 @@ mlir::LogicalResult mlir::tt::ttl::PipeNetForeachDstOp::verify() {
       });
 }
 
-static mlir::LogicalResult verifySelectedPipeRecords(
-    mlir::Operation *op, mlir::tt::ttl::PipeNetRecordsAttr records,
-    int64_t pipeNetId, bool isMulticast) {
+static mlir::LogicalResult
+verifySelectedPipeRecords(mlir::Operation *op,
+                          mlir::tt::ttl::PipeNetRecordsAttr records,
+                          int64_t pipeNetId, bool isMulticast) {
   if (records.getPipeNetId() != pipeNetId) {
     return op->emitOpError() << "records pipeNetId must match net attribute";
   }
@@ -722,23 +749,21 @@ static mlir::LogicalResult verifySelectedPipeRecords(
 }
 
 mlir::LogicalResult mlir::tt::ttl::SelectPipeSrcOp::verify() {
-  return verifySelectedPipeRecords(getOperation(), getRecords(),
-                                   getPipeNetId(), getIsMulticast());
+  return verifySelectedPipeRecords(getOperation(), getRecords(), getPipeNetId(),
+                                   getIsMulticast());
 }
 
 mlir::LogicalResult mlir::tt::ttl::SelectPipeDstOp::verify() {
-  return verifySelectedPipeRecords(getOperation(), getRecords(),
-                                   getPipeNetId(), getIsMulticast());
+  return verifySelectedPipeRecords(getOperation(), getRecords(), getPipeNetId(),
+                                   getIsMulticast());
 }
 
 static mlir::Operation *getSelectedPipeDef(mlir::Value pipe) {
   pipe = mlir::tt::ttl::traceUnrealizedCasts(pipe);
-  if (auto selectedSrc =
-          pipe.getDefiningOp<mlir::tt::ttl::SelectPipeSrcOp>()) {
+  if (auto selectedSrc = pipe.getDefiningOp<mlir::tt::ttl::SelectPipeSrcOp>()) {
     return selectedSrc.getOperation();
   }
-  if (auto selectedDst =
-          pipe.getDefiningOp<mlir::tt::ttl::SelectPipeDstOp>()) {
+  if (auto selectedDst = pipe.getDefiningOp<mlir::tt::ttl::SelectPipeDstOp>()) {
     return selectedDst.getOperation();
   }
   return nullptr;
@@ -757,12 +782,12 @@ static mlir::LogicalResult verifySelectedPipeDirectDef(mlir::Operation *op,
             "ttl.select_pipe_src or ttl.select_pipe_dst";
 }
 
-static bool selectedPipeKindMatchesTransfer(mlir::Value pipe,
-                                            mlir::tt::ttl::PipeTransferKind kind) {
+static bool
+selectedPipeKindMatchesTransfer(mlir::Value pipe,
+                                mlir::tt::ttl::PipeTransferKind kind) {
   pipe = mlir::tt::ttl::traceUnrealizedCasts(pipe);
   bool isMulticast = false;
-  if (auto selectedSrc =
-          pipe.getDefiningOp<mlir::tt::ttl::SelectPipeSrcOp>()) {
+  if (auto selectedSrc = pipe.getDefiningOp<mlir::tt::ttl::SelectPipeSrcOp>()) {
     isMulticast = selectedSrc.getIsMulticast();
   } else if (auto selectedDst =
                  pipe.getDefiningOp<mlir::tt::ttl::SelectPipeDstOp>()) {
@@ -771,8 +796,7 @@ static bool selectedPipeKindMatchesTransfer(mlir::Value pipe,
     return true;
   }
 
-  return isMulticast ==
-         (kind == mlir::tt::ttl::PipeTransferKind::Collective);
+  return isMulticast == (kind == mlir::tt::ttl::PipeTransferKind::Collective);
 }
 
 mlir::LogicalResult mlir::tt::ttl::PipeTransferCreateOp::verify() {
@@ -799,6 +823,33 @@ mlir::LogicalResult mlir::tt::ttl::PipeTransferCreateOp::verify() {
            << "selected pipe transfer kind must match the records kind";
   }
 
+  return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::PipeTransferPostOp::verify() {
+  Value transfer = traceUnrealizedCasts(getTransfer());
+  auto createOp = transfer.getDefiningOp<PipeTransferCreateOp>();
+  if (!createOp) {
+    return success();
+  }
+
+  Value pipe = traceUnrealizedCasts(createOp.getPipe());
+  if (mlir::isa<SelectedPipeSrcType>(pipe.getType())) {
+    return emitOpError()
+           << "requires a static pipe or destination-selected pipe transfer";
+  }
+
+  std::optional<int64_t> pipeNetId;
+  if (auto pipeType = mlir::dyn_cast<PipeType>(pipe.getType())) {
+    pipeNetId = pipeType.getPipeNetId();
+  } else if (auto selectedDst = pipe.getDefiningOp<SelectPipeDstOp>()) {
+    pipeNetId = selectedDst.getPipeNetId();
+  }
+  assert(pipeNetId && "pipe transfer create verifier rejected pipe operand");
+  auto tokenType = mlir::cast<PipeTokenType>(getToken().getType());
+  if (tokenType.getPipeNetId() != *pipeNetId) {
+    return emitOpError() << "token pipeNetId must match transfer pipeNetId";
+  }
   return success();
 }
 

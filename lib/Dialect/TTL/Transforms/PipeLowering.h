@@ -40,6 +40,8 @@ struct FabricRoute {
 struct FabricRoutePlan {
   llvm::MapVector<func::FuncOp, SmallVector<FabricRoute>> routesByFunction;
   llvm::DenseMap<Operation *, unsigned> sendRouteIndex;
+  llvm::DenseMap<Operation *, SmallVector<unsigned>> selectedSendRouteIndices;
+  llvm::DenseMap<Operation *, SmallVector<unsigned>> selectedPostRouteIndices;
 };
 
 struct FabricRouteTarget {
@@ -51,6 +53,7 @@ struct FabricRuntimeInfo {
   Value manager;
   Value routeId;
   Value connectionCount;
+  unsigned routeCount;
   SmallVector<FabricRouteTarget> routeTargets;
 };
 
@@ -95,6 +98,7 @@ struct PipeResourcePlan;
 class PipeCapacityPlan;
 class PipeSynchronizationSelection;
 class PipeTransferPlan;
+class SelectedPipeTransferPlan;
 
 /// Receiver-side completion state for one transfer definition.
 struct PipeCompletionInfo {
@@ -178,8 +182,11 @@ struct PipeResourcePlan {
   /// shared by that transfer definition.
   llvm::MapVector<Operation *, PipeResourceInfo> resources;
   /// Per-record resources for protocol operations over selected PipeNets.
-  llvm::MapVector<Operation *, SmallVector<PipeResourceInfo>>
-      selectedResources;
+  llvm::MapVector<Operation *, SmallVector<PipeResourceInfo>> selectedResources;
+  llvm::DenseMap<Operation *, PipeReference> selectedPipeReferences;
+  /// One local word stages a receiver-published address before a fabric write.
+  llvm::DenseMap<Operation *, int64_t>
+      selectedFabricPublicationScratchByteOffsets;
   /// Protocol operations proven unreachable at their pipe endpoint. Lowering
   /// removes these operations without allocating rendezvous resources.
   llvm::SmallPtrSet<Operation *, 8> staticallyInactiveOps;
@@ -263,6 +270,15 @@ LogicalResult lowerPipeTransferSend(
     const FabricRoutePlan *fabricRoutePlan,
     const FabricRuntimeMap *fabricRuntime, ConversionPatternRewriter &rewriter);
 
+/// Lower a sender operation over a runtime-selected PipeNet record.
+LogicalResult
+lowerSelectedPipeTransferSend(PipeTransferSendOp op, Value srcCB,
+                              const SelectedPipeTransferPlan &transferPlan,
+                              const PipeResourcePlan &pipeResourcePlan,
+                              const FabricRoutePlan &fabricRoutePlan,
+                              const FabricRuntimeMap &fabricRuntime,
+                              ConversionPatternRewriter &rewriter);
+
 /// Remove a receiver post proven unreachable at its pipe endpoint.
 void lowerInactivePipeTransferPost(PipeTransferPostOp op,
                                    ConversionPatternRewriter &rewriter);
@@ -275,6 +291,15 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
                                     const FabricRoutePlan *fabricRoutePlan,
                                     const FabricRuntimeMap *fabricRuntime,
                                     ConversionPatternRewriter &rewriter);
+
+/// Lower a receiver post over a runtime-selected PipeNet record.
+LogicalResult
+lowerSelectedPipeTransferPost(PipeTransferPostOp op, Value dst,
+                              const SelectedPipeTransferPlan &transferPlan,
+                              const PipeResourcePlan &pipeResourcePlan,
+                              const FabricRoutePlan &fabricRoutePlan,
+                              const FabricRuntimeMap &fabricRuntime,
+                              ConversionPatternRewriter &rewriter);
 
 /// Lower a dataflow buffer pop and emit any proven pipe capacity releases.
 LogicalResult lowerCBPop(CBPopOp op, Value cb,

@@ -12,6 +12,8 @@
 #include "mlir/Analysis/DataFlowFramework.h"
 #include "llvm/ADT/TypeSwitch.h"
 
+#include <optional>
+
 namespace mlir::tt::ttl {
 
 #define GEN_PASS_DEF_TTLVERIFYTRANSFERPROVENANCE
@@ -75,9 +77,18 @@ LogicalResult verifyPost(PipeTransferPostOp op, ValueOriginAnalysis &analysis) {
            << "requires every possible transfer value to derive from the "
               "same ttl.pipe_transfer.create";
   }
-  auto pipeType = cast<PipeType>(create->getPipe().getType());
+  Value pipe = traceUnrealizedCasts(create->getPipe());
+  std::optional<int64_t> pipeNetId;
+  if (auto pipeType = dyn_cast<PipeType>(pipe.getType())) {
+    pipeNetId = pipeType.getPipeNetId();
+  } else if (auto selectedSrc = pipe.getDefiningOp<SelectPipeSrcOp>()) {
+    pipeNetId = selectedSrc.getPipeNetId();
+  } else if (auto selectedDst = pipe.getDefiningOp<SelectPipeDstOp>()) {
+    pipeNetId = selectedDst.getPipeNetId();
+  }
+  assert(pipeNetId && "pipe transfer create verifier rejected pipe operand");
   auto tokenType = cast<PipeTokenType>(op.getToken().getType());
-  if (tokenType.getPipeNetId() != pipeType.getPipeNetId()) {
+  if (tokenType.getPipeNetId() != *pipeNetId) {
     return op.emitOpError() << "token pipeNetId must match transfer pipeNetId";
   }
   return success();

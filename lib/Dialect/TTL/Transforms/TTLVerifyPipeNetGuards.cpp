@@ -12,6 +12,7 @@
 // checked against the narrowed set.
 //===----------------------------------------------------------------------===//
 
+#include "PipeGraph.h"
 #include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Analysis/DataFlowFramework.h"
 #include "ttlang/Analysis/ValueOriginAnalysis.h"
@@ -183,7 +184,8 @@ struct ModuleState : LaunchNodeDomainState {
       PipeType pipeType = PipeType::get(
           records.getContext(), record.getSrcX(), record.getSrcY(),
           record.getDstStartX(), record.getDstStartY(), record.getDstEndX(),
-          record.getDstEndY(), records.getPipeNetId());
+          record.getDstEndY(),
+          getRecordPipeNetId(record, records.getPipeNetId()));
       LaunchNodeDomain roleDomain =
           role == PipeRole::Source
               ? getPipeRecordSourceLaunchNodeDomain(record)
@@ -936,10 +938,25 @@ LogicalResult addPipeOccurrenceEdges(SmallVectorImpl<PipeScheduleNode> &nodes,
     state.sawError = true;
     return failure();
   }
+
+  auto getExecutionCountAnchor = [](Operation *op) {
+    Operation *current = op;
+    while (current) {
+      if (mlir::isa<PipeNetForeachSrcOp, PipeNetForeachDstOp>(current)) {
+        return current;
+      }
+      current = current->getParentOp();
+    }
+    return op;
+  };
+
   for (auto [predecessor, successor] : llvm::zip(predecessors, successors)) {
+    Operation *predecessorAnchor =
+        getExecutionCountAnchor(nodes[predecessor].op);
+    Operation *successorAnchor = getExecutionCountAnchor(nodes[successor].op);
     if (!proveEqualExecutionCountAtLaunchNodes(
-            nodes[predecessor].op, nodes[predecessor].coord,
-            nodes[successor].op, nodes[successor].coord, state)) {
+            predecessorAnchor, nodes[predecessor].coord, successorAnchor,
+            nodes[successor].coord, state)) {
       auto diag = nodes[successor].op->emitOpError()
                   << "cannot prove a one-to-one synchronization schedule on "
                      "PipeNet "

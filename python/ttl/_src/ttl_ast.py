@@ -67,6 +67,24 @@ def _ceil_div(a, b):
     return (a + b - 1) // b
 
 
+class _SelectedSrcPipeIdentity:
+    def __init__(self, pipe):
+        self._pipe = pipe
+
+    @property
+    def destination_device_index(self):
+        return ttl.selected_pipe_destination_device_index(self._pipe)
+
+
+class _SelectedDstPipeIdentity:
+    def __init__(self, pipe):
+        self._pipe = pipe
+
+    @property
+    def source_device_index(self):
+        return ttl.selected_pipe_source_device_index(self._pipe)
+
+
 def _build_tensor_type(ctx, tensor, grid, tiled, memory_space):
     """Build MLIR tensor type with TTLLayoutAttr encoding."""
     if not tiled:
@@ -1018,68 +1036,32 @@ class TTLGenericCompiler(TTCompilerBase):
 
         decl_file = getattr(pipenet, "_source_file", None)
         decl_line = getattr(pipenet, "_source_line", None)
-        if pipenet.is_graph:
-            for pipe in self._materialize_graph_pipes(pipenet):
-                pipe_val = self._emit_pipe_from_capture(
-                    pipe,
-                    pipe_net_name=pipe_net_name,
-                    source_file=decl_file,
-                    source_line=decl_line,
+        pipes = (
+            self._materialize_graph_pipes(pipenet)
+            if pipenet.is_graph
+            else pipenet.pipes
+        )
+        pipe_records = []
+        for pipe in pipes:
+            record_kwargs = {}
+            if hasattr(pipe, "_device_edge"):
+                record_kwargs["pipe_net_id"] = pipe.pipe_net_id
+                record_kwargs["device_transfer"] = self._device_transfer_attr(
+                    pipe._device_domain, pipe._device_edge
                 )
-                pipe._mlir_value = pipe_val
-
-                def emit_node_callback():
-                    if method_name == "if_src":
-                        pipe_identity = SrcPipeIdentity(pipe)
-                        op = ttl.if_src(pipe_val)
-                    else:
-                        pipe_identity = DstPipeIdentity(pipe)
-                        op = ttl.if_dst(pipe_val)
-
-                    block = Block.create_at_start(op.body)
-                    with InsertionPoint(block):
-                        self.symbol_tables.append({})
-                        self.symbol_tables[-1][pipe_param_name] = pipe_val
-                        self.symbol_tables[-1][
-                            f"__{pipe_param_name}_identity"
-                        ] = pipe_identity
-
-                        if isinstance(callback_body, list):
-                            for stmt in callback_body:
-                                self.visit(stmt)
-                        else:
-                            self.visit(callback_body)
-
-                        self.symbol_tables.pop()
-                        ttl.yield_([])
-
-                endpoint = (
-                    pipe._device_edge.source
-                    if method_name == "if_src"
-                    else pipe._device_edge.destination
+            pipe_records.append(
+                ttl.PipeRecordAttr.get(
+                    self.ctx,
+                    pipe.src[0],
+                    pipe.src[1],
+                    pipe.dst_start[0],
+                    pipe.dst_start[1],
+                    pipe.dst_end[0],
+                    pipe.dst_end[1],
+                    pipe.is_collective,
+                    **record_kwargs,
                 )
-                predicate = self._emit_device_endpoint_predicate(
-                    pipe._device_domain, endpoint
-                )
-                device_if = scf.IfOp(predicate)
-                with InsertionPoint(device_if.then_block):
-                    emit_node_callback()
-                    scf.YieldOp([])
-            return None
-
-        pipe_records = [
-            ttl.PipeRecordAttr.get(
-                self.ctx,
-                pipe.src[0],
-                pipe.src[1],
-                pipe.dst_start[0],
-                pipe.dst_start[1],
-                pipe.dst_end[0],
-                pipe.dst_end[1],
-                pipe.is_collective,
             )
-            for pipe in pipenet.pipes
-        ]
         records_attr = ttl.PipeNetRecordsAttr.get(
             self.ctx,
             pipenet.pipe_net_id,
@@ -1103,6 +1085,13 @@ class TTLGenericCompiler(TTCompilerBase):
         with InsertionPoint(block):
             self.symbol_tables.append({})
             self.symbol_tables[-1][pipe_param_name] = block.arguments[0]
+            if pipenet.is_graph:
+                pipe_identity = (
+                    _SelectedSrcPipeIdentity(block.arguments[0])
+                    if method_name == "if_src"
+                    else _SelectedDstPipeIdentity(block.arguments[0])
+                )
+                self.symbol_tables[-1][f"__{pipe_param_name}_identity"] = pipe_identity
 
             if isinstance(callback_body, list):
                 for stmt in callback_body:
