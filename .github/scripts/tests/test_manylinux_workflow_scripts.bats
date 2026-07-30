@@ -196,6 +196,52 @@ setup() {
     ! grep -q '^buildx imagetools create' "$FAKE_DOCKER_CALLS"
 }
 
+@test "builder resolver hashes builder driver changes without changing shared docker tag" {
+    repo="$(mkrepo)"
+    install_scripts_in_repo "$repo"
+    (cd "$repo" && git tag v99.99.99)
+    echo "driver change" >> "$repo/.github/containers/build-wheel-manylinux-images.sh"
+    commit_all "$repo" "driver change"
+    output_file="$BATS_TEST_TMPDIR/output"
+
+    shared_tag=$(cd "$repo" && .github/containers/get-version-tag.sh)
+    assert_equal "$shared_tag" "v99.99.99"
+
+    cd "$repo"
+    run env \
+        DOCKER="$DOCKER_MOCK" \
+        GITHUB_OUTPUT="$output_file" \
+        GITHUB_REF=refs/heads/feature \
+        "$SCRIPTS_DIR/resolve-wheel-builder-images.sh" \
+            --repository example/project
+
+    assert_success
+    grep -Eq '^docker-tag=v99\.99\.99-[a-f0-9]{8}$' "$output_file"
+}
+
+@test "builder resolver hashes builder Dockerfile changes without changing shared docker tag" {
+    repo="$(mkrepo)"
+    install_scripts_in_repo "$repo"
+    (cd "$repo" && git tag v99.99.99)
+    echo "dockerfile change" >> "$repo/.github/containers/Dockerfile.wheel-manylinux-2-34"
+    commit_all "$repo" "dockerfile change"
+    output_file="$BATS_TEST_TMPDIR/output"
+
+    shared_tag=$(cd "$repo" && .github/containers/get-version-tag.sh)
+    assert_equal "$shared_tag" "v99.99.99"
+
+    cd "$repo"
+    run env \
+        DOCKER="$DOCKER_MOCK" \
+        GITHUB_OUTPUT="$output_file" \
+        GITHUB_REF=refs/heads/feature \
+        "$SCRIPTS_DIR/resolve-wheel-builder-images.sh" \
+            --repository example/project
+
+    assert_success
+    grep -Eq '^docker-tag=v99\.99\.99-[a-f0-9]{8}$' "$output_file"
+}
+
 @test "manylinux input validation accepts supported dependency modes" {
     run "$SCRIPTS_DIR/validate-manylinux-wheel-inputs.sh" pypi 1.2.3
     assert_success
@@ -367,7 +413,7 @@ EOF
         "Expected manylinux wheel was not produced: tt_lang_light-1.2.3.dev20260726-py3-none-any.whl"
 }
 
-@test "component cache exporter keeps LLVM and tt-metal cache references separate" {
+@test "component image publisher keeps LLVM and tt-metal references separate" {
     repo="$(mkrepo)"
     cd "$repo"
 
@@ -389,15 +435,16 @@ EOF
 
     run cat "$FAKE_DOCKER_CALLS"
     assert_line --partial "--target llvm-toolchain"
-    assert_line --partial "--cache-to type=registry,ref=ghcr.io/example/cache:llvm-cp310,mode=max"
+    assert_line --partial "--cache-to type=inline"
+    assert_line --partial "--push -t ghcr.io/example/cache:llvm-cp310"
     assert_line --partial "--build-arg PYTHON_TAG=cp310"
     assert_line --partial "--build-arg WORKFLOW_SOURCE=."
     refute_line --regexp 'llvm-toolchain.*TT_METAL_TAG'
     assert_line --partial "--target ttmetal-toolchain"
-    assert_line --partial "--cache-to type=registry,ref=ghcr.io/example/cache:ttmetal-cp312,mode=max"
+    assert_line --partial "--push -t ghcr.io/example/cache:ttmetal-cp312"
 }
 
-@test "builder image consumes both component caches" {
+@test "builder image consumes both component images" {
     repo="$(mkrepo)"
     cd "$repo"
 
@@ -414,10 +461,51 @@ EOF
     assert_success
     run cat "$FAKE_DOCKER_CALLS"
     assert_line --partial "buildx build"
-    assert_line --partial "--cache-from type=registry,ref=ghcr.io/example/cache:llvm-cp312"
-    assert_line --partial "--cache-from type=registry,ref=ghcr.io/example/cache:ttmetal-cp312"
+    assert_line --partial "--target wheel-builder-from-components"
+    assert_line --partial "--build-context llvm-component=docker-image://ghcr.io/example/cache:llvm-cp312"
+    assert_line --partial "--build-context ttmetal-component=docker-image://ghcr.io/example/cache:ttmetal-cp312"
     assert_line --partial "--build-arg WORKFLOW_SOURCE=."
     assert_line --partial "--push -t ghcr.io/tenstorrent/tt-lang/tt-lang-wheel-manylinux-2-34-cp312:test-tag"
+}
+
+@test "builder image skips an existing registry image without publishing latest" {
+    repo="$(mkrepo)"
+    cd "$repo"
+
+    run env \
+        DOCKER="$DOCKER_MOCK" \
+        GITHUB_REF=refs/heads/main \
+        "$CONTAINERS_DIR/build-wheel-manylinux-images.sh" \
+            --python-tags cp312 \
+            --image-tag test-tag \
+            --llvm-cache-ref ghcr.io/example/cache:llvm-cp312 \
+            --ttmetal-cache-ref ghcr.io/example/cache:ttmetal-cp312
+
+    assert_success
+    assert_output --partial "Image already exists, skipping build"
+    run cat "$FAKE_DOCKER_CALLS"
+    assert_line --partial \
+        "manifest inspect ghcr.io/tenstorrent/tt-lang/tt-lang-wheel-manylinux-2-34-cp312:test-tag"
+    refute_output --partial "buildx"
+    refute_output --partial "push"
+}
+
+@test "builder image no-push builds locally without probing the registry" {
+    repo="$(mkrepo)"
+    cd "$repo"
+
+    run env DOCKER="$DOCKER_MOCK" \
+        "$CONTAINERS_DIR/build-wheel-manylinux-images.sh" \
+            --no-push \
+            --python-tags cp312 \
+            --image-tag test-tag
+
+    assert_success
+    run cat "$FAKE_DOCKER_CALLS"
+    refute_output --partial "manifest inspect"
+    assert_line --partial "build --progress=plain"
+    assert_line --partial "-t tt-lang-wheel-manylinux-2-34-cp312:test-tag"
+    refute_output --partial "push"
 }
 
 @test "hardware wheel test script orchestrates install and tutorials" {

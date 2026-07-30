@@ -180,3 +180,30 @@ RUN python_dir="/opt/python/${PYTHON_TAG}-${PYTHON_TAG}" && \
 
 ENV PATH="/opt/ttlang-toolchain/venv/bin:/opt/ttlang-toolchain/bin:${PATH}"
 ENV CMAKE_BUILD_PARALLEL_LEVEL="${TTLANG_BUILD_PARALLEL_LEVEL}"
+
+FROM base AS wheel-builder-from-components
+
+ARG PYTHON_TAG=cp312
+ARG TTLANG_BUILD_PARALLEL_LEVEL=""
+
+COPY --from=llvm-component /opt/ttlang-toolchain/ /opt/ttlang-toolchain/
+# The shared install contains cp312 extension modules because CMake uses
+# _ttnn.so to identify the install layout. Core wheel builds consume its C++
+# headers and libraries but do not import ttnn; the wheel dependency mode
+# supplies the runtime ttnn package.
+COPY --from=ttmetal-component /opt/ttlang-toolchain/tt-metal/ /opt/ttlang-toolchain/tt-metal/
+COPY requirements.txt requirements-runtime.txt /tmp/ttlang-requirements/
+
+RUN python_dir="/opt/python/${PYTHON_TAG}-${PYTHON_TAG}" && \
+    test -x "${python_dir}/bin/python" && \
+    "${TTLANG_TOOLCHAIN_DIR}/venv/bin/python" -m pip install --no-cache-dir \
+      -r /tmp/ttlang-requirements/requirements.txt \
+      auditwheel \
+      cmake==3.28.4 \
+      packaging \
+      patchelf \
+      wheel && \
+    rm -rf /tmp/ttlang-requirements
+
+ENV PATH="/opt/ttlang-toolchain/venv/bin:/opt/ttlang-toolchain/bin:${PATH}"
+ENV CMAKE_BUILD_PARALLEL_LEVEL="${TTLANG_BUILD_PARALLEL_LEVEL}"
