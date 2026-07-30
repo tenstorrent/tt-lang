@@ -50,21 +50,6 @@ static constexpr int64_t kPipeSramScratchAlignmentBytes = 32;
 // Helpers
 //===----------------------------------------------------------------------===//
 
-static CircularBufferType getTTLCBType(Value cb) {
-  if (auto ttlCbTy = mlir::dyn_cast<CircularBufferType>(cb.getType())) {
-    return ttlCbTy;
-  }
-  if (auto castOp = cb.getDefiningOp<UnrealizedConversionCastOp>()) {
-    if (castOp.getInputs().size() == 1) {
-      if (auto ttlCbTy = mlir::dyn_cast<CircularBufferType>(
-              castOp.getInputs()[0].getType())) {
-        return ttlCbTy;
-      }
-    }
-  }
-  return nullptr;
-}
-
 static Value makeZeroI32(Location loc, ConversionPatternRewriter &rewriter) {
   return arith::ConstantIntOp::create(rewriter, loc, 0, 32);
 }
@@ -512,7 +497,7 @@ struct SelectedPipeFields {
 static SelectedPipeFields getSelectedPipeFields(const PipeReference &pipeRef) {
   assert(pipeRef.isSelected() && "expected selected pipe reference");
   if (pipeRef.isSelectedSrc()) {
-    SelectPipeSrcOp op = pipeRef.selectedSrc;
+    SelectPipeSrcOp op = pipeRef.getSelectedSrc();
     return SelectedPipeFields{
         op.getRecordIndex(),
         op.getSrcX(),
@@ -525,7 +510,7 @@ static SelectedPipeFields getSelectedPipeFields(const PipeReference &pipeRef) {
         op.getSrcInDstRange(),
         op.getRecords().getPipes().front().getIsCollective()};
   }
-  SelectPipeDstOp op = pipeRef.selectedDst;
+  SelectPipeDstOp op = pipeRef.getSelectedDst();
   return SelectedPipeFields{
       op.getRecordIndex(),
       op.getSrcX(),
@@ -548,7 +533,7 @@ buildReceiverPublishedAddress(Value dst, Location loc,
   auto receiverCBConverted =
       utils::convertTTLCBToTTKernel(info.receiverDFB, rewriter, loc);
   assert(succeeded(receiverCBConverted) &&
-         "getTTLCBType guarantees a convertible receiver DFB");
+         "pipe post planning guarantees a convertible receiver DFB");
 
   auto receiverWritePtr =
       ttk::GetWritePtrOp::create(rewriter, loc, *receiverCBConverted);
@@ -563,9 +548,9 @@ buildReceiverPublishedAddress(Value dst, Location loc,
 
   auto tileOffsetI32 = arith::IndexCastOp::create(
       rewriter, loc, rewriter.getI32Type(), globalTileIndex);
-  auto pageSizeBytes = arith::ConstantOp::create(
-      rewriter, loc, rewriter.getI32Type(),
-      rewriter.getI32IntegerAttr(info.tileSizeBytes));
+  auto pageSizeBytes =
+      arith::ConstantOp::create(rewriter, loc, rewriter.getI32Type(),
+                                rewriter.getI32IntegerAttr(info.tileSizeBytes));
   auto byteOffset =
       arith::MulIOp::create(rewriter, loc, tileOffsetI32, pageSizeBytes);
   return arith::AddIOp::create(rewriter, loc, receiverWritePtr, byteOffset)
@@ -596,6 +581,11 @@ public:
 
 class NocPipeTransportEmitterBase : public PipeTransportEmitter {
 protected:
+  struct LogicalCore {
+    Value x;
+    Value y;
+  };
+
   struct TranslatedCore {
     Value x;
     Value y;
@@ -617,15 +607,52 @@ public:
 
   LogicalResult emitReceiverAddressPublish(Value senderTableAddress,
                                            Value publishedAddress) override {
+    LogicalCore sourceCore = getSourceLogicalCore();
+    // The remote publish and the following ready signal reuse the translated
+    // source coordinates, so they must be created before either branch.
+    getSourceCore();
+    Value currentX =
+        ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
+    Value currentY =
+        ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
+    Value xMatches = arith::CmpIOp::create(
+        rewriter, loc, arith::CmpIPredicate::eq, currentX, sourceCore.x);
+    Value yMatches = arith::CmpIOp::create(
+        rewriter, loc, arith::CmpIPredicate::eq, currentY, sourceCore.y);
+    Value receiverIsSource =
+        arith::AndIOp::create(rewriter, loc, xMatches, yMatches);
+    auto localPublish = scf::IfOp::create(rewriter, loc, receiverIsSource,
+                                          /*withElseRegion=*/true);
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(&localPublish.getThenRegion().front());
+      emitLocalReceiverAddressPublish(senderTableAddress, publishedAddress);
+      rewriter.setInsertionPointToStart(&localPublish.getElseRegion().front());
+      emitRemoteReceiverAddressPublish(senderTableAddress, publishedAddress);
+    }
+    rewriter.setInsertionPointAfter(localPublish);
+    return success();
+  }
+
+  void emitLocalReceiverAddressPublish(Value senderTableAddress,
+                                       Value publishedAddress) {
+    auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
+    Value tablePtr =
+        ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, senderTableAddress);
+    Value zero = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
+    ttk::StoreToL1Op::create(rewriter, loc, publishedAddress, tablePtr, zero);
+  }
+
+  void emitRemoteReceiverAddressPublish(Value senderTableAddress,
+                                        Value publishedAddress) {
     TranslatedCore sourceCore = getSourceCore();
     auto byteEnableAll = arith::ConstantOp::create(
         rewriter, loc, rewriter.getI8Type(), rewriter.getI8IntegerAttr(0xF));
-    // [Device 2.0] The receiver writes its DFB address to the sender's typed
-    // address table. Only this operation selects the inline NoC write.
+    // An inline NoC write does not update the sender's local SRAM when the
+    // sender is also this receiver, so that case uses a direct L1 store.
     ttk::NocInlineDwWriteOp::create(rewriter, loc, sourceCore.x, sourceCore.y,
                                     senderTableAddress, publishedAddress,
                                     byteEnableAll, nocVal);
-    return success();
   }
 
   void emitAddressPublishBarrier() override {
@@ -655,6 +682,7 @@ public:
   }
 
 protected:
+  virtual LogicalCore getSourceLogicalCore() = 0;
   virtual TranslatedCore getSourceCore() = 0;
 
   TranslatedCore buildTranslatedCore(Value logicalX, Value logicalY) {
@@ -688,6 +716,20 @@ public:
   NocPipeTransportEmitter(Operation *op, PipeType pipeType,
                           ConversionPatternRewriter &rewriter)
       : NocPipeTransportEmitterBase(op, rewriter), pipeType(pipeType) {}
+
+  LogicalResult emitReceiverAddressPublish(Value senderTableAddress,
+                                           Value publishedAddress) override {
+    if (!pipeType.srcInDstRange()) {
+      emitRemoteReceiverAddressPublish(senderTableAddress, publishedAddress);
+      return success();
+    }
+    if (pipeType.hasSingleReceiver()) {
+      emitLocalReceiverAddressPublish(senderTableAddress, publishedAddress);
+      return success();
+    }
+    return NocPipeTransportEmitterBase::emitReceiverAddressPublish(
+        senderTableAddress, publishedAddress);
+  }
 
   void preparePayloadWrite() override {
     // Materialize destination coordinates before computing the payload address
@@ -777,6 +819,11 @@ public:
   }
 
 private:
+  LogicalCore getSourceLogicalCore() override {
+    return {arith::ConstantIndexOp::create(rewriter, loc, pipeType.getSrcX()),
+            arith::ConstantIndexOp::create(rewriter, loc, pipeType.getSrcY())};
+  }
+
   TranslatedCore getSourceCore() override {
     if (!sourceCore) {
       sourceCore = buildTranslatedCore(pipeType.getSrcX(), pipeType.getSrcY());
@@ -985,6 +1032,10 @@ private:
           rewriter, loc, arith::CmpIPredicate::eq, fields.numDests, one);
     }
     return hasSingleReceiver;
+  }
+
+  LogicalCore getSourceLogicalCore() override {
+    return {fields.srcX, fields.srcY};
   }
 
   TranslatedCore getSourceCore() override {
@@ -1241,8 +1292,7 @@ lowerSelectedPipeTransferSend(PipeTransferSendOp op, Value srcCB,
   auto loc = op.getLoc();
   const PipeReference &pipeRef = transferPlan.getPipeReference();
   SelectedPipeFields fields = getSelectedPipeFields(pipeRef);
-  ArrayRef<PipeResourceInfo> resources =
-      transferPlan.getSelectedResources();
+  ArrayRef<PipeResourceInfo> resources = transferPlan.getSelectedResources();
   const PipeSendPlan &sendPlan = transferPlan.getSend();
 
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
@@ -1323,7 +1373,7 @@ LogicalResult lowerPipeTransferSend(
     const PipeCapacityPlan &pipeCapacityPlan,
     const PipeCounterProgressMap &senderCapacityCounters,
     const PipeComputedAddressCounterMap &computedAddressCounters,
-  ConversionPatternRewriter &rewriter) {
+    ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
   assert(!pipeResourcePlan.staticallyInactiveOps.contains(op.getOperation()) &&
          "inactive sender must not use an active transfer plan");
@@ -1333,7 +1383,7 @@ LogicalResult lowerPipeTransferSend(
     return lowerSelectedPipeTransferSend(op, srcCB, transferPlan,
                                          pipeResourcePlan, rewriter);
   }
-  PipeType pipeType = pipeRef.pipeType;
+  PipeType pipeType = pipeRef.getStaticPipeType();
   const PipeResourceInfo &pipeResource = transferPlan.getResources();
   const PipeSendPlan &sendPlan = transferPlan.getSend();
   PipeCompletionInfo completionInfo = pipeResource.completion;
@@ -1341,9 +1391,8 @@ LogicalResult lowerPipeTransferSend(
   NocPipeTransportEmitter nocTransport(op, pipeType, rewriter);
   PipeTransportEmitter &transport = nocTransport;
 
-  bool usesCapacityProtocol =
-      transferPlan.getSynchronizationProtocol() ==
-      PipeSynchronizationProtocol::Capacity;
+  bool usesCapacityProtocol = transferPlan.getSynchronizationProtocol() ==
+                              PipeSynchronizationProtocol::Capacity;
   ArrayRef<PipeCapacityAcquireInfo> capacityAcquires =
       pipeCapacityPlan.lookupAcquires(op);
   assert(usesCapacityProtocol == !capacityAcquires.empty() &&
@@ -1482,12 +1531,11 @@ static LogicalResult lowerSelectedPipeTransferPost(
     PipeTransferPostOp op, Value dst, const PipeTransferPlan &transferPlan,
     const PipeSelectedPostSequenceMap &selectedPostSequenceCounters,
     const PipeResourcePlan &pipeResourcePlan,
-  ConversionPatternRewriter &rewriter) {
+    ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
   const PipeReference &pipeRef = transferPlan.getPipeReference();
   SelectedPipeFields fields = getSelectedPipeFields(pipeRef);
-  ArrayRef<PipeResourceInfo> resources =
-      transferPlan.getSelectedResources();
+  ArrayRef<PipeResourceInfo> resources = transferPlan.getSelectedResources();
   FuncOp func = op->getParentOfType<FuncOp>();
   assert(func && "pipe transfer post must be inside a function");
   auto sequenceIt = selectedPostSequenceCounters.find(func);
@@ -1515,9 +1563,8 @@ static LogicalResult lowerSelectedPipeTransferPost(
   SelectedNocPipeTransportEmitter nocTransport(op, fields, rewriter);
   PipeTransportEmitter &transport = nocTransport;
 
-  Value publishedAddress =
-      buildReceiverPublishedAddress(dst, loc, *postPlan.addressPublication,
-                                    rewriter);
+  Value publishedAddress = buildReceiverPublishedAddress(
+      dst, loc, *postPlan.addressPublication, rewriter);
   Value tableAddress = buildSelectedAddressTableAddress(
       op, loc, resources, fields.recordIndex, rewriter);
   if (failed(transport.emitReceiverAddressPublish(tableAddress,
@@ -1556,7 +1603,7 @@ LogicalResult lowerPipeTransferPost(
                                          selectedPostSequenceCounters,
                                          pipeResourcePlan, rewriter);
   }
-  PipeType pipeType = pipeRef.pipeType;
+  PipeType pipeType = pipeRef.getStaticPipeType();
   const PipeResourceInfo &pipeResource = transferPlan.getResources();
   const PipePostPlan &postPlan = transferPlan.getPost();
   auto func = op->getParentOfType<func::FuncOp>();
@@ -1605,16 +1652,14 @@ LogicalResult lowerPipeTransferPost(
   return success();
 }
 
-static Value computeDFBPopNumTiles(CBPopOp op, Value originalCb,
+static Value computeDFBPopNumTiles(CBPopOp op, CircularBufferType dfbType,
                                    ConversionPatternRewriter &rewriter,
                                    Location loc) {
   if (auto attr = op.getNumTilesAttr()) {
     return arith::ConstantIntOp::create(rewriter, loc, attr.getInt(), 32);
   }
-  auto ttlCbTy = getTTLCBType(originalCb);
-  assert(ttlCbTy && "lowerCBPop already verified the DFB type");
   return arith::ConstantIntOp::create(rewriter, loc,
-                                      ttlCbTy.getElementsPerBlock(), 32);
+                                      dfbType.getElementsPerBlock(), 32);
 }
 
 LogicalResult lowerCBPop(CBPopOp op, Value cb,
@@ -1623,8 +1668,9 @@ LogicalResult lowerCBPop(CBPopOp op, Value cb,
                          ConversionPatternRewriter &rewriter) {
   Location loc = op.getLoc();
   Value originalCb = op.getCb();
-  auto ttlCbTy = getTTLCBType(originalCb);
-  if (!ttlCbTy) {
+  FailureOr<CircularBufferType> maybeDFBType =
+      utils::getTTLCircularBufferType(originalCb);
+  if (failed(maybeDFBType)) {
     return rewriter.notifyMatchFailure(op, "failed to get TTL DFB type");
   }
 
@@ -1633,7 +1679,7 @@ LogicalResult lowerCBPop(CBPopOp op, Value cb,
     return rewriter.notifyMatchFailure(op, "failed to convert DFB operand");
   }
 
-  Value numTiles = computeDFBPopNumTiles(op, originalCb, rewriter, loc);
+  Value numTiles = computeDFBPopNumTiles(op, *maybeDFBType, rewriter, loc);
   ttk::CBPopFrontOp::create(rewriter, loc, *convertedCb, numTiles);
 
   // A receiver DFB pop makes one slot available to its sender. Emit the
@@ -1673,17 +1719,16 @@ LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op, Value tokenSequence,
   if (transferPlan.isSelected()) {
     SelectedPipeFields fields =
         getSelectedPipeFields(transferPlan.getPipeReference());
-    SmallVector<PipeCounterInfo> completionCounters = llvm::map_to_vector(
-        transferPlan.getSelectedResources(),
-        [](const PipeResourceInfo &resource) {
-          return resource.completion.counter;
-        });
+    SmallVector<PipeCounterInfo> completionCounters =
+        llvm::map_to_vector(transferPlan.getSelectedResources(),
+                            [](const PipeResourceInfo &resource) {
+                              return resource.completion.counter;
+                            });
     receiverCompletionCounterAddress = buildSelectedPipeCounterAddress(
         op, loc, completionCounters, fields.recordIndex, pipeResourcePlan,
         rewriter);
   } else {
-    PipeCompletionInfo completionInfo =
-        transferPlan.getResources().completion;
+    PipeCompletionInfo completionInfo = transferPlan.getResources().completion;
     receiverCompletionCounterAddress = buildPipeCounterAddress(
         loc, func, completionInfo.counter, pipeResourcePlan, rewriter);
   }
@@ -1946,7 +1991,7 @@ struct PipeTransferAllocationUnit {
   /// Record indices distinguish graph nodes that share one protocol operation.
   SmallVector<std::pair<Operation *, unsigned>> selectedProtocolRecords;
 
-  /// Logical pipe whose source node owns this unit's rendezvous resources.
+  /// Logical pipe whose source owns this unit's address and ready resources.
   PipeKey pipe;
 
   PipeType pipeType;
@@ -1956,7 +2001,7 @@ struct PipeTransferAllocationUnit {
   /// Stable tie-breaker for deterministic allocation.
   int64_t ordinal = 0;
 
-  /// Conservative post-to-send lifetime for source-node rendezvous resources.
+  /// Conservative post-to-send lifetime for sender-owned resources.
   OperationLiveInterval interval;
 
   /// Assigned first-fit color within the source node's allocation group.
@@ -2184,9 +2229,9 @@ static int64_t allocateCompletionCounterColor(
   return static_cast<int64_t>(pipesByCounterColor.size() - 1);
 }
 
-static bool usesSenderReadyCounter(const PipeTransferAllocationUnit &unit,
-                                   const PipeSynchronizationSelection
-                                       *synchronizationSelection) {
+static bool usesSenderReadyCounter(
+    const PipeTransferAllocationUnit &unit,
+    const PipeSynchronizationSelection *synchronizationSelection) {
   // Selected transfers publish receiver addresses, so their sender must wait
   // until the matching table entry has been initialized.
   if (!synchronizationSelection || isSelectedTransferUnit(unit)) {

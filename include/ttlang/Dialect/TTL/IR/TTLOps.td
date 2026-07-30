@@ -725,6 +725,9 @@ def TTL_SelectPipeSrcOp : TTL_Op<"select_pipe_src", [Pure]> {
     operands contain the selected record fields for the current foreach
     iteration. `$recordIndex` identifies the record in `$records`; the
     remaining operands contain that record's coordinates and receiver count.
+    `$srcInDstRange` is true when the source coordinate belongs to the
+    destination range. `$records` identifies the PipeNet and its transfer
+    contract.
   }];
 
   let arguments = (ins
@@ -744,7 +747,6 @@ def TTL_SelectPipeSrcOp : TTL_Op<"select_pipe_src", [Pure]> {
     `record` `(` $recordIndex `)` `src` `(` $srcX `,` $srcY `)` `dst` `(` $dstStartX `,` $dstStartY `)` `to` `(` $dstEndX `,` $dstEndY `)`
     `num_dests` `(` $numDests `)` `src_in_dst` `(` $srcInDstRange `)` attr-dict `:` type($pipe)
   }];
-  let hasVerifier = 1;
 }
 
 def TTL_SelectPipeDstOp : TTL_Op<"select_pipe_dst", [Pure]> {
@@ -754,6 +756,9 @@ def TTL_SelectPipeDstOp : TTL_Op<"select_pipe_dst", [Pure]> {
     operands contain the selected record fields for the current foreach
     iteration. `$recordIndex` identifies the record in `$records`; the
     remaining operands contain that record's coordinates and receiver count.
+    `$srcInDstRange` is true when the source coordinate belongs to the
+    destination range. `$records` identifies the PipeNet and its transfer
+    contract.
   }];
 
   let arguments = (ins
@@ -773,7 +778,6 @@ def TTL_SelectPipeDstOp : TTL_Op<"select_pipe_dst", [Pure]> {
     `record` `(` $recordIndex `)` `src` `(` $srcX `,` $srcY `)` `dst` `(` $dstStartX `,` $dstStartY `)` `to` `(` $dstEndX `,` $dstEndY `)`
     `num_dests` `(` $numDests `)` `src_in_dst` `(` $srcInDstRange `)` attr-dict `:` type($pipe)
   }];
-  let hasVerifier = 1;
 }
 
 def TTL_PipeTransferCreateOp : TTL_Op<"pipe_transfer.create", [Pure]> {

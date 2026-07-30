@@ -154,6 +154,22 @@ PipeRecordAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
   return llvm::success();
 }
 
+llvm::LogicalResult PipeNetRecordsAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError, int64_t pipeNetId,
+    StringAttr pipeNetName, ArrayRef<PipeRecordAttr> pipes) {
+  if (pipes.empty()) {
+    return emitError() << "requires at least one pipe record";
+  }
+  bool isCollective = pipes.front().getIsCollective();
+  if (llvm::any_of(pipes, [&](PipeRecordAttr record) {
+        return record.getIsCollective() != isCollective;
+      })) {
+    return emitError()
+           << "all pipe records must be either point-to-point or collective";
+  }
+  return llvm::success();
+}
+
 } // namespace mlir::tt::ttl
 
 mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
@@ -421,27 +437,7 @@ static mlir::LogicalResult verifyPipeNetForeachBody(
   return mlir::success();
 }
 
-static mlir::LogicalResult
-verifyPipeNetForeachRecords(mlir::Operation *op,
-                            mlir::tt::ttl::PipeNetRecordsAttr records) {
-  ::llvm::ArrayRef<mlir::tt::ttl::PipeRecordAttr> pipes = records.getPipes();
-  if (pipes.empty()) {
-    return op->emitOpError() << "requires at least one pipe record";
-  }
-  bool isCollective = pipes.front().getIsCollective();
-  for (mlir::tt::ttl::PipeRecordAttr record : pipes) {
-    if (record.getIsCollective() != isCollective) {
-      return op->emitOpError()
-             << "all pipe records must be either point-to-point or collective";
-    }
-  }
-  return mlir::success();
-}
-
 mlir::LogicalResult mlir::tt::ttl::PipeNetForeachSrcOp::verify() {
-  if (failed(verifyPipeNetForeachRecords(getOperation(), getRecords()))) {
-    return failure();
-  }
   return verifyPipeNetForeachBody(
       getOperation(), getBody(), SelectedPipeSrcType::get(getContext()),
       [](mlir::OpOperand &use, mlir::BlockArgument pipeArg) {
@@ -454,9 +450,6 @@ mlir::LogicalResult mlir::tt::ttl::PipeNetForeachSrcOp::verify() {
 }
 
 mlir::LogicalResult mlir::tt::ttl::PipeNetForeachDstOp::verify() {
-  if (failed(verifyPipeNetForeachRecords(getOperation(), getRecords()))) {
-    return failure();
-  }
   return verifyPipeNetForeachBody(
       getOperation(), getBody(), SelectedPipeDstType::get(getContext()),
       [](mlir::OpOperand &use, mlir::BlockArgument pipeArg) {
@@ -466,14 +459,6 @@ mlir::LogicalResult mlir::tt::ttl::PipeNetForeachDstOp::verify() {
         }
         return copy.getSrc() == pipeArg;
       });
-}
-
-mlir::LogicalResult mlir::tt::ttl::SelectPipeSrcOp::verify() {
-  return verifyPipeNetForeachRecords(getOperation(), getRecords());
-}
-
-mlir::LogicalResult mlir::tt::ttl::SelectPipeDstOp::verify() {
-  return verifyPipeNetForeachRecords(getOperation(), getRecords());
 }
 
 static mlir::Operation *getSelectedPipeDef(mlir::Value pipe) {
