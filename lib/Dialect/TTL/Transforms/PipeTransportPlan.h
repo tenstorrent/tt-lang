@@ -168,9 +168,6 @@ public:
     return logicalTransfersPerGroup;
   }
 
-  /// Return the number of original transfers left for scalar residual code.
-  int64_t getResidualTransferCount() const { return residualTransferCount; }
-
   /// Return the source execution domain.
   const PipeTransportIterationDomain &getSourceIterationDomain() const {
     return sourceIterationDomain;
@@ -221,7 +218,6 @@ private:
   PipeTransportCreditCompletion creditCompletion =
       PipeTransportCreditCompletion::Immediate;
   int64_t logicalTransfersPerGroup = 1;
-  int64_t residualTransferCount = 0;
   PipeTransportIterationDomain sourceIterationDomain;
   PipeTransportSourceStorage sourceStorage;
   PipeTransportPacketization packetization;
