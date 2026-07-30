@@ -1702,29 +1702,24 @@ class Tensor:
         # within the original (root) sharded tensor.  ``ek`` was just computed
         # above so derive starts directly instead of calling
         # ``element_slice_starts(normalized)`` which would re-invoke
-        # ``_to_element_key``.  Open-ended slices (e.g. ``tensor[:]``) have no
-        # computable start, so fall back to the parent's origin (correct when
-        # selecting the full extent).  Only needed when tracing (read by
-        # try_count_locality() in sharding.py via _copy_trace_fields()) or when
-        # the tensor is mesh-sharded (read by validate_mesh_access()); skipping
-        # it otherwise keeps the common untraced, unsharded path cheap.
+        # ``_to_element_key``.  An open-ended slice (``tensor[:]``) begins at the
+        # parent view's own origin, so it contributes a relative offset of 0;
+        # each dimension is resolved independently because discarding the whole
+        # key would drop the *explicit* offsets of the other dimensions and place
+        # the view at its parent's origin -- reporting ``a[32:64, :]`` at row 0,
+        # which would hide a cross-device access from validate_mesh_access().
+        # Only needed when tracing (read by try_count_locality() in sharding.py
+        # via _copy_trace_fields()) or when the tensor is mesh-sharded (read by
+        # validate_mesh_access()); skipping it otherwise keeps the common
+        # untraced, unsharded path cheap.
         if TRACE.enabled or result.mesh_shard_info is not None:
             parent_origin: Tuple[int, ...] = getattr(
                 self, "_element_origin", (0,) * len(self.shape)
             )
-            starts: list[int] = []
-            valid = True
-            for s in ek:
-                if not isinstance(s, slice) or s.start is None:
-                    valid = False
-                    break
-                starts.append(s.start)
-            if valid:
-                result._element_origin = tuple(  # type: ignore[attr-defined]
-                    p + s for p, s in zip(parent_origin, starts)
-                )
-            else:
-                result._element_origin = parent_origin  # type: ignore[attr-defined]
+            starts = [(s.start or 0) if isinstance(s, slice) else int(s) for s in ek]
+            result._element_origin = tuple(  # type: ignore[attr-defined]
+                p + s for p, s in zip(parent_origin, starts)
+            )
         return result
 
     def __setitem__(self, key: TensorKey, value: "Tensor") -> None:
@@ -2080,7 +2075,9 @@ def _shard_to_mesh_info(mesh: MeshDevice, dim: int) -> MeshShardInfo:
     axes = tuple(mesh.shape.dims)
     nontrivial = [i for i, size in enumerate(axes) if size > 1]
     if len(nontrivial) > 1:
-        return MeshShardInfo(mesh_shape=(mesh.num_devices,), dims=(dim,))
+        # Derived from ``axes`` rather than ``mesh.num_devices`` so both branches
+        # describe the same mesh even if the two ever disagree.
+        return MeshShardInfo(mesh_shape=(math.prod(axes),), dims=(dim,))
     # A mesh whose axes are all size 1 holds a single device; attribute the split
     # to its last axis so the shape still mirrors the mesh that was opened.
     shard_axis = nontrivial[0] if nontrivial else len(axes) - 1
@@ -2521,10 +2518,18 @@ def all_reduce(
       the last axis; an out-of-range value raises ``ValueError``.
     * ``cluster_axis=None`` — reduce across all active mesh axes sequentially.
 
-    An axis that does not partition the tensor is a no-op.  On the common
-    ``MeshShape(1, n)`` mesh (recorded as ``dims=(None, d)``) ``cluster_axis=1``
-    therefore reduces across the ``n`` devices, while ``cluster_axis=0`` returns
-    the input unchanged because that axis holds a single device.
+    A size-1 mesh axis is a no-op: on the common ``MeshShape(1, n)`` mesh
+    (recorded as ``dims=(None, d)``) ``cluster_axis=1`` reduces across the ``n``
+    devices, while ``cluster_axis=0`` returns the input unchanged because that
+    axis spans a single device with nothing to combine.
+
+    Known divergence from ``ttnn``: an axis of *more than one* device that does
+    not partition the tensor (a replicated axis, ``dims[k] is None`` with
+    ``mesh_shape[k] > 1``) is also skipped, so the input is returned unchanged.
+    ``ttnn`` would sum the ``n`` identical replicas and return ``n`` times the
+    input.  Reaching this requires an explicitly replicated axis via
+    :class:`ShardTensor2dMesh` / :class:`ShardTensorNdMesh`; see
+    ``TestReplicatedAxisCollective`` in ``test/sim/test_ttnnsim.py``.
 
     Args:
         input_tensor: Input tensor (must have been created with a mesh mapper).
@@ -2605,10 +2610,15 @@ def all_gather(
     * ``cluster_axis=None`` — gather across all active mesh axes sequentially,
       applying the same ``dim`` for each.
 
-    An axis that does not partition the tensor is a no-op.  On the common
-    ``MeshShape(1, n)`` mesh (recorded as ``dims=(None, d)``) ``cluster_axis=1``
-    therefore gathers the ``n`` shards, while ``cluster_axis=0`` returns the input
-    unchanged because that axis holds a single device.
+    A size-1 mesh axis is a no-op: on the common ``MeshShape(1, n)`` mesh
+    (recorded as ``dims=(None, d)``) ``cluster_axis=1`` gathers the ``n`` shards,
+    while ``cluster_axis=0`` returns the input unchanged because that axis spans a
+    single device with nothing to gather.
+
+    Known divergence from ``ttnn``: a replicated axis of more than one device
+    (``dims[k] is None`` with ``mesh_shape[k] > 1``) is also skipped, so the input
+    is returned unchanged where ``ttnn`` would concatenate the ``n`` replicas.
+    See ``TestReplicatedAxisCollective`` in ``test/sim/test_ttnnsim.py``.
 
     Args:
         input_tensor: Input tensor (must have been created with a mesh mapper).

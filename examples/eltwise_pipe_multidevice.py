@@ -43,9 +43,14 @@ def eltwise_pipe(
     row_tiles = a_in.shape[0] // ttl.TILE_SHAPE[0]
     col_tiles = a_in.shape[1] // ttl.TILE_SHAPE[1]
 
-    # Parallelizing by columns here to get reuse on C
-    grid_h, grid_w = ttl.grid_size()
-    cols_per_node = math.ceil(col_tiles / (grid_h * grid_w))
+    # Parallelizing by columns here to get reuse on C.  Only the pipe's
+    # destinations run the loops below (every other node returns early on
+    # ``is_active()``), so the columns are split over the multicast group -- one
+    # node per card -- rather than over all ``prod(grid)`` nodes.  Dividing by the
+    # full node count would leave columns unwritten whenever there are more
+    # column tiles than cards.
+    mcast_nodes = CARD_R * CARD_C
+    cols_per_node = math.ceil(col_tiles / mcast_nodes)
     block_count = 2
 
     # Create circular buffers

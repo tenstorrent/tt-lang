@@ -206,6 +206,59 @@ class TestValidateMeshAccessUnit:
                 validate_mesh_access(a[1, 0], "read")  # rows [32:64) -> device (0,1)
 
 
+class TestOpenEndedSliceOrigin:
+    """Ownership is enforced on views whose key mixes explicit and open-ended bounds.
+
+    A view's position is tracked in ``Tensor._element_origin``, accumulated per
+    dimension in ``__getitem__``.  An open-ended slice (``:``) starts at the parent
+    view's own origin, so it contributes a relative offset of 0; it must not
+    discard the *explicit* offsets given for the other dimensions, or a foreign
+    slice would be reported at its parent's origin and pass validation.
+
+    Only ``ROW_MAJOR_LAYOUT`` reaches this: tile-layout keys reject open-ended
+    bounds outright in ``_validate_tile_slice``.
+    """
+
+    def _row_major_shard_dim0(self, rows: int, cols: int, mesh_n: int) -> ttnn.Tensor:
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(mesh_n))
+        return ttnn.from_torch(
+            torch.zeros(rows, cols),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+
+    def test_foreign_rows_with_open_ended_dim_raises(self) -> None:
+        """``a[32:64, :]`` is device 1's half and must be rejected for node 0."""
+        a = self._row_major_shard_dim0(64, 32, mesh_n=2)
+        with _node_on_grid(0, (2, 1, 1)):
+            with pytest.raises(MeshAccessError, match="Cross-device access"):
+                validate_mesh_access(a[32:64, :], "read")
+
+    def test_foreign_single_row_with_open_ended_dim_raises(self) -> None:
+        """An integer index on the sharded dim keeps its offset alongside ``:``."""
+        a = self._row_major_shard_dim0(64, 32, mesh_n=2)
+        with _node_on_grid(0, (2, 1, 1)):
+            with pytest.raises(MeshAccessError, match="Cross-device access"):
+                validate_mesh_access(a[40, :], "read")
+
+    def test_owned_rows_with_open_ended_dim_allowed(self) -> None:
+        """The same idiom on owned rows stays allowed (no over-rejection)."""
+        a = self._row_major_shard_dim0(64, 32, mesh_n=2)
+        with _node_on_grid(0, (2, 1, 1)):
+            validate_mesh_access(a[0:32, :], "read")
+            validate_mesh_access(a[7, :], "read")
+
+    def test_open_ended_origin_is_tracked_per_dimension(self) -> None:
+        """The view's origin keeps the explicit offset of every other dimension."""
+        a = self._row_major_shard_dim0(64, 32, mesh_n=2)
+        assert a[32:64, :]._element_origin == (32, 0)
+        assert a[40, :]._element_origin == (40, 0)
+        # A fully open-ended key selects the parent's full extent: origin unchanged.
+        assert a[:, :]._element_origin == (0, 0)
+        # Chained slicing accumulates through an open-ended step.
+        assert a[32:64, :][8:16, :]._element_origin == (40, 0)
+
+
 class TestRowVectorMeshGrid:
     """Ownership on a ``MeshShape(1, n)`` mesh, whose leading axis is degenerate.
 

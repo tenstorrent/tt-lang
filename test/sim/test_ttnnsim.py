@@ -3144,6 +3144,49 @@ class TestMeshShapeNd:
         assert ttnn.MeshShape(2, 2) != (2, 2)
 
 
+class TestReplicatedAxisCollective:
+    """Collectives over a *replicated* mesh axis of more than one device.
+
+    ``all_reduce`` / ``all_gather`` skip any axis with ``dims[k] is None``.  That is
+    correct for a size-1 axis (nothing to combine), but a replicated axis spanning
+    several devices holds one identical copy per device, which ``ttnn`` would
+    combine.  These tests pin the divergence so it is visible rather than implied
+    by the axis-selection filter.
+    """
+
+    def _replicated_axis0(self) -> Any:
+        """Tensor of ones on a 2x2 mesh: axis 0 replicates, axis 1 shards dim 0."""
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2, 2))
+        return ttnn.from_torch(
+            torch.ones(4, 2),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensor2dMesh(mesh, mesh_shape=(2, 2), dims=(None, 0)),
+        )
+
+    def test_sharding_axis_still_reduces(self) -> None:
+        """Guard the working case: the partitioned axis sums its two shards."""
+        result = ttnn.all_reduce(self._replicated_axis0(), cluster_axis=1).to_torch()
+        assert result.unique().tolist() == [2.0]
+
+    @pytest.mark.xfail(
+        reason="Replicated axis is skipped; ttnn would sum the n identical replicas",
+        strict=True,
+    )
+    def test_all_reduce_over_replicated_axis_sums_replicas(self) -> None:
+        """Two devices hold identical copies, so the sum is twice the input."""
+        result = ttnn.all_reduce(self._replicated_axis0(), cluster_axis=0).to_torch()
+        assert result.unique().tolist() == [2.0]
+
+    @pytest.mark.xfail(
+        reason="Replicated axis is skipped; ttnn would concatenate the n replicas",
+        strict=True,
+    )
+    def test_all_gather_over_replicated_axis_concatenates_replicas(self) -> None:
+        """Gathering two replicas along dim 0 doubles the rows."""
+        gathered = ttnn.all_gather(self._replicated_axis0(), dim=0, cluster_axis=0)
+        assert gathered.shape == (8, 2)
+
+
 class TestShardTensorToMeshAxisLayout:
     """ShardTensorToMesh keeps the opened mesh's axis layout in its MeshShardInfo.
 
