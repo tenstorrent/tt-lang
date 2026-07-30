@@ -32,6 +32,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   {
     TTLFormPipeTransportsOptions transportOpts;
     transportOpts.groupSize = options.pipeBatchTiles;
+    transportOpts.l1BudgetOverride = options.l1BudgetOverride;
     pm.addPass(createTTLFormPipeTransports(transportOpts));
   }
   pm.addNestedPass<func::FuncOp>(createTTLCoalesceDFBAcquires());
@@ -63,7 +64,11 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   pm.addPass(createTTLAnnotateCBAssociations());
   pm.addPass(createTTLVerifyDFBSPSC());
   pm.addPass(createTTLErasePipeNetScopes());
-  pm.addPass(createTTLValidateCBBudget());
+  {
+    TTLValidateCBBudgetOptions budgetOpts;
+    budgetOpts.l1BudgetOverride = options.l1BudgetOverride;
+    pm.addPass(createTTLValidateCBBudget(budgetOpts));
+  }
   {
     TTLConvertTTLToTTKernelOptions ttkOpts;
     ttkOpts.reduceFullFp32 = options.reduceFullFp32;
