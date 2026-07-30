@@ -36,7 +36,7 @@ semaphore protocol.
 - [x] **Item 1 - row-broadcast bias:** Add one N-sharded bias input and validate
   `A @ B + bias`.
   ![validated on 4 devices](https://img.shields.io/badge/validated-4%20devices-brightgreen)
-- [ ] **Item 2 - full-grid multi-core scheduling:** Partition M/N work across
+- [ ] **Item 2 - full-grid multi-node scheduling:** Partition M/N work across
   the compute grid and assign fabric transfers without duplicating traffic or
   output writes.
 - [ ] **Item 3a - ReLU:** Add a ReLU compute epilogue after bias.

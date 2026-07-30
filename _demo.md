@@ -1,187 +1,164 @@
 # Demo Integration Branch
 
-Branch: `integration/demo-20260730`.
+Branch: `bnorris/demo`.
 
-Base: `origin/main` at `816df6269c16` (`[ci][build] Consolidate manylinux wheel builds (#773)`).
+Base: `origin/main` at `711eddc4a9aa`
+(`[ci] re-enable Galaxy hardware tests (#789)`).
 
-Backup before this refresh: `backup/demo-before-refresh-20260729-071352`
-at `ed4701c65e9e`.
+Purpose: disposable aggregate branch for integration testing and the
+all-gather minimal matmul examples. This branch is not a source PR parent.
 
-Backup before #734 integration: `backup/demo-before-pr734-20260729-112617`
-at `ce0b646c4a8d`.
+## Update Policy
 
-Backup before #687 refresh: `backup/demo-before-pr687-refresh-20260729-122648`
-at `c2817a9306e0`.
-
-Backup before renaming and checkpointing the PR754 integration:
-`backup/integration-demo-pr754-20260730-pre-rename` at `922d1767`.
-
-Purpose: disposable aggregate branch for demos and integration testing. This
-branch is not a PR review layer and must not become a parent for source PRs.
-
-## Policy
-
-- Maintain the source PR branches independently with Graphite.
-- Maintain the demo integration branch with explicit `git merge --no-ff`
-  commits from live
-  `origin/bnorris/...` source tips.
-- Rebuild the demo integration branch from `origin/main` when source branches
-  rebase or
-  force-push.
-- Do not use cherry-picks as the default update mechanism. If an emergency demo
-  repair uses a cherry-pick, record it here and replace it with a source-branch
-  merge on the next rebuild.
-- Keep this file updated with the base SHA, source tips, merge commits,
-  exclusions, conflict notes, source PR follow-ups, and validation.
-
-## Source Of Truth
-
-- The included-input table records the source snapshots integrated into this
-  dated demo branch. Live source refs can advance independently.
-- Rebase status context: `/home/bnorris/tt/tt-lang-acc-3-defer-intermediate-dfbs/_updates.md`.
-- PR inventory context: `/home/bnorris/tt/PRs.md`. Some entries may be stale,
-  but the Pipes chain in that file is authoritative for which active Pipes PRs
-  belong in this aggregate branch unless listed as excluded below.
-
-## Included Inputs
-
-| Order | PR | Source branch | Tip | Merge commit | Notes |
-|---:|---:|---|---|---|---|
-| 1 | 704 | `bnorris/3-defer-intermediate-dfbs` | `a4b521fbf52b` | `e047795b5` | Deferred compiler-created intermediate DFB materialization. |
-| 2 | 778 | `bnorris/dfb-logical-physical-contract` | `362f0219e8c7` | `8f3493d91` | Logical DFB identity and physical allocation contract. |
-| 3 | 775 | `bnorris/user-dfb-reuse` | `f354d885a581` | `58bda800d` | Concurrent DFB lifetime analysis and physical index reuse. |
-| 4 | 733 | `bnorris/4-tensor-recurrence-scopes` | `80c0c07d0a5d` | `74f897f0a` | Tensor recurrence lowering through DST accumulation scopes. |
-| 5 | 673 | `bnorris/support-indexed-pipenets` | `713892fa81df` | `076079b9c` | Indexed PipeNet receiver expressions. |
-| 6 | 759 | `bnorris/ci-s3-publish-disk-caching` | `b3213d856cf3` | `562e10056`, `e6a7f24ec` | S3 publish disk caching and manylinux workflow updates. |
-| 7 | 782 | `bnorris/pr700-1-pipe-schedule-validation` | `7309198cd219` | `273d28f95` | PipeNet schedule validation split. |
-| 8 | 783 | `bnorris/pr700-2-computed-pipe-addresses` | `912573824cca` | `b9b68d68d` | Computed PipeNet receiver addresses. |
-| 9 | 765 | `bnorris/pr700-counter-scaling` | `e6704edc058a` | `5aa604417` | Ready counter scaling. |
-| 10 | 700 | `bnorris/pipe-static-receiver-addr` | `59c015281280` | `b8c8b1293` | Static receiver addressing and capacity protocol. |
-| 11 | 740 | `bnorris/pipes-transport-emitter-refactor` | `15158bbfdfff` | `086571984` | Pipe transport emitter refactor. |
-| 12 | 784 | `bnorris/pr700-3-pipe-planning` | `44feea30895f` | `88ce4f8a6` | PipeNet planning before lowering emission. |
-| 13 | 780 | `bnorris/pipes-codegen-optimizations` | `51cb9909829e` | `36ddc010f`, `1cfbcb909` | PipeNet codegen cleanup and stateful one-packet write selection. |
-| 14 | 687 | `bnorris/fix-683` | `8df9692cec10` | `c10f6eab9`, `2ed41e60d` | Stored values across control flow through branch-local cloning or compiler-created DFBs. Latest refresh applied as feature delta `66f90ca53375..8df9692cec10`. |
-| 15 | 680 | `bnorris/dfb-subviews-671` | `4588cf72d2fc` | `cc6f42636` | DFB block subviews and tensor-slice lowering. |
-| 16 | 734 | `bnorris/pipes-multidevice-integrated-poc` | `8eebd5f9375c` | `81d1103fd` | Fabric PipeNet POC and device-domain API. Applied as feature delta `698ebd38c13e..8eebd5f9375c` because the source branch still includes older PipeNet parent state. |
-| 17 | 754 | `bnorris/pipes-issue-628-code-size` | `922d1767` | `2742e965` | Compact selected PipeNet transfer lowering adapted to the demo stack. |
-
-Duplicate merge commits mean the source branch advanced during the refresh and
-was merged again after the first merge.
-
-## Required Inputs Missing From Current Branch
-
-None after #754 was adapted in `2742e965`.
-
-## Excluded Inputs
-
-| PR | Branch | Status | Reason |
-|---:|---|---|---|
-| 777 | `bnorris/dfb-collection-indexing` | Closed | Excluded from this refresh. |
-| 651 | `bnorris/accumulation-scope-redesign-mainmerge` | Reference branch | Combined/reference branch only. #733 is the active extracted branch included above. |
-
-## Conflict Notes
-
-- #733 `python/ttl/ttl_api.py`: kept the source branch tensor recurrence
-  behavior while preserving the newer runtime DFB allocation extraction.
-- #783 `python/ttl/kernel_runner.py` and PipeNet docs/tests: kept computed
-  receiver address metadata and the current DFB runtime configuration contract.
-- #780 first merge: added an aggregate-only `PipeSendPlan::payloadTileCount`
-  hook to enable one-packet writes before the source branch had the TTKernel
-  cleanup design.
-- #780 latest merge: removed that aggregate-only TTL lowering. The refreshed
-  source implements one-packet write selection in `TTKernelCleanupPatterns.cpp`.
-- #780 latest merge: kept `ttlang/Target/TargetInfo.h` for target-architecture
-  helpers while preserving DFB allocation declarations from the DFB stack.
-- #680 merge: added Tensor dialect registration for Python/CAPI use and split
-  the fp32 running-max-subtract test input DFBs to avoid mixed unpack modes on
-  one DFB.
-- #734 integration: a direct merge would replay older PR700/#740 parent-stack
-  state into the refreshed aggregate. The demo branch uses the feature delta
-  `698ebd38c13e..8eebd5f9375c` on top of the current PipeNet planning/codegen
-  stack instead.
-- #734 integration: kept the current computed-address DFB runtime-argument
-  allocation and added fabric runtime-argument bases after tensor, computed DFB,
-  and PipeNet synchronization arguments.
-- #687 refresh: old PR687 tip `3809bc553c3e` was already present through
-  `c10f6eab9`. The current source branch was applied as feature delta
-  `66f90ca53375..8df9692cec10` to add the released-root-input cloning guard
-  and renamed stored-value tests without replaying unrelated main-stack state.
-- #754 integration: retained the current PipeNet planning, fabric routing, and
-  DFB allocation contracts while adapting compact selected-transfer lowering
-  and verifier scheduling to the aggregate branch.
-
-## Source PR Follow-Ups
-
-These fixes were needed while validating the aggregate branch. Port them to the
-source PRs when applicable rather than leaving them only on `bnorris/demo`.
-
-- #680 `bnorris/dfb-subviews-671`: add `tensor::TensorDialect` to
-  `ttlangRegisterUpstreamDialects`, and make `ttl.ensure_dialects_registered()`
-  load `ctx.dialects["tensor"]`. DFB block subviews create
-  `tensor.extract_slice` directly from Python, so frontend compilation needs
-  Tensor registered in a fresh MLIR context.
-- #680 `bnorris/dfb-subviews-671`: update
-  `test/python/test_recurrence_multi_output_dfb.py::running_max_subtract` to
-  use separate input DFBs for `reduce_max` and `sub`. The fp32 validation
-  rejects a single DFB feeding both default-unpack FPU consumers and
-  `UnpackToDestFp32` SFPU consumers in the same compute kernel.
-- #780 `bnorris/pipes-codegen-optimizations`: when rebased over the DFB stack,
-  keep `kDFBAllocationsAttrName` and the operation-scoped
-  `getNextAvailableDFBIndex(Operation *)` declaration in `TTL.h`, while moving
-  target-architecture helpers to `ttlang/Target/TargetInfo.h`.
-- #780 `bnorris/pipes-codegen-optimizations`: keep one-packet write selection in
-  TTKernel cleanup and remove any stale TTL-side `PipeSendPlan::payloadTileCount`
-  planning state when rebasing over older aggregate branches.
-- #704 `bnorris/3-defer-intermediate-dfbs`: make
-  `ConvertTTLToCompute.cpp` check replacement safety with `DominanceInfo`.
-  Same-block ordering is too restrictive after compute formation when a
-  replacement dominates branch-local consumers.
-- #733 `bnorris/4-tensor-recurrence-scopes`: update tensor recurrence tests to
-  assert physical DFB allocation counts after finalize instead of checking the
-  removed `ttl.compiler_allocated` marker.
-- #733 `bnorris/4-tensor-recurrence-scopes`: use named integer constants for
-  multi-tile slice bounds in tensor recurrence pytests and Python lit tests.
-  Tuple subscripts in traced tensor-slice bounds are not resolved by the
-  current frontend tracer.
-- #783 `bnorris/pr700-2-computed-pipe-addresses`: update kernel-runner tests to
-  use finalized `PhysicalDFBConfig` objects and tile-shape tuples after the
-  logical/physical DFB configuration split.
-- #734 `bnorris/pipes-multidevice-integrated-poc`: rebase over the current
-  PipeNet planning/codegen stack so the source branch can merge normally into
+- Maintain source PR branches independently using the workflow in
+  `/home/bnorris/tt/doc/StackedPRs.md`.
+- Fetch remote refs and create a dated, pushed backup branch before changing
   `bnorris/demo`.
-- #734 `bnorris/pipes-multidevice-integrated-poc`: adapt fabric lowering to the
-  current `PipePlanning` and `PipeLowering` APIs. The aggregate adds explicit
-  `FabricRoutePlan` and `FabricRuntimeMap` plumbing instead of using the older
-  PR734 lowering entry points.
-- #734 `bnorris/pipes-multidevice-integrated-poc`: compute fabric route runtime
-  argument bases after tensor arguments, computed-address DFB runtime arguments,
-  and PipeNet synchronization arguments.
-- #734 `bnorris/pipes-multidevice-integrated-poc`: forward
-  `device_domain` through both explicit and unified `@ttl.operation` decorators
-  and into `_lower_program_to_kernel`.
-- #734 `bnorris/pipes-multidevice-integrated-poc`: keep fabric PipeNet transfers
-  on receiver-post synchronization until the capacity protocol supports
-  routing-plane capacity-release atomics.
-- #734 `bnorris/pipes-multidevice-integrated-poc`: keep the direct DFB helper in
-  `PipeCapacityAnalysis.cpp` for `ttl.cb_pop`, and use the receiver-DFB view
-  helper only for `ttl.pipe_transfer_post`.
-- #734 `bnorris/pipes-multidevice-integrated-poc`: update packaging test fake
-  `ttnn` modules with `SystemMeshDescriptor` and `FabricConfig`, and keep
-  `FABRIC_1D` validation restricted to linear logical meshes.
-- #754 `bnorris/pipes-issue-628-code-size`: the compact selected-pipe lowering
-  compiled a four-device, 12-record all-to-all but stalled during device
-  execution. Preserve per-edge computed-address lowering for bounded graphs
-  until the selected-pipe runtime protocol executes this case correctly.
+- Merge live source branch tips with `git merge --no-ff`. Do not use
+  cherry-picks as the normal source-branch update mechanism.
+- Restore demo-only checkpoints as explicit `[demo baseline]` or
+  `[demo item N]` commits after the source aggregate is current.
+- Record every aggregate-only repair below and apply the corresponding fix to
+  its source PR when required.
+- Validate the refreshed baseline on Galaxy before checklist work. Validate
+  every checklist item on Galaxy before starting the next item.
 
-## Rebuild Procedure
+## Current Backups
 
-Enable recorded conflict reuse once:
+| Backup | Commit | Purpose |
+|---|---|---|
+| `backup/demo-before-latest-refresh-20260730-132242` | `c7a8d94ecc37` | Last four-device-validated demo and item 1 checkpoint. |
+| `backup/demo-before-pipes-codegen-refresh-20260730-145611` | `1ce92bc1` | Aggregate before the latest PR780 restack merge. |
+| `backup/demo-before-checklist-20260730-130603` | recorded remote ref | Pre-checklist demo checkpoint. |
 
-```bash
-git config rerere.enabled true
-```
+## Included Source Tips
 
-Refresh refs and create a dated backup before any rewrite:
+The following refs were fetched and verified as ancestors of `bnorris/demo` on
+2026-07-30. A source branch that advances requires another dated backup,
+merge, and validation cycle.
+
+| Order | PR | Source branch | Included tip |
+|---:|---:|---|---|
+| 1 | 704 | `bnorris/3-defer-intermediate-dfbs` | `d102e7d16828` |
+| 2 | 778 | `bnorris/dfb-logical-physical-contract` | `e284c90ff20c` |
+| 3 | 775 | `bnorris/user-dfb-reuse` | `b92ef2da0fdd` |
+| 4 | 733 | `bnorris/4-tensor-recurrence-scopes` | `ff2cc828b4f1` |
+| 5 | 673 | `bnorris/support-indexed-pipenets` | `713892fa81df` |
+| 6 | 782 | `bnorris/pr700-1-pipe-schedule-validation` | `fd89d1aa9117` |
+| 7 | 783 | `bnorris/pr700-2-computed-pipe-addresses` | `2b226bd030d2` |
+| 8 | 765 | `bnorris/pr700-counter-scaling` | `1dd43c6ba035` |
+| 9 | 700 | `bnorris/pipe-static-receiver-addr` | `03b58ae7f6fd` |
+| 10 | 740 | `bnorris/pipes-transport-emitter-refactor` | `cbd883bd8804` |
+| 11 | 784 | `bnorris/pr700-3-pipe-planning` | `efd39395e8ec` |
+| 12 | 780 | `bnorris/pipes-codegen-optimizations` | `fe705d8cae41` |
+| 13 | 687 | `bnorris/fix-683` | `a4ca54878a7b` |
+| 14 | 680 | `bnorris/dfb-subviews-671` | `4588cf72d2fc` |
+| 15 | 734 | `bnorris/pipes-multidevice-integrated-poc` | `14c5621d299e` |
+| 16 | 754 | `bnorris/pipes-issue-628-code-size` | `8501c45aebe8` |
+
+PR780 was force-pushed from the previously integrated history to the current
+restack. Merge `34745510` records `fe705d8cae41` as an explicit parent, so
+future ancestry checks identify the current source tip without replaying
+equivalent patches.
+
+## Integration Checkpoints
+
+| Commit | Description |
+|---|---|
+| `34745510` | Records the latest PR780 restack as an explicit merge parent. |
+| `78eea62f` | Restores selected PipeNet graph state, immutable plans, fabric route dependencies, and PR687 control-flow helpers lost during aggregate conflict resolution. |
+| `1d0ff827` | Merges PR704 at `d102e7d1` and adapts PR687 compute-result replacement to the deferred materialization API. |
+| `d603c90e` | Merges PR754 at `8501c45a`, including mixed local/global selected counters and current DFB/selected-op test contracts. |
+| `58d6c82f` | Restores bounded per-edge lowering for graphs with at most 12 records; larger graphs use compact selected-pipe lowering. |
+| `a3021dca` | Restores the baseline direct and context-manager all-gather matmul examples. |
+| `37c570f5` | Restores checklist item 1 row-broadcast bias variants. |
+
+## Aggregate Repairs And Source Follow-Ups
+
+These changes must not remain undocumented aggregate behavior.
+
+- PR687 `bnorris/fix-683`: replace producer-compute uses independently when
+  the replacement dominates each user. The previous all-or-nothing
+  `replaceOpIfSafe` decision left nested DFB consumers attached to the tensor
+  operation after PR704 deferred materialization. The aggregate uses
+  `DominanceInfo` and erases the tensor operation only when no uses remain.
+- PR704 `bnorris/3-defer-intermediate-dfbs`: retain PR687
+  `addMaterializationUse` handling when adapting materialization lookup from a
+  direct result to `std::optional<OpResult>`.
+- PR754 `bnorris/pipes-issue-628-code-size`: rebase over the current selected
+  PipeNet and DFB contracts. Handwritten selected-pipe tests require the
+  `net`, device-index, and collective fields; verifier tests require finalized
+  user DFB IDs before `ttl-verify-pipenet-guards`.
+- PR754: preserve `index` receiver counts for selected-record predicates and
+  cast once to `i32` for NoC multicast payload and atomic operands.
+- PR754: preserve mixed local/global selected counter allocation and typed
+  `ttkernel.cast_to_l1_addr` selection. Allocating all selected counters
+  globally is unnecessary and increases runtime arguments.
+- PR734 `bnorris/pipes-multidevice-integrated-poc`: keep fabric route runtime
+  arguments after tensor, computed-address DFB, and PipeNet synchronization
+  arguments. Keep selected fabric transfers on receiver-post synchronization
+  until capacity-release atomics are implemented for routing-plane transport.
+- PR680 `bnorris/dfb-subviews-671`: retain Tensor dialect registration for
+  Python-created `tensor.extract_slice` operations. Keep fp32 recurrence tests
+  from sharing one input DFB across incompatible unpack modes.
+- PR780 `bnorris/pipes-codegen-optimizations`: preserve DFB allocation
+  declarations while using `ttlang/Target/TargetInfo.h`. Keep one-packet write
+  selection in TTKernel cleanup without stale TTL-side payload-count planning.
+
+The 12-record frontend threshold in `58d6c82f` is demo-specific. It preserves
+the four-device all-to-all implementation that was previously hardware
+validated while allowing larger graphs to compile with compact selected-pipe
+lowering. It is not a substitute for validating the compact runtime protocol.
+
+## Demo Checklist
+
+The runnable commands and correctness method are documented in
+`examples/all_gather_minimal_matmul/README.md`.
+
+| Item | Implementation | Refreshed Galaxy validation |
+|---|---|---|
+| Baseline: K-sharded activation all-gather and N-sharded matmul | Restored at `a3021dca` | Pending |
+| 1: N-sharded row-broadcast bias | Restored at `37c570f5` | Pending |
+| 2: full-grid multi-node scheduling | Saved in `stash@{2026-07-30 13:08:27}`; not applied | Not started |
+| 3a: ReLU | Not started | Not started |
+| 3b: GELU and SiLU | Not started | Not started |
+| 4: chunked N output | Not started | Not started |
+| 5: addcmul | Not started | Not started |
+| 6: SwiGLU | Not started | Not started |
+| 7: transpose selection | Not started | Not started |
+| 8: fabric worker configuration | Not started | Not started |
+| 9: FSDP weight gather | Not started | Not started |
+
+The prior `c7a8d94e` snapshot passed direct and context-manager baseline and
+item 1 execution on four devices. The restored example files are identical,
+but the compiler aggregate changed; those results are reference evidence, not
+validation of the refreshed commits.
+
+## Current Validation
+
+Completed for source aggregate `d603c90e`:
+
+- `cmake --build build`: passed.
+- `ninja -C build check-ttlang-mlir`: 241 passed.
+- Repaired MLIR tests were run individually before the complete MLIR suite.
+
+Completed after restoring the demo checkpoints:
+
+- `python3 -m py_compile` for baseline and item 1 modules and launchers:
+  passed.
+- Restored files match the recorded `9a59766a` baseline and `c7a8d94e` item 1
+  snapshots byte-for-byte before this manifest update.
+
+Pending before checklist item 2:
+
+- Rebuild `build-docker` in the current fabric container.
+- Run PipeNet/DFB Python test subsets in Docker with a timeout and
+  `2>&1 | tee /tmp/device_test.log`.
+- Run baseline direct and context-manager examples on Galaxy.
+- Run item 1 direct and context-manager examples on Galaxy.
+- Record exact commands, result metrics, device count, container, and commit.
+
+## Refresh Procedure
 
 ```bash
 git fetch origin
@@ -189,135 +166,17 @@ git switch bnorris/demo
 backup_ref=backup/demo-before-refresh-$(date +%Y%m%d-%H%M%S)
 git branch "$backup_ref"
 git push origin "$backup_ref"
-git reset --hard origin/main
-git restore --source "$backup_ref" -- _demo.md
 ```
 
-Merge source tips in manifest order:
+Merge changed source refs in table order. If source branches were force-pushed,
+rebuild from `origin/main` and merge the live tips instead of replaying obsolete
+merge commits. Restore validated demo-only checkpoints after the source
+aggregate is complete.
+
+Before publishing:
 
 ```bash
-git merge --no-ff --no-edit origin/bnorris/3-defer-intermediate-dfbs
-git merge --no-ff --no-edit origin/bnorris/dfb-logical-physical-contract
-git merge --no-ff --no-edit origin/bnorris/user-dfb-reuse
-git merge --no-ff --no-edit origin/bnorris/4-tensor-recurrence-scopes
-git merge --no-ff --no-edit origin/bnorris/support-indexed-pipenets
-git merge --no-ff --no-edit origin/bnorris/ci-s3-publish-disk-caching
-git merge --no-ff --no-edit origin/bnorris/pr700-1-pipe-schedule-validation
-git merge --no-ff --no-edit origin/bnorris/pr700-2-computed-pipe-addresses
-git merge --no-ff --no-edit origin/bnorris/pr700-counter-scaling
-git merge --no-ff --no-edit origin/bnorris/pipe-static-receiver-addr
-git merge --no-ff --no-edit origin/bnorris/pipes-transport-emitter-refactor
-git merge --no-ff --no-edit origin/bnorris/pr700-3-pipe-planning
-git merge --no-ff --no-edit origin/bnorris/pipes-codegen-optimizations
-git merge --no-ff --no-edit origin/bnorris/fix-683
-git merge --no-ff --no-edit origin/bnorris/dfb-subviews-671
-```
-
-When refreshing an existing aggregate that already contains the old #687 tip,
-apply only the new #687 feature delta:
-
-```bash
-git diff --binary 66f90ca53375 origin/bnorris/fix-683 --output=/tmp/pr687-feature-delta.patch
-git apply -3 /tmp/pr687-feature-delta.patch
-```
-
-Until #734 is rebased over the active PipeNet parent stack, apply its feature
-delta after the normal source-branch merges:
-
-```bash
-git diff --binary 698ebd38c13e origin/bnorris/pipes-multidevice-integrated-poc --output=/tmp/pr734-feature-delta.patch
-git apply -3 /tmp/pr734-feature-delta.patch
-```
-
-After conflicts are resolved, update this file and validate. Push the refreshed
-aggregate with:
-
-```bash
+git diff --check
+ninja -C build check-ttlang-mlir
 git push --force-with-lease origin bnorris/demo
 ```
-
-## Validation
-
-Completed after #687 refresh:
-
-- `git diff --check`: passed.
-- `ninja -C build check-ttlang-mlir`: 234 passed.
-- `ninja -C build check-ttlang-python-bindings`: 3 passed.
-- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird-fabric-v1.1.7 bash -lc 'source build-docker/env/activate && cmake --build build-docker'`: passed.
-- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird-fabric-v1.1.7 bash -lc 'source build-docker/env/activate && ninja -C build-docker check-ttlang-mlir'`: 234 passed.
-- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird-fabric-v1.1.7 bash -lc 'source build-docker/env/activate && ninja -C build-docker check-ttlang-python-bindings'`: 3 passed.
-
-Blocked after #687 refresh:
-
-- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird-fabric-v1.1.7 bash -lc 'source build-docker/env/activate && timeout 300 python -m pytest -c build-docker/test/pytest.ini --rootdir=/home/bnorris/tt/tt-lang4/test test/python/test_control_flow_stored_values.py -xvs 2>&1 | tee /tmp/device_test.log'`: failed before test execution because UMD reported `Sysmem mapped at unexpected NOC address`.
-- `ps -eo user,pid,ppid,stat,etime,comm,args | rg "1240137|1244310|check-ttlang-all|pytest -c /home/bnorris/tt/tt-lang/build-docker"`: found an active `check-ttlang-all` pytest in `bnorris-ird-v1.1.7` against `/home/bnorris/tt/tt-lang`, so the runtime blocker is device ownership rather than this branch's test body.
-
-Completed after #734 integration:
-
-- `python3 -m py_compile python/ttl/_src/ttl_ast.py python/ttl/kernel_runner.py python/ttl/ttl_api.py python/ttl/atom.py python/ttl/pipe.py python/sim/pipe.py test/python/test_kernel_runner.py`: passed.
-- `git diff --check`: passed.
-- `ninja -C build check-ttlang-mlir`: 234 passed.
-- `ninja -C build check-ttlang-python-bindings`: 3 passed.
-- `ninja -C build check-ttlang-packaging`: 162 passed.
-- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird-fabric-v1.1.7 bash -lc 'source build-docker/env/activate && cmake --build build-docker --target check-ttlang-python-bindings'`: 3 passed.
-
-Blocked after #734 integration:
-
-- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird-fabric-v1.1.7 bash -lc 'set -o pipefail; source build-docker/env/activate && timeout 240 python -m pytest -c build-docker/test/pytest.ini --rootdir=/home/bnorris/tt/tt-lang4/test test/python/fabric/test_ping_pong.py -xvs 2>&1 | tee /tmp/device_test.log'`: failed before tt-lang kernel compilation because UMD reported `Sysmem mapped at unexpected NOC address`.
-- `/home/bnorris/.local/bin/tt-smi -r all`: reset PCI device `[1]`; the UMD sysmem error persisted.
-- `/usr/bin/zsh -lc 'TT_VISIBLE_DEVICES=0,1,2,3 /home/bnorris/.local/bin/tt-smi -r all'`: reset PCI devices `[0, 1, 2, 3]`; the UMD sysmem error persisted.
-- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird-fabric-v1.1.7 bash -lc 'set -o pipefail; source build-docker/env/activate && timeout 60 python - <<PY 2>&1 | tee /tmp/device_test.log ... ttnn.get_num_devices() ... PY'`: failed with the same UMD sysmem error, confirming the runtime blocker occurs before pytest-specific code.
-
-Completed for the four-device all-gather matmul demo:
-
-- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird-fabric-v1.1.7 bash -c 'source build-docker/env/activate && cmake --build build-docker -j 8'`: passed.
-- The direct DFB variant ran on a `2x2` mesh with one M tile, one K tile per
-  device and transfer, and one N tile per device: PCC `0.999997`.
-- The context-manager DFB variant ran with the same configuration: PCC
-  `0.999997`.
-- Both runs reset all four devices first, used a 300-second timeout, and wrote
-  output through `tee /tmp/device_test.log`.
-- The gather validation was bit-exact for every source/destination pair in both
-  runs.
-- The 32-device Galaxy configuration remains pending.
-
-Completed for demo checklist item 1:
-
-- Added separate `full_direct.py` and `full_context.py` variants so the
-  baseline examples remain unchanged.
-- Added an N-sharded row-broadcast bias and validated the FP32 PyTorch golden
-  `A @ B + bias`.
-- The full direct and context-manager variants each ran on a `2x2` mesh with
-  the baseline tile configuration: PCC `0.999998`.
-- Gathered activation shards remained bit-exact in both runs.
-- Both runs reset all four devices first, used a 300-second timeout, and wrote
-  output through `tee /tmp/device_test.log`.
-
-Completed earlier during this refresh, before #734:
-
-- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird3-v1.1.7 bash -lc 'source build-docker/env/activate && cmake --build build-docker --target ttlang-opt'`
-- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird3-v1.1.7 bash -lc 'source build-docker/env/activate && cmake --build build-docker --target ttlang-opt TTLangPythonModules'`
-- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird3-v1.1.7 bash -lc 'source build-docker/env/activate && llvm-lit -v test/ttlang/Dialect/TTL/Transforms/insert_intermediate_dfbs.mlir test/ttlang/Dialect/TTL/Transforms/insert_intermediate_dfbs_disabled.mlir test/ttlang/Dialect/TTL/Transforms/insert_intermediate_dfbs_invalid.mlir test/ttlang/Dialect/TTL/Transforms/insert_intermediate_dfbs_nested.mlir test/ttlang/Dialect/TTL/Transforms/insert_intermediate_dfbs_control_flow.mlir test/ttlang/Dialect/TTL/Transforms/insert_intermediate_dfbs_control_flow_disabled.mlir test/ttlang/Dialect/TTL/Transforms/insert_intermediate_dfbs_control_flow_invalid.mlir'`
-- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird3-v1.1.7 bash -lc 'source build-docker/env/activate && llvm-lit -v test/bindings/python/ttl_autoregistration.py test/ttlang/Conversion/TTLToTTKernel/dfb_subview_store.mlir test/ttlang/Conversion/TTLToCompute/mixed_store_users.mlir test/ttlang/Conversion/TTLToCompute/bcast_lowering.mlir test/ttlang/Conversion/TTLToTTKernel/init_consolidation.mlir test/ttlang/Dialect/TTL/Transforms/convert_ttl_to_compute_multi_output.mlir'`
-- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird3-v1.1.7 bash -lc 'set -o pipefail; source build-docker/env/activate && timeout 180 python -m pytest -c build-docker/test/pytest.ini --rootdir=/home/bnorris/tt/tt-lang4/test test/python/test_dfb_subviews.py -xvs 2>&1 | tee /tmp/device_test.log'`
-- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird3-v1.1.7 bash -lc 'set -o pipefail; source build-docker/env/activate && timeout 180 python -m pytest -c build-docker/test/pytest.ini --rootdir=/home/bnorris/tt/tt-lang4/test test/python/test_tensor_slice.py::test_tensor_slice_add -xvs 2>&1 | tee /tmp/device_test.log'`
-- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird3-v1.1.7 bash -lc 'set -o pipefail; source build-docker/env/activate && timeout 240 python -m pytest -c build-docker/test/pytest.ini --rootdir=/home/bnorris/tt/tt-lang4/test test/python/test_recurrence_multi_output_dfb.py -xvs 2>&1 | tee /tmp/device_test.log'`
-- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird3-v1.1.7 bash -lc 'source build-docker/env/activate && timeout 60 python -m pytest -c build-docker/test/pytest.ini --rootdir=/home/bnorris/tt/tt-lang4/test test/python/test_layernorm.py --collect-only -q'`
-- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird3-v1.1.7 bash -lc 'source build-docker/env/activate && timeout 120 python -m pytest -c build-docker/test/pytest.ini --rootdir=/home/bnorris/tt/tt-lang4/test test/packaging/test_workflow_helper_scripts.py -q'`
-- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird3-v1.1.7 bash -lc 'source build-docker/env/activate && llvm-lit -v test/ttlang/Dialect/TTL/Transforms/pipe_stateful_one_packet_write.mlir test/ttlang/Dialect/TTL/Transforms/pipe_loop_invariant_cleanup.mlir test/ttlang/Dialect/TTL/Transforms/convert_pipe_completion_resources.mlir test/ttlang/Dialect/TTL/Transforms/convert_pipe_ops.mlir test/ttlang/Dialect/TTL/Transforms/convert_pipe_ops_overlap.mlir test/ttlang/Dialect/TTL/Transforms/pipe_published_address_overlap.mlir'`
-- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird3-v1.1.7 bash -lc 'source build-docker/env/activate && llvm-lit -v test/ttlang/Dialect/TTL/Transforms/insert_intermediate_dfbs_deferred.mlir'`
-- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird3-v1.1.7 bash -lc 'source build-docker/env/activate && timeout 60 python -m pytest -c build-docker/test/pytest.ini --rootdir=/home/bnorris/tt/tt-lang4/test test/python/test_control_flow_store_fanout.py --collect-only -q'`: collected 12 tests.
-- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird3-v1.1.7 bash -lc 'set -o pipefail; source build-docker/env/activate && timeout 240 python -m pytest -c build-docker/test/pytest.ini --rootdir=/home/bnorris/tt/tt-lang4/test test/python/test_control_flow_store_fanout.py -xvs 2>&1 | tee /tmp/device_test.log'`: 12 passed.
-- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird3-v1.1.7 bash -lc 'set -o pipefail; source build-docker/env/activate && timeout 180 python -m pytest -c build-docker/test/pytest.ini --rootdir=/home/bnorris/tt/tt-lang4/test test/python/test_kernel_runner.py -xvs 2>&1 | tee /tmp/device_test.log'`: 32 passed.
-- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird3-v1.1.7 bash -lc 'set -o pipefail; source build-docker/env/activate && timeout 420 python -m pytest -c build-docker/test/pytest.ini --rootdir=/home/bnorris/tt/tt-lang4/test test/python/test_tensor_recurrences.py -xvs 2>&1 | tee /tmp/device_test.log'`: 38 passed, 2 xfailed.
-- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird3-v1.1.7 bash -lc 'source build-docker/env/activate && llvm-lit -v build-docker/test --filter="tensor_recurrence_dst_acc.py|control_flow_store_fanout.py"'`: 2 passed.
-- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird3-v1.1.7 bash -lc 'set -o pipefail; source build-docker/env/activate && timeout 3600 ninja -C build-docker check-ttlang-all 2>&1 | tee /tmp/device_test.log'`: passed.
-
-Full `check-ttlang-all` results:
-
-- `check-ttlang-mlir`: 230 passed.
-- `check-ttlang-python-bindings`: 3 passed.
-- `check-ttlang-packaging`: 162 passed.
-- `check-ttlang-pytest`: 1982 passed, 3 skipped, 8 xfailed.
-- `check-ttlang-python-lit`: 86 passed, 1 unsupported.
-- `check-ttlang-me2e`: 868 passed, 35 xfailed.
