@@ -108,6 +108,20 @@ setup() {
     assert_equal "$(run_changed "$BASE" "$head")" "true"
 }
 
+@test "diff in manylinux builder driver -> true" {
+    echo "# more" >> "$REPO/.github/containers/build-wheel-manylinux-images.sh"
+    commit_all "$REPO" "manylinux builder driver"
+    head=$(cd "$REPO" && git rev-parse HEAD)
+    assert_equal "$(run_changed "$BASE" "$head")" "true"
+}
+
+@test "diff in manylinux builder Dockerfile -> true" {
+    echo "# more" >> "$REPO/.github/containers/Dockerfile.wheel-manylinux-2-34"
+    commit_all "$REPO" "manylinux builder Dockerfile"
+    head=$(cd "$REPO" && git rev-parse HEAD)
+    assert_equal "$(run_changed "$BASE" "$head")" "true"
+}
+
 # --- Negative: diff only outside the path list. ---
 
 @test "diff in unrelated kernel file -> false" {
@@ -118,11 +132,11 @@ setup() {
     assert_equal "$(run_changed "$BASE" "$head")" "false"
 }
 
-@test "diff only in third-party uplift path -> false (covered by detect-uplift, not this script)" {
+@test "diff in a shared container input -> true" {
     printf '%s\n' "$TEST_TT_METAL_RC1_TAG" > "$REPO/third-party/tt-metal-version"
     commit_all "$REPO" "uplift only"
     head=$(cd "$REPO" && git rev-parse HEAD)
-    assert_equal "$(run_changed "$BASE" "$head")" "false"
+    assert_equal "$(run_changed "$BASE" "$head")" "true"
 }
 
 @test "no diff (same base and head) -> false" {

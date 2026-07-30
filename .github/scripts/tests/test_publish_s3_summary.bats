@@ -70,6 +70,19 @@ setup() {
     refute_output --partial "### Published wheels"
 }
 
+@test "--dry-run-if selects dry-run output from a boolean value" {
+    run -0 "$SCRIPT" --dry-run-if true bundled "$VER"
+    assert_output --partial "### Wheel publish dry run"
+
+    run -0 "$SCRIPT" --dry-run-if false bundled "$VER"
+    assert_output --partial "### Published wheels"
+    refute_output --partial "### Wheel publish dry run"
+}
+
+@test "--dry-run-if rejects non-boolean values" {
+    run -2 "$SCRIPT" --dry-run-if yes bundled "$VER"
+}
+
 @test "--index-subdir points install commands at the subdir index" {
     run -0 "$SCRIPT" --index-subdir 2026-06 light "$VER"
     assert_output --partial "https://pypi.eng.aws.tenstorrent.com/2026-06/"

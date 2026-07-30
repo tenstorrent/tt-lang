@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
+
+cmake_minimum_required(VERSION 3.28.0)
+
+if(NOT DEFINED CMAKE_C_COMPILER)
+  set(CMAKE_C_COMPILER clang CACHE STRING "C Compiler" FORCE)
+endif()
+if(NOT DEFINED CMAKE_CXX_COMPILER)
+  set(CMAKE_CXX_COMPILER clang++ CACHE STRING "C++ Compiler" FORCE)
+endif()
+
+project(ttlang-wheel-toolchain LANGUAGES CXX C)
+
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake/modules")
+include(TTLangUtils)
+include(TTLangCompilerSetup)
+include(TTLangToolchainOptions)
+set(TTLANG_INSTALL_RUNTIME_REQUIREMENTS OFF CACHE BOOL
+  "Install runtime requirements outside the component cache" FORCE)
+
+if(TTLANG_TOOLCHAIN_COMPONENT STREQUAL "all")
+  message(FATAL_ERROR
+    "The wheel toolchain project requires llvm or tt-metal")
+endif()
+
+include(TTLangPython)
+include(TTLangToolchainComponent)
+if(NOT TTLANG_TOOLCHAIN_COMPONENT_CONFIGURED)
+  message(FATAL_ERROR
+    "Failed to configure toolchain component ${TTLANG_TOOLCHAIN_COMPONENT}")
+endif()

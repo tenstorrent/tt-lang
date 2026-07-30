@@ -80,6 +80,21 @@ EOF
     [ "${#lines[@]}" -eq 2 ]
 }
 
+@test "multi-chip: serial test visibility override applies to multi_device phase" {
+    write_fake_python 0
+
+    HW_PYTEST_CHIPS=4 HW_SERIAL_TEST_VISIBLE_DEVICES=0,1 run "$SCRIPT" test/python build/test/pytest-report
+
+    assert_success
+    assert_output --partial "Restricting serial multi_device pytest phase to TT_VISIBLE_DEVICES=0,1"
+    run cat "$CALLS"
+    assert_line --partial "pytest test/python -m not multi_device"
+    assert_line --partial "vis:"
+    assert_line --partial "pytest test/python -m multi_device"
+    assert_line --partial "vis:0,1"
+    [ "${#lines[@]}" -eq 2 ]
+}
+
 @test "single chip: one serial run over the whole suite" {
     write_fake_python 0
 
@@ -96,6 +111,22 @@ EOF
     refute_output --partial "max-worker-restart"
     refute_output --partial "multi_device"
     assert_output --partial "pytest-report.xml"
+    [ "${#lines[@]}" -eq 1 ]
+}
+
+@test "uses the generated pytest config beside the report" {
+    write_fake_python 0
+    pytest_config="$BATS_TEST_TMPDIR/build/test/pytest.ini"
+    mkdir -p "$(dirname "$pytest_config")"
+    touch "$pytest_config"
+
+    HW_PYTEST_CHIPS=1 run "$SCRIPT" test/python \
+        "$BATS_TEST_TMPDIR/build/test/pytest-report"
+
+    assert_success
+    run cat "$CALLS"
+    assert_output --partial "-c $pytest_config"
+    assert_output --partial "--rootdir="
     [ "${#lines[@]}" -eq 1 ]
 }
 

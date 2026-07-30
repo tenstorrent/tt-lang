@@ -2,8 +2,8 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 #
-# Record that no compatible tt-lang was found for a tt-metal SHA, so the nightly
-# detector skips re-attempting it until tt-lang HEAD advances. Writes a small
+# Record that no compatible tt-lang was found for a tt-metal SHA, so scheduled
+# runs skip re-attempting it until tt-lang HEAD advances. Writes a small
 # attempt.json marker under the tt-lang/ttmetal/<ttmetal7> S3 prefix.
 #
 # Usage:
