@@ -4,17 +4,17 @@
 
 # REQUIRES: ttnn
 # UNSUPPORTED: system-darwin
-# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir TTLANG_EMIT_RUNNER=%t.runner.py %python %s > %t.output 2>&1
+# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
 # RUN: FileCheck %s --check-prefix=CHECK-INITIAL < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 # RUN: FileCheck %s --check-prefix=CHECK-LOOPS < %t.output
-# RUN: FileCheck %s --check-prefix=CHECK-SIZE < %t.output
+# RUN: %python %s --report-kernel-size %t.output | FileCheck %s --check-prefix=CHECK-SIZE
 # RUN: FileCheck %s --check-prefix=CHECK-NO-DESCRIPTOR-ARRAYS < %t.output
 
 """Compile-only coverage for large table-driven PipeNet callback lowering."""
 
-import os
-import runpy
+import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -112,13 +112,17 @@ def compile_all_to_all():
         ALL_TO_ALL_NET.if_dst(receive)
 
 
-def report_table_driven_kernel_size():
-    runner = runpy.run_path(os.environ["TTLANG_EMIT_RUNNER"])
+def report_table_driven_kernel_size(output_path):
+    output = Path(output_path).read_text()
     pipe_kernel_paths = [
-        Path(kernel_path)
-        for kernel_path, thread_type in runner["KERNEL_PATHS"]
-        if thread_type == "noc"
+        Path(match.group(1))
+        for match in re.finditer(
+            r"^=== (?:send_dm|recv_dm) kernel written to (.+) ===$",
+            output,
+            re.MULTILINE,
+        )
     ]
+    assert len(pipe_kernel_paths) == 4
     largest_kernel_bytes = max(
         kernel_path.stat().st_size for kernel_path in pipe_kernel_paths
     )
@@ -130,13 +134,14 @@ def report_table_driven_kernel_size():
 
 
 if __name__ == "__main__":
-    assert len(ALL_TO_ALL_NET.pipes) == ALL_TO_ALL_EDGE_COUNT
-    print(f"ALL-TO-ALL-EDGE-COUNT: {len(ALL_TO_ALL_NET.pipes)}")
-    compile_single_receiver_collective()
-    # Compile this operation last so the emitted runner identifies the 992-edge
-    # kernels measured by report_table_driven_kernel_size().
-    compile_all_to_all()
-    report_table_driven_kernel_size()
+    if len(sys.argv) == 3 and sys.argv[1] == "--report-kernel-size":
+        report_table_driven_kernel_size(sys.argv[2])
+    else:
+        assert len(sys.argv) == 1
+        assert len(ALL_TO_ALL_NET.pipes) == ALL_TO_ALL_EDGE_COUNT
+        print(f"ALL-TO-ALL-EDGE-COUNT: {len(ALL_TO_ALL_NET.pipes)}")
+        compile_single_receiver_collective()
+        compile_all_to_all()
 
 
 # CHECK-INITIAL-NOT: ttl.if_src
@@ -169,4 +174,4 @@ if __name__ == "__main__":
 # state requires local arrays.
 # CHECK-NO-DESCRIPTOR-ARRAYS: TTNN INTEROP: Compiling kernel
 # CHECK-NO-DESCRIPTOR-ARRAYS-NOT: {{size_t v[0-9]+\[[0-9]+\];}}
-# CHECK-NO-DESCRIPTOR-ARRAYS: TABLE-DRIVEN-PIPE-KERNEL-SOURCE-BYTES:
+# CHECK-NO-DESCRIPTOR-ARRAYS: Compiled kernel ready
