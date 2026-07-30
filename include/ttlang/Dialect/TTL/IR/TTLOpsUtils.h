@@ -108,6 +108,34 @@ inline std::optional<mlir::Type> getTileElementType(mlir::Type type) {
   return std::nullopt;
 }
 
+/// Check tilization consistency between two element types.
+/// - Both non-tile: success (no tilization to compare).
+/// - Exactly one side tiled: error (mixed tile/scalar is invalid).
+/// - Both tiled with differing HxW: error.
+/// - Both tiled with matching HxW: success.
+inline LogicalResult emitIfTileShapeMismatch(Operation *op, Type lhs, Type rhs,
+                                             StringRef lhsName,
+                                             StringRef rhsName) {
+  auto lhsTile = dyn_cast<ttcore::TileType>(lhs);
+  auto rhsTile = dyn_cast<ttcore::TileType>(rhs);
+  if (!lhsTile && !rhsTile) {
+    return success();
+  }
+  if (!lhsTile || !rhsTile) {
+    return op->emitOpError()
+           << "cannot mix tiled and non-tiled element types; got " << lhsName
+           << "=" << lhs << ", " << rhsName << "=" << rhs;
+  }
+  if (lhsTile.getHeight() == rhsTile.getHeight() &&
+      lhsTile.getWidth() == rhsTile.getWidth()) {
+    return success();
+  }
+  return op->emitOpError() << lhsName << " tile shape (" << lhsTile.getHeight()
+                           << "x" << lhsTile.getWidth() << ") must match "
+                           << rhsName << " tile shape (" << rhsTile.getHeight()
+                           << "x" << rhsTile.getWidth() << ")";
+}
+
 /// Return true when `tensor` was acquired from a CB via ttl.cb_wait or
 /// ttl.cb_reserve (the only two ViewLikeOpInterface implementations whose
 /// view source is a CircularBufferType). Traces through

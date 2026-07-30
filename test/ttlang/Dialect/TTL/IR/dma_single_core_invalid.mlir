@@ -75,6 +75,54 @@ module {
 
 // -----
 
+// Tensor and CB must both be tiled (reject tile vs scalar element type).
+#layout_tiled = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                            buffer = dram, grid = [1, 1], memory = interleaved>
+
+module {
+  func.func @copy_tile_vs_scalar_invalid(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>, #layout_tiled>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], f32, 2>
+    // expected-error @below {{cannot mix tiled and non-tiled element types}}
+    %xf = ttl.copy %arg0, %cb : (tensor<1x1x!ttcore.tile<32x32, f32>, #layout_tiled>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
+    ttl.wait %xf : !ttl.transfer_handle<read>
+    func.return
+  }
+}
+
+// -----
+
+// Tensor tile shape must match the CB tile shape (tensor -> CB).
+#layout_32 = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                         buffer = dram, grid = [1, 1], memory = interleaved>
+
+module {
+  func.func @copy_tile_shape_mismatch_tensor_to_cb(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>, #layout_32>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<16x16, f32>, 2>
+    // expected-error @below {{tensor tile shape (32x32) must match CB tile shape (16x16)}}
+    %xf = ttl.copy %arg0, %cb : (tensor<1x1x!ttcore.tile<32x32, f32>, #layout_32>, !ttl.cb<[1, 1], !ttcore.tile<16x16, f32>, 2>) -> !ttl.transfer_handle<read>
+    ttl.wait %xf : !ttl.transfer_handle<read>
+    func.return
+  }
+}
+
+// -----
+
+// Tensor tile shape must match the CB tile shape (CB -> tensor).
+#layout_16 = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<16x16, f32>,
+                         buffer = dram, grid = [1, 1], memory = interleaved>
+
+module {
+  func.func @copy_tile_shape_mismatch_cb_to_tensor(%arg0: tensor<1x1x!ttcore.tile<16x16, f32>, #layout_16>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    // expected-error @below {{tensor tile shape (16x16) must match CB tile shape (32x32)}}
+    %xf = ttl.copy %cb, %arg0 : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>, tensor<1x1x!ttcore.tile<16x16, f32>, #layout_16>) -> !ttl.transfer_handle<write>
+    ttl.wait %xf : !ttl.transfer_handle<write>
+    func.return
+  }
+}
+
+// -----
+
 // Tensor block shape must match the CB shape.
 #layout_2x1 = #ttl.layout<shape = [2, 1], element_type = !ttcore.tile<32x32, f32>,
                           buffer = dram, grid = [1, 1], memory = interleaved>

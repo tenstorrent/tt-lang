@@ -59,7 +59,7 @@ fresh_tagged_repo() {
 container_input_one_path() {
     local path_to_change="$1"
     REPO=$(fresh_tagged_repo)
-    echo "modified" >> "$REPO/$path_to_change"
+    modify_repo_path "$REPO" "$path_to_change"
     commit_all "$REPO" "container input $path_to_change"
     run -0 bash -c "cd '$REPO' && .github/containers/get-version-tag.sh"
     [[ "$output" =~ ^v99\.99\.99-[a-f0-9]{8}$ ]]
@@ -67,6 +67,10 @@ container_input_one_path() {
 
 @test "container input change in third-party/tt-metal-version -> -<hash> form" {
     container_input_one_path "third-party/tt-metal-version"
+}
+
+@test "container input change in CMakeLists.txt -> -<hash> form" {
+    container_input_one_path "CMakeLists.txt"
 }
 
 @test "container input change in third-party/llvm-project/sentinel -> -<hash> form" {
@@ -81,12 +85,54 @@ container_input_one_path() {
     container_input_one_path ".github/containers/Dockerfile.base"
 }
 
-@test "container input change in .github/containers/Dockerfile.wheel-manylinux-2-34 -> -<hash> form" {
-    container_input_one_path ".github/containers/Dockerfile.wheel-manylinux-2-34"
+@test "container input change in .github/containers/Dockerfile -> -<hash> form" {
+    container_input_one_path ".github/containers/Dockerfile"
 }
 
 @test "container input change in requirements-runtime.txt -> -<hash> form" {
     container_input_one_path "requirements-runtime.txt"
+}
+
+@test "container input change in bin/tt-triage -> -<hash> form" {
+    container_input_one_path "bin/tt-triage"
+}
+
+@test "container input change in BuildLLVM.cmake -> -<hash> form" {
+    container_input_one_path "cmake/modules/BuildLLVM.cmake"
+}
+
+@test "container input change in requirements.txt -> -<hash> form" {
+    container_input_one_path "requirements.txt"
+}
+
+@test "container input change in build-and-install.sh -> -<hash> form" {
+    container_input_one_path "scripts/build-and-install.sh"
+}
+
+@test "each UPLIFT_PATHS entry produces hashed tag form" {
+    while IFS= read -r uplift_path; do
+        REPO=$(fresh_tagged_repo)
+        modify_repo_path "$REPO" "$uplift_path"
+        commit_all "$REPO" "container input $uplift_path"
+        run -0 bash -c "cd '$REPO' && .github/containers/get-version-tag.sh"
+        [[ "$output" =~ ^v99\.99\.99-[a-f0-9]{8}$ ]]
+    done < <(list_uplift_paths "$SCRIPTS_DIR/uplift-paths.sh")
+}
+
+@test "wheel-builder driver change does not change shared docker tag" {
+    REPO=$(fresh_tagged_repo)
+    echo "modified" >> "$REPO/.github/containers/build-wheel-manylinux-images.sh"
+    commit_all "$REPO" "wheel builder driver"
+    run -0 bash -c "cd '$REPO' && .github/containers/get-version-tag.sh"
+    assert_output "$BASE_TAG"
+}
+
+@test "wheel-builder Dockerfile change does not change shared docker tag" {
+    REPO=$(fresh_tagged_repo)
+    echo "modified" >> "$REPO/.github/containers/Dockerfile.wheel-manylinux-2-34"
+    commit_all "$REPO" "wheel builder Dockerfile"
+    run -0 bash -c "cd '$REPO' && .github/containers/get-version-tag.sh"
+    assert_output "$BASE_TAG"
 }
 
 # --- Hash determinism: same content yields same tag ---
@@ -245,17 +291,15 @@ container_input_one_path() {
     echo "new-dep" >> "$REPO/requirements-runtime.txt"
     commit_all "$REPO" "multi-container-input"
     tag_forward=$(get_tag "$REPO")
-    cat > "$REPO/.github/scripts/uplift-paths.sh" <<'EOF'
-#!/bin/bash
-UPLIFT_PATHS=(
-    requirements-runtime.txt
-    .github/containers/Dockerfile.base
-    .github/containers/Dockerfile.wheel-manylinux-2-34
-    third-party/tt-metal
-    third-party/llvm-project
-    third-party/tt-metal-version
-)
-EOF
+    mapfile -t reversed_paths < <(
+        list_uplift_paths "$REPO/.github/scripts/uplift-paths.sh" | tac
+    )
+    {
+        echo '#!/bin/bash'
+        echo 'UPLIFT_PATHS=('
+        printf '    %q\n' "${reversed_paths[@]}"
+        echo ')'
+    } > "$REPO/.github/scripts/uplift-paths.sh"
     tag_reversed=$(get_tag "$REPO")
     assert_equal "$tag_forward" "$tag_reversed"
 }
@@ -267,5 +311,5 @@ EOF
 UPLIFT_PATHS=()
 EOF
     run -1 bash -c "cd '$REPO' && .github/containers/get-version-tag.sh"
-    assert_output --partial "UPLIFT_PATHS is empty"
+    assert_output --partial "path list is empty"
 }

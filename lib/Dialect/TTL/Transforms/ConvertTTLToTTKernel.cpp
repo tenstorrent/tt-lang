@@ -1275,6 +1275,95 @@ struct CoreYLowering : OpConversionPattern<CoreYOp> {
   }
 };
 
+//===----------------------------------------------------------------------===//
+// DFB index query lowering
+//===----------------------------------------------------------------------===//
+
+struct GetDfbIdLowering : OpConversionPattern<GetDfbIdOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(GetDfbIdOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto dfbIdx = getCBIndex(op.getDfb());
+    if (!dfbIdx) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot resolve DFB index for get_dfb_id operand");
+    }
+    auto convertedDfb =
+        utils::convertTTLCBToTTKernel(adaptor.getDfb(), rewriter, op.getLoc());
+    if (failed(convertedDfb)) {
+      return rewriter.notifyMatchFailure(op, "failed to convert DFB type");
+    }
+    auto newOp = ttk::GetDfbIdOp::create(rewriter, op.getLoc(),
+                                         rewriter.getI32Type(), *convertedDfb);
+    rewriter.replaceOp(op, newOp.getResult());
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// Opaque call lowering
+//===----------------------------------------------------------------------===//
+
+struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(OpaqueCallOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    SmallVector<Value> convertedArgs;
+
+    for (auto [origArg, adaptedArg] :
+         llvm::zip(op.getArgOperands(), adaptor.getArgOperands())) {
+      Type origTy = origArg.getType();
+
+      // CB -> i32 cb index via get_compile_time_arg_val.
+      if (mlir::isa<CircularBufferType>(origTy)) {
+        auto cbIdx = getCBIndex(origArg);
+        if (!cbIdx) {
+          return rewriter.notifyMatchFailure(
+              op, "cannot resolve CB index for opaque_call operand");
+        }
+        auto cbVal = ttk::GetCompileArgValOp::create(
+            rewriter, loc, rewriter.getI32Type(), *cbIdx);
+        convertedArgs.push_back(cbVal);
+        continue;
+      }
+
+      // Scalar floats are forwarded as-is. Following tt-metal's kernel
+      // scalar-argument convention, a float reaches the callee as its raw
+      // IEEE-754 bit pattern held in an integer register -- the C++ header
+      // may declare the parameter as `float`/`bf16` or as an unsigned
+      // integer and reinterpret; the bits are identical either way. The
+      // ttkernel-lower-scalar-fp-types pass rewrites scalar-float producers
+      // (e.g. a float arith.constant) into that integer bit pattern later
+      // in the pipeline.
+      convertedArgs.push_back(adaptedArg);
+    }
+
+    // Convert result types (unlikely for void external calls, but supported).
+    SmallVector<Type> resultTypes;
+    for (Type resTy : op.getResultTypes()) {
+      Type converted = getTypeConverter()->convertType(resTy);
+      if (!converted) {
+        return rewriter.notifyMatchFailure(op, "failed to convert result type");
+      }
+      resultTypes.push_back(converted);
+    }
+
+    // Template arg SSA values pass through directly (i32 -> i32).
+    SmallVector<Value> templateArgVals(adaptor.getTemplateArgVals());
+
+    auto newOp = ttk::OpaqueCallOp::create(
+        rewriter, loc, resultTypes, op.getCalleeAttr(), op.getHeaderAttr(),
+        convertedArgs, templateArgVals);
+    rewriter.replaceOp(op, newOp->getResults());
+    return success();
+  }
+};
+
 /// Tensor-level ttl.store ops must be lowered to tile_store by
 /// convert-ttl-to-compute. Any surviving to this point is a miscompile.
 struct StoreLowering : OpConversionPattern<StoreOp> {
@@ -1699,11 +1788,12 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                                          pipeResourcePlan);
   patterns.add<PipeTransferWaitLowering>(typeConverter, &ctx, pipeResourcePlan);
   patterns.add<WaitLowering>(typeConverter, &ctx, completedPipeSendWaits);
-  patterns.add<BindCBLowering, TensorSliceLowering, CBReserveLowering,
-               CBPushLowering, CBWaitLowering, CBPopLowering, TileStoreLowering,
-               StoreLowering, CoreXLowering, CoreYLowering,
-               RawElementReadLowering, RawElementWriteLowering>(typeConverter,
-                                                                &ctx);
+  patterns
+      .add<BindCBLowering, TensorSliceLowering, CBReserveLowering,
+           CBPushLowering, CBWaitLowering, CBPopLowering, TileStoreLowering,
+           StoreLowering, CoreXLowering, CoreYLowering, RawElementReadLowering,
+           RawElementWriteLowering, OpaqueCallLowering, GetDfbIdLowering>(
+          typeConverter, &ctx);
   populatePipeLoweringPatterns(patterns, typeConverter, pipeNetIndex);
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);

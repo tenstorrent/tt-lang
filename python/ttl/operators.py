@@ -98,6 +98,17 @@ def _get_constant_float(val) -> float:
     return v
 
 
+def _tile_hw(elem_type) -> Optional[Tuple[int, int]]:
+    """Return (H, W) when ``elem_type`` is a TileType, else None."""
+    from ttl.dialects import ttcore
+
+    tile = ttcore.ir.TileType.maybe_downcast(elem_type)
+    if tile is None:
+        return None
+    shape = list(tile.shape)
+    return (int(shape[0]), int(shape[1]))
+
+
 # Type aliases for common patterns
 CoreCoordinate = Tuple[int, int]
 IndexedTensor = Union["TensorBlock", Tuple["TensorBlock", Tuple[int, ...]]]
@@ -211,6 +222,12 @@ class TensorBlock:
                 "store() must be called on a block acquired from reserve(), not a regular tensor"
             )
         reserve = _get_reserve_from_block(ast_self)
+        _require_matching_tile_shapes(
+            rhs.type.element_type,
+            reserve.type.element_type,
+            "source",
+            "destination CB",
+        )
         ttl.store(rhs, reserve)
 
     def __iadd__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
@@ -378,6 +395,28 @@ def _get_cb_shape(cb_val):
     return list(cb_type.shape)
 
 
+def _require_matching_tile_shapes(lhs_elem, rhs_elem, lhs_name: str, rhs_name: str):
+    """Reject copies/stores with inconsistent tilization.
+
+    Both non-tile is allowed. Mixing tile and non-tile, or two different
+    tile shapes, is an error.
+    """
+    lhs = _tile_hw(lhs_elem)
+    rhs = _tile_hw(rhs_elem)
+    if lhs is None and rhs is None:
+        return
+    if lhs is None or rhs is None:
+        raise ValueError(
+            f"cannot mix tiled and non-tiled element types; got "
+            f"{lhs_name}={lhs_elem}, {rhs_name}={rhs_elem}"
+        )
+    if lhs != rhs:
+        raise ValueError(
+            f"{lhs_name} tile shape {lhs[0]}x{lhs[1]} must match "
+            f"{rhs_name} tile shape {rhs[0]}x{rhs[1]}"
+        )
+
+
 def _process_tensor_subscript(subscript_tuple, cb_shape):
     """Process tensor subscript and create tensor slice.
 
@@ -533,10 +572,22 @@ def copy(src, dst) -> CopyTransferHandler:
 
     if dst_is_block and not src_is_block:
         # Read: device tensor/slice -> block (CB)
+        dst_cb_ty = ttl.CircularBufferType.maybe_downcast(dst_cb.type)
+        if dst_cb_ty is None:
+            raise ValueError(f"Expected CircularBufferType, got {dst_cb.type}")
+        _require_matching_tile_shapes(
+            src.type.element_type, dst_cb_ty.element_type, "tensor", "CB"
+        )
         xf_type = Type.parse("!ttl.transfer_handle<read>", ctx)
         return ttl.copy(xf_type, src, dst_cb)
     elif src_is_block and not dst_is_block:
         # Write: block (CB) -> device tensor/slice
+        src_cb_ty = ttl.CircularBufferType.maybe_downcast(src_cb.type)
+        if src_cb_ty is None:
+            raise ValueError(f"Expected CircularBufferType, got {src_cb.type}")
+        _require_matching_tile_shapes(
+            dst.type.element_type, src_cb_ty.element_type, "tensor", "CB"
+        )
         xf_type = Type.parse("!ttl.transfer_handle<write>", ctx)
         return ttl.copy(xf_type, src_cb, dst)
     else:

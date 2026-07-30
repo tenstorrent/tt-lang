@@ -3,6 +3,18 @@
 
 // -----
 
+// Tile shape mismatch between source block and destination CB reserve view.
+func.func @store_tile_shape_mismatch(
+    %tensor: tensor<2x2x!ttcore.tile<16x16, f32>>) {
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
+  %view = ttl.cb_reserve %cb : <[2, 2], !ttcore.tile<32x32, f32>, 2> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  // expected-error @below {{source tile shape (16x16) must match destination CB tile shape (32x32)}}
+  ttl.store %tensor, %view : tensor<2x2x!ttcore.tile<16x16, f32>>, tensor<2x2x!ttcore.tile<32x32, f32>>
+  func.return
+}
+
+// -----
+
 // Element type mismatch between tensor and view.
 func.func @store_element_type_mismatch(
     %tensor: tensor<2x2x!ttcore.tile<32x32, f32>>) {

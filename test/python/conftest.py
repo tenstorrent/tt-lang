@@ -80,7 +80,7 @@ def pytest_configure(config):
     )
     config.addinivalue_line(
         "markers",
-        "multi_device: needs all chips (a fabric mesh); excluded from the "
+        "multi_device: needs a fabric mesh; excluded from the "
         "per-chip parallel run and executed serially",
     )
 

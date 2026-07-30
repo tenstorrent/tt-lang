@@ -24,6 +24,11 @@ on:
         type: string
   workflow_call:
     inputs:
+      defer_result_check:
+        description: 'Allow the calling workflow to check the aggregate hardware result.'
+        required: false
+        type: boolean
+        default: false
       runs-on:
         description: 'Hardware type to run on'
         required: false
@@ -53,6 +58,7 @@ jobs:
     name: "Hardware Tests (${{ inputs.runs-on }})"
     runs-on: ${{ fromJSON(inputs.runner_labels) }}
     timeout-minutes: ${{ fromJSON(inputs.timeout) }}
+    continue-on-error: ${{ inputs.defer_result_check }}
 
     container:
       image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04:${{ inputs.docker_tag }}
@@ -71,6 +77,7 @@ jobs:
       RUNS_ON: ${{ inputs.runs-on }}
       PYTHONDONTWRITEBYTECODE: 1
       TTLANG_TEST_SEED: 42
+      HW_SERIAL_TEST_VISIBLE_DEVICES: ${{ inputs.runs-on == 'galaxy-bh' && '0,1' || '' }}
 
     steps:
       - name: Checkout tt-lang
@@ -111,6 +118,15 @@ jobs:
           python3 test/python/smoketest.py
 
       - name: Single test (just python)
+        if: inputs.runs-on != 'galaxy-bh'
+        run: |
+          source build/env/activate
+          python test/python/simple_add.py
+
+      - name: Single test (just python, Galaxy one chip)
+        if: inputs.runs-on == 'galaxy-bh'
+        env:
+          TT_VISIBLE_DEVICES: "0"
         run: |
           source build/env/activate
           python test/python/simple_add.py
@@ -158,3 +174,6 @@ jobs:
             build/test/sim-report.xml
             build/test/tutorial-report*.xml
           retention-days: 7
+
+      - name: Mark hardware tests complete
+        run: echo "Hardware tests completed successfully."

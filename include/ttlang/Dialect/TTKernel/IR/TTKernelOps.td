@@ -4793,4 +4793,57 @@ def TTKernel_DPrintOp : TTKernel_Op<"dprint", [MemoryEffects<[MemRead, MemWrite]
     }];
 }
 
+//===----------------------------------------------------------------------===//
+// DFB index query
+//===----------------------------------------------------------------------===//
+
+def TTKernel_GetDfbIdOp : TTKernel_Op<"get_dfb_id", [Pure]> {
+    let summary = "Get the integer index for a dataflow buffer";
+    let description = [{
+      Returns the integer DFB index for the given dataflow buffer as an
+      i32 SSA value. Lowered to a raw integer literal at EmitC time.
+    }];
+    let arguments = (ins TTKernel_CB:$dfb);
+    let results = (outs I32:$result);
+    let assemblyFormat = "$dfb attr-dict `:` type($dfb)";
+}
+
+def TTKernel_OpaqueCallOp : TTKernel_Op<"opaque_call",
+    [MemoryEffects<[MemRead, MemWrite]>, AttrSizedOperandSegments]> {
+    let summary = "Call an external C/C++ function declared in a user header.";
+    let description = [{
+      Emits a call to an opaque external C/C++ function whose declaration is
+      provided by a user-specified header file. The `callee` attribute names
+      the function and `header` specifies the `#include` path. Arguments are
+      forwarded positionally. Scalar float arguments follow tt-metal's
+      scalar-arg convention: they are passed as their raw IEEE-754 bit
+      pattern in an integer register. The ttkernel-lower-scalar-fp-types
+      pass performs the float-to-bits rewrite for float constants.
+
+      The `template_arg_vals` operands are i32 SSA values that become C++
+      template arguments on the emitted call.  They are resolved to integer
+      literals at EmitC lowering time.
+
+      Example:
+      ```
+      %c1 = arith.constant 1 : i32
+      ttkernel.opaque_call "my_func" template_args(%c1)
+          (%a, %b) {header = "my_header.hpp"} : (f32, f32) -> ()
+      ```
+    }];
+    let arguments = (ins
+      StrAttr:$callee,
+      StrAttr:$header,
+      Variadic<AnyType>:$arg_operands,
+      Variadic<I32>:$template_arg_vals
+    );
+    let results = (outs Variadic<AnyType>);
+    let assemblyFormat = [{
+      $callee (`template_args` `(` $template_arg_vals^ `)`)?
+      `(` $arg_operands `)` attr-dict `:`
+      functional-type($arg_operands, results)
+    }];
+    let hasVerifier = 1;
+}
+
 #endif

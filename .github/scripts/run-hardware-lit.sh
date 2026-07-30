@@ -4,7 +4,7 @@
 #
 # Run hardware Python lit tests with one serial lit process per chip. Each shard
 # is restricted with TT_VISIBLE_DEVICES, preserving one open device per process.
-# Multi-device lit tests run afterward with every chip visible.
+# Multi-device lit tests run afterward in a serial process.
 #
 # Env:
 #   HW_LIT_CHIPS overrides the detected chip count.
