@@ -2385,6 +2385,11 @@ def _lower_program_to_kernel(
                 "canonicalize",
                 "cse",
             ]
+        # Runs last in the TTKernel stage: after the passes that create the ops
+        # it reads, and before EmitC conversion turns circular-buffer calls into
+        # opaque verbatim strings.
+        if compiler_options.cost_estimate:
+            pipeline_passes.append("ttkernel-cost-estimate")
         pipeline_passes += [
             "convert-ttkernel-to-emitc",
             "symbol-dce",

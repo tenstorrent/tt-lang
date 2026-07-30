@@ -1233,4 +1233,45 @@ def TTKernelCombinePackTiles
   ];
 }
 
+def TTKernelCostEstimate
+    : Pass<"ttkernel-cost-estimate", "::mlir::ModuleOp"> {
+  let summary = "Estimate per-core cost from TTKernel IR";
+  let description = [{
+    Non-mutating analysis pass that runs `mlir::tt::CostEstimator` and reports
+    how the program's work splits across the five RISCs of a Tensix core.
+
+    Must run after `ttkernel-insert-inits` and `ttkernel-combine-pack-tiles`,
+    which create operations the estimate depends on, and before
+    `convert-ttkernel-to-emitc`, which turns circular-buffer calls into opaque
+    verbatim strings. Placing it last in the TTKernel stage also means the
+    constant operands carrying tile counts are already folded.
+
+    The report names any operation the estimator could not place rather than
+    assuming a cost for it, so an unmodelled kernel is never mistaken for a
+    cheap one.
+
+    Example output:
+    ```
+    cost estimate: operation placement only, no cycle costs yet
+      kernels: compute read write
+      NCRISC reader: 11 ops
+      TRISC0 unpack: 4 ops
+      TRISC1 math: 2 ops
+      TRISC2 pack: 4 ops
+      BRISC writer: 6 ops
+      incomplete: 4 unaccounted
+        no thread affinity for 'ttkernel.binary_op_init_common'
+    ```
+  }];
+
+  let options = [
+    Option<"outputPath", "output", "std::string", "\"\"",
+           "Path to write the report (empty for stdout)">
+  ];
+
+  let dependentDialects = [
+    "::mlir::tt::ttkernel::TTKernelDialect"
+  ];
+}
+
 #endif // TTLANG_DIALECT_TTL_PASSES_TD

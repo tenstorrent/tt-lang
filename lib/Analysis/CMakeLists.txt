@@ -1,4 +1,5 @@
 add_mlir_library(TTLangAnalysis
+  CostEstimator.cpp
   ExecutionCountAnalysis.cpp
   IntegerExpressionEvaluator.cpp
   LoopIterationUtils.cpp
@@ -10,8 +11,11 @@ add_mlir_library(TTLangAnalysis
   LINK_LIBS PUBLIC
   MLIRAnalysis
   MLIRControlFlowInterfaces
+  MLIRFuncDialect
   MLIRIR
   MLIRLoopLikeInterface
   MLIRSCFDialect
   MLIRTensorDialect
+  MLIRTTKernelDialect
+  MLIRTTLDialect
 )
