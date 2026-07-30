@@ -2,13 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 """
-Program execution framework for multi-node simulation.
+Operation execution framework for multi-node simulation.
 
 This module provides the core execution framework for running compute and data movement
 functions across multiple nodes with proper context binding and error handling.
 """
 
-import copy
 import types
 import warnings
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Sequence
@@ -95,124 +94,6 @@ def get_max_l1_bytes() -> int:
         Current L1 limit in bytes
     """
     return get_context().config.max_l1_bytes
-
-
-def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
-    """Program class that combines compute and data movement functions.
-
-    This is the "kernels-given-directly" entry point (used by tests and any
-    caller that already holds the three kernel templates).  Per-node state is
-    produced by cloning: DataflowBuffers are re-instantiated per node and the
-    kernels are rebound to the per-node context.  The ``@ttl.operation`` path
-    instead uses :func:`run_operation`, which re-runs the operation body per
-    node so that node-dependent setup (``ttl.node()`` / ``ttl.grid_size()``)
-    works.
-
-    Args:
-        *funcs: Compute and data movement function templates
-        grid: Grid size tuple
-        pipenets: Optional OperationPipeNets used to compute the active
-            set of nodes. When None, every node participates.
-    """
-
-    class ProgramImpl:
-        def __init__(
-            self,
-            *functions: BindableTemplate,
-        ):
-            self.functions = functions
-            self.context: Dict[str, Any] = {"grid": grid}
-            self.pipenets = pipenets
-
-        def __call__(self, *args: Any, **kwargs: Any) -> None:
-            # Extract closure variables from kernel functions and add to context
-            # This ensures variables like DFBs that were defined in the kernel function
-            # are available for per-node copying
-            for tmpl in self.functions:
-                if hasattr(tmpl, "__wrapped__"):
-                    func = getattr(tmpl, "__wrapped__")
-                    if hasattr(func, "__code__") and hasattr(func, "__closure__"):
-                        code = func.__code__
-                        closure = func.__closure__
-                        if code.co_freevars and closure:
-                            for var_name, cell in zip(code.co_freevars, closure):
-                                try:
-                                    # Only add if not already in context
-                                    if var_name not in self.context:
-                                        self.context[var_name] = cell.cell_contents
-                                except ValueError:
-                                    # Cell is empty (variable not yet bound)
-                                    pass
-
-            grid = self.context.get("grid", (1, 1))
-            total_nodes = _total_nodes(grid)
-
-            ordered = self.functions
-
-            # Per-node context is produced by cloning the discovered kernel
-            # closures; the kernel templates themselves are shared across nodes.
-            def node_plan_for(node: int) -> tuple[Dict[str, Any], Any]:
-                return self._build_node_context(node), ordered
-
-            ctx = get_context()
-            _schedule_and_run(
-                node_plan_for=node_plan_for,
-                candidate_nodes=range(total_nodes),
-                analysis_templates=ordered,
-                pipenets=self.pipenets,
-                grid=grid,
-                # Setup ran once, before this call, and every node clones it, so
-                # the one footprint counted there is every node's.
-                node_footprints={0: (ctx.kernel_dfb_count, ctx.kernel_l1_bytes)},
-            )
-
-        def _build_node_context(self, node: int) -> Dict[str, Any]:
-            """Build per-node context with fresh DataflowBuffers and deep-copied state.
-
-            Args:
-                node: Linear node index to build context for
-
-            Returns:
-                Dictionary containing per-node context with fresh DataflowBuffers
-            """
-            memo: Dict[int, Any] = {}
-            node_context: Dict[str, Any] = {}
-
-            for key, value in self.context.items():
-                # Skip module objects (e.g., local imports like `from ttl.sim import ttnn`)
-                match value:
-                    case types.ModuleType():
-                        node_context[key] = value
-                        continue
-                    case _:
-                        pass
-
-                match value:
-                    case Tensor():
-                        setattr(value, "_name", key)
-                        node_context[key] = value
-                        memo[id(value)] = value
-                    case DataflowBuffer():
-                        # Create a fresh DFB for this node.
-                        new_dfb = DataflowBuffer(
-                            likeness_tensor=value.likeness_tensor,
-                            shape=value.shape,
-                            block_count=value.block_count,
-                        )
-                        setattr(new_dfb, "_name", key)
-                        node_context[key] = new_dfb
-                    case _:
-                        node_context[key] = copy.deepcopy(value, memo)
-
-            node_context["_node"] = node
-            node_context["grid"] = self.context.get("grid", (1, 1))
-
-            # Inject custom print function for debug printing
-            node_context["print"] = ttlang_print
-
-            return node_context
-
-    return ProgramImpl(*funcs)
 
 
 def _total_nodes(grid: Shape) -> int:
@@ -391,8 +272,7 @@ def _warn_over_hardware_limits(node_footprints: Dict[int, tuple[int, int]]) -> N
     """Warn when any node's DataflowBuffer count or L1 footprint is over budget.
 
     ``node_footprints`` maps a node to the ``(dfb_count, l1_bytes)`` its setup
-    produced.  A single entry stands for every node, which is the cloning path
-    in :func:`Program`: its setup runs once and each node re-instantiates it.
+    produced.
 
     Both limits are per node, so the worst node decides.  Reporting only one
     node's footprint would miss the node that is actually over budget, since

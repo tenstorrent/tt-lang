@@ -17,7 +17,6 @@ from typing import (
     AbstractSet,
     Any,
     Callable,
-    Dict,
     List,
     NamedTuple,
     Optional,
@@ -1450,20 +1449,6 @@ class DataflowBuffer:
                 f"below is one place to fix:\n"
                 + "\n\n---\n\n".join(f"{i+1}) {err}" for i, err in enumerate(errors))
             )
-
-    def __deepcopy__(self, memo: Dict[int, Any]) -> "DataflowBuffer":
-        """Return a fresh DataflowBuffer with the same configuration.
-
-        Deep-copying a DataflowBuffer yields an independent buffer with the same
-        shape/capacity settings and a clean ring-buffer state.
-        """
-        new_dfb = DataflowBuffer(
-            likeness_tensor=self.likeness_tensor,
-            shape=self._shape,
-            block_count=self._block_count,
-        )
-        memo[id(self)] = new_dfb
-        return new_dfb
 
     def __repr__(self) -> str:
         s = self._state

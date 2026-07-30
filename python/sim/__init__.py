@@ -20,7 +20,6 @@ from .decorators import compute, datamovement
 from .nodecontext import node
 from .operation import operation
 from .pipe import DstPipeIdentity, DstT, Pipe, PipeNet, SrcPipeIdentity
-from .program import Program
 from .ttnnsim import TTNN_AVAILABLE, ROW_MAJOR_LAYOUT, TILE_LAYOUT
 from .typedefs import NodeCoord, NodeRange, Shape
 
@@ -97,7 +96,6 @@ class _TTLNamespace:
         from .nodecontext import node, grid_size
         from .operation import operation
         from .pipe import DstPipeIdentity, DstT, Pipe, PipeNet, SrcPipeIdentity
-        from .program import Program
         from .typedefs import NodeCoord, NodeRange, Shape, Size
 
         self.operation = operation
@@ -120,7 +118,6 @@ class _TTLNamespace:
         self.TILE_SHAPE = TILE_SHAPE
         self.TILE_LAYOUT = TILE_LAYOUT
         self.ROW_MAJOR_LAYOUT = ROW_MAJOR_LAYOUT
-        self.Program = Program
         self.block = _TTLBlockNamespace()
         self.math = _TTLMathNamespace()
 
@@ -146,7 +143,6 @@ __all__ = [
     "copy",
     "CopyTransaction",
     "GroupTransfer",
-    "Program",
     "node",
     "compute",
     "datamovement",

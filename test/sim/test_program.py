@@ -2,9 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 """
-Test Program execution framework.
+Test the operation execution framework.
 
-This test verifies the Program class behavior including:
+This test verifies how ``@ttl.operation`` bodies are run, including:
 - Context binding and per-node state isolation
 - Cooperative execution mode
 - Error handling and deadlock detection
@@ -21,7 +21,6 @@ from test_utils import make_ones_tensor, make_zeros_tensor
 from sim import TILE_SHAPE, copy, ttl, ttnn
 from sim.dfb import Block
 from sim.decorators import _make_cell, rebind_func_with_ctx  # type: ignore[reportPrivateUsage]
-from sim.program import Program
 
 
 class TestBasicExecution:
@@ -64,8 +63,6 @@ class TestBasicExecution:
                 tx = copy(block, out[0:1, 0:1])
                 tx.wait()
                 block.pop()
-
-            return Program(compute, dm0, dm1, grid=grid)()
 
         a = make_ones_tensor(32, 32) * 3
         out = make_zeros_tensor(32, 32)
@@ -126,8 +123,6 @@ class TestBasicExecution:
                 tx.wait()
                 block.pop()
 
-            return Program(compute, dm0, dm1, grid=grid)()
-
         # Create test data
         a = ttnn.rand((TILE_SHAPE[0] * 4, TILE_SHAPE[1] * 4))
         b = ttnn.rand((TILE_SHAPE[0] * 4, TILE_SHAPE[1] * 4))
@@ -183,8 +178,6 @@ class TestMultinode:
                 tx.wait()
                 block.pop()
 
-            return Program(compute, dm0, dm1, grid=grid)()
-
         a = make_ones_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1]) * 5
         out = make_zeros_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1])
 
@@ -226,8 +219,6 @@ class TestMultinode:
                 )
                 tx.wait()
                 block.pop()
-
-            return Program(compute, dm0, dm1, grid=grid)()
 
         out = make_zeros_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)
 
@@ -277,8 +268,6 @@ class TestContextIsolation:
                 tx.wait()
                 block.pop()
 
-            return Program(compute, dm0, dm1, grid=grid)()
-
         out = make_zeros_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1])
 
         test_kernel(out)
@@ -323,8 +312,6 @@ class TestContextIsolation:
                 tx.wait()
                 block.pop()
 
-            return Program(compute, dm0, dm1, grid=grid)()
-
         shared = make_ones_tensor(32, 32) * 10
         out = make_zeros_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1])
 
@@ -361,8 +348,6 @@ class TestErrorHandling:
             def dm1():
                 pass
 
-            return Program(compute, dm0, dm1, grid=grid)()
-
         a = make_zeros_tensor(32, 32)
 
         with pytest.raises(
@@ -390,8 +375,6 @@ class TestErrorHandling:
             @ttl.datamovement()
             def dm1():
                 pass
-
-            return Program(compute, dm0, dm1, grid=grid)()
 
         a = make_zeros_tensor(32, 32)
 
@@ -423,8 +406,6 @@ class TestErrorHandling:
             @ttl.datamovement()
             def dm1():
                 pass
-
-            return Program(compute, dm0, dm1, grid=grid)()
 
         a = make_zeros_tensor(32, 32)
 
@@ -738,8 +719,6 @@ class TestCooperativeScheduling:
                 tx.wait()
                 block.pop()
 
-            return Program(compute, dm0, dm1, grid=grid)()
-
         a = make_ones_tensor(32, 32) * 7
         out = make_zeros_tensor(32, 32)
 
@@ -785,8 +764,6 @@ class TestCooperativeScheduling:
                     tx.wait()
                     block.pop()
 
-            return Program(compute, dm0, dm1, grid=grid)()
-
         a = ttnn.Tensor(torch.arange(3 * 32 * 32).reshape(3 * 32, 32).float())
         out = ttnn.empty(a.shape, dtype=torch.float32)
 
@@ -828,8 +805,6 @@ class TestCooperativeScheduling:
                 tx = copy(block, out[0:1, 0:1])
                 tx.wait()
                 block.pop()
-
-            return Program(compute, dm0, dm1, grid=grid)()
 
         a = make_ones_tensor(32, 32) * 5
         out = make_zeros_tensor(32, 32)
@@ -873,8 +848,6 @@ class TestCooperativeScheduling:
                 tx = copy(block, out[0:1, 0:1])
                 tx.wait()
                 block.pop()
-
-            return Program(compute, dm0, dm1, grid=grid)()
 
         a = make_ones_tensor(32, 32) * 7
         out = make_zeros_tensor(32, 32)
@@ -937,8 +910,6 @@ class TestCooperativeScheduling:
                     tx.wait()
                     block_out.pop()
 
-            return Program(compute, dm0, dm1, grid=grid)()
-
         a = ttnn.Tensor(torch.arange(2 * 32 * 32).reshape(2 * 32, 32).float())
         b = ttnn.Tensor(
             torch.arange(2 * 32 * 32, 4 * 32 * 32).reshape(2 * 32, 32).float()
@@ -983,62 +954,24 @@ class TestProgramInternals:
 
     def test_empty_generator_completion(self) -> None:
         """Test that generators with only 'pass' are handled correctly."""
-        from sim import ttl
-        from sim.program import Program
 
-        @ttl.datamovement()
-        def dm0() -> None:
-            pass  # Empty generator
+        @ttl.operation(grid=(1, 1))
+        def test_kernel() -> None:
+            @ttl.datamovement()
+            def dm0() -> None:
+                pass  # Empty generator
 
-        @ttl.datamovement()
-        def dm1() -> None:
-            pass  # Empty generator
+            @ttl.datamovement()
+            def dm1() -> None:
+                pass  # Empty generator
 
-        @ttl.compute()
-        def compute() -> None:
-            pass  # Empty generator
+            @ttl.compute()
+            def compute() -> None:
+                pass  # Empty generator
 
-        prog = Program(compute, dm0, dm1, grid=(1, 1))
         # Should complete without error
-        prog()
+        test_kernel()
 
 
 if __name__ == "__main__":
-    # Run tests
-    test_basic = TestBasicExecution()
-    test_basic.test_cooperative_mode_basic()
-    test_basic.test_multi_tile_computation()
-
-    test_multi = TestMultinode()
-    test_multi.test_two_node_execution()
-    test_multi.test_four_node_2d_grid()
-
-    test_ctx = TestContextIsolation()
-    test_ctx.test_dataflow_buffers_isolated()
-    test_ctx.test_tensors_shared_across_nodes()
-
-    test_err = TestErrorHandling()
-    test_err.test_error_in_compute()
-    test_err.test_error_in_dm0()
-    test_err.test_deadlock_detection()
-
-    test_rebind = TestRebindFunc()
-    test_rebind.test_rebind_simple_closure()
-    test_rebind.test_rebind_multiple_closures()
-    test_rebind.test_rebind_preserves_unspecified_closures()
-    test_rebind.test_rebind_with_globals()
-
-    test_cell = TestMakeCell()
-    test_cell.test_make_cell_creates_valid_cell()
-    test_cell.test_make_cell_different_types()
-
-    test_coop = TestCooperativeScheduling()
-    test_coop.test_yielding_on_blocking_operations()
-    test_coop.test_multiple_iterations_cooperative()
-    test_coop.test_copy_tensor_to_block_cooperative()
-    test_coop.test_copy_block_to_tensor_cooperative()
-    test_coop.test_copy_block_to_pipe_cooperative()
-    test_coop.test_copy_pipe_operations_not_fully_integrated_in_cooperative_mode()
-    test_coop.test_copy_mixed_pairs_cooperative()
-
-    print("All program.py tests passed!")
+    pytest.main([__file__])
