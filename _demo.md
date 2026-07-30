@@ -168,6 +168,10 @@ source PRs when applicable rather than leaving them only on `bnorris/demo`.
 - #734 `bnorris/pipes-multidevice-integrated-poc`: update packaging test fake
   `ttnn` modules with `SystemMeshDescriptor` and `FabricConfig`, and keep
   `FABRIC_1D` validation restricted to linear logical meshes.
+- #754 `bnorris/pipes-issue-628-code-size`: the compact selected-pipe lowering
+  compiled a four-device, 12-record all-to-all but stalled during device
+  execution. Preserve per-edge computed-address lowering for bounded graphs
+  until the selected-pipe runtime protocol executes this case correctly.
 
 ## Rebuild Procedure
 
@@ -263,6 +267,19 @@ Blocked after #734 integration:
 - `/home/bnorris/.local/bin/tt-smi -r all`: reset PCI device `[1]`; the UMD sysmem error persisted.
 - `/usr/bin/zsh -lc 'TT_VISIBLE_DEVICES=0,1,2,3 /home/bnorris/.local/bin/tt-smi -r all'`: reset PCI devices `[0, 1, 2, 3]`; the UMD sysmem error persisted.
 - `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird-fabric-v1.1.7 bash -lc 'set -o pipefail; source build-docker/env/activate && timeout 60 python - <<PY 2>&1 | tee /tmp/device_test.log ... ttnn.get_num_devices() ... PY'`: failed with the same UMD sysmem error, confirming the runtime blocker occurs before pytest-specific code.
+
+Completed for the four-device all-gather matmul demo:
+
+- `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird-fabric-v1.1.7 bash -c 'source build-docker/env/activate && cmake --build build-docker -j 8'`: passed.
+- The direct DFB variant ran on a `2x2` mesh with one M tile, one K tile per
+  device and transfer, and one N tile per device: PCC `0.999997`.
+- The context-manager DFB variant ran with the same configuration: PCC
+  `0.999997`.
+- Both runs reset all four devices first, used a 300-second timeout, and wrote
+  output through `tee /tmp/device_test.log`.
+- The gather validation was bit-exact for every source/destination pair in both
+  runs.
+- The 32-device Galaxy configuration remains pending.
 
 Completed earlier during this refresh, before #734:
 
