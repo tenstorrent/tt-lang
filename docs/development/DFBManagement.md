@@ -4,7 +4,7 @@ This document describes how the tt-lang compiler manages dataflow buffers (DFBs)
 
 ## Overview
 
-DFBs originate from two sources. User-declared DFBs are created explicitly in the DSL via `make_dataflow_buffer_like` and correspond to the programmer's data movement plan. Compiler-allocated DFBs are inserted automatically at fusion split points where a tensor-level operation requires a CB-attached operand but receives the result of a fused expression chain.
+DFBs originate from two sources. User-declared DFBs are created explicitly in the DSL via `make_dataflow_buffer_like` and correspond to the programmer's data movement plan. Compiler-allocated DFBs are inserted automatically when the compiler must provide concrete DFB storage for a tensor SSA value: either an operation requires a DFB-attached operand, or direct `ttl.store` users span multiple blocks and cannot be represented by branch-local cloning.
 
 The hardware supports at most 32 DFBs per node (indices 0--31). User and
 compiler-allocated DFBs share this index space. DFB-creating function passes
@@ -262,6 +262,10 @@ and consumers receive attached tensor values instead of the original
 non-attached compute results. The final `convert-ttl-to-compute` pass lowers
 consumers that now receive DFB-attached operands. The following `ttl-auto-sync`
 run inserts the consumer `cb_pop`.
+
+The pass also normalizes direct stores of a non-DFB-attached value when those stores occupy at least two blocks. If upstream `insideMutuallyExclusiveRegions` proves the store blocks are pairwise exclusive, the producer's backward slice has no remaining non-store uses, and no root-input DFB release can execute before the clone site, the slice is cloned into each store block and no compiler DFB is allocated. Otherwise, the value is materialized through a compiler-allocated DFB and every pre-existing direct store of that value is rewritten to consume the attached DFB value. Rewriting every direct store prevents a same-block store from causing `convert-ttl-to-compute` to place the producer compute after the DFB wait that reads the materialized value.
+
+`TTLMaterializeLoopState` uses the same compiler-DFB materialization helper (`include/ttlang/Dialect/TTL/Transforms/DFBMaterialization.h`) to remove ranked-tensor `scf.for` iter_args before compute lowering.
 
 Compute-result materialization is planned before rewriting IR. The pass records
 each required consumer operand under its original producer result:

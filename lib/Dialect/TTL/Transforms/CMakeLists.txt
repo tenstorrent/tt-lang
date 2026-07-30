@@ -48,6 +48,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   MLIRAnalysis
   MLIRAffineTransforms
   MLIRArithDialect
+  MLIRControlFlowInterfaces
   MLIREmitCDialect
   MLIRFuncDialect
   MLIRLinalgDialect

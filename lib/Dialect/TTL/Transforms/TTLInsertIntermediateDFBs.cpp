@@ -6,16 +6,21 @@
 // TTL Insert Intermediate DFBs
 //===----------------------------------------------------------------------===//
 //
-// Inserts compiler-allocated intermediate dataflow buffers at fusion split
-// points. When a tensor-level op requires a DFB-attached operand produced by
-// ttl.compute, this pass adds a DFB-backed output to the producer compute and
-// rewrites the consumer operand to the waited, attached tensor.
+// Resolves DFB attachment and values stored from multiple blocks before
+// convert-ttl-to-compute. Cloneable backward slices feeding mutually exclusive
+// stores from multiple blocks are relocated into those store blocks. Values
+// whose consumers require DFB-attached inputs, or whose stores cannot be proven
+// mutually exclusive, are materialized through compiler-allocated intermediate
+// dataflow buffers.
 //
 //===----------------------------------------------------------------------===//
+
+#include "DFBAcquireReleaseAnalysis.h"
 
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang/Dialect/TTL/Transforms/ControlFlowUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/DFBMaterialization.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -25,9 +30,11 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 
 #define DEBUG_TYPE "ttl-insert-intermediate-dfbs"
@@ -38,6 +45,363 @@ namespace mlir::tt::ttl {
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 
 namespace {
+
+struct StoreBlockGroup {
+  Block *block = nullptr;
+  SmallVector<StoreOp> stores;
+};
+
+enum class MultiBlockStoreAction {
+  CloneBackwardSlice,
+  MaterializeToDFB,
+};
+
+struct MultiBlockStorePlan {
+  Value value;
+  SmallVector<StoreOp> storesOutsideDefiningBlock;
+  SmallVector<StoreOp> directStores;
+  MultiBlockStoreAction action = MultiBlockStoreAction::MaterializeToDFB;
+  FusionTraceResult backwardSlice;
+};
+
+struct DFBLifecycleOps {
+  SmallVector<Operation *> reserves;
+  SmallVector<Operation *> waits;
+  SmallVector<Operation *> pushes;
+  SmallVector<Operation *> pops;
+};
+
+static DFBLifecycleOps collectDFBLifecycleOps(func::FuncOp funcOp) {
+  DFBLifecycleOps lifecycle;
+  collectDFBAcquireReleaseOps(funcOp, lifecycle.reserves, lifecycle.waits,
+                              lifecycle.pushes, lifecycle.pops);
+  return lifecycle;
+}
+
+static SmallVector<StoreBlockGroup>
+groupStoresByBlock(ArrayRef<StoreOp> stores) {
+  SmallVector<StoreBlockGroup> groups;
+  for (StoreOp storeOp : stores) {
+    Block *block = storeOp->getBlock();
+    auto iter = llvm::find_if(groups, [&](const StoreBlockGroup &group) {
+      return group.block == block;
+    });
+    if (iter == groups.end()) {
+      groups.push_back(StoreBlockGroup{block, {}});
+      iter = std::prev(groups.end());
+    }
+    iter->stores.push_back(storeOp);
+  }
+  return groups;
+}
+
+static SmallVector<StoreOp> getDirectStores(Value value) {
+  SmallVector<StoreOp> stores;
+  for (OpOperand &use : value.getUses()) {
+    auto storeOp = dyn_cast<StoreOp>(use.getOwner());
+    if (storeOp && storeOp.getTensor() == value) {
+      stores.push_back(storeOp);
+    }
+  }
+  return stores;
+}
+
+// Returns the stores of `value` that live outside its defining block, but only
+// when stores span at least two distinct blocks. That is the condition that can
+// make convert-ttl-to-compute compare operation order across blocks.
+static SmallVector<StoreOp> getStoresOutsideDefiningBlock(Value value) {
+  Operation *definingOp = value.getDefiningOp();
+  if (!definingOp) {
+    return {};
+  }
+
+  Block *definingBlock = definingOp->getBlock();
+  SmallVector<StoreOp> storesOutsideDefiningBlock;
+  llvm::SmallPtrSet<Block *, 2> storeBlocks;
+  for (StoreOp storeOp : getDirectStores(value)) {
+    storeBlocks.insert(storeOp->getBlock());
+    if (storeOp->getBlock() != definingBlock) {
+      storesOutsideDefiningBlock.push_back(storeOp);
+    }
+  }
+  if (storeBlocks.size() < 2) {
+    return {};
+  }
+  return storesOutsideDefiningBlock;
+}
+
+static unsigned distinctStoreBlockCount(Value value) {
+  llvm::SmallPtrSet<Block *, 2> storeBlocks;
+  for (StoreOp storeOp : getDirectStores(value)) {
+    storeBlocks.insert(storeOp->getBlock());
+  }
+  return storeBlocks.size();
+}
+
+static bool hasLoopBetween(Operation *ancestor, Operation *descendant) {
+  for (Operation *parent = descendant->getParentOp();
+       parent && parent != ancestor; parent = parent->getParentOp()) {
+    if (isa<LoopLikeOpInterface>(parent)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool areStoreBlocksPairwiseExclusive(ArrayRef<StoreOp> stores) {
+  SmallVector<Operation *> representatives;
+  for (StoreBlockGroup &group : groupStoresByBlock(stores)) {
+    representatives.push_back(group.stores.front().getOperation());
+  }
+  return arePairwiseInsideMutuallyExclusiveRegions(representatives);
+}
+
+static bool sliceExternalUsesAreStores(Value value,
+                                       const FusionTraceResult &backwardSlice,
+                                       ArrayRef<StoreOp> stores) {
+  llvm::SmallPtrSet<Operation *, 8> sliceOps;
+  llvm::SmallPtrSet<Operation *, 8> storeOps;
+  for (Operation *op : backwardSlice.opsInOrder) {
+    sliceOps.insert(op);
+  }
+  for (StoreOp storeOp : stores) {
+    storeOps.insert(storeOp.getOperation());
+  }
+
+  for (Operation *op : backwardSlice.opsInOrder) {
+    for (Value result : op->getResults()) {
+      for (Operation *user : result.getUsers()) {
+        if (sliceOps.contains(user)) {
+          continue;
+        }
+        if (result == value && storeOps.contains(user)) {
+          continue;
+        }
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+static SmallVector<StoreOp> getEarliestStorePerBlock(ArrayRef<StoreOp> stores) {
+  SmallVector<StoreOp> earliestStores;
+  for (StoreBlockGroup group : groupStoresByBlock(stores)) {
+    StoreOp earliestStore = group.stores.front();
+    for (StoreOp storeOp : ArrayRef<StoreOp>(group.stores).drop_front()) {
+      if (storeOp->isBeforeInBlock(earliestStore)) {
+        earliestStore = storeOp;
+      }
+    }
+    earliestStores.push_back(earliestStore);
+  }
+  return earliestStores;
+}
+
+static ArrayRef<Operation *>
+getSameKindAcquires(Operation *acquire, const DFBLifecycleOps &lifecycle) {
+  if (isa<CBReserveOp>(acquire)) {
+    return lifecycle.reserves;
+  }
+  if (isa<CBWaitOp>(acquire)) {
+    return lifecycle.waits;
+  }
+  return {};
+}
+
+static ArrayRef<Operation *>
+getSameKindReleases(Operation *acquire, const DFBLifecycleOps &lifecycle) {
+  if (isa<CBReserveOp>(acquire)) {
+    return lifecycle.pushes;
+  }
+  if (isa<CBWaitOp>(acquire)) {
+    return lifecycle.pops;
+  }
+  return {};
+}
+
+static Operation *projectToBlock(Operation *op, Block *block) {
+  return op->getBlock() == block ? op : block->findAncestorOpInBlock(*op);
+}
+
+static bool releaseCanExecuteBeforeStore(Operation *release, StoreOp storeOp,
+                                         Block *orderingBlock) {
+  Operation *store = storeOp.getOperation();
+  if (release->getBlock() == store->getBlock()) {
+    return release->isBeforeInBlock(store);
+  }
+
+  Operation *projectedRelease = projectToBlock(release, orderingBlock);
+  Operation *projectedStore = projectToBlock(store, orderingBlock);
+  if (!projectedRelease || !projectedStore) {
+    return true;
+  }
+  if (projectedRelease == projectedStore) {
+    return true;
+  }
+  return projectedRelease->isBeforeInBlock(projectedStore);
+}
+
+static bool
+rootInputReleaseCanExecuteBeforeStore(Value rootInput, ArrayRef<StoreOp> stores,
+                                      const DFBLifecycleOps &lifecycle) {
+  Operation *acquire = findCBAcquireOp(rootInput);
+  if (!acquire) {
+    return true;
+  }
+
+  ArrayRef<Operation *> acquires = getSameKindAcquires(acquire, lifecycle);
+  ArrayRef<Operation *> releases = getSameKindReleases(acquire, lifecycle);
+  if (acquires.empty()) {
+    return true;
+  }
+  if (releases.empty()) {
+    return false;
+  }
+
+  DFBAcquireInterval interval = makeDFBAcquireInterval(acquire, acquires);
+  DFBReleaseSearch releaseSearch =
+      findOwnedDFBReleases(interval, /*lastOwnedUse=*/nullptr, releases);
+
+  Block *orderingBlock = acquire->getBlock();
+  auto releaseCanExecuteBeforeAnyStore = [&](Operation *release) {
+    return llvm::any_of(stores, [&](StoreOp storeOp) {
+      return releaseCanExecuteBeforeStore(release, storeOp, orderingBlock);
+    });
+  };
+  if (llvm::any_of(releaseSearch.sameLevelReleases,
+                   releaseCanExecuteBeforeAnyStore)) {
+    return true;
+  }
+  return llvm::any_of(releaseSearch.nestedReleases,
+                      releaseCanExecuteBeforeAnyStore);
+}
+
+static bool rootInputsLiveAtStoreSites(const FusionTraceResult &backwardSlice,
+                                       ArrayRef<StoreOp> stores,
+                                       const DFBLifecycleOps &lifecycle) {
+  SmallVector<StoreOp> cloneSites = getEarliestStorePerBlock(stores);
+  return llvm::none_of(backwardSlice.rootInputs, [&](Value rootInput) {
+    return rootInputReleaseCanExecuteBeforeStore(rootInput, cloneSites,
+                                                 lifecycle);
+  });
+}
+
+static bool getCloneableBackwardSlice(Value value, ArrayRef<StoreOp> stores,
+                                      const DFBLifecycleOps &lifecycle,
+                                      FusionTraceResult &backwardSlice) {
+  if (!areStoreBlocksPairwiseExclusive(stores)) {
+    return false;
+  }
+
+  backwardSlice = traceFusionToRoots(value);
+  if (backwardSlice.failureReason != TraceFailureReason::Success ||
+      backwardSlice.opsInOrder.empty()) {
+    return false;
+  }
+  // TODO(#686): Add explicit exclusions here if a producer recognized by
+  // `traceFusionToRoots` has a concrete clone-safety issue.
+  if (!sliceExternalUsesAreStores(value, backwardSlice, stores)) {
+    return false;
+  }
+  if (!rootInputsLiveAtStoreSites(backwardSlice, stores, lifecycle)) {
+    return false;
+  }
+
+  Operation *producerScope = value.getDefiningOp()->getParentOp();
+  return llvm::none_of(stores, [&](StoreOp storeOp) {
+    return hasLoopBetween(producerScope, storeOp);
+  });
+}
+
+static MultiBlockStorePlan
+buildMultiBlockStorePlan(Value value, SmallVector<StoreOp> stores,
+                         const DFBLifecycleOps &lifecycle) {
+  MultiBlockStorePlan plan;
+  plan.value = value;
+  plan.storesOutsideDefiningBlock = std::move(stores);
+  plan.directStores = getDirectStores(value);
+
+  FusionTraceResult backwardSlice;
+  if (getCloneableBackwardSlice(value, plan.storesOutsideDefiningBlock,
+                                lifecycle, backwardSlice)) {
+    plan.action = MultiBlockStoreAction::CloneBackwardSlice;
+    plan.backwardSlice = std::move(backwardSlice);
+  }
+  return plan;
+}
+
+static SmallVector<MultiBlockStorePlan, 4>
+collectMultiBlockStorePlans(func::FuncOp funcOp) {
+  SmallVector<MultiBlockStorePlan, 4> plans;
+  DFBLifecycleOps lifecycle = collectDFBLifecycleOps(funcOp);
+  funcOp.walk([&](Operation *op) {
+    for (Value result : op->getResults()) {
+      if (!isa<RankedTensorType>(result.getType()) || getAttachedCB(result)) {
+        continue;
+      }
+      SmallVector<StoreOp> stores = getStoresOutsideDefiningBlock(result);
+      if (stores.empty()) {
+        continue;
+      }
+      plans.push_back(
+          buildMultiBlockStorePlan(result, std::move(stores), lifecycle));
+    }
+  });
+  return plans;
+}
+
+static Value
+cloneBackwardSliceForStoreBlock(Value value,
+                                const FusionTraceResult &backwardSlice,
+                                ArrayRef<StoreOp> stores, OpBuilder &builder) {
+  assert(!stores.empty() && "cloneBackwardSliceForStoreBlock requires stores");
+  OpBuilder::InsertionGuard guard(builder);
+
+  StoreOp firstStore = stores.front();
+  for (StoreOp storeOp : stores.drop_front()) {
+    assert(storeOp->getBlock() == firstStore->getBlock() &&
+           "stores must be grouped by block");
+    if (storeOp->isBeforeInBlock(firstStore)) {
+      firstStore = storeOp;
+    }
+  }
+  builder.setInsertionPoint(firstStore);
+
+  IRMapping mapping;
+  for (Value rootInput : backwardSlice.rootInputs) {
+    mapping.map(rootInput, rootInput);
+  }
+
+  for (Operation *op : backwardSlice.opsInOrder) {
+    builder.clone(*op, mapping);
+  }
+  return mapping.lookup(value);
+}
+
+static void
+eraseUnusedBackwardSliceOps(const FusionTraceResult &backwardSlice) {
+  for (Operation *op : llvm::reverse(backwardSlice.opsInOrder)) {
+    if (op->use_empty()) {
+      op->erase();
+    }
+  }
+}
+
+static void cloneStores(Value value, ArrayRef<StoreOp> stores,
+                        const FusionTraceResult &backwardSlice,
+                        OpBuilder &builder) {
+  // Plans use cloning only when the root DFB slots are not explicitly released
+  // before the cloned use sites.
+  for (StoreBlockGroup group : groupStoresByBlock(stores)) {
+    Value replacement = cloneBackwardSliceForStoreBlock(value, backwardSlice,
+                                                        group.stores, builder);
+    for (StoreOp storeOp : group.stores) {
+      storeOp->setOperand(0, replacement);
+    }
+  }
+  eraseUnusedBackwardSliceOps(backwardSlice);
+}
 
 static bool materializedValueDominates(Value materialized,
                                        Operation *consumerOp,
@@ -111,6 +475,125 @@ getOrCreateResultPlan(ComputeMaterializationPlan &plan, unsigned resultIndex) {
   }
   plan.results.push_back({resultIndex, {}});
   return plan.results.back();
+}
+
+static void addMaterializationUse(
+    Value operand, Operation *consumer, unsigned operandIndex,
+    SmallVectorImpl<ComputeMaterializationPlan> &computePlans,
+    SmallVectorImpl<ConsumerUse> &standaloneTensorUses) {
+  // Compute results are materialized by rebuilding the producer once, even when
+  // several results or consumers require DFB-attached values.
+  if (std::optional<ComputeResult> computeResult = getComputeResult(operand)) {
+    ComputeMaterializationPlan &computePlan =
+        getOrCreateComputePlan(computePlans, computeResult->producer);
+    ResultMaterializationPlan &resultPlan =
+        getOrCreateResultPlan(computePlan, computeResult->resultIndex);
+    resultPlan.uses.push_back({consumer, operandIndex});
+    return;
+  }
+
+  standaloneTensorUses.push_back({consumer, operandIndex});
+}
+
+static LogicalResult
+verifyCompilerDFBEnabledForPlans(ArrayRef<MultiBlockStorePlan> plans,
+                                 bool enableCompilerDFBs) {
+  if (enableCompilerDFBs) {
+    return success();
+  }
+
+  for (const MultiBlockStorePlan &plan : plans) {
+    if (plan.action == MultiBlockStoreAction::CloneBackwardSlice) {
+      continue;
+    }
+
+    Operation *definingOp = plan.value.getDefiningOp();
+    definingOp->emitOpError()
+        << "result is stored from a different block and cannot be "
+           "cloned into mutually exclusive store blocks; enable compiler DFBs "
+           "or store the intermediate to a user-declared DFB before the "
+           "control-flow split";
+    return failure();
+  }
+  return success();
+}
+
+static LogicalResult applyMultiBlockStorePlans(
+    ArrayRef<MultiBlockStorePlan> plans, bool enableCompilerDFBs,
+    OpBuilder &builder,
+    SmallVectorImpl<ComputeMaterializationPlan> &computePlans,
+    SmallVectorImpl<ConsumerUse> &standaloneTensorUses) {
+  if (failed(verifyCompilerDFBEnabledForPlans(plans, enableCompilerDFBs))) {
+    return failure();
+  }
+
+  for (const MultiBlockStorePlan &plan : plans) {
+    if (plan.action == MultiBlockStoreAction::CloneBackwardSlice) {
+      cloneStores(plan.value, plan.storesOutsideDefiningBlock,
+                  plan.backwardSlice, builder);
+      continue;
+    }
+
+    assert(enableCompilerDFBs &&
+           "DFB materialization plans require compiler DFBs");
+
+    // All direct stores read the private DFB, including same-block stores.
+    // Otherwise convert-ttl-to-compute can schedule the producer compute after
+    // the wait that reads this materialized value.
+    for (StoreOp storeOp : plan.directStores) {
+      addMaterializationUse(plan.value, storeOp.getOperation(), 0, computePlans,
+                            standaloneTensorUses);
+    }
+  }
+  return success();
+}
+
+static LogicalResult
+verifyCompilerDFBInputs(ArrayRef<DFBInputOpInterface> candidates) {
+  for (DFBInputOpInterface dfbInputOp : candidates) {
+    Operation *op = dfbInputOp.getOperation();
+    auto requiredIndices = dfbInputOp.getDFBInputOperandIndices();
+
+    for (unsigned operandIndex : requiredIndices) {
+      Value operand = op->getOperand(operandIndex);
+      if (getAttachedCB(operand)) {
+        continue;
+      }
+      op->emitOpError("operand #")
+          << operandIndex
+          << " requires a DFB-attached value but compiler-allocated DFBs "
+             "are disabled (--no-ttl-compiler-dfbs); either enable compiler "
+             "DFBs or store the intermediate to a user-declared DFB before "
+             "this operation";
+      return failure();
+    }
+  }
+  return success();
+}
+
+// A tensor block argument stored from multiple blocks has no producer slice to
+// clone and no defining op to materialize.
+static LogicalResult diagnoseUnsupportedBlockArgStores(func::FuncOp funcOp) {
+  Block *entryBlock = &funcOp.getBody().front();
+  WalkResult walk = funcOp.walk([&](Block *block) {
+    if (block == entryBlock) {
+      return WalkResult::advance();
+    }
+
+    for (BlockArgument arg : block->getArguments()) {
+      if (!isa<RankedTensorType>(arg.getType()) || getAttachedCB(arg) ||
+          distinctStoreBlockCount(arg) < 2) {
+        continue;
+      }
+      block->getParentOp()->emitOpError()
+          << "carries a tensor block argument stored from multiple "
+             "control-flow blocks, which is not supported; store the value to "
+             "a user-declared DFB before the control-flow split";
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return failure(walk.wasInterrupted());
 }
 
 // Non-mutating: validates one result and captures its type and source DFB. Bind
@@ -362,37 +845,39 @@ struct TTLInsertIntermediateDFBsPass
   void runOnOperation() override {
     auto funcOp = getOperation();
 
+    if (failed(diagnoseUnsupportedBlockArgStores(funcOp))) {
+      signalPassFailure();
+      return;
+    }
+
     SmallVector<DFBInputOpInterface> candidates;
     funcOp.walk([&](DFBInputOpInterface op) { candidates.push_back(op); });
 
-    // When compiler DFBs are disabled, verify that no operations require
-    // them and emit an actionable error if any do.
-    if (!enable) {
-      for (DFBInputOpInterface dfbInputOp : candidates) {
-        Operation *op = dfbInputOp.getOperation();
-        auto requiredIndices = dfbInputOp.getDFBInputOperandIndices();
-
-        for (unsigned idx : requiredIndices) {
-          Value operand = op->getOperand(idx);
-          if (getAttachedCB(operand)) {
-            continue;
-          }
-          op->emitOpError("operand #")
-              << idx
-              << " requires a DFB-attached value but compiler-allocated DFBs "
-                 "are disabled (--no-ttl-compiler-dfbs); either enable "
-                 "compiler DFBs or store the intermediate to a user-declared "
-                 "DFB before this operation";
-          signalPassFailure();
-          return;
-        }
-      }
-      return;
-    }
+    // Snapshot all multi-block store decisions before rewriting. Clone
+    // rewrites can erase the original backward slice after redirecting stores.
+    SmallVector<MultiBlockStorePlan, 4> multiBlockStorePlans =
+        collectMultiBlockStorePlans(funcOp);
 
     OpBuilder builder(funcOp.getContext());
     SmallVector<ComputeMaterializationPlan> computePlans;
     SmallVector<ConsumerUse> standaloneTensorUses;
+
+    if (failed(applyMultiBlockStorePlans(multiBlockStorePlans, enable, builder,
+                                         computePlans,
+                                         standaloneTensorUses))) {
+      signalPassFailure();
+      return;
+    }
+
+    // When compiler DFBs are disabled, verify that no operations require them.
+    // Cloneable values stored from multiple blocks have already been rewritten
+    // because they allocate no compiler DFB.
+    if (!enable) {
+      if (failed(verifyCompilerDFBInputs(candidates))) {
+        signalPassFailure();
+      }
+      return;
+    }
 
     // Elementwise values that depend on a released producer DFB must be stored
     // before the pop, because later consumers cannot legally reread that DFB
@@ -423,20 +908,8 @@ struct TTLInsertIntermediateDFBsPass
           continue;
         }
 
-        // Compute results are materialized by rebuilding the producer once,
-        // even when several results or consumers require DFB-attached values.
-        if (std::optional<ComputeResult> computeResult =
-                getComputeResult(operand)) {
-          ComputeMaterializationPlan &computePlan =
-              getOrCreateComputePlan(computePlans, computeResult->producer);
-          ResultMaterializationPlan &resultPlan =
-              getOrCreateResultPlan(computePlan, computeResult->resultIndex);
-          resultPlan.uses.push_back({op, idx});
-          continue;
-        }
-
-        // Other tensor producers use standalone reserve/store/wait/attach.
-        standaloneTensorUses.push_back({op, idx});
+        addMaterializationUse(operand, op, idx, computePlans,
+                              standaloneTensorUses);
       }
     }
 

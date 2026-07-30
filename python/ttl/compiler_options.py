@@ -88,7 +88,7 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         dest="compiler_dfbs",
         action=argparse.BooleanOptionalAction,
-        help="Insert compiler-allocated intermediate DFBs for fused computations (default: enabled).",
+        help="Insert compiler-allocated intermediate DFBs when materialization is required (default: enabled).",
     )
     p.add_argument(
         "--ttl-reuse-user-dfbs",
