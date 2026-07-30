@@ -1697,8 +1697,7 @@ PipeGraph::build(ModuleOp mod, ValueOriginAnalysis &analysis,
   analysisState.selectedRecordControlOps.insert(
       foreachLoweringInfo.controlOps.begin(),
       foreachLoweringInfo.controlOps.end());
-  analysisState.selectedRecordIfThenDomains =
-      foreachLoweringInfo.ifThenDomains;
+  analysisState.selectedRecordIfThenDomains = foreachLoweringInfo.ifThenDomains;
   if (failed(collectLaunchNodeDomains(mod, analysisState))) {
     return failure();
   }

@@ -700,8 +700,8 @@ public:
         rewriter, loc, arith::CmpIPredicate::eq, currentY, sourceCore.y);
     Value receiverIsSource =
         arith::AndIOp::create(rewriter, loc, xMatches, yMatches);
-    auto localPublish = scf::IfOp::create(
-        rewriter, loc, receiverIsSource, /*withElseRegion=*/true);
+    auto localPublish = scf::IfOp::create(rewriter, loc, receiverIsSource,
+                                          /*withElseRegion=*/true);
     {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(&localPublish.getThenRegion().front());
@@ -716,8 +716,8 @@ public:
   void emitLocalReceiverAddressPublish(Value senderTableAddress,
                                        Value publishedAddress) {
     auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
-    Value tablePtr = ttk::CastToL1PtrOp::create(
-        rewriter, loc, l1PtrTy, senderTableAddress);
+    Value tablePtr =
+        ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, senderTableAddress);
     Value zero = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
     ttk::StoreToL1Op::create(rewriter, loc, publishedAddress, tablePtr, zero);
   }

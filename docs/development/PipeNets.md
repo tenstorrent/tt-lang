@@ -53,6 +53,38 @@ only within the static producer domain for that DFB index). The
 verifier reads the IR and emits diagnostics; it does not rewrite the
 program.
 
+## PipeNet callbacks and generated code
+
+A PipeNet record is one `ttl.Pipe` declaration: one source coordinate and one
+point-to-point destination or collective destination range. The Python
+frontend represents `net.if_src(callback)` and `net.if_dst(callback)` with one
+`ttl.pipenet_foreach_src` or `ttl.pipenet_foreach_dst` region. The region owns
+the ordered record list and contains one copy of the callback body. At runtime,
+each launch node executes that body once for every record in which the node has
+the requested source or destination role. Multiple matching records execute in
+PipeNet construction order.
+
+TTKernel conversion uses two representations:
+
+- For one to four records, conversion emits one static pipe and one coordinate
+  condition per record. This avoids loop and table-lookup overhead for small
+  PipeNets.
+- For five or more records, conversion emits one loop over immutable coordinate
+  and resource tables. `ttl.select_pipe_src` or `ttl.select_pipe_dst`
+  represents the current record inside the loop. This table-driven form emits
+  one callback and transfer protocol body; only the immutable table contents
+  grow with the number of records.
+
+The immutable tables become C++ template arguments and static compile-time
+storage; they do not create kernel stack arrays. Pipe graph analysis still
+creates one transfer node per record. Resource planning stores each record's
+address-table entry and synchronization indices in record order, and the loop
+index selects the corresponding values. The table-driven form currently uses
+receiver-published destination addresses and receiver-post synchronization.
+Computed receiver addresses and capacity counters are supported only when each
+record has its own `ttl.pipe_transfer.*` operations because the associated
+proof and runtime state belong to one transfer.
+
 ## Semantics
 
 Lowering selects the destination-address mechanism independently from
@@ -1140,11 +1172,13 @@ records the final local and global totals in
 Receiver completion is cumulative across repeated executions of a transfer
 node: sends increment its shared counter, and waits consume it with
 monotonically increasing `wait_min` thresholds instead of resetting it per
-execution. Pipe lowering initializes a separate kernel-local wait-progress
-value to 0 for each completion counter used by a receiver function. Transfers
-that share a physical receiver never share a completion counter. Address-table
-storage and synchronization counters are allocated independently, so address
-publication does not consume local semaphore ids.
+execution. Each receive post increments a kernel-local sequence for its
+completion counter and returns that sequence in the transfer token. The wait
+uses the token directly, so storing or reordering tokens does not associate a
+wait with a later post. Transfers that share a physical receiver never share a
+completion counter. Address-table storage and synchronization counters are
+allocated independently, so address publication does not consume local
+semaphore ids.
 
 Here, `wait_min` means the receiver waits until the semaphore value is at
 least the expected count; it does not require the semaphore to equal that
@@ -1175,11 +1209,11 @@ feature in the current TT-Metal NoC architecture.
 `ttl.wait` on the transfer handle returned by `ttl.copy(pipe, dst_blk)`
 expands to `ttl.pipe_transfer.wait`. TTKernel lowering resolves the defining
 receive post to its transfer node and waits on that transfer's cumulative
-completion state. The receiver keeps a local runtime counter and waits until
-the receiver-completion counter is at least that local count, so repeated
-point-to-point and collective receives in loops advance across iterations
-without reusing stale completion state. Completion of another transfer in the
-same PipeNet cannot satisfy this wait.
+completion state. The receive post returns its next sequence value in the
+transfer token. The wait blocks until the receiver-completion counter reaches
+that value, so repeated point-to-point and collective receives in loops do not
+reuse stale completion state. Completion of another transfer in the same
+PipeNet cannot satisfy this wait.
 
 `RA/RP` fixes the multi-iteration write-pointer issue by making
 the receiver-owned DFB address authoritative. It also makes same-thread
@@ -1227,7 +1261,6 @@ owns the payload-write barrier and receiver-completion signal.
 
 ```mlir
 %transfer = ttl.pipe_transfer.create %pipe {
-  expectedReceivers = 1 : i64,
   kind = #ttl.pipe_transfer_kind<point_to_point>
 } : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
     -> !ttl.pipe_transfer
@@ -1254,10 +1287,9 @@ ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
 
 For `RA/RP`, TTKernel lowering emits receiver-side code that publishes
 the destination DFB address to the source-node address table and
-increments the sender-ready counter. Each receiver keeps a local count of how
-many payload completions it has consumed for this transfer node. On each
-receive wait, lowering increments that local count and waits until the
-transfer-specific receiver-completion counter is at least that value.
+increments the sender-ready counter. Each receive post also increments a local
+sequence for its completion counter and returns that value in the transfer
+token. A receive wait uses the token as the required completion count.
 The TTKernel snippets below show only pipe-protocol operations and omit
 type annotations.
 
@@ -1265,11 +1297,11 @@ This example uses three synchronization values:
 
 | Name | Storage | Initial value | Updated by | Read by |
 | --- | --- | --- | --- | --- |
-| Sender-ready counter | Source-node local semaphore or GlobalSemaphore-backed SRAM address. | 0 | Each receiver post increments it by 1 after publishing the destination DFB address. The sender resets it to 0 after waiting for all expected posts. | Sender send waits for it to equal `%expected_receivers`. |
-| Receiver-completion counter | Destination-node local semaphore or GlobalSemaphore-backed SRAM address assigned to this transfer node. | 0 | Each dynamic execution of that transfer's send increments it by 1 after the payload write barrier. | The matching receiver wait uses `semaphore_wait_min` against its next expected cumulative count. |
-| Receiver wait-progress counter | Kernel-local `memref<1xi32>` on the receiver, shared only by waits that use the same completion counter. | 0 at function entry | Each matching `ttl.pipe_transfer.wait` increments it by 1 before waiting. | The receiver uses it as the threshold for `semaphore_wait_min`. |
+| Sender-ready counter | Source-node semaphore at `%ready_sem_index`. If local semaphore ids are exhausted, this is a GlobalSemaphore-backed SRAM address passed as a common runtime argument. | 0 | Each receiver post increments it by 1 after publishing the destination DFB address. The sender resets it to 0 after waiting for all expected posts. | Sender send waits for it to equal `%expected_receivers`. |
+| Receiver-completion counter | Destination-node local semaphore or GlobalSemaphore-backed SRAM address, assigned to one transfer node at this receiver. | 0 | Each dynamic execution of that transfer's send increments it by 1 after the payload write barrier. | The matching receiver wait uses `semaphore_wait_min` with the sequence stored in its transfer token. |
+| Receiver post-sequence counter | Kernel-local `memref<1xi32>` for a static completion counter. A table-driven receiver uses one `memref<Nxi32>`, where `N` is the number of distinct completion counters referenced by the records. | 0 at function entry | Each matching `ttl.pipe_transfer.post` increments the element for its completion counter. | The post returns the new value in its transfer token; the corresponding wait uses that token as its completion threshold. |
 
-The sender-ready counter is a reusable pre-send rendezvous counter. The
+The sender-ready counter is a reusable pre-send synchronization counter. The
 receiver-completion counter is cumulative across executions of its transfer
 node for the whole kernel execution and is not reset by pipe lowering.
 
@@ -1286,15 +1318,15 @@ ttkernel.noc_async_write_barrier(%noc)
 %ready_noc_addr = ttkernel.get_noc_addr(%src_x, %src_y, %ready_addr, %noc)
 ttkernel.noc_semaphore_inc(%ready_noc_addr, %one, %noc)
 
-// Advance the receiver's local cumulative wait threshold.
-%old_count = memref.load %recv_counter[%zero]
-%new_count = arith.addi %old_count, %one_i32 : i32
-memref.store %new_count, %recv_counter[%zero]
+// Assign this post's completion sequence before its token can be reordered.
+%old_sequence = memref.load %post_sequence[%zero]
+%token_sequence = arith.addi %old_sequence, %one_i32 : i32
+memref.store %token_sequence, %post_sequence[%zero]
 
-// Read the receiver-completion counter until it is at least %new_count.
+// A later wait consumes the sequence returned by this post.
 %completion_addr = ttkernel.get_semaphore(%completion_sem_index)
 %completion_ptr = ttkernel.reinterpret_cast<tt_l1_ptr uint32_t*>(%completion_addr)
-ttkernel.experimental::semaphore_wait_min(%completion_ptr, %new_count)
+ttkernel.experimental::semaphore_wait_min(%completion_ptr, %token_sequence)
 ```
 
 The sender-side code waits until the receiver has published the address,

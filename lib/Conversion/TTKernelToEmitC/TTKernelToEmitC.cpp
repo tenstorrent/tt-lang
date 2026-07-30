@@ -556,6 +556,22 @@ public:
 } // namespace
 
 namespace {
+class TTKernelCastToL1AddrOpToEmitCOpRewriter
+    : public OpConversionPattern<ttkernel::CastToL1AddrOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ttkernel::CastToL1AddrOp op,
+                  ttkernel::CastToL1AddrOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    // The type converter maps every accepted operand to the same i32 address
+    // representation, so the normalization requires no emitted C++ operation.
+    rewriter.replaceOp(op, adaptor.getAddr());
+    return success();
+  }
+};
+
 class TTKernelCastToL1PtrOpToEmitCOpRewriter
     : public OpConversionPattern<ttkernel::CastToL1PtrOp> {
 
@@ -2847,6 +2863,7 @@ public:
         TTKernelToEmitCGetMyLogicalMeshPositionOpRewriter,
         TTKernelMacroOpToEmitCOpRewriter<ttkernel::MemZerosBaseOp>,
         TTKernelMacroOpToEmitCOpRewriter<ttkernel::MemZerosSizeOp>,
+        TTKernelCastToL1AddrOpToEmitCOpRewriter,
         TTKernelCastToL1PtrOpToEmitCOpRewriter,
         TTKernelToEmitCOpaqueRewriter<ttkernel::GetSemaphoreOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::NocSemaphoreSetOp>,

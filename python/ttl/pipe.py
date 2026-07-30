@@ -5,8 +5,8 @@
 """Pipe operations for core-to-core data transfer.
 
 This module provides Python classes for the Pipe and PipeNet abstractions
-as defined in the TT-Lang specification. The MLIR ops (ttl.create_pipe,
-ttl.if_src, ttl.if_dst) are implemented and lower to TTKernel.
+as defined in the TT-Lang specification. PipeNet callbacks lower through
+`ttl.pipenet_foreach_src` and `ttl.pipenet_foreach_dst` to TTKernel.
 
 PipeNet supports the spec's callback API:
     net.if_src(lambda pipe: ttl.copy(blk, pipe))
@@ -241,8 +241,8 @@ class PipeNet:
         # before AST emission (see _build_operation_pipenets).
         self.pipe_net_id = 0
         self.pipes = pipes
-        # Capture the user's call site so `ttl.create_pipe` ops can carry
-        # the declaration location.
+        # Preserve the user's call site so diagnostics identify the PipeNet
+        # declaration instead of frontend implementation code.
         self._source_file: Optional[str] = None
         self._source_line: Optional[int] = None
         try:
@@ -256,16 +256,16 @@ class PipeNet:
         """
         Execute callback for each pipe where current core is source.
 
-        This method is compiled specially by the TTL compiler. At compile time,
-        it iterates over all pipes and emits conditional blocks for each pipe
-        where the current core matches the source coordinates.
+        The frontend compiles the callback once into a PipeNet region. The
+        generated kernel executes it once per matching PipeNet record, in
+        construction order.
 
         Args:
             callback: Function taking SrcPipeIdentity, called for matching pipes
 
         Note:
             This method should only be called inside a @ttl.datamovement thread.
-            The callback is invoked at compile time, not runtime.
+            The callback body is compiled once and executes on the device.
         """
         # This is a marker method. The actual implementation is in ttl_ast.py
         # which detects calls to this method and handles them specially.
@@ -278,16 +278,16 @@ class PipeNet:
         """
         Execute callback for each pipe where current core is destination.
 
-        This method is compiled specially by the TTL compiler. At compile time,
-        it iterates over all pipes and emits conditional blocks for each pipe
-        where the current core falls within the destination range.
+        The frontend compiles the callback once into a PipeNet region. The
+        generated kernel executes it once per matching PipeNet record, in
+        construction order.
 
         Args:
             callback: Function taking DstPipeIdentity, called for matching pipes
 
         Note:
             This method should only be called inside a @ttl.datamovement thread.
-            The callback is invoked at compile time, not runtime.
+            The callback body is compiled once and executes on the device.
         """
         # This is a marker method. The actual implementation is in ttl_ast.py
         # which detects calls to this method and handles them specially.

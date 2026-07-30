@@ -891,9 +891,8 @@ lowerPipeNetForeachDst(PipeNetForeachDstOp op, RewriterBase &rewriter,
   rewriter.setInsertionPoint(op);
   PipeNetRecordsAttr records = op.getRecords();
   if (shouldLowerPipeNetForeachDirect(records)) {
-    return lowerPipeNetForeachDirect(
-        op, rewriter, PipeRole::Destination, foreachLoweringInfo,
-        buildRecordDstMatch);
+    return lowerPipeNetForeachDirect(op, rewriter, PipeRole::Destination,
+                                     foreachLoweringInfo, buildRecordDstMatch);
   }
 
   PipeForeachTables tables = buildPipeForeachTables(rewriter, records);
@@ -965,9 +964,9 @@ lowerPipeNetForeachOps(ModuleOp mod,
       }
       continue;
     }
-    if (failed(lowerPipeNetForeachDst(
-            mlir::cast<PipeNetForeachDstOp>(foreachOp), rewriter,
-            foreachLoweringInfo))) {
+    if (failed(
+            lowerPipeNetForeachDst(mlir::cast<PipeNetForeachDstOp>(foreachOp),
+                                   rewriter, foreachLoweringInfo))) {
       return failure();
     }
   }
