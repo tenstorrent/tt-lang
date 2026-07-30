@@ -47,6 +47,94 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
+// A receiver on the source core publishes its address with a local L1 store;
+// an inline NoC write does not update the issuing core's SRAM.
+module attributes {ttl.launch_grid = array<i64: 1, 1>} {
+  // COMPUTED-LABEL: func.func @loopback_point_to_point
+  // COMPUTED-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
+  // COMPUTED-NOT: ttkernel.store_to_l1
+  // COMPUTED-NOT: ttkernel.noc_inline_dw_write
+  // COMPUTED: ttkernel.noc_async_write
+  // COMPUTED: return
+
+  // PUBLISHED-LABEL: func.func @loopback_point_to_point
+  // PUBLISHED-NOT: ttl.pipe_computed_address_dfb_indices
+  // PUBLISHED: ttkernel.store_to_l1
+  // PUBLISHED-NOT: ttkernel.noc_inline_dw_write
+  // PUBLISHED: ttkernel.noc_async_write
+  // PUBLISHED: return
+  func.func @loopback_point_to_point()
+      attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+    %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %recv_dst = ttl.cb_reserve %dst_cb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %recv = ttl.copy %pipe, %recv_dst
+        : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+           tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.transfer_handle
+    %send = ttl.copy %src_cb, %pipe
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+           !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send : !ttl.transfer_handle<write>
+    ttl.wait %recv : !ttl.transfer_handle
+    ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    func.return
+  }
+}
+
+// -----
+
+// A loopback collective stores locally on the source receiver and uses an
+// inline NoC write for every remote receiver.
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  // COMPUTED-LABEL: func.func @loopback_collective
+  // COMPUTED-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
+  // COMPUTED-NOT: ttkernel.store_to_l1
+  // COMPUTED-NOT: ttkernel.noc_inline_dw_write
+  // COMPUTED: ttkernel.noc_async_write_multicast_loopback_src
+  // COMPUTED: return
+
+  // PUBLISHED-LABEL: func.func @loopback_collective
+  // PUBLISHED-NOT: ttl.pipe_computed_address_dfb_indices
+  // PUBLISHED-DAG: ttkernel.store_to_l1
+  // PUBLISHED-DAG: ttkernel.noc_inline_dw_write
+  // PUBLISHED: ttkernel.noc_async_write_multicast_loopback_src
+  // PUBLISHED: return
+  func.func @loopback_collective()
+      attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+    %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(1, 0) net 0>
+    %recv_dst = ttl.cb_reserve %dst_cb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %recv = ttl.copy %pipe, %recv_dst
+        : (!ttl.pipe<src(0, 0) dst(0, 0) to(1, 0) net 0>,
+           tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.transfer_handle
+    %send = ttl.copy %src_cb, %pipe
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+           !ttl.pipe<src(0, 0) dst(0, 0) to(1, 0) net 0>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send : !ttl.transfer_handle<write>
+    ttl.wait %recv : !ttl.transfer_handle
+    ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    func.return
+  }
+}
+
+// -----
+
 // Disabling computed addresses keeps receiver-published multicast available
 // when every receiver DFB is proven to advance identically.
 module attributes {ttl.launch_grid = array<i64: 3, 1>} {

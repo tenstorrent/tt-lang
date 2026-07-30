@@ -81,6 +81,39 @@ def _make_point_to_point_ops(recv_block_count):
     )
 
 
+@ttl.operation(grid=(2, 1), options="--no-ttl-pipe-computed-addresses")
+def loopback_collective_published_address(inp, out):
+    pipe = ttl.Pipe(src=(0, 0), dst=(slice(0, 2), 0))
+    send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=1)
+    recv_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=1)
+
+    @ttl.compute()
+    def compute():
+        pass
+
+    @ttl.datamovement()
+    def dm():
+        node_x, _node_y = ttl.node(dims=2)
+
+        recv_block = recv_dfb.reserve()
+        receive = ttl.copy(pipe, recv_block)
+
+        if node_x == 0:
+            with send_dfb.reserve() as send_block:
+                ttl.copy(inp[0, 0], send_block).wait()
+            with send_dfb.wait() as send_block:
+                ttl.copy(send_block, pipe).wait()
+
+        receive.wait()
+        if node_x == 0:
+            ttl.copy(recv_block, out[0, 0]).wait()
+        recv_block.push()
+
+    @ttl.datamovement()
+    def dm_brisc():
+        pass
+
+
 @ttl.operation(grid=(3, 1))
 def transfer_specific_completion(inp, out):
     """Verify one transfer's completion cannot satisfy another transfer's wait."""
@@ -166,6 +199,19 @@ def test_pipe_protocols_match(device, dtype, recv_block_count):
         assert_pcc(protocol_result, inp_torch.float())
     for protocol_result in protocol_results[1:]:
         assert_pcc(protocol_results[0], protocol_result)
+
+
+# A collective source that is also a receiver must publish its address through
+# local L1 while the remote receiver publishes through the NoC.
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+def test_loopback_collective_published_address(device, dtype):
+    inp_torch = torch.randn(TILE, TILE, dtype=dtype)
+    output = to_dram(torch.zeros_like(inp_torch), device)
+
+    loopback_collective_published_address(to_dram(inp_torch, device), output)
+    ttnn.synchronize_device(device)
+
+    assert_pcc(inp_torch.float(), ttnn.to_torch(output).float())
 
 
 # The first same-PipeNet transfer must not satisfy the delayed multicast's
