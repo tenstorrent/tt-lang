@@ -266,6 +266,12 @@ struct LaunchNodeDomainAnalysisOptions {
   std::function<void(PipeNetScopeOp, const LaunchNodeDomain &, Operation *,
                      const PipeNetScopeLaunchNodeDomains &)>
       pipeNetScopeCallback;
+
+  /// Return the launch nodes that may enter a generated region across all of
+  /// its dynamic invocations. Returning `std::nullopt` uses the region
+  /// operation's standard control-flow semantics.
+  std::function<std::optional<LaunchNodeDomain>(Operation *, unsigned)>
+      computeRegionDomain;
 };
 
 /// Forward dataflow analysis that propagates launch-node domains through

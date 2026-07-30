@@ -28,6 +28,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <variant>
 
 namespace mlir::tt {
 class ValueOriginAnalysis;
@@ -38,6 +39,16 @@ namespace mlir::tt::ttl {
 class PipeTransferIndex;
 
 struct PipeGraphAnalysisState;
+
+/// Compiler-generated control flow that implements PipeNet foreach callbacks.
+///
+/// `controlOps` identifies loops and conditions that select records rather than
+/// independent user control. `ifThenDomains` records the launch nodes that may
+/// enter each generated `scf.if` across all record-loop iterations.
+struct PipeForeachLoweringInfo {
+  SmallVector<Operation *> controlOps;
+  llvm::DenseMap<Operation *, LaunchNodeDomain> ifThenDomains;
+};
 
 //===----------------------------------------------------------------------===//
 // Pipe Graph: Tracks static transfers, receiver endpoints, physical receiver
@@ -294,44 +305,63 @@ inline PipeType getPipeTypeFromRecord(MLIRContext *context,
                        record.getDstEndX(), record.getDstEndY(), pipeNetId);
 }
 
-struct PipeReference {
-  enum class Kind {
-    Static,
-    SelectedSrc,
-    SelectedDst,
-  };
+/// A pipe operand represented either by a static type or by one selected
+/// source or destination record.
+class PipeReference {
+public:
+  PipeReference() = delete;
+  explicit PipeReference(PipeType pipeType) : value(pipeType) {
+    assert(pipeType && "static pipe reference requires a pipe type");
+  }
+  explicit PipeReference(SelectPipeSrcOp selectedSrc) : value(selectedSrc) {
+    assert(selectedSrc && "selected source reference requires an operation");
+  }
+  explicit PipeReference(SelectPipeDstOp selectedDst) : value(selectedDst) {
+    assert(selectedDst &&
+           "selected destination reference requires an operation");
+  }
 
-  Kind kind = Kind::Static;
-  PipeType pipeType;
-  SelectPipeSrcOp selectedSrc;
-  SelectPipeDstOp selectedDst;
-
-  bool isStatic() const { return kind == Kind::Static; }
+  bool isStatic() const { return std::holds_alternative<PipeType>(value); }
   bool isSelected() const { return !isStatic(); }
-  bool isSelectedSrc() const { return kind == Kind::SelectedSrc; }
-  bool isSelectedDst() const { return kind == Kind::SelectedDst; }
+  bool isSelectedSrc() const {
+    return std::holds_alternative<SelectPipeSrcOp>(value);
+  }
+  bool isSelectedDst() const {
+    return std::holds_alternative<SelectPipeDstOp>(value);
+  }
+
+  PipeType getStaticPipeType() const {
+    assert(isStatic() && "selected pipe reference has no static pipe type");
+    return std::get<PipeType>(value);
+  }
+
+  SelectPipeSrcOp getSelectedSrc() const {
+    assert(isSelectedSrc() && "pipe reference is not a selected source");
+    return std::get<SelectPipeSrcOp>(value);
+  }
+
+  SelectPipeDstOp getSelectedDst() const {
+    assert(isSelectedDst() && "pipe reference is not a selected destination");
+    return std::get<SelectPipeDstOp>(value);
+  }
 
   PipeNetRecordsAttr getRecords() const {
     assert(isSelected() && "static pipe has no records attr");
-    if (selectedSrc) {
-      SelectPipeSrcOp op = selectedSrc;
-      return op.getRecords();
+    if (isSelectedSrc()) {
+      return getSelectedSrc().getRecords();
     }
-    SelectPipeDstOp op = selectedDst;
-    return op.getRecords();
+    return getSelectedDst().getRecords();
   }
 
   int64_t getPipeNetId() const {
-    if (pipeType) {
-      return pipeType.getPipeNetId();
+    if (isStatic()) {
+      return getStaticPipeType().getPipeNetId();
     }
-    if (selectedSrc) {
-      SelectPipeSrcOp op = selectedSrc;
-      return op.getRecords().getPipeNetId();
-    }
-    SelectPipeDstOp op = selectedDst;
-    return op.getRecords().getPipeNetId();
+    return getRecords().getPipeNetId();
   }
+
+private:
+  std::variant<PipeType, SelectPipeSrcOp, SelectPipeDstOp> value;
 };
 
 /// Return a static or selected pipe reference after tracing only unrealized
@@ -357,7 +387,12 @@ public:
   /// Returns failure if validation detects an error (e.g., gather DFB too
   /// small).
   static FailureOr<PipeGraph> build(ModuleOp mod, ValueOriginAnalysis &analysis,
-                                    const PipeTransferIndex &transferIndex);
+  /// `foreachLoweringInfo` identifies compiler-generated record control so it
+  /// is not interpreted as independent user control.
+  static FailureOr<PipeGraph> build(
+      ModuleOp mod, ValueOriginAnalysis &analysis,
+      const PipeTransferIndex &transferIndex,
+      const PipeForeachLoweringInfo &foreachLoweringInfo);
 
   /// Check if any pipes were found.
   bool hasPipes() const { return !pipeTransferNodes.empty(); }

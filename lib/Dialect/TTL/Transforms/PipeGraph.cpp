@@ -36,6 +36,8 @@ struct PipeGraphAnalysisState : LaunchNodeDomainState {
   llvm::DenseMap<Operation *, LaunchNodeDomain> operationLaunchDomains;
   llvm::DenseMap<Operation *, std::unique_ptr<DFBAcquireReleaseIndex>>
       dfbLifecycles;
+  llvm::SmallPtrSet<Operation *, 16> pipeRecordControlOps;
+  llvm::DenseMap<Operation *, LaunchNodeDomain> pipeRecordIfThenDomains;
 };
 
 namespace {
@@ -54,6 +56,18 @@ static LogicalResult collectLaunchNodeDomains(ModuleOp mod,
   options.operationCallback = [&](Operation *op, const LaunchNodeDomain &domain,
                                   Operation * /*unanalyzableOp*/) {
     state.operationLaunchDomains[op] = domain;
+  };
+  options.computeRegionDomain =
+      [&](Operation *op,
+          unsigned regionNumber) -> std::optional<LaunchNodeDomain> {
+    if (regionNumber != 0) {
+      return std::nullopt;
+    }
+    auto domainIt = state.pipeRecordIfThenDomains.find(op);
+    if (domainIt == state.pipeRecordIfThenDomains.end()) {
+      return std::nullopt;
+    }
+    return domainIt->second;
   };
   solver.load<LaunchNodeDomainAnalysis>(state, options);
   if (failed(solver.initializeAndRun(mod))) {
@@ -253,6 +267,13 @@ getReceiverControlContext(Operation *op, PipeReceiverCoord receiver,
       }
       context.function = function;
       break;
+    }
+    // The graph already represents each PipeNet record separately. Ignoring
+    // generated foreach control preserves the callback's order relative to
+    // operations before and after it.
+    if (analysisState.pipeRecordControlOps.contains(parent)) {
+      current = parent;
+      continue;
     }
     if (parent && isTransparentReceiverScope(parent, receiver, analysisState)) {
       current = parent;
@@ -511,6 +532,31 @@ static int64_t advanceReceiverSlot(int64_t slot, int64_t stride,
                                      : slot + stride;
 }
 
+static bool
+reserveRepeatsForPipeRecord(Operation *reserveOp, Operation *postOp,
+                            const PipeGraphAnalysisState &analysisState) {
+  // The nearest generated control selects this pipe record. An enclosing
+  // callback may contain a reserve shared by every nested record.
+  Operation *recordControl = nullptr;
+  for (Operation *parent = postOp->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    if (analysisState.pipeRecordControlOps.contains(parent)) {
+      recordControl = parent;
+      break;
+    }
+  }
+  if (!recordControl) {
+    return false;
+  }
+  for (Operation *parent = reserveOp->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    if (parent == recordControl) {
+      return true;
+    }
+  }
+  return false;
+}
+
 LogicalResult PipeGraph::assignReceiverAddressSequences(
     ModuleOp mod, ValueOriginAnalysis &analysis,
     const PipeTransferIndex &transferIndex,
@@ -616,10 +662,12 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
         auto &slotByReserve = slotByReceiverReserve[receiverDFB];
         auto reserveIt = slotByReserve.find(receiverReserveOp.getOperation());
         int64_t slot = 0;
-        // The table-driven reserve executes once for every matching record.
-        // Reusing its first slot would assign overlapping records to the same
-        // live DFB storage.
-        if ((*pipeRef).isSelected() || reserveIt == slotByReserve.end()) {
+        bool reserveRepeatsPerRecord = reserveRepeatsForPipeRecord(
+            receiverReserveOp, postOp, analysisState);
+        // A reserve inside this callback advances once per matching record. A
+        // reserve outside this callback retains one slot even when an outer
+        // PipeNet callback contains both operations.
+        if (reserveRepeatsPerRecord || reserveIt == slotByReserve.end()) {
           FailureOr<int64_t> assignedSlot = assignReceiverPhysicalSlot(
               pipeKey, receiverInfo, slotStateByReceiverDFB[receiverDFB]);
           if (failed(assignedSlot)) {
@@ -627,7 +675,7 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
             return;
           }
           slot = *assignedSlot;
-          if ((*pipeRef).isStatic()) {
+          if (!reserveRepeatsPerRecord) {
             slotByReserve[receiverReserveOp.getOperation()] = slot;
           }
         } else {
@@ -1427,16 +1475,13 @@ PipeGraph::rebuildEndpointGraph(ModuleOp mod, ValueOriginAnalysis &analysis,
 FailureOr<PipeReference> getPipeReference(Operation *op, Value pipe) {
   Value tracedPipe = traceUnrealizedCasts(pipe);
   if (auto pipeType = mlir::dyn_cast<PipeType>(tracedPipe.getType())) {
-    return PipeReference{PipeReference::Kind::Static, pipeType,
-                         SelectPipeSrcOp(), SelectPipeDstOp()};
+    return PipeReference(pipeType);
   }
   if (auto selectedSrc = tracedPipe.getDefiningOp<SelectPipeSrcOp>()) {
-    return PipeReference{PipeReference::Kind::SelectedSrc, PipeType(),
-                         selectedSrc, SelectPipeDstOp()};
+    return PipeReference(selectedSrc);
   }
   if (auto selectedDst = tracedPipe.getDefiningOp<SelectPipeDstOp>()) {
-    return PipeReference{PipeReference::Kind::SelectedDst, PipeType(),
-                         SelectPipeSrcOp(), selectedDst};
+    return PipeReference(selectedDst);
   }
   return op->emitError() << "selected pipe operand must be a direct result of "
                             "ttl.select_pipe_src or ttl.select_pipe_dst";
@@ -1452,7 +1497,7 @@ getPipeReferenceForProtocolOp(Operation *protocolOp,
 SmallVector<PipeType> getPipeTypesFromReference(MLIRContext *context,
                                                 const PipeReference &ref) {
   if (ref.isStatic()) {
-    return SmallVector<PipeType>{ref.pipeType};
+    return SmallVector<PipeType>{ref.getStaticPipeType()};
   }
   SmallVector<PipeType> pipeTypes;
   PipeNetRecordsAttr records = ref.getRecords();
@@ -1652,7 +1697,8 @@ LogicalResult PipeGraph::addPipeReceiver(Operation *op,
 
 FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod,
                                       ValueOriginAnalysis &analysis,
-                                      const PipeTransferIndex &transferIndex) {
+                                      const PipeTransferIndex &transferIndex,
+                 const PipeForeachLoweringInfo &foreachLoweringInfo) {
   PipeGraph graph;
 
   WalkResult walkResult = mod.walk([&](PipeTransferPostOp postOp) {
@@ -1669,6 +1715,10 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod,
   }
 
   PipeGraphAnalysisState analysisState;
+  analysisState.pipeRecordControlOps.insert(
+      foreachLoweringInfo.controlOps.begin(),
+      foreachLoweringInfo.controlOps.end());
+  analysisState.pipeRecordIfThenDomains = foreachLoweringInfo.ifThenDomains;
   if (failed(collectLaunchNodeDomains(mod, analysisState))) {
     return failure();
   }
