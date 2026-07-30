@@ -64,10 +64,8 @@ from .ttl_api import (
     _detect_memory_space_from_tensor,
     _lower_program_to_kernel,
     _make_operation_wrapper,
-    _require_device,
     _run_thread_compiler,
     _validate_operation_options,
-    get_min_remaining_l1_for_device,
     pykernel_gen,
 )
 
@@ -540,6 +538,7 @@ def _compile_atom(
     dst_full_sync_en: Optional[bool],
     target_arch: Optional[str],
     compiler_options: CompilerOptions,
+    l1_budget_override: int,
 ):
 
     # The shared operation wrapper supplies values in signature order.
@@ -560,14 +559,6 @@ def _compile_atom(
     )
     if first_tensor is not None:
         memory_space = _detect_memory_space_from_tensor(first_tensor, memory_space)
-
-    has_ttnn_tensors = any(is_ttnn_tensor(v) for v in bound_arguments.values())
-    l1_budget_override = compiler_options.l1_budget
-    if l1_budget_override == 0 and has_ttnn_tensors:
-        try:
-            l1_budget_override = get_min_remaining_l1_for_device(_require_device(args))
-        except ValueError:
-            pass
 
     _reset_cb_counter()
     _set_current_grid(grid)
@@ -667,6 +658,7 @@ def _compile_unified_operation(
     program_hash,
     target_arch,
     compiler_options,
+    l1_budget_override,
 ):
     return _compile_atom(
         spec,
@@ -681,6 +673,7 @@ def _compile_unified_operation(
         dst_full_sync_en=decorator_options["dst_full_sync_en"],
         target_arch=target_arch,
         compiler_options=compiler_options,
+        l1_budget_override=l1_budget_override,
     )
 
 
