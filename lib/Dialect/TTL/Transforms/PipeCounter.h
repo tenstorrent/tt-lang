@@ -48,6 +48,23 @@ struct PipeCounterAllocationCounts {
   void include(PipeCounterInfo counter);
 };
 
+/// Allocates local semaphore ids first, then GlobalSemaphore storage.
+class PipeCounterAllocator {
+public:
+  explicit PipeCounterAllocator(PipeCounterAllocationCounts counts = {});
+
+  /// Allocate the next counter using the shared local-then-global policy.
+  PipeCounterInfo allocate();
+
+  /// Allocate a counter that must use GlobalSemaphore storage.
+  PipeCounterInfo allocateGlobal();
+
+  PipeCounterAllocationCounts getCounts() const { return counts; }
+
+private:
+  PipeCounterAllocationCounts counts;
+};
+
 } // namespace mlir::tt::ttl
 
 #endif // TTLANG_DIALECT_TTL_TRANSFORMS_PIPECOUNTER_H
