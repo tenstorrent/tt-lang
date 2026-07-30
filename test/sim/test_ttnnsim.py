@@ -184,6 +184,12 @@ def test_tensor_get_set_item_and_repr():
     a = torch.arange(12, dtype=torch.float32).reshape(3, 4)
     assert "shape=(3, 4)" in repr(ttnn.Tensor(a))
 
+    # A padded tensor names both shapes: the logical one it reports as .shape,
+    # and the stored extent, which is the shape of the data printed alongside.
+    padded_repr = repr(ttnn.from_torch(torch.rand(3, 5), layout=ttnn.TILE_LAYOUT))
+    assert "shape=(3, 5)" in padded_repr
+    assert "padded_shape=(32, 32)" in padded_repr
+
     # Tile-coordinate get/set require a tile-aligned tensor.
     raw = torch.zeros(64, 64, dtype=torch.float32)
     tw = ttnn.Tensor(raw)
@@ -209,6 +215,50 @@ def test_to_torch_type_errors():
     bogus: Any = Foo()
     with pytest.raises(TypeError):
         ttnn.to_torch(bogus)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        torch.rand(3, 5),
+        torch.rand(64, 32),
+        torch.rand(40),
+        torch.rand(()),
+    ],
+    ids=["unaligned", "aligned", "vector", "scalar"],
+)
+def test_to_torch_un_pads_so_from_torch_round_trips(source: torch.Tensor):
+    """ttnn.to_torch returns the logical tensor, whatever the storage looks like.
+
+    ttnn's to_torch un-pads, which makes from_torch / to_torch an identity for
+    any shape.  Without that a caller comparing against a torch reference has to
+    know the tensor's storage: a logical (3, 5) comes back as (32, 32) with
+    zeros around the data, and a vector comes back with a rank it never had.
+    """
+    tensor = ttnn.from_torch(source, layout=ttnn.TILE_LAYOUT)
+    result = ttnn.to_torch(tensor)
+
+    assert result.shape == source.shape, "to_torch reported the padded storage"
+    assert torch.equal(result, source)
+
+
+def test_to_torch_spellings_split_the_logical_data_from_the_store():
+    """The method is the store; the module-level function is what ttnn returns.
+
+    The simulator needs both: a kernel addresses padded tiles, so ``.to_torch()``
+    hands back the store (the same storage, which is how tests fill a tensor in
+    place), while ``ttnn.to_torch()`` is the ttnn-facing conversion.  Pinning
+    them together here keeps the difference deliberate.
+    """
+    tensor = ttnn.from_torch(torch.rand(3, 5), layout=ttnn.TILE_LAYOUT)
+
+    assert tensor.to_torch().shape == tensor.padded_shape == (32, 32)
+    assert ttnn.to_torch(tensor).shape == tensor.shape == (3, 5)
+    # The logical data is the top-left of the store, so the two agree there.
+    assert torch.equal(ttnn.to_torch(tensor), tensor.to_torch()[0:3, 0:5])
+
+    tensor.to_torch().fill_(4.0)
+    assert torch.all(ttnn.to_torch(tensor) == 4.0), "the store is not the tensor's own"
 
 
 # ---- Tile-based indexing tests ----
@@ -423,11 +473,13 @@ def test_tensor_binary_ops_reject_torch_tensor():
 #     alignment.
 #   - Under ``TILE_LAYOUT`` the shim would store such inputs padded to
 #     ``(32, 32)`` (per ``_pad_to_tile_alignment`` in ``ttnnsim.py``).  ``.shape``
-#     would still read back as written, since it is the logical shape, but
-#     ``to_torch()`` returns the padded store, so the value comparisons here
-#     would need to slice the result rather than compare it whole.  We therefore
-#     pass ``layout=ttnn.ROW_MAJOR_LAYOUT`` explicitly, which stores the input
-#     as-is.
+#     would still read back as written, since it is the logical shape, but the
+#     comparisons below read the store through ``Tensor.to_torch()``, which keeps
+#     the padding, and would have to slice it rather than compare it whole.  We
+#     therefore pass ``layout=ttnn.ROW_MAJOR_LAYOUT`` explicitly, which stores
+#     the input as-is.  (The module-level ``ttnn.to_torch()`` un-pads, so it is
+#     the other way to compare a padded result; these tests predate it and read
+#     the store directly.)
 #   - Coverage for the tile-layout shim behaviour (auto-pad + arithmetic on
 #     padded inputs) lives in the ``test_tile_layout_shim_*`` tests further
 #     down, alongside the ``_pad_to_tile_alignment`` tests.

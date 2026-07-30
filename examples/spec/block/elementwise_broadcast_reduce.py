@@ -281,9 +281,10 @@ try:
     y_golden = torch.sqrt(a2 + b2 + c2[None, :] + d2).sum(dim=1)  # (N,)
     z_golden = torch.sqrt(a2 - b2 - c2[None, :] - d2).sum(dim=0)  # (M,)
 
-    # The logical vectors live in column 0 of y and row 0 of z.
+    # to_torch un-pads, so each result comes back at its declared shape: y as
+    # the (N, 1) column it was created as, which the goldens compare as (N,).
     y_result = ttnn.to_torch(y_t)[:, 0]
-    z_result = ttnn.to_torch(z_t)[0, :]
+    z_result = ttnn.to_torch(z_t)
 
     assert torch.allclose(
         y_golden, y_result, rtol=1e-2, atol=1e-2

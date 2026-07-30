@@ -1364,8 +1364,10 @@ class Tensor:
     caller supplied, and :attr:`padded_shape` is the storage it is held in,
     tile-aligned and at least rank 2 under TILE_LAYOUT.  They differ whenever a
     logical shape is not tile-aligned -- a `(3, 5)` tensor is stored as
-    `(32, 32)` -- and the backing tensor, which :meth:`to_torch` returns, is the
-    padded one, with the logical data in its top-left.
+    `(32, 32)` -- with the logical data in the top-left of the store.  The two
+    spellings of ``to_torch`` differ accordingly: :meth:`to_torch` hands back
+    the padded store, which is what a kernel addresses, while the module-level
+    :func:`ttnn.to_torch` un-pads to :attr:`shape`, as ttnn's does.
     """
 
     def __init__(
@@ -1714,25 +1716,31 @@ class Tensor:
         layout_str = (
             f", layout={self._layout.name}" if self._layout != TILE_LAYOUT else ""
         )
-        return f"Tensor(shape={tuple(self._tensor.shape)}{layout_str}, data={repr(self._tensor)})"
+        # ``shape`` is the logical one, so that it reads as the tensor's shape
+        # does everywhere else; the stored extent is named separately when it
+        # differs, since the data shown is the padded store.
+        padded = tuple(self._tensor.shape)
+        padded_str = f", padded_shape={padded}" if padded != self._logical_shape else ""
+        return (
+            f"Tensor(shape={self._logical_shape}{padded_str}{layout_str}, "
+            f"data={repr(self._tensor)})"
+        )
 
     def to_torch(self) -> torch.Tensor:
         """Return the raw backing torch tensor.
 
         Returns the underlying storage tensor directly so that callers can
         perform in-place operations.  The backing dtype may differ from the
-        declared dtype when float32 promotion is active.  Use the module-level
-        ttnn.to_torch() function when the result needs to match the declared
-        dtype (e.g. for comparison with native torch tensors).
+        declared dtype when float32 promotion is active.
 
         This is the padded store, so its shape is :attr:`padded_shape` and not
-        :attr:`shape`: where real ttnn's ``to_torch`` un-pads, this deliberately
-        exposes the padding, because the padding is what a kernel sees and what
-        the simulator's tile-level accesses address.  The logical data occupies
-        the top-left of the store, so slicing each dimension to its :attr:`shape`
-        extent recovers it (see ``_pad_to_tile_alignment``, and
-        ``_logical_view``, which does exactly that); every tensor the simulator
-        produces keeps the logical data in that position.
+        :attr:`shape`, and it deliberately exposes the padding, because the
+        padding is what a kernel sees and what the simulator's tile-level
+        accesses address.  The logical data occupies the top-left of the store
+        (see ``_pad_to_tile_alignment``), so this is not what ttnn's
+        ``to_torch`` returns: use the module-level ``ttnn.to_torch()`` for that,
+        which un-pads as ttnn does and is what a caller comparing against a
+        torch reference wants.
         """
         return self._tensor
 
@@ -2143,7 +2151,11 @@ def _logical_view(tensor: Tensor) -> torch.Tensor:
     logical data in the top-left of the stored tiles and zero-fills the rest, so
     the data is recovered by slicing each stored dimension back to its logical
     extent and dropping the unit dimensions a low-rank input was lifted through.
-    Returns a view, not a copy.
+    This is what :func:`to_torch` hands out, and what a wrapped ttnn op computes
+    on.  The slice keeps the store's memory, so this is a view for every shape
+    the simulator stores, but callers should treat it as read-only: a shape
+    torch cannot view would come back as a copy, and ttnn's ``to_torch`` returns
+    a host copy in any case.  Use :meth:`Tensor.to_torch` to mutate a tensor.
     """
     logical = tuple(tensor.shape)
     stored = tensor.to_torch()
@@ -2208,15 +2220,19 @@ def to_torch(
 ) -> torch.Tensor:
     """Convert a simulator Tensor or torch.Tensor to torch.Tensor.
 
-    Returns the raw backing tensor.  When float32 promotion is active the
-    backing dtype is float32 regardless of the declared dtype; external torch
-    code also uses float32 (torch.bfloat16 is rebound to torch.float32 at
-    module load time), so comparison with natively created tensors works
-    without an additional cast.
+    Returns the tensor's logical data, as ttnn's ``to_torch`` does: the result
+    has the tensor's :attr:`~Tensor.shape` and not its
+    :attr:`~Tensor.padded_shape`, so tile padding never reaches a caller
+    comparing against a torch reference, and ``from_torch`` followed by
+    ``to_torch`` round-trips a tensor of any shape.  Use
+    :meth:`Tensor.to_torch` for the padded store instead, which is what a kernel
+    addresses; it is the same storage rather than a host copy, so it is also the
+    way to mutate a tensor in place.
 
-    Unlike real ttnn's ``to_torch``, which un-pads, the tensor returned here
-    keeps its tile padding, so its shape is the tensor's ``padded_shape`` and the
-    logical data sits in the top-left of it.  See :meth:`Tensor.to_torch`.
+    When float32 promotion is active the dtype is float32 regardless of the
+    declared dtype; external torch code also uses float32 (torch.bfloat16 is
+    rebound to torch.float32 at module load time), so comparison with natively
+    created tensors works without an additional cast.
 
     Args:
         t: Tensor to convert.
@@ -2227,7 +2243,7 @@ def to_torch(
     """
     match t:
         case Tensor() as tw:
-            return tw.to_torch()
+            return _logical_view(tw)
         case torch.Tensor() as tt:
             return tt
         case _:
