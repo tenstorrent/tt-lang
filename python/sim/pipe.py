@@ -18,6 +18,7 @@ from typing import (
     Iterable,
     List,
     Optional,
+    Sequence,
     Set,
     Tuple,
     TypeVar,
@@ -343,18 +344,18 @@ def _pipe_to_pipe_use(pipe: "Pipe") -> PipeUse:
     )
 
 
-def build_pipenets(pipe_nets: List["PipeNet"]) -> OperationPipeNets:
+def build_pipenets(pipe_nets: Sequence["AnyPipeNet"]) -> OperationPipeNets:
     """Build an OperationPipeNets from a list of unique PipeNet objects.
 
     Order is preserved: the first PipeNet in `pipe_nets` becomes id 0.
     """
     graph = OperationPipeNets()
     for net in pipe_nets:
-        graph.add_pipe_net(_pipe_to_pipe_use(p) for p in net._pipes)
+        graph.add_pipe_net(_pipe_to_pipe_use(p) for p in net.pipes)
     return graph
 
 
-def discover_pipe_nets_from_closures(*funcs: Any) -> List["PipeNet"]:
+def discover_pipe_nets_from_closures(*funcs: Any) -> List["AnyPipeNet"]:
     """Walk function closures and return unique PipeNet objects in encounter order.
 
     PipeNets are deduplicated by `id()` so the same captured net referenced
@@ -370,7 +371,7 @@ def discover_pipe_nets_from_closures(*funcs: Any) -> List["PipeNet"]:
     return list(seen.values())
 
 
-def _iter_pipe_nets_in_func(func: Any) -> Iterable["PipeNet"]:
+def _iter_pipe_nets_in_func(func: Any) -> Iterable["AnyPipeNet"]:
     # The Python module is an enclosing scope of an @ttl.operation
     # function, so module-scope PipeNets satisfy the spec's "enclosing
     # scope" rule and must be discovered. Walks closure cells and the
@@ -408,7 +409,19 @@ class PipeNet(Generic[DstT]):
         graph = OperationPipeNets()
         graph.add_pipe_net(_pipe_to_pipe_use(p) for p in pipes)
         graph.validate()
-        self._pipes = pipes
+        # Stored as a tuple so the validated pipe set cannot be mutated
+        # afterwards, and so `pipes` can hand it out without copying.
+        self._pipes: Tuple[Pipe[DstT], ...] = tuple(pipes)
+
+    @property
+    def pipes(self) -> Tuple["Pipe[DstT]", ...]:
+        """The pipes this net was built from, in declaration order.
+
+        The compiler's PipeNet exposes the same name as a plain attribute
+        (`ttl/pipe.py`), so code that reads a net's pipes works against either
+        one; the simulator hands out a tuple rather than the caller's list.
+        """
+        return self._pipes
 
     def is_active(self) -> bool:
         """Return True if the current node participates in any pipe (source or destination).
@@ -470,3 +483,10 @@ class PipeNet(Generic[DstT]):
             if node_in_dst_range(pipe.dst):
                 identity = DstPipeIdentity(pipe)
                 cond_fun(identity)
+
+
+# Union of PipeNet instances with different destination types. A net is
+# point-to-point or collective (OperationPipeNets rejects mixing the two
+# within one net), but an operation may declare both kinds, so code holding
+# several nets is not generic over one destination type.
+AnyPipeNet = Union[PipeNet[NodeCoord], PipeNet[NodeRange]]

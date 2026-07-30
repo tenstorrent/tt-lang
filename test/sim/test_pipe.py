@@ -11,6 +11,8 @@ import pytest
 from test_utils import make_zeros_tensor
 
 from sim import ttl, ttnn
+from sim.pipe import build_pipenets
+from sim.program import _dedupe_pipe_nets  # type: ignore[reportPrivateUsage]
 
 
 class TestPipeNetPredicates:
@@ -143,6 +145,71 @@ class TestPipeNetPredicates:
 
         x = make_zeros_tensor(32, 32)
         op(x, x)
+
+
+class TestPipeNetDiscovery:
+    """Aggregation of the PipeNets the per-node body runs construct.
+
+    The body is re-run once per node, so each run builds its own PipeNet
+    object; these pin what the operation's graph ends up holding.
+    """
+
+    def test_identical_per_node_nets_collapse_to_one(self) -> None:
+        """A node-independent net is one net, however many nodes built it."""
+        nets = [ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(1, 0))]) for _ in range(4)]
+
+        graph = build_pipenets(_dedupe_pipe_nets(nets))
+
+        assert [net.id for net in graph.pipe_nets] == [0]
+        assert graph.active_node_set((2, 2)) == {0, 2}
+
+    def test_node_dependent_nets_are_kept_and_their_active_sets_union(self) -> None:
+        """A net whose pipes vary per node contributes one entry per version.
+
+        Each version is validated on its own and every one is active, so a node
+        runs when it participates in any of them.
+        """
+        nets = [ttl.PipeNet([ttl.Pipe(src=(0, n), dst=(1, n))]) for n in range(2)]
+
+        graph = build_pipenets(_dedupe_pipe_nets(nets))
+        graph.validate()
+
+        assert [net.id for net in graph.pipe_nets] == [0, 1]
+        assert graph.active_node_set((2, 2)) == {0, 1, 2, 3}
+
+    def test_point_to_point_and_collective_nets_coexist(self) -> None:
+        """An operation may declare both kinds of net.
+
+        Point-to-point and collective pipes may not be mixed within one net,
+        but nothing stops an operation from declaring one net of each.
+        """
+        p2p = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(1, 0))])
+        collective = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(slice(0, 2), 1))])
+
+        graph = build_pipenets(_dedupe_pipe_nets([p2p, collective]))
+        graph.validate()
+
+        assert [net.id for net in graph.pipe_nets] == [0, 1]
+        assert graph.active_node_set((2, 2)) == {0, 1, 2, 3}
+
+    def test_pipes_are_readable_without_reaching_for_the_private_field(self) -> None:
+        """PipeNet.pipes reports the declared pipes, as the compiler's does."""
+        pipes = [ttl.Pipe(src=(0, 0), dst=(1, 0)), ttl.Pipe(src=(0, 1), dst=(1, 1))]
+
+        assert ttl.PipeNet(pipes).pipes == tuple(pipes)
+
+    def test_objects_that_are_not_pipe_nets_do_not_merge(self) -> None:
+        """Dedupe keys on the pipes themselves, with nothing to default to.
+
+        A defaulted lookup would give every net-less object the same key and
+        collapse unrelated entries into one without complaint.
+        """
+
+        class NotANet:
+            pass
+
+        with pytest.raises(AttributeError):
+            _dedupe_pipe_nets([NotANet(), NotANet()])  # type: ignore[list-item]
 
 
 class TestPipeDstSliceValidation:

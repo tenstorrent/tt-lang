@@ -11,7 +11,7 @@ functions across multiple nodes with proper context binding and error handling.
 import copy
 import types
 import warnings
-from typing import Any, Callable, Dict, List
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Sequence
 
 from greenlet import getcurrent
 
@@ -34,6 +34,10 @@ from .analysis import (
 from .diagnostics import print_diagnostic_error
 from .debug_print import ttlang_print
 from .trace import TRACE, trace
+
+if TYPE_CHECKING:
+    # Imported for typing only; .pipe is imported at call time in run_operation.
+    from .pipe import AnyPipeNet
 
 
 def set_max_dfbs(limit: int) -> None:
@@ -283,7 +287,7 @@ def _operation_node_context(
     return node_context
 
 
-def _dedupe_pipe_nets(nets: List[Any]) -> List[Any]:
+def _dedupe_pipe_nets(nets: Sequence["AnyPipeNet"]) -> List["AnyPipeNet"]:
     """Deduplicate discovered PipeNets by content.
 
     Re-running the operation body per node creates a fresh PipeNet object each
@@ -291,11 +295,22 @@ def _dedupe_pipe_nets(nets: List[Any]) -> List[Any]:
     compiler) they are identical and collapse to one.  Deduping by the tuple of
     pipes (Pipe is a frozen, hashable dataclass) keeps one entry per distinct
     pipe set and preserves encounter order.
+
+    Per-node re-execution is also what makes a node-dependent pipe set
+    expressible: a src or dst derived from ``ttl.node()`` yields a different net
+    per node, and every distinct one is kept, node 0's first.  The operation's
+    graph then holds all of them, so each is validated on its own and the
+    active-node set is the union across them -- a node runs when it participates
+    in any node's version of the net, not only in its own.  The compiler
+    evaluates the body once and sees a single net, so such a body has no
+    counterpart there.
     """
     seen: set[Any] = set()
-    unique: List[Any] = []
+    unique: List["AnyPipeNet"] = []
     for net in nets:
-        key = tuple(getattr(net, "_pipes", ()))
+        # net.pipes, not a defaulted getattr: keying on a missing attribute
+        # would quietly merge unrelated objects into a single entry.
+        key = net.pipes
         if key not in seen:
             seen.add(key)
             unique.append(net)
@@ -326,7 +341,7 @@ def run_operation(
     ctx = get_context()
 
     node_plans: Dict[int, tuple[Dict[str, Any], tuple[BindableTemplate, ...]]] = {}
-    all_nets: List[Any] = []
+    all_nets: List["AnyPipeNet"] = []
     node_footprints: Dict[int, tuple[int, int]] = {}
 
     body_globals = getattr(body, "__globals__", {})
