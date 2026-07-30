@@ -265,8 +265,14 @@ buildLoopCandidate(scf::ForOp loop,
     reason = "candidate loop requires constant bounds and unit step";
     return failure();
   }
+  std::optional<int64_t> transferCount =
+      llvm::checkedSub(*upperBound, *lowerBound);
+  if (!transferCount) {
+    reason = "candidate loop transfer count exceeds int64_t";
+    return failure();
+  }
   candidate.lowerBound = *lowerBound;
-  candidate.transferCount = *upperBound - *lowerBound;
+  candidate.transferCount = *transferCount;
 
   llvm::DenseSet<Operation *> seenCreates;
   for (const PipeTransferNode *transfer : transfers) {
