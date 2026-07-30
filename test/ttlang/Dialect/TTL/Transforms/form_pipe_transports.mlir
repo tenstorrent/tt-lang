@@ -12,17 +12,18 @@
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports,convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=false})' | FileCheck %s --check-prefix=GROUPED-WRITE
 
 #layout = #ttl.layout<
-    shape = [32, 320], element_type = !ttcore.tile<32x32, f32>,
+    shape = [32, 384], element_type = !ttcore.tile<32x32, f32>,
     buffer = dram, grid = [1, 1], memory = interleaved>
 
-// Automatic selection uses two destination groups so the sender and receiver
-// can overlap without allocating more receiver storage than required.
+// Automatic selection handles a nonzero lower bound and uses two destination
+// groups so the sender and receiver can overlap.
 // AUTO-LABEL: func.func @point_to_point
 // AUTO: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 5}
 // AUTO-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 10}
-// AUTO: %[[PIPE:.*]] = ttl.create_pipe
+// AUTO-DAG: %[[LOWER:.*]] = arith.constant 2 : index
+// AUTO-DAG: %[[PIPE:.*]] = ttl.create_pipe
 // AUTO: %[[GROUPED_TRANSFER:.*]] = ttl.pipe_transfer.create %[[PIPE]] {block_span = 5 : i64, destination_group_depth = 2 : i64
-// AUTO: scf.for %[[ITER:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
+// AUTO: scf.for %[[ITER:.*]] = %[[LOWER]] to %{{.*}} step %{{.*}} {
 // AUTO: %[[SEND_RESERVE:.*]] = ttl.cb_reserve %[[SRC]] {num_tiles = 5 : i64}
 // AUTO-SAME: -> tensor<1x5x!ttcore.tile<32x32, f32>>
 // AUTO: ttl.tensor_slice %{{.*}}[%{{.*}}, %[[ITER]]]
@@ -86,7 +87,7 @@
 // RESIDUAL-SAME: ttl.pipe_sram_scratch_bytes = 32800 : i64
 // RESIDUAL-LABEL: func.func @point_to_point
 // RESIDUAL-DAG: %[[ADDRESS_TABLE_OFFSET:.*]] = arith.constant 32768 : i32
-// RESIDUAL: scf.for %{{.*}} = %[[ZERO:.*]] to %[[GROUP_END:.*]] step %[[GROUP_STEP:.*]] {
+// RESIDUAL: scf.for %{{.*}} = %[[LOWER:.*]] to %[[GROUP_END:.*]] step %[[GROUP_STEP:.*]] {
 // RESIDUAL-NOT: ttkernel.cb_
 // RESIDUAL: ttkernel.noc_async_atomic_barrier
 // RESIDUAL: %[[SCRATCH_BASE:.*]] = ttkernel.get_common_arg_val(%c2)
@@ -158,8 +159,8 @@
 
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @point_to_point(
-      %input: tensor<1x10x!ttcore.tile<32x32, f32>, #layout>,
-      %output: tensor<1x10x!ttcore.tile<32x32, f32>, #layout>)
+      %input: tensor<1x12x!ttcore.tile<32x32, f32>, #layout>,
+      %output: tensor<1x12x!ttcore.tile<32x32, f32>, #layout>)
       attributes {ttl.base_cta_index = 2 : i32, ttl.crta_indices = [0, 1],
                   ttl.kernel_thread = #ttkernel.thread<noc>} {
     %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 5}
@@ -167,10 +168,11 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
     %dst_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     %c0 = arith.constant 0 : index
-    %c10_i64 = arith.constant 10 : i64
-    %c10 = arith.index_cast %c10_i64 : i64 to index
+    %c2 = arith.constant 2 : index
+    %c12_i64 = arith.constant 12 : i64
+    %c12 = arith.index_cast %c12_i64 : i64 to index
     %c1 = arith.constant 1 : index
-    scf.for %iter = %c0 to %c10 step %c1 {
+    scf.for %iter = %c2 to %c12 step %c1 {
       %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
           : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
       ttl.if_src %pipe
@@ -179,7 +181,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
             : <[1, 1], !ttcore.tile<32x32, f32>, 5>
             -> tensor<1x1x!ttcore.tile<32x32, f32>>
         %input_slice = ttl.tensor_slice %input[%c0, %iter]
-            : tensor<1x10x!ttcore.tile<32x32, f32>, #layout>
+            : tensor<1x12x!ttcore.tile<32x32, f32>, #layout>
             -> tensor<1x1x!ttcore.tile<32x32, f32>, #layout>
         %read = ttl.copy %input_slice, %src_dfb
             : (tensor<1x1x!ttcore.tile<32x32, f32>, #layout>,
@@ -215,7 +217,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
             : <[1, 1], !ttcore.tile<32x32, f32>, 1>
             -> tensor<1x1x!ttcore.tile<32x32, f32>>
         %output_slice = ttl.tensor_slice %output[%c0, %iter]
-            : tensor<1x10x!ttcore.tile<32x32, f32>, #layout>
+            : tensor<1x12x!ttcore.tile<32x32, f32>, #layout>
             -> tensor<1x1x!ttcore.tile<32x32, f32>, #layout>
         %write = ttl.copy %dst_dfb, %output_slice
             : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
