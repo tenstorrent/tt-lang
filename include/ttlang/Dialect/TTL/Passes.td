@@ -118,16 +118,19 @@ def TTLFormPipeTransports
     A grouped loop advances its induction variable by `R`, marks each
     `ttl.pipe_transfer.create` with `block_span = R`, and widens DFB lifecycle
     operations and contiguous tensor copies to `R` consecutive original DFB
-    blocks. The original DFB block shape remains unchanged. Source and receiver
-    block counts increase only when every SSA use belongs to the transport and
-    the resulting allocations fit the same L1 accounting used by
-    `ttl-validate-cb-budget`.
+    blocks. The original DFB block shape remains unchanged. The pass changes
+    DFB block counts only after proving that every SSA use belongs to the
+    transport. Later PipeTransport planning replaces each proven-private
+    grouped lifecycle with transport-owned scratch. Scalar residuals continue
+    to use the original DFB lifecycle.
 
     `group-size = 0` prefers a bounded schedule with at least two receiver
     groups, then minimizes completion groups, capacity waits, and L1 allocation
-    bytes. `group-size = 1` disables grouping. A larger value is an upper
-    bound; the pass selects a smaller group when required by the loop trip
-    count or L1 capacity. Ineligible loops retain scalar transfer IR.
+    bytes. Selection counts the widened intermediate DFB types and the required
+    transport scratch against the same L1 budget used by
+    `ttl-validate-cb-budget`. `group-size = 1` disables grouping. A larger value
+    is an upper bound; the pass selects a smaller group when required by the
+    loop trip count or L1 capacity. Ineligible loops retain scalar transfer IR.
   }];
 
   let options = [
