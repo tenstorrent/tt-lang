@@ -249,7 +249,9 @@ existing five-block DFB when `R=4` requires eight blocks. Selection evaluates
 every `R` within a finite upper bound derived from the L1 budget and the
 mandatory bytes per group. It does not use a binary search over `R`.
 Production Python and the registered C++ pipeline pass the same explicit or
-device-derived L1 budget to grouping and final DFB validation.
+device-derived L1 budget to grouping and final DFB validation. The effective
+budget is part of the operation cache key because it can change the selected
+group size and generated code.
 
 #### Pipeline placement and allocation
 

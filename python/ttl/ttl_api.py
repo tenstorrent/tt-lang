@@ -145,6 +145,7 @@ def _make_cache_key(
     dst_full_sync_en: Optional[bool],
     target_arch: Optional[str],
     compiler_options: CompilerOptions = CompilerOptions(),
+    l1_budget_override: int = 0,
 ) -> tuple:
     """Create cache key from tensor properties and runtime compute config parameters."""
     grid_key = tuple(resolved_grid)
@@ -166,6 +167,7 @@ def _make_cache_key(
         dst_full_sync_en,
         target_arch,
         compiler_options,
+        l1_budget_override,
     )
 
 
@@ -434,6 +436,18 @@ def _require_device(args):
         "  ttnn.to_device(tensor, device)\n"
         "  ttnn.from_torch(tensor, ..., device=device)"
     )
+
+
+def _resolve_l1_budget(args: tuple, compiler_options: CompilerOptions) -> int:
+    """Return the explicit or device-derived L1 compilation budget."""
+    if compiler_options.l1_budget != 0:
+        return compiler_options.l1_budget
+    if not any(is_ttnn_tensor(arg) for arg in args):
+        return 0
+    try:
+        return get_min_remaining_l1_for_device(_require_device(args))
+    except ValueError:
+        return 0
 
 
 def _detect_device_arch(device) -> Optional[str]:
@@ -1574,6 +1588,7 @@ def _compile_kernel(
     dst_full_sync_en: Optional[bool] = None,
     target_arch: Optional[str] = None,
     compiler_options: CompilerOptions = CompilerOptions(),
+    l1_budget_override: int = 0,
 ) -> Optional[CompiledTTNNKernel]:
     """
     Compile kernel function to MLIR and return CompiledTTNNKernel.
@@ -1593,6 +1608,7 @@ def _compile_kernel(
         dst_full_sync_en: Optional override for dst_full_sync_en
         target_arch: Optional TT device architecture for target-specific lowering
         compiler_options: Compiler pipeline options
+        l1_budget_override: Explicit or device-derived L1 allocation budget
 
     Returns:
         CompiledTTNNKernel ready for execution
@@ -1624,14 +1640,6 @@ def _compile_kernel(
                 first_ttnn_tensor, memory_space
             )
             print(f"[TTNN interop] Detected {memory_space} memory space")
-
-    l1_budget_override = compiler_options.l1_budget
-    if l1_budget_override == 0 and has_ttnn_tensors:
-        try:
-            device = _require_device(args)
-            l1_budget_override = get_min_remaining_l1_for_device(device)
-        except ValueError:
-            pass
 
     for idx, (param_name, arg) in enumerate(zip(f_params, compile_args)):
         register_tensor_name(arg, param_name, index=idx)
@@ -2123,6 +2131,7 @@ def _make_operation_wrapper(
             CompilerOptions.from_argv()
         )
         target_arch = _device_target_arch(runtime_args)
+        l1_budget_override = _resolve_l1_budget(runtime_args, compiler_options)
 
         cache_key = _make_cache_key(
             runtime_args,
@@ -2131,6 +2140,7 @@ def _make_operation_wrapper(
             dst_full_sync_en=dst_full_sync_en,
             target_arch=target_arch,
             compiler_options=compiler_options,
+            l1_budget_override=l1_budget_override,
         )
 
         compiled_kernel = cache.get(cache_key)
@@ -2142,6 +2152,7 @@ def _make_operation_wrapper(
                 hash((kernel_id, cache_key)),
                 target_arch,
                 compiler_options,
+                l1_budget_override,
             )
             if compiled_kernel is not None:
                 cache[cache_key] = compiled_kernel
@@ -2262,6 +2273,7 @@ def pykernel_gen(
             program_hash,
             target_arch,
             compiler_options,
+            l1_budget_override,
         ):
             compile_kwargs = runtime_kwargs
             if _prepare_call is not None:
@@ -2281,6 +2293,7 @@ def pykernel_gen(
                 dst_full_sync_en=dst_full_sync_en,
                 target_arch=target_arch,
                 compiler_options=compiler_options,
+                l1_budget_override=l1_budget_override,
             )
 
         return _make_operation_wrapper(
