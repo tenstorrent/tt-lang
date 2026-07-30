@@ -281,6 +281,18 @@ Completed for the four-device all-gather matmul demo:
   runs.
 - The 32-device Galaxy configuration remains pending.
 
+Completed for demo checklist item 1:
+
+- Added separate `full_direct.py` and `full_context.py` variants so the
+  baseline examples remain unchanged.
+- Added an N-sharded row-broadcast bias and validated the FP32 PyTorch golden
+  `A @ B + bias`.
+- The full direct and context-manager variants each ran on a `2x2` mesh with
+  the baseline tile configuration: PCC `0.999998`.
+- Gathered activation shards remained bit-exact in both runs.
+- Both runs reset all four devices first, used a 300-second timeout, and wrote
+  output through `tee /tmp/device_test.log`.
+
 Completed earlier during this refresh, before #734:
 
 - `docker exec -w /home/bnorris/tt/tt-lang4 bnorris-ird3-v1.1.7 bash -lc 'source build-docker/env/activate && cmake --build build-docker --target ttlang-opt'`
