@@ -121,6 +121,7 @@ def TTL_PipeNetRecordsAttr : TTL_Attr<"PipeNetRecords", "pipenet_records"> {
 
   let assemblyFormat = "`<` `net` $pipeNetId (`name` $pipeNetName^)? "
                        "`pipes` `[` $pipes `]` `>`";
+  let genVerifyDecl = 1;
 }
 
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSATTRS_TD
