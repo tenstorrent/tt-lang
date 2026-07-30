@@ -180,8 +180,7 @@ void PipeTransportStream::print(llvm::raw_ostream &os) const {
      << stringifySynchronizationProtocol(synchronizationProtocol)
      << " schedule=" << stringifySchedule(schedule)
      << " credit_completion=" << stringifyCreditCompletion(creditCompletion)
-     << " group=" << logicalTransfersPerGroup
-     << " residual=" << residualTransferCount << "\n";
+     << " group=" << logicalTransfersPerGroup << "\n";
   os << "PipeTransport:   source blocks=" << sourceStorage.blockCount
      << " block_span=" << sourceStorage.blocksPerTransfer
      << " stage_depth=" << sourceStorage.stageDepth
@@ -339,7 +338,6 @@ FailureOr<PipeTransportPlan> buildPipeTransportPlan(
                           ? PipeTransportSchedule::Scalar
                           : PipeTransportSchedule::Grouped;
     stream.logicalTransfersPerGroup = transferNode.blockSpan;
-    stream.residualTransferCount = 0;
     stream.sourceIterationDomain = getIterationDomain(sendOp.getOperation());
     stream.sourceStorage = PipeTransportSourceStorage{
         sourceDFBType.getBlockCount(), transferNode.blockSpan,
