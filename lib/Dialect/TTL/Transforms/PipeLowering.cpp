@@ -401,6 +401,75 @@ buildReceiverPublishedAddress(Value dst, Location loc,
       .getResult();
 }
 
+static void
+emitLocalReceiverAddressPublish(Location loc, Value tableAddress,
+                                Value publishedAddress,
+                                ConversionPatternRewriter &rewriter) {
+  auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
+  Value tablePtr =
+      ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, tableAddress);
+  Value zero = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
+  ttk::StoreToL1Op::create(rewriter, loc, publishedAddress, tablePtr, zero);
+}
+
+static void emitRemoteReceiverAddressPublish(
+    Location loc, Value sourceX, Value sourceY, Value tableAddress,
+    Value publishedAddress, Value nocVal, ConversionPatternRewriter &rewriter) {
+  auto byteEnableAll = arith::ConstantOp::create(
+      rewriter, loc, rewriter.getI8Type(), rewriter.getI8IntegerAttr(0xF));
+  ttk::NocInlineDwWriteOp::create(rewriter, loc, sourceX, sourceY, tableAddress,
+                                  publishedAddress, byteEnableAll, nocVal);
+}
+
+/// Publish locally when the receiver is the source because inline NoC writes do
+/// not update their issuing core's SRAM.
+static void emitReceiverAddressPublish(Location loc, PipeType pipeType,
+                                       Value sourceXTranslated,
+                                       Value sourceYTranslated,
+                                       Value tableAddress,
+                                       Value publishedAddress, Value nocVal,
+                                       ConversionPatternRewriter &rewriter) {
+  if (!pipeType.srcInDstRange()) {
+    emitRemoteReceiverAddressPublish(loc, sourceXTranslated, sourceYTranslated,
+                                     tableAddress, publishedAddress, nocVal,
+                                     rewriter);
+    return;
+  }
+  if (pipeType.hasSingleReceiver()) {
+    emitLocalReceiverAddressPublish(loc, tableAddress, publishedAddress,
+                                    rewriter);
+    return;
+  }
+
+  Value currentX =
+      ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
+  Value currentY =
+      ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
+  Value sourceX =
+      arith::ConstantIndexOp::create(rewriter, loc, pipeType.getSrcX());
+  Value sourceY =
+      arith::ConstantIndexOp::create(rewriter, loc, pipeType.getSrcY());
+  Value xMatches = arith::CmpIOp::create(
+      rewriter, loc, arith::CmpIPredicate::eq, currentX, sourceX);
+  Value yMatches = arith::CmpIOp::create(
+      rewriter, loc, arith::CmpIPredicate::eq, currentY, sourceY);
+  Value receiverIsSource =
+      arith::AndIOp::create(rewriter, loc, xMatches, yMatches);
+  auto localPublish = scf::IfOp::create(rewriter, loc, receiverIsSource,
+                                        /*withElseRegion=*/true);
+  {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(&localPublish.getThenRegion().front());
+    emitLocalReceiverAddressPublish(loc, tableAddress, publishedAddress,
+                                    rewriter);
+    rewriter.setInsertionPointToStart(&localPublish.getElseRegion().front());
+    emitRemoteReceiverAddressPublish(loc, sourceXTranslated, sourceYTranslated,
+                                     tableAddress, publishedAddress, nocVal,
+                                     rewriter);
+  }
+  rewriter.setInsertionPointAfter(localPublish);
+}
+
 //===----------------------------------------------------------------------===//
 // Receiver post sequence counter initialization
 //===----------------------------------------------------------------------===//
@@ -802,13 +871,9 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
         dst, loc, *maybePublishedAddressInfo, rewriter);
     Value tableAddress =
         buildAddressTableAddress(loc, addressTableInfo, rewriter);
-    // [Device 2.0] This is a receiver-authored write to a typed address table;
-    // only this lowering should select the current inline NoC write primitive.
-    auto byteEnableAll = arith::ConstantOp::create(
-        rewriter, loc, rewriter.getI8Type(), rewriter.getI8IntegerAttr(0xF));
-    ttk::NocInlineDwWriteOp::create(rewriter, loc, srcXTranslated,
-                                    srcYTranslated, tableAddress,
-                                    publishedAddress, byteEnableAll, nocVal);
+    emitReceiverAddressPublish(loc, pipeType, srcXTranslated, srcYTranslated,
+                               tableAddress, publishedAddress, nocVal,
+                               rewriter);
     ttk::NocAsyncWriteBarrierOp::create(rewriter, loc, nocVal);
   }
 
