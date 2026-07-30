@@ -58,7 +58,7 @@ struct FabricRuntimeInfo {
   Value manager;
   Value routeId;
   Value connectionCount;
-  unsigned routeCount;
+  std::size_t routeCount;
   SmallVector<FabricRouteTarget> routeTargets;
 };
 
@@ -145,6 +145,7 @@ struct PipeResourceInfo {
   /// Absent when the transfer does not use receiver-post sender readiness.
   std::optional<PipeCounterInfo> readyCounter;
   PipeAddressStorageInfo addressStorage;
+  bool usesFabricTransport = false;
 };
 
 /// Kernel-local progress associated with one allocated PipeNet counter.

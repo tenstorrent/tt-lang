@@ -284,7 +284,7 @@ inline PipeTransferContract getPipeTransferContract(PipeTransferCreateOp op) {
 
 inline PipeTransferContract getPipeTransferContract(PipeRecordAttr record) {
   return record.getIsCollective() ? PipeTransferContract::Collective
-                                 : PipeTransferContract::PointToPoint;
+                                  : PipeTransferContract::PointToPoint;
 }
 
 inline int64_t getRecordPipeNetId(PipeRecordAttr record,
@@ -329,26 +329,34 @@ struct PipeReference {
   bool isSelectedSrc() const { return kind == Kind::SelectedSrc; }
   bool isSelectedDst() const { return kind == Kind::SelectedDst; }
 
+  PipeType getStaticPipeType() const {
+    assert(isStatic() && "selected pipe reference has no static pipe type");
+    return pipeType;
+  }
+
+  SelectPipeSrcOp getSelectedSrc() const {
+    assert(isSelectedSrc() && "pipe reference is not a selected source");
+    return selectedSrc;
+  }
+
+  SelectPipeDstOp getSelectedDst() const {
+    assert(isSelectedDst() && "pipe reference is not a selected destination");
+    return selectedDst;
+  }
+
   PipeNetRecordsAttr getRecords() const {
     assert(isSelected() && "static pipe has no records attr");
-    if (selectedSrc) {
-      SelectPipeSrcOp op = selectedSrc;
-      return op.getRecords();
+    if (isSelectedSrc()) {
+      return getSelectedSrc().getRecords();
     }
-    SelectPipeDstOp op = selectedDst;
-    return op.getRecords();
+    return getSelectedDst().getRecords();
   }
 
   int64_t getPipeNetId() const {
-    if (pipeType) {
-      return pipeType.getPipeNetId();
+    if (isStatic()) {
+      return getStaticPipeType().getPipeNetId();
     }
-    if (selectedSrc) {
-      SelectPipeSrcOp op = selectedSrc;
-      return static_cast<int64_t>(op.getPipeNetId());
-    }
-    SelectPipeDstOp op = selectedDst;
-    return static_cast<int64_t>(op.getPipeNetId());
+    return getRecords().getPipeNetId();
   }
 };
 
@@ -368,8 +376,7 @@ public:
   /// Analyze a module to find all pipe receivers and build the graph.
   /// Returns failure if validation detects an error (e.g., gather DFB too
   /// small).
-  static FailureOr<PipeGraph> build(ModuleOp mod,
-                                    ValueOriginAnalysis &analysis,
+  static FailureOr<PipeGraph> build(ModuleOp mod, ValueOriginAnalysis &analysis,
                                     const PipeForeachLoweringInfo &foreachInfo);
 
   /// Check if any pipes were found.

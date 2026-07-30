@@ -9,6 +9,7 @@
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
+#include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
@@ -90,6 +91,14 @@ PipeModulePlan::getTransferPlan(Operation *operation) const {
   auto planIt = transferPlans.find(operation);
   assert(planIt != transferPlans.end() &&
          "active pipe send or receiver post has no transfer plan");
+  return planIt->second;
+}
+
+const SelectedPipeTransferPlan &
+PipeModulePlan::getSelectedTransferPlan(Operation *operation) const {
+  auto planIt = selectedTransferPlans.find(operation);
+  assert(planIt != selectedTransferPlans.end() &&
+         "selected pipe send or receiver post has no transfer plan");
   return planIt->second;
 }
 
@@ -456,6 +465,56 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
       }
       addTransferPlan(*maybePostPlan);
     }
+  }
+
+  for (const auto &[operation, resources] :
+       plan.resourcePlan.selectedResources) {
+    if (!isa<PipeTransferSendOp, PipeTransferPostOp>(operation)) {
+      continue;
+    }
+    assert(!resources.empty() && "selected pipe resource table is empty");
+    Value transfer = isa<PipeTransferSendOp>(operation)
+                         ? cast<PipeTransferSendOp>(operation).getTransfer()
+                         : cast<PipeTransferPostOp>(operation).getTransfer();
+    FailureOr<PipeTransferCreateOp> maybeCreateOp =
+        findPipeTransferCreateForTransfer(analysis, transfer);
+    if (failed(maybeCreateOp)) {
+      operation->emitError(
+          "requires every possible transfer value to derive from the same "
+          "ttl.pipe_transfer.create");
+      return failure();
+    }
+    FailureOr<PipeReference> pipeReference =
+        getPipeReference(operation, maybeCreateOp->getPipe());
+    if (failed(pipeReference)) {
+      return failure();
+    }
+    assert(pipeReference->isSelected() &&
+           "selected resources require a selected pipe");
+
+    if (auto sendOp = dyn_cast<PipeTransferSendOp>(operation)) {
+      // Selected fabric routes use a per-record route table rather than the
+      // scalar route index in PipeSendPlan.
+      FailureOr<PipeSendPlan> maybeSendPlan =
+          buildPipeSendPlan(sendOp, dominanceInfo, nullptr);
+      if (failed(maybeSendPlan)) {
+        return failure();
+      }
+      plan.selectedTransferPlans.insert(
+          {operation, SelectedPipeTransferPlan(*pipeReference, resources,
+                                               *maybeSendPlan)});
+      continue;
+    }
+
+    auto postOp = cast<PipeTransferPostOp>(operation);
+    FailureOr<PipePostPlan> maybePostPlan =
+        buildPipePostPlan(postOp, resources.front());
+    if (failed(maybePostPlan)) {
+      return failure();
+    }
+    plan.selectedTransferPlans.insert(
+        {operation,
+         SelectedPipeTransferPlan(*pipeReference, resources, *maybePostPlan)});
   }
 
   return plan;

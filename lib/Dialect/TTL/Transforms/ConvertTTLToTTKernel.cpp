@@ -812,8 +812,7 @@ createPipeTransfer(OpBuilder &builder, Location loc, Value pipe,
   IntegerAttr expectedReceiversAttr;
   if (auto pipeType =
           mlir::dyn_cast<PipeType>(traceUnrealizedCasts(pipe).getType())) {
-    expectedReceiversAttr =
-        builder.getI64IntegerAttr(pipeType.getNumDests());
+    expectedReceiversAttr = builder.getI64IntegerAttr(pipeType.getNumDests());
   }
   auto kindAttr = PipeTransferKindAttr::get(builder.getContext(),
                                             getPipeTransferKind(contract));
@@ -1752,10 +1751,13 @@ struct PipeTransferPostLowering : OpConversionPattern<PipeTransferPostOp> {
                            MLIRContext *context,
                            const PipeModulePlan &pipeModulePlan,
                            const PipeCounterProgressMap &counters,
-                           const PipeResourcePlan &pipeResourcePlan)
+                           const PipeResourcePlan &pipeResourcePlan,
+                           const FabricRoutePlan &fabricRoutePlan,
+                           const FabricRuntimeMap &fabricRuntime)
       : OpConversionPattern(typeConverter, context),
         pipeModulePlan(pipeModulePlan), counters(counters),
-        pipeResourcePlan(pipeResourcePlan) {}
+        pipeResourcePlan(pipeResourcePlan), fabricRoutePlan(fabricRoutePlan),
+        fabricRuntime(fabricRuntime) {}
 
   LogicalResult
   matchAndRewrite(PipeTransferPostOp op, OpAdaptor,
@@ -1781,6 +1783,8 @@ private:
   const PipeModulePlan &pipeModulePlan;
   const PipeCounterProgressMap &counters;
   const PipeResourcePlan &pipeResourcePlan;
+  const FabricRoutePlan &fabricRoutePlan;
+  const FabricRuntimeMap &fabricRuntime;
 };
 
 struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
@@ -1791,13 +1795,14 @@ struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
       const PipeCapacityPlan &pipeCapacityPlan,
       const PipeCounterProgressMap &senderCapacityCounters,
       const PipeComputedAddressCounterMap &computedAddressCounters,
+      const FabricRoutePlan &fabricRoutePlan,
       const FabricRuntimeMap &fabricRuntime)
       : OpConversionPattern(typeConverter, context),
         pipeModulePlan(pipeModulePlan), pipeResourcePlan(pipeResourcePlan),
         pipeCapacityPlan(pipeCapacityPlan),
         senderCapacityCounters(senderCapacityCounters),
         computedAddressCounters(computedAddressCounters),
-        fabricRuntime(fabricRuntime) {}
+        fabricRoutePlan(fabricRoutePlan), fabricRuntime(fabricRuntime) {}
 
   LogicalResult
   matchAndRewrite(PipeTransferSendOp op, OpAdaptor adaptor,
@@ -1824,6 +1829,7 @@ private:
   const PipeCapacityPlan &pipeCapacityPlan;
   const PipeCounterProgressMap &senderCapacityCounters;
   const PipeComputedAddressCounterMap &computedAddressCounters;
+  const FabricRoutePlan &fabricRoutePlan;
   const FabricRuntimeMap &fabricRuntime;
 };
 
@@ -2384,8 +2390,7 @@ static LogicalResult lowerTTLOpsToTTKernel(
   }
 
   FabricRoutePlan fabricRoutePlan;
-  if (failed(
-          buildFabricRoutePlan(mod, transferAnalysis, fabricRoutePlan))) {
+  if (failed(buildFabricRoutePlan(mod, transferAnalysis, fabricRoutePlan))) {
     return failure();
   }
 
@@ -2430,11 +2435,12 @@ static LogicalResult lowerTTLOpsToTTKernel(
                TensorOpTypeConversion<tensor::CastOp>>(typeConverter, &ctx);
   patterns.add<CopyLowering>(typeConverter, &ctx);
   patterns.add<PipeTransferPostLowering>(typeConverter, &ctx, pipeModulePlan,
-                                         postSequenceCounters,
-                                         pipeResourcePlan);
+                                         postSequenceCounters, pipeResourcePlan,
+                                         fabricRoutePlan, fabricRuntime);
   patterns.add<PipeTransferSendLowering>(
       typeConverter, &ctx, pipeModulePlan, pipeResourcePlan, pipeCapacityPlan,
-      senderCapacityCounters, computedAddressCounters, fabricRuntime);
+      senderCapacityCounters, computedAddressCounters, fabricRoutePlan,
+      fabricRuntime);
   patterns.add<PipeTransferWaitLowering>(typeConverter, &ctx, pipeResourcePlan);
   patterns.add<WaitLowering>(typeConverter, &ctx,
                              pipeModulePlan.getCompletedPipeSendWaits());

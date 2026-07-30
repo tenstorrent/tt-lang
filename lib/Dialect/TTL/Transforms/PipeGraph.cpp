@@ -42,6 +42,8 @@ struct PipeGraphAnalysisState : LaunchNodeDomainState {
 
   llvm::DenseMap<Operation *, LaunchNodeDomain> operationLaunchDomains;
   DFBReleaseOwnerMaps dfbReleaseOwners;
+  llvm::SmallPtrSet<Operation *, 16> selectedRecordControlOps;
+  llvm::DenseMap<Operation *, LaunchNodeDomain> selectedRecordIfThenDomains;
   SmallVector<Operation *> transferProtocolOps;
   SmallVector<PipeTransferPostOp> receiverPosts;
   SmallVector<Operation *> receiverSlotEvents;
@@ -71,6 +73,18 @@ static LogicalResult collectLaunchNodeDomains(ModuleOp mod,
   options.operationCallback = [&](Operation *op, const LaunchNodeDomain &domain,
                                   Operation * /*unanalyzableOp*/) {
     state.operationLaunchDomains[op] = domain;
+  };
+  options.computeRegionDomain =
+      [&](Operation *op,
+          unsigned regionNumber) -> std::optional<LaunchNodeDomain> {
+    if (regionNumber != 0) {
+      return std::nullopt;
+    }
+    auto domainIt = state.selectedRecordIfThenDomains.find(op);
+    if (domainIt == state.selectedRecordIfThenDomains.end()) {
+      return std::nullopt;
+    }
+    return domainIt->second;
   };
   solver.load<LaunchNodeDomainAnalysis>(state, options);
   if (failed(solver.initializeAndRun(mod))) {
@@ -407,6 +421,12 @@ getReceiverControlContext(Operation *op, PipeReceiverCoord receiver,
       }
       context.function = function;
       break;
+    }
+    // PipeGraph represents each selected record independently, so generated
+    // record-selection control does not alter the receiver schedule.
+    if (analysisState.selectedRecordControlOps.contains(parent)) {
+      current = parent;
+      continue;
     }
     if (parent && isTransparentReceiverScope(parent, receiver)) {
       current = parent;
@@ -1486,7 +1506,7 @@ FailureOr<PipeReference> getPipeReference(Operation *op, Value pipe) {
 SmallVector<PipeType> getPipeTypesFromReference(MLIRContext *context,
                                                 const PipeReference &ref) {
   if (ref.isStatic()) {
-    return SmallVector<PipeType>{ref.pipeType};
+    return SmallVector<PipeType>{ref.getStaticPipeType()};
   }
   SmallVector<PipeType> pipeTypes;
   PipeNetRecordsAttr records = ref.getRecords();

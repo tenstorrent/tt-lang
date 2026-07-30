@@ -20,7 +20,6 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
-#include "ttlang/Dialect/TTL/Transforms/ControlFlowUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/DFBMaterialization.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -30,6 +29,7 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 
 #include "llvm/ADT/DenseMap.h"
@@ -153,7 +153,16 @@ static bool areStoreBlocksPairwiseExclusive(ArrayRef<StoreOp> stores) {
   for (StoreBlockGroup &group : groupStoresByBlock(stores)) {
     representatives.push_back(group.stores.front().getOperation());
   }
-  return arePairwiseInsideMutuallyExclusiveRegions(representatives);
+  for (unsigned lhsIndex = 0; lhsIndex < representatives.size(); ++lhsIndex) {
+    for (unsigned rhsIndex = lhsIndex + 1; rhsIndex < representatives.size();
+         ++rhsIndex) {
+      if (!mlir::insideMutuallyExclusiveRegions(representatives[lhsIndex],
+                                                representatives[rhsIndex])) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 static bool sliceExternalUsesAreStores(Value value,
@@ -477,10 +486,10 @@ getOrCreateResultPlan(ComputeMaterializationPlan &plan, unsigned resultIndex) {
   return plan.results.back();
 }
 
-static void addMaterializationUse(
-    Value operand, Operation *consumer, unsigned operandIndex,
-    SmallVectorImpl<ComputeMaterializationPlan> &computePlans,
-    SmallVectorImpl<ConsumerUse> &standaloneTensorUses) {
+static void
+addMaterializationUse(Value operand, Operation *consumer, unsigned operandIndex,
+                      SmallVectorImpl<ComputeMaterializationPlan> &computePlans,
+                      SmallVectorImpl<ConsumerUse> &standaloneTensorUses) {
   // Compute results are materialized by rebuilding the producer once, even when
   // several results or consumers require DFB-attached values.
   if (std::optional<ComputeResult> computeResult = getComputeResult(operand)) {
@@ -863,8 +872,7 @@ struct TTLInsertIntermediateDFBsPass
     SmallVector<ConsumerUse> standaloneTensorUses;
 
     if (failed(applyMultiBlockStorePlans(multiBlockStorePlans, enable, builder,
-                                         computePlans,
-                                         standaloneTensorUses))) {
+                                         computePlans, standaloneTensorUses))) {
       signalPassFailure();
       return;
     }

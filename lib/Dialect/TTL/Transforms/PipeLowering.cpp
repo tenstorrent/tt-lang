@@ -143,10 +143,10 @@ LogicalResult buildFabricRoutePlan(ModuleOp mod, ValueOriginAnalysis &analysis,
                                    FabricRoutePlan &plan) {
   LogicalResult result = success();
 
-  auto recordRoute = [&](Operation *operation, DeviceTransferAttr transfer,
-                         DeviceRefAttr localDevice, DeviceRefAttr remoteDevice,
-                         PipeSourceKey sourceNode)
-      -> std::optional<std::size_t> {
+  auto recordRoute =
+      [&](Operation *operation, DeviceTransferAttr transfer,
+          DeviceRefAttr localDevice, DeviceRefAttr remoteDevice,
+          PipeSourceKey sourceNode) -> std::optional<std::size_t> {
     DeviceRefAttr destination = transfer.getEdge().getDestination();
     if (!destination) {
       operation->emitError(
@@ -933,8 +933,8 @@ protected:
   void emitLocalReceiverAddressPublish(Value senderTableAddress,
                                        Value publishedAddress) {
     auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
-    Value tablePtr = ttk::CastToL1PtrOp::create(
-        rewriter, loc, l1PtrTy, senderTableAddress);
+    Value tablePtr =
+        ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, senderTableAddress);
     Value zero = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
     ttk::StoreToL1Op::create(rewriter, loc, publishedAddress, tablePtr, zero);
   }
@@ -3105,7 +3105,7 @@ static void allocateSelectedPipeResources(
       auto &completionAllocations = colors.usesFabric
                                         ? fabricCompletionAllocations
                                         : localCompletionAllocations;
-      colors.completionColors.push_back(allocateCompletionCounter(
+      colors.completionColors.push_back(allocateCompletionCounterColor(
           completionLocations, completionAllocations));
 
       SmallVector<PipeCounterLocation> sourceLocation{PipeCounterLocation{
@@ -3113,9 +3113,9 @@ static void allocateSelectedPipeResources(
       auto &readyAllocations =
           colors.usesFabric ? fabricReadyAllocations : localReadyAllocations;
       colors.readyColors.push_back(
-          allocateCompletionCounter(sourceLocation, readyAllocations));
+          allocateCompletionCounterColor(sourceLocation, readyAllocations));
       colors.addressColors.push_back(
-          allocateCompletionCounter(sourceLocation, addressAllocations));
+          allocateCompletionCounterColor(sourceLocation, addressAllocations));
     }
     colorsByRecords.insert({records, std::move(colors)});
   }
