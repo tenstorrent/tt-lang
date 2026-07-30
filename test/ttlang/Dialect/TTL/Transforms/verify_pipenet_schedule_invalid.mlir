@@ -51,7 +51,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
   func.func @receiver_record_order()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.pipenet_foreach_dst attributes {
         records = #ttl.pipenet_records<net 0 name "ordered" pipes [
@@ -79,7 +79,7 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
 
   func.func @sender_reversed_record_order()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.pipenet_foreach_src attributes {
         records = #ttl.pipenet_records<net 0 name "ordered" pipes [

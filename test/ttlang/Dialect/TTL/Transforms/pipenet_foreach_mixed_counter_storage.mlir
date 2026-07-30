@@ -10,7 +10,7 @@
 module attributes {ttl.launch_grid = array<i64: 18, 1>} {
 
 // CHECK-LABEL: func.func @mixed_completion_counter_receiver
-// CHECK: memref.alloca() : memref<17xi32>
+// CHECK-NOT: memref.alloca
 // CHECK: scf.for
 // CHECK: %[[LOCAL_ADDRESS:.*]] = ttkernel.get_semaphore
 // CHECK: %[[TYPED_LOCAL_ADDRESS:.*]] = ttkernel.cast_to_l1_addr %[[LOCAL_ADDRESS]]

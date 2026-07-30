@@ -508,30 +508,81 @@ static Value buildSelectedCounterAddress(
     Value recordIndex, const PipeResourcePlan &pipeResourcePlan,
     ConversionPatternRewriter &rewriter) {
   assert(!counters.empty() && "selected pipe counter table is empty");
-  PipeCounterStorage storage = counters.front().getStorage();
-  SmallVector<int64_t> indices;
-  indices.reserve(counters.size());
-  for (PipeCounterInfo counter : counters) {
-    assert(counter.getStorage() == storage &&
-           "selected pipe counters must use uniform storage");
-    if (storage == PipeCounterStorage::LocalSemaphore) {
-      indices.push_back(counter.getIndex());
-      continue;
-    }
-    indices.push_back(getPipeRuntimeCommonArgIndex(
-        operation, getFirstPipeGlobalSemaphoreArgOffset(pipeResourcePlan) +
-                       counter.getIndex()));
-  }
 
-  Value selectedIndex =
-      loadIndexTableEntry(loc, indices, recordIndex, rewriter);
-  if (storage == PipeCounterStorage::LocalSemaphore) {
-    return ttk::GetSemaphoreOp::create(rewriter, loc, selectedIndex)
+  FuncOp function = operation->getParentOfType<FuncOp>();
+  assert(function && "selected pipe operation must be inside a function");
+  bool hasLocalCounter = llvm::any_of(counters, [](PipeCounterInfo counter) {
+    return counter.getStorage() == PipeCounterStorage::LocalSemaphore;
+  });
+  bool hasGlobalCounter = llvm::any_of(counters, [](PipeCounterInfo counter) {
+    return counter.getStorage() == PipeCounterStorage::GlobalSemaphore;
+  });
+  if (!hasGlobalCounter) {
+    SmallVector<int64_t> localIndices = llvm::map_to_vector(
+        counters, [](PipeCounterInfo counter) { return counter.getIndex(); });
+    Value semaphoreIndex =
+        loadIndexTableEntry(loc, localIndices, recordIndex, rewriter);
+    return ttk::GetSemaphoreOp::create(rewriter, loc, semaphoreIndex)
         .getResult();
   }
-  return ttk::GetCommonArgValOp::create(rewriter, loc, rewriter.getI32Type(),
-                                        selectedIndex)
-      .getResult();
+  auto getGlobalArgIndex = [&](PipeCounterInfo counter) {
+    return getPipeRuntimeCommonArgIndex(
+        function, getFirstPipeGlobalSemaphoreArgOffset(pipeResourcePlan) +
+                      counter.getIndex());
+  };
+  if (!hasLocalCounter) {
+    SmallVector<int64_t> globalArgIndices =
+        llvm::map_to_vector(counters, getGlobalArgIndex);
+    Value commonArgIndex =
+        loadIndexTableEntry(loc, globalArgIndices, recordIndex, rewriter);
+    return ttk::GetCommonArgValOp::create(rewriter, loc, rewriter.getI32Type(),
+                                          commonArgIndex)
+        .getResult();
+  }
+
+  PipeCounterInfo validLocalCounter =
+      *llvm::find_if(counters, [](PipeCounterInfo counter) {
+        return counter.getStorage() == PipeCounterStorage::LocalSemaphore;
+      });
+  PipeCounterInfo validGlobalCounter =
+      *llvm::find_if(counters, [](PipeCounterInfo counter) {
+        return counter.getStorage() == PipeCounterStorage::GlobalSemaphore;
+      });
+  SmallVector<int64_t> isGlobal;
+  SmallVector<int64_t> localIndices;
+  SmallVector<int64_t> globalArgIndices;
+  for (PipeCounterInfo counter : counters) {
+    bool usesGlobal =
+        counter.getStorage() == PipeCounterStorage::GlobalSemaphore;
+    isGlobal.push_back(usesGlobal ? 1 : 0);
+    localIndices.push_back(
+        (usesGlobal ? validLocalCounter : counter).getIndex());
+    globalArgIndices.push_back(
+        getGlobalArgIndex(usesGlobal ? counter : validGlobalCounter));
+  }
+
+  // Both operands of arith.select execute, so each table uses an existing
+  // counter from its storage class for records that select the other class.
+  Value localIndex =
+      loadIndexTableEntry(loc, localIndices, recordIndex, rewriter);
+  Value localAddress =
+      ttk::GetSemaphoreOp::create(rewriter, loc, localIndex).getResult();
+  Value typedLocalAddress =
+      ttk::CastToL1AddrOp::create(rewriter, loc, localAddress);
+  Value globalArgIndex =
+      loadIndexTableEntry(loc, globalArgIndices, recordIndex, rewriter);
+  Value globalAddress =
+      ttk::GetCommonArgValOp::create(rewriter, loc, rewriter.getI32Type(),
+                                     globalArgIndex)
+          .getResult();
+  Value typedGlobalAddress =
+      ttk::CastToL1AddrOp::create(rewriter, loc, globalAddress);
+  Value storageKind = loadIndexTableEntry(loc, isGlobal, recordIndex, rewriter);
+  Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  Value usesGlobal = arith::CmpIOp::create(
+      rewriter, loc, arith::CmpIPredicate::ne, storageKind, zero);
+  return arith::SelectOp::create(rewriter, loc, usesGlobal, typedGlobalAddress,
+                                 typedLocalAddress);
 }
 
 static Value buildSelectedReadyCounterAddress(
@@ -1143,6 +1194,7 @@ public:
     }
 
     DestinationRange destinationRange = getDestinationRange();
+    Value numDests = getNumDests();
     auto singleReceiverIf = scf::IfOp::create(
         rewriter, loc, getHasSingleReceiver(), /*withElseRegion=*/true);
     {
@@ -1152,7 +1204,7 @@ public:
       emitUnicastPayloadWrite(srcAddr, dstAddr, totalSizeBytes);
       rewriter.setInsertionPointToStart(
           &singleReceiverIf.getElseRegion().front());
-      emitMulticastPayloadWrite(srcAddr, dstAddr, totalSizeBytes,
+      emitMulticastPayloadWrite(srcAddr, dstAddr, totalSizeBytes, numDests,
                                 destinationRange);
     }
     rewriter.setInsertionPointAfter(singleReceiverIf);
@@ -1170,6 +1222,7 @@ public:
     }
 
     DestinationRange destinationRange = getDestinationRange();
+    Value numDests = getNumDests();
     auto singleReceiverIf = scf::IfOp::create(
         rewriter, loc, getHasSingleReceiver(), /*withElseRegion=*/true);
     {
@@ -1181,7 +1234,8 @@ public:
       rewriter.setInsertionPointToStart(
           &singleReceiverIf.getElseRegion().front());
       emitMulticastCompletionIncrement(receiverCompletionCounterAddr,
-                                       completionIncrement, destinationRange);
+                                       completionIncrement, numDests,
+                                       destinationRange);
     }
     rewriter.setInsertionPointAfter(singleReceiverIf);
     return success();
@@ -1201,7 +1255,7 @@ private:
   }
 
   void emitMulticastPayloadWrite(Value srcAddr, Value dstAddr,
-                                 Value totalSizeBytes,
+                                 Value totalSizeBytes, Value numDests,
                                  DestinationRange destinationRange) {
     auto loopbackIf = scf::IfOp::create(rewriter, loc, fields.srcInDstRange,
                                         /*withElseRegion=*/true);
@@ -1209,13 +1263,13 @@ private:
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(&loopbackIf.getThenRegion().front());
       ttk::NocAsyncWriteMulticastLoopbackSrcOp::create(
-          rewriter, loc, srcAddr, totalSizeBytes, fields.numDests,
+          rewriter, loc, srcAddr, totalSizeBytes, numDests,
           destinationRange.startX, destinationRange.startY,
           destinationRange.endX, destinationRange.endY, dstAddr, nocVal,
           /*linked=*/nullptr);
       rewriter.setInsertionPointToStart(&loopbackIf.getElseRegion().front());
       ttk::NocAsyncWriteMulticastOp::create(
-          rewriter, loc, srcAddr, totalSizeBytes, fields.numDests,
+          rewriter, loc, srcAddr, totalSizeBytes, numDests,
           destinationRange.startX, destinationRange.startY,
           destinationRange.endX, destinationRange.endY, dstAddr, nocVal,
           /*linked=*/nullptr);
@@ -1236,13 +1290,13 @@ private:
 
   void emitMulticastCompletionIncrement(Value receiverCompletionCounterAddr,
                                         Value completionIncrement,
+                                        Value numDests,
                                         DestinationRange destinationRange) {
-    Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    Value one = arith::ConstantIntOp::create(rewriter, loc, 1, 32);
     Value remoteCountWithLoopback =
-        arith::SubIOp::create(rewriter, loc, fields.numDests, one);
-    Value remoteReceiverCount =
-        arith::SelectOp::create(rewriter, loc, fields.srcInDstRange,
-                                remoteCountWithLoopback, fields.numDests);
+        arith::SubIOp::create(rewriter, loc, numDests, one);
+    Value remoteReceiverCount = arith::SelectOp::create(
+        rewriter, loc, fields.srcInDstRange, remoteCountWithLoopback, numDests);
     Value receiverCompletionNocAddr = ttk::GetNocMulticastAddrOp::create(
         rewriter, loc, destinationRange.startX, destinationRange.startY,
         destinationRange.endX, destinationRange.endY,
@@ -1305,8 +1359,17 @@ private:
     return *destinationRange;
   }
 
+  Value getNumDests() {
+    if (!numDests) {
+      numDests = arith::IndexCastOp::create(
+          rewriter, loc, rewriter.getI32Type(), fields.numDests);
+    }
+    return numDests;
+  }
+
   SelectedPipeFields fields;
   Value hasSingleReceiver;
+  Value numDests;
   std::optional<TranslatedCore> sourceCore;
   std::optional<TranslatedCore> dstStartCore;
   std::optional<DestinationRange> destinationRange;
@@ -3120,17 +3183,10 @@ static void allocateSelectedPipeResources(
     colorsByRecords.insert({records, std::move(colors)});
   }
 
-  PipeCounterAllocationCounts counts = counterAllocator.getCounts();
-  bool useGlobalLocalCompletionCounters =
-      counts.localSemaphoreCount +
-          static_cast<int64_t>(localCompletionAllocations.size()) >
-      kMaxHardwareSemaphoreIds;
   SmallVector<PipeCounterInfo> localCompletionCounters;
   for (std::size_t color = 0; color < localCompletionAllocations.size();
        ++color) {
-    localCompletionCounters.push_back(useGlobalLocalCompletionCounters
-                                          ? counterAllocator.allocateGlobal()
-                                          : counterAllocator.allocate());
+    localCompletionCounters.push_back(counterAllocator.allocate());
   }
   SmallVector<PipeCounterInfo> fabricCompletionCounters;
   for (std::size_t color = 0; color < fabricCompletionAllocations.size();
@@ -3138,16 +3194,9 @@ static void allocateSelectedPipeResources(
     fabricCompletionCounters.push_back(counterAllocator.allocateGlobal());
   }
 
-  counts = counterAllocator.getCounts();
-  bool useGlobalLocalReadyCounters =
-      counts.localSemaphoreCount +
-          static_cast<int64_t>(localReadyAllocations.size()) >
-      kMaxHardwareSemaphoreIds;
   SmallVector<PipeCounterInfo> localReadyCounters;
   for (std::size_t color = 0; color < localReadyAllocations.size(); ++color) {
-    localReadyCounters.push_back(useGlobalLocalReadyCounters
-                                     ? counterAllocator.allocateGlobal()
-                                     : counterAllocator.allocate());
+    localReadyCounters.push_back(counterAllocator.allocate());
   }
   SmallVector<PipeCounterInfo> fabricReadyCounters;
   for (std::size_t color = 0; color < fabricReadyAllocations.size(); ++color) {

@@ -818,12 +818,9 @@ mlir::LogicalResult mlir::tt::ttl::PipeTransferCreateOp::verify() {
 
   Value pipe = traceUnrealizedCasts(getPipe());
   if (auto pipeType = mlir::dyn_cast<PipeType>(pipe.getType())) {
-    IntegerAttr expectedReceivers = getExpectedReceiversAttr();
-    if (!expectedReceivers) {
-      return emitOpError()
-             << "static pipe transfer requires expectedReceivers";
-    }
-    if (expectedReceivers.getInt() != pipeType.getNumDests()) {
+    if (IntegerAttr expectedReceivers = getExpectedReceiversAttr();
+        expectedReceivers &&
+        expectedReceivers.getInt() != pipeType.getNumDests()) {
       return emitOpError()
              << "expectedReceivers must match the pipe receiver count";
     }

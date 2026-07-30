@@ -272,7 +272,7 @@ func.func private @foreach_dst_receive_table_driven_sender()
 }
 
 // CHECK-LABEL: func.func @foreach_dst_receive_table_driven
-// CHECK: memref.alloca
+// CHECK-NOT: memref.alloca
 // CHECK: scf.for
 // CHECK-COUNT-1: ttkernel.noc_inline_dw_write(
 // CHECK-COUNT-1: ttkernel.experimental.semaphore_wait_min(

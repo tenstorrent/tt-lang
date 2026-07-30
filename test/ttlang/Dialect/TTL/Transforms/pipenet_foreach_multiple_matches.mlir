@@ -1,5 +1,5 @@
 // RUN: ttlang-opt %s -convert-ttl-to-ttkernel | FileCheck %s
-// RUN: ttlang-opt %s -ttl-verify-pipenet-guards
+// RUN: ttlang-opt %s -ttl-finalize-dfb-indices -ttl-verify-pipenet-guards
 
 // Verifies that one table-driven protocol operation receives distinct
 // resources for every matching record, including identical records. A record
@@ -12,15 +12,17 @@ module attributes {ttl.launch_grid = array<i64: 2, 5>} {
 // CHECK-LABEL: func.func @gather_receiver
 // Six distinct completion counters are sufficient because the inactive record
 // reuses an existing resource while retaining its table entry.
-// CHECK: %[[COUNTERS:.*]] = memref.alloca() : memref<6xi32>
+// CHECK-NOT: memref.alloca
 // CHECK: scf.for %[[INDEX:.*]] =
 // CHECK: ttkernel.experimental.constant_table_lookup %[[INDEX]], [6, 6, 6, 6, 6, 7, 6] : index
-// CHECK: %[[PROGRESS_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[INDEX]], [0, 2, 3, 4, 5, 1, 0] : index
-// CHECK: memref.load %[[COUNTERS]][%[[PROGRESS_INDEX]]] : memref<6xi32>
-// CHECK: ttkernel.experimental.semaphore_wait_min
+// CHECK: %[[COUNTER_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[INDEX]], [0, 1, 2, 3, 4, 5, 0] : index
+// CHECK: %[[COUNTER:.*]] = ttkernel.get_semaphore(%[[COUNTER_INDEX]])
+// CHECK: %[[COUNTER_PTR:.*]] = ttkernel.reinterpret_cast(%[[COUNTER]])
+// CHECK: ttkernel.experimental.semaphore_wait_min(%[[COUNTER_PTR]], %c1_i32)
+// CHECK: ttkernel.noc_semaphore_set(%[[COUNTER_PTR]], %c0)
 func.func @gather_receiver()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  %cb = ttl.bind_cb {cb_index = 1, block_count = 6}
+  %cb = ttl.bind_cb {cb_index = 1, block_count = 6} {dfb_id = 1 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 6>
   ttl.pipenet_foreach_dst attributes {
       records = #ttl.pipenet_records<net 0 name "gather" pipes [
@@ -50,11 +52,11 @@ func.func @gather_receiver()
 // CHECK-LABEL: func.func @gather_senders
 // CHECK: scf.for %[[INDEX:.*]] =
 // CHECK: ttkernel.experimental.constant_table_lookup %[[INDEX]], [6, 6, 6, 6, 6, 7, 6] : index
+// CHECK: ttkernel.experimental.constant_table_lookup %[[INDEX]], [0, 1, 2, 3, 4, 5, 0] : index
 // CHECK: ttkernel.noc_async_write %
-// CHECK: ttkernel.experimental.constant_table_lookup %[[INDEX]], [0, 2, 3, 4, 5, 1, 0] : index
 func.func @gather_senders()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   ttl.pipenet_foreach_src attributes {
       records = #ttl.pipenet_records<net 0 name "gather" pipes [
