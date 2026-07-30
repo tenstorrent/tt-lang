@@ -450,15 +450,16 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
       return failure();
     }
 
-    auto insertTransferPlan = [&](PipeTransferPlan::OperationPlan operationPlan) {
-      PipeTransferPlan transferPlan(
-          std::move(pipeReference), std::move(resources),
-          synchronizationProtocol, std::move(operationPlan));
-      auto [planIt, inserted] =
-          plan.transferPlans.insert({operation, std::move(transferPlan)});
-      (void)planIt;
-      assert(inserted && "pipe operation has more than one transfer plan");
-    };
+    auto insertTransferPlan =
+        [&](PipeTransferPlan::OperationPlan operationPlan) {
+          PipeTransferPlan transferPlan(
+              std::move(pipeReference), std::move(resources),
+              synchronizationProtocol, std::move(operationPlan));
+          auto [planIt, inserted] =
+              plan.transferPlans.insert({operation, std::move(transferPlan)});
+          (void)planIt;
+          assert(inserted && "pipe operation has more than one transfer plan");
+        };
 
     if (sendOp) {
       const PipeTransportStream &transportStream =

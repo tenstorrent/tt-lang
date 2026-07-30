@@ -560,7 +560,8 @@ static bool dependsOnCoord(Value value, llvm::DenseMap<Value, bool> &cache) {
   Operation *op = value.getDefiningOp();
   bool result = false;
   if (op) {
-    if (mlir::isa<CoreXOp, CoreYOp, PipeNetPredicateOpInterface>(op)) {
+    if (mlir::isa<CoreXOp, CoreYOp, PipeNetPredicateOpInterface,
+                  ttkernel::MyLogicalXOp, ttkernel::MyLogicalYOp>(op)) {
       result = true;
     } else {
       for (Value operand : op->getOperands()) {
@@ -1156,6 +1157,17 @@ void LaunchNodeDomainAnalysis::visitRegionBranchControlFlowTransfer(
   Operation *op = branch.getOperation();
   LaunchNodeDomain narrowed = before.getDomain();
   Operation *unanalyzableOp = before.getUnanalyzableOp();
+
+  if (options.computeRegionDomain) {
+    std::optional<LaunchNodeDomain> computedDomain =
+        options.computeRegionDomain(op, *regionTo);
+    if (computedDomain) {
+      narrowed = before.getDomain().intersectWith(*computedDomain);
+      ChangeResult result = after->setDomain(narrowed, unanalyzableOp);
+      propagateIfChanged(after, result);
+      return;
+    }
+  }
 
   TypeSwitch<Operation *>(op)
       .Case<scf::IfOp>([&](scf::IfOp ifOp) {

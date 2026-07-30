@@ -308,28 +308,24 @@ def make_ksplit_resource_allocation_kernel(grid_dim):
 
 # Transfers with disjoint receiver sets reuse completion semaphores. The six
 # completion semaphores are followed by the sender-ready semaphore at index 6.
+# Table-driven transfers publish receiver addresses in one 32-byte SRAM table.
 # FINAL-LABEL: module attributes
-# FINAL-SAME: ttl.pipe_sync_semaphore_count = 7 : i64
-# FINAL-NOT: ttl.pipe_sram_scratch_bytes
+# FINAL-DAG: ttl.pipe_sync_semaphore_count = 7 : i64
+# FINAL-DAG: ttl.pipe_sram_scratch_bytes = 32 : i64
 # FINAL-NOT: ttl.pipe_global_semaphore_count
 # FINAL: func.func @post_receives_and_send
-# FINAL-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 0, 1>
+# FINAL-NOT: ttl.pipe_computed_address_dfb_indices
 #
 # CHECK-CPP-LABEL: === post_receives_and_send kernel written to {{.*}} ===
-# CHECK-CPP-DAG: {{(size_t|int32_t)}} [[STATIC_READY:v[0-9]+]] = 6;
-# Receiver DFB bases are loop-invariant and may be materialized before the
-# synchronization sequence.
-# CHECK-CPP-DAG: get_common_arg_val<uint32_t>
-# CHECK-CPP: get_semaphore([[STATIC_READY]])
 # CHECK-CPP: noc0.inline_dw_write<NocOptions::INLINE_L1>
+# CHECK-CPP: noc0.async_write_barrier
+# CHECK-CPP: size_t [[SELECTED_READY:v[0-9]+]] = experimental::constant_table_lookup<
+# CHECK-CPP-NEXT: int32_t {{v[0-9]+}} = get_semaphore([[SELECTED_READY]]);
 # CHECK-CPP: reinterpret_cast<tt_l1_ptr uint32_t*>
 # CHECK-CPP: experimental::semaphore_wait
-# CHECK-CPP: noc0.async_write_multicast
-# CHECK-CPP: get_common_arg_val<uint32_t>
 # CHECK-CPP: noc0.async_write(
+# CHECK-CPP: noc0.async_write_multicast
 # CHECK-CPP: noc_semaphore_inc
-# CHECK-CPP: size_t [[SELECTED_READY:v[0-9]+]] = experimental::constant_table_lookup<10,
-# CHECK-CPP-NEXT: int32_t {{v[0-9]+}} = get_semaphore([[SELECTED_READY]]);
 #
 # RUNTIME: PASS: ksplit_resource_allocation result verified
 def make_expected_output(input_torch, grid_dim):

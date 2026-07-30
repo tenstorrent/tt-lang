@@ -29,6 +29,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/ADT/bit.h"
 
 #include <array>
 #include <functional>
@@ -1193,6 +1194,23 @@ private:
 } // namespace
 
 namespace {
+static SmallVector<uint64_t> packConstantTable(ArrayRef<int64_t> values,
+                                               unsigned bitsPerValue) {
+  std::size_t totalBits = values.size() * bitsPerValue;
+  SmallVector<uint64_t> packedWords((totalBits + 63) / 64, 0);
+  for (auto [index, signedValue] : llvm::enumerate(values)) {
+    uint64_t value = static_cast<uint64_t>(signedValue);
+    std::size_t bitOffset = index * bitsPerValue;
+    std::size_t wordIndex = bitOffset / 64;
+    unsigned offsetInWord = bitOffset % 64;
+    packedWords[wordIndex] |= value << offsetInWord;
+    if (offsetInWord + bitsPerValue > 64) {
+      packedWords[wordIndex + 1] |= value >> (64 - offsetInWord);
+    }
+  }
+  return packedWords;
+}
+
 class TTKernelConstantTableLookupOpRewriter
     : public OpConversionPattern<ttkernel::ConstantTableLookupOp> {
 public:
@@ -1210,15 +1228,28 @@ public:
                                          "constant table must not be empty");
     }
 
-    SmallVector<Attribute> templateArgs;
-    templateArgs.reserve(op.getValues().size());
+    uint64_t maxValue = 0;
     for (int64_t value : op.getValues()) {
       if (value < 0) {
         return rewriter.notifyMatchFailure(
             op, "constant table values must be non-negative");
       }
-      templateArgs.push_back(
-          emitc::OpaqueAttr::get(op.getContext(), std::to_string(value)));
+      maxValue = std::max(maxValue, static_cast<uint64_t>(value));
+    }
+    unsigned bitsPerValue =
+        std::max(1, llvm::bit_width(static_cast<uint64_t>(maxValue)));
+    SmallVector<uint64_t> packedWords =
+        packConstantTable(op.getValues(), bitsPerValue);
+
+    SmallVector<Attribute> templateArgs;
+    templateArgs.reserve(packedWords.size() + 1);
+    templateArgs.push_back(
+        emitc::OpaqueAttr::get(op.getContext(), std::to_string(bitsPerValue)));
+    // Hex literals preserve the packed bits without signed conversion and use
+    // fewer source characters than one decimal argument per table element.
+    for (uint64_t packedWord : packedWords) {
+      templateArgs.push_back(emitc::OpaqueAttr::get(
+          op.getContext(), "0x" + llvm::utohexstr(packedWord) + "ULL"));
     }
     auto call = emitc::CallOpaqueOp::create(
         rewriter, op.getLoc(), resultType,

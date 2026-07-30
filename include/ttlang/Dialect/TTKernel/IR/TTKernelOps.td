@@ -4148,10 +4148,10 @@ def TTKernel_ConstantTableLookupOp
     : TTKernel_Op<"experimental.constant_table_lookup", [Pure]> {
     let summary = "Look up an element in an immutable compile-time table.";
     let description = [{
-      Returns the element at `index` from the non-empty `values` table. The
-      index must be within the table bounds, and every table value must be
-      non-negative. The table is immutable kernel metadata and does not consume
-      runtime stack storage.
+      Returns the element at `index` from the non-empty `values` table. Every
+      table value must be non-negative. A constant index is verified to be
+      within the table bounds; a dynamic index must satisfy the same
+      precondition.
     }];
 
     let arguments = (ins Index:$index, DenseI64ArrayAttr:$values);

@@ -177,9 +177,8 @@ class TTLGenericCompiler(TTCompilerBase):
 
         # Map id(PipeNet object) -> Python variable name the user assigned
         # it to. Populated from captures/globals at function entry and
-        # from body-local PipeNet assignments. Read by `_emit_pipe_from_capture`
-        # to stamp the user's variable name onto each `ttl.create_pipe`
-        # so the verifier can name PipeNets by user-facing identifier.
+        # from body-local PipeNet assignments. The name is stored on emitted
+        # pipe declarations so diagnostics use the user's identifier.
         self._pipe_net_names: dict[int, str] = {}
 
         # Include paths collected from ttl.call_extern_func invocations,

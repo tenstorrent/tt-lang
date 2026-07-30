@@ -75,15 +75,15 @@ TTKernel conversion uses two representations:
   one callback and transfer protocol body; only the immutable table contents
   grow with the number of records.
 
-The immutable tables become C++ template arguments and static compile-time
-storage; they do not create kernel stack arrays. Pipe graph analysis still
-creates one transfer node per record. Resource planning stores each record's
-address-table entry and synchronization indices in record order, and the loop
-index selects the corresponding values. The table-driven form currently uses
-receiver-published destination addresses and receiver-post synchronization.
-Computed receiver addresses and capacity counters are supported only when each
-record has its own `ttl.pipe_transfer.*` operations because the associated
-proof and runtime state belong to one transfer.
+The immutable tables become bit-packed C++ template arguments stored outside
+the kernel stack. Pipe graph analysis still creates one transfer node per
+record. Resource planning stores each record's address-table entry and
+synchronization indices in record order, and the loop index selects the
+corresponding values. The table-driven form currently uses receiver-published
+destination addresses and receiver-post synchronization. Computed receiver
+addresses and capacity counters are supported only when each record has its
+own `ttl.pipe_transfer.*` operations because the associated proof and runtime
+state belong to one transfer.
 
 ## Semantics
 
@@ -397,13 +397,14 @@ Pipe lowering first expands high-level pipe operations to Pipe Transfer IR:
 
 A transfer node represents one payload transfer: one send, one receiver post
 for each destination, and receiver completion. Sender and receiver callbacks
-may create separate `ttl.create_pipe` values. Correspondence analysis matches
-the send and receiver posts into one transfer node. A dynamic transfer instance
-is one runtime execution of that node, such as one loop iteration. In `RP`, an
-instance is live after its receiver posts and before the send consumes their
-sender-ready count. In `RA/RP`, its published address is live for the same
-interval. Resource allocation treats the sender-ready counter and address-table
-entry as live from the earliest receiver post through the send.
+may use separate static pipe values or selected-record operations.
+Correspondence analysis matches the send and receiver posts into one transfer
+node. A dynamic transfer instance is one runtime execution of that node, such
+as one loop iteration. In `RP`, an instance is live after its receiver posts
+and before the send consumes their sender-ready count. In `RA/RP`, its
+published address is live for the same interval. Resource allocation treats
+the sender-ready counter and address-table entry as live from the earliest
+receiver post through the send.
 
 A `PipeKey` contains the declared source coordinate, receiver rectangle, and
 PipeNet id. It identifies a communication relation, not one transfer node.
@@ -1591,10 +1592,10 @@ closure, and module-scope PipeNets through `__globals__`. See the
 [language specification](https://github.com/tenstorrent/tt-lang/blob/main/docs/sphinx/specs/TTLangSpecification.md) for
 the enclosing-scope capture rule.
 
-Operation-local ids keep `ttl.create_pipe` ids stable across invocations and
-keep graph construction deterministic. Completion counters are allocated from
-transfer nodes and their physical receiver sets. The
-`OperationPipeNets`
+Operation-local PipeNet ids keep static pipe values and record tables stable
+across invocations and keep graph construction deterministic. Completion
+counters are allocated from transfer nodes and their physical receiver sets.
+The `OperationPipeNets`
 instance is built and validated before MLIR emission on the compiler
 side and before `Program(...)` runs on the simulator side.
 `PipeNet.__init__` also builds a one-PipeNet `OperationPipeNets` and
@@ -1872,7 +1873,7 @@ error: 'ttl.copy' op this `ttl.copy(buffer, pipe)` sends data on PipeNet 0
        from a node that is not a source of any pipe in that net; wrap the
        copy in `net_0.if_src(...)` or guard with `if net_0.is_src(): ...`
 note: example node where the guard does not hold: node=(1, 0)
-note: PipeNet 0 declared here  (at create_pipe location)
+note: PipeNet 0 declared here  (at PipeNet declaration location)
 note: suggested guard: `net_0.is_src()`
 ```
 
@@ -1938,7 +1939,7 @@ The verifier relies on these input properties.
 | Invariant | Rationale |
 | --- | --- |
 | `ttl.launch_grid` module attribute present | Subset checks require a finite launch-coordinate domain. The pass emits a module-level error and fails if the attribute is missing. |
-| `ttl.create_pipe` source/destination coordinates are static `I64Attr`s, encoded both on the op and in the result `PipeType` | Domain construction reads the attributes directly to materialize each pipe's source unit box and destination range as concrete `Coord` sets, and `PipeLowering.cpp` emits `arith.ConstantIndexOp` for each coordinate when building per-node source and destination predicates. The static-attribute encoding is a property of today's IR, not a fundamental constraint of the verifier or lowering; see "Future work: parametric PipeNets" for the approach to runtime-bound coordinates. |
+| PipeNet source/destination coordinates are static `I64Attr`s in `ttl.create_pipe` or `#ttl.pipe_record` | Domain construction materializes each source coordinate and destination range as concrete `Coord` sets. Lowering emits constants for direct records and immutable lookup tables for larger record lists. The static encoding is a property of today's IR, not a fundamental constraint; see "Future work: parametric PipeNets" for runtime-bound coordinates. |
 | Every DFB has a concrete, unique provisional index | DFB wait checks associate producers and consumers before physical index reuse. `ttl-insert-intermediate-dfbs` assigns new compiler-created DFBs the next unused provisional index. |
 | One operation per module | The verifier walks all pipes in the module to compute role domains; co-compiling multiple operations would require per-operation scoping. |
 
@@ -2331,18 +2332,14 @@ The shared graph and proof must preserve these fabric invariants:
 * Parametric PipeNets - runtime-bound pipe coordinates resolved at
   kernel-launch time rather than `@ttl.operation` decoration time. The
   current pipeline resolves `ttl.Pipe(src=..., dst=...)` arguments to
-  Python `int` / `slice` literals during frontend tracing, materializes
-  them as `I64Attr`s on `ttl.create_pipe`, and embeds them into the
-  result `PipeType`. A parametric variant requires three coordinated
-  changes:
-  1. IR: extend `ttl.create_pipe` with an alternative form whose
-     source/destination coordinates are SSA `index` operands rather
-     than attributes, and replace the static coordinate fields on
-     `PipeType` with a static bounding-box attribute (so the verifier
-     and downstream passes still have a coarse-grained type
-     invariant). The static form remains the lowering target for
-     `@ttl.operation` invocations whose coordinates are known at
-     trace time.
+  Python `int` / `slice` literals during frontend tracing and
+  materializes them as attributes on `ttl.create_pipe` or
+  `#ttl.pipe_record`. A parametric variant requires three coordinated changes:
+  1. IR: add a representation whose source/destination coordinates are SSA
+     `index` values rather than attributes. Static bounds must remain available
+     so verification and downstream analyses retain a finite launch-node
+     domain. The current attribute form remains appropriate when coordinates
+     are known during frontend tracing.
   2. Verifier: replace the `std::set<Coord>` `Domain` with a symbolic
      representation, either an upstream Presburger set
      (`mlir::presburger::IntegerRelation`) or a structured
@@ -2355,16 +2352,13 @@ The shared graph and proof must preserve these fabric invariants:
      `ttl.is_dst` / `ttl.is_active` recognition stays structural; the
      per-coord enumeration in `evalBool` becomes a constraint
      constructor.
-  3. Lowering: `PipeLowering.cpp` materializes pipe source/destination
-     coordinates as `arith.ConstantIndexOp` from `PipeType::getSrcX/Y`
-     and the destination range bounds. Threading SSA values through to
-     `noc_async_write_multicast` and the per-pipe match expressions is
-     mechanical: tt-metal's multicast NoC primitives already accept
-     runtime coordinates, and `IsSrcLowering` / `IsDstLowering` already
-     construct per-pipe `arith.cmpi` / `arith.andi` / `arith.ori`
-     chains over the pipe's coordinate values; they currently chain
-     against constants but would chain against the SSA operands
-     instead.
+  3. Lowering: direct records currently become constant coordinates, while
+     larger record lists become immutable coordinate tables. Runtime-bound
+     coordinates must instead remain SSA values through source/destination
+     matching and NoC operation creation. TT-Metal's multicast NoC primitives
+     already accept runtime coordinates, and `IsSrcLowering` /
+     `IsDstLowering` already construct `arith.cmpi` / `arith.andi` /
+     `arith.ori` expressions over pipe coordinates.
 
   Frontend surface: `ttl.Pipe(src=ttl.runtime_arg("M"), ...)` or a
   similar SSA-typed coordinate, with the `OperationPipeNets`

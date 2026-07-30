@@ -11,7 +11,7 @@
 # RUN: FileCheck %s --check-prefix=CHECK-SIZE < %t.output
 # RUN: FileCheck %s --check-prefix=CHECK-NO-DESCRIPTOR-ARRAYS < %t.output
 
-"""Compile-only coverage for table-driven PipeNet callback lowering."""
+"""Compile-only coverage for large table-driven PipeNet callback lowering."""
 
 import os
 import runpy
@@ -23,7 +23,11 @@ import ttl
 
 pytest.importorskip("ttnn", exc_type=ImportError)
 
-PIPE_COUNT = 7
+NODE_GRID = (4, 8)
+NODE_COUNT = NODE_GRID[0] * NODE_GRID[1]
+PEER_COUNT = NODE_COUNT - 1
+ALL_TO_ALL_EDGE_COUNT = NODE_COUNT * PEER_COUNT
+SINGLE_RECEIVER_COLLECTIVE_COUNT = 7
 MAX_PIPE_KERNEL_SOURCE_BYTES = 24 * 1024
 
 
@@ -31,42 +35,43 @@ class BFloat16Tensor:
     dtype = torch.bfloat16
 
 
-UNICAST_NET = ttl.PipeNet(
-    [ttl.Pipe(src=(node, 0), dst=(node, 1)) for node in range(PIPE_COUNT)]
+NODES = [
+    (node_x, node_y) for node_x in range(NODE_GRID[0]) for node_y in range(NODE_GRID[1])
+]
+ALL_TO_ALL_NET = ttl.PipeNet(
+    [
+        ttl.Pipe(src=source, dst=destination)
+        for source in NODES
+        for destination in NODES
+        if source != destination
+    ]
 )
 
-SINGLETON_MULTICAST_NET = ttl.PipeNet(
+SINGLE_RECEIVER_COLLECTIVE_NET = ttl.PipeNet(
     [
         ttl.Pipe(src=(node, 0), dst=(slice(node, node + 1), 1))
-        for node in range(PIPE_COUNT)
+        for node in range(SINGLE_RECEIVER_COLLECTIVE_COUNT)
     ]
 )
 
 
-@ttl.operation(grid=(PIPE_COUNT, 2))
-def compile_pipenet_foreach_iteration():
+@ttl.operation(grid=(SINGLE_RECEIVER_COLLECTIVE_COUNT, 2))
+def compile_single_receiver_collective():
     template = BFloat16Tensor()
     send_dfb = ttl.make_dataflow_buffer_like(template, shape=(1, 1), block_count=2)
     recv_dfb = ttl.make_dataflow_buffer_like(template, shape=(1, 1), block_count=2)
 
     @ttl.compute()
     def compute():
-        if UNICAST_NET.is_dst():
+        if SINGLE_RECEIVER_COLLECTIVE_NET.is_dst():
             with recv_dfb.wait() as _recv_blk:
                 pass
 
     @ttl.datamovement()
     def send_dm():
-        if UNICAST_NET.is_src():
+        if SINGLE_RECEIVER_COLLECTIVE_NET.is_src():
             with send_dfb.reserve() as send_blk:
-
-                def send(pipe):
-                    ttl.copy(send_blk, pipe).wait()
-
-                UNICAST_NET.if_src(send)
-        if SINGLETON_MULTICAST_NET.is_src():
-            with send_dfb.reserve() as send_blk:
-                SINGLETON_MULTICAST_NET.if_src(
+                SINGLE_RECEIVER_COLLECTIVE_NET.if_src(
                     lambda pipe: ttl.copy(send_blk, pipe).wait()
                 )
 
@@ -76,8 +81,35 @@ def compile_pipenet_foreach_iteration():
             with recv_dfb.reserve() as recv_blk:
                 ttl.copy(pipe, recv_blk).wait()
 
-        UNICAST_NET.if_dst(recv)
-        SINGLETON_MULTICAST_NET.if_dst(recv)
+        SINGLE_RECEIVER_COLLECTIVE_NET.if_dst(recv)
+
+
+@ttl.operation(grid=NODE_GRID)
+def compile_all_to_all():
+    template = BFloat16Tensor()
+    send_dfb = ttl.make_dataflow_buffer_like(template, shape=(1, 1), block_count=2)
+    recv_dfb = ttl.make_dataflow_buffer_like(
+        template, shape=(1, 1), block_count=PEER_COUNT
+    )
+
+    @ttl.compute()
+    def compute():
+        for _peer_index in range(PEER_COUNT):
+            with recv_dfb.wait() as _recv_block:
+                pass
+
+    @ttl.datamovement()
+    def send_dm():
+        with send_dfb.reserve() as send_block:
+            ALL_TO_ALL_NET.if_src(lambda pipe: ttl.copy(send_block, pipe).wait())
+
+    @ttl.datamovement()
+    def recv_dm():
+        def receive(pipe):
+            with recv_dfb.reserve() as recv_block:
+                ttl.copy(pipe, recv_block).wait()
+
+        ALL_TO_ALL_NET.if_dst(receive)
 
 
 def report_table_driven_kernel_size():
@@ -98,7 +130,12 @@ def report_table_driven_kernel_size():
 
 
 if __name__ == "__main__":
-    compile_pipenet_foreach_iteration()
+    assert len(ALL_TO_ALL_NET.pipes) == ALL_TO_ALL_EDGE_COUNT
+    print(f"ALL-TO-ALL-EDGE-COUNT: {len(ALL_TO_ALL_NET.pipes)}")
+    compile_single_receiver_collective()
+    # Compile this operation last so the emitted runner identifies the 992-edge
+    # kernels measured by report_table_driven_kernel_size().
+    compile_all_to_all()
     report_table_driven_kernel_size()
 
 
@@ -106,27 +143,24 @@ if __name__ == "__main__":
 # CHECK-INITIAL-NOT: ttl.if_dst
 # CHECK-INITIAL-NOT: ttl.create_pipe
 # CHECK-INITIAL: ttl.pipenet_foreach_src
-# CHECK-INITIAL-SAME: name "UNICAST_NET"
+# CHECK-INITIAL-SAME: name "ALL_TO_ALL_NET"
 # CHECK-INITIAL: ^bb0(%{{.*}}: !ttl.selected_pipe_src):
 # CHECK-INITIAL: ttl.copy
 # CHECK-INITIAL: ttl.pipenet_foreach_dst
-# CHECK-INITIAL-SAME: name "UNICAST_NET"
-# CHECK-INITIAL: ^bb0(%{{.*}}: !ttl.selected_pipe_dst):
-# CHECK-INITIAL: ttl.copy
-# CHECK-INITIAL: ttl.pipenet_foreach_dst
-# CHECK-INITIAL-SAME: name "SINGLETON_MULTICAST_NET"
+# CHECK-INITIAL-SAME: name "ALL_TO_ALL_NET"
 # CHECK-INITIAL: ^bb0(%{{.*}}: !ttl.selected_pipe_dst):
 # CHECK-INITIAL: ttl.copy
 # CHECK-INITIAL-NOT: ttl.if_src
 # CHECK-INITIAL-NOT: ttl.if_dst
 # CHECK-INITIAL-NOT: ttl.create_pipe
 
+# CHECK-CPP: ALL-TO-ALL-EDGE-COUNT: 992
 # CHECK-CPP: {{noc[0-9]*\.async_write\(}}
 # CHECK-CPP: {{noc[0-9]*\.async_write_multicast}}
 # CHECK-CPP-COUNT-2: {{noc[0-9]*\.inline_dw_write}}
 # CHECK-CPP: experimental::constant_table_lookup<
 
-# CHECK-LOOPS-COUNT-4: for (
+# CHECK-LOOPS-COUNT-5: for (
 # CHECK-LOOPS-NOT: for (
 
 # CHECK-SIZE: TABLE-DRIVEN-PIPE-KERNEL-SOURCE-BYTES: {{[0-9]+}} / 24576
