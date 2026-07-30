@@ -1664,9 +1664,16 @@ class Tensor:
     def element_slice_starts(self, key: TensorKey) -> Shape:
         """Element-space start offset per dimension for ``key`` (``slice.start`` values).
 
-        Uses the same rules as :meth:`__getitem__`: tile indices for
+        Keys are interpreted as in :meth:`__getitem__`: tile indices for
         ``TILE_LAYOUT`` are converted to element bounds; ``ROW_MAJOR_LAYOUT`` keys
         are already element-space.
+
+        The returned starts are the raw bounds, which is stricter and more literal
+        than the origin :meth:`__getitem__` records in ``_element_origin``: an
+        open-ended bound raises here instead of resolving to 0, and a negative
+        bound is returned as-is instead of being resolved against the extent.
+        Callers needing the resolved position of a view should read
+        ``_element_origin`` from ``self[key]``.
         """
         match key:
             case tuple():
@@ -1708,15 +1715,24 @@ class Tensor:
         # key would drop the *explicit* offsets of the other dimensions and place
         # the view at its parent's origin -- reporting ``a[32:64, :]`` at row 0,
         # which would hide a cross-device access from validate_mesh_access().
+        # A negative bound counts from the end of the *parent* view, so it is
+        # resolved against that extent: ``a[-32:]`` and ``a[32:64]`` select the
+        # same rows of a 64-row tensor and must yield the same origin.
         # Only needed when tracing (read by try_count_locality() in sharding.py
         # via _copy_trace_fields()) or when the tensor is mesh-sharded (read by
         # validate_mesh_access()); skipping it otherwise keeps the common
         # untraced, unsharded path cheap.
         if TRACE.enabled or result.mesh_shard_info is not None:
+            parent_shape = self.shape
             parent_origin: Tuple[int, ...] = getattr(
-                self, "_element_origin", (0,) * len(self.shape)
+                self, "_element_origin", (0,) * len(parent_shape)
             )
-            starts = [(s.start or 0) if isinstance(s, slice) else int(s) for s in ek]
+            starts: list[int] = []
+            for axis, s in enumerate(ek):
+                start = (s.start or 0) if isinstance(s, slice) else int(s)
+                if start < 0:
+                    start += parent_shape[axis]
+                starts.append(start)
             result._element_origin = tuple(  # type: ignore[attr-defined]
                 p + s for p, s in zip(parent_origin, starts)
             )

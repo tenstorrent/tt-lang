@@ -56,6 +56,7 @@ so this affects only deliberately strided row-major views.
 
 from __future__ import annotations
 
+import math
 from typing import Optional
 
 from greenlet import getcurrent
@@ -106,12 +107,26 @@ def validate_mesh_access(tensor: Tensor, direction: str) -> None:
         return
 
     if mesh_axes != tuple(msi.mesh_shape):
+        # Equal device totals with a different axis layout is the ShardTensorToMesh
+        # flattening (see _shard_to_mesh_info in ttnnsim.py), which is easy to hit
+        # by opening a multi-axis mesh and launching on its natural grid, so say so
+        # instead of leaving the user to wonder where their axes went.
+        hint = ""
+        if math.prod(mesh_axes) == math.prod(msi.mesh_shape):
+            hint = (
+                f" Both describe {math.prod(mesh_axes)} devices, only laid out "
+                f"differently: ShardTensorToMesh spreads a tensor over every device "
+                f"as one flat sequence, collapsing a mesh with several axes larger "
+                f"than 1 to a single axis. Either launch on a grid matching "
+                f"{list(msi.mesh_shape)}, or use ShardTensor2dMesh / "
+                f"ShardTensorNdMesh to keep the per-axis structure."
+            )
         raise MeshAccessError(
             f"Mesh mismatch: the launch grid's mesh axes {list(mesh_axes)} do not "
             f"match tensor '{name}' mesh shape {list(msi.mesh_shape)}. A "
             f"mesh-sharded tensor must be launched on a grid whose leading (mesh) "
             f"dimensions equal its mesh shape so each node maps to exactly one "
-            f"device shard."
+            f"device shard.{hint}"
         )
 
     # Two mesh axes partitioning the same tensor dim is hierarchical sharding:

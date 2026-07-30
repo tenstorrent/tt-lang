@@ -101,6 +101,11 @@ def pipe_crosses_mesh(src: NodeCoord, dst: Any, grid: Shape) -> bool:
     axis that covers any value other than the source's coordinate makes the pipe
     fabric.  Grids of rank <= 2 have no mesh axes, so the result is always False.
 
+    Multicast slices are assumed forward and ascending (``start < stop``, unit
+    step), which :mod:`sim.pipe` enforces when a pipe is created -- strided
+    multicast is rejected there.  A hand-built slice violating that (a negative
+    step, say) spans an empty range here and reads as non-fabric.
+
     Endpoints are accepted in two unambiguous forms and normalized to full grid
     coordinates before comparison:
 

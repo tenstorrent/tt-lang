@@ -259,6 +259,92 @@ class TestOpenEndedSliceOrigin:
         assert a[32:64, :][8:16, :]._element_origin == (40, 0)
 
 
+class TestFlattenedMeshMismatchHint:
+    """The mesh-mismatch error names the cause when only the axis layout differs.
+
+    Opening a multi-axis mesh and launching on its natural grid is the easy way to
+    hit this: ``ShardTensorToMesh`` flattens a ``2x4`` mesh to one axis of 8, so a
+    ``(2, 4, ...)`` grid no longer matches.  Equal device totals identify that case,
+    and the message points at the mapper rather than only reporting the shapes.
+    """
+
+    def _shard_over_2x4(self) -> ttnn.Tensor:
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2, 4))
+        return ttnn.from_torch(
+            torch.zeros(256, 32),
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+
+    def test_hint_names_the_mapper_when_device_counts_agree(self) -> None:
+        a = self._shard_over_2x4()
+        with _node_on_grid(0, (2, 4, 1, 1)):
+            with pytest.raises(MeshAccessError) as excinfo:
+                validate_mesh_access(a[0, 0], "read")
+        message = str(excinfo.value)
+        assert "8 devices" in message
+        assert "ShardTensorToMesh" in message
+        assert "ShardTensorNdMesh" in message
+
+    def test_no_hint_when_device_counts_differ(self) -> None:
+        """A genuine device-count mismatch is a different mistake; no mapper hint."""
+        a = self._shard_over_2x4()
+        with _node_on_grid(0, (4, 1, 1)):
+            with pytest.raises(MeshAccessError) as excinfo:
+                validate_mesh_access(a[0, 0], "read")
+        assert "devices, only laid out" not in str(excinfo.value)
+
+    def test_matching_flat_grid_is_accepted(self) -> None:
+        """The grid the message recommends actually works."""
+        a = self._shard_over_2x4()  # 8 shards of 32 rows
+        with _node_on_grid(3, (8, 1, 1)):
+            validate_mesh_access(a[3, 0], "read")
+
+
+class TestNegativeSliceBoundsOrigin:
+    """Negative slice bounds address the same elements as their positive form.
+
+    ``a[-32:]`` and ``a[32:64]`` select identical rows of a 64-row tensor, so they
+    must reach the same ownership verdict.  A negative start has to be resolved
+    against the parent view's extent before being accumulated into
+    ``_element_origin``; using it raw places the view at a negative row and
+    rejects a device reading its own shard.
+    """
+
+    def _row_major_shard_dim0(self, rows: int, cols: int, mesh_n: int) -> ttnn.Tensor:
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(mesh_n))
+        return ttnn.from_torch(
+            torch.zeros(rows, cols),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+
+    def test_negative_origin_matches_positive_form(self) -> None:
+        a = self._row_major_shard_dim0(64, 32, mesh_n=2)
+        assert a[-32:, :]._element_origin == a[32:64, :]._element_origin == (32, 0)
+        assert a[-64:-32, :]._element_origin == a[0:32, :]._element_origin == (0, 0)
+
+    def test_device_may_read_own_shard_via_negative_bounds(self) -> None:
+        """Device 1 owns rows [32:64), which is exactly ``a[-32:]``."""
+        a = self._row_major_shard_dim0(64, 32, mesh_n=2)
+        with _node_on_grid(1, (2, 1, 1)):
+            validate_mesh_access(a[-32:, :], "read")
+        with _node_on_grid(0, (2, 1, 1)):
+            validate_mesh_access(a[-64:-32, :], "read")
+
+    def test_foreign_shard_via_negative_bounds_still_raises(self) -> None:
+        """Resolving the offset must not turn the check off: node 0 cannot read [32:64)."""
+        a = self._row_major_shard_dim0(64, 32, mesh_n=2)
+        with _node_on_grid(0, (2, 1, 1)):
+            with pytest.raises(MeshAccessError, match="Cross-device access"):
+                validate_mesh_access(a[-32:, :], "read")
+
+    def test_negative_bounds_accumulate_through_chained_slicing(self) -> None:
+        """A negative start resolves against the parent view, not the root tensor."""
+        a = self._row_major_shard_dim0(64, 32, mesh_n=2)
+        # Parent is rows [32:64) (32 rows); its last 8 rows are root rows [56:64).
+        assert a[32:64, :][-8:, :]._element_origin == (56, 0)
+
+
 class TestRowVectorMeshGrid:
     """Ownership on a ``MeshShape(1, n)`` mesh, whose leading axis is degenerate.
 
