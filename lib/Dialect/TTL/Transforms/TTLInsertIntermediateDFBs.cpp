@@ -61,11 +61,6 @@ struct ComputeMaterializationPlan {
   SmallVector<ResultMaterializationPlan> results;
 };
 
-struct StandaloneTensorMaterializationUse {
-  Operation *consumer;
-  unsigned operandIndex;
-};
-
 struct MaterializedOutput {
   unsigned sourceResultIndex;
   RankedTensorType tensorType;
@@ -150,7 +145,7 @@ planMaterializedOutput(ComputeOp computeOp, unsigned resultIndex) {
   return output;
 }
 
-static LogicalResult cloneComputeBodyWithMaterializedStores(
+static void cloneComputeBodyWithMaterializedStores(
     ComputeOp sourceCompute, ComputeOp rebuiltCompute,
     MutableArrayRef<MaterializedOutput> materializedOutputs,
     OpBuilder &builder) {
@@ -182,6 +177,8 @@ static LogicalResult cloneComputeBodyWithMaterializedStores(
       if (storeDFB != output.sourceDFB) {
         continue;
       }
+      // Preserve the original output store and replicate its tile into the
+      // compiler DFB required by downstream DFB-only consumers.
       auto materializedStore = TileStoreOp::create(
           builder, clonedStore.getLoc(), clonedStore.getTile(),
           output.reserve.getResult(), clonedStore.getIndices(),
@@ -197,7 +194,6 @@ static LogicalResult cloneComputeBodyWithMaterializedStores(
     assert(output.storeCount > 0 &&
            "verified compute output must have a tile_store");
   }
-  return success();
 }
 
 static LogicalResult materializeComputePlan(ComputeMaterializationPlan &plan,
@@ -266,10 +262,8 @@ static LogicalResult materializeComputePlan(ComputeMaterializationPlan &plan,
                         ValueRange(outputs), builder.getArrayAttr(indexingMaps),
                         producerCompute.getIteratorTypesAttr());
 
-  if (failed(cloneComputeBodyWithMaterializedStores(
-          producerCompute, rebuiltCompute, materializedOutputs, builder))) {
-    return failure();
-  }
+  cloneComputeBodyWithMaterializedStores(producerCompute, rebuiltCompute,
+                                         materializedOutputs, builder);
 
   SmallVector<Value> originalReplacements;
   originalReplacements.reserve(producerCompute.getNumResults());
@@ -310,9 +304,10 @@ static LogicalResult materializeComputePlan(ComputeMaterializationPlan &plan,
   return success();
 }
 
-static LogicalResult materializeStandaloneTensorUses(
-    ArrayRef<StandaloneTensorMaterializationUse> standaloneTensorUses,
-    func::FuncOp funcOp, OpBuilder &builder, DominanceInfo &dominanceInfo) {
+static LogicalResult
+materializeStandaloneTensorUses(ArrayRef<ConsumerUse> standaloneTensorUses,
+                                func::FuncOp funcOp, OpBuilder &builder,
+                                DominanceInfo &dominanceInfo) {
   // A shared consumer-side acquire is valid only when its attach dominates
   // the next consumer. Incomparable control-flow regions need separate
   // compiler DFB outputs so each dynamic execution consumes exactly one
@@ -320,7 +315,7 @@ static LogicalResult materializeStandaloneTensorUses(
   // dataflow proof.
   llvm::DenseMap<Value, SmallVector<Value>> materialized;
 
-  for (StandaloneTensorMaterializationUse use : standaloneTensorUses) {
+  for (ConsumerUse use : standaloneTensorUses) {
     Operation *op = use.consumer;
     Value operand = op->getOperand(use.operandIndex);
 
@@ -397,7 +392,7 @@ struct TTLInsertIntermediateDFBsPass
 
     OpBuilder builder(funcOp.getContext());
     SmallVector<ComputeMaterializationPlan> computePlans;
-    SmallVector<StandaloneTensorMaterializationUse> standaloneTensorUses;
+    SmallVector<ConsumerUse> standaloneTensorUses;
 
     // Elementwise values that depend on a released producer DFB must be stored
     // before the pop, because later consumers cannot legally reread that DFB

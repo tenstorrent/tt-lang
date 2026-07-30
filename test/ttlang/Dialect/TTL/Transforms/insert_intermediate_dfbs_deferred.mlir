@@ -231,6 +231,7 @@ func.func @broadcast_result_then_reduce()
 // FULL: ttl.compute ins(%[[INTERMEDIATE_ATTACHED]],
 // FULL: else
 // FULL: ttl.compute ins(%[[INTERMEDIATE_ATTACHED]],
+// FULL-NOT: ttl.cb_pop
 // FULL: ttl.cb_pop %[[INTERMEDIATE_DFB]]
 func.func @branch_local_reductions(%cond: i1)
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {

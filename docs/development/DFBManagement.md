@@ -253,6 +253,11 @@ source = (producer ttl.compute, result number)
 use    = (consumer operation, operand number)
 ```
 
+Materialization does not infer a store from a Python assignment. The original
+`ttl.compute` already contains a `ttl.tile_store` for each explicit block
+store. Rebuilding the compute preserves that store and replicates its tile into
+the compiler DFB needed by a downstream DFB-only consumer.
+
 For each producer `ttl.compute`, the pass rebuilds the compute exactly once
 using this sequence:
 
@@ -260,8 +265,8 @@ using this sequence:
 2. Append one compiler-allocated DFB output for each source result that needs
    materialization, ordered by source result number.
 3. Clone the original compute body.
-4. For each cloned `ttl.tile_store` that writes the original source DFB, emit
-   a matching `ttl.tile_store` to the appended compiler DFB output.
+4. For each cloned `ttl.tile_store` that writes the original source DFB,
+   replicate the tile into the appended compiler DFB output.
 5. Replace uses of the original compute results with the corresponding results
    of the replacement compute.
 6. Emit `cb_push`, `cb_wait`, and `attach_cb` for each appended compiler DFB
