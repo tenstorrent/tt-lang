@@ -127,10 +127,13 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
   SOURCES
     __init__.py
     atom.py
+    cb_table.py
     dataflow_buffer.py
     compiler_options.py
     constants.py
     diagnostics.py
+    hang.py
+    hang_collect.py
     kernel_runner.py
     pipe.py
     ttl.py
