@@ -275,7 +275,7 @@ class NdShardSpec:
     ``num_cores`` applies only to ROUND_ROBIN (modulus for shard assignment).
     """
 
-    shard_shape: Shape
+    shard_shape: Sequence[int]
     core_ranges: Optional["CoreRangeSet"] = None
     shard_grid: Optional[ShardGrid] = None
     distribution: ShardDistributionStrategy = ShardDistributionStrategy.ROUND_ROBIN_1D
@@ -287,7 +287,7 @@ class NdShardSpec:
         if self.shard_grid is not None:
             object.__setattr__(self, "shard_grid", tuple(self.shard_grid))
 
-    def with_resolved_shard_grid(self, tensor_shape: Shape) -> NdShardSpec:
+    def with_resolved_shard_grid(self, tensor_shape: Sequence[int]) -> NdShardSpec:
         """Return a copy with ``shard_grid`` set from ``tensor_shape`` and ``shard_shape``."""
         if self.shard_grid is not None:
             return self
@@ -432,8 +432,8 @@ class CoreGrid:
 def broadcast_tensors(
     left_tensors: List["Tensor"],
     right_tensors: List["Tensor"],
-    left_shape: Shape,
-    right_shape: Shape,
+    left_shape: Sequence[int],
+    right_shape: Sequence[int],
     op: Any,
 ) -> List["Tensor"]:
     """Apply binary operation to tensor lists with broadcasting.
@@ -689,7 +689,7 @@ def _distribute_cores_across_dims(num_cores: int, k: int) -> Tuple[int, ...]:
 
 
 def _nd_shard_spec_for_dims(
-    shape: Shape,
+    shape: Sequence[int],
     shard_dims: Sequence[int],
     core_ranges: CoreRangeSet,
 ) -> NdShardSpec:
@@ -809,7 +809,7 @@ class TensorSpec:
 
     def nd_sharded(
         self,
-        shard_shape: Shape,
+        shard_shape: Sequence[int],
         core_ranges: CoreRangeSet,
     ) -> TensorSpec:
         """ND sharding with explicit per-dimension shard sizes (element units).
@@ -1199,7 +1199,7 @@ class ConcatMeshToTensor:
         pass
 
 
-def tile_shape_from_shape(shape: Shape) -> Shape:
+def tile_shape_from_shape(shape: Sequence[int]) -> Shape:
     """Tile-grid shape derived purely from an element-space ``shape``.
 
     Pure function of the input shape (no Tensor instance required) so callers
@@ -1221,7 +1221,7 @@ def tile_shape_from_shape(shape: Shape) -> Shape:
     return Shape((tm, tk))
 
 
-def tile_count_from_shape(layout: IndexType, shape: Shape) -> int:
+def tile_count_from_shape(layout: IndexType, shape: Sequence[int]) -> int:
     """Layout-aware logical unit count derived purely from primitives.
 
     ROW_MAJOR_LAYOUT counts every element; TILE_LAYOUT counts tile-grid
@@ -1295,7 +1295,7 @@ def normalize_selector_to_slice(selector: Selector) -> slice:
 
 
 def _maybe_resolve_nd_shard_spec_for_tensor(
-    tensor_shape: Shape, memory_config: MemoryConfig
+    tensor_shape: Sequence[int], memory_config: MemoryConfig
 ) -> MemoryConfig:
     """Fill ``NdShardSpec.shard_grid`` from tensor shape when it was omitted."""
     if memory_config.strategy != ShardingStrategy.ND_SHARDED:
@@ -1318,9 +1318,16 @@ class Shape(tuple[int, ...]):
 
     Accepts ``Shape([d0, d1, ...])``, ``Shape((d0, d1, ...))``, or
     ``Shape(d0, d1, ...)``. Instances are ordinary tuples, so they interoperate
-    with the tuple-based shapes (``Shape``) used throughout the simulator:
-    indexing, equality with plain tuples, passing to ``torch`` factory
-    functions, etc.
+    with the plain tuples used as shapes elsewhere: indexing, equality with
+    tuples, passing to ``torch`` factory functions, etc.
+
+    This is ttnn's ``Shape``, and is a different type from ``ttl.Shape``
+    (``sim.typedefs.Shape``), which the specification defines as a tuple of
+    dimensions rather than a class and which is only ever an annotation.  Both
+    names are shapes, so this module annotates parameters that accept one as
+    ``Sequence[int]``, which every spelling of a shape satisfies -- an instance
+    of this class, a plain tuple, a list -- and reserves this class for what it
+    returns, matching ttnn, where ``Tensor.shape`` is a ``Shape``.
     """
 
     def __new__(cls, *dims: "int | Sequence[int]") -> "Shape":
@@ -2145,7 +2152,7 @@ def _logical_view(tensor: Tensor) -> torch.Tensor:
 
 
 def rand(
-    shape: Shape,
+    shape: Sequence[int],
     dtype: DType = bfloat16,
     layout: IndexType = TILE_LAYOUT,
     device: object = None,
@@ -2162,7 +2169,7 @@ def rand(
 
 
 def empty(
-    shape: Shape,
+    shape: Sequence[int],
     dtype: DType = bfloat16,
     layout: IndexType = TILE_LAYOUT,
     device: object = None,
@@ -2179,7 +2186,7 @@ def empty(
 
 
 def zeros(
-    shape: Shape,
+    shape: Sequence[int],
     dtype: DType = bfloat16,
     layout: IndexType = TILE_LAYOUT,
     device: object = None,

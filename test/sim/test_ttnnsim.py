@@ -948,6 +948,32 @@ def test_from_torch_tile_layout_pads_non_tile_aligned_shapes():
     )
 
 
+def test_shapes_are_taken_in_any_spelling_and_returned_as_shape():
+    """A shape is accepted however it is spelled, and reported back as a Shape.
+
+    ttnn takes a shape as a ``Shape``, a tuple, or a list, and reports one as a
+    ``Shape``; the simulator's annotations say the same (``Sequence[int]`` on
+    the way in, ``Shape`` on the way out) so that a caller passing the plain
+    tuple that every example and test passes type-checks.  A ``Shape`` is a
+    tuple subclass, so it compares equal to the tuple it was built from, which
+    is what lets the assertions elsewhere in this file compare against tuples.
+    """
+    spellings = [ttnn.Shape([2, 32]), (2, 32), [2, 32], ttnn.Shape(2, 32)]
+    for shape in spellings:
+        for create in (ttnn.rand, ttnn.zeros, ttnn.empty):
+            assert create(shape).shape == (2, 32), f"{create.__name__} rejected {shape}"
+
+    tensor = ttnn.zeros((3, 5))
+    assert isinstance(tensor.shape, ttnn.Shape)
+    assert isinstance(tensor.padded_shape, ttnn.Shape)
+    assert isinstance(tensor.tile.tile_shape, ttnn.Shape)
+    assert tensor.shape == (3, 5) and tensor.padded_shape == (32, 32)
+
+    # Note that this class is ttnn's Shape.  ttl.Shape (sim.typedefs.Shape) is
+    # the specification's shape type and a separate thing: an annotation for the
+    # tuples the DSL passes around, not a class to construct.
+
+
 def test_arithmetic_propagates_logical_shape():
     """Element-wise / matmul results report ttnn-logical shapes.
 
