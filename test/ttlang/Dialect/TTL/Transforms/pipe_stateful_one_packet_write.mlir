@@ -104,6 +104,101 @@ func.func @inline_word_write_preserves_async_write_state(
 
 // -----
 
+// A call in the loop may execute another NoC write and must prevent resident
+// write-command reuse across iterations.
+// CHECK-LABEL: func.func private @reprogram_write
+// CHECK: ttkernel.noc_async_write
+// CHECK-LABEL: func.func @call_reprograms_write_state
+// CHECK-NOT: ttkernel.noc_async_write_one_packet_set_state
+// CHECK: scf.for
+// CHECK: ttkernel.noc_async_write
+// CHECK: func.call @reprogram_write
+// CHECK-NOT: ttkernel.noc_async_write_one_packet_with_state
+func.func private @reprogram_write(
+    %src: i32, %dst: i32, %x: index, %y: index, %noc: i8) {
+  %size = arith.constant 2048 : i32
+  ttkernel.noc_async_write
+      %src, core[%x, %y], %dst, %size, noc %noc
+      : (i32, index, index, i32, i32, i8) -> ()
+  func.return
+}
+
+func.func @call_reprograms_write_state(
+    %src: i32, %dst: i32, %other_dst: i32, %x: index, %y: index,
+    %noc: i8) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %size = arith.constant 2048 : i32
+  scf.for %iteration = %c0 to %c4 step %c1 {
+    ttkernel.noc_async_write
+        %src, core[%x, %y], %dst, %size, noc %noc
+        : (i32, index, index, i32, i32, i8) -> ()
+    func.call @reprogram_write(%src, %other_dst, %x, %y, %noc)
+        : (i32, i32, index, index, i8) -> ()
+  }
+  func.return
+}
+
+// -----
+
+// A resolved helper with no write-command effects does not prevent state reuse.
+// CHECK-LABEL: func.func @pure_call_preserves_write_state
+// CHECK: ttkernel.noc_async_write_one_packet_set_state
+// CHECK: scf.for
+// CHECK: func.call @add_one
+// CHECK: ttkernel.noc_async_write_one_packet_with_state
+// CHECK-NOT: ttkernel.noc_async_write{{[ (]}}
+func.func private @add_one(%value: i32) -> i32 {
+  %one = arith.constant 1 : i32
+  %result = arith.addi %value, %one : i32
+  func.return %result : i32
+}
+
+func.func @pure_call_preserves_write_state(
+    %src: i32, %dst: i32, %x: index, %y: index, %noc: i8) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %size = arith.constant 2048 : i32
+  scf.for %iteration = %c0 to %c4 step %c1 {
+    %unused = func.call @add_one(%dst) : (i32) -> i32
+    ttkernel.noc_async_write
+        %src, core[%x, %y], %dst, %size, noc %noc
+        : (i32, index, index, i32, i32, i8) -> ()
+  }
+  func.return
+}
+
+// -----
+
+// An external callable has unknown command effects and must prevent state
+// reuse.
+// CHECK-LABEL: func.func @external_call_invalidates_write_state
+// CHECK-NOT: ttkernel.noc_async_write_one_packet_set_state
+// CHECK: scf.for
+// CHECK: ttkernel.noc_async_write
+// CHECK: func.call @external_side_effect
+// CHECK-NOT: ttkernel.noc_async_write_one_packet_with_state
+func.func private @external_side_effect(i32)
+
+func.func @external_call_invalidates_write_state(
+    %src: i32, %dst: i32, %x: index, %y: index, %noc: i8) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %size = arith.constant 2048 : i32
+  scf.for %iteration = %c0 to %c4 step %c1 {
+    ttkernel.noc_async_write
+        %src, core[%x, %y], %dst, %size, noc %noc
+        : (i32, index, index, i32, i32, i8) -> ()
+    func.call @external_side_effect(%dst) : (i32) -> ()
+  }
+  func.return
+}
+
+// -----
+
 // The inner loop reprograms the NoC write command before the outer send, so
 // only the inner send can reuse resident command state.
 // CHECK-LABEL: func.func @nested_sends_use_generic_writes
