@@ -1106,7 +1106,15 @@ class MeshDevice:
 
 
 def open_mesh_device(shape: MeshShape) -> MeshDevice:
-    """Open a simulated mesh device (stub)."""
+    """Open a simulated mesh device (stub).
+
+    ``shape`` is authoritative and is deliberately not checked against
+    :func:`GetNumAvailableDevices`, which reports a separate configuration value
+    (see :func:`set_num_devices`).  A simulated mesh costs nothing to "open", so
+    tests and examples size meshes directly rather than configuring a matching
+    device count first; requiring the two to agree would mean every such caller
+    had to set one.  Hardware would refuse a mesh larger than the machine.
+    """
     return MeshDevice(shape)
 
 
@@ -2554,12 +2562,30 @@ def _resolve_cluster_axes(
     return [cluster_axis % naxes]
 
 
+def _require_sum_reduction(math_op: Any) -> None:
+    """Reject a reduction operator other than sum.
+
+    Only the sum reduction is implemented.  ``math_op`` would otherwise be
+    swallowed by ``**kwargs`` and a caller asking for max/min/mul would receive a
+    sum -- wrong values with nothing to indicate it.  ``ttnn.ReduceType`` is not
+    part of this shim, so the check goes by name and accepts any sum-like value.
+    """
+    if math_op is None:
+        return
+    name = getattr(math_op, "name", None) or str(math_op)
+    if "sum" not in name.lower():
+        raise NotImplementedError(
+            f"all_reduce implements only the sum reduction, got math_op={math_op!r}"
+        )
+
+
 def all_reduce(
     input_tensor: Tensor,
     cluster_axis: Optional[int] = None,
     mesh_device: Optional[Any] = None,
     memory_config: Optional[MemoryConfig] = None,
     dtype: Optional[torch.dtype] = None,
+    math_op: Optional[Any] = None,
     **kwargs: Any,
 ) -> Tensor:
     """Sum-reduce across simulated devices.
@@ -2600,12 +2626,16 @@ def all_reduce(
         mesh_device: Ignored (accepted for API compatibility).
         memory_config: Optional output memory config.
         dtype: Optional output dtype.
+        math_op: Reduction operator.  Only a sum (or ``None``) is supported;
+            anything else raises ``NotImplementedError`` rather than returning a
+            sum the caller did not ask for.
         **kwargs: Additional keyword arguments accepted for API compatibility.
 
     Returns:
         Tensor where every partition contains the element-wise sum across the
         selected devices.
     """
+    _require_sum_reduction(math_op)
     msi = input_tensor.mesh_shard_info
     if msi is None:
         raise ValueError("Mesh device is required for all_reduce operation")

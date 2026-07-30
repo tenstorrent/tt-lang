@@ -232,3 +232,31 @@ those assertions or be run with assertions disabled via Python's `-O` flag,
 e.g. `PYTHONOPTIMIZE=1 tt-lang-sim script.py --dry-run`.  (The matmul-tutorial
 CI does exactly this when it runs the tutorial examples as dry-run smoke
 tests.)
+
+## Multidevice grids
+
+A launch grid of rank greater than two is interpreted as a device mesh over a
+Tensix core grid: the leading `len(grid) - 2` dimensions are device-mesh axes and
+the trailing two are the core grid.  A grid of rank two or less describes a single
+device, or the SPMD multi-chip case where every chip runs the identical program
+over the full tensor.
+
+The simulator does not split tensors physically; every node addresses one shared
+tensor.  Ownership is therefore checked rather than enforced by construction: a
+`ttl.copy()` whose tensor endpoint reaches outside the shard belonging to the
+node's device raises `MeshAccessError`, reproducing on the host a failure that
+hardware would produce from having separate memories.  Two consequences are worth
+noting:
+
+- A mesh-sharded tensor must be launched on a grid whose mesh axes equal the
+  tensor's mesh shape, including any axis of size 1.  `ShardTensorToMesh` spreads
+  a tensor over every device of the mesh as one flat sequence, so a mesh with two
+  or more axes larger than 1 collapses to a single axis; `ShardTensor2dMesh` and
+  `ShardTensorNdMesh` preserve the per-axis structure.
+- Ownership applies to tensor endpoints only.  Moving data between devices is done
+  with a pipe whose endpoints differ on a mesh axis, which the simulator classifies
+  as a fabric transfer and records in traces (see
+  [Tracing](https://github.com/tenstorrent/tt-lang/blob/main/docs/TRACING.md)).
+
+`examples/eltwise_pipe_multidevice.py` demonstrates both: a `2x2` device mesh over
+an `8x8` core grid, with a 4D pipe multicasting a tile across cards.

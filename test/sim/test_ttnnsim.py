@@ -3285,6 +3285,46 @@ class TestShardTensorNdMesh:
             ttnn.MeshShardInfo(mesh_shape=(2, 2), dims=(0,))
 
 
+class TestAllReduceMathOp:
+    """all_reduce refuses a reduction it does not implement.
+
+    Only the sum is implemented, and ``math_op`` would otherwise be absorbed by
+    the ``**kwargs`` accepted for API compatibility, so a caller asking for max
+    would silently receive a sum.  Wrong values are worse than an unsupported-op
+    error, so the operator is checked.
+    """
+
+    def _sharded(self) -> Any:
+        """Two shards holding 1s and 5s: a sum gives 6, a max would give 5."""
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2))
+        return ttnn.from_torch(
+            torch.tensor([[1.0, 1.0], [5.0, 5.0]]),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+
+    def test_default_sums(self) -> None:
+        assert ttnn.all_reduce(self._sharded()).to_torch()[0].tolist() == [6.0, 6.0]
+
+    @pytest.mark.parametrize("math_op", ["Max", "Min", "Mul"])
+    def test_non_sum_reduction_raises(self, math_op: str) -> None:
+        with pytest.raises(NotImplementedError, match="only the sum reduction"):
+            ttnn.all_reduce(self._sharded(), math_op=math_op)
+
+    def test_sum_like_math_op_is_accepted(self) -> None:
+        """An explicit sum request still works, however the caller spells it."""
+
+        class _ReduceType:
+            name = "Sum"
+
+        assert ttnn.all_reduce(self._sharded(), math_op="Sum").to_torch()[
+            0
+        ].tolist() == [6.0, 6.0]
+        assert ttnn.all_reduce(self._sharded(), math_op=_ReduceType()).to_torch()[
+            0
+        ].tolist() == [6.0, 6.0]
+
+
 class TestMapperMeshShapeValidation:
     """A mapper's mesh_shape must describe the mesh it is given.
 

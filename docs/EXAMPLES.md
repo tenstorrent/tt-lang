@@ -38,6 +38,7 @@ The hardware CI batch (`.github/scripts/compile-and-run-examples.sh`) uses the s
 | `errors/eltwise_add_error.py` | real | negative test (expect failure) | skip | Demonstrates a bad copy; must not exit 0. |
 | `eltwise_pipe.py` | real | yes | yes | |
 | `eltwise_pipe_node3.py` | real | yes | yes | |
+| `eltwise_pipe_multidevice.py` | real | yes | skip | 4D launch grid (`2x2` device mesh over an `8x8` core grid) with a 4D pipe multicasting a tile across cards; opted out of the hardware batch (`TTLANG_HARDWARE_CI: skip-compiler`). |
 | `matmul.py` | sim | yes | skip | Sim-backed; not in hardware batch until migrated (unlike `broadcast_demo.py`). |
 | `matmul_explicit_acc.py` | real | yes | yes | |
 | `singlecore_matmul.py` | real | yes | yes | |
