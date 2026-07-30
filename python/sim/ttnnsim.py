@@ -1178,6 +1178,42 @@ class MeshShardInfo:
         )
 
 
+def _normalize_shard_dim(dim: int, ndim: int, what: str = "mesh mapper dim") -> int:
+    """Resolve a tensor dim against ``ndim``, rejecting out-of-range values.
+
+    Negative indices count from the end as in torch.  A dim outside
+    ``[-ndim, ndim)`` is a typo rather than a wrap request: silently reducing it
+    modulo ``ndim`` would address an unintended dimension, or alias onto a
+    dimension another mesh axis already partitions and surface much later as an
+    "unsupported hierarchical sharding" error that blames the wrong thing.
+    """
+    if not -ndim <= dim < ndim:
+        raise ValueError(
+            f"{what} {dim} is out of range for a {ndim}-dimensional "
+            f"tensor (valid dims are {-ndim} to {ndim - 1})"
+        )
+    return dim % ndim
+
+
+def _validate_mapper_mesh_shape(
+    mesh: "MeshDevice", mesh_shape: tuple[int, ...], cls: str
+) -> None:
+    """Check that ``mesh_shape`` describes as many devices as ``mesh`` has.
+
+    Only the device total is compared, not the axis layout, so describing a
+    ``MeshShape(4)`` mesh as ``(1, 4)`` stays valid.  A differing total is
+    unrecoverable: shard counts, ownership boundaries and collective result
+    shapes are all derived from ``mesh_shape``, so the tensor would be validated
+    and gathered against a mesh that does not exist.
+    """
+    claimed = math.prod(mesh_shape)
+    if claimed != mesh.num_devices:
+        raise ValueError(
+            f"{cls} mesh_shape {tuple(mesh_shape)} describes {claimed} devices "
+            f"but the mesh has {mesh.num_devices} ({mesh.shape!r})"
+        )
+
+
 class TensorToMesh:
     """Base class for mesh mappers passed to :func:`from_torch` (mirrors ``ttnn.TensorToMesh``)."""
 
@@ -1212,7 +1248,8 @@ class ShardTensor2dMesh(TensorToMesh):
 
     Args:
         mesh: 2D mesh device (e.g. from :func:`open_mesh_device`).
-        mesh_shape: ``(rows, cols)`` grid shape for the mesh.
+        mesh_shape: ``(rows, cols)`` grid shape for the mesh.  Must describe as
+            many devices as ``mesh`` holds, though the axis layout may differ.
         dims: ``(dim_for_row_axis, dim_for_col_axis)`` — which tensor dim
             each mesh axis partitions.  Use ``None`` to leave that axis
             unsharded.
@@ -1232,6 +1269,12 @@ class ShardTensor2dMesh(TensorToMesh):
         mesh_shape: tuple[int, int],
         dims: tuple[Optional[int], Optional[int]],
     ) -> None:
+        if len(mesh_shape) != len(dims):
+            raise ValueError(
+                f"ShardTensor2dMesh mesh_shape {mesh_shape} and dims {dims} "
+                "must have the same number of axes"
+            )
+        _validate_mapper_mesh_shape(mesh, tuple(mesh_shape), "ShardTensor2dMesh")
         self.mesh = mesh
         self.mesh_shape = mesh_shape
         self.dims = dims
@@ -1248,7 +1291,8 @@ class ShardTensorNdMesh(TensorToMesh):
 
     Args:
         mesh: Mesh device (e.g. from :func:`open_mesh_device`).
-        mesh_shape: Axis sizes of the mesh, e.g. ``(2, 2, 2)``.
+        mesh_shape: Axis sizes of the mesh, e.g. ``(2, 2, 2)``.  Must describe as
+            many devices as ``mesh`` holds, though the axis layout may differ.
         dims: Which tensor dim each mesh axis partitions (``None`` to leave an
             axis unsharded).  Must be the same length as ``mesh_shape``.
 
@@ -1274,6 +1318,7 @@ class ShardTensorNdMesh(TensorToMesh):
                 f"ShardTensorNdMesh mesh_shape {mesh_shape} and dims {dims} "
                 "must have the same number of axes"
             )
+        _validate_mapper_mesh_shape(mesh, tuple(mesh_shape), "ShardTensorNdMesh")
         self.mesh = mesh
         self.mesh_shape = tuple(mesh_shape)
         self.dims = tuple(dims)
@@ -2160,11 +2205,12 @@ def from_torch(
             result = Tensor(tensor, layout, memory_config=eff_mc)
 
     if isinstance(mesh_mapper, ShardTensorToMesh):
-        d = mesh_mapper.dim % tensor.ndim
+        d = _normalize_shard_dim(mesh_mapper.dim, tensor.ndim)
         result.mesh_shard_info = _shard_to_mesh_info(mesh_mapper.mesh, d)
     elif isinstance(mesh_mapper, (ShardTensor2dMesh, ShardTensorNdMesh)):
         norm_dims = tuple(
-            None if d is None else d % tensor.ndim for d in mesh_mapper.dims
+            None if d is None else _normalize_shard_dim(d, tensor.ndim)
+            for d in mesh_mapper.dims
         )
         result.mesh_shard_info = MeshShardInfo(
             mesh_shape=tuple(mesh_mapper.mesh_shape), dims=norm_dims
@@ -2659,7 +2705,7 @@ def all_gather(
     active_axes = [k for k in axes if msi.dims[k] is not None and msi.mesh_shape[k] > 1]
 
     result = t
-    gather_dim = dim % t.ndim
+    gather_dim = _normalize_shard_dim(dim, t.ndim, "all_gather dim")
     for k in active_axes:
         shard_dim = cast(int, msi.dims[k]) % result.ndim
         n = msi.mesh_shape[k]

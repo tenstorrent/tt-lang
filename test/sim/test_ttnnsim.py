@@ -3285,6 +3285,76 @@ class TestShardTensorNdMesh:
             ttnn.MeshShardInfo(mesh_shape=(2, 2), dims=(0,))
 
 
+class TestMapperMeshShapeValidation:
+    """A mapper's mesh_shape must describe the mesh it is given.
+
+    Shard counts, ownership boundaries and collective result shapes are all read
+    off ``mesh_shape``, so a mesh_shape describing more (or fewer) devices than
+    the mesh holds would have the tensor validated and gathered against a mesh
+    that does not exist.  Only the device total is constrained, not the layout.
+    """
+
+    def test_nd_mapper_rejects_wrong_device_total(self) -> None:
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2, 2))  # 4 devices
+        with pytest.raises(ValueError, match="describes 8 devices but the mesh has 4"):
+            ttnn.ShardTensorNdMesh(mesh, mesh_shape=(2, 4), dims=(0, 1))
+
+    def test_2d_mapper_rejects_wrong_device_total(self) -> None:
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2, 2))
+        with pytest.raises(ValueError, match="describes 64 devices but the mesh has 4"):
+            ttnn.ShardTensor2dMesh(mesh, mesh_shape=(8, 8), dims=(0, 1))
+
+    def test_2d_mapper_rejects_mismatched_lengths(self) -> None:
+        """The axis-count check ShardTensorNdMesh has, on the 2D mapper too."""
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2, 2))
+        with pytest.raises(ValueError, match="same number of axes"):
+            ttnn.ShardTensor2dMesh(mesh, mesh_shape=(2, 2), dims=(0,))  # type: ignore[arg-type]
+
+    def test_same_total_different_layout_is_allowed(self) -> None:
+        """Describing a MeshShape(4) mesh as (1, 4) is a relabelling, not an error."""
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(4))
+        mapper = ttnn.ShardTensor2dMesh(mesh, mesh_shape=(1, 4), dims=(None, 0))
+        assert mapper.mesh_shape == (1, 4)
+
+
+class TestMapperDimRangeValidation:
+    """An out-of-range tensor dim is rejected instead of wrapping modulo ndim.
+
+    Wrapping turns a typo into a silently different sharding: on a 2-D tensor
+    ``dim=2`` would become dim 0, and ``dims=(0, -4)`` would become ``(0, 0)`` --
+    two mesh axes on one dimension, which surfaces later as an "unsupported
+    hierarchical sharding" error that blames the sharding rather than the dim.
+    """
+
+    def _from_torch(self, mapper: Any) -> Any:
+        return ttnn.from_torch(
+            torch.zeros(256, 256), layout=ttnn.ROW_MAJOR_LAYOUT, mesh_mapper=mapper
+        )
+
+    @pytest.mark.parametrize("dim", [2, 5, -3])
+    def test_shard_tensor_to_mesh_rejects_out_of_range(self, dim: int) -> None:
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(4))
+        with pytest.raises(ValueError, match="out of range for a 2-dimensional tensor"):
+            self._from_torch(ttnn.ShardTensorToMesh(mesh, dim=dim))
+
+    @pytest.mark.parametrize("dims", [(0, 7), (0, -4)])
+    def test_nd_mapper_rejects_out_of_range(self, dims: tuple[int, int]) -> None:
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2, 2))
+        with pytest.raises(ValueError, match="out of range for a 2-dimensional tensor"):
+            self._from_torch(ttnn.ShardTensorNdMesh(mesh, mesh_shape=(2, 2), dims=dims))
+
+    def test_in_range_negative_dims_still_normalize(self) -> None:
+        """Only out-of-range values are rejected; torch-style negatives still work."""
+        mesh4 = ttnn.open_mesh_device(ttnn.MeshShape(4))
+        assert self._from_torch(
+            ttnn.ShardTensorToMesh(mesh4, dim=-2)
+        ).mesh_shard_info.dims == (0,)
+        mesh2x2 = ttnn.open_mesh_device(ttnn.MeshShape(2, 2))
+        assert self._from_torch(
+            ttnn.ShardTensorNdMesh(mesh2x2, mesh_shape=(2, 2), dims=(0, -1))
+        ).mesh_shard_info.dims == (0, 1)
+
+
 class TestAllReduceNd:
     """all_reduce across an N-D mesh reduces along every active axis."""
 
@@ -3341,6 +3411,77 @@ class TestAllGatherNd:
         assert r.shape == torch.Size([8, 4, 4])
         assert torch.allclose(r[0:4], data)
         assert torch.allclose(r[4:8], data)
+
+    def test_out_of_range_gather_dim_raises(self) -> None:
+        """A gather dim the tensor does not have is rejected, not wrapped."""
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2))
+        t = ttnn.from_torch(
+            torch.zeros(4, 4),
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+        )
+        with pytest.raises(ValueError, match="all_gather dim 3 is out of range"):
+            ttnn.all_gather(t, dim=3)
+        # An in-range negative dim still resolves normally.
+        assert ttnn.all_gather(t, dim=-2).to_torch().shape == torch.Size([8, 4])
+
+
+class TestAllGatherPerDeviceView:
+    """Per-device views after gathering one axis of a two-axis mesh.
+
+    A gather leaves ``mesh_shard_info`` untouched and represents "every device now
+    holds the gathered result" by stacking identical copies along the gathered
+    axis's shard dim.  The consequence is worth pinning: the *other* axis keeps
+    partitioning its own dimension, so each device ends up with its own block of
+    that axis gathered across the axis that was collected -- not the whole tensor.
+    """
+
+    def _quadrants(self) -> tuple[Any, torch.Tensor]:
+        """4x4 over a 2x2 mesh; device (a, b) owns the quadrant holding a*2+b+1."""
+        data = torch.zeros(4, 4)
+        for a in range(2):
+            for b in range(2):
+                data[a * 2 : a * 2 + 2, b * 2 : b * 2 + 2] = a * 2 + b + 1
+        mesh = ttnn.open_mesh_device(ttnn.MeshShape(2, 2))
+        t = ttnn.from_torch(
+            data,
+            layout=ttnn.ROW_MAJOR_LAYOUT,
+            mesh_mapper=ttnn.ShardTensor2dMesh(mesh, mesh_shape=(2, 2), dims=(0, 1)),
+        )
+        return t, data
+
+    def test_gather_column_axis_keeps_row_blocking(self) -> None:
+        t, _ = self._quadrants()
+        result = ttnn.all_gather(t, dim=1, cluster_axis=1)
+        out = result.to_torch()
+        # Axis 1 held 2 shards, so its shard dim (dim 1) carries 2 copies.
+        assert out.shape == torch.Size([4, 8])
+        # Metadata is unchanged, and still divides evenly over both axes.
+        assert result.mesh_shard_info.mesh_shape == (2, 2)
+        assert result.mesh_shard_info.dims == (0, 1)
+
+        rows, cols = out.shape[0] // 2, out.shape[1] // 2
+        for i in range(2):
+            for j in range(2):
+                view = out[i * rows : (i + 1) * rows, j * cols : (j + 1) * cols]
+                # Device (i, j) sees row block i gathered over the column axis:
+                # the two quadrant values of that row block, and nothing else.
+                assert sorted(set(view.flatten().tolist())) == [
+                    i * 2 + 1.0,
+                    i * 2 + 2.0,
+                ]
+
+    def test_gather_row_axis_keeps_column_blocking(self) -> None:
+        """The mirror case: collecting axis 0 leaves axis 1's blocking intact."""
+        t, _ = self._quadrants()
+        out = ttnn.all_gather(t, dim=0, cluster_axis=0).to_torch()
+        assert out.shape == torch.Size([8, 4])
+        rows, cols = out.shape[0] // 2, out.shape[1] // 2
+        for i in range(2):
+            for j in range(2):
+                view = out[i * rows : (i + 1) * rows, j * cols : (j + 1) * cols]
+                # Device (i, j) sees column block j gathered over the row axis.
+                assert sorted(set(view.flatten().tolist())) == [j + 1.0, j + 3.0]
 
 
 class TestAllReduce2dMesh:
