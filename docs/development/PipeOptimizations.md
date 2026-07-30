@@ -239,12 +239,15 @@ uses scratch, and only the scalar residual accesses the original runtime DFB.
 This contract does not depend on the finalized logical-to-physical DFB
 allocation interface.
 
-Group selection conservatively counts both the widened temporary DFB types and
-transport scratch against the L1 budget. DFB block counts are rounded up to
-multiples of `R`, so this estimate is non-monotonic in `R`; for example, `R=5`
-can fit an existing five-block DFB when `R=4` requires eight blocks. Selection
-evaluates every `R` within a finite upper bound derived from the L1 budget and
-the mandatory bytes per group. It does not use a binary search over `R`.
+Group selection conservatively counts the widened temporary DFB types,
+receiver-published address-table storage, and transport scratch against the L1
+budget. It reuses `buildPipeResourcePlan` in all-published mode for the
+address-table bound, so the selector and final lowering use the same liveness
+coloring and alignment rules. DFB block counts are rounded up to multiples of
+`R`, so this estimate is non-monotonic in `R`; for example, `R=5` can fit an
+existing five-block DFB when `R=4` requires eight blocks. Selection evaluates
+every `R` within a finite upper bound derived from the L1 budget and the
+mandatory bytes per group. It does not use a binary search over `R`.
 
 #### Pipeline placement and allocation
 
