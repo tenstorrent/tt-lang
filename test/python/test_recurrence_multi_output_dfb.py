@@ -25,7 +25,7 @@ TILE = 32
 N_ITERS = 4
 K_TILES = 2
 M_TILES = 2
-N_BRANCH_ITERS = 4
+N_BRANCH_NODES = 2
 N_MULTI_OUTPUT_USES = 3
 
 
@@ -195,7 +195,7 @@ def multi_output_out_of_order_consumers(a, b, out):
                 ttl.copy(out_block, out[0:1, i : i + 1]).wait()
 
 
-@ttl.operation(grid=(1, 1))
+@ttl.operation(grid=(N_BRANCH_NODES, 1))
 def branch_intermediate_consumers(a, b, out):
     a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
     b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)
@@ -204,33 +204,33 @@ def branch_intermediate_consumers(a, b, out):
 
     @ttl.compute()
     def compute():
-        for i in range(N_BRANCH_ITERS):
-            a_block = a_dfb.wait()
-            b_block = b_dfb.wait()
-            sum_block = a_block + b_block
-            with sum_dfb.reserve() as sum_out:
-                sum_out.store(sum_block)
-            if i < 1:
-                with out_dfb.reserve() as out_block:
-                    out_block.store(ttl.math.reduce_sum(sum_block, dims=[1]))
-            else:
-                with out_dfb.reserve() as out_block:
-                    out_block.store(ttl.math.reduce_max(sum_block, dims=[1]))
-            _ = sum_dfb.wait()
+        node_x, _ = ttl.node(dims=2)
+        a_block = a_dfb.wait()
+        b_block = b_dfb.wait()
+        sum_block = a_block + b_block
+        with sum_dfb.reserve() as sum_out:
+            sum_out.store(sum_block)
+        if node_x == 0:
+            with out_dfb.reserve() as out_block:
+                out_block.store(ttl.math.reduce_sum(sum_block, dims=[1]))
+        else:
+            with out_dfb.reserve() as out_block:
+                out_block.store(ttl.math.reduce_max(sum_block, dims=[1]))
+        _ = sum_dfb.wait()
 
     @ttl.datamovement()
     def dm_read():
-        for _ in range(N_BRANCH_ITERS):
-            with a_dfb.reserve() as a_block:
-                ttl.copy(a[0:1, 0:1], a_block).wait()
-            with b_dfb.reserve() as b_block:
-                ttl.copy(b[0:1, 0:1], b_block).wait()
+        node_x, _ = ttl.node(dims=2)
+        with a_dfb.reserve() as a_block:
+            ttl.copy(a[0, node_x], a_block).wait()
+        with b_dfb.reserve() as b_block:
+            ttl.copy(b[0, node_x], b_block).wait()
 
     @ttl.datamovement()
     def dm_write():
-        for i in range(N_BRANCH_ITERS):
-            with out_dfb.wait() as out_block:
-                ttl.copy(out_block, out[0:1, i : i + 1]).wait()
+        node_x, _ = ttl.node(dims=2)
+        with out_dfb.wait() as out_block:
+            ttl.copy(out_block, out[0, node_x]).wait()
 
 
 def _expected_sum(a_torch, b_torch):
@@ -322,9 +322,9 @@ def test_multi_output_out_of_order_consumers(device):
 @pytest.mark.requires_device
 def test_branch_intermediate_consumers(device):
     torch.manual_seed(2)
-    a_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
-    b_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
-    out_torch = torch.zeros(TILE, N_BRANCH_ITERS * TILE, dtype=torch.bfloat16)
+    a_torch = torch.randn(TILE, N_BRANCH_NODES * TILE, dtype=torch.bfloat16)
+    b_torch = torch.randn(TILE, N_BRANCH_NODES * TILE, dtype=torch.bfloat16)
+    out_torch = torch.zeros(TILE, N_BRANCH_NODES * TILE, dtype=torch.bfloat16)
 
     a = to_dram(a_torch, device)
     b = to_dram(b_torch, device)
@@ -335,14 +335,13 @@ def test_branch_intermediate_consumers(device):
     result = ttnn.to_torch(out).float()
     sum_block = a_torch.float() + b_torch.float()
     expected = torch.zeros_like(result)
-    expected[:, :1] = torch.sum(sum_block, dim=1, keepdim=True)
-    row_max = torch.max(sum_block, dim=1, keepdim=True).values
-    for i in range(1, N_BRANCH_ITERS):
-        expected[:, i * TILE : i * TILE + 1] = row_max
+    expected[:, :1] = torch.sum(sum_block[:, :TILE], dim=1, keepdim=True)
+    expected[:, TILE : TILE + 1] = torch.max(
+        sum_block[:, TILE:], dim=1, keepdim=True
+    ).values
     assert_pcc(expected[:, :1], result[:, :1], threshold=0.99)
-    for i in range(1, N_BRANCH_ITERS):
-        assert_pcc(
-            expected[:, i * TILE : i * TILE + 1],
-            result[:, i * TILE : i * TILE + 1],
-            threshold=0.99,
-        )
+    assert_pcc(
+        expected[:, TILE : TILE + 1],
+        result[:, TILE : TILE + 1],
+        threshold=0.99,
+    )
