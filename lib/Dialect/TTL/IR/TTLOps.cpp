@@ -707,6 +707,11 @@ mlir::LogicalResult mlir::tt::ttl::PipeNetForeachSrcOp::verify() {
   return verifyPipeNetForeachBody(
       getOperation(), getBody(), SelectedPipeSrcType::get(getContext()),
       [](mlir::OpOperand &use, mlir::BlockArgument pipeArg) {
+        if (auto deviceIndex =
+                mlir::dyn_cast<SelectedPipeDestinationDeviceIndexOp>(
+                    use.getOwner())) {
+          return deviceIndex.getPipe() == pipeArg;
+        }
         auto copy = mlir::dyn_cast<CopyOp>(use.getOwner());
         if (!copy) {
           return false;
@@ -722,6 +727,10 @@ mlir::LogicalResult mlir::tt::ttl::PipeNetForeachDstOp::verify() {
   return verifyPipeNetForeachBody(
       getOperation(), getBody(), SelectedPipeDstType::get(getContext()),
       [](mlir::OpOperand &use, mlir::BlockArgument pipeArg) {
+        if (auto deviceIndex = mlir::dyn_cast<SelectedPipeSourceDeviceIndexOp>(
+                use.getOwner())) {
+          return deviceIndex.getPipe() == pipeArg;
+        }
         auto copy = mlir::dyn_cast<CopyOp>(use.getOwner());
         if (!copy) {
           return false;

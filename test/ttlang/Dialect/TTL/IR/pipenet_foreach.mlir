@@ -17,6 +17,9 @@ func.func @foreach_src_send() attributes {ttl.kernel_thread = #ttkernel.thread<n
       ]>} {
   ^bb0(%pipe: !ttl.selected_pipe_src):
     // CHECK: ^bb0(%[[PIPE:.*]]: !ttl.selected_pipe_src)
+    // CHECK: ttl.selected_pipe_destination_device_index %[[PIPE]]
+    %destination_device_index =
+        ttl.selected_pipe_destination_device_index %pipe : !ttl.selected_pipe_src
     // CHECK: ttl.copy %{{.*}}, %[[PIPE]]
     %xf = ttl.copy %cb, %pipe
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
@@ -47,6 +50,9 @@ func.func @foreach_dst_receive() attributes {ttl.kernel_thread = #ttkernel.threa
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     // CHECK: ^bb0(%[[PIPE:.*]]: !ttl.selected_pipe_dst)
+    // CHECK: ttl.selected_pipe_source_device_index %[[PIPE]]
+    %source_device_index =
+        ttl.selected_pipe_source_device_index %pipe : !ttl.selected_pipe_dst
     // CHECK: ttl.copy %[[PIPE]], %{{.*}}
     %xf = ttl.copy %pipe, %recv
         : (!ttl.selected_pipe_dst,
