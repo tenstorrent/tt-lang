@@ -276,9 +276,9 @@ or the finalized DFB runtime allocation contract.
 #### Measured result
 
 The pipes microbenchmark was measured on Blackhole with 128 distinct tiles,
-five warmup iterations, and twenty measured iterations. The no-DFB-reuse
-implementation was bit-exact for bf16 and fp32. Automatic selection uses
-`(R=64, K=2)`:
+five warmup iterations, and twenty measured iterations. The default
+transport-owned scratch lowering was bit-exact for bf16 and fp32. Automatic
+selection uses `(R=64, K=2)`:
 
 | Data type | tt-lang sender | C++ bounded-ring sender | tt-lang receiver | C++ bounded-ring receiver |
 | --- | ---: | ---: | ---: | ---: |
@@ -307,6 +307,29 @@ fixed generated-kernel overhead rather than per-transfer communication cost.
 The unconstrained batched/stateful NoC ceiling takes 6.96 us for 128 transfers,
 but does not enforce bounded receiver residency. The scalar C++ baseline is
 approximately 0.60 us per transfer.
+
+The bounded fan-in mux microbenchmark uses four saturated producers and one
+arbiter. Each producer owns a two-group landing ring (`K=2`) at the arbiter and
+sends four tiles per group (`R=4`). An ordinary least-squares fit over
+`T=64,128,256` distinct tiles per producer measures the recurring cost:
+
+| Metric | Default PipeTransport | Postprocessed reference | Difference |
+| --- | ---: | ---: | ---: |
+| Producer | 0.403399 us/tile | 0.404456 us/tile | -0.26% |
+| Arbiter | 0.403375 us/tile | 0.404443 us/tile | -0.26% |
+
+Both current fits have `r2 > 0.99998`, and every result is bit-exact. The
+reference numbers were previously obtained by removing DFB lifecycle
+operations from tt-lang-generated C++ before device-kernel compilation. The
+current numbers use compiler output without postprocessing. Generated kernels
+contain the stateful grouped writes and batched credit completion, with no DFB
+reserve, push, wait, pop, or pointer operations for transport-owned source or
+destination storage.
+
+After a clean Docker rebuild, `check-ttlang-all` passes 204 MLIR tests, 3
+binding tests, 162 packaging tests, 1,897 Python tests, 868 ME2E tests, and 81
+Python lit tests. The suites also report 3 skipped Python tests, 8 expected
+Python failures, 35 expected ME2E failures, and 1 unsupported Python lit test.
 
 #### Metal 2.0 DFB integration
 
