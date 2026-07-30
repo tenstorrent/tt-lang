@@ -2,13 +2,15 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#include "DFBAcquireReleaseAnalysis.h"
 #include "PipeGraph.h"
 #include "PipeTransferExpansion.h"
+#include "PipeTransportDFBAnalysis.h"
+#include "ttlang/Analysis/LoopIterationUtils.h"
 #include "ttlang/Analysis/ValueOriginAnalysis.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "DFBAllocationLimits.h"
+#include "ttlang/Dialect/TTL/Transforms/PipeConstants.h"
 #include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -24,9 +26,11 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <utility>
@@ -40,32 +44,13 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-enum class TransportDFBRole {
-  Source,
-  Destination,
-};
-
-struct TransportDFBUse {
-  Value dfb;
-  BindCBOp bind;
-  TransportDFBRole role = TransportDFBRole::Source;
-  PipeTransferNodeId transferNode = 0;
-  SmallVector<CBReserveOp> reserves;
-  SmallVector<CBPushOp> pushes;
-  SmallVector<CBWaitOp> waits;
-  SmallVector<CBPopOp> pops;
-  SmallVector<AttachCBOp> attaches;
-  CopyOp tensorCopy;
-  TensorSliceOp tensorSlice;
-};
-
 struct PipeTransportLoopCandidate {
   scf::ForOp loop;
   int64_t lowerBound = 0;
   int64_t transferCount = 0;
   SmallVector<const PipeTransferNode *, 1> transfers;
   SmallVector<PipeTransferCreateOp, 1> transferCreates;
-  SmallVector<TransportDFBUse, 0> dfbUses;
+  SmallVector<PipeTransportDFBUse, 0> dfbUses;
 };
 
 struct PipeTransportGrouping {
@@ -95,8 +80,8 @@ static int64_t
 getMinimumDestinationDepth(const PipeTransportLoopCandidate &candidate,
                            int64_t groupSize, bool requireOverlap) {
   int64_t minimumDepth = requireOverlap ? 2 : 1;
-  for (const TransportDFBUse &dfbUse : candidate.dfbUses) {
-    if (dfbUse.role != TransportDFBRole::Destination) {
+  for (const PipeTransportDFBUse &dfbUse : candidate.dfbUses) {
+    if (dfbUse.role != PipeTransportDFBRole::Destination) {
       continue;
     }
     auto dfbType = cast<CircularBufferType>(dfbUse.dfb.getType());
@@ -157,146 +142,12 @@ getGroupedTensorType(RankedTensorType blockType, int64_t blockSpan) {
                                blockType.getEncoding());
 }
 
-/// Return whether a value is independent of the candidate loop induction.
-static bool isLoopInvariant(Value value, scf::ForOp loop) {
-  if (loop.isDefinedOutsideOfLoop(value)) {
-    return true;
-  }
-  auto result = dyn_cast<OpResult>(value);
-  if (!result || !isPure(result.getOwner())) {
-    return false;
-  }
-  return llvm::all_of(result.getOwner()->getOperands(), [&](Value operand) {
-    return isLoopInvariant(operand, loop);
-  });
-}
-
-/// Return whether `slice` enumerates consecutive transfers from `loop`.
-static bool isContiguousLoopSlice(TensorSliceOp slice, scf::ForOp loop,
-                                  CircularBufferType dfbType) {
-  auto sliceType = cast<RankedTensorType>(slice.getResult().getType());
-  if (sliceType.getShape() != dfbType.getShape()) {
-    return false;
-  }
-  if (llvm::any_of(dfbType.getShape().drop_back(),
-                   [](int64_t dimension) { return dimension != 1; })) {
-    return false;
-  }
-  ValueRange indices = slice.getIndices();
-  if (indices.empty() || indices.back() != loop.getInductionVar()) {
-    return false;
-  }
-  return llvm::all_of(indices.drop_back(), [&](Value index) {
-    return isLoopInvariant(index, loop);
-  });
-}
-
-/// Collect one DFB's complete scalar transport lifecycle.
-static LogicalResult collectDFBUsePattern(PipeTransportLoopCandidate &candidate,
-                                          TransportDFBUse &dfbUse,
-                                          const PipeGraph &pipeGraph,
-                                          std::string &reason) {
-  scf::ForOp loop = candidate.loop;
-  for (OpOperand &use : dfbUse.dfb.getUses()) {
-    if (!isInsideLoop(loop, use.getOwner())) {
-      reason = "transport DFB has a use outside the candidate loop";
-      return failure();
-    }
-  }
-
-  loop.walk([&](Operation *operation) {
-    if (auto reserve = dyn_cast<CBReserveOp>(operation);
-        reserve && reserve.getCb() == dfbUse.dfb) {
-      dfbUse.reserves.push_back(reserve);
-    } else if (auto push = dyn_cast<CBPushOp>(operation);
-               push && push.getCb() == dfbUse.dfb) {
-      dfbUse.pushes.push_back(push);
-    } else if (auto wait = dyn_cast<CBWaitOp>(operation);
-               wait && wait.getCb() == dfbUse.dfb) {
-      dfbUse.waits.push_back(wait);
-    } else if (auto pop = dyn_cast<CBPopOp>(operation);
-               pop && pop.getCb() == dfbUse.dfb) {
-      dfbUse.pops.push_back(pop);
-    } else if (auto attach = dyn_cast<AttachCBOp>(operation);
-               attach && attach.getCb() == dfbUse.dfb) {
-      dfbUse.attaches.push_back(attach);
-    }
-  });
-
-  if (dfbUse.reserves.size() != 1 || dfbUse.pushes.size() != 1 ||
-      dfbUse.waits.size() != 1 || dfbUse.pops.size() != 1) {
-    reason = "transport DFB requires one reserve/push and one wait/pop";
-    return failure();
-  }
-
-  const DFBReleaseOwnerMaps &owners = pipeGraph.getDFBReleaseOwnerMaps();
-  if (lookupOwner<CBReserveOp>(owners.reserveByPush,
-                               dfbUse.pushes.front().getOperation()) !=
-          dfbUse.reserves.front() ||
-      lookupOwner<CBWaitOp>(owners.waitByPop,
-                            dfbUse.pops.front().getOperation()) !=
-          dfbUse.waits.front()) {
-    reason = "transport DFB releases do not have unique acquire owners";
-    return failure();
-  }
-
-  SmallVector<CopyOp> tensorCopies;
-  for (OpOperand &use : dfbUse.dfb.getUses()) {
-    Operation *operation = use.getOwner();
-    if (auto copy = dyn_cast<CopyOp>(operation)) {
-      bool expectedDirection = dfbUse.role == TransportDFBRole::Source
-                                   ? copy.getDst() == dfbUse.dfb
-                                   : copy.getSrc() == dfbUse.dfb;
-      if (expectedDirection) {
-        tensorCopies.push_back(copy);
-        continue;
-      }
-    }
-    if (isa<CBReserveOp, CBPushOp, CBWaitOp, CBPopOp, AttachCBOp>(operation)) {
-      continue;
-    }
-    if (dfbUse.role == TransportDFBRole::Source) {
-      const PipeTransferNode *transfer =
-          pipeGraph.getPipeTransferNodeForProtocolOp(operation);
-      if (transfer && transfer->id == dfbUse.transferNode &&
-          isa<PipeTransferSendOp>(operation)) {
-        continue;
-      }
-    }
-    reason = "transport DFB has an unsupported direct use";
-    return failure();
-  }
-
-  if (tensorCopies.size() != 1) {
-    reason = "transport DFB requires one tensor copy";
-    return failure();
-  }
-  dfbUse.tensorCopy = tensorCopies.front();
-  Value tensorValue = dfbUse.role == TransportDFBRole::Source
-                          ? dfbUse.tensorCopy.getSrc()
-                          : dfbUse.tensorCopy.getDst();
-  dfbUse.tensorSlice = tensorValue.getDefiningOp<TensorSliceOp>();
-  auto dfbType = cast<CircularBufferType>(dfbUse.dfb.getType());
-  if (!dfbUse.tensorSlice ||
-      !isContiguousLoopSlice(dfbUse.tensorSlice, loop, dfbType)) {
-    reason = "tensor copy is not a contiguous loop-indexed DFB block";
-    return failure();
-  }
-  if (!dfbUse.tensorCopy.getXf().hasOneUse() ||
-      !isa<WaitOp>(*dfbUse.tensorCopy.getXf().getUsers().begin())) {
-    reason = "tensor copy completion is observed outside one direct wait";
-    return failure();
-  }
-
-  return success();
-}
-
 /// Return or create the DFB record for one transfer role.
-static FailureOr<TransportDFBUse *>
+static FailureOr<PipeTransportDFBUse *>
 getOrAddDFBUse(PipeTransportLoopCandidate &candidate, Value dfb,
-               TransportDFBRole role, PipeTransferNodeId transferNode,
+               PipeTransportDFBRole role, PipeTransferNodeId transferNode,
                std::string &reason) {
-  for (TransportDFBUse &existing : candidate.dfbUses) {
+  for (PipeTransportDFBUse &existing : candidate.dfbUses) {
     if (existing.dfb != dfb) {
       continue;
     }
@@ -312,7 +163,7 @@ getOrAddDFBUse(PipeTransportLoopCandidate &candidate, Value dfb,
     reason = "transport DFB is not defined by ttl.bind_cb";
     return failure();
   }
-  TransportDFBUse dfbUse;
+  PipeTransportDFBUse dfbUse;
   dfbUse.dfb = dfb;
   dfbUse.bind = bind;
   dfbUse.role = role;
@@ -327,7 +178,7 @@ static LogicalResult validateLoopEffects(PipeTransportLoopCandidate &candidate,
                                          std::string &reason) {
   llvm::DenseSet<Operation *> asyncOperations;
   llvm::DenseSet<Operation *> allowedOperations;
-  for (TransportDFBUse &dfbUse : candidate.dfbUses) {
+  for (PipeTransportDFBUse &dfbUse : candidate.dfbUses) {
     llvm::for_each(dfbUse.reserves, [&](CBReserveOp reserve) {
       allowedOperations.insert(reserve);
     });
@@ -404,9 +255,11 @@ buildLoopCandidate(scf::ForOp loop,
     reason = "candidate loop has loop-carried values";
     return failure();
   }
-  std::optional<int64_t> lowerBound = getConstantIntValue(loop.getLowerBound());
-  std::optional<int64_t> upperBound = getConstantIntValue(loop.getUpperBound());
-  std::optional<int64_t> step = getConstantIntValue(loop.getStep());
+  std::optional<int64_t> lowerBound =
+      evaluateIndexExpression(loop.getLowerBound());
+  std::optional<int64_t> upperBound =
+      evaluateIndexExpression(loop.getUpperBound());
+  std::optional<int64_t> step = evaluateIndexExpression(loop.getStep());
   if (!lowerBound || !upperBound || !step || *step != 1 ||
       *upperBound <= *lowerBound) {
     reason = "candidate loop requires constant bounds and unit step";
@@ -422,9 +275,21 @@ buildLoopCandidate(scf::ForOp loop,
           "transfer is not scalar or does not execute in the candidate loop";
       return failure();
     }
+    if (transfer->transferContract != PipeTransferContract::PointToPoint ||
+        transfer->receiverEndpoints.size() != 1) {
+      reason = "grouped scratch storage requires one point-to-point receiver";
+      return failure();
+    }
+    const PipeReceiverEndpoint &receiverEndpoint =
+        pipeGraph.getPipeReceiverEndpoint(transfer->receiverEndpoints.front());
+    if (transfer->pipe.srcX == receiverEndpoint.receiver.x &&
+        transfer->pipe.srcY == receiverEndpoint.receiver.y) {
+      reason = "grouped scratch storage cannot alias source and destination";
+      return failure();
+    }
     auto send = cast<PipeTransferSendOp>(transfer->sendOp);
-    FailureOr<TransportDFBUse *> source =
-        getOrAddDFBUse(candidate, send.getSrc(), TransportDFBRole::Source,
+    FailureOr<PipeTransportDFBUse *> source =
+        getOrAddDFBUse(candidate, send.getSrc(), PipeTransportDFBRole::Source,
                        transfer->id, reason);
     if (failed(source)) {
       return failure();
@@ -455,7 +320,7 @@ buildLoopCandidate(scf::ForOp loop,
         return failure();
       }
       if (failed(getOrAddDFBUse(candidate, receiverDFB,
-                                TransportDFBRole::Destination, transfer->id,
+                                PipeTransportDFBRole::Destination, transfer->id,
                                 reason))) {
         return failure();
       }
@@ -475,8 +340,20 @@ buildLoopCandidate(scf::ForOp loop,
     }
   }
 
-  for (TransportDFBUse &dfbUse : candidate.dfbUses) {
-    if (failed(collectDFBUsePattern(candidate, dfbUse, pipeGraph, reason))) {
+  for (PipeTransportDFBUse &dfbUse : candidate.dfbUses) {
+    FailureOr<PipeTransportDFBUse> maybeDFBUse =
+        analyzePipeTransportDFBUse(candidate.loop, dfbUse.dfb, dfbUse.role,
+                                   dfbUse.transferNode, pipeGraph, reason);
+    if (failed(maybeDFBUse)) {
+      return failure();
+    }
+    dfbUse = std::move(*maybeDFBUse);
+    if (!hasOnlyPipeTransportLoopUses(candidate.loop, dfbUse.dfb)) {
+      reason = "transport DFB has a use outside the candidate loop";
+      return failure();
+    }
+    if (!hasPrivatePipeTransportDFBViews(dfbUse, pipeGraph)) {
+      reason = "transport DFB acquired views escape their transport role";
       return failure();
     }
   }
@@ -486,12 +363,51 @@ buildLoopCandidate(scf::ForOp loop,
   return std::move(candidate);
 }
 
+/// Compute scratch storage allocated for one grouped transport choice.
+static std::optional<uint64_t>
+getTransportScratchBytes(const PipeTransportLoopCandidate &candidate,
+                         int64_t groupSize, int64_t destinationDepth) {
+  uint64_t totalBytes = 0;
+  for (const PipeTransferNode *transfer : candidate.transfers) {
+    auto sendOp = cast<PipeTransferSendOp>(transfer->sendOp);
+    auto sourceType = cast<CircularBufferType>(sendOp.getSrc().getType());
+    FailureOr<uint64_t> sourceBlockBytes = getDFBAllocationSizeBytes(
+        CircularBufferType::get(sourceType.getContext(), sourceType.getShape(),
+                                sourceType.getElementType(), 1));
+    if (failed(sourceBlockBytes)) {
+      return std::nullopt;
+    }
+    std::optional<uint64_t> payloadBytes = llvm::checkedMulUnsigned(
+        *sourceBlockBytes, static_cast<uint64_t>(groupSize));
+    std::optional<uint64_t> destinationBytes =
+        payloadBytes
+            ? llvm::checkedMulUnsigned(*payloadBytes,
+                                       static_cast<uint64_t>(destinationDepth))
+            : std::nullopt;
+    if (!destinationBytes ||
+        *destinationBytes > std::numeric_limits<uint64_t>::max() -
+                                (kPipeSramScratchAlignmentBytes - 1)) {
+      return std::nullopt;
+    }
+    uint64_t alignedBytes =
+        llvm::alignTo(*destinationBytes,
+                      static_cast<uint64_t>(kPipeSramScratchAlignmentBytes));
+    std::optional<uint64_t> nextTotal =
+        llvm::checkedAddUnsigned(totalBytes, alignedBytes);
+    if (!nextTotal) {
+      return std::nullopt;
+    }
+    totalBytes = *nextTotal;
+  }
+  return totalBytes;
+}
+
 /// Compute storage and synchronization facts for one `(R, K)` choice.
 static std::optional<PipeTransportGrouping> evaluateGrouping(
     PipeTransportLoopCandidate &candidate, int64_t groupSize,
     int64_t destinationDepth,
     const DFBAllocationFootprint &allocationFootprint,
-    uint64_t budgetBytes) {
+    uint64_t existingScratchBytes, uint64_t budgetBytes) {
   if (groupSize <= 1 || groupSize > candidate.transferCount) {
     return std::nullopt;
   }
@@ -508,7 +424,7 @@ static std::optional<PipeTransportGrouping> evaluateGrouping(
   grouping.overlapsReceiver = fullGroupCount >= 2 && destinationDepth >= 2;
 
   llvm::DenseMap<int64_t, uint64_t> allocationBytesByIndex;
-  for (TransportDFBUse &dfbUse : candidate.dfbUses) {
+  for (PipeTransportDFBUse &dfbUse : candidate.dfbUses) {
     if (!llvm::checkedMul(cast<CircularBufferType>(dfbUse.dfb.getType())
                               .getElementsPerBlock(),
                           groupSize) ||
@@ -526,7 +442,7 @@ static std::optional<PipeTransportGrouping> evaluateGrouping(
     }
 
     int64_t depth =
-        dfbUse.role == TransportDFBRole::Source ? 1 : destinationDepth;
+        dfbUse.role == PipeTransportDFBRole::Source ? 1 : destinationDepth;
     auto oldType = cast<CircularBufferType>(dfbUse.dfb.getType());
     int64_t oldGroupDepth =
         oldType.getBlockCount() / groupSize +
@@ -554,10 +470,20 @@ static std::optional<PipeTransportGrouping> evaluateGrouping(
   FailureOr<uint64_t> totalBytes =
       allocationFootprint.getTotalBytesWithMinimumAllocations(
           allocationBytesByIndex);
-  if (failed(totalBytes) || *totalBytes > budgetBytes) {
+  std::optional<uint64_t> candidateScratchBytes =
+      getTransportScratchBytes(candidate, groupSize, destinationDepth);
+  std::optional<uint64_t> allScratchBytes =
+      candidateScratchBytes ? llvm::checkedAddUnsigned(existingScratchBytes,
+                                                       *candidateScratchBytes)
+                            : std::nullopt;
+  std::optional<uint64_t> allocationAndScratchBytes =
+      succeeded(totalBytes) && allScratchBytes
+          ? llvm::checkedAddUnsigned(*totalBytes, *allScratchBytes)
+          : std::nullopt;
+  if (!allocationAndScratchBytes || *allocationAndScratchBytes > budgetBytes) {
     return std::nullopt;
   }
-  grouping.allocationBytes = *totalBytes;
+  grouping.allocationBytes = *allocationAndScratchBytes;
   return grouping;
 }
 
@@ -566,7 +492,7 @@ static std::optional<int64_t>
 getGroupSizeUpperBound(PipeTransportLoopCandidate &candidate,
                        int64_t upperBound, uint64_t budgetBytes) {
   llvm::DenseMap<int64_t, uint64_t> bytesPerBlockByIndex;
-  for (TransportDFBUse &dfbUse : candidate.dfbUses) {
+  for (PipeTransportDFBUse &dfbUse : candidate.dfbUses) {
     auto oldType = cast<CircularBufferType>(dfbUse.dfb.getType());
     auto oneBlockType = CircularBufferType::get(
         oldType.getContext(), oldType.getShape(), oldType.getElementType(), 1);
@@ -621,7 +547,8 @@ static bool isBetterGrouping(const PipeTransportGrouping &candidate,
 /// Select an explicit upper-bound or automatic group size.
 static std::optional<PipeTransportGrouping> selectGrouping(
     PipeTransportLoopCandidate &candidate, int64_t requestedGroupSize,
-    const DFBAllocationFootprint &allocationFootprint, uint64_t budgetBytes) {
+    const DFBAllocationFootprint &allocationFootprint,
+    uint64_t existingScratchBytes, uint64_t budgetBytes) {
   int64_t upperBound =
       requestedGroupSize > 1 ? requestedGroupSize : candidate.transferCount;
   std::optional<int64_t> maybeUpperBound =
@@ -638,7 +565,7 @@ static std::optional<PipeTransportGrouping> selectGrouping(
         getMinimumDestinationDepth(candidate, groupSize, requireOverlap);
     std::optional<PipeTransportGrouping> grouping = evaluateGrouping(
         candidate, groupSize, destinationDepth, allocationFootprint,
-        budgetBytes);
+        existingScratchBytes, budgetBytes);
     if (grouping && (!selected || isBetterGrouping(*grouping, *selected))) {
       selected = std::move(grouping);
     }
@@ -691,7 +618,7 @@ static void createGroupedTransfers(PipeTransportLoopCandidate &candidate,
 }
 
 /// Resize one DFB declaration without changing its block shape.
-static void resizeDFB(TransportDFBUse &dfbUse, int64_t blockCount,
+static void resizeDFB(PipeTransportDFBUse &dfbUse, int64_t blockCount,
                       IRRewriter &rewriter) {
   auto oldType = cast<CircularBufferType>(dfbUse.dfb.getType());
   auto newType =
@@ -704,7 +631,7 @@ static void resizeDFB(TransportDFBUse &dfbUse, int64_t blockCount,
 }
 
 /// Widen one scalar DFB lifecycle to a complete transfer group.
-static void groupDFBLifecycle(TransportDFBUse &dfbUse, int64_t groupSize,
+static void groupDFBLifecycle(PipeTransportDFBUse &dfbUse, int64_t groupSize,
                               IRRewriter &rewriter) {
   auto dfbType = cast<CircularBufferType>(dfbUse.dfb.getType());
   std::optional<int64_t> pageCount =
@@ -781,7 +708,7 @@ static void applyGrouping(PipeTransportLoopCandidate &candidate,
     candidate.loop.getStepMutable().assign(groupStep);
   });
 
-  for (TransportDFBUse &dfbUse : candidate.dfbUses) {
+  for (PipeTransportDFBUse &dfbUse : candidate.dfbUses) {
     int64_t blockCount = grouping.blockCounts.lookup(dfbUse.dfb);
     assert(blockCount > 0 && "selected grouping has no DFB allocation");
     resizeDFB(dfbUse, blockCount, rewriter);
@@ -848,6 +775,7 @@ struct TTLFormPipeTransportsPass
     }
 
     IRRewriter rewriter(module.getContext());
+    uint64_t selectedScratchBytes = 0;
     for (PipeTransportLoopCandidate &candidate : candidates) {
       FailureOr<DFBAllocationFootprint> allocationFootprint =
           getDFBAllocationFootprint(module);
@@ -863,7 +791,7 @@ struct TTLFormPipeTransportsPass
       uint64_t budgetBytes = getUsableDFBL1Bytes(module, overrideBytes);
       std::optional<PipeTransportGrouping> grouping =
           selectGrouping(candidate, groupSize, *allocationFootprint,
-                         budgetBytes);
+                         selectedScratchBytes, budgetBytes);
       if (!grouping) {
         debugReject(candidate.loop,
                     "no group with R > 1 fits the L1 DFB budget");
@@ -877,6 +805,15 @@ struct TTLFormPipeTransportsPass
                  << " groups=" << grouping->fullGroupCount
                  << " residual=" << grouping->residualCount << " l1="
                  << grouping->allocationBytes << "/" << budgetBytes << "\n");
+      std::optional<uint64_t> candidateScratchBytes = getTransportScratchBytes(
+          candidate, grouping->groupSize, grouping->destinationDepth);
+      assert(candidateScratchBytes &&
+             "selected grouping has no scratch allocation");
+      std::optional<uint64_t> nextScratchBytes = llvm::checkedAddUnsigned(
+          selectedScratchBytes, *candidateScratchBytes);
+      assert(nextScratchBytes &&
+             "selected scratch allocation exceeds uint64_t");
+      selectedScratchBytes = *nextScratchBytes;
       applyGrouping(candidate, *grouping, rewriter);
     }
   }
