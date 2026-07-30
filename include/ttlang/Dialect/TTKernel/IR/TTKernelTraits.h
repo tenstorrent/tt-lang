@@ -110,6 +110,12 @@ class TTKernelNocCommandStatePreservingOpTrait
     : public mlir::OpTrait::TraitBase<
           ConcreteType, TTKernelNocCommandStatePreservingOpTrait> {};
 
+/// Identifies operations whose effect on resident NoC commands is unknown.
+template <typename ConcreteType>
+class TTKernelNocCommandStateUnknownOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType,
+                                      TTKernelNocCommandStateUnknownOpTrait> {};
+
 /// NoC command resources tracked by stateful command optimizations.
 enum class NocCommandClass {
   Read,
@@ -124,6 +130,9 @@ enum class NocCommandClass {
 /// stateful command reuse.
 inline bool mayReprogramNocCommand(Operation *op,
                                    NocCommandClass commandClass) {
+  if (op->hasTrait<TTKernelNocCommandStateUnknownOpTrait>()) {
+    return true;
+  }
   if (!op->hasTrait<TTKernelNocOpTrait>() ||
       op->hasTrait<TTKernelNocCommandStatePreservingOpTrait>()) {
     return false;
