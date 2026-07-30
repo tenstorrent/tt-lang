@@ -213,14 +213,16 @@ def cache_roots() -> list:
 def resolve_cache_root(report: Report) -> Path:
     """The first candidate root that actually holds a built cache.
 
-    Tested by looking for a firmware directory rather than by trusting the
-    variable, because a wrong root silently yields no ELFs and therefore no
-    symbols, which is the failure that looks like a broken feature.
+    Tested by looking for a firmware or kernel directory rather than by trusting
+    the variable. Some cache configurations contain compiled kernels but no
+    cached firmware, and rejecting those roots silently loses all symbols.
     """
     tried = []
     for candidate in cache_roots():
         tried.append(str(candidate))
-        if any(candidate.glob("*/firmware")):
+        if any(candidate.glob("*/firmware")) or any(
+            candidate.glob("*/kernels")
+        ):
             report.say(f"kernel cache: {candidate}")
             return candidate
     report.say(f"no built kernel cache found; PCs only. Tried: {', '.join(tried)}")
