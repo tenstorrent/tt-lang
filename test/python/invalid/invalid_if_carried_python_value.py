@@ -2,12 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+# REQUIRES: ttnn
 # RUN: env TTLANG_COMPILE_ONLY=1 not %python %s 2>&1 | FileCheck %s
 
 """
 Validation test: plain Python values reassigned in an if statement are rejected
-with a source-level diagnostic. Torch tensors are sufficient here because the
-test fails during frontend compilation before device execution.
+with a source-level diagnostic.
 """
 
 import os
@@ -15,7 +15,16 @@ import os
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
 import torch
+import ttnn
 import ttl
+
+
+def _host_ttnn(shape):
+    return ttnn.from_torch(
+        torch.zeros(shape, dtype=torch.bfloat16),
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+    )
 
 
 # CHECK: Variable 'tile_count' is reassigned inside an if statement, but it is a plain Python value, such as a tuple, list, string, or integer; TT-Lang only supports reassigning TT-Lang tensor, block, and scalar values across an if statement; move the Python assignment outside the if statement or use a different local variable name inside the branch
@@ -44,6 +53,6 @@ def invalid_if_carried_python_value(inp, out):
 
 
 if __name__ == "__main__":
-    inp = torch.ones((32, 32), dtype=torch.bfloat16)
-    out = torch.zeros((32, 32), dtype=torch.bfloat16)
+    inp = _host_ttnn((32, 32))
+    out = _host_ttnn((32, 32))
     invalid_if_carried_python_value(inp, out)

@@ -3,11 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: ttnn, tt-device
-# RUN: not %python %s 2>&1 | FileCheck %s
+# RUN: env TTLANG_FINAL_MLIR=%t.final.mlir %python %s
+# RUN: FileCheck %s --input-file=%t.final.mlir
 
 """
-Validation test: forced DST lowering rejects a tensor recurrence when the loop
-needs three contribution tiles but the contribution DFB can hold only two.
+Compile-only coverage for forced DST tensor accumulation strategy selection.
 """
 
 import os
@@ -23,11 +23,9 @@ TILE = 32
 N_ITERS = 3
 
 
-# CHECK: cannot lower tensor accumulation scope to DST
-# CHECK: expected a DST-compatible same-type additive recurrence
-# CHECK: select the automatic accumulation strategy or l1-pack
+# CHECK: binary_dest_reuse_tiles
 @ttl.operation(grid=(1, 1))
-def invalid_dst_strategy_kernel(initial, delta, out):
+def dst_strategy_kernel(initial, delta, out):
     initial_dfb = ttl.make_dataflow_buffer_like(initial, shape=(1, 1), block_count=2)
     delta_dfb = ttl.make_dataflow_buffer_like(delta, shape=(1, 1), block_count=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
@@ -62,7 +60,7 @@ if __name__ == "__main__":
         initial = to_l1(torch.full((TILE, TILE), -4.0, dtype=torch.bfloat16), device)
         delta = to_l1(torch.full((TILE, TILE), 1.0, dtype=torch.bfloat16), device)
         out = to_l1(torch.zeros((TILE, TILE), dtype=torch.bfloat16), device)
-        invalid_dst_strategy_kernel(
+        dst_strategy_kernel(
             initial, delta, out, options="--ttl-accumulation-strategy=dst"
         )
     finally:

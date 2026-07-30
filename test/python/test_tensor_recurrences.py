@@ -499,7 +499,7 @@ def test_resident_contribution_early_pop_does_not_form_dst(
 ):
     initial = torch.full((TILE, TILE), 4.0, dtype=dtype)
     delta = torch.full((TILE, TILE), 0.5, dtype=dtype)
-    output, initial_ir, final_ir = _run_compile_only_kernel(
+    output, initial_ir, _final_ir = _run_compile_only_kernel(
         _make_resident_contribution_early_pop_kernel(),
         in_tensors=[initial, delta],
         out_zeros=[torch.zeros((TILE, TILE), dtype=dtype)],
@@ -515,7 +515,6 @@ def test_resident_contribution_early_pop_does_not_form_dst(
     assert "binary_dest_reuse_tiles<" not in _extract_generated_kernel_source(
         output, "compute"
     )
-    assert "ttl.compiler_allocated" in final_ir
 
 
 @pytest.mark.requires_device

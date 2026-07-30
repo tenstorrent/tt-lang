@@ -8,6 +8,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang/Dialect/TTL/Transforms/AccumulationUtils.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"
@@ -103,6 +104,16 @@ static bool requiresDstAccumulation(ComputeOp op) {
       .wasInterrupted();
 }
 
+static void annotateReductionLoop(scf::ForOp loop, OpBuilder &builder,
+                                  int64_t scopeId) {
+  MLIRContext *context = builder.getContext();
+  loop->setAttr(kReductionLoopAttrName, builder.getUnitAttr());
+  loop->setAttr(kL1AccInitialAttrName,
+                AccumulationInitialModeAttr::get(
+                    context, AccumulationInitialMode::Overwrite));
+  loop->setAttr(kL1AccScopeIdAttrName, builder.getI64IntegerAttr(scopeId));
+}
+
 /// Generate parallel-outer / reduction-inner loop structure for accumulating
 /// computes. DstSectionOp wraps the reduction loop + stores so DST persists
 /// across reduction iterations.
@@ -118,7 +129,8 @@ static scf::LoopNest generateAccumulatingLoops(
     PatternRewriter &rewriter, Location loc, ComputeOp op,
     ArrayRef<Range> iterDomain, ArrayRef<AffineMap> indexingMaps,
     ArrayRef<StringAttr> iterTypes, ArrayRef<Value> lowerBounds,
-    ArrayRef<Value> upperBounds, ArrayRef<Value> steps) {
+    ArrayRef<Value> upperBounds, ArrayRef<Value> steps,
+    int64_t reductionScopeId) {
 
   // Separate parallel and reduction dim indices.
   SmallVector<unsigned> parallelDims, reductionDims;
@@ -303,7 +315,7 @@ static scf::LoopNest generateAccumulatingLoops(
           unsigned origDim = reductionDims[idx];
           loop->setAttr(kTileLoopStrideAttrName,
                         parBuilder.getIndexAttr(domainStrides[origDim]));
-          loop->setAttr(kReductionLoopAttrName, parBuilder.getUnitAttr());
+          annotateReductionLoop(loop, parBuilder, reductionScopeId);
         }
 
         // Stores after the reduction loop, inside the DstSectionOp.
@@ -448,9 +460,10 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
       if (isAccumulating) {
         if (dstAccumulation || requiresDstAccumulation(op)) {
           usedDstAccumulation = true;
-          return generateAccumulatingLoops(rewriter, loc, op, iterDomain,
-                                           indexingMaps, iterTypes, lowerBounds,
-                                           upperBounds, steps);
+          return generateAccumulatingLoops(
+              rewriter, loc, op, iterDomain, indexingMaps, iterTypes,
+              lowerBounds, upperBounds, steps,
+              getNextL1AccScopeId(op->getParentOfType<func::FuncOp>()));
         }
       }
 
@@ -492,13 +505,15 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
       domainStrides = computeStrides(domainSizes);
     }
     if (!usedDstAccumulation) {
+      int64_t reductionScopeId =
+          getNextL1AccScopeId(op->getParentOfType<func::FuncOp>());
       // Loops are in declaration order, matching iterTypes.
       for (auto [idx, loop] : llvm::enumerate(loopNest.loops)) {
         int64_t stride =
             fullStridesAttr ? fullStridesAttr[idx] : domainStrides[idx];
         loop->setAttr(kTileLoopStrideAttrName, rewriter.getIndexAttr(stride));
         if (iterTypes[idx].getValue() == "reduction") {
-          loop->setAttr(kReductionLoopAttrName, rewriter.getUnitAttr());
+          annotateReductionLoop(loop, rewriter, reductionScopeId);
         }
       }
     }
