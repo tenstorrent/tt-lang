@@ -9,6 +9,7 @@ from unittest import mock
 import pytest
 
 import ttl
+import ttl.atom as ttl_atom
 import ttl.ttl_api as ttl_api
 
 
@@ -175,7 +176,6 @@ class TestMeshProgramPlacement:
 
         monkeypatch.setattr(ttl_api, "_get_registered_threads", lambda: [object()])
         monkeypatch.setattr(ttl_api, "_build_operation_pipenets", lambda *_: object())
-        monkeypatch.setattr(ttl_api, "_collect_cb_configs", lambda *_: [])
 
         def fake_lower_program_to_kernel(**kwargs):
             calls.append(kwargs)
@@ -207,6 +207,55 @@ class TestMeshProgramPlacement:
         assert calls[0]["mesh_program_placements"] == [
             ttl_api.MeshProgramPlacement((0, 0), (0, 1))
         ]
+
+    def test_operation_forwards_device_domain_to_explicit_compiler(self, monkeypatch):
+        domain = ttl.DeviceDomain((1, 2))
+        decorator_options = []
+
+        def fake_pykernel_gen(**kwargs):
+            decorator_options.append(kwargs)
+            return lambda fn: fn
+
+        monkeypatch.setattr(ttl_atom, "pykernel_gen", fake_pykernel_gen)
+        monkeypatch.setattr(ttl_atom, "_has_explicit_kernels", lambda _: True)
+
+        @ttl_atom.operation(grid=(1, 1), device_domain=domain)
+        def operation():
+            pass
+
+        assert decorator_options[0]["device_domain"] is domain
+
+    def test_unified_compiler_forwards_device_domain(self, monkeypatch):
+        domain = ttl.DeviceDomain((1, 2))
+        calls = []
+
+        def fake_compile_atom(*args, **kwargs):
+            calls.append((args, kwargs))
+            return "compiled"
+
+        monkeypatch.setattr(ttl_atom, "_compile_atom", fake_compile_atom)
+        decorator_options = {
+            "num_outs": 1,
+            "memory_space": "L1",
+            "tiled": True,
+            "fp32_dest_acc_en": None,
+            "dst_full_sync_en": None,
+            "device_domain": domain,
+        }
+
+        result = ttl_atom._compile_unified_operation(
+            object(),
+            decorator_options,
+            (),
+            {},
+            (1, 1),
+            0,
+            None,
+            ttl.CompilerOptions(),
+        )
+
+        assert result == "compiled"
+        assert calls[0][1]["device_domain"] is domain
 
     def test_compiled_kernel_forwards_mesh_program_placements(self, monkeypatch):
         placement = ttl_api.MeshProgramPlacement((0, 0), (0, 3))
