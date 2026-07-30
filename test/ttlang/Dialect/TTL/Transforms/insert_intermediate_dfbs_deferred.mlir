@@ -3,6 +3,13 @@
 // leave consumers ready for the final convert-ttl-to-compute pass.
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-form-producer-compute,ttl-insert-intermediate-dfbs))' | FileCheck %s --check-prefix=DEFERRED
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-form-producer-compute,ttl-insert-intermediate-dfbs,convert-ttl-to-compute,ttl-auto-sync))' | FileCheck %s --check-prefix=FULL
+// The unsplit run covers concurrent processing of multiple functions.
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(func.func(ttl-form-producer-compute,ttl-insert-intermediate-dfbs))' | FileCheck %s --check-prefix=MULTIFUNC
+
+// MULTIFUNC-LABEL: func.func @stored_add_then_reduce
+// MULTIFUNC: ttl.bind_cb{{.*}} {ttl.compiler_allocated}
+// MULTIFUNC-LABEL: func.func @state_update_feeds_broadcast
+// MULTIFUNC: ttl.bind_cb{{.*}} {ttl.compiler_allocated}
 
 // -----
 

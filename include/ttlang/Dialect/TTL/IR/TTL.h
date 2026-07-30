@@ -285,8 +285,8 @@ inline std::optional<int64_t> getCBIndexAttr(mlir::Operation *compute,
 // Compiler-Allocated DFB Utilities
 //===----------------------------------------------------------------------===//
 
-/// Return the next available DFB index for the module.
-int32_t getNextAvailableDFBIndex(mlir::ModuleOp mod);
+/// Return the next available DFB index within an operation and its regions.
+int32_t getNextAvailableDFBIndex(mlir::Operation *scopeOp);
 
 } // namespace mlir::tt::ttl
 

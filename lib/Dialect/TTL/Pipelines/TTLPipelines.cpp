@@ -51,6 +51,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   pm.addNestedPass<func::FuncOp>(createTTLInsertCopyWait());
   pm.addPass(createTTLConvertTTLToCompute());
   buildTTLAutoSyncPipeline(pm.nest<func::FuncOp>());
+  pm.addPass(createTTLFinalizeDFBIndices());
   {
     TTLSetComputeKernelConfigOptions configOpts;
     configOpts.reduceFullFp32 = options.reduceFullFp32;
@@ -73,7 +74,6 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   if (options.maximizeDST) {
     pm.addPass(createTTLScheduleOperations());
   }
-  pm.addPass(createTTLFinalizeDFBIndices());
   pm.addPass(createTTLAnnotateCBAssociations());
   pm.addPass(createTTLVerifyPipeNetGuards());
   pm.addPass(createTTLVerifyDFBSPSC());

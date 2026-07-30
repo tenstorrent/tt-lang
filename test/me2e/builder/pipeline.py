@@ -45,8 +45,9 @@ def compile_ttl_to_ttkernel(
         f"ttl-set-compute-kernel-config{{enable-fpu-binary-ops={fpu_flag}}}"
     )
 
-    # Build per-function passes.
-    func_passes = [
+    # Finalize DFB indices before compute configuration copies them into
+    # function attributes.
+    dfb_func_passes = [
         "ttl-insert-accumulation-scopes",
         f"ttl-lower-accumulation-scopes{{strategy={accumulation_strategy}}}",
         "ttl-materialize-loop-state",
@@ -59,16 +60,19 @@ def compile_ttl_to_ttkernel(
         "ttl-insert-copy-wait",
         "convert-ttl-to-compute",
         "ttl-auto-sync",
+    ]
+    lowering_func_passes = [
         set_compute_config_pass,
         "ttl-assign-dst",
     ]
     if maximize_dst:
-        func_passes.append("ttl-subblock-compute-for-dst")
+        lowering_func_passes.append("ttl-subblock-compute-for-dst")
     dst_acc_str = "true" if maximize_dst else "false"
-    func_passes.append(f"ttl-lower-to-loops{{dst-accumulation={dst_acc_str}}}")
+    lowering_func_passes.append(f"ttl-lower-to-loops{{dst-accumulation={dst_acc_str}}}")
     if maximize_dst:
-        func_passes.append("ttl-schedule-operations")
-    func_pipeline = ",".join(func_passes)
+        lowering_func_passes.append("ttl-schedule-operations")
+    dfb_func_pipeline = ",".join(dfb_func_passes)
+    lowering_func_pipeline = ",".join(lowering_func_passes)
 
     specialize_passes = ""
     if specialize_cores:
@@ -76,8 +80,9 @@ def compile_ttl_to_ttkernel(
 
     pipeline_str = (
         f"builtin.module("
-        f"func.func({func_pipeline}),"
+        f"func.func({dfb_func_pipeline}),"
         f"ttl-finalize-dfb-indices,"
+        f"func.func({lowering_func_pipeline}),"
         f"func.func(ttl-annotate-cb-associations),"
         f"ttl-verify-pipenet-guards,"
         f"ttl-verify-dfb-spsc,"

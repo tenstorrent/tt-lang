@@ -9,7 +9,6 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
-#include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/LogicalResult.h"
 
@@ -23,28 +22,25 @@ struct DFBMaterializedValue {
   /// DFB-attached tensor value that should replace the consumer operand.
   Value materialized;
 
-  /// Source tensor value used to key fallback materialization reuse.
+  /// Original tensor value before materialization.
   Value source;
 };
 
 /// Allocates a fresh compiler-managed dataflow buffer and emits its
 /// `bind_cb` at function entry, where `finalize-dfb-indices` requires every
-/// compiler-allocated bind to live. The assigned DFB index is provisional;
-/// `finalize-dfb-indices` performs physical index reuse and validates the
-/// hardware DFB-index limit. Compiler-managed intermediates use one slot: they
-/// carry a single SSA value inside one compute thread, not a pipelined transfer
-/// between independently scheduled threads. The builder's insertion point is
-/// left at the new `bind_cb`; callers that need to emit elsewhere should wrap
-/// the call in `OpBuilder::InsertionGuard`.
+/// compiler-allocated bind to live. The assigned DFB index is provisional and
+/// unique within the kernel. `finalize-dfb-indices` assigns module-wide
+/// physical indices, performs lifetime-based reuse, and validates the hardware
+/// DFB-index limit. Compiler-managed intermediates use one slot: they carry a
+/// single SSA value inside one compute kernel, not a pipelined transfer between
+/// independently scheduled kernels. The builder's insertion point is left at
+/// the new `bind_cb`; callers that need to emit elsewhere should wrap the call
+/// in `OpBuilder::InsertionGuard`.
 BindCBOp createCompilerAllocatedDFB(RankedTensorType tensorType, Location loc,
-                                    func::FuncOp funcOp, ModuleOp moduleOp,
-                                    OpBuilder &builder);
+                                    func::FuncOp funcOp, OpBuilder &builder);
 
 /// Pushes `tensor` into the next slot of `dfb` via `cb_reserve` + `store`.
-/// Passing a unit `accumulate` attribute makes the store an L1
-/// read-modify-write into the same slot instead of an overwrite.
-StoreOp createDFBStore(Value tensor, Value dfb, OpBuilder &builder,
-                       UnitAttr accumulate = nullptr);
+StoreOp createDFBStore(Value tensor, Value dfb, OpBuilder &builder);
 
 /// Consumes one slot of `dfb` as tensor SSA via `cb_wait` + `attach_cb`.
 /// Callers use the returned attach's result wherever a tensor view of the slot
@@ -56,7 +52,7 @@ AttachCBOp createDFBWaitAndAttach(Value dfb, RankedTensorType tensorType,
 /// DFB for one consumer. Compute results are materialized atomically by
 /// `TTLInsertIntermediateDFBs` so one producer compute is rebuilt at most once.
 FailureOr<DFBMaterializedValue>
-materializeToDFB(Value intermediate, ModuleOp moduleOp, OpBuilder &builder);
+materializeToDFB(Value intermediate, func::FuncOp funcOp, OpBuilder &builder);
 
 } // namespace mlir::tt::ttl
 

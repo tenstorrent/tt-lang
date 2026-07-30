@@ -322,10 +322,10 @@ bool sharePackCB(scf::ForOp loopA, scf::ForOp loopB) {
 // Compiler-allocated DFB utilities
 //===----------------------------------------------------------------------===//
 
-int32_t getNextAvailableDFBIndex(ModuleOp mod) {
+int32_t getNextAvailableDFBIndex(Operation *scopeOp) {
   int32_t maxIndex = -1;
 
-  mod->walk([&](BindCBOp bindOp) {
+  scopeOp->walk([&](BindCBOp bindOp) {
     int64_t idx = bindOp.getCbIndex().getSExtValue();
     if (static_cast<int32_t>(idx) > maxIndex) {
       maxIndex = static_cast<int32_t>(idx);
