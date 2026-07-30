@@ -161,6 +161,150 @@ struct TensorOpTypeConversion : OpConversionPattern<TensorOp> {
   }
 };
 
+static int64_t getPipeRuntimeArgCount(ModuleOp module) {
+  int64_t count = 0;
+  if (auto scratchBytes =
+          module->getAttrOfType<IntegerAttr>(kPipeSramScratchBytesAttrName)) {
+    count += scratchBytes.getInt() > 0 ? 1 : 0;
+  }
+  if (auto globalSemaphoreCount = module->getAttrOfType<IntegerAttr>(
+          kPipeGlobalSemaphoreCountAttrName)) {
+    count += globalSemaphoreCount.getInt();
+  }
+  return count;
+}
+
+static int64_t getDeviceCoordinateCommonArgBase(Operation *op) {
+  FuncOp func = op->getParentOfType<FuncOp>();
+  assert(func && "logical device operation must be inside a function");
+  int64_t tensorArgumentCount =
+      llvm::count_if(func.getArguments(), [](BlockArgument argument) {
+        return mlir::isa<RankedTensorType>(argument.getType());
+      });
+  return tensorArgumentCount +
+         getPipeRuntimeArgCount(op->getParentOfType<ModuleOp>());
+}
+
+static Value buildDeviceCoordinate(Location loc,
+                                   ConversionPatternRewriter &rewriter,
+                                   int64_t commonArgIndex) {
+  Value argIndex =
+      arith::ConstantIndexOp::create(rewriter, loc, commonArgIndex);
+  return ttk::GetCommonArgValOp::create(rewriter, loc, rewriter.getI32Type(),
+                                        argIndex)
+      .getResult();
+}
+
+static SmallVector<Value>
+buildDeviceReferencePredicates(Operation *op, DeviceDomainAttr domain,
+                               DeviceRefAttr reference,
+                               ConversionPatternRewriter &rewriter) {
+  SmallVector<Value> predicates;
+  int64_t commonArgIndex = getDeviceCoordinateCommonArgBase(op);
+  for (auto [component, coordinates] :
+       llvm::zip_equal(domain.getComponents(), reference.getCoordinates())) {
+    assert(component.getExtent().size() == coordinates.size() &&
+           "verified device reference rank must match domain");
+    for (int64_t expected : coordinates.asArrayRef()) {
+      Value coordinate =
+          buildDeviceCoordinate(op->getLoc(), rewriter, commonArgIndex++);
+      Value expectedValue =
+          arith::ConstantIntOp::create(rewriter, op->getLoc(), expected, 32);
+      predicates.push_back(arith::CmpIOp::create(rewriter, op->getLoc(),
+                                                 arith::CmpIPredicate::eq,
+                                                 coordinate, expectedValue));
+    }
+  }
+  return predicates;
+}
+
+static Value combinePredicates(Location loc,
+                               ConversionPatternRewriter &rewriter,
+                               ArrayRef<Value> predicates) {
+  assert(!predicates.empty() && "device domain must have at least one axis");
+  Value result = predicates.front();
+  for (Value predicate : predicates.drop_front()) {
+    result = arith::AndIOp::create(rewriter, loc, result, predicate);
+  }
+  return result;
+}
+
+struct IsDeviceLowering : OpConversionPattern<IsDeviceOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(IsDeviceOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    SmallVector<Value> predicates = buildDeviceReferencePredicates(
+        op, op.getDomain(), op.getDevice(), rewriter);
+    rewriter.replaceOp(op,
+                       combinePredicates(op.getLoc(), rewriter, predicates));
+    return success();
+  }
+};
+
+struct CurrentDeviceIndexLowering : OpConversionPattern<CurrentDeviceIndexOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(CurrentDeviceIndexOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value index = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
+    int64_t commonArgIndex = getDeviceCoordinateCommonArgBase(op);
+    for (DeviceDomainComponentAttr component : op.getDomain().getComponents()) {
+      for (int64_t extent : component.getExtent().asArrayRef()) {
+        Value extentValue =
+            arith::ConstantIntOp::create(rewriter, loc, extent, 32);
+        Value coordinate =
+            buildDeviceCoordinate(loc, rewriter, commonArgIndex++);
+        index = arith::MulIOp::create(rewriter, loc, index, extentValue);
+        index = arith::AddIOp::create(rewriter, loc, index, coordinate);
+      }
+    }
+    rewriter.replaceOpWithNewOp<arith::IndexCastOp>(op, rewriter.getIndexType(),
+                                                    index);
+    return success();
+  }
+};
+
+struct IsDeviceInRangeLowering : OpConversionPattern<IsDeviceInRangeOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(IsDeviceInRangeOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    SmallVector<Value> predicates;
+    int64_t commonArgIndex = getDeviceCoordinateCommonArgBase(op);
+    for (auto [component, loCoordinates, hiCoordinates] :
+         llvm::zip_equal(op.getDomain().getComponents(),
+                         op.getRange().getLo().getCoordinates(),
+                         op.getRange().getHi().getCoordinates())) {
+      assert(component.getExtent().size() == loCoordinates.size() &&
+             loCoordinates.size() == hiCoordinates.size() &&
+             "verified device range rank must match domain");
+      for (auto [lo, hi] : llvm::zip_equal(loCoordinates.asArrayRef(),
+                                           hiCoordinates.asArrayRef())) {
+        Value coordinate =
+            buildDeviceCoordinate(op.getLoc(), rewriter, commonArgIndex++);
+        Value loValue =
+            arith::ConstantIntOp::create(rewriter, op.getLoc(), lo, 32);
+        Value hiValue =
+            arith::ConstantIntOp::create(rewriter, op.getLoc(), hi, 32);
+        predicates.push_back(arith::CmpIOp::create(rewriter, op.getLoc(),
+                                                   arith::CmpIPredicate::sge,
+                                                   coordinate, loValue));
+        predicates.push_back(arith::CmpIOp::create(rewriter, op.getLoc(),
+                                                   arith::CmpIPredicate::slt,
+                                                   coordinate, hiValue));
+      }
+    }
+    rewriter.replaceOp(op,
+                       combinePredicates(op.getLoc(), rewriter, predicates));
+    return success();
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // Helper utilities.
 //===----------------------------------------------------------------------===//
@@ -590,9 +734,28 @@ getPipeTransferContractForPipeValue(ValueOriginAnalysis &analysis, Value pipe) {
       });
 }
 
-static PipeTransferCreateOp createPipeTransfer(OpBuilder &builder, Location loc,
-                                               Value pipe,
-                                               PipeTransferContract contract) {
+/// Prove that every possible pipe definition has the same logical-device
+/// transfer. Unlike the transfer contract, this property is not in `PipeType`.
+static FailureOr<std::optional<DeviceTransferAttr>>
+getDeviceTransferForPipeValue(ValueOriginAnalysis &analysis, Value pipe) {
+  return analysis.getOrigins(pipe)
+      .uniqueMapped<std::optional<DeviceTransferAttr>>(
+          [](Value origin) -> FailureOr<std::optional<DeviceTransferAttr>> {
+            if (auto createPipe = origin.getDefiningOp<CreatePipeOp>()) {
+              DeviceTransferAttr deviceTransfer =
+                  createPipe.getDeviceTransferAttr();
+              return deviceTransfer
+                         ? std::optional<DeviceTransferAttr>(deviceTransfer)
+                         : std::optional<DeviceTransferAttr>();
+            }
+            return failure();
+          });
+}
+
+static PipeTransferCreateOp
+createPipeTransfer(OpBuilder &builder, Location loc, Value pipe,
+                   PipeTransferContract contract,
+                   DeviceTransferAttr deviceTransfer) {
   auto pipeType = mlir::cast<PipeType>(traceUnrealizedCasts(pipe).getType());
   auto kindAttr = PipeTransferKindAttr::get(builder.getContext(),
                                             getPipeTransferKind(contract));
@@ -600,11 +763,12 @@ static PipeTransferCreateOp createPipeTransfer(OpBuilder &builder, Location loc,
       builder.getI64IntegerAttr(pipeType.getNumDests());
   return PipeTransferCreateOp::create(
       builder, loc, PipeTransferType::get(builder.getContext()), pipe, kindAttr,
-      expectedReceiversAttr);
+      expectedReceiversAttr, deviceTransfer);
 }
 
 static Value getOrCreatePipeTransfer(
     OpBuilder &builder, Location loc, Value pipe, PipeTransferContract contract,
+    DeviceTransferAttr deviceTransfer,
     llvm::MapVector<Value, Value> &transferByDirectCreatePipe) {
   Value key = traceUnrealizedCasts(pipe);
   if (auto createPipe = key.getDefiningOp<CreatePipeOp>()) {
@@ -614,8 +778,8 @@ static Value getOrCreatePipeTransfer(
     }
     OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPointAfter(createPipe);
-    auto transferOp =
-        createPipeTransfer(builder, createPipe.getLoc(), key, contract);
+    auto transferOp = createPipeTransfer(builder, createPipe.getLoc(), key,
+                                         contract, deviceTransfer);
     transferByDirectCreatePipe[key] = transferOp.getTransfer();
     return transferOp.getTransfer();
   }
@@ -623,13 +787,15 @@ static Value getOrCreatePipeTransfer(
   // Non-direct pipe values can be block arguments or region results. A shared
   // cached transfer for those values would need dominance analysis; creating it
   // at the use site keeps the transfer local to the post/send that consumes it.
-  return createPipeTransfer(builder, loc, pipe, contract).getTransfer();
+  return createPipeTransfer(builder, loc, pipe, contract, deviceTransfer)
+      .getTransfer();
 }
 
-/// High-level pipe copy and its proven transfer contract.
+/// High-level pipe copy and its proven protocol properties.
 struct PipeCopyExpansion {
   CopyOp copy;
   PipeTransferContract contract;
+  DeviceTransferAttr deviceTransfer;
 };
 
 /// Receive-handle wait and the PipeNet id used to create its typed token.
@@ -653,31 +819,36 @@ buildPipeTransferExpansionPlan(ModuleOp mod, ValueOriginAnalysis &analysis) {
   mod.walk([&](CreatePipeOp op) { plan.createPipes.push_back(op); });
 
   LogicalResult result = success();
+  auto recordCopy = [&](CopyOp copyOp, Value pipe,
+                        SmallVectorImpl<PipeCopyExpansion> &expansions) {
+    FailureOr<PipeTransferContract> contract =
+        getPipeTransferContractForPipeValue(analysis, pipe);
+    if (failed(contract)) {
+      copyOp.emitError()
+          << "requires a consistent transfer contract for all possible "
+             "pipe values";
+      result = failure();
+      return;
+    }
+    FailureOr<std::optional<DeviceTransferAttr>> maybeDeviceTransfer =
+        getDeviceTransferForPipeValue(analysis, pipe);
+    if (failed(maybeDeviceTransfer)) {
+      copyOp.emitError() << "requires every possible pipe definition to be "
+                            "ttl.create_pipe with the same device transfer";
+      result = failure();
+      return;
+    }
+    expansions.push_back({copyOp, *contract,
+                          maybeDeviceTransfer->value_or(DeviceTransferAttr())});
+  };
+
   mod.walk([&](CopyOp op) {
     if (isPipeReceiveCopy(op)) {
-      FailureOr<PipeTransferContract> contract =
-          getPipeTransferContractForPipeValue(analysis, op.getSrc());
-      if (failed(contract)) {
-        op.emitError()
-            << "requires a consistent transfer contract for all possible "
-               "pipe values";
-        result = failure();
-      } else {
-        plan.receiveCopies.push_back({op, *contract});
-      }
+      recordCopy(op, op.getSrc(), plan.receiveCopies);
       return;
     }
     if (isPipeSendCopy(op)) {
-      FailureOr<PipeTransferContract> contract =
-          getPipeTransferContractForPipeValue(analysis, op.getDst());
-      if (failed(contract)) {
-        op.emitError()
-            << "requires a consistent transfer contract for all possible "
-               "pipe values";
-        result = failure();
-      } else {
-        plan.sendCopies.push_back({op, *contract});
-      }
+      recordCopy(op, op.getDst(), plan.sendCopies);
     }
   });
   if (failed(result)) {
@@ -729,7 +900,8 @@ applyPipeTransferExpansionPlan(ModuleOp mod,
     builder.setInsertionPointAfter(createPipe);
     auto transferOp =
         createPipeTransfer(builder, createPipe.getLoc(), createPipe.getResult(),
-                           getPipeTransferContract(createPipe));
+                           getPipeTransferContract(createPipe),
+                           createPipe.getDeviceTransferAttr());
     transferByDirectCreatePipe[createPipe.getResult()] =
         transferOp.getTransfer();
   }
@@ -739,9 +911,9 @@ applyPipeTransferExpansionPlan(ModuleOp mod,
     auto pipeType =
         mlir::cast<PipeType>(traceUnrealizedCasts(copyOp.getSrc()).getType());
     builder.setInsertionPoint(copyOp);
-    Value transfer =
-        getOrCreatePipeTransfer(builder, copyOp.getLoc(), copyOp.getSrc(),
-                                expansion.contract, transferByDirectCreatePipe);
+    Value transfer = getOrCreatePipeTransfer(
+        builder, copyOp.getLoc(), copyOp.getSrc(), expansion.contract,
+        expansion.deviceTransfer, transferByDirectCreatePipe);
     auto postOp = PipeTransferPostOp::create(
         builder, copyOp.getLoc(),
         PipeTokenType::get(builder.getContext(), pipeType.getPipeNetId()),
@@ -756,9 +928,9 @@ applyPipeTransferExpansionPlan(ModuleOp mod,
   for (const PipeCopyExpansion &expansion : plan.sendCopies) {
     CopyOp copyOp = expansion.copy;
     builder.setInsertionPoint(copyOp);
-    Value transfer =
-        getOrCreatePipeTransfer(builder, copyOp.getLoc(), copyOp.getDst(),
-                                expansion.contract, transferByDirectCreatePipe);
+    Value transfer = getOrCreatePipeTransfer(
+        builder, copyOp.getLoc(), copyOp.getDst(), expansion.contract,
+        expansion.deviceTransfer, transferByDirectCreatePipe);
     auto sendOp = PipeTransferSendOp::create(builder, copyOp.getLoc(),
                                              copyOp.getResult().getType(),
                                              transfer, copyOp.getSrc());
@@ -1176,12 +1348,14 @@ struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
       const PipeResourcePlan &pipeResourcePlan,
       const PipeCapacityPlan &pipeCapacityPlan,
       const PipeCounterProgressMap &senderCapacityCounters,
-      const PipeComputedAddressCounterMap &computedAddressCounters)
+      const PipeComputedAddressCounterMap &computedAddressCounters,
+      const FabricRuntimeMap &fabricRuntime)
       : OpConversionPattern(typeConverter, context),
         pipeModulePlan(pipeModulePlan), pipeResourcePlan(pipeResourcePlan),
         pipeCapacityPlan(pipeCapacityPlan),
         senderCapacityCounters(senderCapacityCounters),
-        computedAddressCounters(computedAddressCounters) {}
+        computedAddressCounters(computedAddressCounters),
+        fabricRuntime(fabricRuntime) {}
 
   LogicalResult
   matchAndRewrite(PipeTransferSendOp op, OpAdaptor adaptor,
@@ -1193,7 +1367,7 @@ struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
     return lowerPipeTransferSend(
         op, adaptor.getSrc(), pipeModulePlan.getTransferPlan(op.getOperation()),
         pipeResourcePlan, pipeCapacityPlan, senderCapacityCounters,
-        computedAddressCounters, rewriter);
+        computedAddressCounters, fabricRuntime, rewriter);
   }
 
 private:
@@ -1202,6 +1376,7 @@ private:
   const PipeCapacityPlan &pipeCapacityPlan;
   const PipeCounterProgressMap &senderCapacityCounters;
   const PipeComputedAddressCounterMap &computedAddressCounters;
+  const FabricRuntimeMap &fabricRuntime;
 };
 
 struct PipeTransferWaitLowering : OpConversionPattern<PipeTransferWaitOp> {
@@ -1746,7 +1921,6 @@ static LogicalResult lowerTTLOpsToTTKernel(
   if (failed(verifyTransferProvenance(mod, transferAnalysis))) {
     return failure();
   }
-
   // Validate receiver DFB consistency before lowering emits the pipe
   // synchronization protocol.
   auto pipeGraphOrErr = PipeGraph::build(mod, transferAnalysis);
@@ -1754,9 +1928,15 @@ static LogicalResult lowerTTLOpsToTTKernel(
     return failure();
   }
 
+  FabricRoutePlan fabricRoutePlan;
+  if (failed(buildFabricRoutePlan(*pipeGraphOrErr, fabricRoutePlan))) {
+    return failure();
+  }
+
   PipePlanningOptions pipePlanningOptions;
   pipePlanningOptions.enableComputedAddresses = pipeComputedAddresses;
   pipePlanningOptions.enableCapacitySynchronization = pipeCapacitySync;
+  pipePlanningOptions.fabricRoutePlan = &fabricRoutePlan;
   FailureOr<PipeModulePlan> maybePipeModulePlan = buildPipeModulePlan(
       mod, transferAnalysis, *pipeGraphOrErr, pipePlanningOptions);
   if (failed(maybePipeModulePlan)) {
@@ -1764,6 +1944,7 @@ static LogicalResult lowerTTLOpsToTTKernel(
   }
   PipeModulePlan pipeModulePlan = std::move(*maybePipeModulePlan);
   applyPipeModuleAttributes(mod, pipeModulePlan);
+  applyFabricRoutePlan(mod, fabricRoutePlan);
   const PipeResourcePlan &pipeResourcePlan = pipeModulePlan.getResourcePlan();
   const PipeCapacityPlan &pipeCapacityPlan = pipeModulePlan.getCapacityPlan();
   // [Device 2.0] The kPipeSyncSemaphoreCountAttrName,
@@ -1779,6 +1960,8 @@ static LogicalResult lowerTTLOpsToTTKernel(
   PipeComputedAddressCounterMap computedAddressCounters;
   initializePipeComputedAddressCounters(pipeResourcePlan,
                                         computedAddressCounters);
+  FabricRuntimeMap fabricRuntime;
+  initializeFabricRuntime(fabricRoutePlan, fabricRuntime);
 
   RewritePatternSet patterns(&ctx);
   scf::populateSCFStructuralTypeConversionsAndLegality(typeConverter, patterns,
@@ -1795,15 +1978,16 @@ static LogicalResult lowerTTLOpsToTTKernel(
                                          pipeResourcePlan);
   patterns.add<PipeTransferSendLowering>(
       typeConverter, &ctx, pipeModulePlan, pipeResourcePlan, pipeCapacityPlan,
-      senderCapacityCounters, computedAddressCounters);
+      senderCapacityCounters, computedAddressCounters, fabricRuntime);
   patterns.add<PipeTransferWaitLowering>(typeConverter, &ctx, pipeResourcePlan);
   patterns.add<WaitLowering>(typeConverter, &ctx,
                              pipeModulePlan.getCompletedPipeSendWaits());
   patterns.add<BindCBLowering, TensorSliceLowering, CBReserveLowering,
                CBPushLowering, CBWaitLowering, TileStoreLowering, StoreLowering,
                CoreXLowering, CoreYLowering, RawElementReadLowering,
-               RawElementWriteLowering, OpaqueCallLowering, GetDfbIdLowering>(
-      typeConverter, &ctx);
+               RawElementWriteLowering, OpaqueCallLowering, GetDfbIdLowering,
+               IsDeviceLowering, CurrentDeviceIndexLowering,
+               IsDeviceInRangeLowering>(typeConverter, &ctx);
   patterns.add<CBPopLowering>(typeConverter, &ctx, pipeCapacityPlan,
                               pipeResourcePlan);
   populatePipeLoweringPatterns(patterns, typeConverter,
