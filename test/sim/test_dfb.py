@@ -1047,8 +1047,52 @@ def test_l1_limit_counts_unreferenced_dfbs() -> None:
         def noop_dm1():
             pass
 
-    with pytest.warns(UserWarning, match="exceeds the L1 memory limit"):
+    with pytest.warns(UserWarning, match="exceeds the L1 memory limit") as record:
         test_kernel(element)
+
+    # One node, so nothing to attribute: the warning does not name a node.
+    assert "on node" not in str(record[0].message)
+
+
+def test_l1_limit_warns_about_the_worst_node_not_the_first() -> None:
+    """A node-dependent footprint is judged by its largest node, and named.
+
+    The operation body is re-run per node, so a block_count derived from
+    ttl.node() gives each node a footprint of its own: here 2 blocks (4096
+    bytes) on node 0 up to 5 blocks (10240 bytes) on node 3.  Reporting the
+    first node's footprint would report no problem at all, since node 0 fits
+    inside the limit.
+    """
+    from sim import ttl
+    from sim.program import set_max_l1_bytes
+
+    set_max_l1_bytes(8192)  # Allows two 4096-byte blocks, so nodes 0 and 1 fit
+
+    element = make_ones_tile()
+
+    @ttl.operation(grid=(4,))
+    def test_kernel(a):
+        _dfb = ttl.make_dataflow_buffer_like(
+            a, shape=(1, 1), block_count=2 + ttl.node(dims=1)
+        )
+
+        @ttl.compute()
+        def noop_compute():
+            pass
+
+        @ttl.datamovement()
+        def noop_dm0():
+            pass
+
+        @ttl.datamovement()
+        def noop_dm1():
+            pass
+
+    with pytest.warns(UserWarning, match="exceeds the L1 memory limit") as record:
+        test_kernel(element)
+
+    message = str(record[0].message)
+    assert "10240 bytes on node 3" in message, message
 
 
 def test_heterogeneous_dfbs_independent() -> None:

@@ -157,8 +157,9 @@ def Program(*funcs: BindableTemplate, grid: Shape, pipenets: Any = None) -> Any:
                 analysis_templates=ordered,
                 pipenets=self.pipenets,
                 grid=grid,
-                dfb_count=ctx.kernel_dfb_count,
-                l1_bytes=ctx.kernel_l1_bytes,
+                # Setup ran once, before this call, and every node clones it, so
+                # the one footprint counted there is every node's.
+                node_footprints={0: (ctx.kernel_dfb_count, ctx.kernel_l1_bytes)},
             )
 
         def _build_node_context(self, node: int) -> Dict[str, Any]:
@@ -326,8 +327,7 @@ def run_operation(
 
     node_plans: Dict[int, tuple[Dict[str, Any], tuple[BindableTemplate, ...]]] = {}
     all_nets: List[Any] = []
-    dfb_count = 0
-    l1_bytes = 0
+    node_footprints: Dict[int, tuple[int, int]] = {}
 
     body_globals = getattr(body, "__globals__", {})
     try:
@@ -347,11 +347,11 @@ def run_operation(
             node_context = _operation_node_context(node, grid, ordered)
             node_plans[node] = (node_context, ordered)
 
-            # DFB/L1 footprint is per node; record the first node's counts for
-            # the hardware-limit warnings (setup is uniform across nodes).
-            if node == 0:
-                dfb_count = ctx.kernel_dfb_count
-                l1_bytes = ctx.kernel_l1_bytes
+            # Record every node's footprint for the hardware-limit warnings:
+            # the limits are per node, and re-running the body per node means a
+            # block_count or shape derived from ttl.node() gives each node its
+            # own.
+            node_footprints[node] = (ctx.kernel_dfb_count, ctx.kernel_l1_bytes)
 
             kernel_funcs = [getattr(t, "__wrapped__", None) for t in ordered]
             all_nets.extend(discover_pipe_nets_from_closures(body, *kernel_funcs))
@@ -368,9 +368,61 @@ def run_operation(
         analysis_templates=node_plans[0][1],
         pipenets=pipenets,
         grid=grid,
-        dfb_count=dfb_count,
-        l1_bytes=l1_bytes,
+        node_footprints=node_footprints,
     )
+
+
+def _warn_over_hardware_limits(node_footprints: Dict[int, tuple[int, int]]) -> None:
+    """Warn when any node's DataflowBuffer count or L1 footprint is over budget.
+
+    ``node_footprints`` maps a node to the ``(dfb_count, l1_bytes)`` its setup
+    produced.  A single entry stands for every node, which is the cloning path
+    in :func:`Program`: its setup runs once and each node re-instantiates it.
+
+    Both limits are per node, so the worst node decides.  Reporting only one
+    node's footprint would miss the node that is actually over budget, since
+    re-running the body per node means a ``block_count`` or ``shape`` derived
+    from ``ttl.node()`` gives each node a footprint of its own.  Nodes that a
+    PipeNet leaves inactive are included: their buffers are built here like any
+    other node's, and a limit exceeded anywhere is worth reporting.
+    """
+
+    def worst(index: int) -> tuple[int, str]:
+        """The largest footprint at ``index``, and where it is if nodes differ.
+
+        The node is named only when the footprints are not all the same, since
+        naming one of a set of identical nodes suggests the node is the problem.
+        """
+        node = max(node_footprints, key=lambda n: node_footprints[n][index])
+        values = {footprint[index] for footprint in node_footprints.values()}
+        return node_footprints[node][index], (
+            f" on node {node}" if len(values) > 1 else ""
+        )
+
+    # One frame for this helper and one for _schedule_and_run, so the warning is
+    # reported against the caller that ran the operation.
+    stacklevel = 3
+
+    dfb_count, dfb_where = worst(0)
+    max_dfbs = get_max_dfbs()
+    if dfb_count > max_dfbs:
+        warnings.warn(
+            f"Kernel defines {dfb_count} dataflow buffers{dfb_where}, "
+            f"but the hardware limit is {max_dfbs}. "
+            f"Reduce the number of ttl.make_dataflow_buffer_like() calls.",
+            stacklevel=stacklevel,
+        )
+
+    l1_bytes, l1_where = worst(1)
+    max_l1 = get_max_l1_bytes()
+    if l1_bytes > max_l1:
+        warnings.warn(
+            f"Total DataflowBuffer capacity per node ({l1_bytes} bytes"
+            f"{l1_where}) exceeds the L1 memory limit of {max_l1} bytes. "
+            f"Memory is accounted using declared dtypes, so this reflects "
+            f"the on-hardware footprint of the kernel.",
+            stacklevel=stacklevel,
+        )
 
 
 def _schedule_and_run(
@@ -380,8 +432,7 @@ def _schedule_and_run(
     analysis_templates: Any,
     pipenets: Any,
     grid: Shape,
-    dfb_count: int,
-    l1_bytes: int,
+    node_footprints: Dict[int, tuple[int, int]],
 ) -> None:
     """Analyse kernels, schedule active nodes, run the scheduler, and validate.
 
@@ -390,28 +441,11 @@ def _schedule_and_run(
     end-of-run cleanup/validation), and ``ordered_templates`` is (compute, dm0,
     dm1).  ``analysis_templates`` is any representative (compute, dm0, dm1)
     triple used once for copy-pattern analysis (kernel code objects are shared
-    across nodes).
+    across nodes).  ``node_footprints`` carries each node's DataflowBuffer
+    footprint for the hardware-limit warnings; see
+    :func:`_warn_over_hardware_limits`.
     """
-    # Warn if the number of DataflowBuffers exceeds the hardware limit.
-    max_dfbs = get_max_dfbs()
-    if dfb_count > max_dfbs:
-        warnings.warn(
-            f"Kernel defines {dfb_count} dataflow buffers, "
-            f"but the hardware limit is {max_dfbs}. "
-            f"Reduce the number of ttl.make_dataflow_buffer_like() calls.",
-            stacklevel=2,
-        )
-
-    # Warn if total L1 capacity exceeds the configured limit.
-    max_l1 = get_max_l1_bytes()
-    if l1_bytes > max_l1:
-        warnings.warn(
-            f"Total DataflowBuffer capacity per node ({l1_bytes} bytes) "
-            f"exceeds the L1 memory limit of {max_l1} bytes. "
-            f"Memory is accounted using declared dtypes, so this reflects "
-            f"the on-hardware footprint of the kernel.",
-            stacklevel=2,
-        )
+    _warn_over_hardware_limits(node_footprints)
 
     scheduler = GreenletScheduler()
     set_scheduler(scheduler)
