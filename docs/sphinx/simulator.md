@@ -56,6 +56,22 @@ include them (the hardware CI always does; the GitHub-hosted sim CI does not):
 python -m pytest test/sim/ --run-slow
 ```
 
+## Per-node body execution
+
+The simulator evaluates an operation body once for every node in the grid:
+`grid=(2, 2)` evaluates it four times and an 8x8 grid sixty-four times. Each
+evaluation has that node's context injected, so `ttl.node()` and
+`ttl.grid_size()` resolve inside the body itself, and setup derived from them --
+a `block_count`, a dataflow buffer shape, the pipes of a pipe net -- is computed
+per node.
+
+The compiler evaluates the body once, at compile time, and resolves `ttl.node()`
+on the device. A body that mutates state of the enclosing Python scope, or calls
+TT-NN inside itself, therefore sees those effects repeated once per node here and
+once in total under the compiler. The specification does not currently say how
+many times an implementation may evaluate the body, so such a body should not be
+relied upon.
+
 ## Float32 Promotion
 
 By default the simulator promotes all floating-point dtypes narrower than

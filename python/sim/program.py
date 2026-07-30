@@ -214,6 +214,11 @@ def run_operation(
     node's kernels) and its three kernels (whose closures capture the per-node
     state).  PipeNets discovered across the per-node runs are aggregated to
     compute the active-node set.
+
+    The compiler evaluates the body once instead, at compile time, so a body
+    that mutates state of the enclosing scope sees those effects repeated here
+    and not there.  The specification does not currently say how many times an
+    implementation may evaluate the body.
     """
     from .decorators import clear_kernel_registry, get_registered_kernels
     from .pipe import build_pipenets, discover_pipe_nets_from_closures
