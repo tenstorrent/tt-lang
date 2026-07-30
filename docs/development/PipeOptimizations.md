@@ -114,29 +114,29 @@ for each logical transfer:
 ```
 
 This sequence programs and synchronizes the NoC for every logical transfer.
-`ttl-form-pipe-transports` proves eligible loops and strip-mines them into
-groups of `R` logical transfers when the pass is invoked:
+`ttl-form-pipe-transports` now proves eligible loops and strip-mines them into
+groups of `R` logical transfers:
 
 ```text
 select R logical transfers per group
 select K resident destination groups
-resize source DFBs to a multiple of R blocks
-resize destination DFBs to at least R * K blocks
+prove the grouped source and destination DFB lifecycles are private
+allocate R source blocks and R * K destination blocks in per-core scratch
 
 for base = 0; base < grouped_end; base += R:
-  reserve R source DFB blocks
-  issue R tensor reads
+  issue R tensor reads into source scratch
   wait once for the read group
-  acquire R receiver blocks
-  send the contiguous R-block payload
+  wait until one destination scratch group is free
+  send R pages to destination scratch slot (enqueue_sequence mod K)
   wait once for the write group
   publish one data credit
-  consume the destination group
+  write R pages from destination scratch slot to the output
   publish R free credits
+  advance the destination slot modulo K
 
 complete outstanding data and free credit updates
 
-run the remaining logical transfers in a scalar residual loop
+run remaining logical transfers through the original DFBs
 ```
 
 The generated TTKernel code uses one read barrier, one write barrier, and one
@@ -155,6 +155,13 @@ receiver loop that issues those updates. Source and receiver roles in the same
 SPMD loop share one barrier. Scalar, receiver-post, and mixed-completion
 sequences retain immediate barriers.
 
+The source and destination scratch allocations use the same byte offset because
+each node receives a distinct per-core scratch buffer. Different transport
+streams receive non-overlapping aligned segments. The module-level
+`ttl.pipe_sram_scratch_bytes` attribute records the required per-core size.
+Existing runtime support allocates that buffer and passes its address as the
+first PipeNet common argument.
+
 #### PipeTransport contract
 
 `PipeTransportPlan` separates logical scheduling from backend emission:
@@ -170,6 +177,14 @@ sequences retain immediate barriers.
 - Credit completion is explicit. `Immediate` completes a credit update at its
   operation; `IterationDomain` completes all outstanding updates after the
   innermost loop containing the corresponding send or receiver DFB pop.
+- Storage ownership is explicit. `DFB` retains the original reserve, push,
+  wait, and pop operations. `Transport` proves that one grouped stream owns the
+  complete lifecycle, replaces its storage with scratch, and removes those DFB
+  operations during TTKernel conversion.
+- A transport-owned destination with depth `K` uses the recurrence
+  `slot(i) = i mod K`. Sender and receiver counters start at zero and advance
+  once per grouped transfer. Capacity credits prevent sender reuse before the
+  receiver finishes the corresponding slot.
 
 This contract supports the common scalar-tile case, where source and receiver
 spans are both `R`, and transfers between different source and receiver DFB
@@ -185,8 +200,11 @@ The pass groups a loop only after proving all of the following:
   candidate loop.
 - The source and receiver DFB values are direct `ttl.bind_cb` results whose
   complete reserve/push/wait/pop lifecycles are inside the loop.
-- Each transport DFB has one contiguous loop-indexed tensor copy and no
-  unsupported uses.
+- Each transport DFB has one contiguous loop-indexed tensor copy. Its acquired
+  views do not escape the source or destination role.
+- The transfer is point-to-point with one receiver. Source and destination use
+  different nodes and different DFBs, and the receiver starts at DFB tile
+  offset zero.
 - The loop contains no unrelated side effects.
 - Every transfer value has unique, valid provenance.
 
@@ -203,16 +221,25 @@ waits, and L1 allocation bytes. It selects the minimum legal destination depth
 `K`: two groups for bounded overlap, or a larger depth when required to
 preserve existing receiver storage.
 
-DFB block counts are rounded up to multiples of `R` so a grouped payload never
-wraps within a DFB allocation. This rounding makes allocation size
-non-monotonic in `R`; for example, `R=5` can fit an existing five-block DFB
-when `R=4` requires eight blocks. Selection therefore evaluates every `R`
-within a finite upper bound derived from the L1 budget and the mandatory bytes
-per group. It does not use a binary search over `R`.
+Formation temporarily widens the grouped DFB types so the reserve and wait
+views remain valid IR until TTKernel conversion proves and removes their
+lifecycle. Scalar residual operations retain their original one-block
+acquisition counts. The current runtime derives user DFB allocations from the
+frontend declarations rather than the widened intermediate types. Grouped code
+uses scratch, and only the scalar residual accesses the original runtime DFB.
+This contract does not depend on the finalized logical-to-physical DFB
+allocation interface.
+
+Group selection conservatively counts both the widened temporary DFB types and
+transport scratch against the L1 budget. DFB block counts are rounded up to
+multiples of `R`, so this estimate is non-monotonic in `R`; for example, `R=5`
+can fit an existing five-block DFB when `R=4` requires eight blocks. Selection
+evaluates every `R` within a finite upper bound derived from the L1 budget and
+the mandatory bytes per group. It does not use a binary search over `R`.
 
 #### Pipeline placement and allocation
 
-The required pass ordering is:
+The standard TTL lowering pipeline orders the relevant passes as follows:
 
 ```text
 ttl-insert-cb-sync
@@ -224,33 +251,26 @@ ttl-insert-cb-sync
 
 Grouping runs after DFB synchronization is explicit because its proof requires
 the complete lifecycle. It runs before acquire coalescing and DFB finalization
-because it changes acquire widths and block counts. With finalized DFB
-allocation enabled, finalization emits the `ttl.dfb_allocations`
-logical/physical DFB contract, so runtime allocation uses the grouped block
-counts without a separate PipeNet allocation mechanism.
-
-The pass is not enabled in the standard pipeline until the runtime consumes
-that finalized allocation contract for user and compiler-created DFBs. The
-pre-finalization runtime allocates user DFBs from their Python declarations;
-enabling grouping there would make the kernel reserve the resized block count
-while the runtime allocates the original block count.
+because it changes acquire widths and temporary DFB types. The transport plan
+later replaces eligible grouped lifecycles with direct scratch accesses.
+Remaining DFB operations follow the ordinary finalization and runtime
+allocation mechanism. This ordering does not require compiler-allocated DFBs
+or the finalized DFB runtime allocation contract.
 
 #### Measured result
 
-The pipes microbenchmark was measured on a branch with finalized runtime DFB
-allocation enabled, using Blackhole with bf16 distinct tiles, five warmup
-iterations, and twenty measured iterations. Both receiver-address protocols
-were bit-exact:
+The pipes microbenchmark was measured on Blackhole with 128 distinct tiles,
+five warmup iterations, and twenty measured iterations. The no-DFB-reuse
+implementation was bit-exact for bf16 and fp32. Automatic selection uses
+`(R=64, K=2)`:
 
-| Transfers | Computed address total | Computed address per transfer | Published address total | Published address per transfer |
-| ---: | ---: | ---: | ---: | ---: |
-| 8 | 1.950 us | 0.244 us | 2.204 us | 0.276 us |
-| 32 | 3.181 us | 0.099 us | 3.374 us | 0.105 us |
-| 128 | 7.945 us | 0.062 us | 8.244 us | 0.064 us |
+| Data type | tt-lang sender | C++ bounded-ring sender | tt-lang receiver | C++ bounded-ring receiver |
+| --- | ---: | ---: | ---: | ---: |
+| bf16 | 7.789 us | 8.346 us | 9.807 us | 10.924 us |
+| fp32 | 14.351 us | 13.847 us | 17.873 us | 17.419 us |
 
-For 128 transfers, automatic selection uses `(R=64, K=2)`. The corresponding
-hand-written bounded ring takes 8.346 us. The computed PipeTransport sender is
-approximately 5% faster in this measurement.
+The bf16 sender and receiver are faster than the hand-written bounded ring. The
+fp32 sender is 3.6% slower and the receiver is 2.6% slower.
 
 Forced group sizes compare the same bounded protocol at identical `R` and
 `K=2`. Negative differences indicate that tt-lang is faster:
@@ -291,9 +311,9 @@ capability predicates. They do not change PipeTransport semantics.
 
 Until that interface is available and validated for the required targets,
 tt-lang continues to lower grouped schedules to explicit batched NoC
-operations. BLOCKED DFB support can replace the final backend-specific
-synchronization and addressing without changing loop grouping, transport
-planning, capacity accounting, or logical/physical DFB allocation.
+operations over transport-owned scratch. BLOCKED DFB support can replace the
+final backend-specific storage, synchronization, and addressing without
+changing loop grouping, transport planning, or capacity accounting.
 
 ## 3. Optimization opportunities
 
