@@ -572,6 +572,46 @@ class TTLGenericCompiler(TTCompilerBase):
                     raise
                 self._raise_error(node, str(e))
 
+    def _static_python_value(self, node):
+        """Resolve a side-effect-free host expression captured by a kernel."""
+        unresolved = self._STATIC_PYTHON_VALUE_UNRESOLVED
+        if isinstance(node, ast.Constant):
+            return node.value
+        if isinstance(node, ast.Name):
+            value = self.fn_globals.get(node.id, unresolved)
+            if isinstance(value, (bool, int, float, str, type(None))):
+                return value
+            return unresolved
+        if (
+            isinstance(node, ast.Compare)
+            and len(node.ops) == 1
+            and len(node.comparators) == 1
+        ):
+            lhs = self._static_python_value(node.left)
+            rhs = self._static_python_value(node.comparators[0])
+            if lhs is unresolved or rhs is unresolved:
+                return unresolved
+            if isinstance(node.ops[0], ast.Eq):
+                return lhs == rhs
+            if isinstance(node.ops[0], ast.NotEq):
+                return lhs != rhs
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            value = self._static_python_value(node.operand)
+            if value is not unresolved:
+                return not value
+        return unresolved
+
+    _STATIC_PYTHON_VALUE_UNRESOLVED = object()
+
+    def visit_If(self, node):
+        """Fold captured host conditionals before emitting device control flow."""
+        value = self._static_python_value(node.test)
+        if value is not self._STATIC_PYTHON_VALUE_UNRESOLVED:
+            for statement in node.body if value else node.orelse:
+                self.visit(statement)
+            return None
+        return super().visit_If(node)
+
     def visit_Name(self, node):
         """Override to check function globals for simple constants."""
         result = super().visit_Name(node)

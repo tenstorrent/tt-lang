@@ -55,6 +55,23 @@ _factory_exp_block = make_exp_block(block_count=2)
 _RUN_CONDITIONAL_FACTORY_EXP = True
 
 
+def make_static_mode_exp(mode):
+    @ttl.operation(grid=(1, 1))
+    def static_mode_exp(in_t, out_t):
+        a_cb = ttl.make_dataflow_buffer_like(
+            in_t, shape=(1, 1), block_count=2
+        )
+        a_blk = a_cb.reserve()
+        ttl.copy(in_t[0:1, 0:1], a_blk)
+        if mode == "exp":
+            _factory_exp_block(out=out_t, inp=a_cb)
+
+    return static_mode_exp
+
+
+_static_mode_exp = make_static_mode_exp("exp")
+
+
 @ttl.operation(grid=(1, 1))
 def atom_factory_exp(in_t, out_t):
     a_cb = ttl.make_dataflow_buffer_like(in_t, shape=(1, 1), block_count=2)
@@ -113,6 +130,22 @@ def test_atom_conditional_factory_exp(device):
     out_t = to_l1(torch.zeros(tile, tile, dtype=torch.bfloat16), device)
 
     atom_conditional_factory_exp(in_t, out_t)
+
+    got = ttnn.to_torch(out_t).reshape(tile, tile).to(torch.bfloat16)
+    assert_allclose(got, expected, rtol=2e-2, atol=2e-2)
+
+
+def test_atom_captured_string_conditional(device):
+    tile = ttnn.TILE_SIZE
+    inp_t = (torch.randn(tile, tile, dtype=torch.bfloat16) * 0.5).clamp(
+        -1.0, 1.0
+    )
+    expected = torch.exp(inp_t.float()).to(torch.bfloat16)
+
+    in_t = to_l1(inp_t, device)
+    out_t = to_l1(torch.zeros(tile, tile, dtype=torch.bfloat16), device)
+
+    _static_mode_exp(in_t, out_t)
 
     got = ttnn.to_torch(out_t).reshape(tile, tile).to(torch.bfloat16)
     assert_allclose(got, expected, rtol=2e-2, atol=2e-2)
