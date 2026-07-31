@@ -56,20 +56,19 @@ def compile_ttl_to_ttkernel(
         "ttl-coalesce-dfb-acquires",
         "ttl-annotate-l1-acc-loops",
         "convert-ttl-to-compute",
-    ]
-    lowering_func_passes = [
         set_compute_config_pass,
         "ttl-assign-dst",
     ]
     if maximize_dst:
-        lowering_func_passes.append("ttl-subblock-compute-for-dst")
+        post_transport_func_passes.append("ttl-subblock-compute-for-dst")
     dst_acc_str = "true" if maximize_dst else "false"
-    lowering_func_passes.append(f"ttl-lower-to-loops{{dst-accumulation={dst_acc_str}}}")
+    post_transport_func_passes.append(
+        f"ttl-lower-to-loops{{dst-accumulation={dst_acc_str}}}"
+    )
     if maximize_dst:
-        lowering_func_passes.append("ttl-schedule-operations")
+        post_transport_func_passes.append("ttl-schedule-operations")
     pre_transport_pipeline = ",".join(pre_transport_func_passes)
     post_transport_pipeline = ",".join(post_transport_func_passes)
-    lowering_func_pipeline = ",".join(lowering_func_passes)
 
     specialize_passes = ""
     if specialize_cores:
@@ -82,7 +81,6 @@ def compile_ttl_to_ttkernel(
         f"ttl-form-pipe-transports,"
         f"func.func({post_transport_pipeline}),"
         f"ttl-finalize-dfb-indices,"
-        f"func.func({lowering_func_pipeline}),"
         f"func.func(ttl-annotate-cb-associations),"
         f"ttl-verify-dfb-spsc,"
         f"ttl-erase-pipenet-scopes,"
