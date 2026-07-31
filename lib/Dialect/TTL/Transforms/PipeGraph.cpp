@@ -1232,8 +1232,21 @@ PipeGraph::rebuildEndpointGraph(ModuleOp mod, ValueOriginAnalysis &analysis,
     PipeKey pipeKey = candidateEntry.first.first;
     PipeTransferCandidates &candidates = candidateEntry.second;
     if (candidates.sends.empty()) {
-      Operation *postOp = candidates.postsByReceiver.begin()->second.front();
-      postOp->emitError("pipe receiver post has no corresponding send");
+      PipeTransferPostOp postOp =
+          candidates.postsByReceiver.begin()->second.front();
+      auto sendIt =
+          llvm::find_if(candidatesByPipe, [&](const auto &otherEntry) {
+            return otherEntry.first.first == pipeKey &&
+                   !otherEntry.second.sends.empty();
+          });
+      if (sendIt != candidatesByPipe.end()) {
+        auto diagnostic = postOp.emitError(
+            "pipe send and receiver post use different device transfers");
+        diagnostic.attachNote(sendIt->second.sends.front().getLoc())
+            << "corresponding pipe send is here";
+      } else {
+        postOp.emitError("pipe receiver post has no corresponding send");
+      }
       return failure();
     }
 
@@ -1314,13 +1327,6 @@ PipeGraph::rebuildEndpointGraph(ModuleOp mod, ValueOriginAnalysis &analysis,
         if (getPipeTransferContract(postCreate) != transferContract) {
           postOp.emitError(
               "pipe send and receiver post use different transfer contracts");
-          return failure();
-        }
-        if (postCreate.getDeviceTransferAttr() != deviceTransfer) {
-          auto diagnostic = postOp.emitError(
-              "pipe send and receiver post use different device transfers");
-          diagnostic.attachNote(sendOp.getLoc())
-              << "corresponding pipe send is here";
           return failure();
         }
         if (getPipeTransferBlockSpan(postCreate) != blockSpan) {
