@@ -20,6 +20,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h" // IWYU pragma: keep
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/Utils/OpaqueCallVerifyUtils.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/Twine.h"
@@ -295,13 +296,41 @@ llvm::LogicalResult AxisNeighborTransferAttr::verify(
   return mlir::success();
 }
 
+llvm::LogicalResult StencilTransferAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    StringAttr component, llvm::ArrayRef<DenseI64ArrayAttr> offsets,
+    BoolAttr /*wrap*/) {
+  if (mlir::failed(verifyStructuredTransferComponent(emitError, component))) {
+    return mlir::failure();
+  }
+  if (offsets.empty()) {
+    return emitError() << "stencil requires at least one offset";
+  }
+
+  llvm::DenseSet<Attribute> uniqueOffsets;
+  for (auto [offsetIndex, offset] : llvm::enumerate(offsets)) {
+    if (offset.empty()) {
+      return emitError() << "stencil offset " << offsetIndex
+                         << " must not be empty";
+    }
+    if (llvm::all_of(offset.asArrayRef(),
+                     [](int64_t value) { return value == 0; })) {
+      return emitError() << "stencil offsets must not contain the zero offset";
+    }
+    if (!uniqueOffsets.insert(offset).second) {
+      return emitError() << "stencil offsets must be unique";
+    }
+  }
+  return mlir::success();
+}
+
 llvm::LogicalResult GatherTransferAttr::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     StringAttr component, DeviceRefAttr root) {
   return verifyStructuredTransferComponent(emitError, component);
 }
 
-llvm::LogicalResult MulticastTransferAttr::verify(
+llvm::LogicalResult ScatterTransferAttr::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
     StringAttr component, DeviceRefAttr source) {
   return verifyStructuredTransferComponent(emitError, component);
@@ -352,11 +381,25 @@ llvm::LogicalResult TransferGraphAttr::verify(
     return mlir::success();
   }
 
+  if (auto stencil = mlir::dyn_cast<StencilTransferAttr>(structured)) {
+    int64_t rank = static_cast<int64_t>(
+        domain.getComponents()[*componentIndex].getExtent().size());
+    for (auto [offsetIndex, offset] : llvm::enumerate(stencil.getOffsets())) {
+      if (offset.size() != rank) {
+        return emitError() << "stencil offset " << offsetIndex << " has rank "
+                           << offset.size() << ", expected " << rank
+                           << " for component '"
+                           << structured.getComponent().getValue() << "'";
+      }
+    }
+    return mlir::success();
+  }
+
   DeviceRefAttr endpoint;
   if (auto gather = mlir::dyn_cast<GatherTransferAttr>(structured)) {
     endpoint = gather.getRoot();
   } else {
-    endpoint = mlir::cast<MulticastTransferAttr>(structured).getSource();
+    endpoint = mlir::cast<ScatterTransferAttr>(structured).getSource();
   }
   return verifyDeviceRefInDomain(domain, endpoint, emitError,
                                  "structured transfer endpoint");

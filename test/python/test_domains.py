@@ -12,6 +12,7 @@ from ttl.domains import (
     DeviceDomain,
     DeviceRange,
     DeviceRef,
+    StencilTransfer,
     TransferEdge,
     TransferGraph,
 )
@@ -97,6 +98,87 @@ def test_axis_neighbor_edges_are_materialized_from_compact_relation():
     ]
 
 
+def test_stencil_edges_include_multiple_axes_and_directions():
+    domain = DeviceDomain((2, 2))
+
+    graph = TransferGraph.stencil(
+        domain,
+        offsets=[(-1, 0), (1, 0), (0, -1), (0, 1)],
+    )
+
+    assert isinstance(graph.structured, StencilTransfer)
+    assert set(graph.iter_edges()) == {
+        TransferEdge(DeviceRef((0, 0)), DeviceRef((1, 0))),
+        TransferEdge(DeviceRef((0, 0)), DeviceRef((0, 1))),
+        TransferEdge(DeviceRef((0, 1)), DeviceRef((1, 1))),
+        TransferEdge(DeviceRef((0, 1)), DeviceRef((0, 0))),
+        TransferEdge(DeviceRef((1, 0)), DeviceRef((0, 0))),
+        TransferEdge(DeviceRef((1, 0)), DeviceRef((1, 1))),
+        TransferEdge(DeviceRef((1, 1)), DeviceRef((0, 1))),
+        TransferEdge(DeviceRef((1, 1)), DeviceRef((1, 0))),
+    }
+
+
+def test_stencil_wrap_deduplicates_equivalent_edges():
+    domain = DeviceDomain((2,))
+
+    graph = TransferGraph.stencil(
+        domain,
+        offsets=[(-1,), (1,)],
+        wrap=True,
+    )
+
+    assert list(graph.iter_edges()) == [
+        TransferEdge(DeviceRef((0,)), DeviceRef((1,))),
+        TransferEdge(DeviceRef((1,)), DeviceRef((0,))),
+    ]
+
+
+def test_stencil_preserves_unselected_product_components():
+    domain = DeviceDomain.product(board=(2,), device=(2, 2))
+
+    graph = TransferGraph.stencil(
+        domain,
+        component="device",
+        offsets=[(0, 1)],
+    )
+
+    assert list(graph.iter_edges()) == [
+        TransferEdge(
+            DeviceRef((0,), (0, 0)),
+            DeviceRef((0,), (0, 1)),
+        ),
+        TransferEdge(
+            DeviceRef((0,), (1, 0)),
+            DeviceRef((0,), (1, 1)),
+        ),
+        TransferEdge(
+            DeviceRef((1,), (0, 0)),
+            DeviceRef((1,), (0, 1)),
+        ),
+        TransferEdge(
+            DeviceRef((1,), (1, 0)),
+            DeviceRef((1,), (1, 1)),
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    "offsets,message",
+    [
+        ([], "at least one offset"),
+        ([(0, 0)], "zero offset"),
+        ([(1,)], "has rank 1, expected 2"),
+        ([(1, 0), (1, 0)], "must be unique"),
+    ],
+)
+def test_stencil_rejects_invalid_offsets(offsets, message):
+    domain = DeviceDomain((2, 2))
+
+    with pytest.raises(ValueError, match=message):
+        TransferGraph.stencil(domain, offsets=offsets)
+
+
 def test_gather_edges_preserve_other_product_components():
     domain = DeviceDomain.product(board=(2,), device=(2,))
 
@@ -110,10 +192,10 @@ def test_gather_edges_preserve_other_product_components():
     ]
 
 
-def test_multicast_edges_preserve_other_product_components():
+def test_scatter_edges_preserve_other_product_components():
     domain = DeviceDomain.product(board=(2,), device=(2,))
 
-    graph = TransferGraph.multicast(
+    graph = TransferGraph.scatter(
         domain, DeviceRef(board=0, device=0), component="device"
     )
 

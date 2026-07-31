@@ -57,6 +57,44 @@ def _normalize_coordinate(value: Any, context: str) -> Coordinate:
     return coordinate
 
 
+def _normalize_stencil_offsets(
+    offsets: Iterable[Sequence[int]], rank: int
+) -> Tuple[Coordinate, ...]:
+    if isinstance(offsets, (str, bytes)):
+        raise TypeError("stencil offsets must be an iterable of integer sequences")
+    try:
+        offset_values = tuple(offsets)
+    except TypeError as error:
+        raise TypeError(
+            "stencil offsets must be an iterable of integer sequences"
+        ) from error
+    if not offset_values:
+        raise ValueError("stencil requires at least one offset")
+
+    normalized = []
+    for offset_index, offset in enumerate(offset_values):
+        if isinstance(offset, (str, bytes)) or not isinstance(offset, Sequence):
+            raise TypeError(
+                f"stencil offset {offset_index} must be an integer sequence"
+            )
+        coordinate = tuple(
+            _require_int(value, f"stencil offset {offset_index} component")
+            for value in offset
+        )
+        if len(coordinate) != rank:
+            raise ValueError(
+                f"stencil offset {offset_index} has rank {len(coordinate)}, "
+                f"expected {rank}"
+            )
+        if all(value == 0 for value in coordinate):
+            raise ValueError("stencil offsets must not contain the zero offset")
+        normalized.append(coordinate)
+
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("stencil offsets must be unique")
+    return tuple(normalized)
+
+
 @dataclass(frozen=True)
 class DomainComponent:
     """Named rectangular component of a logical device domain."""
@@ -149,6 +187,14 @@ class AxisNeighborTransfer(StructuredTransfer):
 
 
 @dataclass(frozen=True)
+class StencilTransfer(StructuredTransfer):
+    """Union of directed translations within one domain component."""
+
+    offsets: Tuple[Coordinate, ...]
+    wrap: bool
+
+
+@dataclass(frozen=True)
 class GatherTransfer(StructuredTransfer):
     """Transfer relation from every non-root device to one root."""
 
@@ -156,7 +202,7 @@ class GatherTransfer(StructuredTransfer):
 
 
 @dataclass(frozen=True)
-class MulticastTransfer(StructuredTransfer):
+class ScatterTransfer(StructuredTransfer):
     """Transfer relation from one source to every other device."""
 
     source: DeviceRef
@@ -428,12 +474,34 @@ class TransferGraph:
         )
 
     @classmethod
-    def multicast(
+    def stencil(
+        cls,
+        domain: DeviceDomain,
+        *,
+        offsets: Iterable[Sequence[int]],
+        component: Optional[str] = None,
+        wrap: bool = False,
+    ) -> "TransferGraph":
+        component_name = cls._default_component(domain, component)
+        component_info = domain.components[domain.component_index(component_name)]
+        if not isinstance(wrap, bool):
+            raise TypeError(f"wrap must be a bool, got {wrap!r}")
+        return cls(
+            domain,
+            structured=StencilTransfer(
+                component_name=component_name,
+                offsets=_normalize_stencil_offsets(offsets, len(component_info.extent)),
+                wrap=wrap,
+            ),
+        )
+
+    @classmethod
+    def scatter(
         cls, domain: DeviceDomain, source: Any, *, component: Optional[str] = None
     ) -> "TransferGraph":
         return cls(
             domain,
-            structured=MulticastTransfer(
+            structured=ScatterTransfer(
                 component_name=cls._default_component(domain, component),
                 source=domain.device_ref(source),
             ),
@@ -506,6 +574,36 @@ class TransferGraph:
                 yield TransferEdge(source, DeviceRef(*source_coordinates))
             return
 
+        if isinstance(self.structured, StencilTransfer):
+            component = self.domain.components[component_index]
+            emitted_edges = set()
+            for source in devices:
+                for offset in self.structured.offsets:
+                    destination_coordinates = [
+                        list(coordinates) for coordinates in source.coordinates
+                    ]
+                    destination_component = destination_coordinates[component_index]
+                    in_bounds = True
+                    for axis, (coordinate, delta, extent) in enumerate(
+                        zip(destination_component, offset, component.extent)
+                    ):
+                        translated = coordinate + delta
+                        if self.structured.wrap:
+                            translated %= extent
+                        elif translated < 0 or translated >= extent:
+                            in_bounds = False
+                            break
+                        destination_component[axis] = translated
+                    if not in_bounds:
+                        continue
+                    destination = DeviceRef(*destination_coordinates)
+                    edge = TransferEdge(source, destination)
+                    if source == destination or edge in emitted_edges:
+                        continue
+                    emitted_edges.add(edge)
+                    yield edge
+            return
+
         if isinstance(self.structured, GatherTransfer):
             for source in devices:
                 destination_coordinates = list(source.coordinates)
@@ -517,7 +615,7 @@ class TransferGraph:
                     yield TransferEdge(source, destination)
             return
 
-        if isinstance(self.structured, MulticastTransfer):
+        if isinstance(self.structured, ScatterTransfer):
             for destination in devices:
                 source_coordinates = list(destination.coordinates)
                 source_coordinates[component_index] = (
@@ -592,14 +690,25 @@ class TransferGraph:
                 raise TypeError(f"wrap must be a bool, got {structured.wrap!r}")
             return structured
 
+        if isinstance(structured, StencilTransfer):
+            if not isinstance(structured.wrap, bool):
+                raise TypeError(f"wrap must be a bool, got {structured.wrap!r}")
+            return StencilTransfer(
+                component_name=structured.component_name,
+                offsets=_normalize_stencil_offsets(
+                    structured.offsets, len(component.extent)
+                ),
+                wrap=structured.wrap,
+            )
+
         if isinstance(structured, GatherTransfer):
             return GatherTransfer(
                 component_name=structured.component_name,
                 root=domain.resolve_device_ref(structured.root),
             )
 
-        if isinstance(structured, MulticastTransfer):
-            return MulticastTransfer(
+        if isinstance(structured, ScatterTransfer):
+            return ScatterTransfer(
                 component_name=structured.component_name,
                 source=domain.resolve_device_ref(structured.source),
             )
@@ -632,7 +741,8 @@ __all__ = [
     "DomainComponent",
     "GatherTransfer",
     "GraphMetadataCost",
-    "MulticastTransfer",
+    "ScatterTransfer",
+    "StencilTransfer",
     "StructuredTransfer",
     "TransferEdge",
     "TransferGraph",

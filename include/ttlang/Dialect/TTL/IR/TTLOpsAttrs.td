@@ -143,6 +143,26 @@ def TTL_AxisNeighborTransferAttr :
   let genVerifyDecl = 1;
 }
 
+def TTL_StencilTransferAttr :
+    TTL_Attr<"StencilTransfer", "stencil_transfer",
+             [TTL_StructuredTransferAttrInterface]> {
+  let summary = "Transfer relation defined by neighbor offsets";
+  let description = [{
+    Describes the union of directed translations in `offsets` within one
+    logical domain component. Each offset has the component rank and may
+    contain positive and negative values. `wrap` applies each translation
+    modulo the component extent; otherwise, transfers outside the component
+    are omitted.
+  }];
+  let parameters = (ins
+    "StringAttr":$component,
+    ArrayRefParameter<"DenseI64ArrayAttr">:$offsets,
+    "BoolAttr":$wrap
+  );
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
 def TTL_GatherTransferAttr :
     TTL_Attr<"GatherTransfer", "gather_transfer",
              [TTL_StructuredTransferAttrInterface]> {
@@ -159,8 +179,8 @@ def TTL_GatherTransferAttr :
   let genVerifyDecl = 1;
 }
 
-def TTL_MulticastTransferAttr :
-    TTL_Attr<"MulticastTransfer", "multicast_transfer",
+def TTL_ScatterTransferAttr :
+    TTL_Attr<"ScatterTransfer", "scatter_transfer",
              [TTL_StructuredTransferAttrInterface]> {
   let summary = "Transfer relation from one source to every other device";
   let description = [{
