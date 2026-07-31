@@ -211,6 +211,42 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
+// Two producer kernels may reserve the same DFB when their launch-node domains
+// are disjoint.
+// CHECK-LABEL: func.func @producer_x0
+// CHECK-LABEL: func.func @producer_x1
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @producer_x0() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %cb = ttl.bind_cb {cb_index = 21, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %core_x = ttl.core_x : index
+    %zero = arith.constant 0 : index
+    %is_x0 = arith.cmpi eq, %core_x, %zero : index
+    scf.if %is_x0 {
+      %slot = ttl.cb_reserve %cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    }
+    func.return
+  }
+
+  func.func @producer_x1() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 21, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %core_x = ttl.core_x : index
+    %one = arith.constant 1 : index
+    %is_x1 = arith.cmpi eq, %core_x, %one : index
+    scf.if %is_x1 {
+      %slot = ttl.cb_reserve %cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    }
+    func.return
+  }
+}
+
+// -----
+
 // PipeNet role domains may make two consumer threads disjoint.
 // CHECK-LABEL: func.func @consumer_dst
 // CHECK-LABEL: func.func @consumer_src

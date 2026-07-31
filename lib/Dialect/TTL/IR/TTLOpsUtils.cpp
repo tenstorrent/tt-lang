@@ -9,6 +9,46 @@
 
 namespace mlir::tt::ttl {
 
+std::optional<BcastType> getTileBroadcastType(ArrayRef<int64_t> dims,
+                                              int64_t rank) {
+  llvm::SmallDenseSet<int64_t> normalizedDims = normalizeDimsToSet(dims, rank);
+  bool broadcastsInnermost = rank >= 1 && normalizedDims.contains(rank - 1);
+  bool broadcastsSecondInnermost =
+      rank >= 2 && normalizedDims.contains(rank - 2);
+  if (broadcastsInnermost && broadcastsSecondInnermost) {
+    return BcastType::Scalar;
+  }
+  if (broadcastsSecondInnermost) {
+    return BcastType::Row;
+  }
+  if (broadcastsInnermost) {
+    return BcastType::Col;
+  }
+  return std::nullopt;
+}
+
+FailureOr<ttkernel::ReduceDim> getReduceDimension(ArrayRef<int64_t> dims,
+                                                  int64_t rank) {
+  if (rank != 2) {
+    return failure();
+  }
+  llvm::SmallDenseSet<int64_t> normalizedDims = normalizeDimsToSet(dims, rank);
+  // TTKernel names the surviving orientation: reducing height uses a column
+  // reduction, while reducing width uses a row reduction.
+  bool reducesHeight = normalizedDims.contains(0);
+  bool reducesWidth = normalizedDims.contains(1);
+  if (reducesHeight && reducesWidth) {
+    return ttkernel::ReduceDim::Scalar;
+  }
+  if (reducesHeight) {
+    return ttkernel::ReduceDim::Col;
+  }
+  if (reducesWidth) {
+    return ttkernel::ReduceDim::Row;
+  }
+  return failure();
+}
+
 //===----------------------------------------------------------------------===//
 // DST access interface defaults
 //===----------------------------------------------------------------------===//
@@ -203,7 +243,9 @@ TileOpCategory classifyTileOp(Operation *op) {
   return TileOpCategory::Unknown;
 }
 
-FusionTraceResult traceFusionToRoots(mlir::Value value) {
+FusionTraceResult traceFusionToRoots(
+    mlir::Value value,
+    llvm::function_ref<bool(mlir::OpOperand &)> isMaterializationPlanned) {
   FusionTraceResult result;
 
   // Base case: CB-attached value is a root
@@ -221,8 +263,9 @@ FusionTraceResult traceFusionToRoots(mlir::Value value) {
 
   // Special case: BlockBroadcastOp can be fused when its input is CB-attached.
   if (auto bcastOp = llvm::dyn_cast<BlockBroadcastOp>(defOp)) {
-    mlir::Value bcastInput = bcastOp.getInput();
-    if (getAttachedCB(bcastInput)) {
+    mlir::OpOperand &inputOperand = bcastOp->getOpOperand(0);
+    mlir::Value bcastInput = inputOperand.get();
+    if (isMaterializationPlanned(inputOperand) || getAttachedCB(bcastInput)) {
       result.rootInputs.insert(bcastInput);
       result.opsInOrder.insert(defOp);
       return result;
@@ -230,15 +273,22 @@ FusionTraceResult traceFusionToRoots(mlir::Value value) {
     // Bcast recognized but input not CB-attached.
     result.failureReason = TraceFailureReason::NotCBAttached;
     result.failedValue = bcastInput;
+    result.failedOperand = &inputOperand;
     return result;
   }
 
   // Special case: MatmulOp with CB-attached inputs is a fusable leaf.
   // Both inputs become roots; the trace does not recurse into the matmul.
   if (auto matmulOp = llvm::dyn_cast<MatmulOp>(defOp)) {
-    mlir::Value lhs = matmulOp.getLhs();
-    mlir::Value rhs = matmulOp.getRhs();
-    if (getAttachedCB(lhs) && getAttachedCB(rhs)) {
+    mlir::OpOperand &lhsOperand = matmulOp->getOpOperand(0);
+    mlir::OpOperand &rhsOperand = matmulOp->getOpOperand(1);
+    mlir::Value lhs = lhsOperand.get();
+    mlir::Value rhs = rhsOperand.get();
+    bool lhsAvailable =
+        isMaterializationPlanned(lhsOperand) || getAttachedCB(lhs);
+    bool rhsAvailable =
+        isMaterializationPlanned(rhsOperand) || getAttachedCB(rhs);
+    if (lhsAvailable && rhsAvailable) {
       result.rootInputs.insert(lhs);
       result.rootInputs.insert(rhs);
       result.opsInOrder.insert(defOp);
@@ -246,7 +296,8 @@ FusionTraceResult traceFusionToRoots(mlir::Value value) {
     }
     // Matmul recognized but inputs not CB-attached.
     result.failureReason = TraceFailureReason::NotCBAttached;
-    result.failedValue = getAttachedCB(lhs) ? rhs : lhs;
+    result.failedValue = lhsAvailable ? rhs : lhs;
+    result.failedOperand = lhsAvailable ? &rhsOperand : &lhsOperand;
     return result;
   }
 
@@ -262,10 +313,22 @@ FusionTraceResult traceFusionToRoots(mlir::Value value) {
     return result;
   }
 
-  // Recursively trace all operands
-  for (mlir::Value operand : getElementwiseOperands(defOp)) {
-    auto operandTrace = traceFusionToRoots(operand);
+  // Recursively trace every elementwise operand not replaced by a planned
+  // materialization.
+  unsigned numElementwiseOperands = getElementwiseOperands(defOp).size();
+  for (unsigned operandIndex = 0; operandIndex < numElementwiseOperands;
+       ++operandIndex) {
+    mlir::OpOperand &operand = defOp->getOpOperand(operandIndex);
+    if (isMaterializationPlanned(operand)) {
+      result.rootInputs.insert(operand.get());
+      continue;
+    }
+    auto operandTrace =
+        traceFusionToRoots(operand.get(), isMaterializationPlanned);
     if (operandTrace.failureReason != TraceFailureReason::Success) {
+      if (!operandTrace.failedOperand) {
+        operandTrace.failedOperand = &operand;
+      }
       return operandTrace;
     }
     // Merge roots and ops (SmallSetVector handles deduplication)
@@ -281,6 +344,10 @@ FusionTraceResult traceFusionToRoots(mlir::Value value) {
   result.opsInOrder.insert(defOp);
 
   return result;
+}
+
+FusionTraceResult traceFusionToRoots(mlir::Value value) {
+  return traceFusionToRoots(value, [](mlir::OpOperand &) { return false; });
 }
 
 llvm::StringRef describeTraceFailure(TraceFailureReason reason) {
@@ -417,23 +484,6 @@ SmallVector<LoopGroup> collectLoopGroups(
   }
 
   return groups;
-}
-
-//===----------------------------------------------------------------------===//
-// Compiler-allocated DFB utilities
-//===----------------------------------------------------------------------===//
-
-int32_t getNextAvailableDFBIndex(Operation *scopeOp) {
-  int32_t maxIndex = -1;
-
-  scopeOp->walk([&](BindCBOp bindOp) {
-    int64_t idx = bindOp.getCbIndex().getSExtValue();
-    if (static_cast<int32_t>(idx) > maxIndex) {
-      maxIndex = static_cast<int32_t>(idx);
-    }
-  });
-
-  return maxIndex + 1;
 }
 
 } // namespace mlir::tt::ttl

@@ -4,6 +4,7 @@
 // release (regression guard for PR #523 / #524).
 
 // RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute))' | FileCheck %s
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-print-compute-formation-plans))' -o /dev/null 2>&1 | FileCheck %s --check-prefix=PLAN
 
 // Test 1: two back-to-back reduce+store sequences sharing red_dfb (cb2).
 // Each store has a cb_push immediately after. After lowering, each
@@ -119,7 +120,56 @@ func.func @multi_store_single_reserve()
 
 // -----
 
-// Test 3: two reserves on two different CBs with stores interleaved and
+// One tensor result stored twice through the same reserve is one output
+// transaction and may be emitted by one compute. Repeated direct inputs remain
+// repeated because the tile body has a distinct operand position for each use.
+
+// CHECK-LABEL: func.func @one_result_multi_store_single_reserve
+// CHECK:       %[[OUT:.*]] = ttl.bind_cb{cb_index = 1
+// CHECK:       %[[INPUT:.*]] = ttl.attach_cb
+// CHECK:       ttl.cb_reserve %[[OUT]]
+// CHECK:       ttl.compute ins(%[[INPUT]], %[[INPUT]]
+// CHECK:         ttl.tile_add
+// CHECK-NEXT:    ttl.tile_store
+// CHECK-NEXT:    ttl.tile_store
+// CHECK-NEXT:    ttl.yield
+// CHECK:       ttl.cb_push %[[OUT]]
+func.func @one_result_multi_store_single_reserve()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %output_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %input_wait = ttl.cb_wait %input_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %input = ttl.attach_cb %input_wait, %input_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %result = ttl.add %input, %input
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+        tensor<1x1x!ttcore.tile<32x32, bf16>>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %result, %output
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+        tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %result, %output
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+        tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %output_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  ttl.cb_pop %input_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
+
+// -----
+
+// Two reserves on two different DFBs with stores interleaved and
 // pushes in reverse store order. Both releases already follow their generated
 // compute ops, so conversion keeps their original relative order.
 
@@ -161,5 +211,74 @@ func.func @interleaved_pushes_wrong_order()
   ttl.cb_push %y : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.cb_push %x : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   ttl.cb_pop  %in : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
+
+// -----
+
+// The inner and outer exponentials both store through `%shared` and use its
+// single push. The outer fused plan executes first and moves that push after
+// its new compute. The later inner plan must find the moved push from the
+// unchanged reserve/store relation instead of using the erased original push.
+// CHECK-LABEL: func.func @shared_push_is_resolved
+// PLAN-LABEL: Compute formation plan @shared_push_is_resolved
+// PLAN:       F0 {{.*}} kind=direct recipe=elementwise legal=true
+// PLAN:       preserved-by {{.*}} operand=0
+// PLAN:       F1 {{.*}} kind=fused recipe=fused legal=true
+// PLAN:       fused {{.*}} tile-operation operands=1
+// PLAN-NEXT:  fused {{.*}} tile-operation operands=1
+// PLAN-NEXT:  order=[F1, F0]
+// CHECK:       %[[SHARED_DFB:.*]] = ttl.bind_cb{cb_index = 1
+// CHECK:       %[[OTHER_DFB:.*]] = ttl.bind_cb{cb_index = 2
+// CHECK:       ttl.cb_reserve %[[SHARED_DFB]]
+// CHECK:       ttl.compute
+// CHECK:         ttl.tile_exp
+// CHECK:         ttl.tile_store
+// CHECK:       ttl.cb_reserve %[[OTHER_DFB]]
+// CHECK:       ttl.compute
+// CHECK:         ttl.tile_exp
+// CHECK-NEXT:    ttl.tile_exp
+// CHECK:         ttl.tile_store
+// CHECK-NEXT:    ttl.tile_store
+// CHECK:       ttl.cb_push %[[SHARED_DFB]]
+// CHECK-NOT:   ttl.cb_push %[[SHARED_DFB]]
+func.func @shared_push_is_resolved()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %shared_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %other_dfb = ttl.bind_cb {cb_index = 2, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %input_wait = ttl.cb_wait %input_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %input = ttl.attach_cb %input_wait, %input_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %inner = ttl.exp %input
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %outer = ttl.exp %inner
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %shared = ttl.cb_reserve %shared_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %inner, %shared
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+        tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %outer, %shared
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+        tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %shared_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %other = ttl.cb_reserve %other_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %outer, %other
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+        tensor<1x1x!ttcore.tile<32x32, bf16>>
   return
 }

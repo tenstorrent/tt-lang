@@ -7,8 +7,8 @@ This document describes how the tt-lang compiler manages dataflow buffers (DFBs)
 DFBs originate from two sources. User-declared DFBs are created explicitly in the DSL via `make_dataflow_buffer_like` and correspond to the programmer's data movement plan. Compiler-allocated DFBs are inserted automatically at fusion split points where a tensor-level operation requires a CB-attached operand but receives the result of a fused expression chain.
 
 The hardware supports at most 32 DFBs per node (indices 0--31). User and
-compiler-allocated DFBs share this index space. DFB-creating function passes
-assign compiler DFBs kernel-local provisional indices. The module-level
+compiler-allocated DFBs share this index space. Passes operating on individual
+kernels assign compiler DFBs kernel-local provisional indices. The module-level
 finalization pass assigns module-wide physical indices after the last
 user-declared DFB and applies lifetime-based index reuse.
 
@@ -111,15 +111,21 @@ sequence immediately after the producer push. This construction gives all
 traces the same occupancy transition and makes the attach dominate all original
 users dominated by the producer result.
 
-Producer compute formation follows the same publication rule for user DFBs.
+Producer compute formation replaces a tensor-level producer and its output
+stores with one `ttl.compute`. It follows the same publication rule for user
+DFBs.
 When `ttl-form-producer-compute` or `convert-ttl-to-compute` absorbs a
-block-level `ttl.store` into a `ttl.compute`, any producer release that would
-otherwise precede the new compute is replaced after the compute. This keeps the
-generated DFB lifecycle in write-then-publish order: `cb_reserve`,
-`ttl.compute` with `tile_store`, then `cb_push`.
+block-level `ttl.store` into a `ttl.compute`, any publication that would
+otherwise precede the new compute is relocated after the compute. This keeps
+the generated DFB lifecycle in write-then-publish order: `cb_reserve`,
+`ttl.compute` with `tile_store`, then `cb_push`. Both passes use the shared,
+read-only compute-formation analysis described below before modifying IR.
 
-A DFB's L1 memory is reclaimable after its last `cb_pop`. This defines the
-interval used for index reuse.
+After `cb_pop`, the producer may overwrite the released slot because its prior
+contents are no longer live. The DFB's L1 backing storage remains statically
+allocated. Compiler DFB index reuse uses the final pop as the end of the
+contents' live interval, allowing non-overlapping DFBs of the same type to use
+the same backing storage.
 
 ## Single-producer Single-consumer Semantics
 
@@ -245,13 +251,337 @@ non-attached compute results. The final `convert-ttl-to-compute` pass lowers
 consumers that now receive DFB-attached operands. The following `ttl-auto-sync`
 run inserts the consumer `cb_pop`.
 
-Compute-result materialization is planned before rewriting IR. The pass records
-each required consumer operand under its original producer result:
+### DFB Lifetime and Compute Formation Planning
+
+`ttl-form-producer-compute`, `ttl-insert-intermediate-dfbs`, and
+`convert-ttl-to-compute` build complete read-only plans before modifying a
+kernel. A plan records input identities, iteration semantics, output
+transactions, application order, and any required intermediate DFBs. The
+producer and final conversion passes recompute the plan around intermediate
+DFB insertion; no analysis result is reused after its kernel changes.
+
+#### Acquire and Release Ownership
+
+The lifecycle index records every producer acquisition (`cb_reserve`),
+consumer acquisition (`cb_wait`), producer release (`cb_push`), and consumer
+release (`cb_pop`). Producer and consumer pointers are independent and are
+analyzed separately.
+
+Straight-line transactions in the kernel entry block use the DFB FIFO protocol
+and static `num_tiles` values to match releases to one or more acquisitions.
+Other blocks may receive an outstanding transaction, so their releases remain
+unresolved. Control flow that prevents an exact entry-block FIFO match also
+retains conservative ownership. An entry-block release that exceeds all
+preceding acquisitions, or a release with no same-kind acquisition anywhere in
+the kernel, is malformed IR and is diagnosed before any rewrite.
+
+Block order is causal: an acquisition nested after an entry-block release
+cannot supply tiles to the earlier release, even when the nested region later
+executes. Conversely, a release after nested control flow is unresolved when
+the analysis cannot determine which dynamic acquisitions reach it. Unresolved
+ownership is a conservative set of possible owners, not proof that the
+transaction counts are balanced.
 
 ```
-source = (producer ttl.compute, result number)
-use    = (consumer operation, operand number)
+indexLifecycles(kernel):
+  record every acquisition and release in kernel walk order
+
+  for each DFB and producer-or-consumer kind in the kernel entry block:
+    outstanding = FIFO queue of (acquisition, remainingTiles)
+    for operation in block order:
+      acquisition -> append its tile count
+      release     -> consume its tile count from the queue
+      nested lifecycle operation -> mark later releases unresolved
+
+  diagnose an entry-block release that underflows its queue
+
+  exact one owner       -> Exact
+  exact several owners  -> Multiple
+  release outside the proven entry-block sequence -> Unresolved with every
+                                                       same-kind acquisition
+                                                       on the DFB as a candidate
 ```
+
+A DFB-backed tensor has an exact identity when it derives from one acquisition
+through conversion casts, `ttl.attach_cb`, `tensor.extract_slice`, or
+`tensor.extract`. These operations preserve the acquired storage identity.
+An association without a local acquisition has only its DFB identity. It
+represents storage present at kernel entry because `attach_cb` has no protocol
+effect. Any release on that DFB may invalidate it, and another association does
+not reacquire it.
+
+The availability analysis is an MLIR dense forward dataflow analysis. It
+tracks every static acquisition and association at each program point and
+uses MLIR's CFG and region control-flow propagation.
+
+```
+entry state:
+  exact acquisition identities are unavailable
+  standalone association identities are available
+
+transfer(acquisition): mark its exact identity available
+transfer(association): no state change
+transfer(release):
+  if FIFO ownership is exact or spans several acquisitions:
+    mark every recorded owner unavailable
+  otherwise:
+    mark every possible owner may be unavailable
+  mark standalone associations on the released DFB may be unavailable
+
+join(predecessors):
+  available only if every reachable predecessor is available
+
+query(non-executable program point):
+  available, because no runtime read occurs
+```
+
+Partial releases invalidate the complete tensor because the lattice does not
+track tile ranges. Unresolved ownership also invalidates every same-kind
+acquisition on the DFB. These rules may require an additional intermediate
+DFB, but they cannot classify released storage as available. Dead code
+analysis excludes statically non-executable blocks from this conservative
+fallback; dense analysis creates no lattice there, and availability holds
+vacuously because the consumer cannot execute.
+
+#### Compute Formation
+
+The compute formation planner first selects a typed construction recipe for
+each supported source. A direct recipe records the operation's declared DFB
+inputs. A fused recipe records the traced external inputs, affine indexing
+roles, tile operations, and supported instrumentation placement. An identity
+typecast records position-preserving elision instead of a compute.
+
+A fused recipe may recompute side-effect-free producers from a dominating
+block in the consumer's block. SSA dominance makes every producer operand
+available at the consumer, and the DFB availability analysis separately proves
+that the underlying storage remains available at the new execution point.
+Recomputation therefore preserves the tensor value across `scf.if` and
+`scf.for` region boundaries without creating storage solely for that boundary.
+
+For each non-elided source, all result stores must be in one block and every
+store view must derive from `cb_reserve`. Stores using the same reserve form
+one output transaction. Several reserves of different DFBs may be combined;
+several reserves of the same DFB may not, because combining them would move a
+publication across a later reserve of the same producer pointer.
+
+```
+planFormation(source):
+  recipe, inputs, iteration = planTypedConstruction(source)
+  if recipe is identity elision:
+    return position-preserving plan
+
+  outputs = group result stores by their reserve operations
+  require all stores in one block
+  require each existing push to match every store in its transaction
+  reject if one DFB has more than one output transaction
+
+  insertionPoint = final output store
+  reject unless every input is definitely available at insertionPoint
+  reject unless insertionPoint dominates every surviving result use
+  return immutable construction and publication plan
+```
+
+Kernel planning orders overlapping fused candidates before mutation. For each
+independently scheduled formation that absorbs another candidate without
+erasing it, the planner records a dependency from the absorbing formation to
+the absorbed source. All absorbing formations therefore execute before that
+source's independent formation. A source erased by an absorbing formation is
+not scheduled separately. Identity elisions instead follow SSA definition
+order. Application verifies the recorded operands and uses. It resolves only
+pushes that an earlier formation may have relocated and does not repeat
+semantic analysis on modified IR.
+
+The plan preserves DFB publication order. Every output reserve dominates its
+store and therefore the final insertion point. A push moved after the formed
+compute remains before the next reserve of that DFB, and the one-transaction
+condition prevents a push from crossing a later reserve. The availability
+check proves that every compute input retains its storage at the new execution
+position. The dominance check proves that replacement results reach every use
+that survives earlier formations. When several formations absorb one source,
+the planner finds a preserving use outside the union of all subgraphs erased
+by preceding formations. That use proves the source remains present until its
+own formation executes.
+
+The analysis is kernel-local because formation moves operations only within
+one kernel. Producer and consumer pointer states are separate, and the
+module-level `ttl-verify-dfb-spsc` pass verifies cross-kernel producer and
+consumer domains. The implementation supports any number of kernels; the
+current two data movement kernels and one compute kernel are not hard-coded.
+
+The correctness argument relies on these pipeline assumptions:
+
+- DFB operations pass their op verifiers, including static tile counts and
+  result types consistent with each acquisition.
+- Reserve/push and wait/pop follow the DFB FIFO producer and consumer
+  protocols. A tensor derived through a recognized view operation continues
+  to name its acquisition until the corresponding release.
+- Each selected construction recipe defines the tensor operation's tile
+  semantics. Fusion relocates signposts and tile-observing debug prints with
+  recorded placement; an intervening operation that would be crossed prevents
+  formation.
+- A plan is applied only to the unchanged kernel from which it was built.
+  Application verifies recorded operands and uses before rewriting them.
+- `ttl-auto-sync` runs after final formation and inserts absent pushes and pops
+  after the resulting final uses.
+
+#### Intermediate DFB Analysis and Materialization
+
+Intermediate materialization follows the One-Shot Bufferize analysis model. A
+whole-kernel analysis state records each required `OpOperand` and the evidence
+for that decision. The requirement set reaches a fixed point before the pass
+builds or applies a materialization plan. Operand identities remain valid while
+the kernel is unchanged and are checked again before application.
+
+```
+requirements = unattached operands required by DFBInputOpInterface
+
+repeat until requirements does not grow:
+  for each ttl.compute result named by an existing requirement:
+    require every other surviving use of that result
+
+  for each fusable expression operand:
+    roots = trace inputs, stopping at existing requirements
+    if any root may be released before the consumer:
+      require that operand
+
+  for each supported compute-formation source:
+    outputs = plan output transactions
+    inputs = collect inputs, stopping at existing requirements
+    if tracing stops at an operand produced by ttl.compute or by an operation
+       with a standalone compute recipe:
+      require that exact operand
+      continue
+    if formation would not dominate a surviving result use:
+      require every result use
+    if one output DFB has several reserve transactions:
+      require every result use
+    else for each output store:
+      if any input may be released before that store:
+        require the stored-result operand
+
+group requirements by source value
+build every materialization record
+verify the complete plan
+apply standalone materializations
+topologically order compute rebuilds by SSA dominance
+apply compute rebuilds in that order
+```
+
+Each requirement selects one consumer operand for DFB materialization. Input
+tracing treats that operand as a future DFB-backed value, so a later formation
+does not read the original expression's inputs. The requirement set grows
+monotonically over the kernel's finite operand set, which proves termination
+and removes kernel walk order from the result.
+
+When fusion reaches a producer with a complete standalone compute recipe, the
+failed trace reports the exact consumer operand. Materializing that operand
+forms the producer independently and makes its result a DFB input to the
+consumer. This is a producer/consumer boundary rule; it does not enumerate
+operation pairs.
+
+`ttl.compute` results preserve SSA dependencies, but the compute body publishes
+data only through `ttl.tile_store`; `ttl.yield` does not carry tile values. If
+one surviving use requires a compiler DFB, every surviving use of that result
+must read the same pushed and waited materialization. The original user-DFB
+publication remains a `ttl.tile_store` in the compute body and is not a
+surviving result use. This rule prevents a later formation from treating the
+compute result as readable storage without a DFB acquisition.
+
+Materializing a published result adds another formal output to the existing
+compute rather than creating another producer. This is also valid for an
+accumulating compute. Tile operations execute inside the reduction loops, and
+all stores execute afterward while the accumulated DST values remain
+available. Each store uses the indexing map associated with its formal output,
+so one accumulated value can publish both to its original user DFB and to the
+compiler DFB read by another consumer.
+
+The current `ttl.tile_store` syntax does not contain its formal-output index.
+Verification and lowering therefore identify the output by the DFB attached to
+the store view and require formal outputs to use different DFBs. This is an IR
+representation limitation, not a hardware restriction. Issue
+[#797](https://github.com/tenstorrent/tt-lang/issues/797) tracks encoding the
+association explicitly and removing DFB-based output discovery.
+
+An existing `ttl.compute` is rebuilt once with all required additional DFB
+outputs. Other tensor definitions are each materialized once. All consumers of
+one source receive the same waited and attached value. When one result has
+several reserve transactions on the same DFB, the result is materialized once
+and each original store becomes a passthrough compute in its original
+transaction.
+
+Standalone materializations run before compute rebuilds because they preserve
+their source and consumer operations. MLIR's region-aware topological sort
+orders compute rebuilds by SSA dominance rather than region or block list
+order. Valid SSA requires a producer to dominate each consumer, so the
+producer rewrites a recorded consumer operand before that consumer is rebuilt;
+no plan retains an operation after an earlier application erases it.
+
+The materialization plan is sufficient by induction over its fixed point. A
+new requirement identifies a consumer operand that application replaces with
+storage owned by a new DFB transaction. The next iteration analyzes formation
+inputs while treating that operand as the future DFB-backed value. At
+termination, every formation candidate either has available inputs and valid
+output ordering or records the condition that prevents its application. Before
+mutation, final conversion verifies that every `ttl.store` will either be
+absorbed into a planned `ttl.compute` or converted to a DFB-to-DFB passthrough,
+so an unsupported or unsafe source cannot survive as partially converted IR.
+
+#### Relationship to Upstream MLIR
+
+The implementation reuses upstream compiler infrastructure for general
+program analysis and structured operation semantics:
+
+- MLIR dense forward dataflow and dead-code analysis propagate availability
+  only through executable CFG and `RegionBranchOpInterface` edges.
+- `DominanceInfo` proves SSA availability, and MLIR's region-aware topological
+  sort orders producer rebuilds before their consumers.
+- `TilingInterface`, `DestinationStyleOpInterface`, and
+  `IndexingMapOpInterface` define compute iteration and output mapping.
+- memory-effect and speculation interfaces state the precondition for
+  recomputing a producer across a region boundary.
+
+The upstream One-Shot Bufferize implementation supplies the analysis-first
+methodology but not the required DFB semantics. Bufferization reasons about
+tensor and memory aliases; it does not model DFB FIFO acquisitions,
+reserve/push and wait/pop ownership, publication transactions, or TTL tile
+recipes. The TTL-specific implementation therefore adds:
+
+- exact acquisition identities and conservative release-owner sets;
+- static FIFO tile-count matching for entry-block transactions;
+- three-state planner results that distinguish a valid plan, a legal candidate
+  that must remain unchanged, and malformed IR;
+- complete compute-construction and output-publication records;
+- a monotone set of required consumer operands and one grouped
+  materialization plan.
+
+This division keeps control-flow, dominance, operation-effect, and scheduling
+mechanisms in upstream infrastructure while retaining DFB protocol and TTL
+lowering semantics in the dialect.
+
+#### Disabled Mode and Resource Accounting
+
+The default pipeline enables compiler-created DFB materialization. All normal
+tests therefore exercise planning with materialization available. With
+`--no-ttl-compiler-dfbs`, analysis still reaches the same fixed point, but the
+pass diagnoses every required materialization instead of modifying IR. This
+includes consumers reached after a DFB release and values published through
+several reserve transactions. The option does not restore the earlier,
+mutation-dependent formation behavior.
+
+Each materialized result adds one block-count-one DFB and its L1 allocation.
+Physical index reuse may later assign the same index to non-overlapping
+compiler DFB lifetimes of identical type. `ttl-validate-cb-budget` runs after
+index finalization and verifies the resulting static DFB storage against the
+device-specific remaining L1 budget. Materialization that is semantically
+required but exceeds either the 32-index limit or the L1 budget is rejected
+with a resource diagnostic.
+
+`test/python/test_recurrence_multi_output_dfb.py` exercises this behavior on
+hardware with several results materialized from the same compute, nested and
+sibling elementwise consumers of one producer, an unstored reduction consumed
+by an elementwise operation, and one result published through several reserve
+transactions. `compute_formation_materialization.mlir` checks the corresponding
+formation order and exact materialization decisions before mutation.
 
 Materialization does not infer a store from a Python assignment. The original
 `ttl.compute` already contains a `ttl.tile_store` for each explicit block
@@ -294,12 +624,12 @@ result of the same producer.
 (`include/ttlang/Dialect/TTL/Transforms/DFBMaterialization.h`) to remove
 ranked-tensor `scf.for` iter_args before compute lowering.
 The helper chooses a provisional index by scanning only the enclosing kernel,
-so DFB-creating function passes do not inspect sibling kernels while MLIR
-executes them concurrently.
+so passes operating on individual kernels do not inspect sibling kernels while
+MLIR executes them concurrently.
 
-Non-compute producers use the tensor-level fallback. The helper emits the
-reserve/store and wait/attach at the tensor definition site, while
-`ttl-auto-sync` inserts the missing releases:
+Non-compute producers use standalone tensor materialization. The helper emits
+the reserve/store and wait/attach after an insertion operation recorded by the
+plan, while `ttl-auto-sync` inserts the missing releases:
 
 ```
 bind_cb {ttl.compiler_allocated}
@@ -312,9 +642,21 @@ attach_cb
 cb_pop
 ```
 
+When the source already has a valid output-publication plan, its final output
+store is the insertion operation if it properly dominates every rewritten
+consumer. Final compute formation may relocate source evaluation to that store;
+placing the compiler reserve/store/wait afterward therefore keeps evaluation
+before the wait. A source without an applicable output-publication plan remains
+at its definition. If a valid publication store does not dominate every
+consumer, the fixed point must require every source use. Rewriting all uses
+removes the original publications, so the compiler DFB store inserted after
+the definition becomes the source's only output store and therefore its compute
+insertion position. The planner verifies these conditions before modifying IR.
+
 When multiple `DFBInputOpInterface` operations consume the same non-compute
-value, a materialization is shared only when its attached value dominates the
-later consumer. Incomparable consumers receive separate compiler DFBs.
+value, they share one materialization. The selected insertion operation
+properly dominates every rewritten consumer, so the attached replacement is
+valid for consumers in nested or incomparable regions.
 
 For `ttl.compute` results, the attached value is created immediately after the
 producer push, so consumers originally dominated by the compute result remain
@@ -386,7 +728,7 @@ Two disjoint criteria establish ownership:
   bound: a use of `cb_wait t1`'s tile is owned by `t1` regardless of where it
   appears, even past later acquires on the same DFB.
 
-- **Direct-CB ownership** -- `U` references the CB directly as a `ttl.copy`
+- **Direct-DFB ownership** -- `U` references the DFB directly as a `ttl.copy`
   operand on the side matching the acquire's sync class (the DM-thread case,
   e.g. `ttl.copy %cb, %slice` for a writer). With no SSA tile handle,
   ownership is positional: `U` belongs to the latest acquire on
@@ -395,19 +737,19 @@ Two disjoint criteria establish ownership:
   (`interval.syncClassBoundary` in the pass).
 
 The criteria are disjoint. DM-thread `ttl.copy` does not flow through
-`attach_cb` (it takes the CB directly). Compute-thread uses always go through
-`attach_cb` and never reference the CB as a direct operand of a tile op.
+`attach_cb` (it takes the DFB directly). Compute-kernel uses always go through
+`attach_cb` and never reference the DFB as a direct operand of a tile op.
 
 #### Why two criteria
 
 Compute threads work through SSA tile handles
 (`cb_wait` result -> `attach_cb` -> `ttl.store` / compute ops), so tile-SSA
 ownership applies and the next-acquire boundary is irrelevant -- SSA already
-distinguishes which slot the use refers to. DM threads use direct CB
-references (`ttl.copy %cb, %slice`) where no tile handle exists, so direct-CB
-ownership is the fallback and the boundary is essential to disambiguate
-consecutive direct uses on the same CB. Unifying would require changing
-`ttl.copy` to take the attached tensor instead of the CB, a dialect change
+distinguishes which slot the use refers to. Data-movement kernels use direct DFB
+references (`ttl.copy %cb, %slice`) where no tile handle exists, so direct-DFB
+ownership uses the operation interval and its boundary to disambiguate
+consecutive direct uses on the same DFB. Unifying would require changing
+`ttl.copy` to take the attached tensor instead of the DFB, a dialect change
 tracked as future work.
 
 ### Invariants on the inserted release
@@ -626,7 +968,7 @@ If `O` is itself a release on `c` (e.g., a user-written `cb_pop` for consumer
 acquires or `cb_push` for producer acquires), the original IR advances one
 slot at `O`, but the coalesced acquire holds all `N*k` slots from the start.
 With `block_count` only slightly larger than the working set, the matching
-thread cannot make progress until all members are released. Same argument for
+kernel cannot make progress until all members are released. Same argument for
 transitive releases via group results.
 
 ### Detection algorithm
@@ -691,77 +1033,102 @@ user-declared index in the module.
 Two DFBs may share an index only if they have identical `CircularBufferType`
 (shape, element type, block count). Since `CircularBufferType` is an MLIR
 uniqued type, this is a pointer comparison. The algorithm partitions DFBs by
-type and runs a linear scan within each partition.
+type and applies deterministic first-fit interval coloring within each
+partition.
 
 ### Algorithm
 
 ```
+if any compiler-created DFB exists and a derived DFB-index attribute exists:
+  reject the invalid pass order
+
 for bindOp in compilerAllocatedBindCBOps:
   lifecycleOps = reserveOrWaitOrPushOrPopUsers(bindOp)
   if lifecycleOps is not empty and any operation kind is missing:
     reject the partial lifecycle
 
 nextCompilerIndex = max(userDeclaredDFBIndices) + 1
-for funcOp in module:
-  slots = assignPhysicalDFBIndices(
-      funcOp, compilerAllocatedBindCBOps[funcOp], nextCompilerIndex)
+for kernel in module:
+  slots = planPhysicalDFBIndices(
+      kernel, compilerAllocatedBindCBOps[kernel], nextCompilerIndex, plan)
   nextCompilerIndex += slots
 
-assignPhysicalDFBIndices(
-    funcOp, compilerAllocatedBindCBOps, firstPhysicalIndex):
-  // Assign sequential indices to function-level operations.
-  for op in funcOp.entryBlock:
+if nextCompilerIndex > 32:
+  reject the allocation
+assert every shared planned index has one exact DFB type
+
+apply every planned cb_index assignment
+apply ttl.base_cta_index and ttl.compiler_allocated_dfbs
+
+planPhysicalDFBIndices(
+    kernel, compilerAllocatedBindCBOps, firstPhysicalIndex, plan):
+  // Assign sequential indices to kernel-body operations.
+  for op in kernel.entryBlock:
     opIndex[op] = nextIdx++
 
-  // Build intervals from complete reserve/push/wait/pop lifecycles.
-  // Nested acquires and pops are projected to their function-level ancestor.
+  kernelEndIndex = nextIdx
+
+  // Build half-open intervals from reserve/push/wait/pop operations.
+  // Nested acquires and pops are projected to their kernel-body ancestor.
   for bindOp in compilerAllocatedBindCBOps:
     if bindOp has no lifecycle operations:
       intervals[bindOp.type].append(
-          {opIndex[bindOp], lastOpIdx, bindOp.result})
+          {opIndex[bindOp], kernelEndIndex, bindOp.result})
       continue
     start = min(getBodyIndex(acq) for acq in reserveOrWaitUsers(bindOp))
-    end = max(getBodyIndex(pop) for pop in cbPopUsers(bindOp))
+    end = max(getBodyIndex(pop) + 1 for pop in cbPopUsers(bindOp))
     intervals[bindOp.type].append({start, end, bindOp.result})
 
-  // Linear scan per type partition. Each partition gets a contiguous
+  // First-fit coloring per type partition. Each partition gets a contiguous
   // block of indices starting at firstPhysicalIndex + offset.
   offset = 0
   for (type, typeIntervals) in intervals:
     sort typeIntervals by start
-    maxSlot = 0
+    colors = []
     for interval in typeIntervals:
-      // Expire: free slots where active.end <= interval.start
-      for active in activeList:
-        if active.end <= interval.start:
-          free(slot[active])
-      slot[interval] = allocateFirstFreeSlot()
-      maxSlot = max(maxSlot, slot[interval])
+      color = first color in colors where
+          interval overlaps no interval already assigned to color
+      if no such color exists:
+        color = append new color to colors
+      colors[color].append(interval)
 
-    // Rewrite BindCBOp cb_index attributes for this partition.
-    for (value, s) in partitionAssignments:
-      bindOp[value].cb_index = firstPhysicalIndex + offset + s
-    offset += maxSlot + 1
+    // Record assignments without modifying IR.
+    for (color, assignedIntervals) in colors:
+      for interval in assignedIntervals:
+        plan.append(bindOp[interval.value],
+                    firstPhysicalIndex + offset + color)
+    offset += colors.size()
 
   return offset
 ```
 
-Compiler-created DFBs emitted by the production pipeline have both lifecycle
-halves. Rejecting a partial lifecycle prevents the allocator from inferring a
-bounded interval from malformed IR. A declaration with no lifecycle operations
-is legal but conservatively remains live through the end of its kernel.
+Compiler-created DFBs emitted by the production pipeline have reserve, push,
+wait, and pop operations. The check requires the presence of all four operation
+kinds but does not restrict the number of transactions. Auto-sync is assumed to
+have balanced each acquire with its corresponding release before finalization.
+A declaration with no lifecycle operations is legal but conservatively remains
+live through the end of its kernel.
 
-The expiration condition `active.end <= interval.start` matches the DST
-register allocator's convention. Because operation indices are integers
-assigned to distinct operations, strict inequality and non-strict inequality
-produce the same result.
+Planning separates all fallible work from mutation. Pass-order, lifecycle, and
+capacity validation complete before any `cb_index`, `ttl.base_cta_index`, or
+`ttl.compiler_allocated_dfbs` update. A failed pass therefore leaves the input
+IR unchanged. Type-partitioned allocation guarantees that DFBs sharing a
+planned compiler index have one exact type; the metadata builder asserts this
+internal invariant.
+
+Intervals are half-open. A pop at kernel-body ordinal `N` produces endpoint
+`N + 1`, so the interval includes the release operation. A reserve in the next
+kernel-body operation may reuse the index because it starts at `N + 1`. If a
+nested pop and reserve project to the same enclosing operation, the pop ends at
+`N + 1` while the reserve starts at `N`, so their intervals overlap. This
+preserves correctness after nested-region ordering is discarded.
 
 ### Correctness with control flow
 
-The algorithm assigns sequential indices to function-level operations only.
+The algorithm assigns sequential indices to kernel-body operations only.
 Structured operations (`scf.for`, `scf.if`, `ttl.compute`) occupy a single
 index in this sequence; their contents are not individually numbered. Any
-nested acquire or `cb_pop` is projected to its enclosing function-level
+nested acquire or `cb_pop` is projected to its enclosing kernel-body
 operation with `Block::findAncestorOpInBlock`.
 
 Projection overestimates liveness because an interval covers the enclosing
@@ -771,17 +1138,16 @@ cannot assign one physical DFB index to lifetimes that may overlap at runtime.
 
 Two DFBs consumed simultaneously by the same operation (e.g., both operands of
 a matmul) necessarily have overlapping intervals because their acquires
-precede the consumer and their pops follow it. The linear scan assigns them
+precede the consumer and their pops follow it. First-fit coloring assigns them
 different slots.
 
 ### Module attribute and runtime integration
 
-After rewriting indices, the pass calls `getNextAvailableDFBIndex`, which
-returns `max(cb_index) + 1` across all `BindCBOp`s in the module. This is the
-index space usage, not a count of distinct DFBs (sparse indices inflate it).
-The pass verifies this does not exceed `kMaxCircularBuffers` (32).
+The planned physical DFB count is one greater than the greatest assigned index.
+This is the index space usage, not a count of distinct DFBs; sparse user indices
+inflate it. The pass verifies this does not exceed `kMaxCircularBuffers` (32).
 
-The pass then sets `ttl.base_cta_index` on every function. Compile-time
+The pass then sets `ttl.base_cta_index` on every kernel function. Compile-time
 arguments (CTAs) to each kernel are laid out as `[CB indices..., other args...]`.
 `base_cta_index` is the starting index of the non-CB arguments -- equivalently,
 one past the last CB index. CB indices occupy `[0, base_cta_index)`.
@@ -793,7 +1159,46 @@ attribute to allocate L1 buffers at dispatch time.
 
 ## Limitations and Future Work
 
-The linear scan operates on a flat sequence of function-level operations. It
+Compute formation requires one block containing all stores of a tensor result.
+Stores in different blocks have different execution conditions and cannot be
+represented by one unconditional compute. Supporting them requires a
+region-aware formation plan that proves per-region DFB occupancy balance; this
+is tracked by [#724](https://github.com/tenstorrent/tt-lang/issues/724). Until
+then, conditional routing of one tensor result to stores in different blocks
+is rejected with this reason instead of being misclassified as a non-DFB input.
+
+Cross-region fusion recomputes only side-effect-free producers. When the
+producer's block contains relocatable signposts or tile-observing debug prints,
+the planner rejects the formation because it has no cross-block placement
+relation that proves the observation order is preserved. Representing profiling
+scopes as structured region operations would permit a more precise containment
+proof without weakening this correctness condition.
+
+The availability lattice is not tile-range-sensitive. Releasing any part of an
+acquisition invalidates its complete tensor result. Tracking remaining tile
+ranges could prove more values available after partial `cb_push` or `cb_pop`
+operations without changing formation semantics.
+
+Exact FIFO matching is restricted to the kernel entry block and is disabled
+for a DFB when nested lifecycle operations make that queue
+control-flow-dependent. Interval ownership and dense dataflow propagation
+remain conservative in these cases. A future range-aware transaction lattice
+could propagate FIFO tile counts across `RegionBranchOpInterface` edges and
+recover additional exact owners.
+
+Exact tensor identity tracing accepts conversion casts, DFB associations,
+slices, and extracts. An unrecognized aliasing operation produces an unknown
+identity and therefore cannot prove availability. Extending the recognized
+view interface can improve precision only when the operation guarantees that
+its result aliases the same acquired storage.
+
+Formation plans recognize only tile recipes and instrumentation whose relocation
+semantics are defined. An unrecognized operation prevents fusion rather than
+assuming purity or moving an effect. Adding a recipe requires defining its
+input roles, iteration maps, instrumentation order, and output publication
+semantics together.
+
+The interval model operates on a linear sequence of kernel-body operations. It
 cannot distinguish between branches of an `scf.if`, so DFBs used in mutually
 exclusive branches are treated as overlapping. This is conservative for
 physical index reuse. More precise reuse across mutually exclusive regions
@@ -804,8 +1209,8 @@ their original indices because the same CB index is referenced by multiple
 kernels (reader, compute, writer) to implement cross-kernel data flow. Reusing
 a user index in one kernel would invalidate references in the others.
 
-Liveness is computed at function-level granularity. If an acquire or `CBPopOp`
-is inside a structured op, it is projected to its enclosing function-level
+Liveness is computed at kernel-body granularity. If an acquire or `CBPopOp`
+is inside a structured op, it is projected to its enclosing kernel-body
 operation. This is used by loop-state materialization and by later lowering
 passes that can place lifecycle ops in nested regions. The projection is safe
 but may keep a physical DFB index live longer than necessary.

@@ -314,6 +314,12 @@ def TTL_ComputeOp : TTL_Op<"compute", [
     // reductions where the output shape is smaller than the iteration domain.
     int64_t getTotalIterationTiles();
 
+    /// Returns the unique formal output index whose attached DFB matches
+    /// `view`. Failure means the association is absent or ambiguous.
+    /// TODO(bnorris): Encode this association in `ttl.tile_store` and remove
+    /// DFB-based discovery: https://github.com/tenstorrent/tt-lang/issues/797.
+    FailureOr<unsigned> getOutputIndexForView(Value view);
+
     // Return whether the body contains an op of the given type.
     template <typename OpTy>
     bool containsOp() {
@@ -387,7 +393,8 @@ def TTL_AccumulationScopeOp : TTL_Op<"accumulation_scope", [
 def TTL_DstSectionOp : TTL_Op<"dst_section", [
     SingleBlockImplicitTerminator<"YieldOp">,
     RecursiveMemoryEffects,
-    NoRegionArguments
+    NoRegionArguments,
+    DeclareOpInterfaceMethods<RegionBranchOpInterface>
   ]> {
   let summary = "DST register acquisition scope";
   let description = [{
@@ -1161,7 +1168,7 @@ def TTL_TileTypecastOp : TTL_TileOp<"tile_typecast",
 // Broadcast Operation
 //===----------------------------------------------------------------------===//
 
-def TTL_BlockBroadcastOp : TTL_Op<"block.broadcast", [
+def TTL_BlockBroadcastOp : TTL_Op<"block.broadcast", [Pure,
     DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>]> {
   let summary = "Broadcast a block over specified dimensions to a target shape";
   let description = [{
@@ -1430,7 +1437,7 @@ def TTL_CBReserveOp : TTL_Op<"cb_reserve",
   }];
   let arguments = (ins
     TTL_CircularBuffer:$cb,
-    OptionalAttr<I64Attr>:$num_tiles
+    ConfinedAttr<OptionalAttr<I64Attr>, [IntPositive]>:$num_tiles
   );
   let results = (outs AnyRankedTensor:$result);
   let assemblyFormat = "$cb attr-dict `:` type($cb) `->` type($result)";
@@ -1457,7 +1464,7 @@ def TTL_CBPushOp : TTL_Op<"cb_push", [MemoryEffects<[MemWrite]>]> {
   }];
   let arguments = (ins
     TTL_CircularBuffer:$cb,
-    OptionalAttr<I64Attr>:$num_tiles
+    ConfinedAttr<OptionalAttr<I64Attr>, [IntPositive]>:$num_tiles
   );
   let assemblyFormat = "$cb attr-dict `:` type($cb)";
   let hasVerifier = 1;
@@ -1485,7 +1492,7 @@ def TTL_CBWaitOp : TTL_Op<"cb_wait",
   }];
   let arguments = (ins
     TTL_CircularBuffer:$cb,
-    OptionalAttr<I64Attr>:$num_tiles
+    ConfinedAttr<OptionalAttr<I64Attr>, [IntPositive]>:$num_tiles
   );
   let results = (outs AnyRankedTensor:$result);
   let assemblyFormat = "$cb attr-dict `:` type($cb) `->` type($result)";
@@ -1513,7 +1520,7 @@ def TTL_CBPopOp : TTL_Op<"cb_pop", [MemoryEffects<[MemWrite]>]> {
   }];
   let arguments = (ins
     TTL_CircularBuffer:$cb,
-    OptionalAttr<I64Attr>:$num_tiles
+    ConfinedAttr<OptionalAttr<I64Attr>, [IntPositive]>:$num_tiles
   );
   let assemblyFormat = "$cb attr-dict `:` type($cb)";
   let hasVerifier = 1;

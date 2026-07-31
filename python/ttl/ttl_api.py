@@ -11,10 +11,19 @@ import functools
 import inspect
 import os
 import random
+import sys
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Union
 
 ttnn = None  # Lazy-loaded on first access via _ensure_ttnn()
+
+
+def _forward_mlir_warning(diagnostic):
+    """Print MLIR warnings while preserving the existing error handler."""
+    if diagnostic.severity != DiagnosticSeverity.WARNING:
+        return False
+    print(f"warning: {diagnostic}", file=sys.stderr)
+    return True
 
 
 def _ensure_ttnn():
@@ -1920,7 +1929,8 @@ def _lower_program_to_kernel(
 
         try:
             # Run the pass manager with error handling for source-aware diagnostics
-            pm.run(module.operation)
+            with ctx.attach_diagnostic_handler(_forward_mlir_warning):
+                pm.run(module.operation)
         except Exception as e:
             error_msg = str(e)
             # Try to format error with source context
