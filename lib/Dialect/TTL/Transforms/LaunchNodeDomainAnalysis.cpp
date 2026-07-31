@@ -294,7 +294,7 @@ createLaunchNodeIntegerEvaluator(LaunchNodeCoord coord,
       });
 }
 
-static std::optional<bool>
+std::optional<bool>
 evaluatePredicateAtLaunchNode(Value value, LaunchNodeCoord coord,
                               const LaunchNodeDomainState &state) {
   std::optional<llvm::APInt> maybeValue =
@@ -691,6 +691,26 @@ bool proveEqualUnresolvedExecutionCountAtLaunchNodes(
         value, lhsCoord, resolveLhsFunctionArgument, value, rhsCoord,
         resolveRhsFunctionArgument, state, equalValueCache);
   });
+}
+
+bool proveEqualExecutionCountAtLaunchNodes(Operation *lhs,
+                                           LaunchNodeCoord lhsCoord,
+                                           Operation *rhs,
+                                           LaunchNodeCoord rhsCoord,
+                                           const LaunchNodeDomainState &state) {
+  std::optional<std::uint64_t> maybeLhsCount =
+      getExactExecutionCountAtLaunchNode(lhs, lhsCoord, state);
+  std::optional<std::uint64_t> maybeRhsCount =
+      getExactExecutionCountAtLaunchNode(rhs, rhsCoord, state);
+  if (maybeLhsCount && maybeRhsCount) {
+    return *maybeLhsCount == *maybeRhsCount;
+  }
+  auto resolveNoFunctionArguments = [](BlockArgument) -> std::optional<Value> {
+    return std::nullopt;
+  };
+  return proveEqualUnresolvedExecutionCountAtLaunchNodes(
+      lhs, lhsCoord, rhs, rhsCoord, state, resolveNoFunctionArguments,
+      resolveNoFunctionArguments);
 }
 
 /// Find a source file location through common composed MLIR location wrappers.

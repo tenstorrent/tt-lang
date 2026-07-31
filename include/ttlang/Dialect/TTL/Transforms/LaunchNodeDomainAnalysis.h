@@ -158,6 +158,12 @@ struct LaunchNodeDomainState {
   void initialize(ModuleOp module);
 };
 
+/// Evaluate a predicate at one launch coordinate using integer constants,
+/// coordinate expressions, and PipeNet role domains.
+std::optional<bool>
+evaluatePredicateAtLaunchNode(Value value, LaunchNodeCoord coord,
+                              const LaunchNodeDomainState &state);
+
 /// Return the exact execution count of `op` at `coord`. Launch-node facts
 /// specialize coordinate and PipeNet predicates before the generic execution
 /// count analysis evaluates the enclosing control flow. Return `std::nullopt`
@@ -180,6 +186,15 @@ bool proveEqualUnresolvedExecutionCountAtLaunchNodes(
         resolveLhsFunctionArgument,
     llvm::function_ref<std::optional<Value>(BlockArgument)>
         resolveRhsFunctionArgument);
+
+/// Prove that two operations execute equally often at their launch nodes.
+/// Exact counts prove equality directly. Otherwise, the operations must share
+/// equivalent unresolved control flow that does not require call-site values.
+bool proveEqualExecutionCountAtLaunchNodes(Operation *lhs,
+                                           LaunchNodeCoord lhsCoord,
+                                           Operation *rhs,
+                                           LaunchNodeCoord rhsCoord,
+                                           const LaunchNodeDomainState &state);
 
 /// Return the operation with the earlier source location.
 ///
