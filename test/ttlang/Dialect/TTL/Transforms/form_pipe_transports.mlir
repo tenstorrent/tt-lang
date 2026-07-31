@@ -5,6 +5,8 @@
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='group-size=8' | FileCheck %s --check-prefix=UPPER
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='group-size=1' | FileCheck %s --check-prefix=DISABLED
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=24576' | FileCheck %s --check-prefix=NOFIT
+// RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=57376' | FileCheck %s --check-prefix=EXACT-FIT
+// RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=57375' | FileCheck %s --check-prefix=BELOW-FIT
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='l1-budget-override=61440' | FileCheck %s --check-prefix=SCRATCH-BUDGET
 // RUN: ttlang-opt %s --ttl-form-pipe-transports='group-size=4 l1-budget-override=98304' | FileCheck %s --check-prefix=ADDRESS-BUDGET
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports,convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=true})' -debug-only=ttl-pipe-transport-plan 2>&1 >/dev/null | FileCheck %s --check-prefix=OVERLAP
@@ -148,6 +150,23 @@
 // NOFIT-NOT: block_span
 // NOFIT: scf.for
 // NOFIT: ttl.pipe_transfer.send
+
+// A group whose final DFB and scratch allocations exactly equal the L1 budget
+// remains eligible.
+// EXACT-FIT-LABEL: func.func @point_to_point
+// EXACT-FIT: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 6}
+// EXACT-FIT-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 4}
+// EXACT-FIT: %[[STEP:.*]] = arith.constant 2 : index
+// EXACT-FIT: ttl.pipe_transfer.create %{{.*}} {block_span = 2 : i64, destination_group_depth = 2 : i64
+// EXACT-FIT: scf.for %{{.*}} = %{{.*}} to %{{.*}} step %[[STEP]]
+
+// Reducing the exact-fit budget by one byte rejects every grouped transport.
+// BELOW-FIT-LABEL: func.func @point_to_point
+// BELOW-FIT: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 5}
+// BELOW-FIT-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 1}
+// BELOW-FIT-NOT: block_span
+// BELOW-FIT: scf.for
+// BELOW-FIT: ttl.pipe_transfer.send
 
 // Group selection counts the final DFB allocations and transport scratch
 // together. This budget admits R=2 but rejects every larger overlapping group.
