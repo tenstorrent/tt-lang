@@ -594,15 +594,17 @@ def TTLVerifyPipeNetSchedule
     enclosing conditions. Alternative event definitions under runtime control
     flow remain distinct unless one is proven not to execute. Direct calls to
     helper functions are expanded at each call site so caller order and
-    invocation multiplicity are preserved. Functions containing pipe events
-    must have one body block and must be kernel-thread entry points or be
-    reachable from one through direct calls. Definitions of one event kind for
-    a pipe endpoint must belong to one kernel-thread function because
-    independent kernel threads have no program order. Each event must have an
-    exact launch-node domain. Multi-block functions, unknown event domains,
-    recursive calls containing pipe events, and schedules that exceed 4096
-    events after launch-node specialization and helper expansion are rejected
-    because the verifier cannot construct a correct bounded event graph.
+    invocation multiplicity are preserved. Every region containing pipe events
+    directly or through helper calls must have one block. Functions containing
+    pipe events must be kernel-thread entry points or be reachable from one
+    through direct calls. Definitions of one event kind for a pipe endpoint
+    must belong to one kernel-thread function because independent kernel
+    threads have no program order. Each event must have an exact launch-node
+    domain. Multi-block regions that contribute pipe events, unknown event
+    domains, recursive calls containing pipe events, and schedules that exceed
+    4096 events after launch-node specialization and helper expansion are
+    rejected because the verifier cannot construct a correct bounded event
+    graph.
 
     The pass also constructs the same-thread wait-for graph. Program-order
     edges connect consecutive events on one launched node. Protocol edges

@@ -1186,22 +1186,65 @@ LogicalResult verifyPipeEventFunctionsReachable(
   return result;
 }
 
+/// Return true when `region` contains a pipe event or a direct call that
+/// expands to pipe events during schedule construction.
+bool regionContributesPipeEvents(
+    Region &region, const ModuleState &state,
+    const llvm::DenseSet<Operation *> &functionsWithPipeEvents,
+    SymbolTableCollection &symbolTables) {
+  WalkResult walkResult = region.walk([&](Operation *op) {
+    if (state.pipeEventIndices.contains(op)) {
+      return WalkResult::interrupt();
+    }
+    auto callOp = mlir::dyn_cast<func::CallOp>(op);
+    if (!callOp) {
+      return WalkResult::advance();
+    }
+    func::FuncOp callee = symbolTables.lookupNearestSymbolFrom<func::FuncOp>(
+        callOp, callOp.getCalleeAttr());
+    return callee && functionsWithPipeEvents.contains(callee.getOperation())
+               ? WalkResult::interrupt()
+               : WalkResult::advance();
+  });
+  return walkResult.wasInterrupted();
+}
+
 /// Reject control flow whose execution order cannot be represented by a
 /// linear sequence of synchronization events.
-LogicalResult verifyPipeEventFunctionsHaveOneBlock(
-    ModuleOp module,
-    const llvm::DenseSet<Operation *> &functionsWithPipeEvents) {
+LogicalResult verifyPipeEventRegionsHaveOneBlock(
+    ModuleOp module, const ModuleState &state,
+    const llvm::DenseSet<Operation *> &functionsWithPipeEvents,
+    SymbolTableCollection &symbolTables) {
   LogicalResult result = success();
   for (func::FuncOp function : module.getOps<func::FuncOp>()) {
-    if (!functionsWithPipeEvents.contains(function.getOperation()) ||
-        function.getBody().hasOneBlock()) {
+    if (!functionsWithPipeEvents.contains(function.getOperation())) {
       continue;
     }
-    function.emitOpError()
-        << "cannot verify PipeNet synchronization in multi-block function @"
-        << function.getSymName()
-        << "; schedule verification requires a single-block function body";
-    result = failure();
+    function->walk([&](Operation *op) {
+      for (Region &region : op->getRegions()) {
+        if (region.hasOneBlock() ||
+            !regionContributesPipeEvents(region, state, functionsWithPipeEvents,
+                                         symbolTables)) {
+          continue;
+        }
+        if (auto regionFunction = mlir::dyn_cast<func::FuncOp>(op)) {
+          regionFunction.emitOpError()
+              << "cannot verify PipeNet synchronization in multi-block "
+                 "function @"
+              << regionFunction.getSymName()
+              << "; schedule verification requires every region containing "
+                 "pipe events to have one block";
+        } else {
+          op->emitOpError()
+              << "cannot verify PipeNet synchronization in a multi-block "
+                 "region of this operation; schedule verification requires "
+                 "every region containing pipe events to have one block";
+        }
+        result = failure();
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
   }
   return result;
 }
@@ -1320,8 +1363,8 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
   llvm::DenseSet<Operation *> reachableFunctions =
       getFunctionsReachableFromKernelThreads(module, symbolTables);
   if (failed(verifyPipeEventFunctionsReachable(state, reachableFunctions)) ||
-      failed(verifyPipeEventFunctionsHaveOneBlock(module,
-                                                  functionsWithPipeEvents)) ||
+      failed(verifyPipeEventRegionsHaveOneBlock(
+          module, state, functionsWithPipeEvents, symbolTables)) ||
       failed(verifyPipeEventDomainsKnown(state))) {
     state.sawError = true;
     return;

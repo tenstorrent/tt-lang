@@ -1,7 +1,7 @@
-// RUN: ttlang-opt %s --split-input-file -ttl-verify-pipenet-schedule | FileCheck %s --check-prefixes=CHECK,PARTIAL,PAIR --enable-var-scope
+// RUN: ttlang-opt %s --split-input-file -ttl-verify-pipenet-schedule | FileCheck %s --check-prefixes=CHECK,PARTIAL,PAIR,UNRELATED --enable-var-scope
 
-// Summary: Verifies accepted PipeNet synchronization correspondence and
-// call-site ordering.
+// Summary: Verifies accepted PipeNet synchronization correspondence,
+// call-site ordering, and nested-region control flow.
 
 // A send requires a receiver post but does not require a receiver wait.
 
@@ -40,6 +40,55 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       ttl.wait %send : !ttl.transfer_handle<write>
     }
     // CHECK-NOT: ttl.copy
+    func.return
+  }
+}
+
+// -----
+
+// A multi-block nested region is valid when it does not contribute pipe
+// events. The surrounding function's pipe events retain their linear order.
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  // UNRELATED-LABEL: func.func @unrelated_nested_cfg
+  func.func @unrelated_nested_cfg()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // UNRELATED: %[[PIPE:.*]] = ttl.create_pipe
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    // UNRELATED-NEXT: %[[SEND_CB:.*]] = ttl.bind_cb
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // UNRELATED-NEXT: %[[RECV_CB:.*]] = ttl.bind_cb
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // UNRELATED-NEXT: scf.execute_region {
+    scf.execute_region {
+      // UNRELATED-NEXT: cf.br ^[[EXIT:bb[0-9]+]]
+      cf.br ^exit
+    ^exit:
+      // UNRELATED: ^[[EXIT]]:
+      // UNRELATED-NEXT: scf.yield
+      scf.yield
+    }
+    // UNRELATED: %[[RESERVE:.*]] = ttl.cb_reserve %[[RECV_CB]]
+    %reserve = ttl.cb_reserve %recv_cb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    // UNRELATED-NEXT: %[[RECEIVE:.*]] = ttl.copy %[[PIPE]], %[[RESERVE]]
+    %receive = ttl.copy %pipe, %reserve
+        : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+           tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        -> !ttl.transfer_handle
+    // UNRELATED-NOT: ttl.wait %[[RECEIVE]]
+    // UNRELATED: %[[SEND:.*]] = ttl.copy %[[SEND_CB]], %[[PIPE]]
+    %send = ttl.copy %send_cb, %pipe
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+           !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+        -> !ttl.transfer_handle<write>
+    // UNRELATED-NEXT: ttl.wait %[[SEND]]
+    ttl.wait %send : !ttl.transfer_handle<write>
+    // UNRELATED-NEXT: return
     func.return
   }
 }

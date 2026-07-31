@@ -315,6 +315,94 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 
 // -----
 
+// Nested regions also require one block when they contain pipe events. Block
+// storage order does not define the execution order of the nested CFG.
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @nested_cfg_block_order()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-error @below {{cannot verify PipeNet synchronization in a multi-block region of this operation}}
+    scf.execute_region {
+      cf.br ^post
+    ^send:
+      %send = ttl.copy %send_cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+      cf.br ^exit
+    ^post:
+      %reserve = ttl.cb_reserve %recv_cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %receive = ttl.copy %pipe, %reserve
+          : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.transfer_handle
+      cf.br ^send
+    ^exit:
+      ttl.wait %receive : !ttl.transfer_handle
+      scf.yield
+    }
+    func.return
+  }
+}
+
+// -----
+
+// A call to a helper with pipe events contributes those events to the caller's
+// schedule, so its enclosing region must also have one block.
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func private @nested_cfg_send(
+      %send_cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+      %pipe: !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>) {
+    %send = ttl.copy %send_cb, %pipe
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+           !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send : !ttl.transfer_handle<write>
+    func.return
+  }
+
+  func.func @nested_cfg_call()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %reserve = ttl.cb_reserve %recv_cb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %receive = ttl.copy %pipe, %reserve
+        : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+           tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        -> !ttl.transfer_handle
+    // expected-error @below {{cannot verify PipeNet synchronization in a multi-block region of this operation}}
+    scf.execute_region {
+      cf.br ^invoke
+    ^exit:
+      scf.yield
+    ^invoke:
+      func.call @nested_cfg_send(%send_cb, %pipe)
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>) -> ()
+      cf.br ^exit
+    }
+    func.return
+  }
+}
+
+// -----
+
 // A coordinate-dependent condition with an unevaluable operand makes the
 // receiver-post domain unknown. The schedule pass must not omit that event.
 

@@ -966,12 +966,13 @@ exist in the program. Receiver waits consume send completions in order, so the
 first wait corresponds to the first send, the second wait to the second send,
 and so on. Additional sends do not require waits.
 
-Schedule verification requires each function containing pipe events, directly
-or through helper calls, to have one body block. A multi-block CFG does not
-define one static total order, so the verifier rejects it instead of deriving
-ordering from block storage order. Every event must also have an exact
-launch-node domain; an unevaluable coordinate-dependent condition is rejected
-rather than omitting its events from the schedule.
+Schedule verification requires every region containing pipe events, directly
+or through helper calls, to have one block. A multi-block CFG does not define
+one static total order, so the verifier rejects it instead of deriving ordering
+from block storage order. Multi-block regions that do not contribute pipe
+events remain valid. Every event must also have an exact launch-node domain; an
+unevaluable coordinate-dependent condition is rejected rather than omitting
+its events from the schedule.
 
 ## Predicate recognition
 
@@ -1304,7 +1305,7 @@ compile-time properties not runtime-observable.
 | 54 | Verifier accepts every `arith.cmpi` predicate kind, `andi`/`ori`/`xori` boolean composition, `subi`/`muli`/`index_cast` in `evalIndex` |  |  |  X  |
 | 55 | Verifier accepts `affine.if` over `Mul`, `Mod`, `FloorDiv` (non-zero), `CeilDiv`, `AffineSymbolExpr`, else-branch |  |  |  X  |
 | 56 | Guard verifier accepts pipe-coupled op inside `scf.while` / `scf.execute_region` / `affine.for` / multi-block `cf.cond_br` |  |  |  X  |
-| 56a | Schedule verifier rejects multi-block function bodies |  |  |  X  |
+| 56a | Schedule verifier rejects multi-block regions that contribute pipe events |  |  |  X  |
 | 57 | Verifier rejects malformed `pipenet_scope`: missing attrs, length mismatch, role out of {0, 1} |  |  |  X  |
 | 58 | Verifier rejects unguarded pipe-coupled op in `scf.for` / `scf.execute_region` |  |  |  X  |
 | 59 | Lowering: overlapping collective senders get distinct slot offsets in IR |  |  |  X  |
