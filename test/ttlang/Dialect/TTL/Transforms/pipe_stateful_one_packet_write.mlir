@@ -375,3 +375,50 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
     func.return
   }
 }
+
+// -----
+
+// A transfer larger than the conservative Wormhole B0 one-packet limit keeps
+// the generic write when the module does not identify its target.
+// CHECK-LABEL: func.func @default_target_rejects_large_one_packet_write
+// CHECK-NOT: ttkernel.noc_async_write_one_packet_set_state
+// CHECK: scf.for
+// CHECK: ttkernel.noc_async_write
+// CHECK-NOT: ttkernel.noc_async_write_one_packet_with_state
+func.func @default_target_rejects_large_one_packet_write(
+    %src: i32, %dst: i32, %x: index, %y: index, %noc: i8) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %size = arith.constant 12288 : i32
+  scf.for %iteration = %c0 to %c4 step %c1 {
+    ttkernel.noc_async_write
+        %src, core[%x, %y], %dst, %size, noc %noc
+        : (i32, index, index, i32, i32, i8) -> ()
+  }
+  func.return
+}
+
+// -----
+
+// Blackhole permits the same 12288-byte transfer in one NoC packet.
+// CHECK-LABEL: func.func @blackhole_accepts_large_one_packet_write
+// CHECK: ttkernel.noc_async_write_one_packet_set_state
+// CHECK: scf.for
+// CHECK: ttkernel.noc_async_write_one_packet_with_state
+// CHECK-NOT: ttkernel.noc_async_write{{[ (]}}
+module attributes {ttl.target_arch = "blackhole"} {
+  func.func @blackhole_accepts_large_one_packet_write(
+      %src: i32, %dst: i32, %x: index, %y: index, %noc: i8) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %size = arith.constant 12288 : i32
+    scf.for %iteration = %c0 to %c4 step %c1 {
+      ttkernel.noc_async_write
+          %src, core[%x, %y], %dst, %size, noc %noc
+          : (i32, index, index, i32, i32, i8) -> ()
+    }
+    func.return
+  }
+}
