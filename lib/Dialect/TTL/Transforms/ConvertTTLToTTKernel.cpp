@@ -183,7 +183,11 @@ static int64_t getDeviceCoordinateCommonArgBase(Operation *op) {
       llvm::count_if(func.getArguments(), [](BlockArgument argument) {
         return mlir::isa<RankedTensorType>(argument.getType());
       });
-  return tensorArgumentCount +
+  auto computedAddressDFBIndices = func->getAttrOfType<DenseI32ArrayAttr>(
+      kPipeComputedAddressDFBIndicesAttrName);
+  int64_t computedAddressArgumentCount =
+      computedAddressDFBIndices ? computedAddressDFBIndices.size() : 0;
+  return tensorArgumentCount + computedAddressArgumentCount +
          getPipeRuntimeArgCount(op->getParentOfType<ModuleOp>());
 }
 
