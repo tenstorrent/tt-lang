@@ -850,10 +850,14 @@ at the construction source location.
 ## Pass placement
 
 ```
-... -> ttl-finalize-dfb-indices
-    -> ttl-annotate-cb-associations
+... -> ttl-insert-copy-wait
+    -> ttl-insert-cb-sync
     -> ttl-verify-pipenet-guards                 (read-only analysis)
     -> ttl-verify-pipenet-schedule               (read-only analysis)
+    -> ttl-coalesce-dfb-acquires
+    -> ...
+    -> ttl-finalize-dfb-indices
+    -> ttl-annotate-cb-associations
     -> ttl-verify-dfb-spsc                       (read-only analysis)
     -> ttl-erase-pipenet-scopes                  (transform)
     -> ttl-validate-cb-budget                    (read-only analysis)
@@ -862,12 +866,14 @@ at the construction source location.
     ...
 ```
 
-`ttl-verify-pipenet-guards` runs after DFB-index annotation
-(`ttl-annotate-cb-associations`) so DFB wait checks can resolve producer DFB
-indices. `ttl-verify-pipenet-schedule` follows it so invalid launch domains are
-diagnosed before schedule construction. Both run before
-`convert-ttl-to-ttkernel`, so diagnostics print at TTL IR with TTL-level op
-names (`ttl.copy`, `ttl.cb_wait`, `ttl.is_src`, etc.).
+`ttl-insert-cb-sync` first makes every DFB lifecycle operation explicit.
+`ttl-verify-pipenet-guards` then uses each DFB's unique provisional index to
+compare producer and consumer domains. This occurs before final DFB index reuse
+so independent logical DFBs are not grouped by a shared physical index.
+`ttl-verify-pipenet-schedule` follows it so invalid launch domains are diagnosed
+before schedule construction. Both verifiers inspect the high-level pipe
+schedule before later transformations modify it, and diagnostics therefore use
+TTL-level operation names (`ttl.copy`, `ttl.cb_wait`, `ttl.is_src`, etc.).
 `ttl-erase-pipenet-scopes` then inlines and erases the structural
 `ttl.pipenet_scope` markers so downstream lowering sees scope-free IR.
 
@@ -928,11 +934,12 @@ the role required by the op:
 | `cb_wait` on pipe-coupled DFB | union of producer domains across all `cb_push` to the same DFB index |
 
 DFB wait checking is module-global: producer domains accumulate by
-DFB index across every `cb_push` the analysis visits, then a
-post-pass walks recorded `cb_wait` uses and checks each against the
-union. DFB indices are stable post-finalize, so a `cb_wait` in one
-kernel function is checked against `cb_push` domains from a
-different kernel function.
+provisional DFB index across every `cb_push` the analysis visits, then a
+post-pass walks recorded `cb_wait` uses and checks each against the union. The
+frontend and compiler-created DFBs have unique provisional indices before
+physical allocation. A `cb_wait` in one kernel function is therefore checked
+against `cb_push` domains for the same logical DFB in other kernel functions,
+without combining independent DFBs that later reuse one physical index.
 
 `ttl-verify-pipenet-schedule` reuses the launch-node domains but constructs a
 separate event graph. Its correspondence rules are directional:
@@ -1085,7 +1092,7 @@ The verifier relies on these input properties.
 | --- | --- |
 | `ttl.launch_grid` module attribute present | Subset checks require a finite launch-coordinate domain. The pass emits a module-level error and fails if the attribute is missing. |
 | `ttl.create_pipe` source/destination coordinates are static `I64Attr`s, encoded both on the op and in the result `PipeType` | Domain construction reads the attributes directly to materialize each pipe's source unit box and destination range as concrete `Coord` sets, and `PipeLowering.cpp` emits `arith.ConstantIndexOp` for each coordinate when building per-node role predicates. The static-attribute encoding is a property of today's IR, not a fundamental constraint of the verifier or lowering; see "Future work: parametric PipeNets" for the approach to runtime-bound coordinates. |
-| Pipe-coupled ops have stable DFB indices | DFB wait checks require `ttl-annotate-cb-associations` and `ttl-finalize-dfb-indices` to have run already. |
+| Every DFB has a concrete, unique provisional index | DFB wait checks associate producers and consumers before physical index reuse. `ttl-insert-intermediate-dfbs` assigns new compiler-created DFBs the next unused provisional index. |
 | One operation per module | The verifier walks all pipes in the module to compute role domains; co-compiling multiple operations would require per-operation scoping. |
 
 ## Multi-PipeNet operations

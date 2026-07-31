@@ -565,9 +565,9 @@ def TTLVerifyPipeNetGuards
 
     The pass expects one module per `@ttl.operation`, a well-formed
     `ttl.launch_grid` (i64 array of length 2 with positive entries), static
-    `I64Attr` coordinates on `ttl.create_pipe`, and finalized DFB indices
-    (i.e. `ttl-annotate-cb-associations` and `ttl-finalize-dfb-indices`
-    have run).
+    `I64Attr` coordinates on `ttl.create_pipe`, explicit DFB synchronization
+    inserted by `ttl-insert-cb-sync`, and a concrete provisional or final
+    `cb_index` on every `ttl.bind_cb`.
   }];
 
   let dependentDialects = [

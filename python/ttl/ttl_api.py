@@ -1810,7 +1810,10 @@ def _lower_program_to_kernel(
             "func.func(ttl-materialize-loop-state)",
             f"func.func(ttl-insert-intermediate-dfbs{{enable={compiler_dfbs_flag}}})",
             "func.func(ttl-insert-copy-wait)",
-            "func.func(ttl-auto-sync)",
+            "func.func(ttl-insert-cb-sync)",
+            "ttl-verify-pipenet-guards",
+            "ttl-verify-pipenet-schedule",
+            "func.func(ttl-coalesce-dfb-acquires)",
             "func.func(ttl-annotate-l1-acc-loops)",
             "func.func(convert-ttl-to-compute)",
             set_compute_config_pass,
@@ -1831,8 +1834,6 @@ def _lower_program_to_kernel(
             pipeline_passes.append("func.func(ttl-schedule-operations)")
         pipeline_passes.append("ttl-finalize-dfb-indices")
         pipeline_passes.append("func.func(ttl-annotate-cb-associations)")
-        pipeline_passes.append("ttl-verify-pipenet-guards")
-        pipeline_passes.append("ttl-verify-pipenet-schedule")
         pipeline_passes.append("ttl-verify-dfb-spsc")
         pipeline_passes.append("ttl-erase-pipenet-scopes")
         if l1_budget_override > 0:

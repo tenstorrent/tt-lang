@@ -25,7 +25,12 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     pm.addNestedPass<func::FuncOp>(createTTLInsertIntermediateDFBs(dfbOpts));
   }
   pm.addNestedPass<func::FuncOp>(createTTLInsertCopyWait());
-  buildTTLAutoSyncPipeline(pm.nest<func::FuncOp>());
+  pm.addNestedPass<func::FuncOp>(createTTLInsertCBSync());
+  // Verify the complete high-level schedule while logical DFB identities are
+  // still distinct and before later transformations rewrite pipe operations.
+  pm.addPass(createTTLVerifyPipeNetGuards());
+  pm.addPass(createTTLVerifyPipeNetSchedule());
+  pm.addNestedPass<func::FuncOp>(createTTLCoalesceDFBAcquires());
   pm.addPass(createTTLAnnotateL1AccLoops());
   pm.addPass(createTTLConvertTTLToCompute());
   {
@@ -52,8 +57,6 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   }
   pm.addPass(createTTLFinalizeDFBIndices());
   pm.addPass(createTTLAnnotateCBAssociations());
-  pm.addPass(createTTLVerifyPipeNetGuards());
-  pm.addPass(createTTLVerifyPipeNetSchedule());
   pm.addPass(createTTLVerifyDFBSPSC());
   pm.addPass(createTTLErasePipeNetScopes());
   pm.addPass(createTTLValidateCBBudget());

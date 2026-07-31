@@ -43,23 +43,30 @@ def compile_ttl_to_ttkernel(
         f"ttl-set-compute-kernel-config{{enable-fpu-binary-ops={fpu_flag}}}"
     )
 
-    # Build per-function passes.
-    func_passes = [
+    # PipeNet verification must observe the high-level schedule after automatic
+    # synchronization has made every DFB lifecycle operation explicit.
+    pre_verification_func_passes = [
         "ttl-materialize-loop-state",
         "ttl-insert-intermediate-dfbs",
         "ttl-insert-copy-wait",
-        "ttl-auto-sync",
+        "ttl-insert-cb-sync",
+    ]
+    post_verification_func_passes = [
+        "ttl-coalesce-dfb-acquires",
         "convert-ttl-to-compute",
         set_compute_config_pass,
         "ttl-assign-dst",
     ]
     if maximize_dst:
-        func_passes.append("ttl-subblock-compute-for-dst")
+        post_verification_func_passes.append("ttl-subblock-compute-for-dst")
     dst_acc_str = "true" if maximize_dst else "false"
-    func_passes.append(f"ttl-lower-to-loops{{dst-accumulation={dst_acc_str}}}")
+    post_verification_func_passes.append(
+        f"ttl-lower-to-loops{{dst-accumulation={dst_acc_str}}}"
+    )
     if maximize_dst:
-        func_passes.append("ttl-schedule-operations")
-    func_pipeline = ",".join(func_passes)
+        post_verification_func_passes.append("ttl-schedule-operations")
+    pre_verification_func_pipeline = ",".join(pre_verification_func_passes)
+    post_verification_func_pipeline = ",".join(post_verification_func_passes)
 
     specialize_passes = ""
     if specialize_cores:
@@ -67,11 +74,12 @@ def compile_ttl_to_ttkernel(
 
     pipeline_str = (
         f"builtin.module("
-        f"func.func({func_pipeline}),"
-        f"ttl-finalize-dfb-indices,"
-        f"func.func(ttl-annotate-cb-associations),"
+        f"func.func({pre_verification_func_pipeline}),"
         f"ttl-verify-pipenet-guards,"
         f"ttl-verify-pipenet-schedule,"
+        f"func.func({post_verification_func_pipeline}),"
+        f"ttl-finalize-dfb-indices,"
+        f"func.func(ttl-annotate-cb-associations),"
         f"ttl-verify-dfb-spsc,"
         f"ttl-erase-pipenet-scopes,"
         f"ttl-validate-cb-budget,"
