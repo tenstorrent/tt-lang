@@ -67,6 +67,9 @@ void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,
 
 void buildTTLAutoSyncPipeline(mlir::OpPassManager &pm);
 
+/// Add the ordered PipeNet launch-domain and synchronization verifiers.
+void buildTTLVerifyPipeNetPipeline(mlir::OpPassManager &pm);
+
 void registerTTLPipelines();
 
 } // namespace mlir::tt::ttl

@@ -75,8 +75,7 @@ def compile_ttl_to_ttkernel(
     pipeline_str = (
         f"builtin.module("
         f"func.func({pre_verification_func_pipeline}),"
-        f"ttl-verify-pipenet-guards,"
-        f"ttl-verify-pipenet-schedule,"
+        f"ttl-verify-pipenet,"
         f"func.func({post_verification_func_pipeline}),"
         f"ttl-finalize-dfb-indices,"
         f"func.func(ttl-annotate-cb-associations),"

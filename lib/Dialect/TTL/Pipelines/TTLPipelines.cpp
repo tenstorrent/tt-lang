@@ -28,8 +28,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   pm.addNestedPass<func::FuncOp>(createTTLInsertCBSync());
   // Verify the complete high-level schedule while logical DFB identities are
   // still distinct and before later transformations rewrite pipe operations.
-  pm.addPass(createTTLVerifyPipeNetGuards());
-  pm.addPass(createTTLVerifyPipeNetSchedule());
+  buildTTLVerifyPipeNetPipeline(pm);
   pm.addNestedPass<func::FuncOp>(createTTLCoalesceDFBAcquires());
   pm.addPass(createTTLAnnotateL1AccLoops());
   pm.addPass(createTTLConvertTTLToCompute());
@@ -90,6 +89,11 @@ void buildTTLAutoSyncPipeline(OpPassManager &pm) {
   pm.addPass(createTTLCoalesceDFBAcquires());
 }
 
+void buildTTLVerifyPipeNetPipeline(OpPassManager &pm) {
+  pm.addPass(createTTLVerifyPipeNetGuards());
+  pm.addPass(createTTLVerifyPipeNetSchedule());
+}
+
 void registerTTLPipelines() {
   PassPipelineRegistration<TTLToTTKernelPipelineOptions>(
       "ttl-to-ttkernel-pipeline",
@@ -99,6 +103,10 @@ void registerTTLPipelines() {
   PassPipelineRegistration<>("ttl-auto-sync",
                              "Insert auto pop/push and coalesce DFB acquires.",
                              buildTTLAutoSyncPipeline);
+  PassPipelineRegistration<>(
+      "ttl-verify-pipenet",
+      "Verify PipeNet launch domains and synchronization schedules.",
+      buildTTLVerifyPipeNetPipeline);
 }
 
 } // namespace mlir::tt::ttl
