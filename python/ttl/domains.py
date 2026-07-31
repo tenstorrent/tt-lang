@@ -422,7 +422,7 @@ class TransferGraph:
             if isinstance(destination, DeviceRange):
                 destination_ref = domain.resolve_device_range(destination)
                 if cls._range_contains(destination_ref, source_ref):
-                    raise ValueError("source-in-destination multicast is not supported")
+                    raise ValueError("a destination range must not include its source")
             else:
                 destination_ref = domain.device_ref(destination)
             transfer_edges.append(TransferEdge(source_ref, destination_ref))
