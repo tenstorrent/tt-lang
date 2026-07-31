@@ -9,6 +9,7 @@ Covers:
 - Struct-based compute header with DFB template args (negate).
 - int/bool/float values as both template_args and func_args.
 - A DFB passed directly as a func_arg (CB index via get_compile_time_arg_val).
+- A real ttnn GlobalSemaphore captured into template_args.
 """
 
 import os
@@ -26,6 +27,9 @@ import ttl
 NEGATE_HEADER = os.path.join(os.path.dirname(__file__), "include", "negate_tile_op.hpp")
 TYPED_ARGS_HEADER = os.path.join(
     os.path.dirname(__file__), "include", "typed_args_op.hpp"
+)
+SEMAPHORE_TEMPLATE_HEADER = os.path.join(
+    os.path.dirname(__file__), "include", "semaphore_template_op.hpp"
 )
 
 
@@ -134,4 +138,50 @@ def test_typed_args_extern(device):
     result = ttnn.to_torch(out)
     # -inp * IntScale(2) * ScaleTpl(0.5) * scale_f(3.0) * int_factor(2)
     expected = -inp_torch * 6.0
+    assert_allclose(result, expected)
+
+
+def test_global_semaphore_template_arg(device):
+    """Validate real GlobalSemaphore template arg in a true e2e kernel path."""
+
+    core_ranges = ttnn.CoreRangeSet(
+        [ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))]
+    )
+    global_sem = ttnn.create_global_semaphore(device, core_ranges, 0)
+
+    @ttl.operation(grid=(1, 1))
+    def semaphore_template_extern(inp, out):
+        in_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=1)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=1)
+
+        @ttl.compute()
+        def compute():
+            with in_dfb.wait() as in_blk, out_dfb.reserve() as out_blk:
+                ttl.call_extern_func(
+                    SEMAPHORE_TEMPLATE_HEADER,
+                    "semaphore_template_negate_shim",
+                    template_args=[in_dfb, out_dfb, global_sem],
+                )
+
+        @ttl.datamovement()
+        def dm_read():
+            blk = in_dfb.reserve()
+            tx = ttl.copy(inp[0, 0], blk)
+            tx.wait()
+            blk.push()
+
+        @ttl.datamovement()
+        def dm_write():
+            blk = out_dfb.wait()
+            tx = ttl.copy(blk, out[0, 0])
+            tx.wait()
+            blk.pop()
+
+    inp_torch = torch.full((32, 32), 5.0, dtype=torch.bfloat16)
+    inp = to_l1(inp_torch, device)
+    out = to_l1(torch.zeros_like(inp_torch), device)
+    semaphore_template_extern(inp, out)
+
+    result = ttnn.to_torch(out)
+    expected = -inp_torch
     assert_allclose(result, expected)

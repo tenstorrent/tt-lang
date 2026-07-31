@@ -31,20 +31,47 @@ from .auto_profile import (
 from .tensor_registry import get_tensor_global_index, get_tensor_source
 
 
-def _is_ttnn_global_semaphore(value) -> bool:
-    """Return true when value looks like a ttnn GlobalSemaphore object."""
-    return type(value).__module__ == "ttnn._ttnn.global_semaphore"
+def _is_ttnn_semaphore(value) -> bool:
+    """Return true when value looks like a ttnn semaphore object."""
+    module_name = type(value).__module__
+    return module_name in (
+        "ttnn._ttnn.global_semaphore",
+        "ttnn._ttnn.local_semaphore",
+    ) or module_name.endswith((".global_semaphore", ".local_semaphore"))
 
 
-def _try_get_ttnn_global_semaphore_address(value) -> Optional[int]:
-    """Return GlobalSemaphore address as int, or None when unavailable."""
-    if not _is_ttnn_global_semaphore(value):
+def _try_get_ttnn_semaphore_address(value) -> Optional[int]:
+    """Return semaphore address as int, or None when unavailable."""
+    if not _is_ttnn_semaphore(value):
         return None
     try:
         import ttnn
     except ImportError:
         return None
-    return int(ttnn.get_global_semaphore_address(value))
+
+    module_name = type(value).__module__
+    if module_name.endswith(".local_semaphore"):
+        getter_order = (
+            "get_local_semaphore_address",
+            "get_semaphore_address",
+            "get_global_semaphore_address",
+        )
+    else:
+        getter_order = (
+            "get_global_semaphore_address",
+            "get_semaphore_address",
+            "get_local_semaphore_address",
+        )
+
+    for getter_name in getter_order:
+        getter = getattr(ttnn, getter_name, None)
+        if not callable(getter):
+            continue
+        try:
+            return int(getter(value))
+        except Exception:
+            continue
+    return None
 
 
 def _make_file_loc(ctx, source_file: str, node, line_offset: int = 0) -> Location:
@@ -607,6 +634,11 @@ class TTLGenericCompiler(TTCompilerBase):
                 ).result
             if isinstance(val, float):
                 return arith.ConstantOp(F32Type.get(self.ctx), val).result
+            sem_addr = _try_get_ttnn_semaphore_address(val)
+            if sem_addr is not None:
+                return arith.ConstantOp(
+                    IntegerType.get_signless(32, self.ctx), sem_addr
+                ).result
 
         return None
 
@@ -1001,15 +1033,16 @@ class TTLGenericCompiler(TTCompilerBase):
                     # Stamp variable name (first-seen wins) so the
                     # compiler can use it in diagnostics.
                     self._pipe_net_names.setdefault(id(val), name)
-                elif _is_ttnn_global_semaphore(val):
-                    sem_addr = _try_get_ttnn_global_semaphore_address(val)
+                elif _is_ttnn_semaphore(val):
+                    sem_addr = _try_get_ttnn_semaphore_address(val)
                     if sem_addr is None:
                         self._raise_error(
                             node,
-                            f"Failed to extract ttnn GlobalSemaphore address "
+                            f"Failed to extract ttnn semaphore address "
                             f"for capture '{name}'",
                         )
-                    self._set_var(name, arith.ConstantOp(self.i32, sem_addr).result)
+                    i32_ty = IntegerType.get_signless(32, self.ctx)
+                    self._set_var(name, arith.ConstantOp(i32_ty, sem_addr).result)
                 else:
                     self._raise_error(
                         node, f"Invalid capture type for var {name}: {type(val)}"
@@ -1497,7 +1530,7 @@ class TTLGenericCompiler(TTCompilerBase):
                 return _i32_const(val)
             if isinstance(val, float):
                 return _i32_const(_float_bits(val))
-            sem_addr = _try_get_ttnn_global_semaphore_address(val)
+            sem_addr = _try_get_ttnn_semaphore_address(val)
             if sem_addr is not None:
                 return _i32_const(sem_addr)
 
