@@ -25,6 +25,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
@@ -137,25 +138,13 @@ struct LaunchNodeDomainState {
   /// Return the recorded PipeNet name, or a deterministic id-based fallback.
   std::string netName(int64_t netId) const;
 
-  /// Return the launch nodes that have `role` for the requested declared
-  /// PipeNet.
+  /// Return the launch nodes that have `role` for `netId`, or an unknown
+  /// domain when no `ttl.create_pipe` declares that PipeNet.
   LaunchNodeDomain getRoleDomain(int64_t netId, PipeRole role) const;
 
   /// Populate launch-grid and PipeNet role domains from the module.
   void initialize(ModuleOp module);
 };
-
-/// Return the value supplied by launch-node context for a core coordinate or
-/// PipeNet role predicate. PipeNet predicates require `state`.
-std::optional<llvm::APInt>
-evaluateLaunchNodeContextValue(Value value, LaunchNodeCoord coord,
-                               const LaunchNodeDomainState *state = nullptr);
-
-/// Evaluate a predicate at one launch coordinate using PipeNet role domains in
-/// addition to integer constants and core-coordinate expressions.
-std::optional<bool>
-evaluatePredicateAtLaunchNode(Value value, LaunchNodeCoord coord,
-                              const LaunchNodeDomainState &state);
 
 /// Return the exact execution count of `op` at `coord`. Launch-node facts
 /// specialize coordinate and PipeNet predicates before the generic execution
@@ -165,14 +154,20 @@ std::optional<std::uint64_t>
 getExactExecutionCountAtLaunchNode(Operation *op, LaunchNodeCoord coord,
                                    const LaunchNodeDomainState &state);
 
-/// Prove that two operations execute equally often at their launch nodes.
-/// Exact counts prove equality directly. Otherwise, the operations must share
-/// the same unresolved control flow with equal control values at both nodes.
-bool proveEqualExecutionCountAtLaunchNodes(Operation *lhs,
-                                           LaunchNodeCoord lhsCoord,
-                                           Operation *rhs,
-                                           LaunchNodeCoord rhsCoord,
-                                           const LaunchNodeDomainState &state);
+/// Prove that two operations with unknown exact counts have equivalent
+/// control flow at their launch nodes.
+///
+/// The operations must share the same unresolved control-flow frames with
+/// equal control values at both nodes.
+/// The argument resolvers return the operand supplied to a helper-function
+/// entry argument at the active call site. A missing mapping prevents proof.
+bool proveEqualUnresolvedExecutionCountAtLaunchNodes(
+    Operation *lhs, LaunchNodeCoord lhsCoord, Operation *rhs,
+    LaunchNodeCoord rhsCoord, const LaunchNodeDomainState &state,
+    llvm::function_ref<std::optional<Value>(BlockArgument)>
+        resolveLhsFunctionArgument,
+    llvm::function_ref<std::optional<Value>(BlockArgument)>
+        resolveRhsFunctionArgument);
 
 /// Return the operation with the earlier source location.
 ///

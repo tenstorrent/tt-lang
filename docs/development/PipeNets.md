@@ -93,12 +93,15 @@ Pipe transfers have the following operational semantics:
   receive-wait events. It rejects schedules whose same-thread ordering
   creates a wait-for cycle. Other runtime hangs can still have different
   causes.
-- The graph pairs receiver-post, send, and receive-wait operations by IR
-  order. Each pair may execute repeatedly, but the two sides must contain
-  the same number of operations and each pair must execute equally often
-  under equivalent conditions.
+- The graph pairs receiver-post, send, and receive-wait operations by program
+  order after helper expansion. Each pair may execute repeatedly, but the two
+  sides must contain the same number of operations and each pair must execute
+  equally often under equivalent conditions.
 - Direct helper calls are expanded at each call site. This preserves the
-  caller's event order and counts each helper invocation separately.
+  caller's event order and counts each helper invocation separately. Functions
+  containing pipe events must be reachable from a kernel-thread entry point
+  through direct calls. Recursive calls and schedules exceeding 4096 events
+  after launch-node specialization and helper expansion are rejected.
 
 The receive transfer created by `ttl.copy(pipe, dst_blk)` moves through
 these states:
@@ -874,15 +877,16 @@ so independent logical DFBs are not grouped by a shared physical index.
 before schedule construction. Both verifiers inspect the high-level pipe
 schedule before later transformations modify it, and diagnostics therefore use
 TTL-level operation names (`ttl.copy`, `ttl.cb_wait`, `ttl.is_src`, etc.).
+Later subblock synchronization may replace an existing DFB reserve/push pair
+inside a loop, but it preserves the pair's launch-node domain. The early
+producer/consumer domain proof therefore remains valid after that rewrite.
 `ttl-erase-pipenet-scopes` then inlines and erases the structural
 `ttl.pipenet_scope` markers so downstream lowering sees scope-free IR.
 
-Three independent pipeline definitions stay in sync: the C++
-`createTTLToTTKernelPipeline` in
-`lib/Dialect/TTL/Pipelines/TTLPipelines.cpp`, the Python frontend
-pipeline string in `python/ttl/ttl_api.py`, and the me2e builder in
-`test/me2e/builder/pipeline.py`. All three insert the verifiers and
-eraser at the same position.
+The registered `ttl-verify-pipenet` subpipeline owns the verifier sequence.
+The C++ pipeline, Python frontend, and me2e builder invoke that subpipeline at
+the same position. This keeps guard verification before schedule verification
+without duplicating the ordered pass list.
 
 ## Analysis structure
 
@@ -1434,15 +1438,9 @@ can be live concurrently.
 * If multiple operations are ever co-compiled into one module, scope
   the verifier walk to the enclosing operation by a marker attribute or
   by using a per-operation pass driver.
-* Interprocedural analysis. The verifier walks only `func.func`s
-  carrying `ttl.kernel_thread` and does not follow `func.call`. The
-  Python frontend currently inlines user helper functions into the
-  kernel body, so this gap is invisible today; if the frontend later
-  emits `func.call` for shared kernel-thread helpers (code reuse across
-  operations, recursion, larger kernels), the verifier needs either
-  cross-function propagation of the caller's execution domain into the
-  callee, or it must conservatively reject `func.call` from a
-  kernel-thread function whose callee contains PipeNet-coupled work.
+* Indirect calls containing pipe events are unsupported. Pipe events must be
+  reachable from a kernel-thread entry point through direct `func.call`
+  operations so the verifier can preserve call-site order and argument values.
 * `CreatePipeOp` verifier could additionally bound-check coordinates
   against the device grid extent (the `dstStart <= dstEnd` ordering is
   already enforced).

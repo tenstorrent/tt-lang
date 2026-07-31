@@ -46,6 +46,75 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
+// A runtime count passed from a kernel entry argument remains identical at the
+// source and destination after resolving the helper call argument.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func private @runtime_count_helper(
+  func.func private @runtime_count_helper(
+      %count: index,
+      %send_cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+      %recv_cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+      %pipe: !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    // CHECK: scf.for {{.*}} to %[[COUNT:[a-zA-Z0-9]+]] step
+    scf.for %iteration = %c0 to %count step %c1 {
+      // CHECK: ttl.if_src %[[PIPE:[a-zA-Z0-9]+]] :
+      ttl.if_src %pipe
+          : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+        // CHECK: %[[SEND:[a-zA-Z0-9]+]] = ttl.copy %[[SEND_CB:[a-zA-Z0-9]+]], %[[PIPE]]
+        %send = ttl.copy %send_cb, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+               !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+            -> !ttl.transfer_handle<write>
+        // CHECK-NEXT: ttl.wait %[[SEND]]
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
+      // CHECK: ttl.if_dst %[[PIPE]]
+      ttl.if_dst %pipe
+          : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+        // CHECK: %[[RESERVE:[a-zA-Z0-9]+]] = ttl.cb_reserve %[[RECV_CB:[a-zA-Z0-9]+]]
+        %reserve = ttl.cb_reserve %recv_cb
+            : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+            -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        // CHECK-NEXT: %[[RECEIVE:.*]] = ttl.copy %[[PIPE]], %[[RESERVE]]
+        %receive = ttl.copy %pipe, %reserve
+            : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+               tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> !ttl.transfer_handle
+        // CHECK-NEXT: ttl.wait %[[RECEIVE]]
+        ttl.wait %receive : !ttl.transfer_handle
+      }
+    }
+    func.return
+  }
+
+  // CHECK-LABEL: func.func @runtime_count_through_call
+  // CHECK-SAME: (%[[COUNT:[a-zA-Z0-9]+]]: index)
+  func.func @runtime_count_through_call(%count: index)
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // CHECK: %[[PIPE:[a-zA-Z0-9]+]] = ttl.create_pipe
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    // CHECK-NEXT: %[[SEND_CB:[a-zA-Z0-9]+]] = ttl.bind_cb
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // CHECK-NEXT: %[[RECV_CB:[a-zA-Z0-9]+]] = ttl.bind_cb
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // CHECK-NEXT: call @runtime_count_helper(%[[COUNT]], %[[SEND_CB]], %[[RECV_CB]], %[[PIPE]])
+    func.call @runtime_count_helper(%count, %send_cb, %recv_cb, %pipe)
+        : (index, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+           !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    // CHECK-NOT: ttl.copy
+    func.return
+  }
+}
+
+// -----
+
 // Receiver waits may consume a prefix of the send completions without waiting
 // for every send.
 

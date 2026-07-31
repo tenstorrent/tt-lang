@@ -1277,6 +1277,46 @@ module attributes {ttl.launch_grid = [3 : i64, 1 : i64]} {
 
 // -----
 
+// A negated destination predicate executes the receive only on the destination
+// node. This verifies coordinate dependence through boolean composition.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @negated_destination_predicate
+  func.func @negated_destination_predicate()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // CHECK: %[[PIPE:.*]] = ttl.create_pipe
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    // CHECK: %[[RECV_CB:.*]] = ttl.bind_cb
+    %recv_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // CHECK: %[[IS_DST:.*]] = ttl.is_dst
+    %is_dst = ttl.is_dst {pipe_net_id = 0 : i64}
+    // CHECK-NEXT: %[[TRUE:.*]] = arith.constant true
+    %true = arith.constant true
+    // CHECK-NEXT: %[[NOT_DST:.*]] = arith.xori %[[IS_DST]], %[[TRUE]]
+    %not_dst = arith.xori %is_dst, %true : i1
+    // CHECK-NEXT: scf.if %[[NOT_DST]] {
+    scf.if %not_dst {
+    // CHECK-NEXT: } else {
+    } else {
+      // CHECK-NEXT: %[[RESERVE:.*]] = ttl.cb_reserve %[[RECV_CB]]
+      %reserve = ttl.cb_reserve %recv_cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      // CHECK-NEXT: %[[RECEIVE:.*]] = ttl.copy %[[PIPE]], %[[RESERVE]]
+      %receive = ttl.copy %pipe, %reserve
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.transfer_handle
+    }
+    // CHECK-NOT: ttl.copy
+    func.return
+  }
+}
+
+// -----
+
 // `affine.if` IntegerSet with two AND'd constraints: `d0 >= 0` and
 // `0 - d0 >= 0` together imply `d0 == 0`. Exercises the per-coord
 // constraint loop that breaks on the first failing constraint.

@@ -590,12 +590,15 @@ def TTLVerifyPipeNetSchedule
     consume send completions in order; the number of waits may not exceed the
     number of sends.
 
-    Events are paired by program order for each pipe endpoint. Paired static
-    events must have equal dynamic execution counts and equivalent enclosing
-    conditions. Direct calls to helper functions are expanded at each call
-    site so caller order and invocation multiplicity are preserved. Recursive
-    calls containing pipe synchronization events are rejected because their
-    finite event sequence cannot be constructed statically.
+    Events are paired by program order for each pipe endpoint. Paired pipe
+    operations must have equal dynamic execution counts and equivalent
+    enclosing conditions. Direct calls to helper functions are expanded at
+    each call site so caller order and invocation multiplicity are preserved.
+    Functions containing pipe events must be kernel-thread entry points or be
+    reachable from one through direct calls. Recursive calls containing pipe
+    events and schedules that exceed 4096 events after launch-node
+    specialization and helper expansion are rejected because the verifier
+    cannot construct a bounded event graph.
 
     The pass also constructs the same-thread wait-for graph. Program-order
     edges connect consecutive events on one launched node. Protocol edges

@@ -9,6 +9,7 @@
 // CHECK-NEXT: joined = {(0,0), (0,1), (1,0), (1,1)}
 // CHECK-NEXT: empty = {}
 // CHECK-NEXT: unknown = <unknown>
+// CHECK-NEXT: undeclared_pipe = <unknown>
 // CHECK-NOT:  =
 
 module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
@@ -33,6 +34,13 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
     %unresolved = "test.coordinate_predicate"(%core_x) : (index) -> i1
     scf.if %unresolved {
       "test.observe"() {test.label = "unknown"} : () -> ()
+    }
+
+    // An undeclared PipeNet predicate has no role domain. The standalone
+    // analysis reports an unknown domain instead of asserting.
+    %undeclared = ttl.is_src {pipe_net_id = 7 : i64}
+    scf.if %undeclared {
+      "test.observe"() {test.label = "undeclared_pipe"} : () -> ()
     }
     func.return
   }

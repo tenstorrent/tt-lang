@@ -24,17 +24,17 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <optional>
+#include <set>
 #include <tuple>
 
 #define DEBUG_TYPE "ttl-verify-pipenet"
@@ -48,6 +48,7 @@ namespace mlir::tt::ttl {
 namespace {
 
 constexpr std::size_t kMaxPipeScheduleCycleNotes = 8;
+constexpr std::size_t kMaxPipeScheduleNodes = 4096;
 
 //===----------------------------------------------------------------------===//
 // Module state collected before the analysis runs and updated during it.
@@ -111,6 +112,19 @@ struct ModuleState : LaunchNodeDomainState {
   SmallVector<PipeEvent> pipeEvents;
   llvm::DenseMap<Operation *, std::size_t> pipeEventIndices;
 
+  /// Return the receive copied by a wait and emit the common ambiguity error.
+  FailureOr<std::optional<CopyOp>> getPipeReceiveCopy(WaitOp waitOp) {
+    FailureOr<std::optional<CopyOp>> maybeCopyOp =
+        findDefiningPipeReceiveCopy(valueOrigins, waitOp.getXf());
+    if (failed(maybeCopyOp)) {
+      waitOp.emitOpError()
+          << "requires either every possible source to be the same pipe "
+             "receive ttl.copy or no source to be a pipe receive";
+      sawError = true;
+    }
+    return maybeCopyOp;
+  }
+
   /// Record pipe sends and receive posts from `ttl.copy` operations.
   void recordPipeEvent(CopyOp copyOp, const LaunchNodeDomain &domain) {
     PipeEvent event;
@@ -144,13 +158,8 @@ struct ModuleState : LaunchNodeDomainState {
 
   /// Record a receive completion wait for schedule verification.
   void recordPipeWaitEvent(WaitOp waitOp, const LaunchNodeDomain &domain) {
-    FailureOr<std::optional<CopyOp>> maybeCopyOp =
-        findDefiningPipeReceiveCopy(valueOrigins, waitOp.getXf());
+    FailureOr<std::optional<CopyOp>> maybeCopyOp = getPipeReceiveCopy(waitOp);
     if (failed(maybeCopyOp)) {
-      waitOp.emitOpError()
-          << "requires either every possible source to be the same pipe "
-             "receive ttl.copy or no source to be a pipe receive";
-      sawError = true;
       return;
     }
     if (!maybeCopyOp->has_value()) {
@@ -225,12 +234,8 @@ std::string formatGuardExpression(ArrayRef<std::pair<int64_t, PipeRole>> roles,
 void verifyPipeWaitGuard(WaitOp waitOp, const LaunchNodeDomain &domain,
                          Operation *unanalyzableOp, ModuleState &state) {
   FailureOr<std::optional<CopyOp>> maybeCopyOp =
-      findDefiningPipeReceiveCopy(state.valueOrigins, waitOp.getXf());
+      state.getPipeReceiveCopy(waitOp);
   if (failed(maybeCopyOp)) {
-    waitOp.emitOpError()
-        << "requires either every possible source to be the same pipe "
-           "receive ttl.copy or no source to be a pipe receive";
-    state.sawError = true;
     return;
   }
   if (!maybeCopyOp->has_value()) {
@@ -434,17 +439,23 @@ struct PipeScheduleEdge {
   PipeScheduleEdgeKind kind;
 };
 
+/// One direct call and the function entered by that call.
+struct PipeCallSite {
+  func::CallOp call;
+  func::FuncOp callee;
+};
+
 /// Pipe synchronization event specialized to one launch node.
 struct PipeScheduleNode {
   Operation *op;
   PipeType pipeType;
   LaunchNodeCoord coord;
   PipeScheduleNodeKind kind;
-  SmallVector<Operation *> executionCountOps;
+  SmallVector<PipeCallSite> callSites;
   SmallVector<PipeScheduleEdge> successors;
 };
 
-/// Retain the sends for one logical pipe in program order.
+/// Retain the sends for one logical pipe in deterministic traversal order.
 struct PipeOccurrences {
   PipeType pipeType;
   SmallVector<PipeScheduleNodeId> sends;
@@ -475,10 +486,10 @@ PipeCoordIdentity getPipeCoordIdentity(PipeType pipeType,
 }
 
 /// Add one graph node for a synchronization event at one call-site occurrence.
-PipeScheduleNodeId
-addPipeScheduleNode(SmallVectorImpl<PipeScheduleNode> &nodes,
-                    const PipeEvent &event, LaunchNodeCoord coord,
-                    ArrayRef<Operation *> executionCountOps) {
+PipeScheduleNodeId addPipeScheduleNode(SmallVectorImpl<PipeScheduleNode> &nodes,
+                                       const PipeEvent &event,
+                                       LaunchNodeCoord coord,
+                                       ArrayRef<PipeCallSite> callSites) {
   PipeScheduleNodeKind kind;
   if (event.kind == PipeEventKind::Send) {
     kind = PipeScheduleNodeKind::Send;
@@ -492,7 +503,7 @@ addPipeScheduleNode(SmallVectorImpl<PipeScheduleNode> &nodes,
                    event.pipeType,
                    coord,
                    kind,
-                   SmallVector<Operation *>(executionCountOps),
+                   SmallVector<PipeCallSite>(callSites),
                    {}});
   return nodeId;
 }
@@ -513,38 +524,48 @@ void addPipeScheduleEdge(SmallVectorImpl<PipeScheduleNode> &nodes,
 /// Find any directed cycle in the pipe schedule graph.
 std::optional<SmallVector<PipeScheduleNodeId>>
 findPipeScheduleCycle(ArrayRef<PipeScheduleNode> nodes) {
-  SmallVector<PipeScheduleNodeId> stack;
-  SmallVector<PipeScheduleNodeId> cycle;
-  SmallVector<uint8_t> colors(nodes.size(), 0);
+  struct DFSFrame {
+    PipeScheduleNodeId nodeId;
+    std::size_t nextSuccessor = 0;
+  };
 
-  std::function<bool(PipeScheduleNodeId)> visit =
-      [&](PipeScheduleNodeId nodeId) {
-        colors[nodeId] = 1;
-        stack.push_back(nodeId);
-        for (const PipeScheduleEdge &edge : nodes[nodeId].successors) {
-          PipeScheduleNodeId successor = edge.successor;
-          if (colors[successor] == 0) {
-            if (visit(successor)) {
-              return true;
-            }
-            continue;
-          }
-          if (colors[successor] != 1) {
-            continue;
-          }
-          auto cycleStart = llvm::find(stack, successor);
-          cycle.append(cycleStart, stack.end());
-          cycle.push_back(successor);
-          return true;
-        }
-        stack.pop_back();
-        colors[nodeId] = 2;
-        return false;
-      };
+  SmallVector<PipeScheduleNodeId> activeNodes;
+  SmallVector<DFSFrame> frames;
+  SmallVector<std::uint8_t> colors(nodes.size(), 0);
 
   for (PipeScheduleNodeId nodeId = 0, count = nodes.size(); nodeId < count;
        ++nodeId) {
-    if (colors[nodeId] == 0 && visit(nodeId)) {
+    if (colors[nodeId] != 0) {
+      continue;
+    }
+    colors[nodeId] = 1;
+    activeNodes.push_back(nodeId);
+    frames.push_back({nodeId, 0});
+    while (!frames.empty()) {
+      DFSFrame &frame = frames.back();
+      ArrayRef<PipeScheduleEdge> successors = nodes[frame.nodeId].successors;
+      if (frame.nextSuccessor == successors.size()) {
+        colors[frame.nodeId] = 2;
+        frames.pop_back();
+        activeNodes.pop_back();
+        continue;
+      }
+
+      PipeScheduleNodeId successor =
+          successors[frame.nextSuccessor++].successor;
+      if (colors[successor] == 0) {
+        colors[successor] = 1;
+        activeNodes.push_back(successor);
+        frames.push_back({successor, 0});
+        continue;
+      }
+      if (colors[successor] != 1) {
+        continue;
+      }
+
+      auto cycleStart = llvm::find(activeNodes, successor);
+      SmallVector<PipeScheduleNodeId> cycle(cycleStart, activeNodes.end());
+      cycle.push_back(successor);
       return cycle;
     }
   }
@@ -770,7 +791,7 @@ void emitPipeScheduleCycleDiagnostic(ArrayRef<PipeScheduleNode> nodes,
     return;
   }
 
-  PipeScheduleNode node = nodes[cycle.front()];
+  const PipeScheduleNode &node = nodes[cycle.front()];
   auto diag = node.op->emitOpError()
               << "pipe schedule contains a wait-for cycle on PipeNet "
               << state.netName(node.pipeType.getPipeNetId())
@@ -781,9 +802,7 @@ void emitPipeScheduleCycleDiagnostic(ArrayRef<PipeScheduleNode> nodes,
   state.sawError = true;
 }
 
-/// Pair predecessor and successor operations at the same IR-order position.
-/// Each pair may execute repeatedly, so its operations must execute equally
-/// often under equivalent conditions.
+/// Constant and unresolved factors in one schedule occurrence count.
 struct PipeExecutionCountExpression {
   std::uint64_t constantFactor = 1;
   SmallVector<Operation *> unresolvedOps;
@@ -796,21 +815,54 @@ std::optional<PipeExecutionCountExpression>
 getPipeExecutionCountExpression(const PipeScheduleNode &node,
                                 ModuleState &state) {
   PipeExecutionCountExpression expression;
-  for (Operation *op : node.executionCountOps) {
+  auto collectFactor = [&](Operation *op) -> LogicalResult {
     std::optional<std::uint64_t> maybeCount =
         getExactExecutionCountAtLaunchNode(op, node.coord, state);
     if (!maybeCount) {
       expression.unresolvedOps.push_back(op);
-      continue;
+      return success();
     }
     std::optional<std::uint64_t> maybeProduct =
         llvm::checkedMulUnsigned(expression.constantFactor, *maybeCount);
     if (!maybeProduct) {
-      return std::nullopt;
+      return failure();
     }
     expression.constantFactor = *maybeProduct;
+    return success();
+  };
+  for (const PipeCallSite &callSite : node.callSites) {
+    func::CallOp call = callSite.call;
+    if (failed(collectFactor(call.getOperation()))) {
+      return std::nullopt;
+    }
+  }
+  if (failed(collectFactor(node.op))) {
+    return std::nullopt;
   }
   return expression;
+}
+
+/// Return the operand supplied to a helper argument at this occurrence's call
+/// site.
+std::optional<Value> resolveFunctionArgument(BlockArgument argument,
+                                             ArrayRef<PipeCallSite> callSites) {
+  auto function =
+      dyn_cast_if_present<func::FuncOp>(argument.getOwner()->getParentOp());
+  if (!function || argument.getOwner() != &function.getBody().front()) {
+    return std::nullopt;
+  }
+  auto callSiteIt = llvm::find_if(llvm::reverse(callSites),
+                                  [&](const PipeCallSite &callSite) {
+                                    return callSite.callee == function;
+                                  });
+  if (callSiteIt == callSites.rend()) {
+    return std::nullopt;
+  }
+  func::CallOp call = callSiteIt->call;
+  if (argument.getArgNumber() >= call.getNumOperands()) {
+    return std::nullopt;
+  }
+  return call.getOperand(argument.getArgNumber());
 }
 
 /// Prove equal dynamic counts for two call-site-specific schedule nodes.
@@ -829,11 +881,21 @@ bool proveEqualPipeScheduleNodeCounts(const PipeScheduleNode &lhs,
   return llvm::all_of(
       llvm::zip(maybeLhs->unresolvedOps, maybeRhs->unresolvedOps),
       [&](auto pair) {
-        return proveEqualExecutionCountAtLaunchNodes(
-            std::get<0>(pair), lhs.coord, std::get<1>(pair), rhs.coord, state);
+        auto resolveLhsFunctionArgument = [&](BlockArgument argument) {
+          return resolveFunctionArgument(argument, lhs.callSites);
+        };
+        auto resolveRhsFunctionArgument = [&](BlockArgument argument) {
+          return resolveFunctionArgument(argument, rhs.callSites);
+        };
+        return proveEqualUnresolvedExecutionCountAtLaunchNodes(
+            std::get<0>(pair), lhs.coord, std::get<1>(pair), rhs.coord, state,
+            resolveLhsFunctionArgument, resolveRhsFunctionArgument);
       });
 }
 
+/// Pair predecessor and successor operations at the same traversal position.
+/// Repeated pairs must have equal execution counts under equivalent control
+/// conditions.
 LogicalResult addPipeOccurrenceEdges(SmallVectorImpl<PipeScheduleNode> &nodes,
                                      ArrayRef<PipeScheduleNodeId> predecessors,
                                      ArrayRef<PipeScheduleNodeId> successors,
@@ -892,15 +954,20 @@ LogicalResult addPipeOccurrenceEdges(SmallVectorImpl<PipeScheduleNode> &nodes,
   return success();
 }
 
-/// Return true when an event or one of its enclosing calls is proven not to
-/// execute at `coord`.
-bool hasZeroExecutionCount(ArrayRef<Operation *> executionCountOps,
+/// Return true when an operation or one of its enclosing calls is proven not
+/// to execute at `coord`.
+bool hasZeroExecutionCount(ArrayRef<PipeCallSite> callSites, Operation *op,
                            LaunchNodeCoord coord, ModuleState &state) {
-  return llvm::any_of(executionCountOps, [&](Operation *op) {
-    std::optional<std::uint64_t> maybeCount =
-        getExactExecutionCountAtLaunchNode(op, coord, state);
-    return maybeCount && *maybeCount == 0;
-  });
+  if (llvm::any_of(callSites, [&](const PipeCallSite &callSite) {
+        std::optional<std::uint64_t> maybeCount =
+            getExactExecutionCountAtLaunchNode(callSite.call, coord, state);
+        return maybeCount && *maybeCount == 0;
+      })) {
+    return true;
+  }
+  std::optional<std::uint64_t> maybeCount =
+      getExactExecutionCountAtLaunchNode(op, coord, state);
+  return maybeCount && *maybeCount == 0;
 }
 
 /// Return the functions that contain a pipe event directly or through calls to
@@ -922,7 +989,7 @@ getFunctionsWithPipeEvents(ModuleOp module, const ModuleState &state,
       if (functions.contains(function.getOperation())) {
         continue;
       }
-      WalkResult result = function.walk([&](func::CallOp callOp) {
+      function.walk([&](func::CallOp callOp) {
         func::FuncOp callee =
             symbolTables.lookupNearestSymbolFrom<func::FuncOp>(
                 callOp, callOp.getCalleeAttr());
@@ -933,33 +1000,77 @@ getFunctionsWithPipeEvents(ModuleOp module, const ModuleState &state,
         changed = true;
         return WalkResult::interrupt();
       });
-      (void)result;
     }
   } while (changed);
   return functions;
 }
 
+/// Return functions reachable from kernel-thread entry points through direct
+/// calls.
+llvm::DenseSet<Operation *>
+getFunctionsReachableFromKernelThreads(ModuleOp module,
+                                       SymbolTableCollection &symbolTables) {
+  llvm::DenseSet<Operation *> reachableFunctions;
+  SmallVector<func::FuncOp> worklist;
+  for (func::FuncOp function : module.getOps<func::FuncOp>()) {
+    if (function->hasAttr(kKernelThreadAttrName) &&
+        reachableFunctions.insert(function.getOperation()).second) {
+      worklist.push_back(function);
+    }
+  }
+  for (std::size_t worklistIndex = 0; worklistIndex < worklist.size();
+       ++worklistIndex) {
+    worklist[worklistIndex].walk([&](func::CallOp callOp) {
+      func::FuncOp callee = symbolTables.lookupNearestSymbolFrom<func::FuncOp>(
+          callOp, callOp.getCalleeAttr());
+      if (callee && reachableFunctions.insert(callee.getOperation()).second) {
+        worklist.push_back(callee);
+      }
+    });
+  }
+  return reachableFunctions;
+}
+
+/// Reject pipe events with no kernel-thread entry point and direct-call chain.
+LogicalResult verifyPipeEventFunctionsReachable(
+    const ModuleState &state,
+    const llvm::DenseSet<Operation *> &reachableFunctions) {
+  llvm::DenseSet<Operation *> diagnosedFunctions;
+  LogicalResult result = success();
+  for (const PipeEvent &event : state.pipeEvents) {
+    func::FuncOp function = event.op->getParentOfType<func::FuncOp>();
+    if (!function || reachableFunctions.contains(function.getOperation()) ||
+        !diagnosedFunctions.insert(function.getOperation()).second) {
+      continue;
+    }
+    event.op->emitOpError()
+        << "cannot verify PipeNet synchronization in @" << function.getSymName()
+        << " because it is not reachable from a kernel-thread function "
+           "through direct calls";
+    result = failure();
+  }
+  return result;
+}
+
 /// Visit pipe events in the order executed by one kernel thread. Direct helper
 /// calls are expanded at each call site so their events retain caller order and
 /// invocation multiplicity.
-void walkPipeEventsInProgramOrder(
+WalkResult walkPipeEventsInProgramOrder(
     Operation *op, LaunchNodeCoord coord, ModuleState &state,
     const llvm::DenseSet<Operation *> &functionsWithPipeEvents,
     SymbolTableCollection &symbolTables,
     SmallVectorImpl<func::FuncOp> &activeFunctions,
-    SmallVectorImpl<Operation *> &callOps,
+    SmallVectorImpl<PipeCallSite> &callSites,
     llvm::DenseSet<Operation *> &diagnosedRecursiveCalls,
-    llvm::function_ref<void(const PipeEvent &, ArrayRef<Operation *>)>
+    llvm::function_ref<WalkResult(const PipeEvent &, ArrayRef<PipeCallSite>)>
         visitEvent) {
   auto eventIt = state.pipeEventIndices.find(op);
   if (eventIt != state.pipeEventIndices.end()) {
     const PipeEvent &event = state.pipeEvents[eventIt->second];
     if (knownLaunchNodeDomainContains(event.domain, coord)) {
-      SmallVector<Operation *> executionCountOps(callOps.begin(),
-                                                 callOps.end());
-      executionCountOps.push_back(event.op);
-      if (!hasZeroExecutionCount(executionCountOps, coord, state)) {
-        visitEvent(event, executionCountOps);
+      if (!hasZeroExecutionCount(callSites, event.op, coord, state) &&
+          visitEvent(event, callSites).wasInterrupted()) {
+        return WalkResult::interrupt();
       }
     }
   }
@@ -968,8 +1079,8 @@ void walkPipeEventsInProgramOrder(
     func::FuncOp callee = symbolTables.lookupNearestSymbolFrom<func::FuncOp>(
         callOp, callOp.getCalleeAttr());
     if (!callee || !functionsWithPipeEvents.contains(callee.getOperation()) ||
-        hasZeroExecutionCount({callOp.getOperation()}, coord, state)) {
-      return;
+        hasZeroExecutionCount({}, callOp.getOperation(), coord, state)) {
+      return WalkResult::advance();
     }
     if (llvm::is_contained(activeFunctions, callee)) {
       if (diagnosedRecursiveCalls.insert(callOp.getOperation()).second) {
@@ -979,32 +1090,41 @@ void walkPipeEventsInProgramOrder(
             << callee.getSymName();
         state.sawError = true;
       }
-      return;
+      return WalkResult::advance();
     }
 
     activeFunctions.push_back(callee);
-    callOps.push_back(callOp.getOperation());
+    callSites.push_back({callOp, callee});
+    llvm::scope_exit restoreCallStack([&] {
+      callSites.pop_back();
+      activeFunctions.pop_back();
+    });
     for (Block &block : callee.getBody()) {
       for (Operation &nestedOp : block) {
-        walkPipeEventsInProgramOrder(
-            &nestedOp, coord, state, functionsWithPipeEvents, symbolTables,
-            activeFunctions, callOps, diagnosedRecursiveCalls, visitEvent);
+        if (walkPipeEventsInProgramOrder(
+                &nestedOp, coord, state, functionsWithPipeEvents, symbolTables,
+                activeFunctions, callSites, diagnosedRecursiveCalls, visitEvent)
+                .wasInterrupted()) {
+          return WalkResult::interrupt();
+        }
       }
     }
-    callOps.pop_back();
-    activeFunctions.pop_back();
-    return;
+    return WalkResult::advance();
   }
 
   for (Region &region : op->getRegions()) {
     for (Block &block : region) {
       for (Operation &nestedOp : block) {
-        walkPipeEventsInProgramOrder(
-            &nestedOp, coord, state, functionsWithPipeEvents, symbolTables,
-            activeFunctions, callOps, diagnosedRecursiveCalls, visitEvent);
+        if (walkPipeEventsInProgramOrder(
+                &nestedOp, coord, state, functionsWithPipeEvents, symbolTables,
+                activeFunctions, callSites, diagnosedRecursiveCalls, visitEvent)
+                .wasInterrupted()) {
+          return WalkResult::interrupt();
+        }
       }
     }
   }
+  return WalkResult::advance();
 }
 
 // Verify synchronization dependencies implied by pipe operations. Receive-side
@@ -1021,28 +1141,50 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
   SymbolTableCollection symbolTables;
   llvm::DenseSet<Operation *> functionsWithPipeEvents =
       getFunctionsWithPipeEvents(module, state, symbolTables);
+  llvm::DenseSet<Operation *> reachableFunctions =
+      getFunctionsReachableFromKernelThreads(module, symbolTables);
+  if (failed(verifyPipeEventFunctionsReachable(state, reachableFunctions))) {
+    state.sawError = true;
+    return;
+  }
   llvm::DenseSet<Operation *> diagnosedRecursiveCalls;
+  LaunchNodeDomain eventDomain;
+  for (const PipeEvent &event : state.pipeEvents) {
+    eventDomain = eventDomain.unionWith(event.domain);
+  }
+  const std::set<LaunchNodeCoord> &scheduleCoords =
+      eventDomain.known ? eventDomain.nodes : state.baseDomain.nodes;
 
   // Kernel-thread functions execute independently. Expand their direct helper
-  // calls separately at each launch node to retain the program order of every
-  // static call-site occurrence.
+  // calls separately at each launch node to retain the order and multiplicity
+  // of their pipe events.
   for (func::FuncOp function : module.getOps<func::FuncOp>()) {
     if (!function->hasAttr(kKernelThreadAttrName)) {
       continue;
     }
-    for (LaunchNodeCoord coord : state.baseDomain.nodes) {
+    for (LaunchNodeCoord coord : scheduleCoords) {
       SmallVector<func::FuncOp> activeFunctions{function};
-      SmallVector<Operation *> callOps;
+      SmallVector<PipeCallSite> callSites;
       std::optional<PipeScheduleNodeId> lastNode;
       for (Block &block : function.getBody()) {
         for (Operation &op : block) {
-          walkPipeEventsInProgramOrder(
+          WalkResult walkResult = walkPipeEventsInProgramOrder(
               &op, coord, state, functionsWithPipeEvents, symbolTables,
-              activeFunctions, callOps, diagnosedRecursiveCalls,
+              activeFunctions, callSites, diagnosedRecursiveCalls,
               [&](const PipeEvent &event,
-                  ArrayRef<Operation *> executionCountOps) {
+                  ArrayRef<PipeCallSite> activeCallSites) {
+                if (nodes.size() >= kMaxPipeScheduleNodes) {
+                  event.op->emitOpError()
+                      << "cannot verify PipeNet synchronization because the "
+                         "schedule contains more than "
+                      << kMaxPipeScheduleNodes
+                      << " pipe events after specializing launch nodes and "
+                         "expanding helper calls";
+                  state.sawError = true;
+                  return WalkResult::interrupt();
+                }
                 PipeScheduleNodeId nodeId =
-                    addPipeScheduleNode(nodes, event, coord, executionCountOps);
+                    addPipeScheduleNode(nodes, event, coord, activeCallSites);
                 PipeIdentity pipeIdentity = getPipeIdentity(event.pipeType);
                 auto pipeIt =
                     pipeOccurrences
@@ -1063,7 +1205,11 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
                                       PipeScheduleEdgeKind::ProgramOrder);
                 }
                 lastNode = nodeId;
+                return WalkResult::advance();
               });
+          if (walkResult.wasInterrupted()) {
+            return;
+          }
         }
       }
     }
@@ -1090,13 +1236,10 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
       }
       auto waitIt = receiveWaitNodes.find(identity);
       if (waitIt != receiveWaitNodes.end()) {
-        if (failed(addPipeOccurrenceEdges(
-                nodes, occurrences.sends, waitIt->second,
-                PipeScheduleEdgeKind::SendCompletesReceive, "send",
-                "receive wait", coord, state,
-                /*requireEqualOccurrences=*/false))) {
-          continue;
-        }
+        (void)addPipeOccurrenceEdges(nodes, occurrences.sends, waitIt->second,
+                                     PipeScheduleEdgeKind::SendCompletesReceive,
+                                     "send", "receive wait", coord, state,
+                                     /*requireEqualOccurrences=*/false);
       }
     }
   }
@@ -1140,17 +1283,20 @@ void validatePipeNetReferences(ModuleOp module, ModuleState &state) {
 LogicalResult initializePipeNetVerification(ModuleOp module, ModuleState &state,
                                             StringRef passName) {
   state.initialize(module);
-  if (state.hasPipes() && !state.hasLaunchGrid) {
-    module.emitError() << passName
-                       << " requires a `ttl.launch_grid` module attribute "
-                          "(an i64 array of length 2 with positive entries)";
+  validatePipeNetReferences(module, state);
+  if (state.sawError) {
     return failure();
   }
   if (!state.hasPipes()) {
     return success();
   }
-  validatePipeNetReferences(module, state);
-  return failure(state.sawError);
+  if (!state.hasLaunchGrid) {
+    module.emitError() << passName
+                       << " requires a `ttl.launch_grid` module attribute "
+                          "(an i64 array of length 2 with positive entries)";
+    return failure();
+  }
+  return success();
 }
 
 struct TTLVerifyPipeNetGuardsPass

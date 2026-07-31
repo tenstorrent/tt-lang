@@ -1,6 +1,7 @@
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics -ttl-verify-pipenet-schedule
 
-// Summary: Negative tests for pipe schedules that would deadlock at runtime.
+// Summary: Negative tests for invalid or unprovable PipeNet synchronization
+// schedules.
 
 // Schedule verification requires the launch grid used to specialize events to
 // individual kernel instances.
@@ -11,6 +12,104 @@ module {
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
         : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    func.return
+  }
+}
+
+// -----
+
+// A helper argument can preserve a coordinate-dependent loop bound across a
+// call. The source executes once, while the destination executes twice.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func private @coordinate_dependent_count_helper(
+      %count: index,
+      %send_cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+      %recv_cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+      %pipe: !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    scf.for %iteration = %c0 to %count step %c1 {
+      ttl.if_src %pipe
+          : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+        // expected-error @below {{cannot prove a one-to-one synchronization schedule}}
+        %send = ttl.copy %send_cb, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+               !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
+      ttl.if_dst %pipe
+          : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+        %reserve = ttl.cb_reserve %recv_cb
+            : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+            -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        // expected-note @below {{matching receiver post occurrence is here}}
+        %receive = ttl.copy %pipe, %reserve
+            : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+               tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> !ttl.transfer_handle
+        ttl.wait %receive : !ttl.transfer_handle
+      }
+    }
+    func.return
+  }
+
+  func.func @coordinate_dependent_count_through_call()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %core_x = ttl.core_x : index
+    %c1 = arith.constant 1 : index
+    %count = arith.addi %core_x, %c1 : index
+    func.call @coordinate_dependent_count_helper(
+        %count, %send_cb, %recv_cb, %pipe)
+        : (index, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+           !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.return
+  }
+}
+
+// -----
+
+// Pipe events must be reachable from a kernel-thread function so their launch
+// nodes and call sites are defined.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @unreachable_pipe_event() {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.if_src %pipe
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      // expected-error @below {{cannot verify PipeNet synchronization in @unreachable_pipe_event because it is not reachable from a kernel-thread function through direct calls}}
+      %send = ttl.copy %send_cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}
+
+// -----
+
+// PipeNet references are validated even when the module has no declaration.
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @undeclared_pipe_predicate()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{references unknown PipeNet net_7}}
+    %is_src = ttl.is_src {pipe_net_id = 7 : i64}
+    scf.if %is_src {
+    }
     func.return
   }
 }
@@ -677,6 +776,111 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
              !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>)
           -> !ttl.transfer_handle<write>
       ttl.wait %send : !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}
+
+// -----
+
+// Repeated helper calls can create exponentially many pipe events. Schedule
+// construction must diagnose its bound instead of exhausting memory or the
+// cycle checker's call stack.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func private @expansion_leaf(
+      %send_cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+      %pipe: !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) {
+    // expected-error @below {{cannot verify PipeNet synchronization because the schedule contains more than 4096 pipe events after specializing launch nodes and expanding helper calls}}
+    %send = ttl.copy %send_cb, %pipe
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+           !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send : !ttl.transfer_handle<write>
+    func.return
+  }
+
+  func.func private @expansion_level_1(
+      %send_cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+      %pipe: !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) {
+    func.call @expansion_leaf(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_leaf(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_leaf(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_leaf(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_leaf(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_leaf(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_leaf(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_leaf(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.return
+  }
+
+  func.func private @expansion_level_2(
+      %send_cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+      %pipe: !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) {
+    func.call @expansion_level_1(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_level_1(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_level_1(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_level_1(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_level_1(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_level_1(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_level_1(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_level_1(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.return
+  }
+
+  func.func private @expansion_level_3(
+      %send_cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+      %pipe: !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) {
+    func.call @expansion_level_2(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_level_2(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_level_2(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_level_2(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_level_2(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_level_2(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_level_2(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_level_2(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.return
+  }
+
+  func.func private @expansion_level_4(
+      %send_cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+      %pipe: !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) {
+    func.call @expansion_level_3(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_level_3(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_level_3(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_level_3(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_level_3(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_level_3(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_level_3(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_level_3(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.return
+  }
+
+  func.func private @expansion_level_5(
+      %send_cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+      %pipe: !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) {
+    func.call @expansion_level_4(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_level_4(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_level_4(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_level_4(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_level_4(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_level_4(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_level_4(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.call @expansion_level_4(%send_cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    func.return
+  }
+
+  func.func @bounded_schedule_expansion()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.if_src %pipe
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      func.call @expansion_level_5(%send_cb, %pipe)
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
     }
     func.return
   }

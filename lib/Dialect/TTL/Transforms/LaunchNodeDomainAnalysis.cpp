@@ -180,7 +180,9 @@ std::string LaunchNodeDomainState::netName(int64_t netId) const {
 
 LaunchNodeDomain LaunchNodeDomainState::getRoleDomain(int64_t netId,
                                                       PipeRole role) const {
-  assert(pipeNetLocs.contains(netId) && "PipeNet id must be declared");
+  if (!pipeNetLocs.contains(netId)) {
+    return LaunchNodeDomain::unknown();
+  }
   if (role == PipeRole::Source) {
     auto it = netSourceDomains.find(netId);
     return it == netSourceDomains.end() ? LaunchNodeDomain{} : it->second;
@@ -236,7 +238,7 @@ void LaunchNodeDomainState::initialize(ModuleOp module) {
   baseDomain = getFullLaunchNodeDomain(launchGrid[0], launchGrid[1]);
 }
 
-std::optional<llvm::APInt>
+static std::optional<llvm::APInt>
 evaluateLaunchNodeContextValue(Value value, LaunchNodeCoord coord,
                                const LaunchNodeDomainState *state) {
   if (value.getDefiningOp<CoreXOp>()) {
@@ -267,7 +269,7 @@ createLaunchNodeIntegerEvaluator(LaunchNodeCoord coord,
       });
 }
 
-std::optional<bool>
+static std::optional<bool>
 evaluatePredicateAtLaunchNode(Value value, LaunchNodeCoord coord,
                               const LaunchNodeDomainState &state) {
   std::optional<llvm::APInt> maybeValue =
@@ -304,7 +306,7 @@ getRegionInvocationCountAtLaunchNode(Region &region, LaunchNodeCoord coord,
   if (auto affineIfOp = dyn_cast<affine::AffineIfOp>(parent)) {
     LaunchNodeDomainResult trueDomain =
         getAffineIfLaunchNodeDomain(affineIfOp, state.baseDomain);
-    if (!trueDomain.domain.known || region.getRegionNumber() > 1) {
+    if (!trueDomain.domain.known) {
       return std::nullopt;
     }
     bool selectsThen = knownLaunchNodeDomainContains(trueDomain.domain, coord);
@@ -348,7 +350,7 @@ static bool dependsOnCoord(Value value, llvm::DenseMap<Value, bool> &cache) {
   Operation *op = value.getDefiningOp();
   bool result = false;
   if (op) {
-    if (mlir::isa<CoreXOp, CoreYOp>(op)) {
+    if (mlir::isa<CoreXOp, CoreYOp, PipeNetPredicateOpInterface>(op)) {
       result = true;
     } else {
       for (Value operand : op->getOperands()) {
@@ -522,78 +524,132 @@ getUnresolvedExecutionCountContext(Operation *op, LaunchNodeCoord coord,
   return context;
 }
 
-/// Return true when one SSA value has the same runtime value at two launch
-/// nodes. Function arguments are common runtime arguments. Pure expressions
-/// preserve equality; coordinate queries, memory reads, and unsupported block
-/// arguments require a concrete evaluation.
-static bool proveEqualValueAtLaunchNodes(Value value, LaunchNodeCoord lhsCoord,
-                                         LaunchNodeCoord rhsCoord,
-                                         const LaunchNodeDomainState &state,
-                                         llvm::DenseMap<Value, bool> &cache) {
-  if (lhsCoord == rhsCoord) {
-    return true;
-  }
-  if (auto it = cache.find(value); it != cache.end()) {
+/// Return true when two SSA values have the same runtime value at their launch
+/// nodes and active call sites.
+static bool proveEqualValuesAtLaunchNodes(
+    Value lhsValue, LaunchNodeCoord lhsCoord,
+    llvm::function_ref<std::optional<Value>(BlockArgument)>
+        resolveLhsFunctionArgument,
+    Value rhsValue, LaunchNodeCoord rhsCoord,
+    llvm::function_ref<std::optional<Value>(BlockArgument)>
+        resolveRhsFunctionArgument,
+    const LaunchNodeDomainState &state,
+    llvm::DenseMap<std::pair<Value, Value>, bool> &cache) {
+  std::pair<Value, Value> cacheKey{lhsValue, rhsValue};
+  if (auto it = cache.find(cacheKey); it != cache.end()) {
     return it->second;
   }
+  cache[cacheKey] = false;
 
   std::optional<llvm::APInt> maybeLhsValue =
-      createLaunchNodeIntegerEvaluator(lhsCoord, &state).evaluate(value);
+      createLaunchNodeIntegerEvaluator(lhsCoord, &state).evaluate(lhsValue);
   std::optional<llvm::APInt> maybeRhsValue =
-      createLaunchNodeIntegerEvaluator(rhsCoord, &state).evaluate(value);
+      createLaunchNodeIntegerEvaluator(rhsCoord, &state).evaluate(rhsValue);
   if (maybeLhsValue && maybeRhsValue) {
     bool equal = *maybeLhsValue == *maybeRhsValue;
-    cache[value] = equal;
+    cache[cacheKey] = equal;
     return equal;
   }
 
-  if (auto argument = dyn_cast<BlockArgument>(value)) {
-    Block *owner = argument.getOwner();
-    auto function = dyn_cast_if_present<func::FuncOp>(owner->getParentOp());
-    bool equal = function && owner == &function.getBody().front();
-    if (!equal) {
-      if (auto forOp = dyn_cast_if_present<scf::ForOp>(owner->getParentOp());
-          forOp && value == forOp.getInductionVar()) {
-        equal = proveEqualValueAtLaunchNodes(forOp.getLowerBound(), lhsCoord,
-                                             rhsCoord, state, cache) &&
-                proveEqualValueAtLaunchNodes(forOp.getUpperBound(), lhsCoord,
-                                             rhsCoord, state, cache) &&
-                proveEqualValueAtLaunchNodes(forOp.getStep(), lhsCoord,
-                                             rhsCoord, state, cache);
-      }
+  auto lhsArgument = dyn_cast<BlockArgument>(lhsValue);
+  auto rhsArgument = dyn_cast<BlockArgument>(rhsValue);
+  if (lhsArgument || rhsArgument) {
+    if (!lhsArgument || !rhsArgument) {
+      return false;
     }
-    cache[value] = equal;
+
+    Block *lhsOwner = lhsArgument.getOwner();
+    Block *rhsOwner = rhsArgument.getOwner();
+    auto lhsFunction =
+        dyn_cast_if_present<func::FuncOp>(lhsOwner->getParentOp());
+    auto rhsFunction =
+        dyn_cast_if_present<func::FuncOp>(rhsOwner->getParentOp());
+    bool lhsIsFunctionArgument =
+        lhsFunction && lhsOwner == &lhsFunction.getBody().front();
+    bool rhsIsFunctionArgument =
+        rhsFunction && rhsOwner == &rhsFunction.getBody().front();
+    if (lhsIsFunctionArgument || rhsIsFunctionArgument) {
+      if (!lhsIsFunctionArgument || !rhsIsFunctionArgument) {
+        return false;
+      }
+      // The launch ABI supplies one common argument vector to every node of a
+      // kernel-thread function. Helper arguments instead take their values
+      // from the active call site.
+      if (lhsFunction->hasAttr(kKernelThreadAttrName) ||
+          rhsFunction->hasAttr(kKernelThreadAttrName)) {
+        bool equal = lhsValue == rhsValue && lhsFunction == rhsFunction &&
+                     lhsFunction->hasAttr(kKernelThreadAttrName) &&
+                     rhsFunction->hasAttr(kKernelThreadAttrName);
+        cache[cacheKey] = equal;
+        return equal;
+      }
+      std::optional<Value> maybeLhsOperand =
+          resolveLhsFunctionArgument(lhsArgument);
+      std::optional<Value> maybeRhsOperand =
+          resolveRhsFunctionArgument(rhsArgument);
+      if (!maybeLhsOperand || !maybeRhsOperand) {
+        return false;
+      }
+      bool equal = proveEqualValuesAtLaunchNodes(
+          *maybeLhsOperand, lhsCoord, resolveLhsFunctionArgument,
+          *maybeRhsOperand, rhsCoord, resolveRhsFunctionArgument, state, cache);
+      cache[cacheKey] = equal;
+      return equal;
+    }
+
+    auto lhsForOp = dyn_cast_if_present<scf::ForOp>(lhsOwner->getParentOp());
+    auto rhsForOp = dyn_cast_if_present<scf::ForOp>(rhsOwner->getParentOp());
+    bool equal =
+        lhsForOp && rhsForOp && lhsValue == lhsForOp.getInductionVar() &&
+        rhsValue == rhsForOp.getInductionVar() &&
+        proveEqualValuesAtLaunchNodes(
+            lhsForOp.getLowerBound(), lhsCoord, resolveLhsFunctionArgument,
+            rhsForOp.getLowerBound(), rhsCoord, resolveRhsFunctionArgument,
+            state, cache) &&
+        proveEqualValuesAtLaunchNodes(
+            lhsForOp.getUpperBound(), lhsCoord, resolveLhsFunctionArgument,
+            rhsForOp.getUpperBound(), rhsCoord, resolveRhsFunctionArgument,
+            state, cache) &&
+        proveEqualValuesAtLaunchNodes(lhsForOp.getStep(), lhsCoord,
+                                      resolveLhsFunctionArgument,
+                                      rhsForOp.getStep(), rhsCoord,
+                                      resolveRhsFunctionArgument, state, cache);
+    cache[cacheKey] = equal;
     return equal;
   }
 
-  Operation *definingOp = value.getDefiningOp();
-  if (!definingOp || definingOp->getNumRegions() != 0 ||
-      definingOp->getNumOperands() == 0 || !isMemoryEffectFree(definingOp)) {
-    cache[value] = false;
+  Operation *lhsDefiningOp = lhsValue.getDefiningOp();
+  Operation *rhsDefiningOp = rhsValue.getDefiningOp();
+  if (!lhsDefiningOp || lhsDefiningOp != rhsDefiningOp ||
+      lhsDefiningOp->getNumRegions() != 0 ||
+      lhsDefiningOp->getNumOperands() == 0 ||
+      !isMemoryEffectFree(lhsDefiningOp)) {
     return false;
   }
-  bool equal = llvm::all_of(definingOp->getOperands(), [&](Value operand) {
-    return proveEqualValueAtLaunchNodes(operand, lhsCoord, rhsCoord, state,
-                                        cache);
+  auto lhsResult = dyn_cast<OpResult>(lhsValue);
+  auto rhsResult = dyn_cast<OpResult>(rhsValue);
+  if (!lhsResult || !rhsResult ||
+      lhsResult.getResultNumber() != rhsResult.getResultNumber()) {
+    return false;
+  }
+  bool equal = llvm::all_of(lhsDefiningOp->getOperands(), [&](Value operand) {
+    return proveEqualValuesAtLaunchNodes(
+        operand, lhsCoord, resolveLhsFunctionArgument, operand, rhsCoord,
+        resolveRhsFunctionArgument, state, cache);
   });
-  cache[value] = equal;
+  cache[cacheKey] = equal;
   return equal;
 }
 
 } // namespace
 
-bool proveEqualExecutionCountAtLaunchNodes(Operation *lhs,
-                                           LaunchNodeCoord lhsCoord,
-                                           Operation *rhs,
-                                           LaunchNodeCoord rhsCoord,
-                                           const LaunchNodeDomainState &state) {
-  std::optional<std::uint64_t> maybeLhsCount =
-      getExactExecutionCountAtLaunchNode(lhs, lhsCoord, state);
-  std::optional<std::uint64_t> maybeRhsCount =
-      getExactExecutionCountAtLaunchNode(rhs, rhsCoord, state);
-  if (maybeLhsCount && maybeRhsCount) {
-    return maybeLhsCount == maybeRhsCount;
-  }
+bool proveEqualUnresolvedExecutionCountAtLaunchNodes(
+    Operation *lhs, LaunchNodeCoord lhsCoord, Operation *rhs,
+    LaunchNodeCoord rhsCoord, const LaunchNodeDomainState &state,
+    llvm::function_ref<std::optional<Value>(BlockArgument)>
+        resolveLhsFunctionArgument,
+    llvm::function_ref<std::optional<Value>(BlockArgument)>
+        resolveRhsFunctionArgument) {
   std::optional<UnresolvedExecutionCountContext> maybeLhsContext =
       getUnresolvedExecutionCountContext(lhs, lhsCoord, state);
   std::optional<UnresolvedExecutionCountContext> maybeRhsContext =
@@ -602,10 +658,11 @@ bool proveEqualExecutionCountAtLaunchNodes(Operation *lhs,
       !(*maybeLhsContext == *maybeRhsContext)) {
     return false;
   }
-  llvm::DenseMap<Value, bool> equalValueCache;
+  llvm::DenseMap<std::pair<Value, Value>, bool> equalValueCache;
   return llvm::all_of(maybeLhsContext->controlValues, [&](Value value) {
-    return proveEqualValueAtLaunchNodes(value, lhsCoord, rhsCoord, state,
-                                        equalValueCache);
+    return proveEqualValuesAtLaunchNodes(
+        value, lhsCoord, resolveLhsFunctionArgument, value, rhsCoord,
+        resolveRhsFunctionArgument, state, equalValueCache);
   });
 }
 
