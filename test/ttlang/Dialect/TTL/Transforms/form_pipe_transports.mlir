@@ -13,6 +13,7 @@
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports,convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=true})' | FileCheck %s --check-prefix=PAGES
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports{group-size=4},convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=true})' | FileCheck %s --check-prefix=RESIDUAL
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports,convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=false})' | FileCheck %s --check-prefix=GROUPED-WRITE
+// RUN: ttlang-opt %s --ttl-to-ttkernel-pipeline | FileCheck %s --check-prefix=PIPELINE
 
 #layout = #ttl.layout<
     shape = [32, 384], element_type = !ttcore.tile<32x32, f32>,
@@ -108,6 +109,17 @@
 // GROUPED-WRITE-NOT: noc_async_write_one_packet_set_state
 // GROUPED-WRITE: ttkernel.noc_async_write
 // GROUPED-WRITE-SAME: %[[PAYLOAD_BYTES]]
+
+// The registered pipeline preserves DFB synchronization until transport
+// ownership is selected, then removes the transport-owned lifecycle.
+// PIPELINE: module attributes
+// PIPELINE-SAME: ttl.pipe_sram_scratch_bytes = 40960 : i64
+// PIPELINE-LABEL: func.func @point_to_point
+// PIPELINE-NOT: ttkernel.cb_
+// PIPELINE: ttkernel.noc_async_write_one_packet_set_state
+// PIPELINE: scf.for
+// PIPELINE: ttkernel.noc_async_write_one_packet_with_state
+// PIPELINE: ttkernel.noc_async_atomic_barrier
 
 // An explicit upper bound produces two groups of four and a two-transfer
 // scalar residual. The grouped and scalar loops use distinct transfer values.
