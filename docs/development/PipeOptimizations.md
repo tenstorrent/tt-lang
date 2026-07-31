@@ -201,6 +201,21 @@ This contract supports the common scalar-tile case, where source and receiver
 spans are both `R`, and transfers between different source and receiver DFB
 block geometries.
 
+#### Backend scope
+
+Loop grouping, bounded-capacity scheduling, packetization, storage ownership,
+and credit-completion decisions are transport-independent. A fabric lowering
+can consume the same `PipeTransportPlan` when its emitter provides equivalent
+payload, completion, capacity-release, and completion-barrier operations.
+
+The current implementation emits same-device NoC operations. Stateful
+one-packet command reuse and NoC command-state preservation apply only to this
+emitter. Fabric lowering must select fabric payload primitives and define the
+completion semantics for fused payload and semaphore operations. Endpoint
+alias checks must compare complete device-and-node identities rather than local
+2-D node coordinates. These backend requirements do not change the grouping or
+bounded-capacity protocol.
+
 #### Eligibility and selection
 
 The pass groups a loop only after proving all of the following:
@@ -336,10 +351,17 @@ contain the stateful grouped writes and batched credit completion, with no DFB
 reserve, push, wait, pop, or pointer operations for transport-owned source or
 destination storage.
 
-After a clean Docker rebuild, `check-ttlang-all` passes 204 MLIR tests, 3
-binding tests, 162 packaging tests, 1,897 Python tests, 868 ME2E tests, and 81
-Python lit tests. The suites also report 3 skipped Python tests, 8 expected
-Python failures, 35 expected ME2E failures, and 1 unsupported Python lit test.
+At commit `a900dabb`, a clean Docker rebuild and `check-ttlang-all` passed 204
+MLIR tests, 3 binding tests, 162 packaging tests, 1,897 Python tests, 868 ME2E
+tests, and 81 Python lit tests. The suites also reported 3 skipped Python
+tests, 8 expected Python failures, 35 expected ME2E failures, and 1 unsupported
+Python lit test.
+
+Later review changes preserve `ttl.cb_wait` synchronization through generic DCE
+and avoid overflow in DFB budget diagnostics. They pass a host build, 208 MLIR
+tests, 66 non-device Python tests, and pre-commit. A clean Docker rebuild,
+`check-ttlang-all`, hardware correctness, and performance validation remain
+required before pushing the updated branch.
 
 #### Metal 2.0 DFB integration
 
