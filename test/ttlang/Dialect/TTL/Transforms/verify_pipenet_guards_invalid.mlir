@@ -20,6 +20,50 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 
 // -----
 
+// A private helper cannot use one pipe argument for different logical-device
+// transfers from separate call sites.
+
+#device_transfer_0 = #ttl.device_transfer<
+    domain = <components = <name = "device", extent = [2]>>,
+    edge = <source = <coordinates = [0]>, destination = <coordinates = [1]>>>
+#device_transfer_1 = #ttl.device_transfer<
+    domain = <components = <name = "device", extent = [2]>>,
+    edge = <source = <coordinates = [1]>, destination = <coordinates = [0]>>>
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func private @send_helper(
+      %source: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>,
+      %pipe: !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>) {
+    // expected-error @below {{requires every possible pipe definition to be ttl.create_pipe with the same device transfer}}
+    %send = ttl.copy %source, %pipe
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>,
+           !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+        -> !ttl.transfer_handle<write>
+    func.return
+  }
+
+  func.func @conflicting_helper_device_transfers()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %source = ttl.bind_cb {cb_index = 0, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %pipe_0 = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0 {
+        deviceTransfer = #device_transfer_0}
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %pipe_1 = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0 {
+        deviceTransfer = #device_transfer_1}
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    func.call @send_helper(%source, %pipe_0)
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>,
+           !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>) -> ()
+    func.call @send_helper(%source, %pipe_1)
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>,
+           !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>) -> ()
+    func.return
+  }
+}
+
+// -----
+
 // A DFB-to-pipe copy must execute only on the pipe source node.
 
 module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {

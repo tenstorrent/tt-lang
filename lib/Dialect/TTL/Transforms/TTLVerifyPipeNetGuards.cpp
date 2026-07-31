@@ -23,6 +23,7 @@
 #include "ttlang/Dialect/TTL/Transforms/DFBLogicalIdentityAnalysis.h"
 #include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
 #include "ttlang/Dialect/TTL/Transforms/PipeTransferAnalysis.h"
+#include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
@@ -67,15 +68,6 @@ struct WaitUse {
 
 /// Pipe synchronization event used by the wait-for graph verifier.
 enum class PipeEventKind { Send, ReceivePost, ReceiveWait };
-
-/// Return the logical-device transfer associated with a concrete pipe value.
-DeviceTransferAttr getPipeDeviceTransfer(Value pipe) {
-  pipe = traceUnrealizedCasts(pipe);
-  if (auto createPipe = pipe.getDefiningOp<CreatePipeOp>()) {
-    return createPipe.getDeviceTransferAttr();
-  }
-  return {};
-}
 
 /// Return the diagnostic name for a pipe synchronization event.
 StringRef getPipeEventName(PipeEventKind kind) {
@@ -125,16 +117,21 @@ void checkKnownSubset(Operation *op, const LaunchNodeDomain &current,
 /// Mutable facts recorded during one verifier pass.
 struct ModuleState {
   ModuleState(const PipeTransferIndex &transfers,
+              ValueOriginAnalysis &valueOrigins,
               const LaunchNodeDomainState &launchDomains)
-      : transfers(transfers), launchDomains(launchDomains) {}
+      : transfers(transfers), valueOrigins(valueOrigins),
+        launchDomains(launchDomains) {}
 
   ModuleState(const PipeTransferIndex &transfers,
+              ValueOriginAnalysis &valueOrigins,
               const LaunchNodeDomainState &launchDomains,
               const DFBLogicalIdentityAnalysis &dfbIdentities)
-      : transfers(transfers), launchDomains(launchDomains),
+      : transfers(transfers), valueOrigins(valueOrigins),
+        launchDomains(launchDomains),
         dfbIdentities(&dfbIdentities) {}
 
   const PipeTransferIndex &transfers;
+  ValueOriginAnalysis &valueOrigins;
   const LaunchNodeDomainState &launchDomains;
   const DFBLogicalIdentityAnalysis *dfbIdentities = nullptr;
   bool sawError = false;
@@ -142,6 +139,20 @@ struct ModuleState {
   SmallVector<WaitUse> waitUses;
   SmallVector<PipeEvent> pipeEvents;
   llvm::DenseMap<Operation *, std::size_t> pipeEventIndices;
+
+  LogicalResult setPipeEventDeviceTransfer(PipeEvent &event, Value pipe) {
+    FailureOr<std::optional<DeviceTransferAttr>> maybeDeviceTransfer =
+        findPipeDeviceTransfer(valueOrigins, pipe);
+    if (failed(maybeDeviceTransfer)) {
+      event.op->emitOpError()
+          << "requires every possible pipe definition to be ttl.create_pipe "
+             "with the same device transfer";
+      sawError = true;
+      return failure();
+    }
+    event.deviceTransfer = maybeDeviceTransfer->value_or(DeviceTransferAttr());
+    return success();
+  }
 
   /// Record pipe sends and receive posts from `ttl.copy` operations.
   void recordPipeEvent(CopyOp copyOp, const LaunchNodeDomain &domain,
@@ -151,14 +162,18 @@ struct ModuleState {
     if (isPipeSendCopy(copyOp)) {
       auto pipeType = mlir::cast<PipeType>(copyOp.getDst().getType());
       event.pipeType = pipeType;
-      event.deviceTransfer = getPipeDeviceTransfer(copyOp.getDst());
+      if (failed(setPipeEventDeviceTransfer(event, copyOp.getDst()))) {
+        return;
+      }
       event.kind = PipeEventKind::Send;
       event.domain =
           domain.intersectWith(getPipeSourceLaunchNodeDomain(pipeType));
     } else if (isPipeReceiveCopy(copyOp)) {
       auto pipeType = mlir::cast<PipeType>(copyOp.getSrc().getType());
       event.pipeType = pipeType;
-      event.deviceTransfer = getPipeDeviceTransfer(copyOp.getSrc());
+      if (failed(setPipeEventDeviceTransfer(event, copyOp.getSrc()))) {
+        return;
+      }
       event.kind = PipeEventKind::ReceivePost;
       event.domain = domain.intersectWith(getPipeDestinationLaunchNodeDomain(
           pipeType, launchDomains.baseDomain));
@@ -189,7 +204,9 @@ struct ModuleState {
     PipeEvent event;
     event.op = waitOp.getOperation();
     event.pipeType = pipeType;
-    event.deviceTransfer = getPipeDeviceTransfer(copyOp.getSrc());
+    if (failed(setPipeEventDeviceTransfer(event, copyOp.getSrc()))) {
+      return;
+    }
     event.kind = PipeEventKind::ReceiveWait;
     event.domain = domain.intersectWith(
         getPipeDestinationLaunchNodeDomain(pipeType, launchDomains.baseDomain));
@@ -1922,7 +1939,8 @@ struct TTLVerifyPipeNetGuardsPass
       signalPassFailure();
       return;
     }
-    ModuleState state(**maybeTransfers, launchDomains, dfbIdentities);
+    ModuleState state(**maybeTransfers, valueOrigins, launchDomains,
+                      dfbIdentities);
 
     module.walk([&](Operation *op) {
       if (const PipeNetOperationDomainInfo *info =
@@ -1975,7 +1993,7 @@ struct TTLVerifyPipeNetSchedulePass
       signalPassFailure();
       return;
     }
-    ModuleState state(**maybeTransfers, launchDomains);
+    ModuleState state(**maybeTransfers, valueOrigins, launchDomains);
 
     module.walk([&](Operation *op) {
       if (const PipeNetOperationDomainInfo *info =

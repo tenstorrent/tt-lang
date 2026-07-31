@@ -1118,6 +1118,14 @@ const PipeReceiverEndpoint *PipeGraph::getProvenReceiverAddressEndpoint(
   return representative;
 }
 
+static LogicalResult emitDeviceTransferMismatch(PipeTransferSendOp sendOp,
+                                                PipeTransferPostOp postOp) {
+  auto diagnostic = postOp.emitError(
+      "pipe send and receiver post use different device transfers");
+  diagnostic.attachNote(sendOp.getLoc()) << "corresponding pipe send is here";
+  return failure();
+}
+
 LogicalResult
 PipeGraph::rebuildEndpointGraph(ModuleOp mod, ValueOriginAnalysis &analysis,
                                 const PipeTransferIndex &transferIndex,
@@ -1240,14 +1248,23 @@ PipeGraph::rebuildEndpointGraph(ModuleOp mod, ValueOriginAnalysis &analysis,
                    !otherEntry.second.sends.empty();
           });
       if (sendIt != candidatesByPipe.end()) {
-        auto diagnostic = postOp.emitError(
-            "pipe send and receiver post use different device transfers");
-        diagnostic.attachNote(sendIt->second.sends.front().getLoc())
-            << "corresponding pipe send is here";
+        return emitDeviceTransferMismatch(sendIt->second.sends.front(), postOp);
       } else {
         postOp.emitError("pipe receiver post has no corresponding send");
       }
       return failure();
+    }
+    if (candidates.postsByReceiver.empty()) {
+      auto postIt =
+          llvm::find_if(candidatesByPipe, [&](const auto &otherEntry) {
+            return otherEntry.first.first == pipeKey &&
+                   !otherEntry.second.postsByReceiver.empty();
+          });
+      if (postIt != candidatesByPipe.end()) {
+        PipeTransferPostOp postOp =
+            postIt->second.postsByReceiver.begin()->second.front();
+        return emitDeviceTransferMismatch(candidates.sends.front(), postOp);
+      }
     }
 
     SmallVector<SmallVector<std::pair<PipeReceiverCoord, PipeTransferPostOp>>>

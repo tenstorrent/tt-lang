@@ -9,6 +9,7 @@
 #include "ttlang/Analysis/ValueOriginAnalysis.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
+#include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -47,24 +48,6 @@ getPipeTransferContractForPipeValue(ValueOriginAnalysis &analysis, Value pipe) {
         }
         return failure();
       });
-}
-
-/// Prove that every possible pipe definition has the same logical-device
-/// transfer. Unlike the transfer contract, this property is not in `PipeType`.
-static FailureOr<std::optional<DeviceTransferAttr>>
-getDeviceTransferForPipeValue(ValueOriginAnalysis &analysis, Value pipe) {
-  return analysis.getOrigins(pipe)
-      .uniqueMapped<std::optional<DeviceTransferAttr>>(
-          [](Value origin) -> FailureOr<std::optional<DeviceTransferAttr>> {
-            if (auto createPipe = origin.getDefiningOp<CreatePipeOp>()) {
-              DeviceTransferAttr deviceTransfer =
-                  createPipe.getDeviceTransferAttr();
-              return deviceTransfer
-                         ? std::optional<DeviceTransferAttr>(deviceTransfer)
-                         : std::optional<DeviceTransferAttr>();
-            }
-            return failure();
-          });
 }
 
 /// Create one scalar transfer reference for `pipe`.
@@ -148,7 +131,7 @@ buildPipeTransferExpansionPlan(ModuleOp module, ValueOriginAnalysis &analysis) {
       return;
     }
     FailureOr<std::optional<DeviceTransferAttr>> maybeDeviceTransfer =
-        getDeviceTransferForPipeValue(analysis, pipe);
+        findPipeDeviceTransfer(analysis, pipe);
     if (failed(maybeDeviceTransfer)) {
       copyOp.emitError() << "requires every possible pipe definition to be "
                             "ttl.create_pipe with the same device transfer";

@@ -26,7 +26,12 @@
 
 namespace mlir::tt::ttl {
 
-/// Returns the transfer creation op shared by every possible origin.
+/// Return the logical-device transfer shared by every possible pipe origin.
+/// Return `std::nullopt` when every origin defines a local pipe.
+FailureOr<std::optional<DeviceTransferAttr>>
+findPipeDeviceTransfer(ValueOriginAnalysis &analysis, Value pipe);
+
+/// Return the transfer creation op shared by every possible origin.
 FailureOr<PipeTransferCreateOp>
 findPipeTransferCreateForTransfer(ValueOriginAnalysis &analysis,
                                   Value transfer);

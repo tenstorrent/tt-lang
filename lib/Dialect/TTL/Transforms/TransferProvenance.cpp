@@ -10,12 +10,131 @@
 #include "mlir/Analysis/DataFlow/DeadCodeAnalysis.h"
 #include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Analysis/DataFlowFramework.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/SymbolTable.h"
+#include "llvm/ADT/ScopeExit.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 namespace mlir::tt::ttl {
 
 #define GEN_PASS_DEF_TTLVERIFYTRANSFERPROVENANCE
 #include "ttlang/Dialect/TTL/Passes.h.inc"
+
+namespace {
+
+/// Require possible pipe definitions to use the same optional device transfer.
+class DeviceTransferUnifier {
+public:
+  /// Record one possible definition, failing if it differs from an earlier one.
+  LogicalResult add(std::optional<DeviceTransferAttr> candidate) {
+    if (!initialized) {
+      deviceTransfer = candidate;
+      initialized = true;
+      return success();
+    }
+    return success(deviceTransfer == candidate);
+  }
+
+  /// Return the common transfer, or failure when no definition was recorded.
+  FailureOr<std::optional<DeviceTransferAttr>> getResult() const {
+    if (!initialized) {
+      return failure();
+    }
+    return deviceTransfer;
+  }
+
+private:
+  bool initialized = false;
+  std::optional<DeviceTransferAttr> deviceTransfer;
+};
+
+/// Resolve pipe definitions through values and private function arguments.
+class PipeDeviceTransferResolver {
+public:
+  explicit PipeDeviceTransferResolver(ValueOriginAnalysis &analysis)
+      : analysis(analysis) {}
+
+  /// Return the transfer shared by every possible definition of `pipe`.
+  FailureOr<std::optional<DeviceTransferAttr>> resolve(Value pipe) {
+    if (!activeValues.insert(pipe).second) {
+      return failure();
+    }
+    auto removeActiveValue =
+        llvm::scope_exit([&]() { activeValues.erase(pipe); });
+
+    if (auto createPipe = pipe.getDefiningOp<CreatePipeOp>()) {
+      DeviceTransferAttr deviceTransfer = createPipe.getDeviceTransferAttr();
+      return deviceTransfer ? std::optional(deviceTransfer) : std::nullopt;
+    }
+    if (auto blockArgument = dyn_cast<BlockArgument>(pipe);
+        blockArgument &&
+        isa<func::FuncOp>(blockArgument.getOwner()->getParentOp())) {
+      return resolveFunctionArgument(blockArgument);
+    }
+
+    DeviceTransferUnifier unifier;
+    for (Value origin : analysis.getOrigins(pipe)) {
+      FailureOr<std::optional<DeviceTransferAttr>> maybeOriginTransfer =
+          resolve(origin);
+      if (failed(maybeOriginTransfer) ||
+          failed(unifier.add(*maybeOriginTransfer))) {
+        return failure();
+      }
+    }
+    return unifier.getResult();
+  }
+
+private:
+  /// Resolve a private helper argument from every direct call operand.
+  FailureOr<std::optional<DeviceTransferAttr>>
+  resolveFunctionArgument(BlockArgument argument) {
+    auto function =
+        dyn_cast_or_null<func::FuncOp>(argument.getOwner()->getParentOp());
+    if (!function) {
+      return failure();
+    }
+    // Only private functions have a complete set of call operands in this
+    // module; public functions may have callers outside the analyzed IR.
+    if (!function.isPrivate()) {
+      return failure();
+    }
+    ModuleOp module = function->getParentOfType<ModuleOp>();
+    if (!module) {
+      return failure();
+    }
+    std::optional<SymbolTable::UseRange> symbolUses =
+        SymbolTable::getSymbolUses(function, module);
+    if (!symbolUses || symbolUses->empty()) {
+      return failure();
+    }
+
+    DeviceTransferUnifier unifier;
+    for (SymbolTable::SymbolUse symbolUse : *symbolUses) {
+      auto call = dyn_cast<func::CallOp>(symbolUse.getUser());
+      if (!call || argument.getArgNumber() >= call.getNumOperands()) {
+        return failure();
+      }
+      FailureOr<std::optional<DeviceTransferAttr>> maybeCallTransfer =
+          resolve(call.getOperand(argument.getArgNumber()));
+      if (failed(maybeCallTransfer) ||
+          failed(unifier.add(*maybeCallTransfer))) {
+        return failure();
+      }
+    }
+    return unifier.getResult();
+  }
+
+  ValueOriginAnalysis &analysis;
+  llvm::SmallPtrSet<Value, 8> activeValues;
+};
+
+} // namespace
+
+FailureOr<std::optional<DeviceTransferAttr>>
+findPipeDeviceTransfer(ValueOriginAnalysis &analysis, Value pipe) {
+  return PipeDeviceTransferResolver(analysis).resolve(pipe);
+}
 
 FailureOr<PipeTransferCreateOp>
 findPipeTransferCreateForTransfer(ValueOriginAnalysis &analysis,

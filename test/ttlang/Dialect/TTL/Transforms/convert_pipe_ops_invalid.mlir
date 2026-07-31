@@ -136,6 +136,11 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
         kind = #ttl.pipe_transfer_kind<point_to_point>}
         : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
         -> !ttl.pipe_transfer
+    // expected-note @below {{corresponding pipe send is here}}
+    %send = ttl.pipe_transfer.send %send_transfer, %src
+        : (!ttl.pipe_transfer,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>)
+        -> !ttl.transfer_handle<write>
     %reserved = ttl.cb_reserve %dst
         : <[1, 1], !ttcore.tile<32x32, f32>, 1>
         -> tensor<1x1x!ttcore.tile<32x32, f32>>
@@ -143,11 +148,6 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
     %post = ttl.pipe_transfer.post %post_transfer, %reserved
         : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
         -> !ttl.pipe_token<net 0>
-    // expected-note @below {{corresponding pipe send is here}}
-    %send = ttl.pipe_transfer.send %send_transfer, %src
-        : (!ttl.pipe_transfer,
-           !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>)
-        -> !ttl.transfer_handle<write>
     func.return
   }
 }

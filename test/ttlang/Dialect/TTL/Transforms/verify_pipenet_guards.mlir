@@ -10,19 +10,50 @@
 // Device-aware execution counts prove their one-to-one correspondence.
 
 module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func private @fabric_send_helper
+  // CHECK-SAME: %[[HELPER_DFB:.*]]: !ttl.cb
+  // CHECK-SAME: %[[HELPER_PIPE:.*]]: !ttl.pipe
+  // CHECK: %[[ZERO:.*]] = arith.constant 0 : index
+  // CHECK-NEXT: %[[ONE:.*]] = arith.constant 1 : index
+  // CHECK-NEXT: %{{.*}} = scf.for %{{.*}} = %[[ZERO]] to %[[ONE]] step %[[ONE]]
+  // CHECK-SAME: iter_args(%[[ITER_PIPE:.*]] = %[[HELPER_PIPE]])
+  // CHECK-NEXT: %[[HELPER_SEND:.*]] = ttl.copy %[[HELPER_DFB]], %[[ITER_PIPE]]
+  // CHECK-NEXT: ttl.wait %[[HELPER_SEND]]
+  // CHECK-NEXT: scf.yield %[[ITER_PIPE]]
+  // CHECK-NEXT: }
+  // CHECK-NEXT: return
+  func.func private @fabric_send_helper(
+      %source: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>,
+      %pipe: !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    scf.for %index = %c0 to %c1 step %c1
+        iter_args(%iter_pipe = %pipe)
+        -> (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>) {
+      %send = ttl.copy %source, %iter_pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>,
+             !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+      scf.yield %iter_pipe
+          : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    }
+    func.return
+  }
+
   // CHECK-LABEL: func.func @fabric_source_device
   // CHECK: %[[SOURCE_PIPE:.*]] = ttl.create_pipe
   // CHECK-SAME: deviceTransfer = #ttl.device_transfer<
   // CHECK: %[[SOURCE_DFB:.*]] = ttl.bind_cb
   // CHECK: %[[IS_SOURCE:.*]] = ttl.is_device
   // CHECK-SAME: <coordinates = [0]>
+  // CHECK: %[[FORWARDED_PIPE:.*]] = scf.if {{.*}} -> (!ttl.pipe
+  // CHECK: scf.yield %[[SOURCE_PIPE]]
+  // CHECK: scf.yield %[[SOURCE_PIPE]]
   // CHECK-NOT: ttl.copy
   // CHECK-NOT: ttl.wait
   // CHECK: scf.if %[[IS_SOURCE]]
-  // CHECK-NEXT: ttl.if_src %[[SOURCE_PIPE]]
-  // CHECK-NEXT: %[[SEND:.*]] = ttl.copy %[[SOURCE_DFB]], %[[SOURCE_PIPE]]
-  // CHECK-NEXT: ttl.wait %[[SEND]]
-  // CHECK-NEXT: }
+  // CHECK-NEXT: func.call @fabric_send_helper(%[[SOURCE_DFB]], %[[FORWARDED_PIPE]])
   // CHECK-NEXT: }
   // CHECK-NOT: ttl.copy
   // CHECK-NOT: ttl.wait
@@ -39,15 +70,19 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
     %is_source = ttl.is_device
         <coordinates = [0]> in
         <components = <name = "device", extent = [2]>> : i1
+    %true = arith.constant true
+    %forwarded_pipe = scf.if %true
+        -> (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>) {
+      scf.yield %pipe
+          : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    } else {
+      scf.yield %pipe
+          : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    }
     scf.if %is_source {
-      ttl.if_src %pipe
-          : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0> {
-        %send = ttl.copy %send_cb, %pipe
-            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>,
-               !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
-            -> !ttl.transfer_handle<write>
-        ttl.wait %send : !ttl.transfer_handle<write>
-      }
+      func.call @fabric_send_helper(%send_cb, %forwarded_pipe)
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>,
+             !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>) -> ()
     }
     func.return
   }
