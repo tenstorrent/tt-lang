@@ -211,9 +211,10 @@ static bool mayTransitivelyInterfereWithWriteCommand(
 
   auto cachedEffect = callableEffects.find(callableOperation);
   if (cachedEffect != callableEffects.end()) {
-    // Revisiting an active callable is recursion. Operations after the
-    // recursive call are still scanned by the first visit.
-    return cachedEffect->second == CallableWriteCommandInterference::Interferes;
+    // The remaining operations in an active recursive component have not been
+    // analyzed, so the component cannot yet be proven to preserve command
+    // state.
+    return cachedEffect->second != CallableWriteCommandInterference::Preserves;
   }
 
   callableEffects[callableOperation] =
