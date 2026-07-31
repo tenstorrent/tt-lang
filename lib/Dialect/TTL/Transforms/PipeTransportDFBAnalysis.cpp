@@ -50,7 +50,11 @@ static bool isContiguousLoopSlice(TensorSliceOp slice, scf::ForOp loop,
   if (sliceType.getShape() != ArrayRef<int64_t>(expectedShape)) {
     return false;
   }
-  if (llvm::any_of(dfbType.getShape().drop_back(),
+  // Grouping increases the loop step without rewriting the slice indices.
+  // A direct induction-variable index therefore names consecutive blocks only
+  // when the varying dimension contains one tile per block.
+  if (dfbType.getShape().back() != 1 ||
+      llvm::any_of(dfbType.getShape().drop_back(),
                    [](int64_t dimension) { return dimension != 1; })) {
     return false;
   }
