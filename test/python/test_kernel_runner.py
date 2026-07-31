@@ -73,6 +73,9 @@ class _FakeTTNN:
             self.x = x
             self.y = y
 
+    class ReaderConfigDescriptor:
+        pass
+
     class TensorAccessorArgs:
         def __init__(self, tensor):
             self.tensor = tensor
@@ -820,14 +823,16 @@ def test_emit_runner_source_preserves_subtile_geometry(monkeypatch):
     assert "((1, 1), 2, ttnn.bfloat16, (16, 16), 512, 1024)" in source
 
 
-def test_emit_runner_source_uses_shared_pipe_resource_helpers():
+def test_emit_runner_source_uses_shared_pipe_resource_helpers(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     source = kernel_runner.emit_runner_source(
         kernel_specs=[
             kernel_runner.KernelSpec(
                 path="/tmp/reader.cpp",
                 thread_type="noc",
                 tensor_indices=[],
-                config=object(),
+                config=fake_ttnn.ReaderConfigDescriptor(),
                 extra_common_runtime_args=[7, 9],
             )
         ],
