@@ -3595,6 +3595,7 @@ def TTKernel_NocAsyncReadOnePacketWithStateOp
     : TTKernel_NocReadCommandOp<
           "noc_async_read_one_packet_with_state",
           [TTKernel_NocCommandStatePreservingOpTrait,
+           TTKernel_NocCommandStateDependentOpTrait,
            AttrSizedOperandSegments]> {
     let summary = "NocAsyncReadOnePacketWithState";
     let description = [{
@@ -3757,7 +3758,8 @@ def TTKernel_NocAsyncWriteOnePacketSetStateOp
 def TTKernel_NocAsyncWriteOnePacketWithStateOp
     : TTKernel_NocWriteCommandOp<
           "noc_async_write_one_packet_with_state",
-          [TTKernel_NocCommandStatePreservingOpTrait]> {
+          [TTKernel_NocCommandStatePreservingOpTrait,
+           TTKernel_NocCommandStateDependentOpTrait]> {
     let summary = "NocAsyncWriteOnePacketWithState";
     let description = [{
       Issues a one-packet asynchronous write using the state programmed by
