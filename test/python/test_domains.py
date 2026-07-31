@@ -12,6 +12,7 @@ from ttl.domains import (
     DeviceDomain,
     DeviceRange,
     DeviceRef,
+    StencilTransfer,
     TransferEdge,
     TransferGraph,
 )
@@ -58,6 +59,14 @@ def test_product_domain_resolves_named_device_refs():
     assert edge.destination.coordinates == ((1,), (2,))
 
 
+def test_device_ref_identity_ignores_construction_names():
+    named = DeviceRef(board=0, device=1)
+    positional = DeviceRef((0,), (1,))
+
+    assert named == positional
+    assert hash(named) == hash(positional)
+
+
 def test_product_domain_rejects_missing_component():
     domain = DeviceDomain.product(board=(2,), device=(4,))
 
@@ -71,6 +80,23 @@ def test_transfer_graph_does_not_apply_target_routability_rules():
     graph = TransferGraph.edges(domain, edges=[((0, 0), (1, 0))])
 
     assert graph.transfer_edges[0].destination.coordinates == ((1, 0),)
+
+
+def test_direct_transfer_graph_construction_validates_edges():
+    domain = DeviceDomain((4,))
+
+    with pytest.raises(ValueError, match="0 <= coord < 4"):
+        TransferGraph(
+            domain,
+            edges=[TransferEdge(DeviceRef((0,)), DeviceRef((4,)))],
+        )
+
+
+def test_transfer_graph_rejects_exact_self_transfer():
+    domain = DeviceDomain((4,))
+
+    with pytest.raises(ValueError, match="source must differ from destination"):
+        TransferGraph.edges(domain, edges=[(1, 1)])
 
 
 def test_structured_axis_neighbor_remains_compact():
@@ -97,12 +123,91 @@ def test_axis_neighbor_edges_are_materialized_from_compact_relation():
     ]
 
 
+def test_stencil_edges_include_multiple_axes_and_directions():
+    domain = DeviceDomain((2, 2))
+
+    graph = TransferGraph.stencil(
+        domain,
+        offsets=[(-1, 0), (1, 0), (0, -1), (0, 1)],
+    )
+
+    assert isinstance(graph.structured, StencilTransfer)
+    assert set(graph.iter_edges()) == {
+        TransferEdge(DeviceRef((0, 0)), DeviceRef((1, 0))),
+        TransferEdge(DeviceRef((0, 0)), DeviceRef((0, 1))),
+        TransferEdge(DeviceRef((0, 1)), DeviceRef((1, 1))),
+        TransferEdge(DeviceRef((0, 1)), DeviceRef((0, 0))),
+        TransferEdge(DeviceRef((1, 0)), DeviceRef((0, 0))),
+        TransferEdge(DeviceRef((1, 0)), DeviceRef((1, 1))),
+        TransferEdge(DeviceRef((1, 1)), DeviceRef((0, 1))),
+        TransferEdge(DeviceRef((1, 1)), DeviceRef((1, 0))),
+    }
+
+
+def test_stencil_wrap_deduplicates_equivalent_edges():
+    domain = DeviceDomain((2,))
+
+    graph = TransferGraph.stencil(
+        domain,
+        offsets=[(-1,), (1,)],
+        wrap=True,
+    )
+
+    assert list(graph.iter_edges()) == [
+        TransferEdge(DeviceRef((0,)), DeviceRef((1,))),
+        TransferEdge(DeviceRef((1,)), DeviceRef((0,))),
+    ]
+
+
+def test_stencil_preserves_unselected_product_components():
+    domain = DeviceDomain.product(board=(2,), device=(2, 2))
+
+    graph = TransferGraph.stencil(
+        domain,
+        component="device",
+        offsets=[(0, 1)],
+    )
+
+    assert list(graph.iter_edges()) == [
+        TransferEdge(
+            DeviceRef((0,), (0, 0)),
+            DeviceRef((0,), (0, 1)),
+        ),
+        TransferEdge(
+            DeviceRef((0,), (1, 0)),
+            DeviceRef((0,), (1, 1)),
+        ),
+        TransferEdge(
+            DeviceRef((1,), (0, 0)),
+            DeviceRef((1,), (0, 1)),
+        ),
+        TransferEdge(
+            DeviceRef((1,), (1, 0)),
+            DeviceRef((1,), (1, 1)),
+        ),
+    ]
+
+
+@pytest.mark.parametrize(
+    "offsets,message",
+    [
+        ([], "at least one offset"),
+        ([(0, 0)], "zero offset"),
+        ([(1,)], "has rank 1, expected 2"),
+        ([(1, 0), (1, 0)], "must be unique"),
+    ],
+)
+def test_stencil_rejects_invalid_offsets(offsets, message):
+    domain = DeviceDomain((2, 2))
+
+    with pytest.raises(ValueError, match=message):
+        TransferGraph.stencil(domain, offsets=offsets)
+
+
 def test_gather_edges_preserve_other_product_components():
     domain = DeviceDomain.product(board=(2,), device=(2,))
 
-    graph = TransferGraph.gather(
-        domain, DeviceRef(board=0, device=0), component="device"
-    )
+    graph = TransferGraph.gather(domain, DeviceRef(device=0), component="device")
 
     assert list(graph.iter_edges()) == [
         TransferEdge(DeviceRef((0,), (1,)), DeviceRef((0,), (0,))),
@@ -110,17 +215,56 @@ def test_gather_edges_preserve_other_product_components():
     ]
 
 
-def test_multicast_edges_preserve_other_product_components():
+def test_scatter_edges_preserve_other_product_components():
     domain = DeviceDomain.product(board=(2,), device=(2,))
 
-    graph = TransferGraph.multicast(
-        domain, DeviceRef(board=0, device=0), component="device"
-    )
+    graph = TransferGraph.scatter(domain, DeviceRef(device=0), component="device")
 
     assert list(graph.iter_edges()) == [
         TransferEdge(DeviceRef((0,), (0,)), DeviceRef((0,), (1,))),
         TransferEdge(DeviceRef((1,), (0,)), DeviceRef((1,), (1,))),
     ]
+
+
+def test_component_transfer_rejects_full_product_endpoint():
+    domain = DeviceDomain.product(board=(2,), device=(2,))
+
+    with pytest.raises(ValueError, match="must name only component 'device'"):
+        TransferGraph.scatter(
+            domain,
+            DeviceRef(board=0, device=0),
+            component="device",
+        )
+
+
+@pytest.mark.parametrize(
+    "create_graph",
+    [
+        lambda: TransferGraph.axis_neighbor(DeviceDomain((1, 3)), axis=1, offset=3),
+        lambda: TransferGraph.axis_neighbor(
+            DeviceDomain((1, 3)), axis=1, offset=3, wrap=True
+        ),
+        lambda: TransferGraph.stencil(DeviceDomain((1, 3)), offsets=[(0, 3)]),
+        lambda: TransferGraph.stencil(
+            DeviceDomain((1, 3)), offsets=[(0, 3)], wrap=True
+        ),
+        lambda: TransferGraph.gather(DeviceDomain((1,)), 0),
+        lambda: TransferGraph.scatter(DeviceDomain((1,)), 0),
+        lambda: TransferGraph.all_to_all(DeviceDomain((1,))),
+    ],
+    ids=[
+        "axis-neighbor-out-of-bounds",
+        "axis-neighbor-wrap-self-transfer",
+        "stencil-out-of-bounds",
+        "stencil-wrap-self-transfer",
+        "gather-single-device",
+        "scatter-single-device",
+        "all-to-all-single-device",
+    ],
+)
+def test_structured_graph_rejects_empty_relation(create_graph):
+    with pytest.raises(ValueError, match="relation contains no edges"):
+        create_graph()
 
 
 def test_all_to_all_edges_preserve_other_product_components():
@@ -193,7 +337,7 @@ def test_direct_axis_neighbor_transfer_construction_is_validated():
 def test_range_rejects_source_in_destination():
     domain = DeviceDomain((1, 4))
 
-    with pytest.raises(ValueError, match="source-in-destination"):
+    with pytest.raises(ValueError, match="source must not be contained"):
         TransferGraph.edges(
             domain,
             edges=[
