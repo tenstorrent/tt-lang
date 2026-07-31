@@ -18,6 +18,7 @@
 // CHECK-NEXT: ),
 // CHECK-NEXT: ttl-verify-pipenet-guards,
 // CHECK-NEXT: ttl-verify-pipenet-schedule,
+// CHECK-NEXT: ttl-form-pipe-transports{{.*}},
 // CHECK-NEXT: func.func(
 // CHECK-NEXT:   ttl-coalesce-dfb-acquires
 // CHECK-NEXT: ),
