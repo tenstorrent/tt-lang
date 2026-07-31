@@ -135,8 +135,28 @@ def TTL_AxisNeighborTransferAttr :
   }];
   let parameters = (ins
     "StringAttr":$component,
-    "IntegerAttr":$axis,
-    "IntegerAttr":$offset,
+    "int64_t":$axis,
+    "int64_t":$offset,
+    "BoolAttr":$wrap
+  );
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
+def TTL_StencilTransferAttr :
+    TTL_Attr<"StencilTransfer", "stencil_transfer",
+             [TTL_StructuredTransferAttrInterface]> {
+  let summary = "Transfer relation defined by neighbor offsets";
+  let description = [{
+    Describes the union of directed translations in `offsets` within one
+    logical domain component. Each offset has the component rank and may
+    contain positive and negative values. `wrap` applies each translation
+    modulo the component extent; otherwise, transfers outside the component
+    are omitted.
+  }];
+  let parameters = (ins
+    "StringAttr":$component,
+    ArrayRefParameter<"DenseI64ArrayAttr">:$offsets,
     "BoolAttr":$wrap
   );
   let assemblyFormat = "`<` struct(params) `>`";
@@ -148,8 +168,9 @@ def TTL_GatherTransferAttr :
              [TTL_StructuredTransferAttrInterface]> {
   let summary = "Transfer relation from every device to one root";
   let description = [{
-    Describes transfers from every non-root device in one domain component to
-    `root` without materializing the edge set.
+    Describes transfers within each product-domain slice from every non-root
+    device in `component` to `root`. The root contains only the selected
+    component's coordinate.
   }];
   let parameters = (ins
     "StringAttr":$component,
@@ -159,13 +180,14 @@ def TTL_GatherTransferAttr :
   let genVerifyDecl = 1;
 }
 
-def TTL_MulticastTransferAttr :
-    TTL_Attr<"MulticastTransfer", "multicast_transfer",
+def TTL_ScatterTransferAttr :
+    TTL_Attr<"ScatterTransfer", "scatter_transfer",
              [TTL_StructuredTransferAttrInterface]> {
   let summary = "Transfer relation from one source to every other device";
   let description = [{
-    Describes transfers from `source` to every other device in one domain
-    component without materializing the edge set.
+    Describes transfers within each product-domain slice from `source` to every
+    other device in `component`. The source contains only the selected
+    component's coordinate.
   }];
   let parameters = (ins
     "StringAttr":$component,
@@ -180,7 +202,7 @@ def TTL_TransferGraphAttr : TTL_Attr<"TransferGraph", "transfer_graph"> {
   let description = [{
     Describes device-level communication independently from node endpoints and
     dataflow buffer operands. The relation is either an explicit non-empty edge
-    list or one structured transfer descriptor.
+    list or one structured transfer descriptor that denotes at least one edge.
   }];
   let parameters = (ins
     "DeviceDomainAttr":$domain,
