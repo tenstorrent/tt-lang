@@ -576,35 +576,21 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
   const bool dstIsCb = mlir::isa<CircularBufferType>(dstTy);
   const bool srcIsSlice = getSrc().getDefiningOp<TensorSliceOp>() != nullptr;
   const bool dstIsSlice = getDst().getDefiningOp<TensorSliceOp>() != nullptr;
-  const bool srcIsStaticPipe = mlir::isa<PipeType>(srcTy);
-  const bool dstIsStaticPipe = mlir::isa<PipeType>(dstTy);
-  const bool srcIsSelectedPipeSrc = mlir::isa<SelectedPipeSrcType>(srcTy);
-  const bool srcIsSelectedPipeDst = mlir::isa<SelectedPipeDstType>(srcTy);
-  const bool dstIsSelectedPipeSrc = mlir::isa<SelectedPipeSrcType>(dstTy);
-  const bool dstIsSelectedPipeDst = mlir::isa<SelectedPipeDstType>(dstTy);
   const bool srcIsPipe =
-      srcIsStaticPipe || srcIsSelectedPipeSrc || srcIsSelectedPipeDst;
+      mlir::isa<PipeType, SelectedPipeSrcType, SelectedPipeDstType>(srcTy);
   const bool dstIsPipe =
-      dstIsStaticPipe || dstIsSelectedPipeSrc || dstIsSelectedPipeDst;
+      mlir::isa<PipeType, SelectedPipeSrcType, SelectedPipeDstType>(dstTy);
 
   if (srcIsPipe || dstIsPipe) {
     if (srcIsPipe && dstIsPipe) {
       return emitOpError() << "cannot copy directly between pipes";
     }
     if (dstIsPipe) {
-      if (dstIsSelectedPipeDst) {
-        return emitOpError()
-               << "destination-selected pipe cannot be used as a send target";
-      }
       if (!srcIsCb) {
         return emitOpError()
                << "pipe send requires source operand to be !ttl.cb";
       }
       return success();
-    }
-    if (srcIsSelectedPipeSrc) {
-      return emitOpError()
-             << "source-selected pipe cannot be used as a receive source";
     }
     if (!findCBReserveForPipeReceive(getDst())) {
       return emitOpError() << "pipe receive requires a cb_reserve destination";
@@ -708,10 +694,9 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
   return success();
 }
 
-static mlir::LogicalResult verifyPipeNetForeachBody(
-    mlir::Operation *op, mlir::Region &body, mlir::Type expectedArgType,
-    llvm::function_ref<bool(mlir::OpOperand &, mlir::BlockArgument)>
-        isValidUse) {
+static mlir::LogicalResult
+verifyPipeNetForeachBody(mlir::Operation *op, mlir::Region &body,
+                         mlir::Type expectedArgType) {
   if (!body.hasOneBlock()) {
     return op->emitOpError() << "requires a single-block body";
   }
@@ -727,7 +712,8 @@ static mlir::LogicalResult verifyPipeNetForeachBody(
            << pipeArg.getType();
   }
   for (mlir::OpOperand &use : pipeArg.getUses()) {
-    if (isValidUse(use, pipeArg)) {
+    auto copy = mlir::dyn_cast<mlir::tt::ttl::CopyOp>(use.getOwner());
+    if (copy && (copy.getSrc() == pipeArg || copy.getDst() == pipeArg)) {
       continue;
     }
     return op->emitOpError() << "selected pipe argument has unsupported use by "
@@ -737,27 +723,13 @@ static mlir::LogicalResult verifyPipeNetForeachBody(
 }
 
 mlir::LogicalResult mlir::tt::ttl::PipeNetForeachSrcOp::verify() {
-  return verifyPipeNetForeachBody(
-      getOperation(), getBody(), SelectedPipeSrcType::get(getContext()),
-      [](mlir::OpOperand &use, mlir::BlockArgument pipeArg) {
-        auto copy = mlir::dyn_cast<CopyOp>(use.getOwner());
-        if (!copy) {
-          return false;
-        }
-        return copy.getDst() == pipeArg;
-      });
+  return verifyPipeNetForeachBody(getOperation(), getBody(),
+                                  SelectedPipeSrcType::get(getContext()));
 }
 
 mlir::LogicalResult mlir::tt::ttl::PipeNetForeachDstOp::verify() {
-  return verifyPipeNetForeachBody(
-      getOperation(), getBody(), SelectedPipeDstType::get(getContext()),
-      [](mlir::OpOperand &use, mlir::BlockArgument pipeArg) {
-        auto copy = mlir::dyn_cast<CopyOp>(use.getOwner());
-        if (!copy) {
-          return false;
-        }
-        return copy.getSrc() == pipeArg;
-      });
+  return verifyPipeNetForeachBody(getOperation(), getBody(),
+                                  SelectedPipeDstType::get(getContext()));
 }
 
 static mlir::Operation *getSelectedPipeDef(mlir::Value pipe) {

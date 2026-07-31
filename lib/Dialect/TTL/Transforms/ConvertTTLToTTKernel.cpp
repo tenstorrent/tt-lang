@@ -999,6 +999,8 @@ lowerPipeNetForeachSrc(PipeNetForeachSrcOp op, RewriterBase &rewriter,
       arith::ConstantIndexOp::create(rewriter, loc, records.getPipes().size());
   Value step = arith::ConstantIndexOp::create(rewriter, loc, 1);
   auto forOp = scf::ForOp::create(rewriter, loc, lower, upper, step);
+  foreachLoweringInfo.recordLoops[forOp] =
+      PipeNetRecordLoop{records, PipeNetRecordSelection::Source};
 
   rewriter.setInsertionPointToStart(forOp.getBody());
   Value recordIndex = forOp.getInductionVar();
@@ -1042,6 +1044,8 @@ lowerPipeNetForeachDst(PipeNetForeachDstOp op, RewriterBase &rewriter,
       arith::ConstantIndexOp::create(rewriter, loc, records.getPipes().size());
   Value step = arith::ConstantIndexOp::create(rewriter, loc, 1);
   auto forOp = scf::ForOp::create(rewriter, loc, lower, upper, step);
+  foreachLoweringInfo.recordLoops[forOp] =
+      PipeNetRecordLoop{records, PipeNetRecordSelection::Destination};
 
   rewriter.setInsertionPointToStart(forOp.getBody());
   Value recordIndex = forOp.getInductionVar();

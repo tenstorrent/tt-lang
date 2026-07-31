@@ -226,14 +226,16 @@ inline mlir::Value getAttachedCB(mlir::Value tensor) {
 
 /// Returns true when `op` receives from a pipe into DFB-backed storage.
 inline bool isPipeReceiveCopy(CopyOp op) {
-  return mlir::isa<PipeType>(op.getSrc().getType()) &&
+  return mlir::isa<PipeType, SelectedPipeSrcType, SelectedPipeDstType>(
+             op.getSrc().getType()) &&
          getAttachedCB(op.getDst());
 }
 
 /// Returns true when `op` sends from a DFB into a pipe.
 inline bool isPipeSendCopy(CopyOp op) {
   return mlir::isa<CircularBufferType>(op.getSrc().getType()) &&
-         mlir::isa<PipeType>(op.getDst().getType());
+         mlir::isa<PipeType, SelectedPipeSrcType, SelectedPipeDstType>(
+             op.getDst().getType());
 }
 
 /// Normalize a Python-style dim (allowing negative indices) against `rank`
