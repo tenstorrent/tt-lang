@@ -16,6 +16,14 @@
 
 // -----
 
+// A destination range cannot include its source device.
+// expected-error @below {{transfer graph edge 0 destination range must not include its source}}
+#graph = #ttl.transfer_graph<
+  domain = <components = <name = "device", extent = [4]>>,
+  edges = [<source = <coordinates = [1]>, destinationRange = <lo = <coordinates = [0]>, hi = <coordinates = [3]>>>]>
+
+// -----
+
 // A graph cannot contain explicit and structured relation forms together.
 // expected-error @below {{transfer graph must be explicit or structured, not both}}
 #graph = #ttl.transfer_graph<

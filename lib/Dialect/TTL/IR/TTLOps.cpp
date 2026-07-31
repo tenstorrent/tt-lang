@@ -147,7 +147,7 @@ static mlir::LogicalResult verifyTransferEdgeInDomain(DeviceDomainAttr domain,
   }
   if (rangeContains(destinationRange, edge.getSource())) {
     return emitError() << context
-                       << " source-in-destination multicast is not supported";
+                       << " destination range must not include its source";
   }
   return mlir::success();
 }

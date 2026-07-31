@@ -275,7 +275,9 @@ def test_direct_axis_neighbor_transfer_construction_is_validated():
 def test_range_rejects_source_in_destination():
     domain = DeviceDomain((1, 4))
 
-    with pytest.raises(ValueError, match="source-in-destination"):
+    with pytest.raises(
+        ValueError, match="destination range must not include its source"
+    ):
         TransferGraph.edges(
             domain,
             edges=[
