@@ -35,7 +35,6 @@ namespace {
 /// The recurrence matcher reports the loop-carried value inside the scope; DST
 /// lowering copies the external init tensor into the accumulator.
 struct TensorAccumulationScopeMatch {
-  scf::ForOp loop;
   TensorAccumulationMatch recurrence;
   Value initialValue;
 };
@@ -158,7 +157,7 @@ matchTensorAccumulationScope(AccumulationScopeOp scope,
     }
     return failure();
   }
-  return TensorAccumulationScopeMatch{*loop, *match, scope.getInits().front()};
+  return TensorAccumulationScopeMatch{*match, scope.getInits().front()};
 }
 
 /// Remove the region wrapper after its contents no longer depend on region
@@ -376,7 +375,7 @@ static LogicalResult lowerTensorAccumulationScope(
   AccumulationCostModel costModel =
       AccumulationCostModel::forOperation(scope.getOperation());
   FailureOr<AccumulationStrategyPlan> plan = planTensorAccumulationStrategy(
-      scope, recurrence, match->loop, strategy, costModel);
+      scope, recurrence, strategy, costModel);
   AccumulationStrategy selectedStrategy = strategy;
   if (failed(plan)) {
     if (strategy == AccumulationStrategy::Dst) {
@@ -398,21 +397,15 @@ static LogicalResult lowerTensorAccumulationScope(
 
   if (selectedStrategy == AccumulationStrategy::Dst) {
     FailureOr<TensorDstAccumulationInfo> dstInfo =
-        analyzeTensorAccumulationForDst(recurrence, match->loop,
-                                        match->initialValue, &dfbIndex);
+        analyzeTensorAccumulationForDst(recurrence, match->initialValue,
+                                        &dfbIndex);
     if (failed(dstInfo)) {
       return scope.emitOpError(
           "cannot lower tensor accumulation scope to DST after strategy "
           "planning");
     }
     replaceYieldOperandsWithStateArguments(scope);
-    LogicalResult lowered = lowerTensorAccumulationToDst(recurrence, *dstInfo,
-                                                         match->loop, rewriter);
-    if (failed(lowered)) {
-      return scope.emitOpError(
-          "cannot lower tensor accumulation scope to DST after strategy "
-          "planning");
-    }
+    lowerTensorAccumulationToDst(recurrence, *dstInfo, rewriter);
     eraseAccumulationScopeWrapper(scope, rewriter,
                                   getScopeBlockArgumentReplacements(scope));
     return success();
@@ -430,7 +423,7 @@ static LogicalResult lowerTensorAccumulationScope(
         "the automatic accumulation strategy or rewrite the loop as a "
         "same-type additive recurrence");
   }
-  if (match->loop.getNumResults() != 1 || recurrence.resultIndex != 0) {
+  if (recurrence.loop.getNumResults() != 1 || recurrence.resultIndex != 0) {
     return emitL1PackError(
         "the current strategy supports exactly one loop-carried tensor "
         "accumulator; select the automatic accumulation strategy or split the "
@@ -438,8 +431,7 @@ static LogicalResult lowerTensorAccumulationScope(
   }
 
   replaceYieldOperandsWithStateArguments(scope);
-  if (failed(lowerTensorAccumulationToL1Pack(recurrence, match->loop, scopeId,
-                                             rewriter))) {
+  if (failed(lowerTensorAccumulationToL1Pack(recurrence, scopeId, rewriter))) {
     return emitL1PackError(
         "expected one same-type additive recurrence with one final store; "
         "select the automatic accumulation strategy or rewrite the loop");

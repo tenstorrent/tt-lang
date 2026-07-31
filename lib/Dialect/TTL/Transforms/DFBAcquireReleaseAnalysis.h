@@ -88,25 +88,6 @@ struct DFBAcquireReleaseIndex {
   ArrayRef<Operation *> getReleases(DFBAcquireReleaseKind kind) const;
 };
 
-/// Returns true for DFB acquire ops accepted by this analysis.
-bool isDFBAcquireOp(Operation *op);
-
-/// Returns true for DFB release ops accepted by this analysis.
-bool isDFBReleaseOp(Operation *op);
-
-/// Returns the DFB operand of a `ttl.cb_reserve` or `ttl.cb_wait`.
-Value getDFBAcquireDFB(Operation *op);
-
-/// Returns the DFB operand of a `ttl.cb_push` or `ttl.cb_pop`.
-Value getDFBReleaseDFB(Operation *op);
-
-/// Collects DFB lifecycle operations from `func` in walk order.
-void collectDFBAcquireReleaseOps(func::FuncOp func,
-                                 SmallVectorImpl<Operation *> &reserves,
-                                 SmallVectorImpl<Operation *> &waits,
-                                 SmallVectorImpl<Operation *> &pushes,
-                                 SmallVectorImpl<Operation *> &pops);
-
 /// Builds the ownership interval for `acquire`.
 ///
 /// `acquires` must contain acquire operations of the same

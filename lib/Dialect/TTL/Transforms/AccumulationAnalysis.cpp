@@ -229,13 +229,13 @@ estimateCost(const AccumulationCost &cost,
 }
 
 static AccumulationStrategyCandidate
-buildDstCandidate(TensorAccumulationMatch &match, scf::ForOp loop,
+buildDstCandidate(TensorAccumulationMatch &match,
                   const AccumulationCostModel &costModel) {
   AccumulationStrategyCandidate candidate;
   candidate.strategy = AccumulationStrategy::Dst;
 
   FailureOr<TensorDstAccumulationInfo> info =
-      analyzeTensorAccumulationForDst(match, loop);
+      analyzeTensorAccumulationForDst(match);
   if (failed(info)) {
     candidate.reason =
         "expected a DST-compatible same-type additive recurrence with one "
@@ -249,13 +249,13 @@ buildDstCandidate(TensorAccumulationMatch &match, scf::ForOp loop,
 }
 
 static AccumulationStrategyCandidate
-buildL1PackCandidate(TensorAccumulationMatch &match, scf::ForOp loop,
+buildL1PackCandidate(TensorAccumulationMatch &match,
                      const AccumulationCostModel &costModel) {
   AccumulationStrategyCandidate candidate;
   candidate.strategy = AccumulationStrategy::L1Pack;
 
   FailureOr<TensorL1PackAccumulationInfo> info =
-      analyzeTensorAccumulationForL1Pack(match, loop);
+      analyzeTensorAccumulationForL1Pack(match);
   if (failed(info)) {
     candidate.reason =
         "expected one same-type additive recurrence with one final store";
@@ -424,7 +424,7 @@ bool AccumulationCostModel::isLessCostly(const AccumulationCost &lhs,
 
 FailureOr<AccumulationStrategyPlan>
 planTensorAccumulationStrategy(AccumulationScopeOp scope,
-                               TensorAccumulationMatch &match, scf::ForOp loop,
+                               TensorAccumulationMatch &match,
                                AccumulationStrategy requestedStrategy,
                                const AccumulationCostModel &costModel) {
   AccumulationStrategyPlan plan;
@@ -439,12 +439,12 @@ planTensorAccumulationStrategy(AccumulationScopeOp scope,
   }
 
   if (requestedStrategy == AccumulationStrategy::Dst) {
-    plan.candidates.push_back(buildDstCandidate(match, loop, costModel));
+    plan.candidates.push_back(buildDstCandidate(match, costModel));
   } else if (requestedStrategy == AccumulationStrategy::L1Pack) {
-    plan.candidates.push_back(buildL1PackCandidate(match, loop, costModel));
+    plan.candidates.push_back(buildL1PackCandidate(match, costModel));
   } else {
-    plan.candidates.push_back(buildDstCandidate(match, loop, costModel));
-    plan.candidates.push_back(buildL1PackCandidate(match, loop, costModel));
+    plan.candidates.push_back(buildDstCandidate(match, costModel));
+    plan.candidates.push_back(buildL1PackCandidate(match, costModel));
   }
 
   LLVM_DEBUG({

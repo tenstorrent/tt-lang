@@ -167,7 +167,7 @@ private:
 
 /// Select a legal tensor accumulation strategy for `scope`.
 FailureOr<AccumulationStrategyPlan> planTensorAccumulationStrategy(
-    AccumulationScopeOp scope, TensorAccumulationMatch &match, scf::ForOp loop,
+    AccumulationScopeOp scope, TensorAccumulationMatch &match,
     AccumulationStrategy requestedStrategy,
     const AccumulationCostModel &costModel = AccumulationCostModel());
 

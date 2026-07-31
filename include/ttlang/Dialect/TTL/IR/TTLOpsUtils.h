@@ -26,6 +26,16 @@
 
 namespace mlir::tt::ttl {
 
+/// Returns true if an operation has an attribute in the TTL namespace.
+inline bool hasTTLDialectAttribute(mlir::Operation *operation) {
+  for (mlir::NamedAttribute attribute : operation->getAttrs()) {
+    if (attribute.getName().getValue().starts_with("ttl.")) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /// Return the enclosing kernel-thread `func.func` (tagged with
 /// `ttl.kernel_thread`), or null if `op` is not inside one.
 inline mlir::func::FuncOp getEnclosingKernelThread(mlir::Operation *op) {
