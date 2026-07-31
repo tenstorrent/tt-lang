@@ -189,6 +189,16 @@ normalizeDimsToSet(mlir::ArrayRef<int64_t> dims, int64_t rank) {
   return result;
 }
 
+/// True when a block broadcast touches the last or second-to-last dimension,
+/// which lowers through TTKernel unary_bcast (an in-tile broadcast) rather than
+/// pure inter-tile replication.
+inline bool blockBroadcastRequiresTileBcast(mlir::ArrayRef<int64_t> dims,
+                                            int64_t rank) {
+  llvm::SmallDenseSet<int64_t> normalizedDims = normalizeDimsToSet(dims, rank);
+  return (rank >= 1 && normalizedDims.contains(rank - 1)) ||
+         (rank >= 2 && normalizedDims.contains(rank - 2));
+}
+
 /// True for arithmetic/math tile ops (add, mul, exp, ...); false for data
 /// movement and DST lifecycle ops.
 inline bool isTileComputeOp(mlir::Operation *op) {

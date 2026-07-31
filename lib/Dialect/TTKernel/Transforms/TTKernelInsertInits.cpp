@@ -261,6 +261,10 @@ struct SyncRegionAnalysis {
   Value matmulTranspose, matmulCt, matmulRt, matmulKt;
 };
 
+static Type getCBElementType(Value cb) {
+  return cast<ttk::CBType>(cb.getType()).getElementType();
+}
+
 static FailureOr<SyncRegionAnalysis>
 analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
                   Value &in0CB, Value &in1CB, Value &outputCB) {
@@ -321,7 +325,7 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
         if (!outputCB) {
           outputCB = packCB;
         } else if (outputCB != packCB &&
-                   outputCB.getType() != packCB.getType()) {
+                   getCBElementType(outputCB) != getCBElementType(packCB)) {
           packOp->emitOpError(
               "sync region packs to output CBs with different data formats; "
               "common init cannot configure multiple PACK formats");

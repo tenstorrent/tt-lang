@@ -201,32 +201,112 @@ static void emitTileStores(PatternRewriter &rewriter, Location loc,
         rewriter, loc, tileResult, storeOp.getView(), indices);
     storesToErase.push_back(storeOp);
   }
-  // Some stores get absorbed into the compute body, pulling their data
-  // production past the cb_push that the frontend emitted right after the
-  // block-level store. When that happens, move the push to after the
-  // compute so the push executes after pack_tile writes the data. Only
-  // move pushes that are currently in the compute's block AND before the
-  // compute — pushes already positioned later (e.g., at the end of a
-  // `with reserve: ... multi-store ...` scope) are already correctly
-  // placed and must not be moved forward, or they'd commit before the
-  // later stores pack their data.
+  // TODO(#668): all of the op movement below exists only because intermediate
+  // DFBs are materialized before fusion. Once materialization is deferred to
+  // after compute formation (extending DFBMaterialization, stacked on #651),
+  // the CB ops are emitted in canonical order by construction and none of this
+  // relocation is needed -- delete the entire loop body's movement and keep
+  // only the store erase.
+  //
+  // The compute is placed at the last output store, so it is preceded by every
+  // output reserve. Folding a store in, however, leaves the release/consumer
+  // ops the frontend emitted after that store (cb_push, then a re-consume
+  // cb_wait with its attach_cb views, then cb_pop) ordered before the compute.
+  // For an intra-thread DFB the push must follow the compute (it releases the
+  // packed data) and any consumer wait must follow its push, so sink that
+  // per-generation release/consumer run past the compute, preserving order.
+  // Producer acquires (cb_reserve) are never moved: a reserve's position
+  // encodes per-DFB generation ordering that SSA does not express.
   for (StoreOp s : storesToErase) {
     assert(s->getBlock() == computeOp->getBlock() &&
            "stores absorbed into a compute must be siblings of that compute");
     Value viewCB = getAttachedCB(s.getView());
     if (viewCB) {
-      for (Operation *op = s->getNextNode(); op != nullptr;
+      llvm::SmallPtrSet<Operation *, 8> sink;
+      SmallVector<Operation *> worklist;
+      // Collect this store's cb_push / cb_wait / cb_pop on viewCB that precede
+      // the compute, stopping at the next reserve on viewCB (next generation).
+      for (Operation *op = s->getNextNode();
+           op != nullptr && op->isBeforeInBlock(computeOp);
            op = op->getNextNode()) {
-        if (auto pushOp = dyn_cast<CBPushOp>(op)) {
-          if (pushOp.getCb() == viewCB && pushOp->isBeforeInBlock(computeOp)) {
-            pushOp->moveAfter(computeOp);
+        if (auto reserve = dyn_cast<CBReserveOp>(op)) {
+          if (reserve.getCb() == viewCB) {
             break;
           }
+          continue;
         }
+        Value opCb;
+        if (auto push = dyn_cast<CBPushOp>(op)) {
+          opCb = push.getCb();
+        } else if (auto wait = dyn_cast<CBWaitOp>(op)) {
+          opCb = wait.getCb();
+        } else if (auto pop = dyn_cast<CBPopOp>(op)) {
+          opCb = pop.getCb();
+        }
+        if (opCb == viewCB && sink.insert(op).second) {
+          worklist.push_back(op);
+        }
+      }
+      // A re-consume cb_wait's result feeds attach_cb views (and their users);
+      // any that precede the compute must sink too, or they would read a value
+      // defined after their use.
+      while (!worklist.empty()) {
+        Operation *op = worklist.pop_back_val();
+        for (Value result : op->getResults()) {
+          for (Operation *user : result.getUsers()) {
+            if (user->getBlock() == computeOp->getBlock() &&
+                user->isBeforeInBlock(computeOp) && sink.insert(user).second) {
+              worklist.push_back(user);
+            }
+          }
+        }
+      }
+      // Move the collected ops after the compute, preserving block order.
+      SmallVector<Operation *> ordered;
+      for (Operation &op : *computeOp->getBlock()) {
+        if (sink.contains(&op)) {
+          ordered.push_back(&op);
+        }
+      }
+      Operation *insertAfter = computeOp;
+      for (Operation *op : ordered) {
+        op->moveAfter(insertAfter);
+        insertAfter = op;
       }
     }
     rewriter.eraseOp(s);
   }
+}
+
+static bool replacementDominatesRemainingUses(Operation *replacementOp,
+                                              Operation *sourceOp) {
+  for (Value result : sourceOp->getResults()) {
+    for (OpOperand &use : result.getUses()) {
+      Operation *user = use.getOwner();
+      if (user->getBlock() != replacementOp->getBlock()) {
+        return false;
+      }
+      if (user->isBeforeInBlock(replacementOp)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+// Replace `sourceOp` with the absorbing compute only if that preserves SSA
+// dominance; otherwise leave it in place -- it is re-fused into each consumer's
+// compute and erased once their stores lower (see mixed_store_users.mlir).
+static void replaceOpIfSafe(PatternRewriter &rewriter, Operation *sourceOp,
+                            ValueRange replacements) {
+  assert(!replacements.empty() &&
+         "replaceOpIfSafe requires replacement values");
+  Operation *replacementOp = replacements.front().getDefiningOp();
+  assert(replacementOp && "replacement must be produced by an operation");
+  if (!replacementDominatesRemainingUses(replacementOp, sourceOp)) {
+    return;
+  }
+  rewriter.replaceOp(sourceOp, replacements);
 }
 
 //===----------------------------------------------------------------------===//
@@ -813,7 +893,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   }
 
   YieldOp::create(rewriter, loc);
-  rewriter.replaceOp(sinkOp, computeOp.getResult(0));
+  replaceOpIfSafe(rewriter, sinkOp, computeOp.getResult(0));
 
   // Erase the fused ops in reverse topological order (sink to roots).
   // This ensures each op's users are erased before the op itself.
@@ -903,7 +983,7 @@ static LogicalResult buildComputeFromInputs(
   Value result = emitTileOp(rewriter, loc, outputTileType, body);
   emitTileStores(rewriter, loc, result, op);
   YieldOp::create(rewriter, loc);
-  rewriter.replaceOp(op, computeOp.getResult(0));
+  replaceOpIfSafe(rewriter, op, computeOp.getResult(0));
   return success();
 }
 
@@ -1097,13 +1177,6 @@ static LogicalResult validateBlockBroadcastOp(BlockBroadcastOp op) {
     return success(); // pattern will handle gracefully
   }
 
-  if (!getAttachedCB(op.getInput())) {
-    return op.emitOpError(
-        "broadcast input must come directly from a circular buffer, not from "
-        "an elementwise result; move the broadcast to its own compute block "
-        "or make it the first operation in a fused sequence");
-  }
-
   int64_t rank = inputType.getRank();
   auto broadcastDims = normalizeDimsToSet(op.getDims(), rank);
 
@@ -1163,7 +1236,7 @@ struct LowerBlockBroadcastToCompute : OpRewritePattern<BlockBroadcastOp> {
 
     Value inputCb = getAttachedCB(op.getInput());
     if (!inputCb) {
-      return rewriter.notifyMatchFailure(op, "input not CB-attached");
+      return tryFusion(op, rewriter);
     }
     Value outCb;
     for (OpOperand &use : op.getResult().getUses()) {
@@ -1232,7 +1305,7 @@ struct LowerBlockBroadcastToCompute : OpRewritePattern<BlockBroadcastOp> {
     }
     emitTileStores(rewriter, loc, bodyResult, op.getOperation());
     YieldOp::create(rewriter, loc);
-    rewriter.replaceOp(op, computeOp.getResult(0));
+    replaceOpIfSafe(rewriter, op, computeOp.getResult(0));
     return success();
   }
 };
@@ -1597,7 +1670,7 @@ struct LowerFillToCompute : OpRewritePattern<FillOp> {
         rewriter, loc, tileType, op.getValueAttr());
     emitTileStores(rewriter, loc, fillTileOp, op);
     YieldOp::create(rewriter, loc);
-    rewriter.replaceOp(op, computeOp.getResults());
+    replaceOpIfSafe(rewriter, op, computeOp.getResults());
     return success();
   }
 };

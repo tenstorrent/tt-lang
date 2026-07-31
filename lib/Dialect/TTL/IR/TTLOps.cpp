@@ -1460,6 +1460,14 @@ mlir::LogicalResult mlir::tt::ttl::TileStoreOp::verify() {
 // DFBInputOpInterface implementations
 //===----------------------------------------------------------------------===//
 
+// True if `operand`'s producer is one whose result cannot fuse with a
+// downstream compute and so must be packed out to a DFB.
+static bool needsDFBMaterialization(mlir::Value operand) {
+  mlir::Operation *defOp = operand.getDefiningOp();
+  return defOp &&
+         mlir::isa<mlir::tt::ttl::ReduceOp, mlir::tt::ttl::MatmulOp>(defOp);
+}
+
 llvm::SmallVector<unsigned>
 mlir::tt::ttl::ReduceOp::getDFBInputOperandIndices() {
   return {0, 1}; // input and scaler
@@ -1467,7 +1475,17 @@ mlir::tt::ttl::ReduceOp::getDFBInputOperandIndices() {
 
 llvm::SmallVector<unsigned>
 mlir::tt::ttl::BlockBroadcastOp::getDFBInputOperandIndices() {
-  return {0}; // input is the only operand; output CB is resolved downstream
+  bool needsTileBcast = false;
+  if (auto inputType = dyn_cast<mlir::RankedTensorType>(getInput().getType())) {
+    needsTileBcast =
+        blockBroadcastRequiresTileBcast(getDims(), inputType.getRank());
+  }
+
+  if (needsDFBMaterialization(getInput()) ||
+      (needsTileBcast && !getAttachedCB(getInput()))) {
+    return {0};
+  }
+  return {};
 }
 
 llvm::SmallVector<unsigned>
@@ -1478,14 +1496,6 @@ mlir::tt::ttl::MatmulOp::getDFBInputOperandIndices() {
 llvm::SmallVector<unsigned>
 mlir::tt::ttl::TransposeOp::getDFBInputOperandIndices() {
   return {0}; // input
-}
-
-// True if `operand`'s producer is one whose result cannot fuse with a
-// downstream compute and so must be packed out to a DFB.
-static bool needsDFBMaterialization(mlir::Value operand) {
-  mlir::Operation *defOp = operand.getDefiningOp();
-  return defOp &&
-         mlir::isa<mlir::tt::ttl::ReduceOp, mlir::tt::ttl::MatmulOp>(defOp);
 }
 
 llvm::SmallVector<unsigned>
