@@ -166,20 +166,24 @@ def TTL_Pipe : TTL_Type<"Pipe", "pipe"> {
 }
 
 def TTL_SelectedPipeSrc : TTL_Type<"SelectedPipeSrc", "selected_pipe_src"> {
-  let summary = "Selected source pipe for PipeNet foreach iteration";
+  let summary = "PipeNet record selected by source iteration";
   let description = [{
-    Represents a PipeNet record selected for source-side use. The type does not
-    encode the PipeNet id or coordinates; the enclosing foreach operation or
-    defining select operation supplies them.
+    Represents a PipeNet record selected because the current launch node is its
+    source. The selected record may be used for a send or receive; copy operand
+    position determines the transfer direction. The enclosing foreach
+    operation or defining select operation supplies the PipeNet id and
+    coordinates.
   }];
 }
 
 def TTL_SelectedPipeDst : TTL_Type<"SelectedPipeDst", "selected_pipe_dst"> {
-  let summary = "Selected destination pipe for PipeNet foreach iteration";
+  let summary = "PipeNet record selected by destination iteration";
   let description = [{
-    Represents a PipeNet record selected for destination-side use. The type
-    does not encode the PipeNet id or coordinates; the enclosing foreach
-    operation or defining select operation supplies them.
+    Represents a PipeNet record selected because the current launch node is one
+    of its destinations. The selected record may be used for a send or receive;
+    copy operand position determines the transfer direction. The enclosing
+    foreach operation or defining select operation supplies the PipeNet id and
+    coordinates.
   }];
 }
 

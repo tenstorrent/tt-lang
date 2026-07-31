@@ -14,6 +14,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
+#include "ttlang/Dialect/TTL/Transforms/PipeNetExecutionUtils.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseMapInfo.h"
@@ -44,9 +45,12 @@ struct PipeGraphAnalysisState;
 /// `controlOps` identifies loops and conditions that select records rather than
 /// independent user control. `ifThenDomains` records the launch nodes that may
 /// enter each generated `scf.if` across all record-loop iterations.
+/// `recordLoops` identifies table-driven loops whose bodies execute once per
+/// matching PipeNet record.
 struct PipeForeachLoweringInfo {
   SmallVector<Operation *> controlOps;
   llvm::DenseMap<Operation *, LaunchNodeDomain> ifThenDomains;
+  llvm::DenseMap<Operation *, PipeNetRecordLoop> recordLoops;
 };
 
 //===----------------------------------------------------------------------===//
@@ -380,6 +384,14 @@ public:
     return getRecords().getPipeNetId();
   }
 
+  Operation *getSelectedOperation() const {
+    assert(isSelected() && "static pipe reference has no selection operation");
+    if (isSelectedSrc()) {
+      return getSelectedSrc().getOperation();
+    }
+    return getSelectedDst().getOperation();
+  }
+
 private:
   std::variant<PipeType, SelectPipeSrcOp, SelectPipeDstOp> value;
 };
@@ -488,6 +500,12 @@ public:
   }
 
 private:
+  /// Associate a selected protocol operation and record with one transfer.
+  void
+  recordTransferNodeForProtocolRecord(Operation *op,
+                                      std::optional<std::uint64_t> recordIndex,
+                                      PipeTransferNodeId transferNodeId);
+
   /// Record the DFB geometry and destination offset for one receive post.
   LogicalResult addPipeReceiver(Operation *op,
                                 PipeTransferCreateOp transferCreateOp,
@@ -516,6 +534,10 @@ private:
   // A table-driven protocol operation represents one transfer node per record.
   llvm::DenseMap<Operation *, SmallVector<PipeTransferNodeId>>
       transferNodeIdsByProtocolOp;
+  // Selected protocol operations execute once for each matching record. This
+  // map preserves that identity when equal PipeKeys occur more than once.
+  llvm::DenseMap<std::pair<Operation *, std::uint64_t>, PipeTransferNodeId>
+      transferNodeIdByProtocolOpAndRecord;
   SmallVector<PipeReceiverEndpoint> pipeReceiverEndpoints;
   SmallVector<PipeReceiverDFBNode> receiverDFBNodes;
   bool hasAnalyzedLaunchGrid = false;

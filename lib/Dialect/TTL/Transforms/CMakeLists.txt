@@ -21,6 +21,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   LowerSignpostToEmitC.cpp
   PipeCapacityAnalysis.cpp
   PipeCounter.cpp
+  PipeNetExecutionUtils.cpp
   PipeGraph.cpp
   PipeLowering.cpp
   PipePlanning.cpp

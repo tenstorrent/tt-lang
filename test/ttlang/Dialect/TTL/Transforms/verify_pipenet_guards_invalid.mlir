@@ -85,6 +85,63 @@ module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64
 
 // -----
 
+// Destination iteration does not authorize a send from a non-source node.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @destination_selected_non_loopback_send()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    // expected-note @below {{PipeNet non_loopback declared here}}
+    ttl.pipenet_foreach_dst attributes {
+        records = #ttl.pipenet_records<net 0 name "non_loopback" pipes [
+          #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0>
+        ]>} {
+    ^bb0(%pipe: !ttl.selected_pipe_dst):
+      // expected-error @below {{this `ttl.copy(buffer, pipe)` sends data on PipeNet non_loopback from a node that is not a source}}
+      // expected-note @below {{example node where the guard does not hold: core_x=1}}
+      %send = ttl.copy %cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+             !ttl.selected_pipe_dst)
+          -> !ttl.transfer_handle<write>
+      ttl.yield
+    }
+    func.return
+  }
+}
+
+// -----
+
+// Source iteration does not authorize a receive on a non-destination node.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @source_selected_non_loopback_receive()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    // expected-note @below {{PipeNet non_loopback declared here}}
+    ttl.pipenet_foreach_src attributes {
+        records = #ttl.pipenet_records<net 0 name "non_loopback" pipes [
+          #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0>
+        ]>} {
+    ^bb0(%pipe: !ttl.selected_pipe_src):
+      %reserve = ttl.cb_reserve %cb
+          : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      // expected-error @below {{this `ttl.copy(pipe, buffer)` receives data from PipeNet non_loopback on a node that is not a destination}}
+      // expected-note @below {{example node where the guard does not hold: core_x=0}}
+      %receive = ttl.copy %pipe, %reserve
+          : (!ttl.selected_pipe_src,
+             tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.transfer_handle
+      ttl.yield
+    }
+    func.return
+  }
+}
+
+// -----
+
 // A wait that can observe two receive copies has no unique completion event for
 // the wait-for graph.
 
