@@ -93,10 +93,15 @@ Pipe transfers have the following operational semantics:
   receive-wait events. It rejects schedules whose same-thread ordering
   creates a wait-for cycle. Other runtime hangs can still have different
   causes.
-- The graph pairs receiver-post, send, and receive-wait operations by program
-  order after helper expansion. Each pair may execute repeatedly, but the two
-  sides must contain the same number of operations and each pair must execute
-  equally often under equivalent conditions.
+- The graph pairs static receiver-post, send, and receive-wait definitions by
+  program order after helper expansion. Each pair may execute repeatedly, but
+  the two sides must contain the same number of static definitions and each
+  pair must execute equally often under equivalent conditions. Alternative
+  definitions under a runtime `scf.if` remain distinct unless the verifier can
+  prove one alternative has zero executions at the relevant launch node.
+- All definitions of one event kind for a pipe endpoint must belong to one
+  kernel-thread function. Independent kernel threads have no program order and
+  cannot safely share that endpoint's synchronization state.
 - Direct helper calls are expanded at each call site. This preserves the
   caller's event order and counts each helper invocation separately. Functions
   containing pipe events must be reachable from a kernel-thread entry point
@@ -961,6 +966,13 @@ exist in the program. Receiver waits consume send completions in order, so the
 first wait corresponds to the first send, the second wait to the second send,
 and so on. Additional sends do not require waits.
 
+Schedule verification requires each function containing pipe events, directly
+or through helper calls, to have one body block. A multi-block CFG does not
+define one static total order, so the verifier rejects it instead of deriving
+ordering from block storage order. Every event must also have an exact
+launch-node domain; an unevaluable coordinate-dependent condition is rejected
+rather than omitting its events from the schedule.
+
 ## Predicate recognition
 
 Three predicate ops - `ttl.is_src`, `ttl.is_dst`, `ttl.is_active`
@@ -1042,10 +1054,10 @@ note: suggested guard: `net_0.is_src()`
 | this region exchanges data on PipeNet \<N\> on launched nodes that are not part of that net | A `with cb.reserve()` block containing PipeNet role traffic is reachable from launched nodes outside that net's source/destination union. | wrap the surrounding work in `if net_<N>.is_active(): ...` |
 | this `ttl.copy(buffer, pipe)` sends data on PipeNet \<N\> from a node that is not a source of any pipe in that net | A DFB-to-pipe copy is reachable from a node that isn't the pipe's source coordinate. | wrap the copy in `net_<N>.if_src(...)` or guard with `if net_<N>.is_src(): ...` |
 | this `ttl.copy(pipe, buffer)` receives data from PipeNet \<N\> on a node that is not a destination of any pipe in that net | A pipe-to-DFB copy is reachable from a node outside the pipe's destination range. | wrap the copy in `net_<N>.if_dst(...)` or guard with `if net_<N>.is_dst(): ...` |
-| PipeNet \<N\> requires one receiver post operation for each send operation | A send has no receiver post at a destination, or the post and send occurrence counts differ. | add or reorder receiver posts so every destination publishes one reservation for each send |
-| PipeNet \<N\> requires one send operation for each receive wait operation | A receiver wait has no available send completion. | add the corresponding send or remove the unmatched receiver wait |
+| PipeNet \<N\> requires one static receiver post definition for each static send definition | A send has no receiver-post definition at a destination, or alternative control flow contains a different number of static definitions. | add or reorder receiver posts so every destination posts one reservation for each send |
+| PipeNet \<N\> requires one static send definition for each static receive wait definition | A receiver wait has no statically corresponding send. | add the corresponding send or remove the unmatched receiver wait |
 | cannot prove a one-to-one synchronization schedule on PipeNet \<N\> | Paired events have different or statically unprovable execution counts or conditions. | use matching static control flow for the corresponding protocol events |
-| pipe send occurs before the receiver publishes a destination address on PipeNet \<N\> | A same-thread source can block waiting for a receiver address that is posted later in the same thread. | move `ttl.copy(pipe, dst)` before `ttl.copy(src, pipe)`, then wait for receive completion after the send operation has run |
+| pipe send occurs before the receiver posts a dataflow buffer reservation on PipeNet \<N\> | A same-thread source can block waiting for a receiver reservation that is posted later in the same thread. | move `ttl.copy(pipe, dst)` before `ttl.copy(src, pipe)`, then wait for receive completion after the send operation has run |
 | receive wait occurs before the send that completes it on PipeNet \<N\> | A receiver waits on the receive transfer before the matching sender operation can run. | post the receive first, run the send, then wait on the transfer handle returned by `ttl.copy(pipe, dst)` |
 | pipe schedule contains a wait-for cycle | Same-thread ordering creates a wait-for cycle not matched by a more specific diagnostic. | reorder same-thread sends and receives so all required receive posts happen before dependent sends |
 | this `cb_wait` reads from a dataflow buffer that no other thread fills | A `cb_wait` references a DFB index that no `cb_push` anywhere in the module writes to. | check that another `@ttl.compute()` or `@ttl.datamovement()` thread reserves and pushes the same buffer |
@@ -1291,7 +1303,8 @@ compile-time properties not runtime-observable.
 | 53 | grid="auto" and grid="full" both launch the device grid   |  X  |  X  |     |
 | 54 | Verifier accepts every `arith.cmpi` predicate kind, `andi`/`ori`/`xori` boolean composition, `subi`/`muli`/`index_cast` in `evalIndex` |  |  |  X  |
 | 55 | Verifier accepts `affine.if` over `Mul`, `Mod`, `FloorDiv` (non-zero), `CeilDiv`, `AffineSymbolExpr`, else-branch |  |  |  X  |
-| 56 | Verifier accepts pipe-coupled op inside `scf.while` / `scf.execute_region` / `affine.for` / multi-block `cf.cond_br` |  |  |  X  |
+| 56 | Guard verifier accepts pipe-coupled op inside `scf.while` / `scf.execute_region` / `affine.for` / multi-block `cf.cond_br` |  |  |  X  |
+| 56a | Schedule verifier rejects multi-block function bodies |  |  |  X  |
 | 57 | Verifier rejects malformed `pipenet_scope`: missing attrs, length mismatch, role out of {0, 1} |  |  |  X  |
 | 58 | Verifier rejects unguarded pipe-coupled op in `scf.for` / `scf.execute_region` |  |  |  X  |
 | 59 | Lowering: overlapping collective senders get distinct slot offsets in IR |  |  |  X  |

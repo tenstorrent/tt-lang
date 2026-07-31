@@ -570,7 +570,6 @@ def TTLVerifyPipeNetGuards
     `cb_index` on every `ttl.bind_cb`.
   }];
 
-  let dependentDialects = [];
 }
 
 def TTLVerifyPipeNetSchedule
@@ -590,15 +589,20 @@ def TTLVerifyPipeNetSchedule
     consume send completions in order; the number of waits may not exceed the
     number of sends.
 
-    Events are paired by program order for each pipe endpoint. Paired pipe
-    operations must have equal dynamic execution counts and equivalent
-    enclosing conditions. Direct calls to helper functions are expanded at
-    each call site so caller order and invocation multiplicity are preserved.
-    Functions containing pipe events must be kernel-thread entry points or be
-    reachable from one through direct calls. Recursive calls containing pipe
-    events and schedules that exceed 4096 events after launch-node
-    specialization and helper expansion are rejected because the verifier
-    cannot construct a bounded event graph.
+    Static event definitions are paired by program order for each pipe
+    endpoint. Each pair must have equal dynamic execution counts and equivalent
+    enclosing conditions. Alternative event definitions under runtime control
+    flow remain distinct unless one is proven not to execute. Direct calls to
+    helper functions are expanded at each call site so caller order and
+    invocation multiplicity are preserved. Functions containing pipe events
+    must have one body block and must be kernel-thread entry points or be
+    reachable from one through direct calls. Definitions of one event kind for
+    a pipe endpoint must belong to one kernel-thread function because
+    independent kernel threads have no program order. Each event must have an
+    exact launch-node domain. Multi-block functions, unknown event domains,
+    recursive calls containing pipe events, and schedules that exceed 4096
+    events after launch-node specialization and helper expansion are rejected
+    because the verifier cannot construct a correct bounded event graph.
 
     The pass also constructs the same-thread wait-for graph. Program-order
     edges connect consecutive events on one launched node. Protocol edges
@@ -606,12 +610,12 @@ def TTLVerifyPipeNetSchedule
     A cycle means no event in the cycle can execute and is rejected.
 
     The pass expects one module per `@ttl.operation`, a well-formed
-    `ttl.launch_grid` attribute, and static coordinates on `ttl.create_pipe`.
+    `ttl.launch_grid` attribute, and static `ttl.create_pipe` endpoints within
+    that launch grid.
     `ttl-verify-pipenet-guards` must run first in the compiler pipeline so
     invalid launch domains are reported separately.
   }];
 
-  let dependentDialects = [];
 }
 
 def TTLVerifyTransferProvenance

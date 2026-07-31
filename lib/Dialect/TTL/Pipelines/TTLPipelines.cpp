@@ -84,11 +84,6 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   }
 }
 
-void buildTTLAutoSyncPipeline(OpPassManager &pm) {
-  pm.addPass(createTTLInsertCBSync());
-  pm.addPass(createTTLCoalesceDFBAcquires());
-}
-
 void buildTTLVerifyPipeNetPipeline(OpPassManager &pm) {
   pm.addPass(createTTLVerifyPipeNetGuards());
   pm.addPass(createTTLVerifyPipeNetSchedule());
@@ -100,9 +95,6 @@ void registerTTLPipelines() {
       "Lower TTL to TTKernel, run cleanup canonicalization/CSE, and optionally "
       "lower TTKernel to EmitC.",
       createTTLToTTKernelPipeline);
-  PassPipelineRegistration<>("ttl-auto-sync",
-                             "Insert auto pop/push and coalesce DFB acquires.",
-                             buildTTLAutoSyncPipeline);
   PassPipelineRegistration<>(
       "ttl-verify-pipenet",
       "Verify PipeNet launch domains and synchronization schedules.",

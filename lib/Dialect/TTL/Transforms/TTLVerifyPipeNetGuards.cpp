@@ -88,12 +88,26 @@ findDefiningPipeReceiveCopy(ValueOriginAnalysis &analysis, Value value) {
 /// Pipe synchronization event used by the wait-for graph verifier.
 enum class PipeEventKind { Send, ReceivePost, ReceiveWait };
 
+/// Return the diagnostic name for a pipe synchronization event.
+StringRef getPipeEventName(PipeEventKind kind) {
+  switch (kind) {
+  case PipeEventKind::Send:
+    return "send";
+  case PipeEventKind::ReceivePost:
+    return "receiver post";
+  case PipeEventKind::ReceiveWait:
+    return "receive wait";
+  }
+  llvm_unreachable("unknown pipe event kind");
+}
+
 /// One pipe synchronization event on the launch-node domain where it executes.
 struct PipeEvent {
   Operation *op = nullptr;
   PipeType pipeType;
   PipeEventKind kind;
   LaunchNodeDomain domain;
+  Operation *unanalyzableOp = nullptr;
 };
 
 struct ModuleState;
@@ -104,9 +118,10 @@ void checkKnownSubset(Operation *op, const LaunchNodeDomain &current,
                       ModuleState &state);
 
 struct ModuleState : LaunchNodeDomainState {
-  explicit ModuleState(ModuleOp module) : valueOrigins(module) {}
+  explicit ModuleState(ValueOriginAnalysis &valueOrigins)
+      : valueOrigins(valueOrigins) {}
 
-  ValueOriginAnalysis valueOrigins;
+  ValueOriginAnalysis &valueOrigins;
   llvm::DenseMap<int64_t, LaunchNodeDomain> cbProducerDomains;
   SmallVector<WaitUse> waitUses;
   SmallVector<PipeEvent> pipeEvents;
@@ -126,7 +141,8 @@ struct ModuleState : LaunchNodeDomainState {
   }
 
   /// Record pipe sends and receive posts from `ttl.copy` operations.
-  void recordPipeEvent(CopyOp copyOp, const LaunchNodeDomain &domain) {
+  void recordPipeEvent(CopyOp copyOp, const LaunchNodeDomain &domain,
+                       Operation *unanalyzableOp) {
     PipeEvent event;
     event.op = copyOp.getOperation();
     if (auto pipeType = mlir::dyn_cast<PipeType>(copyOp.getDst().getType())) {
@@ -146,6 +162,7 @@ struct ModuleState : LaunchNodeDomainState {
     } else {
       return;
     }
+    event.unanalyzableOp = unanalyzableOp;
 
     auto [it, inserted] =
         pipeEventIndices.try_emplace(copyOp.getOperation(), pipeEvents.size());
@@ -157,7 +174,8 @@ struct ModuleState : LaunchNodeDomainState {
   }
 
   /// Record a receive completion wait for schedule verification.
-  void recordPipeWaitEvent(WaitOp waitOp, const LaunchNodeDomain &domain) {
+  void recordPipeWaitEvent(WaitOp waitOp, const LaunchNodeDomain &domain,
+                           Operation *unanalyzableOp) {
     FailureOr<std::optional<CopyOp>> maybeCopyOp = getPipeReceiveCopy(waitOp);
     if (failed(maybeCopyOp)) {
       return;
@@ -174,6 +192,7 @@ struct ModuleState : LaunchNodeDomainState {
     event.kind = PipeEventKind::ReceiveWait;
     event.domain =
         domain.intersectWith(getPipeDestinationLaunchNodeDomain(pipeType));
+    event.unanalyzableOp = unanalyzableOp;
 
     auto [it, inserted] =
         pipeEventIndices.try_emplace(waitOp.getOperation(), pipeEvents.size());
@@ -183,6 +202,69 @@ struct ModuleState : LaunchNodeDomainState {
     }
     pipeEvents[it->second] = event;
   }
+};
+
+/// Final launch-node facts for one operation.
+struct PipeNetOperationDomainInfo {
+  LaunchNodeDomain domain;
+  Operation *unanalyzableOp = nullptr;
+};
+
+/// Final launch-node facts for one PipeNet scope.
+struct PipeNetScopeDomainInfo {
+  LaunchNodeDomain domain;
+  PipeNetScopeLaunchNodeDomains scope;
+};
+
+/// Cache launch-node dataflow results shared by the two read-only verifiers.
+class PipeNetLaunchNodeDomainAnalysis {
+public:
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(PipeNetLaunchNodeDomainAnalysis)
+
+  /// Compute and retain the final launch-node dataflow facts for `root`.
+  explicit PipeNetLaunchNodeDomainAnalysis(Operation *root) {
+    auto module = mlir::cast<ModuleOp>(root);
+    LaunchNodeDomainState state;
+    state.initialize(module);
+
+    DataFlowSolver solver;
+    dataflow::loadBaselineAnalyses(solver);
+    LaunchNodeDomainAnalysisOptions options;
+    options.operationCallback = [&](Operation *op,
+                                    const LaunchNodeDomain &domain,
+                                    Operation *unanalyzableOp) {
+      operationDomains[op] = {domain, unanalyzableOp};
+    };
+    options.pipeNetScopeCallback =
+        [&](PipeNetScopeOp scopeOp, const LaunchNodeDomain &domain,
+            Operation * /*unanalyzableOp*/,
+            const PipeNetScopeLaunchNodeDomains &scope) {
+          scopeDomains[scopeOp.getOperation()] = {domain, scope};
+        };
+    solver.load<LaunchNodeDomainAnalysis>(state, options);
+    valid = succeeded(solver.initializeAndRun(module)) && !state.sawError;
+  }
+
+  /// Return whether dataflow completed without errors.
+  bool isValid() const { return valid; }
+
+  /// Return final launch-node facts for `op`, if it was analyzed.
+  const PipeNetOperationDomainInfo *getOperationInfo(Operation *op) const {
+    auto infoIt = operationDomains.find(op);
+    return infoIt == operationDomains.end() ? nullptr : &infoIt->second;
+  }
+
+  /// Return final launch-node facts for `scopeOp`, if it was analyzed.
+  const PipeNetScopeDomainInfo *getScopeInfo(PipeNetScopeOp scopeOp) const {
+    auto infoIt = scopeDomains.find(scopeOp.getOperation());
+    return infoIt == scopeDomains.end() ? nullptr : &infoIt->second;
+  }
+
+private:
+  llvm::DenseMap<Operation *, PipeNetOperationDomainInfo> operationDomains;
+  llvm::DenseMap<Operation *, PipeNetScopeDomainInfo> scopeDomains;
+  /// Whether analysis completed without an unsupported or invalid construct.
+  bool valid = false;
 };
 
 //===----------------------------------------------------------------------===//
@@ -391,11 +473,14 @@ void recordGuardOperation(Operation *op, const LaunchNodeDomain &domain,
 
 /// Record the synchronization events used by the schedule verifier.
 void recordScheduleOperation(Operation *op, const LaunchNodeDomain &domain,
-                             ModuleState &state) {
+                             Operation *unanalyzableOp, ModuleState &state) {
   TypeSwitch<Operation *>(op)
-      .Case<CopyOp>([&](CopyOp copy) { state.recordPipeEvent(copy, domain); })
-      .Case<WaitOp>(
-          [&](WaitOp wait) { state.recordPipeWaitEvent(wait, domain); });
+      .Case<CopyOp>([&](CopyOp copy) {
+        state.recordPipeEvent(copy, domain, unanalyzableOp);
+      })
+      .Case<WaitOp>([&](WaitOp wait) {
+        state.recordPipeWaitEvent(wait, domain, unanalyzableOp);
+      });
 }
 
 // Cross-check each recorded `cb_wait` against the producer domain collected
@@ -423,8 +508,6 @@ void verifyCBWaits(ModuleState &state) {
   }
 }
 
-enum class PipeScheduleNodeKind { Send, ReceivePost, ReceiveWait };
-
 enum class PipeScheduleEdgeKind {
   ProgramOrder,
   ReceivePostEnablesSend,
@@ -450,7 +533,8 @@ struct PipeScheduleNode {
   Operation *op;
   PipeType pipeType;
   LaunchNodeCoord coord;
-  PipeScheduleNodeKind kind;
+  PipeEventKind kind;
+  func::FuncOp kernelFunction;
   SmallVector<PipeCallSite> callSites;
   SmallVector<PipeScheduleEdge> successors;
 };
@@ -489,23 +573,44 @@ PipeCoordIdentity getPipeCoordIdentity(PipeType pipeType,
 PipeScheduleNodeId addPipeScheduleNode(SmallVectorImpl<PipeScheduleNode> &nodes,
                                        const PipeEvent &event,
                                        LaunchNodeCoord coord,
+                                       func::FuncOp kernelFunction,
                                        ArrayRef<PipeCallSite> callSites) {
-  PipeScheduleNodeKind kind;
-  if (event.kind == PipeEventKind::Send) {
-    kind = PipeScheduleNodeKind::Send;
-  } else if (event.kind == PipeEventKind::ReceivePost) {
-    kind = PipeScheduleNodeKind::ReceivePost;
-  } else {
-    kind = PipeScheduleNodeKind::ReceiveWait;
-  }
   PipeScheduleNodeId nodeId = nodes.size();
   nodes.push_back({event.op,
                    event.pipeType,
                    coord,
-                   kind,
+                   event.kind,
+                   kernelFunction,
                    SmallVector<PipeCallSite>(callSites),
                    {}});
   return nodeId;
+}
+
+/// Reject event definitions whose relative order would depend on independent
+/// kernel threads.
+LogicalResult
+verifySingleKernelFunction(ArrayRef<PipeScheduleNode> nodes,
+                           ArrayRef<PipeScheduleNodeId> existingNodes,
+                           const PipeEvent &event, func::FuncOp kernelFunction,
+                           ModuleState &state) {
+  if (existingNodes.empty()) {
+    return success();
+  }
+  const PipeScheduleNode &firstNode = nodes[existingNodes.front()];
+  if (firstNode.kernelFunction == kernelFunction) {
+    return success();
+  }
+  auto diag = event.op->emitOpError()
+              << "cannot verify PipeNet synchronization because "
+              << getPipeEventName(event.kind)
+              << " definitions for the same pipe endpoint occur in multiple "
+                 "kernel-thread functions";
+  func::FuncOp firstKernelFunction = firstNode.kernelFunction;
+  diag.attachNote(firstNode.op->getLoc())
+      << "the first " << getPipeEventName(event.kind) << " definition is in @"
+      << firstKernelFunction.getSymName();
+  state.sawError = true;
+  return failure();
 }
 
 /// Add a directed graph edge unless the same typed edge already exists.
@@ -627,13 +732,13 @@ std::string describePipeScheduleNode(const PipeScheduleNode &node) {
   std::string buffer;
   llvm::raw_string_ostream os(buffer);
   switch (node.kind) {
-  case PipeScheduleNodeKind::Send:
+  case PipeEventKind::Send:
     os << "send";
     break;
-  case PipeScheduleNodeKind::ReceivePost:
+  case PipeEventKind::ReceivePost:
     os << "receiver post";
     break;
-  case PipeScheduleNodeKind::ReceiveWait:
+  case PipeEventKind::ReceiveWait:
     os << "receive completion";
     break;
   }
@@ -673,13 +778,13 @@ findReceiveWaitBeforeCompletingSend(ArrayRef<PipeScheduleNode> nodes,
   for (std::size_t waitIdx = 0; waitIdx < cycleNodeCount; ++waitIdx) {
     PipeScheduleNodeId waitNodeId = cycle[waitIdx];
     const PipeScheduleNode &waitNode = nodes[waitNodeId];
-    if (waitNode.kind != PipeScheduleNodeKind::ReceiveWait) {
+    if (waitNode.kind != PipeEventKind::ReceiveWait) {
       continue;
     }
     for (std::size_t sendIdx = waitIdx + 1; sendIdx < cycle.size(); ++sendIdx) {
       PipeScheduleNodeId sendNodeId = cycle[sendIdx];
       const PipeScheduleNode &sendNode = nodes[sendNodeId];
-      if (sendNode.kind != PipeScheduleNodeKind::Send) {
+      if (sendNode.kind != PipeEventKind::Send) {
         continue;
       }
       if (!cycleHasProgramOrderPath(nodes, cycle, waitIdx, sendIdx)) {
@@ -703,13 +808,13 @@ findSendBeforeReceivePost(ArrayRef<PipeScheduleNode> nodes,
   for (std::size_t sendIdx = 0; sendIdx < cycleNodeCount; ++sendIdx) {
     PipeScheduleNodeId sendNodeId = cycle[sendIdx];
     const PipeScheduleNode &sendNode = nodes[sendNodeId];
-    if (sendNode.kind != PipeScheduleNodeKind::Send) {
+    if (sendNode.kind != PipeEventKind::Send) {
       continue;
     }
     for (std::size_t postIdx = sendIdx + 1; postIdx < cycle.size(); ++postIdx) {
       PipeScheduleNodeId postNodeId = cycle[postIdx];
       const PipeScheduleNode &postNode = nodes[postNodeId];
-      if (postNode.kind != PipeScheduleNodeKind::ReceivePost) {
+      if (postNode.kind != PipeEventKind::ReceivePost) {
         continue;
       }
       if (!cycleHasProgramOrderPath(nodes, cycle, sendIdx, postIdx)) {
@@ -728,6 +833,7 @@ findSendBeforeReceivePost(ArrayRef<PipeScheduleNode> nodes,
 void emitPipeScheduleCycleNotes(InFlightDiagnostic &diag,
                                 ArrayRef<PipeScheduleNode> nodes,
                                 ArrayRef<PipeScheduleNodeId> cycle) {
+  std::size_t noteCount = 0;
   for (std::size_t idx = 0, count = cycle.size() - 1; idx < count; ++idx) {
     PipeScheduleNodeId predecessorId = cycle[idx];
     PipeScheduleNodeId successorId = cycle[idx + 1];
@@ -740,7 +846,8 @@ void emitPipeScheduleCycleNotes(InFlightDiagnostic &diag,
     const PipeScheduleNode &successor = nodes[successorId];
     diag.attachNote(successor.op->getLoc())
         << describePipeScheduleEdge(predecessor, successor, *maybeEdgeKind);
-    if (idx + 1 >= kMaxPipeScheduleCycleNotes) {
+    ++noteCount;
+    if (noteCount >= kMaxPipeScheduleCycleNotes) {
       break;
     }
   }
@@ -893,6 +1000,57 @@ bool proveEqualPipeScheduleNodeCounts(const PipeScheduleNode &lhs,
       });
 }
 
+/// Return whether the static predecessor and successor counts cannot pair.
+bool haveInvalidPipeOccurrenceCount(ArrayRef<PipeScheduleNodeId> predecessors,
+                                    ArrayRef<PipeScheduleNodeId> successors,
+                                    bool requireEqualOccurrences) {
+  return requireEqualOccurrences ? predecessors.size() != successors.size()
+                                 : predecessors.size() < successors.size();
+}
+
+/// Emit one diagnostic for a static event-definition mismatch across one or
+/// more receivers of the same pipe.
+void emitPipeOccurrenceCountError(ArrayRef<PipeScheduleNode> nodes,
+                                  ArrayRef<PipeScheduleNodeId> predecessors,
+                                  ArrayRef<PipeScheduleNodeId> successors,
+                                  StringRef predecessorName,
+                                  StringRef successorName,
+                                  ArrayRef<LaunchNodeCoord> receiverCoords,
+                                  ModuleState &state) {
+  assert(!receiverCoords.empty() && "expected an affected receiver");
+  bool hasExtraPredecessor = predecessors.size() > successors.size();
+  PipeScheduleNodeId unmatchedNode = hasExtraPredecessor
+                                         ? predecessors[successors.size()]
+                                         : successors[predecessors.size()];
+  StringRef unmatchedName =
+      hasExtraPredecessor ? predecessorName : successorName;
+  StringRef missingName = hasExtraPredecessor ? successorName : predecessorName;
+  LaunchNodeCoord firstCoord = receiverCoords.front();
+  auto diag = nodes[unmatchedNode].op->emitOpError()
+              << "PipeNet "
+              << state.netName(nodes[unmatchedNode].pipeType.getPipeNetId())
+              << " requires one static " << predecessorName
+              << " definition for each static " << successorName
+              << " definition at receiver core_x=" << firstCoord.x
+              << ", core_y=" << firstCoord.y << "; found "
+              << predecessors.size() << " static " << predecessorName
+              << " definition(s) and " << successors.size() << " static "
+              << successorName << " definition(s)";
+  diag.attachNote(nodes[unmatchedNode].op->getLoc())
+      << "this " << unmatchedName << " has no corresponding " << missingName;
+  std::size_t noteCount = 1;
+  for (LaunchNodeCoord coord : receiverCoords.drop_front()) {
+    if (noteCount >= kMaxPipeScheduleCycleNotes) {
+      break;
+    }
+    diag.attachNote(nodes[unmatchedNode].op->getLoc())
+        << "the same mismatch applies at receiver core_x=" << coord.x
+        << ", core_y=" << coord.y;
+    ++noteCount;
+  }
+  state.sawError = true;
+}
+
 /// Pair predecessor and successor operations at the same traversal position.
 /// Repeated pairs must have equal execution counts under equivalent control
 /// conditions.
@@ -905,33 +1063,9 @@ LogicalResult addPipeOccurrenceEdges(SmallVectorImpl<PipeScheduleNode> &nodes,
                                      LaunchNodeCoord receiverCoord,
                                      ModuleState &state,
                                      bool requireEqualOccurrences = true) {
-  bool haveInvalidCount = requireEqualOccurrences
-                              ? predecessors.size() != successors.size()
-                              : predecessors.size() < successors.size();
-  if (haveInvalidCount) {
-    bool hasExtraPredecessor = predecessors.size() > successors.size();
-    PipeScheduleNodeId unmatchedNode = hasExtraPredecessor
-                                           ? predecessors[successors.size()]
-                                           : successors[predecessors.size()];
-    StringRef unmatchedName =
-        hasExtraPredecessor ? predecessorName : successorName;
-    StringRef missingName =
-        hasExtraPredecessor ? successorName : predecessorName;
-    auto diag =
-        nodes[unmatchedNode].op->emitOpError()
-        << "PipeNet "
-        << state.netName(nodes[unmatchedNode].pipeType.getPipeNetId())
-        << " requires one " << predecessorName << " operation for each "
-        << successorName << " operation at receiver core_x=" << receiverCoord.x
-        << ", core_y=" << receiverCoord.y << "; found " << predecessors.size()
-        << " " << predecessorName << " operation(s) and " << successors.size()
-        << " " << successorName << " operation(s)";
-    diag.attachNote(nodes[unmatchedNode].op->getLoc())
-        << "this " << unmatchedName << " operation has no corresponding "
-        << missingName << " operation";
-    state.sawError = true;
-    return failure();
-  }
+  assert(!haveInvalidPipeOccurrenceCount(predecessors, successors,
+                                         requireEqualOccurrences) &&
+         "static occurrence counts must be validated before pairing");
   for (auto [predecessor, successor] : llvm::zip(predecessors, successors)) {
     if (!proveEqualPipeScheduleNodeCounts(nodes[predecessor], nodes[successor],
                                           state)) {
@@ -1052,6 +1186,48 @@ LogicalResult verifyPipeEventFunctionsReachable(
   return result;
 }
 
+/// Reject control flow whose execution order cannot be represented by a
+/// linear sequence of synchronization events.
+LogicalResult verifyPipeEventFunctionsHaveOneBlock(
+    ModuleOp module,
+    const llvm::DenseSet<Operation *> &functionsWithPipeEvents) {
+  LogicalResult result = success();
+  for (func::FuncOp function : module.getOps<func::FuncOp>()) {
+    if (!functionsWithPipeEvents.contains(function.getOperation()) ||
+        function.getBody().hasOneBlock()) {
+      continue;
+    }
+    function.emitOpError()
+        << "cannot verify PipeNet synchronization in multi-block function @"
+        << function.getSymName()
+        << "; schedule verification requires a single-block function body";
+    result = failure();
+  }
+  return result;
+}
+
+/// Reject events whose launch-node set is not known exactly. Omitting such an
+/// event from coordinate-specific schedules could accept an invalid program.
+LogicalResult verifyPipeEventDomainsKnown(const ModuleState &state) {
+  LogicalResult result = success();
+  for (const PipeEvent &event : state.pipeEvents) {
+    if (event.domain.known) {
+      continue;
+    }
+    auto diag = event.op->emitOpError()
+                << "cannot verify PipeNet synchronization because this "
+                << getPipeEventName(event.kind)
+                << " has an unknown launch-node domain";
+    if (event.unanalyzableOp) {
+      diag.attachNote(event.unanalyzableOp->getLoc())
+          << "this coordinate-dependent condition cannot be evaluated "
+             "statically";
+    }
+    result = failure();
+  }
+  return result;
+}
+
 /// Visit pipe events in the order executed by one kernel thread. Direct helper
 /// calls are expanded at each call site so their events retain caller order and
 /// invocation multiplicity.
@@ -1143,7 +1319,10 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
       getFunctionsWithPipeEvents(module, state, symbolTables);
   llvm::DenseSet<Operation *> reachableFunctions =
       getFunctionsReachableFromKernelThreads(module, symbolTables);
-  if (failed(verifyPipeEventFunctionsReachable(state, reachableFunctions))) {
+  if (failed(verifyPipeEventFunctionsReachable(state, reachableFunctions)) ||
+      failed(verifyPipeEventFunctionsHaveOneBlock(module,
+                                                  functionsWithPipeEvents)) ||
+      failed(verifyPipeEventDomainsKnown(state))) {
     state.sawError = true;
     return;
   }
@@ -1183,23 +1362,29 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
                   state.sawError = true;
                   return WalkResult::interrupt();
                 }
-                PipeScheduleNodeId nodeId =
-                    addPipeScheduleNode(nodes, event, coord, activeCallSites);
                 PipeIdentity pipeIdentity = getPipeIdentity(event.pipeType);
                 auto pipeIt =
                     pipeOccurrences
                         .try_emplace(pipeIdentity,
                                      PipeOccurrences{event.pipeType, {}})
                         .first;
+                SmallVector<PipeScheduleNodeId> *matchingNodes = nullptr;
                 if (event.kind == PipeEventKind::Send) {
-                  pipeIt->second.sends.push_back(nodeId);
+                  matchingNodes = &pipeIt->second.sends;
                 } else if (event.kind == PipeEventKind::ReceivePost) {
-                  receivePostNodes[getPipeCoordIdentity(event.pipeType, coord)]
-                      .push_back(nodeId);
+                  matchingNodes = &receivePostNodes[getPipeCoordIdentity(
+                      event.pipeType, coord)];
                 } else {
-                  receiveWaitNodes[getPipeCoordIdentity(event.pipeType, coord)]
-                      .push_back(nodeId);
+                  matchingNodes = &receiveWaitNodes[getPipeCoordIdentity(
+                      event.pipeType, coord)];
                 }
+                if (failed(verifySingleKernelFunction(
+                        nodes, *matchingNodes, event, function, state))) {
+                  return WalkResult::interrupt();
+                }
+                PipeScheduleNodeId nodeId = addPipeScheduleNode(
+                    nodes, event, coord, function, activeCallSites);
+                matchingNodes->push_back(nodeId);
                 if (lastNode) {
                   addPipeScheduleEdge(nodes, *lastNode, nodeId,
                                       PipeScheduleEdgeKind::ProgramOrder);
@@ -1218,28 +1403,77 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
   for (const auto &[pipeIdentity, occurrences] : pipeOccurrences) {
     LaunchNodeDomain destinations =
         getPipeDestinationLaunchNodeDomain(occurrences.pipeType);
+    auto getReceiverNodes = [](auto &nodesByCoord,
+                               const PipeCoordIdentity &identity) {
+      auto nodeIt = nodesByCoord.find(identity);
+      return nodeIt == nodesByCoord.end()
+                 ? ArrayRef<PipeScheduleNodeId>()
+                 : ArrayRef<PipeScheduleNodeId>(nodeIt->second);
+    };
+
+    SmallVector<LaunchNodeCoord> postMismatchCoords;
+    if (!occurrences.sends.empty()) {
+      for (LaunchNodeCoord coord : destinations.nodes) {
+        ArrayRef<PipeScheduleNodeId> posts =
+            getReceiverNodes(receivePostNodes,
+                             getPipeCoordIdentity(occurrences.pipeType, coord));
+        if (haveInvalidPipeOccurrenceCount(posts, occurrences.sends,
+                                           /*requireEqualOccurrences=*/true)) {
+          postMismatchCoords.push_back(coord);
+        }
+      }
+    }
+    if (!postMismatchCoords.empty()) {
+      ArrayRef<PipeScheduleNodeId> posts = getReceiverNodes(
+          receivePostNodes, getPipeCoordIdentity(occurrences.pipeType,
+                                                 postMismatchCoords.front()));
+      emitPipeOccurrenceCountError(nodes, posts, occurrences.sends,
+                                   "receiver post", "send", postMismatchCoords,
+                                   state);
+      continue;
+    }
+
+    SmallVector<LaunchNodeCoord> waitMismatchCoords;
+    for (LaunchNodeCoord coord : destinations.nodes) {
+      ArrayRef<PipeScheduleNodeId> waits = getReceiverNodes(
+          receiveWaitNodes, getPipeCoordIdentity(occurrences.pipeType, coord));
+      if (haveInvalidPipeOccurrenceCount(occurrences.sends, waits,
+                                         /*requireEqualOccurrences=*/false)) {
+        waitMismatchCoords.push_back(coord);
+      }
+    }
+    if (!waitMismatchCoords.empty()) {
+      ArrayRef<PipeScheduleNodeId> waits = getReceiverNodes(
+          receiveWaitNodes, getPipeCoordIdentity(occurrences.pipeType,
+                                                 waitMismatchCoords.front()));
+      emitPipeOccurrenceCountError(nodes, occurrences.sends, waits, "send",
+                                   "receive wait", waitMismatchCoords, state);
+      continue;
+    }
+
     for (LaunchNodeCoord coord : destinations.nodes) {
       PipeCoordIdentity identity =
           getPipeCoordIdentity(occurrences.pipeType, coord);
-      auto postIt = receivePostNodes.find(identity);
       if (!occurrences.sends.empty()) {
         ArrayRef<PipeScheduleNodeId> posts =
-            postIt == receivePostNodes.end()
-                ? ArrayRef<PipeScheduleNodeId>()
-                : ArrayRef<PipeScheduleNodeId>(postIt->second);
+            getReceiverNodes(receivePostNodes, identity);
         if (failed(addPipeOccurrenceEdges(
                 nodes, posts, occurrences.sends,
                 PipeScheduleEdgeKind::ReceivePostEnablesSend, "receiver post",
                 "send", coord, state))) {
-          continue;
+          break;
         }
       }
-      auto waitIt = receiveWaitNodes.find(identity);
-      if (waitIt != receiveWaitNodes.end()) {
-        (void)addPipeOccurrenceEdges(nodes, occurrences.sends, waitIt->second,
-                                     PipeScheduleEdgeKind::SendCompletesReceive,
-                                     "send", "receive wait", coord, state,
-                                     /*requireEqualOccurrences=*/false);
+      ArrayRef<PipeScheduleNodeId> waits =
+          getReceiverNodes(receiveWaitNodes, identity);
+      if (!waits.empty()) {
+        if (failed(addPipeOccurrenceEdges(
+                nodes, occurrences.sends, waits,
+                PipeScheduleEdgeKind::SendCompletesReceive, "send",
+                "receive wait", coord, state,
+                /*requireEqualOccurrences=*/false))) {
+          break;
+        }
       }
     }
   }
@@ -1279,6 +1513,33 @@ void validatePipeNetReferences(ModuleOp module, ModuleState &state) {
   });
 }
 
+/// Verify that every declared pipe endpoint belongs to the module launch grid.
+LogicalResult validatePipeEndpoints(ModuleOp module, const ModuleState &state) {
+  LogicalResult result = success();
+  module.walk([&](CreatePipeOp pipe) {
+    PipeType pipeType = mlir::cast<PipeType>(pipe.getResult().getType());
+    LaunchNodeCoord source{pipeType.getSrcX(), pipeType.getSrcY()};
+    if (!knownLaunchNodeDomainContains(state.baseDomain, source)) {
+      pipe.emitOpError() << "declares source core_x=" << source.x
+                         << ", core_y=" << source.y
+                         << " outside the module `ttl.launch_grid`";
+      result = failure();
+      return;
+    }
+    if (!getPipeDestinationLaunchNodeDomain(pipeType).isSubsetOf(
+            state.baseDomain)) {
+      pipe.emitOpError() << "declares destination range core_x="
+                         << pipeType.getDstStartX() << ".."
+                         << pipeType.getDstEndX()
+                         << ", core_y=" << pipeType.getDstStartY() << ".."
+                         << pipeType.getDstEndY()
+                         << " outside the module `ttl.launch_grid`";
+      result = failure();
+    }
+  });
+  return result;
+}
+
 /// Initialize the shared PipeNet metadata required by both verification passes.
 LogicalResult initializePipeNetVerification(ModuleOp module, ModuleState &state,
                                             StringRef passName) {
@@ -1296,7 +1557,7 @@ LogicalResult initializePipeNetVerification(ModuleOp module, ModuleState &state,
                           "(an i64 array of length 2 with positive entries)";
     return failure();
   }
-  return success();
+  return validatePipeEndpoints(module, state);
 }
 
 struct TTLVerifyPipeNetGuardsPass
@@ -1304,43 +1565,43 @@ struct TTLVerifyPipeNetGuardsPass
   void runOnOperation() override {
     ModuleOp module = getOperation();
 
-    ModuleState state(module);
+    ValueOriginAnalysis &valueOrigins = getAnalysis<ValueOriginAnalysis>();
+    ModuleState state(valueOrigins);
     if (failed(initializePipeNetVerification(module, state,
                                              "ttl-verify-pipenet-guards"))) {
       signalPassFailure();
       return;
     }
     if (!state.hasPipes()) {
+      markAllAnalysesPreserved();
       return;
     }
 
-    // Kernel-thread `func.func`s are runtime-invoked entry points with no
-    // callers (so they are analysis roots and get `setToEntryState`); helpers
-    // they call have the caller's narrowed lattice flow through `func.call`.
-    DataFlowSolver solver;
-    dataflow::loadBaselineAnalyses(solver);
-    LaunchNodeDomainAnalysisOptions options;
-    options.operationCallback = [&](Operation *op,
-                                    const LaunchNodeDomain &domain,
-                                    Operation *unanalyzableOp) {
-      recordGuardOperation(op, domain, unanalyzableOp, state);
-    };
-    options.pipeNetScopeCallback =
-        [&](PipeNetScopeOp scopeOp, const LaunchNodeDomain &domain,
-            Operation * /*unanalyzableOp*/,
-            const PipeNetScopeLaunchNodeDomains &scope) {
-          verifyPipeNetScope(scopeOp, domain, scope, state);
-        };
-    solver.load<LaunchNodeDomainAnalysis>(state, options);
-    if (failed(solver.initializeAndRun(module))) {
+    const PipeNetLaunchNodeDomainAnalysis &launchDomains =
+        getAnalysis<PipeNetLaunchNodeDomainAnalysis>();
+    if (!launchDomains.isValid()) {
       signalPassFailure();
       return;
     }
+    module.walk([&](Operation *op) {
+      if (const PipeNetOperationDomainInfo *info =
+              launchDomains.getOperationInfo(op)) {
+        recordGuardOperation(op, info->domain, info->unanalyzableOp, state);
+      }
+      if (auto scopeOp = mlir::dyn_cast<PipeNetScopeOp>(op)) {
+        if (const PipeNetScopeDomainInfo *info =
+                launchDomains.getScopeInfo(scopeOp)) {
+          verifyPipeNetScope(scopeOp, info->domain, info->scope, state);
+        }
+      }
+    });
 
     verifyCBWaits(state);
     if (state.sawError) {
       signalPassFailure();
+      return;
     }
+    markAllAnalysesPreserved();
   }
 };
 
@@ -1349,36 +1610,39 @@ struct TTLVerifyPipeNetSchedulePass
   void runOnOperation() override {
     ModuleOp module = getOperation();
 
-    ModuleState state(module);
+    ValueOriginAnalysis &valueOrigins = getAnalysis<ValueOriginAnalysis>();
+    ModuleState state(valueOrigins);
     if (failed(initializePipeNetVerification(module, state,
                                              "ttl-verify-pipenet-schedule"))) {
       signalPassFailure();
       return;
     }
     if (!state.hasPipes()) {
+      markAllAnalysesPreserved();
       return;
     }
 
-    DataFlowSolver solver;
-    dataflow::loadBaselineAnalyses(solver);
-    LaunchNodeDomainAnalysisOptions options;
-    options.operationCallback = [&](Operation *op,
-                                    const LaunchNodeDomain &domain,
-                                    Operation * /*unanalyzableOp*/) {
-      recordScheduleOperation(op, domain, state);
-    };
-    solver.load<LaunchNodeDomainAnalysis>(state, options);
-    if (failed(solver.initializeAndRun(module))) {
+    const PipeNetLaunchNodeDomainAnalysis &launchDomains =
+        getAnalysis<PipeNetLaunchNodeDomainAnalysis>();
+    if (!launchDomains.isValid()) {
       signalPassFailure();
       return;
     }
+    module.walk([&](Operation *op) {
+      if (const PipeNetOperationDomainInfo *info =
+              launchDomains.getOperationInfo(op)) {
+        recordScheduleOperation(op, info->domain, info->unanalyzableOp, state);
+      }
+    });
 
     if (!state.sawError) {
       verifyPipeScheduleCycles(module, state);
     }
     if (state.sawError) {
       signalPassFailure();
+      return;
     }
+    markAllAnalysesPreserved();
   }
 };
 
