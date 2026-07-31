@@ -374,8 +374,8 @@ static LogicalResult lowerTensorAccumulationScope(
 
   AccumulationCostModel costModel =
       AccumulationCostModel::forOperation(scope.getOperation());
-  FailureOr<AccumulationStrategyPlan> plan = planTensorAccumulationStrategy(
-      scope, recurrence, strategy, costModel);
+  FailureOr<AccumulationStrategyPlan> plan =
+      planTensorAccumulationStrategy(scope, recurrence, strategy, costModel);
   AccumulationStrategy selectedStrategy = strategy;
   if (failed(plan)) {
     if (strategy == AccumulationStrategy::Dst) {
