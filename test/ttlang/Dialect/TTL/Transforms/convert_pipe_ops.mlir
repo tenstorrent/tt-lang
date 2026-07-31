@@ -1323,6 +1323,213 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
 
 // -----
 
+// Device transfers that share core coordinates and a PipeNet ID are separate
+// transfers. Reversed receiver order must not pair either send with the other
+// logical-device edge.
+// CHECK-LABEL: module attributes
+// CHECK-SAME: ttl.pipe_global_semaphore_count = 1 : i64
+// CHECK-SAME: ttl.pipe_sync_semaphore_count = 0 : i64
+//
+// CHECK-LABEL: func.func @same_pipe_edge_0_sender
+// CHECK-SAME: local = #ttl.device_ref<coordinates = [0]>
+// CHECK-SAME: remote = #ttl.device_ref<coordinates = [1]>
+// CHECK-DAG: %[[EDGE0_DEVICE_INDEX:.*]] = arith.constant 1 : index
+// CHECK-DAG: %[[EDGE0_DEVICE:.*]] = arith.constant 0 : i32
+// CHECK-DAG: %[[EDGE0_DFB_INDEX:.*]] = arith.constant 0 : index
+// CHECK: %[[EDGE0_MANAGER:.*]] = ttkernel.routing_plane.create_connection_manager
+// CHECK: %[[EDGE0_CONNECTIONS:.*]] = ttkernel.routing_plane.open_connections %[[EDGE0_MANAGER]]
+// CHECK: %[[EDGE0_SOURCE_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK: %[[EDGE0_CURRENT_DEVICE:.*]] = ttkernel.get_common_arg_val(%[[EDGE0_DEVICE_INDEX]])
+// CHECK: %[[EDGE0_SELECTED:.*]] = arith.cmpi eq, %[[EDGE0_CURRENT_DEVICE]], %[[EDGE0_DEVICE]]
+// CHECK: scf.if %[[EDGE0_SELECTED]]
+// CHECK: %[[EDGE0_SOURCE_ADDR:.*]] = ttkernel.get_write_ptr(%[[EDGE0_SOURCE_DFB]])
+// CHECK: %[[EDGE0_DEST_ADDR:.*]] = ttkernel.get_common_arg_val(%[[EDGE0_DFB_INDEX]])
+// CHECK: %[[EDGE0_DONE_ADDR:.*]] = ttkernel.get_common_arg_val(%[[EDGE0_DEVICE_INDEX]])
+// CHECK: %[[EDGE0_DEST_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[EDGE0_DEST_ADDR]]
+// CHECK: %[[EDGE0_DONE_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[EDGE0_DONE_ADDR]]
+// CHECK-NOT: ttkernel.routing_plane.fused_write_atomic_inc
+// CHECK: ttkernel.routing_plane.fused_write_atomic_inc(%[[EDGE0_MANAGER]], %[[EDGE0_CONNECTIONS]], {{.*}}, {{.*}}, {{.*}}, %[[EDGE0_SOURCE_ADDR]], {{.*}}, %[[EDGE0_DEST_NOC]], %[[EDGE0_DONE_NOC]], {{.*}})
+// CHECK-NOT: ttkernel.routing_plane.fused_write_atomic_inc
+// CHECK-NOT: ttkernel.get_semaphore
+// CHECK: ttkernel.routing_plane.close_connections(%[[EDGE0_MANAGER]]
+//
+// CHECK-LABEL: func.func @same_pipe_edge_1_sender
+// CHECK-SAME: local = #ttl.device_ref<coordinates = [2]>
+// CHECK-SAME: remote = #ttl.device_ref<coordinates = [3]>
+// CHECK-DAG: %[[EDGE1_DEVICE_INDEX:.*]] = arith.constant 1 : index
+// CHECK-DAG: %[[EDGE1_DEVICE:.*]] = arith.constant 2 : i32
+// CHECK-DAG: %[[EDGE1_DFB_INDEX:.*]] = arith.constant 0 : index
+// CHECK: %[[EDGE1_MANAGER:.*]] = ttkernel.routing_plane.create_connection_manager
+// CHECK: %[[EDGE1_CONNECTIONS:.*]] = ttkernel.routing_plane.open_connections %[[EDGE1_MANAGER]]
+// CHECK: %[[EDGE1_SOURCE_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK: %[[EDGE1_CURRENT_DEVICE:.*]] = ttkernel.get_common_arg_val(%[[EDGE1_DEVICE_INDEX]])
+// CHECK: %[[EDGE1_SELECTED:.*]] = arith.cmpi eq, %[[EDGE1_CURRENT_DEVICE]], %[[EDGE1_DEVICE]]
+// CHECK: scf.if %[[EDGE1_SELECTED]]
+// CHECK: %[[EDGE1_SOURCE_ADDR:.*]] = ttkernel.get_write_ptr(%[[EDGE1_SOURCE_DFB]])
+// CHECK: %[[EDGE1_DEST_ADDR:.*]] = ttkernel.get_common_arg_val(%[[EDGE1_DFB_INDEX]])
+// CHECK: %[[EDGE1_DONE_ADDR:.*]] = ttkernel.get_common_arg_val(%[[EDGE1_DEVICE_INDEX]])
+// CHECK: %[[EDGE1_DEST_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[EDGE1_DEST_ADDR]]
+// CHECK: %[[EDGE1_DONE_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[EDGE1_DONE_ADDR]]
+// CHECK-NOT: ttkernel.routing_plane.fused_write_atomic_inc
+// CHECK: ttkernel.routing_plane.fused_write_atomic_inc(%[[EDGE1_MANAGER]], %[[EDGE1_CONNECTIONS]], {{.*}}, {{.*}}, {{.*}}, %[[EDGE1_SOURCE_ADDR]], {{.*}}, %[[EDGE1_DEST_NOC]], %[[EDGE1_DONE_NOC]], {{.*}})
+// CHECK-NOT: ttkernel.routing_plane.fused_write_atomic_inc
+// CHECK-NOT: ttkernel.get_semaphore
+// CHECK: ttkernel.routing_plane.close_connections(%[[EDGE1_MANAGER]]
+//
+// CHECK-LABEL: func.func @same_pipe_edge_1_receiver
+// CHECK-DAG: %[[EDGE1_RECEIVER_DEVICE:.*]] = arith.constant 3 : i32
+// CHECK-DAG: %[[EDGE1_ONE:.*]] = arith.constant 1 : i32
+// CHECK-DAG: %[[EDGE1_RECEIVER_GLOBAL_INDEX:.*]] = arith.constant 0 : index
+// CHECK: %[[EDGE1_DEST_DFB:.*]] = ttkernel.get_compile_time_arg_val(1)
+// CHECK: %[[EDGE1_RECEIVER_CURRENT_DEVICE:.*]] = ttkernel.get_common_arg_val
+// CHECK: %[[EDGE1_RECEIVER_SELECTED:.*]] = arith.cmpi eq, %[[EDGE1_RECEIVER_CURRENT_DEVICE]], %[[EDGE1_RECEIVER_DEVICE]]
+// CHECK: scf.if %[[EDGE1_RECEIVER_SELECTED]]
+// CHECK: ttkernel.cb_reserve_back(%[[EDGE1_DEST_DFB]], %[[EDGE1_ONE]])
+// CHECK: %[[EDGE1_PREVIOUS_COUNT:.*]] = memref.load
+// CHECK: %[[EDGE1_COUNT:.*]] = arith.addi %[[EDGE1_PREVIOUS_COUNT]], %[[EDGE1_ONE]]
+// CHECK: memref.store %[[EDGE1_COUNT]]
+// CHECK: %[[EDGE1_GLOBAL_ADDR:.*]] = ttkernel.get_common_arg_val(%[[EDGE1_RECEIVER_GLOBAL_INDEX]])
+// CHECK: %[[EDGE1_GLOBAL_PTR:.*]] = ttkernel.reinterpret_cast(%[[EDGE1_GLOBAL_ADDR]])
+// CHECK-NOT: ttkernel.experimental.semaphore_wait_min
+// CHECK: ttkernel.experimental.semaphore_wait_min(%[[EDGE1_GLOBAL_PTR]], %[[EDGE1_COUNT]])
+// CHECK-NEXT: ttkernel.cb_push_back(%[[EDGE1_DEST_DFB]], %[[EDGE1_ONE]])
+// CHECK-NOT: ttkernel.experimental.semaphore_wait
+// CHECK-NOT: ttkernel.get_semaphore
+// CHECK: return
+//
+// CHECK-LABEL: func.func @same_pipe_edge_0_receiver
+// CHECK-DAG: %[[EDGE0_ONE:.*]] = arith.constant 1 : i32
+// CHECK-DAG: %[[EDGE0_RECEIVER_GLOBAL_INDEX:.*]] = arith.constant 0 : index
+// CHECK: %[[EDGE0_DEST_DFB:.*]] = ttkernel.get_compile_time_arg_val(1)
+// CHECK: %[[EDGE0_RECEIVER_CURRENT_DEVICE:.*]] = ttkernel.get_common_arg_val
+// CHECK: %[[EDGE0_RECEIVER_SELECTED:.*]] = arith.cmpi eq, %[[EDGE0_RECEIVER_CURRENT_DEVICE]], %[[EDGE0_ONE]]
+// CHECK: scf.if %[[EDGE0_RECEIVER_SELECTED]]
+// CHECK: ttkernel.cb_reserve_back(%[[EDGE0_DEST_DFB]], %[[EDGE0_ONE]])
+// CHECK: %[[EDGE0_PREVIOUS_COUNT:.*]] = memref.load
+// CHECK: %[[EDGE0_COUNT:.*]] = arith.addi %[[EDGE0_PREVIOUS_COUNT]], %[[EDGE0_ONE]]
+// CHECK: memref.store %[[EDGE0_COUNT]]
+// CHECK: %[[EDGE0_GLOBAL_ADDR:.*]] = ttkernel.get_common_arg_val(%[[EDGE0_RECEIVER_GLOBAL_INDEX]])
+// CHECK: %[[EDGE0_GLOBAL_PTR:.*]] = ttkernel.reinterpret_cast(%[[EDGE0_GLOBAL_ADDR]])
+// CHECK-NOT: ttkernel.experimental.semaphore_wait_min
+// CHECK: ttkernel.experimental.semaphore_wait_min(%[[EDGE0_GLOBAL_PTR]], %[[EDGE0_COUNT]])
+// CHECK-NEXT: ttkernel.cb_push_back(%[[EDGE0_DEST_DFB]], %[[EDGE0_ONE]])
+// CHECK-NOT: ttkernel.experimental.semaphore_wait
+// CHECK-NOT: ttkernel.get_semaphore
+// CHECK: return
+module attributes {ttl.launch_grid = array<i64: 1, 1>} {
+  func.func @same_pipe_edge_0_sender()
+      attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+    %source = ttl.bind_cb {cb_index = 0, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 41 {
+        deviceTransfer = #ttl.device_transfer<
+          domain = <components = <name = "device", extent = [4]>>,
+          edge = <source = <coordinates = [0]>, destination = <coordinates = [1]>>>}
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 41>
+    %is_source = ttl.is_device
+        <coordinates = [0]> in
+        <components = <name = "device", extent = [4]>> : i1
+    scf.if %is_source {
+      ttl.if_src %pipe
+          : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 41> {
+        %send = ttl.copy %source, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+               !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 41>)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
+    }
+    func.return
+  }
+
+  func.func @same_pipe_edge_1_sender()
+      attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+    %source = ttl.bind_cb {cb_index = 0, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 41 {
+        deviceTransfer = #ttl.device_transfer<
+          domain = <components = <name = "device", extent = [4]>>,
+          edge = <source = <coordinates = [2]>, destination = <coordinates = [3]>>>}
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 41>
+    %is_source = ttl.is_device
+        <coordinates = [2]> in
+        <components = <name = "device", extent = [4]>> : i1
+    scf.if %is_source {
+      ttl.if_src %pipe
+          : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 41> {
+        %send = ttl.copy %source, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+               !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 41>)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
+    }
+    func.return
+  }
+
+  func.func @same_pipe_edge_1_receiver()
+      attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+    %destination = ttl.bind_cb {cb_index = 1, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 41 {
+        deviceTransfer = #ttl.device_transfer<
+          domain = <components = <name = "device", extent = [4]>>,
+          edge = <source = <coordinates = [2]>, destination = <coordinates = [3]>>>}
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 41>
+    %is_destination = ttl.is_device
+        <coordinates = [3]> in
+        <components = <name = "device", extent = [4]>> : i1
+    scf.if %is_destination {
+      ttl.if_dst %pipe
+          : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 41> {
+        %reserve = ttl.cb_reserve %destination
+            : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+            -> tensor<1x1x!ttcore.tile<32x32, f32>>
+        %receive = ttl.copy %pipe, %reserve
+            : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 41>,
+               tensor<1x1x!ttcore.tile<32x32, f32>>)
+            -> !ttl.transfer_handle
+        ttl.wait %receive : !ttl.transfer_handle
+        ttl.cb_push %destination
+            : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+      }
+    }
+    func.return
+  }
+
+  func.func @same_pipe_edge_0_receiver()
+      attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+    %destination = ttl.bind_cb {cb_index = 1, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 41 {
+        deviceTransfer = #ttl.device_transfer<
+          domain = <components = <name = "device", extent = [4]>>,
+          edge = <source = <coordinates = [0]>, destination = <coordinates = [1]>>>}
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 41>
+    %is_destination = ttl.is_device
+        <coordinates = [1]> in
+        <components = <name = "device", extent = [4]>> : i1
+    scf.if %is_destination {
+      ttl.if_dst %pipe
+          : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 41> {
+        %reserve = ttl.cb_reserve %destination
+            : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+            -> tensor<1x1x!ttcore.tile<32x32, f32>>
+        %receive = ttl.copy %pipe, %reserve
+            : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 41>,
+               tensor<1x1x!ttcore.tile<32x32, f32>>)
+            -> !ttl.transfer_handle
+        ttl.wait %receive : !ttl.transfer_handle
+        ttl.cb_push %destination
+            : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+      }
+    }
+    func.return
+  }
+}
+
+// -----
+
 // CB -> Pipe (multicast, non-loopback): the sender uses the proven common
 // receiver DFB address and signals every receiver after the multicast write.
 // CHECK-LABEL: func.func @copy_cb_to_pipe_multicast

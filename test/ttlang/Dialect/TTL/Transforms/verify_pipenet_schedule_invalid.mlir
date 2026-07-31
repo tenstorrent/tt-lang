@@ -533,6 +533,68 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 
 // -----
 
+// The receiver post is guarded by the source device predicate and therefore
+// does not execute at the transfer destination.
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @fabric_source_device()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0 {
+        deviceTransfer = #ttl.device_transfer<
+          domain = <components = <name = "device", extent = [2]>>,
+          edge = <source = <coordinates = [0]>, destination = <coordinates = [1]>>>}
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %is_source = ttl.is_device
+        <coordinates = [0]> in
+        <components = <name = "device", extent = [2]>> : i1
+    scf.if %is_source {
+      ttl.if_src %pipe
+          : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0> {
+        // expected-error @below {{cannot prove a one-to-one synchronization schedule on PipeNet net_0 for receiver core_x=0, core_y=0; receiver post and send occurrences do not have matching proven execution counts and conditions}}
+        %send = ttl.copy %send_cb, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>,
+               !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
+    }
+    func.return
+  }
+
+  func.func @fabric_wrong_receiver_device()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0 {
+        deviceTransfer = #ttl.device_transfer<
+          domain = <components = <name = "device", extent = [2]>>,
+          edge = <source = <coordinates = [0]>, destination = <coordinates = [1]>>>}
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %is_source = ttl.is_device
+        <coordinates = [0]> in
+        <components = <name = "device", extent = [2]>> : i1
+    scf.if %is_source {
+      ttl.if_dst %pipe
+          : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0> {
+        %reserve = ttl.cb_reserve %recv_cb
+            : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+            -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        // expected-note @below {{matching receiver post occurrence is here}}
+        %receive = ttl.copy %pipe, %reserve
+            : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+               tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> !ttl.transfer_handle
+        ttl.wait %receive : !ttl.transfer_handle
+      }
+    }
+    func.return
+  }
+}
+
+// -----
+
 // A same-thread loopback receive wait before the matching send creates a
 // cycle: the wait needs the send to complete, but program order places the
 // send after the wait.

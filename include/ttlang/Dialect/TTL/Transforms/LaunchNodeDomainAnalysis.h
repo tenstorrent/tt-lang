@@ -57,6 +57,20 @@ struct LaunchNodeCoord {
   bool operator==(const LaunchNodeCoord &rhs) const;
 };
 
+/// One execution point identified by a node and optional logical device.
+///
+/// Node-local operations use only `node`. Cross-device operations also set
+/// `deviceDomain` and `device`, allowing execution-count analysis to evaluate
+/// logical-device predicates without changing launch-node domain propagation.
+struct LaunchExecutionPoint {
+  LaunchNodeCoord node;
+  DeviceDomainAttr deviceDomain;
+  DeviceRefAttr device;
+
+  bool operator<(const LaunchExecutionPoint &rhs) const;
+  bool operator==(const LaunchExecutionPoint &rhs) const;
+};
+
 /// Set of launch nodes that may execute a program point.
 ///
 /// A known domain contains an exact finite set of launch-grid coordinates. An
@@ -134,13 +148,13 @@ struct LaunchNodeDomainState {
   llvm::DenseMap<int64_t, LaunchNodeDomain> netDestinationDomains;
   llvm::DenseMap<int64_t, SmallVector<Location>> pipeNetLocs;
   llvm::DenseMap<int64_t, std::string> pipeNetNames;
-  /// Reuse each function-and-coordinate analysis across all operations in the
-  /// function. The cached analyses reference the current IR and must not be
-  /// queried after a transformation mutates the function.
+  /// Reuse each function-and-execution-point analysis across all operations in
+  /// the function. The cached analyses reference the current IR and must not
+  /// be queried after a transformation mutates the function.
   mutable llvm::DenseMap<
       Operation *,
-      std::map<LaunchNodeCoord, std::unique_ptr<ExecutionCountAnalysis>>>
-      executionCountAnalysesByFunctionAndCoord;
+      std::map<LaunchExecutionPoint, std::unique_ptr<ExecutionCountAnalysis>>>
+      executionCountAnalysesByFunctionAndPoint;
   bool sawError = false;
   bool hasLaunchGrid = false;
 
@@ -164,6 +178,11 @@ std::optional<bool>
 evaluatePredicateAtLaunchNode(Value value, LaunchNodeCoord coord,
                               const LaunchNodeDomainState &state);
 
+/// Evaluate a predicate at one node and optional logical device.
+std::optional<bool>
+evaluatePredicateAtLaunchPoint(Value value, LaunchExecutionPoint point,
+                               const LaunchNodeDomainState &state);
+
 /// Return the exact execution count of `op` at `coord`. Launch-node facts
 /// specialize coordinate and PipeNet predicates before the generic execution
 /// count analysis evaluates the enclosing control flow. Return `std::nullopt`
@@ -171,6 +190,11 @@ evaluatePredicateAtLaunchNode(Value value, LaunchNodeCoord coord,
 std::optional<std::uint64_t>
 getExactExecutionCountAtLaunchNode(Operation *op, LaunchNodeCoord coord,
                                    const LaunchNodeDomainState &state);
+
+/// Return the exact execution count at one node and optional logical device.
+std::optional<std::uint64_t>
+getExactExecutionCountAtLaunchPoint(Operation *op, LaunchExecutionPoint point,
+                                    const LaunchNodeDomainState &state);
 
 /// Prove that two operations with unknown exact counts have equivalent
 /// control flow at their launch nodes.
@@ -187,6 +211,15 @@ bool proveEqualUnresolvedExecutionCountAtLaunchNodes(
     llvm::function_ref<std::optional<Value>(BlockArgument)>
         resolveRhsFunctionArgument);
 
+/// Prove equivalent unresolved control flow at two execution points.
+bool proveEqualUnresolvedExecutionCountAtLaunchPoints(
+    Operation *lhs, LaunchExecutionPoint lhsPoint, Operation *rhs,
+    LaunchExecutionPoint rhsPoint, const LaunchNodeDomainState &state,
+    llvm::function_ref<std::optional<Value>(BlockArgument)>
+        resolveLhsFunctionArgument,
+    llvm::function_ref<std::optional<Value>(BlockArgument)>
+        resolveRhsFunctionArgument);
+
 /// Prove that two operations execute equally often at their launch nodes.
 /// Exact counts prove equality directly. Otherwise, the operations must share
 /// equivalent unresolved control flow that does not require call-site values.
@@ -195,6 +228,14 @@ bool proveEqualExecutionCountAtLaunchNodes(Operation *lhs,
                                            Operation *rhs,
                                            LaunchNodeCoord rhsCoord,
                                            const LaunchNodeDomainState &state);
+
+/// Prove that two operations execute equally often at their node and logical
+/// device execution points.
+bool proveEqualExecutionCountAtLaunchPoints(Operation *lhs,
+                                            LaunchExecutionPoint lhsPoint,
+                                            Operation *rhs,
+                                            LaunchExecutionPoint rhsPoint,
+                                            const LaunchNodeDomainState &state);
 
 /// Return the operation with the earlier source location.
 ///

@@ -6,6 +6,103 @@
 // Each split module includes the finalization metadata required by the
 // verifier; its descriptor contents are irrelevant to guard analysis.
 
+// A fabric send and receiver post execute once at different logical devices.
+// Device-aware execution counts prove their one-to-one correspondence.
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @fabric_source_device
+  // CHECK: %[[SOURCE_PIPE:.*]] = ttl.create_pipe
+  // CHECK-SAME: deviceTransfer = #ttl.device_transfer<
+  // CHECK: %[[SOURCE_DFB:.*]] = ttl.bind_cb
+  // CHECK: %[[IS_SOURCE:.*]] = ttl.is_device
+  // CHECK-SAME: <coordinates = [0]>
+  // CHECK-NOT: ttl.copy
+  // CHECK-NOT: ttl.wait
+  // CHECK: scf.if %[[IS_SOURCE]]
+  // CHECK-NEXT: ttl.if_src %[[SOURCE_PIPE]]
+  // CHECK-NEXT: %[[SEND:.*]] = ttl.copy %[[SOURCE_DFB]], %[[SOURCE_PIPE]]
+  // CHECK-NEXT: ttl.wait %[[SEND]]
+  // CHECK-NEXT: }
+  // CHECK-NEXT: }
+  // CHECK-NOT: ttl.copy
+  // CHECK-NOT: ttl.wait
+  // CHECK: return
+  func.func @fabric_source_device()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0 {
+        deviceTransfer = #ttl.device_transfer<
+          domain = <components = <name = "device", extent = [2]>>,
+          edge = <source = <coordinates = [0]>, destination = <coordinates = [1]>>>}
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %is_source = ttl.is_device
+        <coordinates = [0]> in
+        <components = <name = "device", extent = [2]>> : i1
+    scf.if %is_source {
+      ttl.if_src %pipe
+          : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0> {
+        %send = ttl.copy %send_cb, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>,
+               !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
+    }
+    func.return
+  }
+
+  // CHECK-LABEL: func.func @fabric_destination_device
+  // CHECK: %[[DEST_PIPE:.*]] = ttl.create_pipe
+  // CHECK-SAME: deviceTransfer = #ttl.device_transfer<
+  // CHECK: %[[DEST_DFB:.*]] = ttl.bind_cb
+  // CHECK: %[[IS_DEST:.*]] = ttl.is_device_in_range
+  // CHECK-SAME: <lo = <coordinates = [1]>, hi = <coordinates = [2]>>
+  // CHECK-NOT: ttl.cb_reserve
+  // CHECK-NOT: ttl.copy
+  // CHECK-NOT: ttl.wait
+  // CHECK: scf.if %[[IS_DEST]]
+  // CHECK-NEXT: ttl.if_dst %[[DEST_PIPE]]
+  // CHECK-NEXT: %[[RESERVE:.*]] = ttl.cb_reserve %[[DEST_DFB]]
+  // CHECK-NEXT: %[[RECEIVE:.*]] = ttl.copy %[[DEST_PIPE]], %[[RESERVE]]
+  // CHECK-NEXT: ttl.wait %[[RECEIVE]]
+  // CHECK-NEXT: }
+  // CHECK-NEXT: }
+  // CHECK-NOT: ttl.cb_reserve
+  // CHECK-NOT: ttl.copy
+  // CHECK-NOT: ttl.wait
+  // CHECK: return
+  func.func @fabric_destination_device()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0 {
+        deviceTransfer = #ttl.device_transfer<
+          domain = <components = <name = "device", extent = [2]>>,
+          edge = <source = <coordinates = [0]>, destination = <coordinates = [1]>>>}
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %is_destination = ttl.is_device_in_range
+        <lo = <coordinates = [1]>, hi = <coordinates = [2]>> in
+        <components = <name = "device", extent = [2]>> : i1
+    scf.if %is_destination {
+      ttl.if_dst %pipe
+          : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0> {
+        %reserve = ttl.cb_reserve %recv_cb
+            : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+            -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        %receive = ttl.copy %pipe, %reserve
+            : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+               tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> !ttl.transfer_handle
+        ttl.wait %receive : !ttl.transfer_handle
+      }
+    }
+    func.return
+  }
+}
+
+// -----
+
 // A copy into a pipe is valid only on the source node. A copy out of a pipe is
 // valid only on destination nodes. Existing ttl.if_src/ttl.if_dst regions
 // provide those execution domains.
