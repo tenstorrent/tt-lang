@@ -74,10 +74,21 @@ Pipe transfers have the following operational semantics:
   lowered send has completed before the handle is produced.
 - The compiler uses the user's DFB reserve and wait structure for pipe
   payload storage. Pipe lowering does not create a separate payload DFB.
-- A deadlock-free schedule must allow every receive post required by a
-  send to run before that send can block on the post.
-- A receive wait must run only after the send operation that can
-  complete that receive has run.
+- Every send requires one corresponding receiver post at every destination.
+  The post must be able to run before the send blocks waiting for it.
+- Every receiver wait requires one corresponding send. The send must be able
+  to run before the receiver blocks waiting for completion.
+- A receiver post does not wait for payload and does not require a receiver
+  wait. Code may post a reservation before deciding when or whether to wait. A
+  pipe with no sends or waits may contain unused receiver posts.
+- A send completes after the payload write and completion signal. It does not
+  wait for the receiver to execute a receive wait, so a send does not require
+  a receiver wait.
+- Receiver waits consume completion signals in send order. The number of waits
+  may be smaller than the number of sends, but may not exceed it.
+- When a pipe has sends, every destination must have the same number of
+  receiver posts as sends. Extra posts would advance the sender-ready state
+  before the intended send.
 - The verifier builds a wait-for graph over send, receive-post, and
   receive-wait events. It rejects schedules whose same-thread ordering
   creates a wait-for cycle. Other runtime hangs can still have different
@@ -86,6 +97,8 @@ Pipe transfers have the following operational semantics:
   order. Each pair may execute repeatedly, but the two sides must contain
   the same number of operations and each pair must execute equally often
   under equivalent conditions.
+- Direct helper calls are expanded at each call site. This preserves the
+  caller's event order and counts each helper invocation separately.
 
 The receive transfer created by `ttl.copy(pipe, dst_blk)` moves through
 these states:
@@ -840,6 +853,7 @@ at the construction source location.
 ... -> ttl-finalize-dfb-indices
     -> ttl-annotate-cb-associations
     -> ttl-verify-pipenet-guards                 (read-only analysis)
+    -> ttl-verify-pipenet-schedule               (read-only analysis)
     -> ttl-verify-dfb-spsc                       (read-only analysis)
     -> ttl-erase-pipenet-scopes                  (transform)
     -> ttl-validate-cb-budget                    (read-only analysis)
@@ -849,20 +863,20 @@ at the construction source location.
 ```
 
 `ttl-verify-pipenet-guards` runs after DFB-index annotation
-(`ttl-annotate-cb-associations`) so DFB wait checks can resolve
-producer DFB indices. It runs before `convert-ttl-to-ttkernel` so
-diagnostics print at TTL IR with TTL-level op names (`ttl.copy`,
-`ttl.cb_wait`, `ttl.is_src`, etc.). `ttl-erase-pipenet-scopes` runs
-immediately after the verifier and inlines / erases the structural
-`ttl.pipenet_scope` markers so downstream lowering sees a scope-free
-IR.
+(`ttl-annotate-cb-associations`) so DFB wait checks can resolve producer DFB
+indices. `ttl-verify-pipenet-schedule` follows it so invalid launch domains are
+diagnosed before schedule construction. Both run before
+`convert-ttl-to-ttkernel`, so diagnostics print at TTL IR with TTL-level op
+names (`ttl.copy`, `ttl.cb_wait`, `ttl.is_src`, etc.).
+`ttl-erase-pipenet-scopes` then inlines and erases the structural
+`ttl.pipenet_scope` markers so downstream lowering sees scope-free IR.
 
 Three independent pipeline definitions stay in sync: the C++
 `createTTLToTTKernelPipeline` in
 `lib/Dialect/TTL/Pipelines/TTLPipelines.cpp`, the Python frontend
 pipeline string in `python/ttl/ttl_api.py`, and the me2e builder in
-`test/me2e/builder/pipeline.py`. All three insert verifier and
-eraser at the same anchor.
+`test/me2e/builder/pipeline.py`. All three insert the verifiers and
+eraser at the same position.
 
 ## Analysis structure
 
@@ -919,6 +933,22 @@ post-pass walks recorded `cb_wait` uses and checks each against the
 union. DFB indices are stable post-finalize, so a `cb_wait` in one
 kernel function is checked against `cb_push` domains from a
 different kernel function.
+
+`ttl-verify-pipenet-schedule` reuses the launch-node domains but constructs a
+separate event graph. Its correspondence rules are directional:
+
+| Event | Required corresponding event | Reason |
+| --- | --- | --- |
+| Send | One receiver post at every destination | The send blocks until every destination publishes storage. |
+| Receiver wait | One send | The wait blocks until the sender signals payload completion. |
+| Receiver post | A send only when that pipe contains sends | Posting publishes storage and does not wait for payload; an unused post is permitted when the pipe has no sends or waits. |
+
+The send does not require a receiver wait. Sender completion includes the
+payload write and receiver completion signal, not receiver consumption. The
+schedule graph therefore adds send-to-wait edges only for receiver waits that
+exist in the program. Receiver waits consume send completions in order, so the
+first wait corresponds to the first send, the second wait to the second send,
+and so on. Additional sends do not require waits.
 
 ## Predicate recognition
 
@@ -1001,6 +1031,9 @@ note: suggested guard: `net_0.is_src()`
 | this region exchanges data on PipeNet \<N\> on launched nodes that are not part of that net | A `with cb.reserve()` block containing PipeNet role traffic is reachable from launched nodes outside that net's source/destination union. | wrap the surrounding work in `if net_<N>.is_active(): ...` |
 | this `ttl.copy(buffer, pipe)` sends data on PipeNet \<N\> from a node that is not a source of any pipe in that net | A DFB-to-pipe copy is reachable from a node that isn't the pipe's source coordinate. | wrap the copy in `net_<N>.if_src(...)` or guard with `if net_<N>.is_src(): ...` |
 | this `ttl.copy(pipe, buffer)` receives data from PipeNet \<N\> on a node that is not a destination of any pipe in that net | A pipe-to-DFB copy is reachable from a node outside the pipe's destination range. | wrap the copy in `net_<N>.if_dst(...)` or guard with `if net_<N>.is_dst(): ...` |
+| PipeNet \<N\> requires one receiver post operation for each send operation | A send has no receiver post at a destination, or the post and send occurrence counts differ. | add or reorder receiver posts so every destination publishes one reservation for each send |
+| PipeNet \<N\> requires one send operation for each receive wait operation | A receiver wait has no available send completion. | add the corresponding send or remove the unmatched receiver wait |
+| cannot prove a one-to-one synchronization schedule on PipeNet \<N\> | Paired events have different or statically unprovable execution counts or conditions. | use matching static control flow for the corresponding protocol events |
 | pipe send occurs before the receiver publishes a destination address on PipeNet \<N\> | A same-thread source can block waiting for a receiver address that is posted later in the same thread. | move `ttl.copy(pipe, dst)` before `ttl.copy(src, pipe)`, then wait for receive completion after the send operation has run |
 | receive wait occurs before the send that completes it on PipeNet \<N\> | A receiver waits on the receive transfer before the matching sender operation can run. | post the receive first, run the send, then wait on the transfer handle returned by `ttl.copy(pipe, dst)` |
 | pipe schedule contains a wait-for cycle | Same-thread ordering creates a wait-for cycle not matched by a more specific diagnostic. | reorder same-thread sends and receives so all required receive posts happen before dependent sends |
@@ -1111,6 +1144,8 @@ that the two diverge:
 | --- | --- | --- |
 | Cross-pipe construction validation (above) | yes | yes |
 | `ttl.copy` reachable only from `pipe.src` / `pipe.dst` | yes (`ttl-verify-pipenet-guards`) | no |
+| Send/post and send/wait correspondence | yes (`ttl-verify-pipenet-schedule`) | runtime only |
+| Same-thread PipeNet wait-for cycles | yes (`ttl-verify-pipenet-schedule`) | runtime only |
 | `ttl.pipenet_scope` domain is a subset of declared role union | yes | no |
 | `cb_wait` covered by `cb_push` producer domain | yes (static) | runtime only (deadlock detector in `greenlet_scheduler.py`) |
 | Unanalyzable coord-dependent predicate diagnosed | yes | no |

@@ -20,6 +20,7 @@ target_link_libraries(ttlang-execution-count-test PRIVATE
 mlir_check_link_libraries(ttlang-execution-count-test)
 
 add_subdirectory(ValueOrigin)
+add_subdirectory(LaunchNodeDomain)
 
 # This toy client demonstrates aggregate operation statistics without making
 # the output format a supported command-line interface.

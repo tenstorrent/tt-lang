@@ -71,6 +71,7 @@ def compile_ttl_to_ttkernel(
         f"ttl-finalize-dfb-indices,"
         f"func.func(ttl-annotate-cb-associations),"
         f"ttl-verify-pipenet-guards,"
+        f"ttl-verify-pipenet-schedule,"
         f"ttl-verify-dfb-spsc,"
         f"ttl-erase-pipenet-scopes,"
         f"ttl-validate-cb-budget,"

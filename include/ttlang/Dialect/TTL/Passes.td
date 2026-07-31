@@ -563,21 +563,53 @@ def TTLVerifyPipeNetGuards
     Each diagnostic carries an example offending coordinate, the contributing
     PipeNet(s), and a suggested guard.
 
-    Same-thread pipe schedule diagnostics are emitted only when role and DFB
-    domain checks have succeeded, so schedule-cycle reports are not mixed with
-    earlier guard failures.
-
-    The schedule graph pairs receiver-post, send, and receive-wait operations
-    by IR order. Each paired operation may execute repeatedly, but each side
-    must contain the same number of operations and each pair must have equal
-    dynamic execution counts and equivalent enclosing conditions. One repeated
-    operation is not expanded to correspond to multiple distinct operations.
-
     The pass expects one module per `@ttl.operation`, a well-formed
     `ttl.launch_grid` (i64 array of length 2 with positive entries), static
     `I64Attr` coordinates on `ttl.create_pipe`, and finalized DFB indices
     (i.e. `ttl-annotate-cb-associations` and `ttl-finalize-dfb-indices`
     have run).
+  }];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::scf::SCFDialect",
+    "::mlir::tt::ttl::TTLDialect"
+  ];
+}
+
+def TTLVerifyPipeNetSchedule
+    : Pass<"ttl-verify-pipenet-schedule", "::mlir::ModuleOp"> {
+  let summary = "Verify PipeNet synchronization correspondence and ordering";
+  let description = [{
+    Verifies the synchronization protocol formed by pipe sends, receiver posts,
+    and receiver waits. A send waits until every destination has posted a
+    dataflow buffer reservation, so each send requires one corresponding post
+    at every destination. A receiver wait waits for payload arrival, so each
+    wait requires one corresponding send. Posting a reservation does not wait
+    for payload, and a sender does not wait for the receiver to consume the
+    payload. Receiver posts may therefore exist without receiver waits, and
+    sends do not require receiver waits. When a pipe has sends, each
+    destination must have the same number of receiver posts as sends. A pipe
+    with no sends or waits may contain unused receiver posts. Receiver waits
+    consume send completions in order; the number of waits may not exceed the
+    number of sends.
+
+    Events are paired by program order for each pipe endpoint. Paired static
+    events must have equal dynamic execution counts and equivalent enclosing
+    conditions. Direct calls to helper functions are expanded at each call
+    site so caller order and invocation multiplicity are preserved. Recursive
+    calls containing pipe synchronization events are rejected because their
+    finite event sequence cannot be constructed statically.
+
+    The pass also constructs the same-thread wait-for graph. Program-order
+    edges connect consecutive events on one launched node. Protocol edges
+    connect each receiver post to its send and each send to its receiver wait.
+    A cycle means no event in the cycle can execute and is rejected.
+
+    The pass expects one module per `@ttl.operation`, a well-formed
+    `ttl.launch_grid` attribute, and static coordinates on `ttl.create_pipe`.
+    `ttl-verify-pipenet-guards` must run first in the compiler pipeline so
+    invalid launch domains are reported separately.
   }];
 
   let dependentDialects = [
