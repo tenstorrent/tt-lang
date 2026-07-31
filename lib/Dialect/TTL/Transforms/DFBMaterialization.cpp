@@ -10,31 +10,6 @@
 
 namespace mlir::tt::ttl {
 
-namespace {
-
-FailureOr<DFBMaterializedValue>
-materializeTensorValueToDFB(Value intermediate, func::FuncOp funcOp,
-                            OpBuilder &builder) {
-  auto tensorType = cast<RankedTensorType>(intermediate.getType());
-  Location loc = intermediate.getLoc();
-
-  Operation *defOp = intermediate.getDefiningOp();
-  assert(defOp && "intermediate must have a defining op");
-  assert(funcOp && "intermediate must be inside a func::FuncOp");
-
-  BindCBOp bindDFB =
-      createCompilerAllocatedDFB(tensorType, loc, funcOp, builder);
-
-  builder.setInsertionPointAfter(defOp);
-  createDFBStore(intermediate, bindDFB.getResult(), builder);
-
-  auto attach =
-      createDFBWaitAndAttach(bindDFB.getResult(), tensorType, loc, builder);
-  return DFBMaterializedValue{attach.getResult(), intermediate};
-}
-
-} // namespace
-
 BindCBOp createCompilerAllocatedDFB(RankedTensorType tensorType, Location loc,
                                     func::FuncOp funcOp, OpBuilder &builder) {
   MLIRContext *ctx = builder.getContext();
@@ -89,13 +64,27 @@ AttachCBOp createDFBWaitAndAttach(Value dfb, RankedTensorType tensorType,
   return AttachCBOp::create(builder, loc, tensorType, wait.getResult(), dfb);
 }
 
-FailureOr<DFBMaterializedValue>
-materializeToDFB(Value intermediate, func::FuncOp funcOp, OpBuilder &builder) {
+Value materializeToDFB(Value intermediate, func::FuncOp funcOp,
+                       OpBuilder &builder) {
   auto result = dyn_cast<OpResult>(intermediate);
   assert((!result || !isa<ComputeOp>(result.getOwner())) &&
          "compute results are materialized atomically by "
          "TTLInsertIntermediateDFBs");
-  return materializeTensorValueToDFB(intermediate, funcOp, builder);
+  auto tensorType = cast<RankedTensorType>(intermediate.getType());
+  Location loc = intermediate.getLoc();
+
+  Operation *defOp = intermediate.getDefiningOp();
+  assert(defOp && "intermediate must have a defining op");
+  assert(funcOp && "intermediate must be inside a func::FuncOp");
+
+  BindCBOp bindDFB =
+      createCompilerAllocatedDFB(tensorType, loc, funcOp, builder);
+
+  builder.setInsertionPointAfter(defOp);
+  createDFBStore(intermediate, bindDFB.getResult(), builder);
+
+  return createDFBWaitAndAttach(bindDFB.getResult(), tensorType, loc, builder)
+      .getResult();
 }
 
 } // namespace mlir::tt::ttl
