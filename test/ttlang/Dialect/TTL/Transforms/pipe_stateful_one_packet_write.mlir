@@ -225,6 +225,63 @@ func.func @opaque_call_invalidates_write_state(
 
 // -----
 
+// A recursive call component remains unknown until every member is analyzed.
+// The separately called component member must not reuse an incomplete cached
+// result that hides a generic write in another member.
+// CHECK-LABEL: func.func private @recursive_write_a
+// CHECK: ttkernel.noc_async_write
+// CHECK-LABEL: func.func private @recursive_write_b
+// CHECK: call @recursive_write_a
+// CHECK-LABEL: func.func @recursive_call_cycle_reprograms_write_state
+// CHECK-NOT: ttkernel.noc_async_write_one_packet_set_state
+// CHECK: scf.for
+// CHECK: call @recursive_write_a
+// CHECK: call @recursive_write_b
+// CHECK: ttkernel.noc_async_write
+// CHECK-NOT: ttkernel.noc_async_write_one_packet_with_state
+func.func private @recursive_write_a(
+    %src: i32, %dst: i32, %x: index, %y: index, %noc: i8) {
+  func.call @recursive_write_b(%src, %dst, %x, %y, %noc)
+      : (i32, i32, index, index, i8) -> ()
+  %size = arith.constant 2048 : i32
+  ttkernel.noc_async_write
+      %src, core[%x, %y], %dst, %size, noc %noc
+      : (i32, index, index, i32, i32, i8) -> ()
+  func.return
+}
+
+func.func private @recursive_write_b(
+    %src: i32, %dst: i32, %x: index, %y: index, %noc: i8) {
+  func.call @recursive_write_a(%src, %dst, %x, %y, %noc)
+      : (i32, i32, index, index, i8) -> ()
+  func.return
+}
+
+func.func @recursive_call_cycle_reprograms_write_state(
+    %condition: i1, %src: i32, %dst: i32, %x: index, %y: index,
+    %noc: i8) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c4 = arith.constant 4 : index
+  %size = arith.constant 2048 : i32
+  scf.for %iteration = %c0 to %c4 step %c1 {
+    scf.if %condition {
+      func.call @recursive_write_a(%src, %dst, %x, %y, %noc)
+          : (i32, i32, index, index, i8) -> ()
+    } {ttkernel.execution_core_ranges = [#ttcore.core_range<(1,0), (1,0)>]}
+    func.call @recursive_write_b(%src, %dst, %x, %y, %noc)
+        : (i32, i32, index, index, i8) -> ()
+    scf.if %condition {
+      ttkernel.noc_async_write
+          %src, core[%x, %y], %dst, %size, noc %noc
+          : (i32, index, index, i32, i32, i8) -> ()
+    } {ttkernel.execution_core_ranges = [#ttcore.core_range<(0,0), (0,0)>]}
+  }
+  func.return
+}
+
+// -----
+
 // The inner loop reprograms the NoC write command before the outer send, so
 // only the inner send can reuse resident command state.
 // CHECK-LABEL: func.func @nested_sends_use_generic_writes
