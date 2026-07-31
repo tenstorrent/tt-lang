@@ -1333,9 +1333,10 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
 // CHECK-LABEL: func.func @same_pipe_edge_0_sender
 // CHECK-SAME: local = #ttl.device_ref<coordinates = [0]>
 // CHECK-SAME: remote = #ttl.device_ref<coordinates = [1]>
-// CHECK-DAG: %[[EDGE0_DEVICE_INDEX:.*]] = arith.constant 1 : index
+// CHECK-DAG: %[[EDGE0_DEVICE_INDEX:.*]] = arith.constant 2 : index
 // CHECK-DAG: %[[EDGE0_DEVICE:.*]] = arith.constant 0 : i32
 // CHECK-DAG: %[[EDGE0_DFB_INDEX:.*]] = arith.constant 0 : index
+// CHECK-DAG: %[[EDGE0_DONE_INDEX:.*]] = arith.constant 1 : index
 // CHECK: %[[EDGE0_MANAGER:.*]] = ttkernel.routing_plane.create_connection_manager
 // CHECK: %[[EDGE0_CONNECTIONS:.*]] = ttkernel.routing_plane.open_connections %[[EDGE0_MANAGER]]
 // CHECK: %[[EDGE0_SOURCE_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
@@ -1344,7 +1345,7 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
 // CHECK: scf.if %[[EDGE0_SELECTED]]
 // CHECK: %[[EDGE0_SOURCE_ADDR:.*]] = ttkernel.get_write_ptr(%[[EDGE0_SOURCE_DFB]])
 // CHECK: %[[EDGE0_DEST_ADDR:.*]] = ttkernel.get_common_arg_val(%[[EDGE0_DFB_INDEX]])
-// CHECK: %[[EDGE0_DONE_ADDR:.*]] = ttkernel.get_common_arg_val(%[[EDGE0_DEVICE_INDEX]])
+// CHECK: %[[EDGE0_DONE_ADDR:.*]] = ttkernel.get_common_arg_val(%[[EDGE0_DONE_INDEX]])
 // CHECK: %[[EDGE0_DEST_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[EDGE0_DEST_ADDR]]
 // CHECK: %[[EDGE0_DONE_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[EDGE0_DONE_ADDR]]
 // CHECK-NOT: ttkernel.routing_plane.fused_write_atomic_inc
@@ -1356,9 +1357,10 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
 // CHECK-LABEL: func.func @same_pipe_edge_1_sender
 // CHECK-SAME: local = #ttl.device_ref<coordinates = [2]>
 // CHECK-SAME: remote = #ttl.device_ref<coordinates = [3]>
-// CHECK-DAG: %[[EDGE1_DEVICE_INDEX:.*]] = arith.constant 1 : index
+// CHECK-DAG: %[[EDGE1_DEVICE_INDEX:.*]] = arith.constant 2 : index
 // CHECK-DAG: %[[EDGE1_DEVICE:.*]] = arith.constant 2 : i32
 // CHECK-DAG: %[[EDGE1_DFB_INDEX:.*]] = arith.constant 0 : index
+// CHECK-DAG: %[[EDGE1_DONE_INDEX:.*]] = arith.constant 1 : index
 // CHECK: %[[EDGE1_MANAGER:.*]] = ttkernel.routing_plane.create_connection_manager
 // CHECK: %[[EDGE1_CONNECTIONS:.*]] = ttkernel.routing_plane.open_connections %[[EDGE1_MANAGER]]
 // CHECK: %[[EDGE1_SOURCE_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
@@ -1367,7 +1369,7 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
 // CHECK: scf.if %[[EDGE1_SELECTED]]
 // CHECK: %[[EDGE1_SOURCE_ADDR:.*]] = ttkernel.get_write_ptr(%[[EDGE1_SOURCE_DFB]])
 // CHECK: %[[EDGE1_DEST_ADDR:.*]] = ttkernel.get_common_arg_val(%[[EDGE1_DFB_INDEX]])
-// CHECK: %[[EDGE1_DONE_ADDR:.*]] = ttkernel.get_common_arg_val(%[[EDGE1_DEVICE_INDEX]])
+// CHECK: %[[EDGE1_DONE_ADDR:.*]] = ttkernel.get_common_arg_val(%[[EDGE1_DONE_INDEX]])
 // CHECK: %[[EDGE1_DEST_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[EDGE1_DEST_ADDR]]
 // CHECK: %[[EDGE1_DONE_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[EDGE1_DONE_ADDR]]
 // CHECK-NOT: ttkernel.routing_plane.fused_write_atomic_inc
