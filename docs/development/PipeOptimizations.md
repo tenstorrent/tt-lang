@@ -149,11 +149,14 @@ generic contiguous NoC write.
 
 Stateful write selection treats resident NoC command state as an explicit
 hardware effect. TTKernel NoC operations declare their command class and
-whether they preserve resident state through traits. A write is converted only
-when no operation that may reprogram the write command can execute between
-loop iterations on the same node. Resolved function calls are analyzed
-transitively. Unresolved calls and opaque external calls invalidate the state
-because their device implementation is not available to the compiler.
+whether they preserve or depend on resident state through traits. A write is
+converted only when its enclosing loop has a statically positive trip count and
+no operation that may reprogram or use the write command can execute on the same
+node. The positive trip count prevents setup from changing state when the
+original loop would not execute. Rejecting another state user prevents hoisted
+setup from changing a preceding `_with_state` operation. Resolved function calls
+are analyzed transitively. Unresolved calls and opaque external calls invalidate
+the state because their device implementation is not available to the compiler.
 
 Data and free credits use cumulative counters. An overlapped stream therefore
 does not require each non-posted credit update to complete before the next

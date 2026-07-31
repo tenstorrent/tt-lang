@@ -72,6 +72,10 @@ def TTKernel_NocAtomicCommandOpTrait
 def TTKernel_NocCommandStatePreservingOpTrait
     : TTKernel_Trait<"TTKernelNocCommandStatePreservingOpTrait", []>;
 
+def TTKernel_NocCommandStateDependentOpTrait
+    : TTKernel_Trait<"TTKernelNocCommandStateDependentOpTrait",
+                     [TTKernel_NocOpTrait]>;
+
 def TTKernel_NocCommandStateUnknownOpTrait
     : TTKernel_Trait<"TTKernelNocCommandStateUnknownOpTrait", []>;
 

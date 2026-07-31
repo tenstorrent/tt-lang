@@ -422,3 +422,73 @@ module attributes {ttl.target_arch = "blackhole"} {
     func.return
   }
 }
+
+// -----
+
+// Hoisting setup across a zero-trip loop would overwrite the resident state
+// even though the generic write never executes.
+// CHECK-LABEL: func.func @zero_trip_loop_preserves_prior_state
+// CHECK: ttkernel.noc_async_write_one_packet_set_state
+// CHECK-NOT: ttkernel.noc_async_write_one_packet_set_state
+// CHECK: scf.for
+// CHECK-NEXT: ttkernel.noc_async_write
+// CHECK: ttkernel.noc_async_write_one_packet_with_state
+// CHECK-NOT: ttkernel.noc_async_write_one_packet_set_state
+func.func @zero_trip_loop_preserves_prior_state(
+    %src: i32, %prior_dst: i32, %new_dst: i32, %prior_x: index,
+    %prior_y: index, %new_x: index, %new_y: index, %noc: i8) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %size = arith.constant 2048 : i32
+  %zero = arith.constant 0 : i32
+  %prior_noc_addr = ttkernel.get_noc_addr(
+      %prior_x, %prior_y, %zero, %noc)
+      : (index, index, i32, i8) -> !ttkernel.noc_addr
+  ttkernel.noc_async_write_one_packet_set_state(
+      %prior_noc_addr, %size, noc %noc)
+      : (!ttkernel.noc_addr, i32, i8) -> ()
+  scf.for %iteration = %c0 to %c0 step %c1 {
+    ttkernel.noc_async_write
+        %src, core[%new_x, %new_y], %new_dst, %size, noc %noc
+        : (i32, index, index, i32, i32, i8) -> ()
+  }
+  ttkernel.noc_async_write_one_packet_with_state(
+      %src, %prior_dst, noc %noc) : (i32, i32, i8) -> ()
+  func.return
+}
+
+// -----
+
+// A state-dependent write before the generic write must observe the setup that
+// precedes the loop. Moving the generic write's setup before the loop changes
+// that first write's destination and transfer size.
+// CHECK-LABEL: func.func @state_user_before_write_prevents_hoisting
+// CHECK: ttkernel.noc_async_write_one_packet_set_state
+// CHECK-NOT: ttkernel.noc_async_write_one_packet_set_state
+// CHECK: scf.for
+// CHECK-NEXT: ttkernel.noc_async_write_one_packet_with_state
+// CHECK-NEXT: ttkernel.noc_async_write
+// CHECK-NOT: ttkernel.noc_async_write_one_packet_set_state
+func.func @state_user_before_write_prevents_hoisting(
+    %prior_src: i32, %new_src: i32, %prior_dst: i32, %new_dst: i32,
+    %prior_x: index, %prior_y: index, %new_x: index, %new_y: index,
+    %noc: i8) {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %size = arith.constant 2048 : i32
+  %zero = arith.constant 0 : i32
+  %prior_noc_addr = ttkernel.get_noc_addr(
+      %prior_x, %prior_y, %zero, %noc)
+      : (index, index, i32, i8) -> !ttkernel.noc_addr
+  ttkernel.noc_async_write_one_packet_set_state(
+      %prior_noc_addr, %size, noc %noc)
+      : (!ttkernel.noc_addr, i32, i8) -> ()
+  scf.for %iteration = %c0 to %c1 step %c1 {
+    ttkernel.noc_async_write_one_packet_with_state(
+        %prior_src, %prior_dst, noc %noc) : (i32, i32, i8) -> ()
+    ttkernel.noc_async_write
+        %new_src, core[%new_x, %new_y], %new_dst, %size, noc %noc
+        : (i32, index, index, i32, i32, i8) -> ()
+  }
+  func.return
+}
