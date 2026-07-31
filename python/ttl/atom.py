@@ -829,6 +829,11 @@ class Atom:
             math_fidelity=decorator_options["math_fidelity"],
             options=decorator_options["options"],
             prepare_call=prepare_call,
+            factory_cache=decorator_options["factory_cache"],
+            factory_cache_key=decorator_options["factory_cache_key"],
+            runtime_resource_factory=decorator_options[
+                "runtime_resource_factory"
+            ],
         )
         functools.update_wrapper(self, spec.fn)
 
@@ -855,6 +860,8 @@ def _unified_operation(
     math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
     runtime_resource_factory=None,
+    factory_cache=None,
+    factory_cache_key=None,
 ) -> Callable:
     """Build the unified-body form selected by ``@ttl.operation``.
 
@@ -878,6 +885,8 @@ def _unified_operation(
                 "math_fidelity": math_fidelity,
                 "options": options,
                 "runtime_resource_factory": runtime_resource_factory,
+                "factory_cache": factory_cache,
+                "factory_cache_key": factory_cache_key,
             },
         )
 
@@ -896,6 +905,8 @@ def operation(
     math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
     runtime_resource_factory=None,
+    factory_cache=None,
+    factory_cache_key=None,
 ) -> Callable:
     """Define a unified-body or explicit multi-kernel operation."""
 
@@ -916,6 +927,8 @@ def operation(
                 math_fidelity=math_fidelity,
                 options=options,
                 runtime_resource_factory=runtime_resource_factory,
+                factory_cache=factory_cache,
+                factory_cache_key=factory_cache_key,
                 _prepare_call=prepare_call,
             )(fn)
             wrapped._ttl_operation_kind = "multi_kernel"
@@ -931,6 +944,8 @@ def operation(
             math_fidelity=math_fidelity,
             options=options,
             runtime_resource_factory=runtime_resource_factory,
+            factory_cache=factory_cache,
+            factory_cache_key=factory_cache_key,
         )(fn)
 
     return _decorator
