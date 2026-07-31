@@ -570,11 +570,7 @@ def TTLVerifyPipeNetGuards
     `cb_index` on every `ttl.bind_cb`.
   }];
 
-  let dependentDialects = [
-    "::mlir::arith::ArithDialect",
-    "::mlir::scf::SCFDialect",
-    "::mlir::tt::ttl::TTLDialect"
-  ];
+  let dependentDialects = [];
 }
 
 def TTLVerifyPipeNetSchedule
@@ -612,11 +608,7 @@ def TTLVerifyPipeNetSchedule
     invalid launch domains are reported separately.
   }];
 
-  let dependentDialects = [
-    "::mlir::arith::ArithDialect",
-    "::mlir::scf::SCFDialect",
-    "::mlir::tt::ttl::TTLDialect"
-  ];
+  let dependentDialects = [];
 }
 
 def TTLVerifyTransferProvenance
