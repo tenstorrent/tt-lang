@@ -182,18 +182,19 @@ struct StatefulWriteLoop {
   SmallVector<scf::IfOp> predicates;
 };
 
-/// Cached transitive write-command effect for a callable operation.
-enum class CallableWriteCommandEffect {
+/// Cached transitive write-command interference for a callable operation.
+enum class CallableWriteCommandInterference {
   Analyzing,
   Preserves,
-  Reprograms,
+  Interferes,
 };
 
-/// Return whether `operation` or a called function may reprogram write state.
-static bool mayTransitivelyReprogramWriteCommand(
+/// Return whether `operation` or a called function may interfere with setup.
+static bool mayTransitivelyInterfereWithWriteCommand(
     Operation *operation,
-    DenseMap<Operation *, CallableWriteCommandEffect> &callableEffects) {
-  if (mayReprogramNocCommand(operation, NocCommandClass::Write)) {
+    DenseMap<Operation *, CallableWriteCommandInterference> &callableEffects) {
+  if (mayReprogramNocCommand(operation, NocCommandClass::Write) ||
+      usesNocCommandState(operation, NocCommandClass::Write)) {
     return true;
   }
 
@@ -212,27 +213,33 @@ static bool mayTransitivelyReprogramWriteCommand(
   if (cachedEffect != callableEffects.end()) {
     // Revisiting an active callable is recursion. Operations after the
     // recursive call are still scanned by the first visit.
-    return cachedEffect->second == CallableWriteCommandEffect::Reprograms;
+    return cachedEffect->second == CallableWriteCommandInterference::Interferes;
   }
 
-  callableEffects[callableOperation] = CallableWriteCommandEffect::Analyzing;
+  callableEffects[callableOperation] =
+      CallableWriteCommandInterference::Analyzing;
   WalkResult walkResult = callableRegion->walk([&](Operation *nested) {
-    if (mayTransitivelyReprogramWriteCommand(nested, callableEffects)) {
+    if (mayTransitivelyInterfereWithWriteCommand(nested, callableEffects)) {
       return WalkResult::interrupt();
     }
     return WalkResult::advance();
   });
-  bool reprograms = walkResult.wasInterrupted();
+  bool interferes = walkResult.wasInterrupted();
   callableEffects[callableOperation] =
-      reprograms ? CallableWriteCommandEffect::Reprograms
-                 : CallableWriteCommandEffect::Preserves;
-  return reprograms;
+      interferes ? CallableWriteCommandInterference::Interferes
+                 : CallableWriteCommandInterference::Preserves;
+  return interferes;
 }
 
 /// Return whether `loop` preserves the write command and setup predicate.
 static LogicalResult analyzeStatefulWriteLoop(NocAsyncWriteOp op,
                                               scf::ForOp loop,
                                               StatefulWriteLoop &result) {
+  std::optional<APInt> tripCount = loop.getStaticTripCount();
+  if (!tripCount || tripCount->isZero()) {
+    return failure();
+  }
+
   auto isLoopInvariant = [&](Value value) {
     return !value || loop.isDefinedOutsideOfLoop(value);
   };
@@ -262,12 +269,12 @@ static LogicalResult analyzeStatefulWriteLoop(NocAsyncWriteOp op,
     }
   }
 
-  DenseMap<Operation *, CallableWriteCommandEffect> callableEffects;
+  DenseMap<Operation *, CallableWriteCommandInterference> callableEffects;
   WalkResult commandCheck = loop.walk([&](Operation *nestedOp) {
     if (nestedOp == op.getOperation()) {
       return WalkResult::advance();
     }
-    if (mayTransitivelyReprogramWriteCommand(nestedOp, callableEffects) &&
+    if (mayTransitivelyInterfereWithWriteCommand(nestedOp, callableEffects) &&
         !haveMutuallyExclusiveExecution(op, nestedOp, loop)) {
       return WalkResult::interrupt();
     }
