@@ -1,0 +1,131 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 650"
+     role="img" aria-labelledby="title description">
+  <title id="title">Seven-device binary-tree gather</title>
+  <desc id="description">
+    Logical devices 3 through 6 first send to parent devices 1 and 2.
+    Devices 1 and 2 then send their gathered payloads to root device 0.
+  </desc>
+
+  <defs>
+    <marker id="first-arrow" markerWidth="8" markerHeight="8"
+            refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 8 4 L 0 8 z" fill="#8250df"/>
+    </marker>
+    <marker id="root-arrow" markerWidth="8" markerHeight="8"
+            refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 8 4 L 0 8 z" fill="#1a7f37"/>
+    </marker>
+    <style>
+      .panel {
+        fill: #f6f8fa;
+        stroke: #8c959f;
+        stroke-width: 2;
+      }
+      .heading {
+        fill: #24292f;
+        font: 600 26px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        text-anchor: middle;
+      }
+      .annotation {
+        fill: #24292f;
+        font: 600 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        text-anchor: middle;
+        dominant-baseline: central;
+      }
+      .axis-label {
+        fill: #57606a;
+        font: 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        text-anchor: middle;
+      }
+      .node {
+        fill: #24292f;
+        stroke: #8c959f;
+        stroke-width: 2;
+      }
+      .root {
+        fill: #116329;
+        stroke: #2da44e;
+        stroke-width: 3;
+      }
+      .node-label {
+        fill: #ffffff;
+        font: 600 18px ui-monospace, SFMono-Regular, Consolas, monospace;
+        text-anchor: middle;
+        dominant-baseline: central;
+      }
+      .first-edge {
+        fill: none;
+        stroke: #8250df;
+        stroke-width: 4;
+        marker-end: url(#first-arrow);
+      }
+      .root-edge {
+        fill: none;
+        stroke: #1a7f37;
+        stroke-width: 4;
+        marker-end: url(#root-arrow);
+      }
+      .first-note {
+        fill: #ffffff;
+        stroke: #8250df;
+        stroke-width: 2;
+      }
+      .root-note {
+        fill: #ffffff;
+        stroke: #1a7f37;
+        stroke-width: 2;
+      }
+    </style>
+  </defs>
+
+  <rect width="1200" height="650" fill="#ffffff"/>
+  <rect class="panel" x="20" y="20" width="1160" height="610" rx="12"/>
+
+  <text class="heading" x="600" y="60">Seven-device binary-tree gather</text>
+  <text class="axis-label" x="600" y="88">
+    Every node label is a logical device coordinate.
+  </text>
+
+  <!-- Draw transfers behind the labels and nodes. -->
+  <path class="root-edge" d="M 380 274 L 575 202"/>
+  <path class="root-edge" d="M 820 274 L 625 202"/>
+
+  <path class="first-edge" d="M 200 474 L 365 326"/>
+  <path class="first-edge" d="M 480 474 L 395 326"/>
+  <path class="first-edge" d="M 720 474 L 805 326"/>
+  <path class="first-edge" d="M 1000 474 L 835 326"/>
+
+  <rect class="root-note" x="390" y="102" width="420" height="36" rx="18"/>
+  <text class="annotation" x="600" y="120">
+    Then, devices 1 and 2 send to root device 0.
+  </text>
+
+  <rect class="first-note" x="400" y="378" width="400" height="36" rx="18"/>
+  <text class="annotation" x="600" y="396">
+    First, child devices send to their parents.
+  </text>
+
+  <!-- Root. -->
+  <rect class="root" x="562" y="150" width="76" height="52" rx="8"/>
+  <text class="node-label" x="600" y="176">(0,)</text>
+
+  <!-- Internal devices. -->
+  <rect class="node" x="342" y="274" width="76" height="52" rx="8"/>
+  <rect class="node" x="782" y="274" width="76" height="52" rx="8"/>
+  <text class="node-label" x="380" y="300">(1,)</text>
+  <text class="node-label" x="820" y="300">(2,)</text>
+
+  <!-- Leaf devices. -->
+  <rect class="node" x="162" y="474" width="76" height="52" rx="8"/>
+  <rect class="node" x="442" y="474" width="76" height="52" rx="8"/>
+  <rect class="node" x="682" y="474" width="76" height="52" rx="8"/>
+  <rect class="node" x="962" y="474" width="76" height="52" rx="8"/>
+  <text class="node-label" x="200" y="500">(3,)</text>
+  <text class="node-label" x="480" y="500">(4,)</text>
+  <text class="node-label" x="720" y="500">(5,)</text>
+  <text class="node-label" x="1000" y="500">(6,)</text>
+
+  <text class="axis-label" x="600" y="582">
+    The application processes the purple transfers before the green transfers.
+  </text>
+</svg>

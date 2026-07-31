@@ -5,7 +5,7 @@
 """Copy bundled tt-lang tutorials out of the install for editing.
 
 Tutorials are shipped inside the wheel under `ttl.tutorials.{elementwise,
-matmul,broadcast}`. This script copies them out to a target directory
+matmul,broadcast,pipes}`. This script copies them out to a target directory
 (default `./tutorials/`) so users can run/edit them.
 """
 
@@ -21,6 +21,7 @@ SECTIONS = {
     "elementwise": "ttl.tutorials.elementwise",
     "matmul": "ttl.tutorials.matmul",
     "broadcast": "ttl.tutorials.broadcast",
+    "pipes": "ttl.tutorials.pipes",
 }
 
 

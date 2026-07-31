@@ -217,9 +217,9 @@ another interconnect. It also does not require `(0, 0)` and `(0, 3)` to be one
 hardware packet apart.
 
 Structured transfers share common domain and component properties through
-`StructuredTransfer`. Current derived forms include axis-neighbor, gather,
-and multicast relations. Additional collectives should add semantic transfer
-forms such as scatter and all-to-all without adding target topology fields.
+`StructuredTransfer`. Current derived forms include axis-neighbor, stencil,
+gather, scatter, and all-to-all relations. These forms contain no target
+topology fields.
 
 ### Shared pipe protocol
 

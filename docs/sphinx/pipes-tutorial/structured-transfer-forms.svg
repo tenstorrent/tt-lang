@@ -1,0 +1,237 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1080"
+     role="img" aria-labelledby="title description">
+  <title id="title">Structured TransferGraph forms</title>
+  <desc id="description">
+    Five panels show an axis-neighbor ring, a gather to logical device zero, a
+    scatter from logical device zero, all-to-all communication among four
+    logical devices, and a nearest-neighbor stencil in two dimensions.
+  </desc>
+
+  <defs>
+    <marker id="ring-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 8 4 L 0 8 z" fill="#0969da"/>
+    </marker>
+    <marker id="gather-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 8 4 L 0 8 z" fill="#1a7f37"/>
+    </marker>
+    <marker id="scatter-arrow" markerWidth="8" markerHeight="8"
+            refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 8 4 L 0 8 z" fill="#8250df"/>
+    </marker>
+    <marker id="all-arrow" markerWidth="7" markerHeight="7" refX="6" refY="3.5"
+            orient="auto-start-reverse" markerUnits="strokeWidth">
+      <path d="M 0 0 L 7 3.5 L 0 7 z" fill="#9a6700"/>
+    </marker>
+    <marker id="stencil-arrow" markerWidth="8" markerHeight="8"
+            refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 8 4 L 0 8 z" fill="#cf222e"/>
+    </marker>
+    <style>
+      .panel { fill: #f6f8fa; stroke: #8c959f; stroke-width: 2; }
+      .heading {
+        fill: #24292f;
+        font: 600 22px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        text-anchor: middle;
+      }
+      .annotation {
+        fill: #57606a;
+        font: 17px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        text-anchor: middle;
+      }
+      .node {
+        fill: #24292f;
+        stroke: #8c959f;
+        stroke-width: 2;
+      }
+      .gather-root {
+        fill: #116329;
+        stroke: #2da44e;
+        stroke-width: 3;
+      }
+      .scatter-source {
+        fill: #6639ba;
+        stroke: #a475f9;
+        stroke-width: 3;
+      }
+      .node-label {
+        fill: #ffffff;
+        font: 600 18px ui-monospace, SFMono-Regular, Consolas, monospace;
+        text-anchor: middle;
+        dominant-baseline: central;
+      }
+      .role-label {
+        fill: #24292f;
+        font: 600 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        text-anchor: middle;
+      }
+      .ring-edge {
+        fill: none;
+        stroke: #0969da;
+        stroke-width: 4;
+        marker-end: url(#ring-arrow);
+      }
+      .gather-edge {
+        fill: none;
+        stroke: #1a7f37;
+        stroke-width: 4;
+        marker-end: url(#gather-arrow);
+      }
+      .scatter-edge {
+        fill: none;
+        stroke: #8250df;
+        stroke-width: 4;
+        marker-end: url(#scatter-arrow);
+      }
+      .all-edge {
+        fill: none;
+        stroke: #9a6700;
+        stroke-width: 3;
+        marker-start: url(#all-arrow);
+        marker-end: url(#all-arrow);
+      }
+      .stencil-source {
+        fill: #a40e26;
+        stroke: #ff8182;
+        stroke-width: 3;
+      }
+      .stencil-edge {
+        fill: none;
+        stroke: #cf222e;
+        stroke-width: 4;
+        marker-end: url(#stencil-arrow);
+      }
+    </style>
+  </defs>
+
+  <rect width="1200" height="1080" fill="#ffffff"/>
+  <rect class="panel" x="20" y="20" width="560" height="330" rx="12"/>
+  <rect class="panel" x="620" y="20" width="560" height="330" rx="12"/>
+  <rect class="panel" x="20" y="370" width="560" height="330" rx="12"/>
+  <rect class="panel" x="620" y="370" width="560" height="330" rx="12"/>
+  <rect class="panel" x="20" y="720" width="1160" height="340" rx="12"/>
+
+  <!-- Axis-neighbor ring. -->
+  <g>
+    <text class="heading" x="300" y="58">
+      axis_neighbor with wrap = True
+    </text>
+    <text class="annotation" x="300" y="84">
+      Each logical device transfers to its next neighbor.
+    </text>
+
+    <path class="ring-edge" d="M 194 140 H 406"/>
+    <path class="ring-edge" d="M 440 174 V 236"/>
+    <path class="ring-edge" d="M 406 270 H 194"/>
+    <path class="ring-edge" d="M 160 236 V 174"/>
+
+    <rect class="node" x="126" y="116" width="68" height="48" rx="8"/>
+    <rect class="node" x="406" y="116" width="68" height="48" rx="8"/>
+    <rect class="node" x="406" y="246" width="68" height="48" rx="8"/>
+    <rect class="node" x="126" y="246" width="68" height="48" rx="8"/>
+    <text class="node-label" x="160" y="140">(0,)</text>
+    <text class="node-label" x="440" y="140">(1,)</text>
+    <text class="node-label" x="440" y="270">(2,)</text>
+    <text class="node-label" x="160" y="270">(3,)</text>
+  </g>
+
+  <!-- Gather. -->
+  <g>
+    <text class="heading" x="900" y="58">gather with root = (0,)</text>
+    <text class="annotation" x="900" y="84">
+      Every non-root logical device transfers to the root.
+    </text>
+
+    <path class="gather-edge" d="M 736 164 L 865 246"/>
+    <path class="gather-edge" d="M 900 164 V 238"/>
+    <path class="gather-edge" d="M 1064 164 L 935 246"/>
+
+    <rect class="node" x="686" y="116" width="68" height="48" rx="8"/>
+    <rect class="node" x="866" y="116" width="68" height="48" rx="8"/>
+    <rect class="node" x="1046" y="116" width="68" height="48" rx="8"/>
+    <rect class="gather-root" x="866" y="246" width="68" height="48" rx="8"/>
+    <text class="node-label" x="720" y="140">(1,)</text>
+    <text class="node-label" x="900" y="140">(2,)</text>
+    <text class="node-label" x="1080" y="140">(3,)</text>
+    <text class="node-label" x="900" y="270">(0,)</text>
+    <text class="role-label" x="900" y="317">root</text>
+  </g>
+
+  <!-- Scatter. -->
+  <g>
+    <text class="heading" x="300" y="408">
+      scatter from source = (0,)
+    </text>
+    <text class="annotation" x="300" y="434">
+      The source transfers to every other logical device.
+    </text>
+
+    <path class="scatter-edge" d="M 276 514 L 150 596"/>
+    <path class="scatter-edge" d="M 300 520 V 588"/>
+    <path class="scatter-edge" d="M 324 514 L 450 596"/>
+
+    <rect class="scatter-source" x="266" y="466" width="68" height="48"
+          rx="8"/>
+    <rect class="node" x="86" y="596" width="68" height="48" rx="8"/>
+    <rect class="node" x="266" y="596" width="68" height="48" rx="8"/>
+    <rect class="node" x="446" y="596" width="68" height="48" rx="8"/>
+    <text class="node-label" x="300" y="490">(0,)</text>
+    <text class="node-label" x="120" y="620">(1,)</text>
+    <text class="node-label" x="300" y="620">(2,)</text>
+    <text class="node-label" x="480" y="620">(3,)</text>
+    <text class="role-label" x="300" y="540">source</text>
+  </g>
+
+  <!-- All-to-all. -->
+  <g>
+    <text class="heading" x="900" y="408">all_to_all</text>
+    <text class="annotation" x="900" y="434">
+      Every pair has one directed edge in each direction.
+    </text>
+
+    <path class="all-edge" d="M 780 490 H 1020"/>
+    <path class="all-edge" d="M 1060 526 V 614"/>
+    <path class="all-edge" d="M 1020 650 H 780"/>
+    <path class="all-edge" d="M 740 614 V 526"/>
+    <path class="all-edge" d="M 770 514 L 1030 626"/>
+    <path class="all-edge" d="M 1030 514 L 770 626"/>
+
+    <rect class="node" x="706" y="466" width="68" height="48" rx="8"/>
+    <rect class="node" x="1026" y="466" width="68" height="48" rx="8"/>
+    <rect class="node" x="1026" y="626" width="68" height="48" rx="8"/>
+    <rect class="node" x="706" y="626" width="68" height="48" rx="8"/>
+    <text class="node-label" x="740" y="490">(0,)</text>
+    <text class="node-label" x="1060" y="490">(1,)</text>
+    <text class="node-label" x="1060" y="650">(2,)</text>
+    <text class="node-label" x="740" y="650">(3,)</text>
+  </g>
+
+  <!-- Two-dimensional nearest-neighbor stencil. -->
+  <g>
+    <text class="heading" x="600" y="758">
+      stencil with four nearest-neighbor offsets
+    </text>
+    <text class="annotation" x="600" y="784">
+      Apply the same relative offsets at every logical source.
+    </text>
+
+    <path class="stencil-edge" d="M 600 890 V 838"/>
+    <path class="stencil-edge" d="M 600 930 V 982"/>
+    <path class="stencil-edge" d="M 560 910 H 478"/>
+    <path class="stencil-edge" d="M 640 910 H 722"/>
+
+    <rect class="node" x="560" y="810" width="80" height="48" rx="8"/>
+    <rect class="node" x="430" y="886" width="80" height="48" rx="8"/>
+    <rect class="stencil-source" x="560" y="886" width="80" height="48"
+          rx="8"/>
+    <rect class="node" x="690" y="886" width="80" height="48" rx="8"/>
+    <rect class="node" x="560" y="962" width="80" height="48" rx="8"/>
+    <text class="node-label" x="600" y="834">(0, 1)</text>
+    <text class="node-label" x="470" y="910">(1, 0)</text>
+    <text class="node-label" x="600" y="910">(1, 1)</text>
+    <text class="node-label" x="730" y="910">(1, 2)</text>
+    <text class="node-label" x="600" y="986">(2, 1)</text>
+    <text class="role-label" x="600" y="1035">example source</text>
+  </g>
+</svg>

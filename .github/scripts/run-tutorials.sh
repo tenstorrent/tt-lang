@@ -8,7 +8,8 @@
 # the examples root).
 #
 # Discovers *.py files under examples/elementwise-tutorial/,
-# examples/matmul-tutorial/, and examples/tutorial/ directories
+# examples/matmul-tutorial/, examples/pipes-tutorial/, and examples/tutorial/
+# directories
 # (excluding __init__.py, which exists only to mark these as packages
 # inside the tt-lang wheel).
 #
@@ -56,10 +57,10 @@ file_has_tag() {
     head -n 80 "$1" | grep -Fq "# $2"
 }
 
-# Collect tutorial scripts from the three tutorial directories.
+# Collect tutorial scripts from the tutorial directories.
 collect_tutorials() {
     local dir
-    for dir in elementwise-tutorial matmul-tutorial tutorial; do
+    for dir in elementwise-tutorial matmul-tutorial pipes-tutorial tutorial; do
         if [[ -d "${EXAMPLES_DIR}/${dir}" ]]; then
             find "${EXAMPLES_DIR}/${dir}" -type f -name "*.py" \
                 ! -name "__init__.py" -print0 \
@@ -72,7 +73,7 @@ collect_tutorials() {
 mapfile -t SCRIPTS < <(collect_tutorials)
 
 if [[ ${#SCRIPTS[@]} -eq 0 ]]; then
-    echo "ERROR: No tutorial scripts found under ${EXAMPLES_DIR}/{elementwise-tutorial,matmul-tutorial,tutorial}/" >&2
+    echo "ERROR: No tutorial scripts found under ${EXAMPLES_DIR}/{elementwise-tutorial,matmul-tutorial,pipes-tutorial,tutorial}/" >&2
     exit 1
 fi
 

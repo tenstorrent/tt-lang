@@ -1,0 +1,229 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 650"
+     role="img" aria-labelledby="title description">
+  <title id="title">Row and column rings in a logical 4 by 4 device domain</title>
+  <desc id="description">
+    The left panel shows four row rings. Each ring varies the column coordinate
+    while holding the row coordinate fixed. The right panel shows four column
+    rings. Each ring varies the row coordinate while holding the column
+    coordinate fixed.
+  </desc>
+
+  <defs>
+    <marker id="row-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 8 4 L 0 8 z" fill="#0969da"/>
+    </marker>
+    <marker id="column-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4"
+            orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 8 4 L 0 8 z" fill="#9a6700"/>
+    </marker>
+    <style>
+      .panel { fill: #f6f8fa; stroke: #8c959f; stroke-width: 2; }
+      .heading {
+        fill: #24292f;
+        font: 600 24px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      .axis-label {
+        fill: #57606a;
+        font: 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      .node {
+        fill: #24292f;
+        stroke: #8c959f;
+        stroke-width: 2;
+      }
+      .node-label {
+        fill: #ffffff;
+        font: 600 16px ui-monospace, SFMono-Regular, Consolas, monospace;
+        text-anchor: middle;
+        dominant-baseline: central;
+      }
+      .row-edge {
+        fill: none;
+        stroke: #0969da;
+        stroke-width: 3;
+        marker-end: url(#row-arrow);
+      }
+      .column-edge {
+        fill: none;
+        stroke: #9a6700;
+        stroke-width: 3;
+        marker-end: url(#column-arrow);
+      }
+      .wrap-label {
+        font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        text-anchor: middle;
+      }
+    </style>
+  </defs>
+
+  <rect width="1200" height="650" fill="#ffffff"/>
+  <rect class="panel" x="20" y="20" width="560" height="610" rx="12"/>
+  <rect class="panel" x="620" y="20" width="560" height="610" rx="12"/>
+
+  <text class="heading" x="300" y="58" text-anchor="middle">
+    Row rings vary the column coordinate
+  </text>
+  <text class="axis-label" x="300" y="86" text-anchor="middle">
+    Each row is an independent ring.
+  </text>
+
+  <text class="heading" x="900" y="58" text-anchor="middle">
+    Column rings vary the row coordinate
+  </text>
+  <text class="axis-label" x="900" y="86" text-anchor="middle">
+    Each column is an independent ring.
+  </text>
+
+  <!-- Row rings. -->
+  <g>
+    <text class="axis-label" x="56" y="140" text-anchor="middle">row 0</text>
+    <text class="axis-label" x="56" y="270" text-anchor="middle">row 1</text>
+    <text class="axis-label" x="56" y="400" text-anchor="middle">row 2</text>
+    <text class="axis-label" x="56" y="530" text-anchor="middle">row 3</text>
+
+    <path class="row-edge" d="M 146 140 H 202"/>
+    <path class="row-edge" d="M 266 140 H 322"/>
+    <path class="row-edge" d="M 386 140 H 442"/>
+    <path class="row-edge" d="M 506 140 V 198 H 94 V 166"/>
+
+    <path class="row-edge" d="M 146 270 H 202"/>
+    <path class="row-edge" d="M 266 270 H 322"/>
+    <path class="row-edge" d="M 386 270 H 442"/>
+    <path class="row-edge" d="M 506 270 V 328 H 94 V 296"/>
+
+    <path class="row-edge" d="M 146 400 H 202"/>
+    <path class="row-edge" d="M 266 400 H 322"/>
+    <path class="row-edge" d="M 386 400 H 442"/>
+    <path class="row-edge" d="M 506 400 V 458 H 94 V 426"/>
+
+    <path class="row-edge" d="M 146 530 H 202"/>
+    <path class="row-edge" d="M 266 530 H 322"/>
+    <path class="row-edge" d="M 386 530 H 442"/>
+    <path class="row-edge" d="M 506 530 V 588 H 94 V 556"/>
+
+    <text class="wrap-label" x="300" y="193" fill="#0969da">wrap</text>
+    <text class="wrap-label" x="300" y="323" fill="#0969da">wrap</text>
+    <text class="wrap-label" x="300" y="453" fill="#0969da">wrap</text>
+    <text class="wrap-label" x="300" y="583" fill="#0969da">wrap</text>
+
+    <g>
+      <rect class="node" x="94" y="116" width="52" height="48" rx="8"/>
+      <rect class="node" x="214" y="116" width="52" height="48" rx="8"/>
+      <rect class="node" x="334" y="116" width="52" height="48" rx="8"/>
+      <rect class="node" x="454" y="116" width="52" height="48" rx="8"/>
+      <text class="node-label" x="120" y="140">(0,0)</text>
+      <text class="node-label" x="240" y="140">(0,1)</text>
+      <text class="node-label" x="360" y="140">(0,2)</text>
+      <text class="node-label" x="480" y="140">(0,3)</text>
+    </g>
+    <g>
+      <rect class="node" x="94" y="246" width="52" height="48" rx="8"/>
+      <rect class="node" x="214" y="246" width="52" height="48" rx="8"/>
+      <rect class="node" x="334" y="246" width="52" height="48" rx="8"/>
+      <rect class="node" x="454" y="246" width="52" height="48" rx="8"/>
+      <text class="node-label" x="120" y="270">(1,0)</text>
+      <text class="node-label" x="240" y="270">(1,1)</text>
+      <text class="node-label" x="360" y="270">(1,2)</text>
+      <text class="node-label" x="480" y="270">(1,3)</text>
+    </g>
+    <g>
+      <rect class="node" x="94" y="376" width="52" height="48" rx="8"/>
+      <rect class="node" x="214" y="376" width="52" height="48" rx="8"/>
+      <rect class="node" x="334" y="376" width="52" height="48" rx="8"/>
+      <rect class="node" x="454" y="376" width="52" height="48" rx="8"/>
+      <text class="node-label" x="120" y="400">(2,0)</text>
+      <text class="node-label" x="240" y="400">(2,1)</text>
+      <text class="node-label" x="360" y="400">(2,2)</text>
+      <text class="node-label" x="480" y="400">(2,3)</text>
+    </g>
+    <g>
+      <rect class="node" x="94" y="506" width="52" height="48" rx="8"/>
+      <rect class="node" x="214" y="506" width="52" height="48" rx="8"/>
+      <rect class="node" x="334" y="506" width="52" height="48" rx="8"/>
+      <rect class="node" x="454" y="506" width="52" height="48" rx="8"/>
+      <text class="node-label" x="120" y="530">(3,0)</text>
+      <text class="node-label" x="240" y="530">(3,1)</text>
+      <text class="node-label" x="360" y="530">(3,2)</text>
+      <text class="node-label" x="480" y="530">(3,3)</text>
+    </g>
+  </g>
+
+  <!-- Column rings. -->
+  <g>
+    <text class="axis-label" x="720" y="116" text-anchor="middle">column 0</text>
+    <text class="axis-label" x="840" y="116" text-anchor="middle">column 1</text>
+    <text class="axis-label" x="960" y="116" text-anchor="middle">column 2</text>
+    <text class="axis-label" x="1080" y="116" text-anchor="middle">column 3</text>
+
+    <path class="column-edge" d="M 720 166 V 222"/>
+    <path class="column-edge" d="M 720 286 V 342"/>
+    <path class="column-edge" d="M 720 406 V 462"/>
+    <path class="column-edge" d="M 720 526 H 770 V 140 H 746"/>
+
+    <path class="column-edge" d="M 840 166 V 222"/>
+    <path class="column-edge" d="M 840 286 V 342"/>
+    <path class="column-edge" d="M 840 406 V 462"/>
+    <path class="column-edge" d="M 840 526 H 890 V 140 H 866"/>
+
+    <path class="column-edge" d="M 960 166 V 222"/>
+    <path class="column-edge" d="M 960 286 V 342"/>
+    <path class="column-edge" d="M 960 406 V 462"/>
+    <path class="column-edge" d="M 960 526 H 1010 V 140 H 986"/>
+
+    <path class="column-edge" d="M 1080 166 V 222"/>
+    <path class="column-edge" d="M 1080 286 V 342"/>
+    <path class="column-edge" d="M 1080 406 V 462"/>
+    <path class="column-edge" d="M 1080 526 H 1130 V 140 H 1106"/>
+
+    <text class="wrap-label" x="770" y="338" fill="#9a6700"
+          transform="rotate(90 770 338)">wrap</text>
+    <text class="wrap-label" x="890" y="338" fill="#9a6700"
+          transform="rotate(90 890 338)">wrap</text>
+    <text class="wrap-label" x="1010" y="338" fill="#9a6700"
+          transform="rotate(90 1010 338)">wrap</text>
+    <text class="wrap-label" x="1130" y="338" fill="#9a6700"
+          transform="rotate(90 1130 338)">wrap</text>
+
+    <g>
+      <rect class="node" x="694" y="136" width="52" height="48" rx="8"/>
+      <rect class="node" x="814" y="136" width="52" height="48" rx="8"/>
+      <rect class="node" x="934" y="136" width="52" height="48" rx="8"/>
+      <rect class="node" x="1054" y="136" width="52" height="48" rx="8"/>
+      <text class="node-label" x="720" y="160">(0,0)</text>
+      <text class="node-label" x="840" y="160">(0,1)</text>
+      <text class="node-label" x="960" y="160">(0,2)</text>
+      <text class="node-label" x="1080" y="160">(0,3)</text>
+    </g>
+    <g>
+      <rect class="node" x="694" y="256" width="52" height="48" rx="8"/>
+      <rect class="node" x="814" y="256" width="52" height="48" rx="8"/>
+      <rect class="node" x="934" y="256" width="52" height="48" rx="8"/>
+      <rect class="node" x="1054" y="256" width="52" height="48" rx="8"/>
+      <text class="node-label" x="720" y="280">(1,0)</text>
+      <text class="node-label" x="840" y="280">(1,1)</text>
+      <text class="node-label" x="960" y="280">(1,2)</text>
+      <text class="node-label" x="1080" y="280">(1,3)</text>
+    </g>
+    <g>
+      <rect class="node" x="694" y="376" width="52" height="48" rx="8"/>
+      <rect class="node" x="814" y="376" width="52" height="48" rx="8"/>
+      <rect class="node" x="934" y="376" width="52" height="48" rx="8"/>
+      <rect class="node" x="1054" y="376" width="52" height="48" rx="8"/>
+      <text class="node-label" x="720" y="400">(2,0)</text>
+      <text class="node-label" x="840" y="400">(2,1)</text>
+      <text class="node-label" x="960" y="400">(2,2)</text>
+      <text class="node-label" x="1080" y="400">(2,3)</text>
+    </g>
+    <g>
+      <rect class="node" x="694" y="496" width="52" height="48" rx="8"/>
+      <rect class="node" x="814" y="496" width="52" height="48" rx="8"/>
+      <rect class="node" x="934" y="496" width="52" height="48" rx="8"/>
+      <rect class="node" x="1054" y="496" width="52" height="48" rx="8"/>
+      <text class="node-label" x="720" y="520">(3,0)</text>
+      <text class="node-label" x="840" y="520">(3,1)</text>
+      <text class="node-label" x="960" y="520">(3,2)</text>
+      <text class="node-label" x="1080" y="520">(3,3)</text>
+    </g>
+  </g>
+</svg>

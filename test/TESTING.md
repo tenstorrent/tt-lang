@@ -244,9 +244,10 @@ Tutorial examples on hardware (requires ttnn and a TT device):
 pytest test/tutorial/
 ```
 
-Each script under `examples/{elementwise-tutorial,matmul-tutorial,tutorial}/`
-runs as one parametrized case that executes it in a fresh subprocess, so a crash
-or device wedge in one tutorial cannot poison the others. On the hardware CI job
+Each script under
+`examples/{elementwise-tutorial,matmul-tutorial,pipes-tutorial,tutorial}/` runs
+as one parametrized case that executes it in a fresh subprocess, so a crash or
+device wedge in one tutorial cannot poison the others. On the hardware CI job
 `.github/scripts/run-hardware-pytests.sh` shards single-device tutorials across
 chips and runs mesh tutorials serially with every chip visible. A tutorial that
 opens a device mesh must declare it with a header tag in its first 80 lines:

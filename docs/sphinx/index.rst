@@ -11,6 +11,7 @@ TT-Lang Documentation
    tour/index
    elementwise-tutorial/index
    matmul-tutorial/index
+   pipes-tutorial/index
    programming-guide
    claude-skills
    testing

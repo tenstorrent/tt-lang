@@ -99,6 +99,7 @@ def stage() -> None:
         ("examples/elementwise-tutorial", "elementwise"),
         ("examples/matmul-tutorial", "matmul"),
         ("examples/tutorial", "broadcast"),
+        ("examples/pipes-tutorial", "pipes"),
     ):
         shutil.copytree(REPO_ROOT / src, tutorials / dst)
 
@@ -132,6 +133,7 @@ setup(
         "ttl.tutorials.elementwise",
         "ttl.tutorials.matmul",
         "ttl.tutorials.broadcast",
+        "ttl.tutorials.pipes",
         "ttl.utils",
         "sim_stats",
     ],

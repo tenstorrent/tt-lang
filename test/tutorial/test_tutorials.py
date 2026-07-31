@@ -5,10 +5,10 @@
 """Execute each tutorial example script as an isolated subprocess.
 
 One parametrized test per script under examples/{elementwise-tutorial,
-matmul-tutorial,tutorial}/. Each script is run in a fresh process rather than
-imported: the scripts open and close a device at module top level, so a crash or
-a device wedge in one must not poison the long-lived xdist worker or the next
-tutorial. A subprocess inherits the worker's TT_VISIBLE_DEVICES and
+matmul-tutorial,pipes-tutorial,tutorial}/. Each script is run in a fresh process
+rather than imported: the scripts open and close a device at module top level,
+so a crash or a device wedge in one must not poison the long-lived xdist worker
+or the next tutorial. A subprocess inherits the worker's TT_VISIBLE_DEVICES and
 TT_METAL_CACHE (set by pin_xdist_worker_to_device), so open_device(0) binds to
 that worker's pinned chip during the per-chip parallel phase.
 
@@ -28,7 +28,12 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLES_DIR = REPO_ROOT / "examples"
-TUTORIAL_SUBDIRS = ("elementwise-tutorial", "matmul-tutorial", "tutorial")
+TUTORIAL_SUBDIRS = (
+    "elementwise-tutorial",
+    "matmul-tutorial",
+    "pipes-tutorial",
+    "tutorial",
+)
 
 CI_TAG_PREFIX = "# TTLANG_TUTORIAL_CI:"
 # Opens a device mesh over every visible chip; belongs in the serial phase.

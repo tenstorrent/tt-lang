@@ -68,7 +68,11 @@ tt-lang-setup                    # copy bundled tutorials to ./tutorials/
 `tt-lang-setup` is idempotent (can be run multiple times without accumulating side effects).
 It does two things, both inside the venv (no sudo):
 - Downloads the sfpi compiler that pairs with the installed `ttnn` and extracts it under `<venv>/.../ttnn/runtime/sfpi/` (for `tt-lang` installation only).
-- Copies bundled tutorials (`elementwise`, `matmul`, `broadcast`) to `./tutorials/`.
+- Copies bundled tutorials (`elementwise`, `matmul`, `broadcast`, `pipes`) to
+  `./tutorials/`.
+
+The `pipes` tutorials require multiple Tenstorrent devices and do not run in
+the simulator.
 
 For finer control: `tt-lang-setup-sfpi` runs only the sfpi step, `tt-lang-setup-tutorials -t <DIR>` only the tutorials copy.
 

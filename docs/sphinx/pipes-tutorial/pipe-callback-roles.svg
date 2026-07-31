@@ -1,0 +1,200 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760"
+     role="img" aria-labelledby="title description">
+  <title id="title">PipeNet source and destination callbacks in a logical ring</title>
+  <desc id="description">
+    A four-device logical ring highlights the edge from logical device zero to
+    logical device one. The source callback sends a tensor block from the node
+    on device zero. The destination callback receives the block into
+    destination-owned storage at the matching node on device one.
+  </desc>
+
+  <defs>
+    <marker id="highlight-arrow" markerWidth="8" markerHeight="8"
+            refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 8 4 L 0 8 z" fill="#8250df"/>
+    </marker>
+    <marker id="ring-arrow" markerWidth="8" markerHeight="8"
+            refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 8 4 L 0 8 z" fill="#57606a"/>
+    </marker>
+    <style>
+      .background {
+        fill: #ffffff;
+      }
+      .panel {
+        fill: #f6f8fa;
+        stroke: #8c959f;
+        stroke-width: 2;
+      }
+      .device {
+        fill: #24292f;
+        stroke: #8c959f;
+        stroke-width: 2;
+      }
+      .highlight-device {
+        fill: #4c2889;
+        stroke: #a475f9;
+        stroke-width: 3;
+      }
+      .block {
+        fill: #ffffff;
+        stroke: #57606a;
+        stroke-width: 2;
+      }
+      .receive-block {
+        fill: #dafbe1;
+        stroke: #1a7f37;
+        stroke-width: 2;
+      }
+      .heading {
+        fill: #24292f;
+        font: 600 25px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        text-anchor: middle;
+      }
+      .subheading {
+        fill: #24292f;
+        font: 600 19px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        text-anchor: middle;
+      }
+      .label {
+        fill: #24292f;
+        font: 600 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        text-anchor: middle;
+        dominant-baseline: central;
+      }
+      .small-label {
+        fill: #57606a;
+        font: 17px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        text-anchor: middle;
+      }
+      .device-label {
+        fill: #ffffff;
+        font: 600 18px ui-monospace, SFMono-Regular, Consolas, monospace;
+        text-anchor: middle;
+        dominant-baseline: central;
+      }
+      .code-label {
+        fill: #24292f;
+        font: 600 16px ui-monospace, SFMono-Regular, Consolas, monospace;
+        text-anchor: middle;
+      }
+      .ring-edge {
+        fill: none;
+        stroke: #57606a;
+        stroke-width: 3;
+        marker-end: url(#ring-arrow);
+      }
+      .highlight-edge {
+        fill: none;
+        stroke: #8250df;
+        stroke-width: 5;
+        marker-end: url(#highlight-arrow);
+      }
+      .flow-edge {
+        fill: none;
+        stroke: #57606a;
+        stroke-width: 3;
+        marker-end: url(#ring-arrow);
+      }
+      .pipe-edge {
+        fill: none;
+        stroke: #8250df;
+        stroke-width: 5;
+        marker-end: url(#highlight-arrow);
+      }
+    </style>
+  </defs>
+
+  <rect class="background" width="1200" height="760"/>
+
+  <text class="heading" x="600" y="40">Callbacks move a tensor block along one ring edge</text>
+
+  <!-- Ring overview. -->
+  <path class="highlight-edge" d="M 220 115 L 375 115"/>
+  <path class="ring-edge" d="M 490 115 L 645 115"/>
+  <path class="ring-edge" d="M 760 115 L 915 115"/>
+  <path class="ring-edge" d="M 970 150 C 970 245 165 245 165 155"/>
+
+  <rect class="highlight-device" x="110" y="80" width="110" height="70" rx="9"/>
+  <rect class="highlight-device" x="380" y="80" width="110" height="70" rx="9"/>
+  <rect class="device" x="650" y="80" width="110" height="70" rx="9"/>
+  <rect class="device" x="920" y="80" width="110" height="70" rx="9"/>
+
+  <text class="device-label" x="165" y="115">(0,)</text>
+  <text class="device-label" x="435" y="115">(1,)</text>
+  <text class="device-label" x="705" y="115">(2,)</text>
+  <text class="device-label" x="975" y="115">(3,)</text>
+
+  <text class="small-label" x="300" y="102">highlighted edge</text>
+  <text class="small-label" x="600" y="258">
+    The other three edges use the same callbacks.
+  </text>
+
+  <!-- Source and destination detail. -->
+  <rect class="panel" x="25" y="285" width="540" height="405" rx="12"/>
+  <rect class="panel" x="635" y="285" width="540" height="405" rx="12"/>
+
+  <text class="subheading" x="295" y="325">Logical device (0,) is the source</text>
+  <text class="code-label" x="295" y="357">if_src(send) runs here</text>
+  <text class="small-label" x="295" y="387">
+    The source node has coordinate (column, row).
+  </text>
+
+  <rect class="block" x="55" y="425" width="130" height="70" rx="8"/>
+  <rect class="block" x="220" y="425" width="130" height="70" rx="8"/>
+  <rect class="block" x="385" y="425" width="150" height="70" rx="8"/>
+  <text class="label" x="120" y="452">Input tensor</text>
+  <text class="small-label" x="120" y="478">Select a block.</text>
+  <text class="label" x="285" y="452">Send DFB</text>
+  <text class="small-label" x="285" y="478">Stage the block.</text>
+  <text class="label" x="460" y="452">Pipe endpoint</text>
+  <text class="small-label" x="460" y="478">Send the block.</text>
+
+  <path class="flow-edge" d="M 185 460 L 215 460"/>
+  <path class="flow-edge" d="M 350 460 L 380 460"/>
+
+  <text class="small-label" x="295" y="535">
+    reserve -> fill -> push; wait -> send -> pop
+  </text>
+
+  <text class="subheading" x="905" y="325">Logical device (1,) is the destination</text>
+  <text class="code-label" x="905" y="357">if_dst(receive) runs here</text>
+  <text class="small-label" x="905" y="387">
+    The destination node has the matching coordinate.
+  </text>
+
+  <rect class="block" x="665" y="425" width="150" height="70" rx="8"/>
+  <rect class="receive-block" x="850" y="425" width="130" height="70" rx="8"/>
+  <rect class="block" x="1015" y="425" width="130" height="70" rx="8"/>
+  <text class="label" x="740" y="452">Pipe endpoint</text>
+  <text class="small-label" x="740" y="478">Receive a block.</text>
+  <text class="label" x="915" y="452">Receive DFB</text>
+  <text class="small-label" x="915" y="478">Own storage.</text>
+  <text class="label" x="1080" y="452">Output tensor</text>
+  <text class="small-label" x="1080" y="478">Store the block.</text>
+
+  <path class="flow-edge" d="M 815 460 L 845 460"/>
+  <path class="flow-edge" d="M 980 460 L 1010 460"/>
+
+  <text class="small-label" x="905" y="535">
+    reserve -> receive -> push; wait -> store -> pop
+  </text>
+
+  <!-- The highlighted pipe connects the detailed roles. -->
+  <path class="pipe-edge" d="M 535 460 L 660 460"/>
+  <rect class="block" x="475" y="570" width="250" height="44" rx="22"/>
+  <text class="label" x="600" y="592">
+    PipeNet synchronizes this transfer.
+  </text>
+
+  <text class="small-label" x="295" y="650">
+    The source DFB provides local staging.
+  </text>
+  <text class="small-label" x="905" y="650">
+    The destination owns the payload storage.
+  </text>
+
+  <text class="small-label" x="600" y="728">
+    The compiler lowers the logical pipe to local NoC or TT-Fabric communication.
+  </text>
+</svg>

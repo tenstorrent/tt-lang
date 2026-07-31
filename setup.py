@@ -480,6 +480,7 @@ setup(
         "ttl.tutorials.elementwise",
         "ttl.tutorials.matmul",
         "ttl.tutorials.broadcast",
+        "ttl.tutorials.pipes",
         "ttl.utils",
         "sim_stats",
     ]
@@ -496,6 +497,7 @@ setup(
         "ttl.tutorials.elementwise": "examples/elementwise-tutorial",
         "ttl.tutorials.matmul": "examples/matmul-tutorial",
         "ttl.tutorials.broadcast": "examples/tutorial",
+        "ttl.tutorials.pipes": "examples/pipes-tutorial",
         "ttl.utils": "python/utils",
         "sim_stats": "python/sim_stats",
     }
