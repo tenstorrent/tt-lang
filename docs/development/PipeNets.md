@@ -77,13 +77,16 @@ TTKernel conversion uses two representations:
 
 The immutable tables become bit-packed C++ template arguments stored outside
 the kernel stack. Pipe graph analysis still creates one transfer node per
-record. Resource planning stores each record's address-table entry and
-synchronization indices in record order, and the loop index selects the
-corresponding values. The table-driven form currently uses receiver-published
-destination addresses and receiver-post synchronization. Computed receiver
-addresses and capacity counters are supported only when each record has its
-own `ttl.pipe_transfer.*` operations because the associated proof and runtime
-state belong to one transfer.
+record. A selected-pipe type identifies whether iteration selected the record
+by its source or destination coordinates; copy operand position determines
+whether that record is used for a send or receive. Launch-domain verification
+proves that the selected callback executes on the required endpoint.
+
+Resource planning stores each record's address-table entry and synchronization
+indices in record order, and the loop index selects the corresponding values.
+Pipe graph analysis maps the shared protocol operation and record index to a
+distinct transfer node, so each record retains its own address-sequence proof
+and runtime resources.
 
 ## Semantics
 
