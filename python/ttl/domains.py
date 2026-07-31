@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass
+from math import prod
 from typing import Any, Iterable, Iterator, Optional, Sequence, Tuple, Union
 
 Coordinate = Tuple[int, ...]
@@ -57,6 +58,44 @@ def _normalize_coordinate(value: Any, context: str) -> Coordinate:
     return coordinate
 
 
+def _normalize_stencil_offsets(
+    offsets: Iterable[Sequence[int]], rank: int
+) -> Tuple[Coordinate, ...]:
+    if isinstance(offsets, (str, bytes)):
+        raise TypeError("stencil offsets must be an iterable of integer sequences")
+    try:
+        offset_values = tuple(offsets)
+    except TypeError as error:
+        raise TypeError(
+            "stencil offsets must be an iterable of integer sequences"
+        ) from error
+    if not offset_values:
+        raise ValueError("stencil requires at least one offset")
+
+    normalized = []
+    for offset_index, offset in enumerate(offset_values):
+        if isinstance(offset, (str, bytes)) or not isinstance(offset, Sequence):
+            raise TypeError(
+                f"stencil offset {offset_index} must be an integer sequence"
+            )
+        coordinate = tuple(
+            _require_int(value, f"stencil offset {offset_index} component")
+            for value in offset
+        )
+        if len(coordinate) != rank:
+            raise ValueError(
+                f"stencil offset {offset_index} has rank {len(coordinate)}, "
+                f"expected {rank}"
+            )
+        if all(value == 0 for value in coordinate):
+            raise ValueError("stencil offsets must not contain the zero offset")
+        normalized.append(coordinate)
+
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("stencil offsets must be unique")
+    return tuple(normalized)
+
+
 @dataclass(frozen=True)
 class DomainComponent:
     """Named rectangular component of a logical device domain."""
@@ -78,7 +117,7 @@ class DomainComponent:
         )
 
 
-@dataclass(frozen=True, init=False)
+@dataclass(frozen=True, init=False, eq=False)
 class DeviceRef:
     """Coordinate of one member of a `DeviceDomain`."""
 
@@ -110,6 +149,14 @@ class DeviceRef:
     @property
     def is_named(self) -> bool:
         return bool(self.component_names)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, DeviceRef):
+            return NotImplemented
+        return self.coordinates == other.coordinates
+
+    def __hash__(self) -> int:
+        return hash(self.coordinates)
 
 
 @dataclass(frozen=True)
@@ -149,15 +196,23 @@ class AxisNeighborTransfer(StructuredTransfer):
 
 
 @dataclass(frozen=True)
+class StencilTransfer(StructuredTransfer):
+    """Union of directed translations within one domain component."""
+
+    offsets: Tuple[Coordinate, ...]
+    wrap: bool
+
+
+@dataclass(frozen=True)
 class GatherTransfer(StructuredTransfer):
-    """Transfer relation from every non-root device to one root."""
+    """Per-slice transfer relation from every device to one component root."""
 
     root: DeviceRef
 
 
 @dataclass(frozen=True)
-class MulticastTransfer(StructuredTransfer):
-    """Transfer relation from one source to every other device."""
+class ScatterTransfer(StructuredTransfer):
+    """Per-slice transfer relation from one component source to every device."""
 
     source: DeviceRef
 
@@ -323,19 +378,34 @@ class DeviceDomain:
         self, coordinates: ComponentCoordinates, *, allow_upper_bound: bool
     ) -> None:
         for component, coordinate in zip(self.components, coordinates):
-            if len(coordinate) != len(component.extent):
+            self._validate_component_coordinate(
+                component,
+                coordinate,
+                allow_upper_bound=allow_upper_bound,
+                context="DeviceRef",
+            )
+
+    @staticmethod
+    def _validate_component_coordinate(
+        component: DomainComponent,
+        coordinate: Coordinate,
+        *,
+        allow_upper_bound: bool,
+        context: str,
+    ) -> None:
+        if len(coordinate) != len(component.extent):
+            raise ValueError(
+                f"{context} component {component.name!r} has rank "
+                f"{len(coordinate)}, expected {len(component.extent)}"
+            )
+        for axis, (value, extent) in enumerate(zip(coordinate, component.extent)):
+            upper_ok = value <= extent if allow_upper_bound else value < extent
+            if not upper_ok:
+                relation = "<=" if allow_upper_bound else "<"
                 raise ValueError(
-                    f"DeviceRef component {component.name!r} has rank "
-                    f"{len(coordinate)}, expected {len(component.extent)}"
+                    f"{context} component {component.name!r} axis {axis} "
+                    f"requires 0 <= coord {relation} {extent}, got {value}"
                 )
-            for axis, (value, extent) in enumerate(zip(coordinate, component.extent)):
-                upper_ok = value <= extent if allow_upper_bound else value < extent
-                if not upper_ok:
-                    relation = "<=" if allow_upper_bound else "<"
-                    raise ValueError(
-                        f"DeviceRef component {component.name!r} axis {axis} "
-                        f"requires 0 <= coord {relation} {extent}, got {value}"
-                    )
 
 
 @dataclass(frozen=True, init=False)
@@ -353,13 +423,21 @@ class TransferGraph:
         edges: Iterable[TransferEdge] = (),
         structured: Optional[StructuredTransfer] = None,
     ) -> None:
-        transfer_edges = tuple(edges)
-        if structured is not None and transfer_edges:
+        input_edges = tuple(edges)
+        if structured is not None and input_edges:
             raise ValueError("TransferGraph must be explicit or structured, not both")
-        if structured is None and not transfer_edges:
+        if structured is None and not input_edges:
             raise ValueError("TransferGraph.edges requires at least one edge")
         if structured is not None:
             structured = self._normalize_structured(domain, structured)
+            if not self._structured_has_edges(domain, structured):
+                raise ValueError("structured transfer relation contains no edges")
+            transfer_edges = ()
+        else:
+            transfer_edges = tuple(
+                self._normalize_edge(domain, edge, edge_index)
+                for edge_index, edge in enumerate(input_edges)
+            )
         object.__setattr__(self, "domain", domain)
         object.__setattr__(self, "transfer_edges", transfer_edges)
         object.__setattr__(self, "structured", structured)
@@ -370,17 +448,13 @@ class TransferGraph:
         domain: DeviceDomain,
         edges: Iterable[Tuple[Any, Union[Any, DeviceRange]]],
     ) -> "TransferGraph":
-        transfer_edges = []
-        for source, destination in edges:
-            source_ref = domain.device_ref(source)
-            if isinstance(destination, DeviceRange):
-                destination_ref = domain.resolve_device_range(destination)
-                if cls._range_contains(destination_ref, source_ref):
-                    raise ValueError("source-in-destination multicast is not supported")
-            else:
-                destination_ref = domain.device_ref(destination)
-            transfer_edges.append(TransferEdge(source_ref, destination_ref))
-        return cls(domain, edges=transfer_edges)
+        return cls(
+            domain,
+            edges=(
+                TransferEdge(source=source, destination=destination)
+                for source, destination in edges
+            ),
+        )
 
     @classmethod
     def axis_neighbor(
@@ -419,23 +493,51 @@ class TransferGraph:
     def gather(
         cls, domain: DeviceDomain, root: Any, *, component: Optional[str] = None
     ) -> "TransferGraph":
+        component_name = cls._default_component(domain, component)
         return cls(
             domain,
             structured=GatherTransfer(
-                component_name=cls._default_component(domain, component),
-                root=domain.device_ref(root),
+                component_name=component_name,
+                root=cls._resolve_component_endpoint(
+                    domain, component_name, root, "gather root"
+                ),
             ),
         )
 
     @classmethod
-    def multicast(
-        cls, domain: DeviceDomain, source: Any, *, component: Optional[str] = None
+    def stencil(
+        cls,
+        domain: DeviceDomain,
+        *,
+        offsets: Iterable[Sequence[int]],
+        component: Optional[str] = None,
+        wrap: bool = False,
     ) -> "TransferGraph":
+        component_name = cls._default_component(domain, component)
+        component_info = domain.components[domain.component_index(component_name)]
+        if not isinstance(wrap, bool):
+            raise TypeError(f"wrap must be a bool, got {wrap!r}")
         return cls(
             domain,
-            structured=MulticastTransfer(
-                component_name=cls._default_component(domain, component),
-                source=domain.device_ref(source),
+            structured=StencilTransfer(
+                component_name=component_name,
+                offsets=_normalize_stencil_offsets(offsets, len(component_info.extent)),
+                wrap=wrap,
+            ),
+        )
+
+    @classmethod
+    def scatter(
+        cls, domain: DeviceDomain, source: Any, *, component: Optional[str] = None
+    ) -> "TransferGraph":
+        component_name = cls._default_component(domain, component)
+        return cls(
+            domain,
+            structured=ScatterTransfer(
+                component_name=component_name,
+                source=cls._resolve_component_endpoint(
+                    domain, component_name, source, "scatter source"
+                ),
             ),
         )
 
@@ -506,22 +608,52 @@ class TransferGraph:
                 yield TransferEdge(source, DeviceRef(*source_coordinates))
             return
 
+        if isinstance(self.structured, StencilTransfer):
+            component = self.domain.components[component_index]
+            emitted_edges = set()
+            for source in devices:
+                for offset in self.structured.offsets:
+                    destination_coordinates = [
+                        list(coordinates) for coordinates in source.coordinates
+                    ]
+                    destination_component = destination_coordinates[component_index]
+                    in_bounds = True
+                    for axis, (coordinate, delta, extent) in enumerate(
+                        zip(destination_component, offset, component.extent)
+                    ):
+                        translated = coordinate + delta
+                        if self.structured.wrap:
+                            translated %= extent
+                        elif translated < 0 or translated >= extent:
+                            in_bounds = False
+                            break
+                        destination_component[axis] = translated
+                    if not in_bounds:
+                        continue
+                    destination = DeviceRef(*destination_coordinates)
+                    edge = TransferEdge(source, destination)
+                    if source == destination or edge in emitted_edges:
+                        continue
+                    emitted_edges.add(edge)
+                    yield edge
+            return
+
         if isinstance(self.structured, GatherTransfer):
             for source in devices:
                 destination_coordinates = list(source.coordinates)
                 destination_coordinates[component_index] = (
-                    self.structured.root.coordinates[component_index]
+                    self.structured.root.coordinates[0]
                 )
                 destination = DeviceRef(*destination_coordinates)
                 if source != destination:
                     yield TransferEdge(source, destination)
             return
 
-        if isinstance(self.structured, MulticastTransfer):
+        if isinstance(self.structured, ScatterTransfer):
             for destination in devices:
                 source_coordinates = list(destination.coordinates)
                 source_coordinates[component_index] = (
-                    self.structured.source.coordinates[component_index]
+                    self.structured.source.coordinates[0]
                 )
                 source = DeviceRef(*source_coordinates)
                 if source != destination:
@@ -570,6 +702,87 @@ class TransferGraph:
         )
 
     @staticmethod
+    def _resolve_component_endpoint(
+        domain: DeviceDomain,
+        component_name: str,
+        endpoint: Any,
+        context: str,
+    ) -> DeviceRef:
+        component = domain.components[domain.component_index(component_name)]
+        if isinstance(endpoint, DeviceRef):
+            if endpoint.is_named:
+                if endpoint.component_names != (component_name,):
+                    raise ValueError(
+                        f"{context} must name only component {component_name!r}"
+                    )
+                coordinates = endpoint.coordinates[0]
+            else:
+                if len(endpoint.coordinates) != 1:
+                    raise ValueError(
+                        f"{context} must provide one coordinate for component "
+                        f"{component_name!r}"
+                    )
+                coordinates = endpoint.coordinates[0]
+        else:
+            coordinates = _normalize_coordinate(endpoint, context)
+
+        domain._validate_component_coordinate(
+            component,
+            coordinates,
+            allow_upper_bound=False,
+            context=context,
+        )
+        return DeviceRef(coordinates)
+
+    @staticmethod
+    def _normalize_edge(
+        domain: DeviceDomain, edge: TransferEdge, edge_index: int
+    ) -> TransferEdge:
+        if not isinstance(edge, TransferEdge):
+            raise TypeError(
+                f"TransferGraph edge {edge_index} must be a TransferEdge, "
+                f"got {type(edge).__name__}"
+            )
+        source = domain.device_ref(edge.source)
+        if isinstance(edge.destination, DeviceRange):
+            destination = domain.resolve_device_range(edge.destination)
+            if TransferGraph._range_contains(destination, source):
+                raise ValueError(
+                    "source must not be contained in its destination range"
+                )
+        else:
+            destination = domain.device_ref(edge.destination)
+            if source == destination:
+                raise ValueError("transfer edge source must differ from destination")
+        return TransferEdge(source, destination)
+
+    @staticmethod
+    def _structured_has_edges(
+        domain: DeviceDomain, structured: StructuredTransfer
+    ) -> bool:
+        component = domain.components[domain.component_index(structured.component_name)]
+        if isinstance(structured, AxisNeighborTransfer):
+            extent = component.extent[structured.axis]
+            if structured.wrap:
+                return structured.offset % extent != 0
+            return structured.offset < extent
+        if isinstance(structured, StencilTransfer):
+            for offset in structured.offsets:
+                if structured.wrap:
+                    if any(
+                        delta % extent != 0
+                        for delta, extent in zip(offset, component.extent)
+                    ):
+                        return True
+                elif all(
+                    abs(delta) < extent
+                    for delta, extent in zip(offset, component.extent)
+                ):
+                    return True
+            return False
+        return prod(component.extent) > 1
+
+    @staticmethod
     def _normalize_structured(
         domain: DeviceDomain, structured: StructuredTransfer
     ) -> StructuredTransfer:
@@ -592,16 +805,37 @@ class TransferGraph:
                 raise TypeError(f"wrap must be a bool, got {structured.wrap!r}")
             return structured
 
+        if isinstance(structured, StencilTransfer):
+            if not isinstance(structured.wrap, bool):
+                raise TypeError(f"wrap must be a bool, got {structured.wrap!r}")
+            return StencilTransfer(
+                component_name=structured.component_name,
+                offsets=_normalize_stencil_offsets(
+                    structured.offsets, len(component.extent)
+                ),
+                wrap=structured.wrap,
+            )
+
         if isinstance(structured, GatherTransfer):
             return GatherTransfer(
                 component_name=structured.component_name,
-                root=domain.resolve_device_ref(structured.root),
+                root=TransferGraph._resolve_component_endpoint(
+                    domain,
+                    structured.component_name,
+                    structured.root,
+                    "gather root",
+                ),
             )
 
-        if isinstance(structured, MulticastTransfer):
-            return MulticastTransfer(
+        if isinstance(structured, ScatterTransfer):
+            return ScatterTransfer(
                 component_name=structured.component_name,
-                source=domain.resolve_device_ref(structured.source),
+                source=TransferGraph._resolve_component_endpoint(
+                    domain,
+                    structured.component_name,
+                    structured.source,
+                    "scatter source",
+                ),
             )
 
         if isinstance(structured, AllToAllTransfer):
@@ -632,7 +866,8 @@ __all__ = [
     "DomainComponent",
     "GatherTransfer",
     "GraphMetadataCost",
-    "MulticastTransfer",
+    "ScatterTransfer",
+    "StencilTransfer",
     "StructuredTransfer",
     "TransferEdge",
     "TransferGraph",

@@ -8,15 +8,23 @@
 
 #structured = #ttl.transfer_graph<
   domain = <components = <name = "board", extent = [2]>, <name = "device", extent = [4]>>,
-  structured = #ttl.axis_neighbor_transfer<component = "device", axis = 0 : i64, offset = 1 : i64, wrap = false>>
+  structured = #ttl.axis_neighbor_transfer<component = "device", axis = 0, offset = 1, wrap = false>>
+
+#stencil = #ttl.transfer_graph<
+  domain = <components = <name = "device", extent = [2, 2]>>,
+  structured = #ttl.stencil_transfer<component = "device", offsets = [[-1, 0], [1, 0], [0, -1], [0, 1]], wrap = false>>
 
 #gather = #ttl.transfer_graph<
   domain = <components = <name = "device", extent = [4]>>,
   structured = #ttl.gather_transfer<component = "device", root = <coordinates = [0]>>>
 
-#multicast = #ttl.transfer_graph<
+#scatter = #ttl.transfer_graph<
   domain = <components = <name = "device", extent = [4]>>,
-  structured = #ttl.multicast_transfer<component = "device", source = <coordinates = [0]>>>
+  structured = #ttl.scatter_transfer<component = "device", source = <coordinates = [0]>>>
+
+#product_scatter = #ttl.transfer_graph<
+  domain = <components = <name = "board", extent = [2]>, <name = "device", extent = [4]>>,
+  structured = #ttl.scatter_transfer<component = "device", source = <coordinates = [0]>>>
 
 #device_transfer = #ttl.device_transfer<
   domain = <components = <name = "device", extent = [4]>>,
@@ -36,8 +44,18 @@ module {
   // CHECK-LABEL: func.func @structured_graph_attr
   // CHECK-SAME: transfer_graph = #ttl.transfer_graph<
   // CHECK-SAME: domain = <components = <name = "board", extent = [2]>, <name = "device", extent = [4]>>
-  // CHECK-SAME: structured = #ttl.axis_neighbor_transfer<component = "device", axis = 0 : i64, offset = 1 : i64, wrap = false>
+  // CHECK-SAME: structured = #ttl.axis_neighbor_transfer<component = "device", axis = 0, offset = 1, wrap = false>
   func.func @structured_graph_attr() attributes {transfer_graph = #structured} {
+    return
+  }
+
+  // Verify that a structured stencil retains signed offsets on multiple axes.
+  // CHECK-LABEL: func.func @stencil_graph_attr
+  // CHECK-SAME: transfer_graph = #ttl.transfer_graph<
+  // CHECK-SAME: domain = <components = <name = "device", extent = [2, 2]>>
+  // CHECK-SAME: structured = #ttl.stencil_transfer<component = "device", offsets =
+  // CHECK-SAME: {{\[\[-1, 0\], \[1, 0\], \[0, -1\], \[0, 1\]\]}}, wrap = false>
+  func.func @stencil_graph_attr() attributes {transfer_graph = #stencil} {
     return
   }
 
@@ -45,9 +63,19 @@ module {
   // CHECK-LABEL: func.func @rooted_graph_attrs
   // CHECK-SAME: gather = #ttl.transfer_graph<
   // CHECK-SAME: structured = #ttl.gather_transfer<component = "device", root = <coordinates = {{\[0\]}}>>
-  // CHECK-SAME: multicast = #ttl.transfer_graph<
-  // CHECK-SAME: structured = #ttl.multicast_transfer<component = "device", source = <coordinates = {{\[0\]}}>>
-  func.func @rooted_graph_attrs() attributes {gather = #gather, multicast = #multicast} {
+  // CHECK-SAME: scatter = #ttl.transfer_graph<
+  // CHECK-SAME: structured = #ttl.scatter_transfer<component = "device", source = <coordinates = {{\[0\]}}>>
+  func.func @rooted_graph_attrs() attributes {gather = #gather, scatter = #scatter} {
+    return
+  }
+
+  // Verify that a product-domain scatter source names only the selected
+  // component; the relation repeats independently in every product slice.
+  // CHECK-LABEL: func.func @product_scatter_attr
+  // CHECK-SAME: transfer_graph = #ttl.transfer_graph<
+  // CHECK-SAME: domain = <components = <name = "board", extent = [2]>, <name = "device", extent = [4]>>
+  // CHECK-SAME: structured = #ttl.scatter_transfer<component = "device", source = <coordinates = {{\[0\]}}>>
+  func.func @product_scatter_attr() attributes {transfer_graph = #product_scatter} {
     return
   }
 
