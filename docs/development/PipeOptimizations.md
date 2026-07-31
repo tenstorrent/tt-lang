@@ -209,8 +209,10 @@ The pass groups a loop only after proving all of the following:
   candidate loop.
 - The source and receiver DFB values are direct `ttl.bind_cb` results whose
   complete reserve/push/wait/pop lifecycles are inside the loop.
-- Each transport DFB has one contiguous loop-indexed tensor copy. Its acquired
-  views do not escape the source or destination role.
+- Each transport DFB block contains one tile and has one contiguous
+  loop-indexed tensor copy. Its acquired views do not escape the source or
+  destination role. Grouping wider blocks requires a separate proof that the
+  tensor slice start advances by the block width on each scalar iteration.
 - The transfer is point-to-point with one receiver. Source and destination use
   different nodes and different DFBs, and the receiver starts at DFB tile
   offset zero.
