@@ -278,6 +278,11 @@ Remaining DFB operations follow the ordinary finalization and runtime
 allocation mechanism. This ordering does not require compiler-allocated DFBs
 or the finalized DFB runtime allocation contract.
 
+`ttl.cb_wait` remains an observable synchronization operation even when its
+returned view has no SSA uses. This prevents intermediate greedy rewrites from
+removing the wait before PipeTransport planning proves and replaces the complete
+DFB lifecycle.
+
 #### Measured result
 
 The pipes microbenchmark was measured on Blackhole with 128 distinct tiles,
