@@ -72,6 +72,41 @@ public:
     Location loc;
   };
 
+  /// What an operation does to a shared resource.
+  ///
+  /// Every mechanism modelled here is a credit counter, so double buffering is
+  /// never represented directly: a circular buffer holds `capacity` tiles and
+  /// DST holds one or two halves, and whether a given acquire blocks is an
+  /// outcome of the counter at that cycle. Raising `block_count` from 2 to 3
+  /// changes no code.
+  struct ResourceEffect {
+    enum class Kind {
+      None,
+      CbReserve,  ///< producer claims tiles; blocks until that many are free
+      CbPush,     ///< producer publishes its claimed tiles to the consumer
+      CbWait,     ///< consumer blocks until that many tiles are published
+      CbPop,      ///< consumer frees tiles back to the producer
+      DstAcquire, ///< MATH blocks until a DST half is free
+      DstCommit,  ///< MATH hands its half to PACK
+      DstWait,    ///< PACK blocks until MATH has committed a half
+      DstRelease, ///< PACK returns the half to MATH
+      /// UNPACK fills a SrcA/SrcB bank and sets dvalid. Blocks when no bank is
+      /// free, which is what stops the unpacker running further ahead of MATH
+      /// than the bank count allows.
+      SrcProduce,
+      /// MATH consumes a bank; the math MOP's end op clears dvalid and returns
+      /// it. Blocks until UNPACK has produced one.
+      SrcConsume,
+    };
+
+    Kind kind = Kind::None;
+    /// Compile-time arg index of the circular buffer, for the `Cb*` kinds. The
+    /// same index in two different kernels is the same buffer, which is what
+    /// links a reader's push to a compute kernel's wait.
+    unsigned cb = 0;
+    uint64_t tiles = 0;
+  };
+
   /// One operation placed on a lane.
   struct PlacedOp {
     /// Fully qualified name, e.g. "ttkernel.cb_wait_front".
@@ -88,6 +123,20 @@ public:
     /// These reference string literals in the affinity table, so they are valid
     /// for the life of the program.
     llvm::SmallVector<llvm::StringRef> calls;
+
+    /// Summed cost of `calls`. Zero either because the operation is free or
+    /// because a call had no cost entry, in which case the report carries an
+    /// Unknown naming it.
+    uint64_t cycles = 0;
+
+    ResourceEffect effect;
+
+    /// Filled in by scheduling. `stall` is the gap between the lane becoming
+    /// free and this operation actually starting, so it attributes waiting to
+    /// the operation that waited.
+    uint64_t start = 0;
+    uint64_t finish = 0;
+    uint64_t stall = 0;
 
     unsigned llkCalls() const { return calls.size(); }
   };
@@ -118,16 +167,49 @@ public:
     std::array<LaneReport, kNumLanes> lanes = {};
     llvm::SmallVector<Unknown> unknowns;
 
+    /// Cycle at which the last lane retires. Zero when scheduling did not run.
+    uint64_t totalCycles = 0;
+
     /// True when every operation was accounted for.
     bool isComplete() const { return unknowns.empty(); }
 
-    /// Deterministic human-readable report.
+    /// Summary: per-lane totals, latency, and any unknowns. This is the
+    /// default output, because the per-operation views below are debugging
+    /// aids that run to hundreds of thousands of rows on a real kernel.
     std::string render() const;
+
+    /// Per-lane operation tables with start, end, cost, wait and source line.
+    /// Capped per lane, and says how many it omitted.
+    std::string renderDetail() const;
+
+    /// Five-column timeline: one row per event boundary, one column per lane.
+    ///
+    /// Rows are the distinct starts, finishes and wait-interval boundaries, not
+    /// a fixed sample rate, so no interval is invented and nothing is aliased
+    /// away. The cost is that row height carries no meaning: the `gap` column is
+    /// the distance to the next event on *any* lane. Empty if scheduling did not
+    /// run.
+    std::string renderTimeline() const;
+
+    /// Same five columns sampled at a fixed `step`, so row height is
+    /// proportional to time and lanes can be compared by eye.
+    ///
+    /// The trade against renderTimeline() is aliasing: anything shorter than
+    /// `step` can be hidden, and when several operations fall inside one row
+    /// only the first is named. Empty if scheduling did not run.
+    std::string renderTimelineFixed(uint64_t step) const;
   };
 
   struct Options {
     /// Fold TRISC engine time into the processor lane; see Lane.
     bool foldEngineIntoProcessor = true;
+
+    /// SrcA/SrcB banks the unpacker can fill before it has to wait for MATH.
+    /// Two on Wormhole and Blackhole, which is what lets the unpacker work one
+    /// tile ahead. Exposed so a caller can check whether the credit binds at
+    /// all: if 1 and 2 give the same answer, it is slack rather than a
+    /// bottleneck.
+    unsigned srcBanks = 2;
   };
 
   explicit CostEstimator(ModuleOp module);

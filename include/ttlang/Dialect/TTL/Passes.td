@@ -1266,7 +1266,14 @@ def TTKernelCostEstimate
 
   let options = [
     Option<"outputPath", "output", "std::string", "\"\"",
-           "Path to write the report (empty for stdout)">
+           "Path to write the report (empty for stdout)">,
+    Option<"detail", "detail", "bool", "false",
+           "Also print per-lane operation tables and an event-boundary "
+           "timeline. Off by default: both are capped but still long.">,
+    Option<"timelineStep", "timeline-step", "uint64_t", "0",
+           "Also print a timeline sampled every N cycles, so row height is "
+           "proportional to time. 0 disables it. Anything shorter than N may "
+           "be hidden.">
   ];
 
   let dependentDialects = [

@@ -2389,7 +2389,11 @@ def _lower_program_to_kernel(
         # it reads, and before EmitC conversion turns circular-buffer calls into
         # opaque verbatim strings.
         if compiler_options.cost_estimate:
-            pipeline_passes.append("ttkernel-cost-estimate")
+            detail = int(compiler_options.cost_estimate_detail)
+            timeline_step = compiler_options.cost_estimate_timeline_step
+            pipeline_passes.append(
+                f"ttkernel-cost-estimate{{detail={detail} "
+                f"timeline-step={timeline_step}}}")
         pipeline_passes += [
             "convert-ttkernel-to-emitc",
             "symbol-dce",

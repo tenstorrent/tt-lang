@@ -42,7 +42,16 @@ struct TTKernelCostEstimatePass
       return signalPassFailure();
     }
 
+    // Summary only by default. The per-operation views are opt-in because a
+    // kernel whose loops unroll to tens of thousands of operations produces a
+    // report far longer than anyone reads.
     std::string text = report->render();
+    if (detail) {
+      text += report->renderDetail() + "\n" + report->renderTimeline();
+    }
+    if (timelineStep > 0) {
+      text += "\n" + report->renderTimelineFixed(timelineStep);
+    }
     if (outputPath.empty()) {
       llvm::outs() << text;
       return;

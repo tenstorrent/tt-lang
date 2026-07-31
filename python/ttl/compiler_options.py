@@ -172,6 +172,26 @@ def _make_parser() -> argparse.ArgumentParser:
         "(ttkernel-cost-estimate). Non-mutating. Opt-in (default: disabled).",
     )
     p.add_argument(
+        "--ttl-cost-estimate-detail",
+        default=None,
+        dest="cost_estimate_detail",
+        action=argparse.BooleanOptionalAction,
+        help="Add per-lane operation tables and an event-boundary timeline to "
+        "the cost estimate. Capped, but still long. Requires "
+        "--ttl-cost-estimate.",
+    )
+    p.add_argument(
+        "--ttl-cost-estimate-timeline-step",
+        default=None,
+        dest="cost_estimate_timeline_step",
+        type=int,
+        help="Add a cost-estimate timeline sampled every N cycles, so row "
+        "height is proportional to time; anything shorter than N may be "
+        "hidden. 0 (the default) omits it. For one row per event boundary "
+        "instead, which hides nothing, use --ttl-cost-estimate-detail. "
+        "Requires --ttl-cost-estimate.",
+    )
+    p.add_argument(
         "--ttl-l1-budget",
         default=None,
         dest="l1_budget",
@@ -236,6 +256,8 @@ class CompilerOptions:
     dfb_exact_coloring_search_limit: int = 1_000_000
     specialize_cores: bool = False
     cost_estimate: bool = False
+    cost_estimate_detail: bool = False
+    cost_estimate_timeline_step: int = 0
     l1_budget: int = dataclasses.field(default=0, compare=False, hash=False)
 
     # Fields that were explicitly provided (not defaulted). Excluded from
