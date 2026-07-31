@@ -715,15 +715,14 @@ def TTL_PipeNetForeachDstOp : TTL_Op<"pipenet_foreach_dst",
 }
 
 def TTL_SelectPipeSrcOp : TTL_Op<"select_pipe_src", [Pure]> {
-  let summary = "Represent a selected source pipe";
+  let summary = "Represent a record selected by source iteration";
   let description = [{
-    Represents a source pipe selected from a PipeNet record table. The
-    operands contain the selected record fields for the current foreach
-    iteration. `$recordIndex` identifies the record in `$records`; the
-    remaining operands contain that record's coordinates and receiver count.
-    `$srcInDstRange` is true when the source coordinate belongs to the
-    destination range. `$records` identifies the PipeNet and its transfer
-    contract.
+    Represents a PipeNet record selected because the current launch node is its
+    source. The operands contain the selected record fields. `$recordIndex`
+    identifies the record in `$records`; the remaining operands contain that
+    record's coordinates and receiver count. `$srcInDstRange` is true when the
+    source coordinate belongs to the destination range. `$records` identifies
+    the PipeNet and its transfer contract.
   }];
 
   let arguments = (ins
@@ -746,15 +745,14 @@ def TTL_SelectPipeSrcOp : TTL_Op<"select_pipe_src", [Pure]> {
 }
 
 def TTL_SelectPipeDstOp : TTL_Op<"select_pipe_dst", [Pure]> {
-  let summary = "Represent a selected destination pipe";
+  let summary = "Represent a record selected by destination iteration";
   let description = [{
-    Represents a destination pipe selected from a PipeNet record table. The
-    operands contain the selected record fields for the current foreach
-    iteration. `$recordIndex` identifies the record in `$records`; the
-    remaining operands contain that record's coordinates and receiver count.
-    `$srcInDstRange` is true when the source coordinate belongs to the
-    destination range. `$records` identifies the PipeNet and its transfer
-    contract.
+    Represents a PipeNet record selected because the current launch node is one
+    of its destinations. The operands contain the selected record fields.
+    `$recordIndex` identifies the record in `$records`; the remaining operands
+    contain that record's coordinates and receiver count. `$srcInDstRange` is
+    true when the source coordinate belongs to the destination range.
+    `$records` identifies the PipeNet and its transfer contract.
   }];
 
   let arguments = (ins
