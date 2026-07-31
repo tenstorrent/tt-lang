@@ -110,6 +110,13 @@ class TTKernelNocCommandStatePreservingOpTrait
     : public mlir::OpTrait::TraitBase<
           ConcreteType, TTKernelNocCommandStatePreservingOpTrait> {};
 
+/// Identifies operations whose semantics use resident NoC command state.
+template <typename ConcreteType>
+class TTKernelNocCommandStateDependentOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType,
+                                      TTKernelNocCommandStateDependentOpTrait> {
+};
+
 /// Identifies operations whose effect on resident NoC commands is unknown.
 template <typename ConcreteType>
 class TTKernelNocCommandStateUnknownOpTrait
@@ -122,6 +129,33 @@ enum class NocCommandClass {
   Write,
   Atomic,
 };
+
+/// Return whether `op` accesses the selected resident NoC command.
+inline bool accessesNocCommand(Operation *op, NocCommandClass commandClass) {
+  switch (commandClass) {
+  case NocCommandClass::Read:
+    return op->hasTrait<TTKernelNocReadCommandOpTrait>();
+  case NocCommandClass::Write:
+    return op->hasTrait<TTKernelNocWriteCommandOpTrait>();
+  case NocCommandClass::Atomic:
+    return op->hasTrait<TTKernelNocAtomicCommandOpTrait>();
+  }
+  llvm_unreachable("unknown NoC command class");
+}
+
+/// Return whether `op` uses the selected resident NoC command state.
+inline bool usesNocCommandState(Operation *op, NocCommandClass commandClass) {
+  if (!op->hasTrait<TTKernelNocCommandStateDependentOpTrait>()) {
+    return false;
+  }
+  assert(op->hasTrait<TTKernelNocOpTrait>() &&
+         "NoC command state user must be a NoC operation");
+  assert((accessesNocCommand(op, NocCommandClass::Read) ||
+          accessesNocCommand(op, NocCommandClass::Write) ||
+          accessesNocCommand(op, NocCommandClass::Atomic)) &&
+         "NoC command state user must identify a command class");
+  return accessesNocCommand(op, commandClass);
+}
 
 /// Return whether `op` may reprogram the selected resident NoC command.
 ///
@@ -144,16 +178,7 @@ inline bool mayReprogramNocCommand(Operation *op,
   if (!accessesReadCommand && !accessesWriteCommand && !accessesAtomicCommand) {
     return true;
   }
-
-  switch (commandClass) {
-  case NocCommandClass::Read:
-    return accessesReadCommand;
-  case NocCommandClass::Write:
-    return accessesWriteCommand;
-  case NocCommandClass::Atomic:
-    return accessesAtomicCommand;
-  }
-  llvm_unreachable("unknown NoC command class");
+  return accessesNocCommand(op, commandClass);
 }
 
 } // namespace mlir::tt::ttkernel
