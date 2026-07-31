@@ -55,6 +55,7 @@ merge, and validation cycle.
 | 14 | 680 | `bnorris/dfb-subviews-671` | `4588cf72d2fc` |
 | 15 | 734 | `bnorris/pipes-multidevice-integrated-poc` | `14c5621d299e` |
 | 16 | 754 | `bnorris/pipes-issue-628-code-size` | `8501c45aebe8` |
+| 17 | 795 | `bnorris/pr734-operation-device-domain` | `2dc25d5487d0` |
 
 PR780 was force-pushed from the previously integrated history to the current
 restack. Merge `34745510` records `fe705d8cae41` as an explicit parent, so
@@ -72,6 +73,8 @@ equivalent patches.
 | `58d6c82f` | Restores bounded per-edge lowering for graphs with at most 12 records; larger graphs use compact selected-pipe lowering. |
 | `a3021dca` | Restores the baseline direct and context-manager all-gather matmul examples. |
 | `37c570f5` | Restores checklist item 1 row-broadcast bias variants. |
+| `339b9b69` | Restores Tensor dialect C API registration required by PR680 DFB subviews. |
+| `4d71475d` | Merges PR795 operation device-domain forwarding into the aggregate. |
 
 ## Aggregate Repairs And Source Follow-Ups
 
@@ -98,6 +101,10 @@ These changes must not remain undocumented aggregate behavior.
   arguments after tensor, computed-address DFB, and PipeNet synchronization
   arguments. Keep selected fabric transfers on receiver-post synchronization
   until capacity-release atomics are implemented for routing-plane transport.
+- PR795 `bnorris/pr734-operation-device-domain`: keep `device_domain` on the
+  public `ttl.operation` dispatcher and forward it through explicit and unified
+  operation lowering. This PR targets PR734 so the fabric frontend remains
+  valid independently of the demo aggregate.
 - PR680 `bnorris/dfb-subviews-671`: retain Tensor dialect registration for
   Python-created `tensor.extract_slice` operations. Keep fp32 recurrence tests
   from sharing one input DFB across incompatible unpack modes.
@@ -148,12 +155,21 @@ Completed after restoring the demo checkpoints:
   passed.
 - Restored files match the recorded `9a59766a` baseline and `c7a8d94e` item 1
   snapshots byte-for-byte before this manifest update.
+- `test/bindings/python/ttl_autoregistration.py`: passed.
+- `test/python/test_dfb_runtime_config.py`: 19 passed.
+- `test/python/test_dfb_subviews.py` and selected collective and mixed-counter
+  PipeNet tests: 14 passed.
+- `test/python/test_ttl_api_device_options.py`: 17 passed.
+- Docker rebuild in `bnorris-ird-fabric-v1.1.7`: passed.
+- Four-device baseline startup did not reach kernel compilation. Fabric router
+  synchronization timed out on device 2; after reset, topology discovery
+  exposed only a 2x1 mesh. Local four-device validation remains pending until
+  all four devices form a connected fabric mesh.
 
 Pending before checklist item 2:
 
-- Rebuild `build-docker` in the current fabric container.
-- Run PipeNet/DFB Python test subsets in Docker with a timeout and
-  `2>&1 | tee /tmp/device_test.log`.
+- Run baseline direct and context-manager examples on four local devices.
+- Run item 1 direct and context-manager examples on four local devices.
 - Run baseline direct and context-manager examples on Galaxy.
 - Run item 1 direct and context-manager examples on Galaxy.
 - Record exact commands, result metrics, device count, container, and commit.
