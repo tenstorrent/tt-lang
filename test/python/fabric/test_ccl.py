@@ -6,6 +6,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from itertools import product
 from math import prod
 
 import pytest
@@ -29,6 +30,9 @@ FABRIC_DTYPES = [
 @dataclass(frozen=True)
 class CollectiveOperations:
     point_to_point: Callable[..., None]
+    product_point_to_point: Callable[..., None]
+    axis_neighbor_ring: Callable[..., None]
+    stencil_nearest_neighbors: Callable[..., None]
     broadcast: Callable[..., None]
     scatter: Callable[..., None]
     gather: Callable[..., None]
@@ -47,15 +51,41 @@ def _make_collective_operations(
     root_device = tuple(0 for _ in mesh_shape)
     last_device = tuple(extent - 1 for extent in mesh_shape)
     receive_block_count = max(2, device_count - 1)
+    ring_axis = next(axis for axis, extent in enumerate(mesh_shape) if extent > 1)
+    stencil_offsets = []
+    for axis in range(len(mesh_shape)):
+        for delta in (-1, 1):
+            offset = [0] * len(mesh_shape)
+            offset[axis] = delta
+            stencil_offsets.append(tuple(offset))
 
     point_to_point_net = ttl.PipeNet(
         graph=ttl.TransferGraph.edges(device_domain, edges=[(root_device, last_device)])
     )
+    product_components = {
+        f"axis_{axis}": (extent,) for axis, extent in enumerate(mesh_shape)
+    }
+    product_domain = ttl.DeviceDomain.product(**product_components)
+    product_root = ttl.DeviceRef(**{name: 0 for name in product_components})
+    product_last = ttl.DeviceRef(
+        **{name: extent[0] - 1 for name, extent in product_components.items()}
+    )
+    product_point_to_point_net = ttl.PipeNet(
+        graph=ttl.TransferGraph.edges(
+            product_domain, edges=[(product_root, product_last)]
+        )
+    )
+    axis_neighbor_ring_net = ttl.PipeNet(
+        graph=ttl.TransferGraph.axis_neighbor(device_domain, axis=ring_axis, wrap=True)
+    )
+    stencil_net = ttl.PipeNet(
+        graph=ttl.TransferGraph.stencil(device_domain, offsets=stencil_offsets)
+    )
     broadcast_net = ttl.PipeNet(
-        graph=ttl.TransferGraph.multicast(device_domain, source=root_device)
+        graph=ttl.TransferGraph.scatter(device_domain, source=root_device)
     )
     scatter_net = ttl.PipeNet(
-        graph=ttl.TransferGraph.multicast(device_domain, source=root_device)
+        graph=ttl.TransferGraph.scatter(device_domain, source=root_device)
     )
     gather_net = ttl.PipeNet(
         graph=ttl.TransferGraph.gather(device_domain, root=root_device)
@@ -91,6 +121,94 @@ def _make_collective_operations(
                     ttl.copy(receive_block, out[0, 0]).wait()
 
             point_to_point_net.if_dst(receive)
+
+    @ttl.operation(grid=(1, 1), device_domain=product_domain)
+    def product_point_to_point(inp, out):
+        send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        receive_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def idle_compute():
+            pass
+
+        @ttl.datamovement()
+        def sender_node():
+            def send(pipe):
+                with send_dfb.reserve() as send_block:
+                    ttl.copy(inp[0, 0], send_block).wait()
+                with send_dfb.wait() as send_block:
+                    ttl.copy(send_block, pipe).wait()
+
+            product_point_to_point_net.if_src(send)
+
+        @ttl.datamovement()
+        def receiver_node():
+            def receive(pipe):
+                with receive_dfb.reserve() as receive_block:
+                    ttl.copy(pipe, receive_block).wait()
+                with receive_dfb.wait() as receive_block:
+                    ttl.copy(receive_block, out[0, 0]).wait()
+
+            product_point_to_point_net.if_dst(receive)
+
+    @ttl.operation(grid=(1, 1), device_domain=device_domain)
+    def axis_neighbor_ring(inp, out):
+        send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        receive_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def idle_compute():
+            pass
+
+        @ttl.datamovement()
+        def sender_node():
+            def send(pipe):
+                with send_dfb.reserve() as send_block:
+                    ttl.copy(inp[0, 0], send_block).wait()
+                with send_dfb.wait() as send_block:
+                    ttl.copy(send_block, pipe).wait()
+
+            axis_neighbor_ring_net.if_src(send)
+
+        @ttl.datamovement()
+        def receiver_node():
+            def receive(pipe):
+                with receive_dfb.reserve() as receive_block:
+                    ttl.copy(pipe, receive_block).wait()
+                with receive_dfb.wait() as receive_block:
+                    ttl.copy(receive_block, out[0, 0]).wait()
+
+            axis_neighbor_ring_net.if_dst(receive)
+
+    @ttl.operation(grid=(1, 1), device_domain=device_domain)
+    def stencil_nearest_neighbors(inp, out):
+        send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        receive_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def idle_compute():
+            pass
+
+        @ttl.datamovement()
+        def sender_node():
+            def send(pipe):
+                with send_dfb.reserve() as send_block:
+                    ttl.copy(inp[0, 0], send_block).wait()
+                with send_dfb.wait() as send_block:
+                    ttl.copy(send_block, pipe).wait()
+
+            stencil_net.if_src(send)
+
+        @ttl.datamovement()
+        def receiver_node():
+            def receive(pipe):
+                source_index = pipe.source_device_index
+                with receive_dfb.reserve() as receive_block:
+                    ttl.copy(pipe, receive_block).wait()
+                with receive_dfb.wait() as receive_block:
+                    ttl.copy(receive_block, out[source_index, 0]).wait()
+
+            stencil_net.if_dst(receive)
 
     @ttl.operation(grid=(1, 1), device_domain=device_domain)
     def broadcast(inp, out):
@@ -285,6 +403,9 @@ def _make_collective_operations(
 
     return CollectiveOperations(
         point_to_point=point_to_point,
+        product_point_to_point=product_point_to_point,
+        axis_neighbor_ring=axis_neighbor_ring,
+        stencil_nearest_neighbors=stencil_nearest_neighbors,
         broadcast=broadcast,
         scatter=scatter,
         gather=gather,
@@ -359,6 +480,120 @@ def test_point_to_point(
     expected = torch.zeros_like(inp_torch)
     expected[(device_count - 1) * TILE_SIZE :, :] = inp_torch[:TILE_SIZE, :]
     assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
+
+
+# Verify that named Cartesian-product coordinates select the intended fabric
+# source and destination devices.
+@pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
+def test_product_domain_point_to_point(
+    fabric_mesh_shape,
+    collective_operations,
+    torch_dtype,
+    ttnn_dtype,
+    rtol,
+    atol,
+):
+    device_count = prod(fabric_mesh_shape)
+    logical_shape = (device_count * TILE_SIZE, TILE_SIZE)
+    inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
+    out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
+
+    with _open_collective_mesh(fabric_mesh_shape) as mesh:
+        inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
+        out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
+
+        collective_operations.product_point_to_point(inp, out)
+
+        result = _compose(mesh, out)
+
+    expected = torch.zeros_like(inp_torch)
+    expected[(device_count - 1) * TILE_SIZE :, :] = inp_torch[:TILE_SIZE, :]
+    assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
+
+
+# Verify that a wrapped axis-neighbor relation executes one ring transfer per
+# logical device.
+@pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
+def test_axis_neighbor_ring(
+    fabric_mesh_shape,
+    collective_operations,
+    torch_dtype,
+    ttnn_dtype,
+    rtol,
+    atol,
+):
+    device_count = prod(fabric_mesh_shape)
+    logical_shape = (device_count * TILE_SIZE, TILE_SIZE)
+    inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
+    out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
+    ring_axis = next(
+        axis for axis, extent in enumerate(fabric_mesh_shape) if extent > 1
+    )
+
+    with _open_collective_mesh(fabric_mesh_shape) as mesh:
+        inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
+        out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
+
+        collective_operations.axis_neighbor_ring(inp, out)
+
+        result = _compose(mesh, out)
+
+    shard_shape = (*fabric_mesh_shape, TILE_SIZE, TILE_SIZE)
+    expected = torch.roll(
+        inp_torch.reshape(shard_shape), shifts=1, dims=ring_axis
+    ).reshape(logical_shape)
+    assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
+
+
+# Verify that one structured relation exchanges values with nearest neighbors
+# along every logical-domain axis.
+@pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
+def test_stencil_nearest_neighbors(
+    fabric_mesh_shape,
+    collective_operations,
+    torch_dtype,
+    ttnn_dtype,
+    rtol,
+    atol,
+):
+    device_count = prod(fabric_mesh_shape)
+    inp_shape = (device_count * TILE_SIZE, TILE_SIZE)
+    out_shape = (device_count * device_count * TILE_SIZE, TILE_SIZE)
+    inp_torch = torch.randn(inp_shape, dtype=torch_dtype)
+    out_torch = torch.zeros(out_shape, dtype=torch_dtype)
+
+    with _open_collective_mesh(fabric_mesh_shape) as mesh:
+        inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
+        out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
+
+        collective_operations.stencil_nearest_neighbors(inp, out)
+
+        result = _compose(mesh, out)
+
+    input_shards = inp_torch.reshape(device_count, TILE_SIZE, TILE_SIZE)
+    expected = torch.zeros_like(out_torch).reshape(
+        device_count, device_count, TILE_SIZE, TILE_SIZE
+    )
+    for source in product(*(range(extent) for extent in fabric_mesh_shape)):
+        source_index = 0
+        for coordinate, extent in zip(source, fabric_mesh_shape):
+            source_index = source_index * extent + coordinate
+        for axis in range(len(fabric_mesh_shape)):
+            for delta in (-1, 1):
+                destination = list(source)
+                destination[axis] += delta
+                if not 0 <= destination[axis] < fabric_mesh_shape[axis]:
+                    continue
+                destination_index = 0
+                for coordinate, extent in zip(destination, fabric_mesh_shape):
+                    destination_index = destination_index * extent + coordinate
+                expected[destination_index, source_index] = input_shards[source_index]
+    assert_allclose(
+        result.float(),
+        expected.reshape(out_shape).float(),
+        rtol=rtol,
+        atol=atol,
+    )
 
 
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)

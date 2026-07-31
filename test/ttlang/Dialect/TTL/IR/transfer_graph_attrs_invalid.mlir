@@ -67,6 +67,32 @@
 
 // -----
 
+// Each stencil translation must include at least one component.
+// expected-error @below {{stencil offset 0 must not be empty}}
+#structured = #ttl.stencil_transfer<component = "device", offsets = [[]], wrap = false>
+
+// -----
+
+// Stencil relations exclude self-transfers.
+// expected-error @below {{stencil offsets must not contain the zero offset}}
+#structured = #ttl.stencil_transfer<component = "device", offsets = [[0, 0]], wrap = false>
+
+// -----
+
+// Every stencil offset must match its selected component rank.
+// expected-error @below {{stencil offset 0 has rank 1, expected 2 for component 'device'}}
+#graph = #ttl.transfer_graph<
+  domain = <components = <name = "device", extent = [2, 2]>>,
+  structured = #ttl.stencil_transfer<component = "device", offsets = [[1]], wrap = false>>
+
+// -----
+
+// Duplicate offsets do not define distinct transfer edges.
+// expected-error @below {{stencil offsets must be unique}}
+#structured = #ttl.stencil_transfer<component = "device", offsets = [[1, 0], [1, 0]], wrap = false>
+
+// -----
+
 // A bound device transfer must remain within its associated domain.
 // expected-error @below {{device transfer edge.destination component 'device' axis 0 is out of bounds for extent 4, got 4}}
 #transfer = #ttl.device_transfer<
