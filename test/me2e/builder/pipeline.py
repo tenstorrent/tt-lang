@@ -64,9 +64,7 @@ def compile_ttl_to_ttkernel(
     if maximize_dst:
         lowering_func_passes.append("ttl-subblock-compute-for-dst")
     dst_acc_str = "true" if maximize_dst else "false"
-    lowering_func_passes.append(
-        f"ttl-lower-to-loops{{dst-accumulation={dst_acc_str}}}"
-    )
+    lowering_func_passes.append(f"ttl-lower-to-loops{{dst-accumulation={dst_acc_str}}}")
     if maximize_dst:
         lowering_func_passes.append("ttl-schedule-operations")
     pre_transport_pipeline = ",".join(pre_transport_func_passes)
