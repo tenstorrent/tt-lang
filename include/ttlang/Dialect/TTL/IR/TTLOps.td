@@ -1503,7 +1503,7 @@ def TTL_CBPushOp : TTL_Op<"cb_push", [MemoryEffects<[MemWrite]>]> {
 }
 
 def TTL_CBWaitOp : TTL_Op<"cb_wait",
-    [MemoryEffects<[MemRead]>, DeclareOpInterfaceMethods<ViewLikeOpInterface>]> {
+    [DeclareOpInterfaceMethods<ViewLikeOpInterface>]> {
   let summary = "Wait for pages to be available in the circular buffer";
   let description = [{
     `ttl.cb_wait` blocks until pages are available in the circular buffer for
@@ -1511,6 +1511,8 @@ def TTL_CBWaitOp : TTL_Op<"cb_wait",
 
     This operation is used by consumer threads (typically compute kernels or
     data movement kernels writing to DRAM) to wait for data from producers.
+    The synchronization remains observable when the returned view has no SSA
+    uses.
 
     The number of pages defaults to the CB's elements per block, but can be
     overridden via the optional `num_tiles` attribute when the wait spans
