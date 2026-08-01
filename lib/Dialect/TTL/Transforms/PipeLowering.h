@@ -23,6 +23,8 @@ class ValueOriginAnalysis;
 
 namespace mlir::tt::ttl {
 
+class PipeTransferIndex;
+
 struct PipeInfo {
   PipeType pipeType;
   PipeTransferContract transferContract;
@@ -173,7 +175,8 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 /// Build the pipe resource plan used by pipe lowering. Transfer intervals that
 /// cannot be bounded by dominance are conservatively treated as conflicting
 /// with every other transfer interval from the same source core.
-LogicalResult buildPipeResourcePlan(ModuleOp mod, ValueOriginAnalysis &analysis,
+LogicalResult buildPipeResourcePlan(ModuleOp mod,
+                                    const PipeTransferIndex &transferIndex,
                                     const PipeGraph &pipeGraph,
                                     PipeResourcePlan &info,
                                     bool enableComputedAddresses = true);

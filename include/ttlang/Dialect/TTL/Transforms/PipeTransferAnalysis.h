@@ -48,13 +48,13 @@ public:
   std::optional<CopyOp> getReceivePost(WaitOp waitOp) const;
 
   /// Returns every receive post whose token may reach `waitOp`.
+  /// Construction guarantees at least one post for every internal wait.
   ArrayRef<Operation *>
   getPossibleReceivePosts(PipeTransferWaitOp waitOp) const;
 
-  /// Returns the transfer creation associated with an internal protocol op,
-  /// or failure when the operation has no modeled association.
-  FailureOr<PipeTransferCreateOp>
-  getTransferCreate(Operation *protocolOp) const;
+  /// Returns the transfer creation associated with an internal protocol op.
+  /// `protocolOp` must be an indexed post, send, or wait operation.
+  PipeTransferCreateOp getTransferCreate(Operation *protocolOp) const;
 
 private:
   PipeTransferIndex() = default;

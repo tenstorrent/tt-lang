@@ -21,6 +21,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/LiveIntervalUtils.h"
+#include "ttlang/Dialect/TTL/Transforms/PipeTransferAnalysis.h"
 #include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
 #include "llvm/ADT/DenseMapInfo.h"
@@ -1212,8 +1213,8 @@ static bool pipeTransferIntervalsOverlap(const PipeTransferAllocationUnit &lhs,
 
 static FailureOr<SmallVector<PipeTransferAllocationUnit>>
 collectPipeTransferAllocationUnits(
-    ModuleOp mod, ValueOriginAnalysis &analysis, const PipeGraph &pipeGraph,
-    const DominanceInfo &dominanceInfo,
+    ModuleOp mod, const PipeTransferIndex &transferIndex,
+    const PipeGraph &pipeGraph, const DominanceInfo &dominanceInfo,
     const PostDominanceInfo &postDominanceInfo,
     llvm::SmallPtrSetImpl<Operation *> &staticallyInactiveOps) {
   SmallVector<PipeTransferAllocationUnit> units;
@@ -1229,20 +1230,20 @@ collectPipeTransferAllocationUnits(
       return WalkResult::advance();
     }
     if (auto waitOp = dyn_cast<PipeTransferWaitOp>(op)) {
-      FailureOr<PipeTransferPostOp> maybePostOp =
-          findPipeTransferPostForToken(analysis, waitOp.getToken());
-      if (failed(maybePostOp)) {
-        waitOp.emitError(
-            "pipe transfer wait requires every possible token value to derive "
-            "from the same ttl.pipe_transfer.post");
+      ArrayRef<Operation *> possiblePosts =
+          transferIndex.getPossibleReceivePosts(waitOp);
+      if (possiblePosts.size() != 1) {
+        waitOp.emitError() << "requires exactly one possible receiver post; "
+                              "found "
+                           << possiblePosts.size();
         return WalkResult::interrupt();
       }
-      PipeTransferPostOp postOp = *maybePostOp;
-      if (!pipeGraph.getPipeTransferNodeForProtocolOp(postOp.getOperation())) {
+      Operation *postOp = possiblePosts.front();
+      if (!pipeGraph.getPipeTransferNodeForProtocolOp(postOp)) {
         staticallyInactiveOps.insert(op);
         return WalkResult::advance();
       }
-      waitOpsByPost[postOp.getOperation()].push_back(op);
+      waitOpsByPost[postOp].push_back(op);
     }
     return WalkResult::advance();
   });
@@ -1260,17 +1261,14 @@ collectPipeTransferAllocationUnits(
                 "pipe transfer graph node has no send operation");
       return failure();
     }
-    FailureOr<PipeTransferCreateOp> createOp = getPipeTransferCreate(
-        sendOp.getOperation(), sendOp.getTransfer(), analysis);
-    if (failed(createOp)) {
-      return failure();
-    }
+    PipeTransferCreateOp createOp =
+        transferIndex.getTransferCreate(sendOp.getOperation());
 
     PipeTransferAllocationUnit unit;
     unit.transferNodeId = transferNode.id;
     unit.sendOp = sendOp.getOperation();
     unit.pipe = transferNode.pipe;
-    unit.pipeType = mlir::cast<PipeType>((*createOp).getPipe().getType());
+    unit.pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
     unit.transferContract = transferNode.transferContract;
     unit.ordinal = static_cast<int64_t>(transferNode.id);
     unit.protocolOps.push_back(sendOp.getOperation());
@@ -1587,14 +1585,15 @@ compactColors(const SourceColorMap &colorUsersBySource,
   return {std::move(compactedBySource), maxPerSource};
 }
 
-LogicalResult buildPipeResourcePlan(ModuleOp mod, ValueOriginAnalysis &analysis,
+LogicalResult buildPipeResourcePlan(ModuleOp mod,
+                                    const PipeTransferIndex &transferIndex,
                                     const PipeGraph &pipeGraph,
                                     PipeResourcePlan &info,
                                     bool enableComputedAddresses) {
   DominanceInfo dominanceInfo(mod);
   PostDominanceInfo postDominanceInfo(mod);
   FailureOr<SmallVector<PipeTransferAllocationUnit>> maybeUnits =
-      collectPipeTransferAllocationUnits(mod, analysis, pipeGraph,
+      collectPipeTransferAllocationUnits(mod, transferIndex, pipeGraph,
                                          dominanceInfo, postDominanceInfo,
                                          info.staticallyInactiveOps);
   if (failed(maybeUnits)) {

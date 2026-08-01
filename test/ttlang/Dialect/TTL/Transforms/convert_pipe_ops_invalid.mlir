@@ -63,7 +63,7 @@ func.func @wait_with_distinct_pipe_receive_sources(%condition: i1)
   } else {
     scf.yield %xf1 : !ttl.transfer_handle
   }
-  // expected-error @below {{untyped transfer handle wait requires every possible source to be the same pipe receive ttl.copy}}
+  // expected-error @below {{requires either every possible source to be the same pipe receive ttl.copy or no source to be a pipe receive}}
   ttl.wait %xf : !ttl.transfer_handle
   func.return
 }
@@ -270,7 +270,7 @@ func.func @pipe_wait_requires_one_static_post(%condition: i1)
   } else {
     scf.yield %token1 : !ttl.pipe_token<net 0>
   }
-  // expected-error @below {{requires every possible token value to derive from the same ttl.pipe_transfer.post}}
+  // expected-error @below {{requires exactly one possible receiver post; found 2}}
   ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
   func.return
 }
