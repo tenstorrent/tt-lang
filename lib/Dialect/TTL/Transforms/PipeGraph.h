@@ -34,6 +34,8 @@ class ValueOriginAnalysis;
 
 namespace mlir::tt::ttl {
 
+class PipeTransferIndex;
+
 struct PipeGraphAnalysisState;
 
 //===----------------------------------------------------------------------===//
@@ -271,8 +273,8 @@ public:
   /// Analyze a module to find all pipe receivers and build the graph.
   /// Returns failure if validation detects an error (e.g., gather DFB too
   /// small).
-  static FailureOr<PipeGraph> build(ModuleOp mod,
-                                    ValueOriginAnalysis &analysis);
+  static FailureOr<PipeGraph> build(ModuleOp mod, ValueOriginAnalysis &analysis,
+                                    const PipeTransferIndex &transferIndex);
 
   /// Check if any pipes were found.
   bool hasPipes() const { return !pipeTransferNodes.empty(); }
@@ -348,17 +350,19 @@ private:
   /// Build endpoint slot sequences when receiver DFB posts have a proven
   /// sequential order. Unproven point-to-point sequences use
   /// receiver-published addresses.
-  LogicalResult assignReceiverAddressSequences(ModuleOp mod,
-                                               ValueOriginAnalysis &analysis,
-                                               PipeGraphAnalysisState &state);
+  LogicalResult
+  assignReceiverAddressSequences(ModuleOp mod, ValueOriginAnalysis &analysis,
+                                 const PipeTransferIndex &transferIndex,
+                                 PipeGraphAnalysisState &state);
 
   LogicalResult rebuildEndpointGraph(ModuleOp mod,
                                      ValueOriginAnalysis &analysis,
+                                     const PipeTransferIndex &transferIndex,
                                      PipeGraphAnalysisState &state);
 
   LogicalResult
   provePipeOnlyReceiverProducerStreams(ModuleOp mod,
-                                       ValueOriginAnalysis &analysis,
+                                       const PipeTransferIndex &transferIndex,
                                        PipeGraphAnalysisState &state);
 
   llvm::MapVector<Operation *, ReceiverDFBInfo> receiverDFBByPost;

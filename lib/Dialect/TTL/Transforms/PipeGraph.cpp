@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "PipeGraph.h"
-#include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
 
 #include "DFBAcquireReleaseAnalysis.h"
 #include "mlir/Analysis/DataFlow/Utils.h"
@@ -16,6 +15,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
+#include "ttlang/Dialect/TTL/Transforms/PipeTransferAnalysis.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
@@ -144,20 +144,21 @@ static std::optional<int64_t> getReceiverSlotSpanBlocksForPost(
 }
 
 static LogicalResult collectReceiveWaitsByPost(
-    ModuleOp mod, ValueOriginAnalysis &analysis,
+    ModuleOp mod, const PipeTransferIndex &transferIndex,
     llvm::DenseMap<Operation *, SmallVector<PipeTransferWaitOp>> &waitsByPost) {
-  WalkResult walkResult = mod.walk([&](PipeTransferWaitOp waitOp) {
-    FailureOr<PipeTransferPostOp> maybePostOp =
-        findPipeTransferPostForToken(analysis, waitOp.getToken());
-    if (failed(maybePostOp)) {
-      waitOp.emitError(
-          "requires every possible token value to derive from the same "
-          "ttl.pipe_transfer.post");
-      return WalkResult::interrupt();
-    }
-    waitsByPost[maybePostOp->getOperation()].push_back(waitOp);
-    return WalkResult::advance();
-  });
+  WalkResult walkResult =
+      mod.walk([&](PipeTransferWaitOp waitOp) {
+        ArrayRef<Operation *> possiblePosts =
+            transferIndex.getPossibleReceivePosts(waitOp);
+        if (possiblePosts.size() != 1) {
+          waitOp.emitError()
+              << "requires exactly one possible receiver post; found "
+              << possiblePosts.size();
+          return WalkResult::interrupt();
+        }
+        waitsByPost[possiblePosts.front()].push_back(waitOp);
+        return WalkResult::advance();
+      });
   return success(!walkResult.wasInterrupted());
 }
 
@@ -219,14 +220,15 @@ struct ReceiverControlContext {
 /// are structural; source and destination predicates are evaluated at the
 /// receiver coordinate.
 static bool isTransparentReceiverScope(Operation *op,
-                                       PipeReceiverCoord receiver) {
+                                       PipeReceiverCoord receiver,
+                                       const PipeGraphAnalysisState &state) {
   if (mlir::isa<PipeNetScopeOp>(op)) {
     return true;
   }
   if (auto ifDstOp = mlir::dyn_cast<IfDstOp>(op)) {
     auto pipeType = mlir::cast<PipeType>(ifDstOp.getPipe().getType());
     return knownLaunchNodeDomainContains(
-        getPipeDestinationLaunchNodeDomain(pipeType),
+        getPipeDestinationLaunchNodeDomain(pipeType, state.baseDomain),
         getLaunchNodeCoord(receiver));
   }
   if (auto ifSrcOp = mlir::dyn_cast<IfSrcOp>(op)) {
@@ -253,7 +255,7 @@ getReceiverControlContext(Operation *op, PipeReceiverCoord receiver,
       context.function = function;
       break;
     }
-    if (parent && isTransparentReceiverScope(parent, receiver)) {
+    if (parent && isTransparentReceiverScope(parent, receiver, analysisState)) {
       current = parent;
       continue;
     }
@@ -335,21 +337,15 @@ static bool hasMatchingReceiveWaitBeforePush(
 
 /// Group posts by physical DFB because its writers share one reservation ring.
 static FailureOr<ReceiverPostsByDFB> collectReceiverPostsByDFB(
-    ModuleOp mod, ValueOriginAnalysis &analysis,
+    ModuleOp mod, const PipeTransferIndex &transferIndex,
     const llvm::MapVector<Operation *, ReceiverDFBInfo> &receiverDFBByPost,
     PipeGraphAnalysisState &analysisState) {
   ReceiverPostsByDFB postsByReceiverDFB;
   WalkResult walkResult = mod.walk([&](PipeTransferPostOp postOp) {
-    FailureOr<PipeTransferCreateOp> maybeCreateOp =
-        findPipeTransferCreateForTransfer(analysis, postOp.getTransfer());
-    if (failed(maybeCreateOp)) {
-      postOp.emitError(
-          "requires every possible transfer value to derive from the same "
-          "ttl.pipe_transfer.create");
-      return WalkResult::interrupt();
-    }
+    PipeTransferCreateOp createOp =
+        transferIndex.getTransferCreate(postOp.getOperation());
     PipeKey pipe =
-        getPipeKey(mlir::cast<PipeType>(maybeCreateOp->getPipe().getType()));
+        getPipeKey(mlir::cast<PipeType>(createOp.getPipe().getType()));
     auto receiverIt = receiverDFBByPost.find(postOp.getOperation());
     if (receiverIt == receiverDFBByPost.end()) {
       return WalkResult::advance();
@@ -507,9 +503,10 @@ static int64_t advanceReceiverSlot(int64_t slot, int64_t stride,
 
 LogicalResult PipeGraph::assignReceiverAddressSequences(
     ModuleOp mod, ValueOriginAnalysis &analysis,
+    const PipeTransferIndex &transferIndex,
     PipeGraphAnalysisState &analysisState) {
   FailureOr<ReceiverPostsByDFB> maybePostsByReceiverDFB =
-      collectReceiverPostsByDFB(mod, analysis, receiverDFBByPost,
+      collectReceiverPostsByDFB(mod, transferIndex, receiverDFBByPost,
                                 analysisState);
   if (failed(maybePostsByReceiverDFB)) {
     return failure();
@@ -522,16 +519,10 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
     const ReceiverDFBInfo &receiverInfo = receiverEntry.second;
     int64_t receiverDFBIndex = receiverInfo.dfbIndex;
     auto postOp = llvm::cast<PipeTransferPostOp>(postOperation);
-    FailureOr<PipeTransferCreateOp> maybeCreateOp =
-        findPipeTransferCreateForTransfer(analysis, postOp.getTransfer());
-    if (failed(maybeCreateOp)) {
-      postOp.emitError(
-          "requires every possible transfer value to derive from the same "
-          "ttl.pipe_transfer.create");
-      return failure();
-    }
+    PipeTransferCreateOp createOp =
+        transferIndex.getTransferCreate(postOp.getOperation());
     PipeKey pipe =
-        getPipeKey(mlir::cast<PipeType>(maybeCreateOp->getPipe().getType()));
+        getPipeKey(mlir::cast<PipeType>(createOp.getPipe().getType()));
     pipe.forEachReceiver([&](PipeReceiverCoord receiver) {
       PipeReceiverDFBKey receiverDFB{receiver, receiverDFBIndex};
       auto postIt = postsByReceiverDFB.find(receiverDFB);
@@ -793,10 +784,10 @@ verifyTransferPayloadCompatibility(const PipeTransferNode &transferNode) {
 }
 
 LogicalResult PipeGraph::provePipeOnlyReceiverProducerStreams(
-    ModuleOp mod, ValueOriginAnalysis &analysis,
+    ModuleOp mod, const PipeTransferIndex &transferIndex,
     PipeGraphAnalysisState &analysisState) {
   llvm::DenseMap<Operation *, SmallVector<PipeTransferWaitOp>> waitsByPost;
-  if (failed(collectReceiveWaitsByPost(mod, analysis, waitsByPost))) {
+  if (failed(collectReceiveWaitsByPost(mod, transferIndex, waitsByPost))) {
     return failure();
   }
 
@@ -1047,6 +1038,7 @@ const PipeReceiverEndpoint *PipeGraph::getProvenReceiverAddressEndpoint(
 
 LogicalResult
 PipeGraph::rebuildEndpointGraph(ModuleOp mod, ValueOriginAnalysis &analysis,
+                                const PipeTransferIndex &transferIndex,
                                 PipeGraphAnalysisState &analysisState) {
   pipeTransferNodes.clear();
   transferNodeIdByProtocolOp.clear();
@@ -1065,15 +1057,9 @@ PipeGraph::rebuildEndpointGraph(ModuleOp mod, ValueOriginAnalysis &analysis,
   llvm::MapVector<PipeKey, PipeTransferCandidates> candidatesByPipe;
   WalkResult collectResult = mod.walk([&](Operation *op) {
     if (auto sendOp = dyn_cast<PipeTransferSendOp>(op)) {
-      FailureOr<PipeTransferCreateOp> maybeCreateOp =
-          findPipeTransferCreateForTransfer(analysis, sendOp.getTransfer());
-      if (failed(maybeCreateOp)) {
-        sendOp.emitError(
-            "requires every possible transfer value to derive from the same "
-            "ttl.pipe_transfer.create");
-        return WalkResult::interrupt();
-      }
-      auto pipeType = mlir::cast<PipeType>(maybeCreateOp->getPipe().getType());
+      PipeTransferCreateOp createOp =
+          transferIndex.getTransferCreate(sendOp.getOperation());
+      auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
       PipeKey pipeKey = getPipeKey(pipeType);
       LaunchNodeDomain sendDomain =
           lookupOperationLaunchDomain(sendOp.getOperation(), analysisState);
@@ -1105,15 +1091,9 @@ PipeGraph::rebuildEndpointGraph(ModuleOp mod, ValueOriginAnalysis &analysis,
     if (!postOp) {
       return WalkResult::advance();
     }
-    FailureOr<PipeTransferCreateOp> maybeCreateOp =
-        findPipeTransferCreateForTransfer(analysis, postOp.getTransfer());
-    if (failed(maybeCreateOp)) {
-      postOp.emitError(
-          "requires every possible transfer value to derive from the same "
-          "ttl.pipe_transfer.create");
-      return WalkResult::interrupt();
-    }
-    auto pipeType = mlir::cast<PipeType>(maybeCreateOp->getPipe().getType());
+    PipeTransferCreateOp createOp =
+        transferIndex.getTransferCreate(postOp.getOperation());
+    auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
     PipeKey pipeKey = getPipeKey(pipeType);
     LaunchNodeDomain postDomain =
         lookupOperationLaunchDomain(postOp.getOperation(), analysisState);
@@ -1218,27 +1198,15 @@ PipeGraph::rebuildEndpointGraph(ModuleOp mod, ValueOriginAnalysis &analysis,
     }
 
     for (auto [sendIndex, sendOp] : llvm::enumerate(candidates.sends)) {
-      FailureOr<PipeTransferCreateOp> maybeSendCreate =
-          findPipeTransferCreateForTransfer(analysis, sendOp.getTransfer());
-      if (failed(maybeSendCreate)) {
-        sendOp.emitError(
-            "requires every possible transfer value to derive from the same "
-            "ttl.pipe_transfer.create");
-        return failure();
-      }
+      PipeTransferCreateOp sendCreate =
+          transferIndex.getTransferCreate(sendOp.getOperation());
       PipeTransferContract transferContract =
-          getPipeTransferContract(*maybeSendCreate);
+          getPipeTransferContract(sendCreate);
       for (const auto &endpoint : endpointsBySend[sendIndex]) {
         PipeTransferPostOp postOp = endpoint.second;
-        FailureOr<PipeTransferCreateOp> maybePostCreate =
-            findPipeTransferCreateForTransfer(analysis, postOp.getTransfer());
-        if (failed(maybePostCreate)) {
-          postOp.emitError(
-              "requires every possible transfer value to derive from the same "
-              "ttl.pipe_transfer.create");
-          return failure();
-        }
-        if (getPipeTransferContract(*maybePostCreate) != transferContract) {
+        PipeTransferCreateOp postCreate =
+            transferIndex.getTransferCreate(postOp.getOperation());
+        if (getPipeTransferContract(postCreate) != transferContract) {
           postOp.emitError(
               "pipe send and receiver post use different transfer contracts");
           return failure();
@@ -1486,20 +1454,14 @@ LogicalResult PipeGraph::addPipeReceiver(Operation *op,
 }
 
 FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod,
-                                      ValueOriginAnalysis &analysis) {
+                                      ValueOriginAnalysis &analysis,
+                                      const PipeTransferIndex &transferIndex) {
   PipeGraph graph;
 
   WalkResult walkResult = mod.walk([&](PipeTransferPostOp postOp) {
-    FailureOr<PipeTransferCreateOp> maybeCreateOp =
-        findPipeTransferCreateForTransfer(analysis, postOp.getTransfer());
-    if (failed(maybeCreateOp)) {
-      postOp.emitError(
-          "pipe transfer post requires every possible transfer value to derive "
-          "from the same ttl.pipe_transfer.create");
-      return WalkResult::interrupt();
-    }
-    if (failed(
-            graph.addPipeReceiver(postOp, *maybeCreateOp, postOp.getDst()))) {
+    PipeTransferCreateOp createOp =
+        transferIndex.getTransferCreate(postOp.getOperation());
+    if (failed(graph.addPipeReceiver(postOp, createOp, postOp.getDst()))) {
       return WalkResult::interrupt();
     }
     return WalkResult::advance();
@@ -1514,14 +1476,15 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod,
     return failure();
   }
 
-  if (failed(graph.rebuildEndpointGraph(mod, analysis, analysisState))) {
+  if (failed(graph.rebuildEndpointGraph(mod, analysis, transferIndex,
+                                        analysisState))) {
     return failure();
   }
-  if (failed(
-          graph.assignReceiverAddressSequences(mod, analysis, analysisState))) {
+  if (failed(graph.assignReceiverAddressSequences(mod, analysis, transferIndex,
+                                                  analysisState))) {
     return failure();
   }
-  if (failed(graph.provePipeOnlyReceiverProducerStreams(mod, analysis,
+  if (failed(graph.provePipeOnlyReceiverProducerStreams(mod, transferIndex,
                                                         analysisState))) {
     return failure();
   }

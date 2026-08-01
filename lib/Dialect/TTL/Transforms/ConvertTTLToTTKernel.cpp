@@ -36,6 +36,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
+#include "ttlang/Dialect/TTL/Transforms/PipeTransferAnalysis.h"
 #include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
 #include "llvm/ADT/BitVector.h"
@@ -547,16 +548,6 @@ static std::optional<TransferKind> getTransferKindFromHandleType(Type t) {
     return std::nullopt;
   }
   return transferHandle.getKind();
-}
-
-static bool isPipeReceiveCopy(CopyOp op) {
-  return llvm::isa<PipeType>(op.getSrc().getType()) &&
-         getAttachedCB(op.getDst());
-}
-
-static bool isPipeSendCopy(CopyOp op) {
-  return llvm::isa<CircularBufferType>(op.getSrc().getType()) &&
-         llvm::isa<PipeType>(op.getDst().getType());
 }
 
 static FailureOr<CopyOp> findPipeReceiveCopy(ValueOriginAnalysis &analysis,
@@ -1720,6 +1711,12 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   if (failed(verifyTransferProvenance(mod, transferAnalysis))) {
     return failure();
   }
+  FailureOr<std::unique_ptr<PipeTransferIndex>> maybeTransferIndex =
+      PipeTransferIndex::create(mod, transferAnalysis);
+  if (failed(maybeTransferIndex)) {
+    return failure();
+  }
+  const PipeTransferIndex &transferIndex = **maybeTransferIndex;
 
   llvm::SmallPtrSet<Operation *, 8> completedPipeSendWaits;
   mod.walk([&](WaitOp waitOp) {
@@ -1732,7 +1729,7 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
 
   // Validate receiver DFB consistency before lowering emits the pipe
   // synchronization protocol.
-  auto pipeGraphOrErr = PipeGraph::build(mod, transferAnalysis);
+  auto pipeGraphOrErr = PipeGraph::build(mod, transferAnalysis, transferIndex);
   if (failed(pipeGraphOrErr)) {
     return failure();
   }
@@ -1742,7 +1739,7 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   PipeNetIndex pipeNetIndex;
   buildPipeNetIndex(mod, pipeNetIndex);
   PipeResourcePlan pipeResourcePlan;
-  if (failed(buildPipeResourcePlan(mod, transferAnalysis, *pipeGraphOrErr,
+  if (failed(buildPipeResourcePlan(mod, transferIndex, *pipeGraphOrErr,
                                    pipeResourcePlan, pipeComputedAddresses))) {
     return failure();
   }

@@ -143,16 +143,16 @@ Pipe transfers have the following operational semantics:
   payload storage. Pipe lowering does not create a separate payload DFB.
 - Every send requires one corresponding receiver post at every destination.
   The post must be able to run before the send blocks waiting for it.
-- Every receiver wait requires one corresponding send. The send must be able
-  to run before the receiver blocks waiting for completion.
+- Every receiver wait observes the send corresponding to the exact receive
+  handle it consumes. The send must be able to run before the receiver blocks
+  waiting for completion. Repeating a wait on one handle observes the same
+  completed transfer and does not require another send.
 - A receiver post does not wait for payload and does not require a receiver
   wait. Code may post a reservation before deciding when or whether to wait. A
   pipe with no sends or waits may contain unused receiver posts.
 - A send completes after the payload write and completion signal. It does not
   wait for the receiver to execute a receive wait, so a send does not require
   a receiver wait.
-- Receiver waits consume completion signals in send order. The number of waits
-  may be smaller than the number of sends, but may not exceed it.
 - When a pipe has sends, every destination must have the same number of
   receiver posts as sends. Extra posts would advance the sender-ready state
   before the intended send.
@@ -160,12 +160,14 @@ Pipe transfers have the following operational semantics:
   receive-wait events. It rejects schedules whose same-thread ordering
   creates a wait-for cycle. Other runtime hangs can still have different
   causes.
-- The graph pairs static receiver-post, send, and receive-wait definitions by
-  program order after helper expansion. Each pair may execute repeatedly, but
-  the two sides must contain the same number of static definitions and each
-  pair must execute equally often under equivalent conditions. Alternative
-  definitions under a runtime `scf.if` remain distinct unless the verifier can
-  prove one alternative has zero executions at the relevant launch node.
+- The graph pairs static receiver-post and send definitions by program order
+  after helper expansion. Each pair may execute repeatedly, but the two sides
+  must contain the same number of static definitions and each pair must execute
+  equally often under equivalent conditions. A receiver wait refers to the
+  exact post that produced its handle, rather than a position in the wait
+  sequence. Alternative definitions under a runtime `scf.if` remain distinct
+  unless the verifier can prove one alternative has zero executions at the
+  relevant launch node.
 - All definitions of one event kind for a pipe endpoint must belong to one
   kernel-thread function. Independent kernel threads have no program order and
   cannot safely share that endpoint's synchronization state.
@@ -1492,9 +1494,10 @@ The analyses have non-overlapping responsibilities:
 
 | Analysis result | Responsibility |
 | --- | --- |
+| Pipe transfer index | Associate each public wait with its exact receive copy and each internal wait with every possible receive post and their common transfer creation. |
 | Launch-node domains | Determine which receiver coordinates execute each operation. |
 | DFB acquire/release ownership | Relate reserves, posts, waits, pushes, waits-front, and pops without inferring ownership from lexical proximity. |
-| Pipe rendezvous schedule | Verify one-to-one send, post, and wait occurrence counts and their wait-for dependencies. |
+| Pipe rendezvous schedule | Verify one-to-one send/post occurrence counts and the wait-for dependencies of exact receive handles. |
 | `PipeGraph` | Match each send with one post per receiver, connect its endpoints to physical receiver DFBs, and prove endpoint address sequences. |
 | Pipe resource plan | Select protocols and allocate counters, address storage, and sender-local sequence state from graph facts. |
 

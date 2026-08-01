@@ -240,3 +240,47 @@ func.func @wait_requires_one_pipe_receive(%condition: i1) {
   ttl.wait %receive : !ttl.transfer_handle
   func.return
 }
+
+// -----
+
+// A merged internal token must retain one transfer creation so resource
+// planning cannot select state from an unrelated transfer.
+
+func.func @merged_token_requires_one_transfer_creation(%condition: i1) {
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %pipe0 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %pipe1 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %transfer0 = ttl.pipe_transfer.create %pipe0 {
+      expectedReceivers = 1 : i64,
+      kind = #ttl.pipe_transfer_kind<point_to_point>}
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+      -> !ttl.pipe_transfer
+  %transfer1 = ttl.pipe_transfer.create %pipe1 {
+      expectedReceivers = 1 : i64,
+      kind = #ttl.pipe_transfer_kind<point_to_point>}
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+      -> !ttl.pipe_transfer
+  %token = scf.if %condition -> (!ttl.pipe_token<net 0>) {
+    %dst0 = ttl.cb_reserve %cb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %token0 = ttl.pipe_transfer.post %transfer0, %dst0
+        : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.pipe_token<net 0>
+    scf.yield %token0 : !ttl.pipe_token<net 0>
+  } else {
+    %dst1 = ttl.cb_reserve %cb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %token1 = ttl.pipe_transfer.post %transfer1, %dst1
+        : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.pipe_token<net 0>
+    scf.yield %token1 : !ttl.pipe_token<net 0>
+  }
+  // expected-error @below {{'ttl.pipe_transfer.wait' op requires all possible receive posts to derive from one ttl.pipe_transfer.create}}
+  ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
+  func.return
+}
