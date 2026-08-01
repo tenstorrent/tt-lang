@@ -127,7 +127,15 @@ LaunchNodeDomain getPipeSourceLaunchNodeDomain(PipeType pipeType) {
   return result;
 }
 
-LaunchNodeDomain getPipeDestinationLaunchNodeDomain(PipeType pipeType) {
+LaunchNodeDomain
+getPipeDestinationLaunchNodeDomain(PipeType pipeType,
+                                   const LaunchNodeDomain &baseDomain) {
+  LaunchNodeCoord start{pipeType.getDstStartX(), pipeType.getDstStartY()};
+  LaunchNodeCoord end{pipeType.getDstEndX(), pipeType.getDstEndY()};
+  if (!knownLaunchNodeDomainContains(baseDomain, start) ||
+      !knownLaunchNodeDomainContains(baseDomain, end)) {
+    return LaunchNodeDomain::unknown();
+  }
   LaunchNodeDomain result;
   for (int64_t x = pipeType.getDstStartX(); x <= pipeType.getDstEndX(); ++x) {
     for (int64_t y = pipeType.getDstStartY(); y <= pipeType.getDstEndY(); ++y) {
@@ -205,14 +213,32 @@ LaunchNodeDomain LaunchNodeDomainState::getRoleDomain(int64_t netId,
 
 void LaunchNodeDomainState::initialize(ModuleOp module) {
   executionCountAnalysesByFunctionAndCoord.clear();
+  if (!module->hasAttr(kLaunchGridAttrName)) {
+    hasLaunchGrid = false;
+  } else {
+    SmallVector<int64_t> launchGrid;
+    if (!readI64ArrayAttr(module.getOperation(), kLaunchGridAttrName,
+                          launchGrid) ||
+        launchGrid.size() != 2 || launchGrid[0] <= 0 || launchGrid[1] <= 0) {
+      hasLaunchGrid = false;
+    } else {
+      hasLaunchGrid = true;
+      baseDomain = getFullLaunchNodeDomain(launchGrid[0], launchGrid[1]);
+    }
+  }
+
   module.walk([&](CreatePipeOp pipe) {
     PipeType pipeType = mlir::cast<PipeType>(pipe.getResult().getType());
     int64_t pipeNetId = pipeType.getPipeNetId();
-    netSourceDomains[pipeNetId] = netSourceDomains[pipeNetId].unionWith(
-        getPipeSourceLaunchNodeDomain(pipeType));
+    LaunchNodeDomain sourceDomain = getPipeSourceLaunchNodeDomain(pipeType);
+    if (!sourceDomain.isSubsetOf(baseDomain)) {
+      sourceDomain = LaunchNodeDomain::unknown();
+    }
+    netSourceDomains[pipeNetId] =
+        netSourceDomains[pipeNetId].unionWith(sourceDomain);
     netDestinationDomains[pipeNetId] =
         netDestinationDomains[pipeNetId].unionWith(
-            getPipeDestinationLaunchNodeDomain(pipeType));
+            getPipeDestinationLaunchNodeDomain(pipeType, baseDomain));
     pipeNetLocs[pipeNetId].push_back(pipe.getLoc());
     auto &name = pipeNetNames[pipeNetId];
     if (name.empty()) {
@@ -221,21 +247,6 @@ void LaunchNodeDomainState::initialize(ModuleOp module) {
       }
     }
   });
-
-  if (!module->hasAttr(kLaunchGridAttrName)) {
-    hasLaunchGrid = false;
-    return;
-  }
-
-  SmallVector<int64_t> launchGrid;
-  if (!readI64ArrayAttr(module.getOperation(), kLaunchGridAttrName,
-                        launchGrid) ||
-      launchGrid.size() != 2 || launchGrid[0] <= 0 || launchGrid[1] <= 0) {
-    hasLaunchGrid = false;
-    return;
-  }
-  hasLaunchGrid = true;
-  baseDomain = getFullLaunchNodeDomain(launchGrid[0], launchGrid[1]);
 }
 
 static std::optional<llvm::APInt>
@@ -299,7 +310,8 @@ getRegionInvocationCountAtLaunchNode(Region &region, LaunchNodeCoord coord,
   if (auto ifDstOp = dyn_cast<IfDstOp>(parent)) {
     auto pipeType = cast<PipeType>(ifDstOp.getPipe().getType());
     return knownLaunchNodeDomainContains(
-               getPipeDestinationLaunchNodeDomain(pipeType), coord)
+               getPipeDestinationLaunchNodeDomain(pipeType, state.baseDomain),
+               coord)
                ? 1
                : 0;
   }
@@ -472,7 +484,8 @@ getUnresolvedExecutionCountContext(Operation *op, LaunchNodeCoord coord,
     if (auto ifDstOp = dyn_cast<IfDstOp>(parent)) {
       auto pipeType = cast<PipeType>(ifDstOp.getPipe().getType());
       if (!knownLaunchNodeDomainContains(
-              getPipeDestinationLaunchNodeDomain(pipeType), coord)) {
+              getPipeDestinationLaunchNodeDomain(pipeType, state.baseDomain),
+              coord)) {
         return std::nullopt;
       }
       current = parent;
@@ -937,7 +950,7 @@ void LaunchNodeDomainAnalysis::visitRegionBranchControlFlowTransfer(
       .Case<IfDstOp>([&](IfDstOp ifDst) {
         auto pipeType = mlir::cast<PipeType>(ifDst.getPipe().getType());
         narrowed = before.getDomain().intersectWith(
-            getPipeDestinationLaunchNodeDomain(pipeType));
+            getPipeDestinationLaunchNodeDomain(pipeType, state.baseDomain));
       })
       .Case<PipeNetScopeOp>([&](PipeNetScopeOp scopeOp) {
         auto scope = getPipeNetScopeLaunchNodeDomains(scopeOp, state);

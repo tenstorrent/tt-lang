@@ -14,12 +14,14 @@
 #include "mlir/Analysis/DataFlowFramework.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "ttlang/Analysis/ValueOriginAnalysis.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
+#include "ttlang/Dialect/TTL/Transforms/PipeTransferAnalysis.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
@@ -33,6 +35,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <set>
 #include <tuple>
@@ -47,8 +50,8 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-constexpr std::size_t kMaxPipeScheduleCycleNotes = 8;
-constexpr std::size_t kMaxPipeScheduleNodes = 4096;
+constexpr std::size_t kMaxPipeScheduleDiagnosticNotes = 8;
+constexpr std::size_t kMaxPipeScheduleNodesPerLaunchNode = 4096;
 
 //===----------------------------------------------------------------------===//
 // Module state collected before the analysis runs and updated during it.
@@ -60,30 +63,6 @@ struct WaitUse {
   LaunchNodeDomain domain;
   int64_t cbIndex;
 };
-
-/// Return true if `copyOp` publishes a destination dataflow buffer slot for a
-/// pipe receive.
-bool isPipeReceiveCopy(CopyOp copyOp) {
-  return mlir::isa<PipeType>(copyOp.getSrc().getType()) &&
-         getAttachedCB(copyOp.getDst());
-}
-
-/// Return the unique pipe receive copied by a wait, or no value for a non-pipe
-/// wait. Fail when different possible sources require different events.
-FailureOr<std::optional<CopyOp>>
-findDefiningPipeReceiveCopy(ValueOriginAnalysis &analysis, Value value) {
-  return analysis.getOrigins(value).uniqueMapped<std::optional<CopyOp>>(
-      [](Value origin) -> FailureOr<std::optional<CopyOp>> {
-        if (auto copyOp = origin.getDefiningOp<CopyOp>()) {
-          return isPipeReceiveCopy(copyOp) ? std::optional<CopyOp>(copyOp)
-                                           : std::optional<CopyOp>();
-        }
-        if (origin.getDefiningOp<PipeTransferSendOp>()) {
-          return std::optional<CopyOp>();
-        }
-        return failure();
-      });
-}
 
 /// Pipe synchronization event used by the wait-for graph verifier.
 enum class PipeEventKind { Send, ReceivePost, ReceiveWait };
@@ -108,6 +87,8 @@ struct PipeEvent {
   PipeEventKind kind;
   LaunchNodeDomain domain;
   Operation *unanalyzableOp = nullptr;
+  /// Receive post whose token is observed by a receive-wait event.
+  Operation *receivePost = nullptr;
 };
 
 struct ModuleState;
@@ -118,47 +99,32 @@ void checkKnownSubset(Operation *op, const LaunchNodeDomain &current,
                       ModuleState &state);
 
 struct ModuleState : LaunchNodeDomainState {
-  explicit ModuleState(ValueOriginAnalysis &valueOrigins)
-      : valueOrigins(valueOrigins) {}
+  explicit ModuleState(const PipeTransferIndex &transfers)
+      : transfers(transfers) {}
 
-  ValueOriginAnalysis &valueOrigins;
+  const PipeTransferIndex &transfers;
   llvm::DenseMap<int64_t, LaunchNodeDomain> cbProducerDomains;
   SmallVector<WaitUse> waitUses;
   SmallVector<PipeEvent> pipeEvents;
   llvm::DenseMap<Operation *, std::size_t> pipeEventIndices;
-
-  /// Return the receive copied by a wait and emit the common ambiguity error.
-  FailureOr<std::optional<CopyOp>> getPipeReceiveCopy(WaitOp waitOp) {
-    FailureOr<std::optional<CopyOp>> maybeCopyOp =
-        findDefiningPipeReceiveCopy(valueOrigins, waitOp.getXf());
-    if (failed(maybeCopyOp)) {
-      waitOp.emitOpError()
-          << "requires either every possible source to be the same pipe "
-             "receive ttl.copy or no source to be a pipe receive";
-      sawError = true;
-    }
-    return maybeCopyOp;
-  }
 
   /// Record pipe sends and receive posts from `ttl.copy` operations.
   void recordPipeEvent(CopyOp copyOp, const LaunchNodeDomain &domain,
                        Operation *unanalyzableOp) {
     PipeEvent event;
     event.op = copyOp.getOperation();
-    if (auto pipeType = mlir::dyn_cast<PipeType>(copyOp.getDst().getType())) {
+    if (isPipeSendCopy(copyOp)) {
+      auto pipeType = mlir::cast<PipeType>(copyOp.getDst().getType());
       event.pipeType = pipeType;
       event.kind = PipeEventKind::Send;
       event.domain =
           domain.intersectWith(getPipeSourceLaunchNodeDomain(pipeType));
-    } else if (auto pipeType =
-                   mlir::dyn_cast<PipeType>(copyOp.getSrc().getType())) {
-      if (!isPipeReceiveCopy(copyOp)) {
-        return;
-      }
+    } else if (isPipeReceiveCopy(copyOp)) {
+      auto pipeType = mlir::cast<PipeType>(copyOp.getSrc().getType());
       event.pipeType = pipeType;
       event.kind = PipeEventKind::ReceivePost;
-      event.domain =
-          domain.intersectWith(getPipeDestinationLaunchNodeDomain(pipeType));
+      event.domain = domain.intersectWith(
+          getPipeDestinationLaunchNodeDomain(pipeType, baseDomain));
     } else {
       return;
     }
@@ -176,23 +142,21 @@ struct ModuleState : LaunchNodeDomainState {
   /// Record a receive completion wait for schedule verification.
   void recordPipeWaitEvent(WaitOp waitOp, const LaunchNodeDomain &domain,
                            Operation *unanalyzableOp) {
-    FailureOr<std::optional<CopyOp>> maybeCopyOp = getPipeReceiveCopy(waitOp);
-    if (failed(maybeCopyOp)) {
+    std::optional<CopyOp> maybeCopyOp = transfers.getReceivePost(waitOp);
+    if (!maybeCopyOp) {
       return;
     }
-    if (!maybeCopyOp->has_value()) {
-      return;
-    }
-    CopyOp copyOp = **maybeCopyOp;
+    CopyOp copyOp = *maybeCopyOp;
     auto pipeType = mlir::cast<PipeType>(copyOp.getSrc().getType());
 
     PipeEvent event;
     event.op = waitOp.getOperation();
     event.pipeType = pipeType;
     event.kind = PipeEventKind::ReceiveWait;
-    event.domain =
-        domain.intersectWith(getPipeDestinationLaunchNodeDomain(pipeType));
+    event.domain = domain.intersectWith(
+        getPipeDestinationLaunchNodeDomain(pipeType, baseDomain));
     event.unanalyzableOp = unanalyzableOp;
+    event.receivePost = copyOp.getOperation();
 
     auto [it, inserted] =
         pipeEventIndices.try_emplace(waitOp.getOperation(), pipeEvents.size());
@@ -227,6 +191,8 @@ public:
     LaunchNodeDomainState state;
     state.initialize(module);
 
+    // LaunchNodeDomainAnalysis retains a reference to state. Declaring the
+    // solver second ensures that it is destroyed before state.
     DataFlowSolver solver;
     dataflow::loadBaselineAnalyses(solver);
     LaunchNodeDomainAnalysisOptions options;
@@ -315,16 +281,12 @@ std::string formatGuardExpression(ArrayRef<std::pair<int64_t, PipeRole>> roles,
 /// defining pipe receive.
 void verifyPipeWaitGuard(WaitOp waitOp, const LaunchNodeDomain &domain,
                          Operation *unanalyzableOp, ModuleState &state) {
-  FailureOr<std::optional<CopyOp>> maybeCopyOp =
-      state.getPipeReceiveCopy(waitOp);
-  if (failed(maybeCopyOp)) {
-    return;
-  }
-  if (!maybeCopyOp->has_value()) {
+  std::optional<CopyOp> maybeCopyOp = state.transfers.getReceivePost(waitOp);
+  if (!maybeCopyOp) {
     return;
   }
 
-  auto pipeType = mlir::cast<PipeType>((**maybeCopyOp).getSrc().getType());
+  auto pipeType = mlir::cast<PipeType>(maybeCopyOp->getSrc().getType());
   int64_t netId = pipeType.getPipeNetId();
   std::string name = state.netName(netId);
   std::string message;
@@ -334,9 +296,10 @@ void verifyPipeWaitGuard(WaitOp waitOp, const LaunchNodeDomain &domain,
       << name << "; keep the wait under the same `if " << name
       << ".is_dst(): ...` or `" << name
       << ".if_dst(...)` guard as the receive copy";
-  checkKnownSubset(waitOp, domain, getPipeDestinationLaunchNodeDomain(pipeType),
-                   unanalyzableOp, message, {{netId, PipeRole::Destination}},
-                   state);
+  checkKnownSubset(
+      waitOp, domain,
+      getPipeDestinationLaunchNodeDomain(pipeType, state.baseDomain),
+      unanalyzableOp, message, {{netId, PipeRole::Destination}}, state);
 }
 
 // Emit an op error when `current` is not a subset of `allowed`. Attaches an
@@ -412,7 +375,8 @@ void verifyCopy(CopyOp copyOp, const LaunchNodeDomain &current,
         << name << ".if_dst(...)` or guard with `if " << name
         << ".is_dst(): ...`";
     checkKnownSubset(
-        copyOp, current, getPipeDestinationLaunchNodeDomain(srcPipeType),
+        copyOp, current,
+        getPipeDestinationLaunchNodeDomain(srcPipeType, state.baseDomain),
         unanalyzable, msg, {{netId, PipeRole::Destination}}, state);
   }
 }
@@ -534,6 +498,8 @@ struct PipeScheduleNode {
   PipeType pipeType;
   LaunchNodeCoord coord;
   PipeEventKind kind;
+  /// Static receive post whose token is observed by this wait.
+  Operation *receivePost;
   func::FuncOp kernelFunction;
   SmallVector<PipeCallSite> callSites;
   SmallVector<PipeScheduleEdge> successors;
@@ -580,6 +546,7 @@ PipeScheduleNodeId addPipeScheduleNode(SmallVectorImpl<PipeScheduleNode> &nodes,
                    event.pipeType,
                    coord,
                    event.kind,
+                   event.receivePost,
                    kernelFunction,
                    SmallVector<PipeCallSite>(callSites),
                    {}});
@@ -624,6 +591,38 @@ void addPipeScheduleEdge(SmallVectorImpl<PipeScheduleNode> &nodes,
       })) {
     successors.push_back({successor, kind});
   }
+}
+
+/// Return true when two nodes were expanded through the same direct calls.
+bool haveSamePipeCallSites(ArrayRef<PipeCallSite> lhs,
+                           ArrayRef<PipeCallSite> rhs) {
+  return lhs.size() == rhs.size() &&
+         llvm::all_of(llvm::zip(lhs, rhs), [](auto callSites) {
+           return std::get<0>(callSites).call == std::get<1>(callSites).call &&
+                  std::get<0>(callSites).callee ==
+                      std::get<1>(callSites).callee;
+         });
+}
+
+/// Return the receiver-post node whose token is observed by `waitNode`.
+std::optional<PipeScheduleNodeId>
+findReceivePostNodeForWait(ArrayRef<PipeScheduleNode> nodes,
+                           PipeScheduleNodeId waitNodeId,
+                           ArrayRef<PipeScheduleNodeId> candidatePostNodes) {
+  const PipeScheduleNode &waitNode = nodes[waitNodeId];
+  assert(waitNode.kind == PipeEventKind::ReceiveWait && waitNode.receivePost &&
+         "receive wait must identify its post");
+  auto postIt =
+      llvm::find_if(candidatePostNodes, [&](PipeScheduleNodeId postId) {
+        const PipeScheduleNode &postNode = nodes[postId];
+        return postNode.op == waitNode.receivePost &&
+               postNode.coord == waitNode.coord &&
+               postNode.kernelFunction == waitNode.kernelFunction &&
+               haveSamePipeCallSites(postNode.callSites, waitNode.callSites);
+      });
+  return postIt == candidatePostNodes.end()
+             ? std::nullopt
+             : std::optional<PipeScheduleNodeId>(*postIt);
 }
 
 /// Find any directed cycle in the pipe schedule graph.
@@ -847,7 +846,7 @@ void emitPipeScheduleCycleNotes(InFlightDiagnostic &diag,
     diag.attachNote(successor.op->getLoc())
         << describePipeScheduleEdge(predecessor, successor, *maybeEdgeKind);
     ++noteCount;
-    if (noteCount >= kMaxPipeScheduleCycleNotes) {
+    if (noteCount >= kMaxPipeScheduleDiagnosticNotes) {
       break;
     }
   }
@@ -1000,6 +999,137 @@ bool proveEqualPipeScheduleNodeCounts(const PipeScheduleNode &lhs,
       });
 }
 
+/// Return true when the schedule graph orders `successor` after `predecessor`.
+bool pipeScheduleNodeReaches(ArrayRef<PipeScheduleNode> nodes,
+                             PipeScheduleNodeId predecessor,
+                             PipeScheduleNodeId successor) {
+  SmallVector<PipeScheduleNodeId> worklist{predecessor};
+  llvm::DenseSet<PipeScheduleNodeId> visited{predecessor};
+  for (std::size_t index = 0; index < worklist.size(); ++index) {
+    for (const PipeScheduleEdge &edge : nodes[worklist[index]].successors) {
+      if (edge.successor == successor) {
+        return true;
+      }
+      if (visited.insert(edge.successor).second) {
+        worklist.push_back(edge.successor);
+      }
+    }
+  }
+  return false;
+}
+
+/// Proves that receiver-published rendezvous state has at most one outstanding
+/// post for each pipe and receiver.
+class PipeRendezvousLifetimeAnalysis {
+public:
+  PipeRendezvousLifetimeAnalysis(
+      ArrayRef<PipeScheduleNode> nodes,
+      const llvm::DenseMap<PipeScheduleNodeId, PipeScheduleNodeId>
+          &completingSendByPost,
+      const llvm::DenseMap<PipeScheduleNodeId, SmallVector<PipeScheduleNodeId>>
+          &waitsByPost,
+      ModuleState &state)
+      : nodes(nodes), completingSendByPost(completingSendByPost),
+        waitsByPost(waitsByPost), state(state) {}
+
+  /// Verify one receiver's posts in static execution order.
+  LogicalResult verify(ArrayRef<PipeScheduleNodeId> postNodes) const {
+    LogicalResult result = success();
+    for (PipeScheduleNodeId postNodeId : postNodes) {
+      if (failed(verifyRepeatedPost(postNodeId))) {
+        result = failure();
+      }
+    }
+    for (auto adjacentPosts : llvm::zip(postNodes, postNodes.drop_front())) {
+      if (failed(verifyAdjacentPosts(std::get<0>(adjacentPosts),
+                                     std::get<1>(adjacentPosts)))) {
+        result = failure();
+      }
+    }
+    return result;
+  }
+
+private:
+  /// Return true when `completion` executes after `post` in each occurrence of
+  /// the same block and under an equal dynamic execution count.
+  bool
+  provesSameIterationCompletion(PipeScheduleNodeId postNodeId,
+                                PipeScheduleNodeId completionNodeId) const {
+    const PipeScheduleNode &post = nodes[postNodeId];
+    const PipeScheduleNode &completion = nodes[completionNodeId];
+    return post.kernelFunction == completion.kernelFunction &&
+           haveSamePipeCallSites(post.callSites, completion.callSites) &&
+           post.op->getBlock() == completion.op->getBlock() &&
+           post.op->isBeforeInBlock(completion.op) &&
+           proveEqualPipeScheduleNodeCounts(post, completion, state);
+  }
+
+  LogicalResult verifyRepeatedPost(PipeScheduleNodeId postNodeId) const {
+    auto sendIt = completingSendByPost.find(postNodeId);
+    if (sendIt == completingSendByPost.end()) {
+      return success();
+    }
+    std::optional<PipeExecutionCountExpression> maybeCount =
+        getPipeExecutionCountExpression(nodes[postNodeId], state);
+    bool mayRepeat = !maybeCount || maybeCount->constantFactor > 1 ||
+                     !maybeCount->unresolvedOps.empty();
+    if (!mayRepeat ||
+        provesSameIterationCompletion(postNodeId, sendIt->second)) {
+      return success();
+    }
+    auto waitsIt = waitsByPost.find(postNodeId);
+    if (waitsIt != waitsByPost.end() &&
+        llvm::any_of(waitsIt->second, [&](PipeScheduleNodeId waitNodeId) {
+          return provesSameIterationCompletion(postNodeId, waitNodeId);
+        })) {
+      return success();
+    }
+
+    const PipeScheduleNode &post = nodes[postNodeId];
+    post.op->emitOpError()
+        << "cannot prove that each repeated receiver post is consumed before "
+           "the next post on PipeNet "
+        << state.netName(post.pipeType.getPipeNetId())
+        << " at core_x=" << post.coord.x << ", core_y=" << post.coord.y
+        << "; receiver-published addressing supports one outstanding post per "
+           "pipe";
+    return failure();
+  }
+
+  LogicalResult verifyAdjacentPosts(PipeScheduleNodeId previousPostId,
+                                    PipeScheduleNodeId nextPostId) const {
+    auto sendIt = completingSendByPost.find(previousPostId);
+    if (sendIt == completingSendByPost.end() ||
+        mlir::insideMutuallyExclusiveRegions(nodes[previousPostId].op,
+                                             nodes[nextPostId].op) ||
+        pipeScheduleNodeReaches(nodes, sendIt->second, nextPostId)) {
+      return success();
+    }
+
+    const PipeScheduleNode &previousPost = nodes[previousPostId];
+    const PipeScheduleNode &nextPost = nodes[nextPostId];
+    auto diag = nextPost.op->emitOpError()
+                << "receiver post may overwrite an outstanding posted address "
+                   "on PipeNet "
+                << state.netName(nextPost.pipeType.getPipeNetId())
+                << " at core_x=" << nextPost.coord.x
+                << ", core_y=" << nextPost.coord.y
+                << "; receiver-published addressing supports one outstanding "
+                   "post per pipe";
+    diag.attachNote(previousPost.op->getLoc())
+        << "the preceding receiver post is not proven consumed before this "
+           "post";
+    return failure();
+  }
+
+  ArrayRef<PipeScheduleNode> nodes;
+  const llvm::DenseMap<PipeScheduleNodeId, PipeScheduleNodeId>
+      &completingSendByPost;
+  const llvm::DenseMap<PipeScheduleNodeId, SmallVector<PipeScheduleNodeId>>
+      &waitsByPost;
+  ModuleState &state;
+};
+
 /// Return whether the static predecessor and successor counts cannot pair.
 bool haveInvalidPipeOccurrenceCount(ArrayRef<PipeScheduleNodeId> predecessors,
                                     ArrayRef<PipeScheduleNodeId> successors,
@@ -1040,7 +1170,7 @@ void emitPipeOccurrenceCountError(ArrayRef<PipeScheduleNode> nodes,
       << "this " << unmatchedName << " has no corresponding " << missingName;
   std::size_t noteCount = 1;
   for (LaunchNodeCoord coord : receiverCoords.drop_front()) {
-    if (noteCount >= kMaxPipeScheduleCycleNotes) {
+    if (noteCount >= kMaxPipeScheduleDiagnosticNotes) {
       break;
     }
     diag.attachNote(nodes[unmatchedNode].op->getLoc())
@@ -1357,6 +1487,9 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
       receivePostNodes;
   llvm::DenseMap<PipeCoordIdentity, SmallVector<PipeScheduleNodeId>>
       receiveWaitNodes;
+  llvm::DenseMap<Operation *, SmallVector<PipeScheduleNodeId>>
+      receivePostNodesByOperation;
+  SmallVector<PipeScheduleNodeId> allReceiveWaitNodes;
   SymbolTableCollection symbolTables;
   llvm::DenseSet<Operation *> functionsWithPipeEvents =
       getFunctionsWithPipeEvents(module, state, symbolTables);
@@ -1370,12 +1503,14 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
     return;
   }
   llvm::DenseSet<Operation *> diagnosedRecursiveCalls;
+  // Bound helper expansion per launch node so a larger receiver domain does
+  // not reduce the number of static events accepted at each node.
+  std::map<LaunchNodeCoord, std::size_t> scheduleNodeCounts;
   LaunchNodeDomain eventDomain;
   for (const PipeEvent &event : state.pipeEvents) {
     eventDomain = eventDomain.unionWith(event.domain);
   }
-  const std::set<LaunchNodeCoord> &scheduleCoords =
-      eventDomain.known ? eventDomain.nodes : state.baseDomain.nodes;
+  const std::set<LaunchNodeCoord> &scheduleCoords = eventDomain.nodes;
 
   // Kernel-thread functions execute independently. Expand their direct helper
   // calls separately at each launch node to retain the order and multiplicity
@@ -1395,13 +1530,15 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
               activeFunctions, callSites, diagnosedRecursiveCalls,
               [&](const PipeEvent &event,
                   ArrayRef<PipeCallSite> activeCallSites) {
-                if (nodes.size() >= kMaxPipeScheduleNodes) {
+                std::size_t &scheduleNodeCount = scheduleNodeCounts[coord];
+                if (scheduleNodeCount >= kMaxPipeScheduleNodesPerLaunchNode) {
                   event.op->emitOpError()
                       << "cannot verify PipeNet synchronization because the "
                          "schedule contains more than "
-                      << kMaxPipeScheduleNodes
-                      << " pipe events after specializing launch nodes and "
-                         "expanding helper calls";
+                      << kMaxPipeScheduleNodesPerLaunchNode
+                      << " pipe events at core_x=" << coord.x
+                      << ", core_y=" << coord.y
+                      << " after expanding helper calls";
                   state.sawError = true;
                   return WalkResult::interrupt();
                 }
@@ -1427,7 +1564,13 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
                 }
                 PipeScheduleNodeId nodeId = addPipeScheduleNode(
                     nodes, event, coord, function, activeCallSites);
+                ++scheduleNodeCount;
                 matchingNodes->push_back(nodeId);
+                if (event.kind == PipeEventKind::ReceivePost) {
+                  receivePostNodesByOperation[event.op].push_back(nodeId);
+                } else if (event.kind == PipeEventKind::ReceiveWait) {
+                  allReceiveWaitNodes.push_back(nodeId);
+                }
                 if (lastNode) {
                   addPipeScheduleEdge(nodes, *lastNode, nodeId,
                                       PipeScheduleEdgeKind::ProgramOrder);
@@ -1443,9 +1586,14 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
     }
   }
 
+  llvm::DenseMap<PipeScheduleNodeId, PipeScheduleNodeId> completingSendByPost;
+  llvm::DenseSet<PipeScheduleNodeId> postsWithInvalidCorrespondence;
+  llvm::DenseMap<PipeScheduleNodeId, SmallVector<PipeScheduleNodeId>>
+      waitsByPost;
+
   for (const auto &[pipeIdentity, occurrences] : pipeOccurrences) {
-    LaunchNodeDomain destinations =
-        getPipeDestinationLaunchNodeDomain(occurrences.pipeType);
+    LaunchNodeDomain destinations = getPipeDestinationLaunchNodeDomain(
+        occurrences.pipeType, state.baseDomain);
     auto getReceiverNodes = [](auto &nodesByCoord,
                                const PipeCoordIdentity &identity) {
       auto nodeIt = nodesByCoord.find(identity);
@@ -1473,24 +1621,13 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
       emitPipeOccurrenceCountError(nodes, posts, occurrences.sends,
                                    "receiver post", "send", postMismatchCoords,
                                    state);
-      continue;
-    }
-
-    SmallVector<LaunchNodeCoord> waitMismatchCoords;
-    for (LaunchNodeCoord coord : destinations.nodes) {
-      ArrayRef<PipeScheduleNodeId> waits = getReceiverNodes(
-          receiveWaitNodes, getPipeCoordIdentity(occurrences.pipeType, coord));
-      if (haveInvalidPipeOccurrenceCount(occurrences.sends, waits,
-                                         /*requireEqualOccurrences=*/false)) {
-        waitMismatchCoords.push_back(coord);
+      for (LaunchNodeCoord coord : destinations.nodes) {
+        ArrayRef<PipeScheduleNodeId> unpairedPosts =
+            getReceiverNodes(receivePostNodes,
+                             getPipeCoordIdentity(occurrences.pipeType, coord));
+        postsWithInvalidCorrespondence.insert(unpairedPosts.begin(),
+                                              unpairedPosts.end());
       }
-    }
-    if (!waitMismatchCoords.empty()) {
-      ArrayRef<PipeScheduleNodeId> waits = getReceiverNodes(
-          receiveWaitNodes, getPipeCoordIdentity(occurrences.pipeType,
-                                                 waitMismatchCoords.front()));
-      emitPipeOccurrenceCountError(nodes, occurrences.sends, waits, "send",
-                                   "receive wait", waitMismatchCoords, state);
       continue;
     }
 
@@ -1504,20 +1641,61 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
                 nodes, posts, occurrences.sends,
                 PipeScheduleEdgeKind::ReceivePostEnablesSend, "receiver post",
                 "send", coord, state))) {
+          postsWithInvalidCorrespondence.insert(posts.begin(), posts.end());
           break;
         }
-      }
-      ArrayRef<PipeScheduleNodeId> waits =
-          getReceiverNodes(receiveWaitNodes, identity);
-      if (!waits.empty()) {
-        if (failed(addPipeOccurrenceEdges(
-                nodes, occurrences.sends, waits,
-                PipeScheduleEdgeKind::SendCompletesReceive, "send",
-                "receive wait", coord, state,
-                /*requireEqualOccurrences=*/false))) {
-          break;
+        for (auto [post, send] : llvm::zip(posts, occurrences.sends)) {
+          completingSendByPost[post] = send;
         }
       }
+    }
+  }
+
+  // A receive wait observes the token produced by one exact post. Repeated
+  // waits on that token all depend on the same completing send.
+  for (PipeScheduleNodeId waitNodeId : allReceiveWaitNodes) {
+    const PipeScheduleNode &waitNode = nodes[waitNodeId];
+    auto postNodesIt = receivePostNodesByOperation.find(waitNode.receivePost);
+    std::optional<PipeScheduleNodeId> maybePostNode;
+    if (postNodesIt != receivePostNodesByOperation.end()) {
+      maybePostNode =
+          findReceivePostNodeForWait(nodes, waitNodeId, postNodesIt->second);
+    }
+    if (!maybePostNode) {
+      waitNode.op->emitOpError()
+          << "cannot associate this receive wait with its defining receiver "
+             "post at core_x="
+          << waitNode.coord.x << ", core_y=" << waitNode.coord.y;
+      state.sawError = true;
+      continue;
+    }
+    auto sendIt = completingSendByPost.find(*maybePostNode);
+    if (sendIt == completingSendByPost.end()) {
+      if (postsWithInvalidCorrespondence.contains(*maybePostNode)) {
+        continue;
+      }
+      auto diag = waitNode.op->emitOpError()
+                  << "receive wait has no send corresponding to its defining "
+                     "receiver post on PipeNet "
+                  << state.netName(waitNode.pipeType.getPipeNetId())
+                  << " at core_x=" << waitNode.coord.x
+                  << ", core_y=" << waitNode.coord.y;
+      diag.attachNote(nodes[*maybePostNode].op->getLoc())
+          << "defining receiver post is here";
+      state.sawError = true;
+      continue;
+    }
+    addPipeScheduleEdge(nodes, sendIt->second, waitNodeId,
+                        PipeScheduleEdgeKind::SendCompletesReceive);
+    waitsByPost[*maybePostNode].push_back(waitNodeId);
+  }
+
+  PipeRendezvousLifetimeAnalysis lifetimeAnalysis(nodes, completingSendByPost,
+                                                  waitsByPost, state);
+  for (const auto &[identity, postNodes] : receivePostNodes) {
+    (void)identity;
+    if (failed(lifetimeAnalysis.verify(postNodes))) {
+      state.sawError = true;
     }
   }
 
@@ -1569,8 +1747,12 @@ LogicalResult validatePipeEndpoints(ModuleOp module, const ModuleState &state) {
       result = failure();
       return;
     }
-    if (!getPipeDestinationLaunchNodeDomain(pipeType).isSubsetOf(
-            state.baseDomain)) {
+    LaunchNodeCoord destinationStart{pipeType.getDstStartX(),
+                                     pipeType.getDstStartY()};
+    LaunchNodeCoord destinationEnd{pipeType.getDstEndX(),
+                                   pipeType.getDstEndY()};
+    if (!knownLaunchNodeDomainContains(state.baseDomain, destinationStart) ||
+        !knownLaunchNodeDomainContains(state.baseDomain, destinationEnd)) {
       pipe.emitOpError() << "declares destination range core_x="
                          << pipeType.getDstStartX() << ".."
                          << pipeType.getDstEndX()
@@ -1609,7 +1791,13 @@ struct TTLVerifyPipeNetGuardsPass
     ModuleOp module = getOperation();
 
     ValueOriginAnalysis &valueOrigins = getAnalysis<ValueOriginAnalysis>();
-    ModuleState state(valueOrigins);
+    FailureOr<std::unique_ptr<PipeTransferIndex>> maybeTransfers =
+        PipeTransferIndex::create(module, valueOrigins);
+    if (failed(maybeTransfers)) {
+      signalPassFailure();
+      return;
+    }
+    ModuleState state(**maybeTransfers);
     if (failed(initializePipeNetVerification(module, state,
                                              "ttl-verify-pipenet-guards"))) {
       signalPassFailure();
@@ -1654,7 +1842,13 @@ struct TTLVerifyPipeNetSchedulePass
     ModuleOp module = getOperation();
 
     ValueOriginAnalysis &valueOrigins = getAnalysis<ValueOriginAnalysis>();
-    ModuleState state(valueOrigins);
+    FailureOr<std::unique_ptr<PipeTransferIndex>> maybeTransfers =
+        PipeTransferIndex::create(module, valueOrigins);
+    if (failed(maybeTransfers)) {
+      signalPassFailure();
+      return;
+    }
+    ModuleState state(**maybeTransfers);
     if (failed(initializePipeNetVerification(module, state,
                                              "ttl-verify-pipenet-schedule"))) {
       signalPassFailure();

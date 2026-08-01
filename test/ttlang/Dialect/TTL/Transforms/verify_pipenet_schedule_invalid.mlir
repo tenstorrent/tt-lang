@@ -32,14 +32,15 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
-// The complete destination rectangle must fit in the module launch grid.
+// Endpoint validation precedes destination-domain enumeration, so a malformed
+// range cannot make verification time proportional to that range.
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @destination_outside_launch_grid()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    // expected-error @below {{declares destination range core_x=1..1, core_y=0..2 outside the module `ttl.launch_grid`}}
-    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 2) net 0
-        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 2) net 0>
+    // expected-error @below {{declares destination range core_x=1..100000000, core_y=0..0 outside the module `ttl.launch_grid`}}
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(100000000, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(100000000, 0) net 0>
     func.return
   }
 }
@@ -612,12 +613,12 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %recv_reserve = ttl.cb_reserve %recv_cb
           : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      // expected-note @below {{defining receiver post is here}}
       %recv = ttl.copy %pipe, %recv_reserve
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
           -> !ttl.transfer_handle
-      // expected-error @below {{PipeNet net_0 requires one static send definition for each static receive wait definition at receiver core_x=1, core_y=0; found 0 static send definition(s) and 1 static receive wait definition(s)}}
-      // expected-note @below {{this receive wait has no corresponding send}}
+      // expected-error @below {{receive wait has no send corresponding to its defining receiver post on PipeNet net_0 at core_x=1, core_y=0}}
       ttl.wait %recv : !ttl.transfer_handle
     }
     func.return
@@ -804,44 +805,6 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
              !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
           -> !ttl.transfer_handle<write>
       ttl.wait %send1 : !ttl.transfer_handle<write>
-    }
-    func.return
-  }
-}
-
-// -----
-
-// Reusing one receive handle for two completion waits requires two sends, but
-// the pipe has only one send occurrence.
-
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
-  func.func @different_send_receive_wait_counts()
-      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
-        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
-        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
-        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
-      %recv_reserve = ttl.cb_reserve %recv_cb
-          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
-          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-      %recv = ttl.copy %pipe, %recv_reserve
-          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
-             tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
-      ttl.wait %recv : !ttl.transfer_handle
-      // expected-error @below {{PipeNet net_0 requires one static send definition for each static receive wait definition at receiver core_x=1, core_y=0; found 1 static send definition(s) and 2 static receive wait definition(s)}}
-      // expected-note @below {{this receive wait has no corresponding send}}
-      ttl.wait %recv : !ttl.transfer_handle
-    }
-    ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
-      %send = ttl.copy %send_cb, %pipe
-          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
-             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
-          -> !ttl.transfer_handle<write>
-      ttl.wait %send : !ttl.transfer_handle<write>
     }
     func.return
   }
@@ -1207,7 +1170,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func private @expansion_leaf(
       %send_cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
       %pipe: !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) {
-    // expected-error @below {{cannot verify PipeNet synchronization because the schedule contains more than 4096 pipe events after specializing launch nodes and expanding helper calls}}
+    // expected-error @below {{cannot verify PipeNet synchronization because the schedule contains more than 4096 pipe events at core_x=0, core_y=0 after expanding helper calls}}
     %send = ttl.copy %send_cb, %pipe
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
            !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
@@ -1297,6 +1260,155 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       func.call @expansion_level_5(%send_cb, %pipe)
           : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
              !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
+    }
+    func.return
+  }
+}
+
+// -----
+
+// A wait depends on the send associated with its exact receive token, not the
+// next send in static order.
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @wait_on_second_receive_before_second_send()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %reserve0 = ttl.cb_reserve %recv_cb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %receive0 = ttl.copy %pipe, %reserve0
+        : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+           tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        -> !ttl.transfer_handle
+    %send0 = ttl.copy %send_cb, %pipe
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+           !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send0 : !ttl.transfer_handle<write>
+    %reserve1 = ttl.cb_reserve %recv_cb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %receive1 = ttl.copy %pipe, %reserve1
+        : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+           tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        -> !ttl.transfer_handle
+    // expected-error @below {{receive wait occurs before the send that completes it on PipeNet net_0}}
+    // expected-note @below {{this wait blocks until the sender transfers into the posted destination dataflow buffer slot}}
+    // expected-note @below {{move the receive wait after the send, or place send and receive in separate data-movement threads}}
+    ttl.wait %receive1 : !ttl.transfer_handle
+    // expected-note @below {{this send is ordered after the wait in the same data-movement thread}}
+    %send1 = ttl.copy %send_cb, %pipe
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+           !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send1 : !ttl.transfer_handle<write>
+    func.return
+  }
+}
+
+// -----
+
+// Equal total counts do not make receiver-published addressing safe when all
+// posts execute before any send. The second iteration overwrites the first
+// posted address.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @repeated_receive_ahead()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.if_dst %pipe
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      scf.for %iteration = %c0 to %c2 step %c1 {
+        %reserve = ttl.cb_reserve %recv_cb
+            : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+            -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        // expected-error @below {{cannot prove that each repeated receiver post is consumed before the next post on PipeNet net_0 at core_x=1, core_y=0}}
+        %receive = ttl.copy %pipe, %reserve
+            : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+               tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> !ttl.transfer_handle
+      }
+    }
+    ttl.if_src %pipe
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      scf.for %iteration = %c0 to %c2 step %c1 {
+        %send = ttl.copy %send_cb, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+               !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
+    }
+    func.return
+  }
+}
+
+// -----
+
+// Equal static counts do not make two receiver posts safe when the first send
+// is not proven complete before the second address publication.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @two_static_posts_before_sends_receiver()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.if_dst %pipe
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %reserve0 = ttl.cb_reserve %recv_cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      // expected-note @below {{the preceding receiver post is not proven consumed before this post}}
+      %receive0 = ttl.copy %pipe, %reserve0
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.transfer_handle
+      %reserve1 = ttl.cb_reserve %recv_cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      // expected-error @below {{receiver post may overwrite an outstanding posted address on PipeNet net_0 at core_x=1, core_y=0}}
+      %receive1 = ttl.copy %pipe, %reserve1
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.transfer_handle
+    }
+    func.return
+  }
+
+  func.func @two_static_posts_before_sends_sender()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.if_src %pipe
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %send0 = ttl.copy %send_cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send0 : !ttl.transfer_handle<write>
+      %send1 = ttl.copy %send_cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send1 : !ttl.transfer_handle<write>
     }
     func.return
   }

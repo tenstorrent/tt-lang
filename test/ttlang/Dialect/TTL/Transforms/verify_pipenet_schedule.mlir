@@ -46,6 +46,47 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
+// Multiple waits on one receive token observe the same completed transfer;
+// they do not require additional sends.
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @repeated_wait_on_one_receive
+  func.func @repeated_wait_on_one_receive()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // CHECK: %[[PIPE:.*]] = ttl.create_pipe
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // CHECK: %[[RESERVE:.*]] = ttl.cb_reserve %[[RECV_CB:.*]]
+    %reserve = ttl.cb_reserve %recv_cb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    // CHECK-NEXT: %[[RECEIVE:.*]] = ttl.copy %[[PIPE]], %[[RESERVE]]
+    %receive = ttl.copy %pipe, %reserve
+        : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+           tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        -> !ttl.transfer_handle
+    // CHECK-NEXT: %[[SEND:.*]] = ttl.copy %[[SEND_CB:.*]], %[[PIPE]]
+    %send = ttl.copy %send_cb, %pipe
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+           !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+        -> !ttl.transfer_handle<write>
+    // CHECK-NEXT: ttl.wait %[[SEND]]
+    ttl.wait %send : !ttl.transfer_handle<write>
+    // CHECK-NEXT: ttl.wait %[[RECEIVE]]
+    ttl.wait %receive : !ttl.transfer_handle
+    // CHECK-NEXT: ttl.wait %[[RECEIVE]]
+    ttl.wait %receive : !ttl.transfer_handle
+    // CHECK-NEXT: return
+    func.return
+  }
+}
+
+// -----
+
 // A multi-block nested region is valid when it does not contribute pipe
 // events. The surrounding function's pipe events retain their linear order.
 
@@ -164,8 +205,8 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
-// Receiver waits may consume a prefix of the send completions without waiting
-// for every send.
+// Receiver code may wait for only a subset of sends; other sends do not require
+// receive waits.
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   // PARTIAL-LABEL: func.func @partial_receiver_waits

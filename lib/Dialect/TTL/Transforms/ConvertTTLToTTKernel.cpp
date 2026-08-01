@@ -548,21 +548,6 @@ static std::optional<TransferKind> getTransferKindFromHandleType(Type t) {
   return transferHandle.getKind();
 }
 
-static bool isPipeReceiveCopy(CopyOp op) {
-  return llvm::isa<PipeType>(op.getSrc().getType()) &&
-         getAttachedCB(op.getDst());
-}
-
-static bool isPipeSendCopy(CopyOp op) {
-  return llvm::isa<CircularBufferType>(op.getSrc().getType()) &&
-         llvm::isa<PipeType>(op.getDst().getType());
-}
-
-static FailureOr<CopyOp> findPipeReceiveCopy(ValueOriginAnalysis &analysis,
-                                             Value value) {
-  return analysis.getOrigins(value).uniqueDefiningOp<CopyOp>(isPipeReceiveCopy);
-}
-
 static PipeTransferKind getPipeTransferKind(PipeTransferContract contract) {
   return isCollectiveTransfer(contract) ? PipeTransferKind::Collective
                                         : PipeTransferKind::PointToPoint;
@@ -683,16 +668,16 @@ static LogicalResult expandPipeTransferOps(ModuleOp mod,
       unreachableReceiveWaits.push_back(waitOp);
       return;
     }
-    FailureOr<CopyOp> maybeCopyOp =
-        findPipeReceiveCopy(analysis, waitOp.getXf());
-    if (failed(maybeCopyOp)) {
+    FailureOr<std::optional<CopyOp>> maybeCopyOp =
+        findUniquePipeReceiveCopy(analysis, waitOp.getXf());
+    if (failed(maybeCopyOp) || !maybeCopyOp->has_value()) {
       waitOp.emitError() << "untyped transfer handle wait requires every "
                             "possible source to be the same pipe receive "
                             "ttl.copy";
       result = failure();
       return;
     }
-    CopyOp copyOp = *maybeCopyOp;
+    CopyOp copyOp = **maybeCopyOp;
     auto pipeType =
         mlir::cast<PipeType>(traceUnrealizedCasts(copyOp.getSrc()).getType());
     receiveWaits.push_back({waitOp, pipeType.getPipeNetId()});
@@ -1125,11 +1110,11 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
 
 struct PipeTransferPostLowering : OpConversionPattern<PipeTransferPostOp> {
   PipeTransferPostLowering(const TypeConverter &typeConverter,
-                           MLIRContext *context, ValueOriginAnalysis &analysis,
+                           MLIRContext *context,
                            const PipePostSequenceCounterMap &counters,
                            const PipeResourcePlan &pipeResourcePlan)
-      : OpConversionPattern(typeConverter, context), analysis(analysis),
-        counters(counters), pipeResourcePlan(pipeResourcePlan) {}
+      : OpConversionPattern(typeConverter, context), counters(counters),
+        pipeResourcePlan(pipeResourcePlan) {}
 
   LogicalResult
   matchAndRewrite(PipeTransferPostOp op, OpAdaptor,
@@ -1137,21 +1122,20 @@ struct PipeTransferPostLowering : OpConversionPattern<PipeTransferPostOp> {
     // The receive destination is inspected for its TTL DFB provenance
     // (`ttl.cb_reserve`, `ttl.attach_cb`, and slice offset), so this lowering
     // must use the original SSA value rather than the converted adaptor value.
-    return lowerPipeTransferPost(op, op.getDst(), analysis, counters,
-                                 pipeResourcePlan, rewriter);
+    return lowerPipeTransferPost(op, op.getDst(), counters, pipeResourcePlan,
+                                 rewriter);
   }
 
 private:
-  ValueOriginAnalysis &analysis;
   const PipePostSequenceCounterMap &counters;
   const PipeResourcePlan &pipeResourcePlan;
 };
 
 struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
   PipeTransferSendLowering(const TypeConverter &typeConverter,
-                           MLIRContext *context, ValueOriginAnalysis &analysis,
+                           MLIRContext *context,
                            const PipeResourcePlan &pipeResourcePlan)
-      : OpConversionPattern(typeConverter, context), analysis(analysis),
+      : OpConversionPattern(typeConverter, context),
         pipeResourcePlan(pipeResourcePlan) {}
 
   LogicalResult
@@ -1168,12 +1152,11 @@ struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
                  user->getOperand(0) == op.getSrc() &&
                  domInfo.dominates(user, op);
         });
-    return lowerPipeTransferSend(op, adaptor.getSrc(), isConsumerCB, analysis,
+    return lowerPipeTransferSend(op, adaptor.getSrc(), isConsumerCB,
                                  pipeResourcePlan, rewriter);
   }
 
 private:
-  ValueOriginAnalysis &analysis;
   const PipeResourcePlan &pipeResourcePlan;
 };
 
@@ -1715,6 +1698,12 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   if (failed(verifyTransferProvenance(mod, transferAnalysis))) {
     return failure();
   }
+  FailureOr<std::unique_ptr<PipeTransferIndex>> maybeTransferIndex =
+      PipeTransferIndex::create(mod, transferAnalysis);
+  if (failed(maybeTransferIndex)) {
+    return failure();
+  }
+  const PipeTransferIndex &transferIndex = **maybeTransferIndex;
 
   llvm::SmallPtrSet<Operation *, 8> completedPipeSendWaits;
   mod.walk([&](WaitOp waitOp) {
@@ -1732,19 +1721,16 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
     return failure();
   }
 
-  // Per-PipeNet runtime sequences preserve the identity of dynamic posts.
-  PipePostSequenceCounterMap pipePostSequenceCounters;
-  allocatePipePostSequenceCounters(mod, transferAnalysis,
-                                   pipePostSequenceCounters);
-
   // Per-net-id pipe list, shared by IsSrc/IsDst/IsActive lowerings so they
   // don't walk the module per match.
   PipeNetIndex pipeNetIndex;
   buildPipeNetIndex(mod, pipeNetIndex);
   PipeResourcePlan pipeResourcePlan;
-  if (failed(buildPipeResourcePlan(mod, transferAnalysis, pipeResourcePlan))) {
+  if (failed(buildPipeResourcePlan(mod, transferIndex, pipeResourcePlan))) {
     return failure();
   }
+  PipePostSequenceCounterMap pipePostSequenceCounters;
+  allocatePipePostSequenceCounters(pipeResourcePlan, pipePostSequenceCounters);
   PipeResourceRequirements pipeResourceRequirements =
       getPipeResourceRequirements(pipeResourcePlan);
   if (failed(verifyPipeResourcePlanFitsHardware(mod, pipeResourcePlan,
@@ -1781,11 +1767,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                TensorOpTypeConversion<tensor::ExtractOp>,
                TensorOpTypeConversion<tensor::CastOp>>(typeConverter, &ctx);
   patterns.add<CopyLowering>(typeConverter, &ctx);
-  patterns.add<PipeTransferPostLowering>(typeConverter, &ctx, transferAnalysis,
-                                         pipePostSequenceCounters,
-                                         pipeResourcePlan);
-  patterns.add<PipeTransferSendLowering>(typeConverter, &ctx, transferAnalysis,
-                                         pipeResourcePlan);
+  patterns.add<PipeTransferPostLowering>(
+      typeConverter, &ctx, pipePostSequenceCounters, pipeResourcePlan);
+  patterns.add<PipeTransferSendLowering>(typeConverter, &ctx, pipeResourcePlan);
   patterns.add<PipeTransferWaitLowering>(typeConverter, &ctx, pipeResourcePlan);
   patterns.add<WaitLowering>(typeConverter, &ctx, completedPipeSendWaits);
   patterns

@@ -93,9 +93,11 @@ LaunchNodeDomain getFullLaunchNodeDomain(int64_t gridX, int64_t gridY);
 /// Return the launch node containing the source endpoint of `pipeType`.
 LaunchNodeDomain getPipeSourceLaunchNodeDomain(PipeType pipeType);
 
-/// Return the launch nodes containing the destination endpoint range of
-/// `pipeType`.
-LaunchNodeDomain getPipeDestinationLaunchNodeDomain(PipeType pipeType);
+/// Return the destination endpoint range of `pipeType` within `baseDomain`.
+/// A range extending outside the module launch grid has an unknown domain.
+LaunchNodeDomain
+getPipeDestinationLaunchNodeDomain(PipeType pipeType,
+                                   const LaunchNodeDomain &baseDomain);
 
 /// Return true if `domain` is known and contains `coord`.
 bool knownLaunchNodeDomainContains(const LaunchNodeDomain &domain,
@@ -135,7 +137,7 @@ struct LaunchNodeDomainState {
   /// Return true if the module contains at least one declared PipeNet.
   bool hasPipes() const;
 
-  /// Return the recorded PipeNet name, or a deterministic id-based fallback.
+  /// Return the recorded PipeNet name, or a deterministic name from its id.
   std::string netName(int64_t netId) const;
 
   /// Return the launch nodes that have `role` for `netId`, or an unknown

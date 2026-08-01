@@ -16,7 +16,7 @@ writes and semaphore increments.
 ## Overview
 
 `ttl.PipeNet` describes a logical communication pattern between nodes. A
-pipe carries data from a source coordinate (`src`) to either a single
+pipe transfers data from a source coordinate (`src`) to either a single
 destination (point-to-point) or a contiguous coordinate range
 (collective). When the launch grid is larger than the union of all pipe
 sources and destinations, the extra nodes have no role in the
@@ -76,16 +76,20 @@ Pipe transfers have the following operational semantics:
   payload storage. Pipe lowering does not create a separate payload DFB.
 - Every send requires one corresponding receiver post at every destination.
   The post must be able to run before the send blocks waiting for it.
-- Every receiver wait requires one corresponding send. The send must be able
-  to run before the receiver blocks waiting for completion.
+- Every receiver wait observes the send corresponding to the exact receive
+  handle it consumes. The send must be able to run before the receiver blocks
+  waiting for completion. Repeating a wait on one handle observes the same
+  completed transfer and does not require another send.
 - A receiver post does not wait for payload and does not require a receiver
   wait. Code may post a reservation before deciding when or whether to wait. A
   pipe with no sends or waits may contain unused receiver posts.
 - A send completes after the payload write and completion signal. It does not
   wait for the receiver to execute a receive wait, so a send does not require
   a receiver wait.
-- Receiver waits consume completion signals in send order. The number of waits
-  may be smaller than the number of sends, but may not exceed it.
+- Receiver-published addressing supports one outstanding post for each pipe
+  and receiver. A repeated post's corresponding send must complete before the
+  next iteration posts again. A later distinct post must not execute until the
+  preceding send has completed, unless the posts are mutually exclusive.
 - When a pipe has sends, every destination must have the same number of
   receiver posts as sends. Extra posts would advance the sender-ready state
   before the intended send.
@@ -93,12 +97,14 @@ Pipe transfers have the following operational semantics:
   receive-wait events. It rejects schedules whose same-thread ordering
   creates a wait-for cycle. Other runtime hangs can still have different
   causes.
-- The graph pairs static receiver-post, send, and receive-wait definitions by
-  program order after helper expansion. Each pair may execute repeatedly, but
-  the two sides must contain the same number of static definitions and each
-  pair must execute equally often under equivalent conditions. Alternative
-  definitions under a runtime `scf.if` remain distinct unless the verifier can
-  prove one alternative has zero executions at the relevant launch node.
+- The graph pairs static receiver-post and send definitions by program order
+  after helper expansion. Each pair may execute repeatedly, but the two sides
+  must contain the same number of static definitions and each pair must execute
+  equally often under equivalent conditions. A receiver wait refers to the
+  exact post that produced its handle, rather than a position in the wait
+  sequence. Alternative definitions under a runtime `scf.if` remain distinct
+  unless the verifier can prove one alternative has zero executions at the
+  relevant launch node.
 - All definitions of one event kind for a pipe endpoint must belong to one
   kernel-thread function. Independent kernel threads have no program order and
   cannot safely share that endpoint's synchronization state.
@@ -297,7 +303,7 @@ Table 1. Pipe transfer resources, backing storage, and allocation scale.
 | Destination payload block (`dst_blk`) | User-reserved DFB block on the destination node. | User DFB reserve depth. |
 | Address table | Compiler-managed SRAM scratch on each source node; 4 bytes per entry, with the total table allocation rounded up to 32-byte alignment. | Per source node: one entry per concurrently live transfer sourced by that node. |
 | Sender-ready counter | Source-node 4-byte SRAM semaphore slot or GlobalSemaphore-backed SRAM semaphore. | Per source node: one counter per concurrently live transfer sourced by that node. |
-| Receiver-completion counter | Destination-node 4-byte SRAM semaphore slot. | One counter per PipeNet. |
+| Receiver-completion counter | Destination-node 4-byte SRAM semaphore slot. | Different pipe endpoint relations sharing a receiver use distinct counters; disjoint receiver sets may reuse an index. |
 
 Here, source node means a physical node in the launched device grid. It
 does not mean one allocation per static pipe. Many transfers from the
@@ -366,7 +372,7 @@ and the count proving that the required receivers have posted. After
 the send waits for readiness, resets the ready counter, and reads the
 address-table entry used for the payload write, those source-node
 resources no longer contain state needed by that transfer. Receive
-completion is tracked separately by the per-PipeNet receiver-completion
+completion is tracked separately by the transfer's receiver-completion
 counter, so the transfer handle returned by `ttl.copy(pipe, dst_blk)`
 can remain live until `ttl.wait` without extending the source-node
 address-table or sender-ready-counter lifetime.
@@ -406,22 +412,22 @@ sequenceDiagram
 
 Queue depth is the maximum number of simultaneously live phases for one
 pipe transfer. The current lowering has queue depth 1: a later phase for
-the same pipe transfer cannot post before the current phase's
-sender-ready counter and address-table entry have been consumed by the
-send. This invariant allows the send to reset the sender-ready counter
-after consumption.
+the same pipe transfer cannot post before the current phase's send has
+consumed its sender-ready count and address-table entry. A receive wait on the
+current phase proves that its send has completed. This invariant allows the
+send to reset the sender-ready counter after consumption.
 
-Queue-depth validation enforces that invariant before resource
-allocation. For events in one block, lowering sorts receive posts and
-sends by operation order and rejects any sequence whose live post count
-exceeds one. For receive posts in different blocks, lowering rejects
-the schedule unless those posts are proven mutually exclusive. The
-current proof recognizes posts in different regions of the same
-`scf.if`; one then-region post and one else-region post are valid
-because only one can execute. A receive post before an `scf.if` and a
-second receive post inside that `scf.if` are rejected because both can
-execute before a send consumes the first address-table entry and
-sender-ready count.
+The schedule verifier proves this invariant on the launch-node-specialized
+event graph. A repeated static post must have an equal-count same-block proof
+of completion: either its corresponding send follows it, or a wait on its
+exact receive handle proves that send completed. A later distinct post must be
+reachable from the preceding completing send or mutually exclusive with the
+preceding post.
+After protocol expansion, resource planning independently checks linear blocks:
+a post adds one outstanding phase, its exact receive wait or the corresponding
+same-block send removes that phase, and a second outstanding phase is rejected.
+Posts in different blocks are accepted only when they occur in different
+regions of the same conditional.
 
 ### Receiver-authored address table
 
@@ -460,12 +466,15 @@ Otherwise all sender-ready counters in the module use
 GlobalSemaphore-backed counters, and the compiler records the required
 count in `ttl.pipe_global_semaphore_count`.
 
-Receiver completion uses the per-PipeNet local semaphore in Table 1. It
-is cumulative for one program execution: sends increment it, and waits
-consume it with monotonically increasing `wait_min` thresholds instead
-of resetting it per transfer. The host runtime creates these local
-semaphores with initial value 0, and pipe lowering separately
-initializes the per-PipeNet in-kernel wait-progress counter to 0.
+Receiver completion uses local semaphores assigned by receiver-overlap
+coloring. Each counter is cumulative for one program execution: sends increment
+it, and waits observe monotonically increasing `wait_min` thresholds instead of
+resetting it per dynamic occurrence. Transfers sharing a receiver have distinct
+counters; transfers with disjoint receiver sets may reuse the same local
+semaphore index. The compiler rejects a plan requiring more completion-counter
+colors than the hardware local-semaphore limit. The host runtime creates these
+local semaphores with initial value 0, and pipe lowering separately initializes
+the corresponding in-kernel wait-progress counter to 0.
 Address-table storage, ready counting, and completion wait are allocated
 independently so address publication does not consume local semaphore
 ids.
@@ -484,7 +493,7 @@ addresses must all be the same value because the NoC multicast write
 has only one destination address operand. The sender waits until the
 counter reaches the destination count, reads that one destination
 address from the table, issues one multicast payload write, and signals
-receiver completion with the existing per-PipeNet completion counter.
+receiver completion with the transfer's completion counter.
 
 TT-Metal NoC multicast has one destination SRAM address for all
 receivers. All receivers for one collective pipe must therefore publish
@@ -497,11 +506,10 @@ TT-Metal NoC architecture.
 
 `ttl.wait` on the transfer handle returned by `ttl.copy(pipe, dst_blk)`
 expands to `ttl.pipe_transfer.wait`. TTKernel lowering implements that
-wait as a per-PipeNet cumulative completion wait. The receiver keeps a
-local runtime counter and waits until the receiver-completion counter is
-at least that local count, so repeated point-to-point and collective
-receives in loops advance across iterations without reusing stale
-completion state.
+wait as a transfer-specific cumulative completion wait. The receiver keeps a
+local runtime counter and waits until the receiver-completion counter is at
+least that local count, so repeated point-to-point and collective receives in
+loops advance across iterations without reusing stale completion state.
 
 This protocol fixes the multi-iteration write-pointer issue by making
 the receiver-owned DFB address authoritative. It also makes same-thread
@@ -577,8 +585,8 @@ TTKernel lowering then emits the receiver fragment that publishes the
 destination DFB address to the source-node address table and increments
 the sender-ready counter. Each receiver keeps a local count of how many
 payload completions it has consumed. On each receive wait, lowering
-increments that local count and waits until the shared per-PipeNet
-receiver-completion counter is at least that value.
+increments that local count and waits until the completion counter assigned to
+the receive's pipe endpoint relation is at least that value.
 The TTKernel fragments below show only pipe-protocol operations and omit
 type annotations.
 
@@ -587,7 +595,7 @@ This example uses three synchronization values:
 | Name | Storage | Initial value | Updated by | Read by |
 | --- | --- | --- | --- | --- |
 | Sender-ready counter | Source-node semaphore at `%ready_sem_index`. If local semaphore ids are exhausted, this is a GlobalSemaphore-backed SRAM address passed as a common runtime argument. | 0 | Each receiver post increments it by 1 after publishing the destination DFB address. The sender resets it to 0 after waiting for all expected posts. | Sender send waits for it to equal `%expected_receivers`. |
-| Receiver-completion counter | Destination-node local semaphore at `%completion_sem_index`, shared by one PipeNet. | 0 | Each completed send increments it by 1 after the payload write barrier. | Receiver wait uses `semaphore_wait_min` against the receiver's next expected cumulative count. |
+| Receiver-completion counter | Destination-node local semaphore at `%completion_sem_index`. Different pipe endpoint relations sharing a receiver use distinct counters; disjoint receiver sets may reuse an index. | 0 | Each completed send increments it by 1 after the payload write barrier. | Receiver wait uses `semaphore_wait_min` against the receiver's next expected cumulative count for this counter. |
 | Receiver wait-progress counter | Kernel-local `memref<1xi32>` on the receiver. | 0 at function entry | Each `ttl.pipe_transfer.wait` increments it by 1 before waiting. | The receiver uses it as the threshold for `semaphore_wait_min`. |
 
 The sender-ready counter is a reusable pre-send rendezvous counter. The
@@ -716,11 +724,13 @@ they run concurrently and land in distinct slots.
 
 ### Arrival counter
 
-The handshake uses two counters. Each destination node has a per-PipeNet
-SRAM semaphore that senders increment once per arrival. The receiver
-kernel also keeps a local expected-arrival count and advances it by 1
-per expected arrival per iteration. The receiver blocks until the SRAM
-semaphore reaches the local expected count. Consequences:
+The handshake uses two counters. Each pipe endpoint relation has a completion
+counter on its destination nodes. Different endpoint relations with a common
+receiver use distinct counters, so a completion from one relation cannot
+satisfy a wait on another. The receiver also keeps a local expected-arrival
+count for each completion counter and advances it once per expected arrival.
+The receiver blocks until the completion counter reaches the corresponding
+local count. Consequences:
 
 - A receiver in `N` pipes' destination ranges observes `N` arrivals per
   round, not 1.
@@ -752,10 +762,10 @@ collective. The proof tracks four points in the lowered IR:
    publish destination addresses, performs its own NoC write, then
    increments the receiver completion semaphore. No sender reads a
    semaphore signaled by another sender.
-3. Receiver completion semaphores are per-PipeNet. Sender-ready
-   semaphores and address-table entries are per source-node transfer
-   interval, so two same-source transfers that overlap get distinct
-   state and non-overlapping same-source transfers can reuse state.
+3. Different pipe endpoint relations sharing a receiver have distinct
+   completion semaphores. Sender-ready semaphores and address-table entries are
+   per source-node transfer interval, so two same-source transfers that overlap
+   get distinct state and non-overlapping same-source transfers can reuse state.
    Receive posts publish DFB addresses with inline 32-bit NoC writes,
    so address publication writes the value directly.
 4. Receiver uses cumulative `semaphore_wait_min`. The receiver waits
@@ -846,9 +856,8 @@ closure, and module-scope PipeNets through `__globals__`. See the
 [language specification](https://github.com/tenstorrent/tt-lang/blob/main/docs/sphinx/specs/TTLangSpecification.md) for
 the enclosing-scope capture rule.
 
-Operation-local ids keep `ttl.create_pipe` ids stable across
-invocations, anchor receiver completion semaphore indices, and keep
-the sender-ready/address-table layout deterministic. The `OperationPipeNets`
+Operation-local ids keep `ttl.create_pipe` ids stable across invocations and
+keep pipe resource planning deterministic. The `OperationPipeNets`
 instance is built and validated before MLIR emission on the compiler
 side and before `Program(...)` runs on the simulator side.
 `PipeNet.__init__` also builds a one-PipeNet `OperationPipeNets` and
@@ -938,8 +947,8 @@ the role required by the op:
 | --- | --- |
 | `ttl.copy(buffer, pipe)` | `pipe.src` (single coord) |
 | `ttl.copy(pipe, buffer)` | `pipe.dst` (receiver set) |
-| `ttl.if_src %pipe` body | `pipe.src` (op carries the predicate intrinsically) |
-| `ttl.if_dst %pipe` body | `pipe.dst` (op carries the predicate intrinsically) |
+| `ttl.if_src %pipe` body | `pipe.src` (the op includes the predicate) |
+| `ttl.if_dst %pipe` body | `pipe.dst` (the op includes the predicate) |
 | `cb_wait` on pipe-coupled DFB | union of producer domains across all `cb_push` to the same DFB index |
 
 DFB wait checking is module-global: producer domains accumulate by
@@ -956,15 +965,20 @@ separate event graph. Its correspondence rules are directional:
 | Event | Required corresponding event | Reason |
 | --- | --- | --- |
 | Send | One receiver post at every destination | The send blocks until every destination publishes storage. |
-| Receiver wait | One send | The wait blocks until the sender signals payload completion. |
+| Receiver wait | The send corresponding to its defining receiver post | The wait blocks until that exact transfer signals payload completion. Repeated waits on one handle observe the same send. |
 | Receiver post | A send only when that pipe contains sends | Posting publishes storage and does not wait for payload; an unused post is permitted when the pipe has no sends or waits. |
 
 The send does not require a receiver wait. Sender completion includes the
 payload write and receiver completion signal, not receiver consumption. The
 schedule graph therefore adds send-to-wait edges only for receiver waits that
-exist in the program. Receiver waits consume send completions in order, so the
-first wait corresponds to the first send, the second wait to the second send,
-and so on. Additional sends do not require waits.
+exist in the program. It traces each wait handle to its defining receiver post
+and connects the post's corresponding send to every wait on that handle.
+Additional sends do not require waits.
+
+`PipeTransferIndex` computes these immutable associations before verification
+or lowering mutates the IR. Public waits require one exact receive definition.
+An internal wait retains every post that may produce its token, and those posts
+must use the same transfer creation.
 
 Schedule verification requires every region containing pipe events, directly
 or through helper calls, to have one block. A multi-block CFG does not define
@@ -977,7 +991,7 @@ its events from the schedule.
 ## Predicate recognition
 
 Three predicate ops - `ttl.is_src`, `ttl.is_dst`, `ttl.is_active`
-(the union of source and destination roles) - let user code carry
+(the union of source and destination roles) - let user code express
 per-PipeNet guards that the verifier recognizes structurally. Frontend
 methods `net.is_src()`, `net.is_dst()`, `net.is_active()` lower to
 these ops; coordinate comparisons over `ttl.node(dims=2)` against
@@ -1056,7 +1070,9 @@ note: suggested guard: `net_0.is_src()`
 | this `ttl.copy(buffer, pipe)` sends data on PipeNet \<N\> from a node that is not a source of any pipe in that net | A DFB-to-pipe copy is reachable from a node that isn't the pipe's source coordinate. | wrap the copy in `net_<N>.if_src(...)` or guard with `if net_<N>.is_src(): ...` |
 | this `ttl.copy(pipe, buffer)` receives data from PipeNet \<N\> on a node that is not a destination of any pipe in that net | A pipe-to-DFB copy is reachable from a node outside the pipe's destination range. | wrap the copy in `net_<N>.if_dst(...)` or guard with `if net_<N>.is_dst(): ...` |
 | PipeNet \<N\> requires one static receiver post definition for each static send definition | A send has no receiver-post definition at a destination, or alternative control flow contains a different number of static definitions. | add or reorder receiver posts so every destination posts one reservation for each send |
-| PipeNet \<N\> requires one static send definition for each static receive wait definition | A receiver wait has no statically corresponding send. | add the corresponding send or remove the unmatched receiver wait |
+| receive wait has no send corresponding to its defining receiver post on PipeNet \<N\> | The exact receive handle consumed by a wait has no corresponding send. | add the send corresponding to that receiver post or remove the wait |
+| cannot prove that each repeated receiver post is consumed before the next post on PipeNet \<N\> | A repeated receiver-published post may overwrite its address before the preceding dynamic transfer completes. | complete the corresponding send in each iteration, or wait on the receive handle before the next post |
+| receiver post may overwrite an outstanding posted address on PipeNet \<N\> | A later receiver-published post is not ordered after the send completing the preceding post. | wait for the preceding receive before posting the next address, or make the posts mutually exclusive |
 | cannot prove a one-to-one synchronization schedule on PipeNet \<N\> | Paired events have different or statically unprovable execution counts or conditions. | use matching static control flow for the corresponding protocol events |
 | pipe send occurs before the receiver posts a dataflow buffer reservation on PipeNet \<N\> | A same-thread source can block waiting for a receiver reservation that is posted later in the same thread. | move `ttl.copy(pipe, dst)` before `ttl.copy(src, pipe)`, then wait for receive completion after the send operation has run |
 | receive wait occurs before the send that completes it on PipeNet \<N\> | A receiver waits on the receive transfer before the matching sender operation can run. | post the receive first, run the send, then wait on the transfer handle returned by `ttl.copy(pipe, dst)` |
@@ -1082,7 +1098,7 @@ declarations from each pipe-coupled op individually. The op never
 reaches TTL -> TTKernel lowering.
 
 The frontend emits this region op around DFB-context blocks
-(`with cb.reserve()`) whose body contains pipe role work. It carries
+(`with cb.reserve()`) whose body contains pipe role work. It includes
 two parallel attributes: `ttl.pipe_net_ids` (`DenseI64ArrayAttr`) and
 `ttl.pipe_net_roles` (`DenseI64ArrayAttr`, one entry per id; 0 =
 Source, 1 = Destination - `Active` is a *predicate* via
@@ -1110,6 +1126,7 @@ The verifier relies on these input properties.
 | `ttl.launch_grid` module attribute present | Subset checks require a finite launch-coordinate domain. The pass emits a module-level error and fails if the attribute is missing. |
 | `ttl.create_pipe` source/destination coordinates are static `I64Attr`s, encoded both on the op and in the result `PipeType` | Domain construction reads the attributes directly to materialize each pipe's source unit box and destination range as concrete `Coord` sets, and `PipeLowering.cpp` emits `arith.ConstantIndexOp` for each coordinate when building per-node role predicates. The static-attribute encoding is a property of today's IR, not a fundamental constraint of the verifier or lowering; see "Future work: parametric PipeNets" for the approach to runtime-bound coordinates. |
 | Every DFB has a concrete, unique provisional index | DFB wait checks associate producers and consumers before physical index reuse. `ttl-insert-intermediate-dfbs` assigns new compiler-created DFBs the next unused provisional index. |
+| Kernel-thread entry arguments have the same values at every launch node | The launch ABI supplies one runtime argument vector to every launch node. Schedule-count proofs resolve helper arguments at their active call sites but compare kernel-thread entry arguments directly. |
 | One operation per module | The verifier walks all pipes in the module to compute role domains; co-compiling multiple operations would require per-operation scoping. |
 
 ## Multi-PipeNet operations
@@ -1121,7 +1138,7 @@ A `ttl.copy(buffer, %pipe_a)` reachable from a node that is in
 diagnostic that names `net_a`, not the active nodes of some other
 PipeNet.
 
-Two mechanisms together carry per-PipeNet correctness in user code
+Two mechanisms together enforce per-PipeNet correctness in user code
 when an operation defines multiple PipeNets over different node groups:
 
 1. `ttl.if_src %pipe { ... }` and `ttl.if_dst %pipe { ... }` carry
@@ -1310,7 +1327,7 @@ compile-time properties not runtime-observable.
 | 58 | Verifier rejects unguarded pipe-coupled op in `scf.for` / `scf.execute_region` |  |  |  X  |
 | 59 | Lowering: overlapping collective senders get distinct slot offsets in IR |  |  |  X  |
 | 60 | Lowering: slot assignment is order-independent under user pipe reordering |  |  |  X  |
-| 61 | Lowering: two receives at one node share a single per-PipeNet counter; two PipeNets get distinct counters |  |  |  X  |
+| 61 | Lowering: different pipe endpoint relations sharing a receiver use distinct completion counters; disjoint receiver sets reuse an index |  |  |  X  |
 | 62 | Lowering: loopback collective uses `noc_async_write_multicast_loopback_src` + local receiver-completion increment |  |  |  X  |
 | 63 | Lowering rejects `block_count < max(gather slot) + 1` with diagnostic prefix `"collective overlap"` (and `"gather"` for point-to-point) |  |  |  X  |
 | 64 | Lowering: aggregate collective receive posts publish address-table entries and increment one sender-ready count |  |  |  X  |
@@ -1320,6 +1337,8 @@ compile-time properties not runtime-observable.
 | 68 | Schedule verifier rejects same-thread send before destination address publication | X | | X |
 | 69 | Lowering: overlapping same-source transfers allocate distinct ready counters and address-table slots |  |  |  X  |
 | 70 | Lowering: non-overlapping same-source transfers reuse ready counters and address-table slots |  |  |  X  |
+| 71 | Schedule verifier associates each receiver wait with the exact receive handle, including repeated waits on one handle |  |  |  X  |
+| 72 | Schedule verifier rejects repeated or distinct receiver-published posts that may overwrite an outstanding address |  |  |  X  |
 
 (1) Device-only due to a simulator divergence outside PipeNet
 verification: the simulator's block-state machine accepts
@@ -1354,10 +1373,10 @@ The current lowering has four API-specific binding points:
   TTNN-created GlobalSemaphores whose addresses are passed as common
   runtime arguments. A typed semaphore object API should bind those
   counters directly from the same compiler resource plan.
-- [Device 2.0] Receiver completion currently uses a per-PipeNet local
-  semaphore counter. A typed completion object can replace the local
-  semaphore binding, but completion remains separate from address
-  storage and sender-ready counting.
+- [Device 2.0] Receiver completion currently uses local semaphore counters.
+  Different pipe endpoint relations sharing a receiver use distinct counters.
+  A typed completion object can replace the local semaphore binding, but
+  completion remains separate from address storage and sender-ready counting.
 
 ## Relation to upstream designs
 
@@ -1520,7 +1539,7 @@ can be live concurrently.
 
   Out of scope for parametric PipeNets: per-iteration dynamic routing
   decided inside a kernel function. The TTKernel multicast handshake
-  allocates receiver-completion semaphores per PipeNet and
+  allocates receiver-completion semaphores per pipe endpoint relation and
   sender-ready counters plus address-table entries per pipe at kernel
   compile time. Reconfiguring an
   mcast group mid-kernel is not a tt-metal-supported operation; data-

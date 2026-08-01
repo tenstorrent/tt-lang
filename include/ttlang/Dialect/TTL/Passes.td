@@ -560,7 +560,7 @@ def TTLVerifyPipeNetGuards
     point's domain is contained in the pipe's source or destination domain;
     out-of-domain uses, scopes broader than their declared role, unmatched
     `ttl.cb_wait`s, and unanalyzable coord-dependent predicates are reported.
-    Each diagnostic carries an example offending coordinate, the contributing
+    Each diagnostic includes an example offending coordinate, the contributing
     PipeNet(s), and a suggested guard.
 
     The pass expects one module per `@ttl.operation`, a well-formed
@@ -569,7 +569,6 @@ def TTLVerifyPipeNetGuards
     inserted by `ttl-insert-cb-sync`, and a concrete provisional or final
     `cb_index` on every `ttl.bind_cb`.
   }];
-
 }
 
 def TTLVerifyPipeNetSchedule
@@ -579,15 +578,21 @@ def TTLVerifyPipeNetSchedule
     Verifies the synchronization protocol formed by pipe sends, receiver posts,
     and receiver waits. A send waits until every destination has posted a
     dataflow buffer reservation, so each send requires one corresponding post
-    at every destination. A receiver wait waits for payload arrival, so each
-    wait requires one corresponding send. Posting a reservation does not wait
-    for payload, and a sender does not wait for the receiver to consume the
-    payload. Receiver posts may therefore exist without receiver waits, and
-    sends do not require receiver waits. When a pipe has sends, each
-    destination must have the same number of receiver posts as sends. A pipe
-    with no sends or waits may contain unused receiver posts. Receiver waits
-    consume send completions in order; the number of waits may not exceed the
-    number of sends.
+    at every destination. A receiver wait observes the send associated with
+    the exact receive handle it consumes. Repeated waits on one handle observe
+    the same completed transfer and do not require additional sends. Posting a
+    reservation does not wait for payload, and a sender does not wait for the
+    receiver to consume the payload. Receiver posts may therefore exist
+    without receiver waits, and sends do not require receiver waits. When a
+    pipe has sends, each destination must have the same number of receiver
+    posts as sends. A pipe with no sends or waits may contain unused receiver
+    posts.
+
+    Receiver-published addressing supports one outstanding post for each pipe
+    and destination. Each repetition must contain its corresponding send or an
+    exact receive wait that proves the send completed. Before a distinct post
+    executes, the graph must prove that the preceding send has completed or
+    that the posts are mutually exclusive.
 
     Static event definitions are paired by program order for each pipe
     endpoint. Each pair must have equal dynamic execution counts and equivalent
@@ -601,14 +606,14 @@ def TTLVerifyPipeNetSchedule
     must belong to one kernel-thread function because independent kernel
     threads have no program order. Each event must have an exact launch-node
     domain. Multi-block regions that contribute pipe events, unknown event
-    domains, recursive calls containing pipe events, and schedules that exceed
-    4096 events after launch-node specialization and helper expansion are
-    rejected because the verifier cannot construct a correct bounded event
-    graph.
+    domains, recursive calls containing pipe events, and schedules with more
+    than 4096 expanded event occurrences at one launch node are rejected
+    because the verifier cannot construct a correct bounded event graph.
 
     The pass also constructs the same-thread wait-for graph. Program-order
     edges connect consecutive events on one launched node. Protocol edges
-    connect each receiver post to its send and each send to its receiver wait.
+    connect each receiver post to its send and that send to every wait on the
+    post's exact receive handle.
     A cycle means no event in the cycle can execute and is rejected.
 
     The pass expects one module per `@ttl.operation`, a well-formed
@@ -617,7 +622,6 @@ def TTLVerifyPipeNetSchedule
     `ttl-verify-pipenet-guards` must run first in the compiler pipeline so
     invalid launch domains are reported separately.
   }];
-
 }
 
 def TTLVerifyTransferProvenance
