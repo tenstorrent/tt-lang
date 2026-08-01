@@ -1391,7 +1391,7 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
               "pipe send and receiver post use different transfer contracts");
           return failure();
         }
-        if (getPipeTransferBlockSpan(*maybePostCreate) != blockSpan) {
+        if (getPipeTransferBlockSpan(postCreate) != blockSpan) {
           auto diagnostic =
               postOp.emitError("pipe send and receiver post use different "
                                "transfer block spans");
@@ -1399,7 +1399,7 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
               << "corresponding pipe send uses block_span=" << blockSpan;
           return failure();
         }
-        if (getPipeTransferDestinationGroupDepth(*maybePostCreate) !=
+        if (getPipeTransferDestinationGroupDepth(postCreate) !=
             destinationGroupDepth) {
           auto diagnostic = postOp.emitError(
               "pipe send and receiver post use different destination group "
