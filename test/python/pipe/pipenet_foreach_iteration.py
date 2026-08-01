@@ -8,14 +8,13 @@
 # RUN: FileCheck %s --check-prefix=CHECK-INITIAL < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 # RUN: FileCheck %s --check-prefix=CHECK-LOOPS < %t.output
-# RUN: %python %s --report-kernel-size %t.output | FileCheck %s --check-prefix=CHECK-SIZE
+# RUN: %python %s --report-kernel-size < %t.output | FileCheck %s --check-prefix=CHECK-SIZE
 # RUN: FileCheck %s --check-prefix=CHECK-NO-DESCRIPTOR-ARRAYS < %t.output
 
 """Compile-only coverage for large table-driven PipeNet callback lowering."""
 
 import re
 import sys
-from pathlib import Path
 
 import pytest
 import torch
@@ -112,19 +111,21 @@ def compile_all_to_all():
         ALL_TO_ALL_NET.if_dst(receive)
 
 
-def report_table_driven_kernel_size(output_path):
-    output = Path(output_path).read_text()
-    pipe_kernel_paths = [
-        Path(match.group(1))
+def report_table_driven_kernel_size(output):
+    """Report the largest pipe kernel source section in compiler output."""
+    # Kernel logging appends one newline after the source text.
+    pipe_kernel_sources = [
+        match.group("source").removesuffix("\n")
         for match in re.finditer(
-            r"^=== (?:send_dm|recv_dm) kernel written to (.+) ===$",
+            r"^=== (?:send_dm|recv_dm) kernel written to [^\n]+ ===\n"
+            r"(?P<source>.*?)^={60}$",
             output,
-            re.MULTILINE,
+            re.DOTALL | re.MULTILINE,
         )
     ]
-    assert len(pipe_kernel_paths) == 4
+    assert len(pipe_kernel_sources) == 4
     largest_kernel_bytes = max(
-        kernel_path.stat().st_size for kernel_path in pipe_kernel_paths
+        len(kernel_source.encode()) for kernel_source in pipe_kernel_sources
     )
     assert largest_kernel_bytes < MAX_PIPE_KERNEL_SOURCE_BYTES
     print(
@@ -134,8 +135,8 @@ def report_table_driven_kernel_size(output_path):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 3 and sys.argv[1] == "--report-kernel-size":
-        report_table_driven_kernel_size(sys.argv[2])
+    if len(sys.argv) == 2 and sys.argv[1] == "--report-kernel-size":
+        report_table_driven_kernel_size(sys.stdin.read())
     else:
         assert len(sys.argv) == 1
         assert len(ALL_TO_ALL_NET.pipes) == ALL_TO_ALL_EDGE_COUNT
