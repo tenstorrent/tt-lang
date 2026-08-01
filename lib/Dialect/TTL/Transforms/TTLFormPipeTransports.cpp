@@ -12,6 +12,7 @@
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/TTL/Transforms/DFBAllocation.h"
 #include "ttlang/Dialect/TTL/Transforms/PipeConstants.h"
+#include "ttlang/Dialect/TTL/Transforms/PipeTransferAnalysis.h"
 #include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -175,6 +176,7 @@ getOrAddDFBUse(PipeTransportLoopCandidate &candidate, Value dfb,
 
 /// Validate that changing the loop step does not remove unrelated effects.
 static LogicalResult validateLoopEffects(PipeTransportLoopCandidate &candidate,
+                                         const PipeTransferIndex &transferIndex,
                                          ValueOriginAnalysis &analysis,
                                          std::string &reason) {
   llvm::DenseSet<Operation *> asyncOperations;
@@ -224,9 +226,11 @@ static LogicalResult validateLoopEffects(PipeTransportLoopCandidate &candidate,
       }
     }
     if (auto pipeWait = dyn_cast<PipeTransferWaitOp>(operation)) {
-      FailureOr<PipeTransferPostOp> post =
-          findPipeTransferPostForToken(analysis, pipeWait.getToken());
-      if (succeeded(post) && allowedOperations.contains(*post)) {
+      ArrayRef<Operation *> posts =
+          transferIndex.getPossibleReceivePosts(pipeWait);
+      if (llvm::all_of(posts, [&](Operation *post) {
+            return allowedOperations.contains(post);
+          })) {
         return WalkResult::advance();
       }
     }
@@ -243,11 +247,10 @@ static LogicalResult validateLoopEffects(PipeTransportLoopCandidate &candidate,
 }
 
 /// Build one complete loop candidate from PipeGraph transfer nodes.
-static FailureOr<PipeTransportLoopCandidate>
-buildLoopCandidate(scf::ForOp loop,
-                   ArrayRef<const PipeTransferNode *> transfers,
-                   const PipeGraph &pipeGraph, ValueOriginAnalysis &analysis,
-                   std::string &reason) {
+static FailureOr<PipeTransportLoopCandidate> buildLoopCandidate(
+    scf::ForOp loop, ArrayRef<const PipeTransferNode *> transfers,
+    const PipeTransferIndex &transferIndex, const PipeGraph &pipeGraph,
+    ValueOriginAnalysis &analysis, std::string &reason) {
   PipeTransportLoopCandidate candidate;
   candidate.loop = loop;
   candidate.transfers.append(transfers.begin(), transfers.end());
@@ -301,18 +304,14 @@ buildLoopCandidate(scf::ForOp loop,
     if (failed(source)) {
       return failure();
     }
-    FailureOr<PipeTransferCreateOp> sendCreate =
-        findPipeTransferCreateForTransfer(analysis, send.getTransfer());
-    if (failed(sendCreate)) {
-      reason = "sender transfer has no unique creation operation";
-      return failure();
-    }
-    if (isInsideLoop(loop, sendCreate->getOperation())) {
+    PipeTransferCreateOp sendCreate =
+        transferIndex.getTransferCreate(send.getOperation());
+    if (isInsideLoop(loop, sendCreate.getOperation())) {
       reason = "transfer creation must be outside the candidate loop";
       return failure();
     }
-    if (seenCreates.insert(sendCreate->getOperation()).second) {
-      candidate.transferCreates.push_back(*sendCreate);
+    if (seenCreates.insert(sendCreate.getOperation()).second) {
+      candidate.transferCreates.push_back(sendCreate);
     }
 
     for (Operation *postOperation : transfer->receiverPostOps) {
@@ -331,18 +330,14 @@ buildLoopCandidate(scf::ForOp loop,
                                 reason))) {
         return failure();
       }
-      FailureOr<PipeTransferCreateOp> postCreate =
-          findPipeTransferCreateForTransfer(analysis, post.getTransfer());
-      if (failed(postCreate)) {
-        reason = "receiver transfer has no unique creation operation";
-        return failure();
-      }
-      if (isInsideLoop(loop, postCreate->getOperation())) {
+      PipeTransferCreateOp postCreate =
+          transferIndex.getTransferCreate(post.getOperation());
+      if (isInsideLoop(loop, postCreate.getOperation())) {
         reason = "transfer creation must be outside the candidate loop";
         return failure();
       }
-      if (seenCreates.insert(postCreate->getOperation()).second) {
-        candidate.transferCreates.push_back(*postCreate);
+      if (seenCreates.insert(postCreate.getOperation()).second) {
+        candidate.transferCreates.push_back(postCreate);
       }
     }
   }
@@ -364,7 +359,7 @@ buildLoopCandidate(scf::ForOp loop,
       return failure();
     }
   }
-  if (failed(validateLoopEffects(candidate, analysis, reason))) {
+  if (failed(validateLoopEffects(candidate, transferIndex, analysis, reason))) {
     return failure();
   }
   return std::move(candidate);
@@ -752,7 +747,15 @@ struct TTLFormPipeTransportsPass
       signalPassFailure();
       return;
     }
-    FailureOr<PipeGraph> maybePipeGraph = PipeGraph::build(module, analysis);
+    FailureOr<std::unique_ptr<PipeTransferIndex>> maybeTransferIndex =
+        PipeTransferIndex::create(module, analysis);
+    if (failed(maybeTransferIndex)) {
+      signalPassFailure();
+      return;
+    }
+    const PipeTransferIndex &transferIndex = **maybeTransferIndex;
+    FailureOr<PipeGraph> maybePipeGraph =
+        PipeGraph::build(module, analysis, transferIndex);
     if (failed(maybePipeGraph)) {
       signalPassFailure();
       return;
@@ -762,7 +765,7 @@ struct TTLFormPipeTransportsPass
     // All-published planning bounds address-table storage independently of the
     // receiver-address option selected by the later conversion pass.
     PipeResourcePlan conservativeResourcePlan;
-    if (failed(buildPipeResourcePlan(module, analysis, pipeGraph,
+    if (failed(buildPipeResourcePlan(module, transferIndex, pipeGraph,
                                      conservativeResourcePlan,
                                      /*enableComputedAddresses=*/false,
                                      /*synchronizationSelection=*/nullptr))) {
@@ -786,8 +789,8 @@ struct TTLFormPipeTransportsPass
     for (auto &[loopOperation, transfers] : transfersByLoop) {
       auto loop = cast<scf::ForOp>(loopOperation);
       std::string reason;
-      FailureOr<PipeTransportLoopCandidate> maybeCandidate =
-          buildLoopCandidate(loop, transfers, pipeGraph, analysis, reason);
+      FailureOr<PipeTransportLoopCandidate> maybeCandidate = buildLoopCandidate(
+          loop, transfers, transferIndex, pipeGraph, analysis, reason);
       if (failed(maybeCandidate)) {
         debugReject(loop, reason);
         continue;
