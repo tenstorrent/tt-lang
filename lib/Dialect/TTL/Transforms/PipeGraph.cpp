@@ -1867,9 +1867,9 @@ LogicalResult PipeGraph::addPipeReceiver(Operation *op,
   return success();
 }
 
-FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod,
-                                      ValueOriginAnalysis &analysis,
-                                      const PipeTransferIndex &transferIndex,
+FailureOr<PipeGraph>
+PipeGraph::build(ModuleOp mod, ValueOriginAnalysis &analysis,
+                 const PipeTransferIndex &transferIndex,
                  const PipeForeachLoweringInfo &foreachLoweringInfo) {
   PipeGraph graph;
 

@@ -47,6 +47,46 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
+// Record-backed PipeNet sources must refer to cores instantiated by the module
+// launch grid.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @record_source_outside_launch_grid()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{declares source core_x=2, core_y=0 outside the module `ttl.launch_grid`}}
+    ttl.pipenet_foreach_src attributes {
+        records = #ttl.pipenet_records<net 0 name "invalid_source" pipes [
+          #ttl.pipe_record<srcX = 2, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0>
+        ]>} {
+    ^bb0(%pipe: !ttl.selected_pipe_src):
+      ttl.yield
+    }
+    func.return
+  }
+}
+
+// -----
+
+// Record-backed PipeNet destination ranges must remain inside the module
+// launch grid.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @record_destination_outside_launch_grid()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{declares destination range core_x=1..2, core_y=0..0 outside the module `ttl.launch_grid`}}
+    ttl.pipenet_foreach_dst attributes {
+        records = #ttl.pipenet_records<net 0 name "invalid_destination" pipes [
+          #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 2, dstEndY = 0, isCollective = true>
+        ]>} {
+    ^bb0(%pipe: !ttl.selected_pipe_dst):
+      ttl.yield
+    }
+    func.return
+  }
+}
+
+// -----
+
 // A collective send missing every receiver post produces one primary error.
 // Notes identify the additional receiver coordinates with the same mismatch.
 

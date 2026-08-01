@@ -202,8 +202,7 @@ struct ModuleState {
                                 PipeEventKind kind,
                                 const LaunchNodeDomain &domain,
                                 Operation *unanalyzableOp,
-                                Operation *receivePost,
-                                Operation *foreachOp,
+                                Operation *receivePost, Operation *foreachOp,
                                 SmallVectorImpl<PipeEvent> &events) {
     PipeRole role =
         kind == PipeEventKind::Send ? PipeRole::Source : PipeRole::Destination;
@@ -250,10 +249,9 @@ struct ModuleState {
     }
     if (std::optional<SelectedPipeRecords> selected =
             getSelectedPipeRecords(copyOp.getDst())) {
-      appendSelectedPipeEvents(op, selected->records, PipeEventKind::Send,
-                               domain, unanalyzableOp,
-                               /*receivePost=*/nullptr, selected->foreachOp,
-                               events);
+      appendSelectedPipeEvents(
+          op, selected->records, PipeEventKind::Send, domain, unanalyzableOp,
+          /*receivePost=*/nullptr, selected->foreachOp, events);
       return events;
     }
     if (auto pipeType = mlir::dyn_cast<PipeType>(copyOp.getSrc().getType())) {
@@ -330,8 +328,8 @@ struct ModuleState {
                    getSelectedPipeRecords(copyOp.getSrc())) {
       appendSelectedPipeEvents(op, selected->records,
                                PipeEventKind::ReceiveWait, domain,
-                                unanalyzableOp, copyOp.getOperation(),
-                                selected->foreachOp, events);
+                               unanalyzableOp, copyOp.getOperation(),
+                               selected->foreachOp, events);
     }
 
     replacePipeEvents(op, std::move(events));
@@ -2053,36 +2051,64 @@ validatePipeNetReferences(ModuleOp module,
   return result;
 }
 
+/// Verify that one declared pipe relation belongs to the module launch grid.
+LogicalResult
+validatePipeRelationEndpoints(Operation *declaration, PipeType pipeType,
+                              const LaunchNodeDomain &launchDomain) {
+  LaunchNodeCoord source{pipeType.getSrcX(), pipeType.getSrcY()};
+  if (!knownLaunchNodeDomainContains(launchDomain, source)) {
+    return declaration->emitOpError()
+           << "declares source core_x=" << source.x << ", core_y=" << source.y
+           << " outside the module `ttl.launch_grid`";
+  }
+  LaunchNodeCoord destinationStart{pipeType.getDstStartX(),
+                                   pipeType.getDstStartY()};
+  LaunchNodeCoord destinationEnd{pipeType.getDstEndX(), pipeType.getDstEndY()};
+  if (!knownLaunchNodeDomainContains(launchDomain, destinationStart) ||
+      !knownLaunchNodeDomainContains(launchDomain, destinationEnd)) {
+    return declaration->emitOpError()
+           << "declares destination range core_x=" << pipeType.getDstStartX()
+           << ".." << pipeType.getDstEndX()
+           << ", core_y=" << pipeType.getDstStartY() << ".."
+           << pipeType.getDstEndY() << " outside the module `ttl.launch_grid`";
+  }
+  return success();
+}
+
 /// Verify that every declared pipe endpoint belongs to the module launch grid.
 LogicalResult
 validatePipeEndpoints(ModuleOp module,
                       const LaunchNodeDomainState &launchDomains) {
   LogicalResult result = success();
-  module.walk([&](CreatePipeOp pipe) {
-    PipeType pipeType = mlir::cast<PipeType>(pipe.getResult().getType());
-    LaunchNodeCoord source{pipeType.getSrcX(), pipeType.getSrcY()};
-    if (!knownLaunchNodeDomainContains(launchDomains.baseDomain, source)) {
-      pipe.emitOpError() << "declares source core_x=" << source.x
-                         << ", core_y=" << source.y
-                         << " outside the module `ttl.launch_grid`";
-      result = failure();
+  llvm::DenseSet<PipeNetRecordsAttr> validatedRecordTables;
+  module.walk([&](Operation *op) {
+    if (auto pipe = mlir::dyn_cast<CreatePipeOp>(op)) {
+      PipeType pipeType = mlir::cast<PipeType>(pipe.getResult().getType());
+      if (failed(validatePipeRelationEndpoints(op, pipeType,
+                                               launchDomains.baseDomain))) {
+        result = failure();
+      }
       return;
     }
-    LaunchNodeCoord destinationStart{pipeType.getDstStartX(),
-                                     pipeType.getDstStartY()};
-    LaunchNodeCoord destinationEnd{pipeType.getDstEndX(),
-                                   pipeType.getDstEndY()};
-    if (!knownLaunchNodeDomainContains(launchDomains.baseDomain,
-                                       destinationStart) ||
-        !knownLaunchNodeDomainContains(launchDomains.baseDomain,
-                                       destinationEnd)) {
-      pipe.emitOpError() << "declares destination range core_x="
-                         << pipeType.getDstStartX() << ".."
-                         << pipeType.getDstEndX()
-                         << ", core_y=" << pipeType.getDstStartY() << ".."
-                         << pipeType.getDstEndY()
-                         << " outside the module `ttl.launch_grid`";
-      result = failure();
+
+    PipeNetRecordsAttr records =
+        llvm::TypeSwitch<Operation *, PipeNetRecordsAttr>(op)
+            .Case<PipeNetForeachSrcOp, PipeNetForeachDstOp, SelectPipeSrcOp,
+                  SelectPipeDstOp>(
+                [](auto recordsOp) { return recordsOp.getRecords(); })
+            .Default(PipeNetRecordsAttr());
+    if (!records || !validatedRecordTables.insert(records).second) {
+      return;
+    }
+    for (PipeRecordAttr record : records.getPipes()) {
+      PipeType pipeType = PipeType::get(
+          records.getContext(), record.getSrcX(), record.getSrcY(),
+          record.getDstStartX(), record.getDstStartY(), record.getDstEndX(),
+          record.getDstEndY(), records.getPipeNetId());
+      if (failed(validatePipeRelationEndpoints(op, pipeType,
+                                               launchDomains.baseDomain))) {
+        result = failure();
+      }
     }
   });
   return result;
