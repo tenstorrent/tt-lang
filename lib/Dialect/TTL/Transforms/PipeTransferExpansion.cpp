@@ -17,18 +17,6 @@
 namespace mlir::tt::ttl {
 namespace {
 
-/// Return whether `op` receives a pipe payload into an attached DFB.
-static bool isPipeReceiveCopy(CopyOp op) {
-  return llvm::isa<PipeType>(op.getSrc().getType()) &&
-         getAttachedCB(op.getDst());
-}
-
-/// Return whether `op` sends a DFB payload through a pipe.
-static bool isPipeSendCopy(CopyOp op) {
-  return llvm::isa<CircularBufferType>(op.getSrc().getType()) &&
-         llvm::isa<PipeType>(op.getDst().getType());
-}
-
 /// Resolve an untyped receive handle to its unique high-level pipe copy.
 static FailureOr<CopyOp> findPipeReceiveCopy(ValueOriginAnalysis &analysis,
                                              Value value) {
