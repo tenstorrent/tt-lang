@@ -2447,7 +2447,7 @@ LogicalResult buildPipeResourcePlan(
     const PipeSynchronizationSelection *synchronizationSelection) {
   DominanceInfo dominanceInfo(mod);
   PostDominanceInfo postDominanceInfo(mod);
-  FailureOr<SmallVector<PipeTransferAllocationUnit>> maybeUnits =
+  FailureOr<SmallVector<PipeTransferAllocationUnit, 0>> maybeUnits =
       collectPipeTransferAllocationUnits(mod, transferIndex, pipeGraph,
                                          dominanceInfo, postDominanceInfo,
                                          info.staticallyInactiveOps);
