@@ -284,10 +284,10 @@ void LaunchNodeDomainState::recordPipeNetRecords(PipeNetRecordsAttr records,
   }
   int64_t pipeNetId = records.getPipeNetId();
   for (PipeRecordAttr record : records.getPipes()) {
-    PipeType pipeType = PipeType::get(
-        records.getContext(), record.getSrcX(), record.getSrcY(),
-        record.getDstStartX(), record.getDstStartY(), record.getDstEndX(),
-        record.getDstEndY(), pipeNetId);
+    PipeType pipeType =
+        PipeType::get(records.getContext(), record.getSrcX(), record.getSrcY(),
+                      record.getDstStartX(), record.getDstStartY(),
+                      record.getDstEndX(), record.getDstEndY(), pipeNetId);
     LaunchNodeDomain sourceDomain = getPipeSourceLaunchNodeDomain(pipeType);
     if (!sourceDomain.isSubsetOf(baseDomain)) {
       sourceDomain = LaunchNodeDomain::unknown();

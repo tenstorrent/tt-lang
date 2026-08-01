@@ -84,16 +84,6 @@ static PipeSourceKey getPipeSourceKey(PipeType pipeType) {
   return {pipeType.getSrcX(), pipeType.getSrcY()};
 }
 
-static FailureOr<PipeResourceInfo>
-lookupPipeResourceInfo(Operation *protocolOp,
-                       const PipeResourcePlan &pipeResourcePlan) {
-  auto it = pipeResourcePlan.resources.find(protocolOp);
-  if (it == pipeResourcePlan.resources.end()) {
-    return protocolOp->emitError("pipe transfer has no resource allocation");
-  }
-  return it->second;
-}
-
 static int64_t alignTo(int64_t value, int64_t alignment) {
   assert(alignment > 0 && "alignment must be positive");
   return ((value + alignment - 1) / alignment) * alignment;
@@ -2496,7 +2486,7 @@ LogicalResult buildPipeResourcePlan(
     const PipeSynchronizationSelection *synchronizationSelection) {
   DominanceInfo dominanceInfo(mod);
   PostDominanceInfo postDominanceInfo(mod);
-  FailureOr<SmallVector<PipeTransferAllocationUnit>> maybeUnits =
+  FailureOr<SmallVector<PipeTransferAllocationUnit, 0>> maybeUnits =
       collectPipeTransferAllocationUnits(mod, transferIndex, pipeGraph,
                                          dominanceInfo, postDominanceInfo,
                                          info.staticallyInactiveOps);
