@@ -1,4 +1,5 @@
-// RUN: ttlang-opt %s --split-input-file -convert-ttl-to-ttkernel | FileCheck %s
+// The computed-address protocol must not load a receiver-published address.
+// RUN: ttlang-opt %s --split-input-file -convert-ttl-to-ttkernel | FileCheck %s --implicit-check-not=ttkernel.load_from_l1
 
 // Summary: Verifies that TTL-to-TTKernel cleanup hoists loop-invariant
 // PipeNet value construction and selects stateful NoC writes when other NoC
@@ -13,11 +14,16 @@
 // CHECK-DAG: %[[C0:.+]] = arith.constant 0 : index
 // CHECK-DAG: %[[C1:.+]] = arith.constant 1 : index
 // CHECK-DAG: %[[C0_I32:.+]] = arith.constant 0 : i32
+// CHECK-DAG: %[[C1_I32:.+]] = arith.constant 1 : i32
+// CHECK-DAG: %[[SLOT_COUNT:.+]] = arith.constant 2 : i32
 // CHECK-DAG: %[[WRITE_SIZE:.+]] = arith.constant 8192 : i32
+// CHECK: %[[SLOT_STATE:.+]] = memref.alloca() : memref<1xi32>
+// CHECK-NEXT: memref.store %[[C0_I32]], %[[SLOT_STATE]][%[[C0]]] : memref<1xi32>
 // CHECK-DAG: %[[CORE_X:.+]] = ttkernel.my_logical_x_
 // CHECK-DAG: %[[CORE_Y:.+]] = ttkernel.my_logical_y_
 // CHECK: %[[DST_X:.+]] = ttkernel.experimental.convert_logical_x_to_translated(%[[C1]])
 // CHECK-NEXT: %[[DST_Y:.+]] = ttkernel.experimental.convert_logical_y_to_translated(%[[C0]])
+// CHECK: %[[DST_BASE:.+]] = ttkernel.get_common_arg_val(%[[C0]]) : (index) -> i32
 // CHECK: %[[SETUP_ADDR:.+]] = ttkernel.get_noc_addr(%[[DST_X]], %[[DST_Y]], %[[C0_I32]],
 // CHECK: scf.if %[[IS_SRC:.+]]
 // CHECK-NEXT: ttkernel.noc_async_write_one_packet_set_state(%[[SETUP_ADDR]], %[[WRITE_SIZE]],
@@ -26,12 +32,18 @@
 // CHECK-NOT: ttkernel.my_logical_y_
 // CHECK-NOT: ttkernel.experimental.convert_logical_x_to_translated
 // CHECK-NOT: ttkernel.experimental.convert_logical_y_to_translated
-// CHECK: ttkernel.experimental.semaphore_wait(
+// CHECK: ttkernel.experimental.semaphore_wait_min(
 // CHECK-NOT: ttkernel.experimental.convert_logical_x_to_translated
 // CHECK-NOT: ttkernel.experimental.convert_logical_y_to_translated
 // CHECK: %[[SRC:.+]] = ttkernel.get_write_ptr
-// CHECK-NEXT: %[[DST_ADDR:.+]] = ttkernel.load_from_l1
+// CHECK-NEXT: %[[SLOT:.+]] = memref.load %[[SLOT_STATE]][%[[C0]]] : memref<1xi32>
+// CHECK-NEXT: %[[OFFSET:.+]] = arith.muli %[[SLOT]], %[[WRITE_SIZE]] : i32
+// CHECK-NEXT: %[[DST_ADDR:.+]] = arith.addi %[[DST_BASE]], %[[OFFSET]] : i32
+// CHECK-NEXT: %[[NEXT_SLOT:.+]] = arith.addi %[[SLOT]], %[[C1_I32]] : i32
+// CHECK-NEXT: %[[WRAPPED_SLOT:.+]] = arith.remui %[[NEXT_SLOT]], %[[SLOT_COUNT]] : i32
+// CHECK-NEXT: memref.store %[[WRAPPED_SLOT]], %[[SLOT_STATE]][%[[C0]]] : memref<1xi32>
 // CHECK-NEXT: ttkernel.noc_async_write_one_packet_with_state(%[[SRC]], %[[DST_ADDR]],
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 func.func @sender_loop_hoists_pipe_invariants()
     attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
@@ -66,4 +78,5 @@ func.func @sender_loop_hoists_pipe_invariants()
     }
   }
   func.return
+}
 }
