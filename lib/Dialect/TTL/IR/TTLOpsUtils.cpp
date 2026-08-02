@@ -274,12 +274,15 @@ TileOpCategory classifyTileOp(Operation *op) {
   return TileOpCategory::Unknown;
 }
 
-FusionTraceResult traceFusionToRoots(mlir::Value value) {
+FusionTraceResult traceFusionToRoots(
+    mlir::Value value,
+    llvm::function_ref<bool(mlir::OpOperand &)> isMaterializationPlanned) {
   FusionTraceResult result;
 
-  // Base case: CB-attached value is a root
+  // A DFB-attached value is an available input to the fused computation.
   if (getAttachedCB(value)) {
     result.rootInputs.insert(value);
+    result.lifetimeRootInputs.insert(value);
     return result;
   }
 
@@ -290,34 +293,52 @@ FusionTraceResult traceFusionToRoots(mlir::Value value) {
     return result;
   }
 
-  // Special case: BlockBroadcastOp can be fused when its input is CB-attached.
+  // BlockBroadcastOp is a fusion leaf because its input must be DFB-attached.
   if (auto bcastOp = llvm::dyn_cast<BlockBroadcastOp>(defOp)) {
-    mlir::Value bcastInput = bcastOp.getInput();
-    if (getAttachedCB(bcastInput)) {
+    mlir::OpOperand &inputOperand = bcastOp->getOpOperand(0);
+    mlir::Value bcastInput = inputOperand.get();
+    bool isInputMaterialized = isMaterializationPlanned(inputOperand);
+    if (isInputMaterialized || getAttachedCB(bcastInput)) {
       result.rootInputs.insert(bcastInput);
+      if (!isInputMaterialized) {
+        result.lifetimeRootInputs.insert(bcastInput);
+      }
       result.opsInOrder.insert(defOp);
       return result;
     }
-    // Bcast recognized but input not CB-attached.
+    // The broadcast cannot be formed until its input is materialized.
     result.failureReason = TraceFailureReason::NotCBAttached;
     result.failedValue = bcastInput;
+    result.failedOperand = &inputOperand;
     return result;
   }
 
-  // Special case: MatmulOp with CB-attached inputs is a fusable leaf.
-  // Both inputs become roots; the trace does not recurse into the matmul.
+  // MatmulOp is a fusion leaf because both inputs must be DFB-attached.
   if (auto matmulOp = llvm::dyn_cast<MatmulOp>(defOp)) {
-    mlir::Value lhs = matmulOp.getLhs();
-    mlir::Value rhs = matmulOp.getRhs();
-    if (getAttachedCB(lhs) && getAttachedCB(rhs)) {
+    mlir::OpOperand &lhsOperand = matmulOp->getOpOperand(0);
+    mlir::OpOperand &rhsOperand = matmulOp->getOpOperand(1);
+    mlir::Value lhs = lhsOperand.get();
+    mlir::Value rhs = rhsOperand.get();
+    bool isLhsMaterialized = isMaterializationPlanned(lhsOperand);
+    bool isRhsMaterialized = isMaterializationPlanned(rhsOperand);
+    bool lhsAvailable = isLhsMaterialized || getAttachedCB(lhs);
+    bool rhsAvailable = isRhsMaterialized || getAttachedCB(rhs);
+    if (lhsAvailable && rhsAvailable) {
       result.rootInputs.insert(lhs);
       result.rootInputs.insert(rhs);
+      if (!isLhsMaterialized) {
+        result.lifetimeRootInputs.insert(lhs);
+      }
+      if (!isRhsMaterialized) {
+        result.lifetimeRootInputs.insert(rhs);
+      }
       result.opsInOrder.insert(defOp);
       return result;
     }
-    // Matmul recognized but inputs not CB-attached.
+    // The matmul cannot be formed until both inputs are materialized.
     result.failureReason = TraceFailureReason::NotCBAttached;
-    result.failedValue = getAttachedCB(lhs) ? rhs : lhs;
+    result.failedValue = lhsAvailable ? rhs : lhs;
+    result.failedOperand = lhsAvailable ? &rhsOperand : &lhsOperand;
     return result;
   }
 
@@ -333,15 +354,30 @@ FusionTraceResult traceFusionToRoots(mlir::Value value) {
     return result;
   }
 
-  // Recursively trace all operands
-  for (mlir::Value operand : getElementwiseOperands(defOp)) {
-    auto operandTrace = traceFusionToRoots(operand);
+  // Recursively trace every elementwise operand not replaced by a planned
+  // materialization.
+  unsigned numElementwiseOperands = getElementwiseOperands(defOp).size();
+  for (unsigned operandIndex = 0; operandIndex < numElementwiseOperands;
+       ++operandIndex) {
+    mlir::OpOperand &operand = defOp->getOpOperand(operandIndex);
+    if (isMaterializationPlanned(operand)) {
+      result.rootInputs.insert(operand.get());
+      continue;
+    }
+    auto operandTrace =
+        traceFusionToRoots(operand.get(), isMaterializationPlanned);
     if (operandTrace.failureReason != TraceFailureReason::Success) {
+      if (!operandTrace.failedOperand) {
+        operandTrace.failedOperand = &operand;
+      }
       return operandTrace;
     }
     // Merge roots and ops (SmallSetVector handles deduplication)
     for (mlir::Value root : operandTrace.rootInputs) {
       result.rootInputs.insert(root);
+    }
+    for (mlir::Value root : operandTrace.lifetimeRootInputs) {
+      result.lifetimeRootInputs.insert(root);
     }
     for (mlir::Operation *op : operandTrace.opsInOrder) {
       result.opsInOrder.insert(op);
@@ -354,37 +390,8 @@ FusionTraceResult traceFusionToRoots(mlir::Value value) {
   return result;
 }
 
-bool fusableValueCrossesDFBRelease(mlir::Value value,
-                                   mlir::Operation *consumer) {
-  FusionTraceResult trace = traceFusionToRoots(value);
-  if (trace.failureReason != TraceFailureReason::Success) {
-    return false;
-  }
-
-  for (Value root : trace.rootInputs) {
-    Value dfb = getAttachedCB(root);
-    if (!dfb) {
-      continue;
-    }
-
-    Operation *rootDef = root.getDefiningOp();
-    if (!rootDef || rootDef->getBlock() != consumer->getBlock() ||
-        !rootDef->isBeforeInBlock(consumer)) {
-      continue;
-    }
-
-    // A DFB-attached tensor is only valid until the matching pop. Fusion that
-    // delays the tile read past the pop would make generated compute consume a
-    // released producer slot.
-    for (Operation *cursor = rootDef->getNextNode();
-         cursor && cursor != consumer; cursor = cursor->getNextNode()) {
-      auto pop = dyn_cast<CBPopOp>(cursor);
-      if (pop && pop.getCb() == dfb) {
-        return true;
-      }
-    }
-  }
-  return false;
+FusionTraceResult traceFusionToRoots(mlir::Value value) {
+  return traceFusionToRoots(value, [](mlir::OpOperand &) { return false; });
 }
 
 llvm::StringRef describeTraceFailure(TraceFailureReason reason) {

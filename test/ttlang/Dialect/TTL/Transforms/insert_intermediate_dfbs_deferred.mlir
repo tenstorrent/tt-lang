@@ -1,10 +1,10 @@
-// Tests deferred compiler DFB materialization after initial compute formation.
+// Tests deferred compiler DFB materialization after initial `ComputeOp` creation.
 // The pass must materialize ttl.compute results as extra compute outputs and
 // leave consumers ready for the final convert-ttl-to-compute pass.
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-form-producer-compute,ttl-insert-intermediate-dfbs))' | FileCheck %s --check-prefix=DEFERRED
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-form-producer-compute,ttl-insert-intermediate-dfbs,convert-ttl-to-compute,ttl-auto-sync))' | FileCheck %s --check-prefix=FULL
-// The unsplit run covers concurrent processing of multiple functions.
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(func.func(ttl-form-producer-compute,ttl-insert-intermediate-dfbs))' | FileCheck %s --check-prefix=MULTIFUNC
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute,ttl-insert-intermediate-dfbs))' | FileCheck %s --check-prefix=DEFERRED
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute,ttl-insert-intermediate-dfbs,convert-ttl-to-compute,ttl-auto-sync))' | FileCheck %s --check-prefix=FULL
+// The unsplit run covers concurrent processing of multiple kernels.
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute,ttl-insert-intermediate-dfbs))' | FileCheck %s --check-prefix=MULTIFUNC
 
 // MULTIFUNC-LABEL: func.func @stored_add_then_reduce
 // MULTIFUNC: ttl.bind_cb{{.*}} {ttl.compiler_allocated}
@@ -345,5 +345,96 @@ func.func @multi_output_reuse_after_rebuild()
   %reduce_sum1 = ttl.reduce %result#0, %scaler 1 : i32 [1] : (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   %out2_reserve = ttl.cb_reserve %cb_out2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.store %reduce_sum1, %out2_reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  return
+}
+
+// -----
+
+// A foldable branch condition retains the same single source materialization
+// as the runtime-conditioned form. The dead branch has no availability
+// requirement and cannot cause an additional compiler DFB or a rejection.
+// DEFERRED-LABEL: func.func @folded_branch_local_reductions
+// DEFERRED: ttl.bind_cb{{.*}} {ttl.compiler_allocated}
+// DEFERRED-NOT: ttl.bind_cb{{.*}} {ttl.compiler_allocated}
+// DEFERRED: scf.if
+// DEFERRED: ttl.reduce
+// DEFERRED: else
+// DEFERRED: ttl.reduce
+// FULL-LABEL: func.func @folded_branch_local_reductions
+// FULL: ttl.bind_cb{{.*}} {ttl.compiler_allocated}
+// FULL-NOT: ttl.bind_cb{{.*}} {ttl.compiler_allocated}
+// FULL: scf.if
+// FULL: ttl.compute
+// FULL: else
+// FULL: ttl.compute
+func.func @folded_branch_local_reductions()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %never = arith.constant false
+  %lhs_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %rhs_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %scaler_dfb = ttl.bind_cb {cb_index = 2, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %sum_dfb = ttl.bind_cb {cb_index = 3, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %then_dfb = ttl.bind_cb {cb_index = 4, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %else_dfb = ttl.bind_cb {cb_index = 5, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %lhs_wait = ttl.cb_wait %lhs_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %lhs = ttl.attach_cb %lhs_wait, %lhs_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %rhs_wait = ttl.cb_wait %rhs_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %rhs = ttl.attach_cb %rhs_wait, %rhs_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %scaler_wait = ttl.cb_wait %scaler_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %scaler = ttl.attach_cb %scaler_wait, %scaler_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %sum = ttl.add %lhs, %rhs
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+        tensor<1x1x!ttcore.tile<32x32, bf16>>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %sum_output = ttl.cb_reserve %sum_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %sum, %sum_output
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+        tensor<1x1x!ttcore.tile<32x32, bf16>>
+  scf.if %never {
+    %then_result = ttl.reduce %sum, %scaler 0 : i32 [1]
+        : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+           tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %then_output = ttl.cb_reserve %then_dfb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %then_result, %then_output
+        : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+          tensor<1x1x!ttcore.tile<32x32, bf16>>
+  } else {
+    %else_result = ttl.reduce %sum, %scaler 1 : i32 [1]
+        : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+           tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %else_output = ttl.cb_reserve %else_dfb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %else_result, %else_output
+        : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+          tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
   return
 }

@@ -33,6 +33,8 @@ func.func @elementwise_into_reduce_disabled()
 
 // All inputs already CB-attached: no error even with compiler DFBs disabled.
 
+// CHECK-LABEL: func.func @already_cb_attached_disabled
+// CHECK-NOT: ttl.compiler_allocated
 func.func @already_cb_attached_disabled()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>

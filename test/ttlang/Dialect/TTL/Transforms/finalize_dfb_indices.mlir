@@ -241,7 +241,7 @@ func.func @mixed_types_no_cross_reuse()
 // -----
 
 // Unused compiler-allocated DFB declarations remain live for the entire
-// function. No reuse is possible.
+// kernel. No reuse is possible.
 
 // UNUSED: module attributes {ttl.dfb_allocations = {{.*}}}
 
@@ -326,9 +326,10 @@ func.func @single_dfb_no_reuse()
 
 // -----
 
-// Function passes may assign the same provisional compiler DFB index in
-// sibling functions. Finalization must assign disjoint physical indices after
-// the highest user-declared index, including user indices in other functions.
+// Passes operating on individual kernels may assign the same provisional
+// compiler DFB index in sibling kernels. Finalization must assign disjoint
+// physical indices after the highest user-declared index, including user
+// indices in other kernels.
 
 // GLOBAL: module attributes {ttl.dfb_allocations = {{.*}}}
 

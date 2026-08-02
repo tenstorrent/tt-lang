@@ -16,7 +16,7 @@
 
 namespace mlir::tt::ttl {
 
-struct DFBAcquireReleaseIndex;
+class DFBAcquireReleaseIndex;
 
 /// Accumulation scope family selected by the shared formation and lowering
 /// passes.
@@ -144,15 +144,16 @@ std::optional<int64_t> getStaticAccumulationTripCount(scf::ForOp loop);
 
 /// Return DST-resident accumulation properties for `match` when the source
 /// loop can be deleted without dropping side effects.
-FailureOr<TensorDstAccumulationInfo> analyzeTensorAccumulationForDst(
-    const TensorAccumulationMatch &match,
-    const DFBAcquireReleaseIndex *dfbIndex = nullptr);
+FailureOr<TensorDstAccumulationInfo>
+analyzeTensorAccumulationForDst(const TensorAccumulationMatch &match,
+                                const DFBAcquireReleaseIndex &dfbIndex);
 
 /// Return DST-resident accumulation properties using `initialValue` as the
 /// tensor copied into the accumulator before the source loop executes.
-FailureOr<TensorDstAccumulationInfo> analyzeTensorAccumulationForDst(
-    const TensorAccumulationMatch &match, Value initialValue,
-    const DFBAcquireReleaseIndex *dfbIndex = nullptr);
+FailureOr<TensorDstAccumulationInfo>
+analyzeTensorAccumulationForDst(const TensorAccumulationMatch &match,
+                                Value initialValue,
+                                const DFBAcquireReleaseIndex &dfbIndex);
 
 /// Return packer L1 accumulation properties for `match` when legal.
 FailureOr<TensorL1PackAccumulationInfo>

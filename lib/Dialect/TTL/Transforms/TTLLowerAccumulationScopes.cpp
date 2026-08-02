@@ -22,6 +22,9 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/PatternMatch.h"
 
+#include <memory>
+#include <utility>
+
 #define DEBUG_TYPE "ttl-lower-accumulation-scopes"
 
 namespace mlir::tt::ttl {
@@ -398,7 +401,7 @@ static LogicalResult lowerTensorAccumulationScope(
   if (selectedStrategy == AccumulationStrategy::Dst) {
     FailureOr<TensorDstAccumulationInfo> dstInfo =
         analyzeTensorAccumulationForDst(recurrence, match->initialValue,
-                                        &dfbIndex);
+                                        dfbIndex);
     if (failed(dstInfo)) {
       return scope.emitOpError(
           "cannot lower tensor accumulation scope to DST after strategy "
@@ -472,7 +475,18 @@ struct TTLLowerAccumulationScopesPass
     SmallVector<AccumulationScopeOp> scopes;
     func.walk([&](AccumulationScopeOp scope) { scopes.push_back(scope); });
 
-    DFBAcquireReleaseIndex dfbIndex(func);
+    PlanningResult<std::unique_ptr<DFBAcquireReleaseIndex>> indexResult =
+        DFBAcquireReleaseIndex::create(func);
+    if (indexResult.isInvalidIR()) {
+      const PlanningDiagnostic &diagnostic = indexResult.getInvalidIR();
+      diagnostic.operation->emitOpError(diagnostic.message);
+      signalPassFailure();
+      return;
+    }
+    assert(indexResult.isPlanned() &&
+           "DFB lifecycle indexing has no recoverable rejection");
+    std::unique_ptr<DFBAcquireReleaseIndex> dfbIndex =
+        std::move(indexResult).takePlan();
     IRRewriter rewriter(&getContext());
     int64_t nextScopeId = getNextL1AccScopeId(func);
     for (AccumulationScopeOp scope : scopes) {
@@ -480,7 +494,7 @@ struct TTLLowerAccumulationScopesPass
       LogicalResult result =
           *scopeKind == AccumulationScopeKind::Tensor
               ? lowerTensorAccumulationScope(scope, *selectedStrategy, scopeId,
-                                             dfbIndex, rewriter)
+                                             *dfbIndex, rewriter)
               : lowerDFBAccumulationScope(scope, scopeId, rewriter);
       if (failed(result)) {
         signalPassFailure();

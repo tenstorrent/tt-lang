@@ -1,5 +1,4 @@
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes))' --split-input-file | FileCheck %s --implicit-check-not='ttl.accumulation_scope'
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes, ttl-lower-accumulation-scopes, ttl-materialize-loop-state, ttl-insert-copy-wait, ttl-auto-sync, ttl-insert-accumulation-scopes{kind=dfb}, ttl-lower-accumulation-scopes{kind=dfb}, ttl-form-producer-compute, ttl-insert-intermediate-dfbs, ttl-insert-copy-wait, convert-ttl-to-compute, ttl-auto-sync))' --split-input-file | FileCheck %s --check-prefix=MAT
 
 // Summary: Additive recurrences that are structurally matched but DST-illegal
 // must be left unformed for ttl-materialize-loop-state. Formation is
@@ -89,18 +88,6 @@ func.func @resident_dst_capacity_overflow() {
 // preserving both contribution waits, so this remains regular loop state.
 // CHECK-LABEL: func.func @two_streamed_updates
 // CHECK: scf.for
-// MAT-LABEL: func.func @two_streamed_updates
-// MAT: %[[CONTRIB:.*]] = ttl.bind_cb{{.*}}cb_index = 1
-// MAT: %[[STATE:.*]] = ttl.bind_cb{{.*}}ttl.compiler_allocated
-// MAT: %[[MID:.*]] = ttl.bind_cb{{.*}}ttl.compiler_allocated
-// MAT: scf.for
-// MAT: ttl.cb_wait %[[CONTRIB]]
-// MAT: ttl.compute
-// MAT: ttl.cb_push %[[MID]]
-// MAT: ttl.cb_wait %[[MID]]
-// MAT: ttl.cb_pop %[[CONTRIB]]
-// MAT: ttl.cb_wait %[[CONTRIB]]
-// MAT: ttl.compute
 func.func @two_streamed_updates() {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index

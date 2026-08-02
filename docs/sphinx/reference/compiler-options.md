@@ -160,7 +160,7 @@ The pipeline runs these passes in order:
 - `ttkernel-insert-l1-accumulation` - insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops
 - `ttkernel-combine-pack-tiles` - combine consecutive `pack_tile` into `pack_tile_block` *(only if `combine-pack-tiles=true`)*
 - Canonicalization and CSE cleanup
-- `ttkernel-specialize-cores`, then `canonicalize`, `cse` — per-core clone and const-fold of coordinate branches; tags clones with `ttl.core_coord` *(only if `specialize-cores=true`)*
+- `ttkernel-specialize-cores`, then `canonicalize`, `cse` -- per-core clone and const-fold of coordinate branches; tags clones with `ttl.core_coord` *(only if `specialize-cores=true`)*
 - *(if `lower-to-emitc=true`)* `lower-affine`, `convert-ttkernel-to-emitc`, `emitc-form-expressions`
 
 ### Individual Pass Options

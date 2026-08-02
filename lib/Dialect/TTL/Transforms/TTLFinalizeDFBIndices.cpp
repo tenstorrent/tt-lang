@@ -75,6 +75,106 @@ applyPhysicalAllocationPlan(ModuleOp moduleOp, OpBuilder &builder,
                     ArrayAttr::get(context, descriptorAttributes));
 }
 
+/// Builds all physical assignments and metadata before applying either.
+///
+/// User-declared indices are assumed to be final. Compiler indices are placed
+/// after the greatest user index, so allocation cannot alias user storage. The
+/// type partition used by `planPhysicalDFBIndices` guarantees that shared
+/// compiler indices have one exact DFB type; an assertion protects that
+/// internal invariant while constructing the runtime metadata table.
+static FailureOr<CompilerDFBAllocationPlan> buildCompilerDFBAllocationPlan(
+    ModuleOp moduleOp,
+    const llvm::MapVector<func::FuncOp, SmallVector<BindCBOp>> &kernelToDFBs) {
+  CompilerDFBAllocationPlan plan;
+  int32_t firstCompilerDFBIndex = getFirstCompilerDFBIndex(moduleOp);
+  int32_t nextCompilerDFBIndex = firstCompilerDFBIndex;
+  for (const auto &[kernel, dfbOps] : kernelToDFBs) {
+    int32_t physicalSlotCount = planPhysicalDFBIndices(
+        kernel, dfbOps, nextCompilerDFBIndex, plan.assignments);
+    nextCompilerDFBIndex += physicalSlotCount;
+    plan.compilerSlotCount += physicalSlotCount;
+  }
+  plan.physicalDFBCount = nextCompilerDFBIndex;
+
+  if (plan.physicalDFBCount > kMaxCircularBuffers) {
+    moduleOp.emitError()
+        << "need " << plan.physicalDFBCount
+        << " DFB indices but hardware supports at most " << kMaxCircularBuffers
+        << " (" << plan.compilerSlotCount
+        << " compiler-allocated after reuse); reduce the number of "
+           "user-declared dataflow buffers or split the computation into "
+           "multiple kernels";
+    return failure();
+  }
+
+  DenseMap<int32_t, BindCBOp> uniqueByIndex;
+  for (const DFBIndexAssignment &assignment : plan.assignments) {
+    BindCBOp declaration = assignment.declaration;
+    auto [existingAssignment, inserted] =
+        uniqueByIndex.try_emplace(assignment.physicalIndex, declaration);
+    if (!inserted) {
+      assert(existingAssignment->second.getResult().getType() ==
+                 declaration.getResult().getType() &&
+             "shared compiler DFB index must have one exact type");
+    }
+  }
+
+  SmallVector<std::pair<int32_t, BindCBOp>> sortedMetadata(
+      uniqueByIndex.begin(), uniqueByIndex.end());
+  llvm::sort(sortedMetadata, [](const auto &lhs, const auto &rhs) {
+    return lhs.first < rhs.first;
+  });
+  for (auto [physicalIndex, declaration] : sortedMetadata) {
+    plan.metadata.push_back({physicalIndex, declaration});
+  }
+  return plan;
+}
+
+/// Applies a complete plan after every operation that can fail has succeeded.
+static void
+applyCompilerDFBAllocationPlan(ModuleOp moduleOp, OpBuilder &builder,
+                               const CompilerDFBAllocationPlan &plan) {
+  MLIRContext *context = moduleOp.getContext();
+  for (const DFBIndexAssignment &assignment : plan.assignments) {
+    BindCBOp declaration = assignment.declaration;
+    declaration.setCbIndexAttr(
+        IntegerAttr::get(IndexType::get(context), assignment.physicalIndex));
+  }
+
+  if (plan.physicalDFBCount <= 0) {
+    return;
+  }
+  moduleOp->walk([&](func::FuncOp kernel) {
+    if (kernel->hasAttr(kBaseCTAIndexAttrName)) {
+      kernel->setAttr(kBaseCTAIndexAttrName,
+                      builder.getI32IntegerAttr(plan.physicalDFBCount));
+    }
+  });
+
+  if (plan.metadata.empty()) {
+    return;
+  }
+  SmallVector<Attribute> metadataAttributes;
+  for (const CompilerDFBMetadataEntry &metadata : plan.metadata) {
+    BindCBOp declaration = metadata.declaration;
+    auto dfbType = cast<CircularBufferType>(declaration.getResult().getType());
+    SmallVector<NamedAttribute> entryAttributes;
+    entryAttributes.push_back(builder.getNamedAttr(
+        "dfb_index", builder.getI32IntegerAttr(metadata.physicalIndex)));
+    entryAttributes.push_back(builder.getNamedAttr(
+        "num_tiles", builder.getI32IntegerAttr(
+                         static_cast<int32_t>(dfbType.getElementsPerBlock()))));
+    entryAttributes.push_back(builder.getNamedAttr(
+        "element_type", TypeAttr::get(dfbType.getElementType())));
+    entryAttributes.push_back(builder.getNamedAttr(
+        "block_count", builder.getI32IntegerAttr(
+                           static_cast<int32_t>(dfbType.getBlockCount()))));
+    metadataAttributes.push_back(DictionaryAttr::get(context, entryAttributes));
+  }
+  moduleOp->setAttr(kCompilerAllocatedDFBsAttrName,
+                    ArrayAttr::get(context, metadataAttributes));
+}
+
 struct TTLFinalizeDFBIndicesPass
     : public impl::TTLFinalizeDFBIndicesBase<TTLFinalizeDFBIndicesPass> {
   using Base::Base;

@@ -68,7 +68,11 @@ struct TTLInsertCBSyncPass
   void runOnOperation() override {
     func::FuncOp func = getOperation();
 
-    DFBAcquireReleaseIndex dfbIndex(func);
+    SmallVector<Operation *> reserves;
+    SmallVector<Operation *> waits;
+    SmallVector<Operation *> pushes;
+    SmallVector<Operation *> pops;
+    collectDFBAcquireReleaseOps(func, reserves, waits, pushes, pops);
 
     OpBuilder builder(func.getContext());
 
@@ -77,19 +81,17 @@ struct TTLInsertCBSyncPass
     // must check the set before touching any op wrapper method.
     DenseSet<Operation *> erased;
 
-    insertMissingReleases(
-        dfbIndex.getAcquires(DFBAcquireReleaseKind::Producer),
-        dfbIndex.getReleases(DFBAcquireReleaseKind::Producer), erased, builder,
-        [](OpBuilder &b, Location loc, Value cb) {
-          CBPushOp::create(b, loc, cb, /*num_tiles=*/IntegerAttr{});
-        });
+    insertMissingReleases(reserves, pushes, erased, builder,
+                          [](OpBuilder &builder, Location location, Value dfb) {
+                            CBPushOp::create(builder, location, dfb,
+                                             /*num_tiles=*/IntegerAttr{});
+                          });
 
-    insertMissingReleases(
-        dfbIndex.getAcquires(DFBAcquireReleaseKind::Consumer),
-        dfbIndex.getReleases(DFBAcquireReleaseKind::Consumer), erased, builder,
-        [](OpBuilder &b, Location loc, Value cb) {
-          CBPopOp::create(b, loc, cb, /*num_tiles=*/IntegerAttr{});
-        });
+    insertMissingReleases(waits, pops, erased, builder,
+                          [](OpBuilder &builder, Location location, Value dfb) {
+                            CBPopOp::create(builder, location, dfb,
+                                            /*num_tiles=*/IntegerAttr{});
+                          });
   }
 };
 

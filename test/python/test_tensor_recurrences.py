@@ -28,7 +28,7 @@ TILE = 32
 
 N_ITERS = 3
 CONTRIBUTION_BLOCK_COUNT = 2
-LONG_STREAMING_N_ITERS = 40
+STREAMING_UPDATE_COUNT = 40
 
 
 def _make_loop_carried_add_kernel():
@@ -126,7 +126,7 @@ def _make_resident_contribution_kernel():
         def compute():
             with delta_dfb.wait() as delta_blk:
                 with initial_dfb.wait() as acc:
-                    for _ in range(LONG_STREAMING_N_ITERS):
+                    for _ in range(STREAMING_UPDATE_COUNT):
                         acc = acc + delta_blk
 
                     with out_dfb.reserve() as out_blk:
@@ -160,7 +160,7 @@ def _make_resident_contribution_explicit_pop_kernel():
         def compute():
             delta_blk = delta_dfb.wait()
             with initial_dfb.wait() as acc:
-                for _ in range(LONG_STREAMING_N_ITERS):
+                for _ in range(STREAMING_UPDATE_COUNT):
                     acc = acc + delta_blk
 
                 with out_dfb.reserve() as out_blk:
@@ -196,7 +196,7 @@ def _make_resident_contribution_early_pop_kernel():
             delta_blk = delta_dfb.wait()
             delta_blk.pop()
             with initial_dfb.wait() as acc:
-                for _ in range(LONG_STREAMING_N_ITERS):
+                for _ in range(STREAMING_UPDATE_COUNT):
                     acc = acc + delta_blk
 
                 with out_dfb.reserve() as out_blk:
@@ -223,37 +223,35 @@ def _make_two_update_streamed_kernel():
         initial_dfb = ttl.make_dataflow_buffer_like(
             initial, shape=(1, 1), block_count=2
         )
-        delta_dfb = ttl.make_dataflow_buffer_like(
-            delta, shape=(1, 1), block_count=CONTRIBUTION_BLOCK_COUNT
-        )
+        delta_dfb = ttl.make_dataflow_buffer_like(delta, shape=(1, 1), block_count=2)
         out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
         @ttl.compute()
         def compute():
-            with initial_dfb.wait() as acc:
-                for _ in range(LONG_STREAMING_N_ITERS // 2):
-                    with delta_dfb.wait() as pos:
-                        acc = acc + pos
-                    with delta_dfb.wait() as neg:
-                        acc = acc + neg
+            with initial_dfb.wait() as accumulator:
+                for _ in range(STREAMING_UPDATE_COUNT // 2):
+                    with delta_dfb.wait() as positive_delta:
+                        accumulator = accumulator + positive_delta
+                    with delta_dfb.wait() as negative_delta:
+                        accumulator = accumulator + negative_delta
 
-                with out_dfb.reserve() as out_blk:
-                    out_blk.store(acc)
+                with out_dfb.reserve() as out_block:
+                    out_block.store(accumulator)
 
         @ttl.datamovement()
         def reader():
-            with initial_dfb.reserve() as initial_blk:
-                ttl.copy(initial[0:1, 0:1], initial_blk).wait()
-            for _ in range(LONG_STREAMING_N_ITERS // 2):
-                with delta_dfb.reserve() as pos_blk:
-                    ttl.copy(delta[0:1, 0:1], pos_blk).wait()
-                with delta_dfb.reserve() as neg_blk:
-                    ttl.copy(delta[1:2, 0:1], neg_blk).wait()
+            with initial_dfb.reserve() as initial_block:
+                ttl.copy(initial[0:1, 0:1], initial_block).wait()
+            for _ in range(STREAMING_UPDATE_COUNT // 2):
+                with delta_dfb.reserve() as positive_delta_block:
+                    ttl.copy(delta[0:1, 0:1], positive_delta_block).wait()
+                with delta_dfb.reserve() as negative_delta_block:
+                    ttl.copy(delta[1:2, 0:1], negative_delta_block).wait()
 
         @ttl.datamovement()
         def writer():
-            with out_dfb.wait() as out_blk:
-                ttl.copy(out_blk, out[0:1, 0:1]).wait()
+            with out_dfb.wait() as out_block:
+                ttl.copy(out_block, out[0:1, 0:1]).wait()
 
     return kernel
 
@@ -428,7 +426,7 @@ def test_self_rebound_add_result_is_carried_out_of_loop(device, dtype):
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
 def test_direct_loop_carried_add(device, dtype, tmp_path, monkeypatch, capsys):
     """Direct additive recurrence, lowered to DST-resident accumulation."""
-    iteration_count = LONG_STREAMING_N_ITERS
+    iteration_count = STREAMING_UPDATE_COUNT
     initial = torch.full((TILE, TILE), 4.0, dtype=dtype)
     delta = torch.full((TILE, TILE), 2.0, dtype=dtype)
     expected = initial.float() + iteration_count * delta.float()
@@ -455,7 +453,7 @@ def test_resident_contribution_is_dst_resident(
 ):
     initial = torch.full((TILE, TILE), 4.0, dtype=dtype)
     delta = torch.full((TILE, TILE), 0.5, dtype=dtype)
-    expected = initial.float() + LONG_STREAMING_N_ITERS * delta.float()
+    expected = initial.float() + STREAMING_UPDATE_COUNT * delta.float()
     output, final_ir = _run_io_kernel_with_ir_capture(
         _make_resident_contribution_kernel(),
         in_tensors=[initial, delta],
@@ -477,7 +475,7 @@ def test_resident_contribution_explicit_pop_is_not_duplicated(
 ):
     initial = torch.full((TILE, TILE), 4.0, dtype=dtype)
     delta = torch.full((TILE, TILE), 0.5, dtype=dtype)
-    expected = initial.float() + LONG_STREAMING_N_ITERS * delta.float()
+    expected = initial.float() + STREAMING_UPDATE_COUNT * delta.float()
     output, final_ir = _run_io_kernel_with_ir_capture(
         _make_resident_contribution_explicit_pop_kernel(),
         in_tensors=[initial, delta],
@@ -532,6 +530,25 @@ def test_two_streamed_updates_per_iteration_are_preserved(device, dtype):
         in_tensors=[initial, delta],
         out_zeros=[torch.zeros((TILE, TILE), dtype=dtype)],
         expected_list=[expected],
+        dtype=dtype,
+        device=device,
+    )
+
+
+@pytest.mark.requires_device
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+def test_two_streamed_updates_per_iteration_are_preserved(device, dtype):
+    """Both streamed inputs must be consumed before their DFB slots release."""
+    initial = torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE) / 64
+    initial = initial.to(dtype)
+    delta = torch.empty((2 * TILE, TILE), dtype=dtype)
+    delta[0:TILE, :] = 0.25
+    delta[TILE : 2 * TILE, :] = -0.25
+    _run_io_kernel(
+        _make_two_update_streamed_kernel(),
+        in_tensors=[initial, delta],
+        out_zeros=[torch.zeros((TILE, TILE), dtype=dtype)],
+        expected_list=[initial.float()],
         dtype=dtype,
         device=device,
     )
@@ -744,7 +761,7 @@ def _make_multi_tile_block_kernel(iteration_count=N_ITERS):
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
 def test_multi_tile_block_recurrence(device, dtype, tmp_path, monkeypatch, capsys):
     """Verifies recurrence carries a multi-tile block (shape=(2, 2)), not just a single tile."""
-    iteration_count = LONG_STREAMING_N_ITERS
+    iteration_count = STREAMING_UPDATE_COUNT
     kernel = _make_multi_tile_block_kernel(iteration_count)
 
     a_seed = torch.full((MULTI_TILE_ROWS, MULTI_TILE_COLS), 1.0, dtype=dtype)
@@ -816,7 +833,7 @@ def test_distinct_per_iteration_contributions(
     Reusing the same streamed contribution for every iteration changes the
     result; all-equal contribution tests cannot catch that error.
     """
-    iteration_count = LONG_STREAMING_N_ITERS
+    iteration_count = STREAMING_UPDATE_COUNT
     initial = torch.full((TILE, TILE), 5.0, dtype=dtype)
     deltas = torch.zeros((iteration_count * TILE, TILE), dtype=dtype)
     for i in range(iteration_count):
@@ -906,7 +923,7 @@ def test_multi_tile_distinct_per_iteration_contributions(
     per iteration. This catches both wrong streamed contribution advancement
     and wrong output-tile slot selection."""
     # The kernel reader hard-codes the (2, 2) tile-row stride as literals.
-    iteration_count = LONG_STREAMING_N_ITERS
+    iteration_count = STREAMING_UPDATE_COUNT
     assert MULTI_TILE_SHAPE == (2, 2)
     rows, cols = MULTI_TILE_SHAPE
     a_vals = [[2 * r + c for c in range(cols)] for r in range(rows)]

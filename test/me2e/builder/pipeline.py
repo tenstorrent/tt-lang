@@ -103,6 +103,7 @@ def compile_ttl_to_ttkernel(
         f"canonicalize"
         f")"
     )
+    pipeline_str = f"builtin.module(ttl-to-ttkernel-pipeline{{{pipeline_options}}})"
 
     pm = PassManager.parse(pipeline_str, context=module.context)
     pm.enable_verifier(True)

@@ -147,13 +147,15 @@ struct ResidentContributionReleaseInfo {
 static FailureOr<ResidentContributionReleaseInfo>
 analyzeResidentContributionRelease(CBWaitOp contributionWait,
                                    const DFBAcquireReleaseIndex &dfbIndex) {
+  SmallVector<Operation *> consumerAcquisitions =
+      dfbIndex.getAcquisitions(DFBAcquireReleaseKind::Consumer);
+  SmallVector<Operation *> consumerReleases =
+      dfbIndex.getReleases(DFBAcquireReleaseKind::Consumer);
   DFBAcquireInterval interval = makeDFBAcquireInterval(
-      contributionWait.getOperation(),
-      dfbIndex.getAcquires(DFBAcquireReleaseKind::Consumer));
+      contributionWait.getOperation(), consumerAcquisitions);
   Operation *lastOwnedUse = findLastDFBAcquireOwnedUse(interval);
-  DFBReleaseSearch releaseSearch = findOwnedDFBReleases(
-      interval, lastOwnedUse,
-      dfbIndex.getReleases(DFBAcquireReleaseKind::Consumer));
+  DFBReleaseSearch releaseSearch =
+      findOwnedDFBReleases(interval, lastOwnedUse, consumerReleases);
 
   if (!releaseSearch.nestedReleases.empty()) {
     return failure();
@@ -372,14 +374,14 @@ FailureOr<TensorAccumulationMatch> matchAdditiveTensorAccumulation(
 
 FailureOr<TensorDstAccumulationInfo>
 analyzeTensorAccumulationForDst(const TensorAccumulationMatch &match,
-                                const DFBAcquireReleaseIndex *dfbIndex) {
+                                const DFBAcquireReleaseIndex &dfbIndex) {
   return analyzeTensorAccumulationForDst(match, match.initialValue, dfbIndex);
 }
 
 FailureOr<TensorDstAccumulationInfo>
 analyzeTensorAccumulationForDst(const TensorAccumulationMatch &match,
                                 Value initialValue,
-                                const DFBAcquireReleaseIndex *dfbIndex) {
+                                const DFBAcquireReleaseIndex &dfbIndex) {
   scf::ForOp loop = match.loop;
   if (initialValue.getType() != match.tensorType) {
     return failure();
@@ -420,18 +422,8 @@ analyzeTensorAccumulationForDst(const TensorAccumulationMatch &match,
       return failure();
     }
 
-    std::optional<DFBAcquireReleaseIndex> localIndex;
-    if (!dfbIndex) {
-      auto func = contributionWait->getParentOfType<func::FuncOp>();
-      if (!func) {
-        return failure();
-      }
-      localIndex.emplace(func);
-      dfbIndex = &*localIndex;
-    }
-
     FailureOr<ResidentContributionReleaseInfo> releaseInfo =
-        analyzeResidentContributionRelease(contributionWait, *dfbIndex);
+        analyzeResidentContributionRelease(contributionWait, dfbIndex);
     if (failed(releaseInfo)) {
       return failure();
     }

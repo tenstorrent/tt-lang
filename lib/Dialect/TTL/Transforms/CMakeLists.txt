@@ -1,6 +1,8 @@
 add_mlir_dialect_library(TTLangTTLTransforms
   AccumulationAnalysis.cpp
   AccumulationUtils.cpp
+  ComputeOpCreationPlanning.cpp
+  IntermediateDFBPlanning.cpp
   DFBConcurrentKernelLivenessAnalysis.cpp
   DFBLogicalIdentityAnalysis.cpp
   DFBPhysicalAllocationPlan.cpp
@@ -9,6 +11,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   ConvertTTLToCompute.cpp
   ConvertTTLToTTKernel.cpp
   DFBAcquireReleaseAnalysis.cpp
+  DFBValueLifetimeAnalysis.cpp
   DFBMaterialization.cpp
   LowerDPrintToEmitC.cpp
   LaunchNodeDomainAnalysis.cpp
@@ -30,6 +33,8 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLInsertIntermediateDFBs.cpp
   TTLLowerAccumulationScopes.cpp
   TTLMaterializeLoopState.cpp
+  TTLPrintDFBValueLifetimes.cpp
+  TTLPrintComputeOpCreationPlans.cpp
   TTLScheduleOperations.cpp
   TTLSetComputeKernelConfig.cpp
   TransferProvenance.cpp

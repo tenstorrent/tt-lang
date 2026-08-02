@@ -25,6 +25,8 @@
 #include "llvm/ADT/SmallVector.h"
 
 #include <iterator>
+#include <memory>
+#include <utility>
 
 #define DEBUG_TYPE "ttl-form-accumulation-scopes"
 
@@ -81,7 +83,7 @@ getTensorAccumulationScopeMatch(scf::ForOp loop,
   FailureOr<TensorAccumulationMatch> match =
       matchAdditiveTensorAccumulation(loop, /*resultIndex=*/0);
   if (failed(match) || !isContiguousSingleTensorAccumulator(*match) ||
-      failed(analyzeTensorAccumulationForDst(*match, &dfbIndex))) {
+      failed(analyzeTensorAccumulationForDst(*match, dfbIndex))) {
     return failure();
   }
 
@@ -165,7 +167,18 @@ struct TTLFormAccumulationScopesPass
     getOperation().walk<WalkOrder::PostOrder>(
         [&](scf::ForOp loop) { loops.push_back(loop); });
 
-    DFBAcquireReleaseIndex dfbIndex(getOperation());
+    PlanningResult<std::unique_ptr<DFBAcquireReleaseIndex>> indexResult =
+        DFBAcquireReleaseIndex::create(getOperation());
+    if (indexResult.isInvalidIR()) {
+      const PlanningDiagnostic &diagnostic = indexResult.getInvalidIR();
+      diagnostic.operation->emitOpError(diagnostic.message);
+      signalPassFailure();
+      return;
+    }
+    assert(indexResult.isPlanned() &&
+           "DFB lifecycle indexing has no recoverable rejection");
+    std::unique_ptr<DFBAcquireReleaseIndex> dfbIndex =
+        std::move(indexResult).takePlan();
     SmallVector<TensorAccumulationMatch> matches;
     matches.reserve(loops.size());
     for (scf::ForOp loop : loops) {
@@ -180,7 +193,7 @@ struct TTLFormAccumulationScopesPass
       }
 
       FailureOr<TensorAccumulationMatch> match =
-          getTensorAccumulationScopeMatch(loop, dfbIndex);
+          getTensorAccumulationScopeMatch(loop, *dfbIndex);
       if (succeeded(match)) {
         matches.push_back(*match);
       }
