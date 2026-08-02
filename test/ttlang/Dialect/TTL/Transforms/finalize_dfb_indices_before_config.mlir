@@ -4,7 +4,7 @@
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// A user DFB in another function sets the end of the user index range.
+// A user DFB in another kernel sets the end of the user index range.
 func.func @global_user_index()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.base_cta_index = 5 : i32,
                 ttl.crta_indices = []} {
@@ -15,7 +15,7 @@ func.func @global_user_index()
   return
 }
 
-// The compiler DFB enters finalization with function-local provisional index
+// The compiler DFB enters finalization with kernel-local provisional index
 // 1. Finalization moves it to physical index 5 before compute configuration
 // records the SFPU f32 input index.
 

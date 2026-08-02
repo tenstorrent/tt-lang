@@ -140,7 +140,8 @@ def bcast_multitile_kernel(
 
 # =============================================================================
 # FPU path checks (default: --ttl-maximize-dst --ttl-fpu-binary-ops)
-# Subblocked: 4 tiles per subblock, 3 nested loops, grouped ops
+# User scopes preserve each of the four unrolled tile instances. Scheduling
+# remains enabled within each scope but cannot move operations between scopes.
 # =============================================================================
 
 # CHECK-FPU: === demo_compute kernel written to {{.*}} ===
@@ -155,51 +156,33 @@ def bcast_multitile_kernel(
 # CHECK-FPU-NEXT:   DeviceZoneScopedN("ttl_compute");
 # CHECK-FPU-NEXT:   {
 # CHECK-FPU-NEXT:   DeviceZoneScopedN("ttl_broadcast");
-# CHECK-FPU-NEXT:   {
-# CHECK-FPU-NEXT:   DeviceZoneScopedN("ttl_math");
-
-# Grouped COL broadcasts (4 tiles)
 # CHECK-FPU-NEXT:   unary_bcast_init<BroadcastType::COL>(
 # CHECK-FPU-NEXT:   unary_bcast<BroadcastType::COL>(
-# CHECK-FPU-NEXT:   unary_bcast<BroadcastType::COL>(
-# CHECK-FPU-NEXT:   unary_bcast<BroadcastType::COL>(
-# CHECK-FPU-NEXT:   unary_bcast<BroadcastType::COL>(
-
-# Grouped ROW broadcasts (4 tiles)
 # CHECK-FPU-NEXT:   unary_bcast_init<BroadcastType::ROW>(
 # CHECK-FPU-NEXT:   unary_bcast<BroadcastType::ROW>(
-# CHECK-FPU-NEXT:   unary_bcast<BroadcastType::ROW>(
-# CHECK-FPU-NEXT:   unary_bcast<BroadcastType::ROW>(
-# CHECK-FPU-NEXT:   unary_bcast<BroadcastType::ROW>(
-
-# Grouped mul (4 tiles)
 # CHECK-FPU-NEXT:   mul_binary_tile_init();
 # CHECK-FPU-NEXT:   mul_binary_tile(
-# CHECK-FPU-NEXT:   mul_binary_tile(
-# CHECK-FPU-NEXT:   mul_binary_tile(
-# CHECK-FPU-NEXT:   mul_binary_tile(
-
-# Grouped SCALAR broadcasts (4 tiles)
 # CHECK-FPU-NEXT:   unary_bcast_init<BroadcastType::SCALAR>(
 # CHECK-FPU-NEXT:   unary_bcast<BroadcastType::SCALAR>(
-# CHECK-FPU-NEXT:   unary_bcast<BroadcastType::SCALAR>(
-# CHECK-FPU-NEXT:   unary_bcast<BroadcastType::SCALAR>(
-# CHECK-FPU-NEXT:   unary_bcast<BroadcastType::SCALAR>(
-
-# Grouped add (4 tiles, SFPU: inputs from DST)
+# CHECK-FPU-NEXT:   {
+# CHECK-FPU-NEXT:   DeviceZoneScopedN("ttl_math");
 # CHECK-FPU-NEXT:   add_binary_tile_init();
 # CHECK-FPU-NEXT:   add_binary_tile(
-# CHECK-FPU-NEXT:   add_binary_tile(
-# CHECK-FPU-NEXT:   add_binary_tile(
-# CHECK-FPU-NEXT:   add_binary_tile(
-
-# Close signpost scopes
 # CHECK-FPU-NEXT:   }
 # CHECK-FPU-NEXT:   }
 # CHECK-FPU-NEXT:   }
 
-# Sync and pack (4 tiles, non-constant CB indices prevent combining)
-# CHECK-FPU-NEXT:   tile_regs_commit();
+# The remaining three scoped tile instances precede the shared sync and pack.
+# CHECK-FPU:        DeviceZoneScopedN("ttl_compute");
+# CHECK-FPU:        DeviceZoneScopedN("ttl_broadcast");
+# CHECK-FPU:        DeviceZoneScopedN("ttl_math");
+# CHECK-FPU:        DeviceZoneScopedN("ttl_compute");
+# CHECK-FPU:        DeviceZoneScopedN("ttl_broadcast");
+# CHECK-FPU:        DeviceZoneScopedN("ttl_math");
+# CHECK-FPU:        DeviceZoneScopedN("ttl_compute");
+# CHECK-FPU:        DeviceZoneScopedN("ttl_broadcast");
+# CHECK-FPU:        DeviceZoneScopedN("ttl_math");
+# CHECK-FPU:        tile_regs_commit();
 # CHECK-FPU-NEXT:   tile_regs_wait();
 # CHECK-FPU:        pack_tile<true>(
 # CHECK-FPU:        pack_tile<true>(

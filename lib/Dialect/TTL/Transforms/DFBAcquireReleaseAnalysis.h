@@ -15,25 +15,33 @@
 //   ttl.cb_reserve -> ttl.cb_push
 //   ttl.cb_wait    -> ttl.cb_pop
 //
-// The analysis is intentionally local to a function and to one acquire class.
+// The analysis is intentionally local to a kernel and to one acquire class.
 // Producer intervals and consumer intervals are independent because
 // reserve/push and wait/pop advance different DFB pointers. A release is owned
 // by the acquire interval whose acquired DFB slot is live until that release.
 // Consumers use the result tensor as evidence of slot ownership, while direct
 // DFB operations use the DFB value itself.
 //
-// The same ownership rules are used by `ttl-insert-cb-sync` and by PipeNet
-// lowering proofs. Keeping the rules here avoids disagreement between the pass
-// that creates implicit releases and later analyses that attach protocol
-// meaning to those releases.
+// The interval queries let `ttl-insert-cb-sync` place missing releases after
+// their owned uses. The immutable index additionally matches existing
+// releases to acquisitions by FIFO tile count for DFB value lifetime analysis.
+// Keeping both models here gives them one definition of acquire/release kinds,
+// DFB identity, and transfer counts.
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"
+#include "ttlang/Analysis/PlanningResult.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
+
+#include <cstdint>
+#include <memory>
+#include <optional>
+#include <string>
 
 namespace mlir::tt::ttl {
 
@@ -71,6 +79,54 @@ struct DFBReleaseSearch {
   bool hasSameLevelRelease() const { return !sameLevelReleases.empty(); }
 };
 
+/// Static transaction facts for one DFB acquisition.
+///
+/// `numTiles` is taken from the operation's `num_tiles` attribute or from the
+/// DFB's elements per block when the attribute is absent. Releases may remain
+/// absent before automatic synchronization inserts them.
+struct DFBTransactionRecord {
+  Operation *acquire = nullptr;
+  Value dfb;
+  DFBAcquireReleaseKind kind = DFBAcquireReleaseKind::Producer;
+  int64_t numTiles = 0;
+};
+
+/// Precision of the relation between one release and its acquisition.
+enum class DFBReleaseOwnershipKind {
+  /// Exactly one acquisition owns the release.
+  Exact,
+
+  /// The release consumes tiles from several same-block FIFO acquisitions.
+  Multiple,
+
+  /// Control flow prevents the entry-block FIFO model from selecting one or
+  /// more acquisitions that own the release.
+  Unresolved,
+};
+
+/// Static ownership facts for one DFB release.
+struct DFBReleaseOwnership {
+  Operation *release = nullptr;
+  Value dfb;
+  DFBAcquireReleaseKind kind = DFBAcquireReleaseKind::Producer;
+  int64_t numTiles = 0;
+  DFBReleaseOwnershipKind ownership = DFBReleaseOwnershipKind::Unresolved;
+
+  /// Exact FIFO owners, or every possible owner for an unresolved release.
+  SmallVector<Operation *> candidateOwners;
+
+  /// Returns the exact owner after asserting that ownership is exact.
+  Operation *getExactOwner() const {
+    assert(ownership == DFBReleaseOwnershipKind::Exact &&
+           candidateOwners.size() == 1 &&
+           "exact release ownership requires one candidate");
+    return candidateOwners.front();
+  }
+};
+
+/// Definite malformed-lifecycle result found while indexing one kernel.
+using DFBLifecycleDiagnostic = PlanningDiagnostic;
+
 /// Returns true for DFB acquire ops accepted by this analysis.
 bool isDFBAcquireOp(Operation *op);
 
@@ -94,7 +150,7 @@ void collectDFBAcquireReleaseOps(func::FuncOp func,
 ///
 /// `acquires` must contain acquire operations of the same
 /// `DFBAcquireReleaseKind`, for example all reserves or all waits in the
-/// enclosing function.
+/// enclosing kernel.
 DFBAcquireInterval makeDFBAcquireInterval(Operation *acquire,
                                           ArrayRef<Operation *> acquires);
 
@@ -115,6 +171,48 @@ DFBReleaseSearch
 findOwnedDFBReleases(DFBAcquireInterval interval, Operation *lastOwnedUse,
                      ArrayRef<Operation *> releases,
                      const llvm::DenseSet<Operation *> *erased = nullptr);
+
+/// Immutable release-to-acquisition relations for one kernel.
+///
+/// Tile counts in the kernel entry block prove one or more FIFO owners. Other
+/// blocks may receive outstanding acquisitions and therefore retain unresolved
+/// release ownership. An unresolved record contains every same-kind
+/// acquisition on the DFB so clients cannot apply a less conservative rule.
+class DFBAcquireReleaseIndex {
+public:
+  /// Builds the index without modifying IR.
+  ///
+  /// Missing releases are accepted because automatic synchronization runs
+  /// later in the pipeline. A release with no same-kind acquisition on its DFB
+  /// or an entry-block release that exceeds preceding acquisitions cannot be
+  /// repaired by release insertion and returns an invalid-IR result anchored
+  /// at that release.
+  static PlanningResult<std::unique_ptr<DFBAcquireReleaseIndex>>
+  create(func::FuncOp kernel);
+
+  /// Returns the transaction record for `acquire`.
+  const DFBTransactionRecord &getTransaction(Operation *acquire) const;
+
+  /// Returns acquisitions in deterministic kernel walk order.
+  ArrayRef<Operation *> getAcquisitions() const { return acquisitionOrder; }
+
+  /// Returns the ownership record for `release`.
+  const DFBReleaseOwnership &getReleaseOwnership(Operation *release) const;
+
+  /// Returns releases in deterministic kernel walk order.
+  ArrayRef<Operation *> getReleases() const { return releaseOrder; }
+
+private:
+  DFBAcquireReleaseIndex() = default;
+
+  LogicalResult build(func::FuncOp kernel,
+                      std::optional<DFBLifecycleDiagnostic> &diagnostic);
+
+  SmallVector<Operation *> acquisitionOrder;
+  SmallVector<Operation *> releaseOrder;
+  llvm::DenseMap<Operation *, DFBTransactionRecord> transactions;
+  llvm::DenseMap<Operation *, DFBReleaseOwnership> releaseOwnership;
+};
 
 } // namespace mlir::tt::ttl
 

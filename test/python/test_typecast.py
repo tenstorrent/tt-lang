@@ -184,7 +184,37 @@ def typecast_kernel(inp, out):
             tx.wait()
 '''
 
+IDENTITY_TYPECAST_RELEASE_TEMPLATE = """
+import torch
+import ttl
+
+@ttl.operation(grid=(1, 1))
+def identity_typecast_release_kernel(inp, out):
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute_fn():
+        inp_blk = inp_dfb.wait()
+        identity = ttl.math.typecast(inp_blk, {typecast_target})
+        inp_blk.pop()
+        out_blk = out_dfb.reserve()
+        out_blk.store(ttl.math.reduce_sum(identity, dims=[0, 1]))
+        out_blk.push()
+
+    @ttl.datamovement()
+    def dm_read():
+        with inp_dfb.reserve() as blk:
+            ttl.copy(inp[0, 0], blk).wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with out_dfb.wait() as blk:
+            ttl.copy(blk, out[0, 0]).wait()
+"""
+
 _kernel_cache = {}
+_identity_release_kernel_cache = {}
 _temp_files = []
 
 
@@ -217,6 +247,35 @@ def _make_typecast_kernel(dst_name):
 
     kernel = module.typecast_kernel
     _kernel_cache[dst_name] = kernel
+    return kernel
+
+
+def _make_identity_typecast_release_kernel(dtype_name):
+    """Generate an identity-typecast kernel with an explicit input release."""
+    if dtype_name in _identity_release_kernel_cache:
+        return _identity_release_kernel_cache[dtype_name]
+
+    code = IDENTITY_TYPECAST_RELEASE_TEMPLATE.format(
+        typecast_target=_DTYPE_SPECS[dtype_name]["typecast_target"]
+    )
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=".py",
+        delete=False,
+        prefix=f"identity_typecast_release_{dtype_name}_",
+    ) as tmp:
+        tmp.write(code)
+        temp_path = tmp.name
+
+    _temp_files.append(temp_path)
+    spec = importlib.util.spec_from_file_location(
+        f"identity_typecast_release_{dtype_name}_module", temp_path
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    kernel = module.identity_typecast_release_kernel
+    _identity_release_kernel_cache[dtype_name] = kernel
     return kernel
 
 
@@ -307,6 +366,30 @@ def test_typecast_mixed_bf16_f32_long_fusion_multi_tile(device):
     result = ttnn.to_torch(out).float()
     expected = ((a_ref + a_ref) * a_ref) + a_ref
     assert_allclose(result, expected, rtol=5e-3, atol=1e-2)
+
+
+@pytest.mark.parametrize("dtype_name", ["bf16", "f32"])
+def test_identity_typecast_value_survives_source_dfb_release(device, dtype_name):
+    """Materialize an identity-cast value before its source DFB is released."""
+    dtype_spec = _DTYPE_SPECS[dtype_name]
+    inp_torch = torch.rand((TILE, TILE), dtype=dtype_spec["torch_dtype"])
+    out_torch = torch.zeros((TILE, TILE), dtype=dtype_spec["torch_dtype"])
+
+    inp = _to_l1_with_dtype(inp_torch, device, dtype_spec["ttnn_dtype"])
+    out = _to_l1_with_dtype(out_torch, device, dtype_spec["ttnn_dtype"])
+    kernel = _make_identity_typecast_release_kernel(dtype_name)
+
+    kernel(inp, out)
+
+    result = ttnn.to_torch(out).float()
+    expected = torch.zeros_like(result)
+    expected[0, 0] = inp_torch.float().sum()
+    assert_allclose(
+        result,
+        expected,
+        rtol=5e-3 if dtype_name == "f32" else 0.05,
+        atol=1e-2 if dtype_name == "f32" else 1.0,
+    )
 
 
 def test_typecast_mixed_bf16_f32_stray_f32_long_fusion_rejected(device):

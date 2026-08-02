@@ -94,8 +94,9 @@ def add_with_kernel(lhs, rhs, out):
 
 # 'with' exit: push output, pop inputs (reverse order)
 # CHECK: ttl.cb_push %[[CB2]]
-# CHECK: ttl.cb_pop %[[CB1]]
-# CHECK: ttl.cb_pop %[[CB0]]
+# CHECK-NEXT: ttl.cb_pop %[[CB1]]
+# CHECK-NEXT: ttl.cb_pop %[[CB0]]
+# CHECK-NEXT: return
 
 # =============================================================================
 # Initial IR Checks - Data movement with 'with' pattern
@@ -112,11 +113,12 @@ def add_with_kernel(lhs, rhs, out):
 # CHECK: ttl.cb_push
 
 # Second DFB: reserve (with DFB association), copy, push
-# CHECK: ttl.cb_reserve
+# CHECK-NEXT: {{.*}}ttl.cb_reserve
 # CHECK: ttl.attach_cb
 # CHECK: ttl.copy {{.*}} -> !ttl.transfer_handle<read>
 # CHECK: ttl.wait
 # CHECK: ttl.cb_push
+# CHECK-NEXT: return
 
 # CHECK-LABEL: func.func @dm_write
 # CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [2 : i32], ttl.kernel_thread = #ttkernel.thread<noc>, ttl.noc_index = 1 : i32}
@@ -127,6 +129,7 @@ def add_with_kernel(lhs, rhs, out):
 # CHECK: ttl.copy {{.*}} -> !ttl.transfer_handle<write>
 # CHECK: ttl.wait
 # CHECK: ttl.cb_pop
+# CHECK-NEXT: return
 
 # =============================================================================
 # C++ Kernel Checks - Verify generated code
