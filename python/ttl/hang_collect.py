@@ -60,6 +60,13 @@ STACKS_FILE = "stacks.txt"
 MANIFEST_FILE = "manifest.json"
 
 RISCS = ("brisc", "ncrisc", "trisc0", "trisc1", "trisc2")
+TENSIX_PROCESSOR_TYPES = {
+    "brisc": "DM0",
+    "ncrisc": "DM1",
+    "trisc0": "MATH0",
+    "trisc1": "MATH1",
+    "trisc2": "MATH2",
+}
 
 # Bounds. Stack collection is the slow part (DWARF per ELF, two NOC reads per
 # PC), and an unbounded sweep of a 32-chip galaxy would take minutes at exactly
@@ -258,7 +265,46 @@ def frame_text(entry) -> str:
     return f"{name} at {info.file}:{info.line}"
 
 
-def sample_pcs(context, device_id: int, cores: list, report: Report) -> dict:
+def blackhole_kernel_load_offsets(firmware_elf, mailboxes) -> dict:
+    """Runtime XIP load offset for each Tensix RISC in the active launch.
+
+    This mirrors tt-metal's ``tools/triage/dispatcher_data.py`` calculation for
+    a Blackhole Tensix core. Kernel ELFs are linked at their local text address,
+    while the live PC includes the program's kernel-config-buffer placement.
+    """
+    launch_index = int(mailboxes.launch_msg_rd_ptr)
+    kernel_config = mailboxes.launch[launch_index].kernel_config
+    tensix = firmware_elf.get_enum_value("ProgrammableCoreType::TENSIX")
+    kernel_config_base = int(kernel_config.kernel_config_base[tensix])
+    return {
+        risc_name: (
+            kernel_config_base
+            + int(
+                kernel_config.kernel_text_offset[
+                    firmware_elf.get_enum_value(
+                        f"TensixProcessorTypes::{processor_type}"
+                    )
+                ]
+            )
+        )
+        & 0xFFFFFFFF
+        for risc_name, processor_type in TENSIX_PROCESSOR_TYPES.items()
+    }
+
+
+def read_blackhole_kernel_load_offsets(coordinate, firmware_elf) -> dict:
+    """Read active-launch XIP offsets without halting the core."""
+    from ttexalens.memory_access import create_l1_memory_access
+
+    mailboxes = firmware_elf.read_global(
+        "mailboxes", create_l1_memory_access(coordinate)
+    )
+    return blackhole_kernel_load_offsets(firmware_elf, mailboxes)
+
+
+def sample_pcs(
+    context, device_id: int, cores: list, report: Report, firmware_elf=None
+) -> dict:
     """Read every RISC PC on the given cores without halting anything.
 
     ``get_pc`` falls back to halting when a core has no debug-bus PC signal, so
@@ -274,44 +320,83 @@ def sample_pcs(context, device_id: int, cores: list, report: Report) -> dict:
         except Exception as error:
             report.fail(f"coordinate {x},{y} on device {device_id}", error)
             continue
+        kernel_load_offsets = {}
+        if firmware_elf is not None and coordinate.device.is_blackhole():
+            try:
+                kernel_load_offsets = read_blackhole_kernel_load_offsets(
+                    coordinate, firmware_elf
+                )
+            except Exception as error:
+                report.fail(
+                    f"kernel load offsets at {x},{y} on device {device_id}", error
+                )
         for risc_name in RISCS:
             key = (x, y, risc_name)
             try:
                 risc_debug = coordinate.noc_block.get_risc_debug(risc_name)
                 if risc_debug.is_in_reset():
-                    pcs[key] = ("in reset", None)
+                    pcs[key] = ("in reset", None, None)
                     continue
                 if getattr(risc_debug, "debug_bus_pc_signal", None) is None:
-                    pcs[key] = ("no halt-free PC signal", None)
+                    pcs[key] = ("no halt-free PC signal", None, None)
                     continue
-                pcs[key] = (None, risc_debug.get_pc())
+                pcs[key] = (
+                    None,
+                    risc_debug.get_pc(),
+                    kernel_load_offsets.get(risc_name),
+                )
             except Exception as error:
-                pcs[key] = (f"{type(error).__name__}: {error}", None)
+                pcs[key] = (f"{type(error).__name__}: {error}", None, None)
     return pcs
 
 
 def collect_stacks(
-    context, device_id: int, cores: list, elfs: dict, report: Report
+    context,
+    device_id: int,
+    cores: list,
+    elfs: dict,
+    report: Report,
+    firmware_elf=None,
 ) -> list:
     """Per-RISC PC, motion verdict and symbolized top frame for one device."""
     lines = []
-    first = sample_pcs(context, device_id, cores, report)
+    first = sample_pcs(context, device_id, cores, report, firmware_elf)
     time.sleep(PC_RESAMPLE_SECONDS)
     second = sample_pcs(context, device_id, cores, report)
 
-    for (x, y, risc_name), (error, pc) in first.items():
+    for (x, y, risc_name), (error, pc, kernel_load_offset) in first.items():
         label = f"device {device_id} core {x},{y} {risc_name}"
         if pc is None:
             lines.append(f"{label}: {error}")
             continue
-        later = second.get((x, y, risc_name), (None, None))[1]
+        later = second.get((x, y, risc_name), (None, None, None))[1]
         motion = "STATIONARY" if later == pc else f"ADVANCING (then 0x{later:08x})"
         lines.append(f"{label}: pc=0x{pc:08x} {motion}")
-        lines.extend(symbolize(context, x, y, risc_name, pc, elfs, report))
+        lines.extend(
+            symbolize(
+                context,
+                x,
+                y,
+                risc_name,
+                pc,
+                elfs,
+                report,
+                kernel_load_offset,
+            )
+        )
     return lines
 
 
-def symbolize(context, x, y, risc_name, pc, elfs, report: Report) -> list:
+def symbolize(
+    context,
+    x,
+    y,
+    risc_name,
+    pc,
+    elfs,
+    report: Report,
+    kernel_load_offset=None,
+) -> list:
     """Frames for one PC, from DWARF alone.
 
     ``top_callstack`` resolves the PC and its inlined frames without touching the
@@ -326,7 +411,19 @@ def symbolize(context, x, y, risc_name, pc, elfs, report: Report) -> list:
     try:
         from ttexalens.tt_exalens_lib import top_callstack
 
-        frames = top_callstack(pc, candidates, context=context, extract_variables=False)
+        offsets = [
+            kernel_load_offset
+            if "kernels" in Path(path).parts and "firmware" not in Path(path).parts
+            else None
+            for path in candidates
+        ]
+        frames = top_callstack(
+            pc,
+            candidates,
+            offsets,
+            context=context,
+            extract_variables=False,
+        )
         lines.extend(f"    {frame_text(frame)}" for frame in frames)
         if not frames:
             lines.append("    (PC did not resolve in any candidate ELF)")
@@ -395,14 +492,33 @@ def resolve_elfs(selected: list, cache_root) -> dict:
     return {risc: paths[:MAX_ELFS_PER_RISC] for risc, paths in elfs.items()}
 
 
-def sample_device(devices: list, cores: list, elfs: dict, report: Report) -> list:
+def sample_device(
+    devices: list, cores: list, elfs: dict, cache_root, report: Report
+) -> list:
     """Attach to the device and collect stacks for every selected core."""
     from ttexalens.tt_exalens_init import init_ttexalens
+    from ttexalens.tt_exalens_lib import parse_elf
 
     context = init_ttexalens()
+    firmware_elf = None
+    if cache_root is not None:
+        brisc_firmware = firmware_elfs(cache_root).get("brisc", [])
+        if brisc_firmware:
+            try:
+                firmware_elf = parse_elf(
+                    str(brisc_firmware[0]),
+                    context,
+                    require_debug_symbols=False,
+                )
+            except Exception as error:
+                report.fail("parse BRISC firmware for kernel load offsets", error)
     stacks = []
     for device_id in devices:
-        stacks.extend(collect_stacks(context, device_id, cores, elfs, report))
+        stacks.extend(
+            collect_stacks(
+                context, device_id, cores, elfs, report, firmware_elf
+            )
+        )
     return stacks
 
 
@@ -487,7 +603,7 @@ def main() -> int:
         stacks = guard(
             report,
             "sample device",
-            lambda: sample_device(devices, cores, elfs, report),
+            lambda: sample_device(devices, cores, elfs, cache_root, report),
             [],
         )
 
