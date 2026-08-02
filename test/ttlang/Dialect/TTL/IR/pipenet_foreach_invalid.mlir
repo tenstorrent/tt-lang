@@ -58,6 +58,25 @@ func.func @selected_transfer_requires_direct_def(%pipe: !ttl.selected_pipe_src) 
 
 // -----
 
+// Selected-pipe copy operands require a select operation or foreach block
+// argument that supplies their record table.
+func.func @selected_copy_requires_record_definition(
+    %pipe: !ttl.selected_pipe_dst) {
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %reserve = ttl.cb_reserve %cb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  // expected-error @below {{'ttl.copy' op selected pipe operand must be defined by ttl.select_pipe_src, ttl.select_pipe_dst, ttl.pipenet_foreach_src, or ttl.pipenet_foreach_dst}}
+  %copy = ttl.copy %pipe, %reserve
+      : (!ttl.selected_pipe_dst,
+         tensor<1x1x!ttcore.tile<32x32, bf16>>)
+      -> !ttl.transfer_handle
+  func.return
+}
+
+// -----
+
 // Selected transfer kind must match the selected records kind.
 func.func @selected_transfer_kind_mismatch() {
   %c0 = arith.constant 0 : index
