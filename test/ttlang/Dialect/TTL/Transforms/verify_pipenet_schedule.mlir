@@ -87,6 +87,79 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 
 // -----
 
+// A completed receive permits the same receiver DFB slot to be posted for the
+// next transfer.
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @reuse_receiver_slot_after_completion
+  func.func @reuse_receiver_slot_after_completion()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // CHECK: %[[PIPE:.*]] = ttl.create_pipe
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    // CHECK: %[[RESERVE0:.*]] = ttl.cb_reserve %[[RECV_CB:[^ ]+]]
+    %reserve0 = ttl.cb_reserve %recv_cb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    // CHECK-NEXT: %[[RECEIVE0:.*]] = ttl.copy %[[PIPE]], %[[RESERVE0]]
+    %receive0 = ttl.copy %pipe, %reserve0
+        : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+           tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        -> !ttl.transfer_handle
+    // CHECK-NEXT: %[[SEND0:.*]] = ttl.copy %[[SEND_CB:.*]], %[[PIPE]]
+    %send0 = ttl.copy %send_cb, %pipe
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>,
+           !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+        -> !ttl.transfer_handle<write>
+    // CHECK-NEXT: ttl.wait %[[SEND0]]
+    ttl.wait %send0 : !ttl.transfer_handle<write>
+    // CHECK-NEXT: ttl.wait %[[RECEIVE0]]
+    ttl.wait %receive0 : !ttl.transfer_handle
+    // CHECK-NEXT: ttl.cb_push %[[RECV_CB]]
+    ttl.cb_push %recv_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    // CHECK-NEXT: %[[READY0:.*]] = ttl.cb_wait %[[RECV_CB]]
+    %ready0 = ttl.cb_wait %recv_cb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    // CHECK-NEXT: ttl.cb_pop %[[RECV_CB]]
+    ttl.cb_pop %recv_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    // CHECK-NEXT: %[[RESERVE1:.*]] = ttl.cb_reserve %[[RECV_CB]]
+    %reserve1 = ttl.cb_reserve %recv_cb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    // CHECK-NEXT: %[[RECEIVE1:.*]] = ttl.copy %[[PIPE]], %[[RESERVE1]]
+    %receive1 = ttl.copy %pipe, %reserve1
+        : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+           tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        -> !ttl.transfer_handle
+    // CHECK-NEXT: %[[SEND1:.*]] = ttl.copy %[[SEND_CB]], %[[PIPE]]
+    %send1 = ttl.copy %send_cb, %pipe
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>,
+           !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+        -> !ttl.transfer_handle<write>
+    // CHECK-NEXT: ttl.wait %[[SEND1]]
+    ttl.wait %send1 : !ttl.transfer_handle<write>
+    // CHECK-NEXT: ttl.wait %[[RECEIVE1]]
+    ttl.wait %receive1 : !ttl.transfer_handle
+    // CHECK-NEXT: ttl.cb_push %[[RECV_CB]]
+    ttl.cb_push %recv_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    // CHECK-NEXT: %[[READY1:.*]] = ttl.cb_wait %[[RECV_CB]]
+    %ready1 = ttl.cb_wait %recv_cb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    // CHECK-NEXT: ttl.cb_pop %[[RECV_CB]]
+    ttl.cb_pop %recv_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    // CHECK-NEXT: return
+    func.return
+  }
+}
+
+// -----
+
 // A multi-block nested region is valid when it does not contribute pipe
 // events. The surrounding function's pipe events retain their linear order.
 
