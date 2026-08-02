@@ -27,6 +27,21 @@
 
 namespace mlir::tt::ttl {
 
+/// PipeNet records associated with a selected-pipe value. `maybeForeachOp`
+/// identifies the enclosing foreach operation when the value is its block
+/// argument.
+struct SelectedPipeRecords {
+  PipeNetRecordsAttr records;
+  Operation *maybeForeachOp = nullptr;
+};
+
+/// Return the records associated with a selected-pipe value.
+///
+/// Supported values are results of `ttl.select_pipe_src` or
+/// `ttl.select_pipe_dst`, and the pipe block argument of
+/// `ttl.pipenet_foreach_src` or `ttl.pipenet_foreach_dst`.
+FailureOr<SelectedPipeRecords> getSelectedPipeRecords(Value pipe);
+
 /// Return the enclosing kernel-thread `func.func` (tagged with
 /// `ttl.kernel_thread`), or null if `op` is not inside one.
 inline mlir::func::FuncOp getEnclosingKernelThread(mlir::Operation *op) {
