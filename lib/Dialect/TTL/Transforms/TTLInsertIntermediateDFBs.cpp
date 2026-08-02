@@ -9,9 +9,14 @@
 // Inserts compiler-allocated intermediate dataflow buffers at fusion split
 // points. When a tensor-level op requires a DFB-attached operand produced by
 // ttl.compute, this pass adds a DFB-backed output to the producer compute and
-// rewrites the consumer operand to the waited, attached tensor.
+// rewrites the consumer operand to the waited, attached tensor. It also
+// materializes fusable values before a source DFB release that would otherwise
+// precede the fused read.
 //
 //===----------------------------------------------------------------------===//
+
+#include "DFBValueLifetimeAnalysis.h"
+#include "IntermediateDFBPlanning.h"
 
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
@@ -23,10 +28,8 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
 
-#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -39,100 +42,29 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-static bool materializedValueDominates(Value materialized,
-                                       Operation *consumerOp,
-                                       DominanceInfo &dominanceInfo) {
-  Operation *defOp = materialized.getDefiningOp();
-  return defOp && dominanceInfo.dominates(defOp, consumerOp);
-}
-
-struct ConsumerUse {
-  Operation *consumer;
-  unsigned operandIndex;
-};
-
-struct ResultMaterializationPlan {
-  unsigned resultIndex;
-  SmallVector<ConsumerUse> uses;
-};
-
-struct ComputeMaterializationPlan {
-  ComputeOp producer;
-  SmallVector<ResultMaterializationPlan> results;
-};
-
+/// Tracks one validated source result and its generated DFB lifecycle.
 struct MaterializedOutput {
+  /// Result of the original compute replicated to this DFB.
   unsigned sourceResultIndex;
+
+  /// Tensor type shared by the result and generated DFB view.
   RankedTensorType tensorType;
+
+  /// Existing output DFB whose tile stores are replicated.
   Value sourceDFB;
+
+  /// Compiler-created DFB declaration.
   BindCBOp bind;
+
+  /// Producer acquisition used by replicated tile stores.
   CBReserveOp reserve;
+
+  /// Consumer association used to replace planned operands.
   AttachCBOp attach;
+
+  /// Number of stores replicated while rebuilding the compute body.
   unsigned storeCount = 0;
 };
-
-static std::optional<OpResult> getComputeResult(Value value) {
-  auto result = dyn_cast<OpResult>(value);
-  if (!result || !isa<ComputeOp>(result.getOwner())) {
-    return std::nullopt;
-  }
-  return result;
-}
-
-static ComputeMaterializationPlan &
-getOrCreateComputePlan(SmallVectorImpl<ComputeMaterializationPlan> &plans,
-                       ComputeOp producer) {
-  for (ComputeMaterializationPlan &plan : plans) {
-    if (plan.producer == producer) {
-      return plan;
-    }
-  }
-  plans.push_back({producer, {}});
-  return plans.back();
-}
-
-static ResultMaterializationPlan &
-getOrCreateResultPlan(ComputeMaterializationPlan &plan, unsigned resultIndex) {
-  for (ResultMaterializationPlan &resultPlan : plan.results) {
-    if (resultPlan.resultIndex == resultIndex) {
-      return resultPlan;
-    }
-  }
-  plan.results.push_back({resultIndex, {}});
-  return plan.results.back();
-}
-
-// Non-mutating: validates one result and captures its type and source DFB. Bind
-// allocation is deferred to materializeComputePlan so a rejected plan leaves
-// the IR unchanged.
-static FailureOr<MaterializedOutput>
-planMaterializedOutput(ComputeOp computeOp, unsigned resultIndex) {
-  if (resultIndex >= computeOp.getNumOutputs()) {
-    return computeOp.emitOpError("materialization requested for result ")
-           << resultIndex << ", but compute has only "
-           << computeOp.getNumOutputs() << " outputs";
-  }
-
-  auto tensorType =
-      dyn_cast<RankedTensorType>(computeOp.getResult(resultIndex).getType());
-  if (!tensorType || !tensorType.hasStaticShape()) {
-    return computeOp.emitOpError("result ")
-           << resultIndex
-           << " must have a statically shaped ranked tensor type";
-  }
-
-  Value sourceDFB = getAttachedCB(computeOp.getOutputs()[resultIndex]);
-  if (!sourceDFB) {
-    return computeOp.emitOpError("output ")
-           << resultIndex << " must be attached to a dataflow buffer";
-  }
-
-  MaterializedOutput output;
-  output.sourceResultIndex = resultIndex;
-  output.tensorType = tensorType;
-  output.sourceDFB = sourceDFB;
-  return output;
-}
 
 static void cloneComputeBodyWithMaterializedStores(
     ComputeOp sourceCompute, ComputeOp rebuiltCompute,
@@ -185,35 +117,27 @@ static void cloneComputeBodyWithMaterializedStores(
   }
 }
 
-static LogicalResult materializeComputePlan(ComputeMaterializationPlan &plan,
-                                            OpBuilder &builder) {
-  llvm::sort(plan.results, [](const ResultMaterializationPlan &lhs,
-                              const ResultMaterializationPlan &rhs) {
-    return lhs.resultIndex < rhs.resultIndex;
-  });
-
+static void applyComputeMaterializationPlan(
+    const ComputeDFBMaterializationPlan &plan,
+    ArrayRef<IntermediateDFBRequirement> requirements, OpBuilder &builder) {
   ComputeOp producerCompute = plan.producer;
-
-  // Validate every result before allocating any DFB, so a rejected plan leaves
-  // the IR unmutated.
   SmallVector<MaterializedOutput> materializedOutputs;
   materializedOutputs.reserve(plan.results.size());
-  for (ResultMaterializationPlan &resultPlan : plan.results) {
-    FailureOr<MaterializedOutput> output =
-        planMaterializedOutput(producerCompute, resultPlan.resultIndex);
-    if (failed(output)) {
-      return failure();
-    }
-    materializedOutputs.push_back(*output);
+  for (const ComputeResultDFBMaterializationPlan &resultPlan : plan.results) {
+    MaterializedOutput output;
+    output.sourceResultIndex = resultPlan.resultIndex;
+    output.tensorType = resultPlan.tensorType;
+    output.sourceDFB = resultPlan.sourceDFB;
+    materializedOutputs.push_back(output);
   }
 
-  auto funcOp = producerCompute->getParentOfType<func::FuncOp>();
-  assert(funcOp && "ttl.compute must be inside a func::FuncOp");
+  auto kernel = producerCompute->getParentOfType<func::FuncOp>();
+  assert(kernel && "ttl.compute must be inside a kernel");
   {
     OpBuilder::InsertionGuard guard(builder);
     for (MaterializedOutput &output : materializedOutputs) {
       output.bind = createCompilerAllocatedDFB(
-          output.tensorType, producerCompute.getLoc(), funcOp, builder);
+          output.tensorType, producerCompute.getLoc(), kernel, builder);
     }
   }
 
@@ -267,8 +191,8 @@ static LogicalResult materializeComputePlan(ComputeMaterializationPlan &plan,
   // after the rebuilt compute, so the push stays unconditional and paired with
   // its acquire. Placing them at the consumer could leave an unconditional push
   // without a matching pop for branch-local consumers.
-  // TODO(#724): relax once trace-balance analysis can prove balanced DFB
-  // occupancy across structured control flow.
+  // TODO(#724): Relax this restriction when trace-balance analysis can prove
+  // DFB occupancy across structured control flow.
   Operation *insertAfter = rebuiltCompute;
   for (MaterializedOutput &output : materializedOutputs) {
     builder.setInsertionPointAfter(insertAfter);
@@ -285,55 +209,41 @@ static LogicalResult materializeComputePlan(ComputeMaterializationPlan &plan,
 
   for (auto [resultPlan, output] :
        llvm::zip_equal(plan.results, materializedOutputs)) {
-    for (ConsumerUse use : resultPlan.uses) {
+    for (unsigned requirementIndex : resultPlan.requirementIndices) {
+      const IntermediateDFBRequirement &use = requirements[requirementIndex];
       use.consumer->setOperand(use.operandIndex, output.attach.getResult());
     }
   }
-
-  return success();
 }
 
-static void
-materializeStandaloneTensorUses(ArrayRef<ConsumerUse> standaloneTensorUses,
-                                func::FuncOp funcOp, OpBuilder &builder,
-                                DominanceInfo &dominanceInfo) {
-  // A shared consumer-side acquire is valid only when its attach dominates
-  // the next consumer. Incomparable control-flow regions need separate
-  // compiler DFB outputs so each dynamic execution consumes exactly one
-  // pushed slot. TODO(#724): Relax this with an explicit DFB occupancy
-  // dataflow proof.
-  llvm::DenseMap<Value, SmallVector<Value>> materialized;
-
-  for (ConsumerUse use : standaloneTensorUses) {
-    Operation *op = use.consumer;
-    Value operand = op->getOperand(use.operandIndex);
-
-    if (getAttachedCB(operand)) {
-      continue;
-    }
-
-    // Reuse an existing attached value only when it is valid SSA for this
-    // consumer. Branch-incomparable consumers need separate materializations.
-    auto existingMaterializations = materialized.find(operand);
-    if (existingMaterializations != materialized.end()) {
-      SmallVector<Value> &candidateReplacements =
-          existingMaterializations->second;
-      auto dominatingReplacement =
-          llvm::find_if(candidateReplacements, [&](Value candidateReplacement) {
-            return materializedValueDominates(candidateReplacement, op,
-                                              dominanceInfo);
-          });
-      if (dominatingReplacement != candidateReplacements.end()) {
-        op->setOperand(use.operandIndex, *dominatingReplacement);
-        continue;
-      }
-    }
-
-    // No existing materialization dominates this consumer.
-    Value materializedValue = materializeToDFB(operand, funcOp, builder);
-    op->setOperand(use.operandIndex, materializedValue);
-    materialized[operand].push_back(materializedValue);
+static void applyStandaloneMaterializationPlan(
+    const StandaloneDFBMaterializationPlan &plan,
+    ArrayRef<IntermediateDFBRequirement> requirements, func::FuncOp kernel,
+    OpBuilder &builder) {
+  // The planner proves that the anchor follows the source definition and that
+  // the attached result dominates every rewritten consumer. A later output
+  // store anchor keeps the compiler wait after any compute formed for the
+  // source. Without an applicable output plan, evaluation remains at the
+  // definition. Otherwise, a definition anchor requires every source use to
+  // be rewritten, which leaves the compiler DFB store as the source's only use.
+  Value materializedValue =
+      materializeToDFB(plan.source, plan.insertionAnchor, kernel, builder);
+  for (unsigned requirementIndex : plan.requirementIndices) {
+    const IntermediateDFBRequirement &use = requirements[requirementIndex];
+    use.consumer->setOperand(use.operandIndex, materializedValue);
   }
+}
+
+static LogicalResult verifyPlanSources(const IntermediateDFBPlan &plan) {
+  for (const IntermediateDFBRequirement &requirement : plan.getRequirements()) {
+    if (requirement.operandIndex >= requirement.consumer->getNumOperands() ||
+        requirement.consumer->getOperand(requirement.operandIndex) !=
+            requirement.value) {
+      return requirement.consumer->emitOpError(
+          "intermediate DFB plan was invalidated before application");
+    }
+  }
+  return success();
 }
 
 struct TTLInsertIntermediateDFBsPass
@@ -342,78 +252,73 @@ struct TTLInsertIntermediateDFBsPass
   using TTLInsertIntermediateDFBsBase::TTLInsertIntermediateDFBsBase;
 
   void runOnOperation() override {
-    auto funcOp = getOperation();
+    auto kernel = getOperation();
 
-    SmallVector<DFBInputOpInterface> candidates;
-    funcOp.walk([&](DFBInputOpInterface op) { candidates.push_back(op); });
+    PlanningResult<std::unique_ptr<DFBValueLifetimeAnalysis>> plannedLifetimes =
+        DFBValueLifetimeAnalysis::create(kernel);
+    if (plannedLifetimes.isInvalidIR()) {
+      const PlanningDiagnostic &diagnostic = plannedLifetimes.getInvalidIR();
+      diagnostic.operation->emitOpError(diagnostic.message);
+      signalPassFailure();
+      return;
+    }
+    assert(plannedLifetimes.isPlanned() &&
+           "lifetime analysis has no recoverable rejection");
+    std::unique_ptr<DFBValueLifetimeAnalysis> lifetimes =
+        std::move(plannedLifetimes).takePlan();
+
+    IntermediateDFBPlanner materializationPlanner(kernel, *lifetimes);
+    PlanningResult<IntermediateDFBPlan> plannedMaterializations =
+        materializationPlanner.build();
+    if (plannedMaterializations.isInvalidIR()) {
+      const PlanningDiagnostic &diagnostic =
+          plannedMaterializations.getInvalidIR();
+      diagnostic.operation->emitOpError(diagnostic.message);
+      signalPassFailure();
+      return;
+    }
+    assert(plannedMaterializations.isPlanned() &&
+           "intermediate DFB planning has no recoverable rejection");
+    IntermediateDFBPlan materializationPlan =
+        std::move(plannedMaterializations).takePlan();
+    ArrayRef<IntermediateDFBRequirement> requiredUses =
+        materializationPlan.getRequirements();
 
     // When compiler DFBs are disabled, verify that no operations require
     // them and emit an actionable error if any do.
     if (!enable) {
-      for (DFBInputOpInterface dfbInputOp : candidates) {
-        Operation *op = dfbInputOp.getOperation();
-        auto requiredIndices = dfbInputOp.getDFBInputOperandIndices();
-
-        for (unsigned idx : requiredIndices) {
-          Value operand = op->getOperand(idx);
-          if (getAttachedCB(operand)) {
-            continue;
-          }
-          op->emitOpError("operand #")
-              << idx
-              << " requires a DFB-attached value but compiler-allocated DFBs "
-                 "are disabled (--no-ttl-compiler-dfbs); either enable "
-                 "compiler DFBs or store the intermediate to a user-declared "
-                 "DFB before this operation";
-          signalPassFailure();
-          return;
-        }
+      if (!requiredUses.empty()) {
+        const IntermediateDFBRequirement &requiredUse = requiredUses.front();
+        requiredUse.consumer->emitOpError("operand #")
+            << requiredUse.operandIndex
+            << " requires compiler-created DFB materialization, but "
+               "compiler DFBs are disabled (--no-ttl-compiler-dfbs); either "
+               "enable compiler DFBs or store the intermediate to a "
+               "user-declared DFB before this operation";
+        signalPassFailure();
       }
       return;
     }
 
-    OpBuilder builder(funcOp.getContext());
-    SmallVector<ComputeMaterializationPlan> computePlans;
-    SmallVector<ConsumerUse> standaloneTensorUses;
-
-    for (DFBInputOpInterface dfbInputOp : candidates) {
-      Operation *op = dfbInputOp.getOperation();
-      auto requiredIndices = dfbInputOp.getDFBInputOperandIndices();
-
-      for (unsigned idx : requiredIndices) {
-        Value operand = op->getOperand(idx);
-
-        if (getAttachedCB(operand)) {
-          continue;
-        }
-
-        // Compute results are materialized by rebuilding the producer once,
-        // even when several results or consumers require DFB-attached values.
-        if (std::optional<OpResult> computeResult = getComputeResult(operand)) {
-          auto producer = cast<ComputeOp>(computeResult->getOwner());
-          ComputeMaterializationPlan &computePlan =
-              getOrCreateComputePlan(computePlans, producer);
-          ResultMaterializationPlan &resultPlan = getOrCreateResultPlan(
-              computePlan, computeResult->getResultNumber());
-          resultPlan.uses.push_back({op, idx});
-          continue;
-        }
-
-        // Other tensor producers use standalone reserve/store/wait/attach.
-        standaloneTensorUses.push_back({op, idx});
-      }
+    if (failed(verifyPlanSources(materializationPlan))) {
+      signalPassFailure();
+      return;
     }
 
-    for (ComputeMaterializationPlan &computePlan : computePlans) {
-      if (failed(materializeComputePlan(computePlan, builder))) {
-        signalPassFailure();
-        return;
-      }
+    OpBuilder builder(kernel.getContext());
+    // Standalone materialization only inserts operations and rewrites uses, so
+    // applying it first preserves every compute operation recorded for an
+    // atomic rebuild. Compute rebuilds then follow definition order; valid SSA
+    // ensures a producer rewrites a consumer before that consumer is rebuilt.
+    for (const StandaloneDFBMaterializationPlan &standalonePlan :
+         materializationPlan.getStandaloneMaterializations()) {
+      applyStandaloneMaterializationPlan(standalonePlan, requiredUses, kernel,
+                                         builder);
     }
-
-    DominanceInfo dominanceInfo(funcOp);
-    materializeStandaloneTensorUses(standaloneTensorUses, funcOp, builder,
-                                    dominanceInfo);
+    for (const ComputeDFBMaterializationPlan &computePlan :
+         materializationPlan.getComputeMaterializations()) {
+      applyComputeMaterializationPlan(computePlan, requiredUses, builder);
+    }
   }
 };
 

@@ -321,13 +321,13 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
         if (!outputCB) {
           outputCB = packCB;
         } else if (outputCB != packCB) {
-          // PACK format depends on the element type only, not num_elements
-          // (buffering depth), so compare element types, not full CB types.
-          mlir::Type lhsFormat =
+          // PACK initialization depends on the DFB element type; capacity does
+          // not affect the configured data format.
+          mlir::Type outputElementType =
               mlir::cast<ttk::CBType>(outputCB.getType()).getElementType();
-          mlir::Type rhsFormat =
+          mlir::Type packElementType =
               mlir::cast<ttk::CBType>(packCB.getType()).getElementType();
-          if (lhsFormat != rhsFormat) {
+          if (outputElementType != packElementType) {
             packOp->emitOpError(
                 "sync region packs to output CBs with different data formats; "
                 "common init cannot configure multiple PACK formats");

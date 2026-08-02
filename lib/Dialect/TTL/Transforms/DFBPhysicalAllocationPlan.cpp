@@ -10,6 +10,7 @@
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/InterferenceGraphColoring.h"
 #include "ttlang/Dialect/TTL/Transforms/LiveIntervalUtils.h"
 
@@ -29,6 +30,43 @@
 namespace mlir::tt::ttl {
 
 namespace {
+
+static bool isDerivedDFBIndexAttribute(StringRef attributeName) {
+  return attributeName == kUnpackToDestFp32AttrName ||
+         attributeName.starts_with(kCBIndexAttrPrefix) ||
+         attributeName == kBcastOutputCBIndexAttrName ||
+         attributeName == kReduceOutputCBIndexAttrName ||
+         attributeName == kTransposeOutputCBIndexAttrName;
+}
+
+/// Rejects IR containing copies of provisional physical DFB indices.
+///
+/// The listed attributes directly copy `cb_index`. Reassigning a declaration
+/// after such a copy exists would leave the copy stale. Attribute-name matching
+/// remains valid across operation and region changes, but this predicate must
+/// include every attribute introduced by a pass that copies a DFB index.
+static LogicalResult
+verifyFinalizationPrecedesIndexCopies(ModuleOp moduleOp,
+                                      DFBAnalysisFailure &analysisFailure) {
+  WalkResult walkResult = moduleOp->walk([&](Operation *operation) {
+    for (NamedAttribute attribute : operation->getAttrs()) {
+      StringRef attributeName = attribute.getName().getValue();
+      if (!isDerivedDFBIndexAttribute(attributeName)) {
+        continue;
+      }
+      analysisFailure.set(
+          operation,
+          ("contains derived DFB-index attribute '" + attributeName +
+           "' before DFB index finalization; run ttl-finalize-dfb-indices "
+           "before ttl-set-compute-kernel-config and "
+           "ttl-annotate-cb-associations")
+              .str());
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return success(!walkResult.wasInterrupted());
+}
 
 /// Rejects compiler-created DFBs with incomplete producer or consumer
 /// lifecycles because no bounded live interval can be proven for them.
@@ -228,7 +266,7 @@ planCompilerDFBIndices(func::FuncOp kernel, ArrayRef<BindCBOp> dfbOps,
   for (Operation &operation : body) {
     operationIndices[&operation] = nextOperationIndex++;
   }
-  int64_t lastOperationIndex = nextOperationIndex - 1;
+  int64_t kernelEndIndex = nextOperationIndex;
 
   auto getOperationIndex = [&](Operation *operation) -> int64_t {
     auto operationIndex = operationIndices.find(operation);
@@ -252,7 +290,7 @@ planCompilerDFBIndices(func::FuncOp kernel, ArrayRef<BindCBOp> dfbOps,
            "compiler-created DFB declaration must be in the kernel body");
 
     Value dfb = bindOp.getResult();
-    int64_t start = lastOperationIndex;
+    int64_t start = kernelEndIndex;
     int64_t end = getOperationIndex(bindOp);
     bool hasAcquire = false;
     for (OpOperand &use : dfb.getUses()) {
@@ -263,14 +301,16 @@ planCompilerDFBIndices(func::FuncOp kernel, ArrayRef<BindCBOp> dfbOps,
         hasAcquire = true;
       }
       if (isa<CBPopOp>(user)) {
-        end = std::max(end, useIndex);
+        // Include the pop in the half-open interval. Acquires and pops
+        // projected to the same kernel-body operation must overlap.
+        end = std::max(end, useIndex + 1);
       }
     }
     if (!hasAcquire) {
       start = getOperationIndex(bindOp);
     }
     if (end <= start) {
-      end = lastOperationIndex;
+      end = kernelEndIndex;
     }
 
     SmallVector<ValueLiveInterval> &intervals = typeToIntervals[dfb.getType()];
@@ -459,6 +499,13 @@ DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
   }
 
   DFBAnalysisFailure analysisFailure;
+  if (failed(
+          verifyFinalizationPrecedesIndexCopies(moduleOp, analysisFailure))) {
+    errorOperation = analysisFailure.operation;
+    errorMessage = std::move(analysisFailure.message);
+    return;
+  }
+
   if (failed(verifyCompilerDFBLifecycles(moduleOp, analysisFailure))) {
     errorOperation = analysisFailure.operation;
     errorMessage = std::move(analysisFailure.message);
