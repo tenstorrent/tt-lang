@@ -76,6 +76,46 @@ LogicalResult verifyResolvedDFBIdentities(ModuleOp moduleOp,
   return failure(result.wasInterrupted());
 }
 
+std::optional<BcastType> getTileBroadcastType(ArrayRef<int64_t> dims,
+                                              int64_t rank) {
+  llvm::SmallDenseSet<int64_t> normalizedDims = normalizeDimsToSet(dims, rank);
+  bool broadcastsInnermost = rank >= 1 && normalizedDims.contains(rank - 1);
+  bool broadcastsSecondInnermost =
+      rank >= 2 && normalizedDims.contains(rank - 2);
+  if (broadcastsInnermost && broadcastsSecondInnermost) {
+    return BcastType::Scalar;
+  }
+  if (broadcastsSecondInnermost) {
+    return BcastType::Row;
+  }
+  if (broadcastsInnermost) {
+    return BcastType::Col;
+  }
+  return std::nullopt;
+}
+
+FailureOr<ttkernel::ReduceDim> getReduceDimension(ArrayRef<int64_t> dims,
+                                                  int64_t rank) {
+  if (rank != 2) {
+    return failure();
+  }
+  llvm::SmallDenseSet<int64_t> normalizedDims = normalizeDimsToSet(dims, rank);
+  // TTKernel names the surviving orientation: reducing height uses a column
+  // reduction, while reducing width uses a row reduction.
+  bool reducesHeight = normalizedDims.contains(0);
+  bool reducesWidth = normalizedDims.contains(1);
+  if (reducesHeight && reducesWidth) {
+    return ttkernel::ReduceDim::Scalar;
+  }
+  if (reducesHeight) {
+    return ttkernel::ReduceDim::Col;
+  }
+  if (reducesWidth) {
+    return ttkernel::ReduceDim::Row;
+  }
+  return failure();
+}
+
 //===----------------------------------------------------------------------===//
 // DST access interface defaults
 //===----------------------------------------------------------------------===//

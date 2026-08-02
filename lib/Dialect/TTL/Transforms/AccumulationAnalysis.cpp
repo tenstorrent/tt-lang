@@ -230,12 +230,13 @@ estimateCost(const AccumulationCost &cost,
 
 static AccumulationStrategyCandidate
 buildDstCandidate(TensorAccumulationMatch &match,
+                  const DFBAcquireReleaseIndex &dfbIndex,
                   const AccumulationCostModel &costModel) {
   AccumulationStrategyCandidate candidate;
   candidate.strategy = AccumulationStrategy::Dst;
 
   FailureOr<TensorDstAccumulationInfo> info =
-      analyzeTensorAccumulationForDst(match);
+      analyzeTensorAccumulationForDst(match, dfbIndex);
   if (failed(info)) {
     candidate.reason =
         "expected a DST-compatible same-type additive recurrence with one "
@@ -426,6 +427,7 @@ FailureOr<AccumulationStrategyPlan>
 planTensorAccumulationStrategy(AccumulationScopeOp scope,
                                TensorAccumulationMatch &match,
                                AccumulationStrategy requestedStrategy,
+                               const DFBAcquireReleaseIndex &dfbIndex,
                                const AccumulationCostModel &costModel) {
   AccumulationStrategyPlan plan;
   AccumulationGroupAnalysis groupAnalysis(scope);
@@ -439,11 +441,11 @@ planTensorAccumulationStrategy(AccumulationScopeOp scope,
   }
 
   if (requestedStrategy == AccumulationStrategy::Dst) {
-    plan.candidates.push_back(buildDstCandidate(match, costModel));
+    plan.candidates.push_back(buildDstCandidate(match, dfbIndex, costModel));
   } else if (requestedStrategy == AccumulationStrategy::L1Pack) {
     plan.candidates.push_back(buildL1PackCandidate(match, costModel));
   } else {
-    plan.candidates.push_back(buildDstCandidate(match, costModel));
+    plan.candidates.push_back(buildDstCandidate(match, dfbIndex, costModel));
     plan.candidates.push_back(buildL1PackCandidate(match, costModel));
   }
 

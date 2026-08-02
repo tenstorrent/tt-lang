@@ -24,20 +24,24 @@ omit it until module finalization assigns a unique identity.
 The DFB-related passes in `ttl-to-ttkernel-pipeline` execute in this order:
 
 ```
-ttl-materialize-loop-state     (FuncOp)   Remove ranked-tensor scf.for iter_args
-ttl-insert-copy-wait           (FuncOp)   Insert missing ttl.wait ops
-ttl-annotate-l1-acc-loops      (FuncOp)   Mark user accumulation loops
-ttl-create-producer-compute    (FuncOp)   Create producer ttl.compute ops
-ttl-insert-intermediate-dfbs   (FuncOp)   Materialize compiler-allocated DFBs
-convert-ttl-to-compute         (FuncOp)   Lower remaining tensor ops
-ttl-auto-sync                  (FuncOp)   Insert/coalesce remaining DFB sync
-ttl-finalize-dfb-indices       (Module)   Finalize identities and allocations
-ttl-set-compute-kernel-config  (FuncOp)   Set per-kernel configuration
+ttl-form-accumulation-scopes       (FuncOp) Form tensor accumulation scopes
+ttl-lower-accumulation-scopes      (FuncOp) Select tensor accumulation storage
+ttl-materialize-loop-state         (FuncOp) Remove ranked-tensor scf.for iter_args
+ttl-insert-copy-wait               (FuncOp) Insert missing ttl.wait ops
+ttl-auto-sync                      (FuncOp) Insert/coalesce DFB synchronization
+ttl-insert-accumulation-scopes     (FuncOp) Form DFB accumulation scopes
+ttl-lower-accumulation-scopes      (FuncOp) Lower DFB accumulation metadata
+ttl-create-producer-compute        (FuncOp) Create producer ttl.compute ops
+ttl-insert-intermediate-dfbs       (FuncOp) Materialize compiler-created DFBs
+convert-ttl-to-compute             (FuncOp) Lower remaining tensor ops
+ttl-auto-sync                      (FuncOp) Insert/coalesce DFB synchronization
+ttl-finalize-dfb-indices           (Module) Finalize identities and allocations
+ttl-set-compute-kernel-config      (FuncOp) Set per-kernel configuration
   ... DST assignment, loop lowering, scheduling ...
-ttl-annotate-cb-associations   (FuncOp)   Copy CB indices to tile ops
-ttl-verify-dfb-spsc            (Module)   Reject DFBs shared across threads
-convert-ttl-to-ttkernel        (Module)   Lower to TTKernel dialect
-ttkernel-insert-inits          (Module)   Insert hardware init calls
+ttl-annotate-cb-associations       (FuncOp) Copy DFB indices to tile ops
+ttl-verify-dfb-spsc                (Module) Verify producer/consumer uniqueness
+convert-ttl-to-ttkernel            (Module) Lower to TTKernel dialect
+ttkernel-insert-inits              (Module) Insert hardware init calls
 ```
 
 `ttl-finalize-dfb-indices` must precede
@@ -132,12 +136,14 @@ the generated DFB lifecycle in write-then-publish order: `cb_reserve`,
 `ttl.compute` with `tile_store`, then `cb_push`. Both passes use the shared,
 read-only compute-op-creation analysis described below before modifying IR.
 
-A DFB's L1 contents are dead after its last `cb_pop`. This defines the interval
-used for index reuse. Two logical DFBs may share a physical index only when they
-also have the same producer and consumer kernels. TT-Metal initializes each
-kernel's local DFB counters and ring pointers independently. A
-happens-before cut proves zero occupancy, but it does not transfer this local
-state to a different producer or consumer.
+After `cb_pop`, the producer may overwrite the released slot because its prior
+contents are no longer live. The DFB's backing storage remains statically
+allocated. Index reuse uses this release to prove that non-overlapping logical
+DFBs can use the same storage. Two logical DFBs may share a physical index only
+when they also have the same producer and consumer kernels. TT-Metal initializes
+each kernel's local DFB counters and ring pointers independently; a
+happens-before relation proves zero occupancy but does not transfer that state
+to another producer or consumer.
 
 ## Single-producer Single-consumer Semantics
 
@@ -755,11 +761,11 @@ The criteria are disjoint. DM-thread `ttl.copy` does not flow through
 Compute threads work through SSA tile handles
 (`cb_wait` result -> `attach_cb` -> `ttl.store` / compute ops), so tile-SSA
 ownership applies and the next-acquire boundary is irrelevant -- SSA already
-distinguishes which slot the use refers to. DM threads use direct CB
-references (`ttl.copy %cb, %slice`) where no tile handle exists, so direct-CB
-ownership applies and the boundary is essential to disambiguate
-consecutive direct uses on the same CB. Unifying would require changing
-`ttl.copy` to take the attached tensor instead of the CB, a dialect change
+distinguishes which slot the use refers to. Data-movement kernels use direct DFB
+references (`ttl.copy %cb, %slice`) where no tile handle exists, so direct-DFB
+ownership uses the operation interval and its boundary to disambiguate
+consecutive direct uses on the same DFB. Unifying would require changing
+`ttl.copy` to take the attached tensor instead of the DFB, a dialect change
 tracked as future work.
 
 ### Invariants on the inserted release
@@ -1050,7 +1056,8 @@ Two DFBs may share an index only if they have identical `CircularBufferType`
 (shape, element type, block count), equal transaction tile counts, and a
 transaction count that divides the physical capacity. These conditions ensure
 one physical allocation has one page size, capacity, data format, and legal
-ring-pointer progression.
+ring-pointer progression. `CircularBufferType` is an MLIR-uniqued type, so
+exact type equality is a pointer comparison.
 
 ### Logical identity
 
@@ -1273,35 +1280,42 @@ implementation does not change event construction or the lifetime proof.
 
 ```text
 buildPhysicalAllocationPlan(module, logicalIdentities, lifetimes, coloring):
+  reject if a derived DFB-index attribute exists
+
   for bindOp in compilerCreatedDFBs:
     lifecycleOps = reserveOrPushOrWaitOrPopUsers(bindOp)
     if lifecycleOps is not empty and any operation kind is missing:
       reject the partial lifecycle
 
-  conflicts(A, B):
-    if A.type != B.type:
-      return true
-    if A.transactionTileCount != B.transactionTileCount:
-      return true
-    if A.type.totalElements % A.transactionTileCount != 0:
-      return true
-    if A.producerKernel != B.producerKernel:
-      return true
-    if A.consumerKernel != B.consumerKernel:
-      return true
-    return not isOrderedBefore(A, B)
-       and not isOrderedBefore(B, A)
+  if reuseUserDFBs:
+    conflicts(A, B):
+      if A.type != B.type:
+        return true
+      if A.transactionTileCount != B.transactionTileCount:
+        return true
+      if A.type.totalElements % A.transactionTileCount != 0:
+        return true
+      if A.producerKernel != B.producerKernel:
+        return true
+      if A.consumerKernel != B.consumerKernel:
+        return true
+      return not isOrderedBefore(A, B)
+         and not isOrderedBefore(B, A)
 
-  interferenceGraph = graph(logicalDFBs, conflicts)
-  colors = coloring.color(
-      interferenceGraph,
-      logicalDFBs ordered by logical ID)
+    interferenceGraph = graph(logicalDFBs, conflicts)
+    colors = coloring.color(
+        interferenceGraph,
+        logicalDFBs ordered by logical ID)
+    assignments = map logicalDFBs to colors
+    verify every pair in one color does not conflict
+  else:
+    assignments = planCompilerCreatedDFBs(module)
 
-  reject if the number of distinct colors exceeds 32
-  verify every pair in one color does not conflict
+  reject if the physical DFB count exceeds 32
   build one runtime descriptor for every physical index
   reject conflicting descriptors at one physical index
-  record every kernel base index
+  reject unless physical indices form a dense zero-based range
+  record every existing kernel base-index attribute
   return immutable {
     logical-to-physical assignments,
     runtime descriptors,
@@ -1356,6 +1370,10 @@ conflict predicate for every shared color. If a lifetime or ordering proof is
 missing, the DFB is unbounded and conflicts with every candidate; this can
 increase the physical count but cannot create unsafe reuse.
 
+Two DFBs consumed by the same operation necessarily overlap: both acquires
+precede the consumer and both pops follow it. Coloring therefore assigns them
+different physical indices.
+
 #### Representative example
 
 `test/python/test_flash_chain_8node.py` composes a per-node flash-attention
@@ -1376,15 +1394,41 @@ reuse reduces the physical allocation below the hardware limit.
 
 ### Module attribute and runtime integration
 
+The planned physical DFB count is one greater than the greatest assigned index.
+The pass verifies this does not exceed `kMaxCircularBuffers` (32), and metadata
+validation rejects sparse physical indices.
+
 The allocation planner records the final `ttl.base_cta_index` for every kernel
-and one `ttl.dfb_allocations` descriptor per physical index. Each descriptor
-contains `dfb_index`, `num_tiles`, `element_type`, `page_size`, and
-`block_count`. The planner computes `page_size` with
+that has the attribute. Compile-time arguments to each kernel reserve
+`[0, base_cta_index)` for physical DFB indices; `base_cta_index` is the first
+non-DFB argument index.
+
+The plan contains one `ttl.dfb_allocations` descriptor per physical index.
+Each descriptor contains `dfb_index`, `num_tiles`, `element_type`, `page_size`,
+and `block_count`. The planner computes `page_size` with
 `ttcore::getElementSizeBytes()` on the finalized element type, so subtile
 dimensions affect the physical allocation without requiring runtime device
 initialization.
-Compile-time arguments to each kernel reserve `[0, base_cta_index)` for these
-physical DFB indices.
+
+```text
+buildRuntimeDescriptors(assignments):
+  for assignment in assignments:
+    reject assignment.physicalIndex if another assignment at that index
+        has a different exact type
+    allocationByIndex.insert(assignment.physicalIndex, assignment.type)
+
+  for (index, type) in allocationByIndex sorted by index:
+    emit {dfb_index = index,
+          num_tiles = type.elementsPerBlock,
+          element_type = type.elementType,
+          page_size = byteSize(type.elementType),
+          block_count = type.blockCount}
+```
+
+Every finalized declaration contributes to the table. Type equality makes
+each deduplicated descriptor valid for every declaration at that physical
+index, and deriving the page size from the same element type used by lowering
+keeps compiler and runtime allocation sizes equal.
 
 The Python runtime validates that the descriptors form a dense index range and
 builds all `ttnn.CBDescriptor` objects from this final allocation table. It
@@ -1409,8 +1453,8 @@ planCompilerCreatedDFBs(module):
       else:
         interval = [
           first reserve or wait,
-          last pop
-        ]
+          immediately after last pop
+        )
       intervals[bindOp.type].append(interval)
 
     for type in intervals:
@@ -1424,13 +1468,57 @@ The production pipeline emits reserve, push, wait, and pop operations for every
 used compiler-created DFB. Both allocation strategies reject a DFB with only
 part of that lifecycle because its bounded interval is not proven. A declaration
 with no lifecycle operations is legal and conservatively remains live through
-the end of its kernel.
+the end of its kernel. The presence check does not restrict the number of
+transactions; auto-sync is assumed to balance acquires with releases before
+finalization.
+
+The compiler-only allocator represents each DFB lifetime as a half-open
+interval of kernel-body operation positions: `[first acquire, immediately
+after last pop)`. A physical DFB index assigned to one DFB may therefore be
+reassigned to another DFB whose first acquire is in a later kernel-body
+operation. Nested lifecycle operations project to their enclosing kernel-body
+operation. A pop and acquire projected to the same operation therefore
+overlap, preserving correctness when their internal order is not represented.
 
 ## Limitations and Future Work
 
-- **Structured control flow.** Lifecycle operations inside `scf.if`,
+- **Compute stores in different blocks.** `ComputeOp` creation requires one
+  block containing all stores of a tensor result. Stores in different blocks
+  have different execution conditions and cannot be represented by one
+  unconditional compute. A region-aware creation plan must prove per-region
+  DFB occupancy balance before supporting conditional output routing. This is
+  tracked by [#724](https://github.com/tenstorrent/tt-lang/issues/724).
+
+- **Cross-region instrumentation.** Cross-region creation recomputes only
+  side-effect-free producers. Relocatable signposts or tile-observing debug
+  prints prevent creation when their observation order cannot be preserved.
+  Structured profiling regions could permit a more precise containment proof.
+
+- **Tile-range availability.** Releasing any part of an acquisition invalidates
+  its complete tensor result. Tracking remaining tile ranges could prove more
+  values available after partial `cb_push` or `cb_pop` operations.
+
+- **Control-flow-dependent FIFO ownership.** Exact FIFO matching is restricted
+  to the kernel entry block and is disabled when nested lifecycle operations
+  make the queue control-flow-dependent. A range-aware transaction lattice
+  could propagate tile counts across `RegionBranchOpInterface` edges.
+
+- **Tensor identity.** Identity tracing accepts conversion casts, DFB
+  associations, slices, and extracts. An unrecognized aliasing operation
+  produces an unknown identity. Additional view operations require a semantic
+  guarantee that their results alias the same acquired storage.
+
+- **Compute recipes.** `ComputeOp` creation plans recognize only tile recipes
+  and instrumentation with defined relocation semantics. An unrecognized
+  operation prevents creation. Adding a recipe requires defining its input
+  roles, iteration maps, instrumentation order, and output publication
+  semantics together.
+
+- **Structured control flow and index reuse.** Lifecycle operations inside `scf.if`,
   `scf.for`, or multi-block functions are unbounded. Other nested uses project
-  to the enclosing top-level operation. The required local analyses already
+  to the enclosing kernel-body operation, so mutually exclusive branches may
+  appear to overlap. This is conservative but may keep a physical DFB index
+  live longer than necessary. The required local analyses already
   exist: `OperationLiveInterval` validates bounds with dominance and
   post-dominance; [Static Execution Analysis](StaticExecutionAnalysis.md) uses
   `RegionBranchOpInterface` and block-CFG reachability; and

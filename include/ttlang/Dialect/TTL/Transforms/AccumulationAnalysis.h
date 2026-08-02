@@ -165,10 +165,12 @@ private:
   AccumulationCostWeights weights;
 };
 
-/// Select a legal tensor accumulation strategy for `scope`.
+/// Select a legal tensor accumulation strategy using immutable DFB lifecycle
+/// facts from the IR version that will be lowered.
 FailureOr<AccumulationStrategyPlan> planTensorAccumulationStrategy(
     AccumulationScopeOp scope, TensorAccumulationMatch &match,
     AccumulationStrategy requestedStrategy,
+    const DFBAcquireReleaseIndex &dfbIndex,
     const AccumulationCostModel &costModel = AccumulationCostModel());
 
 } // namespace mlir::tt::ttl

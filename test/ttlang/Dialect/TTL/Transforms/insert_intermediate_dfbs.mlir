@@ -254,17 +254,20 @@ func.func @mul_materializes_only_reduce_side()
 // -----
 
 // A multi-use fallback value materializes once after its producer. Consumers
-// that do not require DFB attachment keep the original SSA value.
+// that do not require DFB attachment keep the original SSA value. The existing
+// user publication remains before the compiler-created materialization.
 
 // CHECK-LABEL: func.func @multi_use_materialization_before_consumer
+// CHECK: %[[OUTPUT_DFB:.*]] = ttl.bind_cb{cb_index = 3,
 // CHECK: %[[COMPILER_DFB:.*]] = ttl.bind_cb{cb_index = 4, block_count = 1} {ttl.compiler_allocated}
 // CHECK: %[[ADD:.*]] = ttl.add
-// CHECK: %[[MATERIALIZED:.*]] = ttl.cb_reserve %[[COMPILER_DFB]]
+// CHECK: %[[OUTPUT_RESERVE:.*]] = ttl.cb_reserve %[[OUTPUT_DFB]]
+// CHECK-NEXT: ttl.store %[[ADD]], %[[OUTPUT_RESERVE]]
+// CHECK-NEXT: %[[MATERIALIZED:.*]] = ttl.cb_reserve %[[COMPILER_DFB]]
 // CHECK-NEXT: ttl.store %[[ADD]], %[[MATERIALIZED]]
-// CHECK: %[[WAIT:.*]] = ttl.cb_wait %[[COMPILER_DFB]]
+// CHECK-NEXT: %[[WAIT:.*]] = ttl.cb_wait %[[COMPILER_DFB]]
 // CHECK-NEXT: %[[ATTACHED:.*]] = ttl.attach_cb %[[WAIT]], %[[COMPILER_DFB]]
-// CHECK: ttl.store %[[ADD]]
-// CHECK: ttl.reduce %[[ATTACHED]]
+// CHECK-NEXT: ttl.reduce %[[ATTACHED]]
 // CHECK: return
 func.func @multi_use_materialization_before_consumer()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {

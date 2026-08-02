@@ -381,7 +381,7 @@ def TTLInsertIntermediateDFBs
     compiler DFB. Application begins only after the complete plan is valid.
 
     In the standard pipeline this pass runs after
-    `ttl-form-producer-compute`, so tensor-level materialization is limited
+    `ttl-create-producer-compute`, so tensor-level materialization is limited
     to IR forms that have not yet been converted to `ttl.compute`.
 
     All DFBs created by this pass are marked with `ttl.compiler_allocated`;
@@ -893,20 +893,22 @@ def TTLFinalizeDFBIndices
 
     Disabling `reuse-user-dfbs` retains each user DFB's physical index and
     applies the kernel-local linear-scan allocator only to compiler-created
-    DFBs.
+    DFBs. A compiler-created DFB's half-open lifetime starts at its first
+    `cb_reserve` or `cb_wait` and ends immediately after its last `cb_pop`.
+    Non-overlapping lifetimes with equal types may share an index.
 
     Every used compiler-created DFB must contain `ttl.cb_reserve`,
     `ttl.cb_push`, `ttl.cb_wait`, and `ttl.cb_pop`. An unused declaration is
     legal and remains live through the end of its kernel.
 
-    The pass validates the complete physical allocation plan before changing
-    the IR. The plan must use no more than kMaxCircularBuffers (32). Applying
-    the plan updates physical indices and ttl.base_cta_index, assigns missing
-    compiler-created logical IDs, and builds the ttl.dfb_allocations module
-    attribute for the Python runtime. The attribute contains one descriptor
-    per physical index,
-    including user-declared and compiler-created DFBs. Each descriptor records
-    the page size computed from the finalized element type.
+    The pass rejects copied DFB-index attributes from later passes. It computes
+    all physical assignments and runtime metadata and validates the 32-index
+    hardware limit before modifying the IR. Applying the validated plan updates
+    physical indices and `ttl.base_cta_index`, assigns missing compiler-created
+    logical IDs, and builds `ttl.dfb_allocations` for the Python runtime. The
+    attribute contains one descriptor per physical index, including
+    user-declared and compiler-created DFBs, and records the page size computed
+    from the finalized element type. See docs/development/DFBManagement.md.
   }];
 
   let options = [

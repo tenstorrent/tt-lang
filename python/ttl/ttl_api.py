@@ -1833,8 +1833,8 @@ def _lower_program_to_kernel(
                 + "})"
             )
 
-        # NOTE: Pipeline pass ordering is mirrored in
-        # test/me2e/builder/pipeline.py and lib/Dialect/TTL/Pipelines/TTLPipelines.cpp.
+        # This explicit frontend pipeline must match createTTLToTTKernelPipeline.
+        # The ME2E builder invokes that registered C++ pipeline directly.
         assign_dst_pass = "ttl-assign-dst"
 
         compiler_dfbs_flag = int(compiler_options.compiler_dfbs)
@@ -1854,9 +1854,8 @@ def _lower_program_to_kernel(
             "func.func(ttl-auto-sync)",
             "func.func(ttl-insert-accumulation-scopes{kind=dfb})",
             "func.func(ttl-lower-accumulation-scopes{kind=dfb})",
-            "func.func(ttl-form-producer-compute)",
+            "func.func(ttl-create-producer-compute)",
             f"func.func(ttl-insert-intermediate-dfbs{{enable={compiler_dfbs_flag}}})",
-            "func.func(ttl-insert-copy-wait)",
             "func.func(convert-ttl-to-compute)",
             "func.func(ttl-auto-sync)",
             f"ttl-finalize-dfb-indices{{reuse-user-dfbs={reuse_user_dfbs_flag}}}",
