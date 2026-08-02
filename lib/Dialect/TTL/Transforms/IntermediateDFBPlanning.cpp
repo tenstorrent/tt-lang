@@ -104,9 +104,9 @@ addExpressionReleaseRequirements(Operation *elementwiseOp,
                                  DFBMaterializationAnalysisState &state) {
   for (OpOperand &operand : elementwiseOp->getOpOperands()) {
     Value value = operand.get();
-    if (getAttachedCB(value)) {
-      continue;
-    }
+    // DFB attachment proves where the value resides, not that its slot remains
+    // live at this consumer. Tracing attached operands lets the lifetime query
+    // materialize values used after their original DFB release.
     FusionTraceResult trace =
         traceFusionToRoots(value, [&](OpOperand &tracedOperand) {
           return state.requiresMaterialization(tracedOperand);
