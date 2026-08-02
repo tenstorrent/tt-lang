@@ -22,6 +22,7 @@ from ..layouts import (
     detect_memory_layout,
     TENSOR_MEMORY_LAYOUT_INTERLEAVED,
 )
+from ..pipe import DstPipeIdentity, SrcPipeIdentity
 from ..ttl_utils import get_thread_type_string
 from .auto_profile import (
     get_line_mapper,

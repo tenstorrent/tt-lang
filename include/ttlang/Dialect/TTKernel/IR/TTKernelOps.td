@@ -4107,6 +4107,21 @@ def TTKernel_CastToL1PtrOp : TTKernel_Op<"reinterpret_cast"> {
     }];
 }
 
+def TTKernel_CastToL1AddrOp : TTKernel_Op<"cast_to_l1_addr", [Pure]> {
+    let summary = "Normalize a value to an L1 address.";
+    let description = [{
+      Converts an integer L1 address, typed L1 address, or local semaphore
+      address to `l1_addr` without changing its representation.
+    }];
+
+    let arguments = (ins AnyTypeOf<[I32, TTKernel_L1Addr, TTKernel_LocalSemaphore]>:$addr);
+    let results = (outs TTKernel_L1Addr:$result);
+
+    let assemblyFormat = [{
+      $addr attr-dict `:` type($addr) `to` type($result)
+    }];
+}
+
 def TTKernel_StoreToL1Op : TTKernel_Op<"store_to_l1"> {
     let summary = "StoreToL1";
     let description = [{

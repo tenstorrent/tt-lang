@@ -532,6 +532,20 @@ public:
 } // namespace
 
 namespace {
+class TTKernelCastToL1AddrOpToEmitCOpRewriter
+    : public OpConversionPattern<ttkernel::CastToL1AddrOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ttkernel::CastToL1AddrOp op,
+                  ttkernel::CastToL1AddrOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    rewriter.replaceOp(op, adaptor.getAddr());
+    return success();
+  }
+};
+
 class TTKernelCastToL1PtrOpToEmitCOpRewriter
     : public OpConversionPattern<ttkernel::CastToL1PtrOp> {
 
@@ -2884,6 +2898,7 @@ public:
         TTKernelToEmitCGetMyLogicalMeshPositionOpRewriter,
         TTKernelMacroOpToEmitCOpRewriter<ttkernel::MemZerosBaseOp>,
         TTKernelMacroOpToEmitCOpRewriter<ttkernel::MemZerosSizeOp>,
+        TTKernelCastToL1AddrOpToEmitCOpRewriter,
         TTKernelCastToL1PtrOpToEmitCOpRewriter,
         TTKernelToEmitCOpaqueRewriter<ttkernel::GetSemaphoreOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::NocSemaphoreSetOp>,

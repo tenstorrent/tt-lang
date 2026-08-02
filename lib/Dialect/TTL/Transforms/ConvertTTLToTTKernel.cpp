@@ -898,7 +898,7 @@ static CreatePipeOp buildStaticPipeForRecord(RewriterBase &rewriter,
       rewriter.getI64IntegerAttr(record.getDstEndX()),
       rewriter.getI64IntegerAttr(record.getDstEndY()),
       rewriter.getI64IntegerAttr(records.getPipeNetId()),
-      records.getPipeNetName(), isCollectiveAttr);
+      records.getPipeNetName(), isCollectiveAttr, DeviceTransferAttr());
 }
 
 template <typename ForeachOp>

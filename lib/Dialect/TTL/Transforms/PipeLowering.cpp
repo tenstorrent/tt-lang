@@ -484,30 +484,84 @@ static Value buildSelectedReadyCounterAddress(
     ConversionPatternRewriter &rewriter) {
   assert(!resources.empty() && "selected pipe resource table is empty");
 
-  std::optional<ReadyCounterAddressStorage> storage;
+  SmallVector<PipeCounterAddressInfo> addressInfos;
+  addressInfos.reserve(resources.size());
+  PipeCounterAddressStorage storage =
+      getReadyCounterAddressInfo(op, resources.front(), pipeResourcePlan)
+          .storage;
+  bool hasMixedStorage = false;
   SmallVector<int64_t> indices;
   indices.reserve(resources.size());
   for (const PipeResourceInfo &resource : resources) {
-    ReadyCounterAddressInfo info =
+    PipeCounterAddressInfo info =
         getReadyCounterAddressInfo(op, resource, pipeResourcePlan);
-    if (!storage) {
-      storage = info.storage;
-    }
-    assert(*storage == info.storage &&
-           "selected resource ready-counter kind mismatch");
+    hasMixedStorage |= info.storage != storage;
+    addressInfos.push_back(info);
     indices.push_back(info.index);
   }
 
-  Value index = loadIndexTableEntry(loc, indices, recordIndex, rewriter);
-  switch (*storage) {
-  case ReadyCounterAddressStorage::LocalSemaphore:
-    return ttk::GetSemaphoreOp::create(rewriter, loc, index).getResult();
-  case ReadyCounterAddressStorage::GlobalSemaphoreRuntimeArg:
-    return ttk::GetCommonArgValOp::create(rewriter, loc, rewriter.getI32Type(),
-                                          index)
-        .getResult();
+  if (!hasMixedStorage) {
+    Value index = loadIndexTableEntry(loc, indices, recordIndex, rewriter);
+    switch (storage) {
+    case PipeCounterAddressStorage::LocalSemaphore:
+      return ttk::GetSemaphoreOp::create(rewriter, loc, index).getResult();
+    case PipeCounterAddressStorage::GlobalSemaphoreRuntimeArg:
+      return ttk::GetCommonArgValOp::create(rewriter, loc,
+                                            rewriter.getI32Type(), index)
+          .getResult();
+    }
+    llvm_unreachable("unknown ready counter address storage");
   }
-  llvm_unreachable("unknown ready counter address storage");
+
+  // Pack the storage tag with the address index so mixed tables retain one
+  // metadata entry per selected record.
+  SmallVector<int64_t> encodedAddresses;
+  encodedAddresses.reserve(addressInfos.size());
+  for (const PipeCounterAddressInfo &info : addressInfos) {
+    assert(info.index >= 0 && llvm::isUInt<31>(info.index) &&
+           "pipe counter index cannot be encoded");
+    int64_t storageTag =
+        info.storage == PipeCounterAddressStorage::GlobalSemaphoreRuntimeArg;
+    encodedAddresses.push_back((info.index << 1) | storageTag);
+  }
+
+  Value encodedAddress =
+      loadIndexTableEntry(loc, encodedAddresses, recordIndex, rewriter);
+  Value encodedAddressI32 = arith::IndexCastOp::create(
+      rewriter, loc, rewriter.getI32Type(), encodedAddress);
+  Value one = arith::ConstantIntOp::create(rewriter, loc, 1, 32);
+  Value zero = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
+  Value storageTag =
+      arith::AndIOp::create(rewriter, loc, encodedAddressI32, one);
+  Value addressIndex =
+      arith::ShRUIOp::create(rewriter, loc, encodedAddressI32, one);
+  Value usesGlobalSemaphore = arith::CmpIOp::create(
+      rewriter, loc, arith::CmpIPredicate::ne, storageTag, zero);
+
+  // Both forms lower to i32 L1 addresses. Normalize their TTKernel types so
+  // the runtime storage selection can yield one SSA value.
+  auto l1AddressType = ttk::L1AddrType::get(rewriter.getContext());
+  auto addressIf =
+      scf::IfOp::create(rewriter, loc, l1AddressType, usesGlobalSemaphore,
+                        /*withElseRegion=*/true);
+  {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(&addressIf.getThenRegion().front());
+    Value globalAddress = ttk::GetCommonArgValOp::create(
+        rewriter, loc, rewriter.getI32Type(), addressIndex);
+    Value typedGlobalAddress =
+        ttk::CastToL1AddrOp::create(rewriter, loc, globalAddress);
+    scf::YieldOp::create(rewriter, loc, typedGlobalAddress);
+
+    rewriter.setInsertionPointToStart(&addressIf.getElseRegion().front());
+    Value localAddress =
+        ttk::GetSemaphoreOp::create(rewriter, loc, addressIndex);
+    Value typedLocalAddress =
+        ttk::CastToL1AddrOp::create(rewriter, loc, localAddress);
+    scf::YieldOp::create(rewriter, loc, typedLocalAddress);
+  }
+  rewriter.setInsertionPointAfter(addressIf);
+  return addressIf.getResult(0);
 }
 
 /// Add a static byte offset to an L1 address without changing the address
@@ -1099,12 +1153,8 @@ public:
     return success();
   }
 
-  LogicalResult
-  emitReceiverCompletionIncrement(int64_t receiverCompletionSemIdx) override {
-    auto receiverCompletionCounterSemIdx =
-        arith::ConstantIndexOp::create(rewriter, loc, receiverCompletionSemIdx);
-    auto receiverCompletionCounterAddr = ttk::GetSemaphoreOp::create(
-        rewriter, loc, receiverCompletionCounterSemIdx);
+  LogicalResult emitReceiverCompletionIncrement(
+      Value receiverCompletionCounterAddr) override {
     auto completionIncrement = arith::ConstantIndexOp::create(rewriter, loc, 1);
 
     if (!fields.isCollective) {
@@ -1581,8 +1631,12 @@ lowerSelectedPipeTransferSend(PipeTransferSendOp op, Value srcCB,
   }
   transport.emitPayloadWriteBarrier();
 
+  PipeCounterAddressInfo completionCounterInfo =
+      completionInfo.counter.getAddressInfo(op, pipeResourcePlan);
+  Value completionCounterAddress =
+      buildPipeCounterAddress(loc, completionCounterInfo, rewriter);
   if (failed(transport.emitReceiverCompletionIncrement(
-          completionInfo.receiverCompletionSemIdx))) {
+          completionCounterAddress))) {
     return failure();
   }
   transport.emitCompletionSignalBarrier();
@@ -2744,15 +2798,7 @@ static bool usesFabricTransport(const PipeTransferAllocationUnit &unit) {
 static SmallVector<PipeCounterLocation>
 getCompletionCounterLocations(const PipeTransferAllocationUnit &unit) {
   SmallVector<PipeCounterLocation> locations;
-  for (Operation *transferCreateOp : unit.transferCreateOps) {
-    auto transferCreate = llvm::cast<PipeTransferCreateOp>(transferCreateOp);
-    DeviceRefAttr device;
-    if (DeviceTransferAttr transfer = getDeviceTransfer(transferCreate)) {
-      device = transfer.getEdge().getDestination();
-      assert(device && "device-range transfers must fail route planning");
-    }
-
-    auto pipeType = mlir::cast<PipeType>(transferCreate.getPipe().getType());
+  auto addLocations = [&](PipeType pipeType, DeviceRefAttr device) {
     int64_t minNodeX = std::min(pipeType.getDstStartX(), pipeType.getDstEndX());
     int64_t maxNodeX = std::max(pipeType.getDstStartX(), pipeType.getDstEndX());
     int64_t minNodeY = std::min(pipeType.getDstStartY(), pipeType.getDstEndY());
@@ -2765,6 +2811,21 @@ getCompletionCounterLocations(const PipeTransferAllocationUnit &unit) {
         }
       }
     }
+  };
+
+  if (isSelectedTransferUnit(unit)) {
+    addLocations(unit.pipeType, DeviceRefAttr());
+  }
+  for (Operation *transferCreateOp : unit.transferCreateOps) {
+    auto transferCreate = llvm::cast<PipeTransferCreateOp>(transferCreateOp);
+    DeviceRefAttr device;
+    if (DeviceTransferAttr transfer = getDeviceTransfer(transferCreate)) {
+      device = transfer.getEdge().getDestination();
+      assert(device && "device-range transfers must fail route planning");
+    }
+
+    addLocations(mlir::cast<PipeType>(transferCreate.getPipe().getType()),
+                 device);
   }
   assert(!locations.empty() && "pipe completion counter has no destination");
   return locations;
@@ -3367,7 +3428,8 @@ verifyPipeResourcePlanFitsHardware(ModuleOp mod, const PipeResourcePlan &info,
   for (const auto &[transferCreateOp, resources] : info.selectedResources) {
     (void)transferCreateOp;
     for (const PipeResourceInfo &resource : resources) {
-      SenderReadyObserver observer(highest, resource.pipe);
+      LocalSemaphoreObserver observer(highest, PipeSemaphoreKind::SenderReady,
+                                      resource.pipe);
       assert(resource.readyCounter &&
              "selected pipe missing sender-ready counter");
       resource.readyCounter->observe(observer);
