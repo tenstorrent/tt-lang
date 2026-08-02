@@ -6,12 +6,29 @@
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
-#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
+
+#include "mlir/IR/Dominance.h"
+
+#include <algorithm>
 
 namespace mlir::tt::ttl {
 
+/// Return a provisional index unique within `kernel`.
+///
+/// Different kernels may reuse provisional indices because module finalization
+/// replaces them with disjoint physical ranges before indices are copied.
+static int32_t getNextAvailableKernelDFBIndex(func::FuncOp kernel) {
+  int32_t maxIndex = -1;
+  kernel.walk([&](BindCBOp declaration) {
+    maxIndex =
+        std::max(maxIndex,
+                 static_cast<int32_t>(declaration.getCbIndex().getSExtValue()));
+  });
+  return maxIndex + 1;
+}
+
 BindCBOp createCompilerAllocatedDFB(RankedTensorType tensorType, Location loc,
-                                    func::FuncOp funcOp, OpBuilder &builder) {
+                                    func::FuncOp kernel, OpBuilder &builder) {
   MLIRContext *ctx = builder.getContext();
 
   SmallVector<int64_t> shape(tensorType.getShape());
@@ -21,12 +38,12 @@ BindCBOp createCompilerAllocatedDFB(RankedTensorType tensorType, Location loc,
 
   // Kernel-local allocation preserves pass isolation. The module finalizer
   // replaces this provisional index before index annotations are emitted.
-  int32_t dfbIndex = getNextAvailableDFBIndex(funcOp.getOperation());
+  int32_t dfbIndex = getNextAvailableKernelDFBIndex(kernel);
 
-  // BindCBOp lives at function entry because finalize-dfb-indices requires that
+  // BindCBOp lives at kernel entry because finalize-dfb-indices requires that
   // placement. Reserve/store/wait/attach stay at the def site to preserve
   // per-invocation accounting inside loops and conditional branches.
-  Block &body = funcOp.getBody().front();
+  Block &body = kernel.getBody().front();
   Operation *insertAfter = nullptr;
   for (Operation &op : body) {
     if (isa<BindCBOp>(&op)) {
@@ -64,8 +81,8 @@ AttachCBOp createDFBWaitAndAttach(Value dfb, RankedTensorType tensorType,
   return AttachCBOp::create(builder, loc, tensorType, wait.getResult(), dfb);
 }
 
-Value materializeToDFB(Value intermediate, func::FuncOp funcOp,
-                       OpBuilder &builder) {
+Value materializeToDFB(Value intermediate, Operation *insertionAnchor,
+                       func::FuncOp kernel, OpBuilder &builder) {
   auto result = dyn_cast<OpResult>(intermediate);
   assert((!result || !isa<ComputeOp>(result.getOwner())) &&
          "compute results are materialized atomically by "
@@ -75,12 +92,15 @@ Value materializeToDFB(Value intermediate, func::FuncOp funcOp,
 
   Operation *defOp = intermediate.getDefiningOp();
   assert(defOp && "intermediate must have a defining op");
-  assert(funcOp && "intermediate must be inside a func::FuncOp");
+  assert(insertionAnchor && "materialization requires an insertion anchor");
+  assert(kernel && "intermediate must be inside a kernel");
+  assert(DominanceInfo(kernel).dominates(defOp, insertionAnchor) &&
+         "intermediate definition must dominate its insertion anchor");
 
   BindCBOp bindDFB =
-      createCompilerAllocatedDFB(tensorType, loc, funcOp, builder);
+      createCompilerAllocatedDFB(tensorType, loc, kernel, builder);
 
-  builder.setInsertionPointAfter(defOp);
+  builder.setInsertionPointAfter(insertionAnchor);
   createDFBStore(intermediate, bindDFB.getResult(), builder);
 
   return createDFBWaitAndAttach(bindDFB.getResult(), tensorType, loc, builder)

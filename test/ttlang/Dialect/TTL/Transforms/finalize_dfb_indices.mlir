@@ -9,6 +9,7 @@
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=THREE
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=SINGLE
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=GLOBAL
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=NESTED
 
 // -----
 
@@ -251,7 +252,7 @@ func.func @mixed_types_no_cross_reuse()
 // -----
 
 // Unused compiler-allocated DFB declarations remain live for the entire
-// function. No reuse is possible.
+// kernel. No reuse is possible.
 
 // DEBUG: DFB reuse: 2 compiler-allocated DFBs -> 2 physical slot(s)
 // DEBUG: Total DFB count: 5
@@ -342,9 +343,10 @@ func.func @single_dfb_no_reuse()
 
 // -----
 
-// Function passes may assign the same provisional compiler DFB index in
-// sibling functions. Finalization must assign disjoint physical indices after
-// the highest user-declared index, including user indices in other functions.
+// Passes operating on individual kernels may assign the same provisional
+// compiler DFB index in sibling kernels. Finalization must assign disjoint
+// physical indices after the highest user-declared index, including user
+// indices in other kernels.
 
 // GLOBAL: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 5 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}, {block_count = 2 : i32, dfb_index = 6 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}]}
 
@@ -385,5 +387,50 @@ func.func @second_provisional_index()
   ttl.cb_push %compiler1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %wait1 = ttl.cb_wait %compiler1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.cb_pop %compiler1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
+
+// -----
+
+// A reserve before another DFB's pop inside the same region-bearing kernel-body
+// operation makes both DFBs live concurrently. Projection gives both events
+// the same ordinal, so the pop endpoint must include that ordinal.
+
+// NESTED: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 1 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}, {block_count = 1 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}]}
+// NESTED-LABEL: func.func @nested_lifecycles_overlap
+// NESTED-SAME: ttl.base_cta_index = 2 : i32
+// NESTED: ttl.bind_cb{cb_index = 0,
+// NESTED: ttl.bind_cb{cb_index = 1,
+// NESTED: return
+func.func @nested_lifecycles_overlap()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                ttl.base_cta_index = 0 : i32} {
+  %lower = arith.constant 0 : index
+  %upper = arith.constant 1 : index
+  %step = arith.constant 1 : index
+  %first = ttl.bind_cb {cb_index = 0, block_count = 1}
+      {ttl.compiler_allocated}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  %second = ttl.bind_cb {cb_index = 1, block_count = 1}
+      {ttl.compiler_allocated}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  %first_reserve = ttl.cb_reserve %first
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %first : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  %first_wait = ttl.cb_wait %first
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  scf.for %iteration = %lower to %upper step %step {
+    %second_reserve = ttl.cb_reserve %second
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %second : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %second_wait = ttl.cb_wait %second
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_pop %first : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  }
+  ttl.cb_pop %second : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
   return
 }

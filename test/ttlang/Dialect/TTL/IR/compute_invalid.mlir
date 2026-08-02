@@ -658,6 +658,62 @@ func.func @compute_output_cb_missing_store(
 
 // -----
 
+// A tile_store identifies its formal output through the DFB attached to its
+// view. Duplicate output DFBs would make the corresponding indexing map
+// ambiguous.
+func.func @compute_duplicate_output_dfb(
+    %a: tensor<2x2x!ttcore.tile<32x32, f32>>,
+    %cba: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+    %cbout: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+    -> (tensor<2x2x!ttcore.tile<32x32, f32>>,
+        tensor<2x2x!ttcore.tile<32x32, f32>>) {
+  %init0 = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+  %init1 = tensor.empty() : tensor<2x2x!ttcore.tile<32x32, f32>>
+  %a_att = ttl.attach_cb %a, %cba
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %init0_att = ttl.attach_cb %init0, %cbout
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %init1_att = ttl.attach_cb %init1, %cbout
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %out_view = ttl.cb_reserve %cbout
+      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  // expected-error @below {{output 1 shares a dataflow buffer with an earlier formal output}}
+  %0, %1 = ttl.compute
+      ins(%a_att : tensor<2x2x!ttcore.tile<32x32, f32>>)
+      outs(%init0_att, %init1_att
+           : tensor<2x2x!ttcore.tile<32x32, f32>>,
+             tensor<2x2x!ttcore.tile<32x32, f32>>)
+      {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                        affine_map<(d0, d1) -> (d0, d1)>,
+                        affine_map<(d0, d1) -> (d0, d1)>],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%arg0: !ttcore.tile<32x32, f32>,
+       %arg1: !ttcore.tile<32x32, f32>,
+       %arg2: !ttcore.tile<32x32, f32>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
+    %c0 = arith.constant 0 : index
+    %exp = ttl.tile_exp %arg0 into dst[%c0]
+        : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    ttl.tile_store %exp, %out_view[%i, %j] from dst[%c0]
+        : !ttcore.tile<32x32, f32>,
+          tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.yield
+  } -> (tensor<2x2x!ttcore.tile<32x32, f32>>,
+        tensor<2x2x!ttcore.tile<32x32, f32>>)
+  func.return %0, %1 : tensor<2x2x!ttcore.tile<32x32, f32>>,
+                       tensor<2x2x!ttcore.tile<32x32, f32>>
+}
+
+// -----
+
 // Test: tile_store targets a CB not in the compute's formal outputs (#396)
 func.func @compute_tile_store_cb_not_output(
     %a: tensor<2x2x!ttcore.tile<32x32, f32>>,

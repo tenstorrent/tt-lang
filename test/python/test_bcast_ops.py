@@ -1003,7 +1003,6 @@ def kern(inp, out):
     def dm_read():
         with inp_dfb.reserve() as blk:
             ttl.copy(inp[0:32, 0:32], blk).wait()
-            blk.push()
     @ttl.datamovement()
     def dm_write():
         with out_dfb.wait() as blk:

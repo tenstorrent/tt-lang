@@ -14,7 +14,7 @@
 
 namespace mlir::tt::ttl {
 
-struct DFBAcquireReleaseIndex;
+class DFBAcquireReleaseIndex;
 
 /// Accumulation scope family selected by the shared formation and lowering
 /// passes.
@@ -122,15 +122,16 @@ FailureOr<TensorAccumulationMatch> matchAdditiveTensorAccumulation(
 
 /// Return DST-resident accumulation properties for `match` when the source
 /// loop can be deleted without dropping side effects.
-FailureOr<TensorDstAccumulationInfo> analyzeTensorAccumulationForDst(
-    const TensorAccumulationMatch &match,
-    const DFBAcquireReleaseIndex *dfbIndex = nullptr);
+FailureOr<TensorDstAccumulationInfo>
+analyzeTensorAccumulationForDst(const TensorAccumulationMatch &match,
+                                const DFBAcquireReleaseIndex &dfbIndex);
 
 /// Return DST-resident accumulation properties using `initialValue` as the
 /// tensor copied into the accumulator before the source loop executes.
-FailureOr<TensorDstAccumulationInfo> analyzeTensorAccumulationForDst(
-    const TensorAccumulationMatch &match, Value initialValue,
-    const DFBAcquireReleaseIndex *dfbIndex = nullptr);
+FailureOr<TensorDstAccumulationInfo>
+analyzeTensorAccumulationForDst(const TensorAccumulationMatch &match,
+                                Value initialValue,
+                                const DFBAcquireReleaseIndex &dfbIndex);
 
 /// Lower a matched additive tensor recurrence to a DST section whose
 /// accumulator stays resident across the original source loop. Contribution

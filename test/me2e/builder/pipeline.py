@@ -38,64 +38,15 @@ def compile_ttl_to_ttkernel(
     Returns:
         Compiled module with TTKernel/EmitC ops.
     """
-    fpu_flag = int(enable_fpu_binary_ops)
-    set_compute_config_pass = (
-        f"ttl-set-compute-kernel-config{{enable-fpu-binary-ops={fpu_flag}}}"
+    pipeline_options = " ".join(
+        [
+            f"maximize-dst={str(maximize_dst).lower()}",
+            f"enable-fpu-binary-ops={str(enable_fpu_binary_ops).lower()}",
+            f"specialize-cores={str(specialize_cores).lower()}",
+            "lower-to-emitc=true",
+        ]
     )
-
-    # Finalize DFB indices before compute configuration copies them into
-    # function attributes. Tensor recurrence formation must run before
-    # loop-state materialization removes tensor iter_args.
-    tensor_recurrence_passes = [
-        "ttl-form-accumulation-scopes",
-        "ttl-lower-accumulation-scopes",
-        "ttl-materialize-loop-state",
-    ]
-    dfb_func_passes = [
-        *tensor_recurrence_passes,
-        "ttl-insert-copy-wait",
-        "ttl-form-producer-compute",
-        "ttl-insert-intermediate-dfbs",
-        "convert-ttl-to-compute",
-        "ttl-auto-sync",
-    ]
-    lowering_func_passes = [
-        set_compute_config_pass,
-        "ttl-assign-dst",
-    ]
-    if maximize_dst:
-        lowering_func_passes.append("ttl-subblock-compute-for-dst")
-    dst_acc_str = "true" if maximize_dst else "false"
-    lowering_func_passes.append(f"ttl-lower-to-loops{{dst-accumulation={dst_acc_str}}}")
-    if maximize_dst:
-        lowering_func_passes.append("ttl-schedule-operations")
-    dfb_func_pipeline = ",".join(dfb_func_passes)
-    lowering_func_pipeline = ",".join(lowering_func_passes)
-
-    specialize_passes = ""
-    if specialize_cores:
-        specialize_passes = "ttkernel-specialize-cores,canonicalize,cse,"
-
-    pipeline_str = (
-        f"builtin.module("
-        f"func.func({dfb_func_pipeline}),"
-        f"ttl-finalize-dfb-indices,"
-        f"func.func({lowering_func_pipeline}),"
-        f"func.func(ttl-annotate-cb-associations),"
-        f"ttl-verify-pipenet-guards,"
-        f"ttl-verify-dfb-spsc,"
-        f"ttl-erase-pipenet-scopes,"
-        f"ttl-validate-cb-budget,"
-        f"convert-ttl-to-ttkernel,"
-        f"ttkernel-insert-inits,"
-        f"canonicalize,"
-        f"cse,"
-        f"{specialize_passes}"
-        f"lower-affine,"
-        f"func.func(convert-ttkernel-to-emitc),"
-        f"canonicalize"
-        f")"
-    )
+    pipeline_str = f"builtin.module(ttl-to-ttkernel-pipeline{{{pipeline_options}}})"
 
     pm = PassManager.parse(pipeline_str, context=module.context)
     pm.enable_verifier(True)

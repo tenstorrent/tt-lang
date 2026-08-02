@@ -21,6 +21,9 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/PatternMatch.h"
 
+#include <memory>
+#include <utility>
+
 #define DEBUG_TYPE "ttl-lower-accumulation-scopes"
 
 namespace mlir::tt::ttl {
@@ -184,7 +187,7 @@ getTensorScopeLoweringPlan(AccumulationScopeOp scope,
 
   FailureOr<TensorDstAccumulationInfo> dstInfo =
       analyzeTensorAccumulationForDst(match->recurrence, match->initialValue,
-                                      &dfbIndex);
+                                      dfbIndex);
   if (failed(dstInfo)) {
     (void)scope.emitOpError(
         "tensor accumulation lowering requires a DST-compatible same-type "
@@ -239,13 +242,24 @@ struct TTLLowerAccumulationScopesPass
     SmallVector<AccumulationScopeOp> scopes;
     func.walk([&](AccumulationScopeOp scope) { scopes.push_back(scope); });
 
-    DFBAcquireReleaseIndex dfbIndex(func);
+    PlanningResult<std::unique_ptr<DFBAcquireReleaseIndex>> indexResult =
+        DFBAcquireReleaseIndex::create(func);
+    if (indexResult.isInvalidIR()) {
+      const PlanningDiagnostic &diagnostic = indexResult.getInvalidIR();
+      diagnostic.operation->emitOpError(diagnostic.message);
+      signalPassFailure();
+      return;
+    }
+    assert(indexResult.isPlanned() &&
+           "DFB lifecycle indexing has no recoverable rejection");
+    std::unique_ptr<DFBAcquireReleaseIndex> dfbIndex =
+        std::move(indexResult).takePlan();
     SmallVector<TensorAccumulationScopeLoweringPlan> plans;
     plans.reserve(scopes.size());
     bool hasInvalidScope = false;
     for (AccumulationScopeOp scope : scopes) {
       FailureOr<TensorAccumulationScopeLoweringPlan> plan =
-          getTensorScopeLoweringPlan(scope, dfbIndex);
+          getTensorScopeLoweringPlan(scope, *dfbIndex);
       if (failed(plan)) {
         hasInvalidScope = true;
         continue;
