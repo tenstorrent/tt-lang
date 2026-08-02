@@ -43,6 +43,7 @@ DIR_ENV = "TTLANG_HANG_DIR"
 MODE_ENV = "TTLANG_ON_HANG"
 LAUNCH_ENV = "TTLANG_HANG_LAUNCHES"
 DEVICES_ENV = "TTLANG_HANG_DEVICES"
+MAX_CORES_ENV = "TTLANG_HANG_MAX_CORES"
 
 MODE_OFF = "off"
 MODE_ON = "on"
@@ -63,7 +64,7 @@ RISCS = ("brisc", "ncrisc", "trisc0", "trisc1", "trisc2")
 # Bounds. Stack collection is the slow part (DWARF per ELF, two NOC reads per
 # PC), and an unbounded sweep of a 32-chip galaxy would take minutes at exactly
 # the moment the user is waiting. Truncation is always reported, never silent.
-MAX_CORES = 64
+DEFAULT_MAX_CORES = 64
 MAX_ELFS_PER_RISC = 8
 PC_RESAMPLE_SECONDS = 0.05
 LAUNCH_REPORT_LIMIT = 8
@@ -85,6 +86,14 @@ def incident_dir() -> Path:
     path = Path(os.environ.get(DIR_ENV, INCIDENT_DIR))
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def max_cores() -> int:
+    """Bound a core sweep without letting diagnostics configuration raise."""
+    try:
+        return max(1, int(os.environ.get(MAX_CORES_ENV, DEFAULT_MAX_CORES)))
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_CORES
 
 
 class Report:
@@ -456,12 +465,13 @@ def main() -> int:
         report.say(f"ELFs found: {found or 'none'}")
 
     cores = select_cores(selected)
-    if len(cores) > MAX_CORES:
+    core_limit = max_cores()
+    if len(cores) > core_limit:
         report.say(
-            f"grid has {len(cores)} cores; sampling the first {MAX_CORES}. "
-            f"Raise MAX_CORES in ttl/hang_collect.py to widen."
+            f"grid has {len(cores)} cores; sampling the first {core_limit}. "
+            f"Raise {MAX_CORES_ENV} to widen."
         )
-        cores = cores[:MAX_CORES]
+        cores = cores[:core_limit]
     manifest["cores"] = [list(core) for core in cores]
 
     devices = select_devices()
