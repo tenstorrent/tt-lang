@@ -5,14 +5,19 @@
 # REQUIRES: ttnn, tt-device
 # RUN: env TTLANG_COMPILE_ONLY=1 not %python %s 2>&1 | FileCheck %s
 
-"""End-to-end coverage for an unanalyzable PipeNet send guard.
+"""End-to-end coverage for the `could not statically analyze the PipeNet
+guard` diagnostic from `ttl-verify-pipenet-guards`.
 
 The pipe-coupled `ttl.copy(blk, pipe)` is guarded by a predicate read from
 runtime tensor data. The verifier cannot evaluate that predicate for each
-launch coordinate, so it cannot prove that the source executes the send.
+launch coordinate. It rejects the program and attaches a note to the
+predicate it could not fold.
 """
 
-# CHECK: cannot determine whether the pipe source executes this send
+# The Python frontend's diagnostic formatter renders the primary error
+# and each attached note with its own source-context block.
+# CHECK: could not statically analyze the PipeNet guard
+# CHECK: this expression is not statically analyzable
 
 import os
 
