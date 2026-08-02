@@ -96,35 +96,6 @@ struct PipeEvent {
   int64_t selectedRecordIndex = -1;
 };
 
-/// Pipe records and selection context represented by one selected-pipe value.
-struct SelectedPipeRecords {
-  PipeNetRecordsAttr records;
-  Operation *foreachOp = nullptr;
-};
-
-/// Return the records and foreach operation referenced by a selected pipe.
-std::optional<SelectedPipeRecords> getSelectedPipeRecords(Value pipe) {
-  pipe = traceUnrealizedCasts(pipe);
-  if (auto selectedSrc = pipe.getDefiningOp<SelectPipeSrcOp>()) {
-    return SelectedPipeRecords{selectedSrc.getRecords(), nullptr};
-  }
-  if (auto selectedDst = pipe.getDefiningOp<SelectPipeDstOp>()) {
-    return SelectedPipeRecords{selectedDst.getRecords(), nullptr};
-  }
-  auto blockArg = mlir::dyn_cast<BlockArgument>(pipe);
-  if (!blockArg || blockArg.getArgNumber() != 0) {
-    return std::nullopt;
-  }
-  Operation *owner = blockArg.getOwner()->getParentOp();
-  if (auto foreachSrc = mlir::dyn_cast<PipeNetForeachSrcOp>(owner)) {
-    return SelectedPipeRecords{foreachSrc.getRecords(), owner};
-  }
-  if (auto foreachDst = mlir::dyn_cast<PipeNetForeachDstOp>(owner)) {
-    return SelectedPipeRecords{foreachDst.getRecords(), owner};
-  }
-  return std::nullopt;
-}
-
 struct ModuleState;
 void checkKnownSubset(Operation *op, const LaunchNodeDomain &current,
                       const LaunchNodeDomain &allowed,
@@ -152,6 +123,15 @@ struct ModuleState {
   SmallVector<WaitUse> waitUses;
   SmallVector<PipeEvent> pipeEvents;
   llvm::DenseMap<Operation *, SmallVector<std::size_t>> pipeEventIndices;
+
+  /// Diagnose malformed selected-pipe IR when this pass runs directly.
+  void reportInvalidSelectedPipeDefinition(CopyOp copyOp) {
+    copyOp.emitOpError()
+        << "selected pipe operand must be defined by ttl.select_pipe_src, "
+           "ttl.select_pipe_dst, ttl.pipenet_foreach_src, or "
+           "ttl.pipenet_foreach_dst";
+    sawError = true;
+  }
 
   /// Replace the events for one operation after a dataflow update.
   void replacePipeEvents(Operation *op, SmallVector<PipeEvent> events) {
@@ -216,12 +196,17 @@ struct ModuleState {
           unanalyzableOp, nullptr, nullptr, -1});
       return events;
     }
-    if (std::optional<SelectedPipeRecords> selected =
-            getSelectedPipeRecords(copyOp.getDst())) {
-      appendSelectedPipeEvents(op, selected->records, PipeEventKind::Send,
-                               domain, unanalyzableOp,
-                               /*receivePost=*/nullptr, selected->foreachOp,
-                               events);
+    FailureOr<SelectedPipeRecords> selectedDst =
+        getSelectedPipeRecords(copyOp.getDst());
+    if (succeeded(selectedDst)) {
+      appendSelectedPipeEvents(
+          op, selectedDst->records, PipeEventKind::Send, domain, unanalyzableOp,
+          /*receivePost=*/nullptr, selectedDst->maybeForeachOp, events);
+      return events;
+    }
+    if (mlir::isa<SelectedPipeSrcType, SelectedPipeDstType>(
+            copyOp.getDst().getType())) {
+      reportInvalidSelectedPipeDefinition(copyOp);
       return events;
     }
     if (auto pipeType = mlir::dyn_cast<PipeType>(copyOp.getSrc().getType())) {
@@ -234,14 +219,18 @@ struct ModuleState {
       }
       return events;
     }
-    if (std::optional<SelectedPipeRecords> selected =
-            getSelectedPipeRecords(copyOp.getSrc())) {
+    FailureOr<SelectedPipeRecords> selectedSrc =
+        getSelectedPipeRecords(copyOp.getSrc());
+    if (succeeded(selectedSrc)) {
       if (isPipeReceiveCopy(copyOp)) {
-        appendSelectedPipeEvents(op, selected->records,
+        appendSelectedPipeEvents(op, selectedSrc->records,
                                  PipeEventKind::ReceivePost, domain,
                                  unanalyzableOp, /*receivePost=*/nullptr,
-                                 selected->foreachOp, events);
+                                 selectedSrc->maybeForeachOp, events);
       }
+    } else if (mlir::isa<SelectedPipeSrcType, SelectedPipeDstType>(
+                   copyOp.getSrc().getType())) {
+      reportInvalidSelectedPipeDefinition(copyOp);
     }
     return events;
   }
@@ -264,17 +253,23 @@ struct ModuleState {
     SmallVector<PipeEvent> events;
     Operation *op = waitOp.getOperation();
     if (auto pipeType = mlir::dyn_cast<PipeType>(copyOp.getSrc().getType())) {
-      events.push_back(PipeEvent{
-          op, pipeType, PipeEventKind::ReceiveWait,
-          domain.intersectWith(getPipeDestinationLaunchNodeDomain(
-              pipeType, launchDomains.baseDomain)),
-          unanalyzableOp, copyOp.getOperation(), nullptr, -1});
-    } else if (std::optional<SelectedPipeRecords> selected =
-                   getSelectedPipeRecords(copyOp.getSrc())) {
+      events.push_back(
+          PipeEvent{op, pipeType, PipeEventKind::ReceiveWait,
+                    domain.intersectWith(getPipeDestinationLaunchNodeDomain(
+                        pipeType, launchDomains.baseDomain)),
+                    unanalyzableOp, copyOp.getOperation(), nullptr, -1});
+    } else {
+      FailureOr<SelectedPipeRecords> selected =
+          getSelectedPipeRecords(copyOp.getSrc());
+      if (failed(selected)) {
+        reportInvalidSelectedPipeDefinition(copyOp);
+        replacePipeEvents(op, {});
+        return;
+      }
       appendSelectedPipeEvents(op, selected->records,
                                PipeEventKind::ReceiveWait, domain,
                                unanalyzableOp, copyOp.getOperation(),
-                               selected->foreachOp, events);
+                               selected->maybeForeachOp, events);
     }
 
     replacePipeEvents(op, std::move(events));
@@ -415,9 +410,12 @@ void verifyPipeWaitGuard(WaitOp waitOp, const LaunchNodeDomain &domain,
     allowedDomain = getPipeDestinationLaunchNodeDomain(
         pipeType, state.launchDomains.baseDomain);
   } else {
-    std::optional<SelectedPipeRecords> selected =
+    FailureOr<SelectedPipeRecords> selected =
         getSelectedPipeRecords(copyOp.getSrc());
-    assert(selected && "selected pipe must have a verified direct definition");
+    if (failed(selected)) {
+      state.reportInvalidSelectedPipeDefinition(copyOp);
+      return;
+    }
     netId = selected->records.getPipeNetId();
     allowedDomain = getPipeRecordsRoleLaunchNodeDomain(selected->records,
                                                        PipeRole::Destination);
@@ -497,9 +495,10 @@ void verifyCopy(CopyOp copyOp, const LaunchNodeDomain &current,
                      msg, {{netId, PipeRole::Source}}, state);
     return;
   }
-  if (std::optional<SelectedPipeRecords> selected =
-          getSelectedPipeRecords(copyOp.getDst())) {
-    int64_t netId = selected->records.getPipeNetId();
+  FailureOr<SelectedPipeRecords> selectedDst =
+      getSelectedPipeRecords(copyOp.getDst());
+  if (succeeded(selectedDst)) {
+    int64_t netId = selectedDst->records.getPipeNetId();
     std::string name = state.launchDomains.netName(netId);
     std::string msg;
     llvm::raw_string_ostream(msg)
@@ -508,10 +507,10 @@ void verifyCopy(CopyOp copyOp, const LaunchNodeDomain &current,
            "wrap the copy in `"
         << name << ".if_src(...)` or guard with `if " << name
         << ".is_src(): ...`";
-    checkKnownSubset(
-        copyOp, current,
-        getPipeRecordsRoleLaunchNodeDomain(selected->records, PipeRole::Source),
-        unanalyzable, msg, {{netId, PipeRole::Source}}, state);
+    checkKnownSubset(copyOp, current,
+                     getPipeRecordsRoleLaunchNodeDomain(selectedDst->records,
+                                                        PipeRole::Source),
+                     unanalyzable, msg, {{netId, PipeRole::Source}}, state);
     return;
   }
   if (auto srcPipeType = mlir::dyn_cast<PipeType>(copyOp.getSrc().getType())) {
@@ -531,9 +530,10 @@ void verifyCopy(CopyOp copyOp, const LaunchNodeDomain &current,
                      state);
     return;
   }
-  if (std::optional<SelectedPipeRecords> selected =
-          getSelectedPipeRecords(copyOp.getSrc())) {
-    int64_t netId = selected->records.getPipeNetId();
+  FailureOr<SelectedPipeRecords> selectedSrc =
+      getSelectedPipeRecords(copyOp.getSrc());
+  if (succeeded(selectedSrc)) {
+    int64_t netId = selectedSrc->records.getPipeNetId();
     std::string name = state.launchDomains.netName(netId);
     std::string msg;
     llvm::raw_string_ostream(msg)
@@ -543,7 +543,7 @@ void verifyCopy(CopyOp copyOp, const LaunchNodeDomain &current,
         << name << ".if_dst(...)` or guard with `if " << name
         << ".is_dst(): ...`";
     checkKnownSubset(copyOp, current,
-                     getPipeRecordsRoleLaunchNodeDomain(selected->records,
+                     getPipeRecordsRoleLaunchNodeDomain(selectedSrc->records,
                                                         PipeRole::Destination),
                      unanalyzable, msg, {{netId, PipeRole::Destination}},
                      state);
