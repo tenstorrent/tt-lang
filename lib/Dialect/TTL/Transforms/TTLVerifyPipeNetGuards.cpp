@@ -27,7 +27,6 @@
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
-#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/CheckedArithmetic.h"
@@ -36,6 +35,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <tuple>
@@ -98,11 +98,15 @@ void checkKnownSubset(Operation *op, const LaunchNodeDomain &current,
                       ArrayRef<std::pair<int64_t, PipeRole>> roles,
                       ModuleState &state);
 
-struct ModuleState : LaunchNodeDomainState {
-  explicit ModuleState(const PipeTransferIndex &transfers)
-      : transfers(transfers) {}
+/// Mutable facts recorded during one verifier pass.
+struct ModuleState {
+  ModuleState(const PipeTransferIndex &transfers,
+              const LaunchNodeDomainState &launchDomains)
+      : transfers(transfers), launchDomains(launchDomains) {}
 
   const PipeTransferIndex &transfers;
+  const LaunchNodeDomainState &launchDomains;
+  bool sawError = false;
   llvm::DenseMap<int64_t, LaunchNodeDomain> cbProducerDomains;
   SmallVector<WaitUse> waitUses;
   SmallVector<PipeEvent> pipeEvents;
@@ -123,8 +127,8 @@ struct ModuleState : LaunchNodeDomainState {
       auto pipeType = mlir::cast<PipeType>(copyOp.getSrc().getType());
       event.pipeType = pipeType;
       event.kind = PipeEventKind::ReceivePost;
-      event.domain = domain.intersectWith(
-          getPipeDestinationLaunchNodeDomain(pipeType, baseDomain));
+      event.domain = domain.intersectWith(getPipeDestinationLaunchNodeDomain(
+          pipeType, launchDomains.baseDomain));
     } else {
       return;
     }
@@ -154,7 +158,7 @@ struct ModuleState : LaunchNodeDomainState {
     event.pipeType = pipeType;
     event.kind = PipeEventKind::ReceiveWait;
     event.domain = domain.intersectWith(
-        getPipeDestinationLaunchNodeDomain(pipeType, baseDomain));
+        getPipeDestinationLaunchNodeDomain(pipeType, launchDomains.baseDomain));
     event.unanalyzableOp = unanalyzableOp;
     event.receivePost = copyOp.getOperation();
 
@@ -188,11 +192,15 @@ public:
   /// Compute and retain the final launch-node dataflow facts for `root`.
   explicit PipeNetLaunchNodeDomainAnalysis(Operation *root) {
     auto module = mlir::cast<ModuleOp>(root);
-    LaunchNodeDomainState state;
     state.initialize(module);
+    if (!state.hasPipes()) {
+      valid = true;
+      return;
+    }
+    if (!state.hasLaunchGrid) {
+      return;
+    }
 
-    // LaunchNodeDomainAnalysis retains a reference to state. Declaring the
-    // solver second ensures that it is destroyed before state.
     DataFlowSolver solver;
     dataflow::loadBaselineAnalyses(solver);
     LaunchNodeDomainAnalysisOptions options;
@@ -214,6 +222,9 @@ public:
   /// Return whether dataflow completed without errors.
   bool isValid() const { return valid; }
 
+  /// Return the module metadata and cached execution-count analyses.
+  const LaunchNodeDomainState &getState() const { return state; }
+
   /// Return final launch-node facts for `op`, if it was analyzed.
   const PipeNetOperationDomainInfo *getOperationInfo(Operation *op) const {
     auto infoIt = operationDomains.find(op);
@@ -227,6 +238,7 @@ public:
   }
 
 private:
+  LaunchNodeDomainState state;
   llvm::DenseMap<Operation *, PipeNetOperationDomainInfo> operationDomains;
   llvm::DenseMap<Operation *, PipeNetScopeDomainInfo> scopeDomains;
   /// Whether analysis completed without an unsupported or invalid construct.
@@ -272,7 +284,7 @@ std::string formatGuardExpression(ArrayRef<std::pair<int64_t, PipeRole>> roles,
     first = false;
     StringRef method =
         (hasSrc && hasDst) ? "is_active" : (hasSrc ? "is_src" : "is_dst");
-    os << state.netName(id) << "." << method << "()";
+    os << state.launchDomains.netName(id) << "." << method << "()";
   }
   return buffer;
 }
@@ -288,7 +300,7 @@ void verifyPipeWaitGuard(WaitOp waitOp, const LaunchNodeDomain &domain,
 
   auto pipeType = mlir::cast<PipeType>(maybeCopyOp->getSrc().getType());
   int64_t netId = pipeType.getPipeNetId();
-  std::string name = state.netName(netId);
+  std::string name = state.launchDomains.netName(netId);
   std::string message;
   llvm::raw_string_ostream(message)
       << "this `ttl.wait` waits for a pipe receive on launched nodes "
@@ -296,10 +308,11 @@ void verifyPipeWaitGuard(WaitOp waitOp, const LaunchNodeDomain &domain,
       << name << "; keep the wait under the same `if " << name
       << ".is_dst(): ...` or `" << name
       << ".if_dst(...)` guard as the receive copy";
-  checkKnownSubset(
-      waitOp, domain,
-      getPipeDestinationLaunchNodeDomain(pipeType, state.baseDomain),
-      unanalyzableOp, message, {{netId, PipeRole::Destination}}, state);
+  checkKnownSubset(waitOp, domain,
+                   getPipeDestinationLaunchNodeDomain(
+                       pipeType, state.launchDomains.baseDomain),
+                   unanalyzableOp, message, {{netId, PipeRole::Destination}},
+                   state);
 }
 
 // Emit an op error when `current` is not a subset of `allowed`. Attaches an
@@ -335,12 +348,13 @@ void checkKnownSubset(Operation *op, const LaunchNodeDomain &current,
                       << "core_x=" << example.x << ", core_y=" << example.y;
   }
   for (auto &p : roles) {
-    auto it = state.pipeNetLocs.find(p.first);
-    if (it == state.pipeNetLocs.end() || it->second.empty()) {
+    auto it = state.launchDomains.pipeNetLocs.find(p.first);
+    if (it == state.launchDomains.pipeNetLocs.end() || it->second.empty()) {
       continue;
     }
     diag.attachNote(it->second.front())
-        << "PipeNet " << state.netName(p.first) << " declared here";
+        << "PipeNet " << state.launchDomains.netName(p.first)
+        << " declared here";
   }
   state.sawError = true;
 }
@@ -351,7 +365,7 @@ void verifyCopy(CopyOp copyOp, const LaunchNodeDomain &current,
                 Operation *unanalyzable, ModuleState &state) {
   if (auto dstPipeType = mlir::dyn_cast<PipeType>(copyOp.getDst().getType())) {
     int64_t netId = dstPipeType.getPipeNetId();
-    std::string name = state.netName(netId);
+    std::string name = state.launchDomains.netName(netId);
     std::string msg;
     llvm::raw_string_ostream(msg)
         << "this `ttl.copy(buffer, pipe)` sends data on PipeNet " << name
@@ -366,7 +380,7 @@ void verifyCopy(CopyOp copyOp, const LaunchNodeDomain &current,
   }
   if (auto srcPipeType = mlir::dyn_cast<PipeType>(copyOp.getSrc().getType())) {
     int64_t netId = srcPipeType.getPipeNetId();
-    std::string name = state.netName(netId);
+    std::string name = state.launchDomains.netName(netId);
     std::string msg;
     llvm::raw_string_ostream(msg)
         << "this `ttl.copy(pipe, buffer)` receives data from PipeNet " << name
@@ -374,10 +388,11 @@ void verifyCopy(CopyOp copyOp, const LaunchNodeDomain &current,
            "net; wrap the copy in `"
         << name << ".if_dst(...)` or guard with `if " << name
         << ".is_dst(): ...`";
-    checkKnownSubset(
-        copyOp, current,
-        getPipeDestinationLaunchNodeDomain(srcPipeType, state.baseDomain),
-        unanalyzable, msg, {{netId, PipeRole::Destination}}, state);
+    checkKnownSubset(copyOp, current,
+                     getPipeDestinationLaunchNodeDomain(
+                         srcPipeType, state.launchDomains.baseDomain),
+                     unanalyzable, msg, {{netId, PipeRole::Destination}},
+                     state);
   }
 }
 
@@ -400,8 +415,9 @@ void verifyPipeNetScope(PipeNetScopeOp scopeOp, const LaunchNodeDomain &domain,
       os << "s";
     }
     os << " ";
-    llvm::interleaveComma(uniqueIds, os,
-                          [&](int64_t id) { os << state.netName(id); });
+    llvm::interleaveComma(uniqueIds, os, [&](int64_t id) {
+      os << state.launchDomains.netName(id);
+    });
     os << " on launched nodes that are not part of "
        << (uniqueIds.size() == 1 ? "that net" : "those nets")
        << "; wrap the surrounding work in `if "
@@ -859,10 +875,11 @@ void emitPipeScheduleCycleDiagnostic(ArrayRef<PipeScheduleNode> nodes,
   if (auto waitBeforeSend = findReceiveWaitBeforeCompletingSend(nodes, cycle)) {
     const PipeScheduleNode &waitNode = nodes[waitBeforeSend->first];
     const PipeScheduleNode &sendNode = nodes[waitBeforeSend->second];
-    auto diag = waitNode.op->emitOpError()
-                << "receive wait occurs before the send that completes it on "
-                   "PipeNet "
-                << state.netName(waitNode.pipeType.getPipeNetId());
+    auto diag =
+        waitNode.op->emitOpError()
+        << "receive wait occurs before the send that completes it on "
+           "PipeNet "
+        << state.launchDomains.netName(waitNode.pipeType.getPipeNetId());
     diag.attachNote(waitNode.op->getLoc())
         << "this wait blocks until the sender transfers into the posted "
            "destination dataflow buffer slot";
@@ -879,10 +896,11 @@ void emitPipeScheduleCycleDiagnostic(ArrayRef<PipeScheduleNode> nodes,
   if (auto sendBeforePost = findSendBeforeReceivePost(nodes, cycle)) {
     const PipeScheduleNode &sendNode = nodes[sendBeforePost->first];
     const PipeScheduleNode &postNode = nodes[sendBeforePost->second];
-    auto diag = sendNode.op->emitOpError()
-                << "pipe send occurs before the receiver posts a dataflow "
-                   "buffer reservation on PipeNet "
-                << state.netName(sendNode.pipeType.getPipeNetId());
+    auto diag =
+        sendNode.op->emitOpError()
+        << "pipe send occurs before the receiver posts a dataflow "
+           "buffer reservation on PipeNet "
+        << state.launchDomains.netName(sendNode.pipeType.getPipeNetId());
     diag.attachNote(sendNode.op->getLoc())
         << "this send waits for each destination to post "
            "`ttl.copy(pipe, dst)`";
@@ -900,7 +918,7 @@ void emitPipeScheduleCycleDiagnostic(ArrayRef<PipeScheduleNode> nodes,
   const PipeScheduleNode &node = nodes[cycle.front()];
   auto diag = node.op->emitOpError()
               << "pipe schedule contains a wait-for cycle on PipeNet "
-              << state.netName(node.pipeType.getPipeNetId())
+              << state.launchDomains.netName(node.pipeType.getPipeNetId())
               << "; post the receive before the dependent send, or place the "
                  "send and receive in separate data-movement threads";
 
@@ -923,7 +941,7 @@ getPipeExecutionCountExpression(const PipeScheduleNode &node,
   PipeExecutionCountExpression expression;
   auto collectFactor = [&](Operation *op) -> LogicalResult {
     std::optional<std::uint64_t> maybeCount =
-        getExactExecutionCountAtLaunchNode(op, node.coord, state);
+        getExactExecutionCountAtLaunchNode(op, node.coord, state.launchDomains);
     if (!maybeCount) {
       expression.unresolvedOps.push_back(op);
       return success();
@@ -994,8 +1012,9 @@ bool proveEqualPipeScheduleNodeCounts(const PipeScheduleNode &lhs,
           return resolveFunctionArgument(argument, rhs.callSites);
         };
         return proveEqualUnresolvedExecutionCountAtLaunchNodes(
-            std::get<0>(pair), lhs.coord, std::get<1>(pair), rhs.coord, state,
-            resolveLhsFunctionArgument, resolveRhsFunctionArgument);
+            std::get<0>(pair), lhs.coord, std::get<1>(pair), rhs.coord,
+            state.launchDomains, resolveLhsFunctionArgument,
+            resolveRhsFunctionArgument);
       });
 }
 
@@ -1089,7 +1108,7 @@ private:
     post.op->emitOpError()
         << "cannot prove that each repeated receiver post is consumed before "
            "the next post on PipeNet "
-        << state.netName(post.pipeType.getPipeNetId())
+        << state.launchDomains.netName(post.pipeType.getPipeNetId())
         << " at core_x=" << post.coord.x << ", core_y=" << post.coord.y
         << "; receiver-published addressing supports one outstanding post per "
            "pipe";
@@ -1111,7 +1130,7 @@ private:
     auto diag = nextPost.op->emitOpError()
                 << "receiver post may overwrite an outstanding posted address "
                    "on PipeNet "
-                << state.netName(nextPost.pipeType.getPipeNetId())
+                << state.launchDomains.netName(nextPost.pipeType.getPipeNetId())
                 << " at core_x=" << nextPost.coord.x
                 << ", core_y=" << nextPost.coord.y
                 << "; receiver-published addressing supports one outstanding "
@@ -1158,7 +1177,8 @@ void emitPipeOccurrenceCountError(ArrayRef<PipeScheduleNode> nodes,
   LaunchNodeCoord firstCoord = receiverCoords.front();
   auto diag = nodes[unmatchedNode].op->emitOpError()
               << "PipeNet "
-              << state.netName(nodes[unmatchedNode].pipeType.getPipeNetId())
+              << state.launchDomains.netName(
+                     nodes[unmatchedNode].pipeType.getPipeNetId())
               << " requires one static " << predecessorName
               << " definition for each static " << successorName
               << " definition at receiver core_x=" << firstCoord.x
@@ -1202,7 +1222,8 @@ LogicalResult addPipeOccurrenceEdges(SmallVectorImpl<PipeScheduleNode> &nodes,
       auto diag = nodes[successor].op->emitOpError()
                   << "cannot prove a one-to-one synchronization schedule on "
                      "PipeNet "
-                  << state.netName(nodes[successor].pipeType.getPipeNetId())
+                  << state.launchDomains.netName(
+                         nodes[successor].pipeType.getPipeNetId())
                   << " for receiver core_x=" << receiverCoord.x
                   << ", core_y=" << receiverCoord.y << "; " << predecessorName
                   << " and " << successorName
@@ -1224,13 +1245,14 @@ bool hasZeroExecutionCount(ArrayRef<PipeCallSite> callSites, Operation *op,
                            LaunchNodeCoord coord, ModuleState &state) {
   if (llvm::any_of(callSites, [&](const PipeCallSite &callSite) {
         std::optional<std::uint64_t> maybeCount =
-            getExactExecutionCountAtLaunchNode(callSite.call, coord, state);
+            getExactExecutionCountAtLaunchNode(callSite.call, coord,
+                                               state.launchDomains);
         return maybeCount && *maybeCount == 0;
       })) {
     return true;
   }
   std::optional<std::uint64_t> maybeCount =
-      getExactExecutionCountAtLaunchNode(op, coord, state);
+      getExactExecutionCountAtLaunchNode(op, coord, state.launchDomains);
   return maybeCount && *maybeCount == 0;
 }
 
@@ -1483,7 +1505,7 @@ WalkResult walkPipeEventsInProgramOrder(
 void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
   SmallVector<PipeScheduleNode> nodes;
   llvm::MapVector<PipeIdentity, PipeOccurrences> pipeOccurrences;
-  llvm::DenseMap<PipeCoordIdentity, SmallVector<PipeScheduleNodeId>>
+  llvm::MapVector<PipeCoordIdentity, SmallVector<PipeScheduleNodeId>>
       receivePostNodes;
   llvm::DenseMap<PipeCoordIdentity, SmallVector<PipeScheduleNodeId>>
       receiveWaitNodes;
@@ -1593,7 +1615,7 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
 
   for (const auto &[pipeIdentity, occurrences] : pipeOccurrences) {
     LaunchNodeDomain destinations = getPipeDestinationLaunchNodeDomain(
-        occurrences.pipeType, state.baseDomain);
+        occurrences.pipeType, state.launchDomains.baseDomain);
     auto getReceiverNodes = [](auto &nodesByCoord,
                                const PipeCoordIdentity &identity) {
       auto nodeIt = nodesByCoord.find(identity);
@@ -1674,12 +1696,13 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
       if (postsWithInvalidCorrespondence.contains(*maybePostNode)) {
         continue;
       }
-      auto diag = waitNode.op->emitOpError()
-                  << "receive wait has no send corresponding to its defining "
-                     "receiver post on PipeNet "
-                  << state.netName(waitNode.pipeType.getPipeNetId())
-                  << " at core_x=" << waitNode.coord.x
-                  << ", core_y=" << waitNode.coord.y;
+      auto diag =
+          waitNode.op->emitOpError()
+          << "receive wait has no send corresponding to its defining "
+             "receiver post on PipeNet "
+          << state.launchDomains.netName(waitNode.pipeType.getPipeNetId())
+          << " at core_x=" << waitNode.coord.x
+          << ", core_y=" << waitNode.coord.y;
       diag.attachNote(nodes[*maybePostNode].op->getLoc())
           << "defining receiver post is here";
       state.sawError = true;
@@ -1692,8 +1715,7 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
 
   PipeRendezvousLifetimeAnalysis lifetimeAnalysis(nodes, completingSendByPost,
                                                   waitsByPost, state);
-  for (const auto &[identity, postNodes] : receivePostNodes) {
-    (void)identity;
+  for (const auto &postNodes : llvm::make_second_range(receivePostNodes)) {
     if (failed(lifetimeAnalysis.verify(postNodes))) {
       state.sawError = true;
     }
@@ -1707,16 +1729,19 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
 
 // Walk the module and report any `pipenet_scope` or PipeNetPredicate that
 // references a PipeNet id not declared by some `ttl.create_pipe`.
-void validatePipeNetReferences(ModuleOp module, ModuleState &state) {
+LogicalResult
+validatePipeNetReferences(ModuleOp module,
+                          const LaunchNodeDomainState &launchDomains) {
+  LogicalResult result = success();
   module.walk([&](Operation *op) {
     auto report = [&](int64_t netId) {
-      op->emitOpError() << "references unknown PipeNet " << state.netName(netId)
-                        << " (id " << netId
+      op->emitOpError() << "references unknown PipeNet "
+                        << launchDomains.netName(netId) << " (id " << netId
                         << "); no `ttl.create_pipe` declares this net";
-      state.sawError = true;
+      result = failure();
     };
     if (auto pred = mlir::dyn_cast<PipeNetPredicateOpInterface>(op)) {
-      if (!state.pipeNetLocs.count(pred.getReferencedPipeNetId())) {
+      if (!launchDomains.pipeNetLocs.count(pred.getReferencedPipeNetId())) {
         report(pred.getReferencedPipeNetId());
       }
       return;
@@ -1725,22 +1750,25 @@ void validatePipeNetReferences(ModuleOp module, ModuleState &state) {
       SmallVector<int64_t> ids;
       if (readPipeNetScopeIds(scopeOp, ids)) {
         for (int64_t id : ids) {
-          if (!state.pipeNetLocs.count(id)) {
+          if (!launchDomains.pipeNetLocs.count(id)) {
             report(id);
           }
         }
       }
     }
   });
+  return result;
 }
 
 /// Verify that every declared pipe endpoint belongs to the module launch grid.
-LogicalResult validatePipeEndpoints(ModuleOp module, const ModuleState &state) {
+LogicalResult
+validatePipeEndpoints(ModuleOp module,
+                      const LaunchNodeDomainState &launchDomains) {
   LogicalResult result = success();
   module.walk([&](CreatePipeOp pipe) {
     PipeType pipeType = mlir::cast<PipeType>(pipe.getResult().getType());
     LaunchNodeCoord source{pipeType.getSrcX(), pipeType.getSrcY()};
-    if (!knownLaunchNodeDomainContains(state.baseDomain, source)) {
+    if (!knownLaunchNodeDomainContains(launchDomains.baseDomain, source)) {
       pipe.emitOpError() << "declares source core_x=" << source.x
                          << ", core_y=" << source.y
                          << " outside the module `ttl.launch_grid`";
@@ -1751,8 +1779,10 @@ LogicalResult validatePipeEndpoints(ModuleOp module, const ModuleState &state) {
                                      pipeType.getDstStartY()};
     LaunchNodeCoord destinationEnd{pipeType.getDstEndX(),
                                    pipeType.getDstEndY()};
-    if (!knownLaunchNodeDomainContains(state.baseDomain, destinationStart) ||
-        !knownLaunchNodeDomainContains(state.baseDomain, destinationEnd)) {
+    if (!knownLaunchNodeDomainContains(launchDomains.baseDomain,
+                                       destinationStart) ||
+        !knownLaunchNodeDomainContains(launchDomains.baseDomain,
+                                       destinationEnd)) {
       pipe.emitOpError() << "declares destination range core_x="
                          << pipeType.getDstStartX() << ".."
                          << pipeType.getDstEndX()
@@ -1765,30 +1795,46 @@ LogicalResult validatePipeEndpoints(ModuleOp module, const ModuleState &state) {
   return result;
 }
 
-/// Initialize the shared PipeNet metadata required by both verification passes.
-LogicalResult initializePipeNetVerification(ModuleOp module, ModuleState &state,
-                                            StringRef passName) {
-  state.initialize(module);
-  validatePipeNetReferences(module, state);
-  if (state.sawError) {
+/// Validate the module properties required by both PipeNet verifiers.
+LogicalResult validatePipeNetModule(ModuleOp module,
+                                    const LaunchNodeDomainState &launchDomains,
+                                    StringRef passName) {
+  if (failed(validatePipeNetReferences(module, launchDomains))) {
     return failure();
   }
-  if (!state.hasPipes()) {
+  if (!launchDomains.hasPipes()) {
     return success();
   }
-  if (!state.hasLaunchGrid) {
+  if (!launchDomains.hasLaunchGrid) {
     module.emitError() << passName
                        << " requires a `ttl.launch_grid` module attribute "
                           "(an i64 array of length 2 with positive entries)";
     return failure();
   }
-  return validatePipeEndpoints(module, state);
+  return validatePipeEndpoints(module, launchDomains);
 }
 
 struct TTLVerifyPipeNetGuardsPass
     : impl::TTLVerifyPipeNetGuardsBase<TTLVerifyPipeNetGuardsPass> {
   void runOnOperation() override {
     ModuleOp module = getOperation();
+
+    const PipeNetLaunchNodeDomainAnalysis &launchNodeAnalysis =
+        getAnalysis<PipeNetLaunchNodeDomainAnalysis>();
+    const LaunchNodeDomainState &launchDomains = launchNodeAnalysis.getState();
+    if (failed(validatePipeNetModule(module, launchDomains,
+                                     "ttl-verify-pipenet-guards"))) {
+      signalPassFailure();
+      return;
+    }
+    if (!launchDomains.hasPipes()) {
+      markAllAnalysesPreserved();
+      return;
+    }
+    if (!launchNodeAnalysis.isValid()) {
+      signalPassFailure();
+      return;
+    }
 
     ValueOriginAnalysis &valueOrigins = getAnalysis<ValueOriginAnalysis>();
     FailureOr<std::unique_ptr<PipeTransferIndex>> maybeTransfers =
@@ -1797,31 +1843,16 @@ struct TTLVerifyPipeNetGuardsPass
       signalPassFailure();
       return;
     }
-    ModuleState state(**maybeTransfers);
-    if (failed(initializePipeNetVerification(module, state,
-                                             "ttl-verify-pipenet-guards"))) {
-      signalPassFailure();
-      return;
-    }
-    if (!state.hasPipes()) {
-      markAllAnalysesPreserved();
-      return;
-    }
+    ModuleState state(**maybeTransfers, launchDomains);
 
-    const PipeNetLaunchNodeDomainAnalysis &launchDomains =
-        getAnalysis<PipeNetLaunchNodeDomainAnalysis>();
-    if (!launchDomains.isValid()) {
-      signalPassFailure();
-      return;
-    }
     module.walk([&](Operation *op) {
       if (const PipeNetOperationDomainInfo *info =
-              launchDomains.getOperationInfo(op)) {
+              launchNodeAnalysis.getOperationInfo(op)) {
         recordGuardOperation(op, info->domain, info->unanalyzableOp, state);
       }
       if (auto scopeOp = mlir::dyn_cast<PipeNetScopeOp>(op)) {
         if (const PipeNetScopeDomainInfo *info =
-                launchDomains.getScopeInfo(scopeOp)) {
+                launchNodeAnalysis.getScopeInfo(scopeOp)) {
           verifyPipeNetScope(scopeOp, info->domain, info->scope, state);
         }
       }
@@ -1841,6 +1872,23 @@ struct TTLVerifyPipeNetSchedulePass
   void runOnOperation() override {
     ModuleOp module = getOperation();
 
+    const PipeNetLaunchNodeDomainAnalysis &launchNodeAnalysis =
+        getAnalysis<PipeNetLaunchNodeDomainAnalysis>();
+    const LaunchNodeDomainState &launchDomains = launchNodeAnalysis.getState();
+    if (failed(validatePipeNetModule(module, launchDomains,
+                                     "ttl-verify-pipenet-schedule"))) {
+      signalPassFailure();
+      return;
+    }
+    if (!launchDomains.hasPipes()) {
+      markAllAnalysesPreserved();
+      return;
+    }
+    if (!launchNodeAnalysis.isValid()) {
+      signalPassFailure();
+      return;
+    }
+
     ValueOriginAnalysis &valueOrigins = getAnalysis<ValueOriginAnalysis>();
     FailureOr<std::unique_ptr<PipeTransferIndex>> maybeTransfers =
         PipeTransferIndex::create(module, valueOrigins);
@@ -1848,26 +1896,11 @@ struct TTLVerifyPipeNetSchedulePass
       signalPassFailure();
       return;
     }
-    ModuleState state(**maybeTransfers);
-    if (failed(initializePipeNetVerification(module, state,
-                                             "ttl-verify-pipenet-schedule"))) {
-      signalPassFailure();
-      return;
-    }
-    if (!state.hasPipes()) {
-      markAllAnalysesPreserved();
-      return;
-    }
+    ModuleState state(**maybeTransfers, launchDomains);
 
-    const PipeNetLaunchNodeDomainAnalysis &launchDomains =
-        getAnalysis<PipeNetLaunchNodeDomainAnalysis>();
-    if (!launchDomains.isValid()) {
-      signalPassFailure();
-      return;
-    }
     module.walk([&](Operation *op) {
       if (const PipeNetOperationDomainInfo *info =
-              launchDomains.getOperationInfo(op)) {
+              launchNodeAnalysis.getOperationInfo(op)) {
         recordScheduleOperation(op, info->domain, info->unanalyzableOp, state);
       }
     });

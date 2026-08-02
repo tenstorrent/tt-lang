@@ -1320,8 +1320,7 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod,
       static_cast<int64_t>(pipesByCompletionCounterColor.size());
 
   int64_t maxReadyCountersPerSource = 0;
-  for (const auto &[sourceKey, colorUsers] : colorUsersBySource) {
-    (void)sourceKey;
+  for (const auto &colorUsers : llvm::make_second_range(colorUsersBySource)) {
     maxReadyCountersPerSource =
         std::max<int64_t>(maxReadyCountersPerSource, colorUsers.size());
   }
@@ -1346,8 +1345,7 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod,
   }
 
   int64_t maxAddressTableBytes = 0;
-  for (const auto &[sourceKey, colorUsers] : colorUsersBySource) {
-    (void)sourceKey;
+  for (const auto &colorUsers : llvm::make_second_range(colorUsersBySource)) {
     maxAddressTableBytes = std::max<int64_t>(
         maxAddressTableBytes, colorUsers.size() * kPipeAddressWordBytes);
   }
@@ -1401,8 +1399,8 @@ getPipeResourceRequirements(const PipeResourcePlan &info) {
   };
 
   RequirementsObserver observer;
-  for (const auto &[protocolOp, resource] : info.resources) {
-    (void)protocolOp;
+  for (const PipeResourceInfo &resource :
+       llvm::make_second_range(info.resources)) {
     observer.observeLocalSemaphore(
         resource.completion.receiverCompletionSemIdx);
     resource.readyCounter.observe(observer);
@@ -1446,8 +1444,8 @@ verifyPipeResourcePlanFitsHardware(ModuleOp mod, const PipeResourcePlan &info,
   };
 
   HighestSemaphore highest;
-  for (const auto &[protocolOp, resource] : info.resources) {
-    (void)protocolOp;
+  for (const PipeResourceInfo &resource :
+       llvm::make_second_range(info.resources)) {
     if (resource.completion.receiverCompletionSemIdx > highest.index) {
       highest =
           HighestSemaphore{resource.completion.receiverCompletionSemIdx,
