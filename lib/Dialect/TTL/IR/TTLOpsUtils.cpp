@@ -248,9 +248,10 @@ FusionTraceResult traceFusionToRoots(
     llvm::function_ref<bool(mlir::OpOperand &)> isMaterializationPlanned) {
   FusionTraceResult result;
 
-  // Base case: CB-attached value is a root
+  // A DFB-attached value is an available input to the fused computation.
   if (getAttachedCB(value)) {
     result.rootInputs.insert(value);
+    result.lifetimeRootInputs.insert(value);
     return result;
   }
 
@@ -261,40 +262,49 @@ FusionTraceResult traceFusionToRoots(
     return result;
   }
 
-  // Special case: BlockBroadcastOp can be fused when its input is CB-attached.
+  // BlockBroadcastOp is a fusion leaf because its input must be DFB-attached.
   if (auto bcastOp = llvm::dyn_cast<BlockBroadcastOp>(defOp)) {
     mlir::OpOperand &inputOperand = bcastOp->getOpOperand(0);
     mlir::Value bcastInput = inputOperand.get();
-    if (isMaterializationPlanned(inputOperand) || getAttachedCB(bcastInput)) {
+    bool isInputMaterialized = isMaterializationPlanned(inputOperand);
+    if (isInputMaterialized || getAttachedCB(bcastInput)) {
       result.rootInputs.insert(bcastInput);
+      if (!isInputMaterialized) {
+        result.lifetimeRootInputs.insert(bcastInput);
+      }
       result.opsInOrder.insert(defOp);
       return result;
     }
-    // Bcast recognized but input not CB-attached.
+    // The broadcast cannot be formed until its input is materialized.
     result.failureReason = TraceFailureReason::NotCBAttached;
     result.failedValue = bcastInput;
     result.failedOperand = &inputOperand;
     return result;
   }
 
-  // Special case: MatmulOp with CB-attached inputs is a fusable leaf.
-  // Both inputs become roots; the trace does not recurse into the matmul.
+  // MatmulOp is a fusion leaf because both inputs must be DFB-attached.
   if (auto matmulOp = llvm::dyn_cast<MatmulOp>(defOp)) {
     mlir::OpOperand &lhsOperand = matmulOp->getOpOperand(0);
     mlir::OpOperand &rhsOperand = matmulOp->getOpOperand(1);
     mlir::Value lhs = lhsOperand.get();
     mlir::Value rhs = rhsOperand.get();
-    bool lhsAvailable =
-        isMaterializationPlanned(lhsOperand) || getAttachedCB(lhs);
-    bool rhsAvailable =
-        isMaterializationPlanned(rhsOperand) || getAttachedCB(rhs);
+    bool isLhsMaterialized = isMaterializationPlanned(lhsOperand);
+    bool isRhsMaterialized = isMaterializationPlanned(rhsOperand);
+    bool lhsAvailable = isLhsMaterialized || getAttachedCB(lhs);
+    bool rhsAvailable = isRhsMaterialized || getAttachedCB(rhs);
     if (lhsAvailable && rhsAvailable) {
       result.rootInputs.insert(lhs);
       result.rootInputs.insert(rhs);
+      if (!isLhsMaterialized) {
+        result.lifetimeRootInputs.insert(lhs);
+      }
+      if (!isRhsMaterialized) {
+        result.lifetimeRootInputs.insert(rhs);
+      }
       result.opsInOrder.insert(defOp);
       return result;
     }
-    // Matmul recognized but inputs not CB-attached.
+    // The matmul cannot be formed until both inputs are materialized.
     result.failureReason = TraceFailureReason::NotCBAttached;
     result.failedValue = lhsAvailable ? rhs : lhs;
     result.failedOperand = lhsAvailable ? &rhsOperand : &lhsOperand;
@@ -334,6 +344,9 @@ FusionTraceResult traceFusionToRoots(
     // Merge roots and ops (SmallSetVector handles deduplication)
     for (mlir::Value root : operandTrace.rootInputs) {
       result.rootInputs.insert(root);
+    }
+    for (mlir::Value root : operandTrace.lifetimeRootInputs) {
+      result.lifetimeRootInputs.insert(root);
     }
     for (mlir::Operation *op : operandTrace.opsInOrder) {
       result.opsInOrder.insert(op);

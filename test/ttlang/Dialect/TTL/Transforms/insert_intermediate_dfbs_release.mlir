@@ -2,6 +2,7 @@
 // otherwise release one of its fused source values.
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-form-producer-compute,ttl-insert-intermediate-dfbs,convert-ttl-to-compute,ttl-auto-sync))' | FileCheck %s
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-print-compute-formation-plans))' -o /dev/null 2>&1 | FileCheck %s --check-prefix=PLAN
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-form-producer-compute,ttl-print-compute-formation-plans))' -o /dev/null 2>&1 | FileCheck %s --check-prefix=ELIDED-PLAN
 
 // CHECK-LABEL: func.func @preserve_before_release
 // CHECK: %[[DELTA_DFB:.*]] = ttl.bind_cb{{.*}}cb_index = 1
@@ -366,6 +367,68 @@ func.func @defer_absorbed_candidate()
       : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.store %outer, %final
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+        tensor<1x1x!ttcore.tile<32x32, bf16>>
+  return
+}
+
+// -----
+
+// Identity typecast elision retains the input DFB's storage. If that storage
+// may be released before a DFB-input consumer, one compiler DFB preserves the
+// value and the replacement storage no longer constrains later formation.
+// CHECK-LABEL: func.func @materialize_released_input_after_identity_elision
+// CHECK: %[[INPUT_DFB:.*]] = ttl.bind_cb{{.*}}cb_index = 0
+// CHECK: %[[INTERMEDIATE_DFB:.*]] = ttl.bind_cb{{.*}}ttl.compiler_allocated
+// CHECK-NOT: ttl.bind_cb{{.*}}ttl.compiler_allocated
+// CHECK: %[[INPUT_WAIT:.*]] = ttl.cb_wait %[[INPUT_DFB]]
+// CHECK: %[[INPUT:.*]] = ttl.attach_cb %[[INPUT_WAIT]], %[[INPUT_DFB]]
+// CHECK-NOT: ttl.typecast
+// CHECK: ttl.compute ins(%[[INPUT]] :
+// CHECK: ttl.cb_push %[[INTERMEDIATE_DFB]]
+// CHECK: %[[INTERMEDIATE_WAIT:.*]] = ttl.cb_wait %[[INTERMEDIATE_DFB]]
+// CHECK: %[[INTERMEDIATE:.*]] = ttl.attach_cb %[[INTERMEDIATE_WAIT]], %[[INTERMEDIATE_DFB]]
+// CHECK: ttl.cb_pop %[[INPUT_DFB]]
+// CHECK: ttl.compute ins(%[[INTERMEDIATE]],
+// ELIDED-PLAN-LABEL: Compute formation plan @materialize_released_input_after_identity_elision
+// ELIDED-PLAN:       M0 {{.*}} operand=0
+// ELIDED-PLAN-NEXT:  reason=dfb-input-may-be-released
+// ELIDED-PLAN-NOT:   M1
+func.func @materialize_released_input_after_identity_elision()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 4], !ttcore.tile<32x32, bf16>, 2>
+  %scaler_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %output_dfb = ttl.bind_cb {cb_index = 2, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %input_wait = ttl.cb_wait %input_dfb
+      : <[1, 4], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x4x!ttcore.tile<32x32, bf16>>
+  %input = ttl.attach_cb %input_wait, %input_dfb
+      : (tensor<1x4x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 4], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x4x!ttcore.tile<32x32, bf16>>
+  %identity = ttl.typecast %input
+      : (tensor<1x4x!ttcore.tile<32x32, bf16>>)
+        -> tensor<1x4x!ttcore.tile<32x32, bf16>>
+  ttl.cb_pop %input_dfb
+      : <[1, 4], !ttcore.tile<32x32, bf16>, 2>
+  %scaler_wait = ttl.cb_wait %scaler_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %scaler = ttl.attach_cb %scaler_wait, %scaler_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %reduced = ttl.reduce %identity, %scaler 0 : i32 [1]
+      : (tensor<1x4x!ttcore.tile<32x32, bf16>>,
+         tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %reduced, %output
       : tensor<1x1x!ttcore.tile<32x32, bf16>>,
         tensor<1x1x!ttcore.tile<32x32, bf16>>
   return

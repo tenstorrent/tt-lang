@@ -239,9 +239,10 @@ users must duplicate explicitly via `make_dataflow_buffer_like`. Tracked in
 `DFBInputOpInterface`, including reduce, block broadcast, matmul, transpose,
 and selected elementwise forms that require DFB-attached operands. For each
 operand that the interface marks as requiring a DFB-attached value, the pass
-checks whether the operand traces to an existing DFB via `getAttachedCB`. If
-not, the pass materializes the value through a fresh compiler-allocated DFB
-marked with `ttl.compiler_allocated`.
+checks whether the operand traces to an existing DFB via `getAttachedCB` and
+whether that storage remains available before the consumer. An unattached or
+possibly released operand is materialized through a fresh compiler-allocated
+DFB marked with `ttl.compiler_allocated`.
 
 The standard pipeline runs this pass after `ttl-form-producer-compute`.
 Values produced by `ttl.compute` are materialized by the compiler-created
@@ -252,6 +253,11 @@ consumers that now receive DFB-attached operands. The following `ttl-auto-sync`
 run inserts the consumer `cb_pop`.
 
 ### DFB Lifetime and Compute Formation Planning
+
+This section defines the DFB ownership, availability, and materialization facts
+used by formation. [ComputeFormation.md](ComputeFormation.md) is the
+authoritative design for candidate construction, fusion, output publication,
+kernel-wide selection, and mechanical application.
 
 `ttl-form-producer-compute`, `ttl-insert-intermediate-dfbs`, and
 `convert-ttl-to-compute` build complete read-only plans before modifying a
@@ -345,62 +351,18 @@ vacuously because the consumer cannot execute.
 
 #### Compute Formation
 
-The compute formation planner first selects a typed construction recipe for
-each supported source. A direct recipe records the operation's declared DFB
-inputs. A fused recipe records the traced external inputs, affine indexing
-roles, tile operations, and supported instrumentation placement. An identity
-typecast records position-preserving elision instead of a compute.
+Formation consumes the availability result at its planned output-store
+position. A direct or fused candidate is legal only when every lifetime root
+is definitely available there. Planned materializations remain compute roots
+but are excluded from lifetime roots because their replacement DFB supplies
+new storage. If another unmaterialized occurrence reads the same SSA value, it
+remains a lifetime root.
 
-A fused recipe may recompute side-effect-free producers from a dominating
-block in the consumer's block. SSA dominance makes every producer operand
-available at the consumer, and the DFB availability analysis separately proves
-that the underlying storage remains available at the new execution point.
-Recomputation therefore preserves the tensor value across `scf.if` and
-`scf.for` region boundaries without creating storage solely for that boundary.
-
-For each non-elided source, all result stores must be in one block and every
-store view must derive from `cb_reserve`. Stores using the same reserve form
-one output transaction. Several reserves of different DFBs may be combined;
-several reserves of the same DFB may not, because combining them would move a
-publication across a later reserve of the same producer pointer.
-
-```
-planFormation(source):
-  recipe, inputs, iteration = planTypedConstruction(source)
-  if recipe is identity elision:
-    return position-preserving plan
-
-  outputs = group result stores by their reserve operations
-  require all stores in one block
-  require each existing push to match every store in its transaction
-  reject if one DFB has more than one output transaction
-
-  insertionPoint = final output store
-  reject unless every input is definitely available at insertionPoint
-  reject unless insertionPoint dominates every surviving result use
-  return immutable construction and publication plan
-```
-
-Kernel planning orders overlapping fused candidates before mutation. For each
-independently scheduled formation that absorbs another candidate without
-erasing it, the planner records a dependency from the absorbing formation to
-the absorbed source. All absorbing formations therefore execute before that
-source's independent formation. A source erased by an absorbing formation is
-not scheduled separately. Identity elisions instead follow SSA definition
-order. Application verifies the recorded operands and uses. It resolves only
-pushes that an earlier formation may have relocated and does not repeat
-semantic analysis on modified IR.
-
-The plan preserves DFB publication order. Every output reserve dominates its
-store and therefore the final insertion point. A push moved after the formed
-compute remains before the next reserve of that DFB, and the one-transaction
-condition prevents a push from crossing a later reserve. The availability
-check proves that every compute input retains its storage at the new execution
-position. The dominance check proves that replacement results reach every use
-that survives earlier formations. When several formations absorb one source,
-the planner finds a preserving use outside the union of all subgraphs erased
-by preceding formations. That use proves the source remains present until its
-own formation executes.
+Output publication planning groups stores by their `cb_reserve` operations and
+prevents one compute from combining several reserve transactions of the same
+DFB. This preserves producer-pointer order when a push moves after the formed
+compute. Kernel-wide selection and application ordering are described in
+`ComputeFormation.md`.
 
 The analysis is kernel-local because formation moves operations only within
 one kernel. Producer and consumer pointer states are separate, and the
@@ -433,7 +395,8 @@ builds or applies a materialization plan. Operand identities remain valid while
 the kernel is unchanged and are checked again before application.
 
 ```
-requirements = unattached operands required by DFBInputOpInterface
+requirements = DFBInputOpInterface operands that are unattached or may be
+               released before their consumer
 
 repeat until requirements does not grow:
   for each ttl.compute result named by an existing requirement:
@@ -446,7 +409,7 @@ repeat until requirements does not grow:
 
   for each supported compute-formation source:
     outputs = plan output transactions
-    inputs = collect inputs, stopping at existing requirements
+    inputs = collect current-storage inputs, stopping at existing requirements
     if tracing stops at an operand produced by ttl.compute or by an operation
        with a standalone compute recipe:
       require that exact operand

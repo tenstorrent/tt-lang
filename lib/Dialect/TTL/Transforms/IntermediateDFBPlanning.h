@@ -37,6 +37,9 @@ enum class IntermediateDFBReason {
   /// The consumer operation requires a DFB-attached operand.
   RequiredDFBOperand,
 
+  /// The consumer's attached input may be released before it executes.
+  DFBInputMayBeReleased,
+
   /// A partial expression would otherwise read a released DFB input.
   ExpressionInputMayBeReleased,
 

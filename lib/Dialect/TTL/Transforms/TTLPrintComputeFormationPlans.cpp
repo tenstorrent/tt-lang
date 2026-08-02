@@ -80,6 +80,8 @@ static StringRef stringifyReason(IntermediateDFBReason reason) {
   switch (reason) {
   case IntermediateDFBReason::RequiredDFBOperand:
     return "required-dfb-operand";
+  case IntermediateDFBReason::DFBInputMayBeReleased:
+    return "dfb-input-may-be-released";
   case IntermediateDFBReason::ExpressionInputMayBeReleased:
     return "expression-input-may-be-released";
   case IntermediateDFBReason::FormationInputMayBeReleased:

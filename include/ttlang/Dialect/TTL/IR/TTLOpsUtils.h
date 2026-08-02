@@ -364,6 +364,14 @@ struct FusionTraceResult {
   /// an operand selected for later materialization may contribute its current,
   /// unattached value.
   llvm::SmallSetVector<mlir::Value, 2> rootInputs;
+
+  /// Roots whose current storage remains an input after planned replacements.
+  ///
+  /// A planned materialization supplies new storage, so that occurrence does
+  /// not constrain formation by the original value's release. If another
+  /// unmaterialized occurrence reaches the same value, it remains in this set.
+  llvm::SmallSetVector<mlir::Value, 2> lifetimeRootInputs;
+
   /// Operations in the chain, topologically ordered (roots first, sink last).
   llvm::SmallSetVector<mlir::Operation *, 4> opsInOrder;
   /// Failure reason (Success if tracing succeeded).
@@ -375,7 +383,7 @@ struct FusionTraceResult {
 };
 
 /// Trace a value through fusable ops (elementwise, matmul, bcast) to
-/// CB-attached roots. On failure, the result's `failureReason` and
+/// DFB-attached roots. On failure, the result's `failureReason` and
 /// `failedValue` are set.
 FusionTraceResult traceFusionToRoots(mlir::Value value);
 

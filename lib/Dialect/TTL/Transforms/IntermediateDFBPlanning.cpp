@@ -110,14 +110,14 @@ addExpressionReleaseRequirements(Operation *elementwiseOp,
           return state.requiresMaterialization(tracedOperand);
         });
     if (trace.failureReason != TraceFailureReason::Success ||
-        !lifetimes.anyValueMayBeReleased(trace.rootInputs.getArrayRef(),
+        !lifetimes.anyValueMayBeReleased(trace.lifetimeRootInputs.getArrayRef(),
                                          elementwiseOp)) {
       continue;
     }
 
     IntermediateDFBEvidence evidence;
     evidence.reason = IntermediateDFBReason::ExpressionInputMayBeReleased;
-    llvm::append_range(evidence.inputs, trace.rootInputs);
+    llvm::append_range(evidence.inputs, trace.lifetimeRootInputs);
     evidence.observation = elementwiseOp;
     state.requireMaterialization(operand, std::move(evidence));
   }
@@ -181,7 +181,7 @@ static LogicalResult addFormationRequirements(
   const OutputPublicationPlan &outputPlan = outputs.getPlan();
 
   FailureOr<SmallVector<Value>> inputs =
-      collectComputeFormationInputs(source, [&](OpOperand &operand) {
+      collectComputeFormationLifetimeInputs(source, [&](OpOperand &operand) {
         return state.requiresMaterialization(operand);
       });
   if (failed(inputs)) {
@@ -430,15 +430,22 @@ PlanningResult<IntermediateDFBPlan> IntermediateDFBPlanner::build() const {
   kernel->walk([&](DFBInputOpInterface dfbInputOp) {
     Operation *operation = dfbInputOp.getOperation();
     for (unsigned operandIndex : dfbInputOp.getDFBInputOperandIndices()) {
-      if (getAttachedCB(operation->getOperand(operandIndex))) {
+      OpOperand &operand = operation->getOpOperand(operandIndex);
+      Value value = operand.get();
+      bool isDFBBacked = static_cast<bool>(getAttachedCB(value));
+      bool mayBeReleased =
+          isDFBBacked && lifetimes.getAvailability(value, operation) ==
+                             DFBValueAvailability::MayBeReleased;
+      if (isDFBBacked && !mayBeReleased) {
         continue;
       }
       IntermediateDFBEvidence evidence;
-      evidence.reason = IntermediateDFBReason::RequiredDFBOperand;
-      evidence.inputs = {operation->getOperand(operandIndex)};
+      evidence.reason = mayBeReleased
+                            ? IntermediateDFBReason::DFBInputMayBeReleased
+                            : IntermediateDFBReason::RequiredDFBOperand;
+      evidence.inputs = {value};
       evidence.observation = operation;
-      state.requireMaterialization(operation->getOpOperand(operandIndex),
-                                   std::move(evidence));
+      state.requireMaterialization(operand, std::move(evidence));
     }
   });
 

@@ -391,20 +391,20 @@ buildOutputPublicationPlan(Operation *source);
 PlanningResult<OutputPublicationPlan>
 resolveOutputPublicationOperations(const OutputPublicationPlan &analyzed);
 
-/// Returns compute inputs after treating selected expression operands as
-/// future DFB-backed values.
+/// Returns current-storage inputs that constrain future compute formation.
 ///
-/// Direct formation contributes every tensor operand in lowering order,
-/// including duplicates. When direct formation is unavailable, fusable
-/// expressions contribute their distinct traced DFB roots. Failure means
-/// `source` has no known compute-formation semantics; an empty successful
-/// result is valid for operations such as `ttl.fill`.
+/// Direct formation contributes every unmaterialized tensor operand in
+/// lowering order, including duplicates. When direct formation is
+/// unavailable, fusable expressions contribute their distinct unmaterialized
+/// DFB roots. Failure means `source` has no known compute-formation semantics.
+/// An empty result is valid when no existing storage constrains execution,
+/// including `ttl.fill` and formations whose inputs are all materialized.
 ///
 /// `isMaterializationPlanned` identifies operands anywhere in the fusable
 /// expression that will be replaced by compiler-DFB values before formation.
-/// Tracing stops at those operands because their original roots are not read by
-/// the eventual compute and do not constrain its later execution position.
-FailureOr<SmallVector<Value>> collectComputeFormationInputs(
+/// The replacement DFB is released after its planned uses, so the original
+/// operand's storage lifetime does not constrain the formation position.
+FailureOr<SmallVector<Value>> collectComputeFormationLifetimeInputs(
     Operation *source,
     llvm::function_ref<bool(OpOperand &)> isMaterializationPlanned);
 

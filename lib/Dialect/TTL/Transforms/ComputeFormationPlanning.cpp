@@ -992,23 +992,35 @@ resolveOutputPublicationOperations(const OutputPublicationPlan &analyzed) {
   return resolveTransactionPushes(analyzed);
 }
 
-FailureOr<SmallVector<Value>> collectComputeFormationInputs(
+FailureOr<SmallVector<Value>> collectComputeFormationLifetimeInputs(
     Operation *source,
     llvm::function_ref<bool(OpOperand &)> isMaterializationPlanned) {
   if (source->getNumResults() != 1) {
     return failure();
   }
 
-  if (std::optional<SmallVector<Value>> directInputs =
-          collectDirectInputs(source, isMaterializationPlanned)) {
-    return std::move(*directInputs);
+  if (std::optional<SmallVector<unsigned>> inputIndices =
+          getDirectInputOperandIndices(source)) {
+    SmallVector<Value> lifetimeInputs;
+    for (unsigned operandIndex : *inputIndices) {
+      OpOperand &operand = source->getOpOperand(operandIndex);
+      if (isMaterializationPlanned(operand)) {
+        continue;
+      }
+      if (!getAttachedCB(operand.get())) {
+        return failure();
+      }
+      lifetimeInputs.push_back(operand.get());
+    }
+    return lifetimeInputs;
   }
 
   FusionTraceResult trace =
       traceFusionToRoots(source->getResult(0), isMaterializationPlanned);
   if (trace.failureReason == TraceFailureReason::Success &&
       !trace.opsInOrder.empty()) {
-    return SmallVector<Value>(trace.rootInputs.begin(), trace.rootInputs.end());
+    return SmallVector<Value>(trace.lifetimeRootInputs.begin(),
+                              trace.lifetimeRootInputs.end());
   }
   return failure();
 }

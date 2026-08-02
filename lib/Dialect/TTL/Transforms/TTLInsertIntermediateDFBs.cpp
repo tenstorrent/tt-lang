@@ -191,9 +191,8 @@ static void applyComputeMaterializationPlan(
   // after the rebuilt compute, so the push stays unconditional and paired with
   // its acquire. Placing them at the consumer could leave an unconditional push
   // without a matching pop for branch-local consumers.
-  // TODO(bnorris): Relax this restriction when trace-balance analysis can
-  // prove DFB occupancy across structured control flow:
-  // https://github.com/tenstorrent/tt-lang/issues/724.
+  // TODO(#724): Relax this restriction when trace-balance analysis can prove
+  // DFB occupancy across structured control flow.
   Operation *insertAfter = rebuiltCompute;
   for (MaterializedOutput &output : materializedOutputs) {
     builder.setInsertionPointAfter(insertAfter);
