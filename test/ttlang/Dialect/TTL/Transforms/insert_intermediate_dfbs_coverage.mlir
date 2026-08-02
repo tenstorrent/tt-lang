@@ -1,8 +1,8 @@
 // Verifies intermediate DFB materialization in loops, for f32 multi-tile
 // matmul results, across a two-requirement fixed point, and for multiple
 // consumers of a materialized compute result.
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-form-producer-compute,ttl-insert-intermediate-dfbs,convert-ttl-to-compute,ttl-auto-sync))' | FileCheck %s
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-form-producer-compute,ttl-print-compute-formation-plans))' -o /dev/null 2>&1 | FileCheck %s --check-prefix=PLAN
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute,ttl-insert-intermediate-dfbs,convert-ttl-to-compute,ttl-auto-sync))' | FileCheck %s
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute,ttl-print-compute-op-creation-plans))' -o /dev/null 2>&1 | FileCheck %s --check-prefix=PLAN
 
 // Materialization inside a loop keeps the complete compiler DFB lifecycle in
 // the loop body, so every dynamic iteration publishes and releases one slot.
@@ -247,7 +247,7 @@ func.func @chained_add_reduce_broadcast()
 // reduction and elementwise consumers must read the same compiler DFB rather
 // than leaving the elementwise operation attached to the compute result.
 // CHECK-LABEL: func.func @published_result_with_mixed_consumers
-// PLAN-LABEL: Compute formation plan @published_result_with_mixed_consumers
+// PLAN-LABEL: ComputeOp creation plan @published_result_with_mixed_consumers
 // PLAN:       operand=0
 // PLAN-NEXT:  reason=required-dfb-operand
 // PLAN:       reason=compute-result-has-materialized-use
@@ -336,7 +336,7 @@ func.func @published_result_with_mixed_consumers()
 // checks that a published sum used by matmul and its elementwise accumulator
 // is materialized in one shared DFB.
 // CHECK-LABEL: func.func @published_result_with_matmul_consumer
-// PLAN-LABEL: Compute formation plan @published_result_with_matmul_consumer
+// PLAN-LABEL: ComputeOp creation plan @published_result_with_matmul_consumer
 // PLAN:       operand=0
 // PLAN-NEXT:  reason=required-dfb-operand
 // PLAN:       operand=1

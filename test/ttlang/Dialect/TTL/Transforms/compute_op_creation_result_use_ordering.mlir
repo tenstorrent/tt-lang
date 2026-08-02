@@ -1,14 +1,14 @@
-// Tests materialization when compute formation at an output store would not
+// Tests materialization when `ComputeOp` creation at an output store would not
 // dominate another result use.
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-print-compute-formation-plans))' -o /dev/null 2>&1 | FileCheck %s --check-prefix=PLAN
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-form-producer-compute,ttl-insert-intermediate-dfbs,convert-ttl-to-compute,ttl-auto-sync))' | FileCheck %s --check-prefix=FULL
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-print-compute-op-creation-plans))' -o /dev/null 2>&1 | FileCheck %s --check-prefix=PLAN
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute,ttl-insert-intermediate-dfbs,convert-ttl-to-compute,ttl-auto-sync))' | FileCheck %s --check-prefix=FULL
 
 // The reduce consumes the multiply result before its user-DFB store. Moving
 // the multiply to that store would violate SSA dominance. Materializing every
 // result use leaves the compiler-DFB store as the multiply's only publication,
 // while the original store becomes a passthrough compute.
 
-// PLAN-LABEL: Compute formation plan @nonstore_use_before_store
+// PLAN-LABEL: ComputeOp creation plan @nonstore_use_before_store
 // PLAN:       ttl.mul kind=direct recipe=elementwise legal=false
 // PLAN-NEXT:  iterators=
 // PLAN-NEXT:  removed-before {{.*}} operand=0
@@ -17,9 +17,9 @@
 // PLAN:       unassigned-store {{.*}} reason=ttl.compute inserted at the final output store would not dominate every surviving result use
 // PLAN-NEXT:  unassigned-store {{.*}} reason=reduce input is an unstored compute result
 // PLAN:       operand=0
-// PLAN:       reason=formation-would-not-dominate-use
+// PLAN:       reason=compute-op-would-not-dominate-use
 // PLAN:       operand=0
-// PLAN-NEXT:  reason=formation-would-not-dominate-use
+// PLAN-NEXT:  reason=compute-op-would-not-dominate-use
 
 // FULL-LABEL: func.func @nonstore_use_before_store
 // FULL:       %[[USER_OUTPUT_DFB:.*]] = ttl.bind_cb{{.*}}cb_index = 3
@@ -107,7 +107,7 @@ func.func @nonstore_use_before_store()
 // through attach and slice operations. Popping the first wait therefore does
 // not require an intermediate DFB for the second view.
 
-// PLAN-LABEL: Compute formation plan @slice_of_second_acquisition
+// PLAN-LABEL: ComputeOp creation plan @slice_of_second_acquisition
 // PLAN:       ttl.exp kind=direct recipe=elementwise legal=true
 // PLAN:       ttl.exp kind=direct recipe=elementwise legal=true
 // PLAN-NOT:   materialize

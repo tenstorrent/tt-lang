@@ -368,7 +368,7 @@ struct FusionTraceResult {
   /// Roots whose current storage remains an input after planned replacements.
   ///
   /// A planned materialization supplies new storage, so that occurrence does
-  /// not constrain formation by the original value's release. If another
+  /// not constrain creation by the original value's release. If another
   /// unmaterialized occurrence reaches the same value, it remains in this set.
   llvm::SmallSetVector<mlir::Value, 2> lifetimeRootInputs;
 
@@ -393,7 +393,7 @@ FusionTraceResult traceFusionToRoots(mlir::Value value);
 /// This models a planned materialization that replaces the operand with a
 /// DFB-attached value before fusion. Every selected operand must be replaced
 /// before the trace is used to form a compute; otherwise the returned roots do
-/// not prove formation legality. The query does not modify IR.
+/// not prove creation legality. The query does not modify IR.
 FusionTraceResult traceFusionToRoots(
     mlir::Value value,
     llvm::function_ref<bool(mlir::OpOperand &)> isMaterializationPlanned);

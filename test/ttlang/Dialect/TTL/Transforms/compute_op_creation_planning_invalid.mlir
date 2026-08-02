@@ -1,4 +1,4 @@
-// Verifies that compute formation diagnoses inconsistent output publication
+// Verifies that `ComputeOp` creation diagnoses inconsistent output publication
 // before modifying the source kernel.
 
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute))'
@@ -115,7 +115,7 @@ func.func @unassigned_final_store()
 
 // An attached passthrough input still requires live acquired storage. The
 // final preflight reports the store's lifetime rejection rather than treating
-// ttl.attach_cb as a compute-formation source.
+// ttl.attach_cb as a source operation for `ComputeOp` creation.
 func.func @released_passthrough_input()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
   %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}

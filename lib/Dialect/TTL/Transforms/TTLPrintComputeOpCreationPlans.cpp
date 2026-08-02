@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#include "ComputeFormationPlanning.h"
+#include "ComputeOpCreationPlanning.h"
 #include "DFBValueLifetimeAnalysis.h"
 #include "IntermediateDFBPlanning.h"
 
@@ -15,47 +15,47 @@
 
 namespace mlir::tt::ttl {
 
-#define GEN_PASS_DEF_TTLPRINTCOMPUTEFORMATIONPLANS
+#define GEN_PASS_DEF_TTLPRINTCOMPUTEOPCREATIONPLANS
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 
 namespace {
 
-static StringRef stringifyKind(ComputeFormationKind kind) {
+static StringRef stringifyKind(ComputeOpCreationKind kind) {
   switch (kind) {
-  case ComputeFormationKind::Direct:
+  case ComputeOpCreationKind::Direct:
     return "direct";
-  case ComputeFormationKind::Fused:
+  case ComputeOpCreationKind::Fused:
     return "fused";
-  case ComputeFormationKind::Elide:
+  case ComputeOpCreationKind::Elide:
     return "elide";
   }
-  llvm_unreachable("unknown compute formation kind");
+  llvm_unreachable("unknown ComputeOp creation kind");
 }
 
-static StringRef stringifyRecipe(ComputeFormationRecipe recipe) {
+static StringRef stringifyRecipe(ComputeOpCreationRecipe recipe) {
   switch (recipe) {
-  case ComputeFormationRecipe::Elementwise:
+  case ComputeOpCreationRecipe::Elementwise:
     return "elementwise";
-  case ComputeFormationRecipe::BlockBroadcast:
+  case ComputeOpCreationRecipe::BlockBroadcast:
     return "block-broadcast";
-  case ComputeFormationRecipe::Matmul:
+  case ComputeOpCreationRecipe::Matmul:
     return "matmul";
-  case ComputeFormationRecipe::Reduce:
+  case ComputeOpCreationRecipe::Reduce:
     return "reduce";
-  case ComputeFormationRecipe::MulUnaryConst:
+  case ComputeOpCreationRecipe::MulUnaryConst:
     return "mul-unary-const";
-  case ComputeFormationRecipe::Fill:
+  case ComputeOpCreationRecipe::Fill:
     return "fill";
-  case ComputeFormationRecipe::Typecast:
+  case ComputeOpCreationRecipe::Typecast:
     return "typecast";
-  case ComputeFormationRecipe::Transpose:
+  case ComputeOpCreationRecipe::Transpose:
     return "transpose";
-  case ComputeFormationRecipe::Fused:
+  case ComputeOpCreationRecipe::Fused:
     return "fused";
-  case ComputeFormationRecipe::Elide:
+  case ComputeOpCreationRecipe::Elide:
     return "elide";
   }
-  llvm_unreachable("unknown compute formation recipe");
+  llvm_unreachable("unknown ComputeOp creation recipe");
 }
 
 static StringRef stringifyFusedRecipe(FusedOperationRecipe recipe) {
@@ -84,16 +84,18 @@ static StringRef stringifyReason(IntermediateDFBReason reason) {
     return "dfb-input-may-be-released";
   case IntermediateDFBReason::ExpressionInputMayBeReleased:
     return "expression-input-may-be-released";
-  case IntermediateDFBReason::FormationInputMayBeReleased:
-    return "formation-input-may-be-released";
+  case IntermediateDFBReason::ComputeOpInputMayBeReleased:
+    return "compute-op-input-may-be-released";
   case IntermediateDFBReason::MultipleOutputTransactions:
     return "multiple-output-transactions";
-  case IntermediateDFBReason::FormationWouldNotDominateUse:
-    return "formation-would-not-dominate-use";
+  case IntermediateDFBReason::ComputeOpWouldNotDominateUse:
+    return "compute-op-would-not-dominate-use";
+  case IntermediateDFBReason::ComputeOpInstrumentationWouldBeReordered:
+    return "compute-op-instrumentation-would-be-reordered";
   case IntermediateDFBReason::ComputeResultHasMaterializedUse:
     return "compute-result-has-materialized-use";
-  case IntermediateDFBReason::FormationRequiresMaterializedInput:
-    return "formation-requires-materialized-input";
+  case IntermediateDFBReason::ComputeOpRequiresMaterializedInput:
+    return "compute-op-requires-materialized-input";
   }
   llvm_unreachable("unknown intermediate DFB reason");
 }
@@ -118,10 +120,10 @@ static void printValue(raw_ostream &output, Value value,
   output << "B" << blockId->second << "A" << argument.getArgNumber();
 }
 
-struct TTLPrintComputeFormationPlansPass
-    : public impl::TTLPrintComputeFormationPlansBase<
-          TTLPrintComputeFormationPlansPass> {
-  using TTLPrintComputeFormationPlansBase::TTLPrintComputeFormationPlansBase;
+struct TTLPrintComputeOpCreationPlansPass
+    : public impl::TTLPrintComputeOpCreationPlansBase<
+          TTLPrintComputeOpCreationPlansPass> {
+  using TTLPrintComputeOpCreationPlansBase::TTLPrintComputeOpCreationPlansBase;
 
   void runOnOperation() override {
     func::FuncOp kernel = getOperation();
@@ -138,20 +140,20 @@ struct TTLPrintComputeFormationPlansPass
     std::unique_ptr<DFBValueLifetimeAnalysis> lifetimes =
         std::move(plannedLifetimes).takePlan();
 
-    ComputeFormationPlanner formationPlanner(kernel, *lifetimes);
-    PlanningResult<KernelComputeFormationPlan> plannedFormations =
-        formationPlanner.build();
-    if (plannedFormations.isInvalidIR()) {
+    ComputeOpCreationPlanner creationPlanner(kernel, *lifetimes);
+    PlanningResult<KernelComputeOpCreationPlan> plannedCreations =
+        creationPlanner.build();
+    if (plannedCreations.isInvalidIR()) {
       const PlanningDiagnostic &planningDiagnostic =
-          plannedFormations.getInvalidIR();
+          plannedCreations.getInvalidIR();
       planningDiagnostic.operation->emitOpError(planningDiagnostic.message);
       signalPassFailure();
       return;
     }
-    assert(plannedFormations.isPlanned() &&
-           "kernel formation planning has no recoverable rejection");
-    KernelComputeFormationPlan formations =
-        std::move(plannedFormations).takePlan();
+    assert(plannedCreations.isPlanned() &&
+           "kernel ComputeOp creation planning has no recoverable rejection");
+    KernelComputeOpCreationPlan creations =
+        std::move(plannedCreations).takePlan();
     IntermediateDFBPlanner materializationPlanner(kernel, *lifetimes);
     PlanningResult<IntermediateDFBPlan> plannedMaterializations =
         materializationPlanner.build();
@@ -190,96 +192,95 @@ struct TTLPrintComputeFormationPlansPass
       }
     });
 
-    DenseMap<Operation *, unsigned> formationIds;
-    for (auto [formationId, source] :
-         llvm::enumerate(formations.getAnalyzedSources())) {
-      formationIds.try_emplace(source, formationId);
+    DenseMap<Operation *, unsigned> creationIds;
+    for (auto [creationId, source] :
+         llvm::enumerate(creations.getAnalyzedSources())) {
+      creationIds.try_emplace(source, creationId);
     }
 
     raw_ostream &output = llvm::errs();
-    output << "Compute formation plan @" << kernel.getSymName() << "\n";
-    for (Operation *source : formations.getAnalyzedSources()) {
-      const ComputeFormationPlan &formation =
-          formations.getAnalyzedFormation(source);
-      output << "  F" << formationIds.at(source) << " ";
+    output << "ComputeOp creation plan @" << kernel.getSymName() << "\n";
+    for (Operation *source : creations.getAnalyzedSources()) {
+      const ComputeOpCreationPlan &creation =
+          creations.getAnalyzedCreation(source);
+      output << "  C" << creationIds.at(source) << " ";
       printOperation(output, source, operationIds);
       output << " " << source->getName()
-             << " kind=" << stringifyKind(formation.kind)
-             << " recipe=" << stringifyRecipe(formation.recipe)
-             << " legal=" << (formation.isLegal() ? "true" : "false")
-             << " inputs=" << formation.inputs.size()
-             << " outputs=" << formation.outputs.dfbs.size()
-             << " transactions=" << formation.outputs.transactions.size()
+             << " kind=" << stringifyKind(creation.kind)
+             << " recipe=" << stringifyRecipe(creation.recipe)
+             << " legal=" << (creation.isLegal() ? "true" : "false")
+             << " inputs=" << creation.inputs.size()
+             << " outputs=" << creation.outputs.dfbs.size()
+             << " transactions=" << creation.outputs.transactions.size()
              << "\n";
 
       output << "    iterators=[";
-      llvm::interleaveComma(formation.iteration.iteratorTypes, output,
+      llvm::interleaveComma(creation.iteration.iteratorTypes, output,
                             [&](utils::IteratorType iteratorType) {
                               output
                                   << utils::stringifyIteratorType(iteratorType);
                             });
-      output << "] input-maps=" << formation.iteration.inputMaps.size() << " [";
-      llvm::interleaveComma(formation.iteration.inputMaps, output,
+      output << "] input-maps=" << creation.iteration.inputMaps.size() << " [";
+      llvm::interleaveComma(creation.iteration.inputMaps, output,
                             [&](AffineMap inputMap) { output << inputMap; });
-      output << "] output-map=" << formation.iteration.outputMap << "\n";
+      output << "] output-map=" << creation.iteration.outputMap << "\n";
 
-      for (const FusedOperationPlan &operationPlan :
-           formation.fusedOperations) {
+      for (const FusedOperationPlan &operationPlan : creation.fusedOperations) {
         output << "    fused ";
         printOperation(output, operationPlan.source, operationIds);
         output << " " << stringifyFusedRecipe(operationPlan.recipe)
                << " operands=" << operationPlan.operands.size() << "\n";
       }
-      for (const ComputeFormationWarning &warning : formation.warnings) {
+      for (const ComputeOpCreationWarning &warning : creation.warnings) {
         output << "    warning="
-               << getComputeFormationWarningMessage(warning.kind) << " at=";
+               << getComputeOpCreationWarningMessage(warning.kind) << " at=";
         printOperation(output, warning.operation, operationIds);
         output << "\n";
       }
-      for (const ComputeFormationUse &preservingUse :
-           formation.preservingUses) {
+      for (const ComputeOpCreationUse &preservingUse :
+           creation.preservingUses) {
         output << "    preserved-by ";
         printOperation(output, preservingUse.owner, operationIds);
         output << " operand=" << preservingUse.operandIndex << "\n";
       }
-      for (const ComputeFormationUse &removedUse :
-           formation.preFormationRemovedUses) {
+      for (const ComputeOpCreationUse &removedUse :
+           creation.preCreationRemovedUses) {
         output << "    removed-before ";
         printOperation(output, removedUse.owner, operationIds);
         output << " operand=" << removedUse.operandIndex << "\n";
       }
-      if (!formation.isLegal()) {
-        output << "    rejected=" << formation.rejectionReason << "\n";
+      if (!creation.isLegal()) {
+        output << "    rejected=" << creation.rejectionReason << "\n";
       }
     }
 
     DenseSet<Operation *> printedRejectedSources;
-    for (StoreOp store : formations.getUnassignedStores()) {
-      std::optional<Operation *> formationSource =
-          formations.getUnassignedStoreFormationSource(store);
-      if (!formationSource) {
+    for (StoreOp store : creations.getUnassignedStores()) {
+      std::optional<Operation *> sourceOperation =
+          creations.getUnassignedStoreSource(store);
+      if (!sourceOperation) {
         continue;
       }
-      Operation *source = *formationSource;
-      if (formations.hasFormationRecord(source) ||
+      Operation *source = *sourceOperation;
+      if (creations.hasCreationRecord(source) ||
           !printedRejectedSources.insert(source).second) {
         continue;
       }
       output << "  rejected-source ";
       printOperation(output, source, operationIds);
       output << " " << source->getName()
-             << " reason=" << formations.getRejectionReason(source) << "\n";
+             << " reason=" << creations.getRejectionReason(source) << "\n";
     }
 
     output << "  order=[";
     llvm::interleaveComma(
-        formations.getFormationOrder(), output,
-        [&](Operation *source) { output << "F" << formationIds.at(source); });
+        creations.getCreationOrder(), output,
+        [&](Operation *source) { output << "C" << creationIds.at(source); });
     output << "]\n";
 
-    for (StoreOp store : formations.getUnassignedStores()) {
+    for (StoreOp store : creations.getUnassignedStores()) {
       PlanningDiagnostic diagnostic =
-          formations.getUnassignedStoreDiagnostic(store);
+          creations.getUnassignedStoreDiagnostic(store);
       output << "  unassigned-store ";
       printOperation(output, store, operationIds);
       output << " reason=" << diagnostic.message << "\n";

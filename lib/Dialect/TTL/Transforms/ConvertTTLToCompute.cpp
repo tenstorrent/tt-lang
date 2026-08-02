@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#include "ComputeFormationPlanning.h"
+#include "ComputeOpCreationPlanning.h"
 #include "DFBValueLifetimeAnalysis.h"
 
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
@@ -26,13 +26,13 @@
 
 namespace mlir::tt::ttl {
 
-#define GEN_PASS_DEF_TTLFORMPRODUCERCOMPUTE
+#define GEN_PASS_DEF_TTLPRODUCERCOMPUTECREATION
 #define GEN_PASS_DEF_TTLCONVERTTTLTOCOMPUTE
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 
 /// Controls whether unresolved DFB-only consumers are deferred or diagnosed.
 enum class TTLToComputeMode {
-  ProducerFormation,
+  ProducerCreation,
   FinalConversion,
 };
 
@@ -43,56 +43,56 @@ static bool containsOperation(func::FuncOp kernel, Operation *candidate) {
 }
 
 static LogicalResult
-getFormationPlan(Operation *source, PatternRewriter &rewriter,
-                 const KernelComputeFormationPlan &kernelPlan,
-                 const ComputeFormationPlan *&formation) {
-  FailureOr<const ComputeFormationPlan *> planned = kernelPlan.get(source);
+getCreationPlan(Operation *source, PatternRewriter &rewriter,
+                const KernelComputeOpCreationPlan &kernelPlan,
+                const ComputeOpCreationPlan *&creation) {
+  FailureOr<const ComputeOpCreationPlan *> planned = kernelPlan.get(source);
   if (failed(planned)) {
     return rewriter.notifyMatchFailure(source,
                                        kernelPlan.getRejectionReason(source));
   }
-  formation = *planned;
-  assert(formation->source == source &&
+  creation = *planned;
+  assert(creation->source == source &&
          "kernel plan must be indexed by its source operation");
-  if (!llvm::equal(source->getOperands(), formation->applicationOperands)) {
+  if (!llvm::equal(source->getOperands(), creation->applicationOperands)) {
     return rewriter.notifyMatchFailure(
-        source, "candidate operands changed after compute formation analysis");
+        source, "candidate operands changed after ComputeOp creation analysis");
   }
   for (OpOperand &use : source->getResult(0).getUses()) {
-    if (llvm::none_of(formation->resultUses,
-                      [&](const ComputeFormationUse &recordedUse) {
+    if (llvm::none_of(creation->resultUses,
+                      [&](const ComputeOpCreationUse &recordedUse) {
                         return recordedUse.matches(use);
                       })) {
       return rewriter.notifyMatchFailure(
           source,
-          "candidate acquired a new use after compute formation analysis");
+          "candidate acquired a new use after ComputeOp creation analysis");
     }
   }
-  if (!formation->preservingUses.empty() &&
+  if (!creation->preservingUses.empty() &&
       llvm::none_of(source->getResult(0).getUses(), [&](OpOperand &use) {
-        return llvm::any_of(formation->preservingUses,
-                            [&](const ComputeFormationUse &recordedUse) {
+        return llvm::any_of(creation->preservingUses,
+                            [&](const ComputeOpCreationUse &recordedUse) {
                               return recordedUse.matches(use);
                             });
       })) {
     return rewriter.notifyMatchFailure(
-        source, "use preserving an overlapping formation was removed");
+        source, "use preserving an overlapping creation was removed");
   }
-  for (const ComputeFormationUse &removedUse :
-       formation->preFormationRemovedUses) {
+  for (const ComputeOpCreationUse &removedUse :
+       creation->preCreationRemovedUses) {
     if (llvm::any_of(source->getResult(0).getUses(),
                      [&](OpOperand &use) { return removedUse.matches(use); })) {
       return rewriter.notifyMatchFailure(
-          source, "prerequisite formation did not remove a result use");
+          source, "prerequisite creation did not remove a result use");
     }
   }
   auto kernel = source->getParentOfType<func::FuncOp>();
-  for (const FusedInstrumentationPlacement &placement :
-       formation->instrumentation) {
+  for (const ComputeInstrumentationPlacement &placement :
+       creation->instrumentation) {
     if (!containsOperation(kernel, placement.operation) ||
         (placement.after && !containsOperation(kernel, placement.after))) {
       return rewriter.notifyMatchFailure(
-          source, "instrumentation changed after compute formation analysis");
+          source, "instrumentation changed after ComputeOp creation analysis");
     }
   }
   return success();
@@ -100,10 +100,10 @@ getFormationPlan(Operation *source, PatternRewriter &rewriter,
 
 static LogicalResult
 resolveCurrentOutputs(Operation *source, PatternRewriter &rewriter,
-                      const ComputeFormationPlan &formation,
+                      const ComputeOpCreationPlan &creation,
                       OutputPublicationPlan &outputs) {
   PlanningResult<OutputPublicationPlan> resolved =
-      resolveOutputPublicationOperations(formation.outputs);
+      resolveOutputPublicationOperations(creation.outputs);
   if (resolved.isInvalidIR()) {
     return rewriter.notifyMatchFailure(source, resolved.getInvalidIR().message);
   }
@@ -114,25 +114,25 @@ resolveCurrentOutputs(Operation *source, PatternRewriter &rewriter,
 }
 
 static LogicalResult
-getFormationPlan(Operation *source, ComputeFormationKind expectedKind,
-                 ComputeFormationRecipe expectedRecipe, ValueRange inputs,
-                 PatternRewriter &rewriter,
-                 const KernelComputeFormationPlan &kernelPlan,
-                 const ComputeFormationPlan *&formation) {
-  if (failed(getFormationPlan(source, rewriter, kernelPlan, formation))) {
+getCreationPlan(Operation *source, ComputeOpCreationKind expectedKind,
+                ComputeOpCreationRecipe expectedRecipe, ValueRange inputs,
+                PatternRewriter &rewriter,
+                const KernelComputeOpCreationPlan &kernelPlan,
+                const ComputeOpCreationPlan *&creation) {
+  if (failed(getCreationPlan(source, rewriter, kernelPlan, creation))) {
     return failure();
   }
-  if (formation->kind != expectedKind) {
+  if (creation->kind != expectedKind) {
     return rewriter.notifyMatchFailure(
-        source, "lowering strategy differs from the analyzed formation");
+        source, "lowering strategy differs from the analyzed creation");
   }
-  if (formation->recipe != expectedRecipe) {
+  if (creation->recipe != expectedRecipe) {
     return rewriter.notifyMatchFailure(
-        source, "construction recipe differs from the analyzed formation");
+        source, "tile recipe differs from the analyzed creation plan");
   }
-  if (!llvm::equal(inputs, formation->inputs)) {
+  if (!llvm::equal(inputs, creation->inputs)) {
     return rewriter.notifyMatchFailure(
-        source, "lowering inputs differ from the analyzed formation inputs");
+        source, "lowering inputs differ from the analyzed creation inputs");
   }
   return success();
 }
@@ -169,8 +169,8 @@ static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
 }
 
 /// Selects the insertion position proven by output-publication planning.
-static void insertAtFormationAnchor(PatternRewriter &rewriter,
-                                    const OutputPublicationPlan &outputs) {
+static void insertAtCreationAnchor(PatternRewriter &rewriter,
+                                   const OutputPublicationPlan &outputs) {
   rewriter.setInsertionPoint(outputs.insertionAnchor);
 }
 
@@ -192,14 +192,6 @@ static void emitTileStore(PatternRewriter &rewriter, Location loc,
 
   createTileOpWithPlaceholderDstIndex<TileStoreOp>(rewriter, loc, tileResult,
                                                    store.getView(), indices);
-}
-
-static void emitTileStores(PatternRewriter &rewriter, Location loc,
-                           Value tileResult, ComputeOp computeOp,
-                           const OutputPublicationPlan &outputs) {
-  for (StoreOp store : outputs.stores) {
-    emitTileStore(rewriter, loc, tileResult, computeOp, store, outputs);
-  }
 }
 
 static void
@@ -287,37 +279,96 @@ static Value emitTileOpFor(OpBuilder &builder, Location loc,
   llvm_unreachable("planner must reject unsupported fused operations");
 }
 
+/// Emits the instrumentation placement selected before IR mutation.
+///
+/// Both direct and fused creation use this class so instrumentation ownership
+/// and ordering cannot differ between the two creation strategies. Anchors are
+/// source operations from the immutable plan; callers invoke `emitAfter` when
+/// the corresponding tile recipe or tile store has been created.
+class ComputeInstrumentationEmitter {
+public:
+  ComputeInstrumentationEmitter(
+      PatternRewriter &rewriter,
+      ArrayRef<ComputeInstrumentationPlacement> placements)
+      : rewriter(rewriter), expectedCount(placements.size()) {
+    for (const ComputeInstrumentationPlacement &placement : placements) {
+      if (placement.after) {
+        instrumentationAfter[placement.after].push_back(placement.operation);
+      } else {
+        leadingInstrumentation.push_back(placement.operation);
+      }
+    }
+  }
+
+  void emitLeading() {
+    for (Operation *operation : leadingInstrumentation) {
+      emit(operation);
+    }
+  }
+
+  void emitAfter(Operation *anchor) {
+    for (Operation *operation : instrumentationAfter.lookup(anchor)) {
+      emit(operation);
+    }
+  }
+
+  bool hasAfter(Operation *anchor) const {
+    return !instrumentationAfter.lookup(anchor).empty();
+  }
+
+  bool emittedAll() const { return emittedCount == expectedCount; }
+
+private:
+  void emit(Operation *operation) {
+    if (auto signpost = dyn_cast<SignpostOp>(operation)) {
+      SignpostOp::create(rewriter, signpost.getLoc(), signpost.getNameAttr(),
+                         signpost.getIsEndAttr());
+    } else {
+      assert(isa<DPrintOp>(operation) &&
+             "planner recorded unsupported compute instrumentation");
+      rewriter.clone(*operation);
+    }
+    ++emittedCount;
+  }
+
+  PatternRewriter &rewriter;
+  DenseMap<Operation *, SmallVector<Operation *>> instrumentationAfter;
+  SmallVector<Operation *> leadingInstrumentation;
+  unsigned expectedCount = 0;
+  unsigned emittedCount = 0;
+};
+
 //===----------------------------------------------------------------------===//
 // Fused compute building
 //===----------------------------------------------------------------------===//
 
-/// Applies a precomputed fused formation. Fusion tracing, indexing, lifetime
+/// Applies a precomputed fused creation. Fusion tracing, indexing, lifetime
 /// legality, publication, and instrumentation placement are immutable plan
 /// data; this function only constructs the selected tile-level operations.
 static LogicalResult buildFusedCompute(Operation *sinkOp,
                                        PatternRewriter &rewriter,
-                                       const ComputeFormationPlan &formation,
+                                       const ComputeOpCreationPlan &creation,
                                        const OutputPublicationPlan &outputs) {
-  assert(formation.recipe == ComputeFormationRecipe::Fused &&
-         "fused builder requires a fused formation recipe");
-  const FusionTraceResult &trace = formation.trace;
-  RankedTensorType type = formation.resultType;
+  assert(creation.recipe == ComputeOpCreationRecipe::Fused &&
+         "fused builder requires a fused creation recipe");
+  const FusionTraceResult &trace = creation.trace;
+  RankedTensorType type = creation.resultType;
 
   // Verify every recorded dependency before creating IR. This prevents plan
   // invalidation by an earlier rewrite from leaving a partially built compute.
   DenseSet<Value> availableValues;
-  for (const FusedOperationPlan &operationPlan : formation.fusedOperations) {
+  for (const FusedOperationPlan &operationPlan : creation.fusedOperations) {
     if (!llvm::equal(operationPlan.source->getOperands(),
                      operationPlan.sourceOperands)) {
       return rewriter.notifyMatchFailure(
-          sinkOp, "fused operation operands changed after formation analysis");
+          sinkOp, "fused operation operands changed after creation analysis");
     }
     if (llvm::any_of(operationPlan.operands,
                      [&](const FusedOperationOperand &operand) {
                        if (operand.rootInputIndex) {
                          unsigned inputIndex = *operand.rootInputIndex;
-                         return inputIndex >= formation.inputs.size() ||
-                                formation.inputs[inputIndex] != operand.value;
+                         return inputIndex >= creation.inputs.size() ||
+                                creation.inputs[inputIndex] != operand.value;
                        }
                        return !availableValues.contains(operand.value);
                      })) {
@@ -336,18 +387,18 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 
   Location loc = sinkOp->getLoc();
   SmallVector<Attribute> maps;
-  for (AffineMap inputMap : formation.iteration.inputMaps) {
+  for (AffineMap inputMap : creation.iteration.inputMaps) {
     maps.push_back(AffineMapAttr::get(inputMap));
   }
   for (size_t outputIndex = 0; outputIndex < outputs.dfbs.size();
        ++outputIndex) {
-    maps.push_back(AffineMapAttr::get(formation.iteration.outputMap));
+    maps.push_back(AffineMapAttr::get(creation.iteration.outputMap));
   }
   SmallVector<Attribute> iteratorTypes =
-      buildIteratorTypeAttributes(rewriter, formation.iteration.iteratorTypes);
+      buildIteratorTypeAttributes(rewriter, creation.iteration.iteratorTypes);
 
   // Position compute after all reserves by inserting before the last store.
-  insertAtFormationAnchor(rewriter, outputs);
+  insertAtCreationAnchor(rewriter, outputs);
 
   // Create init tensors and attach to output CBs.
   // Use the first root input as exemplar for dynamic dims. For fill-only
@@ -355,12 +406,11 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   SmallVector<Value> allInitAttached;
   SmallVector<Type> resultTypes;
   for (Value outputDFB : outputs.dfbs) {
-    Value init =
-        formation.inputs.empty()
-            ? tensor::EmptyOp::create(rewriter, loc, type.getShape(),
-                                      type.getElementType())
-                  .getResult()
-            : buildInitTensor(rewriter, loc, type, formation.inputs[0]);
+    Value init = creation.inputs.empty()
+                     ? tensor::EmptyOp::create(rewriter, loc, type.getShape(),
+                                               type.getElementType())
+                           .getResult()
+                     : buildInitTensor(rewriter, loc, type, creation.inputs[0]);
     Value initAttached =
         AttachCBOp::create(rewriter, loc, init.getType(), init, outputDFB);
     allInitAttached.push_back(initAttached);
@@ -369,7 +419,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 
   // Create ttl.compute op
   auto computeOp = ComputeOp::create(
-      rewriter, loc, TypeRange(resultTypes), ValueRange(formation.inputs),
+      rewriter, loc, TypeRange(resultTypes), ValueRange(creation.inputs),
       ValueRange(allInitAttached), rewriter.getArrayAttr(maps),
       rewriter.getArrayAttr(iteratorTypes));
 
@@ -386,7 +436,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     return ttcore::TileType::get(inputTensor.getElementType());
   };
 
-  for (Value root : formation.inputs) {
+  for (Value root : creation.inputs) {
     body->addArgument(getInputTileType(root), loc);
   }
   for (size_t i = 0; i < outputs.dfbs.size(); ++i) {
@@ -399,47 +449,16 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   // recorded block-argument indices because one root may have several maps.
   DenseMap<Value, Value> tensorToTile;
 
-  // Group each effect by the exact fused operation or output store that
-  // preceded it in the source sequence.
   assert(!trace.opsInOrder.empty() &&
          "buildFusedCompute requires non-empty opsInOrder");
-  DenseMap<Operation *, SmallVector<Operation *>> instrumentationAfter;
-  SmallVector<Operation *> leadingOps;
-  for (const FusedInstrumentationPlacement &placement :
-       formation.instrumentation) {
-    if (!placement.after) {
-      leadingOps.push_back(placement.operation);
-    } else {
-      instrumentationAfter[placement.after].push_back(placement.operation);
-    }
-  }
-
-  unsigned emittedInstrumentationCount = 0;
-  auto emitInstrumentationOp = [&](Operation *op) {
-    if (auto signpost = dyn_cast<SignpostOp>(op)) {
-      SignpostOp::create(rewriter, signpost.getLoc(), signpost.getNameAttr(),
-                         signpost.getIsEndAttr());
-    } else {
-      assert(isa<DPrintOp>(op) &&
-             "planner recorded unsupported fused instrumentation");
-      rewriter.clone(*op);
-    }
-    ++emittedInstrumentationCount;
-  };
-  auto emitInstrumentationAfter = [&](Operation *anchor) {
-    for (Operation *instrumentation : instrumentationAfter.lookup(anchor)) {
-      emitInstrumentationOp(instrumentation);
-    }
-  };
-
-  for (Operation *instrumentation : leadingOps) {
-    emitInstrumentationOp(instrumentation);
-  }
+  ComputeInstrumentationEmitter instrumentationEmitter(
+      rewriter, creation.instrumentation);
+  instrumentationEmitter.emitLeading();
 
   // Execute the recorded recipes in dependency order. Every non-deferred
   // result becomes available to subsequent recipes through `tensorToTile`.
   Value finalResult;
-  for (const FusedOperationPlan &operationPlan : formation.fusedOperations) {
+  for (const FusedOperationPlan &operationPlan : creation.fusedOperations) {
     Operation *op = operationPlan.source;
 
     SmallVector<Value> tileOperands;
@@ -475,7 +494,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
       break;
     }
     case FusedOperationRecipe::DeferredMatmul:
-      assert(instrumentationAfter.lookup(op).empty() &&
+      assert(!instrumentationEmitter.hasAfter(op) &&
              "instrumented matmul must not be folded into its user");
       continue;
     case FusedOperationRecipe::MatmulAccumulator: {
@@ -491,16 +510,16 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
     }
     tensorToTile[op->getResult(0)] = tileResult;
     finalResult = tileResult;
-    emitInstrumentationAfter(op);
+    instrumentationEmitter.emitAfter(op);
   }
 
   // Output stores and their instrumentation retain their complete source
   // order, including distinct signpost scopes around multiple stores.
   for (StoreOp store : outputs.stores) {
     emitTileStore(rewriter, loc, finalResult, computeOp, store, outputs);
-    emitInstrumentationAfter(store);
+    instrumentationEmitter.emitAfter(store);
   }
-  assert(emittedInstrumentationCount == formation.instrumentation.size() &&
+  assert(instrumentationEmitter.emittedAll() &&
          "every planned instrumentation operation must have a supported "
          "source anchor");
 
@@ -522,8 +541,8 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   }
 
   // Erase the original instrumentation after cloning it into the compute body.
-  for (const FusedInstrumentationPlacement &placement :
-       formation.instrumentation) {
+  for (const ComputeInstrumentationPlacement &placement :
+       creation.instrumentation) {
     rewriter.eraseOp(placement.operation);
   }
 
@@ -534,33 +553,33 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 // Lowering to ttl.compute with tile ops
 //===----------------------------------------------------------------------===//
 
-/// Applies one direct formation plan. The callback selects the tile operation;
+/// Applies one direct creation plan. The callback selects the tile operation;
 /// input selection, iteration semantics, output transactions, and lifetime
 /// legality have already been decided from immutable IR.
 static LogicalResult buildComputeFromInputs(
     Operation *op, PatternRewriter &rewriter,
-    ComputeFormationRecipe expectedRecipe,
-    const KernelComputeFormationPlan &kernelPlan,
+    ComputeOpCreationRecipe expectedRecipe,
+    const KernelComputeOpCreationPlan &kernelPlan,
     llvm::function_ref<Value(OpBuilder &, Location, Type, Block *,
-                             const ComputeFormationPlan &)>
+                             const ComputeOpCreationPlan &)>
         emitTileOp) {
-  const ComputeFormationPlan *formation = nullptr;
-  if (failed(getFormationPlan(op, rewriter, kernelPlan, formation))) {
+  const ComputeOpCreationPlan *creation = nullptr;
+  if (failed(getCreationPlan(op, rewriter, kernelPlan, creation))) {
     return failure();
   }
-  if (formation->kind != ComputeFormationKind::Direct ||
-      formation->recipe != expectedRecipe) {
+  if (creation->kind != ComputeOpCreationKind::Direct ||
+      creation->recipe != expectedRecipe) {
     return rewriter.notifyMatchFailure(
-        op, "direct construction differs from the analyzed formation");
+        op, "direct creation differs from the analyzed creation plan");
   }
   OutputPublicationPlan outputs;
-  if (failed(resolveCurrentOutputs(op, rewriter, *formation, outputs))) {
+  if (failed(resolveCurrentOutputs(op, rewriter, *creation, outputs))) {
     return failure();
   }
 
   Location loc = op->getLoc();
-  ValueRange inputs(formation->inputs);
-  RankedTensorType outputType = formation->resultType;
+  ValueRange inputs(creation->inputs);
+  RankedTensorType outputType = creation->resultType;
 
   SmallVector<Type> inputTileTypes;
   for (Value input : inputs) {
@@ -573,17 +592,17 @@ static LogicalResult buildComputeFromInputs(
   Type outputTileType = ttcore::TileType::get(outputType.getElementType());
 
   SmallVector<Attribute> maps;
-  for (AffineMap inputMap : formation->iteration.inputMaps) {
+  for (AffineMap inputMap : creation->iteration.inputMaps) {
     maps.push_back(AffineMapAttr::get(inputMap));
   }
   for (size_t outputIndex = 0; outputIndex < outputs.dfbs.size();
        ++outputIndex) {
-    maps.push_back(AffineMapAttr::get(formation->iteration.outputMap));
+    maps.push_back(AffineMapAttr::get(creation->iteration.outputMap));
   }
   SmallVector<Attribute> iteratorTypes =
-      buildIteratorTypeAttributes(rewriter, formation->iteration.iteratorTypes);
+      buildIteratorTypeAttributes(rewriter, creation->iteration.iteratorTypes);
 
-  insertAtFormationAnchor(rewriter, outputs);
+  insertAtCreationAnchor(rewriter, outputs);
 
   SmallVector<Value> allInitAttached;
   SmallVector<Type> resultTypes;
@@ -614,31 +633,45 @@ static LogicalResult buildComputeFromInputs(
   }
 
   rewriter.setInsertionPointToStart(body);
-  Value result = emitTileOp(rewriter, loc, outputTileType, body, *formation);
-  emitTileStores(rewriter, loc, result, computeOp, outputs);
+  ComputeInstrumentationEmitter instrumentationEmitter(
+      rewriter, creation->instrumentation);
+  instrumentationEmitter.emitLeading();
+  Value result = emitTileOp(rewriter, loc, outputTileType, body, *creation);
+  instrumentationEmitter.emitAfter(op);
+  for (StoreOp store : outputs.stores) {
+    emitTileStore(rewriter, loc, result, computeOp, store, outputs);
+    instrumentationEmitter.emitAfter(store);
+  }
+  assert(instrumentationEmitter.emittedAll() &&
+         "every planned instrumentation operation must have a supported "
+         "source anchor");
   YieldOp::create(rewriter, loc);
   SmallVector<CBPushOp> replacedPushes;
   replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
                                    replacedPushes);
   eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
   rewriter.replaceOp(op, computeOp.getResult(0));
+  for (const ComputeInstrumentationPlacement &placement :
+       creation->instrumentation) {
+    rewriter.eraseOp(placement.operation);
+  }
   return success();
 }
 
 /// Try fusion for an op whose inputs are not all CB-attached.
 /// Returns success if fusion was performed, failure otherwise.
 static LogicalResult tryFusion(Operation *op, PatternRewriter &rewriter,
-                               const KernelComputeFormationPlan &kernelPlan) {
-  const ComputeFormationPlan *formation = nullptr;
-  if (failed(getFormationPlan(op, rewriter, kernelPlan, formation))) {
+                               const KernelComputeOpCreationPlan &kernelPlan) {
+  const ComputeOpCreationPlan *creation = nullptr;
+  if (failed(getCreationPlan(op, rewriter, kernelPlan, creation))) {
     return failure();
   }
-  if (formation->kind == ComputeFormationKind::Fused) {
+  if (creation->kind == ComputeOpCreationKind::Fused) {
     OutputPublicationPlan outputs;
-    if (failed(resolveCurrentOutputs(op, rewriter, *formation, outputs))) {
+    if (failed(resolveCurrentOutputs(op, rewriter, *creation, outputs))) {
       return failure();
     }
-    return buildFusedCompute(op, rewriter, *formation, outputs);
+    return buildFusedCompute(op, rewriter, *creation, outputs);
   }
   return rewriter.notifyMatchFailure(op, "operation has no fusable expression");
 }
@@ -649,15 +682,15 @@ static LogicalResult tryFusion(Operation *op, PatternRewriter &rewriter,
 template <typename TileOp>
 static LogicalResult
 buildBinaryCompute(Operation *op, PatternRewriter &rewriter, Value lhs,
-                   Value rhs, const KernelComputeFormationPlan &kernelPlan) {
+                   Value rhs, const KernelComputeOpCreationPlan &kernelPlan) {
   if (!getAttachedCB(lhs) || !getAttachedCB(rhs)) {
     return tryFusion(op, rewriter, kernelPlan);
   }
 
   return buildComputeFromInputs(
-      op, rewriter, ComputeFormationRecipe::Elementwise, kernelPlan,
+      op, rewriter, ComputeOpCreationRecipe::Elementwise, kernelPlan,
       [](OpBuilder &builder, Location location, Type tileType, Block *body,
-         const ComputeFormationPlan &) {
+         const ComputeOpCreationPlan &) {
         return createTileOpWithPlaceholderDstIndex<TileOp>(
             builder, location, tileType, body->getArgument(0),
             body->getArgument(1));
@@ -670,15 +703,15 @@ buildBinaryCompute(Operation *op, PatternRewriter &rewriter, Value lhs,
 template <typename TileOp>
 static LogicalResult
 buildUnaryCompute(Operation *op, PatternRewriter &rewriter, Value input,
-                  const KernelComputeFormationPlan &kernelPlan) {
+                  const KernelComputeOpCreationPlan &kernelPlan) {
   if (!getAttachedCB(input)) {
     return tryFusion(op, rewriter, kernelPlan);
   }
 
   return buildComputeFromInputs(
-      op, rewriter, ComputeFormationRecipe::Elementwise, kernelPlan,
+      op, rewriter, ComputeOpCreationRecipe::Elementwise, kernelPlan,
       [](OpBuilder &builder, Location location, Type tileType, Block *body,
-         const ComputeFormationPlan &) {
+         const ComputeOpCreationPlan &) {
         return createTileOpWithPlaceholderDstIndex<TileOp>(
             builder, location, tileType, body->getArgument(0));
       });
@@ -689,15 +722,15 @@ namespace {
 // Templated Elementwise Lowering Patterns
 //===----------------------------------------------------------------------===//
 
-/// Base for rewrites whose common formation legality is precomputed.
+/// Base for rewrites whose common creation legality is precomputed.
 template <typename SourceOp>
 struct PlannedComputeRewritePattern : OpRewritePattern<SourceOp> {
   PlannedComputeRewritePattern(MLIRContext *context,
-                               const KernelComputeFormationPlan &kernelPlan)
+                               const KernelComputeOpCreationPlan &kernelPlan)
       : OpRewritePattern<SourceOp>(context), kernelPlan(kernelPlan) {}
 
 protected:
-  const KernelComputeFormationPlan &kernelPlan;
+  const KernelComputeOpCreationPlan &kernelPlan;
 };
 
 /// Pattern for binary elementwise ops: TTL tensor op -> ttl.compute with tile
@@ -811,7 +844,7 @@ static LogicalResult validateBlockBroadcastOp(BlockBroadcastOp op,
   }
 
   if (!getAttachedCB(op.getInput())) {
-    if (mode == TTLToComputeMode::ProducerFormation) {
+    if (mode == TTLToComputeMode::ProducerCreation) {
       return success();
     }
     return op.emitOpError(
@@ -873,17 +906,17 @@ struct LowerBlockBroadcastToCompute
   LogicalResult matchAndRewrite(BlockBroadcastOp op,
                                 PatternRewriter &rewriter) const override {
     return buildComputeFromInputs(
-        op, rewriter, ComputeFormationRecipe::BlockBroadcast, this->kernelPlan,
+        op, rewriter, ComputeOpCreationRecipe::BlockBroadcast, this->kernelPlan,
         [](OpBuilder &builder, Location location, Type tileType, Block *body,
-           const ComputeFormationPlan &formation) -> Value {
-          if (!formation.tileBroadcast) {
+           const ComputeOpCreationPlan &creation) -> Value {
+          if (!creation.tileBroadcast) {
             return body->getArgument(0);
           }
           // The output block argument supplies the DFB required by hardware
           // pack reconfiguration; the input alone cannot identify it.
           return createTileOpWithPlaceholderDstIndex<TileBcastOp>(
               builder, location, tileType, body->getArgument(0),
-              body->getArgument(1), *formation.tileBroadcast);
+              body->getArgument(1), *creation.tileBroadcast);
         });
   }
 };
@@ -920,13 +953,13 @@ struct LowerMatmulToCompute : PlannedComputeRewritePattern<MatmulOp> {
     }
 
     return buildComputeFromInputs(
-        op, rewriter, ComputeFormationRecipe::Matmul, this->kernelPlan,
+        op, rewriter, ComputeOpCreationRecipe::Matmul, this->kernelPlan,
         [](OpBuilder &builder, Location location, Type tileType, Block *body,
-           const ComputeFormationPlan &formation) {
+           const ComputeOpCreationPlan &creation) {
           auto tileOp = createTileOpWithPlaceholderDstIndex<TileMatmulBlockOp>(
               builder, location, tileType, body->getArgument(0),
               body->getArgument(1), Value());
-          tileOp.setTransposeRhs(formation.transposeRhs);
+          tileOp.setTransposeRhs(creation.transposeRhs);
           return tileOp;
         });
   }
@@ -941,7 +974,7 @@ struct LowerMatmulToCompute : PlannedComputeRewritePattern<MatmulOp> {
 /// already erased by the elementwise builders (emitTileStores).
 struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
   LowerStoreToCompute(MLIRContext *context,
-                      const KernelComputeFormationPlan &kernelPlan)
+                      const KernelComputeOpCreationPlan &kernelPlan)
       : OpRewritePattern<StoreOp>(context), kernelPlan(kernelPlan) {}
 
   LogicalResult matchAndRewrite(StoreOp op,
@@ -953,7 +986,7 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
     const PassthroughStorePlan &plan = **planned;
     if (op.getTensor() != plan.input || op.getView() != plan.outputView) {
       return rewriter.notifyMatchFailure(
-          op, "store operands changed after compute formation analysis");
+          op, "store operands changed after ComputeOp creation analysis");
     }
     Value input = plan.input;
     RankedTensorType inputType = plan.tensorType;
@@ -998,7 +1031,7 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
   }
 
 private:
-  const KernelComputeFormationPlan &kernelPlan;
+  const KernelComputeOpCreationPlan &kernelPlan;
 };
 
 //===----------------------------------------------------------------------===//
@@ -1031,15 +1064,15 @@ struct LowerReduceToCompute : PlannedComputeRewritePattern<ReduceOp> {
     }
 
     return buildComputeFromInputs(
-        op, rewriter, ComputeFormationRecipe::Reduce, this->kernelPlan,
+        op, rewriter, ComputeOpCreationRecipe::Reduce, this->kernelPlan,
         [](OpBuilder &builder, Location location, Type tileType, Block *body,
-           const ComputeFormationPlan &formation) {
-          assert(formation.reduceType && formation.reduceDimension &&
+           const ComputeOpCreationPlan &creation) {
+          assert(creation.reduceType && creation.reduceDimension &&
                  "reduce recipe must record function and dimension");
           return createTileOpWithPlaceholderDstIndex<TileReduceOp>(
               builder, location, tileType, body->getArgument(0),
-              body->getArgument(1), body->getArgument(2), *formation.reduceType,
-              *formation.reduceDimension);
+              body->getArgument(1), body->getArgument(2), *creation.reduceType,
+              *creation.reduceDimension);
         });
   }
 };
@@ -1059,14 +1092,14 @@ struct LowerMulUnaryConstToCompute
     }
 
     return buildComputeFromInputs(
-        op, rewriter, ComputeFormationRecipe::MulUnaryConst, this->kernelPlan,
+        op, rewriter, ComputeOpCreationRecipe::MulUnaryConst, this->kernelPlan,
         [](OpBuilder &builder, Location location, Type tileType, Block *body,
-           const ComputeFormationPlan &formation) {
-          assert(formation.constantValue &&
+           const ComputeOpCreationPlan &creation) {
+          assert(creation.constantValue &&
                  "multiply-constant recipe must record its scalar value");
           return createTileOpWithPlaceholderDstIndex<TileMulUnaryConstOp>(
               builder, location, tileType, body->getArgument(0),
-              *formation.constantValue);
+              *creation.constantValue);
         });
   }
 };
@@ -1081,13 +1114,13 @@ struct LowerFillToCompute : PlannedComputeRewritePattern<FillOp> {
   LogicalResult matchAndRewrite(FillOp op,
                                 PatternRewriter &rewriter) const override {
     return buildComputeFromInputs(
-        op, rewriter, ComputeFormationRecipe::Fill, this->kernelPlan,
+        op, rewriter, ComputeOpCreationRecipe::Fill, this->kernelPlan,
         [](OpBuilder &builder, Location location, Type tileType, Block *,
-           const ComputeFormationPlan &formation) {
-          assert(formation.constantValue &&
+           const ComputeOpCreationPlan &creation) {
+          assert(creation.constantValue &&
                  "fill recipe must record its scalar value");
           return createTileOpWithPlaceholderDstIndex<TileFillOp>(
-              builder, location, tileType, *formation.constantValue);
+              builder, location, tileType, *creation.constantValue);
         });
   }
 };
@@ -1108,11 +1141,11 @@ struct LowerTypecastToCompute : PlannedComputeRewritePattern<TypecastOp> {
     }
 
     if (op.getInput().getType() == op.getResult().getType()) {
-      const ComputeFormationPlan *formation = nullptr;
-      if (failed(getFormationPlan(op, ComputeFormationKind::Elide,
-                                  ComputeFormationRecipe::Elide,
-                                  ValueRange{op.getInput()}, rewriter,
-                                  this->kernelPlan, formation))) {
+      const ComputeOpCreationPlan *creation = nullptr;
+      if (failed(getCreationPlan(op, ComputeOpCreationKind::Elide,
+                                 ComputeOpCreationRecipe::Elide,
+                                 ValueRange{op.getInput()}, rewriter,
+                                 this->kernelPlan, creation))) {
         return failure();
       }
       rewriter.replaceOp(op, op.getInput());
@@ -1124,9 +1157,9 @@ struct LowerTypecastToCompute : PlannedComputeRewritePattern<TypecastOp> {
     }
 
     return buildComputeFromInputs(
-        op, rewriter, ComputeFormationRecipe::Typecast, this->kernelPlan,
+        op, rewriter, ComputeOpCreationRecipe::Typecast, this->kernelPlan,
         [](OpBuilder &builder, Location location, Type outputTileType,
-           Block *body, const ComputeFormationPlan &) {
+           Block *body, const ComputeOpCreationPlan &) {
           return createTileOpWithPlaceholderDstIndex<TileTypecastOp>(
               builder, location, outputTileType, body->getArgument(0));
         });
@@ -1155,9 +1188,9 @@ struct LowerTransposeToCompute : PlannedComputeRewritePattern<TransposeOp> {
     }
 
     return buildComputeFromInputs(
-        op, rewriter, ComputeFormationRecipe::Transpose, this->kernelPlan,
+        op, rewriter, ComputeOpCreationRecipe::Transpose, this->kernelPlan,
         [](OpBuilder &builder, Location location, Type tileType, Block *body,
-           const ComputeFormationPlan &) {
+           const ComputeOpCreationPlan &) {
           return createTileOpWithPlaceholderDstIndex<TileTransposeOp>(
               builder, location, tileType, body->getArgument(0),
               body->getArgument(1));
@@ -1184,7 +1217,7 @@ struct LowerTransposeToCompute : PlannedComputeRewritePattern<TransposeOp> {
 
 static void populateTTLToComputePatternsForMode(
     RewritePatternSet &patterns, TTLToComputeMode mode,
-    const KernelComputeFormationPlan &kernelPlan);
+    const KernelComputeOpCreationPlan &kernelPlan);
 
 static LogicalResult runTTLToCompute(func::FuncOp kernel,
                                      TTLToComputeMode mode) {
@@ -1211,17 +1244,17 @@ static LogicalResult runTTLToCompute(func::FuncOp kernel,
          "lifetime analysis has no recoverable rejection");
   std::unique_ptr<DFBValueLifetimeAnalysis> lifetimes =
       std::move(plannedLifetimes).takePlan();
-  ComputeFormationPlanner formationPlanner(kernel, *lifetimes);
-  PlanningResult<KernelComputeFormationPlan> plannedKernel =
-      formationPlanner.build();
+  ComputeOpCreationPlanner creationPlanner(kernel, *lifetimes);
+  PlanningResult<KernelComputeOpCreationPlan> plannedKernel =
+      creationPlanner.build();
   if (plannedKernel.isInvalidIR()) {
     const PlanningDiagnostic &planningDiagnostic = plannedKernel.getInvalidIR();
     planningDiagnostic.operation->emitOpError(planningDiagnostic.message);
     return failure();
   }
   assert(plannedKernel.isPlanned() &&
-         "kernel formation planning has no recoverable rejection");
-  KernelComputeFormationPlan kernelPlan = std::move(plannedKernel).takePlan();
+         "kernel ComputeOp creation planning has no recoverable rejection");
+  KernelComputeOpCreationPlan kernelPlan = std::move(plannedKernel).takePlan();
 
   if (mode == TTLToComputeMode::FinalConversion &&
       !kernelPlan.getUnassignedStores().empty()) {
@@ -1234,19 +1267,19 @@ static LogicalResult runTTLToCompute(func::FuncOp kernel,
     return failure();
   }
 
-  SmallVector<ComputeFormationWarning> emittedWarnings;
-  for (Operation *source : kernelPlan.getFormationOrder()) {
-    const ComputeFormationPlan &formation =
-        kernelPlan.getAnalyzedFormation(source);
-    for (const ComputeFormationWarning &warning : formation.warnings) {
+  SmallVector<ComputeOpCreationWarning> emittedWarnings;
+  for (Operation *source : kernelPlan.getCreationOrder()) {
+    const ComputeOpCreationPlan &creation =
+        kernelPlan.getAnalyzedCreation(source);
+    for (const ComputeOpCreationWarning &warning : creation.warnings) {
       bool alreadyEmitted = llvm::any_of(
-          emittedWarnings, [&](const ComputeFormationWarning &emitted) {
+          emittedWarnings, [&](const ComputeOpCreationWarning &emitted) {
             return emitted.operation == warning.operation &&
                    emitted.kind == warning.kind;
           });
       if (!alreadyEmitted) {
         warning.operation->emitWarning(
-            getComputeFormationWarningMessage(warning.kind));
+            getComputeOpCreationWarningMessage(warning.kind));
         emittedWarnings.push_back(warning);
       }
     }
@@ -1259,13 +1292,13 @@ static LogicalResult runTTLToCompute(func::FuncOp kernel,
   GreedyRewriteConfig candidateConfig;
   candidateConfig.setStrictness(GreedyRewriteStrictness::ExistingOps);
   candidateConfig.enableFolding(false);
-  for (Operation *source : kernelPlan.getFormationOrder()) {
+  for (Operation *source : kernelPlan.getCreationOrder()) {
     if (failed(applyOpPatternsGreedily({source}, frozenPatterns,
                                        candidateConfig))) {
       return failure();
     }
     if (containsOperation(kernel, source)) {
-      source->emitError("failed to apply verified compute-formation plan");
+      source->emitError("failed to apply verified ComputeOp creation plan");
       return failure();
     }
   }
@@ -1275,15 +1308,15 @@ static LogicalResult runTTLToCompute(func::FuncOp kernel,
   return applyPatternsGreedily(kernel, frozenPatterns, remainingConfig);
 }
 
-struct TTLFormProducerComputePass
-    : public tt::ttl::impl::TTLFormProducerComputeBase<
-          TTLFormProducerComputePass> {
-  using tt::ttl::impl::TTLFormProducerComputeBase<
-      TTLFormProducerComputePass>::TTLFormProducerComputeBase;
+struct TTLProducerComputeCreationPass
+    : public tt::ttl::impl::TTLProducerComputeCreationBase<
+          TTLProducerComputeCreationPass> {
+  using tt::ttl::impl::TTLProducerComputeCreationBase<
+      TTLProducerComputeCreationPass>::TTLProducerComputeCreationBase;
 
   void runOnOperation() override {
     if (failed(runTTLToCompute(getOperation(),
-                               TTLToComputeMode::ProducerFormation))) {
+                               TTLToComputeMode::ProducerCreation))) {
       return signalPassFailure();
     }
   }
@@ -1305,7 +1338,7 @@ struct TTLConvertTTLToComputePass
 
 static void populateTTLToComputePatternsForMode(
     RewritePatternSet &patterns, TTLToComputeMode mode,
-    const KernelComputeFormationPlan &kernelPlan) {
+    const KernelComputeOpCreationPlan &kernelPlan) {
   MLIRContext *ctx = patterns.getContext();
 
   // Register patterns for lowering to ttl.compute with tile ops.

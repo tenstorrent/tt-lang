@@ -1,13 +1,13 @@
-// Verifies whole-kernel compute-formation ordering and exact consumer-operand
+// Verifies whole-kernel compute-op-creation ordering and exact consumer-operand
 // materialization decisions discovered by adversarial producer/use sweeps.
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-print-compute-formation-plans))' -o /dev/null 2>&1 | FileCheck %s --check-prefix=PLAN
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-form-producer-compute,ttl-insert-intermediate-dfbs,convert-ttl-to-compute,ttl-auto-sync))' | FileCheck %s --check-prefix=FULL
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-print-compute-op-creation-plans))' -o /dev/null 2>&1 | FileCheck %s --check-prefix=PLAN
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute,ttl-insert-intermediate-dfbs,convert-ttl-to-compute,ttl-auto-sync))' | FileCheck %s --check-prefix=FULL
 
 // A pure producer that dominates a nested consumer can be recomputed in the
 // consumer's region. No storage is needed across the region boundary.
-// PLAN-LABEL: Compute formation plan @cross_region_elementwise_consumer
+// PLAN-LABEL: ComputeOp creation plan @cross_region_elementwise_consumer
 // PLAN:       ttl.exp kind=fused recipe=fused legal=true
-// PLAN:       order=[F0]
+// PLAN:       order=[C0]
 // PLAN-NOT:   materialize
 // FULL-LABEL: func.func @cross_region_elementwise_consumer
 // FULL-NOT:   ttl.compiler_allocated
@@ -60,13 +60,13 @@ func.func @cross_region_elementwise_consumer(%condition: i1)
 
 // -----
 
-// Both consumers must be formed before the shared producer. The publication
-// store keeps the producer alive until its independent formation executes.
-// PLAN-LABEL: Compute formation plan @two_consumers_absorb_one_producer
+// Both consumers must be created before the shared producer. The publication
+// store keeps the producer alive until its independent creation executes.
+// PLAN-LABEL: ComputeOp creation plan @two_consumers_absorb_one_producer
 // PLAN:       ttl.add kind=direct recipe=elementwise legal=true
 // PLAN:       preserved-by {{.*}} operand=0
 // PLAN-COUNT-2: ttl.exp kind=fused recipe=fused legal=true
-// PLAN:       order=[F2, F1, F0]
+// PLAN:       order=[C2, C1, C0]
 // FULL-LABEL: func.func @two_consumers_absorb_one_producer
 // FULL-NOT:   ttl.compiler_allocated
 // FULL:       ttl.tile_add
@@ -138,10 +138,10 @@ func.func @two_consumers_absorb_one_producer()
 
 // Reduction cannot be fused into an elementwise consumer. Analysis records
 // the exact consumer operand and inserts one compiler DFB before conversion.
-// PLAN-LABEL: Compute formation plan @unstored_reduce_to_elementwise
+// PLAN-LABEL: ComputeOp creation plan @unstored_reduce_to_elementwise
 // PLAN:       order=[]
 // PLAN:       operand=0
-// PLAN-NEXT:  reason=formation-requires-materialized-input
+// PLAN-NEXT:  reason=compute-op-requires-materialized-input
 // FULL-LABEL: func.func @unstored_reduce_to_elementwise
 // FULL:       %[[INTERMEDIATE_DFB:.*]] = ttl.bind_cb{{.*}} {ttl.compiler_allocated}
 // FULL-NOT:   ttl.bind_cb{{.*}} {ttl.compiler_allocated}
@@ -193,9 +193,9 @@ func.func @unstored_reduce_to_elementwise()
 
 // -----
 
-// Multiple reserve transactions prevent direct producer formation. All uses
+// Multiple reserve transactions prevent direct producer creation. All uses
 // must consume one shared materialization so no use retains the tensor value.
-// PLAN-LABEL: Compute formation plan @two_transactions_and_elementwise_use
+// PLAN-LABEL: ComputeOp creation plan @two_transactions_and_elementwise_use
 // PLAN:       ttl.reduce kind=direct recipe=reduce legal=false
 // PLAN:       rejected=one compute cannot publish multiple reserve transactions of the same dataflow buffer
 // PLAN-COUNT-3: reason=multiple-output-transactions

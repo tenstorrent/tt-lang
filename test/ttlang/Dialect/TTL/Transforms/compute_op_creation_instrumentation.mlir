@@ -1,12 +1,14 @@
-// Tests whether fused-compute planning can preserve instrumentation ordering.
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-print-compute-formation-plans))' -o /dev/null 2>&1 | FileCheck %s
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-form-producer-compute))' | FileCheck %s --check-prefix=IR
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-form-producer-compute))' -o /dev/null 2>&1 | FileCheck %s --check-prefix=WARN
+// Tests whether direct and fused ComputeOp creation preserve instrumentation
+// ownership and ordering.
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-print-compute-op-creation-plans))' -o /dev/null 2>&1 | FileCheck %s
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute))' | FileCheck %s --check-prefix=IR
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute))' -o /dev/null 2>&1 | FileCheck %s --check-prefix=WARN
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute,ttl-insert-intermediate-dfbs,convert-ttl-to-compute))' 2>/dev/null | FileCheck %s --check-prefix=SPLIT
 
 // Nested user signposts move into the compute body with the operations they
 // observe. A following scope remains outside the compute.
 
-// CHECK-LABEL: Compute formation plan @movable_instrumentation
+// CHECK-LABEL: ComputeOp creation plan @movable_instrumentation
 // CHECK:       ttl.add kind=fused recipe=fused legal=true
 // CHECK:       warning=instrumentation changes code generation: matmul-accumulator folding is disabled because the combined hardware operation cannot preserve the observation point between ttl.matmul and ttl.add; the instrumented program uses separate tile operations
 // IR-LABEL:    func.func @movable_instrumentation
@@ -80,11 +82,11 @@ func.func @movable_instrumentation()
 
 // -----
 
-// Two output stores have distinct instrumentation scopes. Formation must keep
+// Two output stores have distinct instrumentation scopes. Creation must keep
 // each tile store inside its corresponding scope instead of grouping the tile
 // stores between the first begin and final end signposts.
 
-// CHECK-LABEL: Compute formation plan @instrumented_output_stores
+// CHECK-LABEL: ComputeOp creation plan @instrumented_output_stores
 // CHECK:       ttl.add kind=fused recipe=fused legal=true
 // IR-LABEL:    func.func @instrumented_output_stores
 // IR:          ttl.compute
@@ -140,13 +142,20 @@ func.func @instrumented_output_stores()
 
 // -----
 
-// Relocating the signpost while leaving the constant outside ttl.compute would
-// reverse their observable order. The planner therefore rejects this fusion,
-// and the conversion does not form the fused compute.
+// Scalar debug output cannot move into ttl.compute. Materializing the tensor
+// value consumed after the print preserves the source observation order. The
+// unrelated pure constant does not require another split.
 
-// CHECK-LABEL: Compute formation plan @intervening_operation
+// CHECK-LABEL: ComputeOp creation plan @intervening_operation
 // CHECK:       ttl.add kind=fused recipe=fused legal=false
-// CHECK:       rejected=instrumented fusion contains an operation that cannot move into ttl.compute
+// CHECK:       rejected=creating ttl.compute would move instrumentation across a non-reorderable operation
+// CHECK:       reason=compute-op-instrumentation-would-be-reordered
+// SPLIT-LABEL: func.func @intervening_operation
+// SPLIT:       ttl.compute
+// SPLIT:         ttl.tile_matmul_block
+// SPLIT:       ttl.dprint "between product and sum"
+// SPLIT:       ttl.compute
+// SPLIT:         ttl.tile_add
 func.func @intervening_operation()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
   %lhs_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
@@ -186,6 +195,8 @@ func.func @intervening_operation()
       : tensor<1x1x!ttcore.tile<32x32, bf16>>,
         tensor<1x1x!ttcore.tile<32x32, bf16>>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  "ttl.dprint"() {fmt = "between product and sum", mode = "scalar"}
+      : () -> ()
   %unrelated = arith.constant 0 : i32
   %sum = ttl.add %product, %accumulator
       : tensor<1x1x!ttcore.tile<32x32, bf16>>,
@@ -197,5 +208,63 @@ func.func @intervening_operation()
   ttl.signpost "ttl_scope" {is_end}
   ttl.cb_push %output_dfb
       : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
+
+// -----
+
+// A direct producer owns the signposts that surround its source operation.
+// A fused consumer may recompute that source, but must not move or duplicate
+// the producer's observable events.
+
+// CHECK-LABEL: ComputeOp creation plan @direct_producer_owns_instrumentation
+// CHECK:       ttl.exp kind=direct recipe=elementwise legal=true
+// CHECK:       ttl.exp kind=fused recipe=fused legal=true
+// IR-LABEL:    func.func @direct_producer_owns_instrumentation
+// IR:          ttl.compute
+// IR:            ttl.signpost "ttl_source"
+// IR-NEXT:       ttl.tile_exp
+// IR-NEXT:       ttl.signpost "ttl_source" {is_end}
+// IR:            ttl.tile_store
+// IR:          ttl.compute
+// IR-NOT:        ttl.signpost "ttl_source"
+// IR:            ttl.tile_exp
+// IR-NEXT:       ttl.tile_exp
+// IR:          return
+func.func @direct_producer_owns_instrumentation()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %published_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %output_dfb = ttl.bind_cb {cb_index = 2, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %input_wait = ttl.cb_wait %input_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %input = ttl.attach_cb %input_wait, %input_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.signpost "ttl_source"
+  %published = ttl.exp %input
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.signpost "ttl_source" {is_end}
+  %published_view = ttl.cb_reserve %published_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %published, %published_view
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+        tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %result = ttl.exp %published
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %output_view = ttl.cb_reserve %output_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %result, %output_view
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+        tensor<1x1x!ttcore.tile<32x32, bf16>>
   return
 }

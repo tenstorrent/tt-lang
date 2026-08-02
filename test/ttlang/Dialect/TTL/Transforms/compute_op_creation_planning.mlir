@@ -1,10 +1,10 @@
 // Tests debug output for compute sources that planning analyzes but cannot
-// assign to a final formation.
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-print-compute-formation-plans))' -o /dev/null 2>&1 | FileCheck %s
+// assign to a final creation.
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-print-compute-op-creation-plans))' -o /dev/null 2>&1 | FileCheck %s
 
 // Conditional routing has no common insertion operation for one compute. The
 // plan reports the source rejection and applies it to both unassigned stores.
-// CHECK-LABEL: Compute formation plan @conditional_output_routing
+// CHECK-LABEL: ComputeOp creation plan @conditional_output_routing
 // CHECK:       rejected-source {{.*}}ttl.add reason=output stores are in different blocks
 // CHECK:       order=[]
 // CHECK:       unassigned-store {{.*}} reason=output stores are in different blocks

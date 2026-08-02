@@ -316,8 +316,8 @@ def TTL_ComputeOp : TTL_Op<"compute", [
 
     /// Returns the unique formal output index whose attached DFB matches
     /// `view`. Failure means the association is absent or ambiguous.
-    /// TODO(#797): Encode this association in `ttl.tile_store` and remove
-    /// DFB-based discovery.
+    /// TODO(bnorris): Encode this association in `ttl.tile_store` and remove
+    /// DFB-based discovery. See #797.
     FailureOr<unsigned> getOutputIndexForView(Value view);
 
     // Return whether the body contains an op of the given type.
@@ -809,7 +809,8 @@ def TTL_SignpostOp : TTL_Op<"signpost", []> {
 // Debug print operations
 //===----------------------------------------------------------------------===//
 
-def TTL_DPrintOp : TTL_Op<"dprint", []> {
+def TTL_DPrintOp
+    : TTL_Op<"dprint", [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Debug print from device kernel";
   let description = [{
     Emits device debug print calls. Mode determines the output format:
@@ -825,6 +826,10 @@ def TTL_DPrintOp : TTL_Op<"dprint", []> {
     ttl.dprint "input" (%cb) {mode = "cb"} : (!ttl.cb<...>)
     ttl.dprint "after exp" () {mode = "dst"}
     ```
+
+    Debug output is an observable side effect. Transformations must preserve
+    its order relative to tensor evaluation unless they move the print with
+    the observed computation.
   }];
 
   let arguments = (ins

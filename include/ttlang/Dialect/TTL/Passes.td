@@ -287,8 +287,8 @@ def TTLPrintDFBValueLifetimes
   let summary = "Print DFB lifetime analysis for debugging and tests";
   let description = [{
     This diagnostic pass prints the immutable acquisition, release-ownership,
-    transfer-count, and program-point availability facts used by compute
-    formation and intermediate DFB materialization. It supports debugging and
+    transfer-count, and program-point availability facts used by `ComputeOp`
+    creation and intermediate DFB materialization. It supports debugging and
     deterministic regression tests; IDs follow kernel walk order rather than
     process addresses. The pass emits text to stderr and does not modify IR.
   }];
@@ -296,11 +296,11 @@ def TTLPrintDFBValueLifetimes
   let dependentDialects = [];
 }
 
-def TTLPrintComputeFormationPlans
-    : Pass<"ttl-print-compute-formation-plans", "::mlir::func::FuncOp"> {
-  let summary = "Print compute formation plans for debugging and tests";
+def TTLPrintComputeOpCreationPlans
+    : Pass<"ttl-print-compute-op-creation-plans", "::mlir::func::FuncOp"> {
+  let summary = "Print ComputeOp creation plans for debugging and tests";
   let description = [{
-    This diagnostic pass prints the immutable compute construction recipes,
+    This diagnostic pass prints the immutable ComputeOp creation recipes,
     dependency-safe application order, overlap-preserving uses, unassigned
     output stores, and intermediate DFB materialization requirements. Each
     materialization includes the evidence that requires the consumer operand
@@ -312,12 +312,12 @@ def TTLPrintComputeFormationPlans
   let dependentDialects = [];
 }
 
-def TTLFormProducerCompute
-    : Pass<"ttl-form-producer-compute", "::mlir::func::FuncOp"> {
-  let summary = "Form ttl.compute ops before compiler DFB materialization";
+def TTLProducerComputeCreation
+    : Pass<"ttl-create-producer-compute", "::mlir::func::FuncOp"> {
+  let summary = "Create ttl.compute ops before compiler DFB materialization";
   let description = [{
     Builds an immutable kernel plan before applying any rewrite. The plan
-    records typed construction recipes, input lifetimes, iteration semantics,
+    records typed tile recipes, input lifetimes, iteration semantics,
     result-use ordering, output transactions, and dependency-safe application
     order. Operations whose plans satisfy every condition are converted to
     `ttl.compute`. Operations with rejected plans are not transformed, so
@@ -326,7 +326,7 @@ def TTLFormProducerCompute
 
     When a block-level store is absorbed into a producer compute, this pass
     relocates any corresponding publication that would otherwise precede the
-    new compute. The constructed order is:
+    new compute. The resulting order is:
 
       cb_reserve -> ttl.compute tile_store -> cb_push
   }];
@@ -350,7 +350,7 @@ def TTLConvertTTLToCompute
     dependency-safe application order. Before modifying IR, final conversion
     verifies that every `ttl.store` will either be absorbed into a planned
     `ttl.compute` or converted to a DFB-to-DFB passthrough. The pass fails if
-    neither conversion applies. `ttl-form-producer-compute` may leave such
+    neither conversion applies. `ttl-create-producer-compute` may leave such
     stores for `ttl-insert-intermediate-dfbs` to resolve.
   }];
 

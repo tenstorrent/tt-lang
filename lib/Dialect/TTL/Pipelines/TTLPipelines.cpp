@@ -21,7 +21,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   pm.addNestedPass<func::FuncOp>(createTTLMaterializeLoopState());
   pm.addNestedPass<func::FuncOp>(createTTLInsertCopyWait());
   pm.addNestedPass<func::FuncOp>(createTTLAnnotateL1AccLoops());
-  pm.addNestedPass<func::FuncOp>(createTTLFormProducerCompute());
+  pm.addNestedPass<func::FuncOp>(createTTLProducerComputeCreation());
   {
     TTLInsertIntermediateDFBsOptions dfbOpts;
     dfbOpts.enable = options.compilerDFBs;

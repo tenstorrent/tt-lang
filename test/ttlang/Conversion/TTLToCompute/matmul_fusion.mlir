@@ -1,5 +1,5 @@
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute))' --split-input-file | FileCheck %s
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-print-compute-formation-plans))' -o /dev/null 2>&1 | FileCheck %s --check-prefix=PLAN
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-print-compute-op-creation-plans))' -o /dev/null 2>&1 | FileCheck %s --check-prefix=PLAN
 
 // Matmul+add fold: add is eliminated, producing 3-operand tile_matmul_block.
 // Post-matmul unary: applied in-place in the same fused compute body.
@@ -9,12 +9,12 @@
 // CHECK-DAG: #[[$PAR:.*]] = affine_map<(d0, d1, d2) -> (d0, d1)>
 
 // CHECK-LABEL: func.func @matmul_add
-// PLAN-LABEL: Compute formation plan @matmul_add
+// PLAN-LABEL: ComputeOp creation plan @matmul_add
 // PLAN:       kind=fused recipe=fused legal=true inputs=3
 // PLAN-NEXT:  iterators=[parallel, parallel, reduction] input-maps=3
 // PLAN-NEXT:  fused {{.*}} deferred-matmul operands=2
 // PLAN-NEXT:  fused {{.*}} matmul-accumulator operands=3
-// PLAN-NEXT:  order=[F0]
+// PLAN-NEXT:  order=[C0]
 // CHECK:         %[[A:.*]] = ttl.attach_cb
 // CHECK:         %[[B:.*]] = ttl.attach_cb
 // CHECK:         %[[C:.*]] = ttl.attach_cb
@@ -439,13 +439,13 @@ func.func @matmul_add_non_square() attributes {ttl.base_cta_index = 4 : i32, ttl
 // CHECK:       %[[RHS:.*]] = ttl.tile_matmul_block
 // CHECK:       %[[SUM:.*]] = ttl.tile_add %[[LHS]], %[[RHS]]
 // CHECK:       ttl.tile_store %[[SUM]]
-// PLAN-LABEL: Compute formation plan @two_matmuls_add
+// PLAN-LABEL: ComputeOp creation plan @two_matmuls_add
 // PLAN:       kind=fused recipe=fused legal=true inputs=4
 // PLAN-NEXT:  iterators=[parallel, parallel, reduction] input-maps=4 [(d0, d1, d2) -> (d0, d2), (d0, d1, d2) -> (d2, d1), (d0, d1, d2) -> (d0, d2), (d0, d1, d2) -> (d1, d2)]
 // PLAN:       fused {{.*}} matmul operands=2
 // PLAN-NEXT:  fused {{.*}} matmul operands=2
 // PLAN-NEXT:  fused {{.*}} tile-operation operands=2
-// PLAN-NEXT:  order=[F0]
+// PLAN-NEXT:  order=[C0]
 func.func @two_matmuls_add()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
   %lhs0_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}

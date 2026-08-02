@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#include "ComputeFormationPlanning.h"
+#include "ComputeOpCreationPlanning.h"
 
 #include "DFBValueLifetimeAnalysis.h"
 
@@ -18,15 +18,16 @@
 
 namespace mlir::tt::ttl {
 
-StringRef getComputeFormationWarningMessage(ComputeFormationWarningKind kind) {
+StringRef
+getComputeOpCreationWarningMessage(ComputeOpCreationWarningKind kind) {
   switch (kind) {
-  case ComputeFormationWarningKind::InstrumentationPreventsMatmulAccumulator:
+  case ComputeOpCreationWarningKind::InstrumentationPreventsMatmulAccumulator:
     return "instrumentation changes code generation: matmul-accumulator "
            "folding is disabled because the combined hardware operation "
            "cannot preserve the observation point between ttl.matmul and "
            "ttl.add; the instrumented program uses separate tile operations";
   }
-  llvm_unreachable("unknown compute formation warning kind");
+  llvm_unreachable("unknown ComputeOp creation warning kind");
 }
 
 namespace {
@@ -130,7 +131,7 @@ buildBroadcastAwareInputMap(MLIRContext *context, RankedTensorType inputType,
   return AffineMap::get(iterationRank, 0, expressions, context);
 }
 
-static bool isRelocatableFusedInstrumentation(Operation *operation) {
+static bool isRelocatableComputeInstrumentation(Operation *operation) {
   // The frontend gives user scopes a `ttl_` prefix. Automatic profiling uses
   // different placement rules that paired markers cannot represent reliably
   // through all compute-lowering transformations.
@@ -143,18 +144,67 @@ static bool isRelocatableFusedInstrumentation(Operation *operation) {
   return false;
 }
 
-static bool canPrecedeFusedOperations(Operation *operation) {
+static bool canPrecedeComputeBody(Operation *operation) {
   if (auto signpost = dyn_cast<SignpostOp>(operation)) {
-    return isRelocatableFusedInstrumentation(operation) && !signpost.getIsEnd();
+    return isRelocatableComputeInstrumentation(operation) &&
+           !signpost.getIsEnd();
   }
-  return isRelocatableFusedInstrumentation(operation);
+  return isRelocatableComputeInstrumentation(operation);
 }
 
-static bool canFollowFusedStores(Operation *operation) {
+static bool canFollowComputeStores(Operation *operation) {
   if (auto signpost = dyn_cast<SignpostOp>(operation)) {
-    return isRelocatableFusedInstrumentation(operation) && signpost.getIsEnd();
+    return isRelocatableComputeInstrumentation(operation) &&
+           signpost.getIsEnd();
   }
-  return isRelocatableFusedInstrumentation(operation);
+  return isRelocatableComputeInstrumentation(operation);
+}
+
+/// Returns expression operations erased if this fused creation runs alone.
+///
+/// The sink is always replaced. An earlier operation remains when any user is
+/// outside the erased expression, so instrumentation surrounding that
+/// operation belongs to its independent creation and must remain in place.
+static DenseSet<Operation *>
+collectErasedFusedOperations(const FusionTraceResult &trace, Operation *sink) {
+  DenseSet<Operation *> erased{sink};
+  for (Operation *operation : llvm::reverse(trace.opsInOrder)) {
+    if (operation == sink) {
+      continue;
+    }
+    bool allUsersErased =
+        llvm::all_of(operation->getUsers(),
+                     [&](Operation *user) { return erased.contains(user); });
+    if (allUsersErased) {
+      erased.insert(operation);
+    }
+  }
+  return erased;
+}
+
+/// Operations represented by one created `ComputeOp` and the subset erased
+/// when that plan is applied. A fused expression may retain a shared producer;
+/// its instrumentation therefore remains owned by the producer's own plan.
+struct ComputeOpMovement {
+  SmallVector<Operation *> expressionOperations;
+  DenseSet<Operation *> movedOperations;
+};
+
+static ComputeOpMovement
+collectComputeOpMovement(Operation *source, ComputeOpCreationKind kind,
+                         const FusionTraceResult &trace) {
+  ComputeOpMovement movement;
+  if (kind == ComputeOpCreationKind::Direct) {
+    movement.expressionOperations.push_back(source);
+    movement.movedOperations.insert(source);
+    return movement;
+  }
+  assert(kind == ComputeOpCreationKind::Fused &&
+         "elision does not create a ComputeOp body");
+  movement.expressionOperations.append(trace.opsInOrder.begin(),
+                                       trace.opsInOrder.end());
+  movement.movedOperations = collectErasedFusedOperations(trace, source);
+  return movement;
 }
 
 static DenseMap<Operation *, Operation *> pairSignpostsInBlock(Block &block) {
@@ -182,17 +232,17 @@ static DenseMap<Operation *, Operation *> pairSignpostsInBlock(Block &block) {
 }
 
 static LogicalResult preserveSignpostScopes(
-    Block &block, Operation *firstFused, Operation *lastStore,
-    SmallVectorImpl<FusedInstrumentationPlacement> &placements,
+    Block &block, Operation *firstMoved, Operation *lastStore,
+    SmallVectorImpl<ComputeInstrumentationPlacement> &placements,
     std::string &failureReason) {
   DenseSet<Operation *> selected;
-  for (const FusedInstrumentationPlacement &placement : placements) {
+  for (const ComputeInstrumentationPlacement &placement : placements) {
     selected.insert(placement.operation);
   }
 
   DenseMap<Operation *, Operation *> partners = pairSignpostsInBlock(block);
   DenseSet<Operation *> keptOutside;
-  for (const FusedInstrumentationPlacement &placement : placements) {
+  for (const ComputeInstrumentationPlacement &placement : placements) {
     auto signpost = dyn_cast<SignpostOp>(placement.operation);
     if (!signpost) {
       continue;
@@ -200,7 +250,7 @@ static LogicalResult preserveSignpostScopes(
     Operation *partner = partners.lookup(signpost);
     if (!partner) {
       failureReason =
-          "instrumented fusion cannot preserve an unmatched ttl.signpost";
+          "ComputeOp creation cannot preserve an unmatched ttl.signpost";
       return failure();
     }
     if (selected.contains(partner)) {
@@ -209,37 +259,39 @@ static LogicalResult preserveSignpostScopes(
 
     Operation *begin = signpost.getIsEnd() ? partner : signpost.getOperation();
     Operation *end = signpost.getIsEnd() ? signpost.getOperation() : partner;
-    if (begin->isBeforeInBlock(firstFused) && lastStore->isBeforeInBlock(end)) {
+    if (begin->isBeforeInBlock(firstMoved) && lastStore->isBeforeInBlock(end)) {
       // A scope containing every absorbed operation still observes the same
-      // events when the complete formed compute remains between its markers.
+      // events when the complete created `ComputeOp` remains between its
+      // markers.
       keptOutside.insert(signpost);
       continue;
     }
 
     failureReason =
-        "instrumented fusion cannot preserve a partially overlapping "
+        "ComputeOp creation cannot preserve a partially overlapping "
         "ttl.signpost scope";
     return failure();
   }
 
   llvm::erase_if(placements,
-                 [&](const FusedInstrumentationPlacement &placement) {
+                 [&](const ComputeInstrumentationPlacement &placement) {
                    return keptOutside.contains(placement.operation);
                  });
   return success();
 }
 
-static LogicalResult collectFusedInstrumentation(
-    const FusionTraceResult &trace, const OutputPublicationPlan &outputs,
-    Operation *sink, SmallVectorImpl<FusedInstrumentationPlacement> &placements,
+static LogicalResult collectComputeInstrumentation(
+    ArrayRef<Operation *> expressionOperations,
+    const DenseSet<Operation *> &movedOperations,
+    const OutputPublicationPlan &outputs,
+    SmallVectorImpl<ComputeInstrumentationPlacement> &placements,
     std::string &failureReason) {
-  Block *block = sink->getBlock();
-  if (llvm::any_of(outputs.stores, [block](StoreOp store) {
-        return store->getBlock() != block;
-      })) {
-    failureReason = "fused source and output stores must be in one block";
-    return failure();
-  }
+  Block *publicationBlock = outputs.insertionAnchor->getBlock();
+  assert(llvm::all_of(outputs.stores,
+                      [publicationBlock](StoreOp store) {
+                        return store->getBlock() == publicationBlock;
+                      }) &&
+         "publication plan must place every output store in one block");
 
   // Cross-block recomputation uses upstream `isPure`, which requires both
   // speculation safety and absence of memory effects, rather than relying on
@@ -247,57 +299,54 @@ static LogicalResult collectFusedInstrumentation(
   // https://github.com/llvm/llvm-project/blob/4279d524cc78d0bac294bb29257c62665121d9f1/mlir/include/mlir/Interfaces/SideEffectInterfaces.h
   // SSA dominance and the separate DFB availability proof then preserve the
   // producer's value. Instrumentation in another block has no placement
-  // relation to the sink, so rejecting it preserves its observations.
-  for (Operation *fusedOperation : trace.opsInOrder) {
-    if (fusedOperation->getBlock() == block) {
+  // relation to the publication block, so rejecting it preserves observations.
+  for (Operation *expressionOperation : expressionOperations) {
+    if (!movedOperations.contains(expressionOperation) ||
+        expressionOperation->getBlock() == publicationBlock) {
       continue;
     }
-    bool canRecompute = isPure(fusedOperation);
+    bool canRecompute = isPure(expressionOperation);
     assert(canRecompute &&
-           "cross-block fusion admitted an operation that cannot be "
+           "cross-block creation admitted an operation that cannot be "
            "recomputed");
     if (!canRecompute) {
       failureReason =
-          "fusion across blocks requires speculatable, memory-effect-free "
+          "creation across blocks requires speculatable, memory-effect-free "
           "operations";
       return failure();
     }
-    if (llvm::any_of(*fusedOperation->getBlock(), [](Operation &operation) {
-          return isRelocatableFusedInstrumentation(&operation);
-        })) {
+    if (llvm::any_of(*expressionOperation->getBlock(),
+                     [](Operation &operation) {
+                       return isRelocatableComputeInstrumentation(&operation);
+                     })) {
       failureReason =
-          "fusion across blocks cannot preserve instrumentation surrounding "
-          "an absorbed operation";
+          "creation across blocks cannot preserve instrumentation surrounding "
+          "a moved operation";
       return failure();
     }
   }
 
-  DenseSet<Operation *> fusedOperations(trace.opsInOrder.begin(),
-                                        trace.opsInOrder.end());
   DenseSet<Operation *> outputStores;
   for (StoreOp store : outputs.stores) {
     outputStores.insert(store);
   }
-  Operation *firstFused = nullptr;
-  for (Operation &operation : *sink->getBlock()) {
-    if (!fusedOperations.contains(&operation)) {
+  Operation *firstMoved = nullptr;
+  for (Operation &operation : *publicationBlock) {
+    if (!movedOperations.contains(&operation) &&
+        !outputStores.contains(&operation)) {
       continue;
     }
-    if (!firstFused) {
-      firstFused = &operation;
-    }
+    firstMoved = &operation;
+    break;
   }
-  if (!firstFused) {
-    failureReason = "fused expression has no operation in the sink block";
-    return failure();
-  }
+  assert(firstMoved && "publication plan must contain an output store");
 
-  // Recording each observation relative to an absorbed operation preserves
-  // the observed sequence after those operations move into the compute body.
+  // Recording each observation relative to a moved operation preserves the
+  // observed sequence after creating the `ComputeOp` body.
   SmallVector<Operation *> leading;
-  for (Operation *operation = firstFused->getPrevNode(); operation;
+  for (Operation *operation = firstMoved->getPrevNode(); operation;
        operation = operation->getPrevNode()) {
-    if (!canPrecedeFusedOperations(operation)) {
+    if (!canPrecedeComputeBody(operation)) {
       break;
     }
     leading.push_back(operation);
@@ -307,45 +356,29 @@ static LogicalResult collectFusedInstrumentation(
   }
 
   Operation *lastStore = outputs.stores.back();
-  Operation *previousMovable = nullptr;
-  bool hasUnsupportedOperation = false;
-  for (Operation *operation = firstFused;
+  Operation *previousMoved = nullptr;
+  for (Operation *operation = firstMoved;
        operation && operation != lastStore->getNextNode();
        operation = operation->getNextNode()) {
-    if (fusedOperations.contains(operation) ||
+    if (movedOperations.contains(operation) ||
         outputStores.contains(operation)) {
-      previousMovable = operation;
-    } else if (isRelocatableFusedInstrumentation(operation)) {
-      placements.push_back({operation, previousMovable});
-    } else {
-      hasUnsupportedOperation = true;
+      previousMoved = operation;
+    } else if (isRelocatableComputeInstrumentation(operation)) {
+      placements.push_back({operation, previousMoved});
     }
   }
 
   for (Operation *operation = lastStore->getNextNode(); operation;
        operation = operation->getNextNode()) {
-    if (canFollowFusedStores(operation)) {
+    if (canFollowComputeStores(operation)) {
       placements.push_back({operation, lastStore});
     } else {
       break;
     }
   }
 
-  if (failed(preserveSignpostScopes(*block, firstFused, lastStore, placements,
-                                    failureReason))) {
-    return failure();
-  }
-
-  // Instrumentation cannot move across an operation that remains outside the
-  // compute body. Rejecting only instrumented expressions leaves ordinary
-  // fusion unaffected while preserving the observed operation sequence.
-  if (!placements.empty() && hasUnsupportedOperation) {
-    failureReason =
-        "instrumented fusion contains an operation that cannot move into "
-        "ttl.compute";
-    return failure();
-  }
-  return success();
+  return preserveSignpostScopes(*publicationBlock, firstMoved, lastStore,
+                                placements, failureReason);
 }
 
 static FailureOr<Type> getResultTileType(Operation *source) {
@@ -359,7 +392,7 @@ static FailureOr<Type> getResultTileType(Operation *source) {
   return ttcore::TileType::get(tensorType.getElementType());
 }
 
-static FailureOr<unsigned> findFusedRootInput(const ComputeFormationPlan &plan,
+static FailureOr<unsigned> findFusedRootInput(const ComputeOpCreationPlan &plan,
                                               Value value,
                                               FusedInputRole role) {
   for (auto [inputIndex, input] : llvm::enumerate(plan.inputs)) {
@@ -370,7 +403,7 @@ static FailureOr<unsigned> findFusedRootInput(const ComputeFormationPlan &plan,
   return failure();
 }
 
-static LogicalResult buildFusedOperationPlans(ComputeFormationPlan &plan,
+static LogicalResult buildFusedOperationPlans(ComputeOpCreationPlan &plan,
                                               std::string &failureReason) {
   DenseSet<Operation *> fusedOperations(plan.trace.opsInOrder.begin(),
                                         plan.trace.opsInOrder.end());
@@ -386,7 +419,7 @@ static LogicalResult buildFusedOperationPlans(ComputeFormationPlan &plan,
         matmul->getBlock() == user->getBlock()) {
       for (Operation *operation = matmul->getNextNode(); operation != user;
            operation = operation->getNextNode()) {
-        if (isRelocatableFusedInstrumentation(operation)) {
+        if (isRelocatableComputeInstrumentation(operation)) {
           interveningInstrumentation = operation;
           break;
         }
@@ -394,7 +427,7 @@ static LogicalResult buildFusedOperationPlans(ComputeFormationPlan &plan,
     }
     if (interveningInstrumentation) {
       plan.warnings.push_back({interveningInstrumentation,
-                               ComputeFormationWarningKind::
+                               ComputeOpCreationWarningKind::
                                    InstrumentationPreventsMatmulAccumulator});
     } else if (isa<AddOp>(user) && fusedOperations.contains(user)) {
       foldCandidates[user].push_back(matmul);
@@ -502,7 +535,7 @@ static LogicalResult buildFusedOperationPlans(ComputeFormationPlan &plan,
   return success();
 }
 
-static void buildIdentityIterationPlan(ComputeFormationPlan &plan) {
+static void buildIdentityIterationPlan(ComputeOpCreationPlan &plan) {
   MLIRContext *context = plan.source->getContext();
   AffineMap identity =
       AffineMap::getMultiDimIdentityMap(plan.resultType.getRank(), context);
@@ -512,7 +545,7 @@ static void buildIdentityIterationPlan(ComputeFormationPlan &plan) {
                                       utils::IteratorType::parallel);
 }
 
-static LogicalResult buildFusedIterationPlan(ComputeFormationPlan &plan,
+static LogicalResult buildFusedIterationPlan(ComputeOpCreationPlan &plan,
                                              std::string &failureReason) {
   MLIRContext *context = plan.source->getContext();
   DenseMap<Value, SmallVector<FusedInputRole>> inputRoles;
@@ -676,14 +709,14 @@ static LogicalResult buildFusedIterationPlan(ComputeFormationPlan &plan,
   return success();
 }
 
-static LogicalResult buildOperationSpecificPlan(ComputeFormationPlan &plan,
+static LogicalResult buildOperationSpecificPlan(ComputeOpCreationPlan &plan,
                                                 std::string &failureReason) {
-  if (plan.kind == ComputeFormationKind::Elide) {
-    plan.recipe = ComputeFormationRecipe::Elide;
+  if (plan.kind == ComputeOpCreationKind::Elide) {
+    plan.recipe = ComputeOpCreationRecipe::Elide;
     return success();
   }
-  if (plan.kind == ComputeFormationKind::Fused) {
-    plan.recipe = ComputeFormationRecipe::Fused;
+  if (plan.kind == ComputeOpCreationKind::Fused) {
+    plan.recipe = ComputeOpCreationRecipe::Fused;
     if (failed(buildFusedIterationPlan(plan, failureReason))) {
       return failure();
     }
@@ -691,7 +724,7 @@ static LogicalResult buildOperationSpecificPlan(ComputeFormationPlan &plan,
   }
 
   if (isa<BlockBroadcastOp>(plan.source)) {
-    plan.recipe = ComputeFormationRecipe::BlockBroadcast;
+    plan.recipe = ComputeOpCreationRecipe::BlockBroadcast;
     auto broadcast = cast<BlockBroadcastOp>(plan.source);
     RankedTensorType inputType = getTensorType(broadcast.getInput());
     if (!inputType) {
@@ -711,7 +744,7 @@ static LogicalResult buildOperationSpecificPlan(ComputeFormationPlan &plan,
     return success();
   }
   if (auto matmul = dyn_cast<MatmulOp>(plan.source)) {
-    plan.recipe = ComputeFormationRecipe::Matmul;
+    plan.recipe = ComputeOpCreationRecipe::Matmul;
     plan.transposeRhs = matmul.getTransposeRhs();
     MLIRContext *context = plan.source->getContext();
     AffineExpr dimensionM = getAffineDimExpr(0, context);
@@ -730,7 +763,7 @@ static LogicalResult buildOperationSpecificPlan(ComputeFormationPlan &plan,
     return success();
   }
   if (auto reduce = dyn_cast<ReduceOp>(plan.source)) {
-    plan.recipe = ComputeFormationRecipe::Reduce;
+    plan.recipe = ComputeOpCreationRecipe::Reduce;
     RankedTensorType inputType = getTensorType(reduce.getInput());
     if (!inputType || inputType.getRank() != 2) {
       failureReason = "reduce requires a rank-2 input";
@@ -773,24 +806,24 @@ static LogicalResult buildOperationSpecificPlan(ComputeFormationPlan &plan,
     return success();
   }
   if (isa<MulUnaryConstOp>(plan.source)) {
-    plan.recipe = ComputeFormationRecipe::MulUnaryConst;
+    plan.recipe = ComputeOpCreationRecipe::MulUnaryConst;
     plan.constantValue = cast<MulUnaryConstOp>(plan.source).getValueAttr();
     buildIdentityIterationPlan(plan);
     return success();
   }
   if (isa<FillOp>(plan.source)) {
-    plan.recipe = ComputeFormationRecipe::Fill;
+    plan.recipe = ComputeOpCreationRecipe::Fill;
     plan.constantValue = cast<FillOp>(plan.source).getValueAttr();
     buildIdentityIterationPlan(plan);
     return success();
   }
   if (isa<TypecastOp>(plan.source)) {
-    plan.recipe = ComputeFormationRecipe::Typecast;
+    plan.recipe = ComputeOpCreationRecipe::Typecast;
     buildIdentityIterationPlan(plan);
     return success();
   }
   if (isa<TransposeOp>(plan.source)) {
-    plan.recipe = ComputeFormationRecipe::Transpose;
+    plan.recipe = ComputeOpCreationRecipe::Transpose;
     MLIRContext *context = plan.source->getContext();
     AffineExpr dimensionM = getAffineDimExpr(0, context);
     AffineExpr dimensionN = getAffineDimExpr(1, context);
@@ -801,12 +834,12 @@ static LogicalResult buildOperationSpecificPlan(ComputeFormationPlan &plan,
     return success();
   }
   if (isElementwiseOp(plan.source)) {
-    plan.recipe = ComputeFormationRecipe::Elementwise;
+    plan.recipe = ComputeOpCreationRecipe::Elementwise;
     buildIdentityIterationPlan(plan);
     return success();
   }
 
-  failureReason = "operation has no ttl.compute construction recipe";
+  failureReason = "operation has no ttl.compute tile recipe";
   return failure();
 }
 
@@ -946,9 +979,9 @@ buildOutputPublicationPlan(Operation *source) {
                                                                  .takePlan());
 }
 
-bool isComputeFormationUsePreserved(const OutputPublicationPlan &outputs,
-                                    OpOperand &use,
-                                    const DominanceInfo &dominanceInfo) {
+bool isComputeOpCreationUsePreserved(const OutputPublicationPlan &outputs,
+                                     OpOperand &use,
+                                     const DominanceInfo &dominanceInfo) {
   if (auto store = dyn_cast<StoreOp>(use.getOwner());
       store && &store.getTensorMutable() == &use &&
       llvm::is_contained(outputs.stores, store)) {
@@ -958,13 +991,13 @@ bool isComputeFormationUsePreserved(const OutputPublicationPlan &outputs,
                                          use.getOwner());
 }
 
-bool isComputeFormationElision(Operation *source) {
+bool isComputeOpCreationElision(Operation *source) {
   auto typecast = dyn_cast<TypecastOp>(source);
   return typecast &&
          typecast.getInput().getType() == typecast.getResult().getType();
 }
 
-bool hasStandaloneComputeFormationRecipe(Operation *source) {
+bool hasStandaloneComputeOpCreationRecipe(Operation *source) {
   if (source->getNumResults() != 1) {
     return false;
   }
@@ -975,11 +1008,12 @@ bool hasStandaloneComputeFormationRecipe(Operation *source) {
     return false;
   }
 
-  ComputeFormationPlan plan;
+  ComputeOpCreationPlan plan;
   plan.source = source;
   plan.resultType = resultType;
-  plan.kind = isComputeFormationElision(source) ? ComputeFormationKind::Elide
-                                                : ComputeFormationKind::Direct;
+  plan.kind = isComputeOpCreationElision(source)
+                  ? ComputeOpCreationKind::Elide
+                  : ComputeOpCreationKind::Direct;
   for (unsigned operandIndex : *inputIndices) {
     plan.inputs.push_back(source->getOperand(operandIndex));
   }
@@ -992,24 +1026,140 @@ resolveOutputPublicationOperations(const OutputPublicationPlan &analyzed) {
   return resolveTransactionPushes(analyzed);
 }
 
-FailureOr<SmallVector<Value>> collectComputeFormationLifetimeInputs(
+static SmallVector<ComputeOpCreationInstrumentationBoundary>
+collectInstrumentationBoundaries(
+    const ComputeOpMovement &movement, const OutputPublicationPlan &outputs,
+    ArrayRef<ComputeInstrumentationPlacement> instrumentation,
+    llvm::function_ref<bool(OpOperand &)> isMaterializationPlanned) {
+  SmallVector<ComputeOpCreationInstrumentationBoundary> boundaries;
+  if (instrumentation.empty()) {
+    return boundaries;
+  }
+
+  Block *publicationBlock = outputs.insertionAnchor->getBlock();
+  DenseSet<Operation *> outputStores;
+  for (StoreOp store : outputs.stores) {
+    outputStores.insert(store);
+  }
+  DenseSet<Operation *> outputReserves;
+  for (const OutputDFBTransaction &transaction : outputs.transactions) {
+    outputReserves.insert(transaction.reserve);
+  }
+
+  auto firstMovedIterator =
+      llvm::find_if(*publicationBlock, [&](Operation &operation) {
+        return movement.movedOperations.contains(&operation) ||
+               outputStores.contains(&operation);
+      });
+  assert(firstMovedIterator != publicationBlock->end() &&
+         "publication plan must contain an output store");
+  Operation *firstMoved = &*firstMovedIterator;
+  Operation *lastStore = outputs.stores.back();
+  for (Operation *operation = firstMoved;
+       operation && operation != lastStore->getNextNode();
+       operation = operation->getNextNode()) {
+    if (movement.movedOperations.contains(operation) ||
+        outputStores.contains(operation) ||
+        outputReserves.contains(operation) ||
+        isRelocatableComputeInstrumentation(operation) || isPure(operation)) {
+      continue;
+    }
+    bool instrumentationWouldCross = llvm::any_of(
+        instrumentation, [&](const ComputeInstrumentationPlacement &placement) {
+          return placement.operation->getBlock() == publicationBlock &&
+                 placement.operation->isBeforeInBlock(operation);
+        });
+    if (!instrumentationWouldCross) {
+      continue;
+    }
+
+    ComputeOpCreationInstrumentationBoundary boundary;
+    boundary.operation = operation;
+    for (Operation *producer : movement.expressionOperations) {
+      if (!movement.movedOperations.contains(producer) ||
+          producer->getBlock() != publicationBlock ||
+          !producer->isBeforeInBlock(operation)) {
+        continue;
+      }
+      for (Value result : producer->getResults()) {
+        for (OpOperand &use : result.getUses()) {
+          Operation *consumer = use.getOwner();
+          if (isMaterializationPlanned(use) ||
+              consumer->getBlock() != publicationBlock ||
+              (!movement.movedOperations.contains(consumer) &&
+               !outputStores.contains(consumer)) ||
+              !operation->isBeforeInBlock(consumer)) {
+            continue;
+          }
+          ComputeOpCreationUse crossingUse{consumer, use.getOperandNumber()};
+          if (llvm::none_of(boundary.crossingUses,
+                            [&](const ComputeOpCreationUse &existing) {
+                              return existing.owner == crossingUse.owner &&
+                                     existing.operandIndex ==
+                                         crossingUse.operandIndex;
+                            })) {
+            boundary.crossingUses.push_back(crossingUse);
+          }
+        }
+      }
+    }
+    if (!boundary.crossingUses.empty()) {
+      boundaries.push_back(std::move(boundary));
+    }
+  }
+  return boundaries;
+}
+
+FailureOr<SmallVector<ComputeOpCreationInstrumentationBoundary>>
+collectComputeOpCreationInstrumentationBoundaries(
+    Operation *source, const OutputPublicationPlan &outputs,
+    llvm::function_ref<bool(OpOperand &)> isMaterializationPlanned) {
+  if (isComputeOpCreationElision(source)) {
+    return SmallVector<ComputeOpCreationInstrumentationBoundary>{};
+  }
+
+  ComputeOpCreationKind kind = ComputeOpCreationKind::Direct;
+  FusionTraceResult trace;
+  if (!collectDirectInputs(source, isMaterializationPlanned)) {
+    kind = ComputeOpCreationKind::Fused;
+    trace = traceFusionToRoots(source->getResult(0), isMaterializationPlanned);
+    if (trace.failureReason != TraceFailureReason::Success ||
+        trace.opsInOrder.empty()) {
+      return failure();
+    }
+  }
+
+  ComputeOpMovement movement = collectComputeOpMovement(source, kind, trace);
+  SmallVector<ComputeInstrumentationPlacement> instrumentation;
+  std::string failureReason;
+  if (failed(collectComputeInstrumentation(movement.expressionOperations,
+                                           movement.movedOperations, outputs,
+                                           instrumentation, failureReason))) {
+    return failure();
+  }
+  return collectInstrumentationBoundaries(movement, outputs, instrumentation,
+                                          isMaterializationPlanned);
+}
+
+FailureOr<SmallVector<Value>> collectComputeOpCreationLifetimeInputs(
     Operation *source,
     llvm::function_ref<bool(OpOperand &)> isMaterializationPlanned) {
   if (source->getNumResults() != 1) {
     return failure();
   }
 
-  if (std::optional<SmallVector<unsigned>> inputIndices =
-          getDirectInputOperandIndices(source)) {
+  if (collectDirectInputs(source, isMaterializationPlanned)) {
+    std::optional<SmallVector<unsigned>> inputIndices =
+        getDirectInputOperandIndices(source);
+    assert(inputIndices && "direct inputs require a direct compute recipe");
     SmallVector<Value> lifetimeInputs;
     for (unsigned operandIndex : *inputIndices) {
       OpOperand &operand = source->getOpOperand(operandIndex);
       if (isMaterializationPlanned(operand)) {
         continue;
       }
-      if (!getAttachedCB(operand.get())) {
-        return failure();
-      }
+      assert(getAttachedCB(operand.get()) &&
+             "direct ComputeOp input must be DFB-backed or materialized");
       lifetimeInputs.push_back(operand.get());
     }
     return lifetimeInputs;
@@ -1025,31 +1175,31 @@ FailureOr<SmallVector<Value>> collectComputeFormationLifetimeInputs(
   return failure();
 }
 
-static PlanningResult<ComputeFormationPlan, ComputeFormationRejection>
-rejectComputeFormation(
-    Operation *source, ComputeFormationRejectionKind kind, std::string message,
-    std::optional<ComputeFormationPlan> candidate = std::nullopt) {
-  return PlanningResult<ComputeFormationPlan, ComputeFormationRejection>::
+static PlanningResult<ComputeOpCreationPlan, ComputeOpCreationRejection>
+rejectComputeOpCreation(
+    Operation *source, ComputeOpCreationRejectionKind kind, std::string message,
+    std::optional<ComputeOpCreationPlan> candidate = std::nullopt) {
+  return PlanningResult<ComputeOpCreationPlan, ComputeOpCreationRejection>::
       rejected({source, kind, std::move(message), std::move(candidate)});
 }
 
-static PlanningResult<ComputeFormationPlan, ComputeFormationRejection>
-buildComputeFormationPlan(Operation *source,
-                          const DFBValueLifetimeAnalysis &lifetimes,
-                          const DominanceInfo &dominanceInfo,
-                          std::string &failureReason) {
+static PlanningResult<ComputeOpCreationPlan, ComputeOpCreationRejection>
+buildComputeOpCreationPlan(Operation *source,
+                           const DFBValueLifetimeAnalysis &lifetimes,
+                           const DominanceInfo &dominanceInfo,
+                           std::string &failureReason) {
   if (source->getNumResults() != 1) {
-    return rejectComputeFormation(
-        source, ComputeFormationRejectionKind::UnsupportedCandidate,
+    return rejectComputeOpCreation(
+        source, ComputeOpCreationRejectionKind::UnsupportedCandidate,
         "operation must have exactly one result to form compute");
   }
 
-  ComputeFormationPlan plan;
+  ComputeOpCreationPlan plan;
   plan.source = source;
   plan.resultType = getTensorType(source->getResult(0));
   if (!plan.resultType) {
-    return rejectComputeFormation(
-        source, ComputeFormationRejectionKind::UnsupportedCandidate,
+    return rejectComputeOpCreation(
+        source, ComputeOpCreationRejectionKind::UnsupportedCandidate,
         "operation result is not a ranked tensor");
   }
   llvm::append_range(plan.applicationOperands, source->getOperands());
@@ -1057,13 +1207,13 @@ buildComputeFormationPlan(Operation *source,
     plan.resultUses.push_back({use.getOwner(), use.getOperandNumber()});
   }
 
-  if (isComputeFormationElision(source)) {
-    plan.kind = ComputeFormationKind::Elide;
+  if (isComputeOpCreationElision(source)) {
+    plan.kind = ComputeOpCreationKind::Elide;
     plan.inputs = {cast<TypecastOp>(source).getInput()};
   } else if (std::optional<SmallVector<Value>> directInputs =
                  collectDirectInputs(source,
                                      [](OpOperand &) { return false; })) {
-    plan.kind = ComputeFormationKind::Direct;
+    plan.kind = ComputeOpCreationKind::Direct;
     plan.inputs = std::move(*directInputs);
   } else if (auto reduce = dyn_cast<ReduceOp>(source)) {
     if (!getAttachedCB(reduce.getInput())) {
@@ -1072,32 +1222,32 @@ buildComputeFormationPlan(Operation *source,
           inputDefinition &&
           (isElementwiseOp(inputDefinition) ||
            isa<MatmulOp, BlockBroadcastOp, FillOp>(inputDefinition));
-      return rejectComputeFormation(
-          source, ComputeFormationRejectionKind::UnmaterializedInput,
+      return rejectComputeOpCreation(
+          source, ComputeOpCreationRejectionKind::UnmaterializedInput,
           isUnstoredComputeResult
               ? "reduce input is an unstored compute result; store the "
                 "intermediate result to a dataflow buffer before passing it "
                 "to reduce (see issue #474)"
               : "reduce input must be dataflow-buffer-backed");
     }
-    return rejectComputeFormation(
-        source, ComputeFormationRejectionKind::UnmaterializedInput,
+    return rejectComputeOpCreation(
+        source, ComputeOpCreationRejectionKind::UnmaterializedInput,
         "reduce scaler must be dataflow-buffer-backed");
   } else {
     plan.trace = traceFusionToRoots(source->getResult(0));
     if (plan.trace.failureReason != TraceFailureReason::Success ||
         plan.trace.opsInOrder.empty()) {
-      return rejectComputeFormation(
-          source, ComputeFormationRejectionKind::UnsupportedCandidate,
+      return rejectComputeOpCreation(
+          source, ComputeOpCreationRejectionKind::UnsupportedCandidate,
           "operation has no defined ttl.compute input semantics");
     }
-    plan.kind = ComputeFormationKind::Fused;
+    plan.kind = ComputeOpCreationKind::Fused;
     llvm::append_range(plan.inputs, plan.trace.rootInputs);
   }
 
   if (failed(buildOperationSpecificPlan(plan, failureReason))) {
-    return rejectComputeFormation(
-        source, ComputeFormationRejectionKind::UnsupportedCandidate,
+    return rejectComputeOpCreation(
+        source, ComputeOpCreationRejectionKind::UnsupportedCandidate,
         std::move(failureReason));
   }
 
@@ -1105,79 +1255,97 @@ buildComputeFormationPlan(Operation *source,
   // compute nor alter output publication, so requiring a store would make
   // their legality depend on a later mutation. Record the final input expected
   // after prerequisite identity elisions and apply them independently.
-  if (plan.kind == ComputeFormationKind::Elide) {
+  if (plan.kind == ComputeOpCreationKind::Elide) {
     Value input = plan.inputs.front();
     while (Operation *definition = input.getDefiningOp()) {
-      if (!isComputeFormationElision(definition)) {
+      if (!isComputeOpCreationElision(definition)) {
         break;
       }
       input = cast<TypecastOp>(definition).getInput();
     }
     plan.inputs = {input};
     plan.applicationOperands = {input};
-    return PlanningResult<ComputeFormationPlan,
-                          ComputeFormationRejection>::planned(std::move(plan));
+    return PlanningResult<ComputeOpCreationPlan,
+                          ComputeOpCreationRejection>::planned(std::move(plan));
   }
 
   PlanningResult<OutputPublicationPlan, OutputPublicationRejection> outputs =
       buildOutputPublicationPlan(source);
   if (outputs.isInvalidIR()) {
     const PlanningDiagnostic &diagnostic = outputs.getInvalidIR();
-    return PlanningResult<ComputeFormationPlan, ComputeFormationRejection>::
+    return PlanningResult<ComputeOpCreationPlan, ComputeOpCreationRejection>::
         invalidIR(diagnostic.operation, diagnostic.message);
   }
   if (outputs.isRejected()) {
-    return rejectComputeFormation(
-        source, ComputeFormationRejectionKind::UnsupportedOutputPublication,
+    return rejectComputeOpCreation(
+        source, ComputeOpCreationRejectionKind::UnsupportedOutputPublication,
         outputs.getRejection().message);
   }
   plan.outputs = std::move(outputs).takePlan();
 
-  if (plan.kind == ComputeFormationKind::Fused &&
-      failed(collectFusedInstrumentation(plan.trace, plan.outputs, plan.source,
-                                         plan.instrumentation,
-                                         failureReason))) {
-    plan.rejectionKind = ComputeFormationRejectionKind::UnsupportedCandidate;
+  ComputeOpMovement movement =
+      collectComputeOpMovement(source, plan.kind, plan.trace);
+  if (failed(collectComputeInstrumentation(
+          movement.expressionOperations, movement.movedOperations, plan.outputs,
+          plan.instrumentation, failureReason))) {
+    plan.rejectionKind = ComputeOpCreationRejectionKind::UnsupportedCandidate;
     plan.rejectionReason = failureReason;
-    return rejectComputeFormation(
+    return rejectComputeOpCreation(
         source, plan.rejectionKind, plan.rejectionReason,
-        std::optional<ComputeFormationPlan>(std::move(plan)));
+        std::optional<ComputeOpCreationPlan>(std::move(plan)));
   }
 
-  if (plan.outputs.hasMultipleTransactionsForOneDFB()) {
+  SmallVector<ComputeOpCreationInstrumentationBoundary>
+      instrumentationBoundaries =
+          collectInstrumentationBoundaries(movement, plan.outputs,
+                                           plan.instrumentation,
+                                           [](OpOperand &) { return false; });
+  if (!instrumentationBoundaries.empty()) {
     plan.rejectionKind =
-        ComputeFormationRejectionKind::MultipleOutputTransactions;
+        ComputeOpCreationRejectionKind::InstrumentationWouldBeReordered;
     plan.rejectionReason =
-        "one compute cannot publish multiple reserve transactions of the "
-        "same dataflow buffer";
-  } else if (lifetimes.anyValueMayBeReleased(plan.inputs,
-                                             plan.outputs.insertionAnchor)) {
-    plan.rejectionKind = ComputeFormationRejectionKind::InputMayBeReleased;
-    plan.rejectionReason =
-        "moving tensor evaluation to the final output store would read a "
-        "dataflow buffer value after its pop";
-  } else {
-    for (OpOperand &use : source->getResult(0).getUses()) {
-      if (!isComputeFormationUsePreserved(plan.outputs, use, dominanceInfo)) {
-        plan.preFormationRemovedUses.push_back(
-            {use.getOwner(), use.getOperandNumber()});
-      }
-    }
-    if (!plan.preFormationRemovedUses.empty()) {
-      plan.rejectionKind = ComputeFormationRejectionKind::ResultUseNotDominated;
+        "creating ttl.compute would move instrumentation across a "
+        "non-reorderable operation";
+  }
+
+  if (plan.isLegal()) {
+    if (plan.outputs.hasMultipleTransactionsForOneDFB()) {
+      plan.rejectionKind =
+          ComputeOpCreationRejectionKind::MultipleOutputTransactions;
       plan.rejectionReason =
-          "ttl.compute inserted at the final output store would not dominate "
-          "every surviving result use";
+          "one compute cannot publish multiple reserve transactions of the "
+          "same dataflow buffer";
+    } else if (lifetimes.anyValueMayBeReleased(plan.inputs,
+                                               plan.outputs.insertionAnchor)) {
+      plan.rejectionKind = ComputeOpCreationRejectionKind::InputMayBeReleased;
+      plan.rejectionReason =
+          "moving tensor evaluation to the final output store would read a "
+          "dataflow buffer value after its pop";
+    } else {
+      for (OpOperand &use : source->getResult(0).getUses()) {
+        if (!isComputeOpCreationUsePreserved(plan.outputs, use,
+                                             dominanceInfo)) {
+          plan.preCreationRemovedUses.push_back(
+              {use.getOwner(), use.getOperandNumber()});
+        }
+      }
+      if (!plan.preCreationRemovedUses.empty()) {
+        plan.rejectionKind =
+            ComputeOpCreationRejectionKind::ResultUseNotDominated;
+        plan.rejectionReason =
+            "ttl.compute inserted at the final output store would not "
+            "dominate every surviving result use";
+      }
     }
   }
 
   if (!plan.isLegal()) {
-    return rejectComputeFormation(
+    return rejectComputeOpCreation(
         source, plan.rejectionKind, plan.rejectionReason,
-        std::optional<ComputeFormationPlan>(std::move(plan)));
+        std::optional<ComputeOpCreationPlan>(std::move(plan)));
   }
-  return PlanningResult<ComputeFormationPlan,
-                        ComputeFormationRejection>::planned(std::move(plan));
+  return PlanningResult<ComputeOpCreationPlan,
+                        ComputeOpCreationRejection>::planned(std::move(plan));
 }
 
 static FailureOr<PassthroughStorePlan>
@@ -1186,7 +1354,7 @@ buildPassthroughStorePlan(StoreOp store,
                           std::string &failureReason) {
   SmallVector<Value> inputChain = {store.getTensor()};
   while (Operation *definition = inputChain.back().getDefiningOp()) {
-    if (!isComputeFormationElision(definition)) {
+    if (!isComputeOpCreationElision(definition)) {
       break;
     }
     inputChain.push_back(cast<TypecastOp>(definition).getInput());
@@ -1248,47 +1416,34 @@ buildPassthroughStorePlan(StoreOp store,
 /// use-empty rule used by `buildFusedCompute`. An operation with an independent
 /// store or other external use therefore remains available to a later plan.
 static DenseSet<Operation *>
-collectErasedFusedOperations(const ComputeFormationPlan &formation) {
-  DenseSet<Operation *> erased;
-  if (formation.kind != ComputeFormationKind::Fused) {
-    return erased;
+collectErasedFusedOperations(const ComputeOpCreationPlan &creation) {
+  if (creation.kind != ComputeOpCreationKind::Fused) {
+    return {};
   }
-
-  erased.insert(formation.source);
-  for (Operation *operation : llvm::reverse(formation.trace.opsInOrder)) {
-    if (operation == formation.source) {
-      continue;
-    }
-    bool allUsersErased =
-        llvm::all_of(operation->getUsers(),
-                     [&](Operation *user) { return erased.contains(user); });
-    if (allUsersErased) {
-      erased.insert(operation);
-    }
-  }
-  return erased;
+  return collectErasedFusedOperations(creation.trace, creation.source);
 }
 
-static bool
-requiresIntermediateDFBResolution(ComputeFormationRejectionKind rejectionKind) {
+static bool requiresIntermediateDFBResolution(
+    ComputeOpCreationRejectionKind rejectionKind) {
   switch (rejectionKind) {
-  case ComputeFormationRejectionKind::UnmaterializedInput:
-  case ComputeFormationRejectionKind::MultipleOutputTransactions:
-  case ComputeFormationRejectionKind::InputMayBeReleased:
-  case ComputeFormationRejectionKind::ResultUseNotDominated:
+  case ComputeOpCreationRejectionKind::UnmaterializedInput:
+  case ComputeOpCreationRejectionKind::MultipleOutputTransactions:
+  case ComputeOpCreationRejectionKind::InputMayBeReleased:
+  case ComputeOpCreationRejectionKind::ResultUseNotDominated:
+  case ComputeOpCreationRejectionKind::InstrumentationWouldBeReordered:
     return true;
-  case ComputeFormationRejectionKind::None:
-  case ComputeFormationRejectionKind::UnsupportedCandidate:
-  case ComputeFormationRejectionKind::UnsupportedOutputPublication:
-  case ComputeFormationRejectionKind::DeferredDependency:
+  case ComputeOpCreationRejectionKind::None:
+  case ComputeOpCreationRejectionKind::UnsupportedCandidate:
+  case ComputeOpCreationRejectionKind::UnsupportedOutputPublication:
+  case ComputeOpCreationRejectionKind::DeferredDependency:
     return false;
   }
-  llvm_unreachable("unknown compute formation rejection kind");
+  llvm_unreachable("unknown ComputeOp creation rejection kind");
 }
 
-PlanningResult<KernelComputeFormationPlan>
-ComputeFormationPlanner::build() const {
-  KernelComputeFormationPlan kernelPlan;
+PlanningResult<KernelComputeOpCreationPlan>
+ComputeOpCreationPlanner::build() const {
+  KernelComputeOpCreationPlan kernelPlan;
   DominanceInfo dominanceInfo(kernel);
   SmallVector<Operation *> candidates;
   std::optional<PlanningDiagnostic> invalidIR;
@@ -1301,120 +1456,119 @@ ComputeFormationPlanner::build() const {
     }
 
     std::string failureReason;
-    PlanningResult<ComputeFormationPlan, ComputeFormationRejection> formation =
-        buildComputeFormationPlan(source, lifetimes, dominanceInfo,
-                                  failureReason);
-    if (formation.isInvalidIR()) {
-      invalidIR = formation.getInvalidIR();
+    PlanningResult<ComputeOpCreationPlan, ComputeOpCreationRejection> creation =
+        buildComputeOpCreationPlan(source, lifetimes, dominanceInfo,
+                                   failureReason);
+    if (creation.isInvalidIR()) {
+      invalidIR = creation.getInvalidIR();
       return;
     }
-    if (formation.isRejected()) {
-      ComputeFormationRejection rejection =
-          std::move(formation).takeRejection();
+    if (creation.isRejected()) {
+      ComputeOpCreationRejection rejection =
+          std::move(creation).takeRejection();
       if (!rejection.candidate) {
         kernelPlan.rejectionKinds.try_emplace(source, rejection.kind);
         kernelPlan.rejectionReasons.try_emplace(source,
                                                 std::move(rejection.message));
         return;
       }
-      kernelPlan.formations.try_emplace(source,
-                                        std::move(*rejection.candidate));
+      kernelPlan.creations.try_emplace(source, std::move(*rejection.candidate));
       candidates.push_back(source);
       return;
     }
-    kernelPlan.formations.try_emplace(source, std::move(formation).takePlan());
+    kernelPlan.creations.try_emplace(source, std::move(creation).takePlan());
     candidates.push_back(source);
   });
   if (invalidIR) {
-    return PlanningResult<KernelComputeFormationPlan>::invalidIR(
+    return PlanningResult<KernelComputeOpCreationPlan>::invalidIR(
         invalidIR->operation, std::move(invalidIR->message));
   }
   kernelPlan.analyzedSources = candidates;
 
-  // A fused outer formation may erase every use that precedes an inner
+  // A fused outer creation may erase every use that precedes an inner
   // candidate's insertion anchor. Accept the inner plan only when each such
   // consumer has its own already accepted fused plan containing the inner
   // source. The outer source's independent store keeps it present until that
   // plan runs, and the inner store keeps the inner source present afterward.
-  bool acceptedDependentFormation;
+  bool acceptedDependentCreation;
   do {
-    acceptedDependentFormation = false;
+    acceptedDependentCreation = false;
     for (Operation *source : candidates) {
-      ComputeFormationPlan &formation = kernelPlan.formations.at(source);
-      if (formation.isLegal() ||
-          formation.rejectionKind !=
-              ComputeFormationRejectionKind::ResultUseNotDominated) {
+      ComputeOpCreationPlan &creation = kernelPlan.creations.at(source);
+      if (creation.isLegal() ||
+          creation.rejectionKind !=
+              ComputeOpCreationRejectionKind::ResultUseNotDominated) {
         continue;
       }
       bool allUsesRemoved = llvm::all_of(
-          formation.preFormationRemovedUses,
-          [&](const ComputeFormationUse &use) {
-            auto remover = kernelPlan.formations.find(use.owner);
-            return remover != kernelPlan.formations.end() &&
+          creation.preCreationRemovedUses,
+          [&](const ComputeOpCreationUse &use) {
+            auto remover = kernelPlan.creations.find(use.owner);
+            return remover != kernelPlan.creations.end() &&
                    remover->second.isLegal() &&
-                   remover->second.kind == ComputeFormationKind::Fused &&
+                   remover->second.kind == ComputeOpCreationKind::Fused &&
                    remover->second.trace.opsInOrder.contains(source);
           });
       if (!allUsesRemoved) {
         continue;
       }
-      formation.rejectionKind = ComputeFormationRejectionKind::None;
-      formation.rejectionReason.clear();
-      acceptedDependentFormation = true;
+      creation.rejectionKind = ComputeOpCreationRejectionKind::None;
+      creation.rejectionReason.clear();
+      acceptedDependentCreation = true;
     }
-  } while (acceptedDependentFormation);
+  } while (acceptedDependentCreation);
 
   DenseSet<Operation *> deferredDependencies;
   for (Operation *source : candidates) {
-    const ComputeFormationPlan &formation = kernelPlan.formations.at(source);
-    if (formation.isLegal() ||
-        !requiresIntermediateDFBResolution(formation.rejectionKind)) {
+    const ComputeOpCreationPlan &creation = kernelPlan.creations.at(source);
+    if (creation.isLegal() ||
+        !requiresIntermediateDFBResolution(creation.rejectionKind)) {
       continue;
     }
-    for (Operation *absorbed : formation.trace.opsInOrder) {
-      if (absorbed != source && kernelPlan.formations.contains(absorbed)) {
+    for (Operation *absorbed : creation.trace.opsInOrder) {
+      if (absorbed != source && kernelPlan.creations.contains(absorbed)) {
         deferredDependencies.insert(absorbed);
       }
     }
   }
-  // A formation rejected for an unresolved DFB prerequisite still owns its
+  // A creation rejected for an unresolved DFB prerequisite still owns its
   // expression until intermediate DFB insertion rewrites the required
-  // operands. Forming an absorbed producer first would erase that expression.
+  // operands. Creating an absorbed producer first would erase that expression.
   // Rejections without an intermediate DFB requirement create no dependency.
   for (Operation *source : deferredDependencies) {
-    ComputeFormationPlan &formation = kernelPlan.formations.at(source);
-    formation.rejectionKind = ComputeFormationRejectionKind::DeferredDependency;
-    formation.rejectionReason =
+    ComputeOpCreationPlan &creation = kernelPlan.creations.at(source);
+    creation.rejectionKind = ComputeOpCreationRejectionKind::DeferredDependency;
+    creation.rejectionReason =
         "a dependent expression requires dataflow buffer materialization "
         "before this operation can be lowered";
   }
 
   DenseSet<Operation *> erasedCandidates;
-  DenseMap<Operation *, SmallVector<Operation *>> precedingFormations;
+  DenseMap<Operation *, SmallVector<Operation *>> precedingCreations;
   for (Operation *source : candidates) {
-    const ComputeFormationPlan &formation = kernelPlan.formations.at(source);
-    if (!formation.isLegal()) {
+    const ComputeOpCreationPlan &creation = kernelPlan.creations.at(source);
+    if (!creation.isLegal()) {
       continue;
     }
-    if (formation.kind == ComputeFormationKind::Elide) {
+    if (creation.kind == ComputeOpCreationKind::Elide) {
       Operation *inputDefinition = source->getOperand(0).getDefiningOp();
-      if (inputDefinition && kernelPlan.formations.contains(inputDefinition) &&
-          kernelPlan.formations.at(inputDefinition).isLegal() &&
-          kernelPlan.formations.at(inputDefinition).kind ==
-              ComputeFormationKind::Elide) {
-        precedingFormations[source].push_back(inputDefinition);
+      if (inputDefinition && kernelPlan.creations.contains(inputDefinition) &&
+          kernelPlan.creations.at(inputDefinition).isLegal() &&
+          kernelPlan.creations.at(inputDefinition).kind ==
+              ComputeOpCreationKind::Elide) {
+        precedingCreations[source].push_back(inputDefinition);
       }
     }
     DenseSet<Operation *> erasedOperations =
-        collectErasedFusedOperations(formation);
-    for (Operation *absorbed : formation.trace.opsInOrder) {
-      if (absorbed != source && kernelPlan.formations.contains(absorbed) &&
-          kernelPlan.formations.at(absorbed).isLegal()) {
+        collectErasedFusedOperations(creation);
+    for (Operation *absorbed : creation.trace.opsInOrder) {
+      if (absorbed != source && kernelPlan.creations.contains(absorbed) &&
+          kernelPlan.creations.at(absorbed).isLegal()) {
         if (erasedOperations.contains(absorbed)) {
           erasedCandidates.insert(absorbed);
           continue;
         }
-        SmallVector<Operation *> &preceding = precedingFormations[absorbed];
+        SmallVector<Operation *> &preceding = precedingCreations[absorbed];
         if (!llvm::is_contained(preceding, source)) {
           preceding.push_back(source);
         }
@@ -1422,7 +1576,7 @@ ComputeFormationPlanner::build() const {
     }
   }
 
-  // Apply every absorbing consumer before forming its source separately; each
+  // Apply every absorbing consumer before creating its source separately; each
   // independent use keeps the source available until all absorbers run.
   // Identity elisions instead follow SSA definition order because each outer
   // plan records the result that its inner identity operation replaces.
@@ -1433,55 +1587,55 @@ ComputeFormationPlanner::build() const {
       return;
     }
     bool inserted = visiting.insert(source).second;
-    assert(inserted && "compute formation dependencies must be acyclic");
-    for (Operation *preceding : precedingFormations.lookup(source)) {
+    assert(inserted && "ComputeOp creation dependencies must be acyclic");
+    for (Operation *preceding : precedingCreations.lookup(source)) {
       schedule(preceding);
     }
     visiting.erase(source);
     scheduled.insert(source);
-    kernelPlan.formationOrder.push_back(source);
+    kernelPlan.creationOrder.push_back(source);
   };
 
   for (Operation *candidate : llvm::reverse(candidates)) {
-    if (kernelPlan.formations.at(candidate).isLegal()) {
+    if (kernelPlan.creations.at(candidate).isLegal()) {
       schedule(candidate);
     }
   }
 
   for (auto [laterIndex, laterSource] :
-       llvm::enumerate(kernelPlan.formationOrder)) {
+       llvm::enumerate(kernelPlan.creationOrder)) {
     DenseSet<Operation *> erasedBeforeLater;
-    bool absorbedByEarlierFormation = false;
+    bool absorbedByEarlierCreation = false;
     for (Operation *earlierSource :
-         ArrayRef<Operation *>(kernelPlan.formationOrder)
+         ArrayRef<Operation *>(kernelPlan.creationOrder)
              .take_front(laterIndex)) {
-      const ComputeFormationPlan &earlier =
-          kernelPlan.formations.at(earlierSource);
+      const ComputeOpCreationPlan &earlier =
+          kernelPlan.creations.at(earlierSource);
       if (!earlier.trace.opsInOrder.contains(laterSource)) {
         continue;
       }
-      absorbedByEarlierFormation = true;
+      absorbedByEarlierCreation = true;
       DenseSet<Operation *> erasedOperations =
           collectErasedFusedOperations(earlier);
       assert(!erasedOperations.contains(laterSource) &&
-             "an operation erased by an earlier formation must not be "
+             "an operation erased by an earlier creation must not be "
              "scheduled separately");
       erasedBeforeLater.insert(erasedOperations.begin(),
                                erasedOperations.end());
     }
-    if (!absorbedByEarlierFormation) {
+    if (!absorbedByEarlierCreation) {
       continue;
     }
 
     // One use outside every preceding absorbed subgraph proves that the
-    // source remains present until its own formation is applied.
-    ComputeFormationPlan &later = kernelPlan.formations.at(laterSource);
+    // source remains present until its own creation is applied.
+    ComputeOpCreationPlan &later = kernelPlan.creations.at(laterSource);
     auto preservingUse =
-        llvm::find_if(later.resultUses, [&](const ComputeFormationUse &use) {
+        llvm::find_if(later.resultUses, [&](const ComputeOpCreationUse &use) {
           return !erasedBeforeLater.contains(use.owner);
         });
     assert(preservingUse != later.resultUses.end() &&
-           "a surviving formation candidate must retain a result use");
+           "a surviving creation candidate must retain a result use");
     later.preservingUses.push_back(*preservingUse);
   }
 
@@ -1497,9 +1651,9 @@ ComputeFormationPlanner::build() const {
   });
 
   DenseSet<Operation *> plannedStores;
-  for (Operation *source : kernelPlan.formationOrder) {
-    const ComputeFormationPlan &formation = kernelPlan.formations.at(source);
-    for (StoreOp store : formation.outputs.stores) {
+  for (Operation *source : kernelPlan.creationOrder) {
+    const ComputeOpCreationPlan &creation = kernelPlan.creations.at(source);
+    for (StoreOp store : creation.outputs.stores) {
       plannedStores.insert(store.getOperation());
     }
   }
@@ -1511,32 +1665,32 @@ ComputeFormationPlanner::build() const {
       kernelPlan.unassignedStores.push_back(store);
     }
   });
-  return PlanningResult<KernelComputeFormationPlan>::planned(
+  return PlanningResult<KernelComputeOpCreationPlan>::planned(
       std::move(kernelPlan));
 }
 
-FailureOr<const ComputeFormationPlan *>
-KernelComputeFormationPlan::get(Operation *source) const {
-  auto formation = formations.find(source);
-  if (formation == formations.end() || !formation->second.isLegal()) {
+FailureOr<const ComputeOpCreationPlan *>
+KernelComputeOpCreationPlan::get(Operation *source) const {
+  auto creation = creations.find(source);
+  if (creation == creations.end() || !creation->second.isLegal()) {
     return failure();
   }
-  return &formation->second;
+  return &creation->second;
 }
 
-const ComputeFormationPlan &
-KernelComputeFormationPlan::getAnalyzedFormation(Operation *source) const {
-  auto formation = formations.find(source);
-  assert(formation != formations.end() &&
+const ComputeOpCreationPlan &
+KernelComputeOpCreationPlan::getAnalyzedCreation(Operation *source) const {
+  auto creation = creations.find(source);
+  assert(creation != creations.end() &&
          "source must be returned by getAnalyzedSources");
-  return formation->second;
+  return creation->second;
 }
 
 StringRef
-KernelComputeFormationPlan::getRejectionReason(Operation *source) const {
-  auto formation = formations.find(source);
-  if (formation != formations.end() && !formation->second.isLegal()) {
-    return formation->second.rejectionReason;
+KernelComputeOpCreationPlan::getRejectionReason(Operation *source) const {
+  auto creation = creations.find(source);
+  if (creation != creations.end() && !creation->second.isLegal()) {
+    return creation->second.rejectionReason;
   }
   auto reason = rejectionReasons.find(source);
   if (reason == rejectionReasons.end()) {
@@ -1545,11 +1699,11 @@ KernelComputeFormationPlan::getRejectionReason(Operation *source) const {
   return reason->second;
 }
 
-std::optional<ComputeFormationRejectionKind>
-KernelComputeFormationPlan::getRejectionKind(Operation *source) const {
-  auto formation = formations.find(source);
-  if (formation != formations.end() && !formation->second.isLegal()) {
-    return formation->second.rejectionKind;
+std::optional<ComputeOpCreationRejectionKind>
+KernelComputeOpCreationPlan::getRejectionKind(Operation *source) const {
+  auto creation = creations.find(source);
+  if (creation != creations.end() && !creation->second.isLegal()) {
+    return creation->second.rejectionKind;
   }
   auto rejection = rejectionKinds.find(source);
   if (rejection == rejectionKinds.end()) {
@@ -1559,45 +1713,44 @@ KernelComputeFormationPlan::getRejectionKind(Operation *source) const {
 }
 
 PlanningDiagnostic
-KernelComputeFormationPlan::getUnassignedStoreDiagnostic(StoreOp store) const {
+KernelComputeOpCreationPlan::getUnassignedStoreDiagnostic(StoreOp store) const {
   PlanningDiagnostic diagnostic{store, getRejectionReason(store).str()};
-  std::optional<Operation *> formationSource =
-      getUnassignedStoreFormationSource(store);
-  if (!formationSource) {
+  std::optional<Operation *> sourceOperation = getUnassignedStoreSource(store);
+  if (!sourceOperation) {
     return diagnostic;
   }
 
-  Operation *source = *formationSource;
-  std::optional<ComputeFormationRejectionKind> sourceRejection =
+  Operation *source = *sourceOperation;
+  std::optional<ComputeOpCreationRejectionKind> sourceRejection =
       getRejectionKind(source);
-  assert(sourceRejection && "reported formation source requires a rejection");
+  assert(sourceRejection && "reported source operation requires a rejection");
 
   diagnostic.message = getRejectionReason(source);
-  if (*sourceRejection == ComputeFormationRejectionKind::UnmaterializedInput) {
+  if (*sourceRejection == ComputeOpCreationRejectionKind::UnmaterializedInput) {
     diagnostic.operation = source;
   }
   return diagnostic;
 }
 
 std::optional<Operation *>
-KernelComputeFormationPlan::getUnassignedStoreFormationSource(
-    StoreOp store) const {
+KernelComputeOpCreationPlan::getUnassignedStoreSource(StoreOp store) const {
   Operation *source = store.getTensor().getDefiningOp();
   if (!source) {
     return std::nullopt;
   }
 
-  std::optional<ComputeFormationRejectionKind> sourceRejection =
+  std::optional<ComputeOpCreationRejectionKind> sourceRejection =
       getRejectionKind(source);
   if (!sourceRejection ||
-      *sourceRejection == ComputeFormationRejectionKind::UnsupportedCandidate) {
+      *sourceRejection ==
+          ComputeOpCreationRejectionKind::UnsupportedCandidate) {
     return std::nullopt;
   }
   return source;
 }
 
 FailureOr<const PassthroughStorePlan *>
-KernelComputeFormationPlan::get(StoreOp store) const {
+KernelComputeOpCreationPlan::get(StoreOp store) const {
   auto plan = passthroughStores.find(store);
   if (plan == passthroughStores.end()) {
     return failure();

@@ -1819,7 +1819,7 @@ def _lower_program_to_kernel(
             "func.func(ttl-materialize-loop-state)",
             "func.func(ttl-insert-copy-wait)",
             "func.func(ttl-annotate-l1-acc-loops)",
-            "func.func(ttl-form-producer-compute)",
+            "func.func(ttl-create-producer-compute)",
             f"func.func(ttl-insert-intermediate-dfbs{{enable={compiler_dfbs_flag}}})",
             "func.func(convert-ttl-to-compute)",
             "func.func(ttl-auto-sync)",

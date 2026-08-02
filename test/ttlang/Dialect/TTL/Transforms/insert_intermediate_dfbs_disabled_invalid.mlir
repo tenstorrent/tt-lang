@@ -113,3 +113,40 @@ func.func @repeated_output_transactions_disabled()
       : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   return
 }
+
+// -----
+
+// Tile instrumentation before tensor evaluation and scalar output after it
+// require a materialized value so `ComputeOp` creation preserves their order.
+func.func @intervening_operation_disabled()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %output_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %input_wait = ttl.cb_wait %input_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %input = ttl.attach_cb %input_wait, %input_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  "ttl.dprint"(%input) {fmt = "input", mode = "tile"}
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>) -> ()
+  %inner = ttl.exp %input
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %result = ttl.exp %inner
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  "ttl.dprint"() {fmt = "after tensor evaluation", mode = "scalar"}
+      : () -> ()
+  // expected-error @below {{'ttl.store' op operand #0 requires compiler-created DFB materialization, but compiler DFBs are disabled (--no-ttl-compiler-dfbs)}}
+  ttl.store %result, %output
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+        tensor<1x1x!ttcore.tile<32x32, bf16>>
+  return
+}

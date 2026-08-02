@@ -1,8 +1,8 @@
 // Verifies that an intermediate is materialized before a pop that would
 // otherwise release one of its fused source values.
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-form-producer-compute,ttl-insert-intermediate-dfbs,convert-ttl-to-compute,ttl-auto-sync))' | FileCheck %s
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-print-compute-formation-plans))' -o /dev/null 2>&1 | FileCheck %s --check-prefix=PLAN
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-form-producer-compute,ttl-print-compute-formation-plans))' -o /dev/null 2>&1 | FileCheck %s --check-prefix=ELIDED-PLAN
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute,ttl-insert-intermediate-dfbs,convert-ttl-to-compute,ttl-auto-sync))' | FileCheck %s
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-print-compute-op-creation-plans))' -o /dev/null 2>&1 | FileCheck %s --check-prefix=PLAN
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute,ttl-print-compute-op-creation-plans))' -o /dev/null 2>&1 | FileCheck %s --check-prefix=ELIDED-PLAN
 
 // CHECK-LABEL: func.func @preserve_before_release
 // CHECK: %[[DELTA_DFB:.*]] = ttl.bind_cb{{.*}}cb_index = 1
@@ -130,11 +130,11 @@ func.func @preserve_inside_nested_region(%condition: i1)
 // A terminal elementwise result must be preserved when its output store follows
 // a source pop. The attached intermediate feeds a passthrough output compute.
 // CHECK-LABEL: func.func @preserve_before_output_store
-// PLAN-LABEL: Compute formation plan @preserve_before_output_store
+// PLAN-LABEL: ComputeOp creation plan @preserve_before_output_store
 // PLAN:       kind=direct recipe=elementwise legal=false
 // PLAN:       rejected=moving tensor evaluation to the final output store would read a dataflow buffer value after its pop
 // PLAN:       M0 {{.*}} operand=0
-// PLAN-NEXT:  reason=formation-input-may-be-released
+// PLAN-NEXT:  reason=compute-op-input-may-be-released
 // CHECK: %[[INPUT_DFB:.*]] = ttl.bind_cb{{.*}}cb_index = 0
 // CHECK: %[[INTERMEDIATE_DFB:.*]] = ttl.bind_cb{{.*}}ttl.compiler_allocated
 // CHECK: ttl.cb_wait %[[INPUT_DFB]]
@@ -215,7 +215,7 @@ func.func @preserve_block_broadcast_before_release()
 // Fill uses the same output-transaction proof as general fusion. Repeated
 // reserves of one DFB remain separate after one result materialization.
 // CHECK-LABEL: func.func @preserve_fill_output_transactions
-// PLAN-LABEL: Compute formation plan @preserve_fill_output_transactions
+// PLAN-LABEL: ComputeOp creation plan @preserve_fill_output_transactions
 // PLAN:       kind=direct recipe=fill legal=false
 // PLAN-SAME:  transactions=2
 // PLAN:       reason=multiple-output-transactions
@@ -376,7 +376,7 @@ func.func @defer_absorbed_candidate()
 
 // Identity typecast elision retains the input DFB's storage. If that storage
 // may be released before a DFB-input consumer, one compiler DFB preserves the
-// value and the replacement storage no longer constrains later formation.
+// value and the replacement storage no longer constrains later creation.
 // CHECK-LABEL: func.func @materialize_released_input_after_identity_elision
 // CHECK: %[[INPUT_DFB:.*]] = ttl.bind_cb{{.*}}cb_index = 0
 // CHECK: %[[INTERMEDIATE_DFB:.*]] = ttl.bind_cb{{.*}}ttl.compiler_allocated
@@ -390,7 +390,7 @@ func.func @defer_absorbed_candidate()
 // CHECK: %[[INTERMEDIATE:.*]] = ttl.attach_cb %[[INTERMEDIATE_WAIT]], %[[INTERMEDIATE_DFB]]
 // CHECK: ttl.cb_pop %[[INPUT_DFB]]
 // CHECK: ttl.compute ins(%[[INTERMEDIATE]],
-// ELIDED-PLAN-LABEL: Compute formation plan @materialize_released_input_after_identity_elision
+// ELIDED-PLAN-LABEL: ComputeOp creation plan @materialize_released_input_after_identity_elision
 // ELIDED-PLAN:       M0 {{.*}} operand=0
 // ELIDED-PLAN-NEXT:  reason=dfb-input-may-be-released
 // ELIDED-PLAN-NOT:   M1

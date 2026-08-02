@@ -1,6 +1,6 @@
 // Verifies that intermediate DFB planning uses control-flow-aware value
 // availability across branches, loops, and repeated acquisitions.
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-form-producer-compute,ttl-insert-intermediate-dfbs,convert-ttl-to-compute))' | FileCheck %s
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute,ttl-insert-intermediate-dfbs,convert-ttl-to-compute))' | FileCheck %s
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-print-dfb-value-lifetimes))' -o /dev/null 2>&1 | FileCheck %s --check-prefix=ANALYSIS
 
 // A release on one branch makes the pre-branch expression unavailable at the

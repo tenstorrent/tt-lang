@@ -1,6 +1,6 @@
-// Verify that producer compute formation preserves the operation order of
+// Verify that producer `ComputeOp` creation preserves the operation order of
 // releases when the release order differs from the output store order.
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(func.func(ttl-form-producer-compute))' | FileCheck %s
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute))' | FileCheck %s
 
 // CHECK-LABEL: func.func @add_stored_to_three_dfbs
 // CHECK: %[[OUT_A:.*]] = ttl.bind_cb{cb_index = 2

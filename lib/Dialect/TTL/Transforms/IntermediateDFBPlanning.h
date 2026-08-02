@@ -44,13 +44,17 @@ enum class IntermediateDFBReason {
   ExpressionInputMayBeReleased,
 
   /// Moving tensor evaluation to an output store would read a released input.
-  FormationInputMayBeReleased,
+  ComputeOpInputMayBeReleased,
 
   /// One result is published through several reserves of the same DFB.
   MultipleOutputTransactions,
 
   /// A ttl.compute at the final output store would not dominate a consumer.
-  FormationWouldNotDominateUse,
+  ComputeOpWouldNotDominateUse,
+
+  /// Creation would reorder instrumentation with another operation, so the
+  /// consumer must read materialized storage at the tensor SSA frontier.
+  ComputeOpInstrumentationWouldBeReordered,
 
   /// Another use requires this ttl.compute result to be materialized. All
   /// consumers must read that shared DFB because the result has no storage.
@@ -58,7 +62,7 @@ enum class IntermediateDFBReason {
 
   /// A consumer cannot absorb a producer with its own standalone compute
   /// recipe, so the producer result must become a DFB input to that consumer.
-  FormationRequiresMaterializedInput,
+  ComputeOpRequiresMaterializedInput,
 };
 
 /// Evidence supporting one intermediate DFB requirement.
@@ -159,7 +163,7 @@ struct StandaloneDFBMaterializationPlan {
   /// This is a later output store that properly dominates every rewritten
   /// consumer, or the source definition when there is no applicable output
   /// plan or every source use is rewritten. Each condition ensures final
-  /// compute formation executes before the compiler DFB wait.
+  /// `ComputeOp` creation executes before the compiler DFB wait.
   Operation *insertionAnchor = nullptr;
 
   /// Indices into `IntermediateDFBPlan::getRequirements()`.

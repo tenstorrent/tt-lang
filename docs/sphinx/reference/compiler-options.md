@@ -124,7 +124,7 @@ The pipeline runs these passes in order:
 - `ttl-materialize-loop-state` -- replace ranked-tensor loop-carried values with compiler-created DFBs
 - `ttl-insert-copy-wait` -- insert missing `ttl.wait` after `ttl.copy` ops whose transfer handle has no wait user
 - `ttl-annotate-l1-acc-loops` -- detect `+=` accumulation loops and annotate for L1 packer accumulation
-- `ttl-form-producer-compute` -- form producer computes before intermediate materialization
+- `ttl-create-producer-compute` -- create producer `ttl.compute` operations before intermediate materialization
 - `ttl-insert-intermediate-dfbs` -- materialize DFB-only operands and values that must be preserved before source release; verify and error when `compiler-dfbs=false`
 - `convert-ttl-to-compute` -- lower TTL elementwise tensor ops to `ttl.compute` with tile ops
 - `ttl-insert-cb-sync`, then `ttl-coalesce-dfb-acquires` -- insert missing releases and coalesce compatible DFB acquires

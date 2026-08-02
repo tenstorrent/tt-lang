@@ -4,7 +4,7 @@
 // release (regression guard for PR #523 / #524).
 
 // RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute))' | FileCheck %s
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-print-compute-formation-plans))' -o /dev/null 2>&1 | FileCheck %s --check-prefix=PLAN
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-print-compute-op-creation-plans))' -o /dev/null 2>&1 | FileCheck %s --check-prefix=PLAN
 
 // Test 1: two back-to-back reduce+store sequences sharing red_dfb (cb2).
 // Each store has a cb_push immediately after. After lowering, each
@@ -221,13 +221,13 @@ func.func @interleaved_pushes_wrong_order()
 // its new compute. The later inner plan must find the moved push from the
 // unchanged reserve/store relation instead of using the erased original push.
 // CHECK-LABEL: func.func @shared_push_is_resolved
-// PLAN-LABEL: Compute formation plan @shared_push_is_resolved
-// PLAN:       F0 {{.*}} kind=direct recipe=elementwise legal=true
+// PLAN-LABEL: ComputeOp creation plan @shared_push_is_resolved
+// PLAN:       C0 {{.*}} kind=direct recipe=elementwise legal=true
 // PLAN:       preserved-by {{.*}} operand=0
-// PLAN:       F1 {{.*}} kind=fused recipe=fused legal=true
+// PLAN:       C1 {{.*}} kind=fused recipe=fused legal=true
 // PLAN:       fused {{.*}} tile-operation operands=1
 // PLAN-NEXT:  fused {{.*}} tile-operation operands=1
-// PLAN-NEXT:  order=[F1, F0]
+// PLAN-NEXT:  order=[C1, C0]
 // CHECK:       %[[SHARED_DFB:.*]] = ttl.bind_cb{cb_index = 1
 // CHECK:       %[[OTHER_DFB:.*]] = ttl.bind_cb{cb_index = 2
 // CHECK:       ttl.cb_reserve %[[SHARED_DFB]]

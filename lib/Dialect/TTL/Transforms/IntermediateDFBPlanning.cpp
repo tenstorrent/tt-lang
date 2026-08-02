@@ -4,7 +4,7 @@
 
 #include "IntermediateDFBPlanning.h"
 
-#include "ComputeFormationPlanning.h"
+#include "ComputeOpCreationPlanning.h"
 #include "DFBValueLifetimeAnalysis.h"
 
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
@@ -78,10 +78,12 @@ addComputeResultUseRequirements(DFBMaterializationAnalysisState &state) {
     }
   }
 
-  // ttl.compute preserves SSA dependencies through tensor results, but its
-  // body publishes data only through ttl.tile_store. Once one surviving use
-  // needs a readable DFB lifecycle, every surviving use must read the same
-  // pushed and waited materialization rather than the compute result.
+  // ComputeOp results preserve SSA dependencies during this stage, but
+  // lowering communicates computed tiles only through output DFB stores. If
+  // `%sum` feeds both a reduce and a multiply, materializing only the reduce
+  // would leave the multiply reading a result with no readable storage after
+  // lowering. Rewrite both operands to one stored, pushed, and waited value so
+  // every surviving use observes the same publication of `%sum`.
   for (Value result : materializedComputeResults) {
     for (OpOperand &use : result.getUses()) {
       if (state.requiresMaterialization(use)) {
@@ -136,36 +138,36 @@ static void addStoreRequirement(DFBMaterializationAnalysisState &state,
 }
 
 static void
-addFormationOrderingRequirements(Operation *source,
-                                 const OutputPublicationPlan &outputs,
-                                 const DominanceInfo &dominanceInfo,
-                                 DFBMaterializationAnalysisState &state) {
-  if (isComputeFormationElision(source)) {
+addCreationOrderingRequirements(Operation *source,
+                                const OutputPublicationPlan &outputs,
+                                const DominanceInfo &dominanceInfo,
+                                DFBMaterializationAnalysisState &state) {
+  if (isComputeOpCreationElision(source)) {
     return;
   }
 
   Value result = source->getResult(0);
   auto unsafeUse = llvm::find_if(result.getUses(), [&](OpOperand &use) {
-    return !isComputeFormationUsePreserved(outputs, use, dominanceInfo);
+    return !isComputeOpCreationUsePreserved(outputs, use, dominanceInfo);
   });
   if (unsafeUse == result.getUses().end()) {
     return;
   }
 
   IntermediateDFBEvidence evidence;
-  evidence.reason = IntermediateDFBReason::FormationWouldNotDominateUse;
+  evidence.reason = IntermediateDFBReason::ComputeOpWouldNotDominateUse;
   evidence.inputs = {result};
   evidence.observation = unsafeUse->getOwner();
 
   // Rewriting every use makes the compiler DFB store the source's only output
-  // publication. Final formation must then execute at that store instead of
+  // publication. Final creation must then execute at that store instead of
   // combining it with a later user-DFB store and recreating the bad ordering.
   for (OpOperand &use : result.getUses()) {
     state.requireMaterialization(use, evidence);
   }
 }
 
-static LogicalResult addFormationRequirements(
+static LogicalResult addCreationRequirements(
     Operation *source, const DFBValueLifetimeAnalysis &lifetimes,
     const DominanceInfo &dominanceInfo, DFBMaterializationAnalysisState &state,
     std::optional<PlanningDiagnostic> &diagnostic) {
@@ -181,7 +183,7 @@ static LogicalResult addFormationRequirements(
   const OutputPublicationPlan &outputPlan = outputs.getPlan();
 
   FailureOr<SmallVector<Value>> inputs =
-      collectComputeFormationLifetimeInputs(source, [&](OpOperand &operand) {
+      collectComputeOpCreationLifetimeInputs(source, [&](OpOperand &operand) {
         return state.requiresMaterialization(operand);
       });
   if (failed(inputs)) {
@@ -193,28 +195,51 @@ static LogicalResult addFormationRequirements(
     Operation *producer =
         failedOperand ? failedOperand->get().getDefiningOp() : nullptr;
     if (!producer || (!isa<ComputeOp>(producer) &&
-                      !hasStandaloneComputeFormationRecipe(producer))) {
+                      !hasStandaloneComputeOpCreationRecipe(producer))) {
       return success();
     }
 
     IntermediateDFBEvidence evidence;
-    evidence.reason = IntermediateDFBReason::FormationRequiresMaterializedInput;
+    evidence.reason = IntermediateDFBReason::ComputeOpRequiresMaterializedInput;
     evidence.inputs = {failedOperand->get()};
     evidence.observation = source;
     state.requireMaterialization(*failedOperand, std::move(evidence));
     return success();
   }
 
-  addFormationOrderingRequirements(source, outputPlan, dominanceInfo, state);
+  FailureOr<SmallVector<ComputeOpCreationInstrumentationBoundary>> boundaries =
+      collectComputeOpCreationInstrumentationBoundaries(
+          source, outputPlan, [&](OpOperand &operand) {
+            return state.requiresMaterialization(operand);
+          });
+  if (succeeded(boundaries) && !boundaries->empty()) {
+    for (const ComputeOpCreationInstrumentationBoundary &boundary :
+         *boundaries) {
+      for (const ComputeOpCreationUse &use : boundary.crossingUses) {
+        assert(use.operandIndex < use.owner->getNumOperands() &&
+               "creation ordering analysis recorded an invalid operand");
+        OpOperand &operand = use.owner->getOpOperand(use.operandIndex);
+        IntermediateDFBEvidence evidence;
+        evidence.reason =
+            IntermediateDFBReason::ComputeOpInstrumentationWouldBeReordered;
+        evidence.inputs = {operand.get()};
+        evidence.observation = boundary.operation;
+        state.requireMaterialization(operand, std::move(evidence));
+      }
+    }
+    return success();
+  }
+
+  addCreationOrderingRequirements(source, outputPlan, dominanceInfo, state);
 
   Value result = source->getResult(0);
   for (const OutputDFBTransaction &transaction : outputPlan.transactions) {
     bool splitsTransactions =
         outputPlan.hasMultipleTransactions(transaction.dfb);
     if (splitsTransactions) {
-      // No formation can publish the result through these transactions. Route
+      // No creation can publish the result through these transactions. Route
       // every use through one compiler DFB so each original store and consumer
-      // becomes an independent formation after conflict resolution.
+      // becomes an independent creation after conflict resolution.
       for (OpOperand &use : result.getUses()) {
         IntermediateDFBEvidence evidence;
         evidence.reason = IntermediateDFBReason::MultipleOutputTransactions;
@@ -226,7 +251,7 @@ static LogicalResult addFormationRequirements(
     for (StoreOp store : transaction.stores) {
       if (lifetimes.anyValueMayBeReleased(*inputs, store)) {
         IntermediateDFBEvidence evidence;
-        evidence.reason = IntermediateDFBReason::FormationInputMayBeReleased;
+        evidence.reason = IntermediateDFBReason::ComputeOpInputMayBeReleased;
         evidence.inputs = *inputs;
         evidence.observation = store;
         addStoreRequirement(state, store, result, std::move(evidence));
@@ -365,33 +390,76 @@ IntermediateDFBPlanner::buildMaterializationRecords(
       continue;
     }
 
-    Operation *publicationAnchor = outputs.getPlan().insertionAnchor;
-    bool dominatesConsumers = llvm::all_of(
-        standalonePlan.requirementIndices, [&](unsigned requirementIndex) {
-          Operation *consumer = requirements[requirementIndex].consumer;
-          return dominanceInfo.properlyDominates(publicationAnchor, consumer);
-        });
-    if (dominatesConsumers) {
-      standalonePlan.insertionAnchor = publicationAnchor;
+    const OutputPublicationPlan &outputPlan = outputs.getPlan();
+    auto isRequiredUse = [&](OpOperand &use) {
+      return llvm::any_of(
+          standalonePlan.requirementIndices, [&](unsigned requirementIndex) {
+            const IntermediateDFBRequirement &requirement =
+                requirements[requirementIndex];
+            return requirement.consumer == use.getOwner() &&
+                   requirement.operandIndex == use.getOperandNumber();
+          });
+    };
+    auto preservesInstrumentationOrder = [&](Operation *publicationAnchor) {
+      return llvm::all_of(
+          standalonePlan.requirementIndices, [&](unsigned requirementIndex) {
+            const IntermediateDFBRequirement &requirement =
+                requirements[requirementIndex];
+            return llvm::all_of(
+                requirement.evidence,
+                [&](const IntermediateDFBEvidence &evidence) {
+                  return evidence.reason !=
+                             IntermediateDFBReason::
+                                 ComputeOpInstrumentationWouldBeReordered ||
+                         dominanceInfo.properlyDominates(publicationAnchor,
+                                                         evidence.observation);
+                });
+          });
+    };
+
+    // Requirements rewrite selected stores before final creation. Select the
+    // last publication that will remain, not the last publication in the
+    // analyzed IR. The chosen position must precede recorded instrumentation
+    // boundaries and preserve every surviving non-store use.
+    for (StoreOp store : llvm::reverse(outputPlan.stores)) {
+      OpOperand &storedValue = store.getTensorMutable();
+      if (isRequiredUse(storedValue) ||
+          !preservesInstrumentationOrder(store.getOperation())) {
+        continue;
+      }
+      bool dominatesRequiredConsumers = llvm::all_of(
+          standalonePlan.requirementIndices, [&](unsigned requirementIndex) {
+            return dominanceInfo.properlyDominates(
+                store, requirements[requirementIndex].consumer);
+          });
+      bool preservesSurvivingUses =
+          llvm::all_of(standalonePlan.source.getUses(), [&](OpOperand &use) {
+            if (isRequiredUse(use)) {
+              return true;
+            }
+            auto survivingStore = dyn_cast<StoreOp>(use.getOwner());
+            if (survivingStore && &survivingStore.getTensorMutable() == &use &&
+                llvm::is_contained(outputPlan.stores, survivingStore)) {
+              return !store->isBeforeInBlock(survivingStore);
+            }
+            return dominanceInfo.properlyDominates(store, use.getOwner());
+          });
+      if (dominatesRequiredConsumers && preservesSurvivingUses) {
+        standalonePlan.insertionAnchor = store;
+        break;
+      }
+    }
+    if (standalonePlan.insertionAnchor != source) {
       continue;
     }
 
-    // Formation may relocate the source to its final publication store. When
+    // Creation may relocate the source to its final publication store. When
     // that store cannot dominate every materialized consumer, rewriting every
     // source use removes the original publications and leaves the compiler DFB
-    // store at the definition as the sole formation anchor. Any surviving use
-    // would permit final formation to execute after the compiler DFB wait.
+    // store at the definition as the sole creation anchor. Any surviving use
+    // would permit final creation to execute after the compiler DFB wait.
     bool rewritesEveryUse =
-        llvm::all_of(standalonePlan.source.getUses(), [&](OpOperand &use) {
-          return llvm::any_of(standalonePlan.requirementIndices,
-                              [&](unsigned requirementIndex) {
-                                const IntermediateDFBRequirement &requirement =
-                                    requirements[requirementIndex];
-                                return requirement.consumer == use.getOwner() &&
-                                       requirement.operandIndex ==
-                                           use.getOperandNumber();
-                              });
-        });
+        llvm::all_of(standalonePlan.source.getUses(), isRequiredUse);
     if (!rewritesEveryUse) {
       return PlanningResult<IntermediateDFBPlan>::invalidIR(
           source, "intermediate DFB plan leaves a source use not dominated by "
@@ -463,16 +531,16 @@ PlanningResult<IntermediateDFBPlan> IntermediateDFBPlanner::build() const {
       }
     });
     std::optional<PlanningDiagnostic> diagnostic;
-    WalkResult formationWalk = kernel->walk([&](Operation *operation) {
-      if (failed(addFormationRequirements(operation, lifetimes, dominanceInfo,
-                                          state, diagnostic))) {
+    WalkResult creationWalk = kernel->walk([&](Operation *operation) {
+      if (failed(addCreationRequirements(operation, lifetimes, dominanceInfo,
+                                         state, diagnostic))) {
         return WalkResult::interrupt();
       }
       return WalkResult::advance();
     });
-    if (formationWalk.wasInterrupted()) {
+    if (creationWalk.wasInterrupted()) {
       assert(diagnostic &&
-             "failed formation requirement planning requires a diagnostic");
+             "failed creation requirement planning requires a diagnostic");
       return PlanningResult<IntermediateDFBPlan>::invalidIR(
           diagnostic->operation, std::move(diagnostic->message));
     }
