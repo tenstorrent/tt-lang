@@ -222,6 +222,14 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
     if (srcIsPipe && dstIsPipe) {
       return emitOpError() << "cannot copy directly between pipes";
     }
+    Value pipe = srcIsPipe ? getSrc() : getDst();
+    if (!mlir::isa<PipeType>(pipe.getType()) &&
+        failed(getSelectedPipeRecords(pipe))) {
+      return emitOpError()
+             << "selected pipe operand must be defined by ttl.select_pipe_src, "
+                "ttl.select_pipe_dst, ttl.pipenet_foreach_src, or "
+                "ttl.pipenet_foreach_dst";
+    }
     if (dstIsPipe) {
       if (!srcIsCb) {
         return emitOpError()
