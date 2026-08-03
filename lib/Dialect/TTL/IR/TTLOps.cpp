@@ -543,6 +543,31 @@ int64_t mlir::tt::ttl::ComputeOp::getTotalIterationTiles() {
                          std::multiplies<>());
 }
 
+mlir::FailureOr<unsigned>
+mlir::tt::ttl::ComputeOp::getOutputIndexForView(mlir::Value view) {
+  mlir::Value viewDFB = getAttachedCB(view);
+  if (!viewDFB) {
+    return mlir::failure();
+  }
+
+  unsigned matchingIndex = 0;
+  bool foundMatch = false;
+  for (auto [outputIndex, output] : llvm::enumerate(getOutputs())) {
+    if (getAttachedCB(output) != viewDFB) {
+      continue;
+    }
+    if (foundMatch) {
+      return mlir::failure();
+    }
+    matchingIndex = outputIndex;
+    foundMatch = true;
+  }
+  if (!foundMatch) {
+    return mlir::failure();
+  }
+  return matchingIndex;
+}
+
 llvm::FailureOr<mlir::TilingResult>
 mlir::tt::ttl::ComputeOp::getTiledImplementation(
     mlir::OpBuilder &b, llvm::ArrayRef<mlir::OpFoldResult> offsets,
@@ -586,20 +611,20 @@ mlir::tt::ttl::ComputeOp::getTiledImplementation(
   // when tiling, they must reference the sliced output so downstream lowering
   // can compute the correct global DFB offset from the extract_slice.
   mlir::IRMapping mapping;
-  for (size_t i = 0; i < getOutputs().size(); ++i) {
-    mlir::Value origOutput = getOutputs()[i];
-    mlir::Value tiledOut = tiledOutputs[i];
-    getBody().walk([&](TileStoreOp store) {
-      mlir::Value view = store.getView();
-      if (view.getParentRegion() == &getBody()) {
-        return;
-      }
-      mlir::Value viewCB = getAttachedCB(view);
-      mlir::Value outputCB = getAttachedCB(origOutput);
-      if (viewCB && outputCB && viewCB == outputCB) {
-        mapping.map(view, tiledOut);
-      }
-    });
+  mlir::WalkResult storeWalk = getBody().walk([&](TileStoreOp store) {
+    mlir::Value view = store.getView();
+    if (view.getParentRegion() == &getBody()) {
+      return mlir::WalkResult::advance();
+    }
+    mlir::FailureOr<unsigned> outputIndex = getOutputIndexForView(view);
+    if (mlir::failed(outputIndex)) {
+      return mlir::WalkResult::interrupt();
+    }
+    mapping.map(view, tiledOutputs[*outputIndex]);
+    return mlir::WalkResult::advance();
+  });
+  if (storeWalk.wasInterrupted()) {
+    return mlir::failure();
   }
   getBody().cloneInto(&tiledOp.getBody(), mapping);
 
@@ -915,6 +940,7 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     }
   }
 
+  DenseSet<Value> outputDFBs;
   size_t outputStart = numInputs;
   for (size_t i = 0; i < numOutputs; ++i) {
     auto tensorTy = mlir::cast<RankedTensorType>(getOutputs()[i].getType());
@@ -923,6 +949,12 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     }
     if (failed(requireAttachedCB(getOutputs()[i], i, "output"))) {
       return failure();
+    }
+    Value outputDFB = getAttachedCB(getOutputs()[i]);
+    if (!outputDFBs.insert(outputDFB).second) {
+      return emitOpError() << "output " << i
+                           << " shares a dataflow buffer with an earlier "
+                              "formal output";
     }
     size_t mapIdx = outputStart + i;
     auto map = mlir::cast<AffineMapAttr>(maps[mapIdx]).getValue();
@@ -957,16 +989,9 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     }
   }
 
-  // tile_store is the only op that writes to the output CB (lowers to
-  // pack_tile); each store's target CB must match a formal output CB.
-  DenseSet<Value> outputCBs;
-  for (Value output : getOutputs()) {
-    if (Value cb = getAttachedCB(output)) {
-      outputCBs.insert(cb);
-    }
-  }
-
-  DenseSet<Value> storedCBs;
+  // tile_store is the only op that writes to an output DFB. Each store must
+  // map to one formal output so transformations can select its indexing map.
+  SmallVector<bool> storedOutputs(numOutputs, false);
   bool hasTileStore = false;
   for (Operation &op : bodyBlock.without_terminator()) {
     auto store = dyn_cast<TileStoreOp>(&op);
@@ -978,21 +1003,20 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     if (!viewCB) {
       return store.emitOpError() << "view must trace to a dataflow buffer";
     }
-    if (!outputCBs.contains(viewCB)) {
+    FailureOr<unsigned> outputIndex = getOutputIndexForView(store.getView());
+    if (failed(outputIndex)) {
       return store.emitOpError()
              << "stores to CB that is not a formal output of the compute";
     }
-    storedCBs.insert(viewCB);
+    storedOutputs[*outputIndex] = true;
   }
   if (!hasTileStore) {
     return emitOpError("body must contain at least one ttl.tile_store");
   }
 
-  for (Value output : getOutputs()) {
-    if (Value cb = getAttachedCB(output)) {
-      if (!storedCBs.contains(cb)) {
-        return emitOpError("formal output CB has no tile_store in the body");
-      }
+  for (bool stored : storedOutputs) {
+    if (!stored) {
+      return emitOpError("formal output CB has no tile_store in the body");
     }
   }
 
@@ -1966,7 +1990,8 @@ mlir::tt::ttl::PipeRole mlir::tt::ttl::IsActiveOp::getReferencedRole() {
 // `IfSrcOp` / `IfDstOp` execute the body conditionally on coord; from a
 // type-system perspective both successors (body and parent-after-op) are
 // possible, and the analysis decides which path applies via the lattice.
-// `PipeNetScopeOp` is unconditional: control always enters the body.
+// `PipeNetScopeOp` and `DstSectionOp` are unconditional: control always enters
+// the body.
 //===----------------------------------------------------------------------===//
 
 void mlir::tt::ttl::IfSrcOp::getSuccessorRegions(
@@ -1990,6 +2015,15 @@ void mlir::tt::ttl::IfDstOp::getSuccessorRegions(
 }
 
 void mlir::tt::ttl::PipeNetScopeOp::getSuccessorRegions(
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  if (point.isParent()) {
+    regions.push_back(RegionSuccessor(&getBody()));
+    return;
+  }
+  regions.push_back(RegionSuccessor(getOperation()));
+}
+
+void mlir::tt::ttl::DstSectionOp::getSuccessorRegions(
     RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
   if (point.isParent()) {
     regions.push_back(RegionSuccessor(&getBody()));

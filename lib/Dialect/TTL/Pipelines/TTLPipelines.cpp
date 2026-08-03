@@ -19,39 +19,41 @@ namespace mlir::tt::ttl {
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
   pm.addNestedPass<func::FuncOp>(createTTLMaterializeLoopState());
+  pm.addNestedPass<func::FuncOp>(createTTLInsertCopyWait());
+  pm.addNestedPass<func::FuncOp>(createTTLAnnotateL1AccLoops());
+  pm.addNestedPass<func::FuncOp>(createTTLProducerComputeCreation());
   {
     TTLInsertIntermediateDFBsOptions dfbOpts;
     dfbOpts.enable = options.compilerDFBs;
     pm.addNestedPass<func::FuncOp>(createTTLInsertIntermediateDFBs(dfbOpts));
   }
-  pm.addNestedPass<func::FuncOp>(createTTLInsertCopyWait());
+  pm.addNestedPass<func::FuncOp>(createTTLConvertTTLToCompute());
   buildTTLAutoSyncPipeline(pm.nest<func::FuncOp>());
-  pm.addPass(createTTLAnnotateL1AccLoops());
-  pm.addPass(createTTLConvertTTLToCompute());
+  pm.addPass(createTTLFinalizeDFBIndices());
   {
     TTLSetComputeKernelConfigOptions configOpts;
     configOpts.reduceFullFp32 = options.reduceFullFp32;
     configOpts.enableFPUBinaryOps = options.enableFPUBinaryOps;
-    pm.addPass(createTTLSetComputeKernelConfig(configOpts));
+    pm.addNestedPass<func::FuncOp>(createTTLSetComputeKernelConfig(configOpts));
   }
-  pm.addPass(createTTLAssignDST());
+  pm.addNestedPass<func::FuncOp>(createTTLAssignDST());
   if (options.maximizeDST) {
     TTLSubblockComputeForDSTOptions subblockOpts;
     subblockOpts.subblockSync = options.subblockSync;
     subblockOpts.strictF32Acc = options.strictF32Acc;
-    pm.addPass(createTTLSubblockComputeForDST(subblockOpts));
+    pm.addNestedPass<func::FuncOp>(
+        createTTLSubblockComputeForDST(subblockOpts));
   }
   {
     TTLLowerToLoopsOptions loopOpts;
     loopOpts.dstAccumulation = options.maximizeDST;
     loopOpts.useBlockMatmul = options.useBlockMatmul;
-    pm.addPass(createTTLLowerToLoops(loopOpts));
+    pm.addNestedPass<func::FuncOp>(createTTLLowerToLoops(loopOpts));
   }
   if (options.maximizeDST) {
-    pm.addPass(createTTLScheduleOperations());
+    pm.addNestedPass<func::FuncOp>(createTTLScheduleOperations());
   }
-  pm.addPass(createTTLFinalizeDFBIndices());
-  pm.addPass(createTTLAnnotateCBAssociations());
+  pm.addNestedPass<func::FuncOp>(createTTLAnnotateCBAssociations());
   pm.addPass(createTTLVerifyPipeNetGuards());
   pm.addPass(createTTLVerifyDFBSPSC());
   pm.addPass(createTTLErasePipeNetScopes());

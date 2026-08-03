@@ -24,5 +24,5 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers",
         "multi_device: opens a device mesh; excluded from the per-chip parallel "
-        "run and executed serially with every chip visible",
+        "run and executed serially",
     )

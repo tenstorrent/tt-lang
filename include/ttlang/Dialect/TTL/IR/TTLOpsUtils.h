@@ -18,6 +18,7 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Support/LogicalResult.h"
+#include "llvm/ADT/FunctionExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 
@@ -53,31 +54,38 @@ inline mlir::Value traceUnrealizedCasts(mlir::Value value) {
   return value;
 }
 
-/// Trace a tensor value back to its originating CB acquire operation
-/// (CBWaitOp or CBReserveOp). Traces through unrealized_conversion_cast,
-/// AttachCBOp, and tensor.extract_slice. Returns the acquire Operation*,
-/// or null if the chain does not end at one.
+/// Trace a tensor value through view-preserving operations to its DFB acquire.
+///
+/// Casts, DFB associations, slices, and extracts preserve the acquired storage
+/// identity and may occur in any order. Other tensor operations terminate the
+/// search because their results do not necessarily alias the acquired slot.
+/// Returns null when the chain does not end at `ttl.cb_wait` or
+/// `ttl.cb_reserve`.
 inline mlir::Operation *findCBAcquireOp(mlir::Value tensor) {
-  tensor = traceUnrealizedCasts(tensor);
-  if (auto attach = tensor.getDefiningOp<AttachCBOp>()) {
-    tensor = attach.getTensor();
+  while (true) {
     tensor = traceUnrealizedCasts(tensor);
-  }
-  while (auto slice = tensor.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
-    tensor = slice.getSource();
-    tensor = traceUnrealizedCasts(tensor);
-  }
-  if (auto viewLike = tensor.getDefiningOp<mlir::ViewLikeOpInterface>()) {
-    mlir::Value source = viewLike.getViewSource();
-    if (mlir::isa<CircularBufferType>(source.getType())) {
-      return viewLike.getOperation();
+    if (auto attach = tensor.getDefiningOp<AttachCBOp>()) {
+      tensor = attach.getTensor();
+      continue;
     }
+    if (auto slice = tensor.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
+      tensor = slice.getSource();
+      continue;
+    }
+    if (auto extract = tensor.getDefiningOp<mlir::tensor::ExtractOp>()) {
+      tensor = extract.getTensor();
+      continue;
+    }
+    mlir::Operation *definition = tensor.getDefiningOp();
+    if (mlir::isa_and_nonnull<CBWaitOp, CBReserveOp>(definition)) {
+      return definition;
+    }
+    return nullptr;
   }
-  return nullptr;
 }
 
-/// Walk through `tensor.extract_slice` ops and return the underlying
-/// `ttl.cb_reserve` op, or null if the chain doesn't end at one.
+/// Returns the `ttl.cb_reserve` underlying the supported view-preserving
+/// operations, or null if the chain does not end at one.
 inline mlir::tt::ttl::CBReserveOp findCBReserveForView(mlir::Value view) {
   return mlir::dyn_cast_or_null<CBReserveOp>(findCBAcquireOp(view));
 }
@@ -136,10 +144,8 @@ inline LogicalResult emitIfTileShapeMismatch(Operation *op, Type lhs, Type rhs,
                            << "x" << rhsTile.getWidth() << ")";
 }
 
-/// Return true when `tensor` was acquired from a CB via ttl.cb_wait or
-/// ttl.cb_reserve (the only two ViewLikeOpInterface implementations whose
-/// view source is a CircularBufferType). Traces through
-/// unrealized_conversion_cast, ttl.attach_cb, and tensor.extract_slice.
+/// Return true when `tensor` aliases a `ttl.cb_wait` or `ttl.cb_reserve`
+/// result through the view-preserving operations accepted above.
 inline bool isCBAcquireView(mlir::Value tensor) {
   return findCBAcquireOp(tensor) != nullptr;
 }
@@ -188,6 +194,16 @@ normalizeDimsToSet(mlir::ArrayRef<int64_t> dims, int64_t rank) {
   }
   return result;
 }
+
+/// Returns the intra-tile broadcast required by `dims`, or no value when the
+/// broadcast affects only dimensions represented by the compute indexing map.
+std::optional<BcastType> getTileBroadcastType(ArrayRef<int64_t> dims,
+                                              int64_t rank);
+
+/// Returns the rank-2 hardware reduction orientation represented by `dims`.
+/// Failure indicates a non-rank-2 tensor or no supported reduced dimension.
+FailureOr<ttkernel::ReduceDim> getReduceDimension(ArrayRef<int64_t> dims,
+                                                  int64_t rank);
 
 /// True for arithmetic/math tile ops (add, mul, exp, ...); false for data
 /// movement and DST lifecycle ops.
@@ -341,22 +357,46 @@ enum class TraceFailureReason {
   NotFusableOp,
 };
 
-/// Result of tracing through fusable ops to CB-attached roots.
+/// Result of tracing through fusable operations to DFB inputs or operands
+/// selected for DFB materialization.
 struct FusionTraceResult {
-  /// CB-attached input values that form the roots of the chain.
+  /// Input values at which tracing stopped. These are normally DFB-attached;
+  /// an operand selected for later materialization may contribute its current,
+  /// unattached value.
   llvm::SmallSetVector<mlir::Value, 2> rootInputs;
+
+  /// Roots whose current storage remains an input after planned replacements.
+  ///
+  /// A planned materialization supplies new storage, so that occurrence does
+  /// not constrain creation by the original value's release. If another
+  /// unmaterialized occurrence reaches the same value, it remains in this set.
+  llvm::SmallSetVector<mlir::Value, 2> lifetimeRootInputs;
+
   /// Operations in the chain, topologically ordered (roots first, sink last).
   llvm::SmallSetVector<mlir::Operation *, 4> opsInOrder;
   /// Failure reason (Success if tracing succeeded).
   TraceFailureReason failureReason = TraceFailureReason::Success;
   /// The value where tracing failed (only set on failure).
   mlir::Value failedValue;
+  /// Operand whose definition could not be included in the fused expression.
+  mlir::OpOperand *failedOperand = nullptr;
 };
 
 /// Trace a value through fusable ops (elementwise, matmul, bcast) to
-/// CB-attached roots. On failure, the result's `failureReason` and
+/// DFB-attached roots. On failure, the result's `failureReason` and
 /// `failedValue` are set.
 FusionTraceResult traceFusionToRoots(mlir::Value value);
+
+/// Trace a value through fusable operations, stopping at selected operands.
+///
+/// A selected operand is recorded as a root without tracing its definition.
+/// This models a planned materialization that replaces the operand with a
+/// DFB-attached value before fusion. Every selected operand must be replaced
+/// before the trace is used to form a compute; otherwise the returned roots do
+/// not prove creation legality. The query does not modify IR.
+FusionTraceResult traceFusionToRoots(
+    mlir::Value value,
+    llvm::function_ref<bool(mlir::OpOperand &)> isMaterializationPlanned);
 
 /// Return a human-readable description of a trace failure reason.
 llvm::StringRef describeTraceFailure(TraceFailureReason reason);

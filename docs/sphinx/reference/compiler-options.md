@@ -18,7 +18,7 @@ python my_kernel.py --no-ttl-maximize-dst
 | `--ttl-subblock-sync` / `--no-ttl-subblock-sync` | disabled | Refine DFB reserve/push to per-subblock granularity, enabling `pack_tile_block` for contiguous subblocks. When disabled, user-placed reserve/push is preserved as written. |
 | `--ttl-combine-pack-tiles` / `--no-ttl-combine-pack-tiles` | enabled | Combine consecutive `pack_tile` ops on the same DFB with contiguous DST and DFB indices into a single `pack_tile_block` call. |
 | `--ttl-strict-f32-acc` / `--no-ttl-strict-f32-acc` | disabled | Error at compile time if a `+=` accumulation loop's output block exceeds f32 DST capacity (4 tiles with double-buffering). When enabled, guarantees each accumulation step fits in a single DST section without subblocking. |
-| `--ttl-compiler-dfbs` / `--no-ttl-compiler-dfbs` | enabled | Insert compiler-allocated intermediate DFBs when an operation requires a DFB-attached input, or when a value stored from multiple blocks cannot be handled by branch-local cloning. When disabled, the compiler emits an error if such materialization is required. |
+| `--ttl-compiler-dfbs` / `--no-ttl-compiler-dfbs` | enabled | Insert compiler-allocated intermediate DFBs when an operation requires DFB-attached inputs, fusion would read a source after its DFB is released, or a computed value is stored from multiple blocks. When disabled, the compiler emits an error if materialization is required. |
 | `--ttl-specialize-cores` / `--no-ttl-specialize-cores` | disabled | Clone each TTKernel function whose control flow branches on a core coordinate once per launch coordinate (`ttkernel-specialize-cores`), replacing `my_logical_x_` / `my_logical_y_` with constants and tagging clones with `ttl.core_coord` for per-core dispatch. Opt-in. |
 
 ### Other Ways to Set These
@@ -115,30 +115,35 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 | `subblock-sync` | bool | `false` | Refine DFB reserve/push to per-subblock granularity. |
 | `combine-pack-tiles` | bool | `true` | Combine consecutive `pack_tile` ops into `pack_tile_block`. |
 | `strict-f32-acc` | bool | `false` | Error if a `+=` accumulation loop's output block exceeds f32 DST capacity. |
-| `compiler-dfbs` | bool | `true` | Insert compiler-allocated intermediate DFBs for DFB-attached operands and non-cloneable values stored from multiple blocks. Error if disabled and materialization is required. |
+| `compiler-dfbs` | bool | `true` | Insert compiler-allocated intermediate DFBs for DFB-only operands, source-lifetime preservation, and computed values stored from multiple blocks. Error if disabled and any operation requires one. |
 | `specialize-cores` | bool | `false` | Clone TTKernel functions that branch on a core coordinate once per launch coordinate (`ttkernel-specialize-cores`), then run `canonicalize` / `cse`. Maps from `--ttl-specialize-cores`. |
 | `lower-to-emitc` | bool | `false` | Run the TTKernel-to-EmitC backend (produces C++ source). |
 
 The pipeline runs these passes in order:
 
-- `ttl-insert-intermediate-dfbs` — clone producer backward slices into mutually exclusive store blocks, allocate compiler-managed DFBs for remaining storage requirements, and report an error when `compiler-dfbs=false` and materialization is required
-- `ttl-insert-copy-wait` — insert missing `ttl.wait` after `ttl.copy` ops whose transfer handle has no wait user
-- `ttl-insert-cb-sync` — insert DFB wait/pop/reserve/push around compute regions
-- `ttl-annotate-l1-acc-loops` — detect `+=` accumulation loops and annotate for L1 packer accumulation
-- `convert-ttl-to-compute` — lower TTL elementwise tensor ops to `ttl.compute` with tile ops
-- `ttl-set-compute-kernel-config` — set `fp32_dest_acc_en` / `dst_full_sync_en` defaults
-- `ttl-assign-dst` — DST register allocation (linear scan with copy insertion)
-- `ttl-subblock-compute-for-dst` — tile `ttl.compute` into DST-sized subblocks *(only if `maximize-dst=true`)*; optionally refine reserve/push to per-subblock granularity *(only if `subblock-sync=true`)*
-- `ttl-insert-tile-regs-sync` — insert math/pack thread synchronization
-- `ttl-lower-to-loops` — lower `ttl.compute` to `scf.for` loops; matmul computes are expanded inline via `generateMatmulCompute`
-- `ttl-schedule-operations` — reorder tile ops by dependency depth and kind *(only if `maximize-dst=true`)*
-- `ttl-annotate-cb-associations` — annotate block args with DFB indices
-- `convert-ttl-to-ttkernel` — lower TTL DMA ops to TTKernel
-- `ttkernel-insert-inits` — insert hardware init ops before compute ops
-- `ttkernel-insert-l1-accumulation` — insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops
-- `ttkernel-combine-pack-tiles` — combine consecutive `pack_tile` into `pack_tile_block` *(only if `combine-pack-tiles=true`)*
+- `ttl-materialize-loop-state` -- replace ranked-tensor loop-carried values with compiler-created DFBs
+- `ttl-insert-copy-wait` -- insert missing `ttl.wait` after `ttl.copy` ops whose transfer handle has no wait user
+- `ttl-annotate-l1-acc-loops` -- detect `+=` accumulation loops and annotate for L1 packer accumulation
+- `ttl-create-producer-compute` -- create producer `ttl.compute` operations before intermediate materialization
+- `ttl-insert-intermediate-dfbs` -- materialize DFB-only operands, values that must be preserved before source release, and computed values stored from multiple blocks; verify and error when `compiler-dfbs=false`
+- `convert-ttl-to-compute` -- lower TTL elementwise tensor ops to `ttl.compute` with tile ops
+- `ttl-insert-cb-sync`, then `ttl-coalesce-dfb-acquires` -- insert missing releases and coalesce compatible DFB acquires
+- `ttl-finalize-dfb-indices` -- allocate physical compiler DFB indices, validate capacity, and emit runtime metadata
+- `ttl-set-compute-kernel-config` -- set `fp32_dest_acc_en` / `dst_full_sync_en` defaults
+- `ttl-assign-dst` -- DST register allocation (linear scan with copy insertion)
+- `ttl-subblock-compute-for-dst` -- tile `ttl.compute` into DST-sized subblocks *(only if `maximize-dst=true`)*; optionally refine reserve/push to per-subblock granularity *(only if `subblock-sync=true`)*
+- `ttl-lower-to-loops` -- lower `ttl.compute` to `scf.for` loops; matmul computes are expanded inline via `generateMatmulCompute`
+- `ttl-schedule-operations` -- reorder tile ops by dependency depth and kind *(only if `maximize-dst=true`)*
+- `ttl-annotate-cb-associations` -- annotate block args with DFB indices
+- `ttl-verify-pipenet-guards`, then `ttl-verify-dfb-spsc` -- verify PipeNet synchronization and per-node DFB producer/consumer uniqueness
+- `ttl-erase-pipenet-scopes` -- remove verified PipeNet structural markers
+- `ttl-validate-cb-budget` -- verify static DFB storage fits the per-core L1 budget
+- `convert-ttl-to-ttkernel` -- lower TTL DMA ops to TTKernel
+- `ttkernel-insert-inits` -- insert hardware init ops before compute ops
+- `ttkernel-insert-l1-accumulation` -- insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops
+- `ttkernel-combine-pack-tiles` -- combine consecutive `pack_tile` into `pack_tile_block` *(only if `combine-pack-tiles=true`)*
 - Canonicalization and CSE cleanup
-- `ttkernel-specialize-cores`, then `canonicalize`, `cse` — per-core clone and const-fold of coordinate branches; tags clones with `ttl.core_coord` *(only if `specialize-cores=true`)*
+- `ttkernel-specialize-cores`, then `canonicalize`, `cse` -- per-core clone and const-fold of coordinate branches; tags clones with `ttl.core_coord` *(only if `specialize-cores=true`)*
 - *(if `lower-to-emitc=true`)* `lower-affine`, `convert-ttkernel-to-emitc`, `emitc-form-expressions`
 
 ### Individual Pass Options
@@ -148,11 +153,12 @@ options are listed; the remaining passes have no options.
 
 #### `ttl-insert-intermediate-dfbs`
 
-Resolve DFB-attached operands and values stored from multiple blocks.
+Insert compiler-allocated intermediate DFBs where tensor SSA values require
+concrete DFB storage.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `enable` | bool | `true` | Insert compiler-allocated DFBs. When false, emit an error if any operation or value stored from multiple blocks requires one. |
+| `enable` | bool | `true` | Insert compiler-allocated DFBs. When false, emit an error if any operation requires one. |
 
 ```bash
 ttlang-opt input.mlir -p 'func.func(ttl-insert-intermediate-dfbs{enable=false})'

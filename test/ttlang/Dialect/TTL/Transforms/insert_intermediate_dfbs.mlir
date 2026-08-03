@@ -9,7 +9,7 @@
 // Elementwise result feeds into reduce: pass should insert a compiler-allocated DFB.
 
 // CHECK-LABEL: func.func @elementwise_into_reduce
-// CHECK: ttl.bind_cb{cb_index = 3, block_count = 2} {ttl.compiler_allocated}
+// CHECK: ttl.bind_cb{cb_index = 3, block_count = 1} {ttl.compiler_allocated}
 // CHECK: ttl.add
 // CHECK: ttl.cb_reserve
 // CHECK: ttl.store
@@ -130,15 +130,15 @@ func.func @shared_materialization()
 // After insert: two compiler-allocated DFBs at indices 4, 5, both at
 // function body entry.
 // CHECK-LABEL: func.func @sequential_intermediates_reuse
-// CHECK: ttl.bind_cb{cb_index = 4, block_count = 2} {ttl.compiler_allocated}
-// CHECK: ttl.bind_cb{cb_index = 5, block_count = 2} {ttl.compiler_allocated}
+// CHECK: ttl.bind_cb{cb_index = 4, block_count = 1} {ttl.compiler_allocated}
+// CHECK: ttl.bind_cb{cb_index = 5, block_count = 1} {ttl.compiler_allocated}
 // CHECK: ttl.add
 // CHECK: ttl.reduce
 // CHECK: ttl.mul
 // CHECK: ttl.reduce
 
 // After finalize with reuse: both DFBs get index 4 (one physical slot).
-// FINALIZE: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 2 : i32, dfb_index = 4 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}]}
+// FINALIZE: module attributes {ttl.compiler_allocated_dfbs = [{block_count = 1 : i32, dfb_index = 4 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32}]}
 // FINALIZE-LABEL: func.func @sequential_intermediates_reuse
 // FINALIZE-SAME: ttl.base_cta_index = 5 : i32
 // FINALIZE-NOT: cb_index = 5

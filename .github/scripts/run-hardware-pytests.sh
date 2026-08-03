@@ -8,10 +8,12 @@
 # Chip count is the number of digit-named nodes under /dev/tenstorrent (matching
 # test/lit.cfg.py). With more than one chip, single-device tests run under
 # pytest-xdist (-n <chips>) with each worker restricted to one chip through
-# TT_VISIBLE_DEVICES. The multi_device tests then run serially with every chip
-# visible. With one chip the whole suite runs serially.
+# TT_VISIBLE_DEVICES. The multi_device tests then run serially. With one chip the
+# whole suite runs serially.
 #
 # Env: HW_PYTEST_CHIPS overrides the detected chip count.
+# Env: HW_SERIAL_TEST_VISIBLE_DEVICES restricts device visibility for serial
+#      phases that need multiple devices. Unset means every chip remains visible.
 #
 # Usage: run-hardware-pytests.sh <test-dir> <report-prefix>
 
@@ -51,6 +53,16 @@ run_pytest_phase() {
     return "$phase_rc"
 }
 
+run_multi_device_phase() {
+    if [ -n "${HW_SERIAL_TEST_VISIBLE_DEVICES:-}" ]; then
+        export TT_VISIBLE_DEVICES="$HW_SERIAL_TEST_VISIBLE_DEVICES"
+        echo "Restricting serial multi_device pytest phase to TT_VISIBLE_DEVICES=$TT_VISIBLE_DEVICES"
+    else
+        unset TT_VISIBLE_DEVICES
+    fi
+    run_pytest_phase "$@"
+}
+
 if [ "$chips" -gt 1 ]; then
     echo "Detected ${chips} chips: single-device tests in parallel (-n ${chips}), multi_device serial"
     unset TT_VISIBLE_DEVICES
@@ -65,7 +77,7 @@ if [ "$chips" -gt 1 ]; then
         run_pytest_phase "$TEST_DIR" -m "not multi_device" -n "$chips" \
         --max-worker-restart=0 "${common[@]}" \
         --junitxml="${REPORT_PREFIX}-parallel.xml" || rc=1
-    run_pytest_phase "$TEST_DIR" -m multi_device \
+    run_multi_device_phase "$TEST_DIR" -m multi_device \
         "${common[@]}" --junitxml="${REPORT_PREFIX}-multidevice.xml" || rc=1
     if [ "$selected_phase_count" -eq 0 ]; then
         echo "No tests selected by either hardware pytest phase" >&2

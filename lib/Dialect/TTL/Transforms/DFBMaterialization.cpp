@@ -7,25 +7,43 @@
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 
+#include "mlir/IR/Dominance.h"
+
+#include <algorithm>
+
 namespace mlir::tt::ttl {
 
+/// Return a provisional index unique within `kernel`.
+///
+/// Different kernels may reuse provisional indices because module finalization
+/// replaces them with disjoint physical ranges before indices are copied.
+static int32_t getNextAvailableKernelDFBIndex(func::FuncOp kernel) {
+  int32_t maxIndex = -1;
+  kernel.walk([&](BindCBOp declaration) {
+    maxIndex =
+        std::max(maxIndex,
+                 static_cast<int32_t>(declaration.getCbIndex().getSExtValue()));
+  });
+  return maxIndex + 1;
+}
+
 BindCBOp createCompilerAllocatedDFB(RankedTensorType tensorType, Location loc,
-                                    func::FuncOp funcOp, ModuleOp moduleOp,
-                                    OpBuilder &builder) {
+                                    func::FuncOp kernel, OpBuilder &builder) {
   MLIRContext *ctx = builder.getContext();
 
   SmallVector<int64_t> shape(tensorType.getShape());
   Type elementType = tensorType.getElementType();
-  int64_t blockCount = 2;
+  int64_t blockCount = 1;
   auto dfbType = CircularBufferType::get(ctx, shape, elementType, blockCount);
 
-  int32_t dfbIndex = getNextAvailableDFBIndex(moduleOp);
+  // Kernel-local allocation preserves pass isolation. The module finalizer
+  // replaces this provisional index before index annotations are emitted.
+  int32_t dfbIndex = getNextAvailableKernelDFBIndex(kernel);
 
-  // BindCBOp lives at function entry: cb_index is function-scoped and
-  // finalize-dfb-indices requires that placement. Reserve/store/wait/attach
-  // stay at the def site to preserve per-invocation accounting inside loops
-  // and conditional branches.
-  Block &body = funcOp.getBody().front();
+  // BindCBOp lives at kernel entry because finalize-dfb-indices requires that
+  // placement. Reserve/store/wait/attach stay at the def site to preserve
+  // per-invocation accounting inside loops and conditional branches.
+  Block &body = kernel.getBody().front();
   Operation *insertAfter = nullptr;
   for (Operation &op : body) {
     if (isa<BindCBOp>(&op)) {
@@ -63,26 +81,30 @@ AttachCBOp createDFBWaitAndAttach(Value dfb, RankedTensorType tensorType,
   return AttachCBOp::create(builder, loc, tensorType, wait.getResult(), dfb);
 }
 
-Value materializeToDFB(Value intermediate, ModuleOp moduleOp,
-                       OpBuilder &builder) {
+Value materializeToDFB(Value intermediate, Operation *insertionAnchor,
+                       func::FuncOp kernel, OpBuilder &builder) {
+  auto result = dyn_cast<OpResult>(intermediate);
+  assert((!result || !isa<ComputeOp>(result.getOwner())) &&
+         "compute results are materialized atomically by "
+         "TTLInsertIntermediateDFBs");
   auto tensorType = cast<RankedTensorType>(intermediate.getType());
   Location loc = intermediate.getLoc();
 
   Operation *defOp = intermediate.getDefiningOp();
   assert(defOp && "intermediate must have a defining op");
-
-  auto funcOp = defOp->getParentOfType<func::FuncOp>();
-  assert(funcOp && "intermediate must be inside a func::FuncOp");
+  assert(insertionAnchor && "materialization requires an insertion anchor");
+  assert(kernel && "intermediate must be inside a kernel");
+  assert(DominanceInfo(kernel).dominates(defOp, insertionAnchor) &&
+         "intermediate definition must dominate its insertion anchor");
 
   BindCBOp bindDFB =
-      createCompilerAllocatedDFB(tensorType, loc, funcOp, moduleOp, builder);
+      createCompilerAllocatedDFB(tensorType, loc, kernel, builder);
 
-  builder.setInsertionPointAfter(defOp);
+  builder.setInsertionPointAfter(insertionAnchor);
   createDFBStore(intermediate, bindDFB.getResult(), builder);
 
-  auto attach =
-      createDFBWaitAndAttach(bindDFB.getResult(), tensorType, loc, builder);
-  return attach.getResult();
+  return createDFBWaitAndAttach(bindDFB.getResult(), tensorType, loc, builder)
+      .getResult();
 }
 
 } // namespace mlir::tt::ttl

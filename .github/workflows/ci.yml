@@ -135,6 +135,7 @@ jobs:
     secrets: inherit
     with:
       docker_tag: ${{ needs.resolve-docker-tag.outputs.docker_tag }}
+      run_galaxy_tests: true
 
   build-docs:
     name: Build documentation

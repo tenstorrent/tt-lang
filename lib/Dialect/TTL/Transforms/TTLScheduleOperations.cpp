@@ -17,6 +17,7 @@
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/Debug.h"
 
@@ -183,8 +184,9 @@ computeDepthLevels(llvm::ArrayRef<Operation *> tileOps) {
   return levels;
 }
 
-/// Process a single sync region: reorder tile ops between acquire and commit.
-static LogicalResult scheduleOpsInRegion(ArrayRef<Operation *> tileOps) {
+/// Reorder one contiguous sequence of tile operations without crossing an
+/// operation whose ordering semantics are not modeled by this scheduler.
+static LogicalResult scheduleContiguousTileOps(ArrayRef<Operation *> tileOps) {
   if (tileOps.size() <= 1) {
     return success();
   }
@@ -221,15 +223,32 @@ static LogicalResult scheduleOpsInRegion(ArrayRef<Operation *> tileOps) {
     }
   });
 
-  // Reposition ops using moveBefore. Place each op before the first
-  // non-tile-op after the region, maintaining sorted order.
+  // Reposition the operations before the sequence boundary. The caller forms
+  // contiguous sequences, so this cannot move an operation across a boundary
+  // whose reordering safety was not proven.
   Operation *insertionPoint = tileOps.back()->getNextNode();
-  assert(insertionPoint && "expected commit op after tile ops in sync region");
+  assert(insertionPoint && "expected an operation after tile operations");
 
   for (auto &key : keys) {
     key.op->moveBefore(insertionPoint);
   }
   return success();
+}
+
+/// Return whether `operation` or one of its descendants consumes a result
+/// produced by any candidate. Region operations may capture SSA values without
+/// listing them as operation operands, so inspecting only the operand list
+/// would permit a producer to move after a nested use.
+static bool containsCandidateResultUse(Operation *operation,
+                                       ArrayRef<Operation *> candidates) {
+  return llvm::any_of(candidates, [&](Operation *candidate) {
+    return llvm::any_of(candidate->getResults(), [&](Value result) {
+      return llvm::any_of(result.getUses(), [&](OpOperand &use) {
+        Operation *user = use.getOwner();
+        return user == operation || operation->isProperAncestor(user);
+      });
+    });
+  });
 }
 
 struct TTLScheduleOperationsPass
@@ -239,20 +258,41 @@ struct TTLScheduleOperationsPass
     func::FuncOp funcOp = getOperation();
 
     WalkResult result = funcOp.walk([&](DstSectionOp dstSection) {
-      SmallVector<Operation *, 16> mathOps;
+      SmallVector<Operation *, 16> pendingTileOps;
+      auto schedulePendingTileOps = [&]() -> LogicalResult {
+        if (failed(scheduleContiguousTileOps(pendingTileOps))) {
+          return failure();
+        }
+        pendingTileOps.clear();
+        return success();
+      };
+
       for (Operation &op : dstSection.getBody().front().without_terminator()) {
         if (isa<TileStoreOp>(op)) {
+          if (failed(schedulePendingTileOps())) {
+            return WalkResult::interrupt();
+          }
           break;
         }
-        TileOpCategory cat = classifyTileOp(&op);
-        if (cat != TileOpCategory::Unknown) {
-          mathOps.push_back(&op);
+
+        if (classifyTileOp(&op) == TileOpCategory::Unknown) {
+          // Pure, speculatable bookkeeping can remain in place unless it
+          // consumes a pending result. Every other operation is a boundary
+          // because moving tile operations across it is not proven safe.
+          if (isPure(&op) && isSpeculatable(&op) &&
+              !containsCandidateResultUse(&op, pendingTileOps)) {
+            continue;
+          }
+          if (failed(schedulePendingTileOps())) {
+            return WalkResult::interrupt();
+          }
+          continue;
         }
+        pendingTileOps.push_back(&op);
       }
-      if (!mathOps.empty()) {
-        if (failed(scheduleOpsInRegion(mathOps))) {
-          return WalkResult::interrupt();
-        }
+
+      if (failed(schedulePendingTileOps())) {
+        return WalkResult::interrupt();
       }
       return WalkResult::advance();
     });

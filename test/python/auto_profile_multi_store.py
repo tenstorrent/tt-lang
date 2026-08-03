@@ -85,9 +85,9 @@ def multi_store_kernel(a, b, out1, out2, out3):
 # CHECK-NEXT:     add_binary_tile(
 # CHECK:          tile_regs_commit();
 # CHECK-NEXT:     tile_regs_wait();
-# CHECK-NEXT:     pack_tile<true>({{.*}}, get_compile_time_arg_val(4), {{.*}});
-# CHECK-NEXT:     pack_tile<true>({{.*}}, get_compile_time_arg_val(3), {{.*}});
 # CHECK-NEXT:     pack_tile<true>({{.*}}, get_compile_time_arg_val(2), {{.*}});
+# CHECK-NEXT:     pack_tile<true>({{.*}}, get_compile_time_arg_val(3), {{.*}});
+# CHECK-NEXT:     pack_tile<true>({{.*}}, get_compile_time_arg_val(4), {{.*}});
 # CHECK-NEXT:     tile_regs_release();
 
 # 3 cb_push_back and 2 cb_pop_front with auto-profile scopes
@@ -128,15 +128,15 @@ def multi_store_kernel(a, b, out1, out2, out3):
 
 # Compute body: FPU binary add with 3 pack_tiles
 # CHECK-FPU:          DeviceZoneScopedN("compute_L{{[0-9]+}}");
-# CHECK-FPU:          binary_op_init_common(get_compile_time_arg_val(0), get_compile_time_arg_val(1), get_compile_time_arg_val(4));
+# CHECK-FPU:          binary_op_init_common(get_compile_time_arg_val(0), get_compile_time_arg_val(1), get_compile_time_arg_val(2));
 # CHECK-FPU-NEXT:     tile_regs_acquire();
 # CHECK-FPU-NEXT:     add_tiles_init(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
 # CHECK-FPU-NEXT:     add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1),
 # CHECK-FPU-NEXT:     tile_regs_commit();
 # CHECK-FPU-NEXT:     tile_regs_wait();
-# CHECK-FPU-NEXT:     pack_tile<true>({{.*}}, get_compile_time_arg_val(4), {{.*}});
-# CHECK-FPU-NEXT:     pack_tile<true>({{.*}}, get_compile_time_arg_val(3), {{.*}});
 # CHECK-FPU-NEXT:     pack_tile<true>({{.*}}, get_compile_time_arg_val(2), {{.*}});
+# CHECK-FPU-NEXT:     pack_tile<true>({{.*}}, get_compile_time_arg_val(3), {{.*}});
+# CHECK-FPU-NEXT:     pack_tile<true>({{.*}}, get_compile_time_arg_val(4), {{.*}});
 # CHECK-FPU-NEXT:     tile_regs_release();
 
 # 3 cb_push_back and 2 cb_pop_front with auto-profile scopes
