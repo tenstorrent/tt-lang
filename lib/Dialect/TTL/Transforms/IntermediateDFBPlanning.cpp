@@ -126,62 +126,52 @@ addExpressionReleaseRequirements(Operation *elementwiseOp,
 }
 
 static void addStoreRequirement(DFBMaterializationAnalysisState &state,
-                                StoreOp store, Value storedValue,
+                                OpOperand &storedValueOperand,
                                 IntermediateDFBEvidence evidence) {
-  for (OpOperand &operand : store->getOpOperands()) {
-    if (operand.get() == storedValue) {
-      state.requireMaterialization(operand, std::move(evidence));
-      return;
-    }
-  }
-  llvm_unreachable("analyzed store must use the source result");
+  state.requireMaterialization(storedValueOperand, std::move(evidence));
 }
 
-static SmallVector<StoreOp> getDirectStoreUsers(Value value) {
-  SmallVector<StoreOp> stores;
+static SmallVector<OpOperand *> getDirectStoreOperands(Value value) {
+  SmallVector<OpOperand *> storeOperands;
   for (OpOperand &use : value.getUses()) {
     auto store = dyn_cast<StoreOp>(use.getOwner());
     if (store && &store.getTensorMutable() == &use) {
-      stores.push_back(store);
+      storeOperands.push_back(&use);
     }
   }
-  return stores;
+  return storeOperands;
 }
 
-static bool storesUseDifferentBlocks(ArrayRef<StoreOp> stores) {
-  if (stores.empty()) {
+static bool storeOperandsUseDifferentBlocks(ArrayRef<OpOperand *> operands) {
+  if (operands.empty()) {
     return false;
   }
-  Block *firstBlock = stores.front()->getBlock();
-  return llvm::any_of(stores.drop_front(), [&](StoreOp store) {
-    return store->getBlock() != firstBlock;
+  Block *firstBlock = operands.front()->getOwner()->getBlock();
+  return llvm::any_of(operands.drop_front(), [&](OpOperand *operand) {
+    return operand->getOwner()->getBlock() != firstBlock;
   });
 }
 
 static void
-addCrossBlockStoreRequirements(Operation *source,
+addMultiBlockStoreRequirements(Operation *source,
                                DFBMaterializationAnalysisState &state) {
-  if (source->getNumResults() != 1 ||
-      !isa<RankedTensorType>(source->getResult(0).getType())) {
-    return;
-  }
+  for (Value result : source->getResults()) {
+    if (!isa<RankedTensorType>(result.getType()) || getAttachedCB(result)) {
+      continue;
+    }
 
-  Value result = source->getResult(0);
-  if (getAttachedCB(result)) {
-    return;
-  }
+    SmallVector<OpOperand *> storeOperands = getDirectStoreOperands(result);
+    if (!storeOperandsUseDifferentBlocks(storeOperands)) {
+      continue;
+    }
 
-  SmallVector<StoreOp> stores = getDirectStoreUsers(result);
-  if (!storesUseDifferentBlocks(stores)) {
-    return;
-  }
-
-  for (StoreOp store : stores) {
-    IntermediateDFBEvidence evidence;
-    evidence.reason = IntermediateDFBReason::OutputStoresInDifferentBlocks;
-    evidence.inputs = {result};
-    evidence.observation = store;
-    addStoreRequirement(state, store, result, std::move(evidence));
+    for (OpOperand *storeOperand : storeOperands) {
+      IntermediateDFBEvidence evidence;
+      evidence.reason = IntermediateDFBReason::OutputStoresInDifferentBlocks;
+      evidence.inputs = {result};
+      evidence.observation = storeOperand->getOwner();
+      addStoreRequirement(state, *storeOperand, std::move(evidence));
+    }
   }
 }
 
@@ -219,6 +209,8 @@ static LogicalResult addCreationRequirements(
     Operation *source, const DFBValueLifetimeAnalysis &lifetimes,
     const DominanceInfo &dominanceInfo, DFBMaterializationAnalysisState &state,
     std::optional<PlanningDiagnostic> &diagnostic) {
+  addMultiBlockStoreRequirements(source, state);
+
   PlanningResult<OutputPublicationPlan, OutputPublicationRejection> outputs =
       buildOutputPublicationPlan(source);
   if (outputs.isInvalidIR()) {
@@ -226,10 +218,6 @@ static LogicalResult addCreationRequirements(
     return failure();
   }
   if (outputs.isRejected()) {
-    if (outputs.getRejection().kind ==
-        OutputPublicationRejectionKind::StoresInDifferentBlocks) {
-      addCrossBlockStoreRequirements(source, state);
-    }
     return success();
   }
   const OutputPublicationPlan &outputPlan = outputs.getPlan();
@@ -306,7 +294,8 @@ static LogicalResult addCreationRequirements(
         evidence.reason = IntermediateDFBReason::ComputeOpInputMayBeReleased;
         evidence.inputs = *inputs;
         evidence.observation = store;
-        addStoreRequirement(state, store, result, std::move(evidence));
+        addStoreRequirement(state, store.getTensorMutable(),
+                            std::move(evidence));
       }
     }
   }

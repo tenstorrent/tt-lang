@@ -234,10 +234,11 @@ def TTLInsertIntermediateDFBs
   let description = [{
     Walks ops implementing `DFBInputOpInterface` and checks whether the
     operands they declare as requiring DFB-attached values are satisfied.
-    It also records direct `ttl.store` operands whose computed source has
-    stores in multiple blocks. Those stores cannot share one output-publication
-    position during `ttl.compute` creation, so the source is first routed
-    through compiler DFB storage and each store reads the attached value.
+    It also records direct `ttl.store` operands whose computed source value is
+    stored in multiple blocks. Those stores cannot share one
+    output-publication position during `ttl.compute` creation, so that source
+    value is first routed through compiler DFB storage and each store reads the
+    attached value.
 
     When an operand comes from `ttl.compute`, the pass materializes it as an
     extra compute output backed by a compiler-allocated DFB. The pass creates
@@ -266,9 +267,9 @@ def TTLInsertIntermediateDFBs
     storage identity is treated as possibly released and may require an
     additional materialization. A fusion boundary at an independently formable
     producer materializes the exact consumer operand. Multiple reserve
-    transactions for one result, and direct stores in multiple blocks,
-    materialize all relevant uses through one shared compiler DFB. Application
-    begins only after the complete plan is valid.
+    transactions for one result, and direct stores of one value in multiple
+    blocks, materialize all relevant uses through one shared compiler DFB.
+    Application begins only after the complete plan is valid.
 
     All DFBs created by this pass are marked with `ttl.compiler_allocated`.
 

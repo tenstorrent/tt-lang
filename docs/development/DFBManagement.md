@@ -650,8 +650,8 @@ When one computed value has direct `ttl.store` users in multiple blocks, the
 stores cannot be represented by one `ComputeOp` output-publication position.
 `ttl-insert-intermediate-dfbs` materializes the value once and rewrites those
 stores to read the attached compiler DFB value. Final compute creation then
-sees one store for the original producer: the compiler DFB store inserted at
-the materialization point.
+sees one store for that producer result: the compiler DFB store inserted at the
+materialization point.
 
 For `ttl.compute` results, the attached value is created immediately after the
 producer push, so consumers originally dominated by the compute result remain
@@ -1154,13 +1154,14 @@ attribute to allocate L1 buffers at dispatch time.
 
 ## Limitations and Future Work
 
-`ComputeOp` creation requires one block containing all stores of a tensor result.
-Stores in different blocks have different execution conditions and cannot be
-represented by one unconditional compute. Supporting them requires a
-region-aware creation plan that proves per-region DFB occupancy balance; this
-is tracked by [#724](https://github.com/tenstorrent/tt-lang/issues/724). Until
-then, conditional routing of one tensor result to stores in different blocks
-is rejected with this reason instead of being misclassified as a non-DFB input.
+`ComputeOp` creation requires one block containing all stores of a tensor
+result. Stores in different blocks have different execution conditions and
+cannot be represented by one unconditional compute publication.
+`ttl-insert-intermediate-dfbs` handles this by materializing the tensor result
+before final compute creation, so each control-flow block stores from the same
+attached compiler DFB value. A future region-aware creation plan could avoid
+that intermediate when it proves per-region DFB occupancy balance; this is
+tracked by [#724](https://github.com/tenstorrent/tt-lang/issues/724).
 
 Cross-region fusion recomputes only side-effect-free producers. When the
 producer's block contains relocatable signposts or tile-observing debug prints,
