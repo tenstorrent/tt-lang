@@ -202,7 +202,8 @@ static bool checkAndCollectPop(CBPopOp popOp,
     return false;
   }
   ArrayRef<Operation *> owners =
-      pipeGraph.getDFBAcquireReleaseIndex(popOp).getReleaseIntervalOwners(popOp);
+      pipeGraph.getDFBAcquireReleaseIndex(popOp).getReleaseIntervalOwners(
+          popOp);
   if (owners.size() != 1 || !isa<CBWaitOp>(owners.front())) {
     debugRejectEndpoint(endpointFacts,
                         "pop is not owned by a matching receiver wait");
