@@ -3255,6 +3255,19 @@ LogicalResult buildPipeResourcePlan(
   return success();
 }
 
+static void forEachPipeResource(
+    PipeResourcePlan &pipeResourcePlan,
+    llvm::function_ref<void(Operation *, PipeResourceInfo &)> visit) {
+  for (auto &[operation, resource] : pipeResourcePlan.resources) {
+    visit(operation, resource);
+  }
+  for (auto &[operation, resources] : pipeResourcePlan.selectedResources) {
+    for (PipeResourceInfo &resource : resources) {
+      visit(operation, resource);
+    }
+  }
+}
+
 void finalizePipeTransportResources(const PipeTransportPlan &transportPlan,
                                     PipeResourcePlan &pipeResourcePlan) {
   int64_t transportScratchBytes = transportPlan.getSramScratchBytes();
@@ -3281,20 +3294,26 @@ void finalizePipeTransportResources(const PipeTransportPlan &transportPlan,
     const PipeTransportEndpoint &endpoint = stream.getEndpoints().front();
     std::optional<int64_t> dynamicSlotCounterIndex;
     if (stream.getSchedule() == PipeTransportSchedule::Overlapped) {
-      auto sendResource =
-          llvm::find_if(pipeResourcePlan.resources, [&](const auto &entry) {
-            return isa<PipeTransferSendOp>(entry.first) &&
-                   entry.second.transferNode == stream.getTransferNode();
-          });
-      assert(sendResource != pipeResourcePlan.resources.end() &&
-             "transport stream is missing sender resources");
-      if (sendResource->second.addressStorage.computedAddress) {
-        dynamicSlotCounterIndex = sendResource->second.addressStorage
+      Operation *senderOperation = nullptr;
+      PipeResourceInfo *senderResource = nullptr;
+      forEachPipeResource(pipeResourcePlan, [&](Operation *operation,
+                                                PipeResourceInfo &resource) {
+        if (!isa<PipeTransferSendOp>(operation) ||
+            resource.transferNode != stream.getTransferNode()) {
+          return;
+        }
+        assert((!senderResource || senderOperation == operation) &&
+               "pipe transfer has multiple sender operations");
+        senderOperation = operation;
+        senderResource = &resource;
+      });
+      assert(senderResource && "transport stream is missing sender resources");
+      if (senderResource->addressStorage.computedAddress) {
+        dynamicSlotCounterIndex = senderResource->addressStorage
                                       .computedAddress->dynamicSlotCounterIndex;
       }
       if (!dynamicSlotCounterIndex) {
-        FuncOp senderFunc =
-            sendResource->first->getParentOfType<func::FuncOp>();
+        FuncOp senderFunc = senderOperation->getParentOfType<func::FuncOp>();
         int64_t counterIndex = nextComputedCounterIndex[senderFunc]++;
         dynamicSlotCounterIndex = counterIndex;
         pipeResourcePlan.computedAddressCounterInitializations[senderFunc]
@@ -3320,29 +3339,31 @@ void finalizePipeTransportResources(const PipeTransportPlan &transportPlan,
     };
     PipeAddressStorageInfo scratchAddress =
         PipeAddressStorageInfo::transportScratch(computedAddress);
-    for (auto &[operation, resource] : pipeResourcePlan.resources) {
-      (void)operation;
-      if (resource.transferNode == stream.getTransferNode()) {
-        resource.addressStorage = scratchAddress;
-      }
-    }
+    forEachPipeResource(
+        pipeResourcePlan, [&](Operation *, PipeResourceInfo &resource) {
+          if (resource.transferNode == stream.getTransferNode()) {
+            resource.addressStorage = scratchAddress;
+          }
+        });
   }
 
   llvm::MapVector<FuncOp, llvm::SmallSetVector<int64_t, 4>> dfbIndicesBySender;
-  for (const auto &[operation, resource] : pipeResourcePlan.resources) {
-    auto sendOp = dyn_cast<PipeTransferSendOp>(operation);
-    if (!sendOp || !resource.addressStorage.usesComputedReceiverDFB()) {
-      continue;
-    }
-    assert(resource.addressStorage.computedAddress.has_value() &&
-           "computed receiver DFB is missing address information");
-    dfbIndicesBySender[sendOp->getParentOfType<FuncOp>()].insert(
-        resource.addressStorage.computedAddress->receiverDFBIndex);
-  }
+  forEachPipeResource(
+      pipeResourcePlan, [&](Operation *operation, PipeResourceInfo &resource) {
+        auto sendOp = dyn_cast<PipeTransferSendOp>(operation);
+        if (!sendOp || !resource.addressStorage.usesComputedReceiverDFB()) {
+          return;
+        }
+        assert(resource.addressStorage.computedAddress.has_value() &&
+               "computed receiver DFB is missing address information");
+        dfbIndicesBySender[sendOp->getParentOfType<FuncOp>()].insert(
+            resource.addressStorage.computedAddress->receiverDFBIndex);
+      });
 
   pipeResourcePlan.computedAddressDFBIndices.clear();
   llvm::DenseMap<PipeTransferNodeId, PipeAddressStorageInfo>
       addressStorageByTransfer;
+  llvm::DenseMap<PipeTransferNodeId, Operation *> senderByTransfer;
   for (auto &[senderFunc, dfbIndexSet] : dfbIndicesBySender) {
     SmallVector<int64_t> dfbIndices(dfbIndexSet.begin(), dfbIndexSet.end());
     llvm::sort(dfbIndices);
@@ -3352,10 +3373,11 @@ void finalizePipeTransportResources(const PipeTransportPlan &transportPlan,
         });
   }
 
-  for (auto &[operation, resource] : pipeResourcePlan.resources) {
+  forEachPipeResource(pipeResourcePlan, [&](Operation *operation,
+                                            PipeResourceInfo &resource) {
     auto sendOp = dyn_cast<PipeTransferSendOp>(operation);
     if (!sendOp) {
-      continue;
+      return;
     }
     if (resource.addressStorage.usesComputedReceiverDFB()) {
       PipeComputedAddressInfo &computedAddress =
@@ -3374,19 +3396,23 @@ void finalizePipeTransportResources(const PipeTransportPlan &transportPlan,
           getNumTensorFunctionArgs(senderFunc) +
           std::distance(dfbIndices.begin(), dfbIndexIt);
     }
-    auto [addressIt, inserted] = addressStorageByTransfer.try_emplace(
-        resource.transferNode, resource.addressStorage);
-    (void)addressIt;
-    assert(inserted && "pipe transfer has multiple sender resources");
-  }
+    auto [senderIt, inserted] =
+        senderByTransfer.try_emplace(resource.transferNode, operation);
+    assert((inserted || senderIt->second == operation) &&
+           "pipe transfer has multiple sender operations");
+    if (inserted) {
+      addressStorageByTransfer.try_emplace(resource.transferNode,
+                                           resource.addressStorage);
+    }
+  });
 
-  for (auto &[operation, resource] : pipeResourcePlan.resources) {
-    (void)operation;
-    auto addressIt = addressStorageByTransfer.find(resource.transferNode);
-    assert(addressIt != addressStorageByTransfer.end() &&
-           "pipe transfer is missing sender address storage");
-    resource.addressStorage = addressIt->second;
-  }
+  forEachPipeResource(
+      pipeResourcePlan, [&](Operation *, PipeResourceInfo &resource) {
+        auto addressIt = addressStorageByTransfer.find(resource.transferNode);
+        assert(addressIt != addressStorageByTransfer.end() &&
+               "pipe transfer is missing sender address storage");
+        resource.addressStorage = addressIt->second;
+      });
 
   llvm::DenseMap<PipeSourceKey, llvm::DenseMap<int64_t, int64_t>>
       compactAddressOffsets;
@@ -3411,18 +3437,10 @@ void finalizePipeTransportResources(const PipeTransportPlan &transportPlan,
     addressTableBytes =
         std::max(addressTableBytes, compactOffset + kPipeAddressWordBytes);
   };
-  for (auto &[operation, resource] : pipeResourcePlan.resources) {
-    (void)operation;
-    compactAddressTableResource(resource);
-  }
-  // Static and selected protocol operations share the same per-core address
-  // table, so selected record resources contribute to its scratch extent.
-  for (auto &[operation, resources] : pipeResourcePlan.selectedResources) {
-    (void)operation;
-    for (PipeResourceInfo &resource : resources) {
-      compactAddressTableResource(resource);
-    }
-  }
+  forEachPipeResource(pipeResourcePlan,
+                      [&](Operation *, PipeResourceInfo &resource) {
+                        compactAddressTableResource(resource);
+                      });
 
   int64_t alignedAddressTableBytes =
       addressTableBytes == 0
