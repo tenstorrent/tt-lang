@@ -347,19 +347,21 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 // CHECK: %[[READY0_PTR:.*]] = ttkernel.reinterpret_cast(%[[READY0_SEND]])
 // CHECK: ttkernel.experimental.semaphore_wait(%[[READY0_PTR]]
 // CHECK: ttkernel.noc_semaphore_set(%[[READY0_PTR]]
-// CHECK: %[[READY1_POST:.*]] = ttkernel.get_common_arg_val(%[[READY1_INDEX]])
-// CHECK: %[[READY1_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[READY1_POST]], {{.*}})
+// CHECK-DAG: %[[READY1_POST:.*]] = ttkernel.get_common_arg_val(%[[READY1_INDEX]])
+// CHECK-DAG: %[[READY1_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[READY1_POST]], {{.*}})
+// CHECK-DAG: %[[GLOBAL_COMPLETION_WAIT:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_COMPLETION_INDEX]])
+// CHECK-DAG: %[[GLOBAL_COMPLETION_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[GLOBAL_COMPLETION_WAIT]])
+// CHECK: scf.if
 // CHECK: ttkernel.noc_semaphore_inc(%[[READY1_NOC]]
-// CHECK: %[[GLOBAL_COMPLETION_WAIT:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_COMPLETION_INDEX]])
-// CHECK: %[[GLOBAL_COMPLETION_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[GLOBAL_COMPLETION_WAIT]])
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[GLOBAL_COMPLETION_PTR]]
 // CHECK: ttkernel.cb_pop_front
-// CHECK: %[[READY1_SEND:.*]] = ttkernel.get_common_arg_val(%[[READY1_INDEX]])
-// CHECK: %[[READY1_PTR:.*]] = ttkernel.reinterpret_cast(%[[READY1_SEND]])
-// CHECK: ttkernel.experimental.semaphore_wait(%[[READY1_PTR]]
-// CHECK: ttkernel.noc_semaphore_set(%[[READY1_PTR]]
+// CHECK-DAG: %[[READY1_SEND:.*]] = ttkernel.get_common_arg_val(%[[READY1_INDEX]])
+// CHECK-DAG: %[[READY1_PTR:.*]] = ttkernel.reinterpret_cast(%[[READY1_SEND]])
 // CHECK-DAG: %[[GLOBAL_COMPLETION_SEND:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_COMPLETION_INDEX]])
 // CHECK-DAG: %[[GLOBAL_COMPLETION_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[GLOBAL_COMPLETION_SEND]], {{.*}})
+// CHECK: scf.if
+// CHECK: ttkernel.experimental.semaphore_wait(%[[READY1_PTR]]
+// CHECK: ttkernel.noc_semaphore_set(%[[READY1_PTR]]
 // CHECK: ttkernel.noc_async_write
 // CHECK: ttkernel.noc_async_write_barrier
 // CHECK: ttkernel.noc_semaphore_inc(%[[GLOBAL_COMPLETION_NOC]]
