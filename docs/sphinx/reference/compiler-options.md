@@ -22,6 +22,8 @@ python my_kernel.py --no-ttl-maximize-dst
 | `--ttl-reuse-user-dfbs` / `--no-ttl-reuse-user-dfbs` | enabled | Reuse physical DFB indices when concurrent-kernel liveness proves that compatible logical DFB lifetimes do not overlap. Disabling retains user-declared physical indices. |
 | `--ttl-pipe-computed-addresses` / `--no-ttl-pipe-computed-addresses` | enabled | Use computed receiver DFB addresses for eligible PipeNet transfers. When disabled, transfers use receiver-published destination addresses; multicast still requires proven equal runtime receiver addresses. |
 | `--ttl-pipe-capacity-sync` / `--no-ttl-pipe-capacity-sync` | enabled | Use capacity-counter synchronization when the receiver wait and pop execute on the receiver NOC thread and the computed-address transfer passes the DFB ownership and count proofs. When disabled, computed-address transfers use receiver-post synchronization. |
+| `--ttl-pipe-batch-tiles N` | `0` (auto) | Limit the logical transfers in one PipeTransport group. `0` selects automatically and `1` disables grouping. |
+| `--ttl-l1-budget N` | target-dependent | Override the L1 allocation budget used by DFB validation and PipeTransport selection. |
 | `--ttl-specialize-cores` / `--no-ttl-specialize-cores` | disabled | Clone each TTKernel function whose control flow branches on a core coordinate once per launch coordinate (`ttkernel-specialize-cores`), replacing `my_logical_x_` / `my_logical_y_` with constants and tagging clones with `ttl.core_coord` for per-core dispatch. Opt-in. |
 
 ### Other Ways to Set These
@@ -122,6 +124,8 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 | `reuse-user-dfbs` | bool | `true` | Reuse physical DFB indices for compatible logical DFBs with proven non-overlapping concurrent lifetimes. |
 | `pipe-computed-addresses` | bool | `true` | Use computed receiver DFB addresses for eligible PipeNet transfers. When disabled, transfers use receiver-published destination addresses; multicast still requires proven equal runtime receiver addresses. |
 | `pipe-capacity-sync` | bool | `true` | Use capacity-counter synchronization when the receiver wait and pop execute on the receiver NOC thread and the computed-address transfer passes the DFB ownership and count proofs. When disabled, computed-address transfers use receiver-post synchronization. |
+| `pipe-batch-tiles` | int64_t | `0` (auto) | Limit logical transfers per PipeTransport group. `0` selects automatically and `1` disables grouping. |
+| `l1-budget-override` | uint32_t | `0` (target default) | Override the L1 allocation budget used by DFB validation and PipeTransport selection. |
 | `specialize-cores` | bool | `false` | Clone TTKernel functions that branch on a core coordinate once per launch coordinate (`ttkernel-specialize-cores`), then run `canonicalize` / `cse`. Maps from `--ttl-specialize-cores`. |
 | `lower-to-emitc` | bool | `false` | Run the TTKernel-to-EmitC backend (produces C++ source). |
 
@@ -137,6 +141,7 @@ The pipeline runs these passes in order:
 - `convert-ttl-to-compute` -- lower TTL elementwise tensor ops to `ttl.compute` with tile ops
 - `ttl-insert-cb-sync` -- insert missing DFB synchronization operations
 - `ttl-verify-pipenet-guards`, then `ttl-verify-pipenet-schedule` -- verify PipeNet launch domains and synchronization schedules while logical DFB identities remain distinct
+- `ttl-form-pipe-transports` -- group eligible repeated PipeNet transfers and select bounded receiver storage
 - `ttl-coalesce-dfb-acquires` -- coalesce compatible DFB acquisitions
 - `ttl-finalize-dfb-indices` -- assign logical DFBs to physical indices, validate capacity, and emit runtime metadata; `reuse-user-dfbs` controls user-DFB reuse
 - `ttl-set-compute-kernel-config` -- set `fp32_dest_acc_en` / `dst_full_sync_en` defaults
@@ -225,6 +230,23 @@ Partition `ttl.compute` into DST-sized subblocks.
 
 ```bash
 ttlang-opt input.mlir -p 'func.func(ttl-subblock-compute-for-dst{subblock-sync=true})'
+```
+
+#### `ttl-form-pipe-transports`
+
+Group eligible repeated PipeNet transfers and select bounded receiver storage.
+Later PipeTransport planning replaces proven-private grouped DFB lifecycles
+with transport-owned scratch; scalar residuals retain the original lifecycle.
+Selection accounts for DFB allocation, a conservative receiver-published
+address table, and transport scratch.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `group-size` | int64_t | `0` (auto) | Limit logical transfers per group. `0` selects automatically and `1` disables grouping. |
+| `l1-budget-override` | uint32_t | `0` (target default) | Override the combined DFB and pipe scratch budget used during grouping selection. |
+
+```bash
+ttlang-opt input.mlir --ttl-form-pipe-transports='group-size=8'
 ```
 
 #### `convert-ttl-to-ttkernel`

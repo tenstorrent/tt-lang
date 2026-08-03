@@ -105,6 +105,49 @@ def TTLCoalesceDFBAcquires
   ];
 }
 
+def TTLFormPipeTransports
+    : Pass<"ttl-form-pipe-transports", "::mlir::ModuleOp"> {
+  let summary = "Group repeated PipeNet transfers";
+  let description = [{
+    Groups repeated PipeNet transfers into multi-block transport operations.
+    The pass runs after DFB synchronization is explicit. It expands high-level
+    pipe copies, proves that one static `scf.for` contains the complete source
+    and receiver protocol, and strip-mines that loop into a grouped loop plus a
+    scalar residual loop.
+
+    A grouped loop advances its induction variable by `R`, marks each
+    `ttl.pipe_transfer.create` with `block_span = R`, and widens DFB lifecycle
+    operations and contiguous tensor copies to `R` consecutive original DFB
+    blocks. The original DFB block shape remains unchanged. The pass changes
+    DFB block counts only after proving that every SSA use belongs to the
+    transport. Later PipeTransport planning replaces each proven-private
+    grouped lifecycle with transport-owned scratch. Scalar residuals continue
+    to use the original DFB lifecycle.
+
+    `group-size = 0` prefers a bounded schedule with at least two receiver
+    groups, then minimizes completion groups, capacity waits, and L1 allocation
+    bytes. Selection counts the widened intermediate DFB types, a conservative
+    receiver-published address table, and the required transport scratch
+    against the same L1 budget used by `ttl-validate-cb-budget`.
+    `group-size = 1` disables grouping. A larger value is an upper bound; the
+    pass selects a smaller group when required by the loop trip count or L1
+    capacity. Ineligible loops retain scalar transfer IR.
+  }];
+
+  let options = [
+    Option<"groupSize", "group-size", "int64_t", "0",
+           "Maximum logical transfers per group. 0 selects automatically; "
+           "1 disables grouping.">,
+    Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
+           "Override the L1 DFB budget in bytes for transport selection.">
+  ];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::scf::SCFDialect"
+  ];
+}
+
 def TTLInsertCopyWait
     : Pass<"ttl-insert-copy-wait", "::mlir::func::FuncOp"> {
   let summary = "Insert missing ttl.wait for unmatched ttl.copy ops";

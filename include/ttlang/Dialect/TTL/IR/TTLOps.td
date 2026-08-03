@@ -136,7 +136,13 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
 
     Exactly one operand must be a circular buffer (`!ttl.cb`). The other operand
     must be a ranked tensor (the result of a tensor slice) with TTL layout
-    encoding (transfers all tiles via loop).
+    encoding. The copy transfers the complete tensor in row-major tile order.
+
+    The tensor shape normally equals one dataflow buffer block. A copy may span
+    consecutive blocks by extending the tensor's innermost dimension by an
+    integer multiple of the block's innermost dimension. All outer dimensions
+    remain equal to the block shape. The span must not exceed the dataflow
+    buffer's block count.
 
     TODO(ttl): Add an optional TRID attribute (range 0..15) when TRID-specific
     TTKernel NOC ops are available. Issue: #87.
@@ -679,11 +685,24 @@ def TTL_PipeTransferCreateOp : TTL_Op<"pipe_transfer.create", [Pure]> {
     The sender and receiver callbacks may use different references because each
     constructs its pipe value independently. The attributes record the common
     point-to-point or collective contract.
+
+    `block_span` is the number of consecutive original DFB blocks delivered by
+    one transfer. Scalar transfers use the default span of one. Grouping
+    transformations increase the span while preserving the original DFB block
+    geometry.
+
+    `destination_group_depth` is the number of complete transfers that the
+    transport schedule may leave resident in each receiver DFB. The default
+    depth of one preserves lockstep transfer semantics. A greater depth permits
+    multiple grouped transfers to occupy distinct receiver slots.
   }];
   let arguments = (ins
     TTL_Pipe:$pipe,
     TTL_PipeTransferKindAttr:$kind,
-    I64Attr:$expectedReceivers
+    I64Attr:$expectedReceivers,
+    DefaultValuedAttr<ConfinedAttr<I64Attr, [IntPositive]>, "1">:$block_span,
+    DefaultValuedAttr<ConfinedAttr<I64Attr, [IntPositive]>, "1">:
+        $destination_group_depth
   );
   let results = (outs TTL_PipeTransfer:$transfer);
   let assemblyFormat = "$pipe attr-dict `:` type($pipe) `->` type($transfer)";
@@ -1517,7 +1536,7 @@ def TTL_CBPushOp : TTL_Op<"cb_push", [MemoryEffects<[MemWrite]>]> {
 }
 
 def TTL_CBWaitOp : TTL_Op<"cb_wait",
-    [MemoryEffects<[MemRead]>, DeclareOpInterfaceMethods<ViewLikeOpInterface>]> {
+    [DeclareOpInterfaceMethods<ViewLikeOpInterface>]> {
   let summary = "Wait for pages to be available in the circular buffer";
   let description = [{
     `ttl.cb_wait` blocks until pages are available in the circular buffer for
@@ -1525,6 +1544,8 @@ def TTL_CBWaitOp : TTL_Op<"cb_wait",
 
     This operation is used by consumer threads (typically compute kernels or
     data movement kernels writing to DRAM) to wait for data from producers.
+    The synchronization remains observable when the returned view has no SSA
+    uses.
 
     The number of pages defaults to the CB's elements per block, but can be
     overridden via the optional `num_tiles` attribute when the wait spans
