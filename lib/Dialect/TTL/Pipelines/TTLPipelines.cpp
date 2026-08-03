@@ -28,7 +28,11 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     pm.addNestedPass<func::FuncOp>(createTTLInsertIntermediateDFBs(dfbOpts));
   }
   pm.addNestedPass<func::FuncOp>(createTTLConvertTTLToCompute());
-  buildTTLAutoSyncPipeline(pm.nest<func::FuncOp>());
+  pm.addNestedPass<func::FuncOp>(createTTLInsertCBSync());
+  // Verify the complete high-level schedule while logical DFB identities are
+  // still distinct and before later transformations rewrite pipe operations.
+  buildTTLVerifyPipeNetPipeline(pm);
+  pm.addNestedPass<func::FuncOp>(createTTLCoalesceDFBAcquires());
   {
     TTLFinalizeDFBIndicesOptions finalizeOptions;
     finalizeOptions.reuseUserDFBs = options.reuseUserDFBs;
@@ -58,13 +62,14 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     pm.addNestedPass<func::FuncOp>(createTTLScheduleOperations());
   }
   pm.addNestedPass<func::FuncOp>(createTTLAnnotateCBAssociations());
-  pm.addPass(createTTLVerifyPipeNetGuards());
   pm.addPass(createTTLVerifyDFBSPSC());
   pm.addPass(createTTLErasePipeNetScopes());
   pm.addPass(createTTLValidateCBBudget());
   {
     TTLConvertTTLToTTKernelOptions ttkOpts;
     ttkOpts.reduceFullFp32 = options.reduceFullFp32;
+    ttkOpts.pipeComputedAddresses = options.pipeComputedAddresses;
+    ttkOpts.pipeCapacitySync = options.pipeCapacitySync;
     pm.addPass(createTTLConvertTTLToTTKernel(ttkOpts));
   }
   pm.addPass(createTTKernelInsertInits());
@@ -96,6 +101,11 @@ void buildTTLTensorRecurrencePipeline(OpPassManager &pm) {
   pm.addPass(createTTLMaterializeLoopState());
 }
 
+void buildTTLVerifyPipeNetPipeline(OpPassManager &pm) {
+  pm.addPass(createTTLVerifyPipeNetGuards());
+  pm.addPass(createTTLVerifyPipeNetSchedule());
+}
+
 void buildTTLAutoSyncPipeline(OpPassManager &pm) {
   pm.addPass(createTTLInsertCBSync());
   pm.addPass(createTTLCoalesceDFBAcquires());
@@ -107,6 +117,10 @@ void registerTTLPipelines() {
       "Lower TTL to TTKernel, run cleanup canonicalization/CSE, and optionally "
       "lower TTKernel to EmitC.",
       createTTLToTTKernelPipeline);
+  PassPipelineRegistration<>(
+      "ttl-verify-pipenet",
+      "Verify PipeNet launch domains and synchronization schedules.",
+      buildTTLVerifyPipeNetPipeline);
   PassPipelineRegistration<>("ttl-auto-sync",
                              "Insert auto pop/push and coalesce DFB acquires.",
                              buildTTLAutoSyncPipeline);

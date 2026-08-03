@@ -9,8 +9,12 @@ add_mlir_dialect_library(TTLangTTLTransforms
   DFBMaterialization.cpp
   DFBConcurrentKernelLivenessAnalysis.cpp
   DFBPhysicalAllocationPlan.cpp
+  PipeCapacityAnalysis.cpp
+  PipeCounter.cpp
   PipeGraph.cpp
   PipeLowering.cpp
+  PipePlanning.cpp
+  PipeTransferAnalysis.cpp
   ConvertTTLToCompute.cpp
   ConvertTTLComputeToSCF.cpp
   ConvertTTLTileOpsToTTKernel.cpp

@@ -1,35 +1,16 @@
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics -ttl-verify-pipenet-guards
 
-// Summary: Negative tests for finalized DFB identity preconditions.
+// Summary: Negative tests for logical DFB identity preconditions.
 
-// PipeNet verification requires the allocation metadata emitted by DFB
-// finalization, even when the frontend already assigned a logical ID.
+// A user-declared DFB must contain its module-wide logical ID before physical
+// allocation.
 
-// expected-error @below {{`ttl-verify-pipenet-guards` requires finalized DFB allocation metadata; run `ttl-finalize-dfb-indices` first}}
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
-  func.func @missing_finalization()
-      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
-        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
-        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    func.return
-  }
-}
-
-// -----
-
-// A finalized DFB declaration must contain its module-wide logical ID.
-
-module attributes {
-  ttl.dfb_allocations = [],
-  ttl.launch_grid = [2 : i64, 1 : i64]
-} {
   func.func @missing_logical_id()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    // expected-error @below {{`ttl-verify-pipenet-guards` requires every `ttl.bind_cb` to have `dfb_id` after finalization}}
+    // expected-error @below {{`ttl-verify-pipenet-guards` requires valid logical DFB identities: user-declared DFB requires dfb_id before physical allocation}}
     %dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     func.return
@@ -38,18 +19,15 @@ module attributes {
 
 // -----
 
-// A finalized lifecycle operand must resolve to a DFB declaration.
+// A DFB lifecycle operand must resolve to a DFB declaration.
 
-module attributes {
-  ttl.dfb_allocations = [],
-  ttl.launch_grid = [2 : i64, 1 : i64]
-} {
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @unresolved_dfb_operand(
       %dfb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    // expected-error @below {{`ttl-verify-pipenet-guards` requires every DFB lifecycle operand to resolve to `ttl.bind_cb` with `dfb_id` after finalization}}
+    // expected-error @below {{requires a DFB operand defined by `ttl.bind_cb`}}
     %block = ttl.cb_wait %dfb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>

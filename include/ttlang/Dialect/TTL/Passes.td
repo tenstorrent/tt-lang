@@ -239,23 +239,36 @@ def TTLMaterializeLoopState
 
 def TTLConvertTTLToTTKernel
     : Pass<"convert-ttl-to-ttkernel", "::mlir::ModuleOp"> {
-  let summary = "Lower TTL DMA ops to TTKernel using global barriers (temporary)";
+  let summary = "Lower TTL data movement and PipeNet operations to TTKernel";
   let description = [{
-    Converts TTL DMA ops to TTKernel noc ops. Uses global barriers until TRID
-    barriers are available. Covers bind_cb, copy, wait MVP path.
-
-    TODO(ttl): Refine lowering to emit real CB handles and proper NOC addresses.
-    Issue: #77 (umbrella issue with subtasks #78-#89).
+    Converts TTL DFB, copy, wait, and PipeNet operations to TTKernel DFB, NoC,
+    and semaphore operations. PipeNet lowering selects receiver-published or
+    computed destination addresses and receiver-post or capacity-counter
+    synchronization according to the pass options and transfer eligibility.
   }];
 
   let options = [
     Option<"reduceFullFp32", "reduce-full-fp32", "bool", "true",
-           "Enable FP32 accumulation for reduce operations.">
+           "Enable FP32 accumulation for reduce operations.">,
+    Option<"pipeComputedAddresses", "pipe-computed-addresses",
+           "bool", "true",
+           "Use computed receiver DFB addresses for eligible pipe transfers. "
+           "When disabled, pipe transfers use receiver-published destination "
+           "addresses; multicast still requires proven equal runtime "
+           "receiver addresses.">,
+    Option<"pipeCapacitySync", "pipe-capacity-sync",
+           "bool", "true",
+           "Use capacity-counter synchronization when the receiver wait and "
+           "pop execute on the receiver NOC thread and the computed-address "
+           "transfer passes the DFB ownership and count proofs. "
+           "When disabled, computed-address transfers use receiver-post "
+           "synchronization.">
   ];
 
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
     "::mlir::scf::SCFDialect",
+    "::mlir::tensor::TensorDialect",
     "::mlir::tt::ttkernel::TTKernelDialect"
   ];
 }
@@ -740,25 +753,70 @@ def TTLVerifyPipeNetGuards
     point's domain is contained in the pipe's source or destination domain;
     out-of-domain uses, scopes broader than their declared role, unmatched
     `ttl.cb_wait`s, and unanalyzable coord-dependent predicates are reported.
-    Each diagnostic carries an example offending coordinate, the contributing
+    Each diagnostic includes an example offending coordinate, the contributing
     PipeNet(s), and a suggested guard.
-
-    Same-thread pipe schedule diagnostics are emitted only when role and DFB
-    domain checks have succeeded, so schedule-cycle reports are not mixed with
-    earlier guard failures.
 
     The pass expects one module per `@ttl.operation`, a well-formed
     `ttl.launch_grid` (i64 array of length 2 with positive entries), static
-    `I64Attr` coordinates on `ttl.create_pipe`, and the
-    `ttl.dfb_allocations` metadata emitted by `ttl-finalize-dfb-indices`.
-    `ttl-annotate-cb-associations` must also have run.
+    `I64Attr` coordinates on `ttl.create_pipe`, explicit DFB synchronization
+    inserted by `ttl-insert-cb-sync`, and valid module-wide logical DFB
+    identities. User-declared `ttl.bind_cb` operations must carry `dfb_id`;
+    compiler-created declarations receive deterministic identities from the
+    logical identity analysis.
   }];
+}
 
-  let dependentDialects = [
-    "::mlir::arith::ArithDialect",
-    "::mlir::scf::SCFDialect",
-    "::mlir::tt::ttl::TTLDialect"
-  ];
+def TTLVerifyPipeNetSchedule
+    : Pass<"ttl-verify-pipenet-schedule", "::mlir::ModuleOp"> {
+  let summary = "Verify PipeNet synchronization correspondence and ordering";
+  let description = [{
+    Verifies the synchronization protocol formed by pipe sends, receiver posts,
+    and receiver waits. A send waits until every destination has posted a
+    dataflow buffer reservation, so each send requires one corresponding post
+    at every destination. A receiver wait observes the send associated with
+    the exact receive handle it consumes. Repeated waits on one handle observe
+    the same completed transfer and do not require additional sends. Posting a
+    reservation does not wait for payload, and a sender does not wait for the
+    receiver to consume the payload. Receiver posts may therefore exist
+    without receiver waits, and sends do not require receiver waits. When a
+    pipe has sends, each destination must have the same number of receiver
+    posts as sends. A pipe with no sends or waits may contain unused receiver
+    posts.
+
+    Receiver-published addressing supports one outstanding post for each pipe
+    and destination. Each repetition must contain its corresponding send or an
+    exact receive wait that proves the send completed. Before a distinct post
+    executes, the graph must prove that the preceding send has completed or
+    that the posts are mutually exclusive.
+
+    Static event definitions are paired by program order for each pipe
+    endpoint. Each pair must have equal dynamic execution counts and equivalent
+    enclosing conditions. Alternative event definitions under runtime control
+    flow remain distinct unless one is proven not to execute. Direct calls to
+    helper functions are expanded at each call site so caller order and
+    invocation multiplicity are preserved. Every region containing pipe events
+    directly or through helper calls must have one block. Functions containing
+    pipe events must be kernel-thread entry points or be reachable from one
+    through direct calls. Definitions of one event kind for a pipe endpoint
+    must belong to one kernel-thread function because independent kernel
+    threads have no program order. Each event must have an exact launch-node
+    domain. Multi-block regions that contribute pipe events, unknown event
+    domains, recursive calls containing pipe events, and schedules with more
+    than 4096 expanded event occurrences at one launch node are rejected
+    because the verifier cannot construct a correct bounded event graph.
+
+    The pass also constructs the same-thread wait-for graph. Program-order
+    edges connect consecutive events on one launched node. Protocol edges
+    connect each receiver post to its send and that send to every wait on the
+    post's exact receive handle.
+    A cycle means no event in the cycle can execute and is rejected.
+
+    The pass expects one module per `@ttl.operation`, a well-formed
+    `ttl.launch_grid` attribute, and static `ttl.create_pipe` endpoints within
+    that launch grid.
+    `ttl-verify-pipenet-guards` must run first in the compiler pipeline so
+    invalid launch domains are reported separately.
+  }];
 }
 
 def TTLVerifyTransferProvenance
