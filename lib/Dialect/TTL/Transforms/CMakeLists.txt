@@ -11,8 +11,15 @@ add_mlir_dialect_library(TTLangTTLTransforms
   ConvertTTLToCompute.cpp
   ConvertTTLToTTKernel.cpp
   DFBAcquireReleaseAnalysis.cpp
+  DFBAllocation.cpp
   DFBValueLifetimeAnalysis.cpp
   DFBMaterialization.cpp
+  PipeCapacityAnalysis.cpp
+  PipeCounter.cpp
+  PipePlanning.cpp
+  PipeTransferExpansion.cpp
+  PipeTransportDFBAnalysis.cpp
+  PipeTransportPlan.cpp
   LowerDPrintToEmitC.cpp
   LaunchNodeDomainAnalysis.cpp
 
@@ -28,6 +35,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLErasePipeNetScopes.cpp
   TTLFinalizeDFBIndices.cpp
   TTLFormAccumulationScopes.cpp
+  TTLFormPipeTransports.cpp
   TTLInsertAccumulationScopes.cpp
   TTLInsertCBSync.cpp
   TTLInsertCopyWait.cpp
@@ -62,6 +70,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   MLIRPass
   MLIRTensorDialect
   MLIRTilingInterface
+  MLIRTransforms
   MLIRTTKernelDialect
   MLIRTTLDialect
   TTLangAnalysis

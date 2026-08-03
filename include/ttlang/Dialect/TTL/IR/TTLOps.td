@@ -136,7 +136,13 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
 
     Exactly one operand must be a circular buffer (`!ttl.cb`). The other operand
     must be a ranked tensor (the result of a tensor slice) with TTL layout
-    encoding (transfers all tiles via loop).
+    encoding. The copy transfers the complete tensor in row-major tile order.
+
+    The tensor shape normally equals one dataflow buffer block. A copy may span
+    consecutive blocks by extending the tensor's innermost dimension by an
+    integer multiple of the block's innermost dimension. All outer dimensions
+    remain equal to the block shape. The span must not exceed the dataflow
+    buffer's block count.
 
     TODO(ttl): Add an optional TRID attribute (range 0..15) when TRID-specific
     TTKernel NOC ops are available. Issue: #87.
@@ -672,17 +678,31 @@ def TTL_IfDstOp : TTL_Op<"if_dst",
 }
 
 def TTL_PipeTransferCreateOp : TTL_Op<"pipe_transfer.create", [Pure]> {
-  let summary = "Create an internal pipe transfer";
+  let summary = "Create a pipe transfer reference";
   let description = [{
-    Creates the internal transfer object for one logical pipe. The transfer
-    records the receiver-posted contract before synchronization resources are
-    assigned. A point-to-point transfer has one receiver; a collective transfer
-    has a receiver set participating in one transfer contract.
+    Creates a reference used by a pipe send or receiver post. A complete
+    transfer consists of one send and one corresponding post for each receiver.
+    The sender and receiver callbacks may use different references because each
+    constructs its pipe value independently. The attributes record the common
+    point-to-point or collective contract.
+
+    `block_span` is the number of consecutive original DFB blocks delivered by
+    one transfer. Scalar transfers use the default span of one. Grouping
+    transformations increase the span while preserving the original DFB block
+    geometry.
+
+    `destination_group_depth` is the number of complete transfers that the
+    transport schedule may leave resident in each receiver DFB. The default
+    depth of one preserves lockstep transfer semantics. A greater depth permits
+    multiple grouped transfers to occupy distinct receiver slots.
   }];
   let arguments = (ins
     TTL_Pipe:$pipe,
     TTL_PipeTransferKindAttr:$kind,
-    I64Attr:$expectedReceivers
+    I64Attr:$expectedReceivers,
+    DefaultValuedAttr<ConfinedAttr<I64Attr, [IntPositive]>, "1">:$block_span,
+    DefaultValuedAttr<ConfinedAttr<I64Attr, [IntPositive]>, "1">:
+        $destination_group_depth
   );
   let results = (outs TTL_PipeTransfer:$transfer);
   let assemblyFormat = "$pipe attr-dict `:` type($pipe) `->` type($transfer)";
@@ -691,11 +711,12 @@ def TTL_PipeTransferCreateOp : TTL_Op<"pipe_transfer.create", [Pure]> {
 
 def TTL_PipeTransferPostOp : TTL_Op<"pipe_transfer.post",
     [MemoryEffects<[MemRead, MemWrite]>]> {
-  let summary = "Publish a pipe receive destination";
+  let summary = "Post a pipe receive destination";
   let description = [{
-    Publishes the receiver-owned destination DFB slot address for a pipe
-    transfer. The operation contributes to the transfer's receiver-ready count
-    and returns the token that represents receiver-side completion.
+    Registers the receiver-owned destination DFB slot for a pipe transfer and
+    returns the token that represents receiver-side completion. The selected
+    address and synchronization protocols determine whether lowering publishes
+    the address or signals sender readiness.
   }];
   let arguments = (ins
     TTL_PipeTransfer:$transfer,
@@ -709,10 +730,10 @@ def TTL_PipeTransferSendOp : TTL_Op<"pipe_transfer.send",
     [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Send a pipe transfer payload";
   let description = [{
-    Waits until the receiver-publication condition is satisfied, then writes the
-    source DFB payload to the receiver-owned destination storage and signals
-    receiver completion. The returned write handle preserves the existing
-    `ttl.wait` ordering contract for send-side code.
+    Waits until the selected synchronization condition is satisfied, then
+    writes the source DFB payload to the receiver-owned destination storage and
+    signals receiver completion. The returned write handle preserves the
+    existing `ttl.wait` ordering contract for send-side code.
   }];
   let arguments = (ins
     TTL_PipeTransfer:$transfer,
@@ -740,17 +761,18 @@ def TTL_PipeTransferWaitOp : TTL_Op<"pipe_transfer.wait",
 def TTL_PipeNetScopeOp : TTL_Op<"pipenet_scope",
     [SingleBlockImplicitTerminator<"YieldOp">,
      DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
-  let summary = "Mark a DFB region that depends on PipeNet roles";
+  let summary = "Mark a DFB region restricted to PipeNet endpoints";
   let description = [{
     Marks a region whose dataflow-buffer acquire/release sequence must execute
-    only on nodes with specific PipeNet roles. The operation does not change
-    runtime behavior; it records the role contract for the enclosed region.
+    only on specified source or destination nodes of a PipeNet. The operation
+    does not change runtime behavior; it records these execution requirements
+    for the enclosed region.
 
-    Role requirements are stored in attributes:
+    The requirements are stored in parallel arrays:
 
     - `ttl.pipe_net_ids`: array of PipeNet ids.
-    - `ttl.pipe_net_roles`: array of role ids, where 0 is source and 1 is
-      destination.
+    - `ttl.pipe_net_roles`: array of endpoint selectors, where 0 is source and
+      1 is destination.
   }];
   let regions = (region SizedRegion<1>:$body);
   let assemblyFormat = "attr-dict-with-keyword $body";
@@ -1514,7 +1536,7 @@ def TTL_CBPushOp : TTL_Op<"cb_push", [MemoryEffects<[MemWrite]>]> {
 }
 
 def TTL_CBWaitOp : TTL_Op<"cb_wait",
-    [MemoryEffects<[MemRead]>, DeclareOpInterfaceMethods<ViewLikeOpInterface>]> {
+    [DeclareOpInterfaceMethods<ViewLikeOpInterface>]> {
   let summary = "Wait for pages to be available in the circular buffer";
   let description = [{
     `ttl.cb_wait` blocks until pages are available in the circular buffer for
@@ -1522,6 +1544,8 @@ def TTL_CBWaitOp : TTL_Op<"cb_wait",
 
     This operation is used by consumer threads (typically compute kernels or
     data movement kernels writing to DRAM) to wait for data from producers.
+    The synchronization remains observable when the returned view has no SSA
+    uses.
 
     The number of pages defaults to the CB's elements per block, but can be
     overridden via the optional `num_tiles` attribute when the wait spans

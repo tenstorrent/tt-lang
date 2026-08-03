@@ -7,6 +7,7 @@
 
 #include "mlir/Pass/PassOptions.h"
 
+#include <cstdint>
 #include <string>
 
 namespace mlir {
@@ -68,6 +69,27 @@ struct TTLToTTKernelPipelineOptions
       llvm::cl::desc("Reuse physical DFB indices when concurrent-kernel "
                      "liveness proves that logical lifetimes do not overlap."),
       llvm::cl::init(true)};
+  Option<bool> pipeComputedAddresses{
+      *this, "pipe-computed-addresses",
+      llvm::cl::desc("Use computed receiver DFB addresses for eligible pipe "
+                     "transfers."),
+      llvm::cl::init(true)};
+  Option<bool> pipeCapacitySync{
+      *this, "pipe-capacity-sync",
+      llvm::cl::desc("Use capacity-counter synchronization for eligible pipe "
+                     "transfers. When disabled, computed-address transfers "
+                     "use receiver-post synchronization."),
+      llvm::cl::init(true)};
+  Option<int64_t> pipeBatchTiles{
+      *this, "pipe-batch-tiles",
+      llvm::cl::desc("Limit logical transfers per PipeTransport group. "
+                     "Zero selects automatically; one disables grouping."),
+      llvm::cl::init(0)};
+  Option<uint32_t> l1BudgetOverride{
+      *this, "l1-budget-override",
+      llvm::cl::desc("Override the L1 allocation budget used by DFB validation "
+                     "and PipeTransport selection."),
+      llvm::cl::init(0)};
   Option<bool> specializeCores{
       *this, "specialize-cores",
       llvm::cl::desc(

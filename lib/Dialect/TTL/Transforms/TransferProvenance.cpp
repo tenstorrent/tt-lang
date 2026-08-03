@@ -48,6 +48,9 @@ findPipeTransferPostsForToken(ValueOriginAnalysis &analysis, Value token) {
     }
     posts.push_back(postOp);
   }
+  if (posts.empty()) {
+    return failure();
+  }
   return posts;
 }
 
@@ -154,8 +157,7 @@ LogicalResult verifyPipeWait(PipeTransferWaitOp op,
            << "requires every possible token value to derive from a "
               "ttl.pipe_transfer.post in the same PipeNet";
   }
-  if (!maybePosts->empty() &&
-      failed(findPipeTransferCreateForPosts(analysis, *maybePosts))) {
+  if (failed(findPipeTransferCreateForPosts(analysis, *maybePosts))) {
     return op.emitOpError()
            << "requires all possible receive posts to derive from one "
               "ttl.pipe_transfer.create";

@@ -139,6 +139,12 @@ Value getDFBAcquireDFB(Operation *op);
 /// Returns the DFB operand of a `ttl.cb_push` or `ttl.cb_pop`.
 Value getDFBReleaseDFB(Operation *op);
 
+/// Returns the number of whole DFB blocks acquired or released by `op`.
+///
+/// Returns `std::nullopt` when the transaction size is not a positive multiple
+/// of the DFB block size.
+std::optional<int64_t> getDFBTransactionBlockCount(Operation *op);
+
 /// Collects DFB lifecycle operations from `func` in walk order.
 void collectDFBAcquireReleaseOps(func::FuncOp func,
                                  SmallVectorImpl<Operation *> &reserves,
@@ -202,6 +208,13 @@ public:
   /// Returns the ownership record for `release`.
   const DFBReleaseOwnership &getReleaseOwnership(Operation *release) const;
 
+  /// Returns acquisition intervals whose operation range contains `release`.
+  ///
+  /// This structural relation is independent of FIFO tile ownership. Clients
+  /// that require one interval must verify that the returned range has one
+  /// element.
+  ArrayRef<Operation *> getReleaseIntervalOwners(Operation *release) const;
+
   /// Returns releases in deterministic kernel walk order.
   ArrayRef<Operation *> getReleases() const { return releaseOrder; }
 
@@ -218,6 +231,7 @@ private:
   SmallVector<Operation *> releaseOrder;
   llvm::DenseMap<Operation *, DFBTransactionRecord> transactions;
   llvm::DenseMap<Operation *, DFBReleaseOwnership> releaseOwnership;
+  llvm::DenseMap<Operation *, SmallVector<Operation *>> releaseIntervalOwners;
 };
 
 } // namespace mlir::tt::ttl
