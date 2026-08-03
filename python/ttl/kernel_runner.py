@@ -131,6 +131,13 @@ class ProgramRuntimeResources:
         default_factory=dict
     )
     lifetimes: List[Any] = field(default_factory=list)
+    # Optional exact replacement for the whole-grid descriptors normally
+    # synthesized from ``cb_configs``.  This is deliberately a runtime-resource
+    # escape hatch: opaque fused programs can describe one CB id with multiple
+    # disjoint per-core descriptors while the compiler's static CB allocation
+    # model remains conservative.  ``run_kernel_on_device`` validates the
+    # replacement before it can bypass the default descriptor builder.
+    cb_descriptors_override: Optional[List[Any]] = None
 
 
 def build_tensor_accessor_args(tensors: List[Any]) -> List[int]:
@@ -490,6 +497,181 @@ def cb_geometry(index: int, cb: Any) -> CBGeometry:
     )
 
 
+def _core_range_coordinates(core_ranges: Any, *, label: str) -> set[Tuple[int, int]]:
+    """Expand a CoreRangeSet-like object into logical ``(x, y)`` pairs."""
+    if core_ranges is None or not hasattr(core_ranges, "ranges"):
+        raise ValueError(f"{label} must be a CoreRangeSet with ranges()")
+
+    coordinates = set()
+    for core_range in core_ranges.ranges():
+        try:
+            start_x = int(core_range.start.x)
+            start_y = int(core_range.start.y)
+            end_x = int(core_range.end.x)
+            end_y = int(core_range.end.y)
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ValueError(f"{label} contains an invalid core range") from exc
+        if end_x < start_x or end_y < start_y:
+            raise ValueError(f"{label} contains an inverted core range")
+        for y in range(start_y, end_y + 1):
+            for x in range(start_x, end_x + 1):
+                coordinates.add((x, y))
+    if not coordinates:
+        raise ValueError(f"{label} must cover at least one core")
+    return coordinates
+
+
+def _tile_descriptor_key(tile: Any) -> Optional[Tuple[int, int]]:
+    """Return a stable tile-shape key for a TTNN TileDescriptor-like object."""
+    if tile is None:
+        return None
+    height = getattr(tile, "height", None)
+    width = getattr(tile, "width", None)
+    if callable(height):
+        height = height()
+    if callable(width):
+        width = width()
+    if height is None or width is None:
+        shape = getattr(tile, "tile_shape", None)
+        if callable(shape):
+            shape = shape()
+        if shape is None or len(shape) != 2:
+            raise ValueError("CB format tile must expose height/width or tile_shape")
+        height, width = shape
+    return int(height), int(width)
+
+
+def _remaining_cb_budget(tensors: List[Any]) -> int:
+    """Return the same device-aware CB budget used by the default builder."""
+    remaining_bytes = DEFAULT_L1_CB_BUDGET_BYTES
+    for tensor in tensors:
+        if tensor is None or not hasattr(tensor, "device"):
+            continue
+        device = tensor.device()
+        if device is not None:
+            return get_min_remaining_l1_for_device(device)
+    return remaining_bytes
+
+
+def validate_cb_descriptors_override(
+    descriptors: List[Any],
+    program_core_ranges: Any,
+    tensors: List[Any],
+    num_cbs: int,
+) -> List[Any]:
+    """Validate an exact, possibly per-core CB descriptor replacement.
+
+    The same numeric CB id may occur in more than one descriptor only when
+    those descriptors cover disjoint cores and use one identical page format.
+    Their capacities may differ.  L1 usage is checked as the maximum sum on
+    any one core, rather than summing mutually exclusive descriptors globally.
+
+    This intentionally supports the static subset of Blaze's descriptor
+    model.  It does not support runtime phase reconfiguration, overlapping
+    aliases, or multiple format ids attached to one backing descriptor.
+    """
+    if descriptors is None:
+        raise ValueError("CB descriptor override must not be None")
+    try:
+        descriptors = list(descriptors)
+    except TypeError as exc:
+        raise ValueError("CB descriptor override must be iterable") from exc
+
+    program_cores = _core_range_coordinates(
+        program_core_ranges, label="program core ranges"
+    )
+    format_by_id: Dict[int, Tuple[str, Optional[Tuple[int, int]], int]] = {}
+    claims: Dict[Tuple[int, Tuple[int, int]], int] = {}
+    bytes_by_core = {core: 0 for core in program_cores}
+    claim_sizes_by_core: Dict[Tuple[int, int], List[Tuple[int, int]]] = {
+        core: [] for core in program_cores
+    }
+
+    for descriptor_index, descriptor in enumerate(descriptors):
+        formats = list(getattr(descriptor, "format_descriptors", ()))
+        if len(formats) != 1:
+            raise ValueError(
+                "CB descriptor override entry "
+                f"{descriptor_index} must contain exactly one format descriptor"
+            )
+        fmt = formats[0]
+        try:
+            cb_id = int(fmt.buffer_index)
+            page_size = int(fmt.page_size)
+            total_size = int(descriptor.total_size)
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"CB descriptor override entry {descriptor_index} is malformed"
+            ) from exc
+        if cb_id < 0 or cb_id >= num_cbs:
+            raise ValueError(
+                f"CB descriptor override entry {descriptor_index} has CB id "
+                f"{cb_id}, outside [0, {num_cbs})"
+            )
+        if page_size <= 0 or total_size <= 0 or total_size % page_size:
+            raise ValueError(
+                f"CB[{cb_id}] override requires positive page-aligned total_size; "
+                f"got total_size={total_size}, page_size={page_size}"
+            )
+
+        data_format = getattr(fmt, "data_format", None)
+        if data_format is None:
+            raise ValueError(f"CB[{cb_id}] override is missing a data format")
+        tile_key = _tile_descriptor_key(getattr(fmt, "tile", None))
+        format_key = (str(data_format), tile_key, page_size)
+        previous_format = format_by_id.setdefault(cb_id, format_key)
+        if previous_format != format_key:
+            raise ValueError(
+                f"CB[{cb_id}] override uses inconsistent page formats across cores: "
+                f"{previous_format} vs {format_key}"
+            )
+
+        descriptor_cores = _core_range_coordinates(
+            getattr(descriptor, "core_ranges", None),
+            label=f"CB[{cb_id}] descriptor core ranges",
+        )
+        outside = descriptor_cores - program_cores
+        if outside:
+            raise ValueError(
+                f"CB[{cb_id}] override claims cores outside the program grid: "
+                f"{sorted(outside)}"
+            )
+        for core in descriptor_cores:
+            claim_key = (cb_id, core)
+            if claim_key in claims:
+                raise ValueError(
+                    f"CB[{cb_id}] override has overlapping descriptors on core {core}"
+                )
+            claims[claim_key] = descriptor_index
+            bytes_by_core[core] += total_size
+            claim_sizes_by_core[core].append((cb_id, total_size))
+
+    missing_ids = sorted(set(range(num_cbs)) - set(format_by_id))
+    if missing_ids:
+        raise ValueError(
+            "CB descriptor override does not describe every configured CB id; "
+            f"missing {missing_ids}"
+        )
+
+    budget_bytes = _remaining_cb_budget(tensors)
+    if bytes_by_core:
+        peak_core, peak_bytes = max(
+            bytes_by_core.items(), key=lambda item: (item[1], item[0])
+        )
+        if peak_bytes > budget_bytes:
+            breakdown = ", ".join(
+                f"CB[{cb_id}]={size}"
+                for cb_id, size in sorted(claim_sizes_by_core[peak_core])
+            )
+            raise ValueError(
+                "Per-core circular buffer descriptor override allocation "
+                f"({peak_bytes} bytes on core {peak_core}) exceeds L1 budget "
+                f"({budget_bytes} bytes). Claims: {breakdown}"
+            )
+
+    return descriptors
+
+
 def build_cb_descriptors(
     tensors: List[Any],
     cb_configs: List[Any],
@@ -517,14 +699,7 @@ def build_cb_descriptors(
     geometries = [cb_geometry(i, cb) for i, cb in enumerate(cb_configs)]
     total_cb_bytes = sum(g.total_size for g in geometries)
 
-    remaining_bytes = DEFAULT_L1_CB_BUDGET_BYTES
-    for tensor in tensors:
-        if tensor is not None and hasattr(tensor, "device"):
-            device = tensor.device()
-            if device is None:
-                continue
-            remaining_bytes = get_min_remaining_l1_for_device(device)
-            break
+    remaining_bytes = _remaining_cb_budget(tensors)
 
     # Must stay aligned with MLIR ttl-validate-cb-budget (TileType::getSizeBytes) and
     # tile_bytes_from_dtype; see issue #511.
@@ -668,12 +843,22 @@ def run_kernel_on_device(
         defines_by_thread=program_resources.defines_by_thread,
     )
 
-    # Build CB descriptors.
-    cb_descriptors = build_cb_descriptors(
-        tensors=tensors,
-        cb_configs=cb_configs,
-        core_ranges=core_ranges,
-    )
+    # Build CB descriptors, unless this operation supplied an exact per-core
+    # replacement.  Keep the bypass here (after resource construction) so all
+    # other operations retain the compiler-derived whole-grid behavior.
+    if program_resources.cb_descriptors_override is None:
+        cb_descriptors = build_cb_descriptors(
+            tensors=tensors,
+            cb_configs=cb_configs,
+            core_ranges=core_ranges,
+        )
+    else:
+        cb_descriptors = validate_cb_descriptors_override(
+            descriptors=program_resources.cb_descriptors_override,
+            program_core_ranges=core_ranges,
+            tensors=tensors,
+            num_cbs=len(cb_configs),
+        )
 
     semaphore_descriptors = build_pipe_sync_semaphore_descriptors(
         core_ranges=core_ranges,
@@ -1046,9 +1231,11 @@ __all__ = [
     "CBGeometry",
     "KernelSpec",
     "PipeRuntimeResources",
+    "ProgramRuntimeResources",
     "build_tensor_accessor_args",
     "build_kernel_descriptors",
     "build_cb_descriptors",
+    "validate_cb_descriptors_override",
     "cb_geometry",
     "build_pipe_sram_scratch_tensors",
     "build_pipe_global_semaphores",
