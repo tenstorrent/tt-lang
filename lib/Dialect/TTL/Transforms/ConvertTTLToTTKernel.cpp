@@ -1935,9 +1935,9 @@ static LogicalResult lowerTTLOpsToTTKernel(
   pipePlanningOptions.enableComputedAddresses = pipeComputedAddresses;
   pipePlanningOptions.enableCapacitySynchronization = pipeCapacitySync;
   pipePlanningOptions.fabricRoutePlan = &fabricRoutePlan;
-  FailureOr<PipeModulePlan> maybePipeModulePlan = buildPipeModulePlan(
-      mod, transferAnalysis, transferIndex, *pipeGraphOrErr,
-      pipePlanningOptions);
+  FailureOr<PipeModulePlan> maybePipeModulePlan =
+      buildPipeModulePlan(mod, transferAnalysis, transferIndex, *pipeGraphOrErr,
+                          pipePlanningOptions);
   if (failed(maybePipeModulePlan)) {
     return failure();
   }
