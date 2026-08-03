@@ -863,7 +863,8 @@ def TTL_DPrintOp
 // Note: These ops are NOT Pure because they write to DST registers.
 class TTL_TileOp<string mnemonic, list<Trait> traits = []>
     : TTL_Op<mnemonic, !listconcat(traits, [TTL_TileComputeOpTrait,
-                                             TTL_DstAccessOpInterface])>;
+                                             TTL_DstAccessOpInterface,
+                                             TTL_TileExecutionOpInterface])>;
 
 def TTL_TileType : Type<
     CPred<"llvm::isa<mlir::tt::ttcore::TileType>($_self)">,
@@ -917,7 +918,8 @@ def TTL_CopyTileOp : TTL_Op<"copy_tile",
                              TTL_CBInputTileOpTrait,
                              TTL_DataMovementOpTrait,
                              TTL_DstResultOpTrait,
-                             TTL_DstAccessOpInterface]> {
+                             TTL_DstAccessOpInterface,
+                             TTL_TileExecutionOpInterface]> {
   let summary = "Copy a tile from a circular buffer into a DST register";
   let description = [{
     Performs a CB -> DST copy, matching `copy_tile_init` + `copy_tile` in the
@@ -962,7 +964,8 @@ def TTL_CopyDstOp : TTL_Op<"copy_dst",
                             MemoryEffects<[MemRead, MemWrite]>,
                             TTL_DSTInputsTrait,
                             TTL_DataMovementOpTrait,
-                            TTL_DstAccessOpInterface]> {
+                            TTL_DstAccessOpInterface,
+                            TTL_TileExecutionOpInterface]> {
   let summary = "Copy a tile from one DST register to another";
   let description = [{
     Performs DST -> DST copy for multi-consumer value preservation. Used when
@@ -990,7 +993,8 @@ def TTL_CopyDstOp : TTL_Op<"copy_dst",
 }
 
 def TTL_DstIndexOp : TTL_Op<"dst_index",
-    [Pure, TTL_DstAccessOpInterface, AllTypesMatch<["source", "result"]>]> {
+    [Pure, TTL_DstAccessOpInterface, TTL_TileExecutionOpInterface,
+     AllTypesMatch<["source", "result"]>]> {
   let summary = "Index a tile value resident in a specific DST slot";
   let description = [{
     `ttl.dst_index` names an existing DST-resident tile at `dst_index` while
@@ -1022,9 +1026,8 @@ class TTL_TileBinaryOpBase<string mnemonic, list<Trait> traits = []>
 class TTL_TileSfpuBinaryOp<string mnemonic, list<Trait> traits = []>
     : TTL_TileBinaryOpBase<mnemonic, !listconcat(traits, [TTL_DSTInputsTrait])>;
 
-// Strategy-dependent binary tile op: input source is determined by operand
-// provenance at lowering time. add/sub/mul live here; isFPUEligibleBinaryOp
-// resolves the choice from the current IR.
+// The selected FPU/SFPU strategy determines whether operands are consumed from
+// dataflow buffers or DST.
 class TTL_TileStrategyDepBinaryOp<string mnemonic, list<Trait> traits = []>
     : TTL_TileBinaryOpBase<mnemonic,
                            !listconcat(traits,
@@ -1045,9 +1048,9 @@ class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
 // Binary Elementwise Operations (Tensor + Tile Ops)
 //===----------------------------------------------------------------------===//
 
-// Multiclass for paired tensor + strategy-dependent tile binary ops.
-// Used by add/sub/mul, where the tile op may lower to either an FPU or
-// SFPU TTKernel form depending on operand provenance.
+// Multiclass for tensor operations paired with FPU/SFPU tile operations.
+// Add, subtract, and multiply select one tile execution strategy before DST
+// assignment.
 multiclass TTL_BinaryStrategyDepElementwisePair<string mnemonic,
                                                 string kernelOp,
                                                 list<Trait> opTraits = []> {
@@ -1768,7 +1771,7 @@ def TTL_GetDfbIdOp : TTL_Op<"get_dfb_id", [Pure]> {
 
 def TTL_TileStoreOp : TTL_Op<"tile_store",
     [MemoryEffects<[MemWrite]>, TTL_DstResultOpTrait,
-     TTL_DstAccessOpInterface]> {
+     TTL_DstAccessOpInterface, TTL_TileExecutionOpInterface]> {
   let summary = "Store a tile into a circular buffer view";
   let description = [{
     `ttl.tile_store` packs a single tile from the DST register into a circular

@@ -31,7 +31,7 @@ def compile_ttl_to_ttkernel(
         module: TTL MLIR module to compile.
         device: Optional TTNN device (unused, kept for API compat).
         maximize_dst: Enable DST maximization (subblocking + scheduling).
-        enable_fpu_binary_ops: Enable FPU binary op detection (add_tiles, etc).
+        enable_fpu_binary_ops: Allow FPU strategy selection for add/sub/mul.
         specialize_cores: Clone kernels that branch on a core coordinate
             once per launch coordinate (ttkernel-specialize-cores).
 

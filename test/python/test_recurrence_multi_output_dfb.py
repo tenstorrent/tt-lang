@@ -588,8 +588,6 @@ def test_multi_output_out_of_order_consumers(dtype, device):
 
 @pytest.mark.requires_device
 def test_published_value_mixed_consumers(device):
-    # One f32 DFB cannot feed both FPU and SFPU consumers because their unpack
-    # modes conflict. Existing f32 kernels publish separate strategy inputs.
     dtype = torch.bfloat16
     torch.manual_seed(5)
     lhs_torch = torch.randn(TILE, TILE, dtype=dtype)

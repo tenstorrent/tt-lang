@@ -310,25 +310,6 @@ inline bool isBinaryElementwiseOp(mlir::Operation *op) {
   return op->hasTrait<TTLBinaryElementwiseOpTrait>();
 }
 
-/// Return whether a reduce op supports full-fp32 accumulation on its target.
-inline bool isFullFp32ReduceSupported(TileReduceOp reduceOp) {
-  // Wormhole full_fp32 requires FP32 DST and changes existing reduce results.
-  if (isWormholeB0Target(reduceOp)) {
-    return false;
-  }
-
-  // Blackhole cannot write the low 16 bits while the 32-bit dest is enabled, so
-  // the row-reduce LLK disables fp32 accumulation internally (tt-metal #47311).
-  // Report unsupported so DST_ACCUM_MODE is not enabled for it.
-  return !isBlackholeTarget(reduceOp) ||
-         reduceOp.getReduceDim() != mlir::tt::ttkernel::ReduceDim::Row;
-}
-
-/// Apply the user request and target restrictions for reduce full-fp32.
-inline bool shouldUseFullFp32Reduce(TileReduceOp reduceOp, bool requested) {
-  return requested && isFullFp32ReduceSupported(reduceOp);
-}
-
 /// Check if an operation is a tile-level unary op (executes in-place on DST).
 inline bool isTileUnaryOp(mlir::Operation *op) {
   return op->hasTrait<TTLTileUnaryOpTrait>();
@@ -360,66 +341,6 @@ inline int64_t getNocIndex(mlir::Operation *op) {
     return attr.getInt();
   }
   return 0;
-}
-
-/// Return true when an add/sub/mul tile op is eligible to lower to its FPU
-/// form. Eligibility requires all of:
-///   1. op carries TTLStrategyDependentBinaryOpTrait;
-///   2. the enclosing func.func has ttl.enable_fpu_binary_ops = true
-///      (absent or false ⇒ not eligible);
-///   3. both operands trace to the same CB-backed indexing source — either
-///      input block args of one ttl.compute with equal indexing maps
-///      (pre-ttl-lower-to-loops), or tensor.extract ops with equal index
-///      lists (post-ttl-lower-to-loops).
-///
-/// This is a structural predicate over the IR; resolving a usable CB handle
-/// for the operands is the conversion pattern's responsibility.
-inline bool isFPUEligibleBinaryOp(mlir::Operation *op) {
-  if (!op->hasTrait<TTLStrategyDependentBinaryOpTrait>()) {
-    return false;
-  }
-  if (!getKernelBoolAttr(op, kEnableFPUBinaryOpsAttrName)) {
-    return false;
-  }
-  mlir::Value lhs = op->getOperand(0);
-  mlir::Value rhs = op->getOperand(1);
-
-  // Pre-lower-to-loops: input block args of one ttl.compute with equal maps.
-  if (auto lhsArg = mlir::dyn_cast<mlir::BlockArgument>(lhs)) {
-    auto rhsArg = mlir::dyn_cast<mlir::BlockArgument>(rhs);
-    if (!rhsArg || lhsArg.getOwner() != rhsArg.getOwner()) {
-      return false;
-    }
-    auto computeOp =
-        mlir::dyn_cast_or_null<ComputeOp>(lhsArg.getOwner()->getParentOp());
-    if (!computeOp) {
-      return false;
-    }
-    unsigned numInputs = computeOp.getNumInputs();
-    if (lhsArg.getArgNumber() >= numInputs ||
-        rhsArg.getArgNumber() >= numInputs) {
-      return false;
-    }
-    auto indexingMaps = computeOp.getIndexingMapsArray();
-    return indexingMaps[lhsArg.getArgNumber()] ==
-           indexingMaps[rhsArg.getArgNumber()];
-  }
-
-  // Post-lower-to-loops: tensor.extract ops with identical indices. CB
-  // attachment is guaranteed by loop lowering and re-verified by the FPU
-  // conversion pattern's CB lookup, so no getAttachedCB check is needed here.
-  auto lhsExtract = lhs.getDefiningOp<mlir::tensor::ExtractOp>();
-  auto rhsExtract = rhs.getDefiningOp<mlir::tensor::ExtractOp>();
-  return lhsExtract && rhsExtract &&
-         lhsExtract.getIndices() == rhsExtract.getIndices();
-}
-
-/// True if op reads inputs from CB at runtime. Unconditional for trait-bearing
-/// ops (bcast/transpose/reduce/...); conditional for strategy-dep add/sub/mul
-/// (delegated to isFPUEligibleBinaryOp). The strategy-dep answer can flip
-/// across TTLAssignDST copy insertion — re-query, do not cache.
-inline bool isCBInputOp(mlir::Operation *op) {
-  return op->hasTrait<TTLCBInputTileOpTrait>() || isFPUEligibleBinaryOp(op);
 }
 
 /// Check if an operation is any elementwise tensor op (unary or binary).

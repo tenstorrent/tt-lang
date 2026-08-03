@@ -126,21 +126,19 @@ static FailureOr<CopyTileOp> createCopyTileForArg(
 // Phase 1: Copy Insertion
 //===----------------------------------------------------------------------===//
 
-/// Get consumers of a value sorted by their position in the block.
-/// Excludes CB-reading ops (bcast, etc.) since they don't use DST for input.
+/// Return distinct DST consumers of `value` in block order.
 static SmallVector<Operation *> getSortedConsumers(Value v) {
-  SmallVector<Operation *> consumers;
-  for (Operation *user : v.getUsers()) {
-    // Skip CB-input ops (bcast, reduce, transpose, FPU binary, etc.)
-    if (isCBInputOp(user)) {
+  llvm::SmallSetVector<Operation *, 4> consumers;
+  for (OpOperand &use : v.getUses()) {
+    if (!isDstInput(use)) {
       continue;
     }
-    consumers.push_back(user);
+    consumers.insert(use.getOwner());
   }
-  // Sort by block position
-  llvm::sort(consumers,
+  SmallVector<Operation *> sortedConsumers(consumers.begin(), consumers.end());
+  llvm::sort(sortedConsumers,
              [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
-  return consumers;
+  return sortedConsumers;
 }
 
 /// Check if any consumer is an in-place operation (overwrites DST input).
@@ -259,20 +257,17 @@ static void buildLiveIntervals(
   for (Operation &op : *body) {
     int64_t currentIdx = opIndex[&op];
 
-    // Extend input intervals to this use (skipping ops with CB inputs)
-    if (!isCBInputOp(&op)) {
-      for (Value operand : op.getOperands()) {
-        if (!isTileValue(operand)) {
-          continue;
-        }
-        if (!intervals.count(operand)) {
-          // Block argument: start at (first_use - 1) to enable register reuse.
-          // Args consumed at position N get allocated before outputs produced
-          // at N, allowing outputs to reuse the consumed args' registers.
-          intervals[operand] = {currentIdx - 1, currentIdx, operand};
-        } else {
-          intervals[operand].end = std::max(intervals[operand].end, currentIdx);
-        }
+    for (OpOperand &operandUse : op.getOpOperands()) {
+      Value operand = operandUse.get();
+      if (!isDstInput(operandUse) || !isTileValue(operand)) {
+        continue;
+      }
+      if (!intervals.count(operand)) {
+        // Block arguments begin immediately before their first DST use so an
+        // output produced by that use may reuse the consumed register.
+        intervals[operand] = {currentIdx - 1, currentIdx, operand};
+      } else {
+        intervals[operand].end = std::max(intervals[operand].end, currentIdx);
       }
     }
 
@@ -377,56 +372,52 @@ static void buildLiveIntervals(
     });
   }
 
-  // Prevent DST register reuse between FPU binary ops.
-  // FPU binary ops (add_tiles, mul_tiles, sub_tiles) accumulate into their
-  // output DST register: result = old_DST_value + computed_value. If two FPU
-  // binary ops share the same DST output index, the second reads the first's
-  // residual and produces a corrupted result. We prevent this by extending
-  // FPU binary result intervals so the linear scan allocator assigns distinct
-  // registers.
+  // Operations that accumulate into DST cannot reuse a prior accumulator slot
+  // within the same acquire because its residual value changes the result.
+  // Keep their result intervals live through the last accumulating operation.
   //
-  // TODO(#343): This wastes DST capacity. The proper fix is to pass
-  // acc_to_dest=false to add_tiles_init/sub_tiles_init/mul_tiles_init in
-  // TTKernel (currently a FIXME in TTKernelOps.td). With explicit overwrite
-  // mode, DST reuse between FPU binary ops would be safe and this interval
-  // extension could be removed.
+  // TODO(#343): Set acc_to_dest=false for FPU binary init operations so they
+  // no longer require this extension.
   {
-    // Include TileMatmulBlockOp alongside FPU binary ops: matmul_block also
-    // accumulates into DST and its slot must not be reused by another
-    // accumulating op within the same sync region.
-    auto isFPUAccumulatingOp = [](Operation &op) {
-      return isFPUEligibleBinaryOp(&op) || isa<TileMatmulBlockOp>(&op);
+    auto isDstAccumulatingOp = [](Operation &op) {
+      auto executionOp = dyn_cast<TileExecutionOpInterface>(&op);
+      if (!executionOp) {
+        return false;
+      }
+      FailureOr<TileExecutionInfo> info = getSelectedTileExecutionInfo(&op);
+      assert(succeeded(info) && "tile execution semantics are unresolved");
+      return info->accumulatesIntoDst;
     };
 
-    SmallVector<int64_t> fpuBinaryStarts;
+    SmallVector<int64_t> accumulatingOpStarts;
     for (Operation &op : *body) {
-      if (isFPUAccumulatingOp(op)) {
-        fpuBinaryStarts.push_back(opIndex[&op]);
+      if (isDstAccumulatingOp(op)) {
+        accumulatingOpStarts.push_back(opIndex[&op]);
       }
     }
 
-    if (fpuBinaryStarts.size() > 1) {
-      int64_t lastFPUStart = *llvm::max_element(fpuBinaryStarts);
+    if (accumulatingOpStarts.size() > 1) {
+      int64_t lastAccumulatingStart = *llvm::max_element(accumulatingOpStarts);
       for (Operation &op : *body) {
-        if (!isFPUAccumulatingOp(op)) {
+        if (!isDstAccumulatingOp(op)) {
           continue;
         }
         for (Value result : op.getResults()) {
           if (!isTileValue(result) || !intervals.count(result)) {
             continue;
           }
-          // Use lastFPUStart + 1 because the linear scan expires intervals
-          // with end <= start, so end must be strictly greater than the last
-          // FPU binary op's start index to remain active during allocation.
-          if (intervals[result].end <= lastFPUStart) {
+          // The allocator expires intervals with end <= start, so the end must
+          // exceed the final accumulating operation's start.
+          if (intervals[result].end <= lastAccumulatingStart) {
             LLVM_DEBUG({
-              llvm::dbgs() << "Phase 2: Extended FPU binary interval from ["
+              llvm::dbgs() << "Phase 2: Extended accumulating interval from ["
                            << intervals[result].start << ", "
                            << intervals[result].end << "] to ["
                            << intervals[result].start << ", "
-                           << (lastFPUStart + 1) << "] to prevent DST reuse\n";
+                           << (lastAccumulatingStart + 1)
+                           << "] to prevent DST reuse\n";
             });
-            intervals[result].end = lastFPUStart + 1;
+            intervals[result].end = lastAccumulatingStart + 1;
           }
         }
       }
@@ -553,6 +544,11 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
 
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
+
+    if (failed(verifyTileExecutionSemantics(funcOp))) {
+      signalPassFailure();
+      return;
+    }
 
     funcOp.walk([&](ComputeOp computeOp) {
       Block *body = &computeOp.getRegion().front();
@@ -724,10 +720,13 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
       // Copies must be inserted at first use (not block start) to match the
       // liveness intervals that DST allocation was computed against.
       for (Operation &op : *body) {
-        if (isCBInputOp(&op) || isa<CopyTileOp>(&op)) {
+        if (isa<CopyTileOp>(&op)) {
           continue;
         }
         for (OpOperand &operand : op.getOpOperands()) {
+          if (!isDstInput(operand)) {
+            continue;
+          }
           auto arg = dyn_cast<BlockArgument>(operand.get());
           if (!arg || !isTileValue(arg) || dstIndexForValue.count(arg)) {
             continue;
@@ -743,8 +742,7 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
 
           arg.replaceUsesWithIf(copy->getDstTile(), [&](OpOperand &use) {
             return use.getOwner() != copy->getOperation() &&
-                   !isa<CopyTileOp>(use.getOwner()) &&
-                   !isCBInputOp(use.getOwner());
+                   !isa<CopyTileOp>(use.getOwner()) && isDstInput(use);
           });
         }
       }

@@ -82,7 +82,7 @@ ttl-verify-pipenet-guards      (Module)   Verify PipeNet launch-node domains
 ttl-verify-pipenet-schedule    (Module)   Verify PipeNet event ordering
 ttl-coalesce-dfb-acquires      (FuncOp)   Coalesce adjacent DFB acquisitions
 ttl-finalize-dfb-indices       (Module)   Finalize identities and allocations
-ttl-set-compute-kernel-config  (FuncOp)   Set per-kernel configuration
+ttl-set-compute-kernel-config  (FuncOp)   Resolve per-kernel configuration
   ... DST assignment, loop lowering, scheduling ...
 ttl-annotate-cb-associations   (FuncOp)   Copy CB indices to tile ops
 ttl-verify-dfb-spsc            (Module)   Reject DFBs shared across threads

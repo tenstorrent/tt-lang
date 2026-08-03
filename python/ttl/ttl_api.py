@@ -56,6 +56,7 @@ from ttl.passes import (
     get_ttkernel_names,
     ttkernel_to_cpp_by_name,
 )
+
 from ttl.passmanager import PassManager
 
 
@@ -105,6 +106,12 @@ from .kernel_runner import (
 from .operators import CopyTransferHandler, TensorBlock, copy
 from .compiler_options import CompilerOptions
 from .ttl_utils import get_thread_type_string
+
+_TTCORE_ARCH_BY_DEVICE_NAME = {
+    "blackhole": ttcore.Arch.Blackhole,
+    "wormhole_b0": ttcore.Arch.WormholeB0,
+    "quasar": ttcore.Arch.Quasar,
+}
 
 # Thread registry for automatic collection of @compute and @datamovement threads
 _thread_registry: List[Callable] = []
@@ -492,6 +499,8 @@ def _device_target_arch(args) -> Optional[str]:
         arch = _detect_device_arch(device)
         if arch is None:
             continue
+        if arch not in _TTCORE_ARCH_BY_DEVICE_NAME:
+            raise ValueError(f"Unsupported TT device architecture: {arch}")
         return arch
     return None
 
@@ -1892,7 +1901,9 @@ def _lower_program_to_kernel(
             ctx,
         )
         if target_arch is not None:
-            module.operation.attributes["ttl.target_arch"] = StringAttr.get(target_arch)
+            module.operation.attributes["ttl.target_arch"] = ttcore.ir.ArchAttr.get(
+                ctx, int(_TTCORE_ARCH_BY_DEVICE_NAME[target_arch])
+            )
 
         # Insert standalone thread functions directly into module
         with InsertionPoint(module.body):
@@ -1917,11 +1928,13 @@ def _lower_program_to_kernel(
         config_options = []
         if fp32_dest_acc_en is not None:
             config_options.append(
-                f"fp32-dest-acc-en={1 if fp32_dest_acc_en else 0}"
+                "fp32-dest-acc-en="
+                + ("enabled" if fp32_dest_acc_en else "disabled")
             )
         if dst_full_sync_en is not None:
             config_options.append(
-                f"dst-full-sync-en={1 if dst_full_sync_en else 0}"
+                "dst-full-sync-en="
+                + ("enabled" if dst_full_sync_en else "disabled")
             )
         config_options.append(
             f"reduce-full-fp32={int(compiler_options.reduce_full_fp32)}"

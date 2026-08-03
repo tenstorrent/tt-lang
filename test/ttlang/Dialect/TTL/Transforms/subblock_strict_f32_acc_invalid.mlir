@@ -15,7 +15,8 @@
 func.func @strict_f32_subblock_bf16_error(
     %arg0: tensor<3x2x!ttcore.tile<32x32, bf16>>,
     %arg1: tensor<2x3x!ttcore.tile<32x32, bf16>>) -> tensor<3x3x!ttcore.tile<32x32, bf16>>
-    attributes {ttl.kernel_thread = #ttkernel.thread<compute>, fp32_dest_acc_en} {
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                fp32_dest_acc_en = true} {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   %c2 = arith.constant 2 : index
@@ -42,7 +43,8 @@ func.func @strict_f32_subblock_bf16_error(
 func.func @strict_f32_fits_in_dst_ok(
     %arg0: tensor<2x2x!ttcore.tile<32x32, bf16>>,
     %arg1: tensor<2x2x!ttcore.tile<32x32, bf16>>) -> tensor<2x2x!ttcore.tile<32x32, bf16>>
-    attributes {ttl.kernel_thread = #ttkernel.thread<compute>, fp32_dest_acc_en} {
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                fp32_dest_acc_en = true} {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   %c2 = arith.constant 2 : index
