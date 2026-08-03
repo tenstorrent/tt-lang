@@ -223,7 +223,7 @@ tt-metal patterns documented for future implementation.
 | Transpose (CB) | | x | | | — |
 | Transpose (DST) | x | | x | | — |
 
-Notes on FPU binary: `add`, `sub`, and `mul` carry
+Notes on FPU binary: `add`, `sub`, and `mul` have
 `TTLStrategyDependentBinaryOpTrait`. `TTLSetComputeKernelConfig` selects one
 strategy from the operation's `TileExecutionOpInterface` before DST assignment.
 The FPU strategy requires matching tile coordinates and consumes both operands
@@ -231,7 +231,7 @@ from DFBs. The SFPU strategy consumes both operands from DST. The selected
 `ttl.tile_execution_strategy` attribute remains unchanged through allocation
 and lowering.
 
-Notes on in-place binary (max, min): These binary ops carry both
+Notes on in-place binary (max, min): These binary ops have both
 `DSTInputsTrait` (from the `TTL_TileBinaryOp` base class) and
 `TTLInPlaceOpTrait` (extra trait). The allocator treats them the same as
 unary ops for interval merging: input and output share the same DST

@@ -11,14 +11,14 @@ impose different requirements on those shared settings.
 `ttl-set-compute-kernel-config` resolves these decisions before DST assignment:
 
 ```text
-TTCore target attributes ---> KernelTargetEnvironment --+
+TTCore target attributes ---> KernelTargetEnvironment ---+
 pass options and attrs -----> KernelConfigPolicy --------+--> resolver
 TTL tile operations --------> KernelRequirements --------+       |
-                                                               v
-                                                       KernelConfigPlan
-                                                               |
-                                                               v
-                                               explicit IR attributes
+                                                                 v
+                                                         KernelConfigPlan
+                                                                 |
+                                                                 v
+                                                   explicit IR attributes
 ```
 
 The resolver separates target capabilities, compilation policy, and kernel
