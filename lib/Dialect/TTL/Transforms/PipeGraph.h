@@ -512,7 +512,8 @@ private:
   /// sequential order. Unproven point-to-point sequences use
   /// receiver-published addresses.
   LogicalResult
-  assignReceiverAddressSequences(const PipeTransferIndex &transferIndex,
+  assignReceiverAddressSequences(ModuleOp mod,
+                                 const PipeTransferIndex &transferIndex,
                                  PipeGraphAnalysisState &state);
 
   LogicalResult rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
