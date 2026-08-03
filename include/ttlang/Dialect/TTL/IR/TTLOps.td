@@ -272,6 +272,10 @@ def TTL_ComputeOp : TTL_Op<"compute", [
     arguments are individual tiles (`!ttcore.tile<H, W, dtype>`) extracted from
     the input/output tensors at each iteration point.
 
+    A body containing `ttl.tile_accumulate` requires at least one reduction
+    iterator. The accumulator remains resident in DST across the corresponding
+    reduction iterations.
+
     In the pipeline, `ttl.compute` is lowered to `scf.for` loops by
     `ttl-lower-to-loops` BEFORE bufferization. The `ttl.tile_*` ops in the
     loop body are then converted to TTKernel ops after bufferization.
@@ -1185,6 +1189,34 @@ class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
   let arguments = (ins TTL_TileType:$input, Index:$dst_index);
   let results = (outs TTL_TileType:$result);
   let assemblyFormat = "$input `into` `dst` `[` $dst_index `]` attr-dict `:` type($input) `->` type($result)";
+}
+
+def TTL_TileAccumulateOp : TTL_TileOp<"tile_accumulate", "ElementwiseBinary",
+    [TTL_TileBinaryOpTrait, TTL_InPlaceOpTrait,
+     TTL_AccumulatingOpTrait, TTL_DstResultOpTrait,
+     AllTypesMatch<["accumulator", "contribution", "result"]>]> {
+  let summary = "In-DST tile recurrence";
+  let description = [{
+    `ttl.tile_accumulate` models one tile-level recurrence update whose
+    accumulator is resident in DST. The operation applies `combiner` to
+    `accumulator` and `contribution`, writes the result into `dst_index`, and
+    returns the value resident in that same DST slot.
+
+    Example:
+
+    ```mlir
+    %idx = arith.constant 0 : index
+    %next = ttl.tile_accumulate %acc, %delta add into dst[%idx]
+        : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>
+          -> !ttcore.tile<32x32, bf16>
+    ```
+  }];
+  let arguments = (ins TTL_TileType:$accumulator,
+                       TTL_TileType:$contribution,
+                       TTL_AccumulationCombinerAttr:$combiner,
+                       Index:$dst_index);
+  let results = (outs TTL_TileType:$result);
+  let hasCustomAssemblyFormat = 1;
 }
 
 //===----------------------------------------------------------------------===//

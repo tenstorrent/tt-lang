@@ -160,6 +160,85 @@ def TTLInsertCopyWait
   let dependentDialects = [];
 }
 
+def TTLFormAccumulationScopes
+    : Pass<"ttl-form-accumulation-scopes", "::mlir::func::FuncOp"> {
+  let summary = "Form semantic accumulation scopes around tensor recurrences";
+  let description = [{
+    Wraps loop-carried additive tensor recurrences in
+    `ttl.accumulation_scope` so later passes can lower the recurrence from an
+    explicit accumulation policy instead of recovering it from ordinary tensor
+    stores.
+
+    Before:
+
+    ```mlir
+    %result = scf.for %iv = %lb to %ub step %step
+        iter_args(%acc = %init) -> (tensor<...>) {
+      %contribution = ...
+      %next = ttl.add %acc, %contribution : tensor<...>
+      scf.yield %next : tensor<...>
+    }
+    ttl.store %result, %out : tensor<...>, tensor<...>
+    ```
+
+    After:
+
+    ```mlir
+    ttl.accumulation_scope outs(%out : tensor<...>)
+        inits(%init : tensor<...>) {
+    ^bb0(%scope_acc: tensor<...>):
+      %result = scf.for %iv = %lb to %ub step %step
+          iter_args(%acc = %scope_acc) -> (tensor<...>) {
+        %contribution = ...
+        %next = ttl.add %acc, %contribution : tensor<...>
+        scf.yield %next : tensor<...>
+      }
+      ttl.store %result, %out : tensor<...>, tensor<...>
+      ttl.yield %result : tensor<...>
+    } initial_modes([init])
+    ```
+
+    The tensor form requires an init-backed recurrence, one final
+    non-accumulating store to a dataflow buffer reservation, a streamed or
+    resident dataflow-buffer-backed contribution, and an output tile count that
+    fits in one streaming DST section.
+  }];
+
+  let options = [
+    Option<"kind", "kind", "std::string", "\"tensor\"",
+           "Accumulation scope form to create. `dfb` is reserved and unsupported.">
+  ];
+
+  let dependentDialects = [
+    "::mlir::scf::SCFDialect",
+    "::mlir::tt::ttl::TTLDialect"
+  ];
+}
+
+def TTLLowerAccumulationScopes
+    : Pass<"ttl-lower-accumulation-scopes", "::mlir::func::FuncOp"> {
+  let summary = "Lower semantic accumulation scopes to concrete storage";
+  let description = [{
+    Lowers tensor `ttl.accumulation_scope` operations to streaming
+    DST-resident recurrence sections. The pass first validates every scope
+    before mutating IR, then rewrites each valid scope to one `ttl.dst_section`
+    that copies the init tiles into accumulator slots, preserves the source
+    recurrence loop, and packs the final tiles once after the loop.
+  }];
+
+  let options = [
+    Option<"kind", "kind", "std::string", "\"tensor\"",
+           "Accumulation scope form to lower. `dfb` is reserved and unsupported.">
+  ];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::scf::SCFDialect",
+    "::mlir::tensor::TensorDialect",
+    "::mlir::tt::ttl::TTLDialect"
+  ];
+}
+
 def TTLMaterializeLoopState
     : Pass<"ttl-materialize-loop-state", "::mlir::func::FuncOp"> {
   let summary = "Materialize loop-carried tensor state";

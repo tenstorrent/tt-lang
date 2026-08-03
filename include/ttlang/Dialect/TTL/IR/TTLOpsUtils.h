@@ -28,6 +28,16 @@
 
 namespace mlir::tt::ttl {
 
+/// Returns true if an operation has an attribute in the TTL namespace.
+inline bool hasTTLDialectAttribute(mlir::Operation *operation) {
+  for (mlir::NamedAttribute attribute : operation->getAttrs()) {
+    if (attribute.getName().getValue().starts_with("ttl.")) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /// PipeNet records associated with a selected-pipe value. `maybeForeachOp`
 /// identifies the enclosing foreach operation when the value is its block
 /// argument.
