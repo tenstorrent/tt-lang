@@ -21,7 +21,7 @@ import torch
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from ttl.dataflow_buffer import CompilerAllocatedDFBConfig
+from ttl.dataflow_buffer import PhysicalDFBConfig
 from ttl.constants import DEFAULT_L1_CB_BUDGET_BYTES
 from ttl.kernel_runner import build_cb_descriptors, get_min_remaining_l1_for_device
 
@@ -34,17 +34,18 @@ pytestmark = pytest.mark.skipif(
     not is_hardware_available(), reason="No Tenstorrent device available"
 )
 
-TILE_BYTES = 2048  # bf16 tile: 32 * 32 * 2
+TILE_BYTES = ttnn.tile_size(ttnn.bfloat16)
 
 
 def _overflow_config(remaining_bytes):
-    """Build a single CompilerAllocatedDFBConfig whose size exceeds *remaining_bytes*."""
+    """Build a physical DFB configuration larger than *remaining_bytes*."""
     overflow_tiles = (remaining_bytes // TILE_BYTES) + 1
-    return CompilerAllocatedDFBConfig(
+    return PhysicalDFBConfig(
         dfb_index=0,
         num_tiles=overflow_tiles,
         data_format="bfloat16",
         block_count=1,
+        page_size=TILE_BYTES,
     )
 
 

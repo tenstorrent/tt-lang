@@ -118,6 +118,17 @@ inline std::optional<int64_t> getCBIndex(mlir::Value cb) {
   return std::nullopt;
 }
 
+/// Returns the logical DFB ID on the `ttl.bind_cb` reached from `cb`.
+///
+/// Returns failure when `cb` does not resolve to a declaration with `dfb_id`.
+FailureOr<int64_t> getDFBId(mlir::Value cb);
+
+/// Verifies that DFB finalization completed and every logical ID is resolvable.
+///
+/// Passes that consume logical DFB IDs call this before reading any ID.
+LogicalResult verifyResolvedDFBIdentities(ModuleOp moduleOp,
+                                          StringRef consumerPass);
+
 /// Return the element type for a ttcore::TileType.
 inline std::optional<mlir::Type> getTileElementType(mlir::Type type) {
   if (auto tileType = mlir::dyn_cast<ttcore::TileType>(type)) {
@@ -734,18 +745,6 @@ llvm::SmallDenseSet<Value, 2> getPackTileCBs(scf::ForOp loop);
 
 /// Returns true if two loops share any pack_tile CB target.
 bool sharePackCB(scf::ForOp loopA, scf::ForOp loopB);
-
-/// A group of consecutive sibling loops that pack to the same output CB.
-struct LoopGroup {
-  scf::ForOp rootLoop;
-  SmallVector<scf::ForOp> loops;
-  Operation *scopeEnd = nullptr;
-};
-
-/// Collect groups of annotated sibling loops that share a pack CB target.
-SmallVector<LoopGroup> collectLoopGroups(
-    ArrayRef<scf::ForOp> l1AccLoops,
-    const llvm::SmallDenseMap<Operation *, Operation *> &enablePointPerLoop);
 
 } // namespace mlir::tt::ttl
 

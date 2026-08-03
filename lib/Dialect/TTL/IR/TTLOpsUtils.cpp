@@ -9,6 +9,73 @@
 
 namespace mlir::tt::ttl {
 
+FailureOr<int64_t> getDFBId(Value cb) {
+  cb = traceUnrealizedCasts(cb);
+  auto bindOp = cb.getDefiningOp<BindCBOp>();
+  if (!bindOp) {
+    return failure();
+  }
+  auto dfbId = bindOp.getDfbId();
+  if (!dfbId.has_value()) {
+    return failure();
+  }
+  return dfbId->getSExtValue();
+}
+
+LogicalResult verifyResolvedDFBIdentities(ModuleOp moduleOp,
+                                          StringRef consumerPass) {
+  bool hasAllocationMetadata = moduleOp->hasAttr(kDFBAllocationsAttrName);
+  bool hasDFB = false;
+  WalkResult result =
+      moduleOp.walk([&](Operation *nestedOperation) {
+        if (!isa<BindCBOp, CBReserveOp, CBPushOp, CBWaitOp, CBPopOp>(
+                nestedOperation)) {
+          return WalkResult::advance();
+        }
+        hasDFB = true;
+        if (!hasAllocationMetadata) {
+          return WalkResult::interrupt();
+        }
+        if (auto bindOp = dyn_cast<BindCBOp>(nestedOperation);
+            bindOp && !bindOp.getDfbId().has_value()) {
+          bindOp.emitOpError()
+              << "`" << consumerPass
+              << "` requires every `ttl.bind_cb` to have `dfb_id` after "
+                 "finalization";
+          return WalkResult::interrupt();
+        }
+
+        if (!isa<CBReserveOp, CBPushOp, CBWaitOp, CBPopOp>(nestedOperation)) {
+          return WalkResult::advance();
+        }
+        for (Value operand : nestedOperation->getOperands()) {
+          if (!isa<CircularBufferType>(operand.getType())) {
+            continue;
+          }
+          if (failed(getDFBId(operand))) {
+            nestedOperation->emitOpError()
+                << "`" << consumerPass
+                << "` requires every DFB lifecycle operand to resolve to "
+                   "`ttl.bind_cb` with `dfb_id` after finalization";
+            return WalkResult::interrupt();
+          }
+        }
+        return WalkResult::advance();
+      });
+
+  if (!hasDFB) {
+    return success();
+  }
+  if (!hasAllocationMetadata) {
+    moduleOp.emitOpError()
+        << "`" << consumerPass
+        << "` requires finalized DFB allocation metadata; run "
+           "`ttl-finalize-dfb-indices` first";
+    return failure();
+  }
+  return failure(result.wasInterrupted());
+}
+
 std::optional<BcastType> getTileBroadcastType(ArrayRef<int64_t> dims,
                                               int64_t rank) {
   llvm::SmallDenseSet<int64_t> normalizedDims = normalizeDimsToSet(dims, rank);
@@ -402,105 +469,21 @@ bool sharePackCB(scf::ForOp loopA, scf::ForOp loopB) {
   return false;
 }
 
-SmallVector<LoopGroup> collectLoopGroups(
-    ArrayRef<scf::ForOp> l1AccLoops,
-    const llvm::SmallDenseMap<Operation *, Operation *> &enablePointPerLoop) {
-  // Find the outermost annotated ancestor of a loop.
-  auto findRoot = [](scf::ForOp loop) -> scf::ForOp {
-    scf::ForOp outermost = loop;
-    for (Operation *parent = loop->getParentOp(); parent;
-         parent = parent->getParentOp()) {
-      if (auto parentFor = dyn_cast<scf::ForOp>(parent)) {
-        if (parentFor->hasAttr(kL1AccLoopAttrName) ||
-            parentFor->hasAttr(kReductionLoopAttrName)) {
-          outermost = parentFor;
-        }
-      }
+//===----------------------------------------------------------------------===//
+// Compiler-allocated DFB utilities
+//===----------------------------------------------------------------------===//
+
+int32_t getNextAvailableDFBIndex(Operation *scopeOp) {
+  int32_t maxIndex = -1;
+
+  scopeOp->walk([&](BindCBOp bindOp) {
+    int64_t idx = bindOp.getCbIndex().getSExtValue();
+    if (static_cast<int32_t>(idx) > maxIndex) {
+      maxIndex = static_cast<int32_t>(idx);
     }
-    return outermost;
-  };
+  });
 
-  SmallVector<LoopGroup> groups;
-  llvm::SmallDenseSet<Operation *> assigned;
-
-  for (auto loop : l1AccLoops) {
-    if (!enablePointPerLoop.count(loop.getOperation())) {
-      continue;
-    }
-    if (assigned.contains(loop.getOperation())) {
-      continue;
-    }
-
-    scf::ForOp rootLoop = findRoot(loop);
-    auto groupPackCBs = getPackTileCBs(rootLoop);
-
-    // A bare non-annotated scf.for between siblings does not break the
-    // group unless its body packs to one of the group's pack CBs — such
-    // a pack runs with L1 acc disabled and would overwrite the shared
-    // L1 slot before the next sibling accumulates onto it.
-    auto bareForMutatesSharedCB = [&](scf::ForOp forOp) {
-      auto innerCBs = getPackTileCBs(forOp);
-      return llvm::any_of(innerCBs,
-                          [&](Value cb) { return groupPackCBs.contains(cb); });
-    };
-
-    LoopGroup group;
-    group.rootLoop = rootLoop;
-    group.loops.push_back(loop);
-    assigned.insert(loop.getOperation());
-
-    // Collect sibling annotated loops that share a pack CB target.
-    // sharePackCB walks recursively, so for nested loops (rootLoop
-    // wrapping loop), it finds pack_tile ops inside the inner loop.
-    for (Operation *op = rootLoop->getNextNode(); op; op = op->getNextNode()) {
-      if (isa<ttk::CBPushBackOp>(op)) {
-        break;
-      }
-      auto sibling = dyn_cast<scf::ForOp>(op);
-      if (!sibling) {
-        continue;
-      }
-      if (!sibling->hasAttr(kL1AccLoopAttrName) &&
-          !sibling->hasAttr(kReductionLoopAttrName)) {
-        if (bareForMutatesSharedCB(sibling)) {
-          break;
-        }
-        continue;
-      }
-      if (!sharePackCB(rootLoop, sibling)) {
-        break;
-      }
-      group.loops.push_back(sibling);
-      assigned.insert(sibling.getOperation());
-    }
-
-    // Find scope end: scan forward from rootLoop past grouped siblings,
-    // init ops between them, and trailing cb_push_back ops. Stop at a
-    // cb_reserve_back, any annotated scf.for that is not in this group
-    // (belongs to a different scope), or a bare scf.for that packs to
-    // one of the group's pack CBs.
-    group.scopeEnd = rootLoop;
-    for (Operation *op = rootLoop->getNextNode(); op; op = op->getNextNode()) {
-      if (isa<ttk::CBPushBackOp>(op)) {
-        group.scopeEnd = op;
-      } else if (isa<ttk::CBReserveBackOp>(op)) {
-        break;
-      } else if (auto forOp = dyn_cast<scf::ForOp>(op)) {
-        if (assigned.contains(forOp)) {
-          continue;
-        }
-        bool isAnnotated = forOp->hasAttr(kL1AccLoopAttrName) ||
-                           forOp->hasAttr(kReductionLoopAttrName);
-        if (isAnnotated || bareForMutatesSharedCB(forOp)) {
-          break;
-        }
-      }
-    }
-
-    groups.push_back(std::move(group));
-  }
-
-  return groups;
+  return maxIndex + 1;
 }
 
 } // namespace mlir::tt::ttl

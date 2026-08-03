@@ -353,7 +353,8 @@ class TTLGenericCompiler(TTCompilerBase):
         `+=` on a DFB-attached block emits an accumulating store through
         `__iadd__`. Other tensor targets are rewritten to an ordinary
         assignment so loop-carried SSA values can be represented by `scf.for`
-        iter_args.
+        iter_args; accumulation lowering handles recognized additive
+        recurrences.
         """
         with self._loc_for_node(node):
             target = self.visit(node.target)
@@ -857,8 +858,14 @@ class TTLGenericCompiler(TTCompilerBase):
             element_type,
             cb.block_count,
         )
-        # Emit: %cb = ttl.bind_cb {cb_index = N, block_count = M} : !ttl.cb<...>
-        return ttl.bind_cb(cb_type, cb._cb_index, block_count=cb.block_count)
+        # The frontend index identifies the logical DFB; finalization may
+        # replace cb_index when reusing physical storage.
+        return ttl.bind_cb(
+            cb_type,
+            cb._cb_index,
+            block_count=cb.block_count,
+            dfb_id=cb._cb_index,
+        )
 
     def _emit_pipe_from_capture(
         self, pipe, pipe_net_name=None, source_file=None, source_line=None
@@ -1376,6 +1383,8 @@ class TTLGenericCompiler(TTCompilerBase):
             # Get tensor type from CB for reserve/wait result
             tensor_type = self._get_cb_tensor_type(cb_val, node=context_expr)
             if method_name == "reserve":
+                # TODO(#645): Parse reserve(accumulation_strategy=...) here
+                # once source-level accumulation strategy hints are specified.
                 tensor = self._emit_op_signposts(
                     "cb_reserve",
                     context_expr,

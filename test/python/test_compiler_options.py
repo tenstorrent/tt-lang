@@ -17,8 +17,10 @@ class TestDefaults:
     def test_defaults(self):
         opts = CompilerOptions()
         assert opts.maximize_dst is True
+        assert opts.accumulation_strategy == "auto"
         assert opts.enable_fpu_binary_ops is True
         assert opts.subblock_sync is False
+        assert opts.reuse_user_dfbs is True
         assert opts.specialize_cores is False
         assert opts._explicit == frozenset()
 
@@ -43,6 +45,20 @@ class TestFromString:
         assert opts.enable_fpu_binary_ops is True
         assert "maximize_dst" in opts._explicit
 
+    @pytest.mark.parametrize("strategy", ["auto", "dst", "l1-pack"])
+    def test_accumulation_strategy(self, strategy):
+        opts = CompilerOptions.from_string(f"--ttl-accumulation-strategy={strategy}")
+        assert opts.accumulation_strategy == strategy
+        assert "accumulation_strategy" in opts._explicit
+
+    def test_invalid_accumulation_strategy_raises(self):
+        with pytest.raises(ValueError, match="Invalid accumulation strategy"):
+            CompilerOptions.from_string("--ttl-accumulation-strategy=invalid")
+
+    def test_direct_invalid_accumulation_strategy_raises(self):
+        with pytest.raises(ValueError, match="Invalid accumulation strategy"):
+            CompilerOptions(accumulation_strategy="invalid")
+
     def test_disable_fpu(self):
         opts = CompilerOptions.from_string("--no-ttl-fpu-binary-ops")
         assert opts.enable_fpu_binary_ops is False
@@ -57,6 +73,11 @@ class TestFromString:
         opts = CompilerOptions.from_string("--ttl-specialize-cores")
         assert opts.specialize_cores is True
         assert "specialize_cores" in opts._explicit
+
+    def test_disable_user_dfb_reuse(self):
+        opts = CompilerOptions.from_string("--no-ttl-reuse-user-dfbs")
+        assert opts.reuse_user_dfbs is False
+        assert "reuse_user_dfbs" in opts._explicit
 
     def test_enable_flags_explicitly(self):
         opts = CompilerOptions.from_string("--ttl-maximize-dst --ttl-fpu-binary-ops")
@@ -74,10 +95,12 @@ class TestFromString:
 
     def test_multiple_flags(self):
         opts = CompilerOptions.from_string(
-            "--no-ttl-maximize-dst --no-ttl-fpu-binary-ops"
+            "--no-ttl-maximize-dst --no-ttl-fpu-binary-ops "
+            "--ttl-accumulation-strategy=dst"
         )
         assert opts.maximize_dst is False
         assert opts.enable_fpu_binary_ops is False
+        assert opts.accumulation_strategy == "dst"
 
 
 class TestMerge:
@@ -124,6 +147,21 @@ class TestFromArgv:
             opts = CompilerOptions.from_argv()
         assert opts.maximize_dst is False
         assert opts.enable_fpu_binary_ops is True  # default
+        assert opts.accumulation_strategy == "auto"
+
+    def test_extracts_accumulation_strategy(self):
+        with mock.patch.object(
+            sys, "argv", ["script.py", "--ttl-accumulation-strategy=dst"]
+        ):
+            opts = CompilerOptions.from_argv()
+        assert opts.accumulation_strategy == "dst"
+
+    def test_invalid_accumulation_strategy_raises(self):
+        with mock.patch.object(
+            sys, "argv", ["script.py", "--ttl-accumulation-strategy=invalid"]
+        ):
+            with pytest.raises(ValueError, match="Invalid accumulation strategy"):
+                CompilerOptions.from_argv()
 
     def test_ignores_unknown_flags(self):
         with mock.patch.object(

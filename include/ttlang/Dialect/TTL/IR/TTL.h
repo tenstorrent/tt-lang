@@ -127,6 +127,17 @@ constexpr llvm::StringLiteral kReductionLoopAttrName("ttl.reduction_loop");
 /// kReductionLoopAttrName which marks compiler-generated reduction loops.
 constexpr llvm::StringLiteral kL1AccLoopAttrName("ttl.l1_acc_loop");
 
+/// AccumulationInitialModeAttr on an L1 accumulation or reduction loop. The
+/// value determines whether iteration 0 overwrites L1 or accumulates onto an
+/// already materialized output value.
+constexpr llvm::StringLiteral kL1AccInitialAttrName("ttl.l1_acc_initial");
+
+/// Integer identifier shared by loops produced from one semantic accumulation
+/// scope. TTKernel lowering uses this to place packer L1 accumulation
+/// reconfiguration without rediscovering scope identity from neighboring
+/// operations.
+constexpr llvm::StringLiteral kL1AccScopeIdAttrName("ttl.l1_acc_scope_id");
+
 /// Output CB index for tile ops.
 constexpr llvm::StringLiteral
     kBcastOutputCBIndexAttrName("ttl.bcast_output_cb_index");
@@ -138,9 +149,8 @@ constexpr llvm::StringLiteral
 /// Placeholder marker on copy_tile (replaced during DST assignment).
 constexpr llvm::StringLiteral kPlaceholderCopyAttrName("ttl.placeholder_copy");
 
-/// Module attribute carrying compiler-allocated DFB metadata.
-constexpr llvm::StringLiteral
-    kCompilerAllocatedDFBsAttrName("ttl.compiler_allocated_dfbs");
+/// Module attribute containing one runtime descriptor per physical DFB index.
+constexpr llvm::StringLiteral kDFBAllocationsAttrName("ttl.dfb_allocations");
 
 /// Module attributes carrying compiler-owned pipe resource allocation.
 constexpr llvm::StringLiteral
