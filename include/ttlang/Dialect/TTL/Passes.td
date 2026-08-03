@@ -734,9 +734,9 @@ def TTLVerifyPipeNetGuards
 
     The pass expects one module per `@ttl.operation`, a well-formed
     `ttl.launch_grid` (i64 array of length 2 with positive entries), static
-    `I64Attr` coordinates on `ttl.create_pipe`, and finalized DFB indices
-    (i.e. `ttl-annotate-cb-associations` and `ttl-finalize-dfb-indices`
-    have run).
+    `I64Attr` coordinates on `ttl.create_pipe`, and the
+    `ttl.dfb_allocations` metadata emitted by `ttl-finalize-dfb-indices`.
+    `ttl-annotate-cb-associations` must also have run.
   }];
 
   let dependentDialects = [
@@ -764,12 +764,14 @@ def TTLVerifyDFBSPSC
     : Pass<"ttl-verify-dfb-spsc", "::mlir::ModuleOp"> {
   let summary = "Reject DFBs with overlapping producer or consumer launch domains";
   let description = [{
-    Walks every `ttl.cb_reserve` and `ttl.cb_wait`, groups them by `cb_index`
-    (resolved via `getCBIndex`) and enclosing `ttl.kernel_thread`-tagged
-    `func.func`, and tracks the launch-node domain for each producer or
-    consumer participant. A DFB is valid when, for each launched node, at most
-    one producer thread reserves it and at most one consumer thread waits on it.
-    Disjoint domains across different kernel-thread functions are accepted.
+    Walks every `ttl.cb_reserve` and `ttl.cb_wait`, groups them by module-wide
+    logical `dfb_id` and enclosing `ttl.kernel_thread`-tagged `func.func`, and
+    tracks the launch-node domain for each producer or consumer participant.
+    A DFB is valid when, for each launched node, at most one producer kernel
+    reserves it and at most one consumer kernel waits on it. Disjoint domains
+    across different kernel functions are accepted. Distinct logical
+    DFBs remain separate when physical allocation assigns them the same
+    `cb_index`.
 
     tt-metal circular buffers expose a counter pair (`pages_received`,
     `pages_acked`) that is not multi-writer safe on either side, so the
@@ -779,10 +781,10 @@ def TTLVerifyDFBSPSC
     domains, and for unknown domains when multiple threads participate and SPSC
     cannot be proven statically.
 
-    Prerequisite: `ttl-finalize-dfb-indices` must run first so that every
-    `bind_cb` carries a concrete `cb_index`, and modules with DFB acquire ops
-    must carry a valid `ttl.launch_grid` attribute. The pass asserts on
-    unresolvable indices.
+    The module must contain the `ttl.dfb_allocations` metadata emitted by
+    `ttl-finalize-dfb-indices`, and every DFB declaration and lifecycle operand
+    must resolve to a `ttl.bind_cb` with `dfb_id`. Modules with DFB acquire ops
+    must also carry a valid `ttl.launch_grid` attribute.
   }];
 
   let dependentDialects = [];
@@ -826,14 +828,19 @@ def TTLLowerSignpostToEmitC
 
 def TTLFinalizeDFBIndices
     : Pass<"ttl-finalize-dfb-indices", "::mlir::ModuleOp"> {
-  let summary = "Reuse compiler-allocated DFB indices and emit DFB metadata";
+  let summary = "Assign physical DFB indices and emit allocation metadata";
   let description = [{
     Module-level pass that runs after all DFB-creating and synchronization
     passes. Must precede `ttl-set-compute-kernel-config` and
     `ttl-annotate-cb-associations`, which copy DFB indices into attributes and
     would otherwise capture provisional indices.
 
-    Compiler-allocated DFBs enter this pass with kernel-local provisional
+    User-declared DFBs enter this pass with module-wide logical `dfb_id`
+    attributes. Compiler-created DFB declarations receive unique logical IDs.
+    The logical identity remains independent of the physical `cb_index`, so
+    later analyses can distinguish DFBs that share one hardware slot.
+
+    Compiler-created DFBs enter this pass with kernel-local provisional
     indices. The pass assigns each kernel a disjoint module-wide index range,
     then applies deterministic first-fit interval coloring, partitioned by
     CircularBufferType. A half-open lifetime starts at the first `cb_reserve` or
@@ -845,8 +852,11 @@ def TTLFinalizeDFBIndices
     all physical assignments and runtime metadata and validates capacity before
     modifying the IR, so a capacity error leaves provisional
     indices and existing kernel attributes unchanged. After validation, it
-    applies the assignments, updates `ttl.base_cta_index`, and builds the
-    `ttl.compiler_allocated_dfbs` module attribute for the Python runtime.
+    applies the physical assignments and logical identities, updates
+    `ttl.base_cta_index`, and builds the `ttl.dfb_allocations` module attribute
+    for the Python runtime. The attribute contains one descriptor per physical
+    index, including user-declared and compiler-created DFBs, and records the
+    page size computed from the finalized element type.
   }];
 }
 

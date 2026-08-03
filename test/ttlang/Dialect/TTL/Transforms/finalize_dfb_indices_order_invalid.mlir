@@ -25,7 +25,7 @@ func.func @compute_association_before_finalization()
   %compiler_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
       {ttl.compiler_allocated}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-  %output_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+  %output_dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
   %input = ttl.attach_cb %empty, %compiler_dfb
       : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
