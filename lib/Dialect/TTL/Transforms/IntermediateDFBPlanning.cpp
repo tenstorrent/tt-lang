@@ -11,7 +11,10 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
 #include "mlir/Analysis/TopologicalSortUtils.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 
@@ -66,6 +69,194 @@ bool DFBMaterializationAnalysisState::requireMaterialization(
 }
 
 namespace {
+
+struct StoreBlockGroup {
+  Block *block = nullptr;
+  SmallVector<StoreOp> stores;
+};
+
+static SmallVector<StoreBlockGroup>
+groupStoresByBlock(ArrayRef<StoreOp> stores) {
+  SmallVector<StoreBlockGroup> groups;
+  for (StoreOp store : stores) {
+    Block *block = store->getBlock();
+    auto group = llvm::find_if(groups, [&](const StoreBlockGroup &candidate) {
+      return candidate.block == block;
+    });
+    if (group == groups.end()) {
+      groups.push_back(StoreBlockGroup{block, {}});
+      group = std::prev(groups.end());
+    }
+    group->stores.push_back(store);
+  }
+  return groups;
+}
+
+static SmallVector<StoreOp> getDirectStores(Value value) {
+  SmallVector<StoreOp> stores;
+  for (OpOperand &use : value.getUses()) {
+    auto store = dyn_cast<StoreOp>(use.getOwner());
+    if (store && store.getTensor() == value) {
+      stores.push_back(store);
+    }
+  }
+  return stores;
+}
+
+static SmallVector<StoreOp> getStoresOutsideDefiningBlock(Value value) {
+  Operation *definingOp = value.getDefiningOp();
+  if (!definingOp) {
+    return {};
+  }
+
+  Block *definingBlock = definingOp->getBlock();
+  SmallVector<StoreOp> storesOutsideDefiningBlock;
+  llvm::SmallPtrSet<Block *, 2> storeBlocks;
+  for (StoreOp store : getDirectStores(value)) {
+    storeBlocks.insert(store->getBlock());
+    if (store->getBlock() != definingBlock) {
+      storesOutsideDefiningBlock.push_back(store);
+    }
+  }
+  return storeBlocks.size() < 2 ? SmallVector<StoreOp>{}
+                                : storesOutsideDefiningBlock;
+}
+
+static unsigned getDistinctStoreBlockCount(Value value) {
+  llvm::SmallPtrSet<Block *, 2> storeBlocks;
+  for (StoreOp store : getDirectStores(value)) {
+    storeBlocks.insert(store->getBlock());
+  }
+  return storeBlocks.size();
+}
+
+static bool hasEnclosingLoopBetween(Operation *ancestor,
+                                    Operation *descendant) {
+  for (Operation *parent = descendant->getParentOp();
+       parent && parent != ancestor; parent = parent->getParentOp()) {
+    if (isa<LoopLikeOpInterface>(parent)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool areStoreBlocksPairwiseExclusive(ArrayRef<StoreOp> stores) {
+  SmallVector<Operation *> representatives;
+  for (const StoreBlockGroup &group : groupStoresByBlock(stores)) {
+    representatives.push_back(group.stores.front());
+  }
+  // Structural region exclusion is conservative for predicates whose
+  // relationship is not represented by RegionBranchOpInterface.
+  for (unsigned lhsIndex = 0; lhsIndex < representatives.size(); ++lhsIndex) {
+    for (unsigned rhsIndex = lhsIndex + 1; rhsIndex < representatives.size();
+         ++rhsIndex) {
+      if (!mlir::insideMutuallyExclusiveRegions(representatives[lhsIndex],
+                                                representatives[rhsIndex])) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+static bool sliceExternalUsesAreStores(Value value,
+                                       const FusionTraceResult &backwardSlice,
+                                       ArrayRef<StoreOp> stores) {
+  llvm::SmallPtrSet<Operation *, 8> storeOperations;
+  for (StoreOp store : stores) {
+    storeOperations.insert(store);
+  }
+
+  for (Operation *operation : backwardSlice.opsInOrder) {
+    for (Value result : operation->getResults()) {
+      for (Operation *user : result.getUsers()) {
+        if (backwardSlice.opsInOrder.contains(user)) {
+          continue;
+        }
+        if (result == value && storeOperations.contains(user)) {
+          continue;
+        }
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+static SmallVector<StoreOp> getEarliestStorePerBlock(ArrayRef<StoreOp> stores) {
+  SmallVector<StoreOp> earliestStores;
+  for (const StoreBlockGroup &group : groupStoresByBlock(stores)) {
+    StoreOp earliestStore = group.stores.front();
+    for (StoreOp store : ArrayRef<StoreOp>(group.stores).drop_front()) {
+      if (store->isBeforeInBlock(earliestStore)) {
+        earliestStore = store;
+      }
+    }
+    earliestStores.push_back(earliestStore);
+  }
+  return earliestStores;
+}
+
+static bool rootInputsAvailableAtCloneSites(
+    const FusionTraceResult &backwardSlice, ArrayRef<StoreOp> stores,
+    const DFBValueLifetimeAnalysis &lifetimes) {
+  SmallVector<StoreOp> cloneSites = getEarliestStorePerBlock(stores);
+  return llvm::all_of(backwardSlice.lifetimeRootInputs, [&](Value rootInput) {
+    return llvm::all_of(cloneSites, [&](StoreOp cloneSite) {
+      return lifetimes.getAvailability(rootInput, cloneSite) !=
+             DFBValueAvailability::MayBeReleased;
+    });
+  });
+}
+
+static bool getCloneableBackwardSlice(
+    Value value, ArrayRef<StoreOp> stores,
+    const DFBValueLifetimeAnalysis &lifetimes,
+    FusionTraceResult &backwardSlice) {
+  if (!areStoreBlocksPairwiseExclusive(stores)) {
+    return false;
+  }
+
+  backwardSlice = traceFusionToRoots(value);
+  if (backwardSlice.failureReason != TraceFailureReason::Success ||
+      backwardSlice.opsInOrder.empty() ||
+      !sliceExternalUsesAreStores(value, backwardSlice,
+                                  getDirectStores(value)) ||
+      !rootInputsAvailableAtCloneSites(backwardSlice, stores, lifetimes)) {
+    return false;
+  }
+
+  Operation *producerScope = value.getDefiningOp()->getParentOp();
+  return llvm::none_of(stores, [&](StoreOp store) {
+    return hasEnclosingLoopBetween(producerScope, store);
+  });
+}
+
+static std::optional<PlanningDiagnostic>
+findUnsupportedBlockArgumentStores(func::FuncOp kernel) {
+  Block *entryBlock = &kernel.getBody().front();
+  std::optional<PlanningDiagnostic> diagnostic;
+  kernel.walk([&](Block *block) {
+    if (block == entryBlock) {
+      return WalkResult::advance();
+    }
+    for (BlockArgument argument : block->getArguments()) {
+      if (!isa<RankedTensorType>(argument.getType()) ||
+          getAttachedCB(argument) || getDistinctStoreBlockCount(argument) < 2) {
+        continue;
+      }
+      diagnostic.emplace(
+          block->getParentOp(),
+          "carries a tensor block argument stored from multiple control-flow "
+          "blocks, which is not supported; store the value to a "
+          "user-declared DFB before the control-flow split");
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return diagnostic;
+}
 
 static void
 addComputeResultUseRequirements(DFBMaterializationAnalysisState &state) {
@@ -305,6 +496,46 @@ static StandaloneDFBMaterializationPlan &getOrCreateStandaloneMaterialization(
 
 } // namespace
 
+PlanningResult<MultiBlockStorePlan> MultiBlockStorePlanner::build() const {
+  if (std::optional<PlanningDiagnostic> diagnostic =
+          findUnsupportedBlockArgumentStores(kernel)) {
+    return PlanningResult<MultiBlockStorePlan>::invalidIR(
+        diagnostic->operation, std::move(diagnostic->message));
+  }
+
+  SmallVector<MultiBlockStoreClonePlan> clones;
+  SmallVector<MultiBlockStoreMaterializationPlan> materializations;
+  kernel.walk([&](Operation *operation) {
+    for (Value result : operation->getResults()) {
+      if (!isa<RankedTensorType>(result.getType()) || getAttachedCB(result)) {
+        continue;
+      }
+      SmallVector<StoreOp> storesOutsideDefiningBlock =
+          getStoresOutsideDefiningBlock(result);
+      if (storesOutsideDefiningBlock.empty()) {
+        continue;
+      }
+
+      FusionTraceResult backwardSlice;
+      if (getCloneableBackwardSlice(result, storesOutsideDefiningBlock,
+                                    lifetimes, backwardSlice)) {
+        MultiBlockStoreClonePlan clone;
+        clone.source = result;
+        clone.stores = std::move(storesOutsideDefiningBlock);
+        llvm::append_range(clone.rootInputs, backwardSlice.rootInputs);
+        llvm::append_range(clone.operations, backwardSlice.opsInOrder);
+        clones.push_back(std::move(clone));
+        continue;
+      }
+
+      materializations.push_back({result, getDirectStores(result)});
+    }
+  });
+
+  return PlanningResult<MultiBlockStorePlan>::planned(MultiBlockStorePlan(
+      std::move(clones), std::move(materializations)));
+}
+
 PlanningResult<IntermediateDFBPlan>
 IntermediateDFBPlanner::buildMaterializationRecords(
     SmallVector<IntermediateDFBRequirement> requirements) const {
@@ -494,6 +725,17 @@ IntermediateDFBPlanner::buildMaterializationRecords(
 
 PlanningResult<IntermediateDFBPlan> IntermediateDFBPlanner::build() const {
   DFBMaterializationAnalysisState state;
+  for (const MultiBlockStoreMaterializationPlan &plan :
+       multiBlockMaterializations) {
+    for (StoreOp store : plan.stores) {
+      IntermediateDFBEvidence evidence;
+      evidence.reason = IntermediateDFBReason::MultiBlockStore;
+      evidence.inputs = {plan.source};
+      evidence.observation = store;
+      addStoreRequirement(state, store, plan.source, std::move(evidence));
+    }
+  }
+
   DominanceInfo dominanceInfo(kernel);
   kernel->walk([&](DFBInputOpInterface dfbInputOp) {
     Operation *operation = dfbInputOp.getOperation();

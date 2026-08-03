@@ -268,13 +268,21 @@ intermediate tensor SSA values. It does not replace existing user DFB
 declarations; the lifetime analyses described below apply to values backed by
 both user and compiler-created DFBs.
 
+Values stored from multiple blocks are analyzed before ordinary operand
+materialization. A producer expression is cloned into mutually exclusive store
+blocks only when it has no other uses, crosses no loop boundary, and every root
+DFB remains available at each clone site. Other multi-block stores consume one
+compiler-created DFB. Rewriting every direct store prevents compute creation
+from moving the producer after the wait for its materialized value.
+
 The standard pipeline runs this pass after `ttl-create-producer-compute`.
 Values produced by `ttl.compute` are materialized by the compiler-created
 intermediate lifecycle described above: the compute gains extra DFB outputs,
 and consumers receive attached tensor values instead of the original
 non-attached compute results. The final `convert-ttl-to-compute` pass lowers
 consumers that now receive DFB-attached operands. The following `ttl-auto-sync`
-run inserts the consumer `cb_pop`.
+logic inserts the consumer `cb_pop` before PipeNet verification and transport
+formation.
 
 ### DFB Lifetime and `ComputeOp` Creation Planning
 
