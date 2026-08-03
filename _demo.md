@@ -48,7 +48,7 @@ rebuild applies each reviewed final delta to merged PR704 instead.
 | 5 | #673 indexed PipeNet receivers | `713892fa` | `bffe5b31` | Applied |
 | 6 | #687 control-flow stores | `a4ca5487` | `973fe822`, `ba690d18` | Applied and repaired |
 | 7 | #680 DFB subviews | `4588cf72` | `3c4bd203`, `eddbfea9` | Applied and repaired |
-| 8 | #782-#784 PipeNet stack | `fc9233b1` through `9213a58b` | Pending | Pending |
+| 8 | #782-#784 PipeNet stack | `fc9233b1`, `e4bcf154`, `4d003e09`, `bd3a991e`, `671ca189`, `9213a58b` | `684d73ae` | Applied and repaired |
 | 9 | #780 grouped PipeTransport | `374909df` | Pending | Pending |
 | 10 | #734 multidevice fabric | Pending refresh | Pending | Pending |
 | 11 | #754 compact selected PipeNets | Pending refresh | Pending | Pending |
@@ -95,6 +95,20 @@ composition change between independent PRs.
 - #680 with the accumulation stack: retain DFB block subviews, inter-tile
   broadcasts, output ordering, and immutable planning. Owner: composition
   between #680 and the accumulation stack.
+- #784 with #778 and #775: run PipeNet guard and schedule verification after
+  synchronization insertion while logical DFB identities remain distinct, then
+  coalesce acquires and finalize physical indices with `reuse-user-dfbs`.
+  Owner: composition between independent stacks; no source PR change is
+  required.
+- #784 with #778: derive computed-address receiver backing descriptors from
+  finalized `PhysicalDFBConfig` metadata or its six-field serialized form.
+  Exclude separately allocated backing tensors from the static DFB budget while
+  retaining their descriptors and compiler-assigned indices. Owner: composition
+  between independent stacks; no source PR change is required.
+- #784 with #778: use the internal logical-identity analysis header from its
+  transform implementation directory and update verifier tests to require
+  `dfb_id` before physical allocation. Owner: composition between independent
+  stacks; no source PR change is required.
 - #734 terminology: retain the multicast-to-scatter frontend and tests from
   the reviewed source change. Owner: #734.
 
@@ -118,16 +132,17 @@ composition change between independent PRs.
 
 Current rebuild:
 
-- Host build: passed after the current #733/#778/#775 stack and #687/#680
-  integration repairs.
-- Pre-commit: all hooks passed.
-- MLIR: `ninja -C build check-ttlang-mlir` passed on 2026-08-02; 237
-  passed and 1 expected failure.
+- Host build: passed through the current #782-#784 PipeNet stack.
+- Pre-commit: all hooks passed through the current #782-#784 PipeNet stack.
+- MLIR: `ninja -C build check-ttlang-mlir` passed on 2026-08-02; all 248 tests
+  passed.
+- Python-only integration tests: `test_compiler_options.py` and
+  `test_kernel_runner.py` passed on 2026-08-02; all 61 tests passed.
 
 Pending:
 
-- Integrate the current PipeNet, grouped transport, fabric, selected PipeNet,
-  and device-domain branches from `/home/bnorris/tt/PRs.md`.
+- Integrate the current grouped transport, fabric, selected PipeNet, and
+  device-domain branches from `/home/bnorris/tt/PRs.md`.
 - Restore the demo examples.
 - Docker build and `check-ttlang-all`.
 - Four-device example validation.
