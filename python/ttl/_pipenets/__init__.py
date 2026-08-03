@@ -173,6 +173,27 @@ def _expand_dst(dst: Union[NodeCoord, NodeRange]) -> Iterable[Tuple[int, ...]]:
     yield from itertools.product(*(range(lo, hi) for lo, hi in zip(dst.lo, dst.hi)))
 
 
+def iter_instances_in_metadata(
+    value: Any, instance_type: type[Any], visited: Set[int]
+) -> Iterable[Any]:
+    """Yield instances reachable through Python metadata containers."""
+    value_id = id(value)
+    if value_id in visited:
+        return
+    visited.add(value_id)
+    if isinstance(value, instance_type):
+        yield value
+        return
+    if isinstance(value, (list, tuple, set, frozenset)):
+        for item in value:
+            yield from iter_instances_in_metadata(item, instance_type, visited)
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield from iter_instances_in_metadata(key, instance_type, visited)
+            yield from iter_instances_in_metadata(item, instance_type, visited)
+
+
 def _validate_consistent_coord_rank(pipe_nets: List[PipeNetUse]) -> None:
     # _linearize treats a rank-1 coord as already-linear (matching sim's
     # `flatten_node_index`), so mixing rank-1 and rank-2 srcs/dsts in one
@@ -213,4 +234,5 @@ __all__ = [
     "PipeUse",
     "PipeNetUse",
     "OperationPipeNets",
+    "iter_instances_in_metadata",
 ]
