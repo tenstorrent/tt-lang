@@ -747,3 +747,58 @@ func.func @compute_tile_store_cb_not_output(
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   func.return %0 : tensor<2x2x!ttcore.tile<32x32, f32>>
 }
+
+// -----
+
+// Test: tile_accumulate requires a reduction iterator because its accumulator
+// remains live across the corresponding reduction loop.
+func.func @tile_accumulate_without_reduction_iterator(
+    %init: tensor<1x1x!ttcore.tile<32x32, bf16>>,
+    %contribution: tensor<1x1x!ttcore.tile<32x32, bf16>>,
+    %init_cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+    %contribution_cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+    %output_cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+    -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
+  %c0 = arith.constant 0 : index
+  %init_attached = ttl.attach_cb %init, %init_cb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %contribution_attached = ttl.attach_cb %contribution, %contribution_cb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %empty = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %output_attached = ttl.attach_cb %empty, %output_cb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %output = ttl.cb_reserve %output_cb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  // expected-error @below {{ttl.tile_accumulate requires at least one reduction iterator}}
+  %result = ttl.compute
+      ins(%init_attached, %contribution_attached
+          : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+            tensor<1x1x!ttcore.tile<32x32, bf16>>)
+      outs(%output_attached : tensor<1x1x!ttcore.tile<32x32, bf16>>)
+      {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                        affine_map<(d0, d1) -> (d0, d1)>,
+                        affine_map<(d0, d1) -> (d0, d1)>],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%init_tile: !ttcore.tile<32x32, bf16>,
+       %contribution_tile: !ttcore.tile<32x32, bf16>,
+       %output_tile: !ttcore.tile<32x32, bf16>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
+    %accumulated = ttl.tile_accumulate
+        %init_tile, %contribution_tile add into dst[%c0]
+        : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>
+          -> !ttcore.tile<32x32, bf16>
+    ttl.tile_store %accumulated, %output[%i, %j] from dst[%c0]
+        : !ttcore.tile<32x32, bf16>,
+          tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.yield
+  } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  func.return %result : tensor<1x1x!ttcore.tile<32x32, bf16>>
+}

@@ -24,6 +24,7 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Debug.h"
 
@@ -82,6 +83,22 @@ static LogicalResult generateTileProcessing(OpBuilder &b, Location loc,
   return success();
 }
 
+static bool requiresDstAccumulation(ComputeOp op) {
+  // tile_accumulate has in-place DST semantics. Lowering it through ordinary
+  // per-iteration DstSectionOps would reacquire DST for each reduction
+  // iteration and lose the recurrence state.
+  if (op.containsOp<TileAccumulateOp>()) {
+    return true;
+  }
+  return op.getBody()
+      .walk([](TileReduceOp reduce) {
+        return reduce.getReduceType() == ReduceType::Max
+                   ? WalkResult::interrupt()
+                   : WalkResult::advance();
+      })
+      .wasInterrupted();
+}
+
 /// Generate parallel-outer / reduction-inner loop structure for accumulating
 /// computes. DstSectionOp wraps the reduction loop + stores so DST persists
 /// across reduction iterations.
@@ -134,8 +151,8 @@ static scf::LoopNest generateAccumulatingLoops(
   }
   SmallVector<int64_t> domainStrides = computeStrides(domainSizes);
 
-  /// Preserves each store's selected formal output after accumulating lowering
-  /// separates tile computation from post-reduction publication.
+  // Preserves each store's selected formal output after accumulating lowering
+  // separates tile computation from post-reduction publication.
   struct StoreInfo {
     TileStoreOp store;
     int32_t dstIndex;
@@ -146,6 +163,27 @@ static scf::LoopNest generateAccumulatingLoops(
   // output now avoids consulting the replaced compute during publication.
   Block &bodyBlock = op.getBody().front();
   SmallVector<StoreInfo> storeInfos;
+  llvm::SmallPtrSet<Operation *, 4> accumulatorInitOps;
+  // Accumulator init ops must execute once per output tile before the
+  // reduction loop. If they stayed in the reduction body, every contribution
+  // would reset the DST slot before tile_accumulate reads it.
+  auto collectAccumulatorInitOps = [&](auto &&self, Value value) -> void {
+    Operation *definingOp = value.getDefiningOp();
+    if (!definingOp || definingOp->getBlock() != &bodyBlock ||
+        isa<IterIndexOp>(definingOp)) {
+      return;
+    }
+    if (definingOp->hasTrait<TTLAccumulatingOpTrait>()) {
+      return;
+    }
+    if (!accumulatorInitOps.insert(definingOp).second) {
+      return;
+    }
+    for (Value operand : definingOp->getOperands()) {
+      self(self, operand);
+    }
+  };
+
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
     if (auto store = dyn_cast<TileStoreOp>(&bodyOp)) {
       auto dstIdx = getConstantIntValue(store.getDstIndex());
@@ -155,6 +193,19 @@ static scf::LoopNest generateAccumulatingLoops(
              "verified store must map to one formal compute output");
       storeInfos.push_back(
           {store, dstIdx ? static_cast<int32_t>(*dstIdx) : 0, *outputIndex});
+      continue;
+    }
+
+    auto accumulate = dyn_cast<TileAccumulateOp>(&bodyOp);
+    if (!accumulate) {
+      continue;
+    }
+
+    Operation *accumulatorDef = accumulate.getAccumulator().getDefiningOp();
+    if (accumulatorDef && accumulatorDef->getBlock() == &bodyBlock &&
+        !accumulatorDef->hasTrait<TTLAccumulatingOpTrait>()) {
+      collectAccumulatorInitOps(collectAccumulatorInitOps,
+                                accumulate.getAccumulator());
     }
   }
 
@@ -174,9 +225,15 @@ static scf::LoopNest generateAccumulatingLoops(
     return fullIVs;
   };
 
-  // Generate tile ops (excluding stores) inside the reduction loop body.
-  auto generateTileOpsOnly = [&](OpBuilder &builder, Location bodyLoc,
-                                 ValueRange fullIVs) {
+  // Clone the accumulator init chain outside the reduction loop with reduction
+  // IVs fixed at zero. Init operands are mapped through the same indexing maps
+  // as the compute body so multi-tile outputs initialize the matching DST slot.
+  auto cloneAccumulatorInits = [&](OpBuilder &builder, Location bodyLoc,
+                                   ValueRange fullIVs) -> IRMapping {
+    if (accumulatorInitOps.empty()) {
+      return IRMapping();
+    }
+
     size_t numInputs = op.getInputs().size();
     auto extractedInputs = extractTilesAtIndices(
         builder, bodyLoc, op.getInputs(), indexingMaps, fullIVs);
@@ -187,7 +244,32 @@ static scf::LoopNest generateAccumulatingLoops(
     mapComputeBodyArgs(mapping, op, extractedInputs, extractedOutputs, fullIVs);
 
     for (Operation &bodyOp : bodyBlock.without_terminator()) {
-      if (isa<IterIndexOp, TileStoreOp>(&bodyOp)) {
+      if (!accumulatorInitOps.contains(&bodyOp)) {
+        continue;
+      }
+      builder.clone(bodyOp, mapping);
+    }
+    return mapping;
+  };
+
+  // Generate the reduction body after the accumulator has already been
+  // initialized. Stores run after the reduction loop so they publish the final
+  // accumulated DST value once per output tile.
+  auto generateTileOpsOnly = [&](OpBuilder &builder, Location bodyLoc,
+                                 ValueRange fullIVs,
+                                 const IRMapping &baseMapping) {
+    size_t numInputs = op.getInputs().size();
+    auto extractedInputs = extractTilesAtIndices(
+        builder, bodyLoc, op.getInputs(), indexingMaps, fullIVs);
+    auto extractedOutputs = extractTilesAtIndices(
+        builder, bodyLoc, op.getOutputs(), indexingMaps, fullIVs, numInputs);
+
+    IRMapping mapping = baseMapping;
+    mapComputeBodyArgs(mapping, op, extractedInputs, extractedOutputs, fullIVs);
+
+    for (Operation &bodyOp : bodyBlock.without_terminator()) {
+      if (isa<IterIndexOp, TileStoreOp>(&bodyOp) ||
+          accumulatorInitOps.contains(&bodyOp)) {
         continue;
       }
       builder.clone(bodyOp, mapping);
@@ -205,6 +287,13 @@ static scf::LoopNest generateAccumulatingLoops(
         OpBuilder secBuilder(&sectionBody,
                              Block::iterator(sectionBody.getTerminator()));
 
+        Value zeroIdx = arith::ConstantIndexOp::create(secBuilder, parLoc, 0);
+        SmallVector<Value> zeroReductionIVs(reductionDims.size(), zeroIdx);
+        SmallVector<Value> initIVs =
+            buildFullIVs(parallelIVs, zeroReductionIVs);
+        IRMapping accumulatorInitMapping =
+            cloneAccumulatorInits(secBuilder, parLoc, initIVs);
+
         // Inner: reduction loops.
         scf::LoopNest redNest = scf::buildLoopNest(
             secBuilder, parLoc, redLBs, redUBs, redSteps, ValueRange{},
@@ -212,7 +301,8 @@ static scf::LoopNest generateAccumulatingLoops(
                 ValueRange) -> scf::ValueVector {
               SmallVector<Value> fullIVs =
                   buildFullIVs(parallelIVs, reductionIVs);
-              generateTileOpsOnly(redBuilder, redLoc, fullIVs);
+              generateTileOpsOnly(redBuilder, redLoc, fullIVs,
+                                  accumulatorInitMapping);
               return {};
             });
 
@@ -241,8 +331,6 @@ static scf::LoopNest generateAccumulatingLoops(
           for (auto [idx, dim] : llvm::enumerate(parallelDims)) {
             fullIVs[dim] = parallelIVs[idx];
           }
-          Value zeroIdx =
-              arith::ConstantIndexOp::create(storeBuilder, parLoc, 0);
           for (unsigned dim : reductionDims) {
             fullIVs[dim] = zeroIdx;
           }
@@ -356,21 +444,14 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
       }
 
       // DST accumulation: reorder loops (parallel-outer, reduction-inner)
-      // so DST persists across reduction iterations. Required for
+      // so DST persists across reduction iterations. This is required for
+      // tile_accumulate because the recurrence state lives in DST, and for
       // reduce_max because L1 accumulation (pack_reconfig_l1_acc)
       // accumulates via addition, which is only correct for sum.
       // TODO: reduce_max without dst-accumulation could use a compiler-
       // introduced intermediate DFB for L1-based max accumulation.
       if (isAccumulating) {
-        bool hasReduceMax =
-            op.getBody()
-                .walk([](TileReduceOp reduce) {
-                  return reduce.getReduceType() == ReduceType::Max
-                             ? WalkResult::interrupt()
-                             : WalkResult::advance();
-                })
-                .wasInterrupted();
-        if (dstAccumulation || hasReduceMax) {
+        if (dstAccumulation || requiresDstAccumulation(op)) {
           usedDstAccumulation = true;
           return generateAccumulatingLoops(rewriter, loc, op, iterDomain,
                                            indexingMaps, iterTypes, lowerBounds,
