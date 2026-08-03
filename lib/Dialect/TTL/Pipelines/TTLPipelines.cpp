@@ -12,46 +12,73 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
 
+#include <utility>
+
 using namespace mlir;
 
 namespace mlir::tt::ttl {
 
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
+  pm.addNestedPass<func::FuncOp>(createTTLFormAccumulationScopes());
+  {
+    TTLLowerAccumulationScopesOptions lowerOpts;
+    lowerOpts.strategy = options.accumulationStrategy;
+    pm.addNestedPass<func::FuncOp>(
+        createTTLLowerAccumulationScopes(std::move(lowerOpts)));
+  }
   pm.addNestedPass<func::FuncOp>(createTTLMaterializeLoopState());
+  pm.addNestedPass<func::FuncOp>(createTTLInsertCopyWait());
+  buildTTLAutoSyncPipeline(pm.nest<func::FuncOp>());
+  {
+    TTLInsertAccumulationScopesOptions insertOpts;
+    insertOpts.kind = "dfb";
+    pm.addNestedPass<func::FuncOp>(
+        createTTLInsertAccumulationScopes(std::move(insertOpts)));
+  }
+  {
+    TTLLowerAccumulationScopesOptions lowerOpts;
+    lowerOpts.kind = "dfb";
+    pm.addNestedPass<func::FuncOp>(
+        createTTLLowerAccumulationScopes(std::move(lowerOpts)));
+  }
+  pm.addNestedPass<func::FuncOp>(createTTLProducerComputeCreation());
   {
     TTLInsertIntermediateDFBsOptions dfbOpts;
     dfbOpts.enable = options.compilerDFBs;
     pm.addNestedPass<func::FuncOp>(createTTLInsertIntermediateDFBs(dfbOpts));
   }
-  pm.addNestedPass<func::FuncOp>(createTTLInsertCopyWait());
+  pm.addNestedPass<func::FuncOp>(createTTLConvertTTLToCompute());
   buildTTLAutoSyncPipeline(pm.nest<func::FuncOp>());
-  pm.addPass(createTTLAnnotateL1AccLoops());
-  pm.addPass(createTTLConvertTTLToCompute());
+  {
+    TTLFinalizeDFBIndicesOptions finalizeOptions;
+    finalizeOptions.reuseUserDFBs = options.reuseUserDFBs;
+    pm.addPass(createTTLFinalizeDFBIndices(finalizeOptions));
+  }
   {
     TTLSetComputeKernelConfigOptions configOpts;
     configOpts.reduceFullFp32 = options.reduceFullFp32;
     configOpts.enableFPUBinaryOps = options.enableFPUBinaryOps;
-    pm.addPass(createTTLSetComputeKernelConfig(configOpts));
+    pm.addNestedPass<func::FuncOp>(createTTLSetComputeKernelConfig(configOpts));
   }
-  pm.addPass(createTTLAssignDST());
+  pm.addNestedPass<func::FuncOp>(createTTLAssignDST());
   if (options.maximizeDST) {
     TTLSubblockComputeForDSTOptions subblockOpts;
     subblockOpts.subblockSync = options.subblockSync;
     subblockOpts.strictF32Acc = options.strictF32Acc;
-    pm.addPass(createTTLSubblockComputeForDST(subblockOpts));
+    pm.addNestedPass<func::FuncOp>(
+        createTTLSubblockComputeForDST(subblockOpts));
   }
   {
     TTLLowerToLoopsOptions loopOpts;
     loopOpts.dstAccumulation = options.maximizeDST;
     loopOpts.useBlockMatmul = options.useBlockMatmul;
-    pm.addPass(createTTLLowerToLoops(loopOpts));
+    pm.addNestedPass<func::FuncOp>(createTTLLowerToLoops(loopOpts));
   }
   if (options.maximizeDST) {
-    pm.addPass(createTTLScheduleOperations());
+    pm.addNestedPass<func::FuncOp>(createTTLScheduleOperations());
   }
-  pm.addPass(createTTLFinalizeDFBIndices());
-  pm.addPass(createTTLAnnotateCBAssociations());
+  pm.addNestedPass<func::FuncOp>(createTTLAnnotateCBAssociations());
   pm.addPass(createTTLVerifyPipeNetGuards());
   pm.addPass(createTTLVerifyDFBSPSC());
   pm.addPass(createTTLErasePipeNetScopes());
@@ -79,6 +106,15 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     pm.addPass(createCanonicalizerPass());
     pm.addPass(mlir::emitc::createFormExpressionsPass());
   }
+}
+
+void buildTTLTensorRecurrencePipeline(OpPassManager &pm) {
+  // Accumulation lowering must run before loop-state materialization removes
+  // tensor iter_args. Materialized DFB state is the fallback for recurrences
+  // that are not DST-resident.
+  pm.addPass(createTTLFormAccumulationScopes());
+  pm.addPass(createTTLLowerAccumulationScopes());
+  pm.addPass(createTTLMaterializeLoopState());
 }
 
 void buildTTLAutoSyncPipeline(OpPassManager &pm) {

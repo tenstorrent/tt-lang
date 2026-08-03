@@ -6,30 +6,18 @@
 // TTL Finalize DFB Indices
 //===----------------------------------------------------------------------===//
 //
-// Module-level pass that runs after all DFB-creating passes. Reuses
-// compiler-allocated DFB indices when lifetimes do not overlap, then
-// computes the true DFB count, updates ttl.base_cta_index on every
-// function, and collects compiler-allocated DFBs into the
-// ttl.compiler_allocated_dfbs module attribute for the Python runtime.
+// Module-level pass that applies a validated physical DFB allocation plan.
 //
 //===----------------------------------------------------------------------===//
 
+#include "DFBPhysicalAllocationPlan.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
-#include "ttlang/Dialect/TTL/IR/TTLOps.h"
-#include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
-#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
-#include "ttlang/Dialect/TTL/Transforms/LiveIntervalUtils.h"
 
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 
-#include "llvm/ADT/MapVector.h"
 #include "llvm/Support/Debug.h"
-
-#include <algorithm>
-#include <functional>
 
 #define DEBUG_TYPE "ttl-finalize-dfb-indices"
 
@@ -40,251 +28,78 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-/// Reuse compiler-allocated DFB indices within a function when their
-/// lifetimes do not overlap. Groups DFBs by CircularBufferType and runs
-/// linear scan allocation per group.
-static void reuseDFBIndices(func::FuncOp funcOp, ArrayRef<BindCBOp> dfbOps) {
-  if (dfbOps.size() <= 1) {
-    return;
+/// Materializes decisions already validated by physical allocation analysis.
+static void
+applyPhysicalAllocationPlan(ModuleOp moduleOp, OpBuilder &builder,
+                            const DFBPhysicalAllocationPlan &allocationPlan) {
+  MLIRContext *context = moduleOp.getContext();
+  for (const DFBPhysicalIndexAssignment &assignment :
+       allocationPlan.getAssignments()) {
+    for (BindCBOp declaration : assignment.declarations) {
+      declaration.setDfbIdAttr(
+          IntegerAttr::get(IndexType::get(context), assignment.logicalId));
+      declaration.setCbIndexAttr(
+          IntegerAttr::get(IndexType::get(context), assignment.physicalIndex));
+    }
+    LLVM_DEBUG({
+      llvm::dbgs() << "DFB assignment: logical DFB " << assignment.logicalId
+                   << " -> physical index " << assignment.physicalIndex
+                   << (assignment.bounded ? " (bounded)\n" : " (unbounded)\n");
+    });
   }
 
-  Block &body = funcOp.getBody().front();
-
-  // Assign sequential indices to all operations in the body block.
-  DenseMap<Operation *, int64_t> opIndex;
-  int64_t idx = 0;
-  for (Operation &op : body) {
-    opIndex[&op] = idx++;
-  }
-  int64_t lastOpIdx = idx - 1;
-
-  // Project a nested operation to its ancestor in the body block.
-  // After LowerToLoops or SubblockComputeForDST, CBPopOps may end up
-  // inside loops or compute regions.
-  auto getBodyIndex = [&](Operation *op) -> int64_t {
-    if (op->getBlock() == &body) {
-      return opIndex[op];
-    }
-    Operation *ancestor = body.findAncestorOpInBlock(*op);
-    assert(ancestor && "operation must be reachable from function body");
-    return opIndex[ancestor];
-  };
-
-  // Build intervals grouped by CircularBufferType.
-  llvm::MapVector<Type, SmallVector<ValueLiveInterval>> typeToIntervals;
-  DenseMap<Value, BindCBOp> valueToBindOp;
-
-  for (BindCBOp bindOp : dfbOps) {
-    assert(bindOp->getBlock() == &body &&
-           "compiler-allocated BindCBOp must be in function body block");
-
-    Value cbVal = bindOp.getResult();
-    // Lifetime starts at the first acquire (reserve/wait) on this CB, not
-    // at the bind_cb itself: bind_cb is just a declaration, and hoisting
-    // it to the function body entry would otherwise collapse all compiler-
-    // allocated DFB starts together and defeat reuse. If there is no
-    // acquire (synthetic IR, pop-only), fall back to the bind_cb position.
-    int64_t start = lastOpIdx;
-    int64_t end = opIndex[bindOp];
-    bool sawAcquire = false;
-
-    for (OpOperand &use : cbVal.getUses()) {
-      Operation *user = use.getOwner();
-      int64_t useIdx = getBodyIndex(user);
-      if (isa<CBReserveOp, CBWaitOp>(user)) {
-        start = std::min(start, useIdx);
-        sawAcquire = true;
-      }
-      if (isa<CBPopOp>(user)) {
-        end = std::max(end, useIdx);
-      }
-    }
-
-    if (!sawAcquire) {
-      start = opIndex[bindOp];
-    }
-
-    // No cb_pop means the DFB's L1 is never explicitly released --
-    // conservatively treat it as live for the entire function.
-    if (end <= start) {
-      end = lastOpIdx;
-    }
-
-    SmallVector<ValueLiveInterval> &intervals =
-        typeToIntervals[cbVal.getType()];
-    int64_t ordinal = static_cast<int64_t>(intervals.size());
-    intervals.push_back({start, end, cbVal, ordinal});
-    valueToBindOp[cbVal] = bindOp;
+  for (const DFBKernelBaseIndexAssignment &baseIndex :
+       allocationPlan.getKernelBaseIndices()) {
+    baseIndex.kernel->setAttr(kBaseCTAIndexAttrName,
+                              builder.getI32IntegerAttr(baseIndex.baseIndex));
   }
 
-  // Find the base index (smallest compiler-allocated index).
-  int32_t baseIndex = INT32_MAX;
-  for (BindCBOp bindOp : dfbOps) {
-    int32_t cbIdx = static_cast<int32_t>(bindOp.getCbIndex().getSExtValue());
-    baseIndex = std::min(baseIndex, cbIdx);
+  SmallVector<Attribute> descriptorAttributes;
+  for (const DFBPhysicalAllocationDescriptor &descriptor :
+       allocationPlan.getDescriptors()) {
+    SmallVector<NamedAttribute> entryAttributes;
+    entryAttributes.push_back(builder.getNamedAttr(
+        "dfb_index", builder.getI32IntegerAttr(descriptor.physicalIndex)));
+    entryAttributes.push_back(builder.getNamedAttr(
+        "num_tiles", builder.getI32IntegerAttr(descriptor.numTiles)));
+    entryAttributes.push_back(builder.getNamedAttr(
+        "element_type", TypeAttr::get(descriptor.elementType)));
+    entryAttributes.push_back(builder.getNamedAttr(
+        "page_size", builder.getI32IntegerAttr(descriptor.pageSize)));
+    entryAttributes.push_back(builder.getNamedAttr(
+        "block_count", builder.getI32IntegerAttr(descriptor.blockCount)));
+    descriptorAttributes.push_back(
+        DictionaryAttr::get(context, entryAttributes));
   }
-
-  // Linear scan per type partition. Each partition gets a contiguous
-  // block of physical DFB indices starting at baseIndex + cumulative
-  // offset from prior partitions.
-  MLIRContext *ctx = funcOp.getContext();
-  int32_t nextSlotOffset = 0;
-
-  for (auto &entry : typeToIntervals) {
-    SmallVector<ValueLiveInterval> &intervals = entry.second;
-
-    SmallVector<SmallVector<ValueLiveInterval>> colorUsers =
-        assignGreedyIntervalColors<ValueLiveInterval>(
-            intervals, std::less<ValueLiveInterval>(),
-            [](const ValueLiveInterval &lhs, const ValueLiveInterval &rhs) {
-              return intervalsOverlap(lhs, rhs);
-            });
-
-    DenseMap<Value, int32_t> slotAssignment;
-    int32_t maxSlot = -1;
-
-    for (auto indexedColor : llvm::enumerate(colorUsers)) {
-      int32_t slotIndex = static_cast<int32_t>(indexedColor.index());
-      maxSlot = std::max(maxSlot, slotIndex);
-      for (const ValueLiveInterval &interval : indexedColor.value()) {
-        slotAssignment[interval.value] = slotIndex;
-
-        LLVM_DEBUG({
-          llvm::dbgs() << "DFB reuse: [" << interval.start << ", "
-                       << interval.end << "] -> slot " << slotIndex << "\n";
-        });
-      }
-    }
-
-    // Rewrite BindCBOp indices to the assigned physical slot.
-    for (auto &[value, slot] : slotAssignment) {
-      int32_t newIndex = baseIndex + nextSlotOffset + slot;
-      BindCBOp bindOp = valueToBindOp[value];
-      bindOp.setCbIndexAttr(IntegerAttr::get(IndexType::get(ctx), newIndex));
-    }
-
-    nextSlotOffset += maxSlot + 1;
-  }
-
-  LLVM_DEBUG({
-    llvm::dbgs() << "DFB reuse: " << dfbOps.size()
-                 << " compiler-allocated DFBs -> " << nextSlotOffset
-                 << " physical slot(s)\n";
-  });
+  moduleOp->setAttr(kDFBAllocationsAttrName,
+                    ArrayAttr::get(context, descriptorAttributes));
 }
 
 struct TTLFinalizeDFBIndicesPass
     : public impl::TTLFinalizeDFBIndicesBase<TTLFinalizeDFBIndicesPass> {
+  using Base::Base;
+
   void runOnOperation() override {
-    auto moduleOp = getOperation();
-    OpBuilder builder(moduleOp.getContext());
-
-    // Collect compiler-allocated BindCBOps grouped by parent function.
-    llvm::MapVector<func::FuncOp, SmallVector<BindCBOp>> funcToDFBs;
-    moduleOp->walk([&](BindCBOp bindOp) {
-      if (bindOp->hasAttr(kCompilerAllocatedAttrName)) {
-        auto funcOp = bindOp->getParentOfType<func::FuncOp>();
-        funcToDFBs[funcOp].push_back(bindOp);
+    ModuleOp moduleOp = getOperation();
+    DFBPhysicalAllocationPlanner allocationPlanner(moduleOp, reuseUserDFBs,
+                                                   getAnalysisManager());
+    if (!allocationPlanner.succeeded()) {
+      Operation *errorOperation = allocationPlanner.getErrorOperation();
+      if (!errorOperation) {
+        errorOperation = moduleOp.getOperation();
       }
-    });
-
-    // Run DFB index reuse per function.
-    for (auto &[funcOp, dfbOps] : funcToDFBs) {
-      reuseDFBIndices(funcOp, dfbOps);
-    }
-
-    // Recompute DFB count after reuse may have changed indices.
-    int32_t numDFBs = getNextAvailableDFBIndex(moduleOp);
-    if (numDFBs <= 0) {
-      return;
-    }
-
-    LLVM_DEBUG(llvm::dbgs() << "Total DFB count: " << numDFBs << "\n");
-
-    // Verify the final DFB count does not exceed the hardware limit.
-    if (numDFBs > kMaxCircularBuffers) {
-      // Count compiler-allocated physical slots (after reuse).
-      int32_t compilerSlots = 0;
-      for (auto &[funcOp, dfbOps] : funcToDFBs) {
-        llvm::SmallDenseSet<int32_t> uniqueIndices;
-        for (BindCBOp bindOp : dfbOps) {
-          uniqueIndices.insert(
-              static_cast<int32_t>(bindOp.getCbIndex().getSExtValue()));
-        }
-        compilerSlots += static_cast<int32_t>(uniqueIndices.size());
-      }
-      moduleOp.emitError()
-          << "need " << numDFBs << " DFB indices but hardware supports "
-          << "at most " << kMaxCircularBuffers << " (" << compilerSlots
-          << " compiler-allocated after reuse); reduce the number of "
-          << "user-declared dataflow buffers or split the computation "
-          << "into multiple kernels";
+      errorOperation->emitOpError() << allocationPlanner.getErrorMessage();
       signalPassFailure();
       return;
     }
 
-    // Update ttl.base_cta_index on every function that has it.
-    moduleOp->walk([&](func::FuncOp funcOp) {
-      if (funcOp->hasAttr(kBaseCTAIndexAttrName)) {
-        funcOp->setAttr(kBaseCTAIndexAttrName,
-                        builder.getI32IntegerAttr(numDFBs));
-      }
-    });
+    const DFBPhysicalAllocationPlan &allocationPlan =
+        allocationPlanner.getPlan();
+    LLVM_DEBUG(llvm::dbgs() << "Total DFB count: "
+                            << allocationPlan.getPhysicalDFBCount() << "\n");
 
-    // Re-collect compiler-allocated ops (indices may have changed).
-    SmallVector<BindCBOp> compilerAllocatedOps;
-    moduleOp->walk([&](BindCBOp bindOp) {
-      if (bindOp->hasAttr(kCompilerAllocatedAttrName)) {
-        compilerAllocatedOps.push_back(bindOp);
-      }
-    });
-
-    if (compilerAllocatedOps.empty()) {
-      return;
-    }
-
-    // Deduplicate entries by physical index. After reuse, multiple
-    // BindCBOps may share the same index. The module attribute needs
-    // one entry per unique physical DFB.
-    llvm::DenseMap<int32_t, BindCBOp> uniqueByIndex;
-    for (BindCBOp bindOp : compilerAllocatedOps) {
-      int32_t dfbIdx = static_cast<int32_t>(bindOp.getCbIndex().getSExtValue());
-      auto [it, inserted] = uniqueByIndex.try_emplace(dfbIdx, bindOp);
-      if (!inserted) {
-        assert(it->second.getResult().getType() ==
-                   bindOp.getResult().getType() &&
-               "compiler-allocated DFBs sharing an index must have the "
-               "same CircularBufferType");
-      }
-    }
-
-    // Sort by index for deterministic output.
-    SmallVector<std::pair<int32_t, BindCBOp>> sorted(uniqueByIndex.begin(),
-                                                     uniqueByIndex.end());
-    llvm::sort(sorted,
-               [](auto &lhs, auto &rhs) { return lhs.first < rhs.first; });
-
-    MLIRContext *ctx = moduleOp.getContext();
-    SmallVector<Attribute> entries;
-    for (auto &[dfbIdx, bindOp] : sorted) {
-      auto cbType =
-          mlir::cast<CircularBufferType>(bindOp.getResult().getType());
-      SmallVector<NamedAttribute> entryAttrs;
-      entryAttrs.push_back(
-          builder.getNamedAttr("dfb_index", builder.getI32IntegerAttr(dfbIdx)));
-      entryAttrs.push_back(builder.getNamedAttr(
-          "num_tiles", builder.getI32IntegerAttr(static_cast<int32_t>(
-                           cbType.getElementsPerBlock()))));
-      entryAttrs.push_back(builder.getNamedAttr(
-          "element_type", TypeAttr::get(cbType.getElementType())));
-      entryAttrs.push_back(builder.getNamedAttr(
-          "block_count", builder.getI32IntegerAttr(
-                             static_cast<int32_t>(cbType.getBlockCount()))));
-      entries.push_back(DictionaryAttr::get(ctx, entryAttrs));
-    }
-
-    moduleOp->setAttr(kCompilerAllocatedDFBsAttrName,
-                      ArrayAttr::get(ctx, entries));
+    OpBuilder builder(moduleOp.getContext());
+    applyPhysicalAllocationPlan(moduleOp, builder, allocationPlan);
   }
 };
 

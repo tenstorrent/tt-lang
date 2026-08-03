@@ -72,6 +72,7 @@ func.func @carried_add_loop_local_contribution() {
 // CHECK: %[[NEXT:.*]] = ttl.add %[[CURRENT]], %[[DELTA]]
 // CHECK: ttl.store %[[NEXT]]
 // CHECK-NOT: ttl.compute
+// CHECK-NOT: ttl.tile_accumulate
 
 // -----
 
@@ -156,7 +157,7 @@ func.func @unary_recurrence(
   ttl.store %loop, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
   func.return
 }
-// CHECK: ttl.bind_cb{cb_index = 1, block_count = 2} {ttl.compiler_allocated}
+// CHECK: ttl.bind_cb{cb_index = 1, block_count = 1} {ttl.compiler_allocated}
 // CHECK: ttl.store %[[INIT]]
 // CHECK: scf.for
 // CHECK-NOT: iter_args

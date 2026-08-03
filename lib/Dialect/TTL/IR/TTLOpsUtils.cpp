@@ -9,6 +9,113 @@
 
 namespace mlir::tt::ttl {
 
+FailureOr<int64_t> getDFBId(Value cb) {
+  cb = traceUnrealizedCasts(cb);
+  auto bindOp = cb.getDefiningOp<BindCBOp>();
+  if (!bindOp) {
+    return failure();
+  }
+  auto dfbId = bindOp.getDfbId();
+  if (!dfbId.has_value()) {
+    return failure();
+  }
+  return dfbId->getSExtValue();
+}
+
+LogicalResult verifyResolvedDFBIdentities(ModuleOp moduleOp,
+                                          StringRef consumerPass) {
+  bool hasAllocationMetadata = moduleOp->hasAttr(kDFBAllocationsAttrName);
+  bool hasDFB = false;
+  WalkResult result =
+      moduleOp.walk([&](Operation *nestedOperation) {
+        if (!isa<BindCBOp, CBReserveOp, CBPushOp, CBWaitOp, CBPopOp>(
+                nestedOperation)) {
+          return WalkResult::advance();
+        }
+        hasDFB = true;
+        if (!hasAllocationMetadata) {
+          return WalkResult::interrupt();
+        }
+        if (auto bindOp = dyn_cast<BindCBOp>(nestedOperation);
+            bindOp && !bindOp.getDfbId().has_value()) {
+          bindOp.emitOpError()
+              << "`" << consumerPass
+              << "` requires every `ttl.bind_cb` to have `dfb_id` after "
+                 "finalization";
+          return WalkResult::interrupt();
+        }
+
+        if (!isa<CBReserveOp, CBPushOp, CBWaitOp, CBPopOp>(nestedOperation)) {
+          return WalkResult::advance();
+        }
+        for (Value operand : nestedOperation->getOperands()) {
+          if (!isa<CircularBufferType>(operand.getType())) {
+            continue;
+          }
+          if (failed(getDFBId(operand))) {
+            nestedOperation->emitOpError()
+                << "`" << consumerPass
+                << "` requires every DFB lifecycle operand to resolve to "
+                   "`ttl.bind_cb` with `dfb_id` after finalization";
+            return WalkResult::interrupt();
+          }
+        }
+        return WalkResult::advance();
+      });
+
+  if (!hasDFB) {
+    return success();
+  }
+  if (!hasAllocationMetadata) {
+    moduleOp.emitOpError()
+        << "`" << consumerPass
+        << "` requires finalized DFB allocation metadata; run "
+           "`ttl-finalize-dfb-indices` first";
+    return failure();
+  }
+  return failure(result.wasInterrupted());
+}
+
+std::optional<BcastType> getTileBroadcastType(ArrayRef<int64_t> dims,
+                                              int64_t rank) {
+  llvm::SmallDenseSet<int64_t> normalizedDims = normalizeDimsToSet(dims, rank);
+  bool broadcastsInnermost = rank >= 1 && normalizedDims.contains(rank - 1);
+  bool broadcastsSecondInnermost =
+      rank >= 2 && normalizedDims.contains(rank - 2);
+  if (broadcastsInnermost && broadcastsSecondInnermost) {
+    return BcastType::Scalar;
+  }
+  if (broadcastsSecondInnermost) {
+    return BcastType::Row;
+  }
+  if (broadcastsInnermost) {
+    return BcastType::Col;
+  }
+  return std::nullopt;
+}
+
+FailureOr<ttkernel::ReduceDim> getReduceDimension(ArrayRef<int64_t> dims,
+                                                  int64_t rank) {
+  if (rank != 2) {
+    return failure();
+  }
+  llvm::SmallDenseSet<int64_t> normalizedDims = normalizeDimsToSet(dims, rank);
+  // TTKernel names the surviving orientation: reducing height uses a column
+  // reduction, while reducing width uses a row reduction.
+  bool reducesHeight = normalizedDims.contains(0);
+  bool reducesWidth = normalizedDims.contains(1);
+  if (reducesHeight && reducesWidth) {
+    return ttkernel::ReduceDim::Scalar;
+  }
+  if (reducesHeight) {
+    return ttkernel::ReduceDim::Col;
+  }
+  if (reducesWidth) {
+    return ttkernel::ReduceDim::Row;
+  }
+  return failure();
+}
+
 //===----------------------------------------------------------------------===//
 // DST access interface defaults
 //===----------------------------------------------------------------------===//
@@ -50,6 +157,10 @@ SmallVector<DstFootprint, 2> getDefaultDstReadFootprints(Operation *op) {
   }
   if (auto store = dyn_cast<TileStoreOp>(op)) {
     appendDstOperandFootprint(footprints, store.getTile());
+    return footprints;
+  }
+  if (auto accumulate = dyn_cast<TileAccumulateOp>(op)) {
+    appendDstOperandFootprint(footprints, accumulate.getAccumulator());
     return footprints;
   }
   if (op->hasTrait<TTLDSTInputsTrait>() ||
@@ -203,12 +314,15 @@ TileOpCategory classifyTileOp(Operation *op) {
   return TileOpCategory::Unknown;
 }
 
-FusionTraceResult traceFusionToRoots(mlir::Value value) {
+FusionTraceResult traceFusionToRoots(
+    mlir::Value value,
+    llvm::function_ref<bool(mlir::OpOperand &)> isMaterializationPlanned) {
   FusionTraceResult result;
 
-  // Base case: CB-attached value is a root
+  // A DFB-attached value is an available input to the fused computation.
   if (getAttachedCB(value)) {
     result.rootInputs.insert(value);
+    result.lifetimeRootInputs.insert(value);
     return result;
   }
 
@@ -219,34 +333,52 @@ FusionTraceResult traceFusionToRoots(mlir::Value value) {
     return result;
   }
 
-  // Special case: BlockBroadcastOp can be fused when its input is CB-attached.
+  // BlockBroadcastOp is a fusion leaf because its input must be DFB-attached.
   if (auto bcastOp = llvm::dyn_cast<BlockBroadcastOp>(defOp)) {
-    mlir::Value bcastInput = bcastOp.getInput();
-    if (getAttachedCB(bcastInput)) {
+    mlir::OpOperand &inputOperand = bcastOp->getOpOperand(0);
+    mlir::Value bcastInput = inputOperand.get();
+    bool isInputMaterialized = isMaterializationPlanned(inputOperand);
+    if (isInputMaterialized || getAttachedCB(bcastInput)) {
       result.rootInputs.insert(bcastInput);
+      if (!isInputMaterialized) {
+        result.lifetimeRootInputs.insert(bcastInput);
+      }
       result.opsInOrder.insert(defOp);
       return result;
     }
-    // Bcast recognized but input not CB-attached.
+    // The broadcast cannot be formed until its input is materialized.
     result.failureReason = TraceFailureReason::NotCBAttached;
     result.failedValue = bcastInput;
+    result.failedOperand = &inputOperand;
     return result;
   }
 
-  // Special case: MatmulOp with CB-attached inputs is a fusable leaf.
-  // Both inputs become roots; the trace does not recurse into the matmul.
+  // MatmulOp is a fusion leaf because both inputs must be DFB-attached.
   if (auto matmulOp = llvm::dyn_cast<MatmulOp>(defOp)) {
-    mlir::Value lhs = matmulOp.getLhs();
-    mlir::Value rhs = matmulOp.getRhs();
-    if (getAttachedCB(lhs) && getAttachedCB(rhs)) {
+    mlir::OpOperand &lhsOperand = matmulOp->getOpOperand(0);
+    mlir::OpOperand &rhsOperand = matmulOp->getOpOperand(1);
+    mlir::Value lhs = lhsOperand.get();
+    mlir::Value rhs = rhsOperand.get();
+    bool isLhsMaterialized = isMaterializationPlanned(lhsOperand);
+    bool isRhsMaterialized = isMaterializationPlanned(rhsOperand);
+    bool lhsAvailable = isLhsMaterialized || getAttachedCB(lhs);
+    bool rhsAvailable = isRhsMaterialized || getAttachedCB(rhs);
+    if (lhsAvailable && rhsAvailable) {
       result.rootInputs.insert(lhs);
       result.rootInputs.insert(rhs);
+      if (!isLhsMaterialized) {
+        result.lifetimeRootInputs.insert(lhs);
+      }
+      if (!isRhsMaterialized) {
+        result.lifetimeRootInputs.insert(rhs);
+      }
       result.opsInOrder.insert(defOp);
       return result;
     }
-    // Matmul recognized but inputs not CB-attached.
+    // The matmul cannot be formed until both inputs are materialized.
     result.failureReason = TraceFailureReason::NotCBAttached;
-    result.failedValue = getAttachedCB(lhs) ? rhs : lhs;
+    result.failedValue = lhsAvailable ? rhs : lhs;
+    result.failedOperand = lhsAvailable ? &rhsOperand : &lhsOperand;
     return result;
   }
 
@@ -262,15 +394,30 @@ FusionTraceResult traceFusionToRoots(mlir::Value value) {
     return result;
   }
 
-  // Recursively trace all operands
-  for (mlir::Value operand : getElementwiseOperands(defOp)) {
-    auto operandTrace = traceFusionToRoots(operand);
+  // Recursively trace every elementwise operand not replaced by a planned
+  // materialization.
+  unsigned numElementwiseOperands = getElementwiseOperands(defOp).size();
+  for (unsigned operandIndex = 0; operandIndex < numElementwiseOperands;
+       ++operandIndex) {
+    mlir::OpOperand &operand = defOp->getOpOperand(operandIndex);
+    if (isMaterializationPlanned(operand)) {
+      result.rootInputs.insert(operand.get());
+      continue;
+    }
+    auto operandTrace =
+        traceFusionToRoots(operand.get(), isMaterializationPlanned);
     if (operandTrace.failureReason != TraceFailureReason::Success) {
+      if (!operandTrace.failedOperand) {
+        operandTrace.failedOperand = &operand;
+      }
       return operandTrace;
     }
     // Merge roots and ops (SmallSetVector handles deduplication)
     for (mlir::Value root : operandTrace.rootInputs) {
       result.rootInputs.insert(root);
+    }
+    for (mlir::Value root : operandTrace.lifetimeRootInputs) {
+      result.lifetimeRootInputs.insert(root);
     }
     for (mlir::Operation *op : operandTrace.opsInOrder) {
       result.opsInOrder.insert(op);
@@ -281,6 +428,10 @@ FusionTraceResult traceFusionToRoots(mlir::Value value) {
   result.opsInOrder.insert(defOp);
 
   return result;
+}
+
+FusionTraceResult traceFusionToRoots(mlir::Value value) {
+  return traceFusionToRoots(value, [](mlir::OpOperand &) { return false; });
 }
 
 llvm::StringRef describeTraceFailure(TraceFailureReason reason) {
@@ -318,115 +469,14 @@ bool sharePackCB(scf::ForOp loopA, scf::ForOp loopB) {
   return false;
 }
 
-SmallVector<LoopGroup> collectLoopGroups(
-    ArrayRef<scf::ForOp> l1AccLoops,
-    const llvm::SmallDenseMap<Operation *, Operation *> &enablePointPerLoop) {
-  // Find the outermost annotated ancestor of a loop.
-  auto findRoot = [](scf::ForOp loop) -> scf::ForOp {
-    scf::ForOp outermost = loop;
-    for (Operation *parent = loop->getParentOp(); parent;
-         parent = parent->getParentOp()) {
-      if (auto parentFor = dyn_cast<scf::ForOp>(parent)) {
-        if (parentFor->hasAttr(kL1AccLoopAttrName) ||
-            parentFor->hasAttr(kReductionLoopAttrName)) {
-          outermost = parentFor;
-        }
-      }
-    }
-    return outermost;
-  };
-
-  SmallVector<LoopGroup> groups;
-  llvm::SmallDenseSet<Operation *> assigned;
-
-  for (auto loop : l1AccLoops) {
-    if (!enablePointPerLoop.count(loop.getOperation())) {
-      continue;
-    }
-    if (assigned.contains(loop.getOperation())) {
-      continue;
-    }
-
-    scf::ForOp rootLoop = findRoot(loop);
-    auto groupPackCBs = getPackTileCBs(rootLoop);
-
-    // A bare non-annotated scf.for between siblings does not break the
-    // group unless its body packs to one of the group's pack CBs — such
-    // a pack runs with L1 acc disabled and would overwrite the shared
-    // L1 slot before the next sibling accumulates onto it.
-    auto bareForMutatesSharedCB = [&](scf::ForOp forOp) {
-      auto innerCBs = getPackTileCBs(forOp);
-      return llvm::any_of(innerCBs,
-                          [&](Value cb) { return groupPackCBs.contains(cb); });
-    };
-
-    LoopGroup group;
-    group.rootLoop = rootLoop;
-    group.loops.push_back(loop);
-    assigned.insert(loop.getOperation());
-
-    // Collect sibling annotated loops that share a pack CB target.
-    // sharePackCB walks recursively, so for nested loops (rootLoop
-    // wrapping loop), it finds pack_tile ops inside the inner loop.
-    for (Operation *op = rootLoop->getNextNode(); op; op = op->getNextNode()) {
-      if (isa<ttk::CBPushBackOp>(op)) {
-        break;
-      }
-      auto sibling = dyn_cast<scf::ForOp>(op);
-      if (!sibling) {
-        continue;
-      }
-      if (!sibling->hasAttr(kL1AccLoopAttrName) &&
-          !sibling->hasAttr(kReductionLoopAttrName)) {
-        if (bareForMutatesSharedCB(sibling)) {
-          break;
-        }
-        continue;
-      }
-      if (!sharePackCB(rootLoop, sibling)) {
-        break;
-      }
-      group.loops.push_back(sibling);
-      assigned.insert(sibling.getOperation());
-    }
-
-    // Find scope end: scan forward from rootLoop past grouped siblings,
-    // init ops between them, and trailing cb_push_back ops. Stop at a
-    // cb_reserve_back, any annotated scf.for that is not in this group
-    // (belongs to a different scope), or a bare scf.for that packs to
-    // one of the group's pack CBs.
-    group.scopeEnd = rootLoop;
-    for (Operation *op = rootLoop->getNextNode(); op; op = op->getNextNode()) {
-      if (isa<ttk::CBPushBackOp>(op)) {
-        group.scopeEnd = op;
-      } else if (isa<ttk::CBReserveBackOp>(op)) {
-        break;
-      } else if (auto forOp = dyn_cast<scf::ForOp>(op)) {
-        if (assigned.contains(forOp)) {
-          continue;
-        }
-        bool isAnnotated = forOp->hasAttr(kL1AccLoopAttrName) ||
-                           forOp->hasAttr(kReductionLoopAttrName);
-        if (isAnnotated || bareForMutatesSharedCB(forOp)) {
-          break;
-        }
-      }
-    }
-
-    groups.push_back(std::move(group));
-  }
-
-  return groups;
-}
-
 //===----------------------------------------------------------------------===//
 // Compiler-allocated DFB utilities
 //===----------------------------------------------------------------------===//
 
-int32_t getNextAvailableDFBIndex(ModuleOp mod) {
+int32_t getNextAvailableDFBIndex(Operation *scopeOp) {
   int32_t maxIndex = -1;
 
-  mod->walk([&](BindCBOp bindOp) {
+  scopeOp->walk([&](BindCBOp bindOp) {
     int64_t idx = bindOp.getCbIndex().getSExtValue();
     if (static_cast<int32_t>(idx) > maxIndex) {
       maxIndex = static_cast<int32_t>(idx);

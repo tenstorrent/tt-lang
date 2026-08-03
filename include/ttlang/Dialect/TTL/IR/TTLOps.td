@@ -34,16 +34,22 @@ def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
 
     - `cb_index` is the circular buffer hardware slot index (0-31).
     - `block_count` is the number of blocks (default 2 for double buffering).
+    - `dfb_id` identifies the logical dataflow buffer. User declarations carry
+      this identity. Compiler-created declarations may omit it while their
+      identity is unresolved. Bindings in different kernels with the same
+      `dfb_id` refer to the same logical buffer even when physical
+      allocation changes `cb_index`.
     Example:
 
     ```mlir
-    %cb = ttl.bind_cb {cb_index = 0 : index, block_count = 2}
-          : !ttl.cb<[1, 1], f32, 2>
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     ```
   }];
   let arguments = (ins
     IndexAttr:$cb_index,
-    DefaultValuedAttr<I64Attr, "2">:$block_count
+    DefaultValuedAttr<I64Attr, "2">:$block_count,
+    OptionalAttr<IndexAttr>:$dfb_id
   );
   let results = (outs TTL_CircularBuffer:$result);
   let assemblyFormat = "`{` `cb_index` `=` $cb_index `,` `block_count` `=` $block_count `}` attr-dict `:` type($result)";
@@ -253,6 +259,10 @@ def TTL_ComputeOp : TTL_Op<"compute", [
     arguments are individual tiles (`!ttcore.tile<H, W, dtype>`) extracted from
     the input/output tensors at each iteration point.
 
+    A body containing `ttl.tile_accumulate` requires at least one reduction
+    iterator. The accumulator remains resident in DST across the corresponding
+    reduction iterations.
+
     In the pipeline, `ttl.compute` is lowered to `scf.for` loops by
     `ttl-lower-to-loops` BEFORE bufferization. The `ttl.tile_*` ops in the
     loop body are then converted to TTKernel ops after bufferization.
@@ -313,6 +323,12 @@ def TTL_ComputeOp : TTL_Op<"compute", [
     // computes with potentially different output shapes, as well as
     // reductions where the output shape is smaller than the iteration domain.
     int64_t getTotalIterationTiles();
+
+    /// Returns the unique formal output index whose attached DFB matches
+    /// `view`. Failure means the association is absent or ambiguous.
+    /// TODO(bnorris): Encode this association in `ttl.tile_store` and remove
+    /// DFB-based discovery. See #797.
+    FailureOr<unsigned> getOutputIndexForView(Value view);
 
     // Return whether the body contains an op of the given type.
     template <typename OpTy>
@@ -387,7 +403,8 @@ def TTL_AccumulationScopeOp : TTL_Op<"accumulation_scope", [
 def TTL_DstSectionOp : TTL_Op<"dst_section", [
     SingleBlockImplicitTerminator<"YieldOp">,
     RecursiveMemoryEffects,
-    NoRegionArguments
+    NoRegionArguments,
+    DeclareOpInterfaceMethods<RegionBranchOpInterface>
   ]> {
   let summary = "DST register acquisition scope";
   let description = [{
@@ -802,7 +819,8 @@ def TTL_SignpostOp : TTL_Op<"signpost", []> {
 // Debug print operations
 //===----------------------------------------------------------------------===//
 
-def TTL_DPrintOp : TTL_Op<"dprint", []> {
+def TTL_DPrintOp
+    : TTL_Op<"dprint", [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Debug print from device kernel";
   let description = [{
     Emits device debug print calls. Mode determines the output format:
@@ -818,6 +836,10 @@ def TTL_DPrintOp : TTL_Op<"dprint", []> {
     ttl.dprint "input" (%cb) {mode = "cb"} : (!ttl.cb<...>)
     ttl.dprint "after exp" () {mode = "dst"}
     ```
+
+    Debug output is an observable side effect. Transformations must preserve
+    its order relative to tensor evaluation unless they move the print with
+    the observed computation.
   }];
 
   let arguments = (ins
@@ -1017,6 +1039,34 @@ class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
   let assemblyFormat = "$input `into` `dst` `[` $dst_index `]` attr-dict `:` type($input) `->` type($result)";
 }
 
+def TTL_TileAccumulateOp : TTL_TileOp<"tile_accumulate",
+    [TTL_TileBinaryOpTrait, TTL_DSTInputsTrait, TTL_InPlaceOpTrait,
+     TTL_AccumulatingOpTrait, TTL_DstResultOpTrait,
+     AllTypesMatch<["accumulator", "contribution", "result"]>]> {
+  let summary = "In-DST tile recurrence";
+  let description = [{
+    `ttl.tile_accumulate` models one tile-level recurrence update whose
+    accumulator is resident in DST. The operation applies `combiner` to
+    `accumulator` and `contribution`, writes the result into `dst_index`, and
+    returns the value resident in that same DST slot.
+
+    Example:
+
+    ```mlir
+    %idx = arith.constant 0 : index
+    %next = ttl.tile_accumulate %acc, %delta add into dst[%idx]
+        : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>
+          -> !ttcore.tile<32x32, bf16>
+    ```
+  }];
+  let arguments = (ins TTL_TileType:$accumulator,
+                       TTL_TileType:$contribution,
+                       TTL_AccumulationCombinerAttr:$combiner,
+                       Index:$dst_index);
+  let results = (outs TTL_TileType:$result);
+  let hasCustomAssemblyFormat = 1;
+}
+
 //===----------------------------------------------------------------------===//
 // Binary Elementwise Operations (Tensor + Tile Ops)
 //===----------------------------------------------------------------------===//
@@ -1161,7 +1211,7 @@ def TTL_TileTypecastOp : TTL_TileOp<"tile_typecast",
 // Broadcast Operation
 //===----------------------------------------------------------------------===//
 
-def TTL_BlockBroadcastOp : TTL_Op<"block.broadcast", [
+def TTL_BlockBroadcastOp : TTL_Op<"block.broadcast", [Pure,
     DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>]> {
   let summary = "Broadcast a block over specified dimensions to a target shape";
   let description = [{
@@ -1430,7 +1480,7 @@ def TTL_CBReserveOp : TTL_Op<"cb_reserve",
   }];
   let arguments = (ins
     TTL_CircularBuffer:$cb,
-    OptionalAttr<I64Attr>:$num_tiles
+    ConfinedAttr<OptionalAttr<I64Attr>, [IntPositive]>:$num_tiles
   );
   let results = (outs AnyRankedTensor:$result);
   let assemblyFormat = "$cb attr-dict `:` type($cb) `->` type($result)";
@@ -1457,7 +1507,7 @@ def TTL_CBPushOp : TTL_Op<"cb_push", [MemoryEffects<[MemWrite]>]> {
   }];
   let arguments = (ins
     TTL_CircularBuffer:$cb,
-    OptionalAttr<I64Attr>:$num_tiles
+    ConfinedAttr<OptionalAttr<I64Attr>, [IntPositive]>:$num_tiles
   );
   let assemblyFormat = "$cb attr-dict `:` type($cb)";
   let hasVerifier = 1;
@@ -1485,7 +1535,7 @@ def TTL_CBWaitOp : TTL_Op<"cb_wait",
   }];
   let arguments = (ins
     TTL_CircularBuffer:$cb,
-    OptionalAttr<I64Attr>:$num_tiles
+    ConfinedAttr<OptionalAttr<I64Attr>, [IntPositive]>:$num_tiles
   );
   let results = (outs AnyRankedTensor:$result);
   let assemblyFormat = "$cb attr-dict `:` type($cb) `->` type($result)";
@@ -1513,7 +1563,7 @@ def TTL_CBPopOp : TTL_Op<"cb_pop", [MemoryEffects<[MemWrite]>]> {
   }];
   let arguments = (ins
     TTL_CircularBuffer:$cb,
-    OptionalAttr<I64Attr>:$num_tiles
+    ConfinedAttr<OptionalAttr<I64Attr>, [IntPositive]>:$num_tiles
   );
   let assemblyFormat = "$cb attr-dict `:` type($cb)";
   let hasVerifier = 1;

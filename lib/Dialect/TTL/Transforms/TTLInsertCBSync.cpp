@@ -41,21 +41,16 @@ static void insertMissingReleases(ArrayRef<Operation *> acquires,
                                   CreateReleaseFn createRelease) {
   for (Operation *acquire : acquires) {
     DFBAcquireInterval interval = makeDFBAcquireInterval(acquire, acquires);
-    // Cheap check first: any release inside the strict next-acquire range?
-    DFBReleaseSearch releaseSearch = findOwnedDFBReleases(
-        interval, /*lastOwnedUse=*/nullptr, releases, &erased);
+
+    // Tensor SSA uses can keep this acquired slot live past the next same-DFB
+    // acquire. An existing release after that final use still belongs to this
+    // acquire, so pass the final use into the release search.
+    Operation *last = findLastDFBAcquireOwnedUse(interval);
+    DFBReleaseSearch releaseSearch =
+        findOwnedDFBReleases(interval, last, releases, &erased);
+
     if (releaseSearch.hasSameLevelRelease()) {
       continue;
-    }
-
-    // Compute the last owned use; it both bounds the idempotency recheck
-    // and pinpoints the insertion point.
-    Operation *last = findLastDFBAcquireOwnedUse(interval);
-    if (last != interval.acquire) {
-      releaseSearch = findOwnedDFBReleases(interval, last, releases, &erased);
-      if (releaseSearch.hasSameLevelRelease()) {
-        continue;
-      }
     }
 
     for (Operation *nestedRelease : releaseSearch.nestedReleases) {
@@ -77,7 +72,6 @@ struct TTLInsertCBSyncPass
     SmallVector<Operation *> waits;
     SmallVector<Operation *> pushes;
     SmallVector<Operation *> pops;
-
     collectDFBAcquireReleaseOps(func, reserves, waits, pushes, pops);
 
     OpBuilder builder(func.getContext());
@@ -88,14 +82,14 @@ struct TTLInsertCBSyncPass
     DenseSet<Operation *> erased;
 
     insertMissingReleases(reserves, pushes, erased, builder,
-                          [](OpBuilder &b, Location loc, Value cb) {
-                            CBPushOp::create(b, loc, cb,
+                          [](OpBuilder &builder, Location location, Value dfb) {
+                            CBPushOp::create(builder, location, dfb,
                                              /*num_tiles=*/IntegerAttr{});
                           });
 
     insertMissingReleases(waits, pops, erased, builder,
-                          [](OpBuilder &b, Location loc, Value cb) {
-                            CBPopOp::create(b, loc, cb,
+                          [](OpBuilder &builder, Location location, Value dfb) {
+                            CBPopOp::create(builder, location, dfb,
                                             /*num_tiles=*/IntegerAttr{});
                           });
   }

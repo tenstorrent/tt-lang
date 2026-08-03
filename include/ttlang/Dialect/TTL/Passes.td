@@ -117,6 +117,61 @@ def TTLInsertCopyWait
   let dependentDialects = [];
 }
 
+def TTLFormAccumulationScopes
+    : Pass<"ttl-form-accumulation-scopes", "::mlir::func::FuncOp"> {
+  let summary = "Form semantic accumulation scopes around tensor recurrences";
+  let description = [{
+    Wraps loop-carried additive tensor recurrences in
+    `ttl.accumulation_scope` so later passes can lower the recurrence from an
+    explicit accumulation policy instead of recovering it from ordinary tensor
+    stores.
+
+    Before:
+
+    ```mlir
+    %result = scf.for %iv = %lb to %ub step %step
+        iter_args(%acc = %init) -> (tensor<...>) {
+      %contribution = ...
+      %next = ttl.add %acc, %contribution : tensor<...>
+      scf.yield %next : tensor<...>
+    }
+    ttl.store %result, %out : tensor<...>, tensor<...>
+    ```
+
+    After:
+
+    ```mlir
+    ttl.accumulation_scope outs(%out : tensor<...>)
+        inits(%init : tensor<...>) {
+    ^bb0(%scope_acc: tensor<...>):
+      %result = scf.for %iv = %lb to %ub step %step
+          iter_args(%acc = %scope_acc) -> (tensor<...>) {
+        %contribution = ...
+        %next = ttl.add %acc, %contribution : tensor<...>
+        scf.yield %next : tensor<...>
+      }
+      ttl.store %result, %out : tensor<...>, tensor<...>
+      ttl.yield %result : tensor<...>
+    } initial_modes([init])
+    ```
+
+    The tensor form requires an init-backed recurrence, one final
+    non-accumulating store to a dataflow buffer reservation, a streamed or
+    resident dataflow-buffer-backed contribution, and an output tile count that
+    fits in one streaming DST section.
+  }];
+
+  let options = [
+    Option<"kind", "kind", "std::string", "\"tensor\"",
+           "Accumulation scope form to create. `dfb` is reserved and unsupported.">
+  ];
+
+  let dependentDialects = [
+    "::mlir::scf::SCFDialect",
+    "::mlir::tt::ttl::TTLDialect"
+  ];
+}
+
 def TTLMaterializeLoopState
     : Pass<"ttl-materialize-loop-state", "::mlir::func::FuncOp"> {
   let summary = "Materialize loop-carried tensor state";
@@ -125,7 +180,10 @@ def TTLMaterializeLoopState
     buffer state. The pass removes tensor results from the loop while
     preserving non-tensor iter args.
 
-    Tensor recurrences use compiler-allocated dataflow buffer state:
+    Additive tensor recurrences are handled earlier by
+    `ttl-form-accumulation-scopes` and `ttl-lower-accumulation-scopes`.
+    Any tensor recurrence that reaches this pass uses compiler-allocated
+    dataflow buffer state:
     ```mlir
     %state = scf.for %iv = %lb to %ub step %step
         iter_args(%arg = %init) -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
@@ -153,7 +211,73 @@ def TTLMaterializeLoopState
   }];
 
   let dependentDialects = [
+    "::mlir::arith::ArithDialect",
     "::mlir::scf::SCFDialect",
+    "::mlir::tensor::TensorDialect",
+    "::mlir::tt::ttl::TTLDialect"
+  ];
+}
+
+def TTLInsertAccumulationScopes
+    : Pass<"ttl-insert-accumulation-scopes", "::mlir::func::FuncOp"> {
+  let summary = "Insert semantic accumulation scopes";
+  let description = [{
+    Inserts `ttl.accumulation_scope` regions around accumulation constructs
+    before concrete storage strategy selection. The initial tensor mode
+    recognizes single-output additive tensor recurrences whose loop result is
+    immediately stored to a dataflow buffer reservation. DFB mode recognizes
+    user-written accumulating stores after DFB acquire/release structure is
+    canonical.
+
+    The pass records accumulation policy only. It does not select DST, L1
+    packer accumulation, or explicit dataflow buffer state.
+  }];
+
+  let options = [
+    Option<"kind", "kind", "std::string", "\"tensor\"",
+           "Scope insertion kind: tensor or dfb.">
+  ];
+
+  let dependentDialects = [
+    "::mlir::scf::SCFDialect",
+    "::mlir::tt::ttl::TTLDialect"
+  ];
+}
+
+def TTLLowerAccumulationScopes
+    : Pass<"ttl-lower-accumulation-scopes", "::mlir::func::FuncOp"> {
+  let summary = "Lower semantic accumulation scopes";
+  let description = [{
+    Lowers `ttl.accumulation_scope` regions to a concrete storage strategy.
+    Tensor mode supports additive tensor recurrences formed by
+    `ttl-form-accumulation-scopes` and stateful tensor scopes that lower to
+    explicit stores in `strategy=auto`. DFB mode lowers user-written
+    accumulating stores to L1 packer metadata.
+    L1-selected loops carry `ttl.l1_acc_initial` and `ttl.l1_acc_scope_id`
+    metadata for TTKernel packer reconfiguration placement.
+
+    For additive tensor scopes, `strategy=auto` selects DST when the recurrence
+    satisfies the DST legality rules and otherwise uses L1 packer accumulation.
+    `strategy=dst` requires DST and emits an error when the tensor scope is not
+    DST-compatible. `strategy=l1-pack` always uses the L1 packer strategy.
+    Stateful tensor scopes lower only in `strategy=auto`.
+    For f32 recurrences the DST strategy feeds the accumulator back through SRCA
+    each iteration, truncating to tf32; `l1-pack` accumulates in f32 L1 and
+    retains full f32 precision.
+    DFB scopes always lower to L1 packer metadata because their storage target
+    is the reserved output dataflow buffer slot.
+  }];
+
+  let options = [
+    Option<"kind", "kind", "std::string", "\"tensor\"",
+           "Scope lowering kind: tensor or dfb.">,
+    Option<"strategy", "strategy", "std::string", "\"auto\"",
+           "Tensor recurrence accumulation strategy: auto, dst, or l1-pack.">
+  ];
+
+  let dependentDialects = [
+    "::mlir::scf::SCFDialect",
+    "::mlir::tensor::TensorDialect",
     "::mlir::tt::ttl::TTLDialect"
   ];
 }
@@ -183,25 +307,33 @@ def TTLConvertTTLToTTKernel
 
 def TTKernelInsertL1Accumulation
     : Pass<"ttkernel-insert-l1-accumulation", "::mlir::ModuleOp"> {
-  let summary = "Insert L1 accumulation guards for reduction loops";
+  let summary = "Insert packer L1 accumulation reconfiguration";
   let description = [{
-    Inserts `pack_reconfig_l1_acc` guards so that pack operations inside
-    annotated loops accumulate into L1 instead of overwriting. Max-reduce
-    loops are excluded (max is not additive).
+    Inserts `pack_reconfig_l1_acc` operations so that pack operations inside
+    annotated loops accumulate into L1 instead of overwriting. Max-reduce loops
+    are excluded because max is not additive.
+    Annotated additive loops must pack to output formats supported by packer
+    L1 accumulation: f32, f16, bf16, si32, or u8.
 
-    Loops are grouped into accumulation scopes: consecutive sibling loops
-    that pack to the same CB share a single disable pair. Nested annotated
-    loops are folded into the outermost ancestor. Each group gets:
-    - `pack_reconfig_l1_acc(0)` before the first loop.
+    Loops are grouped into accumulation scopes by `ttl.l1_acc_scope_id`;
+    the pass does not infer scope identity from neighboring TTKernel
+    operations. Nested annotated loops are folded into the outermost ancestor
+    with the same scope id. Each group gets:
+    - `pack_reconfig_l1_acc(0)` before the first loop when
+      `ttl.l1_acc_initial=overwrite`, or `pack_reconfig_l1_acc(1)` when
+      `ttl.l1_acc_initial=accumulate_existing`.
     - `if (iv == lb) pack_reconfig_l1_acc(1)` after each loop's first
-      iteration (the L1 acc state persists across `tile_regs` boundaries).
+      iteration for overwrite-mode loops (the L1 acc state persists across
+      `tile_regs` boundaries).
     - For the second+ loop in a group, an enable before the loop to re-enable
       L1 acc after init ops that may reset packer state.
     - `pack_reconfig_l1_acc(0)` after the last `cb_push_back`.
 
     Loops are identified by the `ttl.l1_acc_loop` (user-written) or
     `ttl.reduction_loop` (compiler-generated) attributes on `scf.for`
-    ops, with `ttl.l1_acc_loop` taking precedence.
+    ops, with `ttl.l1_acc_loop` taking precedence. Each loop must carry
+    `ttl.l1_acc_initial` and `ttl.l1_acc_scope_id` so this pass does not infer
+    semantic accumulation state from neighboring TTKernel operations.
 
   }];
 
@@ -212,43 +344,54 @@ def TTKernelInsertL1Accumulation
   ];
 }
 
-def TTLAnnotateL1AccLoops
-    : Pass<"ttl-annotate-l1-acc-loops", "::mlir::func::FuncOp"> {
-  let summary = "Annotate user-written scf.for loops for L1 accumulation";
-  let description = [{
-    Detects user-written `scf.for` loops containing `ttl.store` ops with
-    the `accumulate` attribute (emitted by the `+=` operator) and annotates
-    them with `ttl.l1_acc_loop`. This enables `TTKernelInsertL1Accumulation`
-    to insert `pack_reconfig_l1_acc` guards so that packs accumulate across
-    iterations instead of overwriting.
-  }];
-  let dependentDialects = [
-    "::mlir::scf::SCFDialect"
-  ];
-}
-
 def TTLInsertIntermediateDFBs
     : Pass<"ttl-insert-intermediate-dfbs", "::mlir::func::FuncOp"> {
   let summary = "Insert intermediate dataflow buffers at fusion split points";
   let description = [{
     Walks ops implementing `DFBInputOpInterface` and checks whether the
     operands they declare as requiring DFB-attached values are satisfied.
-    When an operand comes from a fused expression chain (not DFB-attached),
-    the pass inserts a compiler-allocated DFB:
+    When an operand comes from `ttl.compute`, the pass materializes it as an
+    extra compute output backed by a compiler-allocated DFB. The pass creates
+    the DFB, reserves the output slot, clones the compute with an extra
+    `ttl.tile_store`, emits the producer-side `cb_push`, and rewrites the
+    consumer operand to the attached waited value:
 
-      bind_cb -> cb_reserve -> store -> cb_wait -> attach_cb
+      bind_cb -> cb_reserve -> ttl.compute tile_store -> cb_push -> cb_wait -> attach_cb
 
-    `cb_push` and `cb_pop` are omitted; `ttl-insert-cb-sync` inserts them
-    based on transitive use analysis.
+    Non-compute producers use the tensor-level helper. It emits the reserve,
+    store, wait, and attach; `ttl-insert-cb-sync` later inserts the matching
+    push and pop to complete this lifecycle:
 
-    Compiler-allocated DFBs are marked with `ttl.compiler_allocated` so
-    that `ttl-finalize-dfb-indices` can register them for the Python
-    runtime.
+      bind_cb -> cb_reserve -> store -> cb_push -> cb_wait -> attach_cb -> cb_pop
+
+    Before modifying IR, the pass computes a whole-kernel analysis state of
+    exact consumer operands that require DFB materialization. Decisions grow
+    monotonically to a fixed point and retain independent evidence. This
+    follows the One-Shot Bufferize model: analysis records every operand
+    decision first, then a separate immutable plan groups those decisions by
+    producer and applies them without repeating policy.
+
+    MLIR dense forward dataflow proves DFB-backed inputs available at their
+    eventual compute positions across CFG and structured-region edges.
+    Any ambiguous acquisition ownership, partial release, or unrecognized
+    storage identity is treated as possibly released and may require an
+    additional materialization. A fusion boundary at an independently formable
+    producer materializes the exact consumer operand. Multiple reserve
+    transactions for one result materialize all of its uses through one shared
+    compiler DFB. Application begins only after the complete plan is valid.
+
+    In the standard pipeline this pass runs after
+    `ttl-create-producer-compute`, so tensor-level materialization is limited
+    to IR forms that have not yet been converted to `ttl.compute`.
+
+    All DFBs created by this pass are marked with `ttl.compiler_allocated`;
+    `ttl-finalize-dfb-indices` assigns physical indices and emits runtime
+    metadata after materialization is complete.
 
     When `enable` is false, the pass verifies that no operations require
-    compiler-allocated DFBs. If any `DFBInputOpInterface` op has a
-    non-DFB-attached operand, the pass emits an error diagnostic and
-    signals failure.
+    compiler-allocated DFBs for operand attachment or source-lifetime
+    preservation. If any operation requires either materialization, the pass
+    emits an error diagnostic and signals failure.
   }];
 
   let options = [
@@ -258,23 +401,85 @@ def TTLInsertIntermediateDFBs
   ];
 
   let dependentDialects = [
-    "::mlir::tt::ttl::TTLDialect"
+    "::mlir::tensor::TensorDialect"
+  ];
+}
+
+def TTLPrintDFBValueLifetimes
+    : Pass<"ttl-print-dfb-value-lifetimes", "::mlir::func::FuncOp"> {
+  let summary = "Print DFB lifetime analysis for debugging and tests";
+  let description = [{
+    This diagnostic pass prints the immutable acquisition, release-ownership,
+    transfer-count, and program-point availability facts used by `ComputeOp`
+    creation and intermediate DFB materialization. It supports debugging and
+    deterministic regression tests; IDs follow kernel walk order rather than
+    process addresses. The pass emits text to stderr and does not modify IR.
+  }];
+
+  let dependentDialects = [];
+}
+
+def TTLPrintComputeOpCreationPlans
+    : Pass<"ttl-print-compute-op-creation-plans", "::mlir::func::FuncOp"> {
+  let summary = "Print ComputeOp creation plans for debugging and tests";
+  let description = [{
+    This diagnostic pass prints the immutable ComputeOp creation recipes,
+    dependency-safe application order, overlap-preserving uses, unassigned
+    output stores, and intermediate DFB materialization requirements. Each
+    materialization includes the evidence that requires the consumer operand
+    to be materialized. It supports debugging and deterministic regression
+    tests; IDs follow kernel walk order rather than process addresses. The pass
+    emits text to stderr and does not modify IR.
+  }];
+
+  let dependentDialects = [];
+}
+
+def TTLProducerComputeCreation
+    : Pass<"ttl-create-producer-compute", "::mlir::func::FuncOp"> {
+  let summary = "Create ttl.compute ops before compiler DFB materialization";
+  let description = [{
+    Builds an immutable kernel plan before applying any rewrite. The plan
+    records typed tile recipes, input lifetimes, iteration semantics,
+    result-use ordering, output transactions, and dependency-safe application
+    order. Operations whose plans satisfy every condition are converted to
+    `ttl.compute`. Operations with rejected plans are not transformed, so
+    `ttl-insert-intermediate-dfbs` can materialize the required intermediate
+    values.
+
+    When a block-level store is absorbed into a producer compute, this pass
+    relocates any corresponding publication that would otherwise precede the
+    new compute. The resulting order is:
+
+      cb_reserve -> ttl.compute tile_store -> cb_push
+  }];
+
+  let dependentDialects = [
+    "::mlir::affine::AffineDialect",
+    "::mlir::arith::ArithDialect",
+    "::mlir::tensor::TensorDialect",
+    "::mlir::tt::ttkernel::TTKernelDialect"
   ];
 }
 
 def TTLConvertTTLToCompute
     : Pass<"convert-ttl-to-compute", "::mlir::func::FuncOp"> {
-  let summary = "Lower TTL elementwise tensor ops to ttl.compute with tile ops";
+  let summary = "Lower planned tensor operations to ttl.compute";
   let description = [{
-    Lowers TTL elementwise tensor operations (e.g., add, mul, exp, relu) to
-    ttl.compute with SSA-style tile operations in the body. This enables:
-    - Fusion of matmul + elementwise operations in the same compute body
-    - DST register tiling via TilingInterface
-    - Standard SSA optimizations (CSE, DCE, canonicalization)
+    Builds a complete immutable plan before modifying IR, then lowers selected
+    tensor operations to `ttl.compute` with recorded tile recipes. The plan
+    includes direct and fused inputs, affine indexing, iterator semantics,
+    side-effect placement, output reserve/publication transactions, and
+    dependency-safe application order. Before modifying IR, final conversion
+    verifies that every `ttl.store` will either be absorbed into a planned
+    `ttl.compute` or converted to a DFB-to-DFB passthrough. The pass fails if
+    neither conversion applies. `ttl-create-producer-compute` may leave such
+    stores for `ttl-insert-intermediate-dfbs` to resolve.
   }];
 
   let dependentDialects = [
-    "::mlir::func::FuncDialect",
+    "::mlir::affine::AffineDialect",
+    "::mlir::arith::ArithDialect",
     "::mlir::tensor::TensorDialect",
     "::mlir::tt::ttkernel::TTKernelDialect"
   ];
@@ -481,10 +686,15 @@ def TTLScheduleOperations
     interleaved. This pass groups them so `ttkernel-insert-inits` can emit
     one init per consecutive group of same-type ops.
 
-    Ops are sorted by (dependency depth, category, TypeID, init affinity,
+    Ops are sorted by (dependency depth, category, operation name, init affinity,
     dst_index). Dependency depth considers SSA RAW, DST RAW, WAW (same DST
     write index), and WAR (write after prior read of same DST index) hazards.
     Ops at the same depth are independent and can be reordered.
+
+    Pure, speculatable bookkeeping operations are transparent to scheduling
+    unless they consume a candidate tile result. Every other operation outside
+    the scheduled tile categories preserves its relative order and divides the
+    tile operations into independent scheduling sequences.
 
     Only tile ops between `tile_regs_acquire` and `tile_regs_commit` are
     scheduled. Store ops (after the commit/wait boundary) are not reordered.
@@ -568,9 +778,9 @@ def TTLVerifyPipeNetGuards
 
     The pass expects one module per `@ttl.operation`, a well-formed
     `ttl.launch_grid` (i64 array of length 2 with positive entries), static
-    `I64Attr` coordinates on `ttl.create_pipe`, and finalized DFB indices
-    (i.e. `ttl-annotate-cb-associations` and `ttl-finalize-dfb-indices`
-    have run).
+    `I64Attr` coordinates on `ttl.create_pipe`, and the
+    `ttl.dfb_allocations` metadata emitted by `ttl-finalize-dfb-indices`.
+    `ttl-annotate-cb-associations` must also have run.
   }];
 
   let dependentDialects = [
@@ -598,12 +808,14 @@ def TTLVerifyDFBSPSC
     : Pass<"ttl-verify-dfb-spsc", "::mlir::ModuleOp"> {
   let summary = "Reject DFBs with overlapping producer or consumer launch domains";
   let description = [{
-    Walks every `ttl.cb_reserve` and `ttl.cb_wait`, groups them by `cb_index`
-    (resolved via `getCBIndex`) and enclosing `ttl.kernel_thread`-tagged
-    `func.func`, and tracks the launch-node domain for each producer or
-    consumer participant. A DFB is valid when, for each launched node, at most
-    one producer thread reserves it and at most one consumer thread waits on it.
-    Disjoint domains across different kernel-thread functions are accepted.
+    Walks every `ttl.cb_reserve` and `ttl.cb_wait`, groups them by module-wide
+    logical `dfb_id` and enclosing `ttl.kernel_thread`-tagged `func.func`, and
+    tracks the launch-node domain for each producer or consumer participant.
+    A DFB is valid when, for each launched node, at most one producer kernel
+    reserves it and at most one consumer kernel waits on it. Disjoint domains
+    across different kernel functions are accepted. Distinct logical
+    DFBs remain separate when physical allocation assigns them the same
+    `cb_index`.
 
     tt-metal circular buffers expose a counter pair (`pages_received`,
     `pages_acked`) that is not multi-writer safe on either side, so the
@@ -613,10 +825,10 @@ def TTLVerifyDFBSPSC
     domains, and for unknown domains when multiple threads participate and SPSC
     cannot be proven statically.
 
-    Prerequisite: `ttl-finalize-dfb-indices` must run first so that every
-    `bind_cb` carries a concrete `cb_index`, and modules with DFB acquire ops
-    must carry a valid `ttl.launch_grid` attribute. The pass asserts on
-    unresolvable indices.
+    The module must contain the `ttl.dfb_allocations` metadata emitted by
+    `ttl-finalize-dfb-indices`, and every DFB declaration and lifecycle operand
+    must resolve to a `ttl.bind_cb` with `dfb_id`. Modules with DFB acquire ops
+    must also carry a valid `ttl.launch_grid` attribute.
   }];
 
   let dependentDialects = [];
@@ -660,22 +872,50 @@ def TTLLowerSignpostToEmitC
 
 def TTLFinalizeDFBIndices
     : Pass<"ttl-finalize-dfb-indices", "::mlir::ModuleOp"> {
-  let summary = "Reuse compiler-allocated DFB indices and emit DFB metadata";
+  let summary = "Assign physical DFB indices and emit allocation metadata";
   let description = [{
-    Module-level pass that runs after all DFB-creating passes. Must
-    precede ttl-annotate-cb-associations (which copies cb_index onto
-    tile ops and would capture stale pre-reuse indices).
+    Module-level pass that runs after all DFB-creating and synchronization
+    passes. Must precede `ttl-set-compute-kernel-config` and
+    `ttl-annotate-cb-associations`, which copy DFB indices into attributes and
+    would otherwise capture provisional indices.
 
-    Applies lifetime-based index reuse to compiler-allocated DFBs via
-    linear scan allocation, partitioned by CircularBufferType. DFBs
-    whose lifetimes (bind_cb to last cb_pop) do not overlap are assigned
-    the same physical index. See docs/development/DFBManagement.md.
+    User-declared DFBs enter this pass with module-wide logical `dfb_id`
+    attributes. Compiler-created DFB declarations receive unique logical IDs.
+    The logical identity remains independent of the physical `cb_index`, so
+    later analyses can distinguish DFBs that share one hardware slot.
 
-    After reuse, verifies the total DFB count does not exceed
-    kMaxCircularBuffers (32), updates ttl.base_cta_index on every
-    function, and builds the ttl.compiler_allocated_dfbs module
-    attribute for the Python runtime.
+    With `reuse-user-dfbs` enabled, the pass analyzes all logical DFBs,
+    including declarations shared across kernels. Reuse requires exact
+    `CircularBufferType` equality, equal transaction tile counts that divide
+    the DFB capacity, and identical producer and consumer kernels. These
+    requirements preserve TT-Metal's kernel-local counter and ring-pointer
+    state.
+
+    Disabling `reuse-user-dfbs` retains each user DFB's physical index and
+    applies the kernel-local linear-scan allocator only to compiler-created
+    DFBs. A compiler-created DFB's half-open lifetime starts at its first
+    `cb_reserve` or `cb_wait` and ends immediately after its last `cb_pop`.
+    Non-overlapping lifetimes with equal types may share an index.
+
+    Every used compiler-created DFB must contain `ttl.cb_reserve`,
+    `ttl.cb_push`, `ttl.cb_wait`, and `ttl.cb_pop`. An unused declaration is
+    legal and remains live through the end of its kernel.
+
+    The pass rejects copied DFB-index attributes from later passes. It computes
+    all physical assignments and runtime metadata and validates the 32-index
+    hardware limit before modifying the IR. Applying the validated plan updates
+    physical indices and `ttl.base_cta_index`, assigns missing compiler-created
+    logical IDs, and builds `ttl.dfb_allocations` for the Python runtime. The
+    attribute contains one descriptor per physical index, including
+    user-declared and compiler-created DFBs, and records the page size computed
+    from the finalized element type. See docs/development/DFBManagement.md.
   }];
+
+  let options = [
+    Option<"reuseUserDFBs", "reuse-user-dfbs", "bool", "true",
+           "Reuse physical DFB indices for logical DFBs with proven "
+           "non-overlapping lifetimes across concurrent kernels.">
+  ];
 }
 
 def TTLValidateCBBudget
