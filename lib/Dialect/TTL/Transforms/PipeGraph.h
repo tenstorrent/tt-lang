@@ -278,8 +278,8 @@ public:
   /// Analyze a module to find all pipe receivers and build the graph.
   /// Returns failure if validation detects an error (e.g., gather DFB too
   /// small).
-  static FailureOr<PipeGraph>
-  build(ModuleOp mod, const PipeTransferIndex &transferIndex);
+  static FailureOr<PipeGraph> build(ModuleOp mod,
+                                    const PipeTransferIndex &transferIndex);
 
   /// Check if any pipes were found.
   bool hasPipes() const { return !pipeTransferNodes.empty(); }

@@ -97,10 +97,6 @@ static PipeSourceKey getPipeSourceKey(PipeType pipeType) {
   return {pipeType.getSrcX(), pipeType.getSrcY()};
 }
 
-static FailureOr<PipeTransferCreateOp>
-getPipeTransferCreate(Operation *op, Value transfer,
-                      ValueOriginAnalysis &analysis);
-
 static std::size_t addFabricRoute(SmallVectorImpl<FabricRoute> &routes,
                                   DeviceRefAttr localDevice,
                                   DeviceRefAttr remoteDevice,
@@ -251,19 +247,6 @@ void initializeFabricRuntime(const FabricRoutePlan &plan,
                                                   manager, connectionCount);
     }
   }
-}
-
-static FailureOr<PipeTransferCreateOp>
-getPipeTransferCreate(Operation *op, Value transfer,
-                      ValueOriginAnalysis &analysis) {
-  FailureOr<PipeTransferCreateOp> maybeCreateOp =
-      findPipeTransferCreateForTransfer(analysis, transfer);
-  if (failed(maybeCreateOp)) {
-    return op->emitError() << op->getName()
-                           << " requires every possible transfer value to "
-                              "derive from the same ttl.pipe_transfer.create";
-  }
-  return *maybeCreateOp;
 }
 
 static FailureOr<PipeResourceInfo>
@@ -1759,7 +1742,6 @@ collectPipeTransferAllocationUnits(
     unit.sendOp = sendOp.getOperation();
     unit.pipe = transferNode.pipe;
     unit.pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
-    unit.usesFabric = static_cast<bool>(transferNode.deviceTransfer);
     unit.transferContract = transferNode.transferContract;
     unit.ordinal = static_cast<int64_t>(transferNode.id);
     unit.protocolOps.push_back(sendOp.getOperation());

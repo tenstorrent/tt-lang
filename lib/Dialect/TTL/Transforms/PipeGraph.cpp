@@ -149,9 +149,9 @@ getReceiverDFBStreamKey(Value dfb, DeviceRefAttr receiverDevice) {
   return std::make_pair(receiverDevice, *maybeDFBIndex);
 }
 
-static LogicalResult recordReceiverPost(PipeTransferPostOp postOp,
-                                        PipeGraphAnalysisState &state,
-                                        const PipeTransferIndex &transferIndex) {
+static LogicalResult
+recordReceiverPost(PipeTransferPostOp postOp, PipeGraphAnalysisState &state,
+                   const PipeTransferIndex &transferIndex) {
   PipeTransferCreateOp createOp =
       transferIndex.getTransferCreate(postOp.getOperation());
 
@@ -175,9 +175,9 @@ static LogicalResult recordReceiveWait(PipeTransferWaitOp waitOp,
   return success();
 }
 
-static LogicalResult collectPipeGraphOperations(ModuleOp mod,
-                                                const PipeTransferIndex &transferIndex,
-                                                PipeGraphAnalysisState &state) {
+static LogicalResult
+collectPipeGraphOperations(ModuleOp mod, const PipeTransferIndex &transferIndex,
+                           PipeGraphAnalysisState &state) {
   WalkResult walkResult =
       mod.walk<WalkOrder::PreOrder>([&](Operation *op) -> WalkResult {
         LogicalResult recordResult = success();
@@ -598,7 +598,8 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
     const PipeTransferIndex &transferIndex,
     PipeGraphAnalysisState &analysisState) {
   FailureOr<ReceiverPostsByDFB> maybePostsByReceiverDFB =
-      collectReceiverPostsByDFB(transferIndex, receiverDFBByPost, analysisState);
+      collectReceiverPostsByDFB(transferIndex, receiverDFBByPost,
+                                analysisState);
   if (failed(maybePostsByReceiverDFB)) {
     return failure();
   }
