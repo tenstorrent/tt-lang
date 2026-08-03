@@ -28,10 +28,13 @@ chips="$(resolve_tt_chip_count "${HW_LIT_CHIPS:-}")" || {
 lit_common=(-j1 --verbose)
 multi_device_filter="${HW_LIT_MULTI_DEVICE_FILTER:-mesh_tensor}"
 cache_root="$(absolute_path "${TT_METAL_CACHE:-${REPORT_PREFIX}-tt-metal-cache}")"
+lit_exec_root="$(absolute_path "${REPORT_PREFIX}-lit-exec")"
 
 if [ "$chips" -le 1 ]; then
     echo "Detected ${chips} chip(s): running Python lit serially"
-    llvm-lit "$TEST_DIR" "${lit_common[@]}" --xunit-xml-output="${REPORT_PREFIX}.xml"
+    TTLANG_LIT_TEST_EXEC_ROOT="${lit_exec_root}/serial" \
+        llvm-lit "$TEST_DIR" "${lit_common[@]}" \
+        --xunit-xml-output="${REPORT_PREFIX}.xml"
     exit $?
 fi
 
@@ -44,6 +47,7 @@ for ((chip_index = 0; chip_index < chips; chip_index++)); do
     (
         export TT_VISIBLE_DEVICES="${chip_index}"
         export TT_METAL_CACHE="${cache_root}/shard-${shard_number}"
+        export TTLANG_LIT_TEST_EXEC_ROOT="${lit_exec_root}/shard-${shard_number}"
         mkdir -p "$TT_METAL_CACHE"
         llvm-lit "$TEST_DIR" \
             --num-shards "$chips" \
@@ -62,7 +66,10 @@ done
 
 multi_device_cache="${cache_root}/multidevice"
 mkdir -p "$multi_device_cache"
-env -u TT_VISIBLE_DEVICES TT_METAL_CACHE="$multi_device_cache" llvm-lit "$TEST_DIR" \
+env -u TT_VISIBLE_DEVICES \
+    TT_METAL_CACHE="$multi_device_cache" \
+    TTLANG_LIT_TEST_EXEC_ROOT="${lit_exec_root}/multidevice" \
+    llvm-lit "$TEST_DIR" \
     --filter "$multi_device_filter" \
     --allow-empty-runs \
     "${lit_common[@]}" \
