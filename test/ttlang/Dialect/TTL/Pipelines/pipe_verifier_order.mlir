@@ -5,7 +5,13 @@
 // high-level pipe and DFB operations or reuse provisional DFB indices.
 
 // CHECK-LABEL: Pass Manager with
-// CHECK:        ttl-insert-copy-wait
+// CHECK:        ttl-create-producer-compute
+// CHECK-NEXT: ),
+// CHECK-NEXT: func.func(
+// CHECK-NEXT:   ttl-insert-intermediate-dfbs{enable=true}
+// CHECK-NEXT: ),
+// CHECK-NEXT: func.func(
+// CHECK-NEXT:   convert-ttl-to-compute
 // CHECK-NEXT: ),
 // CHECK-NEXT: func.func(
 // CHECK-NEXT:   ttl-insert-cb-sync
@@ -15,11 +21,11 @@
 // CHECK-NEXT: func.func(
 // CHECK-NEXT:   ttl-coalesce-dfb-acquires
 // CHECK-NEXT: ),
-// CHECK-NOT:  ttl-verify-pipenet-guards
-// CHECK-NOT:  ttl-verify-pipenet-schedule
-// CHECK:      ttl-finalize-dfb-indices,
+// CHECK-NEXT: ttl-finalize-dfb-indices,
 // CHECK-NEXT: func.func(
-// CHECK-NEXT:   ttl-annotate-cb-associations
+// CHECK-NOT:    ttl-verify-pipenet-guards
+// CHECK-NOT:    ttl-verify-pipenet-schedule
+// CHECK:        ttl-annotate-cb-associations
 // CHECK-NEXT: ),
 // CHECK-NOT:  ttl-verify-pipenet-guards
 // CHECK-NOT:  ttl-verify-pipenet-schedule

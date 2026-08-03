@@ -19,43 +19,45 @@ namespace mlir::tt::ttl {
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
   pm.addNestedPass<func::FuncOp>(createTTLMaterializeLoopState());
+  pm.addNestedPass<func::FuncOp>(createTTLInsertCopyWait());
+  pm.addNestedPass<func::FuncOp>(createTTLAnnotateL1AccLoops());
+  pm.addNestedPass<func::FuncOp>(createTTLProducerComputeCreation());
   {
     TTLInsertIntermediateDFBsOptions dfbOpts;
     dfbOpts.enable = options.compilerDFBs;
     pm.addNestedPass<func::FuncOp>(createTTLInsertIntermediateDFBs(dfbOpts));
   }
-  pm.addNestedPass<func::FuncOp>(createTTLInsertCopyWait());
+  pm.addNestedPass<func::FuncOp>(createTTLConvertTTLToCompute());
   pm.addNestedPass<func::FuncOp>(createTTLInsertCBSync());
   // Verify the complete high-level schedule while logical DFB identities are
   // still distinct and before later transformations rewrite pipe operations.
   buildTTLVerifyPipeNetPipeline(pm);
   pm.addNestedPass<func::FuncOp>(createTTLCoalesceDFBAcquires());
-  pm.addPass(createTTLAnnotateL1AccLoops());
-  pm.addPass(createTTLConvertTTLToCompute());
+  pm.addPass(createTTLFinalizeDFBIndices());
   {
     TTLSetComputeKernelConfigOptions configOpts;
     configOpts.reduceFullFp32 = options.reduceFullFp32;
     configOpts.enableFPUBinaryOps = options.enableFPUBinaryOps;
-    pm.addPass(createTTLSetComputeKernelConfig(configOpts));
+    pm.addNestedPass<func::FuncOp>(createTTLSetComputeKernelConfig(configOpts));
   }
-  pm.addPass(createTTLAssignDST());
+  pm.addNestedPass<func::FuncOp>(createTTLAssignDST());
   if (options.maximizeDST) {
     TTLSubblockComputeForDSTOptions subblockOpts;
     subblockOpts.subblockSync = options.subblockSync;
     subblockOpts.strictF32Acc = options.strictF32Acc;
-    pm.addPass(createTTLSubblockComputeForDST(subblockOpts));
+    pm.addNestedPass<func::FuncOp>(
+        createTTLSubblockComputeForDST(subblockOpts));
   }
   {
     TTLLowerToLoopsOptions loopOpts;
     loopOpts.dstAccumulation = options.maximizeDST;
     loopOpts.useBlockMatmul = options.useBlockMatmul;
-    pm.addPass(createTTLLowerToLoops(loopOpts));
+    pm.addNestedPass<func::FuncOp>(createTTLLowerToLoops(loopOpts));
   }
   if (options.maximizeDST) {
-    pm.addPass(createTTLScheduleOperations());
+    pm.addNestedPass<func::FuncOp>(createTTLScheduleOperations());
   }
-  pm.addPass(createTTLFinalizeDFBIndices());
-  pm.addPass(createTTLAnnotateCBAssociations());
+  pm.addNestedPass<func::FuncOp>(createTTLAnnotateCBAssociations());
   pm.addPass(createTTLVerifyDFBSPSC());
   pm.addPass(createTTLErasePipeNetScopes());
   pm.addPass(createTTLValidateCBBudget());
@@ -89,6 +91,11 @@ void buildTTLVerifyPipeNetPipeline(OpPassManager &pm) {
   pm.addPass(createTTLVerifyPipeNetSchedule());
 }
 
+void buildTTLAutoSyncPipeline(OpPassManager &pm) {
+  pm.addPass(createTTLInsertCBSync());
+  pm.addPass(createTTLCoalesceDFBAcquires());
+}
+
 void registerTTLPipelines() {
   PassPipelineRegistration<TTLToTTKernelPipelineOptions>(
       "ttl-to-ttkernel-pipeline",
@@ -99,6 +106,9 @@ void registerTTLPipelines() {
       "ttl-verify-pipenet",
       "Verify PipeNet launch domains and synchronization schedules.",
       buildTTLVerifyPipeNetPipeline);
+  PassPipelineRegistration<>("ttl-auto-sync",
+                             "Insert auto pop/push and coalesce DFB acquires.",
+                             buildTTLAutoSyncPipeline);
 }
 
 } // namespace mlir::tt::ttl

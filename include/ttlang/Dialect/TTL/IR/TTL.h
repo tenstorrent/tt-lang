@@ -270,13 +270,6 @@ inline std::optional<int64_t> getCBIndexAttr(mlir::Operation *compute,
   return std::nullopt;
 }
 
-//===----------------------------------------------------------------------===//
-// Compiler-Allocated DFB Utilities
-//===----------------------------------------------------------------------===//
-
-/// Return the next available DFB index for the module.
-int32_t getNextAvailableDFBIndex(mlir::ModuleOp mod);
-
 } // namespace mlir::tt::ttl
 
 #endif // TTLANG_DIALECT_TTL_IR_TTL_H

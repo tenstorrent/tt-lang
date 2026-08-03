@@ -11,10 +11,19 @@ import functools
 import inspect
 import os
 import random
+import sys
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Union
 
 ttnn = None  # Lazy-loaded on first access via _ensure_ttnn()
+
+
+def _forward_mlir_warning(diagnostic):
+    """Print MLIR warnings while preserving the existing error handler."""
+    if diagnostic.severity != DiagnosticSeverity.WARNING:
+        return False
+    print(f"warning: {diagnostic}", file=sys.stderr)
+    return True
 
 
 def _ensure_ttnn():
@@ -1801,20 +1810,22 @@ def _lower_program_to_kernel(
                 + "})"
             )
 
-        # NOTE: Pipeline pass ordering is mirrored in
-        # test/me2e/builder/pipeline.py and lib/Dialect/TTL/Pipelines/TTLPipelines.cpp.
+        # NOTE: Pipeline pass ordering mirrors
+        # lib/Dialect/TTL/Pipelines/TTLPipelines.cpp.
         assign_dst_pass = "ttl-assign-dst"
 
         compiler_dfbs_flag = int(compiler_options.compiler_dfbs)
         pipeline_passes = [
             "func.func(ttl-materialize-loop-state)",
-            f"func.func(ttl-insert-intermediate-dfbs{{enable={compiler_dfbs_flag}}})",
             "func.func(ttl-insert-copy-wait)",
+            "func.func(ttl-annotate-l1-acc-loops)",
+            "func.func(ttl-create-producer-compute)",
+            f"func.func(ttl-insert-intermediate-dfbs{{enable={compiler_dfbs_flag}}})",
+            "func.func(convert-ttl-to-compute)",
             "func.func(ttl-insert-cb-sync)",
             "ttl-verify-pipenet",
             "func.func(ttl-coalesce-dfb-acquires)",
-            "func.func(ttl-annotate-l1-acc-loops)",
-            "func.func(convert-ttl-to-compute)",
+            "ttl-finalize-dfb-indices",
             set_compute_config_pass,
             f"func.func({assign_dst_pass})",
         ]
@@ -1831,7 +1842,6 @@ def _lower_program_to_kernel(
         )
         if compiler_options.maximize_dst:
             pipeline_passes.append("func.func(ttl-schedule-operations)")
-        pipeline_passes.append("ttl-finalize-dfb-indices")
         pipeline_passes.append("func.func(ttl-annotate-cb-associations)")
         pipeline_passes.append("ttl-verify-dfb-spsc")
         pipeline_passes.append("ttl-erase-pipenet-scopes")
@@ -1920,7 +1930,8 @@ def _lower_program_to_kernel(
 
         try:
             # Run the pass manager with error handling for source-aware diagnostics
-            pm.run(module.operation)
+            with ctx.attach_diagnostic_handler(_forward_mlir_warning):
+                pm.run(module.operation)
         except Exception as e:
             error_msg = str(e)
             # Try to format error with source context
