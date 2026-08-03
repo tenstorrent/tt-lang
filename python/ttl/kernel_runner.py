@@ -621,7 +621,12 @@ def validate_cb_descriptors_override(
                 f"got total_size={total_size}, page_size={page_size}"
             )
 
-        data_format = getattr(fmt, "data_format", None)
+        # Real TTNN descriptors expose the enum safely through the integer
+        # binding.  Accessing ``data_format`` directly is broken on some
+        # pybind builds (it returns an unregistered ``tt::DataFormat``).
+        data_format = getattr(fmt, "data_format_as_uint8", None)
+        if data_format is None:
+            data_format = getattr(fmt, "data_format", None)
         if data_format is None:
             raise ValueError(f"CB[{cb_id}] override is missing a data format")
         tile_key = _tile_descriptor_key(getattr(fmt, "tile", None))
