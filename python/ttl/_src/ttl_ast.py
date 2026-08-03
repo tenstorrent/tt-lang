@@ -729,7 +729,8 @@ class TTLGenericCompiler(TTCompilerBase):
                     iadd_fn = self._fn_map.get(f"{mlir_type}.__iadd__")
                     if iadd_fn:
                         result = iadd_fn(target, rhs)
-                        self._set_var(node.target.id, result)
+                        if isinstance(node.target, ast.Name):
+                            self._set_var(node.target.id, result)
                         return
                 if isinstance(node.target, ast.Name):
                     load_target = ast.copy_location(
@@ -1115,11 +1116,7 @@ class TTLGenericCompiler(TTCompilerBase):
 
     def visit_Subscript(self, node):
         """Handle tensor[row, col] or tensor[r0:r1, c0:c1] indexing."""
-        tbl = self._var_exists(node.value.id)
-        if not tbl:
-            self._raise_error(node, f"Unknown variable: {node.value.id}")
-
-        tensor = tbl[node.value.id]
+        tensor = self.visit(node.value)
         if not isinstance(getattr(tensor, "type", None), RankedTensorType):
             self._raise_error(node, "TTL only supports subscripting tensors")
 
@@ -1128,22 +1125,33 @@ class TTLGenericCompiler(TTCompilerBase):
         else:
             indices = [self._build_index_or_range(node.slice)]
 
+        if getattr(getattr(tensor, "owner", None), "name", None) == "ttl.attach_cb":
+            mlir_type = _get_type_str(tensor.type)
+            getitem_fn = self._fn_map.get(f"{mlir_type}.__getitem__")
+            if getitem_fn is None:
+                self._raise_error(node, f"No subscript support for type {mlir_type}")
+            return getitem_fn(tensor, indices)
+
         return (tensor, indices)
 
     def _to_index_value(self, node):
         """Convert AST node to MLIR index Value."""
         if isinstance(node, ast.Constant):
             return arith.ConstantOp(IndexType.get(self.ctx), node.value)
+        if isinstance(node, ast.Name) and node.id in self.fn_globals:
+            val = self.fn_globals[node.id]
+            if isinstance(val, int) and not isinstance(val, bool):
+                return arith.ConstantOp(IndexType.get(self.ctx), val)
         val = self.visit(node)
         if isinstance(val.type, IndexType):
             return val
         return arith.IndexCastOp(IndexType.get(self.ctx), val)
 
     def _build_index_or_range(self, node):
-        """Convert AST node to (start_value, is_range) tuple.
+        """Convert AST node to (start_value, stop_value, is_range) tuple.
 
-        For slice syntax (start:end), returns (start_value, True).
-        For index syntax (value), returns (value, False).
+        For slice syntax (start:end), returns (start_value, stop_value, True).
+        For index syntax (value), returns (value, None, False).
         """
         if isinstance(node, ast.Slice):
             if node.lower is None:
@@ -1153,9 +1161,10 @@ class TTLGenericCompiler(TTCompilerBase):
             if node.step is not None:
                 self._raise_error(node, "Slice step is not supported")
             start_val = self._to_index_value(node.lower)
-            return (start_val, True)
+            stop_val = self._to_index_value(node.upper)
+            return (start_val, stop_val, True)
         else:
-            return (self._to_index_value(node), False)
+            return (self._to_index_value(node), None, False)
 
     # Override to use i64 for all integer constants (attributes or not)
     # TTL/TTKernel ops require i64, and this reduces casts throughout the pipeline

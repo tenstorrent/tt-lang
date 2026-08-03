@@ -728,3 +728,78 @@ def test_published_reduce_broadcast(dtype, device):
     threshold = _pcc_threshold(dtype)
     assert_pcc(reduced, result[:, :1], threshold=threshold)
     assert_pcc(reduced.expand(-1, TILE), result[:, TILE:], threshold=threshold)
+
+
+N_CHUNKS = 4
+WT = 2
+
+
+@ttl.operation(grid=(1, 1))
+def running_max_subtract(x, neg_inf, out):
+    x_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, WT), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, WT), block_count=2)
+    chunk_max_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2)
+    max_state_dfb = ttl.make_dataflow_buffer_like(x, shape=(1, 1), block_count=2)
+    seed_dfb = ttl.make_dataflow_buffer_like(neg_inf, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        seed = seed_dfb.wait()
+        max_initial = max_state_dfb.reserve()
+        max_initial.store(seed)
+        for _ in range(N_CHUNKS):
+            x_block = x_dfb.wait()
+            chunk_max_output = chunk_max_dfb.reserve()
+            chunk_max_output.store(ttl.math.reduce_max(x_block, dims=[1]))
+            chunk_max = chunk_max_dfb.wait()
+            max_old = max_state_dfb.wait()
+            max_new = ttl.math.max(max_old, chunk_max)
+            max_next = max_state_dfb.reserve()
+            max_next.store(max_new)
+            max_broadcast = ttl.block.broadcast(max_new, dims=[1], shape=(1, WT))
+            y_output = out_dfb.reserve()
+            y_output.store(ttl.sub(x_block, max_broadcast))
+        _ = max_state_dfb.wait()
+
+    @ttl.datamovement()
+    def dm():
+        seed_output = seed_dfb.reserve()
+        ttl.copy(neg_inf[0:1, 0:1], seed_output)
+        for chunk_index in range(N_CHUNKS):
+            x_output = x_dfb.reserve()
+            ttl.copy(x[chunk_index : chunk_index + 1, 0:WT], x_output)
+            y_block = out_dfb.wait()
+            ttl.copy(y_block, out[chunk_index : chunk_index + 1, 0:WT])
+
+    @ttl.datamovement()
+    def dm_unused():
+        pass
+
+
+@pytest.mark.parametrize("dtype", DTYPES, ids=["bf16", "f32"])
+@pytest.mark.requires_device
+def test_running_max_subtract(dtype, device):
+    torch.manual_seed(10)
+    x = torch.randn(N_CHUNKS * TILE, WT * TILE, dtype=dtype)
+
+    running_max = torch.full((TILE, 1), -1e30, dtype=torch.float32)
+    expected = torch.empty_like(x, dtype=torch.float32)
+    for chunk_index in range(N_CHUNKS):
+        x_chunk = x[chunk_index * TILE : (chunk_index + 1) * TILE].float()
+        running_max = torch.maximum(
+            running_max, x_chunk.amax(dim=1, keepdim=True)
+        )
+        expected[chunk_index * TILE : (chunk_index + 1) * TILE] = (
+            x_chunk - running_max
+        )
+
+    x_dram = to_dram(x, device)
+    neg_inf_dram = to_dram(torch.full((TILE, TILE), -1e30, dtype=dtype), device)
+    out_dram = to_dram(
+        torch.zeros(N_CHUNKS * TILE, WT * TILE, dtype=dtype), device
+    )
+
+    running_max_subtract(x_dram, neg_inf_dram, out_dram)
+
+    result = ttnn.to_torch(out_dram).float()
+    assert_pcc(expected, result, threshold=_pcc_threshold(dtype))

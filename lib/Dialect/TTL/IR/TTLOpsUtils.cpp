@@ -333,7 +333,8 @@ FusionTraceResult traceFusionToRoots(
     return result;
   }
 
-  // BlockBroadcastOp is a fusion leaf because its input must be DFB-attached.
+  // A computed inter-tile broadcast remains in the same fused compute body.
+  // An in-tile broadcast requires DFB-backed input for TTKernel lowering.
   if (auto bcastOp = llvm::dyn_cast<BlockBroadcastOp>(defOp)) {
     mlir::OpOperand &inputOperand = bcastOp->getOpOperand(0);
     mlir::Value bcastInput = inputOperand.get();
@@ -346,10 +347,31 @@ FusionTraceResult traceFusionToRoots(
       result.opsInOrder.insert(defOp);
       return result;
     }
-    // The broadcast cannot be formed until its input is materialized.
-    result.failureReason = TraceFailureReason::NotCBAttached;
-    result.failedValue = bcastInput;
-    result.failedOperand = &inputOperand;
+    auto inputType =
+        llvm::dyn_cast<mlir::RankedTensorType>(bcastInput.getType());
+    if (!inputType || blockBroadcastRequiresTileBcast(bcastOp.getDims(),
+                                                      inputType.getRank())) {
+      result.failureReason = TraceFailureReason::NotCBAttached;
+      result.failedValue = bcastInput;
+      result.failedOperand = &inputOperand;
+      return result;
+    }
+
+    auto inputTrace =
+        traceFusionToRoots(bcastInput, isMaterializationPlanned);
+    if (inputTrace.failureReason != TraceFailureReason::Success) {
+      return inputTrace;
+    }
+    for (mlir::Value root : inputTrace.rootInputs) {
+      result.rootInputs.insert(root);
+    }
+    for (mlir::Value root : inputTrace.lifetimeRootInputs) {
+      result.lifetimeRootInputs.insert(root);
+    }
+    for (mlir::Operation *op : inputTrace.opsInOrder) {
+      result.opsInOrder.insert(op);
+    }
+    result.opsInOrder.insert(defOp);
     return result;
   }
 
