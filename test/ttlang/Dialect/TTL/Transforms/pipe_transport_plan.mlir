@@ -19,7 +19,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
     %transfer = ttl.pipe_transfer.create %pipe {
-        expectedReceivers = 1 : i64,
+
         kind = #ttl.pipe_transfer_kind<point_to_point>}
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
         -> !ttl.pipe_transfer
@@ -72,7 +72,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
         isCollective = true}
         : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
     %transfer = ttl.pipe_transfer.create %pipe {
-        expectedReceivers = 2 : i64,
+
         kind = #ttl.pipe_transfer_kind<collective>}
         : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
         -> !ttl.pipe_transfer
@@ -125,7 +125,6 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
     %transfer = ttl.pipe_transfer.create %pipe {
         block_span = 2 : i64,
         destination_group_depth = 2 : i64,
-        expectedReceivers = 1 : i64,
         kind = #ttl.pipe_transfer_kind<point_to_point>}
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
         -> !ttl.pipe_transfer

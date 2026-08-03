@@ -842,7 +842,8 @@ def TTL_PipeTransferCreateOp : TTL_Op<"pipe_transfer.create", [Pure]> {
     constructs its pipe value independently. The attributes record the common
     point-to-point or collective contract and the optional logical-device
     transfer. The logical-device transfer is absent for transfers within one
-    device.
+    device. Selected pipe references currently represent transfers within one
+    device and therefore cannot specify a logical-device transfer.
 
     `block_span` is the number of consecutive original DFB blocks delivered by
     one transfer. Scalar transfers use the default span of one. Grouping
@@ -857,7 +858,6 @@ def TTL_PipeTransferCreateOp : TTL_Op<"pipe_transfer.create", [Pure]> {
   let arguments = (ins
     TTL_PipeReference:$pipe,
     TTL_PipeTransferKindAttr:$kind,
-    I64Attr:$expectedReceivers,
     OptionalAttr<TTL_DeviceTransferAttr>:$deviceTransfer,
     DefaultValuedAttr<ConfinedAttr<I64Attr, [IntPositive]>, "1">:$block_span,
     DefaultValuedAttr<ConfinedAttr<I64Attr, [IntPositive]>, "1">:

@@ -126,13 +126,11 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
         : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
     %send_transfer = ttl.pipe_transfer.create %send_pipe {
         deviceTransfer = #send_device_transfer,
-        expectedReceivers = 1 : i64,
         kind = #ttl.pipe_transfer_kind<point_to_point>}
         : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
         -> !ttl.pipe_transfer
     %post_transfer = ttl.pipe_transfer.create %post_pipe {
         deviceTransfer = #post_device_transfer,
-        expectedReceivers = 1 : i64,
         kind = #ttl.pipe_transfer_kind<point_to_point>}
         : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
         -> !ttl.pipe_transfer
@@ -405,7 +403,7 @@ func.func @pipe_wait_requires_one_static_post(%condition: i1)
   %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
   %transfer = ttl.pipe_transfer.create %pipe {
-      expectedReceivers = 1 : i64,
+
       kind = #ttl.pipe_transfer_kind<point_to_point>}
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
       -> !ttl.pipe_transfer
@@ -588,12 +586,11 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
     %send_transfer = ttl.pipe_transfer.create %pipe {
         block_span = 2 : i64,
-        expectedReceivers = 1 : i64,
         kind = #ttl.pipe_transfer_kind<point_to_point>}
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
         -> !ttl.pipe_transfer
     %post_transfer = ttl.pipe_transfer.create %pipe {
-        expectedReceivers = 1 : i64,
+
         kind = #ttl.pipe_transfer_kind<point_to_point>}
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
         -> !ttl.pipe_transfer
@@ -637,12 +634,11 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
     %send_transfer = ttl.pipe_transfer.create %pipe {
         destination_group_depth = 2 : i64,
-        expectedReceivers = 1 : i64,
         kind = #ttl.pipe_transfer_kind<point_to_point>}
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
         -> !ttl.pipe_transfer
     %post_transfer = ttl.pipe_transfer.create %pipe {
-        expectedReceivers = 1 : i64,
+
         kind = #ttl.pipe_transfer_kind<point_to_point>}
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
         -> !ttl.pipe_transfer

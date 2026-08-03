@@ -92,3 +92,27 @@ func.func @selected_transfer_kind_mismatch() {
       : !ttl.selected_pipe_src -> !ttl.pipe_transfer
   func.return
 }
+
+// -----
+
+// Selected pipe records do not encode logical-device transfer metadata.
+#device_transfer = #ttl.device_transfer<
+    domain = <components = <name = "device", extent = [1, 2]>>,
+    edge = <source = <coordinates = [0, 0]>,
+            destination = <coordinates = [0, 1]>>>
+func.func @selected_transfer_rejects_device_transfer() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %false = arith.constant false
+  %src = ttl.select_pipe_src record(%c0) src (%c0, %c0) dst (%c1, %c0) to (%c1, %c0)
+      num_dests (%c1) src_in_dst (%false)
+      {records = #ttl.pipenet_records<net 0 pipes [
+        #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0>
+      ]>} : !ttl.selected_pipe_src
+  // expected-error @below {{'ttl.pipe_transfer.create' op selected pipe transfers cannot specify deviceTransfer}}
+  %transfer = ttl.pipe_transfer.create %src {
+      deviceTransfer = #device_transfer,
+      kind = #ttl.pipe_transfer_kind<point_to_point>}
+      : !ttl.selected_pipe_src -> !ttl.pipe_transfer
+  func.return
+}

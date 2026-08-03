@@ -788,6 +788,12 @@ mlir::LogicalResult mlir::tt::ttl::PipeTransferCreateOp::verify() {
   }
 
   Value pipe = traceUnrealizedCasts(getPipe());
+  if (auto createPipe = pipe.getDefiningOp<CreatePipeOp>();
+      createPipe &&
+      createPipe.getDeviceTransferAttr() != getDeviceTransferAttr()) {
+    return emitOpError()
+           << "deviceTransfer must match the defining ttl.create_pipe";
+  }
   if (auto pipeType = mlir::dyn_cast<PipeType>(pipe.getType())) {
     switch (getKind().getValue()) {
     case PipeTransferKind::PointToPoint:
@@ -805,12 +811,9 @@ mlir::LogicalResult mlir::tt::ttl::PipeTransferCreateOp::verify() {
     return emitOpError()
            << "selected pipe transfer kind must match the records kind";
   }
-
-  if (auto createPipe = getPipe().getDefiningOp<CreatePipeOp>();
-      createPipe &&
-      createPipe.getDeviceTransferAttr() != getDeviceTransferAttr()) {
+  if (getDeviceTransferAttr()) {
     return emitOpError()
-           << "deviceTransfer must match the defining ttl.create_pipe";
+           << "selected pipe transfers cannot specify deviceTransfer";
   }
 
   return success();

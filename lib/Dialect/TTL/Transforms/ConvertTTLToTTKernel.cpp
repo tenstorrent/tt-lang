@@ -62,6 +62,9 @@ namespace ttk = mlir::tt::ttkernel;
 constexpr llvm::StringLiteral kCRTAIndicesAttr = "ttl.crta_indices";
 constexpr llvm::StringLiteral kExpandLinearizeIndexAttr =
     "ttlang.expand_linearize_index";
+// Small record tables use direct conditions to avoid runtime lookups. Larger
+// tables use one loop to keep generated code size independent of record count.
+constexpr size_t kPipeNetForeachDirectRecordLimit = 4;
 
 // PipeGraph is defined in PipeGraph.h.
 
@@ -2262,7 +2265,8 @@ static LogicalResult lowerTTLOpsToTTKernel(
                          func::FuncDialect, ttkernel::TTKernelDialect>();
 
   // Structural ops remain legal (converted elsewhere or kept as-is).
-  target.addLegalOp<ComputeOp, YieldOp, AttachCBOp, DstIndexOp>();
+  target.addLegalOp<ComputeOp, YieldOp, AttachCBOp, DstIndexOp, SelectPipeSrcOp,
+                    SelectPipeDstOp>();
   target.addLegalOp<PipeTransferCreateOp>();
 
   // DST lifecycle ops are not tile compute ops; keep them legal until the
@@ -2428,6 +2432,16 @@ static LogicalResult lowerTTLOpsToTTKernel(
   });
   for (PipeTransferCreateOp op : deadPipeTransfers) {
     op.erase();
+  }
+
+  SmallVector<Operation *> deadSelectedPipes;
+  mod.walk([&](Operation *op) {
+    if (mlir::isa<SelectPipeSrcOp, SelectPipeDstOp>(op) && op->use_empty()) {
+      deadSelectedPipes.push_back(op);
+    }
+  });
+  for (Operation *op : deadSelectedPipes) {
+    op->erase();
   }
 
   // Greedy cleanup also erases dead unrealized casts used as temporary
