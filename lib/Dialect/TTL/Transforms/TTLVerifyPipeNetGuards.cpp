@@ -20,6 +20,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang/Dialect/TTL/Transforms/DFBLogicalIdentityAnalysis.h"
 #include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
 #include "ttlang/Dialect/TTL/Transforms/PipeTransferAnalysis.h"
 #include "llvm/ADT/DenseMap.h"
@@ -61,7 +62,7 @@ constexpr std::size_t kMaxPipeScheduleNodesPerLaunchNode = 4096;
 struct WaitUse {
   CBWaitOp op;
   LaunchNodeDomain domain;
-  int64_t cbIndex;
+  int64_t dfbId;
 };
 
 /// Pipe synchronization event used by the wait-for graph verifier.
@@ -100,14 +101,24 @@ void checkKnownSubset(Operation *op, const LaunchNodeDomain &current,
 
 /// Mutable facts recorded during one verifier pass.
 struct ModuleState {
+  /// Constructs state for schedule verification.
   ModuleState(const PipeTransferIndex &transfers,
               const LaunchNodeDomainState &launchDomains)
       : transfers(transfers), launchDomains(launchDomains) {}
 
+  /// Constructs state for guard verification with resolved DFB identities.
+  ModuleState(const PipeTransferIndex &transfers,
+              const LaunchNodeDomainState &launchDomains,
+              const DFBLogicalIdentityAnalysis &dfbIdentities)
+      : transfers(transfers), launchDomains(launchDomains),
+        dfbIdentities(&dfbIdentities) {}
+
   const PipeTransferIndex &transfers;
   const LaunchNodeDomainState &launchDomains;
+  /// Logical identities required by guard verification.
+  const DFBLogicalIdentityAnalysis *dfbIdentities = nullptr;
   bool sawError = false;
-  llvm::DenseMap<int64_t, LaunchNodeDomain> cbProducerDomains;
+  llvm::DenseMap<int64_t, LaunchNodeDomain> dfbProducerDomains;
   SmallVector<WaitUse> waitUses;
   SmallVector<PipeEvent> pipeEvents;
   llvm::DenseMap<Operation *, std::size_t> pipeEventIndices;
@@ -432,6 +443,7 @@ void verifyPipeNetScope(PipeNetScopeOp scopeOp, const LaunchNodeDomain &domain,
 /// a specific operation kind.
 void recordGuardOperation(Operation *op, const LaunchNodeDomain &domain,
                           Operation *unanalyzableOp, ModuleState &state) {
+  assert(state.dfbIdentities && "guard verification requires DFB identities");
   TypeSwitch<Operation *>(op)
       .Case<CopyOp>(
           [&](CopyOp copy) { verifyCopy(copy, domain, unanalyzableOp, state); })
@@ -439,15 +451,17 @@ void recordGuardOperation(Operation *op, const LaunchNodeDomain &domain,
         verifyPipeWaitGuard(wait, domain, unanalyzableOp, state);
       })
       .Case<CBPushOp>([&](CBPushOp push) {
-        if (auto cbIndex = getCBIndex(push.getCb())) {
-          state.cbProducerDomains[*cbIndex] =
-              state.cbProducerDomains[*cbIndex].unionWith(domain);
-        }
+        FailureOr<int64_t> dfbId =
+            state.dfbIdentities->getLogicalId(push.getCb());
+        assert(succeeded(dfbId) && "DFB operands were verified");
+        state.dfbProducerDomains[*dfbId] =
+            state.dfbProducerDomains[*dfbId].unionWith(domain);
       })
       .Case<CBWaitOp>([&](CBWaitOp wait) {
-        if (auto cbIndex = getCBIndex(wait.getCb())) {
-          state.waitUses.push_back({wait, domain, *cbIndex});
-        }
+        FailureOr<int64_t> dfbId =
+            state.dfbIdentities->getLogicalId(wait.getCb());
+        assert(succeeded(dfbId) && "DFB operands were verified");
+        state.waitUses.push_back({wait, domain, *dfbId});
       });
 }
 
@@ -468,8 +482,8 @@ void recordScheduleOperation(Operation *op, const LaunchNodeDomain &domain,
 // covered by any producer (deadlock-prone IR).
 void verifyCBWaits(ModuleState &state) {
   for (WaitUse &use : state.waitUses) {
-    auto it = state.cbProducerDomains.find(use.cbIndex);
-    if (it == state.cbProducerDomains.end()) {
+    auto it = state.dfbProducerDomains.find(use.dfbId);
+    if (it == state.dfbProducerDomains.end()) {
       use.op.emitOpError()
           << "this `cb_wait` reads from a dataflow buffer that no other "
              "thread fills; check that another `@ttl.compute()` or "
@@ -486,6 +500,26 @@ void verifyCBWaits(ModuleState &state) {
                      "...` predicate the producer uses",
                      /*roles=*/{}, state);
   }
+}
+
+/// Validate logical DFB identities and every operand read by guard analysis.
+LogicalResult
+verifyGuardDFBIdentities(ModuleOp module,
+                         const DFBLogicalIdentityAnalysis &dfbIdentities) {
+  if (!dfbIdentities.succeeded()) {
+    Operation *errorOperation = dfbIdentities.getErrorOperation();
+    if (!errorOperation) {
+      errorOperation = module.getOperation();
+    }
+    errorOperation->emitOpError() << dfbIdentities.getErrorMessage();
+    return failure();
+  }
+
+  return verifyDFBOperandIdentities(
+      module, "ttl-verify-pipenet-guards",
+      [](Operation *operation) { return isa<CBPushOp, CBWaitOp>(operation); },
+      [&](Value dfb) { return dfbIdentities.getLogicalId(dfb); },
+      "`ttl.cb_push` and `ttl.cb_wait` DFB", DFBIdentityRequirement::Logical);
 }
 
 enum class PipeScheduleEdgeKind {
@@ -1836,6 +1870,13 @@ struct TTLVerifyPipeNetGuardsPass
       return;
     }
 
+    const DFBLogicalIdentityAnalysis &dfbIdentities =
+        getAnalysis<DFBLogicalIdentityAnalysis>();
+    if (failed(verifyGuardDFBIdentities(module, dfbIdentities))) {
+      signalPassFailure();
+      return;
+    }
+
     ValueOriginAnalysis &valueOrigins = getAnalysis<ValueOriginAnalysis>();
     FailureOr<std::unique_ptr<PipeTransferIndex>> maybeTransfers =
         PipeTransferIndex::create(module, valueOrigins);
@@ -1843,7 +1884,7 @@ struct TTLVerifyPipeNetGuardsPass
       signalPassFailure();
       return;
     }
-    ModuleState state(**maybeTransfers, launchDomains);
+    ModuleState state(**maybeTransfers, launchDomains, dfbIdentities);
 
     module.walk([&](Operation *op) {
       if (const PipeNetOperationDomainInfo *info =

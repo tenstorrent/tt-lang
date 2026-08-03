@@ -48,7 +48,7 @@ def _ensure_ttnn():
 import ttl._mlir_libs._ttlang  # Register tt-lang passes
 from ttl._mlir_libs._ttlang import ttl_ir as _ttl_ir
 from ttl.pykernel._src.utils import _cleanup_source_code
-from ttl.dialects import ttkernel
+from ttl.dialects import ttcore, ttkernel
 from ttl.ir import *
 from ttl.ir import DenseI32ArrayAttr
 from ttl.passes import (
@@ -79,8 +79,8 @@ from ._src.tensor_registry import (
 from ._src.ttl_ast import TTLGenericCompiler
 from .dataflow_buffer import (
     CircularBuffer,
-    CompilerAllocatedDFBConfig,
     DataflowBuffer,
+    PhysicalDFBConfig,
     get_cb_count,
 )
 from .pipe import Pipe, PipeNet
@@ -93,7 +93,6 @@ from .diagnostics import (
 )
 from .dtype_utils import (
     is_ttnn_tensor,
-    tile_bytes_from_dtype,
     torch_dtype_to_ttnn_datatype,
 )
 from .kernel_runner import (
@@ -582,7 +581,7 @@ class CompiledTTNNKernel:
                 with kernel_paths. Set by the per-core specialization path so
                 each specialized clone is dispatched only to its own core; None
                 entries fall back to the whole-grid core_ranges.
-            cb_configs: List of (shape, block_count) tuples for each CB, indexed by cb_index
+            cb_configs: Final physical DFB configurations indexed by cb_index
             program_hash: Hash for tt-metal program cache
             source_lines: Source code lines for auto-profiling reports (deprecated)
             all_source_lines: Dict mapping kernel name to source lines
@@ -1211,87 +1210,128 @@ def _collect_captures(
     }
 
 
-def _collect_cb_configs(threads):
-    """Extract DataflowBuffer objects from thread closures, indexed by dfb index.
-
-    Returns a list of DataflowBuffer objects indexed by dfb index. Each DFB has
-    shape, block_count, tensor (for dtype), and _cb_index attributes.
-    """
-    cb_configs_dict = {}
-    for thread_fn in threads:
-        wrapped = getattr(thread_fn, "__wrapped__", None)
-        closure = getattr(wrapped, "__closure__", None) if wrapped else None
-        if not closure:
-            continue
-        for cell in closure:
-            val = cell.cell_contents
-            if isinstance(val, DataflowBuffer):
-                cb_configs_dict[val._cb_index] = val
-
-    if not cb_configs_dict:
-        return []
-    max_idx = max(cb_configs_dict.keys())
-    return [cb_configs_dict.get(i) for i in range(max_idx + 1)]
-
-
 # Map MLIR element type names to ttnn-compatible data format names.
 # Keyed by exact MLIR type mnemonic (no substring matching).
 _MLIR_TYPE_TO_FORMAT = {
     "bf16": "bfloat16",
+    "bfp_bf4": "bfloat4_b",
+    "bfp_bf8": "bfloat8_b",
     "f16": "float16",
     "f32": "float32",
     "i32": "int32",
+    "si32": "int32",
+    "u8": "uint8",
+    "u16": "uint16",
+    "u32": "uint32",
+    "ui8": "uint8",
     "ui32": "uint32",
     "ui16": "uint16",
 }
 
 
-def _parse_mlir_element_type(type_str: str) -> str:
-    """Extract the base data format name from an MLIR TypeAttr string.
+def _parse_mlir_element_type(element_type) -> tuple[str, Optional[tuple[int, int]]]:
+    """Extract the data format and optional tile dimensions from a TypeAttr.
 
     The TypeAttr prints as e.g. "bf16" or "!ttcore.tile<32x32, bf16>".
-    This function extracts the trailing type mnemonic and maps it to a
-    ttnn-compatible format name.
     """
+    tile = None
+    type_value = getattr(element_type, "value", None)
+    if type_value is None:
+        raise TypeError(f"element_type must be an MLIR TypeAttr, got {element_type!r}")
+    tile_type = ttcore.ir.TileType.maybe_downcast(type_value)
+    if tile_type is not None:
+        tile = tuple(tile_type.shape)
+
     # For compound types like "!ttcore.tile<32x32, bf16>", extract the
     # type after the last comma. For bare types like "bf16", use as-is.
+    type_str = str(element_type)
     token = type_str.strip()
     if "," in token:
         token = token.rsplit(",", 1)[1].strip().rstrip(">").strip()
     fmt = _MLIR_TYPE_TO_FORMAT.get(token)
     if fmt is not None:
-        return fmt
+        return fmt, tile
     raise ValueError(
         f"Unrecognized MLIR element type '{token}' (from '{type_str}'). "
         f"Known types: {list(_MLIR_TYPE_TO_FORMAT.keys())}"
     )
 
 
-def _extract_compiler_allocated_dfbs(module):
-    """Read ttl.compiler_allocated_dfbs module attribute.
-
-    Returns an empty list when the attribute is absent (no compiler-allocated
-    DFBs). Each entry is a DictionaryAttr with dfb_index, num_tiles,
-    element_type, and block_count.
-    """
-    attr = module.operation.attributes.get("ttl.compiler_allocated_dfbs", None)
+def _extract_dfb_allocations(module):
+    """Read `ttl.dfb_allocations` and require dense physical indices."""
+    attribute_name = "ttl.dfb_allocations"
+    attr = module.operation.attributes.get(attribute_name, None)
     if attr is None:
-        return []
+        return None
 
     configs = []
-    for entry in attr:
-        dfb_index = int(entry["dfb_index"])
-        num_tiles = int(entry["num_tiles"])
-        block_count = int(entry["block_count"])
-        data_format = _parse_mlir_element_type(str(entry["element_type"]))
+    seen_indices = set()
+    required_fields = (
+        "dfb_index",
+        "num_tiles",
+        "element_type",
+        "block_count",
+        "page_size",
+    )
+    for position, entry in enumerate(attr):
+        for field in required_fields:
+            if field not in entry:
+                raise ValueError(f"{attribute_name}[{position}] is missing '{field}'")
+        values = {field: entry[field] for field in required_fields}
 
+        try:
+            dfb_index = int(values["dfb_index"])
+            num_tiles = int(values["num_tiles"])
+            block_count = int(values["block_count"])
+            page_size = int(values["page_size"])
+            data_format, tile = _parse_mlir_element_type(values["element_type"])
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"Invalid {attribute_name}[{position}]: {error}") from None
+
+        if dfb_index < 0:
+            raise ValueError(
+                f"{attribute_name}[{position}].dfb_index must be non-negative, "
+                f"got {dfb_index}"
+            )
+        if dfb_index in seen_indices:
+            raise ValueError(
+                f"{attribute_name} contains duplicate dfb_index {dfb_index}"
+            )
+        if num_tiles <= 0:
+            raise ValueError(
+                f"{attribute_name}[{position}].num_tiles must be positive, "
+                f"got {num_tiles}"
+            )
+        if block_count <= 0:
+            raise ValueError(
+                f"{attribute_name}[{position}].block_count must be positive, "
+                f"got {block_count}"
+            )
+        if page_size <= 0:
+            raise ValueError(
+                f"{attribute_name}[{position}].page_size must be positive, "
+                f"got {page_size}"
+            )
+
+        seen_indices.add(dfb_index)
         configs.append(
-            CompilerAllocatedDFBConfig(
+            PhysicalDFBConfig(
                 dfb_index=dfb_index,
                 num_tiles=num_tiles,
                 data_format=data_format,
                 block_count=block_count,
+                page_size=page_size,
+                tile=tile,
             )
+        )
+
+    configs.sort(key=lambda config: config.dfb_index)
+    indices = [config.dfb_index for config in configs]
+    expected_indices = list(range(len(configs)))
+    if indices != expected_indices:
+        raise ValueError(
+            "ttl.dfb_allocations must contain a dense physical index range "
+            f"{expected_indices}, got {indices}"
         )
     return configs
 
@@ -1322,28 +1362,15 @@ def _extract_pipe_global_semaphore_count(module) -> int:
     return int(attr)
 
 
-def _merge_dfb_configs(cb_configs, compiler_allocated_dfbs):
-    """Merge compiler-allocated DFBs into the CB config list.
-
-    Extends cb_configs to cover all DFB indices. Compiler-allocated DFBs
-    are placed at their dfb_index positions.
-    """
-    if not compiler_allocated_dfbs:
-        return cb_configs
-
-    user_max = len(cb_configs) - 1 if cb_configs else -1
-    alloc_max = max(dfb.dfb_index for dfb in compiler_allocated_dfbs)
-    total = max(user_max, alloc_max) + 1
-
-    merged = list(cb_configs) + [None] * (total - len(cb_configs))
-    for dfb in compiler_allocated_dfbs:
-        if merged[dfb.dfb_index] is not None:
-            raise ValueError(
-                f"Compiler-allocated DFB index {dfb.dfb_index} collides with "
-                f"an existing DFB."
-            )
-        merged[dfb.dfb_index] = dfb
-    return merged
+def _resolve_dfb_configs(module):
+    """Return finalized physical DFB configurations from required metadata."""
+    physical_allocations = _extract_dfb_allocations(module)
+    if physical_allocations is None:
+        raise ValueError(
+            "compiled module is missing ttl.dfb_allocations; "
+            "ttl-finalize-dfb-indices must run before runtime construction"
+        )
+    return physical_allocations
 
 
 def _run_thread_compiler(
@@ -1631,8 +1658,6 @@ def _compile_kernel(
 
     launch_grid = grid
 
-    cb_configs = _collect_cb_configs(threads)
-
     injected_program_kwargs = {
         "grid": grid,
         "memory_space": memory_space,
@@ -1650,7 +1675,6 @@ def _compile_kernel(
         args=args,
         launch_grid=launch_grid,
         num_outs=num_outs,
-        cb_configs=cb_configs,
         pipenets=pipenets,
         target_arch=target_arch,
         fp32_dest_acc_en=fp32_dest_acc_en,
@@ -1669,7 +1693,6 @@ def _lower_program_to_kernel(
     args,
     launch_grid,
     num_outs,
-    cb_configs,
     pipenets,
     target_arch,
     fp32_dest_acc_en,
@@ -1963,9 +1986,7 @@ def _lower_program_to_kernel(
             first_thread = next(iter(all_source_lines.keys()))
             profile_source_lines = all_source_lines[first_thread]
 
-        # Merge compiler-allocated DFBs into the CB config list.
-        compiler_allocated_dfbs = _extract_compiler_allocated_dfbs(module)
-        cb_configs = _merge_dfb_configs(cb_configs, compiler_allocated_dfbs)
+        cb_configs = _resolve_dfb_configs(module)
         pipe_sync_semaphore_count = _extract_pipe_sync_semaphore_count(module)
         if pipe_sync_semaphore_count is None:
             raise RuntimeError(
