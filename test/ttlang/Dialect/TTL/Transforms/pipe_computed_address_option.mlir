@@ -103,8 +103,23 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
   // PUBLISHED-LABEL: func.func @loopback_collective
   // PUBLISHED-NOT: ttl.pipe_computed_address_dfb_indices
-  // PUBLISHED-DAG: ttkernel.store_to_l1
-  // PUBLISHED-DAG: ttkernel.noc_inline_dw_write
+  // PUBLISHED: %[[ZERO:.*]] = arith.constant 0 : index
+  // PUBLISHED-NEXT: %[[ZERO_I32:.*]] = arith.constant 0 : i32
+  // PUBLISHED-DAG: %[[SOURCE_X:.*]] = ttkernel.experimental.convert_logical_x_to_translated(%[[ZERO]])
+  // PUBLISHED-DAG: %[[SOURCE_Y:.*]] = ttkernel.experimental.convert_logical_y_to_translated(%[[ZERO]])
+  // PUBLISHED-DAG: %[[PUBLISHED_ADDRESS:.*]] = ttkernel.get_write_ptr
+  // PUBLISHED-DAG: %[[TABLE_ADDRESS:.*]] = ttkernel.get_common_arg_val(%[[ZERO]])
+  // PUBLISHED-DAG: %[[CURRENT_X:.*]] = ttkernel.my_logical_x_
+  // PUBLISHED-DAG: %[[CURRENT_Y:.*]] = ttkernel.my_logical_y_
+  // PUBLISHED: %[[X_MATCHES:.*]] = arith.cmpi eq, %[[CURRENT_X]], %[[ZERO]] : index
+  // PUBLISHED-NEXT: %[[Y_MATCHES:.*]] = arith.cmpi eq, %[[CURRENT_Y]], %[[ZERO]] : index
+  // PUBLISHED-NEXT: %[[RECEIVER_IS_SOURCE:.*]] = arith.andi %[[X_MATCHES]], %[[Y_MATCHES]] : i1
+  // PUBLISHED-NEXT: scf.if %[[RECEIVER_IS_SOURCE]] {
+  // PUBLISHED-NEXT:   %[[TABLE_PTR:.*]] = ttkernel.reinterpret_cast(%[[TABLE_ADDRESS]])
+  // PUBLISHED-NEXT:   ttkernel.store_to_l1(%[[PUBLISHED_ADDRESS]], %[[TABLE_PTR]], %[[ZERO_I32]])
+  // PUBLISHED-NEXT: } else {
+  // PUBLISHED-NEXT:   ttkernel.noc_inline_dw_write(core[%[[SOURCE_X]], %[[SOURCE_Y]]], %[[TABLE_ADDRESS]], %[[PUBLISHED_ADDRESS]], {{.*}})
+  // PUBLISHED-NEXT: }
   // PUBLISHED: ttkernel.noc_async_write_multicast_loopback_src
   // PUBLISHED: return
   func.func @loopback_collective()
