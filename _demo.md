@@ -2,7 +2,7 @@
 
 Target branch: `bnorris/demo`.
 
-Current rebuild branch: `integration/demo-rebuild-20260802-v3`.
+Current rebuild branch: `integration/demo-rebuild-20260802-v4`.
 
 Base: `origin/main` at `711fcb38`.
 
@@ -32,6 +32,8 @@ Backups:
 - `backup/demo-before-rebuild-20260802-192524` at `db9d2dfb` (pushed).
 - `backup/demo-rebuild-v2-before-main-refresh-20260802-205901` at `ed897a86`
   (pushed).
+- `backup/demo-rebuild-v3-before-current-stack-20260802-212557` at `5041479b`
+  (pushed).
 
 The prior accumulation aggregate `fba66fa8` was not applied as one delta. It
 includes development commits outside the reviewed PR heads. The current
@@ -40,14 +42,14 @@ rebuild applies each reviewed final delta to merged PR704 instead.
 | Order | PR or branch | Source tip | Integration commit | Status |
 |---:|---|---|---|---|
 | 1 | `origin/main`, including #704 | `711fcb38` | - | Applied |
-| 2 | #733 tensor recurrence scopes | `81dd303a` | `14604a97` | Applied |
-| 3 | #778 logical DFB identities | `cb15a4ac` | `f2da76ad` | Applied |
-| 4 | #775 user DFB reuse | `15842a3e` | `c0422196` | Applied |
-| 5 | #673 indexed PipeNet receivers | `713892fa` | `3b000f2a` | Applied |
-| 6 | #687 control-flow stores | `a4ca5487` | `9b852f3e` | Applied and repaired |
-| 7 | #680 DFB subviews | `4588cf72` | `e970fd83` | Applied and repaired |
-| 8 | #782-#784 PipeNet stack | Pending refresh | Pending | Pending |
-| 9 | #780 grouped PipeTransport | `b544c620` before refresh | Pending | Pending |
+| 2 | #733 tensor recurrence scopes | `7e743a06` | `419c6a8a` | Applied |
+| 3 | #778 logical DFB identities | `c9c4a0a5` | `b4cae829` | Applied |
+| 4 | #775 user DFB reuse | `94a42bb1` | `c312d47c` | Applied |
+| 5 | #673 indexed PipeNet receivers | `713892fa` | `bffe5b31` | Applied |
+| 6 | #687 control-flow stores | `a4ca5487` | `973fe822`, `ba690d18` | Applied and repaired |
+| 7 | #680 DFB subviews | `4588cf72` | `3c4bd203`, `eddbfea9` | Applied and repaired |
+| 8 | #782-#784 PipeNet stack | `fc9233b1` through `9213a58b` | Pending | Pending |
+| 9 | #780 grouped PipeTransport | `374909df` | Pending | Pending |
 | 10 | #734 multidevice fabric | Pending refresh | Pending | Pending |
 | 11 | #754 compact selected PipeNets | Pending refresh | Pending | Pending |
 | 12 | #795 operation device domains | Pending refresh | Pending | Pending |
@@ -116,7 +118,8 @@ composition change between independent PRs.
 
 Current rebuild:
 
-- Host build: passed after the #687/#680 integration repairs.
+- Host build: passed after the current #733/#778/#775 stack and #687/#680
+  integration repairs.
 - Pre-commit: all hooks passed.
 - MLIR: `ninja -C build check-ttlang-mlir` passed on 2026-08-02; 237
   passed and 1 expected failure.
