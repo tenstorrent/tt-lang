@@ -1,14 +1,14 @@
-// Verify matmul accumulates in the DST register initialized from its third
-// operand and preserves that register for subsequent in-place operations.
+// Verify the matmul accumulator and result share a DST register. Matmul
+// lowering initializes that register from the accumulator tensor.
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst{dst-capacity=8}),canonicalize,cse)' | FileCheck %s
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // CHECK-LABEL: func.func @matmul_with_accumulator
-// The accumulator copy and matmul result use the same DST register.
+// The accumulator and result use the same DST register without a generic copy.
 // CHECK: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, bf16>, %[[B:.*]]: !ttcore.tile<32x32, bf16>, %[[C:.*]]: !ttcore.tile<32x32, bf16>, %{{.*}}: !ttcore.tile<32x32, bf16>):
-// CHECK: %{{.*}}, %[[C_DST:.*]] = ttl.copy_tile %[[C]]{{.*}} into dst[%c0]
-// CHECK: %[[MM:.*]] = ttl.tile_matmul_block %[[A]], %[[B]], %[[C_DST]] into dst[%c0]
+// CHECK-NOT: ttl.copy_tile
+// CHECK: %[[MM:.*]] = ttl.tile_matmul_block %[[A]], %[[B]], %[[C]] into dst[%c0]
 func.func @matmul_with_accumulator(
     %a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
     %b: tensor<1x1x!ttcore.tile<32x32, bf16>>,
@@ -53,8 +53,8 @@ func.func @matmul_with_accumulator(
 
 // CHECK-LABEL: func.func @matmul_accumulator_relu
 // CHECK: ^bb0(%[[A2:.*]]: !ttcore.tile<32x32, bf16>, %[[B2:.*]]: !ttcore.tile<32x32, bf16>, %[[C2:.*]]: !ttcore.tile<32x32, bf16>, %{{.*}}: !ttcore.tile<32x32, bf16>):
-// CHECK: %{{.*}}, %[[C2_DST:.*]] = ttl.copy_tile %[[C2]]{{.*}} into dst[%c0]
-// CHECK: %[[MM2:.*]] = ttl.tile_matmul_block %[[A2]], %[[B2]], %[[C2_DST]] into dst[%c0]
+// CHECK-NOT: ttl.copy_tile
+// CHECK: %[[MM2:.*]] = ttl.tile_matmul_block %[[A2]], %[[B2]], %[[C2]] into dst[%c0]
 // CHECK: ttl.tile_relu %[[MM2]] into dst[%c0]
 func.func @matmul_accumulator_relu(
     %a: tensor<1x1x!ttcore.tile<32x32, bf16>>,

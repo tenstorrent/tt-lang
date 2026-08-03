@@ -623,11 +623,10 @@ bool KernelTargetEnvironment::supportsDstMode(TilePrimitive primitive,
   if (mode == DstMode::Default) {
     return true;
   }
-  if ((primitive == TilePrimitive::Broadcast ||
-       primitive == TilePrimitive::Transpose) &&
-      !elementType.isF32()) {
-    // tt-llk #1338: bf16 broadcast and transpose are incorrect when the
-    // kernel configures DST for f32 values.
+  if (primitive == TilePrimitive::BroadcastRow && !elementType.isF32() &&
+      (!arch || *arch == ttcore::Arch::WormholeB0)) {
+    // tt-llk #1338: Wormhole row broadcast is incorrect for bf16 input when
+    // DST stores f32 values.
     return false;
   }
   return true;
