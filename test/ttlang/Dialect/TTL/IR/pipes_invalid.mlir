@@ -23,22 +23,11 @@ func.func @pipe_receive_without_reserve(%t: tensor<32x32xf32>) {
 
 // -----
 
-// Test: internal pipe transfer expected receiver count must be positive.
-func.func @pipe_transfer_expected_receiver_count_positive() {
-  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-  // expected-error @+1 {{'ttl.pipe_transfer.create' op requires positive expectedReceivers}}
-  %transfer = ttl.pipe_transfer.create %p {expectedReceivers = 0 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
-      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> -> !ttl.pipe_transfer
-  func.return
-}
-
-// -----
-
 // Test: an internal pipe transfer must deliver at least one original DFB block.
 func.func @pipe_transfer_block_span_positive() {
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
   // expected-error @+1 {{'ttl.pipe_transfer.create' op attribute 'block_span' failed to satisfy constraint: 64-bit signless integer attribute whose value is positive}}
-  %transfer = ttl.pipe_transfer.create %p {block_span = 0 : i64, expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+  %transfer = ttl.pipe_transfer.create %p {block_span = 0 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> -> !ttl.pipe_transfer
   func.return
 }
@@ -49,19 +38,8 @@ func.func @pipe_transfer_block_span_positive() {
 func.func @pipe_transfer_destination_group_depth_positive() {
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
   // expected-error @+1 {{'ttl.pipe_transfer.create' op attribute 'destination_group_depth' failed to satisfy constraint: 64-bit signless integer attribute whose value is positive}}
-  %transfer = ttl.pipe_transfer.create %p {destination_group_depth = 0 : i64, expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+  %transfer = ttl.pipe_transfer.create %p {destination_group_depth = 0 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> -> !ttl.pipe_transfer
-  func.return
-}
-
-// -----
-
-// Test: internal pipe transfer expected receiver count must match the pipe.
-func.func @pipe_transfer_expected_receiver_count_mismatch() {
-  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
-  // expected-error @+1 {{'ttl.pipe_transfer.create' op expectedReceivers must match the pipe receiver count}}
-  %transfer = ttl.pipe_transfer.create %p {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<collective>}
-      : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> -> !ttl.pipe_transfer
   func.return
 }
 
@@ -94,7 +72,6 @@ func.func @pipe_transfer_device_transfer_mismatch() {
   // expected-error @below {{'ttl.pipe_transfer.create' op deviceTransfer must match the defining ttl.create_pipe}}
   %transfer = ttl.pipe_transfer.create %pipe {
       deviceTransfer = #other_device_transfer,
-      expectedReceivers = 1 : i64,
       kind = #ttl.pipe_transfer_kind<point_to_point>}
       : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
       -> !ttl.pipe_transfer

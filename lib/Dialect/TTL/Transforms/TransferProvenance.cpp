@@ -68,6 +68,9 @@ public:
       DeviceTransferAttr deviceTransfer = createPipe.getDeviceTransferAttr();
       return deviceTransfer ? std::optional(deviceTransfer) : std::nullopt;
     }
+    if (succeeded(getSelectedPipeRecords(pipe))) {
+      return std::nullopt;
+    }
     if (auto blockArgument = dyn_cast<BlockArgument>(pipe);
         blockArgument &&
         isa<func::FuncOp>(blockArgument.getOwner()->getParentOp())) {

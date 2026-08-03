@@ -51,7 +51,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
     %transfer = ttl.pipe_transfer.create %pipe
-        {expectedReceivers = 1 : i64,
+        {
          kind = #ttl.pipe_transfer_kind<point_to_point>}
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
         -> !ttl.pipe_transfer
