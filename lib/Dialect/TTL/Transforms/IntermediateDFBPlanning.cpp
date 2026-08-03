@@ -14,9 +14,9 @@
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallPtrSet.h"
 
 #include <tuple>
 
@@ -198,9 +198,10 @@ static SmallVector<StoreOp> getEarliestStorePerBlock(ArrayRef<StoreOp> stores) {
   return earliestStores;
 }
 
-static bool rootInputsAvailableAtCloneSites(
-    const FusionTraceResult &backwardSlice, ArrayRef<StoreOp> stores,
-    const DFBValueLifetimeAnalysis &lifetimes) {
+static bool
+rootInputsAvailableAtCloneSites(const FusionTraceResult &backwardSlice,
+                                ArrayRef<StoreOp> stores,
+                                const DFBValueLifetimeAnalysis &lifetimes) {
   SmallVector<StoreOp> cloneSites = getEarliestStorePerBlock(stores);
   return llvm::all_of(backwardSlice.lifetimeRootInputs, [&](Value rootInput) {
     return llvm::all_of(cloneSites, [&](StoreOp cloneSite) {
@@ -210,10 +211,9 @@ static bool rootInputsAvailableAtCloneSites(
   });
 }
 
-static bool getCloneableBackwardSlice(
-    Value value, ArrayRef<StoreOp> stores,
-    const DFBValueLifetimeAnalysis &lifetimes,
-    FusionTraceResult &backwardSlice) {
+static bool getCloneableBackwardSlice(Value value, ArrayRef<StoreOp> stores,
+                                      const DFBValueLifetimeAnalysis &lifetimes,
+                                      FusionTraceResult &backwardSlice) {
   if (!areStoreBlocksPairwiseExclusive(stores)) {
     return false;
   }
@@ -516,9 +516,10 @@ PlanningResult<MultiBlockStorePlan> MultiBlockStorePlanner::build() const {
         continue;
       }
 
+      SmallVector<StoreOp> directStores = getDirectStores(result);
       FusionTraceResult backwardSlice;
-      if (getCloneableBackwardSlice(result, storesOutsideDefiningBlock,
-                                    lifetimes, backwardSlice)) {
+      if (getCloneableBackwardSlice(result, directStores, lifetimes,
+                                    backwardSlice)) {
         MultiBlockStoreClonePlan clone;
         clone.source = result;
         clone.stores = std::move(storesOutsideDefiningBlock);
@@ -528,12 +529,12 @@ PlanningResult<MultiBlockStorePlan> MultiBlockStorePlanner::build() const {
         continue;
       }
 
-      materializations.push_back({result, getDirectStores(result)});
+      materializations.push_back({result, std::move(directStores)});
     }
   });
 
-  return PlanningResult<MultiBlockStorePlan>::planned(MultiBlockStorePlan(
-      std::move(clones), std::move(materializations)));
+  return PlanningResult<MultiBlockStorePlan>::planned(
+      MultiBlockStorePlan(std::move(clones), std::move(materializations)));
 }
 
 PlanningResult<IntermediateDFBPlan>

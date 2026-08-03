@@ -1,4 +1,4 @@
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute),cse,canonicalize)' | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-create-producer-compute,ttl-insert-intermediate-dfbs,convert-ttl-to-compute),cse,canonicalize)' --split-input-file | FileCheck %s
 
 // Summary: Tests for ttl.block.broadcast lowering to ttl.compute with
 // tile_bcast. The block op carries dims/shape attributes; the lowering
@@ -123,17 +123,16 @@ func.func @bcast_row_fused_add(%arg0: tensor<1x2x!ttcore.tile<32x32, f32>>, %arg
 
 // -----
 
-// An in-tile broadcast (touching a within-tile dim, here dims=[-1]) of a
-// computed value is NOT fused: ttl.tile_bcast reads its input from a CB, so a
-// non-CB input cannot lower and must be materialized to a DFB before this pass
-// (see BlockBroadcastOp::getDFBInputOperandIndices). The add and broadcast are
-// left unlowered for the materialization pass.
-// CHECK-LABEL: func.func @in_tile_bcast_from_computed_not_fused
-// CHECK:       ttl.add
-// CHECK:       ttl.block.broadcast {{.*}}dims = [-1]
-// CHECK-NOT:   ttl.tile_bcast
-// CHECK-NOT:   ttl.compute
-func.func @in_tile_bcast_from_computed_not_fused(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>>, %arg1: tensor<1x1x!ttcore.tile<32x32, f32>>) -> tensor<1x8x!ttcore.tile<32x32, f32>> {
+// An in-tile broadcast of a computed value is materialized because
+// ttl.tile_bcast requires a DFB-backed input.
+// CHECK-LABEL: func.func @in_tile_bcast_from_computed_materialized
+// CHECK:       %[[INTERMEDIATE:.*]] = ttl.bind_cb{{.*}}ttl.compiler_allocated
+// CHECK:       ttl.compute ins({{.*}}) outs({{.*}})
+// CHECK:       %[[WAIT:.*]] = ttl.cb_wait %[[INTERMEDIATE]]
+// CHECK:       %[[ATTACHED:.*]] = ttl.attach_cb %[[WAIT]], %[[INTERMEDIATE]]
+// CHECK:       ttl.compute ins(%[[ATTACHED]]
+// CHECK:       ttl.tile_bcast
+func.func @in_tile_bcast_from_computed_materialized(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>>, %arg1: tensor<1x1x!ttcore.tile<32x32, f32>>) -> tensor<1x8x!ttcore.tile<32x32, f32>> {
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %cb2 = ttl.bind_cb {cb_index = 16, block_count = 2} : !ttl.cb<[1, 8], !ttcore.tile<32x32, f32>, 2>

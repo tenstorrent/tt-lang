@@ -256,8 +256,8 @@ groupStoresByBlock(ArrayRef<StoreOp> stores) {
   return groups;
 }
 
-static void applyMultiBlockStoreClonePlan(
-    const MultiBlockStoreClonePlan &plan, OpBuilder &builder) {
+static void applyMultiBlockStoreClonePlan(const MultiBlockStoreClonePlan &plan,
+                                          OpBuilder &builder) {
   for (const StoreBlockGroup &group : groupStoresByBlock(plan.stores)) {
     StoreOp firstStore = group.stores.front();
     for (StoreOp store : ArrayRef<StoreOp>(group.stores).drop_front()) {
@@ -384,8 +384,7 @@ struct TTLInsertIntermediateDFBsPass
     if (!multiBlockPlan.getClones().empty()) {
       plannedLifetimes = DFBValueLifetimeAnalysis::create(kernel);
       if (plannedLifetimes.isInvalidIR()) {
-        const PlanningDiagnostic &diagnostic =
-            plannedLifetimes.getInvalidIR();
+        const PlanningDiagnostic &diagnostic = plannedLifetimes.getInvalidIR();
         diagnostic.operation->emitOpError(diagnostic.message);
         signalPassFailure();
         return;

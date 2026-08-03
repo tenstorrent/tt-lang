@@ -357,8 +357,7 @@ FusionTraceResult traceFusionToRoots(
       return result;
     }
 
-    auto inputTrace =
-        traceFusionToRoots(bcastInput, isMaterializationPlanned);
+    auto inputTrace = traceFusionToRoots(bcastInput, isMaterializationPlanned);
     if (inputTrace.failureReason != TraceFailureReason::Success) {
       return inputTrace;
     }

@@ -194,23 +194,24 @@ static void emitTileStore(PatternRewriter &rewriter, Location loc,
                                                    store.getView(), indices);
 }
 
-static void
-replaceOutputPushesBeforeCompute(PatternRewriter &rewriter, ComputeOp computeOp,
-                                 const OutputPublicationPlan &outputs,
-                                 SmallVectorImpl<CBPushOp> &replacedPushes) {
+static void relocateOutputOperationsAfterCompute(
+    PatternRewriter &rewriter, ComputeOp computeOp,
+    const OutputPublicationPlan &outputs,
+    SmallVectorImpl<CBPushOp> &replacedPushes) {
   OpBuilder::InsertionGuard guard(rewriter);
   Operation *insertAfter = computeOp;
-  for (CBPushOp push : outputs.pushes) {
-    assert(push->getBlock() == computeOp->getBlock() &&
-           "pushes absorbed into a compute must be siblings of that compute");
-    // Publications already after the new compute preserve their ordering.
-    if (!push->isBeforeInBlock(computeOp)) {
-      continue;
+  for (Operation *operation : outputs.operationsToRelocate) {
+    assert(operation->getBlock() == computeOp->getBlock() &&
+           "relocated output operations must be siblings of the compute");
+    if (auto push = dyn_cast<CBPushOp>(operation)) {
+      rewriter.setInsertionPointAfter(insertAfter);
+      auto replacement = cast<CBPushOp>(rewriter.clone(*push));
+      insertAfter = replacement;
+      replacedPushes.push_back(push);
+    } else {
+      operation->moveAfter(insertAfter);
+      insertAfter = operation;
     }
-    rewriter.setInsertionPointAfter(insertAfter);
-    auto replacement = cast<CBPushOp>(rewriter.clone(*push));
-    insertAfter = replacement;
-    replacedPushes.push_back(push);
   }
 }
 
@@ -525,8 +526,8 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 
   YieldOp::create(rewriter, loc);
   SmallVector<CBPushOp> replacedPushes;
-  replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
-                                   replacedPushes);
+  relocateOutputOperationsAfterCompute(rewriter, computeOp, outputs,
+                                       replacedPushes);
   eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
   rewriter.replaceOp(sinkOp, computeOp.getResult(0));
 
@@ -647,8 +648,8 @@ static LogicalResult buildComputeFromInputs(
          "source anchor");
   YieldOp::create(rewriter, loc);
   SmallVector<CBPushOp> replacedPushes;
-  replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
-                                   replacedPushes);
+  relocateOutputOperationsAfterCompute(rewriter, computeOp, outputs,
+                                       replacedPushes);
   eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
   rewriter.replaceOp(op, computeOp.getResult(0));
   for (const ComputeInstrumentationPlacement &placement :
@@ -895,6 +896,9 @@ struct LowerBlockBroadcastToCompute
 
   LogicalResult matchAndRewrite(BlockBroadcastOp op,
                                 PatternRewriter &rewriter) const override {
+    if (!getAttachedCB(op.getInput())) {
+      return tryFusion(op, rewriter, this->kernelPlan);
+    }
     return buildComputeFromInputs(
         op, rewriter, ComputeOpCreationRecipe::BlockBroadcast, this->kernelPlan,
         [](OpBuilder &builder, Location location, Type tileType, Block *body,

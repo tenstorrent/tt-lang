@@ -6,7 +6,7 @@
 // RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute))' | FileCheck %s --check-prefix=COMPUTE
 // RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-set-compute-kernel-config,ttl-assign-dst,ttl-subblock-compute-for-dst,ttl-lower-to-loops,canonicalize,cse))' | FileCheck %s --check-prefix=DST
 
-// ---- Test 1: Binary add, 1x1 shape, 2 outputs ----
+// Test 1: Binary add, 1x1 shape, 2 outputs.
 
 // COMPUTE: #[[$ID:.*]] = affine_map<(d0, d1) -> (d0, d1)>
 
@@ -61,7 +61,7 @@ module {
 
 // -----
 
-// ---- Test 2: Unary exp, 2x2 shape, 2 outputs ----
+// Test 2: Unary exp, 2x2 shape, 2 outputs.
 // Exercises the buildUnaryCompute path with multi-output.
 
 // COMPUTE-LABEL: func.func @unary_two_outputs
@@ -104,7 +104,7 @@ module {
 
 // -----
 
-// ---- Test 3: Fused chain (exp + add), 2x2 shape, 2 outputs ----
+// Test 3: Fused chain (exp + add), 2x2 shape, 2 outputs.
 // Exercises the buildFusedCompute path with multi-output: the exp is an
 // intermediate (not CB-attached), so fusion traces through it.
 
@@ -153,7 +153,7 @@ module {
 
 // -----
 
-// ---- Test 4: Binary add, 1x1, 3 outputs ----
+// Test 4: Binary add, 1x1, 3 outputs.
 // Exercises N > 2 outputs: 5 indexing maps, 5 block args, 3 tile_stores.
 
 // COMPUTE-LABEL: func.func @three_outputs
@@ -205,7 +205,7 @@ module {
 
 // -----
 
-// ---- Test 5: Binary add, 4x4, 2 outputs with DST subblocking ----
+// Test 5: Binary add, 4x4, 2 outputs with DST subblocking.
 // 16 tiles, DST capacity 8 -> subblock outer loop with step 2.
 // Each subblock: 8 tile_add with dst_idx 0..7, each followed by 2 tile_stores.
 
@@ -253,7 +253,7 @@ module {
 
 // -----
 
-// ---- Test 6: multi-output where one output DFB is re-consumed (#666) ----
+// Test 6: Multi-output where one output DFB is re-consumed (#666).
 // The add result is stored to two output CBs (a multi-output compute), and one
 // of them (cb2) is immediately re-consumed by a following op (cb_wait + exp).
 // The compute is placed at the last store, so cb2's release/consumer ops
