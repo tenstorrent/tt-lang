@@ -49,7 +49,7 @@ rebuild applies each reviewed final delta to merged PR704 instead.
 | 6 | #687 control-flow stores | `a4ca5487` | `973fe822`, `ba690d18` | Applied and repaired |
 | 7 | #680 DFB subviews | `4588cf72` | `3c4bd203`, `eddbfea9` | Applied and repaired |
 | 8 | #782-#784 PipeNet stack | `fc9233b1`, `e4bcf154`, `4d003e09`, `bd3a991e`, `671ca189`, `9213a58b` | `684d73ae` | Applied and repaired |
-| 9 | #780 grouped PipeTransport | `374909df` | Pending | Pending |
+| 9 | #780 grouped PipeTransport | `374909df` | `1c56a977` | Applied and repaired |
 | 10 | #734 multidevice fabric | Pending refresh | Pending | Pending |
 | 11 | #754 compact selected PipeNets | Pending refresh | Pending | Pending |
 | 12 | #795 operation device domains | Pending refresh | Pending | Pending |
@@ -109,6 +109,17 @@ composition change between independent PRs.
   transform implementation directory and update verifier tests to require
   `dfb_id` before physical allocation. Owner: composition between independent
   stacks; no source PR change is required.
+- #780 with the accumulation/DFB stack: retain recurrence lowering and
+  `reuse-user-dfbs`, then form grouped PipeTransports after PipeNet verification
+  and before acquire coalescing and physical allocation. Owner: composition
+  between independent stacks; no source PR change is required.
+- #780 with #778: register both PR780's grouped-transport `DFBAllocation` helper
+  and the logical-identity and physical-allocation analyses. Owner: composition
+  between independent stacks; no source PR change is required.
+- #780 pipeline test: add logical `dfb_id` attributes to handwritten user DFBs
+  exercised through the complete pipeline. Standalone transport formation does
+  not require physical allocation. Owner: composition with #778; no source PR
+  change is required while #780 remains an independent child of #784.
 - #734 terminology: retain the multicast-to-scatter frontend and tests from
   the reviewed source change. Owner: #734.
 
@@ -132,17 +143,18 @@ composition change between independent PRs.
 
 Current rebuild:
 
-- Host build: passed through the current #782-#784 PipeNet stack.
-- Pre-commit: all hooks passed through the current #782-#784 PipeNet stack.
-- MLIR: `ninja -C build check-ttlang-mlir` passed on 2026-08-02; all 248 tests
+- Host build: passed through current PR780.
+- Pre-commit: all hooks passed through current PR780.
+- MLIR: `ninja -C build check-ttlang-mlir` passed on 2026-08-02; all 260 tests
   passed.
-- Python-only integration tests: `test_compiler_options.py` and
-  `test_kernel_runner.py` passed on 2026-08-02; all 61 tests passed.
+- Python-only integration tests: `test_compiler_options.py`,
+  `test_ttl_api_kernel_cache.py`, and `test_kernel_runner.py` passed on
+  2026-08-02; all 70 tests passed.
 
 Pending:
 
-- Integrate the current grouped transport, fabric, selected PipeNet, and
-  device-domain branches from `/home/bnorris/tt/PRs.md`.
+- Integrate the current fabric, selected PipeNet, and device-domain branches
+  from `/home/bnorris/tt/PRs.md`.
 - Restore the demo examples.
 - Docker build and `check-ttlang-all`.
 - Four-device example validation.
