@@ -1940,9 +1940,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
       pipeGlobalSemaphoresOnly ? PipeCounterAllocationPolicy::GlobalOnly
                                : PipeCounterAllocationPolicy::LocalThenGlobal;
   pipePlanningOptions.fabricRoutePlan = &fabricRoutePlan;
-  FailureOr<PipeModulePlan> maybePipeModulePlan = buildPipeModulePlan(
-      mod, transferAnalysis, transferIndex, *pipeGraphOrErr,
-      pipePlanningOptions);
+  FailureOr<PipeModulePlan> maybePipeModulePlan =
+      buildPipeModulePlan(mod, transferAnalysis, transferIndex, *pipeGraphOrErr,
+                          pipePlanningOptions);
   if (failed(maybePipeModulePlan)) {
     return failure();
   }

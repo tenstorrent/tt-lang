@@ -148,9 +148,9 @@ getReceiverDFBStreamKey(Value dfb, DeviceRefAttr receiverDevice) {
   return std::make_pair(receiverDevice, *maybeDFBIndex);
 }
 
-static LogicalResult recordReceiverPost(PipeTransferPostOp postOp,
-                                        PipeGraphAnalysisState &state,
-                                        const PipeTransferIndex &transferIndex) {
+static LogicalResult
+recordReceiverPost(PipeTransferPostOp postOp, PipeGraphAnalysisState &state,
+                   const PipeTransferIndex &transferIndex) {
   PipeTransferCreateOp createOp =
       transferIndex.getTransferCreate(postOp.getOperation());
 
