@@ -19,6 +19,7 @@
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/FunctionExtras.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 
@@ -62,6 +63,23 @@ getKernelThreadType(mlir::func::FuncOp func) {
 inline bool isNocKernelThread(mlir::Operation *op) {
   return getKernelThreadType(op->getParentOfType<mlir::func::FuncOp>()) ==
          mlir::tt::ttkernel::ThreadType::Noc;
+}
+
+/// Return whether `device` is inside the half-open device coordinate range.
+/// The attributes must have matching component counts and ranks.
+inline bool deviceRangeContains(DeviceRangeAttr range, DeviceRefAttr device) {
+  for (auto [loCoordinate, coordinate, hiCoordinate] :
+       llvm::zip_equal(range.getLo().getCoordinates(), device.getCoordinates(),
+                       range.getHi().getCoordinates())) {
+    for (auto [lo, value, hi] :
+         llvm::zip_equal(loCoordinate.asArrayRef(), coordinate.asArrayRef(),
+                         hiCoordinate.asArrayRef())) {
+      if (value < lo || value >= hi) {
+        return false;
+      }
+    }
+  }
+  return true;
 }
 
 /// Trace through unrealized conversion casts to the original value

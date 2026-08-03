@@ -101,7 +101,7 @@ static std::size_t addFabricRoute(SmallVectorImpl<FabricRoute> &routes,
                                   DeviceRefAttr localDevice,
                                   DeviceRefAttr remoteDevice,
                                   PipeSourceKey sourceNode) {
-  SmallVector<int64_t> sourceCoordinates{sourceNode.srcX, sourceNode.srcY};
+  LaunchNodeCoord sourceCoordinates{sourceNode.srcX, sourceNode.srcY};
   auto route = llvm::find_if(routes, [&](const FabricRoute &existing) {
     return existing.localDevice == localDevice &&
            existing.remoteDevice == remoteDevice;
@@ -144,7 +144,7 @@ LogicalResult buildFabricRoutePlan(const PipeGraph &pipeGraph,
     DeviceRefAttr destination = transfer.getEdge().getDestination();
     if (!destination) {
       send.emitError(
-          "device-range fabric transfers require multicast target lowering");
+          "device-range fabric transfers require scatter target lowering");
       result = failure();
       continue;
     }
@@ -183,8 +183,9 @@ void applyFabricRoutePlan(ModuleOp mod, const FabricRoutePlan &plan) {
     for (const FabricRoute &route : routes) {
       SmallVector<Attribute> sourceNodes;
       sourceNodes.reserve(route.sourceNodes.size());
-      for (const SmallVector<int64_t> &sourceNode : route.sourceNodes) {
-        sourceNodes.push_back(builder.getDenseI64ArrayAttr(sourceNode));
+      for (LaunchNodeCoord sourceNode : route.sourceNodes) {
+        sourceNodes.push_back(
+            builder.getDenseI64ArrayAttr({sourceNode.x, sourceNode.y}));
       }
       routeAttrs.push_back(DictionaryAttr::get(
           mod.getContext(),
@@ -1130,8 +1131,16 @@ LogicalResult lowerPipeTransferSend(
   if (usesFabric) {
     FuncOp func = op->getParentOfType<FuncOp>();
     auto runtimeIt = fabricRuntime.find(func);
-    assert(runtimeIt != fabricRuntime.end() &&
-           "fabric route must have initialized kernel runtime state");
+    if (runtimeIt == fabricRuntime.end()) {
+      op.emitError("fabric pipe transfer has no initialized routing-plane "
+                   "runtime state");
+      return failure();
+    }
+    if (*sendPlan.fabricRouteIndex >= runtimeIt->second.routeTargets.size()) {
+      op.emitError("fabric pipe transfer route index exceeds the initialized "
+                   "routing-plane targets");
+      return failure();
+    }
     transport = std::make_unique<FabricPipeTransportEmitter>(
         op, pipeType, *sendPlan.fabricRouteIndex, runtimeIt->second, rewriter);
   } else {
