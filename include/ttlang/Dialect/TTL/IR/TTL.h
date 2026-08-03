@@ -43,27 +43,9 @@ constexpr llvm::StringLiteral kDstFullSyncEnAttrName("dst_full_sync_en");
 constexpr llvm::StringLiteral
     kUnpackToDestFp32AttrName("ttl.unpack_to_dest_fp32");
 
-/// Canonical target_arch values. Mirrored in python/ttl/ttl_api.py.
-constexpr llvm::StringLiteral kBlackholeArchName("blackhole");
-constexpr llvm::StringLiteral kWormholeB0ArchName("wormhole_b0");
-
-inline bool hasTargetArch(Operation *op, llvm::StringRef archName) {
-  ModuleOp moduleOp = op->getParentOfType<ModuleOp>();
-  if (!moduleOp) {
-    return false;
-  }
-
-  auto targetArch = moduleOp->getAttrOfType<StringAttr>(kTargetArchAttrName);
-  return targetArch && targetArch.getValue() == archName;
-}
-
-inline bool isBlackholeTarget(Operation *op) {
-  return hasTargetArch(op, kBlackholeArchName);
-}
-
-inline bool isWormholeB0Target(Operation *op) {
-  return hasTargetArch(op, kWormholeB0ArchName);
-}
+/// Selected strategy on tile operations with execution alternatives.
+constexpr llvm::StringLiteral
+    kTileExecutionStrategyAttrName("ttl.tile_execution_strategy");
 
 /// PipeNet role exposed by `is_src` / `is_dst` / `is_active` predicate ops
 /// and by `pipenet_scope` declarations.
@@ -86,8 +68,7 @@ getDefaultDstWriteFootprints(mlir::Operation *op);
 mlir::FailureOr<DstFootprint> getDefaultResultDstFootprint(mlir::Operation *op,
                                                            mlir::Value result);
 
-/// Func-level: enable FPU lowering for eligible tile add/sub/mul.
-/// Set by TTLSetComputeKernelConfig, read via getKernelBoolAttr.
+/// Function-level policy for selecting FPU add, subtract, and multiply.
 constexpr llvm::StringLiteral
     kEnableFPUBinaryOpsAttrName("ttl.enable_fpu_binary_ops");
 
@@ -201,9 +182,7 @@ template <typename ConcreteType>
 class TTLDSTInputsTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, TTLDSTInputsTrait> {};
 
-/// Participation marker for binary tile ops (add/sub/mul) whose input source
-/// is decided by operand provenance rather than op identity. The eligibility
-/// answer is computed by isFPUEligibleBinaryOp() in TTLOpsUtils.h.
+/// Marks binary tile ops that support both FPU and SFPU execution strategies.
 template <typename ConcreteType>
 class TTLStrategyDependentBinaryOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType,

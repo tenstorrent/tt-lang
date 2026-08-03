@@ -24,7 +24,8 @@ struct TTLToTTKernelPipelineOptions
       llvm::cl::init(true)};
   Option<bool> enableFPUBinaryOps{
       *this, "enable-fpu-binary-ops",
-      llvm::cl::desc("Use FPU for binary add/sub/mul."), llvm::cl::init(true)};
+      llvm::cl::desc("Allow FPU strategy selection for binary add/sub/mul."),
+      llvm::cl::init(true)};
   Option<bool> useBlockMatmul{
       *this, "use-block-matmul",
       llvm::cl::desc("Lower matmul to block-level hardware calls "
@@ -42,7 +43,7 @@ struct TTLToTTKernelPipelineOptions
       llvm::cl::init(true)};
   Option<bool> reduceFullFp32{
       *this, "reduce-full-fp32",
-      llvm::cl::desc("Enable FP32 accumulation for reduce operations."),
+      llvm::cl::desc("Prefer FP32 accumulation for reduce operations."),
       llvm::cl::init(true)};
   Option<bool> strictF32Acc{
       *this, "strict-f32-acc",

@@ -60,11 +60,14 @@ class TestDeviceTargetArch:
         device = _DeviceWithArchAttribute("BLACKHOLE")
         assert ttl_api._device_target_arch((_TensorWithDevice(device),)) == "blackhole"
 
-    def test_unknown_arch_returns_normalized_string(self):
+    def test_quasar_arch(self):
+        device = _DeviceWithArchMethod("Arch.QUASAR")
+        assert ttl_api._device_target_arch((_TensorWithDevice(device),)) == "quasar"
+
+    def test_unknown_arch_is_rejected(self):
         device = _DeviceWithArchAttribute("future_arch")
-        assert (
-            ttl_api._device_target_arch((_TensorWithDevice(device),)) == "future_arch"
-        )
+        with pytest.raises(ValueError, match="Unsupported TT device architecture"):
+            ttl_api._device_target_arch((_TensorWithDevice(device),))
 
     def test_no_recognized_arch_attribute_returns_none(self):
         assert ttl_api._device_target_arch((_TensorWithDevice(object()),)) is None
@@ -73,9 +76,6 @@ class TestDeviceTargetArch:
         assert ttl_api._device_target_arch(()) is None
 
     def test_raising_arch_attribute_returns_none(self):
-        # hasattr() swallows the AttributeError-or-otherwise; detection
-        # falls through to the next attribute and ultimately returns None
-        # when none resolve.
         assert (
             ttl_api._device_target_arch((_TensorWithDevice(_DeviceWithRaisingArch()),))
             is None

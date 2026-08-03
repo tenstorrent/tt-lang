@@ -14,7 +14,7 @@ func.func @tile_mul_lhs_missing_dst_idx(%idx: index) -> !ttcore.tile<32x32, f32>
   %a_tile = builtin.unrealized_conversion_cast %a : tensor<32x32xf32> to !ttcore.tile<32x32, f32>
 
   // expected-error @+1 {{failed to legalize operation 'ttl.tile_mul' that was explicitly marked illegal}}
-  %prod = ttl.tile_mul %a_tile, %b_with_idx into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %prod = ttl.tile_mul %a_tile, %b_with_idx into dst[%c0] {ttl.tile_execution_strategy = #ttl.tile_execution_strategy<sfpu>} : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
   func.return %prod : !ttcore.tile<32x32, f32>
 }
 
@@ -32,7 +32,7 @@ func.func @tile_mul_rhs_missing_dst_idx(%idx: index) -> !ttcore.tile<32x32, f32>
   %b_tile = builtin.unrealized_conversion_cast %b : tensor<32x32xf32> to !ttcore.tile<32x32, f32>
 
   // expected-error @+1 {{failed to legalize operation 'ttl.tile_mul' that was explicitly marked illegal}}
-  %prod = ttl.tile_mul %a_with_idx, %b_tile into dst[%c1] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %prod = ttl.tile_mul %a_with_idx, %b_tile into dst[%c1] {ttl.tile_execution_strategy = #ttl.tile_execution_strategy<sfpu>} : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
   func.return %prod : !ttcore.tile<32x32, f32>
 }
 

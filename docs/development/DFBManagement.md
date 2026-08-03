@@ -25,7 +25,7 @@ ttl-insert-intermediate-dfbs   (FuncOp)   Materialize compiler-allocated DFBs
 convert-ttl-to-compute         (FuncOp)   Lower remaining tensor ops
 ttl-auto-sync                  (FuncOp)   Insert/coalesce remaining DFB sync
 ttl-finalize-dfb-indices       (Module)   Index reuse + limit check
-ttl-set-compute-kernel-config  (FuncOp)   Set per-kernel configuration
+ttl-set-compute-kernel-config  (FuncOp)   Resolve per-kernel configuration
   ... DST assignment, loop lowering, scheduling ...
 ttl-annotate-cb-associations   (FuncOp)   Copy CB indices to tile ops
 ttl-verify-dfb-spsc            (Module)   Reject DFBs shared across threads

@@ -58,11 +58,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   pm.addPass(createTTLVerifyDFBSPSC());
   pm.addPass(createTTLErasePipeNetScopes());
   pm.addPass(createTTLValidateCBBudget());
-  {
-    TTLConvertTTLToTTKernelOptions ttkOpts;
-    ttkOpts.reduceFullFp32 = options.reduceFullFp32;
-    pm.addPass(createTTLConvertTTLToTTKernel(ttkOpts));
-  }
+  pm.addPass(createTTLConvertTTLToTTKernel());
   pm.addPass(createTTKernelInsertInits());
   pm.addPass(createTTKernelInsertL1Accumulation());
   if (options.combinePackTiles) {

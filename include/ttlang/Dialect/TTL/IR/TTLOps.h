@@ -19,6 +19,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
+#include "ttlang/Dialect/TTL/IR/TileExecution.h"
 
 #include "ttlang/Dialect/TTL/IR/TTLInterfaces.h.inc"
 

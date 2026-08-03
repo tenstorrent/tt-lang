@@ -9,6 +9,254 @@
 
 namespace mlir::tt::ttl {
 
+/// FPU binary execution requires both operands to address the same tile
+/// coordinates.
+static bool hasMatchingFPUInputIndices(Operation *operation) {
+  assert(operation->getNumOperands() >= 2 &&
+         "binary tile op with execution alternatives must have two data "
+         "operands");
+  Value lhs = operation->getOperand(0);
+  Value rhs = operation->getOperand(1);
+
+  if (auto lhsArgument = dyn_cast<BlockArgument>(lhs)) {
+    auto rhsArgument = dyn_cast<BlockArgument>(rhs);
+    if (!rhsArgument || lhsArgument.getOwner() != rhsArgument.getOwner()) {
+      return false;
+    }
+    auto computeOp =
+        dyn_cast_or_null<ComputeOp>(lhsArgument.getOwner()->getParentOp());
+    if (!computeOp) {
+      return false;
+    }
+    unsigned numInputs = computeOp.getNumInputs();
+    if (lhsArgument.getArgNumber() >= numInputs ||
+        rhsArgument.getArgNumber() >= numInputs) {
+      return false;
+    }
+    auto indexingMaps = computeOp.getIndexingMapsArray();
+    return indexingMaps[lhsArgument.getArgNumber()] ==
+           indexingMaps[rhsArgument.getArgNumber()];
+  }
+
+  auto lhsExtract = lhs.getDefiningOp<tensor::ExtractOp>();
+  auto rhsExtract = rhs.getDefiningOp<tensor::ExtractOp>();
+  return lhsExtract && rhsExtract &&
+         lhsExtract.getIndices() == rhsExtract.getIndices();
+}
+
+SmallVector<TileExecutionStrategy, 2>
+getDefaultLegalTileExecutionStrategies(Operation *operation) {
+  if (!operation->hasTrait<TTLStrategyDependentBinaryOpTrait>()) {
+    return {};
+  }
+
+  SmallVector<TileExecutionStrategy, 2> strategies{TileExecutionStrategy::SFPU};
+  if (hasMatchingFPUInputIndices(operation)) {
+    strategies.insert(strategies.begin(), TileExecutionStrategy::FPU);
+  }
+  return strategies;
+}
+
+FailureOr<TileExecutionInfo>
+getDefaultTileExecutionInfo(Operation *operation,
+                            std::optional<TileExecutionStrategy> strategy) {
+  TileExecutionInfo info;
+  info.operandRoutes.assign(operation->getNumOperands(),
+                            TileOperandRoute::None);
+  info.resultInDst = operation->hasTrait<TTLDstResultOpTrait>();
+
+  if (isa<CopyTileOp>(operation)) {
+    info.primitive = TilePrimitive::Copy;
+    info.operandRoutes[0] = TileOperandRoute::DataflowBuffer;
+    return info;
+  }
+  if (isa<CopyDstOp>(operation)) {
+    info.primitive = TilePrimitive::Copy;
+    info.operandRoutes[0] = TileOperandRoute::Dst;
+    return info;
+  }
+  if (isa<DstIndexOp>(operation)) {
+    info.primitive = TilePrimitive::DstIndex;
+    return info;
+  }
+  if (isa<TileStoreOp>(operation)) {
+    info.primitive = TilePrimitive::Store;
+    info.operandRoutes[0] = TileOperandRoute::Dst;
+    return info;
+  }
+  if (isa<TileBcastOp>(operation)) {
+    info.primitive = TilePrimitive::Broadcast;
+    info.operandRoutes[0] = TileOperandRoute::DataflowBuffer;
+    return info;
+  }
+  if (isa<TileReduceOp>(operation)) {
+    info.primitive = TilePrimitive::Reduce;
+    info.operandRoutes[0] = TileOperandRoute::DataflowBuffer;
+    info.operandRoutes[1] = TileOperandRoute::DataflowBuffer;
+    switch (cast<TileReduceOp>(operation).getReduceDim()) {
+    case ttkernel::ReduceDim::Row:
+      info.fullFp32Accumulation = FullFp32AccumulationKind::ReduceRow;
+      break;
+    case ttkernel::ReduceDim::Col:
+      info.fullFp32Accumulation = FullFp32AccumulationKind::ReduceColumn;
+      break;
+    case ttkernel::ReduceDim::Scalar:
+      info.fullFp32Accumulation = FullFp32AccumulationKind::ReduceScalar;
+      break;
+    }
+    return info;
+  }
+  if (isa<TileTransposeOp>(operation)) {
+    info.primitive = TilePrimitive::Transpose;
+    info.operandRoutes[0] = TileOperandRoute::DataflowBuffer;
+    return info;
+  }
+  if (isa<TileFillOp>(operation)) {
+    info.primitive = TilePrimitive::Fill;
+    return info;
+  }
+  if (auto matmul = dyn_cast<TileMatmulBlockOp>(operation)) {
+    info.primitive = TilePrimitive::Matmul;
+    info.operandRoutes[0] = TileOperandRoute::DataflowBuffer;
+    info.operandRoutes[1] = TileOperandRoute::DataflowBuffer;
+    if (matmul.getAccumulator()) {
+      info.operandRoutes[2] = TileOperandRoute::Dst;
+    }
+    info.fullFp32Accumulation = FullFp32AccumulationKind::Matmul;
+    info.accumulatesIntoDst = true;
+    return info;
+  }
+  if (operation->hasTrait<TTLStrategyDependentBinaryOpTrait>()) {
+    if (!strategy) {
+      return failure();
+    }
+    info.primitive = TilePrimitive::ElementwiseBinary;
+    TileOperandRoute route = *strategy == TileExecutionStrategy::FPU
+                                 ? TileOperandRoute::DataflowBuffer
+                                 : TileOperandRoute::Dst;
+    info.operandRoutes[0] = route;
+    info.operandRoutes[1] = route;
+    info.accumulatesIntoDst = *strategy == TileExecutionStrategy::FPU;
+    return info;
+  }
+  if (operation->hasTrait<TTLTileBinaryOpTrait>()) {
+    info.primitive = TilePrimitive::ElementwiseBinary;
+    info.operandRoutes[0] = TileOperandRoute::Dst;
+    info.operandRoutes[1] = TileOperandRoute::Dst;
+    return info;
+  }
+  if (operation->hasTrait<TTLTileUnaryOpTrait>()) {
+    info.primitive = TilePrimitive::ElementwiseUnary;
+    info.operandRoutes[0] = TileOperandRoute::Dst;
+    return info;
+  }
+  return failure();
+}
+
+LogicalResult verifyTileExecutionInfo(Operation *operation,
+                                      const TileExecutionInfo &info) {
+  if (info.operandRoutes.size() == operation->getNumOperands()) {
+    return success();
+  }
+  operation->emitOpError() << "defines " << info.operandRoutes.size()
+                           << " tile operand routes for "
+                           << operation->getNumOperands() << " operands";
+  return failure();
+}
+
+FailureOr<TileExecutionStrategy>
+getSelectedTileExecutionStrategy(Operation *operation) {
+  auto strategyAttr = operation->getAttrOfType<TileExecutionStrategyAttr>(
+      kTileExecutionStrategyAttrName);
+  if (!strategyAttr) {
+    return failure();
+  }
+  return strategyAttr.getValue();
+}
+
+FailureOr<TileExecutionInfo>
+getSelectedTileExecutionInfo(Operation *operation) {
+  auto executionOp = dyn_cast<TileExecutionOpInterface>(operation);
+  if (!executionOp) {
+    return failure();
+  }
+  if (executionOp.getLegalExecutionStrategies().empty()) {
+    return executionOp.getTileExecutionInfo(std::nullopt);
+  }
+  FailureOr<TileExecutionStrategy> strategy =
+      getSelectedTileExecutionStrategy(operation);
+  if (failed(strategy)) {
+    return failure();
+  }
+  return executionOp.getTileExecutionInfo(*strategy);
+}
+
+/// Return an operand route after all required strategies have been selected.
+static TileOperandRoute getRequiredOperandRoute(OpOperand &operand) {
+  if (!isa<TileExecutionOpInterface>(operand.getOwner())) {
+    assert(!isTileComputeOp(operand.getOwner()) &&
+           "tile operation does not implement TileExecutionOpInterface");
+    return TileOperandRoute::None;
+  }
+  FailureOr<TileExecutionInfo> info =
+      getSelectedTileExecutionInfo(operand.getOwner());
+  assert(succeeded(info) && "tile execution strategy is unresolved");
+  assert(operand.getOperandNumber() < info->operandRoutes.size());
+  return info->operandRoutes[operand.getOperandNumber()];
+}
+
+bool isDstInput(OpOperand &operand) {
+  return getRequiredOperandRoute(operand) == TileOperandRoute::Dst;
+}
+
+LogicalResult verifyTileExecutionSemantics(Operation *root) {
+  WalkResult walkResult = root->walk([&](TileExecutionOpInterface executionOp) {
+    Operation *operation = executionOp.getOperation();
+    SmallVector<TileExecutionStrategy, 2> legalStrategies =
+        executionOp.getLegalExecutionStrategies();
+    Attribute rawStrategy = operation->getAttr(kTileExecutionStrategyAttrName);
+    auto strategyAttr =
+        dyn_cast_or_null<TileExecutionStrategyAttr>(rawStrategy);
+    if (rawStrategy && !strategyAttr) {
+      operation->emitOpError()
+          << kTileExecutionStrategyAttrName
+          << " must be a #ttl.tile_execution_strategy attribute";
+      return WalkResult::interrupt();
+    }
+    if (legalStrategies.empty() && strategyAttr) {
+      operation->emitOpError()
+          << kTileExecutionStrategyAttrName
+          << " is only valid on tile operations with execution-strategy "
+             "alternatives";
+      return WalkResult::interrupt();
+    }
+    if (strategyAttr &&
+        !llvm::is_contained(legalStrategies, strategyAttr.getValue())) {
+      operation->emitOpError() << kTileExecutionStrategyAttrName
+                               << " is not legal for the operation operands";
+      return WalkResult::interrupt();
+    }
+    FailureOr<TileExecutionInfo> info = getSelectedTileExecutionInfo(operation);
+    if (succeeded(info) &&
+        succeeded(verifyTileExecutionInfo(operation, *info))) {
+      return WalkResult::advance();
+    }
+    if (succeeded(info)) {
+      return WalkResult::interrupt();
+    }
+    if (!legalStrategies.empty()) {
+      operation->emitOpError()
+          << "requires a selected " << kTileExecutionStrategyAttrName
+          << " attribute; run ttl-set-compute-kernel-config before DST "
+             "assignment, scheduling, or lowering";
+    } else {
+      operation->emitOpError("has no tile execution semantics");
+    }
+    return WalkResult::interrupt();
+  });
+  return failure(walkResult.wasInterrupted());
+}
+
 std::optional<BcastType> getTileBroadcastType(ArrayRef<int64_t> dims,
                                               int64_t rank) {
   llvm::SmallDenseSet<int64_t> normalizedDims = normalizeDimsToSet(dims, rank);
@@ -81,23 +329,16 @@ static void appendDstOperandFootprint(SmallVectorImpl<DstFootprint> &footprints,
   footprints.push_back(*footprint);
 }
 
-/// Ordinary DST-input tile ops read tile operands from their producer slots.
-/// FPU-eligible strategy-dependent binary ops read from DFBs instead.
 SmallVector<DstFootprint, 2> getDefaultDstReadFootprints(Operation *op) {
   SmallVector<DstFootprint, 2> footprints;
-  if (isa<CopyTileOp, DstIndexOp>(op)) {
-    return footprints;
-  }
-  if (auto store = dyn_cast<TileStoreOp>(op)) {
-    appendDstOperandFootprint(footprints, store.getTile());
-    return footprints;
-  }
-  if (op->hasTrait<TTLDSTInputsTrait>() ||
-      (op->hasTrait<TTLStrategyDependentBinaryOpTrait>() &&
-       !isFPUEligibleBinaryOp(op))) {
-    for (Value operand : op->getOperands()) {
-      appendDstOperandFootprint(footprints, operand);
+  FailureOr<TileExecutionInfo> info = getSelectedTileExecutionInfo(op);
+  assert(succeeded(info) && "tile execution semantics are unresolved");
+  for (OpOperand &operand : op->getOpOperands()) {
+    if (info->operandRoutes[operand.getOperandNumber()] !=
+        TileOperandRoute::Dst) {
+      continue;
     }
+    appendDstOperandFootprint(footprints, operand.get());
   }
   return footprints;
 }
@@ -229,8 +470,12 @@ TileOpCategory classifyTileOp(Operation *op) {
   }
   // TODO: add TileOpCategory::Transpose case when TTL transpose op is added.
 
-  if (isFPUEligibleBinaryOp(op)) {
-    return TileOpCategory::FPUBinary;
+  if (op->hasTrait<TTLStrategyDependentBinaryOpTrait>()) {
+    FailureOr<TileExecutionStrategy> strategy =
+        getSelectedTileExecutionStrategy(op);
+    assert(succeeded(strategy) && "tile execution strategy is unresolved");
+    return *strategy == TileExecutionStrategy::FPU ? TileOpCategory::FPUBinary
+                                                   : TileOpCategory::SFPUBinary;
   }
   // SFPU unary: tile unary ops that operate in-place on DST.
   if (op->hasTrait<TTLTileUnaryOpTrait>()) {

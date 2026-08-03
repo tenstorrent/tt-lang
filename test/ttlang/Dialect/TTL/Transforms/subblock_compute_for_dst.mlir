@@ -5,7 +5,7 @@
 
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst{dst-capacity=8}))' --split-input-file | FileCheck %s --check-prefix=ASSIGN
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst{dst-capacity=8},ttl-subblock-compute-for-dst,canonicalize,cse))' --split-input-file | FileCheck %s --check-prefix=TILED
-// Actual DST capacity (no override) for broadcast tests where FPU detection matters:
+// Actual DST capacity (no override) for tests where strategy selection matters:
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst))' --split-input-file | FileCheck %s --check-prefix=BCAST-ASSIGN
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst,ttl-subblock-compute-for-dst,canonicalize,cse))' --split-input-file | FileCheck %s --check-prefix=BCAST-TILED
 
@@ -384,9 +384,8 @@ func.func @tile_multidim_remainder_3x3(%a: tensor<3x3x!ttcore.tile<32x32, f32>>)
 // expression for the column dimension. Verifies that the broadcast dim
 // retains its original size (1) in extract_slice rather than being
 // incorrectly set to the iteration-domain size (4).
-// The two inputs have different indexing maps (identity vs broadcast), so
-// FPU binary detection is skipped and the op uses the SFPU path with
-// dstPerIteration=2 (copy_tile for both operands).
+// Different input indexing maps make the FPU strategy illegal, so the
+// operation selects SFPU with dstPerIteration=2 (copy_tile for both operands).
 // DST capacity=4 (f32, actual), dstPerIteration=2, totalTiles=16.
 // unroll_factor = min(4/2, 16) = 2.
 // Multi-dim tiling: tileSizes=[1,2], product=2.
