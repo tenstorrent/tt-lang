@@ -9,6 +9,7 @@
 
 #include "mlir/IR/Operation.h"
 #include "mlir/Support/LogicalResult.h"
+#include "llvm/ADT/SmallBitVector.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <optional>
@@ -20,7 +21,9 @@ enum class TilePrimitive {
   Copy,
   ElementwiseBinary,
   ElementwiseUnary,
-  Broadcast,
+  BroadcastColumn,
+  BroadcastRow,
+  BroadcastScalar,
   Reduce,
   Transpose,
   Fill,
@@ -48,6 +51,8 @@ enum class FullFp32AccumulationKind {
 struct TileExecutionInfo {
   TilePrimitive primitive;
   llvm::SmallVector<TileOperandRoute, 4> operandRoutes;
+  /// DST operands initialized by the operation's lowering.
+  llvm::SmallBitVector dstOperandsMaterializedByOperation;
   bool resultInDst = false;
   std::optional<FullFp32AccumulationKind> fullFp32Accumulation;
   /// Residual contents in a reused destination slot affect the result.
@@ -77,6 +82,9 @@ getSelectedTileExecutionInfo(mlir::Operation *operation);
 
 /// Return whether `operand` must be resident in DST when consumed.
 bool isDstInput(mlir::OpOperand &operand);
+
+/// Return whether the operation lowering initializes DST from `operand`.
+bool isDstInputMaterializedByOperation(mlir::OpOperand &operand);
 
 /// Verify that every tile operation has complete execution semantics.
 mlir::LogicalResult verifyTileExecutionSemantics(mlir::Operation *root);

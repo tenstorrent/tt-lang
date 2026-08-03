@@ -130,7 +130,7 @@ static FailureOr<CopyTileOp> createCopyTileForArg(
 static SmallVector<Operation *> getSortedConsumers(Value v) {
   llvm::SmallSetVector<Operation *, 4> consumers;
   for (OpOperand &use : v.getUses()) {
-    if (!isDstInput(use)) {
+    if (!isDstInput(use) || isDstInputMaterializedByOperation(use)) {
       continue;
     }
     consumers.insert(use.getOwner());
@@ -724,7 +724,8 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
           continue;
         }
         for (OpOperand &operand : op.getOpOperands()) {
-          if (!isDstInput(operand)) {
+          if (!isDstInput(operand) ||
+              isDstInputMaterializedByOperation(operand)) {
             continue;
           }
           auto arg = dyn_cast<BlockArgument>(operand.get());
@@ -742,7 +743,8 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
 
           arg.replaceUsesWithIf(copy->getDstTile(), [&](OpOperand &use) {
             return use.getOwner() != copy->getOperation() &&
-                   !isa<CopyTileOp>(use.getOwner()) && isDstInput(use);
+                   !isa<CopyTileOp>(use.getOwner()) && isDstInput(use) &&
+                   !isDstInputMaterializedByOperation(use);
           });
         }
       }

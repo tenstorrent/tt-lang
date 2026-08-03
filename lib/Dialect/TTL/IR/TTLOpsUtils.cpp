@@ -152,6 +152,7 @@ getDefaultTileExecutionInfo(Operation *operation,
   TileExecutionInfo info;
   info.operandRoutes.assign(operation->getNumOperands(),
                             TileOperandRoute::None);
+  info.dstOperandsMaterializedByOperation.resize(operation->getNumOperands());
   info.resultInDst = operation->hasTrait<TTLDstResultOpTrait>();
 
   if (isa<CopyTileOp>(operation)) {
@@ -173,8 +174,18 @@ getDefaultTileExecutionInfo(Operation *operation,
     info.operandRoutes[0] = TileOperandRoute::Dst;
     return info;
   }
-  if (isa<TileBcastOp>(operation)) {
-    info.primitive = TilePrimitive::Broadcast;
+  if (auto broadcast = dyn_cast<TileBcastOp>(operation)) {
+    switch (broadcast.getBcastType()) {
+    case BcastType::Col:
+      info.primitive = TilePrimitive::BroadcastColumn;
+      break;
+    case BcastType::Row:
+      info.primitive = TilePrimitive::BroadcastRow;
+      break;
+    case BcastType::Scalar:
+      info.primitive = TilePrimitive::BroadcastScalar;
+      break;
+    }
     info.operandRoutes[0] = TileOperandRoute::DataflowBuffer;
     return info;
   }
@@ -210,6 +221,7 @@ getDefaultTileExecutionInfo(Operation *operation,
     info.operandRoutes[1] = TileOperandRoute::DataflowBuffer;
     if (matmul.getAccumulator()) {
       info.operandRoutes[2] = TileOperandRoute::Dst;
+      info.dstOperandsMaterializedByOperation.set(2);
     }
     info.fullFp32Accumulation = FullFp32AccumulationKind::Matmul;
     info.accumulatesIntoDst = true;
@@ -244,13 +256,21 @@ getDefaultTileExecutionInfo(Operation *operation,
 
 LogicalResult verifyTileExecutionInfo(Operation *operation,
                                       const TileExecutionInfo &info) {
-  if (info.operandRoutes.size() == operation->getNumOperands()) {
-    return success();
+  if (info.operandRoutes.size() != operation->getNumOperands()) {
+    operation->emitOpError() << "defines " << info.operandRoutes.size()
+                             << " tile operand routes for "
+                             << operation->getNumOperands() << " operands";
+    return failure();
   }
-  operation->emitOpError() << "defines " << info.operandRoutes.size()
-                           << " tile operand routes for "
-                           << operation->getNumOperands() << " operands";
-  return failure();
+  if (info.dstOperandsMaterializedByOperation.size() !=
+      operation->getNumOperands()) {
+    operation->emitOpError()
+        << "defines " << info.dstOperandsMaterializedByOperation.size()
+        << " DST operand materialization entries for "
+        << operation->getNumOperands() << " operands";
+    return failure();
+  }
+  return success();
 }
 
 FailureOr<TileExecutionStrategy>
@@ -296,6 +316,16 @@ static TileOperandRoute getRequiredOperandRoute(OpOperand &operand) {
 
 bool isDstInput(OpOperand &operand) {
   return getRequiredOperandRoute(operand) == TileOperandRoute::Dst;
+}
+
+bool isDstInputMaterializedByOperation(OpOperand &operand) {
+  FailureOr<TileExecutionInfo> info =
+      getSelectedTileExecutionInfo(operand.getOwner());
+  assert(succeeded(info) && "tile execution strategy is unresolved");
+  assert(operand.getOperandNumber() <
+         info->dstOperandsMaterializedByOperation.size());
+  return info->dstOperandsMaterializedByOperation.test(
+      operand.getOperandNumber());
 }
 
 LogicalResult verifyTileExecutionSemantics(Operation *root) {

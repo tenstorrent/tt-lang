@@ -21,34 +21,36 @@ func.func @disabled_required_f32() attributes {fp32_dest_acc_en = false} {
 
 // -----
 
-// expected-error @below {{'func.func' op explicit f32 destination accumulation is unsupported by the kernel's tile operations}}
-func.func @enabled_unsupported_bcast(
-    %input: tensor<1x1x!ttcore.tile<32x32, bf16>>,
-    %output: tensor<1x1x!ttcore.tile<32x32, bf16>>)
-    attributes {fp32_dest_acc_en = true} {
-  %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
-      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %output_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
-      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  %input_attached = ttl.attach_cb %input, %input_dfb
-      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
-         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
-        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %output_attached = ttl.attach_cb %output, %output_dfb
-      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
-         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
-        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %zero = arith.constant 0 : index
-  %input_tile = tensor.extract %input_attached[%zero, %zero]
-      : tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %output_tile = tensor.extract %output_attached[%zero, %zero]
-      : tensor<1x1x!ttcore.tile<32x32, bf16>>
-  // expected-note @below {{the target does not support f32 DST mode for ttl.tile_bcast with 'bf16' elements}}
-  %broadcast = ttl.tile_bcast %input_tile, %output_tile 1 : i32
-      into dst[%zero]
-      : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>)
-        -> !ttcore.tile<32x32, bf16>
-  return
+module attributes {ttl.target_arch = #ttcore.arch<wormhole_b0>} {
+  // expected-error @below {{'func.func' op explicit f32 destination accumulation is unsupported by the kernel's tile operations}}
+  func.func @enabled_unsupported_wormhole_row_bcast(
+      %input: tensor<1x1x!ttcore.tile<32x32, bf16>>,
+      %output: tensor<1x1x!ttcore.tile<32x32, bf16>>)
+      attributes {fp32_dest_acc_en = true} {
+    %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %output_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %input_attached = ttl.attach_cb %input, %input_dfb
+        : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %output_attached = ttl.attach_cb %output, %output_dfb
+        : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %zero = arith.constant 0 : index
+    %input_tile = tensor.extract %input_attached[%zero, %zero]
+        : tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %output_tile = tensor.extract %output_attached[%zero, %zero]
+        : tensor<1x1x!ttcore.tile<32x32, bf16>>
+    // expected-note @below {{the target does not support f32 DST mode for ttl.tile_bcast with 'bf16' elements}}
+    %broadcast = ttl.tile_bcast %input_tile, %output_tile 2 : i32
+        into dst[%zero]
+        : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>)
+          -> !ttcore.tile<32x32, bf16>
+    return
+  }
 }
 
 // -----

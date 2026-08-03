@@ -31,6 +31,7 @@ Tile operations implement `TileExecutionOpInterface`. The interface reports:
 - the hardware primitive;
 - legal execution strategies;
 - the route for each operand: dataflow buffer, DST, or no tile-data route;
+- which DST operands the operation lowering initializes itself;
 - whether the result is resident in DST;
 - the full-fp32 accumulation category, when configurable;
 - whether repeated operations accumulate into an existing DST slot.
@@ -60,7 +61,7 @@ architectures is invalid.
 Capability queries contain architecture and backend restrictions. They consume
 only target-independent execution categories, not operations. For example,
 Blackhole row reduction and Wormhole reduction restrict full-fp32 accumulation,
-and bf16 broadcast and transpose restrict f32 DST mode.
+and Wormhole bf16 row broadcast restricts f32 DST mode.
 
 ### Policy
 

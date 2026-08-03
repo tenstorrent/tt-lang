@@ -469,15 +469,15 @@ func.func @bf16_matmul_auto_fp32(
 
 #map4 = affine_map<(d0, d1) -> (d0, d1)>
 
-// A bf16 broadcast removes the unsupported f32 mode, so the matmul preference
-// selects the remaining default mode.
-// DEFAULT-LABEL: func.func @bf16_matmul_bcast_no_fp32
-// DEFAULT-SAME: fp32_dest_acc_en = false
-// NO-MATMUL-FP32-LABEL: func.func @bf16_matmul_bcast_no_fp32
+// A column broadcast supports f32 DST mode, so the matmul preference remains
+// effective. Disabling that preference selects default DST mode.
+// DEFAULT-LABEL: func.func @bf16_matmul_column_bcast
+// DEFAULT-SAME: fp32_dest_acc_en = true
+// NO-MATMUL-FP32-LABEL: func.func @bf16_matmul_column_bcast
 // NO-MATMUL-FP32-SAME: fp32_dest_acc_en = false
-// NO-REDUCE-FP32-LABEL: func.func @bf16_matmul_bcast_no_fp32
-// NO-REDUCE-FP32-SAME: fp32_dest_acc_en = false
-func.func @bf16_matmul_bcast_no_fp32(
+// NO-REDUCE-FP32-LABEL: func.func @bf16_matmul_column_bcast
+// NO-REDUCE-FP32-SAME: fp32_dest_acc_en = true
+func.func @bf16_matmul_column_bcast(
     %a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
     %b: tensor<1x1x!ttcore.tile<32x32, bf16>>,
     %bias: tensor<1x1x!ttcore.tile<32x32, bf16>>)
