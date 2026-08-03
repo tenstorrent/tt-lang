@@ -14,9 +14,9 @@
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallPtrSet.h"
 
 #include <tuple>
 
@@ -198,9 +198,10 @@ static SmallVector<StoreOp> getEarliestStorePerBlock(ArrayRef<StoreOp> stores) {
   return earliestStores;
 }
 
-static bool rootInputsAvailableAtCloneSites(
-    const FusionTraceResult &backwardSlice, ArrayRef<StoreOp> stores,
-    const DFBValueLifetimeAnalysis &lifetimes) {
+static bool
+rootInputsAvailableAtCloneSites(const FusionTraceResult &backwardSlice,
+                                ArrayRef<StoreOp> stores,
+                                const DFBValueLifetimeAnalysis &lifetimes) {
   SmallVector<StoreOp> cloneSites = getEarliestStorePerBlock(stores);
   return llvm::all_of(backwardSlice.lifetimeRootInputs, [&](Value rootInput) {
     return llvm::all_of(cloneSites, [&](StoreOp cloneSite) {
@@ -210,10 +211,9 @@ static bool rootInputsAvailableAtCloneSites(
   });
 }
 
-static bool getCloneableBackwardSlice(
-    Value value, ArrayRef<StoreOp> stores,
-    const DFBValueLifetimeAnalysis &lifetimes,
-    FusionTraceResult &backwardSlice) {
+static bool getCloneableBackwardSlice(Value value, ArrayRef<StoreOp> stores,
+                                      const DFBValueLifetimeAnalysis &lifetimes,
+                                      FusionTraceResult &backwardSlice) {
   if (!areStoreBlocksPairwiseExclusive(stores)) {
     return false;
   }
@@ -533,8 +533,8 @@ PlanningResult<MultiBlockStorePlan> MultiBlockStorePlanner::build() const {
     }
   });
 
-  return PlanningResult<MultiBlockStorePlan>::planned(MultiBlockStorePlan(
-      std::move(clones), std::move(materializations)));
+  return PlanningResult<MultiBlockStorePlan>::planned(
+      MultiBlockStorePlan(std::move(clones), std::move(materializations)));
 }
 
 PlanningResult<IntermediateDFBPlan>

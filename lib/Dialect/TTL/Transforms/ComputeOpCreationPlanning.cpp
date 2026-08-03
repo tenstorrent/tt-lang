@@ -856,6 +856,10 @@ getDirectInputOperandIndices(Operation *source) {
   if (isa<FillOp>(source)) {
     return SmallVector<unsigned>{};
   }
+  if (auto broadcast = dyn_cast<BlockBroadcastOp>(source)) {
+    return SmallVector<unsigned>{
+        broadcast.getInputMutable().getOperandNumber()};
+  }
   if (auto dfbInputOp = dyn_cast<DFBInputOpInterface>(source)) {
     return dfbInputOp.getDFBInputOperandIndices();
   }
@@ -885,6 +889,7 @@ static std::optional<SmallVector<Value>> collectDirectInputs(
 static PlanningResult<OutputPublicationPlan>
 resolveTransactionPushes(OutputPublicationPlan plan) {
   plan.pushes.clear();
+  plan.operationsToRelocate.clear();
   for (OutputDFBTransaction &transaction : plan.transactions) {
     transaction.push.reset();
     bool sawStoreWithoutPush = false;
@@ -916,6 +921,58 @@ resolveTransactionPushes(OutputPublicationPlan plan) {
   llvm::sort(plan.pushes, [](CBPushOp lhs, CBPushOp rhs) {
     return lhs->isBeforeInBlock(rhs);
   });
+
+  DenseSet<Operation *> operationsToRelocate;
+  for (const OutputDFBTransaction &transaction : plan.transactions) {
+    if (!transaction.push ||
+        !(*transaction.push)->isBeforeInBlock(plan.insertionAnchor)) {
+      continue;
+    }
+
+    operationsToRelocate.insert(*transaction.push);
+    SmallVector<Operation *> consumerWorklist;
+    for (Operation *operation = (*transaction.push)->getNextNode();
+         operation && operation != plan.insertionAnchor;
+         operation = operation->getNextNode()) {
+      if (auto reserve = dyn_cast<CBReserveOp>(operation);
+          reserve && reserve.getCb() == transaction.dfb) {
+        break;
+      }
+
+      Value synchronizedDFB;
+      if (auto wait = dyn_cast<CBWaitOp>(operation)) {
+        synchronizedDFB = wait.getCb();
+      } else if (auto pop = dyn_cast<CBPopOp>(operation)) {
+        synchronizedDFB = pop.getCb();
+      }
+      if (synchronizedDFB == transaction.dfb &&
+          operationsToRelocate.insert(operation).second) {
+        consumerWorklist.push_back(operation);
+      }
+    }
+
+    // SSA users of a relocated wait must follow it. Restricting this closure
+    // to operations before the insertion anchor leaves consumers already
+    // ordered after the created compute unchanged.
+    while (!consumerWorklist.empty()) {
+      Operation *operation = consumerWorklist.pop_back_val();
+      for (Value result : operation->getResults()) {
+        for (Operation *user : result.getUsers()) {
+          if (user->getBlock() == plan.insertionAnchor->getBlock() &&
+              user->isBeforeInBlock(plan.insertionAnchor) &&
+              operationsToRelocate.insert(user).second) {
+            consumerWorklist.push_back(user);
+          }
+        }
+      }
+    }
+  }
+
+  for (Operation &operation : *plan.insertionAnchor->getBlock()) {
+    if (operationsToRelocate.contains(&operation)) {
+      plan.operationsToRelocate.push_back(&operation);
+    }
+  }
   return PlanningResult<OutputPublicationPlan>::planned(std::move(plan));
 }
 

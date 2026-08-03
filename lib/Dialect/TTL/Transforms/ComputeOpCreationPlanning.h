@@ -304,6 +304,15 @@ struct OutputPublicationPlan {
   /// Existing `ttl.cb_push` operations matched to transactions, in block order.
   SmallVector<CBPushOp> pushes;
 
+  /// Publication and dependent consumer operations preceding the insertion
+  /// anchor, in block order.
+  ///
+  /// Creating the compute at `insertionAnchor` would otherwise leave a wait
+  /// before the push that makes its data available. These operations execute
+  /// immediately after the created compute while preserving their source
+  /// order.
+  SmallVector<Operation *> operationsToRelocate;
+
   /// Reserve-delimited output transactions in first-store order.
   SmallVector<OutputDFBTransaction> transactions;
 

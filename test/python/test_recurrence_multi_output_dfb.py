@@ -786,18 +786,12 @@ def test_running_max_subtract(dtype, device):
     expected = torch.empty_like(x, dtype=torch.float32)
     for chunk_index in range(N_CHUNKS):
         x_chunk = x[chunk_index * TILE : (chunk_index + 1) * TILE].float()
-        running_max = torch.maximum(
-            running_max, x_chunk.amax(dim=1, keepdim=True)
-        )
-        expected[chunk_index * TILE : (chunk_index + 1) * TILE] = (
-            x_chunk - running_max
-        )
+        running_max = torch.maximum(running_max, x_chunk.amax(dim=1, keepdim=True))
+        expected[chunk_index * TILE : (chunk_index + 1) * TILE] = x_chunk - running_max
 
     x_dram = to_dram(x, device)
     neg_inf_dram = to_dram(torch.full((TILE, TILE), -1e30, dtype=dtype), device)
-    out_dram = to_dram(
-        torch.zeros(N_CHUNKS * TILE, WT * TILE, dtype=dtype), device
-    )
+    out_dram = to_dram(torch.zeros(N_CHUNKS * TILE, WT * TILE, dtype=dtype), device)
 
     running_max_subtract(x_dram, neg_inf_dram, out_dram)
 
