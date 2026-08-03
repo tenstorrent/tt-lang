@@ -118,6 +118,17 @@ inline std::optional<int64_t> getCBIndex(mlir::Value cb) {
   return std::nullopt;
 }
 
+/// Returns the logical DFB ID on the `ttl.bind_cb` reached from `cb`.
+///
+/// Returns failure when `cb` does not resolve to a declaration with `dfb_id`.
+FailureOr<int64_t> getDFBId(mlir::Value cb);
+
+/// Verifies that DFB finalization completed and every logical ID is resolvable.
+///
+/// Passes that consume logical DFB IDs call this before reading any ID.
+LogicalResult verifyResolvedDFBIdentities(ModuleOp moduleOp,
+                                          StringRef consumerPass);
+
 /// Return the element type for a ttcore::TileType.
 inline std::optional<mlir::Type> getTileElementType(mlir::Type type) {
   if (auto tileType = mlir::dyn_cast<ttcore::TileType>(type)) {
