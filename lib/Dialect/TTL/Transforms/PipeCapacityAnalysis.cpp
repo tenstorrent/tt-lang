@@ -285,20 +285,23 @@ static bool collectAndCheckPops(ArrayRef<CBPopOp> candidatePops,
       valid = false;
       continue;
     }
-    std::optional<int64_t> maybeReleasedBlocks = getReleasedBlockCount(popOp);
+    std::optional<int64_t> maybeReleasedBlocks =
+        getDFBTransactionBlockCount(popOp);
     if (!maybeReleasedBlocks || *maybeReleasedBlocks != 1) {
       debugRejectEndpoint(endpoint, "pop does not release one DFB block");
       valid = false;
       continue;
     }
-    const DFBReleaseOwnerMaps &owners = pipeGraph.getDFBReleaseOwnerMaps();
-    auto waitOp = lookupOwner<CBWaitOp>(owners.waitByPop, popOp.getOperation());
-    if (!waitOp) {
+    ArrayRef<Operation *> owners =
+        pipeGraph.getDFBAcquireReleaseIndex(popOp).getReleaseIntervalOwners(
+            popOp);
+    if (owners.size() != 1 || !isa<CBWaitOp>(owners.front())) {
       debugRejectEndpoint(endpoint,
                           "pop is not owned by a matching receiver wait");
       valid = false;
       continue;
     }
+    CBWaitOp waitOp = cast<CBWaitOp>(owners.front());
     LaunchNodeDomain waitDomain =
         pipeGraph.getOperationLaunchDomain(waitOp.getOperation());
     if (!isExactlyDomain(waitOp, receiverDomain, pipeGraph) ||
@@ -307,7 +310,8 @@ static bool collectAndCheckPops(ArrayRef<CBPopOp> candidatePops,
       valid = false;
       continue;
     }
-    std::optional<int64_t> maybeWaitedBlocks = getWaitedBlockCount(waitOp);
+    std::optional<int64_t> maybeWaitedBlocks =
+        getDFBTransactionBlockCount(waitOp);
     if (!maybeWaitedBlocks || *maybeWaitedBlocks != *maybeReleasedBlocks) {
       debugRejectEndpoint(endpoint,
                           "wait and pop release different DFB block counts");
