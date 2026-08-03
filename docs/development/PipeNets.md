@@ -966,8 +966,9 @@ Completion colors consume the first local semaphore ids and then
 GlobalSemaphore storage. If every readiness color fits in the remaining local
 ids, readiness counters use those ids and the same color is reused on different
 source nodes. Otherwise all readiness counters use GlobalSemaphore storage,
-with one allocation per source-node color. This all-global readiness rule gives
-every source node the same storage interpretation for a ready color. The
+with one allocation per ready color. Each source node has distinct storage for
+that allocation. This all-global readiness rule gives every source node the
+same storage interpretation for a ready color. The
 compiler records the final local and global totals in
 `ttl.pipe_sync_semaphore_count` and `ttl.pipe_global_semaphore_count`.
 
