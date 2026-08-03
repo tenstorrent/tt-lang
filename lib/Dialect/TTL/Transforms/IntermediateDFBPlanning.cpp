@@ -516,9 +516,10 @@ PlanningResult<MultiBlockStorePlan> MultiBlockStorePlanner::build() const {
         continue;
       }
 
+      SmallVector<StoreOp> directStores = getDirectStores(result);
       FusionTraceResult backwardSlice;
-      if (getCloneableBackwardSlice(result, storesOutsideDefiningBlock,
-                                    lifetimes, backwardSlice)) {
+      if (getCloneableBackwardSlice(result, directStores, lifetimes,
+                                    backwardSlice)) {
         MultiBlockStoreClonePlan clone;
         clone.source = result;
         clone.stores = std::move(storesOutsideDefiningBlock);
@@ -528,7 +529,7 @@ PlanningResult<MultiBlockStorePlan> MultiBlockStorePlanner::build() const {
         continue;
       }
 
-      materializations.push_back({result, getDirectStores(result)});
+      materializations.push_back({result, std::move(directStores)});
     }
   });
 
