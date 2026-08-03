@@ -7,6 +7,8 @@ add_mlir_dialect_library(TTLangTTLTransforms
   DFBLogicalIdentityAnalysis.cpp
   DFBValueLifetimeAnalysis.cpp
   DFBMaterialization.cpp
+  DFBConcurrentKernelLivenessAnalysis.cpp
+  DFBPhysicalAllocationPlan.cpp
   PipeGraph.cpp
   PipeLowering.cpp
   ConvertTTLToCompute.cpp

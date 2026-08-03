@@ -1838,6 +1838,7 @@ def _lower_program_to_kernel(
         assign_dst_pass = "ttl-assign-dst"
 
         compiler_dfbs_flag = int(compiler_options.compiler_dfbs)
+        reuse_user_dfbs_flag = int(compiler_options.reuse_user_dfbs)
         # Must run before loop-state materialization removes tensor iter_args.
         tensor_recurrence_pipeline = (
             "ttl-form-accumulation-scopes,"
@@ -1852,7 +1853,7 @@ def _lower_program_to_kernel(
             f"func.func(ttl-insert-intermediate-dfbs{{enable={compiler_dfbs_flag}}})",
             "func.func(convert-ttl-to-compute)",
             "func.func(ttl-auto-sync)",
-            "ttl-finalize-dfb-indices",
+            f"ttl-finalize-dfb-indices{{reuse-user-dfbs={reuse_user_dfbs_flag}}}",
             set_compute_config_pass,
             f"func.func({assign_dst_pass})",
         ]
