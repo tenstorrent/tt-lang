@@ -133,6 +133,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     diagnostics.py
     kernel_runner.py
     pipe.py
+    domains.py
     ttl.py
     ttl_api.py
     ttl_math.py

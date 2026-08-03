@@ -2,10 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pipe synchronization coverage for posted receives.
+"""Pipe synchronization coverage for receiver-post and capacity protocols.
 
 These tests cover cases where the receiver publishes one or more destination
-DFB addresses before waiting for the transfers to complete.
+DFB addresses before waiting for completion, plus local-semaphore exhaustion
+for completion, readiness, and capacity counters.
 """
 
 import pytest
@@ -483,14 +484,14 @@ def _make_full_grid_fanout_pipes(grid_width, grid_height, recipient_count):
     return pipes
 
 
-def _full_grid_fanout_recipient_coords(grid_width, grid_height, recipient_count):
+def _full_grid_non_origin_coords(grid_width, grid_height, coord_count):
     coords = []
     for column_index in range(grid_width):
         for row_index in range(grid_height):
             if column_index == 0 and row_index == 0:
                 continue
             coords.append((column_index, row_index))
-            if len(coords) == recipient_count:
+            if len(coords) == coord_count:
                 return coords
     return coords
 
@@ -498,10 +499,21 @@ def _full_grid_fanout_recipient_coords(grid_width, grid_height, recipient_count)
 def _make_full_grid_unicast_fanout_pipes(grid_width, grid_height, recipient_count):
     return [
         ttl.Pipe(src=(0, 0), dst=(recipient_col, recipient_row))
-        for recipient_col, recipient_row in _full_grid_fanout_recipient_coords(
+        for recipient_col, recipient_row in _full_grid_non_origin_coords(
             grid_width,
             grid_height,
             recipient_count,
+        )
+    ]
+
+
+def _make_full_grid_many_to_one_pipes(grid_width, grid_height, sender_count):
+    return [
+        ttl.Pipe(src=source_coord, dst=(0, 0))
+        for source_coord in _full_grid_non_origin_coords(
+            grid_width,
+            grid_height,
+            sender_count,
         )
     ]
 
@@ -606,6 +618,85 @@ def make_full_grid_unicast_global_ready_kernel(recipient_count):
                     ttl.copy(out_blk, out[node_y, node_x]).wait()
 
     return full_grid_unicast_global_ready
+
+
+def make_full_grid_global_completion_kernel(sender_count, options=None):
+    @ttl.operation(grid="full", options=options)
+    def full_grid_global_completion(inp, out):
+        grid_width, grid_height = ttl.grid_size(dims=2)
+        sender_coords = _full_grid_non_origin_coords(
+            grid_width,
+            grid_height,
+            sender_count,
+        )
+        gather_net = ttl.PipeNet(
+            _make_full_grid_many_to_one_pipes(
+                grid_width,
+                grid_height,
+                sender_count,
+            )
+        )
+        capacity_net = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=sender_coords[0])])
+
+        send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=1)
+        recv_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=1)
+        capacity_send_dfb = ttl.make_dataflow_buffer_like(
+            inp,
+            shape=(1, 1),
+            block_count=1,
+        )
+        capacity_recv_dfb = ttl.make_dataflow_buffer_like(
+            inp,
+            shape=(1, 1),
+            block_count=1,
+        )
+
+        @ttl.compute()
+        def compute():
+            pass
+
+        @ttl.datamovement()
+        def receive_and_send():
+            node_x, node_y = ttl.node(dims=2)
+            if gather_net.is_src():
+                with send_dfb.reserve() as send_blk:
+                    ttl.copy(inp[node_y, node_x], send_blk).wait()
+
+                    def send(pipe):
+                        ttl.copy(send_blk, pipe).wait()
+
+                    gather_net.if_src(send)
+
+            if gather_net.is_dst():
+
+                def receive(pipe):
+                    with recv_dfb.reserve() as recv_blk:
+                        ttl.copy(pipe, recv_blk).wait()
+                    with recv_dfb.wait() as ready_blk:
+                        ttl.copy(ready_blk, out[0, 0]).wait()
+
+                gather_net.if_dst(receive)
+
+            def send_capacity(pipe):
+                with capacity_send_dfb.reserve() as send_blk:
+                    ttl.copy(inp[0, 0], send_blk).wait()
+                    ttl.copy(send_blk, pipe).wait()
+
+            capacity_net.if_src(send_capacity)
+
+            def receive_capacity(pipe):
+                with capacity_recv_dfb.reserve() as recv_blk:
+                    ttl.copy(pipe, recv_blk).wait()
+                with capacity_recv_dfb.wait() as ready_blk:
+                    ttl.copy(ready_blk, out[0, 1]).wait()
+
+            capacity_net.if_dst(receive_capacity)
+
+        @ttl.datamovement()
+        def write_output():
+            pass
+
+    return full_grid_global_completion
 
 
 def make_row_all_to_all_multicast_kernel():
@@ -1204,7 +1295,7 @@ def test_full_grid_fanout_uses_sram_address_table(device, recipient_case):
         dtype=torch.bfloat16,
     )
     expected = out_torch.clone()
-    for recipient_col, recipient_row in _full_grid_fanout_recipient_coords(
+    for recipient_col, recipient_row in _full_grid_non_origin_coords(
         grid_width,
         grid_height,
         recipient_count,
@@ -1250,7 +1341,7 @@ def test_full_grid_unicast_fanout_uses_global_ready_counters(device, recipient_c
         dtype=torch.bfloat16,
     )
     expected = out_torch.clone()
-    for recipient_col, recipient_row in _full_grid_fanout_recipient_coords(
+    for recipient_col, recipient_row in _full_grid_non_origin_coords(
         grid_width,
         grid_height,
         recipient_count,
@@ -1266,6 +1357,60 @@ def test_full_grid_unicast_fanout_uses_global_ready_counters(device, recipient_c
 
     fanout_kernel = make_full_grid_unicast_global_ready_kernel(recipient_count)
     fanout_kernel(inp, out)
+    ttnn.synchronize_device(device)
+
+    result = ttnn.to_torch(out)
+    assert_pcc(expected.float(), result.float())
+
+
+@pytest.mark.parametrize(
+    "dtype",
+    [torch.bfloat16, torch.float32],
+    ids=["bf16", "fp32"],
+)
+@pytest.mark.parametrize(
+    "options",
+    [
+        None,
+        "--no-ttl-pipe-capacity-sync",
+        "--no-ttl-pipe-computed-addresses",
+    ],
+    ids=["ca-cc", "ca-rp", "ra-rp"],
+)
+def test_many_to_one_global_counters_work_with_all_protocols(device, dtype, options):
+    sender_count = 17
+    device_grid = device.compute_with_storage_grid_size()
+    grid_width, grid_height = device_grid.x, device_grid.y
+    if grid_width * grid_height - 1 < sender_count:
+        pytest.skip("Global completion-counter coverage needs at least 17 senders")
+
+    inp_torch = torch.randn(
+        grid_height * TILE,
+        grid_width * TILE,
+        dtype=dtype,
+    )
+    out_torch = torch.zeros(TILE, 2 * TILE, dtype=dtype)
+    source_coords = _full_grid_non_origin_coords(
+        grid_width,
+        grid_height,
+        sender_count,
+    )
+    last_source_x, last_source_y = source_coords[-1]
+    expected = out_torch.clone()
+    expected[0:TILE, 0:TILE] = inp_torch[
+        last_source_y * TILE : (last_source_y + 1) * TILE,
+        last_source_x * TILE : (last_source_x + 1) * TILE,
+    ]
+    expected[0:TILE, TILE : 2 * TILE] = inp_torch[0:TILE, 0:TILE]
+
+    inp = to_dram(inp_torch, device)
+    out = to_dram(out_torch, device)
+
+    global_completion_kernel = make_full_grid_global_completion_kernel(
+        sender_count,
+        options=options,
+    )
+    global_completion_kernel(inp, out)
     ttnn.synchronize_device(device)
 
     result = ttnn.to_torch(out)
@@ -1370,9 +1515,9 @@ def test_multicast_destination_addresses_differ_by_destination_rejected(device):
     with pytest.raises(
         Exception,
         match=(
-            "collective pipe receive posts publish different destination "
-            "addresses; TT-Metal NoC multicast requires one destination SRAM "
-            "address for all receivers"
+            "collective pipe receiver address sequences are not proven equal "
+            "for every transfer occurrence; TT-Metal NoC multicast requires "
+            "one destination SRAM address for all receivers"
         ),
     ):
         non_uniform_multicast_destination_address_kernel(inp, out)

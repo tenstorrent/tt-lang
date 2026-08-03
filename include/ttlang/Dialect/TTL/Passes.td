@@ -284,23 +284,37 @@ def TTLLowerAccumulationScopes
 
 def TTLConvertTTLToTTKernel
     : Pass<"convert-ttl-to-ttkernel", "::mlir::ModuleOp"> {
-  let summary = "Lower TTL DMA ops to TTKernel using global barriers (temporary)";
+  let summary = "Lower TTL data movement and PipeNet operations to TTKernel";
   let description = [{
-    Converts TTL DMA ops to TTKernel noc ops. Uses global barriers until TRID
-    barriers are available. Covers bind_cb, copy, wait MVP path.
-
-    TODO(ttl): Refine lowering to emit real CB handles and proper NOC addresses.
-    Issue: #77 (umbrella issue with subtasks #78-#89).
+    Converts TTL DFB, copy, wait, and PipeNet operations to TTKernel DFB, NoC,
+    and semaphore operations. PipeNet lowering selects receiver-published or
+    computed destination addresses and receiver-post, capacity-counter, or
+    fabric synchronization according to the pass options, transfer eligibility,
+    and logical-device transfer.
   }];
 
   let options = [
     Option<"reduceFullFp32", "reduce-full-fp32", "bool", "true",
-           "Enable FP32 accumulation for reduce operations.">
+           "Enable FP32 accumulation for reduce operations.">,
+    Option<"pipeComputedAddresses", "pipe-computed-addresses",
+           "bool", "true",
+           "Use computed receiver DFB addresses for eligible pipe transfers. "
+           "When disabled, pipe transfers use receiver-published destination "
+           "addresses; multicast still requires proven equal runtime "
+           "receiver addresses.">,
+    Option<"pipeCapacitySync", "pipe-capacity-sync",
+           "bool", "true",
+           "Use capacity-counter synchronization when the receiver wait and "
+           "pop execute on the receiver NOC thread and the computed-address "
+           "transfer passes the DFB ownership and count proofs. "
+           "When disabled, computed-address transfers use receiver-post "
+           "synchronization.">
   ];
 
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
     "::mlir::scf::SCFDialect",
+    "::mlir::tensor::TensorDialect",
     "::mlir::tt::ttkernel::TTKernelDialect"
   ];
 }
@@ -775,6 +789,12 @@ def TTLVerifyPipeNetGuards
     Same-thread pipe schedule diagnostics are emitted only when role and DFB
     domain checks have succeeded, so schedule-cycle reports are not mixed with
     earlier guard failures.
+
+    The schedule graph pairs receiver-post, send, and receive-wait operations
+    by IR order. Each paired operation may execute repeatedly, but each side
+    must contain the same number of operations and each pair must have equal
+    dynamic execution counts and equivalent enclosing conditions. One repeated
+    operation is not expanded to correspond to multiple distinct operations.
 
     The pass expects one module per `@ttl.operation`, a well-formed
     `ttl.launch_grid` (i64 array of length 2 with positive entries), static

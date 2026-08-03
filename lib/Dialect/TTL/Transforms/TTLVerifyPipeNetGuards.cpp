@@ -20,12 +20,15 @@
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
+#include <cstddef>
 #include <functional>
 #include <optional>
 #include <tuple>
@@ -39,7 +42,7 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-constexpr unsigned kMaxPipeScheduleCycleNotes = 8;
+constexpr std::size_t kMaxPipeScheduleCycleNotes = 8;
 
 //===----------------------------------------------------------------------===//
 // Module state collected before the analysis runs and updated during it.
@@ -101,7 +104,7 @@ struct ModuleState : LaunchNodeDomainState {
   llvm::DenseMap<int64_t, LaunchNodeDomain> dfbProducerDomains;
   SmallVector<WaitUse> waitUses;
   SmallVector<PipeEvent> pipeEvents;
-  llvm::DenseMap<Operation *, unsigned> pipeEventIndices;
+  llvm::DenseMap<Operation *, std::size_t> pipeEventIndices;
 
   /// Record pipe sends and receive posts from `ttl.copy` operations.
   void recordPipeEvent(CopyOp copyOp, const LaunchNodeDomain &domain) {
@@ -397,9 +400,11 @@ enum class PipeScheduleEdgeKind {
   SendCompletesReceive
 };
 
+using PipeScheduleNodeId = std::size_t;
+
 /// Directed wait-for edge in the pipe schedule graph.
 struct PipeScheduleEdge {
-  unsigned successor;
+  PipeScheduleNodeId successor;
   PipeScheduleEdgeKind kind;
 };
 
@@ -410,6 +415,13 @@ struct PipeScheduleNode {
   LaunchNodeCoord coord;
   PipeScheduleNodeKind kind;
   SmallVector<PipeScheduleEdge> successors;
+};
+
+/// Retain every send for one logical pipe in IR order so receiver posts can be
+/// paired with the corresponding send.
+struct PipeSendOccurrences {
+  PipeType pipeType;
+  SmallVector<PipeScheduleNodeId> nodes;
 };
 
 using PipeIdentity =
@@ -447,11 +459,11 @@ PipeNodeIdentity getPipeNodeIdentity(Operation *op, LaunchNodeCoord coord,
 }
 
 /// Add or reuse the graph node for one pipe synchronization event.
-unsigned
-addPipeScheduleNode(SmallVectorImpl<PipeScheduleNode> &nodes,
-                    llvm::DenseMap<PipeNodeIdentity, unsigned> &nodeIds,
-                    Operation *op, PipeType pipeType, LaunchNodeCoord coord,
-                    PipeScheduleNodeKind kind) {
+PipeScheduleNodeId addPipeScheduleNode(
+    SmallVectorImpl<PipeScheduleNode> &nodes,
+    llvm::DenseMap<PipeNodeIdentity, PipeScheduleNodeId> &nodeIds,
+    Operation *op, PipeType pipeType, LaunchNodeCoord coord,
+    PipeScheduleNodeKind kind) {
   PipeNodeIdentity identity = getPipeNodeIdentity(op, coord, kind);
   auto [it, inserted] = nodeIds.try_emplace(identity, nodes.size());
   if (inserted) {
@@ -462,7 +474,8 @@ addPipeScheduleNode(SmallVectorImpl<PipeScheduleNode> &nodes,
 
 /// Add a directed graph edge unless the same typed edge already exists.
 void addPipeScheduleEdge(SmallVectorImpl<PipeScheduleNode> &nodes,
-                         unsigned predecessor, unsigned successor,
+                         PipeScheduleNodeId predecessor,
+                         PipeScheduleNodeId successor,
                          PipeScheduleEdgeKind kind) {
   SmallVectorImpl<PipeScheduleEdge> &successors = nodes[predecessor].successors;
   if (!llvm::any_of(successors, [&](const PipeScheduleEdge &edge) {
@@ -473,37 +486,39 @@ void addPipeScheduleEdge(SmallVectorImpl<PipeScheduleNode> &nodes,
 }
 
 /// Find any directed cycle in the pipe schedule graph.
-std::optional<SmallVector<unsigned>>
+std::optional<SmallVector<PipeScheduleNodeId>>
 findPipeScheduleCycle(ArrayRef<PipeScheduleNode> nodes) {
-  SmallVector<unsigned> stack;
-  SmallVector<unsigned> cycle;
+  SmallVector<PipeScheduleNodeId> stack;
+  SmallVector<PipeScheduleNodeId> cycle;
   SmallVector<uint8_t> colors(nodes.size(), 0);
 
-  std::function<bool(unsigned)> visit = [&](unsigned nodeId) {
-    colors[nodeId] = 1;
-    stack.push_back(nodeId);
-    for (const PipeScheduleEdge &edge : nodes[nodeId].successors) {
-      unsigned successor = edge.successor;
-      if (colors[successor] == 0) {
-        if (visit(successor)) {
+  std::function<bool(PipeScheduleNodeId)> visit =
+      [&](PipeScheduleNodeId nodeId) {
+        colors[nodeId] = 1;
+        stack.push_back(nodeId);
+        for (const PipeScheduleEdge &edge : nodes[nodeId].successors) {
+          PipeScheduleNodeId successor = edge.successor;
+          if (colors[successor] == 0) {
+            if (visit(successor)) {
+              return true;
+            }
+            continue;
+          }
+          if (colors[successor] != 1) {
+            continue;
+          }
+          auto cycleStart = llvm::find(stack, successor);
+          cycle.append(cycleStart, stack.end());
+          cycle.push_back(successor);
           return true;
         }
-        continue;
-      }
-      if (colors[successor] != 1) {
-        continue;
-      }
-      auto cycleStart = llvm::find(stack, successor);
-      cycle.append(cycleStart, stack.end());
-      cycle.push_back(successor);
-      return true;
-    }
-    stack.pop_back();
-    colors[nodeId] = 2;
-    return false;
-  };
+        stack.pop_back();
+        colors[nodeId] = 2;
+        return false;
+      };
 
-  for (unsigned nodeId = 0, count = nodes.size(); nodeId < count; ++nodeId) {
+  for (PipeScheduleNodeId nodeId = 0, count = nodes.size(); nodeId < count;
+       ++nodeId) {
     if (colors[nodeId] == 0 && visit(nodeId)) {
       return cycle;
     }
@@ -513,8 +528,9 @@ findPipeScheduleCycle(ArrayRef<PipeScheduleNode> nodes) {
 
 /// Return the first edge kind between two schedule nodes, if present.
 std::optional<PipeScheduleEdgeKind>
-getPipeScheduleEdgeKind(ArrayRef<PipeScheduleNode> nodes, unsigned predecessor,
-                        unsigned successor) {
+getPipeScheduleEdgeKind(ArrayRef<PipeScheduleNode> nodes,
+                        PipeScheduleNodeId predecessor,
+                        PipeScheduleNodeId successor) {
   for (const PipeScheduleEdge &edge : nodes[predecessor].successors) {
     if (edge.successor == successor) {
       return edge.kind;
@@ -525,15 +541,17 @@ getPipeScheduleEdgeKind(ArrayRef<PipeScheduleNode> nodes, unsigned predecessor,
 
 /// Return true if a reported cycle contains the requested typed edge.
 bool cycleContainsEdge(ArrayRef<PipeScheduleNode> nodes,
-                       ArrayRef<unsigned> cycle, unsigned predecessor,
-                       unsigned successor, PipeScheduleEdgeKind kind) {
-  for (unsigned idx = 0, count = cycle.size() - 1; idx < count; ++idx) {
+                       ArrayRef<PipeScheduleNodeId> cycle,
+                       PipeScheduleNodeId predecessor,
+                       PipeScheduleNodeId successor,
+                       PipeScheduleEdgeKind kind) {
+  for (std::size_t idx = 0, count = cycle.size() - 1; idx < count; ++idx) {
     if (cycle[idx] != predecessor || cycle[idx + 1] != successor) {
       continue;
     }
-    std::optional<PipeScheduleEdgeKind> actualKind =
+    std::optional<PipeScheduleEdgeKind> maybeActualKind =
         getPipeScheduleEdgeKind(nodes, predecessor, successor);
-    if (actualKind && *actualKind == kind) {
+    if (maybeActualKind && *maybeActualKind == kind) {
       return true;
     }
   }
@@ -542,15 +560,16 @@ bool cycleContainsEdge(ArrayRef<PipeScheduleNode> nodes,
 
 /// Return true if a section of a reported cycle is entirely program order.
 bool cycleHasProgramOrderPath(ArrayRef<PipeScheduleNode> nodes,
-                              ArrayRef<unsigned> cycle,
-                              unsigned startCycleIndex,
-                              unsigned endCycleIndex) {
+                              ArrayRef<PipeScheduleNodeId> cycle,
+                              std::size_t startCycleIndex,
+                              std::size_t endCycleIndex) {
   assert(startCycleIndex < endCycleIndex &&
          "expected a forward range within the reported cycle");
-  for (unsigned idx = startCycleIndex; idx < endCycleIndex; ++idx) {
-    std::optional<PipeScheduleEdgeKind> edgeKind =
+  for (std::size_t idx = startCycleIndex; idx < endCycleIndex; ++idx) {
+    std::optional<PipeScheduleEdgeKind> maybeEdgeKind =
         getPipeScheduleEdgeKind(nodes, cycle[idx], cycle[idx + 1]);
-    if (!edgeKind || *edgeKind != PipeScheduleEdgeKind::ProgramOrder) {
+    if (!maybeEdgeKind ||
+        *maybeEdgeKind != PipeScheduleEdgeKind::ProgramOrder) {
       return false;
     }
   }
@@ -566,7 +585,7 @@ std::string describePipeScheduleNode(const PipeScheduleNode &node) {
     os << "send";
     break;
   case PipeScheduleNodeKind::ReceivePost:
-    os << "destination address publication";
+    os << "receiver post";
     break;
   case PipeScheduleNodeKind::ReceiveWait:
     os << "receive completion";
@@ -601,18 +620,18 @@ std::string describePipeScheduleEdge(const PipeScheduleNode &predecessor,
 
 /// Identify the common single-thread bug where a receive wait is ordered before
 /// the send that can complete it.
-std::optional<std::pair<unsigned, unsigned>>
+std::optional<std::pair<PipeScheduleNodeId, PipeScheduleNodeId>>
 findReceiveWaitBeforeCompletingSend(ArrayRef<PipeScheduleNode> nodes,
-                                    ArrayRef<unsigned> cycle) {
-  unsigned cycleNodeCount = cycle.size() - 1;
-  for (unsigned waitIdx = 0; waitIdx < cycleNodeCount; ++waitIdx) {
-    unsigned waitNodeId = cycle[waitIdx];
+                                    ArrayRef<PipeScheduleNodeId> cycle) {
+  std::size_t cycleNodeCount = cycle.size() - 1;
+  for (std::size_t waitIdx = 0; waitIdx < cycleNodeCount; ++waitIdx) {
+    PipeScheduleNodeId waitNodeId = cycle[waitIdx];
     const PipeScheduleNode &waitNode = nodes[waitNodeId];
     if (waitNode.kind != PipeScheduleNodeKind::ReceiveWait) {
       continue;
     }
-    for (unsigned sendIdx = waitIdx + 1; sendIdx < cycle.size(); ++sendIdx) {
-      unsigned sendNodeId = cycle[sendIdx];
+    for (std::size_t sendIdx = waitIdx + 1; sendIdx < cycle.size(); ++sendIdx) {
+      PipeScheduleNodeId sendNodeId = cycle[sendIdx];
       const PipeScheduleNode &sendNode = nodes[sendNodeId];
       if (sendNode.kind != PipeScheduleNodeKind::Send) {
         continue;
@@ -631,18 +650,18 @@ findReceiveWaitBeforeCompletingSend(ArrayRef<PipeScheduleNode> nodes,
 
 /// Identify the common single-thread bug where a send is ordered before the
 /// receive post that enables it.
-std::optional<std::pair<unsigned, unsigned>>
+std::optional<std::pair<PipeScheduleNodeId, PipeScheduleNodeId>>
 findSendBeforeReceivePost(ArrayRef<PipeScheduleNode> nodes,
-                          ArrayRef<unsigned> cycle) {
-  unsigned cycleNodeCount = cycle.size() - 1;
-  for (unsigned sendIdx = 0; sendIdx < cycleNodeCount; ++sendIdx) {
-    unsigned sendNodeId = cycle[sendIdx];
+                          ArrayRef<PipeScheduleNodeId> cycle) {
+  std::size_t cycleNodeCount = cycle.size() - 1;
+  for (std::size_t sendIdx = 0; sendIdx < cycleNodeCount; ++sendIdx) {
+    PipeScheduleNodeId sendNodeId = cycle[sendIdx];
     const PipeScheduleNode &sendNode = nodes[sendNodeId];
     if (sendNode.kind != PipeScheduleNodeKind::Send) {
       continue;
     }
-    for (unsigned postIdx = sendIdx + 1; postIdx < cycle.size(); ++postIdx) {
-      unsigned postNodeId = cycle[postIdx];
+    for (std::size_t postIdx = sendIdx + 1; postIdx < cycle.size(); ++postIdx) {
+      PipeScheduleNodeId postNodeId = cycle[postIdx];
       const PipeScheduleNode &postNode = nodes[postNodeId];
       if (postNode.kind != PipeScheduleNodeKind::ReceivePost) {
         continue;
@@ -662,19 +681,19 @@ findSendBeforeReceivePost(ArrayRef<PipeScheduleNode> nodes,
 /// Attach a bounded set of edge notes for a reported schedule cycle.
 void emitPipeScheduleCycleNotes(InFlightDiagnostic &diag,
                                 ArrayRef<PipeScheduleNode> nodes,
-                                ArrayRef<unsigned> cycle) {
-  for (unsigned idx = 0, count = cycle.size() - 1; idx < count; ++idx) {
-    unsigned predecessorId = cycle[idx];
-    unsigned successorId = cycle[idx + 1];
-    std::optional<PipeScheduleEdgeKind> edgeKind =
+                                ArrayRef<PipeScheduleNodeId> cycle) {
+  for (std::size_t idx = 0, count = cycle.size() - 1; idx < count; ++idx) {
+    PipeScheduleNodeId predecessorId = cycle[idx];
+    PipeScheduleNodeId successorId = cycle[idx + 1];
+    std::optional<PipeScheduleEdgeKind> maybeEdgeKind =
         getPipeScheduleEdgeKind(nodes, predecessorId, successorId);
-    if (!edgeKind) {
+    if (!maybeEdgeKind) {
       continue;
     }
     const PipeScheduleNode &predecessor = nodes[predecessorId];
     const PipeScheduleNode &successor = nodes[successorId];
     diag.attachNote(successor.op->getLoc())
-        << describePipeScheduleEdge(predecessor, successor, *edgeKind);
+        << describePipeScheduleEdge(predecessor, successor, *maybeEdgeKind);
     if (idx + 1 >= kMaxPipeScheduleCycleNotes) {
       break;
     }
@@ -683,7 +702,7 @@ void emitPipeScheduleCycleNotes(InFlightDiagnostic &diag,
 
 /// Emit the most specific diagnostic available for a pipe schedule cycle.
 void emitPipeScheduleCycleDiagnostic(ArrayRef<PipeScheduleNode> nodes,
-                                     ArrayRef<unsigned> cycle,
+                                     ArrayRef<PipeScheduleNodeId> cycle,
                                      ModuleState &state) {
   if (auto waitBeforeSend = findReceiveWaitBeforeCompletingSend(nodes, cycle)) {
     const PipeScheduleNode &waitNode = nodes[waitBeforeSend->first];
@@ -709,16 +728,15 @@ void emitPipeScheduleCycleDiagnostic(ArrayRef<PipeScheduleNode> nodes,
     const PipeScheduleNode &sendNode = nodes[sendBeforePost->first];
     const PipeScheduleNode &postNode = nodes[sendBeforePost->second];
     auto diag = sendNode.op->emitOpError()
-                << "pipe send occurs before the receiver publishes a "
-                   "destination address on PipeNet "
+                << "pipe send occurs before the receiver posts a dataflow "
+                   "buffer reservation on PipeNet "
                 << state.netName(sendNode.pipeType.getPipeNetId());
     diag.attachNote(sendNode.op->getLoc())
-        << "this send waits for each destination to execute "
+        << "this send waits for each destination to post "
            "`ttl.copy(pipe, dst)`";
     diag.attachNote(postNode.op->getLoc())
-        << "this destination address publication is ordered after the send in "
-           "the "
-           "same data-movement thread";
+        << "this receiver post is ordered after the send in the same "
+           "data-movement thread";
     diag.attachNote(sendNode.op->getLoc())
         << "move `ttl.copy(pipe, dst)` before the dependent send, or place "
            "send "
@@ -738,17 +756,80 @@ void emitPipeScheduleCycleDiagnostic(ArrayRef<PipeScheduleNode> nodes,
   state.sawError = true;
 }
 
-// Verify the hidden pipe synchronization introduced by receiver-advertised pipe
-// lowering. Receive-side ttl.copy publishes the address; ttl.wait on that
-// handle waits for completion. Modeling those as distinct events preserves
-// async copy semantics while rejecting wait-for cycles.
+/// Pair predecessor and successor operations at the same IR-order position.
+/// Each pair may execute repeatedly, so its operations must execute equally
+/// often under equivalent conditions.
+LogicalResult addPipeOccurrenceEdges(SmallVectorImpl<PipeScheduleNode> &nodes,
+                                     ArrayRef<PipeScheduleNodeId> predecessors,
+                                     ArrayRef<PipeScheduleNodeId> successors,
+                                     PipeScheduleEdgeKind kind,
+                                     StringRef predecessorName,
+                                     StringRef successorName,
+                                     LaunchNodeCoord receiverCoord,
+                                     ModuleState &state) {
+  assert(!predecessors.empty() && !successors.empty() &&
+         "schedule correspondence requires both event kinds");
+  if (predecessors.size() != successors.size()) {
+    bool hasExtraPredecessor = predecessors.size() > successors.size();
+    PipeScheduleNodeId unmatchedNode = hasExtraPredecessor
+                                           ? predecessors[successors.size()]
+                                           : successors[predecessors.size()];
+    StringRef unmatchedName =
+        hasExtraPredecessor ? predecessorName : successorName;
+    StringRef missingName =
+        hasExtraPredecessor ? successorName : predecessorName;
+    auto diag =
+        nodes[unmatchedNode].op->emitOpError()
+        << "PipeNet "
+        << state.netName(nodes[unmatchedNode].pipeType.getPipeNetId())
+        << " requires one " << predecessorName << " operation for each "
+        << successorName << " operation at receiver core_x=" << receiverCoord.x
+        << ", core_y=" << receiverCoord.y << "; found " << predecessors.size()
+        << " " << predecessorName << " operation(s) and " << successors.size()
+        << " " << successorName << " operation(s)";
+    diag.attachNote(nodes[unmatchedNode].op->getLoc())
+        << "this " << unmatchedName << " operation has no corresponding "
+        << missingName << " operation";
+    state.sawError = true;
+    return failure();
+  }
+  for (auto [predecessor, successor] : llvm::zip(predecessors, successors)) {
+    if (!proveEqualExecutionCountAtLaunchNodes(
+            nodes[predecessor].op, nodes[predecessor].coord,
+            nodes[successor].op, nodes[successor].coord, state)) {
+      auto diag = nodes[successor].op->emitOpError()
+                  << "cannot prove a one-to-one synchronization schedule on "
+                     "PipeNet "
+                  << state.netName(nodes[successor].pipeType.getPipeNetId())
+                  << " for receiver core_x=" << receiverCoord.x
+                  << ", core_y=" << receiverCoord.y << "; " << predecessorName
+                  << " and " << successorName
+                  << " occurrences do not have matching proven execution "
+                     "counts and conditions";
+      diag.attachNote(nodes[predecessor].op->getLoc())
+          << "matching " << predecessorName << " occurrence is here";
+      state.sawError = true;
+      return failure();
+    }
+    addPipeScheduleEdge(nodes, predecessor, successor, kind);
+  }
+  return success();
+}
+
+// Verify synchronization dependencies implied by pipe operations. Receive-side
+// ttl.copy makes a reserved DFB slot available to the sender, while ttl.wait on
+// its handle waits for payload arrival. Modeling availability and completion as
+// separate events preserves asynchronous semantics and detects wait-for cycles.
 void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
   SmallVector<PipeScheduleNode> nodes;
-  SmallVector<std::pair<unsigned, PipeType>> sendNodes;
-  llvm::DenseMap<PipeNodeIdentity, unsigned> nodeIds;
-  llvm::DenseMap<PipeCoordIdentity, SmallVector<unsigned>> receivePostNodes;
-  llvm::DenseMap<PipeCoordIdentity, SmallVector<unsigned>> receiveWaitNodes;
-  llvm::DenseMap<ProgramPointIdentity, unsigned> lastCompletionNodes;
+  // Preserve module order so cycle selection and diagnostics are deterministic.
+  llvm::MapVector<PipeIdentity, PipeSendOccurrences> sendOccurrences;
+  llvm::DenseMap<PipeNodeIdentity, PipeScheduleNodeId> nodeIds;
+  llvm::DenseMap<PipeCoordIdentity, SmallVector<PipeScheduleNodeId>>
+      receivePostNodes;
+  llvm::DenseMap<PipeCoordIdentity, SmallVector<PipeScheduleNodeId>>
+      receiveWaitNodes;
+  llvm::DenseMap<ProgramPointIdentity, PipeScheduleNodeId> lastCompletionNodes;
 
   module.walk([&](Operation *op) {
     auto eventIt = state.pipeEventIndices.find(op);
@@ -775,11 +856,16 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
         nodeKind = PipeScheduleNodeKind::ReceiveWait;
       }
 
-      unsigned nodeId = addPipeScheduleNode(nodes, nodeIds, op, event.pipeType,
-                                            coord, nodeKind);
+      PipeScheduleNodeId nodeId = addPipeScheduleNode(
+          nodes, nodeIds, op, event.pipeType, coord, nodeKind);
 
       if (event.kind == PipeEventKind::Send) {
-        sendNodes.push_back({nodeId, event.pipeType});
+        PipeIdentity identity = getPipeIdentity(event.pipeType);
+        auto sendIt =
+            sendOccurrences
+                .try_emplace(identity, PipeSendOccurrences{event.pipeType, {}})
+                .first;
+        sendIt->second.nodes.push_back(nodeId);
       } else if (event.kind == PipeEventKind::ReceivePost) {
         receivePostNodes[getPipeCoordIdentity(event.pipeType, coord)].push_back(
             nodeId);
@@ -799,31 +885,35 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
     }
   });
 
-  for (auto [sendNode, pipeType] : sendNodes) {
+  for (const auto &[pipeIdentity, sends] : sendOccurrences) {
     LaunchNodeDomain destinations =
-        getPipeDestinationLaunchNodeDomain(pipeType);
+        getPipeDestinationLaunchNodeDomain(sends.pipeType);
     for (LaunchNodeCoord coord : destinations.nodes) {
-      PipeCoordIdentity identity = getPipeCoordIdentity(pipeType, coord);
+      PipeCoordIdentity identity = getPipeCoordIdentity(sends.pipeType, coord);
       auto postIt = receivePostNodes.find(identity);
       if (postIt != receivePostNodes.end()) {
-        for (unsigned receivePostNode : postIt->second) {
-          addPipeScheduleEdge(nodes, receivePostNode, sendNode,
-                              PipeScheduleEdgeKind::ReceivePostEnablesSend);
+        if (failed(addPipeOccurrenceEdges(
+                nodes, postIt->second, sends.nodes,
+                PipeScheduleEdgeKind::ReceivePostEnablesSend, "receiver post",
+                "send", coord, state))) {
+          continue;
         }
       }
       auto waitIt = receiveWaitNodes.find(identity);
       if (waitIt != receiveWaitNodes.end()) {
-        for (unsigned receiveWaitNode : waitIt->second) {
-          addPipeScheduleEdge(nodes, sendNode, receiveWaitNode,
-                              PipeScheduleEdgeKind::SendCompletesReceive);
+        if (failed(addPipeOccurrenceEdges(
+                nodes, sends.nodes, waitIt->second,
+                PipeScheduleEdgeKind::SendCompletesReceive, "send",
+                "receive wait", coord, state))) {
+          continue;
         }
       }
     }
   }
 
-  if (std::optional<SmallVector<unsigned>> cycle =
+  if (std::optional<SmallVector<PipeScheduleNodeId>> maybeCycle =
           findPipeScheduleCycle(nodes)) {
-    emitPipeScheduleCycleDiagnostic(nodes, *cycle, state);
+    emitPipeScheduleCycleDiagnostic(nodes, *maybeCycle, state);
   }
 }
 

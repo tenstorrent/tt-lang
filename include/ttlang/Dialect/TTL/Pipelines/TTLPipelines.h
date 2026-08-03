@@ -68,6 +68,17 @@ struct TTLToTTKernelPipelineOptions
       llvm::cl::desc("Reuse physical DFB indices when concurrent-kernel "
                      "liveness proves that logical lifetimes do not overlap."),
       llvm::cl::init(true)};
+  Option<bool> pipeComputedAddresses{
+      *this, "pipe-computed-addresses",
+      llvm::cl::desc("Use computed receiver DFB addresses for eligible pipe "
+                     "transfers."),
+      llvm::cl::init(true)};
+  Option<bool> pipeCapacitySync{
+      *this, "pipe-capacity-sync",
+      llvm::cl::desc("Use capacity-counter synchronization for eligible pipe "
+                     "transfers. When disabled, computed-address transfers "
+                     "use receiver-post synchronization."),
+      llvm::cl::init(true)};
   Option<bool> specializeCores{
       *this, "specialize-cores",
       llvm::cl::desc(

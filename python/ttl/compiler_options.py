@@ -113,6 +113,23 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Reuse physical DFB indices for proven non-overlapping logical lifetimes (default: enabled).",
     )
     p.add_argument(
+        "--ttl-pipe-computed-addresses",
+        default=None,
+        dest="pipe_computed_addresses",
+        action=argparse.BooleanOptionalAction,
+        help="Use computed receiver DFB addresses for eligible pipe transfers; receiver-published multicast still requires proven equal runtime addresses (default: enabled).",
+    )
+    p.add_argument(
+        "--ttl-pipe-capacity-sync",
+        default=None,
+        dest="pipe_capacity_sync",
+        action=argparse.BooleanOptionalAction,
+        help="Use capacity-counter synchronization when a computed-address "
+        "transfer's receiver wait and pop run on the receiver NOC thread and "
+        "pass the DFB ownership and count proofs; disabling uses receiver-post "
+        "synchronization (default: enabled).",
+    )
+    p.add_argument(
         "--ttl-specialize-cores",
         default=None,
         dest="specialize_cores",
@@ -185,6 +202,8 @@ class CompilerOptions:
     strict_f32_acc: bool = False
     compiler_dfbs: bool = True
     reuse_user_dfbs: bool = True
+    pipe_computed_addresses: bool = True
+    pipe_capacity_sync: bool = True
     specialize_cores: bool = False
     l1_budget: int = dataclasses.field(default=0, compare=False, hash=False)
 

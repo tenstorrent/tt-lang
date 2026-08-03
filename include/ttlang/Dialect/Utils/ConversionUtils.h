@@ -22,6 +22,23 @@
 
 namespace mlir::tt::ttl::utils {
 
+/// Return the TTL DFB type of `value` or its sole unrealized-cast input.
+/// Return failure when neither value has a TTL DFB type.
+inline FailureOr<CircularBufferType> getTTLCircularBufferType(Value value) {
+  if (auto dfbType = mlir::dyn_cast<CircularBufferType>(value.getType())) {
+    return dfbType;
+  }
+  if (auto castOp = value.getDefiningOp<UnrealizedConversionCastOp>()) {
+    if (castOp.getInputs().size() == 1 && castOp.getOutputs().size() == 1) {
+      if (auto dfbType = mlir::dyn_cast<CircularBufferType>(
+              castOp.getInputs().front().getType())) {
+        return dfbType;
+      }
+    }
+  }
+  return failure();
+}
+
 /// Convert a local DFB index (within a subblock) to a global DFB index (within
 /// the full block) when `operand` traces to a tensor.extract_slice.
 ///

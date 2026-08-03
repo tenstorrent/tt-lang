@@ -157,31 +157,43 @@ class FabricMeshUnavailable(RuntimeError):
     pass
 
 
+def get_fabric_mesh_shape() -> tuple[int, ...]:
+    """Return the control-plane-discovered fabric mesh extent."""
+    ttnn_module = _get_ttnn()
+    if ttnn_module is None:
+        raise FabricMeshUnavailable("TTNN not available")
+    return tuple(
+        int(extent)
+        for extent in ttnn_module._ttnn.multi_device.SystemMeshDescriptor().shape()
+    )
+
+
 @contextmanager
-def open_fabric_mesh(requested_mesh_shape: tuple[int, int] | None = None):
-    """Open a 1D fabric mesh spanning every visible device by default."""
+def open_fabric_mesh(
+    requested_mesh_shape: tuple[int, ...] | None = None,
+    *,
+    fabric_config: Any | None = None,
+):
+    """Open a fabric-enabled mesh. With requested_mesh_shape=None, use the
+    control-plane-discovered shape (SystemMeshDescriptor); a forced shape that
+    mismatches the physical fabric can hang. Set TT_MESH_GRAPH_DESC_PATH to
+    override topology discovery.
+    """
     ttnn_module = _get_ttnn()
     if ttnn_module is None:
         raise FabricMeshUnavailable("TTNN not available")
 
+    if fabric_config is None:
+        fabric_config = ttnn_module.FabricConfig.FABRIC_1D
+
     if requested_mesh_shape is None:
-        # FABRIC_1D requires a 1D topology even when physical discovery is 2-D.
-        requested_mesh_shape = (1, ttnn_module.get_num_devices())
+        requested_mesh_shape = get_fabric_mesh_shape()
     else:
         requested_mesh_shape = tuple(requested_mesh_shape)
-    if (
-        len(requested_mesh_shape) != 2
-        or requested_mesh_shape[0] != 1
-        or requested_mesh_shape[1] < 1
-    ):
-        raise ValueError(
-            "FABRIC_1D requires a logical mesh shape of (1, num_devices) with "
-            "num_devices greater than zero"
-        )
 
     mesh_device = None
     try:
-        ttnn_module.set_fabric_config(ttnn_module.FabricConfig.FABRIC_1D)
+        ttnn_module.set_fabric_config(fabric_config)
         mesh_device = ttnn_module.open_mesh_device(
             ttnn_module.MeshShape(requested_mesh_shape)
         )
@@ -195,6 +207,23 @@ def open_fabric_mesh(requested_mesh_shape: tuple[int, int] | None = None):
 # =============================================================================
 # Tensor creation utilities
 # =============================================================================
+
+
+def torch_dtype_from_name(name: str):
+    """Parse common test dtype names into PyTorch dtypes."""
+    import torch
+
+    normalized = name.lower()
+    if normalized in ("bf16", "bfloat16"):
+        return torch.bfloat16
+    if normalized in ("fp32", "f32", "float32"):
+        return torch.float32
+    raise ValueError(f"Unsupported torch dtype name {name!r}")
+
+
+def torch_dtype_from_env(var_name: str, default: str = "bf16"):
+    """Read a PyTorch dtype name from an environment variable."""
+    return torch_dtype_from_name(os.environ.get(var_name, default))
 
 
 def to_dram(torch_tensor, device):
@@ -413,6 +442,8 @@ __all__ = [
     "is_hardware_available",
     "require_ttnn",
     "require_hardware",
+    "torch_dtype_from_name",
+    "torch_dtype_from_env",
     "to_dram",
     "to_l1",
     "to_l1_sharded",

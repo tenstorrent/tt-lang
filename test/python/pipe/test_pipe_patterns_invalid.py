@@ -169,13 +169,13 @@ def test_loopback_receive_wait_before_send_rejected(device):
 
 
 def test_loopback_send_before_receive_post_rejected(device):
-    """The sender cannot run before the loopback receive publishes its address."""
+    """A loopback send cannot precede the receive copy that posts its DFB slot."""
     inp_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
     inp_tt = to_dram(inp_torch, device)
 
     with pytest.raises(
         Exception,
-        match="pipe send occurs before the receiver publishes a destination address",
+        match="pipe send occurs before the receiver posts a dataflow buffer reservation",
     ):
         loopback_send_before_receive_post_kernel(inp_tt)
 
