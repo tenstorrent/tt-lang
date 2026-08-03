@@ -1,41 +1,48 @@
 add_mlir_dialect_library(TTLangTTLTransforms
+  AccumulationAnalysis.cpp
+  AccumulationUtils.cpp
   ComputeOpCreationPlanning.cpp
   IntermediateDFBPlanning.cpp
+  DFBConcurrentKernelLivenessAnalysis.cpp
+  DFBLogicalIdentityAnalysis.cpp
+  DFBPhysicalAllocationPlan.cpp
+  ConvertTTLComputeToSCF.cpp
+  ConvertTTLTileOpsToTTKernel.cpp
+  ConvertTTLToCompute.cpp
   ConvertTTLToTTKernel.cpp
   DFBAcquireReleaseAnalysis.cpp
   DFBValueLifetimeAnalysis.cpp
   DFBMaterialization.cpp
-  PipeGraph.cpp
-  PipeLowering.cpp
-  ConvertTTLToCompute.cpp
-  ConvertTTLComputeToSCF.cpp
-  ConvertTTLTileOpsToTTKernel.cpp
   LowerDPrintToEmitC.cpp
   LaunchNodeDomainAnalysis.cpp
 
   LowerMatmulCompute.cpp
   LowerSignpostToEmitC.cpp
+  PipeGraph.cpp
+  PipeLowering.cpp
   TTLAnnotateCBAssociations.cpp
-  TTLAnnotateL1AccLoops.cpp
+  TTLAssignDST.cpp
   TTLCoalesceDFBAcquires.cpp
   TTLDumpCBFlowGraph.cpp
+  TTLErasePipeNetScopes.cpp
   TTLFinalizeDFBIndices.cpp
-  TTLValidateCBBudget.cpp
+  TTLFormAccumulationScopes.cpp
+  TTLInsertAccumulationScopes.cpp
   TTLInsertCBSync.cpp
   TTLInsertCopyWait.cpp
   TTLInsertIntermediateDFBs.cpp
+  TTLLowerAccumulationScopes.cpp
   TTLMaterializeLoopState.cpp
   TTLPrintDFBValueLifetimes.cpp
   TTLPrintComputeOpCreationPlans.cpp
-  TTLVerifyDFBSPSC.cpp
-  TTLVerifyPipeNetGuards.cpp
-  TTLErasePipeNetScopes.cpp
-  TTLAssignDST.cpp
   TTLScheduleOperations.cpp
   TTLSetComputeKernelConfig.cpp
   TransferProvenance.cpp
   DstSubblockUtils.cpp
   TTLSubblockComputeForDST.cpp
+  TTLValidateCBBudget.cpp
+  TTLVerifyDFBSPSC.cpp
+  TTLVerifyPipeNetGuards.cpp
 
   DEPENDS
   TTLangTTLTransformsIncGen

@@ -34,16 +34,22 @@ def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
 
     - `cb_index` is the circular buffer hardware slot index (0-31).
     - `block_count` is the number of blocks (default 2 for double buffering).
+    - `dfb_id` identifies the logical dataflow buffer. User declarations carry
+      this identity. Compiler-created declarations may omit it while their
+      identity is unresolved. Bindings in different kernels with the same
+      `dfb_id` refer to the same logical buffer even when physical
+      allocation changes `cb_index`.
     Example:
 
     ```mlir
-    %cb = ttl.bind_cb {cb_index = 0 : index, block_count = 2}
-          : !ttl.cb<[1, 1], f32, 2>
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     ```
   }];
   let arguments = (ins
     IndexAttr:$cb_index,
-    DefaultValuedAttr<I64Attr, "2">:$block_count
+    DefaultValuedAttr<I64Attr, "2">:$block_count,
+    OptionalAttr<IndexAttr>:$dfb_id
   );
   let results = (outs TTL_CircularBuffer:$result);
   let assemblyFormat = "`{` `cb_index` `=` $cb_index `,` `block_count` `=` $block_count `}` attr-dict `:` type($result)";
@@ -252,6 +258,10 @@ def TTL_ComputeOp : TTL_Op<"compute", [
     The operation takes tensors of tiles as inputs and outputs. The block
     arguments are individual tiles (`!ttcore.tile<H, W, dtype>`) extracted from
     the input/output tensors at each iteration point.
+
+    A body containing `ttl.tile_accumulate` requires at least one reduction
+    iterator. The accumulator remains resident in DST across the corresponding
+    reduction iterations.
 
     In the pipeline, `ttl.compute` is lowered to `scf.for` loops by
     `ttl-lower-to-loops` BEFORE bufferization. The `ttl.tile_*` ops in the
@@ -1027,6 +1037,34 @@ class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
   let arguments = (ins TTL_TileType:$input, Index:$dst_index);
   let results = (outs TTL_TileType:$result);
   let assemblyFormat = "$input `into` `dst` `[` $dst_index `]` attr-dict `:` type($input) `->` type($result)";
+}
+
+def TTL_TileAccumulateOp : TTL_TileOp<"tile_accumulate",
+    [TTL_TileBinaryOpTrait, TTL_DSTInputsTrait, TTL_InPlaceOpTrait,
+     TTL_AccumulatingOpTrait, TTL_DstResultOpTrait,
+     AllTypesMatch<["accumulator", "contribution", "result"]>]> {
+  let summary = "In-DST tile recurrence";
+  let description = [{
+    `ttl.tile_accumulate` models one tile-level recurrence update whose
+    accumulator is resident in DST. The operation applies `combiner` to
+    `accumulator` and `contribution`, writes the result into `dst_index`, and
+    returns the value resident in that same DST slot.
+
+    Example:
+
+    ```mlir
+    %idx = arith.constant 0 : index
+    %next = ttl.tile_accumulate %acc, %delta add into dst[%idx]
+        : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>
+          -> !ttcore.tile<32x32, bf16>
+    ```
+  }];
+  let arguments = (ins TTL_TileType:$accumulator,
+                       TTL_TileType:$contribution,
+                       TTL_AccumulationCombinerAttr:$combiner,
+                       Index:$dst_index);
+  let results = (outs TTL_TileType:$result);
+  let hasCustomAssemblyFormat = 1;
 }
 
 //===----------------------------------------------------------------------===//

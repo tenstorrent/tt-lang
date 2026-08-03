@@ -500,14 +500,6 @@ def _synthesize_thread_module(fn_name: str, body: List[ast.stmt]) -> ast.Module:
     return ast.fix_missing_locations(ast.Module(body=[fn], type_ignores=[]))
 
 
-def _cb_configs_from_lifted(lifted: Dict[str, DataflowBuffer]):
-    """DataflowBuffer list indexed by CB index, matching _collect_cb_configs."""
-    by_index = {dfb._cb_index: dfb for dfb in lifted.values()}
-    if not by_index:
-        return []
-    return [by_index.get(i) for i in range(max(by_index) + 1)]
-
-
 def _make_thread_callable(spec, kernel_type, fn_name, body, captures):
     def _compile_thread(*args, **kwargs):
         kwargs = dict(kwargs)
@@ -648,7 +640,6 @@ def _compile_atom(
         args=args,
         launch_grid=grid,
         num_outs=num_outs,
-        cb_configs=_cb_configs_from_lifted(dfbs),
         pipenets=pipe_graph,
         target_arch=target_arch,
         fp32_dest_acc_en=fp32_dest_acc_en,
