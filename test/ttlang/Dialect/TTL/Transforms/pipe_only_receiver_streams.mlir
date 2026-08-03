@@ -191,10 +191,10 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
-// Purpose: a pop without a wait owner does not affect the producer write
+// Purpose: consumer wait/pop operations do not affect the producer write
 // pointer proof.
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
-  func.func @pop_without_wait_owner()
+  func.func @consumer_wait_pop_does_not_change_producer_proof()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
@@ -207,6 +207,9 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
           : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.pipe_token<net 0>
       ttl.pipe_transfer.wait %token : !ttl.pipe_token<net 0>
       ttl.cb_push %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      %ready = ttl.cb_wait %dst_cb
+          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
       ttl.cb_pop %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
     }
     ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {

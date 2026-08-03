@@ -522,6 +522,28 @@ LogicalResult DFBAcquireReleaseIndex::build(
       failed(recordReleaseOwnership(pops, waits))) {
     return failure();
   }
+
+  auto recordIntervalOwners = [&](ArrayRef<Operation *> acquires,
+                                  ArrayRef<Operation *> releases) {
+    for (Operation *release : releases) {
+      releaseIntervalOwners.try_emplace(release);
+    }
+    for (Operation *acquire : acquires) {
+      DFBAcquireInterval interval = makeDFBAcquireInterval(acquire, acquires);
+      Operation *lastOwnedUse = findLastDFBAcquireOwnedUse(interval);
+      DFBReleaseSearch releaseSearch =
+          findOwnedDFBReleases(interval, lastOwnedUse, releases);
+      for (Operation *release : releaseSearch.sameLevelReleases) {
+        releaseIntervalOwners[release].push_back(acquire);
+      }
+      for (Operation *release : releaseSearch.nestedReleases) {
+        releaseIntervalOwners[release].push_back(acquire);
+      }
+    }
+  };
+  recordIntervalOwners(reserves, pushes);
+  recordIntervalOwners(waits, pops);
+
   kernel.walk([&](Operation *operation) {
     if (isDFBReleaseOp(operation)) {
       releaseOrder.push_back(operation);
@@ -544,6 +566,14 @@ DFBAcquireReleaseIndex::getReleaseOwnership(Operation *release) const {
   assert(ownership != releaseOwnership.end() &&
          "operation is not an indexed DFB release");
   return ownership->second;
+}
+
+ArrayRef<Operation *>
+DFBAcquireReleaseIndex::getReleaseIntervalOwners(Operation *release) const {
+  auto owners = releaseIntervalOwners.find(release);
+  assert(owners != releaseIntervalOwners.end() &&
+         "operation is not an indexed DFB release");
+  return owners->second;
 }
 
 } // namespace mlir::tt::ttl

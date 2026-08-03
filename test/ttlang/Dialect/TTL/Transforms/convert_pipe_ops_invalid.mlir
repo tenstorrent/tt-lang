@@ -221,6 +221,9 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
            !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
         -> !ttl.transfer_handle<write>
     ttl.wait %send : !ttl.transfer_handle<write>
+    %ready = ttl.cb_wait %cb {num_tiles = 2 : i64}
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x2x!ttcore.tile<32x32, f32>>
     // expected-error @below {{pipe receiver DFB pop releases 1 block(s), but oldest live receive slot spans 2 block(s); receiver pops must release whole DFB slots}}
     ttl.cb_pop %cb {num_tiles = 1 : i64}
         : <[1, 1], !ttcore.tile<32x32, f32>, 2>
@@ -302,8 +305,14 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
            !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
         -> !ttl.transfer_handle<write>
     ttl.wait %send : !ttl.transfer_handle<write>
+    %ready0 = ttl.cb_wait %cb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
     ttl.cb_pop %cb
         : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %ready1 = ttl.cb_wait %cb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
     // expected-error @below {{pipe receiver DFB pop releases 1 block(s), but only 0 live pipe receive block(s) are tracked; receiver pops must release only live pipe receive slots}}
     ttl.cb_pop %cb
         : <[1, 1], !ttcore.tile<32x32, f32>, 2>
@@ -339,6 +348,9 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
            !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
         -> !ttl.transfer_handle<write>
     ttl.wait %send : !ttl.transfer_handle<write>
+    %ready = ttl.cb_wait %cb {num_tiles = 2 : i64}
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x2x!ttcore.tile<32x32, f32>>
     // expected-error @below {{pipe receiver DFB pop releases 2 block(s), but only 1 live pipe receive block(s) are tracked; receiver pops must release only live pipe receive slots}}
     ttl.cb_pop %cb {num_tiles = 2 : i64}
         : <[1, 1], !ttcore.tile<32x32, f32>, 2>

@@ -205,6 +205,13 @@ public:
   /// Returns the ownership record for `release`.
   const DFBReleaseOwnership &getReleaseOwnership(Operation *release) const;
 
+  /// Returns acquisition intervals whose operation range contains `release`.
+  ///
+  /// This structural relation is independent of FIFO tile ownership. Clients
+  /// that require one interval must verify that the returned range has one
+  /// element.
+  ArrayRef<Operation *> getReleaseIntervalOwners(Operation *release) const;
+
   /// Returns releases in deterministic kernel walk order.
   ArrayRef<Operation *> getReleases() const { return releaseOrder; }
 
@@ -218,6 +225,7 @@ private:
   SmallVector<Operation *> releaseOrder;
   llvm::DenseMap<Operation *, DFBTransactionRecord> transactions;
   llvm::DenseMap<Operation *, DFBReleaseOwnership> releaseOwnership;
+  llvm::DenseMap<Operation *, SmallVector<Operation *>> releaseIntervalOwners;
 };
 
 } // namespace mlir::tt::ttl

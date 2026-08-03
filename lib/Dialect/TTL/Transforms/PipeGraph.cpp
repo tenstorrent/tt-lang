@@ -69,25 +69,26 @@ static LogicalResult collectLaunchNodeDomains(ModuleOp mod,
     }
     assert(lifecycleResult.isPlanned() &&
            "DFB lifecycle indexing has no recoverable rejection");
-    state.dfbLifecycles.try_emplace(
-        function.getOperation(), std::move(lifecycleResult).takePlan());
+    state.dfbLifecycles.try_emplace(function.getOperation(),
+                                    std::move(lifecycleResult).takePlan());
   }
   return success();
 }
 
 template <typename AcquireOp>
-static AcquireOp findExactDFBReleaseOwner(Operation *release,
-                                          PipeGraphAnalysisState &state) {
+static AcquireOp
+findUniqueDFBReleaseIntervalOwner(Operation *release,
+                                  PipeGraphAnalysisState &state) {
   func::FuncOp function = release->getParentOfType<func::FuncOp>();
   auto lifecycle = state.dfbLifecycles.find(function.getOperation());
   assert(lifecycle != state.dfbLifecycles.end() &&
          "every function has a DFB lifecycle index");
-  const DFBReleaseOwnership &ownership =
-      lifecycle->second->getReleaseOwnership(release);
-  if (ownership.ownership != DFBReleaseOwnershipKind::Exact) {
+  ArrayRef<Operation *> owners =
+      lifecycle->second->getReleaseIntervalOwners(release);
+  if (owners.size() != 1) {
     return AcquireOp();
   }
-  return dyn_cast<AcquireOp>(ownership.getExactOwner());
+  return dyn_cast<AcquireOp>(owners.front());
 }
 
 static LaunchNodeDomain
@@ -839,7 +840,7 @@ LogicalResult PipeGraph::provePipeOnlyReceiverProducerStreams(
         reject("push block count is not a whole DFB block count");
         return;
       }
-      CBReserveOp reserveOp = findExactDFBReleaseOwner<CBReserveOp>(
+      CBReserveOp reserveOp = findUniqueDFBReleaseIntervalOwner<CBReserveOp>(
           pushOp.getOperation(), analysisState);
       if (!reserveOp) {
         reject("push has no unique receiver reserve owner");
