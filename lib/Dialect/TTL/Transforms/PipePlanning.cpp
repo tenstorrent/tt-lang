@@ -24,6 +24,16 @@ bool PipeSynchronizationSelection::usesCapacityProtocol(Operation *op) const {
   return capacityTransferOps.contains(op);
 }
 
+bool PipeSynchronizationSelection::usesFabricProtocol(
+    PipeTransferSendOp op) const {
+  return fabricTransferOps.contains(op.getOperation());
+}
+
+bool PipeSynchronizationSelection::usesFabricProtocol(
+    PipeTransferPostOp op) const {
+  return fabricTransferOps.contains(op.getOperation());
+}
+
 ArrayRef<PipeCapacityAcquireInfo>
 PipeCapacityPlan::lookupAcquires(PipeTransferSendOp op) const {
   auto acquireIt = acquires.find(op.getOperation());
@@ -99,14 +109,22 @@ PipeModulePlan::getTransferPlan(Operation *operation) const {
 
 static FailureOr<PipeSendPlan>
 buildPipeSendPlan(PipeTransferSendOp sendOp, const DominanceInfo &dominanceInfo,
-                  int64_t payloadSizeBytes) {
+                  int64_t payloadSizeBytes,
+                  const FabricRoutePlan *fabricRoutePlan) {
   bool readFromDFB =
       llvm::any_of(sendOp.getSrc().getUsers(), [&](Operation *user) {
         return isa<CBWaitOp>(user) && user->getOperand(0) == sendOp.getSrc() &&
                dominanceInfo.dominates(user, sendOp);
       });
 
-  return PipeSendPlan{readFromDFB, payloadSizeBytes};
+  std::optional<std::size_t> fabricRouteIndex;
+  if (fabricRoutePlan) {
+    auto routeIt = fabricRoutePlan->sendRouteIndex.find(sendOp.getOperation());
+    if (routeIt != fabricRoutePlan->sendRouteIndex.end()) {
+      fabricRouteIndex = routeIt->second;
+    }
+  }
+  return PipeSendPlan{readFromDFB, payloadSizeBytes, fabricRouteIndex};
 }
 
 static FailureOr<int64_t>
@@ -196,12 +214,17 @@ static void debugRejectEndpoint(const PipeCapacityEndpointFacts &endpointFacts,
   });
 }
 
-static bool
-isCapacityProtocolLowerable(const PipeCapacityEndpointFacts &endpointFacts,
-                            const PipeGraph &pipeGraph,
-                            const PipeResourcePlan &resources) {
+static bool isCapacityProtocolLowerable(
+    const PipeCapacityEndpointFacts &endpointFacts, const PipeGraph &pipeGraph,
+    const PipeResourcePlan &resources, const FabricRoutePlan *fabricRoutePlan) {
   const PipeTransferNode &transferNode =
       pipeGraph.getPipeTransferNode(endpointFacts.transferNode);
+  if (fabricRoutePlan &&
+      fabricRoutePlan->sendRouteIndex.contains(transferNode.sendOp)) {
+    debugRejectEndpoint(endpointFacts,
+                        "device transfer uses routing-plane flow control");
+    return false;
+  }
   auto resourceIt = resources.resources.find(transferNode.sendOp);
   if (resourceIt == resources.resources.end()) {
     debugRejectEndpoint(endpointFacts, "pipe resource is missing");
@@ -218,10 +241,9 @@ isCapacityProtocolLowerable(const PipeCapacityEndpointFacts &endpointFacts,
   return true;
 }
 
-static SmallVector<PipeTransferNodeId>
-selectCapacityTransfers(const PipeCapacityAnalysisResult &capacityFacts,
-                        const PipeGraph &pipeGraph,
-                        const PipeResourcePlan &resources) {
+static SmallVector<PipeTransferNodeId> selectCapacityTransfers(
+    const PipeCapacityAnalysisResult &capacityFacts, const PipeGraph &pipeGraph,
+    const PipeResourcePlan &resources, const FabricRoutePlan *fabricRoutePlan) {
   SmallVector<PipeTransferNodeId> selectedTransfers;
   for (const PipeTransferNode &transferNode :
        pipeGraph.getPipeTransferNodes()) {
@@ -233,7 +255,7 @@ selectCapacityTransfers(const PipeCapacityAnalysisResult &capacityFacts,
         break;
       }
       if (!isCapacityProtocolLowerable(capacityFacts.getEndpointFacts(endpoint),
-                                       pipeGraph, resources)) {
+                                       pipeGraph, resources, fabricRoutePlan)) {
         allEndpointsProven = false;
         break;
       }
@@ -343,22 +365,28 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
   PipeSynchronizationSelection synchronizationSelection;
   buildPipeNetIndex(module, plan.pipeNetIndex);
 
+  const FabricRoutePlan *fabricRoutePlan = options.fabricRoutePlan;
+  if (fabricRoutePlan) {
+    synchronizationSelection.fabricTransferOps.insert(
+        fabricRoutePlan->transferOps.begin(),
+        fabricRoutePlan->transferOps.end());
+  }
+
   if (options.enableCapacitySynchronization) {
-    PipeCapacityAnalysisResult capacityFacts =
-        analyzePipeCapacity(module, pipeGraph);
+    PipeCapacityAnalysisResult capacityFacts = analyzePipeCapacity(pipeGraph);
     // Preliminary resources determine which transfers have computed receiver
     // addresses. Final allocation omits sender-ready counters for transfers
     // selected for capacity synchronization.
     PipeResourcePlan preliminaryResourcePlan;
-    if (failed(buildPipeResourcePlan(module, transferIndex, pipeGraph,
-                                     preliminaryResourcePlan,
-                                     options.enableComputedAddresses,
-                                     /*synchronizationSelection=*/nullptr))) {
+    if (failed(buildPipeResourcePlan(
+            module, transferIndex, pipeGraph, preliminaryResourcePlan,
+            options.enableComputedAddresses,
+            fabricRoutePlan ? &synchronizationSelection : nullptr))) {
       return failure();
     }
     SmallVector<PipeTransferNodeId> selectedCapacityTransfers =
         selectCapacityTransfers(capacityFacts, pipeGraph,
-                                preliminaryResourcePlan);
+                                preliminaryResourcePlan, fabricRoutePlan);
     for (PipeTransferNodeId transferNode : selectedCapacityTransfers) {
       const PipeTransferNode &selectedTransfer =
           pipeGraph.getPipeTransferNode(transferNode);
@@ -374,7 +402,8 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
       return failure();
     }
     SmallVector<PipeTransferNodeId> finalSelectedCapacityTransfers =
-        selectCapacityTransfers(capacityFacts, pipeGraph, plan.resourcePlan);
+        selectCapacityTransfers(capacityFacts, pipeGraph, plan.resourcePlan,
+                                fabricRoutePlan);
     if (finalSelectedCapacityTransfers != selectedCapacityTransfers) {
       module.emitError(
           "PipeNet capacity protocol selection changed after resource "
@@ -387,7 +416,7 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
   } else if (failed(buildPipeResourcePlan(
                  module, transferIndex, pipeGraph, plan.resourcePlan,
                  options.enableComputedAddresses,
-                 /*synchronizationSelection=*/nullptr))) {
+                 fabricRoutePlan ? &synchronizationSelection : nullptr))) {
     return failure();
   }
 
@@ -395,6 +424,9 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
     const PipeTransferNode &transferNode =
         pipeGraph.getPipeTransferNode(transferNodeId);
     auto sendOp = cast<PipeTransferSendOp>(transferNode.sendOp);
+    if (synchronizationSelection.usesFabricProtocol(sendOp)) {
+      return PipeSynchronizationProtocol::Fabric;
+    }
     return synchronizationSelection.usesCapacityProtocol(sendOp)
                ? PipeSynchronizationProtocol::Capacity
                : PipeSynchronizationProtocol::ReceiverPost;
@@ -428,12 +460,64 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
     auto waitOp = dyn_cast<PipeTransferWaitOp>(operation);
     assert((sendOp || postOp || waitOp) &&
            "pipe resources assigned to an unsupported operation");
+    bool usesFabricProtocol =
+        sendOp   ? synchronizationSelection.usesFabricProtocol(sendOp)
+        : postOp ? synchronizationSelection.usesFabricProtocol(postOp)
+                 : false;
     bool usesCapacityProtocol =
         (sendOp || postOp) &&
         synchronizationSelection.usesCapacityProtocol(operation);
     PipeSynchronizationProtocol synchronizationProtocol =
-        usesCapacityProtocol ? PipeSynchronizationProtocol::Capacity
-                             : PipeSynchronizationProtocol::ReceiverPost;
+        usesFabricProtocol     ? PipeSynchronizationProtocol::Fabric
+        : usesCapacityProtocol ? PipeSynchronizationProtocol::Capacity
+                               : PipeSynchronizationProtocol::ReceiverPost;
+    const PipeResourceInfo *staticResources =
+        std::get_if<PipeResourceInfo>(&resources);
+    assert((!usesFabricProtocol || staticResources) &&
+           "fabric protocol requires a static pipe reference");
+    if (usesFabricProtocol &&
+        !staticResources->addressStorage.usesComputedReceiverDFB()) {
+      auto diagnostic = operation->emitError(
+          "fabric pipe transfer requires computed receiver DFB addresses");
+      ArrayRef<PipeTransferNodeId> transferNodeIds =
+          pipeGraph.getPipeTransferNodeIdsForProtocolOp(operation);
+      assert(transferNodeIds.size() == 1 &&
+             "static protocol operation requires one PipeGraph transfer");
+      const PipeTransferNode &transferNode =
+          pipeGraph.getPipeTransferNode(transferNodeIds.front());
+      bool attachedReason = false;
+      for (PipeReceiverEndpointId endpointId :
+           pipeGraph.getPipeReceiverEndpoints(transferNode.id)) {
+        const PipeReceiverEndpoint &endpoint =
+            pipeGraph.getPipeReceiverEndpoint(endpointId);
+        const PipeReceiverDFBNode &receiverDFB =
+            pipeGraph.getReceiverDFBNode(endpoint.receiverDFBNode);
+        if (!receiverDFB.hasProvenPipeOnlyProducerStream) {
+          diagnostic.attachNote(endpoint.receiverDFBInfo.loc)
+              << "receiver DFB " << endpoint.receiverDFBInfo.dfbIndex << ": "
+              << receiverDFB.pipeOnlyProducerStreamFailureReason;
+          attachedReason = true;
+          break;
+        }
+        if (endpoint.addressSequence.getKind() ==
+            ReceiverAddressSequenceProofKind::FullyDynamic) {
+          diagnostic.attachNote(endpoint.receiverDFBInfo.loc)
+              << "receiver DFB " << endpoint.receiverDFBInfo.dfbIndex
+              << " has no proven receiver address sequence";
+          attachedReason = true;
+          break;
+        }
+      }
+      if (!attachedReason && !transferNode.receiverEndpoints.empty()) {
+        const PipeReceiverEndpoint &endpoint =
+            pipeGraph.getPipeReceiverEndpoint(
+                transferNode.receiverEndpoints.front());
+        diagnostic.attachNote(endpoint.receiverDFBInfo.loc)
+            << "receiver address sequences are not proven equal for every "
+               "transfer occurrence";
+      }
+      return failure();
+    }
 
     auto insertTransferPlan =
         [&](PipeTransferPlan::OperationPlan operationPlan) {
@@ -452,8 +536,8 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
       if (failed(payloadSize)) {
         return failure();
       }
-      FailureOr<PipeSendPlan> maybeSendPlan =
-          buildPipeSendPlan(sendOp, dominanceInfo, *payloadSize);
+      FailureOr<PipeSendPlan> maybeSendPlan = buildPipeSendPlan(
+          sendOp, dominanceInfo, *payloadSize, fabricRoutePlan);
       if (failed(maybeSendPlan)) {
         return failure();
       }

@@ -29,6 +29,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <variant>
 
 namespace mlir::tt {
@@ -70,24 +71,25 @@ struct PipeReceiverCoord {
   }
 };
 
-/// Physical receiver DFB identity for the current single-device module.
+/// Physical receiver DFB identity within one logical device.
 struct PipeReceiverDFBKey {
+  DeviceRefAttr receiverDevice;
   PipeReceiverCoord receiver;
   int64_t dfbIndex = 0;
 
   bool operator==(const PipeReceiverDFBKey &other) const {
-    return receiver == other.receiver && dfbIndex == other.dfbIndex;
+    return receiverDevice == other.receiverDevice &&
+           receiver == other.receiver && dfbIndex == other.dfbIndex;
   }
 };
 
-inline bool isReceiverDFB(mlir::Value cb,
-                          const PipeReceiverDFBKey &receiverDFB) {
-  std::optional<int64_t> maybeDFBIndex = getCBIndex(cb);
-  return maybeDFBIndex && *maybeDFBIndex == receiverDFB.dfbIndex;
-}
+using PipeReceiverDFBStreamKey = std::pair<DeviceRefAttr, int64_t>;
 
 inline void printReceiverDFB(llvm::raw_ostream &os,
                              const PipeReceiverDFBKey &receiverDFB) {
+  if (receiverDFB.receiverDevice) {
+    os << "device " << receiverDFB.receiverDevice << " ";
+  }
   os << "receiver(" << receiverDFB.receiver.x << ", " << receiverDFB.receiver.y
      << ") DFB " << receiverDFB.dfbIndex;
 }
@@ -148,8 +150,8 @@ template <>
 struct DenseMapInfo<mlir::tt::ttl::PipeReceiverDFBKey> {
   using Key = mlir::tt::ttl::PipeReceiverDFBKey;
   static unsigned getHashValue(const Key &receiverDFB) {
-    return hash_combine(receiverDFB.receiver.x, receiverDFB.receiver.y,
-                        receiverDFB.dfbIndex);
+    return hash_combine(receiverDFB.receiverDevice, receiverDFB.receiver.x,
+                        receiverDFB.receiver.y, receiverDFB.dfbIndex);
   }
   static bool isEqual(const Key &lhs, const Key &rhs) { return lhs == rhs; }
 };
@@ -179,6 +181,7 @@ inline bool isCollectiveTransfer(PipeTransferContract contract) {
 
 /// Receiver DFB geometry for one transfer definition.
 struct ReceiverDFBInfo {
+  DeviceRefAttr receiverDevice;
   int64_t dfbIndex;
   CircularBufferType dfbType;
   bool hasStaticTileOffset;
@@ -230,14 +233,15 @@ struct ReceiverAddressSequenceProof {
 
 /// One transfer definition: one send and its corresponding receiver posts.
 /// The sender and receiver operations may reference distinct
-/// `ttl.pipe_transfer.create` declarations; those declarations do not define
-/// transfer identity.
+/// `ttl.pipe_transfer.create` declarations. The graph verifies and records
+/// their common transfer contract and logical-device transfer.
 struct PipeTransferNode {
   PipeTransferNodeId id = 0;
   PipeKey pipe;
   PipeTransferContract transferContract = PipeTransferContract::PointToPoint;
   int64_t blockSpan = 1;
   int64_t destinationGroupDepth = 1;
+  DeviceTransferAttr deviceTransfer;
   Operation *sendOp = nullptr;
   SmallVector<Operation *> receiverPostOps;
   SmallVector<PipeReceiverEndpointId> receiverEndpoints;
@@ -490,6 +494,10 @@ public:
   const DFBAcquireReleaseIndex &
   getDFBAcquireReleaseIndex(Operation *operation) const;
 
+  /// Append DFB pops that may execute for this physical receiver stream.
+  void appendReceiverDFBPops(const PipeReceiverDFBKey &receiverDFB,
+                             SmallVectorImpl<CBPopOp> &pops) const;
+
 private:
   /// Associate a selected protocol operation and record with one transfer.
   void
@@ -506,19 +514,15 @@ private:
   /// sequential order. Unproven point-to-point sequences use
   /// receiver-published addresses.
   LogicalResult
-  assignReceiverAddressSequences(ModuleOp mod, ValueOriginAnalysis &analysis,
+  assignReceiverAddressSequences(ModuleOp module,
                                  const PipeTransferIndex &transferIndex,
                                  PipeGraphAnalysisState &state);
 
-  LogicalResult rebuildEndpointGraph(ModuleOp mod,
-                                     ValueOriginAnalysis &analysis,
-                                     const PipeTransferIndex &transferIndex,
+  LogicalResult rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
                                      PipeGraphAnalysisState &state);
 
   LogicalResult
-  provePipeOnlyReceiverProducerStreams(ModuleOp mod,
-                                       const PipeTransferIndex &transferIndex,
-                                       PipeGraphAnalysisState &state);
+  provePipeOnlyReceiverProducerStreams(PipeGraphAnalysisState &analysisState);
 
   llvm::MapVector<Operation *, ReceiverDFBInfo> receiverDFBByPost;
   SmallVector<PipeTransferNode, 0> pipeTransferNodes;
@@ -531,6 +535,8 @@ private:
       transferNodeIdByProtocolOpAndRecord;
   SmallVector<PipeReceiverEndpoint> pipeReceiverEndpoints;
   SmallVector<PipeReceiverDFBNode> receiverDFBNodes;
+  llvm::DenseMap<PipeReceiverDFBStreamKey, SmallVector<CBPopOp>>
+      receiverPopsByStream;
   bool hasAnalyzedLaunchGrid = false;
   /// Cached operation-keyed analysis facts are valid only before lowering
   /// starts erasing or replacing IR operations.

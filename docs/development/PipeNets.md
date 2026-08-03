@@ -709,7 +709,7 @@ The address proof uses four graph objects:
 | Graph object | Meaning | Address facts owned by the object |
 | --- | --- | --- |
 | `PipeReceiverDFBNode` | One physical DFB, identified by logical receiver device when present, receiver node, and finalized DFB index. | Writer endpoint list and whether every producer-side advance is a modeled pipe receive. |
-| `PipeTransferNode` | One send and its corresponding receiver post for each destination. The send and receiver posts may reference distinct `ttl.pipe_transfer.create` operations. Multiple transfers for one `PipeKey` remain distinct nodes. | Transfer contract, send operation, and receiver endpoint list. |
+| `PipeTransferNode` | One send and its corresponding receiver post for each destination. The send and receiver posts may reference distinct `ttl.pipe_transfer.create` operations. Multiple transfers for one `PipeKey` remain distinct nodes. | Transfer contract, logical-device transfer, send operation, and receiver endpoint list. |
 | `PipeReceiverEndpoint` | One connection from a transfer node to a receiver DFB node. | Slot span, static byte offset, and the derived receiver address-sequence proof. |
 | `ReceiverAddressSequenceProof` | The proof result for the destination address selected by one endpoint at occurrence `i`. | A proven modular recurrence, optionally restricted to an exact execution count, or `FullyDynamic`. |
 
@@ -1294,11 +1294,13 @@ ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
 }
 ```
 
-Pipe transfer expansion makes the protocol events explicit. The receive
-copy becomes a receive post plus a receive-completion wait. The send copy
-becomes a pipe-transfer send. The public send handle preserves the TTL
-ordering contract for sender-side code, but the pipe-transfer send itself
-owns the payload-write barrier and receiver-completion signal.
+Pipe transfer expansion makes the protocol events explicit. It records the
+transfer contract and optional logical-device transfer proven across every
+possible pipe origin. The receive copy becomes a receive post plus a
+receive-completion wait. The send copy becomes a pipe-transfer send. The public
+send handle preserves the TTL ordering contract for sender-side code, but the
+pipe-transfer send itself owns the payload-write barrier and
+receiver-completion signal.
 
 ```mlir
 %transfer = ttl.pipe_transfer.create %pipe {
@@ -1724,6 +1726,12 @@ from block storage order. Multi-block regions that do not contribute pipe
 events remain valid. Every event must also have an exact launch-node domain; an
 unevaluable coordinate-dependent condition is rejected rather than omitting
 its events from the schedule.
+
+Cross-device correspondence includes the logical-device transfer in the pipe
+identity. Send counts are evaluated at the transfer's source device; receiver
+post and wait counts are evaluated at its destination device. Device predicates
+that are mutually exclusive in the generic kernel can therefore prove matching
+endpoint counts. Local pipes use the existing launch-node-only queries.
 
 ### Pipe transfer and receiver-address graph
 
@@ -2301,6 +2309,8 @@ resolves logical device edges to physical fabric routes.
 The shared graph and proof must preserve these fabric invariants:
 
 * logical-device predicates are evaluated as part of the execution coordinate;
+* corresponding send and receiver-post declarations identify the same logical
+  device transfer;
 * fabric transfers require a proven computed receiver address;
 * fabric senders do not wait for receiver-post readiness, so a receiver pop does
   not make the assigned slot available to another fabric transfer in the same

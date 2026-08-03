@@ -20,6 +20,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <optional>
@@ -30,6 +31,20 @@ namespace mlir::tt::ttl {
 FailureOr<PipeTransferCreateOp>
 findPipeTransferCreateForTransfer(ValueOriginAnalysis &analysis,
                                   Value transfer);
+
+/// Return the device transfer shared by every possible pipe origin. A pipe
+/// whose create operation has no device-transfer attribute returns no value.
+/// Selected PipeNet records represent local transfers and also return no value.
+/// Fails when another origin is not a pipe creation or origins disagree.
+FailureOr<std::optional<DeviceTransferAttr>>
+findUniquePipeDeviceTransfer(ValueOriginAnalysis &analysis, Value pipe);
+
+/// Return the device transfer shared by every possible pipe origin after
+/// resolving function entry arguments with `resolveFunctionArgument`.
+FailureOr<std::optional<DeviceTransferAttr>> findUniquePipeDeviceTransfer(
+    ValueOriginAnalysis &analysis, Value pipe,
+    llvm::function_ref<std::optional<Value>(BlockArgument)>
+        resolveFunctionArgument);
 
 /// Returns the unique pipe receive whose handle may reach `value`. Returns no
 /// receive when none of the possible origins is a pipe receive, and failure

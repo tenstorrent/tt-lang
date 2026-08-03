@@ -23,6 +23,12 @@ def ensure_dialects_registered(ctx):
 
 # Re-export C++-bound attributes/types for convenience.
 SliceAttr = ir.SliceAttr
+DeviceDomainComponentAttr = ir.DeviceDomainComponentAttr
+DeviceDomainAttr = ir.DeviceDomainAttr
+DeviceRangeAttr = ir.DeviceRangeAttr
+DeviceRefAttr = ir.DeviceRefAttr
+DeviceTransferAttr = ir.DeviceTransferAttr
+TransferEdgeAttr = ir.TransferEdgeAttr
 PipeRecordAttr = ir.PipeRecordAttr
 PipeNetRecordsAttr = ir.PipeNetRecordsAttr
 CircularBufferType = ir.CircularBufferType
