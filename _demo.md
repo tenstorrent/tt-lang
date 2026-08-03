@@ -50,7 +50,7 @@ rebuild applies each reviewed final delta to merged PR704 instead.
 | 7 | #680 DFB subviews | `4588cf72` | `3c4bd203`, `eddbfea9` | Applied and repaired |
 | 8 | #782-#784 PipeNet stack | `fc9233b1`, `e4bcf154`, `4d003e09`, `bd3a991e`, `671ca189`, `9213a58b` | `684d73ae` | Applied and repaired |
 | 9 | #780 grouped PipeTransport | `374909df` | `1c56a977` | Applied and repaired |
-| 10 | #734 multidevice fabric, including #795 | `d54f5dda` (`2fa8f92c` for #795) | `bce1cd6d` | Applied and repaired |
+| 10 | #734 multidevice fabric, including #795 and scatter overlay | `d54f5dda`, `5ac0c3d7`, `2caa76f5` (`2fa8f92c` for #795) | `bce1cd6d`, `13ab1139`, `50d5f86f` | Applied and repaired |
 | 11 | #754 compact selected PipeNets | Pending refresh | Pending | Pending |
 | 12 | #795 operation device domains | `2fa8f92c` | Included in `bce1cd6d` | Applied with #734 |
 | 13 | demo examples | `a3021dca`, `37c570f5` | Pending | Pending |
@@ -148,8 +148,7 @@ composition change between independent PRs.
   configuration instead of an untyped object when verifying emitted
   per-kernel runtime arguments. Owner: #734 when refreshed on top of #680.
 - #734 terminology: retain the multicast-to-scatter frontend and tests from
-  the reviewed source change. This overlay is not yet applied to the current
-  rebuild. Owner: #734.
+  the reviewed source commits `5ac0c3d7` and `2caa76f5`. Owner: #734.
 
 ## Demo Checklist
 
@@ -178,10 +177,12 @@ Current rebuild:
 - Python-only integration tests: `test_domains.py`,
   `test_ttl_api_device_options.py`, `test_kernel_runner.py`, and
   `test_pipenet_validation.py` passed on 2026-08-02; all 91 tests passed.
+- Scatter overlay: all 24 `test_domains.py` tests passed, all 18 fabric CCL
+  cases collected, and all 264 MLIR tests passed on 2026-08-02.
 
 Pending:
 
-- Apply the reviewed multicast-to-scatter overlay and integrate #754.
+- Integrate #754.
 - Restore the demo examples.
 - Docker build and `check-ttlang-all`.
 - Four-device example validation.
