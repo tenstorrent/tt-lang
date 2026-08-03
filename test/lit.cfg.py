@@ -46,7 +46,10 @@ config.ttlang_source_dir = getattr(
 )
 config.python_executable = getattr(config, "python_executable", sys.executable)
 
-config.test_exec_root = os.path.join(config.ttlang_obj_root, "test")
+# Concurrent hardware shards require separate timing and temporary files.
+config.test_exec_root = os.environ.get(
+    "TTLANG_LIT_TEST_EXEC_ROOT", os.path.join(config.ttlang_obj_root, "test")
+)
 
 # Create Output directories for lit temp files (%t substitution).
 # This is needed when running from pre-built artifacts where the build
