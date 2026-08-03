@@ -72,7 +72,6 @@ struct TTLInsertCBSyncPass
     SmallVector<Operation *> waits;
     SmallVector<Operation *> pushes;
     SmallVector<Operation *> pops;
-
     collectDFBAcquireReleaseOps(func, reserves, waits, pushes, pops);
 
     OpBuilder builder(func.getContext());
@@ -83,14 +82,14 @@ struct TTLInsertCBSyncPass
     DenseSet<Operation *> erased;
 
     insertMissingReleases(reserves, pushes, erased, builder,
-                          [](OpBuilder &b, Location loc, Value cb) {
-                            CBPushOp::create(b, loc, cb,
+                          [](OpBuilder &builder, Location location, Value dfb) {
+                            CBPushOp::create(builder, location, dfb,
                                              /*num_tiles=*/IntegerAttr{});
                           });
 
     insertMissingReleases(waits, pops, erased, builder,
-                          [](OpBuilder &b, Location loc, Value cb) {
-                            CBPopOp::create(b, loc, cb,
+                          [](OpBuilder &builder, Location location, Value dfb) {
+                            CBPopOp::create(builder, location, dfb,
                                             /*num_tiles=*/IntegerAttr{});
                           });
   }

@@ -1,4 +1,5 @@
 add_mlir_dialect_library(TTLangTTLTransforms
+  AccumulationUtils.cpp
   ComputeOpCreationPlanning.cpp
   IntermediateDFBPlanning.cpp
   ConvertTTLToTTKernel.cpp
@@ -24,6 +25,8 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLInsertCBSync.cpp
   TTLInsertCopyWait.cpp
   TTLInsertIntermediateDFBs.cpp
+  TTLFormAccumulationScopes.cpp
+  TTLLowerAccumulationScopes.cpp
   TTLMaterializeLoopState.cpp
   TTLPrintDFBValueLifetimes.cpp
   TTLPrintComputeOpCreationPlans.cpp
