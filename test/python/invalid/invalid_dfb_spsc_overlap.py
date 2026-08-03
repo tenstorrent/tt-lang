@@ -12,7 +12,7 @@ movement thread over the full launch grid. The verifier must reject the shared
 DFB because the consumer launch-node domains overlap.
 """
 
-# CHECK: dataflow buffer cb_index={{[0-9]+}} has multiple consumer threads active on the same launched node
+# CHECK: logical DFB 0 has multiple consumer kernels active on the same launched node
 # CHECK: tt-metal CBs are single-producer single-consumer; allocate one DFB per consumer
 
 import os

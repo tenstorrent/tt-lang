@@ -113,6 +113,8 @@ class DataflowBuffer:
         tensor = ttl.cb_wait(tensor_type, ast_self)
         return ttl.attach_cb(tensor.type, tensor, ast_self)
 
+    # TODO(#645): Add an accumulation_strategy keyword after source-level
+    # strategy hints have defined precedence and legality diagnostics.
     def reserve(ast_self: "DataflowBuffer") -> "TensorBlock":
         """
         Reserve space in the dataflow buffer (producer acquire).
@@ -138,20 +140,21 @@ class DataflowBuffer:
 CircularBuffer = DataflowBuffer
 
 
-@dataclass
-class CompilerAllocatedDFBConfig:
-    """Configuration for a compiler-allocated dataflow buffer.
+@dataclass(frozen=True)
+class PhysicalDFBConfig:
+    """Runtime configuration for one physical dataflow buffer allocation.
 
-    Created by the Python runtime after reading the ttl.compiler_allocated_dfbs
-    module attribute produced by the ttl-finalize-dfb-indices pass. Carries
-    the same information as a user-declared DataflowBuffer but without a
-    backing tensor -- the data format comes directly from the MLIR attribute.
+    The final DFB index assignment determines this configuration. It is
+    independent of whether the allocation serves user-declared,
+    compiler-created, or multiple non-overlapping logical DFBs.
     """
 
     dfb_index: int
     num_tiles: int
-    data_format: str  # e.g., "bf16", "f32", "f16"
+    data_format: str  # e.g., "bfloat16", "float32", "float16"
     block_count: int
+    page_size: int
+    tile: Tuple[int, int] = (32, 32)
 
 
 def make_dataflow_buffer_like(

@@ -98,7 +98,7 @@ set_target_properties(check-ttlang-packaging PROPERTIES FOLDER "Tests")
 
 # Tests that never require a TT device.
 add_custom_target(check-ttlang
-  DEPENDS check-ttlang-mlir check-ttlang-python-bindings check-ttlang-packaging
+  DEPENDS check-ttlang-mlir check-ttlang-python-bindings
   COMMENT "Running ttlang tests that never require a TT device"
 )
 
@@ -162,6 +162,8 @@ add_custom_target(check-ttlang-all
   COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-me2e
   COMMAND ${CMAKE_COMMAND} -E echo "=== Running check-ttlang-python-lit ==="
   COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-python-lit
+  COMMAND ${CMAKE_COMMAND} -E echo "=== Running check-ttlang-packaging ==="
+  COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target check-ttlang-packaging
   COMMAND ${CMAKE_COMMAND} -E echo "=== All ttlang tests completed ==="
   USES_TERMINAL
   COMMENT "Running all ttlang tests sequentially"

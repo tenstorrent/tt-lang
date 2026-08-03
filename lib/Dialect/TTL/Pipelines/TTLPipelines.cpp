@@ -12,15 +12,36 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
 
+#include <utility>
+
 using namespace mlir;
 
 namespace mlir::tt::ttl {
 
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
+  pm.addNestedPass<func::FuncOp>(createTTLFormAccumulationScopes());
+  {
+    TTLLowerAccumulationScopesOptions lowerOpts;
+    lowerOpts.strategy = options.accumulationStrategy;
+    pm.addNestedPass<func::FuncOp>(
+        createTTLLowerAccumulationScopes(std::move(lowerOpts)));
+  }
   pm.addNestedPass<func::FuncOp>(createTTLMaterializeLoopState());
   pm.addNestedPass<func::FuncOp>(createTTLInsertCopyWait());
-  pm.addNestedPass<func::FuncOp>(createTTLAnnotateL1AccLoops());
+  buildTTLAutoSyncPipeline(pm.nest<func::FuncOp>());
+  {
+    TTLInsertAccumulationScopesOptions insertOpts;
+    insertOpts.kind = "dfb";
+    pm.addNestedPass<func::FuncOp>(
+        createTTLInsertAccumulationScopes(std::move(insertOpts)));
+  }
+  {
+    TTLLowerAccumulationScopesOptions lowerOpts;
+    lowerOpts.kind = "dfb";
+    pm.addNestedPass<func::FuncOp>(
+        createTTLLowerAccumulationScopes(std::move(lowerOpts)));
+  }
   pm.addNestedPass<func::FuncOp>(createTTLProducerComputeCreation());
   {
     TTLInsertIntermediateDFBsOptions dfbOpts;
@@ -33,7 +54,11 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   // still distinct and before later transformations rewrite pipe operations.
   buildTTLVerifyPipeNetPipeline(pm);
   pm.addNestedPass<func::FuncOp>(createTTLCoalesceDFBAcquires());
-  pm.addPass(createTTLFinalizeDFBIndices());
+  {
+    TTLFinalizeDFBIndicesOptions finalizeOptions;
+    finalizeOptions.reuseUserDFBs = options.reuseUserDFBs;
+    pm.addPass(createTTLFinalizeDFBIndices(finalizeOptions));
+  }
   {
     TTLSetComputeKernelConfigOptions configOpts;
     configOpts.reduceFullFp32 = options.reduceFullFp32;
@@ -84,6 +109,15 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     pm.addPass(createCanonicalizerPass());
     pm.addPass(mlir::emitc::createFormExpressionsPass());
   }
+}
+
+void buildTTLTensorRecurrencePipeline(OpPassManager &pm) {
+  // Accumulation lowering must run before loop-state materialization removes
+  // tensor iter_args. Materialized DFB state is the fallback for recurrences
+  // that are not DST-resident.
+  pm.addPass(createTTLFormAccumulationScopes());
+  pm.addPass(createTTLLowerAccumulationScopes());
+  pm.addPass(createTTLMaterializeLoopState());
 }
 
 void buildTTLVerifyPipeNetPipeline(OpPassManager &pm) {

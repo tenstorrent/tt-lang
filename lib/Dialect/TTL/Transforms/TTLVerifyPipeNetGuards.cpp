@@ -10,6 +10,7 @@
 // cycles.
 //===----------------------------------------------------------------------===//
 
+#include "DFBLogicalIdentityAnalysis.h"
 #include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Analysis/DataFlowFramework.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -61,7 +62,7 @@ constexpr std::size_t kMaxPipeScheduleNodesPerLaunchNode = 4096;
 struct WaitUse {
   CBWaitOp op;
   LaunchNodeDomain domain;
-  int64_t cbIndex;
+  int64_t dfbId;
 };
 
 /// Pipe synchronization event used by the wait-for graph verifier.
@@ -104,10 +105,17 @@ struct ModuleState {
               const LaunchNodeDomainState &launchDomains)
       : transfers(transfers), launchDomains(launchDomains) {}
 
+  ModuleState(const PipeTransferIndex &transfers,
+              const LaunchNodeDomainState &launchDomains,
+              const DFBLogicalIdentityAnalysis &dfbIdentities)
+      : transfers(transfers), launchDomains(launchDomains),
+        dfbIdentities(&dfbIdentities) {}
+
   const PipeTransferIndex &transfers;
   const LaunchNodeDomainState &launchDomains;
+  const DFBLogicalIdentityAnalysis *dfbIdentities = nullptr;
   bool sawError = false;
-  llvm::DenseMap<int64_t, LaunchNodeDomain> cbProducerDomains;
+  llvm::DenseMap<int64_t, LaunchNodeDomain> dfbProducerDomains;
   SmallVector<WaitUse> waitUses;
   SmallVector<PipeEvent> pipeEvents;
   llvm::DenseMap<Operation *, std::size_t> pipeEventIndices;
@@ -439,15 +447,31 @@ void recordGuardOperation(Operation *op, const LaunchNodeDomain &domain,
         verifyPipeWaitGuard(wait, domain, unanalyzableOp, state);
       })
       .Case<CBPushOp>([&](CBPushOp push) {
-        if (auto cbIndex = getCBIndex(push.getCb())) {
-          state.cbProducerDomains[*cbIndex] =
-              state.cbProducerDomains[*cbIndex].unionWith(domain);
+        Value dfb = traceUnrealizedCasts(push.getCb());
+        auto declaration = dfb.getDefiningOp<BindCBOp>();
+        if (!declaration) {
+          push.emitOpError()
+              << "requires a DFB operand defined by `ttl.bind_cb`";
+          state.sawError = true;
+          return;
         }
+        assert(state.dfbIdentities && "guard verification requires DFB IDs");
+        int64_t dfbId = state.dfbIdentities->getLogicalId(declaration);
+        state.dfbProducerDomains[dfbId] =
+            state.dfbProducerDomains[dfbId].unionWith(domain);
       })
       .Case<CBWaitOp>([&](CBWaitOp wait) {
-        if (auto cbIndex = getCBIndex(wait.getCb())) {
-          state.waitUses.push_back({wait, domain, *cbIndex});
+        Value dfb = traceUnrealizedCasts(wait.getCb());
+        auto declaration = dfb.getDefiningOp<BindCBOp>();
+        if (!declaration) {
+          wait.emitOpError()
+              << "requires a DFB operand defined by `ttl.bind_cb`";
+          state.sawError = true;
+          return;
         }
+        assert(state.dfbIdentities && "guard verification requires DFB IDs");
+        state.waitUses.push_back(
+            {wait, domain, state.dfbIdentities->getLogicalId(declaration)});
       });
 }
 
@@ -468,8 +492,8 @@ void recordScheduleOperation(Operation *op, const LaunchNodeDomain &domain,
 // covered by any producer (deadlock-prone IR).
 void verifyCBWaits(ModuleState &state) {
   for (WaitUse &use : state.waitUses) {
-    auto it = state.cbProducerDomains.find(use.cbIndex);
-    if (it == state.cbProducerDomains.end()) {
+    auto it = state.dfbProducerDomains.find(use.dfbId);
+    if (it == state.dfbProducerDomains.end()) {
       use.op.emitOpError()
           << "this `cb_wait` reads from a dataflow buffer that no other "
              "thread fills; check that another `@ttl.compute()` or "
@@ -1835,6 +1859,15 @@ struct TTLVerifyPipeNetGuardsPass
       signalPassFailure();
       return;
     }
+    DFBLogicalIdentityAnalysis &dfbIdentities =
+        getAnalysis<DFBLogicalIdentityAnalysis>();
+    if (!dfbIdentities.succeeded()) {
+      dfbIdentities.getErrorOperation()->emitError()
+          << "`" << getArgument() << "` requires valid logical DFB identities: "
+          << dfbIdentities.getErrorMessage();
+      signalPassFailure();
+      return;
+    }
 
     ValueOriginAnalysis &valueOrigins = getAnalysis<ValueOriginAnalysis>();
     FailureOr<std::unique_ptr<PipeTransferIndex>> maybeTransfers =
@@ -1843,7 +1876,7 @@ struct TTLVerifyPipeNetGuardsPass
       signalPassFailure();
       return;
     }
-    ModuleState state(**maybeTransfers, launchDomains);
+    ModuleState state(**maybeTransfers, launchDomains, dfbIdentities);
 
     module.walk([&](Operation *op) {
       if (const PipeNetOperationDomainInfo *info =

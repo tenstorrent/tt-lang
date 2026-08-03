@@ -19,6 +19,10 @@ import os
 import sys
 from typing import Optional, Sequence
 
+# TODO(#649): Add dfb-state after explicit DFB fallback becomes a selectable
+# accumulation strategy.
+_ACCUMULATION_STRATEGIES = frozenset({"auto", "dst", "l1-pack"})
+
 
 def _make_parser() -> argparse.ArgumentParser:
     """Build the compiler options parser.
@@ -27,12 +31,23 @@ def _make_parser() -> argparse.ArgumentParser:
     "explicitly set to the dataclass default".
     """
     p = argparse.ArgumentParser(add_help=False)
+    # TODO(#649): Replace maximize-dst with granular options for accumulation
+    # strategy, compute subblocking, and tile-op scheduling.
     p.add_argument(
         "--ttl-maximize-dst",
         default=None,
         dest="maximize_dst",
         action=argparse.BooleanOptionalAction,
         help="Enable DST maximization via subblock compute and scheduling (default: enabled).",
+    )
+    p.add_argument(
+        "--ttl-accumulation-strategy",
+        default=None,
+        dest="accumulation_strategy",
+        help=(
+            "Select tensor recurrence accumulation storage strategy: auto, "
+            "dst, or l1-pack (default: auto)."
+        ),
     )
     p.add_argument(
         "--ttl-fpu-binary-ops",
@@ -91,6 +106,13 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Insert compiler-allocated intermediate DFBs for fused computations (default: enabled).",
     )
     p.add_argument(
+        "--ttl-reuse-user-dfbs",
+        default=None,
+        dest="reuse_user_dfbs",
+        action=argparse.BooleanOptionalAction,
+        help="Reuse physical DFB indices for proven non-overlapping logical lifetimes (default: enabled).",
+    )
+    p.add_argument(
         "--ttl-specialize-cores",
         default=None,
         dest="specialize_cores",
@@ -125,7 +147,14 @@ def _parse_explicit(tokens: Sequence[str], *, reject_unknown: bool = False) -> d
             raise ValueError(f"Unknown kernel option(s): {unknown}")
     else:
         ns, _ = _PARSER.parse_known_args(tokens)
-    return {k: v for k, v in vars(ns).items() if v is not None}
+    explicit = {k: v for k, v in vars(ns).items() if v is not None}
+    strategy = explicit.get("accumulation_strategy")
+    if strategy is not None and strategy not in _ACCUMULATION_STRATEGIES:
+        raise ValueError(
+            "Invalid accumulation strategy "
+            f"{strategy!r}; expected one of {sorted(_ACCUMULATION_STRATEGIES)}"
+        )
+    return explicit
 
 
 @dataclasses.dataclass(frozen=True)
@@ -146,6 +175,7 @@ class CompilerOptions:
     """
 
     maximize_dst: bool = True
+    accumulation_strategy: str = "auto"
     enable_fpu_binary_ops: bool = True
     use_block_matmul: bool = True
     subblock_sync: bool = False
@@ -154,6 +184,7 @@ class CompilerOptions:
     matmul_full_fp32: bool = True
     strict_f32_acc: bool = False
     compiler_dfbs: bool = True
+    reuse_user_dfbs: bool = True
     specialize_cores: bool = False
     l1_budget: int = dataclasses.field(default=0, compare=False, hash=False)
 
@@ -163,6 +194,15 @@ class CompilerOptions:
     _explicit: frozenset = dataclasses.field(
         default=frozenset(), compare=False, hash=False, repr=False
     )
+
+    def __post_init__(self):
+        """Validate options that can be constructed without argparse."""
+        if self.accumulation_strategy not in _ACCUMULATION_STRATEGIES:
+            raise ValueError(
+                "Invalid accumulation strategy "
+                f"{self.accumulation_strategy!r}; expected one of "
+                f"{sorted(_ACCUMULATION_STRATEGIES)}"
+            )
 
     @staticmethod
     def from_string(options: Optional[str] = None) -> CompilerOptions:
