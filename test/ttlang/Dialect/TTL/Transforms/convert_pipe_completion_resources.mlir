@@ -337,15 +337,32 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 // CHECK-SAME: ttl.pipe_sync_semaphore_count = 16 : i64
 // CHECK-LABEL: func.func @completion_overflow_uses_global_counter
 // CHECK-DAG: %[[GLOBAL_COMPLETION_INDEX:.*]] = arith.constant 1 : index
+// CHECK-DAG: %[[READY0_INDEX:.*]] = arith.constant 2 : index
+// CHECK-DAG: %[[READY1_INDEX:.*]] = arith.constant 3 : index
+// CHECK: %[[READY0_POST:.*]] = ttkernel.get_common_arg_val(%[[READY0_INDEX]])
+// CHECK: %[[READY0_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[READY0_POST]], {{.*}})
+// CHECK: ttkernel.noc_semaphore_inc(%[[READY0_NOC]]
+// CHECK: %[[READY0_SEND:.*]] = ttkernel.get_common_arg_val(%[[READY0_INDEX]])
+// CHECK: %[[READY0_PTR:.*]] = ttkernel.reinterpret_cast(%[[READY0_SEND]])
+// CHECK: ttkernel.experimental.semaphore_wait(%[[READY0_PTR]]
+// CHECK: ttkernel.noc_semaphore_set(%[[READY0_PTR]]
+// CHECK: %[[READY1_POST:.*]] = ttkernel.get_common_arg_val(%[[READY1_INDEX]])
+// CHECK: %[[READY1_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[READY1_POST]], {{.*}})
+// CHECK: ttkernel.noc_semaphore_inc(%[[READY1_NOC]]
 // CHECK: %[[GLOBAL_COMPLETION_WAIT:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_COMPLETION_INDEX]])
 // CHECK: %[[GLOBAL_COMPLETION_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[GLOBAL_COMPLETION_WAIT]])
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[GLOBAL_COMPLETION_PTR]]
 // CHECK: ttkernel.cb_pop_front
+// CHECK: %[[READY1_SEND:.*]] = ttkernel.get_common_arg_val(%[[READY1_INDEX]])
+// CHECK: %[[READY1_PTR:.*]] = ttkernel.reinterpret_cast(%[[READY1_SEND]])
+// CHECK: ttkernel.experimental.semaphore_wait(%[[READY1_PTR]]
+// CHECK: ttkernel.noc_semaphore_set(%[[READY1_PTR]]
 // CHECK: ttkernel.noc_async_write
 // CHECK: ttkernel.noc_async_write_barrier
 // CHECK: %[[GLOBAL_COMPLETION_SEND:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_COMPLETION_INDEX]])
 // CHECK: %[[GLOBAL_COMPLETION_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[GLOBAL_COMPLETION_SEND]], {{.*}})
 // CHECK: ttkernel.noc_semaphore_inc(%[[GLOBAL_COMPLETION_NOC]]
+// CHECK: return
 module attributes {ttl.launch_grid = array<i64: 17, 1>} {
   func.func @completion_overflow_uses_global_counter()
       attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
