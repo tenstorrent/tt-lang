@@ -118,6 +118,18 @@ static LaunchNodeCoord getLaunchNodeCoord(PipeReceiverCoord receiver) {
   return {receiver.x, receiver.y};
 }
 
+static FailureOr<LaunchExecutionLocation>
+getPipeGraphExecutionLocation(Operation *op, LaunchNodeCoord node,
+                              DeviceTransferAttr transfer, PipeRole role) {
+  FailureOr<LaunchExecutionLocation> maybeLocation =
+      getPipeExecutionLocation(node, transfer, role);
+  if (failed(maybeLocation)) {
+    op->emitError(
+        "device-range fabric transfers require scatter target lowering");
+  }
+  return maybeLocation;
+}
+
 static DeviceRefAttr getReceiverDevice(PipeTransferCreateOp transferCreate) {
   DeviceTransferAttr transfer = transferCreate.getDeviceTransferAttr();
   return transfer ? transfer.getEdge().getDestination() : DeviceRefAttr();
@@ -700,10 +712,17 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
         endpointAssignment.valid = false;
         return;
       }
+      FailureOr<LaunchExecutionLocation> maybeLocation =
+          getPipeGraphExecutionLocation(
+              postOp.getOperation(), getLaunchNodeCoord(receiver),
+              transferNode->deviceTransfer, PipeRole::Destination);
+      if (failed(maybeLocation)) {
+        result = failure();
+        return;
+      }
       std::optional<std::uint64_t> maybeExecutionCount =
-          getExactExecutionCountAtLaunchNode(postOp.getOperation(),
-                                             getLaunchNodeCoord(receiver),
-                                             analysisState);
+          getExactExecutionCountAtLaunchLocation(postOp.getOperation(),
+                                                 *maybeLocation, analysisState);
       if (endpointAssignment.initialSlot) {
         endpointAssignment.valid = false;
         return;
@@ -1160,18 +1179,22 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
   // Correspondence analysis matches them into individual transfers.
   struct PipeTransferCandidates {
     PipeType pipeType;
+    DeviceTransferAttr deviceTransfer;
     SmallVector<PipeTransferSendOp> sends;
     llvm::DenseMap<PipeReceiverCoord, SmallVector<PipeTransferPostOp>>
         postsByReceiver;
   };
 
-  llvm::MapVector<PipeKey, PipeTransferCandidates> candidatesByPipe;
+  using PipeTransferIdentity = std::pair<PipeKey, DeviceTransferAttr>;
+  llvm::MapVector<PipeTransferIdentity, PipeTransferCandidates>
+      candidatesByPipe;
   for (Operation *op : analysisState.transferProtocolOps) {
     if (auto sendOp = dyn_cast<PipeTransferSendOp>(op)) {
       PipeTransferCreateOp createOp =
           transferIndex.getTransferCreate(sendOp.getOperation());
       auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
       PipeKey pipeKey = getPipeKey(pipeType);
+      DeviceTransferAttr deviceTransfer = createOp.getDeviceTransferAttr();
       LaunchNodeDomain sendDomain =
           lookupOperationLaunchDomain(sendOp.getOperation(), analysisState);
       if (!sendDomain.known && analysisState.hasLaunchGrid) {
@@ -1183,16 +1206,24 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
                                   sendDomain, {pipeKey.srcX, pipeKey.srcY})) {
         continue;
       }
+      FailureOr<LaunchExecutionLocation> maybeLocation =
+          getPipeGraphExecutionLocation(sendOp.getOperation(),
+                                        {pipeKey.srcX, pipeKey.srcY},
+                                        deviceTransfer, PipeRole::Source);
+      if (failed(maybeLocation)) {
+        return failure();
+      }
       std::optional<std::uint64_t> maybeExecutionCount =
-          getExactExecutionCountAtLaunchNode(sendOp.getOperation(),
-                                             {pipeKey.srcX, pipeKey.srcY},
-                                             analysisState);
+          getExactExecutionCountAtLaunchLocation(sendOp.getOperation(),
+                                                 *maybeLocation, analysisState);
       if (maybeExecutionCount && *maybeExecutionCount == 0) {
         continue;
       }
-      PipeTransferCandidates &candidates = candidatesByPipe[pipeKey];
+      PipeTransferCandidates &candidates =
+          candidatesByPipe[{pipeKey, deviceTransfer}];
       if (!candidates.pipeType) {
         candidates.pipeType = pipeType;
+        candidates.deviceTransfer = deviceTransfer;
       }
       candidates.sends.push_back(sendOp);
       continue;
@@ -1206,6 +1237,7 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
         transferIndex.getTransferCreate(postOp.getOperation());
     auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
     PipeKey pipeKey = getPipeKey(pipeType);
+    DeviceTransferAttr deviceTransfer = createOp.getDeviceTransferAttr();
     LaunchNodeDomain postDomain =
         lookupOperationLaunchDomain(postOp.getOperation(), analysisState);
     if (!postDomain.known && analysisState.hasLaunchGrid) {
@@ -1214,25 +1246,41 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
       return failure();
     }
     SmallVector<PipeReceiverCoord> activeReceivers;
+    LogicalResult receiverResult = success();
     pipeKey.forEachReceiver([&](PipeReceiverCoord receiver) {
+      if (failed(receiverResult)) {
+        return;
+      }
       if (postDomain.known && !knownLaunchNodeDomainContains(
                                   postDomain, getLaunchNodeCoord(receiver))) {
         return;
       }
+      FailureOr<LaunchExecutionLocation> maybeLocation =
+          getPipeGraphExecutionLocation(postOp.getOperation(),
+                                        getLaunchNodeCoord(receiver),
+                                        deviceTransfer, PipeRole::Destination);
+      if (failed(maybeLocation)) {
+        receiverResult = failure();
+        return;
+      }
       std::optional<std::uint64_t> maybeExecutionCount =
-          getExactExecutionCountAtLaunchNode(postOp.getOperation(),
-                                             getLaunchNodeCoord(receiver),
-                                             analysisState);
+          getExactExecutionCountAtLaunchLocation(postOp.getOperation(),
+                                                 *maybeLocation, analysisState);
       if (!maybeExecutionCount || *maybeExecutionCount != 0) {
         activeReceivers.push_back(receiver);
       }
     });
+    if (failed(receiverResult)) {
+      return failure();
+    }
     if (activeReceivers.empty()) {
       continue;
     }
-    PipeTransferCandidates &candidates = candidatesByPipe[pipeKey];
+    PipeTransferCandidates &candidates =
+        candidatesByPipe[{pipeKey, deviceTransfer}];
     if (!candidates.pipeType) {
       candidates.pipeType = pipeType;
+      candidates.deviceTransfer = deviceTransfer;
     }
     for (PipeReceiverCoord receiver : activeReceivers) {
       candidates.postsByReceiver[receiver].push_back(postOp);
@@ -1241,10 +1289,28 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
 
   llvm::DenseMap<PipeReceiverDFBKey, PipeReceiverDFBNodeId> nodeIdByReceiverDFB;
   for (auto &candidateEntry : candidatesByPipe) {
-    PipeKey pipeKey = candidateEntry.first;
+    PipeKey pipeKey = candidateEntry.first.first;
     PipeTransferCandidates &candidates = candidateEntry.second;
     if (candidates.sends.empty()) {
       Operation *postOp = candidates.postsByReceiver.begin()->second.front();
+      std::optional<PipeTransferSendOp> sendWithDifferentDeviceTransfer;
+      for (auto &otherEntry : candidatesByPipe) {
+        if (otherEntry.first.first == pipeKey &&
+            otherEntry.first.second != candidates.deviceTransfer &&
+            !otherEntry.second.sends.empty()) {
+          sendWithDifferentDeviceTransfer = otherEntry.second.sends.front();
+          break;
+        }
+      }
+      if (sendWithDifferentDeviceTransfer) {
+        auto diagnostic = postOp->emitError(
+            "pipe receiver post has no corresponding send for its device "
+            "transfer");
+        diagnostic.attachNote(sendWithDifferentDeviceTransfer->getLoc())
+            << "this send has the same PipeKey but a different device "
+               "transfer";
+        return failure();
+      }
       postOp->emitError("pipe receiver post has no corresponding send");
       return failure();
     }
@@ -1278,10 +1344,21 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
            ++sendIndex) {
         PipeTransferSendOp sendOp = candidates.sends[sendIndex];
         PipeTransferPostOp postOp = postsIt->second[sendIndex];
-        if (!proveEqualExecutionCountAtLaunchNodes(
+        FailureOr<LaunchExecutionLocation> maybeSendLocation =
+            getPipeGraphExecutionLocation(
                 sendOp.getOperation(), {pipeKey.srcX, pipeKey.srcY},
+                candidates.deviceTransfer, PipeRole::Source);
+        FailureOr<LaunchExecutionLocation> maybePostLocation =
+            getPipeGraphExecutionLocation(
                 postOp.getOperation(), getLaunchNodeCoord(receiver),
-                analysisState)) {
+                candidates.deviceTransfer, PipeRole::Destination);
+        if (failed(maybeSendLocation) || failed(maybePostLocation)) {
+          correspondenceResult = failure();
+          return;
+        }
+        if (!proveEqualExecutionCountAtLaunchLocations(
+                sendOp.getOperation(), *maybeSendLocation,
+                postOp.getOperation(), *maybePostLocation, analysisState)) {
           auto diag = postOp.emitError()
                       << "cannot prove matching execution counts for this "
                          "receiver post and its pipe send";
@@ -1309,7 +1386,9 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
           transferIndex.getTransferCreate(sendOp.getOperation());
       PipeTransferContract transferContract =
           getPipeTransferContract(sendCreate);
-      DeviceTransferAttr deviceTransfer = sendCreate.getDeviceTransferAttr();
+      DeviceTransferAttr deviceTransfer = candidates.deviceTransfer;
+      assert(sendCreate.getDeviceTransferAttr() == deviceTransfer &&
+             "candidate group must retain the send device transfer");
       for (const auto &endpoint : endpointsBySend[sendIndex]) {
         PipeTransferPostOp postOp = endpoint.second;
         PipeTransferCreateOp postCreate =
@@ -1319,13 +1398,8 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
               "pipe send and receiver post use different transfer contracts");
           return failure();
         }
-        if (postCreate.getDeviceTransferAttr() != deviceTransfer) {
-          auto diagnostic = postOp.emitError(
-              "pipe send and receiver post use different device transfers");
-          diagnostic.attachNote(sendOp.getLoc())
-              << "corresponding pipe send is here";
-          return failure();
-        }
+        assert(postCreate.getDeviceTransferAttr() == deviceTransfer &&
+               "candidate group must retain the post device transfer");
       }
 
       PipeTransferNodeId transferNodeId = pipeTransferNodes.size();
