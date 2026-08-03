@@ -670,6 +670,19 @@ def validate_cb_descriptors_override(
         peak_core, peak_bytes = max(
             bytes_by_core.items(), key=lambda item: (item[1], item[0])
         )
+        if os.environ.get("TTLANG_DUMP_CB_LAYOUT"):
+            print(
+                "TTLANG_CB_LAYOUT "
+                f"budget={budget_bytes} peak={peak_bytes} core={peak_core}"
+            )
+            for core, total in sorted(
+                bytes_by_core.items(), key=lambda item: item[1], reverse=True
+            )[:12]:
+                breakdown = ",".join(
+                    f"{cb_id}:{size}"
+                    for cb_id, size in sorted(claim_sizes_by_core[core])
+                )
+                print(f"TTLANG_CB_CORE core={core} bytes={total} {breakdown}")
         if peak_bytes > budget_bytes:
             breakdown = ", ".join(
                 f"CB[{cb_id}]={size}"
