@@ -138,6 +138,13 @@ class ProgramRuntimeResources:
     # model remains conservative.  ``run_kernel_on_device`` validates the
     # replacement before it can bypass the default descriptor builder.
     cb_descriptors_override: Optional[List[Any]] = None
+    # Optional capacity-only specialization for selected CB ids.  Each value
+    # is ``[(CoreRangeSet, num_pages), ...]`` and must partition the program
+    # grid.  Formats still come from the compiler-derived ``cb_configs``;
+    # unlisted ids retain their normal whole-grid descriptors.
+    cb_pages_by_core: Dict[int, List[Tuple[Any, int]]] = field(
+        default_factory=dict
+    )
 
 
 def build_tensor_accessor_args(tensors: List[Any]) -> List[int]:
@@ -672,6 +679,129 @@ def validate_cb_descriptors_override(
     return descriptors
 
 
+def _cb_descriptor(index: int, geometry: CBGeometry, total_size: int, core_ranges):
+    cb_format = ttnn.CBFormatDescriptor(
+        buffer_index=index,
+        data_format=geometry.data_format,
+        page_size=geometry.page_size,
+        **(
+            {"tile": geometry.tile_descriptor}
+            if geometry.tile_descriptor is not None
+            else {}
+        ),
+    )
+    return ttnn.CBDescriptor(
+        total_size=total_size,
+        core_ranges=core_ranges,
+        format_descriptors=[cb_format],
+    )
+
+
+def build_cb_descriptors_by_core(
+    tensors: List[Any],
+    cb_configs: List[Any],
+    core_ranges: Any,
+    pages_by_core: Dict[int, List[Tuple[Any, int]]],
+) -> List[Any]:
+    """Build a full descriptor table with selected per-core capacities."""
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+
+    geometries = [cb_geometry(i, cb) for i, cb in enumerate(cb_configs)]
+    program_cores = _core_range_coordinates(
+        core_ranges, label="program core ranges"
+    )
+    specialized = {}
+    for raw_index, entries in dict(pages_by_core).items():
+        try:
+            index = int(raw_index)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid per-core CB id {raw_index!r}") from exc
+        if index < 0 or index >= len(geometries):
+            raise ValueError(
+                f"per-core CB id {index} is outside [0, {len(geometries)})"
+            )
+        if index in specialized:
+            raise ValueError(f"duplicate per-core CB id {index}")
+        try:
+            entries = list(entries)
+        except TypeError as exc:
+            raise ValueError(
+                f"per-core CB[{index}] configuration must be iterable"
+            ) from exc
+        if not entries:
+            raise ValueError(f"per-core CB[{index}] configuration is empty")
+
+        covered = set()
+        descriptors = []
+        for entry_index, entry in enumerate(entries):
+            try:
+                entry_ranges, raw_pages = entry
+                pages = int(raw_pages)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"per-core CB[{index}] entry {entry_index} must be "
+                    "(CoreRangeSet, positive pages)"
+                ) from exc
+            if pages <= 0:
+                raise ValueError(
+                    f"per-core CB[{index}] entry {entry_index} has "
+                    f"non-positive page count {pages}"
+                )
+            entry_cores = _core_range_coordinates(
+                entry_ranges,
+                label=f"per-core CB[{index}] entry {entry_index}",
+            )
+            outside = entry_cores - program_cores
+            overlap = entry_cores & covered
+            if outside:
+                raise ValueError(
+                    f"per-core CB[{index}] claims cores outside the program "
+                    f"grid: {sorted(outside)}"
+                )
+            if overlap:
+                raise ValueError(
+                    f"per-core CB[{index}] entries overlap on "
+                    f"{sorted(overlap)}"
+                )
+            covered.update(entry_cores)
+            geometry = geometries[index]
+            descriptors.append(
+                _cb_descriptor(
+                    index,
+                    geometry,
+                    pages * geometry.page_size,
+                    entry_ranges,
+                )
+            )
+        if covered != program_cores:
+            raise ValueError(
+                f"per-core CB[{index}] must cover the whole program grid; "
+                f"missing {sorted(program_cores - covered)}"
+            )
+        specialized[index] = descriptors
+
+    # Allocate uniform whole-grid descriptors first.  A specialized capacity
+    # may move the addresses of descriptors allocated after it differently on
+    # different cores; keeping all defaults first preserves uniform bases for
+    # any remote-CB protocols among them.  Callers may specialize only CBs
+    # whose kernels use local CB pointers (or otherwise tolerate this).
+    descriptors = [
+        _cb_descriptor(index, geometry, geometry.total_size, core_ranges)
+        for index, geometry in enumerate(geometries)
+        if index not in specialized
+    ]
+    for index in sorted(specialized):
+        descriptors.extend(specialized[index])
+    return validate_cb_descriptors_override(
+        descriptors=descriptors,
+        program_core_ranges=core_ranges,
+        tensors=tensors,
+        num_cbs=len(cb_configs),
+    )
+
+
 def build_cb_descriptors(
     tensors: List[Any],
     cb_configs: List[Any],
@@ -713,26 +843,10 @@ def build_cb_descriptors(
             + "\n  hint: reduce DFB shapes or block_count."
         )
 
-    cb_descriptors = []
-    for i, geometry in enumerate(geometries):
-        cb_format = ttnn.CBFormatDescriptor(
-            buffer_index=i,
-            data_format=geometry.data_format,
-            page_size=geometry.page_size,
-            **(
-                {"tile": geometry.tile_descriptor}
-                if geometry.tile_descriptor is not None
-                else {}
-            ),
-        )
-        cb_desc = ttnn.CBDescriptor(
-            total_size=geometry.total_size,
-            core_ranges=core_ranges,
-            format_descriptors=[cb_format],
-        )
-        cb_descriptors.append(cb_desc)
-
-    return cb_descriptors
+    return [
+        _cb_descriptor(i, geometry, geometry.total_size, core_ranges)
+        for i, geometry in enumerate(geometries)
+    ]
 
 
 def build_generic_op_io_tensors(
@@ -846,18 +960,33 @@ def run_kernel_on_device(
     # Build CB descriptors, unless this operation supplied an exact per-core
     # replacement.  Keep the bypass here (after resource construction) so all
     # other operations retain the compiler-derived whole-grid behavior.
-    if program_resources.cb_descriptors_override is None:
-        cb_descriptors = build_cb_descriptors(
-            tensors=tensors,
-            cb_configs=cb_configs,
-            core_ranges=core_ranges,
+    if (
+        program_resources.cb_descriptors_override is not None
+        and program_resources.cb_pages_by_core
+    ):
+        raise ValueError(
+            "ProgramRuntimeResources cannot set both cb_descriptors_override "
+            "and cb_pages_by_core"
         )
-    else:
+    if program_resources.cb_descriptors_override is not None:
         cb_descriptors = validate_cb_descriptors_override(
             descriptors=program_resources.cb_descriptors_override,
             program_core_ranges=core_ranges,
             tensors=tensors,
             num_cbs=len(cb_configs),
+        )
+    elif program_resources.cb_pages_by_core:
+        cb_descriptors = build_cb_descriptors_by_core(
+            tensors=tensors,
+            cb_configs=cb_configs,
+            core_ranges=core_ranges,
+            pages_by_core=program_resources.cb_pages_by_core,
+        )
+    else:
+        cb_descriptors = build_cb_descriptors(
+            tensors=tensors,
+            cb_configs=cb_configs,
+            core_ranges=core_ranges,
         )
 
     semaphore_descriptors = build_pipe_sync_semaphore_descriptors(
@@ -1235,6 +1364,7 @@ __all__ = [
     "build_tensor_accessor_args",
     "build_kernel_descriptors",
     "build_cb_descriptors",
+    "build_cb_descriptors_by_core",
     "validate_cb_descriptors_override",
     "cb_geometry",
     "build_pipe_sram_scratch_tensors",

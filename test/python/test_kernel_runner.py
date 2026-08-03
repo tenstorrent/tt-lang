@@ -101,6 +101,19 @@ class _FakeTTNN:
             self.semaphores = semaphores
             self.custom_program_hash = None
 
+    class CBFormatDescriptor:
+        def __init__(self, buffer_index, data_format, page_size, tile=None):
+            self.buffer_index = buffer_index
+            self.data_format = data_format
+            self.page_size = page_size
+            self.tile = tile
+
+    class CBDescriptor:
+        def __init__(self, total_size, core_ranges, format_descriptors):
+            self.total_size = total_size
+            self.core_ranges = core_ranges
+            self.format_descriptors = format_descriptors
+
     class ReaderConfigDescriptor:
         pass
 
@@ -581,6 +594,94 @@ def test_cb_descriptor_override_rejects_per_core_budget_overflow(monkeypatch):
             program_core_ranges=core,
             tensors=[_FakeTensorWithoutDevice()],
             num_cbs=2,
+        )
+
+
+def test_cb_pages_by_core_specializes_selected_ids(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", 160)
+    program = _FakeExplicitCoreRanges(((0, 0), (1, 0)))
+    core_0 = _FakeExplicitCoreRanges(((0, 0), (0, 0)))
+    core_1 = _FakeExplicitCoreRanges(((1, 0), (1, 0)))
+    geometries = {
+        0: SimpleNamespace(
+            data_format="bf16",
+            page_size=32,
+            num_pages=4,
+            total_size=128,
+            tile_descriptor=SimpleNamespace(height=1, width=32),
+        ),
+        1: SimpleNamespace(
+            data_format="bf16",
+            page_size=32,
+            num_pages=1,
+            total_size=32,
+            tile_descriptor=SimpleNamespace(height=1, width=32),
+        ),
+    }
+    monkeypatch.setattr(
+        kernel_runner, "cb_geometry", lambda index, _cb: geometries[index]
+    )
+
+    descriptors = kernel_runner.build_cb_descriptors_by_core(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=[object(), object()],
+        core_ranges=program,
+        pages_by_core={0: [(core_0, 1), (core_1, 4)]},
+    )
+
+    # Uniform descriptors stay first so their base addresses remain identical
+    # across cores; specialized descriptors follow.
+    assert [descriptor.total_size for descriptor in descriptors] == [32, 32, 128]
+    assert [
+        descriptor.format_descriptors[0].buffer_index
+        for descriptor in descriptors
+    ] == [1, 0, 0]
+
+
+def test_cb_pages_by_core_requires_exact_grid_partition(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    program = _FakeExplicitCoreRanges(((0, 0), (1, 0)))
+    core_0 = _FakeExplicitCoreRanges(((0, 0), (0, 0)))
+    geometry = SimpleNamespace(
+        data_format="bf16",
+        page_size=32,
+        num_pages=1,
+        total_size=32,
+        tile_descriptor=SimpleNamespace(height=1, width=32),
+    )
+    monkeypatch.setattr(kernel_runner, "cb_geometry", lambda _index, _cb: geometry)
+
+    with pytest.raises(ValueError, match="must cover the whole program grid"):
+        kernel_runner.build_cb_descriptors_by_core(
+            tensors=[_FakeTensorWithoutDevice()],
+            cb_configs=[object()],
+            core_ranges=program,
+            pages_by_core={0: [(core_0, 1)]},
+        )
+
+
+def test_run_kernel_rejects_both_cb_override_forms(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    tensor = _FakeTensorWithoutDevice()
+    core = _FakeExplicitCoreRanges(((0, 0), (0, 0)))
+    descriptor = _fake_cb_descriptor(0, core, total_size=32)
+
+    def factory(**_kwargs):
+        return kernel_runner.ProgramRuntimeResources(
+            cb_descriptors_override=[descriptor],
+            cb_pages_by_core={0: [(core, 1)]},
+        )
+
+    with pytest.raises(ValueError, match="cannot set both"):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[tensor],
+            cb_configs=[object()],
+            core_ranges=core,
+            runtime_resource_factory=factory,
         )
 
 
