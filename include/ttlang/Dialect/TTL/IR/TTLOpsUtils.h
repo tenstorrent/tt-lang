@@ -47,6 +47,33 @@ inline mlir::func::FuncOp getEnclosingKernelThread(mlir::Operation *op) {
   return nullptr;
 }
 
+/// Return the TTKernel thread type attached to `func`.
+///
+/// The helper accepts both the TTL attribute used before conversion and the
+/// TTKernel attribute used after conversion because analysis utilities may run
+/// on either side of the attr rewrite.
+inline std::optional<mlir::tt::ttkernel::ThreadType>
+getKernelThreadType(mlir::func::FuncOp func) {
+  if (!func) {
+    return std::nullopt;
+  }
+  if (auto attr = func->getAttrOfType<mlir::tt::ttkernel::ThreadTypeAttr>(
+          mlir::tt::ttkernel::ThreadTypeAttr::name)) {
+    return attr.getValue();
+  }
+  if (auto attr = func->getAttrOfType<mlir::tt::ttkernel::ThreadTypeAttr>(
+          kKernelThreadAttrName)) {
+    return attr.getValue();
+  }
+  return std::nullopt;
+}
+
+/// Return true if `op` belongs to a NOC kernel thread.
+inline bool isNocKernelThread(mlir::Operation *op) {
+  return getKernelThreadType(op->getParentOfType<mlir::func::FuncOp>()) ==
+         mlir::tt::ttkernel::ThreadType::Noc;
+}
+
 /// Trace through unrealized conversion casts to the original value
 /// (cycle-safe).
 inline mlir::Value traceUnrealizedCasts(mlir::Value value) {
@@ -195,6 +222,18 @@ inline mlir::Value getAttachedCB(mlir::Value tensor) {
   }
 
   return mlir::Value();
+}
+
+/// Returns true when `op` receives from a pipe into DFB-backed storage.
+inline bool isPipeReceiveCopy(CopyOp op) {
+  return mlir::isa<PipeType>(op.getSrc().getType()) &&
+         getAttachedCB(op.getDst());
+}
+
+/// Returns true when `op` sends from a DFB into a pipe.
+inline bool isPipeSendCopy(CopyOp op) {
+  return mlir::isa<CircularBufferType>(op.getSrc().getType()) &&
+         mlir::isa<PipeType>(op.getDst().getType());
 }
 
 /// Normalize a Python-style dim (allowing negative indices) against `rank`

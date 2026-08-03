@@ -96,6 +96,7 @@ if llvm_config is not None:
 # Add tt-lang tools used by lit tests.
 tools = [
     "ttlang-execution-count-test",
+    "ttlang-launch-node-domain-test",
     "ttlang-op-stats",
     "ttlang-value-origin-test",
     "ttlang-opt",

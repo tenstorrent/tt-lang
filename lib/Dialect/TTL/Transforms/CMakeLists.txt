@@ -2,24 +2,32 @@ add_mlir_dialect_library(TTLangTTLTransforms
   AccumulationAnalysis.cpp
   AccumulationUtils.cpp
   ComputeOpCreationPlanning.cpp
-  IntermediateDFBPlanning.cpp
-  DFBConcurrentKernelLivenessAnalysis.cpp
-  DFBLogicalIdentityAnalysis.cpp
-  DFBPhysicalAllocationPlan.cpp
   ConvertTTLComputeToSCF.cpp
   ConvertTTLTileOpsToTTKernel.cpp
   ConvertTTLToCompute.cpp
   ConvertTTLToTTKernel.cpp
   DFBAcquireReleaseAnalysis.cpp
+  DFBAllocation.cpp
+  DFBConcurrentKernelLivenessAnalysis.cpp
+  DFBLogicalIdentityAnalysis.cpp
   DFBValueLifetimeAnalysis.cpp
   DFBMaterialization.cpp
+  DFBPhysicalAllocationPlan.cpp
+  DstSubblockUtils.cpp
+  IntermediateDFBPlanning.cpp
   LowerDPrintToEmitC.cpp
   LaunchNodeDomainAnalysis.cpp
-
   LowerMatmulCompute.cpp
   LowerSignpostToEmitC.cpp
+  PipeCapacityAnalysis.cpp
+  PipeCounter.cpp
   PipeGraph.cpp
   PipeLowering.cpp
+  PipePlanning.cpp
+  PipeTransferAnalysis.cpp
+  PipeTransferExpansion.cpp
+  PipeTransportDFBAnalysis.cpp
+  PipeTransportPlan.cpp
   TTLAnnotateCBAssociations.cpp
   TTLAssignDST.cpp
   TTLCoalesceDFBAcquires.cpp
@@ -27,6 +35,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLErasePipeNetScopes.cpp
   TTLFinalizeDFBIndices.cpp
   TTLFormAccumulationScopes.cpp
+  TTLFormPipeTransports.cpp
   TTLInsertAccumulationScopes.cpp
   TTLInsertCBSync.cpp
   TTLInsertCopyWait.cpp
@@ -37,12 +46,11 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLPrintComputeOpCreationPlans.cpp
   TTLScheduleOperations.cpp
   TTLSetComputeKernelConfig.cpp
-  TransferProvenance.cpp
-  DstSubblockUtils.cpp
   TTLSubblockComputeForDST.cpp
   TTLValidateCBBudget.cpp
   TTLVerifyDFBSPSC.cpp
   TTLVerifyPipeNetGuards.cpp
+  TransferProvenance.cpp
 
   DEPENDS
   TTLangTTLTransformsIncGen
@@ -61,6 +69,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   MLIRPass
   MLIRTensorDialect
   MLIRTilingInterface
+  MLIRTransforms
   MLIRTTKernelDialect
   MLIRTTLDialect
   TTLangAnalysis

@@ -4,6 +4,22 @@
 // Each split module includes the finalization metadata required by the
 // verifier; its descriptor contents are irrelevant to guard analysis.
 
+// PipeNet predicates must reference a declaration even when the module has no
+// ttl.create_pipe operation.
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @undeclared_pipe_predicate()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{references unknown PipeNet net_7}}
+    %is_src = ttl.is_src {pipe_net_id = 7 : i64}
+    scf.if %is_src {
+    }
+    func.return
+  }
+}
+
+// -----
+
 // A DFB-to-pipe copy must execute only on the pipe source node.
 
 module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {

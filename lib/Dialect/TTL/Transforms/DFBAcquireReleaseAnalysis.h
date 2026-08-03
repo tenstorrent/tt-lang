@@ -29,6 +29,7 @@
 // DFB identity, and transfer counts.
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"
 #include "ttlang/Analysis/PlanningResult.h"
@@ -127,6 +128,24 @@ struct DFBReleaseOwnership {
 /// Definite malformed-lifecycle result found while indexing one kernel.
 using DFBLifecycleDiagnostic = PlanningDiagnostic;
 
+/// Release-to-acquire owner maps for both DFB pointer classes.
+struct DFBReleaseOwnerMaps {
+  /// Maps each `ttl.cb_push` to the `ttl.cb_reserve` that owns it.
+  llvm::DenseMap<Operation *, Operation *> reserveByPush;
+
+  /// Maps each `ttl.cb_pop` to the `ttl.cb_wait` that owns it.
+  llvm::DenseMap<Operation *, Operation *> waitByPop;
+};
+
+/// Resolve the recorded owner of `op` to `OpT`, or a null op when `op` has no
+/// owner or its owner is a different op type.
+template <typename OpT>
+OpT lookupOwner(const llvm::DenseMap<Operation *, Operation *> &owners,
+                Operation *op) {
+  auto it = owners.find(op);
+  return it == owners.end() ? OpT() : dyn_cast_or_null<OpT>(it->second);
+}
+
 /// Returns true for DFB acquire ops accepted by this analysis.
 bool isDFBAcquireOp(Operation *op);
 
@@ -138,6 +157,15 @@ Value getDFBAcquireDFB(Operation *op);
 
 /// Returns the DFB operand of a `ttl.cb_push` or `ttl.cb_pop`.
 Value getDFBReleaseDFB(Operation *op);
+
+/// Returns the number of DFB blocks acquired by `waitOp`.
+std::optional<int64_t> getWaitedBlockCount(CBWaitOp waitOp);
+
+/// Returns the number of DFB blocks released by `popOp`.
+std::optional<int64_t> getReleasedBlockCount(CBPopOp popOp);
+
+/// Returns the number of DFB blocks released by `pushOp`.
+std::optional<int64_t> getPushedBlockCount(CBPushOp pushOp);
 
 /// Collects DFB lifecycle operations from `func` in walk order.
 void collectDFBAcquireReleaseOps(func::FuncOp func,
@@ -219,6 +247,10 @@ private:
   llvm::DenseMap<Operation *, DFBTransactionRecord> transactions;
   llvm::DenseMap<Operation *, DFBReleaseOwnership> releaseOwnership;
 };
+
+/// Builds producer and consumer release-owner maps for every function in
+/// `mod`.
+void buildDFBReleaseOwnerMaps(ModuleOp mod, DFBReleaseOwnerMaps &ownerMaps);
 
 } // namespace mlir::tt::ttl
 
