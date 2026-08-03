@@ -161,10 +161,10 @@ if __name__ == "__main__":
 # CHECK-INITIAL-NOT: ttl.create_pipe
 
 # CHECK-CPP: ALL-TO-ALL-EDGE-COUNT: 992
+# CHECK-CPP: experimental::constant_table_lookup<
 # CHECK-CPP: {{noc[0-9]*\.async_write\(}}
 # CHECK-CPP: {{noc[0-9]*\.async_write_multicast}}
 # CHECK-CPP-COUNT-2: {{noc[0-9]*\.inline_dw_write}}
-# CHECK-CPP: experimental::constant_table_lookup<
 
 # CHECK-LOOPS-COUNT-5: for (
 # CHECK-LOOPS-NOT: for (
