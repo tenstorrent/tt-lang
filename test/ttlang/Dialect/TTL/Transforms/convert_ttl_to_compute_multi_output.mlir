@@ -250,3 +250,53 @@ module {
     return
   }
 }
+
+// -----
+
+// ---- Test 6: multi-output where one output DFB is re-consumed (#666) ----
+// The add result is stored to two output CBs (a multi-output compute), and one
+// of them (cb2) is immediately re-consumed by a following op (cb_wait + exp).
+// The compute is placed at the last store, so cb2's release/consumer ops
+// (cb_push, then the re-consume cb_wait) are sunk after the compute; cb_push
+// must still precede cb_wait. The inverted order (wait before push) for this
+// intra-thread DFB deadlocks the unpack/math/pack pipeline on device.
+
+// COMPUTE-LABEL: func.func @multi_output_reconsumed
+// COMPUTE:      %[[CB2:.*]] = ttl.bind_cb{cb_index = 2
+// COMPUTE:      ttl.compute
+// cb_push for the re-consumed output must come before its cb_wait.
+// COMPUTE:      ttl.cb_push %[[CB2]]
+// COMPUTE:      ttl.cb_wait %[[CB2]]
+
+// DST-LABEL: func.func @multi_output_reconsumed
+// DST: ttl.dst_section
+module {
+  func.func @multi_output_reconsumed() attributes {ttl.base_cta_index = 5 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %cb0 = ttl.bind_cb{cb_index = 0, block_count = 2} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %cb1 = ttl.bind_cb{cb_index = 1, block_count = 2} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %cb2 = ttl.bind_cb{cb_index = 2, block_count = 2} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %cb3 = ttl.bind_cb{cb_index = 3, block_count = 2} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %cb4 = ttl.bind_cb{cb_index = 4, block_count = 2} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %a = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %a_att = ttl.attach_cb %a, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %b = ttl.cb_wait %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %b_att = ttl.attach_cb %b, %cb1 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %r2 = ttl.cb_reserve %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %sum = ttl.add %a_att, %b_att : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %sum, %r2 : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %c = ttl.cb_wait %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %c_att = ttl.attach_cb %c, %cb2 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %r3 = ttl.cb_reserve %cb3 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %sum, %r3 : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %cb3 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %r4 = ttl.cb_reserve %cb4 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %e = ttl.exp %c_att : tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %e, %r4 : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %cb4 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.cb_pop %cb0 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.cb_pop %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.cb_pop %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    return
+  }
+}

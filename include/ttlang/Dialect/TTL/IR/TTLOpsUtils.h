@@ -226,6 +226,13 @@ std::optional<BcastType> getTileBroadcastType(ArrayRef<int64_t> dims,
 FailureOr<ttkernel::ReduceDim> getReduceDimension(ArrayRef<int64_t> dims,
                                                   int64_t rank);
 
+/// True when a block broadcast touches the last or second-to-last dimension,
+/// which lowers through TTKernel unary_bcast rather than inter-tile replication.
+inline bool blockBroadcastRequiresTileBcast(mlir::ArrayRef<int64_t> dims,
+                                            int64_t rank) {
+  return getTileBroadcastType(dims, rank).has_value();
+}
+
 /// True for arithmetic/math tile ops (add, mul, exp, ...); false for data
 /// movement and DST lifecycle ops.
 inline bool isTileComputeOp(mlir::Operation *op) {

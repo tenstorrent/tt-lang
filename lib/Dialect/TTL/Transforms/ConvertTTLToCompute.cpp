@@ -836,21 +836,11 @@ static std::optional<ttkernel::ReduceDim> getInputReduceDim(Value bcastInput) {
 /// Validate a single BlockBroadcastOp. Called from runOnOperation() before
 /// patterns run, so emitOpError is safe (not inside a pattern rewriter).
 static LogicalResult validateBlockBroadcastOp(BlockBroadcastOp op,
-                                              TTLToComputeMode mode) {
+                                              TTLToComputeMode /*mode*/) {
   auto outputType = getTensorType(op.getResult());
   auto inputType = getTensorType(op.getInput());
   if (!outputType || !inputType) {
     return success(); // pattern will handle gracefully
-  }
-
-  if (!getAttachedCB(op.getInput())) {
-    if (mode == TTLToComputeMode::ProducerCreation) {
-      return success();
-    }
-    return op.emitOpError(
-        "broadcast input must come directly from a circular buffer, not from "
-        "an elementwise result; move the broadcast to its own compute block "
-        "or make it the first operation in a fused sequence");
   }
 
   int64_t rank = inputType.getRank();

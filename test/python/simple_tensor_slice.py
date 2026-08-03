@@ -10,7 +10,7 @@
 """
 Tensor slice test - verifies tensor[row, col] creates ttl.tensor_slice ops.
 
-Uses 64x64 tensors (2x2 tiles of 32x32) and accesses specific tiles
+Uses 32x128 tensors (1x4 tiles of 32x32) and accesses specific tiles
 via indices to test the tensor slice infrastructure.
 """
 
@@ -128,10 +128,10 @@ if __name__ == "__main__":
     device = ttnn.open_device(device_id=0)
 
     try:
-        # 64x64 = 2x2 tiles of 32x32
-        lhs_torch = torch.full((64, 64), 2.0, dtype=torch.bfloat16)
-        rhs_torch = torch.full((64, 64), 3.0, dtype=torch.bfloat16)
-        out_torch = torch.zeros((64, 64), dtype=torch.bfloat16)
+        # 32x128 = 1x4 tiles of 32x32
+        lhs_torch = torch.full((32, 128), 2.0, dtype=torch.bfloat16)
+        rhs_torch = torch.full((32, 128), 3.0, dtype=torch.bfloat16)
+        out_torch = torch.zeros((32, 128), dtype=torch.bfloat16)
 
         lhs = ttnn.from_torch(
             lhs_torch,
@@ -159,7 +159,7 @@ if __name__ == "__main__":
         rhs = ttnn.to_memory_config(rhs, memory_config=ttnn.L1_MEMORY_CONFIG)
         out = ttnn.to_memory_config(out, memory_config=ttnn.L1_MEMORY_CONFIG)
 
-        print("Compiling tile index kernel (64x64 = 2x2 tiles)...")
+        print("Compiling tile index kernel (32x128 = 1x4 tiles)...")
         tile_index_kernel(lhs, rhs, out)
 
         print("=== Tile Index Kernel Test Complete ===")

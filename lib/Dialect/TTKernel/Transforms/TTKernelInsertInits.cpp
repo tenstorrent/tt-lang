@@ -281,6 +281,10 @@ struct SyncRegionAnalysis {
   Value matmulTranspose, matmulCt, matmulRt, matmulKt;
 };
 
+static Type getCBElementType(Value cb) {
+  return cast<ttk::CBType>(cb.getType()).getElementType();
+}
+
 static FailureOr<SyncRegionAnalysis>
 analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
                   Value &in0CB, Value &in1CB, Value &outputCB) {
@@ -350,19 +354,12 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
       auto collectOutputCB = [&](Value packCB, Operation *packOp) {
         if (!outputCB) {
           outputCB = packCB;
-        } else if (outputCB != packCB) {
-          // PACK initialization depends on the DFB element type; capacity does
-          // not affect the configured data format.
-          mlir::Type outputElementType =
-              mlir::cast<ttk::CBType>(outputCB.getType()).getElementType();
-          mlir::Type packElementType =
-              mlir::cast<ttk::CBType>(packCB.getType()).getElementType();
-          if (outputElementType != packElementType) {
-            packOp->emitOpError(
-                "sync region packs to output CBs with different data formats; "
-                "common init cannot configure multiple PACK formats");
-            hadError = true;
-          }
+        } else if (outputCB != packCB &&
+                   getCBElementType(outputCB) != getCBElementType(packCB)) {
+          packOp->emitOpError(
+              "sync region packs to output CBs with different data formats; "
+              "common init cannot configure multiple PACK formats");
+          hadError = true;
         }
       };
       if (auto pack = dyn_cast<ttk::PackTileOp>(inner)) {
