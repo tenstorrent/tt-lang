@@ -138,6 +138,13 @@ getDefaultTileExecutionInfo(Operation *operation,
     info.accumulatesIntoDst = true;
     return info;
   }
+  if (isa<TileAccumulateOp>(operation)) {
+    info.primitive = TilePrimitive::ElementwiseBinary;
+    info.operandRoutes[0] = TileOperandRoute::Dst;
+    info.operandRoutes[1] = TileOperandRoute::DataflowBuffer;
+    info.accumulatesIntoDst = true;
+    return info;
+  }
   if (operation->hasTrait<TTLStrategyDependentBinaryOpTrait>()) {
     if (!strategy) {
       return failure();
