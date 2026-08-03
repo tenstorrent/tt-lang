@@ -131,7 +131,10 @@ def TTLFormPipeTransports
     against the same L1 budget used by `ttl-validate-cb-budget`.
     `group-size = 1` disables grouping. A larger value is an upper bound; the
     pass selects a smaller group when required by the loop trip count or L1
-    capacity. Ineligible loops retain scalar transfer IR.
+    capacity. Ineligible loops retain scalar transfer IR. Modules containing
+    `ttl.pipenet_foreach_src` or `ttl.pipenet_foreach_dst` remain unchanged so
+    record selection and its control-region metadata are lowered together by
+    `convert-ttl-to-ttkernel`.
   }];
 
   let options = [

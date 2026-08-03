@@ -151,6 +151,49 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
+// Repeated table-driven receives cannot reuse one DFB slot without a pop
+// between callback executions.
+
+module attributes {ttl.launch_grid = array<i64: 1, 1>} {
+  func.func @record_order_without_pop()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    ttl.pipenet_foreach_dst attributes {
+        records = #ttl.pipenet_records<net 0 name "loopback" pipes [
+          #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0, dstEndX = 0, dstEndY = 0>,
+          #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0, dstEndX = 0, dstEndY = 0>,
+          #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0, dstEndX = 0, dstEndY = 0>,
+          #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0, dstEndX = 0, dstEndY = 0>,
+          #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0, dstEndX = 0, dstEndY = 0>
+        ]>} {
+    ^bb0(%pipe: !ttl.selected_pipe_dst):
+      %reserve = ttl.cb_reserve %recv_cb
+          : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      // expected-error @below {{gather pipe receiver DFB reuses slot 0 before a receiver pop releases it}}
+      %receive = ttl.copy %pipe, %reserve
+          : (!ttl.selected_pipe_dst,
+             tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.transfer_handle
+      %send = ttl.copy %send_cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+             !ttl.selected_pipe_dst)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+      ttl.wait %receive : !ttl.transfer_handle
+      ttl.cb_push %recv_cb
+          : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+      ttl.yield
+    }
+    func.return
+  }
+}
+
+// -----
+
 // A multi-block receive cannot wrap around the physical DFB ring. The receiver
 // must pop before reusing earlier slots or use a larger block_count.
 
@@ -611,7 +654,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
     %receiver_one = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 1
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 1>
     %transfer = ttl.pipe_transfer.create %collective
-        {expectedReceivers = 2 : i64, kind = #ttl.pipe_transfer_kind<collective>}
+        {kind = #ttl.pipe_transfer_kind<collective>}
         : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> -> !ttl.pipe_transfer
     ttl.if_dst %receiver_one
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 1> {
@@ -671,10 +714,10 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
     %receiver_one = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 1
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 1>
     %collective_transfer = ttl.pipe_transfer.create %collective
-        {expectedReceivers = 2 : i64, kind = #ttl.pipe_transfer_kind<collective>}
+        {kind = #ttl.pipe_transfer_kind<collective>}
         : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> -> !ttl.pipe_transfer
     %receiver_one_transfer = ttl.pipe_transfer.create %receiver_one
-        {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+        {kind = #ttl.pipe_transfer_kind<point_to_point>}
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 1> -> !ttl.pipe_transfer
     %lower = arith.constant 0 : index
     %upper = arith.constant 2 : index

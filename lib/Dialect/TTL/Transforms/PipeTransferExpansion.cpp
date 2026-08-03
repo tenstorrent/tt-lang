@@ -12,8 +12,6 @@
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
 
-#include <optional>
-
 namespace mlir::tt::ttl {
 namespace {
 
@@ -31,14 +29,23 @@ static PipeTransferKind getPipeTransferKind(PipeTransferContract contract) {
 
 /// Return the contract shared by every possible value of a pipe operand.
 ///
-/// A defining create op preserves a degenerate one-receiver collective. A
-/// block argument has no create op, so its pipe type supplies the contract.
+/// Create and selected-pipe operations preserve an explicit collective
+/// contract. A block argument has no defining pipe op, so its type supplies
+/// the contract.
 static FailureOr<PipeTransferContract>
 getPipeTransferContractForPipeValue(ValueOriginAnalysis &analysis, Value pipe) {
   return analysis.getOrigins(pipe).uniqueMapped<PipeTransferContract>(
       [](Value origin) -> FailureOr<PipeTransferContract> {
         if (auto createPipe = origin.getDefiningOp<CreatePipeOp>()) {
           return getPipeTransferContract(createPipe);
+        }
+        if (auto selectedSrc = origin.getDefiningOp<SelectPipeSrcOp>()) {
+          return getPipeTransferContract(
+              selectedSrc.getRecords().getPipes().front());
+        }
+        if (auto selectedDst = origin.getDefiningOp<SelectPipeDstOp>()) {
+          return getPipeTransferContract(
+              selectedDst.getRecords().getPipes().front());
         }
         if (isa<BlockArgument>(origin) && isa<PipeType>(origin.getType())) {
           return cast<PipeType>(origin.getType()).hasMultipleReceivers()
@@ -53,14 +60,24 @@ getPipeTransferContractForPipeValue(ValueOriginAnalysis &analysis, Value pipe) {
 static PipeTransferCreateOp createPipeTransfer(OpBuilder &builder,
                                                Location location, Value pipe,
                                                PipeTransferContract contract) {
-  auto pipeType = mlir::cast<PipeType>(traceUnrealizedCasts(pipe).getType());
   auto kindAttr = PipeTransferKindAttr::get(builder.getContext(),
                                             getPipeTransferKind(contract));
-  auto expectedReceiversAttr =
-      builder.getI64IntegerAttr(pipeType.getNumDests());
+  IntegerAttr expectedReceiversAttr;
+  if (auto pipeType =
+          mlir::dyn_cast<PipeType>(traceUnrealizedCasts(pipe).getType())) {
+    expectedReceiversAttr = builder.getI64IntegerAttr(pipeType.getNumDests());
+  }
   return PipeTransferCreateOp::create(
       builder, location, PipeTransferType::get(builder.getContext()), pipe,
       kindAttr, expectedReceiversAttr);
+}
+
+static FailureOr<int64_t> getPipeNetIdForPipeValue(Operation *op, Value pipe) {
+  FailureOr<PipeReference> pipeRef = getPipeReference(op, pipe);
+  if (failed(pipeRef)) {
+    return failure();
+  }
+  return pipeRef->getPipeNetId();
 }
 
 /// Reuse a transfer for a direct create op or create one at the use site.
@@ -88,7 +105,13 @@ static Value getOrCreatePipeTransfer(
 }
 
 /// High-level pipe copy and its proven transfer contract.
-struct PipeCopyExpansion {
+struct PipeReceiveCopyExpansion {
+  CopyOp copy;
+  PipeTransferContract contract;
+  int64_t pipeNetId = 0;
+};
+
+struct PipeSendCopyExpansion {
   CopyOp copy;
   PipeTransferContract contract;
 };
@@ -102,8 +125,8 @@ struct PipeReceiveWaitExpansion {
 /// Operations replaced when high-level pipe copies become pipe transfer IR.
 struct PipeTransferExpansionPlan {
   SmallVector<CreatePipeOp> createPipes;
-  SmallVector<PipeCopyExpansion> receiveCopies;
-  SmallVector<PipeCopyExpansion> sendCopies;
+  SmallVector<PipeReceiveCopyExpansion> receiveCopies;
+  SmallVector<PipeSendCopyExpansion> sendCopies;
   SmallVector<PipeReceiveWaitExpansion> receiveWaits;
   SmallVector<WaitOp> unreachableReceiveWaits;
 };
@@ -125,7 +148,13 @@ buildPipeTransferExpansionPlan(ModuleOp module, ValueOriginAnalysis &analysis) {
                "pipe values";
         result = failure();
       } else {
-        plan.receiveCopies.push_back({op, *contract});
+        FailureOr<int64_t> pipeNetId =
+            getPipeNetIdForPipeValue(op, op.getSrc());
+        if (failed(pipeNetId)) {
+          result = failure();
+        } else {
+          plan.receiveCopies.push_back({op, *contract, *pipeNetId});
+        }
       }
       return;
     }
@@ -166,9 +195,13 @@ buildPipeTransferExpansionPlan(ModuleOp module, ValueOriginAnalysis &analysis) {
       return;
     }
     CopyOp copyOp = *maybeCopyOp;
-    auto pipeType =
-        mlir::cast<PipeType>(traceUnrealizedCasts(copyOp.getSrc()).getType());
-    plan.receiveWaits.push_back({waitOp, pipeType.getPipeNetId()});
+    FailureOr<int64_t> pipeNetId =
+        getPipeNetIdForPipeValue(waitOp, copyOp.getSrc());
+    if (failed(pipeNetId)) {
+      result = failure();
+      return;
+    }
+    plan.receiveWaits.push_back({waitOp, *pipeNetId});
   });
   if (failed(result)) {
     return failure();
@@ -196,18 +229,16 @@ applyPipeTransferExpansionPlan(ModuleOp module,
         transferOp.getTransfer();
   }
 
-  for (const PipeCopyExpansion &expansion : plan.receiveCopies) {
+  for (const PipeReceiveCopyExpansion &expansion : plan.receiveCopies) {
     CopyOp copyOp = expansion.copy;
-    auto pipeType =
-        mlir::cast<PipeType>(traceUnrealizedCasts(copyOp.getSrc()).getType());
     builder.setInsertionPoint(copyOp);
     Value transfer =
         getOrCreatePipeTransfer(builder, copyOp.getLoc(), copyOp.getSrc(),
                                 expansion.contract, transferByDirectCreatePipe);
     auto postOp = PipeTransferPostOp::create(
         builder, copyOp.getLoc(),
-        PipeTokenType::get(builder.getContext(), pipeType.getPipeNetId()),
-        transfer, copyOp.getDst());
+        PipeTokenType::get(builder.getContext(), expansion.pipeNetId), transfer,
+        copyOp.getDst());
     auto handleCast = UnrealizedConversionCastOp::create(
         builder, copyOp.getLoc(), copyOp.getResult().getType(),
         ValueRange{postOp.getToken()});
@@ -215,7 +246,7 @@ applyPipeTransferExpansionPlan(ModuleOp module,
     copyOp->erase();
   }
 
-  for (const PipeCopyExpansion &expansion : plan.sendCopies) {
+  for (const PipeSendCopyExpansion &expansion : plan.sendCopies) {
     CopyOp copyOp = expansion.copy;
     builder.setInsertionPoint(copyOp);
     Value transfer =

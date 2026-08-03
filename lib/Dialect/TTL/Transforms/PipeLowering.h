@@ -136,6 +136,18 @@ struct PipeCounterProgress {
 using PipeCounterProgressMap =
     llvm::MapVector<func::FuncOp, SmallVector<PipeCounterProgress>>;
 
+struct PipeSelectedPostSequenceCounters {
+  /// Indexed by `counters` so runtime record selection does not require one
+  /// control-flow branch per transfer definition.
+  Value completionSequences;
+  SmallVector<PipeCounterInfo> counters;
+};
+
+/// Per-function state keeps completion progress cumulative when selected
+/// records reuse a counter.
+using PipeSelectedPostSequenceMap =
+    llvm::MapVector<func::FuncOp, PipeSelectedPostSequenceCounters>;
+
 /// Initial value for one sender-local computed-address slot counter.
 struct PipeComputedAddressCounterInitInfo {
   int64_t counterIndex = 0;
@@ -168,11 +180,14 @@ struct PipeResourcePlan {
   /// Maps each pipe send, receiver post, and receiver wait to the resources
   /// shared by that transfer definition.
   llvm::MapVector<Operation *, PipeResourceInfo> resources;
+  /// Record order is retained so runtime indices address the corresponding
+  /// resources.
+  llvm::MapVector<Operation *, SmallVector<PipeResourceInfo>> selectedResources;
   /// Protocol operations proven unreachable at their pipe endpoint. Lowering
-  /// removes these operations without allocating rendezvous resources.
+  /// removes these operations without allocating synchronization resources.
   llvm::SmallPtrSet<Operation *, 8> staticallyInactiveOps;
-  /// One entry-block counter preserves slot state across repeated sends from
-  /// the same transfer definition.
+  /// Each entry-block counter preserves slot state across repeated sends that
+  /// share one computed-address allocation unit.
   llvm::MapVector<func::FuncOp, SmallVector<PipeComputedAddressCounterInitInfo>>
       computedAddressCounterInitializations;
   /// Receiver DFB indices supplied as common runtime arguments to each sender.
@@ -246,7 +261,8 @@ Value lookupPipeTransportSlotCounter(
 /// for every completion counter used by that function.
 void initializePipePostSequenceCounters(
     const PipeResourcePlan &pipeResourcePlan,
-    PipeCounterProgressMap &postSequenceCounters);
+    PipeCounterProgressMap &postSequenceCounters,
+    PipeSelectedPostSequenceMap &selectedPostSequenceCounters);
 
 /// Translate iteration-domain credit completion into NoC atomic barriers after
 /// the selected source and receiver loops.
@@ -257,8 +273,15 @@ void materializePipeTransportCompletionBarriers(
 void lowerInactivePipeTransferSend(PipeTransferSendOp op,
                                    ConversionPatternRewriter &rewriter);
 
-/// Lower the sender-side pipe transfer and signal receiver completion.
-LogicalResult lowerPipeTransferSend(
+/// Lower a runtime-selected sender-side transfer.
+LogicalResult
+lowerSelectedPipeTransferSend(PipeTransferSendOp op, Value srcCB,
+                              const PipeTransferPlan &transferPlan,
+                              const PipeResourcePlan &pipeResourcePlan,
+                              ConversionPatternRewriter &rewriter);
+
+/// Lower a static sender-side transfer and signal receiver completion.
+LogicalResult lowerStaticPipeTransferSend(
     PipeTransferSendOp op, Value srcCB, const PipeTransferPlan &transferPlan,
     const PipeTransportStream &transportStream,
     const PipeResourcePlan &pipeResourcePlan,
@@ -271,12 +294,12 @@ LogicalResult lowerPipeTransferSend(
 void lowerInactivePipeTransferPost(PipeTransferPostOp op,
                                    ConversionPatternRewriter &rewriter);
 
-/// Lower the receiver-side pipe rendezvous.
-LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
-                                    const PipeTransferPlan &transferPlan,
-                                    const PipeCounterProgressMap &counters,
-                                    const PipeResourcePlan &pipeResourcePlan,
-                                    ConversionPatternRewriter &rewriter);
+LogicalResult lowerPipeTransferPost(
+    PipeTransferPostOp op, Value dst, const PipeTransferPlan &transferPlan,
+    const PipeCounterProgressMap &counters,
+    const PipeSelectedPostSequenceMap &selectedPostSequenceCounters,
+    const PipeResourcePlan &pipeResourcePlan,
+    ConversionPatternRewriter &rewriter);
 
 /// Lower a dataflow buffer pop and emit any proven pipe capacity releases.
 LogicalResult lowerCBPop(CBPopOp op, Value cb,
@@ -288,6 +311,7 @@ LogicalResult lowerCBPop(CBPopOp op, Value cb,
 
 /// Lower the receiver-side pipe receive completion wait.
 LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op, Value tokenSequence,
+                                    const PipeTransferPlan &transferPlan,
                                     const PipeResourcePlan &pipeResourcePlan,
                                     ConversionPatternRewriter &rewriter);
 

@@ -274,7 +274,9 @@ Group eligible repeated PipeNet transfers and select bounded receiver storage.
 Later PipeTransport planning replaces proven-private grouped DFB lifecycles
 with transport-owned scratch; scalar residuals retain the original lifecycle.
 Selection accounts for DFB allocation, a conservative receiver-published
-address table, and transport scratch.
+address table, and transport scratch. Modules containing PipeNet foreach
+callbacks remain unchanged; their record selection is lowered by
+`convert-ttl-to-ttkernel`.
 
 | Option | Type | Default | Description |
 |---|---|---|---|

@@ -29,6 +29,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/ADT/bit.h"
 
 #include <array>
 #include <functional>
@@ -556,6 +557,22 @@ public:
 } // namespace
 
 namespace {
+class TTKernelCastToL1AddrOpToEmitCOpRewriter
+    : public OpConversionPattern<ttkernel::CastToL1AddrOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ttkernel::CastToL1AddrOp op,
+                  ttkernel::CastToL1AddrOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    // The type converter maps every accepted operand to the same i32 address
+    // representation, so the normalization requires no emitted C++ operation.
+    rewriter.replaceOp(op, adaptor.getAddr());
+    return success();
+  }
+};
+
 class TTKernelCastToL1PtrOpToEmitCOpRewriter
     : public OpConversionPattern<ttkernel::CastToL1PtrOp> {
 
@@ -1167,6 +1184,74 @@ public:
 
 private:
   std::string opName;
+};
+} // namespace
+
+namespace {
+static SmallVector<uint64_t> packConstantTable(ArrayRef<int64_t> values,
+                                               unsigned bitsPerValue) {
+  std::size_t totalBits = values.size() * bitsPerValue;
+  SmallVector<uint64_t> packedWords((totalBits + 63) / 64, 0);
+  for (auto [index, signedValue] : llvm::enumerate(values)) {
+    uint64_t value = static_cast<uint64_t>(signedValue);
+    std::size_t bitOffset = index * bitsPerValue;
+    std::size_t wordIndex = bitOffset / 64;
+    unsigned offsetInWord = bitOffset % 64;
+    packedWords[wordIndex] |= value << offsetInWord;
+    if (offsetInWord + bitsPerValue > 64) {
+      packedWords[wordIndex + 1] |= value >> (64 - offsetInWord);
+    }
+  }
+  return packedWords;
+}
+
+class TTKernelConstantTableLookupOpRewriter
+    : public OpConversionPattern<ttkernel::ConstantTableLookupOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ttkernel::ConstantTableLookupOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+    if (!resultType) {
+      return rewriter.notifyMatchFailure(op, "failed to convert result type");
+    }
+    if (op.getValues().empty()) {
+      return rewriter.notifyMatchFailure(op,
+                                         "constant table must not be empty");
+    }
+
+    uint64_t maxValue = 0;
+    for (int64_t value : op.getValues()) {
+      if (value < 0) {
+        return rewriter.notifyMatchFailure(
+            op, "constant table values must be non-negative");
+      }
+      maxValue = std::max(maxValue, static_cast<uint64_t>(value));
+    }
+    unsigned bitsPerValue =
+        std::max(1, llvm::bit_width(static_cast<uint64_t>(maxValue)));
+    SmallVector<uint64_t> packedWords =
+        packConstantTable(op.getValues(), bitsPerValue);
+
+    SmallVector<Attribute> templateArgs;
+    templateArgs.reserve(packedWords.size() + 1);
+    templateArgs.push_back(
+        emitc::OpaqueAttr::get(op.getContext(), std::to_string(bitsPerValue)));
+    // Hex literals preserve the packed bits without signed conversion and use
+    // fewer source characters than one decimal argument per table element.
+    for (uint64_t packedWord : packedWords) {
+      templateArgs.push_back(emitc::OpaqueAttr::get(
+          op.getContext(), "0x" + llvm::utohexstr(packedWord) + "ULL"));
+    }
+    auto call = emitc::CallOpaqueOp::create(
+        rewriter, op.getLoc(), resultType,
+        "experimental::constant_table_lookup", ArrayAttr(),
+        rewriter.getArrayAttr(templateArgs), adaptor.getIndex());
+    rewriter.replaceOp(op, call.getResult(0));
+    return success();
+  }
 };
 } // namespace
 
@@ -2789,6 +2874,7 @@ public:
     populateMemRefToEmitCConversionPatterns(patterns, typeConverter);
 
     patterns.add<TTKernelBitcastOpRewriter>(typeConverter, context, &state);
+    patterns.add<TTKernelConstantTableLookupOpRewriter>(typeConverter, context);
     patterns
         .add<TTKernelMatmulInitToEmitCRewriter<ttkernel::MatmulInitOp>,
              TTKernelMatmulInitToEmitCRewriter<ttkernel::MatmulBlockInitOp>>(
@@ -2808,6 +2894,7 @@ public:
         TTKernelToEmitCGetMyLogicalMeshPositionOpRewriter,
         TTKernelMacroOpToEmitCOpRewriter<ttkernel::MemZerosBaseOp>,
         TTKernelMacroOpToEmitCOpRewriter<ttkernel::MemZerosSizeOp>,
+        TTKernelCastToL1AddrOpToEmitCOpRewriter,
         TTKernelCastToL1PtrOpToEmitCOpRewriter,
         TTKernelToEmitCOpaqueRewriter<ttkernel::GetSemaphoreOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::NocSemaphoreSetOp>,

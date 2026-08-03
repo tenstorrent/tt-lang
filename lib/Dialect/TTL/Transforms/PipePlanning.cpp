@@ -97,25 +97,51 @@ PipeModulePlan::getTransferPlan(Operation *operation) const {
   return planIt->second;
 }
 
-static PipeType getPipeType(MLIRContext *context,
-                            const PipeResourceInfo &resources) {
-  const PipeKey &pipe = resources.pipe;
-  return PipeType::get(context, pipe.srcX, pipe.srcY, pipe.dstStartX,
-                       pipe.dstStartY, pipe.dstEndX, pipe.dstEndY,
-                       pipe.pipeNetId);
-}
-
 static FailureOr<PipeSendPlan>
 buildPipeSendPlan(PipeTransferSendOp sendOp, const DominanceInfo &dominanceInfo,
-                  const PipeTransportStream &transportStream) {
+                  int64_t payloadSizeBytes) {
   bool readFromDFB =
       llvm::any_of(sendOp.getSrc().getUsers(), [&](Operation *user) {
         return isa<CBWaitOp>(user) && user->getOperand(0) == sendOp.getSrc() &&
                dominanceInfo.dominates(user, sendOp);
       });
 
-  return PipeSendPlan{readFromDFB,
-                      transportStream.getPacketization().getPayloadSizeBytes()};
+  return PipeSendPlan{readFromDFB, payloadSizeBytes};
+}
+
+static FailureOr<int64_t>
+getSelectedPipePayloadSize(PipeTransferSendOp sendOp,
+                           const PipeTransportPlan &transportPlan) {
+  ArrayRef<PipeTransportStreamId> streamIds =
+      transportPlan.getStreamIdsForOperation(sendOp);
+  if (streamIds.empty()) {
+    return sendOp.emitError("selected pipe send has no transport streams");
+  }
+  int64_t payloadSize = transportPlan.getStream(streamIds.front())
+                            .getPacketization()
+                            .getPayloadSizeBytes();
+  for (PipeTransportStreamId streamId : streamIds.drop_front()) {
+    int64_t candidateSize = transportPlan.getStream(streamId)
+                                .getPacketization()
+                                .getPayloadSizeBytes();
+    if (candidateSize != payloadSize) {
+      return sendOp.emitError(
+          "selected pipe send has inconsistent record payload sizes");
+    }
+  }
+  return payloadSize;
+}
+
+static FailureOr<int64_t>
+getPipePayloadSize(PipeTransferSendOp sendOp,
+                   const PipeReference &pipeReference,
+                   const PipeTransportPlan &transportPlan) {
+  if (pipeReference.isSelected()) {
+    return getSelectedPipePayloadSize(sendOp, transportPlan);
+  }
+  return transportPlan.getStreamForOperation(sendOp)
+      .getPacketization()
+      .getPayloadSizeBytes();
 }
 
 static FailureOr<PipePostPlan>
@@ -394,48 +420,86 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
   });
 
   DominanceInfo dominanceInfo(module);
-  for (const auto &resourceEntry : plan.resourcePlan.resources) {
-    Operation *operation = resourceEntry.first;
-    const PipeResourceInfo &resources = resourceEntry.second;
+  auto addTransferPlan =
+      [&](Operation *operation, PipeReference pipeReference,
+          PipeTransferPlan::Resources resources) -> LogicalResult {
     auto sendOp = dyn_cast<PipeTransferSendOp>(operation);
     auto postOp = dyn_cast<PipeTransferPostOp>(operation);
-    if (!sendOp && !postOp) {
-      assert(isa<PipeTransferWaitOp>(operation) &&
-             "pipe resources assigned to an unsupported operation");
-      continue;
-    }
+    auto waitOp = dyn_cast<PipeTransferWaitOp>(operation);
+    assert((sendOp || postOp || waitOp) &&
+           "pipe resources assigned to an unsupported operation");
     bool usesCapacityProtocol =
+        (sendOp || postOp) &&
         synchronizationSelection.usesCapacityProtocol(operation);
     PipeSynchronizationProtocol synchronizationProtocol =
         usesCapacityProtocol ? PipeSynchronizationProtocol::Capacity
                              : PipeSynchronizationProtocol::ReceiverPost;
 
-    auto addTransferPlan = [&](auto operationPlan) {
-      PipeTransferPlan transferPlan(getPipeType(module.getContext(), resources),
-                                    resources, synchronizationProtocol,
-                                    std::move(operationPlan));
-      auto [planIt, inserted] =
-          plan.transferPlans.insert({operation, std::move(transferPlan)});
-      (void)planIt;
-      assert(inserted && "pipe operation has more than one transfer plan");
-    };
+    auto insertTransferPlan =
+        [&](PipeTransferPlan::OperationPlan operationPlan) {
+          PipeTransferPlan transferPlan(
+              std::move(pipeReference), std::move(resources),
+              synchronizationProtocol, std::move(operationPlan));
+          auto [planIt, inserted] =
+              plan.transferPlans.insert({operation, std::move(transferPlan)});
+          (void)planIt;
+          assert(inserted && "pipe operation has more than one transfer plan");
+        };
 
     if (sendOp) {
-      const PipeTransportStream &transportStream =
-          plan.transportPlan.getStreamForOperation(operation);
+      FailureOr<int64_t> payloadSize =
+          getPipePayloadSize(sendOp, pipeReference, plan.transportPlan);
+      if (failed(payloadSize)) {
+        return failure();
+      }
       FailureOr<PipeSendPlan> maybeSendPlan =
-          buildPipeSendPlan(sendOp, dominanceInfo, transportStream);
+          buildPipeSendPlan(sendOp, dominanceInfo, *payloadSize);
       if (failed(maybeSendPlan)) {
         return failure();
       }
-      addTransferPlan(*maybeSendPlan);
-    } else {
+      insertTransferPlan(*maybeSendPlan);
+    } else if (postOp) {
+      const PipeResourceInfo &postResources =
+          std::holds_alternative<PipeResourceInfo>(resources)
+              ? std::get<PipeResourceInfo>(resources)
+              : std::get<SmallVector<PipeResourceInfo>>(resources).front();
       FailureOr<PipePostPlan> maybePostPlan =
-          buildPipePostPlan(postOp, resources);
+          buildPipePostPlan(postOp, postResources);
       if (failed(maybePostPlan)) {
         return failure();
       }
-      addTransferPlan(*maybePostPlan);
+      insertTransferPlan(*maybePostPlan);
+    } else {
+      insertTransferPlan(PipeWaitPlan{});
+    }
+    return success();
+  };
+
+  for (const auto &[operation, resources] : plan.resourcePlan.resources) {
+    FailureOr<PipeReference> maybePipeReference =
+        getPipeReferenceForProtocolOp(operation, transferIndex);
+    if (failed(maybePipeReference)) {
+      return failure();
+    }
+    assert(maybePipeReference->isStatic() &&
+           "static resources require a static pipe reference");
+    if (failed(addTransferPlan(operation, std::move(*maybePipeReference),
+                               resources))) {
+      return failure();
+    }
+  }
+  for (const auto &[operation, resources] :
+       plan.resourcePlan.selectedResources) {
+    FailureOr<PipeReference> maybePipeReference =
+        getPipeReferenceForProtocolOp(operation, transferIndex);
+    if (failed(maybePipeReference)) {
+      return failure();
+    }
+    assert(maybePipeReference->isSelected() &&
+           "selected resources require a selected pipe reference");
+    if (failed(addTransferPlan(operation, std::move(*maybePipeReference),
+                               SmallVector<PipeResourceInfo>(resources)))) {
+      return failure();
     }
   }
 

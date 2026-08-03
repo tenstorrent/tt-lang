@@ -16,6 +16,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   DFBMaterialization.cpp
   PipeCapacityAnalysis.cpp
   PipeCounter.cpp
+  PipeNetExecutionUtils.cpp
   PipePlanning.cpp
   PipeTransferExpansion.cpp
   PipeTransportDFBAnalysis.cpp
