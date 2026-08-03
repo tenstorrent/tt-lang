@@ -72,6 +72,12 @@ class _FakeTTNN:
             self.x = x
             self.y = y
 
+    class ReaderConfigDescriptor:
+        pass
+
+    class WriterConfigDescriptor:
+        pass
+
     class TensorAccessorArgs:
         def __init__(self, tensor):
             self.tensor = tensor
@@ -819,14 +825,16 @@ def test_emit_runner_source_preserves_subtile_geometry(monkeypatch):
     assert "((1, 1), 2, ttnn.bfloat16, (16, 16), 512, 1024)" in source
 
 
-def test_emit_runner_source_uses_shared_pipe_resource_helpers():
+def test_emit_runner_source_uses_shared_pipe_resource_helpers(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+
     source = kernel_runner.emit_runner_source(
         kernel_specs=[
             kernel_runner.KernelSpec(
                 path="/tmp/reader.cpp",
                 thread_type="noc",
                 tensor_indices=[],
-                config=object(),
+                config=_FakeTTNN.ReaderConfigDescriptor(),
                 extra_common_runtime_args=[7, 9],
             )
         ],
@@ -849,6 +857,7 @@ def test_emit_runner_source_uses_shared_pipe_resource_helpers():
     assert "program_descriptor.custom_program_hash = PROGRAM_HASH" in source
     assert "KERNEL_EXTRA_COMMON_RUNTIME_ARGS = [" in source
     assert "    [7, 9],  # noc" in source
+    assert "    0,  # noc" in source
     assert (
         "extra_common_runtime_args=KERNEL_EXTRA_COMMON_RUNTIME_ARGS[kernel_idx]"
         in source

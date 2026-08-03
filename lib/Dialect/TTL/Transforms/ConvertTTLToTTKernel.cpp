@@ -725,24 +725,6 @@ getPipeTransferContractForPipeValue(ValueOriginAnalysis &analysis, Value pipe) {
       });
 }
 
-/// Prove that every possible pipe definition has the same logical-device
-/// transfer. Unlike the transfer contract, this property is not in `PipeType`.
-static FailureOr<std::optional<DeviceTransferAttr>>
-getDeviceTransferForPipeValue(ValueOriginAnalysis &analysis, Value pipe) {
-  return analysis.getOrigins(pipe)
-      .uniqueMapped<std::optional<DeviceTransferAttr>>(
-          [](Value origin) -> FailureOr<std::optional<DeviceTransferAttr>> {
-            if (auto createPipe = origin.getDefiningOp<CreatePipeOp>()) {
-              DeviceTransferAttr deviceTransfer =
-                  createPipe.getDeviceTransferAttr();
-              return deviceTransfer
-                         ? std::optional<DeviceTransferAttr>(deviceTransfer)
-                         : std::optional<DeviceTransferAttr>();
-            }
-            return failure();
-          });
-}
-
 static PipeTransferCreateOp
 createPipeTransfer(OpBuilder &builder, Location loc, Value pipe,
                    PipeTransferContract contract,
@@ -822,7 +804,7 @@ buildPipeTransferExpansionPlan(ModuleOp mod, ValueOriginAnalysis &analysis) {
       return;
     }
     FailureOr<std::optional<DeviceTransferAttr>> maybeDeviceTransfer =
-        getDeviceTransferForPipeValue(analysis, pipe);
+        findUniquePipeDeviceTransfer(analysis, pipe);
     if (failed(maybeDeviceTransfer)) {
       copyOp.emitError() << "requires every possible pipe definition to be "
                             "ttl.create_pipe with the same device transfer";

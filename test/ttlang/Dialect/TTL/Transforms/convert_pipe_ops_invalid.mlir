@@ -78,6 +78,54 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
 
 // -----
 
+// Fabric cannot use receiver-published addresses. Report the specific DFB
+// producer-stream property that prevented computed addressing.
+
+#fabric_domain = #ttl.device_domain<components = <name = "device", extent = [2]>>
+#fabric_transfer = #ttl.device_transfer<
+    domain = #fabric_domain,
+    edge = <source = <coordinates = [0]>, destination = <coordinates = [1]>>>
+
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @fabric_requires_pipe_only_receiver_stream()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 2}
+        {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 {
+        deviceTransfer = #fabric_transfer}
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+
+    %local = ttl.cb_reserve %dst
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+
+    %reserved = ttl.cb_reserve %dst
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    // expected-note @below {{receiver DFB 1: push reserve owns no matching receiver post}}
+    %post = ttl.copy %pipe, %reserved
+        : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+           tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.transfer_handle
+    // expected-error @below {{fabric pipe transfer requires computed receiver DFB addresses}}
+    %send = ttl.copy %src, %pipe
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+           !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send : !ttl.transfer_handle<write>
+    ttl.wait %post : !ttl.transfer_handle
+    ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    func.return
+  }
+}
+
+// -----
+
 // A pipe block argument does not identify whether the transfer is within one
 // device or between logical devices.
 
@@ -139,11 +187,11 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
     %reserved = ttl.cb_reserve %dst
         : <[1, 1], !ttcore.tile<32x32, f32>, 1>
         -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    // expected-error @below {{pipe send and receiver post use different device transfers}}
+    // expected-error @below {{pipe receiver post has no corresponding send for its device transfer}}
     %post = ttl.pipe_transfer.post %post_transfer, %reserved
         : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
         -> !ttl.pipe_token<net 0>
-    // expected-note @below {{corresponding pipe send is here}}
+    // expected-note @below {{this send has the same PipeKey but a different device transfer}}
     %send = ttl.pipe_transfer.send %send_transfer, %src
         : (!ttl.pipe_transfer,
            !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>)

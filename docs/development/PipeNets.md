@@ -1692,6 +1692,12 @@ events remain valid. Every event must also have an exact launch-node domain; an
 unevaluable coordinate-dependent condition is rejected rather than omitting
 its events from the schedule.
 
+Cross-device correspondence includes the logical-device transfer in the pipe
+identity. Send counts are evaluated at the transfer's source device; receiver
+post and wait counts are evaluated at its destination device. Device predicates
+that are mutually exclusive in the generic kernel can therefore prove matching
+endpoint counts. Local pipes use the existing launch-node-only queries.
+
 ### Pipe transfer and receiver-address graph
 
 `PipeGraph` is the source of truth for pipe topology, transfer definitions,
