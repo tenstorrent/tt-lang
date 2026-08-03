@@ -1,4 +1,4 @@
-// RUN: ttlang-opt %s --split-input-file -convert-ttl-to-ttkernel | FileCheck %s
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=false})' | FileCheck %s
 
 // Summary: Verifies the receiver-posted pipe protocol. Senders consume the
 // destination address published by the receiver and never advance the receiver
@@ -35,6 +35,25 @@ func.func @sender_uses_published_unicast_address() attributes { "ttl.kernel_thre
   func.return
 }
 
+// Define the receiver half so the transfer graph can prove the complete
+// protocol while the checks remain focused on sender lowering.
+func.func @sender_uses_published_unicast_address_receiver() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+  %dst = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %recv_dst = ttl.cb_reserve %dst
+      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %xf = ttl.copy %pipe, %recv_dst
+      : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+         tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.transfer_handle
+  ttl.wait %xf : !ttl.transfer_handle
+  ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  func.return
+}
+
 // -----
 
 // Sender-side multicast lowering also consumes receiver-published addresses.
@@ -42,13 +61,13 @@ func.func @sender_uses_published_unicast_address() attributes { "ttl.kernel_thre
 // write and must not advance any receiver DFB.
 // CHECK-LABEL: func.func @sender_uses_published_multicast_addresses
 // CHECK: %[[NOC:.+]] = arith.constant 0 : i8
-// CHECK: ttkernel.experimental.semaphore_wait
-// CHECK-NOT: ttkernel.cb_reserve_back
-// CHECK: %[[SRC_WP:.+]] = ttkernel.get_write_ptr
 // CHECK: %[[DST_X_START:.+]] = ttkernel.experimental.convert_logical_x_to_translated
 // CHECK: %[[DST_Y_START:.+]] = ttkernel.experimental.convert_logical_y_to_translated
 // CHECK: %[[DST_X_END:.+]] = ttkernel.experimental.convert_logical_x_to_translated
 // CHECK: %[[DST_Y_END:.+]] = ttkernel.experimental.convert_logical_y_to_translated
+// CHECK: ttkernel.experimental.semaphore_wait
+// CHECK-NOT: ttkernel.cb_reserve_back
+// CHECK: %[[SRC_WP:.+]] = ttkernel.get_write_ptr
 // CHECK: %[[DST_WP:.+]] = ttkernel.load_from_l1
 // CHECK-NOT: ttkernel.get_noc_multicast_addr({{.*}}, %[[DST_WP]]
 // CHECK: ttkernel.noc_async_write_multicast(%[[SRC_WP]], {{.*}}, {{.*}}, start_xy[%[[DST_X_START]], %[[DST_Y_START]]], end_xy[%[[DST_X_END]], %[[DST_Y_END]]], %[[DST_WP]], noc %[[NOC]])
@@ -57,17 +76,42 @@ func.func @sender_uses_published_unicast_address() attributes { "ttl.kernel_thre
 // CHECK: ttkernel.noc_async_atomic_barrier(%[[NOC]])
 // CHECK-NOT: ttkernel.cb_push_back
 // CHECK: return
+module attributes {ttl.launch_grid = array<i64: 2, 4>} {
 func.func @sender_uses_published_multicast_addresses() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %src = ttl.bind_cb {cb_index = 0, block_count = 2}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
-  %xf = ttl.copy %src, %pipe
-      : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
-         !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>)
-      -> !ttl.transfer_handle<write>
-  ttl.wait %xf : !ttl.transfer_handle<write>
+  ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0> {
+    %xf = ttl.copy %src, %pipe
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+           !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %xf : !ttl.transfer_handle<write>
+  }
   func.return
+}
+
+// Define the receiver half so the transfer graph can prove the complete
+// protocol while the checks remain focused on sender lowering.
+func.func @sender_uses_published_multicast_addresses_receiver() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+  %dst = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
+  ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0> {
+    %recv_dst = ttl.cb_reserve %dst
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %xf = ttl.copy %pipe, %recv_dst
+        : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>,
+           tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.transfer_handle
+    ttl.wait %xf : !ttl.transfer_handle
+    ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  }
+  func.return
+}
 }
 
 // -----
@@ -101,15 +145,31 @@ func.func @receiver_publishes_reserved_dfb_address() attributes { "ttl.kernel_th
   func.return
 }
 
+// Define the sender half so the transfer graph can prove the complete protocol
+// while the checks remain focused on receiver lowering.
+func.func @receiver_publishes_reserved_dfb_address_sender() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+  %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %pipe = ttl.create_pipe src(1, 0) dst(0, 0) to(0, 0) net 0
+      : !ttl.pipe<src(1, 0) dst(0, 0) to(0, 0) net 0>
+  %xf = ttl.copy %src, %pipe
+      : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+         !ttl.pipe<src(1, 0) dst(0, 0) to(0, 0) net 0>)
+      -> !ttl.transfer_handle<write>
+  ttl.wait %xf : !ttl.transfer_handle<write>
+  func.return
+}
+
 // -----
 
-// Repeated receives use a cumulative completion counter for the pipe endpoint
-// relation. The expected wait value increases inside the loop, so each
-// iteration waits for the next transfer rather than the first completion.
+// Repeated executions of one transfer use a cumulative completion counter. The
+// expected wait value is incremented inside the loop, so each iteration waits
+// for the next execution rather than reusing the first completion value.
 // CHECK-LABEL: func.func @receiver_advances_wait_counter_inside_loop
 // CHECK: %[[CTR:.+]] = memref.alloca() : memref<1xi32>
 // CHECK: memref.store {{.*}}, %[[CTR]]
 // CHECK: %[[DST_DFB:.+]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK: %[[DONE_PTR:.+]] = ttkernel.reinterpret_cast
 // CHECK: scf.for
 // CHECK: ttkernel.cb_reserve_back(%[[DST_DFB]]
 // CHECK: %[[DST_ADDR:.+]] = ttkernel.get_write_ptr(%[[DST_DFB]])
@@ -118,7 +178,6 @@ func.func @receiver_publishes_reserved_dfb_address() attributes { "ttl.kernel_th
 // CHECK: memref.load %[[CTR]]
 // CHECK: %[[NEXT:.+]] = arith.addi
 // CHECK: memref.store %[[NEXT]], %[[CTR]]
-// CHECK: %[[DONE_PTR:.+]] = ttkernel.reinterpret_cast
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[DONE_PTR]], %[[NEXT]])
 // CHECK: ttkernel.cb_push_back(%[[DST_DFB]]
 func.func @receiver_advances_wait_counter_inside_loop() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
@@ -139,6 +198,25 @@ func.func @receiver_advances_wait_counter_inside_loop() attributes { "ttl.kernel
         -> !ttl.transfer_handle
     ttl.wait %xf : !ttl.transfer_handle
     ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  }
+  func.return
+}
+
+// Match the receiver loop's two dynamic transfers from the source node.
+func.func @receiver_advances_wait_counter_inside_loop_sender() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+  %src = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %pipe = ttl.create_pipe src(1, 0) dst(0, 0) to(0, 0) net 0
+      : !ttl.pipe<src(1, 0) dst(0, 0) to(0, 0) net 0>
+  %c0 = arith.constant 0 : index
+  %c2 = arith.constant 2 : index
+  %c1 = arith.constant 1 : index
+  scf.for %iter = %c0 to %c2 step %c1 {
+    %xf = ttl.copy %src, %pipe
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+           !ttl.pipe<src(1, 0) dst(0, 0) to(0, 0) net 0>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %xf : !ttl.transfer_handle<write>
   }
   func.return
 }

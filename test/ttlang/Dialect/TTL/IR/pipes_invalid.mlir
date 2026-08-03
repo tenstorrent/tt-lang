@@ -34,6 +34,28 @@ func.func @pipe_transfer_expected_receiver_count_positive() {
 
 // -----
 
+// Test: an internal pipe transfer must deliver at least one original DFB block.
+func.func @pipe_transfer_block_span_positive() {
+  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  // expected-error @+1 {{'ttl.pipe_transfer.create' op attribute 'block_span' failed to satisfy constraint: 64-bit signless integer attribute whose value is positive}}
+  %transfer = ttl.pipe_transfer.create %p {block_span = 0 : i64, expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> -> !ttl.pipe_transfer
+  func.return
+}
+
+// -----
+
+// Test: an internal pipe transfer destination group depth must be positive.
+func.func @pipe_transfer_destination_group_depth_positive() {
+  %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  // expected-error @+1 {{'ttl.pipe_transfer.create' op attribute 'destination_group_depth' failed to satisfy constraint: 64-bit signless integer attribute whose value is positive}}
+  %transfer = ttl.pipe_transfer.create %p {destination_group_depth = 0 : i64, expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> -> !ttl.pipe_transfer
+  func.return
+}
+
+// -----
+
 // Test: internal pipe transfer expected receiver count must match the pipe.
 func.func @pipe_transfer_expected_receiver_count_mismatch() {
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>

@@ -45,9 +45,6 @@ LogicalResult PipeTransferIndex::build(ModuleOp module,
                "ttl.pipe_transfer.post";
         return WalkResult::interrupt();
       }
-      if (maybePosts->empty()) {
-        return WalkResult::advance();
-      }
       for (PipeTransferPostOp postOp : *maybePosts) {
         receivePostsByWait[operation].push_back(postOp.getOperation());
       }
@@ -96,17 +93,16 @@ std::optional<CopyOp> PipeTransferIndex::getReceivePost(WaitOp waitOp) const {
 ArrayRef<Operation *>
 PipeTransferIndex::getPossibleReceivePosts(PipeTransferWaitOp waitOp) const {
   auto postsIt = receivePostsByWait.find(waitOp.getOperation());
-  return postsIt == receivePostsByWait.end()
-             ? ArrayRef<Operation *>()
-             : ArrayRef<Operation *>(postsIt->second);
+  assert(postsIt != receivePostsByWait.end() &&
+         "internal receive wait must have a transfer index entry");
+  return postsIt->second;
 }
 
-FailureOr<PipeTransferCreateOp>
+PipeTransferCreateOp
 PipeTransferIndex::getTransferCreate(Operation *protocolOp) const {
   auto createIt = transferCreateByProtocolOp.find(protocolOp);
-  if (createIt == transferCreateByProtocolOp.end()) {
-    return failure();
-  }
+  assert(createIt != transferCreateByProtocolOp.end() &&
+         "protocol operation must have a transfer index entry");
   return mlir::cast<PipeTransferCreateOp>(createIt->second);
 }
 
