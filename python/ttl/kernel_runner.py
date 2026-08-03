@@ -797,15 +797,15 @@ def build_cb_descriptors_by_core(
 
     # Allocate uniform whole-grid descriptors first.  A specialized capacity
     # may move the addresses of descriptors allocated after it differently on
-    # different cores; keeping all defaults first preserves uniform bases for
-    # any remote-CB protocols among them.  Callers may specialize only CBs
-    # whose kernels use local CB pointers (or otherwise tolerate this).
+    # different cores; keeping all defaults first preserves their uniform
+    # bases.  Mapping insertion order is then significant: put any specialized
+    # CB whose base is remotely addressed before variable-sized local-only CBs.
     descriptors = [
         _cb_descriptor(index, geometry, geometry.total_size, core_ranges)
         for index, geometry in enumerate(geometries)
         if index not in specialized
     ]
-    for index in sorted(specialized):
+    for index in specialized:
         descriptors.extend(specialized[index])
     return validate_cb_descriptors_override(
         descriptors=descriptors,

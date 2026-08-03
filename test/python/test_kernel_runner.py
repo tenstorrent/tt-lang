@@ -683,6 +683,47 @@ def test_cb_pages_by_core_preserves_compiler_maximum(monkeypatch):
         )
 
 
+def test_cb_pages_by_core_preserves_specialization_order(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    program = _FakeExplicitCoreRanges(((0, 0), (1, 0)))
+    core_0 = _FakeExplicitCoreRanges(((0, 0), (0, 0)))
+    core_1 = _FakeExplicitCoreRanges(((1, 0), (1, 0)))
+    geometries = {
+        0: SimpleNamespace(
+            data_format="bf16",
+            page_size=32,
+            num_pages=4,
+            total_size=128,
+            tile_descriptor=SimpleNamespace(height=1, width=32),
+        ),
+        1: SimpleNamespace(
+            data_format="bf16",
+            page_size=32,
+            num_pages=2,
+            total_size=64,
+            tile_descriptor=SimpleNamespace(height=1, width=32),
+        ),
+    }
+    monkeypatch.setattr(
+        kernel_runner, "cb_geometry", lambda index, _cb: geometries[index]
+    )
+
+    descriptors = kernel_runner.build_cb_descriptors_by_core(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=[object(), object()],
+        core_ranges=program,
+        pages_by_core={
+            1: [(core_0, 2), (core_1, 1)],
+            0: [(core_0, 1), (core_1, 4)],
+        },
+    )
+
+    assert [
+        descriptor.format_descriptors[0].buffer_index
+        for descriptor in descriptors
+    ] == [1, 1, 0, 0]
+
+
 def test_run_kernel_rejects_both_cb_override_forms(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
