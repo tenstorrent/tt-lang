@@ -429,7 +429,7 @@ enum class TileOpCategory : uint8_t {
   Unknown = 255
 };
 
-/// Classify a TTL tile op into its category.
+/// Classify a TTL tile op into its category after strategy resolution.
 /// Uses TTL traits and attributes for O(1) per-call classification.
 TileOpCategory classifyTileOp(mlir::Operation *op);
 

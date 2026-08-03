@@ -525,3 +525,42 @@ func.func @bf16_matmul_column_bcast(
 
   return %res2 : tensor<1x1x!ttcore.tile<32x32, bf16>>
 }
+
+// -----
+
+// An unspecified target applies no architecture-specific broadcast
+// restriction while still resolving target-independent f32 requirements.
+// DEFAULT-LABEL: func.func @unspecified_target_row_broadcast
+// DEFAULT-SAME: fp32_dest_acc_en = true
+// DEFAULT-SAME: ttl.unpack_to_dest_fp32 = array<i32: 0>
+func.func @unspecified_target_row_broadcast(
+    %f32_input: tensor<1x1x!ttcore.tile<32x32, f32>>,
+    %bf16_input: tensor<1x1x!ttcore.tile<32x32, bf16>>,
+    %output: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  %f32_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %bf16_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %f32_attached = ttl.attach_cb %f32_input, %f32_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, f32>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %bf16_attached = ttl.attach_cb %bf16_input, %bf16_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %zero = arith.constant 0 : index
+  %f32_tile = tensor.extract %f32_attached[%zero, %zero]
+      : tensor<1x1x!ttcore.tile<32x32, f32>>
+  %bf16_tile = tensor.extract %bf16_attached[%zero, %zero]
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %output_tile = tensor.extract %output[%zero, %zero]
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %exponential = ttl.tile_exp %f32_tile into dst[%zero]
+      : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %broadcast = ttl.tile_bcast %bf16_tile, %output_tile 2 : i32
+      into dst[%zero]
+      : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>)
+        -> !ttcore.tile<32x32, bf16>
+  return
+}

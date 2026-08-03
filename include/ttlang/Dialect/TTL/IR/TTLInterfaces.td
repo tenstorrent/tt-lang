@@ -110,7 +110,7 @@ def TTL_DstAccessOpInterface : OpInterface<"DstAccessOpInterface"> {
 
   let methods = [
     InterfaceMethod<
-      /*desc=*/"Return DST slots read by this operation.",
+      /*desc=*/"Return DST slots read by this operation after tile execution semantics and DST residency are resolved.",
       /*retTy=*/"::llvm::SmallVector<::mlir::tt::ttl::DstFootprint, 2>",
       /*methodName=*/"getDstReadFootprints",
       /*args=*/(ins),

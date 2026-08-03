@@ -81,9 +81,11 @@ mlir::FailureOr<TileExecutionInfo>
 getSelectedTileExecutionInfo(mlir::Operation *operation);
 
 /// Return whether `operand` must be resident in DST when consumed.
+/// Tile execution semantics must be verified before calling this function.
 bool isDstInput(mlir::OpOperand &operand);
 
 /// Return whether the operation lowering initializes DST from `operand`.
+/// Tile execution semantics must be verified before calling this function.
 bool isDstInputMaterializedByOperation(mlir::OpOperand &operand);
 
 /// Verify that every tile operation has complete execution semantics.

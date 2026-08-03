@@ -196,7 +196,7 @@ ttlang-opt input.mlir -p 'builtin.module(ttl-finalize-dfb-indices{reuse-user-dfb
 #### `ttl-set-compute-kernel-config`
 
 Resolve tile execution strategies and shared compute-kernel configuration. See
-[Compute Kernel Configuration](../../development/ComputeKernelConfiguration.md)
+[Compute Kernel Configuration](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/ComputeKernelConfiguration.md)
 for the algorithm and invariants.
 
 | Option | Type | Default | Description |

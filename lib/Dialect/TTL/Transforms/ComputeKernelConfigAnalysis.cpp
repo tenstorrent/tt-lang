@@ -129,11 +129,7 @@ resolveDataflowBufferIndex(Value value, Operation *consumer) {
     return dfbIndex;
   }
 
-  if (value.getDefiningOp() || isa<BlockArgument>(value)) {
-    return std::optional<int64_t>();
-  }
-  consumer->emitOpError("has an unresolved tile operand");
-  return failure();
+  return std::optional<int64_t>();
 }
 
 /// Return the element type required by configuration queries.
@@ -620,16 +616,20 @@ KernelTargetEnvironment::get(func::FuncOp function) {
 bool KernelTargetEnvironment::supportsDstMode(TilePrimitive primitive,
                                               Type elementType,
                                               DstMode mode) const {
-  if (mode == DstMode::Default) {
+  if (mode == DstMode::Default || elementType.isF32() || !arch) {
     return true;
   }
-  if (primitive == TilePrimitive::BroadcastRow && !elementType.isF32() &&
-      (!arch || *arch == ttcore::Arch::WormholeB0)) {
-    // tt-llk #1338: Wormhole row broadcast is incorrect for bf16 input when
-    // DST stores f32 values.
-    return false;
+
+  switch (primitive) {
+  case TilePrimitive::BroadcastColumn:
+  case TilePrimitive::BroadcastRow:
+  case TilePrimitive::BroadcastScalar:
+    // Broadcast LLKs interpret non-f32 inputs using the default DST format.
+    return *arch != ttcore::Arch::WormholeB0 &&
+           *arch != ttcore::Arch::Blackhole;
+  default:
+    return true;
   }
-  return true;
 }
 
 bool KernelTargetEnvironment::supportsFullFp32Accumulation(

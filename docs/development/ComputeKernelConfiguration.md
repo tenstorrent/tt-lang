@@ -58,10 +58,15 @@ existing TTCore system and device descriptions. If both sources are present,
 their architectures must agree. A device selecting chips with different
 architectures is invalid.
 
+When neither source is present, target-specific restrictions are not applied.
+Device compilation attaches an architecture before this pass; the unspecified
+environment supports target-neutral compiler testing.
+
 Capability queries contain architecture and backend restrictions. They consume
 only target-independent execution categories, not operations. For example,
 Blackhole row reduction and Wormhole reduction restrict full-fp32 accumulation,
-and Wormhole bf16 row broadcast restricts f32 DST mode.
+and Wormhole and Blackhole broadcasts with non-f32 inputs restrict f32 DST
+mode.
 
 ### Policy
 
