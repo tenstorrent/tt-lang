@@ -65,6 +65,8 @@ struct TTLToTTKernelPipelineOptions
 void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options);
 
+void buildTTLTensorRecurrencePipeline(mlir::OpPassManager &pm);
+
 void buildTTLAutoSyncPipeline(mlir::OpPassManager &pm);
 
 void registerTTLPipelines();

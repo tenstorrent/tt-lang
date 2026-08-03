@@ -196,11 +196,17 @@ public:
   /// Returns acquisitions in deterministic kernel walk order.
   ArrayRef<Operation *> getAcquisitions() const { return acquisitionOrder; }
 
+  /// Returns acquisitions of `kind` in deterministic kernel walk order.
+  SmallVector<Operation *> getAcquisitions(DFBAcquireReleaseKind kind) const;
+
   /// Returns the ownership record for `release`.
   const DFBReleaseOwnership &getReleaseOwnership(Operation *release) const;
 
   /// Returns releases in deterministic kernel walk order.
   ArrayRef<Operation *> getReleases() const { return releaseOrder; }
+
+  /// Returns releases of `kind` in deterministic kernel walk order.
+  SmallVector<Operation *> getReleases(DFBAcquireReleaseKind kind) const;
 
 private:
   DFBAcquireReleaseIndex() = default;
