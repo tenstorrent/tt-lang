@@ -6,9 +6,9 @@ These examples model the core data dependence of the tt-metal implementation at
 
 The examples shard activations across K, all-gather activation shards across a
 fabric mesh, shard weights across output N, and compute each device's local N
-output shard. They do not model the full tt-metal operation surface: optional
-bias, fused activation, addcmul, SwiGLU, chunked outputs, FSDP weight gather,
-and program-factory core-grid scheduling are not included.
+output shard. The baseline variants keep only this computation. The full
+variants add the checklist features while preserving checkpointed working
+revisions.
 
 Files:
 
@@ -16,6 +16,11 @@ Files:
 * `context.py`: Equivalent operation using context-manager DFB syntax.
 * `common.py`: CLI parsing, mesh discovery, tensor setup, and correctness
   checks shared by both examples.
+* `full_direct.py`: Direct DFB variant containing completed checklist features.
+* `full_context.py`: Context-manager variant containing completed checklist
+  features.
+* `full_common.py`: Additional tensors and golden validation for the full
+  variants.
 
 The TT-Lang operation does not allocate explicit tt-metal semaphores. Dataflow
 buffer wait/reserve ordering plus PipeNet lowering provide the producer/consumer
@@ -26,32 +31,35 @@ semaphore protocol.
 
 - [x] **Baseline:** K-sharded activation all-gather, N-sharded matmul, direct
   and context-manager variants, bit-exact gather validation, and FP32 PyTorch
-  matmul golden validation on four devices.
-- [ ] **Item 1 - row-broadcast bias:** Add one N-sharded bias input and validate
+  matmul golden validation.
+  ![validated on 4 devices](https://img.shields.io/badge/validated-4%20devices-brightgreen)
+- [x] **Item 1 - row-broadcast bias:** Add one N-sharded bias input and validate
   `A @ B + bias`.
-- [ ] **Item 2a - ReLU:** Add an optional ReLU compute epilogue after bias.
-- [ ] **Item 2b - GELU and SiLU:** Extend the validated activation interface
+  ![validated on 4 devices](https://img.shields.io/badge/validated-4%20devices-brightgreen)
+- [ ] **Item 2 - full-grid multi-core scheduling:** Partition M/N work across
+  the compute grid and assign fabric transfers without duplicating traffic or
+  output writes.
+- [ ] **Item 3a - ReLU:** Add a ReLU compute epilogue after bias.
+- [ ] **Item 3b - GELU and SiLU:** Extend the validated activation interface
   after ReLU.
-- [ ] **Item 3 - chunked N output:** Add output slicing and storage without
+- [ ] **Item 4 - chunked N output:** Add output slicing and storage without
   changing the activation collective.
-- [ ] **Item 4 - addcmul:** Add the full-output residual, row-broadcast
+- [ ] **Item 5 - addcmul:** Add the full-output residual, row-broadcast
   multiplier, and scalar.
-- [ ] **Item 5 - SwiGLU:** Add paired gate/up weight interpretation and
+- [ ] **Item 6 - SwiGLU:** Add paired gate/up weight interpretation and
   half-width output validation.
-- [ ] **Item 6a - multi-core scheduling:** Add configurable block, subblock,
-  and compute-grid placement.
-- [ ] **Item 6b - transpose selection:** Add the tt-metal transpose strategy
+- [ ] **Item 7 - transpose selection:** Add the tt-metal transpose strategy
   and validate both selections.
-- [ ] **Item 6c - fabric worker configuration:** Add link, worker-per-link, and
+- [ ] **Item 8 - fabric worker configuration:** Add link, worker-per-link, and
   channel-buffer controls.
-- [ ] **Item 7 - FSDP weight gather:** Add the second collective and its
+- [ ] **Item 9 - FSDP weight gather:** Add the second collective and its
   independent synchronization domain.
-- [ ] **Galaxy validation:** Validate the completed configuration on a
-  32-device `4x8` mesh.
 
 Each completed item receives a working checkpoint commit after direct and
 context-manager correctness validation. Commit messages use the prefix
-`[demo item N]`; the baseline uses `[demo baseline]`.
+`[demo item N]`; the baseline uses `[demo baseline]`. Hardware badges record
+validation of that exact checkpoint. Four-device and Galaxy badges are tracked
+independently.
 
 ## Correctness Validation
 
@@ -63,6 +71,12 @@ The golden output is the FP32 PyTorch matmul:
 
 ```python
 expected_output = host_tensors.activation.float() @ host_tensors.weight.float()
+```
+
+The full variants currently add the item 1 bias:
+
+```python
+expected_output += host_tensors.bias.float()
 ```
 
 The per-device N output shards are concatenated and compared with the golden
@@ -88,6 +102,13 @@ The context-manager variant accepts the same arguments:
 python examples/all_gather_minimal_matmul_fabric.py
 ```
 
+The full variants use separate launchers:
+
+```bash
+python examples/all_gather_minimal_matmul_fabric_full_direct.py
+python examples/all_gather_minimal_matmul_fabric_full.py
+```
+
 Run on four devices:
 
 ```bash
@@ -101,6 +122,11 @@ timeout 300 python examples/all_gather_minimal_matmul_fabric_direct.py \
     --fabric-config 2d \
     2>&1 | tee /tmp/device_test.log
 ```
+
+The completed full checklist checkpoint uses the same arguments with
+`examples/all_gather_minimal_matmul_fabric_full_direct.py`. The
+context-manager equivalent is
+`examples/all_gather_minimal_matmul_fabric_full.py`.
 
 Run on a 32-device Galaxy:
 
