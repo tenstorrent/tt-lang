@@ -54,21 +54,21 @@ func.func @overlap_two_receives_share_counter() attributes { "ttl.kernel_thread"
 // -----
 
 //===----------------------------------------------------------------------===//
-// Two PipeNets in one function get distinct counters.
+// Pipe endpoint relations with disjoint receiver domains reuse one counter.
 //===----------------------------------------------------------------------===//
 
-// CHECK-LABEL: func.func @two_pipenets_two_counters
-// CHECK: %[[CTR_A:.*]] = memref.alloca() : memref<1xi32>
-// CHECK: %[[CTR_B:.*]] = memref.alloca() : memref<1xi32>
-// CHECK: %[[VA:.*]] = memref.load %[[CTR_A]]
+// CHECK-LABEL: func.func @two_pipenets_one_counter
+// CHECK: %[[CTR:.*]] = memref.alloca() : memref<1xi32>
+// CHECK-NOT: memref.alloca() : memref<1xi32>
+// CHECK: %[[VA:.*]] = memref.load %[[CTR]]
 // CHECK: %[[NA:.*]] = arith.addi %[[VA]]
-// CHECK: memref.store %[[NA]], %[[CTR_A]]
+// CHECK: memref.store %[[NA]], %[[CTR]]
 // CHECK: ttkernel.experimental.semaphore_wait_min({{.*}}, %[[NA]])
-// CHECK: %[[VB:.*]] = memref.load %[[CTR_B]]
+// CHECK: %[[VB:.*]] = memref.load %[[CTR]]
 // CHECK: %[[NB:.*]] = arith.addi %[[VB]]
-// CHECK: memref.store %[[NB]], %[[CTR_B]]
+// CHECK: memref.store %[[NB]], %[[CTR]]
 // CHECK: ttkernel.experimental.semaphore_wait_min({{.*}}, %[[NB]])
-func.func @two_pipenets_two_counters() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+func.func @two_pipenets_one_counter() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %p_net0 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
   %p_net1 = ttl.create_pipe src(0, 1) dst(2, 0) to(2, 3) net 1 : !ttl.pipe<src(0, 1) dst(2, 0) to(2, 3) net 1>

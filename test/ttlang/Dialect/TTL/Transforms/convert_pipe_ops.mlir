@@ -628,17 +628,17 @@ func.func @same_source_pipes_keep_local_ready_counters_below_limit() attributes 
 
 // -----
 
-// A transfer whose receiver completion counter consumes semaphore id 14 can
-// still use local semaphore id 15 for sender-ready state.
-// CHECK-LABEL: func.func @pipe_ready_counter_at_local_limit
-// CHECK-DAG: %[[READY_IDX:.*]] = arith.constant 15 : index
+// PipeNet ids do not determine semaphore ids. A high id still receives compact
+// completion and sender-ready allocations.
+// CHECK-LABEL: func.func @high_pipe_net_id_uses_compact_semaphore_ids
+// CHECK-DAG: %[[READY_IDX:.*]] = arith.constant 1 : index
 // CHECK: %[[READY_POST:.*]] = ttkernel.get_semaphore(%[[READY_IDX]])
 // CHECK: ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[READY_POST]], {{.*}})
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: %[[READY_SEND:.*]] = ttkernel.get_semaphore(%[[READY_IDX]])
 // CHECK: %[[READY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[READY_SEND]])
 // CHECK: ttkernel.experimental.semaphore_wait(%[[READY_PTR]]
-func.func @pipe_ready_counter_at_local_limit() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+func.func @high_pipe_net_id_uses_compact_semaphore_ids() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 14 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 14>
@@ -653,27 +653,26 @@ func.func @pipe_ready_counter_at_local_limit() attributes { "ttl.kernel_thread" 
 
 // -----
 
-// A high PipeNet id can consume the last local semaphore id for receiver
-// completion, so sender-ready state uses a GlobalSemaphore-backed counter.
+// A high PipeNet id does not force GlobalSemaphore-backed sender-ready state.
 // CHECK-LABEL: module attributes
-// CHECK-SAME: ttl.pipe_global_semaphore_count = 1 : i64
-// CHECK-LABEL: func.func @high_pipe_net_uses_global_ready_counter
+// CHECK-SAME: ttl.pipe_sync_semaphore_count = 2 : i64
+// CHECK-NOT: ttl.pipe_global_semaphore_count
+// CHECK-LABEL: func.func @high_pipe_net_id_keeps_local_ready_counter
+// CHECK-DAG: %[[READY_IDX:.*]] = arith.constant 1 : index
 // CHECK-DAG: %[[SCRATCH_ARG_IDX:.*]] = arith.constant 0 : index
-// CHECK-DAG: %[[READY_ARG_IDX:.*]] = arith.constant 1 : index
 // CHECK: %[[SCRATCH_POST:.*]] = ttkernel.get_common_arg_val(%[[SCRATCH_ARG_IDX]])
 // CHECK: ttkernel.noc_inline_dw_write
-// CHECK: %[[READY_POST:.*]] = ttkernel.get_common_arg_val(%[[READY_ARG_IDX]])
+// CHECK: %[[READY_POST:.*]] = ttkernel.get_semaphore(%[[READY_IDX]])
 // CHECK: ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[READY_POST]], {{.*}})
 // CHECK: ttkernel.noc_semaphore_inc
-// CHECK: %[[READY_SEND:.*]] = ttkernel.get_common_arg_val(%[[READY_ARG_IDX]])
+// CHECK: %[[READY_SEND:.*]] = ttkernel.get_semaphore(%[[READY_IDX]])
 // CHECK: %[[READY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[READY_SEND]])
 // CHECK: ttkernel.experimental.semaphore_wait(%[[READY_PTR]]
 // CHECK: ttkernel.noc_semaphore_set
 // CHECK: %[[SCRATCH_SEND:.*]] = ttkernel.get_common_arg_val(%[[SCRATCH_ARG_IDX]])
 // CHECK: ttkernel.reinterpret_cast{{.*}}(%[[SCRATCH_SEND]])
 // CHECK: ttkernel.load_from_l1
-// CHECK-NOT: ttkernel.get_semaphore(%[[READY_ARG_IDX]])
-func.func @high_pipe_net_uses_global_ready_counter() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+func.func @high_pipe_net_id_keeps_local_ready_counter() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 15 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 15>
@@ -688,26 +687,26 @@ func.func @high_pipe_net_uses_global_ready_counter() attributes { "ttl.kernel_th
 
 // -----
 
-// When one transfer forces GlobalSemaphore-backed ready counters, all
-// source-local ready counters use the same compact runtime-arg layout while
-// receiver completion remains per PipeNet.
+// Disjoint receiver sets reuse one completion counter. Each source uses the
+// next local semaphore id for its sender-ready counter.
 // CHECK-LABEL: module attributes
-// CHECK-SAME: ttl.pipe_global_semaphore_count = 2 : i64
-// CHECK-LABEL: func.func @interleaved_pipenets_use_global_ready_and_local_completion
-// CHECK-DAG: %[[SCRATCH_ARG_IDX:.*]] = arith.constant 0 : index
-// CHECK-DAG: %[[FIRST_READY_ARG_IDX:.*]] = arith.constant 1 : index
-// CHECK: %[[READY_POST:.*]] = ttkernel.get_common_arg_val(%[[FIRST_READY_ARG_IDX]])
+// CHECK-SAME: ttl.pipe_sync_semaphore_count = 2 : i64
+// CHECK-NOT: ttl.pipe_global_semaphore_count
+// CHECK-LABEL: func.func @disjoint_receivers_reuse_completion_counter
+// CHECK-DAG: %[[ZERO_INDEX:.*]] = arith.constant 0 : index
+// CHECK-DAG: %[[READY_IDX:.*]] = arith.constant 1 : index
+// CHECK: %[[READY_POST:.*]] = ttkernel.get_semaphore(%[[READY_IDX]])
 // CHECK: ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[READY_POST]], {{.*}})
 // CHECK: ttkernel.noc_semaphore_inc
-// CHECK: %[[READY_SEND:.*]] = ttkernel.get_common_arg_val(%[[FIRST_READY_ARG_IDX]])
+// CHECK: %[[READY_SEND:.*]] = ttkernel.get_semaphore(%[[READY_IDX]])
 // CHECK: %[[READY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[READY_SEND]])
 // CHECK: ttkernel.experimental.semaphore_wait(%[[READY_PTR]]
-// CHECK: ttkernel.get_common_arg_val(%[[SCRATCH_ARG_IDX]])
+// CHECK: ttkernel.get_common_arg_val(%[[ZERO_INDEX]])
 // CHECK: ttkernel.load_from_l1
-// CHECK: %[[DONE_SEM:.*]] = ttkernel.get_semaphore
+// CHECK: %[[DONE_SEM:.*]] = ttkernel.get_semaphore(%[[ZERO_INDEX]])
 // CHECK: ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[DONE_SEM]], {{.*}})
 // CHECK: ttkernel.noc_semaphore_inc
-func.func @interleaved_pipenets_use_global_ready_and_local_completion() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
+func.func @disjoint_receivers_reuse_completion_counter() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %p0 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 15 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 15>
@@ -911,7 +910,7 @@ func.func @degenerate_multicast_aggregate_ready_counting() attributes { "ttl.ker
 // -----
 
 // Pipe -> DFB (multicast receiver): publish the destination address through
-// the SRAM address table, then wait on the per-PipeNet counter.
+// the SRAM address table, then wait on the transfer's completion counter.
 // CHECK-LABEL: func.func @copy_pipe_to_cb_multicast
 // CHECK: %[[NOC:.*]] = arith.constant 0 : i8
 // CHECK: %[[CTR:.*]] = memref.alloca() : memref<1xi32>
@@ -1107,5 +1106,91 @@ func.func @pipe_block_argument(
          tensor<1x1x!ttcore.tile<32x32, f32>>)
       -> !ttl.transfer_handle
   ttl.wait %handle : !ttl.transfer_handle
+  func.return
+}
+
+// -----
+
+// A receive wait completes its exact posted phase. The receiver can post the
+// next phase even though matching sends execute in another kernel thread.
+
+// CHECK-LABEL: func.func @two_sequential_receiver_phases
+// CHECK-DAG: %[[COMPLETION_INDEX:.*]] = arith.constant 0 : index
+// CHECK-DAG: %[[ONE:.*]] = arith.constant 1 : i32
+// CHECK: %[[SEQUENCE:.*]] = memref.alloca() : memref<1xi32>
+// CHECK-NOT: memref.alloca
+// CHECK: ttkernel.noc_inline_dw_write
+// CHECK: %[[PREVIOUS0:.*]] = memref.load %[[SEQUENCE]][%[[COMPLETION_INDEX]]]
+// CHECK-NEXT: %[[TOKEN0:.*]] = arith.addi %[[PREVIOUS0]], %[[ONE]]
+// CHECK-NEXT: memref.store %[[TOKEN0]], %[[SEQUENCE]][%[[COMPLETION_INDEX]]]
+// CHECK: %[[COMPLETION0:.*]] = ttkernel.get_semaphore(%[[COMPLETION_INDEX]])
+// CHECK-NEXT: %[[COMPLETION_PTR0:.*]] = ttkernel.reinterpret_cast(%[[COMPLETION0]])
+// CHECK-NEXT: ttkernel.experimental.semaphore_wait_min(%[[COMPLETION_PTR0]], %[[TOKEN0]])
+// CHECK-NOT: memref.alloca
+// CHECK: ttkernel.noc_inline_dw_write
+// CHECK: %[[PREVIOUS1:.*]] = memref.load %[[SEQUENCE]][%[[COMPLETION_INDEX]]]
+// CHECK-NEXT: %[[TOKEN1:.*]] = arith.addi %[[PREVIOUS1]], %[[ONE]]
+// CHECK-NEXT: memref.store %[[TOKEN1]], %[[SEQUENCE]][%[[COMPLETION_INDEX]]]
+// CHECK: %[[COMPLETION1:.*]] = ttkernel.get_semaphore(%[[COMPLETION_INDEX]])
+// CHECK-NEXT: %[[COMPLETION_PTR1:.*]] = ttkernel.reinterpret_cast(%[[COMPLETION1]])
+// CHECK-NEXT: ttkernel.experimental.semaphore_wait_min(%[[COMPLETION_PTR1]], %[[TOKEN1]])
+// CHECK-NOT: memref.alloca
+// CHECK-NOT: ttl.pipe_transfer
+func.func @two_sequential_receiver_phases()
+    attributes {ttkernel.thread = #ttkernel.thread<noc>} {
+  %recv_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %reserve0 = ttl.cb_reserve %recv_cb
+      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %receive0 = ttl.copy %pipe, %reserve0
+      : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+         tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.transfer_handle
+  ttl.wait %receive0 : !ttl.transfer_handle
+  ttl.cb_push %recv_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %reserve1 = ttl.cb_reserve %recv_cb
+      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %receive1 = ttl.copy %pipe, %reserve1
+      : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+         tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.transfer_handle
+  ttl.wait %receive1 : !ttl.transfer_handle
+  ttl.cb_push %recv_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  func.return
+}
+
+// CHECK-LABEL: func.func @two_sequential_sender_phases
+// CHECK-DAG: %[[SEND_COMPLETION_INDEX:.*]] = arith.constant 0 : index
+// CHECK: ttkernel.noc_async_write
+// CHECK: ttkernel.noc_async_write_barrier
+// CHECK: %[[SEND_COMPLETION0:.*]] = ttkernel.get_semaphore(%[[SEND_COMPLETION_INDEX]])
+// CHECK: %[[SEND_COMPLETION_NOC0:.*]] = ttkernel.get_noc_addr({{.*}}, %[[SEND_COMPLETION0]]
+// CHECK-NEXT: ttkernel.noc_semaphore_inc(%[[SEND_COMPLETION_NOC0]]
+// CHECK: ttkernel.noc_async_write
+// CHECK: ttkernel.noc_async_write_barrier
+// CHECK: %[[SEND_COMPLETION1:.*]] = ttkernel.get_semaphore(%[[SEND_COMPLETION_INDEX]])
+// CHECK: %[[SEND_COMPLETION_NOC1:.*]] = ttkernel.get_noc_addr({{.*}}, %[[SEND_COMPLETION1]]
+// CHECK-NEXT: ttkernel.noc_semaphore_inc(%[[SEND_COMPLETION_NOC1]]
+// CHECK-NOT: ttl.pipe_transfer
+func.func @two_sequential_sender_phases()
+    attributes {ttkernel.thread = #ttkernel.thread<noc>} {
+  %send_cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %send0 = ttl.copy %send_cb, %pipe
+      : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+         !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+      -> !ttl.transfer_handle<write>
+  ttl.wait %send0 : !ttl.transfer_handle<write>
+  %send1 = ttl.copy %send_cb, %pipe
+      : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+         !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+      -> !ttl.transfer_handle<write>
+  ttl.wait %send1 : !ttl.transfer_handle<write>
   func.return
 }

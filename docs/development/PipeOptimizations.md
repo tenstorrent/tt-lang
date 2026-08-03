@@ -59,14 +59,15 @@ the count to equal the number of pipes.
 
 ### Multicast handshake protocol
 
-The sender and receiver in each multicast pipe coordinate via a
-per-PipeNet receiver counter, allocated by
-`allocatePipeNetCountersForMulticast` as a kernel-local
-`memref<1xi32>`. The lowering in `lib/Dialect/TTL/Transforms/PipeLowering.cpp`
-emits the following sequence (some arguments elided for brevity):
+The sender and receiver in each multicast pipe coordinate via a local
+receiver-completion semaphore and a kernel-local expected sequence allocated
+by `allocatePipePostSequenceCounters`. Pipe endpoint relations sharing a
+receiver use distinct completion semaphores; disjoint receiver sets may reuse
+an index. The lowering in `lib/Dialect/TTL/Transforms/PipeLowering.cpp` emits
+the following sequence (some arguments elided for brevity):
 
 ```
-                // one per (receiver, PipeNet); kernel-local memref<1xi32>
+                // one per completion semaphore used by this kernel
                 int32_t recv_counter[1] = {0};
 
 sender:    noc_async_write_multicast(data, recv_slot_addr, num_dests)
@@ -747,7 +748,7 @@ TTKernel op
 regions larger than 4 bytes, host-side `Buffer::create_l1_sharded`
 returns an L1 base address that can be passed similarly. This
 mechanism is sufficient for any future rewrite that needs a small
-fixed-size L1 region (e.g., a per-PipeNet shared counter) without
+fixed-size L1 region (e.g., a cross-core shared counter) without
 any new dialect surface; allocate a fresh semaphore alongside the
 existing `senderSem` / `recvSem` and operate on it with
 `noc_semaphore_inc` etc.
@@ -764,21 +765,19 @@ should grow its own TTL-side allocator targeting the same
 underlying tt-metal `Buffer` mechanism but driven from PipeGraph
 liveness rather than D2M's.
 
-Distinction from the existing per-PipeNet receiver counter: that
-counter is a `memref<1xi32>` with no memory-space attribute. The standard
-MemRefToEmitC patterns lower it to a stack-allocated `int32_t
-counter[1]` inside the kernel function — not L1-allocated. This is
-sufficient for that counter (each kernel invocation needs a fresh
-counter, no cross-core sharing). It is not sufficient for any
-counter that must be visible to other cores; that case requires
-the host-side semaphore mechanism above.
+Distinction from the existing receiver expected-sequence counter: that counter
+is a `memref<1xi32>` with no memory-space attribute. The standard MemRefToEmitC
+patterns lower it to a stack-allocated `int32_t counter[1]` inside the kernel
+function, not L1-allocated. This is sufficient because each kernel invocation
+needs fresh local state. A counter visible to other cores requires the
+host-side semaphore mechanism above.
 
 Recommendation by rewrite:
 
 | Rewrite | L1 need | Mechanism |
 |---|---|---|
 | 3.2.5 receiver-DFB sharing | Reuses an existing DFB | None; no new allocation |
-| Future cross-core counter | One 4-byte semaphore per PipeNet | Host-side `CreateSemaphore` |
+| Future cross-core counter | One 4-byte semaphore per synchronization relation | Host-side `CreateSemaphore` |
 | Future intermediate accumulator | Sized L1 region with liveness | TTL-side allocator (does not exist today; D2M's allocator is not an option) |
 
 The host-side mechanism covers every L1 need the §3.2 rewrites

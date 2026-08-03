@@ -5,7 +5,7 @@
 """Negative tests for ttl.PipeNet construction-time validation.
 
 Pure Python tests: no device, no MLIR. Pin the user-visible error
-contract for invalid PipeNet shapes.
+contract for invalid PipeNet configurations.
 """
 
 import pytest
@@ -22,8 +22,8 @@ def test_within_pipenet_overlapping_collective_dst_allowed():
     single PipeNet are allowed.
 
     The two pipes both target column 1 rows 0..3, so the node at (1, 1)
-    receives from both. Per-PipeNet receiver counters disambiguate the
-    handshake.
+    receives from both. Independent synchronization state for the two pipe
+    endpoint relations disambiguates the transfers.
     """
     ttl.PipeNet(
         [

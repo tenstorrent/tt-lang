@@ -6,23 +6,16 @@
 #define TTLANG_DIALECT_TTL_TRANSFORMS_PIPELOWERING_H
 
 #include "PipeGraph.h"
+#include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/Transforms/PipeTransferAnalysis.h"
+
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
-#include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "llvm/ADT/MapVector.h"
 
-namespace mlir::tt {
-class ValueOriginAnalysis;
-}
-
 namespace mlir::tt::ttl {
-
-/// Receiver-completion semaphores are indexed by PipeNet id.
-inline int64_t getReceiverCompletionSemIdx(int64_t pipeNetId) {
-  return pipeNetId;
-}
 
 struct PipeInfo {
   PipeType pipeType;
@@ -92,8 +85,8 @@ private:
   int64_t index;
 };
 
-struct PipeCompletionWaitInfo {
-  int64_t pipeNetId;
+/// Receiver-side completion state for one pipe endpoint relation.
+struct PipeCompletionInfo {
   int64_t receiverCompletionSemIdx;
 };
 
@@ -104,18 +97,21 @@ struct PipeAddressStorageInfo {
   PipeSramAddressTableInfo sramAddressTable;
 };
 
-/// Lowering information for a set of ttl.pipe_transfer.create ops sharing one
-/// PipeKey. This keeps address storage separate from readiness counting so
-/// physical allocation can choose local semaphores or GlobalSemaphore-backed
-/// counters independently.
+/// Lowering resources for one pipe endpoint relation.
+///
+/// Address storage remains separate from readiness counting so physical
+/// allocation can choose local semaphores or GlobalSemaphore-backed counters
+/// independently.
 struct PipeResourceInfo {
   PipeKey pipe;
   PipeTransferContract transferContract;
+  PipeCompletionInfo completion;
   PipeReadyCounterInfo readyCounter;
   PipeAddressStorageInfo addressStorage;
 };
 
-/// Per-function map: pipeNetId -> kernel-local i32 sequence assigned to posts.
+/// Per-function map from completion semaphore to the corresponding cumulative
+/// receiver-post sequence.
 using PipePostSequenceCounterMap =
     llvm::MapVector<func::FuncOp, llvm::MapVector<int64_t, Value>>;
 
@@ -128,13 +124,13 @@ struct PipeSramScratchInfo {
   int64_t bytes = 0;
 };
 
-/// Static resource allocation used by pipe lowering. Receiver-completion
-/// semaphore indices are per PipeNet. Sender-ready indices and address-table
-/// offsets are per source core and only need to be unique across concurrently
-/// live transfer intervals.
+/// Static resource allocation used by pipe lowering. Completion counters are
+/// distinct for transfers sharing a receiver. Sender-ready indices and
+/// address-table offsets are per source core and only need to be unique across
+/// concurrently live transfer intervals.
 struct PipeResourcePlan {
   PipeSramScratchInfo sramScratch;
-  llvm::MapVector<int64_t, PipeCompletionWaitInfo> completionWaits;
+  /// Maps each post, send, and wait to its transfer resources.
   llvm::MapVector<Operation *, PipeResourceInfo> resources;
 };
 
@@ -163,26 +159,24 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 /// Build the pipe resource plan used by pipe lowering. Transfer intervals that
 /// cannot be bounded by dominance are conservatively treated as conflicting
 /// with every other transfer interval from the same source core.
-LogicalResult buildPipeResourcePlan(ModuleOp mod, ValueOriginAnalysis &analysis,
+LogicalResult buildPipeResourcePlan(ModuleOp mod,
+                                    const PipeTransferIndex &transferIndex,
                                     PipeResourcePlan &info);
 
 /// At each function entry, emit one zero-initialized `memref<1xi32>` per
-/// pipeNetId used by a pipe receive post.
-void allocatePipePostSequenceCounters(ModuleOp mod,
-                                      ValueOriginAnalysis &analysis,
+/// completion counter used by a pipe receive post.
+void allocatePipePostSequenceCounters(const PipeResourcePlan &pipeResourcePlan,
                                       PipePostSequenceCounterMap &counters);
 
 /// Lower the sender-side pipe transfer. Uses receiver-published destination
 /// addresses and signals receiver completion.
 LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
                                     bool isConsumerCB,
-                                    ValueOriginAnalysis &analysis,
                                     const PipeResourcePlan &pipeResourcePlan,
                                     ConversionPatternRewriter &rewriter);
 
 /// Lower the receiver-side pipe destination address publication.
 LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
-                                    ValueOriginAnalysis &analysis,
                                     const PipePostSequenceCounterMap &counters,
                                     const PipeResourcePlan &pipeResourcePlan,
                                     ConversionPatternRewriter &rewriter);

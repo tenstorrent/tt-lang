@@ -8,6 +8,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   DFBMaterialization.cpp
   PipeGraph.cpp
   PipeLowering.cpp
+  PipeTransferAnalysis.cpp
   ConvertTTLToCompute.cpp
   ConvertTTLComputeToSCF.cpp
   ConvertTTLTileOpsToTTKernel.cpp
