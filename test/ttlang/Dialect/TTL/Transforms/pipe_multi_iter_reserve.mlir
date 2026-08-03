@@ -103,9 +103,9 @@ func.func @receiver_publishes_reserved_dfb_address() attributes { "ttl.kernel_th
 
 // -----
 
-// Repeated receives use a cumulative per-PipeNet completion counter. The
-// expected wait value is incremented inside the loop, so each iteration waits
-// for the next transfer rather than reusing the first completion value.
+// Repeated receives use a cumulative completion counter for the pipe endpoint
+// relation. The expected wait value increases inside the loop, so each
+// iteration waits for the next transfer rather than the first completion.
 // CHECK-LABEL: func.func @receiver_advances_wait_counter_inside_loop
 // CHECK: %[[CTR:.+]] = memref.alloca() : memref<1xi32>
 // CHECK: memref.store {{.*}}, %[[CTR]]

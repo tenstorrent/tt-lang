@@ -1810,8 +1810,8 @@ def _lower_program_to_kernel(
                 + "})"
             )
 
-        # NOTE: Pipeline pass ordering is mirrored in
-        # test/me2e/builder/pipeline.py and lib/Dialect/TTL/Pipelines/TTLPipelines.cpp.
+        # NOTE: Pipeline pass ordering mirrors
+        # lib/Dialect/TTL/Pipelines/TTLPipelines.cpp.
         assign_dst_pass = "ttl-assign-dst"
 
         compiler_dfbs_flag = int(compiler_options.compiler_dfbs)
@@ -1822,7 +1822,9 @@ def _lower_program_to_kernel(
             "func.func(ttl-create-producer-compute)",
             f"func.func(ttl-insert-intermediate-dfbs{{enable={compiler_dfbs_flag}}})",
             "func.func(convert-ttl-to-compute)",
-            "func.func(ttl-auto-sync)",
+            "func.func(ttl-insert-cb-sync)",
+            "ttl-verify-pipenet",
+            "func.func(ttl-coalesce-dfb-acquires)",
             "ttl-finalize-dfb-indices",
             set_compute_config_pass,
             f"func.func({assign_dst_pass})",
@@ -1841,7 +1843,6 @@ def _lower_program_to_kernel(
         if compiler_options.maximize_dst:
             pipeline_passes.append("func.func(ttl-schedule-operations)")
         pipeline_passes.append("func.func(ttl-annotate-cb-associations)")
-        pipeline_passes.append("ttl-verify-pipenet-guards")
         pipeline_passes.append("ttl-verify-dfb-spsc")
         pipeline_passes.append("ttl-erase-pipenet-scopes")
         if l1_budget_override > 0:

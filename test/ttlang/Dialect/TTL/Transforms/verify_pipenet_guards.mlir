@@ -294,6 +294,150 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
 
 // -----
 
+// Repeated occurrences of one PipeKey form independent FIFO rendezvous. The
+// first send must not acquire a dependency on the second receiver post.
+
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [1 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @repeated_pipe_key_schedule
+  // CHECK: return
+  func.func @repeated_pipe_key_schedule() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0> {
+      %recv0 = ttl.cb_reserve %recv_cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %post0 = ttl.copy %pipe, %recv0
+          : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.transfer_handle
+      %send0 = ttl.copy %send_cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send0 : !ttl.transfer_handle<write>
+      ttl.wait %post0 : !ttl.transfer_handle
+      %recv1 = ttl.cb_reserve %recv_cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %post1 = ttl.copy %pipe, %recv1
+          : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.transfer_handle
+      %send1 = ttl.copy %send_cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send1 : !ttl.transfer_handle<write>
+      ttl.wait %post1 : !ttl.transfer_handle
+    }
+    func.return
+  }
+}
+
+// -----
+
+// Corresponding events may use different structured control after thread
+// splitting. The receiver posts once, and the sender executes only on the last
+// loop iteration, so both endpoints execute one rendezvous event.
+
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @post_outside_sender_loop
+  // CHECK: return
+  func.func @post_outside_sender_loop() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %is_dst = ttl.is_dst {pipe_net_id = 0 : i64}
+    scf.if %is_dst {
+      %recv_reserve = ttl.cb_reserve %recv_cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %recv = ttl.copy %pipe, %recv_reserve
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.transfer_handle
+      ttl.wait %recv : !ttl.transfer_handle
+    }
+    func.return
+  }
+
+  // CHECK-LABEL: func.func @send_on_last_iteration
+  // CHECK: return
+  func.func @send_on_last_iteration() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c3 = arith.constant 3 : index
+    %c4 = arith.constant 4 : index
+    %is_src = ttl.is_src {pipe_net_id = 0 : i64}
+    scf.if %is_src {
+      scf.for %iteration = %c0 to %c4 step %c1 {
+        %is_last = arith.cmpi eq, %iteration, %c3 : index
+        scf.if %is_last {
+          %send = ttl.copy %send_cb, %pipe
+              : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+                 !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+              -> !ttl.transfer_handle<write>
+          ttl.wait %send : !ttl.transfer_handle<write>
+        }
+      }
+    }
+    func.return
+  }
+}
+
+// -----
+
+// A common unresolved loop gives the source and destination equal execution
+// counts because its runtime bounds are identical at both launch nodes.
+
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @shared_runtime_loop_schedule
+  // CHECK: return
+  func.func @shared_runtime_loop_schedule(%upper: index)
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %lower = arith.constant 0 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+        %recv_reserve = ttl.cb_reserve %recv_cb
+            : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+            -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        %recv = ttl.copy %pipe, %recv_reserve
+            : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+               tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> !ttl.transfer_handle
+        ttl.wait %recv : !ttl.transfer_handle
+      }
+      ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+        %send = ttl.copy %send_cb, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+               !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
+    }
+    func.return
+  }
+}
+
+// -----
+
 // ttl.is_active in a scope spanning both src and dst roles.
 
 module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
@@ -1127,6 +1271,46 @@ module attributes {ttl.launch_grid = [3 : i64, 1 : i64]} {
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
           -> !ttl.transfer_handle
     }
+    func.return
+  }
+}
+
+// -----
+
+// A negated destination predicate executes the receive only on the destination
+// node. This verifies coordinate dependence through boolean composition.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @negated_destination_predicate
+  func.func @negated_destination_predicate()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // CHECK: %[[PIPE:.*]] = ttl.create_pipe
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    // CHECK: %[[RECV_CB:.*]] = ttl.bind_cb
+    %recv_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // CHECK: %[[IS_DST:.*]] = ttl.is_dst
+    %is_dst = ttl.is_dst {pipe_net_id = 0 : i64}
+    // CHECK-NEXT: %[[TRUE:.*]] = arith.constant true
+    %true = arith.constant true
+    // CHECK-NEXT: %[[NOT_DST:.*]] = arith.xori %[[IS_DST]], %[[TRUE]]
+    %not_dst = arith.xori %is_dst, %true : i1
+    // CHECK-NEXT: scf.if %[[NOT_DST]] {
+    scf.if %not_dst {
+    // CHECK-NEXT: } else {
+    } else {
+      // CHECK-NEXT: %[[RESERVE:.*]] = ttl.cb_reserve %[[RECV_CB]]
+      %reserve = ttl.cb_reserve %recv_cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      // CHECK-NEXT: %[[RECEIVE:.*]] = ttl.copy %[[PIPE]], %[[RESERVE]]
+      %receive = ttl.copy %pipe, %reserve
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.transfer_handle
+    }
+    // CHECK-NOT: ttl.copy
     func.return
   }
 }

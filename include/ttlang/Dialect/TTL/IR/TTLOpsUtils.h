@@ -176,6 +176,18 @@ inline mlir::Value getAttachedCB(mlir::Value tensor) {
   return mlir::Value();
 }
 
+/// Returns true when `op` receives from a pipe into DFB-backed storage.
+inline bool isPipeReceiveCopy(CopyOp op) {
+  return mlir::isa<PipeType>(op.getSrc().getType()) &&
+         getAttachedCB(op.getDst());
+}
+
+/// Returns true when `op` sends from a DFB into a pipe.
+inline bool isPipeSendCopy(CopyOp op) {
+  return mlir::isa<CircularBufferType>(op.getSrc().getType()) &&
+         mlir::isa<PipeType>(op.getDst().getType());
+}
+
 /// Normalize a Python-style dim (allowing negative indices) against `rank`
 /// into a non-negative index. Negative dims wrap from the end (-1 is the
 /// last dim). Does not bounds-check; callers should validate the result is

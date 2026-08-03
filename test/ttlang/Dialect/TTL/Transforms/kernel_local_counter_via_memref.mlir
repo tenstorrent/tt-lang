@@ -4,13 +4,13 @@
 
 // Subsystem-level coverage for `memref<1xi32>` alloca + zero-store + load
 // / add 1 / store through `--convert-ttkernel-to-emitc` and
-// `ttlang-translate --ttkernel-to-cpp`. This is how the per-PipeNet
-// receiver counter (issue #505) is materialized; isolating it here means
+// `ttlang-translate --ttkernel-to-cpp`. This is how each receiver-completion
+// counter (issue #505) is materialized; isolating it here means
 // a MemRefToEmitC regression surfaces locally instead of as a pipe
 // lowering failure.
 
 //===----------------------------------------------------------------------===//
-// Single-counter case: one PipeNet, one Pipe→CB receive at a receiver.
+// Single-counter case: one pipe endpoint relation and one receive.
 //===----------------------------------------------------------------------===//
 
 // EMITC-LABEL: func.func @one_counter

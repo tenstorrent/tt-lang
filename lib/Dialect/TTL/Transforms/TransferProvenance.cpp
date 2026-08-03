@@ -23,6 +23,54 @@ findPipeTransferCreateForTransfer(ValueOriginAnalysis &analysis,
   return analysis.getOrigins(transfer).uniqueDefiningOp<PipeTransferCreateOp>();
 }
 
+FailureOr<std::optional<CopyOp>>
+findUniquePipeReceiveCopy(ValueOriginAnalysis &analysis, Value value) {
+  return analysis.getOrigins(value).uniqueMapped<std::optional<CopyOp>>(
+      [](Value origin) -> FailureOr<std::optional<CopyOp>> {
+        if (auto copyOp = origin.getDefiningOp<CopyOp>()) {
+          return isPipeReceiveCopy(copyOp) ? std::optional<CopyOp>(copyOp)
+                                           : std::optional<CopyOp>();
+        }
+        if (origin.getDefiningOp<PipeTransferSendOp>()) {
+          return std::optional<CopyOp>();
+        }
+        return failure();
+      });
+}
+
+FailureOr<SmallVector<PipeTransferPostOp>>
+findPipeTransferPostsForToken(ValueOriginAnalysis &analysis, Value token) {
+  SmallVector<PipeTransferPostOp> posts;
+  for (Value origin : analysis.getOrigins(token)) {
+    auto postOp = origin.getDefiningOp<PipeTransferPostOp>();
+    if (!postOp) {
+      return failure();
+    }
+    posts.push_back(postOp);
+  }
+  return posts;
+}
+
+FailureOr<PipeTransferCreateOp>
+findPipeTransferCreateForPosts(ValueOriginAnalysis &analysis,
+                               ArrayRef<PipeTransferPostOp> posts) {
+  std::optional<PipeTransferCreateOp> commonCreate;
+  for (PipeTransferPostOp postOp : posts) {
+    FailureOr<PipeTransferCreateOp> maybeCreate =
+        findPipeTransferCreateForTransfer(analysis, postOp.getTransfer());
+    if (failed(maybeCreate) ||
+        (commonCreate &&
+         commonCreate->getOperation() != maybeCreate->getOperation())) {
+      return failure();
+    }
+    commonCreate = *maybeCreate;
+  }
+  if (!commonCreate) {
+    return failure();
+  }
+  return *commonCreate;
+}
+
 namespace {
 
 bool isReachable(DataFlowSolver &solver, Operation *operation) {
@@ -55,6 +103,11 @@ LogicalResult verifyWait(WaitOp op, ValueOriginAnalysis &analysis) {
   if (hasPipeSend && hasCopy) {
     return op.emitOpError()
            << "requires all possible sources to have the same wait semantics";
+  }
+  if (failed(findUniquePipeReceiveCopy(analysis, op.getXf()))) {
+    return op.emitOpError()
+           << "requires either every possible source to be the same pipe "
+              "receive ttl.copy or no source to be a pipe receive";
   }
   return success();
 }
@@ -90,17 +143,22 @@ LogicalResult verifySend(PipeTransferSendOp op, ValueOriginAnalysis &analysis) {
 LogicalResult verifyPipeWait(PipeTransferWaitOp op,
                              ValueOriginAnalysis &analysis) {
   auto waitTokenType = cast<PipeTokenType>(op.getToken().getType());
-  if (!analysis.getOrigins(op.getToken()).allMatch([&](Value origin) {
-        auto post = origin.getDefiningOp<PipeTransferPostOp>();
-        if (!post) {
-          return false;
-        }
+  FailureOr<SmallVector<PipeTransferPostOp>> maybePosts =
+      findPipeTransferPostsForToken(analysis, op.getToken());
+  if (failed(maybePosts) ||
+      llvm::any_of(*maybePosts, [&](PipeTransferPostOp post) {
         auto postTokenType = cast<PipeTokenType>(post.getToken().getType());
-        return waitTokenType.getPipeNetId() == postTokenType.getPipeNetId();
+        return waitTokenType.getPipeNetId() != postTokenType.getPipeNetId();
       })) {
     return op.emitOpError()
            << "requires every possible token value to derive from a "
               "ttl.pipe_transfer.post in the same PipeNet";
+  }
+  if (!maybePosts->empty() &&
+      failed(findPipeTransferCreateForPosts(analysis, *maybePosts))) {
+    return op.emitOpError()
+           << "requires all possible receive posts to derive from one "
+              "ttl.pipe_transfer.create";
   }
   return success();
 }

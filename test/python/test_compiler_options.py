@@ -114,8 +114,11 @@ class TestMerge:
 class TestFromArgv:
     @pytest.fixture(autouse=True)
     def _reset_argv_cache(self):
-        """Clear the from_argv() cache so each test parses fresh."""
+        """Isolate the process-wide argv cache for each parser test."""
+        saved_argv_result = _co._argv_result
         _co._argv_result = None
+        yield
+        _co._argv_result = saved_argv_result
 
     def test_extracts_known_flags(self):
         with mock.patch.object(
