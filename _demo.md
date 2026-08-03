@@ -50,9 +50,9 @@ rebuild applies each reviewed final delta to merged PR704 instead.
 | 7 | #680 DFB subviews | `4588cf72` | `3c4bd203`, `eddbfea9` | Applied and repaired |
 | 8 | #782-#784 PipeNet stack | `fc9233b1`, `e4bcf154`, `4d003e09`, `bd3a991e`, `671ca189`, `9213a58b` | `684d73ae` | Applied and repaired |
 | 9 | #780 grouped PipeTransport | `374909df` | `1c56a977` | Applied and repaired |
-| 10 | #734 multidevice fabric | Pending refresh | Pending | Pending |
+| 10 | #734 multidevice fabric, including #795 | `d54f5dda` (`2fa8f92c` for #795) | `bce1cd6d` | Applied and repaired |
 | 11 | #754 compact selected PipeNets | Pending refresh | Pending | Pending |
-| 12 | #795 operation device domains | Pending refresh | Pending | Pending |
+| 12 | #795 operation device domains | `2fa8f92c` | Included in `bce1cd6d` | Applied with #734 |
 | 13 | demo examples | `a3021dca`, `37c570f5` | Pending | Pending |
 
 ## Integration Repairs And Source Follow-Ups
@@ -120,8 +120,36 @@ composition change between independent PRs.
   exercised through the complete pipeline. Standalone transport formation does
   not require physical allocation. Owner: composition with #778; no source PR
   change is required while #780 remains an independent child of #784.
+- #734 with #780: retain PR780's grouped transfer attributes when adding the
+  logical-device transfer to `ttl.pipe_transfer.create`. Propagate the device
+  transfer in `PipeTransferExpansion`, which owns high-level copy expansion
+  after #780. Owner: #734 when refreshed on top of #780.
+- #734 with #780: retain grouped packetization, transport-owned storage, and
+  receiver-release ownership while adding device-qualified PipeGraph streams
+  and fabric route planning. Use the current cached-analysis
+  `PipeGraph::build` interface. Owner: #734 when refreshed on top of #780.
+- #734 with #780: add `Fabric` to the synchronization protocol declared by
+  `PipeTransportPlan`, and record the optional route index in `PipeSendPlan`.
+  Owner: #734 when refreshed on top of #780.
+- #734 with #780: make the fabric emitter implement PR780's page-write
+  interface. Each page uses a fused fabric write; only the final page increments
+  the receiver completion counter. This preserves payload-before-completion
+  ordering for grouped payloads larger than one NoC burst. Owner: #734 when
+  refreshed on top of #780.
+- #734 with the current Python frontend: retain recursive PipeNet discovery,
+  physical DFB runtime descriptors, NOC-role serialization, and per-kernel
+  runtime arguments while adding graph PipeNets and mesh placement. Owner:
+  composition between independent stacks; no source PR change is required.
+- #795 with the accumulation stack: default the unified compiler's
+  `l1_budget_override` to zero so the operation device-domain dispatcher keeps
+  the existing direct-call contract. Owner: composition between independent
+  stacks; no source PR change is required.
+- #734 runner test with NOC-role serialization: use the fake reader
+  configuration instead of an untyped object when verifying emitted
+  per-kernel runtime arguments. Owner: #734 when refreshed on top of #680.
 - #734 terminology: retain the multicast-to-scatter frontend and tests from
-  the reviewed source change. Owner: #734.
+  the reviewed source change. This overlay is not yet applied to the current
+  rebuild. Owner: #734.
 
 ## Demo Checklist
 
@@ -143,18 +171,17 @@ composition change between independent PRs.
 
 Current rebuild:
 
-- Host build: passed through current PR780.
-- Pre-commit: all hooks passed through current PR780.
+- Host build: passed through current PR734 and #795.
+- Pre-commit: all hooks passed through current PR734 and #795.
 - MLIR: `ninja -C build check-ttlang-mlir` passed on 2026-08-02; all 260 tests
-  passed.
-- Python-only integration tests: `test_compiler_options.py`,
-  `test_ttl_api_kernel_cache.py`, and `test_kernel_runner.py` passed on
-  2026-08-02; all 70 tests passed.
+  passed through PR780. After PR734 and #795, all 264 tests passed.
+- Python-only integration tests: `test_domains.py`,
+  `test_ttl_api_device_options.py`, `test_kernel_runner.py`, and
+  `test_pipenet_validation.py` passed on 2026-08-02; all 91 tests passed.
 
 Pending:
 
-- Integrate the current fabric, selected PipeNet, and device-domain branches
-  from `/home/bnorris/tt/PRs.md`.
+- Apply the reviewed multicast-to-scatter overlay and integrate #754.
 - Restore the demo examples.
 - Docker build and `check-ttlang-all`.
 - Four-device example validation.
