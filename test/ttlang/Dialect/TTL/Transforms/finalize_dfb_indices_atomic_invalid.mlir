@@ -1,6 +1,6 @@
-// Verifies that allocation failure leaves provisional DFB indices and kernel
-// configuration unchanged and does not create runtime metadata.
-// RUN: ttlang-opt %s --verify-diagnostics --mlir-print-ir-after=ttl-finalize-dfb-indices --mlir-print-ir-after-failure -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' 2>&1 | FileCheck %s --implicit-check-not=ttl.dfb_allocations
+// Verifies that compiler-only allocation failure leaves provisional DFB
+// indices and kernel configuration unchanged and creates no runtime metadata.
+// RUN: ttlang-opt %s --verify-diagnostics --mlir-print-ir-after=ttl-finalize-dfb-indices --mlir-print-ir-after-failure -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false})' 2>&1 | FileCheck %s --implicit-check-not=ttl.dfb_allocations
 
 // expected-error @below {{need 33 DFB indices but hardware supports at most 32 (1 compiler-allocated after reuse)}}
 module {
