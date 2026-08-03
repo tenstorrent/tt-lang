@@ -662,6 +662,27 @@ def test_cb_pages_by_core_requires_exact_grid_partition(monkeypatch):
         )
 
 
+def test_cb_pages_by_core_preserves_compiler_maximum(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    program = _FakeExplicitCoreRanges(((0, 0), (1, 0)))
+    geometry = SimpleNamespace(
+        data_format="bf16",
+        page_size=32,
+        num_pages=4,
+        total_size=128,
+        tile_descriptor=SimpleNamespace(height=1, width=32),
+    )
+    monkeypatch.setattr(kernel_runner, "cb_geometry", lambda _index, _cb: geometry)
+
+    with pytest.raises(ValueError, match="preserve the compiler-derived maximum"):
+        kernel_runner.build_cb_descriptors_by_core(
+            tensors=[_FakeTensorWithoutDevice()],
+            cb_configs=[object()],
+            core_ranges=program,
+            pages_by_core={0: [(program, 2)]},
+        )
+
+
 def test_run_kernel_rejects_both_cb_override_forms(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)

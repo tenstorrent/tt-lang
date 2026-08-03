@@ -735,6 +735,7 @@ def build_cb_descriptors_by_core(
 
         covered = set()
         descriptors = []
+        configured_pages = []
         for entry_index, entry in enumerate(entries):
             try:
                 entry_ranges, raw_pages = entry
@@ -767,6 +768,7 @@ def build_cb_descriptors_by_core(
                 )
             covered.update(entry_cores)
             geometry = geometries[index]
+            configured_pages.append(pages)
             descriptors.append(
                 _cb_descriptor(
                     index,
@@ -779,6 +781,12 @@ def build_cb_descriptors_by_core(
             raise ValueError(
                 f"per-core CB[{index}] must cover the whole program grid; "
                 f"missing {sorted(program_cores - covered)}"
+            )
+        if max(configured_pages) != geometries[index].num_pages:
+            raise ValueError(
+                f"per-core CB[{index}] must preserve the compiler-derived "
+                f"maximum of {geometries[index].num_pages} pages; got "
+                f"{max(configured_pages)}"
             )
         specialized[index] = descriptors
 
