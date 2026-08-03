@@ -102,6 +102,16 @@ inline BindCBOp getDFBDeclaration(mlir::Value dfb) {
   return traceUnrealizedCasts(dfb).getDefiningOp<BindCBOp>();
 }
 
+/// Returns true when a direct DFB operand may access physical storage.
+///
+/// Callers first identify a DFB operand. Unknown operations conservatively
+/// access storage; only operations with defined identity-only semantics are
+/// excluded.
+inline bool mayAccessDFBStorage(mlir::Operation *operation) {
+  return !mlir::isa<AttachCBOp, GetDfbIdOp, mlir::UnrealizedConversionCastOp>(
+      operation);
+}
+
 /// Resolve the CB index attached to `cb`, accepting either the pre-conversion
 /// BindCBOp or the post-conversion GetCompileArgValOp.
 inline std::optional<int64_t> getCBIndex(mlir::Value cb) {

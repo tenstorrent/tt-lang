@@ -23,6 +23,7 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -799,28 +800,34 @@ getBranchLaunchNodeDomains(Value condition, const LaunchNodeDomain &current,
 /// Decode the PipeNet role metadata carried by one `ttl.pipenet_scope`.
 static std::optional<PipeNetScopeLaunchNodeDomains>
 getPipeNetScopeLaunchNodeDomains(PipeNetScopeOp scopeOp,
-                                 LaunchNodeDomainState &state) {
+                                 LaunchNodeDomainState &state,
+                                 bool emitDiagnostics) {
+  auto recordError = [&](const Twine &message) {
+    state.sawError = true;
+    state.errorOperation = scopeOp;
+    state.errorMessage = message.str();
+    if (emitDiagnostics) {
+      scopeOp.emitOpError() << message;
+    }
+  };
   SmallVector<int64_t> ids;
   SmallVector<int64_t> roles;
   if (!readI64ArrayAttr(scopeOp.getOperation(), kPipeNetIdsAttrName, ids) ||
       !readI64ArrayAttr(scopeOp.getOperation(), kPipeNetRolesAttrName, roles)) {
-    scopeOp.emitOpError() << "requires `" << kPipeNetIdsAttrName << "` and `"
-                          << kPipeNetRolesAttrName << "` attributes";
-    state.sawError = true;
+    recordError(Twine("requires `") + kPipeNetIdsAttrName + "` and `" +
+                kPipeNetRolesAttrName + "` attributes");
     return std::nullopt;
   }
   if (ids.size() != roles.size()) {
-    scopeOp.emitOpError() << "requires equal-length PipeNet id and role arrays";
-    state.sawError = true;
+    recordError("requires equal-length PipeNet id and role arrays");
     return std::nullopt;
   }
   PipeNetScopeLaunchNodeDomains result;
   for (auto [pipeNetId, roleValue] : llvm::zip_equal(ids, roles)) {
     if (roleValue != static_cast<int64_t>(PipeRole::Source) &&
         roleValue != static_cast<int64_t>(PipeRole::Destination)) {
-      scopeOp.emitOpError() << "has invalid PipeNet role " << roleValue
-                            << " (expected 0=src or 1=dst)";
-      state.sawError = true;
+      recordError(Twine("has invalid PipeNet role ") + Twine(roleValue) +
+                  " (expected 0=src or 1=dst)");
       return std::nullopt;
     }
     auto role = static_cast<PipeRole>(roleValue);
@@ -953,7 +960,8 @@ void LaunchNodeDomainAnalysis::visitRegionBranchControlFlowTransfer(
             getPipeDestinationLaunchNodeDomain(pipeType, state.baseDomain));
       })
       .Case<PipeNetScopeOp>([&](PipeNetScopeOp scopeOp) {
-        auto scope = getPipeNetScopeLaunchNodeDomains(scopeOp, state);
+        auto scope = getPipeNetScopeLaunchNodeDomains(
+            scopeOp, state, options.emitInvalidPipeNetDiagnostics);
         if (!scope) {
           return;
         }

@@ -5,6 +5,7 @@
 #include "DFBAcquireReleaseAnalysis.h"
 
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/DenseMap.h"
@@ -44,8 +45,10 @@ static bool directDFBUseMatchesAcquire(DFBAcquireInterval interval,
   llvm_unreachable("unknown DFB acquire/release kind");
 }
 
-static bool isLifecycleOrAttachOp(Operation *op) {
-  return isDFBAcquireOp(op) || isDFBReleaseOp(op) || isa<AttachCBOp>(op);
+/// Returns true when a direct DFB operand does not consume an acquired slot.
+static bool isLifecycleOrIdentityOnlyOp(Operation *operation) {
+  return isDFBAcquireOp(operation) || isDFBReleaseOp(operation) ||
+         !mayAccessDFBStorage(operation);
 }
 
 /// Project `op` into the acquire block so nested regions can be ordered
@@ -141,7 +144,7 @@ getDFBAcquireReleaseKind(Operation *op) {
   return std::nullopt;
 }
 
-static int64_t getDFBLifecycleTileCount(Operation *operation) {
+int64_t getDFBLifecycleTileCount(Operation *operation) {
   if (auto numTiles = operation->getAttrOfType<IntegerAttr>("num_tiles")) {
     return numTiles.getInt();
   }
@@ -183,6 +186,7 @@ static bool operationMatchesKind(Operation *operation,
 static FailureOr<SameBlockFIFOOwnership>
 buildSameBlockFIFOOwners(func::FuncOp kernel, ArrayRef<Operation *> reserves,
                          ArrayRef<Operation *> waits,
+                         ArrayRef<Operation *> releases,
                          std::optional<DFBLifecycleDiagnostic> &diagnostic) {
   SameBlockFIFOOwnership ownership;
 
@@ -270,30 +274,32 @@ buildSameBlockFIFOOwners(func::FuncOp kernel, ArrayRef<Operation *> reserves,
           processBlock(entryBlock, DFBAcquireReleaseKind::Consumer, waits))) {
     return failure();
   }
-  kernel.walk([&](Operation *operation) {
+  for (Operation *operation : releases) {
     if (operation->getBlock() != entryBlock && isDFBReleaseOp(operation)) {
       ownership.unresolvedReleases.insert(operation);
     }
-  });
+  }
   return ownership;
 }
 
-void collectDFBAcquireReleaseOps(func::FuncOp func,
-                                 SmallVectorImpl<Operation *> &reserves,
-                                 SmallVectorImpl<Operation *> &waits,
-                                 SmallVectorImpl<Operation *> &pushes,
-                                 SmallVectorImpl<Operation *> &pops) {
+DFBAcquireReleaseOperations collectDFBAcquireReleaseOps(func::FuncOp func) {
+  DFBAcquireReleaseOperations operations;
   func.walk([&](Operation *op) {
     if (isa<CBReserveOp>(op)) {
-      reserves.push_back(op);
+      operations.reserves.push_back(op);
+      operations.acquisitions.push_back(op);
     } else if (isa<CBWaitOp>(op)) {
-      waits.push_back(op);
+      operations.waits.push_back(op);
+      operations.acquisitions.push_back(op);
     } else if (isa<CBPushOp>(op)) {
-      pushes.push_back(op);
+      operations.pushes.push_back(op);
+      operations.releases.push_back(op);
     } else if (isa<CBPopOp>(op)) {
-      pops.push_back(op);
+      operations.pops.push_back(op);
+      operations.releases.push_back(op);
     }
   });
+  return operations;
 }
 
 DFBAcquireInterval makeDFBAcquireInterval(Operation *acquire,
@@ -347,7 +353,7 @@ Operation *findLastDFBAcquireOwnedUse(DFBAcquireInterval interval) {
     if (user == interval.acquire) {
       continue;
     }
-    if (isLifecycleOrAttachOp(user)) {
+    if (isLifecycleOrIdentityOnlyOp(user)) {
       continue;
     }
     if (!directDFBUseMatchesAcquire(interval, user)) {
@@ -434,11 +440,9 @@ DFBAcquireReleaseIndex::create(func::FuncOp kernel) {
 
 LogicalResult DFBAcquireReleaseIndex::build(
     func::FuncOp kernel, std::optional<DFBLifecycleDiagnostic> &diagnostic) {
-  SmallVector<Operation *> reserves;
-  SmallVector<Operation *> waits;
-  SmallVector<Operation *> pushes;
-  SmallVector<Operation *> pops;
-  collectDFBAcquireReleaseOps(kernel, reserves, waits, pushes, pops);
+  DFBAcquireReleaseOperations operations = collectDFBAcquireReleaseOps(kernel);
+  acquisitionOrder = operations.acquisitions;
+  releaseOrder = operations.releases;
 
   auto recordTransactions = [&](ArrayRef<Operation *> acquires) {
     for (Operation *acquire : acquires) {
@@ -448,16 +452,12 @@ LogicalResult DFBAcquireReleaseIndex::build(
                                         getDFBLifecycleTileCount(acquire)});
     }
   };
-  recordTransactions(reserves);
-  recordTransactions(waits);
-  kernel.walk([&](Operation *operation) {
-    if (isDFBAcquireOp(operation)) {
-      acquisitionOrder.push_back(operation);
-    }
-  });
+  recordTransactions(operations.reserves);
+  recordTransactions(operations.waits);
 
   FailureOr<SameBlockFIFOOwnership> fifoOwnershipResult =
-      buildSameBlockFIFOOwners(kernel, reserves, waits, diagnostic);
+      buildSameBlockFIFOOwners(kernel, operations.reserves, operations.waits,
+                               operations.releases, diagnostic);
   if (failed(fifoOwnershipResult)) {
     return failure();
   }
@@ -502,15 +502,10 @@ LogicalResult DFBAcquireReleaseIndex::build(
     return success();
   };
 
-  if (failed(recordReleaseOwnership(pushes, reserves)) ||
-      failed(recordReleaseOwnership(pops, waits))) {
+  if (failed(recordReleaseOwnership(operations.pushes, operations.reserves)) ||
+      failed(recordReleaseOwnership(operations.pops, operations.waits))) {
     return failure();
   }
-  kernel.walk([&](Operation *operation) {
-    if (isDFBReleaseOp(operation)) {
-      releaseOrder.push_back(operation);
-    }
-  });
   return success();
 }
 

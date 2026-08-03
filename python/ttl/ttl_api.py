@@ -1838,6 +1838,10 @@ def _lower_program_to_kernel(
         assign_dst_pass = "ttl-assign-dst"
 
         compiler_dfbs_flag = int(compiler_options.compiler_dfbs)
+        reuse_user_dfbs_flag = int(compiler_options.reuse_user_dfbs)
+        exact_coloring_search_limit = (
+            compiler_options.dfb_exact_coloring_search_limit
+        )
         pipeline_passes = [
             "func.func(ttl-materialize-loop-state)",
             "func.func(ttl-insert-copy-wait)",
@@ -1848,7 +1852,10 @@ def _lower_program_to_kernel(
             "func.func(ttl-insert-cb-sync)",
             "ttl-verify-pipenet",
             "func.func(ttl-coalesce-dfb-acquires)",
-            "ttl-finalize-dfb-indices",
+            "ttl-finalize-dfb-indices{"
+            f"reuse-user-dfbs={reuse_user_dfbs_flag} "
+            f"exact-coloring-search-limit={exact_coloring_search_limit}"
+            "}",
             set_compute_config_pass,
             f"func.func({assign_dst_pass})",
         ]

@@ -13,6 +13,7 @@
 //
 // Func args (runtime):
 //   in_cb       -- input CB index (from a DFB passed as func_args)
+//   out_cb      -- output CB index, declaring the output DFB dependency
 //   scale_f     -- float scale
 //   int_factor   -- integer factor multiplied into the scale
 //   also_negate -- bool: also request negate
@@ -53,8 +54,9 @@ inline uint32_t bits_from_float(float value) {
 } // namespace
 
 template <uint32_t OutCB, int IntScale, bool NegateTpl, uint32_t ScaleTplBits>
-void typed_args_shim(uint32_t in_cb, float scale_f, int32_t int_factor,
-                     bool also_negate) {
+void typed_args_shim(uint32_t in_cb, uint32_t out_cb, float scale_f,
+                     int32_t int_factor, bool also_negate) {
+  (void)out_cb;
 #if defined(COMPILE_FOR_TRISC)
   using namespace ckernel;
 
