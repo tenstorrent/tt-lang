@@ -41,6 +41,7 @@ using PipeTransportStreamId = std::size_t;
 enum class PipeSynchronizationProtocol {
   ReceiverPost,
   Capacity,
+  Fabric,
 };
 
 /// Backend-independent schedule selected for one transfer stream.

@@ -20,11 +20,16 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h" // IWYU pragma: keep
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/Utils/OpaqueCallVerifyUtils.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/StringSet.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/ADT/TypeSwitch.h" // IWYU pragma: keep
 #include <cstdint>
 #include <functional>
 #include <numeric>
+#include <optional>
 
+#include "ttlang/Dialect/TTL/IR/TTLAttrInterfaces.cpp.inc"
 #include "ttlang/Dialect/TTL/IR/TTLInterfaces.cpp.inc"
 
 #define GET_OP_CLASSES
@@ -52,6 +57,102 @@ void TTLDialect::registerTypes() {
       >();
 }
 
+namespace {
+
+using EmitErrorFn = llvm::function_ref<mlir::InFlightDiagnostic()>;
+
+static mlir::LogicalResult
+verifyDeviceRefInDomain(DeviceDomainAttr domain, DeviceRefAttr deviceRef,
+                        EmitErrorFn emitError, llvm::StringRef context,
+                        bool allowUpperBound = false) {
+  llvm::ArrayRef<DeviceDomainComponentAttr> components = domain.getComponents();
+  llvm::ArrayRef<DenseI64ArrayAttr> coordinates = deviceRef.getCoordinates();
+  if (coordinates.size() != components.size()) {
+    return emitError() << context << " has " << coordinates.size()
+                       << " component coordinates, expected "
+                       << components.size();
+  }
+
+  for (auto [component, coordinate] : llvm::zip(components, coordinates)) {
+    llvm::ArrayRef<int64_t> extent = component.getExtent().asArrayRef();
+    llvm::ArrayRef<int64_t> values = coordinate.asArrayRef();
+    if (values.size() != extent.size()) {
+      return emitError() << context << " component '"
+                         << component.getName().getValue() << "' has rank "
+                         << values.size() << ", expected " << extent.size();
+    }
+    for (auto [axis, value] : llvm::enumerate(values)) {
+      bool upperBoundValid =
+          allowUpperBound ? value <= extent[axis] : value < extent[axis];
+      if (value < 0 || !upperBoundValid) {
+        return emitError() << context << " component '"
+                           << component.getName().getValue() << "' axis "
+                           << axis << " is out of bounds for extent "
+                           << extent[axis] << ", got " << value;
+      }
+    }
+  }
+  return mlir::success();
+}
+
+static std::optional<unsigned> findComponent(DeviceDomainAttr domain,
+                                             llvm::StringRef name) {
+  for (auto [index, component] : llvm::enumerate(domain.getComponents())) {
+    if (component.getName().getValue() == name) {
+      return index;
+    }
+  }
+  return std::nullopt;
+}
+
+static bool rangeContains(DeviceRangeAttr range, DeviceRefAttr deviceRef) {
+  for (auto [loCoordinate, coordinate, hiCoordinate] : llvm::zip_equal(
+           range.getLo().getCoordinates(), deviceRef.getCoordinates(),
+           range.getHi().getCoordinates())) {
+    for (auto [lo, value, hi] :
+         llvm::zip_equal(loCoordinate.asArrayRef(), coordinate.asArrayRef(),
+                         hiCoordinate.asArrayRef())) {
+      if (value < lo || value >= hi) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+static mlir::LogicalResult verifyTransferEdgeInDomain(DeviceDomainAttr domain,
+                                                      TransferEdgeAttr edge,
+                                                      EmitErrorFn emitError,
+                                                      llvm::StringRef context) {
+  if (mlir::failed(
+          verifyDeviceRefInDomain(domain, edge.getSource(), emitError,
+                                  (llvm::Twine(context) + ".source").str()))) {
+    return mlir::failure();
+  }
+  if (DeviceRefAttr destination = edge.getDestination()) {
+    return verifyDeviceRefInDomain(
+        domain, destination, emitError,
+        (llvm::Twine(context) + ".destination").str());
+  }
+
+  DeviceRangeAttr destinationRange = edge.getDestinationRange();
+  if (mlir::failed(verifyDeviceRefInDomain(
+          domain, destinationRange.getLo(), emitError,
+          (llvm::Twine(context) + ".destination_range.lo").str())) ||
+      mlir::failed(verifyDeviceRefInDomain(
+          domain, destinationRange.getHi(), emitError,
+          (llvm::Twine(context) + ".destination_range.hi").str(), true))) {
+    return mlir::failure();
+  }
+  if (rangeContains(destinationRange, edge.getSource())) {
+    return emitError() << context
+                       << " source-in-destination multicast is not supported";
+  }
+  return mlir::success();
+}
+
+} // namespace
+
 llvm::LogicalResult
 SliceAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
                   int64_t start, int64_t stop, int64_t step) {
@@ -67,6 +168,222 @@ SliceAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
                        << start << ") when step is negative";
   }
   return llvm::success();
+}
+
+llvm::LogicalResult DeviceDomainComponentAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError, StringAttr name,
+    DenseI64ArrayAttr extent) {
+  if (name.getValue().empty()) {
+    return emitError() << "device domain component name must not be empty";
+  }
+  if (extent.empty()) {
+    return emitError() << "device domain component '" << name.getValue()
+                       << "' extent must not be empty";
+  }
+  for (auto [axis, dimension] : llvm::enumerate(extent.asArrayRef())) {
+    if (dimension <= 0) {
+      return emitError() << "device domain component '" << name.getValue()
+                         << "' extent axis " << axis
+                         << " must be positive, got " << dimension;
+    }
+  }
+  return mlir::success();
+}
+
+llvm::LogicalResult DeviceDomainAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    llvm::ArrayRef<DeviceDomainComponentAttr> components) {
+  if (components.empty()) {
+    return emitError() << "device domain requires at least one component";
+  }
+
+  llvm::StringSet<> componentNames;
+  for (DeviceDomainComponentAttr component : components) {
+    llvm::StringRef name = component.getName().getValue();
+    if (!componentNames.insert(name).second) {
+      return emitError() << "duplicate device domain component name '" << name
+                         << "'";
+    }
+  }
+  return mlir::success();
+}
+
+llvm::LogicalResult
+DeviceRefAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+                      llvm::ArrayRef<DenseI64ArrayAttr> coordinates) {
+  if (coordinates.empty()) {
+    return emitError() << "device reference requires at least one coordinate";
+  }
+  for (auto [componentIndex, coordinate] : llvm::enumerate(coordinates)) {
+    if (coordinate.empty()) {
+      return emitError() << "device reference component " << componentIndex
+                         << " coordinate must not be empty";
+    }
+    for (auto [axis, value] : llvm::enumerate(coordinate.asArrayRef())) {
+      if (value < 0) {
+        return emitError() << "device reference component " << componentIndex
+                           << " axis " << axis << " must be non-negative, got "
+                           << value;
+      }
+    }
+  }
+  return mlir::success();
+}
+
+llvm::LogicalResult DeviceRangeAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError, DeviceRefAttr lo,
+    DeviceRefAttr hi) {
+  if (lo.getCoordinates().size() != hi.getCoordinates().size()) {
+    return emitError() << "device range endpoints have different component "
+                          "counts";
+  }
+  for (auto [componentIndex, coordinatePair] : llvm::enumerate(
+           llvm::zip_equal(lo.getCoordinates(), hi.getCoordinates()))) {
+    auto [loCoordinate, hiCoordinate] = coordinatePair;
+    if (loCoordinate.size() != hiCoordinate.size()) {
+      return emitError() << "device range component " << componentIndex
+                         << " endpoints have different ranks";
+    }
+    for (auto [axis, valuePair] : llvm::enumerate(llvm::zip_equal(
+             loCoordinate.asArrayRef(), hiCoordinate.asArrayRef()))) {
+      auto [loValue, hiValue] = valuePair;
+      if (loValue >= hiValue) {
+        return emitError() << "device range component " << componentIndex
+                           << " axis " << axis
+                           << " requires lo < hi, got lo=" << loValue
+                           << ", hi=" << hiValue;
+      }
+    }
+  }
+  return mlir::success();
+}
+
+llvm::LogicalResult TransferEdgeAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    DeviceRefAttr source, DeviceRefAttr destination,
+    DeviceRangeAttr destinationRange) {
+  if (static_cast<bool>(destination) == static_cast<bool>(destinationRange)) {
+    return emitError() << "transfer edge requires exactly one of destination "
+                          "or destination_range";
+  }
+  return mlir::success();
+}
+
+static llvm::LogicalResult verifyStructuredTransferComponent(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    StringAttr component) {
+  if (component.getValue().empty()) {
+    return emitError() << "structured transfer component must not be empty";
+  }
+  return mlir::success();
+}
+
+llvm::LogicalResult AxisNeighborTransferAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    StringAttr component, IntegerAttr axis, IntegerAttr offset, BoolAttr wrap) {
+  if (mlir::failed(verifyStructuredTransferComponent(emitError, component))) {
+    return mlir::failure();
+  }
+  if (axis.getInt() < 0) {
+    return emitError() << "axis_neighbor axis must be non-negative, got "
+                       << axis.getInt();
+  }
+  if (offset.getInt() <= 0) {
+    return emitError() << "axis_neighbor offset must be positive, got "
+                       << offset.getInt();
+  }
+  return mlir::success();
+}
+
+llvm::LogicalResult GatherTransferAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    StringAttr component, DeviceRefAttr root) {
+  return verifyStructuredTransferComponent(emitError, component);
+}
+
+llvm::LogicalResult MulticastTransferAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    StringAttr component, DeviceRefAttr source) {
+  return verifyStructuredTransferComponent(emitError, component);
+}
+
+llvm::LogicalResult TransferGraphAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    DeviceDomainAttr domain, llvm::ArrayRef<TransferEdgeAttr> edges,
+    StructuredTransferAttrInterface structured) {
+  if (structured && !edges.empty()) {
+    return emitError()
+           << "transfer graph must be explicit or structured, not both";
+  }
+  if (!structured && edges.empty()) {
+    return emitError() << "explicit transfer graph requires at least one edge";
+  }
+
+  for (auto [edgeIndex, edge] : llvm::enumerate(edges)) {
+    std::string context =
+        (llvm::Twine("transfer graph edge ") + llvm::Twine(edgeIndex)).str();
+    if (mlir::failed(
+            verifyTransferEdgeInDomain(domain, edge, emitError, context))) {
+      return mlir::failure();
+    }
+  }
+
+  if (!structured) {
+    return mlir::success();
+  }
+
+  std::optional<unsigned> componentIndex =
+      findComponent(domain, structured.getComponent().getValue());
+  if (!componentIndex) {
+    return emitError() << "structured transfer references unknown component '"
+                       << structured.getComponent().getValue() << "'";
+  }
+
+  if (auto axisNeighbor =
+          mlir::dyn_cast<AxisNeighborTransferAttr>(structured)) {
+    int64_t axisValue = axisNeighbor.getAxis().getInt();
+    size_t rank = domain.getComponents()[*componentIndex].getExtent().size();
+    if (axisValue >= static_cast<int64_t>(rank)) {
+      return emitError() << "axis_neighbor axis " << axisValue
+                         << " is out of bounds for component '"
+                         << structured.getComponent().getValue() << "' rank "
+                         << rank;
+    }
+    return mlir::success();
+  }
+
+  DeviceRefAttr endpoint;
+  if (auto gather = mlir::dyn_cast<GatherTransferAttr>(structured)) {
+    endpoint = gather.getRoot();
+  } else {
+    endpoint = mlir::cast<MulticastTransferAttr>(structured).getSource();
+  }
+  return verifyDeviceRefInDomain(domain, endpoint, emitError,
+                                 "structured transfer endpoint");
+}
+
+llvm::LogicalResult DeviceTransferAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    DeviceDomainAttr domain, TransferEdgeAttr edge) {
+  return verifyTransferEdgeInDomain(domain, edge, emitError,
+                                    "device transfer edge");
+}
+
+mlir::LogicalResult IsDeviceOp::verify() {
+  return verifyDeviceRefInDomain(
+      getDomain(), getDevice(), [&]() { return emitOpError(); }, "device");
+}
+
+mlir::LogicalResult IsDeviceInRangeOp::verify() {
+  if (mlir::failed(verifyDeviceRefInDomain(
+          getDomain(), getRange().getLo(), [&]() { return emitOpError(); },
+          "range lower bound")) ||
+      mlir::failed(verifyDeviceRefInDomain(
+          getDomain(), getRange().getHi(), [&]() { return emitOpError(); },
+          "range upper bound", true))) {
+    return mlir::failure();
+  }
+  return mlir::success();
 }
 
 llvm::LogicalResult
@@ -313,6 +630,13 @@ mlir::LogicalResult mlir::tt::ttl::PipeTransferCreateOp::verify() {
     break;
   case PipeTransferKind::Collective:
     break;
+  }
+
+  if (auto createPipe = getPipe().getDefiningOp<CreatePipeOp>();
+      createPipe &&
+      createPipe.getDeviceTransferAttr() != getDeviceTransferAttr()) {
+    return emitOpError()
+           << "deviceTransfer must match the defining ttl.create_pipe";
   }
 
   return success();

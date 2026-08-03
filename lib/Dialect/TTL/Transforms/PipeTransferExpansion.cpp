@@ -49,10 +49,28 @@ getPipeTransferContractForPipeValue(ValueOriginAnalysis &analysis, Value pipe) {
       });
 }
 
+/// Prove that every possible pipe definition has the same device transfer.
+static FailureOr<std::optional<DeviceTransferAttr>>
+getDeviceTransferForPipeValue(ValueOriginAnalysis &analysis, Value pipe) {
+  return analysis.getOrigins(pipe)
+      .uniqueMapped<std::optional<DeviceTransferAttr>>(
+          [](Value origin) -> FailureOr<std::optional<DeviceTransferAttr>> {
+            if (auto createPipe = origin.getDefiningOp<CreatePipeOp>()) {
+              DeviceTransferAttr deviceTransfer =
+                  createPipe.getDeviceTransferAttr();
+              return deviceTransfer
+                         ? std::optional<DeviceTransferAttr>(deviceTransfer)
+                         : std::optional<DeviceTransferAttr>();
+            }
+            return failure();
+          });
+}
+
 /// Create one scalar transfer reference for `pipe`.
-static PipeTransferCreateOp createPipeTransfer(OpBuilder &builder,
-                                               Location location, Value pipe,
-                                               PipeTransferContract contract) {
+static PipeTransferCreateOp
+createPipeTransfer(OpBuilder &builder, Location location, Value pipe,
+                   PipeTransferContract contract,
+                   DeviceTransferAttr deviceTransfer) {
   auto pipeType = mlir::cast<PipeType>(traceUnrealizedCasts(pipe).getType());
   auto kindAttr = PipeTransferKindAttr::get(builder.getContext(),
                                             getPipeTransferKind(contract));
@@ -60,13 +78,13 @@ static PipeTransferCreateOp createPipeTransfer(OpBuilder &builder,
       builder.getI64IntegerAttr(pipeType.getNumDests());
   return PipeTransferCreateOp::create(
       builder, location, PipeTransferType::get(builder.getContext()), pipe,
-      kindAttr, expectedReceiversAttr);
+      kindAttr, expectedReceiversAttr, deviceTransfer);
 }
 
 /// Reuse a transfer for a direct create op or create one at the use site.
 static Value getOrCreatePipeTransfer(
     OpBuilder &builder, Location location, Value pipe,
-    PipeTransferContract contract,
+    PipeTransferContract contract, DeviceTransferAttr deviceTransfer,
     llvm::MapVector<Value, Value> &transferByDirectCreatePipe) {
   Value key = traceUnrealizedCasts(pipe);
   if (auto createPipe = key.getDefiningOp<CreatePipeOp>()) {
@@ -76,21 +94,23 @@ static Value getOrCreatePipeTransfer(
     }
     OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPointAfter(createPipe);
-    auto transferOp =
-        createPipeTransfer(builder, createPipe.getLoc(), key, contract);
+    auto transferOp = createPipeTransfer(builder, createPipe.getLoc(), key,
+                                         contract, deviceTransfer);
     transferByDirectCreatePipe[key] = transferOp.getTransfer();
     return transferOp.getTransfer();
   }
 
   // A shared transfer for block arguments and region results would require a
   // new dominance choice. Keeping it at the use preserves current semantics.
-  return createPipeTransfer(builder, location, pipe, contract).getTransfer();
+  return createPipeTransfer(builder, location, pipe, contract, deviceTransfer)
+      .getTransfer();
 }
 
-/// High-level pipe copy and its proven transfer contract.
+/// High-level pipe copy and its proven protocol properties.
 struct PipeCopyExpansion {
   CopyOp copy;
   PipeTransferContract contract;
+  DeviceTransferAttr deviceTransfer;
 };
 
 /// Receive-handle wait and the PipeNet id used to create its typed token.
@@ -115,31 +135,36 @@ buildPipeTransferExpansionPlan(ModuleOp module, ValueOriginAnalysis &analysis) {
   module.walk([&](CreatePipeOp op) { plan.createPipes.push_back(op); });
 
   LogicalResult result = success();
+  auto recordCopy = [&](CopyOp copyOp, Value pipe,
+                        SmallVectorImpl<PipeCopyExpansion> &expansions) {
+    FailureOr<PipeTransferContract> contract =
+        getPipeTransferContractForPipeValue(analysis, pipe);
+    if (failed(contract)) {
+      copyOp.emitError()
+          << "requires a consistent transfer contract for all possible "
+             "pipe values";
+      result = failure();
+      return;
+    }
+    FailureOr<std::optional<DeviceTransferAttr>> maybeDeviceTransfer =
+        getDeviceTransferForPipeValue(analysis, pipe);
+    if (failed(maybeDeviceTransfer)) {
+      copyOp.emitError() << "requires every possible pipe definition to be "
+                            "ttl.create_pipe with the same device transfer";
+      result = failure();
+      return;
+    }
+    expansions.push_back({copyOp, *contract,
+                          maybeDeviceTransfer->value_or(DeviceTransferAttr())});
+  };
+
   module.walk([&](CopyOp op) {
     if (isPipeReceiveCopy(op)) {
-      FailureOr<PipeTransferContract> contract =
-          getPipeTransferContractForPipeValue(analysis, op.getSrc());
-      if (failed(contract)) {
-        op.emitError()
-            << "requires a consistent transfer contract for all possible "
-               "pipe values";
-        result = failure();
-      } else {
-        plan.receiveCopies.push_back({op, *contract});
-      }
+      recordCopy(op, op.getSrc(), plan.receiveCopies);
       return;
     }
     if (isPipeSendCopy(op)) {
-      FailureOr<PipeTransferContract> contract =
-          getPipeTransferContractForPipeValue(analysis, op.getDst());
-      if (failed(contract)) {
-        op.emitError()
-            << "requires a consistent transfer contract for all possible "
-               "pipe values";
-        result = failure();
-      } else {
-        plan.sendCopies.push_back({op, *contract});
-      }
+      recordCopy(op, op.getDst(), plan.sendCopies);
     }
   });
   if (failed(result)) {
@@ -191,7 +216,8 @@ applyPipeTransferExpansionPlan(ModuleOp module,
     builder.setInsertionPointAfter(createPipe);
     auto transferOp =
         createPipeTransfer(builder, createPipe.getLoc(), createPipe.getResult(),
-                           getPipeTransferContract(createPipe));
+                           getPipeTransferContract(createPipe),
+                           createPipe.getDeviceTransferAttr());
     transferByDirectCreatePipe[createPipe.getResult()] =
         transferOp.getTransfer();
   }
@@ -201,9 +227,9 @@ applyPipeTransferExpansionPlan(ModuleOp module,
     auto pipeType =
         mlir::cast<PipeType>(traceUnrealizedCasts(copyOp.getSrc()).getType());
     builder.setInsertionPoint(copyOp);
-    Value transfer =
-        getOrCreatePipeTransfer(builder, copyOp.getLoc(), copyOp.getSrc(),
-                                expansion.contract, transferByDirectCreatePipe);
+    Value transfer = getOrCreatePipeTransfer(
+        builder, copyOp.getLoc(), copyOp.getSrc(), expansion.contract,
+        expansion.deviceTransfer, transferByDirectCreatePipe);
     auto postOp = PipeTransferPostOp::create(
         builder, copyOp.getLoc(),
         PipeTokenType::get(builder.getContext(), pipeType.getPipeNetId()),
@@ -218,9 +244,9 @@ applyPipeTransferExpansionPlan(ModuleOp module,
   for (const PipeCopyExpansion &expansion : plan.sendCopies) {
     CopyOp copyOp = expansion.copy;
     builder.setInsertionPoint(copyOp);
-    Value transfer =
-        getOrCreatePipeTransfer(builder, copyOp.getLoc(), copyOp.getDst(),
-                                expansion.contract, transferByDirectCreatePipe);
+    Value transfer = getOrCreatePipeTransfer(
+        builder, copyOp.getLoc(), copyOp.getDst(), expansion.contract,
+        expansion.deviceTransfer, transferByDirectCreatePipe);
     auto sendOp = PipeTransferSendOp::create(builder, copyOp.getLoc(),
                                              copyOp.getResult().getType(),
                                              transfer, copyOp.getSrc());

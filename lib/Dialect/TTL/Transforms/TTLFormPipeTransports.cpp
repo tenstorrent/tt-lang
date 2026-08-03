@@ -755,7 +755,7 @@ struct TTLFormPipeTransportsPass
     }
     const PipeTransferIndex &transferIndex = **maybeTransferIndex;
     FailureOr<PipeGraph> maybePipeGraph =
-        PipeGraph::build(module, analysis, transferIndex);
+        PipeGraph::build(module, transferIndex);
     if (failed(maybePipeGraph)) {
       signalPassFailure();
       return;
