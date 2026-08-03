@@ -151,6 +151,77 @@ module attributes {
 
 // -----
 
+// An explicit FPU strategy requires operands that address the same tile.
+func.func @explicit_strategy_illegal_for_operands(
+    %lhs: tensor<1x2x!ttcore.tile<32x32, bf16>>,
+    %rhs: tensor<1x2x!ttcore.tile<32x32, bf16>>) {
+  %lhs_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2>
+  %rhs_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2>
+  %lhs_attached = ttl.attach_cb %lhs, %lhs_dfb
+      : (tensor<1x2x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x2x!ttcore.tile<32x32, bf16>>
+  %rhs_attached = ttl.attach_cb %rhs, %rhs_dfb
+      : (tensor<1x2x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x2x!ttcore.tile<32x32, bf16>>
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %lhs_tile = tensor.extract %lhs_attached[%zero, %zero]
+      : tensor<1x2x!ttcore.tile<32x32, bf16>>
+  %rhs_tile = tensor.extract %rhs_attached[%zero, %one]
+      : tensor<1x2x!ttcore.tile<32x32, bf16>>
+  // expected-error @below {{'ttl.tile_add' op explicit ttl.tile_execution_strategy is not legal for its operands}}
+  %sum = ttl.tile_add %lhs_tile, %rhs_tile into dst[%zero]
+      {ttl.tile_execution_strategy = #ttl.tile_execution_strategy<fpu>}
+      : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>
+        -> !ttcore.tile<32x32, bf16>
+  return
+}
+
+// -----
+
+// Attached DFB handles must resolve to a physical index before analysis.
+func.func @dataflow_buffer_without_finalized_index(
+    %input: tensor<1x1x!ttcore.tile<32x32, f32>>,
+    %input_dfb: !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) {
+  %input_attached = ttl.attach_cb %input, %input_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, f32>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %zero = arith.constant 0 : index
+  %input_tile = tensor.extract %input_attached[%zero, %zero]
+      : tensor<1x1x!ttcore.tile<32x32, f32>>
+  // expected-error @below {{'ttl.tile_exp' op uses a dataflow buffer without a finalized index}}
+  %exp = ttl.tile_exp %input_tile into dst[%zero]
+      : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  return
+}
+
+// -----
+
+// Physical DFB indices outside the kernel configuration domain are invalid.
+func.func @dataflow_buffer_index_out_of_range(
+    %input: tensor<1x1x!ttcore.tile<32x32, f32>>) {
+  %input_dfb = ttl.bind_cb {cb_index = 32, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %input_attached = ttl.attach_cb %input, %input_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, f32>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %zero = arith.constant 0 : index
+  %input_tile = tensor.extract %input_attached[%zero, %zero]
+      : tensor<1x1x!ttcore.tile<32x32, f32>>
+  // expected-error @below {{'ttl.tile_exp' op uses dataflow buffer index 32 outside the supported range [0, 31]}}
+  %exp = ttl.tile_exp %input_tile into dst[%zero]
+      : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  return
+}
+
+// -----
+
 // Device chip IDs must refer to entries in the system description.
 module attributes {
   ttcore.system_desc = #ttcore.system_desc<[{role = host, target_triple = "x86_64-pc-linux"}], [{arch = <wormhole_b0>, grid = 8x8, coord_translation_offsets = 18x18, l1_size = 204800, num_dram_channels = 12, dram_channel_size = 1073741824, noc_l1_address_align_bytes = 16, pcie_address_align_bytes = 32, noc_dram_address_align_bytes = 32, l1_unreserved_base = 0, erisc_l1_unreserved_base = 0, dram_unreserved_base = 0, dram_unreserved_end = 1073741824, supported_data_types = [<f32>, <f16>, <bf16>], supported_tile_sizes = [32x32], dst_physical_size_tiles = 16, num_cbs = 64, num_compute_threads = 1, num_datamovement_threads = 2, dram_grid = 1x12, dram_bank_to_logical_worker_noc0 = [(0, 0)], dram_bank_to_logical_worker_noc1 = [(0, 0)]}], [0], [1 : i32], [ 0x0x0x0]>

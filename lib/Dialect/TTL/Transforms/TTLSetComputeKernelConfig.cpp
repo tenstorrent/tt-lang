@@ -46,9 +46,11 @@ struct TTLSetComputeKernelConfigPass
 
     FailureOr<KernelConfigPlan> plan =
         resolveKernelConfig(function, *target, *policy, *requirements);
-    if (failed(plan) || failed(applyKernelConfigPlan(function, *plan))) {
+    if (failed(plan)) {
       signalPassFailure();
+      return;
     }
+    applyKernelConfigPlan(function, *plan);
   }
 };
 

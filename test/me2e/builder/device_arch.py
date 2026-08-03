@@ -18,7 +18,11 @@ def get_mock_arch_from_device(device) -> str:
 
     Returns:
         Architecture string (e.g., "wormhole_b0", "blackhole") for mock system desc.
-        Defaults to "wormhole_b0" if device is None or detection fails.
+        Defaults to "wormhole_b0" for compiler-only tests without a device.
+
+    Raises:
+        ValueError: If a device is present but its architecture is unsupported
+            or cannot be detected.
     """
     if device is None:
         return "wormhole_b0"
@@ -46,12 +50,11 @@ def get_mock_arch_from_device(device) -> str:
             # Convert to string for comparison (handles enums, strings, etc.)
             arch_str = str(arch_value)
             arch_lower = arch_str.lower()
-            if "wormhole" in arch_lower or "wh" in arch_lower:
+            if "wormhole" in arch_lower:
                 return "wormhole_b0"
-            elif "blackhole" in arch_lower or "bh" in arch_lower:
+            if "blackhole" in arch_lower:
                 return "blackhole"
-            elif "grayskull" in arch_lower or "gs" in arch_lower:
-                return "wormhole_b0"  # Fallback to wormhole_b0 for grayskull
+            if "quasar" in arch_lower:
+                return "quasar"
 
-    # Default to wormhole_b0 if detection fails.
-    return "wormhole_b0"
+    raise ValueError("Unsupported or undetectable TT device architecture")

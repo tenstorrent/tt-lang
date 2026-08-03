@@ -16,8 +16,8 @@
 #include "mlir/IR/SymbolTable.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/Support/ErrorHandling.h"
 
 #include <algorithm>
 #include <limits>
@@ -133,14 +133,13 @@ resolveDataflowBufferIndex(Value value, Operation *consumer) {
 }
 
 /// Return the element type required by configuration queries.
-FailureOr<Type> getRequiredTileElementType(Value value, Operation *operation) {
-  std::optional<Type> elementType = getTileElementType(value.getType());
-  if (!elementType) {
-    operation->emitOpError()
-        << "expected a tile operand or result, got " << value.getType();
-    return failure();
+Type getRequiredTileElementType(Value value) {
+  auto tileType = dyn_cast<ttcore::TileType>(value.getType());
+  if (!tileType) {
+    llvm::report_fatal_error(
+        "kernel configuration requires verified tile execution semantics");
   }
-  return *elementType;
+  return tileType.getElementType();
 }
 
 /// Return a dataflow-buffer operand that the strategy cannot address.
@@ -174,11 +173,10 @@ appendExecutionRequirements(Operation *operation, const TileExecutionInfo &info,
     if (route == TileOperandRoute::None) {
       continue;
     }
-    FailureOr<Type> elementType =
-        getRequiredTileElementType(operand.get(), operation);
+    Type elementType = getRequiredTileElementType(operand.get());
     FailureOr<std::optional<int64_t>> dataflowBufferIndex =
         resolveDataflowBufferIndex(operand.get(), operation);
-    if (failed(elementType) || failed(dataflowBufferIndex)) {
+    if (failed(dataflowBufferIndex)) {
       return failure();
     }
     if (route == TileOperandRoute::DataflowBuffer && !*dataflowBufferIndex) {
@@ -190,10 +188,10 @@ appendExecutionRequirements(Operation *operation, const TileExecutionInfo &info,
     if (*dataflowBufferIndex) {
       dfbInputUses.push_back({**dataflowBufferIndex, operation,
                               operand.getOperandNumber(), info.primitive, route,
-                              *elementType});
+                              elementType});
     }
     if (route == TileOperandRoute::Dst) {
-      dstModeUses.push_back({operation, info.primitive, *elementType});
+      dstModeUses.push_back({operation, info.primitive, elementType});
     }
   }
 
@@ -204,11 +202,8 @@ appendExecutionRequirements(Operation *operation, const TileExecutionInfo &info,
     if (!isa<ttcore::TileType>(result.getType())) {
       continue;
     }
-    FailureOr<Type> elementType = getRequiredTileElementType(result, operation);
-    if (failed(elementType)) {
-      return failure();
-    }
-    dstModeUses.push_back({operation, info.primitive, *elementType});
+    Type elementType = getRequiredTileElementType(result);
+    dstModeUses.push_back({operation, info.primitive, elementType});
   }
   return success();
 }
@@ -309,7 +304,9 @@ void emitDstModeConflict(func::FuncOp function, DstModeEvidence requiresFp32,
   diagnostic.attachNote(requiresDefault.operation->getLoc())
       << "the target does not support f32 DST mode for "
       << requiresDefault.operation->getName() << " with "
-      << requiresDefault.use->elementType << " elements";
+      << requiresDefault.use->elementType
+      << " elements; use an f32 broadcast input or place the broadcast in a "
+         "separate kernel";
 }
 
 struct DstModeConflict {
@@ -824,8 +821,8 @@ FailureOr<KernelConfigPlan> resolveKernelConfig(
                              : DstSyncMode::DoubleBuffered;
 
   if (policy.unpackToDestFp32) {
-    return KernelConfigPlan{dstMode, syncMode, *policy.unpackToDestFp32,
-                            std::move(tileStrategies)};
+    return KernelConfigPlan(dstMode, syncMode, *policy.unpackToDestFp32,
+                            std::move(tileStrategies));
   }
 
   SmallVector<int32_t> unpackToDestFp32;
@@ -835,90 +832,27 @@ FailureOr<KernelConfigPlan> resolveKernelConfig(
     }
   }
   llvm::sort(unpackToDestFp32);
-  return KernelConfigPlan{dstMode, syncMode, std::move(unpackToDestFp32),
-                          std::move(tileStrategies)};
+  return KernelConfigPlan(dstMode, syncMode, std::move(unpackToDestFp32),
+                          std::move(tileStrategies));
 }
 
-LogicalResult applyKernelConfigPlan(func::FuncOp function,
-                                    const KernelConfigPlan &plan) {
-  if (!std::is_sorted(plan.unpackToDestFp32.begin(),
-                      plan.unpackToDestFp32.end()) ||
-      std::adjacent_find(plan.unpackToDestFp32.begin(),
-                         plan.unpackToDestFp32.end()) !=
-          plan.unpackToDestFp32.end() ||
-      llvm::any_of(plan.unpackToDestFp32, [](int32_t index) {
-        return index < 0 || index >= kMaxCircularBuffers;
-      })) {
-    function.emitOpError(
-        "kernel configuration plan contains invalid dataflow buffer indices");
-    return failure();
-  }
-
-  llvm::SmallPtrSet<Operation *, 8> plannedOperations;
-  for (const TileExecutionDecision &decision : plan.tileStrategies) {
-    if (!decision.operation || !function->isAncestor(decision.operation)) {
-      function.emitOpError(
-          "tile execution plan refers to an operation outside the kernel");
-      return failure();
-    }
-    if (!plannedOperations.insert(decision.operation).second) {
-      decision.operation->emitOpError(
-          "tile execution plan contains duplicate strategy decisions");
-      return failure();
-    }
-    auto executionOp = dyn_cast<TileExecutionOpInterface>(decision.operation);
-    if (!executionOp) {
-      decision.operation->emitOpError(
-          "tile execution plan records a strategy for an unsupported op");
-      return failure();
-    }
-    if (!llvm::is_contained(executionOp.getLegalExecutionStrategies(),
-                            decision.strategy)) {
-      decision.operation->emitOpError(
-          "tile execution plan is inconsistent with the operation operands");
-      return failure();
-    }
-    FailureOr<TileExecutionInfo> info =
-        executionOp.getTileExecutionInfo(decision.strategy);
-    if (failed(info)) {
-      decision.operation->emitOpError(
-          "tile execution plan selects incomplete execution semantics");
-      return failure();
-    }
-    if (failed(verifyTileExecutionInfo(decision.operation, *info))) {
-      return failure();
-    }
-  }
-
-  WalkResult completeness =
-      function.walk([&](TileExecutionOpInterface executionOp) {
-        if (executionOp.getLegalExecutionStrategies().empty() ||
-            plannedOperations.contains(executionOp.getOperation())) {
-          return WalkResult::advance();
-        }
-        executionOp->emitOpError(
-            "tile execution plan does not select an execution strategy");
-        return WalkResult::interrupt();
-      });
-  if (completeness.wasInterrupted()) {
-    return failure();
-  }
-
+void applyKernelConfigPlan(func::FuncOp function,
+                           const KernelConfigPlan &plan) {
   MLIRContext *context = function.getContext();
-  for (const TileExecutionDecision &decision : plan.tileStrategies) {
+  for (const TileExecutionDecision &decision : plan.getTileStrategies()) {
     decision.operation->setAttr(
         kTileExecutionStrategyAttrName,
         TileExecutionStrategyAttr::get(context, decision.strategy));
   }
   function->setAttr(kFp32DestAccEnAttrName,
-                    BoolAttr::get(context, plan.dstMode == DstMode::Fp32));
+                    BoolAttr::get(context, plan.getDstMode() == DstMode::Fp32));
   function->setAttr(
       kDstFullSyncEnAttrName,
-      BoolAttr::get(context, plan.dstSyncMode == DstSyncMode::Full));
-  function->setAttr(kUnpackToDestFp32AttrName,
-                    DenseI32ArrayAttr::get(context, plan.unpackToDestFp32));
+      BoolAttr::get(context, plan.getDstSyncMode() == DstSyncMode::Full));
+  function->setAttr(
+      kUnpackToDestFp32AttrName,
+      DenseI32ArrayAttr::get(context, plan.getUnpackToDestFp32()));
   function->removeAttr(kEnableFPUBinaryOpsAttrName);
-  return success();
 }
 
 } // namespace mlir::tt::ttl

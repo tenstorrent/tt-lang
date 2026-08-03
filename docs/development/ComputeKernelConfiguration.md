@@ -59,8 +59,8 @@ their architectures must agree. A device selecting chips with different
 architectures is invalid.
 
 When neither source is present, target-specific restrictions are not applied.
-Device compilation attaches an architecture before this pass; the unspecified
-environment supports target-neutral compiler testing.
+This environment is limited to target-neutral compiler testing. Pipelines that
+emit device kernels must attach an architecture before this pass.
 
 Capability queries contain architecture and backend restrictions. They consume
 only target-independent execution categories, not operations. For example,
@@ -140,9 +140,9 @@ Resolution returns a `KernelConfigPlan` containing:
 - one DST synchronization mode;
 - the sorted set of DFB indices using unpack-to-DST-f32.
 
-Plan application validates all recorded operations before mutation. It then
-writes operation strategy attributes and function configuration attributes
-without additional failure points. The input-only
+Only the resolver can construct a plan. Plan application writes operation
+strategy attributes and function configuration attributes without re-deriving
+policy or introducing additional failure points. The input-only
 `ttl.enable_fpu_binary_ops` policy attribute is removed. Application derives no
 additional policy.
 

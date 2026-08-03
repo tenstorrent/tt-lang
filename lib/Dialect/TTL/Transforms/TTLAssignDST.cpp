@@ -135,7 +135,7 @@ static SmallVector<Operation *> getSortedConsumers(Value v) {
     }
     consumers.insert(use.getOwner());
   }
-  SmallVector<Operation *> sortedConsumers(consumers.begin(), consumers.end());
+  SmallVector<Operation *> sortedConsumers = llvm::to_vector(consumers);
   llvm::sort(sortedConsumers,
              [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
   return sortedConsumers;

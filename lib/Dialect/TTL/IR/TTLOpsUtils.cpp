@@ -257,6 +257,10 @@ getDefaultTileExecutionInfo(Operation *operation,
 
 LogicalResult verifyTileExecutionInfo(Operation *operation,
                                       const TileExecutionInfo &info) {
+  if (info.primitive == TilePrimitive::Unknown) {
+    operation->emitOpError("does not define a tile execution primitive");
+    return failure();
+  }
   if (info.operandRoutes.size() != operation->getNumOperands()) {
     operation->emitOpError() << "defines " << info.operandRoutes.size()
                              << " tile operand routes for "
@@ -368,22 +372,20 @@ LogicalResult verifyTileExecutionSemantics(Operation *root) {
       return WalkResult::interrupt();
     }
     FailureOr<TileExecutionInfo> info = getSelectedTileExecutionInfo(operation);
-    if (succeeded(info) &&
-        succeeded(verifyTileExecutionInfo(operation, *info))) {
-      return WalkResult::advance();
-    }
-    if (succeeded(info)) {
+    if (failed(info)) {
+      if (!legalStrategies.empty()) {
+        operation->emitOpError()
+            << "requires a selected " << kTileExecutionStrategyAttrName
+            << " attribute; run ttl-set-compute-kernel-config before DST "
+               "assignment, scheduling, or lowering";
+      } else {
+        operation->emitOpError("has no tile execution semantics");
+      }
       return WalkResult::interrupt();
     }
-    if (!legalStrategies.empty()) {
-      operation->emitOpError()
-          << "requires a selected " << kTileExecutionStrategyAttrName
-          << " attribute; run ttl-set-compute-kernel-config before DST "
-             "assignment, scheduling, or lowering";
-    } else {
-      operation->emitOpError("has no tile execution semantics");
-    }
-    return WalkResult::interrupt();
+    return failed(verifyTileExecutionInfo(operation, *info))
+               ? WalkResult::interrupt()
+               : WalkResult::advance();
   });
   return failure(walkResult.wasInterrupted());
 }

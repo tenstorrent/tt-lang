@@ -47,6 +47,10 @@ struct TTLToTTKernelPipelineOptions
       *this, "reduce-full-fp32",
       llvm::cl::desc("Prefer FP32 accumulation for reduce operations."),
       llvm::cl::init(true)};
+  Option<bool> matmulFullFp32{
+      *this, "matmul-full-fp32",
+      llvm::cl::desc("Prefer FP32 accumulation for matmul operations."),
+      llvm::cl::init(true)};
   Option<bool> strictF32Acc{
       *this, "strict-f32-acc",
       llvm::cl::desc("Error if accumulation output exceeds f32 DST capacity."),

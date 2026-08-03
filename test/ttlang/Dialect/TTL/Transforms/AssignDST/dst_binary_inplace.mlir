@@ -109,3 +109,59 @@ func.func @single_max(%a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   func.return %result : tensor<1x1x!ttcore.tile<32x32, bf16>>
 }
+
+// -----
+
+#map2 = affine_map<(d0, d1) -> (d0, d1)>
+
+// Test that two uses by one in-place operation count as one consumer. The
+// allocator materializes the input once and routes both operands to that tile.
+
+// CHECK-LABEL: func.func @repeated_operand_one_consumer
+// CHECK:           ttl.compute
+// CHECK-NEXT:      ^bb0(%[[INPUT:[^:]*]]: !ttcore.tile<32x32, bf16>, %[[OUT:[^:]*]]: !ttcore.tile<32x32, bf16>):
+// CHECK:           %{{.*}}, %[[INPUT_TILE:.*]] = ttl.copy_tile %[[INPUT]]
+// CHECK-NOT:       ttl.copy_tile %[[INPUT]]
+// CHECK:           %[[MAX:.*]] = ttl.tile_max %[[INPUT_TILE]], %[[INPUT_TILE]]
+// CHECK:           ttl.tile_store %[[MAX]]
+// CHECK-NEXT:      ttl.yield
+
+func.func @repeated_operand_one_consumer(
+    %input: tensor<1x1x!ttcore.tile<32x32, bf16>>)
+    -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
+  %init = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  %output_dfb = ttl.bind_cb {cb_index = 16, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  %input_attached = ttl.attach_cb %input, %input_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %output_attached = ttl.attach_cb %init, %output_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %output_view = ttl.cb_reserve %output_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %result = ttl.compute
+      ins(%input_attached : tensor<1x1x!ttcore.tile<32x32, bf16>>)
+      outs(%output_attached : tensor<1x1x!ttcore.tile<32x32, bf16>>)
+      {indexing_maps = [#map2, #map2],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%input_tile: !ttcore.tile<32x32, bf16>,
+       %output_tile: !ttcore.tile<32x32, bf16>):
+    %row = ttl.iter_index 0 : index
+    %column = ttl.iter_index 1 : index
+    %zero = arith.constant 0 : index
+    %maximum = ttl.tile_max %input_tile, %input_tile into dst[%zero]
+        : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>
+          -> !ttcore.tile<32x32, bf16>
+    ttl.tile_store %maximum, %output_view[%row, %column] from dst[%zero]
+        : !ttcore.tile<32x32, bf16>,
+          tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.yield
+  } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  func.return %result : tensor<1x1x!ttcore.tile<32x32, bf16>>
+}

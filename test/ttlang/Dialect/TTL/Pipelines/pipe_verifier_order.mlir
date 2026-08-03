@@ -1,5 +1,7 @@
 // RUN: ttlang-opt %s --ttl-to-ttkernel-pipeline --dump-pass-pipeline 2>&1 | FileCheck %s
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-verify-pipenet)' --dump-pass-pipeline 2>&1 | FileCheck %s --check-prefix=SUBPIPELINE
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-to-ttkernel-pipeline{matmul-full-fp32=false})' --dump-pass-pipeline 2>&1 | FileCheck %s --check-prefix=MATMUL-DISABLED
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-to-ttkernel-pipeline{matmul-full-fp32=true})' --dump-pass-pipeline 2>&1 | FileCheck %s --check-prefix=MATMUL-ENABLED
 
 // Verify PipeNet schedule semantics before later transformations modify the
 // high-level pipe and DFB operations or reuse provisional DFB indices.
@@ -39,5 +41,10 @@
 // SUBPIPELINE-NEXT: ttl-verify-pipenet-schedule
 // SUBPIPELINE-NOT:  ttl-verify-pipenet-guards
 // SUBPIPELINE-NOT:  ttl-verify-pipenet-schedule
+
+// Verify the public pipeline option reaches kernel configuration resolution.
+
+// MATMUL-DISABLED: ttl-set-compute-kernel-config{{.*}}matmul-full-fp32=false
+// MATMUL-ENABLED: ttl-set-compute-kernel-config{{.*}}matmul-full-fp32=true
 
 module {}

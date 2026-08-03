@@ -18,6 +18,7 @@ namespace mlir::tt::ttl {
 
 /// Tile operation category used by configuration capability queries.
 enum class TilePrimitive {
+  Unknown,
   Copy,
   ElementwiseBinary,
   ElementwiseUnary,
@@ -49,7 +50,7 @@ enum class FullFp32AccumulationKind {
 
 /// Target-independent execution semantics for one tile operation.
 struct TileExecutionInfo {
-  TilePrimitive primitive;
+  TilePrimitive primitive = TilePrimitive::Unknown;
   llvm::SmallVector<TileOperandRoute, 4> operandRoutes;
   /// DST operands initialized by the operation's lowering.
   llvm::SmallBitVector dstOperandsMaterializedByOperation;

@@ -17,6 +17,7 @@ from typing import Any, Dict, Optional
 import torch
 from ttlang_test_utils import make_compare_inputs
 
+from .builder.device_arch import get_mock_arch_from_device
 from .builder.kernels import (
     KernelSpec,
     ThreadType,
@@ -50,6 +51,7 @@ def get_compute_kernel(
     cache_key = (
         f"{op.name}_{op.ttl_op}_{config.block_h}x{config.block_w}_{config.dtype}"
         f"_dst{config.maximize_dst}_fpu{config.enable_fpu_binary_ops}"
+        f"_arch{get_mock_arch_from_device(device)}"
     )
     if cache_key in _kernel_cache:
         return _kernel_cache[cache_key]

@@ -705,6 +705,7 @@ pipeline option to gate the optimization passes.
 | `subblock-sync` | false | Refine DFB reserve/push to per-subblock granularity; when disabled, user-placed reserve/push is preserved |
 | `combine-pack-tiles` | true | Combine consecutive `pack_tile` ops into `pack_tile_block` |
 | `reduce-full-fp32` | true | Prefer full-fp32 reduce accumulation when supported |
+| `matmul-full-fp32` | true | Prefer full-fp32 matmul accumulation when supported |
 | `lower-to-emitc` | false | Lower TTKernel to EmitC (for C++ translation) |
 
 Python API equivalents (`CompilerOptions` in
@@ -718,6 +719,7 @@ Python API equivalents (`CompilerOptions` in
 | `subblock_sync` | `--ttl-subblock-sync` / `--no-ttl-subblock-sync` | `subblock-sync` |
 | `combine_pack_tiles` | `--ttl-combine-pack-tiles` / `--no-ttl-combine-pack-tiles` | `combine-pack-tiles` |
 | `reduce_full_fp32` | `--ttl-reduce-full-fp32` / `--no-ttl-reduce-full-fp32` | `reduce-full-fp32` |
+| `matmul_full_fp32` | `--ttl-matmul-full-fp32` / `--no-ttl-matmul-full-fp32` | `matmul-full-fp32` |
 
 Environment variable: `TTLANG_COMPILER_OPTIONS` (space-separated flags).
 

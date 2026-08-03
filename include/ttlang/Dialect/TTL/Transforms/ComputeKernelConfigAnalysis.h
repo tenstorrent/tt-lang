@@ -9,9 +9,11 @@
 #include "ttlang/Dialect/TTL/IR/TileExecution.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <optional>
+#include <utility>
 
 namespace mlir::tt::ttl {
 
@@ -126,8 +128,31 @@ struct KernelRequirements {
   llvm::SmallVector<TileExecutionChoice, 0> tileStrategyChoices;
 };
 
-/// Complete configuration selected before any IR mutation.
-struct KernelConfigPlan {
+/// Complete configuration selected before any IR mutation. Apply the plan
+/// before mutating IR because its decisions contain operation pointers.
+class KernelConfigPlan {
+public:
+  DstMode getDstMode() const { return dstMode; }
+  DstSyncMode getDstSyncMode() const { return dstSyncMode; }
+  llvm::ArrayRef<int32_t> getUnpackToDestFp32() const {
+    return unpackToDestFp32;
+  }
+  llvm::ArrayRef<TileExecutionDecision> getTileStrategies() const {
+    return tileStrategies;
+  }
+
+private:
+  friend FailureOr<KernelConfigPlan> resolveKernelConfig(
+      func::FuncOp function, const KernelTargetEnvironment &target,
+      const KernelConfigPolicy &policy, const KernelRequirements &requirements);
+
+  KernelConfigPlan(DstMode dstMode, DstSyncMode dstSyncMode,
+                   llvm::SmallVector<int32_t> unpackToDestFp32,
+                   llvm::SmallVector<TileExecutionDecision> tileStrategies)
+      : dstMode(dstMode), dstSyncMode(dstSyncMode),
+        unpackToDestFp32(std::move(unpackToDestFp32)),
+        tileStrategies(std::move(tileStrategies)) {}
+
   DstMode dstMode;
   DstSyncMode dstSyncMode;
   llvm::SmallVector<int32_t> unpackToDestFp32;
@@ -142,9 +167,8 @@ FailureOr<KernelConfigPlan> resolveKernelConfig(
     func::FuncOp function, const KernelTargetEnvironment &target,
     const KernelConfigPolicy &policy, const KernelRequirements &requirements);
 
-/// Apply a validated plan without deriving additional configuration policy.
-LogicalResult applyKernelConfigPlan(func::FuncOp function,
-                                    const KernelConfigPlan &plan);
+/// Apply a resolved plan without deriving additional configuration policy.
+void applyKernelConfigPlan(func::FuncOp function, const KernelConfigPlan &plan);
 
 } // namespace mlir::tt::ttl
 
