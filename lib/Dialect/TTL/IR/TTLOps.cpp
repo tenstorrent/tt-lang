@@ -105,21 +105,6 @@ static std::optional<unsigned> findComponent(DeviceDomainAttr domain,
   return std::nullopt;
 }
 
-static bool rangeContains(DeviceRangeAttr range, DeviceRefAttr deviceRef) {
-  for (auto [loCoordinate, coordinate, hiCoordinate] : llvm::zip_equal(
-           range.getLo().getCoordinates(), deviceRef.getCoordinates(),
-           range.getHi().getCoordinates())) {
-    for (auto [lo, value, hi] :
-         llvm::zip_equal(loCoordinate.asArrayRef(), coordinate.asArrayRef(),
-                         hiCoordinate.asArrayRef())) {
-      if (value < lo || value >= hi) {
-        return false;
-      }
-    }
-  }
-  return true;
-}
-
 static mlir::LogicalResult verifyTransferEdgeInDomain(DeviceDomainAttr domain,
                                                       TransferEdgeAttr edge,
                                                       EmitErrorFn emitError,
@@ -144,7 +129,7 @@ static mlir::LogicalResult verifyTransferEdgeInDomain(DeviceDomainAttr domain,
           (llvm::Twine(context) + ".destination_range.hi").str(), true))) {
     return mlir::failure();
   }
-  if (rangeContains(destinationRange, edge.getSource())) {
+  if (deviceRangeContains(destinationRange, edge.getSource())) {
     return emitError() << context
                        << " source-in-destination multicast is not supported";
   }

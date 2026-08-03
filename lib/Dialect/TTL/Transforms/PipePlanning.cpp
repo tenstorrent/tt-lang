@@ -430,8 +430,42 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
                                : PipeSynchronizationProtocol::ReceiverPost;
     if (usesFabricProtocol &&
         !resources.addressStorage.usesComputedReceiverDFB()) {
-      operation->emitError(
+      auto diagnostic = operation->emitError(
           "fabric pipe transfer requires computed receiver DFB addresses");
+      const PipeTransferNode *transferNode =
+          pipeGraph.getPipeTransferNodeForProtocolOp(operation);
+      assert(transferNode && "planned pipe operation is absent from PipeGraph");
+      bool attachedReason = false;
+      for (PipeReceiverEndpointId endpointId :
+           pipeGraph.getPipeReceiverEndpoints(transferNode->id)) {
+        const PipeReceiverEndpoint &endpoint =
+            pipeGraph.getPipeReceiverEndpoint(endpointId);
+        const PipeReceiverDFBNode &receiverDFB =
+            pipeGraph.getReceiverDFBNode(endpoint.receiverDFBNode);
+        if (!receiverDFB.hasProvenPipeOnlyProducerStream) {
+          diagnostic.attachNote(endpoint.receiverDFBInfo.loc)
+              << "receiver DFB " << endpoint.receiverDFBInfo.dfbIndex << ": "
+              << receiverDFB.pipeOnlyProducerStreamFailureReason;
+          attachedReason = true;
+          break;
+        }
+        if (endpoint.addressSequence.getKind() ==
+            ReceiverAddressSequenceProofKind::FullyDynamic) {
+          diagnostic.attachNote(endpoint.receiverDFBInfo.loc)
+              << "receiver DFB " << endpoint.receiverDFBInfo.dfbIndex
+              << " has no proven receiver address sequence";
+          attachedReason = true;
+          break;
+        }
+      }
+      if (!attachedReason && !transferNode->receiverEndpoints.empty()) {
+        const PipeReceiverEndpoint &endpoint =
+            pipeGraph.getPipeReceiverEndpoint(
+                transferNode->receiverEndpoints.front());
+        diagnostic.attachNote(endpoint.receiverDFBInfo.loc)
+            << "receiver address sequences are not proven equal for every "
+               "transfer occurrence";
+      }
       return failure();
     }
 

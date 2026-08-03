@@ -3,13 +3,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
-
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "mlir/Analysis/DataFlow/DeadCodeAnalysis.h"
 #include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Analysis/DataFlowFramework.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 namespace mlir::tt::ttl {
@@ -21,6 +22,56 @@ FailureOr<PipeTransferCreateOp>
 findPipeTransferCreateForTransfer(ValueOriginAnalysis &analysis,
                                   Value transfer) {
   return analysis.getOrigins(transfer).uniqueDefiningOp<PipeTransferCreateOp>();
+}
+
+static FailureOr<std::optional<DeviceTransferAttr>>
+findUniquePipeDeviceTransferImpl(
+    ValueOriginAnalysis &analysis, Value pipe,
+    llvm::function_ref<std::optional<Value>(BlockArgument)>
+        resolveFunctionArgument,
+    llvm::DenseSet<Value> &activeValues) {
+  if (!activeValues.insert(pipe).second) {
+    return failure();
+  }
+  llvm::scope_exit restoreActiveValues([&] { activeValues.erase(pipe); });
+  return analysis.getOrigins(pipe)
+      .uniqueMapped<std::optional<DeviceTransferAttr>>(
+          [&](Value origin) -> FailureOr<std::optional<DeviceTransferAttr>> {
+            auto createPipe = origin.getDefiningOp<CreatePipeOp>();
+            if (createPipe) {
+              DeviceTransferAttr deviceTransfer =
+                  createPipe.getDeviceTransferAttr();
+              return deviceTransfer
+                         ? std::optional<DeviceTransferAttr>(deviceTransfer)
+                         : std::optional<DeviceTransferAttr>();
+            }
+            auto argument = mlir::dyn_cast<BlockArgument>(origin);
+            std::optional<Value> operand =
+                argument ? resolveFunctionArgument(argument) : std::nullopt;
+            if (!operand) {
+              return failure();
+            }
+            return findUniquePipeDeviceTransferImpl(
+                analysis, *operand, resolveFunctionArgument, activeValues);
+          });
+}
+
+FailureOr<std::optional<DeviceTransferAttr>>
+findUniquePipeDeviceTransfer(ValueOriginAnalysis &analysis, Value pipe) {
+  auto resolveNoFunctionArguments = [](BlockArgument) -> std::optional<Value> {
+    return std::nullopt;
+  };
+  return findUniquePipeDeviceTransfer(analysis, pipe,
+                                      resolveNoFunctionArguments);
+}
+
+FailureOr<std::optional<DeviceTransferAttr>> findUniquePipeDeviceTransfer(
+    ValueOriginAnalysis &analysis, Value pipe,
+    llvm::function_ref<std::optional<Value>(BlockArgument)>
+        resolveFunctionArgument) {
+  llvm::DenseSet<Value> activeValues;
+  return findUniquePipeDeviceTransferImpl(
+      analysis, pipe, resolveFunctionArgument, activeValues);
 }
 
 FailureOr<std::optional<CopyOp>>

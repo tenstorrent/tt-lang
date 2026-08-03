@@ -36,7 +36,7 @@ inline constexpr llvm::StringLiteral kFabricDeviceDomainAttrName =
 struct FabricRoute {
   DeviceRefAttr localDevice;
   DeviceRefAttr remoteDevice;
-  SmallVector<SmallVector<int64_t>> sourceNodes;
+  SmallVector<LaunchNodeCoord> sourceNodes;
   std::size_t routeIndex;
 };
 
