@@ -187,13 +187,16 @@ analyzePipeTransportDFBUse(scf::ForOp loop, Value dfb,
     return failure();
   }
 
-  const DFBReleaseOwnerMaps &owners = pipeGraph.getDFBReleaseOwnerMaps();
-  if (lookupOwner<CBReserveOp>(owners.reserveByPush,
-                               dfbUse.pushes.front().getOperation()) !=
-          dfbUse.reserves.front() ||
-      lookupOwner<CBWaitOp>(owners.waitByPop,
-                            dfbUse.pops.front().getOperation()) !=
-          dfbUse.waits.front()) {
+  ArrayRef<Operation *> reserveOwners =
+      pipeGraph.getDFBAcquireReleaseIndex(dfbUse.pushes.front().getOperation())
+          .getReleaseIntervalOwners(dfbUse.pushes.front().getOperation());
+  ArrayRef<Operation *> waitOwners =
+      pipeGraph.getDFBAcquireReleaseIndex(dfbUse.pops.front().getOperation())
+          .getReleaseIntervalOwners(dfbUse.pops.front().getOperation());
+  if (reserveOwners.size() != 1 ||
+      reserveOwners.front() != dfbUse.reserves.front().getOperation() ||
+      waitOwners.size() != 1 ||
+      waitOwners.front() != dfbUse.waits.front().getOperation()) {
     reason = "transport DFB releases do not have unique acquire owners";
     return failure();
   }
