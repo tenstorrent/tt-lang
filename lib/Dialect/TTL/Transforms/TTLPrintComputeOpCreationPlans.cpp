@@ -96,6 +96,8 @@ static StringRef stringifyReason(IntermediateDFBReason reason) {
     return "compute-result-has-materialized-use";
   case IntermediateDFBReason::ComputeOpRequiresMaterializedInput:
     return "compute-op-requires-materialized-input";
+  case IntermediateDFBReason::MultiBlockStore:
+    return "multi-block-store";
   }
   llvm_unreachable("unknown intermediate DFB reason");
 }

@@ -63,6 +63,68 @@ enum class IntermediateDFBReason {
   /// A consumer cannot absorb a producer with its own standalone compute
   /// recipe, so the producer result must become a DFB input to that consumer.
   ComputeOpRequiresMaterializedInput,
+
+  /// Stores in multiple blocks require one stable storage publication.
+  MultiBlockStore,
+};
+
+/// Branch-local cloning of one producer expression.
+struct MultiBlockStoreClonePlan {
+  /// Result whose producer expression is cloned.
+  Value source;
+
+  /// Stores outside the defining block, grouped during application.
+  SmallVector<StoreOp> stores;
+
+  /// Root values mapped directly into each clone.
+  SmallVector<Value> rootInputs;
+
+  /// Producer operations in topological clone order.
+  SmallVector<Operation *> operations;
+};
+
+/// Stores routed through one compiler-created DFB.
+struct MultiBlockStoreMaterializationPlan {
+  /// Result requiring stable storage across blocks.
+  Value source;
+
+  /// Every direct store rewritten to consume the materialized value.
+  SmallVector<StoreOp> stores;
+};
+
+/// Immutable decisions for tensor values stored from multiple blocks.
+class MultiBlockStorePlan {
+public:
+  ArrayRef<MultiBlockStoreClonePlan> getClones() const { return clones; }
+
+  ArrayRef<MultiBlockStoreMaterializationPlan> getMaterializations() const {
+    return materializations;
+  }
+
+private:
+  friend class MultiBlockStorePlanner;
+  MultiBlockStorePlan(
+      SmallVector<MultiBlockStoreClonePlan> clones,
+      SmallVector<MultiBlockStoreMaterializationPlan> materializations)
+      : clones(std::move(clones)),
+        materializations(std::move(materializations)) {}
+
+  SmallVector<MultiBlockStoreClonePlan> clones;
+  SmallVector<MultiBlockStoreMaterializationPlan> materializations;
+};
+
+/// Plans branch-local cloning and fallback storage without modifying IR.
+class MultiBlockStorePlanner {
+public:
+  MultiBlockStorePlanner(func::FuncOp kernel,
+                         const DFBValueLifetimeAnalysis &lifetimes)
+      : kernel(kernel), lifetimes(lifetimes) {}
+
+  PlanningResult<MultiBlockStorePlan> build() const;
+
+private:
+  func::FuncOp kernel;
+  const DFBValueLifetimeAnalysis &lifetimes;
 };
 
 /// Evidence supporting one intermediate DFB requirement.
@@ -212,8 +274,11 @@ private:
 class IntermediateDFBPlanner {
 public:
   IntermediateDFBPlanner(func::FuncOp kernel,
-                         const DFBValueLifetimeAnalysis &lifetimes)
-      : kernel(kernel), lifetimes(lifetimes) {}
+                         const DFBValueLifetimeAnalysis &lifetimes,
+                         ArrayRef<MultiBlockStoreMaterializationPlan>
+                             multiBlockMaterializations = {})
+      : kernel(kernel), lifetimes(lifetimes),
+        multiBlockMaterializations(multiBlockMaterializations) {}
 
   PlanningResult<IntermediateDFBPlan> build() const;
 
@@ -223,6 +288,7 @@ private:
 
   func::FuncOp kernel;
   const DFBValueLifetimeAnalysis &lifetimes;
+  ArrayRef<MultiBlockStoreMaterializationPlan> multiBlockMaterializations;
 };
 
 } // namespace mlir::tt::ttl
