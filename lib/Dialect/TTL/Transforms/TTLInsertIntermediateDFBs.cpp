@@ -234,6 +234,82 @@ static void applyStandaloneMaterializationPlan(
   }
 }
 
+struct StoreBlockGroup {
+  Block *block = nullptr;
+  SmallVector<StoreOp> stores;
+};
+
+static SmallVector<StoreBlockGroup>
+groupStoresByBlock(ArrayRef<StoreOp> stores) {
+  SmallVector<StoreBlockGroup> groups;
+  for (StoreOp store : stores) {
+    Block *block = store->getBlock();
+    auto group = llvm::find_if(groups, [&](const StoreBlockGroup &candidate) {
+      return candidate.block == block;
+    });
+    if (group == groups.end()) {
+      groups.push_back(StoreBlockGroup{block, {}});
+      group = std::prev(groups.end());
+    }
+    group->stores.push_back(store);
+  }
+  return groups;
+}
+
+static void applyMultiBlockStoreClonePlan(
+    const MultiBlockStoreClonePlan &plan, OpBuilder &builder) {
+  for (const StoreBlockGroup &group : groupStoresByBlock(plan.stores)) {
+    StoreOp firstStore = group.stores.front();
+    for (StoreOp store : ArrayRef<StoreOp>(group.stores).drop_front()) {
+      if (store->isBeforeInBlock(firstStore)) {
+        firstStore = store;
+      }
+    }
+
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPoint(firstStore);
+    IRMapping mapping;
+    for (Value rootInput : plan.rootInputs) {
+      mapping.map(rootInput, rootInput);
+    }
+    for (Operation *operation : plan.operations) {
+      builder.clone(*operation, mapping);
+    }
+    Value replacement = mapping.lookup(plan.source);
+    for (StoreOp store : group.stores) {
+      store->setOperand(0, replacement);
+    }
+  }
+
+  for (Operation *operation : llvm::reverse(plan.operations)) {
+    if (operation->use_empty()) {
+      operation->erase();
+    }
+  }
+}
+
+static LogicalResult verifyPlanSources(const MultiBlockStorePlan &plan) {
+  for (const MultiBlockStoreClonePlan &clone : plan.getClones()) {
+    if (!clone.source || clone.operations.empty()) {
+      return failure();
+    }
+    for (StoreOp store : clone.stores) {
+      if (!store || store.getTensor() != clone.source) {
+        return failure();
+      }
+    }
+  }
+  for (const MultiBlockStoreMaterializationPlan &materialization :
+       plan.getMaterializations()) {
+    for (StoreOp store : materialization.stores) {
+      if (!store || store.getTensor() != materialization.source) {
+        return failure();
+      }
+    }
+  }
+  return success();
+}
+
 static LogicalResult verifyPlanSources(const IntermediateDFBPlan &plan) {
   for (const IntermediateDFBRequirement &requirement : plan.getRequirements()) {
     if (requirement.operandIndex >= requirement.consumer->getNumOperands() ||
@@ -267,7 +343,60 @@ struct TTLInsertIntermediateDFBsPass
     std::unique_ptr<DFBValueLifetimeAnalysis> lifetimes =
         std::move(plannedLifetimes).takePlan();
 
-    IntermediateDFBPlanner materializationPlanner(kernel, *lifetimes);
+    MultiBlockStorePlanner multiBlockPlanner(kernel, *lifetimes);
+    PlanningResult<MultiBlockStorePlan> plannedMultiBlockStores =
+        multiBlockPlanner.build();
+    if (plannedMultiBlockStores.isInvalidIR()) {
+      const PlanningDiagnostic &diagnostic =
+          plannedMultiBlockStores.getInvalidIR();
+      diagnostic.operation->emitOpError(diagnostic.message);
+      signalPassFailure();
+      return;
+    }
+    assert(plannedMultiBlockStores.isPlanned() &&
+           "multi-block store planning has no recoverable rejection");
+    MultiBlockStorePlan multiBlockPlan =
+        std::move(plannedMultiBlockStores).takePlan();
+
+    if (!enable && !multiBlockPlan.getMaterializations().empty()) {
+      const MultiBlockStoreMaterializationPlan &materialization =
+          multiBlockPlan.getMaterializations().front();
+      materialization.source.getDefiningOp()->emitOpError()
+          << "result is stored from a different block and cannot be cloned "
+             "into mutually exclusive store blocks; enable compiler DFBs or "
+             "store the intermediate to a user-declared DFB before the "
+             "control-flow split";
+      signalPassFailure();
+      return;
+    }
+    if (failed(verifyPlanSources(multiBlockPlan))) {
+      kernel.emitOpError("multi-block store plan was invalidated before "
+                         "application");
+      signalPassFailure();
+      return;
+    }
+
+    OpBuilder builder(kernel.getContext());
+    for (const MultiBlockStoreClonePlan &clone : multiBlockPlan.getClones()) {
+      applyMultiBlockStoreClonePlan(clone, builder);
+    }
+
+    if (!multiBlockPlan.getClones().empty()) {
+      plannedLifetimes = DFBValueLifetimeAnalysis::create(kernel);
+      if (plannedLifetimes.isInvalidIR()) {
+        const PlanningDiagnostic &diagnostic =
+            plannedLifetimes.getInvalidIR();
+        diagnostic.operation->emitOpError(diagnostic.message);
+        signalPassFailure();
+        return;
+      }
+      assert(plannedLifetimes.isPlanned() &&
+             "lifetime analysis has no recoverable rejection");
+      lifetimes = std::move(plannedLifetimes).takePlan();
+    }
+
+    IntermediateDFBPlanner materializationPlanner(
+        kernel, *lifetimes, multiBlockPlan.getMaterializations());
     PlanningResult<IntermediateDFBPlan> plannedMaterializations =
         materializationPlanner.build();
     if (plannedMaterializations.isInvalidIR()) {
@@ -305,7 +434,6 @@ struct TTLInsertIntermediateDFBsPass
       return;
     }
 
-    OpBuilder builder(kernel.getContext());
     // Standalone materialization only inserts operations and rewrites uses, so
     // applying it first preserves every compute operation recorded for an
     // atomic rebuild. Compute rebuilds then follow definition order; valid SSA

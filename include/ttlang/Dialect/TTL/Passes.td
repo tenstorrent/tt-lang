@@ -326,6 +326,14 @@ def TTLInsertIntermediateDFBs
 
       bind_cb -> cb_reserve -> store -> cb_push -> cb_wait -> attach_cb -> cb_pop
 
+    A value stored from multiple blocks is normalized before ordinary operand
+    materialization. The pass clones a side-effect-free producer expression
+    into mutually exclusive store blocks only when the expression has no other
+    uses, no intervening loop, and every root DFB remains available at each
+    clone site. Otherwise, every direct store reads one compiler-created DFB.
+    This prevents compute creation from dropping stores or moving a producer
+    after the DFB wait that consumes its materialized value.
+
     Before modifying IR, the pass computes a whole-kernel analysis state of
     exact consumer operands that require DFB materialization. Decisions grow
     monotonically to a fixed point and retain independent evidence. This
@@ -342,18 +350,25 @@ def TTLInsertIntermediateDFBs
     transactions for one result materialize all of its uses through one shared
     compiler DFB. Application begins only after the complete plan is valid.
 
-    All DFBs created by this pass are marked with `ttl.compiler_allocated`.
+    In the standard pipeline this pass runs after
+    `ttl-create-producer-compute`, so tensor-level materialization is limited
+    to IR forms that have not yet been converted to `ttl.compute`.
 
-    When `enable` is false, the pass verifies that no operations require
-    compiler-allocated DFBs for operand attachment or source-lifetime
-    preservation. If any operation requires either materialization, the pass
-    emits an error diagnostic and signals failure.
+    All DFBs created by this pass are marked with `ttl.compiler_allocated`;
+    `ttl-finalize-dfb-indices` assigns physical indices and emits runtime
+    metadata after materialization is complete.
+
+    When `enable` is false, branch-local cloning remains enabled because it
+    allocates no DFB. The pass emits an error when multi-block stores, operand
+    attachment, or source-lifetime preservation require compiler-created
+    storage.
   }];
 
   let options = [
     Option<"enable", "enable", "bool", "true",
            "Insert compiler-allocated intermediate DFBs. When false, "
-           "emit an error if any operation requires a compiler-allocated DFB.">
+           "emit an error if materialization through a compiler-allocated "
+           "DFB is required.">
   ];
 
   let dependentDialects = [

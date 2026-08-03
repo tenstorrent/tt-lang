@@ -4,7 +4,7 @@ This document describes how the tt-lang compiler manages dataflow buffers (DFBs)
 
 ## Overview
 
-DFBs originate from two sources. User-declared DFBs are created explicitly in the DSL via `make_dataflow_buffer_like` and correspond to the programmer's data movement plan. Compiler-allocated DFBs are inserted automatically at fusion split points where a tensor-level operation requires a CB-attached operand but receives the result of a fused expression chain.
+DFBs originate from two sources. User-declared DFBs are created explicitly in the DSL via `make_dataflow_buffer_like` and correspond to the programmer's data movement plan. Compiler-allocated DFBs are inserted automatically when the compiler must provide concrete DFB storage for a tensor SSA value: either an operation requires a DFB-attached operand, or direct `ttl.store` users span multiple blocks and cannot be represented by branch-local cloning.
 
 The hardware supports at most 32 DFBs per node (indices 0--31). User and
 compiler-allocated DFBs share this index space. Passes operating on individual
@@ -624,6 +624,16 @@ creates two compiler DFB outputs, not three, and both consumers of `a` use the
 same attached materialization. The producer compute is rebuilt once, so the
 plan is not affected by transient SSA values created while rewriting another
 result of the same producer.
+
+The pass also normalizes direct stores of a non-DFB-attached value when those
+stores occupy at least two blocks. If `insideMutuallyExclusiveRegions` proves
+the store blocks pairwise exclusive, the producer backward slice has no
+remaining non-store uses, and every root DFB remains available at each clone
+site, the pass clones the slice into each store block. Otherwise, it
+materializes the value through a compiler-created DFB and rewrites every
+direct store to consume the attached value. Rewriting all direct stores
+prevents compute creation from moving the producer after the DFB wait that
+reads the materialized value.
 
 `TTLMaterializeLoopState` uses the same compiler-DFB materialization helper
 (`include/ttlang/Dialect/TTL/Transforms/DFBMaterialization.h`) to remove
@@ -1477,13 +1487,6 @@ operation. A pop and acquire projected to the same operation therefore
 overlap, preserving correctness when their internal order is not represented.
 
 ## Limitations and Future Work
-
-- **Compute stores in different blocks.** `ComputeOp` creation requires one
-  block containing all stores of a tensor result. Stores in different blocks
-  have different execution conditions and cannot be represented by one
-  unconditional compute. A region-aware creation plan must prove per-region
-  DFB occupancy balance before supporting conditional output routing. This is
-  tracked by [#724](https://github.com/tenstorrent/tt-lang/issues/724).
 
 - **Cross-region instrumentation.** Cross-region creation recomputes only
   side-effect-free producers. Relocatable signposts or tile-observing debug
