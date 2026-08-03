@@ -36,7 +36,7 @@ semaphore protocol.
 - [x] **Item 1 - row-broadcast bias:** Add one N-sharded bias input and validate
   `A @ B + bias`.
   ![validated on 4 devices](https://img.shields.io/badge/validated-4%20devices-brightgreen)
-- [ ] **Item 2 - full-grid multi-core scheduling:** Partition M/N work across
+- [ ] **Item 2 - full-grid multi-node scheduling:** Partition M/N work across
   the compute grid and assign fabric transfers without duplicating traffic or
   output writes.
 - [ ] **Item 3a - ReLU:** Add a ReLU compute epilogue after bias.
@@ -93,27 +93,27 @@ Exabox container.
 The direct DFB variant is the primary launcher:
 
 ```bash
-python examples/all_gather_minimal_matmul_fabric_direct.py
+python -m examples.all_gather_minimal_matmul.direct
 ```
 
 The context-manager variant accepts the same arguments:
 
 ```bash
-python examples/all_gather_minimal_matmul_fabric.py
+python -m examples.all_gather_minimal_matmul.context
 ```
 
 The full variants use separate launchers:
 
 ```bash
-python examples/all_gather_minimal_matmul_fabric_full_direct.py
-python examples/all_gather_minimal_matmul_fabric_full.py
+python -m examples.all_gather_minimal_matmul.full_direct
+python -m examples.all_gather_minimal_matmul.full_context
 ```
 
 Run on four devices:
 
 ```bash
 set -o pipefail
-timeout 300 python examples/all_gather_minimal_matmul_fabric_direct.py \
+timeout 300 python -m examples.all_gather_minimal_matmul.direct \
     --mesh-shape 2x2 \
     --m-tiles 1 \
     --k-tiles-per-device 1 \
@@ -124,15 +124,14 @@ timeout 300 python examples/all_gather_minimal_matmul_fabric_direct.py \
 ```
 
 The completed full checklist checkpoint uses the same arguments with
-`examples/all_gather_minimal_matmul_fabric_full_direct.py`. The
-context-manager equivalent is
-`examples/all_gather_minimal_matmul_fabric_full.py`.
+`examples.all_gather_minimal_matmul.full_direct`. The context-manager
+equivalent is `examples.all_gather_minimal_matmul.full_context`.
 
 Run on a 32-device Galaxy:
 
 ```bash
 set -o pipefail
-timeout 1800 python examples/all_gather_minimal_matmul_fabric_direct.py \
+timeout 1800 python -m examples.all_gather_minimal_matmul.direct \
     --mesh-shape 4x8 \
     --m-tiles 4 \
     --k-tiles-per-device 8 \
