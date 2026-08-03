@@ -91,8 +91,17 @@ def _make_parser() -> argparse.ArgumentParser:
         help=(
             "Insert compiler-allocated intermediate DFBs when materialization "
             "is required for DFB-only operands, source lifetimes, or computed "
-            "values stored from multiple blocks (default: enabled)."
+            "values stored by operations in multiple MLIR basic blocks "
+            "(default: enabled)."
         ),
+    )
+    p.add_argument(
+        "--ttl-reuse-user-dfbs",
+        default=None,
+        dest="reuse_user_dfbs",
+        action=argparse.BooleanOptionalAction,
+        help="Reuse physical DFB indices only for logical lifetimes proven "
+        "not to overlap across concurrent kernels (default: enabled).",
     )
     p.add_argument(
         "--ttl-specialize-cores",
@@ -158,6 +167,7 @@ class CompilerOptions:
     matmul_full_fp32: bool = True
     strict_f32_acc: bool = False
     compiler_dfbs: bool = True
+    reuse_user_dfbs: bool = True
     specialize_cores: bool = False
     l1_budget: int = dataclasses.field(default=0, compare=False, hash=False)
 

@@ -1658,9 +1658,20 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     template arguments on the emitted call. They are resolved to integer
     literals at EmitC lowering time, e.g. `my_func<1, 2>(a, b)`.
 
-    The `arg_operands` are forwarded as function arguments to the callee.
-    Results are optional; when absent the call is treated as a void
-    function invocation.
+    The `arg_operands` are forwarded as function arguments to the callee. A
+    DFB operand declares that the callee may access that logical DFB from call
+    entry through call completion; storage liveness does not distinguish reads
+    from writes. Every DFB accessed by the callee or a transitive helper must
+    appear as a DFB operand, and all synchronous and asynchronous accesses must
+    complete before the call returns. This external-code contract is assumed
+    because the compiler does not inspect the C++ body.
+
+    An integer produced by `ttl.get_dfb_id`, including a template argument,
+    does not declare a call-level DFB access. If the callee uses that index to
+    access the DFB, the same DFB must also appear in `arg_operands`.
+
+    Results are optional; when absent the call is treated as a void function
+    invocation.
 
     Example:
     ```mlir
@@ -1694,9 +1705,10 @@ def TTL_GetDfbIdOp : TTL_Op<"get_dfb_id", [Pure]> {
   let summary = "Get the integer index for a dataflow buffer";
   let description = [{
     Returns the integer DFB index for the given dataflow buffer as an
-    i32 SSA value. Typically consumed by `ttl.opaque_call` template
-    args, which keeps the DFB live through SSA dataflow. At EmitC time
-    this resolves to a raw integer literal.
+    i32 SSA value. At EmitC time this resolves to a raw integer literal.
+    Integer SSA dataflow does not preserve a call-level DFB access; an
+    external callee that accesses the DFB must also receive it as a DFB
+    operand.
   }];
   let arguments = (ins TTL_CircularBuffer:$dfb);
   let results = (outs I32:$result);

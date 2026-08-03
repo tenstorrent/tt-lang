@@ -60,9 +60,12 @@ struct NegateTileOp {
 
 } // namespace test_ops
 
-// Shim callable from ttl.call_extern_func via template_args.
+// The function operands declare the DFB access set; template arguments retain
+// the constexpr configuration required by the external operation.
 template <uint32_t InCB, uint32_t OutCB>
-void negate_tile_shim() {
+void negate_tile_shim(int inDfb, int outDfb) {
+  (void)inDfb;
+  (void)outDfb;
   using Config = test_ops::NegateTileConfig<InCB, OutCB>;
   test_ops::NegateTileOp<Config> op;
   op.init();

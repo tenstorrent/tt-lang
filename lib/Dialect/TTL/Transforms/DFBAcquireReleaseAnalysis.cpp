@@ -5,6 +5,7 @@
 #include "DFBAcquireReleaseAnalysis.h"
 
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
 #include "mlir/IR/BuiltinTypes.h"
 #include "llvm/ADT/DenseMap.h"
@@ -44,8 +45,10 @@ static bool directDFBUseMatchesAcquire(DFBAcquireInterval interval,
   llvm_unreachable("unknown DFB acquire/release kind");
 }
 
-static bool isLifecycleOrAttachOp(Operation *op) {
-  return isDFBAcquireOp(op) || isDFBReleaseOp(op) || isa<AttachCBOp>(op);
+/// Returns true when a direct DFB operand does not consume an acquired slot.
+static bool isLifecycleOrIdentityOnlyOp(Operation *operation) {
+  return isDFBAcquireOp(operation) || isDFBReleaseOp(operation) ||
+         !mayAccessDFBStorage(operation);
 }
 
 /// Project `op` into the acquire block so nested regions can be ordered
@@ -347,7 +350,7 @@ Operation *findLastDFBAcquireOwnedUse(DFBAcquireInterval interval) {
     if (user == interval.acquire) {
       continue;
     }
-    if (isLifecycleOrAttachOp(user)) {
+    if (isLifecycleOrIdentityOnlyOp(user)) {
       continue;
     }
     if (!directDFBUseMatchesAcquire(interval, user)) {

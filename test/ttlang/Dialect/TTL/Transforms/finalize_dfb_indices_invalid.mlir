@@ -1,6 +1,6 @@
 // Verify diagnostics for unresolved logical identities, incompatible physical
 // assignments, and partial compiler-created lifecycles.
-// RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)'
+// RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false})'
 
 // One physical index requires one exact DFB type.
 module {

@@ -6,6 +6,7 @@
     * [Runtime and compile-time arguments](#runtime-and-compile-time-arguments)
     * [Thread assignment](#thread-assignment)
     * [Composing operations](#composing-operations)
+    * [External C++ functions](#external-c-functions)
     * [Multi-kernel operation](#multi-kernel-operation)
 * [Grid](#grid)
     * [Grid size function](#grid-size-function)
@@ -53,6 +54,7 @@
 | 0.17 | 04/28/2026 | Move `broadcast`, `transpose`, `where`, `mask`, `mask_posinf`, `fill`, `squeeze`, `unsqueeze` to `ttl.block` |
 | 0.18 | 06/16/2026 | Add `ttl.raw_element_read` and `ttl.raw_element_write` |
 | 0.19 | 06/15/2026 | Unified-body `ttl.operation` with thread assignment and composition; add multi-kernel operation with explicit kernels |
+| 0.20 | 08/04/2026 | Specify external C++ function calls and their dataflow buffer access contract |
 
 
 ## Introduction
@@ -153,6 +155,24 @@ An operation can be built from other operations by calling them in its body. Suc
 An operation written to be composed may declare its own dataflow buffers and pipe nets in its body, or take them as parameters for the caller to supply. An operation that takes dataflow buffers or pipe nets as parameters is an *expand-only operation*: because these are not runtime arguments (see [runtime and compile-time arguments](#runtime-and-compile-time-arguments)), there is nothing to supply at a TT-NN call site, and it can only be expanded into another operation, never called directly.
 
 A call to a composed operation is a statement, not an expression, and must supply every parameter. Default parameter values, argument unpacking, and reassigning a parameter inside the composed operation are not allowed. An operation cannot call itself, directly or through a cycle; composition is finite and fully resolved when the operation is defined.
+
+
+### External C++ functions
+
+`ttl.call_extern_func` calls a C++ function declared in a user-provided header. The external body is opaque to the compiler. Scalars and dataflow buffers in `func_args` become C++ function arguments; values in `template_args` become C++ template arguments.
+
+| Function | Description |
+| :---- | :---- |
+| `ttl.call_extern_func(header_path: str, function_name: str, *, template_args: list = [], func_args: list = [], include_paths: list[str] = []) -> None` | Call an external C++ function. Template arguments accept `int`, `bool`, `float` and the result of `ttl.get_dfb_id`. Function arguments accept `int`, `bool`, `float` and `ttl.DataflowBuffer`. |
+| `ttl.get_dfb_id(dataflow_buffer: ttl.DataflowBuffer) -> int` | Return the physical index supplied to the kernel for a dataflow buffer. An external function that accesses the dataflow buffer must also receive it directly in `func_args`. |
+
+The compiler assumes that every dataflow buffer accessed by the external function or any function it calls appears directly in `func_args` as a dataflow buffer. Passing a dataflow buffer index as an integer or template argument does not satisfy this requirement. The assumption is part of the external-function contract because the compiler cannot inspect the C++ implementation for hidden constants, global state or helper dependencies.
+
+A dataflow buffer argument declares a possible read or write for the complete call. Read and write classification is unnecessary for storage liveness: either access requires the physical allocation to remain unchanged until the call completes. The external function must not retain a dataflow buffer address or leave an asynchronous access outstanding after returning.
+
+External code may execute reserve, push, wait and pop operations, but those hidden protocol operations do not establish a bounded dataflow buffer lifetime in the IR. The compiler can reuse that dataflow buffer's physical index only when the visible IR independently proves its complete lifecycle. This restriction does not prevent reuse among other dataflow buffers with proven non-overlapping lifetimes.
+
+The DSL does not currently represent a dependency-only dataflow buffer, a hidden protocol summary or an unknown dataflow buffer access set. An external function with an unknown access set is outside the valid-program assumption. A future explicit unknown form must disable user dataflow buffer index reuse for the complete module because a raw index may name any physical allocation. These additions are tracked by [issue #806](https://github.com/tenstorrent/tt-lang/issues/806).
 
 
 ### Multi-kernel operation

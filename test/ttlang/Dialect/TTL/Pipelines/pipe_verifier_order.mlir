@@ -21,7 +21,7 @@
 // CHECK-NEXT: func.func(
 // CHECK-NEXT:   ttl-coalesce-dfb-acquires
 // CHECK-NEXT: ),
-// CHECK-NEXT: ttl-finalize-dfb-indices,
+// CHECK-NEXT: ttl-finalize-dfb-indices{reuse-user-dfbs=true},
 // CHECK-NEXT: func.func(
 // CHECK-NOT:    ttl-verify-pipenet-guards
 // CHECK-NOT:    ttl-verify-pipenet-schedule

@@ -55,6 +55,11 @@ struct TTLToTTKernelPipelineOptions
                      "error if materialization through a compiler-allocated "
                      "DFB is required."),
       llvm::cl::init(true)};
+  Option<bool> reuseUserDFBs{
+      *this, "reuse-user-dfbs",
+      llvm::cl::desc("Reuse physical DFB indices when concurrent-kernel "
+                     "liveness proves that logical lifetimes do not overlap."),
+      llvm::cl::init(true)};
   Option<bool> specializeCores{
       *this, "specialize-cores",
       llvm::cl::desc(

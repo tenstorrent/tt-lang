@@ -19,6 +19,7 @@ class TestDefaults:
         assert opts.maximize_dst is True
         assert opts.enable_fpu_binary_ops is True
         assert opts.subblock_sync is False
+        assert opts.reuse_user_dfbs is True
         assert opts.specialize_cores is False
         assert opts._explicit == frozenset()
 
@@ -57,6 +58,11 @@ class TestFromString:
         opts = CompilerOptions.from_string("--ttl-specialize-cores")
         assert opts.specialize_cores is True
         assert "specialize_cores" in opts._explicit
+
+    def test_disable_user_dfb_reuse(self):
+        opts = CompilerOptions.from_string("--no-ttl-reuse-user-dfbs")
+        assert opts.reuse_user_dfbs is False
+        assert "reuse_user_dfbs" in opts._explicit
 
     def test_enable_flags_explicitly(self):
         opts = CompilerOptions.from_string("--ttl-maximize-dst --ttl-fpu-binary-ops")
