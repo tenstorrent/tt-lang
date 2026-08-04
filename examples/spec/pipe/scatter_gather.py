@@ -136,6 +136,13 @@ try:
     # The loopback copies tiles without computing on them, so the comparison is
     # exact: a tolerance would accept a node that gathered something slightly
     # wrong, or that gathered nothing where the column's value is small.
+    #
+    # It distinguishes the columns and not the nodes within one: every node in a
+    # column sends the same value, which is what makes the gathered result
+    # independent of arrival order, and so a source that read a column
+    # neighbour's tile instead of its own would pass. Giving the nodes in a
+    # column distinct payloads would pin that, and would leave the result
+    # dependent on which broadcast arrived last.
     assert torch.equal(
         expected, result
     ), "scatter-gather column loopback did not match torch reference"
