@@ -426,21 +426,11 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   // Build the body region
   Block *body = rewriter.createBlock(&computeOp.getBody());
 
-  // Each block argument's tile type is derived from its corresponding
-  // tensor's element type so mixed-dtype fusion (e.g., bf16 input + f32
-  // intermediate produced by a fused `ttl.typecast`) preserves per-value
-  // precision. The output block arg type matches the sink tensor.
-  Type outputTileType = getTensorTileType(type);
-  auto getInputTileType = [&](Value root) -> Type {
-    auto inputTensor = cast<RankedTensorType>(root.getType());
-    return getTensorTileType(inputTensor);
-  };
-
-  for (Value root : creation.inputs) {
-    body->addArgument(getInputTileType(root), loc);
+  for (ttcore::TileType inputTileType : creation.inputTileTypes) {
+    body->addArgument(inputTileType, loc);
   }
   for (size_t i = 0; i < outputs.dfbs.size(); ++i) {
-    body->addArgument(outputTileType, loc);
+    body->addArgument(creation.resultTileType, loc);
   }
 
   rewriter.setInsertionPointToStart(body);
@@ -581,16 +571,6 @@ static LogicalResult buildComputeFromInputs(
   ValueRange inputs(creation->inputs);
   RankedTensorType outputType = creation->resultType;
 
-  SmallVector<Type> inputTileTypes;
-  for (Value input : inputs) {
-    auto inputType = getTensorType(input);
-    if (!inputType) {
-      return rewriter.notifyMatchFailure(op, "input is not a ranked tensor");
-    }
-    inputTileTypes.push_back(getTensorTileType(inputType));
-  }
-  Type outputTileType = getTensorTileType(outputType);
-
   SmallVector<Attribute> maps;
   for (AffineMap inputMap : creation->iteration.inputMaps) {
     maps.push_back(AffineMapAttr::get(inputMap));
@@ -625,18 +605,19 @@ static LogicalResult buildComputeFromInputs(
                                      rewriter.getArrayAttr(iteratorTypes));
 
   Block *body = rewriter.createBlock(&computeOp.getBody());
-  for (Type inputTileType : inputTileTypes) {
+  for (ttcore::TileType inputTileType : creation->inputTileTypes) {
     body->addArgument(inputTileType, loc);
   }
   for (size_t i = 0; i < outputs.dfbs.size(); ++i) {
-    body->addArgument(outputTileType, loc);
+    body->addArgument(creation->resultTileType, loc);
   }
 
   rewriter.setInsertionPointToStart(body);
   ComputeInstrumentationEmitter instrumentationEmitter(
       rewriter, creation->instrumentation);
   instrumentationEmitter.emitLeading();
-  Value result = emitTileOp(rewriter, loc, outputTileType, body, *creation);
+  Value result =
+      emitTileOp(rewriter, loc, creation->resultTileType, body, *creation);
   instrumentationEmitter.emitAfter(op);
   for (StoreOp store : outputs.stores) {
     emitTileStore(rewriter, loc, result, computeOp, store, outputs);
@@ -1008,9 +989,8 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
         rewriter.getArrayAttr(iteratorTypes));
 
     Block *body = rewriter.createBlock(&computeOp.getBody());
-    Type tileType = getTensorTileType(inputType);
-    body->addArgument(tileType, loc);
-    body->addArgument(tileType, loc);
+    body->addArgument(plan.tileType, loc);
+    body->addArgument(plan.tileType, loc);
 
     rewriter.setInsertionPointToEnd(body);
     SmallVector<Value> iterIndices =
