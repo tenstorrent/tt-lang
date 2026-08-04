@@ -49,6 +49,10 @@ def operation(
     compiler-side code but have no effect in the simulator.  Any other
     unrecognised keyword argument raises TypeError to catch user errors early.
 
+    The decorated function's interface is checked against the specification's
+    rules for an operation (no parameter defaults, no ``*args`` / ``**kwargs``, no
+    return), by the same code the compiler checks with.
+
     Args:
         grid: Grid specification. If 'auto' or 'full', uses the default grid
             (configurable via set_default_grid()).
@@ -91,7 +95,15 @@ def operation(
         # multi-kernel function by reusing the compiler's thread-assignment
         # splitter; the rest of this decorator then runs it unchanged. A
         # multi-kernel body keeps the original code (and its source lines).
-        from .unified_operation import build_multikernel_function, is_unified_body
+        from .unified_operation import (
+            build_multikernel_function,
+            is_unified_body,
+            validate_operation_interface,
+        )
+
+        # The interface rules apply to every operation, so they are checked before
+        # anything is done with the body, and with the compiler's own wording.
+        validate_operation_interface(func)
 
         if is_unified_body(func):
             try:

@@ -1339,3 +1339,101 @@ class TestHardwareKeywordsIgnored:
         """An unrecognised keyword argument raises TypeError."""
         with pytest.raises(TypeError, match="unexpected keyword argument"):
             ttl.operation(grid=(1, 1), totally_unknown_option=42)
+
+
+class TestOperationInterface:
+    """The signature and body rules an operation must satisfy, with the compiler.
+
+    The specification states them under "Operation function": an operation takes
+    only tensors, parameters have no defaults and the signature no ``*args`` /
+    ``**kwargs``, and the function returns nothing. Everything else it needs is a
+    compile-time argument captured from the enclosing scope.
+
+    The wording asserted here is the compiler's, pinned on that side by
+    test/python/atom/operation_boundaries_invalid.py, because both frontends now
+    raise it from one place (atom_rules.validate_operation_interface). A program
+    the simulator runs and the compiler refuses is the failure mode worth a test:
+    it is found after the simulator has said the program is fine.
+    """
+
+    def test_a_parameter_with_a_default_is_refused(self) -> None:
+        """A default value would be a compile-time argument wearing runtime clothes."""
+        with pytest.raises(ValueError, match=r"cannot have default values.*'b'"):
+
+            @ttl.operation(grid=(1, 1))
+            def op(a: ttnn.Tensor, b: object = None) -> None:
+                pass
+
+    def test_a_variadic_signature_is_refused(self) -> None:
+        """The tensor parameters are the interface, so it cannot be open-ended."""
+        with pytest.raises(ValueError, match=r"\*args or \*\*kwargs.*'rest'"):
+
+            @ttl.operation(grid=(1, 1))
+            def positional(a: ttnn.Tensor, *rest: ttnn.Tensor) -> None:
+                pass
+
+        with pytest.raises(ValueError, match=r"\*args or \*\*kwargs.*'rest'"):
+
+            @ttl.operation(grid=(1, 1))
+            def keyword(a: ttnn.Tensor, **rest: ttnn.Tensor) -> None:
+                pass
+
+    def test_a_body_that_returns_is_refused(self) -> None:
+        """An operation writes its results into its output tensors, and returns none."""
+        with pytest.raises(ValueError, match="cannot return a value"):
+
+            @ttl.operation(grid=(1, 1))
+            def op(a: ttnn.Tensor) -> ttnn.Tensor:
+                return a
+
+    def test_a_kernel_inside_the_body_may_still_return(self) -> None:
+        """The rule is the operation's, not its kernels'.
+
+        A kernel is a function of its own; the walk stops at nested definitions, so
+        a body that writes one is not refused for what that kernel does.
+        """
+        a = make_zeros_tensor(32, 32)
+        out = make_zeros_tensor(32, 32)
+
+        @ttl.operation(grid=(1, 1))
+        def op(src: ttnn.Tensor, dst: ttnn.Tensor) -> None:
+            dfb = ttl.make_dataflow_buffer_like(src, shape=(1, 1), block_count=2)
+
+            @ttl.datamovement()
+            def reader() -> None:
+                block = dfb.reserve()
+                ttl.copy(src[0:1, 0:1], block).wait()
+                block.push()
+
+            @ttl.compute()
+            def nothing() -> None:
+                pass
+
+            @ttl.datamovement()
+            def writer() -> int:
+                block = dfb.wait()
+                ttl.copy(block, dst[0:1, 0:1]).wait()
+                block.pop()
+                return 0
+
+        op(a, out)
+
+    def test_a_body_whose_source_cannot_be_read_is_left_alone(self) -> None:
+        """Only the return rule needs the source, and an unreadable body is not wrong.
+
+        A function defined by ``exec`` (a REPL line, a generated body) has no
+        source to parse. Refusing it would refuse a program that is otherwise
+        fine, so the signature rules still apply and the return rule stands down.
+        """
+        namespace: dict[str, object] = {"ttl": ttl}
+        exec(
+            "@ttl.operation(grid=(1, 1))\n" "def op(a):\n" "    pass\n",
+            namespace,
+        )
+        assert callable(namespace["op"])
+
+        with pytest.raises(ValueError, match="cannot have default values"):
+            exec(
+                "@ttl.operation(grid=(1, 1))\n" "def bad(a=None):\n" "    pass\n",
+                {"ttl": ttl},
+            )

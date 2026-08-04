@@ -560,6 +560,21 @@ def _make_kernel_def(
     )
 
 
+def validate_operation_interface(func: Callable[..., Any]) -> None:
+    """Check ``func`` against the operation interface the specification states.
+
+    Applies to any operation, kernels written by hand or not, and is the shared
+    rule (``atom_rules.validate_operation_interface``) with the compiler's own
+    wording, so a signature one frontend refuses is not one the other quietly
+    takes: a parameter with a default value or a ``*args`` / ``**kwargs``
+    signature, and a body that returns.
+
+    Raises:
+        ValueError: With the message the compiler gives.
+    """
+    _rules().validate_operation_interface(func)
+
+
 def is_unified_body(func: Callable[..., Any]) -> bool:
     """True when ``func`` is a thread-unified operation (no hand-written kernels).
 

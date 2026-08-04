@@ -69,6 +69,78 @@ def parse_function_definition(
     return module.body[0]
 
 
+class _ReturnFinder(ast.NodeVisitor):
+    """Finds a ``return`` in an operation body, ignoring its nested functions.
+
+    A kernel written inside the body is a function of its own and may return; the
+    body itself may not.
+    """
+
+    def __init__(self) -> None:
+        self.found = False
+
+    def visit_Return(self, node: ast.Return) -> None:
+        self.found = True
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        return
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        return
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        return
+
+
+def validate_operation_interface(fn: Callable[..., Any]) -> None:
+    """Check ``fn``'s signature and body against the operation interface rules.
+
+    The specification states these under "Operation function": an operation takes
+    only tensors as parameters, "Operation parameters have no default values, and
+    the signature uses no ``*args`` or ``**kwargs``", and the function returns
+    nothing -- everything else it needs is a compile-time argument captured from
+    the enclosing scope.
+
+    The rules are here rather than with either frontend because they decide which
+    programs are operations at all, and a program one frontend takes and the other
+    refuses is worse than either answer. The wording is the compiler's, whose
+    diagnostics are pinned by ``test/python/atom/operation_boundaries_invalid.py``.
+
+    A body whose source cannot be read is left alone: only the return rule needs
+    the source, and refusing an operation because its source is unavailable (a
+    REPL, an exec'd string) would refuse a program that is otherwise fine.
+
+    Raises:
+        ValueError: If a parameter is variadic or has a default, or if the body
+            returns.
+    """
+    for parameter in inspect.signature(fn).parameters.values():
+        if parameter.kind in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        ):
+            raise ValueError(
+                "@ttl.operation does not support *args or **kwargs "
+                f"(parameter {parameter.name!r})"
+            )
+        if parameter.default is not inspect.Parameter.empty:
+            raise ValueError(
+                "@ttl.operation parameters cannot have default values "
+                f"(parameter {parameter.name!r})"
+            )
+
+    function_definition = parse_function_definition(fn)
+    if function_definition is None:
+        return
+    finder = _ReturnFinder()
+    for statement in function_definition.body:
+        finder.visit(statement)
+    if finder.found:
+        raise ValueError(
+            "@ttl.operation functions cannot return a value or use return statements"
+        )
+
+
 def closure_values(fn: Callable[..., Any]) -> Dict[str, Any]:
     """The free variables ``fn`` captures, mapped to their current values.
 

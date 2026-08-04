@@ -48,6 +48,7 @@ from ._src.atom_rules import (
     function_scope,
     parse_function_definition,
     setup_assign_target,
+    validate_operation_interface,
     validate_resource_declarations,
 )
 from ._src.atom_split import split_function_body
@@ -106,52 +107,6 @@ class _AtomSpec:
     compile_time_captures: Dict[str, Any]
     frozen_scope: Dict[str, Any]
     external_pipenets: Dict[str, PipeNet]
-
-
-class _ReturnFinder(ast.NodeVisitor):
-    def __init__(self):
-        self.found = False
-
-    def visit_Return(self, node):
-        self.found = True
-
-    def visit_FunctionDef(self, node):
-        return
-
-    def visit_AsyncFunctionDef(self, node):
-        return
-
-    def visit_Lambda(self, node):
-        return
-
-
-def _validate_operation_interface(fn: Callable) -> None:
-    signature = inspect.signature(fn)
-    for parameter in signature.parameters.values():
-        if parameter.kind in (
-            inspect.Parameter.VAR_POSITIONAL,
-            inspect.Parameter.VAR_KEYWORD,
-        ):
-            raise ValueError(
-                "@ttl.operation does not support *args or **kwargs "
-                f"(parameter {parameter.name!r})"
-            )
-        if parameter.default is not inspect.Parameter.empty:
-            raise ValueError(
-                "@ttl.operation parameters cannot have default values "
-                f"(parameter {parameter.name!r})"
-            )
-
-    function_definition = parse_function_definition(fn)
-    if function_definition is None:
-        return
-    finder = _ReturnFinder()
-    for statement in function_definition.body:
-        finder.visit(statement)
-    if finder.found:
-        raise ValueError(
-            "@ttl.operation functions cannot return a value or use return statements"
-        )
 
 
 def _has_explicit_kernels(fn: Callable) -> bool:
@@ -622,7 +577,7 @@ def operation(
     """Define a unified-body or explicit multi-kernel operation."""
 
     def _decorator(fn):
-        _validate_operation_interface(fn)
+        validate_operation_interface(fn)
         explicit_options = indexing_maps is not None or iterator_types is not None
         if explicit_options or _has_explicit_kernels(fn):
             prepare_call = functools.partial(_canonical_tensor_args, fn)
