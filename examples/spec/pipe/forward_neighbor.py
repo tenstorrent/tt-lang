@@ -21,13 +21,13 @@ import torch
 import ttl
 import ttnn
 
-# Concrete grid for a standalone run (scaffolding, not rendered).
+# Concrete grid for a standalone run.
 GRID_X, GRID_Y = 2, 4
 
 
 @ttl.operation(grid=(GRID_X, GRID_Y))
 def forward_neighbor(inp: ttnn.Tensor, out: ttnn.Tensor) -> None:
-    # One tile per node for the sent and received payloads (scaffolding).
+    # One tile per node for the sent and received payloads.
     dfb_to_send = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
     dfb_received = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
     # spec:begin

@@ -22,7 +22,7 @@ import torch
 import ttl
 import ttnn
 
-# Concrete compile-time sizes for a single-block run (scaffolding, not rendered).
+# Concrete compile-time sizes for a single-block run.
 TILE_SIZE = 32
 N, M = 64, 32
 N_BLOCK_SIZE = 1

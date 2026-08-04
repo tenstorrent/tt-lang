@@ -21,13 +21,13 @@ import torch
 import ttl
 import ttnn
 
-# Concrete grid for a standalone run (scaffolding, not rendered).
+# Concrete grid for a standalone run.
 GRID_X, GRID_Y = 2, 2
 
 
 @ttl.operation(grid=(GRID_X, GRID_Y))
 def scatter_gather(inp: ttnn.Tensor, out: ttnn.Tensor) -> None:
-    # One tile per node, shared by the node's send and receive (scaffolding).
+    # One tile per node, shared by the node's send and receive.
     dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
     # spec:begin
     # ---------------------

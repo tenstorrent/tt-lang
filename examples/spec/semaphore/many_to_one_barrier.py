@@ -23,7 +23,7 @@
 import ttl
 import ttnn
 
-# Concrete grid for a standalone run (scaffolding, not rendered).
+# Concrete grid for a standalone run.
 GRID_X, GRID_Y = 2, 2
 
 

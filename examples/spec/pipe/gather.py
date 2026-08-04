@@ -22,14 +22,14 @@ import torch
 import ttl
 import ttnn
 
-# Concrete active rectangle for a standalone run (scaffolding, not rendered):
+# Concrete active rectangle for a standalone run:
 # COLS columns (x in [0, COLS)) x ROWS rows (y in [0, ROWS)).
 GRID_COLS, GRID_ROWS = 3, 2
 
 
 @ttl.operation(grid=(GRID_COLS, GRID_ROWS))
 def gather(inp: ttnn.Tensor, out: ttnn.Tensor) -> None:
-    # One tile per node, shared by the node's send and receive (scaffolding).
+    # One tile per node, shared by the node's send and receive.
     dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
     # spec:begin
     # Grid:

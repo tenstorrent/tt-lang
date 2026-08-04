@@ -21,7 +21,7 @@ import torch
 import ttl
 import ttnn
 
-# Concrete compile-time sizes for a standalone run (scaffolding, not rendered).
+# Concrete compile-time sizes for a standalone run.
 A_ROWS, A_COLS = 64, 64
 
 
