@@ -205,9 +205,9 @@ def tile_bytes_from_dtype(dtype, tile=(DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)) ->
     """
     Calculate tile size in bytes from ttnn dtype.
 
-    The byte size matches ttcore::TileType::getSizeBytes(). Dense formats scale
-    with the physical tile dimensions. TT-Lang currently accepts BFP compute
-    tiles only with 32x32 dimensions.
+    The byte size matches ttcore::TileType::getSizeBytes(). Dense and BFP
+    formats scale with the physical tile dimensions. Compute eligibility is
+    validated separately by the compiler.
 
     Args:
         dtype: ttnn.DataType enum value
@@ -245,24 +245,22 @@ def tile_bytes_from_dtype(dtype, tile=(DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)) ->
         ttnn.DataType.BFLOAT8_B,
         ttnn.DataType.BFLOAT4_B,
     )
-    default_tile = (DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)
-    if dtype in bfp_dtypes and tuple(tile) != default_tile:
-        raise ValueError(
-            "TT-Lang supports BFP compute tiles only with "
-            f"{DEFAULT_TILE_SIZE}x{DEFAULT_TILE_SIZE} dimensions, got {tile}"
-        )
+    if dtype not in bfp_dtypes:
+        raise ValueError(f"Unsupported dtype for tile size calculation: {dtype}")
     # tt-metal Tile::get_tile_size stores one exponent byte per 16-element face
     # row and aligns the complete exponent section to L1.
     # TODO(#511): Source L1 alignment from shared target metadata.
     elements_per_exponent = 16
     l1_alignment_bytes = 16
-    assert tile_elements % elements_per_exponent == 0
+    if tile_elements % elements_per_exponent != 0:
+        raise ValueError(
+            "BFP tile element count must be divisible by "
+            f"{elements_per_exponent}, got {tile_elements}"
+        )
     exponent_count = tile_elements // elements_per_exponent
     exponent_bytes = (
         (exponent_count + l1_alignment_bytes - 1) // l1_alignment_bytes
     ) * l1_alignment_bytes
     if dtype == ttnn.DataType.BFLOAT8_B:
         return tile_elements + exponent_bytes
-    if dtype == ttnn.DataType.BFLOAT4_B:
-        return tile_elements // 2 + exponent_bytes
-    raise ValueError(f"Unsupported dtype for tile size calculation: {dtype}")
+    return tile_elements // 2 + exponent_bytes

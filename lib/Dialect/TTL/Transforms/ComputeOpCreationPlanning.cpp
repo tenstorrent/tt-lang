@@ -1021,6 +1021,11 @@ recordComputeTileTypes(ComputeOpCreationPlan &plan) {
   }
   plan.resultTileType = resultTileType;
 
+  std::string failureReason;
+  if (failed(validateComputeTileType(resultTileType, failureReason))) {
+    return PlanningDiagnostic{plan.source, "compute result " + failureReason};
+  }
+
   for (auto [inputIndex, input] : llvm::enumerate(plan.inputs)) {
     RankedTensorType inputType = getTensorType(input);
     auto inputTileType =
@@ -1034,6 +1039,20 @@ recordComputeTileTypes(ComputeOpCreationPlan &plan) {
                                                         : input.getType())};
     }
     plan.inputTileTypes.push_back(inputTileType);
+    failureReason.clear();
+    if (failed(validateComputeTileType(inputTileType, failureReason))) {
+      return PlanningDiagnostic{plan.source, "compute input " +
+                                                 std::to_string(inputIndex) +
+                                                 " " + failureReason};
+    }
+  }
+  for (const FusedOperationPlan &operationPlan : plan.fusedOperations) {
+    failureReason.clear();
+    if (failed(validateComputeTileType(operationPlan.resultTileType,
+                                       failureReason))) {
+      return PlanningDiagnostic{operationPlan.source,
+                                "fused compute result " + failureReason};
+    }
   }
   return std::nullopt;
 }
@@ -1431,6 +1450,10 @@ buildPassthroughStorePlan(StoreOp store,
   if (!tileType) {
     failureReason =
         formatTensorOfTilesDiagnostic("passthrough store input", tensorType);
+    return failure();
+  }
+  if (failed(validateComputeTileType(tileType, failureReason))) {
+    failureReason = "passthrough store " + failureReason;
     return failure();
   }
   if (lifetimes.getAvailability(input, store) ==
