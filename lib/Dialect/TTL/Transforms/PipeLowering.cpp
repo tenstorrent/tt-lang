@@ -33,7 +33,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <functional>
-#include <numeric>
 #include <optional>
 #include <tuple>
 #include <utility>
@@ -1354,34 +1353,6 @@ static int64_t getReceiverDFBStaticByteOffset(const ReceiverDFBInfo &info) {
   return info.staticTileOffset * tileType.getSizeBytes();
 }
 
-static bool
-hasContiguousReceiverSlots(const ReceiverAddressSequenceProof &sequence,
-                           int64_t slotSpanBlocks) {
-  assert(sequence.recurrence && "materializable sequence needs recurrence");
-  const ReceiverAddressRecurrence &recurrence = *sequence.recurrence;
-  auto slotFits = [&](int64_t slot) {
-    return slot >= 0 && slotSpanBlocks > 0 &&
-           slot <= recurrence.blockCount - slotSpanBlocks;
-  };
-  int64_t period = recurrence.blockCount /
-                   std::gcd(recurrence.blockCount, recurrence.repeatStride);
-  std::uint64_t occurrenceCount = static_cast<std::uint64_t>(period);
-  if (sequence.executionCount) {
-    occurrenceCount = std::min(occurrenceCount, *sequence.executionCount);
-  }
-  int64_t slot = recurrence.initialSlot;
-  for (std::uint64_t occurrence = 0; occurrence < occurrenceCount;
-       ++occurrence) {
-    if (!slotFits(slot)) {
-      return false;
-    }
-    slot = recurrence.repeatStride >= recurrence.blockCount - slot
-               ? recurrence.repeatStride - (recurrence.blockCount - slot)
-               : slot + recurrence.repeatStride;
-  }
-  return true;
-}
-
 /// Return metadata only when the sender can compute every receiver address.
 /// The caller uses receiver-published addresses when this proof fails.
 static std::optional<PipeComputedAddressInfo>
@@ -1408,12 +1379,6 @@ getComputedAddressInfo(const PipeReceiverEndpoint &receiverEndpoint) {
       recurrence.repeatStride < 0 ||
       recurrence.repeatStride >= recurrence.blockCount ||
       recurrence.blockCount != receiverInfo.blockCount) {
-    return std::nullopt;
-  }
-  // A reachable slot with `slot + span > blockCount` requires two NOC writes,
-  // which current lowering cannot emit.
-  if (!hasContiguousReceiverSlots(sequence,
-                                  receiverInfo.receiverSlotSpanBlocks)) {
     return std::nullopt;
   }
   int64_t blockStrideBytes = getReceiverDFBBlockStrideBytes(receiverInfo);
