@@ -561,9 +561,9 @@ verifyReceiverReservationSequence(const ReceiverAddressSequenceProof &sequence,
   }
   return success();
 }
+
 LogicalResult PipeGraph::assignReceiverAddressSequences(
-    ModuleOp mod,
-    const PipeTransferIndex &transferIndex,
+    ModuleOp mod, const PipeTransferIndex &transferIndex,
     PipeGraphAnalysisState &analysisState) {
   ReceiverPostsByDFB postsByReceiverDFB = collectReceiverPostsByDFB(
       transferIndex, receiverDFBByPost, analysisState);
@@ -1677,9 +1677,9 @@ LogicalResult PipeGraph::addPipeReceiver(Operation *op,
   return success();
 }
 
-FailureOr<PipeGraph> PipeGraph::build(
-    ModuleOp mod, const PipeTransferIndex &transferIndex,
-    const PipeForeachLoweringInfo &foreachLoweringInfo) {
+FailureOr<PipeGraph>
+PipeGraph::build(ModuleOp mod, const PipeTransferIndex &transferIndex,
+                 const PipeForeachLoweringInfo &foreachLoweringInfo) {
   PipeGraph graph;
   PipeGraphAnalysisState analysisState;
   if (failed(collectPipeGraphOperations(mod, transferIndex, analysisState))) {
