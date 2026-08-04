@@ -829,7 +829,7 @@ def TTL_DPrintOp
     Emits device debug print calls. Mode determines the output format:
     - "scalar": prints format string with scalar values
     - "cb": prints CB metadata (size, limit, ptrs)
-    - "tile": prints full 32x32 tile contents from a CB
+    - "tile": prints physical tile contents from a DFB using the operand dimensions
     - "tensor": prints raw memory pages from tensor backing buffer
     - "dst": dumps live DST register slots
 

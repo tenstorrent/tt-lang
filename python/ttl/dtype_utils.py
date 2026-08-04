@@ -204,8 +204,10 @@ def tile_bytes_from_dtype(dtype, tile=(DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)) ->
     Calculate tile size in bytes from ttnn dtype.
 
     The byte size matches ttcore::TileType::getSizeBytes(). Dense and BFP
-    formats scale with the physical tile dimensions. Compute eligibility is
-    validated separately by the compiler.
+    formats scale with the physical tile dimensions. Every valid ttnn.DataType
+    with a corresponding ttcore::DataType is supported; FP8_E4M3 has no
+    ttcore representation. Compute eligibility is validated separately by the
+    compiler.
 
     Args:
         dtype: ttnn.DataType enum value
@@ -228,6 +230,8 @@ def tile_bytes_from_dtype(dtype, tile=(DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)) ->
         raise RuntimeError("ttnn is not available")
 
     tile_elements = tile_height * tile_width
+    # Local sizing keeps metadata generation independent of MetalContext, which
+    # tt-metal's Tile::get_tile_size uses to query L1 alignment.
     # Keep this mapping synchronized with ttcore::TileType::getSizeBytes().
     if dtype in (ttnn.DataType.BFLOAT16, ttnn.DataType.UINT16):
         return tile_elements * 2
