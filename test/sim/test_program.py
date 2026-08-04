@@ -1044,6 +1044,41 @@ class TestProgramInternals:
         # Should complete without error
         test_kernel()
 
+    def test_a_kernel_may_read_a_name_the_body_never_assigned(self) -> None:
+        """A name the body leaves unset is skipped, not an error.
+
+        The per-node context is built by reading every name a kernel closes over,
+        looking for the buffers and tensors it must be able to reach. A name the
+        body binds only on a path it did not take is closed over all the same and
+        has no value yet, and that is the user's business: the kernels here never
+        read it, so naming it must not fail the run before they start.
+        """
+
+        @ttl.operation(grid=(1, 1))
+        def op(a: ttnn.Tensor, out: ttnn.Tensor) -> None:
+            dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+            if a is None:
+                only_on_the_path_not_taken = 1
+
+            @ttl.compute()
+            def compute() -> None:
+                if a is None:
+                    print(only_on_the_path_not_taken)
+
+            @ttl.datamovement()
+            def dm0() -> None:
+                block = dfb.reserve()
+                copy(a[0:1, 0:1], block).wait()
+                block.push()
+
+            @ttl.datamovement()
+            def dm1() -> None:
+                block = dfb.wait()
+                copy(block, out[0:1, 0:1]).wait()
+                block.pop()
+
+        op(make_ones_tensor(32, 32), make_zeros_tensor(32, 32))
+
 
 if __name__ == "__main__":
     pytest.main([__file__])
