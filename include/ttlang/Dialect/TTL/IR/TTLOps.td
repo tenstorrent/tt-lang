@@ -34,16 +34,21 @@ def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
 
     - `cb_index` is the circular buffer hardware slot index (0-31).
     - `block_count` is the number of blocks (default 2 for double buffering).
+    - `dfb_id`, when present, identifies the logical dataflow buffer
+      independently of the physical slot selected by `cb_index`. Bindings in
+      different kernels with the same `dfb_id` refer to the same logical
+      buffer.
     Example:
 
     ```mlir
-    %cb = ttl.bind_cb {cb_index = 0 : index, block_count = 2}
-          : !ttl.cb<[1, 1], f32, 2>
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     ```
   }];
   let arguments = (ins
     IndexAttr:$cb_index,
-    DefaultValuedAttr<I64Attr, "2">:$block_count
+    DefaultValuedAttr<I64Attr, "2">:$block_count,
+    OptionalAttr<IndexAttr>:$dfb_id
   );
   let results = (outs TTL_CircularBuffer:$result);
   let assemblyFormat = "`{` `cb_index` `=` $cb_index `,` `block_count` `=` $block_count `}` attr-dict `:` type($result)";

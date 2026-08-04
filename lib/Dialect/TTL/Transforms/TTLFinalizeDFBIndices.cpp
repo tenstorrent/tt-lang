@@ -6,23 +6,25 @@
 // TTL Finalize DFB Indices
 //===----------------------------------------------------------------------===//
 //
-// Plans module-wide physical indices for compiler-created DFBs after DFB
-// creation and synchronization. Pass-order, lifecycle, and capacity checks
-// complete before the plan updates declarations, kernel attributes, or runtime
-// metadata.
+// Plans module-wide logical identities, physical indices, and runtime metadata
+// after DFB creation and synchronization. Pass-order, lifecycle, identity,
+// capacity, and metadata checks complete before the plan modifies the IR.
 //
 //===----------------------------------------------------------------------===//
 
+#include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang/Dialect/TTL/Transforms/DFBLogicalIdentityAnalysis.h"
 #include "ttlang/Dialect/TTL/Transforms/LiveIntervalUtils.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Debug.h"
@@ -74,18 +76,6 @@ static LogicalResult verifyFinalizationPrecedesIndexCopies(ModuleOp moduleOp) {
   return success(!walkResult.wasInterrupted());
 }
 
-static int32_t getFirstCompilerDFBIndex(ModuleOp moduleOp) {
-  int32_t maxUserIndex = -1;
-  moduleOp->walk([&](BindCBOp bindOp) {
-    if (bindOp->hasAttr(kCompilerAllocatedAttrName)) {
-      return;
-    }
-    maxUserIndex = std::max(
-        maxUserIndex, static_cast<int32_t>(bindOp.getCbIndex().getSExtValue()));
-  });
-  return maxUserIndex + 1;
-}
-
 /// Rejects compiler-created DFB declarations missing a lifecycle operation.
 ///
 /// Finalization may span any number of transactions. Auto-sync is assumed to
@@ -124,23 +114,28 @@ static LogicalResult verifyCompilerDFBLifecycleOperations(BindCBOp bindOp) {
   return success();
 }
 
-/// One compiler-created DFB's final physical index.
+/// One DFB declaration's final physical index.
 struct DFBIndexAssignment {
   BindCBOp declaration;
   int32_t physicalIndex;
 };
 
-/// One runtime metadata entry for a physical compiler-created DFB.
-struct CompilerDFBMetadataEntry {
+/// One runtime metadata entry for a physical DFB.
+struct DFBAllocationMetadataEntry {
   int32_t physicalIndex;
+  /// Representative declaration supplying the exact DFB type.
   BindCBOp declaration;
 };
 
-/// Complete compiler-created DFB allocation validated before IR mutation.
-struct CompilerDFBAllocationPlan {
+/// Complete DFB finalization plan validated before IR mutation.
+struct DFBAllocationPlan {
+  /// Physical-index updates for every DFB declaration.
   SmallVector<DFBIndexAssignment> assignments;
-  SmallVector<CompilerDFBMetadataEntry> metadata;
+  /// One runtime descriptor for each unique physical index.
+  SmallVector<DFBAllocationMetadataEntry> metadata;
+  /// Size of the dense zero-based physical-index range.
   int32_t physicalDFBCount = 0;
+  /// Compiler-owned slots reported if the hardware limit is exceeded.
   int32_t compilerSlotCount = 0;
 };
 
@@ -267,19 +262,54 @@ planPhysicalDFBIndices(func::FuncOp kernel, ArrayRef<BindCBOp> dfbOps,
   return nextSlotOffset;
 }
 
-/// Builds all physical assignments and metadata before applying either.
+/// Builds all physical assignments and runtime metadata before modifying IR.
 ///
-/// User-declared indices are assumed to be final. Compiler indices are placed
-/// after the greatest user index, so allocation cannot alias user storage. The
-/// type partition used by `planPhysicalDFBIndices` guarantees that shared
-/// compiler indices have one exact DFB type; an assertion protects that
-/// internal invariant while constructing the runtime metadata table.
-static FailureOr<CompilerDFBAllocationPlan> buildCompilerDFBAllocationPlan(
+/// User-declared physical indices are compacted while preserving any existing
+/// sharing. Compiler indices follow the compacted user range, so allocation
+/// cannot alias user storage. Metadata includes every declaration because user
+/// DFBs and compiler-created DFBs use the same runtime allocation mechanism.
+/// Declarations may share a physical index only when their exact DFB types
+/// match.
+static FailureOr<DFBAllocationPlan> buildDFBAllocationPlan(
     ModuleOp moduleOp,
-    const llvm::MapVector<func::FuncOp, SmallVector<BindCBOp>> &kernelToDFBs) {
-  CompilerDFBAllocationPlan plan;
-  int32_t firstCompilerDFBIndex = getFirstCompilerDFBIndex(moduleOp);
-  int32_t nextCompilerDFBIndex = firstCompilerDFBIndex;
+    const llvm::MapVector<func::FuncOp, SmallVector<BindCBOp>> &kernelToDFBs,
+    const DFBLogicalIdentityAnalysis &identityAnalysis) {
+  DFBAllocationPlan plan;
+
+  DenseSet<int64_t> uniqueUserProvisionalIndices;
+  for (const DFBLogicalIdentityAssignment &identity :
+       identityAnalysis.getAssignments()) {
+    BindCBOp declaration = identity.declaration;
+    if (declaration->hasAttr(kCompilerAllocatedAttrName)) {
+      continue;
+    }
+    int64_t provisionalIndex = declaration.getCbIndex().getSExtValue();
+    uniqueUserProvisionalIndices.insert(provisionalIndex);
+  }
+
+  SmallVector<int64_t> sortedUserProvisionalIndices(
+      uniqueUserProvisionalIndices.begin(), uniqueUserProvisionalIndices.end());
+  llvm::sort(sortedUserProvisionalIndices);
+
+  DenseMap<int64_t, int32_t> compactedUserIndices;
+  for (auto [physicalIndex, provisionalIndex] :
+       llvm::enumerate(sortedUserProvisionalIndices)) {
+    compactedUserIndices[provisionalIndex] =
+        static_cast<int32_t>(physicalIndex);
+  }
+  for (const DFBLogicalIdentityAssignment &identity :
+       identityAnalysis.getAssignments()) {
+    BindCBOp declaration = identity.declaration;
+    if (declaration->hasAttr(kCompilerAllocatedAttrName)) {
+      continue;
+    }
+    int64_t provisionalIndex = declaration.getCbIndex().getSExtValue();
+    plan.assignments.push_back(
+        {declaration, compactedUserIndices.lookup(provisionalIndex)});
+  }
+
+  int32_t nextCompilerDFBIndex =
+      static_cast<int32_t>(sortedUserProvisionalIndices.size());
   for (const auto &[kernel, dfbOps] : kernelToDFBs) {
     int32_t physicalSlotCount = planPhysicalDFBIndices(
         kernel, dfbOps, nextCompilerDFBIndex, plan.assignments);
@@ -299,15 +329,42 @@ static FailureOr<CompilerDFBAllocationPlan> buildCompilerDFBAllocationPlan(
     return failure();
   }
 
-  DenseMap<int32_t, BindCBOp> uniqueByIndex;
+  DenseMap<Operation *, int32_t> plannedIndices;
   for (const DFBIndexAssignment &assignment : plan.assignments) {
     BindCBOp declaration = assignment.declaration;
-    auto [existingAssignment, inserted] =
-        uniqueByIndex.try_emplace(assignment.physicalIndex, declaration);
-    if (!inserted) {
-      assert(existingAssignment->second.getResult().getType() ==
-                 declaration.getResult().getType() &&
-             "shared compiler DFB index must have one exact type");
+    plannedIndices[declaration.getOperation()] = assignment.physicalIndex;
+  }
+
+  DenseMap<int64_t, int32_t> physicalIndexByLogicalId;
+  DenseMap<int32_t, BindCBOp> uniqueByIndex;
+  for (const DFBLogicalIdentityAssignment &identity :
+       identityAnalysis.getAssignments()) {
+    BindCBOp declaration = identity.declaration;
+    auto plannedIndex = plannedIndices.find(declaration.getOperation());
+    assert(plannedIndex != plannedIndices.end() &&
+           "every DFB declaration must have a planned index");
+    int32_t physicalIndex = plannedIndex->second;
+
+    auto [logicalIndex, insertedLogicalIndex] =
+        physicalIndexByLogicalId.try_emplace(identity.logicalId, physicalIndex);
+    if (!insertedLogicalIndex && logicalIndex->second != physicalIndex) {
+      declaration.emitOpError()
+          << "logical DFB " << identity.logicalId
+          << " has inconsistent physical indices " << logicalIndex->second
+          << " and " << physicalIndex;
+      return failure();
+    }
+
+    auto [existingDeclaration, inserted] =
+        uniqueByIndex.try_emplace(physicalIndex, declaration);
+    if (!inserted && existingDeclaration->second.getResult().getType() !=
+                         declaration.getResult().getType()) {
+      declaration.emitOpError()
+          << "physical DFB index " << physicalIndex
+          << " has inconsistent CircularBufferType values "
+          << existingDeclaration->second.getResult().getType() << " and "
+          << declaration.getResult().getType();
+      return failure();
     }
   }
 
@@ -316,6 +373,16 @@ static FailureOr<CompilerDFBAllocationPlan> buildCompilerDFBAllocationPlan(
   llvm::sort(sortedMetadata, [](const auto &lhs, const auto &rhs) {
     return lhs.first < rhs.first;
   });
+  for (auto [expectedIndex, metadata] : llvm::enumerate(sortedMetadata)) {
+    auto [physicalIndex, declaration] = metadata;
+    if (physicalIndex != static_cast<int32_t>(expectedIndex)) {
+      declaration.emitOpError()
+          << "physical DFB indices must form a dense zero-based range; "
+             "expected index "
+          << expectedIndex << " but found " << physicalIndex;
+      return failure();
+    }
+  }
   for (auto [physicalIndex, declaration] : sortedMetadata) {
     plan.metadata.push_back({physicalIndex, declaration});
   }
@@ -323,31 +390,32 @@ static FailureOr<CompilerDFBAllocationPlan> buildCompilerDFBAllocationPlan(
 }
 
 /// Applies a complete plan after every operation that can fail has succeeded.
-static void
-applyCompilerDFBAllocationPlan(ModuleOp moduleOp, OpBuilder &builder,
-                               const CompilerDFBAllocationPlan &plan) {
+static void applyDFBAllocationPlan(
+    ModuleOp moduleOp, OpBuilder &builder, const DFBAllocationPlan &plan,
+    ArrayRef<DFBLogicalIdentityAssignment> identityAssignments) {
   MLIRContext *context = moduleOp.getContext();
   for (const DFBIndexAssignment &assignment : plan.assignments) {
     BindCBOp declaration = assignment.declaration;
     declaration.setCbIndexAttr(
         IntegerAttr::get(IndexType::get(context), assignment.physicalIndex));
   }
-
-  if (plan.physicalDFBCount <= 0) {
-    return;
+  for (const DFBLogicalIdentityAssignment &assignment : identityAssignments) {
+    BindCBOp declaration = assignment.declaration;
+    declaration.setDfbIdAttr(
+        IntegerAttr::get(IndexType::get(context), assignment.logicalId));
   }
-  moduleOp->walk([&](func::FuncOp kernel) {
-    if (kernel->hasAttr(kBaseCTAIndexAttrName)) {
-      kernel->setAttr(kBaseCTAIndexAttrName,
-                      builder.getI32IntegerAttr(plan.physicalDFBCount));
-    }
-  });
 
-  if (plan.metadata.empty()) {
-    return;
+  if (plan.physicalDFBCount > 0) {
+    moduleOp->walk([&](func::FuncOp kernel) {
+      if (kernel->hasAttr(kBaseCTAIndexAttrName)) {
+        kernel->setAttr(kBaseCTAIndexAttrName,
+                        builder.getI32IntegerAttr(plan.physicalDFBCount));
+      }
+    });
   }
+
   SmallVector<Attribute> metadataAttributes;
-  for (const CompilerDFBMetadataEntry &metadata : plan.metadata) {
+  for (const DFBAllocationMetadataEntry &metadata : plan.metadata) {
     BindCBOp declaration = metadata.declaration;
     auto dfbType = cast<CircularBufferType>(declaration.getResult().getType());
     SmallVector<NamedAttribute> entryAttributes;
@@ -359,11 +427,15 @@ applyCompilerDFBAllocationPlan(ModuleOp moduleOp, OpBuilder &builder,
     entryAttributes.push_back(builder.getNamedAttr(
         "element_type", TypeAttr::get(dfbType.getElementType())));
     entryAttributes.push_back(builder.getNamedAttr(
+        "page_size",
+        builder.getI32IntegerAttr(static_cast<int32_t>(
+            ttcore::getElementSizeBytes(dfbType.getElementType())))));
+    entryAttributes.push_back(builder.getNamedAttr(
         "block_count", builder.getI32IntegerAttr(
                            static_cast<int32_t>(dfbType.getBlockCount()))));
     metadataAttributes.push_back(DictionaryAttr::get(context, entryAttributes));
   }
-  moduleOp->setAttr(kCompilerAllocatedDFBsAttrName,
+  moduleOp->setAttr(kDFBAllocationsAttrName,
                     ArrayAttr::get(context, metadataAttributes));
 }
 
@@ -372,6 +444,20 @@ struct TTLFinalizeDFBIndicesPass
   void runOnOperation() override {
     auto moduleOp = getOperation();
     OpBuilder builder(moduleOp.getContext());
+
+    // Validate logical identities before building the physical allocation plan
+    // so every failure leaves the input IR unchanged.
+    const DFBLogicalIdentityAnalysis &identityAnalysis =
+        getAnalysis<DFBLogicalIdentityAnalysis>();
+    if (!identityAnalysis.succeeded()) {
+      Operation *errorOperation = identityAnalysis.getErrorOperation();
+      if (!errorOperation) {
+        errorOperation = moduleOp.getOperation();
+      }
+      errorOperation->emitOpError() << identityAnalysis.getErrorMessage();
+      signalPassFailure();
+      return;
+    }
 
     llvm::MapVector<func::FuncOp, SmallVector<BindCBOp>> kernelToDFBs;
     moduleOp->walk([&](BindCBOp bindOp) {
@@ -396,8 +482,8 @@ struct TTLFinalizeDFBIndicesPass
       }
     }
 
-    FailureOr<CompilerDFBAllocationPlan> plan =
-        buildCompilerDFBAllocationPlan(moduleOp, kernelToDFBs);
+    FailureOr<DFBAllocationPlan> plan =
+        buildDFBAllocationPlan(moduleOp, kernelToDFBs, identityAnalysis);
     if (failed(plan)) {
       signalPassFailure();
       return;
@@ -405,7 +491,8 @@ struct TTLFinalizeDFBIndicesPass
 
     LLVM_DEBUG(llvm::dbgs()
                << "Total DFB count: " << plan->physicalDFBCount << "\n");
-    applyCompilerDFBAllocationPlan(moduleOp, builder, *plan);
+    applyDFBAllocationPlan(moduleOp, builder, *plan,
+                           identityAnalysis.getAssignments());
   }
 };
 

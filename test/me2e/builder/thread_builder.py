@@ -156,6 +156,7 @@ class ThreadBuilder(ABC):
             self._cb_type,
             cb_index=cb_index,
             block_count=self._block_count,
+            dfb_id=cb_index,
             loc=self.loc,
         )
 
@@ -438,6 +439,14 @@ class StringBasedThreadBuilder:
     # =========================================================================
     # CB Operation Strings
     # =========================================================================
+
+    def _bind_cb_str(self, result_var: str, cb_index: int) -> str:
+        """Emit a binding whose logical ID is stable across final allocation."""
+        return (
+            f"{result_var} = ttl.bind_cb "
+            f"{{cb_index = {cb_index}, block_count = {self._block_count}}} "
+            f"{{dfb_id = {cb_index} : index}} : {self.cb_type_str}"
+        )
 
     def _cb_reserve_str(self, cb_var: str, result_var: str) -> str:
         """Generate cb_reserve operation string."""
