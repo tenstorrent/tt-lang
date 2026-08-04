@@ -22,8 +22,8 @@
 // Automatic selection handles a nonzero lower bound and uses two destination
 // groups so the sender and receiver can overlap.
 // AUTO-LABEL: func.func @point_to_point
-// AUTO: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 5}
-// AUTO-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 10}
+// AUTO: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 5} {dfb_id = 0 : index}
+// AUTO-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 10} {dfb_id = 1 : index}
 // AUTO-DAG: %[[LOWER:.*]] = arith.constant 2 : index
 // AUTO-DAG: %[[PIPE:.*]] = ttl.create_pipe
 // AUTO: %[[GROUPED_TRANSFER:.*]] = ttl.pipe_transfer.create %[[PIPE]] {block_span = 5 : i64, destination_group_depth = 2 : i64
@@ -124,8 +124,8 @@
 // An explicit upper bound produces two groups of four and a two-transfer
 // scalar residual. The grouped and scalar loops use distinct transfer values.
 // BOUND-LABEL: func.func @point_to_point
-// BOUND: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 8}
-// BOUND-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 8}
+// BOUND: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 8} {dfb_id = 0 : index}
+// BOUND-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 8} {dfb_id = 1 : index}
 // BOUND: %[[SCALAR_TRANSFER:.*]] = ttl.pipe_transfer.create %{{.*}} {expectedReceivers
 // BOUND: %[[GROUPED_TRANSFER:.*]] = ttl.pipe_transfer.create %{{.*}} {block_span = 4 : i64, destination_group_depth = 2 : i64
 // BOUND: scf.for %[[GROUP_ITER:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
@@ -141,14 +141,14 @@
 
 // A bound larger than half the trip count still selects two receiver groups.
 // UPPER-LABEL: func.func @point_to_point
-// UPPER: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 5}
-// UPPER-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 10}
+// UPPER: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 5} {dfb_id = 0 : index}
+// UPPER-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 10} {dfb_id = 1 : index}
 // UPPER: ttl.pipe_transfer.create %{{.*}} {block_span = 5 : i64, destination_group_depth = 2 : i64
 
 // Disabled grouping leaves the scalar protocol unchanged.
 // DISABLED-LABEL: func.func @point_to_point
-// DISABLED: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 5}
-// DISABLED-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 1}
+// DISABLED: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 5} {dfb_id = 0 : index}
+// DISABLED-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 1} {dfb_id = 1 : index}
 // DISABLED-NOT: block_span
 // DISABLED: scf.for
 // DISABLED: ttl.cb_reserve %[[SRC]]
@@ -157,8 +157,8 @@
 
 // A budget that fits only the original allocations retains scalar transfers.
 // NOFIT-LABEL: func.func @point_to_point
-// NOFIT: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 5}
-// NOFIT-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 1}
+// NOFIT: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 5} {dfb_id = 0 : index}
+// NOFIT-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 1} {dfb_id = 1 : index}
 // NOFIT-NOT: block_span
 // NOFIT: scf.for
 // NOFIT: ttl.pipe_transfer.send
@@ -166,16 +166,16 @@
 // A group whose final DFB and scratch allocations exactly equal the L1 budget
 // remains eligible.
 // EXACT-FIT-LABEL: func.func @point_to_point
-// EXACT-FIT: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 6}
-// EXACT-FIT-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 4}
+// EXACT-FIT: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 6} {dfb_id = 0 : index}
+// EXACT-FIT-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 4} {dfb_id = 1 : index}
 // EXACT-FIT: %[[STEP:.*]] = arith.constant 2 : index
 // EXACT-FIT: ttl.pipe_transfer.create %{{.*}} {block_span = 2 : i64, destination_group_depth = 2 : i64
 // EXACT-FIT: scf.for %{{.*}} = %{{.*}} to %{{.*}} step %[[STEP]]
 
 // Reducing the exact-fit budget by one byte rejects every grouped transport.
 // BELOW-FIT-LABEL: func.func @point_to_point
-// BELOW-FIT: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 5}
-// BELOW-FIT-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 1}
+// BELOW-FIT: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 5} {dfb_id = 0 : index}
+// BELOW-FIT-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 1} {dfb_id = 1 : index}
 // BELOW-FIT-NOT: block_span
 // BELOW-FIT: scf.for
 // BELOW-FIT: ttl.pipe_transfer.send
@@ -183,8 +183,8 @@
 // Group selection counts the final DFB allocations and transport scratch
 // together. This budget admits R=2 but rejects every larger overlapping group.
 // SCRATCH-BUDGET-LABEL: func.func @point_to_point
-// SCRATCH-BUDGET: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 6}
-// SCRATCH-BUDGET-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 4}
+// SCRATCH-BUDGET: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 6} {dfb_id = 0 : index}
+// SCRATCH-BUDGET-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 4} {dfb_id = 1 : index}
 // SCRATCH-BUDGET: %[[STEP:.*]] = arith.constant 2 : index
 // SCRATCH-BUDGET: ttl.pipe_transfer.create %{{.*}} {block_span = 2 : i64, destination_group_depth = 2 : i64
 // SCRATCH-BUDGET: scf.for %{{.*}} = %{{.*}} to %{{.*}} step %[[STEP]]
@@ -193,8 +193,8 @@
 // transport scratch allocations. R=4 needs 98336 bytes after final planning;
 // the exact 98304-byte bound therefore selects R=3.
 // ADDRESS-BUDGET-LABEL: func.func @point_to_point
-// ADDRESS-BUDGET: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 6}
-// ADDRESS-BUDGET-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 6}
+// ADDRESS-BUDGET: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 6} {dfb_id = 0 : index}
+// ADDRESS-BUDGET-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 6} {dfb_id = 1 : index}
 // ADDRESS-BUDGET: %[[STEP:.*]] = arith.constant 3 : index
 // ADDRESS-BUDGET: ttl.pipe_transfer.create %{{.*}} {block_span = 3 : i64, destination_group_depth = 2 : i64
 // ADDRESS-BUDGET: scf.for %{{.*}} = %{{.*}} to %{{.*}} step %[[STEP]]
@@ -205,9 +205,9 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
       %output: tensor<1x12x!ttcore.tile<32x32, f32>, #layout>)
       attributes {ttl.base_cta_index = 2 : i32, ttl.crta_indices = [0, 1],
                   ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 5}
+    %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 5} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 5>
-    %dst_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
+    %dst_dfb = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     %c0 = arith.constant 0 : index
     %c2 = arith.constant 2 : index
