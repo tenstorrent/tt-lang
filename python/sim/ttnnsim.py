@@ -938,7 +938,7 @@ class TensorSpec:
     @property
     def tile(self) -> Tile:
         """The tile the stored data is cut into, as ttnn's spec reports it."""
-        return _DEFAULT_TILE
+        return Tile()
 
     def height_sharded(self, core_ranges: CoreRangeSet) -> TensorSpec:
         """2-D height sharding: collapse leading dims to height, shard along height."""
@@ -1709,7 +1709,10 @@ class Tile:
     which is what a ``std::array<uint32_t, 2>`` reaches Python as.
 
     The simulator models the one 32x32 tile the DSL uses, so any other geometry
-    is refused rather than silently modelled as 32x32.
+    is refused rather than silently modelled as 32x32.  That is also why
+    :attr:`tile_shape` defaults here while ttnn's constructor requires it: there
+    is only one shape to ask for, and the flags ttnn accepts for the others
+    (``transpose_tile``) are refused.
     """
 
     def __init__(
@@ -1765,9 +1768,23 @@ class Tile:
     def get_tile_size(self, dtype: "DType") -> int:
         """Bytes one tile of ``dtype`` occupies, as ttnn reports it.
 
-        Uses the declared (hardware) dtype, so a bfloat16 tile is 2048 bytes
-        even where the simulator backs it with float32 for host precision.
+        Sized from the dtype as declared, so ``ttnn.bfloat16`` gives 2048 bytes
+        even though the simulator backs that data with float32 for host
+        precision. The declared dtype has to be spelled the ttnn way to get the
+        hardware answer: ``torch.bfloat16`` is rebound to ``torch.float32`` under
+        float32 promotion (see "Float32 Promotion" in docs/sphinx/simulator.md),
+        so passing that spelling reports 4096.
+
+        Raises:
+            TypeError: If ``dtype`` is not a dtype. Without this a missing dtype
+                would take torch's default and report a float32 tile.
         """
+        if not isinstance(dtype, (torch.dtype, _BFloat8BDtype)):
+            raise TypeError(
+                f"get_tile_size needs the tile's dtype, got "
+                f"{type(dtype).__name__}; a tile's size is its geometry times "
+                f"the width of what it holds."
+            )
         return _dtype_size_in_bytes(dtype, math.prod(self._tile_shape))
 
     def __eq__(self, other: object) -> bool:
@@ -1783,11 +1800,6 @@ class Tile:
 
     def __repr__(self) -> str:
         return f"Tile with shape: [{self._tile_shape[0]}, {self._tile_shape[1]}]"
-
-
-# The tile every simulated tensor is held in.  Handed out by Tensor.tile, which
-# has no per-tensor geometry to describe.
-_DEFAULT_TILE = Tile()
 
 
 class Tensor:
@@ -1895,11 +1907,12 @@ class Tensor:
     def tile(self) -> Tile:
         """Tile descriptor, mirroring ``ttnn.Tensor.tile``.
 
-        Every simulated tensor is held in the same 32x32 tile, so this is the
-        one shared description of it; :class:`Tile` compares by geometry, so
-        nothing can tell that apart from a fresh one.
+        Every simulated tensor is held in the same 32x32 tile, so this describes
+        that one.  Built per access rather than handed out from a shared
+        instance, because ttnn returns a value here and code that holds on to one
+        must not be holding a description every other tensor shares.
         """
-        return _DEFAULT_TILE
+        return Tile()
 
     @property
     def dtype(self) -> Any:

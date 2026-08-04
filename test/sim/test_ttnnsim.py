@@ -1212,10 +1212,19 @@ def test_tiles_describe_their_geometry_as_ttnn_does():
     assert tile != object()
     assert len({tile, ttnn.Tile()}) == 1
 
+    # Reading .tile is reading a value, as it is in ttnn: two tensors describe the
+    # same tile without handing out one object between them.
+    assert tile is not ttnn.zeros((64, 64)).tile
+
     # Handing out the geometry does not hand out the tile's state.
     shape = tile.tile_shape
     shape.append(1)
     assert tile.tile_shape == [32, 32]
+
+    # A tile's size needs a dtype; without asking, torch's default would answer
+    # for a missing one and report a float32 tile.
+    with pytest.raises(TypeError, match="needs the tile's dtype"):
+        tile.get_tile_size(None)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
