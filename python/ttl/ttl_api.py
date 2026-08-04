@@ -1240,8 +1240,11 @@ _MLIR_TYPE_TO_FORMAT = {
     "f16": "float16",
     "f32": "float32",
     "i32": "int32",
+    "si32": "int32",
     "ui32": "uint32",
+    "u32": "uint32",
     "ui16": "uint16",
+    "u16": "uint16",
 }
 
 
