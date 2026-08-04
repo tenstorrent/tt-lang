@@ -36,15 +36,21 @@ namespace {
 
 constexpr llvm::StringLiteral kThreadAttrName("ttkernel.thread");
 constexpr llvm::StringLiteral kTTKernelDialect("ttkernel");
-constexpr llvm::StringLiteral kTTLDialect("ttl");
 
-/// Loop iterations a single kernel may unroll. Exceeding it fails the estimate
-/// rather than truncating the program; see placeLoop.
+/// Loop iterations a single kernel may unroll, shared across the whole nest.
+/// Exceeding it fails the estimate rather than truncating the program; see
+/// placeLoop.
 ///
-/// Counted in iterations, which is not the quantity that matters -- a body of N
-/// operations costs trip * N placements, so this bounds the work only loosely.
-/// Bounding placements directly is the right fix and is not done yet.
-constexpr std::uint64_t kUnrollBudget = 8192;
+/// Counted in iterations, which is not the quantity that matters: a body of N
+/// operations costs trip * N placements, and placements are what the report
+/// holds and what the scheduler walks, so this bounds time and memory only
+/// loosely. A 16x16 block nest over 4x4-tile blocks needs a few tens of
+/// thousands of iterations and places 59k operations, which the estimator
+/// handles in a few hundred milliseconds and no measurable memory over the rest
+/// of a compile. This value is set well above such a kernel while still
+/// bounding a pathological one, but a loop whose body is far larger can still
+/// cost more than the count suggests.
+constexpr std::uint64_t kUnrollBudget = 1ull << 20;
 
 /// Output caps. A kernel whose loops unroll to tens of thousands of operations
 /// would otherwise emit a report longer than anyone will read. Truncation is
@@ -54,534 +60,371 @@ constexpr size_t kMaxListedOpsPerLane = 30;
 
 using Lane = CostEstimator::Lane;
 
-/// Functions one TTKernel operation expands to on each RISC.
+/// What one TTKernel operation costs on each lane it runs on.
 ///
-/// `dm` is the expansion when the operation appears in a data-movement kernel.
-/// It is a single list rather than one per DM core because the operation does
-/// not choose which core it runs on: `ttl.noc_index` on the enclosing function
-/// does. The other three are the per-TRISC expansions inside a compute kernel.
-/// The `= {}` defaults let an entry name only the lanes it uses; without them
-/// -Wmissing-field-initializers rejects the omitted trailing members.
+/// An empty slot means the operation does no work on that lane: it is not
+/// placed there, has no resource effect there and takes no time there. A value
+/// means it is what the operation costs there.
+///
+/// A lane with no measurement behind it carries 1, not 0. One is what the
+/// scheduler charges as its floor, so the cost a lane declares and the span it
+/// occupies agree, and it never makes the claim a 0 would: that the lane does
+/// no work and an operation placed there is free.
+///
+/// `dm` is one slot rather than one per data-movement core because the
+/// operation does not choose which core it runs on: `ttl.noc_index` on the
+/// enclosing function does. The other three are the per-TRISC halves inside a
+/// compute kernel.
+///
+/// Lanes and costs are one table because a lane is exactly what a cost is
+/// keyed on. The `llk_*` calls an operation expands to are not recorded: cost
+/// is measured per operation per lane (see scripts/gen_cost_table.py), and a
+/// resource effect is a property of the operation rather than of any one call
+/// it makes.
+///
+/// The `= std::nullopt` defaults let an entry name only the lanes it uses;
+/// without them -Wmissing-field-initializers rejects the omitted trailing
+/// members.
 struct ThreadWork {
-  llvm::SmallVector<llvm::StringRef, 3> dm = {};
-  llvm::SmallVector<llvm::StringRef, 3> unpack = {};
-  llvm::SmallVector<llvm::StringRef, 3> math = {};
-  llvm::SmallVector<llvm::StringRef, 3> pack = {};
+  std::optional<uint64_t> dm = std::nullopt;
+  std::optional<uint64_t> unpack = std::nullopt;
+  std::optional<uint64_t> math = std::nullopt;
+  std::optional<uint64_t> pack = std::nullopt;
 
-  /// True when the operation is known to cost nothing anywhere. Distinct from
-  /// being absent from the table, which means unknown.
-  bool isFree() const {
-    return dm.empty() && unpack.empty() && math.empty() && pack.empty();
-  }
+  /// True when the operation runs on no lane at all. Distinct from being absent
+  /// from the table, which means unknown, and from a zero cost, which still
+  /// places the operation so that its resource effect applies.
+  bool isFree() const { return !dm && !unpack && !math && !pack; }
 };
 
-/// Thread affinity for TTKernel operations, keyed by operation name.
+/// Per-lane work for TTKernel operations, keyed by operation name.
 ///
-/// A compute kernel is one source file compiled three times, once per TRISC,
-/// with -DTRISC_UNPACK / -DTRISC_MATH / -DTRISC_PACK. The UNPACK(), MATH() and
-/// PACK() macros in api/compute/common_globals.h keep only the calls belonging
-/// to the thread being compiled and erase the rest, so each compute-API call
-/// expands to a different number of LLK calls per thread. The counts below are
-/// read off the non-Quasar branch of the tt-metal headers:
+/// >>> THE CYCLE COUNTS ARE PLACEHOLDERS, NOT MEASUREMENTS. <<<
+///
+/// They are ordered sensibly relative to each other -- a semaphore poll is
+/// cheaper than a tile of unpack, which is cheaper than a tile of FPU work --
+/// and nothing else, so the shape of a report is meaningful while its
+/// magnitudes are not. Replace with the measured per-operation, per-lane
+/// numbers from scripts/gen_cost_table.py before any decision depends on them.
+///
+/// Known inaccuracy: a cost here is flat per operation, but some operations
+/// scale with a tile count taken from an operand. pack_tile_block in particular
+/// packs `ntiles` tiles in a loop, so a flat cost is wrong for any block bigger
+/// than one tile. The measured data is keyed on the same operation and lane but
+/// carries a per-tile term, so operand-dependent scaling arrives with it.
+///
+/// Which lanes an operation runs on is a fact about the compiled program rather
+/// than a measurement. A compute kernel is one source file compiled three
+/// times, once per TRISC, with -DTRISC_UNPACK / -DTRISC_MATH / -DTRISC_PACK.
+/// The UNPACK(), MATH() and PACK() macros in api/compute/common_globals.h keep
+/// only the calls belonging to the thread being compiled and erase the rest, so
+/// the wrapper around a call is what decides which TRISC runs it. An operation
+/// is on a lane below when its wrapper keeps at least one call for that thread.
+/// Read off the non-Quasar branch of the tt-metal headers:
 ///
 ///   circular_buffer.h:31-69 (COMPILE_FOR_TRISC path)
-///     wait_front   -> UNPACK llk_wait_tiles
-///     pop_front    -> UNPACK llk_pop_tiles
-///     reserve_back -> PACK   llk_wait_for_free_tiles
-///     push_back    -> PACK   llk_push_tiles
+///     wait_front, pop_front    -> UNPACK
+///     reserve_back, push_back  -> PACK
 ///
 ///   reg_api.h:45-89
-///     tile_regs_acquire -> MATH llk_math_wait_for_dest_available
-///     tile_regs_commit  -> MATH llk_math_dest_section_done
-///     tile_regs_wait    -> PACK llk_packer_wait_for_math_done
-///     tile_regs_release -> PACK llk_pack_dest_section_done
+///     tile_regs_acquire, tile_regs_commit -> MATH
+///     tile_regs_wait, tile_regs_release   -> PACK
 ///
-///   eltwise_binary.h:31-55  binary_op_init_common
-///     UNPACK llk_unpack_hw_configure, llk_unpack_AB_init
-///     MATH   llk_math_pack_sync_init, llk_math_hw_configure
-///     PACK   llk_pack_hw_configure, llk_pack_init, llk_pack_dest_init
-///
-///   eltwise_binary.h:72-83, 128-132  add_tiles_init
-///     via binary_tiles_init<full_init = true, ELWADD>
-///     MATH   llk_math_eltwise_binary_init
-///     UNPACK llk_unpack_AB_init   (guarded by `if constexpr (full_init)`)
-///
-///   eltwise_binary.h:206-214  add_tiles
-///     UNPACK llk_unpack_AB
-///     MATH   llk_math_eltwise_binary
-///
-///   pack.h:128-135  pack_tile_block
-///     PACK   llk_matmul_pack
+///   eltwise_binary.h:31-55   binary_op_init_common -> UNPACK, MATH, PACK
+///   eltwise_binary.h:72-83, 128-132  add_tiles_init -> UNPACK, MATH
+///     (UNPACK only because binary_tiles_init passes full_init = true, which
+///     keeps the call inside its `if constexpr (full_init)` guard)
+///   eltwise_binary.h:206-214 add_tiles -> UNPACK, MATH
+///   pack.h:128-135           pack_tile_block -> PACK
 ///
 /// `state_configure()` and `LLK_SAN_FUNCTION()` appear in several of these but
 /// are sentinel/sanitizer hooks that compile to nothing in a normal build, so
-/// they are not counted.
+/// an operation whose wrapper keeps only those counts as free rather than as
+/// work.
 const llvm::StringMap<ThreadWork> &getThreadWorkTable() {
   static const llvm::StringMap<ThreadWork> table = [] {
     // Keys omit the `ttkernel.` prefix; the lookup strips it. That avoids a
     // string concatenation and allocation per entry at first use.
     llvm::StringMap<ThreadWork> t;
 
-    // Member order is dm, unpack, math, pack; trailing members left off are
-    // empty. Written with /*name=*/ comments because designated initializers
-    // are C++20 and this builds as C++17.
+    // Slot order is dm, unpack, math, pack; trailing slots left off are empty,
+    // and `{}` is an empty slot the entry has to name to reach a later one.
+    // Written with /*name=*/ comments because designated initializers are C++20
+    // and this builds as C++17.
 
     // -- Circular buffers, api/dataflow/circular_buffer.h:31-69 -------------
     // Under COMPILE_FOR_TRISC the four methods are wrapped PACK/PACK/UNPACK/
     // UNPACK; otherwise they call the plain dataflow functions.
-    t["cb_wait_front"] =
-        ThreadWork{/*dm=*/{"cb_wait_front"}, /*unpack=*/{"llk_wait_tiles"}};
-    t["cb_pop_front"] =
-        ThreadWork{/*dm=*/{"cb_pop_front"}, /*unpack=*/{"llk_pop_tiles"}};
-    t["cb_reserve_back"] =
-        ThreadWork{/*dm=*/{"cb_reserve_back"}, /*unpack=*/{}, /*math=*/{},
-                   /*pack=*/{"llk_wait_for_free_tiles"}};
-    t["cb_push_back"] =
-        ThreadWork{/*dm=*/{"cb_push_back"}, /*unpack=*/{}, /*math=*/{},
-                   /*pack=*/{"llk_push_tiles"}};
+    //
+    // These and the DST lifecycle below are unmeasured: no benchmark in the LLK
+    // perf suite isolates a handshake, and none of them touches a circular
+    // buffer. What matters about them is not the call anyway, it is the credit
+    // they move -- the waiting is derived by the scheduler -- so they carry the
+    // unmeasured value of one and let their resource effect do the work.
+    t["cb_wait_front"] = {/*dm=*/1, /*unpack=*/1};
+    t["cb_pop_front"] = {/*dm=*/1, /*unpack=*/1};
+    t["cb_reserve_back"] = {/*dm=*/1, /*unpack=*/{}, /*math=*/{}, /*pack=*/1};
+    t["cb_push_back"] = {/*dm=*/1, /*unpack=*/{}, /*math=*/{}, /*pack=*/1};
 
     // -- DST lifecycle, api/compute/reg_api.h:45-89 ------------------------
-    t["tile_regs_acquire"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{}, /*math=*/{"llk_math_wait_for_dest_available"}};
-    t["tile_regs_commit"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{}, /*math=*/{"llk_math_dest_section_done"}};
-    t["tile_regs_wait"] =
-        ThreadWork{/*dm=*/{}, /*unpack=*/{}, /*math=*/{},
-                   /*pack=*/{"llk_packer_wait_for_math_done"}};
-    t["tile_regs_release"] =
-        ThreadWork{/*dm=*/{}, /*unpack=*/{}, /*math=*/{},
-                   /*pack=*/{"llk_pack_dest_section_done"}};
+    t["tile_regs_acquire"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/1};
+    t["tile_regs_commit"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/1};
+    t["tile_regs_wait"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/{}, /*pack=*/1};
+    t["tile_regs_release"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/{},
+                              /*pack=*/1};
 
     // -- Eltwise binary, api/compute/eltwise_binary.h ----------------------
-    // binary_op_init_common, lines 31-55.
-    t["binary_op_init_common"] = ThreadWork{
-        /*dm=*/{},
-        /*unpack=*/{"llk_unpack_hw_configure", "llk_unpack_AB_init"},
-        /*math=*/{"llk_math_pack_sync_init", "llk_math_hw_configure"},
-        /*pack=*/{"llk_pack_hw_configure", "llk_pack_init",
-                  "llk_pack_dest_init"}};
-    // add_tiles_init, lines 128-132, via binary_tiles_init lines 72-83. It
-    // passes full_init = true, so the UNPACK call inside the
-    // `if constexpr (full_init)` guard is kept.
-    t["add_tiles_init"] =
-        ThreadWork{/*dm=*/{}, /*unpack=*/{"llk_unpack_AB_init"},
-                   /*math=*/{"llk_math_eltwise_binary_init"}};
-    // add_tiles, lines 206-214.
-    t["add_tiles"] =
-        ThreadWork{/*dm=*/{}, /*unpack=*/{"llk_unpack_AB"},
-                   /*math=*/{"llk_math_eltwise_binary"}};
+    t["binary_op_init_common"] = {/*dm=*/{}, /*unpack=*/100, /*math=*/100,
+                                  /*pack=*/140};
+    t["add_tiles_init"] = {/*dm=*/{}, /*unpack=*/40, /*math=*/40};
+    t["add_tiles"] = {/*dm=*/{}, /*unpack=*/200, /*math=*/300};
 
     // -- Pack, api/compute/pack.h -----------------------------------------
-    // pack_tile, lines 86-94: one tile.
-    t["pack_tile"] = ThreadWork{/*dm=*/{}, /*unpack=*/{}, /*math=*/{},
-                                    /*pack=*/{"llk_pack"}};
-    // pack_tile_block, lines 128-135: llk_matmul_pack is llk_pack hoisted out of
-    // a loop over ntiles; the name is vestigial and pack_tile_block is its only
-    // caller. Both forms occur: ttkernel-combine-pack-tiles fuses a run of
-    // pack_tile into one pack_tile_block, but only when the CB indices step by
-    // one starting from zero, so a subblocked compute keeps separate pack_tile
-    // ops for every round after the first.
-    t["pack_tile_block"] = ThreadWork{/*dm=*/{}, /*unpack=*/{}, /*math=*/{},
-                                          /*pack=*/{"llk_matmul_pack"}};
+    // pack_tile, lines 86-94: one tile. pack_tile_block, lines 128-135: the
+    // same packer work hoisted out of a loop over ntiles. Both forms occur:
+    // ttkernel-combine-pack-tiles fuses a run of pack_tile into one
+    // pack_tile_block, but only when the CB indices step by one starting from
+    // zero, so a subblocked compute keeps separate pack_tile ops for every
+    // round after the first.
+    t["pack_tile"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/{}, /*pack=*/200};
+    t["pack_tile_block"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/{},
+                            /*pack=*/260};
 
     // -- Data movement, api/dataflow/{noc,dataflow_api,circular_buffer}.h --
     // A barrier's cost is the transfer it waits on, not the call itself.
-    t["noc_async_read_tile"] = ThreadWork{/*dm=*/{"Noc::async_read"}};
-    t["noc_async_write_tile"] = ThreadWork{/*dm=*/{"Noc::async_write"}};
-    t["noc_async_read_barrier"] =
-        ThreadWork{/*dm=*/{"Noc::async_read_barrier"}};
-    t["noc_async_write_barrier"] =
-        ThreadWork{/*dm=*/{"Noc::async_write_barrier"}};
-    t["get_common_arg_val"] = ThreadWork{/*dm=*/{"get_common_arg_val"}};
-    t["get_write_ptr"] =
-        ThreadWork{/*dm=*/{"CircularBuffer::get_write_ptr"}};
-    t["get_read_ptr"] = ThreadWork{/*dm=*/{"CircularBuffer::get_read_ptr"}};
-    t["TensorAccessor"] =
-        ThreadWork{/*dm=*/{"TensorAccessor::TensorAccessor"}};
+    t["noc_async_read_tile"] = {/*dm=*/60};
+    t["noc_async_write_tile"] = {/*dm=*/60};
+    t["noc_async_read_barrier"] = {/*dm=*/30};
+    t["noc_async_write_barrier"] = {/*dm=*/30};
+    t["get_common_arg_val"] = {/*dm=*/10};
+    t["get_write_ptr"] = {/*dm=*/5};
+    t["get_read_ptr"] = {/*dm=*/5};
+    t["TensorAccessor"] = {/*dm=*/20};
 
     // -- Known to be free --------------------------------------------------
-    // Present with no calls, which is how the table says "costs nothing", as
+    // Present on no lane, which is how the table says "costs nothing", as
     // opposed to being absent, which means unknown. get_compile_time_arg_val
     // is a compile-time constant that only constructs a CircularBuffer handle
     // holding an id; TensorAccessorArgs is a template instantiation.
     t["get_compile_time_arg_val"] = {};
     t["TensorAccessorArgs"] = {};
-
+    t["my_logical_x_"] = {};
+    t["my_logical_y_"] = {};
 
     // -- SFPU binary ops that call through a macro -------------------------
-    // eltwise_binary_sfpu.h:73 and :214 do not call an llk_ function directly:
-    // they go through SFPU_BINARY_CALL / SFPU_BINARY_INIT_FN, which expand to
-    // _llk_math_eltwise_binary_sfpu_params_ and
-    // llk_math_eltwise_binary_sfpu_init respectively
-    // (llk_math_eltwise_binary_sfpu_macros.h:49, :81). The `_sfpu_binary_check_`
-    // that SFPU_BINARY_CALL also emits is a validation helper and is omitted for
-    // the same reason as LLK_SAN_FUNCTION.
-    t["add_binary_tile"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{},
-        /*math=*/{"_llk_math_eltwise_binary_sfpu_params_"}, /*pack=*/{}};
-    t["add_binary_tile_init"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{},
-        /*math=*/{"llk_math_eltwise_binary_sfpu_init"}, /*pack=*/{}};
+    // eltwise_binary_sfpu.h:73 and :214 do not name an llk_ function directly:
+    // they go through SFPU_BINARY_CALL / SFPU_BINARY_INIT_FN
+    // (llk_math_eltwise_binary_sfpu_macros.h:49, :81). Both expand under
+    // MATH(), so the lane is unambiguous either way.
+    t["add_binary_tile"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/300};
+    t["add_binary_tile_init"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/40};
 
     // -- Remaining compute-API ops -----------------------------------------
     // Extracted from the non-Quasar branches of api/compute/**.h by matching
-    // each op mnemonic to its ALWI wrapper and collecting the UNPACK()/MATH()/
-    // PACK() calls in order, resolving one level of delegation (add_tiles_init
-    // -> binary_tiles_init).
+    // each op mnemonic to its ALWI wrapper and recording which of UNPACK(),
+    // MATH() and PACK() appear in it, resolving one level of delegation
+    // (add_tiles_init -> binary_tiles_init).
     //
-    // Ops whose wrapper contains mutually exclusive branches are deliberately
-    // absent: collecting every macro in such a body double-counts arms that
-    // never both run. matmul_block, mm_block_init, mm_block_init_short,
+    // Ops whose wrapper contains mutually exclusive branches are still absent:
+    // matmul_block, mm_block_init, mm_block_init_short,
     // pack_reconfig_data_format, tilize_init, transpose_wh_init,
-    // transpose_wh_tile, unary_bcast, unary_bcast_init and untilize_uninit need
-    // reading by hand, and until then report as unknown rather than inflated.
+    // transpose_wh_tile, unary_bcast, unary_bcast_init and untilize_uninit.
+    // Lane membership is often the same in every arm, so these are now more
+    // tractable than they were at call granularity -- but each still needs its
+    // header read, and the arms differ in cost even where they agree on lanes,
+    // so they report as unknown rather than guessed.
+
     // -- api/compute/add_int_sfpu.h ------------------------------------------
-    t["add_int_tile"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{},
-        /*math=*/{"llk_math_eltwise_binary_sfpu_add_int"}, /*pack=*/{}};
-    t["add_int_tile_init"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{},
-        /*math=*/{"llk_math_eltwise_binary_sfpu_add_int_init"}, /*pack=*/{}};
+    t["add_int_tile"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/300};
+    t["add_int_tile_init"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/40};
 
     // -- api/compute/binary_max_min.h ----------------------------------------
-    t["binary_max_int32_tile"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{},
-        /*math=*/{"llk_math_eltwise_binary_sfpu_binary_max_int32"}, /*pack=*/{}};
-    t["binary_max_int32_tile_init"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{},
-        /*math=*/{"llk_math_eltwise_binary_sfpu_binary_max_min_int32_init"}, /*pack=*/{}};
-    t["binary_max_tile"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{},
-        /*math=*/{"llk_math_eltwise_binary_sfpu_binary_max"}, /*pack=*/{}};
-    t["binary_max_tile_init"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{},
-        /*math=*/{"llk_math_eltwise_binary_sfpu_binary_max_min_init"}, /*pack=*/{}};
-    t["binary_min_int32_tile"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{},
-        /*math=*/{"llk_math_eltwise_binary_sfpu_binary_min_int32"}, /*pack=*/{}};
-    t["binary_min_int32_tile_init"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{},
-        /*math=*/{"llk_math_eltwise_binary_sfpu_binary_max_min_int32_init"}, /*pack=*/{}};
-    t["binary_min_tile"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{},
-        /*math=*/{"llk_math_eltwise_binary_sfpu_binary_min"}, /*pack=*/{}};
-    t["binary_min_tile_init"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{},
-        /*math=*/{"llk_math_eltwise_binary_sfpu_binary_max_min_init"}, /*pack=*/{}};
+    t["binary_max_int32_tile"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/300};
+    t["binary_max_int32_tile_init"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/40};
+    t["binary_max_tile"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/300};
+    t["binary_max_tile_init"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/40};
+    t["binary_min_int32_tile"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/300};
+    t["binary_min_int32_tile_init"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/40};
+    t["binary_min_tile"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/300};
+    t["binary_min_tile_init"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/40};
 
     // -- api/compute/binop_with_scalar.h -------------------------------------
-    t["binop_with_scalar_tile_init"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{},
-        /*math=*/{"llk_math_eltwise_unary_sfpu_binop_with_scalar_init"}, /*pack=*/{}};
-    t["mul_unary_tile"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{},
-        /*math=*/{"llk_math_eltwise_unary_sfpu_binop_with_scalar"}, /*pack=*/{}};
+    t["binop_with_scalar_tile_init"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/40};
+    t["mul_unary_tile"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/300};
 
     // -- api/compute/compute_kernel_hw_startup.h -----------------------------
-    t["compute_kernel_hw_startup"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{"llk_unpack_hw_configure"},
-        /*math=*/{"llk_math_pack_sync_init", "llk_math_hw_configure"}, /*pack=*/{"llk_pack_hw_configure", "llk_pack_init", "llk_pack_dest_init"}};
+    t["compute_kernel_hw_startup"] = {/*dm=*/{}, /*unpack=*/60, /*math=*/100,
+                                      /*pack=*/140};
 
     // -- api/compute/eltwise_binary.h ----------------------------------------
-    t["binary_dest_reuse_tiles"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{"llk_unpack_A"},
-        /*math=*/{"llk_math_eltwise_binary"}, /*pack=*/{}};
-    t["binary_dest_reuse_tiles_init"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{"llk_unpack_A_init"},
-        /*math=*/{"llk_math_eltwise_binary_init"}, /*pack=*/{}};
-    t["mul_tiles"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{"llk_unpack_AB"},
-        /*math=*/{"llk_math_eltwise_binary"}, /*pack=*/{}};
-    t["mul_tiles_init"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{"llk_unpack_AB_init"},
-        /*math=*/{"llk_math_eltwise_binary_init"}, /*pack=*/{}};
-    t["sub_tiles"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{"llk_unpack_AB"},
-        /*math=*/{"llk_math_eltwise_binary"}, /*pack=*/{}};
-    t["sub_tiles_init"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{"llk_unpack_AB_init"},
-        /*math=*/{"llk_math_eltwise_binary_init"}, /*pack=*/{}};
+    t["binary_dest_reuse_tiles"] = {/*dm=*/{}, /*unpack=*/200, /*math=*/300};
+    t["binary_dest_reuse_tiles_init"] = {/*dm=*/{}, /*unpack=*/40, /*math=*/40};
+    t["mul_tiles"] = {/*dm=*/{}, /*unpack=*/200, /*math=*/300};
+    t["mul_tiles_init"] = {/*dm=*/{}, /*unpack=*/40, /*math=*/40};
+    t["sub_tiles"] = {/*dm=*/{}, /*unpack=*/200, /*math=*/300};
+    t["sub_tiles_init"] = {/*dm=*/{}, /*unpack=*/40, /*math=*/40};
 
     // -- api/compute/eltwise_binary_sfpu.h -----------------------------------
-    t["div_binary_tile"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{},
-        /*math=*/{"llk_math_eltwise_binary_sfpu_binop_div"}, /*pack=*/{}};
-    t["div_binary_tile_init"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{},
-        /*math=*/{"llk_math_eltwise_binary_sfpu_binop_init"}, /*pack=*/{}};
-    t["mul_binary_tile"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{},
-        /*math=*/{"llk_math_eltwise_binary_sfpu_binop_mul"}, /*pack=*/{}};
-    t["mul_binary_tile_init"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{},
-        /*math=*/{"llk_math_eltwise_binary_sfpu_binop_init"}, /*pack=*/{}};
+    t["div_binary_tile"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/300};
+    t["div_binary_tile_init"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/40};
+    t["mul_binary_tile"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/300};
+    t["mul_binary_tile_init"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/40};
 
     // -- api/compute/eltwise_unary.h -----------------------------------------
-    t["init_sfpu"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{"llk_unpack_hw_configure", "llk_unpack_A_init"},
-        /*math=*/{"llk_math_eltwise_unary_datacopy_init", "llk_math_pack_sync_init", "llk_math_hw_configure"}, /*pack=*/{"llk_pack_hw_configure", "llk_pack_init", "llk_pack_dest_init"}};
-    t["unary_op_init_common"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{"llk_unpack_hw_configure", "llk_unpack_A_init"},
-        /*math=*/{"llk_math_eltwise_unary_datacopy_init", "llk_math_pack_sync_init", "llk_math_hw_configure"}, /*pack=*/{"llk_pack_hw_configure", "llk_pack_init", "llk_pack_dest_init"}};
+    t["init_sfpu"] = {/*dm=*/{}, /*unpack=*/100, /*math=*/140, /*pack=*/140};
+    t["unary_op_init_common"] = {/*dm=*/{}, /*unpack=*/100, /*math=*/140,
+                                 /*pack=*/140};
 
     // -- api/compute/matmul.h ------------------------------------------------
-    t["matmul_tiles"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{"llk_unpack_AB_matmul"},
-        /*math=*/{"llk_math_matmul"}, /*pack=*/{}};
-    t["mm_init"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{"llk_unpack_hw_configure", "llk_unpack_AB_matmul_init"},
-        /*math=*/{"llk_math_hw_configure", "llk_math_pack_sync_init", "llk_math_matmul_init"}, /*pack=*/{"llk_pack_hw_configure", "llk_pack_dest_init", "llk_pack_init"}};
-    t["mm_init_short"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{"llk_unpack_AB_matmul_init"},
-        /*math=*/{"llk_math_matmul_init"}, /*pack=*/{}};
+    t["matmul_tiles"] = {/*dm=*/{}, /*unpack=*/200, /*math=*/400};
+    t["mm_init"] = {/*dm=*/{}, /*unpack=*/100, /*math=*/140, /*pack=*/140};
+    t["mm_init_short"] = {/*dm=*/{}, /*unpack=*/40, /*math=*/40};
 
     // -- api/compute/mul_int_sfpu.h ------------------------------------------
-    t["mul_int_tile"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{},
-        /*math=*/{"llk_math_eltwise_binary_sfpu_mul_int"}, /*pack=*/{}};
-    t["mul_int_tile_init"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{},
-        /*math=*/{"llk_math_eltwise_binary_sfpu_mul_int_init"}, /*pack=*/{}};
+    t["mul_int_tile"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/300};
+    t["mul_int_tile_init"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/40};
 
     // -- api/compute/pack.h --------------------------------------------------
-    t["pack_reconfig_l1_acc"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{},
-        /*math=*/{}, /*pack=*/{"llk_pack_reconfig_l1_acc"}};
+    t["pack_reconfig_l1_acc"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/{},
+                                 /*pack=*/200};
 
     // -- api/compute/pack_untilize.h -----------------------------------------
-    t["pack_untilize_init"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{"llk_unpack_A_init"},
-        /*math=*/{"llk_math_eltwise_unary_datacopy_init"}, /*pack=*/{}};
-    t["pack_untilize_uninit"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{},
-        /*math=*/{}, /*pack=*/{"llk_pack_untilize_uninit", "llk_init_packer_dest_offset_registers", "llk_pack_reconfig_data_format", "llk_pack_init"}};
+    t["pack_untilize_init"] = {/*dm=*/{}, /*unpack=*/40, /*math=*/40};
+    t["pack_untilize_uninit"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/{},
+                                 /*pack=*/480};
 
     // -- api/compute/reduce.h ------------------------------------------------
-    t["reduce_init"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{"llk_unpack_AB_reduce_init"},
-        /*math=*/{"llk_math_reduce_init"}, /*pack=*/{"llk_pack_reduce_mask_config"}};
-    t["reduce_tile"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{"llk_unpack_AB_reduce"},
-        /*math=*/{"llk_math_reduce"}, /*pack=*/{}};
-    t["reduce_uninit"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{},
-        /*math=*/{"llk_math_reduce_uninit"}, /*pack=*/{"llk_pack_reduce_mask_clear"}};
+    t["reduce_init"] = {/*dm=*/{}, /*unpack=*/40, /*math=*/40, /*pack=*/200};
+    t["reduce_tile"] = {/*dm=*/{}, /*unpack=*/200, /*math=*/300};
+    t["reduce_uninit"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/300, /*pack=*/200};
 
     // -- api/compute/tile_move_copy.h ----------------------------------------
-    t["copy_block_matmul_partials"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{"llk_unpack_A_block"},
-        /*math=*/{"llk_math_eltwise_unary_datacopy_block"}, /*pack=*/{}};
-    t["copy_tile"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{"llk_unpack_A"},
-        /*math=*/{"llk_math_eltwise_unary_datacopy"}, /*pack=*/{}};
-    t["copy_tile_init"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{"llk_unpack_A_init"},
-        /*math=*/{"llk_math_eltwise_unary_datacopy_init"}, /*pack=*/{}};
+    t["copy_block_matmul_partials"] = {/*dm=*/{}, /*unpack=*/200, /*math=*/150};
+    t["copy_tile"] = {/*dm=*/{}, /*unpack=*/200, /*math=*/150};
+    t["copy_tile_init"] = {/*dm=*/{}, /*unpack=*/40, /*math=*/40};
 
     // -- api/compute/tilize.h ------------------------------------------------
-    t["tilize_block"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{"llk_unpack_tilize_block"},
-        /*math=*/{"llk_math_wait_for_dest_available", "llk_math_eltwise_unary_datacopy", "llk_math_dest_section_done"}, /*pack=*/{"llk_packer_wait_for_math_done", "llk_pack", "llk_pack_dest_section_done"}};
-    t["tilize_uninit"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{"llk_unpack_tilize_uninit"},
-        /*math=*/{}, /*pack=*/{"llk_pack_init"}};
+    // tilize_block and untilize_block run the DST handshake themselves: their
+    // MATH halves call llk_math_wait_for_dest_available and
+    // llk_math_dest_section_done, and their PACK halves the packer's matching
+    // pair. getResourceEffect keys the DST effects on the tile_regs_* ops only,
+    // so those internal acquires are not modelled -- a pre-existing gap that
+    // the per-call lists used to make visible and this comment now carries.
+    t["tilize_block"] = {/*dm=*/{}, /*unpack=*/200, /*math=*/190, /*pack=*/240};
+    t["tilize_uninit"] = {/*dm=*/{}, /*unpack=*/200, /*math=*/{}, /*pack=*/40};
 
     // -- api/compute/untilize.h ----------------------------------------------
-    t["untilize_block"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{"llk_unpack_untilize"},
-        /*math=*/{"llk_math_wait_for_dest_available", "llk_math_dest_section_done"}, /*pack=*/{"llk_packer_wait_for_math_done", "llk_pack", "llk_pack_dest_section_done"}};
-    t["untilize_init"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{"llk_unpack_untilize_init"},
-        /*math=*/{"llk_math_eltwise_unary_datacopy_init"}, /*pack=*/{}};
+    t["untilize_block"] = {/*dm=*/{}, /*unpack=*/200, /*math=*/40,
+                           /*pack=*/240};
+    t["untilize_init"] = {/*dm=*/{}, /*unpack=*/40, /*math=*/40};
 
     // -- api/compute/where.h -------------------------------------------------
-    t["where_tile"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{},
-        /*math=*/{"llk_math_eltwise_ternary_sfpu_where"}, /*pack=*/{}};
-    t["where_tile_init"] = ThreadWork{
-        /*dm=*/{}, /*unpack=*/{},
-        /*math=*/{"llk_math_eltwise_ternary_sfpu_where_init"}, /*pack=*/{}};
+    t["where_tile"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/350};
+    t["where_tile_init"] = {/*dm=*/{}, /*unpack=*/{}, /*math=*/40};
 
     return t;
   }();
   return table;
 }
 
-/// Cycle cost of one emitted call.
+/// Cost of one operation on one lane.
 ///
 /// >>> PLACEHOLDER VALUES, NOT MEASUREMENTS. <<<
 ///
-/// They are ordered sensibly relative to each other -- a semaphore poll is
-/// cheaper than a tile of unpack, which is cheaper than a tile of FPU work --
-/// so the shape of a report is meaningful while its magnitudes are not. Replace
-/// with per-call measurements before any decision depends on the numbers.
+/// Each number is the sum of the placeholder per-call costs this table held
+/// when it was keyed on `llk_*` names, so a report keeps the shape it had at
+/// call granularity while its magnitudes stay invented. They are ordered
+/// sensibly relative to each other -- a semaphore poll is cheaper than a tile
+/// of unpack, which is cheaper than a tile of FPU work -- and nothing else.
+/// Replace with the measured per-operation, per-lane numbers from
+/// scripts/gen_cost_table.py before any decision depends on them.
 ///
-/// Known inaccuracy: costs are flat per call, but some calls scale with a tile
-/// count taken from an operand. llk_matmul_pack in particular is llk_pack in a
-/// loop over `ntiles`, so a flat cost is wrong for any block bigger than one
-/// tile. Operand-dependent scaling is the next refinement.
-const llvm::StringMap<uint64_t> &getCallCostTable() {
-  static const llvm::StringMap<uint64_t> table = [] {
-    llvm::StringMap<uint64_t> t;
-
-    // Circular-buffer semaphore ops, uncontended. The cost of waiting is the
-    // simulator's business; this is just the call.
-    t["llk_wait_tiles"] = 20;
-    t["llk_pop_tiles"] = 20;
-    t["llk_wait_for_free_tiles"] = 20;
-    t["llk_push_tiles"] = 20;
-    t["cb_wait_front"] = 30;
-    t["cb_pop_front"] = 30;
-    t["cb_reserve_back"] = 30;
-    t["cb_push_back"] = 30;
-
-    // DST handshake.
-    t["llk_math_wait_for_dest_available"] = 20;
-    t["llk_math_dest_section_done"] = 20;
-    t["llk_packer_wait_for_math_done"] = 20;
-    t["llk_pack_dest_section_done"] = 20;
-
-    // Config writes, paid per block because the inits sit inside the loop.
-    t["llk_unpack_hw_configure"] = 60;
-    t["llk_unpack_AB_init"] = 40;
-    t["llk_math_pack_sync_init"] = 40;
-    t["llk_math_hw_configure"] = 60;
-    t["llk_math_eltwise_binary_init"] = 40;
-    t["llk_pack_hw_configure"] = 60;
-    t["llk_pack_init"] = 40;
-    t["llk_pack_dest_init"] = 40;
-
-    // Real per-tile work.
-    t["llk_unpack_AB"] = 200;
-    t["llk_math_eltwise_binary"] = 300;
-    t["llk_pack"] = 200;
-    t["llk_matmul_pack"] = 260;
-
-    // Data movement. A barrier's real cost is the transfer it waits on, which
-    // the simulator has to model from bytes and bandwidth; this is the call.
-    t["Noc::async_read"] = 60;
-    t["Noc::async_write"] = 60;
-    t["Noc::async_read_barrier"] = 30;
-    t["Noc::async_write_barrier"] = 30;
-    t["get_common_arg_val"] = 10;
-    t["CircularBuffer::get_write_ptr"] = 5;
-    t["CircularBuffer::get_read_ptr"] = 5;
-    t["TensorAccessor::TensorAccessor"] = 20;
-
-
-    // Class-level placeholders for the extracted compute ops. Grouped by class
-    // because the value is invented either way, and the class is the unit that
-    // real per-op-per-RISC measurements arrive in.
-    // datacopy
-    t["llk_math_eltwise_unary_datacopy"] = 150;
-    t["llk_math_eltwise_unary_datacopy_block"] = 150;
-    // init
-    t["llk_init_packer_dest_offset_registers"] = 40;
-    t["llk_math_eltwise_binary_sfpu_add_int_init"] = 40;
-    t["llk_math_eltwise_binary_sfpu_binary_max_min_init"] = 40;
-    t["llk_math_eltwise_binary_sfpu_binary_max_min_int32_init"] = 40;
-    t["llk_math_eltwise_binary_sfpu_binop_init"] = 40;
-    t["llk_math_eltwise_binary_sfpu_mul_int_init"] = 40;
-    t["llk_math_eltwise_ternary_sfpu_where_init"] = 40;
-    t["llk_math_eltwise_unary_datacopy_init"] = 40;
-    t["llk_math_eltwise_unary_sfpu_binop_with_scalar_init"] = 40;
-    t["llk_math_matmul_init"] = 40;
-    t["llk_math_reduce_init"] = 40;
-    t["llk_unpack_AB_matmul_init"] = 40;
-    t["llk_unpack_AB_reduce_init"] = 40;
-    t["llk_unpack_A_init"] = 40;
-    t["llk_unpack_untilize_init"] = 40;
-    // matmul math
-    t["llk_math_matmul"] = 400;
-    // pack
-    t["llk_pack_reconfig_data_format"] = 200;
-    t["llk_pack_reconfig_l1_acc"] = 200;
-    t["llk_pack_reduce_mask_clear"] = 200;
-    t["llk_pack_reduce_mask_config"] = 200;
-    t["llk_pack_untilize_uninit"] = 200;
-    // reduce math
-    t["llk_math_reduce"] = 300;
-    t["llk_math_reduce_uninit"] = 300;
-    t["_llk_math_eltwise_binary_sfpu_params_"] = 300;
-    t["llk_math_eltwise_binary_sfpu_init"] = 40;
-
-    // sfpu binary
-    t["llk_math_eltwise_binary_sfpu_add_int"] = 300;
-    t["llk_math_eltwise_binary_sfpu_binary_max"] = 300;
-    t["llk_math_eltwise_binary_sfpu_binary_max_int32"] = 300;
-    t["llk_math_eltwise_binary_sfpu_binary_min"] = 300;
-    t["llk_math_eltwise_binary_sfpu_binary_min_int32"] = 300;
-    t["llk_math_eltwise_binary_sfpu_binop_div"] = 300;
-    t["llk_math_eltwise_binary_sfpu_binop_mul"] = 300;
-    t["llk_math_eltwise_binary_sfpu_mul_int"] = 300;
-    // sfpu ternary
-    t["llk_math_eltwise_ternary_sfpu_where"] = 350;
-    // sfpu unary
-    t["llk_math_eltwise_unary_sfpu_binop_with_scalar"] = 300;
-    // unpack
-    t["llk_unpack_A"] = 200;
-    t["llk_unpack_AB_matmul"] = 200;
-    t["llk_unpack_AB_reduce"] = 200;
-    t["llk_unpack_A_block"] = 200;
-    t["llk_unpack_tilize_block"] = 200;
-    t["llk_unpack_tilize_uninit"] = 200;
-    t["llk_unpack_untilize"] = 200;
-
-    return t;
-  }();
-  return table;
-}
-
+/// Known inaccuracy: a cost here is flat per operation, but some operations
+/// scale with a tile count taken from an operand. pack_tile_block in particular
+/// packs `ntiles` tiles in a loop, so a flat cost is wrong for any block bigger
+/// than one tile. The measured table is keyed on the same operation and lane
+/// but carries a per-tile term, so operand-dependent scaling arrives with it.
 using ResourceEffect = CostEstimator::ResourceEffect;
 
 /// Resource effect of one TTKernel operation, read from its operands.
 ///
-/// Nothing here is hand-maintained data: the buffer identity, the tile count and
-/// the capacity all come from the module. Only the op-name-to-kind mapping is
-/// fixed, and that follows from the operation's own semantics.
-/// Operations that unpack into SrcA/SrcB without carrying
-/// `TTKernelFPUOpTrait`. The trait covers the six FPU ops; these are the
-/// datacopy and (un)tilize paths, which feed Src exactly the same way but are
-/// not FPU operations. Missing one means MATH is free to run before the data
-/// exists, so the assert below cross-checks this list against each operation's
-/// own expansion.
+/// Nothing here is hand-maintained data: the buffer identity, the tile count
+/// and the capacity all come from the module. Only the op-name-to-kind mapping
+/// is fixed, and that follows from the operation's own semantics. Operations
+/// that unpack into SrcA/SrcB without carrying `TTKernelFPUOpTrait`. The trait
+/// covers the six FPU ops; these are the datacopy and (un)tilize paths, which
+/// feed Src exactly the same way but are not FPU operations. Missing one means
+/// MATH is free to run before the data exists, so the assert below cross-checks
+/// this list against the lanes each operation runs on.
 const llvm::StringSet<> &getNonFpuSrcCouplingOps() {
-  static const llvm::StringSet<> ops = {
-      "copy_tile", "copy_block_matmul_partials", "tilize_block",
-      "untilize_block"};
+  static const llvm::StringSet<> ops = {"copy_tile",
+                                        "copy_block_matmul_partials",
+                                        "tilize_block", "untilize_block"};
   return ops;
 }
 
-/// Whether the operation's own expansion implies a Src handshake: its UNPACK
-/// half moves data (as opposed to only configuring the unpacker with `*_init` or
-/// `*_hw_configure`) and MATH consumes it. Used only to validate the list above.
-bool expansionImpliesSrcCoupling(const ThreadWork &work) {
-  if (work.math.empty()) {
-    return false;
-  }
-  for (llvm::StringRef call : work.unpack) {
-    if (!call.ends_with("_init") && !call.contains("hw_configure")) {
-      return true;
-    }
-  }
-  return false;
+/// Whether an operation's lanes are consistent with a Src handshake: it has to
+/// fill a bank on UNPACK and drain one on MATH. Used only to validate the set
+/// above.
+///
+/// This is the half of the old per-call cross-check that survives at lane
+/// granularity, and it is the half that catches the mistake that matters: an
+/// operation named as Src coupled but not running on both lanes would leave
+/// MATH waiting on a bank nothing fills. The converse -- an operation on both
+/// lanes that only configures the unpacker -- can no longer be checked, because
+/// `add_tiles` and `add_tiles_init` are indistinguishable once the call names
+/// are gone.
+bool lanesAllowSrcCoupling(const ThreadWork &work) {
+  return work.unpack && work.math;
+}
+
+/// Operations whose MATH half re-initializes the DST pipeline.
+///
+/// Their MATH half calls `llk_math_pack_sync_init`, which spins until the
+/// MATH/PACK semaphore reads zero -- every committed half drained -- before
+/// re-seeding that semaphore and resetting the DST section base
+/// (tt_llk_blackhole/llk_lib/llk_math_common.h:130). The wait is the price of
+/// the reset: the section base cannot move under a packer still reading a half.
+///
+/// Keyed on what convert-ttkernel-to-emitc emits rather than on the compute-API
+/// wrapper of the same name, because the two disagree here. `mm_init` and
+/// `mm_block_init` lower to `compute_kernel_hw_startup` plus
+/// `matmul_init`/`matmul_block_init` (TTKernelToEmitC.cpp:1188-1203), and it is
+/// the startup call that carries the sync; `mm_block_init_short` emits
+/// `matmul_block_init` alone and so does not.
+///
+/// The per-operation inits that stay inside compiler-generated tile and
+/// subblock loops -- add_tiles_init, copy_tile_init, matmul_block_init -- carry
+/// no sync, which is what leaves the DST halves free to pipeline there. Only a
+/// common init re-executed inside a user loop pays this.
+///
+/// tilize_init, transpose_wh_init and the bcast inits carry it too, and belong
+/// here once the work table covers them.
+const llvm::StringSet<> &getDstSyncInitOps() {
+  static const llvm::StringSet<> ops = {"binary_op_init_common",
+                                        "unary_op_init_common",
+                                        "init_sfpu",
+                                        "compute_kernel_hw_startup",
+                                        "mm_init",
+                                        "mm_block_init"};
+  return ops;
 }
 
 ResourceEffect getResourceEffect(Operation *op, Lane lane) {
   llvm::StringRef name = op->getName().stripDialect();
 
-  // The Src handshake is the one effect that depends on which lane the placement
-  // is for: the UNPACK half fills a bank and the MATH half drains one. Every
-  // other effect below lands on exactly one lane, so they ignore `lane`.
+  // The Src handshake is the one effect that depends on which lane the
+  // placement is for: the UNPACK half fills a bank and the MATH half drains
+  // one. Every other effect below lands on exactly one lane, so they ignore
+  // `lane`.
   bool coupled = op->hasTrait<ttkernel::TTKernelFPUOpTrait>() ||
                  getNonFpuSrcCouplingOps().contains(name);
   const llvm::StringMap<ThreadWork> &table = getThreadWorkTable();
   auto entry = table.find(name);
-  assert((entry == table.end() ||
-          coupled == expansionImpliesSrcCoupling(entry->second)) &&
-         "Src coupling disagrees with the operation's expansion: an op that "
-         "unpacks into Src needs TTKernelFPUOpTrait or an entry in "
-         "getNonFpuSrcCouplingOps");
+  assert((!coupled || entry == table.end() ||
+          lanesAllowSrcCoupling(entry->second)) &&
+         "Src coupling disagrees with the operation's lanes: an op that feeds "
+         "SrcA/SrcB has to run on both UNPACK and MATH");
   if (coupled) {
     if (lane == Lane::Trisc0Unpack) {
       return {ResourceEffect::Kind::SrcProduce, 0, 0};
@@ -590,6 +433,12 @@ ResourceEffect getResourceEffect(Operation *op, Lane lane) {
       return {ResourceEffect::Kind::SrcConsume, 0, 0};
     }
     return {};
+  }
+
+  // Only the MATH half re-initializes DST. The same operation's unpack and pack
+  // halves configure their own engines and leave the handshake alone.
+  if (lane == Lane::Trisc1Math && getDstSyncInitOps().contains(name)) {
+    return {ResourceEffect::Kind::DstSyncInit, 0, 0};
   }
 
   ResourceEffect::Kind kind = ResourceEffect::Kind::None;
@@ -619,8 +468,7 @@ ResourceEffect getResourceEffect(Operation *op, Lane lane) {
   if (op->getNumOperands() < 2) {
     return {};
   }
-  auto argVal =
-      op->getOperand(0).getDefiningOp<ttkernel::GetCompileArgValOp>();
+  auto argVal = op->getOperand(0).getDefiningOp<ttkernel::GetCompileArgValOp>();
   std::optional<int64_t> tiles = getConstantIntValue(op->getOperand(1));
   if (!argVal || !tiles || *tiles <= 0) {
     return {};
@@ -644,9 +492,9 @@ std::optional<uint64_t> getCbCapacity(Operation *op) {
 /// Short display name for the timeline columns.
 ///
 /// Presentation only: a name missing from the map falls back to the operation
-/// name without its dialect prefix, so an unlisted operation renders wide rather
-/// than wrong. Mechanical truncation is not an option because `tile_regs_*`
-/// would collide.
+/// name without its dialect prefix, so an unlisted operation renders wide
+/// rather than wrong. Mechanical truncation is not an option because
+/// `tile_regs_*` would collide.
 llvm::StringRef getShortName(llvm::StringRef opName) {
   static const llvm::StringMap<llvm::StringRef> names = [] {
     llvm::StringMap<llvm::StringRef> n;
@@ -711,9 +559,9 @@ Lane getDataMovementLane(func::FuncOp funcOp) {
 } // namespace
 
 llvm::ArrayRef<CostEstimator::Lane> CostEstimator::getAllLanes() {
-  static constexpr Lane lanes[kNumLanes] = {
-      Lane::Ncrisc, Lane::Trisc0Unpack, Lane::Trisc1Math, Lane::Trisc2Pack,
-      Lane::Brisc};
+  static constexpr Lane lanes[kNumLanes] = {Lane::Ncrisc, Lane::Trisc0Unpack,
+                                            Lane::Trisc1Math, Lane::Trisc2Pack,
+                                            Lane::Brisc};
   return lanes;
 }
 
@@ -737,7 +585,8 @@ std::string CostEstimator::Report::render() const {
   std::string text;
   llvm::raw_string_ostream out(text);
 
-  out << "cost estimate: scheduled with PLACEHOLDER call costs\n";
+  out << "cost estimate: scheduled with PLACEHOLDER per-lane costs; every "
+         "figure below is cost, not measured cycles\n";
 
   out << "  kernels:";
   for (llvm::StringRef kernel : kernels) {
@@ -752,9 +601,12 @@ std::string CostEstimator::Report::render() const {
   uint64_t busiestWork = 0;
   for (Lane lane : getAllLanes()) {
     const LaneReport &laneReport = lanes[getLaneIndex(lane)];
+    // Occupancy, not the sum of the table's costs. The two differ for an
+    // operation the table costs at zero, which still occupies its lane for the
+    // one the scheduler charges as a floor, so that no interval is empty.
     uint64_t work = 0;
     for (const PlacedOp &op : laneReport.ops) {
-      work += op.cycles;
+      work += op.finish - op.start;
     }
     if (work > busiestWork) {
       busiestWork = work;
@@ -764,42 +616,31 @@ std::string CostEstimator::Report::render() const {
     // for opposite responses: a lane blocked on another lane is a dependency
     // signal, while a lane that has run out of work is a balance observation.
     //
-    // The three partition totalCycles exactly, because a lane's own span is
-    // busy + stalled: each operation contributes its stall gap then its cost,
-    // telescoping to the last finish.
+    // The three partition totalCost exactly, because a lane's own span is
+    // busy + stalled: each operation contributes its stall gap then its
+    // occupancy, telescoping to the last finish.
     uint64_t stalled = 0;
     for (const PlacedOp &op : laneReport.ops) {
       stalled += op.stall;
     }
     uint64_t lastFinish =
         laneReport.ops.empty() ? 0 : laneReport.ops.back().finish;
-    uint64_t drained = totalCycles > lastFinish ? totalCycles - lastFinish : 0;
-    assert((laneReport.ops.empty() ||
-            work + stalled + drained == totalCycles) &&
+    uint64_t drained = totalCost > lastFinish ? totalCost - lastFinish : 0;
+    assert((laneReport.ops.empty() || work + stalled + drained == totalCost) &&
            "lane time must account for the whole run");
 
     out << "  " << getLaneName(lane) << ": " << laneReport.ops.size()
-        << " ops, " << laneReport.llkCalls() << " llk calls, " << work
-        << " busy, " << stalled << " stalled, " << drained << " drained";
-    if (totalCycles > 0) {
-      out << llvm::format(", %.0f%% utilized", 100.0 * work / totalCycles);
+        << " ops, " << work << " busy, " << stalled << " stalled, " << drained
+        << " drained";
+    if (totalCost > 0) {
+      out << llvm::format(", %.0f%% utilized", 100.0 * work / totalCost);
     }
     out << "\n";
   }
 
-  out << "  latency: " << totalCycles << " cycles\n";
+  out << "  latency: " << totalCost << "\n";
   out << "  busiest lane: " << getLaneName(busiestLane) << " (" << busiestWork
-      << " cycles busy)\n";
-
-  if (isComplete()) {
-    out << "  complete: every operation was placed\n";
-    return text;
-  }
-
-  out << "  incomplete: " << unknowns.size() << " unaccounted\n";
-  for (const Unknown &unknown : unknowns) {
-    out << "    " << unknown.message << "\n";
-  }
+      << " busy)\n";
   return text;
 }
 
@@ -823,15 +664,14 @@ std::string CostEstimator::Report::renderDetail() const {
       continue;
     }
     out << "    " << llvm::left_justify("op", nameWidth)
-        << "  start    end   cost   wait  calls\n";
+        << "  start    end   cost   wait\n";
     size_t listed =
         std::min<size_t>(laneReport.ops.size(), kMaxListedOpsPerLane);
     for (const PlacedOp &op :
          llvm::ArrayRef<PlacedOp>(laneReport.ops).take_front(listed)) {
       out << "    " << llvm::left_justify(op.name, nameWidth)
-          << llvm::format("%7" PRIu64 "%7" PRIu64 "%7" PRIu64 "%7" PRIu64 "  ",
-                          op.start, op.finish, op.cycles, op.stall);
-      llvm::interleave(op.calls, out, ", ");
+          << llvm::format("%7" PRIu64 "%7" PRIu64 "%7" PRIu64 "%7" PRIu64,
+                          op.start, op.finish, op.cost, op.stall);
       std::string where = formatLoc(op.loc);
       if (!where.empty()) {
         out << "  [" << where << "]";
@@ -847,7 +687,7 @@ std::string CostEstimator::Report::renderDetail() const {
 }
 
 std::string CostEstimator::Report::renderTimeline() const {
-  if (totalCycles == 0) {
+  if (totalCost == 0) {
     return "";
   }
 
@@ -878,7 +718,7 @@ std::string CostEstimator::Report::renderTimeline() const {
   llvm::raw_string_ostream out(text);
   out << "timeline: one row per event, '|' running, 'w' waiting, '^' ended, "
          "'.' idle\n\n";
-  out << llvm::right_justify("cycle", 8) << llvm::right_justify("gap", 7)
+  out << llvm::right_justify("cost", 8) << llvm::right_justify("gap", 7)
       << "  ";
   for (Lane lane : getAllLanes()) {
     out << llvm::left_justify(getLaneName(lane).split(' ').first.str(), width)
@@ -943,13 +783,14 @@ std::string CostEstimator::Report::renderTimeline() const {
   }
   if (rows < times.size()) {
     out << "  ... " << (times.size() - rows)
-        << " later event rows omitted; use timeline-step=N for a sampled view\n";
+        << " later event rows omitted; use timeline-step=N for a sampled "
+           "view\n";
   }
   return text;
 }
 
 std::string CostEstimator::Report::renderTimelineFixed(uint64_t step) const {
-  if (totalCycles == 0 || step == 0) {
+  if (totalCost == 0 || step == 0) {
     return "";
   }
 
@@ -963,9 +804,9 @@ std::string CostEstimator::Report::renderTimelineFixed(uint64_t step) const {
   std::string text;
   llvm::raw_string_ostream out(text);
   out << "timeline sampled every " << step
-      << " cycles, '|' running, 'w' waiting, '.' idle";
-  out << " (anything shorter than " << step << " cycles may be hidden)\n\n";
-  out << llvm::right_justify("cycle", 8) << "  ";
+      << " of cost, '|' running, 'w' waiting, '.' idle";
+  out << " (anything cheaper than " << step << " may be hidden)\n\n";
+  out << llvm::right_justify("cost", 8) << "  ";
   for (Lane lane : getAllLanes()) {
     out << llvm::left_justify(getLaneName(lane).split(' ').first.str(), width)
         << "|";
@@ -980,7 +821,7 @@ std::string CostEstimator::Report::renderTimelineFixed(uint64_t step) const {
   std::array<size_t, kNumLanes> cursor = {};
 
   uint64_t emitted = 0;
-  for (uint64_t now = 0; now <= totalCycles; now += step) {
+  for (uint64_t now = 0; now <= totalCost; now += step) {
     if (++emitted > kMaxTimelineRows) {
       out << "  ... truncated at " << kMaxTimelineRows
           << " rows; raise timeline-step to cover the whole schedule\n";
@@ -1025,19 +866,35 @@ namespace {
 
 /// Tiles of one circular buffer. `capacity` comes from the CB type, so the
 /// number of blocks it holds is `capacity / tiles-per-op` and is never stored.
+///
+/// One counter, because the hardware has one quantity. A CB is a lock-free SPSC
+/// ring holding two monotonic counters -- `tiles_received`, written only by the
+/// producer, and `tiles_acked`, written only by the consumer -- so that neither
+/// RISC read-modify-writes the other's word, and occupancy is their difference
+/// (llk_io_pack.h:38-41). Tracking a separate reservation would add a state the
+/// hardware cannot be in: `cb_reserve_back` only waits, and the write pointer
+/// advances in `cb_push_back`, so reserving twice returns the same address
+/// rather than two slots. Keeping the producer to one reservation at a time is
+/// the SPSC discipline that ttl-insert-cb-sync and ttl-verify-dfb-spsc own.
 struct CbState {
   uint64_t capacity = 0;
-  uint64_t available = 0; ///< published by the producer, not yet popped
-  uint64_t reserved = 0;  ///< claimed by the producer, not yet pushed
+  uint64_t occupancy = 0; ///< pushed, not yet popped: received - acked
 
-  uint64_t freeTiles() const { return capacity - available - reserved; }
+  uint64_t freeTiles() const { return capacity - occupancy; }
 };
 
-/// DST halves. `SyncHalf` gives two, so MATH can fill one while PACK drains the
-/// other; `dst_full_sync_en` gives one and the two serialize.
+/// DST halves handed to PACK. `SyncHalf` gives two, so MATH can fill one while
+/// PACK drains the other; `dst_full_sync_en` gives one and the two serialize.
+///
+/// One counter for the same reason, and here the hardware really is one: the
+/// MATH_PACK semaphore. MATH posts on commit and the packer's
+/// dest_section_done takes it back, while both waits only gate -- MATH stalls
+/// on max, PACK stalls on zero. The half MATH writes advances at commit
+/// (`dest_section_flip`), not at acquire, so acquiring twice keeps MATH on the
+/// same half instead of claiming two.
 struct DstState {
-  unsigned freeHalves = 2;
-  unsigned committed = 0;
+  unsigned halves = 2; ///< the semaphore's max count
+  unsigned handed = 0; ///< committed to PACK, not yet returned == MATH_PACK
 };
 
 /// SrcA/SrcB banks between the unpacker and the Matrix Unit.
@@ -1047,8 +904,9 @@ struct DstState {
 /// between banks is emergent.
 ///
 /// Simplification: SrcA and SrcB are counted as one credit rather than two
-/// independent register files. That is exact for the AB-style ops that read both
-/// and conservative for single-operand ops, which leave the other file idle.
+/// independent register files. That is exact for the AB-style ops that read
+/// both and conservative for single-operand ops, which leave the other file
+/// idle.
 struct SrcState {
   unsigned freeBanks = 2; ///< banks the unpacker may fill
   unsigned valid = 0;     ///< filled and dvalid, not yet consumed by MATH
@@ -1070,22 +928,6 @@ public:
   Impl(ModuleOp module, Options options) : module(module), options(options) {}
 
   FailureOr<Report> estimate() {
-    // Reject IR from before convert-ttl-to-ttkernel: the per-thread operation
-    // sequence does not exist yet, so any estimate would be of the wrong
-    // program.
-    WalkResult preLowering = module.walk([](Operation *op) {
-      if (op->getName().getDialectNamespace() == kTTLDialect &&
-          op->getName().stripDialect() == "compute") {
-        return WalkResult::interrupt();
-      }
-      return WalkResult::advance();
-    });
-    if (preLowering.wasInterrupted()) {
-      return module.emitError()
-             << "cost estimator needs TTKernel IR, but the module still "
-                "contains ttl.compute; run it after convert-ttl-to-ttkernel";
-    }
-
     Report report;
     uint64_t ttkernelOps = 0;
 
@@ -1104,8 +946,8 @@ public:
       case ttkernel::ThreadType::Compute:
         // DstSync::SyncHalf is the default, so an absent attribute means two
         // halves, not "unknown".
-        if (auto fullSync = funcOp->getAttrOfType<BoolAttr>(
-                ttl::kDstFullSyncEnAttrName)) {
+        if (auto fullSync =
+                funcOp->getAttrOfType<BoolAttr>(ttl::kDstFullSyncEnAttrName)) {
           dstHalves = fullSync.getValue() ? 1 : 2;
         }
         ttkernelOps += placeFunc(funcOp, std::nullopt, report);
@@ -1113,10 +955,10 @@ public:
       default:
         // Structural: an unhandled thread type means the whole function's work
         // lands nowhere.
-        cannotModel = true;
-        funcOp->emitError() << "cost estimator does not model the kernel thread "
-                               "type on '"
-                            << funcOp.getSymName() << "'";
+        failToModel(
+            "thread-type", funcOp,
+            "cost estimator does not model the kernel thread type on '" +
+                funcOp.getSymName() + "'");
         break;
       }
     }
@@ -1126,15 +968,15 @@ public:
     // the module is past the stage this estimator reads, not that it is
     // trivial.
     if (ttkernelOps == 0 && !report.kernels.empty()) {
-      return module.emitError()
-             << "cost estimator found no ttkernel operations in "
-             << report.kernels.size()
-             << " kernel function(s); the module is probably already lowered "
-                "to EmitC";
+      module.emitWarning() << "cost estimator found no ttkernel operations in "
+                           << report.kernels.size()
+                           << " kernel function(s); the module is probably "
+                              "already lowered to EmitC";
+      return failure();
     }
 
     if (cannotModel) {
-      // The diagnostic was already emitted at the offending loop.
+      // The diagnostic was already emitted at the operation responsible.
       return failure();
     }
 
@@ -1162,7 +1004,7 @@ private:
     }
 
     DstState dst;
-    dst.freeHalves = dstHalves;
+    dst.halves = dstHalves;
 
     SrcState src;
     src.freeBanks = options.srcBanks;
@@ -1176,12 +1018,19 @@ private:
         return cbs[effect.cb].freeTiles() >= effect.tiles ? llvm::StringRef()
                                                           : "cb free tiles";
       case ResourceEffect::Kind::CbWait:
-        return cbs[effect.cb].available >= effect.tiles ? llvm::StringRef()
+        return cbs[effect.cb].occupancy >= effect.tiles ? llvm::StringRef()
                                                         : "cb published tiles";
       case ResourceEffect::Kind::DstAcquire:
-        return dst.freeHalves > 0 ? llvm::StringRef() : "dst half";
+        // Stalls on max, like the SEMWAIT it stands for. It claims nothing, so
+        // a second acquire with no commit between them passes, as on hardware.
+        return dst.handed < dst.halves ? llvm::StringRef() : "dst half";
       case ResourceEffect::Kind::DstWait:
-        return dst.committed > 0 ? llvm::StringRef() : "dst commit";
+        return dst.handed > 0 ? llvm::StringRef() : "dst commit";
+      case ResourceEffect::Kind::DstSyncInit:
+        // Nothing handed out is the semaphore reading zero. A half MATH holds
+        // but has not committed does not hold the reset up, matching the
+        // hardware, which waits only on what the packer still owes.
+        return dst.handed == 0 ? llvm::StringRef() : "dst drain";
       case ResourceEffect::Kind::SrcProduce:
         return src.freeBanks > 0 ? llvm::StringRef() : "srcA/B bank";
       case ResourceEffect::Kind::SrcConsume:
@@ -1191,13 +1040,12 @@ private:
       }
     };
 
+    // Only the Src handshake takes anything when an operation starts. The CB
+    // and DST waits are gates: they read their counter and never move it, so
+    // nothing here corresponds to `cb_reserve_back` or `tile_regs_acquire`.
     auto takeAtStart = [&](const PlacedOp &op) {
       const ResourceEffect &effect = op.effect;
-      if (effect.kind == ResourceEffect::Kind::CbReserve) {
-        cbs[effect.cb].reserved += effect.tiles;
-      } else if (effect.kind == ResourceEffect::Kind::DstAcquire) {
-        --dst.freeHalves;
-      } else if (effect.kind == ResourceEffect::Kind::SrcProduce) {
+      if (effect.kind == ResourceEffect::Kind::SrcProduce) {
         --src.freeBanks;
       } else if (effect.kind == ResourceEffect::Kind::SrcConsume) {
         --src.valid;
@@ -1209,17 +1057,22 @@ private:
       CbState &cb = cbs[effect.cb];
       switch (effect.kind) {
       case ResourceEffect::Kind::CbPush:
-        cb.reserved -= std::min(cb.reserved, effect.tiles);
-        cb.available += effect.tiles;
+        // The producer's `tiles_received += n`, which is also what advances the
+        // write pointer, so the tiles become visible to the consumer here.
+        cb.occupancy += effect.tiles;
         break;
       case ResourceEffect::Kind::CbPop:
-        cb.available -= std::min(cb.available, effect.tiles);
+        // The consumer's `tiles_acked += n`.
+        cb.occupancy -= std::min(cb.occupancy, effect.tiles);
         break;
       case ResourceEffect::Kind::DstCommit:
-        ++dst.committed;
+        ++dst.handed; ///< t6_semaphore_post(MATH_PACK)
         break;
       case ResourceEffect::Kind::DstRelease:
-        ++dst.freeHalves;
+        // The packer's dest_section_done is the semaphore_get matching MATH's
+        // post at commit, and it runs after the pack itself has finished, so
+        // the half comes back here rather than when PACK started draining it.
+        dst.handed -= std::min<unsigned>(dst.handed, 1);
         break;
       case ResourceEffect::Kind::SrcProduce:
         // dvalid is set when the unpack retires, so MATH cannot start on this
@@ -1271,7 +1124,7 @@ private:
         takeAtStart(op);
         op.start = now;
         op.stall = now - laneSim.idleSince;
-        op.finish = now + std::max<uint64_t>(op.cycles, 1);
+        op.finish = now + std::max<uint64_t>(op.cost, 1);
         laneSim.busyUntil = op.finish;
         laneSim.inFlight = true;
         anyInFlight = true;
@@ -1294,8 +1147,9 @@ private:
                << laneSim.blockedOn;
           }
         }
-        return module.emitError()
-               << "cost estimator deadlocked at cycle " << now << detail;
+        module.emitWarning()
+            << "cost estimator deadlocked at cost " << now << detail;
+        return failure();
       }
 
       uint64_t next = std::numeric_limits<uint64_t>::max();
@@ -1306,7 +1160,7 @@ private:
         }
       }
       now = next;
-      report.totalCycles = std::max(report.totalCycles, now);
+      report.totalCost = std::max(report.totalCost, now);
     }
 
     return success();
@@ -1322,25 +1176,29 @@ private:
   struct PlaceContext {
     std::optional<Lane> dmLane;
     Report *report;
-    llvm::StringSet<> reportedNames;
     uint64_t seen = 0;
   };
 
-  /// One unknown per distinct key, so a repeated loop body does not repeat the
-  /// same complaint once per iteration.
-  void reportOnce(PlaceContext &ctx, llvm::StringRef key, std::string message,
-                  Location loc) {
-    if (ctx.reportedNames.insert(key).second) {
-      ctx.report->unknowns.push_back({std::move(message), loc});
-    }
-  }
-
-  /// Record a structural gap: diagnose it once per distinct `key` so one run
-  /// names everything that is missing, and mark the estimate unusable.
-  void failToModel(PlaceContext &ctx, llvm::StringRef key, Operation *op,
+  /// Record a gap the estimate cannot survive: diagnose it once per distinct
+  /// `key` and mark the estimate unusable.
+  ///
+  /// Every gap found while walking the module reports through here, so one run
+  /// names all of them. `key` decides how much counts as one gap, and the right
+  /// granularity differs by kind: an operation the work table does not cover is
+  /// keyed by name, because an unrolled loop body would otherwise repeat the
+  /// same complaint once per iteration, while a loop the estimator cannot
+  /// enumerate is keyed by what went wrong with it. Dedup spans the module
+  /// rather than one kernel, because a three-thread module hits the same gap
+  /// three times and the reader learns nothing from the repeats.
+  ///
+  /// A warning rather than an error. The gap is in the estimator, and the
+  /// estimate is a read-only side output, so a module the estimator cannot
+  /// account for still compiles; `estimate()` returning failure is what tells a
+  /// caller not to trust a number.
+  void failToModel(llvm::StringRef key, Operation *op,
                    const llvm::Twine &message) {
-    if (ctx.reportedNames.insert(key).second) {
-      op->emitError() << message;
+    if (reportedGaps.insert(key).second) {
+      op->emitWarning() << message;
     }
     cannotModel = true;
   }
@@ -1351,9 +1209,9 @@ private:
     ctx.dmLane = dmLane;
     ctx.report = &report;
 
-    // Walk regions structurally rather than with Operation::walk, because a loop
-    // body has to be repeated in place: the correct lane order for a body of
-    // A,B,C over two iterations is A,B,C,A,B,C, not A,A,B,B,C,C.
+    // Walk regions structurally rather than with Operation::walk, because a
+    // loop body has to be repeated in place: the correct lane order for a body
+    // of A,B,C over two iterations is A,B,C,A,B,C, not A,A,B,B,C,C.
     LoopInductionBindings bindings;
     EnumerationBudget budget(kUnrollBudget);
     placeBlock(funcOp.getBody().front(), ctx, bindings, budget);
@@ -1392,8 +1250,8 @@ private:
     // two branches that mutate resource counters differently leave no sound
     // single state to continue from.
     if (op->getNumRegions() > 0) {
-      failToModel(ctx, op->getName().getStringRef(), op,
-                  "cost estimator does not model '" +
+      failToModel(op->getName().getStringRef(), op,
+                  "cost estimator currently does not model '" +
                       op->getName().getStringRef() +
                       "': a guarded body would be counted as taken and both "
                       "arms of a branch as executed");
@@ -1406,60 +1264,57 @@ private:
                  LoopInductionBindings &bindings, EnumerationBudget &budget) {
     std::optional<uint64_t> trip = getLoopTripCount(loop, bindings);
     if (!trip) {
-      // TODO(ttl): a dynamic trip count cannot be unrolled at all, so this needs
-      // steady-state extrapolation rather than a larger budget: unroll a bounded
-      // prefix, detect when the resource state and per-lane program counters
-      // repeat, take that cycle delta as the initiation interval, and report
-      // prologue + II * (trip - warmup) + epilogue with the trip count left
-      // symbolic. Until then, failing is the honest answer -- placing nothing
-      // for the loop would schedule a different program.
-      if (!cannotModel) {
-        loop->emitError()
-            << "cost estimator cannot determine this loop's trip count "
-               "statically, and steady-state extrapolation is not implemented "
-               "yet, so no estimate is produced";
-      }
-      cannotModel = true;
+      // TODO(ttl): a dynamic trip count cannot be unrolled at all, so this
+      // needs steady-state extrapolation rather than a larger budget: unroll a
+      // bounded prefix, detect when the resource state and per-lane program
+      // counters repeat, take that cost delta as the initiation interval, and
+      // report prologue + II * (trip - warmup) + epilogue with the trip count
+      // left symbolic. Until then, failing is the honest answer -- placing
+      // nothing for the loop would schedule a different program.
+      failToModel("loop-trip-count", loop,
+                  "cost estimator cannot determine this loop's trip count "
+                  "statically, and steady-state extrapolation is not "
+                  "implemented yet, so no estimate is produced");
       return;
     }
-    // Over budget is a hard failure, not an unknown. Skipping the body would
-    // leave the lanes holding a different program than the one being estimated,
-    // and scheduling that still yields a confident-looking latency which is
-    // neither an upper nor a lower bound on the real one. An unknown is the
-    // right signal for a missing cost; it is too weak for a missing program.
+    // Skipping the body would leave the lanes holding a different program than
+    // the one being estimated, and scheduling that still yields a
+    // confident-looking latency which is neither an upper nor a lower bound on
+    // the real one.
     if (!budget.canConsume(*trip)) {
-      if (!cannotModel) {
-        loop->emitError() << "cost estimator cannot unroll a loop of " << *trip
-                          << " iterations: the per-kernel unroll budget is "
-                          << kUnrollBudget
-                          << " iterations. Steady-state extrapolation is not "
-                             "implemented yet, so no estimate is produced.";
-      }
-      cannotModel = true;
+      // The budget is shared across the enclosing nest, so this loop is usually
+      // an inner one that would have fit on its own and the iterations were
+      // spent by the loops around it. Saying so matters: the trip count named
+      // here is not what the limit was compared against.
+      failToModel(
+          "loop-unroll-budget", loop,
+          "cost estimator cannot unroll this loop's " + std::to_string(*trip) +
+              " iterations: the per-kernel budget of " +
+              std::to_string(kUnrollBudget) +
+              " iterations is exhausted, spent on this loop and the ones "
+              "enclosing it. Steady-state extrapolation is not "
+              "implemented yet, so no estimate is produced.");
       return;
     }
 
-    LogicalResult enumerated = enumerateLoopNest(
-        {loop}, bindings, budget,
-        [&](const LoopInductionBindings &) -> LogicalResult {
-          for (Region &region : loop->getRegions()) {
-            for (Block &block : region) {
-              placeBlock(block, ctx, bindings, budget);
-            }
-          }
-          return success();
-        });
+    LogicalResult enumerated =
+        enumerateLoopNest({loop}, bindings, budget,
+                          [&](const LoopInductionBindings &) -> LogicalResult {
+                            for (Region &region : loop->getRegions()) {
+                              for (Block &block : region) {
+                                placeBlock(block, ctx, bindings, budget);
+                              }
+                            }
+                            return success();
+                          });
+    // Worse than the case above: enumeration stopped partway, so some
+    // iterations are already placed and the lanes hold a truncated program.
     if (failed(enumerated)) {
-      // Also a hard failure, and worse than the case above: enumeration stopped
-      // partway, so some iterations are already placed and the lanes hold a
-      // truncated program.
-      if (!cannotModel) {
-        loop->emitError() << "cost estimator exhausted its unroll budget of "
-                          << kUnrollBudget
-                          << " iterations partway through this loop, or hit an "
-                             "iteration range it cannot enumerate";
-      }
-      cannotModel = true;
+      failToModel("loop-enumeration", loop,
+                  "cost estimator exhausted its unroll budget of " +
+                      std::to_string(kUnrollBudget) +
+                      " iterations partway through this loop, or hit an "
+                      "iteration range it cannot enumerate");
     }
   }
 
@@ -1474,37 +1329,22 @@ private:
       // Messages keep the qualified name so they can be grepped against the IR.
       auto found = table.find(op->getName().stripDialect());
       if (found == table.end()) {
-        // One unknown per distinct name keeps the report readable while still
-        // naming everything the affinity table is missing.
-        // Structural: with no entry the operation is placed on no lane at all,
-        // so its time and its resource effects are both missing.
-        failToModel(ctx, name, op,
-                    "no thread affinity for '" + name +
+        // With no entry the operation is placed on no lane at all, so its time
+        // and its resource effects are both missing.
+        failToModel(name, op,
+                    "no per lane work for '" + name +
                         "': the operation would be left out of every lane");
         return;
       }
       const ThreadWork &work = found->second;
 
-      const llvm::StringMap<uint64_t> &costs = getCallCostTable();
-      auto place = [&](Lane lane, llvm::ArrayRef<llvm::StringRef> calls) {
-        if (calls.empty()) {
+      auto place = [&](Lane lane, std::optional<uint64_t> cost) {
+        if (!cost) {
           return false;
-        }
-        uint64_t cycles = 0;
-        for (llvm::StringRef call : calls) {
-          auto cost = costs.find(call);
-          if (cost == costs.end()) {
-            reportOnce(ctx, call, ("no cost for call '" + call + "'").str(),
-                       op->getLoc());
-            continue;
-          }
-          cycles += cost->second;
         }
         ResourceEffect effect = getResourceEffect(op, lane);
 
-        llvm::SmallVector<llvm::StringRef> callList(calls.begin(), calls.end());
-        PlacedOp placed{name.str(), op->getLoc(), std::move(callList), cycles,
-                        effect};
+        PlacedOp placed{name.str(), op->getLoc(), *cost, effect};
         if (placed.effect.kind != ResourceEffect::Kind::None &&
             placed.effect.tiles > 0) {
           if (std::optional<uint64_t> capacity = getCbCapacity(op)) {
@@ -1528,8 +1368,8 @@ private:
       // The table knows this operation, but not for the kind of kernel it
       // appeared in. Placing nothing would silently report it as free.
       if (!placed && !work.isFree()) {
-        failToModel(ctx, name, op,
-                    "'" + name + "' has no expansion for a " +
+        failToModel(name, op,
+                    "'" + name + "' runs on no lane of a " +
                         (dmLane ? "data-movement" : "compute") +
                         " kernel, so it would be left out of every lane");
       }
@@ -1543,15 +1383,17 @@ private:
   /// DST halves available to MATH. `dst_full_sync_en` collapses them to one.
   unsigned dstHalves = 2;
 
-  /// Set when the module contains something whose *structure* cannot be
-  /// reproduced: an operation that will not be placed, control flow whose
-  /// outcome is unknown, or two kernels sharing a lane. The placed lanes then
-  /// describe a different program than the real one, so estimate() fails rather
-  /// than reporting a latency for it.
-  ///
-  /// Distinct from Report::unknowns, which covers *cost* gaps: there the program
-  /// is right and only a magnitude is missing, so a partial answer is still
-  /// worth having.
+  /// Gap keys already diagnosed, so each is reported once per module. See
+  /// failToModel.
+  llvm::StringSet<> reportedGaps;
+
+  /// Set when the module contains anything the estimate cannot account for: an
+  /// operation the work table does not cover, control flow whose outcome is not
+  /// resolved, or a loop that cannot be unrolled. The lanes then describe
+  /// either a different program than the real one or the same program with work
+  /// missing from it, and a latency computed from either is neither an upper
+  /// nor a lower bound on the real one, so estimate() fails rather than
+  /// reporting it.
   bool cannotModel = false;
 
   ModuleOp module;

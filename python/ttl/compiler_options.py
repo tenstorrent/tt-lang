@@ -185,7 +185,7 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         dest="cost_estimate_timeline_step",
         type=int,
-        help="Add a cost-estimate timeline sampled every N cycles, so row "
+        help="Add a cost-estimate timeline sampled every N of cost, so row "
         "height is proportional to time; anything shorter than N may be "
         "hidden. 0 (the default) omits it. For one row per event boundary "
         "instead, which hides nothing, use --ttl-cost-estimate-detail. "

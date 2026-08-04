@@ -1246,21 +1246,26 @@ def TTKernelCostEstimate
     verbatim strings. Placing it last in the TTKernel stage also means the
     constant operands carrying tile counts are already folded.
 
-    The report names any operation the estimator could not place rather than
-    assuming a cost for it, so an unmodelled kernel is never mistaken for a
-    cheap one.
+    An estimate covers every operation in the module or is not produced at all,
+    so an unmodelled kernel is never mistaken for a cheap one. Anything the
+    estimator cannot account for -- an operation missing from its per-lane work
+    table, control flow it cannot resolve, a loop it cannot
+    unroll -- is warned about at the operation responsible, and the report says
+    only that no estimate is available. The pass never signals failure: the
+    estimate is opt-in and mutates nothing, so a gap in it does not fail a
+    compile.
 
     Example output:
     ```
-    cost estimate: operation placement only, no cycle costs yet
+    cost estimate: scheduled with PLACEHOLDER per-lane costs
       kernels: compute read write
-      NCRISC reader: 11 ops
-      TRISC0 unpack: 4 ops
-      TRISC1 math: 2 ops
-      TRISC2 pack: 4 ops
-      BRISC writer: 6 ops
-      incomplete: 4 unaccounted
-        no thread affinity for 'ttkernel.binary_op_init_common'
+      NCRISC reader: 43 ops, 2140 busy, 0 stalled, 7185 drained, 23% utilized
+      TRISC0 unpack: 23 ops, 3460 busy, 3580 stalled, 2285 drained, 37% utilized
+      TRISC1 math: 23 ops, 5060 busy, 2360 stalled, 1905 drained, 54% utilized
+      TRISC2 pack: 23 ops, 3460 busy, 4780 stalled, 1085 drained, 37% utilized
+      BRISC writer: 22 ops, 1085 busy, 8240 stalled, 0 drained, 12% utilized
+      latency: 8999
+      busiest lane: TRISC1 math (4984 busy)
     ```
   }];
 
@@ -1271,7 +1276,7 @@ def TTKernelCostEstimate
            "Also print per-lane operation tables and an event-boundary "
            "timeline. Off by default: both are capped but still long.">,
     Option<"timelineStep", "timeline-step", "uint64_t", "0",
-           "Also print a timeline sampled every N cycles, so row height is "
+           "Also print a timeline sampled every N of cost, so row height is "
            "proportional to time. 0 disables it. Anything shorter than N may "
            "be hidden.">
   ];

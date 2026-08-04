@@ -35,23 +35,30 @@ struct TTKernelCostEstimatePass
       TTKernelCostEstimatePass>::TTKernelCostEstimateBase;
 
   void runOnOperation() override {
+    // Nothing below signals pass failure. The estimate is opt-in and mutates
+    // nothing, so a program the estimator cannot account for is a gap in the
+    // estimator, not a reason to fail a compile that would otherwise succeed.
+    // The analysis warns at each operation responsible; this pass reports that
+    // no estimate is coming and lets the pipeline continue.
+    std::string text;
+
     CostEstimator estimator(getOperation());
     FailureOr<CostEstimator::Report> report = estimator.estimate();
     if (failed(report)) {
-      // estimate() already emitted a diagnostic explaining the stage mismatch.
-      return signalPassFailure();
+      text = "cost estimate: unavailable, see the warnings above\n";
+    } else {
+      // Summary only by default. The per-operation views are opt-in because a
+      // kernel whose loops unroll to tens of thousands of operations produces a
+      // report far longer than anyone reads.
+      text = report->render();
+      if (detail) {
+        text += report->renderDetail() + "\n" + report->renderTimeline();
+      }
+      if (timelineStep > 0) {
+        text += "\n" + report->renderTimelineFixed(timelineStep);
+      }
     }
 
-    // Summary only by default. The per-operation views are opt-in because a
-    // kernel whose loops unroll to tens of thousands of operations produces a
-    // report far longer than anyone reads.
-    std::string text = report->render();
-    if (detail) {
-      text += report->renderDetail() + "\n" + report->renderTimeline();
-    }
-    if (timelineStep > 0) {
-      text += "\n" + report->renderTimelineFixed(timelineStep);
-    }
     if (outputPath.empty()) {
       llvm::outs() << text;
       return;
@@ -60,10 +67,13 @@ struct TTKernelCostEstimatePass
     std::error_code error;
     llvm::raw_fd_ostream out(outputPath, error, llvm::sys::fs::OF_Text);
     if (error) {
-      getOperation().emitError()
+      // The report is a side output, so losing it does not invalidate the
+      // compile either. Say where it went instead of dropping it silently.
+      getOperation().emitWarning()
           << "cannot write cost estimate to '" << outputPath
-          << "': " << error.message();
-      return signalPassFailure();
+          << "': " << error.message() << "; writing it to stdout instead";
+      llvm::outs() << text;
+      return;
     }
     out << text;
   }

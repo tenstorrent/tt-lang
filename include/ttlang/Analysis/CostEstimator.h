@@ -62,22 +62,12 @@ public:
     return static_cast<unsigned>(lane);
   }
 
-  /// Work the estimator could not account for.
-  ///
-  /// Any unknown makes the estimate untrustworthy. The estimator reports the
-  /// gap rather than assuming a cost, so that an unmodelled kernel is never
-  /// mistaken for a cheap one.
-  struct Unknown {
-    std::string message;
-    Location loc;
-  };
-
   /// What an operation does to a shared resource.
   ///
   /// Every mechanism modelled here is a credit counter, so double buffering is
   /// never represented directly: a circular buffer holds `capacity` tiles and
   /// DST holds one or two halves, and whether a given acquire blocks is an
-  /// outcome of the counter at that cycle. Raising `block_count` from 2 to 3
+  /// outcome of the counter at that point. Raising `block_count` from 2 to 3
   /// changes no code.
   struct ResourceEffect {
     enum class Kind {
@@ -90,6 +80,13 @@ public:
       DstCommit,  ///< MATH hands its half to PACK
       DstWait,    ///< PACK blocks until MATH has committed a half
       DstRelease, ///< PACK returns the half to MATH
+      /// MATH re-initializes the DST pipeline: it blocks until the packer has
+      /// drained every committed half, then re-seeds the handshake and resets
+      /// the section base. Stricter than DstAcquire, which needs only one free
+      /// half. This is a boundary rather than a stall better scheduling could
+      /// hide -- sections cannot pipeline across a reset that redefines where
+      /// they are.
+      DstSyncInit,
       /// UNPACK fills a SrcA/SrcB bank and sets dvalid. Blocks when no bank is
       /// free, which is what stops the unpacker running further ahead of MATH
       /// than the bank count allows.
@@ -113,21 +110,15 @@ public:
     std::string name;
     Location loc;
 
-    /// Functions this operation expands to on this lane, in emission order:
-    /// `llk_*` on the TRISCs, dataflow-API names on the data-movement cores.
+    /// Cost of this operation on this lane. One operation can land on several
+    /// lanes with a different cost on each: `binary_op_init_common` configures
+    /// the unpacker, the math sync and the packer, and the three are not equal.
     ///
-    /// A compute-API call can expand unevenly across the TRISCs, which is why
-    /// this is a list rather than a flag: `binary_op_init_common` is two calls
-    /// on UNPACK, two on MATH and three on PACK.
-    ///
-    /// These reference string literals in the affinity table, so they are valid
-    /// for the life of the program.
-    llvm::SmallVector<llvm::StringRef> calls;
-
-    /// Summed cost of `calls`. Zero either because the operation is free or
-    /// because a call had no cost entry, in which case the report carries an
-    /// Unknown naming it.
-    uint64_t cycles = 0;
+    /// Zero when the work table gives this lane a zero, which is how an
+    /// operation placed purely for its resource effect is spelled. An operation
+    /// the table does not cover at all fails the estimate instead of landing
+    /// here at zero.
+    uint64_t cost = 0;
 
     ResourceEffect effect;
 
@@ -137,27 +128,15 @@ public:
     uint64_t start = 0;
     uint64_t finish = 0;
     uint64_t stall = 0;
-
-    unsigned llkCalls() const { return calls.size(); }
   };
 
-  /// What lands on one lane, in program order. Cycle terms arrive with the cost
-  /// table; this records placement only.
+  /// What lands on one lane, in program order.
   ///
   /// These are static occurrences, so the list is bounded by the size of the IR
   /// rather than by loop trip counts. Weighting by execution count is a
   /// separate step.
   struct LaneReport {
     llvm::SmallVector<PlacedOp> ops;
-
-    /// Total LLK calls on this lane.
-    uint64_t llkCalls() const {
-      uint64_t total = 0;
-      for (const PlacedOp &op : ops) {
-        total += op.llkCalls();
-      }
-      return total;
-    }
   };
 
   /// Result of estimating one module.
@@ -165,17 +144,14 @@ public:
     /// Kernel-thread functions the estimator recognized, by symbol name.
     llvm::SmallVector<std::string> kernels;
     std::array<LaneReport, kNumLanes> lanes = {};
-    llvm::SmallVector<Unknown> unknowns;
 
-    /// Cycle at which the last lane retires. Zero when scheduling did not run.
-    uint64_t totalCycles = 0;
+    /// Accumulated cost at which the last lane retires. Zero when scheduling
+    /// did not run.
+    uint64_t totalCost = 0;
 
-    /// True when every operation was accounted for.
-    bool isComplete() const { return unknowns.empty(); }
-
-    /// Summary: per-lane totals, latency, and any unknowns. This is the
-    /// default output, because the per-operation views below are debugging
-    /// aids that run to hundreds of thousands of rows on a real kernel.
+    /// Summary: per-lane totals and overall latency, all in cost. This is the
+    /// default output, because the per-operation views below are debugging aids
+    /// that run to hundreds of thousands of rows on a real kernel.
     std::string render() const;
 
     /// Per-lane operation tables with start, end, cost, wait and source line.
@@ -186,15 +162,15 @@ public:
     ///
     /// Rows are the distinct starts, finishes and wait-interval boundaries, not
     /// a fixed sample rate, so no interval is invented and nothing is aliased
-    /// away. The cost is that row height carries no meaning: the `gap` column is
-    /// the distance to the next event on *any* lane. Empty if scheduling did not
-    /// run.
+    /// away. The trade is that row height carries no meaning: the `gap` column
+    /// is the distance to the next event on *any* lane. Empty if scheduling did
+    /// not run.
     std::string renderTimeline() const;
 
     /// Same five columns sampled at a fixed `step`, so row height is
     /// proportional to time and lanes can be compared by eye.
     ///
-    /// The trade against renderTimeline() is aliasing: anything shorter than
+    /// The trade against renderTimeline() is aliasing: anything cheaper than
     /// `step` can be hidden, and when several operations fall inside one row
     /// only the first is named. Empty if scheduling did not run.
     std::string renderTimelineFixed(uint64_t step) const;
@@ -222,9 +198,14 @@ public:
   CostEstimator(const CostEstimator &) = delete;
   CostEstimator &operator=(const CostEstimator &) = delete;
 
-  /// Estimate the whole module. Fails only when the module is not at the
-  /// expected pipeline stage; per-operation gaps land in `Report::unknowns` so
-  /// a partial result stays inspectable.
+  /// Estimate the whole module, or fail if anything in it cannot be accounted
+  /// for: a module at the wrong pipeline stage, an operation the work table
+  /// does not cover, control flow whose outcome is not resolved, or a loop that
+  /// cannot be unrolled. A returned report describes
+  /// every operation in the module; there is no partial result, because a
+  /// latency computed from an incomplete program is neither an upper nor a
+  /// lower bound on the real one. Diagnostics name each gap at its own
+  /// operation.
   FailureOr<Report> estimate();
 
 private:
