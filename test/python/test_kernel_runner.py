@@ -114,6 +114,23 @@ class _FakeTTNN:
             self.core_ranges = core_ranges
             self.format_descriptors = format_descriptors
 
+    CoreCoord = _FakeCoreCoord
+
+    class CoreRange:
+        def __init__(self, start, end):
+            self.start = start
+            self.end = end
+
+        def __hash__(self):
+            return hash((self.start.x, self.start.y, self.end.x, self.end.y))
+
+    class CoreRangeSet:
+        def __init__(self, ranges):
+            self._ranges = list(ranges)
+
+        def ranges(self):
+            return self._ranges
+
     class ReaderConfigDescriptor:
         pass
 
@@ -228,6 +245,43 @@ def test_remaining_l1_without_tensors_uses_cb_address_interval(monkeypatch):
     assert kernel_runner.get_min_remaining_l1_for_device(object()) == (
         0x130000 - 0x4A000
     )
+
+
+def test_remaining_l1_by_core_does_not_conflate_tensor_placements(monkeypatch):
+    l1 = object()
+    reports = SimpleNamespace(
+        get_device_info=lambda _device: SimpleNamespace(
+            address_at_first_l1_cb_buffer=0x4A000,
+            cb_limit=0x130000,
+        ),
+        get_buffer_pages=lambda _device: [
+            SimpleNamespace(
+                buffer_type=l1,
+                page_address=0x6A000,
+                core_x=0,
+                core_y=0,
+            ),
+            SimpleNamespace(
+                buffer_type=l1,
+                page_address=0xEA000,
+                core_x=1,
+                core_y=0,
+            ),
+        ],
+    )
+    fake_ttnn = SimpleNamespace(
+        BufferType=SimpleNamespace(L1=l1),
+        _ttnn=SimpleNamespace(reports=reports),
+    )
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+
+    assert kernel_runner.get_remaining_l1_by_core_for_device(
+        object(), {(0, 0), (1, 0), (2, 0)}
+    ) == {
+        (0, 0): 0x20000,
+        (1, 0): 0xA0000,
+        (2, 0): 0xE6000,
+    }
 
 
 def test_build_pipe_global_semaphores_empty_does_not_require_ttnn(monkeypatch):
@@ -597,6 +651,51 @@ def test_cb_descriptor_override_rejects_per_core_budget_overflow(monkeypatch):
         )
 
 
+def test_cb_descriptor_override_uses_matching_per_core_l1_budget(monkeypatch):
+    l1 = object()
+    device = object()
+    reports = SimpleNamespace(
+        get_device_info=lambda _device: SimpleNamespace(
+            address_at_first_l1_cb_buffer=0,
+            cb_limit=256,
+        ),
+        get_buffer_pages=lambda _device: [
+            SimpleNamespace(
+                buffer_type=l1,
+                page_address=128,
+                core_x=0,
+                core_y=0,
+            ),
+            SimpleNamespace(
+                buffer_type=l1,
+                page_address=192,
+                core_x=1,
+                core_y=0,
+            ),
+        ],
+    )
+    fake_ttnn = SimpleNamespace(
+        BufferType=SimpleNamespace(L1=l1),
+        _ttnn=SimpleNamespace(reports=reports),
+    )
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _FakeExplicitCoreRanges(((0, 0), (1, 0)))
+    core_0 = _FakeExplicitCoreRanges(((0, 0), (0, 0)))
+    core_1 = _FakeExplicitCoreRanges(((1, 0), (1, 0)))
+
+    descriptors = kernel_runner.validate_cb_descriptors_override(
+        descriptors=[
+            _fake_cb_descriptor(0, core_0, total_size=96),
+            _fake_cb_descriptor(0, core_1, total_size=160),
+        ],
+        program_core_ranges=program,
+        tensors=[_FakeTensor(device)],
+        num_cbs=1,
+    )
+
+    assert [descriptor.total_size for descriptor in descriptors] == [96, 160]
+
+
 def test_cb_pages_by_core_specializes_selected_ids(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
@@ -633,11 +732,16 @@ def test_cb_pages_by_core_specializes_selected_ids(monkeypatch):
 
     # Uniform descriptors stay first so their base addresses remain identical
     # across cores; specialized descriptors follow.
-    assert [descriptor.total_size for descriptor in descriptors] == [32, 32, 128]
+    assert [descriptor.total_size for descriptor in descriptors] == [
+        32,
+        32,
+        32,
+        128,
+    ]
     assert [
         descriptor.format_descriptors[0].buffer_index
         for descriptor in descriptors
-    ] == [1, 0, 0]
+    ] == [1, 1, 0, 0]
 
 
 def test_cb_pages_by_core_requires_exact_grid_partition(monkeypatch):

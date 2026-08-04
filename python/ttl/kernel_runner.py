@@ -76,6 +76,40 @@ def get_min_remaining_l1_for_device(device):
     return max(0, first_occupied - cb_base)
 
 
+def get_remaining_l1_by_core_for_device(device, core_coordinates):
+    """Return the minimum remaining CB budget for each logical worker core.
+
+    Buffer-page reports include logical core coordinates and device ids.  A
+    mesh may place a different lowest L1 tensor page on the same logical core
+    of different devices, so retain the minimum address across devices for
+    each coordinate without collapsing unrelated cores together.
+    """
+
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+
+    info = ttnn._ttnn.reports.get_device_info(device)
+    cb_base = int(info.address_at_first_l1_cb_buffer)
+    cb_limit = int(info.cb_limit)
+    first_occupied = {
+        tuple(core): cb_limit for core in core_coordinates
+    }
+    for page in ttnn._ttnn.reports.get_buffer_pages(device):
+        if page.buffer_type != ttnn.BufferType.L1:
+            continue
+        core = (int(page.core_x), int(page.core_y))
+        if core in first_occupied:
+            first_occupied[core] = min(
+                first_occupied[core], int(page.page_address)
+            )
+
+    return {
+        core: max(0, address - cb_base)
+        for core, address in first_occupied.items()
+    }
+
+
 @dataclass
 class KernelSpec:
     """Specification for a single kernel to execute.
@@ -560,6 +594,24 @@ def _remaining_cb_budget(tensors: List[Any]) -> int:
     return remaining_bytes
 
 
+def _remaining_cb_budgets_by_core(
+    tensors: List[Any], core_coordinates: set[Tuple[int, int]]
+) -> Dict[Tuple[int, int], int]:
+    """Return device-aware CB budgets without conflating unrelated cores."""
+
+    for tensor in tensors:
+        if tensor is None or not hasattr(tensor, "device"):
+            continue
+        device = tensor.device()
+        if device is not None:
+            return get_remaining_l1_by_core_for_device(
+                device, core_coordinates
+            )
+    return {
+        core: DEFAULT_L1_CB_BUDGET_BYTES for core in core_coordinates
+    }
+
+
 def validate_cb_descriptors_override(
     descriptors: List[Any],
     program_core_ranges: Any,
@@ -666,6 +718,9 @@ def validate_cb_descriptors_override(
         )
 
     budget_bytes = _remaining_cb_budget(tensors)
+    budgets_by_core = _remaining_cb_budgets_by_core(
+        tensors, program_cores
+    )
     if bytes_by_core:
         peak_core, peak_bytes = max(
             bytes_by_core.items(), key=lambda item: (item[1], item[0])
@@ -682,16 +737,28 @@ def validate_cb_descriptors_override(
                     f"{cb_id}:{size}"
                     for cb_id, size in sorted(claim_sizes_by_core[core])
                 )
-                print(f"TTLANG_CB_CORE core={core} bytes={total} {breakdown}")
-        if peak_bytes > budget_bytes:
+                print(
+                    f"TTLANG_CB_CORE core={core} bytes={total} "
+                    f"budget={budgets_by_core[core]} {breakdown}"
+                )
+        overflow_core, overflow_bytes = max(
+            bytes_by_core.items(),
+            key=lambda item: (
+                item[1] - budgets_by_core[item[0]], item[0]
+            ),
+        )
+        overflow_budget = budgets_by_core[overflow_core]
+        if overflow_bytes > overflow_budget:
             breakdown = ", ".join(
                 f"CB[{cb_id}]={size}"
-                for cb_id, size in sorted(claim_sizes_by_core[peak_core])
+                for cb_id, size in sorted(
+                    claim_sizes_by_core[overflow_core]
+                )
             )
             raise ValueError(
                 "Per-core circular buffer descriptor override allocation "
-                f"({peak_bytes} bytes on core {peak_core}) exceeds L1 budget "
-                f"({budget_bytes} bytes). Claims: {breakdown}"
+                f"({overflow_bytes} bytes on core {overflow_core}) exceeds "
+                f"L1 budget ({overflow_budget} bytes). Claims: {breakdown}"
             )
 
     return descriptors
@@ -713,6 +780,34 @@ def _cb_descriptor(index: int, geometry: CBGeometry, total_size: int, core_range
         core_ranges=core_ranges,
         format_descriptors=[cb_format],
     )
+
+
+def _core_ranges_from_coordinates(coordinates: set[Tuple[int, int]]):
+    """Build a compact, deterministic CoreRangeSet for exact coordinates."""
+
+    remaining = set(coordinates)
+    rectangles = []
+    while remaining:
+        start_x, start_y = min(remaining, key=lambda core: (core[1], core[0]))
+        end_x = start_x
+        while (end_x + 1, start_y) in remaining:
+            end_x += 1
+        end_y = start_y
+        while all(
+            (x, end_y + 1) in remaining
+            for x in range(start_x, end_x + 1)
+        ):
+            end_y += 1
+        for y in range(start_y, end_y + 1):
+            for x in range(start_x, end_x + 1):
+                remaining.remove((x, y))
+        rectangles.append(
+            ttnn.CoreRange(
+                ttnn.CoreCoord(start_x, start_y),
+                ttnn.CoreCoord(end_x, end_y),
+            )
+        )
+    return ttnn.CoreRangeSet(rectangles)
 
 
 def build_cb_descriptors_by_core(
@@ -752,8 +847,8 @@ def build_cb_descriptors_by_core(
             raise ValueError(f"per-core CB[{index}] configuration is empty")
 
         covered = set()
-        descriptors = []
         configured_pages = []
+        pages_for_core = {}
         for entry_index, entry in enumerate(entries):
             try:
                 entry_ranges, raw_pages = entry
@@ -785,16 +880,8 @@ def build_cb_descriptors_by_core(
                     f"{sorted(overlap)}"
                 )
             covered.update(entry_cores)
-            geometry = geometries[index]
             configured_pages.append(pages)
-            descriptors.append(
-                _cb_descriptor(
-                    index,
-                    geometry,
-                    pages * geometry.page_size,
-                    entry_ranges,
-                )
-            )
+            pages_for_core.update({core: pages for core in entry_cores})
         if covered != program_cores:
             raise ValueError(
                 f"per-core CB[{index}] must cover the whole program grid; "
@@ -806,20 +893,50 @@ def build_cb_descriptors_by_core(
                 f"maximum of {geometries[index].num_pages} pages; got "
                 f"{max(configured_pages)}"
             )
-        specialized[index] = descriptors
+        specialized[index] = pages_for_core
 
-    # Allocate uniform whole-grid descriptors first.  A specialized capacity
-    # may move the addresses of descriptors allocated after it differently on
-    # different cores; keeping all defaults first preserves their uniform
-    # bases.  Mapping insertion order is then significant: put any specialized
-    # CB whose base is remotely addressed before variable-sized local-only CBs.
-    descriptors = [
-        _cb_descriptor(index, geometry, geometry.total_size, core_ranges)
-        for index, geometry in enumerate(geometries)
-        if index not in specialized
+    # TT-Metal keeps one allocation cursor per descriptor CoreRange. A single
+    # whole-grid descriptor overlaps every later specialized subset and makes
+    # that whole-grid cursor conservatively accumulate all subset capacities.
+    # Refine every descriptor onto one common disjoint partition instead.
+    # Uniform descriptors still receive identical sizes in identical order on
+    # every partition, preserving the common bases required by remote users.
+    specialized_indices = tuple(specialized)
+    cores_by_signature = {}
+    for core in sorted(program_cores):
+        signature = tuple(
+            specialized[index][core] for index in specialized_indices
+        )
+        cores_by_signature.setdefault(signature, set()).add(core)
+    partitions = [
+        (signature, _core_ranges_from_coordinates(coordinates))
+        for signature, coordinates in cores_by_signature.items()
     ]
-    for index in specialized:
-        descriptors.extend(specialized[index])
+
+    descriptors = []
+    for index, geometry in enumerate(geometries):
+        if index in specialized:
+            continue
+        for _, partition_ranges in partitions:
+            descriptors.append(
+                _cb_descriptor(
+                    index,
+                    geometry,
+                    geometry.total_size,
+                    partition_ranges,
+                )
+            )
+    for signature_position, index in enumerate(specialized_indices):
+        geometry = geometries[index]
+        for signature, partition_ranges in partitions:
+            descriptors.append(
+                _cb_descriptor(
+                    index,
+                    geometry,
+                    signature[signature_position] * geometry.page_size,
+                    partition_ranges,
+                )
+            )
     return validate_cb_descriptors_override(
         descriptors=descriptors,
         program_core_ranges=core_ranges,
