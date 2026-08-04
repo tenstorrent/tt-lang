@@ -36,6 +36,32 @@ namespace mlir::tt::ttl {
 LogicalResult validateComputeTileType(ttcore::TileType tileType,
                                       std::string &failureReason);
 
+/// Validate a tile used by a compute region containing block matmul.
+///
+/// Matmul configures the FPU for the additional 1x32, 2x32, 4x32, and 8x32
+/// dimensions. Other operations fused into the region use that configuration.
+LogicalResult validateMatmulKernelTileType(ttcore::TileType tileType,
+                                           std::string &failureReason);
+
+/// Validate the element data types and physical tile dimensions of a matmul.
+///
+/// This is the target-independent type relation. For `lhs @ rhs`, the lhs tile
+/// width equals the rhs tile height and the result tile dimensions are
+/// `[lhs.height, rhs.width]`. With `transposeRhs`, the rhs width is contracted
+/// and the result width is the rhs height.
+LogicalResult verifyMatmulTileTypes(ttcore::TileType lhsType,
+                                    ttcore::TileType rhsType,
+                                    ttcore::TileType resultType,
+                                    bool transposeRhs,
+                                    std::string &failureReason);
+
+/// Validate a compatible matmul tile triple against the current compute LLKs.
+LogicalResult validateMatmulComputeTileTypes(ttcore::TileType lhsType,
+                                             ttcore::TileType rhsType,
+                                             ttcore::TileType resultType,
+                                             bool transposeRhs,
+                                             std::string &failureReason);
+
 /// Return the enclosing kernel-thread `func.func` (tagged with
 /// `ttl.kernel_thread`), or null if `op` is not inside one.
 inline mlir::func::FuncOp getEnclosingKernelThread(mlir::Operation *op) {

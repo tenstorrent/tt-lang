@@ -36,6 +36,31 @@ bool isBFPDataType(ttcore::DataType dataType) {
   }
 }
 
+bool hasTileShape(ttcore::TileType tileType, int64_t height, int64_t width) {
+  return tileType.getHeight() == height && tileType.getWidth() == width;
+}
+
+LogicalResult validateComputeTileDataType(ttcore::TileType tileType,
+                                          std::string &failureReason) {
+  constexpr std::array<int64_t, 2> defaultTileShape =
+      ttcore::TileType::getDefaultShape();
+  // Blackhole BFP8/BFP4 add corrupts 16 output elements at 16x32; 16x16,
+  // 32x16, and 32x32 produce correct results. Keep a conservative
+  // target-independent restriction until packing support is represented per
+  // target.
+  if (isBFPDataType(tileType.getDataType()) &&
+      (tileType.getHeight() != defaultTileShape[0] ||
+       tileType.getWidth() != defaultTileShape[1])) {
+    llvm::raw_string_ostream diagnostic(failureReason);
+    diagnostic << "TT-Lang supports BFP compute tiles only with "
+               << defaultTileShape[0] << "x" << defaultTileShape[1]
+               << " dimensions, got " << tileType.getHeight() << "x"
+               << tileType.getWidth();
+    return failure();
+  }
+  return success();
+}
+
 } // namespace
 
 LogicalResult validateComputeTileType(ttcore::TileType tileType,
@@ -50,19 +75,107 @@ LogicalResult validateComputeTileType(ttcore::TileType tileType,
     return failure();
   }
 
-  constexpr std::array<int64_t, 2> defaultTileShape =
-      ttcore::TileType::getDefaultShape();
-  // Blackhole BFP8/BFP4 add corrupts 16 output elements at 16x32; 16x16,
-  // 32x16, and 32x32 produce correct results. Keep a conservative
-  // target-independent restriction until packing support is represented per
-  // target.
-  if (isBFPDataType(tileType.getDataType()) &&
-      (tileType.getHeight() != defaultTileShape[0] ||
-       tileType.getWidth() != defaultTileShape[1])) {
-    diagnostic << "TT-Lang supports BFP compute tiles only with "
-               << defaultTileShape[0] << "x" << defaultTileShape[1]
-               << " dimensions, got " << tileType.getHeight() << "x"
-               << tileType.getWidth();
+  return validateComputeTileDataType(tileType, failureReason);
+}
+
+LogicalResult validateMatmulKernelTileType(ttcore::TileType tileType,
+                                           std::string &failureReason) {
+  failureReason.clear();
+  if (!hasTileShape(tileType, 1, 32) && !hasTileShape(tileType, 2, 32) &&
+      !hasTileShape(tileType, 4, 32) && !hasTileShape(tileType, 8, 32) &&
+      !ttcore::TileType::isLLKSupportedShape(tileType.getShape())) {
+    llvm::raw_string_ostream diagnostic(failureReason);
+    diagnostic << "tile shape " << tileType.getHeight() << "x"
+               << tileType.getWidth()
+               << " is not supported by compute kernels containing matmul; "
+                  "supported shapes are 1x32, 2x32, 4x32, 8x32, 16x16, "
+                  "16x32, 32x16, and 32x32";
+    return failure();
+  }
+  return validateComputeTileDataType(tileType, failureReason);
+}
+
+LogicalResult verifyMatmulTileTypes(ttcore::TileType lhsType,
+                                    ttcore::TileType rhsType,
+                                    ttcore::TileType resultType,
+                                    bool transposeRhs,
+                                    std::string &failureReason) {
+  failureReason.clear();
+  llvm::raw_string_ostream diagnostic(failureReason);
+  if (lhsType.getDataType() != rhsType.getDataType()) {
+    diagnostic << "element data type mismatch: lhs has " << lhsType
+               << " but rhs has " << rhsType;
+    return failure();
+  }
+  if (resultType.getDataType() != lhsType.getDataType()) {
+    diagnostic << "result element data type " << resultType
+               << " must match input element data type " << lhsType;
+    return failure();
+  }
+
+  int64_t rhsK = transposeRhs ? rhsType.getWidth() : rhsType.getHeight();
+  if (lhsType.getWidth() != rhsK) {
+    diagnostic << "tile K dimension mismatch: lhs tile width "
+               << lhsType.getWidth() << " does not match rhs tile "
+               << (transposeRhs ? "width " : "height ") << rhsK;
+    return failure();
+  }
+
+  int64_t expectedResultWidth =
+      transposeRhs ? rhsType.getHeight() : rhsType.getWidth();
+  if (resultType.getHeight() != lhsType.getHeight() ||
+      resultType.getWidth() != expectedResultWidth) {
+    diagnostic << "result tile dimensions " << resultType.getHeight() << "x"
+               << resultType.getWidth() << " do not match expected "
+               << lhsType.getHeight() << "x" << expectedResultWidth;
+    return failure();
+  }
+  return success();
+}
+
+LogicalResult validateMatmulComputeTileTypes(ttcore::TileType lhsType,
+                                             ttcore::TileType rhsType,
+                                             ttcore::TileType resultType,
+                                             bool transposeRhs,
+                                             std::string &failureReason) {
+  if (failed(verifyMatmulTileTypes(lhsType, rhsType, resultType, transposeRhs,
+                                   failureReason))) {
+    return failure();
+  }
+
+  for (auto [role, tileType] : llvm::zip_equal(
+           std::array<llvm::StringLiteral, 3>{"lhs", "rhs", "result"},
+           std::array<ttcore::TileType, 3>{lhsType, rhsType, resultType})) {
+    std::string tileFailureReason;
+    if (failed(validateMatmulKernelTileType(tileType, tileFailureReason))) {
+      failureReason = (role + " " + tileFailureReason).str();
+      return failure();
+    }
+  }
+
+  if (hasTileShape(lhsType, 16, 16)) {
+    failureReason = "matmul lhs tile dimensions 16x16 are not implemented by "
+                    "the current compute LLKs";
+    return failure();
+  }
+  if (!hasTileShape(rhsType, 32, 32) && !hasTileShape(rhsType, 32, 16) &&
+      !hasTileShape(rhsType, 16, 32)) {
+    llvm::raw_string_ostream diagnostic(failureReason);
+    diagnostic << "matmul rhs tile dimensions " << rhsType.getHeight() << "x"
+               << rhsType.getWidth()
+               << " are not implemented by the current compute LLKs; "
+                  "supported rhs dimensions are 16x32, 32x16, and 32x32";
+    return failure();
+  }
+  if (transposeRhs && hasTileShape(rhsType, 32, 16)) {
+    failureReason = "matmul rhs tile dimensions 32x16 do not support "
+                    "transpose_rhs in the current compute LLKs";
+    return failure();
+  }
+  if (transposeRhs && hasTileShape(lhsType, 32, 32) &&
+      hasTileShape(rhsType, 16, 32)) {
+    failureReason = "matmul tile dimensions lhs 32x32 and rhs 16x32 do not "
+                    "support transpose_rhs in the current compute LLKs";
     return failure();
   }
   return success();
