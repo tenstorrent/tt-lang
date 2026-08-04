@@ -104,8 +104,8 @@ def elementwise_broadcast_reduce(
             c_xf.wait()
             d_xf.wait()
 
-            # End of "with" scope:
-            # Push c_blk and d_blk to make them ready for elwise_compute
+            # End of "with" scope: c_blk and d_blk are pushed implicitly, which makes
+            # them ready for elwise_compute
 
         for n_block in range(N_BLOCKS):
 
@@ -129,8 +129,8 @@ def elementwise_broadcast_reduce(
                 a_xf.wait()
                 b_xf.wait()
 
-                # End of "with" scope:
-                # Push a_blk and b_blk to make them ready for elwise_compute
+                # End of "with" scope: a_blk and b_blk are pushed implicitly, which makes
+                # them ready for elwise_compute
 
     @ttl.compute()
     def elwise_compute():
@@ -205,16 +205,15 @@ def elementwise_broadcast_reduce(
                     # Accumulate-add partial z_final
                     z_final += z_partial
 
-                    # End of "with" scope:
-                    # Pop a_blk and b_dfb to make them available for elwise_read to load and push next blocks;
-                    # Push y_blk to make it ready for elwise_write
+                    # End of "with" scope: a_blk and b_blk are popped implicitly, which makes
+                    # them available for elwise_read to load and push the next blocks, and
+                    # y_blk is pushed implicitly, which makes it ready for elwise_write
 
             # Store z_final
             z_blk.store(z_final)
 
-            # End of "with" scope:
-            # Pop c_blk and d_blk;
-            # Push z_blk to make it ready for elwise_write
+            # End of "with" scope: c_blk and d_blk are popped implicitly, and z_blk is
+            # pushed implicitly, which makes it ready for elwise_write
 
     @ttl.datamovement()
     def elwise_write():
@@ -228,8 +227,7 @@ def elementwise_broadcast_reduce(
             z_xf = ttl.copy(z_blk, z[0, :])
             z_xf.wait()
 
-            # End of "with" scope:
-            # Pop z_blk
+            # End of "with" scope: z_blk is popped implicitly
 
         for n_block in range(N_BLOCKS):
             n_slice = slice(n_block * N_BLOCK_SIZE, (n_block + 1) * N_BLOCK_SIZE)
@@ -243,8 +241,8 @@ def elementwise_broadcast_reduce(
                 y_xf = ttl.copy(y_blk, y[n_slice, :])
                 y_xf.wait()
 
-                # End of "with" scope:
-                # Pop y_blk to make it available for elwise_compute to store and push next block
+                # End of "with" scope: y_blk is popped implicitly, which makes it available
+                # for elwise_compute to store and push the next block
 
     # spec:end
 

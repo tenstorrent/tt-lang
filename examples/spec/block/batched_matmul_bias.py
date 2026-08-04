@@ -94,8 +94,8 @@ def batched_matmul_bias(
                         c_xf = ttl.copy(c[m_slice, n_slice], c_blk)
                         c_xf.wait()
 
-                        # End of "with" scope:
-                        # Push c_blk to make it ready for matmul_compute
+                        # End of "with" scope: c_blk is pushed implicitly, which makes it
+                        # ready for matmul_compute
 
                     # Repeat for each K block
                     for k_block in range(K_BLOCKS):
@@ -116,8 +116,8 @@ def batched_matmul_bias(
                             a_xf.wait()
                             b_xf.wait()
 
-                            # End of "with" scope:
-                            # Push a_blk and b_blk to make it ready for matmul_compute
+                            # End of "with" scope: a_blk and b_blk are pushed implicitly,
+                            # which makes them ready for matmul_compute
 
     @ttl.compute()
     def matmul_compute():
@@ -154,8 +154,9 @@ def batched_matmul_bias(
                                 # L_BLOCK_SIZE×K_BLOCK_SIZE×N_BLOCK_SIZE b_bcast in y_final
                                 y_final += a_blk @ b_bcast
 
-                                # End of "with" scope:
-                                # Pop a_blk and b_blk to make them available for matmul_read to load and push next blocks
+                                # End of "with" scope: a_blk and b_blk are popped implicitly,
+                                # which makes them available for matmul_read to load and push
+                                # the next blocks
 
                         # Wait for c_blk to be loaded and pushed by matmul_read
                         with c_dfb.wait() as c_blk:
@@ -171,13 +172,13 @@ def batched_matmul_bias(
 
                             y_final = y_final + c_bcast
 
-                            # End of "with" scope:
-                            # Pop c_blk to make it available for matmul_read to load and push next block
+                            # End of "with" scope: c_blk is popped implicitly, which makes it
+                            # available for matmul_read to load and push the next block
 
                         y_blk.store(y_final)
 
-                        # End of "with" scope:
-                        # Push y_blk to make it ready for matmul_write
+                        # End of "with" scope: y_blk is pushed implicitly, which makes it
+                        # ready for matmul_write
 
     @ttl.datamovement()
     def matmul_write():
@@ -199,8 +200,8 @@ def batched_matmul_bias(
                         )
                         y_xf.wait()
 
-                        # End of "with" scope:
-                        # Pop y_blk to make it available for matmul_compute to store and push next block
+                        # End of "with" scope: y_blk is popped implicitly, which makes it
+                        # available for matmul_compute to store and push the next block
 
     # spec:end
 
