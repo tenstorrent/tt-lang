@@ -442,9 +442,10 @@ class MemoryConfig:
 
         st = strategy if strategy is not None else (args[0] if len(args) == 1 else None)
         if st is None:
-            raise TypeError(
-                "MemoryConfig requires strategy=... or (TensorMemoryLayout, BufferType, ShardSpec|NdShardSpec)"
-            )
+            # ttnn's arguments all have defaults and its default config is an
+            # interleaved one, which is also what a tensor gets when no config
+            # is named.
+            st = ShardingStrategy.INTERLEAVED
         layout_tt = tensor_memory_layout
         if isinstance(st, TensorMemoryLayout):
             # ttnn's first argument is the memory layout and it has no separate
@@ -459,6 +460,27 @@ class MemoryConfig:
         self.nd_shard_spec = nd_shard_spec
         self.buffer_type = buffer_type
         self.tensor_memory_layout = layout_tt
+
+    @property
+    def memory_layout(self) -> TensorMemoryLayout:
+        """How the tensor is laid out over memory, under ttnn's name for it.
+
+        Always answers, including for a config built the simulator's way with a
+        strategy: the two say the same thing, so the layout can be read back
+        from the strategy.
+        """
+        if self.tensor_memory_layout is not None:
+            return self.tensor_memory_layout
+        return _sharding_strategy_to_tensor_memory_layout(self.strategy)
+
+    def is_sharded(self) -> bool:
+        """Whether the tensor is sharded rather than interleaved, as ttnn asks."""
+        return self.strategy != ShardingStrategy.INTERLEAVED
+
+    @property
+    def interleaved(self) -> bool:
+        """The complement of :meth:`is_sharded`, as ttnn reports it."""
+        return not self.is_sharded()
 
     def __eq__(self, other: object) -> bool:
         match other:
@@ -481,16 +503,28 @@ class MemoryConfig:
         )
 
 
+_LAYOUT_TO_STRATEGY: Dict[TensorMemoryLayout, ShardingStrategy] = {
+    TensorMemoryLayout.INTERLEAVED: ShardingStrategy.INTERLEAVED,
+    TensorMemoryLayout.HEIGHT_SHARDED: ShardingStrategy.HEIGHT_SHARDED,
+    TensorMemoryLayout.WIDTH_SHARDED: ShardingStrategy.WIDTH_SHARDED,
+    TensorMemoryLayout.BLOCK_SHARDED: ShardingStrategy.BLOCK_SHARDED,
+    TensorMemoryLayout.ND_SHARDED: ShardingStrategy.ND_SHARDED,
+}
+
+
 def _tensor_memory_layout_to_sharding_strategy(
     layout: TensorMemoryLayout,
 ) -> ShardingStrategy:
-    return {
-        TensorMemoryLayout.INTERLEAVED: ShardingStrategy.INTERLEAVED,
-        TensorMemoryLayout.HEIGHT_SHARDED: ShardingStrategy.HEIGHT_SHARDED,
-        TensorMemoryLayout.WIDTH_SHARDED: ShardingStrategy.WIDTH_SHARDED,
-        TensorMemoryLayout.BLOCK_SHARDED: ShardingStrategy.BLOCK_SHARDED,
-        TensorMemoryLayout.ND_SHARDED: ShardingStrategy.ND_SHARDED,
-    }[layout]
+    return _LAYOUT_TO_STRATEGY[layout]
+
+
+def _sharding_strategy_to_tensor_memory_layout(
+    strategy: ShardingStrategy,
+) -> TensorMemoryLayout:
+    for layout, mapped in _LAYOUT_TO_STRATEGY.items():
+        if mapped == strategy:
+            return layout
+    raise ValueError(f"no memory layout stands for {strategy!r}")
 
 
 @dataclass(kw_only=True)
@@ -861,6 +895,12 @@ def _nd_shard_spec_for_dims(
     )
 
 
+# Stands in for "no config was named", so that a spec can fill in the one its
+# own layout and buffer describe.  Never reaches a caller: every spec replaces
+# it in __post_init__.
+_DERIVE_MEMORY_CONFIG = MemoryConfig(TensorMemoryLayout.INTERLEAVED)
+
+
 @dataclass(frozen=True)
 class TensorSpec:
     """Tensor shape/dtype/layout/buffer metadata with optional sharding (ttnn API).
@@ -878,11 +918,27 @@ class TensorSpec:
     layout: IndexType = TILE_LAYOUT
     buffer_type: BufferType = BufferType.DRAM
     memory_layout: TensorMemoryLayout = TensorMemoryLayout.INTERLEAVED
-    memory_config: Optional[MemoryConfig] = None
+    # The factory hands back the one sentinel, which __post_init__ recognises;
+    # a dataclass will not take an unhashable default any other way.
+    memory_config: MemoryConfig = field(default_factory=lambda: _DERIVE_MEMORY_CONFIG)
     core_ranges: Optional[CoreRangeSet] = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "shape", Shape(self.shape))
+        # An unsharded spec still describes memory, and ttnn's TensorSpec always
+        # answers with a config, so build the one this spec's layout and buffer
+        # name rather than leaving a None for the caller to reach through.
+        if self.memory_config is _DERIVE_MEMORY_CONFIG:
+            object.__setattr__(
+                self,
+                "memory_config",
+                MemoryConfig(self.memory_layout, self.buffer_type),
+            )
+
+    @property
+    def tile(self) -> Tile:
+        """The tile the stored data is cut into, as ttnn's spec reports it."""
+        return _DEFAULT_TILE
 
     def height_sharded(self, core_ranges: CoreRangeSet) -> TensorSpec:
         """2-D height sharding: collapse leading dims to height, shard along height."""
@@ -2755,9 +2811,7 @@ def from_torch(
             )
         layout = spec.layout
         eff_dtype = spec.dtype if dtype is None else dtype
-        eff_mc = (
-            spec.memory_config if spec.memory_config is not None else DRAM_MEMORY_CONFIG
-        )
+        eff_mc = spec.memory_config
     else:
         eff_dtype = dtype
         eff_mc = memory_config if memory_config is not None else DRAM_MEMORY_CONFIG

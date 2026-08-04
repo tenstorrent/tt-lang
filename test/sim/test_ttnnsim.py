@@ -2328,6 +2328,43 @@ class TestShardingTypes:
         assert ttnn.L1_MEMORY_CONFIG.buffer_type == ttnn.BufferType.L1
         assert ttnn.DRAM_MEMORY_CONFIG != ttnn.L1_MEMORY_CONFIG
 
+    def test_a_config_answers_whether_it_is_sharded(self) -> None:
+        """A config reports its layout and whether it shards, under ttnn's names.
+
+        ttnn asks a config these directly, and answers for any config: the
+        simulator's own spelling names a sharding strategy instead of a memory
+        layout, and the two say the same thing.
+        """
+        interleaved = MemoryConfig()
+        assert interleaved.memory_layout == TensorMemoryLayout.INTERLEAVED
+        assert interleaved.buffer_type == ttnn.BufferType.DRAM
+        assert not interleaved.is_sharded()
+        assert interleaved.interleaved
+
+        block = MemoryConfig(strategy=ShardingStrategy.BLOCK_SHARDED)
+        assert block.memory_layout == TensorMemoryLayout.BLOCK_SHARDED
+        assert block.is_sharded()
+        assert not block.interleaved
+
+    def test_a_spec_always_describes_its_memory(self) -> None:
+        """An unsharded spec reports a config too, as ttnn's does.
+
+        Answering None means every reader has to know whether a spec was
+        sharded before it can ask where the tensor lives.
+        """
+        spec = TensorSpec(shape=(64, 64), buffer_type=ttnn.BufferType.L1)
+
+        assert spec.memory_config.memory_layout == TensorMemoryLayout.INTERLEAVED
+        assert spec.memory_config.buffer_type == ttnn.BufferType.L1
+        assert not spec.memory_config.is_sharded()
+        assert spec.tile == ttnn.Tile()
+
+        # And sharding it keeps the config the sharding built, shard spec and all.
+        cores = ttnn.num_cores_to_corerangeset(4, [8, 8])
+        sharded = spec.height_sharded(cores)
+        assert sharded.memory_config.is_sharded()
+        assert sharded.memory_config.shard_spec is not None
+
     def test_a_memory_layout_names_the_strategy_it_stands_for(self) -> None:
         """A config spelled ttnn's way reports a ShardingStrategy.
 
