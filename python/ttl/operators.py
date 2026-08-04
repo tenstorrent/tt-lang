@@ -846,11 +846,41 @@ def _build_matmul(lhs: TensorBlock, rhs: TensorBlock, *, transpose_rhs: bool):
             f"matmul K dimension mismatch: lhs has {lhs_shape[1]} columns but "
             f"rhs has {rhs_k} {'columns' if transpose else 'rows'}"
         )
+
+    from ttl.dialects import ttcore
+
+    lhs_tile = ttcore.ir.TileType.maybe_downcast(lhs_type.element_type)
+    rhs_tile = ttcore.ir.TileType.maybe_downcast(rhs_type.element_type)
+    if lhs_tile is None or rhs_tile is None:
+        raise ValueError(
+            "matmul requires tile-typed operands, got "
+            f"lhs={lhs_type.element_type}, rhs={rhs_type.element_type}"
+        )
+    lhs_dtype = ttcore.DataType(lhs_tile.data_type_as_int)
+    rhs_dtype = ttcore.DataType(rhs_tile.data_type_as_int)
+    if lhs_dtype != rhs_dtype:
+        raise ValueError(
+            "matmul operand tile data types must match, got "
+            f"lhs={lhs_type.element_type}, rhs={rhs_type.element_type}"
+        )
+
+    lhs_tile_height, lhs_tile_width = map(int, lhs_tile.shape)
+    rhs_tile_height, rhs_tile_width = map(int, rhs_tile.shape)
+    rhs_tile_k = rhs_tile_width if transpose else rhs_tile_height
+    if lhs_tile_width != rhs_tile_k:
+        raise ValueError(
+            "matmul tile K dimension mismatch: lhs tile width "
+            f"{lhs_tile_width} does not match rhs tile "
+            f"{'width' if transpose else 'height'} {rhs_tile_k}"
+        )
+
     n = rhs_shape[0] if transpose else rhs_shape[1]
     result_shape = [lhs_shape[0], n]
-    result_type = RankedTensorType.get(
-        result_shape, lhs_type.element_type, lhs_type.encoding
+    result_tile_width = rhs_tile_height if transpose else rhs_tile_width
+    result_tile = ttcore.ir.TileType.get(
+        lhs_type.context, lhs_tile_height, result_tile_width, lhs_dtype
     )
+    result_type = RankedTensorType.get(result_shape, result_tile, lhs_type.encoding)
     if transpose:
         return ttl.matmul(result_type, lhs, rhs, transpose_rhs=True)
     return ttl.matmul(result_type, lhs, rhs)

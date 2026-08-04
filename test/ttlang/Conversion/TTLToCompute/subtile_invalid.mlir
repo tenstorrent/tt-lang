@@ -78,3 +78,108 @@ func.func @direct_unsupported_bfp_dimensions(
         tensor<1x1x!ttcore.tile<16x32, bfp_bf8>>
   func.return
 }
+
+// -----
+
+// Matmul validates operation-specific LLK restrictions before creating a
+// compute region.
+func.func @matmul_unsupported_lhs_dimensions(
+    %lhs_argument: tensor<1x1x!ttcore.tile<16x16, bf16>>,
+    %rhs_argument: tensor<1x1x!ttcore.tile<16x32, bf16>>) {
+  %lhs_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<16x16, bf16>, 1>
+  %rhs_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<16x32, bf16>, 1>
+  %output_dfb = ttl.bind_cb {cb_index = 2, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<16x32, bf16>, 1>
+  %lhs = ttl.attach_cb %lhs_argument, %lhs_dfb
+      : (tensor<1x1x!ttcore.tile<16x16, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<16x16, bf16>, 1>)
+        -> tensor<1x1x!ttcore.tile<16x16, bf16>>
+  %rhs = ttl.attach_cb %rhs_argument, %rhs_dfb
+      : (tensor<1x1x!ttcore.tile<16x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<16x32, bf16>, 1>)
+        -> tensor<1x1x!ttcore.tile<16x32, bf16>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[1, 1], !ttcore.tile<16x32, bf16>, 1>
+        -> tensor<1x1x!ttcore.tile<16x32, bf16>>
+  // expected-error @below {{'ttl.matmul' op matmul lhs tile dimensions 16x16 are not implemented by the current compute LLKs}}
+  %result = ttl.matmul %lhs, %rhs
+      : tensor<1x1x!ttcore.tile<16x16, bf16>>,
+        tensor<1x1x!ttcore.tile<16x32, bf16>>
+        -> tensor<1x1x!ttcore.tile<16x32, bf16>>
+  ttl.store %result, %output
+      : tensor<1x1x!ttcore.tile<16x32, bf16>>,
+        tensor<1x1x!ttcore.tile<16x32, bf16>>
+  func.return
+}
+
+// -----
+
+// Transposed matmul validates the rhs tile restriction before creating a
+// compute region.
+func.func @matmul_unsupported_transposed_rhs_dimensions(
+    %lhs_argument: tensor<1x1x!ttcore.tile<32x16, bf16>>,
+    %rhs_argument: tensor<1x1x!ttcore.tile<32x16, bf16>>) {
+  %lhs_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x16, bf16>, 1>
+  %rhs_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x16, bf16>, 1>
+  %output_dfb = ttl.bind_cb {cb_index = 2, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  %lhs = ttl.attach_cb %lhs_argument, %lhs_dfb
+      : (tensor<1x1x!ttcore.tile<32x16, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x16, bf16>, 1>)
+        -> tensor<1x1x!ttcore.tile<32x16, bf16>>
+  %rhs = ttl.attach_cb %rhs_argument, %rhs_dfb
+      : (tensor<1x1x!ttcore.tile<32x16, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x16, bf16>, 1>)
+        -> tensor<1x1x!ttcore.tile<32x16, bf16>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  // expected-error @below {{'ttl.matmul' op matmul rhs tile dimensions 32x16 do not support transpose_rhs in the current compute LLKs}}
+  %result = ttl.matmul %lhs, %rhs {transpose_rhs}
+      : tensor<1x1x!ttcore.tile<32x16, bf16>>,
+        tensor<1x1x!ttcore.tile<32x16, bf16>>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %result, %output
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+        tensor<1x1x!ttcore.tile<32x32, bf16>>
+  func.return
+}
+
+// -----
+
+// Transposed matmul validates the unsupported 32x32-by-16x32 tile
+// configuration before creating a compute region.
+func.func @matmul_unsupported_transposed_tile_configuration(
+    %lhs_argument: tensor<1x1x!ttcore.tile<32x32, bf16>>,
+    %rhs_argument: tensor<1x1x!ttcore.tile<16x32, bf16>>) {
+  %lhs_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  %rhs_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<16x32, bf16>, 1>
+  %output_dfb = ttl.bind_cb {cb_index = 2, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x16, bf16>, 1>
+  %lhs = ttl.attach_cb %lhs_argument, %lhs_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %rhs = ttl.attach_cb %rhs_argument, %rhs_dfb
+      : (tensor<1x1x!ttcore.tile<16x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<16x32, bf16>, 1>)
+        -> tensor<1x1x!ttcore.tile<16x32, bf16>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[1, 1], !ttcore.tile<32x16, bf16>, 1>
+        -> tensor<1x1x!ttcore.tile<32x16, bf16>>
+  // expected-error @below {{'ttl.matmul' op matmul tile dimensions lhs 32x32 and rhs 16x32 do not support transpose_rhs in the current compute LLKs}}
+  %result = ttl.matmul %lhs, %rhs {transpose_rhs}
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+        tensor<1x1x!ttcore.tile<16x32, bf16>>
+        -> tensor<1x1x!ttcore.tile<32x16, bf16>>
+  ttl.store %result, %output
+      : tensor<1x1x!ttcore.tile<32x16, bf16>>,
+        tensor<1x1x!ttcore.tile<32x16, bf16>>
+  func.return
+}

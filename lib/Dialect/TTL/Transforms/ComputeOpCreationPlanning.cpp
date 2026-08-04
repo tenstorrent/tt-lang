@@ -1011,7 +1011,77 @@ static std::string formatTensorOfTilesDiagnostic(StringRef role, Type type) {
 }
 
 static std::optional<PlanningDiagnostic>
+validateMatmulComputeTypes(MatmulOp matmul) {
+  auto lhsType = cast<RankedTensorType>(matmul.getLhs().getType());
+  auto rhsType = cast<RankedTensorType>(matmul.getRhs().getType());
+  auto resultType = cast<RankedTensorType>(matmul.getResult().getType());
+  auto lhsTileType = dyn_cast<ttcore::TileType>(lhsType.getElementType());
+  auto rhsTileType = dyn_cast<ttcore::TileType>(rhsType.getElementType());
+  auto resultTileType = dyn_cast<ttcore::TileType>(resultType.getElementType());
+  if (!lhsTileType || !rhsTileType || !resultTileType) {
+    return PlanningDiagnostic{
+        matmul, "matmul operands and result must be tensors of ttcore.tile "
+                "elements"};
+  }
+
+  std::string failureReason;
+  if (failed(validateMatmulComputeTileTypes(
+          lhsTileType, rhsTileType, resultTileType, matmul.getTransposeRhs(),
+          failureReason))) {
+    return PlanningDiagnostic{matmul, std::move(failureReason)};
+  }
+  return std::nullopt;
+}
+
+static std::optional<PlanningDiagnostic>
+validatePlannedMatmuls(const ComputeOpCreationPlan &plan,
+                       bool &containsMatmul) {
+  DenseSet<Operation *> validatedMatmuls;
+  auto validateMatmul =
+      [&](MatmulOp matmul) -> std::optional<PlanningDiagnostic> {
+    containsMatmul = true;
+    if (!validatedMatmuls.insert(matmul.getOperation()).second) {
+      return std::nullopt;
+    }
+    return validateMatmulComputeTypes(matmul);
+  };
+
+  if (auto matmul = dyn_cast<MatmulOp>(plan.source)) {
+    if (std::optional<PlanningDiagnostic> diagnostic = validateMatmul(matmul)) {
+      return diagnostic;
+    }
+  }
+  for (const FusedOperationPlan &operationPlan : plan.fusedOperations) {
+    if (auto matmul = dyn_cast<MatmulOp>(operationPlan.source)) {
+      if (std::optional<PlanningDiagnostic> diagnostic =
+              validateMatmul(matmul)) {
+        return diagnostic;
+      }
+    }
+    if (operationPlan.foldedMatmul) {
+      if (std::optional<PlanningDiagnostic> diagnostic =
+              validateMatmul(*operationPlan.foldedMatmul)) {
+        return diagnostic;
+      }
+    }
+  }
+  return std::nullopt;
+}
+
+static std::optional<PlanningDiagnostic>
 recordComputeTileTypes(ComputeOpCreationPlan &plan) {
+  bool containsMatmul = false;
+  if (std::optional<PlanningDiagnostic> diagnostic =
+          validatePlannedMatmuls(plan, containsMatmul)) {
+    return diagnostic;
+  }
+  auto validateTileType = [&](ttcore::TileType tileType,
+                              std::string &failureReason) {
+    return containsMatmul
+               ? validateMatmulKernelTileType(tileType, failureReason)
+               : validateComputeTileType(tileType, failureReason);
+  };
+
   auto resultTileType =
       dyn_cast<ttcore::TileType>(plan.resultType.getElementType());
   if (!resultTileType) {
@@ -1022,7 +1092,7 @@ recordComputeTileTypes(ComputeOpCreationPlan &plan) {
   plan.resultTileType = resultTileType;
 
   std::string failureReason;
-  if (failed(validateComputeTileType(resultTileType, failureReason))) {
+  if (failed(validateTileType(resultTileType, failureReason))) {
     return PlanningDiagnostic{plan.source, "compute result " + failureReason};
   }
 
@@ -1039,15 +1109,14 @@ recordComputeTileTypes(ComputeOpCreationPlan &plan) {
                                                         : input.getType())};
     }
     plan.inputTileTypes.push_back(inputTileType);
-    if (failed(validateComputeTileType(inputTileType, failureReason))) {
+    if (failed(validateTileType(inputTileType, failureReason))) {
       return PlanningDiagnostic{plan.source, "compute input " +
                                                  std::to_string(inputIndex) +
                                                  " " + failureReason};
     }
   }
   for (const FusedOperationPlan &operationPlan : plan.fusedOperations) {
-    if (failed(validateComputeTileType(operationPlan.resultTileType,
-                                       failureReason))) {
+    if (failed(validateTileType(operationPlan.resultTileType, failureReason))) {
       return PlanningDiagnostic{operationPlan.source,
                                 "fused compute result " + failureReason};
     }

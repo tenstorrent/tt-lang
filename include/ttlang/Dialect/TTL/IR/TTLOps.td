@@ -1382,7 +1382,11 @@ def TTL_MatmulOp : TTL_Op<"matmul", [Pure,
     rhs[j, k]). The inner (K) dimensions then match as lhs.shape[1] ==
     rhs.shape[1], and the result shape is [lhs.shape[0], rhs.shape[0]].
 
-    Lowered to ttl.compute with ttl.tile_matmul_block by convert-ttl-to-compute.
+    Operand tile dimensions follow the same matrix relation. Without
+    `transpose_rhs`, `lhs.tile.width == rhs.tile.height` and the result tile is
+    `[lhs.tile.height, rhs.tile.width]`. With `transpose_rhs`, the rhs tile
+    width is contracted and the result tile width is the rhs tile height.
+    Operand and result tile element data types must match.
   }];
   let arguments = (ins AnyRankedTensor:$lhs, AnyRankedTensor:$rhs,
                        UnitAttr:$transpose_rhs);
@@ -1412,6 +1416,9 @@ def TTL_TileMatmulBlockOp : TTL_TileOp<"tile_matmul_block",
     transposed per-K addressing during TTKernel lowering.
 
     Maps to ttkernel.mm_block_init + ttkernel.matmul_block.
+
+    The lhs, rhs, and result tile types may have different dimensions. Their
+    physical dimensions follow the same contraction relation as `ttl.matmul`.
   }];
   let arguments = (ins TTL_TileOrTensor:$lhs, TTL_TileOrTensor:$rhs,
                        Optional<TTL_TileOrTensor>:$accumulator,
@@ -1421,6 +1428,7 @@ def TTL_TileMatmulBlockOp : TTL_TileOp<"tile_matmul_block",
     $lhs `,` $rhs (`,` $accumulator^)? `into` `dst` `[` $dst_index `]` attr-dict `:`
     type($lhs) `,` type($rhs) (`,` type($accumulator)^)? `->` type($result)
   }];
+  let hasVerifier = 1;
 }
 
 // Circular buffer synchronization operations
