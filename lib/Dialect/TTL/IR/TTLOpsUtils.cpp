@@ -6,6 +6,9 @@
 
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/raw_ostream.h"
+
+#include <array>
 
 namespace mlir::tt::ttl {
 
@@ -96,6 +99,60 @@ LogicalResult verifyResolvedDFBIdentities(ModuleOp moduleOp,
         return isa<CBReserveOp, CBPushOp, CBWaitOp, CBPopOp>(operation);
       },
       getDFBId, "DFB lifecycle", DFBIdentityRequirement::Finalized);
+}
+
+namespace {
+
+bool isBFPDataType(ttcore::DataType dataType) {
+  using ttcore::DataType;
+  switch (dataType) {
+  case DataType::BFP_Float8:
+  case DataType::BFP_BFloat8:
+  case DataType::BFP_Float4:
+  case DataType::BFP_BFloat4:
+  case DataType::BFP_Float2:
+  case DataType::BFP_BFloat2:
+    return true;
+  case DataType::Float32:
+  case DataType::Float16:
+  case DataType::BFloat16:
+  case DataType::UInt32:
+  case DataType::UInt16:
+  case DataType::UInt8:
+  case DataType::Int32:
+  case DataType::Bool:
+    return false;
+  }
+}
+
+} // namespace
+
+LogicalResult validateComputeTileType(ttcore::TileType tileType,
+                                      std::string &failureReason) {
+  failureReason.clear();
+  llvm::raw_string_ostream diagnostic(failureReason);
+  if (!ttcore::TileType::isLLKSupportedShape(tileType.getShape())) {
+    diagnostic << "tile shape " << tileType.getHeight() << "x"
+               << tileType.getWidth()
+               << " is not supported by the current compute LLKs; supported "
+                  "shapes are 16x16, 16x32, 32x16, and 32x32";
+    return failure();
+  }
+
+  constexpr std::array<int64_t, 2> defaultTileShape =
+      ttcore::TileType::getDefaultShape();
+  // Keep BFP compute target-independent until sub-tile packing support is
+  // represented per target.
+  if (isBFPDataType(tileType.getDataType()) &&
+      (tileType.getHeight() != defaultTileShape[0] ||
+       tileType.getWidth() != defaultTileShape[1])) {
+    diagnostic << "TT-Lang supports BFP compute tiles only with "
+               << defaultTileShape[0] << "x" << defaultTileShape[1]
+               << " dimensions, got " << tileType.getHeight() << "x"
+               << tileType.getWidth();
+    return failure();
+  }
+  return success();
 }
 
 std::optional<BcastType> getTileBroadcastType(ArrayRef<int64_t> dims,

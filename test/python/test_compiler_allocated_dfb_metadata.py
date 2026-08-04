@@ -28,10 +28,21 @@ MLIR_FORMAT_CASES = [
     ("bfp_bf8", "bfloat8_b"),
     ("bfp_bf4", "bfloat4_b"),
 ]
-COMPUTE_TILE_SIZES = [(16, 16), (16, 32), (32, 16), (32, 32)]
-DENSE_FORMATS = [
-    case[1] for case in MLIR_FORMAT_CASES if not case[0].startswith("bfp_")
+TT_METAL_TILE_SIZES = [
+    (32, 32),
+    (16, 32),
+    (32, 16),
+    (16, 16),
+    (8, 32),
+    (4, 32),
+    (2, 32),
+    (1, 32),
+    (8, 16),
+    (4, 16),
+    (2, 16),
+    (1, 16),
 ]
+RUNTIME_FORMATS = [case[1] for case in MLIR_FORMAT_CASES]
 
 
 @pytest.mark.parametrize(
@@ -40,7 +51,7 @@ DENSE_FORMATS = [
         (
             mlir_type,
             data_format,
-            (32, 32) if mlir_type.startswith("bfp_") else (16, 32),
+            (8, 32),
         )
         for mlir_type, data_format in MLIR_FORMAT_CASES
     ],
@@ -77,10 +88,10 @@ def test_extract_compiler_allocated_subtile_metadata(mlir_type, data_format, til
 
 @pytest.mark.parametrize(
     "data_format",
-    DENSE_FORMATS,
+    RUNTIME_FORMATS,
 )
 @pytest.mark.parametrize(
-    "tile_hw", COMPUTE_TILE_SIZES, ids=lambda tile: f"{tile[0]}x{tile[1]}"
+    "tile_hw", TT_METAL_TILE_SIZES, ids=lambda tile: f"{tile[0]}x{tile[1]}"
 )
 def test_compiler_allocated_subtile_descriptor(data_format, tile_hw):
     core_ranges = ttnn.CoreRangeSet(
@@ -130,19 +141,13 @@ def _expected_page_size(data_format, tile_hw):
 
 @pytest.mark.parametrize("dtype", [ttnn.bfloat8_b, ttnn.bfloat4_b])
 @pytest.mark.parametrize(
-    "tile_hw", [(16, 16), (16, 32), (32, 16)], ids=lambda tile: f"{tile[0]}x{tile[1]}"
+    "tile_hw", TT_METAL_TILE_SIZES, ids=lambda tile: f"{tile[0]}x{tile[1]}"
 )
-def test_bfp_subtile_size_is_rejected(dtype, tile_hw):
-    with pytest.raises(ValueError, match="supports BFP compute tiles only with 32x32"):
-        tile_bytes_from_dtype(dtype, tile_hw)
+def test_bfp_storage_tile_size(dtype, tile_hw):
+    data_format = "bfloat8_b" if dtype == ttnn.bfloat8_b else "bfloat4_b"
+    page_size = tile_bytes_from_dtype(dtype, tile_hw)
 
-
-@pytest.mark.parametrize(
-    "dtype,data_format",
-    [(ttnn.bfloat8_b, "bfloat8_b"), (ttnn.bfloat4_b, "bfloat4_b")],
-)
-def test_bfp_default_tile_size(dtype, data_format):
-    assert tile_bytes_from_dtype(dtype) == _expected_page_size(data_format, (32, 32))
+    assert page_size == _expected_page_size(data_format, tile_hw)
 
 
 @pytest.mark.parametrize(
