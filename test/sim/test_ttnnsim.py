@@ -1899,6 +1899,28 @@ def test_golden_wrapper_falls_back_to_the_padded_store_when_logical_extents_fail
     assert torch.equal(result.to_torch(), a.to_torch().reshape(1024))
 
 
+def test_the_wrapping_exclusions_say_only_what_is_true() -> None:
+    """No excluded name is one this module implements.
+
+    The golden-function loop skips every name the module defines, so an
+    excluded name that is also defined tells the reader nothing except, once it
+    stops being true, something false.  The exclusions are for names that would
+    otherwise be bound: the builtins a wrapper would shadow, and the ops the
+    simulator leaves unavailable on purpose.
+    """
+    from sim import ttnnsim
+
+    defined = vars(ttnnsim)
+    redundant = sorted(n for n in ttnnsim._EXCLUDE_FROM_WRAPPING if n in defined)
+    assert redundant == [], "these are implemented, so excluding them says nothing"
+
+    # The builtins are still the builtins inside the module, which is what
+    # excluding them is for.
+    assert all(n not in defined for n in ttnnsim._SHADOWS_A_BUILTIN)
+    # And an unavailable op is absent rather than answered wrongly.
+    assert not hasattr(ttnnsim, "concat")
+
+
 class TestTensorTileIndexing:
     """Tests for Tensor tile-coordinate __getitem__ and __setitem__."""
 

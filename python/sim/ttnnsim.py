@@ -3375,50 +3375,55 @@ def _create_golden_wrapper(
     return wrapper
 
 
-# Functions that should NOT be auto-wrapped (already implemented or would break things)
-_EXCLUDE_FROM_WRAPPING = {
-    # Names here are skipped in addition to any symbol already in this module's
-    # globals() (those are never overwritten by the golden-function loop).
-    # Core infrastructure functions that are already implemented
-    "from_torch",
-    "to_torch",
-    "from_device",
-    "to_device",
-    "to_dtype",
-    "to_layout",
-    "to_memory_config",
-    # Tensor creation functions that are already implemented
-    "empty",
-    "empty_like",
-    "zeros",
-    "zeros_like",
-    "ones",
-    "ones_like",
-    "full",
-    "full_like",
-    "arange",
-    # Built-in functions that shouldn't be wrapped
+# Python builtins this module calls.  The loop below binds each wrapper into
+# globals(), which for one of these names would shadow the builtin for every
+# function in the file.
+_SHADOWS_A_BUILTIN = {
     "min",
     "max",
     "sum",
-    # Functions that return non-tensor types
+}
+
+# Operations the simulator leaves unavailable rather than serve from a golden
+# function.  Each of these moves or re-lays-out a tensor, and a golden run
+# cannot say where the result lands in the simulator's store: how a tensor is
+# held is the simulator's own business (tile padding, rank lifting, the shard
+# grid), so an op that changes it has to be written against that and not
+# derived.  Reaching one raises AttributeError, which names the gap; a wrapper
+# would answer with a tensor laid out wrongly.
+_RESHAPES_THE_STORE = {
+    "arange",
+    "bitcast",
     "clone",
-    "reshape",
-    "permute",
     "concat",
-    "pad",
-    "squeeze",
-    # Sharding/memory functions
+    "empty_like",
+    "from_device",
+    "full",
+    "full_like",
     "interleaved_to_sharded",
     "interleaved_to_sharded_partial",
+    "ones",
+    "ones_like",
+    "pad",
+    "permute",
+    "reallocate",
+    "reshape",
+    "reshard",
     "sharded_to_interleaved",
     "sharded_to_interleaved_partial",
-    "reallocate",
-    "reshard",
     "tilize",
-    "bitcast",
+    "to_device",
+    "to_dtype",
+    "to_layout",
     "typecast",
+    "zeros_like",
 }
+
+# Names the golden-function loop below must not bind.  Anything this module
+# already defines is skipped there in any case, so only names it does not
+# define belong here -- a name that is both would be a claim about this module
+# that could go stale, and test_ttnnsim pins that it cannot.
+_EXCLUDE_FROM_WRAPPING = _SHADOWS_A_BUILTIN | _RESHAPES_THE_STORE
 
 # Get all operations with golden functions and create wrappers at module load time
 if TTNN_AVAILABLE:
