@@ -1578,9 +1578,11 @@ class Tensor:
         self._tensor: torch.Tensor = tensor
         self._layout: IndexType = layout
         # The logical (user-visible) shape, mirroring ttnn.Tensor.shape: the
-        # dimensions of the actual data, before tile-alignment padding and
-        # before low-rank inputs are lifted for storage.  ``padded_shape``
-        # reports the physical stored shape.  ``logical_shape`` defaults to the
+        # dimensions of the actual data, before the store is padded out to whole
+        # tiles and before a low-rank input gains the leading unit dimensions
+        # that give it a tileable rank -- a length-N vector is stored as a 1xN
+        # row (see _normalize_rank_for_layout).  ``padded_shape`` reports that
+        # stored shape.  ``logical_shape`` defaults to the
         # backing tensor's shape for tensors produced by internal ops (e.g.
         # arithmetic / slicing), whose data is already at physical extent; the
         # creation entry points (from_torch / rand / empty / zeros) pass the
@@ -1629,9 +1631,10 @@ class Tensor:
 
         Mirrors ``ttnn.Tensor.padded_shape``: the shape of the stored data,
         including any zero padding added to reach ``TILE_SHAPE`` multiples for
-        ``TILE_LAYOUT`` tensors and any leading unit dimensions added to lift a
-        low-rank input to a tileable rank. For ``ROW_MAJOR_LAYOUT`` this equals
-        ``shape`` apart from lifting a bare scalar to a length-1 vector.
+        ``TILE_LAYOUT`` tensors and any leading unit dimensions a low-rank input
+        gained to reach a tileable rank -- a length-N vector is stored as a 1xN
+        row. For ``ROW_MAJOR_LAYOUT`` this equals ``shape`` apart from a bare
+        scalar, which is stored as a length-1 vector.
         """
         return Shape(self._tensor.shape)
 
