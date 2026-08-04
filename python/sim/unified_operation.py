@@ -151,13 +151,22 @@ def _is_kernel_decorator(dec: ast.expr, symbols: Dict[str, Any]) -> bool:
     """True when ``dec`` decorates a hand-written compute / datamovement kernel.
 
     Resolves the decorator to its runtime object rather than matching the source
-    spelling, so ``@ttl.compute()``, ``@T.compute()`` after ``import ttl as T``,
-    and ``@compute()`` after ``from ttl import compute`` are all recognized.
-    Misclassifying a multi-kernel body as unified splits it and silently
-    produces a wrong answer, so unresolvable decorators fall back to the shared
-    spelling rule, which errs toward "multi-kernel" -- and which is all the
-    compiler applies (``atom_rules.defines_kernels_by_spelling``), so resolving
-    first only ever adds recognition.
+    spelling. The shared spelling rule already ignores the receiver, so it covers
+    ``@ttl.compute()``, ``@T.compute()`` and a bare ``@compute()`` on its own;
+    what resolution adds is the decorator bound under another name
+    (``from ttl import compute as build_math``), which no spelling recognizes and
+    which is why this looks at the object at all.
+
+    Resolution can also withhold recognition the spelling would have given: a
+    body's own ``compute`` that is not this API's decorator resolves to something
+    else and is not read as a kernel. So this is not the compiler's rule plus
+    extra recognition -- the compiler applies only the spelling
+    (``atom_rules.defines_kernels_by_spelling``) -- and the two can disagree about
+    a body that reuses a kernel decorator's name for something else.
+
+    Misclassifying a multi-kernel body as unified splits it and silently produces
+    a wrong answer, so a decorator that resolves to nothing falls back to the
+    spelling rule, which errs toward "multi-kernel".
     """
     rules = _rules()
     node = dec.func if isinstance(dec, ast.Call) else dec

@@ -54,6 +54,11 @@ FIXTURES_DIR = Path(__file__).resolve().parent / "test_helpers"
 signpost = ttl_alias.signpost
 math_namespace = ttl_alias.math
 
+# Bound the way `from ttl import compute as build_math` would bind them: kernel
+# decorators under names no spelling rule recognizes.
+build_math = compute
+move_data = datamovement
+
 
 class _NeverCalled:
     """Stand-in for the ``ttl`` module in the sample body below.
@@ -228,22 +233,62 @@ def _multikernel_body_mixed_spelling(a: Any, out: Any) -> None:
             ttl.copy(blk, out[0:1, 0:1]).wait()
 
 
+def _multikernel_body_via_renamed_decorators(a: Any, out: Any) -> None:
+    """Kernel decorators bound under other names ("from ttl import compute as ...").
+
+    The spelling rule reads the attribute name and finds ``move_data`` /
+    ``build_math``, neither of which names a kernel, so nothing but the decorator
+    object identifies these as kernels.
+    """
+    dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+
+    @move_data()
+    def reader() -> None:
+        with dfb.reserve() as blk:
+            ttl.copy(a[0:1, 0:1], blk).wait()
+
+    @build_math()
+    def comp() -> None:
+        pass
+
+    @move_data()
+    def writer() -> None:
+        with dfb.wait() as blk:
+            ttl.copy(blk, out[0:1, 0:1]).wait()
+
+
 @pytest.mark.parametrize(
     "body",
     [
         _multikernel_body_via_alias,
         _multikernel_body_via_direct_import,
         _multikernel_body_mixed_spelling,
+        _multikernel_body_via_renamed_decorators,
     ],
-    ids=["aliased_module", "direct_import", "aliased_decorators_only"],
+    ids=[
+        "aliased_module",
+        "direct_import",
+        "aliased_decorators_only",
+        "renamed_decorators",
+    ],
 )
 def test_hand_written_kernels_are_not_classified_as_unified(body: Any) -> None:
     """Kernel decorators are recognized by object, not by source spelling.
 
     Matching only ``ttl.compute`` / ``ttl.datamovement`` text classifies these
     bodies as unified, which splits them and silently returns a wrong answer.
+
+    The first three are recognized by spelling as well, since the shared spelling
+    rule reads the attribute name and ignores the receiver. The renamed case is
+    the one that needs the object: its decorators spell names no rule knows, and
+    it is the reason resolution is done at all.
     """
     assert not is_unified_body(body)
+
+
+def _users_own_decorator(fn: Any) -> Any:
+    """A decorator of the user's own that a body might bind as ``compute``."""
+    return fn
 
 
 def _foreign_kernel_decorator() -> Any:
@@ -267,6 +312,8 @@ def _foreign_kernel_decorator() -> Any:
             True,
         ),
         ("@registry['compute']()", {"registry": {"compute": compute}}, False),
+        ("@build_math()", {"build_math": compute}, True),
+        ("@compute()", {"compute": _users_own_decorator}, False),
     ],
     ids=[
         "unknown_receiver",
@@ -274,6 +321,8 @@ def _foreign_kernel_decorator() -> Any:
         "receiver_without_the_attribute",
         "another_build_of_the_api",
         "spells_no_name",
+        "renamed_decorator",
+        "the_name_bound_to_something_else",
     ],
 )
 def test_a_decorator_that_does_not_resolve_falls_back_to_its_spelling(
@@ -285,13 +334,17 @@ def test_a_decorator_that_does_not_resolve_falls_back_to_its_spelling(
     objects, and a body can be short of either: bindings this cannot follow, or a
     decorator from another build of the API. Since calling a multi-kernel body
     unified splits it and returns a wrong answer, every fallback errs toward
-    "multi-kernel" -- which is also all the compiler does
-    (``atom_rules.defines_kernels_by_spelling``), so resolving first only adds
-    recognition.
+    "multi-kernel", which is also all the compiler does
+    (``atom_rules.defines_kernels_by_spelling``).
 
-    The exception is a decorator that spells no name at all: neither rule can find
-    a kernel in ``@registry['compute']()``, and the compiler's spelling rule cannot
-    either, so both frontends read such a body as unified.
+    The last two cases are what resolution changes, in both directions: a renamed
+    decorator is recognized where no spelling would, and a name bound to something
+    else is refused where the spelling would have accepted it. The second is a
+    disagreement with the compiler, which reads that body as kernels.
+
+    A decorator that spells no name at all is beyond either rule: neither can find
+    a kernel in ``@registry['compute']()``, so both frontends read such a body as
+    unified.
     """
     fn_def = _decorated_funcdef(spelling)
     assert _is_kernel_decorator(fn_def.decorator_list[0], symbols) == recognized
