@@ -319,9 +319,13 @@ class TestFiltering:
 
     def test_exclusive_filter_suppresses_compute(self) -> None:
         """With ALL_CATEGORIES minus 'compute', no compute_op events appear."""
-        events = _run_simple_kernel_with_tracing(ALL_CATEGORIES - frozenset({"compute"}))
+        events = _run_simple_kernel_with_tracing(
+            ALL_CATEGORIES - frozenset({"compute"})
+        )
         for ev in events:
-            assert ev["event"] != "compute_op", f"Unexpected compute event: {ev['event']}"
+            assert (
+                ev["event"] != "compute_op"
+            ), f"Unexpected compute event: {ev['event']}"
 
     def test_no_filter_returns_all_categories(self) -> None:
         """With no filter, all event categories appear."""
