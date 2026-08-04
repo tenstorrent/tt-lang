@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 import math
+import operator
 from collections.abc import Callable
 from typing import Any
 
@@ -1319,6 +1320,49 @@ def test_arithmetic_propagates_logical_shape():
     assert prod.padded_shape == (32, 32)
 
 
+_ARITHMETIC_OPERATORS: list[tuple[str, Callable[[Any, Any], Any]]] = [
+    ("add", operator.add),
+    ("sub", operator.sub),
+    ("mul", operator.mul),
+    ("truediv", operator.truediv),
+    ("floordiv", operator.floordiv),
+    ("mod", operator.mod),
+    ("pow", operator.pow),
+]
+
+
+@pytest.mark.parametrize(
+    "name, op", _ARITHMETIC_OPERATORS, ids=[n for n, _ in _ARITHMETIC_OPERATORS]
+)
+@pytest.mark.parametrize("reverse", [False, True], ids=["tensor_op", "scalar_op"])
+def test_every_arithmetic_operator_keeps_the_shape_dtype_and_layout(
+    name: str, op: Callable[[Any, Any], Any], reverse: bool
+) -> None:
+    """Each operator's result describes itself like the operand it came from.
+
+    Every one of these carries the logical shape, the declared dtype and the
+    layout across, and each does it in its own branch, so the ones no other test
+    reaches (floor division, modulo, the reverse forms) can lose a field on their
+    own.  Values are checked against torch on the padded store, which is what the
+    operator computed on.
+    """
+    a = ttnn.from_torch(
+        torch.rand(3, 5) + 1.0, layout=ttnn.TILE_LAYOUT, dtype=ttnn.bfloat16
+    )
+    scalar = 2.0
+
+    result = op(scalar, a) if reverse else op(a, scalar)
+
+    assert result.shape == (3, 5)
+    assert result.padded_shape == (32, 32)
+    assert result.dtype == ttnn.bfloat16
+    assert result.layout == ttnn.TILE_LAYOUT
+
+    store = a.to_torch()
+    expected = op(scalar, store) if reverse else op(store, scalar)
+    assert torch.allclose(result.to_torch(), expected, equal_nan=True)
+
+
 def test_arithmetic_logical_shape_matches_under_dry_run():
     """Dry-run and real paths agree on the logical result shape and dtype.
 
@@ -1339,6 +1383,12 @@ def test_arithmetic_logical_shape_matches_under_dry_run():
         assert (a @ y).shape == real_mm == (3, 7)
         assert (a * 2).shape == (3, 5)
         assert (b + b).dtype == ttnn.bfloat16
+        # The unary shims describe their result the same way, each on its own
+        # dry-run branch.
+        for shim in (ttnn.relu, ttnn.abs, ttnn.exp):
+            described = shim(a)
+            assert described.shape == (3, 5), shim.__name__
+            assert described.padded_shape == (32, 32), shim.__name__
     finally:
         set_dry_run(False)
 
