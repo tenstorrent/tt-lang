@@ -12,7 +12,8 @@
 # Everything outside the markers (imports, scaffolding, the @ttl.operation
 # wrapper, device setup) exists so the file can run standalone; it is not
 # copied into the specification. The marked lines are nested inside
-# @ttl.operation and dedented on render, so the rendered spec is unchanged.
+# @ttl.operation and dedented on render, so these mechanics add nothing to the
+# rendered text.
 
 import math
 

@@ -10,11 +10,12 @@
 #     python docs/sphinx/specs/build_spec.py
 #
 # Everything outside the markers -- imports, the @ttl.operation wrapper, the
-# DFB, the hidden data read/write that fills in the "..." placeholders, the
-# no-op kernels, device setup, and the correctness check -- exists so the file
-# can run standalone; it is not copied into the specification. The marked lines
-# are nested inside @ttl.operation and dedented on render, and hidden lines are
-# fenced with spec:end/spec:begin, so the rendered spec is unchanged.
+# DFB, the hidden data read/write that fills in the "..." placeholders, the no-
+# op kernels, device setup, and the correctness check -- exists so the file can
+# run standalone; it is not copied into the specification. The marked lines are
+# nested inside @ttl.operation and dedented on render, and hidden lines are
+# fenced with spec:end/spec:begin, so these mechanics add nothing to the
+# rendered text.
 
 import torch
 

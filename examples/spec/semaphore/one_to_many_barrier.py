@@ -9,10 +9,10 @@
 #
 #     python docs/sphinx/specs/build_spec.py
 #
-# Everything outside the markers (imports, the @ttl.operation wrapper, the
-# no-op kernels) exists so the file can run standalone; it is not copied into
-# the specification. The marked lines are nested inside @ttl.operation and
-# dedented on render, so the rendered spec is unchanged.
+# Everything outside the markers (imports, the @ttl.operation wrapper, the no-
+# op kernels) exists so the file can run standalone; it is not copied into the
+# specification. The marked lines are nested inside @ttl.operation and dedented
+# on render, so these mechanics add nothing to the rendered text.
 #
 # NOTE: the user-facing ttl.Semaphore barrier API is not implemented in the
 # simulator (or the compiler) yet, so this example is expected to fail at the

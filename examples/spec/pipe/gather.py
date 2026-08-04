@@ -14,8 +14,8 @@
 # "..." placeholders, the no-op kernels, device setup, and the correctness
 # check -- exists so the file can run standalone; it is not copied into the
 # specification. The marked lines are nested inside @ttl.operation and dedented
-# on render, and hidden lines are fenced with spec:end/spec:begin, so the
-# rendered spec is unchanged.
+# on render, and hidden lines are fenced with spec:end/spec:begin, so these
+# mechanics add nothing to the rendered text.
 
 import torch
 

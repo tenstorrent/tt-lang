@@ -12,9 +12,9 @@
 # Everything outside the markers (imports, the @ttl.operation wrapper, and the
 # correctness check) exists so the file can run standalone; it is not copied
 # into the specification. The marked lines are nested inside @ttl.operation and
-# dedented on render, so the rendered spec is unchanged. ttl.node() resolves
-# against the current node, so the marked lines run per node during operation
-# setup.
+# dedented on render, so these mechanics add nothing to the rendered text.
+# ttl.node() resolves against the current node, so the marked lines run per
+# node during operation setup.
 
 import ttl
 import ttnn
