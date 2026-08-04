@@ -2214,6 +2214,11 @@ class TestShardingTypes:
         assert isinstance(ttnn.L1_MEMORY_CONFIG, MemoryConfig)
         assert ttnn.DRAM_MEMORY_CONFIG.strategy == ShardingStrategy.INTERLEAVED
         assert ttnn.L1_MEMORY_CONFIG.strategy == ShardingStrategy.INTERLEAVED
+        # Both are interleaved, so the buffer is the whole difference between
+        # them; equal constants would make asking for L1 a no-op.
+        assert ttnn.DRAM_MEMORY_CONFIG.buffer_type == ttnn.BufferType.DRAM
+        assert ttnn.L1_MEMORY_CONFIG.buffer_type == ttnn.BufferType.L1
+        assert ttnn.DRAM_MEMORY_CONFIG != ttnn.L1_MEMORY_CONFIG
 
     def test_a_memory_layout_names_the_strategy_it_stands_for(self) -> None:
         """A config spelled ttnn's way reports a ShardingStrategy.

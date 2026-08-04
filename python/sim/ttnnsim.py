@@ -513,8 +513,12 @@ def broadcast_tensors(
     return [Tensor(result_flat[i]) for i in range(num_result_tiles)]
 
 
-DRAM_MEMORY_CONFIG: MemoryConfig = MemoryConfig(strategy=ShardingStrategy.INTERLEAVED)
-L1_MEMORY_CONFIG: MemoryConfig = MemoryConfig(strategy=ShardingStrategy.INTERLEAVED)
+DRAM_MEMORY_CONFIG: MemoryConfig = MemoryConfig(
+    TensorMemoryLayout.INTERLEAVED, BufferType.DRAM
+)
+L1_MEMORY_CONFIG: MemoryConfig = MemoryConfig(
+    TensorMemoryLayout.INTERLEAVED, BufferType.L1
+)
 
 # Type aliases for binary operations
 Scalar = Union[float, int]
