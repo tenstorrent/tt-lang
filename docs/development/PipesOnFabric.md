@@ -217,9 +217,9 @@ another interconnect. It also does not require `(0, 0)` and `(0, 3)` to be one
 hardware packet apart.
 
 Structured transfers share common domain and component properties through
-`StructuredTransfer`. Current derived forms include axis-neighbor, gather,
-and multicast relations. Additional collectives should add semantic transfer
-forms such as scatter and all-to-all without adding target topology fields.
+`StructuredTransfer`. Current derived forms include axis-neighbor, gather, and
+scatter relations. Additional collectives should add semantic transfer forms
+such as all-to-all without adding target topology fields.
 
 ### Shared pipe protocol
 
@@ -623,7 +623,7 @@ The POC still requires:
   receiver DFB addresses;
 - hardware pytests for reduce-to-root, reduce-scatter, and all-reduce in
   `test/python/fabric`;
-- tree-reduction, packet-boundary, full-duplex, backpressure, and cache behavior
-  hardware pytests;
+- tree-reduction, packet-boundary, full-duplex, and cache behavior hardware
+  pytests;
 - performance comparison of destination-table decoding and connection reuse
   against specialized communication kernels.

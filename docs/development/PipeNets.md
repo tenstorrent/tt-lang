@@ -451,13 +451,13 @@ large enough to hold the aligned byte count. The tensor buffer address
 is the SRAM scratch base for that node. `build_pipe_runtime_resources`
 passes that buffer address as the first pipe-resource common runtime
 argument, followed by all GlobalSemaphore counter addresses in compiler
-allocation order. Computed receiver
-DFB bases, when present, precede these pipe-resource arguments. TTKernel
-lowering therefore maps pipe runtime arg 0 to common runtime arg index
-`num_tensor_args + num_computed_dfb_bases + 0`. It reads the scratch base
-with `get_common_arg_val` at that index and adds the
-compiler-selected byte offset (`resourceColor * 4`) for the transfer's
-address-table slot.
+allocation order. The compiler-defined argument prefix is tensor buffer
+addresses, computed receiver DFB bases, compiler-managed PipeNet resources,
+and logical device coordinates; per-kernel extra arguments follow this prefix.
+TTKernel lowering therefore maps pipe runtime arg 0 to common runtime arg index
+`num_tensor_args + num_computed_dfb_bases + 0`. It reads the scratch base with
+`get_common_arg_val` at that index and adds the compiler-selected byte offset
+(`resourceColor * 4`) for the transfer's address-table slot.
 
 This scratch allocation does not alias DFB SRAM. DFB payload storage is
 bound through TTNN circular-buffer descriptors in the current runtime,

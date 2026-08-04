@@ -4,6 +4,7 @@
 
 #include "ttlang/Dialect/TTL/Passes.h" // IWYU pragma: keep
 
+#include "CommonRuntimeArgLayout.h"
 #include "PipeGraph.h"
 #include "PipeLowering.h"
 #include "PipePlanning.h"
@@ -162,28 +163,10 @@ struct TensorOpTypeConversion : OpConversionPattern<TensorOp> {
   }
 };
 
-static int64_t getPipeRuntimeArgCount(ModuleOp module) {
-  int64_t count = 0;
-  if (auto scratchBytes =
-          module->getAttrOfType<IntegerAttr>(kPipeSramScratchBytesAttrName)) {
-    count += scratchBytes.getInt() > 0 ? 1 : 0;
-  }
-  if (auto globalSemaphoreCount = module->getAttrOfType<IntegerAttr>(
-          kPipeGlobalSemaphoreCountAttrName)) {
-    count += globalSemaphoreCount.getInt();
-  }
-  return count;
-}
-
 static int64_t getDeviceCoordinateCommonArgBase(Operation *op) {
   FuncOp func = op->getParentOfType<FuncOp>();
   assert(func && "logical device operation must be inside a function");
-  int64_t tensorArgumentCount =
-      llvm::count_if(func.getArguments(), [](BlockArgument argument) {
-        return mlir::isa<RankedTensorType>(argument.getType());
-      });
-  return tensorArgumentCount +
-         getPipeRuntimeArgCount(op->getParentOfType<ModuleOp>());
+  return CommonRuntimeArgLayout(func).getDeviceCoordinateIndex(0);
 }
 
 static Value buildDeviceCoordinate(Location loc,

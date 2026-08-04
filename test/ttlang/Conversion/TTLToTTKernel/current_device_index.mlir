@@ -1,4 +1,4 @@
-// RUN: ttlang-opt %s -convert-ttl-to-ttkernel | FileCheck %s
+// RUN: ttlang-opt %s --split-input-file -convert-ttl-to-ttkernel | FileCheck %s
 
 // Verify that logical device coordinates are flattened in row-major order.
 
@@ -18,4 +18,37 @@ func.func @current_device_index() -> index attributes {
   %index = ttl.current_device_index
     <components = <name = "device", extent = [2, 3]>> : index
   return %index : index
+}
+
+// -----
+
+// PipeNet runtime arguments precede logical device coordinates. Verify that
+// device predicates read coordinates after every preceding argument segment.
+
+// CHECK-LABEL: func.func @device_after_pipe_arguments
+// CHECK-NOT: arith.constant 4 : index
+// CHECK-NOT: arith.constant 5 : index
+// CHECK-DAG: %[[ROW_ARG_INDEX:.*]] = arith.constant 6 : index
+// CHECK-DAG: %[[COL_ARG_INDEX:.*]] = arith.constant 7 : index
+// CHECK: %[[ROW:.*]] = ttkernel.get_common_arg_val(%[[ROW_ARG_INDEX]]) : (index) -> i32
+// CHECK-NEXT: %[[IS_ROW:.*]] = arith.cmpi eq, %[[ROW]], {{.*}} : i32
+// CHECK-NEXT: %[[COL:.*]] = ttkernel.get_common_arg_val(%[[COL_ARG_INDEX]]) : (index) -> i32
+// CHECK-NEXT: %[[IS_COL:.*]] = arith.cmpi eq, %[[COL]], {{.*}} : i32
+// CHECK-NEXT: %[[IS_DEVICE:.*]] = arith.andi %[[IS_ROW]], %[[IS_COL]] : i1
+// CHECK-NOT: ttkernel.get_common_arg_val
+// CHECK-NEXT: return %[[IS_DEVICE]] : i1
+module attributes {
+  ttl.pipe_global_semaphore_count = 2 : i64,
+  ttl.pipe_sram_scratch_bytes = 32 : i64
+} {
+  func.func @device_after_pipe_arguments(%tensor: tensor<1xi32>) -> i1
+      attributes {
+        ttl.kernel_thread = #ttkernel.thread<noc>,
+        ttl.pipe_computed_address_dfb_indices = array<i32: 1, 3>
+      } {
+    %is_device = ttl.is_device
+        <coordinates = [1, 2]>
+        in <components = <name = "mesh", extent = [2, 3]>> : i1
+    return %is_device : i1
+  }
 }

@@ -33,6 +33,8 @@ inline constexpr llvm::StringLiteral kFabricRoutesAttrName =
 inline constexpr llvm::StringLiteral kFabricDeviceDomainAttrName =
     "ttl.fabric_device_domain";
 
+/// One logical device route shared by sends from `sourceNodes`.
+/// `routeIndex` identifies the connection within `localDevice`.
 struct FabricRoute {
   DeviceRefAttr localDevice;
   DeviceRefAttr remoteDevice;
@@ -40,18 +42,25 @@ struct FabricRoute {
   std::size_t routeIndex;
 };
 
+/// Fabric routes and transfer associations derived before PipeNet lowering.
 struct FabricRoutePlan {
+  /// Routes grouped by the kernel function that submits each transfer.
   llvm::MapVector<func::FuncOp, SmallVector<FabricRoute>> routesByFunction;
+  /// Logical device domain used by each function containing fabric sends.
   llvm::DenseMap<Operation *, DeviceDomainAttr> deviceDomainsByFunction;
+  /// Connection index selected for each fabric send.
   llvm::DenseMap<Operation *, std::size_t> sendRouteIndex;
+  /// Send and receiver-post operations that use fabric synchronization.
   llvm::SmallPtrSet<Operation *, 16> transferOps;
 };
 
+/// Runtime values identifying one resolved fabric destination.
 struct FabricRouteTarget {
   Value destinationDeviceId;
   Value destinationMeshId;
 };
 
+/// Per-function routing-plane state materialized before transfer lowering.
 struct FabricRuntimeInfo {
   Value manager;
   Value routeId;
@@ -59,6 +68,7 @@ struct FabricRuntimeInfo {
   SmallVector<FabricRouteTarget> routeTargets;
 };
 
+/// Routing-plane state indexed by its kernel function.
 using FabricRuntimeMap = llvm::DenseMap<Operation *, FabricRuntimeInfo>;
 
 struct PipeInfo {

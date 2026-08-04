@@ -4,6 +4,7 @@
 
 #include "PipeLowering.h"
 
+#include "CommonRuntimeArgLayout.h"
 #include "PipePlanning.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -264,34 +265,13 @@ static int64_t alignTo(int64_t value, int64_t alignment) {
   return ((value + alignment - 1) / alignment) * alignment;
 }
 
-/// Count tensor arguments because TTKernel common runtime args list tensor
-/// buffer addresses before computed DFB bases and compiler-managed resources.
-static int64_t getNumTensorFunctionArgs(FuncOp func) {
-  int64_t numTensorArgs = 0;
-  for (BlockArgument argument : func.getArguments()) {
-    if (llvm::isa<RankedTensorType>(argument.getType())) {
-      ++numTensorArgs;
-    }
-  }
-  return numTensorArgs;
-}
-
-static int64_t getNumComputedAddressRuntimeArgs(FuncOp func) {
-  // Resource planning records the sorted receiver DFB list before lowering
-  // computes common runtime argument indices.
-  auto dfbIndices = func->getAttrOfType<DenseI32ArrayAttr>(
-      kPipeComputedAddressDFBIndicesAttrName);
-  return dfbIndices ? static_cast<int64_t>(dfbIndices.size()) : 0;
-}
-
-/// Pipe kernels receive tensor buffer addresses, computed receiver DFB bases,
-/// and then compiler-managed pipe resources as common runtime arguments.
+/// Compiler-managed pipe resources follow tensor buffer addresses and computed
+/// receiver DFB bases in the common runtime argument list.
 /// [Device 2.0] Keep this as a resource-plan lookup so the final device API
 /// lowering can replace common-arg plumbing without changing pipe semantics.
 static int64_t getPipeRuntimeCommonArgIndex(FuncOp func,
                                             int64_t pipeRuntimeArgIndex) {
-  return getNumTensorFunctionArgs(func) +
-         getNumComputedAddressRuntimeArgs(func) + pipeRuntimeArgIndex;
+  return CommonRuntimeArgLayout(func).getPipeResourceIndex(pipeRuntimeArgIndex);
 }
 
 static int64_t getPipeRuntimeCommonArgIndex(Operation *op,
@@ -2044,8 +2024,10 @@ buildComputedAddressPlan(MutableArrayRef<PipeTransferAllocationUnit> units,
     auto dfbIt = llvm::find(dfbIndices, computedAddress.receiverDFBIndex);
     assert(dfbIt != dfbIndices.end() && "candidate DFB missing from func list");
     computedAddress.baseRuntimeCommonArgIndex =
-        getNumTensorFunctionArgs(senderFunc) +
-        std::distance(dfbIndices.begin(), dfbIt);
+        CommonRuntimeArgLayout(senderFunc,
+                               static_cast<int64_t>(dfbIndices.size()))
+            .getComputedReceiverDFBBaseIndex(
+                std::distance(dfbIndices.begin(), dfbIt));
 
     const PipeTransferAllocationUnit &unit = units[candidate.unitIndex];
     const PipeTransferNode &transferNode =

@@ -39,7 +39,6 @@ struct PipeGraphAnalysisState : LaunchNodeDomainState {
       dfbLifecycles;
   SmallVector<Operation *> transferProtocolOps;
   SmallVector<PipeTransferPostOp> receiverPosts;
-  SmallVector<Operation *> receiverSlotEvents;
   llvm::DenseMap<Operation *, SmallVector<PipeTransferWaitOp>>
       receiveWaitsByPost;
   llvm::DenseMap<PipeReceiverDFBStreamKey, SmallVector<PipeTransferPostOp>>
@@ -169,7 +168,6 @@ recordReceiverPost(PipeTransferPostOp postOp, PipeGraphAnalysisState &state,
 
   state.transferProtocolOps.push_back(postOp.getOperation());
   state.receiverPosts.push_back(postOp);
-  state.receiverSlotEvents.push_back(postOp.getOperation());
   auto streamKey = getReceiverDFBStreamKey(getAttachedCB(postOp.getDst()),
                                            getReceiverDevice(createOp));
   if (streamKey) {
@@ -216,7 +214,6 @@ collectPipeGraphOperations(ModuleOp mod, const PipeTransferIndex &transferIndex,
               if (streamKey) {
                 state.popsByStream[*streamKey].push_back(popOp);
               }
-              state.receiverSlotEvents.push_back(popOp.getOperation());
             });
         return failed(recordResult) ? WalkResult::interrupt()
                                     : WalkResult::advance();
@@ -348,9 +345,10 @@ static bool isTransparentReceiverScope(Operation *op,
 }
 
 /// Return the function and enclosing region blocks whose selection can vary at
-/// runtime and therefore constrains DFB reservation order at this receiver.
+/// the receiver execution location and therefore constrains reservation order.
 static std::optional<ReceiverControlContext>
-getReceiverControlContext(Operation *op, PipeReceiverCoord receiver,
+getReceiverControlContext(Operation *op,
+                          const LaunchExecutionLocation &location,
                           const PipeGraphAnalysisState &analysisState) {
   ReceiverControlContext context;
   Operation *current = op;
@@ -363,14 +361,16 @@ getReceiverControlContext(Operation *op, PipeReceiverCoord receiver,
       context.function = function;
       break;
     }
-    if (parent && isTransparentReceiverScope(parent, receiver, analysisState)) {
+    if (parent &&
+        isTransparentReceiverScope(
+            parent, PipeReceiverCoord{location.node.x, location.node.y},
+            analysisState)) {
       current = parent;
       continue;
     }
     if (auto ifOp = mlir::dyn_cast_if_present<scf::IfOp>(parent)) {
-      if (std::optional<bool> maybeSelected = evaluatePredicateAtLaunchNode(
-              ifOp.getCondition(), getLaunchNodeCoord(receiver),
-              analysisState)) {
+      if (std::optional<bool> maybeSelected = evaluatePredicateAtLaunchLocation(
+              ifOp.getCondition(), location, analysisState)) {
         std::size_t selectedRegion = *maybeSelected ? 0 : 1;
         if (block->getParent()->getRegionNumber() != selectedRegion) {
           return std::nullopt;
@@ -394,16 +394,16 @@ getReceiverControlContext(Operation *op, PipeReceiverCoord receiver,
 }
 
 /// Return true when `before` precedes `after` in one receiver control context.
-/// Projecting a node-selected wrapper into the enclosing block preserves the
-/// per-node order without treating unrelated blocks as sequential.
+/// Projecting a location-selected wrapper into the enclosing block preserves
+/// the per-location order without treating unrelated blocks as sequential.
 static bool
 isBeforeInReceiverControlContext(Operation *before, Operation *after,
-                                 PipeReceiverCoord receiver,
+                                 const LaunchExecutionLocation &location,
                                  const PipeGraphAnalysisState &analysisState) {
   std::optional<ReceiverControlContext> maybeBeforeContext =
-      getReceiverControlContext(before, receiver, analysisState);
+      getReceiverControlContext(before, location, analysisState);
   std::optional<ReceiverControlContext> maybeAfterContext =
-      getReceiverControlContext(after, receiver, analysisState);
+      getReceiverControlContext(after, location, analysisState);
   if (!maybeBeforeContext || maybeBeforeContext != maybeAfterContext) {
     return false;
   }
@@ -430,15 +430,16 @@ static bool hasMatchingReceiveWaitBeforePush(
     PipeTransferPostOp postOp, CBPushOp pushOp,
     const llvm::DenseMap<Operation *, SmallVector<PipeTransferWaitOp>>
         &waitsByPost,
-    PipeReceiverCoord receiver, const PipeGraphAnalysisState &analysisState) {
+    const LaunchExecutionLocation &location,
+    const PipeGraphAnalysisState &analysisState) {
   auto waitIt = waitsByPost.find(postOp.getOperation());
   if (waitIt == waitsByPost.end()) {
     return false;
   }
   return llvm::any_of(waitIt->second, [&](PipeTransferWaitOp waitOp) {
-    return isBeforeInReceiverControlContext(postOp, waitOp, receiver,
+    return isBeforeInReceiverControlContext(postOp, waitOp, location,
                                             analysisState) &&
-           isBeforeInReceiverControlContext(waitOp, pushOp, receiver,
+           isBeforeInReceiverControlContext(waitOp, pushOp, location,
                                             analysisState);
   });
 }
@@ -485,33 +486,55 @@ static void debugRejectReceiverSchedule(const PipeReceiverDFBKey &receiverDFB,
 /// Lexical order proves reservation order only when all posts are in the same
 /// function and the same runtime-varying enclosing regions. PipeNet scopes and
 /// source or destination conditions known true at this receiver are ignored.
-static std::optional<ReceiverControlContext>
+static FailureOr<std::optional<ReceiverControlContext>>
 getProvenReceiverScheduleContext(const PipeReceiverDFBKey &receiverDFB,
                                  ArrayRef<PipeTransferPostOp> posts,
+                                 const PipeTransferIndex &transferIndex,
                                  const PipeGraphAnalysisState &analysisState) {
   if (posts.empty()) {
     debugRejectReceiverSchedule(receiverDFB, "no receiver posts");
-    return std::nullopt;
+    return std::optional<ReceiverControlContext>();
   }
 
-  std::optional<ReceiverControlContext> maybeControlContext =
-      getReceiverControlContext(posts.front(), receiverDFB.receiver,
-                                analysisState);
-  if (!maybeControlContext) {
+  auto getPostContext = [&](PipeTransferPostOp postOp)
+      -> FailureOr<std::optional<ReceiverControlContext>> {
+    PipeTransferCreateOp createOp =
+        transferIndex.getTransferCreate(postOp.getOperation());
+    FailureOr<LaunchExecutionLocation> maybeLocation =
+        getPipeGraphExecutionLocation(
+            postOp.getOperation(), getLaunchNodeCoord(receiverDFB.receiver),
+            createOp.getDeviceTransferAttr(), PipeRole::Destination);
+    if (failed(maybeLocation)) {
+      return failure();
+    }
+    return getReceiverControlContext(postOp, *maybeLocation, analysisState);
+  };
+
+  FailureOr<std::optional<ReceiverControlContext>> maybeFirstContext =
+      getPostContext(posts.front());
+  if (failed(maybeFirstContext)) {
+    return failure();
+  }
+  if (!*maybeFirstContext) {
     debugRejectReceiverSchedule(receiverDFB,
                                 "receiver control cannot be evaluated");
-    return std::nullopt;
+    return std::optional<ReceiverControlContext>();
   }
-  for (PipeTransferPostOp postOp : posts) {
-    if (getReceiverControlContext(postOp, receiverDFB.receiver,
-                                  analysisState) != maybeControlContext) {
+  std::optional<ReceiverControlContext> controlContext = *maybeFirstContext;
+  for (PipeTransferPostOp postOp : posts.drop_front()) {
+    FailureOr<std::optional<ReceiverControlContext>> maybePostContext =
+        getPostContext(postOp);
+    if (failed(maybePostContext)) {
+      return failure();
+    }
+    if (*maybePostContext != controlContext) {
       debugRejectReceiverSchedule(
           receiverDFB,
           "receiver posts do not share one sequential control context");
-      return std::nullopt;
+      return std::optional<ReceiverControlContext>();
     }
   }
-  return maybeControlContext;
+  return controlContext;
 }
 
 /// Next physical DFB block selected by producer reservation order.
@@ -571,6 +594,7 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
         transferIndex.getTransferCreate(postOp.getOperation());
     PipeKey pipe =
         getPipeKey(mlir::cast<PipeType>(createOp.getPipe().getType()));
+    LogicalResult result = success();
     pipe.forEachReceiver([&](PipeReceiverCoord receiver) {
       PipeReceiverDFBKey receiverDFB{receiverInfo.receiverDevice, receiver,
                                      receiverInfo.dfbIndex};
@@ -579,10 +603,19 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
       if (postIt != postsByReceiverDFB.end()) {
         posts = postIt->second;
       }
-      scheduleContextByReceiverDFB.try_emplace(
-          receiverDFB,
-          getProvenReceiverScheduleContext(receiverDFB, posts, analysisState));
+      FailureOr<std::optional<ReceiverControlContext>> maybeContext =
+          getProvenReceiverScheduleContext(receiverDFB, posts, transferIndex,
+                                           analysisState);
+      if (failed(maybeContext)) {
+        result = failure();
+        return;
+      }
+      scheduleContextByReceiverDFB.try_emplace(receiverDFB,
+                                               std::move(*maybeContext));
     });
+    if (failed(result)) {
+      return failure();
+    }
   }
 
   // Recurrence facts accumulated for one endpoint during the producer walk.
@@ -688,65 +721,10 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
     return success();
   };
 
-  auto processPop = [&](CBPopOp popOp) -> LogicalResult {
-    std::optional<int64_t> maybeDFBIndex = getCBIndex(popOp.getCb());
-    if (!maybeDFBIndex) {
-      return success();
+  for (PipeTransferPostOp postOp : analysisState.receiverPosts) {
+    if (failed(processPost(postOp))) {
+      return failure();
     }
-    std::optional<int64_t> maybeReleasedBlocks =
-        getDFBTransactionBlockCount(popOp);
-    if (!maybeReleasedBlocks) {
-      return success();
-    }
-    LaunchNodeDomain popDomain =
-        lookupOperationLaunchDomain(popOp.getOperation(), analysisState);
-    if (!popDomain.known) {
-      return success();
-    }
-    DeviceRefAttr receiverDevice = getEnclosingReceiverDevice(popOp);
-    if (receiverDevice) {
-      // Fabric senders use computed receiver addresses without a receiver-ready
-      // handshake. They can execute before later receiver posts, so a receiver
-      // pop cannot make that physical slot available to another fabric sender.
-      return success();
-    }
-    for (LaunchNodeCoord coord : popDomain.nodes) {
-      PipeReceiverDFBKey receiverDFB{
-          receiverDevice, PipeReceiverCoord{coord.x, coord.y}, *maybeDFBIndex};
-      auto contextIt = scheduleContextByReceiverDFB.find(receiverDFB);
-      if (contextIt == scheduleContextByReceiverDFB.end() ||
-          !contextIt->second) {
-        continue;
-      }
-      std::optional<ReceiverControlContext> maybePopContext =
-          getReceiverControlContext(popOp, receiverDFB.receiver, analysisState);
-      if (maybePopContext != contextIt->second) {
-        continue;
-      }
-      auto stateIt = slotStateByReceiverDFB.find(receiverDFB);
-      if (stateIt == slotStateByReceiverDFB.end()) {
-        continue;
-      }
-      if (failed(releaseReceiverSlots(popOp, stateIt->second,
-                                      *maybeReleasedBlocks))) {
-        return failure();
-      }
-    }
-    return success();
-  };
-
-  for (Operation *op : analysisState.receiverSlotEvents) {
-    if (auto postOp = dyn_cast<PipeTransferPostOp>(op)) {
-      if (failed(processPost(postOp))) {
-        return failure();
-      }
-      continue;
-    }
-    if (auto popOp = dyn_cast<CBPopOp>(op)) {
-      if (failed(processPop(popOp))) {
-        return failure();
-      }
-  }
   }
 
   for (PipeReceiverEndpoint &endpoint : pipeReceiverEndpoints) {
@@ -877,10 +855,11 @@ LogicalResult PipeGraph::provePipeOnlyReceiverProducerStreams(
       valid = false;
     };
     llvm::DenseSet<Operation *> postsWithPush;
+    LogicalResult result = success();
 
     forEachReceiverDFBStreamEvent(
         analysisState.pushesByStream, receiverDFB, [&](CBPushOp pushOp) {
-          if (!valid) {
+          if (!valid || failed(result)) {
             return;
           }
           LaunchNodeDomain pushDomain =
@@ -915,9 +894,22 @@ LogicalResult PipeGraph::provePipeOnlyReceiverProducerStreams(
           }
           int64_t postedBlocks = 0;
           for (PipeTransferPostOp postOp : ownedPosts) {
+            const PipeTransferNode *transferNode =
+                getPipeTransferNodeForProtocolOp(postOp.getOperation());
+            assert(transferNode &&
+                   "receiver post must belong to a pipe transfer node");
+            FailureOr<LaunchExecutionLocation> maybeLocation =
+                getPipeGraphExecutionLocation(
+                    postOp.getOperation(),
+                    getLaunchNodeCoord(receiverDFB.receiver),
+                    transferNode->deviceTransfer, PipeRole::Destination);
+            if (failed(maybeLocation)) {
+              result = failure();
+              return;
+            }
             if (!hasMatchingReceiveWaitBeforePush(
                     postOp, pushOp, analysisState.receiveWaitsByPost,
-                    receiverDFB.receiver, analysisState)) {
+                    *maybeLocation, analysisState)) {
               reject("post has no receive wait before push");
               return;
             }
@@ -937,6 +929,9 @@ LogicalResult PipeGraph::provePipeOnlyReceiverProducerStreams(
             reject("push block count does not match posted receiver slot span");
           }
         });
+    if (failed(result)) {
+      return failure();
+    }
     if (!valid) {
       continue;
     }
