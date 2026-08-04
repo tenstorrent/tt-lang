@@ -89,6 +89,11 @@ collected. Inactive nodes then skip their kernels, as they do on hardware, but
 their setup has already run, so their dataflow buffers exist and count towards
 the reported per-node limits.
 
+The specification's `gather` example says instead that a node outside the active
+rectangle skips the operation body, which neither implementation does -- the
+compiler evaluates the body once for all nodes, and the simulator evaluates it
+everywhere for the reason above. Tracked as tt-lang issue #804.
+
 ## Blocks released without being pushed or popped
 
 A block is handed out by `dfb.reserve()` or `dfb.wait()` and handed back by
