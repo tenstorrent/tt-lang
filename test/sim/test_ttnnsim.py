@@ -2098,6 +2098,24 @@ class TestTensorTileIndexing:
         assert t[0:2, 0:2, 0:2].shape == (2, 64, 64)
         assert t[1, 1, 1].shape == (1, 32, 32)
 
+    def test_an_open_end_locates_the_slice_like_a_spelled_out_one(self) -> None:
+        """``t[i, :]`` reports the origin ``t[i, 0:n]`` reports.
+
+        The origin is what the locality statistics attribute a copy to, so an
+        open end that left it unknown would bill the same transfer differently
+        depending on how its slice was spelled -- or, in the element-space case,
+        refuse to give an origin at all.
+        """
+        row_major = ttnn.Tensor(torch.zeros(8, 8), ttnn.ROW_MAJOR_LAYOUT)
+        assert row_major.element_slice_starts((slice(2, 3), slice(None))) == (2, 0)
+        assert row_major.element_slice_starts(
+            (slice(2, 3), slice(0, 8))
+        ) == row_major.element_slice_starts((slice(2, 3), slice(None)))
+
+        tiled = ttnn.Tensor(torch.zeros(2, 64, 64))
+        assert tiled.element_slice_starts((slice(None), 1, 1)) == (0, 32, 32)
+        assert tiled.element_slice_starts((1, slice(None), 1)) == (1, 0, 32)
+
 
 class TestShardingTypes:
     """Tests for ShardingStrategy, ShardSpec, NdShardSpec, and MemoryConfig data types.

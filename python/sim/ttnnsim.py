@@ -1808,19 +1808,31 @@ class Tensor:
         cache[key] = result
         return result
 
-    def _validate_key_bounds(self, selectors: Tuple[Selector, ...], unit: str) -> None:
-        """Check element-space selectors against the dimensions they index.
+    def _resolve_element_key(
+        self, selectors: Tuple[Selector, ...], unit: str
+    ) -> Tuple[Selector, ...]:
+        """Fill in and check element-space selectors against their dimensions.
 
-        The leading dimensions of a key, which are not tile-scaled: a whole
-        row-major key, or the batch part of a tiled one.
+        The dimensions of a key that are not tile-scaled: a whole row-major
+        key, or the batch part of a tiled one.  Open ends are resolved to the
+        dimension's extent, as :meth:`_resolve_tile_slice` does for the tile
+        dimensions, so that every selector this returns carries an explicit
+        origin.  ``element_slice_starts`` and the slice origin ``__getitem__``
+        accumulates for the locality statistics both read that origin, and an
+        open end would leave them without one -- reporting the parent's origin
+        for a slice that has moved, or refusing the key outright.
         """
+        resolved: List[Selector] = []
         for dim, selector in enumerate(selectors):
             if not isinstance(selector, slice):
+                resolved.append(selector)
                 continue
             extent = self._tensor.shape[dim]
             start = 0 if selector.start is None else selector.start
             stop = extent if selector.stop is None else selector.stop
             _validate_selector_bounds(start, stop, extent, f"dimension {dim}", unit)
+            resolved.append(slice(start, stop, selector.step))
+        return tuple(resolved)
 
     def _compute_element_key(self, key: Tuple[Selector, ...]) -> Tuple[Selector, ...]:
         """Uncached body of :meth:`_to_element_key`.
@@ -1839,8 +1851,7 @@ class Tensor:
 
         if self._layout == ROW_MAJOR_LAYOUT:
             # Element-space indexing: no tile scaling needed.
-            self._validate_key_bounds(normalized, "element")
-            return normalized
+            return self._resolve_element_key(normalized, "element")
 
         # Tile alignment is a per-tensor invariant; check once and latch.
         if not self._tile_alignment_checked:
@@ -1852,8 +1863,8 @@ class Tensor:
             return (slice(start * TILE_SHAPE[0], stop * TILE_SHAPE[0]),)
         *batch_s, row_s, col_s = normalized
         # Batch dimensions carry an implicit tile size of 1, so they are already
-        # element-space and only need their bounds checked.
-        self._validate_key_bounds(tuple(batch_s), "element")
+        # element-space and only need filling in and checking.
+        batch_s = list(self._resolve_element_key(tuple(batch_s), "element"))
         row_tiles = _tile_extent(self._tensor.shape[-2], TILE_SHAPE[0])
         col_tiles = _tile_extent(self._tensor.shape[-1], TILE_SHAPE[1])
         row_start, row_stop = self._resolve_tile_slice(row_s, row_tiles, "row")
@@ -1913,28 +1924,19 @@ class Tensor:
             # the position of this slice within the original (root) sharded
             # tensor.  ``ek`` was just computed above so derive starts directly
             # instead of calling ``element_slice_starts(normalized)`` which would
-            # re-invoke ``_to_element_key``.  Open-ended slices (e.g.
-            # ``tensor[:]``) have no computable start, so fall back to the
-            # parent's origin (which is correct when selecting the full extent).
+            # re-invoke ``_to_element_key``.  Every selector ``ek`` holds has an
+            # explicit start, including the open-ended ones (``tensor[:]``),
+            # which are resolved against the dimension they index.
             # _element_origin is only read by try_count_locality() in sharding.py,
             # which is called from _copy_trace_fields() inside if TRACE.enabled:
             # guards in copy.py, so tracking it is a no-op when tracing is off.
             parent_origin: Tuple[int, ...] = getattr(
                 self, "_element_origin", (0,) * self._tensor.ndim
             )
-            starts: list[int] = []
-            valid = True
-            for s in ek:
-                if not isinstance(s, slice) or s.start is None:
-                    valid = False
-                    break
-                starts.append(s.start)
-            if valid:
-                result._element_origin = tuple(  # type: ignore[attr-defined]
-                    p + s for p, s in zip(parent_origin, starts)
-                )
-            else:
-                result._element_origin = parent_origin  # type: ignore[attr-defined]
+            starts = [s.start if isinstance(s, slice) else s for s in ek]
+            result._element_origin = tuple(  # type: ignore[attr-defined]
+                p + s for p, s in zip(parent_origin, starts)
+            )
         return result
 
     def __setitem__(self, key: TensorKey, value: "Tensor") -> None:
