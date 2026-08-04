@@ -16,9 +16,10 @@
 #
 # NOTE: the user-facing ttl.Semaphore barrier API is not implemented in the
 # simulator (or the compiler) yet, so this example is expected to fail at the
-# `ttl.Semaphore()` call. The simulator test asserts exactly that; if semaphore
-# support lands, that test will start failing and this example should be
-# promoted to a real, golden-checked test.
+# `ttl.Semaphore()` call. It is tracked by tt-lang issues #176 (simulator),
+# #182 (compiler) and #177 (multi-chip). The simulator test asserts exactly
+# that failure; if semaphore support lands, that test will start failing and
+# this example should be promoted to a real, golden-checked test.
 
 import ttl
 import ttnn

@@ -316,7 +316,10 @@ def test_semaphore_examples_fail_at_unimplemented_interface(
     script_name: str, scheduler: str
 ) -> None:
     """The ttl.Semaphore barrier API used by these spec examples is not
-    implemented in the simulator (or the compiler) yet.
+    implemented in the simulator (or the compiler) yet: see
+    https://github.com/tenstorrent/tt-lang/issues/176 (simulator),
+    https://github.com/tenstorrent/tt-lang/issues/182 (compiler) and
+    https://github.com/tenstorrent/tt-lang/issues/177 (multi-chip).
 
     Each example is wrapped so its node-dependent setup runs, but it must fail
     *specifically* at the ttl.Semaphore() call. A success -- or a failure for
