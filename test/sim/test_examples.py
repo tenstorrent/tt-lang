@@ -82,6 +82,7 @@ _SPEC_EXAMPLES_PASSING = [
     "spec/block/elementwise_broadcast_reduce.py",
     "spec/copy/group_transfer.py",
     "spec/operation_function/operation_function.py",
+    "spec/tensor_slice/tensor_slice.py",
     # Pipe data movement (unicast / multicast / loopback) with goldens.
     "spec/pipe/scatter.py",
     "spec/pipe/scatter_gather.py",
@@ -92,11 +93,9 @@ _SPEC_EXAMPLES_PASSING = [
     "spec/dataflow_buffer/row_major_tensor_shape.py",
     "spec/dataflow_buffer/dataflow_buffer.py",
     "spec/operation_function/multi_kernel_operation.py",
-    # Run for their structure, with nothing to compare against: the slice example
-    # reads into a block it then drops, and the debugging snippets are about what
-    # they print.  Reaching the end without a dataflow or diagnostic error is the
-    # whole check.
-    "spec/tensor_slice/tensor_slice.py",
+    # Run for their structure, with nothing to compare against: the debugging
+    # snippets are about what they print.  Reaching the end without a dataflow or
+    # diagnostic error is the whole check.
     "spec/performance_and_debugging/debug_printing.py",
     "spec/performance_and_debugging/signpost.py",
     # Grid/node introspection: node-dependent setup runs per node, asserted.

@@ -22,12 +22,18 @@ import torch
 import ttl
 import ttnn
 
-# Concrete compile-time sizes for a standalone run.
-A_ROWS, A_COLS = 64, 64
+# Concrete compile-time sizes for a standalone run. More than one group of g row
+# tiles per column, so that the row slice the marked kernel computes has to
+# advance: at 64 rows there is a single group and any row arithmetic reads the
+# same tiles.
+A_ROWS, A_COLS = 128, 64
 
 
 @ttl.operation(grid=(1, 2))
-def tensor_slice(A: ttnn.Tensor) -> None:  # input matrix (A_ROWS, A_COLS)
+def tensor_slice(
+    A: ttnn.Tensor,  # input matrix (A_ROWS, A_COLS)
+    out: ttnn.Tensor,  # scaffolding: receives what the marked kernel loaded
+) -> None:
     # The marked lines below are the specification's, which calls grid_size
     # without the ttl prefix.  This alias is what makes them run.
     grid_size = ttl.grid_size
@@ -70,8 +76,16 @@ def tensor_slice(A: ttnn.Tensor) -> None:  # input matrix (A_ROWS, A_COLS)
         pass
 
     @ttl.datamovement()
-    def _noop_dm1() -> None:
-        pass
+    def _drain_to_out() -> None:
+        # Writes each block the marked kernel loaded back out, in the order it
+        # loaded them, so the run can be checked against torch. Nothing else
+        # observes what was loaded: without this the slice arithmetic above could
+        # read the wrong tiles, or the same tile every time, and the example would
+        # still finish.
+        for ct in range(start_ct, end_ct):
+            for rt in range(row_tiles // g):
+                with a_dfb.wait() as a_blk:
+                    ttl.copy(a_blk, out[rt * g : (rt + 1) * g, ct : ct + 1]).wait()
 
 
 device = ttnn.open_device(device_id=0)
@@ -80,10 +94,19 @@ try:
     A_t = ttnn.rand(
         ttnn.Shape([A_ROWS, A_COLS]), layout=ttnn.TILE_LAYOUT, device=device
     )
+    out_t = ttnn.zeros(
+        ttnn.Shape([A_ROWS, A_COLS]), layout=ttnn.TILE_LAYOUT, device=device
+    )
 
     # Each node reads its assigned column tiles; the run exercises node-dependent
     # setup (ttl.node()/ttl.grid_size()) and tile-coordinate tensor slicing.
-    tensor_slice(A_t)
+    tensor_slice(A_t, out_t)
+
+    # The two nodes' column ranges cover A between them, and the slices only move
+    # tiles, so every element comes back bit for bit.
+    assert torch.equal(
+        ttnn.to_torch(A_t), ttnn.to_torch(out_t)
+    ), "the sliced reads did not cover A exactly once"
 
 finally:
     ttnn.close_device(device)
