@@ -3559,13 +3559,12 @@ _SHADOWS_A_BUILTIN = {
 }
 
 # Operations the simulator leaves unavailable rather than serve from a golden
-# function.  Each of these moves or re-lays-out a tensor, and a golden run
-# cannot say where the result lands in the simulator's store: how a tensor is
-# held is the simulator's own business (tile padding, rank lifting, the shard
-# grid), so an op that changes it has to be written against that and not
-# derived.  Reaching one raises AttributeError, which names the gap; a wrapper
-# would answer with a tensor laid out wrongly.
-_RESHAPES_THE_STORE = {
+# function.  Each either creates a tensor or decides how one is stored -- its
+# layout, its dtype width, its padding, which core holds which shard -- and how
+# a tensor is stored is the simulator's own business, so a golden run cannot
+# say where the result lands.  Reaching one of these raises AttributeError,
+# which names the gap; a wrapper would answer with a tensor laid out wrongly.
+_DECIDES_THE_STORE = {
     "arange",
     "bitcast",
     "clone",
@@ -3597,7 +3596,7 @@ _RESHAPES_THE_STORE = {
 # already defines is skipped there in any case, so only names it does not
 # define belong here -- a name that is both would be a claim about this module
 # that could go stale, and test_ttnnsim pins that it cannot.
-_EXCLUDE_FROM_WRAPPING = _SHADOWS_A_BUILTIN | _RESHAPES_THE_STORE
+_EXCLUDE_FROM_WRAPPING = _SHADOWS_A_BUILTIN | _DECIDES_THE_STORE
 
 # Get all operations with golden functions and create wrappers at module load time
 if TTNN_AVAILABLE:
