@@ -1889,6 +1889,7 @@ uint64_t TileType::getSizeBytes() const {
   const uint64_t tileElements = getHeight() * getWidth();
   // BFP stores one exponent byte per 16 elements. Wormhole B0, Blackhole, and
   // Quasar define 16-byte L1 alignment for the exponent section.
+  // TODO(#511): Source L1 alignment from shared target metadata.
   static constexpr uint64_t l1AlignmentBytes = 16;
   const uint64_t exponentBytes =
       llvm::alignTo(tileElements / 16, l1AlignmentBytes);

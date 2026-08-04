@@ -32,20 +32,20 @@ with inp_dfb.wait() as tile:
 
 Prints DFB metadata: size, limit, page_size, num_pages, rd_ptr, wr_ptr.
 
-### Tile from DFB (full tile)
+### Tile from DFB
 
 ```python
 with inp_dfb.wait() as tile:
     print(tile, thread="pack")
 ```
 
-Prints the full 32x32 tile contents from the DFB. The tile must be live (between wait/pop or reserve/push).
+Prints the physical tile contents from the DFB using its tile dimensions. The tile must be live (between wait/pop or reserve/push).
 
 Note: will dump all registers in a block if using multi-tile block size (DFB shape > 1x1) as the print will be inside the loop generated.
 
 Note: unsupported on math thread.
 
-Example output:
+Example output for a 32x32 tile:
 ```
 0:(x=1,y=1):TR2: ======
 0:(x=1,y=1):TR2: 0 : 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0

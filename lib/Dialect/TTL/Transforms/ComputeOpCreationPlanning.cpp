@@ -1039,7 +1039,6 @@ recordComputeTileTypes(ComputeOpCreationPlan &plan) {
                                                         : input.getType())};
     }
     plan.inputTileTypes.push_back(inputTileType);
-    failureReason.clear();
     if (failed(validateComputeTileType(inputTileType, failureReason))) {
       return PlanningDiagnostic{plan.source, "compute input " +
                                                  std::to_string(inputIndex) +
@@ -1047,7 +1046,6 @@ recordComputeTileTypes(ComputeOpCreationPlan &plan) {
     }
   }
   for (const FusedOperationPlan &operationPlan : plan.fusedOperations) {
-    failureReason.clear();
     if (failed(validateComputeTileType(operationPlan.resultTileType,
                                        failureReason))) {
       return PlanningDiagnostic{operationPlan.source,
@@ -1081,8 +1079,11 @@ bool hasStandaloneComputeOpCreationRecipe(Operation *source) {
   if (failed(buildOperationSpecificPlan(plan, failureReason))) {
     return false;
   }
-  return plan.kind == ComputeOpCreationKind::Elide ||
-         !recordComputeTileTypes(plan);
+  if (plan.kind == ComputeOpCreationKind::Elide) {
+    return true;
+  }
+  std::optional<PlanningDiagnostic> diagnostic = recordComputeTileTypes(plan);
+  return !diagnostic.has_value();
 }
 
 PlanningResult<OutputPublicationPlan>
