@@ -22,7 +22,7 @@ from .context import get_context
 from .dfb import Block, check_same_layout, track_source_blocks, _dry_run_result
 from .blockstate import BlockAcquisition
 from .kernel import KernelKind
-from .ttnnsim import ROW_MAJOR_LAYOUT, Tensor, _promote_dtype
+from .ttnnsim import ROW_MAJOR_LAYOUT, Tensor, _promote_dtype, bfloat16 as _bfloat16
 
 
 def _is_dry_run() -> bool:
@@ -274,7 +274,7 @@ def fill(
     batch = shape[:-2]
     TM, TK = shape[-2], shape[-1]
 
-    declared = dtype if dtype is not None else torch.bfloat16
+    declared = dtype if dtype is not None else _bfloat16
     elem = torch.full(
         (*batch, TM * tile_h, TK * tile_w),
         value,
