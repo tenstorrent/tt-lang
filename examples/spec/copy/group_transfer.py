@@ -123,6 +123,13 @@ try:
 
     # Nearest-neighbor upsample: each input pixel is replicated
     # H_SCALE_FACTOR x W_SCALE_FACTOR times into the output.
+    #
+    # What this checks is the upsample, not the group. The simulator waits for a
+    # transfer whose handle is never waited on explicitly (copy-wait injection,
+    # docs/sphinx/simulator.md), so the same output comes out with the gxf.add and
+    # gxf.wait_all lines removed -- on hardware those transfers would still be in
+    # flight. The group's own contract (transfers complete at wait_all, no add
+    # after it) is pinned in test/sim/test_copy.py::TestGroupTransfer.
     expected = input_torch.repeat_interleave(H_SCALE_FACTOR, dim=1).repeat_interleave(
         W_SCALE_FACTOR, dim=2
     )
