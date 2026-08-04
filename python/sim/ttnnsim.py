@@ -1462,6 +1462,11 @@ class Shape(tuple[int, ...]):
     true here and false on a device, and ``(1,) + shape`` still concatenates,
     because Python hands that to the tuple on the left.
 
+    One cosmetic difference is deliberate: this prints as ``(2, 3)`` where ttnn
+    prints ``Shape([2, 3])``.  The simulator's diagnostics quote shapes in their
+    messages, alongside the block shapes that are plain tuples, and the ttnn
+    spelling reads badly there.
+
     This is ttnn's ``Shape``, and is a different type from ``ttl.Shape``
     (``sim.typedefs.Shape``), which the specification defines as a tuple of
     dimensions rather than a class and which is only ever an annotation.  Both
@@ -1515,6 +1520,46 @@ class Shape(tuple[int, ...]):
                 "first: tuple(shape)[1:]"
             )
         return super().__getitem__(index)
+
+    def __eq__(self, other: object) -> bool:
+        """Equal to any spelling of the same dimensions, as ttnn's is.
+
+        ttnn converts a list or tuple of sizes to a ``Shape`` before comparing,
+        so a shape equals both spellings there.  Inheriting tuple's comparison
+        would answer False for a list -- not an error a reader would notice,
+        just a different answer than the device gives.
+        """
+        match other:
+            case Shape() | tuple() | list():
+                return tuple(self) == tuple(cast("Sequence[int]", other))
+            case _:
+                return NotImplemented
+
+    def __ne__(self, other: object) -> bool:
+        result = self.__eq__(other)
+        if result is NotImplemented:
+            return result
+        return not result
+
+    def __hash__(self) -> int:
+        """The equal tuple's hash.
+
+        Defining ``__eq__`` above would otherwise leave a Shape unhashable, and
+        hashing it as the tuple it compares equal to is what lets the two
+        spellings reach the same dict entry.
+        """
+        return super().__hash__()
+
+    def _refuse_ordering(self, other: object) -> NoReturn:
+        raise TypeError(
+            "Shape cannot be ordered; a shape has no order on a device. "
+            "Compare the dimensions that matter, or convert: tuple(shape) < ..."
+        )
+
+    __lt__ = _refuse_ordering
+    __le__ = _refuse_ordering
+    __gt__ = _refuse_ordering
+    __ge__ = _refuse_ordering
 
     def __add__(self, other: object) -> NoReturn:
         raise TypeError(

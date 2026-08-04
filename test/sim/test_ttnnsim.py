@@ -1086,7 +1086,15 @@ def test_shape_offers_what_ttnn_shape_offers():
     assert shape.rank == 3
     assert shape[0] == 2 and shape[-1] == 32
     assert list(shape) == [2, 3, 32]
+    # Equal to either spelling of the same dimensions, as ttnn's is: it takes a
+    # list or tuple of sizes as a Shape before comparing.
     assert shape == (2, 3, 32)
+    assert shape == [2, 3, 32]
+    assert shape != [2, 3, 64]
+    assert shape != 3
+    # And still usable as a key, interchangeably with the tuple it equals.
+    keyed: dict[tuple[int, ...], str] = {(2, 3, 32): "tile grid"}
+    assert keyed[shape] == "tile grid"
 
     # to_rank pads with leading ones to grow, and drops leading ones to shrink.
     assert ttnn.Shape([32, 64]).to_rank(4) == (1, 1, 32, 64)
@@ -1105,6 +1113,8 @@ def test_shape_offers_what_ttnn_shape_offers():
         (lambda: ttnn.Shape([2, 32]) + (1,), "cannot be concatenated"),
         (lambda: ttnn.Shape([2, 32]) * 2, "cannot be repeated"),
         (lambda: 2 * ttnn.Shape([2, 32]), "cannot be repeated"),
+        (lambda: ttnn.Shape([2, 32]) < (3, 32), "cannot be ordered"),
+        (lambda: ttnn.Shape([2, 32]) >= ttnn.Shape([2, 32]), "cannot be ordered"),
     ],
 )
 def test_shape_refuses_what_a_device_shape_refuses(
@@ -1911,12 +1921,14 @@ def test_the_wrapping_exclusions_say_only_what_is_true() -> None:
     from sim import ttnnsim
 
     defined = vars(ttnnsim)
-    redundant = sorted(n for n in ttnnsim._EXCLUDE_FROM_WRAPPING if n in defined)
+    excluded = ttnnsim._EXCLUDE_FROM_WRAPPING  # type: ignore[reportPrivateUsage]
+    redundant = sorted(n for n in excluded if n in defined)
     assert redundant == [], "these are implemented, so excluding them says nothing"
 
     # The builtins are still the builtins inside the module, which is what
     # excluding them is for.
-    assert all(n not in defined for n in ttnnsim._SHADOWS_A_BUILTIN)
+    builtin_names = ttnnsim._SHADOWS_A_BUILTIN  # type: ignore[reportPrivateUsage]
+    assert all(n not in defined for n in builtin_names)
     # And an unavailable op is absent rather than answered wrongly.
     assert not hasattr(ttnnsim, "concat")
 
