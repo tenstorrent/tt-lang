@@ -177,50 +177,23 @@ def format_name_to_ttnn_dtype(name: str):
     match name:
         case "bfloat16" | "bf16":
             return ttnn.DataType.BFLOAT16
+        case "bfloat4_b" | "bfp_bf4":
+            return ttnn.DataType.BFLOAT4_B
+        case "bfloat8_b" | "bfp_bf8":
+            return ttnn.DataType.BFLOAT8_B
         case "float16" | "f16":
             return ttnn.DataType.BFLOAT16  # hardware implements f16 as bf16
         case "float32" | "f32":
             return ttnn.DataType.FLOAT32
-        case "int32" | "i32":
+        case "int32" | "i32" | "si32":
             return ttnn.DataType.INT32
-        case "uint32" | "u32":
+        case "uint32" | "u32" | "ui32":
             return ttnn.DataType.UINT32
-        case "uint16" | "u16":
+        case "uint16" | "u16" | "ui16":
             return ttnn.DataType.UINT16
+        case "uint8" | "u8" | "ui8":
+            return ttnn.DataType.UINT8
         case _:
             raise ValueError(
                 f"Unrecognized data format name '{name}' for ttnn.DataType"
             )
-
-
-def tile_bytes_from_dtype(dtype) -> int:
-    """
-    Calculate tile size in bytes from ttnn dtype.
-
-    For tiled tensors, each tile is 32x32 elements. The byte size depends on
-    the data type's element size plus any format-specific overhead.
-
-    Args:
-        dtype: ttnn.DataType enum value
-
-    Returns:
-        Tile size in bytes
-
-    Raises:
-        ValueError: If dtype is not supported
-    """
-    dtype_int = dtype.value
-    # Map ttnn DataType enum values to tile sizes
-    # Reference: tt-metal/tt_metal/common/constants.hpp
-    if dtype_int in (0, 6):  # BFloat16, UInt16
-        return 32 * 32 * 2  # 2048
-    elif dtype_int in (1, 2, 7):  # Float32, Int32, UInt32
-        return 32 * 32 * 4  # 4096
-    elif dtype_int == 3:  # BFP8
-        return 32 * 32 + 64  # 1088
-    elif dtype_int == 5:  # UInt8/Int8
-        return 32 * 32  # 1024
-    elif dtype_int == 4:  # BFP4
-        return 512 + 64  # 576
-    else:
-        raise ValueError(f"Unsupported dtype for tile size calculation: {dtype}")

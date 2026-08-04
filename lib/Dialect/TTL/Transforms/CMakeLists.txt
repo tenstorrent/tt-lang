@@ -4,6 +4,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   IntermediateDFBPlanning.cpp
   ConvertTTLToTTKernel.cpp
   DFBAcquireReleaseAnalysis.cpp
+  DFBLogicalIdentityAnalysis.cpp
   DFBValueLifetimeAnalysis.cpp
   DFBMaterialization.cpp
   PipeCapacityAnalysis.cpp

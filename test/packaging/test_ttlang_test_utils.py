@@ -52,6 +52,7 @@ def _load_ttlang_test_utils(
     else:
         # None in sys.modules makes `from ttl.config import ...` raise ImportError.
         monkeypatch.setitem(sys.modules, "ttl", None)
+        monkeypatch.setitem(sys.modules, "ttl.config", None)
 
     real_glob = glob.glob
 

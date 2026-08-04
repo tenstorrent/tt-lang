@@ -9,6 +9,95 @@
 
 namespace mlir::tt::ttl {
 
+FailureOr<int64_t> getDFBId(Value cb) {
+  auto bindOp = getDFBDeclaration(cb);
+  if (!bindOp) {
+    return failure();
+  }
+  auto dfbId = bindOp.getDfbId();
+  if (!dfbId.has_value()) {
+    return failure();
+  }
+  return dfbId->getSExtValue();
+}
+
+LogicalResult verifyDFBOperandIdentities(
+    ModuleOp moduleOp, StringRef consumerPass,
+    llvm::function_ref<bool(Operation *)> operationFilter,
+    llvm::function_ref<FailureOr<int64_t>(Value)> identityResolver,
+    StringRef operandDescription, DFBIdentityRequirement requirement) {
+  WalkResult result = moduleOp.walk([&](Operation *operation) {
+    if (!operationFilter(operation)) {
+      return WalkResult::advance();
+    }
+    for (Value operand : operation->getOperands()) {
+      if (!isa<CircularBufferType>(operand.getType())) {
+        continue;
+      }
+      if (succeeded(identityResolver(operand))) {
+        continue;
+      }
+      InFlightDiagnostic diagnostic = operation->emitOpError();
+      diagnostic << "`" << consumerPass << "` requires every "
+                 << operandDescription
+                 << " operand to resolve to `ttl.bind_cb`";
+      if (requirement == DFBIdentityRequirement::Finalized) {
+        diagnostic << " with `dfb_id` after finalization";
+      }
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return failure(result.wasInterrupted());
+}
+
+LogicalResult verifyResolvedDFBIdentities(ModuleOp moduleOp,
+                                          StringRef consumerPass) {
+  bool hasAllocationMetadata = moduleOp->hasAttr(kDFBAllocationsAttrName);
+  bool hasDFB = false;
+  WalkResult result =
+      moduleOp.walk([&](Operation *nestedOperation) {
+        if (!isa<BindCBOp, CBReserveOp, CBPushOp, CBWaitOp, CBPopOp>(
+                nestedOperation)) {
+          return WalkResult::advance();
+        }
+        hasDFB = true;
+        if (!hasAllocationMetadata) {
+          return WalkResult::interrupt();
+        }
+        if (auto bindOp = dyn_cast<BindCBOp>(nestedOperation);
+            bindOp && !bindOp.getDfbId().has_value()) {
+          bindOp.emitOpError()
+              << "`" << consumerPass
+              << "` requires every `ttl.bind_cb` to have `dfb_id` after "
+                 "finalization";
+          return WalkResult::interrupt();
+        }
+
+        return WalkResult::advance();
+      });
+
+  if (!hasDFB) {
+    return success();
+  }
+  if (!hasAllocationMetadata) {
+    moduleOp.emitOpError()
+        << "`" << consumerPass
+        << "` requires finalized DFB allocation metadata; run "
+           "`ttl-finalize-dfb-indices` first";
+    return failure();
+  }
+  if (result.wasInterrupted()) {
+    return failure();
+  }
+  return verifyDFBOperandIdentities(
+      moduleOp, consumerPass,
+      [](Operation *operation) {
+        return isa<CBReserveOp, CBPushOp, CBWaitOp, CBPopOp>(operation);
+      },
+      getDFBId, "DFB lifecycle", DFBIdentityRequirement::Finalized);
+}
+
 std::optional<BcastType> getTileBroadcastType(ArrayRef<int64_t> dims,
                                               int64_t rank) {
   llvm::SmallDenseSet<int64_t> normalizedDims = normalizeDimsToSet(dims, rank);

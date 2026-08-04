@@ -519,6 +519,9 @@ mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
   if (idx < 0) {
     return emitOpError() << "cb_index must be non-negative";
   }
+  if (auto dfbId = getDfbId(); dfbId && dfbId->isNegative()) {
+    return emitOpError() << "dfb_id must be non-negative";
+  }
 
   int64_t blockCount = getBlockCount();
   if (blockCount <= 0) {

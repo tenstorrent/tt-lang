@@ -12,6 +12,13 @@ kernels assign compiler DFBs kernel-local provisional indices. The module-level
 finalization pass assigns module-wide physical indices after the last
 user-declared DFB and applies lifetime-based index reuse.
 
+`ttl.bind_cb` separates logical and physical identity. `dfb_id` identifies one
+logical DFB across kernel functions, while `cb_index` identifies its assigned
+hardware slot. Keeping both identities allows non-overlapping logical DFBs to
+share one physical index without merging their producer and consumer
+protocols. Every user declaration carries `dfb_id`. Compiler-created
+declarations may omit it until module finalization assigns a unique ID.
+
 ## Pipeline
 
 The DFB-related passes in `ttl-to-ttkernel-pipeline` execute in this order:
@@ -23,8 +30,11 @@ ttl-annotate-l1-acc-loops      (FuncOp)   Mark user accumulation loops
 ttl-create-producer-compute    (FuncOp)   Create producer ttl.compute ops
 ttl-insert-intermediate-dfbs   (FuncOp)   Materialize compiler-allocated DFBs
 convert-ttl-to-compute         (FuncOp)   Lower remaining tensor ops
-ttl-auto-sync                  (FuncOp)   Insert/coalesce remaining DFB sync
-ttl-finalize-dfb-indices       (Module)   Index reuse + limit check
+ttl-insert-cb-sync             (FuncOp)   Insert remaining DFB synchronization
+ttl-verify-pipenet-guards      (Module)   Verify PipeNet launch-node domains
+ttl-verify-pipenet-schedule    (Module)   Verify PipeNet event ordering
+ttl-coalesce-dfb-acquires      (FuncOp)   Coalesce adjacent DFB acquisitions
+ttl-finalize-dfb-indices       (Module)   Finalize identities and allocations
 ttl-set-compute-kernel-config  (FuncOp)   Set per-kernel configuration
   ... DST assignment, loop lowering, scheduling ...
 ttl-annotate-cb-associations   (FuncOp)   Copy CB indices to tile ops
@@ -40,7 +50,17 @@ Compute configuration copies selected indices into
 operations (`bcast`, `reduce`, `transpose`). Running either pass first would
 leave stale attributes after finalization rewrites the indices.
 
-`ttl-verify-dfb-spsc` must run after `ttl-finalize-dfb-indices` so every `bind_cb` carries its final `cb_index`. The pass asserts on unresolvable indices.
+The PipeNet verifiers run before DFB acquire coalescing and physical index
+finalization. Guard verification uses the read-only logical identity analysis,
+which assigns temporary IDs to compiler-created DFBs without modifying IR.
+Schedule verification uses exact transfer provenance and does not depend on DFB
+allocation.
+
+`ttl-verify-dfb-spsc` must run after `ttl-finalize-dfb-indices` so every
+`bind_cb` carries its final `cb_index` and module-wide logical `dfb_id`. The
+pass requires the `ttl.dfb_allocations` module attribute emitted by successful
+finalization, then verifies that every declaration and lifecycle operand has a
+resolved logical ID.
 
 ## DFB Lifecycle
 
@@ -218,13 +238,16 @@ consumer for that DFB.
 
 The `ttl-verify-dfb-spsc` module-level pass runs after
 `ttl-annotate-cb-associations`. It walks every `cb_reserve` and `cb_wait` op,
-groups them by `cb_index` and enclosing `ttl.kernel_thread`-tagged
-`func.func`, and tracks the launch-node domain for each producer or consumer.
+groups them by logical `dfb_id` and enclosing
+`ttl.kernel_thread`-tagged `func.func`, and tracks the launch-node domain for
+each producer or consumer. Distinct logical DFBs therefore remain separate
+after physical allocation assigns them the same `cb_index`.
+
 The pass rejects a DFB when two producer domains overlap or when two consumer
 domains overlap. If multiple threads participate and a coordinate-dependent
 predicate cannot be analyzed statically, the pass rejects the DFB rather than
-assuming disjointness. The diagnostic identifies the cb_index, the role
-(producer or consumer), an overlapping launched node when available, the
+assuming disjointness. The diagnostic identifies the logical `dfb_id`, the
+role (producer or consumer), an overlapping launched node when available, the
 participating operation sites, and the originating `ttl.bind_cb`.
 
 See `test/ttlang/Dialect/TTL/Transforms/verify_dfb_spsc_invalid.mlir` for the rejected patterns and `verify_dfb_spsc.mlir` for the accepted ones.
@@ -252,8 +275,8 @@ Values produced by `ttl.compute` are materialized by the compiler-created
 intermediate lifecycle described above: the compute gains extra DFB outputs,
 and consumers receive attached tensor values instead of the original
 non-attached compute results. The final `convert-ttl-to-compute` pass lowers
-consumers that now receive DFB-attached operands. The following `ttl-auto-sync`
-run inserts the consumer `cb_pop`.
+consumers that now receive DFB-attached operands. The following
+`ttl-insert-cb-sync` pass inserts the consumer `cb_pop`.
 
 ### DFB Lifetime and `ComputeOp` Creation Planning
 
@@ -386,7 +409,7 @@ The correctness argument relies on these pipeline assumptions:
   operation, materialization splits the tensor SSA frontier first.
 - A plan is applied only to the unchanged kernel from which it was built.
   Application verifies recorded operands and uses before rewriting them.
-- `ttl-auto-sync` runs after final creation and inserts absent pushes and pops
+- `ttl-insert-cb-sync` runs after final creation and inserts absent pushes and pops
   after the resulting final uses.
 
 #### Compiler-Created Intermediate DFB Analysis and Materialization
@@ -617,7 +640,7 @@ MLIR executes them concurrently.
 
 Non-compute producers use standalone tensor materialization. The helper emits
 the reserve/store and wait/attach after an insertion operation recorded by the
-plan, while `ttl-auto-sync` inserts the missing releases:
+plan, while `ttl-insert-cb-sync` inserts the missing releases:
 
 ```
 bind_cb {ttl.compiler_allocated}
@@ -646,11 +669,16 @@ value, they share one materialization. The selected insertion operation
 properly dominates every rewritten consumer, so the attached replacement is
 valid for consumers in nested or incomparable regions.
 
-When one computed value has direct `ttl.store` users in multiple blocks, the
-stores cannot be represented by one `ComputeOp` output-publication position.
-`ttl-insert-intermediate-dfbs` materializes the value once and rewrites those
-stores to read the attached compiler DFB value. Final compute creation then
-sees one store for that producer result: the compiler DFB store inserted at the
+When one computed value has direct `ttl.store` users in multiple MLIR basic
+blocks, one `ttl.compute` cannot absorb all of them. A compute operation is
+located in one MLIR basic block, and all output stores in its body execute
+whenever that operation executes. Moving stores from different MLIR basic
+blocks into one compute could therefore change their conditional execution or
+violate SSA dominance.
+`ttl-insert-intermediate-dfbs` therefore materializes the value once and
+rewrites each original store to read the attached compiler DFB value while
+remaining in its original MLIR basic block. Final compute creation sees one
+store for the producer result: the compiler DFB store inserted at the
 materialization point.
 
 For `ttl.compute` results, the attached value is created immediately after the
@@ -1031,9 +1059,52 @@ uniqued type, this is a pointer comparison. The algorithm partitions DFBs by
 type and applies deterministic first-fit interval coloring within each
 partition.
 
+### Logical identity
+
+The frontend assigns each user-declared DFB a module-wide logical `dfb_id` and
+copies that ID to the declaration in every participating kernel.
+Compiler-created declarations receive distinct logical IDs after the largest
+explicit ID. A user declaration without `dfb_id` is rejected before physical
+allocation.
+
+Declarations with one `dfb_id` must have the same `CircularBufferType`.
+Compiler-created DFBs are currently kernel-local and receive distinct logical
+IDs.
+
+Logical identity resolution is a read-only analysis. The finalizer
+materializes its complete assignment on `ttl.bind_cb` only after the identity
+and capacity checks succeed. Rewriting `cb_index` therefore does not merge
+the SPSC or PipeNet protocol state of distinct logical DFBs.
+
+```
+resolveLogicalDFBIdentities(module):
+  maxExplicitId = max(dfb_id for declarations that have dfb_id, default=-1)
+  reject any user declaration without dfb_id
+  compilerCount = count(compiler-created declarations without dfb_id)
+  reject if maxExplicitId + compilerCount exceeds the index domain
+  nextCompilerId = maxExplicitId + 1 if compilerCount > 0 else 0
+
+  for declaration in module traversal order:
+    logicalId = declaration.dfb_id
+    if declaration has no dfb_id:
+      logicalId = nextCompilerId++
+    reject logicalId if another declaration with that ID has a different type
+    assignments.append({declaration, logicalId})
+
+  return assignments
+```
+
+Generated IDs are strictly greater than every explicit ID, and each
+compiler-created declaration consumes the next ID exactly once. Generated and
+explicit identities therefore cannot collide. Equal types for repeated
+explicit IDs ensure that one logical identity denotes one DFB representation.
+
 ### Algorithm
 
 ```
+identityAssignments = resolveLogicalDFBIdentities(module)
+reject if logical identity validation fails
+
 if any compiler-created DFB exists and a derived DFB-index attribute exists:
   reject the invalid pass order
 
@@ -1042,7 +1113,10 @@ for bindOp in compilerAllocatedBindCBOps:
   if lifecycleOps is not empty and any operation kind is missing:
     reject the partial lifecycle
 
-nextCompilerIndex = max(userDeclaredDFBIndices) + 1
+compact distinct user physical indices into a dense zero-based range
+record the compacted index for every user declaration
+
+nextCompilerIndex = number of distinct user physical indices
 for kernel in module:
   slots = planPhysicalDFBIndices(
       kernel, compilerAllocatedBindCBOps[kernel], nextCompilerIndex, plan)
@@ -1050,10 +1124,14 @@ for kernel in module:
 
 if nextCompilerIndex > 32:
   reject the allocation
-assert every shared planned index has one exact DFB type
 
-apply every planned cb_index assignment
-apply ttl.base_cta_index and ttl.compiler_allocated_dfbs
+for declaration in module:
+  physicalIndex = planned user or compiler index
+  reject if logicalId previously mapped to a different physicalIndex
+  reject if another declaration at physicalIndex has a different exact type
+
+apply every planned cb_index and dfb_id assignment
+apply ttl.base_cta_index and ttl.dfb_allocations
 
 planPhysicalDFBIndices(
     kernel, compilerAllocatedBindCBOps, firstPhysicalIndex, plan):
@@ -1104,12 +1182,13 @@ have balanced each acquire with its corresponding release before finalization.
 A declaration with no lifecycle operations is legal but conservatively remains
 live through the end of its kernel.
 
-Planning separates all fallible work from mutation. Pass-order, lifecycle, and
-capacity validation complete before any `cb_index`, `ttl.base_cta_index`, or
-`ttl.compiler_allocated_dfbs` update. A failed pass therefore leaves the input
-IR unchanged. Type-partitioned allocation guarantees that DFBs sharing a
-planned compiler index have one exact type; the metadata builder asserts this
-internal invariant.
+Planning separates all fallible work from mutation. Pass-order, lifecycle,
+logical-identity, capacity, and metadata validation complete before any
+`cb_index`, `dfb_id`, `ttl.base_cta_index`, or `ttl.dfb_allocations` update. A
+failed pass therefore leaves the input IR unchanged. Type-partitioned allocation
+guarantees that compiler-created DFBs sharing a planned index have one exact
+type. Metadata validation applies the same requirement to every declaration at
+each physical index.
 
 Intervals are half-open. A pop at kernel-body ordinal `N` produces endpoint
 `N + 1`, so the interval includes the release operation. A reserve in the next
@@ -1138,19 +1217,52 @@ different slots.
 
 ### Module attribute and runtime integration
 
-The planned physical DFB count is one greater than the greatest assigned index.
-This is the index space usage, not a count of distinct DFBs; sparse user indices
-inflate it. The pass verifies this does not exceed `kMaxCircularBuffers` (32).
+The pass compacts distinct user physical indices before placing
+compiler-created DFBs after them. This removes gaps caused by declarations that
+the frontend created but no kernel captured, without changing logical identity
+or existing physical-index sharing. The planned physical DFB count is one
+greater than the greatest assigned index, and the pass verifies this does not
+exceed `kMaxCircularBuffers` (32).
 
 The pass then sets `ttl.base_cta_index` on every kernel function. Compile-time
 arguments (CTAs) to each kernel are laid out as `[CB indices..., other args...]`.
 `base_cta_index` is the starting index of the non-CB arguments -- equivalently,
 one past the last CB index. CB indices occupy `[0, base_cta_index)`.
 
-Finally, the pass builds the `ttl.compiler_allocated_dfbs` module attribute
-with one entry per unique physical index, deduplicated from the potentially
-many `BindCBOp`s that now share an index. The Python runtime reads this
-attribute to allocate L1 buffers at dispatch time.
+Finally, the pass builds the `ttl.dfb_allocations` module attribute with one
+descriptor per physical index. Each descriptor contains `dfb_index`,
+`num_tiles`, `element_type`, `page_size`, and `block_count`. The finalizer
+computes `page_size` with `ttcore::getElementSizeBytes()` on the finalized
+element type, so subtile dimensions affect the allocation without requiring
+runtime device initialization.
+
+```
+emitDFBAllocations(declarations, plannedIndices):
+  for declaration in declarations:
+    index = plannedIndices[declaration]
+    reject index if another declaration at that index has a different type
+    allocationByIndex.insert(index, declaration.type)
+
+  for (index, type) in allocationByIndex sorted by index:
+    emit {dfb_index = index,
+          num_tiles = type.elementsPerBlock,
+          element_type = type.elementType,
+          page_size = byteSize(type.elementType),
+          block_count = type.blockCount}
+```
+
+Every finalized declaration contributes to the table. Type equality makes
+each deduplicated descriptor valid for every declaration at that physical
+index, and deriving the page size from the same element type used by lowering
+keeps compiler and runtime allocation sizes equal.
+
+The Python runtime validates that the descriptors form a dense index range and
+builds all `ttnn.CBDescriptor` objects from this final allocation table. It
+does not use the frontend's logical DFB list after physical assignment. This
+preserves compiler-computed page sizes, tile dimensions, and data formats.
+Scalar element types omit the optional TTNN tile descriptor, so their page
+size is not paired with an invented 32x32 tile. Standalone runner emission uses
+the same physical configuration as direct execution.
 
 ## Limitations and Future Work
 
