@@ -691,6 +691,40 @@ class TestPerNodeBodyExecution:
         test_operation(a, b)
         assert len(runs) == 16
 
+    def test_nodes_a_pipe_net_leaves_out_still_run_their_setup(self) -> None:
+        """Inactive nodes skip their kernels but not the body that built them.
+
+        Which nodes a pipe net covers is only known once every body has run and
+        its pipes have been collected, so the body runs everywhere first.  On
+        hardware an inactive node allocates nothing, so its dataflow buffers
+        exist here and not there.
+        """
+        setup_nodes: list[int] = []
+        kernel_nodes: list[int] = []
+
+        @ttl.operation(grid=(2, 2))
+        def test_operation(a: ttnn.Tensor, b: ttnn.Tensor) -> None:
+            setup_nodes.append(cast(int, ttl.node(dims=1)))
+            # A single pipe, so two of the four nodes take no part in the net.
+            net = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(1, 0))])
+
+            @ttl.compute()
+            def compute():
+                kernel_nodes.append(cast(int, ttl.node(dims=1)))
+
+            @ttl.datamovement()
+            def dm0():
+                net.if_src(lambda pipe: None)
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+        test_operation(make_zeros_tensor(32, 32), make_zeros_tensor(32, 32))
+
+        assert sorted(setup_nodes) == [0, 1, 2, 3]
+        assert sorted(kernel_nodes) == [0, 2]
+
 
 class TestFlattenNodeCoord:
     """Test flatten_node_index() function."""

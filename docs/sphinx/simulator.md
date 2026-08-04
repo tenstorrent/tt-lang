@@ -72,6 +72,12 @@ once in total under the compiler. The specification does not currently say how
 many times an implementation may evaluate the body, so such a body should not be
 relied upon.
 
+Every node is evaluated, including the ones a pipe net leaves inactive: which
+nodes participate is only known once every body has run and its pipes have been
+collected. Inactive nodes then skip their kernels, as they do on hardware, but
+their setup has already run, so their dataflow buffers exist and count towards
+the reported per-node limits.
+
 ## Float32 Promotion
 
 By default the simulator promotes all floating-point dtypes narrower than

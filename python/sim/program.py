@@ -213,7 +213,9 @@ def run_operation(
     per node.  Each run produces that node's DataflowBuffers (shared among the
     node's kernels) and its three kernels (whose closures capture the per-node
     state).  PipeNets discovered across the per-node runs are aggregated to
-    compute the active-node set.
+    compute the active-node set -- which is why every node's body runs, inactive
+    ones included: the set is not known until they have.  Their kernels are then
+    skipped, but their setup has already happened.
 
     The compiler evaluates the body once instead, at compile time, so a body
     that mutates state of the enclosing scope sees those effects repeated here
@@ -383,8 +385,12 @@ def _schedule_and_run(
         )
 
     # Compute the PipeNet active set: linear node indices that participate in
-    # any pipe as source or destination. Inactive nodes skip every kernel,
-    # mirroring the compiler's scf.if guard.
+    # any pipe as source or destination.  Inactive nodes skip every kernel,
+    # mirroring the compiler's scf.if guard -- but only the kernels: their setup
+    # has already run, because the active set is not known until every node's
+    # body has been evaluated and its pipes collected (see run_operation).  So
+    # an inactive node's dataflow buffers exist and count against the hardware
+    # limits, where on hardware they would never be allocated.
     active_nodes = (
         pipenets.active_node_set(tuple(grid)) if pipenets is not None else None
     )
