@@ -38,6 +38,7 @@ from .dataflow_buffer import CompilerAllocatedDFBConfig
 from .constants import DEFAULT_L1_CB_BUDGET_BYTES
 from .dtype_utils import (
     format_name_to_ttnn_dtype,
+    tile_bytes_from_dtype,
     torch_dtype_to_ttnn_datatype,
 )
 
@@ -423,7 +424,7 @@ def build_cb_descriptors(
         data_format = _dfb_data_format(cb)
         tile = ttnn.Tile(cb.tile)
         tile_descriptor = ttnn.TileDescriptor(tile)
-        page_size = tile.get_tile_size(data_format)
+        page_size = tile_bytes_from_dtype(data_format, cb.tile)
         total_size = _dfb_capacity_tiles(cb) * page_size
         if isinstance(cb, CompilerAllocatedDFBConfig):
             description = (
@@ -754,8 +755,7 @@ def emit_runner_source(
             continue
         data_format = _dfb_data_format(cb)
         tile_hw = tuple(cb.tile)
-        tile = ttnn.Tile(tile_hw)
-        page_size = tile.get_tile_size(data_format)
+        page_size = tile_bytes_from_dtype(data_format, tile_hw)
         dtype_str = _dtype_to_ttnn_str(data_format)
         total_size = _dfb_capacity_tiles(cb) * page_size
         lines.append(
