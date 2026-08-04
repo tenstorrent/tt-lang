@@ -261,6 +261,11 @@ def test_to_torch_spellings_split_the_logical_data_from_the_store():
     tensor.to_torch().fill_(4.0)
     assert torch.all(ttnn.to_torch(tensor) == 4.0), "the store is not the tensor's own"
 
+    # And only that spelling writes through: on a device ttnn.to_torch lands in
+    # host memory, so a write to it is dropped.
+    ttnn.to_torch(tensor).fill_(7.0)
+    assert torch.all(tensor.to_torch() == 4.0), "ttnn.to_torch was not a copy"
+
 
 # ---- Tile-based indexing tests ----
 

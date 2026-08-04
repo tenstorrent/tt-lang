@@ -2511,10 +2511,11 @@ def to_torch(
     has the tensor's :attr:`~Tensor.shape` and not its
     :attr:`~Tensor.padded_shape`, so tile padding never reaches a caller
     comparing against a torch reference, and ``from_torch`` followed by
-    ``to_torch`` round-trips a tensor of any shape.  Use
+    ``to_torch`` round-trips a tensor of any shape.  The result is a copy, as
+    ttnn's is, so writing to it does not reach the tensor.  Use
     :meth:`Tensor.to_torch` for the padded store instead, which is what a kernel
-    addresses; it is the same storage rather than a host copy, so it is also the
-    way to mutate a tensor in place.
+    addresses and is the storage itself, so it is also the way to mutate a
+    tensor in place.
 
     When float32 promotion is active the dtype is float32 regardless of the
     declared dtype; external torch code also uses float32 (torch.bfloat16 is
@@ -2530,7 +2531,10 @@ def to_torch(
     """
     match t:
         case Tensor() as tw:
-            return _logical_view(tw)
+            # A copy, as ttnn's is: on a device the result is host memory, so
+            # writing to it cannot reach the tensor.  Sharing the store would
+            # let a write that a device would drop take effect here.
+            return _logical_view(tw).clone()
         case torch.Tensor() as tt:
             return tt
         case _:
