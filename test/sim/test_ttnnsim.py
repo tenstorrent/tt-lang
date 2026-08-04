@@ -1048,6 +1048,12 @@ def test_from_torch_tile_layout_pads_non_tile_aligned_shapes():
     assert long_vec.shape == (128,)
     assert long_vec.padded_shape == (32, 128)
 
+    # The lifted row is then padded like any other shape, so a vector whose length
+    # is not a tile multiple does not stay 1xN: it reports a whole tile.
+    short_vec = ttnn.from_torch(torch.ones((5,)), layout=ttnn.TILE_LAYOUT)
+    assert short_vec.shape == (5,)
+    assert short_vec.padded_shape == (32, 32)
+
     scalar_0d = ttnn.from_torch(
         torch.tensor(3.5, dtype=torch.float32), layout=ttnn.TILE_LAYOUT
     )

@@ -1831,9 +1831,9 @@ class Tensor:
         # The logical (user-visible) shape, mirroring ttnn.Tensor.shape: the
         # dimensions of the actual data, before the store is padded out to whole
         # tiles and before a low-rank input gains the leading unit dimensions
-        # that give it a tileable rank -- a length-N vector is stored as a 1xN
-        # row (see _normalize_rank_for_layout).  ``padded_shape`` reports that
-        # stored shape.  ``logical_shape`` defaults to the
+        # that give it a tileable rank -- a length-N vector is lifted to a 1xN row
+        # (see _normalize_rank_for_layout) and then tile-padded from there.
+        # ``padded_shape`` reports that stored shape.  ``logical_shape`` defaults to the
         # backing tensor's shape for tensors produced by internal ops (e.g.
         # arithmetic / slicing), whose data is already at physical extent; the
         # creation entry points (from_torch / rand / empty / zeros) pass the
@@ -1883,9 +1883,11 @@ class Tensor:
         Mirrors ``ttnn.Tensor.padded_shape``: the shape of the stored data,
         including any zero padding added to reach ``TILE_SHAPE`` multiples for
         ``TILE_LAYOUT`` tensors and any leading unit dimensions a low-rank input
-        gained to reach a tileable rank -- a length-N vector is stored as a 1xN
-        row. For ``ROW_MAJOR_LAYOUT`` this equals ``shape`` apart from a bare
-        scalar, which is stored as a length-1 vector.
+        gained to reach a tileable rank. A length-N vector is lifted to a 1xN row
+        and then padded out with it, so a length-5 vector reports ``(32, 32)``
+        while its :attr:`shape` stays ``(5,)``. For ``ROW_MAJOR_LAYOUT`` this
+        equals ``shape`` apart from a bare scalar, which is stored as a length-1
+        vector.
         """
         return Shape(self._tensor.shape)
 
