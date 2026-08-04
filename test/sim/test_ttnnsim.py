@@ -3042,6 +3042,35 @@ class TestShardingHelpers:
         dst = ttnn.to_memory_config(src, ttnn.DRAM_MEMORY_CONFIG)
         assert dst.layout == ttnn.ROW_MAJOR_LAYOUT
 
+    def test_to_memory_config_preserves_the_shape_and_dtype(self) -> None:
+        """Only the memory config changes; a padded tensor keeps its shape.
+
+        Rebuilding from the store alone would report the padding as the shape,
+        so moving a tensor to L1 would change what it says it is.
+        """
+        src = ttnn.from_torch(torch.rand(3, 5), dtype=ttnn.bfloat16)
+        dst = ttnn.to_memory_config(src, ttnn.L1_MEMORY_CONFIG)
+        assert (dst.shape, dst.padded_shape, dst.dtype) == (
+            (3, 5),
+            (32, 32),
+            ttnn.bfloat16,
+        )
+
+    def test_squeeze_removes_a_logical_dimension_not_a_stored_one(self) -> None:
+        """squeeze reads the logical shape, as ttnn's does.
+
+        A size-1 logical dimension is a whole tile of the store, so squeezing
+        the store finds nothing of size 1 to drop and returns the tensor
+        unchanged.
+        """
+        col = ttnn.from_torch(torch.arange(64.0).reshape(64, 1))
+        assert col.padded_shape == (64, 32)
+
+        squeezed = ttnn.squeeze(col, 1)
+        assert squeezed.shape == (64,)
+        assert torch.equal(ttnn.to_torch(squeezed), torch.arange(64.0))
+        assert ttnn.squeeze(col).shape == (64,)
+
 
 class TestRowMajorLayout:
     """Tests for ROW_MAJOR_LAYOUT Tensor behaviour (Steps 1 and 2)."""

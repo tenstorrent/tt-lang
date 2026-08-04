@@ -2719,9 +2719,16 @@ def to_memory_config(tensor: Tensor, memory_config: MemoryConfig) -> Tensor:
 
     Mirrors ttnn.to_memory_config.  The simulator does not move data between
     memory banks; it only updates the MemoryConfig metadata so that subsequent
-    statistics collection uses the new layout.
+    statistics collection uses the new layout.  Everything else about the
+    tensor -- its shape, dtype and layout -- is the same tensor's.
     """
-    result = Tensor(tensor.to_torch(), tensor.layout, memory_config)
+    result = Tensor(
+        tensor.to_torch(),
+        tensor.layout,
+        memory_config,
+        dtype=tensor.dtype,
+        logical_shape=tensor.shape,
+    )
     if hasattr(tensor, "_name"):
         result._name = tensor._name  # type: ignore[attr-defined]
     return result
@@ -3121,7 +3128,14 @@ def all_reduce(
     out_memory_config = (
         memory_config if memory_config is not None else input_tensor.memory_config
     )
-    result_tensor = Tensor(result, input_tensor.layout, out_memory_config)
+    # A reduce leaves the shape alone, so the logical one carries over.
+    result_tensor = Tensor(
+        result,
+        input_tensor.layout,
+        out_memory_config,
+        dtype=dtype if dtype is not None else input_tensor.dtype,
+        logical_shape=input_tensor.shape,
+    )
     result_tensor.mesh_shard_info = msi
     if hasattr(input_tensor, "_name"):
         result_tensor._name = input_tensor._name  # type: ignore[attr-defined]
@@ -3203,7 +3217,9 @@ def all_gather(
     out_memory_config = (
         memory_config if memory_config is not None else input_tensor.memory_config
     )
-    result_tensor = Tensor(result, input_tensor.layout, out_memory_config)
+    result_tensor = Tensor(
+        result, input_tensor.layout, out_memory_config, dtype=input_tensor.dtype
+    )
     result_tensor.mesh_shard_info = msi
     if hasattr(input_tensor, "_name"):
         result_tensor._name = input_tensor._name  # type: ignore[attr-defined]
@@ -3222,6 +3238,11 @@ def synchronize_device(*args: Any, **kwargs: Any) -> None:
 def squeeze(input_tensor: Tensor, dim: Optional[int] = None) -> Tensor:
     """Remove dimensions of size 1 from a tensor.
 
+    Operates on the logical tensor, as ttnn's does, and stores the result
+    padded again: a size-1 dimension of the logical shape is a whole tile of
+    the store, so squeezing the store would find nothing to remove and leave
+    the dimension in place.
+
     Args:
         input_tensor: Input tensor
         dim: If specified, only squeeze this dimension if it has size 1.
@@ -3230,12 +3251,14 @@ def squeeze(input_tensor: Tensor, dim: Optional[int] = None) -> Tensor:
     Returns:
         Tensor with singleton dimensions removed
     """
-    torch_tensor = input_tensor.to_torch()
-    if dim is None:
-        result = torch_tensor.squeeze()
-    else:
-        result = torch_tensor.squeeze(dim)
-    return Tensor(result)
+    logical = _logical_view(input_tensor)
+    result = logical.squeeze() if dim is None else logical.squeeze(dim)
+    return from_torch(
+        result,
+        dtype=input_tensor.dtype,
+        layout=input_tensor.layout,
+        memory_config=input_tensor.memory_config,
+    )
 
 
 # Dynamically generate wrapper functions for all ttnn operations with golden functions
