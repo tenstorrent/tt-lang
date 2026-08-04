@@ -1631,6 +1631,29 @@ class Tile:
     def num_faces(self) -> int:
         return math.prod(self._tile_shape) // math.prod(FACE_SHAPE)
 
+    @property
+    def partial_face(self) -> int:
+        """0, since a tile shorter than 32 rows is the only partial-face one.
+
+        An ``int`` and not a ``bool`` because ttnn's is a ``uint32_t``.
+        """
+        return int(self._tile_shape[0] < TILE_SHAPE[0])
+
+    @property
+    def narrow_tile(self) -> int:
+        """0, since a tile narrower than 32 columns is the only narrow one."""
+        return int(self._tile_shape[1] < TILE_SHAPE[1])
+
+    @property
+    def transpose_within_face(self) -> bool:
+        """False: the constructor refuses a transposed tile."""
+        return False
+
+    @property
+    def transpose_of_faces(self) -> bool:
+        """False, for the same reason as :attr:`transpose_within_face`."""
+        return False
+
     def get_tile_size(self, dtype: "DType") -> int:
         """Bytes one tile of ``dtype`` occupies, as ttnn reports it.
 

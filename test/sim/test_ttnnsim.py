@@ -1144,6 +1144,12 @@ def test_tiles_describe_their_geometry_as_ttnn_does():
     assert tile.face_shape == [16, 16]
     assert tile.num_faces == 4
     assert repr(tile) == "Tile with shape: [32, 32]"
+    # A full 32x32 tile, laid out as it comes: none of the flags ttnn reports
+    # about a smaller or transposed one are set.
+    assert tile.partial_face == 0
+    assert tile.narrow_tile == 0
+    assert tile.transpose_within_face is False
+    assert tile.transpose_of_faces is False
 
     # 1024 elements at the declared dtype's width, even where the simulator
     # backs a narrow float with float32.  bfloat8_b adds its shared exponents:
