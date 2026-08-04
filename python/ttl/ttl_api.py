@@ -1245,7 +1245,7 @@ def _parse_mlir_element_type(
     """
     if not isinstance(element_type_attr, TypeAttr):
         raise ValueError(
-            "Compiler-allocated DFB element_type metadata must be a TypeAttr, "
+            "Physical DFB element_type metadata must be a TypeAttr, "
             f"got {element_type_attr}"
         )
     element_type = element_type_attr.value
@@ -1255,7 +1255,7 @@ def _parse_mlir_element_type(
         data_format = _MLIR_TILE_DATA_TYPE_TO_FORMAT.get(data_type)
         if data_format is None:
             raise ValueError(
-                "Compiler-allocated DFB tile data type "
+                "Physical DFB tile data type "
                 f"'{data_type.name}' is not supported by the ttnn runtime"
             )
         return data_format, tuple(tile_type.shape)
