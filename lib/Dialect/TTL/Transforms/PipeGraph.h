@@ -28,10 +28,6 @@
 #include <optional>
 #include <string>
 
-namespace mlir::tt {
-class ValueOriginAnalysis;
-}
-
 namespace mlir::tt::ttl {
 
 class PipeTransferIndex;
@@ -63,12 +59,6 @@ struct PipeReceiverDFBKey {
     return receiver == other.receiver && dfbIndex == other.dfbIndex;
   }
 };
-
-inline bool isReceiverDFB(mlir::Value cb,
-                          const PipeReceiverDFBKey &receiverDFB) {
-  std::optional<int64_t> maybeDFBIndex = getCBIndex(cb);
-  return maybeDFBIndex && *maybeDFBIndex == receiverDFB.dfbIndex;
-}
 
 inline void printReceiverDFB(llvm::raw_ostream &os,
                              const PipeReceiverDFBKey &receiverDFB) {
@@ -273,7 +263,7 @@ public:
   /// Analyze a module to find all pipe receivers and build the graph.
   /// Returns failure if validation detects invalid transfer correspondence or
   /// receiver DFB address geometry.
-  static FailureOr<PipeGraph> build(ModuleOp mod, ValueOriginAnalysis &analysis,
+  static FailureOr<PipeGraph> build(ModuleOp mod,
                                     const PipeTransferIndex &transferIndex);
 
   /// Check if any pipes were found.
@@ -351,19 +341,14 @@ private:
   /// sequential order. Unproven point-to-point sequences use
   /// receiver-published addresses.
   LogicalResult
-  assignReceiverAddressSequences(ModuleOp mod, ValueOriginAnalysis &analysis,
-                                 const PipeTransferIndex &transferIndex,
+  assignReceiverAddressSequences(const PipeTransferIndex &transferIndex,
                                  PipeGraphAnalysisState &state);
 
-  LogicalResult rebuildEndpointGraph(ModuleOp mod,
-                                     ValueOriginAnalysis &analysis,
-                                     const PipeTransferIndex &transferIndex,
+  LogicalResult rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
                                      PipeGraphAnalysisState &state);
 
   LogicalResult
-  provePipeOnlyReceiverProducerStreams(ModuleOp mod,
-                                       const PipeTransferIndex &transferIndex,
-                                       PipeGraphAnalysisState &state);
+  provePipeOnlyReceiverProducerStreams(PipeGraphAnalysisState &state);
 
   llvm::MapVector<Operation *, ReceiverDFBInfo> receiverDFBByPost;
   SmallVector<PipeTransferNode, 0> pipeTransferNodes;

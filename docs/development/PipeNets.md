@@ -158,8 +158,15 @@ Pipe transfers have the following operational semantics:
   receive-wait events. It rejects schedules whose same-thread ordering
   creates a wait-for cycle. Other runtime hangs can still have different
   causes.
-- The graph pairs static receiver-post and send definitions by program order
-  after helper expansion. Each pair may execute repeatedly, but the two sides
+- A *static definition* is one IR operation that defines a send, receiver post,
+  or receiver wait. *Program order* (the order in which events can execute
+  within one kernel thread) is distinct from *definition order* (the
+  deterministic lexical IR order of definitions for one event kind and
+  `PipeKey`). The verifier derives program order from single-block structured
+  regions after expanding direct helper calls at each call site. Independent
+  kernel threads have no program order.
+- The verifier pairs static receiver-post and send definitions in their
+  respective program order. Each pair may execute repeatedly, but the two sides
   must contain the same number of static definitions and each pair must execute
   equally often under equivalent conditions. A receiver wait refers to the
   exact post that produced its handle, rather than a position in the wait
@@ -300,14 +307,14 @@ def transfer():
             net.if_dst(recv)
 ```
 
-The verifier collects receiver posts, sends, and receive waits in deterministic
-IR order. Each event kind must have the same number of definitions, and each
-corresponding pair must have proven equal execution multiplicity. Equal exact
-counts prove the relation directly. When exact counts are unavailable,
-operations must share one unresolved structured-control context, and every
-runtime control value must be proven equal at the source and receiver nodes.
-The verifier rejects an unproven correspondence instead of assuming that
-unrelated functions, regions, or node-dependent values execute equally often.
+The verifier collects receiver posts, sends, and receive waits in program order.
+Each event kind must have the same number of definitions, and each corresponding
+pair must have proven equal execution multiplicity. Equal exact counts prove the
+relation directly. When exact counts are unavailable, operations must share one
+unresolved structured-control context, and every runtime control value must be
+proven equal at the source and receiver nodes. The verifier rejects an unproven
+correspondence instead of assuming that unrelated functions, regions, or
+node-dependent values execute equally often.
 
 The receive post executes before the send can block on that post. The
 receive wait runs only after the send operation has run:
@@ -1505,9 +1512,13 @@ The analyses have non-overlapping responsibilities:
 Synchronization verification and `PipeGraph` share execution-multiplicity
 proofs. The verifier diagnoses invalid occurrence correspondence. `PipeGraph`
 uses `PipeKey` to collect candidate operations, then matches sends and
-per-receiver posts by deterministic definition order and proven equal
-execution multiplicity. A `ttl.pipe_transfer.create` reference is not
-transfer-node identity.
+per-receiver posts by definition order within each `PipeKey` and verifies that
+each pair executes equally often. This does not impose an order between
+different `PipeKey`s. The Python DSL identifies the pipe relation but has no
+syntax for naming one transfer shared by the source and destination callbacks.
+The callbacks may therefore produce distinct `ttl.pipe_transfer.create`
+references for the same transfer; those references are not transfer-node
+identity.
 
 Graph construction runs after DFB indices and pipe transfer operations are
 available and before TTKernel conversion mutates the IR:
