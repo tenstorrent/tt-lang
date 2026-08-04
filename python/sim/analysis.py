@@ -50,8 +50,11 @@ called from multiple kernel functions.
 
 Design constraints
 ------------------
-* The original source must remain untouched (no AST rewriting, no exec of
-  modified code) so that Python debuggers work on the original file.
+* Injection adds no statements to the code it runs: waits fire from
+  `sys.monitoring` callbacks, so every line keeps the number it has in the
+  user's file and a debugger stops where the reader expects.  A thread-unified
+  body is a separate matter -- `unified_operation` does rewrite its AST and exec
+  it, and rebases the line numbers onto the original file for the same reason.
 * The analysis runs once per kernel function and the result is stored in
   `SimulatorContext.injection_points_cache` by the caller.
 * `sys.monitoring` allows multiple independent tools (debugger, coverage,

@@ -85,14 +85,19 @@ therefore worth writing inside a kernel, where its thread is stated.
 
 Every node is evaluated, including the ones a pipe net leaves inactive: which
 nodes participate is only known once every body has run and its pipes have been
-collected. Inactive nodes then skip their kernels, as they do on hardware, but
-their setup has already run, so their dataflow buffers exist and count towards
-the reported per-node limits.
+collected. Inactive nodes then skip their kernels, which is what the
+specification's `gather` example describes, but their setup has already run, so
+their dataflow buffers exist and count towards the reported per-node limits.
 
-The specification's `gather` example says instead that a node outside the active
-rectangle skips the operation body, which neither implementation does -- the
-compiler evaluates the body once for all nodes, and the simulator evaluates it
-everywhere for the reason above. Tracked as tt-lang issue #804.
+The compiler does not skip anything on its own account: its
+`TTLVerifyPipeNetGuards` pass requires the program to narrow the nodes itself,
+with `net.if_src` / `net.if_dst` or an `scf.if`, around any operation coupled to
+a pipe. A program that reads a pipe outside such a guard is therefore refused
+there and silently skipped here. The specification's own `gather` example also
+says a node outside the active rectangle skips the operation body, which neither
+implementation does -- the compiler evaluates the body once for all nodes, and
+the simulator evaluates it everywhere for the reason above. Both are tracked as
+tt-lang issue #804.
 
 ## Blocks released without being pushed or popped
 
