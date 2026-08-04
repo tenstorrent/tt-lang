@@ -2572,6 +2572,51 @@ class TestShardingTypes:
                 ttnn.from_torch(torch.zeros(32, 32), memory_config=mc)
             )
 
+    def test_arguments_in_the_wrong_slots_are_refused(self) -> None:
+        """A config the caller did not ask for is worse than no config.
+
+        ttnn's arguments all have defaults, so a spelling that misses is easy to
+        write and, defaulted past, describes different memory than the caller
+        asked for: interleaved DRAM where they wanted height-sharded L1, or a shard
+        spec dropped because it arrived in the buffer type's slot. Nothing reads
+        back to say so, and the tensor is then billed and localized as if the
+        request had been honoured.
+        """
+        cores = ttnn.CoreRangeSet(
+            [ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))]
+        )
+        spec = ttnn.ShardSpec(grid=cores, shard_shape=(32, 32))
+
+        # A strategy where the layout goes: the pair form is ttnn's, and ttnn's
+        # first argument is a layout.
+        with pytest.raises(TypeError, match="two positional arguments"):
+            MemoryConfig(ShardingStrategy.HEIGHT_SHARDED, ttnn.BufferType.L1)
+
+        # The shard spec and the buffer type transposed.
+        with pytest.raises(TypeError, match="three positional arguments"):
+            MemoryConfig(TensorMemoryLayout.HEIGHT_SHARDED, spec, ttnn.BufferType.L1)
+
+        # A buffer type alone, which would have meant interleaved DRAM.
+        with pytest.raises(TypeError, match="first positional argument"):
+            MemoryConfig(ttnn.BufferType.L1)
+
+        with pytest.raises(TypeError, match="at most three positional arguments"):
+            MemoryConfig(
+                TensorMemoryLayout.HEIGHT_SHARDED, ttnn.BufferType.L1, spec, spec
+            )
+
+        # And the spellings that do carry the request still do.
+        by_strategy = MemoryConfig(
+            strategy=ShardingStrategy.HEIGHT_SHARDED, buffer_type=ttnn.BufferType.L1
+        )
+        assert (
+            by_strategy.is_sharded() and by_strategy.buffer_type == ttnn.BufferType.L1
+        )
+        ttnn_way = MemoryConfig(
+            TensorMemoryLayout.HEIGHT_SHARDED, ttnn.BufferType.L1, spec
+        )
+        assert ttnn_way.is_sharded() and ttnn_way.shard_spec is not None
+
     def test_tensor_spec_nd_sharded_matches_tech_report_inputs(self) -> None:
         """TensorSpec.nd_sharded(shard_shape, core_ranges) sets ND shard_shape."""
         core_ranges = ttnn.CoreRangeSet(

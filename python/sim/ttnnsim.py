@@ -412,11 +412,16 @@ class MemoryConfig:
         buffer_type: BufferType = BufferType.DRAM,
         tensor_memory_layout: Optional[TensorMemoryLayout] = None,
     ) -> None:
-        if (
-            len(args) == 3
-            and isinstance(args[0], TensorMemoryLayout)
-            and isinstance(args[1], BufferType)
-        ):
+        if len(args) == 3:
+            if not isinstance(args[0], TensorMemoryLayout) or not isinstance(
+                args[1], BufferType
+            ):
+                raise TypeError(
+                    f"three positional arguments are ttnn's "
+                    f"(TensorMemoryLayout, BufferType, ShardSpec|NdShardSpec), got "
+                    f"({type(args[0]).__name__}, {type(args[1]).__name__}, "
+                    f"{type(args[2]).__name__})"
+                )
             layout_tt, buf, spec = args[0], args[1], args[2]
             self.buffer_type = buf
             self.tensor_memory_layout = layout_tt
@@ -435,10 +440,36 @@ class MemoryConfig:
                 )
             return
 
-        if len(args) == 2 and isinstance(args[0], TensorMemoryLayout):
+        if len(args) == 2:
             # ttnn's own two-argument form, e.g. its L1_MEMORY_CONFIG:
             # MemoryConfig(TensorMemoryLayout.INTERLEAVED, BufferType.L1).
+            if not isinstance(args[0], TensorMemoryLayout) or not isinstance(
+                args[1], BufferType
+            ):
+                raise TypeError(
+                    f"two positional arguments are ttnn's "
+                    f"(TensorMemoryLayout, BufferType), got "
+                    f"({type(args[0]).__name__}, {type(args[1]).__name__})"
+                )
             args, buffer_type = args[:1], args[1]
+
+        if len(args) > 1:
+            raise TypeError(
+                f"a memory config takes at most three positional arguments "
+                f"(TensorMemoryLayout, BufferType, ShardSpec|NdShardSpec), got "
+                f"{len(args)}"
+            )
+        if args and not isinstance(args[0], (ShardingStrategy, TensorMemoryLayout)):
+            # Positionally, the first argument is the layout (ttnn's spelling) or
+            # the strategy that stands for it (the simulator's). Anything else is
+            # an argument in the wrong slot -- a buffer type, a shard spec -- and
+            # defaulting past it would build a config the caller did not ask for
+            # and hand back no sign of it.
+            raise TypeError(
+                f"the first positional argument is a TensorMemoryLayout or a "
+                f"ShardingStrategy, got {type(args[0]).__name__}; pass a buffer type "
+                f"or a shard spec by name (buffer_type=..., shard_spec=...)"
+            )
 
         st = strategy if strategy is not None else (args[0] if len(args) == 1 else None)
         if st is None:
