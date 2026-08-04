@@ -6,12 +6,10 @@
 // TTL Insert Intermediate DFBs
 //===----------------------------------------------------------------------===//
 //
-// Inserts compiler-allocated intermediate dataflow buffers at fusion split
-// points. When a tensor-level op requires a DFB-attached operand produced by
-// ttl.compute, this pass adds a DFB-backed output to the producer compute and
-// rewrites the consumer operand to the waited, attached tensor. It also
-// materializes fusable values before a source DFB release that would otherwise
-// precede the fused read.
+// Inserts compiler-allocated intermediate dataflow buffers for tensor SSA
+// values that need concrete storage before final compute creation. The pass
+// first builds an immutable operand-rewrite plan, then applies standalone
+// materializations and atomic compute rebuilds.
 //
 //===----------------------------------------------------------------------===//
 
@@ -253,6 +251,9 @@ struct TTLInsertIntermediateDFBsPass
 
   void runOnOperation() override {
     auto kernel = getOperation();
+    if (kernel.isExternal()) {
+      return;
+    }
 
     PlanningResult<std::unique_ptr<DFBValueLifetimeAnalysis>> plannedLifetimes =
         DFBValueLifetimeAnalysis::create(kernel);

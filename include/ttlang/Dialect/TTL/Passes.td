@@ -235,10 +235,16 @@ def TTLAnnotateL1AccLoops
 
 def TTLInsertIntermediateDFBs
     : Pass<"ttl-insert-intermediate-dfbs", "::mlir::func::FuncOp"> {
-  let summary = "Insert intermediate dataflow buffers at fusion split points";
+  let summary = "Insert intermediate dataflow buffers for tensor materialization";
   let description = [{
     Walks ops implementing `DFBInputOpInterface` and checks whether the
     operands they declare as requiring DFB-attached values are satisfied.
+    It also records direct `ttl.store` operands whose computed source value is
+    stored in multiple blocks. Those stores cannot share one
+    output-publication position during `ttl.compute` creation, so that source
+    value is first routed through compiler DFB storage and each store reads the
+    attached value.
+
     When an operand comes from `ttl.compute`, the pass materializes it as an
     extra compute output backed by a compiler-allocated DFB. The pass creates
     the DFB, reserves the output slot, clones the compute with an extra
@@ -266,15 +272,16 @@ def TTLInsertIntermediateDFBs
     storage identity is treated as possibly released and may require an
     additional materialization. A fusion boundary at an independently formable
     producer materializes the exact consumer operand. Multiple reserve
-    transactions for one result materialize all of its uses through one shared
-    compiler DFB. Application begins only after the complete plan is valid.
+    transactions for one result, and direct stores of one value in multiple
+    blocks, materialize all relevant uses through one shared compiler DFB.
+    Application begins only after the complete plan is valid.
 
     All DFBs created by this pass are marked with `ttl.compiler_allocated`.
 
     When `enable` is false, the pass verifies that no operations require
-    compiler-allocated DFBs for operand attachment or source-lifetime
-    preservation. If any operation requires either materialization, the pass
-    emits an error diagnostic and signals failure.
+    compiler-allocated DFBs for operand attachment, source-lifetime
+    preservation, or stores in multiple blocks. If any operation requires
+    materialization, the pass emits an error diagnostic and signals failure.
   }];
 
   let options = [

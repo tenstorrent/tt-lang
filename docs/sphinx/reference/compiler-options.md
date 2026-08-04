@@ -18,7 +18,7 @@ python my_kernel.py --no-ttl-maximize-dst
 | `--ttl-subblock-sync` / `--no-ttl-subblock-sync` | disabled | Refine DFB reserve/push to per-subblock granularity, enabling `pack_tile_block` for contiguous subblocks. When disabled, user-placed reserve/push is preserved as written. |
 | `--ttl-combine-pack-tiles` / `--no-ttl-combine-pack-tiles` | enabled | Combine consecutive `pack_tile` ops on the same DFB with contiguous DST and DFB indices into a single `pack_tile_block` call. |
 | `--ttl-strict-f32-acc` / `--no-ttl-strict-f32-acc` | disabled | Error at compile time if a `+=` accumulation loop's output block exceeds f32 DST capacity (4 tiles with double-buffering). When enabled, guarantees each accumulation step fits in a single DST section without subblocking. |
-| `--ttl-compiler-dfbs` / `--no-ttl-compiler-dfbs` | enabled | Insert compiler-allocated intermediate DFBs when an operation requires DFB-attached inputs or fusion would read a source after its DFB is released. When disabled, the compiler emits an error if either materialization is required. |
+| `--ttl-compiler-dfbs` / `--no-ttl-compiler-dfbs` | enabled | Insert compiler-allocated intermediate DFBs when an operation requires DFB-attached inputs, fusion would read a source after its DFB is released, or a computed value is stored from multiple blocks. When disabled, the compiler emits an error if materialization is required. |
 | `--ttl-pipe-computed-addresses` / `--no-ttl-pipe-computed-addresses` | enabled | Use computed receiver DFB addresses for eligible PipeNet transfers. When disabled, transfers use receiver-published destination addresses; multicast still requires proven equal runtime receiver addresses. |
 | `--ttl-specialize-cores` / `--no-ttl-specialize-cores` | disabled | Clone each TTKernel function whose control flow branches on a core coordinate once per launch coordinate (`ttkernel-specialize-cores`), replacing `my_logical_x_` / `my_logical_y_` with constants and tagging clones with `ttl.core_coord` for per-core dispatch. Opt-in. |
 
@@ -116,7 +116,7 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 | `subblock-sync` | bool | `false` | Refine DFB reserve/push to per-subblock granularity. |
 | `combine-pack-tiles` | bool | `true` | Combine consecutive `pack_tile` ops into `pack_tile_block`. |
 | `strict-f32-acc` | bool | `false` | Error if a `+=` accumulation loop's output block exceeds f32 DST capacity. |
-| `compiler-dfbs` | bool | `true` | Insert compiler-allocated intermediate DFBs for DFB-only operands and source-lifetime preservation. Error if disabled and any operation requires one. |
+| `compiler-dfbs` | bool | `true` | Insert compiler-allocated intermediate DFBs for DFB-only operands, source-lifetime preservation, and computed values stored from multiple blocks. Error if disabled and any operation requires one. |
 | `pipe-computed-addresses` | bool | `true` | Use computed receiver DFB addresses for eligible PipeNet transfers. When disabled, transfers use receiver-published destination addresses; multicast still requires proven equal runtime receiver addresses. |
 | `specialize-cores` | bool | `false` | Clone TTKernel functions that branch on a core coordinate once per launch coordinate (`ttkernel-specialize-cores`), then run `canonicalize` / `cse`. Maps from `--ttl-specialize-cores`. |
 | `lower-to-emitc` | bool | `false` | Run the TTKernel-to-EmitC backend (produces C++ source). |
@@ -127,7 +127,7 @@ The pipeline runs these passes in order:
 - `ttl-insert-copy-wait` -- insert missing `ttl.wait` after `ttl.copy` ops whose transfer handle has no wait user
 - `ttl-annotate-l1-acc-loops` -- detect `+=` accumulation loops and annotate for L1 packer accumulation
 - `ttl-create-producer-compute` -- create producer `ttl.compute` operations before intermediate materialization
-- `ttl-insert-intermediate-dfbs` -- materialize DFB-only operands and values that must be preserved before source release; verify and error when `compiler-dfbs=false`
+- `ttl-insert-intermediate-dfbs` -- materialize DFB-only operands, values that must be preserved before source release, and computed values stored from multiple blocks; verify and error when `compiler-dfbs=false`
 - `convert-ttl-to-compute` -- lower TTL elementwise tensor ops to `ttl.compute` with tile ops
 - `ttl-insert-cb-sync` -- insert missing DFB synchronization operations
 - `ttl-verify-pipenet-guards`, then `ttl-verify-pipenet-schedule` -- verify PipeNet launch domains and synchronization schedules while logical DFB identities remain distinct
@@ -157,7 +157,8 @@ options are listed; the remaining passes have no options.
 
 #### `ttl-insert-intermediate-dfbs`
 
-Insert compiler-allocated intermediate DFBs at fusion split points.
+Insert compiler-allocated intermediate DFBs where tensor SSA values require
+concrete DFB storage.
 
 | Option | Type | Default | Description |
 |---|---|---|---|

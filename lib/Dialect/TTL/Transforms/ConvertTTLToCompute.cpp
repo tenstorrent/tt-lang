@@ -1221,6 +1221,10 @@ static void populateTTLToComputePatternsForMode(
 
 static LogicalResult runTTLToCompute(func::FuncOp kernel,
                                      TTLToComputeMode mode) {
+  if (kernel.isExternal()) {
+    return success();
+  }
+
   // Validate bcast ops before running patterns. Emitting errors here (outside
   // a pattern rewriter) is safe for the Python bindings.
   bool hasErrors = false;
