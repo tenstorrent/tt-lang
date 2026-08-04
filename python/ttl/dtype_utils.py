@@ -197,3 +197,54 @@ def format_name_to_ttnn_dtype(name: str):
             raise ValueError(
                 f"Unrecognized data format name '{name}' for ttnn.DataType"
             )
+def tile_bytes_from_dtype(dtype, tile=(32, 32)) -> int:
+    """
+    Calculate tile size in bytes from ttnn dtype.
+
+    The byte size matches ttcore::TileType::getSizeBytes(). Dense formats scale
+    with the physical tile dimensions. BFP formats currently support only the
+    default 32x32 tile dimensions.
+
+    Args:
+        dtype: ttnn.DataType enum value
+        tile: Physical tile dimensions as (height, width)
+
+    Returns:
+        Tile size in bytes
+
+    Raises:
+        ValueError: If dtype or its tile dimensions are not supported
+    """
+    if len(tile) != 2:
+        raise ValueError(f"Expected 2D tile dimensions, got {tile}")
+    tile_height, tile_width = tile
+    if tile_height <= 0 or tile_width <= 0:
+        raise ValueError(f"Tile dimensions must be positive, got {tile}")
+
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+
+    tile_elements = tile_height * tile_width
+    # Keep this mapping synchronized with ttcore::TileType::getSizeBytes().
+    if dtype in (ttnn.DataType.BFLOAT16, ttnn.DataType.UINT16):
+        return tile_elements * 2
+    if dtype in (
+        ttnn.DataType.FLOAT32,
+        ttnn.DataType.INT32,
+        ttnn.DataType.UINT32,
+    ):
+        return tile_elements * 4
+    if dtype == ttnn.DataType.UINT8:
+        return tile_elements
+    bfp_dtypes = (
+        ttnn.DataType.BFLOAT8_B,
+        ttnn.DataType.BFLOAT4_B,
+    )
+    if dtype in bfp_dtypes and tuple(tile) != (32, 32):
+        raise ValueError(f"{dtype} supports only 32x32 tiles, got {tile}")
+    if dtype == ttnn.DataType.BFLOAT8_B:
+        return 32 * 32 + 64  # 1088
+    if dtype == ttnn.DataType.BFLOAT4_B:
+        return 512 + 64  # 576
+    raise ValueError(f"Unsupported dtype for tile size calculation: {dtype}")
