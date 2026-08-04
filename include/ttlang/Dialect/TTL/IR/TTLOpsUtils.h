@@ -24,8 +24,17 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 
 namespace mlir::tt::ttl {
+
+/// Validate whether the current compute lowering supports `tileType`.
+///
+/// TileType validation covers storage dimensions. This check is narrower: it
+/// covers dimensions and formats consumed by the compute LLKs. On failure,
+/// `failureReason` describes the unsupported compute configuration.
+LogicalResult validateComputeTileType(ttcore::TileType tileType,
+                                      std::string &failureReason);
 
 /// Return the enclosing kernel-thread `func.func` (tagged with
 /// `ttl.kernel_thread`), or null if `op` is not inside one.

@@ -747,3 +747,171 @@ func.func @compute_tile_store_cb_not_output(
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   func.return %0 : tensor<2x2x!ttcore.tile<32x32, f32>>
 }
+
+// -----
+
+// Compute operations require tile dimensions implemented by the LLKs.
+func.func @compute_unsupported_tile_dimensions(
+    %input: tensor<1x1x!ttcore.tile<8x32, bf16>>,
+    %input_cb: !ttl.cb<[1, 1], !ttcore.tile<8x32, bf16>, 1>,
+    %output_cb: !ttl.cb<[1, 1], !ttcore.tile<8x32, bf16>, 1>)
+    -> tensor<1x1x!ttcore.tile<8x32, bf16>> {
+  %output = tensor.empty() : tensor<1x1x!ttcore.tile<8x32, bf16>>
+  %attached_input = ttl.attach_cb %input, %input_cb
+      : (tensor<1x1x!ttcore.tile<8x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<8x32, bf16>, 1>)
+        -> tensor<1x1x!ttcore.tile<8x32, bf16>>
+  %attached_output = ttl.attach_cb %output, %output_cb
+      : (tensor<1x1x!ttcore.tile<8x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<8x32, bf16>, 1>)
+        -> tensor<1x1x!ttcore.tile<8x32, bf16>>
+  // expected-error @below {{'ttl.compute' op block argument 0 tile shape 8x32 is not supported by the current compute LLKs; supported shapes are 16x16, 16x32, 32x16, and 32x32}}
+  %result = ttl.compute
+      ins(%attached_input : tensor<1x1x!ttcore.tile<8x32, bf16>>)
+      outs(%attached_output : tensor<1x1x!ttcore.tile<8x32, bf16>>)
+      {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                        affine_map<(d0, d1) -> (d0, d1)>],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%input_tile: !ttcore.tile<8x32, bf16>,
+       %output_tile: !ttcore.tile<8x32, bf16>):
+    ttl.yield
+  } -> tensor<1x1x!ttcore.tile<8x32, bf16>>
+  func.return %result : tensor<1x1x!ttcore.tile<8x32, bf16>>
+}
+
+// -----
+
+// BFP compute remains restricted to 32x32 because sub-tile support is not
+// represented per target.
+func.func @compute_unsupported_bfp_dimensions(
+    %input: tensor<1x1x!ttcore.tile<16x32, bfp_bf8>>,
+    %input_cb: !ttl.cb<[1, 1], !ttcore.tile<16x32, bfp_bf8>, 1>,
+    %output_cb: !ttl.cb<[1, 1], !ttcore.tile<16x32, bfp_bf8>, 1>)
+    -> tensor<1x1x!ttcore.tile<16x32, bfp_bf8>> {
+  %output = tensor.empty() : tensor<1x1x!ttcore.tile<16x32, bfp_bf8>>
+  %attached_input = ttl.attach_cb %input, %input_cb
+      : (tensor<1x1x!ttcore.tile<16x32, bfp_bf8>>,
+         !ttl.cb<[1, 1], !ttcore.tile<16x32, bfp_bf8>, 1>)
+        -> tensor<1x1x!ttcore.tile<16x32, bfp_bf8>>
+  %attached_output = ttl.attach_cb %output, %output_cb
+      : (tensor<1x1x!ttcore.tile<16x32, bfp_bf8>>,
+         !ttl.cb<[1, 1], !ttcore.tile<16x32, bfp_bf8>, 1>)
+        -> tensor<1x1x!ttcore.tile<16x32, bfp_bf8>>
+  // expected-error @below {{'ttl.compute' op block argument 0 TT-Lang supports BFP compute tiles only with 32x32 dimensions, got 16x32}}
+  %result = ttl.compute
+      ins(%attached_input : tensor<1x1x!ttcore.tile<16x32, bfp_bf8>>)
+      outs(%attached_output : tensor<1x1x!ttcore.tile<16x32, bfp_bf8>>)
+      {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                        affine_map<(d0, d1) -> (d0, d1)>],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%input_tile: !ttcore.tile<16x32, bfp_bf8>,
+       %output_tile: !ttcore.tile<16x32, bfp_bf8>):
+    ttl.yield
+  } -> tensor<1x1x!ttcore.tile<16x32, bfp_bf8>>
+  func.return %result : tensor<1x1x!ttcore.tile<16x32, bfp_bf8>>
+}
+
+// -----
+
+// BFP_Float8 compute retains the target-independent 32x32 restriction.
+func.func @compute_unsupported_bfp_f8(
+    %input: tensor<1x1x!ttcore.tile<16x32, bfp_f8>>)
+    -> tensor<1x1x!ttcore.tile<16x32, bfp_f8>> {
+  %output = tensor.empty() : tensor<1x1x!ttcore.tile<16x32, bfp_f8>>
+  // expected-error @below {{'ttl.compute' op block argument 0 TT-Lang supports BFP compute tiles only with 32x32 dimensions, got 16x32}}
+  %result = ttl.compute
+      ins(%input : tensor<1x1x!ttcore.tile<16x32, bfp_f8>>)
+      outs(%output : tensor<1x1x!ttcore.tile<16x32, bfp_f8>>)
+      {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                        affine_map<(d0, d1) -> (d0, d1)>],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%input_tile: !ttcore.tile<16x32, bfp_f8>,
+       %output_tile: !ttcore.tile<16x32, bfp_f8>):
+    ttl.yield
+  } -> tensor<1x1x!ttcore.tile<16x32, bfp_f8>>
+  func.return %result : tensor<1x1x!ttcore.tile<16x32, bfp_f8>>
+}
+
+// -----
+
+// BFP_Float4 compute retains the target-independent 32x32 restriction.
+func.func @compute_unsupported_bfp_f4(
+    %input: tensor<1x1x!ttcore.tile<16x32, bfp_f4>>)
+    -> tensor<1x1x!ttcore.tile<16x32, bfp_f4>> {
+  %output = tensor.empty() : tensor<1x1x!ttcore.tile<16x32, bfp_f4>>
+  // expected-error @below {{'ttl.compute' op block argument 0 TT-Lang supports BFP compute tiles only with 32x32 dimensions, got 16x32}}
+  %result = ttl.compute
+      ins(%input : tensor<1x1x!ttcore.tile<16x32, bfp_f4>>)
+      outs(%output : tensor<1x1x!ttcore.tile<16x32, bfp_f4>>)
+      {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                        affine_map<(d0, d1) -> (d0, d1)>],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%input_tile: !ttcore.tile<16x32, bfp_f4>,
+       %output_tile: !ttcore.tile<16x32, bfp_f4>):
+    ttl.yield
+  } -> tensor<1x1x!ttcore.tile<16x32, bfp_f4>>
+  func.return %result : tensor<1x1x!ttcore.tile<16x32, bfp_f4>>
+}
+
+// -----
+
+// BFP_BFloat4 compute retains the target-independent 32x32 restriction.
+func.func @compute_unsupported_bfp_bf4(
+    %input: tensor<1x1x!ttcore.tile<16x32, bfp_bf4>>)
+    -> tensor<1x1x!ttcore.tile<16x32, bfp_bf4>> {
+  %output = tensor.empty() : tensor<1x1x!ttcore.tile<16x32, bfp_bf4>>
+  // expected-error @below {{'ttl.compute' op block argument 0 TT-Lang supports BFP compute tiles only with 32x32 dimensions, got 16x32}}
+  %result = ttl.compute
+      ins(%input : tensor<1x1x!ttcore.tile<16x32, bfp_bf4>>)
+      outs(%output : tensor<1x1x!ttcore.tile<16x32, bfp_bf4>>)
+      {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                        affine_map<(d0, d1) -> (d0, d1)>],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%input_tile: !ttcore.tile<16x32, bfp_bf4>,
+       %output_tile: !ttcore.tile<16x32, bfp_bf4>):
+    ttl.yield
+  } -> tensor<1x1x!ttcore.tile<16x32, bfp_bf4>>
+  func.return %result : tensor<1x1x!ttcore.tile<16x32, bfp_bf4>>
+}
+
+// -----
+
+// BFP_Float2 compute retains the target-independent 32x32 restriction.
+func.func @compute_unsupported_bfp_f2(
+    %input: tensor<1x1x!ttcore.tile<16x32, bfp_f2>>)
+    -> tensor<1x1x!ttcore.tile<16x32, bfp_f2>> {
+  %output = tensor.empty() : tensor<1x1x!ttcore.tile<16x32, bfp_f2>>
+  // expected-error @below {{'ttl.compute' op block argument 0 TT-Lang supports BFP compute tiles only with 32x32 dimensions, got 16x32}}
+  %result = ttl.compute
+      ins(%input : tensor<1x1x!ttcore.tile<16x32, bfp_f2>>)
+      outs(%output : tensor<1x1x!ttcore.tile<16x32, bfp_f2>>)
+      {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                        affine_map<(d0, d1) -> (d0, d1)>],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%input_tile: !ttcore.tile<16x32, bfp_f2>,
+       %output_tile: !ttcore.tile<16x32, bfp_f2>):
+    ttl.yield
+  } -> tensor<1x1x!ttcore.tile<16x32, bfp_f2>>
+  func.return %result : tensor<1x1x!ttcore.tile<16x32, bfp_f2>>
+}
+
+// -----
+
+// BFP_BFloat2 compute retains the target-independent 32x32 restriction.
+func.func @compute_unsupported_bfp_bf2(
+    %input: tensor<1x1x!ttcore.tile<16x32, bfp_bf2>>)
+    -> tensor<1x1x!ttcore.tile<16x32, bfp_bf2>> {
+  %output = tensor.empty() : tensor<1x1x!ttcore.tile<16x32, bfp_bf2>>
+  // expected-error @below {{'ttl.compute' op block argument 0 TT-Lang supports BFP compute tiles only with 32x32 dimensions, got 16x32}}
+  %result = ttl.compute
+      ins(%input : tensor<1x1x!ttcore.tile<16x32, bfp_bf2>>)
+      outs(%output : tensor<1x1x!ttcore.tile<16x32, bfp_bf2>>)
+      {indexing_maps = [affine_map<(d0, d1) -> (d0, d1)>,
+                        affine_map<(d0, d1) -> (d0, d1)>],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%input_tile: !ttcore.tile<16x32, bfp_bf2>,
+       %output_tile: !ttcore.tile<16x32, bfp_bf2>):
+    ttl.yield
+  } -> tensor<1x1x!ttcore.tile<16x32, bfp_bf2>>
+  func.return %result : tensor<1x1x!ttcore.tile<16x32, bfp_bf2>>
+}
