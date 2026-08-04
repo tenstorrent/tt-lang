@@ -1899,7 +1899,12 @@ class Tensor:
         # Python passes a bare int/slice (not a tuple) for single-element indexing.
         normalized: Tuple[Selector, ...] = key if isinstance(key, tuple) else (key,)
         ek = self._to_element_key(normalized)
-        result = Tensor(self._tensor[cast(Any, ek)], self._layout, self.memory_config)
+        result = Tensor(
+            self._tensor[cast(Any, ek)],
+            self._layout,
+            self.memory_config,
+            dtype=self._dtype,
+        )
         _name = getattr(self, "_name", None)
         if _name is not None:
             result._name = _name  # type: ignore
@@ -2044,6 +2049,7 @@ class Tensor:
                 return Tensor(
                     self._tensor + other._tensor,
                     self._layout,
+                    dtype=self._dtype,
                     logical_shape=self._broadcast_logical_shape(other),
                 )
             case float() | int():
@@ -2052,6 +2058,7 @@ class Tensor:
                 return Tensor(
                     self._tensor + other,
                     self._layout,
+                    dtype=self._dtype,
                     logical_shape=self._logical_shape,
                 )
             case _:  # type: ignore[reportUnnecessaryComparison]
@@ -2066,6 +2073,7 @@ class Tensor:
                 return Tensor(
                     self._tensor - other._tensor,
                     self._layout,
+                    dtype=self._dtype,
                     logical_shape=self._broadcast_logical_shape(other),
                 )
             case float() | int():
@@ -2074,6 +2082,7 @@ class Tensor:
                 return Tensor(
                     self._tensor - other,
                     self._layout,
+                    dtype=self._dtype,
                     logical_shape=self._logical_shape,
                 )
             case _:  # type: ignore[reportUnnecessaryComparison]
@@ -2088,6 +2097,7 @@ class Tensor:
                 return Tensor(
                     self._tensor * other._tensor,
                     self._layout,
+                    dtype=self._dtype,
                     logical_shape=self._broadcast_logical_shape(other),
                 )
             case float() | int():
@@ -2096,6 +2106,7 @@ class Tensor:
                 return Tensor(
                     self._tensor * other,
                     self._layout,
+                    dtype=self._dtype,
                     logical_shape=self._logical_shape,
                 )
             case _:  # type: ignore[reportUnnecessaryComparison]
@@ -2110,6 +2121,7 @@ class Tensor:
                 return Tensor(
                     self._tensor / other._tensor,
                     self._layout,
+                    dtype=self._dtype,
                     logical_shape=self._broadcast_logical_shape(other),
                 )
             case float() | int():
@@ -2118,6 +2130,7 @@ class Tensor:
                 return Tensor(
                     self._tensor / other,
                     self._layout,
+                    dtype=self._dtype,
                     logical_shape=self._logical_shape,
                 )
             case _:  # type: ignore[reportUnnecessaryComparison]
@@ -2132,6 +2145,7 @@ class Tensor:
                 return Tensor(
                     self._tensor // other._tensor,
                     self._layout,
+                    dtype=self._dtype,
                     logical_shape=self._broadcast_logical_shape(other),
                 )
             case float() | int():
@@ -2140,6 +2154,7 @@ class Tensor:
                 return Tensor(
                     self._tensor // other,
                     self._layout,
+                    dtype=self._dtype,
                     logical_shape=self._logical_shape,
                 )
             case _:  # type: ignore[reportUnnecessaryComparison]
@@ -2154,6 +2169,7 @@ class Tensor:
                 return Tensor(
                     self._tensor % other._tensor,
                     self._layout,
+                    dtype=self._dtype,
                     logical_shape=self._broadcast_logical_shape(other),
                 )
             case float() | int():
@@ -2162,6 +2178,7 @@ class Tensor:
                 return Tensor(
                     self._tensor % other,
                     self._layout,
+                    dtype=self._dtype,
                     logical_shape=self._logical_shape,
                 )
             case _:  # type: ignore[reportUnnecessaryComparison]
@@ -2176,6 +2193,7 @@ class Tensor:
                 return Tensor(
                     self._tensor**other._tensor,
                     self._layout,
+                    dtype=self._dtype,
                     logical_shape=self._broadcast_logical_shape(other),
                 )
             case float() | int():
@@ -2184,6 +2202,7 @@ class Tensor:
                 return Tensor(
                     self._tensor**other,
                     self._layout,
+                    dtype=self._dtype,
                     logical_shape=self._logical_shape,
                 )
             case _:  # type: ignore[reportUnnecessaryComparison]
@@ -2198,6 +2217,7 @@ class Tensor:
                 return Tensor(
                     self._tensor @ other._tensor,
                     self._layout,
+                    dtype=self._dtype,
                     logical_shape=self._matmul_logical_shape(other),
                 )
             case _:  # type: ignore[reportUnnecessaryComparison]
@@ -2207,14 +2227,22 @@ class Tensor:
         """Unary negation."""
         if _is_dry_run():
             return self._zeros_like()
-        return Tensor(-self._tensor, self._layout, logical_shape=self._logical_shape)
+        return Tensor(
+            -self._tensor,
+            self._layout,
+            dtype=self._dtype,
+            logical_shape=self._logical_shape,
+        )
 
     def __abs__(self) -> "Tensor":
         """Absolute value."""
         if _is_dry_run():
             return self._zeros_like()
         return Tensor(
-            torch.abs(self._tensor), self._layout, logical_shape=self._logical_shape
+            torch.abs(self._tensor),
+            self._layout,
+            dtype=self._dtype,
+            logical_shape=self._logical_shape,
         )
 
     # ---- Reverse binary operations ----
@@ -2228,6 +2256,7 @@ class Tensor:
                 return Tensor(
                     other + self._tensor,
                     self._layout,
+                    dtype=self._dtype,
                     logical_shape=self._logical_shape,
                 )
             case _:  # type: ignore[reportUnnecessaryComparison]
@@ -2242,6 +2271,7 @@ class Tensor:
                 return Tensor(
                     other - self._tensor,
                     self._layout,
+                    dtype=self._dtype,
                     logical_shape=self._logical_shape,
                 )
             case _:  # type: ignore[reportUnnecessaryComparison]
@@ -2256,6 +2286,7 @@ class Tensor:
                 return Tensor(
                     other * self._tensor,
                     self._layout,
+                    dtype=self._dtype,
                     logical_shape=self._logical_shape,
                 )
             case _:  # type: ignore[reportUnnecessaryComparison]
@@ -2270,6 +2301,7 @@ class Tensor:
                 return Tensor(
                     other / self._tensor,
                     self._layout,
+                    dtype=self._dtype,
                     logical_shape=self._logical_shape,
                 )
             case _:  # type: ignore[reportUnnecessaryComparison]
@@ -2284,6 +2316,7 @@ class Tensor:
                 return Tensor(
                     other // self._tensor,
                     self._layout,
+                    dtype=self._dtype,
                     logical_shape=self._logical_shape,
                 )
             case _:  # type: ignore[reportUnnecessaryComparison]
@@ -2298,6 +2331,7 @@ class Tensor:
                 return Tensor(
                     other % self._tensor,
                     self._layout,
+                    dtype=self._dtype,
                     logical_shape=self._logical_shape,
                 )
             case _:  # type: ignore[reportUnnecessaryComparison]
@@ -2312,6 +2346,7 @@ class Tensor:
                 return Tensor(
                     other**self._tensor,
                     self._layout,
+                    dtype=self._dtype,
                     logical_shape=self._logical_shape,
                 )
             case _:  # type: ignore[reportUnnecessaryComparison]
@@ -2758,41 +2793,34 @@ def _elementwise_logical_shape(
 
 def add(a: Tensor, b: Tensor) -> Tensor:
     """Element-wise add (simulator shim for ttnn.add)."""
-    if _is_dry_run():
-        return a._zeros_broadcast(b)
-    return Tensor(
-        a.to_torch() + b.to_torch(), logical_shape=a._broadcast_logical_shape(b)
-    )
+    return a + b
 
 
 def multiply(a: Tensor, b: Tensor) -> Tensor:
     """Element-wise multiply (simulator shim for ttnn.multiply)."""
-    if _is_dry_run():
-        return a._zeros_broadcast(b)
-    return Tensor(
-        a.to_torch() * b.to_torch(), logical_shape=a._broadcast_logical_shape(b)
-    )
+    return a * b
 
 
 def matmul(a: Tensor, b: Tensor) -> Tensor:
     """Matrix multiply (simulator shim for ttnn.matmul)."""
-    if _is_dry_run():
-        return a._zeros_matmul(b)
-    return Tensor(a.to_torch() @ b.to_torch(), logical_shape=a._matmul_logical_shape(b))
+    return a @ b
 
 
 def relu(a: Tensor) -> Tensor:
     """Element-wise ReLU (simulator shim for ttnn.relu)."""
     if _is_dry_run():
         return a._zeros_like()
-    return Tensor(torch.relu(a.to_torch()), logical_shape=a._logical_shape)
+    return Tensor(
+        torch.relu(a.to_torch()),
+        a.layout,
+        dtype=a.dtype,
+        logical_shape=a._logical_shape,
+    )
 
 
 def abs(a: Tensor) -> Tensor:
     """Element-wise absolute value (simulator shim for ttnn.abs)."""
-    if _is_dry_run():
-        return a._zeros_like()
-    return Tensor(torch.abs(a.to_torch()), logical_shape=a._logical_shape)
+    return a.__abs__()
 
 
 def exp(a: Tensor, fast_and_approximate_mode: bool = False) -> Tensor:
@@ -2803,7 +2831,12 @@ def exp(a: Tensor, fast_and_approximate_mode: bool = False) -> Tensor:
     """
     if _is_dry_run():
         return a._zeros_like()
-    return Tensor(torch.exp(a.to_torch()), logical_shape=a._logical_shape)
+    return Tensor(
+        torch.exp(a.to_torch()),
+        a.layout,
+        dtype=a.dtype,
+        logical_shape=a._logical_shape,
+    )
 
 
 def split_work_to_cores(

@@ -604,6 +604,49 @@ def test_multiply_large_tensors():
     assert torch.allclose(c.to_torch(), expected, rtol=1e-2)
 
 
+def test_derived_tensors_keep_the_dtype_and_layout_they_came_from() -> None:
+    """A computed tensor reports the dtype and layout of the operand it came
+    from, as ttnn's does.
+
+    The declared dtype is not the dtype of the store: the simulator backs a
+    bfloat16 tensor with float32 for host precision, so reading it off the
+    store would report float32 and cost twice the L1 bytes -- the figure
+    DataflowBuffer.capacity_bytes and the hardware-limit warnings are computed
+    from.  A row-major operand also has to stay row-major, or the result would
+    be indexed in tile space.
+    """
+    a = ttnn.rand((64, 64), dtype=ttnn.bfloat16)
+    b = ttnn.rand((64, 64), dtype=ttnn.bfloat16)
+    tile_bytes = 2 * 32 * 32
+
+    for derived in (
+        a + b,
+        a * b,
+        a - b,
+        a / b,
+        a @ b,
+        -a,
+        a.__abs__(),
+        a + 1.0,
+        1.0 + a,
+        a[0:1, 0:1],
+        ttnn.add(a, b),
+        ttnn.multiply(a, b),
+        ttnn.matmul(a, b),
+        ttnn.relu(a),
+        ttnn.abs(a),
+        ttnn.exp(a),
+    ):
+        assert derived.dtype == ttnn.bfloat16
+        assert derived.size_in_bytes(32 * 32) == tile_bytes
+        assert derived.layout == ttnn.TILE_LAYOUT
+
+    row = ttnn.rand((8, 8), dtype=ttnn.bfloat16, layout=ttnn.ROW_MAJOR_LAYOUT)
+    assert (row + row).layout == ttnn.ROW_MAJOR_LAYOUT
+    assert ttnn.add(row, row).layout == ttnn.ROW_MAJOR_LAYOUT
+    assert ttnn.exp(row).layout == ttnn.ROW_MAJOR_LAYOUT
+
+
 # ---- Core coordinate classes tests ----
 
 
@@ -1198,11 +1241,16 @@ def test_arithmetic_propagates_logical_shape():
 
 
 def test_arithmetic_logical_shape_matches_under_dry_run():
-    """Dry-run and real paths agree on the logical result shape."""
+    """Dry-run and real paths agree on the logical result shape and dtype.
+
+    A dry run walks a body without computing, so anything it reports
+    differently is a difference between what a user inspects and what runs.
+    """
     from sim.context import set_dry_run
 
     a = ttnn.from_torch(torch.rand(3, 5), layout=ttnn.TILE_LAYOUT)
     y = ttnn.from_torch(torch.rand(5, 7), layout=ttnn.TILE_LAYOUT)
+    b = ttnn.rand((32, 32), dtype=ttnn.bfloat16)
     real_add = (a + a).shape
     real_mm = (a @ y).shape
 
@@ -1211,6 +1259,7 @@ def test_arithmetic_logical_shape_matches_under_dry_run():
         assert (a + a).shape == real_add == (3, 5)
         assert (a @ y).shape == real_mm == (3, 7)
         assert (a * 2).shape == (3, 5)
+        assert (b + b).dtype == ttnn.bfloat16
     finally:
         set_dry_run(False)
 
