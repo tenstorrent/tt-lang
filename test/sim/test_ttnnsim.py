@@ -2161,6 +2161,24 @@ class TestTensorTileIndexing:
         # Open row stop -> all row tiles (2 tiles == 64 rows).
         assert t[slice(0, None), slice(0, 1)].shape == (64, 32)
 
+    @pytest.mark.parametrize(
+        "key",
+        [(Ellipsis, 0), (None, 0), ([0], 0), ((0,), 0), (True, 0)],
+        ids=["ellipsis", "none", "list", "tuple", "bool"],
+    )
+    def test_keys_that_are_not_integers_or_slices_are_refused(self, key: Any) -> None:
+        """The keys ttnn takes and this does not are named, not half-supported.
+
+        Every one of these is a valid ttnn element key, and each would otherwise
+        travel far enough in to fail as an attribute error about ``step``, which
+        says nothing about the key.  Refusing them by name is also what keeps
+        "a key never drops a dimension" true: an integer becomes a unit slice, and
+        nothing else gets in.
+        """
+        t = ttnn.Tensor(torch.zeros(64, 64))
+        with pytest.raises(TypeError, match="indexed by integers and slices"):
+            _ = t[key]
+
     def test_slice_with_step_raises(self) -> None:
         t = ttnn.Tensor(torch.zeros(64, 64))
         with pytest.raises(ValueError, match="must not have a step value"):

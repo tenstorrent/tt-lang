@@ -1489,14 +1489,36 @@ def check_count_match(
 def normalize_selector_to_slice(selector: Selector) -> slice:
     """Convert an integer index to a unit slice, or return slice as-is.
 
+    An integer becomes a unit slice so that no dimension is collapsed, which is
+    what keeps a key's rank equal to the tensor's.
+
     Shared by :meth:`Tensor._normalize_index` and :mod:`sim.sharding` when
     interpreting :class:`~sim.typedefs.Selector` values.
+
+    Raises:
+        TypeError: For anything that is not an integer or a slice -- an
+            ``Ellipsis``, a ``None``, a list of indices, a tensor. Those are all
+            things ttnn's element indexing takes and this does not, so they are
+            named here rather than left to fail further in as an attribute error
+            about ``step``.
     """
     match selector:
+        case bool():
+            # Before int(): a bool is one, and indexing by True is a mistake
+            # rather than a request for element 1.
+            raise TypeError(
+                "a tensor is indexed by integers and slices, not by True/False"
+            )
         case int():
             return slice(selector, selector + 1)
-        case _:
+        case slice():
             return selector
+        case _:
+            raise TypeError(
+                f"a tensor is indexed by integers and slices, got "
+                f"{type(selector).__name__}; ttnn's fancier element indexing "
+                f"(Ellipsis, None, a list of indices, a tensor) is not modelled."
+            )
 
 
 def _tile_extent(dim_size: int, tile_dim: int) -> int:
@@ -2172,6 +2194,10 @@ class Tensor:
         The key is in tile units for a tiled tensor and element units for a
         row-major one, and never drops a dimension -- neither of which is what
         ttnn's element indexing does.  See :class:`Tensor`.
+
+        A selector is an integer or a slice without a step, one per dimension;
+        the fancier keys ttnn accepts are refused by name
+        (:func:`normalize_selector_to_slice`) rather than half-supported.
         """
         # Python passes a bare int/slice (not a tuple) for single-element indexing.
         normalized: Tuple[Selector, ...] = key if isinstance(key, tuple) else (key,)
