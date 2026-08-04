@@ -1137,6 +1137,45 @@ def test_the_l1_warning_points_at_the_line_that_ran_the_operation() -> None:
     assert record[0].lineno == call_line, record[0].lineno
 
 
+def test_a_tensor_whose_logical_shape_is_not_tile_aligned_backs_a_buffer() -> None:
+    """A buffer is described in the tiles the tensor is stored as, padding included.
+
+    The specification defines a tile grid over ``tensor.padded_shape``, and gives
+    (2, 2, 120, 30) -> [2, 2, 4, 1] as the case that shows why: the trailing
+    dimensions are padded up to whole tiles, so a tensor no dimension of which is
+    a multiple of 32 still has 4 x 1 tiles per batch entry.  Reading the logical
+    shape instead refuses this tensor outright, and every other test here uses an
+    aligned tensor where the two shapes agree.
+    """
+    set_current_kernel_type(KernelType.DM)
+
+    try:
+        ragged = ttnn.from_torch(
+            torch.rand(2, 2, 120, 30, dtype=torch.float32), layout=TILE_LAYOUT
+        )
+        assert tuple(ragged.padded_shape) == (2, 2, 128, 32)
+
+        dfb = DataflowBuffer(likeness_tensor=ragged, shape=(2, 2, 4, 1), block_count=2)
+        assert dfb.capacity_tiles == 2 * (2 * 2 * 4 * 1)
+
+        # And the copy paths agree with the buffer about the extent: a round trip
+        # through it returns the tensor, padding and all.
+        out = ttnn.zeros(
+            ttnn.Shape([2, 2, 120, 30]), layout=TILE_LAYOUT, dtype=torch.float32
+        )
+        block = dfb.reserve()
+        copy(ragged, block).wait()
+        block.push()
+
+        held = dfb.wait()
+        copy(held, out).wait()
+        held.pop()
+
+        assert torch.equal(out.to_torch(), ragged.to_torch())
+    finally:
+        clear_current_kernel_type()
+
+
 def test_heterogeneous_dfbs_independent() -> None:
     """Test that multiple DataflowBuffers operate independently."""
     set_current_kernel_type(KernelType.COMPUTE)

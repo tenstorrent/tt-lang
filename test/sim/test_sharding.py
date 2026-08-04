@@ -46,6 +46,40 @@ class TestCountLocalRemoteL1Dram:
         local, remote, dram = count_local_remote_l1_dram(t, 0)
         assert dram == 4096
 
+    def test_counts_cover_the_padding_a_tiled_tensor_is_stored_with(self) -> None:
+        """The counts are over stored elements, so they add up to the padded extent.
+
+        A tiled tensor is stored as whole tiles, and a logical (50, 40) occupies a
+        64 x 64 store.  Counting the logical extent instead leaves the padding
+        unaccounted: a height shard is then reported as part local and part
+        nothing at all, and the totals no longer say where the tensor is.
+        """
+        ragged = ttnn.from_torch(
+            torch.zeros(50, 40, dtype=torch.float32), layout=ttnn.TILE_LAYOUT
+        )
+        assert tuple(ragged.padded_shape) == (64, 64)
+        stored = 64 * 64
+
+        # Interleaved: all of the store is in DRAM, padding included.
+        assert count_local_remote_l1_dram(ragged, 0) == (0, 0, stored)
+
+        # Height-sharded over two nodes, 32 rows each: each node owns half the
+        # store and reads the other half remotely, and the two add to all of it.
+        spec = ShardSpec(shard_grid=(2,), shard_shape=(32, 64))
+        sharded = ttnn.from_torch(
+            torch.zeros(50, 40, dtype=torch.float32),
+            layout=ttnn.TILE_LAYOUT,
+            memory_config=MemoryConfig(
+                strategy=ShardingStrategy.HEIGHT_SHARDED, shard_spec=spec
+            ),
+        )
+        for node in (0, 1):
+            local, remote, dram = count_local_remote_l1_dram(sharded, node)
+            assert local == 32 * 64, node
+            assert remote == 32 * 64, node
+            assert dram == 0, node
+            assert local + remote + dram == stored, node
+
     # ---- HEIGHT_SHARDED (shard_shape in elements) ----
 
     def test_height_sharded_local_access(self) -> None:
