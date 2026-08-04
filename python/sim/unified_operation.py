@@ -345,6 +345,49 @@ def _reject_aliased_api(fn_def: ast.FunctionDef, symbols: Dict[str, Any]) -> Non
     )
 
 
+def _reject_captured_dfb(fn_def: ast.FunctionDef, symbols: Dict[str, Any]) -> None:
+    """Reject a body that reads a dataflow buffer built outside the operation.
+
+    The spec draws this line where the compiler does: a dataflow buffer "is
+    constructed in the scope of an operation function" ("Dataflow buffer"),
+    while a pipe net may be constructed "in an enclosing scope and captured by
+    the operation function" ("Pipe net"). So a captured pipe net is supported
+    and a captured buffer is not, and the compiler refuses one at decoration
+    time (``atom.py``, "external DFB ... is not supported").
+
+    Without this the simulator would take the body: a captured buffer is not
+    among the names the body constructs, so ``blk = outer.reserve()`` anchors no
+    thread, gets replicated onto all three kernels, and fails as a dataflow
+    state error inside a kernel the user never wrote. Sharing a buffer by
+    hoisting it into an enclosing scope is a natural thing to try -- the spec's
+    pipe-net wording invites it -- so it is worth the same answer the compiler
+    gives, at the same time.
+
+    Raises:
+        ValueError: If the body reads a captured dataflow buffer.
+    """
+    from .dfb import DataflowBuffer
+
+    captured = sorted(
+        name
+        for name in _rules().loaded_names_in(fn_def)
+        if isinstance(symbols.get(name), DataflowBuffer)
+    )
+    if not captured:
+        return
+    names = ", ".join(repr(name) for name in captured)
+    raise ValueError(
+        f"the dataflow buffer(s) {names} are constructed outside the operation. "
+        f"A dataflow buffer is constructed in the scope of the operation "
+        f"function that uses it, because construction is what tells the three "
+        f"kernels which buffer they share; one built elsewhere reaches them as "
+        f"three separate uses. Construct it in the body "
+        f"('name = ttl.make_dataflow_buffer_like(...)'), or pass the tensor it "
+        f"is built from as an operation argument. (A pipe net may be captured; "
+        f"a dataflow buffer may not.)"
+    )
+
+
 def _reject_unsupported_setup(fn_def: ast.FunctionDef) -> None:
     """Reject DFB / pipe construction that cannot be hoisted out of the body.
 
@@ -507,6 +550,7 @@ def build_multikernel_function(
     fn_def = _parse_operation_funcdef(func)
     _clear_decorators(fn_def, symbols)
     _reject_aliased_api(fn_def, symbols)
+    _reject_captured_dfb(fn_def, symbols)
     _reject_unsupported_setup(fn_def)
 
     local_dfbs = _local_dfb_names(fn_def)

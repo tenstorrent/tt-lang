@@ -806,6 +806,26 @@ def test_unified_body_with_nested_dfb_is_rejected() -> None:
     ), f"unexpected failure mode:\n{out}"
 
 
+def test_unified_body_with_a_captured_dfb_is_rejected() -> None:
+    """A buffer built outside the operation is refused, as the compiler refuses it.
+
+    The specification constructs a dataflow buffer in the scope of the operation
+    that uses it, while allowing a pipe net to be captured -- so this is the one
+    of the two that has to be turned away.  Unguarded, the captured name is not
+    among the buffers the body constructs, so its reserve and wait anchor no
+    thread and the run dies on a dataflow state error inside a synthesized
+    kernel, naming neither the buffer nor the line that built it.
+    """
+    code, out = run_script_in_process(FIXTURES_DIR / "unified_captured_dfb.py")
+    assert code != 0, f"unified body with a captured DFB unexpectedly ran:\n{out}"
+    assert (
+        "constructed outside the operation" in out
+    ), f"unexpected failure mode:\n{out}"
+    # The compiler's own refusal is at decoration time too, so the message must
+    # arrive before any kernel runs.
+    assert "Cannot perform" not in out, f"reached the dataflow protocol:\n{out}"
+
+
 def _passthrough(fn: Any) -> Any:
     """A user decorator that a sample body can be stacked with."""
     return fn
