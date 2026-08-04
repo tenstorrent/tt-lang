@@ -199,6 +199,8 @@ def format_name_to_ttnn_dtype(name: str):
             raise ValueError(
                 f"Unrecognized data format name '{name}' for ttnn.DataType"
             )
+
+
 def tile_bytes_from_dtype(dtype, tile=(DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)) -> int:
     """
     Calculate tile size in bytes from ttnn dtype.
