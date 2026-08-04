@@ -306,9 +306,11 @@ def _warn_over_hardware_limits(node_footprints: Dict[int, tuple[int, int]]) -> N
             f" on node {node}" if len(values) > 1 else ""
         )
 
-    # One frame for this helper and one for _schedule_and_run, so the warning is
-    # reported against the caller that ran the operation.
-    stacklevel = 3
+    # Count out the simulator frames between here and the user's call, so the
+    # warning is reported against the line that ran the operation rather than
+    # against a simulator source file the reader cannot act on: this helper,
+    # _schedule_and_run, run_operation, and the wrapper @ttl.operation installed.
+    stacklevel = 5
 
     dfb_count, dfb_where = worst(0)
     max_dfbs = get_max_dfbs()
@@ -390,12 +392,18 @@ def _schedule_and_run(
         )
 
     # Compute the PipeNet active set: linear node indices that participate in
-    # any pipe as source or destination.  Inactive nodes skip every kernel,
-    # mirroring the compiler's scf.if guard -- but only the kernels: their setup
-    # has already run, because the active set is not known until every node's
-    # body has been evaluated and its pipes collected (see run_operation).  So
-    # an inactive node's dataflow buffers exist and count against the hardware
-    # limits, where on hardware they would never be allocated.
+    # any pipe as source or destination.  Inactive nodes skip every kernel, as the
+    # specification's gather example describes ("nodes outside the active
+    # rectangle skip the operation body") -- but only the kernels: their setup has
+    # already run, because the active set is not known until every node's body has
+    # been evaluated and its pipes collected (see run_operation).  So an inactive
+    # node's dataflow buffers exist and count against the hardware limits.
+    #
+    # The compiler does not insert this guard: TTLVerifyPipeNetGuards verifies
+    # that the user's own scf.if / ttl.if_src / ttl.if_dst narrows the nodes
+    # around pipe-coupled operations, which is where the specification puts the
+    # obligation. So a program that reads a pipe outside such a guard is refused
+    # there and quietly skipped here (tt-lang issue #804).
     active_nodes = (
         pipenets.active_node_set(tuple(grid)) if pipenets is not None else None
     )

@@ -9,6 +9,7 @@ context manager syntax, state machine enforcement) and the low-level ring-buffer
 primitives (reserve/wait/push/pop, error contracts, per-node limits).
 """
 
+import inspect
 import pytest
 import subprocess
 import tempfile
@@ -1093,6 +1094,47 @@ def test_l1_limit_warns_about_the_worst_node_not_the_first() -> None:
 
     message = str(record[0].message)
     assert "10240 bytes on node 3" in message, message
+
+
+def test_the_l1_warning_points_at_the_line_that_ran_the_operation() -> None:
+    """The warning names the caller's line, not a simulator source file.
+
+    A warning is something to act on, and the action is in the caller's code: the
+    buffers to shrink are in the operation it called.  Attributing it inside the
+    simulator also decides where a ``-W`` filter by module applies, and puts the
+    entry in ``sim.program``'s registry rather than the caller's.
+    """
+    from sim import ttl
+    from sim.program import set_max_l1_bytes
+
+    set_max_l1_bytes(4096)
+
+    element = make_ones_tile()
+
+    @ttl.operation(grid=(1,))
+    def test_kernel(a):
+        _dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=4)
+
+        @ttl.compute()
+        def noop_compute():
+            pass
+
+        @ttl.datamovement()
+        def noop_dm0():
+            pass
+
+        @ttl.datamovement()
+        def noop_dm1():
+            pass
+
+    here = inspect.currentframe()
+    assert here is not None
+    with pytest.warns(UserWarning, match="exceeds the L1 memory limit") as record:
+        call_line = here.f_lineno + 1
+        test_kernel(element)
+
+    assert record[0].filename == __file__, record[0].filename
+    assert record[0].lineno == call_line, record[0].lineno
 
 
 def test_heterogeneous_dfbs_independent() -> None:
