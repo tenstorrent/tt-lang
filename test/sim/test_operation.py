@@ -639,11 +639,15 @@ class TestPerNodeBodyExecution:
     two; the specification does not currently say which is right.
     """
 
-    def test_body_runs_once_per_node(self) -> None:
-        """Each node evaluates the body, and sees its own node index doing so."""
+    def test_body_runs_once_per_node_on_every_call(self) -> None:
+        """Each node evaluates the body, sees its own index, and does so per call.
+
+        The count follows the grid rather than the call, so a second call is a
+        second round of evaluations and not a cached one.
+        """
         nodes: list[int] = []
 
-        @ttl.operation(grid=(2, 2))
+        @ttl.operation(grid=(2, 4))
         def test_operation(a: ttnn.Tensor, b: ttnn.Tensor) -> None:
             nodes.append(cast(int, ttl.node(dims=1)))
 
@@ -659,37 +663,14 @@ class TestPerNodeBodyExecution:
             def dm1():
                 pass
 
-        test_operation(make_zeros_tensor(32, 32), make_zeros_tensor(32, 32))
-
-        assert sorted(nodes) == [0, 1, 2, 3]
-
-    def test_body_evaluations_scale_with_the_grid(self) -> None:
-        """A larger grid means more evaluations: one per node, not one per call."""
-        runs: list[int] = []
-
-        @ttl.operation(grid=(2, 4))
-        def test_operation(a: ttnn.Tensor, b: ttnn.Tensor) -> None:
-            runs.append(1)
-
-            @ttl.compute()
-            def compute():
-                pass
-
-            @ttl.datamovement()
-            def dm0():
-                pass
-
-            @ttl.datamovement()
-            def dm1():
-                pass
-
         a = make_zeros_tensor(32, 32)
         b = make_zeros_tensor(32, 32)
-        test_operation(a, b)
-        assert len(runs) == 8
 
         test_operation(a, b)
-        assert len(runs) == 16
+        assert sorted(nodes) == [0, 1, 2, 3, 4, 5, 6, 7]
+
+        test_operation(a, b)
+        assert sorted(nodes) == sorted([0, 1, 2, 3, 4, 5, 6, 7] * 2)
 
     def test_nodes_a_pipe_net_leaves_out_still_run_their_setup(self) -> None:
         """Inactive nodes skip their kernels but not the body that built them.
