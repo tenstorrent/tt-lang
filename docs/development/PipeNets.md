@@ -121,16 +121,20 @@ is unavailable when any of the following applies:
   corresponding receive post and wait family.
 - The receiver sequence is fully dynamic, or the graph cannot prove a modular
   recurrence that current computed-address lowering can materialize.
-- A reachable address in the sequence would make the payload cross the end of
-  the DFB ring; current lowering emits one contiguous payload write.
 - The receiver DFB does not contain tiles, the sender operations do not
   belong to one sender function, or the address arithmetic does not fit
   the supported 32-bit representation.
 
+The address protocol does not change DFB reservation legality. TT-Metal permits
+the producer write pointer to return to the first block only when a reservation
+advance reaches the physical DFB end exactly. PipeGraph rejects any proven
+reservation sequence whose advance exceeds `block_count` in both address modes.
+
 Multicast is not itself a restriction. A collective transfer whose receiver
 endpoints form one address-sequence equivalence class uses `CA/RP` when the
 sender can materialize that sequence. `RA/RP` remains available when computed
-addressing is disabled or another computed-address predicate fails. Both modes
+addressing is disabled or another computed-address predicate fails. It does not
+make an invalid receiver reservation sequence valid. Both modes
 require the same graph proof because TT-Metal NoC multicast has one destination
 SRAM address operand. A collective transfer is rejected unless every receiver
 address is proven equal for every occurrence.
@@ -174,8 +178,15 @@ Pipe transfers have the following operational semantics:
   receive-wait events. It rejects schedules whose same-thread ordering
   creates a wait-for cycle. Other runtime hangs can still have different
   causes.
-- The graph pairs static receiver-post and send definitions by program order
-  after helper expansion. Each pair may execute repeatedly, but the two sides
+- A *static definition* is one IR operation that defines a send, receiver post,
+  or receiver wait. *Program order* (the order in which events can execute
+  within one kernel thread) is distinct from *definition order* (the
+  deterministic lexical IR order of definitions for one event kind and
+  `PipeKey`). The verifier derives program order from single-block structured
+  regions after expanding direct helper calls at each call site. Independent
+  kernel threads have no program order.
+- The verifier pairs static receiver-post and send definitions in their
+  respective program order. Each pair may execute repeatedly, but the two sides
   must contain the same number of static definitions and each pair must execute
   equally often under equivalent conditions. A receiver wait refers to the
   exact post that produced its handle, rather than a position in the wait
@@ -316,14 +327,14 @@ def transfer():
             net.if_dst(recv)
 ```
 
-The verifier collects receiver posts, sends, and receive waits in deterministic
-IR order. Each event kind must have the same number of definitions, and each
-corresponding pair must have proven equal execution multiplicity. Equal exact
-counts prove the relation directly. When exact counts are unavailable,
-operations must share one unresolved structured-control context, and every
-runtime control value must be proven equal at the source and receiver nodes.
-The verifier rejects an unproven correspondence instead of assuming that
-unrelated functions, regions, or node-dependent values execute equally often.
+The verifier collects receiver posts, sends, and receive waits in program order.
+Each event kind must have the same number of definitions, and each corresponding
+pair must have proven equal execution multiplicity. Equal exact counts prove the
+relation directly. When exact counts are unavailable, operations must share one
+unresolved structured-control context, and every runtime control value must be
+proven equal at the source and receiver nodes. The verifier rejects an unproven
+correspondence instead of assuming that unrelated functions, regions, or
+node-dependent values execute equally often.
 
 The receive post executes before the send can block on that post. The
 receive wait runs only after the send operation has run:
@@ -601,10 +612,11 @@ that the sender can materialize; otherwise `RA/RP` publishes the runtime
 receiver address. A collective still requires a proven one-class address
 partition.
 
-The current lowering emits one contiguous NoC write per send. The graph
-therefore verifies that every reachable slot satisfies
-`slot + slot_span <= block_count`. This condition is evaluated over the
-reachable recurrence; repeat-stride divisibility is not required.
+The graph verifies that every reachable slot satisfies
+`slot + slot_span <= block_count`. TT-Metal advances the DFB producer write
+pointer by `slot_span` blocks and permits it to return to the first block only
+when the advance reaches `block_count` exactly. The condition is evaluated over
+the reachable recurrence; repeat-stride divisibility is not required.
 
 When the address proof succeeds but the capacity proof does not,
 lowering selects `CA/RP`. The address-table write and read are removed,
@@ -818,15 +830,14 @@ match. Equal initial slots and equal repeat strides are sufficient proof
 lemmas, but they are not required: different recurrences are accepted when
 they produce equal addresses over the reachable occurrences.
 
-Computed-address selection uses the same bounded recurrence enumeration to
-require:
+Receiver reservation validation uses bounded recurrence enumeration to require:
 
 ```text
 slot(E, i) + slot_span(E) <= block_count(E)
 ```
 
-A violation requires split payload writes, which current computed-address
-lowering does not implement, so point-to-point transfers use `RA/RP`.
+A violation would advance the TT-Metal producer write pointer past the physical
+DFB end and is rejected independently of the receiver address protocol.
 
 ##### Reservation-schedule construction
 
@@ -839,8 +850,9 @@ ring. Consumer waits and pops do not participate in address-sequence
 construction because only the reserve/push sequence determines the write
 addresses. For local `RP`, a reserve does not complete until the DFB has
 enough free blocks, and the sender does not transfer data until that reserve
-posts readiness. A reserve/push sequence may therefore wrap to an earlier
-address safely even when the consumer is in another kernel thread. Fabric
+posts readiness. After an advance reaches the physical DFB end, the next
+reserve may select the first block safely even when the consumer is in another
+kernel thread. Fabric
 transport does not use receiver-post admission and requires a separate capacity
 proof; an address sequence alone does not prove that a fabric destination slot
 is available.
@@ -874,7 +886,7 @@ for D in pipe_graph.receiver_dfbs:
             reservation = unique_reservation_owner(event)
             if reservation has no assigned slot:
                 if next_slot + reservation.span > block_count(D):
-                    reject_contiguous_payload_wrap(reservation)
+                    reject_reservation_past_dfb_end(reservation)
                 assign_initial_slot(reservation, next_slot)
                 next_slot = (next_slot + reservation.span) mod block_count(D)
             attach_posts_to_reservation(event, reservation)
@@ -1403,9 +1415,9 @@ producer reservation schedule for the physical DFB. Within that schedule,
 slot per reserve. It does not infer producer order between functions, threads,
 loop regions, or branch regions from lexical module position. Consumer waits
 and pops may execute in another function or thread; their placement does not
-alter the ordered sequence of producer write addresses. A later reserve may
-select an earlier slot after ring wrap because it waits until enough DFB blocks
-are free before posting receiver readiness.
+alter the ordered sequence of producer write addresses. After the write pointer
+reaches the physical DFB end, a later reserve may select the first slot because
+it waits until enough DFB blocks are free before posting receiver readiness.
 
 Each receive post identifies the physical start slot selected by its owning DFB
 reserve. A `PipeReceiverEndpoint` records that initial slot and the modular
@@ -1428,11 +1440,12 @@ completion signal: it uses the hardware multicast completion signal
 (`noc_semaphore_inc_multicast`; see `PipeOptimizations.md`, section 2)
 rather than per-destination `noc_semaphore_inc`. The receiver DFB
 `block_count` is the number of payload blocks available at that
-receiver. A reservation may wrap to an earlier block only after the runtime DFB
-has capacity for it. The compiler rejects a multi-block payload whose
-contiguous address range would cross the end of the DFB block ring. Senders
-whose receiver reservations have all completed may run concurrently. Each
-sender writes to the address selected by its completed receiver reservation.
+receiver. A reservation may return to the first block only when the producer
+write pointer reaches the physical DFB end exactly. The compiler rejects a
+proven reservation sequence that advances the write pointer past that end.
+Senders whose receiver reservations have all completed may run concurrently.
+Each sender writes to the address selected by its completed receiver
+reservation.
 
 ### Completion counters
 
@@ -1734,9 +1747,13 @@ The analyses have non-overlapping responsibilities:
 Synchronization verification and `PipeGraph` share execution-multiplicity
 proofs. The verifier diagnoses invalid occurrence correspondence. `PipeGraph`
 uses `PipeKey` to collect candidate operations, then matches sends and
-per-receiver posts by deterministic definition order and proven equal
-execution multiplicity. A `ttl.pipe_transfer.create` reference is not
-transfer-node identity.
+per-receiver posts by definition order within each `PipeKey` and verifies that
+each pair executes equally often. This does not impose an order between
+different `PipeKey`s. The Python DSL identifies the pipe relation but has no
+syntax for naming one transfer shared by the source and destination callbacks.
+The callbacks may therefore produce distinct `ttl.pipe_transfer.create`
+references for the same transfer; those references are not transfer-node
+identity.
 
 Graph construction runs after DFB indices and pipe transfer operations are
 available and before TTKernel conversion mutates the IR:
@@ -2253,9 +2270,9 @@ can be live concurrently.
   unknown execution counts. A `FullyDynamic` point-to-point schedule uses
   `RA/RP`, while collective verification reports an error because receiver
   address equality is unproven.
-* Payload lowering emits one contiguous NoC write. An address sequence with a
-  reachable slot whose payload span crosses `block_count` is rejected. Split
-  payload writes are not synthesized.
+* Receiver reservation validation rejects a proven address sequence with a
+  reachable slot whose reservation span advances past `block_count`. This DFB
+  producer-pointer invariant is independent of receiver address protocol.
 * Domain representation is `std::set<Coord>` over the launch grid. This
   is sufficient for current 2D grids (<= ~200 nodes); revisit when grids
   grow to 3D or thousands of nodes.

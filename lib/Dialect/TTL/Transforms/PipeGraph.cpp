@@ -32,7 +32,7 @@
 
 namespace mlir::tt::ttl {
 
-/// Launch-node and DFB ownership facts needed while constructing PipeGraph.
+/// Analysis facts and operation indexes used while constructing PipeGraph.
 struct PipeGraphAnalysisState : LaunchNodeDomainState {
   llvm::DenseMap<Operation *, LaunchNodeDomain> operationLaunchDomains;
   llvm::DenseMap<Operation *, std::unique_ptr<DFBAcquireReleaseIndex>>
@@ -185,6 +185,8 @@ static LogicalResult recordReceiveWait(PipeTransferWaitOp waitOp,
   return success();
 }
 
+/// Collect protocol and receiver DFB operations once so graph analyses do not
+/// rescan the module for every receiver.
 static LogicalResult
 collectPipeGraphOperations(ModuleOp mod, const PipeTransferIndex &transferIndex,
                            PipeGraphAnalysisState &state) {
@@ -218,13 +220,11 @@ collectPipeGraphOperations(ModuleOp mod, const PipeTransferIndex &transferIndex,
         return failed(recordResult) ? WalkResult::interrupt()
                                     : WalkResult::advance();
       });
-  if (walkResult.wasInterrupted()) {
-    return failure();
-  }
-
-  return success();
+  return success(!walkResult.wasInterrupted());
 }
 
+/// Visit operations for this logical-device receiver and operations shared by
+/// every logical device using the same physical DFB index.
 template <typename OpTy, typename Callback>
 static void forEachReceiverDFBStreamEvent(
     const llvm::DenseMap<PipeReceiverDFBStreamKey, SmallVector<OpTy>>
@@ -445,7 +445,7 @@ static bool hasMatchingReceiveWaitBeforePush(
 }
 
 /// Group posts by physical DFB because its writers share one reservation ring.
-static FailureOr<ReceiverPostsByDFB> collectReceiverPostsByDFB(
+static ReceiverPostsByDFB collectReceiverPostsByDFB(
     const PipeTransferIndex &transferIndex,
     const llvm::MapVector<Operation *, ReceiverDFBInfo> &receiverDFBByPost,
     PipeGraphAnalysisState &analysisState) {
@@ -544,9 +544,20 @@ struct ReceiverProducerState {
 
 } // namespace
 
+static InFlightDiagnostic
+emitReceiverReservationPastDFBEnd(const ReceiverDFBInfo &receiverInfo,
+                                  int64_t slot) {
+  return emitError(receiverInfo.loc)
+         << "pipe receiver DFB reservation sequence reaches slot " << slot
+         << " with a span of " << receiverInfo.receiverSlotSpanBlocks
+         << " blocks, which advances the DFB producer write pointer past "
+            "block_count="
+         << receiverInfo.blockCount
+         << "; increase block_count or change the reservation sizes";
+}
+
 static FailureOr<int64_t>
-assignReceiverPhysicalSlot(const PipeKey &pipeKey,
-                           const ReceiverDFBInfo &receiverInfo,
+assignReceiverPhysicalSlot(const ReceiverDFBInfo &receiverInfo,
                            ReceiverProducerState &producerState) {
   int64_t span = receiverInfo.receiverSlotSpanBlocks;
   assert(span > 0 && span <= receiverInfo.blockCount &&
@@ -554,11 +565,7 @@ assignReceiverPhysicalSlot(const PipeKey &pipeKey,
 
   int64_t slot = producerState.nextSlot;
   if (span > receiverInfo.blockCount - slot) {
-    return emitError(receiverInfo.loc)
-           << (pipeKey.hasSingleReceiver() ? "gather" : "collective overlap")
-           << " pipe receiver DFB reserve at slot " << slot << " spans " << span
-           << " block(s), which would wrap block_count="
-           << receiverInfo.blockCount;
+    return emitReceiverReservationPastDFBEnd(receiverInfo, slot);
   }
 
   producerState.nextSlot =
@@ -574,16 +581,39 @@ static int64_t advanceReceiverSlot(int64_t slot, int64_t stride,
                                      : slot + stride;
 }
 
+/// Verify that every reachable reservation advances to or before the physical
+/// DFB end. TT-Metal permits the write pointer to return to the first block
+/// only when an advance reaches the end exactly.
+static LogicalResult
+verifyReceiverReservationSequence(const ReceiverAddressSequenceProof &sequence,
+                                  const ReceiverDFBInfo &receiverInfo) {
+  assert(sequence.recurrence && "sequence validation requires a recurrence");
+  const ReceiverAddressRecurrence &recurrence = *sequence.recurrence;
+  int64_t period = recurrence.blockCount /
+                   std::gcd(recurrence.blockCount, recurrence.repeatStride);
+  std::uint64_t occurrenceCount = static_cast<std::uint64_t>(period);
+  if (sequence.executionCount) {
+    occurrenceCount = std::min(occurrenceCount, *sequence.executionCount);
+  }
+
+  int64_t slot = recurrence.initialSlot;
+  for (std::uint64_t occurrence = 0; occurrence < occurrenceCount;
+       ++occurrence) {
+    if (receiverInfo.receiverSlotSpanBlocks > recurrence.blockCount - slot) {
+      emitReceiverReservationPastDFBEnd(receiverInfo, slot);
+      return failure();
+    }
+    slot = advanceReceiverSlot(slot, recurrence.repeatStride,
+                               recurrence.blockCount);
+  }
+  return success();
+}
+
 LogicalResult PipeGraph::assignReceiverAddressSequences(
     const PipeTransferIndex &transferIndex,
     PipeGraphAnalysisState &analysisState) {
-  FailureOr<ReceiverPostsByDFB> maybePostsByReceiverDFB =
-      collectReceiverPostsByDFB(transferIndex, receiverDFBByPost,
-                                analysisState);
-  if (failed(maybePostsByReceiverDFB)) {
-    return failure();
-  }
-  ReceiverPostsByDFB &postsByReceiverDFB = *maybePostsByReceiverDFB;
+  ReceiverPostsByDFB postsByReceiverDFB = collectReceiverPostsByDFB(
+      transferIndex, receiverDFBByPost, analysisState);
   llvm::DenseMap<PipeReceiverDFBKey, std::optional<ReceiverControlContext>>
       scheduleContextByReceiverDFB;
   for (const auto &receiverEntry : receiverDFBByPost) {
@@ -677,7 +707,7 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
       int64_t slot = 0;
       if (reserveIt == slotByReserve.end()) {
         FailureOr<int64_t> assignedSlot = assignReceiverPhysicalSlot(
-            pipeKey, receiverInfo, producerStateByReceiverDFB[receiverDFB]);
+            receiverInfo, producerStateByReceiverDFB[receiverDFB]);
         if (failed(assignedSlot)) {
           result = failure();
           return;
@@ -747,6 +777,9 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
     ReceiverAddressSequenceProof sequence;
     sequence.executionCount = assignmentIt->second.executionCount;
     sequence.recurrence = recurrence;
+    if (failed(verifyReceiverReservationSequence(sequence, receiverInfo))) {
+      return failure();
+    }
     endpoint.addressSequence = std::move(sequence);
   }
   return success();
@@ -946,11 +979,9 @@ LogicalResult PipeGraph::provePipeOnlyReceiverProducerStreams(
       continue;
     }
 
-    node.hasProvenPipeOnlyProducerStream = valid;
-    if (valid) {
-      node.pipeOnlyProducerStreamFailureReason.clear();
-      debugAcceptPipeOnlyProducerStream(receiverDFB);
-    }
+    node.hasProvenPipeOnlyProducerStream = true;
+    node.pipeOnlyProducerStreamFailureReason.clear();
+    debugAcceptPipeOnlyProducerStream(receiverDFB);
   }
   return success();
 }

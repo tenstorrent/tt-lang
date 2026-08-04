@@ -46,6 +46,110 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
+// Two two-block reservations exactly fill a four-block receiver DFB. The
+// second reservation reaches the physical end without advancing past it.
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  // COMPUTED-LABEL: func.func @repeated_reservation_reaches_dfb_end
+  // COMPUTED-NOT: ttl.pipe_computed_address_dfb_indices
+  // COMPUTED-DAG: %[[COMPUTED_TWO_I32:.*]] = arith.constant 2 : i32
+  // COMPUTED-DAG: %[[COMPUTED_TWO:.*]] = arith.constant 2 : index
+  // COMPUTED-DAG: %[[COMPUTED_DST:.*]] = ttkernel.get_compile_time_arg_val(1)
+  // COMPUTED: scf.for {{.*}} to %[[COMPUTED_TWO]]
+  // COMPUTED: ttkernel.cb_reserve_back(%[[COMPUTED_DST]], %[[COMPUTED_TWO_I32]])
+  // COMPUTED-NOT: ttkernel.noc_inline_dw_write
+  // COMPUTED: ttkernel.experimental.semaphore_wait_min
+  // COMPUTED-NEXT: ttkernel.cb_push_back(%[[COMPUTED_DST]], %[[COMPUTED_TWO_I32]])
+  // COMPUTED: return
+  // COMPUTED-LABEL: func.func @repeated_reservation_reaches_dfb_end_sender
+  // COMPUTED-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
+  // COMPUTED-DAG: %[[BLOCK_COUNT:.*]] = arith.constant 4 : i32
+  // COMPUTED-DAG: %[[REPEAT_STRIDE:.*]] = arith.constant 2 : i32
+  // COMPUTED-DAG: %[[BLOCK_BYTES:.*]] = arith.constant 4096 : i32
+  // COMPUTED: %[[SLOT:.*]] = memref.load %[[SLOT_COUNTER:.*]]
+  // COMPUTED-NEXT: %[[SLOT_OFFSET:.*]] = arith.muli %[[SLOT]], %[[BLOCK_BYTES]]
+  // COMPUTED-NEXT: %[[DST_ADDR:.*]] = arith.addi {{.*}}, %[[SLOT_OFFSET]]
+  // COMPUTED-NEXT: %[[ADVANCED_SLOT:.*]] = arith.addi %[[SLOT]], %[[REPEAT_STRIDE]]
+  // COMPUTED-NEXT: %[[NEXT_SLOT:.*]] = arith.remui %[[ADVANCED_SLOT]], %[[BLOCK_COUNT]]
+  // COMPUTED-NEXT: memref.store %[[NEXT_SLOT]], %[[SLOT_COUNTER]]
+  // COMPUTED-NEXT: ttkernel.noc_async_write {{.*}}, %[[DST_ADDR]], %[[BLOCK_BYTES]]
+  // COMPUTED-NOT: ttkernel.load_from_l1
+  // COMPUTED: return
+
+  // PUBLISHED-LABEL: func.func @repeated_reservation_reaches_dfb_end
+  // PUBLISHED-NOT: ttl.pipe_computed_address_dfb_indices
+  // PUBLISHED-DAG: %[[PUBLISHED_TWO_I32:.*]] = arith.constant 2 : i32
+  // PUBLISHED-DAG: %[[PUBLISHED_TWO:.*]] = arith.constant 2 : index
+  // PUBLISHED-DAG: %[[PUBLISHED_DST:.*]] = ttkernel.get_compile_time_arg_val(1)
+  // PUBLISHED: scf.for {{.*}} to %[[PUBLISHED_TWO]]
+  // PUBLISHED: ttkernel.cb_reserve_back(%[[PUBLISHED_DST]], %[[PUBLISHED_TWO_I32]])
+  // PUBLISHED: %[[PUBLISHED_ADDR:.*]] = ttkernel.get_write_ptr(%[[PUBLISHED_DST]])
+  // PUBLISHED: ttkernel.noc_inline_dw_write({{.*}}, %[[PUBLISHED_ADDR]]
+  // PUBLISHED: ttkernel.experimental.semaphore_wait_min
+  // PUBLISHED-NEXT: ttkernel.cb_push_back(%[[PUBLISHED_DST]], %[[PUBLISHED_TWO_I32]])
+  // PUBLISHED: return
+  // PUBLISHED-LABEL: func.func @repeated_reservation_reaches_dfb_end_sender
+  // PUBLISHED-NOT: ttl.pipe_computed_address_dfb_indices
+  // PUBLISHED: %[[ADDRESS_TABLE:.*]] = ttkernel.get_common_arg_val
+  // PUBLISHED-NEXT: %[[ADDRESS_TABLE_PTR:.*]] = ttkernel.reinterpret_cast(%[[ADDRESS_TABLE]])
+  // PUBLISHED-NEXT: %[[PUBLISHED_DST_ADDR:.*]] = ttkernel.load_from_l1(%[[ADDRESS_TABLE_PTR]]
+  // PUBLISHED: ttkernel.noc_async_write {{.*}}, %[[PUBLISHED_DST_ADDR]]
+  // PUBLISHED: return
+  func.func @repeated_reservation_reaches_dfb_end()
+      attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 4}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %lb = arith.constant 0 : index
+    %ub = arith.constant 2 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lb to %ub step %step {
+      ttl.if_dst %pipe
+          : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+        %reserved = ttl.cb_reserve %dst {num_tiles = 2 : i64}
+            : <[1, 1], !ttcore.tile<32x32, f32>, 4>
+            -> tensor<1x2x!ttcore.tile<32x32, f32>>
+        %slot = tensor.extract_slice %reserved[0, 0] [1, 1] [1, 1]
+            : tensor<1x2x!ttcore.tile<32x32, f32>>
+              to tensor<1x1x!ttcore.tile<32x32, f32>>
+        %receive = ttl.copy %pipe, %slot
+            : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+               tensor<1x1x!ttcore.tile<32x32, f32>>)
+            -> !ttl.transfer_handle
+        ttl.wait %receive : !ttl.transfer_handle
+        ttl.cb_push %dst {num_tiles = 2 : i64}
+            : <[1, 1], !ttcore.tile<32x32, f32>, 4>
+      }
+    }
+    func.return
+  }
+
+  // Match the receiver loop with two sends from the source node.
+  func.func @repeated_reservation_reaches_dfb_end_sender()
+      attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %lb = arith.constant 0 : index
+    %ub = arith.constant 2 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lb to %ub step %step {
+      ttl.if_src %pipe
+          : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+        %send = ttl.copy %src, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+               !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
+    }
+    func.return
+  }
+}
+
+// -----
+
 // A receiver on the source core publishes its address with a local L1 store;
 // an inline NoC write does not update the issuing core's SRAM.
 module attributes {ttl.launch_grid = array<i64: 1, 1>} {

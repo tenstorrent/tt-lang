@@ -30,10 +30,6 @@
 #include <string>
 #include <utility>
 
-namespace mlir::tt {
-class ValueOriginAnalysis;
-}
-
 namespace mlir::tt::ttl {
 
 class PipeTransferIndex;
@@ -276,8 +272,8 @@ inline PipeTransferContract getPipeTransferContract(PipeTransferCreateOp op) {
 class PipeGraph {
 public:
   /// Analyze a module to find all pipe receivers and build the graph.
-  /// Returns failure if validation detects an error (e.g., gather DFB too
-  /// small).
+  /// Returns failure if validation detects invalid transfer correspondence or
+  /// receiver DFB address geometry.
   static FailureOr<PipeGraph> build(ModuleOp mod,
                                     const PipeTransferIndex &transferIndex);
 
@@ -371,7 +367,7 @@ private:
                                      PipeGraphAnalysisState &state);
 
   LogicalResult
-  provePipeOnlyReceiverProducerStreams(PipeGraphAnalysisState &analysisState);
+  provePipeOnlyReceiverProducerStreams(PipeGraphAnalysisState &state);
 
   llvm::MapVector<Operation *, ReceiverDFBInfo> receiverDFBByPost;
   SmallVector<PipeTransferNode, 0> pipeTransferNodes;

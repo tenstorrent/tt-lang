@@ -1,4 +1,5 @@
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics -convert-ttl-to-ttkernel
+// RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=false})'
 
 // Summary: Negative tests for pipe value provenance, receiver DFB validation,
 // and synchronization resource diagnostics in ttl-convert-ttl-to-ttkernel.
@@ -272,10 +273,10 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
-// A multi-block receive cannot cross the physical DFB ring end because current
-// lowering emits one contiguous payload write.
+// A receiver reservation may reach the physical DFB end exactly, but it cannot
+// advance the TT-Metal write pointer past that end.
 
-func.func @gather_receive_span_would_wrap_block_count()
+func.func @gather_receiver_reservation_past_dfb_end()
     attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 3}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 3>
@@ -301,7 +302,7 @@ func.func @gather_receive_span_would_wrap_block_count()
   %recv2 = ttl.cb_reserve %cb {num_tiles = 2 : i64}
       : <[1, 1], !ttcore.tile<32x32, f32>, 3>
       -> tensor<1x2x!ttcore.tile<32x32, f32>>
-  // expected-error @below {{gather pipe receiver DFB reserve at slot 2 spans 2 block(s), which would wrap block_count=3}}
+  // expected-error @below {{pipe receiver DFB reservation sequence reaches slot 2 with a span of 2 blocks, which advances the DFB producer write pointer past block_count=3; increase block_count or change the reservation sizes}}
   %xf2 = ttl.copy %p2, %recv2
       : (!ttl.pipe<src(2, 0) dst(1, 0) to(1, 0) net 0>,
          tensor<1x2x!ttcore.tile<32x32, f32>>)
@@ -313,6 +314,66 @@ func.func @gather_receive_span_would_wrap_block_count()
   ttl.wait %send2 : !ttl.transfer_handle<write>
   ttl.wait %xf2 : !ttl.transfer_handle
   func.return
+}
+
+// -----
+
+// A loop recurrence must validate every executed receiver reservation, not only
+// the first reservation represented by the static post operation.
+
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @repeated_receiver_reservation_past_dfb_end()
+      attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 3}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 3>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %lb = arith.constant 0 : index
+    %ub = arith.constant 2 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lb to %ub step %step {
+      ttl.if_dst %pipe
+          : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+        %reserved = ttl.cb_reserve %dst {num_tiles = 2 : i64}
+            : <[1, 1], !ttcore.tile<32x32, f32>, 3>
+            -> tensor<1x2x!ttcore.tile<32x32, f32>>
+        %slot = tensor.extract_slice %reserved[0, 0] [1, 1] [1, 1]
+            : tensor<1x2x!ttcore.tile<32x32, f32>>
+              to tensor<1x1x!ttcore.tile<32x32, f32>>
+        // expected-error @below {{pipe receiver DFB reservation sequence reaches slot 2 with a span of 2 blocks, which advances the DFB producer write pointer past block_count=3; increase block_count or change the reservation sizes}}
+        %receive = ttl.copy %pipe, %slot
+            : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+               tensor<1x1x!ttcore.tile<32x32, f32>>)
+            -> !ttl.transfer_handle
+        ttl.wait %receive : !ttl.transfer_handle
+        ttl.cb_push %dst {num_tiles = 2 : i64}
+            : <[1, 1], !ttcore.tile<32x32, f32>, 3>
+      }
+    }
+    func.return
+  }
+
+  func.func @repeated_receiver_reservation_past_dfb_end_sender()
+      attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %lb = arith.constant 0 : index
+    %ub = arith.constant 2 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lb to %ub step %step {
+      ttl.if_src %pipe
+          : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+        %send = ttl.copy %src, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+               !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
+    }
+    func.return
+  }
 }
 
 // -----
