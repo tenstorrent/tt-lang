@@ -490,19 +490,26 @@ class MemoryConfig:
         self.shard_spec = shard_spec
         self.nd_shard_spec = nd_shard_spec
         self.buffer_type = buffer_type
-        self.tensor_memory_layout = layout_tt
+        # Both names for one thing are filled in, whichever the caller spelled, so
+        # that two configs describing the same memory are equal: leaving the
+        # unspelled one at None would make equality depend on the spelling, and
+        # ttnn's own two-argument form and the simulator's strategy form would
+        # compare unequal.
+        self.tensor_memory_layout = (
+            layout_tt
+            if layout_tt is not None
+            else _sharding_strategy_to_tensor_memory_layout(st)
+        )
 
     @property
     def memory_layout(self) -> TensorMemoryLayout:
         """How the tensor is laid out over memory, under ttnn's name for it.
 
         Always answers, including for a config built the simulator's way with a
-        strategy: the two say the same thing, so the layout can be read back
-        from the strategy.
+        strategy: the two say the same thing, and both are recorded at
+        construction.
         """
-        if self.tensor_memory_layout is not None:
-            return self.tensor_memory_layout
-        return _sharding_strategy_to_tensor_memory_layout(self.strategy)
+        return self.tensor_memory_layout
 
     def is_sharded(self) -> bool:
         """Whether the tensor is sharded rather than interleaved, as ttnn asks."""
@@ -525,6 +532,19 @@ class MemoryConfig:
                 )
             case _:
                 return False
+
+    def __hash__(self) -> int:
+        """Hashed by the memory it names, leaving the shard spec to equality.
+
+        Defining ``__eq__`` alone would make a config unhashable, and a frozen
+        :class:`TensorSpec` hashes its fields -- so every spec would be unhashable
+        too, now that each one carries a config. ttnn's is hashable, and a spec is
+        a natural cache key.
+
+        A shard spec is compared but not hashed: two configs that are equal agree
+        on everything hashed here, which is all a hash has to promise.
+        """
+        return hash((self.strategy, self.buffer_type, self.tensor_memory_layout))
 
     def __repr__(self) -> str:
         return (

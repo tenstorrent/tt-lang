@@ -2572,6 +2572,46 @@ class TestShardingTypes:
                 ttnn.from_torch(torch.zeros(32, 32), memory_config=mc)
             )
 
+    def test_specs_and_configs_can_be_used_as_keys(self) -> None:
+        """ttnn's are hashable, and a spec is a natural key to cache work under.
+
+        A spec is frozen and hashes its fields, so the config every spec now
+        carries decides whether the spec can be a key at all: a config that
+        defines equality without a hash makes the spec unhashable too, sharded or
+        not.
+        """
+        spec = TensorSpec(shape=(64, 64))
+        cores = ttnn.num_cores_to_corerangeset(4, [8, 8])
+
+        assert hash(spec) == hash(TensorSpec(shape=(64, 64)))
+        assert {spec: "plain"}[TensorSpec(shape=(64, 64))] == "plain"
+        # A sharded spec hashes as well: its shard spec is compared but not
+        # hashed, and its core ranges are hashable.
+        assert isinstance(hash(spec.height_sharded(cores)), int)
+        assert {ttnn.DRAM_MEMORY_CONFIG: "dram"}[MemoryConfig()] == "dram"
+
+    def test_two_spellings_of_the_same_memory_are_one_config(self) -> None:
+        """A config is equal to another that names the same memory.
+
+        ttnn names a layout where the simulator's own spelling names the strategy
+        that stands for it, so the same interleaved DRAM can arrive either way.
+        Comparing them unequal would make the spelling part of the memory's
+        identity, and a caller who built a config one way could not recognize the
+        constant for it.
+        """
+        ttnn_way = MemoryConfig(TensorMemoryLayout.INTERLEAVED)
+        sim_way = MemoryConfig(strategy=ShardingStrategy.INTERLEAVED)
+
+        assert ttnn_way == sim_way == ttnn.DRAM_MEMORY_CONFIG
+        assert hash(ttnn_way) == hash(sim_way)
+        assert MemoryConfig(strategy=ShardingStrategy.HEIGHT_SHARDED) == MemoryConfig(
+            TensorMemoryLayout.HEIGHT_SHARDED
+        )
+        # Different memory still compares different: the buffer is part of it.
+        assert ttnn_way != MemoryConfig(
+            TensorMemoryLayout.INTERLEAVED, ttnn.BufferType.L1
+        )
+
     def test_arguments_in_the_wrong_slots_are_refused(self) -> None:
         """A config the caller did not ask for is worse than no config.
 
