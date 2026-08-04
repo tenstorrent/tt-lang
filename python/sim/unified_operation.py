@@ -345,29 +345,6 @@ def _reject_aliased_api(fn_def: ast.FunctionDef, symbols: Dict[str, Any]) -> Non
     )
 
 
-def is_unified_body(func: Callable[..., Any]) -> bool:
-    """True when ``func`` is a thread-unified operation (no hand-written kernels).
-
-    A multi-kernel operation defines nested compute / datamovement kernels and is
-    left on the legacy execution path. Anything whose source cannot be parsed is
-    treated as multi-kernel (legacy), never split.
-
-    Which definitions are searched is the shared walk; only the test applied to
-    each decorator is the simulator's own.
-    """
-    rules = _rules()
-    try:
-        fn_def = _parse_operation_funcdef(func)
-    except (OSError, TypeError, ValueError):
-        return False
-    symbols = rules.function_scope(func)
-
-    def is_kernel(dec: ast.expr) -> bool:
-        return _is_kernel_decorator(dec, symbols)
-
-    return not rules.defines_kernels(fn_def, is_kernel)
-
-
 def _reject_unsupported_setup(fn_def: ast.FunctionDef) -> None:
     """Reject DFB / pipe construction that cannot be hoisted out of the body.
 
@@ -487,6 +464,29 @@ def _make_kernel_def(
         type_comment=None,
         type_params=[],
     )
+
+
+def is_unified_body(func: Callable[..., Any]) -> bool:
+    """True when ``func`` is a thread-unified operation (no hand-written kernels).
+
+    A multi-kernel operation defines nested compute / datamovement kernels and is
+    left on the legacy execution path. Anything whose source cannot be parsed is
+    treated as multi-kernel (legacy), never split.
+
+    Which definitions are searched is the shared walk; only the test applied to
+    each decorator is the simulator's own.
+    """
+    rules = _rules()
+    try:
+        fn_def = _parse_operation_funcdef(func)
+    except (OSError, TypeError, ValueError):
+        return False
+    symbols = rules.function_scope(func)
+
+    def is_kernel(dec: ast.expr) -> bool:
+        return _is_kernel_decorator(dec, symbols)
+
+    return not rules.defines_kernels(fn_def, is_kernel)
 
 
 def build_multikernel_function(
