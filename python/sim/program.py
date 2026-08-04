@@ -237,13 +237,15 @@ def run_operation(
     all_nets: List["AnyPipeNet"] = []
     node_footprints: Dict[int, tuple[int, int]] = {}
 
+    # The body reaches ttl.node() / ttl.grid_size() through the names `_node` and
+    # `grid` in its own globals, which the frame walk those functions do looks up.
+    # `grid` is put there once by @ttl.operation, on a private copy of the module's
+    # globals, so only the node changes here -- and only the node is taken away
+    # afterwards, since removing `grid` would leave the body unable to run again.
     body_globals = getattr(body, "__globals__", {})
     try:
         for node in range(total_nodes):
-            # Inject per-node context so ttl.node()/ttl.grid_size() resolve in
-            # the body's setup (they walk frames for `_node` / `grid`).
             body_globals["_node"] = node
-            body_globals["grid"] = grid
 
             clear_kernel_registry()
             ctx.kernel_dfb_count = 0
@@ -264,7 +266,7 @@ def run_operation(
             kernel_funcs = [getattr(t, "__wrapped__", None) for t in ordered]
             all_nets.extend(discover_pipe_nets_from_closures(body, *kernel_funcs))
     finally:
-        # Do not leave the injected node index on the shared body globals.
+        # A node index left behind would answer ttl.node() outside a run.
         body_globals.pop("_node", None)
 
     pipenets = build_pipenets(_dedupe_pipe_nets(all_nets))
