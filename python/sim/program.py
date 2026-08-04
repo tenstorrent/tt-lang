@@ -410,8 +410,10 @@ def _schedule_and_run(
         return active_nodes is None or node in active_nodes
 
     try:
-        # Track all per-node contexts for validation.
-        all_node_contexts: List[Dict[str, Any]] = []
+        # Track all per-node contexts for validation, each under the node it
+        # belongs to: a pipe net can leave nodes out, so a context's position in
+        # this list is not its node.
+        all_node_contexts: List[tuple[int, Dict[str, Any]]] = []
 
         for node in candidate_nodes:
             # Skip nodes that are not in any PipeNet's active set.
@@ -419,7 +421,7 @@ def _schedule_and_run(
                 continue
 
             node_context, ordered = node_plan_for(node)
-            all_node_contexts.append(node_context)
+            all_node_contexts.append((node, node_context))
 
             # Add kernels to scheduler (one compute + two DM per node).
             # Identity is (node, kind, __name__); the two DM kernels on a node
@@ -485,24 +487,29 @@ def _schedule_and_run(
         set_scheduler(None)
 
 
-def _validate_dataflow_buffers(all_node_contexts: List[Dict[str, Any]]) -> None:
+def _validate_dataflow_buffers(
+    all_node_contexts: List[tuple[int, Dict[str, Any]]],
+) -> None:
     """Validate that all DataflowBuffers have no pending blocks at end of execution.
 
     Args:
-        all_node_contexts: List of per-node contexts containing DataflowBuffers
+        all_node_contexts: The nodes that ran, each with the context holding its
+            DataflowBuffers.  The node is carried rather than counted, so that a
+            failure on node 3 of an operation whose active nodes are {1, 3} is
+            reported against node 3 and not against the second one that ran.
 
     Raises:
         RuntimeError: If any DataflowBuffer has pending blocks
     """
     errors: List[str] = []
-    for node_idx, node_context in enumerate(all_node_contexts):
+    for node, node_context in all_node_contexts:
         for key, value in node_context.items():
             match value:
                 case DataflowBuffer():
                     try:
                         value.validate_no_pending_blocks()
                     except RuntimeError as e:
-                        errors.append(f"node{node_idx}.{key}: {e}")
+                        errors.append(f"node{node}.{key}: {e}")
                 case _:
                     pass
 

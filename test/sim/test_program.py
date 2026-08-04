@@ -568,6 +568,43 @@ class TestBlockCompletion:
         ):
             test_kernel(input_tensor)
 
+    def test_the_failure_names_the_node_it_happened_on(self) -> None:
+        """A buffer left pending is reported against its own node.
+
+        A pipe net leaves nodes out, so the nodes that ran are not 0..n-1: here
+        only nodes 1 and 3 of a 2x2 grid participate, and the one that forgets to
+        pop is node 3.  Counting the contexts instead of carrying the node names
+        it "node1", which is a node that ran and did nothing wrong.
+        """
+        net = ttl.PipeNet([ttl.Pipe(src=(0, 1), dst=(1, 1))])
+
+        @ttl.operation(grid=(2, 2))
+        def test_kernel(input_data: ttnn.Tensor):
+            element = make_ones_tensor(32, 32)
+            in_dfb = ttl.make_dataflow_buffer_like(element, shape=(1, 1), block_count=2)
+
+            @ttl.datamovement()
+            def dm0():
+                block = in_dfb.reserve()
+                copy(input_data[0:1, 0:1], block).wait()
+                block.push()
+
+            @ttl.datamovement()
+            def dm1():
+                pass
+
+            @ttl.compute()
+            def compute():
+                if net.is_dst():
+                    # Node 3 alone leaves the block it waited for pending.
+                    data = in_dfb.wait()
+                    _ = data + data
+
+        with pytest.raises(RuntimeError, match=r"node3\.in_dfb") as failure:
+            test_kernel(ttnn.rand((32, 32)))
+
+        assert "node1." not in str(failure.value), str(failure.value)
+
     def test_complete_operations_pass(self) -> None:
         """Test that properly completed operations pass validation."""
 
