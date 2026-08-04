@@ -6,13 +6,22 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
-from test_utils import make_zeros_tensor
+from test_utils import make_ones_tensor, make_zeros_tensor
 
-from sim import ttl, ttnn
+from sim import copy, ttl, ttnn
+from sim.dfb import Block
 from sim.pipe import build_pipenets
 from sim.program import _dedupe_pipe_nets  # type: ignore[reportPrivateUsage]
+
+# A net belonging to no operation in this file, standing in for one declared for a
+# neighbouring operation in the same module. Read by
+# test_a_net_the_operation_never_mentions_is_not_its_net, whose operation must not
+# pick it up.
+_NET_OF_ANOTHER_OPERATION = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(0, 1))])
 
 
 class TestPipeNetPredicates:
@@ -213,6 +222,45 @@ class TestPipeNetDiscovery:
 
         with pytest.raises(AttributeError, match="pipes"):
             _dedupe_pipe_nets([NotANet(), NotANet()])  # type: ignore[list-item]
+
+    def test_a_net_the_operation_never_mentions_is_not_its_net(self) -> None:
+        """Another operation's module-level net does not shrink this one's nodes.
+
+        A net is this operation's when its body or kernels refer to it, which is
+        what the specification means by captured from an enclosing scope ("Pipe
+        net"). Every net an operation holds narrows which nodes run its kernels, so
+        taking a net that belongs to a neighbouring operation in the same file
+        leaves nodes with work unrun -- and with no pipe code to look at, the only
+        symptom is a partly written output.
+        """
+
+        @ttl.operation(grid=(2, 2))
+        def op(out: ttnn.Tensor) -> None:
+            out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=1)
+
+            @ttl.compute()
+            def compute() -> None:
+                block = out_dfb.reserve()
+                block.store(Block.from_tensor(make_ones_tensor(32, 32)))
+                block.push()
+
+            @ttl.datamovement()
+            def dm0() -> None:
+                pass
+
+            @ttl.datamovement()
+            def dm1() -> None:
+                row, column = cast(tuple[int, int], ttl.node(dims=2))
+                block = out_dfb.wait()
+                copy(block, out[row : row + 1, column : column + 1]).wait()
+                block.pop()
+
+        out = make_zeros_tensor(64, 64)
+        op(out)
+
+        # _NET_OF_ANOTHER_OPERATION covers nodes (0, 0) and (0, 1) only, so a
+        # discovery that picked it up would leave the bottom two tiles at zero.
+        assert (out.to_torch() == 1).all(), "some node did not run its kernels"
 
 
 class TestPipeDstSliceValidation:
