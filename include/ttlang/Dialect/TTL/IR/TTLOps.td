@@ -213,8 +213,8 @@ class TTL_ElementWiseBase<string mnemonic, list<Trait> traits>
 class TTL_ElementWiseBinary<string mnemonic, list<Trait> traits = []>
     : TTL_ElementWiseBase<
           mnemonic,
-          !listconcat(traits,
-                      [Pure, SameTypeOperands, TTL_BinaryElementwiseOpTrait])> {
+          !listconcat(traits, [Pure, TTL_ElementwiseSameTypeOpTrait,
+                               TTL_BinaryElementwiseOpTrait])> {
   let summary = "Binary elementwise operation";
   let arguments = (ins AnyType:$lhs, AnyType:$rhs);
   let assemblyFormat =
@@ -224,7 +224,8 @@ class TTL_ElementWiseBinary<string mnemonic, list<Trait> traits = []>
 class TTL_ElementWiseUnary<string mnemonic, list<Trait> traits = []>
     : TTL_ElementWiseBase<
           mnemonic,
-          !listconcat(traits, [Pure, TTL_UnaryElementwiseOpTrait])> {
+          !listconcat(traits, [Pure, TTL_ElementwiseSameTypeOpTrait,
+                               TTL_UnaryElementwiseOpTrait])> {
   let summary = "Unary elementwise operation";
   let arguments = (ins AnyType:$input);
   let assemblyFormat =
