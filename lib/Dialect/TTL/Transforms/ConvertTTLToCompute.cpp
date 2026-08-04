@@ -430,10 +430,10 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   // tensor's element type so mixed-dtype fusion (e.g., bf16 input + f32
   // intermediate produced by a fused `ttl.typecast`) preserves per-value
   // precision. The output block arg type matches the sink tensor.
-  Type outputTileType = ttcore::TileType::get(type.getElementType());
+  Type outputTileType = getTensorTileType(type);
   auto getInputTileType = [&](Value root) -> Type {
     auto inputTensor = cast<RankedTensorType>(root.getType());
-    return ttcore::TileType::get(inputTensor.getElementType());
+    return getTensorTileType(inputTensor);
   };
 
   for (Value root : creation.inputs) {
@@ -587,9 +587,9 @@ static LogicalResult buildComputeFromInputs(
     if (!inputType) {
       return rewriter.notifyMatchFailure(op, "input is not a ranked tensor");
     }
-    inputTileTypes.push_back(ttcore::TileType::get(inputType.getElementType()));
+    inputTileTypes.push_back(getTensorTileType(inputType));
   }
-  Type outputTileType = ttcore::TileType::get(outputType.getElementType());
+  Type outputTileType = getTensorTileType(outputType);
 
   SmallVector<Attribute> maps;
   for (AffineMap inputMap : creation->iteration.inputMaps) {
@@ -1008,8 +1008,7 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
         rewriter.getArrayAttr(iteratorTypes));
 
     Block *body = rewriter.createBlock(&computeOp.getBody());
-    Type scalarType = inputType.getElementType();
-    Type tileType = ttcore::TileType::get(scalarType);
+    Type tileType = getTensorTileType(inputType);
     body->addArgument(tileType, loc);
     body->addArgument(tileType, loc);
 
