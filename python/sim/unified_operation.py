@@ -248,47 +248,87 @@ def _receiver_root_name(func: ast.expr) -> Optional[str]:
     return node.id if isinstance(node, ast.Name) else None
 
 
-def _thread_pinning_api_ops(api: Any) -> Dict[int, str]:
-    """``id()`` -> op name for every API call that pins a thread.
+def _api_ops_by_thread(api: Any) -> tuple[Dict[int, str], Dict[int, str]]:
+    """``id()`` -> op name for the API's calls, split into pinning and control.
 
     Read out of ``atom_split``'s registry rather than restated here, and keyed on
-    object identity so a renamed binding (``cp = ttl.copy``) is still recognized.
-    Control ops are excluded: the splitter replicates those onto every thread by
-    design, so reaching one under another name changes nothing.
+    object identity so any binding of the same op is recognized, however it is
+    spelled: a renamed one (``cp = ttl.copy``) or one reached through a name
+    bound to a namespace (``m = ttl.math`` and then ``m.exp(...)``), which is why
+    the namespaces are walked too.
+
+    Pinning ops are the ones the split depends on. Control ops are separated
+    rather than dropped, because they are what makes a spelling harmless: the
+    splitter replicates them onto every thread whatever their receiver, so
+    reaching one under another name changes nothing.
     """
-    ops: Dict[int, str] = {}
-    for name, thread in _load_atom_split()._TTL_OPS.items():
-        if thread == "control":
-            continue
+    atom_split = _load_atom_split()
+    pinning: Dict[int, str] = {}
+    control: Dict[int, str] = {}
+    for name, thread in atom_split._TTL_OPS.items():
         op = getattr(api, name, None)
-        if op is not None:
-            ops[id(op)] = name
-    return ops
+        if op is None:
+            continue
+        (control if thread == "control" else pinning)[id(op)] = name
+    for namespace in atom_split._TTL_NAMESPACES:
+        holder = getattr(api, namespace, None)
+        if holder is None:
+            continue
+        for name in dir(holder):
+            if name.startswith("_"):
+                continue
+            op = getattr(holder, name, None)
+            # A namespace also re-exports the helpers and types its own module
+            # imported (``ttl.math.Block``, ``ttl.math.get_context``), which are
+            # not ops. Keep the functions the namespace's module defines.
+            if not inspect.isfunction(op):
+                continue
+            if getattr(op, "__module__", "").rsplit(".", 1)[-1] != namespace:
+                continue
+            pinning[id(op)] = f"{namespace}.{name}"
+    return pinning, control
 
 
 def _aliased_api_calls(fn_def: ast.FunctionDef, symbols: Dict[str, Any]) -> List[str]:
     """Calls in ``fn_def`` that reach the API under a name the splitter ignores.
+
+    A call is offending when the splitter would have to classify it and cannot:
+    it is spelled with a receiver other than ``ttl`` (or with none), and it
+    either resolves to a thread-pinning op or is an attribute of the API module
+    itself -- the second case catching an attribute that resolves to nothing
+    recognizable, which spelled ``ttl.<name>`` would have been the splitter's own
+    "unknown op" error and aliased is silently unanchored instead.
+
+    A call that resolves to a control op is not offending, in either spelling.
+    That is the same exemption the splitter grants (control ops are replicated,
+    not anchored) and it covers construction, so an aliased
+    ``T.make_dataflow_buffer_like(...)`` is accepted: it is recognized as
+    construction by name, without its receiver (``atom_rules.call_name``).
 
     Returns each offending spelling with its line number, for the error message.
     """
     api = sys.modules.get("ttl")
     if api is None:
         return []
-    pinning_ops = _thread_pinning_api_ops(api)
+    pinning_ops, control_ops = _api_ops_by_thread(api)
     found: List[str] = []
     for node in ast.walk(fn_def):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
-        if isinstance(func, ast.Attribute):
-            root = _receiver_root_name(func)
-            if root is not None and root != "ttl" and symbols.get(root) is api:
-                found.append(f"'{ast.unparse(func)}(...)' on line {node.lineno}")
-        elif isinstance(func, ast.Name):
-            resolved = symbols.get(func.id, _UNRESOLVED)
-            if resolved is not _UNRESOLVED and id(resolved) in pinning_ops:
-                op = pinning_ops[id(resolved)]
-                found.append(f"'{func.id}(...)' (ttl.{op}) on line {node.lineno}")
+        if not isinstance(func, (ast.Attribute, ast.Name)):
+            continue
+        root = _receiver_root_name(func) if isinstance(func, ast.Attribute) else None
+        if root == "ttl":
+            continue
+        resolved = _resolve_expr(func, symbols)
+        if resolved is not _UNRESOLVED and id(resolved) in control_ops:
+            continue
+        if resolved is not _UNRESOLVED and id(resolved) in pinning_ops:
+            op = pinning_ops[id(resolved)]
+            found.append(f"'{ast.unparse(func)}(...)' (ttl.{op}) on line {node.lineno}")
+        elif root is not None and symbols.get(root) is api:
+            found.append(f"'{ast.unparse(func)}(...)' on line {node.lineno}")
     return found
 
 
@@ -302,14 +342,16 @@ def _reject_aliased_api(fn_def: ast.FunctionDef, symbols: Dict[str, Any]) -> Non
     the split fails claiming a block has no uses when its only use is the call
     that went unrecognized. Name the spelling to fix instead.
 
-    Not detected, because the receiver does not resolve to the API module: a name
-    bound to one of its namespaces (``M = ttl.math`` and then ``M.exp(...)``).
+    Only the ops the splitter classifies are rejected. Construction and the other
+    control ops are accepted under any name, because the splitter does not
+    classify them: they are replicated onto every thread whatever their receiver,
+    and construction is recognized by name without one
+    (``atom_rules.call_name``), so an aliased ``T.make_dfb(...)`` is hoisted and
+    shared like any other. Rejecting those would turn away bodies that split
+    correctly.
 
     There is no counterpart in the compiler, which is exposed to the same gap and
-    reaches the splitter with anchors missing. Construction is not what saves
-    either of them: ``atom_rules.call_name`` ignores the receiver, so both
-    frontends do recognize ``T.make_dfb(...)`` as construction; it is the ops the
-    splitter classifies that go unrecognized. Teaching ``_classify_ttl_call`` the
+    reaches the splitter with anchors missing. Teaching ``_classify_ttl_call`` the
     set of names that refer to the API would fix both and retire this guard --
     see #779.
 

@@ -31,6 +31,7 @@ from sim.copy import copy as renamed_copy
 from sim.decorators import compute, datamovement
 from sim.dfb import make_dataflow_buffer_like
 from sim.unified_operation import (  # type: ignore[reportPrivateUsage]
+    _api_ops_by_thread,
     _clear_decorators,
     _is_kernel_decorator,
     _is_operation_decorator,
@@ -328,9 +329,9 @@ def _unified_body_via_alias(a: Any, out: Any) -> None:
 def _unified_body_via_aliased_factory(a: Any, out: Any) -> None:
     """Only the DFB factory is aliased; every copy is spelled ``ttl.copy``.
 
-    The factory call is what populates ``local_dfb_names``, so overlooking it
-    leaves the splitter without DFB names and unanchors the whole body, even
-    though the rest of the body reads as supported.
+    Construction is recognized by name without its receiver, so this body is
+    hoisted, registered and split like any other: turning it away would refuse a
+    program that works.
     """
     dfb = ttl_alias.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
     blk = dfb.reserve()
@@ -422,14 +423,14 @@ def _rejection_reason(body: Any) -> Optional[str]:
     "body, spelling",
     [
         (_unified_body_via_alias, "ttl_alias.copy(...)"),
-        (
-            _unified_body_via_aliased_factory,
-            "ttl_alias.make_dataflow_buffer_like(...)",
-        ),
         (_unified_body_via_aliased_namespace, "ttl_alias.math.reduce_sum(...)"),
         (_unified_body_via_renamed_op, "renamed_copy(...)"),
+        (
+            _unified_body_via_namespace_binding,
+            "math_namespace.reduce_sum(...)",
+        ),
     ],
-    ids=["aliased_module", "aliased_factory", "aliased_namespace", "renamed_op"],
+    ids=["aliased_module", "aliased_namespace", "renamed_op", "namespace_binding"],
 )
 def test_unified_body_reaching_api_under_another_name_is_rejected(
     body: Any, spelling: str, shadowed_ttl: None
@@ -453,33 +454,21 @@ def test_unified_body_reaching_api_under_another_name_is_rejected(
         _unified_body,
         _unified_body_with_bare_factory,
         _unified_body_with_bare_control_op,
+        _unified_body_via_aliased_factory,
     ],
-    ids=["literal_ttl", "bare_factory", "bare_control_op"],
+    ids=["literal_ttl", "bare_factory", "bare_control_op", "aliased_factory"],
 )
 def test_unified_body_spellings_the_splitter_resolves_are_accepted(
     body: Any, shadowed_ttl: None
 ) -> None:
     """The guard stays out of the way of spellings that do resolve.
 
-    Bare factory calls are recognized by name, and control ops pin no thread
-    however they are spelled, so rejecting either would only block valid code.
+    Construction is recognized by name without its receiver, and control ops pin
+    no thread however they are spelled, so rejecting either would only block valid
+    code. The aliased factory is the case both rules meet: it is construction, and
+    construction is a control op.
     """
     assert _rejection_reason(body) is None, f"{body.__name__} was rejected"
-
-
-@pytest.mark.xfail(
-    reason="the receiver resolves to a namespace of the API, not to the API "
-    "itself, so the guard does not recognize it (#779)",
-    strict=True,
-)
-def test_unified_body_via_namespace_binding_is_rejected(shadowed_ttl: None) -> None:
-    """A known hole in the guard, recorded so it is not rediscovered.
-
-    ``m = ttl.math`` followed by ``m.reduce_sum(...)`` reaches a thread-pinning op
-    under a name the splitter ignores, exactly like the rejected spellings, but
-    the receiver is a namespace object rather than the API. It mis-splits.
-    """
-    assert _rejection_reason(_unified_body_via_namespace_binding) is not None
 
 
 def test_the_alias_guard_stands_down_when_the_api_is_not_installed(
@@ -512,6 +501,42 @@ def test_unified_body_with_aliased_api_is_rejected(fixture: str) -> None:
     code, out = run_script_in_process(FIXTURES_DIR / fixture)
     assert code != 0, f"aliased unified body unexpectedly ran:\n{out}"
     assert "must reference it as 'ttl'" in out, f"unexpected failure mode:\n{out}"
+
+
+def test_the_guard_reads_the_ops_and_only_the_ops_out_of_the_registry() -> None:
+    """The two op maps hold what the splitter classifies, and nothing else.
+
+    They decide which spellings are refused, so a stray entry refuses valid code:
+    a namespace re-exports the helpers and types its module imported
+    (``ttl.math.Block``, ``ttl.math.get_context``), and taking every callable
+    would enter those as ops and turn away a body that merely calls one.
+    """
+    pinning, control = _api_ops_by_thread(ttl_alias)
+
+    assert pinning[id(ttl_alias.copy)] == "copy"
+    assert pinning[id(ttl_alias.math.reduce_sum)] == "math.reduce_sum"
+    assert control[id(ttl_alias.make_dataflow_buffer_like)] == (
+        "make_dataflow_buffer_like"
+    )
+    # Construction is a control op, which is what makes an aliased factory
+    # acceptable; keeping it out of the pinning map is that decision.
+    assert id(ttl_alias.make_dataflow_buffer_like) not in pinning
+    for name in ("Block", "get_context"):
+        helper: Any = getattr(ttl_alias.math, name)
+        assert id(helper) not in pinning, f"{name} was entered as an op"
+
+
+def test_unified_body_with_an_aliased_factory_runs_correctly() -> None:
+    """End to end, an aliased factory is hoisted, shared and split correctly.
+
+    The negative case above is what the guard is for; this is the line it must
+    not cross. Construction carries no thread and is recognized without its
+    receiver, so the only thing an alias changes here is the spelling -- and the
+    run has to produce the copy, since a body that built three separate buffers
+    would still decorate.
+    """
+    code, out = run_script_in_process(FIXTURES_DIR / "unified_aliased_factory.py")
+    assert code == 0, f"aliased-factory unified body failed:\n{out}"
 
 
 USE_LARGE_BUFFER = True  # compile-time switch for the sample bodies below
