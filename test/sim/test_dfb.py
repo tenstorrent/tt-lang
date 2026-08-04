@@ -1530,6 +1530,38 @@ def test_tiled_dfb_rejects_degenerate_innermost_dim():
         make_dataflow_buffer_like(likeness_h, shape=(1, 1))
 
 
+def test_a_tile_grid_the_likeness_tensor_cannot_supply_is_rejected():
+    """A buffer's block must fit inside the tensor it is built to look like.
+
+    The likeness tensor is what says how big a tile is and how many there are, so
+    asking for a block the tensor cannot describe is answered at construction
+    rather than at the first copy into it, where the mismatch would surface as a
+    shape error about tiles the user never asked for.
+
+    Each of the three ways the request can exceed the likeness is checked: a rank
+    it does not have, more tiles than it holds, and more of a leading dimension
+    than it has.
+    """
+    square = Tensor(torch.ones((32, 32), dtype=torch.float32), TILE_LAYOUT)
+
+    # A rank the likeness does not have: the tile grid is read against the
+    # tensor's dimensions one for one, so there is no dimension to compare to.
+    with pytest.raises(ValueError, match="dimensionality 2 does not match"):
+        DataflowBuffer(likeness_tensor=square, shape=(1, 1, 1), block_count=2)
+
+    # More tiles than the likeness holds: 64x64 is two tiles by two.
+    four_tiles = Tensor(torch.ones((64, 64), dtype=torch.float32), TILE_LAYOUT)
+    too_many_tiles = "has 2 tiles, but tile shape requires at least 4"
+    with pytest.raises(ValueError, match=too_many_tiles):
+        DataflowBuffer(likeness_tensor=four_tiles, shape=(4, 4), block_count=2)
+
+    # More of a leading dimension than the likeness has: leading dimensions count
+    # tiles' worth of batch, not scalars, so 2 is all there is.
+    batched = Tensor(torch.ones((2, 32, 32), dtype=torch.float32), TILE_LAYOUT)
+    with pytest.raises(ValueError, match="size 2, but tile shape requires at least 4"):
+        DataflowBuffer(likeness_tensor=batched, shape=(4, 1, 1), block_count=2)
+
+
 def test_1d_arithmetic_on_blocks():
     """Basic arithmetic on 1-D blocks works element-wise."""
     a = Block.from_tensor(Tensor(torch.ones(64) * 2.0))
