@@ -44,7 +44,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @destination_selected_non_loopback_send()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 1}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     // expected-note @below {{PipeNet non_loopback declared here}}
     ttl.pipenet_foreach_dst attributes {
@@ -71,7 +71,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @source_selected_non_loopback_receive()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 1}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     // expected-note @below {{PipeNet non_loopback declared here}}
     ttl.pipenet_foreach_src attributes {

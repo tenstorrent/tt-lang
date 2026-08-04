@@ -18,7 +18,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 5>} {
 // CHECK: ttkernel.experimental.semaphore_wait_min
 func.func @gather_receiver()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  %cb = ttl.bind_cb {cb_index = 1, block_count = 6}
+  %cb = ttl.bind_cb {cb_index = 1, block_count = 6} {dfb_id = 1 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 6>
   ttl.pipenet_foreach_dst attributes {
       records = #ttl.pipenet_records<net 0 name "gather" pipes [
@@ -51,7 +51,7 @@ func.func @gather_receiver()
 // CHECK: ttkernel.experimental.constant_table_lookup %[[INDEX]], [0, 2, 3, 4, 5, 1] : index
 func.func @gather_senders()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   ttl.pipenet_foreach_src attributes {
       records = #ttl.pipenet_records<net 0 name "gather" pipes [
