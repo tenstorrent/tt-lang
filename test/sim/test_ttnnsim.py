@@ -27,6 +27,7 @@ from sim.ttnnsim import (  # type: ignore[reportPrivateUsage]
     TensorSpec,
     _create_golden_wrapper,
     _logical_view,
+    tile_shape_from_tensor,
 )
 
 
@@ -1010,7 +1011,7 @@ def test_shapes_are_taken_in_any_spelling_and_returned_as_shape():
     tuple subclass, so it compares equal to the tuple it was built from, which
     is what lets the assertions elsewhere in this file compare against tuples.
     """
-    spellings = [ttnn.Shape([2, 32]), (2, 32), [2, 32], ttnn.Shape(2, 32)]
+    spellings = [ttnn.Shape([2, 32]), (2, 32), [2, 32], ttnn.Shape((2, 32))]
     for shape in spellings:
         for create in (ttnn.rand, ttnn.zeros, ttnn.empty):
             assert create(shape).shape == (2, 32), f"{create.__name__} rejected {shape}"
@@ -1024,6 +1025,79 @@ def test_shapes_are_taken_in_any_spelling_and_returned_as_shape():
     # Note that this class is ttnn's Shape.  ttl.Shape (sim.typedefs.Shape) is
     # the specification's shape type and a separate thing: an annotation for the
     # tuples the DSL passes around, not a class to construct.
+
+
+def test_shape_offers_what_ttnn_shape_offers():
+    """The readable surface of a Shape matches ttnn's."""
+    shape = ttnn.Shape([2, 3, 32])
+
+    assert len(shape) == 3
+    assert shape.rank == 3
+    assert shape[0] == 2 and shape[-1] == 32
+    assert list(shape) == [2, 3, 32]
+    assert shape == (2, 3, 32)
+
+    # to_rank pads with leading ones to grow, and drops leading ones to shrink.
+    assert ttnn.Shape([32, 64]).to_rank(4) == (1, 1, 32, 64)
+    assert ttnn.Shape([1, 1, 32, 64]).to_rank(2) == (32, 64)
+    assert ttnn.Shape([32, 64]).to_rank(2) == (32, 64)
+    with pytest.raises(RuntimeError, match="Can't convert shape rank"):
+        ttnn.Shape([2, 32, 64]).to_rank(2)
+
+
+@pytest.mark.parametrize(
+    "spelling, message",
+    [
+        (lambda: ttnn.Shape(2, 32), "one sequence"),  # type: ignore[arg-type]
+        (lambda: ttnn.Shape(32), "one sequence"),  # type: ignore[arg-type]
+        (lambda: ttnn.Shape([2, 32])[1:], "cannot be sliced"),
+        (lambda: ttnn.Shape([2, 32]) + (1,), "cannot be concatenated"),
+        (lambda: ttnn.Shape([2, 32]) * 2, "cannot be repeated"),
+        (lambda: 2 * ttnn.Shape([2, 32]), "cannot be repeated"),
+    ],
+)
+def test_shape_refuses_what_a_device_shape_refuses(
+    spelling: Callable[[], Any], message: str
+):
+    """Code that a device would reject is rejected here too.
+
+    ttnn's Shape takes its dimensions as one sequence and is not a sequence
+    type itself, so none of these work against hardware.  The simulator's is a
+    tuple underneath and would happily do all of them, which is exactly how a
+    kernel comes to pass in simulation and fail on a device.
+    """
+    with pytest.raises(TypeError, match=message):
+        spelling()
+
+
+def test_specs_report_their_shapes_as_ttnn_does():
+    """A spec holds a Shape, whatever spelling built it.
+
+    ttnn's ``TensorSpec.shape`` and ``NdShardSpec.shard_shape`` are both
+    ``Shape``, so reading one back gets the class and its surface, not the list
+    or tuple the caller happened to pass.
+    """
+    spec = TensorSpec(shape=[2, 64, 512], dtype=torch.float32)
+    assert isinstance(spec.shape, ttnn.Shape)
+    assert spec.shape == (2, 64, 512) and spec.shape.rank == 3
+
+    nd = NdShardSpec(shard_shape=[1, 32, 512], shard_grid=(2, 2, 1))
+    assert isinstance(nd.shard_shape, ttnn.Shape)
+    assert nd.shard_shape == (1, 32, 512)
+
+
+def test_tile_grids_are_block_shapes_not_ttnn_shapes():
+    """A tile grid comes back as a plain tuple, so the DSL can slice it.
+
+    ttnn has no tile-grid shape; the grid is a block shape (``ttl.Shape``),
+    and the block bookkeeping that consumes it slices and concatenates it.
+    """
+    tensor = ttnn.zeros((64, 96))
+    grid = tile_shape_from_tensor(tensor)
+
+    assert grid == (2, 3)
+    assert type(grid) is tuple
+    assert grid[:-1] + (1,) == (2, 1)
 
 
 def test_arithmetic_propagates_logical_shape():

@@ -29,12 +29,15 @@ from typing import (
     FrozenSet,
     Iterable,
     List,
+    NoReturn,
     Optional,
     Sequence,
     Set,
+    SupportsIndex,
     Tuple,
     Union,
     cast,
+    overload,
 )
 
 import torch
@@ -50,7 +53,12 @@ except ImportError:
 
 from .constants import TILE_SHAPE
 from .trace import TRACE
-from .typedefs import Count, IndexType, Selector, Size, TensorKey
+from .typedefs import Count, Index, IndexType, Selector, Size, TensorKey
+
+# ``ttl.Shape``, the specification's tuple of dimensions, under an alias: the
+# bare name belongs to ttnn's ``Shape`` class in this module.  Annotates what
+# this module hands to the DSL rather than to a ttnn caller.
+from .typedefs import Shape as TtlShape
 
 # Number of shards along each tensor dimension for a sharded tensor;
 # math.prod(ShardGrid) equals the number of participating cores. This is a
@@ -256,7 +264,8 @@ class NdShardSpec:
     Matches the tensor sharding tech report surface API:
 
     - ``shard_shape``: extent of one shard along each tensor dimension in
-      **element** units.
+      **element** units.  Taken in any spelling and reported as a
+      :class:`Shape`, which is what ttnn holds it as.
     - ``core_ranges``: which device cores participate (optional in the simulator
       when only locality math is needed).
 
@@ -282,8 +291,9 @@ class NdShardSpec:
     num_cores: Optional[int] = None
 
     def __post_init__(self) -> None:
-        # Accept list inputs like the tech report (``shard_shape=[...]``).
-        object.__setattr__(self, "shard_shape", tuple(self.shard_shape))
+        # Accept list inputs like the tech report (``shard_shape=[...]``) and
+        # report a Shape, which is what ttnn's NdShardSpec holds.
+        object.__setattr__(self, "shard_shape", Shape(self.shard_shape))
         if self.shard_grid is not None:
             object.__setattr__(self, "shard_grid", tuple(self.shard_grid))
 
@@ -717,7 +727,7 @@ def _nd_shard_spec_for_dims(
         for i in range(ndim)
     )
     return NdShardSpec(
-        shard_shape=Shape(shard_shape),
+        shard_shape=shard_shape,
         shard_grid=shard_grid_t,
         distribution=ShardDistributionStrategy.GRID_2D,
         core_ranges=core_ranges,
@@ -731,15 +741,21 @@ class TensorSpec:
     Use ``height_sharded`` / ``width_sharded`` / ``block_sharded`` /
     ``sharded_across_dims`` / ``nd_sharded`` to attach a :class:`MemoryConfig`,
     then pass the spec to :func:`from_torch` (see tt-metal tensor sharding examples).
+
+    ``shape`` is taken in any spelling and reported as a :class:`Shape`, as
+    ttnn's ``TensorSpec.shape`` is.
     """
 
-    shape: Tuple[int, ...]
+    shape: Sequence[int]
     dtype: torch.dtype = torch.float32
     layout: IndexType = TILE_LAYOUT
     buffer_type: BufferType = BufferType.DRAM
     memory_layout: TensorMemoryLayout = TensorMemoryLayout.INTERLEAVED
     memory_config: Optional[MemoryConfig] = None
     core_ranges: Optional[CoreRangeSet] = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "shape", Shape(self.shape))
 
     def height_sharded(self, core_ranges: CoreRangeSet) -> TensorSpec:
         """2-D height sharding: collapse leading dims to height, shard along height."""
@@ -798,7 +814,7 @@ class TensorSpec:
         core_ranges: CoreRangeSet,
     ) -> TensorSpec:
         """Experimental ND sharding across the given tensor dimensions."""
-        nd = _nd_shard_spec_for_dims(Shape(self.shape), dims, core_ranges)
+        nd = _nd_shard_spec_for_dims(self.shape, dims, core_ranges)
         mc = MemoryConfig(strategy=ShardingStrategy.ND_SHARDED, nd_shard_spec=nd)
         return replace(
             self,
@@ -822,7 +838,7 @@ class TensorSpec:
         For ND sharding derived from ``shard_dims`` and core count instead, use
         :meth:`sharded_across_dims`.
         """
-        nd = NdShardSpec(shard_shape=Shape(shard_shape), core_ranges=core_ranges)
+        nd = NdShardSpec(shard_shape=shard_shape, core_ranges=core_ranges)
         mc = MemoryConfig(strategy=ShardingStrategy.ND_SHARDED, nd_shard_spec=nd)
         return replace(
             self,
@@ -1199,7 +1215,7 @@ class ConcatMeshToTensor:
         pass
 
 
-def tile_shape_from_shape(shape: Sequence[int]) -> Shape:
+def tile_shape_from_shape(shape: Sequence[int]) -> TtlShape:
     """Tile-grid shape derived purely from an element-space ``shape``.
 
     Pure function of the input shape (no Tensor instance required) so callers
@@ -1208,17 +1224,23 @@ def tile_shape_from_shape(shape: Sequence[int]) -> Shape:
     or W==1 treated as degenerate single-tile dimensions) and leading
     dimensions pass through; for 1-D inputs the single dimension is divided
     by ``TILE_SHAPE[0]``.
+
+    Returns a ``ttl.Shape`` rather than a :class:`Shape`: a tile grid is a
+    block shape, which the DSL slices and concatenates freely (a ``Block``
+    holds one, and the matmul shape rules take it apart), and which ttnn has no
+    notion of.
     """
-    if len(shape) == 1:
-        w = shape[0]
+    dims = tuple(shape)
+    if len(dims) == 1:
+        w = dims[0]
         tk = 1 if w == 1 else w // TILE_SHAPE[0]
-        return Shape((tk,))
-    h, w = shape[-2], shape[-1]
+        return (tk,)
+    h, w = dims[-2], dims[-1]
     tm = 1 if h == 1 else h // TILE_SHAPE[0]
     tk = 1 if w == 1 else w // TILE_SHAPE[1]
-    if len(shape) > 2:
-        return Shape((*shape[:-2], tm, tk))
-    return Shape((tm, tk))
+    if len(dims) > 2:
+        return (*dims[:-2], tm, tk)
+    return (tm, tk)
 
 
 def tile_count_from_shape(layout: IndexType, shape: Sequence[int]) -> int:
@@ -1233,7 +1255,7 @@ def tile_count_from_shape(layout: IndexType, shape: Sequence[int]) -> int:
     return math.prod(tile_shape_from_shape(shape))
 
 
-def tile_shape_from_tensor(t: "Tensor") -> Shape:
+def tile_shape_from_tensor(t: "Tensor") -> TtlShape:
     """Return the tile-grid shape of a tensor (thin wrapper over
     :func:`tile_shape_from_shape`).
 
@@ -1314,12 +1336,24 @@ def _maybe_resolve_nd_shard_spec_for_tensor(
 
 
 class Shape(tuple[int, ...]):
-    """Constructible tuple of dimensions, mirroring ``ttnn.Shape``.
+    """Dimensions of a tensor, mirroring ``ttnn.Shape``.
 
-    Accepts ``Shape([d0, d1, ...])``, ``Shape((d0, d1, ...))``, or
-    ``Shape(d0, d1, ...)``. Instances are ordinary tuples, so they interoperate
-    with the plain tuples used as shapes elsewhere: indexing, equality with
-    tuples, passing to ``torch`` factory functions, etc.
+    Built from one sequence -- ``Shape([d0, d1, ...])`` or
+    ``Shape((d0, d1, ...))`` -- and offering what ttnn's offers: ``len``,
+    integer indexing, iteration, equality, :attr:`rank` and :meth:`to_rank`.
+
+    Everything a shape does not do on a device it does not do here either:
+    ttnn's ``Shape`` is not a sequence type, so slicing, concatenating and
+    repeating one all raise instead of quietly succeeding, which would let
+    code pass under the simulator and fail on hardware.  Convert first, as the
+    specification's examples do: ``list(shape)[:-2]``.
+
+    The base class is still ``tuple`` so that a shape can be handed to torch's
+    factory functions and compared against the plain tuples used as shapes
+    everywhere else.  Two things follow from that, and are the respects in
+    which this remains the looser of the two: ``isinstance(shape, tuple)`` is
+    true here and false on a device, and ``(1,) + shape`` still concatenates,
+    because Python hands that to the tuple on the left.
 
     This is ttnn's ``Shape``, and is a different type from ``ttl.Shape``
     (``sim.typedefs.Shape``), which the specification defines as a tuple of
@@ -1330,10 +1364,61 @@ class Shape(tuple[int, ...]):
     returns, matching ttnn, where ``Tensor.shape`` is a ``Shape``.
     """
 
-    def __new__(cls, *dims: "int | Sequence[int]") -> "Shape":
-        if len(dims) == 1 and isinstance(dims[0], (list, tuple)):
-            return super().__new__(cls, dims[0])
-        return super().__new__(cls, cast("Sequence[int]", dims))
+    def __new__(cls, *dims: Sequence[int]) -> "Shape":
+        if len(dims) != 1 or isinstance(dims[0], int):
+            spelled = ", ".join(repr(d) for d in dims)
+            raise TypeError(
+                "Shape takes the dimensions as one sequence: "
+                f"Shape([{spelled}]), not Shape({spelled})"
+            )
+        return super().__new__(cls, dims[0])
+
+    @property
+    def rank(self) -> int:
+        """Number of dimensions."""
+        return len(self)
+
+    def to_rank(self, new_rank: int) -> "Shape":
+        """The same dimensions expressed at ``new_rank``.
+
+        Growing prepends 1s; shrinking drops leading dimensions, which each
+        have to be 1 for the shape to survive the trip.
+        """
+        dims = tuple(self)
+        if new_rank >= len(dims):
+            return Shape((1,) * (new_rank - len(dims)) + dims)
+        dropped = dims[: len(dims) - new_rank]
+        if any(d != 1 for d in dropped):
+            raise RuntimeError(
+                f"Can't convert shape rank: {dims} to rank {new_rank} would "
+                f"drop {dropped}, which is not all ones"
+            )
+        return Shape(dims[len(dims) - new_rank :])
+
+    @overload
+    def __getitem__(self, index: SupportsIndex) -> int: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> NoReturn: ...
+
+    def __getitem__(self, index: Union[SupportsIndex, slice]) -> int:
+        if isinstance(index, slice):
+            raise TypeError(
+                "Shape cannot be sliced; index one dimension, or convert "
+                "first: tuple(shape)[1:]"
+            )
+        return super().__getitem__(index)
+
+    def __add__(self, other: object) -> NoReturn:
+        raise TypeError(
+            "Shape cannot be concatenated; convert first: tuple(shape) + ..."
+        )
+
+    def __mul__(self, count: object) -> NoReturn:
+        raise TypeError("Shape cannot be repeated; convert first: tuple(shape) * n")
+
+    def __rmul__(self, count: object) -> NoReturn:
+        raise TypeError("Shape cannot be repeated; convert first: n * tuple(shape)")
 
 
 def _dtype_element_size(dtype: torch.dtype) -> int:
@@ -1397,7 +1482,7 @@ class Tensor:
         )
         if memory_config.strategy == ShardingStrategy.ND_SHARDED:
             self.memory_config: MemoryConfig = _maybe_resolve_nd_shard_spec_for_tensor(
-                Shape(tensor.shape), memory_config
+                tensor.shape, memory_config
             )
         else:
             self.memory_config: MemoryConfig = memory_config
@@ -1648,12 +1733,15 @@ class Tensor:
             slice(col_start * TILE_SHAPE[1], col_stop * TILE_SHAPE[1]),
         )
 
-    def element_slice_starts(self, key: TensorKey) -> Shape:
+    def element_slice_starts(self, key: TensorKey) -> Tuple[Index, ...]:
         """Element-space start offset per dimension for ``key`` (``slice.start`` values).
 
         Uses the same rules as :meth:`__getitem__`: tile indices for
         ``TILE_LAYOUT`` are converted to element bounds; ``ROW_MAJOR_LAYOUT`` keys
         are already element-space.
+
+        An origin rather than a shape, so it is a tuple of :data:`~sim.typedefs.Index`
+        and not a :class:`Shape`; ttnn has no type for one.
         """
         match key:
             case tuple():
@@ -1668,7 +1756,7 @@ class Tensor:
                     f"element_slice_starts requires explicit slice bounds on dimension {i}, got {s!r}"
                 )
             starts.append(s.start)
-        return Shape(starts)
+        return tuple(starts)
 
     def __getitem__(self, key: TensorKey) -> "Tensor":
         # Python passes a bare int/slice (not a tuple) for single-element indexing.
@@ -2349,7 +2437,7 @@ _SHARD_STRATEGY_MAP: dict[ShardStrategy, ShardingStrategy] = {
 
 
 def create_sharded_memory_config(
-    shape: Union[Tuple[int, ...], List[int]],
+    shape: Sequence[int],
     core_grid: CoreGrid,
     strategy: ShardStrategy,
     orientation: Optional[ShardOrientation] = None,
