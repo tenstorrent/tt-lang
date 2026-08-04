@@ -28,6 +28,7 @@ from sim.ttnnsim import (  # type: ignore[reportPrivateUsage]
     TensorMemoryLayout,
     TensorSpec,
     _create_golden_wrapper,
+    _golden_logical_result,
     _logical_view,
     tile_shape_from_tensor,
 )
@@ -1893,6 +1894,11 @@ def test_golden_wrapper_reports_logical_shape_for_elementwise_operands():
     Pairs with the test above: dropping the logical shape whenever the operands
     are awkward would also pass there, and would silently report padded shapes
     for every wrapped elementwise op.
+
+    Both mechanisms answer here -- the op runs on the logical data, and the
+    elementwise rule would supply the same shape for the padded run -- which is
+    what makes this the shape a caller sees either way.  The test below isolates
+    the second one.
     """
 
     def golden_multiply(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
@@ -1906,6 +1912,34 @@ def test_golden_wrapper_reports_logical_shape_for_elementwise_operands():
 
     assert result.shape == (3, 5)
     assert result.padded_shape == (32, 32)
+
+
+def test_the_elementwise_rule_names_the_shape_when_the_logical_run_declines():
+    """An op that only runs at padded extents still reports a logical shape.
+
+    The elementwise rule is the second of the two mechanisms, and reachable on its
+    own: an op that declines the logical extents leaves the padded run, whose
+    result is shaped like the store and would otherwise be reported as the
+    tensor's own shape.  Written with a golden that insists on a whole tile so the
+    logical run is the one that fails, which is the only way in.
+    """
+
+    def golden_tile_sized(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        if x.shape[-2:] != (32, 32):
+            raise ValueError("this op is defined on whole tiles")
+        return x * y
+
+    a = ttnn.from_torch(torch.rand(3, 5), layout=ttnn.TILE_LAYOUT)
+    row = ttnn.from_torch(torch.rand(1, 5), layout=ttnn.TILE_LAYOUT)
+    assert _golden_logical_result(golden_tile_sized, (a, row), {}) is None
+
+    wrapped = _create_golden_wrapper("tile_sized", golden_tile_sized)
+    result = wrapped(a, row)
+
+    # Computed on the store, described as ttnn describes it.
+    assert result.shape == (3, 5)
+    assert result.padded_shape == (32, 32)
+    assert torch.equal(result.to_torch(), a.to_torch() * row.to_torch())
 
 
 def _golden_matmul(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
