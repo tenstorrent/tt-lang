@@ -1316,6 +1316,38 @@ def normalize_selector_to_slice(selector: Selector) -> slice:
             return selector
 
 
+def _tile_extent(dim_size: int, tile_dim: int) -> int:
+    """Tiles along a dimension of ``dim_size`` elements.
+
+    A degenerate dimension -- the size-1 one a broadcast operand carries, which
+    :meth:`Tensor._validate_tile_alignment` allows through -- occupies one
+    (partly used) tile rather than none.
+    """
+    return -(-dim_size // tile_dim)
+
+
+def _validate_selector_bounds(
+    start: int, stop: int, extent: int, dim_name: str, unit: str
+) -> None:
+    """Reject bounds that reach outside a dimension of ``extent`` ``unit`` s.
+
+    A kernel addressing data the tensor does not have is a bug in the kernel,
+    so it is reported rather than clamped the way a torch or Python slice would
+    be.  That also covers an out-of-range index, which arrives here as a unit
+    slice, and a negative one, which the specification's ``ttl.Index`` excludes
+    and which would otherwise select nothing at all.
+
+    Raises:
+        IndexError: If the bounds fall outside ``[0, extent]`` or run backwards.
+    """
+    if 0 <= start <= stop <= extent:
+        return
+    raise IndexError(
+        f"{dim_name} slice {start}:{stop} is outside the tensor, which has "
+        f"{extent} {unit}(s) along it"
+    )
+
+
 def _maybe_resolve_nd_shard_spec_for_tensor(
     tensor_shape: Sequence[int], memory_config: MemoryConfig
 ) -> MemoryConfig:
@@ -1709,6 +1741,7 @@ class Tensor:
 
         Raises:
             ValueError: If ``step`` is set.
+            IndexError: If the bounds reach outside the tensor.
         """
         if s.step is not None:
             raise ValueError(
@@ -1717,6 +1750,7 @@ class Tensor:
             )
         start = 0 if s.start is None else s.start
         stop = tile_count if s.stop is None else s.stop
+        _validate_selector_bounds(start, stop, tile_count, dim_name, "tile")
         return start, stop
 
     def _to_element_key(self, key: Tuple[Selector, ...]) -> Tuple[Selector, ...]:
@@ -1761,6 +1795,20 @@ class Tensor:
         cache[key] = result
         return result
 
+    def _validate_key_bounds(self, selectors: Tuple[Selector, ...], unit: str) -> None:
+        """Check element-space selectors against the dimensions they index.
+
+        The leading dimensions of a key, which are not tile-scaled: a whole
+        row-major key, or the batch part of a tiled one.
+        """
+        for dim, selector in enumerate(selectors):
+            if not isinstance(selector, slice):
+                continue
+            extent = self._tensor.shape[dim]
+            start = 0 if selector.start is None else selector.start
+            stop = extent if selector.stop is None else selector.stop
+            _validate_selector_bounds(start, stop, extent, f"dimension {dim}", unit)
+
     def _compute_element_key(self, key: Tuple[Selector, ...]) -> Tuple[Selector, ...]:
         """Uncached body of :meth:`_to_element_key`.
 
@@ -1778,6 +1826,7 @@ class Tensor:
 
         if self._layout == ROW_MAJOR_LAYOUT:
             # Element-space indexing: no tile scaling needed.
+            self._validate_key_bounds(normalized, "element")
             return normalized
 
         # Tile alignment is a per-tensor invariant; check once and latch.
@@ -1785,12 +1834,15 @@ class Tensor:
             self._validate_tile_alignment()
             self._tile_alignment_checked = True
         if ndim == 1:
-            col_tiles = self._tensor.shape[0] // TILE_SHAPE[0]
+            col_tiles = _tile_extent(self._tensor.shape[0], TILE_SHAPE[0])
             start, stop = self._resolve_tile_slice(normalized[0], col_tiles, "col")
             return (slice(start * TILE_SHAPE[0], stop * TILE_SHAPE[0]),)
         *batch_s, row_s, col_s = normalized
-        row_tiles = self._tensor.shape[-2] // TILE_SHAPE[0]
-        col_tiles = self._tensor.shape[-1] // TILE_SHAPE[1]
+        # Batch dimensions carry an implicit tile size of 1, so they are already
+        # element-space and only need their bounds checked.
+        self._validate_key_bounds(tuple(batch_s), "element")
+        row_tiles = _tile_extent(self._tensor.shape[-2], TILE_SHAPE[0])
+        col_tiles = _tile_extent(self._tensor.shape[-1], TILE_SHAPE[1])
         row_start, row_stop = self._resolve_tile_slice(row_s, row_tiles, "row")
         col_start, col_stop = self._resolve_tile_slice(col_s, col_tiles, "col")
         return (

@@ -1981,6 +1981,52 @@ class TestTensorTileIndexing:
         assert tile.shape == (32, 1)
         assert torch.allclose(tile.to_torch(), raw)
 
+        # A degenerate dimension is one (partly used) tile, so the open slice
+        # spans it rather than selecting nothing.
+        assert torch.allclose(t[0, :].to_torch(), raw)
+
+    # --- bounds ---
+
+    @pytest.mark.parametrize(
+        "key, message",
+        [
+            ((2, 0, 0), "dimension 0 slice 2:3"),
+            ((0, 2, 0), "row slice 2:3"),
+            ((0, 0, 2), "col slice 2:3"),
+            ((0, slice(0, 3), 0), "row slice 0:3"),
+            ((0, -1, 0), "row slice -1:0"),
+            ((0, slice(2, 1), 0), "row slice 2:1"),
+        ],
+    )
+    def test_out_of_range_tile_key_is_reported(
+        self, key: tuple[Any, ...], message: str
+    ) -> None:
+        """A key reaching past the tensor says so instead of being clamped.
+
+        A torch or Python slice would clamp, and an index the specification's
+        ttl.Index excludes -- a negative one -- would quietly select nothing.
+        Either way the kernel would read a block that is not the one it asked
+        for, so the tile-space key is checked against the tensor first.
+        """
+        t = ttnn.Tensor(torch.zeros(2, 64, 64))
+        with pytest.raises(IndexError, match=message):
+            _ = t[key]
+        with pytest.raises(IndexError, match=message):
+            t[key] = ttnn.Tensor(torch.zeros(32, 32))
+
+    def test_out_of_range_row_major_key_is_reported(self) -> None:
+        """Element-space keys are checked against the tensor too."""
+        t = ttnn.Tensor(torch.zeros(4, 4), ttnn.ROW_MAJOR_LAYOUT)
+        with pytest.raises(IndexError, match="dimension 1 slice 0:5"):
+            _ = t[0:4, 0:5]
+
+    def test_whole_extent_keys_stay_in_range(self) -> None:
+        """The bounds check leaves every in-range spelling alone."""
+        t = ttnn.Tensor(torch.zeros(2, 64, 64))
+        assert t[0, :, :].shape == (1, 64, 64)
+        assert t[0:2, 0:2, 0:2].shape == (2, 64, 64)
+        assert t[1, 1, 1].shape == (1, 32, 32)
+
 
 class TestShardingTypes:
     """Tests for ShardingStrategy, ShardSpec, NdShardSpec, and MemoryConfig data types.
