@@ -29,8 +29,8 @@ GRID_X, GRID_Y = 2, 2
 
 @ttl.operation(grid=(GRID_X, GRID_Y))
 def many_to_one_barrier() -> None:
-    # The rendered spec spells the grid helper unqualified; bind it to the ttl
-    # helper so the marked lines below stay verbatim.
+    # The marked lines below are the specification's, which calls grid_size
+    # without the ttl prefix.  This alias is what makes them run.
     grid_size = ttl.grid_size
     # spec:begin
     node_num = ttl.node(dims=1)
