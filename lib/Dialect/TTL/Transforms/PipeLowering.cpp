@@ -111,13 +111,12 @@ getPipeTransferCreate(Operation *op, Value transfer,
   return *maybeCreateOp;
 }
 
-static FailureOr<PipeResourceInfo>
+static const PipeResourceInfo &
 lookupPipeResourceInfo(Operation *protocolOp,
                        const PipeResourcePlan &pipeResourcePlan) {
   auto it = pipeResourcePlan.resources.find(protocolOp);
-  if (it == pipeResourcePlan.resources.end()) {
-    return protocolOp->emitError("pipe transfer has no resource allocation");
-  }
+  assert(it != pipeResourcePlan.resources.end() &&
+         "active pipe transfer must have a resource allocation");
   return it->second;
 }
 
@@ -592,12 +591,8 @@ LogicalResult lowerPipeTransferSend(
   }
   PipeTransferCreateOp createOp = *maybeCreateOp;
   auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
-  FailureOr<PipeResourceInfo> maybePipeResource =
+  const PipeResourceInfo &pipeResource =
       lookupPipeResourceInfo(op.getOperation(), pipeResourcePlan);
-  if (failed(maybePipeResource)) {
-    return failure();
-  }
-  PipeResourceInfo pipeResource = *maybePipeResource;
   PipeCompletionInfo completionInfo = pipeResource.completion;
   FuncOp senderFunc = op->getParentOfType<FuncOp>();
   assert(senderFunc && "pipe transfer send must be inside a function");
@@ -819,12 +814,8 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
   }
   PipeTransferCreateOp createOp = *maybeCreateOp;
   auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
-  FailureOr<PipeResourceInfo> maybePipeResource =
+  const PipeResourceInfo &pipeResource =
       lookupPipeResourceInfo(op.getOperation(), pipeResourcePlan);
-  if (failed(maybePipeResource)) {
-    return failure();
-  }
-  PipeResourceInfo pipeResource = *maybePipeResource;
   FuncOp func = op->getParentOfType<FuncOp>();
   assert(func && "pipe transfer post must be inside a function");
   FailureOr<Value> maybeSequenceCounter = lookupPipeCounterProgress(
@@ -911,12 +902,8 @@ LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op, Value tokenSequence,
     return success();
   }
   auto loc = op.getLoc();
-  FailureOr<PipeResourceInfo> maybePipeResource =
-      lookupPipeResourceInfo(op.getOperation(), pipeResourcePlan);
-  if (failed(maybePipeResource)) {
-    return failure();
-  }
-  PipeCompletionInfo completionInfo = maybePipeResource->completion;
+  PipeCompletionInfo completionInfo =
+      lookupPipeResourceInfo(op.getOperation(), pipeResourcePlan).completion;
 
   FuncOp func = op->getParentOfType<FuncOp>();
   assert(func && "pipe transfer wait must be inside a function");
@@ -1254,13 +1241,9 @@ collectPipeTransferAllocationUnits(
   units.reserve(pipeGraph.getPipeTransferNodes().size());
   for (const PipeTransferNode &transferNode :
        pipeGraph.getPipeTransferNodes()) {
-    auto sendOp = dyn_cast_if_present<PipeTransferSendOp>(transferNode.sendOp);
-    if (!sendOp) {
-      emitError(transferNode.sendOp ? transferNode.sendOp->getLoc()
-                                    : mod.getLoc(),
-                "pipe transfer graph node has no send operation");
-      return failure();
-    }
+    assert(transferNode.sendOp &&
+           "pipe transfer graph node must have a send operation");
+    auto sendOp = cast<PipeTransferSendOp>(transferNode.sendOp);
     PipeTransferCreateOp createOp =
         transferIndex.getTransferCreate(sendOp.getOperation());
 

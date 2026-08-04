@@ -410,67 +410,22 @@ getProvenReceiverScheduleContext(const PipeReceiverDFBKey &receiverDFB,
   return maybeControlContext;
 }
 
-/// One live receiver reservation that cannot be reused before a matching pop.
-struct LiveReceiverSlot {
-  int64_t slot = 0;
-  int64_t span = 0;
-};
-
-/// Producer cursor and live reservations for one physical receiver DFB.
-struct ReceiverSlotState {
+/// Next physical DFB block selected by producer reservation order.
+struct ReceiverProducerState {
   int64_t nextSlot = 0;
-  SmallVector<LiveReceiverSlot> liveSlots;
 };
-
-static bool slotRangesOverlap(int64_t lhsSlot, int64_t lhsSpan, int64_t rhsSlot,
-                              int64_t rhsSpan) {
-  return lhsSlot < rhsSlot + rhsSpan && rhsSlot < lhsSlot + lhsSpan;
-}
-
-// Pops release whole live slots in FIFO order, matching the hardware ring's
-// in-order consumption. A pop that does not exactly drain tracked pipe receive
-// slots would leave the static slot model out of sync with the DFB ring.
-static LogicalResult releaseReceiverSlots(CBPopOp popOp,
-                                          ReceiverSlotState &state,
-                                          int64_t releasedBlocks) {
-  std::size_t slotsToRelease = 0;
-  int64_t remainingBlocks = releasedBlocks;
-  for (const LiveReceiverSlot &slot : state.liveSlots) {
-    if (remainingBlocks == 0) {
-      break;
-    }
-    if (remainingBlocks < slot.span) {
-      return popOp.emitError()
-             << "pipe receiver DFB pop releases " << remainingBlocks
-             << " block(s), but oldest live receive slot spans " << slot.span
-             << " block(s); receiver pops must release whole DFB slots";
-    }
-    remainingBlocks -= slot.span;
-    ++slotsToRelease;
-  }
-  if (remainingBlocks != 0) {
-    return popOp.emitError()
-           << "pipe receiver DFB pop releases " << releasedBlocks
-           << " block(s), but only " << (releasedBlocks - remainingBlocks)
-           << " live pipe receive block(s) are tracked; receiver pops must "
-              "release only live pipe receive slots";
-  }
-  state.liveSlots.erase(state.liveSlots.begin(),
-                        state.liveSlots.begin() + slotsToRelease);
-  return success();
-}
 
 } // namespace
 
 static FailureOr<int64_t>
 assignReceiverPhysicalSlot(const PipeKey &pipeKey,
                            const ReceiverDFBInfo &receiverInfo,
-                           ReceiverSlotState &slotState) {
+                           ReceiverProducerState &producerState) {
   int64_t span = receiverInfo.receiverSlotSpanBlocks;
   assert(span > 0 && span <= receiverInfo.blockCount &&
          "verified receiver reserve span must fit the DFB");
 
-  int64_t slot = slotState.nextSlot;
+  int64_t slot = producerState.nextSlot;
   if (span > receiverInfo.blockCount - slot) {
     return emitError(receiverInfo.loc)
            << (pipeKey.hasSingleReceiver() ? "gather" : "collective overlap")
@@ -479,18 +434,8 @@ assignReceiverPhysicalSlot(const PipeKey &pipeKey,
            << receiverInfo.blockCount;
   }
 
-  for (const LiveReceiverSlot &liveSlot : slotState.liveSlots) {
-    if (slotRangesOverlap(slot, span, liveSlot.slot, liveSlot.span)) {
-      return emitError(receiverInfo.loc)
-             << (pipeKey.hasSingleReceiver() ? "gather" : "collective overlap")
-             << " pipe receiver DFB reuses slot " << slot
-             << " before a receiver pop releases it; add a receiver pop before "
-                "reusing the DFB slot or increase block_count";
-    }
-  }
-
-  slotState.liveSlots.push_back(LiveReceiverSlot{slot, span});
-  slotState.nextSlot = slot + span == receiverInfo.blockCount ? 0 : slot + span;
+  producerState.nextSlot =
+      slot + span == receiverInfo.blockCount ? 0 : slot + span;
   return slot;
 }
 
@@ -544,7 +489,8 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
     std::optional<std::uint64_t> executionCount;
   };
 
-  llvm::DenseMap<PipeReceiverDFBKey, ReceiverSlotState> slotStateByReceiverDFB;
+  llvm::DenseMap<PipeReceiverDFBKey, ReceiverProducerState>
+      producerStateByReceiverDFB;
   llvm::DenseMap<PipeReceiverDFBKey, llvm::DenseMap<Operation *, int64_t>>
       slotByReceiverReserve;
   llvm::DenseMap<PipeReceiverEndpointId, EndpointSlotAssignment>
@@ -594,7 +540,7 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
       int64_t slot = 0;
       if (reserveIt == slotByReserve.end()) {
         FailureOr<int64_t> assignedSlot = assignReceiverPhysicalSlot(
-            pipeKey, receiverInfo, slotStateByReceiverDFB[receiverDFB]);
+            pipeKey, receiverInfo, producerStateByReceiverDFB[receiverDFB]);
         if (failed(assignedSlot)) {
           result = failure();
           return;
@@ -631,55 +577,11 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
     return success();
   };
 
-  auto processPop = [&](CBPopOp popOp) -> LogicalResult {
-    std::optional<int64_t> maybeDFBIndex = getCBIndex(popOp.getCb());
-    if (!maybeDFBIndex) {
-      return success();
-    }
-    std::optional<int64_t> maybeReleasedBlocks =
-        getDFBTransactionBlockCount(popOp);
-    if (!maybeReleasedBlocks) {
-      return success();
-    }
-    LaunchNodeDomain popDomain =
-        lookupOperationLaunchDomain(popOp.getOperation(), analysisState);
-    if (!popDomain.known) {
-      return success();
-    }
-    for (LaunchNodeCoord coord : popDomain.nodes) {
-      PipeReceiverDFBKey receiverDFB{PipeReceiverCoord{coord.x, coord.y},
-                                     *maybeDFBIndex};
-      auto contextIt = scheduleContextByReceiverDFB.find(receiverDFB);
-      if (contextIt == scheduleContextByReceiverDFB.end() ||
-          !contextIt->second) {
-        continue;
-      }
-      std::optional<ReceiverControlContext> maybePopContext =
-          getReceiverControlContext(popOp, receiverDFB.receiver, analysisState);
-      if (maybePopContext != contextIt->second) {
-        continue;
-      }
-      auto stateIt = slotStateByReceiverDFB.find(receiverDFB);
-      if (stateIt == slotStateByReceiverDFB.end()) {
-        continue;
-      }
-      if (failed(releaseReceiverSlots(popOp, stateIt->second,
-                                      *maybeReleasedBlocks))) {
-        return failure();
-      }
-    }
-    return success();
-  };
-
   WalkResult walkResult =
       walkNestedOpsInOrder(mod.getOperation(), [&](Operation *op) {
         if (auto postOp = dyn_cast<PipeTransferPostOp>(op)) {
           return failed(processPost(postOp)) ? WalkResult::interrupt()
                                              : WalkResult::advance();
-        }
-        if (auto popOp = dyn_cast<CBPopOp>(op)) {
-          return failed(processPop(popOp)) ? WalkResult::interrupt()
-                                           : WalkResult::advance();
         }
         return WalkResult::advance();
       });
@@ -693,14 +595,15 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
         !assignmentIt->second.valid || !assignmentIt->second.initialSlot) {
       continue;
     }
-    auto slotStateIt = slotStateByReceiverDFB.find(endpoint.receiverDFB);
-    if (slotStateIt == slotStateByReceiverDFB.end()) {
+    auto producerStateIt =
+        producerStateByReceiverDFB.find(endpoint.receiverDFB);
+    if (producerStateIt == producerStateByReceiverDFB.end()) {
       continue;
     }
     const ReceiverDFBInfo &receiverInfo = endpoint.receiverDFBInfo;
     ReceiverAddressRecurrence recurrence{
         *assignmentIt->second.initialSlot,
-        slotStateIt->second.nextSlot,
+        producerStateIt->second.nextSlot,
         receiverInfo.blockCount,
     };
     ReceiverAddressSequenceProof sequence;

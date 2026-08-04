@@ -102,8 +102,6 @@ is unavailable when any of the following applies:
 - The graph cannot prove a complete receiver DFB reservation schedule. This
   includes unmodeled producer writes and reservations in unordered functions,
   threads, loops, or branch regions.
-- Static slot assignment would reuse a live receiver slot without a DFB pop in
-  the producer reservation context to release it.
 - A transfer definition cannot be matched to exactly one send and its
   corresponding receive post and wait family.
 - The receiver sequence is fully dynamic, or the graph cannot prove a modular
@@ -546,18 +544,18 @@ without retaining an address from an earlier allocation.
 
 For ordinary point-to-point transfers, `%initial_slot` is usually 0. For
 gather or allgather-style receivers, `PipeGraph` derives it from the complete
-producer reservation schedule for the physical receiver DFB. Receiver DFB pops
-in that schedule release live physical slots. They do not advance or reset the
-producer reservation cursor. Static tensor subviews add `%static_byte_offset`
-inside the selected DFB block.
+producer reservation schedule for the physical receiver DFB. Producer
+reserves select write addresses, and matching pushes advance the DFB write
+pointer. Consumer pops affect when a later reserve can complete, but they do not
+select its address. Static tensor subviews add `%static_byte_offset` inside the
+selected DFB block.
 
 A periodic receiver sequence has a graph-derived `%repeat_stride`. This value
-is the producer reservation-cursor advance between consecutive occurrences of
-that transfer, measured in DFB blocks and reduced modulo `block_count`. It is
-not the maximum occupied slot or the number of live slots. A reserve shared by
-multiple receive posts contributes its block span once. When
-`%repeat_stride` is nonzero, the sender uses a local slot counter initialized
-to `%initial_slot`:
+is the distance in DFB blocks between the starting slots selected by consecutive
+occurrences, reduced modulo `block_count`. It is not the maximum occupied slot
+or the number of in-flight reservations. A reserve shared by multiple receive
+posts contributes its block span once. When `%repeat_stride` is nonzero, the
+sender uses a local slot counter initialized to `%initial_slot`:
 
 ```mlir
 %receiver_slot = load %sender_slot_counter
@@ -764,11 +762,15 @@ the device component omitted for a single-device module. The graph derives
 endpoint sequences from the complete producer schedule for `D`, not from one
 pipe in isolation. A producer reservation contributes its span once even when
 multiple receive posts share it. Its matching push commits that span to the DFB
-ring. Consumer pops do not change the producer cursor or address advancement.
-For local NoC transfers, a proven pop can release a live slot for a later
-receiver post because the sender waits for that post. A fabric sender does not
-wait for receiver-post readiness, so its assigned slot remains unavailable to
-other fabric transfers for the rest of the invocation.
+ring. Consumer waits and pops do not participate in address-sequence
+construction because only the reserve/push sequence determines the write
+addresses. For local `RP`, a reserve does not complete until the DFB has
+enough free blocks, and the sender does not transfer data until that reserve
+posts readiness. A reserve/push sequence may therefore wrap to an earlier
+address safely even when the consumer is in another kernel thread. Fabric
+transport does not use receiver-post admission and requires a separate capacity
+proof; an address sequence alone does not prove that a fabric destination slot
+is available.
 
 Current recurrence construction requires every post to one receiver DFB to
 share one data-movement function and the same enclosing runtime-selected
@@ -787,27 +789,26 @@ The analysis is:
 
 ```text
 for D in pipe_graph.receiver_dfbs:
-    events = collect_all_producer_reserves_pushes_and_pops(D)
-    schedule_model = classify_producer_schedule(events)
+    producer_stream = collect_all_producer_reserves_and_pushes(D)
+    schedule_model = classify_producer_schedule(producer_stream)
     if schedule_model == FullyDynamic:
         reservation_schedule(D) = unknown
         continue
 
-    state = {next_slot = 0, live_reservations = []}
+    next_slot = 0
     for event in enumerate_proven_schedule(schedule_model):
         if event reserves producer blocks:
             reservation = unique_reservation_owner(event)
             if reservation has no assigned slot:
-                reject_wrap_or_live_slot_reuse(reservation, state)
-                assign_initial_slot(reservation, state.next_slot)
-                advance_next_slot_once(reservation.span, state)
+                if next_slot + reservation.span > block_count(D):
+                    reject_contiguous_payload_wrap(reservation)
+                assign_initial_slot(reservation, next_slot)
+                next_slot = (next_slot + reservation.span) mod block_count(D)
             attach_posts_to_reservation(event, reservation)
         if event pushes producer blocks:
             verify_push_matches_reservation(event)
-        if event pops blocks in the proven schedule:
-            release_oldest_complete_reservations(event, state)
 
-    reservation_schedule(D) = derive_recurrences(schedule_model, state)
+    reservation_schedule(D) = derive_recurrences(schedule_model, next_slot)
 
 for T in pipe_graph.transfer_nodes:
     occurrence_model(T) = synchronization_proof.occurrence_model(T)
@@ -1173,19 +1174,19 @@ increments are flushed before execution continues.
 
 When two or more pipes in the same PipeNet target the same receiver
 node, the receiver observes every arrival cumulatively and each
-sender's data lands in its own slot of the receiver's dataflow buffer.
+sender's payload is written to the DFB block selected by its reservation.
 
 ### Data layout: physical receiver slots
 
 Slot assignment is deterministic only after the graph establishes a complete
 producer reservation schedule for the physical DFB. Within that schedule,
-`PipeGraph` follows program order, assigns the next physical slot once per
-reserve, and releases live slots at matching-context DFB pops. It does not infer
-order between functions, threads, loop regions, or branch regions from lexical
-module position. A consumer pop in another function does not order producer
-reservations and cannot prove static slot reuse. Simultaneously live
-reservations at one receiver use distinct physical slots. A later static
-receive post can reuse a slot after a matching-context pop releases it.
+`PipeGraph` follows reserve/push program order and assigns one physical start
+slot per reserve. It does not infer producer order between functions, threads,
+loop regions, or branch regions from lexical module position. Consumer waits
+and pops may execute in another function or thread; their placement does not
+alter the ordered sequence of producer write addresses. A later reserve may
+select an earlier slot after ring wrap because it waits until enough DFB blocks
+are free before posting receiver readiness.
 
 Each receive post identifies the physical start slot selected by its owning DFB
 reserve. A `PipeReceiverEndpoint` records that initial slot and the modular
@@ -1208,11 +1209,11 @@ completion signal: it uses the hardware multicast completion signal
 (`noc_semaphore_inc_multicast`; see `PipeOptimizations.md`, section 2)
 rather than per-destination `noc_semaphore_inc`. The receiver DFB
 `block_count` is the number of payload blocks available at that
-receiver. The compiler rejects any receive post that would reuse a live
-slot before a receiver DFB pop releases it, or that would reserve past
-the end of the DFB block ring. There is no synchronous serialization
-between senders in one batch: they run concurrently and land in
-distinct slots.
+receiver. A reservation may wrap to an earlier block only after the runtime DFB
+has capacity for it. The compiler rejects a multi-block payload whose
+contiguous address range would cross the end of the DFB block ring. Senders
+whose receiver reservations have all completed may run concurrently. Each
+sender writes to the address selected by its completed receiver reservation.
 
 ### Completion counters
 
@@ -1888,7 +1889,8 @@ compile-time properties not runtime-observable.
 | 60 | Lowering: slot assignment is order-independent under user pipe reordering |  |  |  X  |
 | 61 | Lowering: transfers sharing a receiver use distinct completion counters; disjoint receiver sets may reuse one semaphore index |  |  |  X  |
 | 62 | Lowering: loopback collective uses `noc_async_write_multicast_loopback_src` + local receiver-completion increment |  |  |  X  |
-| 63 | Address graph rejects a reserve that exceeds `block_count`, wraps, or reuses a live slot |  |  |  X  |
+| 63 | Address graph rejects a reserve that exceeds `block_count` or crosses the DFB ring end |  |  |  X  |
+| 63a| Sequential local receives reuse one DFB block while another thread consumes it | X | X | X |
 | 64 | Lowering: aggregate collective receive posts increment one sender-ready count |  |  |  X  |
 | 65 | Lowering: non-loopback collective uses a computed receiver address when its graph sequence is materializable | X | | X |
 | 66 | Semaphore counting: collective address storage does not allocate semaphore ids | | X | |

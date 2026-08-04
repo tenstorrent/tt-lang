@@ -127,16 +127,33 @@ module attributes {ttl.launch_grid = array<i64: 6, 1>} {
 
 // -----
 
-// A consumer thread can pop the receiver DFB without changing the reservation
-// order established by the data-movement thread. The cross-thread pop must not
-// disable the uniform computed address required by multicast.
+// A consumer thread can pop one block between two multicast receives without
+// changing their address sequence. Both sends reuse the computed
+// block-zero address at every receiver.
 
 // CHECK-LABEL: func.func @multicast_post
 // CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
+// CHECK: %[[MULTI_ZERO:.*]] = arith.constant 0 : index
 // CHECK-NOT: ttkernel.load_from_l1
-// CHECK: ttkernel.noc_async_write_multicast
+// CHECK-NOT: arith.muli
+// CHECK: %[[MULTI_DST_A:.*]] = ttkernel.get_common_arg_val(%[[MULTI_ZERO]])
+// CHECK-NEXT: ttkernel.noc_async_write_multicast({{.*}}, %[[MULTI_DST_A]], noc {{.*}})
+// CHECK-NOT: ttkernel.noc_async_write_multicast
+// CHECK-NOT: ttkernel.load_from_l1
+// CHECK-NOT: arith.muli
+// CHECK: %[[MULTI_DST_B:.*]] = ttkernel.get_common_arg_val(%[[MULTI_ZERO]])
+// CHECK-NEXT: ttkernel.noc_async_write_multicast({{.*}}, %[[MULTI_DST_B]], noc {{.*}})
+// CHECK-NOT: ttkernel.noc_async_write_multicast
+// CHECK-NOT: ttkernel.load_from_l1
+// CHECK-NOT: arith.muli
 // CHECK-LABEL: func.func @multicast_consume
-// CHECK: ttkernel.cb_pop_front
+// CHECK: %[[MULTI_ONE:.*]] = arith.constant 1 : i32
+// CHECK: %[[MULTI_DFB:.*]] = ttkernel.get_compile_time_arg_val(1)
+// CHECK: scf.if
+// CHECK-NEXT: ttkernel.cb_wait_front(%[[MULTI_DFB]], %[[MULTI_ONE]])
+// CHECK-NEXT: ttkernel.cb_pop_front(%[[MULTI_DFB]], %[[MULTI_ONE]])
+// CHECK-NEXT: ttkernel.cb_wait_front(%[[MULTI_DFB]], %[[MULTI_ONE]])
+// CHECK-NEXT: ttkernel.cb_pop_front(%[[MULTI_DFB]], %[[MULTI_ONE]])
 module attributes {ttl.launch_grid = array<i64: 3, 1>} {
   func.func @multicast_post() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %src = ttl.bind_cb {cb_index = 0, block_count = 2}
@@ -155,6 +172,15 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
           -> !ttl.transfer_handle
       ttl.wait %post : !ttl.transfer_handle
       ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+      %recv_again = ttl.cb_reserve %dst
+          : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      %post_again = ttl.copy %pipe, %recv_again
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.transfer_handle
+      ttl.wait %post_again : !ttl.transfer_handle
+      ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
     }
     ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> {
       %send = ttl.copy %src, %pipe
@@ -162,6 +188,11 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
              !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>)
           -> !ttl.transfer_handle<write>
       ttl.wait %send : !ttl.transfer_handle<write>
+      %send_again = ttl.copy %src, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send_again : !ttl.transfer_handle<write>
     }
     func.return
   }
@@ -176,7 +207,107 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
           : <[1, 1], !ttcore.tile<32x32, f32>, 1>
           -> tensor<1x1x!ttcore.tile<32x32, f32>>
       ttl.cb_pop %dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+      %ready_again = ttl.cb_wait %dst
+          : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      ttl.cb_pop %dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
     }
+    func.return
+  }
+}
+
+// -----
+
+// Two sequential producer reservations can reuse one DFB block even when a
+// different kernel thread pops the first block. Both senders must use the
+// block-zero computed address without receiver address publication.
+
+// CHECK-LABEL: func.func @cross_thread_single_slot_posts
+// CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
+// CHECK: %[[ZERO:.*]] = arith.constant 0 : index
+// CHECK-NOT: ttkernel.noc_async_write {{.*}}
+// CHECK-NOT: ttkernel.load_from_l1
+// CHECK-NOT: arith.muli
+// CHECK: %[[DST_A:.*]] = ttkernel.get_common_arg_val(%[[ZERO]])
+// CHECK-NEXT: ttkernel.noc_async_write %{{.*}}, core[{{.*}}], %[[DST_A]], %{{.*}}, noc %{{.*}}
+// CHECK-NOT: ttkernel.noc_async_write {{.*}}
+// CHECK-NOT: ttkernel.load_from_l1
+// CHECK-NOT: arith.muli
+// CHECK: %[[DST_B:.*]] = ttkernel.get_common_arg_val(%[[ZERO]])
+// CHECK-NEXT: ttkernel.noc_async_write %{{.*}}, core[{{.*}}], %[[DST_B]], %{{.*}}, noc %{{.*}}
+// CHECK-NOT: ttkernel.noc_async_write {{.*}}
+// CHECK-NOT: ttkernel.load_from_l1
+// CHECK-NOT: arith.muli
+// CHECK-LABEL: func.func @cross_thread_single_slot_consumer
+// CHECK: %[[ONE:.*]] = arith.constant 1 : i32
+// CHECK-NEXT: %[[DST_DFB:.*]] = ttkernel.get_compile_time_arg_val(1)
+// CHECK-NEXT: ttkernel.cb_wait_front(%[[DST_DFB]], %[[ONE]])
+// CHECK-NEXT: ttkernel.cb_pop_front(%[[DST_DFB]], %[[ONE]])
+// CHECK-NEXT: ttkernel.cb_wait_front(%[[DST_DFB]], %[[ONE]])
+// CHECK-NEXT: ttkernel.cb_pop_front(%[[DST_DFB]], %[[ONE]])
+// CHECK-NEXT: return
+module attributes {ttl.launch_grid = array<i64: 3, 1>} {
+  func.func @cross_thread_single_slot_posts()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %src = ttl.bind_cb {cb_index = 0, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %pipe_a = ttl.create_pipe src(1, 0) dst(0, 0) to(0, 0) net 0
+        : !ttl.pipe<src(1, 0) dst(0, 0) to(0, 0) net 0>
+    %pipe_b = ttl.create_pipe src(2, 0) dst(0, 0) to(0, 0) net 0
+        : !ttl.pipe<src(2, 0) dst(0, 0) to(0, 0) net 0>
+    ttl.if_dst %pipe_a : !ttl.pipe<src(1, 0) dst(0, 0) to(0, 0) net 0> {
+      %recv_a = ttl.cb_reserve %dst
+          : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      %post_a = ttl.copy %pipe_a, %recv_a
+          : (!ttl.pipe<src(1, 0) dst(0, 0) to(0, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.transfer_handle
+      ttl.wait %post_a : !ttl.transfer_handle
+      ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    }
+    ttl.if_dst %pipe_b : !ttl.pipe<src(2, 0) dst(0, 0) to(0, 0) net 0> {
+      %recv_b = ttl.cb_reserve %dst
+          : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      %post_b = ttl.copy %pipe_b, %recv_b
+          : (!ttl.pipe<src(2, 0) dst(0, 0) to(0, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.transfer_handle
+      ttl.wait %post_b : !ttl.transfer_handle
+      ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    }
+    ttl.if_src %pipe_a : !ttl.pipe<src(1, 0) dst(0, 0) to(0, 0) net 0> {
+      %send_a = ttl.copy %src, %pipe_a
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+             !ttl.pipe<src(1, 0) dst(0, 0) to(0, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send_a : !ttl.transfer_handle<write>
+    }
+    ttl.if_src %pipe_b : !ttl.pipe<src(2, 0) dst(0, 0) to(0, 0) net 0> {
+      %send_b = ttl.copy %src, %pipe_b
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+             !ttl.pipe<src(2, 0) dst(0, 0) to(0, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send_b : !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+
+  func.func @cross_thread_single_slot_consumer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %ready_a = ttl.cb_wait %dst
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.cb_pop %dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %ready_b = ttl.cb_wait %dst
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.cb_pop %dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
     func.return
   }
 }

@@ -271,8 +271,8 @@ inline PipeTransferContract getPipeTransferContract(PipeTransferCreateOp op) {
 class PipeGraph {
 public:
   /// Analyze a module to find all pipe receivers and build the graph.
-  /// Returns failure if validation detects an error (e.g., gather DFB too
-  /// small).
+  /// Returns failure if validation detects invalid transfer correspondence or
+  /// receiver DFB address geometry.
   static FailureOr<PipeGraph> build(ModuleOp mod, ValueOriginAnalysis &analysis,
                                     const PipeTransferIndex &transferIndex);
 
