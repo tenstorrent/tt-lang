@@ -14,6 +14,7 @@ from sim.sharding import (
     count_local_remote_l1_dram_for_getitem,
     shard_origin_from_key,
 )
+from sim.trace import TRACE
 from sim.ttnnsim import (  # type: ignore[reportPrivateUsage]
     CoreGrid,
     MemoryConfig,
@@ -2184,6 +2185,38 @@ class TestTensorTileIndexing:
         assert t[0, :, :].shape == (1, 64, 64)
         assert t[0:2, 0:2, 0:2].shape == (2, 64, 64)
         assert t[1, 1, 1].shape == (1, 32, 32)
+
+    @pytest.mark.parametrize(
+        "layout, extent, key",
+        [
+            (ttnn.TILE_LAYOUT, (2, 64, 64), (1, 1, 1)),
+            (ttnn.TILE_LAYOUT, (2, 64, 64), (slice(None), 0, 0)),
+            (ttnn.TILE_LAYOUT, (2, 64, 64), (0, slice(None), slice(None))),
+            (ttnn.TILE_LAYOUT, (2, 64, 64), (slice(0, 2), slice(1, 2), slice(0, 1))),
+            (ttnn.ROW_MAJOR_LAYOUT, (8, 8), (2, slice(None))),
+            (ttnn.ROW_MAJOR_LAYOUT, (8, 8), (slice(None), 3)),
+            (ttnn.ROW_MAJOR_LAYOUT, (8, 8), (slice(2, 4), slice(0, 8))),
+        ],
+    )
+    def test_a_slice_agrees_with_itself_about_where_it_starts(
+        self, layout: Any, extent: tuple[int, ...], key: tuple[Any, ...]
+    ) -> None:
+        """The origin a slice records equals the one its key computes.
+
+        Two paths answer where a slice sits in its tensor: the origin
+        ``__getitem__`` accumulates while tracing, and ``element_slice_starts``
+        from the key.  The locality statistics read the first and the copy
+        handlers the second, so a disagreement bills one transfer two ways.
+        """
+        tensor = ttnn.from_torch(torch.rand(*extent), layout=layout)
+
+        TRACE.enabled = True
+        try:
+            sliced = tensor[key]
+        finally:
+            TRACE.enabled = False
+
+        assert sliced._element_origin == tensor.element_slice_starts(key)
 
     def test_an_open_end_locates_the_slice_like_a_spelled_out_one(self) -> None:
         """``t[i, :]`` reports the origin ``t[i, 0:n]`` reports.
