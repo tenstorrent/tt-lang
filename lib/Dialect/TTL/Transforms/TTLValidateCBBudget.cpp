@@ -90,23 +90,37 @@ static std::optional<uint64_t> tryBudgetFromModule(ModuleOp moduleOp) {
 /// Bytes per CB slot: explicit ttcore.tile uses its shape/dtype; row-wise
 /// (scalar/builtin) element types use the default tile layout for that dtype,
 /// matching TTCore CB page sizing.
-static uint64_t bytesPerCbElement(mlir::Type elemTy) {
-  if (auto tileTy = mlir::dyn_cast<mlir::tt::ttcore::TileType>(elemTy)) {
-    return tileTy.getSizeBytes();
+static FailureOr<uint64_t> bytesPerDFBElement(BindCBOp bindOp,
+                                              mlir::Type elementType) {
+  auto tileType = mlir::dyn_cast<mlir::tt::ttcore::TileType>(elementType);
+  if (!tileType) {
+    std::optional<mlir::tt::ttcore::DataType> dataType =
+        mlir::tt::ttcore::elementTypeToDataTypeImpl(elementType);
+    if (!dataType) {
+      bindOp.emitOpError() << "cannot determine DFB page size for element type "
+                           << elementType;
+      return failure();
+    }
+    tileType = mlir::tt::ttcore::TileType::get(
+        elementType.getContext(), mlir::tt::ttcore::TileType::getDefaultShape(),
+        *dataType);
   }
-  return mlir::tt::ttcore::TileType::get(elemTy).getSizeBytes();
+  return tileType.getSizeBytes();
 }
 
-static FailureOr<uint64_t> cbBytesForBind(BindCBOp bindOp) {
-  auto cbTy = mlir::cast<CircularBufferType>(bindOp.getResult().getType());
-  mlir::Type elemTy = cbTy.getElementType();
-  const uint64_t slotBytes = bytesPerCbElement(elemTy);
-  const int64_t totalEl = cbTy.getTotalElements();
-  if (totalEl < 0) {
+static FailureOr<uint64_t> dfbBytesForBind(BindCBOp bindOp) {
+  auto dfbType = mlir::cast<CircularBufferType>(bindOp.getResult().getType());
+  mlir::Type elementType = dfbType.getElementType();
+  FailureOr<uint64_t> slotBytes = bytesPerDFBElement(bindOp, elementType);
+  if (failed(slotBytes)) {
+    return failure();
+  }
+  const int64_t totalElements = dfbType.getTotalElements();
+  if (totalElements < 0) {
     bindOp.emitOpError() << "invalid negative total element count for CB";
     return failure();
   }
-  return static_cast<uint64_t>(totalEl) * slotBytes;
+  return static_cast<uint64_t>(totalElements) * *slotBytes;
 }
 
 struct TTLValidateCBBudgetPass
@@ -127,7 +141,7 @@ struct TTLValidateCBBudgetPass
     llvm::DenseMap<int64_t, BindCBOp> bindForIndex;
 
     auto walkResult = moduleOp.walk([&](BindCBOp bindOp) -> WalkResult {
-      FailureOr<uint64_t> bytes = cbBytesForBind(bindOp);
+      FailureOr<uint64_t> bytes = dfbBytesForBind(bindOp);
       if (failed(bytes)) {
         return WalkResult::interrupt();
       }

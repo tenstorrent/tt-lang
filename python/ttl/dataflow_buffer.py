@@ -141,16 +141,15 @@ CircularBuffer = DataflowBuffer
 
 @dataclass
 class CompilerAllocatedDFBConfig:
-    """Configuration for a compiler-allocated dataflow buffer.
+    """Runtime configuration for a DFB without a backing tensor.
 
-    Created by the Python runtime after reading the ttl.compiler_allocated_dfbs
-    module attribute produced by the ttl-finalize-dfb-indices pass. Includes
-    the static storage configuration needed without a backing tensor.
+    ``data_format`` and ``tile`` define the page representation. ``num_tiles``
+    and ``block_count`` define its capacity.
     """
 
     dfb_index: int
     num_tiles: int
-    data_format: str  # e.g., "bf16", "f32", "f16"
+    data_format: str  # e.g., "bfloat16", "float32", "bfloat8_b"
     block_count: int
     tile: Tuple[int, int] = (DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)
 
@@ -196,7 +195,7 @@ def make_dfb(
     dtype: Any,
     shape: Tuple[int, ...],
     block_count: int = 2,
-    tile: Tuple[int, int] = (32, 32),
+    tile: Tuple[int, int] = (DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE),
 ) -> DataflowBuffer:
     """
     Create a dataflow buffer from an explicit dtype, with no backing tensor.

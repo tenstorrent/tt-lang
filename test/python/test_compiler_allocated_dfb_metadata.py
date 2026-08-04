@@ -8,31 +8,46 @@ import pytest
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from ttl.dataflow_buffer import CompilerAllocatedDFBConfig
+from ttl.constants import DEFAULT_TILE_SIZE
+from ttl.dataflow_buffer import CompilerAllocatedDFBConfig, DataflowBuffer, make_dfb
 from ttl.dialects import ttl
-from ttl.dtype_utils import tile_bytes_from_dtype
+from ttl.dtype_utils import format_name_to_ttnn_dtype, tile_bytes_from_dtype
 from ttl.ir import Context, Module
 from ttl.kernel_runner import build_cb_descriptors, emit_runner_source
 from ttl.ttl_api import _extract_compiler_allocated_dfbs
 
 
 MLIR_FORMAT_CASES = [
-    ("bf16", "bfloat16", 2),
-    ("f16", "float16", 2),
-    ("f32", "float32", 4),
-    ("si32", "int32", 4),
-    ("u32", "uint32", 4),
-    ("u16", "uint16", 2),
+    ("bf16", "bfloat16"),
+    ("f16", "float16"),
+    ("f32", "float32"),
+    ("si32", "int32"),
+    ("u32", "uint32"),
+    ("u16", "uint16"),
+    ("u8", "uint8"),
+    ("bfp_bf8", "bfloat8_b"),
+    ("bfp_bf4", "bfloat4_b"),
 ]
 COMPUTE_TILE_SIZES = [(16, 16), (16, 32), (32, 16), (32, 32)]
+DENSE_FORMATS = [
+    case[1] for case in MLIR_FORMAT_CASES if not case[0].startswith("bfp_")
+]
 
 
 @pytest.mark.parametrize(
-    "mlir_type,data_format",
-    [(case[0], case[1]) for case in MLIR_FORMAT_CASES],
+    "mlir_type,data_format,tile_hw",
+    [
+        (
+            mlir_type,
+            data_format,
+            (32, 32) if mlir_type.startswith("bfp_") else (16, 32),
+        )
+        for mlir_type, data_format in MLIR_FORMAT_CASES
+    ],
     ids=[case[0] for case in MLIR_FORMAT_CASES],
 )
-def test_extract_compiler_allocated_subtile_metadata(mlir_type, data_format):
+def test_extract_compiler_allocated_subtile_metadata(mlir_type, data_format, tile_hw):
+    tile_height, tile_width = tile_hw
     with Context() as context:
         ttl.ensure_dialects_registered(context)
         module = Module.parse(
@@ -41,7 +56,7 @@ def test_extract_compiler_allocated_subtile_metadata(mlir_type, data_format):
               ttl.compiler_allocated_dfbs = [{{
                 block_count = 2 : i32,
                 dfb_index = 3 : i32,
-                element_type = !ttcore.tile<16x32, {mlir_type}>,
+                element_type = !ttcore.tile<{tile_height}x{tile_width}, {mlir_type}>,
                 num_tiles = 5 : i32
               }}]
             }} {{}}
@@ -55,20 +70,19 @@ def test_extract_compiler_allocated_subtile_metadata(mlir_type, data_format):
             num_tiles=5,
             data_format=data_format,
             block_count=2,
-            tile=(16, 32),
+            tile=tile_hw,
         )
     ]
 
 
 @pytest.mark.parametrize(
-    "data_format,bytes_per_element",
-    [(case[1], case[2]) for case in MLIR_FORMAT_CASES],
-    ids=[case[0] for case in MLIR_FORMAT_CASES],
+    "data_format",
+    DENSE_FORMATS,
 )
 @pytest.mark.parametrize(
     "tile_hw", COMPUTE_TILE_SIZES, ids=lambda tile: f"{tile[0]}x{tile[1]}"
 )
-def test_compiler_allocated_subtile_descriptor(data_format, bytes_per_element, tile_hw):
+def test_compiler_allocated_subtile_descriptor(data_format, tile_hw):
     core_ranges = ttnn.CoreRangeSet(
         {ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))}
     )
@@ -82,8 +96,8 @@ def test_compiler_allocated_subtile_descriptor(data_format, bytes_per_element, t
 
     descriptor = build_cb_descriptors([None], [config], core_ranges)[0]
     format_descriptor = descriptor.format_descriptors[0]
+    page_size = _expected_page_size(data_format, tile_hw)
     tile_height, tile_width = tile_hw
-    page_size = tile_height * tile_width * bytes_per_element
 
     assert descriptor.total_size == 6 * page_size
     assert format_descriptor.page_size == page_size
@@ -91,10 +105,37 @@ def test_compiler_allocated_subtile_descriptor(data_format, bytes_per_element, t
     assert format_descriptor.tile.width == tile_width
 
 
+def _expected_page_size(data_format, tile_hw):
+    tile_elements = tile_hw[0] * tile_hw[1]
+    if data_format in ("bfloat16", "float16", "uint16"):
+        return tile_elements * 2
+    if data_format in ("float32", "int32", "uint32"):
+        return tile_elements * 4
+    if data_format == "uint8":
+        return tile_elements
+    exponent_bytes = ((tile_elements + 15) // 16 + 15) // 16 * 16
+    if data_format == "bfloat8_b":
+        return tile_elements + exponent_bytes
+    if data_format == "bfloat4_b":
+        return tile_elements // 2 + exponent_bytes
+    raise AssertionError(f"Unhandled test data format: {data_format}")
+
+
 @pytest.mark.parametrize("dtype", [ttnn.bfloat8_b, ttnn.bfloat4_b])
-def test_bfp_subtile_size_is_rejected(dtype):
-    with pytest.raises(ValueError, match="supports only 32x32 tiles"):
-        tile_bytes_from_dtype(dtype, (16, 32))
+@pytest.mark.parametrize(
+    "tile_hw", [(16, 16), (16, 32), (32, 16)], ids=lambda tile: f"{tile[0]}x{tile[1]}"
+)
+def test_bfp_subtile_size_is_rejected(dtype, tile_hw):
+    with pytest.raises(ValueError, match="supports BFP compute tiles only with 32x32"):
+        tile_bytes_from_dtype(dtype, tile_hw)
+
+
+@pytest.mark.parametrize(
+    "dtype,data_format",
+    [(ttnn.bfloat8_b, "bfloat8_b"), (ttnn.bfloat4_b, "bfloat4_b")],
+)
+def test_bfp_default_tile_size(dtype, data_format):
+    assert tile_bytes_from_dtype(dtype) == _expected_page_size(data_format, (32, 32))
 
 
 @pytest.mark.parametrize(
@@ -108,6 +149,60 @@ def test_bfp_subtile_size_is_rejected(dtype):
 )
 def test_tile_size_for_remaining_ttnn_formats(dtype, tile_hw, expected_size):
     assert tile_bytes_from_dtype(dtype, tile_hw) == expected_size
+
+
+def test_rank_three_user_dfb_capacity():
+    core_ranges = ttnn.CoreRangeSet(
+        {ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))}
+    )
+    config = DataflowBuffer(
+        tensor=None,
+        shape=(2, 2, 2),
+        block_count=2,
+        dtype=ttnn.bfloat16,
+    )
+
+    descriptor = build_cb_descriptors([None], [config], core_ranges)[0]
+
+    assert descriptor.total_size == 16 * 2048
+
+
+def test_make_dfb_uses_default_tile_size():
+    config = make_dfb(ttnn.bfloat16, shape=(1, 1))
+
+    assert config.tile == (DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)
+
+
+@pytest.mark.parametrize("mlir_type", ["bfp_f8", "bfp_f4", "bfp_f2", "bfp_bf2", "i1"])
+def test_unsupported_compiler_allocated_dtype_is_diagnosed(mlir_type):
+    with Context() as context:
+        ttl.ensure_dialects_registered(context)
+        module = Module.parse(
+            f"""
+            module attributes {{
+              ttl.compiler_allocated_dfbs = [{{
+                block_count = 1 : i32,
+                dfb_index = 0 : i32,
+                element_type = !ttcore.tile<32x32, {mlir_type}>,
+                num_tiles = 1 : i32
+              }}]
+            }} {{}}
+            """
+        )
+        with pytest.raises(ValueError, match="not supported by the ttnn runtime"):
+            _extract_compiler_allocated_dfbs(module)
+
+
+@pytest.mark.parametrize(
+    "data_format,expected_dtype",
+    [
+        ("uint8", ttnn.uint8),
+        ("bfloat8_b", ttnn.bfloat8_b),
+        ("bfloat4_b", ttnn.bfloat4_b),
+    ],
+)
+def test_remaining_compiler_formats_convert_to_ttnn(data_format, expected_dtype):
+    assert format_name_to_ttnn_dtype(data_format) == expected_dtype
 
 
 def test_emitted_runner_preserves_compiler_allocated_subtile():

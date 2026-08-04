@@ -14,6 +14,7 @@ building and execution.
 """
 
 from dataclasses import dataclass, field
+import math
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -57,7 +58,16 @@ def _dfb_capacity_tiles(dfb) -> int:
     """Return the DFB capacity using its declared tile-count representation."""
     if isinstance(dfb, CompilerAllocatedDFBConfig):
         return dfb.num_tiles * dfb.block_count
-    return dfb.shape[0] * dfb.shape[1] * dfb.block_count
+    return math.prod(dfb.shape) * dfb.block_count
+
+
+@dataclass(frozen=True)
+class _DFBDescriptorPlan:
+    data_format: Any
+    page_size: int
+    total_size: int
+    tile_descriptor: Any
+    description: str
 
 
 def get_min_remaining_l1_for_device(device):
@@ -437,7 +447,15 @@ def build_cb_descriptors(
                 f"  CB[{i}]: shape={cb.shape} block_count={cb.block_count} "
                 f"tile={cb.tile} -> {total_size} bytes"
             )
-        rows.append((data_format, page_size, total_size, tile_descriptor, description))
+        rows.append(
+            _DFBDescriptorPlan(
+                data_format=data_format,
+                page_size=page_size,
+                total_size=total_size,
+                tile_descriptor=tile_descriptor,
+                description=description,
+            )
+        )
 
         total_cb_bytes += total_size
 
@@ -453,7 +471,7 @@ def build_cb_descriptors(
     # Must stay aligned with MLIR ttl-validate-cb-budget
     # (TileType::getSizeBytes()); see issue #511.
     if total_cb_bytes > remaining_bytes:
-        breakdown = "\n".join(r[-1] for r in rows)
+        breakdown = "\n".join(row.description for row in rows)
         raise ValueError(
             "Total circular buffer allocation ("
             f"{total_cb_bytes} bytes) exceeds L1 budget ({remaining_bytes} bytes). "
@@ -464,16 +482,14 @@ def build_cb_descriptors(
 
     cb_descriptors = []
     for i, row in enumerate(rows):
-        data_format, page_size, total_size = row[:3]
-        tile_descriptor = row[3]
         cb_format = ttnn.CBFormatDescriptor(
             buffer_index=i,
-            data_format=data_format,
-            page_size=page_size,
-            **({"tile": tile_descriptor} if tile_descriptor is not None else {}),
+            data_format=row.data_format,
+            page_size=row.page_size,
+            tile=row.tile_descriptor,
         )
         cb_desc = ttnn.CBDescriptor(
-            total_size=total_size,
+            total_size=row.total_size,
             core_ranges=core_ranges,
             format_descriptors=[cb_format],
         )

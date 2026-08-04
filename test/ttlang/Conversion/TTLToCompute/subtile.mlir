@@ -112,3 +112,30 @@ func.func @passthrough_subtile(%arg: tensor<1x1x!ttcore.tile<16x16, bf16>>)
         tensor<1x1x!ttcore.tile<16x16, bf16>>
   return %input : tensor<1x1x!ttcore.tile<16x16, bf16>>
 }
+
+// -----
+
+// Integer tile types pass through compute creation without scalar-type
+// reconstruction.
+// CHECK-LABEL: func.func @integer_passthrough_subtile
+// CHECK:       ^bb0(%[[INPUT:.*]]: !ttcore.tile<32x16, u32>, %[[OUTPUT:.*]]: !ttcore.tile<32x16, u32>):
+// CHECK:         ttl.tile_store %[[INPUT]],
+func.func @integer_passthrough_subtile(
+    %arg: tensor<1x1x!ttcore.tile<32x16, u32>>)
+    -> tensor<1x1x!ttcore.tile<32x16, u32>> {
+  %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x16, u32>, 2>
+  %output_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x16, u32>, 2>
+  %input = ttl.attach_cb %arg, %input_dfb
+      : (tensor<1x1x!ttcore.tile<32x16, u32>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x16, u32>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x16, u32>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[1, 1], !ttcore.tile<32x16, u32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x16, u32>>
+  ttl.store %input, %output
+      : tensor<1x1x!ttcore.tile<32x16, u32>>,
+        tensor<1x1x!ttcore.tile<32x16, u32>>
+  return %input : tensor<1x1x!ttcore.tile<32x16, u32>>
+}

@@ -1233,9 +1233,8 @@ def _collect_cb_configs(threads):
     return [cb_configs_dict.get(i) for i in range(max_idx + 1)]
 
 
-# Map MLIR element type names to ttnn-compatible data format names.
-# Keyed by exact MLIR type mnemonic (no substring matching).
-_MLIR_TYPE_TO_FORMAT = {
+# Map scalar MLIR element types to ttnn-compatible data format names.
+_MLIR_SCALAR_TYPE_TO_FORMAT = {
     "bf16": "bfloat16",
     "f16": "float16",
     "f32": "float32",
@@ -1245,6 +1244,21 @@ _MLIR_TYPE_TO_FORMAT = {
     "u32": "uint32",
     "ui16": "uint16",
     "u16": "uint16",
+    "ui8": "uint8",
+    "u8": "uint8",
+}
+
+
+_MLIR_TILE_DATA_TYPE_TO_FORMAT = {
+    ttcore.DataType.Float32: "float32",
+    ttcore.DataType.Float16: "float16",
+    ttcore.DataType.BFloat16: "bfloat16",
+    ttcore.DataType.BFP_BFloat8: "bfloat8_b",
+    ttcore.DataType.BFP_BFloat4: "bfloat4_b",
+    ttcore.DataType.UInt32: "uint32",
+    ttcore.DataType.UInt16: "uint16",
+    ttcore.DataType.UInt8: "uint8",
+    ttcore.DataType.Int32: "int32",
 }
 
 
@@ -1261,22 +1275,24 @@ def _parse_mlir_dfb_element_type(element_type_attr) -> tuple[str, tuple[int, int
         )
     element_type = element_type_attr.value
     tile_type = ttcore.ir.TileType.maybe_downcast(element_type)
-    tile = (
-        tuple(tile_type.shape)
-        if tile_type is not None
-        else (DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)
-    )
+    if tile_type is not None:
+        data_type = ttcore.DataType(tile_type.data_type_as_int)
+        data_format = _MLIR_TILE_DATA_TYPE_TO_FORMAT.get(data_type)
+        if data_format is None:
+            raise ValueError(
+                "Compiler-allocated DFB tile data type "
+                f"'{data_type.name}' is not supported by the ttnn runtime"
+            )
+        return data_format, tuple(tile_type.shape)
 
-    type_str = str(element_type)
-    token = type_str.strip()
-    if "," in token:
-        token = token.rsplit(",", 1)[1].strip().rstrip(">").strip()
-    fmt = _MLIR_TYPE_TO_FORMAT.get(token)
-    if fmt is not None:
-        return fmt, tile
+    type_str = str(element_type).strip()
+    data_format = _MLIR_SCALAR_TYPE_TO_FORMAT.get(type_str)
+    if data_format is not None:
+        return data_format, (DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)
+    known_types = list(_MLIR_SCALAR_TYPE_TO_FORMAT.keys())
     raise ValueError(
-        f"Unrecognized MLIR element type '{token}' (from '{type_str}'). "
-        f"Known types: {list(_MLIR_TYPE_TO_FORMAT.keys())}"
+        f"Unrecognized MLIR scalar element type '{type_str}'. "
+        f"Known types: {known_types}"
     )
 
 
