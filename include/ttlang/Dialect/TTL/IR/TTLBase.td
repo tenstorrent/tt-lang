@@ -69,6 +69,8 @@ def TTL_CircularBufferOpTrait : TTL_Trait<"TTLCircularBufferOpTrait", []>;
 def TTL_TileComputeOpTrait : TTL_Trait<"TTLTileComputeOpTrait", []>;
 def TTL_UnaryElementwiseOpTrait : TTL_Trait<"TTLUnaryElementwiseOpTrait", []>;
 def TTL_BinaryElementwiseOpTrait : TTL_Trait<"TTLBinaryElementwiseOpTrait", []>;
+def TTL_ElementwiseSameTypeOpTrait
+    : TTL_Trait<"TTLElementwiseSameTypeOpTrait", []>;
 def TTL_TileUnaryOpTrait : TTL_Trait<"TTLTileUnaryOpTrait", []>;
 def TTL_TileBinaryOpTrait : TTL_Trait<"TTLTileBinaryOpTrait", []>;
 def TTL_CBInputTileOpTrait : TTL_Trait<"TTLCBInputTileOpTrait", []>;

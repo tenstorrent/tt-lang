@@ -273,7 +273,7 @@ class PhysicalDFBConfig:
 
     dfb_index: int
     num_tiles: int
-    data_format: str  # e.g., "bfloat16", "float32", "float16"
+    data_format: str  # e.g., "bfloat16", "float32", "bfloat8_b"
     block_count: int
     page_size: int
     tile: Optional[Tuple[int, int]]
@@ -382,7 +382,7 @@ def make_dfb(
     dtype: Any,
     shape: Tuple[int, ...],
     block_count: int = 2,
-    tile: Tuple[int, int] = (32, 32),
+    tile: Tuple[int, int] = (DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE),
 ) -> DataflowBuffer:
     """
     Create a dataflow buffer from an explicit dtype, with no backing tensor.

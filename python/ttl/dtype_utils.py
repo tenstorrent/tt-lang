@@ -6,6 +6,8 @@
 
 import torch
 
+from .constants import DEFAULT_TILE_SIZE
+
 ttnn = None  # Lazy-loaded via _ensure_ttnn()
 
 
@@ -197,13 +199,13 @@ def format_name_to_ttnn_dtype(name: str):
             raise ValueError(
                 f"Unrecognized data format name '{name}' for ttnn.DataType"
             )
-def tile_bytes_from_dtype(dtype, tile=(32, 32)) -> int:
+def tile_bytes_from_dtype(dtype, tile=(DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)) -> int:
     """
     Calculate tile size in bytes from ttnn dtype.
 
     The byte size matches ttcore::TileType::getSizeBytes(). Dense formats scale
-    with the physical tile dimensions. BFP formats currently support only the
-    default 32x32 tile dimensions.
+    with the physical tile dimensions. TT-Lang currently accepts BFP compute
+    tiles only with 32x32 dimensions.
 
     Args:
         dtype: ttnn.DataType enum value
@@ -241,10 +243,20 @@ def tile_bytes_from_dtype(dtype, tile=(32, 32)) -> int:
         ttnn.DataType.BFLOAT8_B,
         ttnn.DataType.BFLOAT4_B,
     )
-    if dtype in bfp_dtypes and tuple(tile) != (32, 32):
-        raise ValueError(f"{dtype} supports only 32x32 tiles, got {tile}")
+    default_tile = (DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)
+    if dtype in bfp_dtypes and tuple(tile) != default_tile:
+        raise ValueError(
+            "TT-Lang supports BFP compute tiles only with "
+            f"{DEFAULT_TILE_SIZE}x{DEFAULT_TILE_SIZE} dimensions, got {tile}"
+        )
+    elements_per_exponent = 16
+    l1_alignment_bytes = 16
+    exponent_count = tile_elements // elements_per_exponent
+    exponent_bytes = (
+        (exponent_count + l1_alignment_bytes - 1) // l1_alignment_bytes
+    ) * l1_alignment_bytes
     if dtype == ttnn.DataType.BFLOAT8_B:
-        return 32 * 32 + 64  # 1088
+        return tile_elements + exponent_bytes
     if dtype == ttnn.DataType.BFLOAT4_B:
-        return 512 + 64  # 576
+        return tile_elements // 2 + exponent_bytes
     raise ValueError(f"Unsupported dtype for tile size calculation: {dtype}")

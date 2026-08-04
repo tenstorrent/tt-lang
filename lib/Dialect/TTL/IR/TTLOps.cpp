@@ -21,6 +21,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/Utils/OpaqueCallVerifyUtils.h"
 #include "llvm/ADT/TypeSwitch.h" // IWYU pragma: keep
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <limits>
@@ -134,6 +135,32 @@ LayoutAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
 
 } // namespace mlir::tt::ttl
 
+namespace {
+
+bool isBFPDataType(mlir::tt::ttcore::DataType dataType) {
+  using mlir::tt::ttcore::DataType;
+  switch (dataType) {
+  case DataType::BFP_Float8:
+  case DataType::BFP_BFloat8:
+  case DataType::BFP_Float4:
+  case DataType::BFP_BFloat4:
+  case DataType::BFP_Float2:
+  case DataType::BFP_BFloat2:
+    return true;
+  case DataType::Float32:
+  case DataType::Float16:
+  case DataType::BFloat16:
+  case DataType::UInt32:
+  case DataType::UInt16:
+  case DataType::UInt8:
+  case DataType::Int32:
+  case DataType::Bool:
+    return false;
+  }
+}
+
+} // namespace
+
 mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
   auto cbTy = mlir::cast<CircularBufferType>(getResult().getType());
 
@@ -192,6 +219,26 @@ mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
              << "tensor backing byte_size must equal the complete dataflow "
                 "buffer capacity (expected "
              << allocationSize << ", got " << backing.getByteSize() << ")";
+    }
+  }
+
+  if (auto tileType = dyn_cast<ttcore::TileType>(cbTy.getElementType())) {
+    if (!ttcore::TileType::isLLKSupportedShape(tileType.getShape())) {
+      return emitOpError()
+             << "tile shape " << tileType.getHeight() << "x"
+             << tileType.getWidth()
+             << " is not supported by the LLK; supported shapes are 16x16, "
+                "16x32, 32x16, and 32x32";
+    }
+    constexpr std::array<int64_t, 2> defaultTileShape =
+        ttcore::TileType::getDefaultShape();
+    if (isBFPDataType(tileType.getDataType()) &&
+        (tileType.getHeight() != defaultTileShape[0] ||
+         tileType.getWidth() != defaultTileShape[1])) {
+      return emitOpError() << "TT-Lang supports BFP compute tiles only with "
+                           << defaultTileShape[0] << "x" << defaultTileShape[1]
+                           << " dimensions, got " << tileType.getHeight() << "x"
+                           << tileType.getWidth();
     }
   }
 
