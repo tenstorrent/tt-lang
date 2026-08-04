@@ -10,6 +10,7 @@ from typing import Any, Optional, Tuple
 from ttl.ir import *
 
 from ._src.ttl_ast import syntax
+from .constants import DEFAULT_TILE_SIZE
 from ttl.dialects import ttl
 
 # Module-level counter for DFB index assignment in creation order
@@ -61,7 +62,7 @@ class DataflowBuffer:
         shape: Tuple[int, ...],
         block_count: int,
         dtype: Any = None,
-        tile: Tuple[int, int] = (32, 32),
+        tile: Tuple[int, int] = (DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE),
     ):
         if len(shape) < 2:
             raise ValueError(f"DFB shape must have at least 2 dimensions, got {shape}")
@@ -172,7 +173,7 @@ def make_dataflow_buffer_like(
     Returns:
         DataflowBuffer for use in thread function closures
     """
-    tile = (32, 32)
+    tile = (DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)
     if hasattr(tensor, "get_tile"):
         tile = tuple(tensor.get_tile().tile_shape)
     return DataflowBuffer(tensor, shape, block_count, tile=tile)
