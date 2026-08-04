@@ -365,8 +365,9 @@ func.func @reduce_init_consolidates_same_dim() {
 }
 
 // Test 15: Multiple output CBs with same data format -> accepted, one common init.
-// When two pack ops target different CBs that share the same element type,
-// PACK data format routing is identical and one common init suffices.
+// When two pack ops target DFBs with the same element type but different
+// capacities, PACK data format routing is identical and one common init
+// suffices.
 // COMMON-LABEL: func.func @multi_output_cb_same_format
 // COMMON-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
 // COMMON-DAG: %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
@@ -378,7 +379,7 @@ func.func @reduce_init_consolidates_same_dim() {
 func.func @multi_output_cb_same_format() {
   %cb0 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
   %cb1 = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
-  %cb2 = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %cb2 = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<8, !ttcore.tile<32x32, f32>>
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   ttkernel.tile_regs_acquire() : () -> ()
@@ -389,7 +390,7 @@ func.func @multi_output_cb_same_format() {
   ttkernel.tile_regs_commit() : () -> ()
   ttkernel.tile_regs_wait() : () -> ()
   ttkernel.pack_tile(%c0, %cb1, %c0, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index) -> ()
-  ttkernel.pack_tile(%c1, %cb2, %c0, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index) -> ()
+  ttkernel.pack_tile(%c1, %cb2, %c0, false) : (index, !ttkernel.cb<8, !ttcore.tile<32x32, f32>>, index) -> ()
   ttkernel.tile_regs_release() : () -> ()
   func.return
 }

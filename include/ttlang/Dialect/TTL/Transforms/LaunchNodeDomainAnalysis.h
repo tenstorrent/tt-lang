@@ -21,11 +21,17 @@
 #include "mlir/Analysis/DataFlowFramework.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
+#include "ttlang/Analysis/ExecutionCountAnalysis.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <cstdint>
 #include <functional>
+#include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -87,9 +93,15 @@ LaunchNodeDomain getFullLaunchNodeDomain(int64_t gridX, int64_t gridY);
 /// Return the launch node containing the source endpoint of `pipeType`.
 LaunchNodeDomain getPipeSourceLaunchNodeDomain(PipeType pipeType);
 
-/// Return the launch nodes containing the destination endpoint range of
-/// `pipeType`.
-LaunchNodeDomain getPipeDestinationLaunchNodeDomain(PipeType pipeType);
+/// Return the destination endpoint range of `pipeType` within `baseDomain`.
+/// A range extending outside the module launch grid has an unknown domain.
+LaunchNodeDomain
+getPipeDestinationLaunchNodeDomain(PipeType pipeType,
+                                   const LaunchNodeDomain &baseDomain);
+
+/// Return true if `domain` is known and contains `coord`.
+bool knownLaunchNodeDomainContains(const LaunchNodeDomain &domain,
+                                   LaunchNodeCoord coord);
 
 /// Read the PipeNet ids selected by a `ttl.pipenet_scope`.
 bool readPipeNetScopeIds(PipeNetScopeOp scopeOp, SmallVectorImpl<int64_t> &ids);
@@ -112,21 +124,52 @@ struct LaunchNodeDomainState {
   llvm::DenseMap<int64_t, LaunchNodeDomain> netDestinationDomains;
   llvm::DenseMap<int64_t, SmallVector<Location>> pipeNetLocs;
   llvm::DenseMap<int64_t, std::string> pipeNetNames;
+  /// Reuse each function-and-coordinate analysis across all operations in the
+  /// function. The cached analyses reference the current IR and must not be
+  /// queried after a transformation mutates the function.
+  mutable llvm::DenseMap<
+      Operation *,
+      std::map<LaunchNodeCoord, std::unique_ptr<ExecutionCountAnalysis>>>
+      executionCountAnalysesByFunctionAndCoord;
   bool sawError = false;
   bool hasLaunchGrid = false;
 
   /// Return true if the module contains at least one declared PipeNet.
   bool hasPipes() const;
 
-  /// Return the recorded PipeNet name, or a deterministic id-based fallback.
+  /// Return the recorded PipeNet name, or a deterministic name from its id.
   std::string netName(int64_t netId) const;
 
-  /// Return the launch nodes that have `role` for the requested PipeNet.
+  /// Return the launch nodes that have `role` for `netId`, or an unknown
+  /// domain when no `ttl.create_pipe` declares that PipeNet.
   LaunchNodeDomain getRoleDomain(int64_t netId, PipeRole role) const;
 
   /// Populate launch-grid and PipeNet role domains from the module.
   void initialize(ModuleOp module);
 };
+
+/// Return the exact execution count of `op` at `coord`. Launch-node facts
+/// specialize coordinate and PipeNet predicates before the generic execution
+/// count analysis evaluates the enclosing control flow. Return `std::nullopt`
+/// when the count is not proven.
+std::optional<std::uint64_t>
+getExactExecutionCountAtLaunchNode(Operation *op, LaunchNodeCoord coord,
+                                   const LaunchNodeDomainState &state);
+
+/// Prove that two operations with unknown exact counts have equivalent
+/// control flow at their launch nodes.
+///
+/// The operations must share the same unresolved control-flow frames with
+/// equal control values at both nodes.
+/// The argument resolvers return the operand supplied to a helper-function
+/// entry argument at the active call site. A missing mapping prevents proof.
+bool proveEqualUnresolvedExecutionCountAtLaunchNodes(
+    Operation *lhs, LaunchNodeCoord lhsCoord, Operation *rhs,
+    LaunchNodeCoord rhsCoord, const LaunchNodeDomainState &state,
+    llvm::function_ref<std::optional<Value>(BlockArgument)>
+        resolveLhsFunctionArgument,
+    llvm::function_ref<std::optional<Value>(BlockArgument)>
+        resolveRhsFunctionArgument);
 
 /// Return the operation with the earlier source location.
 ///

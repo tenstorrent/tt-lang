@@ -50,9 +50,10 @@ struct TTLToTTKernelPipelineOptions
       llvm::cl::init(false)};
   Option<bool> compilerDFBs{
       *this, "compiler-dfbs",
-      llvm::cl::desc("Insert compiler-allocated intermediate DFBs for fused "
-                     "computations. When disabled, emit an error if any "
-                     "operation requires a compiler-allocated DFB."),
+      llvm::cl::desc("Insert compiler-allocated intermediate DFBs when "
+                     "materialization is required. When disabled, emit an "
+                     "error if materialization through a compiler-allocated "
+                     "DFB is required."),
       llvm::cl::init(true)};
   Option<bool> specializeCores{
       *this, "specialize-cores",
@@ -65,7 +66,11 @@ struct TTLToTTKernelPipelineOptions
 void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options);
 
+/// Add DFB synchronization insertion and acquire coalescing passes.
 void buildTTLAutoSyncPipeline(mlir::OpPassManager &pm);
+
+/// Add the ordered PipeNet launch-domain and synchronization verifiers.
+void buildTTLVerifyPipeNetPipeline(mlir::OpPassManager &pm);
 
 void registerTTLPipelines();
 

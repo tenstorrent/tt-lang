@@ -25,13 +25,26 @@ from ttl.kernel_runner import (
     KernelSpec as RunnerKernelSpec,
     run_kernel_on_device,
 )
-from ttl.dataflow_buffer import DataflowBuffer
+from ttl.dataflow_buffer import PhysicalDFBConfig
 
 from .kernels import KernelSpec
 
 # Tile dimensions.
 TILE_HEIGHT = 32
 TILE_WIDTH = 32
+
+
+def _data_format_name(dtype: torch.dtype) -> str:
+    """Return the runtime DFB format; ME2E builders construct bf16/f32 only."""
+
+    data_formats = {
+        torch.bfloat16: "bfloat16",
+        torch.float32: "float32",
+    }
+    try:
+        return data_formats[dtype]
+    except KeyError:
+        raise ValueError(f"Unsupported me2e tensor dtype: {dtype}") from None
 
 
 def run_binary_op(
@@ -127,6 +140,8 @@ def _run_op(
     """
     shape = list(inputs[0].shape)
     dtype = inputs[0].dtype
+    if any(input_tensor.dtype != dtype for input_tensor in inputs[1:]):
+        raise ValueError("ME2E runner requires all input tensors to have one dtype")
 
     # Create device tensors using to_dram (respects tensor dtype).
     device_inputs = []
@@ -183,11 +198,17 @@ def _run_op(
         ),
     ]
 
-    # Build DFB configs: DataflowBuffer objects for each tensor.
-    # Shape is (1, 1) for single tile, block_count is 1 for single buffering.
-    dfb_configs: List[DataflowBuffer] = [
-        DataflowBuffer(tensor=tensor, shape=(1, 1), block_count=1)
-        for tensor in io_tensors
+    data_format = _data_format_name(dtype)
+    dfb_configs = [
+        PhysicalDFBConfig(
+            dfb_index=dfb_index,
+            num_tiles=1,
+            data_format=data_format,
+            block_count=1,
+            page_size=ttnn.tile_size(io_tensor.dtype),
+            tile=(TILE_HEIGHT, TILE_WIDTH),
+        )
+        for dfb_index, io_tensor in enumerate(io_tensors)
     ]
 
     # Execute using shared kernel runner.

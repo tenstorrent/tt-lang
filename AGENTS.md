@@ -20,8 +20,8 @@
 - **Naming**: UpperCamelCase for types, lowerCamelCase for variables/functions
 - **Includes**: Absolute paths from tt-lang root, sorted: main header → local →
   LLVM → system
-- **Comments**: Full sentences, explain why not what, TODO with alias and issue
-  link
+- **Comments**: Full sentences, explain why not what. Code TODOs use an issue
+  number without an issue URL.
 - **Python**: PEP 8 with black formatter (v23.x), Python 3.10+ only
 - **Functions**: Bottom-up order, helpers before callers, static/anonymous
   namespace for .cpp
@@ -53,6 +53,46 @@
   the pass creates; do not include the starting dialect.
 - **Debugging**: use `--debug-only=dialect-conversion` with `ttlang-opt`
 - Use enums instead of integer literals for encoding items in a category.
+
+### Nonlocal Transformation Design
+
+- When legality depends on multiple operations, regions, uses, or resource
+  lifetimes, analyze the complete transformation scope on immutable IR before
+  rewriting. Greedy pattern order must not determine semantic decisions.
+- Record every application decision in a typed plan, including operands, uses,
+  transactions, indexing, dependencies, and diagnostics. Application verifies
+  and executes the plan; it does not rediscover policy. Discard the plan after
+  any IR mutation.
+- Model stateful resources with explicit acquisition, release, ownership, and
+  publication transactions. Resource association, adjacency, use-list order,
+  and integer identity are not lifetime proofs.
+- Express repairs using semantic capabilities and exact consumer operands, not
+  operation-specific exceptions. When planned materialization changes storage,
+  distinguish the future input from current storage that constrains motion.
+- Represent interacting candidates with explicit dependencies and
+  preservation or erasure obligations. Compute mutually dependent requirements
+  as a monotone fixed point over a finite set and canonicalize results by IR
+  order.
+- Reuse upstream dataflow, dead-code, dominance, region-order, purity,
+  speculation, and operation-interface utilities for general compiler facts.
+  Add custom analysis only for dialect-specific semantics. Unreachable and
+  unknown are distinct; unknown results remain conservative.
+- Use typed planned, rejected, and invalid-IR outcomes. Diagnose malformed IR
+  and incomplete conversion before mutation; a rejected optimization leaves
+  valid IR unchanged. Never leave partially rewritten IR after failure.
+- Moving or recomputing operations across regions requires proof of SSA
+  dominance, purity and speculation safety, absence of memory effects,
+  resource availability at the destination, and preserved instrumentation
+  ordering.
+- When a transformation makes a new IR form common, audit downstream passes,
+  verifiers, and every compiler pipeline. Implement the form or emit a precise
+  diagnostic; do not rely on an assertion.
+- Validate nonlocal transformations with systematic input matrices and
+  baseline differential sweeps. Check generated-case counts and verifier
+  filtering, isolate every failure cause, and cover all compiler modes,
+  pipelines, dtypes, control-flow placements, and runtime-visible regressions.
+- Document the algorithm, correctness argument, assumptions, conservative
+  behavior, limitations, and upstream reuse in a design document.
 
 ### Op Creation API
 - Use the static `OpTy::create(builder, loc, ...)` form, **not** the deprecated

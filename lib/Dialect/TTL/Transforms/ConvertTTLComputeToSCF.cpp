@@ -35,13 +35,9 @@ namespace mlir::tt::ttl {
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 namespace {
 
-/// Get the iteration domain for a ComputeOp. The verifier ensures that the
-/// maximum tensor rank equals iterator_types.size(). Use the tensor with the
-/// largest shape for loop bounds (handles broadcasts where output is larger
-/// than input).
-/// Compute the iteration domain from the ComputeOp's TilingInterface.
-/// This correctly handles matmul's 3D iteration space (M, N, K) where the
-/// iteration domain exceeds the operand rank due to reduction dimensions.
+/// Returns the iteration domain defined by ComputeOp's TilingInterface.
+/// The interface includes reduction iterators that exceed operand rank, such
+/// as matmul's M, N, K domain for rank-two operands.
 static SmallVector<Range> getIterationDomain(OpBuilder &b, ComputeOp op) {
   return op.getIterationDomain(b);
 }
@@ -103,7 +99,6 @@ static scf::LoopNest generateAccumulatingLoops(
     ArrayRef<StringAttr> iterTypes, ArrayRef<Value> lowerBounds,
     ArrayRef<Value> upperBounds, ArrayRef<Value> steps) {
 
-  // Separate parallel and reduction dim indices.
   SmallVector<unsigned> parallelDims, reductionDims;
   for (auto [idx, iterType] : llvm::enumerate(iterTypes)) {
     if (iterType.getValue() == "reduction") {
@@ -139,14 +134,27 @@ static scf::LoopNest generateAccumulatingLoops(
   }
   SmallVector<int64_t> domainStrides = computeStrides(domainSizes);
 
-  // Collect store ops and their dst_index from the compute body.
+  /// Preserves each store's selected formal output after accumulating lowering
+  /// separates tile computation from post-reduction publication.
+  struct StoreInfo {
+    TileStoreOp store;
+    int32_t dstIndex;
+    unsigned outputIndex;
+  };
+
+  // Verification guarantees an unambiguous DFB association, so recording the
+  // output now avoids consulting the replaced compute during publication.
   Block &bodyBlock = op.getBody().front();
-  SmallVector<std::pair<TileStoreOp, int32_t>> storeInfos;
+  SmallVector<StoreInfo> storeInfos;
   for (Operation &bodyOp : bodyBlock.without_terminator()) {
     if (auto store = dyn_cast<TileStoreOp>(&bodyOp)) {
       auto dstIdx = getConstantIntValue(store.getDstIndex());
-      storeInfos.emplace_back(store,
-                              dstIdx ? static_cast<int32_t>(*dstIdx) : 0);
+      FailureOr<unsigned> outputIndex =
+          op.getOutputIndexForView(store.getView());
+      assert(succeeded(outputIndex) &&
+             "verified store must map to one formal compute output");
+      storeInfos.push_back(
+          {store, dstIdx ? static_cast<int32_t>(*dstIdx) : 0, *outputIndex});
     }
   }
 
@@ -220,9 +228,8 @@ static scf::LoopNest generateAccumulatingLoops(
         // Use placeholder tile value + explicit dst_index (same as matmul).
         OpBuilder storeBuilder(&sectionBody,
                                Block::iterator(sectionBody.getTerminator()));
-        for (auto &[origStore, dstIdx] : storeInfos) {
-          // Get the output tile type for the placeholder.
-          Type tileType = origStore.getTile().getType();
+        for (StoreInfo &storeInfo : storeInfos) {
+          Type tileType = storeInfo.store.getTile().getType();
           Value placeholder = UnrealizedConversionCastOp::create(
                                   storeBuilder, parLoc, tileType, ValueRange{})
                                   .getResult(0);
@@ -241,17 +248,15 @@ static scf::LoopNest generateAccumulatingLoops(
           }
 
           size_t numInputs = op.getInputs().size();
-          assert(op.getOutputs().size() == 1 &&
-                 "multi-output accumulating computes not yet supported");
-          size_t outputIdx = 0;
-          SmallVector<Value> storeIndices =
-              applyIndexingMap(storeBuilder, parLoc,
-                               indexingMaps[numInputs + outputIdx], fullIVs);
+          SmallVector<Value> storeIndices = applyIndexingMap(
+              storeBuilder, parLoc,
+              indexingMaps[numInputs + storeInfo.outputIndex], fullIVs);
 
-          Value dstIdxVal =
-              arith::ConstantIndexOp::create(storeBuilder, parLoc, dstIdx);
+          Value dstIdxVal = arith::ConstantIndexOp::create(storeBuilder, parLoc,
+                                                           storeInfo.dstIndex);
           TileStoreOp::create(storeBuilder, parLoc, placeholder,
-                              origStore.getView(), storeIndices, dstIdxVal);
+                              storeInfo.store.getView(), storeIndices,
+                              dstIdxVal);
         }
 
         return {};

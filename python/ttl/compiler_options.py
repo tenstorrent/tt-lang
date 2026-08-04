@@ -88,7 +88,11 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         dest="compiler_dfbs",
         action=argparse.BooleanOptionalAction,
-        help="Insert compiler-allocated intermediate DFBs for fused computations (default: enabled).",
+        help=(
+            "Insert compiler-allocated intermediate DFBs when materialization "
+            "is required for DFB-only operands, source lifetimes, or computed "
+            "values stored from multiple blocks (default: enabled)."
+        ),
     )
     p.add_argument(
         "--ttl-specialize-cores",
