@@ -15,7 +15,6 @@
 # nested inside @ttl.operation and dedented on render, so these mechanics add
 # nothing to the rendered text.
 
-import math
 
 import torch
 

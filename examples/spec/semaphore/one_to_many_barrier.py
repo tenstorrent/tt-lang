@@ -22,7 +22,6 @@
 # this example should be promoted to a real, golden-checked test.
 
 import ttl
-import ttnn
 
 # Concrete grid for a standalone run.
 GRID_X, GRID_Y = 2, 2

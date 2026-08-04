@@ -12,12 +12,8 @@
 # Everything outside the markers (imports, scaffolding) exists so the file can
 # stand on its own and is not copied into the specification.
 
-import math
-
-import torch
 
 import ttl
-import ttnn
 
 
 # spec:begin
