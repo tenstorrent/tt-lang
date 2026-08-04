@@ -493,9 +493,13 @@ def _tensor_memory_layout_to_sharding_strategy(
     }[layout]
 
 
-@dataclass
+@dataclass(kw_only=True)
 class CoreGrid:
     """2-D core grid.  Mirrors ttnn.CoreGrid.
+
+    Named arguments only, as ttnn's constructor is: it takes ``x`` first where
+    this takes ``y`` first, so a positional pair would mean one grid here and
+    its transpose on a device.
 
     Attributes:
         y: Number of core rows.
@@ -632,6 +636,21 @@ class CoreRange:
         y_range = self.end.y - self.start.y + 1
         return x_range * y_range
 
+    def grid_size(self) -> CoreCoord:
+        """Extent of this range along each axis, as ttnn reports it."""
+        return CoreCoord(self.end.x - self.start.x + 1, self.end.y - self.start.y + 1)
+
+    def contains(self, other: Union[CoreCoord, "CoreRange"]) -> bool:
+        """Whether a core, or every core of another range, lies in this one."""
+        match other:
+            case CoreCoord():
+                return (
+                    self.start.x <= other.x <= self.end.x
+                    and self.start.y <= other.y <= self.end.y
+                )
+            case CoreRange():
+                return self.contains(other.start) and self.contains(other.end)
+
 
 class CoreRangeSet:
     """Collection of :class:`CoreRange` regions (ttnn API).
@@ -667,6 +686,38 @@ class CoreRangeSet:
         """Total cores across all ranges."""
         return sum(r.num_cores() for r in self._ranges)
 
+    def size(self) -> Count:
+        """Number of ranges, as ttnn reports it (not the number of cores)."""
+        return len(self._ranges)
+
+    def bounding_box(self) -> CoreRange:
+        """Smallest range covering every range in the set.
+
+        tt-lang's own runtime asks a core range set for this when it turns a
+        grid into kernel arguments, so a set the simulator produced has to
+        answer it.
+        """
+        if not self._ranges:
+            raise ValueError("an empty CoreRangeSet has no bounding box")
+        return CoreRange(
+            CoreCoord(
+                min(r.start.x for r in self._ranges),
+                min(r.start.y for r in self._ranges),
+            ),
+            CoreCoord(
+                max(r.end.x for r in self._ranges),
+                max(r.end.y for r in self._ranges),
+            ),
+        )
+
+    def contains(self, core: CoreCoord) -> bool:
+        """Whether any range in the set holds ``core``."""
+        return any(r.contains(core) for r in self._ranges)
+
+    def empty(self) -> bool:
+        """Whether the set holds no ranges."""
+        return not self._ranges
+
     def __repr__(self) -> str:
         return f"CoreRangeSet({self._ranges!r})"
 
@@ -676,6 +727,11 @@ class CoreRangeSet:
                 return self._ranges == other._ranges
             case _:
                 return False
+
+    def __hash__(self) -> int:
+        # ttnn's is hashable, and a memory config holding one is compared and
+        # cached by value.
+        return hash(tuple(self._ranges))
 
 
 def num_cores_to_corerangeset(
@@ -740,14 +796,10 @@ def core_range_set_to_core_grid(core_ranges: CoreRangeSet) -> CoreGrid:
     Uses the axis-aligned bounding box of all ranges.  For sharding helpers
     this matches typical tt-metal examples with one rectangular ``CoreRange``.
     """
-    ranges = core_ranges.ranges()
-    if not ranges:
+    if core_ranges.empty():
         raise ValueError("CoreRangeSet is empty")
-    min_x = min(r.start.x for r in ranges)
-    max_x = max(r.end.x for r in ranges)
-    min_y = min(r.start.y for r in ranges)
-    max_y = max(r.end.y for r in ranges)
-    return CoreGrid(y=max_y - min_y + 1, x=max_x - min_x + 1)
+    extent = core_ranges.bounding_box().grid_size()
+    return CoreGrid(y=extent.y, x=extent.x)
 
 
 def _distribute_cores_across_dims(num_cores: int, k: int) -> Tuple[int, ...]:

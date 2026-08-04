@@ -725,6 +725,48 @@ def test_core_range_set_empty():
     rs = ttnn.CoreRangeSet([])
     assert rs.num_cores() == 0
     assert len(rs.ranges()) == 0
+    assert rs.empty()
+    with pytest.raises(ValueError, match="no bounding box"):
+        rs.bounding_box()
+
+
+def test_core_ranges_answer_the_questions_ttnn_answers():
+    """A set of ranges reports its extent, its members and its size.
+
+    tt-lang's own runtime asks a core range set for its bounding box when it
+    turns a grid into kernel arguments, and both types have to be usable as
+    dictionary keys because a memory config holding one is compared by value.
+    """
+    lower = ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(1, 1))
+    upper = ttnn.CoreRange(ttnn.CoreCoord(3, 2), ttnn.CoreCoord(4, 4))
+    both = ttnn.CoreRangeSet([lower, upper])
+
+    assert both.bounding_box() == ttnn.CoreRange(
+        ttnn.CoreCoord(0, 0), ttnn.CoreCoord(4, 4)
+    )
+    assert both.size() == 2 and both.num_cores() == 4 + 6
+    assert not both.empty()
+
+    assert lower.grid_size() == ttnn.CoreCoord(2, 2)
+    assert lower.contains(ttnn.CoreCoord(1, 0))
+    assert not lower.contains(ttnn.CoreCoord(2, 0))
+    assert lower.contains(ttnn.CoreRange(ttnn.CoreCoord(1, 1), ttnn.CoreCoord(1, 1)))
+
+    assert both.contains(ttnn.CoreCoord(4, 4))
+    assert not both.contains(ttnn.CoreCoord(2, 2))
+
+    assert len({both, ttnn.CoreRangeSet([lower, upper])}) == 1
+
+
+def test_a_core_grid_takes_its_sizes_by_name():
+    """ttnn's CoreGrid is keyword-only, and its order is the other way round.
+
+    A positional pair would read as ``(y, x)`` here and ``(x, y)`` there, so
+    the same call would describe a grid and its transpose.
+    """
+    assert ttnn.CoreGrid(y=2, x=8).num_cores == 16
+    with pytest.raises(TypeError):
+        ttnn.CoreGrid(2, 8)  # type: ignore[call-arg]
 
 
 # ---- split_work_to_cores tests ----
