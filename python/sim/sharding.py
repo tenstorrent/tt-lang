@@ -249,7 +249,13 @@ def count_local_remote_l1_dram(
         )
 
     if mc.shard_spec is None:
-        return (0, 0, math.prod(t.padded_shape))
+        # Answering "all DRAM" here would report a tensor whose config calls
+        # itself sharded as living nowhere in L1, and the caller would take that
+        # for a locality measurement rather than a missing shard spec. Said
+        # plainly instead, the way the ND case above says it.
+        raise ValueError(
+            f"{mc.strategy.name} requires shard_spec to say where its shards live"
+        )
 
     counter = _SHARD_ELEMENT_COUNTERS.get(mc.strategy)
     if counter is None:

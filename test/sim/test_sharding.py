@@ -211,6 +211,28 @@ class TestNdSharding:
         with pytest.raises(ValueError, match="nd_shard_spec"):
             count_local_remote_l1_dram(t, 0)
 
+    @pytest.mark.parametrize(
+        "strategy",
+        [
+            ShardingStrategy.HEIGHT_SHARDED,
+            ShardingStrategy.WIDTH_SHARDED,
+            ShardingStrategy.BLOCK_SHARDED,
+        ],
+    )
+    def test_a_sharded_config_without_a_spec_raises(
+        self, strategy: ShardingStrategy
+    ) -> None:
+        """A config that calls itself sharded and names no shards is not a locality.
+
+        The counts feed the L1 accounting, so returning "all DRAM" for this would
+        report a sharded tensor as absent from L1 and the caller would read that as
+        a measurement. Said out loud instead, as the ND case already does.
+        """
+        mc = MemoryConfig(strategy=strategy)
+        t = ttnn.Tensor(torch.zeros(64, 64), memory_config=mc)
+        with pytest.raises(ValueError, match="requires shard_spec"):
+            count_local_remote_l1_dram(t, 0)
+
     def test_grid2d_equivalent_to_block_sharded(self) -> None:
         """GRID_2D on a 2-D tensor matches BLOCK_SHARDED ownership (element shards)."""
         nd_spec = NdShardSpec(
