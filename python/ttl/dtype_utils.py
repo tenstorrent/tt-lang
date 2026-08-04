@@ -249,8 +249,12 @@ def tile_bytes_from_dtype(dtype, tile=(DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)) ->
             "TT-Lang supports BFP compute tiles only with "
             f"{DEFAULT_TILE_SIZE}x{DEFAULT_TILE_SIZE} dimensions, got {tile}"
         )
+    # tt-metal Tile::get_tile_size stores one exponent byte per 16-element face
+    # row and aligns the complete exponent section to L1.
+    # TODO(#511): Source L1 alignment from shared target metadata.
     elements_per_exponent = 16
     l1_alignment_bytes = 16
+    assert tile_elements % elements_per_exponent == 0
     exponent_count = tile_elements // elements_per_exponent
     exponent_bytes = (
         (exponent_count + l1_alignment_bytes - 1) // l1_alignment_bytes
