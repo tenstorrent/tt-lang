@@ -390,9 +390,9 @@ public:
   /// receiver DFB address geometry.
   /// `foreachLoweringInfo` identifies compiler-generated record control so it
   /// is not interpreted as independent user control.
-  static FailureOr<PipeGraph> build(
-      ModuleOp mod, const PipeTransferIndex &transferIndex,
-      const PipeForeachLoweringInfo &foreachLoweringInfo);
+  static FailureOr<PipeGraph>
+  build(ModuleOp mod, const PipeTransferIndex &transferIndex,
+        const PipeForeachLoweringInfo &foreachLoweringInfo);
 
   /// Check if any pipes were found.
   bool hasPipes() const { return !pipeTransferNodes.empty(); }
