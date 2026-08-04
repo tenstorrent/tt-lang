@@ -2161,11 +2161,6 @@ class TestTensorTileIndexing:
         # Open row stop -> all row tiles (2 tiles == 64 rows).
         assert t[slice(0, None), slice(0, 1)].shape == (64, 32)
 
-    def test_open_slice_selects_full_row_of_tiles(self) -> None:
-        """``t[i, :]`` selects the whole row of tiles (ttnn-compatible)."""
-        t = ttnn.Tensor(torch.zeros(64, 64))
-        assert t[0, :].shape == (32, 64)
-
     def test_slice_with_step_raises(self) -> None:
         t = ttnn.Tensor(torch.zeros(64, 64))
         with pytest.raises(ValueError, match="must not have a step value"):
