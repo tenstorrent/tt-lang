@@ -329,13 +329,19 @@ class MemoryConfig:
 
         MemoryConfig(strategy=ShardingStrategy.HEIGHT_SHARDED, shard_spec=...)
 
-    tt-metal style (three positional args; see tensor sharding tech report)::
+    tt-metal style (see tensor sharding tech report)::
 
         MemoryConfig(
             TensorMemoryLayout.HEIGHT_SHARDED,
             BufferType.L1,
             ShardSpec(...),
         )
+        MemoryConfig(TensorMemoryLayout.INTERLEAVED, BufferType.L1)
+        MemoryConfig(TensorMemoryLayout.INTERLEAVED)
+
+    A layout given where the strategy goes names the same thing and is
+    converted, so :attr:`strategy` is a :class:`ShardingStrategy` however the
+    config was spelled.
     """
 
     __slots__ = (
@@ -378,16 +384,30 @@ class MemoryConfig:
                 )
             return
 
+        if len(args) == 2 and isinstance(args[0], TensorMemoryLayout):
+            # ttnn's own two-argument form, e.g. its L1_MEMORY_CONFIG:
+            # MemoryConfig(TensorMemoryLayout.INTERLEAVED, BufferType.L1).
+            args, buffer_type = args[:1], args[1]
+
         st = strategy if strategy is not None else (args[0] if len(args) == 1 else None)
         if st is None:
             raise TypeError(
                 "MemoryConfig requires strategy=... or (TensorMemoryLayout, BufferType, ShardSpec|NdShardSpec)"
             )
+        layout_tt = tensor_memory_layout
+        if isinstance(st, TensorMemoryLayout):
+            # ttnn's first argument is the memory layout and it has no separate
+            # notion of a strategy, so a config spelled ttnn's way -- as its
+            # documentation spells the interleaved one -- arrives with a layout
+            # where the strategy goes.  They name the same thing; record both,
+            # or every strategy comparison silently fails to match.
+            layout_tt = st
+            st = _tensor_memory_layout_to_sharding_strategy(st)
         self.strategy = st
         self.shard_spec = shard_spec
         self.nd_shard_spec = nd_shard_spec
         self.buffer_type = buffer_type
-        self.tensor_memory_layout = tensor_memory_layout
+        self.tensor_memory_layout = layout_tt
 
     def __eq__(self, other: object) -> bool:
         match other:

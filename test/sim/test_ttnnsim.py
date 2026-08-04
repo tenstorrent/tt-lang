@@ -2215,6 +2215,29 @@ class TestShardingTypes:
         assert ttnn.DRAM_MEMORY_CONFIG.strategy == ShardingStrategy.INTERLEAVED
         assert ttnn.L1_MEMORY_CONFIG.strategy == ShardingStrategy.INTERLEAVED
 
+    def test_a_memory_layout_names_the_strategy_it_stands_for(self) -> None:
+        """A config spelled ttnn's way reports a ShardingStrategy.
+
+        ttnn's first argument is the memory layout, and its documentation
+        spells the interleaved config exactly this way.  Storing the layout
+        where the strategy goes would leave every strategy comparison
+        unmatched, so an interleaved tensor would report itself sharded and be
+        billed as L1.
+        """
+        interleaved = MemoryConfig(TensorMemoryLayout.INTERLEAVED)
+        in_l1 = MemoryConfig(TensorMemoryLayout.INTERLEAVED, ttnn.BufferType.L1)
+
+        assert interleaved.strategy == ShardingStrategy.INTERLEAVED
+        assert interleaved.tensor_memory_layout == TensorMemoryLayout.INTERLEAVED
+        assert interleaved.buffer_type == ttnn.BufferType.DRAM
+        assert in_l1.strategy == ShardingStrategy.INTERLEAVED
+        assert in_l1.buffer_type == ttnn.BufferType.L1
+
+        for mc in (interleaved, in_l1):
+            assert not ttnn.is_sharded(
+                ttnn.from_torch(torch.zeros(32, 32), memory_config=mc)
+            )
+
     def test_tensor_spec_nd_sharded_matches_tech_report_inputs(self) -> None:
         """TensorSpec.nd_sharded(shard_shape, core_ranges) sets ND shard_shape."""
         core_ranges = ttnn.CoreRangeSet(
