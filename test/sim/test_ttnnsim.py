@@ -1130,7 +1130,11 @@ def test_shapes_are_taken_in_any_spelling_and_returned_as_shape():
 
 
 def test_shape_offers_what_ttnn_shape_offers():
-    """The readable surface of a Shape matches ttnn's."""
+    """The readable surface of a Shape matches ttnn's.
+
+    Spelled out as constants, and compared against the installed ttnn by
+    ``test_the_shape_and_tile_surface_matches_the_installed_ttnn``.
+    """
     shape = ttnn.Shape([2, 3, 32])
 
     assert len(shape) == 3
@@ -1188,6 +1192,11 @@ def test_tiles_describe_their_geometry_as_ttnn_does():
     ttnn's Tile is a description of a tile, not an identity: two of them that
     describe the same tile are equal.  Reading one off two tensors, or building
     one directly, all have to agree.
+
+    The numbers here are ttnn's, written out as constants because ttnn need not
+    be installed to run this;
+    ``test_the_shape_and_tile_surface_matches_the_installed_ttnn`` reads them off
+    the real thing where there is one.
     """
     tile = ttnn.zeros((32, 32)).tile
 
@@ -1227,6 +1236,36 @@ def test_tiles_describe_their_geometry_as_ttnn_does():
     # for a missing one and report a float32 tile.
     with pytest.raises(TypeError, match="needs the tile's dtype"):
         tile.get_tile_size(None)  # type: ignore[arg-type]
+
+
+@requires_ttnn
+def test_the_shape_and_tile_surface_matches_the_installed_ttnn():
+    """The constants the shim pins are read off real ttnn where there is one.
+
+    The tests above spell out ttnn's surface -- a rank, a rank conversion, a
+    face shape, a tile size per dtype -- as constants, which is all they can do
+    without ttnn installed.  This is the one that compares them, so drift in the
+    thing being mirrored shows up as a failure here rather than as a shim that
+    quietly stopped matching.
+    """
+    import ttnn as real_ttnn  # type: ignore[reportMissingImports]
+
+    shape = real_ttnn.Shape([2, 3])
+    assert shape.rank == ttnn.Shape([2, 3]).rank == 2
+    assert tuple(shape.to_rank(4)) == tuple(ttnn.Shape([2, 3]).to_rank(4))
+    with pytest.raises(Exception, match="onvert shape rank"):
+        real_ttnn.Shape([2, 3]).to_rank(1)
+
+    tile = real_ttnn.Tile([32, 32])
+    assert tile.tile_shape == ttnn.Tile().tile_shape
+    assert tile.face_shape == ttnn.Tile().face_shape
+    assert tile.num_faces == ttnn.Tile().num_faces
+    assert repr(tile) == repr(ttnn.Tile())
+    for dtype_name in ("bfloat16", "float32", "bfloat8_b"):
+        real_size = tile.get_tile_size(getattr(real_ttnn, dtype_name))
+        assert real_size == ttnn.Tile().get_tile_size(
+            getattr(ttnn, dtype_name)
+        ), f"{dtype_name} tile size drifted"
 
 
 @pytest.mark.parametrize(
