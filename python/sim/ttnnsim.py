@@ -1139,6 +1139,18 @@ def _promote_dtype(dtype: "DType") -> torch.dtype:
     return native
 
 
+def _quotient_dtype(declared: torch.dtype) -> torch.dtype:
+    """The dtype a true division reports, given what its operands declare.
+
+    Dividing integers gives a float, in torch and in ttnn alike, so the quotient's
+    declared dtype cannot be the operands'. Anything already floating divides to
+    itself.
+    """
+    if declared.is_floating_point:
+        return declared
+    return torch.get_default_dtype()
+
+
 def set_disable_float32_promotion(value: bool) -> None:
     """Disable or re-enable the default float32 promotion of floating-point dtypes.
 
@@ -2345,6 +2357,17 @@ class Tensor:
             ).shape
         )
 
+    def _promoted_dtype(self, other: "Tensor") -> torch.dtype:
+        """The dtype two operands' declared dtypes come to, torch's way.
+
+        Reading the left operand's instead makes ``a + b`` and ``b + a`` report
+        different dtypes for the same computation, and the answer is not only
+        cosmetic: it is what a dataflow buffer built from the result bills as L1
+        (``dfb.capacity_bytes``), so the operands' order would move the hardware
+        limit warning.
+        """
+        return torch.promote_types(self._dtype, other._dtype)
+
     def _zeros_like(self) -> "Tensor":
         """Return a zero tensor with the same shape, dtype, and layout."""
         return Tensor(
@@ -2360,7 +2383,7 @@ class Tensor:
         return Tensor(
             torch.zeros(out_shape, dtype=self._tensor.dtype),
             self._layout,
-            dtype=self._dtype,
+            dtype=self._promoted_dtype(other),
             logical_shape=self._broadcast_logical_shape(other),
         )
 
@@ -2379,7 +2402,7 @@ class Tensor:
         return Tensor(
             torch.zeros(out_shape, dtype=self._tensor.dtype),
             self._layout,
-            dtype=self._dtype,
+            dtype=self._promoted_dtype(other),
             logical_shape=self._matmul_logical_shape(other),
         )
 
@@ -2394,7 +2417,7 @@ class Tensor:
                 return Tensor(
                     self._tensor + other._tensor,
                     self._layout,
-                    dtype=self._dtype,
+                    dtype=self._promoted_dtype(other),
                     logical_shape=self._broadcast_logical_shape(other),
                 )
             case float() | int():
@@ -2418,7 +2441,7 @@ class Tensor:
                 return Tensor(
                     self._tensor - other._tensor,
                     self._layout,
-                    dtype=self._dtype,
+                    dtype=self._promoted_dtype(other),
                     logical_shape=self._broadcast_logical_shape(other),
                 )
             case float() | int():
@@ -2442,7 +2465,7 @@ class Tensor:
                 return Tensor(
                     self._tensor * other._tensor,
                     self._layout,
-                    dtype=self._dtype,
+                    dtype=self._promoted_dtype(other),
                     logical_shape=self._broadcast_logical_shape(other),
                 )
             case float() | int():
@@ -2466,7 +2489,7 @@ class Tensor:
                 return Tensor(
                     self._tensor / other._tensor,
                     self._layout,
-                    dtype=self._dtype,
+                    dtype=_quotient_dtype(self._promoted_dtype(other)),
                     logical_shape=self._broadcast_logical_shape(other),
                 )
             case float() | int():
@@ -2475,7 +2498,7 @@ class Tensor:
                 return Tensor(
                     self._tensor / other,
                     self._layout,
-                    dtype=self._dtype,
+                    dtype=_quotient_dtype(self._dtype),
                     logical_shape=self._logical_shape,
                 )
             case _:  # type: ignore[reportUnnecessaryComparison]
@@ -2490,7 +2513,7 @@ class Tensor:
                 return Tensor(
                     self._tensor // other._tensor,
                     self._layout,
-                    dtype=self._dtype,
+                    dtype=self._promoted_dtype(other),
                     logical_shape=self._broadcast_logical_shape(other),
                 )
             case float() | int():
@@ -2514,7 +2537,7 @@ class Tensor:
                 return Tensor(
                     self._tensor % other._tensor,
                     self._layout,
-                    dtype=self._dtype,
+                    dtype=self._promoted_dtype(other),
                     logical_shape=self._broadcast_logical_shape(other),
                 )
             case float() | int():
@@ -2538,7 +2561,7 @@ class Tensor:
                 return Tensor(
                     self._tensor**other._tensor,
                     self._layout,
-                    dtype=self._dtype,
+                    dtype=self._promoted_dtype(other),
                     logical_shape=self._broadcast_logical_shape(other),
                 )
             case float() | int():
@@ -2562,7 +2585,7 @@ class Tensor:
                 return Tensor(
                     self._tensor @ other._tensor,
                     self._layout,
-                    dtype=self._dtype,
+                    dtype=self._promoted_dtype(other),
                     logical_shape=self._matmul_logical_shape(other),
                 )
             case _:  # type: ignore[reportUnnecessaryComparison]
@@ -2646,7 +2669,7 @@ class Tensor:
                 return Tensor(
                     other / self._tensor,
                     self._layout,
-                    dtype=self._dtype,
+                    dtype=_quotient_dtype(self._dtype),
                     logical_shape=self._logical_shape,
                 )
             case _:  # type: ignore[reportUnnecessaryComparison]

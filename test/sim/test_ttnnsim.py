@@ -1403,6 +1403,44 @@ def test_every_arithmetic_operator_keeps_the_shape_dtype_and_layout(
     assert torch.allclose(result.to_torch(), expected, equal_nan=True)
 
 
+def test_mixed_dtypes_report_the_wider_one_whichever_side_it_is_on() -> None:
+    """A result's dtype is the two operands', promoted, not the left one's.
+
+    The declared dtype is what a dataflow buffer built from the result bills as
+    L1, so reading it off the left operand makes the same computation cost twice
+    as much written the other way round -- and the number decides whether the
+    hardware-limit warning fires.
+
+    True division is the one operator whose result cannot be its operands' dtype:
+    dividing integers gives a float, in torch and in ttnn.
+    """
+    narrow = ttnn.rand((32, 32), dtype=ttnn.bfloat16)
+    wide = ttnn.rand((32, 32), dtype=torch.float32)
+
+    assert (narrow + wide).dtype == torch.float32
+    assert (wide + narrow).dtype == torch.float32
+    assert (narrow * wide).dtype == (wide * narrow).dtype == torch.float32
+    # Same dtype on both sides keeps it, which is what makes a bfloat16 buffer
+    # cost half a float32 one.
+    assert (narrow + narrow).dtype == ttnn.bfloat16
+
+    from sim.dfb import DataflowBuffer
+
+    def billed(tensor: Any) -> int:
+        return DataflowBuffer(
+            likeness_tensor=tensor, shape=(1, 1), block_count=2
+        ).capacity_bytes
+
+    assert billed(narrow + wide) == billed(wide + narrow)
+    assert billed(narrow + narrow) < billed(wide + wide)
+
+    whole = ttnn.from_torch(torch.ones(32, 32, dtype=torch.int32))
+    assert (whole / whole).dtype == torch.float32
+    assert (whole / 2).dtype == (2 / whole).dtype == torch.float32
+    # Floor division of integers stays integral, as torch's does.
+    assert (whole // whole).dtype == torch.int32
+
+
 def test_arithmetic_logical_shape_matches_under_dry_run():
     """Dry-run and real paths agree on the logical result shape and dtype.
 
@@ -1414,8 +1452,10 @@ def test_arithmetic_logical_shape_matches_under_dry_run():
     a = ttnn.from_torch(torch.rand(3, 5), layout=ttnn.TILE_LAYOUT)
     y = ttnn.from_torch(torch.rand(5, 7), layout=ttnn.TILE_LAYOUT)
     b = ttnn.rand((32, 32), dtype=ttnn.bfloat16)
+    wide = ttnn.rand((32, 32), dtype=torch.float32)
     real_add = (a + a).shape
     real_mm = (a @ y).shape
+    real_mixed_dtype = (b + wide).dtype
 
     set_dry_run(True)
     try:
@@ -1423,6 +1463,9 @@ def test_arithmetic_logical_shape_matches_under_dry_run():
         assert (a @ y).shape == real_mm == (3, 7)
         assert (a * 2).shape == (3, 5)
         assert (b + b).dtype == ttnn.bfloat16
+        # A dry run promotes the operands' dtypes as the real path does, so the
+        # buffer a body sizes from a described result is the one it will get.
+        assert (b + wide).dtype == real_mixed_dtype == torch.float32
         # The unary shims describe their result the same way, each on its own
         # dry-run branch.
         for shim in (ttnn.relu, ttnn.abs, ttnn.exp):
