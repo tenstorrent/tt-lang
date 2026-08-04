@@ -725,6 +725,37 @@ class TestPerNodeBodyExecution:
         assert sorted(setup_nodes) == [0, 1, 2, 3]
         assert sorted(kernel_nodes) == [0, 2]
 
+    def test_a_unified_statement_with_no_thread_runs_on_all_three(self) -> None:
+        """In a unified body, only setup and pinned statements run once per node.
+
+        Thread assignment pins a statement through the TT-Lang call it makes, so a
+        statement that makes none belongs to no thread and is replicated onto all
+        three kernels -- where a side effect happens three times per node, while
+        the hoisted construction happens once.  Documented in
+        docs/sphinx/simulator.md, and worth pinning because it is the difference
+        between a unified body and the same body written as explicit kernels.
+        """
+        buffers_seen: list[int] = []
+
+        @ttl.operation(grid=(2, 1))
+        def test_operation(a: ttnn.Tensor, b: ttnn.Tensor) -> None:
+            dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+            buffers_seen.append(id(dfb))
+            blk = dfb.reserve()
+            ttl.copy(a[0:1, 0:1], blk).wait()
+            blk.push()
+            out_blk = dfb.wait()
+            ttl.copy(out_blk, b[0:1, 0:1]).wait()
+            out_blk.pop()
+
+        test_operation(make_zeros_tensor(32, 32), make_zeros_tensor(32, 32))
+
+        # Two nodes: the statement that pins no thread runs on each of the three
+        # kernels, and each node's three kernels see the one buffer its lifted
+        # construction built.
+        assert len(buffers_seen) == 6
+        assert len(set(buffers_seen)) == 2
+
 
 class TestFlattenNodeCoord:
     """Test flatten_node_index() function."""
