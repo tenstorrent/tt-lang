@@ -12,8 +12,6 @@
 # Everything outside the markers (imports, scaffolding) exists so the file can
 # stand on its own and is not copied into the specification.
 
-import math
-
 import torch
 
 import ttl
@@ -64,3 +62,11 @@ x = ttnn.rand(ttnn.Shape([32, 32]), layout=ttnn.TILE_LAYOUT)
 # TT-Lang operations mix freely with built-in TT-NN operations.
 y = ttnn.exp(add(ttnn.abs(x), x))
 # spec:end
+
+# Scaffolding: check the result against torch, so the example's own arithmetic is
+# verified and not merely run.  The tolerance is exp()'s: the operation itself is
+# an exact addition of the same values torch adds.
+x_ref = ttnn.to_torch(x)
+assert torch.allclose(
+    ttnn.to_torch(y), torch.exp(torch.abs(x_ref) + x_ref), atol=1e-5
+), "the spec's add example did not compute exp(|x| + x)"

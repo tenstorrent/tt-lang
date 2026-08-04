@@ -75,27 +75,31 @@ _NO_PROMOTION_SCRIPTS: frozenset[str] = frozenset(
 # _SPEC_EXAMPLES_PASSING: run successfully on the simulator (golden- or
 # structurally-checked); they are parametrized into test_example_cli below.
 _SPEC_EXAMPLES_PASSING = [
-    # Wrapped in @ttl.operation + a torch golden outside the spec:begin/end
-    # markers (the marked lines are dedented on render, so the spec is unchanged).
+    # Wrapped in @ttl.operation, with a torch golden asserted outside the
+    # spec:begin/end markers, so what the example computes is checked and not
+    # only run.
     "spec/block/batched_matmul_bias.py",
     "spec/block/elementwise_broadcast_reduce.py",
     "spec/copy/group_transfer.py",
-    "spec/tensor_slice/tensor_slice.py",
+    "spec/operation_function/operation_function.py",
     # Pipe data movement (unicast / multicast / loopback) with goldens.
     "spec/pipe/scatter.py",
     "spec/pipe/scatter_gather.py",
     "spec/pipe/forward_neighbor.py",
     "spec/pipe/gather.py",
-    # Stand-alone: shape introspection, a multi-kernel operation, unified op,
-    # and the debugging/perf snippets.
+    # Shape introspection: these assert the shapes they demonstrate.
     "spec/dataflow_buffer/tiled_tensor_shape.py",
     "spec/dataflow_buffer/row_major_tensor_shape.py",
     "spec/dataflow_buffer/dataflow_buffer.py",
     "spec/operation_function/multi_kernel_operation.py",
-    "spec/operation_function/operation_function.py",
+    # Run for their structure, with nothing to compare against: the slice example
+    # reads into a block it then drops, and the debugging snippets are about what
+    # they print.  Reaching the end without a dataflow or diagnostic error is the
+    # whole check.
+    "spec/tensor_slice/tensor_slice.py",
     "spec/performance_and_debugging/debug_printing.py",
     "spec/performance_and_debugging/signpost.py",
-    # Grid/node introspection: node-dependent setup runs per node.
+    # Grid/node introspection: node-dependent setup runs per node, asserted.
     "spec/grid/grid_size.py",
     "spec/grid/node.py",
 ]
