@@ -240,13 +240,19 @@ torch.manual_seed(0)
 device = ttnn.open_device(device_id=0)
 
 try:
-    # Inputs are chosen so a dominates b, c and d: this keeps
-    # a^2 - b^2 - c^2 - d^2 strictly positive so the z branch never hits a
-    # negative square root.
+    # Inputs are chosen so a dominates b, c and d: a^2 is at least 4 while the
+    # three squares sum to less than 3, which keeps a^2 - b^2 - c^2 - d^2
+    # strictly positive so the z branch never hits a negative square root.
+    #
+    # They are as large as that allows, because each of the three enters the
+    # result through a broadcast this example exists to show: scaled down to a few
+    # percent, each one moves the summed result by less than the comparison's
+    # tolerance, and the goldens below would pass with any single broadcast
+    # dropped from the math.
     a_torch = 2.0 + 0.5 * torch.rand(N, M, dtype=torch.float32)
-    b_torch = 0.3 * torch.rand(N, 1, dtype=torch.float32)
-    c_torch = 0.3 * torch.rand(M, dtype=torch.float32)
-    d_torch = 0.3 * torch.rand((), dtype=torch.float32)
+    b_torch = 0.9 * torch.rand(N, 1, dtype=torch.float32)
+    c_torch = 0.9 * torch.rand(M, dtype=torch.float32)
+    d_torch = 0.9 * torch.rand((), dtype=torch.float32)
 
     a_t = ttnn.from_torch(a_torch, layout=ttnn.TILE_LAYOUT, device=device)
     b_t = ttnn.from_torch(b_torch, layout=ttnn.TILE_LAYOUT, device=device)
@@ -272,11 +278,14 @@ try:
     y_result = ttnn.to_torch(y_t)[:, 0]
     z_result = ttnn.to_torch(z_t)
 
+    # The tolerance covers a different summation order over 32 float32 terms, and
+    # no more: anything looser stops distinguishing the broadcasts above from each
+    # other.
     assert torch.allclose(
-        y_golden, y_result, rtol=1e-2, atol=1e-2
+        y_golden, y_result, rtol=1e-4, atol=1e-4
     ), "elementwise broadcast+reduce y did not match torch reference"
     assert torch.allclose(
-        z_golden, z_result, rtol=1e-2, atol=1e-2
+        z_golden, z_result, rtol=1e-4, atol=1e-4
     ), "elementwise broadcast+reduce z did not match torch reference"
 
 finally:
