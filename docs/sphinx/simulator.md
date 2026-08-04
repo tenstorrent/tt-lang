@@ -89,6 +89,45 @@ collected. Inactive nodes then skip their kernels, as they do on hardware, but
 their setup has already run, so their dataflow buffers exist and count towards
 the reported per-node limits.
 
+## Blocks released without being pushed or popped
+
+A block is handed out by `dfb.reserve()` or `dfb.wait()` and handed back by
+`push()` or `pop()`. A `with` statement does that handing back at the end of the
+scope, as the specification describes. Where a body neither uses a `with` nor
+calls `push()` / `pop()`, the simulator releases the block anyway, in two places:
+
+- the next `reserve()` on the same buffer pushes the block the previous
+  `reserve()` handed out, and the next `wait()` pops the block the previous
+  `wait()` handed out;
+- when a kernel returns, any block it is still holding is pushed or popped.
+
+This keeps a body that forgets one release from deadlocking against itself, and
+some examples -- including the specification's `__add`, which never pops the
+block it copies out of -- rely on it. It is a property of this simulator and not
+of the language, so a body that depends on it is worth writing out: state the
+`push()` / `pop()`, or take the block with a `with`.
+
+Copy waiting is different: an unwaited `ttl.copy()` is completed for the body
+here, and the compiler does the same in its `ttl-insert-copy-wait` pass, so that
+one is not a simulator-only allowance.
+
+## Unified bodies and the transfer handle
+
+A thread-unified body (no explicit kernels) is split by reading the TT-Lang calls
+it makes. The splitter it shares with the compiler recognizes a copy that is
+waited on where it is made, `ttl.copy(...).wait()`, but not yet one whose handle
+is kept and waited on later:
+
+```python
+a_tx = ttl.copy(a[0:1, 0:1], blk)
+a_tx.wait()
+```
+
+Such a body is refused at decoration with `assigned transfer handle 'a_tx' is not
+supported yet`, naming the line. Both forms work inside an explicit
+`@ttl.datamovement` kernel, which is where a body that wants several transfers in
+flight belongs today. Tracked as tt-lang issue #793.
+
 ## Float32 Promotion
 
 By default the simulator promotes all floating-point dtypes narrower than
@@ -130,16 +169,17 @@ bfloat16). Run these with `--no-float32-promotion`:
 **L1 memory budget.** The simulator uses the declared dtype for all
 `DataflowBuffer` capacity accounting so the reported footprint always matches
 what the hardware would allocate, regardless of whether float32 promotion is
-active. If the total buffer capacity for a core exceeds the L1 limit, the
-simulator issues a warning:
+active. The limit is per node, so the node with the largest footprint decides;
+if it is over budget, the simulator issues a warning:
 
 ```
-UserWarning: Total DataflowBuffer capacity per core (N bytes) exceeds the L1 memory limit of M bytes.
+UserWarning: Total DataflowBuffer capacity per node (N bytes on node K) exceeds the L1 memory limit of M bytes.
 Memory is accounted using declared dtypes, so this reflects the on-hardware footprint of the kernel.
 ```
 
-This warning does not abort execution, but it indicates that the kernel would
-not fit in hardware L1.
+The node is named only when the nodes differ, which happens when a `block_count`
+or a buffer shape is derived from `ttl.node()`. This warning does not abort
+execution, but it indicates that the kernel would not fit in hardware L1.
 
 **Dtype-specific behavior.** If a kernel explicitly tests dtype identity,
 overflow behavior, or precision characteristics of a specific narrow type,
