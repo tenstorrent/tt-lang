@@ -13,6 +13,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <functional>
 
@@ -381,7 +382,7 @@ static LogicalResult collectComputeInstrumentation(
                                 placements, failureReason);
 }
 
-static FailureOr<Type> getResultTileType(Operation *source) {
+static FailureOr<ttcore::TileType> getResultTileType(Operation *source) {
   if (source->getNumResults() != 1) {
     return failure();
   }
@@ -389,7 +390,11 @@ static FailureOr<Type> getResultTileType(Operation *source) {
   if (!tensorType) {
     return failure();
   }
-  return getTensorTileType(tensorType);
+  auto tileType = dyn_cast<ttcore::TileType>(tensorType.getElementType());
+  if (!tileType) {
+    return failure();
+  }
+  return tileType;
 }
 
 static ExpFlagsPlan buildExpFlagsPlan(ExpOp exp,
@@ -510,9 +515,10 @@ static LogicalResult buildFusedOperationPlans(ComputeOpCreationPlan &plan,
       operationPlan.operands.push_back({value, rootInputIndex});
       return success();
     };
-    FailureOr<Type> resultTileType = getResultTileType(operation);
+    FailureOr<ttcore::TileType> resultTileType = getResultTileType(operation);
     if (failed(resultTileType)) {
-      failureReason = "fused operation result is not a ranked tensor";
+      failureReason =
+          "fused operation result must be a tensor of ttcore.tile elements";
       return failure();
     }
     operationPlan.resultTileType = *resultTileType;
@@ -1064,6 +1070,41 @@ bool isComputeOpCreationElision(Operation *source) {
          typecast.getInput().getType() == typecast.getResult().getType();
 }
 
+static std::string formatTensorOfTilesDiagnostic(StringRef role, Type type) {
+  std::string message;
+  llvm::raw_string_ostream stream(message);
+  stream << role << " must be a tensor of ttcore.tile elements, got " << type;
+  return stream.str();
+}
+
+static std::optional<PlanningDiagnostic>
+recordComputeTileTypes(ComputeOpCreationPlan &plan) {
+  auto resultTileType =
+      dyn_cast<ttcore::TileType>(plan.resultType.getElementType());
+  if (!resultTileType) {
+    return PlanningDiagnostic{
+        plan.source,
+        formatTensorOfTilesDiagnostic("compute result", plan.resultType)};
+  }
+  plan.resultTileType = resultTileType;
+
+  for (auto [inputIndex, input] : llvm::enumerate(plan.inputs)) {
+    RankedTensorType inputType = getTensorType(input);
+    auto inputTileType =
+        inputType ? dyn_cast<ttcore::TileType>(inputType.getElementType())
+                  : ttcore::TileType{};
+    if (!inputTileType) {
+      std::string role = "compute input " + std::to_string(inputIndex);
+      return PlanningDiagnostic{
+          plan.source,
+          formatTensorOfTilesDiagnostic(role, inputType ? Type(inputType)
+                                                        : input.getType())};
+    }
+    plan.inputTileTypes.push_back(inputTileType);
+  }
+  return std::nullopt;
+}
+
 bool hasStandaloneComputeOpCreationRecipe(Operation *source) {
   if (source->getNumResults() != 1) {
     return false;
@@ -1085,7 +1126,11 @@ bool hasStandaloneComputeOpCreationRecipe(Operation *source) {
     plan.inputs.push_back(source->getOperand(operandIndex));
   }
   std::string failureReason;
-  return succeeded(buildOperationSpecificPlan(plan, failureReason));
+  if (failed(buildOperationSpecificPlan(plan, failureReason))) {
+    return false;
+  }
+  return plan.kind == ComputeOpCreationKind::Elide ||
+         !recordComputeTileTypes(plan);
 }
 
 PlanningResult<OutputPublicationPlan>
@@ -1318,6 +1363,14 @@ buildComputeOpCreationPlan(Operation *source,
         std::move(failureReason));
   }
 
+  if (plan.kind != ComputeOpCreationKind::Elide) {
+    if (std::optional<PlanningDiagnostic> invalidIR =
+            recordComputeTileTypes(plan)) {
+      return PlanningResult<ComputeOpCreationPlan, ComputeOpCreationRejection>::
+          invalidIR(invalidIR->operation, std::move(invalidIR->message));
+    }
+  }
+
   // Identity typecasts preserve position and storage. They neither form a
   // compute nor alter output publication, so requiring a store would make
   // their legality depend on a later mutation. Record the final input expected
@@ -1441,6 +1494,12 @@ buildPassthroughStorePlan(StoreOp store,
     failureReason = "store input is not a ranked tensor";
     return failure();
   }
+  auto tileType = dyn_cast<ttcore::TileType>(tensorType.getElementType());
+  if (!tileType) {
+    failureReason =
+        formatTensorOfTilesDiagnostic("passthrough store input", tensorType);
+    return failure();
+  }
   if (lifetimes.getAvailability(input, store) ==
       DFBValueAvailability::MayBeReleased) {
     failureReason =
@@ -1456,6 +1515,7 @@ buildPassthroughStorePlan(StoreOp store,
   plan.outputView = store.getView();
   plan.outputDFB = reserve.getCb();
   plan.tensorType = tensorType;
+  plan.tileType = tileType;
   AffineMap identity = AffineMap::getMultiDimIdentityMap(tensorType.getRank(),
                                                          store->getContext());
   plan.iteration.inputMaps = {identity};
