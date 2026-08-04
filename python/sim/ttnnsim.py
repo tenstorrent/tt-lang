@@ -213,6 +213,26 @@ class ShardSpec:
             )
         return self._shard_grid
 
+    @property
+    def shape(self) -> List[int]:
+        """Per-shard extent, under the name ttnn reports it.
+
+        ttnn takes this as ``shard_shape=`` and reports it as ``shape``, as a
+        two-element list (its ``std::array<uint32_t, 2>``); both names read the
+        same value here.
+        """
+        return list(self.shard_shape)
+
+    def num_cores(self) -> int:
+        """Cores the shards are laid out over, as ttnn reports it.
+
+        ttnn reads it off the core grid; where the simulator was given shard
+        counts instead, their product is the same number.
+        """
+        if self.grid is not None:
+            return self.grid.num_cores()
+        return math.prod(self.shard_grid)
+
     def with_resolved_shard_grid(self, layout: "TensorMemoryLayout") -> ShardSpec:
         """Return a spec with ``shard_grid`` set from ``grid`` and layout (tt-metal path)."""
         if self._shard_grid is not None:
@@ -281,14 +301,18 @@ class NdShardSpec:
     that only specify ``shard_shape``.
 
 
-    ``num_cores`` applies only to ROUND_ROBIN (modulus for shard assignment).
+    ``round_robin_cores`` applies only to ROUND_ROBIN (modulus for shard
+    assignment).  It is spelled that way rather than ``num_cores`` because ttnn
+    has a ``num_cores()`` *method*, which :meth:`num_cores` is, and the two mean
+    different things: how many cores the shards go round, against how many the
+    spec covers.
     """
 
     shard_shape: Sequence[int]
     core_ranges: Optional["CoreRangeSet"] = None
     shard_grid: Optional[ShardGrid] = None
     distribution: ShardDistributionStrategy = ShardDistributionStrategy.ROUND_ROBIN_1D
-    num_cores: Optional[int] = None
+    round_robin_cores: Optional[int] = None
 
     def __post_init__(self) -> None:
         # Accept list inputs like the tech report (``shard_shape=[...]``) and
@@ -296,6 +320,33 @@ class NdShardSpec:
         object.__setattr__(self, "shard_shape", Shape(self.shard_shape))
         if self.shard_grid is not None:
             object.__setattr__(self, "shard_grid", tuple(self.shard_grid))
+
+    @property
+    def grid(self) -> Optional["CoreRangeSet"]:
+        """The participating cores, under the name ttnn reports them."""
+        return self.core_ranges
+
+    @property
+    def shard_distribution_strategy(self) -> ShardDistributionStrategy:
+        """:attr:`distribution`, under the name ttnn reports it."""
+        return self.distribution
+
+    def num_cores(self) -> int:
+        """Cores this spec covers, as ttnn's ``num_cores()`` reports it.
+
+        ttnn reads it off the core grid; where the simulator was given shard
+        counts instead, their product is the same number.
+        """
+        if self.core_ranges is not None:
+            return self.core_ranges.num_cores()
+        if self.round_robin_cores is not None:
+            return self.round_robin_cores
+        if self.shard_grid is not None:
+            return math.prod(self.shard_grid)
+        raise ValueError(
+            "NdShardSpec has neither core_ranges, round_robin_cores nor "
+            "shard_grid, so it covers no known number of cores"
+        )
 
     def with_resolved_shard_grid(self, tensor_shape: Sequence[int]) -> NdShardSpec:
         """Return a copy with ``shard_grid`` set from ``tensor_shape`` and ``shard_shape``."""

@@ -166,9 +166,13 @@ def _count_nd_round_robin_elements(
 ) -> Tuple[Count, Count, Count]:
     ndim = len(spec.shard_grid)
     num_shard_slots = math.prod(spec.shard_grid)
-    num_cores = spec.num_cores if spec.num_cores is not None else num_shard_slots
+    num_cores = (
+        spec.round_robin_cores
+        if spec.round_robin_cores is not None
+        else num_shard_slots
+    )
     if num_cores < 1:
-        raise ValueError("NdShardSpec.num_cores must be at least 1")
+        raise ValueError("NdShardSpec.round_robin_cores must be at least 1")
 
     shard_strides = [1] * ndim
     for d in range(ndim - 2, -1, -1):

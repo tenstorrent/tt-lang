@@ -399,7 +399,7 @@ class TestNdShardingTechReportExamples:
             shard_grid=(2, 2, 1),
             shard_shape=(2, 32, 96),
             distribution=ShardDistributionStrategy.ROUND_ROBIN_1D,
-            num_cores=3,
+            round_robin_cores=3,
         )
         mc = MemoryConfig(strategy=ShardingStrategy.ND_SHARDED, nd_shard_spec=spec)
         t = ttnn.Tensor(torch.zeros(4, 64, 96), memory_config=mc)
@@ -421,7 +421,7 @@ class TestNdShardingTechReportExamples:
             shard_shape=(2, 64, 96),
             shard_grid=(2, 3, 1),
             distribution=ShardDistributionStrategy.ROUND_ROBIN_1D,
-            num_cores=2,
+            round_robin_cores=2,
         )
         mc = MemoryConfig(strategy=ShardingStrategy.ND_SHARDED, nd_shard_spec=spec)
         t = ttnn.Tensor(torch.zeros(4, 192, 96), memory_config=mc)

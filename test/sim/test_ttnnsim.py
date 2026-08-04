@@ -2206,6 +2206,27 @@ class TestShardingTypes:
         )
         assert spec_col.orientation == ShardOrientation.COL_MAJOR
 
+    def test_shard_specs_answer_to_the_names_ttnn_reports(self) -> None:
+        """The per-shard extent and core count read as ttnn's do.
+
+        ttnn takes the extent as ``shard_shape=`` and reports it as ``shape``,
+        and ``num_cores()`` is a method on both spec types -- where the
+        simulator once had a field of that name meaning something else, so
+        calling it the way device code does raised.
+        """
+        spec = ShardSpec(shard_grid=(4,), shard_shape=(2, 8))
+        assert spec.shape == [2, 8]
+        assert spec.num_cores() == 4
+
+        cores = ttnn.num_cores_to_corerangeset(8, [8, 8])
+        assert ShardSpec(cores, [2, 8], ShardOrientation.ROW_MAJOR).num_cores() == 8
+
+        nd = NdShardSpec(shard_shape=[1, 64, 128], core_ranges=cores)
+        assert nd.num_cores() == 8
+        assert nd.grid is cores
+        assert nd.shard_distribution_strategy == nd.distribution
+        assert NdShardSpec(shard_shape=[64, 128], shard_grid=(2, 3)).num_cores() == 6
+
     def test_core_grid_creation(self) -> None:
         """CoreGrid stores y, x, and exposes num_cores."""
         grid = CoreGrid(y=4, x=8)
