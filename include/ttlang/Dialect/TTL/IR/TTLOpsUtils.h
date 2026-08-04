@@ -116,16 +116,6 @@ inline std::optional<mlir::Type> getTileElementType(mlir::Type type) {
   return std::nullopt;
 }
 
-/// Return the tensor's tile type without discarding physical tile dimensions.
-/// Scalar-element tensors use the target-independent default tile dimensions.
-inline ttcore::TileType getTensorTileType(mlir::RankedTensorType tensorType) {
-  if (auto tileType =
-          mlir::dyn_cast<ttcore::TileType>(tensorType.getElementType())) {
-    return tileType;
-  }
-  return ttcore::TileType::get(tensorType.getElementType());
-}
-
 /// Check tilization consistency between two element types.
 /// - Both non-tile: success (no tilization to compare).
 /// - Exactly one side tiled: error (mixed tile/scalar is invalid).
