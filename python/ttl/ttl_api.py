@@ -48,7 +48,7 @@ def _ensure_ttnn():
 import ttl._mlir_libs._ttlang  # Register tt-lang passes
 from ttl._mlir_libs._ttlang import ttl_ir as _ttl_ir
 from ttl.pykernel._src.utils import _cleanup_source_code
-from ttl.dialects import ttkernel
+from ttl.dialects import ttcore, ttkernel
 from ttl.ir import *
 from ttl.ir import DenseI32ArrayAttr
 from ttl.passes import (
@@ -84,7 +84,7 @@ from .dataflow_buffer import (
     get_cb_count,
 )
 from .pipe import Pipe, PipeNet
-from .constants import SUPPORTED_MEMORY_SPACES
+from .constants import DEFAULT_TILE_SIZE, SUPPORTED_MEMORY_SPACES
 from .diagnostics import (
     TTLangCompileError,
     find_variable_assignment,
@@ -93,7 +93,6 @@ from .diagnostics import (
 )
 from .dtype_utils import (
     is_ttnn_tensor,
-    tile_bytes_from_dtype,
     torch_dtype_to_ttnn_datatype,
 )
 from .kernel_runner import (
@@ -1246,21 +1245,32 @@ _MLIR_TYPE_TO_FORMAT = {
 }
 
 
-def _parse_mlir_element_type(type_str: str) -> str:
-    """Extract the base data format name from an MLIR TypeAttr string.
+def _parse_mlir_dfb_element_type(element_type_attr) -> tuple[str, tuple[int, int]]:
+    """Extract the data format and physical tile dimensions from a TypeAttr.
 
     The TypeAttr prints as e.g. "bf16" or "!ttcore.tile<32x32, bf16>".
-    This function extracts the trailing type mnemonic and maps it to a
-    ttnn-compatible format name.
+    Scalar elements use the default tile dimensions.
     """
-    # For compound types like "!ttcore.tile<32x32, bf16>", extract the
-    # type after the last comma. For bare types like "bf16", use as-is.
+    if not isinstance(element_type_attr, TypeAttr):
+        raise ValueError(
+            "Compiler-allocated DFB element_type metadata must be a TypeAttr, "
+            f"got {element_type_attr}"
+        )
+    element_type = element_type_attr.value
+    tile_type = ttcore.ir.TileType.maybe_downcast(element_type)
+    tile = (
+        tuple(tile_type.shape)
+        if tile_type is not None
+        else (DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)
+    )
+
+    type_str = str(element_type)
     token = type_str.strip()
     if "," in token:
         token = token.rsplit(",", 1)[1].strip().rstrip(">").strip()
     fmt = _MLIR_TYPE_TO_FORMAT.get(token)
     if fmt is not None:
-        return fmt
+        return fmt, tile
     raise ValueError(
         f"Unrecognized MLIR element type '{token}' (from '{type_str}'). "
         f"Known types: {list(_MLIR_TYPE_TO_FORMAT.keys())}"
@@ -1283,7 +1293,7 @@ def _extract_compiler_allocated_dfbs(module):
         dfb_index = int(entry["dfb_index"])
         num_tiles = int(entry["num_tiles"])
         block_count = int(entry["block_count"])
-        data_format = _parse_mlir_element_type(str(entry["element_type"]))
+        data_format, tile = _parse_mlir_dfb_element_type(entry["element_type"])
 
         configs.append(
             CompilerAllocatedDFBConfig(
@@ -1291,6 +1301,7 @@ def _extract_compiler_allocated_dfbs(module):
                 num_tiles=num_tiles,
                 data_format=data_format,
                 block_count=block_count,
+                tile=tile,
             )
         )
     return configs

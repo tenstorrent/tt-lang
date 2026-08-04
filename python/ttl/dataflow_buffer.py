@@ -10,6 +10,7 @@ from typing import Any, Tuple
 from ttl.ir import *
 
 from ._src.ttl_ast import syntax
+from .constants import DEFAULT_TILE_SIZE
 from ttl.dialects import ttl
 
 # Module-level counter for DFB index assignment in creation order
@@ -61,7 +62,7 @@ class DataflowBuffer:
         shape: Tuple[int, ...],
         block_count: int,
         dtype: Any = None,
-        tile: Tuple[int, int] = (32, 32),
+        tile: Tuple[int, int] = (DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE),
     ):
         if len(shape) < 2:
             raise ValueError(f"DFB shape must have at least 2 dimensions, got {shape}")
@@ -143,15 +144,15 @@ class CompilerAllocatedDFBConfig:
     """Configuration for a compiler-allocated dataflow buffer.
 
     Created by the Python runtime after reading the ttl.compiler_allocated_dfbs
-    module attribute produced by the ttl-finalize-dfb-indices pass. Carries
-    the same information as a user-declared DataflowBuffer but without a
-    backing tensor -- the data format comes directly from the MLIR attribute.
+    module attribute produced by the ttl-finalize-dfb-indices pass. Includes
+    the static storage configuration needed without a backing tensor.
     """
 
     dfb_index: int
     num_tiles: int
     data_format: str  # e.g., "bf16", "f32", "f16"
     block_count: int
+    tile: Tuple[int, int] = (DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)
 
 
 def make_dataflow_buffer_like(
@@ -170,7 +171,7 @@ def make_dataflow_buffer_like(
     Returns:
         DataflowBuffer for use in thread function closures
     """
-    tile = (32, 32)
+    tile = (DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)
     if hasattr(tensor, "get_tile"):
         tile = tuple(tensor.get_tile().tile_shape)
     return DataflowBuffer(tensor, shape, block_count, tile=tile)
