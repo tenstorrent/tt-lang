@@ -113,7 +113,14 @@ def _expected_page_size(data_format, tile_hw):
         return tile_elements * 4
     if data_format == "uint8":
         return tile_elements
-    exponent_bytes = ((tile_elements + 15) // 16 + 15) // 16 * 16
+    # Matches tt-metal's face-row exponent layout and L1 alignment.
+    elements_per_exponent = 16
+    l1_alignment_bytes = 16
+    assert tile_elements % elements_per_exponent == 0
+    exponent_count = tile_elements // elements_per_exponent
+    exponent_bytes = (
+        (exponent_count + l1_alignment_bytes - 1) // l1_alignment_bytes
+    ) * l1_alignment_bytes
     if data_format == "bfloat8_b":
         return tile_elements + exponent_bytes
     if data_format == "bfloat4_b":
