@@ -363,7 +363,6 @@ def _schedule_and_run(
     # shared visited set prevents duplicate analysis when helpers are called by
     # more than one kernel.  Kernel code objects are identical across nodes, so
     # a single representative triple covers every node.
-    ctx = get_context()
     _empty = KernelAnalysis(injection_points=(), bare_copy_linenos=frozenset())
     _visited: set[int] = set()
     injection_map: dict[types.CodeType, KernelAnalysis] = {}
@@ -373,7 +372,6 @@ def _schedule_and_run(
         analyses = collect_reachable_analyses(tmpl.__wrapped__, _visited)
         injection_map.update(analyses)
         top = analyses.get(tmpl.__wrapped__.__code__, _empty)
-        ctx.injection_points_cache[tmpl.__wrapped__] = top
         all_violations.extend(top.violations)
 
     if all_violations:
