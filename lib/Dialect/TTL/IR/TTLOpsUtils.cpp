@@ -52,8 +52,10 @@ LogicalResult validateComputeTileType(ttcore::TileType tileType,
 
   constexpr std::array<int64_t, 2> defaultTileShape =
       ttcore::TileType::getDefaultShape();
-  // Keep BFP compute target-independent until sub-tile packing support is
-  // represented per target.
+  // Blackhole BFP8/BFP4 add corrupts 16 output elements at 16x32; 16x16,
+  // 32x16, and 32x32 produce correct results. Keep a conservative
+  // target-independent restriction until packing support is represented per
+  // target.
   if (isBFPDataType(tileType.getDataType()) &&
       (tileType.getHeight() != defaultTileShape[0] ||
        tileType.getWidth() != defaultTileShape[1])) {

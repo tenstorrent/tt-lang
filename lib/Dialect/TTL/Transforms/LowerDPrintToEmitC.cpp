@@ -324,6 +324,14 @@ struct DPrintLowering : OpConversionPattern<DPrintOp> {
         return op.emitError("tile mode requires exactly one operand");
       }
       Value tileVal = op.getArgv()[0];
+      auto tensorType = dyn_cast<RankedTensorType>(tileVal.getType());
+      if (!tensorType) {
+        return op.emitError("tile mode operand must be a RankedTensorType");
+      }
+      auto tileType = dyn_cast<ttcore::TileType>(tensorType.getElementType());
+      if (!tileType) {
+        return op.emitError("tile mode operand must have a tile element type");
+      }
 
       // Trace tile back to its CB.
       Value cb = getAttachedCB(tileVal);
@@ -340,11 +348,16 @@ struct DPrintLowering : OpConversionPattern<DPrintOp> {
           "get_compile_time_arg_val(" + std::to_string(*cbIdx) + ")";
       emitVerbatim(loc, "{", rewriter);
       emitVerbatim(loc, "DPRINT(\"======\\n\");", rewriter);
-      emitVerbatim(loc, "for (uint16_t r = 0; r < 32; ++r) {", rewriter);
+      emitVerbatim(loc,
+                   "for (uint16_t r = 0; r < " +
+                       std::to_string(tileType.getHeight()) + "; ++r) {",
+                   rewriter);
       emitVerbatim(loc,
                    "DPRINT(\"{} : {}\\n\", (uint)r, TSLICE(" + cbArg +
                        ", 0, SliceRange{.h0=(uint8_t)r, .h1=(uint8_t)(r+1), "
-                       ".hs=1, .w0=0, .w1=32, .ws=1}, true, false));",
+                       ".hs=1, .w0=0, .w1=" +
+                       std::to_string(tileType.getWidth()) +
+                       ", .ws=1}, true, false));",
                    rewriter);
       emitVerbatim(loc, "}", rewriter);
       emitVerbatim(loc, "DPRINT(\"++++++\\n\");", rewriter);

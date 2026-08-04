@@ -1241,11 +1241,8 @@ _MLIR_SCALAR_TYPE_TO_FORMAT = {
     "i32": "int32",
     "si32": "int32",
     "ui32": "uint32",
-    "u32": "uint32",
     "ui16": "uint16",
-    "u16": "uint16",
     "ui8": "uint8",
-    "u8": "uint8",
 }
 
 

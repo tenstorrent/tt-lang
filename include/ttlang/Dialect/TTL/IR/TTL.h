@@ -11,6 +11,7 @@
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/Support/LogicalResult.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include <cstdint>
@@ -191,17 +192,13 @@ public:
     assert(op->getNumOperands() > 0 && op->getNumResults() > 0 &&
            "expected elementwise operation with operands and results");
     mlir::Type expectedType = op->getOperand(0).getType();
-    for (mlir::Value operand : op->getOperands()) {
-      if (operand.getType() != expectedType) {
-        return op->emitOpError(
-            "requires all operands and results to have the same type");
-      }
-    }
-    for (mlir::Value result : op->getResults()) {
-      if (result.getType() != expectedType) {
-        return op->emitOpError(
-            "requires all operands and results to have the same type");
-      }
+    auto hasExpectedType = [expectedType](mlir::Value value) {
+      return value.getType() == expectedType;
+    };
+    if (!llvm::all_of(op->getOperands(), hasExpectedType) ||
+        !llvm::all_of(op->getResults(), hasExpectedType)) {
+      return op->emitOpError(
+          "requires all operands and results to have the same type");
     }
     return mlir::success();
   }
