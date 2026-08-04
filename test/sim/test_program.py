@@ -11,6 +11,7 @@ This test verifies how ``@ttl.operation`` bodies are run, including:
 - Multi-node execution
 """
 
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -19,8 +20,10 @@ import torch.testing as tt_testing
 from test_utils import make_ones_tensor, make_zeros_tensor
 
 from sim import TILE_SHAPE, copy, ttl, ttnn
+from sim.blockstate import KernelType
 from sim.dfb import Block
 from sim.decorators import _make_cell, rebind_func_with_ctx  # type: ignore[reportPrivateUsage]
+from sim.program import _order_kernels  # type: ignore[reportPrivateUsage]
 
 
 class TestBasicExecution:
@@ -411,6 +414,75 @@ class TestErrorHandling:
 
         with pytest.raises(RuntimeError, match="Deadlock detected"):
             test_kernel(a)
+
+
+class TestKernelSetShape:
+    """An operation runs one compute and two data-movement kernels, and no other set.
+
+    Three threads is what the hardware node offers, so the count is not a
+    simulator convenience: a body that writes two compute kernels or forgets one
+    has no execution to model. These are the diagnostics a user meets while
+    writing a multi-kernel body, and they name what is wrong with the set rather
+    than failing later inside the scheduler.
+    """
+
+    def test_a_body_with_too_few_kernels_is_refused(self) -> None:
+        """Two kernels leave a thread with nothing to run."""
+
+        @ttl.operation(grid=(1, 1))
+        def op(a: ttnn.Tensor):
+            @ttl.compute()
+            def compute():
+                pass
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+        with pytest.raises(ValueError, match="exactly 3 kernels.*got 2"):
+            op(make_zeros_tensor(32, 32))
+
+    def test_a_body_with_two_compute_kernels_is_refused(self) -> None:
+        """A node has one compute thread, so the second has nowhere to run.
+
+        The count is right here and the roles are not, which is why it is worth
+        its own message: the kernels look like a valid set until they are sorted.
+        """
+
+        @ttl.operation(grid=(1, 1))
+        def op(a: ttnn.Tensor):
+            @ttl.compute()
+            def compute():
+                pass
+
+            @ttl.compute()
+            def also_compute():
+                pass
+
+            @ttl.datamovement()
+            def dm0():
+                pass
+
+        with pytest.raises(ValueError, match="exactly 1 compute kernel, got 2"):
+            op(make_zeros_tensor(32, 32))
+
+    def test_a_kernel_that_is_neither_role_is_not_counted_as_data_movement(
+        self,
+    ) -> None:
+        """The two data-movement kernels are the ones that say they are.
+
+        No decorator produces a third role today, so this is checked against the
+        ordering directly rather than through a body. It is the reason the count is
+        a count and not "the two that are left": something that arrives without a
+        role must not be handed to a data-movement thread, where it would run as
+        one.
+        """
+        compute = SimpleNamespace(kernel_type=KernelType.COMPUTE, __name__="compute")
+        dm = SimpleNamespace(kernel_type=KernelType.DM, __name__="dm0")
+        roleless = SimpleNamespace(kernel_type=None, __name__="stranger")
+
+        with pytest.raises(ValueError, match="exactly 2 datamovement kernels, got 1"):
+            _order_kernels(cast(list, [compute, dm, roleless]))
 
 
 class TestBlockCompletion:

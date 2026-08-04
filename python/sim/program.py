@@ -104,6 +104,11 @@ def _total_nodes(grid: Shape) -> int:
     return total
 
 
+# The roles of the three kernels an operation runs, in the order _order_kernels
+# returns them.
+_KERNEL_ROLES = (KernelType.COMPUTE, KernelType.DM, KernelType.DM)
+
+
 def _order_kernels(kernels: List[BindableTemplate]) -> tuple[BindableTemplate, ...]:
     """Validate and order registered kernels as (compute, dm0, dm1).
 
@@ -414,17 +419,10 @@ def _schedule_and_run(
             # Identity is (node, kind, __name__); the two DM kernels on a node
             # must have distinct __name__s -- the scheduler rejects duplicates
             # with a user-facing error.
-            for tmpl in ordered:
-                kernel_type = getattr(tmpl, "kernel_type", None)
-                match kernel_type:
-                    case KernelType.COMPUTE | KernelType.DM:
-                        pass
-                    case _:
-                        raise RuntimeError(
-                            f"Template {tmpl} has invalid kernel_type '{kernel_type}'. "
-                            f"Expected KernelType enum (COMPUTE or DM)."
-                        )
-
+            # The roles come from the ordering rather than being read off the
+            # template again: _order_kernels admitted these three by role, so
+            # asking a second time can only disagree with itself.
+            for kernel_type, tmpl in zip(_KERNEL_ROLES, ordered):
                 # Bind template to node context.
                 bound_func = tmpl.bind(node_context)
 
