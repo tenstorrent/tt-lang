@@ -51,7 +51,7 @@ try:
 except ImportError:
     TTNN_AVAILABLE = False  # type: ignore[reportConstantRedefinition]
 
-from .constants import TILE_SHAPE
+from .constants import FACE_SHAPE, TILE_SHAPE
 from .trace import TRACE
 from .typedefs import Count, Index, IndexType, Selector, Size, TensorKey
 
@@ -1426,16 +1426,85 @@ def _dtype_element_size(dtype: torch.dtype) -> int:
     return torch.tensor([], dtype=dtype).element_size()
 
 
-class Tile:
-    """Minimal stand-in for ``ttnn.Tile`` exposing ``tile_shape``.
+def _dtype_size_in_bytes(dtype: "DType", n_elements: int) -> int:
+    """Bytes ``n_elements`` of ``dtype`` occupy on hardware.
 
-    The simulator models every tensor with the single fixed ``TILE_SHAPE``
-    (32x32), so this carries no per-tensor state.
+    Elements times their width, except for the block-float dtypes, whose shared
+    exponents make the cost more than a per-element constant.
+    """
+    match dtype:
+        case _BFloat8BDtype():
+            return dtype.size_in_bytes(n_elements)
+        case _:
+            return n_elements * _dtype_element_size(dtype)
+
+
+class Tile:
+    """Tile geometry, mirroring ``ttnn.Tile``.
+
+    Exposes the geometry ttnn's does -- :attr:`tile_shape`, :attr:`face_shape`,
+    :attr:`num_faces`, :meth:`get_tile_size` -- and compares by geometry, as
+    ttnn's ``operator==`` does, so two descriptions of the same tile are equal
+    rather than merely identical.  The shapes come back as two-element lists,
+    which is what a ``std::array<uint32_t, 2>`` reaches Python as.
+
+    The simulator models the one 32x32 tile the DSL uses, so any other geometry
+    is refused rather than silently modelled as 32x32.
     """
 
+    def __init__(
+        self,
+        tile_shape: Sequence[int] = TILE_SHAPE,
+        transpose_tile: bool = False,
+    ) -> None:
+        shape = tuple(int(d) for d in tile_shape)
+        if shape != TILE_SHAPE:
+            raise ValueError(
+                f"the simulator models the {TILE_SHAPE[0]}x{TILE_SHAPE[1]} tile "
+                f"only, got {list(shape)}"
+            )
+        if transpose_tile:
+            raise ValueError("the simulator does not model transposed tiles")
+        self._tile_shape = shape
+
     @property
-    def tile_shape(self) -> Shape:
-        return Shape(TILE_SHAPE)
+    def tile_shape(self) -> List[int]:
+        return list(self._tile_shape)
+
+    @property
+    def face_shape(self) -> List[int]:
+        return list(FACE_SHAPE)
+
+    @property
+    def num_faces(self) -> int:
+        return math.prod(self._tile_shape) // math.prod(FACE_SHAPE)
+
+    def get_tile_size(self, dtype: "DType") -> int:
+        """Bytes one tile of ``dtype`` occupies, as ttnn reports it.
+
+        Uses the declared (hardware) dtype, so a bfloat16 tile is 2048 bytes
+        even where the simulator backs it with float32 for host precision.
+        """
+        return _dtype_size_in_bytes(dtype, math.prod(self._tile_shape))
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Tile):
+            return NotImplemented
+        return (
+            self._tile_shape == other._tile_shape
+            and self.face_shape == other.face_shape
+        )
+
+    def __hash__(self) -> int:
+        return hash((self._tile_shape, FACE_SHAPE))
+
+    def __repr__(self) -> str:
+        return f"Tile with shape: [{self._tile_shape[0]}, {self._tile_shape[1]}]"
+
+
+# The tile every simulated tensor is held in.  Handed out by Tensor.tile, which
+# has no per-tensor geometry to describe.
+_DEFAULT_TILE = Tile()
 
 
 class Tensor:
@@ -1529,10 +1598,11 @@ class Tensor:
     def tile(self) -> Tile:
         """Tile descriptor, mirroring ``ttnn.Tensor.tile``.
 
-        Exposes ``tile_shape`` (the 32x32 ``TILE_SHAPE``); the simulator uses a
-        single fixed tile size for every tensor.
+        Every simulated tensor is held in the same 32x32 tile, so this is the
+        one shared description of it; :class:`Tile` compares by geometry, so
+        nothing can tell that apart from a fresh one.
         """
-        return Tile()
+        return _DEFAULT_TILE
 
     @property
     def dtype(self) -> Any:
@@ -1580,11 +1650,7 @@ class Tensor:
         n_elements * element_size.  For dtypes with shared exponents
         (e.g. bfloat8_b) this includes the exponent overhead.
         """
-        match self._dtype:
-            case _BFloat8BDtype():
-                return self._dtype.size_in_bytes(n_elements)
-            case _:
-                return n_elements * _dtype_element_size(self._dtype)
+        return _dtype_size_in_bytes(self._dtype, n_elements)
 
     def _validate_tile_alignment(self) -> None:
         """Validate that this tensor supports tile-style indexing.

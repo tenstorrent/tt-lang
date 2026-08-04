@@ -949,7 +949,7 @@ def test_from_torch_tile_layout_pads_non_tile_aligned_shapes():
     )
     assert vec.shape == (32,)
     assert vec.padded_shape == (32, 32)
-    assert vec.tile.tile_shape == (32, 32)
+    assert vec.tile.tile_shape == [32, 32]
     assert torch.equal(vec.to_torch()[0, :], torch.arange(32, dtype=torch.float32))
     assert torch.all(vec.to_torch()[1:, :] == 0)
 
@@ -1019,8 +1019,11 @@ def test_shapes_are_taken_in_any_spelling_and_returned_as_shape():
     tensor = ttnn.zeros((3, 5))
     assert isinstance(tensor.shape, ttnn.Shape)
     assert isinstance(tensor.padded_shape, ttnn.Shape)
-    assert isinstance(tensor.tile.tile_shape, ttnn.Shape)
     assert tensor.shape == (3, 5) and tensor.padded_shape == (32, 32)
+
+    # A tile's geometry is not one of these: ttnn reports it as a plain list of
+    # two, which is what a std::array<uint32_t, 2> becomes in Python.
+    assert tensor.tile.tile_shape == [32, 32]
 
     # Note that this class is ttnn's Shape.  ttl.Shape (sim.typedefs.Shape) is
     # the specification's shape type and a separate thing: an annotation for the
@@ -1068,6 +1071,58 @@ def test_shape_refuses_what_a_device_shape_refuses(
     """
     with pytest.raises(TypeError, match=message):
         spelling()
+
+
+def test_tiles_describe_their_geometry_as_ttnn_does():
+    """A tile reports the geometry ttnn reports, and compares by it.
+
+    ttnn's Tile is a description of a tile, not an identity: two of them that
+    describe the same tile are equal.  Reading one off two tensors, or building
+    one directly, all have to agree.
+    """
+    tile = ttnn.zeros((32, 32)).tile
+
+    assert tile.tile_shape == [32, 32]
+    assert tile.face_shape == [16, 16]
+    assert tile.num_faces == 4
+    assert repr(tile) == "Tile with shape: [32, 32]"
+
+    # 1024 elements at the declared dtype's width, even where the simulator
+    # backs a narrow float with float32.  bfloat8_b adds its shared exponents:
+    # one byte per group of 16 elements.
+    assert tile.get_tile_size(ttnn.bfloat16) == 2048
+    assert tile.get_tile_size(torch.float32) == 4096
+    assert tile.get_tile_size(torch.uint8) == 1024
+    assert tile.get_tile_size(ttnn.bfloat8_b) == 1024 + 64
+
+    assert tile == ttnn.Tile() == ttnn.zeros((64, 64)).tile
+    assert tile != object()
+    assert len({tile, ttnn.Tile()}) == 1
+
+    # Handing out the geometry does not hand out the tile's state.
+    shape = tile.tile_shape
+    shape.append(1)
+    assert tile.tile_shape == [32, 32]
+
+
+@pytest.mark.parametrize(
+    "kwargs, message",
+    [
+        ({"tile_shape": (16, 32)}, "models the 32x32 tile only"),
+        ({"tile_shape": (32, 32), "transpose_tile": True}, "transposed tiles"),
+    ],
+)
+def test_tile_refuses_geometry_the_simulator_does_not_model(
+    kwargs: dict[str, Any], message: str
+):
+    """Tiles the simulator cannot model say so.
+
+    ttnn supports several tile geometries and a transposed tile; the DSL uses
+    one 32x32 tile, and everything here assumes it, so asking for another has
+    to fail rather than be quietly treated as 32x32.
+    """
+    with pytest.raises(ValueError, match=message):
+        ttnn.Tile(**kwargs)
 
 
 def test_specs_report_their_shapes_as_ttnn_does():
