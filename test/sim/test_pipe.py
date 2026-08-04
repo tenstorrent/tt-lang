@@ -202,13 +202,16 @@ class TestPipeNetDiscovery:
         """Dedupe keys on the pipes themselves, with nothing to default to.
 
         A defaulted lookup would give every net-less object the same key and
-        collapse unrelated entries into one without complaint.
+        collapse unrelated entries into one without complaint.  The complaint has
+        to name ``pipes``, since an attribute error about any other name means the
+        key is being read off the wrong attribute -- which no real net would
+        answer either.
         """
 
         class NotANet:
             pass
 
-        with pytest.raises(AttributeError):
+        with pytest.raises(AttributeError, match="pipes"):
             _dedupe_pipe_nets([NotANet(), NotANet()])  # type: ignore[list-item]
 
 
