@@ -1542,9 +1542,7 @@ _DEFAULT_TILE = Tile()
 class Tensor:
     """TTNN-like Tensor wrapper built on torch.Tensor.
 
-    Exposes `.shape`, `.dtype`, and `.layout`.  The layout determines how
-    indices are interpreted: TILE_LAYOUT uses tile-space indexing (each index
-    unit = 32 elements); ROW_MAJOR_LAYOUT uses element-space indexing directly.
+    Exposes `.shape`, `.dtype`, and `.layout`.
 
     Two shapes are tracked, as ttnn does: :attr:`shape` is the logical one the
     caller supplied, and :attr:`padded_shape` is the storage it is held in,
@@ -1554,6 +1552,17 @@ class Tensor:
     spellings of ``to_torch`` differ accordingly: :meth:`to_torch` hands back
     the padded store, which is what a kernel addresses, while the module-level
     :func:`ttnn.to_torch` un-pads to :attr:`shape`, as ttnn's does.
+
+    **Indexing is tile-space and diverges from ttnn deliberately.**  ttnn's
+    ``__getitem__`` indexes elements of the logical shape, as torch does, and
+    drops a dimension indexed by an integer.  Here, the layout decides: under
+    TILE_LAYOUT one index unit is one 32x32 tile and no dimension is dropped,
+    which is how the specification addresses tiled blocks and therefore what
+    ``ttl.copy`` needs from its operands; under ROW_MAJOR_LAYOUT indices are
+    elements, as ttnn's are.  So on a 64x64 tiled tensor ``t[0:2, 0:2]`` is all
+    four of its tiles, the whole 64x64, where ttnn would give a 2x2 element
+    view, and ``t[0, :]`` is its first row of tiles, ``(32, 64)``, against
+    ttnn's ``(64,)``.
     """
 
     def __init__(
@@ -1737,7 +1746,8 @@ class Tensor:
         Open ends follow Python slice semantics: a missing start defaults to 0
         and a missing stop defaults to ``tile_count`` (the full extent along the
         dimension). This lets ``t[i, :]`` / ``t[:, j]`` select whole rows/columns
-        of tiles, matching ttnn. Steps remain unsupported.
+        of tiles.  The bounds are tiles, not elements: see :class:`Tensor` on how
+        that diverges from ttnn.  Steps remain unsupported.
 
         Raises:
             ValueError: If ``step`` is set.
@@ -1877,6 +1887,12 @@ class Tensor:
         return tuple(starts)
 
     def __getitem__(self, key: TensorKey) -> "Tensor":
+        """Select a sub-tensor, addressing tiles under TILE_LAYOUT.
+
+        The key is in tile units for a tiled tensor and element units for a
+        row-major one, and never drops a dimension -- neither of which is what
+        ttnn's element indexing does.  See :class:`Tensor`.
+        """
         # Python passes a bare int/slice (not a tuple) for single-element indexing.
         normalized: Tuple[Selector, ...] = key if isinstance(key, tuple) else (key,)
         ek = self._to_element_key(normalized)
@@ -1914,6 +1930,7 @@ class Tensor:
         return result
 
     def __setitem__(self, key: TensorKey, value: "Tensor") -> None:
+        """Write a sub-tensor, addressing it as :meth:`__getitem__` does."""
         normalized: Tuple[Selector, ...] = key if isinstance(key, tuple) else (key,)
         self._tensor[cast(Any, self._to_element_key(normalized))] = value._tensor
 

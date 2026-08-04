@@ -2020,6 +2020,28 @@ class TestTensorTileIndexing:
         with pytest.raises(IndexError, match="dimension 1 slice 0:5"):
             _ = t[0:4, 0:5]
 
+    def test_indexing_is_tile_space_and_keeps_the_rank(self) -> None:
+        """Tile-space addressing, which is a deliberate divergence from ttnn.
+
+        ttnn indexes elements of the logical shape and drops a dimension an
+        integer selects.  A tiled tensor here is addressed in tiles and keeps
+        its rank, because that is how the specification addresses blocks and
+        what ttl.copy needs of its operands.  Pinned so the two conventions
+        cannot quietly converge.
+        """
+        t = ttnn.Tensor(torch.zeros(64, 64))
+
+        # The whole tensor: four tiles, where ttnn would read a 2x2 element view.
+        assert t[0:2, 0:2].shape == (64, 64)
+        # A row of tiles, where ttnn would read one row of elements, (64,).
+        assert t[0, :].shape == (32, 64)
+
+        # Row-major tensors are element-space, as ttnn's are, but still keep
+        # the rank an integer index would drop.
+        row_major = ttnn.Tensor(torch.zeros(64, 64), ttnn.ROW_MAJOR_LAYOUT)
+        assert row_major[0:2, 0:2].shape == (2, 2)
+        assert row_major[0, :].shape == (1, 64)
+
     def test_whole_extent_keys_stay_in_range(self) -> None:
         """The bounds check leaves every in-range spelling alone."""
         t = ttnn.Tensor(torch.zeros(2, 64, 64))
