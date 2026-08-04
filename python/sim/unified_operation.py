@@ -396,7 +396,7 @@ def _reject_aliased_api(fn_def: ast.FunctionDef, symbols: Dict[str, Any]) -> Non
     )
 
 
-def _reject_captured_dfb(fn_def: ast.FunctionDef, symbols: Dict[str, Any]) -> None:
+def _reject_captured_dfb(func: Callable[..., Any]) -> None:
     """Reject a body that reads a dataflow buffer built outside the operation.
 
     The spec draws this line where the compiler does: a dataflow buffer "is
@@ -414,15 +414,27 @@ def _reject_captured_dfb(fn_def: ast.FunctionDef, symbols: Dict[str, Any]) -> No
     pipe-net wording invites it -- so it is worth the same answer the compiler
     gives, at the same time.
 
+    Captured means captured, so this asks what the body actually closes over
+    (``inspect.getclosurevars``, as ``atom.py`` does) rather than intersecting the
+    names it reads with the enclosing scope. A body that builds its own buffer
+    binds that name locally, and a local is not a capture however many
+    module-level objects share its spelling.
+
     Raises:
         ValueError: If the body reads a captured dataflow buffer.
     """
     from .dfb import DataflowBuffer
 
+    try:
+        scopes = inspect.getclosurevars(func)
+    except TypeError:
+        # Not something with a code object to read; nothing is captured.
+        return
     captured = sorted(
         name
-        for name in _rules().loaded_names_in(fn_def)
-        if isinstance(symbols.get(name), DataflowBuffer)
+        for scope in (scopes.nonlocals, scopes.globals)
+        for name, value in scope.items()
+        if isinstance(value, DataflowBuffer)
     )
     if not captured:
         return
@@ -616,7 +628,7 @@ def build_multikernel_function(
     fn_def = _parse_operation_funcdef(func)
     _clear_decorators(fn_def, symbols)
     _reject_aliased_api(fn_def, symbols)
-    _reject_captured_dfb(fn_def, symbols)
+    _reject_captured_dfb(func)
     _reject_unsupported_setup(fn_def)
 
     local_dfbs = _local_dfb_names(fn_def)

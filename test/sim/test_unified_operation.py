@@ -904,6 +904,18 @@ def test_unified_body_with_a_captured_dfb_is_rejected() -> None:
     assert "Cannot perform" not in out, f"reached the dataflow protocol:\n{out}"
 
 
+def test_a_body_that_builds_its_own_buffer_is_not_read_as_capturing_one() -> None:
+    """The guard turns away captures, not names that appear twice in a file.
+
+    A body's own buffer is a local, and a module-level buffer spelled the same way
+    is a different object it never reads. Refusing this program would refuse a
+    normal one -- two operations in a file, each naming its buffer ``dfb`` -- with
+    a message about construction the user did exactly as asked.
+    """
+    code, out = run_script_in_process(FIXTURES_DIR / "unified_shadowed_dfb_name.py")
+    assert code == 0, f"a body with its own buffer was turned away:\n{out}"
+
+
 def _passthrough(fn: Any) -> Any:
     """A user decorator that a sample body can be stacked with."""
     return fn
