@@ -11,6 +11,7 @@ from typing import Any, Optional, Tuple
 from ttl.ir import *
 
 from ._src.ttl_ast import syntax
+from .constants import DEFAULT_TILE_SIZE
 from ttl.dialects import ttl
 
 _DFB_DESCRIPTOR_UINT32_MAX = (1 << 32) - 1
@@ -167,7 +168,7 @@ class DataflowBuffer:
         shape: Tuple[int, ...],
         block_count: int,
         dtype: Any = None,
-        tile: Tuple[int, int] = (32, 32),
+        tile: Tuple[int, int] = (DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE),
         tensor_backing: Any = None,
         byte_offset: int = 0,
         byte_size: Optional[int] = None,
@@ -309,7 +310,7 @@ def make_dataflow_buffer_like(
     Returns:
         DataflowBuffer for use in thread function closures
     """
-    tile = (32, 32)
+    tile = (DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)
     if hasattr(tensor, "get_tile"):
         tile = tuple(tensor.get_tile().tile_shape)
     return DataflowBuffer(tensor, shape, block_count, tile=tile)
