@@ -17,7 +17,6 @@
 # run per node during operation setup.
 
 import ttl
-import ttnn
 
 
 @ttl.operation(grid=(8, 8))
@@ -34,7 +33,11 @@ def grid_size_example() -> None:
     # spec:end
 
     # Grid size is node-independent; on a (8, 8) grid the successive forms yield
-    # 64, then (8, 8), then (8, 8, 1).
+    # 64, then (8, 8), then (8, 8, 1). Each is asserted: the marked lines rebind
+    # x_size and y_size, so the first two forms are read again here rather than
+    # left as a claim about values nothing checks.
+    assert ttl.grid_size(dims=1) == 64
+    assert ttl.grid_size(dims=2) == (8, 8)
     assert (x_size, y_size, z_size) == (8, 8, 1)
 
 

@@ -17,7 +17,6 @@
 # node during operation setup.
 
 import ttl
-import ttnn
 
 
 @ttl.operation(grid=(8, 8))
@@ -33,8 +32,14 @@ def node_example() -> None:
     x, y, z = ttl.node(dims=3)
     # spec:end
 
-    # On a (8, 8) grid the dims=3 form yields the current node's coordinates:
-    # x in [0, 8), y in [0, 8), z == 0.
+    # On a (8, 8) grid each form yields the current node's coordinates at that
+    # rank: a linear index in [0, 64), then a pair in [0, 8) x [0, 8), then the
+    # same pair with z == 0. The marked lines rebind x and y, so the first two
+    # forms are read again here rather than left as a claim about values nothing
+    # checks; the linear index and the pair have to agree about the node.
+    assert 0 <= ttl.node(dims=1) < 64
+    assert ttl.node(dims=1) == x * 8 + y
+    assert ttl.node(dims=2) == (x, y)
     assert 0 <= x < 8 and 0 <= y < 8 and z == 0
 
 
