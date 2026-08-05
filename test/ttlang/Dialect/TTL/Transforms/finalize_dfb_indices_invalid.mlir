@@ -1,8 +1,9 @@
 // Verify diagnostics for unresolved logical identities, incompatible physical
 // assignments, and partial compiler-created lifecycles.
-// RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)'
+// RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false})'
 
-// One physical index requires one exact DFB type.
+// Distinct logical DFBs with incompatible types cannot retain one provisional
+// physical index.
 module {
   func.func @bf16_declaration()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
@@ -15,7 +16,7 @@ module {
   func.func @f32_declaration()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
                   ttl.base_cta_index = 1 : i32, ttl.crta_indices = []} {
-    // expected-error @below {{physical DFB index 0 has inconsistent CircularBufferType values}}
+    // expected-error @below {{provisional physical DFB index 0 aliases conflicting logical DFBs 1 and 0}}
     %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     return
@@ -107,7 +108,7 @@ module {
 // A producer lifecycle requires a reserve before its push.
 func.func @missing_reserve()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
-  // expected-error @below {{'ttl.bind_cb' op compiler-allocated DFB has a partial lifecycle: missing ttl.cb_reserve}}
+  // expected-error @below {{'ttl.bind_cb' op compiler-allocated logical DFB has a partial lifecycle: missing ttl.cb_reserve}}
   %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
   ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
   %wait = ttl.cb_wait %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -120,7 +121,7 @@ func.func @missing_reserve()
 // A producer lifecycle requires a push after its reserve.
 func.func @missing_push()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
-  // expected-error @below {{'ttl.bind_cb' op compiler-allocated DFB has a partial lifecycle: missing ttl.cb_push}}
+  // expected-error @below {{'ttl.bind_cb' op compiler-allocated logical DFB has a partial lifecycle: missing ttl.cb_push}}
   %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
   %reserve = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   %wait = ttl.cb_wait %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -133,7 +134,7 @@ func.func @missing_push()
 // A consumer lifecycle requires a wait before its pop.
 func.func @missing_wait()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
-  // expected-error @below {{'ttl.bind_cb' op compiler-allocated DFB has a partial lifecycle: missing ttl.cb_wait}}
+  // expected-error @below {{'ttl.bind_cb' op compiler-allocated logical DFB has a partial lifecycle: missing ttl.cb_wait}}
   %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
   %reserve = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
@@ -146,7 +147,7 @@ func.func @missing_wait()
 // A consumer lifecycle requires a pop after its wait.
 func.func @missing_pop()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
-  // expected-error @below {{'ttl.bind_cb' op compiler-allocated DFB has a partial lifecycle: missing ttl.cb_pop}}
+  // expected-error @below {{'ttl.bind_cb' op compiler-allocated logical DFB has a partial lifecycle: missing ttl.cb_pop}}
   %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
   %reserve = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 1>

@@ -20,6 +20,8 @@ class TestDefaults:
         assert opts.enable_fpu_binary_ops is True
         assert opts.subblock_sync is False
         assert opts.pipe_computed_addresses is True
+        assert opts.reuse_user_dfbs is True
+        assert opts.dfb_exact_coloring_search_limit == 1_000_000
         assert opts.specialize_cores is False
         assert opts._explicit == frozenset()
 
@@ -63,6 +65,22 @@ class TestFromString:
         opts = CompilerOptions.from_string("--ttl-specialize-cores")
         assert opts.specialize_cores is True
         assert "specialize_cores" in opts._explicit
+
+    def test_disable_user_dfb_reuse(self):
+        opts = CompilerOptions.from_string("--no-ttl-reuse-user-dfbs")
+        assert opts.reuse_user_dfbs is False
+        assert "reuse_user_dfbs" in opts._explicit
+
+    def test_exact_coloring_search_limit(self):
+        opts = CompilerOptions.from_string(
+            "--ttl-dfb-exact-coloring-search-limit 250000"
+        )
+        assert opts.dfb_exact_coloring_search_limit == 250_000
+        assert "dfb_exact_coloring_search_limit" in opts._explicit
+
+    def test_negative_exact_coloring_search_limit_is_invalid(self):
+        with pytest.raises(SystemExit):
+            CompilerOptions.from_string("--ttl-dfb-exact-coloring-search-limit -1")
 
     def test_enable_flags_explicitly(self):
         opts = CompilerOptions.from_string("--ttl-maximize-dst --ttl-fpu-binary-ops")

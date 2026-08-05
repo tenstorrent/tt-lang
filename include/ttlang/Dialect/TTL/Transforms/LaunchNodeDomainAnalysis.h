@@ -143,6 +143,8 @@ struct LaunchNodeDomainState {
       executionCountAnalysesByFunctionAndCoord;
   bool sawError = false;
   bool hasLaunchGrid = false;
+  Operation *errorOperation = nullptr;
+  std::string errorMessage;
 
   /// Return true if the module contains at least one declared PipeNet.
   bool hasPipes() const;
@@ -238,6 +240,10 @@ private:
 
 /// Optional callbacks and analysis behavior requested by a verifier.
 struct LaunchNodeDomainAnalysisOptions {
+  /// Emit malformed PipeNet-scope diagnostics during analysis. Analyses that
+  /// return typed failures disable this and forward the recorded error.
+  bool emitInvalidPipeNetDiagnostics = true;
+
   /// Intersect the active domain with each `ttl.pipenet_scope` role domain when
   /// entering the scope body.
   bool narrowPipeNetScopes = false;

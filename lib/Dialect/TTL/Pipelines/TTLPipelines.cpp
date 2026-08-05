@@ -33,7 +33,13 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   // still distinct and before later transformations rewrite pipe operations.
   buildTTLVerifyPipeNetPipeline(pm);
   pm.addNestedPass<func::FuncOp>(createTTLCoalesceDFBAcquires());
-  pm.addPass(createTTLFinalizeDFBIndices());
+  {
+    TTLFinalizeDFBIndicesOptions finalizeOptions;
+    finalizeOptions.reuseUserDFBs = options.reuseUserDFBs;
+    finalizeOptions.exactColoringSearchStateLimit =
+        options.exactColoringSearchStateLimit;
+    pm.addPass(createTTLFinalizeDFBIndices(finalizeOptions));
+  }
   {
     TTLSetComputeKernelConfigOptions configOpts;
     configOpts.reduceFullFp32 = options.reduceFullFp32;

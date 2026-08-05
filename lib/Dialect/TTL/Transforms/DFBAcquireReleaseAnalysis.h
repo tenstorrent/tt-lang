@@ -133,6 +133,9 @@ bool isDFBAcquireOp(Operation *op);
 /// Returns true for DFB release ops accepted by this analysis.
 bool isDFBReleaseOp(Operation *op);
 
+/// Returns the explicit transaction count or the DFB block size.
+int64_t getDFBLifecycleTileCount(Operation *operation);
+
 /// Returns the DFB operand of a `ttl.cb_reserve` or `ttl.cb_wait`.
 Value getDFBAcquireDFB(Operation *op);
 
@@ -145,12 +148,18 @@ Value getDFBReleaseDFB(Operation *op);
 /// of the DFB block size.
 std::optional<int64_t> getDFBTransactionBlockCount(Operation *op);
 
+/// DFB lifecycle operations collected in one function traversal.
+struct DFBAcquireReleaseOperations {
+  SmallVector<Operation *> reserves;
+  SmallVector<Operation *> waits;
+  SmallVector<Operation *> pushes;
+  SmallVector<Operation *> pops;
+  SmallVector<Operation *> acquisitions;
+  SmallVector<Operation *> releases;
+};
+
 /// Collects DFB lifecycle operations from `func` in walk order.
-void collectDFBAcquireReleaseOps(func::FuncOp func,
-                                 SmallVectorImpl<Operation *> &reserves,
-                                 SmallVectorImpl<Operation *> &waits,
-                                 SmallVectorImpl<Operation *> &pushes,
-                                 SmallVectorImpl<Operation *> &pops);
+DFBAcquireReleaseOperations collectDFBAcquireReleaseOps(func::FuncOp func);
 
 /// Builds the ownership interval for `acquire`.
 ///
