@@ -7,6 +7,7 @@
 #include "IntermediateDFBPlanning.h"
 
 #include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang/Dialect/TTL/Transforms/ComputeTarget.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -135,6 +136,15 @@ struct TTLPrintComputeOpCreationPlansPass
       return;
     }
 
+    std::string targetFailureReason;
+    FailureOr<std::unique_ptr<ComputeTargetEnvironment>> target =
+        ComputeTargetEnvironment::get(kernel, targetFailureReason);
+    if (failed(target)) {
+      kernel.emitOpError(targetFailureReason);
+      signalPassFailure();
+      return;
+    }
+
     PlanningResult<std::unique_ptr<DFBValueLifetimeAnalysis>> plannedLifetimes =
         DFBValueLifetimeAnalysis::create(kernel);
     if (plannedLifetimes.isInvalidIR()) {
@@ -148,7 +158,7 @@ struct TTLPrintComputeOpCreationPlansPass
     std::unique_ptr<DFBValueLifetimeAnalysis> lifetimes =
         std::move(plannedLifetimes).takePlan();
 
-    ComputeOpCreationPlanner creationPlanner(kernel, *lifetimes);
+    ComputeOpCreationPlanner creationPlanner(kernel, *lifetimes, **target);
     PlanningResult<KernelComputeOpCreationPlan> plannedCreations =
         creationPlanner.build();
     if (plannedCreations.isInvalidIR()) {

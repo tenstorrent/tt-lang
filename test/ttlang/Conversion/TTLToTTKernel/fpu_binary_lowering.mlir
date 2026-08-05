@@ -492,3 +492,64 @@ func.func @fpu_mul_mismatched_block_count()
   ttl.cb_push %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   return
 }
+
+// -----
+
+// =============================================================================
+// Test 6: Integer binary operations always use the SFPU strategy
+// =============================================================================
+// Integer operations require both inputs in DST even when FPU binary lowering
+// is enabled. This verifies strategy selection before loop lowering as well as
+// the final integer LLK selection.
+
+// FPU-LABEL: func.func @integer_add
+// FPU:       ttkernel.copy_tile_init
+// FPU:       ttkernel.copy_tile
+// FPU:       ttkernel.copy_tile_init
+// FPU:       ttkernel.copy_tile
+// FPU:       ttkernel.add_int_tile_init
+// FPU-NEXT:  ttkernel.add_int_tile({{.*}}<si32>)
+// FPU-NOT:   ttkernel.add_tiles
+
+// SFPU-LABEL: func.func @integer_add
+// SFPU:       ttkernel.copy_tile_init
+// SFPU:       ttkernel.copy_tile
+// SFPU:       ttkernel.copy_tile_init
+// SFPU:       ttkernel.copy_tile
+// SFPU:       ttkernel.add_int_tile_init
+// SFPU-NEXT:  ttkernel.add_int_tile({{.*}}<si32>)
+// SFPU-NOT:   ttkernel.add_tiles
+
+#map_integer = affine_map<(d0, d1) -> (d0, d1)>
+func.func @integer_add()
+    attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [],
+                ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<16x32, si32>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<16x32, si32>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<16x32, si32>, 2>
+  %lhs_ready = ttl.cb_wait %cb0 : <[1, 1], !ttcore.tile<16x32, si32>, 2> -> tensor<1x1x!ttcore.tile<16x32, si32>>
+  %lhs = ttl.attach_cb %lhs_ready, %cb0 : (tensor<1x1x!ttcore.tile<16x32, si32>>, !ttl.cb<[1, 1], !ttcore.tile<16x32, si32>, 2>) -> tensor<1x1x!ttcore.tile<16x32, si32>>
+  %rhs_ready = ttl.cb_wait %cb2 : <[1, 1], !ttcore.tile<16x32, si32>, 2> -> tensor<1x1x!ttcore.tile<16x32, si32>>
+  %rhs = ttl.attach_cb %rhs_ready, %cb2 : (tensor<1x1x!ttcore.tile<16x32, si32>>, !ttl.cb<[1, 1], !ttcore.tile<16x32, si32>, 2>) -> tensor<1x1x!ttcore.tile<16x32, si32>>
+  %out_view = ttl.cb_reserve %cb1 : <[1, 1], !ttcore.tile<16x32, si32>, 2> -> tensor<1x1x!ttcore.tile<16x32, si32>>
+  %empty = tensor.empty() : tensor<1x1x!ttcore.tile<16x32, si32>>
+  %out = ttl.attach_cb %empty, %cb1 : (tensor<1x1x!ttcore.tile<16x32, si32>>, !ttl.cb<[1, 1], !ttcore.tile<16x32, si32>, 2>) -> tensor<1x1x!ttcore.tile<16x32, si32>>
+  %result = ttl.compute
+      ins(%lhs, %rhs : tensor<1x1x!ttcore.tile<16x32, si32>>,
+                        tensor<1x1x!ttcore.tile<16x32, si32>>)
+      outs(%out : tensor<1x1x!ttcore.tile<16x32, si32>>)
+      {indexing_maps = [#map_integer, #map_integer, #map_integer],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%lhs_tile: !ttcore.tile<16x32, si32>,
+       %rhs_tile: !ttcore.tile<16x32, si32>,
+       %out_tile: !ttcore.tile<16x32, si32>):
+    %row = ttl.iter_index 0 : index
+    %column = ttl.iter_index 1 : index
+    %c0 = arith.constant 0 : index
+    %sum = ttl.tile_add %lhs_tile, %rhs_tile into dst[%c0] : !ttcore.tile<16x32, si32>, !ttcore.tile<16x32, si32> -> !ttcore.tile<16x32, si32>
+    ttl.tile_store %sum, %out_view[%row, %column] from dst[%c0] : !ttcore.tile<16x32, si32>, tensor<1x1x!ttcore.tile<16x32, si32>>
+    ttl.yield
+  } -> tensor<1x1x!ttcore.tile<16x32, si32>>
+  ttl.cb_push %cb1 : <[1, 1], !ttcore.tile<16x32, si32>, 2>
+  return
+}

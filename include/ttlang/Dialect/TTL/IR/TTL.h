@@ -187,28 +187,6 @@ class TTLBinaryElementwiseOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType,
                                       TTLBinaryElementwiseOpTrait> {};
 
-/// Verifies that a type-preserving elementwise operation has one common type.
-template <typename ConcreteType>
-class TTLElementwiseSameTypeOpTrait
-    : public mlir::OpTrait::TraitBase<ConcreteType,
-                                      TTLElementwiseSameTypeOpTrait> {
-public:
-  static mlir::LogicalResult verifyTrait(mlir::Operation *op) {
-    assert(op->getNumOperands() > 0 && op->getNumResults() > 0 &&
-           "expected elementwise operation with operands and results");
-    mlir::Type expectedType = op->getOperand(0).getType();
-    auto hasExpectedType = [expectedType](mlir::Value value) {
-      return value.getType() == expectedType;
-    };
-    if (!llvm::all_of(op->getOperands(), hasExpectedType) ||
-        !llvm::all_of(op->getResults(), hasExpectedType)) {
-      return op->emitOpError(
-          "requires all operands and results to have the same type");
-    }
-    return mlir::success();
-  }
-};
-
 /// Trait for tile-level unary operations (execute in-place on DST).
 template <typename ConcreteType>
 class TTLTileUnaryOpTrait

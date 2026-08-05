@@ -871,7 +871,6 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
            << getResults().size();
   }
 
-  bool containsMatmul = containsOp<TileMatmulBlockOp>();
   for (size_t i = 0; i < numOperands; ++i) {
     Value operand =
         (i < numInputs) ? getInputs()[i] : getOutputs()[i - numInputs];
@@ -890,13 +889,6 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     if (!tileType) {
       return emitOpError("block argument ")
              << i << " must have ttcore.tile type, got " << actualTy;
-    }
-    std::string failureReason;
-    LogicalResult tileTypeResult =
-        containsMatmul ? validateMatmulKernelTileType(tileType, failureReason)
-                       : validateComputeTileType(tileType, failureReason);
-    if (failed(tileTypeResult)) {
-      return emitOpError("block argument ") << i << " " << failureReason;
     }
   }
 
@@ -1757,9 +1749,8 @@ mlir::LogicalResult mlir::tt::ttl::TileMatmulBlockOp::verify() {
   }
 
   std::string failureReason;
-  if (failed(validateMatmulComputeTileTypes(*lhsTileType, *rhsTileType,
-                                            *resultTileType, getTransposeRhs(),
-                                            failureReason))) {
+  if (failed(verifyMatmulTileTypes(*lhsTileType, *rhsTileType, *resultTileType,
+                                   getTransposeRhs(), failureReason))) {
     return emitOpError() << failureReason;
   }
   return success();

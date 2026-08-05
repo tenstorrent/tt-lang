@@ -34,6 +34,8 @@
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
 
+#include <type_traits>
+
 #define DEBUG_TYPE "ttl-tile-ops-to-ttkernel"
 
 namespace mlir::tt::ttl {
@@ -362,6 +364,37 @@ static FailureOr<Value> getSrcDstIndex(Value operand, Location loc,
   return failure();
 }
 
+static bool isIntegerTileType(Type type) {
+  auto tileType = dyn_cast<ttcore::TileType>(type);
+  return tileType && !ttcore::isFloat(tileType.getDataType());
+}
+
+template <typename SourceOp>
+static LogicalResult
+createIntegerBinaryOp(SourceOp op, Value lhsIndex, Value rhsIndex,
+                      Value resultIndex, ConversionPatternRewriter &rewriter) {
+  auto tileType = dyn_cast<ttcore::TileType>(op.getResult().getType());
+  if (!tileType) {
+    return rewriter.notifyMatchFailure(op, "result is not a tile type");
+  }
+  auto dataType =
+      ttcore::DataTypeAttr::get(rewriter.getContext(), tileType.getDataType());
+  if constexpr (std::is_same_v<SourceOp, AddTileOp>) {
+    ttk::AddIntTileOp::create(rewriter, op.getLoc(), lhsIndex, rhsIndex,
+                              resultIndex, dataType);
+  } else if constexpr (std::is_same_v<SourceOp, SubTileOp>) {
+    ttk::SubIntTileOp::create(rewriter, op.getLoc(), lhsIndex, rhsIndex,
+                              resultIndex, dataType);
+  } else if constexpr (std::is_same_v<SourceOp, MulTileOp>) {
+    ttk::MulIntTileOp::create(rewriter, op.getLoc(), lhsIndex, rhsIndex,
+                              resultIndex, dataType);
+  } else {
+    return rewriter.notifyMatchFailure(
+        op, "integer lowering is not implemented for this operation");
+  }
+  return success();
+}
+
 /// Generic pattern for lowering TTL binary tile ops to TTKernel SFPU ops.
 /// Binary SFPU ops: DST[odst] = DST[src0] op DST[src1]
 ///
@@ -388,7 +421,13 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
     }
     Value odst = adaptor.getDstIndex();
 
-    TTKernelComputeOp::create(rewriter, loc, *src0, *src1, odst);
+    if (isIntegerTileType(op.getResult().getType())) {
+      if (failed(createIntegerBinaryOp(op, *src0, *src1, odst, rewriter))) {
+        return failure();
+      }
+    } else {
+      TTKernelComputeOp::create(rewriter, loc, *src0, *src1, odst);
+    }
 
     rewriter.replaceOp(op, adaptor.getLhs());
     return success();
@@ -444,6 +483,9 @@ struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
   LogicalResult
   matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    if (isIntegerTileType(op.getResult().getType())) {
+      return rewriter.notifyMatchFailure(op, "integer operations require SFPU");
+    }
     if (!isFPUEligibleBinaryOp(op)) {
       return rewriter.notifyMatchFailure(op, "not FPU-eligible");
     }

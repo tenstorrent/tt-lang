@@ -33,6 +33,7 @@
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
+#include "ttlang/Dialect/TTL/Transforms/ComputeTarget.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/FunctionExtras.h"
 #include "llvm/ADT/STLExtras.h"
@@ -703,14 +704,16 @@ private:
 class ComputeOpCreationPlanner {
 public:
   ComputeOpCreationPlanner(func::FuncOp kernel,
-                           const DFBValueLifetimeAnalysis &lifetimes)
-      : kernel(kernel), lifetimes(lifetimes) {}
+                           const DFBValueLifetimeAnalysis &lifetimes,
+                           const ComputeTargetEnvironment &target)
+      : kernel(kernel), lifetimes(lifetimes), target(target) {}
 
   PlanningResult<KernelComputeOpCreationPlan> build() const;
 
 private:
   func::FuncOp kernel;
   const DFBValueLifetimeAnalysis &lifetimes;
+  const ComputeTargetEnvironment &target;
 };
 
 } // namespace mlir::tt::ttl

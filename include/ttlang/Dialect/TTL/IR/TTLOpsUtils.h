@@ -28,21 +28,6 @@
 
 namespace mlir::tt::ttl {
 
-/// Validate whether the current compute lowering supports `tileType`.
-///
-/// TileType validation covers storage dimensions. This check is narrower: it
-/// covers dimensions and formats consumed by the compute LLKs. On failure,
-/// `failureReason` describes the unsupported compute configuration.
-LogicalResult validateComputeTileType(ttcore::TileType tileType,
-                                      std::string &failureReason);
-
-/// Validate a tile used by a compute region containing block matmul.
-///
-/// Matmul configures the FPU for the additional 1x32, 2x32, 4x32, and 8x32
-/// dimensions. Other operations fused into the region use that configuration.
-LogicalResult validateMatmulKernelTileType(ttcore::TileType tileType,
-                                           std::string &failureReason);
-
 /// Validate the element data types and physical tile dimensions of a matmul.
 ///
 /// This is the target-independent type relation. For `lhs @ rhs`, the lhs tile
@@ -54,13 +39,6 @@ LogicalResult verifyMatmulTileTypes(ttcore::TileType lhsType,
                                     ttcore::TileType resultType,
                                     bool transposeRhs,
                                     std::string &failureReason);
-
-/// Validate a compatible matmul tile triple against the current compute LLKs.
-LogicalResult validateMatmulComputeTileTypes(ttcore::TileType lhsType,
-                                             ttcore::TileType rhsType,
-                                             ttcore::TileType resultType,
-                                             bool transposeRhs,
-                                             std::string &failureReason);
 
 /// Return the enclosing kernel-thread `func.func` (tagged with
 /// `ttl.kernel_thread`), or null if `op` is not inside one.
@@ -400,9 +378,10 @@ inline int64_t getNocIndex(mlir::Operation *op) {
 /// Return true when an add/sub/mul tile op is eligible to lower to its FPU
 /// form. Eligibility requires all of:
 ///   1. op carries TTLStrategyDependentBinaryOpTrait;
-///   2. the enclosing func.func has ttl.enable_fpu_binary_ops = true
-///      (absent or false ⇒ not eligible);
-///   3. both operands trace to the same CB-backed indexing source — either
+///   2. the result has a floating-point tile type;
+///   3. the enclosing func.func has ttl.enable_fpu_binary_ops = true
+///      (absent or false means not eligible);
+///   4. both operands trace to the same CB-backed indexing source, either
 ///      input block args of one ttl.compute with equal indexing maps
 ///      (pre-ttl-lower-to-loops), or tensor.extract ops with equal index
 ///      lists (post-ttl-lower-to-loops).
@@ -411,6 +390,11 @@ inline int64_t getNocIndex(mlir::Operation *op) {
 /// for the operands is the conversion pattern's responsibility.
 inline bool isFPUEligibleBinaryOp(mlir::Operation *op) {
   if (!op->hasTrait<TTLStrategyDependentBinaryOpTrait>()) {
+    return false;
+  }
+  auto resultType =
+      mlir::dyn_cast<ttcore::TileType>(op->getResult(0).getType());
+  if (!resultType || !ttcore::isFloat(resultType.getDataType())) {
     return false;
   }
   if (!getKernelBoolAttr(op, kEnableFPUBinaryOpsAttrName)) {

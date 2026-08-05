@@ -153,11 +153,11 @@ class TensorBlock:
         Returns:
             Result tensor with the same shape as inputs.
         """
-        return ttl.add(ast_self.type, ast_self, rhs)
+        return ttl.add(ast_self, rhs)
 
     def __sub__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
         """Element-wise subtraction using ttl.sub."""
-        return ttl.sub(ast_self.type, ast_self, rhs)
+        return ttl.sub(ast_self, rhs)
 
     def __mul__(ast_self: TensorBlock, rhs) -> TensorBlock:
         """Multiplication.
@@ -171,7 +171,7 @@ class TensorBlock:
             ctx = ast_self.type.context
             value_attr = FloatAttr.get(F32Type.get(ctx), c)
             return ttl.mul_unary_const(ast_self, value_attr)
-        return ttl.mul(ast_self.type, ast_self, rhs)
+        return ttl.mul(ast_self, rhs)
 
     def __rmul__(ast_self: TensorBlock, lhs) -> TensorBlock:
         """Reflected multiplication for `scalar * self`."""
@@ -184,23 +184,23 @@ class TensorBlock:
 
     def __truediv__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
         """Element-wise division using ttl.div."""
-        return ttl.div(ast_self.type, ast_self, rhs)
+        return ttl.div(ast_self, rhs)
 
     def __gt__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
         """Element-wise greater-than using ttl.gt."""
-        return ttl.gt(ast_self.type, ast_self, rhs)
+        return ttl.gt(ast_self, rhs)
 
     def __lt__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
         """Element-wise less-than using ttl.lt."""
-        return ttl.lt(ast_self.type, ast_self, rhs)
+        return ttl.lt(ast_self, rhs)
 
     def __eq__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:  # type: ignore[override]
         """Element-wise equality using ttl.eq."""
-        return ttl.eq(ast_self.type, ast_self, rhs)
+        return ttl.eq(ast_self, rhs)
 
     def __ne__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:  # type: ignore[override]
         """Element-wise inequality using ttl.ne."""
-        return ttl.ne(ast_self.type, ast_self, rhs)
+        return ttl.ne(ast_self, rhs)
 
     def __matmul__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
         """Matrix multiplication using ttl.matmul.

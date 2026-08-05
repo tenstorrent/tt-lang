@@ -226,6 +226,17 @@ def tile_bytes_from_dtype(dtype, tile=(DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)) ->
     tile_height, tile_width = tile
     if tile_height <= 0 or tile_width <= 0:
         raise ValueError(f"Tile dimensions must be positive, got {tile}")
+    try:
+        is_supported_tile = ttcore.ir.TileType.is_tt_metal_tile_shape(
+            tile_height, tile_width
+        )
+    except (OverflowError, TypeError):
+        is_supported_tile = False
+    if not is_supported_tile:
+        raise ValueError(
+            "Tile dimensions are not constructible by tt-metal: "
+            f"{tile_height}x{tile_width}"
+        )
 
     _ensure_ttnn()
     if ttnn is None:

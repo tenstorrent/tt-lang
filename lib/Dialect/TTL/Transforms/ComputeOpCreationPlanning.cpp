@@ -7,6 +7,7 @@
 #include "DFBValueLifetimeAnalysis.h"
 
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
+#include "ttlang/Dialect/TTL/Transforms/ComputeTarget.h"
 
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
@@ -1078,7 +1079,8 @@ static std::string formatTensorOfTilesDiagnostic(StringRef role, Type type) {
 }
 
 static std::optional<PlanningDiagnostic>
-validateMatmulComputeTypes(MatmulOp matmul) {
+validateMatmulComputeTypes(MatmulOp matmul,
+                           const ComputeTargetEnvironment &target) {
   auto lhsType = cast<RankedTensorType>(matmul.getLhs().getType());
   auto rhsType = cast<RankedTensorType>(matmul.getRhs().getType());
   auto resultType = cast<RankedTensorType>(matmul.getResult().getType());
@@ -1092,7 +1094,7 @@ validateMatmulComputeTypes(MatmulOp matmul) {
   }
 
   std::string failureReason;
-  if (failed(validateMatmulComputeTileTypes(
+  if (failed(target.validateMatmulTileTypes(
           lhsTileType, rhsTileType, resultTileType, matmul.getTransposeRhs(),
           failureReason))) {
     return PlanningDiagnostic{matmul, std::move(failureReason)};
@@ -1102,6 +1104,7 @@ validateMatmulComputeTypes(MatmulOp matmul) {
 
 static std::optional<PlanningDiagnostic>
 validatePlannedMatmuls(const ComputeOpCreationPlan &plan,
+                       const ComputeTargetEnvironment &target,
                        bool &containsMatmul) {
   DenseSet<Operation *> validatedMatmuls;
   auto validateMatmul =
@@ -1110,7 +1113,7 @@ validatePlannedMatmuls(const ComputeOpCreationPlan &plan,
     if (!validatedMatmuls.insert(matmul.getOperation()).second) {
       return std::nullopt;
     }
-    return validateMatmulComputeTypes(matmul);
+    return validateMatmulComputeTypes(matmul, target);
   };
 
   if (auto matmul = dyn_cast<MatmulOp>(plan.source)) {
@@ -1136,17 +1139,17 @@ validatePlannedMatmuls(const ComputeOpCreationPlan &plan,
 }
 
 static std::optional<PlanningDiagnostic>
-recordComputeTileTypes(ComputeOpCreationPlan &plan) {
+recordComputeTileTypes(ComputeOpCreationPlan &plan,
+                       const ComputeTargetEnvironment &target) {
   bool containsMatmul = false;
   if (std::optional<PlanningDiagnostic> diagnostic =
-          validatePlannedMatmuls(plan, containsMatmul)) {
+          validatePlannedMatmuls(plan, target, containsMatmul)) {
     return diagnostic;
   }
   auto validateTileType = [&](ttcore::TileType tileType,
                               std::string &failureReason) {
-    return containsMatmul
-               ? validateMatmulKernelTileType(tileType, failureReason)
-               : validateComputeTileType(tileType, failureReason);
+    return target.validateKernelTileType(containsMatmul, tileType,
+                                         failureReason);
   };
 
   auto resultTileType =
@@ -1161,6 +1164,10 @@ recordComputeTileTypes(ComputeOpCreationPlan &plan) {
   std::string failureReason;
   if (failed(validateTileType(resultTileType, failureReason))) {
     return PlanningDiagnostic{plan.source, "compute result " + failureReason};
+  }
+  if (failed(target.validateOperation(plan.source, containsMatmul,
+                                      failureReason))) {
+    return PlanningDiagnostic{plan.source, std::move(failureReason)};
   }
 
   for (auto [inputIndex, input] : llvm::enumerate(plan.inputs)) {
@@ -1186,6 +1193,10 @@ recordComputeTileTypes(ComputeOpCreationPlan &plan) {
     if (failed(validateTileType(operationPlan.resultTileType, failureReason))) {
       return PlanningDiagnostic{operationPlan.source,
                                 "fused compute result " + failureReason};
+    }
+    if (failed(target.validateOperation(operationPlan.source, containsMatmul,
+                                        failureReason))) {
+      return PlanningDiagnostic{operationPlan.source, std::move(failureReason)};
     }
   }
   return std::nullopt;
@@ -1215,11 +1226,7 @@ bool hasStandaloneComputeOpCreationRecipe(Operation *source) {
   if (failed(buildOperationSpecificPlan(plan, failureReason))) {
     return false;
   }
-  if (plan.kind == ComputeOpCreationKind::Elide) {
-    return true;
-  }
-  std::optional<PlanningDiagnostic> diagnostic = recordComputeTileTypes(plan);
-  return !diagnostic.has_value();
+  return true;
 }
 
 PlanningResult<OutputPublicationPlan>
@@ -1388,6 +1395,7 @@ static PlanningResult<ComputeOpCreationPlan, ComputeOpCreationRejection>
 buildComputeOpCreationPlan(Operation *source,
                            const DFBValueLifetimeAnalysis &lifetimes,
                            const DominanceInfo &dominanceInfo,
+                           const ComputeTargetEnvironment &target,
                            std::string &failureReason) {
   if (source->getNumResults() != 1) {
     return rejectComputeOpCreation(
@@ -1454,7 +1462,7 @@ buildComputeOpCreationPlan(Operation *source,
 
   if (plan.kind != ComputeOpCreationKind::Elide) {
     if (std::optional<PlanningDiagnostic> invalidIR =
-            recordComputeTileTypes(plan)) {
+            recordComputeTileTypes(plan, target)) {
       return PlanningResult<ComputeOpCreationPlan, ComputeOpCreationRejection>::
           invalidIR(invalidIR->operation, std::move(invalidIR->message));
     }
@@ -1557,10 +1565,9 @@ buildComputeOpCreationPlan(Operation *source,
                         ComputeOpCreationRejection>::planned(std::move(plan));
 }
 
-static FailureOr<PassthroughStorePlan>
-buildPassthroughStorePlan(StoreOp store,
-                          const DFBValueLifetimeAnalysis &lifetimes,
-                          std::string &failureReason) {
+static FailureOr<PassthroughStorePlan> buildPassthroughStorePlan(
+    StoreOp store, const DFBValueLifetimeAnalysis &lifetimes,
+    const ComputeTargetEnvironment &target, std::string &failureReason) {
   SmallVector<Value> inputChain = {store.getTensor()};
   while (Operation *definition = inputChain.back().getDefiningOp()) {
     if (!isComputeOpCreationElision(definition)) {
@@ -1589,7 +1596,8 @@ buildPassthroughStorePlan(StoreOp store,
         formatTensorOfTilesDiagnostic("passthrough store input", tensorType);
     return failure();
   }
-  if (failed(validateComputeTileType(tileType, failureReason))) {
+  if (failed(target.validateOperation(store, /*containsMatmul=*/false,
+                                      failureReason))) {
     failureReason = "passthrough store " + failureReason;
     return failure();
   }
@@ -1677,7 +1685,7 @@ ComputeOpCreationPlanner::build() const {
 
     std::string failureReason;
     PlanningResult<ComputeOpCreationPlan, ComputeOpCreationRejection> creation =
-        buildComputeOpCreationPlan(source, lifetimes, dominanceInfo,
+        buildComputeOpCreationPlan(source, lifetimes, dominanceInfo, target,
                                    failureReason);
     if (creation.isInvalidIR()) {
       invalidIR = creation.getInvalidIR();
@@ -1862,7 +1870,7 @@ ComputeOpCreationPlanner::build() const {
   kernel->walk([&](StoreOp store) {
     std::string failureReason;
     FailureOr<PassthroughStorePlan> plan =
-        buildPassthroughStorePlan(store, lifetimes, failureReason);
+        buildPassthroughStorePlan(store, lifetimes, target, failureReason);
     if (succeeded(plan)) {
       kernelPlan.passthroughStores.try_emplace(store, std::move(*plan));
     } else {

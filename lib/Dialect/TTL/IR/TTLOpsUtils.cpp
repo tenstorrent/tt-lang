@@ -8,8 +8,6 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include <array>
-
 namespace mlir::tt::ttl {
 
 FailureOr<int64_t> getDFBId(Value cb) {
@@ -101,89 +99,6 @@ LogicalResult verifyResolvedDFBIdentities(ModuleOp moduleOp,
       getDFBId, "DFB lifecycle", DFBIdentityRequirement::Finalized);
 }
 
-namespace {
-
-bool isBFPDataType(ttcore::DataType dataType) {
-  using ttcore::DataType;
-  switch (dataType) {
-  case DataType::BFP_Float8:
-  case DataType::BFP_BFloat8:
-  case DataType::BFP_Float4:
-  case DataType::BFP_BFloat4:
-  case DataType::BFP_Float2:
-  case DataType::BFP_BFloat2:
-    return true;
-  case DataType::Float32:
-  case DataType::Float16:
-  case DataType::BFloat16:
-  case DataType::UInt32:
-  case DataType::UInt16:
-  case DataType::UInt8:
-  case DataType::Int32:
-  case DataType::Bool:
-    return false;
-  }
-}
-
-bool hasTileShape(ttcore::TileType tileType, int64_t height, int64_t width) {
-  return tileType.getHeight() == height && tileType.getWidth() == width;
-}
-
-LogicalResult validateComputeTileDataType(ttcore::TileType tileType,
-                                          std::string &failureReason) {
-  constexpr std::array<int64_t, 2> defaultTileShape =
-      ttcore::TileType::getDefaultShape();
-  // Blackhole BFP8/BFP4 add corrupts 16 output elements at 16x32; 16x16,
-  // 32x16, and 32x32 produce correct results. Keep a conservative
-  // target-independent restriction until packing support is represented per
-  // target.
-  if (isBFPDataType(tileType.getDataType()) &&
-      (tileType.getHeight() != defaultTileShape[0] ||
-       tileType.getWidth() != defaultTileShape[1])) {
-    llvm::raw_string_ostream diagnostic(failureReason);
-    diagnostic << "TT-Lang supports BFP compute tiles only with "
-               << defaultTileShape[0] << "x" << defaultTileShape[1]
-               << " dimensions, got " << tileType.getHeight() << "x"
-               << tileType.getWidth();
-    return failure();
-  }
-  return success();
-}
-
-} // namespace
-
-LogicalResult validateComputeTileType(ttcore::TileType tileType,
-                                      std::string &failureReason) {
-  failureReason.clear();
-  llvm::raw_string_ostream diagnostic(failureReason);
-  if (!ttcore::TileType::isLLKSupportedShape(tileType.getShape())) {
-    diagnostic << "tile shape " << tileType.getHeight() << "x"
-               << tileType.getWidth()
-               << " is not supported by the current compute LLKs; supported "
-                  "shapes are 16x16, 16x32, 32x16, and 32x32";
-    return failure();
-  }
-
-  return validateComputeTileDataType(tileType, failureReason);
-}
-
-LogicalResult validateMatmulKernelTileType(ttcore::TileType tileType,
-                                           std::string &failureReason) {
-  failureReason.clear();
-  if (!hasTileShape(tileType, 1, 32) && !hasTileShape(tileType, 2, 32) &&
-      !hasTileShape(tileType, 4, 32) && !hasTileShape(tileType, 8, 32) &&
-      !ttcore::TileType::isLLKSupportedShape(tileType.getShape())) {
-    llvm::raw_string_ostream diagnostic(failureReason);
-    diagnostic << "tile shape " << tileType.getHeight() << "x"
-               << tileType.getWidth()
-               << " is not supported by compute kernels containing matmul; "
-                  "supported shapes are 1x32, 2x32, 4x32, 8x32, 16x16, "
-                  "16x32, 32x16, and 32x32";
-    return failure();
-  }
-  return validateComputeTileDataType(tileType, failureReason);
-}
-
 LogicalResult verifyMatmulTileTypes(ttcore::TileType lhsType,
                                     ttcore::TileType rhsType,
                                     ttcore::TileType resultType,
@@ -217,54 +132,6 @@ LogicalResult verifyMatmulTileTypes(ttcore::TileType lhsType,
     diagnostic << "result tile dimensions " << resultType.getHeight() << "x"
                << resultType.getWidth() << " do not match expected "
                << lhsType.getHeight() << "x" << expectedResultWidth;
-    return failure();
-  }
-  return success();
-}
-
-LogicalResult validateMatmulComputeTileTypes(ttcore::TileType lhsType,
-                                             ttcore::TileType rhsType,
-                                             ttcore::TileType resultType,
-                                             bool transposeRhs,
-                                             std::string &failureReason) {
-  if (failed(verifyMatmulTileTypes(lhsType, rhsType, resultType, transposeRhs,
-                                   failureReason))) {
-    return failure();
-  }
-
-  for (auto [role, tileType] : llvm::zip_equal(
-           std::array<llvm::StringLiteral, 3>{"lhs", "rhs", "result"},
-           std::array<ttcore::TileType, 3>{lhsType, rhsType, resultType})) {
-    std::string tileFailureReason;
-    if (failed(validateMatmulKernelTileType(tileType, tileFailureReason))) {
-      failureReason = (role + " " + tileFailureReason).str();
-      return failure();
-    }
-  }
-
-  if (hasTileShape(lhsType, 16, 16)) {
-    failureReason = "matmul lhs tile dimensions 16x16 are not implemented by "
-                    "the current compute LLKs";
-    return failure();
-  }
-  if (!hasTileShape(rhsType, 32, 32) && !hasTileShape(rhsType, 32, 16) &&
-      !hasTileShape(rhsType, 16, 32)) {
-    llvm::raw_string_ostream diagnostic(failureReason);
-    diagnostic << "matmul rhs tile dimensions " << rhsType.getHeight() << "x"
-               << rhsType.getWidth()
-               << " are not implemented by the current compute LLKs; "
-                  "supported rhs dimensions are 16x32, 32x16, and 32x32";
-    return failure();
-  }
-  if (transposeRhs && hasTileShape(rhsType, 32, 16)) {
-    failureReason = "matmul rhs tile dimensions 32x16 do not support "
-                    "transpose_rhs in the current compute LLKs";
-    return failure();
-  }
-  if (transposeRhs && hasTileShape(lhsType, 32, 32) &&
-      hasTileShape(rhsType, 16, 32)) {
-    failureReason = "matmul tile dimensions lhs 32x32 and rhs 16x32 do not "
-                    "support transpose_rhs in the current compute LLKs";
     return failure();
   }
   return success();
