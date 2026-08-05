@@ -13,6 +13,7 @@
 
 #include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Analysis/DataFlowFramework.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/Interfaces/CallInterfaces.h"
@@ -60,22 +61,20 @@ public:
     successors[source].push_back(destination);
   }
 
-  /// Materializes transitive reachability once after all program and protocol
-  /// constraints have been recorded.
+  /// Visits each edge once per source, which avoids cubic closure on sparse
+  /// per-node program-order graphs.
   void computeReachability() {
     unsigned eventCount = successors.size();
     reachable.assign(eventCount, llvm::BitVector(eventCount));
-    for (unsigned eventIndex = 0; eventIndex < eventCount; ++eventIndex) {
-      reachable[eventIndex].set(eventIndex);
-      for (unsigned successor : successors[eventIndex]) {
-        reachable[eventIndex].set(successor);
-      }
-    }
-    for (unsigned intermediate = 0; intermediate < eventCount; ++intermediate) {
-      for (unsigned source = 0; source < eventCount; ++source) {
-        if (reachable[source].test(intermediate)) {
-          reachable[source] |= reachable[intermediate];
+    for (unsigned source = 0; source < eventCount; ++source) {
+      SmallVector<unsigned> pending = {source};
+      while (!pending.empty()) {
+        unsigned event = pending.pop_back_val();
+        if (reachable[source].test(event)) {
+          continue;
         }
+        reachable[source].set(event);
+        pending.append(successors[event].begin(), successors[event].end());
       }
     }
   }
@@ -286,20 +285,14 @@ static LogicalResult verifyCustomFunctionIndexDependency(
   return success();
 }
 
-/// Propagates through every result except a boolean predicate, which cannot be
-/// the physical index consumed by a custom function.
-static bool shouldPropagatePhysicalIndex(Value result) {
-  return !result.getType().isInteger(1);
-}
-
-/// Adds only results that may preserve or compute a physical DFB index.
+/// Integer comparisons derive predicates from an index rather than another
+/// index value. Every other pure result remains conservative.
 static void appendPhysicalIndexResults(Operation *operation,
                                        SmallVectorImpl<Value> &pending) {
-  for (Value result : operation->getResults()) {
-    if (shouldPropagatePhysicalIndex(result)) {
-      pending.push_back(result);
-    }
+  if (isa<arith::CmpIOp>(operation)) {
+    return;
   }
+  pending.append(operation->result_begin(), operation->result_end());
 }
 
 /// Verifies every transitive use of one physical DFB index. Pure SSA operations

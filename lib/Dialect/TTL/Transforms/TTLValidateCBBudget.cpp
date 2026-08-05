@@ -58,7 +58,10 @@ struct TTLValidateCBBudgetPass
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
 
-    uint64_t budgetBytes = getUsableDFBL1Bytes(moduleOp, l1BudgetOverride);
+    std::optional<uint64_t> overrideBytes =
+        l1BudgetOverride == 0 ? std::nullopt
+                              : std::optional<uint64_t>(l1BudgetOverride);
+    uint64_t budgetBytes = getUsableDFBL1Bytes(moduleOp, overrideBytes);
 
     DFBAllocationFootprint footprint;
     llvm::DenseMap<int64_t, BindCBOp> bindForIndex;

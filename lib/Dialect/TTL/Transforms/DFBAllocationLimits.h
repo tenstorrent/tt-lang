@@ -14,6 +14,7 @@
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
+#include <optional>
 
 namespace mlir::tt::ttl {
 
@@ -36,7 +37,9 @@ private:
 };
 
 /// Returns the target's usable per-node L1 bytes or the supported fallback.
-uint64_t getUsableDFBL1Bytes(ModuleOp module, uint64_t overrideBytes = 0);
+uint64_t
+getUsableDFBL1Bytes(ModuleOp module,
+                    std::optional<uint64_t> overrideBytes = std::nullopt);
 
 } // namespace mlir::tt::ttl
 

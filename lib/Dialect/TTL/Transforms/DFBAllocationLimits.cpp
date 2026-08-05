@@ -17,10 +17,9 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-static constexpr uint64_t kFallbackUsableL1Bytes =
-    static_cast<uint64_t>(1432 * 1024);
+constexpr uint64_t kFallbackUsableL1Bytes = static_cast<uint64_t>(1432 * 1024);
 
-static std::optional<uint64_t> tryBudgetFromModule(ModuleOp module) {
+std::optional<uint64_t> tryBudgetFromModule(ModuleOp module) {
   auto systemDesc = module->getAttrOfType<ttcore::SystemDescAttr>(
       ttcore::SystemDescAttr::name);
   if (!systemDesc) {
@@ -96,9 +95,10 @@ DFBAllocationFootprint::getSortedPhysicalIndices() const {
   return physicalIndices;
 }
 
-uint64_t getUsableDFBL1Bytes(ModuleOp module, uint64_t overrideBytes) {
-  if (overrideBytes > 0) {
-    return overrideBytes;
+uint64_t getUsableDFBL1Bytes(ModuleOp module,
+                             std::optional<uint64_t> overrideBytes) {
+  if (overrideBytes) {
+    return *overrideBytes;
   }
   return tryBudgetFromModule(module).value_or(kFallbackUsableL1Bytes);
 }
