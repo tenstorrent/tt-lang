@@ -70,3 +70,24 @@ func.func @tile_max_rhs_missing_dst_idx(%idx: index) -> !ttcore.tile<32x32, f32>
   %max = ttl.tile_max %a_with_idx, %b_tile into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
   func.return %max : !ttcore.tile<32x32, f32>
 }
+
+// -----
+
+// Target validation rejects an integer tile operation without an integer LLK.
+func.func @tile_exp_u32(%input: !ttcore.tile<16x32, u32>) -> !ttcore.tile<16x32, u32> {
+  %c0 = arith.constant 0 : index
+  // expected-error @below {{'ttl.tile_exp' op integer tile type !ttcore.tile<16x32, u32> is not supported by this compute primitive}}
+  %result = ttl.tile_exp %input into dst[%c0]
+      : !ttcore.tile<16x32, u32> -> !ttcore.tile<16x32, u32>
+  func.return %result : !ttcore.tile<16x32, u32>
+}
+
+// -----
+
+// Target selection rejects architectures without implemented LLK capabilities.
+// expected-error @below {{'builtin.module' op Quasar compute LLK capabilities are not implemented by TT-Lang}}
+module attributes {ttl.target_arch = "quasar"} {
+  func.func @unsupported_target() {
+    func.return
+  }
+}

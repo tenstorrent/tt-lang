@@ -4,6 +4,7 @@
 
 #include "ComputeOpCreationPlanning.h"
 #include "DFBValueLifetimeAnalysis.h"
+#include "ttlang/Dialect/TTL/Transforms/ComputeTarget.h"
 
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
@@ -1198,10 +1199,56 @@ static void populateTTLToComputePatternsForMode(
     RewritePatternSet &patterns, TTLToComputeMode mode,
     const KernelComputeOpCreationPlan &kernelPlan);
 
+static LogicalResult
+validateExistingComputeOps(func::FuncOp kernel,
+                           const ComputeTargetEnvironment &target) {
+  bool hasErrors = false;
+  kernel.walk([&](ComputeOp compute) {
+    bool containsMatmul = containsMatmulOperation(compute);
+    for (BlockArgument argument : compute.getBody().front().getArguments()) {
+      auto tileType = dyn_cast<ttcore::TileType>(argument.getType());
+      if (!tileType) {
+        continue;
+      }
+      std::string failureReason;
+      if (failed(target.validateKernelTileType(containsMatmul, tileType,
+                                               failureReason))) {
+        compute.emitOpError() << "block argument " << argument.getArgNumber()
+                              << " " << failureReason;
+        hasErrors = true;
+      }
+    }
+
+    compute.walk([&](Operation *operation) {
+      if (!isTileComputeOp(operation)) {
+        return;
+      }
+      std::string failureReason;
+      if (failed(target.validateOperation(operation, containsMatmul,
+                                          failureReason))) {
+        operation->emitOpError(failureReason);
+        hasErrors = true;
+      }
+    });
+  });
+  return failure(hasErrors);
+}
+
 static LogicalResult runTTLToCompute(func::FuncOp kernel,
                                      TTLToComputeMode mode) {
   if (kernel.isExternal()) {
     return success();
+  }
+
+  std::string targetFailureReason;
+  FailureOr<std::unique_ptr<ComputeTargetEnvironment>> target =
+      ComputeTargetEnvironment::get(kernel, targetFailureReason);
+  if (failed(target)) {
+    kernel.emitOpError(targetFailureReason);
+    return failure();
+  }
+  if (failed(validateExistingComputeOps(kernel, **target))) {
+    return failure();
   }
 
   // Validate bcast ops before running patterns. Emitting errors here (outside
@@ -1227,7 +1274,7 @@ static LogicalResult runTTLToCompute(func::FuncOp kernel,
          "lifetime analysis has no recoverable rejection");
   std::unique_ptr<DFBValueLifetimeAnalysis> lifetimes =
       std::move(plannedLifetimes).takePlan();
-  ComputeOpCreationPlanner creationPlanner(kernel, *lifetimes);
+  ComputeOpCreationPlanner creationPlanner(kernel, *lifetimes, **target);
   PlanningResult<KernelComputeOpCreationPlan> plannedKernel =
       creationPlanner.build();
   if (plannedKernel.isInvalidIR()) {

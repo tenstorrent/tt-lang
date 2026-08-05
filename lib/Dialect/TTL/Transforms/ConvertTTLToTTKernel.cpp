@@ -36,6 +36,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
+#include "ttlang/Dialect/TTL/Transforms/ComputeTarget.h"
 #include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
 #include "llvm/ADT/BitVector.h"
@@ -2013,6 +2014,32 @@ static void expandDstSections(ModuleOp mod) {
 // TTLConvertTTLToTTKernelPass
 //===----------------------------------------------------------------------===//
 
+static LogicalResult
+validateTileOperationsForTarget(ModuleOp module,
+                                const ComputeTargetEnvironment &target) {
+  bool hasErrors = false;
+  module.walk([&](func::FuncOp function) {
+    function.walk([&](Operation *operation) {
+      if (!isTileComputeOp(operation)) {
+        return;
+      }
+      bool containsMatmul = isa<TileMatmulBlockOp>(operation);
+      if (auto compute = operation->getParentOfType<ComputeOp>()) {
+        containsMatmul = containsMatmulOperation(compute);
+      } else if (auto dstSection = operation->getParentOfType<DstSectionOp>()) {
+        containsMatmul = containsMatmulOperation(dstSection);
+      }
+      std::string failureReason;
+      if (failed(target.validateOperation(operation, containsMatmul,
+                                          failureReason))) {
+        operation->emitOpError(failureReason);
+        hasErrors = true;
+      }
+    });
+  });
+  return failure(hasErrors);
+}
+
 struct TTLConvertTTLToTTKernelPass
     : impl::TTLConvertTTLToTTKernelBase<TTLConvertTTLToTTKernelPass> {
   using TTLConvertTTLToTTKernelBase::TTLConvertTTLToTTKernelBase;
@@ -2021,6 +2048,19 @@ struct TTLConvertTTLToTTKernelPass
     MLIRContext &ctx = getContext();
     ModuleOp mod = getOperation();
     TTLToTTKernelTypeConverter typeConverter;
+
+    std::string targetFailureReason;
+    FailureOr<std::unique_ptr<ComputeTargetEnvironment>> target =
+        ComputeTargetEnvironment::get(mod, targetFailureReason);
+    if (failed(target)) {
+      mod.emitOpError(targetFailureReason);
+      signalPassFailure();
+      return;
+    }
+    if (failed(validateTileOperationsForTarget(mod, **target))) {
+      signalPassFailure();
+      return;
+    }
 
     // Phase 0: Expand DstSectionOp into four TTL sync ops. This inlines the
     // DstSectionOp body and inserts acquire/commit/wait/release around it,

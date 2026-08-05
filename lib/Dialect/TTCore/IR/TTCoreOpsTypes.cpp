@@ -1857,11 +1857,6 @@ bool TileType::isTTMetalTileShape(ArrayRef<int64_t> shape) {
   return llvm::is_contained(validHeights, shape[0]);
 }
 
-bool TileType::isLLKSupportedShape(ArrayRef<int64_t> shape) {
-  return shape.size() == 2 && (shape[0] == 16 || shape[0] == 32) &&
-         (shape[1] == 16 || shape[1] == 32);
-}
-
 TileType TileType::get(Type elementType, ArrayRef<int64_t> shape) {
   return get(elementType.getContext(), shape,
              elementTypeToDataType(elementType));
