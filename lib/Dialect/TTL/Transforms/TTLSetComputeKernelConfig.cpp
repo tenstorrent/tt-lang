@@ -27,7 +27,7 @@ struct TTLSetComputeKernelConfigPass
 
   void runOnOperation() override {
     func::FuncOp function = getOperation();
-    FailureOr<KernelTargetEnvironment> target =
+    FailureOr<std::unique_ptr<KernelTargetEnvironment>> target =
         KernelTargetEnvironment::get(function);
     FailureOr<KernelConfigPolicy> policy = KernelConfigPolicy::get(
         function, fp32DestAccEn, dstFullSyncEn, reduceFullFp32, matmulFullFp32,
@@ -45,7 +45,7 @@ struct TTLSetComputeKernelConfigPass
     }
 
     FailureOr<KernelConfigPlan> plan =
-        resolveKernelConfig(function, *target, *policy, *requirements);
+        resolveKernelConfig(function, **target, *policy, *requirements);
     if (failed(plan)) {
       signalPassFailure();
       return;

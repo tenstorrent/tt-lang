@@ -110,7 +110,6 @@ from .ttl_utils import get_thread_type_string
 _TTCORE_ARCH_BY_DEVICE_NAME = {
     "blackhole": ttcore.Arch.Blackhole,
     "wormhole_b0": ttcore.Arch.WormholeB0,
-    "quasar": ttcore.Arch.Quasar,
 }
 
 # Thread registry for automatic collection of @compute and @datamovement threads
@@ -489,20 +488,32 @@ def _detect_device_arch(device) -> Optional[str]:
 
 
 def _device_target_arch(args) -> Optional[str]:
-    """Return the first detected tensor device architecture, or None."""
+    """Return the common tensor device architecture, or None for host inputs."""
+    target_arch = None
     for arg in args:
-        if not is_ttnn_tensor(arg) or not hasattr(arg, "device"):
+        if not is_ttnn_tensor(arg):
             continue
-        device = arg.device()
+        try:
+            device = arg.device()
+        except Exception as error:
+            raise ValueError(
+                "Unsupported or undetectable TT device architecture"
+            ) from error
         if device is None:
             continue
         arch = _detect_device_arch(device)
         if arch is None:
-            continue
+            raise ValueError("Unsupported or undetectable TT device architecture")
         if arch not in _TTCORE_ARCH_BY_DEVICE_NAME:
             raise ValueError(f"Unsupported TT device architecture: {arch}")
-        return arch
-    return None
+        if target_arch is None:
+            target_arch = arch
+        elif target_arch != arch:
+            raise ValueError(
+                "Tensor arguments use different TT device architectures: "
+                f"{target_arch} and {arch}"
+            )
+    return target_arch
 
 
 def _resolve_grid(grid, args, kwargs):
@@ -770,7 +781,10 @@ def _get_kernel_bool_attr(module, kernel_name: str, attr_name: str) -> bool:
     operation = _lookup_kernel_func_op(module, kernel_name)
     attr = operation.attributes.get(attr_name, None)
     if attr is None:
-        return False
+        raise ValueError(
+            f"Required compiler-generated attribute '{attr_name}' is missing "
+            f"from compute kernel '{kernel_name}'"
+        )
     attr_text = str(attr).strip()
     if attr_text == "true":
         return True
@@ -783,14 +797,14 @@ def _get_kernel_bool_attr(module, kernel_name: str, attr_name: str) -> bool:
 
 
 def _get_kernel_i32_array_attr(module, kernel_name: str, attr_name: str):
-    """Read a `DenseI32ArrayAttr` func.func attribute as a list of ints.
-
-    Returns an empty list when the attribute is missing.
-    """
+    """Read a required `DenseI32ArrayAttr` kernel attribute."""
     operation = _lookup_kernel_func_op(module, kernel_name)
     attr = operation.attributes.get(attr_name, None)
     if attr is None:
-        return []
+        raise ValueError(
+            f"Required compiler-generated attribute '{attr_name}' is missing "
+            f"from compute kernel '{kernel_name}'"
+        )
     if not isinstance(attr, DenseI32ArrayAttr):
         raise ValueError(
             f"Expected DenseI32ArrayAttr for '{attr_name}' on kernel "
@@ -1009,7 +1023,8 @@ def _compile_ttnn_kernel(
                 module, name, "ttl.unpack_to_dest_fp32"
             ),
         }
-        for name, _ in kernel_info
+        for name, thread_type in kernel_info
+        if thread_type == "compute"
     }
 
     # Build thread-to-kernel mapping for profiling

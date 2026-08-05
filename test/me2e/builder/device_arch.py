@@ -27,8 +27,6 @@ def get_mock_arch_from_device(device) -> str:
     if device is None:
         return "wormhole_b0"
 
-    # Try to detect architecture from device.
-    # Common attributes to check (may vary by ttnn version):
     arch_attrs = [
         "arch",
         "architecture",
@@ -39,22 +37,24 @@ def get_mock_arch_from_device(device) -> str:
     ]
 
     for attr in arch_attrs:
-        if hasattr(device, attr):
+        try:
             arch_value = getattr(device, attr)
-            # Try calling if it's a method/function.
-            if callable(arch_value):
-                try:
-                    arch_value = arch_value()
-                except Exception:
-                    continue
-            # Convert to string for comparison (handles enums, strings, etc.)
-            arch_str = str(arch_value)
-            arch_lower = arch_str.lower()
-            if "wormhole" in arch_lower:
-                return "wormhole_b0"
-            if "blackhole" in arch_lower:
-                return "blackhole"
-            if "quasar" in arch_lower:
-                return "quasar"
+        except Exception:
+            continue
+        if callable(arch_value):
+            try:
+                arch_value = arch_value()
+            except Exception:
+                continue
+        arch = str(arch_value).lower().rsplit(".", maxsplit=1)[-1]
+        if arch == "wormhole_b0":
+            return arch
+        if arch == "blackhole":
+            return arch
+        if arch == "quasar":
+            raise ValueError(
+                "Quasar compute kernels require unsupported Gen2 runtime APIs"
+            )
+        raise ValueError(f"Unsupported TT device architecture: {arch}")
 
     raise ValueError("Unsupported or undetectable TT device architecture")

@@ -389,7 +389,7 @@ static FailureOr<Type> getResultTileType(Operation *source) {
   if (!tensorType) {
     return failure();
   }
-  return ttcore::TileType::get(tensorType.getElementType());
+  return getTensorTileType(tensorType);
 }
 
 static ExpFlagsPlan buildExpFlagsPlan(ExpOp exp,

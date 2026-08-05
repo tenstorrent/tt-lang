@@ -21,6 +21,7 @@ M_TILES = 2
 N_BRANCH_NODES = 2
 N_MULTI_OUTPUT_USES = 3
 DTYPES = [torch.bfloat16, torch.float32]
+COMPUTE_TILE_SIZES = [(16, 16), (16, 32), (32, 16), (32, 32)]
 
 
 @ttl.operation(grid=(1, 1))
@@ -635,16 +636,22 @@ def test_published_value_mixed_consumers(device):
 
 
 @pytest.mark.parametrize("dtype", DTYPES, ids=["bf16", "f32"])
+@pytest.mark.parametrize(
+    "tile_hw",
+    COMPUTE_TILE_SIZES,
+    ids=[f"{height}x{width}" for height, width in COMPUTE_TILE_SIZES],
+)
 @pytest.mark.requires_device
-def test_shared_dfb_fixed_and_strategy_consumers(dtype, device):
+def test_shared_dfb_fixed_and_strategy_consumers(dtype, tile_hw, device):
     torch.manual_seed(6)
-    lhs_torch = torch.randn(TILE, TILE, dtype=dtype)
-    rhs_torch = torch.randn(TILE, TILE, dtype=dtype)
-    out_torch = torch.zeros(TILE, TILE, dtype=dtype)
+    tile_height, tile_width = tile_hw
+    lhs_torch = torch.randn(tile_height, tile_width, dtype=dtype)
+    rhs_torch = torch.randn(tile_height, tile_width, dtype=dtype)
+    out_torch = torch.zeros(tile_height, tile_width, dtype=dtype)
 
-    lhs = to_dram(lhs_torch, device)
-    rhs = to_dram(rhs_torch, device)
-    out = to_dram(out_torch, device)
+    lhs = to_dram(lhs_torch, device, tile_hw=tile_hw)
+    rhs = to_dram(rhs_torch, device, tile_hw=tile_hw)
+    out = to_dram(out_torch, device, tile_hw=tile_hw)
 
     shared_dfb_fixed_and_strategy_consumers(lhs, rhs, out)
 

@@ -441,11 +441,11 @@ def TTLSetComputeKernelConfig
     : Pass<"ttl-set-compute-kernel-config", "::mlir::func::FuncOp"> {
   let summary = "Resolve compute-kernel configuration";
   let description = [{
-    Selects tile execution strategies and resolves kernel-wide DST mode,
-    synchronization mode, and per-dataflow-buffer unpack mode. Target
-    capabilities, user policy, and target-independent kernel requirements are
-    analyzed separately. The pass validates a complete configuration before
-    writing operation or function attributes.
+    Selects tile execution strategies and resolves kernel-wide destination
+    element width, synchronization mode, and per-dataflow-buffer unpack mode.
+    Target capabilities, user policy, and target-independent kernel
+    requirements are analyzed separately. The pass validates a complete
+    configuration before writing operation or function attributes.
   }];
 
   let options = [

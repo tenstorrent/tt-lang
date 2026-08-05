@@ -55,8 +55,8 @@ flags) and control the TTNN compute kernel hardware configuration:
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `fp32_dest_acc_en` | `bool` or `None` | `None` | Constrain the DST register file to f32 mode. When `None`, resolve the mode from target capabilities and tile-operation requirements. |
-| `dst_full_sync_en` | `bool` or `None` | `None` | Enable full DST synchronization (single-buffering mode). Doubles DST capacity (f32: 8, f16/bf16: 16) at the cost of a full sync between math and pack threads. |
+| `fp32_dest_acc_en` | `bool` or `None` | `None` | Constrain the Wormhole B0/Blackhole DST register-file element width: `true` selects 32-bit elements and `false` selects 16-bit elements. When `None`, resolve the width from target capabilities and tile-operation requirements. |
+| `dst_full_sync_en` | `bool` or `None` | `None` | Enable full DST synchronization (single-buffering mode). Doubles DST capacity (32-bit elements: 8, 16-bit elements: 16) at the cost of a full sync between math and pack threads. |
 
 ```python
 @ttl.operation(grid=(2, 2), fp32_dest_acc_en=True, dst_full_sync_en=False)
@@ -202,7 +202,7 @@ for the algorithm and invariants.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `fp32-dest-acc-en` | string | `auto` | Select f32 DST mode: `auto`, `enabled`, or `disabled`. |
+| `fp32-dest-acc-en` | string | `auto` | Select 32-bit destination elements through the Wormhole B0/Blackhole `fp32_dest_acc_en` setting: `auto`, `enabled`, or `disabled`. |
 | `dst-full-sync-en` | string | `auto` | Select full DST synchronization: `auto`, `enabled`, or `disabled`. |
 | `reduce-full-fp32` | bool | `true` | Prefer full-fp32 reduce accumulation when supported. |
 | `matmul-full-fp32` | bool | `true` | Prefer full-fp32 matmul accumulation when supported. |
@@ -219,7 +219,7 @@ merging.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `dst-capacity` | uint32_t | `0` (auto) | Override DST register capacity. Auto-computed from `fp32_dest_acc_en` and `dst_full_sync_en` by default. Single-buffering (`dst_full_sync_en=true`): f32=8, f16/bf16=16. Double-buffering (default): f32=4, f16/bf16=8. |
+| `dst-capacity` | uint32_t | `0` (auto) | Override DST register capacity. Auto-computed from `fp32_dest_acc_en` and `dst_full_sync_en` by default. Single-buffering (`dst_full_sync_en=true`): 32-bit elements=8, 16-bit elements=16. Double-buffering (default): 32-bit elements=4, 16-bit elements=8. |
 | `separate-output-region` | bool | `false` | Allocate outputs in a separate DST region (needed for reductions and some loop optimizations). |
 
 ```bash

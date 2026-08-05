@@ -60,23 +60,35 @@ class TestDeviceTargetArch:
         device = _DeviceWithArchAttribute("BLACKHOLE")
         assert ttl_api._device_target_arch((_TensorWithDevice(device),)) == "blackhole"
 
-    def test_quasar_arch(self):
+    def test_quasar_arch_is_rejected(self):
         device = _DeviceWithArchMethod("Arch.QUASAR")
-        assert ttl_api._device_target_arch((_TensorWithDevice(device),)) == "quasar"
+        with pytest.raises(ValueError, match="Unsupported TT device architecture"):
+            ttl_api._device_target_arch((_TensorWithDevice(device),))
 
     def test_unknown_arch_is_rejected(self):
         device = _DeviceWithArchAttribute("future_arch")
         with pytest.raises(ValueError, match="Unsupported TT device architecture"):
             ttl_api._device_target_arch((_TensorWithDevice(device),))
 
-    def test_no_recognized_arch_attribute_returns_none(self):
-        assert ttl_api._device_target_arch((_TensorWithDevice(object()),)) is None
+    def test_no_recognized_arch_attribute_is_rejected(self):
+        with pytest.raises(
+            ValueError, match="Unsupported or undetectable TT device architecture"
+        ):
+            ttl_api._device_target_arch((_TensorWithDevice(object()),))
 
     def test_no_tensor_args_returns_none(self):
         assert ttl_api._device_target_arch(()) is None
 
-    def test_raising_arch_attribute_returns_none(self):
-        assert (
+    def test_raising_arch_attribute_is_rejected(self):
+        with pytest.raises(
+            ValueError, match="Unsupported or undetectable TT device architecture"
+        ):
             ttl_api._device_target_arch((_TensorWithDevice(_DeviceWithRaisingArch()),))
-            is None
+
+    def test_different_device_architectures_are_rejected(self):
+        args = (
+            _TensorWithDevice(_DeviceWithArchAttribute("Arch.WORMHOLE_B0")),
+            _TensorWithDevice(_DeviceWithArchAttribute("Arch.BLACKHOLE")),
         )
+        with pytest.raises(ValueError, match="different TT device architectures"):
+            ttl_api._device_target_arch(args)

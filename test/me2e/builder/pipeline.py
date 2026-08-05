@@ -21,7 +21,6 @@ from .device_arch import get_mock_arch_from_device
 _TTCORE_ARCH_BY_DEVICE_NAME = {
     "blackhole": ttcore.Arch.Blackhole,
     "wormhole_b0": ttcore.Arch.WormholeB0,
-    "quasar": ttcore.Arch.Quasar,
 }
 
 

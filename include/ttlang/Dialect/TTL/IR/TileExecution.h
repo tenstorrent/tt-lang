@@ -81,6 +81,11 @@ getSelectedTileExecutionStrategy(mlir::Operation *operation);
 mlir::FailureOr<TileExecutionInfo>
 getSelectedTileExecutionInfo(mlir::Operation *operation);
 
+/// Verify the strategy attribute against the operation's legal alternatives.
+mlir::LogicalResult verifyTileExecutionStrategy(
+    mlir::Operation *operation,
+    llvm::ArrayRef<TileExecutionStrategy> legalStrategies);
+
 /// Return whether `operand` must be resident in DST when consumed.
 /// Tile execution semantics must be verified before calling this function.
 bool isDstInput(mlir::OpOperand &operand);

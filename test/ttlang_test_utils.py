@@ -214,12 +214,13 @@ def torch_dtype_from_env(var_name: str, default: str = "bf16"):
     return torch_dtype_from_name(os.environ.get(var_name, default))
 
 
-def to_dram(torch_tensor, device):
+def to_dram(torch_tensor, device, tile_hw=None):
     """Create a TTNN tensor in DRAM from a torch tensor.
 
     Args:
         torch_tensor: Source torch tensor
         device: TTNN device handle
+        tile_hw: Optional physical tile dimensions.
 
     Returns:
         TTNN tensor in DRAM with TILE_LAYOUT
@@ -229,13 +230,15 @@ def to_dram(torch_tensor, device):
     ttnn = _get_ttnn()
     if ttnn is None:
         raise RuntimeError("TTNN not available")
-    return ttnn.from_torch(
-        torch_tensor,
+    options = dict(
         dtype=torch_dtype_to_ttnn_datatype(torch_tensor.dtype),
         layout=ttnn.TILE_LAYOUT,
         device=device,
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
     )
+    if tile_hw is not None:
+        options["tile"] = ttnn.Tile(tile_hw)
+    return ttnn.from_torch(torch_tensor, **options)
 
 
 def to_l1(torch_tensor, device):

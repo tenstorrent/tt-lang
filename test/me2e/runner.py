@@ -145,6 +145,9 @@ def run_compute_test(
         name=compute_kernel_spec.name,
         thread_type=ThreadType.COMPUTE,
         source=compute_cpp,
+        fp32_dest_acc_en=compute_kernel_spec.fp32_dest_acc_en,
+        dst_full_sync_en=compute_kernel_spec.dst_full_sync_en,
+        unpack_to_dest_fp32=compute_kernel_spec.unpack_to_dest_fp32,
     )
 
     # 4. Write kernels to temporary directory.
@@ -157,7 +160,6 @@ def run_compute_test(
     from .builder.ttnn_runner import run_binary_op, run_unary_op
 
     try:
-        fp32_accum = config.dtype == torch.float32
         if op.arity == 2:
             result = run_binary_op(
                 device=device,
@@ -166,7 +168,6 @@ def run_compute_test(
                 input_a=torch_inputs[0],
                 input_b=torch_inputs[1],
                 kernel_dir=kernel_dir,
-                enable_fp32_accumulation=fp32_accum,
             )
         else:
             result = run_unary_op(
@@ -175,7 +176,6 @@ def run_compute_test(
                 compute_kernel=compute_kernel_spec,
                 input_a=torch_inputs[0],
                 kernel_dir=kernel_dir,
-                enable_fp32_accumulation=fp32_accum,
             )
 
         # 6. Validate against golden.

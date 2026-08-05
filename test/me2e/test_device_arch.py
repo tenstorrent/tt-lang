@@ -18,12 +18,17 @@ class FakeDevice:
         self.architecture = architecture
 
 
+class DeviceWithRaisingArch:
+    @property
+    def arch(self):
+        raise RuntimeError("device handle closed")
+
+
 @pytest.mark.parametrize(
     "architecture, expected",
     [
         ("Arch.WORMHOLE_B0", "wormhole_b0"),
         ("Arch.BLACKHOLE", "blackhole"),
-        ("Arch.QUASAR", "quasar"),
     ],
 )
 def test_detect_supported_device_architecture(architecture, expected):
@@ -35,10 +40,20 @@ def test_compiler_only_architecture_defaults_to_wormhole():
 
 
 def test_unknown_device_architecture_is_rejected():
+    with pytest.raises(ValueError, match="Unsupported TT device architecture"):
+        get_mock_arch_from_device(FakeDevice("Arch.UNKNOWN"))
+
+
+def test_undetectable_device_architecture_is_rejected():
     with pytest.raises(
         ValueError, match="Unsupported or undetectable TT device architecture"
     ):
-        get_mock_arch_from_device(FakeDevice("Arch.UNKNOWN"))
+        get_mock_arch_from_device(DeviceWithRaisingArch())
+
+
+def test_quasar_device_architecture_is_rejected():
+    with pytest.raises(ValueError, match="unsupported Gen2 runtime APIs"):
+        get_mock_arch_from_device(FakeDevice("Arch.QUASAR"))
 
 
 def test_pipeline_attaches_typed_target_architecture():

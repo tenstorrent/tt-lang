@@ -11,9 +11,19 @@ module attributes {ttl.target_arch = "blackhole"} {
 
 // -----
 
+// Quasar requires a Gen2 configuration descriptor and kernel launch API.
+// expected-error @below {{'builtin.module' op Quasar compute kernels require the Gen2 configuration and launch APIs, which are not supported by the current TT-Lang runtime}}
+module attributes {ttl.target_arch = #ttcore.arch<quasar>} {
+  func.func @unsupported_quasar_target() {
+    return
+  }
+}
+
+// -----
+
 func.func @disabled_required_f32() attributes {fp32_dest_acc_en = false} {
   %zero = arith.constant 0 : index
-  // expected-error @below {{'ttl.tile_fill' op requires f32 DST mode, but fp32 destination accumulation is explicitly disabled}}
+  // expected-error @below {{'ttl.tile_fill' op requires 32-bit destination elements, but fp32 destination accumulation is explicitly disabled}}
   %value = ttl.tile_fill 1.0 into dst[%zero]
       : !ttcore.tile<32x32, f32>
   return
@@ -217,6 +227,18 @@ func.func @dataflow_buffer_index_out_of_range(
   // expected-error @below {{'ttl.tile_exp' op uses dataflow buffer index 32 outside the supported range [0, 31]}}
   %exp = ttl.tile_exp %input_tile into dst[%zero]
       : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  return
+}
+
+// -----
+
+// Kernel configuration rejects malformed tile-operation operands without
+// aborting the compiler.
+func.func @non_tile_operand(%input: f32, %output: f32) {
+  %zero = arith.constant 0 : index
+  // expected-error @below {{'ttl.tile_bcast' op expected a tile or tensor-of-tiles operand, got 'f32'}}
+  %broadcast = ttl.tile_bcast %input, %output 2 : i32 into dst[%zero]
+      : (f32, f32) -> f32
   return
 }
 

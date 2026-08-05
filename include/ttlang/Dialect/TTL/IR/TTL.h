@@ -62,7 +62,7 @@ struct DstFootprint {
   int64_t tileCount = 1;
 };
 
-llvm::SmallVector<DstFootprint, 2>
+mlir::FailureOr<llvm::SmallVector<DstFootprint, 2>>
 getDefaultDstReadFootprints(mlir::Operation *op);
 llvm::SmallVector<DstFootprint, 2>
 getDefaultDstWriteFootprints(mlir::Operation *op);

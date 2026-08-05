@@ -6,7 +6,6 @@
 
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/Support/ErrorHandling.h"
 
 namespace mlir::tt::ttl {
 
@@ -305,23 +304,46 @@ getSelectedTileExecutionInfo(Operation *operation) {
   return executionOp.getTileExecutionInfo(*strategy);
 }
 
+LogicalResult
+verifyTileExecutionStrategy(Operation *operation,
+                            ArrayRef<TileExecutionStrategy> legalStrategies) {
+  Attribute rawStrategy = operation->getAttr(kTileExecutionStrategyAttrName);
+  auto strategyAttr = dyn_cast_or_null<TileExecutionStrategyAttr>(rawStrategy);
+  if (rawStrategy && !strategyAttr) {
+    operation->emitOpError()
+        << kTileExecutionStrategyAttrName
+        << " must be a #ttl.tile_execution_strategy attribute";
+    return failure();
+  }
+  if (legalStrategies.empty() && strategyAttr) {
+    operation->emitOpError()
+        << kTileExecutionStrategyAttrName
+        << " is only valid on tile operations with execution-strategy "
+           "alternatives";
+    return failure();
+  }
+  if (strategyAttr &&
+      !llvm::is_contained(legalStrategies, strategyAttr.getValue())) {
+    operation->emitOpError() << "explicit " << kTileExecutionStrategyAttrName
+                             << " is not legal for its operands";
+    return failure();
+  }
+  return success();
+}
+
 /// Return an operand route after all required strategies have been selected.
 static TileOperandRoute getRequiredOperandRoute(OpOperand &operand) {
-  if (!isa<TileExecutionOpInterface>(operand.getOwner())) {
-    if (isTileComputeOp(operand.getOwner())) {
-      llvm::report_fatal_error(
-          "tile operation does not implement TileExecutionOpInterface");
-    }
+  auto executionOp = dyn_cast<TileExecutionOpInterface>(operand.getOwner());
+  if (!executionOp) {
+    assert(!isTileComputeOp(operand.getOwner()) &&
+           "tile operation must implement TileExecutionOpInterface");
     return TileOperandRoute::None;
   }
   FailureOr<TileExecutionInfo> info =
       getSelectedTileExecutionInfo(operand.getOwner());
-  if (failed(info)) {
-    llvm::report_fatal_error("tile execution strategy is unresolved");
-  }
-  if (operand.getOperandNumber() >= info->operandRoutes.size()) {
-    llvm::report_fatal_error("tile execution operand route is missing");
-  }
+  assert(succeeded(info) && "tile execution strategy must be resolved");
+  assert(operand.getOperandNumber() < info->operandRoutes.size() &&
+         "tile execution semantics must define every operand route");
   return info->operandRoutes[operand.getOperandNumber()];
 }
 
@@ -332,43 +354,27 @@ bool isDstInput(OpOperand &operand) {
 bool isDstInputMaterializedByOperation(OpOperand &operand) {
   FailureOr<TileExecutionInfo> info =
       getSelectedTileExecutionInfo(operand.getOwner());
-  if (failed(info)) {
-    llvm::report_fatal_error("tile execution strategy is unresolved");
-  }
-  if (operand.getOperandNumber() >=
-      info->dstOperandsMaterializedByOperation.size()) {
-    llvm::report_fatal_error(
-        "tile execution DST materialization entry is missing");
-  }
+  assert(succeeded(info) && "tile execution strategy must be resolved");
+  assert(operand.getOperandNumber() <
+             info->dstOperandsMaterializedByOperation.size() &&
+         "tile execution semantics must define every DST materialization bit");
   return info->dstOperandsMaterializedByOperation.test(
       operand.getOperandNumber());
 }
 
 LogicalResult verifyTileExecutionSemantics(Operation *root) {
-  WalkResult walkResult = root->walk([&](TileExecutionOpInterface executionOp) {
-    Operation *operation = executionOp.getOperation();
+  WalkResult walkResult = root->walk([&](Operation *operation) {
+    auto executionOp = dyn_cast<TileExecutionOpInterface>(operation);
+    if (!executionOp) {
+      if (isTileComputeOp(operation)) {
+        operation->emitOpError("does not implement TileExecutionOpInterface");
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    }
     SmallVector<TileExecutionStrategy, 2> legalStrategies =
         executionOp.getLegalExecutionStrategies();
-    Attribute rawStrategy = operation->getAttr(kTileExecutionStrategyAttrName);
-    auto strategyAttr =
-        dyn_cast_or_null<TileExecutionStrategyAttr>(rawStrategy);
-    if (rawStrategy && !strategyAttr) {
-      operation->emitOpError()
-          << kTileExecutionStrategyAttrName
-          << " must be a #ttl.tile_execution_strategy attribute";
-      return WalkResult::interrupt();
-    }
-    if (legalStrategies.empty() && strategyAttr) {
-      operation->emitOpError()
-          << kTileExecutionStrategyAttrName
-          << " is only valid on tile operations with execution-strategy "
-             "alternatives";
-      return WalkResult::interrupt();
-    }
-    if (strategyAttr &&
-        !llvm::is_contained(legalStrategies, strategyAttr.getValue())) {
-      operation->emitOpError() << kTileExecutionStrategyAttrName
-                               << " is not legal for the operation operands";
+    if (failed(verifyTileExecutionStrategy(operation, legalStrategies))) {
       return WalkResult::interrupt();
     }
     FailureOr<TileExecutionInfo> info = getSelectedTileExecutionInfo(operation);
@@ -452,30 +458,35 @@ static int64_t getMatmulBlockOutputTileCount(TileMatmulBlockOp op) {
 
 /// Interface defaults require resolved DST operands because callers use this
 /// after DST assignment, where unresolved tile residency is invalid IR.
-static void appendDstOperandFootprint(SmallVectorImpl<DstFootprint> &footprints,
-                                      Value operand) {
+static LogicalResult
+appendDstOperandFootprint(SmallVectorImpl<DstFootprint> &footprints,
+                          Value operand) {
   if (!isTileValue(operand)) {
-    return;
+    return success();
   }
   FailureOr<DstFootprint> footprint = getDstFootprint(operand);
   if (failed(footprint)) {
-    llvm::report_fatal_error("DST operand has no DST footprint");
+    return failure();
   }
   footprints.push_back(*footprint);
+  return success();
 }
 
-SmallVector<DstFootprint, 2> getDefaultDstReadFootprints(Operation *op) {
+FailureOr<SmallVector<DstFootprint, 2>>
+getDefaultDstReadFootprints(Operation *op) {
   SmallVector<DstFootprint, 2> footprints;
   FailureOr<TileExecutionInfo> info = getSelectedTileExecutionInfo(op);
   if (failed(info)) {
-    llvm::report_fatal_error("tile execution semantics are unresolved");
+    return failure();
   }
   for (OpOperand &operand : op->getOpOperands()) {
     if (info->operandRoutes[operand.getOperandNumber()] !=
         TileOperandRoute::Dst) {
       continue;
     }
-    appendDstOperandFootprint(footprints, operand.get());
+    if (failed(appendDstOperandFootprint(footprints, operand.get()))) {
+      return failure();
+    }
   }
   return footprints;
 }
@@ -574,7 +585,12 @@ FailureOr<SmallVector<int64_t>> getConstantDstReadIndices(Operation *op) {
   if (!dstAccess) {
     return SmallVector<int64_t>{};
   }
-  return getConstantDstIndices(dstAccess.getDstReadFootprints());
+  FailureOr<SmallVector<DstFootprint, 2>> footprints =
+      dstAccess.getDstReadFootprints();
+  if (failed(footprints)) {
+    return failure();
+  }
+  return getConstantDstIndices(*footprints);
 }
 
 FailureOr<SmallVector<int64_t>> getConstantDstWriteIndices(Operation *op) {
@@ -605,14 +621,14 @@ TileOpCategory classifyTileOp(Operation *op) {
   if (isa<TileMatmulBlockOp>(op)) {
     return TileOpCategory::FPUBinary;
   }
-  // TODO: add TileOpCategory::Transpose case when TTL transpose op is added.
+  if (isa<TileTransposeOp>(op)) {
+    return TileOpCategory::Transpose;
+  }
 
   if (op->hasTrait<TTLStrategyDependentBinaryOpTrait>()) {
     FailureOr<TileExecutionStrategy> strategy =
         getSelectedTileExecutionStrategy(op);
-    if (failed(strategy)) {
-      llvm::report_fatal_error("tile execution strategy is unresolved");
-    }
+    assert(succeeded(strategy) && "tile execution strategy must be resolved");
     return *strategy == TileExecutionStrategy::FPU ? TileOpCategory::FPUBinary
                                                    : TileOpCategory::SFPUBinary;
   }

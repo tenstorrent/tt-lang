@@ -12,6 +12,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <memory>
 #include <optional>
 #include <utility>
 
@@ -24,10 +25,11 @@ enum class ConfigSelection {
   Disabled,
 };
 
-/// Element format used by the kernel's DST register file.
-enum class DstMode {
-  Default,
-  Fp32,
+/// Physical element width used by the kernel's destination register file.
+/// Tensix exposes only 16-bit and 32-bit destination element configurations.
+enum class DestinationElementWidth {
+  Bits16,
+  Bits32,
 };
 
 /// Synchronization protocol used for the kernel's DST register file.
@@ -36,30 +38,40 @@ enum class DstSyncMode {
   Full,
 };
 
-/// Unpack mode assigned to one dataflow buffer for the complete kernel.
+/// Per-DFB unpack selection shared by the complete kernel. A target defines
+/// when each selection changes the primitive's physical operand route.
 enum class DFBUnpackMode {
   Default,
-  UnpackToDestFp32,
+  UnpackToDestination,
+};
+
+/// One target-supported combination of shared destination width and per-DFB
+/// unpack selection.
+struct DFBHardwareConfiguration {
+  DestinationElementWidth destinationElementWidth;
+  DFBUnpackMode unpackMode;
 };
 
 /// Immutable hardware and backend capabilities for one kernel target.
 class KernelTargetEnvironment {
 public:
-  static FailureOr<KernelTargetEnvironment> get(func::FuncOp function);
+  virtual ~KernelTargetEnvironment() = default;
 
-  std::optional<ttcore::Arch> getArch() const { return arch; }
-  bool supportsDstMode(TilePrimitive primitive, Type elementType,
-                       DstMode mode) const;
-  bool supportsFullFp32Accumulation(FullFp32AccumulationKind kind) const;
-  DFBUnpackMode getRequiredUnpackMode(TilePrimitive primitive,
-                                      TileOperandRoute route,
-                                      Type elementType) const;
+  static FailureOr<std::unique_ptr<KernelTargetEnvironment>>
+  get(func::FuncOp function);
 
-private:
-  explicit KernelTargetEnvironment(std::optional<ttcore::Arch> arch)
-      : arch(arch) {}
+  virtual std::optional<ttcore::Arch> getArch() const = 0;
+  virtual bool supportsDestinationElementWidth(
+      TilePrimitive primitive, Type elementType,
+      DestinationElementWidth destinationElementWidth) const = 0;
+  virtual bool
+  supportsFullFp32Accumulation(FullFp32AccumulationKind kind) const = 0;
+  virtual llvm::SmallVector<DFBHardwareConfiguration, 4>
+  getSupportedDFBConfigurations(TilePrimitive primitive, TileOperandRoute route,
+                                Type elementType) const = 0;
 
-  std::optional<ttcore::Arch> arch;
+protected:
+  KernelTargetEnvironment() = default;
 };
 
 /// Explicit configuration constraints normalized without inspecting tile ops.
@@ -93,8 +105,8 @@ struct DFBInputUse {
   Type elementType;
 };
 
-/// One operand or result that requires a kernel-wide DST mode.
-struct DstModeUse {
+/// One operand or result that constrains the shared destination width.
+struct DestinationUse {
   Operation *operation;
   TilePrimitive primitive;
   Type elementType;
@@ -104,7 +116,7 @@ struct DstModeUse {
 struct TileExecutionOption {
   TileExecutionStrategy strategy;
   llvm::SmallVector<DFBInputUse> dfbInputUses;
-  llvm::SmallVector<DstModeUse> dstModeUses;
+  llvm::SmallVector<DestinationUse> destinationUses;
 };
 
 /// Legal strategy alternatives retained for kernel-wide resolution.
@@ -123,7 +135,7 @@ struct FullFp32AccumulationUse {
 /// Target-independent requirements collected from immutable TTL IR.
 struct KernelRequirements {
   llvm::SmallVector<DFBInputUse> dfbInputUses;
-  llvm::SmallVector<DstModeUse> dstModeUses;
+  llvm::SmallVector<DestinationUse> destinationUses;
   llvm::SmallVector<FullFp32AccumulationUse> fullFp32AccumulationUses;
   llvm::SmallVector<TileExecutionChoice, 0> tileStrategyChoices;
 };
@@ -132,7 +144,9 @@ struct KernelRequirements {
 /// before mutating IR because its decisions contain operation pointers.
 class KernelConfigPlan {
 public:
-  DstMode getDstMode() const { return dstMode; }
+  DestinationElementWidth getDestinationElementWidth() const {
+    return destinationElementWidth;
+  }
   DstSyncMode getDstSyncMode() const { return dstSyncMode; }
   llvm::ArrayRef<int32_t> getUnpackToDestFp32() const {
     return unpackToDestFp32;
@@ -146,14 +160,15 @@ private:
       func::FuncOp function, const KernelTargetEnvironment &target,
       const KernelConfigPolicy &policy, const KernelRequirements &requirements);
 
-  KernelConfigPlan(DstMode dstMode, DstSyncMode dstSyncMode,
+  KernelConfigPlan(DestinationElementWidth destinationElementWidth,
+                   DstSyncMode dstSyncMode,
                    llvm::SmallVector<int32_t> unpackToDestFp32,
                    llvm::SmallVector<TileExecutionDecision> tileStrategies)
-      : dstMode(dstMode), dstSyncMode(dstSyncMode),
-        unpackToDestFp32(std::move(unpackToDestFp32)),
+      : destinationElementWidth(destinationElementWidth),
+        dstSyncMode(dstSyncMode), unpackToDestFp32(std::move(unpackToDestFp32)),
         tileStrategies(std::move(tileStrategies)) {}
 
-  DstMode dstMode;
+  DestinationElementWidth destinationElementWidth;
   DstSyncMode dstSyncMode;
   llvm::SmallVector<int32_t> unpackToDestFp32;
   llvm::SmallVector<TileExecutionDecision> tileStrategies;
