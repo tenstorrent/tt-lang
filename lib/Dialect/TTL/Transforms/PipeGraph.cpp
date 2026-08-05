@@ -882,6 +882,16 @@ LaunchNodeDomain PipeGraph::getOperationLaunchDomain(Operation *op) const {
   return it->second;
 }
 
+const DFBAcquireReleaseIndex &
+PipeGraph::getDFBAcquireReleaseIndex(Operation *operation) const {
+  func::FuncOp function = operation->getParentOfType<func::FuncOp>();
+  assert(function && "DFB lifecycle operation must be inside a function");
+  auto lifecycle = dfbLifecycles.find(function.getOperation());
+  assert(lifecycle != dfbLifecycles.end() &&
+         "every function must have a DFB lifecycle index");
+  return *lifecycle->second;
+}
+
 static std::optional<int64_t>
 getReceiverAddressByteOffset(const PipeReceiverEndpoint &endpoint,
                              int64_t slot) {
@@ -1457,6 +1467,7 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod,
   graph.hasAnalyzedLaunchGrid = analysisState.hasLaunchGrid;
   graph.operationLaunchDomains =
       std::move(analysisState.operationLaunchDomains);
+  graph.dfbLifecycles = std::move(analysisState.dfbLifecycles);
   return std::move(graph);
 }
 

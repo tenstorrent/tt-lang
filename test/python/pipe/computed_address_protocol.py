@@ -18,9 +18,9 @@
 
 """Computed receiver-address protocol coverage for PipeNet lowering.
 
-The point-to-point case covers dynamic computed addresses with receiver-post
-synchronization. The all-gather case covers dynamic computed addresses for a
-collective multicast transfer.
+The point-to-point case covers dynamic computed addresses with sender-local
+capacity release. The all-gather case covers dynamic computed addresses for a
+collective multicast transfer where receiver-ready counters remain required.
 Both cases execute on device and compare the result with torch expected values.
 """
 
@@ -159,23 +159,23 @@ def row_all_gather_computed_address(inp, out):
         pass
 
 
-# Point-to-point computed address: the receiver posts readiness without
-# publishing its reserved DFB address. recv_block_count=2 and two iterations
-# force dynamic sender-side receiver slot tracking.
+# Point-to-point computed address: the receiver does not publish its reserved
+# DFB address, and the sender uses the capacity protocol. recv_block_count=2
+# and two iterations force dynamic sender-side receiver slot tracking.
 # P2P-FINAL-LABEL: func.func @dm
 # The receiver DFB is allocated at physical index 0 after DFB compaction.
 # P2P-FINAL-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 0>
 # P2P-FINAL-DAG: %[[P2P_BASE_ARG_INDEX:.*]] = "emitc.constant"() <{value = 2 : index}>
-# Address calculation may move relative to the readiness wait; both must
+# Address calculation may move relative to the capacity wait; both must
 # precede the payload write.
-# P2P-FINAL-DAG: call_opaque "experimental::semaphore_wait"
+# P2P-FINAL-DAG: call_opaque "experimental::semaphore_wait_min"
 # P2P-FINAL-DAG: call_opaque "get_common_arg_val"(%[[P2P_BASE_ARG_INDEX]])
 # P2P-FINAL-DAG: = rem {{.*}} : (ui32, ui32) -> ui32
 # P2P-FINAL: noc0.async_write
 # P2P-FINAL-NOT: noc_inline_dw_write
 # P2P-FINAL-NOT: load_from_l1
 
-# P2P-CPP-DAG: experimental::semaphore_wait(
+# P2P-CPP-DAG: experimental::semaphore_wait_min(
 # P2P-CPP-DAG: get_common_arg_val<uint32_t>(
 # P2P-CPP-DAG: {{.*}} % {{.*}};
 # P2P-CPP: noc0.async_write(

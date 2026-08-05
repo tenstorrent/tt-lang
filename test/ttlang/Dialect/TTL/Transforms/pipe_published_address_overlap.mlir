@@ -3,7 +3,7 @@
 // Summary: Verifies receiver-published synchronization for overlapping
 // collective destinations and loopback collectives.
 
-// Transfers that share physical receivers use distinct completion semaphores.
+// Transfers that share physical receivers use distinct completion counters.
 // CHECK-LABEL: func.func @overlap_two_receives_use_distinct_completion
 // CHECK-DAG: %[[SEM_A:.*]] = arith.constant 0 : index
 // CHECK-DAG: %[[SEM_B:.*]] = arith.constant 1 : index

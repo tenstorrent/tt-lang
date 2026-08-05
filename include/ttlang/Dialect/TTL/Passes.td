@@ -164,8 +164,8 @@ def TTLConvertTTLToTTKernel
   let description = [{
     Converts TTL DFB, copy, wait, and PipeNet operations to TTKernel DFB, NoC,
     and semaphore operations. PipeNet lowering selects receiver-published or
-    computed destination addresses according to the pass option and transfer
-    eligibility. Every transfer uses receiver-post synchronization.
+    computed destination addresses and receiver-post or capacity-counter
+    synchronization according to the pass options and transfer eligibility.
   }];
 
   let options = [
@@ -176,7 +176,14 @@ def TTLConvertTTLToTTKernel
            "Use computed receiver DFB addresses for eligible pipe transfers. "
            "When disabled, pipe transfers use receiver-published destination "
            "addresses; multicast still requires proven equal runtime "
-           "receiver addresses.">
+           "receiver addresses.">,
+    Option<"pipeCapacitySync", "pipe-capacity-sync",
+           "bool", "true",
+           "Use capacity-counter synchronization when the receiver wait and "
+           "pop execute on the receiver NOC thread and the computed-address "
+           "transfer passes the DFB ownership and count proofs. "
+           "When disabled, computed-address transfers use receiver-post "
+           "synchronization.">
   ];
 
   let dependentDialects = [
