@@ -137,7 +137,7 @@ private:
 
 namespace {
 
-/// Coloring outcome for one selected subset of logical DFBs.
+/// Physical-index assignment and its proven bounds for selected logical DFBs.
 struct ConcurrentAssignmentResult {
   SmallVector<int32_t> assignments;
   unsigned colorCount = 0;
@@ -147,11 +147,15 @@ struct ConcurrentAssignmentResult {
   std::uint64_t exactSearchStateCount = 0;
 };
 
-/// Colors the selected logical DFBs using concurrent-lifetime interference.
-/// First-fit is accepted when it meets `availableIndices`; otherwise a single
-/// fixed-limit exact check decides capacity. Minimum-color search runs only
-/// when required for an L1-budget decision. `firstPhysicalIndex` reserves a
-/// prefix without changing the conflict or coloring model.
+/// Assigns indices by mapping each logical DFB to a graph vertex, each conflict
+/// to an edge, and each available physical index to a graph color.
+///
+/// First-fit processes DFBs in immutable declaration order and chooses the
+/// lowest index not used by a conflicting DFB. Its assignment is accepted when
+/// it fits `availableIndices`. Otherwise one exhaustive fixed-limit search
+/// decides whether some assignment fits. A minimum physical-index-count search
+/// runs only for an L1-budget decision. `firstPhysicalIndex` reserves lower
+/// index values without changing which DFB pairs may share.
 static FailureOr<ConcurrentAssignmentResult> computeConcurrentAssignments(
     ModuleOp moduleOp, ArrayRef<unsigned> candidateIndices,
     int32_t firstPhysicalIndex, const DFBPhysicalConflictModel &conflictModel,
@@ -176,7 +180,7 @@ static FailureOr<ConcurrentAssignmentResult> computeConcurrentAssignments(
       computeInterferenceGraphColoringBounds(interferenceGraph);
   SmallVector<unsigned> selectedColors = bounds.colors;
   unsigned colorCount = bounds.colorCount;
-  unsigned provenColorLowerBound = bounds.cliqueLowerBound;
+  unsigned provenColorLowerBound = bounds.pairwiseConflictLowerBound;
   bool minimumProven = bounds.provesMinimum();
   bool exactSearchLimitReached = false;
   std::uint64_t exactSearchStateCount = 0;
@@ -227,7 +231,7 @@ static FailureOr<ConcurrentAssignmentResult> computeConcurrentAssignments(
       }
       if (interferenceGraph.interferes(lhsVertex, rhsVertex)) {
         analysisFailure.set(
-            moduleOp, "internal DFB coloring assigned one physical index to "
+            moduleOp, "internal DFB allocation assigned one physical index to "
                       "conflicting logical DFBs");
         return failure();
       }
@@ -258,13 +262,19 @@ setExactSearchLimitFailure(ModuleOp moduleOp, unsigned firstFitCount,
   std::string message;
   llvm::raw_string_ostream messageStream(message);
   messageStream << "deterministic first-fit uses " << firstFitCount
-                << " physical DFB indices; exact coloring explored "
+                << " physical DFB indices; exact allocation search explored "
                 << exactSearchStateCount << " states and reached the "
                 << exactColoringSearchStateLimit
                 << "-state limit without proving whether the allocation fits "
                 << constrainedResource
                 << "; increase `exact-coloring-search-limit`";
   analysisFailure.set(moduleOp, messageStream.str());
+}
+
+/// Derives capacity text from the enforced constant so diagnostics cannot
+/// report a stale limit.
+static std::string getPhysicalIndexLimitDescription() {
+  return "the " + std::to_string(kMaxCircularBuffers) + "-index hardware limit";
 }
 
 /// Maps provisional user indices to a dense physical index range.
@@ -305,7 +315,7 @@ struct PhysicalAllocationCandidate {
   std::uint64_t exactSearchStateCount = 0;
 };
 
-/// Compacts user indices and colors compiler-created DFB lifetimes.
+/// Compacts user indices and assigns compiler-created DFBs after that range.
 ///
 /// User declarations retain sharing already expressed by equal provisional
 /// indices. Compiler-created DFBs use the same concurrent lifetime proof as
@@ -427,7 +437,7 @@ static FailureOr<PhysicalAllocationCandidate> computeDistinctUserAllocation(
       setExactSearchLimitFailure(
           moduleOp, allocation.physicalDFBCount,
           allocation.exactSearchStateCount, exactColoringSearchStateLimit,
-          "the 32-index hardware limit", analysisFailure);
+          getPhysicalIndexLimitDescription(), analysisFailure);
       return failure();
     }
     std::string message;
@@ -449,7 +459,7 @@ static FailureOr<PhysicalAllocationCandidate> computeDistinctUserAllocation(
   return allocation;
 }
 
-/// Colors every logical DFB together so user and compiler-created lifetimes
+/// Assigns every logical DFB together so user and compiler-created lifetimes
 /// may share physical indices under the same conflict model.
 static FailureOr<PhysicalAllocationCandidate> computeReuseAllocation(
     ModuleOp moduleOp, const DFBConcurrentKernelLivenessAnalysis &liveness,
@@ -487,10 +497,10 @@ static FailureOr<PhysicalAllocationCandidate> computeReuseAllocation(
     return allocation;
   }
   if (allocation.exactSearchLimitReached) {
-    setExactSearchLimitFailure(moduleOp, allocation.physicalDFBCount,
-                               allocation.exactSearchStateCount,
-                               exactColoringSearchStateLimit,
-                               "the 32-index hardware limit", analysisFailure);
+    setExactSearchLimitFailure(
+        moduleOp, allocation.physicalDFBCount, allocation.exactSearchStateCount,
+        exactColoringSearchStateLimit, getPhysicalIndexLimitDescription(),
+        analysisFailure);
     return failure();
   }
 
@@ -521,9 +531,9 @@ computeAllocationBytes(ArrayRef<DFBPhysicalIndexAssignment> assignments) {
   return footprint.getTotalBytes();
 }
 
-/// Recomputes a minimum assignment only when a valid first-fit assignment
-/// exceeds the L1 budget. Both user-reuse policies therefore share identical
-/// minimum-color search and diagnostic behavior.
+/// Recomputes an assignment with the minimum physical-index count only when a
+/// valid first-fit assignment exceeds the L1 budget. Both user-reuse policies
+/// therefore share identical search and diagnostic behavior.
 static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
     ModuleOp moduleOp, std::uint64_t exactColoringSearchStateLimit,
     DFBAnalysisFailure &analysisFailure,

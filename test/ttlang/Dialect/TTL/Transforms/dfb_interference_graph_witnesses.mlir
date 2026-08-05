@@ -1,9 +1,11 @@
-// Tests interference graphs produced by launch-node-local DFB lifetimes.
+// Tests physical-index conflict graphs from launch-node-local DFB lifetimes.
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true})' | FileCheck %s
 
-// Each DFB is active on the launch node it shares with each adjacent DFB.
-// Non-adjacent DFBs have disjoint launch domains. The resulting five-cycle has
-// maximum clique size two but requires three physical indices.
+// Each DFB conflicts with its two neighbors in a five-DFB cycle. Non-neighbors
+// have disjoint launch domains and may share. At most two DFBs conflict
+// pairwise, which proves only a two-index lower bound, but alternating two
+// indices cannot close an odd cycle. The required third index demonstrates why
+// the lower bound alone cannot decide every allocation.
 
 // CHECK: module attributes {ttl.dfb_allocations = [{{.*}}dfb_index = 0 : i32{{.*}}, {{.*}}dfb_index = 1 : i32{{.*}}, {{.*}}dfb_index = 2 : i32{{.*}}]}
 // CHECK-LABEL: func.func @cycle_vertex_zero

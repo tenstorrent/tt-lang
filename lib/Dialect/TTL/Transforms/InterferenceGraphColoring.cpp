@@ -14,6 +14,8 @@ namespace mlir::tt::ttl {
 
 namespace {
 
+/// Applies one state limit across all independently solved candidate groups so
+/// splitting a graph cannot multiply the configured compile-time budget.
 class ExactColoringSearchBudget {
 public:
   explicit ExactColoringSearchBudget(std::uint64_t stateLimit)
@@ -45,6 +47,8 @@ struct FixedColorCountSearchResult {
   llvm::SmallVector<unsigned> colors;
 };
 
+/// Separates candidate groups that have no conflicts between them. Independent
+/// groups can reuse the same resource slots and are cheaper to search alone.
 static llvm::SmallVector<llvm::SmallVector<unsigned>>
 getConnectedComponents(const InterferenceGraph &graph) {
   llvm::SmallVector<llvm::SmallVector<unsigned>> components;
@@ -75,8 +79,14 @@ getConnectedComponents(const InterferenceGraph &graph) {
   return components;
 }
 
-static unsigned getGreedyCliqueLowerBound(const InterferenceGraph &graph,
-                                          llvm::ArrayRef<unsigned> component) {
+/// Finds a pairwise-conflicting set whose size proves a required slot count.
+///
+/// The degree-first greedy selection may miss a larger set, but every set it
+/// returns contains only members that conflict with every other member. Its
+/// size is therefore always a valid lower bound on the required slots.
+static unsigned
+getPairwiseConflictLowerBound(const InterferenceGraph &graph,
+                              llvm::ArrayRef<unsigned> component) {
   llvm::SmallVector<unsigned> candidates(component.begin(), component.end());
   llvm::sort(candidates, [&](unsigned lhsVertex, unsigned rhsVertex) {
     unsigned lhsDegree = graph.degree(lhsVertex);
@@ -85,17 +95,19 @@ static unsigned getGreedyCliqueLowerBound(const InterferenceGraph &graph,
                                   : lhsVertex < rhsVertex;
   });
 
-  llvm::SmallVector<unsigned> clique;
+  llvm::SmallVector<unsigned> conflictingSet;
   for (unsigned candidate : candidates) {
-    if (llvm::all_of(clique, [&](unsigned member) {
+    if (llvm::all_of(conflictingSet, [&](unsigned member) {
           return graph.interferes(candidate, member);
         })) {
-      clique.push_back(candidate);
+      conflictingSet.push_back(candidate);
     }
   }
-  return std::max(1U, static_cast<unsigned>(clique.size()));
+  return std::max(1U, static_cast<unsigned>(conflictingSet.size()));
 }
 
+/// Processes highly constrained candidates first to improve the first-fit
+/// assignment while retaining candidate number as a deterministic tie-breaker.
 static llvm::SmallVector<unsigned>
 getDegreePriorityOrder(const InterferenceGraph &graph,
                        llvm::ArrayRef<unsigned> component) {
@@ -109,6 +121,8 @@ getDegreePriorityOrder(const InterferenceGraph &graph,
   return order;
 }
 
+/// Fixing the slot count answers one capacity question without first proving
+/// that every smaller count fails.
 class FixedColorCountSearch {
 public:
   FixedColorCountSearch(const InterferenceGraph &graph,
@@ -134,6 +148,9 @@ public:
 private:
   static constexpr unsigned kUnassigned = std::numeric_limits<unsigned>::max();
 
+  /// Implements deterministic DSATUR selection. A candidate's saturation is
+  /// the number of different slots already used by its assigned conflicts;
+  /// higher saturation means fewer remaining choices and is searched first.
   unsigned selectVertex() const {
     unsigned selected = kUnassigned;
     unsigned selectedSaturation = 0;
@@ -180,6 +197,10 @@ private:
     return true;
   }
 
+  /// Backtracks over legal slots while removing equivalent slot renamings.
+  ///
+  /// At most one previously unused slot is tried at a state. Any other unused
+  /// slot differs only by its number and would produce an equivalent subtree.
   FixedColorCountSearchStatus assign(unsigned assignedCount,
                                      unsigned usedColorCount) {
     if (!searchBudget.consumeState()) {
@@ -228,7 +249,8 @@ computeInterferenceGraphColoringBounds(const InterferenceGraph &graph) {
   }
   llvm::SmallVector<unsigned> vertices =
       llvm::to_vector(llvm::seq<unsigned>(0, graph.size()));
-  bounds.cliqueLowerBound = getGreedyCliqueLowerBound(graph, vertices);
+  bounds.pairwiseConflictLowerBound =
+      getPairwiseConflictLowerBound(graph, vertices);
   bounds.colors = colorInterferenceGraphFirstFit(graph, vertices);
   for (unsigned color : bounds.colors) {
     bounds.colorCount = std::max(bounds.colorCount, color + 1);
@@ -252,7 +274,9 @@ colorInterferenceGraphWithColorLimitExactly(const InterferenceGraph &graph,
   result.colors.assign(graph.size(), 0);
   ExactColoringSearchBudget searchBudget(searchStateLimit);
   for (llvm::ArrayRef<unsigned> component : getConnectedComponents(graph)) {
-    if (getGreedyCliqueLowerBound(graph, component) > colorLimit) {
+    // More pairwise-conflicting candidates than available slots prove failure
+    // without backtracking.
+    if (getPairwiseConflictLowerBound(graph, component) > colorLimit) {
       result.colors.clear();
       result.exploredStateCount = searchBudget.getExploredStateCount();
       return result;
@@ -295,10 +319,13 @@ colorInterferenceGraphExactly(const InterferenceGraph &graph,
   ExactColoringSearchBudget searchBudget(searchStateLimit);
 
   for (llvm::ArrayRef<unsigned> component : getConnectedComponents(graph)) {
-    unsigned cliqueLowerBound = getGreedyCliqueLowerBound(graph, component);
-    result.cliqueLowerBound =
-        std::max(result.cliqueLowerBound, cliqueLowerBound);
+    unsigned pairwiseConflictLowerBound =
+        getPairwiseConflictLowerBound(graph, component);
+    result.pairwiseConflictLowerBound =
+        std::max(result.pairwiseConflictLowerBound, pairwiseConflictLowerBound);
 
+    // First-fit supplies a known-valid maximum for the increasing exact
+    // searches, so at least one tested slot count must succeed.
     llvm::SmallVector<unsigned> globalPriorityOrder =
         getDegreePriorityOrder(graph, component);
     InterferenceGraph componentGraph(component.size());
@@ -324,7 +351,7 @@ colorInterferenceGraphExactly(const InterferenceGraph &graph,
     }
 
     llvm::SmallVector<unsigned> exactColors;
-    for (unsigned candidateCount = cliqueLowerBound;
+    for (unsigned candidateCount = pairwiseConflictLowerBound;
          candidateCount <= upperBound; ++candidateCount) {
       FixedColorCountSearch search(graph, component, candidateCount,
                                    searchBudget);

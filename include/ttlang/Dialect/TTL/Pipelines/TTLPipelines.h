@@ -64,8 +64,8 @@ struct TTLToTTKernelPipelineOptions
       llvm::cl::init(true)};
   Option<std::uint64_t> exactColoringSearchStateLimit{
       *this, "exact-coloring-search-limit",
-      llvm::cl::desc("Maximum exact DFB coloring search states before "
-                     "reporting an inconclusive allocation result."),
+      llvm::cl::desc("Maximum states examined by exact DFB allocation before "
+                     "reporting an inconclusive result."),
       llvm::cl::init(1000000)};
   Option<bool> specializeCores{
       *this, "specialize-cores",

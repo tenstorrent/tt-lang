@@ -90,7 +90,7 @@ struct TTLValidateCBBudgetPass
     }
 
     uint64_t totalBytes = footprint.getTotalBytes();
-    SmallVector<int64_t, 32> sortedIndices =
+    SmallVector<int64_t, kMaxCircularBuffers> sortedIndices =
         footprint.getSortedPhysicalIndices();
 
     auto emitBreakdown = [&](InFlightDiagnostic &diag) {

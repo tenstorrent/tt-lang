@@ -1,10 +1,13 @@
 // Tests the distinct diagnostic for an inconclusive bounded exact search.
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{exact-coloring-search-limit=1})' --verify-diagnostics
 
-// Thirty persistent DFBs form a clique joined to the four-vertex path
-// declared in A,D,B,C order. First-fit uses 33 indices, while 32 suffice.
+// Thirty persistent DFBs all conflict pairwise and therefore require distinct
+// indices. The remaining four DFBs conflict in A-B-C-D order but are processed
+// as A,D,B,C, making first-fit use three indices when two suffice. The combined
+// first-fit result uses 33 indices, but an exact assignment can use 32. A
+// one-state limit must report an inconclusive search, not a capacity failure.
 
-// expected-error @below {{'builtin.module' op deterministic first-fit uses 33 physical DFB indices; exact coloring explored 1 states and reached the 1-state limit without proving whether the allocation fits the 32-index hardware limit; increase `exact-coloring-search-limit`}}
+// expected-error @below {{'builtin.module' op deterministic first-fit uses 33 physical DFB indices; exact allocation search explored 1 states and reached the 1-state limit without proving whether the allocation fits the 32-index hardware limit; increase `exact-coloring-search-limit`}}
 module {
   func.func @bounded_exact_search()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>,

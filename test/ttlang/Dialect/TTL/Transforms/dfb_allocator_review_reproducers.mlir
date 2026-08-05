@@ -39,12 +39,12 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 
 // -----
 
-// The four data DFBs have a path interference graph. Logical-ID first-fit
-// visits A, D, B, C and uses three data colors, while the exact assignment uses
-// two. The greedy assignment is valid and fits the hardware limit, so the
-// production allocator accepts its six total indices. The independent oracle
-// joins this graph with a 30-vertex clique to verify a fixed-limit check from 33
-// to 32 indices.
+// Each data DFB conflicts only with the next DFB in A-B-C-D order. Processing
+// them as A, D, B, C makes first-fit use three indices although two suffice.
+// This six-index result is valid and below the hardware limit, so proving the
+// smaller assignment would not change acceptance. The independent oracle adds
+// 30 DFBs that all conflict pairwise to verify the case where exact search must
+// reduce 33 first-fit indices to the available 32.
 
 // CHECK: module attributes {ttl.dfb_allocations = [{{.*}}dfb_index = 0 : i32{{.*}}, {{.*}}dfb_index = 1 : i32{{.*}}, {{.*}}dfb_index = 2 : i32{{.*}}, {{.*}}dfb_index = 3 : i32{{.*}}, {{.*}}dfb_index = 4 : i32{{.*}}, {{.*}}dfb_index = 5 : i32{{.*}}]}
 // CHECK-LABEL: func.func @path_producer

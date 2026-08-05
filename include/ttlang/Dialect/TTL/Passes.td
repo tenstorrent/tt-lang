@@ -827,12 +827,22 @@ def TTLFinalizeDFBIndices
     order conflicts with every other DFB. Unsupported or unknown control flow
     can reduce reuse but cannot produce an unsafe physical assignment.
 
-    Allocation first applies deterministic first-fit. Exact coloring runs only
-    when first-fit exceeds an index or L1 limit and the available bounds do not
-    already prove acceptance or rejection. Exact search examines at most
-    `exact-coloring-search-limit` deterministic states. Reaching that limit
-    reports an inconclusive allocation diagnostic; it does not report that the
-    hardware capacity was proved insufficient.
+    The allocator represents each logical DFB as a vertex, each pair that
+    cannot share as an edge, and each physical index as a color. First-fit
+    quickly produces a valid assignment by giving each DFB the lowest index
+    not used by one of its conflicts, but its result depends on DFB order and
+    may use more indices than necessary. A found set of pairwise-conflicting
+    DFBs proves that at least that many indices are required.
+
+    Exhaustive assignment search can grow exponentially, so it runs only when
+    first-fit prevents acceptance and the pairwise-conflict lower bound does
+    not already prove failure. The physical-index check asks directly whether
+    an assignment fits the available indices. Minimum physical-index-count
+    search runs only when an otherwise valid assignment exceeds the L1 budget.
+    Each search examines at most `exact-coloring-search-limit` deterministic
+    states to bound compile time. Reaching that limit reports an inconclusive
+    allocation diagnostic; it does not report that hardware capacity was
+    proved insufficient.
 
     Every storage-accessing operation with a direct DFB operand is treated as a
     runtime access from operation entry through completion. Every direct DFB
@@ -843,9 +853,9 @@ def TTLFinalizeDFBIndices
     push, wait, and pop operations required to prove a bounded lifecycle.
 
     Disabling `reuse-user-dfbs` compacts distinct provisional user indices
-    without introducing new sharing between user DFBs, then colors only
-    compiler-created DFBs. Both modes use the same concurrent lifetime proof
-    and interference graph for every DFB they color.
+    without introducing new sharing between user DFBs, then assigns only
+    compiler-created DFBs. Both modes use the same lifetime proof and conflict
+    relation for every DFB whose index they select.
 
     Every used compiler-created DFB must contain `ttl.cb_reserve`,
     `ttl.cb_push`, `ttl.cb_wait`, and `ttl.cb_pop`. An unused declaration is
@@ -867,8 +877,8 @@ def TTLFinalizeDFBIndices
            "non-overlapping lifetimes across concurrent kernels.">,
     Option<"exactColoringSearchStateLimit", "exact-coloring-search-limit",
            "uint64_t", "1000000",
-           "Maximum exact-coloring search states before reporting an "
-           "inconclusive allocation result.">
+           "Maximum states examined by exact DFB allocation before reporting "
+           "an inconclusive result.">
   ];
 }
 

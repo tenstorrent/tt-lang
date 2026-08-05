@@ -2,8 +2,10 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// This test uses exhaustive assignment enumeration as an independent oracle.
-// It does not call the production search while computing expected minima.
+// This test treats each graph vertex as one DFB, each edge as a required
+// distinct-index relation, and each color as one physical index. Exhaustive
+// assignment enumeration supplies expected results without calling the
+// production search.
 
 #include "ttlang/Dialect/TTL/Transforms/InterferenceGraphColoring.h"
 
@@ -26,8 +28,8 @@ using mlir::tt::ttl::InterferenceGraphColorLimitStatus;
 constexpr uint64_t kUnlimitedSearchStates =
     std::numeric_limits<uint64_t>::max();
 
-/// Enumerates color choices in vertex order so expected results do not depend
-/// on the production DSATUR implementation or its priority rules.
+/// Enumerates index choices in vertex order so expected results do not depend
+/// on the production search order.
 static bool oracleCanColor(const InterferenceGraph &graph,
                            llvm::MutableArrayRef<unsigned> colors,
                            unsigned vertex, unsigned colorCount) {
@@ -55,8 +57,8 @@ static bool oracleCanColor(const InterferenceGraph &graph,
   return false;
 }
 
-/// Finds the minimum feasible count by exhaustive enumeration.
-static unsigned oracleChromaticNumber(const InterferenceGraph &graph) {
+/// Finds the minimum feasible physical-index count by exhaustive enumeration.
+static unsigned oracleMinimumIndexCount(const InterferenceGraph &graph) {
   if (graph.size() == 0) {
     return 0;
   }
@@ -118,7 +120,7 @@ static bool compareProductionSolverWithOracle() {
     uint64_t graphCount = uint64_t{1} << edgeCount;
     for (uint64_t edgeMask = 0; edgeMask < graphCount; ++edgeMask) {
       InterferenceGraph graph = buildGraph(vertexCount, edgeMask);
-      unsigned oracleCount = oracleChromaticNumber(graph);
+      unsigned oracleCount = oracleMinimumIndexCount(graph);
       ExactInterferenceGraphColoring production =
           mlir::tt::ttl::colorInterferenceGraphExactly(graph,
                                                        kUnlimitedSearchStates);
@@ -182,8 +184,8 @@ static bool verifyGreedyCapacityReproducer() {
       capacityGraph.addInterference(singleton, otherVertex);
     }
   }
-  // Vertex order A, D, B, C makes first-fit use three colors for the path
-  // A-B-C-D after the 30-color clique.
+  // A, D, B, C processing makes first-fit use three indices for the conflict
+  // chain A-B-C-D after the 30 pairwise-conflicting DFBs.
   capacityGraph.addInterference(30, 32);
   capacityGraph.addInterference(32, 33);
   capacityGraph.addInterference(33, 31);
@@ -238,8 +240,8 @@ static bool verifySearchLimitOutcome() {
   return true;
 }
 
-/// Builds one Mycielskian while preserving deterministic vertex numbering.
-/// Repeated application creates low-clique, high-chromatic witnesses.
+/// Preserves small pairwise-conflicting sets while increasing the required
+/// index count, producing cases where the lower bound is intentionally weak.
 static InterferenceGraph buildMycielskian(const InterferenceGraph &graph) {
   unsigned vertexCount = graph.size();
   InterferenceGraph result(2 * vertexCount + 1);
@@ -261,9 +263,9 @@ static InterferenceGraph buildMycielskian(const InterferenceGraph &graph) {
   return result;
 }
 
-/// Verifies a C5 witness and demonstrates why a fixed acceptance query avoids
-/// the harder minimum proof when the clique bound is far below chromatic count.
-static bool verifyLowCliqueFixedLimitCheck() {
+/// Demonstrates why asking whether five indices fit is cheaper than proving
+/// the minimum when the pairwise-conflict lower bound is weak.
+static bool verifyFixedLimitAvoidsMinimumSearch() {
   InterferenceGraph completeGraph(2);
   completeGraph.addInterference(0, 1);
   InterferenceGraph cycleFive = buildMycielskian(completeGraph);
@@ -275,10 +277,10 @@ static bool verifyLowCliqueFixedLimitCheck() {
   InterferenceGraphColorLimitResult cycleThreeColors =
       mlir::tt::ttl::colorInterferenceGraphWithColorLimitExactly(
           cycleFive, /*colorLimit=*/3, kUnlimitedSearchStates);
-  if (cycleBounds.cliqueLowerBound != 2 ||
+  if (cycleBounds.pairwiseConflictLowerBound != 2 ||
       cycleTwoColors.status != InterferenceGraphColorLimitStatus::Infeasible ||
       !cycleThreeColors.isFeasible()) {
-    llvm::errs() << "C5 exact-coloring witness mismatch\n";
+    llvm::errs() << "five-cycle allocation witness mismatch\n";
     return false;
   }
 
@@ -294,30 +296,28 @@ static bool verifyLowCliqueFixedLimitCheck() {
   if (!fixedLimit.isFeasible() ||
       minimum.status !=
           ExactInterferenceGraphColoringStatus::SearchLimitReached) {
-    llvm::errs() << "low-clique fixed-limit comparison mismatch: fixed="
+    llvm::errs() << "fixed-limit and minimum-search comparison mismatch: fixed="
                  << static_cast<unsigned>(fixedLimit.status)
                  << " minimum=" << static_cast<unsigned>(minimum.status)
                  << " fixed_states=" << fixedLimit.exploredStateCount
                  << " minimum_states=" << minimum.exploredStateCount << "\n";
     return false;
   }
-  llvm::outs() << "low_clique_fixed_states=" << fixedLimit.exploredStateCount
-               << "\n"
-               << "low_clique_minimum_states=" << minimum.exploredStateCount
-               << "\n";
+  llvm::outs() << "fixed_limit_states=" << fixedLimit.exploredStateCount << "\n"
+               << "minimum_proof_states=" << minimum.exploredStateCount << "\n";
   return true;
 }
 
-/// Exhaustively measures the assignment-count penalty of uniform coloring
+/// Exhaustively measures the assignment-count penalty of uniform assignment
 /// relative to per-node and two-group contracts.
 static bool compareAssignmentContracts() {
   constexpr unsigned kVertexCount = 4;
   constexpr unsigned kPossibleEdgeCount = 6;
   constexpr unsigned kGraphCount = 1U << kPossibleEdgeCount;
-  unsigned chromaticNumbers[kGraphCount];
+  unsigned minimumIndexCounts[kGraphCount];
   for (unsigned edgeMask = 0; edgeMask < kGraphCount; ++edgeMask) {
-    chromaticNumbers[edgeMask] =
-        oracleChromaticNumber(buildGraph(kVertexCount, edgeMask));
+    minimumIndexCounts[edgeMask] =
+        oracleMinimumIndexCount(buildGraph(kVertexCount, edgeMask));
   }
 
   uint64_t caseCount = 0;
@@ -328,17 +328,17 @@ static bool compareAssignmentContracts() {
     for (unsigned secondNode = 0; secondNode < kGraphCount; ++secondNode) {
       for (unsigned thirdNode = 0; thirdNode < kGraphCount; ++thirdNode) {
         unsigned uniformCount =
-            chromaticNumbers[firstNode | secondNode | thirdNode];
-        unsigned perNodeCount =
-            std::max({chromaticNumbers[firstNode], chromaticNumbers[secondNode],
-                      chromaticNumbers[thirdNode]});
+            minimumIndexCounts[firstNode | secondNode | thirdNode];
+        unsigned perNodeCount = std::max({minimumIndexCounts[firstNode],
+                                          minimumIndexCounts[secondNode],
+                                          minimumIndexCounts[thirdNode]});
         unsigned twoGroupCount =
-            std::min({std::max(chromaticNumbers[firstNode | secondNode],
-                               chromaticNumbers[thirdNode]),
-                      std::max(chromaticNumbers[firstNode | thirdNode],
-                               chromaticNumbers[secondNode]),
-                      std::max(chromaticNumbers[secondNode | thirdNode],
-                               chromaticNumbers[firstNode])});
+            std::min({std::max(minimumIndexCounts[firstNode | secondNode],
+                               minimumIndexCounts[thirdNode]),
+                      std::max(minimumIndexCounts[firstNode | thirdNode],
+                               minimumIndexCounts[secondNode]),
+                      std::max(minimumIndexCounts[secondNode | thirdNode],
+                               minimumIndexCounts[firstNode])});
         ++caseCount;
         if (perNodeCount < uniformCount) {
           ++perNodeImprovementCount;
@@ -370,7 +370,7 @@ int main() {
   return compareProductionSolverWithOracle() &&
                  verifyGreedyCapacityReproducer() &&
                  verifySearchLimitOutcome() &&
-                 verifyLowCliqueFixedLimitCheck() &&
+                 verifyFixedLimitAvoidsMinimumSearch() &&
                  compareAssignmentContracts()
              ? 0
              : 1;

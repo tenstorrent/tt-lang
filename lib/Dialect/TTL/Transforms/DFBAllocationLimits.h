@@ -5,6 +5,7 @@
 #ifndef TTLANG_DIALECT_TTL_TRANSFORMS_DFBALLOCATIONLIMITS_H
 #define TTLANG_DIALECT_TTL_TRANSFORMS_DFBALLOCATIONLIMITS_H
 
+#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 
 #include "mlir/IR/BuiltinOps.h"
@@ -30,7 +31,8 @@ public:
   bool empty() const { return maxBytesByIndex.empty(); }
   uint64_t getTotalBytes() const;
   uint64_t getBytes(int64_t physicalIndex) const;
-  llvm::SmallVector<int64_t, 32> getSortedPhysicalIndices() const;
+  llvm::SmallVector<int64_t, kMaxCircularBuffers>
+  getSortedPhysicalIndices() const;
 
 private:
   llvm::DenseMap<int64_t, uint64_t> maxBytesByIndex;

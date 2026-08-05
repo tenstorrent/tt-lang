@@ -115,7 +115,7 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         dest="dfb_exact_coloring_search_limit",
         type=_nonnegative_int,
-        help="Limit exact DFB coloring to this many deterministic search "
+        help="Limit exact DFB allocation to this many deterministic search "
         "states (default: 1000000).",
     )
     p.add_argument(

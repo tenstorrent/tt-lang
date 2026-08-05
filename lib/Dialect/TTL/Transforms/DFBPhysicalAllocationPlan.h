@@ -59,7 +59,7 @@ enum class DFBConflictReason {
   ConcurrentLifetime,
 };
 
-/// Source evidence for one edge in the physical DFB conflict graph.
+/// Source evidence that explains why one logical DFB pair cannot share.
 struct DFBConflictEvidence {
   unsigned lhsLogicalIndex = 0;
   unsigned rhsLogicalIndex = 0;
@@ -129,10 +129,13 @@ private:
 /// Builds and validates a complete physical DFB allocation without mutation.
 class DFBPhysicalAllocationPlanner {
 public:
-  /// Builds a plan using deterministic first-fit with bounded exact checks.
+  /// Builds a plan using deterministic first-fit and bounded exhaustive checks.
   ///
   /// `operation` must be a `ModuleOp`. Failures are recorded for the consuming
-  /// pass to diagnose before any IR mutation.
+  /// pass to diagnose before any IR mutation. A successful plan has verified
+  /// sharing, dense indices, runtime descriptors, and hardware capacity.
+  /// Unknown lifetime facts add conflicts and can cause rejection, but cannot
+  /// permit unsafe sharing.
   DFBPhysicalAllocationPlanner(Operation *operation, bool reuseUserDFBs,
                                std::uint64_t exactColoringSearchStateLimit,
                                AnalysisManager analysisManager);

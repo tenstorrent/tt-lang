@@ -1312,9 +1312,9 @@ processors.
 Repeated DFB protocols may produce periodic or disconnected lifetimes. Cyclic
 register-allocation work models software-pipelined lifetimes with
 [circular-arc graphs](https://www.sciencedirect.com/science/article/pii/S0166218X99001055).
-SSA chordality or interval-coloring results apply only after the compiler proves
-that each physical DFB version has the required connected lifetime. A separate
-exact constraint model, following
+Allocation algorithms that require one connected lifetime per value apply only
+after the compiler proves that property for each physical DFB version. A
+separate exact constraint model, following
 [Unison](https://arxiv.org/abs/1804.02452), can validate small cases that
 combine index assignment, per-node specialization, lifetime splitting,
 scheduling, and spilling without requiring the production allocator to use a
@@ -1327,8 +1327,8 @@ general solver.
 The liveness analysis consumes the cached logical-identity result and exposes
 logical lifecycles, lifetime frontiers, boundedness, and pairwise lifetime
 order. Its operation events and program-order and protocol edges remain an
-internal proof representation. It does not construct an interference graph or
-select physical indices.
+internal proof representation. It does not construct the physical-index
+conflict relation or select indices.
 
 ```text
 resolveLogicalIdentities(module):
@@ -1377,6 +1377,23 @@ following reasons: descriptor mismatch, unknown launch-node domain, unproven
 quiescence, transaction mismatch, pointer-owner mismatch, or concurrent
 lifetime.
 
+The allocation graph uses one vertex per logical DFB and one edge per pair
+that cannot share. Assigning a graph color means assigning a physical DFB
+index; vertices joined by an edge must receive different indices. A clique is
+a set of vertices in which every pair has an edge. Every DFB in a clique needs a
+different physical index, so the clique size is a proved lower bound on the
+number of required indices. The allocator finds a clique greedily. It may miss
+a larger clique, but the one it finds still proves its lower bound.
+
+First-fit processes DFBs in immutable declaration order and assigns the lowest
+index not used by a conflict. This produces a valid assignment quickly, but a
+different order can use fewer indices. Exact search uses deterministic DSATUR
+ordering: it next selects the unassigned DFB constrained by the most different
+indices among already assigned conflicts, then tries legal indices in numeric
+order. Resolving the most constrained DFB first reduces failed alternatives.
+DSATUR changes search order only; feasibility and infeasibility results come
+from exhaustive backtracking within the configured state limit.
+
 ```text
 buildPhysicalAllocationPlan(module, logicalIdentities, perNodeLifetimes):
   reject if a derived DFB-index attribute exists
@@ -1403,23 +1420,23 @@ buildPhysicalAllocationPlan(module, logicalIdentities, perNodeLifetimes):
 
   conflicts = typed conflict graph induced by candidates
   assignment = deterministicFirstFit(conflicts)
-  lowerBound = greedyClique(conflicts)
+  pairwiseConflictLowerBound = findCliqueLowerBound(conflicts)
   if assignment exceeds the physical-index limit:
-    fitResult = fixedLimitDSATUR(conflicts, physicalIndexLimit,
-                                 searchStateLimit)
+    fitResult = exactFixedLimitSearch(conflicts, physicalIndexLimit,
+                                      searchStateLimit)
     if fitResult is SearchLimitReached:
       reject with an inconclusive-search diagnostic
     if fitResult is Infeasible:
       reject with a proved capacity diagnostic
     assignment = fitResult.assignment
-  reject a capacity result only after exact infeasibility or a sound lower
-      bound proves that the applicable limit cannot be met
+  reject a capacity result only after exact infeasibility or the
+      pairwise-conflict lower bound exceeds the applicable limit
   verify every pair assigned one index against the typed conflict model
 
   aggregate L1 bytes once per unique physical index
   if assignment exceeds the L1 limit and is not known minimum:
-    minimumResult = minimumColorDSATUR(conflicts, lowerBound,
-                                      searchStateLimit)
+    minimumResult = exactMinimumIndexSearch(
+        conflicts, pairwiseConflictLowerBound, searchStateLimit)
     if minimumResult is SearchLimitReached:
       reject with an inconclusive-search diagnostic
     assignment = minimumResult.assignment
@@ -1442,15 +1459,17 @@ applyPhysicalAllocationPlan(module, plan):
   write ttl.dfb_allocations from plan.runtimeDescriptors
 ```
 
-Each color is one physical index. First-fit is the default assignment mechanism.
-When first-fit exceeds the physical-index limit, one fixed-limit exact query
-tests that limit directly. Minimum-color search runs only when a valid index
-assignment exceeds the L1 budget. Any deterministic assignment that satisfies
-both hardware limits is valid. Each exact query examines at most
-`exact-coloring-search-limit` deterministic states, which defaults to 1,000,000.
-Reaching the limit reports that feasibility was not proved and identifies the
-option that increases the limit; it never reports a proved capacity failure.
-The planner completes every
+First-fit is accepted whenever its valid assignment satisfies the physical
+index and L1 limits; proving a smaller assignment would not change compilation.
+Backtracking can grow exponentially, so exact search is reserved for cases
+where first-fit prevents acceptance. A physical-index failure asks one direct
+question at the available index count instead of proving the minimum. A valid
+assignment that exceeds L1 requires a minimum physical-index-count search
+because a different sharing assignment may use less physical storage. Each
+exact query examines at most `exact-coloring-search-limit` deterministic states,
+which defaults to 1,000,000, to bound compile time. Reaching the limit reports
+that feasibility was not proved and identifies the option that increases the
+limit; it never reports a proved capacity failure. The planner completes every
 diagnostic-producing validation before `TTLFinalizeDFBIndices` changes any
 `dfb_id`, `cb_index`, kernel attribute, or module attribute. The finalizer only
 materializes the validated plan.
@@ -1489,16 +1508,16 @@ consumer can begin B. An early B wait cannot consume A's data because its entry
 is at or after one of B's earliest use events. The physical allocation is
 sufficient for both logical DFBs.
 
-Coloring places two DFBs in one color only when this relation holds in one
-direction on every shared node. The final pairwise verification independently
-checks the typed conflict model for every shared color. If a lifetime or
+Allocation places two DFBs at one physical index only when this relation holds
+in one direction on every shared node. The final pairwise verification checks
+the typed conflict model again for every shared index. If a lifetime or
 ordering proof is missing, the DFB conflicts with every candidate that may
 execute on the same node; this can increase the physical count but cannot
 create unsafe reuse.
 
 Two DFBs consumed by the same operation necessarily overlap: both acquires
-precede the consumer and both pops follow it. Coloring therefore assigns them
-different physical indices.
+precede the consumer and both pops follow it. Allocation therefore assigns
+them different physical indices.
 
 #### Representative example
 
@@ -1509,12 +1528,12 @@ kernels. Proven non-overlapping lifetimes reduce the allocation to 29 physical
 indices, below the hardware limit of 32. The device test compares the final
 result with PyTorch scaled dot-product attention.
 
-`test/ttlang/Dialect/TTL/Transforms/dfb_concurrent_kernel_liveness.mlir` isolates
-the cross-kernel ordering rules. The independent allocation-oracle test joins a
-30-vertex clique with the confirmed four-vertex bad-order graph: first-fit uses
-33 indices and the fixed-limit exact check finds a 32-index assignment. The
-invalid liveness test confirms that 33 mutually conflicting lifetimes are
-rejected.
+`test/ttlang/Dialect/TTL/Transforms/dfb_concurrent_kernel_liveness.mlir`
+isolates the cross-kernel ordering rules. The independent allocation-oracle
+test joins 30 DFBs that all conflict pairwise with the confirmed four-DFB
+order-sensitive case. First-fit uses 33 indices and the fixed-limit exact check
+finds a 32-index assignment. The invalid liveness test confirms that 33
+mutually conflicting lifetimes are rejected.
 
 `test/python/test_user_dfb_reuse.py` recursively composes copy atoms into an
 operation with 33 logical DFBs. The operation compiles and executes only when
@@ -1525,7 +1544,7 @@ reuse reduces the physical allocation below the hardware limit.
 The pass compacts distinct provisional user indices before placing
 compiler-created DFBs after them. This removes gaps caused by DFBs that the
 frontend created but no kernel captured, without changing logical identity or
-existing physical-index sharing. Lifetime-based coloring may further reuse
+existing physical-index sharing. Lifetime-based assignment may further reuse
 physical indices when enabled. The planned physical DFB count is one greater
 than the greatest assigned index, and the pass verifies this does not exceed
 `kMaxCircularBuffers` (32).
@@ -1572,11 +1591,11 @@ the same physical configuration as direct execution.
 
 Setting `reuse-user-dfbs=false` retains physical sharing already expressed by
 equal provisional user indices but does not introduce new sharing between user
-DFBs. It compacts the distinct provisional values, then colors only
+DFBs. It compacts the distinct provisional values, then assigns only
 compiler-created DFBs. Both allocation modes use the same concurrent lifetime
-proof and interference graph for every DFB they color. Both modes emit the
-complete `ttl.dfb_allocations` table and assign identities to compiler-created
-declarations.
+proof and conflict relation for every DFB whose index they select. Both modes
+emit the complete `ttl.dfb_allocations` table and assign identities to
+compiler-created declarations.
 
 ```text
 allocateWithoutUserReuse(module, lifetimes):
@@ -1676,18 +1695,20 @@ with releases before finalization.
   must also prove compatible transaction counts and address calculations.
 
 - **Pressure above the unspilled limits.** Deterministic first-fit is accepted
-  when it fits. One fixed-limit DSATUR query runs when first-fit exceeds the
-  physical-index limit. Minimum-color DSATUR runs only when a valid assignment
-  exceeds the L1 budget. Each query is limited to 1,000,000 deterministic states
-  by default. Limit exhaustion reports an inconclusive allocation; proven
-  infeasibility reports a capacity failure. DRAM spilling is tracked by
+  when it fits because a smaller assignment would not change acceptance. One
+  fixed-limit exhaustive query runs when first-fit exceeds the physical-index
+  limit. Minimum physical-index-count search runs only when a valid assignment
+  exceeds the L1 budget. Each query is limited to 1,000,000 deterministic
+  states by default so difficult graphs cannot make compile time unbounded.
+  Limit exhaustion reports an inconclusive allocation; proven infeasibility
+  reports a capacity failure. DRAM spilling is tracked by
   [#809](https://github.com/tenstorrent/tt-lang/issues/809).
 
-- **Reachability cost.** The bit-vector transitive closure is cubic in the
-  number of top-level DFB-accessing operations across all kernel sequences.
-  Unrelated operations are excluded. An SCC condensation followed by
-  topological bit-set propagation would scale better for programs with many
-  DFB lifecycle operations.
+- **Reachability cost.** Each launch node runs one graph traversal from every
+  top-level DFB-accessing operation. For `V` operation events and `E` ordering
+  edges, this costs `O(V * (V + E))`; unrelated operations are excluded. Launch
+  nodes with identical active operations currently recompute the same ordering
+  relation. Grouping those nodes could reduce analysis time for large grids.
 
 ## Scalar Element Access to DFBs
 

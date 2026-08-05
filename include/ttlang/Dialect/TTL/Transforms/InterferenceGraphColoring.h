@@ -14,8 +14,12 @@
 
 namespace mlir::tt::ttl {
 
-/// Undirected graph whose edges prohibit assigning the same color to both
-/// endpoint vertices.
+/// Allocation constraints represented as an undirected graph.
+///
+/// Each vertex is one allocation candidate. An edge means its two candidates
+/// cannot share a resource. A color is one resource slot, so a valid coloring
+/// assigns different colors to the endpoints of every edge. For DFB allocation,
+/// vertices are logical DFBs and colors are physical DFB indices.
 class InterferenceGraph {
 public:
   /// Creates a graph with vertices numbered `[0, vertexCount)`.
@@ -25,26 +29,26 @@ public:
   /// Returns the number of vertices in the graph.
   unsigned size() const { return adjacency.size(); }
 
-  /// Records that two distinct vertices cannot receive the same color.
+  /// Records that two distinct candidates cannot share a resource slot.
   void addInterference(unsigned lhs, unsigned rhs) {
     assert(lhs < size() && rhs < size() && lhs != rhs);
     adjacency[lhs].set(rhs);
     adjacency[rhs].set(lhs);
   }
 
-  /// Returns true when two vertices require distinct colors.
+  /// Returns true when two candidates require distinct resource slots.
   bool interferes(unsigned lhs, unsigned rhs) const {
     assert(lhs < size() && rhs < size());
     return adjacency[lhs].test(rhs);
   }
 
-  /// Returns the neighbors of one vertex.
+  /// Returns the candidates that conflict with one candidate.
   const llvm::BitVector &getNeighbors(unsigned vertex) const {
     assert(vertex < size());
     return adjacency[vertex];
   }
 
-  /// Returns the degree of one vertex.
+  /// Returns the number of candidates that conflict with one candidate.
   unsigned degree(unsigned vertex) const {
     return getNeighbors(vertex).count();
   }
@@ -53,10 +57,11 @@ private:
   llvm::SmallVector<llvm::BitVector> adjacency;
 };
 
-/// Visits vertices in priority order and assigns the lowest available color.
+/// Assigns each candidate the lowest-numbered slot not used by a conflict.
 ///
-/// Production DFB allocation accepts this assignment when it satisfies the
-/// hardware limits and otherwise uses exact coloring below.
+/// Candidates are processed in `priorityOrder`, so the result is deterministic
+/// but may use more slots than necessary. The returned valid assignment gives
+/// an upper bound on the minimum required slot count.
 inline llvm::SmallVector<unsigned>
 colorInterferenceGraphFirstFit(const InterferenceGraph &graph,
                                llvm::ArrayRef<unsigned> priorityOrder) {
@@ -92,27 +97,31 @@ colorInterferenceGraphFirstFit(const InterferenceGraph &graph,
   return vertexColors;
 }
 
-/// Completion status for bounded exact coloring.
+/// Completion status for a bounded minimum-slot search.
 enum class ExactInterferenceGraphColoringStatus {
   Optimal,
   SearchLimitReached,
 };
 
-/// Result of bounded exact coloring of an interference graph.
+/// Result of proving the minimum number of slots required by a graph.
 struct ExactInterferenceGraphColoring {
   ExactInterferenceGraphColoringStatus status =
       ExactInterferenceGraphColoringStatus::Optimal;
 
-  /// Dense zero-based color indexed by vertex number.
+  /// Dense zero-based resource slot indexed by candidate number.
   ///
   /// Present only when `status` is `Optimal`.
   llvm::SmallVector<unsigned> colors;
 
-  /// Proven chromatic number, or zero when search was inconclusive.
+  /// Proven minimum slot count, or zero when search was inconclusive.
   unsigned colorCount = 0;
 
-  /// Sound clique lower bound used to begin exact search.
-  unsigned cliqueLowerBound = 0;
+  /// Size of a found set whose members all conflict with each other.
+  ///
+  /// Such a set is a clique. Every member needs a distinct slot, so its size is
+  /// a proved lower bound on the required slot count. The found clique need not
+  /// be the largest clique in the graph.
+  unsigned pairwiseConflictLowerBound = 0;
 
   /// Recursive search states examined before completion or termination.
   std::uint64_t exploredStateCount = 0;
@@ -122,37 +131,45 @@ struct ExactInterferenceGraphColoring {
   }
 };
 
-/// Deterministic feasible coloring with a sound clique lower bound.
+/// A valid first-fit assignment and a proved lower bound on required slots.
 struct InterferenceGraphColoringBounds {
+  /// Dense zero-based resource slot indexed by candidate number.
   llvm::SmallVector<unsigned> colors;
-  unsigned colorCount = 0;
-  unsigned cliqueLowerBound = 0;
 
-  bool provesMinimum() const { return colorCount == cliqueLowerBound; }
+  /// Slots used by `colors`, which is an upper bound on the minimum.
+  unsigned colorCount = 0;
+
+  /// Size of a found clique, which is a lower bound on the minimum.
+  unsigned pairwiseConflictLowerBound = 0;
+
+  /// Equal valid upper and proved lower bounds establish the minimum.
+  bool provesMinimum() const {
+    return colorCount == pairwiseConflictLowerBound;
+  }
 };
 
-/// Computes a deterministic greedy upper bound and explicit clique lower bound.
+/// Computes a first-fit assignment and a pairwise-conflict lower bound.
 InterferenceGraphColoringBounds
 computeInterferenceGraphColoringBounds(const InterferenceGraph &graph);
 
-/// Completion status for exact coloring with a fixed color limit.
+/// Completion status for deciding whether a fixed slot limit is sufficient.
 enum class InterferenceGraphColorLimitStatus {
   Feasible,
   Infeasible,
   SearchLimitReached,
 };
 
-/// Result of deciding whether an interference graph fits a fixed color limit.
+/// Result of deciding whether an allocation graph fits a fixed slot limit.
 struct InterferenceGraphColorLimitResult {
   InterferenceGraphColorLimitStatus status =
       InterferenceGraphColorLimitStatus::Infeasible;
 
-  /// Dense zero-based color indexed by vertex number.
+  /// Dense zero-based resource slot indexed by candidate number.
   ///
   /// Present only when `status` is `Feasible`.
   llvm::SmallVector<unsigned> colors;
 
-  /// Number of colors used by the feasible assignment, or zero otherwise.
+  /// Slots used by the feasible assignment, or zero otherwise.
   unsigned colorCount = 0;
 
   /// Recursive search states examined before completion or termination.
@@ -163,22 +180,28 @@ struct InterferenceGraphColorLimitResult {
   }
 };
 
-/// Decides exactly whether `graph` can be colored with at most `colorLimit`
-/// colors using bounded DSATUR search.
+/// Decides whether `graph` can use at most `colorLimit` resource slots.
 ///
-/// `Infeasible` is returned only after an exhaustive proof. A search limit
-/// cannot be converted into a capacity rejection.
+/// The deterministic backtracking search selects the unassigned candidate
+/// constrained by the most different slots among its already assigned
+/// conflicts, then tries legal slots in numeric order. This DSATUR ordering
+/// reduces branching by resolving candidates with the fewest remaining choices
+/// first; it does not change which assignments are feasible. `Infeasible` is
+/// returned only after the search exhausts every assignment. Reaching the state
+/// limit is inconclusive and cannot justify a capacity rejection.
 InterferenceGraphColorLimitResult
 colorInterferenceGraphWithColorLimitExactly(const InterferenceGraph &graph,
                                             unsigned colorLimit,
                                             std::uint64_t searchStateLimit);
 
-/// Computes a deterministic minimum coloring with bounded DSATUR search.
+/// Computes a deterministic assignment with the minimum resource-slot count.
 ///
-/// Connected components are solved independently and reuse the same color
-/// range. Exhaustive infeasibility checks below the returned color count prove
-/// that an `Optimal` result is minimum. `SearchLimitReached` contains no
-/// coloring and cannot justify a capacity diagnostic.
+/// Disconnected candidate groups have no conflicts between them, so they are
+/// solved independently and reuse the same slots. The search begins at the
+/// pairwise-conflict lower bound and tests increasing slot counts. Exhaustively
+/// rejecting every smaller count proves that an `Optimal` result is minimum.
+/// `SearchLimitReached` contains no assignment and cannot justify a capacity
+/// diagnostic.
 ExactInterferenceGraphColoring
 colorInterferenceGraphExactly(const InterferenceGraph &graph,
                               std::uint64_t searchStateLimit);
