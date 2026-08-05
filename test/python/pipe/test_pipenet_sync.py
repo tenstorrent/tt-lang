@@ -1013,8 +1013,10 @@ def make_non_uniform_multicast_destination_address_kernel():
 
         send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
         first_recv_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        # Incompatible descriptors keep the receive DFBs physically distinct,
+        # so both allocation modes reach the multicast-address validation.
         second_recv_dfb = ttl.make_dataflow_buffer_like(
-            inp, shape=(1, 1), block_count=2
+            inp, shape=(1, 1), block_count=3
         )
 
         @ttl.compute()
@@ -1360,7 +1362,10 @@ def test_many_pipe_sync_sites_fit_hardware_semaphore_limit(device):
     ttnn.synchronize_device(device)
 
 
-def test_multicast_destination_addresses_differ_by_destination_rejected(device):
+@pytest.mark.parametrize("reuse_user_dfbs", [True, False], ids=["reuse", "distinct"])
+def test_multicast_destination_addresses_differ_by_destination_rejected(
+    device, reuse_user_dfbs
+):
     inp_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
     out_torch = torch.zeros(TILE, 2 * TILE, dtype=torch.bfloat16)
 
@@ -1375,4 +1380,7 @@ def test_multicast_destination_addresses_differ_by_destination_rejected(device):
             "address for all receivers"
         ),
     ):
-        non_uniform_multicast_destination_address_kernel(inp, out)
+        reuse_option = (
+            "--ttl-reuse-user-dfbs" if reuse_user_dfbs else "--no-ttl-reuse-user-dfbs"
+        )
+        non_uniform_multicast_destination_address_kernel(inp, out, options=reuse_option)
