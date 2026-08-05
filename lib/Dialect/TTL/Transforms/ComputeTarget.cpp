@@ -132,7 +132,9 @@ public:
     bool isIntegerArithmetic = primitive == ComputePrimitive::Add ||
                                primitive == ComputePrimitive::Subtract ||
                                primitive == ComputePrimitive::Multiply;
-    if (isIntegerArithmetic && isSupportedIntegerDataType(dataType)) {
+    bool isIntegerBroadcast = primitive == ComputePrimitive::Broadcast;
+    if ((isIntegerArithmetic || isIntegerBroadcast) &&
+        isSupportedIntegerDataType(dataType)) {
       return success();
     }
 
@@ -141,6 +143,9 @@ public:
     if (isIntegerArithmetic) {
       diagnostic << " is not supported; integer add, subtract, and multiply "
                     "support si32, u32, and u16 tiles";
+    } else if (isIntegerBroadcast) {
+      diagnostic << " is not supported; integer broadcast supports si32, "
+                    "u32, and u16 tiles";
     } else {
       diagnostic << " is not supported by this compute primitive";
     }
