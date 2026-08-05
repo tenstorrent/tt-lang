@@ -367,8 +367,26 @@ using CBPushLowering =
     CBOpLowering<CBPushOp, ttk::CBPushBackOp, /*HasResult=*/false>;
 using CBWaitLowering =
     CBOpLowering<CBWaitOp, ttk::CBWaitFrontOp, /*HasResult=*/true>;
-using CBPopLowering =
-    CBOpLowering<CBPopOp, ttk::CBPopFrontOp, /*HasResult=*/false>;
+
+struct CBPopLowering : OpConversionPattern<CBPopOp> {
+  CBPopLowering(const TypeConverter &typeConverter, MLIRContext *context,
+                const PipeCapacityPlan &pipeCapacityPlan,
+                const PipeResourcePlan &pipeResourcePlan)
+      : OpConversionPattern(typeConverter, context),
+        pipeCapacityPlan(pipeCapacityPlan), pipeResourcePlan(pipeResourcePlan) {
+  }
+
+  LogicalResult
+  matchAndRewrite(CBPopOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    return lowerCBPop(op, adaptor.getCb(), pipeCapacityPlan, pipeResourcePlan,
+                      rewriter);
+  }
+
+private:
+  const PipeCapacityPlan &pipeCapacityPlan;
+  const PipeResourcePlan &pipeResourcePlan;
+};
 
 /// Trace back from a view value to the underlying TTKernel CB.
 /// Traverses ViewLikeOpInterface ops (CBReserveOp, CBWaitOp) and casts.
@@ -1147,9 +1165,13 @@ struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
       const TypeConverter &typeConverter, MLIRContext *context,
       const PipeModulePlan &pipeModulePlan,
       const PipeResourcePlan &pipeResourcePlan,
+      const PipeCapacityPlan &pipeCapacityPlan,
+      const PipeCounterProgressMap &senderCapacityCounters,
       const PipeComputedAddressCounterMap &computedAddressCounters)
       : OpConversionPattern(typeConverter, context),
         pipeModulePlan(pipeModulePlan), pipeResourcePlan(pipeResourcePlan),
+        pipeCapacityPlan(pipeCapacityPlan),
+        senderCapacityCounters(senderCapacityCounters),
         computedAddressCounters(computedAddressCounters) {}
 
   LogicalResult
@@ -1161,12 +1183,15 @@ struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
     }
     return lowerPipeTransferSend(
         op, adaptor.getSrc(), pipeModulePlan.getTransferPlan(op.getOperation()),
-        pipeResourcePlan, computedAddressCounters, rewriter);
+        pipeResourcePlan, pipeCapacityPlan, senderCapacityCounters,
+        computedAddressCounters, rewriter);
   }
 
 private:
   const PipeModulePlan &pipeModulePlan;
   const PipeResourcePlan &pipeResourcePlan;
+  const PipeCapacityPlan &pipeCapacityPlan;
+  const PipeCounterProgressMap &senderCapacityCounters;
   const PipeComputedAddressCounterMap &computedAddressCounters;
 };
 
@@ -1652,7 +1677,7 @@ static LogicalResult
 lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                       TTLToTTKernelTypeConverter &typeConverter,
                       StringRef passName, bool pipeComputedAddresses,
-                      bool pipeGlobalSemaphoresOnly) {
+                      bool pipeCapacitySync, bool pipeGlobalSemaphoresOnly) {
   ConversionTarget target(ctx);
   target.addIllegalDialect<tt::ttl::TTLDialect>();
   target.addLegalDialect<affine::AffineDialect, arith::ArithDialect,
@@ -1730,6 +1755,7 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
 
   PipePlanningOptions pipePlanningOptions;
   pipePlanningOptions.enableComputedAddresses = pipeComputedAddresses;
+  pipePlanningOptions.enableCapacitySynchronization = pipeCapacitySync;
   pipePlanningOptions.counterAllocationPolicy =
       pipeGlobalSemaphoresOnly ? PipeCounterAllocationPolicy::GlobalOnly
                                : PipeCounterAllocationPolicy::LocalThenGlobal;
@@ -1742,11 +1768,15 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   PipeModulePlan pipeModulePlan = std::move(*maybePipeModulePlan);
   applyPipeModuleAttributes(mod, pipeModulePlan);
   const PipeResourcePlan &pipeResourcePlan = pipeModulePlan.getResourcePlan();
+  const PipeCapacityPlan &pipeCapacityPlan = pipeModulePlan.getCapacityPlan();
   // [Device 2.0] The kPipeSyncSemaphoreCountAttrName,
   // kPipeGlobalSemaphoreCountAttrName, and kPipeSramScratchBytesAttrName attrs
   // are the current host/runtime ABI for pipe resource binding. Keep the
   // allocation decision in this compiler plan so future typed device APIs only
   // change runtime binding code.
+  PipeCounterProgressMap senderCapacityCounters;
+  initializePipeCapacityCounters(pipeCapacityPlan, pipeResourcePlan,
+                                 senderCapacityCounters);
   PipeCounterProgressMap postSequenceCounters;
   initializePipePostSequenceCounters(pipeResourcePlan, postSequenceCounters);
   PipeComputedAddressCounterMap computedAddressCounters;
@@ -1766,18 +1796,19 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   patterns.add<PipeTransferPostLowering>(typeConverter, &ctx, pipeModulePlan,
                                          postSequenceCounters,
                                          pipeResourcePlan);
-  patterns.add<PipeTransferSendLowering>(typeConverter, &ctx, pipeModulePlan,
-                                         pipeResourcePlan,
-                                         computedAddressCounters);
+  patterns.add<PipeTransferSendLowering>(
+      typeConverter, &ctx, pipeModulePlan, pipeResourcePlan, pipeCapacityPlan,
+      senderCapacityCounters, computedAddressCounters);
   patterns.add<PipeTransferWaitLowering>(typeConverter, &ctx, pipeResourcePlan);
   patterns.add<WaitLowering>(typeConverter, &ctx,
                              pipeModulePlan.getCompletedPipeSendWaits());
-  patterns
-      .add<BindCBLowering, TensorSliceLowering, CBReserveLowering,
-           CBPushLowering, CBWaitLowering, CBPopLowering, TileStoreLowering,
-           StoreLowering, CoreXLowering, CoreYLowering, RawElementReadLowering,
-           RawElementWriteLowering, OpaqueCallLowering, GetDfbIdLowering>(
-          typeConverter, &ctx);
+  patterns.add<BindCBLowering, TensorSliceLowering, CBReserveLowering,
+               CBPushLowering, CBWaitLowering, TileStoreLowering, StoreLowering,
+               CoreXLowering, CoreYLowering, RawElementReadLowering,
+               RawElementWriteLowering, OpaqueCallLowering, GetDfbIdLowering>(
+      typeConverter, &ctx);
+  patterns.add<CBPopLowering>(typeConverter, &ctx, pipeCapacityPlan,
+                              pipeResourcePlan);
   populatePipeLoweringPatterns(patterns, typeConverter,
                                pipeModulePlan.getPipeNetIndex());
   populateFunctionOpInterfaceTypeConversionPattern(
@@ -2030,7 +2061,7 @@ struct TTLConvertTTLToTTKernelPass
 
     // Phase 1: Lower TTL ops to TTKernel (bind_cb, copy, wait, cb ops, store)
     if (failed(lowerTTLOpsToTTKernel(mod, ctx, typeConverter, getName(),
-                                     pipeComputedAddresses,
+                                     pipeComputedAddresses, pipeCapacitySync,
                                      pipeGlobalSemaphoresOnly))) {
       signalPassFailure();
       return;
