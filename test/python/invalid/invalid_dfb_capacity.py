@@ -3,15 +3,17 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: ttnn, tt-device
-# RUN: env TTLANG_COMPILE_ONLY=1 not %python %s 2>&1 | FileCheck %s
+# RUN: env TTLANG_COMPILE_ONLY=1 %python %s 2>&1 | FileCheck %s --check-prefix=REUSE
+# RUN: env TTLANG_COMPILE_ONLY=1 not %python %s --no-ttl-reuse-user-dfbs 2>&1 | FileCheck %s --check-prefix=NOREUSE
 
 """Compile-only coverage for the Python-visible physical DFB limit error.
 
-The nested conditional keeps every logical DFB lifetime unbounded. Recursive
-composition therefore requires 33 distinct physical DFB indices.
+With user DFB reuse disabled, recursive composition preserves 33 distinct
+logical assignments and must report the Python-visible physical-index limit.
 """
 
-# CHECK: DFB allocation needs 33 unspilled physical indices but hardware supports at most 32
+# REUSE: Compiled kernel ready
+# NOREUSE: need 33 unspilled DFB indices but hardware supports at most 32
 
 import os
 

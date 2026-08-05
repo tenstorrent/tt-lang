@@ -286,11 +286,27 @@ static LogicalResult verifyCustomFunctionIndexDependency(
   return success();
 }
 
+/// Propagates through every result except a boolean predicate, which cannot be
+/// the physical index consumed by a custom function.
+static bool shouldPropagatePhysicalIndex(Value result) {
+  return !result.getType().isInteger(1);
+}
+
+/// Adds only results that may preserve or compute a physical DFB index.
+static void appendPhysicalIndexResults(Operation *operation,
+                                       SmallVectorImpl<Value> &pending) {
+  for (Value result : operation->getResults()) {
+    if (shouldPropagatePhysicalIndex(result)) {
+      pending.push_back(result);
+    }
+  }
+}
+
 /// Verifies every transitive use of one physical DFB index. Pure SSA operations
-/// propagate the dependency conservatively to all results. Calls, terminators,
-/// region-bearing operations, resultless consumers and side-effecting
-/// operations are rejected because the analysis cannot prove where the integer
-/// is consumed.
+/// propagate the dependency conservatively to index-capable results. Calls,
+/// terminators, region-bearing operations, resultless consumers and
+/// side-effecting operations are rejected because the analysis cannot prove
+/// where the integer is consumed.
 static LogicalResult
 verifyPhysicalIndexUses(GetDfbIdOp getId,
                         const DFBLogicalIdentityAnalysis &identityAnalysis,
@@ -317,7 +333,7 @@ verifyPhysicalIndexUses(GetDfbIdOp getId,
                 call, *logicalId, identityAnalysis, analysisFailure))) {
           return failure();
         }
-        pending.append(call->getResults().begin(), call->getResults().end());
+        appendPhysicalIndexResults(call, pending);
         continue;
       }
       if (isa<CallOpInterface>(consumer) ||
@@ -330,8 +346,7 @@ verifyPhysicalIndexUses(GetDfbIdOp getId,
                                 " escapes through an unsupported operation");
         return failure();
       }
-      pending.append(consumer->getResults().begin(),
-                     consumer->getResults().end());
+      appendPhysicalIndexResults(consumer, pending);
     }
   }
   return success();

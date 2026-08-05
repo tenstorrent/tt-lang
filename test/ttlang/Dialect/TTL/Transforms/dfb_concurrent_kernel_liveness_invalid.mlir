@@ -141,26 +141,6 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 
 // -----
 
-// A physical DFB index cannot influence untracked control flow.
-
-module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
-  func.func @control_flow_index_escape()
-      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
-        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %dfb_index = ttl.get_dfb_id %dfb
-        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %zero = arith.constant 0 : i32
-    %is_zero = arith.cmpi eq, %dfb_index, %zero : i32
-    // expected-error @below {{'scf.if' op physical index for logical DFB 0 escapes through an unsupported operation}}
-    scf.if %is_zero {
-    }
-    return
-  }
-}
-
-// -----
-
 // Default-mode allocation rejects a compiler-created DFB without a producer
 // acquire.
 
