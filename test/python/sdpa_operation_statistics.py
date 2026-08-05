@@ -236,15 +236,16 @@ def sdpa_fused(query, key, value, output):
 
 # Launch-coordinate predicates are deliberately unknown to this toy client.
 # Their nested data-movement operations therefore have unknown aggregate
-# dynamic counts, while surrounding static loops remain exact.
+# dynamic counts, while surrounding static loops remain exact. PipeNet foreach
+# callbacks remain one static region and count selected records dynamically.
 # CHECK-LABEL: func @dm_brisc
 # CHECK:       scf.yield static_occurrences=2 dynamic_instances=8
-# CHECK:       ttl.copy static_occurrences=40 dynamic_instances=unknown
-# CHECK:       ttl.create_pipe static_occurrences=28 dynamic_instances=64
+# CHECK:       ttl.copy static_occurrences=7 dynamic_instances=unknown
+# CHECK:       ttl.pipenet_foreach_src static_occurrences=4 dynamic_instances=13
 # CHECK-LABEL: func @dm_ncrisc
 # CHECK:       scf.yield static_occurrences=2 dynamic_instances=8
-# CHECK:       ttl.copy static_occurrences=29 dynamic_instances=unknown
-# CHECK:       ttl.create_pipe static_occurrences=28 dynamic_instances=64
+# CHECK:       ttl.copy static_occurrences=5 dynamic_instances=unknown
+# CHECK:       ttl.pipenet_foreach_dst static_occurrences=4 dynamic_instances=13
 
 
 def to_dram(device, tensor):

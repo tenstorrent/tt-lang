@@ -47,6 +47,46 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
+// Record-backed PipeNet sources must refer to cores instantiated by the module
+// launch grid.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @record_source_outside_launch_grid()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{declares source core_x=2, core_y=0 outside the module `ttl.launch_grid`}}
+    ttl.pipenet_foreach_src attributes {
+        records = #ttl.pipenet_records<net 0 name "invalid_source" pipes [
+          #ttl.pipe_record<srcX = 2, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0>
+        ]>} {
+    ^bb0(%pipe: !ttl.selected_pipe_src):
+      ttl.yield
+    }
+    func.return
+  }
+}
+
+// -----
+
+// Record-backed PipeNet destination ranges must remain inside the module
+// launch grid.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @record_destination_outside_launch_grid()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{declares destination range core_x=1..2, core_y=0..0 outside the module `ttl.launch_grid`}}
+    ttl.pipenet_foreach_dst attributes {
+        records = #ttl.pipenet_records<net 0 name "invalid_destination" pipes [
+          #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 2, dstEndY = 0, isCollective = true>
+        ]>} {
+    ^bb0(%pipe: !ttl.selected_pipe_dst):
+      ttl.yield
+    }
+    func.return
+  }
+}
+
+// -----
+
 // A collective send missing every receiver post produces one primary error.
 // Notes identify the additional receiver coordinates with the same mismatch.
 
@@ -765,6 +805,72 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
           -> !ttl.transfer_handle
       ttl.wait %recv : !ttl.transfer_handle
     }
+    func.return
+  }
+}
+
+// -----
+
+// Each foreach callback completes before the next matching record begins.
+// Reversing the sender records creates a cycle between the first receiver wait
+// and the sender's first selected record. The sender callback is in a helper to
+// verify that call expansion preserves the enclosing record order.
+
+module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
+  func.func @receiver_record_order()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.pipenet_foreach_dst attributes {
+        records = #ttl.pipenet_records<net 0 name "ordered" pipes [
+          #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0, isCollective = true>,
+          #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 1, isCollective = true>
+        ]>} {
+    ^bb0(%pipe: !ttl.selected_pipe_dst):
+      %recv_reserve = ttl.cb_reserve %recv_cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      // expected-note @below {{program order requires receiver post at core_x=1, core_y=0 after receive completion at core_x=1, core_y=0}}
+      %recv = ttl.copy %pipe, %recv_reserve
+          : (!ttl.selected_pipe_dst,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.transfer_handle
+      // expected-error @below {{pipe schedule contains a wait-for cycle on PipeNet ordered}}
+      // expected-note @below {{receive completion at core_x=1, core_y=0 waits for send at core_x=0, core_y=0 to transfer data}}
+      ttl.wait %recv : !ttl.transfer_handle
+      ttl.cb_push %recv_cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      ttl.yield
+    }
+    func.return
+  }
+
+  func.func private @send_records_reversed(
+      %send_cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) {
+    ttl.pipenet_foreach_src attributes {
+        records = #ttl.pipenet_records<net 0 name "ordered" pipes [
+          #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 1, isCollective = true>,
+          #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0, isCollective = true>
+        ]>} {
+    ^bb0(%pipe: !ttl.selected_pipe_src):
+      // expected-note @below {{sender waits for receiver post at core_x=1, core_y=0 before send at core_x=0, core_y=0}}
+      // expected-note @below {{program order requires send at core_x=0, core_y=0 after send at core_x=0, core_y=0}}
+      %send = ttl.copy %send_cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.selected_pipe_src)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+      ttl.yield
+    }
+    func.return
+  }
+
+  func.func @sender_reversed_record_order()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    func.call @send_records_reversed(%send_cb)
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> ()
     func.return
   }
 }
