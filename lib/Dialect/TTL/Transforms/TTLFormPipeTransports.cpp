@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#include "DFBAllocationLimits.h"
 #include "PipeGraph.h"
 #include "PipeLowering.h"
 #include "PipeTransferExpansion.h"
@@ -10,7 +11,6 @@
 #include "ttlang/Analysis/ValueOriginAnalysis.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
-#include "DFBAllocationLimits.h"
 #include "ttlang/Dialect/TTL/Transforms/PipeConstants.h"
 #include "ttlang/Dialect/TTL/Transforms/PipeTransferAnalysis.h"
 #include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
@@ -405,11 +405,11 @@ getTransportScratchBytes(const PipeTransportLoopCandidate &candidate,
 }
 
 /// Compute storage and synchronization facts for one `(R, K)` choice.
-static std::optional<PipeTransportGrouping> evaluateGrouping(
-    PipeTransportLoopCandidate &candidate, int64_t groupSize,
-    int64_t destinationDepth,
-    const DFBAllocationFootprint &allocationFootprint,
-    uint64_t existingScratchBytes, uint64_t budgetBytes) {
+static std::optional<PipeTransportGrouping>
+evaluateGrouping(PipeTransportLoopCandidate &candidate, int64_t groupSize,
+                 int64_t destinationDepth,
+                 const DFBAllocationFootprint &allocationFootprint,
+                 uint64_t existingScratchBytes, uint64_t budgetBytes) {
   if (groupSize <= 1 || groupSize > candidate.transferCount) {
     return std::nullopt;
   }
@@ -547,10 +547,11 @@ static bool isBetterGrouping(const PipeTransportGrouping &candidate,
 }
 
 /// Select an explicit upper-bound or automatic group size.
-static std::optional<PipeTransportGrouping> selectGrouping(
-    PipeTransportLoopCandidate &candidate, int64_t requestedGroupSize,
-    const DFBAllocationFootprint &allocationFootprint,
-    uint64_t existingScratchBytes, uint64_t budgetBytes) {
+static std::optional<PipeTransportGrouping>
+selectGrouping(PipeTransportLoopCandidate &candidate,
+               int64_t requestedGroupSize,
+               const DFBAllocationFootprint &allocationFootprint,
+               uint64_t existingScratchBytes, uint64_t budgetBytes) {
   int64_t upperBound =
       requestedGroupSize > 1 ? requestedGroupSize : candidate.transferCount;
   std::optional<int64_t> maybeUpperBound =
@@ -809,9 +810,8 @@ struct TTLFormPipeTransportsPass
         return;
       }
       std::optional<uint64_t> overrideBytes =
-          l1BudgetOverride == 0
-              ? std::nullopt
-              : std::optional<uint64_t>(l1BudgetOverride);
+          l1BudgetOverride == 0 ? std::nullopt
+                                : std::optional<uint64_t>(l1BudgetOverride);
       uint64_t budgetBytes = getUsableDFBL1Bytes(module, overrideBytes);
       std::optional<PipeTransportGrouping> grouping =
           selectGrouping(candidate, groupSize, *allocationFootprint,
