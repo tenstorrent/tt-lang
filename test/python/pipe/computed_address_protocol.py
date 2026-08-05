@@ -163,7 +163,8 @@ def row_all_gather_computed_address(inp, out):
 # publishing its reserved DFB address. recv_block_count=2 and two iterations
 # force dynamic sender-side receiver slot tracking.
 # P2P-FINAL-LABEL: func.func @dm
-# P2P-FINAL-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
+# The receiver DFB is allocated at physical index 0 after DFB compaction.
+# P2P-FINAL-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 0>
 # P2P-FINAL-DAG: %[[P2P_BASE_ARG_INDEX:.*]] = "emitc.constant"() <{value = 2 : index}>
 # Address calculation may move relative to the readiness wait; both must
 # precede the payload write.
@@ -185,7 +186,8 @@ def row_all_gather_computed_address(inp, out):
 # recv_block_count=8 and two iterations force dynamic sender-side receiver slot
 # tracking across all four multicast sends.
 # ALLGATHER-FINAL-LABEL: func.func @dm
-# ALLGATHER-FINAL-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
+# The receiver DFB is allocated at physical index 0 after DFB compaction.
+# ALLGATHER-FINAL-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 0>
 # ALLGATHER-BF16-FINAL-DAG: %[[STRIDE:.*]] = "emitc.constant"() <{value = 2048 : i32}>
 # ALLGATHER-FP32-FINAL-DAG: %[[STRIDE:.*]] = "emitc.constant"() <{value = 4096 : i32}>
 # ALLGATHER-FINAL-DAG: %[[ALLGATHER_BASE_ARG_INDEX:.*]] = "emitc.constant"() <{value = 2 : index}>
