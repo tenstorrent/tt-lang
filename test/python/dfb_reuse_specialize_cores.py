@@ -23,9 +23,7 @@ from ttlang_test_utils import to_dram
 
 @ttl.operation(grid=(2, 1))
 def dfb_reuse_specialize_cores(input_tensor, output_tensor):
-    first_dfb = ttl.make_dataflow_buffer_like(
-        input_tensor, shape=(1, 1), block_count=2
-    )
+    first_dfb = ttl.make_dataflow_buffer_like(input_tensor, shape=(1, 1), block_count=2)
     acknowledgment_dfb = ttl.make_dataflow_buffer_like(
         input_tensor, shape=(1, 1), block_count=2
     )
@@ -105,12 +103,8 @@ if __name__ == "__main__":
     device = ttnn.open_device(device_id=0)
     try:
         tensor_shape = (32, 64)
-        input_tensor = to_dram(
-            torch.zeros(tensor_shape, dtype=torch.bfloat16), device
-        )
-        output_tensor = to_dram(
-            torch.zeros(tensor_shape, dtype=torch.bfloat16), device
-        )
+        input_tensor = to_dram(torch.zeros(tensor_shape, dtype=torch.bfloat16), device)
+        output_tensor = to_dram(torch.zeros(tensor_shape, dtype=torch.bfloat16), device)
         dfb_reuse_specialize_cores(input_tensor, output_tensor)
     finally:
         ttnn.close_device(device)
