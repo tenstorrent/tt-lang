@@ -50,6 +50,7 @@
 
 func.func @synchronized_dm()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                ttl.noc_index = 0 : i32,
                 ttl.base_cta_index = 3 : i32, ttl.crta_indices = []} {
   %a = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
   %ack = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
@@ -101,6 +102,7 @@ func.func @synchronized_compute()
 
 func.func @three_kernel_producer()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                ttl.noc_index = 0 : i32,
                 ttl.base_cta_index = 4 : i32, ttl.crta_indices = []} {
   %first_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %relay_to_producer = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -131,6 +133,7 @@ func.func @three_kernel_consumer()
 
 func.func @three_kernel_relay()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                ttl.noc_index = 0 : i32,
                 ttl.base_cta_index = 4 : i32, ttl.crta_indices = []} {
   %consumer_to_relay = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %relay_to_producer = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -158,6 +161,7 @@ func.func @three_kernel_relay()
 
 func.func @unordered_dm()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                ttl.noc_index = 0 : i32,
                 ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
   %a = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %b = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -199,6 +203,7 @@ func.func @unordered_compute()
 
 func.func @early_wait_producer()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                ttl.noc_index = 0 : i32,
                 ttl.base_cta_index = 3 : i32, ttl.crta_indices = []} {
   %a = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %ack = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -226,6 +231,7 @@ func.func @early_wait_compute()
 
 func.func @early_wait_consumer()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                ttl.noc_index = 0 : i32,
                 ttl.base_cta_index = 3 : i32, ttl.crta_indices = []} {
   %b = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %b_view = ttl.cb_wait %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -250,6 +256,7 @@ func.func @early_wait_consumer()
 
 func.func @unbalanced_dm()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                ttl.noc_index = 0 : i32,
                 ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
   %a = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %b = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -373,6 +380,7 @@ func.func @loop_lifecycle()
 
 func.func @producer_transition_dm()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                ttl.noc_index = 0 : i32,
                 ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
   %input = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %input_producer = ttl.cb_reserve %input : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -429,6 +437,7 @@ func.func @consumer_transition_compute()
 
 func.func @consumer_transition_dm()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                ttl.noc_index = 0 : i32,
                 ttl.base_cta_index = 3 : i32, ttl.crta_indices = []} {
   %ack = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %b = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>

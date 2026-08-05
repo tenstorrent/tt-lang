@@ -1404,20 +1404,30 @@ buildPhysicalAllocationPlan(module, logicalIdentities, perNodeLifetimes):
   conflicts = typed conflict graph induced by candidates
   assignment = deterministicFirstFit(conflicts)
   lowerBound = greedyClique(conflicts)
-  if assignment exceeds the physical-index or L1 limit:
-    exactResult = exactDSATUR(conflicts, lowerBound, searchStateLimit)
-    if exactResult is SearchLimitReached:
+  if assignment exceeds the physical-index limit:
+    fitResult = fixedLimitDSATUR(conflicts, physicalIndexLimit,
+                                 searchStateLimit)
+    if fitResult is SearchLimitReached:
       reject with an inconclusive-search diagnostic
-    assignment = exactResult.optimalAssignment
+    if fitResult is Infeasible:
+      reject with a proved capacity diagnostic
+    assignment = fitResult.assignment
   reject a capacity result only after exact infeasibility or a sound lower
       bound proves that the applicable limit cannot be met
   verify every pair assigned one index against the typed conflict model
 
   aggregate L1 bytes once per unique physical index
-  reject if the assignment exceeds the physical-index or L1 limit
+  if assignment exceeds the L1 limit and is not known minimum:
+    minimumResult = minimumColorDSATUR(conflicts, lowerBound,
+                                      searchStateLimit)
+    if minimumResult is SearchLimitReached:
+      reject with an inconclusive-search diagnostic
+    assignment = minimumResult.assignment
+    aggregate L1 bytes once per unique physical index
+  reject if the assignment exceeds the L1 limit
   build one runtime descriptor for every physical index
   reject conflicting descriptors at one physical index
-  assert that the internal assignment is a dense zero-based range
+  reject if the internal assignment is not a dense zero-based range
   record every existing kernel base-index attribute
   return immutable {
     logical-to-physical assignments,
@@ -1432,13 +1442,15 @@ applyPhysicalAllocationPlan(module, plan):
   write ttl.dfb_allocations from plan.runtimeDescriptors
 ```
 
-Each color is one physical index. Exact search is an acceptance escalation, not
-the default assignment mechanism. Any deterministic assignment that satisfies
-both hardware limits is valid. Exact search examines at most
-`exact-coloring-search-limit` deterministic states, which defaults to
-1,000,000. Reaching the limit reports that feasibility was not proved and
-identifies the option that increases the limit; it never reports a proved
-capacity failure. The planner completes every
+Each color is one physical index. First-fit is the default assignment mechanism.
+When first-fit exceeds the physical-index limit, one fixed-limit exact query
+tests that limit directly. Minimum-color search runs only when a valid index
+assignment exceeds the L1 budget. Any deterministic assignment that satisfies
+both hardware limits is valid. Each exact query examines at most
+`exact-coloring-search-limit` deterministic states, which defaults to 1,000,000.
+Reaching the limit reports that feasibility was not proved and identifies the
+option that increases the limit; it never reports a proved capacity failure.
+The planner completes every
 diagnostic-producing validation before `TTLFinalizeDFBIndices` changes any
 `dfb_id`, `cb_index`, kernel attribute, or module attribute. The finalizer only
 materializes the validated plan.
@@ -1500,8 +1512,9 @@ result with PyTorch scaled dot-product attention.
 `test/ttlang/Dialect/TTL/Transforms/dfb_concurrent_kernel_liveness.mlir` isolates
 the cross-kernel ordering rules. The independent allocation-oracle test joins a
 30-vertex clique with the confirmed four-vertex bad-order graph: first-fit uses
-33 indices and exact escalation proves that 32 suffice. The invalid liveness
-test confirms that 33 mutually conflicting lifetimes are rejected.
+33 indices and the fixed-limit exact check finds a 32-index assignment. The
+invalid liveness test confirms that 33 mutually conflicting lifetimes are
+rejected.
 
 `test/python/test_user_dfb_reuse.py` recursively composes copy atoms into an
 operation with 33 logical DFBs. The operation compiles and executes only when
@@ -1663,10 +1676,11 @@ with releases before finalization.
   must also prove compatible transaction counts and address calculations.
 
 - **Pressure above the unspilled limits.** Deterministic first-fit is accepted
-  when it fits. Exact DSATUR search runs when the upper bound prevents physical
-  index or L1 acceptance. Exact search is limited to 1,000,000 deterministic
-  states by default. Limit exhaustion reports an inconclusive allocation;
-  proven infeasibility reports a capacity failure. DRAM spilling is tracked by
+  when it fits. One fixed-limit DSATUR query runs when first-fit exceeds the
+  physical-index limit. Minimum-color DSATUR runs only when a valid assignment
+  exceeds the L1 budget. Each query is limited to 1,000,000 deterministic states
+  by default. Limit exhaustion reports an inconclusive allocation; proven
+  infeasibility reports a capacity failure. DRAM spilling is tracked by
   [#809](https://github.com/tenstorrent/tt-lang/issues/809).
 
 - **Reachability cost.** The bit-vector transitive closure is cubic in the

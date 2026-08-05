@@ -20,6 +20,10 @@ pytestmark = pytest.mark.requires_device
 TILE = 32
 OVER_CAPACITY_COMPOSITION_LEVELS = 5
 OVER_CAPACITY_LOGICAL_DFBS = (1 << OVER_CAPACITY_COMPOSITION_LEVELS) + 1
+# Two approximate SFPU exponential evaluations need operation-level error
+# bounds; f32 data movement and addition tests retain 1e-5 relative tolerance.
+F32_REPEATED_EXP_RTOL = 2e-3
+F32_REPEATED_EXP_ATOL = 5e-4
 
 
 def _make_exp_via_scratch_atom(data_format, shape=(1, 1)):
@@ -246,15 +250,23 @@ def test_user_dfb_allocation_runtime(
     ],
     ids=["bf16", "f32"],
 )
+@pytest.mark.parametrize(
+    "specialize_cores",
+    [False, True],
+    ids=["generic-cores", "specialized-cores"],
+)
 def test_repeated_dfb_declaring_atom_runtime(
-    device, memory_config, to_device, operation, dtype
+    device, memory_config, to_device, operation, dtype, specialize_cores
 ):
     element_indices = torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE)
     input_host = ((element_indices.remainder(97) - 48) / 128).to(dtype)
     input_tensor = to_device(input_host, device)
     output_tensor = to_device(torch.zeros((TILE, TILE), dtype=dtype), device)
 
-    operation(input_tensor, output_tensor)
+    specialization_option = (
+        "--ttl-specialize-cores" if specialize_cores else "--no-ttl-specialize-cores"
+    )
+    operation(input_tensor, output_tensor, options=specialization_option)
 
     intermediate = torch.exp(input_host.float()).to(dtype)
     expected = torch.exp(intermediate.float()).to(dtype).float()
@@ -262,7 +274,12 @@ def test_repeated_dfb_declaring_atom_runtime(
     if dtype == torch.bfloat16:
         assert_allclose(actual, expected, rtol=0.05, atol=1.0)
     else:
-        assert_allclose(actual, expected, rtol=1e-2, atol=1e-2)
+        assert_allclose(
+            actual,
+            expected,
+            rtol=F32_REPEATED_EXP_RTOL,
+            atol=F32_REPEATED_EXP_ATOL,
+        )
 
 
 @pytest.mark.parametrize(

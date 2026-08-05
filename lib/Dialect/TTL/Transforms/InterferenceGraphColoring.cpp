@@ -236,6 +236,53 @@ computeInterferenceGraphColoringBounds(const InterferenceGraph &graph) {
   return bounds;
 }
 
+InterferenceGraphColorLimitResult
+colorInterferenceGraphWithColorLimitExactly(const InterferenceGraph &graph,
+                                            unsigned colorLimit,
+                                            std::uint64_t searchStateLimit) {
+  InterferenceGraphColorLimitResult result;
+  if (graph.size() == 0) {
+    result.status = InterferenceGraphColorLimitStatus::Feasible;
+    return result;
+  }
+  if (colorLimit == 0) {
+    return result;
+  }
+
+  result.colors.assign(graph.size(), 0);
+  ExactColoringSearchBudget searchBudget(searchStateLimit);
+  for (llvm::ArrayRef<unsigned> component : getConnectedComponents(graph)) {
+    if (getGreedyCliqueLowerBound(graph, component) > colorLimit) {
+      result.colors.clear();
+      result.exploredStateCount = searchBudget.getExploredStateCount();
+      return result;
+    }
+
+    FixedColorCountSearch search(graph, component, colorLimit, searchBudget);
+    FixedColorCountSearchResult searchResult = search.solve();
+    if (searchResult.status ==
+        FixedColorCountSearchStatus::SearchLimitReached) {
+      result.status = InterferenceGraphColorLimitStatus::SearchLimitReached;
+      result.colors.clear();
+      result.exploredStateCount = searchBudget.getExploredStateCount();
+      return result;
+    }
+    if (searchResult.status == FixedColorCountSearchStatus::Infeasible) {
+      result.colors.clear();
+      result.exploredStateCount = searchBudget.getExploredStateCount();
+      return result;
+    }
+    for (unsigned vertex : component) {
+      result.colors[vertex] = searchResult.colors[vertex];
+      result.colorCount =
+          std::max(result.colorCount, searchResult.colors[vertex] + 1);
+    }
+  }
+  result.status = InterferenceGraphColorLimitStatus::Feasible;
+  result.exploredStateCount = searchBudget.getExploredStateCount();
+  return result;
+}
+
 ExactInterferenceGraphColoring
 colorInterferenceGraphExactly(const InterferenceGraph &graph,
                               std::uint64_t searchStateLimit) {

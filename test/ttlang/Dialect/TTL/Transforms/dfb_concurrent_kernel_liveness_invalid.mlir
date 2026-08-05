@@ -98,6 +98,69 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 
 // -----
 
+// Pure integer operations cannot hide a physical DFB index from the custom
+// function dependency check.
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @custom_function_laundered_dependency()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %dfb_index = ttl.get_dfb_id %dfb
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %zero = arith.constant 0 : i32
+    %laundered = arith.addi %dfb_index, %zero : i32
+    // expected-error @below {{'ttl.opaque_call' op custom function consumes the physical index for logical DFB 0 without listing that DFB as a dependency operand}}
+    ttl.opaque_call "custom_consume" (%laundered)
+        {header = "custom_consume.hpp"} : (i32) -> ()
+    return
+  }
+}
+
+// -----
+
+// Passing a physical DFB index across a function boundary is an unanalyzable
+// escape even when the local callee would return the value unchanged.
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func private @forward_index(i32) -> i32
+
+  func.func @function_forwarded_dependency()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %dfb_index = ttl.get_dfb_id %dfb
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-error @below {{'func.call' op physical index for logical DFB 0 escapes through an unsupported operation}}
+    %forwarded = func.call @forward_index(%dfb_index) : (i32) -> i32
+    ttl.opaque_call "custom_consume" (%forwarded)
+        {header = "custom_consume.hpp"} : (i32) -> ()
+    return
+  }
+}
+
+// -----
+
+// A physical DFB index cannot influence untracked control flow.
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @control_flow_index_escape()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %dfb_index = ttl.get_dfb_id %dfb
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %zero = arith.constant 0 : i32
+    %is_zero = arith.cmpi eq, %dfb_index, %zero : i32
+    // expected-error @below {{'scf.if' op physical index for logical DFB 0 escapes through an unsupported operation}}
+    scf.if %is_zero {
+    }
+    return
+  }
+}
+
+// -----
+
 // Default-mode allocation rejects a compiler-created DFB without a producer
 // acquire.
 

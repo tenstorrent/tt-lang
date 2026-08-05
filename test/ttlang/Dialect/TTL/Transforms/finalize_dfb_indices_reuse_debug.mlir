@@ -10,6 +10,7 @@
 module {
   func.func @producer()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.noc_index = 0 : i32,
                   ttl.base_cta_index = 3 : i32, ttl.crta_indices = []} {
     %first = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>

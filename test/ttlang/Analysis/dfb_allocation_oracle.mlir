@@ -1,11 +1,13 @@
-// Tests the exact DFB coloring solver against an independent exhaustive oracle
-// and compares uniform, per-node, and two-group hybrid assignment contracts.
+// Tests minimum and fixed-limit exact DFB coloring against an independent
+// exhaustive oracle and compares uniform, per-node, and hybrid assignments.
 // RUN: ttlang-dfb-allocation-oracle-test | FileCheck %s
 
 // CHECK: solver_graphs=33868
 // CHECK-NEXT: capacity_reproducer=32
 // CHECK-NEXT: capacity_search_states={{[1-9][0-9]*}}
 // CHECK-NEXT: bounded_search_states=1
+// CHECK-NEXT: low_clique_fixed_states={{[1-9][0-9]*}}
+// CHECK-NEXT: low_clique_minimum_states=100
 // CHECK-NEXT: contract_cases=262144
 // CHECK-NEXT: per_node_improvements=149268
 // CHECK-NEXT: two_group_improvements=142536

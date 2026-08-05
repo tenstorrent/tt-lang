@@ -15,6 +15,8 @@
 #include "mlir/Analysis/DataFlowFramework.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Operation.h"
+#include "mlir/Interfaces/CallInterfaces.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -30,13 +32,19 @@ namespace mlir::tt::ttl {
 
 namespace {
 
+/// Entry and completion events keep operation duration distinct from source
+/// order and protocol completion edges.
 struct EventPair {
   unsigned entry = 0;
   unsigned completion = 0;
 };
 
+/// Represents only ordering proved for one launch node. Cyclic reachability is
+/// deliberately not treated as strict order.
 class HappensBeforeGraph {
 public:
+  /// Creates distinct entry and completion events so later constraints may
+  /// order either execution or completion.
   EventPair addOperation() {
     unsigned entry = successors.size();
     successors.emplace_back();
@@ -46,11 +54,14 @@ public:
     return {entry, completion};
   }
 
+  /// Records one proved ordering constraint without inferring its converse.
   void addEdge(unsigned source, unsigned destination) {
     assert(source < successors.size() && destination < successors.size());
     successors[source].push_back(destination);
   }
 
+  /// Materializes transitive reachability once after all program and protocol
+  /// constraints have been recorded.
   void computeReachability() {
     unsigned eventCount = successors.size();
     reachable.assign(eventCount, llvm::BitVector(eventCount));
@@ -69,6 +80,8 @@ public:
     }
   }
 
+  /// Requires asymmetric reachability because mutually reachable events do
+  /// not establish a safe lifetime order.
   bool strictlyPrecedes(unsigned source, unsigned destination) const {
     assert(source < reachable.size() && destination < reachable.size());
     return source != destination && reachable[source].test(destination) &&
@@ -80,15 +93,30 @@ private:
   SmallVector<llvm::BitVector> reachable;
 };
 
+/// Associates a storage access with its computed launch domain and the
+/// operation that prevented a precise result, when applicable.
 struct AccessDomain {
   LaunchNodeDomain domain = LaunchNodeDomain::unknown();
   Operation *unanalyzableOperation = nullptr;
 };
 
+/// Retains access-domain results from the shared launch-domain analysis.
 struct LivenessDomainState : LaunchNodeDomainState {
   DenseMap<Operation *, AccessDomain> accessDomains;
 };
 
+/// Identifies attributes that copy a provisional physical DFB index and would
+/// become stale after allocation changes declaration indices.
+static bool isDerivedDFBIndexAttribute(StringRef attributeName) {
+  return attributeName == kUnpackToDestFp32AttrName ||
+         attributeName.starts_with(kCBIndexAttrPrefix) ||
+         attributeName == kBcastOutputCBIndexAttrName ||
+         attributeName == kReduceOutputCBIndexAttrName ||
+         attributeName == kTransposeOutputCBIndexAttrName;
+}
+
+/// Classifies unknown storage users as opaque so they extend liveness instead
+/// of being ignored.
 static DFBProtocolEffect classifyEffect(Operation *operation) {
   if (isa<CBReserveOp>(operation)) {
     return DFBProtocolEffect::Reserve;
@@ -105,15 +133,22 @@ static DFBProtocolEffect classifyEffect(Operation *operation) {
   return DFBProtocolEffect::OpaqueAccess;
 }
 
+/// Reserve and push must resolve to one producer-side owner before reuse can
+/// preserve write-pointer progression.
 static bool effectAdvancesWritePointer(DFBProtocolEffect effect) {
   return effect == DFBProtocolEffect::Reserve ||
          effect == DFBProtocolEffect::Push;
 }
 
+/// Wait and pop must resolve to one consumer-side owner before reuse can
+/// preserve read-pointer progression.
 static bool effectAdvancesReadPointer(DFBProtocolEffect effect) {
   return effect == DFBProtocolEffect::Wait || effect == DFBProtocolEffect::Pop;
 }
 
+/// Resolves the hardware pointer owner only from explicit kernel semantics.
+/// Missing or invalid ownership attributes remain unknown because assuming a
+/// processor could permit unsafe physical-index reuse.
 static std::optional<DFBPointerOwner>
 getPointerOwner(Operation *operation, LaunchNodeCoord node,
                 DFBProtocolEffect effect) {
@@ -143,7 +178,11 @@ getPointerOwner(Operation *operation, LaunchNodeCoord node,
   if (thread.getValue() != ttkernel::ThreadType::Noc) {
     return std::nullopt;
   }
-  int64_t nocIndex = getNocIndex(operation);
+  auto nocIndexAttr = kernel->getAttrOfType<IntegerAttr>(kNocIndexAttrName);
+  if (!nocIndexAttr) {
+    return std::nullopt;
+  }
+  int64_t nocIndex = nocIndexAttr.getInt();
   if (nocIndex != 0 && nocIndex != 1) {
     return std::nullopt;
   }
@@ -152,6 +191,8 @@ getPointerOwner(Operation *operation, LaunchNodeCoord node,
   return DFBPointerOwner{node, processor, direction};
 }
 
+/// Projects nested accesses to their containing top-level operation because
+/// the graph models only source order that is unconditional at that level.
 static Operation *getTopLevelKernelOperation(Operation *operation) {
   func::FuncOp function = operation->getParentOfType<func::FuncOp>();
   if (!function || function.getBody().empty() ||
@@ -164,6 +205,8 @@ static Operation *getTopLevelKernelOperation(Operation *operation) {
              : functionBody.findAncestorOpInBlock(*operation);
 }
 
+/// Missing projected events remain unknown because nested source order alone
+/// cannot establish cross-region execution order.
 static std::optional<EventPair>
 getProjectedEvents(Operation *operation,
                    const DenseMap<Operation *, EventPair> &operationEvents) {
@@ -177,6 +220,8 @@ getProjectedEvents(Operation *operation,
              : std::optional<EventPair>(eventIt->second);
 }
 
+/// Requires a release to follow every use owned by its acquisition; textual
+/// acquire/release order alone does not prove storage quiescence.
 static bool releaseFollowsOwnedUses(Operation *acquire, Operation *release) {
   if (acquire->getBlock() != release->getBlock()) {
     return false;
@@ -187,6 +232,8 @@ static bool releaseFollowsOwnedUses(Operation *acquire, Operation *release) {
   return lastOwnedUse == acquire || lastOwnedUse->isBeforeInBlock(release);
 }
 
+/// Finds every access without a proved predecessor so all possible lifetime
+/// starts constrain reuse.
 static SmallVector<Operation *>
 findMinimalOperations(ArrayRef<Operation *> operations,
                       const HappensBeforeGraph &graph,
@@ -211,53 +258,88 @@ findMinimalOperations(ArrayRef<Operation *> operations,
   return minimal;
 }
 
-static LogicalResult verifyCustomFunctionIndexDependencies(
-    OpaqueCallOp call, const DFBLogicalIdentityAnalysis &identityAnalysis,
+/// Requires a custom function that consumes a physical index to name the same
+/// logical DFB as a direct storage dependency.
+static LogicalResult verifyCustomFunctionIndexDependency(
+    OpaqueCallOp call, int64_t logicalId,
+    const DFBLogicalIdentityAnalysis &identityAnalysis,
     DFBAnalysisFailure &analysisFailure) {
   SmallVector<int64_t> dependencyIds;
   for (Value operand : call.getArgOperands()) {
     if (!isa<CircularBufferType>(operand.getType())) {
       continue;
     }
-    FailureOr<int64_t> logicalId = identityAnalysis.getLogicalId(operand);
-    if (succeeded(logicalId)) {
-      dependencyIds.push_back(*logicalId);
+    FailureOr<int64_t> dependencyLogicalId =
+        identityAnalysis.getLogicalId(operand);
+    if (succeeded(dependencyLogicalId)) {
+      dependencyIds.push_back(*dependencyLogicalId);
     }
   }
 
-  auto verifyIndexDependency = [&](Value operand) {
-    auto getId = operand.getDefiningOp<GetDfbIdOp>();
-    if (!getId) {
-      return success();
-    }
-    FailureOr<int64_t> logicalId =
-        identityAnalysis.getLogicalId(getId.getDfb());
-    if (failed(logicalId)) {
-      return success();
-    }
-    if (!llvm::is_contained(dependencyIds, *logicalId)) {
-      analysisFailure.set(
-          call, "custom function consumes the physical index for logical DFB " +
-                    std::to_string(*logicalId) +
-                    " without listing that DFB as a dependency operand");
-      return failure();
-    }
-    return success();
-  };
-
-  for (Value operand : call.getTemplateArgVals()) {
-    if (failed(verifyIndexDependency(operand))) {
-      return failure();
-    }
+  if (!llvm::is_contained(dependencyIds, logicalId)) {
+    analysisFailure.set(
+        call, "custom function consumes the physical index for logical DFB " +
+                  std::to_string(logicalId) +
+                  " without listing that DFB as a dependency operand");
+    return failure();
   }
-  for (Value operand : call.getArgOperands()) {
-    if (failed(verifyIndexDependency(operand))) {
-      return failure();
+  return success();
+}
+
+/// Verifies every transitive use of one physical DFB index. Pure SSA operations
+/// propagate the dependency conservatively to all results. Calls, terminators,
+/// region-bearing operations, resultless consumers and side-effecting
+/// operations are rejected because the analysis cannot prove where the integer
+/// is consumed.
+static LogicalResult
+verifyPhysicalIndexUses(GetDfbIdOp getId,
+                        const DFBLogicalIdentityAnalysis &identityAnalysis,
+                        DFBAnalysisFailure &analysisFailure) {
+  FailureOr<int64_t> logicalId = identityAnalysis.getLogicalId(getId.getDfb());
+  if (failed(logicalId)) {
+    analysisFailure.set(
+        getId, "ttl.get_dfb_id operand must resolve to a logical DFB before "
+               "physical index allocation");
+    return failure();
+  }
+
+  SmallVector<Value> pending = {getId.getResult()};
+  DenseSet<Value> visited;
+  while (!pending.empty()) {
+    Value value = pending.pop_back_val();
+    if (!visited.insert(value).second) {
+      continue;
+    }
+    for (OpOperand &use : value.getUses()) {
+      Operation *consumer = use.getOwner();
+      if (auto call = dyn_cast<OpaqueCallOp>(consumer)) {
+        if (failed(verifyCustomFunctionIndexDependency(
+                call, *logicalId, identityAnalysis, analysisFailure))) {
+          return failure();
+        }
+        pending.append(call->getResults().begin(), call->getResults().end());
+        continue;
+      }
+      if (isa<CallOpInterface>(consumer) ||
+          consumer->hasTrait<OpTrait::IsTerminator>() ||
+          consumer->getNumRegions() != 0 || consumer->getNumResults() == 0 ||
+          !isPure(consumer)) {
+        analysisFailure.set(consumer,
+                            "physical index for logical DFB " +
+                                std::to_string(*logicalId) +
+                                " escapes through an unsupported operation");
+        return failure();
+      }
+      pending.append(consumer->getResults().begin(),
+                     consumer->getResults().end());
     }
   }
   return success();
 }
 
+/// Collects logical DFB declarations and storage accesses in one module walk.
+/// Stale copied indices, malformed identities, and untracked physical-index
+/// escapes are rejected before launch-domain or lifetime analysis begins.
 static LogicalResult collectLogicalDFBs(
     ModuleOp module, const DFBLogicalIdentityAnalysis &identityAnalysis,
     SmallVectorImpl<DFBLogicalLifecycle> &logicalDFBs,
@@ -285,12 +367,26 @@ static LogicalResult collectLogicalDFBs(
   }
 
   WalkResult collectionResult = module.walk([&](Operation *operation) {
+    for (NamedAttribute attribute : operation->getAttrs()) {
+      StringRef attributeName = attribute.getName().getValue();
+      if (!isDerivedDFBIndexAttribute(attributeName)) {
+        continue;
+      }
+      analysisFailure.set(
+          operation,
+          ("contains derived DFB-index attribute '" + attributeName +
+           "' before DFB index finalization; run ttl-finalize-dfb-indices "
+           "before ttl-set-compute-kernel-config and "
+           "ttl-annotate-cb-associations")
+              .str());
+      return WalkResult::interrupt();
+    }
     dependsOnLaunchNode |=
         isa<CoreXOp, CoreYOp, CreatePipeOp, PipeNetPredicateOpInterface>(
             operation);
-    if (auto call = dyn_cast<OpaqueCallOp>(operation);
-        call && failed(verifyCustomFunctionIndexDependencies(
-                    call, identityAnalysis, analysisFailure))) {
+    if (auto getId = dyn_cast<GetDfbIdOp>(operation);
+        getId && failed(verifyPhysicalIndexUses(getId, identityAnalysis,
+                                                analysisFailure))) {
       return WalkResult::interrupt();
     }
     if (!mayAccessDFBStorage(operation)) {
@@ -358,6 +454,8 @@ static LogicalResult collectLogicalDFBs(
   return success();
 }
 
+/// Builds source-order events only for accesses active on `node`. Operations
+/// in different kernels remain concurrent unless protocol edges order them.
 static void
 buildProgramOrderGraph(ModuleOp module,
                        ArrayRef<DFBLogicalLifecycle> logicalDFBs,
@@ -393,6 +491,9 @@ buildProgramOrderGraph(ModuleOp module,
   }
 }
 
+/// Derives the immutable per-node lifetime facts required for reuse. Any
+/// unsupported or ambiguous protocol fact returns a typed failed proof, which
+/// can only add conflicts.
 static DFBQuiescenceProof
 computePerNodeLifetime(DFBLogicalLifecycle &logicalDFB, LaunchNodeCoord node,
                        const HappensBeforeGraph &graph,
@@ -509,6 +610,8 @@ computePerNodeLifetime(DFBLogicalLifecycle &logicalDFB, LaunchNodeCoord node,
   return {};
 }
 
+/// Proves non-overlap only when every possible end of `before` strictly
+/// precedes every possible start of `after`.
 static bool
 proveOrderedBefore(const DFBPerNodeLifetime &before,
                    const DFBPerNodeLifetime &after,
@@ -533,6 +636,8 @@ proveOrderedBefore(const DFBPerNodeLifetime &before,
 
 } // namespace
 
+// Per-node facts are stored on each logical lifecycle because the conflict
+// model must compare identical logical DFBs across all shared launch nodes.
 const DFBPerNodeLifetime *
 DFBLogicalLifecycle::findNodeLifetime(LaunchNodeCoord node) const {
   auto lifetimeIt = llvm::find_if(nodeLifetimes, [&](const auto &lifetime) {
@@ -541,6 +646,8 @@ DFBLogicalLifecycle::findNodeLifetime(LaunchNodeCoord node) const {
   return lifetimeIt == nodeLifetimes.end() ? nullptr : &*lifetimeIt;
 }
 
+// Logical identity is obtained through the analysis manager so every lifetime
+// uses the same declaration aggregation as physical allocation.
 DFBConcurrentKernelLivenessAnalysis::DFBConcurrentKernelLivenessAnalysis(
     Operation *operation, AnalysisManager &analysisManager) {
   const DFBLogicalIdentityAnalysis &identityAnalysis =
@@ -553,6 +660,8 @@ DFBConcurrentKernelLivenessAnalysis::DFBConcurrentKernelLivenessAnalysis(
   analyze(operation, identityAnalysis);
 }
 
+// Completes validation and immutable fact construction before the finalizer
+// mutates any DFB index or derived attribute.
 void DFBConcurrentKernelLivenessAnalysis::analyze(
     Operation *operation, const DFBLogicalIdentityAnalysis &identityAnalysis) {
   ModuleOp module = cast<ModuleOp>(operation);
@@ -701,6 +810,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
   }
 }
 
+// The planner queries cached reachability so allocation cannot depend on a
+// second IR traversal or on later mutation order.
 bool DFBConcurrentKernelLivenessAnalysis::isOrderedBefore(
     unsigned beforeIndex, unsigned afterIndex, LaunchNodeCoord node) const {
   auto nodeIt = llvm::find(launchNodes, node);

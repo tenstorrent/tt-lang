@@ -20,10 +20,14 @@ namespace {
 using mlir::tt::ttl::ExactInterferenceGraphColoring;
 using mlir::tt::ttl::ExactInterferenceGraphColoringStatus;
 using mlir::tt::ttl::InterferenceGraph;
+using mlir::tt::ttl::InterferenceGraphColorLimitResult;
+using mlir::tt::ttl::InterferenceGraphColorLimitStatus;
 
 constexpr uint64_t kUnlimitedSearchStates =
     std::numeric_limits<uint64_t>::max();
 
+/// Enumerates color choices in vertex order so expected results do not depend
+/// on the production DSATUR implementation or its priority rules.
 static bool oracleCanColor(const InterferenceGraph &graph,
                            llvm::MutableArrayRef<unsigned> colors,
                            unsigned vertex, unsigned colorCount) {
@@ -51,6 +55,7 @@ static bool oracleCanColor(const InterferenceGraph &graph,
   return false;
 }
 
+/// Finds the minimum feasible count by exhaustive enumeration.
 static unsigned oracleChromaticNumber(const InterferenceGraph &graph) {
   if (graph.size() == 0) {
     return 0;
@@ -67,6 +72,7 @@ static unsigned oracleChromaticNumber(const InterferenceGraph &graph) {
   llvm_unreachable("every finite graph is colorable");
 }
 
+/// Decodes a compact edge mask used to enumerate every labeled small graph.
 static InterferenceGraph buildGraph(unsigned vertexCount, uint64_t edgeMask) {
   InterferenceGraph graph(vertexCount);
   unsigned edgeIndex = 0;
@@ -81,19 +87,21 @@ static InterferenceGraph buildGraph(unsigned vertexCount, uint64_t edgeMask) {
   return graph;
 }
 
+/// Checks the solver's assignment independently of its completion status.
 static bool verifyColoring(const InterferenceGraph &graph,
-                           const ExactInterferenceGraphColoring &coloring) {
-  if (coloring.colors.size() != graph.size()) {
+                           llvm::ArrayRef<unsigned> colors,
+                           unsigned colorCount) {
+  if (colors.size() != graph.size()) {
     return false;
   }
   for (unsigned lhsVertex = 0; lhsVertex < graph.size(); ++lhsVertex) {
-    if (coloring.colors[lhsVertex] >= coloring.colorCount) {
+    if (colors[lhsVertex] >= colorCount) {
       return false;
     }
     for (unsigned rhsVertex = lhsVertex + 1; rhsVertex < graph.size();
          ++rhsVertex) {
       if (graph.interferes(lhsVertex, rhsVertex) &&
-          coloring.colors[lhsVertex] == coloring.colors[rhsVertex]) {
+          colors[lhsVertex] == colors[rhsVertex]) {
         return false;
       }
     }
@@ -101,6 +109,8 @@ static bool verifyColoring(const InterferenceGraph &graph,
   return true;
 }
 
+/// Compares minimum and fixed-limit production queries against exhaustive
+/// expected results for every graph with at most six vertices.
 static bool compareProductionSolverWithOracle() {
   uint64_t checkedGraphCount = 0;
   for (unsigned vertexCount = 0; vertexCount <= 6; ++vertexCount) {
@@ -113,11 +123,30 @@ static bool compareProductionSolverWithOracle() {
           mlir::tt::ttl::colorInterferenceGraphExactly(graph,
                                                        kUnlimitedSearchStates);
       if (!production.isOptimal() || production.colorCount != oracleCount ||
-          !verifyColoring(graph, production)) {
+          !verifyColoring(graph, production.colors, production.colorCount)) {
         llvm::errs() << "solver mismatch: vertices=" << vertexCount
                      << " edge_mask=" << edgeMask << " oracle=" << oracleCount
                      << " production=" << production.colorCount << "\n";
         return false;
+      }
+      for (unsigned colorLimit = 0; colorLimit <= vertexCount; ++colorLimit) {
+        InterferenceGraphColorLimitResult fit =
+            mlir::tt::ttl::colorInterferenceGraphWithColorLimitExactly(
+                graph, colorLimit, kUnlimitedSearchStates);
+        bool expectedFeasible = oracleCount <= colorLimit;
+        bool resultFeasible =
+            fit.status == InterferenceGraphColorLimitStatus::Feasible;
+        if (resultFeasible != expectedFeasible ||
+            (resultFeasible &&
+             !verifyColoring(graph, fit.colors, fit.colorCount)) ||
+            (!resultFeasible &&
+             fit.status != InterferenceGraphColorLimitStatus::Infeasible)) {
+          llvm::errs() << "fixed-limit mismatch: vertices=" << vertexCount
+                       << " edge_mask=" << edgeMask
+                       << " color_limit=" << colorLimit
+                       << " oracle=" << oracleCount << "\n";
+          return false;
+        }
       }
       ++checkedGraphCount;
     }
@@ -126,6 +155,8 @@ static bool compareProductionSolverWithOracle() {
   return true;
 }
 
+/// Confirms that a fixed-limit exact check repairs the adversarial first-fit
+/// ordering used by the positive 32-index capacity test.
 static bool verifyGreedyCapacityReproducer() {
   InterferenceGraph pathGraph(4);
   pathGraph.addInterference(0, 1);
@@ -158,21 +189,24 @@ static bool verifyGreedyCapacityReproducer() {
   capacityGraph.addInterference(33, 31);
   mlir::tt::ttl::InterferenceGraphColoringBounds capacityBounds =
       mlir::tt::ttl::computeInterferenceGraphColoringBounds(capacityGraph);
-  ExactInterferenceGraphColoring capacity =
-      mlir::tt::ttl::colorInterferenceGraphExactly(capacityGraph,
-                                                   kUnlimitedSearchStates);
-  if (capacityBounds.colorCount != 33 || capacity.colorCount != 32) {
-    llvm::errs() << "capacity reproducer expected greedy 33 and exact 32, got "
-                 << capacityBounds.colorCount << " and " << capacity.colorCount
-                 << "\n";
+  InterferenceGraphColorLimitResult capacityFit =
+      mlir::tt::ttl::colorInterferenceGraphWithColorLimitExactly(
+          capacityGraph, /*colorLimit=*/32, kUnlimitedSearchStates);
+  if (capacityBounds.colorCount != 33 || !capacityFit.isFeasible() ||
+      capacityFit.colorCount != 32) {
+    llvm::errs()
+        << "capacity reproducer expected first-fit 33 and fixed-limit 32, got "
+        << capacityBounds.colorCount << " and " << capacityFit.colorCount
+        << "\n";
     return false;
   }
   llvm::outs() << "capacity_reproducer=32\n";
-  llvm::outs() << "capacity_search_states=" << capacity.exploredStateCount
+  llvm::outs() << "capacity_search_states=" << capacityFit.exploredStateCount
                << "\n";
   return true;
 }
 
+/// Distinguishes an exhausted search budget from a proof of infeasibility.
 static bool verifySearchLimitOutcome() {
   InterferenceGraph pathGraph(4);
   pathGraph.addInterference(0, 1);
@@ -188,11 +222,94 @@ static bool verifySearchLimitOutcome() {
     llvm::errs() << "bounded search did not report an inconclusive result\n";
     return false;
   }
+  InterferenceGraphColorLimitResult fixedLimit =
+      mlir::tt::ttl::colorInterferenceGraphWithColorLimitExactly(
+          pathGraph, /*colorLimit=*/2, /*searchStateLimit=*/1);
+  if (fixedLimit.status !=
+          InterferenceGraphColorLimitStatus::SearchLimitReached ||
+      !fixedLimit.colors.empty() || fixedLimit.colorCount != 0 ||
+      fixedLimit.exploredStateCount != 1) {
+    llvm::errs()
+        << "fixed-limit search did not report an inconclusive result\n";
+    return false;
+  }
   llvm::outs() << "bounded_search_states=" << limited.exploredStateCount
                << "\n";
   return true;
 }
 
+/// Builds one Mycielskian while preserving deterministic vertex numbering.
+/// Repeated application creates low-clique, high-chromatic witnesses.
+static InterferenceGraph buildMycielskian(const InterferenceGraph &graph) {
+  unsigned vertexCount = graph.size();
+  InterferenceGraph result(2 * vertexCount + 1);
+  for (unsigned lhsVertex = 0; lhsVertex < vertexCount; ++lhsVertex) {
+    for (unsigned rhsVertex = lhsVertex + 1; rhsVertex < vertexCount;
+         ++rhsVertex) {
+      if (!graph.interferes(lhsVertex, rhsVertex)) {
+        continue;
+      }
+      result.addInterference(lhsVertex, rhsVertex);
+      result.addInterference(lhsVertex, vertexCount + rhsVertex);
+      result.addInterference(rhsVertex, vertexCount + lhsVertex);
+    }
+  }
+  unsigned apex = 2 * vertexCount;
+  for (unsigned clone = vertexCount; clone < 2 * vertexCount; ++clone) {
+    result.addInterference(clone, apex);
+  }
+  return result;
+}
+
+/// Verifies a C5 witness and demonstrates why a fixed acceptance query avoids
+/// the harder minimum proof when the clique bound is far below chromatic count.
+static bool verifyLowCliqueFixedLimitCheck() {
+  InterferenceGraph completeGraph(2);
+  completeGraph.addInterference(0, 1);
+  InterferenceGraph cycleFive = buildMycielskian(completeGraph);
+  mlir::tt::ttl::InterferenceGraphColoringBounds cycleBounds =
+      mlir::tt::ttl::computeInterferenceGraphColoringBounds(cycleFive);
+  InterferenceGraphColorLimitResult cycleTwoColors =
+      mlir::tt::ttl::colorInterferenceGraphWithColorLimitExactly(
+          cycleFive, /*colorLimit=*/2, kUnlimitedSearchStates);
+  InterferenceGraphColorLimitResult cycleThreeColors =
+      mlir::tt::ttl::colorInterferenceGraphWithColorLimitExactly(
+          cycleFive, /*colorLimit=*/3, kUnlimitedSearchStates);
+  if (cycleBounds.cliqueLowerBound != 2 ||
+      cycleTwoColors.status != InterferenceGraphColorLimitStatus::Infeasible ||
+      !cycleThreeColors.isFeasible()) {
+    llvm::errs() << "C5 exact-coloring witness mismatch\n";
+    return false;
+  }
+
+  InterferenceGraph fourChromatic = buildMycielskian(cycleFive);
+  InterferenceGraph fiveChromatic = buildMycielskian(fourChromatic);
+  constexpr uint64_t kComparisonSearchStates = 100;
+  InterferenceGraphColorLimitResult fixedLimit =
+      mlir::tt::ttl::colorInterferenceGraphWithColorLimitExactly(
+          fiveChromatic, /*colorLimit=*/5, kComparisonSearchStates);
+  ExactInterferenceGraphColoring minimum =
+      mlir::tt::ttl::colorInterferenceGraphExactly(fiveChromatic,
+                                                   kComparisonSearchStates);
+  if (!fixedLimit.isFeasible() ||
+      minimum.status !=
+          ExactInterferenceGraphColoringStatus::SearchLimitReached) {
+    llvm::errs() << "low-clique fixed-limit comparison mismatch: fixed="
+                 << static_cast<unsigned>(fixedLimit.status)
+                 << " minimum=" << static_cast<unsigned>(minimum.status)
+                 << " fixed_states=" << fixedLimit.exploredStateCount
+                 << " minimum_states=" << minimum.exploredStateCount << "\n";
+    return false;
+  }
+  llvm::outs() << "low_clique_fixed_states=" << fixedLimit.exploredStateCount
+               << "\n"
+               << "low_clique_minimum_states=" << minimum.exploredStateCount
+               << "\n";
+  return true;
+}
+
+/// Exhaustively measures the assignment-count penalty of uniform coloring
+/// relative to per-node and two-group contracts.
 static bool compareAssignmentContracts() {
   constexpr unsigned kVertexCount = 4;
   constexpr unsigned kPossibleEdgeCount = 6;
@@ -252,7 +369,9 @@ static bool compareAssignmentContracts() {
 int main() {
   return compareProductionSolverWithOracle() &&
                  verifyGreedyCapacityReproducer() &&
-                 verifySearchLimitOutcome() && compareAssignmentContracts()
+                 verifySearchLimitOutcome() &&
+                 verifyLowCliqueFixedLimitCheck() &&
+                 compareAssignmentContracts()
              ? 0
              : 1;
 }

@@ -135,6 +135,44 @@ struct InterferenceGraphColoringBounds {
 InterferenceGraphColoringBounds
 computeInterferenceGraphColoringBounds(const InterferenceGraph &graph);
 
+/// Completion status for exact coloring with a fixed color limit.
+enum class InterferenceGraphColorLimitStatus {
+  Feasible,
+  Infeasible,
+  SearchLimitReached,
+};
+
+/// Result of deciding whether an interference graph fits a fixed color limit.
+struct InterferenceGraphColorLimitResult {
+  InterferenceGraphColorLimitStatus status =
+      InterferenceGraphColorLimitStatus::Infeasible;
+
+  /// Dense zero-based color indexed by vertex number.
+  ///
+  /// Present only when `status` is `Feasible`.
+  llvm::SmallVector<unsigned> colors;
+
+  /// Number of colors used by the feasible assignment, or zero otherwise.
+  unsigned colorCount = 0;
+
+  /// Recursive search states examined before completion or termination.
+  std::uint64_t exploredStateCount = 0;
+
+  bool isFeasible() const {
+    return status == InterferenceGraphColorLimitStatus::Feasible;
+  }
+};
+
+/// Decides exactly whether `graph` can be colored with at most `colorLimit`
+/// colors using bounded DSATUR search.
+///
+/// `Infeasible` is returned only after an exhaustive proof. A search limit
+/// cannot be converted into a capacity rejection.
+InterferenceGraphColorLimitResult
+colorInterferenceGraphWithColorLimitExactly(const InterferenceGraph &graph,
+                                            unsigned colorLimit,
+                                            std::uint64_t searchStateLimit);
+
 /// Computes a deterministic minimum coloring with bounded DSATUR search.
 ///
 /// Connected components are solved independently and reuse the same color

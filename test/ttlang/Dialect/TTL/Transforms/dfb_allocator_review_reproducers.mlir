@@ -12,7 +12,8 @@
 
 module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
   func.func @split_compiler_producer()
-      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.noc_index = 0 : i32} {
     %dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
         {dfb_id = 7 : index, ttl.compiler_allocated}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -42,7 +43,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 // visits A, D, B, C and uses three data colors, while the exact assignment uses
 // two. The greedy assignment is valid and fits the hardware limit, so the
 // production allocator accepts its six total indices. The independent oracle
-// joins this graph with a 30-vertex clique to verify exact escalation from 33
+// joins this graph with a 30-vertex clique to verify a fixed-limit check from 33
 // to 32 indices.
 
 // CHECK: module attributes {ttl.dfb_allocations = [{{.*}}dfb_index = 0 : i32{{.*}}, {{.*}}dfb_index = 1 : i32{{.*}}, {{.*}}dfb_index = 2 : i32{{.*}}, {{.*}}dfb_index = 3 : i32{{.*}}, {{.*}}dfb_index = 4 : i32{{.*}}, {{.*}}dfb_index = 5 : i32{{.*}}]}
@@ -57,7 +58,8 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 
 module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
   func.func @path_producer()
-      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.noc_index = 0 : i32} {
     %first_path_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
     %last_path_dfb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
     %second_path_dfb = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>

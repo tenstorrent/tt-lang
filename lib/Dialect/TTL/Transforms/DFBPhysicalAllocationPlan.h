@@ -129,7 +129,7 @@ private:
 /// Builds and validates a complete physical DFB allocation without mutation.
 class DFBPhysicalAllocationPlanner {
 public:
-  /// Builds a plan using deterministic first-fit with exact escalation.
+  /// Builds a plan using deterministic first-fit with bounded exact checks.
   ///
   /// `operation` must be a `ModuleOp`. Failures are recorded for the consuming
   /// pass to diagnose before any IR mutation.

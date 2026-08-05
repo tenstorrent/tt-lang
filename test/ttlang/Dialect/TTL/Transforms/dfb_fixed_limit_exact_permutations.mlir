@@ -1,4 +1,4 @@
-// Tests successful exact-coloring escalation for every logical-ID permutation.
+// Tests a successful fixed-limit exact check for every logical-ID permutation.
 // RUN: %python %S/Inputs/generate_dfb_exact_coloring_permutations.py | ttlang-opt --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s
 
 // Thirty mutually conflicting DFBs join a four-vertex path declared in the

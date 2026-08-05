@@ -134,7 +134,7 @@ The pipeline runs these passes in order:
 - `ttl-insert-cb-sync` -- insert missing DFB synchronization
 - `ttl-verify-pipenet-guards`, then `ttl-verify-pipenet-schedule` -- verify PipeNet launch domains and event ordering before DFB allocation
 - `ttl-coalesce-dfb-acquires` -- coalesce compatible DFB acquires
-- `ttl-finalize-dfb-indices` -- assign logical DFBs to physical indices, validate capacity, and emit runtime metadata; `reuse-user-dfbs` controls user-DFB reuse and `exact-coloring-search-limit` bounds exact escalation
+- `ttl-finalize-dfb-indices` -- assign logical DFBs to physical indices, validate capacity, and emit runtime metadata; `reuse-user-dfbs` controls user-DFB reuse and `exact-coloring-search-limit` bounds fixed-limit and minimum-color exact queries
 - `ttl-set-compute-kernel-config` -- set `fp32_dest_acc_en` / `dst_full_sync_en` defaults
 - `ttl-assign-dst` -- DST register allocation (linear scan with copy insertion)
 - `ttl-subblock-compute-for-dst` -- tile `ttl.compute` into DST-sized subblocks *(only if `maximize-dst=true`)*; optionally refine reserve/push to per-subblock granularity *(only if `subblock-sync=true`)*
