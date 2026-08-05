@@ -5,9 +5,13 @@
 #include "DFBAcquireReleaseAnalysis.h"
 
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
+#include "mlir/IR/BuiltinTypes.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 
+#include <algorithm>
 #include <optional>
 
 //===----------------------------------------------------------------------===//
@@ -41,8 +45,10 @@ static bool directDFBUseMatchesAcquire(DFBAcquireInterval interval,
   llvm_unreachable("unknown DFB acquire/release kind");
 }
 
-static bool isLifecycleOrAttachOp(Operation *op) {
-  return isDFBAcquireOp(op) || isDFBReleaseOp(op) || isa<AttachCBOp>(op);
+/// Returns true when a direct DFB operand does not consume an acquired slot.
+static bool isLifecycleOrIdentityOnlyOp(Operation *operation) {
+  return isDFBAcquireOp(operation) || isDFBReleaseOp(operation) ||
+         !mayAccessDFBStorage(operation);
 }
 
 /// Project `op` into the acquire block so nested regions can be ordered
@@ -138,22 +144,178 @@ getDFBAcquireReleaseKind(Operation *op) {
   return std::nullopt;
 }
 
-void collectDFBAcquireReleaseOps(func::FuncOp func,
-                                 SmallVectorImpl<Operation *> &reserves,
-                                 SmallVectorImpl<Operation *> &waits,
-                                 SmallVectorImpl<Operation *> &pushes,
-                                 SmallVectorImpl<Operation *> &pops) {
+int64_t getDFBLifecycleTileCount(Operation *operation) {
+  if (auto numTiles = operation->getAttrOfType<IntegerAttr>("num_tiles")) {
+    return numTiles.getInt();
+  }
+
+  Value dfb = isDFBAcquireOp(operation) ? getDFBAcquireDFB(operation)
+                                        : getDFBReleaseDFB(operation);
+  return cast<CircularBufferType>(dfb.getType()).getElementsPerBlock();
+}
+
+std::optional<int64_t> getDFBTransactionBlockCount(Operation *operation) {
+  assert((isDFBAcquireOp(operation) || isDFBReleaseOp(operation)) &&
+         "DFB transaction block count requires a lifecycle operation");
+  Value dfb = isDFBAcquireOp(operation) ? getDFBAcquireDFB(operation)
+                                        : getDFBReleaseDFB(operation);
+  auto dfbType = dyn_cast<CircularBufferType>(dfb.getType());
+  if (!dfbType || dfbType.getElementsPerBlock() <= 0) {
+    return std::nullopt;
+  }
+  int64_t numTiles = getDFBLifecycleTileCount(operation);
+  if (numTiles <= 0 || numTiles % dfbType.getElementsPerBlock() != 0) {
+    return std::nullopt;
+  }
+  return numTiles / dfbType.getElementsPerBlock();
+}
+
+struct OutstandingDFBAcquisition {
+  /// Acquisition contributing the oldest remaining FIFO tiles.
+  Operation *operation = nullptr;
+
+  /// Tiles not yet consumed by a same-block release.
+  int64_t remainingTiles = 0;
+};
+
+/// Entry-block FIFO matches and control-flow-dependent releases.
+struct SameBlockFIFOOwnership {
+  DenseMap<Operation *, SmallVector<Operation *>> owners;
+  DenseSet<Operation *> unresolvedReleases;
+};
+
+static bool operationMatchesKind(Operation *operation,
+                                 DFBAcquireReleaseKind kind) {
+  std::optional<DFBAcquireReleaseKind> operationKind =
+      getDFBAcquireReleaseKind(operation);
+  return operationKind && *operationKind == kind;
+}
+
+/// Matches direct same-block transactions using the DFB's FIFO protocol.
+///
+/// Only the kernel entry block has no incoming local transaction state. A CFG
+/// successor or nested block may receive an outstanding acquisition, so
+/// initializing a local FIFO there would be unsound. Releases outside the
+/// entry block remain unresolved. A nested lifecycle operation also makes the
+/// parent queue control-flow-dependent, so subsequent entry-block releases
+/// retain conservative ownership.
+static FailureOr<SameBlockFIFOOwnership>
+buildSameBlockFIFOOwners(func::FuncOp kernel, ArrayRef<Operation *> reserves,
+                         ArrayRef<Operation *> waits,
+                         ArrayRef<Operation *> releases,
+                         std::optional<DFBLifecycleDiagnostic> &diagnostic) {
+  SameBlockFIFOOwnership ownership;
+
+  auto processBlock = [&](Block *block, DFBAcquireReleaseKind kind,
+                          ArrayRef<Operation *> kindAcquisitions) {
+    DenseMap<Value, SmallVector<OutstandingDFBAcquisition>> outstanding;
+    DenseSet<Value> controlFlowDependentDFBs;
+
+    for (Operation &operation : *block) {
+      if (isDFBAcquireOp(&operation) &&
+          operationMatchesKind(&operation, kind)) {
+        Value dfb = getDFBAcquireDFB(&operation);
+        if (!controlFlowDependentDFBs.contains(dfb)) {
+          outstanding[dfb].push_back(
+              {&operation, getDFBLifecycleTileCount(&operation)});
+        }
+      } else if (isDFBReleaseOp(&operation) &&
+                 operationMatchesKind(&operation, kind)) {
+        Value dfb = getDFBReleaseDFB(&operation);
+        if (controlFlowDependentDFBs.contains(dfb)) {
+          ownership.unresolvedReleases.insert(&operation);
+          continue;
+        }
+        auto queueIterator = outstanding.find(dfb);
+        if (queueIterator == outstanding.end()) {
+          bool hasSameKindAcquisition =
+              llvm::any_of(kindAcquisitions, [&](Operation *acquisition) {
+                return getDFBAcquireDFB(acquisition) == dfb;
+              });
+          if (!hasSameKindAcquisition) {
+            continue;
+          }
+          diagnostic.emplace(
+              &operation,
+              "dataflow buffer release exceeds preceding entry-block "
+              "acquisitions");
+          return failure();
+        }
+        SmallVector<OutstandingDFBAcquisition> updatedQueue =
+            queueIterator->second;
+        SmallVector<Operation *> candidates;
+        int64_t remainingReleaseTiles = getDFBLifecycleTileCount(&operation);
+        while (remainingReleaseTiles > 0 && !updatedQueue.empty()) {
+          OutstandingDFBAcquisition &acquisition = updatedQueue.front();
+          if (!llvm::is_contained(candidates, acquisition.operation)) {
+            candidates.push_back(acquisition.operation);
+          }
+          int64_t releasedTiles =
+              std::min(remainingReleaseTiles, acquisition.remainingTiles);
+          remainingReleaseTiles -= releasedTiles;
+          acquisition.remainingTiles -= releasedTiles;
+          if (acquisition.remainingTiles == 0) {
+            updatedQueue.erase(updatedQueue.begin());
+          }
+        }
+        if (remainingReleaseTiles != 0) {
+          diagnostic.emplace(
+              &operation,
+              "dataflow buffer release exceeds preceding entry-block "
+              "acquisitions");
+          return failure();
+        }
+        ownership.owners.try_emplace(&operation, std::move(candidates));
+        queueIterator->second = std::move(updatedQueue);
+      }
+
+      for (Region &region : operation.getRegions()) {
+        region.walk([&](Operation *nested) {
+          if (!operationMatchesKind(nested, kind)) {
+            return;
+          }
+          Value dfb = isDFBAcquireOp(nested) ? getDFBAcquireDFB(nested)
+                                             : getDFBReleaseDFB(nested);
+          controlFlowDependentDFBs.insert(dfb);
+        });
+      }
+    }
+    return success();
+  };
+
+  Block *entryBlock = &kernel.getBody().front();
+  if (failed(processBlock(entryBlock, DFBAcquireReleaseKind::Producer,
+                          reserves)) ||
+      failed(
+          processBlock(entryBlock, DFBAcquireReleaseKind::Consumer, waits))) {
+    return failure();
+  }
+  for (Operation *operation : releases) {
+    if (operation->getBlock() != entryBlock && isDFBReleaseOp(operation)) {
+      ownership.unresolvedReleases.insert(operation);
+    }
+  }
+  return ownership;
+}
+
+DFBAcquireReleaseOperations collectDFBAcquireReleaseOps(func::FuncOp func) {
+  DFBAcquireReleaseOperations operations;
   func.walk([&](Operation *op) {
     if (isa<CBReserveOp>(op)) {
-      reserves.push_back(op);
+      operations.reserves.push_back(op);
+      operations.acquisitions.push_back(op);
     } else if (isa<CBWaitOp>(op)) {
-      waits.push_back(op);
+      operations.waits.push_back(op);
+      operations.acquisitions.push_back(op);
     } else if (isa<CBPushOp>(op)) {
-      pushes.push_back(op);
+      operations.pushes.push_back(op);
+      operations.releases.push_back(op);
     } else if (isa<CBPopOp>(op)) {
-      pops.push_back(op);
+      operations.pops.push_back(op);
+      operations.releases.push_back(op);
     }
   });
+  return operations;
 }
 
 DFBAcquireInterval makeDFBAcquireInterval(Operation *acquire,
@@ -207,7 +369,7 @@ Operation *findLastDFBAcquireOwnedUse(DFBAcquireInterval interval) {
     if (user == interval.acquire) {
       continue;
     }
-    if (isLifecycleOrAttachOp(user)) {
+    if (isLifecycleOrIdentityOnlyOp(user)) {
       continue;
     }
     if (!directDFBUseMatchesAcquire(interval, user)) {
@@ -276,6 +438,136 @@ findOwnedDFBReleases(DFBAcquireInterval interval, Operation *lastOwnedUse,
   }
 
   return result;
+}
+
+PlanningResult<std::unique_ptr<DFBAcquireReleaseIndex>>
+DFBAcquireReleaseIndex::create(func::FuncOp kernel) {
+  auto index =
+      std::unique_ptr<DFBAcquireReleaseIndex>(new DFBAcquireReleaseIndex());
+  std::optional<DFBLifecycleDiagnostic> diagnostic;
+  if (failed(index->build(kernel, diagnostic))) {
+    assert(diagnostic && "failed lifecycle indexing requires a diagnostic");
+    return PlanningResult<std::unique_ptr<DFBAcquireReleaseIndex>>::invalidIR(
+        diagnostic->operation, std::move(diagnostic->message));
+  }
+  return PlanningResult<std::unique_ptr<DFBAcquireReleaseIndex>>::planned(
+      std::move(index));
+}
+
+LogicalResult DFBAcquireReleaseIndex::build(
+    func::FuncOp kernel, std::optional<DFBLifecycleDiagnostic> &diagnostic) {
+  DFBAcquireReleaseOperations operations = collectDFBAcquireReleaseOps(kernel);
+  acquisitionOrder = operations.acquisitions;
+  releaseOrder = operations.releases;
+
+  auto recordTransactions = [&](ArrayRef<Operation *> acquires) {
+    for (Operation *acquire : acquires) {
+      transactions.try_emplace(
+          acquire, DFBTransactionRecord{acquire, getDFBAcquireDFB(acquire),
+                                        *getDFBAcquireReleaseKind(acquire),
+                                        getDFBLifecycleTileCount(acquire)});
+    }
+  };
+  recordTransactions(operations.reserves);
+  recordTransactions(operations.waits);
+
+  FailureOr<SameBlockFIFOOwnership> fifoOwnershipResult =
+      buildSameBlockFIFOOwners(kernel, operations.reserves, operations.waits,
+                               operations.releases, diagnostic);
+  if (failed(fifoOwnershipResult)) {
+    return failure();
+  }
+  SameBlockFIFOOwnership &fifoOwnership = *fifoOwnershipResult;
+  auto recordReleaseOwnership = [&](ArrayRef<Operation *> releases,
+                                    ArrayRef<Operation *> acquires) {
+    for (Operation *release : releases) {
+      Value dfb = getDFBReleaseDFB(release);
+      SmallVector<Operation *> candidates;
+
+      bool hasSameKindAcquisition = llvm::any_of(
+          acquires, [&](Operation *op) { return getDFBAcquireDFB(op) == dfb; });
+      if (!hasSameKindAcquisition) {
+        diagnostic.emplace(
+            release, "dataflow buffer release has no same-kind acquisition "
+                     "in the enclosing kernel");
+        return failure();
+      }
+
+      DFBReleaseOwnershipKind ownership = DFBReleaseOwnershipKind::Unresolved;
+      if (!fifoOwnership.unresolvedReleases.contains(release)) {
+        auto owners = fifoOwnership.owners.find(release);
+        assert(owners != fifoOwnership.owners.end() &&
+               !owners->second.empty() &&
+               "positive entry-block release must have FIFO owners");
+        llvm::append_range(candidates, owners->second);
+        ownership = candidates.size() == 1 ? DFBReleaseOwnershipKind::Exact
+                                           : DFBReleaseOwnershipKind::Multiple;
+      } else {
+        for (Operation *acquisition : acquires) {
+          if (getDFBAcquireDFB(acquisition) == dfb) {
+            candidates.push_back(acquisition);
+          }
+        }
+      }
+      releaseOwnership.try_emplace(
+          release,
+          DFBReleaseOwnership{release, dfb, *getDFBAcquireReleaseKind(release),
+                              getDFBLifecycleTileCount(release), ownership,
+                              std::move(candidates)});
+    }
+    return success();
+  };
+
+  if (failed(recordReleaseOwnership(operations.pushes, operations.reserves)) ||
+      failed(recordReleaseOwnership(operations.pops, operations.waits))) {
+    return failure();
+  }
+  auto recordIntervalOwners = [&](ArrayRef<Operation *> acquires,
+                                  ArrayRef<Operation *> releases) {
+    for (Operation *release : releases) {
+      releaseIntervalOwners.try_emplace(release);
+    }
+    for (Operation *acquire : acquires) {
+      DFBAcquireInterval interval = makeDFBAcquireInterval(acquire, acquires);
+      Operation *lastOwnedUse = findLastDFBAcquireOwnedUse(interval);
+      DFBReleaseSearch releaseSearch =
+          findOwnedDFBReleases(interval, lastOwnedUse, releases);
+      for (Operation *release : releaseSearch.sameLevelReleases) {
+        releaseIntervalOwners[release].push_back(acquire);
+      }
+      for (Operation *release : releaseSearch.nestedReleases) {
+        releaseIntervalOwners[release].push_back(acquire);
+      }
+    }
+  };
+  recordIntervalOwners(operations.reserves, operations.pushes);
+  recordIntervalOwners(operations.waits, operations.pops);
+
+  return success();
+}
+
+const DFBTransactionRecord &
+DFBAcquireReleaseIndex::getTransaction(Operation *acquire) const {
+  auto transaction = transactions.find(acquire);
+  assert(transaction != transactions.end() &&
+         "operation is not an indexed DFB acquisition");
+  return transaction->second;
+}
+
+const DFBReleaseOwnership &
+DFBAcquireReleaseIndex::getReleaseOwnership(Operation *release) const {
+  auto ownership = releaseOwnership.find(release);
+  assert(ownership != releaseOwnership.end() &&
+         "operation is not an indexed DFB release");
+  return ownership->second;
+}
+
+ArrayRef<Operation *>
+DFBAcquireReleaseIndex::getReleaseIntervalOwners(Operation *release) const {
+  auto owners = releaseIntervalOwners.find(release);
+  assert(owners != releaseIntervalOwners.end() &&
+         "operation is not an indexed DFB release");
+  return owners->second;
 }
 
 } // namespace mlir::tt::ttl

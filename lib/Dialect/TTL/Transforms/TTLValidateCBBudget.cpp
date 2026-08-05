@@ -15,6 +15,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "DFBAllocationLimits.h"
+
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
@@ -26,11 +28,6 @@
 #include "mlir/IR/Types.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/LogicalResult.h"
-
-#include "ttlang/Dialect/TTCore/IR/TTCoreOps.h"
-#include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
-#include "ttlang/Dialect/TTCore/IR/Utils.h"
-#include <optional>
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
@@ -45,14 +42,6 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-/// Fallback when the module has no `system_desc` / device: same static CB
-/// region per core as Wormhole and Blackhole (1464 KiB L1 minus 32 KiB
-/// reserved in tt-metal dev_mem_map). Matches
-/// `ttl.constants.DEFAULT_L1_CB_BUDGET_BYTES` and
-/// `ChipDescAttr::getUsableL1Size()` for those chips when IR carries attrs.
-static constexpr uint64_t kFallbackUsableL1Bytes =
-    static_cast<uint64_t>(1432 * 1024);
-
 static std::string formatShape(llvm::ArrayRef<int64_t> shape) {
   std::string s;
   llvm::raw_string_ostream os(s);
@@ -62,53 +51,6 @@ static std::string formatShape(llvm::ArrayRef<int64_t> shape) {
   return os.str();
 }
 
-/// If the module has a system descriptor and default device, return usable L1
-/// for chip 0; otherwise return std::nullopt (caller uses the WH/BH fallback).
-static std::optional<uint64_t> tryBudgetFromModule(ModuleOp moduleOp) {
-  auto systemDesc = moduleOp->getAttrOfType<mlir::tt::ttcore::SystemDescAttr>(
-      mlir::tt::ttcore::SystemDescAttr::name);
-  if (!systemDesc) {
-    return std::nullopt;
-  }
-
-  auto deviceOp = mlir::tt::ttcore::lookupDeviceOp(
-      moduleOp, mlir::tt::ttcore::getDefaultDeviceName());
-  if (!deviceOp) {
-    return std::nullopt;
-  }
-
-  auto chipIds = deviceOp.getDeviceAttr().getChipIds();
-  if (chipIds.empty()) {
-    return std::nullopt;
-  }
-
-  return *llvm::min_element(llvm::map_range(chipIds, [&](unsigned chipId) {
-    return systemDesc.getChipDesc(chipId).getUsableL1Size();
-  }));
-}
-
-/// Bytes per CB slot: explicit ttcore.tile uses its shape/dtype; row-wise
-/// (scalar/builtin) element types use the default tile layout for that dtype,
-/// matching TTCore CB page sizing.
-static uint64_t bytesPerCbElement(mlir::Type elemTy) {
-  if (auto tileTy = mlir::dyn_cast<mlir::tt::ttcore::TileType>(elemTy)) {
-    return tileTy.getSizeBytes();
-  }
-  return mlir::tt::ttcore::TileType::get(elemTy).getSizeBytes();
-}
-
-static FailureOr<uint64_t> cbBytesForBind(BindCBOp bindOp) {
-  auto cbTy = mlir::cast<CircularBufferType>(bindOp.getResult().getType());
-  mlir::Type elemTy = cbTy.getElementType();
-  const uint64_t slotBytes = bytesPerCbElement(elemTy);
-  const int64_t totalEl = cbTy.getTotalElements();
-  if (totalEl < 0) {
-    bindOp.emitOpError() << "invalid negative total element count for CB";
-    return failure();
-  }
-  return static_cast<uint64_t>(totalEl) * slotBytes;
-}
-
 struct TTLValidateCBBudgetPass
     : public impl::TTLValidateCBBudgetBase<TTLValidateCBBudgetPass> {
   using Base::Base;
@@ -116,26 +58,24 @@ struct TTLValidateCBBudgetPass
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
 
-    uint64_t budgetBytes = kFallbackUsableL1Bytes;
-    if (l1BudgetOverride > 0) {
-      budgetBytes = l1BudgetOverride;
-    } else if (auto fromDevice = tryBudgetFromModule(moduleOp)) {
-      budgetBytes = *fromDevice;
-    }
+    std::optional<uint64_t> overrideBytes =
+        l1BudgetOverride == 0 ? std::nullopt
+                              : std::optional<uint64_t>(l1BudgetOverride);
+    uint64_t budgetBytes = getUsableDFBL1Bytes(moduleOp, overrideBytes);
 
-    llvm::DenseMap<int64_t, uint64_t> maxBytesByIndex;
+    DFBAllocationFootprint footprint;
     llvm::DenseMap<int64_t, BindCBOp> bindForIndex;
 
     auto walkResult = moduleOp.walk([&](BindCBOp bindOp) -> WalkResult {
-      FailureOr<uint64_t> bytes = cbBytesForBind(bindOp);
-      if (failed(bytes)) {
+      auto cbType = cast<CircularBufferType>(bindOp.getResult().getType());
+      int64_t physicalIndex = bindOp.getCbIndex().getSExtValue();
+      FailureOr<bool> increased = footprint.add(physicalIndex, cbType);
+      if (failed(increased)) {
+        bindOp.emitOpError() << "invalid negative total element count for CB";
         return WalkResult::interrupt();
       }
-      int64_t idx = bindOp.getCbIndex().getSExtValue();
-      auto it = maxBytesByIndex.find(idx);
-      if (it == maxBytesByIndex.end() || *bytes > it->second) {
-        maxBytesByIndex[idx] = *bytes;
-        bindForIndex[idx] = bindOp;
+      if (*increased) {
+        bindForIndex[physicalIndex] = bindOp;
       }
       return WalkResult::advance();
     });
@@ -145,21 +85,13 @@ struct TTLValidateCBBudgetPass
       return;
     }
 
-    if (maxBytesByIndex.empty()) {
+    if (footprint.empty()) {
       return;
     }
 
-    uint64_t totalBytes = 0;
-    for (auto &e : maxBytesByIndex) {
-      totalBytes += e.second;
-    }
-
-    SmallVector<int64_t, 32> sortedIndices;
-    sortedIndices.reserve(maxBytesByIndex.size());
-    for (auto &e : maxBytesByIndex) {
-      sortedIndices.push_back(e.first);
-    }
-    llvm::sort(sortedIndices);
+    uint64_t totalBytes = footprint.getTotalBytes();
+    SmallVector<int64_t, kMaxCircularBuffers> sortedIndices =
+        footprint.getSortedPhysicalIndices();
 
     auto emitBreakdown = [&](InFlightDiagnostic &diag) {
       for (int64_t idx : sortedIndices) {
@@ -169,7 +101,7 @@ struct TTLValidateCBBudgetPass
         diag << "\n  CB[" << idx << "]: shape=" << formatShape(cbTy.getShape())
              << ", element_type=" << cbTy.getElementType()
              << ", block_count=" << cbTy.getBlockCount() << ", "
-             << maxBytesByIndex[idx] << " bytes";
+             << footprint.getBytes(idx) << " bytes";
         if (bindOp->hasAttr(kCompilerAllocatedAttrName)) {
           diag << " (compiler-allocated)";
         }
@@ -186,11 +118,11 @@ struct TTLValidateCBBudgetPass
     // slot.
     auto bindForLargestAllocation = [&]() -> BindCBOp {
       int64_t reportIdx = sortedIndices.front();
-      uint64_t reportMax = maxBytesByIndex[reportIdx];
+      uint64_t reportMax = footprint.getBytes(reportIdx);
       for (int64_t idx : sortedIndices) {
-        const uint64_t b = maxBytesByIndex[idx];
-        if (b > reportMax) {
-          reportMax = b;
+        uint64_t allocationBytes = footprint.getBytes(idx);
+        if (allocationBytes > reportMax) {
+          reportMax = allocationBytes;
           reportIdx = idx;
         }
       }

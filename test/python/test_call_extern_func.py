@@ -6,7 +6,8 @@
 End-to-end tests for ttl.call_extern_func.
 
 Covers:
-- Struct-based compute header with DFB template args (negate).
+- Struct-based compute header with DFB IDs as template args and direct DFB
+  operands (negate).
 - int/bool/float values as both template_args and func_args.
 - A DFB passed directly as a func_arg (CB index via get_compile_time_arg_val).
 - A real ttnn GlobalSemaphore captured into template_args.
@@ -45,9 +46,10 @@ def negate_extern(inp, out):
                 NEGATE_HEADER,
                 "negate_tile_shim",
                 template_args=[
-                    in_dfb,
-                    out_dfb,
+                    ttl.get_dfb_id(in_dfb),
+                    ttl.get_dfb_id(out_dfb),
                 ],
+                func_args=[in_dfb, out_dfb],
             )
 
     @ttl.datamovement()
@@ -70,9 +72,10 @@ def typed_args_extern(inp, out):
     """Exercise int/bool/float template+func args and a DFB as func_arg.
 
     template_args:
-      OutCB=out_dfb, IntScale=2, NegateTpl=True, ScaleTpl=0.5
+      OutCB=get_dfb_id(out), IntScale=2, NegateTpl=True, ScaleTpl=0.5
     func_args:
-      in_dfb (DFB), scale_f=3.0, int_factor=2, also_negate=False
+      in_dfb and out_dfb (DFBs), scale_f=3.0, int_factor=2,
+      also_negate=False
 
     expected = -inp * 2 * 0.5 * 3.0 * 2 = -inp * 6
     """
@@ -86,13 +89,14 @@ def typed_args_extern(inp, out):
                 TYPED_ARGS_HEADER,
                 "typed_args_shim",
                 template_args=[
-                    out_dfb,
+                    ttl.get_dfb_id(out_dfb),
                     2,  # int
                     True,  # bool
                     0.5,  # float (IEEE bits in template)
                 ],
                 func_args=[
                     in_dfb,  # DFB -> CB index
+                    out_dfb,  # DFB -> CB index
                     3.0,  # float
                     2,  # int
                     False,  # bool
@@ -160,7 +164,12 @@ def test_global_semaphore_template_arg(device):
                 ttl.call_extern_func(
                     SEMAPHORE_TEMPLATE_HEADER,
                     "semaphore_template_negate_shim",
-                    template_args=[in_dfb, out_dfb, global_sem],
+                    template_args=[
+                        ttl.get_dfb_id(in_dfb),
+                        ttl.get_dfb_id(out_dfb),
+                        global_sem,
+                    ],
+                    func_args=[in_dfb, out_dfb],
                 )
 
         @ttl.datamovement()

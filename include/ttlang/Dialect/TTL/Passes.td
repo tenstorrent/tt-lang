@@ -160,23 +160,29 @@ def TTLMaterializeLoopState
 
 def TTLConvertTTLToTTKernel
     : Pass<"convert-ttl-to-ttkernel", "::mlir::ModuleOp"> {
-  let summary = "Lower TTL DMA ops to TTKernel using global barriers (temporary)";
+  let summary = "Lower TTL data movement and PipeNet operations to TTKernel";
   let description = [{
-    Converts TTL DMA ops to TTKernel noc ops. Uses global barriers until TRID
-    barriers are available. Covers bind_cb, copy, wait MVP path.
-
-    TODO(ttl): Refine lowering to emit real CB handles and proper NOC addresses.
-    Issue: #77 (umbrella issue with subtasks #78-#89).
+    Converts TTL DFB, copy, wait, and PipeNet operations to TTKernel DFB, NoC,
+    and semaphore operations. PipeNet lowering selects receiver-published or
+    computed destination addresses according to the pass option and transfer
+    eligibility. Every transfer uses receiver-post synchronization.
   }];
 
   let options = [
     Option<"reduceFullFp32", "reduce-full-fp32", "bool", "true",
-           "Enable FP32 accumulation for reduce operations.">
+           "Enable FP32 accumulation for reduce operations.">,
+    Option<"pipeComputedAddresses", "pipe-computed-addresses",
+           "bool", "true",
+           "Use computed receiver DFB addresses for eligible pipe transfers. "
+           "When disabled, pipe transfers use receiver-published destination "
+           "addresses; multicast still requires proven equal runtime "
+           "receiver addresses.">
   ];
 
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
     "::mlir::scf::SCFDialect",
+    "::mlir::tensor::TensorDialect",
     "::mlir::tt::ttkernel::TTKernelDialect"
   ];
 }
@@ -229,26 +235,56 @@ def TTLAnnotateL1AccLoops
 
 def TTLInsertIntermediateDFBs
     : Pass<"ttl-insert-intermediate-dfbs", "::mlir::func::FuncOp"> {
-  let summary = "Insert intermediate dataflow buffers at fusion split points";
+  let summary = "Insert intermediate dataflow buffers for tensor materialization";
   let description = [{
     Walks ops implementing `DFBInputOpInterface` and checks whether the
     operands they declare as requiring DFB-attached values are satisfied.
-    When an operand comes from a fused expression chain (not DFB-attached),
-    the pass inserts a compiler-allocated DFB:
+    It also records direct `ttl.store` operands when one computed SSA value is
+    stored by operations in multiple MLIR basic blocks. A `ttl.compute`
+    operation is located in one MLIR basic block, and all output stores in its
+    body execute whenever the operation executes. Moving stores from different
+    MLIR basic blocks into one compute could therefore change their conditional
+    execution or violate SSA dominance. The pass materializes the computed
+    value once in a compiler DFB; each original store reads the attached value
+    and remains in its original MLIR basic block.
 
-      bind_cb -> cb_reserve -> store -> cb_wait -> attach_cb
+    When an operand comes from `ttl.compute`, the pass materializes it as an
+    extra compute output backed by a compiler-allocated DFB. The pass creates
+    the DFB, reserves the output slot, clones the compute with an extra
+    `ttl.tile_store`, emits the producer-side `cb_push`, and rewrites the
+    consumer operand to the attached waited value:
 
-    `cb_push` and `cb_pop` are omitted; `ttl-insert-cb-sync` inserts them
-    based on transitive use analysis.
+      bind_cb -> cb_reserve -> ttl.compute tile_store -> cb_push -> cb_wait -> attach_cb
 
-    Compiler-allocated DFBs are marked with `ttl.compiler_allocated` so
-    that `ttl-finalize-dfb-indices` can register them for the Python
-    runtime.
+    Non-compute producers use the tensor-level helper. It emits the reserve,
+    store, wait, and attach; `ttl-insert-cb-sync` later inserts the matching
+    push and pop to complete this lifecycle:
+
+      bind_cb -> cb_reserve -> store -> cb_push -> cb_wait -> attach_cb -> cb_pop
+
+    Before modifying IR, the pass computes a whole-kernel analysis state of
+    exact consumer operands that require DFB materialization. Decisions grow
+    monotonically to a fixed point and retain independent evidence. This
+    follows the One-Shot Bufferize model: analysis records every operand
+    decision first, then a separate immutable plan groups those decisions by
+    producer and applies them without repeating policy.
+
+    MLIR dense forward dataflow proves DFB-backed inputs available at their
+    eventual compute positions across CFG and structured-region edges.
+    Any ambiguous acquisition ownership, partial release, or unrecognized
+    storage identity is treated as possibly released and may require an
+    additional materialization. A fusion boundary at an independently formable
+    producer materializes the exact consumer operand. Multiple reserve
+    transactions for one result, and direct stores of one value in multiple
+    blocks, materialize all relevant uses through one shared compiler DFB.
+    Application begins only after the complete plan is valid.
+
+    All DFBs created by this pass are marked with `ttl.compiler_allocated`.
 
     When `enable` is false, the pass verifies that no operations require
-    compiler-allocated DFBs. If any `DFBInputOpInterface` op has a
-    non-DFB-attached operand, the pass emits an error diagnostic and
-    signals failure.
+    compiler-allocated DFBs for operand attachment, source-lifetime
+    preservation, or stores in multiple blocks. If any operation requires
+    materialization, the pass emits an error diagnostic and signals failure.
   }];
 
   let options = [
@@ -258,23 +294,85 @@ def TTLInsertIntermediateDFBs
   ];
 
   let dependentDialects = [
-    "::mlir::tt::ttl::TTLDialect"
+    "::mlir::tensor::TensorDialect"
+  ];
+}
+
+def TTLPrintDFBValueLifetimes
+    : Pass<"ttl-print-dfb-value-lifetimes", "::mlir::func::FuncOp"> {
+  let summary = "Print DFB lifetime analysis for debugging and tests";
+  let description = [{
+    This diagnostic pass prints the immutable acquisition, release-ownership,
+    transfer-count, and program-point availability facts used by `ComputeOp`
+    creation and intermediate DFB materialization. It supports debugging and
+    deterministic regression tests; IDs follow kernel walk order rather than
+    process addresses. The pass emits text to stderr and does not modify IR.
+  }];
+
+  let dependentDialects = [];
+}
+
+def TTLPrintComputeOpCreationPlans
+    : Pass<"ttl-print-compute-op-creation-plans", "::mlir::func::FuncOp"> {
+  let summary = "Print ComputeOp creation plans for debugging and tests";
+  let description = [{
+    This diagnostic pass prints the immutable ComputeOp creation recipes,
+    dependency-safe application order, overlap-preserving uses, unassigned
+    output stores, and intermediate DFB materialization requirements. Each
+    materialization includes the evidence that requires the consumer operand
+    to be materialized. It supports debugging and deterministic regression
+    tests; IDs follow kernel walk order rather than process addresses. The pass
+    emits text to stderr and does not modify IR.
+  }];
+
+  let dependentDialects = [];
+}
+
+def TTLProducerComputeCreation
+    : Pass<"ttl-create-producer-compute", "::mlir::func::FuncOp"> {
+  let summary = "Create ttl.compute ops before compiler DFB materialization";
+  let description = [{
+    Builds an immutable kernel plan before applying any rewrite. The plan
+    records typed tile recipes, input lifetimes, iteration semantics,
+    result-use ordering, output transactions, and dependency-safe application
+    order. Operations whose plans satisfy every condition are converted to
+    `ttl.compute`. Operations with rejected plans are not transformed, so
+    `ttl-insert-intermediate-dfbs` can materialize the required intermediate
+    values.
+
+    When a block-level store is absorbed into a producer compute, this pass
+    relocates any corresponding publication that would otherwise precede the
+    new compute. The resulting order is:
+
+      cb_reserve -> ttl.compute tile_store -> cb_push
+  }];
+
+  let dependentDialects = [
+    "::mlir::affine::AffineDialect",
+    "::mlir::arith::ArithDialect",
+    "::mlir::tensor::TensorDialect",
+    "::mlir::tt::ttkernel::TTKernelDialect"
   ];
 }
 
 def TTLConvertTTLToCompute
     : Pass<"convert-ttl-to-compute", "::mlir::func::FuncOp"> {
-  let summary = "Lower TTL elementwise tensor ops to ttl.compute with tile ops";
+  let summary = "Lower planned tensor operations to ttl.compute";
   let description = [{
-    Lowers TTL elementwise tensor operations (e.g., add, mul, exp, relu) to
-    ttl.compute with SSA-style tile operations in the body. This enables:
-    - Fusion of matmul + elementwise operations in the same compute body
-    - DST register tiling via TilingInterface
-    - Standard SSA optimizations (CSE, DCE, canonicalization)
+    Builds a complete immutable plan before modifying IR, then lowers selected
+    tensor operations to `ttl.compute` with recorded tile recipes. The plan
+    includes direct and fused inputs, affine indexing, iterator semantics,
+    side-effect placement, output reserve/publication transactions, and
+    dependency-safe application order. Before modifying IR, final conversion
+    verifies that every `ttl.store` will either be absorbed into a planned
+    `ttl.compute` or converted to a DFB-to-DFB passthrough. The pass fails if
+    neither conversion applies. `ttl-create-producer-compute` may leave such
+    stores for `ttl-insert-intermediate-dfbs` to resolve.
   }];
 
   let dependentDialects = [
-    "::mlir::func::FuncDialect",
+    "::mlir::affine::AffineDialect",
+    "::mlir::arith::ArithDialect",
     "::mlir::tensor::TensorDialect",
     "::mlir::tt::ttkernel::TTKernelDialect"
   ];
@@ -481,10 +579,15 @@ def TTLScheduleOperations
     interleaved. This pass groups them so `ttkernel-insert-inits` can emit
     one init per consecutive group of same-type ops.
 
-    Ops are sorted by (dependency depth, category, TypeID, init affinity,
+    Ops are sorted by (dependency depth, category, operation name, init affinity,
     dst_index). Dependency depth considers SSA RAW, DST RAW, WAW (same DST
     write index), and WAR (write after prior read of same DST index) hazards.
     Ops at the same depth are independent and can be reordered.
+
+    Pure, speculatable bookkeeping operations are transparent to scheduling
+    unless they consume a candidate tile result. Every other operation outside
+    the scheduled tile categories preserves its relative order and divides the
+    tile operations into independent scheduling sequences.
 
     Only tile ops between `tile_regs_acquire` and `tile_regs_commit` are
     scheduled. Store ops (after the commit/wait boundary) are not reordered.
@@ -559,25 +662,72 @@ def TTLVerifyPipeNetGuards
     point's domain is contained in the pipe's source or destination domain;
     out-of-domain uses, scopes broader than their declared role, unmatched
     `ttl.cb_wait`s, and unanalyzable coord-dependent predicates are reported.
-    Each diagnostic carries an example offending coordinate, the contributing
+    Each diagnostic includes an example offending coordinate, the contributing
     PipeNet(s), and a suggested guard.
-
-    Same-thread pipe schedule diagnostics are emitted only when role and DFB
-    domain checks have succeeded, so schedule-cycle reports are not mixed with
-    earlier guard failures.
 
     The pass expects one module per `@ttl.operation`, a well-formed
     `ttl.launch_grid` (i64 array of length 2 with positive entries), static
-    `I64Attr` coordinates on `ttl.create_pipe`, and finalized DFB indices
-    (i.e. `ttl-annotate-cb-associations` and `ttl-finalize-dfb-indices`
-    have run).
+    `I64Attr` coordinates on `ttl.create_pipe`, and explicit DFB synchronization
+    inserted by `ttl-insert-cb-sync`. Every user-declared DFB must have its
+    module-wide logical `dfb_id`; compiler-created DFBs receive analysis-only
+    logical IDs until physical index finalization. DFB lifecycle operands used
+    by the guard analysis must resolve to `ttl.bind_cb` declarations.
   }];
+}
 
-  let dependentDialects = [
-    "::mlir::arith::ArithDialect",
-    "::mlir::scf::SCFDialect",
-    "::mlir::tt::ttl::TTLDialect"
-  ];
+def TTLVerifyPipeNetSchedule
+    : Pass<"ttl-verify-pipenet-schedule", "::mlir::ModuleOp"> {
+  let summary = "Verify PipeNet synchronization correspondence and ordering";
+  let description = [{
+    Verifies the synchronization protocol formed by pipe sends, receiver posts,
+    and receiver waits. A send waits until every destination has posted a
+    dataflow buffer reservation, so each send requires one corresponding post
+    at every destination. A receiver wait observes the send associated with
+    the exact receive handle it consumes. Repeated waits on one handle observe
+    the same completed transfer and do not require additional sends. Posting a
+    reservation does not wait for payload, and a sender does not wait for the
+    receiver to consume the payload. Receiver posts may therefore exist
+    without receiver waits, and sends do not require receiver waits. When a
+    pipe has sends, each destination must have the same number of receiver
+    posts as sends. A pipe with no sends or waits may contain unused receiver
+    posts.
+
+    Receiver-published addressing supports one outstanding post for each pipe
+    and destination. Each repetition must contain its corresponding send or an
+    exact receive wait that proves the send completed. Before a distinct post
+    executes, the graph must prove that the preceding send has completed or
+    that the posts are mutually exclusive.
+
+    Static event definitions are paired by program order for each pipe
+    endpoint. Each pair must have equal dynamic execution counts and equivalent
+    enclosing conditions. Alternative event definitions under runtime control
+    flow remain distinct unless one is proven not to execute. Direct calls to
+    helper functions are expanded at each call site so caller order and
+    invocation multiplicity are preserved. Every region containing pipe events
+    directly or through helper calls must have one block. Functions containing
+    pipe events must be kernel-thread entry points or be reachable from one
+    through direct calls. Definitions of one event kind for a pipe endpoint
+    must belong to one kernel-thread function because independent kernel
+    threads have no program order. Each event must have an exact launch-node
+    domain. Multi-block regions that contribute pipe events, unknown event
+    domains, recursive calls containing pipe events, and schedules with more
+    than 4096 expanded event occurrences at one launch node are rejected
+    because the verifier cannot construct a correct bounded event graph.
+
+    The pass also constructs the same-thread wait-for graph. Program-order
+    edges connect consecutive events on one launched node. Protocol edges
+    connect each receiver post to its send and that send to every wait on the
+    post's exact receive handle.
+    A cycle means no event in the cycle can execute and is rejected.
+
+    The pass expects one module per `@ttl.operation`, a well-formed
+    `ttl.launch_grid` attribute, and static `ttl.create_pipe` endpoints within
+    that launch grid.
+    `ttl-verify-pipenet-guards` must run first in the compiler pipeline so
+    invalid launch domains are reported separately. Both verifiers run after
+    DFB synchronization insertion and before DFB acquire coalescing and physical
+    index finalization.
+  }];
 }
 
 def TTLVerifyTransferProvenance
@@ -598,12 +748,13 @@ def TTLVerifyDFBSPSC
     : Pass<"ttl-verify-dfb-spsc", "::mlir::ModuleOp"> {
   let summary = "Reject DFBs with overlapping producer or consumer launch domains";
   let description = [{
-    Walks every `ttl.cb_reserve` and `ttl.cb_wait`, groups them by `cb_index`
-    (resolved via `getCBIndex`) and enclosing `ttl.kernel_thread`-tagged
-    `func.func`, and tracks the launch-node domain for each producer or
-    consumer participant. A DFB is valid when, for each launched node, at most
-    one producer thread reserves it and at most one consumer thread waits on it.
-    Disjoint domains across different kernel-thread functions are accepted.
+    Walks every `ttl.cb_reserve` and `ttl.cb_wait`, groups them by module-wide
+    logical `dfb_id` and enclosing `ttl.kernel_thread`-tagged `func.func`, and
+    tracks the launch-node domain for each producer or consumer participant.
+    A DFB is valid when, for each launched node, at most one producer kernel
+    reserves it and at most one consumer kernel waits on it. Disjoint domains
+    across different kernel functions are accepted. Distinct logical DFBs
+    remain separate when physical allocation assigns them the same `cb_index`.
 
     tt-metal circular buffers expose a counter pair (`pages_received`,
     `pages_acked`) that is not multi-writer safe on either side, so the
@@ -613,10 +764,10 @@ def TTLVerifyDFBSPSC
     domains, and for unknown domains when multiple threads participate and SPSC
     cannot be proven statically.
 
-    Prerequisite: `ttl-finalize-dfb-indices` must run first so that every
-    `bind_cb` carries a concrete `cb_index`, and modules with DFB acquire ops
-    must carry a valid `ttl.launch_grid` attribute. The pass asserts on
-    unresolvable indices.
+    The module must contain the `ttl.dfb_allocations` metadata emitted by
+    `ttl-finalize-dfb-indices`, and every DFB declaration and lifecycle operand
+    must resolve to a `ttl.bind_cb` with `dfb_id`. Modules with DFB acquire ops
+    must also carry a valid `ttl.launch_grid` attribute.
   }];
 
   let dependentDialects = [];
@@ -660,22 +811,80 @@ def TTLLowerSignpostToEmitC
 
 def TTLFinalizeDFBIndices
     : Pass<"ttl-finalize-dfb-indices", "::mlir::ModuleOp"> {
-  let summary = "Reuse compiler-allocated DFB indices and emit DFB metadata";
+  let summary = "Assign physical DFB indices and emit allocation metadata";
   let description = [{
-    Module-level pass that runs after all DFB-creating passes. Must
-    precede ttl-annotate-cb-associations (which copies cb_index onto
-    tile ops and would capture stale pre-reuse indices).
+    Module-level pass that runs after all DFB-creating and synchronization
+    passes. Must precede `ttl-set-compute-kernel-config` and
+    `ttl-annotate-cb-associations`, which copy DFB indices into attributes and
+    would otherwise capture provisional indices.
 
-    Applies lifetime-based index reuse to compiler-allocated DFBs via
-    linear scan allocation, partitioned by CircularBufferType. DFBs
-    whose lifetimes (bind_cb to last cb_pop) do not overlap are assigned
-    the same physical index. See docs/development/DFBManagement.md.
+    User-declared DFBs enter this pass with module-wide logical `dfb_id`
+    attributes. Compiler-created DFB declarations receive unique logical IDs.
+    The logical identity remains independent of the physical `cb_index`, so
+    later analyses can distinguish DFBs that share one hardware slot.
 
-    After reuse, verifies the total DFB count does not exceed
-    kMaxCircularBuffers (32), updates ttl.base_cta_index on every
-    function, and builds the ttl.compiler_allocated_dfbs module
-    attribute for the Python runtime.
+    With `reuse-user-dfbs` enabled, the pass analyzes all logical DFBs,
+    including declarations shared across kernels. Reuse requires exact
+    `CircularBufferType` equality, equal transaction tile counts that divide
+    the DFB capacity, and identical read- and write-pointer processors on each
+    launch node. These requirements preserve hardware counter and ring-pointer
+    state. A logical DFB without an exact single lifecycle or a proven lifetime
+    order conflicts with every other DFB. Unsupported or unknown control flow
+    can reduce reuse but cannot produce an unsafe physical assignment.
+
+    The allocator represents each logical DFB as a vertex, each pair that
+    cannot share as an edge, and each physical index as a color. First-fit
+    quickly produces a valid assignment by giving each DFB the lowest index
+    not used by one of its conflicts, but its result depends on DFB order and
+    may use more indices than necessary. A found set of pairwise-conflicting
+    DFBs proves that at least that many indices are required.
+
+    Exhaustive assignment search can grow exponentially, so it runs only when
+    first-fit prevents acceptance and the pairwise-conflict lower bound does
+    not already prove failure. The physical-index check asks directly whether
+    an assignment fits the available indices. Minimum physical-index-count
+    search runs only when an otherwise valid assignment exceeds the L1 budget.
+    Each search examines at most `exact-coloring-search-limit` deterministic
+    states to bound compile time. Reaching that limit reports an inconclusive
+    allocation diagnostic; it does not report that hardware capacity was
+    proved insufficient.
+
+    Every storage-accessing operation with a direct DFB operand is treated as a
+    runtime access from operation entry through completion. Every direct DFB
+    operand of `ttl.opaque_call` is a possible read or write; both require the
+    same storage-liveness interval. Identity-only `ttl.attach_cb` and
+    `ttl.get_dfb_id` operations do not access storage. An external call whose
+    C++ body implements the DFB protocol does not provide the visible reserve,
+    push, wait, and pop operations required to prove a bounded lifecycle.
+
+    Disabling `reuse-user-dfbs` compacts distinct provisional user indices
+    without introducing new sharing between user DFBs, then assigns only
+    compiler-created DFBs. Both modes use the same lifetime proof and conflict
+    relation for every DFB whose index they select.
+
+    Every used compiler-created DFB must contain `ttl.cb_reserve`,
+    `ttl.cb_push`, `ttl.cb_wait`, and `ttl.cb_pop`. An unused declaration is
+    legal and remains live through the end of its kernel.
+
+    The pass rejects copied DFB-index attributes from later passes. It computes
+    all physical assignments and runtime metadata and validates the 32-index
+    hardware limit before modifying the IR. Applying the validated plan updates
+    physical indices and `ttl.base_cta_index`, assigns missing compiler-created
+    logical IDs, and builds `ttl.dfb_allocations` for the Python runtime. The
+    attribute contains one descriptor per physical index, including
+    user-declared and compiler-created DFBs, and records the page size computed
+    from the finalized element type. See docs/development/DFBManagement.md.
   }];
+
+  let options = [
+    Option<"reuseUserDFBs", "reuse-user-dfbs", "bool", "true",
+           "Reuse physical DFB indices for logical DFBs with proven "
+           "non-overlapping lifetimes across concurrent kernels.">,
+    Option<"exactColoringSearchStateLimit", "exact-coloring-search-limit",
+           "uint64_t", "1000000",
+           "Maximum states examined by exact DFB allocation before reporting "
+           "an inconclusive result.">
+  ];
 }
 
 def TTLValidateCBBudget
@@ -719,7 +928,8 @@ def TTLDumpCBFlowGraph
   let summary = "Analyze and dump CB producer/consumer flow graph";
   let description = [{
     Analysis pass that builds a flow graph showing how data moves through
-    circular buffers between kernels. For each CB, identifies:
+    dataflow buffers between kernels. Logical DFB identity separates flows that
+    reuse one physical CB index. For each DFB, the graph identifies:
     - Producers: operations that write to the CB (cb_reserve + copy/store)
     - Consumers: operations that read from the CB (cb_wait)
     - DMA operations: copy ops with their direction (read/write)
@@ -727,7 +937,9 @@ def TTLDumpCBFlowGraph
 
     Outputs the graph in a human-readable format and optionally as JSON
     for consumption by the auto-profiler. The graph maps source locations
-    to CB operations, enabling correlation with runtime profiler data.
+    to CB operations, enabling correlation with runtime profiler data. JSON
+    entries include the logical `dfb_id` when available and the physical
+    `cb_index` used by runtime events.
 
     Example output:
     ```

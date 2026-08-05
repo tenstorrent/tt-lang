@@ -67,26 +67,21 @@ def matmul_scale_bias_kernel(A, B, scale_tile, bias_tile, out):
         with sc_dfb.reserve() as blk:
             tx = ttl.copy(scale_tile[0, 0], blk)
             tx.wait()
-            blk.push()
         with a_dfb.reserve() as blk:
             tx = ttl.copy(A[0, 0], blk)
             tx.wait()
-            blk.push()
         with b_dfb.reserve() as blk:
             tx = ttl.copy(B[0, 0], blk)
             tx.wait()
-            blk.push()
         with bias_dfb.reserve() as blk:
             tx = ttl.copy(bias_tile[0, 0], blk)
             tx.wait()
-            blk.push()
 
     @ttl.datamovement()
     def dm_write():
         with out_dfb.wait() as blk:
             tx = ttl.copy(blk, out[0, 0])
             tx.wait()
-            blk.pop()
 
 
 @ttl.operation(grid=(1, 1))

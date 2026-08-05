@@ -110,6 +110,7 @@ def build_ttl_module(
                         cb_type,
                         cb_index=i,
                         block_count=config.block_count,
+                        dfb_id=i,
                         loc=loc,
                     )
                     attached = ttl.attach_cb(
@@ -125,6 +126,7 @@ def build_ttl_module(
                     cb_type,
                     cb_index=arity,  # Next index after inputs.
                     block_count=config.block_count,
+                    dfb_id=arity,
                     loc=loc,
                 )
                 reserve = ttl.cb_reserve(tile_tensor_type, output_cb, loc=loc)

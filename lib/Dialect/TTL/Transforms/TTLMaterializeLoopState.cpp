@@ -240,13 +240,11 @@ static LogicalResult materializeLoopState(scf::ForOp loop,
 
   auto funcOp = loop->getParentOfType<func::FuncOp>();
   assert(funcOp && "pass runs on func.func");
-  auto moduleOp = funcOp->getParentOfType<ModuleOp>();
-  assert(moduleOp && "func.func must be nested in a module");
 
   for (TensorLoopState &state : states) {
     OpBuilder::InsertionGuard guard(rewriter);
     state.stateDFB = createCompilerAllocatedDFB(state.tensorType, loop.getLoc(),
-                                                funcOp, moduleOp, rewriter);
+                                                funcOp, rewriter);
   }
 
   createInitialStores(states, loop, rewriter);

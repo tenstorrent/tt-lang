@@ -22,6 +22,8 @@
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <optional>
+
 #define DEBUG_TYPE "ttl-dump-cb-flow-graph"
 
 namespace mlir::tt::ttl {
@@ -42,8 +44,8 @@ struct CBOpInfo {
 
 /// Information about a circular buffer in the flow graph.
 struct CBFlowInfo {
+  std::optional<int64_t> dfbId;
   int64_t cbIndex;
-  std::string name; // Variable name if available
   llvm::SmallVector<CBOpInfo> producers;
   llvm::SmallVector<CBOpInfo> consumers;
   llvm::SmallVector<CBOpInfo> dmaOps;  // copy operations
@@ -103,6 +105,18 @@ static std::string getThreadType(func::FuncOp func) {
 /// Check if a type is a CB type.
 static bool isCBType(Type type) { return isa<CircularBufferType>(type); }
 
+/// Return logical identity when available so physical reuse does not merge
+/// distinct DFB flows. Pre-finalization compiler DFBs fall back to their
+/// provisional physical index.
+static int64_t getDFBFlowKey(Value dfb) {
+  if (FailureOr<int64_t> dfbId = getDFBId(dfb); succeeded(dfbId)) {
+    return *dfbId;
+  }
+  std::optional<int64_t> cbIndex = getCBIndex(dfb);
+  assert(cbIndex.has_value() && "DFB operand must trace to a declaration");
+  return -*cbIndex - 1;
+}
+
 /// Get transfer direction from transfer handle type.
 static std::string getTransferDirection(Type handleType) {
   if (auto thType = dyn_cast<TransferHandleType>(handleType)) {
@@ -123,7 +137,7 @@ struct TTLDumpCBFlowGraphPass
   void runOnOperation() override {
     ModuleOp mod = getOperation();
 
-    // Map from CB index to flow info
+    // Map from logical DFB identity to flow info when identity is available.
     llvm::DenseMap<int64_t, CBFlowInfo> cbFlows;
 
     // Walk all functions
@@ -136,47 +150,50 @@ struct TTLDumpCBFlowGraphPass
         if (auto bindOp = dyn_cast<BindCBOp>(op)) {
           // Initialize CB flow info
           int64_t cbIndex = bindOp.getCbIndex().getSExtValue();
-          if (cbFlows.find(cbIndex) == cbFlows.end()) {
-            cbFlows[cbIndex] = CBFlowInfo{cbIndex, "", {}, {}, {}, {}};
+          FailureOr<int64_t> dfbId = getDFBId(bindOp.getResult());
+          int64_t flowKey = succeeded(dfbId) ? *dfbId : -cbIndex - 1;
+          if (cbFlows.find(flowKey) == cbFlows.end()) {
+            cbFlows[flowKey] =
+                CBFlowInfo{succeeded(dfbId) ? std::optional<int64_t>(*dfbId)
+                                            : std::nullopt,
+                           cbIndex,
+                           {},
+                           {},
+                           {},
+                           {}};
           }
         } else if (auto waitOp = dyn_cast<CBWaitOp>(op)) {
           // Consumer: cb_wait
-          std::optional<int64_t> cbIndex = getCBIndex(waitOp.getCb());
-          assert(cbIndex.has_value() &&
-                 "cb_wait operand must trace to a bind_cb");
+          int64_t flowKey = getDFBFlowKey(waitOp.getCb());
           CBOpInfo info{kernelName, threadType, getLineNumber(op), "cb_wait",
                         ""};
-          cbFlows[cbIndex.value()].consumers.push_back(info);
+          cbFlows[flowKey].consumers.push_back(info);
         } else if (auto reserveOp = dyn_cast<CBReserveOp>(op)) {
           // Producer: cb_reserve
-          std::optional<int64_t> cbIndex = getCBIndex(reserveOp.getCb());
-          assert(cbIndex.has_value() &&
-                 "cb_reserve operand must trace to a bind_cb");
+          int64_t flowKey = getDFBFlowKey(reserveOp.getCb());
           CBOpInfo info{kernelName, threadType, getLineNumber(op), "cb_reserve",
                         ""};
-          cbFlows[cbIndex.value()].producers.push_back(info);
+          cbFlows[flowKey].producers.push_back(info);
         } else if (auto copyOp = dyn_cast<CopyOp>(op)) {
           // DMA operation: one operand is a CB, the other a tensor.
           Value src = copyOp.getSrc();
           Value dst = copyOp.getDst();
           std::string direction;
-          std::optional<int64_t> cbIndex;
+          int64_t flowKey;
 
           if (isCBType(dst.getType())) {
-            cbIndex = getCBIndex(dst);
+            flowKey = getDFBFlowKey(dst);
             direction = "read"; // Reading from DRAM to CB
           } else if (isCBType(src.getType())) {
-            cbIndex = getCBIndex(src);
+            flowKey = getDFBFlowKey(src);
             direction = "write"; // Writing from CB to DRAM
           } else {
             return; // Tensor-to-tensor copy: no CB to record.
           }
 
-          assert(cbIndex.has_value() &&
-                 "copy CB operand must trace to a bind_cb");
           CBOpInfo info{kernelName, threadType, getLineNumber(op), "copy",
                         direction};
-          cbFlows[cbIndex.value()].dmaOps.push_back(info);
+          cbFlows[flowKey].dmaOps.push_back(info);
         } else if (auto waitOp = dyn_cast<WaitOp>(op)) {
           // DMA wait/barrier — trace back to the copy op to find the CB.
           auto copyOp = waitOp.getXf().getDefiningOp<CopyOp>();
@@ -187,21 +204,19 @@ struct TTLDumpCBFlowGraphPass
               getTransferDirection(waitOp.getXf().getType());
           Value src = copyOp.getSrc();
           Value dst = copyOp.getDst();
-          std::optional<int64_t> cbIndex;
+          int64_t flowKey;
 
           if (isCBType(dst.getType())) {
-            cbIndex = getCBIndex(dst);
+            flowKey = getDFBFlowKey(dst);
           } else if (isCBType(src.getType())) {
-            cbIndex = getCBIndex(src);
+            flowKey = getDFBFlowKey(src);
           } else {
             return; // Tensor-to-tensor copy: no CB to record.
           }
 
-          assert(cbIndex.has_value() &&
-                 "copy CB operand must trace to a bind_cb");
           CBOpInfo info{kernelName, threadType, getLineNumber(op), "wait",
                         direction};
-          cbFlows[cbIndex.value()].waitOps.push_back(info);
+          cbFlows[flowKey].waitOps.push_back(info);
         }
       });
     });
@@ -223,8 +238,14 @@ struct TTLDumpCBFlowGraphPass
     llvm::errs() << "CB Flow Graph\n";
     llvm::errs() << "========================================\n";
 
-    for (const auto &[cbIndex, info] : cbFlows) {
-      llvm::errs() << "\nCB[" << cbIndex << "]:\n";
+    for (const auto &flowEntry : cbFlows) {
+      const CBFlowInfo &info = flowEntry.second;
+      if (info.dfbId) {
+        llvm::errs() << "\nDFB[" << *info.dfbId << "] CB[" << info.cbIndex
+                     << "]:\n";
+      } else {
+        llvm::errs() << "\nCB[" << info.cbIndex << "]:\n";
+      }
 
       if (!info.producers.empty()) {
         llvm::errs() << "  producers:\n";
@@ -266,9 +287,13 @@ struct TTLDumpCBFlowGraphPass
     llvm::json::Object root;
     llvm::json::Array cbArray;
 
-    for (const auto &[cbIndex, info] : cbFlows) {
+    for (const auto &flowEntry : cbFlows) {
+      const CBFlowInfo &info = flowEntry.second;
       llvm::json::Object cbObj;
-      cbObj["cb_index"] = cbIndex;
+      cbObj["cb_index"] = info.cbIndex;
+      if (info.dfbId) {
+        cbObj["dfb_id"] = *info.dfbId;
+      }
 
       auto opsToArray = [](const llvm::SmallVector<CBOpInfo> &ops) {
         llvm::json::Array arr;

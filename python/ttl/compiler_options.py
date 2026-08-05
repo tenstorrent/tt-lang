@@ -20,6 +20,13 @@ import sys
 from typing import Optional, Sequence
 
 
+def _nonnegative_int(value: str) -> int:
+    parsed_value = int(value)
+    if parsed_value < 0:
+        raise argparse.ArgumentTypeError("must be nonnegative")
+    return parsed_value
+
+
 def _make_parser() -> argparse.ArgumentParser:
     """Build the compiler options parser.
 
@@ -88,7 +95,35 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         dest="compiler_dfbs",
         action=argparse.BooleanOptionalAction,
-        help="Insert compiler-allocated intermediate DFBs for fused computations (default: enabled).",
+        help=(
+            "Insert compiler-allocated intermediate DFBs when materialization "
+            "is required for DFB-only operands, source lifetimes, or computed "
+            "values stored by operations in multiple MLIR basic blocks "
+            "(default: enabled)."
+        ),
+    )
+    p.add_argument(
+        "--ttl-pipe-computed-addresses",
+        default=None,
+        dest="pipe_computed_addresses",
+        action=argparse.BooleanOptionalAction,
+        help="Use computed receiver DFB addresses for eligible pipe transfers; receiver-published multicast still requires proven equal runtime addresses (default: enabled).",
+    )
+    p.add_argument(
+        "--ttl-reuse-user-dfbs",
+        default=None,
+        dest="reuse_user_dfbs",
+        action=argparse.BooleanOptionalAction,
+        help="Reuse physical DFB indices only for logical lifetimes proven "
+        "not to overlap across concurrent kernels (default: enabled).",
+    )
+    p.add_argument(
+        "--ttl-dfb-exact-coloring-search-limit",
+        default=None,
+        dest="dfb_exact_coloring_search_limit",
+        type=_nonnegative_int,
+        help="Limit exact DFB allocation to this many deterministic search "
+        "states (default: 1000000).",
     )
     p.add_argument(
         "--ttl-specialize-cores",
@@ -154,6 +189,9 @@ class CompilerOptions:
     matmul_full_fp32: bool = True
     strict_f32_acc: bool = False
     compiler_dfbs: bool = True
+    pipe_computed_addresses: bool = True
+    reuse_user_dfbs: bool = True
+    dfb_exact_coloring_search_limit: int = 1_000_000
     specialize_cores: bool = False
     l1_budget: int = dataclasses.field(default=0, compare=False, hash=False)
 
