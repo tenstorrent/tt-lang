@@ -821,10 +821,6 @@ LogicalResult lowerPipeTransferSend(
   }
   int64_t pageSizeBytes = tileType.getSizeBytes();
 
-  int64_t dstStartX = pipeType.getDstStartX();
-  int64_t dstStartY = pipeType.getDstStartY();
-  int64_t dstEndX = pipeType.getDstEndX();
-  int64_t dstEndY = pipeType.getDstEndY();
   int64_t numDests = pipeType.getNumDests();
 
   auto indexTy = rewriter.getIndexType();
@@ -833,10 +829,6 @@ LogicalResult lowerPipeTransferSend(
   auto cbConverted = utils::convertTTLCBToTTKernel(srcCB, rewriter, loc);
   assert(succeeded(cbConverted) &&
          "getTTLCBType guarantees a convertible source DFB");
-
-  int64_t nocIdx = getNocIndex(op);
-  Value nocVal = arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
-                                           rewriter.getI8IntegerAttr(nocIdx));
 
   int64_t expectedReceiverPosts =
       isCollectiveTransfer(pipeResource.transferContract) ? numDests : 1;
