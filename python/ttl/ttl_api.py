@@ -2131,7 +2131,13 @@ def _lower_program_to_kernel(
             "lower-affine",
             "ttl-lower-signpost-to-emitc",
         ]
-        if compiler_options.specialize_cores:
+        if compiler_options.full_specialize_cores:
+            pipeline_passes += [
+                "ttkernel-specialize-cores{full-specialization=true}",
+                "canonicalize",
+                "cse",
+            ]
+        elif compiler_options.specialize_cores:
             pipeline_passes += [
                 "ttkernel-specialize-cores",
                 "canonicalize",

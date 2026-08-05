@@ -42,7 +42,6 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // CHECK-NOT:   func.func @k2()
 // CHECK-LABEL: func.func @k2_c0_0
 // CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 0]]
-// CHECK-NOT:     my_logical_y_
 // CHECK-LABEL: func.func @k2_c0_1
 // CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 1]]
 // CHECK-LABEL: func.func @k2_c0_2

@@ -9,8 +9,10 @@
 // conversion. For every kernel function whose control flow branches on a core
 // coordinate (i.e. an `scf.if` whose condition is derived from
 // `ttkernel.my_logical_x_` / `ttkernel.my_logical_y_`), the pass clones the
-// function once per launch coordinate. In each clone, the coordinate reads are
-// replaced by `arith.constant`s for that core, so the following
+// function once per launch coordinate. In each clone, coordinate reads in the
+// backward slice of branch predicates are replaced by `arith.constant`s for
+// that core. Addressing and data uses remain dynamic by default. Full
+// specialization instead replaces every coordinate read in each clone. The following
 // `canonicalize` / `cse` fold the now-constant branch conditions and delete the
 // untaken regions. Each clone is tagged with a `ttl.core_coord` attribute (the
 // coordinate it serves) and the runtime bridge (ttl_api.py) turns that into a
@@ -26,8 +28,11 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Support/LogicalResult.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
@@ -107,41 +112,136 @@ static bool funcBranchesOnCore(func::FuncOp func) {
   return found;
 }
 
-/// Replace every CoordOp in func clone with an arith.constant of coord.
+/// Return true when `func` reads either logical core coordinate anywhere.
+static bool funcReadsCore(func::FuncOp func) {
+  bool found = false;
+  func.walk([&](Operation *op) {
+    if (isa<ttk::MyLogicalXOp, ttk::MyLogicalYOp>(op)) {
+      found = true;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return found;
+}
+
+/// Clone the pure backward slice for `value`, replacing coordinate leaves with
+/// constants. The original slice remains available to non-control-flow users
+/// such as bank, shard, and NoC address calculations.
+static FailureOr<Value>
+cloneSpecializedPredicateValue(Value value, int64_t x, int64_t y,
+                               OpBuilder &builder,
+                               llvm::DenseMap<Value, Value> &specialized) {
+  if (auto mapped = specialized.find(value); mapped != specialized.end()) {
+    return mapped->second;
+  }
+
+  Operation *op = value.getDefiningOp();
+  if (!op) {
+    specialized[value] = value;
+    return value;
+  }
+
+  if (isa<ttk::MyLogicalXOp>(op) || isa<ttk::MyLogicalYOp>(op)) {
+    int64_t coord = isa<ttk::MyLogicalXOp>(op) ? x : y;
+    Value constant = arith::ConstantOp::create(
+        builder, op->getLoc(), builder.getIndexAttr(coord));
+    specialized[value] = constant;
+    return constant;
+  }
+
+  if (!conditionDependsOnCore(value)) {
+    specialized[value] = value;
+    return value;
+  }
+  if (!isPure(op) || op->getNumRegions() != 0) {
+    return failure();
+  }
+
+  IRMapping mapping;
+  for (Value operand : op->getOperands()) {
+    FailureOr<Value> specializedOperand =
+        cloneSpecializedPredicateValue(operand, x, y, builder, specialized);
+    if (failed(specializedOperand)) {
+      return failure();
+    }
+    mapping.map(operand, *specializedOperand);
+  }
+  Operation *cloned = builder.clone(*op, mapping);
+  for (auto [originalResult, clonedResult] :
+       llvm::zip(op->getResults(), cloned->getResults())) {
+    specialized[originalResult] = clonedResult;
+  }
+  return specialized.lookup(value);
+}
+
+/// Specialize only coordinate-dependent branch predicates. Coordinate reads
+/// used by the selected branch body or by addressing remain dynamic.
+static LogicalResult specializeBranchPredicates(func::FuncOp clone, int64_t x,
+                                                int64_t y) {
+  SmallVector<scf::IfOp> coordinateIfs;
+  clone.walk([&](scf::IfOp ifOp) {
+    if (conditionDependsOnCore(ifOp.getCondition())) {
+      coordinateIfs.push_back(ifOp);
+    }
+  });
+  for (scf::IfOp ifOp : coordinateIfs) {
+    OpBuilder builder(ifOp);
+    llvm::DenseMap<Value, Value> specialized;
+    FailureOr<Value> condition = cloneSpecializedPredicateValue(
+        ifOp.getCondition(), x, y, builder, specialized);
+    if (failed(condition)) {
+      return failure();
+    }
+    ifOp.getConditionMutable().assign(*condition);
+  }
+  return success();
+}
+
+/// Replace every coordinate read of `CoordOp` in `clone` with `coord`.
 template <typename CoordOp>
-static void replaceCoordReads(func::FuncOp clone, int64_t coord) {
+static void specializeAllCoordinateReads(func::FuncOp clone, int64_t coord) {
   SmallVector<CoordOp> reads;
   clone.walk([&](CoordOp op) { reads.push_back(op); });
   for (CoordOp op : reads) {
-    OpBuilder b(op);
-    Value cst =
-        arith::ConstantOp::create(b, op.getLoc(), b.getIndexAttr(coord));
-    op.getResult().replaceAllUsesWith(cst);
+    OpBuilder builder(op);
+    Value constant = arith::ConstantOp::create(
+        builder, op.getLoc(), builder.getIndexAttr(coord));
+    op.getResult().replaceAllUsesWith(constant);
     op.erase();
   }
 }
 
-/// Emit one clone of func for core (x, y), replacing every coordinate read
-/// with the matching constant and tagging the clone with ttl.core_coord.
+/// Emit one clone of func for core (x, y), specializing its branch predicates
+/// and tagging the clone with ttl.core_coord.
 /// TODO: See if we can leverage LaunchDomainAnalysis in an earlier pass
 /// to further minimize clones.
-static void emitCoreClone(func::FuncOp func, int64_t x, int64_t y,
-                          OpBuilder &moduleBuilder) {
+static FailureOr<func::FuncOp> emitCoreClone(func::FuncOp func, int64_t x,
+                                            int64_t y, bool fullSpecialization,
+                                            OpBuilder &moduleBuilder) {
   func::FuncOp clone = func.clone();
   clone.setSymName(
       (func.getSymName() + "_c" + Twine(x) + "_" + Twine(y)).str());
 
-  replaceCoordReads<ttk::MyLogicalXOp>(clone, x);
-  replaceCoordReads<ttk::MyLogicalYOp>(clone, y);
+  if (fullSpecialization) {
+    specializeAllCoordinateReads<ttk::MyLogicalXOp>(clone, x);
+    specializeAllCoordinateReads<ttk::MyLogicalYOp>(clone, y);
+  } else if (failed(specializeBranchPredicates(clone, x, y))) {
+    clone.erase();
+    return failure();
+  }
 
   clone->setAttr(
       CoreCoordAttrName,
       moduleBuilder.getArrayAttr({moduleBuilder.getI64ArrayAttr({x, y})}));
   moduleBuilder.insert(clone);
+  return clone;
 }
 
 struct TTKernelSpecializeCoresPass
     : impl::TTKernelSpecializeCoresBase<TTKernelSpecializeCoresPass> {
+  using Base::Base;
+
   void runOnOperation() override {
     ModuleOp module = getOperation();
 
@@ -173,7 +273,9 @@ struct TTKernelSpecializeCoresPass
     // functions still get specialized.
     SmallVector<func::FuncOp> targets;
     for (auto func : module.getOps<func::FuncOp>()) {
-      if (!funcBranchesOnCore(func)) {
+      bool shouldSpecialize = fullSpecialization ? funcReadsCore(func)
+                                                 : funcBranchesOnCore(func);
+      if (!shouldSpecialize) {
         continue;
       }
       if (auto uses = SymbolTable::getSymbolUses(func, module);
@@ -184,12 +286,18 @@ struct TTKernelSpecializeCoresPass
       }
       targets.push_back(func);
     }
-
     for (func::FuncOp func : targets) {
       OpBuilder moduleBuilder(func);
       for (int64_t y = 0; y < gridY; ++y) {
         for (int64_t x = 0; x < gridX; ++x) {
-          emitCoreClone(func, x, y, moduleBuilder);
+          if (failed(emitCoreClone(func, x, y, fullSpecialization,
+                                   moduleBuilder))) {
+            func.emitOpError()
+                << "cannot specialize a coordinate-dependent predicate "
+                   "containing non-pure or region operations";
+            signalPassFailure();
+            return;
+          }
         }
       }
       func.erase();

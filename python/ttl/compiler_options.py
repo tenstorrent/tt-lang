@@ -100,6 +100,15 @@ def _make_parser() -> argparse.ArgumentParser:
         "removed (ttkernel-specialize-cores). Opt-in (default: disabled).",
     )
     p.add_argument(
+        "--ttl-full-specialize-cores",
+        default=None,
+        dest="full_specialize_cores",
+        action=argparse.BooleanOptionalAction,
+        help="Fully constantize logical coordinates in every per-core clone. "
+        "Implies core specialization and prioritizes minimum per-core program "
+        "size over binary reuse (default: disabled).",
+    )
+    p.add_argument(
         "--ttl-l1-budget",
         default=None,
         dest="l1_budget",
@@ -155,6 +164,7 @@ class CompilerOptions:
     strict_f32_acc: bool = False
     compiler_dfbs: bool = True
     specialize_cores: bool = False
+    full_specialize_cores: bool = False
     l1_budget: int = dataclasses.field(default=0, compare=False, hash=False)
 
     # Fields that were explicitly provided (not defaulted). Excluded from

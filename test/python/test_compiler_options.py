@@ -20,6 +20,7 @@ class TestDefaults:
         assert opts.enable_fpu_binary_ops is True
         assert opts.subblock_sync is False
         assert opts.specialize_cores is False
+        assert opts.full_specialize_cores is False
         assert opts._explicit == frozenset()
 
     def test_frozen(self):
@@ -57,6 +58,11 @@ class TestFromString:
         opts = CompilerOptions.from_string("--ttl-specialize-cores")
         assert opts.specialize_cores is True
         assert "specialize_cores" in opts._explicit
+
+    def test_enable_full_specialize_cores(self):
+        opts = CompilerOptions.from_string("--ttl-full-specialize-cores")
+        assert opts.full_specialize_cores is True
+        assert "full_specialize_cores" in opts._explicit
 
     def test_enable_flags_explicitly(self):
         opts = CompilerOptions.from_string("--ttl-maximize-dst --ttl-fpu-binary-ops")

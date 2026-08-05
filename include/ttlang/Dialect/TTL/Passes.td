@@ -854,6 +854,11 @@ def TTKernelSpecializeCores
     unspecialized with a warning so erasing the original does not leave dangling
     `SymbolRefAttr`s; unrelated functions in the module are still specialized.
 
+    With `full-specialization=true`, every function that reads a logical
+    coordinate is cloned and every coordinate read is replaced by its constant.
+    This minimizes each per-core image at the cost of making address and NoC
+    expressions coordinate-specific.
+
     Example (`ttl.launch_grid = [1, 2]`):
     ```mlir
     // Before:
@@ -900,6 +905,12 @@ def TTKernelSpecializeCores
     }
     ```
   }];
+
+  let options = [
+    Option<"fullSpecialization", "full-specialization", "bool", "false",
+           "Replace every logical coordinate read in each clone instead of "
+           "specializing branch predicates only.">
+  ];
 
   let dependentDialects = [
     "::mlir::arith::ArithDialect",

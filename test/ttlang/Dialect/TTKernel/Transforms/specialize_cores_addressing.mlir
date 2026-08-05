@@ -1,10 +1,8 @@
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttkernel-specialize-cores,canonicalize,cse)' | FileCheck %s
 
-// Summary: these tests characterize the address over-specialization caused by
-// replacing every logical-coordinate read in a kernel that has any
-// coordinate-dependent branch. The branch needs a role-specialized value, but
-// unrelated address expressions should remain dynamic so cores with the same
-// role can continue sharing one binary.
+// Summary: these tests ensure per-core specialization folds coordinate-driven
+// branches while preserving dynamic coordinate reads used by shard, bank, ring,
+// and NoC address expressions.
 
 // -- Test 1: a y-only role branch also freezes an unrelated x shard offset. --
 // The two rows require two control-flow variants. Replacing x as well creates
@@ -13,19 +11,20 @@
 // CHECK-NOT: func.func @unrelated_x_shard()
 // CHECK-LABEL: func.func @unrelated_x_shard_c0_0
 // CHECK-SAME: ttl.core_coord = {{\[\[}}0, 0]]
-// CHECK: %[[ROW0:.+]] = arith.addi %arg0, %{{.+}} : index
-// CHECK: return %[[ROW0]] : index
+// CHECK: ttkernel.my_logical_x_
+// CHECK: arith.muli
 // CHECK-LABEL: func.func @unrelated_x_shard_c1_0
 // CHECK-SAME: ttl.core_coord = {{\[\[}}1, 0]]
-// CHECK: %[[X1_ROLE0_OFFSET:.+]] = arith.constant 4103 : index
-// CHECK: %[[ROLE0_X1:.+]] = arith.addi %arg0, %[[X1_ROLE0_OFFSET]] : index
-// CHECK: return %[[ROLE0_X1]] : index
+// CHECK: ttkernel.my_logical_x_
+// CHECK: arith.muli
 // CHECK-LABEL: func.func @unrelated_x_shard_c0_1
 // CHECK-SAME: ttl.core_coord = {{\[\[}}0, 1]]
+// CHECK: ttkernel.my_logical_x_
+// CHECK: arith.muli
 // CHECK-LABEL: func.func @unrelated_x_shard_c1_1
 // CHECK-SAME: ttl.core_coord = {{\[\[}}1, 1]]
-// CHECK: %[[X1_ROLE1_OFFSET:.+]] = arith.constant 4105 : index
-// CHECK: arith.addi %arg0, %[[X1_ROLE1_OFFSET]] : index
+// CHECK: ttkernel.my_logical_x_
+// CHECK: arith.muli
 
 module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
   func.func @unrelated_x_shard(%base: index) -> index {
@@ -58,20 +57,22 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
 // CHECK-NOT: func.func @router_bank()
 // CHECK-LABEL: func.func @router_bank_c0_0
 // CHECK-SAME: ttl.core_coord = {{\[\[}}0, 0]]
-// CHECK: %[[BANK0:.+]] = arith.constant 0 : index
-// CHECK: return %[[BANK0]] : index
+// CHECK: %[[X00:.+]] = ttkernel.my_logical_x_
+// CHECK: return %[[X00]] : index
 // CHECK-LABEL: func.func @router_bank_c1_0
 // CHECK-SAME: ttl.core_coord = {{\[\[}}1, 0]]
-// CHECK: %[[BANK1:.+]] = arith.constant 1 : index
-// CHECK: return %[[BANK1]] : index
+// CHECK: %[[X10:.+]] = ttkernel.my_logical_x_
+// CHECK: return %[[X10]] : index
 // CHECK-LABEL: func.func @router_bank_c0_1
 // CHECK-SAME: ttl.core_coord = {{\[\[}}0, 1]]
-// CHECK: %[[BANK8:.+]] = arith.constant 8 : index
-// CHECK: return %[[BANK8]] : index
+// CHECK: ttkernel.my_logical_x_
+// CHECK: ttkernel.my_logical_y_
+// CHECK: arith.muli
 // CHECK-LABEL: func.func @router_bank_c1_1
 // CHECK-SAME: ttl.core_coord = {{\[\[}}1, 1]]
-// CHECK: %[[BANK9:.+]] = arith.constant 9 : index
-// CHECK: return %[[BANK9]] : index
+// CHECK: ttkernel.my_logical_x_
+// CHECK: ttkernel.my_logical_y_
+// CHECK: arith.muli
 
 module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
   func.func @router_bank() -> index {
@@ -101,20 +102,20 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
 // CHECK-NOT: func.func @ring_peer()
 // CHECK-LABEL: func.func @ring_peer_c0_0
 // CHECK-SAME: ttl.core_coord = {{\[\[}}0, 0]]
-// CHECK: %[[PEER1:.+]] = arith.constant 1 : index
-// CHECK: return %[[PEER1]] : index
+// CHECK: ttkernel.my_logical_x_
+// CHECK: arith.remsi
 // CHECK-LABEL: func.func @ring_peer_c1_0
 // CHECK-SAME: ttl.core_coord = {{\[\[}}1, 0]]
-// CHECK: %[[PEER2:.+]] = arith.constant 2 : index
-// CHECK: return %[[PEER2]] : index
+// CHECK: ttkernel.my_logical_x_
+// CHECK: arith.remsi
 // CHECK-LABEL: func.func @ring_peer_c2_0
 // CHECK-SAME: ttl.core_coord = {{\[\[}}2, 0]]
-// CHECK: %[[PEER3:.+]] = arith.constant 3 : index
-// CHECK: return %[[PEER3]] : index
+// CHECK: ttkernel.my_logical_x_
+// CHECK: arith.remsi
 // CHECK-LABEL: func.func @ring_peer_c3_0
 // CHECK-SAME: ttl.core_coord = {{\[\[}}3, 0]]
-// CHECK: %[[PEER0:.+]] = arith.constant 0 : index
-// CHECK: return %[[PEER0]] : index
+// CHECK: ttkernel.my_logical_x_
+// CHECK: arith.remsi
 
 module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
   func.func @ring_peer() -> index {
@@ -145,20 +146,21 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
 // CHECK-NOT: func.func @noc_address_outside_branch()
 // CHECK-LABEL: func.func @noc_address_outside_branch_c0_0
 // CHECK-SAME: ttl.core_coord = {{\[\[}}0, 0]]
-// CHECK: %[[C0:.+]] = arith.constant 0 : index
-// CHECK: %[[NOC00:.+]] = ttkernel.get_noc_addr(%[[C0]], %[[C0]], %arg0)
+// CHECK: %[[X00:.+]] = ttkernel.my_logical_x_
+// CHECK: %[[Y00:.+]] = ttkernel.my_logical_y_
+// CHECK: %[[NOC00:.+]] = ttkernel.get_noc_addr(%[[X00]], %[[Y00]], %arg0)
 // CHECK: return %[[NOC00]] : !ttkernel.noc_addr
 // CHECK-LABEL: func.func @noc_address_outside_branch_c1_0
 // CHECK-SAME: ttl.core_coord = {{\[\[}}1, 0]]
-// CHECK-DAG: %[[X1:.+]] = arith.constant 1 : index
-// CHECK-DAG: %[[Y0:.+]] = arith.constant 0 : index
-// CHECK: %[[NOC10:.+]] = ttkernel.get_noc_addr(%[[X1]], %[[Y0]], %arg0)
+// CHECK: %[[X10:.+]] = ttkernel.my_logical_x_
+// CHECK: %[[Y10:.+]] = ttkernel.my_logical_y_
+// CHECK: %[[NOC10:.+]] = ttkernel.get_noc_addr(%[[X10]], %[[Y10]], %arg0)
 // CHECK: return %[[NOC10]] : !ttkernel.noc_addr
 // CHECK-LABEL: func.func @noc_address_outside_branch_c0_1
 // CHECK-SAME: ttl.core_coord = {{\[\[}}0, 1]]
-// CHECK-DAG: %[[X0:.+]] = arith.constant 0 : index
-// CHECK-DAG: %[[Y1:.+]] = arith.constant 1 : index
-// CHECK: %[[NOC01:.+]] = ttkernel.get_noc_addr(%[[X0]], %[[Y1]], %arg0)
+// CHECK: %[[X01:.+]] = ttkernel.my_logical_x_
+// CHECK: %[[Y01:.+]] = ttkernel.my_logical_y_
+// CHECK: %[[NOC01:.+]] = ttkernel.get_noc_addr(%[[X01]], %[[Y01]], %arg0)
 // CHECK: return %[[NOC01]] : !ttkernel.noc_addr
 
 module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
