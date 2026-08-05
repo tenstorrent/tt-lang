@@ -81,8 +81,7 @@ uint64_t DFBAllocationFootprint::getTotalBytes() const {
   return totalBytes;
 }
 
-FailureOr<uint64_t>
-DFBAllocationFootprint::getTotalBytesWithMinimumAllocations(
+FailureOr<uint64_t> DFBAllocationFootprint::getTotalBytesWithMinimumAllocations(
     const llvm::DenseMap<int64_t, uint64_t> &minimumBytesByIndex) const {
   uint64_t totalBytes = 0;
   for (const auto &[physicalIndex, allocationBytes] : maxBytesByIndex) {
@@ -126,15 +125,13 @@ DFBAllocationFootprint::getSortedPhysicalIndices() const {
   return physicalIndices;
 }
 
-FailureOr<DFBAllocationFootprint>
-getDFBAllocationFootprint(ModuleOp module) {
+FailureOr<DFBAllocationFootprint> getDFBAllocationFootprint(ModuleOp module) {
   DFBAllocationFootprint footprint;
   WalkResult walkResult = module.walk([&](BindCBOp bindOp) {
-    FailureOr<bool> increased = footprint.add(
-        bindOp.getCbIndex().getSExtValue(),
-        cast<CircularBufferType>(bindOp.getResult().getType()));
-    return failed(increased) ? WalkResult::interrupt()
-                             : WalkResult::advance();
+    FailureOr<bool> increased =
+        footprint.add(bindOp.getCbIndex().getSExtValue(),
+                      cast<CircularBufferType>(bindOp.getResult().getType()));
+    return failed(increased) ? WalkResult::interrupt() : WalkResult::advance();
   });
   if (walkResult.wasInterrupted()) {
     return failure();
