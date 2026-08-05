@@ -129,8 +129,8 @@ struct TTLValidateCBBudgetPass
       }
       std::string percentage =
           formatDFBUsagePercentage(totalBytes, budgetBytes);
-      diag << "\n  total: " << totalBytes << " / " << budgetBytes
-           << " bytes (" << percentage << " percent)";
+      diag << "\n  total: " << totalBytes << " / " << budgetBytes << " bytes ("
+           << percentage << " percent)";
       diag << "\n  hint: reduce DFB block shapes or block_count, or reduce "
               "compiler-inserted buffers (fusion splits)";
     };
