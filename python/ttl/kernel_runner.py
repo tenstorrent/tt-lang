@@ -258,11 +258,43 @@ def build_kernel_descriptors(
     runtime_args_by_thread = runtime_args_by_thread or {}
     defines_by_thread = defines_by_thread or {}
 
+    def tensor_runtime_address(tensor: Any) -> int:
+        try:
+            per_core = bool(tensor.is_per_core_allocated())
+        except (AttributeError, RuntimeError):
+            per_core = False
+        if not per_core:
+            return int(tensor.buffer_address())
+
+        memory_config = tensor.memory_config()
+        shard_spec = getattr(memory_config, "shard_spec", None)
+        if shard_spec is None:
+            raise ValueError(
+                "per-core tensor runtime arguments require a sharded tensor"
+            )
+        cores = list(
+            ttnn.corerange_to_cores(shard_spec.grid, row_wise=True)
+        )
+        if not cores:
+            raise ValueError("per-core tensor shard grid is empty")
+        addresses = {
+            int(tensor.experimental_per_core_buffer_address(core))
+            for core in cores
+        }
+        if len(addresses) != 1:
+            raise ValueError(
+                "TT-Lang tensor arguments currently require a uniform L1 "
+                "address across a per-core tensor's shard grid; got "
+                f"{len(addresses)} distinct addresses"
+            )
+        return addresses.pop()
+
     for spec in kernel_specs:
         # Build common_runtime_args using tensor_indices.
         # C++ indexes by function-local position, we provide addresses in that order.
         common_runtime_args = [
-            tensors[idx].buffer_address() for idx in spec.tensor_indices
+            tensor_runtime_address(tensors[idx])
+            for idx in spec.tensor_indices
         ]
         common_runtime_args.extend(extra_args)
 
