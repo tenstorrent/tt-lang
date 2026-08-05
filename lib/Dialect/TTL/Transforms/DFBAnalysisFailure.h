@@ -20,6 +20,7 @@ struct DFBAnalysisFailure {
   Operation *operation = nullptr;
   std::string message;
 
+  /// Records the first failure so traversal order selects diagnostics.
   void set(Operation *failureOperation, std::string failureMessage) {
     if (!message.empty()) {
       return;

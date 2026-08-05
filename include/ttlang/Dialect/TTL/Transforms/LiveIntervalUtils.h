@@ -208,7 +208,7 @@ assignGreedyIntervalColors(ArrayRef<ItemT> items, IsBeforeFn isBefore,
     priorityOrder.push_back(vertex);
   }
   SmallVector<unsigned> vertexColors =
-      getGreedyFirstFitInterferenceGraphColoring().color(graph, priorityOrder);
+      colorInterferenceGraphFirstFit(graph, priorityOrder);
 
   unsigned colorCount = 0;
   for (unsigned color : vertexColors) {

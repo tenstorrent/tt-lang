@@ -70,6 +70,10 @@ struct TTLPrintDFBValueLifetimesPass
 
   void runOnOperation() override {
     func::FuncOp kernel = getOperation();
+    if (kernel.isExternal()) {
+      return;
+    }
+
     PlanningResult<std::unique_ptr<DFBValueLifetimeAnalysis>> plannedLifetimes =
         DFBValueLifetimeAnalysis::create(kernel);
     if (plannedLifetimes.isInvalidIR()) {

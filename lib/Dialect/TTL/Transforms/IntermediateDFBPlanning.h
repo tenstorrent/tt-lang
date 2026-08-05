@@ -46,6 +46,10 @@ enum class IntermediateDFBReason {
   /// Moving tensor evaluation to an output store would read a released input.
   ComputeOpInputMayBeReleased,
 
+  /// The result has direct stores in more than one block, so one output
+  /// publication position cannot represent every store.
+  OutputStoresInDifferentBlocks,
+
   /// One result is published through several reserves of the same DFB.
   MultipleOutputTransactions,
 

@@ -35,6 +35,8 @@ TILE_WIDTH = 32
 
 
 def _data_format_name(dtype: torch.dtype) -> str:
+    """Return the runtime DFB format; ME2E builders construct bf16/f32 only."""
+
     data_formats = {
         torch.bfloat16: "bfloat16",
         torch.float32: "float32",
@@ -204,6 +206,7 @@ def _run_op(
             data_format=data_format,
             block_count=1,
             page_size=ttnn.tile_size(io_tensor.dtype),
+            tile=(TILE_HEIGHT, TILE_WIDTH),
         )
         for dfb_index, io_tensor in enumerate(io_tensors)
     ]

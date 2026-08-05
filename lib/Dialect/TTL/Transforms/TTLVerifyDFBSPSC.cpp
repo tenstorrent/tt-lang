@@ -185,14 +185,6 @@ struct TTLVerifyDFBSPSCPass
   void runOnOperation() override {
     ModuleOp module = getOperation();
 
-    ModuleState state;
-    state.initialize(module);
-
-    bool hasAcquire = false;
-    module.walk([&](Operation *op) {
-      hasAcquire |=
-          isa<CBReserveOp, CBWaitOp>(op) && getEnclosingKernelThread(op);
-    });
     if (failed(verifyResolvedDFBIdentities(module, getArgument()))) {
       signalPassFailure();
       return;
@@ -202,6 +194,8 @@ struct TTLVerifyDFBSPSCPass
     llvm::DenseMap<int64_t, int64_t> physicalIndices;
     bool hasInconsistentIndex = false;
 
+    // Finalization normally guarantees this mapping. The check remains here
+    // because the verifier also supports direct invocation on finalized IR.
     module.walk([&](BindCBOp bindOp) {
       FailureOr<int64_t> dfbId = getDFBId(bindOp.getResult());
       assert(succeeded(dfbId) && "DFB identities were verified");
@@ -220,9 +214,18 @@ struct TTLVerifyDFBSPSCPass
       signalPassFailure();
       return;
     }
+
+    bool hasAcquire = false;
+    module.walk([&](Operation *op) {
+      hasAcquire |=
+          isa<CBReserveOp, CBWaitOp>(op) && getEnclosingKernelThread(op);
+    });
     if (!hasAcquire) {
       return;
     }
+
+    ModuleState state;
+    state.initialize(module);
     if (!state.hasLaunchGrid) {
       module.emitError()
           << "ttl-verify-dfb-spsc requires a `ttl.launch_grid` module "

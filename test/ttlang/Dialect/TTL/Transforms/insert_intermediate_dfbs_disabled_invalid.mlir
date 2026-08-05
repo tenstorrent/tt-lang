@@ -76,6 +76,158 @@ func.func @released_source_before_output_store_disabled()
 
 // -----
 
+// A computed value stored from multiple blocks requires compiler DFB storage
+// so final compute creation has one output publication for the producer.
+func.func @computed_value_stored_from_multiple_blocks_disabled(%condition: i1)
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %then_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %else_dfb = ttl.bind_cb {cb_index = 2, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %input_wait = ttl.cb_wait %input_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %input = ttl.attach_cb %input_wait, %input_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %value = ttl.exp %input
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+  scf.if %condition {
+    %then_view = ttl.cb_reserve %then_dfb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    // expected-error @below {{'ttl.store' op operand #0 requires compiler-created DFB materialization, but compiler DFBs are disabled (--no-ttl-compiler-dfbs)}}
+    ttl.store %value, %then_view
+        : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+          tensor<1x1x!ttcore.tile<32x32, bf16>>
+  } else {
+    %else_view = ttl.cb_reserve %else_dfb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %value, %else_view
+        : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+          tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  return
+}
+
+// -----
+
+// A multi-result compute result stored from multiple blocks still requires
+// compiler DFB storage for that individual result.
+func.func @multi_result_compute_result_stored_from_multiple_blocks_disabled(
+    %condition: i1)
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %lhs_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %rhs_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %sum_dfb = ttl.bind_cb {cb_index = 2, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %product_dfb = ttl.bind_cb {cb_index = 3, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %then_dfb = ttl.bind_cb {cb_index = 4, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %else_dfb = ttl.bind_cb {cb_index = 5, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %c-1 = arith.constant -1 : index
+
+  %lhs_wait = ttl.cb_wait %lhs_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %lhs = ttl.attach_cb %lhs_wait, %lhs_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %rhs_wait = ttl.cb_wait %rhs_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %rhs = ttl.attach_cb %rhs_wait, %rhs_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+  %sum_reserve = ttl.cb_reserve %sum_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %product_reserve = ttl.cb_reserve %product_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %sum_empty = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %sum_output = ttl.attach_cb %sum_empty, %sum_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %product_empty = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %product_output = ttl.attach_cb %product_empty, %product_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+  %result:2 = ttl.compute
+      ins(%lhs, %rhs : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                     tensor<1x1x!ttcore.tile<32x32, bf16>>)
+      outs(%sum_output, %product_output
+           : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+      {indexing_maps = [
+         affine_map<(d0, d1) -> (d0, d1)>,
+         affine_map<(d0, d1) -> (d0, d1)>,
+         affine_map<(d0, d1) -> (d0, d1)>,
+         affine_map<(d0, d1) -> (d0, d1)>],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%lhs_tile: !ttcore.tile<32x32, bf16>,
+       %rhs_tile: !ttcore.tile<32x32, bf16>,
+       %sum_output_tile: !ttcore.tile<32x32, bf16>,
+       %product_output_tile: !ttcore.tile<32x32, bf16>):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
+    %sum_tile = ttl.tile_add %lhs_tile, %rhs_tile into dst[%c-1]
+        {ttl.dst_placeholder}
+        : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>
+          -> !ttcore.tile<32x32, bf16>
+    %product_tile = ttl.tile_mul %lhs_tile, %rhs_tile into dst[%c-1]
+        {ttl.dst_placeholder}
+        : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>
+          -> !ttcore.tile<32x32, bf16>
+    ttl.tile_store %sum_tile, %sum_reserve[%i, %j] from dst[%c-1]
+        {ttl.dst_placeholder}
+        : !ttcore.tile<32x32, bf16>,
+          tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.tile_store %product_tile, %product_reserve[%i, %j] from dst[%c-1]
+        {ttl.dst_placeholder}
+        : !ttcore.tile<32x32, bf16>,
+          tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.yield
+  } -> (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+        tensor<1x1x!ttcore.tile<32x32, bf16>>)
+
+  scf.if %condition {
+    %then_view = ttl.cb_reserve %then_dfb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    // expected-error @below {{'ttl.store' op operand #0 requires compiler-created DFB materialization, but compiler DFBs are disabled (--no-ttl-compiler-dfbs)}}
+    ttl.store %result#0, %then_view
+        : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+          tensor<1x1x!ttcore.tile<32x32, bf16>>
+  } else {
+    %else_view = ttl.cb_reserve %else_dfb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %result#0, %else_view
+        : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+          tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  return
+}
+
+// -----
+
 // Separate reserves of one output DFB require an intermediate so their
 // publications remain separate.
 func.func @repeated_output_transactions_disabled()

@@ -126,15 +126,53 @@ addExpressionReleaseRequirements(Operation *elementwiseOp,
 }
 
 static void addStoreRequirement(DFBMaterializationAnalysisState &state,
-                                StoreOp store, Value storedValue,
+                                OpOperand &storedValueOperand,
                                 IntermediateDFBEvidence evidence) {
-  for (OpOperand &operand : store->getOpOperands()) {
-    if (operand.get() == storedValue) {
-      state.requireMaterialization(operand, std::move(evidence));
-      return;
+  state.requireMaterialization(storedValueOperand, std::move(evidence));
+}
+
+static SmallVector<OpOperand *> getDirectStoreOperands(Value value) {
+  SmallVector<OpOperand *> storeOperands;
+  for (OpOperand &use : value.getUses()) {
+    auto store = dyn_cast<StoreOp>(use.getOwner());
+    if (store && &store.getTensorMutable() == &use) {
+      storeOperands.push_back(&use);
     }
   }
-  llvm_unreachable("analyzed store must use the source result");
+  return storeOperands;
+}
+
+static bool storeOperandsUseDifferentBlocks(ArrayRef<OpOperand *> operands) {
+  if (operands.empty()) {
+    return false;
+  }
+  Block *firstBlock = operands.front()->getOwner()->getBlock();
+  return llvm::any_of(operands.drop_front(), [&](OpOperand *operand) {
+    return operand->getOwner()->getBlock() != firstBlock;
+  });
+}
+
+static void
+addMultiBlockStoreRequirements(Operation *source,
+                               DFBMaterializationAnalysisState &state) {
+  for (Value result : source->getResults()) {
+    if (!isa<RankedTensorType>(result.getType()) || getAttachedCB(result)) {
+      continue;
+    }
+
+    SmallVector<OpOperand *> storeOperands = getDirectStoreOperands(result);
+    if (!storeOperandsUseDifferentBlocks(storeOperands)) {
+      continue;
+    }
+
+    for (OpOperand *storeOperand : storeOperands) {
+      IntermediateDFBEvidence evidence;
+      evidence.reason = IntermediateDFBReason::OutputStoresInDifferentBlocks;
+      evidence.inputs = {result};
+      evidence.observation = storeOperand->getOwner();
+      addStoreRequirement(state, *storeOperand, std::move(evidence));
+    }
+  }
 }
 
 static void
@@ -171,6 +209,8 @@ static LogicalResult addCreationRequirements(
     Operation *source, const DFBValueLifetimeAnalysis &lifetimes,
     const DominanceInfo &dominanceInfo, DFBMaterializationAnalysisState &state,
     std::optional<PlanningDiagnostic> &diagnostic) {
+  addMultiBlockStoreRequirements(source, state);
+
   PlanningResult<OutputPublicationPlan, OutputPublicationRejection> outputs =
       buildOutputPublicationPlan(source);
   if (outputs.isInvalidIR()) {
@@ -254,7 +294,8 @@ static LogicalResult addCreationRequirements(
         evidence.reason = IntermediateDFBReason::ComputeOpInputMayBeReleased;
         evidence.inputs = *inputs;
         evidence.observation = store;
-        addStoreRequirement(state, store, result, std::move(evidence));
+        addStoreRequirement(state, store.getTensorMutable(),
+                            std::move(evidence));
       }
     }
   }

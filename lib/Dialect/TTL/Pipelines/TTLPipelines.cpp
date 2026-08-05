@@ -22,25 +22,25 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
   pm.addNestedPass<func::FuncOp>(createTTLFormAccumulationScopes());
   {
-    TTLLowerAccumulationScopesOptions lowerOpts;
-    lowerOpts.strategy = options.accumulationStrategy;
+    TTLLowerAccumulationScopesOptions lowerOptions;
+    lowerOptions.strategy = options.accumulationStrategy;
     pm.addNestedPass<func::FuncOp>(
-        createTTLLowerAccumulationScopes(std::move(lowerOpts)));
+        createTTLLowerAccumulationScopes(std::move(lowerOptions)));
   }
   pm.addNestedPass<func::FuncOp>(createTTLMaterializeLoopState());
   pm.addNestedPass<func::FuncOp>(createTTLInsertCopyWait());
   buildTTLAutoSyncPipeline(pm.nest<func::FuncOp>());
   {
-    TTLInsertAccumulationScopesOptions insertOpts;
-    insertOpts.kind = "dfb";
+    TTLInsertAccumulationScopesOptions insertOptions;
+    insertOptions.kind = "dfb";
     pm.addNestedPass<func::FuncOp>(
-        createTTLInsertAccumulationScopes(std::move(insertOpts)));
+        createTTLInsertAccumulationScopes(std::move(insertOptions)));
   }
   {
-    TTLLowerAccumulationScopesOptions lowerOpts;
-    lowerOpts.kind = "dfb";
+    TTLLowerAccumulationScopesOptions lowerOptions;
+    lowerOptions.kind = "dfb";
     pm.addNestedPass<func::FuncOp>(
-        createTTLLowerAccumulationScopes(std::move(lowerOpts)));
+        createTTLLowerAccumulationScopes(std::move(lowerOptions)));
   }
   pm.addNestedPass<func::FuncOp>(createTTLProducerComputeCreation());
   {
@@ -49,10 +49,16 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     pm.addNestedPass<func::FuncOp>(createTTLInsertIntermediateDFBs(dfbOpts));
   }
   pm.addNestedPass<func::FuncOp>(createTTLConvertTTLToCompute());
-  buildTTLAutoSyncPipeline(pm.nest<func::FuncOp>());
+  pm.addNestedPass<func::FuncOp>(createTTLInsertCBSync());
+  // Verify the complete high-level schedule while logical DFB identities are
+  // still distinct and before later transformations rewrite pipe operations.
+  buildTTLVerifyPipeNetPipeline(pm);
+  pm.addNestedPass<func::FuncOp>(createTTLCoalesceDFBAcquires());
   {
     TTLFinalizeDFBIndicesOptions finalizeOptions;
     finalizeOptions.reuseUserDFBs = options.reuseUserDFBs;
+    finalizeOptions.exactColoringSearchStateLimit =
+        options.exactColoringSearchStateLimit;
     pm.addPass(createTTLFinalizeDFBIndices(finalizeOptions));
   }
   {
@@ -79,13 +85,13 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     pm.addNestedPass<func::FuncOp>(createTTLScheduleOperations());
   }
   pm.addNestedPass<func::FuncOp>(createTTLAnnotateCBAssociations());
-  pm.addPass(createTTLVerifyPipeNetGuards());
   pm.addPass(createTTLVerifyDFBSPSC());
   pm.addPass(createTTLErasePipeNetScopes());
   pm.addPass(createTTLValidateCBBudget());
   {
     TTLConvertTTLToTTKernelOptions ttkOpts;
     ttkOpts.reduceFullFp32 = options.reduceFullFp32;
+    ttkOpts.pipeComputedAddresses = options.pipeComputedAddresses;
     pm.addPass(createTTLConvertTTLToTTKernel(ttkOpts));
   }
   pm.addPass(createTTKernelInsertInits());
@@ -109,12 +115,16 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
 }
 
 void buildTTLTensorRecurrencePipeline(OpPassManager &pm) {
-  // Accumulation lowering must run before loop-state materialization removes
-  // tensor iter_args. Materialized DFB state is the fallback for recurrences
-  // that are not DST-resident.
+  // Accumulation lowering consumes tensor loop iter_args before loop-state
+  // materialization replaces unsupported tensor state with explicit DFB state.
   pm.addPass(createTTLFormAccumulationScopes());
   pm.addPass(createTTLLowerAccumulationScopes());
   pm.addPass(createTTLMaterializeLoopState());
+}
+
+void buildTTLVerifyPipeNetPipeline(OpPassManager &pm) {
+  pm.addPass(createTTLVerifyPipeNetGuards());
+  pm.addPass(createTTLVerifyPipeNetSchedule());
 }
 
 void buildTTLAutoSyncPipeline(OpPassManager &pm) {
@@ -128,6 +138,10 @@ void registerTTLPipelines() {
       "Lower TTL to TTKernel, run cleanup canonicalization/CSE, and optionally "
       "lower TTKernel to EmitC.",
       createTTLToTTKernelPipeline);
+  PassPipelineRegistration<>(
+      "ttl-verify-pipenet",
+      "Verify PipeNet launch domains and synchronization schedules.",
+      buildTTLVerifyPipeNetPipeline);
   PassPipelineRegistration<>("ttl-auto-sync",
                              "Insert auto pop/push and coalesce DFB acquires.",
                              buildTTLAutoSyncPipeline);

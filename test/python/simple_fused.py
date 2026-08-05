@@ -3,10 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: tt-device
-# RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.output 2>&1
+# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.reuse.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
+# RUN: FileCheck %s --check-prefix=CHECK-CPP-REUSE < %t.reuse.output
+# Stable logical-index checks run separately from the default allocator checks.
+# RUN: env %python %s --no-ttl-reuse-user-dfbs --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.output 2>&1
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
-# RUN: env %python %s > %t.fpu.output 2>&1
+# RUN: env %python %s --no-ttl-reuse-user-dfbs > %t.fpu.output 2>&1
 # RUN: FileCheck %s --check-prefix=CHECK-CPP-FPU < %t.fpu.output
 
 """
@@ -91,6 +94,24 @@ def fused_kernel(inp, bias, out):
 # =============================================================================
 # C++ Kernel Checks - Verify generated fused compute kernel
 # =============================================================================
+
+# Default allocation may permute physical indices while preserving every
+# logical DFB use across the three kernels.
+# CHECK-CPP-REUSE-LABEL: === fused_compute kernel written to {{.*}} ===
+# CHECK-CPP-REUSE: cb_ctarg_1.wait_front(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_0.wait_front(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_2.reserve_back(
+# CHECK-CPP-REUSE: cb_ctarg_1.pop_front(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_0.pop_front(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_2.push_back(
+# CHECK-CPP-REUSE-LABEL: === dm_read kernel written to {{.*}} ===
+# CHECK-CPP-REUSE: cb_ctarg_1.reserve_back(
+# CHECK-CPP-REUSE: cb_ctarg_1.push_back(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_0.reserve_back(
+# CHECK-CPP-REUSE: cb_ctarg_0.push_back(
+# CHECK-CPP-REUSE-LABEL: === dm_write kernel written to {{.*}} ===
+# CHECK-CPP-REUSE: cb_ctarg_2.wait_front(
+# CHECK-CPP-REUSE: cb_ctarg_2.pop_front(
 
 # CHECK-CPP: === fused_compute kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()

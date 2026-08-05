@@ -4,429 +4,582 @@
 
 #include "DFBPhysicalAllocationPlan.h"
 
+#include "DFBAllocationLimits.h"
 #include "DFBAnalysisFailure.h"
 #include "DFBConcurrentKernelLivenessAnalysis.h"
-#include "DFBLogicalIdentityAnalysis.h"
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
-#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
+#include "ttlang/Dialect/TTL/Transforms/DFBLogicalIdentityAnalysis.h"
 #include "ttlang/Dialect/TTL/Transforms/InterferenceGraphColoring.h"
-#include "ttlang/Dialect/TTL/Transforms/LiveIntervalUtils.h"
 
 #include "mlir/IR/BuiltinOps.h"
 
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <cstdint>
-#include <functional>
+#include <optional>
 #include <string>
 
 namespace mlir::tt::ttl {
 
 namespace {
 
-static bool isDerivedDFBIndexAttribute(StringRef attributeName) {
-  return attributeName == kUnpackToDestFp32AttrName ||
-         attributeName.starts_with(kCBIndexAttrPrefix) ||
-         attributeName == kBcastOutputCBIndexAttrName ||
-         attributeName == kReduceOutputCBIndexAttrName ||
-         attributeName == kTransposeOutputCBIndexAttrName;
+/// Preserves the operation that made a proof conservative, falling back to the
+/// declaration only when no more specific evidence exists.
+static Operation *getLifetimeEvidence(const DFBPerNodeLifetime *lifetime,
+                                      const DFBLogicalLifecycle &logicalDFB) {
+  if (lifetime && lifetime->quiescence.evidence) {
+    return lifetime->quiescence.evidence;
+  }
+  return logicalDFB.declarations.front();
 }
 
-/// Rejects IR containing copies of provisional physical DFB indices.
-///
-/// The listed attributes directly copy `cb_index`. Reassigning a declaration
-/// after such a copy exists would leave the copy stale. Attribute-name matching
-/// remains valid across operation and region changes, but this predicate must
-/// include every attribute introduced by a pass that copies a DFB index.
-static LogicalResult
-verifyFinalizationPrecedesIndexCopies(ModuleOp moduleOp,
-                                      DFBAnalysisFailure &analysisFailure) {
-  WalkResult walkResult = moduleOp->walk([&](Operation *operation) {
-    for (NamedAttribute attribute : operation->getAttrs()) {
-      StringRef attributeName = attribute.getName().getValue();
-      if (!isDerivedDFBIndexAttribute(attributeName)) {
-        continue;
+} // namespace
+
+class DFBPhysicalConflictModelBuilder {
+public:
+  static DFBPhysicalConflictModel
+  build(const DFBConcurrentKernelLivenessAnalysis &liveness) {
+    ArrayRef<DFBLogicalLifecycle> logicalDFBs =
+        liveness.getLogicalDFBLifecycles();
+    DFBPhysicalConflictModel model;
+    model.adjacency.assign(logicalDFBs.size(),
+                           llvm::BitVector(logicalDFBs.size()));
+    for (unsigned lhsIndex = 0; lhsIndex < logicalDFBs.size(); ++lhsIndex) {
+      for (unsigned rhsIndex = lhsIndex + 1; rhsIndex < logicalDFBs.size();
+           ++rhsIndex) {
+        addPairConflicts(model, liveness, lhsIndex, rhsIndex);
       }
-      analysisFailure.set(
-          operation,
-          ("contains derived DFB-index attribute '" + attributeName +
-           "' before DFB index finalization; run ttl-finalize-dfb-indices "
-           "before ttl-set-compute-kernel-config and "
-           "ttl-annotate-cb-associations")
-              .str());
-      return WalkResult::interrupt();
     }
-    return WalkResult::advance();
-  });
-  return success(!walkResult.wasInterrupted());
-}
-
-/// Rejects compiler-created DFBs with incomplete producer or consumer
-/// lifecycles because no bounded live interval can be proven for them.
-static LogicalResult
-verifyCompilerDFBLifecycles(ModuleOp moduleOp,
-                            DFBAnalysisFailure &analysisFailure) {
-  WalkResult walkResult = moduleOp->walk([&](BindCBOp bindOp) {
-    if (!bindOp->hasAttr(kCompilerAllocatedAttrName)) {
-      return WalkResult::advance();
-    }
-
-    bool hasReserve = false;
-    bool hasPush = false;
-    bool hasWait = false;
-    bool hasPop = false;
-    for (Operation *user : bindOp.getResult().getUsers()) {
-      hasReserve |= isa<CBReserveOp>(user);
-      hasPush |= isa<CBPushOp>(user);
-      hasWait |= isa<CBWaitOp>(user);
-      hasPop |= isa<CBPopOp>(user);
-    }
-
-    if (!hasReserve && !hasPush && !hasWait && !hasPop) {
-      return WalkResult::advance();
-    }
-
-    StringRef missingOperation;
-    if (!hasReserve) {
-      missingOperation = "ttl.cb_reserve";
-    } else if (!hasPush) {
-      missingOperation = "ttl.cb_push";
-    } else if (!hasWait) {
-      missingOperation = "ttl.cb_wait";
-    } else if (!hasPop) {
-      missingOperation = "ttl.cb_pop";
-    } else {
-      return WalkResult::advance();
-    }
-
-    analysisFailure.set(
-        bindOp, ("compiler-allocated DFB has a partial lifecycle: missing " +
-                 missingOperation)
-                    .str());
-    return WalkResult::interrupt();
-  });
-  return success(!walkResult.wasInterrupted());
-}
-
-/// Returns true unless two logical DFBs can share one physical allocation.
-static bool
-logicalDFBsConflict(const DFBLogicalLifecycle &lhs,
-                    const DFBLogicalLifecycle &rhs, unsigned lhsIndex,
-                    unsigned rhsIndex,
-                    const DFBConcurrentKernelLivenessAnalysis &liveness) {
-  // TT-Metal stores each physical DFB's counters and ring pointers in the
-  // producer and consumer kernels. Different kernels have independent state.
-  if (lhs.type != rhs.type || lhs.producerKernel != rhs.producerKernel ||
-      lhs.consumerKernel != rhs.consumerKernel) {
-    return true;
+    return model;
   }
-  if (!lhs.transactionTileCount.has_value() ||
-      lhs.transactionTileCount != rhs.transactionTileCount) {
-    return true;
-  }
-  auto dfbType = cast<CircularBufferType>(lhs.type);
-  if (dfbType.getTotalElements() % *lhs.transactionTileCount != 0) {
-    return true;
-  }
-  return !liveness.isOrderedBefore(lhsIndex, rhsIndex) &&
-         !liveness.isOrderedBefore(rhsIndex, lhsIndex);
-}
 
-/// Colors the concurrent-lifetime interference graph.
-static FailureOr<SmallVector<int32_t>> computeConcurrentAssignments(
-    ModuleOp moduleOp, const DFBConcurrentKernelLivenessAnalysis &liveness,
-    const InterferenceGraphColoring &coloring,
-    DFBAnalysisFailure &analysisFailure) {
-  ArrayRef<DFBLogicalLifecycle> logicalDFBs =
-      liveness.getLogicalDFBLifecycles();
-  SmallVector<unsigned> logicalIndices =
-      llvm::to_vector(llvm::seq<unsigned>(0, logicalDFBs.size()));
-  llvm::sort(logicalIndices, [&](unsigned lhsIndex, unsigned rhsIndex) {
+private:
+  static void addEvidence(DFBPhysicalConflictModel &model,
+                          const DFBLogicalLifecycle &lhs,
+                          const DFBLogicalLifecycle &rhs, unsigned lhsIndex,
+                          unsigned rhsIndex, DFBConflictReason reason,
+                          std::optional<LaunchNodeCoord> node,
+                          Operation *lhsOperation, Operation *rhsOperation) {
+    model.adjacency[lhsIndex].set(rhsIndex);
+    model.adjacency[rhsIndex].set(lhsIndex);
+    model.evidence.push_back({lhsIndex, rhsIndex, lhs.logicalId, rhs.logicalId,
+                              reason, node, lhsOperation, rhsOperation});
+  }
+
+  static void
+  addPairConflicts(DFBPhysicalConflictModel &model,
+                   const DFBConcurrentKernelLivenessAnalysis &liveness,
+                   unsigned lhsIndex, unsigned rhsIndex) {
+    ArrayRef<DFBLogicalLifecycle> logicalDFBs =
+        liveness.getLogicalDFBLifecycles();
     const DFBLogicalLifecycle &lhs = logicalDFBs[lhsIndex];
     const DFBLogicalLifecycle &rhs = logicalDFBs[rhsIndex];
-    return lhs.logicalId != rhs.logicalId ? lhs.logicalId < rhs.logicalId
-                                          : lhsIndex < rhsIndex;
-  });
-
-  InterferenceGraph interferenceGraph(logicalDFBs.size());
-  for (unsigned lhsIndex = 0; lhsIndex < logicalDFBs.size(); ++lhsIndex) {
-    for (unsigned rhsIndex = lhsIndex + 1; rhsIndex < logicalDFBs.size();
-         ++rhsIndex) {
-      if (logicalDFBsConflict(logicalDFBs[lhsIndex], logicalDFBs[rhsIndex],
-                              lhsIndex, rhsIndex, liveness)) {
-        interferenceGraph.addInterference(lhsIndex, rhsIndex);
-      }
+    if (lhs.type != rhs.type) {
+      addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
+                  DFBConflictReason::DescriptorMismatch, std::nullopt,
+                  lhs.declarations.front(), rhs.declarations.front());
+      return;
     }
-  }
-
-  SmallVector<unsigned> colors =
-      coloring.color(interferenceGraph, logicalIndices);
-  if (colors.size() != logicalDFBs.size()) {
-    std::string message;
-    llvm::raw_string_ostream messageStream(message);
-    messageStream << "DFB coloring returned " << colors.size()
-                  << " assignments for " << logicalDFBs.size()
-                  << " logical DFBs";
-    analysisFailure.set(moduleOp, messageStream.str());
-    return failure();
-  }
-
-  unsigned colorCount = 0;
-  for (auto [vertex, color] : llvm::enumerate(colors)) {
-    if (color >= logicalDFBs.size()) {
-      std::string message;
-      llvm::raw_string_ostream messageStream(message);
-      messageStream << "DFB coloring assigned out-of-range color " << color
-                    << " to vertex " << vertex << "; expected less than "
-                    << logicalDFBs.size();
-      analysisFailure.set(moduleOp, messageStream.str());
-      return failure();
+    if (!lhs.launchDomain.known || !rhs.launchDomain.known) {
+      addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
+                  DFBConflictReason::UnknownLaunchNodeDomain, std::nullopt,
+                  lhs.declarations.front(), rhs.declarations.front());
+      return;
     }
-    colorCount = std::max(colorCount, color + 1);
-  }
-  llvm::BitVector usedColors(colorCount);
-  for (unsigned color : colors) {
-    usedColors.set(color);
-  }
-  if (!usedColors.all()) {
-    unsigned missingColor = usedColors.find_first_unset();
-    std::string message;
-    llvm::raw_string_ostream messageStream(message);
-    messageStream << "DFB coloring must use dense zero-based colors; color "
-                  << missingColor << " is unused";
-    analysisFailure.set(moduleOp, messageStream.str());
-    return failure();
-  }
 
-  if (colorCount > kMaxCircularBuffers) {
-    std::string message;
-    llvm::raw_string_ostream messageStream(message);
-    messageStream << "DFB allocation needs " << colorCount
-                  << " physical indices but hardware supports at most "
-                  << kMaxCircularBuffers;
-    analysisFailure.set(moduleOp, messageStream.str());
-    return failure();
-  }
-
-  SmallVector<int32_t> assignments;
-  assignments.reserve(colors.size());
-  for (unsigned color : colors) {
-    assignments.push_back(static_cast<int32_t>(color));
-  }
-
-  for (unsigned lhsIndex = 0; lhsIndex < logicalDFBs.size(); ++lhsIndex) {
-    for (unsigned rhsIndex = lhsIndex + 1; rhsIndex < logicalDFBs.size();
-         ++rhsIndex) {
-      if (assignments[lhsIndex] != assignments[rhsIndex]) {
+    LaunchNodeDomain sharedNodes =
+        lhs.launchDomain.intersectWith(rhs.launchDomain);
+    for (LaunchNodeCoord node : sharedNodes.nodes) {
+      const DFBPerNodeLifetime *lhsLifetime = lhs.findNodeLifetime(node);
+      const DFBPerNodeLifetime *rhsLifetime = rhs.findNodeLifetime(node);
+      if (!lhsLifetime || !rhsLifetime || !lhsLifetime->quiescence.proven() ||
+          !rhsLifetime->quiescence.proven()) {
+        addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
+                    DFBConflictReason::UnprovenQuiescence, node,
+                    getLifetimeEvidence(lhsLifetime, lhs),
+                    getLifetimeEvidence(rhsLifetime, rhs));
         continue;
       }
-      if (interferenceGraph.interferes(lhsIndex, rhsIndex)) {
-        std::string message;
-        llvm::raw_string_ostream messageStream(message);
-        messageStream << "DFB allocator assigned interfering logical DFBs "
-                      << logicalDFBs[lhsIndex].logicalId << " and "
-                      << logicalDFBs[rhsIndex].logicalId
-                      << " to physical index " << assignments[lhsIndex];
-        analysisFailure.set(moduleOp, messageStream.str());
+      if (lhsLifetime->transactionTileCount !=
+          rhsLifetime->transactionTileCount) {
+        addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
+                    DFBConflictReason::TransactionMismatch, node,
+                    getLifetimeEvidence(lhsLifetime, lhs),
+                    getLifetimeEvidence(rhsLifetime, rhs));
+        continue;
+      }
+      if (lhsLifetime->writePointerOwner != rhsLifetime->writePointerOwner ||
+          lhsLifetime->readPointerOwner != rhsLifetime->readPointerOwner) {
+        addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
+                    DFBConflictReason::PointerOwnerMismatch, node,
+                    getLifetimeEvidence(lhsLifetime, lhs),
+                    getLifetimeEvidence(rhsLifetime, rhs));
+        continue;
+      }
+      if (!liveness.isOrderedBefore(lhsIndex, rhsIndex, node) &&
+          !liveness.isOrderedBefore(rhsIndex, lhsIndex, node)) {
+        addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
+                    DFBConflictReason::ConcurrentLifetime, node,
+                    getLifetimeEvidence(lhsLifetime, lhs),
+                    getLifetimeEvidence(rhsLifetime, rhs));
+      }
+    }
+  }
+};
+
+namespace {
+
+/// Physical-index assignment and its proven bounds for selected logical DFBs.
+struct ConcurrentAssignmentResult {
+  SmallVector<int32_t> assignments;
+  unsigned colorCount = 0;
+  unsigned provenColorLowerBound = 0;
+  bool minimumProven = false;
+  bool exactSearchLimitReached = false;
+  std::uint64_t exactSearchStateCount = 0;
+};
+
+/// Assigns indices by mapping each logical DFB to a graph vertex, each conflict
+/// to an edge, and each available physical index to a graph color.
+///
+/// First-fit processes DFBs in immutable declaration order and chooses the
+/// lowest index not used by a conflicting DFB. Its assignment is accepted when
+/// it fits `availableIndices`. Otherwise one exhaustive fixed-limit search
+/// decides whether some assignment fits. A minimum physical-index-count search
+/// runs only for an L1-budget decision. `firstPhysicalIndex` reserves lower
+/// index values without changing which DFB pairs may share.
+static FailureOr<ConcurrentAssignmentResult> computeConcurrentAssignments(
+    ModuleOp moduleOp, ArrayRef<unsigned> candidateIndices,
+    int32_t firstPhysicalIndex, const DFBPhysicalConflictModel &conflictModel,
+    unsigned availableIndices, std::uint64_t exactColoringSearchStateLimit,
+    DFBAnalysisFailure &analysisFailure, bool requireMinimum = false) {
+  SmallVector<unsigned> logicalIndices(candidateIndices.begin(),
+                                       candidateIndices.end());
+
+  InterferenceGraph interferenceGraph(logicalIndices.size());
+  for (unsigned lhsVertex = 0; lhsVertex < logicalIndices.size(); ++lhsVertex) {
+    for (unsigned rhsVertex = lhsVertex + 1; rhsVertex < logicalIndices.size();
+         ++rhsVertex) {
+      unsigned lhsIndex = logicalIndices[lhsVertex];
+      unsigned rhsIndex = logicalIndices[rhsVertex];
+      if (conflictModel.conflicts(lhsIndex, rhsIndex)) {
+        interferenceGraph.addInterference(lhsVertex, rhsVertex);
+      }
+    }
+  }
+
+  InterferenceGraphColoringBounds bounds =
+      computeInterferenceGraphColoringBounds(interferenceGraph);
+  SmallVector<unsigned> selectedColors = bounds.colors;
+  unsigned colorCount = bounds.colorCount;
+  unsigned provenColorLowerBound = bounds.pairwiseConflictLowerBound;
+  bool minimumProven = bounds.provesMinimum();
+  bool exactSearchLimitReached = false;
+  std::uint64_t exactSearchStateCount = 0;
+  if (!minimumProven && requireMinimum) {
+    ExactInterferenceGraphColoring exactColoring =
+        colorInterferenceGraphExactly(interferenceGraph,
+                                      exactColoringSearchStateLimit);
+    exactSearchStateCount = exactColoring.exploredStateCount;
+    if (exactColoring.isOptimal()) {
+      selectedColors = std::move(exactColoring.colors);
+      colorCount = exactColoring.colorCount;
+      minimumProven = true;
+      provenColorLowerBound = colorCount;
+    } else {
+      exactSearchLimitReached = true;
+    }
+  } else if (colorCount > availableIndices &&
+             provenColorLowerBound <= availableIndices) {
+    InterferenceGraphColorLimitResult fitResult =
+        colorInterferenceGraphWithColorLimitExactly(
+            interferenceGraph, availableIndices, exactColoringSearchStateLimit);
+    exactSearchStateCount = fitResult.exploredStateCount;
+    if (fitResult.status == InterferenceGraphColorLimitStatus::Feasible) {
+      selectedColors = std::move(fitResult.colors);
+      colorCount = fitResult.colorCount;
+      minimumProven = colorCount == provenColorLowerBound;
+    } else if (fitResult.status ==
+               InterferenceGraphColorLimitStatus::Infeasible) {
+      provenColorLowerBound = availableIndices + 1;
+    } else {
+      exactSearchLimitReached = true;
+    }
+  }
+  ArrayRef<unsigned> colors = selectedColors;
+  assert(colors.size() == logicalIndices.size());
+
+  DenseMap<unsigned, int32_t> assignmentByLogicalIndex;
+  for (auto [vertex, color] : llvm::enumerate(colors)) {
+    assignmentByLogicalIndex[logicalIndices[vertex]] =
+        firstPhysicalIndex + static_cast<int32_t>(color);
+  }
+
+  for (unsigned lhsVertex = 0; lhsVertex < logicalIndices.size(); ++lhsVertex) {
+    for (unsigned rhsVertex = lhsVertex + 1; rhsVertex < logicalIndices.size();
+         ++rhsVertex) {
+      if (colors[lhsVertex] != colors[rhsVertex]) {
+        continue;
+      }
+      if (interferenceGraph.interferes(lhsVertex, rhsVertex)) {
+        analysisFailure.set(
+            moduleOp, "internal DFB allocation assigned one physical index to "
+                      "conflicting logical DFBs");
         return failure();
       }
     }
   }
 
-  return assignments;
+  ConcurrentAssignmentResult result;
+  result.assignments.reserve(candidateIndices.size());
+  for (unsigned logicalIndex : candidateIndices) {
+    result.assignments.push_back(assignmentByLogicalIndex.lookup(logicalIndex));
+  }
+  result.colorCount = colorCount;
+  result.provenColorLowerBound = provenColorLowerBound;
+  result.minimumProven = minimumProven;
+  result.exactSearchLimitReached = exactSearchLimitReached;
+  result.exactSearchStateCount = exactSearchStateCount;
+  return result;
 }
 
-static int32_t getFirstCompilerDFBIndex(ModuleOp moduleOp) {
-  int32_t maxUserIndex = -1;
-  moduleOp->walk([&](BindCBOp bindOp) {
-    if (bindOp->hasAttr(kCompilerAllocatedAttrName)) {
-      return;
-    }
-    maxUserIndex = std::max(
-        maxUserIndex, static_cast<int32_t>(bindOp.getCbIndex().getSExtValue()));
-  });
-  return maxUserIndex + 1;
+/// Diagnoses an inconclusive bounded search without reporting hardware or L1
+/// infeasibility that the search did not prove.
+static void
+setExactSearchLimitFailure(ModuleOp moduleOp, unsigned firstFitCount,
+                           std::uint64_t exactSearchStateCount,
+                           std::uint64_t exactColoringSearchStateLimit,
+                           StringRef constrainedResource,
+                           DFBAnalysisFailure &analysisFailure) {
+  std::string message;
+  llvm::raw_string_ostream messageStream(message);
+  messageStream << "deterministic first-fit uses " << firstFitCount
+                << " physical DFB indices; exact allocation search explored "
+                << exactSearchStateCount << " states and reached the "
+                << exactColoringSearchStateLimit
+                << "-state limit without proving whether the allocation fits "
+                << constrainedResource
+                << "; increase `exact-coloring-search-limit`";
+  analysisFailure.set(moduleOp, messageStream.str());
 }
 
-/// Plans kernel-local linear-scan allocation for compiler-created DFBs.
-static int32_t
-planCompilerDFBIndices(func::FuncOp kernel, ArrayRef<BindCBOp> dfbOps,
-                       int32_t firstPhysicalIndex,
-                       DenseMap<Operation *, int32_t> &physicalIndices) {
-  Block &body = kernel.getBody().front();
-  DenseMap<Operation *, int64_t> operationIndices;
-  int64_t nextOperationIndex = 0;
-  for (Operation &operation : body) {
-    operationIndices[&operation] = nextOperationIndex++;
-  }
-  int64_t kernelEndIndex = nextOperationIndex;
-
-  auto getOperationIndex = [&](Operation *operation) -> int64_t {
-    auto operationIndex = operationIndices.find(operation);
-    assert(operationIndex != operationIndices.end() &&
-           "operation must belong to the kernel body");
-    return operationIndex->second;
-  };
-  auto getBodyIndex = [&](Operation *operation) -> int64_t {
-    if (operation->getBlock() == &body) {
-      return getOperationIndex(operation);
-    }
-    Operation *ancestor = body.findAncestorOpInBlock(*operation);
-    assert(ancestor && "operation must be reachable from kernel body");
-    return getOperationIndex(ancestor);
-  };
-
-  llvm::MapVector<Type, SmallVector<ValueLiveInterval>> typeToIntervals;
-  DenseMap<Value, BindCBOp> valueToDeclaration;
-  for (BindCBOp bindOp : dfbOps) {
-    assert(bindOp->getBlock() == &body &&
-           "compiler-created DFB declaration must be in the kernel body");
-
-    Value dfb = bindOp.getResult();
-    int64_t start = kernelEndIndex;
-    int64_t end = getOperationIndex(bindOp);
-    bool hasAcquire = false;
-    for (OpOperand &use : dfb.getUses()) {
-      Operation *user = use.getOwner();
-      int64_t useIndex = getBodyIndex(user);
-      if (isa<CBReserveOp, CBWaitOp>(user)) {
-        start = std::min(start, useIndex);
-        hasAcquire = true;
-      }
-      if (isa<CBPopOp>(user)) {
-        // Include the pop in the half-open interval. Acquires and pops
-        // projected to the same kernel-body operation must overlap.
-        end = std::max(end, useIndex + 1);
-      }
-    }
-    if (!hasAcquire) {
-      start = getOperationIndex(bindOp);
-    }
-    if (end <= start) {
-      end = kernelEndIndex;
-    }
-
-    SmallVector<ValueLiveInterval> &intervals = typeToIntervals[dfb.getType()];
-    intervals.push_back(
-        {start, end, dfb, static_cast<int64_t>(intervals.size())});
-    valueToDeclaration[dfb] = bindOp;
-  }
-
-  int32_t nextSlotOffset = 0;
-  for (auto &typeAndIntervals : typeToIntervals) {
-    SmallVector<SmallVector<ValueLiveInterval>> colorUsers =
-        assignGreedyIntervalColors<ValueLiveInterval>(
-            typeAndIntervals.second, std::less<ValueLiveInterval>(),
-            [](const ValueLiveInterval &lhs, const ValueLiveInterval &rhs) {
-              return intervalsOverlap(lhs, rhs);
-            });
-    for (auto indexedColor : llvm::enumerate(colorUsers)) {
-      int32_t color = static_cast<int32_t>(indexedColor.index());
-      for (const ValueLiveInterval &interval : indexedColor.value()) {
-        auto declaration = valueToDeclaration.find(interval.value);
-        assert(declaration != valueToDeclaration.end() &&
-               "every interval must have a DFB declaration");
-        physicalIndices[declaration->second.getOperation()] =
-            firstPhysicalIndex + nextSlotOffset + color;
-      }
-    }
-    nextSlotOffset += static_cast<int32_t>(colorUsers.size());
-  }
-  return nextSlotOffset;
+/// Derives capacity text from the enforced constant so diagnostics cannot
+/// report a stale limit.
+static std::string getPhysicalIndexLimitDescription() {
+  return "the " + std::to_string(kMaxCircularBuffers) + "-index hardware limit";
 }
 
-/// Compiler-only assignments and the resulting module-wide index count.
-struct CompilerOnlyAllocation {
+/// Maps provisional user indices to a dense physical index range.
+///
+/// Frontend indices identify allocation groups before finalization but may
+/// contain gaps when an uncaptured DFB has no declarations. Compacting the
+/// distinct values preserves existing sharing without making logical identity
+/// depend on provisional numbering.
+static DenseMap<int64_t, int32_t>
+computeCompactedUserIndices(ArrayRef<DFBLogicalLifecycle> logicalDFBs) {
+  DenseSet<int64_t> provisionalIndices;
+  for (const DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
+    for (BindCBOp declaration : logicalDFB.declarations) {
+      if (!declaration->hasAttr(kCompilerAllocatedAttrName)) {
+        provisionalIndices.insert(declaration.getCbIndex().getSExtValue());
+      }
+    }
+  }
+
+  SmallVector<int64_t> sortedIndices(provisionalIndices.begin(),
+                                     provisionalIndices.end());
+  llvm::sort(sortedIndices);
+
+  DenseMap<int64_t, int32_t> compactedIndices;
+  for (auto [physicalIndex, provisionalIndex] :
+       llvm::enumerate(sortedIndices)) {
+    compactedIndices[provisionalIndex] = static_cast<int32_t>(physicalIndex);
+  }
+  return compactedIndices;
+}
+
+/// Complete assignment candidate before descriptor construction.
+struct PhysicalAllocationCandidate {
   SmallVector<DFBPhysicalIndexAssignment> assignments;
   int32_t physicalDFBCount = 0;
+  bool minimumProven = false;
+  bool exactSearchLimitReached = false;
+  std::uint64_t exactSearchStateCount = 0;
 };
 
-static FailureOr<CompilerOnlyAllocation> computeCompilerOnlyAllocation(
-    ModuleOp moduleOp,
-    const DFBLogicalIdentityAnalysis &logicalIdentityAnalysis,
-    DFBAnalysisFailure &analysisFailure) {
-  llvm::MapVector<func::FuncOp, SmallVector<BindCBOp>> kernelDFBs;
-  moduleOp->walk([&](BindCBOp bindOp) {
-    if (bindOp->hasAttr(kCompilerAllocatedAttrName)) {
-      func::FuncOp kernel = bindOp->getParentOfType<func::FuncOp>();
-      assert(kernel && "compiler-created DFB must be nested in a kernel");
-      kernelDFBs[kernel].push_back(bindOp);
+/// Compacts user indices and assigns compiler-created DFBs after that range.
+///
+/// User declarations retain sharing already expressed by equal provisional
+/// indices. Compiler-created DFBs use the same concurrent lifetime proof as
+/// the all-DFB allocator, so the option changes allocation policy without
+/// selecting a second lifetime model.
+static FailureOr<PhysicalAllocationCandidate> computeDistinctUserAllocation(
+    ModuleOp moduleOp, const DFBConcurrentKernelLivenessAnalysis &liveness,
+    const DFBPhysicalConflictModel &conflictModel,
+    DFBAnalysisFailure &analysisFailure,
+    std::uint64_t exactColoringSearchStateLimit, bool requireMinimum = false) {
+  ArrayRef<DFBLogicalLifecycle> logicalDFBs =
+      liveness.getLogicalDFBLifecycles();
+  DenseMap<int64_t, int32_t> compactedUserIndices =
+      computeCompactedUserIndices(logicalDFBs);
+  int32_t firstCompilerIndex =
+      static_cast<int32_t>(compactedUserIndices.size());
+  SmallVector<unsigned> compilerLogicalIndices;
+  for (auto indexedLogicalDFB : llvm::enumerate(logicalDFBs)) {
+    if (indexedLogicalDFB.value().compilerCreated) {
+      compilerLogicalIndices.push_back(indexedLogicalDFB.index());
     }
-  });
-
-  DenseMap<Operation *, int32_t> physicalIndices;
-  int32_t nextCompilerIndex = getFirstCompilerDFBIndex(moduleOp);
-  int32_t compilerSlotCount = 0;
-  for (auto &[kernel, dfbOps] : kernelDFBs) {
-    int32_t slotCount = planCompilerDFBIndices(
-        kernel, dfbOps, nextCompilerIndex, physicalIndices);
-    nextCompilerIndex += slotCount;
-    compilerSlotCount += slotCount;
   }
 
-  llvm::MapVector<int64_t, unsigned> logicalIdToAssignment;
-  CompilerOnlyAllocation allocation;
-  for (const DFBLogicalIdentityAssignment &identity :
-       logicalIdentityAnalysis.getAssignments()) {
-    BindCBOp declaration = identity.declaration;
+  unsigned availableCompilerIndices =
+      firstCompilerIndex >= kMaxCircularBuffers
+          ? 0
+          : static_cast<unsigned>(kMaxCircularBuffers - firstCompilerIndex);
+  FailureOr<ConcurrentAssignmentResult> compilerAssignment =
+      computeConcurrentAssignments(
+          moduleOp, compilerLogicalIndices, firstCompilerIndex, conflictModel,
+          availableCompilerIndices, exactColoringSearchStateLimit,
+          analysisFailure, requireMinimum);
+  if (failed(compilerAssignment)) {
+    return failure();
+  }
+  DenseMap<unsigned, int32_t> compilerIndexByLogicalIndex;
+  for (auto indexedCompilerIndex : llvm::enumerate(compilerLogicalIndices)) {
+    compilerIndexByLogicalIndex[indexedCompilerIndex.value()] =
+        compilerAssignment->assignments[indexedCompilerIndex.index()];
+  }
+
+  PhysicalAllocationCandidate allocation;
+  allocation.minimumProven = compilerAssignment->minimumProven;
+  allocation.exactSearchLimitReached =
+      compilerAssignment->exactSearchLimitReached;
+  allocation.exactSearchStateCount = compilerAssignment->exactSearchStateCount;
+  for (auto indexedLogicalDFB : llvm::enumerate(logicalDFBs)) {
+    unsigned logicalIndex = indexedLogicalDFB.index();
+    const DFBLogicalLifecycle &logicalDFB = indexedLogicalDFB.value();
     int32_t physicalIndex;
-    if (declaration->hasAttr(kCompilerAllocatedAttrName)) {
-      auto physicalIndexIt = physicalIndices.find(declaration.getOperation());
-      assert(physicalIndexIt != physicalIndices.end() &&
+    if (logicalDFB.compilerCreated) {
+      auto physicalIndexIt = compilerIndexByLogicalIndex.find(logicalIndex);
+      assert(physicalIndexIt != compilerIndexByLogicalIndex.end() &&
              "every compiler-created DFB must have a physical index");
       physicalIndex = physicalIndexIt->second;
     } else {
-      physicalIndex =
-          static_cast<int32_t>(declaration.getCbIndex().getSExtValue());
+      std::optional<int32_t> logicalPhysicalIndex;
+      for (BindCBOp declaration : logicalDFB.declarations) {
+        if (declaration->hasAttr(kCompilerAllocatedAttrName)) {
+          continue;
+        }
+        int64_t provisionalIndex = declaration.getCbIndex().getSExtValue();
+        auto physicalIndexIt = compactedUserIndices.find(provisionalIndex);
+        assert(physicalIndexIt != compactedUserIndices.end() &&
+               "every user DFB must have a compacted physical index");
+        if (!logicalPhysicalIndex.has_value()) {
+          logicalPhysicalIndex = physicalIndexIt->second;
+        } else if (*logicalPhysicalIndex != physicalIndexIt->second) {
+          std::string message;
+          llvm::raw_string_ostream messageStream(message);
+          messageStream << "logical DFB " << logicalDFB.logicalId
+                        << " has inconsistent physical indices "
+                        << *logicalPhysicalIndex << " and "
+                        << physicalIndexIt->second;
+          analysisFailure.set(declaration, messageStream.str());
+          return failure();
+        }
+      }
+      assert(logicalPhysicalIndex.has_value() &&
+             "a user logical DFB must have a user declaration");
+      physicalIndex = *logicalPhysicalIndex;
     }
 
-    auto [assignmentIt, inserted] = logicalIdToAssignment.insert(
-        {identity.logicalId, allocation.assignments.size()});
-    if (inserted) {
-      allocation.assignments.push_back({identity.logicalId,
-                                        physicalIndex,
-                                        declaration.getResult().getType(),
-                                        {declaration},
-                                        false});
-    } else {
-      DFBPhysicalIndexAssignment &assignment =
-          allocation.assignments[assignmentIt->second];
-      if (assignment.physicalIndex != physicalIndex) {
-        std::string message;
-        llvm::raw_string_ostream messageStream(message);
-        messageStream << "logical DFB " << identity.logicalId
-                      << " has inconsistent physical indices "
-                      << assignment.physicalIndex << " and " << physicalIndex;
-        analysisFailure.set(declaration, messageStream.str());
-        return failure();
-      }
-      assignment.declarations.push_back(declaration);
-    }
+    allocation.assignments.push_back({logicalDFB.logicalId, physicalIndex,
+                                      logicalDFB.type, logicalDFB.declarations,
+                                      logicalDFB.bounded});
     allocation.physicalDFBCount =
         std::max(allocation.physicalDFBCount, physicalIndex + 1);
   }
+
+  for (unsigned lhsIndex = 0; lhsIndex < logicalDFBs.size(); ++lhsIndex) {
+    if (logicalDFBs[lhsIndex].compilerCreated) {
+      continue;
+    }
+    for (unsigned rhsIndex = lhsIndex + 1; rhsIndex < logicalDFBs.size();
+         ++rhsIndex) {
+      if (logicalDFBs[rhsIndex].compilerCreated ||
+          allocation.assignments[lhsIndex].physicalIndex !=
+              allocation.assignments[rhsIndex].physicalIndex ||
+          !conflictModel.conflicts(lhsIndex, rhsIndex)) {
+        continue;
+      }
+      int32_t physicalIndex = allocation.assignments[rhsIndex].physicalIndex;
+      std::string message;
+      llvm::raw_string_ostream messageStream(message);
+      messageStream << "provisional physical DFB index " << physicalIndex
+                    << " aliases conflicting logical DFBs "
+                    << logicalDFBs[lhsIndex].logicalId << " and "
+                    << logicalDFBs[rhsIndex].logicalId;
+      analysisFailure.set(logicalDFBs[rhsIndex].declarations.front(),
+                          messageStream.str());
+      return failure();
+    }
+  }
+
+  int32_t compilerSlotCount = allocation.physicalDFBCount - firstCompilerIndex;
   if (allocation.physicalDFBCount > kMaxCircularBuffers) {
+    if (allocation.exactSearchLimitReached) {
+      setExactSearchLimitFailure(
+          moduleOp, allocation.physicalDFBCount,
+          allocation.exactSearchStateCount, exactColoringSearchStateLimit,
+          getPhysicalIndexLimitDescription(), analysisFailure);
+      return failure();
+    }
     std::string message;
     llvm::raw_string_ostream messageStream(message);
-    messageStream << "need " << allocation.physicalDFBCount
-                  << " DFB indices but hardware supports at most "
+    if (allocation.minimumProven) {
+      messageStream << "need " << allocation.physicalDFBCount;
+    } else {
+      messageStream << "need at least "
+                    << firstCompilerIndex +
+                           static_cast<int32_t>(
+                               compilerAssignment->provenColorLowerBound);
+    }
+    messageStream << " unspilled DFB indices but hardware supports at most "
                   << kMaxCircularBuffers << " (" << compilerSlotCount
-                  << " compiler-allocated after reuse); reduce the number of "
-                     "user-declared dataflow buffers or split the computation "
-                     "into multiple kernels";
+                  << " compiler-allocated after proven reuse)";
     analysisFailure.set(moduleOp, messageStream.str());
     return failure();
   }
   return allocation;
 }
 
+/// Assigns every logical DFB together so user and compiler-created lifetimes
+/// may share physical indices under the same conflict model.
+static FailureOr<PhysicalAllocationCandidate> computeReuseAllocation(
+    ModuleOp moduleOp, const DFBConcurrentKernelLivenessAnalysis &liveness,
+    const DFBPhysicalConflictModel &conflictModel,
+    DFBAnalysisFailure &analysisFailure,
+    std::uint64_t exactColoringSearchStateLimit, bool requireMinimum) {
+  ArrayRef<DFBLogicalLifecycle> logicalDFBs =
+      liveness.getLogicalDFBLifecycles();
+  SmallVector<unsigned> logicalIndices =
+      llvm::to_vector(llvm::seq<unsigned>(0, logicalDFBs.size()));
+  FailureOr<ConcurrentAssignmentResult> assignment =
+      computeConcurrentAssignments(
+          moduleOp, logicalIndices, /*firstPhysicalIndex=*/0, conflictModel,
+          kMaxCircularBuffers, exactColoringSearchStateLimit, analysisFailure,
+          requireMinimum);
+  if (failed(assignment)) {
+    return failure();
+  }
+
+  PhysicalAllocationCandidate allocation;
+  allocation.minimumProven = assignment->minimumProven;
+  allocation.exactSearchLimitReached = assignment->exactSearchLimitReached;
+  allocation.exactSearchStateCount = assignment->exactSearchStateCount;
+  for (auto indexedLogicalDFB : llvm::enumerate(logicalDFBs)) {
+    const DFBLogicalLifecycle &logicalDFB = indexedLogicalDFB.value();
+    int32_t physicalIndex = assignment->assignments[indexedLogicalDFB.index()];
+    allocation.physicalDFBCount =
+        std::max(allocation.physicalDFBCount, physicalIndex + 1);
+    allocation.assignments.push_back({logicalDFB.logicalId, physicalIndex,
+                                      logicalDFB.type, logicalDFB.declarations,
+                                      logicalDFB.bounded});
+  }
+
+  if (allocation.physicalDFBCount <= kMaxCircularBuffers) {
+    return allocation;
+  }
+  if (allocation.exactSearchLimitReached) {
+    setExactSearchLimitFailure(
+        moduleOp, allocation.physicalDFBCount, allocation.exactSearchStateCount,
+        exactColoringSearchStateLimit, getPhysicalIndexLimitDescription(),
+        analysisFailure);
+    return failure();
+  }
+
+  std::string message;
+  llvm::raw_string_ostream messageStream(message);
+  if (allocation.minimumProven) {
+    messageStream << "DFB allocation needs " << allocation.physicalDFBCount;
+  } else {
+    messageStream << "DFB allocation needs at least "
+                  << assignment->provenColorLowerBound;
+  }
+  messageStream << " unspilled physical indices but hardware supports at most "
+                << kMaxCircularBuffers;
+  analysisFailure.set(moduleOp, messageStream.str());
+  return failure();
+}
+
+/// Returns the L1 bytes required by the unique physical assignments.
+static FailureOr<uint64_t>
+computeAllocationBytes(ArrayRef<DFBPhysicalIndexAssignment> assignments) {
+  DFBAllocationFootprint footprint;
+  for (const DFBPhysicalIndexAssignment &assignment : assignments) {
+    if (failed(footprint.add(assignment.physicalIndex,
+                             cast<CircularBufferType>(assignment.type)))) {
+      return failure();
+    }
+  }
+  return footprint.getTotalBytes();
+}
+
+/// Recomputes an assignment with the minimum physical-index count only when a
+/// valid first-fit assignment exceeds the L1 budget. Both user-reuse policies
+/// therefore share identical search and diagnostic behavior.
+static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
+    ModuleOp moduleOp, std::uint64_t exactColoringSearchStateLimit,
+    DFBAnalysisFailure &analysisFailure,
+    llvm::function_ref<FailureOr<PhysicalAllocationCandidate>(bool)>
+        computeAllocation) {
+  FailureOr<PhysicalAllocationCandidate> allocation =
+      computeAllocation(/*requireMinimum=*/false);
+  if (failed(allocation)) {
+    return failure();
+  }
+
+  FailureOr<uint64_t> allocationBytes =
+      computeAllocationBytes(allocation->assignments);
+  uint64_t l1BudgetBytes = getUsableDFBL1Bytes(moduleOp);
+  if (succeeded(allocationBytes) && *allocationBytes > l1BudgetBytes &&
+      !allocation->minimumProven) {
+    allocation = computeAllocation(/*requireMinimum=*/true);
+    if (failed(allocation)) {
+      return failure();
+    }
+    allocationBytes = computeAllocationBytes(allocation->assignments);
+  }
+  if (allocation->exactSearchLimitReached) {
+    setExactSearchLimitFailure(moduleOp, allocation->physicalDFBCount,
+                               allocation->exactSearchStateCount,
+                               exactColoringSearchStateLimit,
+                               "the target L1 budget", analysisFailure);
+    return failure();
+  }
+  if (failed(allocationBytes)) {
+    analysisFailure.set(moduleOp,
+                        "DFB allocation has an invalid negative element count");
+    return failure();
+  }
+  if (*allocationBytes > l1BudgetBytes) {
+    std::string message;
+    llvm::raw_string_ostream messageStream(message);
+    messageStream << "DFB allocation requires " << *allocationBytes
+                  << " L1 bytes but the target supports " << l1BudgetBytes;
+    analysisFailure.set(moduleOp, messageStream.str());
+    return failure();
+  }
+  return allocation;
+}
+
+/// Builds the dense runtime descriptor table without modifying IR.
 static FailureOr<SmallVector<DFBPhysicalAllocationDescriptor>>
 buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
                  DFBAnalysisFailure &analysisFailure) {
@@ -459,10 +612,8 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
     if (physicalIndex != static_cast<int32_t>(expectedIndex)) {
       std::string message;
       llvm::raw_string_ostream messageStream(message);
-      messageStream
-          << "physical DFB indices must form a dense zero-based range; "
-             "expected index "
-          << expectedIndex << " but found " << physicalIndex;
+      messageStream << "physical DFB allocation plan is not dense: expected "
+                    << expectedIndex << " but found " << physicalIndex;
       analysisFailure.set(assignment->declarations.front(),
                           messageStream.str());
       return failure();
@@ -481,14 +632,9 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
 } // namespace
 
 DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
-    Operation *operation, bool reuseUserDFBs, AnalysisManager analysisManager)
-    : DFBPhysicalAllocationPlanner(
-          operation, reuseUserDFBs, analysisManager,
-          getGreedyFirstFitInterferenceGraphColoring()) {}
-
-DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
-    Operation *operation, bool reuseUserDFBs, AnalysisManager analysisManager,
-    const InterferenceGraphColoring &coloring) {
+    Operation *operation, bool reuseUserDFBs,
+    std::uint64_t exactColoringSearchStateLimit,
+    AnalysisManager analysisManager) {
   ModuleOp moduleOp = cast<ModuleOp>(operation);
   const DFBLogicalIdentityAnalysis &logicalIdentityAnalysis =
       analysisManager.getAnalysis<DFBLogicalIdentityAnalysis>();
@@ -498,60 +644,37 @@ DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
     return;
   }
 
+  const DFBConcurrentKernelLivenessAnalysis &liveness =
+      analysisManager.getAnalysis<DFBConcurrentKernelLivenessAnalysis>();
+  if (!liveness.succeeded()) {
+    errorOperation = liveness.getErrorOperation();
+    errorMessage = liveness.getErrorMessage().str();
+    return;
+  }
   DFBAnalysisFailure analysisFailure;
-  if (failed(
-          verifyFinalizationPrecedesIndexCopies(moduleOp, analysisFailure))) {
+  plan.conflictModel = DFBPhysicalConflictModelBuilder::build(liveness);
+
+  auto computeAllocation =
+      [&](bool requireMinimum) -> FailureOr<PhysicalAllocationCandidate> {
+    if (reuseUserDFBs) {
+      return computeReuseAllocation(
+          moduleOp, liveness, plan.conflictModel, analysisFailure,
+          exactColoringSearchStateLimit, requireMinimum);
+    }
+    return computeDistinctUserAllocation(
+        moduleOp, liveness, plan.conflictModel, analysisFailure,
+        exactColoringSearchStateLimit, requireMinimum);
+  };
+  FailureOr<PhysicalAllocationCandidate> allocation =
+      computeAllocationWithinL1(moduleOp, exactColoringSearchStateLimit,
+                                analysisFailure, computeAllocation);
+  if (failed(allocation)) {
     errorOperation = analysisFailure.operation;
     errorMessage = std::move(analysisFailure.message);
     return;
   }
-
-  if (failed(verifyCompilerDFBLifecycles(moduleOp, analysisFailure))) {
-    errorOperation = analysisFailure.operation;
-    errorMessage = std::move(analysisFailure.message);
-    return;
-  }
-
-  if (reuseUserDFBs) {
-    const DFBConcurrentKernelLivenessAnalysis &liveness =
-        analysisManager.getAnalysis<DFBConcurrentKernelLivenessAnalysis>();
-    if (!liveness.succeeded()) {
-      errorOperation = liveness.getErrorOperation();
-      errorMessage = liveness.getErrorMessage().str();
-      return;
-    }
-
-    FailureOr<SmallVector<int32_t>> physicalIndices =
-        computeConcurrentAssignments(moduleOp, liveness, coloring,
-                                     analysisFailure);
-    if (failed(physicalIndices)) {
-      errorOperation = analysisFailure.operation;
-      errorMessage = std::move(analysisFailure.message);
-      return;
-    }
-    ArrayRef<DFBLogicalLifecycle> logicalDFBs =
-        liveness.getLogicalDFBLifecycles();
-    for (auto indexedLogicalDFB : llvm::enumerate(logicalDFBs)) {
-      const DFBLogicalLifecycle &logicalDFB = indexedLogicalDFB.value();
-      int32_t physicalIndex = (*physicalIndices)[indexedLogicalDFB.index()];
-      plan.physicalDFBCount =
-          std::max(plan.physicalDFBCount, physicalIndex + 1);
-      plan.assignments.push_back({logicalDFB.logicalId, physicalIndex,
-                                  logicalDFB.type, logicalDFB.declarations,
-                                  logicalDFB.bounded});
-    }
-  } else {
-    FailureOr<CompilerOnlyAllocation> allocation =
-        computeCompilerOnlyAllocation(moduleOp, logicalIdentityAnalysis,
-                                      analysisFailure);
-    if (failed(allocation)) {
-      errorOperation = analysisFailure.operation;
-      errorMessage = std::move(analysisFailure.message);
-      return;
-    }
-    plan.assignments = std::move(allocation->assignments);
-    plan.physicalDFBCount = allocation->physicalDFBCount;
-  }
+  plan.assignments = std::move(allocation->assignments);
+  plan.physicalDFBCount = allocation->physicalDFBCount;
 
   FailureOr<SmallVector<DFBPhysicalAllocationDescriptor>> descriptors =
       buildDescriptors(plan.assignments, analysisFailure);
@@ -563,11 +686,11 @@ DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
   plan.descriptors = std::move(*descriptors);
 
   if (plan.physicalDFBCount > 0) {
-    moduleOp->walk([&](func::FuncOp kernel) {
+    for (func::FuncOp kernel : moduleOp.getOps<func::FuncOp>()) {
       if (kernel->hasAttr(kBaseCTAIndexAttrName)) {
         plan.kernelBaseIndices.push_back({kernel, plan.physicalDFBCount});
       }
-    });
+    }
   }
 }
 

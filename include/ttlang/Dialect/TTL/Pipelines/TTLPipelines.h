@@ -7,6 +7,7 @@
 
 #include "mlir/Pass/PassOptions.h"
 
+#include <cstdint>
 #include <string>
 
 namespace mlir {
@@ -20,12 +21,12 @@ struct TTLToTTKernelPipelineOptions
   Option<bool> lowerToEmitC{*this, "lower-to-emitc",
                             llvm::cl::desc("Lower TTKernel to EmitC."),
                             llvm::cl::init(false)};
-  // TODO(#649): Replace maximize-dst with granular options for accumulation
-  // strategy, compute subblocking, and tile-op scheduling.
   Option<bool> maximizeDST{
       *this, "maximize-dst",
       llvm::cl::desc("Enable DST maximization via subblock compute."),
       llvm::cl::init(true)};
+  // TODO(#649): Replace maximize-dst with granular options for accumulation
+  // strategy, compute subblocking, and tile-op scheduling.
   Option<std::string> accumulationStrategy{
       *this, "accumulation-strategy",
       llvm::cl::desc("Select tensor recurrence accumulation storage strategy: "
@@ -59,15 +60,26 @@ struct TTLToTTKernelPipelineOptions
       llvm::cl::init(false)};
   Option<bool> compilerDFBs{
       *this, "compiler-dfbs",
-      llvm::cl::desc("Insert compiler-allocated intermediate DFBs for fused "
-                     "computations. When disabled, emit an error if any "
-                     "operation requires a compiler-allocated DFB."),
+      llvm::cl::desc("Insert compiler-allocated intermediate DFBs when "
+                     "materialization is required. When disabled, emit an "
+                     "error if materialization through a compiler-allocated "
+                     "DFB is required."),
+      llvm::cl::init(true)};
+  Option<bool> pipeComputedAddresses{
+      *this, "pipe-computed-addresses",
+      llvm::cl::desc("Use computed receiver DFB addresses for eligible pipe "
+                     "transfers."),
       llvm::cl::init(true)};
   Option<bool> reuseUserDFBs{
       *this, "reuse-user-dfbs",
       llvm::cl::desc("Reuse physical DFB indices when concurrent-kernel "
                      "liveness proves that logical lifetimes do not overlap."),
       llvm::cl::init(true)};
+  Option<std::uint64_t> exactColoringSearchStateLimit{
+      *this, "exact-coloring-search-limit",
+      llvm::cl::desc("Maximum states examined by exact DFB allocation before "
+                     "reporting an inconclusive result."),
+      llvm::cl::init(1000000)};
   Option<bool> specializeCores{
       *this, "specialize-cores",
       llvm::cl::desc(
@@ -81,7 +93,11 @@ void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,
 
 void buildTTLTensorRecurrencePipeline(mlir::OpPassManager &pm);
 
+/// Add DFB synchronization insertion and acquire coalescing passes.
 void buildTTLAutoSyncPipeline(mlir::OpPassManager &pm);
+
+/// Add the ordered PipeNet launch-domain and synchronization verifiers.
+void buildTTLVerifyPipeNetPipeline(mlir::OpPassManager &pm);
 
 void registerTTLPipelines();
 

@@ -566,6 +566,7 @@ class CompiledTTNNKernel:
         pipe_sram_scratch_bytes=0,
         num_pipe_global_semaphores=0,
         opaque_include_paths=None,
+        kernel_pipe_computed_address_dfb_indices=None,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -593,6 +594,8 @@ class CompiledTTNNKernel:
                 PipeNet metadata.
             num_pipe_global_semaphores: Number of GlobalSemaphore-backed
                 PipeNet ready counters used by this kernel.
+            kernel_pipe_computed_address_dfb_indices: Per-kernel receiver DFB indices whose
+                L1 bases are supplied as common runtime args.
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
@@ -610,6 +613,9 @@ class CompiledTTNNKernel:
         self.num_pipe_sync_semaphores = num_pipe_sync_semaphores
         self.pipe_sram_scratch_bytes = pipe_sram_scratch_bytes
         self.num_pipe_global_semaphores = num_pipe_global_semaphores
+        self.kernel_pipe_computed_address_dfb_indices = (
+            kernel_pipe_computed_address_dfb_indices or [[] for _ in kernel_paths]
+        )
         self._pipe_global_semaphore_lifetime = []
         self.opaque_include_paths = opaque_include_paths or []
 
@@ -640,6 +646,9 @@ class CompiledTTNNKernel:
                 tensor_indices=tensor_indices,
                 config=config,
                 compiler_include_paths=self.opaque_include_paths,
+                pipe_computed_address_dfb_indices=self.kernel_pipe_computed_address_dfb_indices[
+                    kernel_idx
+                ],
                 core_ranges=self.kernel_core_ranges[kernel_idx],
             )
             kernel_specs.append(spec)
@@ -749,9 +758,7 @@ def _get_kernel_bool_attr(module, kernel_name: str, attr_name: str) -> bool:
 def _get_kernel_i32_array_attr(module, kernel_name: str, attr_name: str):
     """Read a `DenseI32ArrayAttr` func.func attribute as a list of ints.
 
-    Returns an empty list when the attribute is missing. Used by the runtime
-    bridge to consume the per-CB UnpackToDestFp32 selection emitted by
-    `ttl-set-compute-kernel-config`.
+    Returns an empty list when the attribute is missing.
     """
     operation = _lookup_kernel_func_op(module, kernel_name)
     attr = operation.attributes.get(attr_name, None)
@@ -962,6 +969,7 @@ def _compile_ttnn_kernel(
     kernel_paths = []
     kernel_configs = []
     kernel_arg_specs = []
+    kernel_pipe_computed_address_dfb_indices = []
     # Per-kernel single-core ranges (specialization path) and tensor indices
     # read from ttl.crta_indices. Both stay aligned with kernel_info order.
     kernel_core_ranges = []
@@ -985,6 +993,11 @@ def _compile_ttnn_kernel(
         cpp_source = ttkernel_to_cpp_by_name(module, name)
         kernel_path = _write_kernel_to_tmp(name, cpp_source)
         kernel_paths.append((kernel_path, thread_type))
+        kernel_pipe_computed_address_dfb_indices.append(
+            _get_kernel_i32_array_attr(
+                module, name, _ttl_ir.PIPE_COMPUTED_ADDRESS_DFB_INDICES_ATTR
+            )
+        )
 
         # The specialized clone's launch coordinates (None on the default,
         # whole-grid path). Used to build the per-kernel dispatch range below.
@@ -1071,6 +1084,7 @@ def _compile_ttnn_kernel(
         pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
         num_pipe_global_semaphores=num_pipe_global_semaphores,
         opaque_include_paths=opaque_include_paths or [],
+        kernel_pipe_computed_address_dfb_indices=kernel_pipe_computed_address_dfb_indices,
     )
 
     if verbose:
@@ -1088,6 +1102,9 @@ def _compile_ttnn_kernel(
                 tensor_indices=tensor_indices,
                 config=kernel_configs[kernel_idx],
                 compiler_include_paths=opaque_include_paths or [],
+                pipe_computed_address_dfb_indices=kernel_pipe_computed_address_dfb_indices[
+                    kernel_idx
+                ],
                 core_ranges=kernel_core_ranges[kernel_idx],
             )
             kernel_specs_for_emit.append(spec)
@@ -1229,12 +1246,12 @@ _MLIR_TYPE_TO_FORMAT = {
 }
 
 
-def _parse_mlir_element_type(element_type) -> tuple[str, tuple[int, int]]:
-    """Extract the data format and tile dimensions from an MLIR TypeAttr.
+def _parse_mlir_element_type(element_type) -> tuple[str, Optional[tuple[int, int]]]:
+    """Extract the data format and optional tile dimensions from a TypeAttr.
 
     The TypeAttr prints as e.g. "bf16" or "!ttcore.tile<32x32, bf16>".
     """
-    tile = (32, 32)
+    tile = None
     type_value = getattr(element_type, "value", None)
     if type_value is None:
         raise TypeError(f"element_type must be an MLIR TypeAttr, got {element_type!r}")
@@ -1833,21 +1850,21 @@ def _lower_program_to_kernel(
                 + "})"
             )
 
-        # This explicit frontend pipeline must match createTTLToTTKernelPipeline.
-        # The ME2E builder invokes that registered C++ pipeline directly.
+        # NOTE: Pipeline pass ordering mirrors
+        # lib/Dialect/TTL/Pipelines/TTLPipelines.cpp.
         assign_dst_pass = "ttl-assign-dst"
 
         compiler_dfbs_flag = int(compiler_options.compiler_dfbs)
         accumulation_strategy = compiler_options.accumulation_strategy
         reuse_user_dfbs_flag = int(compiler_options.reuse_user_dfbs)
-        # Must run before loop-state materialization removes tensor iter_args.
+        exact_coloring_search_limit = (
+            compiler_options.dfb_exact_coloring_search_limit
+        )
         tensor_recurrence_pipeline = (
             "ttl-form-accumulation-scopes,"
             f"ttl-lower-accumulation-scopes{{strategy={accumulation_strategy}}},"
             "ttl-materialize-loop-state"
         )
-        # Mirrors createTTLToTTKernelPipeline in TTLPipelines.cpp; keep the two
-        # in sync when adding or reordering passes.
         pipeline_passes = [
             f"func.func({tensor_recurrence_pipeline})",
             "func.func(ttl-insert-copy-wait)",
@@ -1857,8 +1874,13 @@ def _lower_program_to_kernel(
             "func.func(ttl-create-producer-compute)",
             f"func.func(ttl-insert-intermediate-dfbs{{enable={compiler_dfbs_flag}}})",
             "func.func(convert-ttl-to-compute)",
-            "func.func(ttl-auto-sync)",
-            f"ttl-finalize-dfb-indices{{reuse-user-dfbs={reuse_user_dfbs_flag}}}",
+            "func.func(ttl-insert-cb-sync)",
+            "ttl-verify-pipenet",
+            "func.func(ttl-coalesce-dfb-acquires)",
+            "ttl-finalize-dfb-indices{"
+            f"reuse-user-dfbs={reuse_user_dfbs_flag} "
+            f"exact-coloring-search-limit={exact_coloring_search_limit}"
+            "}",
             set_compute_config_pass,
             f"func.func({assign_dst_pass})",
         ]
@@ -1876,7 +1898,6 @@ def _lower_program_to_kernel(
         if compiler_options.maximize_dst:
             pipeline_passes.append("func.func(ttl-schedule-operations)")
         pipeline_passes.append("func.func(ttl-annotate-cb-associations)")
-        pipeline_passes.append("ttl-verify-pipenet-guards")
         pipeline_passes.append("ttl-verify-dfb-spsc")
         pipeline_passes.append("ttl-erase-pipenet-scopes")
         if l1_budget_override > 0:
@@ -1908,9 +1929,10 @@ def _lower_program_to_kernel(
             pipeline_passes.append(f'ttl-dump-cb-flow-graph{{output="{cb_flow_json}"}}')
 
         reduce_fp32_flag = int(compiler_options.reduce_full_fp32)
+        pipe_computed_flag = int(compiler_options.pipe_computed_addresses)
         pipeline_passes += [
             "ttl-lower-dprint-to-emitc",
-            f"convert-ttl-to-ttkernel{{reduce-full-fp32={reduce_fp32_flag}}}",
+            f"convert-ttl-to-ttkernel{{reduce-full-fp32={reduce_fp32_flag} pipe-computed-addresses={pipe_computed_flag}}}",
             "func.func(ttkernel-lower-scalar-fp-types)",
             "ttkernel-insert-inits",
             "ttkernel-insert-l1-accumulation",

@@ -8,23 +8,16 @@
 //===----------------------------------------------------------------------===//
 // Concurrent Kernel DFB Liveness Analysis
 //===----------------------------------------------------------------------===//
-//
-// This analysis constructs the cross-kernel event graph and derives the
-// lifetime facts needed by physical DFB allocation. It does not modify IR or
-// select physical indices.
-//
-//===----------------------------------------------------------------------===//
 
-#include "DFBLogicalIdentityAnalysis.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/Transforms/DFBLogicalIdentityAnalysis.h"
+#include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
 
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/AnalysisManager.h"
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/BitVector.h"
-#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 
@@ -34,68 +27,115 @@
 
 namespace mlir::tt::ttl {
 
-/// Immutable protocol and lifetime facts for one logical DFB.
+/// Protocol or opaque storage effect performed by one DFB access.
+enum class DFBProtocolEffect { Reserve, Push, Wait, Pop, OpaqueAccess };
+
+/// Hardware processor that owns one DFB ring pointer.
+enum class DFBPointerProcessor { Noc0, Noc1, Pack, Unpack };
+
+/// Ring pointer advanced by a protocol effect.
+enum class DFBPointerDirection { Read, Write };
+
+/// Physical owner of one DFB ring pointer on one launched node.
+struct DFBPointerOwner {
+  LaunchNodeCoord node;
+  DFBPointerProcessor processor = DFBPointerProcessor::Noc0;
+  DFBPointerDirection direction = DFBPointerDirection::Read;
+
+  bool operator==(const DFBPointerOwner &rhs) const {
+    return node == rhs.node && processor == rhs.processor &&
+           direction == rhs.direction;
+  }
+
+  bool operator!=(const DFBPointerOwner &rhs) const { return !(*this == rhs); }
+};
+
+/// Reason that a per-node lifetime did not prove a quiescent handoff.
+enum class DFBQuiescenceFailureReason {
+  None,
+  MissingProtocolEffect,
+  RepeatedProtocolEffect,
+  UnsupportedControlFlow,
+  MismatchedTransaction,
+  IncompleteUseOrder,
+  UnknownPointerOwner,
+};
+
+/// Typed quiescence result retained for conflict evidence.
+struct DFBQuiescenceProof {
+  DFBQuiescenceFailureReason failure = DFBQuiescenceFailureReason::None;
+  Operation *evidence = nullptr;
+
+  bool proven() const { return failure == DFBQuiescenceFailureReason::None; }
+};
+
+/// Immutable occurrence of one logical DFB access.
+struct DFBAccessOccurrence {
+  Operation *operation = nullptr;
+  DFBProtocolEffect effect = DFBProtocolEffect::OpaqueAccess;
+  LaunchNodeDomain launchDomain;
+  Operation *unanalyzableDomainOperation = nullptr;
+};
+
+/// Immutable lifetime and hardware-state facts for one launched node.
+struct DFBPerNodeLifetime {
+  LaunchNodeCoord node;
+  SmallVector<unsigned> occurrenceIndices;
+  SmallVector<Operation *> earliestOperations;
+  SmallVector<Operation *> terminalOperations;
+  std::optional<int64_t> transactionTileCount;
+  std::optional<DFBPointerOwner> writePointerOwner;
+  std::optional<DFBPointerOwner> readPointerOwner;
+  DFBQuiescenceProof quiescence;
+};
+
+/// Immutable protocol and per-node lifetime facts for one logical DFB.
 struct DFBLogicalLifecycle {
   int64_t logicalId = 0;
   Type type;
-  func::FuncOp producerKernel;
-  func::FuncOp consumerKernel;
   bool compilerCreated = false;
-
   SmallVector<BindCBOp> declarations;
-  SmallVector<Operation *> reserves;
-  SmallVector<Operation *> pushes;
-  SmallVector<Operation *> waits;
-  SmallVector<Operation *> pops;
-  SmallVector<Operation *> runtimeUses;
-
-  std::optional<int64_t> transactionTileCount;
-  SmallVector<unsigned> earliestEvents;
-  SmallVector<unsigned> terminalEvents;
+  SmallVector<DFBAccessOccurrence> accesses;
+  LaunchNodeDomain launchDomain;
+  SmallVector<DFBPerNodeLifetime, 0> nodeLifetimes;
   bool bounded = false;
+
+  /// Returns the lifetime for `node`, or null when the DFB is inactive there.
+  const DFBPerNodeLifetime *findNodeLifetime(LaunchNodeCoord node) const;
 };
 
-/// Builds cross-kernel happens-before facts for logical DFB lifetimes.
-///
-/// Each top-level kernel operation receives entry and completion events.
-/// Program order and matched push-to-wait protocol edges establish the event
-/// relation. The analysis supports any number of kernel sequences.
+/// Builds per-node cross-kernel happens-before and DFB quiescence facts.
 class DFBConcurrentKernelLivenessAnalysis {
 public:
   DFBConcurrentKernelLivenessAnalysis(Operation *operation,
                                       AnalysisManager &analysisManager);
 
-  /// Invalidates the result when its logical-identity dependency is invalid.
   bool isInvalidated(const AnalysisManager::PreservedAnalyses &analyses) {
     return !analyses.isPreserved<DFBConcurrentKernelLivenessAnalysis>() ||
            !analyses.isPreserved<DFBLogicalIdentityAnalysis>();
   }
 
-  /// Returns true when the event and protocol facts satisfy input invariants.
   bool succeeded() const { return errorMessage.empty(); }
-
-  /// Returns the diagnostic message recorded for a failed analysis.
   StringRef getErrorMessage() const { return errorMessage; }
-
-  /// Returns the operation to which the analysis diagnostic should attach.
   Operation *getErrorOperation() const { return errorOperation; }
 
-  /// Returns protocol and lifetime facts in module declaration order.
   ArrayRef<DFBLogicalLifecycle> getLogicalDFBLifecycles() const {
     return logicalDFBs;
   }
 
-  /// Returns true when one indexed lifecycle ends before the other begins.
-  ///
-  /// Both indices refer to the array returned by `getLogicalDFBLifecycles()`.
-  bool isOrderedBefore(unsigned beforeIndex, unsigned afterIndex) const;
+  ArrayRef<LaunchNodeCoord> getLaunchNodes() const { return launchNodes; }
+
+  /// Returns true when one indexed lifetime ends before another on `node`.
+  bool isOrderedBefore(unsigned beforeIndex, unsigned afterIndex,
+                       LaunchNodeCoord node) const;
 
 private:
   void analyze(Operation *operation,
                const DFBLogicalIdentityAnalysis &logicalIdentityAnalysis);
 
   SmallVector<DFBLogicalLifecycle, 0> logicalDFBs;
-  SmallVector<llvm::BitVector> orderedBefore;
+  SmallVector<LaunchNodeCoord> launchNodes;
+  SmallVector<SmallVector<llvm::BitVector>> orderedBeforeByNode;
   Operation *errorOperation = nullptr;
   std::string errorMessage;
 };

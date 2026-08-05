@@ -47,6 +47,33 @@ inline mlir::func::FuncOp getEnclosingKernelThread(mlir::Operation *op) {
   return nullptr;
 }
 
+/// Return the TTKernel thread type attached to `func`.
+///
+/// The helper accepts both the TTL attribute used before conversion and the
+/// TTKernel attribute used after conversion because analysis utilities may run
+/// on either side of the attr rewrite.
+inline std::optional<mlir::tt::ttkernel::ThreadType>
+getKernelThreadType(mlir::func::FuncOp func) {
+  if (!func) {
+    return std::nullopt;
+  }
+  if (auto attr = func->getAttrOfType<mlir::tt::ttkernel::ThreadTypeAttr>(
+          mlir::tt::ttkernel::ThreadTypeAttr::name)) {
+    return attr.getValue();
+  }
+  if (auto attr = func->getAttrOfType<mlir::tt::ttkernel::ThreadTypeAttr>(
+          kKernelThreadAttrName)) {
+    return attr.getValue();
+  }
+  return std::nullopt;
+}
+
+/// Return true if `op` belongs to a NOC kernel thread.
+inline bool isNocKernelThread(mlir::Operation *op) {
+  return getKernelThreadType(op->getParentOfType<mlir::func::FuncOp>()) ==
+         mlir::tt::ttkernel::ThreadType::Noc;
+}
+
 /// Trace through unrealized conversion casts to the original value
 /// (cycle-safe).
 inline mlir::Value traceUnrealizedCasts(mlir::Value value) {
@@ -105,6 +132,23 @@ inline mlir::tt::ttl::CBReserveOp findCBReserveForPipeReceive(mlir::Value dst) {
   return mlir::dyn_cast_or_null<CBReserveOp>(findCBAcquireOp(dst));
 }
 
+/// Returns the DFB declaration reached through unrealized conversion casts.
+///
+/// Returns a null operation when `dfb` does not resolve to `ttl.bind_cb`.
+inline BindCBOp getDFBDeclaration(mlir::Value dfb) {
+  return traceUnrealizedCasts(dfb).getDefiningOp<BindCBOp>();
+}
+
+/// Returns true when a direct DFB operand may access physical storage.
+///
+/// Callers first identify a DFB operand. Unknown operations conservatively
+/// access storage; only operations with defined identity-only semantics are
+/// excluded.
+inline bool mayAccessDFBStorage(mlir::Operation *operation) {
+  return !mlir::isa<AttachCBOp, GetDfbIdOp, mlir::UnrealizedConversionCastOp>(
+      operation);
+}
+
 /// Resolve the CB index attached to `cb`, accepting either the pre-conversion
 /// BindCBOp or the post-conversion GetCompileArgValOp.
 inline std::optional<int64_t> getCBIndex(mlir::Value cb) {
@@ -123,9 +167,31 @@ inline std::optional<int64_t> getCBIndex(mlir::Value cb) {
 /// Returns failure when `cb` does not resolve to a declaration with `dfb_id`.
 FailureOr<int64_t> getDFBId(mlir::Value cb);
 
+/// Selects the identity contract diagnosed by verifyDFBOperandIdentities.
+enum class DFBIdentityRequirement {
+  /// The caller's analysis can resolve logical identity before finalization.
+  Logical,
+  /// The declaration must contain its finalized `dfb_id` attribute.
+  Finalized
+};
+
+/// Verifies the DFB operands selected by `operationFilter` with one resolver.
+///
+/// The caller defines which operations its analysis consumes and supplies the
+/// identity resolver appropriate to its pipeline position. Centralizing the
+/// operand walk prevents analyses from selecting different DFB operands when
+/// a recognized operation gains another operand.
+LogicalResult verifyDFBOperandIdentities(
+    ModuleOp moduleOp, StringRef consumerPass,
+    llvm::function_ref<bool(Operation *)> operationFilter,
+    llvm::function_ref<FailureOr<int64_t>(Value)> identityResolver,
+    StringRef operandDescription, DFBIdentityRequirement requirement);
+
 /// Verifies that DFB finalization completed and every logical ID is resolvable.
 ///
-/// Passes that consume logical DFB IDs call this before reading any ID.
+/// Requires allocation metadata, a `dfb_id` on every declaration, and a
+/// resolvable declaration for every DFB lifecycle operand. `consumerPass` is
+/// included in diagnostics so the required pipeline ordering is explicit.
 LogicalResult verifyResolvedDFBIdentities(ModuleOp moduleOp,
                                           StringRef consumerPass);
 
@@ -195,6 +261,18 @@ inline mlir::Value getAttachedCB(mlir::Value tensor) {
   }
 
   return mlir::Value();
+}
+
+/// Returns true when `op` receives from a pipe into DFB-backed storage.
+inline bool isPipeReceiveCopy(CopyOp op) {
+  return mlir::isa<PipeType>(op.getSrc().getType()) &&
+         getAttachedCB(op.getDst());
+}
+
+/// Returns true when `op` sends from a DFB into a pipe.
+inline bool isPipeSendCopy(CopyOp op) {
+  return mlir::isa<CircularBufferType>(op.getSrc().getType()) &&
+         mlir::isa<PipeType>(op.getDst().getType());
 }
 
 /// Normalize a Python-style dim (allowing negative indices) against `rank`

@@ -11,6 +11,10 @@
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=SUBTILE
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=RANK3
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=NESTED
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefixes=COMPACT-GAP,COMPACT-NOZERO
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false})' | FileCheck %s --check-prefixes=COMPACT-GAP,COMPACT-NOZERO
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=PAGE-TYPES
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)' | FileCheck %s --check-prefix=SCALAR
 
 // -----
 
@@ -405,6 +409,76 @@ func.func @rank_three_num_tiles()
                 ttl.base_cta_index = 1 : i32, ttl.crta_indices = []} {
   %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
       : !ttl.cb<[2, 2, 2], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
+
+// -----
+
+// Sparse frontend indices are compacted because physical allocation does not
+// inherit logical DFB numbering.
+
+// COMPACT-GAP: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32, page_size = 2048 : i32}, {block_count = 2 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<32x32, f32>, num_tiles = 1 : i32, page_size = 4096 : i32}]}
+// COMPACT-GAP-LABEL: func.func @compact_middle_gap
+// COMPACT-GAP-SAME: ttl.base_cta_index = 2 : i32
+// COMPACT-GAP-DAG: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+// COMPACT-GAP-DAG: ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 2 : index}
+func.func @compact_middle_gap()
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                ttl.base_cta_index = 3 : i32, ttl.crta_indices = []} {
+  %first = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %third = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  return
+}
+
+// -----
+
+// A user range that starts above zero receives the same compaction.
+
+// COMPACT-NOZERO: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bfp_bf8>, num_tiles = 1 : i32, page_size = 1088 : i32}, {block_count = 2 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32, page_size = 2048 : i32}]}
+// COMPACT-NOZERO-LABEL: func.func @compact_missing_zero
+// COMPACT-NOZERO-SAME: ttl.base_cta_index = 2 : i32
+// COMPACT-NOZERO-DAG: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 1 : index}
+// COMPACT-NOZERO-DAG: ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 2 : index}
+func.func @compact_missing_zero()
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                ttl.base_cta_index = 3 : i32, ttl.crta_indices = []} {
+  %second = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bfp_bf8>, 2>
+  %third = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
+
+// -----
+
+// Finalization derives page size from each exact tile element type.
+
+// PAGE-TYPES: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, f32>, num_tiles = 1 : i32, page_size = 4096 : i32}, {block_count = 2 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<32x32, bfp_bf8>, num_tiles = 1 : i32, page_size = 1088 : i32}]}
+// PAGE-TYPES-LABEL: func.func @tile_page_sizes
+func.func @tile_page_sizes()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+  %f32 = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %bfp_bf8 = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bfp_bf8>, 2>
+  return
+}
+
+// -----
+
+// Scalar DFBs use one scalar element per hardware page and do not imply tile
+// dimensions.
+
+// SCALAR: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, element_type = f32, num_tiles = 128 : i32, page_size = 4 : i32}]}
+// SCALAR-LABEL: func.func @scalar_page_size
+func.func @scalar_page_size()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                ttl.base_cta_index = 1 : i32, ttl.crta_indices = []} {
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+      : !ttl.cb<[128], f32, 2>
   return
 }
 

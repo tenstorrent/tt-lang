@@ -5,7 +5,7 @@
 """Dataflow buffer (DFB) operations for inter-thread communication."""
 
 from dataclasses import dataclass
-from typing import Any, Tuple
+from typing import Any, Optional, Tuple
 
 from ttl.ir import *
 
@@ -113,8 +113,6 @@ class DataflowBuffer:
         tensor = ttl.cb_wait(tensor_type, ast_self)
         return ttl.attach_cb(tensor.type, tensor, ast_self)
 
-    # TODO(#645): Add an accumulation_strategy keyword after source-level
-    # strategy hints have defined precedence and legality diagnostics.
     def reserve(ast_self: "DataflowBuffer") -> "TensorBlock":
         """
         Reserve space in the dataflow buffer (producer acquire).
@@ -147,6 +145,7 @@ class PhysicalDFBConfig:
     The final DFB index assignment determines this configuration. It is
     independent of whether the allocation serves user-declared,
     compiler-created, or multiple non-overlapping logical DFBs.
+    `tile` is present only when the DFB element type is a TTCore tile.
     """
 
     dfb_index: int
@@ -154,7 +153,7 @@ class PhysicalDFBConfig:
     data_format: str  # e.g., "bfloat16", "float32", "float16"
     block_count: int
     page_size: int
-    tile: Tuple[int, int] = (32, 32)
+    tile: Optional[Tuple[int, int]]
 
 
 def make_dataflow_buffer_like(

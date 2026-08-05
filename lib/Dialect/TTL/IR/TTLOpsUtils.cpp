@@ -10,8 +10,7 @@
 namespace mlir::tt::ttl {
 
 FailureOr<int64_t> getDFBId(Value cb) {
-  cb = traceUnrealizedCasts(cb);
-  auto bindOp = cb.getDefiningOp<BindCBOp>();
+  auto bindOp = getDFBDeclaration(cb);
   if (!bindOp) {
     return failure();
   }
@@ -20,6 +19,36 @@ FailureOr<int64_t> getDFBId(Value cb) {
     return failure();
   }
   return dfbId->getSExtValue();
+}
+
+LogicalResult verifyDFBOperandIdentities(
+    ModuleOp moduleOp, StringRef consumerPass,
+    llvm::function_ref<bool(Operation *)> operationFilter,
+    llvm::function_ref<FailureOr<int64_t>(Value)> identityResolver,
+    StringRef operandDescription, DFBIdentityRequirement requirement) {
+  WalkResult result = moduleOp.walk([&](Operation *operation) {
+    if (!operationFilter(operation)) {
+      return WalkResult::advance();
+    }
+    for (Value operand : operation->getOperands()) {
+      if (!isa<CircularBufferType>(operand.getType())) {
+        continue;
+      }
+      if (succeeded(identityResolver(operand))) {
+        continue;
+      }
+      InFlightDiagnostic diagnostic = operation->emitOpError();
+      diagnostic << "`" << consumerPass << "` requires every "
+                 << operandDescription
+                 << " operand to resolve to `ttl.bind_cb`";
+      if (requirement == DFBIdentityRequirement::Finalized) {
+        diagnostic << " with `dfb_id` after finalization";
+      }
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return failure(result.wasInterrupted());
 }
 
 LogicalResult verifyResolvedDFBIdentities(ModuleOp moduleOp,
@@ -45,21 +74,6 @@ LogicalResult verifyResolvedDFBIdentities(ModuleOp moduleOp,
           return WalkResult::interrupt();
         }
 
-        if (!isa<CBReserveOp, CBPushOp, CBWaitOp, CBPopOp>(nestedOperation)) {
-          return WalkResult::advance();
-        }
-        for (Value operand : nestedOperation->getOperands()) {
-          if (!isa<CircularBufferType>(operand.getType())) {
-            continue;
-          }
-          if (failed(getDFBId(operand))) {
-            nestedOperation->emitOpError()
-                << "`" << consumerPass
-                << "` requires every DFB lifecycle operand to resolve to "
-                   "`ttl.bind_cb` with `dfb_id` after finalization";
-            return WalkResult::interrupt();
-          }
-        }
         return WalkResult::advance();
       });
 
@@ -73,7 +87,15 @@ LogicalResult verifyResolvedDFBIdentities(ModuleOp moduleOp,
            "`ttl-finalize-dfb-indices` first";
     return failure();
   }
-  return failure(result.wasInterrupted());
+  if (result.wasInterrupted()) {
+    return failure();
+  }
+  return verifyDFBOperandIdentities(
+      moduleOp, consumerPass,
+      [](Operation *operation) {
+        return isa<CBReserveOp, CBPushOp, CBWaitOp, CBPopOp>(operation);
+      },
+      getDFBId, "DFB lifecycle", DFBIdentityRequirement::Finalized);
 }
 
 std::optional<BcastType> getTileBroadcastType(ArrayRef<int64_t> dims,
@@ -467,23 +489,6 @@ bool sharePackCB(scf::ForOp loopA, scf::ForOp loopB) {
     }
   }
   return false;
-}
-
-//===----------------------------------------------------------------------===//
-// Compiler-allocated DFB utilities
-//===----------------------------------------------------------------------===//
-
-int32_t getNextAvailableDFBIndex(Operation *scopeOp) {
-  int32_t maxIndex = -1;
-
-  scopeOp->walk([&](BindCBOp bindOp) {
-    int64_t idx = bindOp.getCbIndex().getSExtValue();
-    if (static_cast<int32_t>(idx) > maxIndex) {
-      maxIndex = static_cast<int32_t>(idx);
-    }
-  });
-
-  return maxIndex + 1;
 }
 
 } // namespace mlir::tt::ttl

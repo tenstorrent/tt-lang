@@ -86,6 +86,8 @@ static StringRef stringifyReason(IntermediateDFBReason reason) {
     return "expression-input-may-be-released";
   case IntermediateDFBReason::ComputeOpInputMayBeReleased:
     return "compute-op-input-may-be-released";
+  case IntermediateDFBReason::OutputStoresInDifferentBlocks:
+    return "output-stores-in-different-blocks";
   case IntermediateDFBReason::MultipleOutputTransactions:
     return "multiple-output-transactions";
   case IntermediateDFBReason::ComputeOpWouldNotDominateUse:
@@ -127,6 +129,10 @@ struct TTLPrintComputeOpCreationPlansPass
 
   void runOnOperation() override {
     func::FuncOp kernel = getOperation();
+    if (kernel.isExternal()) {
+      return;
+    }
+
     PlanningResult<std::unique_ptr<DFBValueLifetimeAnalysis>> plannedLifetimes =
         DFBValueLifetimeAnalysis::create(kernel);
     if (plannedLifetimes.isInvalidIR()) {

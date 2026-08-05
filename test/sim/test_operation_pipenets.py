@@ -85,8 +85,8 @@ class TestValidate:
             graph.validate()
 
     def test_overlapping_multicast_destinations_allowed(self):
-        # Overlapping multicast destinations are supported via per-PipeNet
-        # receiver counters; validation no longer rejects them.
+        # Overlapping multicast destinations are supported because each pipe
+        # endpoint relation has independent receiver synchronization state.
         graph = OperationPipeNets()
         graph.add_pipe_net(
             [

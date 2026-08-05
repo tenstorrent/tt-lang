@@ -81,8 +81,9 @@ struct TTLFinalizeDFBIndicesPass
 
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
-    DFBPhysicalAllocationPlanner allocationPlanner(moduleOp, reuseUserDFBs,
-                                                   getAnalysisManager());
+    DFBPhysicalAllocationPlanner allocationPlanner(
+        moduleOp, reuseUserDFBs, exactColoringSearchStateLimit,
+        getAnalysisManager());
     if (!allocationPlanner.succeeded()) {
       Operation *errorOperation = allocationPlanner.getErrorOperation();
       if (!errorOperation) {

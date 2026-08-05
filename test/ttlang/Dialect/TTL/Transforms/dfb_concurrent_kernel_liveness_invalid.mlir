@@ -24,7 +24,7 @@ func.func @type_mismatch_consumer()
 module {
   func.func @producer_only()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
-    // expected-error @below {{'ttl.bind_cb' op compiler-allocated DFB has a partial lifecycle: missing ttl.cb_wait}}
+    // expected-error @below {{'ttl.bind_cb' op compiler-allocated logical DFB has a partial lifecycle: missing ttl.cb_wait}}
     %dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
         {ttl.compiler_allocated}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -39,13 +39,115 @@ module {
 
 // -----
 
+// A cast does not hide a partial compiler-created lifecycle from validation.
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @cast_partial_lifecycle()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{'ttl.bind_cb' op compiler-allocated logical DFB has a partial lifecycle: missing ttl.cb_wait}}
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {ttl.compiler_allocated}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %cast = builtin.unrealized_conversion_cast %dfb
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        to !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %reserved = ttl.cb_reserve %cast
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %cast : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    return
+  }
+}
+
+// -----
+
+// A compiler-created DFB accessed only by a custom function is used and must
+// provide a visible lifecycle.
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @custom_function_without_lifecycle()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{'ttl.bind_cb' op compiler-allocated logical DFB has a partial lifecycle: missing ttl.cb_reserve}}
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {ttl.compiler_allocated}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.opaque_call "custom_consume" (%dfb) {header = "custom_consume.hpp"}
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> ()
+    return
+  }
+}
+
+// -----
+
+// A physical index passed to a custom function must have a direct DFB
+// dependency operand on the same call.
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @custom_function_missing_dependency()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %dfb_index = ttl.get_dfb_id %dfb
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-error @below {{'ttl.opaque_call' op custom function consumes the physical index for logical DFB 0 without listing that DFB as a dependency operand}}
+    ttl.opaque_call "custom_consume" (%dfb_index)
+        {header = "custom_consume.hpp"} : (i32) -> ()
+    return
+  }
+}
+
+// -----
+
+// Pure integer operations cannot hide a physical DFB index from the custom
+// function dependency check.
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @custom_function_laundered_dependency()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %dfb_index = ttl.get_dfb_id %dfb
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %zero = arith.constant 0 : i32
+    %laundered = arith.addi %dfb_index, %zero : i32
+    // expected-error @below {{'ttl.opaque_call' op custom function consumes the physical index for logical DFB 0 without listing that DFB as a dependency operand}}
+    ttl.opaque_call "custom_consume" (%laundered)
+        {header = "custom_consume.hpp"} : (i32) -> ()
+    return
+  }
+}
+
+// -----
+
+// Passing a physical DFB index across a function boundary is an unanalyzable
+// escape even when the local callee would return the value unchanged.
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func private @forward_index(i32) -> i32
+
+  func.func @function_forwarded_dependency()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %dfb_index = ttl.get_dfb_id %dfb
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-error @below {{'func.call' op physical index for logical DFB 0 escapes through an unsupported operation}}
+    %forwarded = func.call @forward_index(%dfb_index) : (i32) -> i32
+    ttl.opaque_call "custom_consume" (%forwarded)
+        {header = "custom_consume.hpp"} : (i32) -> ()
+    return
+  }
+}
+
+// -----
+
 // Default-mode allocation rejects a compiler-created DFB without a producer
 // acquire.
 
 module {
   func.func @consumer_only()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
-    // expected-error @below {{'ttl.bind_cb' op compiler-allocated DFB has a partial lifecycle: missing ttl.cb_reserve}}
+    // expected-error @below {{'ttl.bind_cb' op compiler-allocated logical DFB has a partial lifecycle: missing ttl.cb_reserve}}
     %dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
         {ttl.compiler_allocated}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -63,7 +165,7 @@ module {
 // An unbounded lifetime conflicts with every other lifetime. Thirty-three
 // unbounded logical DFBs must be rejected rather than unsafely compacted.
 
-// expected-error @below {{DFB allocation needs 33 physical indices but hardware supports at most 32}}
+// expected-error @below {{DFB allocation needs 33 unspilled physical indices but hardware supports at most 32}}
 module {
   func.func @unbounded_over_capacity()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>,

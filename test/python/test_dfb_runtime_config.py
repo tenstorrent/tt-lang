@@ -20,6 +20,8 @@ def _entry(
     block_count=2,
     page_size=2048,
 ):
+    """Build one textual physical-allocation metadata entry."""
+
     return (
         f"{{dfb_index = {dfb_index} : i32, num_tiles = {num_tiles} : i32, "
         f"element_type = {element_type}, block_count = {block_count} : i32, "
@@ -28,6 +30,8 @@ def _entry(
 
 
 def _module(allocations=None):
+    """Parse a module with optional physical-allocation metadata."""
+
     if allocations is None:
         return Module.parse("module {}")
     entries = ", ".join(allocations)
@@ -50,8 +54,8 @@ def test_complete_physical_allocations_are_sorted():
         )
 
         assert _resolve_dfb_configs(module) == [
-            PhysicalDFBConfig(0, 2, "bfloat16", 2, 2048),
-            PhysicalDFBConfig(1, 4, "float32", 3, 4096),
+            PhysicalDFBConfig(0, 2, "bfloat16", 2, 2048, None),
+            PhysicalDFBConfig(1, 4, "float32", 3, 4096, None),
         ]
 
 
