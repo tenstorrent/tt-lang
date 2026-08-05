@@ -318,7 +318,9 @@ def make_ksplit_resource_allocation_kernel(grid_dim):
 # FINAL-NOT: ttl.pipe_sram_scratch_bytes
 # FINAL-NOT: ttl.pipe_global_semaphore_count
 # FINAL: func.func @post_receives_and_send
-# FINAL-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 0, 1>
+# The output DFB occupies physical index 1 while both receiver DFBs are live, so
+# computed addressing uses receiver indices 0 and 2.
+# FINAL-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 0, 2>
 #
 # CHECK-CPP-LABEL: === post_receives_and_send kernel written to {{.*}} ===
 # CHECK-CPP-DAG: {{(size_t|int32_t)}} [[READY:v[0-9]+]] = 6;
