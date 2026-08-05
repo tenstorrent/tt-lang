@@ -324,10 +324,12 @@ def make_ksplit_resource_allocation_kernel(grid_dim):
 #
 # CHECK-CPP-LABEL: === post_receives_and_send kernel written to {{.*}} ===
 # CHECK-CPP-DAG: {{(size_t|int32_t)}} [[READY:v[0-9]+]] = 6;
+# Receiver DFB bases are loop-invariant and may be materialized before the
+# synchronization sequence.
+# CHECK-CPP-DAG: get_common_arg_val<uint32_t>
 # CHECK-CPP: get_semaphore([[READY]])
 # CHECK-CPP: reinterpret_cast<tt_l1_ptr uint32_t*>
 # CHECK-CPP: experimental::semaphore_wait
-# CHECK-CPP: get_common_arg_val<uint32_t>
 # CHECK-CPP: noc0.async_write(
 # CHECK-CPP: noc_semaphore_inc
 #
