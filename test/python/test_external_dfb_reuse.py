@@ -38,8 +38,15 @@ F32_EXTERNAL_MULTIPLY_RTOL = 5e-3
 F32_EXTERNAL_MULTIPLY_ATOL = 1e-4
 F32_EXTERNAL_COMPOSITION_RTOL = 2e-3
 F32_EXTERNAL_COMPOSITION_ATOL = 5e-4
-EXTERNAL_MULTIPLY_HEADER = os.path.join(
-    os.path.dirname(__file__), "include", "external_eltwise_mul.hpp"
+EXTERNAL_MULTIPLY_HEADER = os.path.abspath(
+    os.path.join(
+        os.path.dirname(__file__),
+        "..",
+        "..",
+        "examples",
+        "include",
+        "external_eltwise_mul.hpp",
+    )
 )
 
 

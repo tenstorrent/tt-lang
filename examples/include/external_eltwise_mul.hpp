@@ -2,8 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// External compute operation used to validate direct DFB operands. The
-// external function owns the compute-thread DFB protocol.
+// Direct external functions receive physical DFB indices, so this function
+// owns the compute-thread DFB protocol for its operands.
 #pragma once
 
 #if defined(COMPILE_FOR_TRISC)

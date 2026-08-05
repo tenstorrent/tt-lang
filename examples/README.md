@@ -34,6 +34,7 @@ python examples/<example_name>.py
 | `eltwise_add.py` | Element-wise addition of two tensors | ✓ | ✓ |
 | `eltwise_pipe.py` | Fused element-wise ops using pipe multicasting | ✓ | ✗ |
 | `eltwise_pipe_node3.py` | Variant of eltwise_pipe with different node config | ✓ | ✗ |
+| `external_dfb_reuse.py` | DFB reuse around a direct external function | ✗ | ✓ |
 
 ### Broadcasting
 
