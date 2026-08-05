@@ -40,10 +40,19 @@ PipeTransportPlan::getStreamForTransfer(PipeTransferNodeId transferNode) const {
 
 const PipeTransportStream &
 PipeTransportPlan::getStreamForOperation(Operation *operation) const {
-  auto streamIt = streamByOperation.find(operation);
-  assert(streamIt != streamByOperation.end() &&
-         "pipe protocol operation has no transport stream");
-  return getStream(streamIt->second);
+  ArrayRef<PipeTransportStreamId> streamIds =
+      getStreamIdsForOperation(operation);
+  assert(streamIds.size() == 1 &&
+         "static pipe protocol operation must have one transport stream");
+  return getStream(streamIds.front());
+}
+
+ArrayRef<PipeTransportStreamId>
+PipeTransportPlan::getStreamIdsForOperation(Operation *operation) const {
+  auto streamIt = streamsByOperation.find(operation);
+  return streamIt == streamsByOperation.end()
+             ? ArrayRef<PipeTransportStreamId>{}
+             : ArrayRef<PipeTransportStreamId>{streamIt->second};
 }
 
 bool PipeTransportPlan::ownsDFBLifecycle(Operation *operation) const {
@@ -76,6 +85,8 @@ stringifySynchronizationProtocol(PipeSynchronizationProtocol protocol) {
     return "receiver_post";
   case PipeSynchronizationProtocol::Capacity:
     return "capacity";
+  case PipeSynchronizationProtocol::Fabric:
+    return "fabric";
   }
   llvm_unreachable("unknown pipe synchronization protocol");
 }
@@ -484,10 +495,11 @@ FailureOr<PipeTransportPlan> buildPipeTransportPlan(
            "PipeGraph transfer belongs to multiple transport streams");
 
     auto recordStreamOperation = [&](Operation *operation) {
-      auto [streamIt, inserted] =
-          plan.streamByOperation.try_emplace(operation, stream.id);
-      (void)streamIt;
-      assert(inserted && "pipe protocol operation belongs to multiple streams");
+      SmallVector<PipeTransportStreamId, 1> &streamIds =
+          plan.streamsByOperation[operation];
+      assert(!llvm::is_contained(streamIds, stream.id) &&
+             "pipe protocol operation repeats a transport stream");
+      streamIds.push_back(stream.id);
     };
     recordStreamOperation(transferNode.sendOp);
     for (Operation *postOperation : transferNode.receiverPostOps) {

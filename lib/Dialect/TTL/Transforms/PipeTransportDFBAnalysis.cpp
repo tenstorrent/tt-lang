@@ -75,6 +75,17 @@ static bool hasExpectedTileCount(Operation *operation, int64_t expectedTiles,
                   : defaultTiles == expectedTiles;
 }
 
+/// Return the unique static transfer represented by a protocol operation.
+static const PipeTransferNode *
+getUniquePipeTransferNode(Operation *operation, const PipeGraph &pipeGraph) {
+  ArrayRef<PipeTransferNodeId> transferNodeIds =
+      pipeGraph.getPipeTransferNodeIdsForProtocolOp(operation);
+  if (transferNodeIds.size() != 1) {
+    return nullptr;
+  }
+  return &pipeGraph.getPipeTransferNode(transferNodeIds.front());
+}
+
 } // namespace
 
 bool hasOnlyPipeTransportLoopUses(scf::ForOp loop, Value dfb) {
@@ -124,8 +135,7 @@ bool hasPrivatePipeTransportDFBViews(const PipeTransportDFBUse &dfbUse,
   }
 
   Operation *user = reservedViewUsers.front();
-  const PipeTransferNode *transfer =
-      pipeGraph.getPipeTransferNodeForProtocolOp(user);
+  const PipeTransferNode *transfer = getUniquePipeTransferNode(user, pipeGraph);
   return isa<PipeTransferPostOp>(user) && transfer &&
          transfer->id == dfbUse.transferNode;
 }
@@ -221,7 +231,7 @@ analyzePipeTransportDFBUse(scf::ForOp loop, Value dfb,
     }
     if (role == PipeTransportDFBRole::Source) {
       const PipeTransferNode *transfer =
-          pipeGraph.getPipeTransferNodeForProtocolOp(operation);
+          getUniquePipeTransferNode(operation, pipeGraph);
       if (transfer && transfer->id == transferNode &&
           isa<PipeTransferSendOp>(operation)) {
         continue;

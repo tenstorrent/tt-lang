@@ -47,8 +47,8 @@ func.func @gather_receiver()
 // CHECK-LABEL: func.func @gather_senders
 // CHECK: scf.for %[[INDEX:.*]] =
 // CHECK: ttkernel.experimental.constant_table_lookup %[[INDEX]], [6, 6, 6, 6, 6, 7] : index
-// CHECK: ttkernel.noc_async_write %
 // CHECK: ttkernel.experimental.constant_table_lookup %[[INDEX]], [0, 2, 3, 4, 5, 1] : index
+// CHECK: ttkernel.noc_async_write %
 func.func @gather_senders()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
