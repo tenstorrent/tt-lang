@@ -36,6 +36,24 @@ void populateTTLModule(nb::module_ &m) {
       nb::str(kPipeComputedAddressDFBIndicesAttrName.data(),
               kPipeComputedAddressDFBIndicesAttrName.size());
 
+  nb::enum_<ExternalTemplateArgKind>(m, "ExternalTemplateArgKind")
+      .value("SignedInteger", ExternalTemplateArgKind::SignedInteger)
+      .value("Boolean", ExternalTemplateArgKind::Boolean)
+      .value("UnsignedInteger", ExternalTemplateArgKind::UnsignedInteger)
+      .value("DFBIndex", ExternalTemplateArgKind::DFBIndex)
+      .value("DFBDescriptor", ExternalTemplateArgKind::DFBDescriptor);
+
+  tt_attribute_class<ExternalTemplateArgAttr>(m, "ExternalTemplateArgAttr")
+      .def_static(
+          "get",
+          [](MlirContext context, ExternalTemplateArgKind kind, int64_t value) {
+            return wrap(
+                ExternalTemplateArgAttr::get(unwrap(context), kind, value));
+          },
+          nb::arg("context"), nb::arg("kind"), nb::arg("value"))
+      .def_prop_ro("kind", &ExternalTemplateArgAttr::getKind)
+      .def_prop_ro("value", &ExternalTemplateArgAttr::getValue);
+
   //===--------------------------------------------------------------------===//
   // SliceAttr
   //===--------------------------------------------------------------------===//

@@ -4809,7 +4809,7 @@ def TTKernel_GetDfbIdOp : TTKernel_Op<"get_dfb_id", [Pure]> {
 }
 
 def TTKernel_OpaqueCallOp : TTKernel_Op<"opaque_call",
-    [MemoryEffects<[MemRead, MemWrite]>, AttrSizedOperandSegments]> {
+    [MemoryEffects<[MemRead, MemWrite]>]> {
     let summary = "Call an external C/C++ function declared in a user header.";
     let description = [{
       Emits a call to an opaque external C/C++ function whose declaration is
@@ -4820,14 +4820,18 @@ def TTKernel_OpaqueCallOp : TTKernel_Op<"opaque_call",
       pattern in an integer register. The ttkernel-lower-scalar-fp-types
       pass performs the float-to-bits rewrite for float constants.
 
-      The `template_arg_vals` operands are i32 SSA values that become C++
-      template arguments on the emitted call.  They are resolved to integer
-      literals at EmitC lowering time.
+      The ordered `template_args` attributes become C++ template arguments.
+      Signed integer, boolean, and unsigned 32-bit attributes resolve to
+      literals. DFB descriptor attributes resolve to `ttlang::DFBDescriptor`
+      types. Compile-time metadata is stored as attributes because it has no
+      runtime SSA identity at the TTKernel level.
+
+      `unsigned_arg_indices` preserves unsigned address semantics when an
+      earlier signless i32 value reaches the C++ call boundary.
 
       Example:
       ```
-      %c1 = arith.constant 1 : i32
-      ttkernel.opaque_call "my_func" template_args(%c1)
+      ttkernel.opaque_call "my_func" template_args [1 : si32]
           (%a, %b) {header = "my_header.hpp"} : (f32, f32) -> ()
       ```
     }];
@@ -4835,11 +4839,12 @@ def TTKernel_OpaqueCallOp : TTKernel_Op<"opaque_call",
       StrAttr:$callee,
       StrAttr:$header,
       Variadic<AnyType>:$arg_operands,
-      Variadic<I32>:$template_arg_vals
+      OptionalAttr<ArrayAttr>:$template_args,
+      OptionalAttr<DenseI32ArrayAttr>:$unsigned_arg_indices
     );
     let results = (outs Variadic<AnyType>);
     let assemblyFormat = [{
-      $callee (`template_args` `(` $template_arg_vals^ `)`)?
+      $callee (`template_args` $template_args^)?
       `(` $arg_operands `)` attr-dict `:`
       functional-type($arg_operands, results)
     }];

@@ -2,10 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// External compute shim that accepts a semaphore address as a template arg.
-// The semaphore value is intentionally unused in the kernel body; this test
-// validates frontend/lowering handling of real ttnn GlobalSemaphore objects
-// passed through ttl.call_extern_func template_args.
+// Accept the same semaphore capture in both argument forms so the test detects
+// signature drift without requiring synchronization in the compute body.
 
 #pragma once
 
@@ -19,10 +17,12 @@
 #endif
 
 template <uint32_t InCB, uint32_t OutCB, uint32_t SemaphoreAddr>
-void semaphore_template_negate_shim() {
+void semaphore_template_negate_shim(uint32_t, uint32_t,
+                                    uint32_t semaphore_address) {
+  static_assert(SemaphoreAddr != 0);
+  (void)semaphore_address;
 #if defined(COMPILE_FOR_TRISC)
   using namespace ckernel;
-  (void)SemaphoreAddr;
 
   unary_op_init_common(InCB, OutCB);
   copy_tile_init(InCB);
@@ -35,7 +35,5 @@ void semaphore_template_negate_shim() {
   tile_regs_wait();
   pack_tile(0, OutCB);
   tile_regs_release();
-#else
-  (void)SemaphoreAddr;
 #endif
 }

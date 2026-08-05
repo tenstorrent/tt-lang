@@ -9,6 +9,7 @@
 #include "ttlang/Dialect/TTCore/IR/Utils.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/CheckedArithmetic.h"
 
 #include <cassert>
 #include <optional>
@@ -40,19 +41,25 @@ std::optional<uint64_t> tryBudgetFromModule(ModuleOp module) {
 
 } // namespace
 
+FailureOr<uint64_t> getDFBPageSizeBytes(CircularBufferType type) {
+  return ttcore::getElementSizeBytes(type.getElementType());
+}
+
 FailureOr<uint64_t> getDFBAllocationSizeBytes(CircularBufferType type) {
   int64_t totalElements = type.getTotalElements();
   if (totalElements < 0) {
     return failure();
   }
-  Type elementType = type.getElementType();
-  uint64_t elementBytes;
-  if (auto tileType = dyn_cast<ttcore::TileType>(elementType)) {
-    elementBytes = tileType.getSizeBytes();
-  } else {
-    elementBytes = ttcore::TileType::get(elementType).getSizeBytes();
+  FailureOr<uint64_t> pageSizeBytes = getDFBPageSizeBytes(type);
+  if (failed(pageSizeBytes)) {
+    return failure();
   }
-  return static_cast<uint64_t>(totalElements) * elementBytes;
+  std::optional<uint64_t> allocationBytes = llvm::checkedMulUnsigned(
+      static_cast<uint64_t>(totalElements), *pageSizeBytes);
+  if (!allocationBytes) {
+    return failure();
+  }
+  return *allocationBytes;
 }
 
 FailureOr<bool> DFBAllocationFootprint::add(int64_t physicalIndex,

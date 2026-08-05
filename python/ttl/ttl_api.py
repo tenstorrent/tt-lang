@@ -45,15 +45,6 @@ def _ensure_ttnn():
     return ttnn
 
 
-def _is_ttnn_semaphore(value) -> bool:
-    """Return true when value looks like a ttnn semaphore object."""
-    module_name = type(value).__module__
-    return module_name in (
-        "ttnn._ttnn.global_semaphore",
-        "ttnn._ttnn.local_semaphore",
-    ) or module_name.endswith((".global_semaphore", ".local_semaphore"))
-
-
 import ttl._mlir_libs._ttlang  # Register tt-lang passes
 from ttl._mlir_libs._ttlang import ttl_ir as _ttl_ir
 from ttl.pykernel._src.utils import _cleanup_source_code
@@ -85,7 +76,7 @@ from ._src.tensor_registry import (
     register_tensor_name,
     register_tensor_source,
 )
-from ._src.ttl_ast import TTLGenericCompiler
+from ._src.ttl_ast import TTLGenericCompiler, _is_ttnn_global_semaphore
 from .dataflow_buffer import (
     CircularBuffer,
     DataflowBuffer,
@@ -1219,7 +1210,7 @@ def _collect_captures(
     def convert(name, val):
         if isinstance(val, (int, float)):
             return val
-        elif _is_ttnn_semaphore(val):
+        elif _is_ttnn_global_semaphore(val):
             return val
         elif is_ttnn_tensor(val):
             return val

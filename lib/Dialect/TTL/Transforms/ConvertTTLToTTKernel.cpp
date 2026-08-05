@@ -4,6 +4,7 @@
 
 #include "ttlang/Dialect/TTL/Passes.h" // IWYU pragma: keep
 
+#include "DFBAllocationLimits.h"
 #include "PipeGraph.h"
 #include "PipeLowering.h"
 #include "ttlang/Dialect/TTKernel/Transforms/TTKernelCleanupPatterns.h"
@@ -44,7 +45,10 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Casting.h"
+#include <cstdint>
 #include <cstdlib>
+#include <limits>
+#include <optional>
 #include <utility>
 
 namespace mlir::tt::ttl {
@@ -195,16 +199,17 @@ struct ExpandMarkedLinearizeIndex
   }
 };
 
-/// Get the function argument index for a tensor value.
-/// Returns the index if the tensor is a block argument of an entry block,
-/// otherwise returns failure. Used to map tensors to runtime args.
+/// Get the function argument index used to map a tensor to runtime arguments.
+/// A region block argument is rejected because its position is unrelated to
+/// the enclosing kernel function signature.
 static FailureOr<unsigned> getTensorFuncArgIndex(Value tensor) {
   auto blockArg = llvm::dyn_cast<BlockArgument>(tensor);
   if (!blockArg) {
     return failure();
   }
   Block *block = blockArg.getParentBlock();
-  if (!block || !block->isEntryBlock()) {
+  auto func = block ? dyn_cast<func::FuncOp>(block->getParentOp()) : nullptr;
+  if (!func || func.isDeclaration() || block != &func.getBody().front()) {
     return failure();
   }
   return blockArg.getArgNumber();
@@ -1304,14 +1309,13 @@ struct RawAddrLowering : OpConversionPattern<RawAddrOp> {
   LogicalResult
   matchAndRewrite(RawAddrOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    FailureOr<TensorAccessorInfo> accessorInfo =
-        getTensorAccessorInfo(op.getTensor(), op, rewriter);
-    if (failed(accessorInfo)) {
+    FailureOr<unsigned> argIdx = getTensorFuncArgIndex(op.getTensor());
+    if (failed(argIdx)) {
       return rewriter.notifyMatchFailure(
           op, "raw_addr operand must be a function tensor argument");
     }
-    Value bankBase = getBufferAddressFromRuntimeArg(accessorInfo->argIdx,
-                                                    op.getLoc(), rewriter);
+    Value bankBase =
+        getBufferAddressFromRuntimeArg(*argIdx, op.getLoc(), rewriter);
     rewriter.replaceOp(op, bankBase);
     return success();
   }
@@ -1327,38 +1331,68 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
   LogicalResult
   matchAndRewrite(OpaqueCallOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto loc = op.getLoc();
+    Location location = op.getLoc();
+
+    SmallVector<Attribute> templateArgs;
+    if (std::optional<ArrayAttr> sourceTemplateArgs = op.getTemplateArgs()) {
+      for (Attribute attribute : *sourceTemplateArgs) {
+        auto templateArg = cast<ExternalTemplateArgAttr>(attribute);
+        FailureOr<Attribute> convertedTemplateArg = convertTemplateArg(
+            templateArg, op.getTemplateDfbOperands(), rewriter);
+        if (failed(convertedTemplateArg)) {
+          return rewriter.notifyMatchFailure(
+              op, "cannot resolve opaque_call template argument");
+        }
+        templateArgs.push_back(*convertedTemplateArg);
+      }
+    }
+
+    SmallVector<Type> resultTypes;
+    for (Type resultType : op.getResultTypes()) {
+      Type convertedType = getTypeConverter()->convertType(resultType);
+      if (!convertedType) {
+        return rewriter.notifyMatchFailure(op, "failed to convert result type");
+      }
+      resultTypes.push_back(convertedType);
+    }
+
     SmallVector<Value> convertedArgs;
-
-    for (auto [origArg, adaptedArg] :
+    for (auto [originalArg, adaptedArg] :
          llvm::zip(op.getArgOperands(), adaptor.getArgOperands())) {
-      Type origTy = origArg.getType();
+      Type originalType = originalArg.getType();
 
-      // CB -> i32 cb index via get_compile_time_arg_val.
-      if (mlir::isa<CircularBufferType>(origTy)) {
-        auto cbIdx = getCBIndex(origArg);
-        if (!cbIdx) {
+      // The external interface uses an unsigned physical index because DFB
+      // identifiers are never negative.
+      if (mlir::isa<CircularBufferType>(originalType)) {
+        std::optional<int32_t> dfbIndex = getCBIndex(originalArg);
+        if (!dfbIndex) {
           return rewriter.notifyMatchFailure(
               op, "cannot resolve CB index for opaque_call operand");
         }
-        auto cbVal = ttk::GetCompileArgValOp::create(
-            rewriter, loc, rewriter.getI32Type(), *cbIdx);
-        convertedArgs.push_back(cbVal);
+        IntegerType unsignedI32 =
+            IntegerType::get(rewriter.getContext(), 32, IntegerType::Unsigned);
+        auto dfbIndexValue = ttk::GetCompileArgValOp::create(
+            rewriter, location, unsignedI32, *dfbIndex);
+        convertedArgs.push_back(dfbIndexValue);
         continue;
       }
 
-      // Bare tensor args default to TensorAccessor materialization.
-      if (mlir::isa<RankedTensorType>(origTy)) {
+      // TensorAccessor preserves layout metadata that a raw address omits.
+      if (mlir::isa<RankedTensorType>(originalType)) {
+        if (!isNocKernelThread(op)) {
+          return rewriter.notifyMatchFailure(
+              op, "tensor opaque_call operands require a NOC kernel thread");
+        }
         FailureOr<TensorAccessorInfo> accessorInfo =
-            getTensorAccessorInfo(origArg, op, rewriter);
+            getTensorAccessorInfo(originalArg, op, rewriter);
         if (failed(accessorInfo)) {
           return rewriter.notifyMatchFailure(
               op, "tensor opaque_call operand must be a function argument with "
                   "TTL layout encoding");
         }
-        Value bankBase =
-            getBufferAddressFromRuntimeArg(accessorInfo->argIdx, loc, rewriter);
-        Value accessor = materializeTensorAccessor(origArg, bankBase,
+        Value bankBase = getBufferAddressFromRuntimeArg(accessorInfo->argIdx,
+                                                        location, rewriter);
+        Value accessor = materializeTensorAccessor(originalArg, bankBase,
                                                    *accessorInfo, rewriter);
         convertedArgs.push_back(accessor);
         continue;
@@ -1375,24 +1409,66 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
       convertedArgs.push_back(adaptedArg);
     }
 
-    // Convert result types (unlikely for void external calls, but supported).
-    SmallVector<Type> resultTypes;
-    for (Type resTy : op.getResultTypes()) {
-      Type converted = getTypeConverter()->convertType(resTy);
-      if (!converted) {
-        return rewriter.notifyMatchFailure(op, "failed to convert result type");
-      }
-      resultTypes.push_back(converted);
+    ArrayAttr templateArgsAttr;
+    if (!templateArgs.empty()) {
+      templateArgsAttr = rewriter.getArrayAttr(templateArgs);
     }
-
-    // Template arg SSA values pass through directly (i32 -> i32).
-    SmallVector<Value> templateArgVals(adaptor.getTemplateArgVals());
-
     auto newOp = ttk::OpaqueCallOp::create(
-        rewriter, loc, resultTypes, op.getCalleeAttr(), op.getHeaderAttr(),
-        convertedArgs, templateArgVals);
+        rewriter, location, resultTypes, op.getCalleeAttr(), op.getHeaderAttr(),
+        convertedArgs, templateArgsAttr, op.getUnsignedArgIndicesAttr());
     rewriter.replaceOp(op, newOp->getResults());
     return success();
+  }
+
+private:
+  /// Resolve DFB metadata before type conversion discards block geometry.
+  static FailureOr<Attribute>
+  convertTemplateArg(ExternalTemplateArgAttr templateArg,
+                     ValueRange templateDFBs,
+                     ConversionPatternRewriter &rewriter) {
+    ExternalTemplateArgKind kind = templateArg.getKind();
+    int64_t payload = templateArg.getValue();
+    if (kind == ExternalTemplateArgKind::SignedInteger) {
+      IntegerType signedI32 =
+          IntegerType::get(rewriter.getContext(), 32, IntegerType::Signed);
+      return rewriter.getIntegerAttr(signedI32, payload);
+    }
+    if (kind == ExternalTemplateArgKind::Boolean) {
+      return rewriter.getBoolAttr(payload != 0);
+    }
+    if (kind == ExternalTemplateArgKind::UnsignedInteger) {
+      return rewriter.getUI32IntegerAttr(static_cast<uint32_t>(payload));
+    }
+
+    if (payload < 0 || static_cast<size_t>(payload) >= templateDFBs.size()) {
+      return failure();
+    }
+    Value dfb = templateDFBs[static_cast<size_t>(payload)];
+    std::optional<int32_t> dfbIndex = getCBIndex(dfb);
+    if (!dfbIndex || *dfbIndex < 0) {
+      return failure();
+    }
+    if (kind == ExternalTemplateArgKind::DFBIndex) {
+      return rewriter.getUI32IntegerAttr(static_cast<uint32_t>(*dfbIndex));
+    }
+    if (kind == ExternalTemplateArgKind::DFBDescriptor) {
+      auto dfbType = cast<CircularBufferType>(dfb.getType());
+      FailureOr<uint64_t> pageSizeBytes = getDFBPageSizeBytes(dfbType);
+      int64_t pagesPerBlock = dfbType.getElementsPerBlock();
+      int64_t blockCount = dfbType.getBlockCount();
+      constexpr uint64_t maxDescriptorField =
+          std::numeric_limits<uint32_t>::max();
+      if (failed(pageSizeBytes) || pagesPerBlock <= 0 || blockCount <= 0 ||
+          static_cast<uint64_t>(pagesPerBlock) > maxDescriptorField ||
+          static_cast<uint64_t>(blockCount) > maxDescriptorField ||
+          *pageSizeBytes == 0 || *pageSizeBytes > maxDescriptorField) {
+        return failure();
+      }
+      return ttk::DFBDescriptorAttr::get(rewriter.getContext(), *dfbIndex,
+                                         pagesPerBlock, blockCount,
+                                         static_cast<int64_t>(*pageSizeBytes));
+    }
+    llvm_unreachable("unhandled external template argument kind");
   }
 };
 

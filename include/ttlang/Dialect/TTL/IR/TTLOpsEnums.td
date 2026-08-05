@@ -37,6 +37,28 @@ def TTL_PipeTransferKind : I32EnumAttr<
   let genSpecializedAttr = 0;
 }
 
+def TTL_ExternalTemplateArgKind_SignedInteger :
+    I32EnumAttrCase<"SignedInteger", 0, "signed_integer">;
+def TTL_ExternalTemplateArgKind_Boolean :
+    I32EnumAttrCase<"Boolean", 1, "boolean">;
+def TTL_ExternalTemplateArgKind_UnsignedInteger :
+    I32EnumAttrCase<"UnsignedInteger", 2, "unsigned_integer">;
+def TTL_ExternalTemplateArgKind_DFBIndex :
+    I32EnumAttrCase<"DFBIndex", 3, "dfb_index">;
+def TTL_ExternalTemplateArgKind_DFBDescriptor :
+    I32EnumAttrCase<"DFBDescriptor", 4, "dfb_descriptor">;
+
+def TTL_ExternalTemplateArgKind : I32EnumAttr<
+    "ExternalTemplateArgKind", "External function template argument kind",
+    [TTL_ExternalTemplateArgKind_SignedInteger,
+     TTL_ExternalTemplateArgKind_Boolean,
+     TTL_ExternalTemplateArgKind_UnsignedInteger,
+     TTL_ExternalTemplateArgKind_DFBIndex,
+     TTL_ExternalTemplateArgKind_DFBDescriptor]> {
+  let cppNamespace = "::mlir::tt::ttl";
+  let genSpecializedAttr = 0;
+}
+
 def TTL_BcastType_Col    : I32EnumAttrCase<"Col",    1, "col">;
 def TTL_BcastType_Row    : I32EnumAttrCase<"Row",    2, "row">;
 def TTL_BcastType_Scalar : I32EnumAttrCase<"Scalar", 3, "scalar">;

@@ -8,7 +8,7 @@
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 
 """
-Verify that ttl.get_dfb_id() in template_args emits ttl.get_dfb_id in the
+Verify that ttl.get_dfb_id() in template_args preserves DFB identity in the
 initial MLIR and lowers to a raw integer literal in the generated C++.
 
 The compute thread calls ttl.call_extern_func with DFB IDs and a literal
@@ -56,27 +56,22 @@ def get_dfb_id_kernel(inp):
 
 
 # =============================================================================
-# Initial IR checks -- verify ttl.get_dfb_id SSA values feed opaque_call
+# Initial IR checks -- verify ordered DFB index references on opaque_call
 # =============================================================================
 
 # CHECK-LABEL: func.func @compute
 # CHECK-DAG: %[[SCRATCH:.*]] = ttl.bind_cb{cb_index = 1
 # CHECK-DAG: %[[IN_CB:.*]] = ttl.bind_cb{cb_index = 0
 
-# get_dfb_id results flow as SSA values into opaque_call template_args
-# CHECK: %[[ID_SCRATCH:.*]] = ttl.get_dfb_id %[[SCRATCH]] : <
-# CHECK: %[[ID_IN:.*]] = ttl.get_dfb_id %[[IN_CB]] : <
-# CHECK: %[[C1:.*]] = arith.constant 1 : i32
-
-# The opaque_call receives template arg values as SSA operands
-# CHECK: ttl.opaque_call "my_shim" template_args(%[[ID_SCRATCH]], %[[ID_IN]], %[[C1]]) (%[[SCRATCH]], %[[IN_CB]])
+# DFB references remain explicit until physical allocation is finalized.
+# CHECK: ttl.opaque_call "my_shim" template_args [#ttl.external_template_arg<dfb_index, 0>, #ttl.external_template_arg<dfb_index, 1>, #ttl.external_template_arg<signed_integer, 1>] template_dfbs(%[[SCRATCH]], %[[IN_CB]] : !ttl.cb<{{.*}}>, !ttl.cb<{{.*}}>) (%[[SCRATCH]], %[[IN_CB]])
 
 # =============================================================================
 # C++ output checks -- verify raw integers in template args
 # =============================================================================
 
 # CHECK-CPP: === compute kernel written to {{.*}} ===
-# CHECK-CPP: my_shim<[[SCRATCH_INDEX:[0-9]+]], [[IN_INDEX:[0-9]+]], 1>
+# CHECK-CPP: my_shim<[[SCRATCH_INDEX:[0-9]+]]U, [[IN_INDEX:[0-9]+]]U, 1>
 # CHECK-CPP-SAME: (get_compile_time_arg_val([[SCRATCH_INDEX]]), get_compile_time_arg_val([[IN_INDEX]]))
 
 

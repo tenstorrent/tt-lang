@@ -9,7 +9,7 @@ This section collects design documents and pipeline traces that describe how TT-
 - [`ComputeOp` Creation and Fusion](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/ComputeOpCreation.md) - immutable planning for `ttl.compute` creation, fusion, DFB publication, and intermediate materialization
 - [DST Register Allocation](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/DST_Allocation.md) — how the `TTLAssignDST` pass assigns destination registers to tile operations
 - [DST Register Utilization](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/DST_Utilization.md) — maximizing tile throughput per DST synchronization cycle
-- [External Function Interop Lowering](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/ExternalFuncInteropLowering.md) - argument mapping and delayed template evaluation for `ttl.call_extern_func`
+- [External Function Interop Lowering](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/ExternalFuncInteropLowering.md) - typed DFB descriptors and argument mapping for `ttl.call_extern_func`
 
 ## Lowering Pipeline Traces
 

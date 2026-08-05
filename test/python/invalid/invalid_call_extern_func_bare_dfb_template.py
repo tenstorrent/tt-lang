@@ -6,10 +6,9 @@
 # RUN: not %python %s 2>&1 | FileCheck %s
 
 """
-Validation test: ttl.call_extern_func template_args must use direct DFB values.
+Validation test: ttl.call_extern_func rejects ambiguous bare DFB template args.
 
-This test verifies that explicit ttl.get_dfb_id(...) in template_args is
-rejected with a migration diagnostic that instructs passing DFB directly.
+The diagnostic names both explicit supported representations.
 """
 
 import os
@@ -23,16 +22,14 @@ import ttl
 FAKE_HEADER = "/dev/null/fake_shim.hpp"
 
 
-# CHECK: TTLangCompileError: error: ttl.call_extern_func() template_args does not accept ttl.get_dfb_id(...); pass the DFB value directly
+# CHECK: TTLangCompileError: error: bare DFB template arguments are ambiguous; use ttl.dfb_descriptor(dfb) for allocation metadata or ttl.get_dfb_id(dfb) for an integer index
 @ttl.operation(grid=(1, 1))
-def invalid_get_dfb_id_template(inp):
+def invalid_bare_dfb_template(inp):
     in_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=1)
 
     @ttl.compute()
     def compute():
-        ttl.call_extern_func(
-            FAKE_HEADER, "my_shim", template_args=[ttl.get_dfb_id(in_dfb)]
-        )
+        ttl.call_extern_func(FAKE_HEADER, "my_shim", template_args=[in_dfb])
 
     @ttl.datamovement()
     def dm_read():
@@ -63,6 +60,6 @@ if __name__ == "__main__":
         )
         inp = ttnn.to_memory_config(inp, memory_config=ttnn.L1_MEMORY_CONFIG)
 
-        invalid_get_dfb_id_template(inp)
+        invalid_bare_dfb_template(inp)
     finally:
         ttnn.close_device(device)

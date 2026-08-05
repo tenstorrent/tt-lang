@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 
@@ -619,11 +620,16 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
       return failure();
     }
     auto dfbType = cast<CircularBufferType>(assignment->type);
+    FailureOr<uint64_t> pageSizeBytes = getDFBPageSizeBytes(dfbType);
+    if (failed(pageSizeBytes) ||
+        *pageSizeBytes > std::numeric_limits<int32_t>::max()) {
+      analysisFailure.set(assignment->declarations.front(),
+                          "DFB page size does not fit runtime metadata");
+      return failure();
+    }
     descriptors.push_back(
         {physicalIndex, static_cast<int32_t>(dfbType.getElementsPerBlock()),
-         dfbType.getElementType(),
-         static_cast<int32_t>(
-             ttcore::getElementSizeBytes(dfbType.getElementType())),
+         dfbType.getElementType(), static_cast<int32_t>(*pageSizeBytes),
          static_cast<int32_t>(dfbType.getBlockCount())});
   }
   return descriptors;

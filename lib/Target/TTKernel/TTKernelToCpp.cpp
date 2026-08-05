@@ -6,6 +6,7 @@
 
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 
+#include "ttlang/Target/TTKernel/DFBDescriptorPrelude_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_coord_translation_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_fabric_1d_routing_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_fabric_2d_routing_generated.h"
@@ -50,7 +51,6 @@ public:
     std::set<llvm::StringRef> headers;
 
     // Baseline, always required.
-    headers.insert("<cstdint>");
     switch (threadType) {
     case ThreadType::Compute:
       headers.insert("api/compute/common.h");
@@ -85,6 +85,7 @@ public:
     };
 
     bool hasDevicePrint = false;
+    bool requiresDFBDescriptor = false;
     region->walk([&](emitc::CallOpaqueOp callOp) {
       llvm::StringRef callee = callOp.getCallee();
 
@@ -101,6 +102,8 @@ public:
               callOp->getAttrOfType<StringAttr>("ttlang.opaque_header")) {
         headers.insert(headerAttr.getValue());
       }
+      requiresDFBDescriptor |=
+          callOp->hasAttr("ttlang.requires_dfb_descriptor");
 
       // Our experimental kernel code snippets.
       if (callee == "experimental::unpack_stall_on_pack") {
@@ -212,7 +215,16 @@ public:
           loc, "#define REDUCE_DIM ReduceDim::REDUCE_COL");
     }
 
-    // Emit the headers.
+    // The descriptor definition must precede user headers because those
+    // headers may name it in their function declarations.
+    emitc::IncludeOp::create(*builder, loc, "cstdint", /*isStandard=*/true);
+    if (requiresDFBDescriptor) {
+      emitc::VerbatimOp::create(
+          *builder, loc,
+          llvm::StringRef(dfb_descriptor_prelude_generated,
+                          dfb_descriptor_prelude_generated_len));
+    }
+
     for (llvm::StringRef header : headers) {
       bool isStandard = false;
       if (header.starts_with("<") && header.ends_with(">")) {

@@ -31,47 +31,30 @@ from .auto_profile import (
 from .tensor_registry import get_tensor_global_index, get_tensor_source
 
 
-def _is_ttnn_semaphore(value) -> bool:
-    """Return true when value looks like a ttnn semaphore object."""
-    module_name = type(value).__module__
-    return module_name in (
-        "ttnn._ttnn.global_semaphore",
-        "ttnn._ttnn.local_semaphore",
-    ) or module_name.endswith((".global_semaphore", ".local_semaphore"))
-
-
-def _try_get_ttnn_semaphore_address(value) -> Optional[int]:
-    """Return semaphore address as int, or None when unavailable."""
-    if not _is_ttnn_semaphore(value):
-        return None
+def _is_ttnn_global_semaphore(value) -> bool:
+    """Require the exact TTNN type so local and lookalike objects are rejected."""
     try:
-        import ttnn
+        from ttnn._ttnn.global_semaphore import global_semaphore
     except ImportError:
-        return None
+        return False
+    return isinstance(value, global_semaphore)
 
-    module_name = type(value).__module__
-    if module_name.endswith(".local_semaphore"):
-        getter_order = (
-            "get_local_semaphore_address",
-            "get_semaphore_address",
-            "get_global_semaphore_address",
-        )
-    else:
-        getter_order = (
-            "get_global_semaphore_address",
-            "get_semaphore_address",
-            "get_local_semaphore_address",
-        )
 
-    for getter_name in getter_order:
-        getter = getattr(ttnn, getter_name, None)
-        if not callable(getter):
-            continue
-        try:
-            return int(getter(value))
-        except Exception:
-            continue
-    return None
+def _get_ttnn_global_semaphore_address(value) -> int:
+    """Return one GlobalSemaphore address without suppressing TTNN failures."""
+    if not _is_ttnn_global_semaphore(value):
+        raise TypeError(f"expected ttnn GlobalSemaphore, got {type(value)}")
+    import ttnn
+
+    return int(ttnn.get_global_semaphore_address(value))
+
+
+@dataclass(frozen=True)
+class _ExternalTemplateArg:
+    """Separate compile-time payloads from DFB values needed by allocation."""
+
+    kind: object
+    value: object
 
 
 def _make_file_loc(ctx, source_file: str, node, line_offset: int = 0) -> Location:
@@ -634,11 +617,12 @@ class TTLGenericCompiler(TTCompilerBase):
                 ).result
             if isinstance(val, float):
                 return arith.ConstantOp(F32Type.get(self.ctx), val).result
-            sem_addr = _try_get_ttnn_semaphore_address(val)
-            if sem_addr is not None:
-                return arith.ConstantOp(
-                    IntegerType.get_signless(32, self.ctx), sem_addr
-                ).result
+            if _is_ttnn_global_semaphore(val):
+                self._raise_error(
+                    node,
+                    "ttnn.GlobalSemaphore must be captured by an operation "
+                    "factory; module-global semaphores are not supported",
+                )
 
         return None
 
@@ -1039,14 +1023,8 @@ class TTLGenericCompiler(TTCompilerBase):
                     # Stamp variable name (first-seen wins) so the
                     # compiler can use it in diagnostics.
                     self._pipe_net_names.setdefault(id(val), name)
-                elif _is_ttnn_semaphore(val):
-                    sem_addr = _try_get_ttnn_semaphore_address(val)
-                    if sem_addr is None:
-                        self._raise_error(
-                            node,
-                            f"Failed to extract ttnn semaphore address "
-                            f"for capture '{name}'",
-                        )
+                elif _is_ttnn_global_semaphore(val):
+                    sem_addr = _get_ttnn_global_semaphore_address(val)
                     i32_ty = IntegerType.get_signless(32, self.ctx)
                     self._set_var(name, arith.ConstantOp(i32_ty, sem_addr).result)
                 else:
@@ -1483,41 +1461,81 @@ class TTLGenericCompiler(TTCompilerBase):
             )
 
     def _resolve_template_arg_value(self, node):
-        """Resolve a template_args element to an i32 MLIR SSA Value.
+        """Resolve one external template argument without creating static SSA.
 
         Accepts:
-        - ``dfb`` -- DFB CB index (auto-resolved internally)
-        - ``int`` literals / module-level ints -- passed through as i32
-        - ``bool`` literals / module-level bools -- encoded as i32 0/1
-        - ``float`` literals / module-level floats -- IEEE-754 bit pattern as i32
+        - ``ttl.dfb_descriptor(dfb)`` -- typed allocation descriptor
+        - ``ttl.get_dfb_id(dfb)`` -- compatibility integer index
+        - ``int`` literals / module-level ints -- signed 32-bit payload
+        - ``bool`` literals / module-level bools -- boolean payload
+        - ``float`` literals / module-level floats -- binary32 bit payload
         """
-        if isinstance(node, ast.Call) and self._is_ttl_api_call(node, "get_dfb_id"):
-            self._raise_error(
-                node,
-                "ttl.call_extern_func() template_args does not accept "
-                "ttl.get_dfb_id(...); pass the DFB value directly",
-            )
+        arg_kind = ttl.ir.ExternalTemplateArgKind
 
-        i32_ty = IntegerType.get_signless(32, self.ctx)
+        def _signed_integer(py_int: int):
+            if not -(1 << 31) <= py_int < (1 << 31):
+                self._raise_error(
+                    node,
+                    "ttl.call_extern_func() signed integer template argument "
+                    "must fit in 32 bits",
+                )
+            return _ExternalTemplateArg(arg_kind.SignedInteger, py_int)
 
-        def _i32_const(py_int: int):
-            return arith.ConstantOp(i32_ty, py_int).result
+        def _unsigned_integer(py_int: int):
+            if not 0 <= py_int < (1 << 32):
+                self._raise_error(
+                    node,
+                    "ttl.call_extern_func() unsigned template argument must "
+                    "fit in 32 bits",
+                )
+            return _ExternalTemplateArg(arg_kind.UnsignedInteger, py_int)
+
+        def _boolean(py_bool: bool):
+            return _ExternalTemplateArg(arg_kind.Boolean, int(py_bool))
 
         def _float_bits(py_float: float) -> int:
             return struct.unpack("<I", struct.pack("<f", py_float))[0]
 
+        def _dfb_reference(kind):
+            if len(node.args) != 1 or node.keywords:
+                wrapper_name = (
+                    "ttl.get_dfb_id()"
+                    if kind == arg_kind.DFBIndex
+                    else "ttl.dfb_descriptor()"
+                )
+                self._raise_error(node, f"{wrapper_name} requires exactly 1 argument")
+            dfb_value = self.visit(node.args[0])
+            if (
+                ttl.CircularBufferType.maybe_downcast(getattr(dfb_value, "type", None))
+                is None
+            ):
+                wrapper_name = (
+                    "ttl.get_dfb_id()"
+                    if kind == arg_kind.DFBIndex
+                    else "ttl.dfb_descriptor()"
+                )
+                self._raise_error(
+                    node.args[0], f"{wrapper_name} argument must be a DFB"
+                )
+            return _ExternalTemplateArg(kind, dfb_value)
+
+        if isinstance(node, ast.Call) and self._is_ttl_api_call(node, "get_dfb_id"):
+            return _dfb_reference(arg_kind.DFBIndex)
+        if isinstance(node, ast.Call) and self._is_ttl_api_call(node, "dfb_descriptor"):
+            return _dfb_reference(arg_kind.DFBDescriptor)
+
         if isinstance(node, ast.Constant):
             # bool is a subclass of int; check explicitly first.
             if type(node.value) is bool:
-                return _i32_const(int(node.value))
+                return _boolean(node.value)
             if type(node.value) is int:
-                return _i32_const(node.value)
+                return _signed_integer(node.value)
             if isinstance(node.value, float):
-                return _i32_const(_float_bits(node.value))
+                return _unsigned_integer(_float_bits(node.value))
 
         int_val = self._signed_int_literal(node)
         if int_val is not None:
-            return _i32_const(int_val)
+            return _signed_integer(int_val)
 
         # Fold unary-minus float literals (e.g. ``-1.5``).
         if (
@@ -1526,19 +1544,34 @@ class TTLGenericCompiler(TTCompilerBase):
             and isinstance(node.operand, ast.Constant)
             and isinstance(node.operand.value, float)
         ):
-            return _i32_const(_float_bits(-node.operand.value))
+            return _unsigned_integer(_float_bits(-node.operand.value))
+
+        if isinstance(node, ast.Name) and node.id in self.captures:
+            val = self.captures[node.id]
+            if type(val) is bool:
+                return _boolean(val)
+            if type(val) is int:
+                return _signed_integer(val)
+            if isinstance(val, float):
+                return _unsigned_integer(_float_bits(val))
+            if _is_ttnn_global_semaphore(val):
+                sem_addr = _get_ttnn_global_semaphore_address(val)
+                return _unsigned_integer(sem_addr)
 
         if isinstance(node, ast.Name) and node.id in self.fn_globals:
             val = self.fn_globals[node.id]
             if type(val) is bool:
-                return _i32_const(int(val))
+                return _boolean(val)
             if type(val) is int:
-                return _i32_const(val)
+                return _signed_integer(val)
             if isinstance(val, float):
-                return _i32_const(_float_bits(val))
-            sem_addr = _try_get_ttnn_semaphore_address(val)
-            if sem_addr is not None:
-                return _i32_const(sem_addr)
+                return _unsigned_integer(_float_bits(val))
+            if _is_ttnn_global_semaphore(val):
+                self._raise_error(
+                    node,
+                    "ttnn.GlobalSemaphore must be captured by an operation "
+                    "factory; module-global semaphores are not supported",
+                )
 
         resolved = self.visit(node)
         if isinstance(resolved, tuple):
@@ -1551,14 +1584,20 @@ class TTLGenericCompiler(TTCompilerBase):
         resolved_type = getattr(resolved, "type", None)
         cb_type = ttl.CircularBufferType.maybe_downcast(resolved_type)
         if cb_type is not None:
-            # Keep user syntax simple: template_args=[dfb].
-            return ttl.get_dfb_id(resolved)
+            self._raise_error(
+                node,
+                "bare DFB template arguments are ambiguous; use "
+                "ttl.dfb_descriptor(dfb) for allocation metadata or "
+                "ttl.get_dfb_id(dfb) for an integer index",
+            )
         if isinstance(resolved_type, IntegerType):
             def_op = resolved.owner if hasattr(resolved, "owner") else None
             if isinstance(def_op, arith.ConstantOp):
                 value_attr = def_op.value
                 if isinstance(value_attr, IntegerAttr):
-                    return _i32_const(int(value_attr.value))
+                    if resolved_type.width == 1:
+                        return _boolean(bool(int(value_attr.value)))
+                    return _signed_integer(int(value_attr.value))
             self._raise_error(
                 node,
                 "ttl.call_extern_func() template_args integer values must be "
@@ -1569,7 +1608,7 @@ class TTLGenericCompiler(TTCompilerBase):
             if isinstance(def_op, arith.ConstantOp):
                 value_attr = def_op.value
                 if isinstance(value_attr, IntegerAttr):
-                    return _i32_const(int(value_attr.value))
+                    return _signed_integer(int(value_attr.value))
             self._raise_error(
                 node,
                 "ttl.call_extern_func() template_args index values must be "
@@ -1579,7 +1618,8 @@ class TTLGenericCompiler(TTCompilerBase):
         self._raise_error(
             node,
             "ttl.call_extern_func() template_args element must be an int, "
-            "bool, float, a DFB, or an integer/index value",
+            "bool, float, ttl.dfb_descriptor(dfb), ttl.get_dfb_id(dfb), "
+            "or an integer/index value",
         )
 
     def _resolve_string_value(self, node, param_name):
@@ -1611,14 +1651,19 @@ class TTLGenericCompiler(TTCompilerBase):
 
     def _visit_get_dfb_id(self, node):
         """Emit ttl.get_dfb_id for the DFB argument, return the i32 MLIR result."""
-        if len(node.args) != 1:
+        if len(node.args) != 1 or node.keywords:
             self._raise_error(node, "ttl.get_dfb_id() requires exactly 1 argument")
         dfb_val = self.visit(node.args[0])
+        if (
+            ttl.CircularBufferType.maybe_downcast(getattr(dfb_val, "type", None))
+            is None
+        ):
+            self._raise_error(node.args[0], "ttl.get_dfb_id() argument must be a DFB")
         return ttl.get_dfb_id(dfb_val)
 
     def _visit_raw_addr(self, node):
         """Emit ttl.raw_addr for the tensor argument, return the i32 base address."""
-        if len(node.args) != 1:
+        if len(node.args) != 1 or node.keywords:
             self._raise_error(node, "ttl.raw_addr() requires exactly 1 argument")
         tensor_val = self.visit(node.args[0])
         if isinstance(tensor_val, tuple):
@@ -1640,18 +1685,20 @@ class TTLGenericCompiler(TTCompilerBase):
             ttl.call_extern_func(
                 header_path,                    # string (literal or variable)
                 callee_name,                    # string (literal or variable)
-                template_args=[1, True, 1.5],   # C++ template arguments
+                template_args=[1, ttl.dfb_descriptor(dfb)],
                 func_args=[a, b],               # C++ function arguments
                 include_paths=["/path/to/inc"], # -I flags for JIT compiler
             )
 
-        DFBs can appear in either template_args or func_args:
+        DFBs use explicit forms in template_args and may appear directly in
+        func_args:
 
-        - ``template_args=[dfb]`` -- the DFB's CB index is resolved at
-          compile time and baked into the C++ template parameter as an
-          integer literal.
+        - ``template_args=[ttl.dfb_descriptor(dfb)]`` -- allocation metadata
+          becomes a C++ template type.
+        - ``template_args=[ttl.get_dfb_id(dfb)]`` -- the physical index becomes
+          an integer template argument; the DFB must also be in func_args.
         - ``func_args=[dfb]`` -- the DFB is passed as a runtime
-          ``get_compile_time_arg_val(N)`` call, providing the CB index as a
+          ``get_compile_time_arg_val(N)`` call, providing the DFB index as a
           function argument.
 
         Template args accept ``int``, ``bool`` (as 0/1), and ``float`` (as
@@ -1689,7 +1736,7 @@ class TTLGenericCompiler(TTCompilerBase):
                 f"Valid keywords are: {', '.join(sorted(_valid_kwargs))}",
             )
 
-        template_arg_vals = []
+        resolved_template_args = []
         if "template_args" in kw_map:
             ta_node = kw_map["template_args"]
             if not isinstance(ta_node, ast.List):
@@ -1697,9 +1744,10 @@ class TTLGenericCompiler(TTCompilerBase):
                     ta_node, "ttl.call_extern_func() template_args must be a list"
                 )
             for elt in ta_node.elts:
-                template_arg_vals.append(self._resolve_template_arg_value(elt))
+                resolved_template_args.append(self._resolve_template_arg_value(elt))
 
         func_args = []
+        unsigned_arg_indices = []
         if "func_args" in kw_map:
             fa_node = kw_map["func_args"]
             if not isinstance(fa_node, ast.List):
@@ -1707,6 +1755,13 @@ class TTLGenericCompiler(TTCompilerBase):
                     fa_node, "ttl.call_extern_func() func_args must be a list"
                 )
             for elt in fa_node.elts:
+                requires_unsigned_cast = (
+                    isinstance(elt, ast.Call) and self._is_ttl_api_call(elt, "raw_addr")
+                ) or (
+                    isinstance(elt, ast.Name)
+                    and elt.id in self.captures
+                    and _is_ttnn_global_semaphore(self.captures[elt.id])
+                )
                 arg = self.visit(elt)
                 if isinstance(arg, tuple):
                     self._raise_error(
@@ -1715,18 +1770,45 @@ class TTLGenericCompiler(TTCompilerBase):
                         "slices/views in extern arguments yet; pass the base "
                         "tensor or ttl.raw_addr(base_tensor)",
                     )
+                if requires_unsigned_cast:
+                    unsigned_arg_indices.append(len(func_args))
                 func_args.append(arg)
 
         if "include_paths" in kw_map:
             paths = self._resolve_string_list(kw_map["include_paths"], "include_paths")
             self._opaque_include_paths.extend(paths)
 
+        template_dfb_operands = []
+        template_arg_attrs = []
+        dfb_kinds = {
+            ttl.ir.ExternalTemplateArgKind.DFBIndex,
+            ttl.ir.ExternalTemplateArgKind.DFBDescriptor,
+        }
+        for template_arg in resolved_template_args:
+            payload = template_arg.value
+            if template_arg.kind in dfb_kinds:
+                payload = len(template_dfb_operands)
+                template_dfb_operands.append(template_arg.value)
+            template_arg_attrs.append(
+                ttl.ir.ExternalTemplateArgAttr.get(self.ctx, template_arg.kind, payload)
+            )
+        template_args_attr = (
+            ArrayAttr.get(template_arg_attrs) if template_arg_attrs else None
+        )
+        unsigned_arg_indices_attr = (
+            DenseI32ArrayAttr.get(unsigned_arg_indices, context=self.ctx)
+            if unsigned_arg_indices
+            else None
+        )
+
         ttl.opaque_call(
             [],
             callee,
             header,
             func_args,
-            template_arg_vals,
+            template_dfb_operands,
+            template_args=template_args_attr,
+            unsigned_arg_indices=unsigned_arg_indices_attr,
         )
 
     def visit_With(self, node):

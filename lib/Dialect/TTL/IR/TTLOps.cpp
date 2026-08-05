@@ -20,10 +20,13 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h" // IWYU pragma: keep
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/Utils/OpaqueCallVerifyUtils.h"
+#include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/TypeSwitch.h" // IWYU pragma: keep
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <numeric>
+#include <optional>
 
 #include "ttlang/Dialect/TTL/IR/TTLInterfaces.cpp.inc"
 
@@ -67,6 +70,40 @@ SliceAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
                        << start << ") when step is negative";
   }
   return llvm::success();
+}
+
+llvm::LogicalResult ExternalTemplateArgAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    ExternalTemplateArgKind kind, int64_t value) {
+  switch (kind) {
+  case ExternalTemplateArgKind::SignedInteger:
+    if (value < std::numeric_limits<int32_t>::min() ||
+        value > std::numeric_limits<int32_t>::max()) {
+      return emitError() << "signed integer payload must fit in int32_t, got "
+                         << value;
+    }
+    return success();
+  case ExternalTemplateArgKind::Boolean:
+    if (value != 0 && value != 1) {
+      return emitError() << "boolean payload must be 0 or 1, got " << value;
+    }
+    return success();
+  case ExternalTemplateArgKind::UnsignedInteger:
+    if (value < 0 ||
+        static_cast<uint64_t>(value) > std::numeric_limits<uint32_t>::max()) {
+      return emitError()
+             << "unsigned integer payload must fit in uint32_t, got " << value;
+    }
+    return success();
+  case ExternalTemplateArgKind::DFBIndex:
+  case ExternalTemplateArgKind::DFBDescriptor:
+    if (value < 0) {
+      return emitError() << "DFB operand index must be nonnegative, got "
+                         << value;
+    }
+    return success();
+  }
+  llvm_unreachable("unhandled external template argument kind");
 }
 
 llvm::LogicalResult
@@ -1970,8 +2007,9 @@ mlir::LogicalResult mlir::tt::ttl::RawAddrOp::verify() {
           ? mlir::dyn_cast_or_null<tt::ttl::LayoutAttr>(tensorTy.getEncoding())
           : nullptr;
   auto blockArg = mlir::dyn_cast<BlockArgument>(tensor);
-  if (!layoutAttr || !blockArg || !blockArg.getParentBlock() ||
-      !blockArg.getParentBlock()->isEntryBlock()) {
+  auto kernel = getEnclosingKernelThread(getOperation());
+  if (!layoutAttr || !blockArg || !kernel || kernel.isDeclaration() ||
+      blockArg.getOwner() != &kernel.getBody().front()) {
     return emitOpError("operand must be a function tensor argument with TTL "
                        "layout encoding; slices/views are not supported");
   }
@@ -2052,7 +2090,100 @@ void mlir::tt::ttl::DstSectionOp::getSuccessorRegions(
 }
 
 mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
-  return mlir::tt::utils::verifyOpaqueCall<GetDfbIdOp>(
-      getOperation(), getCallee(), getHeader(), getTemplateArgVals(),
-      "arith.constant or ttl.get_dfb_id");
+  if (failed(mlir::tt::utils::verifyOpaqueCallNames(getOperation(), getCallee(),
+                                                    getHeader()))) {
+    return failure();
+  }
+  if (failed(mlir::tt::utils::verifyOpaqueCallUnsignedArgIndices(
+          getOperation(), getUnsignedArgIndices(), getArgOperands()))) {
+    return failure();
+  }
+  if (!isNocKernelThread(getOperation()) &&
+      llvm::any_of(getArgOperands(), [](Value operand) {
+        return isa<RankedTensorType>(operand.getType());
+      })) {
+    return emitOpError(
+        "tensor function arguments require a data movement (noc) thread");
+  }
+  std::optional<ArrayAttr> templateArgs = getTemplateArgs();
+  if (!templateArgs) {
+    if (!getTemplateDfbOperands().empty()) {
+      return emitOpError(
+          "template DFB operands require an ordered template argument list");
+    }
+    return success();
+  }
+
+  llvm::BitVector referencedDFBs(getTemplateDfbOperands().size());
+  for (Attribute attribute : *templateArgs) {
+    auto templateArg = dyn_cast<ExternalTemplateArgAttr>(attribute);
+    if (!templateArg) {
+      return emitOpError("template argument list must contain only "
+                         "#ttl.external_template_arg attributes");
+    }
+    ExternalTemplateArgKind kind = templateArg.getKind();
+    if (kind != ExternalTemplateArgKind::DFBIndex &&
+        kind != ExternalTemplateArgKind::DFBDescriptor) {
+      continue;
+    }
+    int64_t operandIndex = templateArg.getValue();
+    if (operandIndex < 0 ||
+        static_cast<size_t>(operandIndex) >= getTemplateDfbOperands().size()) {
+      return emitOpError("template DFB operand index ")
+             << operandIndex << " is out of range for "
+             << getTemplateDfbOperands().size() << " operands";
+    }
+    referencedDFBs.set(static_cast<size_t>(operandIndex));
+  }
+  if (referencedDFBs.count() != getTemplateDfbOperands().size()) {
+    return emitOpError("every template DFB operand must be referenced by an "
+                       "ordered template argument");
+  }
+  return success();
+}
+
+static llvm::SmallVector<mlir::Value> getTemplateDFBOperandsByKind(
+    mlir::tt::ttl::OpaqueCallOp call,
+    mlir::tt::ttl::ExternalTemplateArgKind selectedKind) {
+  // Return values rather than segment positions so analyses do not need to
+  // parse the static argument representation.
+  llvm::SmallVector<mlir::Value> operands;
+  std::optional<mlir::ArrayAttr> templateArgs = call.getTemplateArgs();
+  if (!templateArgs) {
+    return operands;
+  }
+  for (mlir::Attribute attribute : *templateArgs) {
+    auto templateArg =
+        mlir::cast<mlir::tt::ttl::ExternalTemplateArgAttr>(attribute);
+    if (templateArg.getKind() != selectedKind) {
+      continue;
+    }
+    size_t operandIndex = static_cast<size_t>(templateArg.getValue());
+    mlir::Value operand = call.getTemplateDfbOperands()[operandIndex];
+    if (!llvm::is_contained(operands, operand)) {
+      operands.push_back(operand);
+    }
+  }
+  return operands;
+}
+
+llvm::SmallVector<mlir::Value>
+mlir::tt::ttl::OpaqueCallOp::getDFBDependencyOperands() {
+  llvm::SmallVector<Value> dependencies;
+  auto appendDFB = [&](Value operand) {
+    if (isa<CircularBufferType>(operand.getType()) &&
+        !llvm::is_contained(dependencies, operand)) {
+      dependencies.push_back(operand);
+    }
+  };
+  llvm::for_each(getArgOperands(), appendDFB);
+  llvm::for_each(getTemplateDFBOperandsByKind(
+                     *this, ExternalTemplateArgKind::DFBDescriptor),
+                 appendDFB);
+  return dependencies;
+}
+
+llvm::SmallVector<mlir::Value>
+mlir::tt::ttl::OpaqueCallOp::getDFBIndexTemplateOperands() {
+  return getTemplateDFBOperandsByKind(*this, ExternalTemplateArgKind::DFBIndex);
 }

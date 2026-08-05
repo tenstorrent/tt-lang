@@ -2,8 +2,8 @@
 // layout/dtype combinations for CB element types:
 //   - ttcore.tile<32x32, bf16>  -> 2048 bytes per slot (explicit tile)
 //   - ttcore.tile<32x32, f32>   -> 4096 bytes per slot (explicit tile)
-//   - bf16 (row-wise, builtin)  -> TileType::get(bf16)  -> 2048 bytes per slot
-//   - f32  (row-wise, builtin)  -> TileType::get(f32)   -> 4096 bytes per slot
+//   - bf16 (row-wise, builtin)  -> 2 bytes per slot
+//   - f32  (row-wise, builtin)  -> 4 bytes per slot
 // WH/BH fallback budget B = 1432 * 1024 = 1466368 bytes when the module has no system_desc.
 // Final tests use a ttcore.system_desc with a smaller L1 to verify the pass reads the descriptor.
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-validate-cb-budget)'
@@ -134,7 +134,7 @@ func.func @high_usage_under_budget_tile_f32() {
 
 // -----
 
-// Row-wise builtin bf16 (2048 bytes per slot; same footprint as tile bf16).
+// Row-wise builtin bf16 uses one 2-byte scalar per slot.
 
 func.func @under_budget_row_bf16() {
   %cb0 = ttl.bind_cb{cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], bf16, 2>
@@ -145,20 +145,20 @@ func.func @under_budget_row_bf16() {
 
 func.func @overflow_row_bf16() {
   // expected-error @below {{exceeds L1 budget}}
-  %cb0 = ttl.bind_cb{cb_index = 0, block_count = 1} : !ttl.cb<[717, 1], bf16, 1>
+  %cb0 = ttl.bind_cb{cb_index = 0, block_count = 1} : !ttl.cb<[733185, 1], bf16, 1>
   func.return
 }
 
 // -----
 
 func.func @high_usage_under_budget_row_bf16() {
-  %cb0 = ttl.bind_cb{cb_index = 0, block_count = 1} : !ttl.cb<[1, 645], bf16, 1>
+  %cb0 = ttl.bind_cb{cb_index = 0, block_count = 1} : !ttl.cb<[1, 660000], bf16, 1>
   func.return
 }
 
 // -----
 
-// Row-wise builtin f32 (4096 bytes per slot; same footprint as tile f32).
+// Row-wise builtin f32 uses one 4-byte scalar per slot.
 
 func.func @under_budget_row_f32() {
   %cb0 = ttl.bind_cb{cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], f32, 2>
@@ -169,14 +169,14 @@ func.func @under_budget_row_f32() {
 
 func.func @overflow_row_f32() {
   // expected-error @below {{exceeds L1 budget}}
-  %cb0 = ttl.bind_cb{cb_index = 0, block_count = 1} : !ttl.cb<[359, 1], f32, 1>
+  %cb0 = ttl.bind_cb{cb_index = 0, block_count = 1} : !ttl.cb<[366593, 1], f32, 1>
   func.return
 }
 
 // -----
 
 func.func @high_usage_under_budget_row_f32() {
-  %cb0 = ttl.bind_cb{cb_index = 0, block_count = 1} : !ttl.cb<[1, 323], f32, 1>
+  %cb0 = ttl.bind_cb{cb_index = 0, block_count = 1} : !ttl.cb<[1, 330000], f32, 1>
   func.return
 }
 
