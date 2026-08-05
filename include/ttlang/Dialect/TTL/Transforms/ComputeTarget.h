@@ -49,10 +49,10 @@ public:
                             ttcore::TileType tileType,
                             std::string &failureReason) const = 0;
 
-  virtual LogicalResult validateMatmulTileTypes(
-      ttcore::TileType lhsType, ttcore::TileType rhsType,
-      ttcore::TileType resultType, bool transposeRhs,
-      std::string &failureReason) const = 0;
+  virtual LogicalResult
+  validateMatmulTileTypes(ttcore::TileType lhsType, ttcore::TileType rhsType,
+                          ttcore::TileType resultType, bool transposeRhs,
+                          std::string &failureReason) const = 0;
 
   LogicalResult validateOperation(Operation *operation, bool containsMatmul,
                                   std::string &failureReason) const;

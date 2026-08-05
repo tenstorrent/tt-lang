@@ -154,6 +154,22 @@ int64_t getDFBLifecycleTileCount(Operation *operation) {
   return cast<CircularBufferType>(dfb.getType()).getElementsPerBlock();
 }
 
+std::optional<int64_t> getDFBTransactionBlockCount(Operation *operation) {
+  assert((isDFBAcquireOp(operation) || isDFBReleaseOp(operation)) &&
+         "DFB transaction block count requires a lifecycle operation");
+  Value dfb = isDFBAcquireOp(operation) ? getDFBAcquireDFB(operation)
+                                        : getDFBReleaseDFB(operation);
+  auto dfbType = dyn_cast<CircularBufferType>(dfb.getType());
+  if (!dfbType || dfbType.getElementsPerBlock() <= 0) {
+    return std::nullopt;
+  }
+  int64_t numTiles = getDFBLifecycleTileCount(operation);
+  if (numTiles <= 0 || numTiles % dfbType.getElementsPerBlock() != 0) {
+    return std::nullopt;
+  }
+  return numTiles / dfbType.getElementsPerBlock();
+}
+
 struct OutstandingDFBAcquisition {
   /// Acquisition contributing the oldest remaining FIFO tiles.
   Operation *operation = nullptr;
@@ -506,6 +522,27 @@ LogicalResult DFBAcquireReleaseIndex::build(
       failed(recordReleaseOwnership(operations.pops, operations.waits))) {
     return failure();
   }
+  auto recordIntervalOwners = [&](ArrayRef<Operation *> acquires,
+                                  ArrayRef<Operation *> releases) {
+    for (Operation *release : releases) {
+      releaseIntervalOwners.try_emplace(release);
+    }
+    for (Operation *acquire : acquires) {
+      DFBAcquireInterval interval = makeDFBAcquireInterval(acquire, acquires);
+      Operation *lastOwnedUse = findLastDFBAcquireOwnedUse(interval);
+      DFBReleaseSearch releaseSearch =
+          findOwnedDFBReleases(interval, lastOwnedUse, releases);
+      for (Operation *release : releaseSearch.sameLevelReleases) {
+        releaseIntervalOwners[release].push_back(acquire);
+      }
+      for (Operation *release : releaseSearch.nestedReleases) {
+        releaseIntervalOwners[release].push_back(acquire);
+      }
+    }
+  };
+  recordIntervalOwners(operations.reserves, operations.pushes);
+  recordIntervalOwners(operations.waits, operations.pops);
+
   return success();
 }
 
@@ -523,6 +560,14 @@ DFBAcquireReleaseIndex::getReleaseOwnership(Operation *release) const {
   assert(ownership != releaseOwnership.end() &&
          "operation is not an indexed DFB release");
   return ownership->second;
+}
+
+ArrayRef<Operation *>
+DFBAcquireReleaseIndex::getReleaseIntervalOwners(Operation *release) const {
+  auto owners = releaseIntervalOwners.find(release);
+  assert(owners != releaseIntervalOwners.end() &&
+         "operation is not an indexed DFB release");
+  return owners->second;
 }
 
 } // namespace mlir::tt::ttl

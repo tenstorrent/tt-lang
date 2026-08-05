@@ -81,6 +81,44 @@ class _FakeTTNN:
             self.config = config
             self.compiler_include_paths = compiler_include_paths or []
 
+    class Tile:
+        def __init__(self, tile_shape):
+            self.tile_shape = tuple(tile_shape)
+
+        def get_tile_size(self, _data_format):
+            tile_height, tile_width = self.tile_shape
+            return tile_height * tile_width * 2
+
+    class TileDescriptor:
+        def __init__(self, tile):
+            self.tile = tile
+
+    class CBFormatDescriptor:
+        def __init__(self, buffer_index, data_format, page_size, tile=None):
+            self.buffer_index = buffer_index
+            self.data_format = data_format
+            self.page_size = page_size
+            self.tile = tile
+
+    class CBDescriptor:
+        def __init__(self, total_size, core_ranges, format_descriptors):
+            self.total_size = total_size
+            self.core_ranges = core_ranges
+            self.format_descriptors = format_descriptors
+            self.backing_desc = None
+
+        def set_buffer_from_cb(self, backing_desc):
+            self.backing_desc = backing_desc
+
+    @staticmethod
+    def cb_descriptor_from_sharded_tensor(cb_index, tensor, total_size, core_ranges):
+        return {
+            "cb_index": cb_index,
+            "tensor": tensor,
+            "total_size": total_size,
+            "core_ranges": core_ranges,
+        }
+
     @staticmethod
     def generic_op(tensors, program):
         return {
@@ -226,6 +264,39 @@ def test_build_kernel_descriptors_checks_pipe_runtime_arg_count(monkeypatch):
         )
 
 
+def test_build_kernel_descriptors_passes_computed_addresses_as_runtime_args(
+    monkeypatch,
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="noc",
+        tensor_indices=[0],
+        config=object(),
+        pipe_computed_address_dfb_indices=[1, 3],
+    )
+    tensor = _FakeTensor(object(), address=0x2000)
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[tensor],
+        tensor_accessor_args=[0x44, 0x55],
+        core_ranges=object(),
+        grid_cols=1,
+        grid_rows=1,
+        num_cbs=2,
+        pipe_computed_address_base_addresses={1: 0x8000, 3: 0x9000},
+        extra_common_runtime_args=[0xA000],
+        expected_extra_common_runtime_args=1,
+    )
+
+    dfb_indices = [0, 1]
+    pipe_dfb_bases = [0x8000, 0x9000]
+    tensor_accessor_args = [0x44, 0x55]
+    assert descriptors[0].compile_time_args == dfb_indices + tensor_accessor_args
+    assert descriptors[0].common_runtime_args == [0x2000] + pipe_dfb_bases + [0xA000]
+
+
 def test_run_kernel_without_pipe_resources_does_not_require_device(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     tensor = _FakeTensorWithoutDevice()
@@ -296,6 +367,28 @@ def test_build_generic_op_io_tensors_duplicates_single_output():
     ]
 
 
+def test_build_generic_op_io_tensors_keeps_user_output_last():
+    inp = object()
+    output = object()
+    scratch = object()
+    computed_dfb_1 = object()
+    computed_dfb_3 = object()
+
+    io_tensors = kernel_runner.build_generic_op_io_tensors(
+        [inp, output],
+        [scratch],
+        {3: computed_dfb_3, 1: computed_dfb_1},
+    )
+
+    assert io_tensors == [scratch, computed_dfb_1, computed_dfb_3, inp, output]
+    assert io_tensors[-1] is output
+
+
+def test_build_generic_op_io_tensors_requires_user_output():
+    with pytest.raises(ValueError, match="kernel must have at least one output tensor"):
+        kernel_runner.build_generic_op_io_tensors([], [object()])
+
+
 def test_run_kernel_global_semaphore_lifetime_is_bounded(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
@@ -317,6 +410,81 @@ def test_run_kernel_global_semaphore_lifetime_is_bounded(monkeypatch):
 
     assert len(fake_ttnn.create_calls) == 4
     assert lifetime == fake_ttnn.create_calls[-2:]
+
+
+def test_build_cb_descriptors_excludes_computed_address_backing_tensors(
+    monkeypatch,
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 1024
+    )
+
+    cb_configs = [
+        PhysicalDFBConfig(0, 1, "bfloat16", 1, 512, None),
+        PhysicalDFBConfig(1, 1, "bfloat16", 1, 800, None),
+    ]
+
+    # DFB 1 (800 bytes) is a computed-address backing tensor, already allocated
+    # separately, so it is excluded from the budget; only DFB 0 (512) counts and
+    # stays under 1024.
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensor(object())],
+        cb_configs=cb_configs,
+        core_ranges=_FakeCoreRanges(),
+        pipe_computed_address_backing_tensors={1: object()},
+    )
+    assert len(descriptors) == 2
+
+    # Without the backing exclusion the same DFBs (512 + 800) exceed 1024, so
+    # non-backing DFBs are still charged.
+    with pytest.raises(
+        ValueError,
+        match="Total circular buffer allocation \\(1312 bytes\\) exceeds L1 budget \\(1024 bytes\\)",
+    ):
+        kernel_runner.build_cb_descriptors(
+            tensors=[_FakeTensor(object())],
+            cb_configs=cb_configs,
+            core_ranges=_FakeCoreRanges(),
+            pipe_computed_address_backing_tensors={},
+        )
+
+
+def test_build_cb_descriptors_preserves_subtile_geometry(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+    )
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensor(object())],
+        cb_configs=[PhysicalDFBConfig(0, 1, "bfloat16", 2, 512, (16, 16))],
+        core_ranges=_FakeCoreRanges(),
+    )
+
+    descriptor = descriptors[0]
+    format_descriptor = descriptor.format_descriptors[0]
+    assert descriptor.total_size == 1024
+    assert format_descriptor.page_size == 512
+    assert format_descriptor.tile.tile.tile_shape == (16, 16)
+
+
+def test_emit_runner_source_preserves_subtile_geometry(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[],
+        cb_configs=[PhysicalDFBConfig(0, 1, "bfloat16", 2, 512, (16, 16))],
+        grid_cols=1,
+        grid_rows=1,
+        num_tensors=1,
+    )
+
+    assert "num_tiles=1" in source
+    assert "data_format='bfloat16'" in source
+    assert "block_count=2" in source
+    assert "page_size=512" in source
+    assert "tile=(16, 16)" in source
 
 
 def test_emit_runner_source_uses_shared_pipe_resource_helpers():
@@ -358,14 +526,15 @@ def test_emit_runner_source_accepts_physical_dfb_configs():
         num_tensors=1,
     )
 
-    assert "(3, 2, ttnn.bfloat16, (1, 16), 32, 192),  # CB 0" in source
-    assert (
-        "for i, (num_tiles, block_count, dtype, tile_shape, page_size, "
-        "total_size) "
-        "in enumerate(CB_CONFIGS):"
-    ) in source
-    assert 'format_options["tile"] = ttnn.TileDescriptor(' in source
-    assert "**format_options," in source
+    assert "from ttl.dataflow_buffer import PhysicalDFBConfig" in source
+    assert "dfb_index=0" in source
+    assert "num_tiles=3" in source
+    assert "data_format='bfloat16'" in source
+    assert "block_count=2" in source
+    assert "page_size=32" in source
+    assert "tile=(1, 16)" in source
+    assert "cb_descriptors = build_cb_descriptors(" in source
+    assert "for i, (num_tiles, block_count" not in source
 
 
 def test_emit_runner_source_omits_tile_descriptor_for_scalar_dfb():
@@ -377,8 +546,8 @@ def test_emit_runner_source_omits_tile_descriptor_for_scalar_dfb():
         num_tensors=1,
     )
 
-    assert "(128, 2, ttnn.float32, None, 4, 1024),  # CB 0" in source
-    assert "if tile_shape is not None:" in source
+    assert "data_format='float32'" in source
+    assert "tile=None" in source
 
 
 def test_physical_dfb_allocation_scales_with_subtile_area():
@@ -441,16 +610,14 @@ def test_emit_runner_source_rejects_invalid_physical_dfb_sequence(
 
 
 @pytest.mark.parametrize(
-    ("data_format", "emitted_dtype", "page_size"),
+    ("data_format", "page_size"),
     [
-        ("bfloat4_b", "ttnn.bfloat4_b", 576),
-        ("bfloat8_b", "ttnn.bfloat8_b", 1088),
-        ("uint8", "ttnn.uint8", 1024),
+        ("bfloat4_b", 576),
+        ("bfloat8_b", 1088),
+        ("uint8", 1024),
     ],
 )
-def test_emit_runner_source_preserves_physical_dfb_format(
-    data_format, emitted_dtype, page_size
-):
+def test_emit_runner_source_preserves_physical_dfb_format(data_format, page_size):
     source = kernel_runner.emit_runner_source(
         kernel_specs=[],
         cb_configs=[
@@ -468,7 +635,8 @@ def test_emit_runner_source_preserves_physical_dfb_format(
         num_tensors=1,
     )
 
-    assert f"(1, 2, {emitted_dtype}," in source
+    assert f"data_format={data_format!r}" in source
+    assert f"page_size={page_size}" in source
 
 
 def test_emit_runner_source_rejects_unknown_physical_dfb_format():

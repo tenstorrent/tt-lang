@@ -74,8 +74,7 @@ std::optional<ttcore::TileType> getTileType(Type type) {
   if (!tensorType) {
     return std::nullopt;
   }
-  if (auto tileType =
-          dyn_cast<ttcore::TileType>(tensorType.getElementType())) {
+  if (auto tileType = dyn_cast<ttcore::TileType>(tensorType.getElementType())) {
     return tileType;
   }
   return std::nullopt;
@@ -84,9 +83,9 @@ std::optional<ttcore::TileType> getTileType(Type type) {
 class WormholeBlackholeComputeTargetEnvironment
     : public ComputeTargetEnvironment {
 public:
-  LogicalResult
-  validateKernelTileType(bool containsMatmul, ttcore::TileType tileType,
-                         std::string &failureReason) const final {
+  LogicalResult validateKernelTileType(bool containsMatmul,
+                                       ttcore::TileType tileType,
+                                       std::string &failureReason) const final {
     failureReason.clear();
     bool supportedShape = containsMatmul ? isMatmulKernelShape(tileType)
                                          : isElementwiseComputeShape(tileType);
@@ -148,10 +147,10 @@ public:
     return failure();
   }
 
-  LogicalResult validateMatmulTileTypes(
-      ttcore::TileType lhsType, ttcore::TileType rhsType,
-      ttcore::TileType resultType, bool transposeRhs,
-      std::string &failureReason) const final {
+  LogicalResult
+  validateMatmulTileTypes(ttcore::TileType lhsType, ttcore::TileType rhsType,
+                          ttcore::TileType resultType, bool transposeRhs,
+                          std::string &failureReason) const final {
     if (failed(verifyMatmulTileTypes(lhsType, rhsType, resultType, transposeRhs,
                                      failureReason))) {
       return failure();
@@ -175,8 +174,8 @@ public:
     if (!hasTileShape(rhsType, 32, 32) && !hasTileShape(rhsType, 32, 16) &&
         !hasTileShape(rhsType, 16, 32)) {
       llvm::raw_string_ostream diagnostic(failureReason);
-      diagnostic << "matmul rhs tile dimensions " << rhsType.getHeight()
-                 << "x" << rhsType.getWidth()
+      diagnostic << "matmul rhs tile dimensions " << rhsType.getHeight() << "x"
+                 << rhsType.getWidth()
                  << " are not implemented by the current compute LLKs; "
                     "supported rhs dimensions are 16x32, 32x16, and 32x32";
       return failure();
@@ -194,7 +193,6 @@ public:
     }
     return success();
   }
-
 };
 
 class WormholeComputeTargetEnvironment final
@@ -219,8 +217,7 @@ FailureOr<std::optional<ttcore::Arch>>
 getDeviceArch(ModuleOp module, std::string &failureReason) {
   auto systemDesc = module->getAttrOfType<ttcore::SystemDescAttr>(
       ttcore::SystemDescAttr::name);
-  auto device =
-      ttcore::lookupDeviceOp(module, ttcore::getDefaultDeviceName());
+  auto device = ttcore::lookupDeviceOp(module, ttcore::getDefaultDeviceName());
   if (!systemDesc || !device) {
     return std::optional<ttcore::Arch>();
   }
@@ -293,7 +290,8 @@ ComputeTargetEnvironment::get(Operation *operation,
             .str();
     return failure();
   }
-  std::optional<ttcore::Arch> arch = attributeArch ? attributeArch : *deviceArch;
+  std::optional<ttcore::Arch> arch =
+      attributeArch ? attributeArch : *deviceArch;
   if (!arch) {
     return std::unique_ptr<ComputeTargetEnvironment>(
         std::make_unique<CommonComputeTargetEnvironment>());
@@ -313,11 +311,11 @@ ComputeTargetEnvironment::get(Operation *operation,
   llvm_unreachable("unknown TTCore architecture");
 }
 
-LogicalResult ComputeTargetEnvironment::validateOperation(
-    Operation *operation, bool containsMatmul,
-    std::string &failureReason) const {
-  std::optional<ComputePrimitive> primitive =
-      getComputePrimitive(operation);
+LogicalResult
+ComputeTargetEnvironment::validateOperation(Operation *operation,
+                                            bool containsMatmul,
+                                            std::string &failureReason) const {
+  std::optional<ComputePrimitive> primitive = getComputePrimitive(operation);
   if (!primitive) {
     failureReason = "has no compute-target capability classification";
     return failure();
@@ -329,10 +327,10 @@ LogicalResult ComputeTargetEnvironment::validateOperation(
     if (!tileType) {
       continue;
     }
-    if (failed(validateKernelTileType(containsMatmul, *tileType,
-                                      failureReason)) ||
-        failed(validatePrimitiveDataType(*primitive, *tileType,
-                                         failureReason))) {
+    if (failed(
+            validateKernelTileType(containsMatmul, *tileType, failureReason)) ||
+        failed(
+            validatePrimitiveDataType(*primitive, *tileType, failureReason))) {
       return failure();
     }
   }
@@ -378,7 +376,7 @@ std::optional<ComputePrimitive> getComputePrimitive(Operation *operation) {
     return ComputePrimitive::ElementwiseBinary;
   }
 #define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
-  if (isa<TTL_OP##Op, TILE_OP>(operation))                                    \
+  if (isa<TTL_OP##Op, TILE_OP>(operation))                                     \
     return ComputePrimitive::ElementwiseUnary;
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
   if (isa<BlockBroadcastOp, TileBcastOp>(operation)) {
@@ -410,9 +408,8 @@ std::optional<ComputePrimitive> getComputePrimitive(Operation *operation) {
 
 bool containsMatmulOperation(Operation *scope) {
   WalkResult result = scope->walk([](Operation *operation) {
-    return isa<MatmulOp, TileMatmulBlockOp>(operation)
-               ? WalkResult::interrupt()
-               : WalkResult::advance();
+    return isa<MatmulOp, TileMatmulBlockOp>(operation) ? WalkResult::interrupt()
+                                                       : WalkResult::advance();
   });
   return result.wasInterrupted();
 }

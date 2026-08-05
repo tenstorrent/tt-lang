@@ -37,7 +37,8 @@ findPipeTransferCreateForTransfer(ValueOriginAnalysis &analysis,
 FailureOr<std::optional<CopyOp>>
 findUniquePipeReceiveCopy(ValueOriginAnalysis &analysis, Value value);
 
-/// Returns every internal receive post whose token may reach `token`.
+/// Returns every internal receive post whose token may reach `token`. Fails
+/// unless at least one post reaches the token.
 FailureOr<SmallVector<PipeTransferPostOp>>
 findPipeTransferPostsForToken(ValueOriginAnalysis &analysis, Value token);
 

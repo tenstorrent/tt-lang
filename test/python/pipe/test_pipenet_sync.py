@@ -1375,9 +1375,9 @@ def test_multicast_destination_addresses_differ_by_destination_rejected(
     with pytest.raises(
         Exception,
         match=(
-            "collective pipe receive posts publish different destination "
-            "addresses; TT-Metal NoC multicast requires one destination SRAM "
-            "address for all receivers"
+            "collective pipe receiver address sequences are not proven equal "
+            "for every transfer occurrence; TT-Metal NoC multicast requires "
+            "one destination SRAM address for all receivers"
         ),
     ):
         reuse_option = (

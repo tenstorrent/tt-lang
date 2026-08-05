@@ -12,7 +12,6 @@
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
-#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
@@ -22,14 +21,17 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/LiveIntervalUtils.h"
+#include "ttlang/Dialect/TTL/Transforms/PipeTransferAnalysis.h"
 #include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
 #include "llvm/ADT/DenseMapInfo.h"
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <functional>
 #include <optional>
 #include <tuple>
@@ -66,21 +68,6 @@ static Value makeZeroI32(Location loc, ConversionPatternRewriter &rewriter) {
   return arith::ConstantIntOp::create(rewriter, loc, 0, 32);
 }
 
-static PipeKey getPipeKey(PipeType pipeType) {
-  return {pipeType.getSrcX(),      pipeType.getSrcY(),
-          pipeType.getDstStartX(), pipeType.getDstStartY(),
-          pipeType.getDstEndX(),   pipeType.getDstEndY(),
-          pipeType.getPipeNetId()};
-}
-
-static PipeType getPipeType(MLIRContext *context,
-                            const PipeResourceInfo &resource) {
-  const PipeKey &pipe = resource.pipe;
-  return PipeType::get(context, pipe.srcX, pipe.srcY, pipe.dstStartX,
-                       pipe.dstStartY, pipe.dstEndX, pipe.dstEndY,
-                       pipe.pipeNetId);
-}
-
 struct PipeSourceKey {
   int64_t srcX;
   int64_t srcY;
@@ -101,6 +88,7 @@ struct DenseMapInfo<mlir::tt::ttl::PipeSourceKey> {
   }
   static bool isEqual(const Key &lhs, const Key &rhs) { return lhs == rhs; }
 };
+
 } // namespace llvm
 
 namespace mlir::tt::ttl {
@@ -109,12 +97,25 @@ static PipeSourceKey getPipeSourceKey(PipeType pipeType) {
   return {pipeType.getSrcX(), pipeType.getSrcY()};
 }
 
+static FailureOr<PipeTransferCreateOp>
+getPipeTransferCreate(Operation *op, Value transfer,
+                      ValueOriginAnalysis &analysis) {
+  FailureOr<PipeTransferCreateOp> maybeCreateOp =
+      findPipeTransferCreateForTransfer(analysis, transfer);
+  if (failed(maybeCreateOp)) {
+    return op->emitError() << op->getName()
+                           << " requires every possible transfer value to "
+                              "derive from the same ttl.pipe_transfer.create";
+  }
+  return *maybeCreateOp;
+}
+
 static const PipeResourceInfo &
 lookupPipeResourceInfo(Operation *protocolOp,
                        const PipeResourcePlan &pipeResourcePlan) {
   auto it = pipeResourcePlan.resources.find(protocolOp);
   assert(it != pipeResourcePlan.resources.end() &&
-         "pipe protocol op missing from pipe resource plan");
+         "active pipe transfer must have a resource allocation");
   return it->second;
 }
 
@@ -124,7 +125,7 @@ static int64_t alignTo(int64_t value, int64_t alignment) {
 }
 
 /// Count tensor arguments because TTKernel common runtime args list tensor
-/// buffer addresses before compiler-managed pipe resources.
+/// buffer addresses before computed DFB bases and compiler-managed resources.
 static int64_t getNumTensorFunctionArgs(FuncOp func) {
   int64_t numTensorArgs = 0;
   for (BlockArgument argument : func.getArguments()) {
@@ -135,28 +136,49 @@ static int64_t getNumTensorFunctionArgs(FuncOp func) {
   return numTensorArgs;
 }
 
-/// Pipe kernels receive common runtime args for tensor buffer addresses first,
-/// followed by compiler-managed pipe resources.
+static int64_t getNumComputedAddressRuntimeArgs(FuncOp func) {
+  // Resource planning records the sorted receiver DFB list before lowering
+  // computes common runtime argument indices.
+  auto dfbIndices = func->getAttrOfType<DenseI32ArrayAttr>(
+      kPipeComputedAddressDFBIndicesAttrName);
+  return dfbIndices ? static_cast<int64_t>(dfbIndices.size()) : 0;
+}
+
+/// Pipe kernels receive tensor buffer addresses, computed receiver DFB bases,
+/// and then compiler-managed pipe resources as common runtime arguments.
 /// [Device 2.0] Keep this as a resource-plan lookup so the final device API
 /// lowering can replace common-arg plumbing without changing pipe semantics.
+static int64_t getPipeRuntimeCommonArgIndex(FuncOp func,
+                                            int64_t pipeRuntimeArgIndex) {
+  return getNumTensorFunctionArgs(func) +
+         getNumComputedAddressRuntimeArgs(func) + pipeRuntimeArgIndex;
+}
+
 static int64_t getPipeRuntimeCommonArgIndex(Operation *op,
                                             int64_t pipeRuntimeArgIndex) {
   FuncOp func = op->getParentOfType<FuncOp>();
   assert(func && "pipe op is not inside a function");
-  return getNumTensorFunctionArgs(func) + pipeRuntimeArgIndex;
+  return getPipeRuntimeCommonArgIndex(func, pipeRuntimeArgIndex);
 }
 
-static Value buildPipeRuntimeCommonArg(Location loc,
-                                       ConversionPatternRewriter &rewriter,
+static Value buildPipeRuntimeCommonArg(Location loc, OpBuilder &builder,
                                        int64_t commonArgIndex) {
-  auto argIndex = arith::ConstantIndexOp::create(rewriter, loc, commonArgIndex);
-  return ttk::GetCommonArgValOp::create(rewriter, loc, rewriter.getI32Type(),
+  auto argIndex = arith::ConstantIndexOp::create(builder, loc, commonArgIndex);
+  return ttk::GetCommonArgValOp::create(builder, loc, builder.getI32Type(),
                                         argIndex)
       .getResult();
 }
 
+static Value buildLocalSemaphoreAddress(Location loc, OpBuilder &builder,
+                                        int64_t semaphoreIndex) {
+  Value semaphoreIndexValue =
+      arith::ConstantIndexOp::create(builder, loc, semaphoreIndex);
+  return ttk::GetSemaphoreOp::create(builder, loc, semaphoreIndexValue)
+      .getResult();
+}
+
 /// Return the first pipe-resource runtime arg index used for GlobalSemaphore
-/// ready-counter addresses.
+/// counter addresses.
 static int64_t
 getFirstPipeGlobalSemaphoreArgOffset(const PipeResourcePlan &info) {
   // GlobalSemaphore addresses follow the optional SRAM scratch base in the
@@ -164,72 +186,34 @@ getFirstPipeGlobalSemaphoreArgOffset(const PipeResourcePlan &info) {
   return info.sramScratch.bytes > 0 ? 1 : 0;
 }
 
-PipeReadyCounterInfo
-PipeReadyCounterInfo::localSemaphore(int64_t senderReadyCounterSemIdx) {
-  return PipeReadyCounterInfo(PipeReadyCounterStorage::LocalSemaphore,
-                              senderReadyCounterSemIdx);
-}
-
-PipeReadyCounterInfo
-PipeReadyCounterInfo::globalSemaphore(int64_t globalSemaphoreIndex) {
-  return PipeReadyCounterInfo(PipeReadyCounterStorage::GlobalSemaphore,
-                              globalSemaphoreIndex);
-}
-
-ReadyCounterAddressInfo PipeReadyCounterInfo::getAddressInfo(
-    Operation *op, const PipeResourcePlan &pipeResourcePlan) const {
-  switch (storage) {
-  case PipeReadyCounterStorage::LocalSemaphore:
-    return {ReadyCounterAddressStorage::LocalSemaphore, index};
-  case PipeReadyCounterStorage::GlobalSemaphore: {
-    int64_t argIndex = getPipeRuntimeCommonArgIndex(
-        op, getFirstPipeGlobalSemaphoreArgOffset(pipeResourcePlan) + index);
-    return {ReadyCounterAddressStorage::GlobalSemaphoreRuntimeArg, argIndex};
-  }
-  }
-  llvm_unreachable("unknown pipe ready-counter storage");
-}
-
-void PipeReadyCounterInfo::observe(PipeReadyCounterObserver &observer) const {
-  switch (storage) {
-  case PipeReadyCounterStorage::LocalSemaphore:
-    observer.observeLocalSemaphore(index);
-    return;
-  case PipeReadyCounterStorage::GlobalSemaphore:
-    observer.observeGlobalSemaphore(index);
-    return;
-  }
-  llvm_unreachable("unknown pipe ready-counter storage");
-}
-
-/// Resolve the resource-plan ready-counter allocation to the addressing form
-/// used by TTKernel lowering at this operation site.
-static ReadyCounterAddressInfo
-getReadyCounterAddressInfo(Operation *op, const PipeResourceInfo &pipeResource,
-                           const PipeResourcePlan &pipeResourcePlan) {
-  return pipeResource.readyCounter.getAddressInfo(op, pipeResourcePlan);
-}
-
-/// Build the L1 address for the sender-ready counter for either storage kind.
-static Value buildReadyCounterAddress(Location loc,
-                                      const ReadyCounterAddressInfo &info,
-                                      ConversionPatternRewriter &rewriter) {
-  // Lowering consumes both local and GlobalSemaphore ready counters as L1
-  // addresses; only address construction differs between the two kinds.
+/// Build the L1 address for any compiler-managed PipeNet counter.
+static Value buildPipeCounterAddress(Location loc, FuncOp func,
+                                     PipeCounterInfo counter,
+                                     const PipeResourcePlan &pipeResourcePlan,
+                                     OpBuilder &builder) {
   // [Device 2.0] This should become a typed semaphore-object lookup when the
   // device API exposes Semaphore/GlobalSemaphore objects directly.
-  switch (info.storage) {
-  case ReadyCounterAddressStorage::LocalSemaphore: {
-    auto senderReadyCounterSemIdx =
-        arith::ConstantIndexOp::create(rewriter, loc, info.index);
-    auto senderReadyCounterAddr =
-        ttk::GetSemaphoreOp::create(rewriter, loc, senderReadyCounterSemIdx);
-    return senderReadyCounterAddr.getResult();
+  switch (counter.getStorage()) {
+  case PipeCounterStorage::LocalSemaphore:
+    return buildLocalSemaphoreAddress(loc, builder, counter.getIndex());
+  case PipeCounterStorage::GlobalSemaphore: {
+    int64_t argIndex = getPipeRuntimeCommonArgIndex(
+        func, getFirstPipeGlobalSemaphoreArgOffset(pipeResourcePlan) +
+                  counter.getIndex());
+    return buildPipeRuntimeCommonArg(loc, builder, argIndex);
   }
-  case ReadyCounterAddressStorage::GlobalSemaphoreRuntimeArg:
-    return buildPipeRuntimeCommonArg(loc, rewriter, info.index);
   }
-  llvm_unreachable("unknown ready counter address storage");
+  llvm_unreachable("unknown pipe counter storage");
+}
+
+static Value buildPipeCounterPtr(Location loc, FuncOp func,
+                                 PipeCounterInfo counter,
+                                 const PipeResourcePlan &pipeResourcePlan,
+                                 OpBuilder &builder) {
+  auto l1PtrTy = ttk::L1AddrPtrType::get(builder.getContext(), 32);
+  Value address =
+      buildPipeCounterAddress(loc, func, counter, pipeResourcePlan, builder);
+  return ttk::CastToL1PtrOp::create(builder, loc, l1PtrTy, address).getResult();
 }
 
 /// Add a static byte offset to an L1 address without changing the address
@@ -258,9 +242,15 @@ struct AddressTableInfo {
 /// the resource plan.
 static AddressTableInfo
 getAddressTableInfo(Operation *op, const PipeResourceInfo &pipeResource) {
+  assert(pipeResource.addressStorage.mode ==
+             PipeAddressMode::ReceiverPublishedAddressTable &&
+         "address-table info requested for computed-address pipe");
+  assert(pipeResource.addressStorage.sramAddressTable.has_value() &&
+         "receiver-published-address pipe missing address-table storage");
   int64_t scratchArgIndex = getPipeRuntimeCommonArgIndex(op, 0);
   return AddressTableInfo{
-      scratchArgIndex, pipeResource.addressStorage.sramAddressTable.byteOffset};
+      scratchArgIndex,
+      pipeResource.addressStorage.sramAddressTable->byteOffset};
 }
 
 /// Build the L1 address of this transfer's source-core address-table slot.
@@ -288,6 +278,65 @@ buildAddressTableDestinationAddress(Location loc, const AddressTableInfo &info,
   return ttk::LoadFromL1Op::create(rewriter, loc, rewriter.getI32Type(),
                                    tablePtr, zeroI32)
       .getResult();
+}
+
+/// Find the slot counter allocated during resource planning. Missing state is
+/// a pass-ordering bug because computed-address sends are planned before
+/// conversion patterns mutate the IR.
+static Value lookupComputedAddressCounter(
+    PipeTransferSendOp op, int64_t counterIndex,
+    const PipeComputedAddressCounterMap &computedAddressCounters) {
+  FuncOp senderFunc = op->getParentOfType<FuncOp>();
+  auto funcIt = computedAddressCounters.find(senderFunc);
+  assert(funcIt != computedAddressCounters.end() &&
+         "sender function missing computed-address counters");
+  auto counterIt = funcIt->second.find(counterIndex);
+  assert(counterIt != funcIt->second.end() &&
+         "computed-address counter missing from sender function");
+  return counterIt->second;
+}
+
+/// Compute the receiver DFB destination address selected for this send. A
+/// transfer that executes at most once uses `initialSlot` directly. A transfer
+/// that can repeat with a nonzero stride uses a sender-local counter for
+/// `slot(i)`.
+static Value buildComputedReceiverDFBDestinationAddress(
+    PipeTransferSendOp op, Location loc, const PipeComputedAddressInfo &info,
+    const PipeComputedAddressCounterMap &computedAddressCounters,
+    ConversionPatternRewriter &rewriter) {
+  Value baseAddress =
+      buildPipeRuntimeCommonArg(loc, rewriter, info.baseRuntimeCommonArgIndex);
+  if (!info.usesDynamicSlotCounter()) {
+    int64_t byteOffset =
+        info.initialSlot * info.blockStrideBytes + info.staticTileByteOffset;
+    return addByteOffset(loc, baseAddress, byteOffset, rewriter);
+  }
+
+  Value zeroIdx = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  Value slotCounter = lookupComputedAddressCounter(
+      op, *info.dynamicSlotCounterIndex, computedAddressCounters);
+  Value currentSlot =
+      memref::LoadOp::create(rewriter, loc, slotCounter, ValueRange{zeroIdx});
+  Value blockStrideBytes =
+      arith::ConstantIntOp::create(rewriter, loc, info.blockStrideBytes, 32);
+  Value blockByteOffset =
+      arith::MulIOp::create(rewriter, loc, currentSlot, blockStrideBytes);
+  Value receiverAddress =
+      arith::AddIOp::create(rewriter, loc, baseAddress, blockByteOffset);
+  receiverAddress =
+      addByteOffset(loc, receiverAddress, info.staticTileByteOffset, rewriter);
+
+  Value repeatStride =
+      arith::ConstantIntOp::create(rewriter, loc, info.repeatStride, 32);
+  Value blockCount =
+      arith::ConstantIntOp::create(rewriter, loc, info.blockCount, 32);
+  Value nextSlotUnwrapped =
+      arith::AddIOp::create(rewriter, loc, currentSlot, repeatStride);
+  Value nextSlot =
+      arith::RemUIOp::create(rewriter, loc, nextSlotUnwrapped, blockCount);
+  memref::StoreOp::create(rewriter, loc, nextSlot, slotCounter,
+                          ValueRange{zeroIdx});
+  return receiverAddress;
 }
 
 struct ReceiverPublishedAddressInfo {
@@ -327,7 +376,7 @@ buildReceiverPublishedAddress(Value dst, Location loc,
   auto receiverCBConverted =
       utils::convertTTLCBToTTKernel(info.receiverDFB, rewriter, loc);
   assert(succeeded(receiverCBConverted) &&
-         "preflight checked receiver DFB type");
+         "getTTLCBType guarantees a convertible receiver DFB");
 
   auto receiverWritePtr =
       ttk::GetWritePtrOp::create(rewriter, loc, *receiverCBConverted);
@@ -351,28 +400,98 @@ buildReceiverPublishedAddress(Value dst, Location loc,
       .getResult();
 }
 
+static void
+emitLocalReceiverAddressPublish(Location loc, Value tableAddress,
+                                Value publishedAddress,
+                                ConversionPatternRewriter &rewriter) {
+  auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
+  Value tablePtr =
+      ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, tableAddress);
+  Value zero = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
+  ttk::StoreToL1Op::create(rewriter, loc, publishedAddress, tablePtr, zero);
+}
+
+static void emitRemoteReceiverAddressPublish(
+    Location loc, Value sourceX, Value sourceY, Value tableAddress,
+    Value publishedAddress, Value nocVal, ConversionPatternRewriter &rewriter) {
+  auto byteEnableAll = arith::ConstantOp::create(
+      rewriter, loc, rewriter.getI8Type(), rewriter.getI8IntegerAttr(0xF));
+  ttk::NocInlineDwWriteOp::create(rewriter, loc, sourceX, sourceY, tableAddress,
+                                  publishedAddress, byteEnableAll, nocVal);
+}
+
+/// Publish locally when the receiver is the source because inline NoC writes do
+/// not update their issuing core's SRAM.
+static void emitReceiverAddressPublish(Location loc, PipeType pipeType,
+                                       Value sourceXTranslated,
+                                       Value sourceYTranslated,
+                                       Value tableAddress,
+                                       Value publishedAddress, Value nocVal,
+                                       ConversionPatternRewriter &rewriter) {
+  if (!pipeType.srcInDstRange()) {
+    emitRemoteReceiverAddressPublish(loc, sourceXTranslated, sourceYTranslated,
+                                     tableAddress, publishedAddress, nocVal,
+                                     rewriter);
+    return;
+  }
+  if (pipeType.hasSingleReceiver()) {
+    emitLocalReceiverAddressPublish(loc, tableAddress, publishedAddress,
+                                    rewriter);
+    return;
+  }
+
+  Value currentX =
+      ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
+  Value currentY =
+      ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
+  Value sourceX =
+      arith::ConstantIndexOp::create(rewriter, loc, pipeType.getSrcX());
+  Value sourceY =
+      arith::ConstantIndexOp::create(rewriter, loc, pipeType.getSrcY());
+  Value xMatches = arith::CmpIOp::create(
+      rewriter, loc, arith::CmpIPredicate::eq, currentX, sourceX);
+  Value yMatches = arith::CmpIOp::create(
+      rewriter, loc, arith::CmpIPredicate::eq, currentY, sourceY);
+  Value receiverIsSource =
+      arith::AndIOp::create(rewriter, loc, xMatches, yMatches);
+  auto localPublish = scf::IfOp::create(rewriter, loc, receiverIsSource,
+                                        /*withElseRegion=*/true);
+  {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(&localPublish.getThenRegion().front());
+    emitLocalReceiverAddressPublish(loc, tableAddress, publishedAddress,
+                                    rewriter);
+    rewriter.setInsertionPointToStart(&localPublish.getElseRegion().front());
+    emitRemoteReceiverAddressPublish(loc, sourceXTranslated, sourceYTranslated,
+                                     tableAddress, publishedAddress, nocVal,
+                                     rewriter);
+  }
+  rewriter.setInsertionPointAfter(localPublish);
+}
+
 //===----------------------------------------------------------------------===//
-// Receiver post-sequence allocation
+// Receiver post sequence counter initialization
 //===----------------------------------------------------------------------===//
 
-void allocatePipePostSequenceCounters(const PipeResourcePlan &pipeResourcePlan,
-                                      PipePostSequenceCounterMap &counters) {
-  // The sequence is assigned where a post executes so the token retains the
-  // completion threshold of that dynamic receive.
-  llvm::MapVector<FuncOp, llvm::SmallSetVector<int64_t, 4>> semIndicesByFunc;
+void initializePipePostSequenceCounters(
+    const PipeResourcePlan &pipeResourcePlan,
+    PipeCounterProgressMap &postSequenceCounters) {
+  llvm::MapVector<FuncOp, SmallVector<PipeCounterInfo>> countersByFunc;
   for (const auto &[protocolOp, resource] : pipeResourcePlan.resources) {
-    auto postOp = mlir::dyn_cast<PipeTransferPostOp>(protocolOp);
-    if (!postOp || !getAttachedCB(postOp.getDst())) {
+    auto postOp = dyn_cast<PipeTransferPostOp>(protocolOp);
+    if (!postOp) {
       continue;
     }
     FuncOp func = postOp->getParentOfType<FuncOp>();
     assert(func && "pipe transfer post must be inside a function");
-    semIndicesByFunc[func].insert(resource.completion.receiverCompletionSemIdx);
+    SmallVector<PipeCounterInfo> &counters = countersByFunc[func];
+    if (!llvm::is_contained(counters, resource.completion.counter)) {
+      counters.push_back(resource.completion.counter);
+    }
   }
 
-  for (auto &[func, semIndices] : semIndicesByFunc) {
-    // Allocas + zero-stores at function entry dominate every receive post,
-    // including posts inside scf.if from `if_dst`.
+  for (auto &[func, counters] : countersByFunc) {
+    // These entry-block values dominate posts nested in receiver control flow.
     OpBuilder builder(func.getContext());
     builder.setInsertionPointToStart(&func.getBody().front());
     Location loc = func.getLoc();
@@ -381,29 +500,101 @@ void allocatePipePostSequenceCounters(const PipeResourcePlan &pipeResourcePlan,
     Value zeroIdx = arith::ConstantIndexOp::create(builder, loc, 0);
     Value zeroI32 = arith::ConstantOp::create(builder, loc, i32Ty,
                                               builder.getI32IntegerAttr(0));
-    auto &perFunc = counters[func];
-    SmallVector<int64_t> sortedSemIndices(semIndices.begin(), semIndices.end());
-    llvm::sort(sortedSemIndices);
-    for (int64_t semIndex : sortedSemIndices) {
-      auto alloca = memref::AllocaOp::create(builder, loc, memrefTy);
-      memref::StoreOp::create(builder, loc, zeroI32, alloca,
+    auto &countersForFunc = postSequenceCounters[func];
+    llvm::sort(counters, [](PipeCounterInfo lhs, PipeCounterInfo rhs) {
+      return std::make_pair(lhs.getStorage(), lhs.getIndex()) <
+             std::make_pair(rhs.getStorage(), rhs.getIndex());
+    });
+    for (PipeCounterInfo counterInfo : counters) {
+      auto counter = memref::AllocaOp::create(builder, loc, memrefTy);
+      memref::StoreOp::create(builder, loc, zeroI32, counter,
                               ValueRange{zeroIdx});
-      perFunc[semIndex] = alloca.getResult();
+      countersForFunc.push_back(
+          PipeCounterProgress{counterInfo, counter.getResult()});
     }
   }
 }
 
-/// Lower CB -> Pipe copy: write source DFB data to the receiver-published
-/// destination address, then signal arrival.
-LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
-                                    bool isConsumerCB,
-                                    const PipeResourcePlan &pipeResourcePlan,
-                                    ConversionPatternRewriter &rewriter) {
+void initializePipeComputedAddressCounters(
+    const PipeResourcePlan &pipeResourcePlan,
+    PipeComputedAddressCounterMap &computedAddressCounters) {
+  for (const auto &initializationEntry :
+       pipeResourcePlan.computedAddressCounterInitializations) {
+    func::FuncOp func = initializationEntry.first;
+    const SmallVector<PipeComputedAddressCounterInitInfo> &initializations =
+        initializationEntry.second;
+    SmallVector<PipeComputedAddressCounterInitInfo> sortedInitializations(
+        initializations);
+    llvm::sort(sortedInitializations,
+               [](const PipeComputedAddressCounterInitInfo &lhs,
+                  const PipeComputedAddressCounterInitInfo &rhs) {
+                 return lhs.counterIndex < rhs.counterIndex;
+               });
+
+    OpBuilder builder(func.getContext());
+    builder.setInsertionPointToStart(&func.getBody().front());
+    Location loc = func.getLoc();
+    auto counterMemrefTy = MemRefType::get({1}, builder.getI32Type());
+    Value zeroIdx = arith::ConstantIndexOp::create(builder, loc, 0);
+    auto &perFuncCounters = computedAddressCounters[func];
+    for (const PipeComputedAddressCounterInitInfo &init :
+         sortedInitializations) {
+      // Entry-block allocation dominates loop-carried sends while keeping the
+      // slot state private to the sender kernel.
+      auto counter = memref::AllocaOp::create(builder, loc, counterMemrefTy);
+      Value initialSlot =
+          arith::ConstantIntOp::create(builder, loc, init.initialSlot, 32);
+      memref::StoreOp::create(builder, loc, initialSlot, counter,
+                              ValueRange{zeroIdx});
+      perFuncCounters[init.counterIndex] = counter.getResult();
+    }
+  }
+}
+
+static FailureOr<Value>
+lookupPipeCounterProgress(const PipeCounterProgressMap *progress, FuncOp func,
+                          PipeCounterInfo counter) {
+  if (!progress) {
+    return failure();
+  }
+  auto funcIt = progress->find(func);
+  if (funcIt == progress->end()) {
+    return failure();
+  }
+  auto progressIt =
+      llvm::find_if(funcIt->second, [&](const PipeCounterProgress &entry) {
+        return entry.counter == counter;
+      });
+  if (progressIt == funcIt->second.end()) {
+    return failure();
+  }
+  return progressIt->value;
+}
+
+/// Lower CB -> Pipe copy: write source DFB data to the selected destination
+/// address, then signal arrival.
+LogicalResult lowerPipeTransferSend(
+    PipeTransferSendOp op, Value srcCB, bool isConsumerCB,
+    ValueOriginAnalysis &analysis, const PipeResourcePlan &pipeResourcePlan,
+    const PipeComputedAddressCounterMap &computedAddressCounters,
+    ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
+  if (pipeResourcePlan.staticallyInactiveOps.contains(op.getOperation())) {
+    rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
+    return success();
+  }
+  FailureOr<PipeTransferCreateOp> maybeCreateOp =
+      getPipeTransferCreate(op.getOperation(), op.getTransfer(), analysis);
+  if (failed(maybeCreateOp)) {
+    return failure();
+  }
+  PipeTransferCreateOp createOp = *maybeCreateOp;
+  auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
   const PipeResourceInfo &pipeResource =
-      lookupPipeResourceInfo(op, pipeResourcePlan);
+      lookupPipeResourceInfo(op.getOperation(), pipeResourcePlan);
   PipeCompletionInfo completionInfo = pipeResource.completion;
-  PipeType pipeType = getPipeType(rewriter.getContext(), pipeResource);
+  FuncOp senderFunc = op->getParentOfType<FuncOp>();
+  assert(senderFunc && "pipe transfer send must be inside a function");
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
 
   auto cbType = getTTLCBType(srcCB);
@@ -419,10 +610,6 @@ LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
   }
   int64_t pageSizeBytes = tileType.getSizeBytes();
 
-  ReadyCounterAddressInfo readyCounterInfo =
-      getReadyCounterAddressInfo(op, pipeResource, pipeResourcePlan);
-  AddressTableInfo addressTableInfo = getAddressTableInfo(op, pipeResource);
-
   int64_t dstStartX = pipeType.getDstStartX();
   int64_t dstStartY = pipeType.getDstStartY();
   int64_t dstEndX = pipeType.getDstEndX();
@@ -433,7 +620,8 @@ LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
   auto i32Ty = rewriter.getI32Type();
 
   auto cbConverted = utils::convertTTLCBToTTKernel(srcCB, rewriter, loc);
-  assert(succeeded(cbConverted) && "preflight checked source DFB type");
+  assert(succeeded(cbConverted) &&
+         "getTTLCBType guarantees a convertible source DFB");
 
   int64_t nocIdx = getNocIndex(op);
   Value nocVal = arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
@@ -441,8 +629,8 @@ LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
 
   int64_t expectedReceiverPosts =
       isCollectiveTransfer(pipeResource.transferContract) ? numDests : 1;
-  Value senderReadyCounterAddr =
-      buildReadyCounterAddress(loc, readyCounterInfo, rewriter);
+  Value senderReadyCounterAddr = buildPipeCounterAddress(
+      loc, senderFunc, pipeResource.readyCounter, pipeResourcePlan, rewriter);
   auto senderReadyCounterPtr = ttk::CastToL1PtrOp::create(
       rewriter, loc, l1PtrTy, senderReadyCounterAddr);
   auto expectedReadyCount = arith::ConstantOp::create(
@@ -478,7 +666,7 @@ LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
   auto dstEndXLogical = arith::ConstantIndexOp::create(rewriter, loc, dstEndX);
   auto dstEndYLogical = arith::ConstantIndexOp::create(rewriter, loc, dstEndY);
 
-  // NOC operations require virtual/translated coordinates
+  // NoC operations require translated coordinates.
   auto dstStartXVal = ttk::ConvertLogicalXToTranslatedOp::create(
       rewriter, loc, indexTy, dstStartXLogical);
   auto dstStartYVal = ttk::ConvertLogicalYToTranslatedOp::create(
@@ -501,8 +689,8 @@ LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
   auto numDestsVal = arith::ConstantOp::create(
       rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(numDests));
 
-  // Transfer the entire block in a single NOC write. Tiles are contiguous in
-  // the CB, and destination CB layout is uniform across cores, so we can send
+  // Transfer the entire block in one NoC write. Tiles are contiguous in the
+  // DFB, and destination DFB layout is uniform across nodes, so lowering sends
   // all tiles at once instead of one per tile.
   int64_t totalSizeBytes = cbNumTiles * pageSizeBytes;
   auto totalSizeVal = arith::ConstantOp::create(
@@ -510,8 +698,18 @@ LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
 
   Value srcAddr = arith::IndexCastOp::create(rewriter, loc, i32Ty, srcPtrIdx);
 
-  Value dstAddr =
-      buildAddressTableDestinationAddress(loc, addressTableInfo, rewriter);
+  Value dstAddr;
+  if (pipeResource.addressStorage.usesComputedReceiverDFB()) {
+    assert(pipeResource.addressStorage.computedAddress.has_value() &&
+           "computed pipe missing computed-address info");
+    dstAddr = buildComputedReceiverDFBDestinationAddress(
+        op, loc, *pipeResource.addressStorage.computedAddress,
+        computedAddressCounters, rewriter);
+  } else {
+    AddressTableInfo addressTableInfo = getAddressTableInfo(op, pipeResource);
+    dstAddr =
+        buildAddressTableDestinationAddress(loc, addressTableInfo, rewriter);
+  }
 
   // TODO(ttl): Select unicast or multicast from a compiler optimization over
   // the transfer plan instead of directly preserving the user's tt-lang syntax.
@@ -536,14 +734,11 @@ LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
   // Wait for payload writes to complete before signaling receiver completion.
   // Without this barrier, the receiver may wake up before all data arrives.
   ttk::NocAsyncWriteBarrierOp::create(rewriter, loc, nocVal);
+  Value receiverCompletionCounterAddr = buildPipeCounterAddress(
+      loc, senderFunc, completionInfo.counter, pipeResourcePlan, rewriter);
 
-  // Signal receiver completion.
   if (pipeType.hasSingleReceiver()) {
     // Point-to-point increments the destination receiver-completion counter.
-    auto receiverCompletionCounterSemIdx = arith::ConstantIndexOp::create(
-        rewriter, loc, completionInfo.receiverCompletionSemIdx);
-    auto receiverCompletionCounterAddr = ttk::GetSemaphoreOp::create(
-        rewriter, loc, receiverCompletionCounterSemIdx);
     auto completionIncrement = arith::ConstantIndexOp::create(rewriter, loc, 1);
     auto receiverCompletionNocAddr =
         ttk::GetNocAddrOp::create(rewriter, loc, dstStartXVal, dstStartYVal,
@@ -554,14 +749,9 @@ LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
   } else {
     // Collective increments every receiver-completion counter. The receiver
     // pairs this with a cumulative wait_min threshold.
-    auto receiverCompletionCounterSemIdx = arith::ConstantIndexOp::create(
-        rewriter, loc, completionInfo.receiverCompletionSemIdx);
-    auto receiverCompletionCounterAddr = ttk::GetSemaphoreOp::create(
-        rewriter, loc, receiverCompletionCounterSemIdx);
-
-    // HW multicast auto-excludes the sender; num_dests counts only remote
-    // receivers. tt-metal has no inc_multicast_loopback primitive, so the
-    // source node's receiver-completion counter is incremented locally below.
+    // Hardware multicast excludes the sender, so num_dests counts only remote
+    // receivers. TT-Metal has no multicast loopback increment, so a source that
+    // is also a receiver requires a separate local increment.
     int64_t numRemoteDests = pipeType.srcInDstRange() ? numDests - 1 : numDests;
     auto remoteReceiverCount = arith::ConstantOp::create(
         rewriter, loc, i32Ty, rewriter.getI32IntegerAttr(numRemoteDests));
@@ -578,8 +768,6 @@ LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
         /*posted=*/BoolAttr());
 
     if (pipeType.srcInDstRange()) {
-      // Local self-inc: when sender is also a receiver of overlapping
-      // pipes, its own cumulative count must include this pipe.
       auto srcXLogical =
           arith::ConstantIndexOp::create(rewriter, loc, pipeType.getSrcX());
       auto srcYLogical =
@@ -597,9 +785,9 @@ LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
     }
   }
 
-  // Both branches signal completion with non-posted atomics; the send ttl.wait
-  // lowers to a no-op, so this barrier is the only flush before the kernel
-  // exits. Without it receivers can observe stale completion counts.
+  // Point-to-point and collective completion signals use non-posted atomics.
+  // The send ttl.wait lowers to a no-op, so this barrier is the only flush
+  // before kernel exit; without it receivers can observe stale counts.
   ttk::NocAsyncAtomicBarrierOp::create(rewriter, loc, nocVal);
 
   rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
@@ -607,38 +795,54 @@ LogicalResult lowerPipeTransferSend(PipeTransferSendOp op, Value srcCB,
 }
 
 LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
-                                    const PipePostSequenceCounterMap &counters,
+                                    ValueOriginAnalysis &analysis,
+                                    const PipeCounterProgressMap &counters,
                                     const PipeResourcePlan &pipeResourcePlan,
                                     ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
+  if (pipeResourcePlan.staticallyInactiveOps.contains(op.getOperation())) {
+    auto token = UnrealizedConversionCastOp::create(
+        rewriter, loc, op.getToken().getType(), ValueRange{});
+    rewriter.replaceOp(op, token.getResult(0));
+    return success();
+  }
+  FailureOr<PipeTransferCreateOp> maybeCreateOp =
+      getPipeTransferCreate(op.getOperation(), op.getTransfer(), analysis);
+  if (failed(maybeCreateOp)) {
+    return failure();
+  }
+  PipeTransferCreateOp createOp = *maybeCreateOp;
+  auto pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
   const PipeResourceInfo &pipeResource =
-      lookupPipeResourceInfo(op, pipeResourcePlan);
-  PipeType pipeType = getPipeType(rewriter.getContext(), pipeResource);
-  int64_t completionSemIndex = pipeResource.completion.receiverCompletionSemIdx;
-  auto func = op->getParentOfType<func::FuncOp>();
-  auto functionCounters = counters.find(func);
-  if (functionCounters == counters.end()) {
-    op.emitError("pipe receive post has no sequence counter allocation");
+      lookupPipeResourceInfo(op.getOperation(), pipeResourcePlan);
+  FuncOp func = op->getParentOfType<FuncOp>();
+  assert(func && "pipe transfer post must be inside a function");
+  FailureOr<Value> maybeSequenceCounter = lookupPipeCounterProgress(
+      &counters, func, pipeResource.completion.counter);
+  if (failed(maybeSequenceCounter)) {
+    op.emitError("pipe receive post has no sequence counter for its completion "
+                 "counter");
     return failure();
   }
-  auto sequenceCounter = functionCounters->second.find(completionSemIndex);
-  if (sequenceCounter == functionCounters->second.end()) {
-    op.emitError("pipe receive post has no sequence counter for completion "
-                 "semaphore ")
-        << completionSemIndex;
-    return failure();
-  }
-  FailureOr<ReceiverPublishedAddressInfo> publishedAddressInfo =
-      getReceiverPublishedAddressInfo(op, dst, rewriter);
-  if (failed(publishedAddressInfo)) {
-    return failure();
-  }
-  AddressTableInfo addressTableInfo = getAddressTableInfo(op, pipeResource);
-  ReadyCounterAddressInfo readyCounterInfo =
-      getReadyCounterAddressInfo(op, pipeResource, pipeResourcePlan);
+  Value sequenceCounter = *maybeSequenceCounter;
 
   int64_t nocIdx = getNocIndex(op);
   auto indexTy = rewriter.getIndexType();
+
+  // Preflight the only fallible validation before emitting any ops, so a match
+  // failure leaves no partially-built IR for the conversion driver to roll
+  // back.
+  bool usesComputedReceiverDFB =
+      pipeResource.addressStorage.usesComputedReceiverDFB();
+  std::optional<ReceiverPublishedAddressInfo> maybePublishedAddressInfo;
+  if (!usesComputedReceiverDFB) {
+    FailureOr<ReceiverPublishedAddressInfo> info =
+        getReceiverPublishedAddressInfo(op, dst, rewriter);
+    if (failed(info)) {
+      return failure();
+    }
+    maybePublishedAddressInfo = *info;
+  }
 
   Value nocVal = arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
                                            rewriter.getI8IntegerAttr(nocIdx));
@@ -652,37 +856,37 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
   auto srcYTranslated = ttk::ConvertLogicalYToTranslatedOp::create(
       rewriter, loc, indexTy, srcYLogical);
 
-  Value publishedAddress =
-      buildReceiverPublishedAddress(dst, loc, *publishedAddressInfo, rewriter);
-  Value tableAddress =
-      buildAddressTableAddress(loc, addressTableInfo, rewriter);
-  // [Device 2.0] This is a receiver-authored write to a typed address table;
-  // only this lowering should select the current inline NoC write primitive.
-  auto byteEnableAll = arith::ConstantOp::create(
-      rewriter, loc, rewriter.getI8Type(), rewriter.getI8IntegerAttr(0xF));
-  ttk::NocInlineDwWriteOp::create(rewriter, loc, srcXTranslated, srcYTranslated,
-                                  tableAddress, publishedAddress, byteEnableAll,
-                                  nocVal);
-  ttk::NocAsyncWriteBarrierOp::create(rewriter, loc, nocVal);
+  if (!usesComputedReceiverDFB) {
+    AddressTableInfo addressTableInfo = getAddressTableInfo(op, pipeResource);
+    Value publishedAddress = buildReceiverPublishedAddress(
+        dst, loc, *maybePublishedAddressInfo, rewriter);
+    Value tableAddress =
+        buildAddressTableAddress(loc, addressTableInfo, rewriter);
+    emitReceiverAddressPublish(loc, pipeType, srcXTranslated, srcYTranslated,
+                               tableAddress, publishedAddress, nocVal,
+                               rewriter);
+    ttk::NocAsyncWriteBarrierOp::create(rewriter, loc, nocVal);
+  }
 
-  Value senderReadyCounterAddr =
-      buildReadyCounterAddress(loc, readyCounterInfo, rewriter);
+  Value senderReadyCounterAddr = buildPipeCounterAddress(
+      loc, func, pipeResource.readyCounter, pipeResourcePlan, rewriter);
   auto senderReadyCounterNocAddr =
       ttk::GetNocAddrOp::create(rewriter, loc, srcXTranslated, srcYTranslated,
                                 senderReadyCounterAddr, nocVal);
   auto readyCounterIncrement = arith::ConstantIndexOp::create(rewriter, loc, 1);
-  ttk::NocSemaphoreIncOp::create(
-      rewriter, loc, senderReadyCounterNocAddr.getResult(),
-      readyCounterIncrement, nocVal, /*posted=*/BoolAttr());
+  ttk::NocSemaphoreIncOp::create(rewriter, loc,
+                                 senderReadyCounterNocAddr.getResult(),
+                                 readyCounterIncrement, nocVal,
+                                 /*posted=*/BoolAttr());
 
   auto zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
-  auto previousSequence = memref::LoadOp::create(
-      rewriter, loc, sequenceCounter->second, ValueRange{zeroIndex});
+  auto previousSequence = memref::LoadOp::create(rewriter, loc, sequenceCounter,
+                                                 ValueRange{zeroIndex});
   auto oneI32 = arith::ConstantOp::create(rewriter, loc, rewriter.getI32Type(),
                                           rewriter.getI32IntegerAttr(1));
   auto tokenSequence =
       arith::AddIOp::create(rewriter, loc, previousSequence, oneI32);
-  memref::StoreOp::create(rewriter, loc, tokenSequence, sequenceCounter->second,
+  memref::StoreOp::create(rewriter, loc, tokenSequence, sequenceCounter,
                           ValueRange{zeroIndex});
   rewriter.replaceOp(op, tokenSequence.getResult());
   return success();
@@ -692,20 +896,20 @@ LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
 LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op, Value tokenSequence,
                                     const PipeResourcePlan &pipeResourcePlan,
                                     ConversionPatternRewriter &rewriter) {
+  if (pipeResourcePlan.staticallyInactiveOps.contains(op.getOperation())) {
+    rewriter.eraseOp(op);
+    return success();
+  }
   auto loc = op.getLoc();
   PipeCompletionInfo completionInfo =
-      lookupPipeResourceInfo(op, pipeResourcePlan).completion;
+      lookupPipeResourceInfo(op.getOperation(), pipeResourcePlan).completion;
 
-  auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
-
-  auto receiverCompletionCounterSemIdx = arith::ConstantIndexOp::create(
-      rewriter, loc, completionInfo.receiverCompletionSemIdx);
-  auto receiverCompletionCounterAddr = ttk::GetSemaphoreOp::create(
-      rewriter, loc, receiverCompletionCounterSemIdx);
-  // [Device 2.0] Completion waits should use the allocated completion
+  FuncOp func = op->getParentOfType<FuncOp>();
+  assert(func && "pipe transfer wait must be inside a function");
+  // [Device 2.0] Completion waits should consume the allocated completion
   // object directly once device APIs expose typed semaphore waits.
-  auto receiverCompletionCounterPtr = ttk::CastToL1PtrOp::create(
-      rewriter, loc, l1PtrTy, receiverCompletionCounterAddr);
+  Value receiverCompletionCounterPtr = buildPipeCounterPtr(
+      loc, func, completionInfo.counter, pipeResourcePlan, rewriter);
 
   ttk::SemaphoreWaitMinOp::create(rewriter, loc, receiverCompletionCounterPtr,
                                   tokenSequence);
@@ -783,7 +987,6 @@ struct IfSrcLowering : OpConversionPattern<IfSrcOp> {
     auto loc = op.getLoc();
     auto pipeType = mlir::cast<PipeType>(op.getPipe().getType());
 
-    // Get current core coordinates.
     auto coreX =
         ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
     auto coreY =
@@ -804,7 +1007,6 @@ struct IfDstLowering : OpConversionPattern<IfDstOp> {
     auto loc = op.getLoc();
     auto pipeType = mlir::cast<PipeType>(op.getPipe().getType());
 
-    // Get current core coordinates.
     auto coreX =
         ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
     auto coreY =
@@ -845,8 +1047,6 @@ static LogicalResult lowerRolePredicate(
   return success();
 }
 
-// Base for IsSrc/IsDst/IsActive lowerings: holds the shared PipeNetIndex
-// borrowed pointer so the per-pattern matchAndRewrite stays compact.
 template <typename Op>
 struct IsRoleLoweringBase : OpConversionPattern<Op> {
   IsRoleLoweringBase(const TypeConverter &tc, MLIRContext *ctx,
@@ -947,68 +1147,22 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
 
 namespace {
 
-/// Operation kind that changes outstanding receiver-published state.
-enum class PipeTransferRendezvousEventKind {
-  Post,
-  Send,
-  ReceiveWait,
-};
-
-struct PipeTransferAllocationUnit;
-
-/// One ordered post/send operation used to validate bounded rendezvous depth.
-struct PipeTransferRendezvousEvent {
-  static PipeTransferRendezvousEvent post(Operation *op) {
-    return {op, PipeTransferRendezvousEventKind::Post, {}};
-  }
-
-  static PipeTransferRendezvousEvent send(Operation *op) {
-    return {op, PipeTransferRendezvousEventKind::Send, {}};
-  }
-
-  static PipeTransferRendezvousEvent
-  receiveWait(Operation *op, ArrayRef<Operation *> possiblePosts) {
-    return {op, PipeTransferRendezvousEventKind::ReceiveWait,
-            SmallVector<Operation *, 2>(possiblePosts)};
-  }
-
-  /// Pipe transfer post, send, or receive-wait operation.
-  Operation *op;
-  PipeTransferRendezvousEventKind kind;
-  /// Posts whose completion a receive wait may observe.
-  SmallVector<Operation *, 2> possiblePosts;
-
-  /// Block-local operation order used for queue-depth validation.
-  bool operator<(const PipeTransferRendezvousEvent &rhs) const {
-    return op->isBeforeInBlock(rhs.op);
-  }
-
-  /// Update outstanding posts for one event in block order.
-  LogicalResult updateLivePosts(const PipeTransferAllocationUnit &unit,
-                                llvm::SmallSetVector<Operation *, 4> &livePosts,
-                                int64_t maxLivePosts) const;
-};
-
-/// Allocation unit for source-node pipe rendezvous resources.
+/// Allocation unit for all resources owned by one transfer definition.
 ///
-/// Repeated static transfer operations for the same logical pipe share one
-/// unit so they preserve the existing per-pipe protocol state. The interval
-/// bounds the lifetime of the unit's address-table slot and sender-ready
-/// counter for deterministic coloring.
+/// One send and its corresponding receiver posts share an address mechanism
+/// and sender-ready counter. Each receiver wait uses the completion semaphore
+/// assigned to the same unit.
 struct PipeTransferAllocationUnit {
-  /// Post, send, and wait operations that use this unit's resources.
+  PipeTransferNodeId transferNodeId = 0;
+  Operation *sendOp = nullptr;
+  /// Send, receiver-post, and receiver-wait operations for this transfer.
   SmallVector<Operation *> protocolOps;
-
-  /// Protocol events used to reject unsupported queue depth in linear blocks.
-  SmallVector<PipeTransferRendezvousEvent> rendezvousEvents;
 
   /// Logical pipe whose source node owns this unit's rendezvous resources.
   PipeKey pipe;
 
-  /// Pipe type cached from the first create op for resource-plan construction.
   PipeType pipeType;
 
-  /// Collective takes precedence when cloned regions produce mixed contracts.
   PipeTransferContract transferContract = PipeTransferContract::PointToPoint;
 
   /// Stable tie-breaker for deterministic allocation.
@@ -1018,10 +1172,10 @@ struct PipeTransferAllocationUnit {
   OperationLiveInterval interval;
 
   /// Assigned first-fit color within the source node's allocation group.
-  int64_t resourceColor = 0;
+  std::size_t resourceColor = 0;
 
-  /// Completion-counter color shared only across disjoint receiver sets.
-  int64_t completionCounterColor = 0;
+  /// Completion-counter color; disjoint receiver sets may share one color.
+  std::optional<int64_t> maybeCompletionCounterColor;
 
   /// Deterministic order used by first-fit interval coloring.
   bool operator<(const PipeTransferAllocationUnit &rhs) const {
@@ -1037,231 +1191,116 @@ struct PipeTransferAllocationUnit {
 
 } // namespace
 
-static LogicalResult
-emitUnsupportedQueueDepth(Operation *op,
-                          const PipeTransferAllocationUnit &unit) {
-  return op->emitError()
-         << "pipe transfer for pipe net " << unit.pipe.pipeNetId << " src("
-         << unit.pipe.srcX << ", " << unit.pipe.srcY << ") dst("
-         << unit.pipe.dstStartX << ", " << unit.pipe.dstStartY << ") to("
-         << unit.pipe.dstEndX << ", " << unit.pipe.dstEndY
-         << ") requires queue depth greater than 1; current lowering supports "
-            "one outstanding receiver post per pipe";
-}
-
-LogicalResult PipeTransferRendezvousEvent::updateLivePosts(
-    const PipeTransferAllocationUnit &unit,
-    llvm::SmallSetVector<Operation *, 4> &livePosts,
-    int64_t maxLivePosts) const {
-  switch (kind) {
-  case PipeTransferRendezvousEventKind::Post:
-    livePosts.insert(op);
-    if (livePosts.size() > static_cast<std::size_t>(maxLivePosts)) {
-      return emitUnsupportedQueueDepth(op, unit);
-    }
-    return success();
-  case PipeTransferRendezvousEventKind::Send:
-    if (!livePosts.empty()) {
-      livePosts.remove(livePosts.front());
-    }
-    return success();
-  case PipeTransferRendezvousEventKind::ReceiveWait:
-    for (Operation *postOp : possiblePosts) {
-      livePosts.remove(postOp);
-    }
-    return success();
-  }
-  llvm_unreachable("unknown pipe transfer rendezvous event kind");
-}
-
-static LogicalResult
-validateMaxLivePosts(const PipeTransferAllocationUnit &unit,
-                     int64_t maxLivePosts) {
-  llvm::MapVector<Block *, SmallVector<PipeTransferRendezvousEvent>>
-      eventsByBlock;
-  SmallVector<Operation *> postOps;
-  for (const PipeTransferRendezvousEvent &event : unit.rendezvousEvents) {
-    if (event.kind == PipeTransferRendezvousEventKind::Post) {
-      postOps.push_back(event.op);
-    }
-    eventsByBlock[event.op->getBlock()].push_back(event);
-  }
-
-  if (postOps.size() <= static_cast<size_t>(maxLivePosts)) {
-    return success();
-  }
-
-  for (size_t lhsIndex = 0; lhsIndex < postOps.size(); ++lhsIndex) {
-    for (size_t rhsIndex = lhsIndex + 1; rhsIndex < postOps.size();
-         ++rhsIndex) {
-      Operation *lhsOp = postOps[lhsIndex];
-      Operation *rhsOp = postOps[rhsIndex];
-      if (lhsOp->getBlock() != rhsOp->getBlock() &&
-          !mlir::insideMutuallyExclusiveRegions(lhsOp, rhsOp)) {
-        return emitUnsupportedQueueDepth(rhsOp, unit);
-      }
-    }
-  }
-
-  for (auto &entry : eventsByBlock) {
-    SmallVector<PipeTransferRendezvousEvent> &events = entry.second;
-    if (events.size() <= static_cast<size_t>(maxLivePosts)) {
-      continue;
-    }
-
-    llvm::sort(events, std::less<PipeTransferRendezvousEvent>());
-
-    llvm::SmallSetVector<Operation *, 4> livePosts;
-    for (const PipeTransferRendezvousEvent &event : events) {
-      if (failed(event.updateLivePosts(unit, livePosts, maxLivePosts))) {
-        return failure();
-      }
-    }
-  }
-
-  return success();
-}
-
 static bool pipeTransferIntervalsOverlap(const PipeTransferAllocationUnit &lhs,
                                          const PipeTransferAllocationUnit &rhs,
                                          const DominanceInfo &dominanceInfo) {
   return intervalsOverlap(lhs.interval, rhs.interval, dominanceInfo);
 }
 
-static FailureOr<SmallVector<PipeTransferAllocationUnit, 0>>
-collectPipeTransferAllocationUnits(ModuleOp mod,
-                                   const PipeTransferIndex &transferIndex,
-                                   const DominanceInfo &dominanceInfo,
-                                   const PostDominanceInfo &postDominanceInfo) {
-  SmallVector<PipeTransferAllocationUnit, 0> units;
-  llvm::MapVector<Operation *, unsigned> indexByTransferCreateOp;
-  llvm::MapVector<PipeKey, unsigned> indexByPipe;
-  int64_t nextOrdinal = 0;
-  int64_t nextEventOrdinal = 0;
-
-  auto getOrCreateUnit =
-      [&](Operation *protocolOp) -> FailureOr<PipeTransferAllocationUnit *> {
-    FailureOr<PipeTransferCreateOp> createOp =
-        transferIndex.getTransferCreate(protocolOp);
-    if (failed(createOp)) {
-      return protocolOp->emitError(
-          "pipe protocol operation has no transfer creation association");
-    }
-
-    Operation *transferCreateOp = (*createOp).getOperation();
-    auto existing = indexByTransferCreateOp.find(transferCreateOp);
-    if (existing != indexByTransferCreateOp.end()) {
-      units[existing->second].protocolOps.push_back(protocolOp);
-      return &units[existing->second];
-    }
-
-    auto pipeType = mlir::cast<PipeType>((*createOp).getPipe().getType());
-    PipeKey pipe = getPipeKey(pipeType);
-    PipeTransferContract transferContract = getPipeTransferContract(*createOp);
-    auto existingPipe = indexByPipe.find(pipe);
-    if (existingPipe != indexByPipe.end()) {
-      PipeTransferAllocationUnit &unit = units[existingPipe->second];
-      unit.protocolOps.push_back(protocolOp);
-      if (isCollectiveTransfer(transferContract)) {
-        unit.transferContract = PipeTransferContract::Collective;
+static FailureOr<SmallVector<PipeTransferAllocationUnit>>
+collectPipeTransferAllocationUnits(
+    ModuleOp mod, const PipeTransferIndex &transferIndex,
+    const PipeGraph &pipeGraph, const DominanceInfo &dominanceInfo,
+    const PostDominanceInfo &postDominanceInfo,
+    llvm::SmallPtrSetImpl<Operation *> &staticallyInactiveOps) {
+  SmallVector<PipeTransferAllocationUnit> units;
+  llvm::DenseMap<Operation *, int64_t> operationOrdinals;
+  llvm::DenseMap<Operation *, SmallVector<Operation *>> waitOpsByPost;
+  int64_t nextOperationOrdinal = 0;
+  WalkResult provenanceWalkResult = mod.walk([&](Operation *op) {
+    if (isa<PipeTransferPostOp, PipeTransferSendOp>(op)) {
+      operationOrdinals[op] = nextOperationOrdinal++;
+      if (!pipeGraph.getPipeTransferNodeForProtocolOp(op)) {
+        staticallyInactiveOps.insert(op);
       }
-      indexByTransferCreateOp.insert({transferCreateOp, existingPipe->second});
-      return &unit;
-    }
-
-    PipeTransferAllocationUnit unit;
-    unit.protocolOps.push_back(protocolOp);
-    unit.pipe = pipe;
-    unit.pipeType = pipeType;
-    unit.transferContract = transferContract;
-    unit.ordinal = nextOrdinal++;
-    indexByTransferCreateOp.insert({transferCreateOp, units.size()});
-    indexByPipe.insert({pipe, units.size()});
-    units.push_back(unit);
-    return &units.back();
-  };
-
-  // Posts and sends determine resource lifetimes. Waits use the completion
-  // resource selected for their defining post but do not extend that lifetime.
-  WalkResult walkResult = mod.walk([&](Operation *op) {
-    if (mlir::isa<PipeTransferPostOp>(op)) {
-      int64_t eventOrdinal = nextEventOrdinal++;
-      FailureOr<PipeTransferAllocationUnit *> unit = getOrCreateUnit(op);
-      if (failed(unit)) {
-        return WalkResult::interrupt();
-      }
-      (*unit)->rendezvousEvents.push_back(
-          PipeTransferRendezvousEvent::post(op));
-      updateIntervalStart((*unit)->interval, op, eventOrdinal, dominanceInfo);
       return WalkResult::advance();
     }
-
-    if (mlir::isa<PipeTransferSendOp>(op)) {
-      FailureOr<PipeTransferAllocationUnit *> unit = getOrCreateUnit(op);
-      if (failed(unit)) {
+    if (auto waitOp = dyn_cast<PipeTransferWaitOp>(op)) {
+      ArrayRef<Operation *> possiblePosts =
+          transferIndex.getPossibleReceivePosts(waitOp);
+      if (possiblePosts.size() != 1) {
+        waitOp.emitError() << "requires exactly one possible receiver post; "
+                              "found "
+                           << possiblePosts.size();
         return WalkResult::interrupt();
       }
-      (*unit)->rendezvousEvents.push_back(
-          PipeTransferRendezvousEvent::send(op));
-      updateIntervalEnd((*unit)->interval, op, dominanceInfo);
-      return WalkResult::advance();
-    }
-
-    if (auto waitOp = mlir::dyn_cast<PipeTransferWaitOp>(op)) {
-      FailureOr<PipeTransferAllocationUnit *> unit = getOrCreateUnit(op);
-      if (failed(unit)) {
-        return WalkResult::interrupt();
+      Operation *postOp = possiblePosts.front();
+      if (!pipeGraph.getPipeTransferNodeForProtocolOp(postOp)) {
+        staticallyInactiveOps.insert(op);
+        return WalkResult::advance();
       }
-      (*unit)->rendezvousEvents.push_back(
-          PipeTransferRendezvousEvent::receiveWait(
-              op, transferIndex.getPossibleReceivePosts(waitOp)));
-      return WalkResult::advance();
+      waitOpsByPost[postOp].push_back(op);
     }
-
     return WalkResult::advance();
   });
-  if (walkResult.wasInterrupted()) {
+  if (provenanceWalkResult.wasInterrupted()) {
     return failure();
   }
 
-  for (PipeTransferAllocationUnit &unit : units) {
-    if (failed(validateMaxLivePosts(unit, /*maxLivePosts=*/1))) {
-      return failure();
+  units.reserve(pipeGraph.getPipeTransferNodes().size());
+  for (const PipeTransferNode &transferNode :
+       pipeGraph.getPipeTransferNodes()) {
+    assert(transferNode.sendOp &&
+           "pipe transfer graph node must have a send operation");
+    auto sendOp = cast<PipeTransferSendOp>(transferNode.sendOp);
+    PipeTransferCreateOp createOp =
+        transferIndex.getTransferCreate(sendOp.getOperation());
+
+    PipeTransferAllocationUnit unit;
+    unit.transferNodeId = transferNode.id;
+    unit.sendOp = sendOp.getOperation();
+    unit.pipe = transferNode.pipe;
+    unit.pipeType = mlir::cast<PipeType>(createOp.getPipe().getType());
+    unit.transferContract = transferNode.transferContract;
+    unit.ordinal = static_cast<int64_t>(transferNode.id);
+    unit.protocolOps.push_back(sendOp.getOperation());
+    updateIntervalEnd(unit.interval, sendOp.getOperation(), dominanceInfo);
+    for (Operation *postOp : transferNode.receiverPostOps) {
+      auto ordinalIt = operationOrdinals.find(postOp);
+      assert(ordinalIt != operationOrdinals.end() &&
+             "receiver post is missing an operation ordinal");
+      unit.protocolOps.push_back(postOp);
+      auto waitIt = waitOpsByPost.find(postOp);
+      if (waitIt != waitOpsByPost.end()) {
+        unit.protocolOps.append(waitIt->second.begin(), waitIt->second.end());
+      }
+      updateIntervalStart(unit.interval, postOp, ordinalIt->second,
+                          dominanceInfo);
     }
     finalizeInterval(unit.interval, dominanceInfo, postDominanceInfo);
+    units.push_back(std::move(unit));
   }
-
   return units;
 }
 
 using SourceColorMap =
-    llvm::MapVector<PipeSourceKey, SmallVector<SmallVector<unsigned>>>;
+    llvm::MapVector<PipeSourceKey, SmallVector<SmallVector<std::size_t>>>;
 
 static SourceColorMap
 assignLiveIntervalColors(MutableArrayRef<PipeTransferAllocationUnit> units,
                          const DominanceInfo &dominanceInfo) {
-  llvm::MapVector<PipeSourceKey, SmallVector<unsigned>> unitIndicesBySource;
-  for (unsigned index = 0, size = units.size(); index < size; ++index) {
+  llvm::MapVector<PipeSourceKey, SmallVector<std::size_t>> unitIndicesBySource;
+  for (std::size_t index = 0, size = units.size(); index < size; ++index) {
     unitIndicesBySource[getPipeSourceKey(units[index].pipeType)].push_back(
         index);
   }
 
   SourceColorMap colorUsersBySource;
   for (auto &entry : unitIndicesBySource) {
-    SmallVector<SmallVector<unsigned>> colorUsers =
-        assignGreedyIntervalColors<unsigned>(
+    SmallVector<SmallVector<std::size_t>> colorUsers =
+        assignGreedyIntervalColors<std::size_t>(
             entry.second,
-            [&](unsigned lhsIndex, unsigned rhsIndex) {
+            [&](std::size_t lhsIndex, std::size_t rhsIndex) {
               return std::less<PipeTransferAllocationUnit>()(units[lhsIndex],
                                                              units[rhsIndex]);
             },
-            [&](unsigned lhsIndex, unsigned rhsIndex) {
+            [&](std::size_t lhsIndex, std::size_t rhsIndex) {
               return pipeTransferIntervalsOverlap(
                   units[lhsIndex], units[rhsIndex], dominanceInfo);
             });
 
     for (auto indexedColor : llvm::enumerate(colorUsers)) {
-      for (unsigned unitIndex : indexedColor.value()) {
+      for (std::size_t unitIndex : indexedColor.value()) {
         units[unitIndex].resourceColor = indexedColor.index();
       }
     }
@@ -1278,16 +1317,18 @@ static bool receiverSetsOverlap(const PipeKey &lhs, const PipeKey &rhs) {
          lhs.dstStartY <= rhs.dstEndY && rhs.dstStartY <= lhs.dstEndY;
 }
 
-/// Reuse completion state only when no receiver can observe both transfers.
+/// Reuse a counter color only across disjoint physical receiver sets.
+/// Transfers sharing a receiver need distinct state because either send may
+/// complete first.
 static int64_t allocateCompletionCounterColor(
     const PipeKey &pipe,
     SmallVectorImpl<SmallVector<PipeKey>> &pipesByCounterColor) {
   for (auto indexedPipes : llvm::enumerate(pipesByCounterColor)) {
-    bool sharesReceiver =
+    bool overlapsAssignedReceiverSet =
         llvm::any_of(indexedPipes.value(), [&](const PipeKey &allocatedPipe) {
           return receiverSetsOverlap(pipe, allocatedPipe);
         });
-    if (!sharesReceiver) {
+    if (!overlapsAssignedReceiverSet) {
       indexedPipes.value().push_back(pipe);
       return static_cast<int64_t>(indexedPipes.index());
     }
@@ -1296,34 +1337,236 @@ static int64_t allocateCompletionCounterColor(
   return static_cast<int64_t>(pipesByCounterColor.size() - 1);
 }
 
+static std::optional<FuncOp>
+getSingleSenderFunc(const PipeTransferAllocationUnit &unit) {
+  FuncOp senderFunc = unit.sendOp->getParentOfType<FuncOp>();
+  return senderFunc ? std::optional<FuncOp>(senderFunc) : std::nullopt;
+}
+
+static int64_t getReceiverDFBBlockStrideBytes(const ReceiverDFBInfo &info) {
+  auto tileType = llvm::cast<ttcore::TileType>(info.dfbType.getElementType());
+  return info.dfbType.getElementsPerBlock() * tileType.getSizeBytes();
+}
+
+static int64_t getReceiverDFBStaticByteOffset(const ReceiverDFBInfo &info) {
+  auto tileType = llvm::cast<ttcore::TileType>(info.dfbType.getElementType());
+  return info.staticTileOffset * tileType.getSizeBytes();
+}
+
+/// Return metadata only when the sender can compute every receiver address.
+/// The caller uses receiver-published addresses when this proof fails.
+static std::optional<PipeComputedAddressInfo>
+getComputedAddressInfo(const PipeReceiverEndpoint &receiverEndpoint) {
+  const ReceiverDFBInfo &receiverInfo = receiverEndpoint.receiverDFBInfo;
+  if (!receiverInfo.hasStaticTileOffset) {
+    return std::nullopt;
+  }
+  if (!llvm::isa<ttcore::TileType>(receiverInfo.dfbType.getElementType())) {
+    return std::nullopt;
+  }
+  // Static receiver addresses are derived from the pipe graph's physical slot
+  // assignment. Non-pipe DFB traffic can advance the hardware ring without a
+  // pipe post, so computed addressing requires the graph to prove that the
+  // receiver stream contains only pipe-delivered blocks.
+  const ReceiverAddressSequenceProof &sequence =
+      receiverEndpoint.addressSequence;
+  if (sequence.getKind() == ReceiverAddressSequenceProofKind::FullyDynamic) {
+    return std::nullopt;
+  }
+  const ReceiverAddressRecurrence &recurrence = *sequence.recurrence;
+  if (recurrence.blockCount <= 0 || recurrence.initialSlot < 0 ||
+      recurrence.initialSlot >= recurrence.blockCount ||
+      recurrence.repeatStride < 0 ||
+      recurrence.repeatStride >= recurrence.blockCount ||
+      recurrence.blockCount != receiverInfo.blockCount) {
+    return std::nullopt;
+  }
+  int64_t blockStrideBytes = getReceiverDFBBlockStrideBytes(receiverInfo);
+  int64_t staticTileByteOffset = getReceiverDFBStaticByteOffset(receiverInfo);
+  if (blockStrideBytes <= 0 || !llvm::isInt<32>(blockStrideBytes) ||
+      !llvm::isInt<32>(staticTileByteOffset) ||
+      !llvm::isInt<32>(recurrence.initialSlot) ||
+      !llvm::isInt<32>(recurrence.repeatStride) ||
+      !llvm::isInt<32>(receiverInfo.blockCount)) {
+    return std::nullopt;
+  }
+  int64_t maxBlockByteOffset =
+      (receiverInfo.blockCount - 1) * blockStrideBytes + staticTileByteOffset;
+  if (!llvm::isInt<32>(maxBlockByteOffset)) {
+    return std::nullopt;
+  }
+  return PipeComputedAddressInfo{receiverInfo.dfbIndex,
+                                 /*baseRuntimeCommonArgIndex=*/0,
+                                 recurrence.initialSlot,
+                                 recurrence.repeatStride,
+                                 receiverInfo.blockCount,
+                                 blockStrideBytes,
+                                 staticTileByteOffset,
+                                 std::nullopt};
+}
+
+/// Computed-address facts indexed by transfer allocation unit before resource
+/// coloring builds the final plan.
+struct ComputedAddressPlan {
+  llvm::DenseMap<std::size_t, PipeComputedAddressInfo> infoByUnitIndex;
+  llvm::MapVector<FuncOp, SmallVector<PipeComputedAddressCounterInitInfo>>
+      counterInitializations;
+};
+
+static ComputedAddressPlan
+buildComputedAddressPlan(ModuleOp mod,
+                         MutableArrayRef<PipeTransferAllocationUnit> units,
+                         const PipeGraph &pipeGraph) {
+  ComputedAddressPlan plan;
+
+  /// One transfer whose recurrence can be materialized by its sender.
+  struct Candidate {
+    std::size_t unitIndex = 0;
+    FuncOp senderFunc;
+    PipeComputedAddressInfo computedAddress;
+  };
+  SmallVector<Candidate> candidates;
+  llvm::MapVector<FuncOp, llvm::SmallSetVector<int64_t, 4>> dfbIndicesByFunc;
+
+  for (auto indexedUnit : llvm::enumerate(units)) {
+    PipeTransferAllocationUnit &unit = indexedUnit.value();
+    const PipeTransferNode &transferNode =
+        pipeGraph.getPipeTransferNode(unit.transferNodeId);
+    const PipeReceiverEndpoint *receiverEndpoint =
+        pipeGraph.getProvenReceiverAddressEndpoint(transferNode.id);
+    if (!receiverEndpoint) {
+      continue;
+    }
+    const ReceiverDFBInfo &receiverInfo = receiverEndpoint->receiverDFBInfo;
+    std::optional<PipeComputedAddressInfo> maybeComputedAddress =
+        getComputedAddressInfo(*receiverEndpoint);
+    if (!maybeComputedAddress) {
+      continue;
+    }
+    std::optional<FuncOp> maybeSenderFunc = getSingleSenderFunc(unit);
+    if (!maybeSenderFunc) {
+      continue;
+    }
+    candidates.push_back(Candidate{indexedUnit.index(), *maybeSenderFunc,
+                                   *maybeComputedAddress});
+    dfbIndicesByFunc[*maybeSenderFunc].insert(receiverInfo.dfbIndex);
+  }
+
+  if (candidates.empty()) {
+    return plan;
+  }
+
+  OpBuilder builder(mod.getContext());
+  llvm::DenseMap<FuncOp, SmallVector<int64_t>> sortedDFBIndicesByFunc;
+  for (auto &[func, dfbSet] : dfbIndicesByFunc) {
+    SmallVector<int64_t> sortedDFBIndices(dfbSet.begin(), dfbSet.end());
+    llvm::sort(sortedDFBIndices);
+    sortedDFBIndicesByFunc[func] = sortedDFBIndices;
+
+    SmallVector<int32_t> dfbAttrs =
+        llvm::map_to_vector(sortedDFBIndices, [](int64_t dfbIndex) {
+          return static_cast<int32_t>(dfbIndex);
+        });
+    func->setAttr(kPipeComputedAddressDFBIndicesAttrName,
+                  builder.getDenseI32ArrayAttr(dfbAttrs));
+  }
+
+  llvm::MapVector<FuncOp, int64_t> nextDynamicSlotCounterIndexByFunc;
+  for (const Candidate &candidate : candidates) {
+    FuncOp senderFunc = candidate.senderFunc;
+    const SmallVector<int64_t> &dfbIndices = sortedDFBIndicesByFunc[senderFunc];
+    PipeComputedAddressInfo computedAddress = candidate.computedAddress;
+    auto dfbIt = llvm::find(dfbIndices, computedAddress.receiverDFBIndex);
+    assert(dfbIt != dfbIndices.end() && "candidate DFB missing from func list");
+    computedAddress.baseRuntimeCommonArgIndex =
+        getNumTensorFunctionArgs(senderFunc) +
+        std::distance(dfbIndices.begin(), dfbIt);
+
+    const PipeTransferAllocationUnit &unit = units[candidate.unitIndex];
+    const PipeTransferNode &transferNode =
+        pipeGraph.getPipeTransferNode(unit.transferNodeId);
+    const PipeReceiverEndpoint *receiverEndpoint =
+        pipeGraph.getProvenReceiverAddressEndpoint(transferNode.id);
+    assert(receiverEndpoint &&
+           "computed-address unit missing receiver address proof");
+    const ReceiverAddressSequenceProof &sequence =
+        receiverEndpoint->addressSequence;
+    bool canRepeat =
+        sequence.getKind() != ReceiverAddressSequenceProofKind::KnownCount ||
+        *sequence.executionCount > 1;
+    if (canRepeat && computedAddress.repeatStride != 0) {
+      int64_t counterIndex = nextDynamicSlotCounterIndexByFunc[senderFunc]++;
+      computedAddress.dynamicSlotCounterIndex = counterIndex;
+      plan.counterInitializations[senderFunc].push_back(
+          PipeComputedAddressCounterInitInfo{counterIndex,
+                                             computedAddress.initialSlot});
+    }
+    plan.infoByUnitIndex[candidate.unitIndex] = computedAddress;
+  }
+
+  return plan;
+}
+
+// Compact the per-source colors whose units need a resource into a dense
+// 0..N-1 index range, keyed by original color index. Returns the compacted map
+// and the maximum compacted count across sources.
+template <typename PredT>
+static std::pair<
+    llvm::MapVector<PipeSourceKey, llvm::DenseMap<std::size_t, int64_t>>,
+    int64_t>
+compactColors(const SourceColorMap &colorUsersBySource,
+              PredT unitNeedsResource) {
+  llvm::MapVector<PipeSourceKey, llvm::DenseMap<std::size_t, int64_t>>
+      compactedBySource;
+  int64_t maxPerSource = 0;
+  for (const auto &[sourceKey, colorUsers] : colorUsersBySource) {
+    int64_t nextColor = 0;
+    llvm::DenseMap<std::size_t, int64_t> &compacted =
+        compactedBySource[sourceKey];
+    for (auto indexedColor : llvm::enumerate(colorUsers)) {
+      if (llvm::any_of(indexedColor.value(), unitNeedsResource)) {
+        compacted[indexedColor.index()] = nextColor++;
+      }
+    }
+    maxPerSource = std::max(maxPerSource, nextColor);
+  }
+  return {std::move(compactedBySource), maxPerSource};
+}
+
 LogicalResult buildPipeResourcePlan(ModuleOp mod,
                                     const PipeTransferIndex &transferIndex,
-                                    PipeResourcePlan &info) {
+                                    const PipeGraph &pipeGraph,
+                                    PipeResourcePlan &info,
+                                    bool enableComputedAddresses) {
   DominanceInfo dominanceInfo(mod);
   PostDominanceInfo postDominanceInfo(mod);
-  FailureOr<SmallVector<PipeTransferAllocationUnit, 0>> maybeUnits =
-      collectPipeTransferAllocationUnits(mod, transferIndex, dominanceInfo,
-                                         postDominanceInfo);
+  FailureOr<SmallVector<PipeTransferAllocationUnit>> maybeUnits =
+      collectPipeTransferAllocationUnits(mod, transferIndex, pipeGraph,
+                                         dominanceInfo, postDominanceInfo,
+                                         info.staticallyInactiveOps);
   if (failed(maybeUnits)) {
     return failure();
   }
-  SmallVector<PipeTransferAllocationUnit, 0> &units = *maybeUnits;
+  SmallVector<PipeTransferAllocationUnit> &units = *maybeUnits;
   SourceColorMap colorUsersBySource =
       assignLiveIntervalColors(units, dominanceInfo);
+  ComputedAddressPlan computedAddressPlan;
+  if (enableComputedAddresses) {
+    computedAddressPlan = buildComputedAddressPlan(mod, units, pipeGraph);
+  }
+  info.computedAddressCounterInitializations =
+      computedAddressPlan.counterInitializations;
 
   SmallVector<SmallVector<PipeKey>> pipesByCompletionCounterColor;
   for (PipeTransferAllocationUnit &unit : units) {
-    unit.completionCounterColor = allocateCompletionCounterColor(
+    unit.maybeCompletionCounterColor = allocateCompletionCounterColor(
         unit.pipe, pipesByCompletionCounterColor);
   }
   int64_t firstSourceLocalReadyCounterSemIdx =
       static_cast<int64_t>(pipesByCompletionCounterColor.size());
 
-  int64_t maxReadyCountersPerSource = 0;
-  for (const auto &colorUsers : llvm::make_second_range(colorUsersBySource)) {
-    maxReadyCountersPerSource =
-        std::max<int64_t>(maxReadyCountersPerSource, colorUsers.size());
-  }
+  auto [readyColorBySourceColor, maxReadyCountersPerSource] =
+      compactColors(colorUsersBySource, [](std::size_t) { return true; });
 
   // Use one ready-counter kind per kernel so host allocation has one compact
   // descriptor layout.
@@ -1334,44 +1577,71 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod,
   llvm::MapVector<PipeSourceKey, SmallVector<int64_t>> globalIndexBySourceColor;
   int64_t nextGlobalSemaphoreIndex = 0;
   if (useGlobalReadyCounters) {
-    for (const auto &[sourceKey, colorUsers] : colorUsersBySource) {
+    for (const auto &[sourceKey, readyColors] : readyColorBySourceColor) {
       SmallVector<int64_t> &indices = globalIndexBySourceColor[sourceKey];
-      indices.reserve(colorUsers.size());
-      for (unsigned color = 0, colorCount = colorUsers.size();
+      indices.reserve(readyColors.size());
+      for (std::size_t color = 0, colorCount = readyColors.size();
            color < colorCount; ++color) {
         indices.push_back(nextGlobalSemaphoreIndex++);
       }
     }
   }
 
-  int64_t maxAddressTableBytes = 0;
-  for (const auto &colorUsers : llvm::make_second_range(colorUsersBySource)) {
-    maxAddressTableBytes = std::max<int64_t>(
-        maxAddressTableBytes, colorUsers.size() * kPipeAddressWordBytes);
-  }
+  auto [addressColorBySourceColor, maxAddressColorsPerSource] =
+      compactColors(colorUsersBySource, [&](std::size_t unitIndex) {
+        return computedAddressPlan.infoByUnitIndex.find(unitIndex) ==
+               computedAddressPlan.infoByUnitIndex.end();
+      });
+  int64_t maxAddressTableBytes =
+      maxAddressColorsPerSource * kPipeAddressWordBytes;
 
-  for (const PipeTransferAllocationUnit &unit : units) {
+  for (auto indexedUnit : llvm::enumerate(units)) {
+    const PipeTransferAllocationUnit &unit = indexedUnit.value();
+    assert(unit.maybeCompletionCounterColor &&
+           "pipe transfer is missing a completion counter color");
     PipeSourceKey sourceKey = getPipeSourceKey(unit.pipeType);
-    PipeReadyCounterInfo readyCounter = PipeReadyCounterInfo::localSemaphore(
-        firstSourceLocalReadyCounterSemIdx + unit.resourceColor);
+    auto sourceIt = readyColorBySourceColor.find(sourceKey);
+    assert(sourceIt != readyColorBySourceColor.end());
+    auto colorIt = sourceIt->second.find(unit.resourceColor);
+    assert(colorIt != sourceIt->second.end());
+    int64_t readyColor = colorIt->second;
+    PipeCounterInfo readyCounter = PipeCounterInfo::localSemaphore(
+        firstSourceLocalReadyCounterSemIdx + readyColor);
     if (useGlobalReadyCounters) {
       auto globalIt = globalIndexBySourceColor.find(sourceKey);
       assert(globalIt != globalIndexBySourceColor.end());
-      assert(unit.resourceColor <
-             static_cast<int64_t>(globalIt->second.size()));
-      readyCounter = PipeReadyCounterInfo::globalSemaphore(
-          globalIt->second[unit.resourceColor]);
+      assert(readyColor < static_cast<int64_t>(globalIt->second.size()));
+      readyCounter =
+          PipeCounterInfo::globalSemaphore(globalIt->second[readyColor]);
+    }
+
+    auto computedIt =
+        computedAddressPlan.infoByUnitIndex.find(indexedUnit.index());
+    PipeAddressStorageInfo addressStorage;
+    if (computedIt != computedAddressPlan.infoByUnitIndex.end()) {
+      addressStorage =
+          PipeAddressStorageInfo::computedReceiverDFB(computedIt->second);
+    } else {
+      auto sourceIt = addressColorBySourceColor.find(sourceKey);
+      assert(sourceIt != addressColorBySourceColor.end());
+      auto colorIt = sourceIt->second.find(unit.resourceColor);
+      assert(colorIt != sourceIt->second.end());
+      addressStorage = PipeAddressStorageInfo::receiverPublishedAddressTable(
+          PipeSramAddressTableInfo{colorIt->second * kPipeAddressWordBytes});
     }
     PipeResourceInfo pipeResource{
         unit.pipe,
         unit.transferContract,
-        PipeCompletionInfo{unit.completionCounterColor},
+        PipeCompletionInfo{
+            PipeCounterInfo::localSemaphore(*unit.maybeCompletionCounterColor)},
         readyCounter,
-        PipeAddressStorageInfo{PipeSramAddressTableInfo{unit.resourceColor *
-                                                        kPipeAddressWordBytes}},
+        addressStorage,
     };
     for (Operation *protocolOp : unit.protocolOps) {
-      info.resources.insert({protocolOp, pipeResource});
+      auto [resourceIt, inserted] =
+          info.resources.insert({protocolOp, pipeResource});
+      assert((inserted || resourceIt->second.pipe == pipeResource.pipe) &&
+             "pipe protocol operation assigned to two transfers");
     }
   }
 
@@ -1384,31 +1654,16 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod,
 
 PipeResourceRequirements
 getPipeResourceRequirements(const PipeResourcePlan &info) {
-  struct RequirementsObserver final : PipeReadyCounterObserver {
-    int64_t highestSyncSemaphoreIndex = -1;
-    int64_t highestGlobalSemaphoreIndex = -1;
-
-    void observeLocalSemaphore(int64_t index) override {
-      highestSyncSemaphoreIndex = std::max(highestSyncSemaphoreIndex, index);
-    }
-
-    void observeGlobalSemaphore(int64_t index) override {
-      highestGlobalSemaphoreIndex =
-          std::max(highestGlobalSemaphoreIndex, index);
-    }
-  };
-
-  RequirementsObserver observer;
+  PipeCounterAllocationCounts counts;
   for (const PipeResourceInfo &resource :
        llvm::make_second_range(info.resources)) {
-    observer.observeLocalSemaphore(
-        resource.completion.receiverCompletionSemIdx);
-    resource.readyCounter.observe(observer);
+    counts.include(resource.completion.counter);
+    counts.include(resource.readyCounter);
   }
 
   return PipeResourceRequirements{
-      observer.highestSyncSemaphoreIndex + 1,
-      observer.highestGlobalSemaphoreIndex + 1,
+      counts.localSemaphoreCount,
+      counts.globalSemaphoreCount,
       info.sramScratch.bytes,
   };
 }
@@ -1429,30 +1684,22 @@ verifyPipeResourcePlanFitsHardware(ModuleOp mod, const PipeResourcePlan &info,
     std::optional<PipeKey> pipe;
   };
 
-  struct SenderReadyObserver final : PipeReadyCounterObserver {
-    HighestSemaphore &highest;
-    const PipeKey &pipe;
-
-    SenderReadyObserver(HighestSemaphore &highest, const PipeKey &pipe)
-        : highest(highest), pipe(pipe) {}
-
-    void observeLocalSemaphore(int64_t index) override {
-      if (index > highest.index) {
-        highest = HighestSemaphore{index, PipeSemaphoreKind::SenderReady, pipe};
-      }
-    }
-  };
-
   HighestSemaphore highest;
   for (const PipeResourceInfo &resource :
        llvm::make_second_range(info.resources)) {
-    if (resource.completion.receiverCompletionSemIdx > highest.index) {
-      highest =
-          HighestSemaphore{resource.completion.receiverCompletionSemIdx,
-                           PipeSemaphoreKind::ReceiverCompletion, std::nullopt};
+    PipeCounterInfo completionCounter = resource.completion.counter;
+    if (completionCounter.getStorage() == PipeCounterStorage::LocalSemaphore &&
+        completionCounter.getIndex() > highest.index) {
+      highest = HighestSemaphore{completionCounter.getIndex(),
+                                 PipeSemaphoreKind::ReceiverCompletion,
+                                 resource.pipe};
     }
-    SenderReadyObserver observer(highest, resource.pipe);
-    resource.readyCounter.observe(observer);
+    PipeCounterInfo readyCounter = resource.readyCounter;
+    if (readyCounter.getStorage() == PipeCounterStorage::LocalSemaphore &&
+        readyCounter.getIndex() > highest.index) {
+      highest = HighestSemaphore{readyCounter.getIndex(),
+                                 PipeSemaphoreKind::SenderReady, resource.pipe};
+    }
   }
 
   int64_t requiredSemaphoreIds = reqs.syncSemaphoreCount;
@@ -1476,7 +1723,9 @@ verifyPipeResourcePlanFitsHardware(ModuleOp mod, const PipeResourcePlan &info,
 
   switch (highest.kind) {
   case PipeSemaphoreKind::ReceiverCompletion:
-    note << "receiver-completion counter";
+    note << "receiver-completion counter for ";
+    assert(highest.pipe && "receiver-completion resource must have a pipe");
+    appendPipe(*highest.pipe);
     break;
   case PipeSemaphoreKind::SenderReady:
     note << "sender-ready counter for ";
