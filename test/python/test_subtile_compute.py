@@ -112,6 +112,27 @@ def subtile_mul(lhs, rhs, out):
 
 
 @ttl.operation(grid=(1, 1))
+def subtile_broadcast_row(inp, out):
+    input_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    output_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        with input_dfb.wait() as input_block, output_dfb.reserve() as output_block:
+            output_block.store(ttl.block.broadcast(input_block, dims=[0], shape=(1, 1)))
+
+    @ttl.datamovement()
+    def reader():
+        with input_dfb.reserve() as input_block:
+            ttl.copy(inp[0:1, 0:1], input_block).wait()
+
+    @ttl.datamovement()
+    def writer():
+        with output_dfb.wait() as output_block:
+            ttl.copy(output_block, out[0:1, 0:1]).wait()
+
+
+@ttl.operation(grid=(1, 1))
 def subtile_matmul(lhs, rhs, out):
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 2), block_count=2)
     rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(2, 2), block_count=2)
@@ -346,6 +367,30 @@ def test_subtile_integer_binary(
 
     actual = ttnn.to_torch(output_tensor).reshape(tile_hw).float()
     expected = torch.full(tile_hw, expected_value, dtype=torch.float32)
+    assert_allclose(actual, expected, rtol=0.0, atol=0.0)
+
+
+@pytest.mark.parametrize(
+    "torch_dtype,ttnn_dtype",
+    INTEGER_DTYPES,
+    ids=["int32", "uint32", "uint16"],
+)
+@pytest.mark.parametrize("memory_config", MEMORY_CONFIGS)
+def test_subtile_integer_broadcast(device, torch_dtype, ttnn_dtype, memory_config):
+    tile_hw = (16, 32)
+    source = torch.zeros(tile_hw, dtype=torch_dtype)
+    source[0, :] = torch.arange(tile_hw[1], dtype=torch.int64).to(torch_dtype)
+    output_source = torch.zeros(tile_hw, dtype=torch_dtype)
+
+    input_tensor = _to_device(source, device, tile_hw, ttnn_dtype, memory_config)
+    output_tensor = _to_device(
+        output_source, device, tile_hw, ttnn_dtype, memory_config
+    )
+
+    subtile_broadcast_row(input_tensor, output_tensor)
+
+    actual = ttnn.to_torch(output_tensor).reshape(tile_hw).float()
+    expected = source[0:1, :].expand(tile_hw).float()
     assert_allclose(actual, expected, rtol=0.0, atol=0.0)
 
 

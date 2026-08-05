@@ -263,5 +263,9 @@ def test_emitted_runner_preserves_physical_subtile():
         num_tensors=0,
     )
 
-    assert "(3, 2, ttnn.bfloat16, (16, 32), 1024, 6144)" in source
-    assert 'format_options["tile"] = ttnn.TileDescriptor(' in source
+    assert "num_tiles=3" in source
+    assert "data_format='bfloat16'" in source
+    assert "block_count=2" in source
+    assert "page_size=1024" in source
+    assert "tile=(16, 32)" in source
+    assert "cb_configs=CB_CONFIGS" in source
