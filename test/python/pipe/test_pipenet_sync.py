@@ -1425,40 +1425,6 @@ def test_grid_all_to_all_multicast_reduces_all_sources(device):
     assert_pcc(expected.float(), result.float())
 
 
-def test_row_all_to_all_multicast_semaphore_count_scales():
-    from ttl._pipenets import NodeCoord, NodeRange, OperationPipeNets, PipeUse
-
-    width = 32
-    all_to_all_graph = OperationPipeNets()
-    all_to_all_graph.add_pipe_net(
-        PipeUse(
-            src=NodeCoord((source_idx, 0)),
-            dst=NodeRange((0, 0), (width, 1)),
-        )
-        for source_idx in range(width)
-    )
-
-    assert all_to_all_graph.num_pipe_sync_semaphores() == 2
-
-
-def test_grid_all_to_all_multicast_semaphore_count_scales():
-    from ttl._pipenets import NodeCoord, NodeRange, OperationPipeNets, PipeUse
-
-    width = 32
-    height = 16
-    all_to_all_graph = OperationPipeNets()
-    all_to_all_graph.add_pipe_net(
-        PipeUse(
-            src=NodeCoord((source_x, source_y)),
-            dst=NodeRange((0, 0), (width, height)),
-        )
-        for source_y in range(height)
-        for source_x in range(width)
-    )
-
-    assert all_to_all_graph.num_pipe_sync_semaphores() == 2
-
-
 def test_many_pipe_sync_sites_fit_hardware_semaphore_limit(device):
     inp_torch = torch.randn(2 * TILE, 2 * TILE, dtype=torch.bfloat16)
     out_torch = torch.zeros(2 * TILE, 2 * TILE, dtype=torch.bfloat16)

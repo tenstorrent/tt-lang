@@ -22,8 +22,6 @@ import itertools
 from dataclasses import dataclass, field
 from typing import Any, Iterable, List, Optional, Set, Tuple, Union
 
-from ttl.constants import MAX_HARDWARE_SEMAPHORE_IDS
-
 
 @dataclass(frozen=True)
 class NodeCoord:
@@ -111,40 +109,6 @@ class OperationPipeNets:
                 raise ValueError("PipeNet requires at least one pipe")
             _validate_no_mixed_kinds(net.pipes)
         _validate_consistent_coord_rank(self.pipe_nets)
-
-    def num_pipe_sync_semaphores(self) -> int:
-        """Return the total semaphore count required by pipe lowering."""
-        if not self.pipe_nets:
-            return 0
-
-        num_pipe_nets = len(self.pipe_nets)
-        max_pipes_per_source = self._max_pipes_per_source()
-        if _uses_global_ready_counters(num_pipe_nets, max_pipes_per_source):
-            return num_pipe_nets
-        return num_pipe_nets + max_pipes_per_source
-
-    def num_pipe_global_semaphores(self) -> int:
-        """Return the GlobalSemaphore count required by pipe lowering."""
-        if not self.pipe_nets:
-            return 0
-        num_pipe_nets = len(self.pipe_nets)
-        max_pipes_per_source = self._max_pipes_per_source()
-        if not _uses_global_ready_counters(num_pipe_nets, max_pipes_per_source):
-            return 0
-        return sum(len(net.pipes) for net in self.pipe_nets)
-
-    def _max_pipes_per_source(self) -> int:
-        pipe_count_by_source = {}
-        for net in self.pipe_nets:
-            for pipe in net.pipes:
-                pipe_count_by_source[pipe.src.coords] = (
-                    pipe_count_by_source.get(pipe.src.coords, 0) + 1
-                )
-        return max(pipe_count_by_source.values(), default=0)
-
-
-def _uses_global_ready_counters(num_pipe_nets: int, max_pipes_per_source: int) -> bool:
-    return num_pipe_nets + max_pipes_per_source > MAX_HARDWARE_SEMAPHORE_IDS
 
 
 def _linearize(coords: Tuple[int, ...], grid: Tuple[int, ...]) -> int:
