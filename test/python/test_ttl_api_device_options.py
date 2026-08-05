@@ -252,6 +252,7 @@ class TestMeshProgramPlacement:
             0,
             None,
             ttl.CompilerOptions(),
+            None,
         )
 
         assert result == "compiled"
