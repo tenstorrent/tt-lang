@@ -125,8 +125,7 @@ struct ModuleState {
               ValueOriginAnalysis &valueOrigins,
               const DFBLogicalIdentityAnalysis &dfbIdentities)
       : transfers(transfers), launchDomains(launchDomains),
-        valueOrigins(valueOrigins),
-        dfbIdentities(&dfbIdentities) {}
+        valueOrigins(valueOrigins), dfbIdentities(&dfbIdentities) {}
 
   const PipeTransferIndex &transfers;
   const LaunchNodeDomainState &launchDomains;
