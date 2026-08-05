@@ -24,10 +24,12 @@ DFBLogicalIdentityAnalysis::DFBLogicalIdentityAnalysis(Operation *operation) {
   int64_t maxExplicitId = -1;
   int64_t compilerDeclarationCount = 0;
   BindCBOp firstCompilerDeclaration;
+  SmallVector<BindCBOp> declarations;
 
   // Discover the complete explicit ID range before generating IDs. Assigning
   // generated IDs during this walk could collide with a later declaration.
   WalkResult discoveryResult = moduleOp.walk([&](BindCBOp bindOp) {
+    declarations.push_back(bindOp);
     if (auto dfbId = bindOp.getDfbId()) {
       int64_t logicalId = dfbId->getSExtValue();
       maxExplicitId = std::max(maxExplicitId, logicalId);
@@ -62,7 +64,7 @@ DFBLogicalIdentityAnalysis::DFBLogicalIdentityAnalysis(Operation *operation) {
   llvm::DenseMap<int64_t, BindCBOp> firstDeclarationById;
   // Declarations with one logical ID describe one allocation, so they must
   // agree on the complete DFB type in every participating kernel.
-  moduleOp.walk([&](BindCBOp bindOp) {
+  for (BindCBOp bindOp : declarations) {
     auto dfbId = bindOp.getDfbId();
     int64_t logicalId = dfbId ? dfbId->getSExtValue() : nextCompilerId++;
     auto [firstDeclarationIt, inserted] =
@@ -78,12 +80,11 @@ DFBLogicalIdentityAnalysis::DFBLogicalIdentityAnalysis(Operation *operation) {
           << bindOp.getResult().getType();
       errorOperation = bindOp;
       errorMessage = messageStream.str();
-      return WalkResult::interrupt();
+      return;
     }
     assignments.push_back({bindOp, logicalId});
     logicalIds[bindOp.getOperation()] = logicalId;
-    return WalkResult::advance();
-  });
+  }
 }
 
 int64_t DFBLogicalIdentityAnalysis::getLogicalId(BindCBOp declaration) const {

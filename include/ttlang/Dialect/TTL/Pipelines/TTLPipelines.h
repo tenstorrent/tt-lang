@@ -7,6 +7,8 @@
 
 #include "mlir/Pass/PassOptions.h"
 
+#include <cstdint>
+
 namespace mlir {
 class OpPassManager;
 } // namespace mlir
@@ -55,6 +57,16 @@ struct TTLToTTKernelPipelineOptions
                      "error if materialization through a compiler-allocated "
                      "DFB is required."),
       llvm::cl::init(true)};
+  Option<bool> reuseUserDFBs{
+      *this, "reuse-user-dfbs",
+      llvm::cl::desc("Reuse physical DFB indices when concurrent-kernel "
+                     "liveness proves that logical lifetimes do not overlap."),
+      llvm::cl::init(true)};
+  Option<std::uint64_t> exactColoringSearchStateLimit{
+      *this, "exact-coloring-search-limit",
+      llvm::cl::desc("Maximum states examined by exact DFB allocation before "
+                     "reporting an inconclusive result."),
+      llvm::cl::init(1000000)};
   Option<bool> specializeCores{
       *this, "specialize-cores",
       llvm::cl::desc(
