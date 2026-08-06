@@ -21,7 +21,7 @@ As of 2026-08-06, the current integration inputs are:
 | 4 | #754 | `origin/bnorris/pipes-issue-628-code-size` | `caf4fed0` | Compact selected PipeNet lowering |
 | 5 | #734 | `origin/bnorris/pipes-multidevice-integrated-poc` | `b388d180` | Multidevice/fabric PipeNet support and #795 operation device domains |
 | 6 | branch | `origin/bnorris/tensor-backed-dfb` | `ae22d6fe` | Tensor-backed DFB storage and runtime configuration |
-| 7 | #803 | `origin/bnorris/preserve-subtile-dimensions` | `3061dcf5` | Subtile dimensions and compute-target validation |
+| 7 | #803 | `origin/bnorris/preserve-subtile-dimensions` | `552f1879` | Subtile dimensions, compute-target validation, and subtile `fill` |
 
 #780, #754, and #734 are sibling leaves above #700. #651 is the accumulation
 and DFB aggregate. Tensor-backed DFB is an independent branch based on current
@@ -56,6 +56,8 @@ Base: `origin/main` at `441be2d0`.
 
 Backups:
 
+- `backup/integration-before-pr803-fill-20260806` at `0d7159b6`
+  (pushed).
 - `backup/integration-before-pr803-remote-20260806` at `1c9d8f5e`
   (pushed).
 - `backup/integration-before-tip-refresh-20260806` at `ff020b9d` (pushed).
@@ -83,7 +85,7 @@ Backups:
 | #754 | Current tip `caf4fed0` merged in checkpoint `8849a973` |
 | #734 | Current tip `b388d180` merged in checkpoint `41c464a2` |
 | Tensor-backed DFB | Current tip `ae22d6fe` merged in checkpoint `050ddd4b` |
-| #803 | Current tip `3061dcf5` merged in checkpoint `43fe371c` |
+| #803 | Current tip `552f1879` merged in checkpoint `8028e239` |
 | Demo-only commits | Base checkpoint restored as `f95ff833`; row-broadcast checkpoint restored as `befca9df`; module-command documentation restored as `9cb84198`; operation-domain test adaptation restored as `db1b54f8`; full-grid work pending |
 | Integration fixes | Cross-leaf contracts preserved in `f6c02b39`; verifier contracts preserved in `1c9d8f5e` |
 | Tensor-backed row-page views | 1x32 tensor storage may be interpreted directly as 16x32 or 32x32 compute pages in `10e3c3aa` |
@@ -136,6 +138,11 @@ the integration branch.
 
 Current 2026-08-06 rebuild:
 
+- Docker build: passed at `8028e239`.
+- Docker subtile `fill` device matrix: 32 BF16/FP32, DRAM/L1,
+  direct/fused, and 16x16/16x32/32x16/32x32 cases passed at `8028e239`.
+- MLIR: `cmake --build build --target check-ttlang-mlir`; 322 passed at
+  `8028e239`.
 - Host `ttlang-opt` build: passed at `43fe371c`.
 - MLIR: `ninja -C build check-ttlang-mlir`; 322 passed at `10e3c3aa`.
 - Docker build: passed in `bnorris-ird3-v1.1.7` at `43fe371c`.
