@@ -192,12 +192,85 @@ jobs:
               bash .github/containers/cleanup-toolchain.sh /opt/ttlang-toolchain
             "
 
-      - name: Save ird toolchain
+      - name: Clean up Docker build cache before ird image build
         run: |
-          echo "=== Saving ird toolchain ==="
-          sudo cp -a /opt/ttlang-toolchain ird-toolchain
-          echo "ird toolchain size:"
-          du -sh ird-toolchain
+          docker builder prune -af || true
+          df -h
+
+      # The ird image captures the toolchain WITHOUT the freshly built tt-lang,
+      # so it must be built before "Build + install tt-lang" installs tt-lang
+      # into /opt. Building it directly from /opt here (instead of snapshotting
+      # /opt to a directory with cp -a) avoids a full second copy of the
+      # multi-GB toolchain on disk during the dist image build. dist-toolchain
+      # is unused when targeting ird but must be a valid path.
+      - name: Build ird Docker image (local only)
+        id: build-ird
+        env:
+          DOCKER_BUILDKIT: 1
+          BUILDKIT_STEP_LOG_MAX_SIZE: -1
+          DOCKER_BUILD_EXTRA_ARGS: "--build-context dist-toolchain=/opt/ttlang-toolchain --build-context ird-toolchain=/opt/ttlang-toolchain"
+        run: |
+          set -o pipefail
+          set -x
+          .github/containers/build-docker-images.sh --image-type ird --no-push | tee docker-ird.log
+
+          if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+            echo "ERROR: Docker build failed"
+            exit 1
+          fi
+
+          LOCAL_IMAGE="$(cat .docker-image-ird)"
+          REGISTRY_IMAGE="ghcr.io/tenstorrent/tt-lang/${LOCAL_IMAGE}"
+          echo "local-image=$LOCAL_IMAGE" >> "$GITHUB_OUTPUT"
+          echo "docker-image=$REGISTRY_IMAGE" >> "$GITHUB_OUTPUT"
+          echo "IRD image built locally: $LOCAL_IMAGE"
+          df -h
+
+      - name: Smoke-test ird image
+        run: |
+          set -e
+          docker run --rm "${{ steps.build-ird.outputs.local-image }}" bash -c '
+            set -e
+            export PATH=/opt/ttlang-toolchain/venv/bin:/opt/ttlang-toolchain/bin:$PATH
+            mlir-opt --version
+            FileCheck --version
+            python3 --version
+            tt-triage --help
+          '
+
+      # Push after the ird smoke test so the local image can be removed before
+      # the larger dist build. Keeping it until the dist smoke test would
+      # retain both image layer sets and raise the peak disk requirement.
+      - name: Push ird image to GHCR
+        if: ${{ inputs.push }}
+        run: |
+          set -e
+          LOCAL="${{ steps.build-ird.outputs.local-image }}"
+          REGISTRY="${{ steps.build-ird.outputs.docker-image }}"
+          docker tag "$LOCAL" "$REGISTRY"
+          docker push "$REGISTRY"
+
+      - name: Push ird image to GHCR as :latest
+        if: ${{ inputs.push && github.ref == 'refs/heads/main' }}
+        run: |
+          set -e
+          LOCAL="${{ steps.build-ird.outputs.local-image }}"
+          REGISTRY="${{ steps.build-ird.outputs.docker-image }}"
+          LATEST="${REGISTRY%:*}:latest"
+          docker tag "$LOCAL" "$LATEST"
+          docker push "$LATEST"
+
+      - name: Remove local ird image to free space
+        run: |
+          # Remove by image ID so all tags (local, registry, :latest) are
+          # dropped; removing only the local tag would leave the layers
+          # referenced by the pushed tags and free nothing.
+          ird_iid="$(docker images -q "${{ steps.build-ird.outputs.local-image }}")"
+          if [ -n "$ird_iid" ]; then
+            docker rmi -f "$ird_iid" || true
+          fi
+          docker builder prune -af || true
+          df -h
 
       - name: Build + install tt-lang
         run: |
@@ -230,8 +303,11 @@ jobs:
 
       - name: Clean up Docker before packaging
         run: |
-          docker system prune -af --volumes || true
+          # Prune build cache and dangling layers but keep tagged images so the
+          # base image survives for the dist build; system prune -a would delete
+          # it and force a no-retry GHCR re-pull.
           docker builder prune -af || true
+          docker image prune -f || true
           df -h
 
       - name: Build dist Docker image (local only)
@@ -239,7 +315,7 @@ jobs:
         env:
           DOCKER_BUILDKIT: 1
           BUILDKIT_STEP_LOG_MAX_SIZE: -1
-          DOCKER_BUILD_EXTRA_ARGS: "--build-context dist-toolchain=/opt/ttlang-toolchain --build-context ird-toolchain=./ird-toolchain"
+          DOCKER_BUILD_EXTRA_ARGS: "--build-context dist-toolchain=/opt/ttlang-toolchain --build-context ird-toolchain=/opt/ttlang-toolchain"
         run: |
           set -o pipefail
           set -x
@@ -287,66 +363,6 @@ jobs:
           docker tag "$LOCAL" "$LATEST"
           docker push "$LATEST"
 
-      - name: Remove dist toolchain to free space
-        run: sudo rm -rf /opt/ttlang-toolchain
-
-      # dist-toolchain points to ird-toolchain here because dist toolchain was
-      # already deleted to save space. BuildKit doesn't read dist-toolchain when
-      # targeting ird, but it must be a valid path to avoid build errors.
-      - name: Build ird Docker image (local only)
-        id: build-ird
-        env:
-          DOCKER_BUILDKIT: 1
-          BUILDKIT_STEP_LOG_MAX_SIZE: -1
-          DOCKER_BUILD_EXTRA_ARGS: "--build-context dist-toolchain=./ird-toolchain --build-context ird-toolchain=./ird-toolchain"
-        run: |
-          set -o pipefail
-          set -x
-          .github/containers/build-docker-images.sh --image-type ird --no-push | tee docker-ird.log
-
-          if [ "${PIPESTATUS[0]}" -ne 0 ]; then
-            echo "ERROR: Docker build failed"
-            exit 1
-          fi
-
-          LOCAL_IMAGE="$(cat .docker-image-ird)"
-          REGISTRY_IMAGE="ghcr.io/tenstorrent/tt-lang/${LOCAL_IMAGE}"
-          echo "local-image=$LOCAL_IMAGE" >> "$GITHUB_OUTPUT"
-          echo "docker-image=$REGISTRY_IMAGE" >> "$GITHUB_OUTPUT"
-          echo "IRD image built locally: $LOCAL_IMAGE"
-          df -h
-
-      - name: Smoke-test ird image
-        run: |
-          set -e
-          docker run --rm "${{ steps.build-ird.outputs.local-image }}" bash -c '
-            set -e
-            export PATH=/opt/ttlang-toolchain/venv/bin:/opt/ttlang-toolchain/bin:$PATH
-            mlir-opt --version
-            FileCheck --version
-            python3 --version
-            tt-triage --help
-          '
-
-      - name: Push ird image to GHCR
-        if: ${{ inputs.push }}
-        run: |
-          set -e
-          LOCAL="${{ steps.build-ird.outputs.local-image }}"
-          REGISTRY="${{ steps.build-ird.outputs.docker-image }}"
-          docker tag "$LOCAL" "$REGISTRY"
-          docker push "$REGISTRY"
-
-      - name: Push ird image to GHCR as :latest
-        if: ${{ inputs.push && github.ref == 'refs/heads/main' }}
-        run: |
-          set -e
-          LOCAL="${{ steps.build-ird.outputs.local-image }}"
-          REGISTRY="${{ steps.build-ird.outputs.docker-image }}"
-          LATEST="${REGISTRY%:*}:latest"
-          docker tag "$LOCAL" "$LATEST"
-          docker push "$LATEST"
-
       - name: Clean up Docker after build
         if: always()
         run: |
@@ -359,8 +375,20 @@ jobs:
           echo "=== Disk Usage ==="
           df -h
           echo ""
+          echo "=== Toolchain size (largest consumer, outside the workspace) ==="
+          du -sh /opt/ttlang-toolchain 2>/dev/null || true
+          echo ""
           echo "=== Disk Usage by Directory ==="
           du -h --max-depth=2 ${{ github.workspace }} 2>/dev/null | sort -hr | head -20 || true
           echo ""
           echo "=== Docker Disk Usage ==="
           docker system df || true
+
+      # Runs after "Show disk usage on failure" so the toolchain is still on
+      # disk for that diagnostic. Self-hosted-runner hygiene: /opt persists
+      # across jobs otherwise.
+      - name: Remove toolchain to free space
+        if: always()
+        run: |
+          sudo rm -rf /opt/ttlang-toolchain || true
+          df -h

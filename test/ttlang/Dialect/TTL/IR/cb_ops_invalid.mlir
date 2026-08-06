@@ -177,3 +177,59 @@ module {
 }
 
 // tile_store tests moved to tile_store_invalid.mlir
+
+// -----
+
+// Logical DFB identities must be non-negative.
+module {
+  func.func @negative_dfb_id() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{dfb_id must be non-negative}}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = -1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    func.return
+  }
+}
+
+// -----
+
+// cb_reserve must acquire a positive tile count.
+module {
+  func.func @cb_reserve_non_positive_num_tiles(%cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{attribute 'num_tiles' failed to satisfy constraint: 64-bit signless integer attribute whose value is positive}}
+    %view = ttl.cb_reserve %cb {num_tiles = 0 : i64} : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x0x!ttcore.tile<32x32, bf16>>
+    func.return
+  }
+}
+
+// -----
+
+// cb_push must publish a positive tile count.
+module {
+  func.func @cb_push_non_positive_num_tiles(%cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{attribute 'num_tiles' failed to satisfy constraint: 64-bit signless integer attribute whose value is positive}}
+    ttl.cb_push %cb {num_tiles = 0 : i64} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    func.return
+  }
+}
+
+// -----
+
+// cb_wait must acquire a positive tile count.
+module {
+  func.func @cb_wait_non_positive_num_tiles(%cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{attribute 'num_tiles' failed to satisfy constraint: 64-bit signless integer attribute whose value is positive}}
+    %view = ttl.cb_wait %cb {num_tiles = 0 : i64} : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x0x!ttcore.tile<32x32, bf16>>
+    func.return
+  }
+}
+
+// -----
+
+// cb_pop must release a positive tile count.
+module {
+  func.func @cb_pop_non_positive_num_tiles(%cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{attribute 'num_tiles' failed to satisfy constraint: 64-bit signless integer attribute whose value is positive}}
+    ttl.cb_pop %cb {num_tiles = 0 : i64} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    func.return
+  }
+}

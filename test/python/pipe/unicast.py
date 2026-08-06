@@ -5,7 +5,8 @@
 # REQUIRES: ttnn, tt-device
 # RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
-# RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
+# Reject receiver-address publication anywhere in the generated C++.
+# RUN: FileCheck %s --check-prefix=CHECK-CPP --implicit-check-not=noc0.inline_dw_write < %t.output
 
 """
 PipeNet unicast: core 1 sends a tile to core 0 via a single unicast pipe.
@@ -80,21 +81,20 @@ def unicast_pipe(inp, out):
 # C++ Output Checks (unicast pipe)
 # =============================================================================
 
-# Sender side: wait for receiver address publication, then unicast write and
-# completion signal.
+# Sender side: wait for receiver readiness, compute the receiver DFB address,
+# then write the payload and signal completion.
 # CHECK-CPP: === dm_read kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP: experimental::semaphore_wait(
 # CHECK-CPP: noc_semaphore_set(
+# CHECK-CPP: get_common_arg_val<uint32_t>(
 # CHECK-CPP: noc0.async_write(
 # CHECK-CPP: noc0.async_write_barrier();
 # CHECK-CPP: noc_semaphore_inc(
 
-# Receiver side: publish the reserved DFB address, then wait for sender
-# completion.
+# Receiver side: signal readiness without publishing an address, then wait for
+# sender completion.
 # CHECK-CPP: reserve_back(
-# CHECK-CPP: noc0.inline_dw_write<NocOptions::INLINE_L1>
-# CHECK-CPP-SAME: get_write_ptr()
 # CHECK-CPP: noc_semaphore_inc(
 # CHECK-CPP: experimental::semaphore_wait_min(
 # CHECK-CPP: push_back(

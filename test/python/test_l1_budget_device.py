@@ -21,7 +21,7 @@ import torch
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from ttl.dataflow_buffer import CompilerAllocatedDFBConfig
+from ttl.dataflow_buffer import PhysicalDFBConfig
 from ttl.constants import DEFAULT_L1_CB_BUDGET_BYTES
 from ttl.kernel_runner import build_cb_descriptors, get_min_remaining_l1_for_device
 
@@ -34,24 +34,32 @@ pytestmark = pytest.mark.skipif(
     not is_hardware_available(), reason="No Tenstorrent device available"
 )
 
-TILE_BYTES = 2048  # bf16 tile: 32 * 32 * 2
+DFB_FORMATS = [
+    ("bfloat16", ttnn.tile_size(ttnn.bfloat16)),
+    ("float32", ttnn.tile_size(ttnn.float32)),
+]
 
 
-def _overflow_config(remaining_bytes):
-    """Build a single CompilerAllocatedDFBConfig whose size exceeds *remaining_bytes*."""
-    overflow_tiles = (remaining_bytes // TILE_BYTES) + 1
-    return CompilerAllocatedDFBConfig(
+def _overflow_config(remaining_bytes, data_format, page_size):
+    """Build a physical DFB configuration larger than *remaining_bytes*."""
+    overflow_tiles = (remaining_bytes // page_size) + 1
+    return PhysicalDFBConfig(
         dfb_index=0,
         num_tiles=overflow_tiles,
-        data_format="bfloat16",
+        data_format=data_format,
         block_count=1,
+        page_size=page_size,
+        tile=(32, 32),
     )
 
 
 class TestReducedWorkerL1:
     """Reduced worker_l1_size lowers cb_limit, triggering the budget check."""
 
-    def test_overflow(self):
+    @pytest.mark.parametrize(
+        ("data_format", "page_size"), DFB_FORMATS, ids=["bf16", "f32"]
+    )
+    def test_overflow(self, data_format, page_size):
         default_size = ttnn.device.get_max_worker_l1_unreserved_size()
         reduced_size = default_size - 1_200_000
         device = ttnn.open_device(device_id=0, worker_l1_size=reduced_size)
@@ -64,7 +72,11 @@ class TestReducedWorkerL1:
             ), f"Expected reduced budget, got {remaining} >= {DEFAULT_L1_CB_BUDGET_BYTES}"
 
             with pytest.raises(ValueError, match="exceeds L1 budget"):
-                build_cb_descriptors([probe], [_overflow_config(remaining)], None)
+                build_cb_descriptors(
+                    [probe],
+                    [_overflow_config(remaining, data_format, page_size)],
+                    None,
+                )
         finally:
             ttnn.close_device(device)
 
@@ -72,7 +84,10 @@ class TestReducedWorkerL1:
 class TestL1TensorAllocation:
     """L1 tensor allocations reduce remaining budget on the target core."""
 
-    def test_overflow(self):
+    @pytest.mark.parametrize(
+        ("data_format", "page_size"), DFB_FORMATS, ids=["bf16", "f32"]
+    )
+    def test_overflow(self, data_format, page_size):
         device = ttnn.open_device(device_id=0)
         try:
             remaining_empty = get_min_remaining_l1_for_device(device)
@@ -88,7 +103,11 @@ class TestL1TensorAllocation:
             )
 
             with pytest.raises(ValueError, match="exceeds L1 budget"):
-                build_cb_descriptors([big], [_overflow_config(remaining_after)], None)
+                build_cb_descriptors(
+                    [big],
+                    [_overflow_config(remaining_after, data_format, page_size)],
+                    None,
+                )
         finally:
             ttnn.close_device(device)
 
@@ -96,7 +115,10 @@ class TestL1TensorAllocation:
 class TestBothReducedL1AndTensorAllocation:
     """Reduced worker_l1_size combined with L1 tensor allocations."""
 
-    def test_overflow(self):
+    @pytest.mark.parametrize(
+        ("data_format", "page_size"), DFB_FORMATS, ids=["bf16", "f32"]
+    )
+    def test_overflow(self, data_format, page_size):
         default_size = ttnn.device.get_max_worker_l1_unreserved_size()
         reduced_size = default_size - 800_000
         device = ttnn.open_device(device_id=0, worker_l1_size=reduced_size)
@@ -116,6 +138,10 @@ class TestBothReducedL1AndTensorAllocation:
             )
 
             with pytest.raises(ValueError, match="exceeds L1 budget"):
-                build_cb_descriptors([big], [_overflow_config(remaining)], None)
+                build_cb_descriptors(
+                    [big],
+                    [_overflow_config(remaining, data_format, page_size)],
+                    None,
+                )
         finally:
             ttnn.close_device(device)

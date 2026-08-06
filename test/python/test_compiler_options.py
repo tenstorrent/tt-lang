@@ -19,6 +19,10 @@ class TestDefaults:
         assert opts.maximize_dst is True
         assert opts.enable_fpu_binary_ops is True
         assert opts.subblock_sync is False
+        assert opts.pipe_computed_addresses is True
+        assert opts.pipe_global_semaphores_only is False
+        assert opts.reuse_user_dfbs is True
+        assert opts.dfb_exact_coloring_search_limit == 1_000_000
         assert opts.specialize_cores is False
         assert opts._explicit == frozenset()
 
@@ -48,6 +52,21 @@ class TestFromString:
         assert opts.enable_fpu_binary_ops is False
         assert "enable_fpu_binary_ops" in opts._explicit
 
+    def test_disable_pipe_computed_addresses(self):
+        opts = CompilerOptions.from_string("--no-ttl-pipe-computed-addresses")
+        assert opts.pipe_computed_addresses is False
+        assert "pipe_computed_addresses" in opts._explicit
+
+    def test_enable_pipe_global_semaphores_only(self):
+        opts = CompilerOptions.from_string("--ttl-pipe-global-semaphores-only")
+        assert opts.pipe_global_semaphores_only is True
+        assert "pipe_global_semaphores_only" in opts._explicit
+
+    def test_disable_pipe_global_semaphores_only(self):
+        opts = CompilerOptions.from_string("--no-ttl-pipe-global-semaphores-only")
+        assert opts.pipe_global_semaphores_only is False
+        assert "pipe_global_semaphores_only" in opts._explicit
+
     def test_enable_subblock_sync(self):
         opts = CompilerOptions.from_string("--ttl-subblock-sync")
         assert opts.subblock_sync is True
@@ -57,6 +76,22 @@ class TestFromString:
         opts = CompilerOptions.from_string("--ttl-specialize-cores")
         assert opts.specialize_cores is True
         assert "specialize_cores" in opts._explicit
+
+    def test_disable_user_dfb_reuse(self):
+        opts = CompilerOptions.from_string("--no-ttl-reuse-user-dfbs")
+        assert opts.reuse_user_dfbs is False
+        assert "reuse_user_dfbs" in opts._explicit
+
+    def test_exact_coloring_search_limit(self):
+        opts = CompilerOptions.from_string(
+            "--ttl-dfb-exact-coloring-search-limit 250000"
+        )
+        assert opts.dfb_exact_coloring_search_limit == 250_000
+        assert "dfb_exact_coloring_search_limit" in opts._explicit
+
+    def test_negative_exact_coloring_search_limit_is_invalid(self):
+        with pytest.raises(SystemExit):
+            CompilerOptions.from_string("--ttl-dfb-exact-coloring-search-limit -1")
 
     def test_enable_flags_explicitly(self):
         opts = CompilerOptions.from_string("--ttl-maximize-dst --ttl-fpu-binary-ops")
@@ -114,8 +149,11 @@ class TestMerge:
 class TestFromArgv:
     @pytest.fixture(autouse=True)
     def _reset_argv_cache(self):
-        """Clear the from_argv() cache so each test parses fresh."""
+        """Isolate the process-wide argv cache for each parser test."""
+        saved_argv_result = _co._argv_result
         _co._argv_result = None
+        yield
+        _co._argv_result = saved_argv_result
 
     def test_extracts_known_flags(self):
         with mock.patch.object(

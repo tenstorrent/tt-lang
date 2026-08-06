@@ -721,6 +721,14 @@ def test_manylinux_builder_images_are_opt_in_for_docker_workflows() -> None:
         "COPY ${WORKFLOW_SOURCE}/.github/containers/"
         "CMakeLists.wheel-toolchain CMakeLists.txt"
     ) in manylinux_dockerfile
+    assert "FROM base AS wheel-builder-from-components" in manylinux_dockerfile
+    assert (
+        "COPY --from=llvm-component /opt/ttlang-toolchain/ " "/opt/ttlang-toolchain/"
+    ) in manylinux_dockerfile
+    assert (
+        "COPY --from=ttmetal-component /opt/ttlang-toolchain/tt-metal/ "
+        "/opt/ttlang-toolchain/tt-metal/"
+    ) in manylinux_dockerfile
     assert "COPY ${WORKFLOW_SOURCE}/CMakeLists.txt" not in manylinux_dockerfile
     llvm_stage = manylinux_dockerfile.split("FROM base AS llvm-toolchain", 1)[1].split(
         "FROM base AS ttmetal-toolchain", 1

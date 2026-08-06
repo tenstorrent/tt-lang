@@ -433,7 +433,7 @@ the current checkout:
   `.github/scripts/uplift-paths.sh` match the nearest version tag commit.
   The script returns the tag name itself, with `+` translated to `-` because
   Docker tags allow only `[A-Za-z0-9_.-]`.
-- **Uplift state** (`vX.Y.Z-uplift-<8char>`): one or more of those files
+- **Uplift state** (`vX.Y.Z-<8char>`): one or more of those files
   differ from the nearest version tag. The hash is
   `git ls-tree HEAD -- <uplift-files> | sha256sum | cut -c1-8`, so two
   branches with identical submodule SHAs and Dockerfile/requirements content
@@ -469,6 +469,13 @@ regressions at PR time without uploading a separate container image for
 every PR. The path-change detection is in
 `.github/scripts/wheel-or-container-changed.sh` (path list in
 `wheel-or-container-paths.sh`).
+
+Manylinux wheel-builder images use the same deterministic tag format, but
+their input list extends `.github/scripts/uplift-paths.sh` with the
+manylinux builder Dockerfile, CMake driver, and builder driver scripts. This
+keeps changes to those builder-only files from invalidating the shared
+ird/dist image tag while still producing a new manylinux builder tag when the
+builder assembly changes.
 
 `call-build.yml` retains its `build_toolchain` input for manual
 `workflow_dispatch` runs, but the automated workflows no longer set it:

@@ -219,3 +219,41 @@ func.func @typecast_identity_to_input(
 
   return %0 : tensor<2x2x!ttcore.tile<32x32, f32>>
 }
+
+// -----
+
+// Chained identity typecasts are planned from the immutable input. Eliding the
+// producer first updates the consumer to the exact operand recorded by its
+// plan, and the final store uses the attached root.
+
+// CHECK-LABEL: func.func @chained_identity_typecasts
+// CHECK: %[[INPUT:.*]] = ttl.attach_cb
+// CHECK-NOT: ttl.typecast
+// CHECK: ttl.compute ins(%[[INPUT]]
+// CHECK: ttl.tile_store
+// CHECK: return %[[INPUT]]
+func.func @chained_identity_typecasts(
+    %arg: tensor<2x2x!ttcore.tile<32x32, f32>>)
+    -> tensor<2x2x!ttcore.tile<32x32, f32>> {
+  %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
+  %output_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
+  %input = ttl.attach_cb %arg, %input_dfb
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>,
+         !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[2, 2], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %first = ttl.typecast %input
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  %second = ttl.typecast %first
+      : (tensor<2x2x!ttcore.tile<32x32, f32>>)
+        -> tensor<2x2x!ttcore.tile<32x32, f32>>
+  ttl.store %second, %output
+      : tensor<2x2x!ttcore.tile<32x32, f32>>,
+        tensor<2x2x!ttcore.tile<32x32, f32>>
+  return %second : tensor<2x2x!ttcore.tile<32x32, f32>>
+}

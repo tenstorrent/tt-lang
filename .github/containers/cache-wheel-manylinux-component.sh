@@ -3,8 +3,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# Build one manylinux wheel-toolchain component and export its BuildKit cache
-# to GHCR. The LLVM and tt-metal cache references are intentionally distinct.
+# Build one manylinux wheel-toolchain component and publish it to GHCR with
+# inline cache metadata. The LLVM and tt-metal references are intentionally
+# distinct.
 
 set -eu
 
@@ -110,8 +111,9 @@ set -- \
     --target "$target" \
     --build-arg "WORKFLOW_SOURCE=$workflow_source" \
     --cache-from "type=registry,ref=$cache_ref" \
-    --cache-to "type=registry,ref=$cache_ref,mode=max" \
-    --output type=cacheonly
+    --cache-to type=inline \
+    --push \
+    -t "$cache_ref"
 
 if [ -n "$python_tag" ]; then
     set -- "$@" --build-arg "PYTHON_TAG=$python_tag"
@@ -128,5 +130,5 @@ if [ -n "$build_parallel_level" ]; then
     set -- "$@" --build-arg "TTLANG_BUILD_PARALLEL_LEVEL=$build_parallel_level"
 fi
 
-echo "Updating $component cache: $cache_ref"
+echo "Publishing $component component image: $cache_ref"
 ${DOCKER:-docker} "$@" -f "$dockerfile" "$repo_root"

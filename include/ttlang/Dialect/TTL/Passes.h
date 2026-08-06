@@ -27,9 +27,6 @@ namespace mlir::tt::ttl {
 #define GEN_PASS_REGISTRATION
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 
-/// Populate patterns for lowering TTL elementwise tensor ops to ttl.compute.
-void populateTTLToComputePatterns(RewritePatternSet &patterns);
-
 /// Populate patterns for lowering ttl.tile_* ops to TTKernel.
 void populateTTLTileOpsToTTKernelPatterns(mlir::TypeConverter *typeConverter,
                                           RewritePatternSet &patterns,
