@@ -1922,9 +1922,16 @@ def _lower_program_to_kernel(
 
         reduce_fp32_flag = int(compiler_options.reduce_full_fp32)
         pipe_computed_flag = int(compiler_options.pipe_computed_addresses)
+        pipe_global_semaphores_only_flag = int(
+            compiler_options.pipe_global_semaphores_only
+        )
         pipeline_passes += [
             "ttl-lower-dprint-to-emitc",
-            f"convert-ttl-to-ttkernel{{reduce-full-fp32={reduce_fp32_flag} pipe-computed-addresses={pipe_computed_flag}}}",
+            (
+                f"convert-ttl-to-ttkernel{{reduce-full-fp32={reduce_fp32_flag} "
+                f"pipe-computed-addresses={pipe_computed_flag} "
+                f"pipe-global-semaphores-only={pipe_global_semaphores_only_flag}}}"
+            ),
             "func.func(ttkernel-lower-scalar-fp-types)",
             "ttkernel-insert-inits",
             "ttkernel-insert-l1-accumulation",

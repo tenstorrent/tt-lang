@@ -62,6 +62,11 @@ struct TTLToTTKernelPipelineOptions
       llvm::cl::desc("Use computed receiver DFB addresses for eligible pipe "
                      "transfers."),
       llvm::cl::init(true)};
+  Option<bool> pipeGlobalSemaphoresOnly{
+      *this, "pipe-global-semaphores-only",
+      llvm::cl::desc("Allocate all compiler-managed PipeNet synchronization "
+                     "counters in GlobalSemaphore storage."),
+      llvm::cl::init(false)};
   Option<bool> reuseUserDFBs{
       *this, "reuse-user-dfbs",
       llvm::cl::desc("Reuse physical DFB indices when concurrent-kernel "

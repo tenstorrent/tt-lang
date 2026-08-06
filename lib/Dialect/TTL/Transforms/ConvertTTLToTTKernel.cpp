@@ -1654,7 +1654,8 @@ struct RawElementWriteLowering : OpConversionPattern<RawElementWriteOp> {
 static LogicalResult
 lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                       TTLToTTKernelTypeConverter &typeConverter,
-                      StringRef passName, bool pipeComputedAddresses) {
+                      StringRef passName, bool pipeComputedAddresses,
+                      bool pipeGlobalSemaphoresOnly) {
   ConversionTarget target(ctx);
   target.addIllegalDialect<tt::ttl::TTLDialect>();
   target.addLegalDialect<affine::AffineDialect, arith::ArithDialect,
@@ -1739,8 +1740,12 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   PipeNetIndex pipeNetIndex;
   buildPipeNetIndex(mod, pipeNetIndex);
   PipeResourcePlan pipeResourcePlan;
+  PipeCounterAllocationPolicy counterPolicy =
+      pipeGlobalSemaphoresOnly ? PipeCounterAllocationPolicy::GlobalOnly
+                               : PipeCounterAllocationPolicy::LocalThenGlobal;
   if (failed(buildPipeResourcePlan(mod, transferIndex, *pipeGraphOrErr,
-                                   pipeResourcePlan, pipeComputedAddresses))) {
+                                   pipeResourcePlan, pipeComputedAddresses,
+                                   counterPolicy))) {
     return failure();
   }
   PipeResourceRequirements pipeResourceRequirements =
@@ -2045,7 +2050,8 @@ struct TTLConvertTTLToTTKernelPass
 
     // Phase 1: Lower TTL ops to TTKernel (bind_cb, copy, wait, cb ops, store)
     if (failed(lowerTTLOpsToTTKernel(mod, ctx, typeConverter, getName(),
-                                     pipeComputedAddresses))) {
+                                     pipeComputedAddresses,
+                                     pipeGlobalSemaphoresOnly))) {
       signalPassFailure();
       return;
     }

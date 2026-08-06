@@ -1537,7 +1537,8 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod,
                                     const PipeTransferIndex &transferIndex,
                                     const PipeGraph &pipeGraph,
                                     PipeResourcePlan &info,
-                                    bool enableComputedAddresses) {
+                                    bool enableComputedAddresses,
+                                    PipeCounterAllocationPolicy counterPolicy) {
   DominanceInfo dominanceInfo(mod);
   PostDominanceInfo postDominanceInfo(mod);
   FailureOr<SmallVector<PipeTransferAllocationUnit>> maybeUnits =
@@ -1562,7 +1563,8 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod,
     unit.maybeCompletionCounterColor = allocateCompletionCounterColor(
         unit.pipe, pipesByCompletionCounterColor);
   }
-  PipeCounterAllocator counterAllocator;
+  PipeCounterAllocator counterAllocator(PipeCounterAllocationCounts{},
+                                        counterPolicy);
   SmallVector<PipeCounterInfo> completionCounters;
   completionCounters.reserve(pipesByCompletionCounterColor.size());
   while (completionCounters.size() < pipesByCompletionCounterColor.size()) {
@@ -1573,28 +1575,21 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod,
       compactColors(colorUsersBySource, [](std::size_t) { return true; });
 
   // The same ready color is reused on different source cores, so every source
-  // must interpret that color as the same storage kind.
+  // must interpret that color as the same storage kind. GlobalSemaphore
+  // indices name separate storage on each source, so only same-source colors
+  // need distinct indices.
   PipeCounterAllocationCounts counterCounts = counterAllocator.getCounts();
   bool useGlobalReadyCounters =
+      counterPolicy == PipeCounterAllocationPolicy::GlobalOnly ||
       counterCounts.localSemaphoreCount + maxReadyCountersPerSource >
-      kMaxHardwareSemaphoreIds;
+          kMaxHardwareSemaphoreIds;
 
-  SmallVector<PipeCounterInfo> localReadyCounterByColor;
-  if (!useGlobalReadyCounters) {
-    localReadyCounterByColor.reserve(maxReadyCountersPerSource);
-    for (int64_t color = 0; color < maxReadyCountersPerSource; ++color) {
-      localReadyCounterByColor.push_back(counterAllocator.allocate());
-    }
-  }
-
-  SmallVector<PipeCounterInfo> globalReadyCounterByColor;
-  if (useGlobalReadyCounters) {
-    // A global semaphore index refers to distinct storage on each source core.
-    // Only counters live on the same source need distinct indices.
-    globalReadyCounterByColor.reserve(maxReadyCountersPerSource);
-    for (int64_t color = 0; color < maxReadyCountersPerSource; ++color) {
-      globalReadyCounterByColor.push_back(counterAllocator.allocateGlobal());
-    }
+  SmallVector<PipeCounterInfo> readyCounterByColor;
+  readyCounterByColor.reserve(maxReadyCountersPerSource);
+  for (int64_t color = 0; color < maxReadyCountersPerSource; ++color) {
+    readyCounterByColor.push_back(useGlobalReadyCounters
+                                      ? counterAllocator.allocateGlobal()
+                                      : counterAllocator.allocate());
   }
 
   auto [addressColorBySourceColor, maxAddressColorsPerSource] =
@@ -1617,11 +1612,8 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod,
     auto colorIt = sourceIt->second.find(unit.resourceColor);
     assert(colorIt != sourceIt->second.end());
     int64_t readyColor = colorIt->second;
-    const SmallVector<PipeCounterInfo> &readyCounters =
-        useGlobalReadyCounters ? globalReadyCounterByColor
-                               : localReadyCounterByColor;
-    assert(readyColor < static_cast<int64_t>(readyCounters.size()));
-    PipeCounterInfo readyCounter = readyCounters[readyColor];
+    assert(readyColor < static_cast<int64_t>(readyCounterByColor.size()));
+    PipeCounterInfo readyCounter = readyCounterByColor[readyColor];
 
     auto computedIt =
         computedAddressPlan.infoByUnitIndex.find(indexedUnit.index());

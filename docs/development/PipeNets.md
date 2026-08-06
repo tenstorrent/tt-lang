@@ -403,11 +403,14 @@ Repeated dynamic executions of one transfer node reuse its assigned counter
 and advance a cumulative expected-count value.
 
 The compiler uses one allocation abstraction for completion and readiness
-counters. It allocates completion counters first, using local semaphore ids
-before GlobalSemaphore storage. It then allocates readiness counters locally
-only if the entire per-kernel readiness allocation fits in the remaining local
-ids; otherwise all readiness counters use GlobalSemaphore storage. No PipeNet
-counter fails solely because all 16 local semaphore ids are occupied.
+counters. By default, it allocates completion counters first, using local
+semaphore ids before GlobalSemaphore storage. It then allocates readiness
+counters locally only if the entire per-kernel readiness allocation fits in the
+remaining local ids; otherwise all readiness counters use GlobalSemaphore
+storage. `--ttl-pipe-global-semaphores-only` allocates every compiler-managed
+PipeNet counter in GlobalSemaphore storage, preserving all local semaphore ids
+for application use. No PipeNet counter fails solely because all 16 local
+semaphore ids are occupied.
 
 The address table and synchronization counters all reside in Tensix L1 SRAM,
 but they use different allocation mechanisms. TTKernel local semaphores consume
@@ -974,14 +977,17 @@ Repeated executions of one transfer node use its assigned counter.
 Distinct transfer nodes for one logical pipe remain separate intervals
 and may reuse a counter only when those intervals do not overlap.
 
-Completion colors consume the first local semaphore ids and then
+By default, completion colors consume the first local semaphore ids and then
 GlobalSemaphore storage. If every readiness color fits in the remaining local
 ids, readiness counters use those ids and the same color is reused on different
 source nodes. Otherwise all readiness counters use GlobalSemaphore storage,
 with one allocation per ready color. Each source node has distinct storage for
 that allocation. This all-global readiness rule gives every source node the
-same storage interpretation for a ready color. The
-compiler records the final local and global totals in
+same storage interpretation for a ready color.
+`--ttl-pipe-global-semaphores-only` preserves the same color assignments and
+reuse decisions while allocating every completion and readiness counter in
+GlobalSemaphore storage. The compiler records the final local and global
+totals in
 `ttl.pipe_sync_semaphore_count` and `ttl.pipe_global_semaphore_count`.
 
 Receiver completion is cumulative across repeated executions of a transfer
