@@ -29,8 +29,8 @@ Algorithm:
         For each side, walk the duplicated body. If a stmt has
         ``_ttl_threads`` and this side isn't in it, drop the stmt.
         Non-anchor stmts (control flow, scalar arithmetic, ttl.node,
-        make_dataflow_buffer_like, ...) stay on every side; MLIR DCE
-        removes dead code per-thread later.
+        make_dataflow_buffer_like, make_tensor_backed_dfb, ...) stay on
+        every side; MLIR DCE removes dead code per-thread later.
 
     Post-check:
         A DFB producer (``blk = cb.wait()`` / ``cb.reserve()``) must have
@@ -96,6 +96,7 @@ _TTL_OPS: Dict[str, str] = {
     "Pipe": "control",
     "PipeNet": "control",
     "make_dataflow_buffer_like": "control",
+    "make_tensor_backed_dfb": "control",
     "node": "control",
     "grid_size": "control",
     "dims": "control",
@@ -128,6 +129,7 @@ _BLOCK_METHODS: Dict[str, str] = {
 
 # Methods on a DFB name that produce a block.
 _DFB_PRODUCING_METHODS: Set[str] = {"wait", "reserve"}
+_DFB_DIRECT_METHODS: Dict[str, str] = {"publish": "dm"}
 
 
 # ----- shared call -> thread classification ---------------------------------
@@ -216,9 +218,8 @@ def split_function_body(
     Args:
         fn_def: AST FunctionDef of the user's @ttl.operation function.
         dfb_param_names: parameter names annotated as ttl.DFB / ttl.DFB.Output.
-        local_dfb_names: names of DFBs declared inside the body via
-            ``ttl.make_dataflow_buffer_like(...)``. Treated as DFB receivers
-            for wait/reserve recognition.
+        local_dfb_names: names of DFBs declared inside the body via a DFB
+            factory. Treated as DFB receivers for wait/reserve recognition.
     """
     dfb_names = set(dfb_param_names) | (local_dfb_names or set())
 
@@ -249,7 +250,8 @@ class _AnchorTagger:
 
     1. Direct anchors: any stmt whose AST subtree contains a registered
        ``ttl.<op>(...)`` call, a ``<pipenet>.if_src/if_dst(...)`` call,
-       a block-method call (``blk.store(...)``), or a ``@`` MatMult.
+       a DFB direct-method call (``dfb.publish()``), a block-method call
+       (``blk.store(...)``), or a ``@`` MatMult.
        Thread = union of anchor threads found.
 
     2. Deferred producer anchors: ``name = cb.wait()/.reserve()`` (or
@@ -487,6 +489,10 @@ class _AnchorTagger:
         # <block>.<method>(...) where <block> is a producer in this scope.
         func = call.func
         if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            if func.value.id in self.dfb_names:
+                method = _DFB_DIRECT_METHODS.get(func.attr)
+                if method is not None:
+                    return _materialize_thread(method, self._dm_thread)
             if func.value.id in self._producers:
                 method = _BLOCK_METHODS.get(func.attr)
                 if method == "trisc":

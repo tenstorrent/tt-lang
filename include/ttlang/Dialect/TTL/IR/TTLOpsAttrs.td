@@ -27,6 +27,26 @@ def TTL_SliceAttr : TTL_Attr<"Slice", "slice"> {
   }];
 }
 
+def TTL_TensorBackingAttr
+    : TTL_Attr<"TensorBacking", "tensor_backing"> {
+  let summary = "Tensor storage used by a dataflow buffer";
+  let description = [{
+    Identifies a byte range in one operation tensor argument that supplies the
+    storage for a dataflow buffer. The range is relative to each launch node's
+    tensor shard. It must match the complete dataflow buffer capacity and must
+    remain valid for the complete program execution.
+  }];
+  let parameters = (ins
+    "int64_t":$tensorIndex,
+    "int64_t":$byteOffset,
+    "int64_t":$byteSize
+  );
+  let assemblyFormat = "`<` `tensor_index` `=` $tensorIndex `,`"
+                       " `byte_offset` `=` $byteOffset `,`"
+                       " `byte_size` `=` $byteSize `>`";
+  let genVerifyDecl = 1;
+}
+
 def TTL_PipeTransferKindAttr : TTL_Attr<"PipeTransferKind",
                                         "pipe_transfer_kind"> {
   let summary = "Pipe transfer kind";

@@ -5,6 +5,7 @@
 """Dataflow buffer (DFB) operations for inter-thread communication."""
 
 from dataclasses import dataclass
+import math
 from typing import Any, Optional, Tuple
 
 from ttl.ir import *
@@ -62,6 +63,9 @@ class DataflowBuffer:
         block_count: int,
         dtype: Any = None,
         tile: Tuple[int, int] = (32, 32),
+        tensor_backing: Any = None,
+        byte_offset: int = 0,
+        byte_size: Optional[int] = None,
     ):
         if len(shape) < 2:
             raise ValueError(f"DFB shape must have at least 2 dimensions, got {shape}")
@@ -81,6 +85,9 @@ class DataflowBuffer:
         self.block_count = block_count
         self._dtype = dtype
         self.tile = tuple(tile)
+        self.tensor_backing = tensor_backing
+        self.byte_offset = byte_offset
+        self.byte_size = byte_size
         self._cb_index = _next_cb_index()
 
     @property
@@ -132,6 +139,16 @@ class DataflowBuffer:
         tensor = ttl.cb_reserve(tensor_type, ast_self)
         return ttl.attach_cb(tensor.type, tensor, ast_self)
 
+    def publish(ast_self: "DataflowBuffer") -> None:
+        """Publish the complete tensor-backed capacity to consumers."""
+        cb_type = ttl.CircularBufferType.maybe_downcast(ast_self.type)
+        if cb_type is None:
+            raise ValueError(f"Expected CircularBufferType, got {ast_self.type}")
+        total_tiles = math.prod(cb_type.shape) * cb_type.block_count
+        published_type = RankedTensorType.get([1, total_tiles], cb_type.element_type)
+        ttl.cb_reserve(published_type, ast_self, num_tiles=total_tiles)
+        ttl.cb_push(ast_self, num_tiles=total_tiles)
+
 
 # Backward-compatible alias. Existing user code using `ttl.CircularBuffer`
 # continues to work; new code should prefer `DataflowBuffer`.
@@ -154,6 +171,21 @@ class PhysicalDFBConfig:
     block_count: int
     page_size: int
     tile: Optional[Tuple[int, int]]
+    storage_segments: Tuple["DFBStorageSegment", ...] = ()
+
+
+@dataclass(frozen=True)
+class DFBStorageSegment:
+    """Storage selected for a physical DFB on an exact launch-node set."""
+
+    nodes: Tuple[Tuple[int, int], ...]
+    tensor_index: Optional[int] = None
+    byte_offset: int = 0
+    byte_size: Optional[int] = None
+
+    @property
+    def is_tensor_backed(self) -> bool:
+        return self.tensor_index is not None
 
 
 def make_dataflow_buffer_like(
@@ -176,6 +208,77 @@ def make_dataflow_buffer_like(
     if hasattr(tensor, "get_tile"):
         tile = tuple(tensor.get_tile().tile_shape)
     return DataflowBuffer(tensor, shape, block_count, tile=tile)
+
+
+def make_tensor_backed_dfb(
+    tensor: Any,
+    shape: Tuple[int, ...],
+    *,
+    block_count: int = 1,
+    byte_offset: int = 0,
+) -> DataflowBuffer:
+    """Bind a DFB's complete capacity to a sharded L1 tensor byte range."""
+    from .dtype_utils import is_ttnn_tensor
+
+    if not is_ttnn_tensor(tensor):
+        raise TypeError("tensor-backed DFB storage requires a TTNN tensor")
+    if not isinstance(byte_offset, int) or isinstance(byte_offset, bool):
+        raise TypeError("byte_offset must be an integer")
+    if byte_offset < 0:
+        raise ValueError("byte_offset must be non-negative")
+    if not isinstance(block_count, int) or isinstance(block_count, bool):
+        raise TypeError("block_count must be an integer")
+    if block_count < 1 or block_count > 32:
+        raise ValueError(f"block_count must be in range [1, 32], got {block_count}")
+    if len(shape) < 2 or any(
+        not isinstance(dimension, int) or isinstance(dimension, bool) or dimension <= 0
+        for dimension in shape
+    ):
+        raise ValueError(f"DFB shape dimensions must be positive integers, got {shape}")
+
+    memory_config = tensor.memory_config()
+    if "L1" not in str(memory_config.buffer_type):
+        raise ValueError("tensor-backed DFB storage requires an L1 tensor")
+    if "HEIGHT_SHARDED" not in str(memory_config.memory_layout):
+        raise ValueError(
+            "tensor-backed DFB storage currently requires height-sharded memory"
+        )
+    if hasattr(tensor, "layout") and "TILE" not in str(tensor.layout):
+        raise ValueError("tensor-backed DFB storage requires TILE layout")
+    dtype_name = str(tensor.dtype).rsplit(".", maxsplit=1)[-1].lower()
+    if dtype_name not in {"bfloat16", "float32"}:
+        raise ValueError(
+            "tensor-backed DFB storage currently supports BF16 and FP32, "
+            f"got {tensor.dtype}"
+        )
+
+    tile = tensor.get_tile()
+    tile_shape = tuple(tile.tile_shape)
+    page_size = int(tile.get_tile_size(tensor.dtype))
+    byte_size = math.prod(shape) * block_count * page_size
+    descriptor_limit = (1 << 32) - 1
+    if byte_offset > descriptor_limit or byte_size > descriptor_limit:
+        raise ValueError(
+            "tensor-backed DFB byte range exceeds the uint32 descriptor ABI"
+        )
+    if byte_offset + byte_size > descriptor_limit:
+        raise ValueError(
+            "tensor-backed DFB byte range end exceeds the uint32 descriptor ABI"
+        )
+    if byte_offset % page_size != 0:
+        raise ValueError(
+            f"byte_offset must be aligned to the {page_size}-byte DFB page size"
+        )
+
+    return DataflowBuffer(
+        tensor,
+        shape,
+        block_count,
+        tile=tile_shape,
+        tensor_backing=tensor,
+        byte_offset=byte_offset,
+        byte_size=byte_size,
+    )
 
 
 def _resolve_dfb_dtype(dtype: Any):

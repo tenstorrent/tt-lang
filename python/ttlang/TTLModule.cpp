@@ -53,6 +53,24 @@ void populateTTLModule(nb::module_ &m) {
       .def_prop_ro("step", &SliceAttr::getStep);
 
   //===--------------------------------------------------------------------===//
+  // TensorBackingAttr
+  //===--------------------------------------------------------------------===//
+
+  tt_attribute_class<TensorBackingAttr>(m, "TensorBackingAttr")
+      .def_static(
+          "get",
+          [](MlirContext ctx, int64_t tensorIndex, int64_t byteOffset,
+             int64_t byteSize) {
+            return wrap(TensorBackingAttr::get(unwrap(ctx), tensorIndex,
+                                               byteOffset, byteSize));
+          },
+          nb::arg("context"), nb::arg("tensor_index"), nb::arg("byte_offset"),
+          nb::arg("byte_size"))
+      .def_prop_ro("tensor_index", &TensorBackingAttr::getTensorIndex)
+      .def_prop_ro("byte_offset", &TensorBackingAttr::getByteOffset)
+      .def_prop_ro("byte_size", &TensorBackingAttr::getByteSize);
+
+  //===--------------------------------------------------------------------===//
   // CircularBufferType
   //===--------------------------------------------------------------------===//
 
