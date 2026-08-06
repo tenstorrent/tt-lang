@@ -286,17 +286,19 @@ static bool containsSourceNode(ArrayRef<PipeCapacityReleaseTarget> sourceNodes,
 
 class PipeCapacityPlanBuilder {
 public:
-  static void buildSelectedCapacityPlan(
-      ArrayRef<PipeTransferNodeId> selectedTransfers,
-      const PipeCapacityAnalysisResult &capacityFacts,
-      const PipeGraph &pipeGraph, const PipeResourcePlan &resources,
-      PipeCounterAllocationPolicy counterPolicy, PipeCapacityPlan &plan) {
+  static void
+  buildSelectedCapacityPlan(ArrayRef<PipeTransferNodeId> selectedTransfers,
+                            const PipeCapacityAnalysisResult &capacityFacts,
+                            const PipeGraph &pipeGraph,
+                            const PipeResourcePlan &resources,
+                            PipeCounterAllocationPolicy counterAllocationPolicy,
+                            PipeCapacityPlan &plan) {
     PipeResourceRequirements requirements =
         getPipeResourceRequirements(resources);
     plan.initializeCounterAllocation(
         PipeCounterAllocationCounts{requirements.syncSemaphoreCount,
                                     requirements.globalSemaphoreCount},
-        counterPolicy);
+        counterAllocationPolicy);
     SmallVector<PipeCapacityCounterColor> counterColors;
     for (PipeTransferNodeId transferNodeId : selectedTransfers) {
       const PipeTransferNode &transferNode =

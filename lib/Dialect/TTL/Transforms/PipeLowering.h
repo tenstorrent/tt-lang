@@ -266,7 +266,7 @@ LogicalResult buildPipeResourcePlan(
     ModuleOp mod, const PipeTransferIndex &transferIndex,
     const PipeGraph &pipeGraph, PipeResourcePlan &info,
     bool enableComputedAddresses = true,
-    PipeCounterAllocationPolicy counterPolicy =
+    PipeCounterAllocationPolicy counterAllocationPolicy =
         PipeCounterAllocationPolicy::LocalThenGlobal,
     const PipeSynchronizationSelection *synchronizationSelection = nullptr);
 
@@ -323,8 +323,15 @@ void materializePipeTransportCompletionBarriers(
 void lowerInactivePipeTransferSend(PipeTransferSendOp op,
                                    ConversionPatternRewriter &rewriter);
 
-/// Lower the sender-side pipe transfer and signal receiver completion.
-LogicalResult lowerPipeTransferSend(
+/// Lower a runtime-selected sender-side transfer.
+LogicalResult
+lowerSelectedPipeTransferSend(PipeTransferSendOp op, Value srcCB,
+                              const PipeTransferPlan &transferPlan,
+                              const PipeResourcePlan &pipeResourcePlan,
+                              ConversionPatternRewriter &rewriter);
+
+/// Lower a static sender-side transfer and signal receiver completion.
+LogicalResult lowerStaticPipeTransferSend(
     PipeTransferSendOp op, Value srcCB, const PipeTransferPlan &transferPlan,
     const PipeTransportStream &transportStream,
     const PipeResourcePlan &pipeResourcePlan,

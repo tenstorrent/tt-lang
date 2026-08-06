@@ -734,6 +734,15 @@ struct TTLFormPipeTransportsPass
       return;
     }
 
+    WalkResult foreachWalk = module.walk([](Operation *op) {
+      return isa<PipeNetForeachSrcOp, PipeNetForeachDstOp>(op)
+                 ? WalkResult::interrupt()
+                 : WalkResult::advance();
+    });
+    if (foreachWalk.wasInterrupted()) {
+      return;
+    }
+
     ValueOriginAnalysis preExpansionAnalysis(module);
     if (failed(verifyTransferProvenance(module, preExpansionAnalysis)) ||
         failed(expandPipeTransfers(module, preExpansionAnalysis))) {
@@ -754,8 +763,9 @@ struct TTLFormPipeTransportsPass
       return;
     }
     const PipeTransferIndex &transferIndex = **maybeTransferIndex;
+    PipeForeachLoweringInfo foreachLoweringInfo;
     FailureOr<PipeGraph> maybePipeGraph =
-        PipeGraph::build(module, transferIndex);
+        PipeGraph::build(module, transferIndex, foreachLoweringInfo);
     if (failed(maybePipeGraph)) {
       signalPassFailure();
       return;
@@ -763,13 +773,11 @@ struct TTLFormPipeTransportsPass
     PipeGraph &pipeGraph = *maybePipeGraph;
 
     // All-published planning bounds address-table storage independently of the
-    // address and counter-storage options selected by the conversion pass.
+    // receiver-address option selected by the later conversion pass.
     PipeResourcePlan conservativeResourcePlan;
-    if (failed(buildPipeResourcePlan(
-            module, transferIndex, pipeGraph, conservativeResourcePlan,
-            /*enableComputedAddresses=*/false,
-            PipeCounterAllocationPolicy::LocalThenGlobal,
-            /*synchronizationSelection=*/nullptr))) {
+    if (failed(buildPipeResourcePlan(module, transferIndex, pipeGraph,
+                                     conservativeResourcePlan,
+                                     /*enableComputedAddresses=*/false))) {
       signalPassFailure();
       return;
     }

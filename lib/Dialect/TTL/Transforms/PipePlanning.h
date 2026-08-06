@@ -47,7 +47,7 @@ struct PipePlanningOptions {
   /// Use sender-local capacity counters for transfers proven safe.
   bool enableCapacitySynchronization = false;
 
-  /// Select storage for compiler-managed synchronization counters.
+  /// Select storage available to compiler-managed synchronization counters.
   PipeCounterAllocationPolicy counterAllocationPolicy =
       PipeCounterAllocationPolicy::LocalThenGlobal;
 
@@ -139,8 +139,10 @@ private:
   void addInitialization(func::FuncOp func, PipeCapacityInitInfo info);
 
   /// Continue allocation after the completion and readiness counters.
-  void initializeCounterAllocation(PipeCounterAllocationCounts counts,
-                                   PipeCounterAllocationPolicy policy);
+  void
+  initializeCounterAllocation(PipeCounterAllocationCounts counts,
+                              PipeCounterAllocationPolicy policy =
+                                  PipeCounterAllocationPolicy::LocalThenGlobal);
 
   /// Allocate storage for one proven sender-capacity counter.
   PipeCounterInfo allocateCounter();
