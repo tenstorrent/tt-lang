@@ -891,6 +891,39 @@ def test_build_cb_descriptors_binds_tensor_on_exact_nodes(monkeypatch):
     assert selected == [(0, 0), (1, 0)]
 
 
+def test_build_cb_descriptors_binds_uint16_tensor(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+    )
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype("uint16")
+    tensor = _FakeTensor(object(), dtype=expected_dtype)
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "uint16",
+        1,
+        2048,
+        (32, 32),
+        (
+            DFBStorageSegment(
+                nodes=((0, 0),),
+                tensor_index=0,
+                byte_size=2048,
+            ),
+        ),
+    )
+
+    descriptor = kernel_runner.build_cb_descriptors(
+        tensors=[tensor],
+        cb_configs=[config],
+        core_ranges=_FakeCoreRanges(),
+    )[0]
+
+    assert descriptor["tensor"] is tensor
+    assert descriptor["total_size"] == 2048
+
+
 def test_build_cb_descriptors_applies_tensor_backed_row_page_view(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)

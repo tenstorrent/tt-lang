@@ -100,32 +100,42 @@ def dfb_storage_mul(lhs, rhs, out):
 }
 
 
-@ttl.operation(grid=(1, 1), fp32_dest_acc_en=True)
-def tensor_backed_subtile_view_mul(lhs, rhs, out):
-    """Multiply directly in 1x32 storage interpreted as one 16x32 tile."""
-    lhs_dfb = ttl.make_tensor_backed_dfb(lhs, shape=(1, 1), tile=(16, 32))
-    rhs_dfb = ttl.make_tensor_backed_dfb(rhs, shape=(1, 1), tile=(16, 32))
-    out_dfb = ttl.make_tensor_backed_dfb(out, shape=(1, 1), tile=(16, 32))
+def _make_tensor_backed_subtile_view_mul(*, fp32_dest_acc_en):
+    @ttl.operation(grid=(1, 1), fp32_dest_acc_en=fp32_dest_acc_en)
+    def tensor_backed_subtile_view_mul(lhs, rhs, out):
+        """Multiply directly in 1x32 storage interpreted as one 16x32 tile."""
+        lhs_dfb = ttl.make_tensor_backed_dfb(lhs, shape=(1, 1), tile=(16, 32))
+        rhs_dfb = ttl.make_tensor_backed_dfb(rhs, shape=(1, 1), tile=(16, 32))
+        out_dfb = ttl.make_tensor_backed_dfb(out, shape=(1, 1), tile=(16, 32))
 
-    @ttl.compute()
-    def compute():
-        lhs_block = lhs_dfb.wait()
-        rhs_block = rhs_dfb.wait()
-        out_block = out_dfb.reserve()
-        out_block.store(lhs_block * rhs_block)
-        out_block.push()
-        rhs_block.pop()
-        lhs_block.pop()
+        @ttl.compute()
+        def compute():
+            lhs_block = lhs_dfb.wait()
+            rhs_block = rhs_dfb.wait()
+            out_block = out_dfb.reserve()
+            out_block.store(lhs_block * rhs_block)
+            out_block.push()
+            rhs_block.pop()
+            lhs_block.pop()
 
-    @ttl.datamovement()
-    def publish_inputs():
-        lhs_dfb.publish()
-        rhs_dfb.publish()
+        @ttl.datamovement()
+        def publish_inputs():
+            lhs_dfb.publish()
+            rhs_dfb.publish()
 
-    @ttl.datamovement()
-    def consume_output():
-        out_block = out_dfb.wait()
-        out_block.pop()
+        @ttl.datamovement()
+        def consume_output():
+            out_block = out_dfb.wait()
+            out_block.pop()
+
+    return tensor_backed_subtile_view_mul
+
+
+TENSOR_BACKED_SUBTILE_VIEW_MUL = {
+    torch.bfloat16: _make_tensor_backed_subtile_view_mul(fp32_dest_acc_en=False),
+    torch.float32: _make_tensor_backed_subtile_view_mul(fp32_dest_acc_en=True),
+    torch.uint16: _make_tensor_backed_subtile_view_mul(fp32_dest_acc_en=False),
+}
 
 
 def _make_kernel(storage_kind, tile_count, node_count):
@@ -202,7 +212,9 @@ def _to_compact_height_sharded(torch_tensor, device, ttnn_dtype):
 
 @pytest.mark.requires_device
 @pytest.mark.parametrize(
-    "torch_dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"]
+    "torch_dtype",
+    [torch.bfloat16, torch.float32, torch.uint16],
+    ids=["bf16", "f32", "uint16"],
 )
 @pytest.mark.parametrize("tile_count", [1, 8], ids=["one_tile", "eight_tiles"])
 @pytest.mark.parametrize("node_count", [1, 2], ids=["one_node", "two_nodes"])
@@ -215,9 +227,20 @@ def test_dfb_storage_eltwise_mul(
     """The same computation is correct with staged and direct DFB storage."""
     tensor_shape = (32 * node_count, 32 * tile_count)
     torch.manual_seed(0)
-    lhs_torch = torch.rand(tensor_shape, dtype=torch_dtype)
-    rhs_torch = torch.rand(tensor_shape, dtype=torch_dtype)
-    expected = lhs_torch * rhs_torch
+    if torch_dtype == torch.uint16:
+        lhs_torch = torch.randint(0, 32, tensor_shape, dtype=torch.int32).to(
+            torch.uint16
+        )
+        rhs_torch = torch.randint(0, 32, tensor_shape, dtype=torch.int32).to(
+            torch.uint16
+        )
+        expected = (lhs_torch.to(torch.int32) * rhs_torch.to(torch.int32)).to(
+            torch.uint16
+        )
+    else:
+        lhs_torch = torch.rand(tensor_shape, dtype=torch_dtype)
+        rhs_torch = torch.rand(tensor_shape, dtype=torch_dtype)
+        expected = lhs_torch * rhs_torch
 
     lhs = _to_height_sharded(lhs_torch, device, node_count)
     rhs = _to_height_sharded(rhs_torch, device, node_count)
@@ -226,7 +249,10 @@ def test_dfb_storage_eltwise_mul(
     _make_kernel(storage_kind, tile_count, node_count)(lhs, rhs, out)
 
     actual = ttnn.to_torch(out)
-    assert_pcc(expected.float(), actual.float(), threshold=0.999)
+    if torch_dtype == torch.uint16:
+        assert_allclose(actual.float(), expected.float(), rtol=0.0, atol=0.0)
+    else:
+        assert_pcc(expected.float(), actual.float(), threshold=0.999)
 
 
 @pytest.mark.requires_device
@@ -235,21 +261,26 @@ def test_dfb_storage_eltwise_mul(
     [
         (torch.bfloat16, ttnn.bfloat16, 0.05, 1.0),
         (torch.float32, ttnn.float32, 1e-3, 1e-3),
+        (torch.uint16, ttnn.uint16, 0.0, 0.0),
     ],
-    ids=["bf16", "fp32"],
+    ids=["bf16", "fp32", "uint16"],
 )
 def test_tensor_backed_subtile_view(device, torch_dtype, ttnn_dtype, rtol, atol):
     """A compute-page view must preserve the compact tensor's byte order."""
     torch.manual_seed(0)
-    lhs_source = torch.rand((1, 512), dtype=torch_dtype)
-    rhs_source = torch.full((1, 512), 2.0, dtype=torch_dtype)
+    if torch_dtype == torch.uint16:
+        lhs_source = torch.arange(512, dtype=torch.int32).to(torch.uint16)[None, :]
+        rhs_source = torch.full((1, 512), 2, dtype=torch.uint16)
+    else:
+        lhs_source = torch.rand((1, 512), dtype=torch_dtype)
+        rhs_source = torch.full((1, 512), 2.0, dtype=torch_dtype)
     expected = lhs_source.float() * rhs_source.float()
 
     lhs = _to_compact_height_sharded(lhs_source, device, ttnn_dtype)
     rhs = _to_compact_height_sharded(rhs_source, device, ttnn_dtype)
     out = _to_compact_height_sharded(torch.zeros_like(lhs_source), device, ttnn_dtype)
 
-    tensor_backed_subtile_view_mul(lhs, rhs, out)
+    TENSOR_BACKED_SUBTILE_VIEW_MUL[torch_dtype](lhs, rhs, out)
 
     actual = ttnn.to_torch(out).reshape(1, 512).float()
     assert_allclose(actual, expected, rtol=rtol, atol=atol)

@@ -255,9 +255,9 @@ def make_tensor_backed_dfb(
     if hasattr(tensor, "layout") and "TILE" not in str(tensor.layout):
         raise ValueError("tensor-backed DFB storage requires TILE layout")
     dtype_name = str(tensor.dtype).rsplit(".", maxsplit=1)[-1].lower()
-    if dtype_name not in {"bfloat16", "float32"}:
+    if dtype_name not in {"bfloat16", "float32", "uint16"}:
         raise ValueError(
-            "tensor-backed DFB storage currently supports BF16 and FP32, "
+            "tensor-backed DFB storage currently supports BF16, FP32, and UINT16, "
             f"got {tensor.dtype}"
         )
 
