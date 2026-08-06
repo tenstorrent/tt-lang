@@ -14,7 +14,7 @@ def test_tensor_backed_dfb_is_explicitly_unsupported():
         NotImplementedError,
         match="simulator does not model tensor-backed DFB storage",
     ):
-        ttl.make_tensor_backed_dfb(object(), shape=(1, 1))
+        ttl.make_tensor_backed_dfb(object(), shape=(1, 1), tile=(16, 32))
 
 
 def test_tensor_backed_dfb_rejection_preserves_simulator_namespace():

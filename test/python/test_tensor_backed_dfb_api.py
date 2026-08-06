@@ -16,11 +16,12 @@ class _FakeMemoryConfig:
 
 
 class _FakeTile:
-    tile_shape = (32, 32)
+    def __init__(self, tile_shape=(32, 32)):
+        self.tile_shape = tile_shape
 
-    @staticmethod
-    def get_tile_size(_dtype):
-        return 2048
+    def get_tile_size(self, dtype):
+        element_size = 4 if dtype == "float32" else 2
+        return self.tile_shape[0] * self.tile_shape[1] * element_size
 
 
 class _FakeTensor:
@@ -31,17 +32,18 @@ class _FakeTensor:
         layout="TILE",
         buffer_type="L1",
         memory_layout="HEIGHT_SHARDED",
+        tile_shape=(32, 32),
     ):
         self.dtype = dtype
         self.layout = layout
         self._memory_config = _FakeMemoryConfig(buffer_type, memory_layout)
+        self._tile = _FakeTile(tile_shape)
 
     def memory_config(self):
         return self._memory_config
 
-    @staticmethod
-    def get_tile():
-        return _FakeTile()
+    def get_tile(self):
+        return self._tile
 
 
 def test_make_tensor_backed_dfb_records_complete_capacity(monkeypatch):
@@ -60,6 +62,68 @@ def test_make_tensor_backed_dfb_records_complete_capacity(monkeypatch):
     assert dfb.block_count == 2
     assert dfb.byte_offset == 2048
     assert dfb.byte_size == 16384
+
+
+@pytest.mark.parametrize(
+    ("view_tile", "expected_page_size"),
+    [((16, 32), 1024), ((32, 32), 2048)],
+    ids=["half", "full"],
+)
+def test_make_tensor_backed_dfb_records_row_page_view(
+    monkeypatch, view_tile, expected_page_size
+):
+    monkeypatch.setattr(
+        "ttl.dtype_utils.is_ttnn_tensor", lambda tensor: isinstance(tensor, _FakeTensor)
+    )
+    dataflow_buffer._reset_cb_counter()
+
+    tensor = _FakeTensor(tile_shape=(1, 32))
+    dfb = dataflow_buffer.make_tensor_backed_dfb(
+        tensor,
+        shape=(1, 2),
+        tile=view_tile,
+    )
+
+    assert dfb.tile == view_tile
+    assert dfb.byte_size == 2 * expected_page_size
+
+
+@pytest.mark.parametrize(
+    ("storage_tile", "view_tile"),
+    [
+        ((32, 32), (16, 32)),
+        ((1, 32), (8, 32)),
+        ((1, 16), (16, 16)),
+    ],
+    ids=["full-to-half", "row-to-eight", "narrow-row"],
+)
+def test_make_tensor_backed_dfb_rejects_unsupported_tile_view(
+    monkeypatch, storage_tile, view_tile
+):
+    monkeypatch.setattr(
+        "ttl.dtype_utils.is_ttnn_tensor", lambda tensor: isinstance(tensor, _FakeTensor)
+    )
+
+    with pytest.raises(ValueError, match="tile views require"):
+        dataflow_buffer.make_tensor_backed_dfb(
+            _FakeTensor(tile_shape=storage_tile),
+            shape=(1, 1),
+            tile=view_tile,
+        )
+
+
+def test_make_tensor_backed_dfb_aligns_offset_to_view_page(monkeypatch):
+    monkeypatch.setattr(
+        "ttl.dtype_utils.is_ttnn_tensor", lambda tensor: isinstance(tensor, _FakeTensor)
+    )
+
+    with pytest.raises(ValueError, match="1024-byte DFB page size"):
+        dataflow_buffer.make_tensor_backed_dfb(
+            _FakeTensor(tile_shape=(1, 32)),
+            shape=(1, 1),
+            tile=(16, 32),
+            byte_offset=64,
+        )
 
 
 @pytest.mark.parametrize(

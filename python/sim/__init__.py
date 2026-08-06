@@ -126,7 +126,9 @@ class _TTLNamespace:
         self.math = _TTLMathNamespace()
 
     @staticmethod
-    def _make_tensor_backed_dfb(tensor, shape, *, block_count=1, byte_offset=0):
+    def _make_tensor_backed_dfb(
+        tensor, shape, *, block_count=1, byte_offset=0, tile=None
+    ):
         raise NotImplementedError(
             "the simulator does not model tensor-backed DFB storage"
         )

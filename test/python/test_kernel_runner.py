@@ -15,12 +15,20 @@ from ttl.domains import DeviceDomain
 
 
 class _FakeTensor:
-    def __init__(self, device, address=0x2000, dtype=None, size_per_bank=1 << 20):
+    def __init__(
+        self,
+        device,
+        address=0x2000,
+        dtype=None,
+        size_per_bank=1 << 20,
+        tile_shape=(32, 32),
+    ):
         self._device = device
         self._address = address
         self.size_per_bank = size_per_bank
         self.dtype = dtype
         self.layout = "TILE"
+        self.tile_shape = tile_shape
 
     def device(self):
         return self._device
@@ -28,15 +36,20 @@ class _FakeTensor:
     def buffer_address(self):
         return self._address
 
-    @staticmethod
-    def get_tile():
-        return _FakeTTNN.Tile((32, 32))
+    def get_tile(self):
+        return _FakeTTNN.Tile(self.tile_shape)
 
-    @staticmethod
-    def memory_config():
+    def memory_config(self):
+        tile_elements = self.tile_shape[0] * self.tile_shape[1]
+        storage_bytes = max(self.size_per_bank, tile_elements * 2)
+
+        class ShardSpec:
+            shape = (self.tile_shape[0], storage_bytes // (2 * self.tile_shape[0]))
+
         class MemoryConfig:
             buffer_type = "L1"
             memory_layout = "HEIGHT_SHARDED"
+            shard_spec = ShardSpec()
 
         return MemoryConfig()
 
@@ -179,6 +192,9 @@ class _FakeTTNN:
         def set_buffer_from_cb(self, backing_desc):
             self.backing_desc = backing_desc
 
+    class TensorBackedCBDescriptor(dict):
+        pass
+
     class CoreCoord:
         def __init__(self, x, y):
             self.x = x
@@ -202,13 +218,13 @@ class _FakeTTNN:
             and address_offset + total_size > tensor.size_per_bank
         ):
             raise ValueError("address offset + total size exceeds buffer size")
-        return {
-            "cb_index": cb_index,
-            "tensor": tensor,
-            "address_offset": address_offset,
-            "total_size": total_size,
-            "core_ranges": core_ranges,
-        }
+        return _FakeTTNN.TensorBackedCBDescriptor(
+            cb_index=cb_index,
+            tensor=tensor,
+            address_offset=address_offset,
+            total_size=total_size,
+            core_ranges=core_ranges,
+        )
 
     @staticmethod
     def get_optimal_worker_cores_for_sharded_tensor(_tensor):
@@ -873,6 +889,47 @@ def test_build_cb_descriptors_binds_tensor_on_exact_nodes(monkeypatch):
         for core_range in descriptor["core_ranges"].ranges
     ]
     assert selected == [(0, 0), (1, 0)]
+
+
+def test_build_cb_descriptors_applies_tensor_backed_row_page_view(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+    )
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    tensor = _FakeTensor(
+        object(),
+        dtype=expected_dtype,
+        size_per_bank=1024,
+        tile_shape=(1, 32),
+    )
+    config = PhysicalDFBConfig(
+        dfb_index=0,
+        num_tiles=1,
+        data_format="bfloat16",
+        block_count=1,
+        page_size=1024,
+        tile=(16, 32),
+        storage_segments=(
+            DFBStorageSegment(
+                nodes=((0, 0),),
+                tensor_index=0,
+                byte_size=1024,
+            ),
+        ),
+    )
+
+    descriptor = kernel_runner.build_cb_descriptors(
+        tensors=[tensor],
+        cb_configs=[config],
+        core_ranges=_FakeCoreRanges(),
+    )[0]
+
+    format_descriptor = descriptor.format_descriptors[0]
+    assert descriptor["tensor"] is tensor
+    assert format_descriptor.page_size == 1024
+    assert format_descriptor.tile.tile.tile_shape == (16, 32)
 
 
 def test_build_cb_descriptors_rejects_node_without_tensor_shard(monkeypatch):

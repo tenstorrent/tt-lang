@@ -26,7 +26,7 @@ of an operation tensor's node-local L1 allocation:
 
 ```python
 input_dfb = ttl.make_tensor_backed_dfb(
-    input_tensor, shape=(1, tile_count), block_count=1
+    input_tensor, shape=(1, tile_count), block_count=1, tile=(16, 32)
 )
 
 @ttl.datamovement()
@@ -35,7 +35,10 @@ def publish_input():
 ```
 
 The tensor must use TILE layout, height-sharded L1 storage, and BF16 or FP32.
-The optional `byte_offset` must be page-aligned. The bound byte size is
+By default, the DFB uses the tensor's tile and page size. The optional `tile`
+may group contiguous 1x32 tensor pages into 16x32 or 32x32 compute pages
+without copying bytes. Other tile reinterpretations are rejected. The optional
+`byte_offset` must be aligned to the DFB page size. The bound byte size is
 `product(shape) * block_count * page_size`; allocation padding does not change
 the DFB capacity. The current contract supports one device and one or more
 launch nodes whose tensor shards use the same local DFB specification.

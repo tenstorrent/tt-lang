@@ -15,6 +15,7 @@ building and execution.
 
 from dataclasses import dataclass, field
 import itertools
+import math
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -649,11 +650,34 @@ def _validate_tensor_backed_dfb_tensor(
             f"DFB[{config.dfb_index}] tensor backing dtype {tensor.dtype} "
             f"does not match {expected_dtype}"
         )
-    tensor_page_size = int(tensor.get_tile().get_tile_size(tensor.dtype))
-    if tensor_page_size != config.page_size:
+    storage_tile = tensor.get_tile()
+    storage_tile_shape = tuple(storage_tile.tile_shape)
+    view_tile_shape = config.tile
+    if view_tile_shape is None:
         raise ValueError(
-            f"DFB[{config.dfb_index}] tensor backing page size "
-            f"{tensor_page_size} does not match {config.page_size}"
+            f"DFB[{config.dfb_index}] tensor backing requires tiled DFB metadata"
+        )
+    if view_tile_shape != storage_tile_shape:
+        supported_view = storage_tile_shape == (1, 32) and view_tile_shape in {
+            (16, 32),
+            (32, 32),
+        }
+        if not supported_view:
+            raise ValueError(
+                f"DFB[{config.dfb_index}] tensor backing cannot reinterpret "
+                f"{storage_tile_shape} storage as {view_tile_shape} pages"
+            )
+    storage_page_size = int(storage_tile.get_tile_size(tensor.dtype))
+    storage_elements_per_page = math.prod(storage_tile_shape)
+    view_elements_per_page = math.prod(view_tile_shape)
+    if (
+        view_elements_per_page % storage_elements_per_page != 0
+        or config.page_size
+        != storage_page_size * (view_elements_per_page // storage_elements_per_page)
+    ):
+        raise ValueError(
+            f"DFB[{config.dfb_index}] tensor backing page size {config.page_size} "
+            f"does not match the {storage_tile_shape} -> {view_tile_shape} view"
         )
     try:
         tensor_nodes = {
@@ -692,6 +716,29 @@ def _validate_tensor_backed_dfb_tensor(
         raise ValueError(
             f"DFB[{config.dfb_index}] byte_offset must be aligned to its "
             f"{config.page_size}-byte page size"
+        )
+    shard_spec = memory_config.shard_spec
+    if shard_spec is None:
+        raise ValueError(
+            f"DFB[{config.dfb_index}] tensor backing has no shard specification"
+        )
+    try:
+        shard_elements = math.prod(int(dimension) for dimension in shard_spec.shape)
+    except (AttributeError, TypeError, ValueError):
+        raise ValueError(
+            f"DFB[{config.dfb_index}] tensor backing has no valid shard shape"
+        ) from None
+    if shard_elements % storage_elements_per_page != 0:
+        raise ValueError(
+            f"DFB[{config.dfb_index}] tensor backing shard does not contain an "
+            f"integral number of {storage_tile_shape} storage pages"
+        )
+    storage_bytes = (shard_elements // storage_elements_per_page) * storage_page_size
+    if segment.byte_offset + total_size > storage_bytes:
+        raise ValueError(
+            f"DFB[{config.dfb_index}] tensor backing byte range end "
+            f"{segment.byte_offset + total_size} exceeds the {storage_bytes}-byte "
+            "shard allocation"
         )
 
 
@@ -903,15 +950,17 @@ def build_cb_descriptors(
                     f"{segment.tensor_index} is outside [0, {len(tensors)})"
                 )
             tensor = tensors[segment.tensor_index]
-            cb_descriptors.append(
-                ttnn.cb_descriptor_from_sharded_tensor(
-                    cb_index,
-                    tensor,
-                    address_offset=segment.byte_offset,
-                    total_size=row.total_size,
-                    core_ranges=segment_core_ranges,
-                )
+            backing_descriptor = ttnn.cb_descriptor_from_sharded_tensor(
+                cb_index,
+                tensor,
+                address_offset=segment.byte_offset,
+                total_size=row.total_size,
+                core_ranges=segment_core_ranges,
             )
+            # Keep the tensor-owned address while applying the compiler-validated
+            # DFB interpretation to the contiguous backing bytes.
+            backing_descriptor.format_descriptors = [cb_format]
+            cb_descriptors.append(backing_descriptor)
 
     return cb_descriptors
 

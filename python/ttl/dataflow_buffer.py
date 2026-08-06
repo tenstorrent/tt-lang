@@ -239,8 +239,13 @@ def make_tensor_backed_dfb(
     *,
     block_count: int = 1,
     byte_offset: int = 0,
+    tile: Optional[Tuple[int, int]] = None,
 ) -> DataflowBuffer:
-    """Bind a DFB's complete capacity to a sharded L1 tensor byte range."""
+    """Bind a DFB's complete capacity to a sharded L1 tensor byte range.
+
+    ``tile`` may group contiguous 1x32 row pages into 16x32 or 32x32 compute
+    pages without moving data. Other storage reinterpretations are rejected.
+    """
     from .dtype_utils import is_ttnn_tensor
 
     if not is_ttnn_tensor(tensor):
@@ -275,9 +280,40 @@ def make_tensor_backed_dfb(
             f"got {tensor.dtype}"
         )
 
-    tile = tensor.get_tile()
-    tile_shape = tuple(tile.tile_shape)
-    page_size = int(tile.get_tile_size(tensor.dtype))
+    storage_tile = tensor.get_tile()
+    storage_tile_shape = tuple(storage_tile.tile_shape)
+    try:
+        tile_shape = (
+            storage_tile_shape
+            if tile is None
+            else tuple(operator.index(dimension) for dimension in tile)
+        )
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"DFB tile must contain exactly two integer dimensions, got {tile!r}"
+        ) from None
+    if len(tile_shape) != 2:
+        raise ValueError(
+            f"DFB tile must contain exactly two integer dimensions, got {tile!r}"
+        )
+
+    storage_page_size = int(storage_tile.get_tile_size(tensor.dtype))
+    if tile_shape == storage_tile_shape:
+        page_size = storage_page_size
+    else:
+        supported_view = storage_tile_shape == (1, 32) and tile_shape in {
+            (16, 32),
+            (32, 32),
+        }
+        if not supported_view:
+            raise ValueError(
+                "tensor-backed DFB tile views require 1x32 tensor storage and "
+                f"a 16x32 or 32x32 DFB tile, got {storage_tile_shape} -> "
+                f"{tile_shape}"
+            )
+        storage_elements = math.prod(storage_tile_shape)
+        view_elements = math.prod(tile_shape)
+        page_size = storage_page_size * (view_elements // storage_elements)
     byte_size = math.prod(shape) * block_count * page_size
     descriptor_limit = (1 << 32) - 1
     if byte_offset > descriptor_limit or byte_size > descriptor_limit:
