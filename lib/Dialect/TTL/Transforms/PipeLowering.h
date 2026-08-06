@@ -266,6 +266,8 @@ LogicalResult buildPipeResourcePlan(
     ModuleOp mod, const PipeTransferIndex &transferIndex,
     const PipeGraph &pipeGraph, PipeResourcePlan &info,
     bool enableComputedAddresses = true,
+    PipeCounterAllocationPolicy counterAllocationPolicy =
+        PipeCounterAllocationPolicy::LocalThenGlobal,
     const PipeSynchronizationSelection *synchronizationSelection = nullptr);
 
 /// Replace grouped transport DFB backing with compiler-managed SRAM scratch.

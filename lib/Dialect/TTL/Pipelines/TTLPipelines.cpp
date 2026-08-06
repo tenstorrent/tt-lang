@@ -103,6 +103,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     ttkOpts.reduceFullFp32 = options.reduceFullFp32;
     ttkOpts.pipeComputedAddresses = options.pipeComputedAddresses;
     ttkOpts.pipeCapacitySync = options.pipeCapacitySync;
+    ttkOpts.pipeGlobalSemaphoresOnly = options.pipeGlobalSemaphoresOnly;
     pm.addPass(createTTLConvertTTLToTTKernel(ttkOpts));
   }
   pm.addPass(createTTKernelInsertInits());

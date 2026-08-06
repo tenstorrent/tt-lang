@@ -76,6 +76,11 @@ struct TTLToTTKernelPipelineOptions
                      "transfers. When disabled, computed-address transfers "
                      "use receiver-post synchronization."),
       llvm::cl::init(true)};
+  Option<bool> pipeGlobalSemaphoresOnly{
+      *this, "pipe-global-semaphores-only",
+      llvm::cl::desc("Allocate all compiler-managed PipeNet synchronization "
+                     "counters in GlobalSemaphore storage."),
+      llvm::cl::init(false)};
   Option<int64_t> pipeBatchTiles{
       *this, "pipe-batch-tiles",
       llvm::cl::desc("Limit logical transfers per PipeTransport group. "

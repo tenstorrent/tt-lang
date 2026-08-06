@@ -3027,6 +3027,7 @@ LogicalResult buildPipeResourcePlan(
     ModuleOp mod, const PipeTransferIndex &transferIndex,
     const PipeGraph &pipeGraph, PipeResourcePlan &info,
     bool enableComputedAddresses,
+    PipeCounterAllocationPolicy counterAllocationPolicy,
     const PipeSynchronizationSelection *synchronizationSelection) {
   DominanceInfo dominanceInfo(mod);
   PostDominanceInfo postDominanceInfo(mod);
@@ -3063,14 +3064,13 @@ LogicalResult buildPipeResourcePlan(
         allocateCompletionCounterColor(completionLocations, locationsByColor);
   }
 
-  PipeCounterAllocator counterAllocator;
-  SmallVector<PipeCounterInfo> nodeLocalCompletionCounters;
-  nodeLocalCompletionCounters.reserve(
-      nodeLocalCompletionLocationsByColor.size());
+  PipeCounterAllocator counterAllocator({}, counterAllocationPolicy);
+  SmallVector<PipeCounterInfo> nodeCompletionCounters;
+  nodeCompletionCounters.reserve(nodeLocalCompletionLocationsByColor.size());
   for (std::size_t counterIndex = 0;
        counterIndex < nodeLocalCompletionLocationsByColor.size();
        ++counterIndex) {
-    nodeLocalCompletionCounters.push_back(counterAllocator.allocate());
+    nodeCompletionCounters.push_back(counterAllocator.allocate());
   }
   SmallVector<PipeCounterInfo> fabricCompletionCounters;
   fabricCompletionCounters.reserve(fabricCompletionLocationsByColor.size());
@@ -3089,8 +3089,9 @@ LogicalResult buildPipeResourcePlan(
   // must interpret that color as the same storage kind.
   PipeCounterAllocationCounts counterCounts = counterAllocator.getCounts();
   bool useGlobalReadyCounters =
+      counterAllocationPolicy == PipeCounterAllocationPolicy::GlobalOnly ||
       counterCounts.localSemaphoreCount + maxReadyCountersPerSource >
-      kMaxHardwareSemaphoreIds;
+          kMaxHardwareSemaphoreIds;
 
   SmallVector<PipeCounterInfo> localReadyCounterByColor;
   if (!useGlobalReadyCounters) {
@@ -3128,7 +3129,7 @@ LogicalResult buildPipeResourcePlan(
     ArrayRef<PipeCounterInfo> completionCounters =
         usesFabricProtocol(unit, synchronizationSelection)
             ? ArrayRef<PipeCounterInfo>(fabricCompletionCounters)
-            : ArrayRef<PipeCounterInfo>(nodeLocalCompletionCounters);
+            : ArrayRef<PipeCounterInfo>(nodeCompletionCounters);
     assert(completionColor < static_cast<int64_t>(completionCounters.size()));
     PipeSourceKey sourceKey = getPipeSourceKey(unit.pipeType);
     std::optional<PipeCounterInfo> maybeReadyCounter;

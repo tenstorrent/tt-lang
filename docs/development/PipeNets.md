@@ -462,6 +462,10 @@ fits in the remaining local ids; otherwise all readiness counters use
 GlobalSemaphore storage. Capacity counters use any remaining local ids and
 then GlobalSemaphore storage. No PipeNet counter fails solely because all 16
 local semaphore ids are occupied.
+`--ttl-pipe-global-semaphores-only` preserves the counter-coloring and reuse
+decisions while allocating completion, readiness, and capacity counters in
+GlobalSemaphore storage. This leaves local semaphore ids available to the
+application.
 
 The address table and synchronization counters all reside in Tensix L1 SRAM,
 but they use different allocation mechanisms. TTKernel local semaphores consume
@@ -1218,9 +1222,11 @@ capacity counter uses the next local semaphore id when one remains and otherwise
 uses the next GlobalSemaphore allocation. A capacity counter remains live for
 the whole kernel, so endpoints on the same source node use distinct counters.
 Endpoints on different source nodes may reuse an allocation when their initial
-capacities match; the unconditional function-entry initialization then writes
-the same value to each source node's independent counter storage. The compiler
-records the final local and global totals in
+capacities match and their release targets differ; the unconditional
+function-entry initialization then writes the same value to each source node's
+independent counter storage. Global-only allocation uses the same reuse
+decisions and assigns every capacity color to GlobalSemaphore storage. The
+compiler records the final local and global totals in
 `ttl.pipe_sync_semaphore_count` and `ttl.pipe_global_semaphore_count`.
 
 Receiver completion is cumulative across repeated executions of a transfer

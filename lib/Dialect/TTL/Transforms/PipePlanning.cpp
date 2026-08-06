@@ -90,9 +90,9 @@ void PipeCapacityPlan::addInitialization(func::FuncOp function,
 }
 
 void PipeCapacityPlan::initializeCounterAllocation(
-    PipeCounterAllocationCounts counts) {
+    PipeCounterAllocationCounts counts, PipeCounterAllocationPolicy policy) {
   assert(empty() && "capacity counter allocation must be initialized first");
-  counterAllocator = PipeCounterAllocator(counts);
+  counterAllocator = PipeCounterAllocator(counts, policy);
 }
 
 PipeCounterInfo PipeCapacityPlan::allocateCounter() {
@@ -291,11 +291,14 @@ public:
                             const PipeCapacityAnalysisResult &capacityFacts,
                             const PipeGraph &pipeGraph,
                             const PipeResourcePlan &resources,
+                            PipeCounterAllocationPolicy counterAllocationPolicy,
                             PipeCapacityPlan &plan) {
     PipeResourceRequirements requirements =
         getPipeResourceRequirements(resources);
-    plan.initializeCounterAllocation(PipeCounterAllocationCounts{
-        requirements.syncSemaphoreCount, requirements.globalSemaphoreCount});
+    plan.initializeCounterAllocation(
+        PipeCounterAllocationCounts{requirements.syncSemaphoreCount,
+                                    requirements.globalSemaphoreCount},
+        counterAllocationPolicy);
     SmallVector<PipeCapacityCounterColor> counterColors;
     for (PipeTransferNodeId transferNodeId : selectedTransfers) {
       const PipeTransferNode &transferNode =
@@ -380,7 +383,7 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
     PipeResourcePlan preliminaryResourcePlan;
     if (failed(buildPipeResourcePlan(
             module, transferIndex, pipeGraph, preliminaryResourcePlan,
-            options.enableComputedAddresses,
+            options.enableComputedAddresses, options.counterAllocationPolicy,
             fabricRoutePlan ? &synchronizationSelection : nullptr))) {
       return failure();
     }
@@ -398,7 +401,8 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
     }
     if (failed(buildPipeResourcePlan(
             module, transferIndex, pipeGraph, plan.resourcePlan,
-            options.enableComputedAddresses, &synchronizationSelection))) {
+            options.enableComputedAddresses, options.counterAllocationPolicy,
+            &synchronizationSelection))) {
       return failure();
     }
     SmallVector<PipeTransferNodeId> finalSelectedCapacityTransfers =
@@ -412,10 +416,11 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
     }
     PipeCapacityPlanBuilder::buildSelectedCapacityPlan(
         selectedCapacityTransfers, capacityFacts, pipeGraph, plan.resourcePlan,
-        plan.capacityPlan);
+        options.counterAllocationPolicy, plan.capacityPlan);
   } else if (failed(buildPipeResourcePlan(
                  module, transferIndex, pipeGraph, plan.resourcePlan,
                  options.enableComputedAddresses,
+                 options.counterAllocationPolicy,
                  fabricRoutePlan ? &synchronizationSelection : nullptr))) {
     return failure();
   }

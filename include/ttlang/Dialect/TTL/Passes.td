@@ -351,7 +351,12 @@ def TTLConvertTTLToTTKernel
            "pop execute on the receiver NOC thread and the computed-address "
            "transfer passes the DFB ownership and count proofs. "
            "When disabled, computed-address transfers use receiver-post "
-           "synchronization.">
+           "synchronization.">,
+    Option<"pipeGlobalSemaphoresOnly", "pipe-global-semaphores-only",
+           "bool", "false",
+           "Allocate all compiler-managed PipeNet synchronization counters "
+           "in GlobalSemaphore storage, leaving local hardware semaphore ids "
+           "available to the application.">
   ];
 
   let dependentDialects = [

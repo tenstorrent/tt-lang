@@ -22,6 +22,7 @@ class TestDefaults:
         assert opts.subblock_sync is False
         assert opts.pipe_computed_addresses is True
         assert opts.pipe_capacity_sync is True
+        assert opts.pipe_global_semaphores_only is False
         assert opts.pipe_batch_tiles == 0
         assert opts.reuse_user_dfbs is True
         assert opts.dfb_exact_coloring_search_limit == 1_000_000
@@ -72,6 +73,16 @@ class TestFromString:
         opts = CompilerOptions.from_string("--no-ttl-pipe-capacity-sync")
         assert opts.pipe_capacity_sync is False
         assert "pipe_capacity_sync" in opts._explicit
+
+    def test_enable_pipe_global_semaphores_only(self):
+        opts = CompilerOptions.from_string("--ttl-pipe-global-semaphores-only")
+        assert opts.pipe_global_semaphores_only is True
+        assert "pipe_global_semaphores_only" in opts._explicit
+
+    def test_disable_pipe_global_semaphores_only(self):
+        opts = CompilerOptions.from_string("--no-ttl-pipe-global-semaphores-only")
+        assert opts.pipe_global_semaphores_only is False
+        assert "pipe_global_semaphores_only" in opts._explicit
 
     def test_limit_pipe_batch_tiles(self):
         opts = CompilerOptions.from_string("--ttl-pipe-batch-tiles 8")

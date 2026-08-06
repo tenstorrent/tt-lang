@@ -777,8 +777,7 @@ struct TTLFormPipeTransportsPass
     PipeResourcePlan conservativeResourcePlan;
     if (failed(buildPipeResourcePlan(module, transferIndex, pipeGraph,
                                      conservativeResourcePlan,
-                                     /*enableComputedAddresses=*/false,
-                                     /*synchronizationSelection=*/nullptr))) {
+                                     /*enableComputedAddresses=*/false))) {
       signalPassFailure();
       return;
     }
