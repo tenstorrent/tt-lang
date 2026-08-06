@@ -893,7 +893,23 @@ mlir::LogicalResult mlir::tt::ttl::PipeTransferCreateOp::verify() {
   }
 
   Value pipe = traceUnrealizedCasts(getPipe());
+  if (getExpectedReceivers() &&
+      static_cast<int64_t>(*getExpectedReceivers()) <= 0) {
+    return emitOpError() << "requires positive expectedReceivers";
+  }
+  if (auto createPipe = getPipe().getDefiningOp<CreatePipeOp>();
+      createPipe &&
+      createPipe.getDeviceTransferAttr() != getDeviceTransferAttr()) {
+    return emitOpError()
+           << "deviceTransfer must match the defining ttl.create_pipe";
+  }
   if (auto pipeType = mlir::dyn_cast<PipeType>(pipe.getType())) {
+    if (getExpectedReceivers() &&
+        static_cast<int64_t>(*getExpectedReceivers()) !=
+            pipeType.getNumDests()) {
+      return emitOpError()
+             << "expectedReceivers must match the pipe receiver count";
+    }
     switch (getKind().getValue()) {
     case PipeTransferKind::PointToPoint:
       if (!pipeType.hasSingleReceiver()) {
@@ -906,16 +922,13 @@ mlir::LogicalResult mlir::tt::ttl::PipeTransferCreateOp::verify() {
     return success();
   }
 
+  if (getExpectedReceivers()) {
+    return emitOpError()
+           << "selected pipe transfer cannot specify expectedReceivers";
+  }
   if (!selectedPipeKindMatchesTransfer(getPipe(), getKind().getValue())) {
     return emitOpError()
            << "selected pipe transfer kind must match the records kind";
-  }
-
-  if (auto createPipe = getPipe().getDefiningOp<CreatePipeOp>();
-      createPipe &&
-      createPipe.getDeviceTransferAttr() != getDeviceTransferAttr()) {
-    return emitOpError()
-           << "deviceTransfer must match the defining ttl.create_pipe";
   }
 
   return success();

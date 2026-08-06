@@ -160,8 +160,8 @@ buildPipeTransferExpansionPlan(ModuleOp module, ValueOriginAnalysis &analysis) {
         FailureOr<int64_t> pipeNetId =
             getPipeNetIdForPipeValue(op, op.getSrc());
         if (failed(deviceTransfer)) {
-          op.emitError() << "requires every possible pipe definition to have "
-                            "the same device transfer";
+          op.emitError() << "requires every possible pipe definition to be "
+                            "ttl.create_pipe with the same device transfer";
           result = failure();
         } else if (failed(pipeNetId)) {
           result = failure();
@@ -185,8 +185,8 @@ buildPipeTransferExpansionPlan(ModuleOp module, ValueOriginAnalysis &analysis) {
         FailureOr<std::optional<DeviceTransferAttr>> deviceTransfer =
             findUniquePipeDeviceTransfer(analysis, op.getDst());
         if (failed(deviceTransfer)) {
-          op.emitError() << "requires every possible pipe definition to have "
-                            "the same device transfer";
+          op.emitError() << "requires every possible pipe definition to be "
+                            "ttl.create_pipe with the same device transfer";
           result = failure();
         } else {
           plan.sendCopies.push_back(

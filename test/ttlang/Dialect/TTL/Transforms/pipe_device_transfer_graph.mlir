@@ -25,12 +25,14 @@
 // CHECK-NEXT: %[[CONNECTION_COUNT:.*]] = ttkernel.routing_plane.open_connections %[[CONNECTION_MANAGER]]
 // CHECK: %[[DEVICE_0:.*]] = ttkernel.get_common_arg_val
 // CHECK-NEXT: %[[IS_DEVICE_0:.*]] = arith.cmpi eq, %[[DEVICE_0]], %{{.*}} : i32
+// CHECK: %[[ROUTE_0:.*]] = ttkernel.get_arg_val
 // CHECK-NEXT: scf.if %[[IS_DEVICE_0]] {
 // CHECK: %[[PAYLOAD_0:.*]] = ttkernel.get_write_ptr
 // CHECK: ttkernel.routing_plane.fused_write_atomic_inc(%[[CONNECTION_MANAGER]], %[[CONNECTION_COUNT]], {{.*}}, {{.*}}, {{.*}}, %[[PAYLOAD_0]],
 // CHECK-NEXT: }
 // CHECK: %[[DEVICE_2:.*]] = ttkernel.get_common_arg_val
 // CHECK-NEXT: %[[IS_DEVICE_2:.*]] = arith.cmpi eq, %[[DEVICE_2]], %{{.*}} : i32
+// CHECK: %[[ROUTE_1:.*]] = ttkernel.get_arg_val
 // CHECK-NEXT: scf.if %[[IS_DEVICE_2]] {
 // CHECK: %[[PAYLOAD_1:.*]] = ttkernel.get_write_ptr
 // CHECK: ttkernel.routing_plane.fused_write_atomic_inc(%[[CONNECTION_MANAGER]], %[[CONNECTION_COUNT]], {{.*}}, {{.*}}, {{.*}}, %[[PAYLOAD_1]],
@@ -42,6 +44,8 @@
 // CHECK-NEXT: %[[RECEIVER_DFB_1:.*]] = ttkernel.get_compile_time_arg_val(2)
 // CHECK: %[[DEVICE_3:.*]] = ttkernel.get_common_arg_val
 // CHECK-NEXT: %[[IS_DEVICE_3:.*]] = arith.cmpi eq, %[[DEVICE_3]], %{{.*}} : i32
+// CHECK: %[[COMPLETION_BASE_1:.*]] = ttkernel.get_common_arg_val
+// CHECK-NEXT: %[[COMPLETION_PTR_1:.*]] = ttkernel.reinterpret_cast
 // CHECK-NEXT: scf.if %[[IS_DEVICE_3]] {
 // CHECK-NEXT: ttkernel.cb_reserve_back(%[[RECEIVER_DFB_1]],
 // CHECK: ttkernel.experimental.semaphore_wait_min
@@ -49,6 +53,8 @@
 // CHECK-NEXT: }
 // CHECK: %[[DEVICE_1:.*]] = ttkernel.get_common_arg_val
 // CHECK-NEXT: %[[IS_DEVICE_1:.*]] = arith.cmpi eq, %[[DEVICE_1]], %{{.*}} : i32
+// CHECK: %[[COMPLETION_BASE_0:.*]] = ttkernel.get_common_arg_val
+// CHECK-NEXT: %[[COMPLETION_PTR_0:.*]] = ttkernel.reinterpret_cast
 // CHECK-NEXT: scf.if %[[IS_DEVICE_1]] {
 // CHECK-NEXT: ttkernel.cb_reserve_back(%[[RECEIVER_DFB_0]],
 // CHECK: ttkernel.experimental.semaphore_wait_min
