@@ -87,7 +87,7 @@ Backups:
 | Tensor-backed DFB | Current tip `ae22d6fe` merged in checkpoint `050ddd4b` |
 | #803 | Current tip `552f1879` merged in checkpoint `8028e239` |
 | Demo-only commits | Base checkpoint restored as `f95ff833`; row-broadcast checkpoint restored as `befca9df`; module-command documentation restored as `9cb84198`; operation-domain test adaptation restored as `db1b54f8`; full-grid work pending |
-| Integration fixes | Cross-leaf contracts preserved in `f6c02b39`; verifier contracts preserved in `1c9d8f5e` |
+| Integration fixes | Cross-leaf contracts preserved in `f6c02b39`; verifier contracts preserved in `1c9d8f5e`; PR #803 DFB tile validation import restored in `98aaf199` |
 | Tensor-backed row-page views | 1x32 tensor storage may be interpreted directly as 16x32 or 32x32 compute pages in `10e3c3aa` |
 
 ## Integration Resolutions
@@ -133,6 +133,7 @@ the integration branch.
 | PipeNet leaves + #803 | Update PipeTransport allocation-size callers to #803's diagnostic API and report the exact allocation failure from the pass. | None; the source changes extend the same allocation utility contract. |
 | #651 + #803 | Classify integration-only `ttl.tile_accumulate` as a floating-point elementwise-binary compute target. | None; it lowers to the floating-point destination-reuse LLK, which has no integer lowering. |
 | Tensor-backed DFB + #803 | Allow validated 1x32 tensor storage to use 16x32 or 32x32 DFB compute pages. Preserve the tensor-owned address and replace only descriptor format metadata; validate the logical shard byte range before program construction. | Add the validated implementation to the tensor-backed DFB source branch after the RMSNorm comparison confirms the required workload contract. |
+| Tensor-backed DFB + #803 fill update | Restore the `operator` import used by `make_tensor_backed_dfb` tile-dimension validation. | Required in #803; commit `552f1879` calls `operator.index` but removed the module import. |
 
 ## Validation
 
@@ -141,6 +142,8 @@ Current 2026-08-06 rebuild:
 - Docker build: passed at `8028e239`.
 - Docker subtile `fill` device matrix: 32 BF16/FP32, DRAM/L1,
   direct/fused, and 16x16/16x32/32x16/32x32 cases passed at `8028e239`.
+- Docker tensor-backed 16x32 DFB view test: BF16 and FP32 passed at
+  `98aaf199` after restoring the missing validation import.
 - MLIR: `cmake --build build --target check-ttlang-mlir`; 322 passed at
   `8028e239`.
 - Host `ttlang-opt` build: passed at `43fe371c`.
