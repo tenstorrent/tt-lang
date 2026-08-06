@@ -587,11 +587,6 @@ def _validate_tensor_backed_dfb_binding(
             f"launch nodes {missing_nodes}"
         )
     total_size = config.num_tiles * config.block_count * config.page_size
-    if segment.byte_size != total_size:
-        raise ValueError(
-            f"DFB[{config.dfb_index}] tensor backing byte_size must equal "
-            f"{total_size}, got {segment.byte_size}"
-        )
     _validate_tensor_backed_dfb_range(
         properties,
         byte_offset=segment.byte_offset,
