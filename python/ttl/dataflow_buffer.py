@@ -4,6 +4,7 @@
 
 """Dataflow buffer (DFB) operations for inter-thread communication."""
 
+import operator
 from dataclasses import dataclass
 import math
 from typing import Any, Optional, Tuple
