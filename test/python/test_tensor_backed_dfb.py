@@ -70,24 +70,34 @@ import ttl
 @ttl.operation(grid=({node_count}, 1))
 def dfb_storage_mul(lhs, rhs, out):
     lhs_dfb = ttl.make_tensor_backed_dfb(
-        lhs, shape=(1, {tile_count}), byte_offset={byte_offset}
+        lhs,
+        shape=(1, {tile_count}),
+        block_count={block_count},
+        byte_offset={byte_offset},
     )
     rhs_dfb = ttl.make_tensor_backed_dfb(
-        rhs, shape=(1, {tile_count}), byte_offset={byte_offset}
+        rhs,
+        shape=(1, {tile_count}),
+        block_count={block_count},
+        byte_offset={byte_offset},
     )
     out_dfb = ttl.make_tensor_backed_dfb(
-        out, shape=(1, {tile_count}), byte_offset={byte_offset}
+        out,
+        shape=(1, {tile_count}),
+        block_count={block_count},
+        byte_offset={byte_offset},
     )
 
     @ttl.compute()
     def compute_fn():
-        lhs_block = lhs_dfb.wait()
-        rhs_block = rhs_dfb.wait()
-        out_block = out_dfb.reserve()
-        out_block.store(lhs_block * rhs_block)
-        out_block.push()
-        rhs_block.pop()
-        lhs_block.pop()
+        for _ in range({block_count}):
+            lhs_block = lhs_dfb.wait()
+            rhs_block = rhs_dfb.wait()
+            out_block = out_dfb.reserve()
+            out_block.store(lhs_block * rhs_block)
+            out_block.push()
+            rhs_block.pop()
+            lhs_block.pop()
 
     @ttl.datamovement()
     def publish_inputs():
@@ -96,13 +106,14 @@ def dfb_storage_mul(lhs, rhs, out):
 
     @ttl.datamovement()
     def consume_output():
-        out_block = out_dfb.wait()
-        out_block.pop()
+        for _ in range({block_count}):
+            out_block = out_dfb.wait()
+            out_block.pop()
 """,
 }
 
 
-def _make_kernel(storage_kind, tile_count, node_count, byte_offset=0):
+def _make_kernel(storage_kind, tile_count, node_count, byte_offset=0, block_count=1):
     """Create source with a compile-time DFB capacity."""
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".py", delete=False, prefix=f"{storage_kind}_dfb_"
@@ -112,12 +123,14 @@ def _make_kernel(storage_kind, tile_count, node_count, byte_offset=0):
                 tile_count=tile_count,
                 node_count=node_count,
                 byte_offset=byte_offset,
+                block_count=block_count,
             )
         )
         source_name = source_file.name
     temp_kernel_files.append(source_name)
     spec = importlib.util.spec_from_file_location(
-        f"{storage_kind}_dfb_{tile_count}_{node_count}_{byte_offset}", source_name
+        f"{storage_kind}_dfb_{tile_count}_{node_count}_{byte_offset}_{block_count}",
+        source_name,
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -174,6 +187,37 @@ def test_dfb_storage_eltwise_mul(
 
     actual = ttnn.to_torch(out)
     assert_pcc(expected.float(), actual.float(), threshold=0.999)
+
+
+@pytest.mark.requires_device
+@pytest.mark.parametrize(
+    "torch_dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"]
+)
+def test_tensor_backed_dfb_block_count_two(device, torch_dtype):
+    """One publication supplies two FIFO blocks and leaves the DFB reusable."""
+    block_count = 2
+    tile_count = 1
+    tensor_shape = (32, 32 * tile_count * block_count)
+    operation = _make_kernel(
+        "tensor_backed",
+        tile_count=tile_count,
+        node_count=1,
+        block_count=block_count,
+    )
+
+    for seed in range(2):
+        torch.manual_seed(seed)
+        lhs_torch = torch.rand(tensor_shape, dtype=torch_dtype)
+        rhs_torch = torch.rand(tensor_shape, dtype=torch_dtype)
+        expected = lhs_torch * rhs_torch
+        lhs = _to_height_sharded(lhs_torch, device, node_count=1)
+        rhs = _to_height_sharded(rhs_torch, device, node_count=1)
+        out = _to_height_sharded(torch.zeros_like(expected), device, node_count=1)
+
+        operation(lhs, rhs, out)
+
+        actual = ttnn.to_torch(out)
+        assert_pcc(expected.float(), actual.float(), threshold=0.999)
 
 
 @pytest.mark.requires_device
