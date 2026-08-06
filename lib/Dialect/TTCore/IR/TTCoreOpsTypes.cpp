@@ -25,6 +25,7 @@
 #include "llvm/ADT/STLForwardCompat.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
+#include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -1838,7 +1839,22 @@ TileType::verify(::llvm::function_ref<::mlir::InFlightDiagnostic()> emitError,
     emitError() << "expected 2D shape";
     return ::mlir::failure();
   }
+  if (!isTTMetalTileShape(shape)) {
+    emitError() << "expected a tt-metal tile shape, got " << shape[0] << "x"
+                << shape[1]
+                << "; supported shapes have height 1, 2, 4, 8, 16, or 32 "
+                   "and width 16 or 32";
+    return ::mlir::failure();
+  }
   return ::mlir::success();
+}
+
+bool TileType::isTTMetalTileShape(ArrayRef<int64_t> shape) {
+  if (shape.size() != 2 || (shape[1] != 16 && shape[1] != 32)) {
+    return false;
+  }
+  static constexpr std::array<int64_t, 6> validHeights = {1, 2, 4, 8, 16, 32};
+  return llvm::is_contained(validHeights, shape[0]);
 }
 
 TileType TileType::get(Type elementType, ArrayRef<int64_t> shape) {
@@ -1865,40 +1881,40 @@ TileType::getTiledShape(SmallVector<int64_t> scalarShape) const {
 }
 
 uint64_t TileType::getSizeBytes() const {
+  const uint64_t tileElements = getHeight() * getWidth();
+  // BFP stores one exponent byte per 16 elements. Wormhole B0, Blackhole, and
+  // Quasar define 16-byte L1 alignment for the exponent section.
+  // TODO(#511): Source L1 alignment from shared target metadata.
+  static constexpr uint64_t l1AlignmentBytes = 16;
+  const uint64_t exponentBytes =
+      llvm::alignTo(tileElements / 16, l1AlignmentBytes);
   switch (getDataType()) {
   case DataType::Float32:
-    return getHeight() * getWidth() * 4;
+    return tileElements * 4;
   case DataType::Float16:
-    return getHeight() * getWidth() * 2;
+    return tileElements * 2;
   case DataType::BFloat16:
-    return getHeight() * getWidth() * 2;
+    return tileElements * 2;
   case DataType::BFP_Float8:
-    assert(getHeight() == 32 && getWidth() == 32);
-    // 1024 + 64 (1 byte of shared exponent for every 16 elements)
-    return 1088;
+    return tileElements + exponentBytes;
   case DataType::BFP_BFloat8:
-    assert(getHeight() == 32 && getWidth() == 32);
-    return 1088;
+    return tileElements + exponentBytes;
   case DataType::BFP_Float4:
-    assert(getHeight() == 32 && getWidth() == 32);
-    return 576;
+    return tileElements / 2 + exponentBytes;
   case DataType::BFP_BFloat4:
-    assert(getHeight() == 32 && getWidth() == 32);
-    return 576;
+    return tileElements / 2 + exponentBytes;
   case DataType::BFP_Float2:
-    assert(getHeight() == 32 && getWidth() == 32);
-    return 320;
+    return tileElements / 4 + exponentBytes;
   case DataType::BFP_BFloat2:
-    assert(getHeight() == 32 && getWidth() == 32);
-    return 320;
+    return tileElements / 4 + exponentBytes;
   case DataType::UInt32:
   case DataType::Int32:
-    return getHeight() * getWidth() * 4;
+    return tileElements * 4;
   case DataType::UInt16:
-    return getHeight() * getWidth() * 2;
+    return tileElements * 2;
   case DataType::UInt8:
   case DataType::Bool:
-    return getHeight() * getWidth();
+    return tileElements;
   }
 }
 

@@ -70,3 +70,83 @@ func.func @tile_max_rhs_missing_dst_idx(%idx: index) -> !ttcore.tile<32x32, f32>
   %max = ttl.tile_max %a_with_idx, %b_tile into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
   func.return %max : !ttcore.tile<32x32, f32>
 }
+
+// -----
+
+// Target validation rejects an integer tile operation without an integer LLK.
+func.func @tile_exp_u32(%input: !ttcore.tile<16x32, u32>) -> !ttcore.tile<16x32, u32> {
+  %c0 = arith.constant 0 : index
+  // expected-error @below {{'ttl.tile_exp' op integer tile type !ttcore.tile<16x32, u32> is not supported by this compute primitive}}
+  %result = ttl.tile_exp %input into dst[%c0]
+      : !ttcore.tile<16x32, u32> -> !ttcore.tile<16x32, u32>
+  func.return %result : !ttcore.tile<16x32, u32>
+}
+
+// -----
+
+// Integer reduce has no corresponding LLK implementation.
+func.func @tile_reduce_u32(
+    %input: !ttcore.tile<16x32, u32>,
+    %scaler: !ttcore.tile<16x32, u32>,
+    %output: !ttcore.tile<16x32, u32>) -> !ttcore.tile<16x32, u32>
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %c0 = arith.constant 0 : index
+  // expected-error @below {{'ttl.tile_reduce' op integer tile type !ttcore.tile<16x32, u32> is not supported by this compute primitive}}
+  %result = ttl.tile_reduce %input, %scaler, %output 0 : i32 <reduce_dim_col>
+      into dst[%c0]
+      : (!ttcore.tile<16x32, u32>, !ttcore.tile<16x32, u32>,
+         !ttcore.tile<16x32, u32>) -> !ttcore.tile<16x32, u32>
+  func.return %result : !ttcore.tile<16x32, u32>
+}
+
+// -----
+
+// Integer transpose has no corresponding LLK implementation.
+func.func @tile_transpose_u32(
+    %input: !ttcore.tile<16x16, u32>,
+    %output: !ttcore.tile<16x16, u32>) -> !ttcore.tile<16x16, u32> {
+  %c0 = arith.constant 0 : index
+  // expected-error @below {{'ttl.tile_transpose' op integer tile type !ttcore.tile<16x16, u32> is not supported by this compute primitive}}
+  %result = ttl.tile_transpose %input, %output into dst[%c0]
+      : (!ttcore.tile<16x16, u32>, !ttcore.tile<16x16, u32>)
+        -> !ttcore.tile<16x16, u32>
+  func.return %result : !ttcore.tile<16x16, u32>
+}
+
+// -----
+
+// Integer matmul has no corresponding LLK implementation.
+func.func @tile_matmul_u32(
+    %lhs: !ttcore.tile<16x32, u32>,
+    %rhs: !ttcore.tile<32x32, u32>) -> !ttcore.tile<16x32, u32> {
+  %c0 = arith.constant 0 : index
+  // expected-error @below {{'ttl.tile_matmul_block' op integer tile type !ttcore.tile<16x32, u32> is not supported by this compute primitive}}
+  %result = ttl.tile_matmul_block %lhs, %rhs into dst[%c0]
+      : !ttcore.tile<16x32, u32>, !ttcore.tile<32x32, u32>
+        -> !ttcore.tile<16x32, u32>
+  func.return %result : !ttcore.tile<16x32, u32>
+}
+
+// -----
+
+// Integer broadcast rejects storage formats not supported by the LLK.
+func.func @tile_bcast_u8(
+    %input: !ttcore.tile<16x32, u8>,
+    %output: !ttcore.tile<16x32, u8>) -> !ttcore.tile<16x32, u8> {
+  %c0 = arith.constant 0 : index
+  // expected-error @below {{'ttl.tile_bcast' op integer tile type !ttcore.tile<16x32, u8> is not supported; integer broadcast supports si32, u32, and u16 tiles}}
+  %result = ttl.tile_bcast %input, %output 2 : i32 into dst[%c0]
+      : (!ttcore.tile<16x32, u8>, !ttcore.tile<16x32, u8>)
+        -> !ttcore.tile<16x32, u8>
+  func.return %result : !ttcore.tile<16x32, u8>
+}
+
+// -----
+
+// Target selection rejects architectures without implemented LLK capabilities.
+// expected-error @below {{'builtin.module' op Quasar compute LLK capabilities are not implemented by TT-Lang}}
+module attributes {ttl.target_arch = "quasar"} {
+  func.func @unsupported_target() {
+    func.return
+  }
+}

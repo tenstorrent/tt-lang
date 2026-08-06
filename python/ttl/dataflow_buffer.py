@@ -4,6 +4,7 @@
 
 """Dataflow buffer (DFB) operations for inter-thread communication."""
 
+import operator
 from dataclasses import dataclass
 import math
 from typing import Any, Optional, Tuple
@@ -11,7 +12,8 @@ from typing import Any, Optional, Tuple
 from ttl.ir import *
 
 from ._src.ttl_ast import syntax
-from ttl.dialects import ttl
+from .constants import DEFAULT_TILE_SIZE
+from ttl.dialects import ttcore, ttl
 
 # Module-level counter for DFB index assignment in creation order
 _cb_index_counter = 0
@@ -62,7 +64,7 @@ class DataflowBuffer:
         shape: Tuple[int, ...],
         block_count: int,
         dtype: Any = None,
-        tile: Tuple[int, int] = (32, 32),
+        tile: Tuple[int, int] = (DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE),
         tensor_backing: Any = None,
         byte_offset: int = 0,
         byte_size: Optional[int] = None,
@@ -71,6 +73,27 @@ class DataflowBuffer:
             raise ValueError(f"DFB shape must have at least 2 dimensions, got {shape}")
         if block_count < 1 or block_count > 32:
             raise ValueError(f"block_count must be in range [1, 32], got {block_count}")
+        try:
+            tile_height, tile_width = tile
+            normalized_tile = (
+                operator.index(tile_height),
+                operator.index(tile_width),
+            )
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"DFB tile must contain exactly two integer dimensions, got {tile!r}"
+            ) from None
+        try:
+            is_supported_tile = ttcore.ir.TileType.is_tt_metal_tile_shape(
+                *normalized_tile
+            )
+        except (OverflowError, TypeError):
+            is_supported_tile = False
+        if not is_supported_tile:
+            raise ValueError(
+                "DFB tile dimensions are not constructible by tt-metal: "
+                f"{normalized_tile[0]}x{normalized_tile[1]}"
+            )
         # A buffer's dtype has one source: a backing tensor or an explicit
         # dtype. Supplying both is only valid when they resolve to the same type.
         if dtype is not None and getattr(tensor, "dtype", None) is not None:
@@ -84,7 +107,7 @@ class DataflowBuffer:
         self.shape = shape
         self.block_count = block_count
         self._dtype = dtype
-        self.tile = tuple(tile)
+        self.tile = normalized_tile
         self.tensor_backing = tensor_backing
         self.byte_offset = byte_offset
         self.byte_size = byte_size
@@ -167,7 +190,7 @@ class PhysicalDFBConfig:
 
     dfb_index: int
     num_tiles: int
-    data_format: str  # e.g., "bfloat16", "float32", "float16"
+    data_format: str  # e.g., "bfloat16", "float32", "bfloat8_b"
     block_count: int
     page_size: int
     tile: Optional[Tuple[int, int]]
@@ -204,7 +227,7 @@ def make_dataflow_buffer_like(
     Returns:
         DataflowBuffer for use in thread function closures
     """
-    tile = (32, 32)
+    tile = (DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)
     if hasattr(tensor, "get_tile"):
         tile = tuple(tensor.get_tile().tile_shape)
     return DataflowBuffer(tensor, shape, block_count, tile=tile)
@@ -300,7 +323,7 @@ def make_dfb(
     dtype: Any,
     shape: Tuple[int, ...],
     block_count: int = 2,
-    tile: Tuple[int, int] = (32, 32),
+    tile: Tuple[int, int] = (DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE),
 ) -> DataflowBuffer:
     """
     Create a dataflow buffer from an explicit dtype, with no backing tensor.
@@ -312,6 +335,8 @@ def make_dfb(
             ("bf16", "float32", ...), a ttnn dtype, or a torch dtype.
         shape: Tile counts per dimension for wait/reserve operations
         block_count: Capacity multiplier (default 2 for double-buffering)
+        tile: Physical tile dimensions. tt-metal supports heights 1, 2, 4, 8,
+            16, or 32 and widths 16 or 32.
 
     Returns:
         DataflowBuffer for use in thread function closures

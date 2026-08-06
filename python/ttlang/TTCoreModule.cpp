@@ -5,15 +5,18 @@
 #include "ttlang/Bindings/Python/TTLangModule.h"
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 
+#include "mlir/Bindings/Python/IRCore.h"
 #include "mlir/CAPI/AffineMap.h"
 #include "mlir/CAPI/IR.h"
 #include "mlir/IR/AffineMap.h"
 
 #include <cstdint>
 #include <optional>
+#include <string>
 #include <vector>
 
 using namespace mlir;
+namespace mlirPython = mlir::python::MLIR_BINDINGS_PYTHON_DOMAIN;
 
 namespace {
 
@@ -477,19 +480,31 @@ void populateTTModule(nb::module_ &m) {
       .value("Sharded", mlir::tt::ttcore::TensorMemoryLayout::Sharded);
 
   tt_type_class<tt::ttcore::TileType>(m, "TileType")
-      .def_static("get",
-                  [](MlirContext ctx, std::int64_t height, std::int64_t width,
-                     uint32_t dataType) {
-                    return wrap(tt::ttcore::TileType::get(
-                        unwrap(ctx), SmallVector<std::int64_t>{height, width},
-                        static_cast<tt::ttcore::DataType>(dataType)));
+      .def_static("is_tt_metal_tile_shape",
+                  [](std::int64_t height, std::int64_t width) {
+                    return tt::ttcore::TileType::isTTMetalTileShape(
+                        {height, width});
                   })
+      .def_static(
+          "get",
+          [](MlirContext ctx, std::int64_t height, std::int64_t width,
+             uint32_t dataType) {
+            SmallVector<std::int64_t> shape{height, width};
+            mlirPython::PyMlirContext::ErrorCapture errors(
+                mlirPython::PyMlirContext::forContext(ctx));
+            tt::ttcore::TileType tileType = tt::ttcore::TileType::getChecked(
+                getDefaultDiagnosticEmitFn(UnknownLoc::get(unwrap(ctx))),
+                unwrap(ctx), ArrayRef<std::int64_t>(shape),
+                static_cast<tt::ttcore::DataType>(dataType));
+            if (!tileType) {
+              throw mlirPython::MLIRError("Invalid type", errors.take());
+            }
+            return wrap(tileType);
+          })
       .def_prop_ro("data_type_as_int",
                    [](tt::ttcore::TileType self) {
                      return static_cast<uint32_t>(self.getDataType());
                    })
-      .def_prop_ro("data_type",
-                   [](tt::ttcore::TileType self) { return self.getDataType(); })
       .def_prop_ro("shape", [](const tt::ttcore::TileType &tile) {
         return std::vector<int64_t>({tile.getHeight(), tile.getWidth()});
       });

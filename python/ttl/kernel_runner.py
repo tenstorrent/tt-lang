@@ -103,6 +103,15 @@ def _get_dfb_allocation(config: PhysicalDFBConfig) -> _DFBAllocation:
     )
 
 
+@dataclass(frozen=True)
+class _DFBDescriptorPlan:
+    data_format: Any
+    page_size: int
+    total_size: int
+    tile_descriptor: Optional[Any]
+    description: str
+
+
 def get_min_remaining_l1_for_device(device):
     """Return the minimum remaining L1 CB budget (bytes) across all cores.
 
@@ -775,25 +784,36 @@ def build_cb_descriptors(
     _validate_tensor_backing_aliases(tensors, cb_configs)
 
     # Compute sizes first so overflow is diagnosed before creating descriptors.
-    allocations = []
+    rows = []
     static_cb_bytes = 0
     static_allocation_summaries = []
     for physical_index, config in enumerate(cb_configs):
         allocation = _get_dfb_allocation(config)
         _validate_physical_dfb_config(config, physical_index)
-        allocation_summary = (
+        description = (
             f"  DFB[{physical_index}]: num_tiles={allocation.num_tiles} "
             f"block_count={allocation.block_count} "
             f"format={config.data_format} tile={allocation.tile} -> "
             f"{allocation.total_size} bytes"
         )
-        allocations.append(allocation)
         has_static_storage = not config.storage_segments or any(
             not segment.is_tensor_backed for segment in config.storage_segments
         )
+        tile_descriptor = None
+        if allocation.tile is not None:
+            tile_descriptor = ttnn.TileDescriptor(ttnn.Tile(allocation.tile))
+        rows.append(
+            _DFBDescriptorPlan(
+                data_format=allocation.data_format,
+                page_size=allocation.page_size,
+                total_size=allocation.total_size,
+                tile_descriptor=tile_descriptor,
+                description=description,
+            )
+        )
         if physical_index not in backing_tensors and has_static_storage:
             static_cb_bytes += allocation.total_size
-            static_allocation_summaries.append(allocation_summary)
+            static_allocation_summaries.append(description)
 
     remaining_bytes = DEFAULT_L1_CB_BUDGET_BYTES
     for tensor in tensors:
@@ -819,18 +839,16 @@ def build_cb_descriptors(
         )
 
     cb_descriptors = []
-    for cb_index, allocation in enumerate(allocations):
+    for cb_index, row in enumerate(rows):
         config = cb_configs[cb_index]
-        tile_descriptor = (
-            ttnn.TileDescriptor(ttnn.Tile(allocation.tile))
-            if allocation.tile is not None
-            else None
-        )
+        format_options = {}
+        if row.tile_descriptor is not None:
+            format_options["tile"] = row.tile_descriptor
         cb_format = ttnn.CBFormatDescriptor(
             buffer_index=cb_index,
-            data_format=allocation.data_format,
-            page_size=allocation.page_size,
-            **({"tile": tile_descriptor} if tile_descriptor is not None else {}),
+            data_format=row.data_format,
+            page_size=row.page_size,
+            **format_options,
         )
         if cb_index in backing_tensors:
             if config.storage_segments:
@@ -839,14 +857,14 @@ def build_cb_descriptors(
                     "storage with finalized storage segments"
                 )
             cb_desc = ttnn.CBDescriptor(
-                total_size=allocation.total_size,
+                total_size=row.total_size,
                 core_ranges=core_ranges,
                 format_descriptors=[cb_format],
             )
             backing_desc = ttnn.cb_descriptor_from_sharded_tensor(
                 cb_index,
                 backing_tensors[cb_index],
-                total_size=allocation.total_size,
+                total_size=row.total_size,
                 core_ranges=core_ranges,
             )
             cb_desc.set_buffer_from_cb(backing_desc)
@@ -856,7 +874,7 @@ def build_cb_descriptors(
         if not config.storage_segments:
             cb_descriptors.append(
                 ttnn.CBDescriptor(
-                    total_size=allocation.total_size,
+                    total_size=row.total_size,
                     core_ranges=core_ranges,
                     format_descriptors=[cb_format],
                 )
@@ -868,7 +886,7 @@ def build_cb_descriptors(
             if not segment.is_tensor_backed:
                 cb_descriptors.append(
                     ttnn.CBDescriptor(
-                        total_size=allocation.total_size,
+                        total_size=row.total_size,
                         core_ranges=segment_core_ranges,
                         format_descriptors=[cb_format],
                     )
@@ -890,7 +908,7 @@ def build_cb_descriptors(
                     cb_index,
                     tensor,
                     address_offset=segment.byte_offset,
-                    total_size=allocation.total_size,
+                    total_size=row.total_size,
                     core_ranges=segment_core_ranges,
                 )
             )

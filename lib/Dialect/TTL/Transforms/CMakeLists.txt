@@ -2,6 +2,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   AccumulationAnalysis.cpp
   AccumulationUtils.cpp
   ComputeOpCreationPlanning.cpp
+  ComputeTarget.cpp
   IntermediateDFBPlanning.cpp
   ConvertTTLToTTKernel.cpp
   DFBAcquireReleaseAnalysis.cpp
