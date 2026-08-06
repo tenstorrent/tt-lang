@@ -37,6 +37,172 @@ func.func @conflicting_pipe_transfer_contracts(%condition: i1)
 
 // -----
 
+// Pipe transfer expansion rejects a pipe value whose possible definitions
+// identify different logical-device transfers.
+
+#device_transfer_0 = #ttl.device_transfer<
+    domain = <components = <name = "device", extent = [1, 4]>>,
+    edge = <source = <coordinates = [0, 0]>,
+            destination = <coordinates = [0, 1]>>>
+#device_transfer_1 = #ttl.device_transfer<
+    domain = <components = <name = "device", extent = [1, 4]>>,
+    edge = <source = <coordinates = [0, 0]>,
+            destination = <coordinates = [0, 2]>>>
+
+module attributes {ttl.launch_grid = array<i64: 1, 1>} {
+  func.func @conflicting_pipe_device_transfers(%condition: i1)
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %src = ttl.bind_cb {cb_index = 0, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %pipe0 = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0 {
+        deviceTransfer = #device_transfer_0}
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %pipe1 = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0 {
+        deviceTransfer = #device_transfer_1}
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %pipe = scf.if %condition
+        -> (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>) {
+      scf.yield %pipe0
+          : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    } else {
+      scf.yield %pipe1
+          : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    }
+    // expected-error @below {{requires every possible pipe definition to be ttl.create_pipe with the same device transfer}}
+    %send = ttl.copy %src, %pipe
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+           !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+        -> !ttl.transfer_handle<write>
+    func.return
+  }
+}
+
+// -----
+
+// Fabric cannot use receiver-published addresses. Report the specific DFB
+// producer-stream property that prevented computed addressing.
+
+#fabric_domain = #ttl.device_domain<components = <name = "device", extent = [2]>>
+#fabric_transfer = #ttl.device_transfer<
+    domain = #fabric_domain,
+    edge = <source = <coordinates = [0]>, destination = <coordinates = [1]>>>
+
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @fabric_requires_pipe_only_receiver_stream()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 2}
+        {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 {
+        deviceTransfer = #fabric_transfer}
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+
+    %local = ttl.cb_reserve %dst
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+
+    %reserved = ttl.cb_reserve %dst
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    // expected-note @below {{receiver DFB 1: push reserve owns no matching receiver post}}
+    %post = ttl.copy %pipe, %reserved
+        : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+           tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.transfer_handle
+    // expected-error @below {{fabric pipe transfer requires computed receiver DFB addresses}}
+    %send = ttl.copy %src, %pipe
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+           !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send : !ttl.transfer_handle<write>
+    ttl.wait %post : !ttl.transfer_handle
+    ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    func.return
+  }
+}
+
+// -----
+
+// A pipe block argument does not identify whether the transfer is within one
+// device or between logical devices.
+
+func.func @unknown_pipe_device_transfer(
+    %pipe: !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %dst_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %dst = ttl.cb_reserve %dst_cb
+      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  // expected-error @below {{requires every possible pipe definition to be ttl.create_pipe with the same device transfer}}
+  %handle = ttl.copy %pipe, %dst
+      : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+         tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.transfer_handle
+  func.return
+}
+
+// -----
+
+// A send and its corresponding receiver post must identify the same
+// logical-device transfer.
+
+#send_device_transfer = #ttl.device_transfer<
+    domain = <components = <name = "device", extent = [1, 4]>>,
+    edge = <source = <coordinates = [0, 0]>,
+            destination = <coordinates = [0, 1]>>>
+#post_device_transfer = #ttl.device_transfer<
+    domain = <components = <name = "device", extent = [1, 4]>>,
+    edge = <source = <coordinates = [0, 0]>,
+            destination = <coordinates = [0, 2]>>>
+
+module attributes {ttl.launch_grid = array<i64: 1, 1>} {
+  func.func @conflicting_device_transfers()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %src = ttl.bind_cb {cb_index = 0, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %send_pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0 {
+        deviceTransfer = #send_device_transfer}
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %post_pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0 {
+        deviceTransfer = #post_device_transfer}
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %send_transfer = ttl.pipe_transfer.create %send_pipe {
+        deviceTransfer = #send_device_transfer,
+        expectedReceivers = 1 : i64,
+        kind = #ttl.pipe_transfer_kind<point_to_point>}
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+        -> !ttl.pipe_transfer
+    %post_transfer = ttl.pipe_transfer.create %post_pipe {
+        deviceTransfer = #post_device_transfer,
+        expectedReceivers = 1 : i64,
+        kind = #ttl.pipe_transfer_kind<point_to_point>}
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+        -> !ttl.pipe_transfer
+    %reserved = ttl.cb_reserve %dst
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    // expected-error @below {{pipe receiver post has no corresponding send for its device transfer}}
+    %post = ttl.pipe_transfer.post %post_transfer, %reserved
+        : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.pipe_token<net 0>
+    // expected-note @below {{this send has the same PipeKey but a different device transfer}}
+    %send = ttl.pipe_transfer.send %send_transfer, %src
+        : (!ttl.pipe_transfer,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>)
+        -> !ttl.transfer_handle<write>
+    func.return
+  }
+}
+
+// -----
+
 // An untyped wait cannot select between two distinct pipe receive operations.
 
 func.func @wait_with_distinct_pipe_receive_sources(%condition: i1)

@@ -14,6 +14,7 @@ building and execution.
 """
 
 from dataclasses import dataclass, field
+import itertools
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -139,6 +140,8 @@ class KernelSpec:
         core_ranges: Optional per-kernel ttnn.CoreRangeSet. When set, this
             specialized kernel binary is dispatched only to these cores. When None,
             the whole-grid core_ranges passed to build_kernel_descriptors is used.
+        extra_common_runtime_args: Per-kernel runtime args appended after
+            shared compiler-managed arguments.
     """
 
     path: str
@@ -148,6 +151,7 @@ class KernelSpec:
     compiler_include_paths: List[str] = field(default_factory=list)
     pipe_computed_address_dfb_indices: List[int] = field(default_factory=list)
     core_ranges: Optional[Any] = None
+    extra_common_runtime_args: Optional[List[int]] = None
 
 
 @dataclass
@@ -160,6 +164,65 @@ class PipeRuntimeResources:
     computed_address_base_addresses: Dict[int, int]
     extra_common_runtime_args: List[int]
     expected_extra_common_runtime_args: int
+
+
+@dataclass(frozen=True)
+class FabricRouteSpec:
+    """One logical local-to-remote route used by a generated kernel."""
+
+    local_device: Tuple[int, ...]
+    remote_device: Tuple[int, ...]
+    source_nodes: Tuple[Tuple[int, ...], ...]
+    route_index: int
+
+
+class _FabricDirectionCache:
+    """Cache outgoing-direction queries for one mesh and fabric configuration."""
+
+    def __init__(self) -> None:
+        self._mesh_device = None
+        self._fabric_config = None
+        self._directions: Dict[Tuple[int, int, int, int], int] = {}
+
+    @staticmethod
+    def _node_key(node_id: Any) -> Tuple[int, int]:
+        return (int(node_id.mesh_id), int(node_id.chip_id))
+
+    def resolve(
+        self,
+        mesh_device: Any,
+        source_node_id: Any,
+        destination_node_id: Any,
+    ) -> int:
+        fabric_config = ttnn.get_fabric_config()
+        if self._mesh_device is not mesh_device or self._fabric_config != fabric_config:
+            self._mesh_device = mesh_device
+            self._fabric_config = fabric_config
+            self._directions.clear()
+
+        route_key = (
+            *self._node_key(source_node_id),
+            *self._node_key(destination_node_id),
+        )
+        if route_key not in self._directions:
+            direction = ttnn.get_eth_forwarding_direction(
+                source_node_id, destination_node_id
+            )
+            if direction is None:
+                raise ValueError(
+                    f"no fabric route from {source_node_id} to "
+                    f"{destination_node_id}"
+                )
+            self._directions[route_key] = int(direction)
+        return self._directions[route_key]
+
+
+@dataclass(frozen=True)
+class MeshProgramPlacement:
+    """Device range for one program inside a mesh descriptor."""
+
+    start: Any
+    end: Optional[Any] = None
 
 
 def build_tensor_accessor_args(tensors: List[Any]) -> List[int]:
@@ -194,6 +257,7 @@ def build_kernel_descriptors(
     pipe_computed_address_base_addresses: Optional[Dict[int, int]] = None,
     extra_common_runtime_args: Optional[List[int]] = None,
     expected_extra_common_runtime_args: Optional[int] = None,
+    device_coordinates: Optional[List[int]] = None,
 ) -> List[Any]:
     """
     Build kernel descriptors for ttnn.generic_op.
@@ -256,6 +320,8 @@ def build_kernel_descriptors(
             )
         common_runtime_args.extend(computed_address_base_args)
         common_runtime_args.extend(extra_args)
+        common_runtime_args.extend(device_coordinates or [])
+        common_runtime_args.extend(spec.extra_common_runtime_args or [])
 
         # Compile-time args are DFB indices followed by TensorAccessorArgs for
         # data-movement kernels. Allocation-dependent DFB bases remain runtime
@@ -350,11 +416,10 @@ def build_pipe_global_semaphores(
 ) -> Tuple[List[Any], List[int]]:
     """Allocate GlobalSemaphores used by compiler-managed PipeNet counters.
 
-    PipeNet coordinates are per-device core coordinates. When tensors live on
-    a TTNN MeshDevice, the same intra-chip PipeNet program is replicated across
-    device shards; this allocates one MeshDevice GlobalSemaphore object whose
-    address is passed to that replicated program. It does not create an
-    inter-chip PipeNet or assign per-mesh-coordinate pipe synchronization state.
+    A MeshDevice GlobalSemaphore has one common L1 address on the selected nodes
+    of every device. Fabric atomics target the receiver device's instance at
+    that address; node-local PipeNets use the same storage after local semaphore
+    ids are exhausted.
     """
     if count <= 0:
         return [], []
@@ -463,6 +528,19 @@ def build_pipe_runtime_resources(
         dfb_index: int(tensor.buffer_address())
         for dfb_index, tensor in computed_address_dfb_tensors.items()
     }
+    if os.environ.get("TTLANG_DEBUG_FABRIC_ARGS"):
+        for dfb_index, tensor in computed_address_dfb_tensors.items():
+            device_addresses = [
+                int(device_tensor.buffer_address())
+                for device_tensor in ttnn.get_device_tensors(tensor)
+            ]
+            print(
+                "computed DFB addresses:",
+                dfb_index,
+                computed_address_base_addresses[dfb_index],
+                device_addresses,
+                flush=True,
+            )
     return PipeRuntimeResources(
         scratch_tensors=scratch_tensors,
         global_semaphores=global_semaphores,
@@ -627,6 +705,221 @@ def build_generic_op_io_tensors(
     return io_tensors
 
 
+def build_program_descriptor(
+    kernel_descriptors: List[Any],
+    cb_descriptors: List[Any],
+    semaphore_descriptors: List[Any],
+) -> Any:
+    """Build the single-device descriptor used by current intra-chip execution."""
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+
+    return ttnn.ProgramDescriptor(
+        kernels=kernel_descriptors,
+        cbs=cb_descriptors,
+        semaphores=semaphore_descriptors,
+    )
+
+
+def _build_mesh_coordinate(coord: Any) -> Any:
+    if isinstance(coord, (tuple, list)):
+        try:
+            return ttnn.MeshCoordinate(*coord)
+        except TypeError:
+            return ttnn.MeshCoordinate(coord)
+    return coord
+
+
+def _build_mesh_coordinate_range(placement: Any) -> Any:
+    if isinstance(placement, MeshProgramPlacement):
+        start = _build_mesh_coordinate(placement.start)
+        end = _build_mesh_coordinate(
+            placement.start if placement.end is None else placement.end
+        )
+        return ttnn.MeshCoordinateRange(start, end)
+    if isinstance(placement, (tuple, list)):
+        coord = _build_mesh_coordinate(placement)
+        return ttnn.MeshCoordinateRange(coord, coord)
+    return placement
+
+
+def build_mesh_program_descriptor(
+    program_descriptor: Any,
+    mesh_program_placements: List[Any],
+) -> Any:
+    """Build a mesh descriptor that runs a program over selected device ranges."""
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+    if not mesh_program_placements:
+        raise ValueError("mesh_program_placements must not be empty")
+
+    mesh_program_descriptor = ttnn.MeshProgramDescriptor()
+    for placement in mesh_program_placements:
+        mesh_range = _build_mesh_coordinate_range(placement)
+        mesh_program_descriptor[mesh_range] = program_descriptor
+    return mesh_program_descriptor
+
+
+def _iter_device_domain_coordinates(device_domain):
+    component_coordinates = []
+    for component in device_domain.components:
+        component_coordinates.append(
+            tuple(itertools.product(*(range(extent) for extent in component.extent)))
+        )
+    for coordinates in itertools.product(*component_coordinates):
+        runtime_coordinates = [
+            value for coordinate in coordinates for value in coordinate
+        ]
+        yield tuple(runtime_coordinates), runtime_coordinates
+
+
+def build_device_mesh_program_descriptor(
+    program_descriptors: Dict[tuple, Any],
+) -> Any:
+    """Build a mesh descriptor containing one program per logical device."""
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+    if not program_descriptors:
+        raise ValueError("program_descriptors must not be empty")
+
+    mesh_program_descriptor = ttnn.MeshProgramDescriptor()
+    for mesh_coordinate, program_descriptor in program_descriptors.items():
+        coordinate = _build_mesh_coordinate(mesh_coordinate)
+        mesh_range = ttnn.MeshCoordinateRange(coordinate, coordinate)
+        mesh_program_descriptor[mesh_range] = program_descriptor
+    return mesh_program_descriptor
+
+
+def configure_routing_plane_runtime_args(
+    program_descriptor: Any,
+    kernel_fabric_routes: List[List[FabricRouteSpec]],
+    mesh_device: Any,
+    device_coordinates: tuple,
+    grid_cols: int,
+    grid_rows: int,
+    fabric_direction_cache: Optional[_FabricDirectionCache] = None,
+) -> None:
+    """Attach per-node routing-plane setup arguments to one device program."""
+    if len(kernel_fabric_routes) != len(program_descriptor.kernels):
+        raise ValueError(
+            "kernel_fabric_routes must have one entry per kernel descriptor"
+        )
+    if not any(kernel_fabric_routes):
+        return
+    source_node_id = mesh_device.get_fabric_node_id(
+        _build_mesh_coordinate(device_coordinates)
+    )
+    direction_cache = (
+        fabric_direction_cache
+        if fabric_direction_cache is not None
+        else _FabricDirectionCache()
+    )
+    for kernel_index, routes in enumerate(kernel_fabric_routes):
+        if not routes:
+            continue
+
+        kernel_descriptor = program_descriptor.kernels[kernel_index]
+        route_count = max(route.route_index for route in routes) + 1
+        for node_y in range(grid_rows):
+            for node_x in range(grid_cols):
+                node_coordinates = (node_x, node_y)
+                active_remote_devices = []
+                remote_index = {}
+                route_remote_slots = [0] * len(routes)
+                for route_index, route in enumerate(routes):
+                    if route.local_device != device_coordinates:
+                        continue
+                    if node_coordinates not in route.source_nodes:
+                        continue
+                    if route.remote_device not in remote_index:
+                        remote_index[route.remote_device] = len(active_remote_devices)
+                        active_remote_devices.append(route.remote_device)
+                    route_remote_slots[route_index] = remote_index[route.remote_device]
+
+                destination_node_ids = [
+                    mesh_device.get_fabric_node_id(_build_mesh_coordinate(coordinates))
+                    for coordinates in active_remote_devices
+                ]
+                route_directions = [
+                    direction_cache.resolve(
+                        mesh_device, source_node_id, destination_node_id
+                    )
+                    for destination_node_id in destination_node_ids
+                ]
+                connection_index_by_direction = {}
+                connection_destination_node_ids = []
+                remote_connection_slots = []
+                for destination_node_id, direction in zip(
+                    destination_node_ids, route_directions
+                ):
+                    connection_index = connection_index_by_direction.get(direction)
+                    if connection_index is None:
+                        connection_index = len(connection_destination_node_ids)
+                        connection_index_by_direction[direction] = connection_index
+                        connection_destination_node_ids.append(destination_node_id)
+                    remote_connection_slots.append(connection_index)
+
+                route_slots = [0] * route_count
+                destination_device_ids = [0] * route_count
+                destination_mesh_ids = [0] * route_count
+                active_route_indices = set()
+                for route_index, remote_slot in enumerate(route_remote_slots):
+                    if remote_slot >= len(route_directions):
+                        continue
+                    route = routes[route_index]
+                    if route.local_device != device_coordinates:
+                        continue
+                    if node_coordinates not in route.source_nodes:
+                        continue
+                    if route.route_index in active_route_indices:
+                        raise ValueError(
+                            "active fabric routes must have distinct route indices"
+                        )
+                    active_route_indices.add(route.route_index)
+                    route_slots[route.route_index] = remote_connection_slots[
+                        remote_slot
+                    ]
+                    destination_node_id = destination_node_ids[remote_slot]
+                    destination_device_ids[route.route_index] = int(
+                        destination_node_id.chip_id
+                    )
+                    destination_mesh_ids[route.route_index] = int(
+                        destination_node_id.mesh_id
+                    )
+                runtime_prefix = [
+                    len(connection_destination_node_ids),
+                    *route_slots,
+                    *destination_device_ids,
+                    *destination_mesh_ids,
+                ]
+                worker_node = ttnn.CoreCoord(node_x, node_y)
+                kernel_descriptor.runtime_args[node_x][node_y] = list(runtime_prefix)
+                if not connection_destination_node_ids:
+                    continue
+                fabric_args = ttnn.setup_routing_plane_connection(
+                    source_node_id,
+                    connection_destination_node_ids,
+                    [],
+                    program_descriptor,
+                    kernel_index,
+                    worker_node,
+                )
+                kernel_descriptor.runtime_args[node_x][node_y].extend(fabric_args)
+                if os.environ.get("TTLANG_DEBUG_FABRIC_ARGS"):
+                    print(
+                        "fabric runtime args:",
+                        device_coordinates,
+                        kernel_index,
+                        (node_x, node_y),
+                        connection_destination_node_ids,
+                        kernel_descriptor.runtime_args[node_x][node_y],
+                        flush=True,
+                    )
+
+
 def run_kernel_on_device(
     kernel_specs: List[KernelSpec],
     tensors: List[Any],
@@ -637,6 +930,10 @@ def run_kernel_on_device(
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
     pipe_global_semaphore_lifetime: Optional[List[Any]] = None,
+    mesh_program_placements: Optional[List[Any]] = None,
+    device_domain: Optional[Any] = None,
+    kernel_fabric_routes: Optional[List[List[FabricRouteSpec]]] = None,
+    fabric_direction_cache: Optional[_FabricDirectionCache] = None,
 ) -> Any:
     """
     Execute kernels on device using ttnn.generic_op.
@@ -662,6 +959,12 @@ def run_kernel_on_device(
         pipe_global_semaphore_lifetime: Optional list replaced with the current
             call's GlobalSemaphore objects. Cached kernels keep this bounded
             owner list so repeated calls do not retain old semaphore objects.
+        mesh_program_placements: Optional mesh device ranges. When present,
+            execution uses ttnn.MeshProgramDescriptor instead of
+            ttnn.ProgramDescriptor.
+        fabric_direction_cache: Optional cache owned by a compiled kernel.
+            Direction results are reused while the mesh and fabric
+            configuration remain unchanged.
 
     Returns:
         Result from ttnn.generic_op (typically None or output tensor).
@@ -729,14 +1032,64 @@ def run_kernel_on_device(
     )
 
     # Build and execute program.
-    program = ttnn.ProgramDescriptor(
-        kernels=kernel_descriptors,
-        cbs=cb_descriptors,
-        semaphores=semaphore_descriptors,
+    program_descriptor = build_program_descriptor(
+        kernel_descriptors=kernel_descriptors,
+        cb_descriptors=cb_descriptors,
+        semaphore_descriptors=semaphore_descriptors,
     )
     normalized_program_hash = normalize_program_hash(program_hash)
     if normalized_program_hash is not None:
-        program.custom_program_hash = normalized_program_hash
+        program_descriptor.custom_program_hash = normalized_program_hash
+    program = program_descriptor
+    if device_domain is not None:
+        mesh_device = _first_device(tensors)
+        fabric_routes = kernel_fabric_routes or [[] for _ in kernel_specs]
+        program_descriptors = {}
+        for mesh_coordinate, runtime_coordinates in _iter_device_domain_coordinates(
+            device_domain
+        ):
+            device_kernel_descriptors = build_kernel_descriptors(
+                kernel_specs=kernel_specs,
+                tensors=tensors,
+                tensor_accessor_args=tensor_accessor_args,
+                core_ranges=core_ranges,
+                grid_cols=grid_cols,
+                grid_rows=grid_rows,
+                num_cbs=len(cb_configs),
+                pipe_computed_address_base_addresses=(
+                    pipe_runtime_resources.computed_address_base_addresses
+                ),
+                extra_common_runtime_args=(
+                    pipe_runtime_resources.extra_common_runtime_args
+                ),
+                expected_extra_common_runtime_args=(
+                    pipe_runtime_resources.expected_extra_common_runtime_args
+                ),
+                device_coordinates=runtime_coordinates,
+            )
+            device_program = build_program_descriptor(
+                kernel_descriptors=device_kernel_descriptors,
+                cb_descriptors=cb_descriptors,
+                semaphore_descriptors=semaphore_descriptors,
+            )
+            if normalized_program_hash is not None:
+                device_program.custom_program_hash = normalized_program_hash
+            configure_routing_plane_runtime_args(
+                program_descriptor=device_program,
+                kernel_fabric_routes=fabric_routes,
+                mesh_device=mesh_device,
+                device_coordinates=mesh_coordinate,
+                grid_cols=grid_cols,
+                grid_rows=grid_rows,
+                fabric_direction_cache=fabric_direction_cache,
+            )
+            program_descriptors[mesh_coordinate] = device_program
+        program = build_device_mesh_program_descriptor(program_descriptors)
+    elif mesh_program_placements is not None:
+        program = build_mesh_program_descriptor(
+            program_descriptor=program_descriptor,
+            mesh_program_placements=mesh_program_placements,
+        )
 
     # ttnn.generic_op requires io_tensors to contain at least one input
     # and one output (size >= 2).  Output-only kernels (e.g. fill with no
@@ -797,6 +1150,17 @@ def _serialize_noc_role(spec: KernelSpec) -> Optional[int]:
     )
 
 
+def _mesh_program_placement_to_source(placement: Any) -> str:
+    if isinstance(placement, MeshProgramPlacement):
+        return f"MeshProgramPlacement({placement.start!r}, {placement.end!r})"
+    if isinstance(placement, (tuple, list)):
+        return repr(tuple(placement))
+    raise TypeError(
+        "standalone runner mesh placements must be coordinate tuples "
+        "or MeshProgramPlacement values"
+    )
+
+
 def emit_runner_source(
     kernel_specs: List[KernelSpec],
     cb_configs: List[PhysicalDFBConfig],
@@ -808,6 +1172,7 @@ def emit_runner_source(
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
     program_hash: Optional[int] = None,
+    mesh_program_placements: Optional[List[Any]] = None,
 ) -> str:
     """
     Emit Python source code for a standalone runner that invokes ttnn.generic_op.
@@ -818,6 +1183,8 @@ def emit_runner_source(
 
     program_hash, if provided, is normalized to uint64 and embedded as the
     emitted runner's tt-metal program-cache key.
+    mesh_program_placements, if provided, selects the device ranges that run
+    the emitted program.
     """
     lines = []
 
@@ -831,11 +1198,14 @@ def emit_runner_source(
     lines.append("from ttl.dataflow_buffer import PhysicalDFBConfig")
     lines.append("from ttl.kernel_runner import (")
     lines.append("    KernelSpec,")
+    lines.append("    MeshProgramPlacement,")
     lines.append("    build_cb_descriptors,")
     lines.append("    build_generic_op_io_tensors,")
     lines.append("    build_kernel_descriptors,")
+    lines.append("    build_mesh_program_descriptor,")
     lines.append("    build_pipe_runtime_resources,")
     lines.append("    build_pipe_sync_semaphore_descriptors,")
+    lines.append("    build_program_descriptor,")
     lines.append("    build_tensor_accessor_args,")
     lines.append(")")
     lines.append("")
@@ -857,6 +1227,13 @@ def emit_runner_source(
     lines.append(
         f"PIPE_COMPUTED_ADDRESS_DFB_INDICES = {computed_address_dfb_indices!r}"
     )
+    if mesh_program_placements is None:
+        lines.append("MESH_PROGRAM_PLACEMENTS = None")
+    else:
+        lines.append("MESH_PROGRAM_PLACEMENTS = [")
+        for placement in mesh_program_placements:
+            lines.append(f"    {_mesh_program_placement_to_source(placement)},")
+        lines.append("]")
     lines.append("")
 
     lines.append("KERNEL_PATHS = [")
@@ -895,6 +1272,13 @@ def emit_runner_source(
     lines.append("KERNEL_NOC_INDICES = [")
     for spec in kernel_specs:
         lines.append(f"    {_serialize_noc_role(spec)!r},  # {spec.thread_type}")
+    lines.append("]")
+    lines.append("")
+
+    lines.append("KERNEL_EXTRA_COMMON_RUNTIME_ARGS = [")
+    for spec in kernel_specs:
+        extra_args = list(spec.extra_common_runtime_args or [])
+        lines.append(f"    {extra_args!r},  # {spec.thread_type}")
     lines.append("]")
     lines.append("")
     lines.append("CB_CONFIGS = [")
@@ -979,6 +1363,10 @@ def emit_runner_source(
         "                core_ranges=_core_ranges_from_spec("
         "KERNEL_CORE_RANGES[kernel_idx]),"
     )
+    lines.append(
+        "                extra_common_runtime_args="
+        "KERNEL_EXTRA_COMMON_RUNTIME_ARGS[kernel_idx],"
+    )
     lines.append("            )")
     lines.append("        )")
     lines.append("    kernel_descriptors = build_kernel_descriptors(")
@@ -1017,13 +1405,19 @@ def emit_runner_source(
     lines.append("    )")
     lines.append("")
 
-    lines.append("    program = ttnn.ProgramDescriptor(")
-    lines.append("        kernels=kernel_descriptors,")
-    lines.append("        cbs=cb_descriptors,")
-    lines.append("        semaphores=semaphore_descriptors,")
+    lines.append("    program_descriptor = build_program_descriptor(")
+    lines.append("        kernel_descriptors=kernel_descriptors,")
+    lines.append("        cb_descriptors=cb_descriptors,")
+    lines.append("        semaphore_descriptors=semaphore_descriptors,")
     lines.append("    )")
     lines.append("    if PROGRAM_HASH is not None:")
-    lines.append("        program.custom_program_hash = PROGRAM_HASH")
+    lines.append("        program_descriptor.custom_program_hash = PROGRAM_HASH")
+    lines.append("    program = program_descriptor")
+    lines.append("    if MESH_PROGRAM_PLACEMENTS is not None:")
+    lines.append("        program = build_mesh_program_descriptor(")
+    lines.append("            program_descriptor=program_descriptor,")
+    lines.append("            mesh_program_placements=MESH_PROGRAM_PLACEMENTS,")
+    lines.append("        )")
     lines.append("")
     lines.append("    io_tensors = build_generic_op_io_tensors(")
     lines.append("        tensors=tensors,")
@@ -1056,12 +1450,15 @@ def emit_runner_file(
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
     program_hash: Optional[int] = None,
+    mesh_program_placements: Optional[List[Any]] = None,
 ) -> str:
     """
     Emit a Python runner file for the compiled kernel.
 
     program_hash, if provided, is forwarded to the emitted runner as its
     normalized tt-metal program-cache key.
+    mesh_program_placements, if provided, is forwarded as the emitted
+    program's device ranges.
 
     Returns the output path.
     """
@@ -1078,6 +1475,7 @@ def emit_runner_file(
         num_pipe_sync_semaphores=num_pipe_sync_semaphores,
         pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
         num_pipe_global_semaphores=num_pipe_global_semaphores,
+        mesh_program_placements=mesh_program_placements,
     )
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
@@ -1090,6 +1488,8 @@ def emit_runner_file(
 
 __all__ = [
     "KernelSpec",
+    "FabricRouteSpec",
+    "MeshProgramPlacement",
     "PipeRuntimeResources",
     "build_tensor_accessor_args",
     "build_kernel_descriptors",
@@ -1101,6 +1501,10 @@ __all__ = [
     "build_pipe_sync_semaphore_descriptors",
     "normalize_program_hash",
     "build_generic_op_io_tensors",
+    "build_device_mesh_program_descriptor",
+    "configure_routing_plane_runtime_args",
+    "build_mesh_program_descriptor",
+    "build_program_descriptor",
     "run_kernel_on_device",
     "emit_runner_source",
     "emit_runner_file",

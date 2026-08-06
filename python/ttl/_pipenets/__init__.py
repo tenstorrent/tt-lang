@@ -73,16 +73,45 @@ class PipeNetUse:
     pipes: Tuple[PipeUse, ...]
 
 
+@dataclass(frozen=True)
+class GraphPipeNetUse:
+    """One graph-based PipeNet consumed by one operation invocation."""
+
+    pipe_net_ids: Tuple[int, ...]
+    edges: Tuple[Any, ...]
+    transfer_graph: Any
+
+
 @dataclass
 class OperationPipeNets:
     """All PipeNets used by one operation invocation."""
 
     pipe_nets: List[PipeNetUse] = field(default_factory=list)
+    graph_pipe_nets: List[GraphPipeNetUse] = field(default_factory=list)
+    _next_id: int = 0
+
+    def _next_pipe_net_id(self) -> int:
+        pipe_net_id = self._next_id
+        self._next_id += 1
+        return pipe_net_id
 
     def add_pipe_net(self, pipes: Iterable[PipeUse]) -> PipeNetUse:
         """Append a new PipeNetUse with the next operation-local id."""
-        use = PipeNetUse(id=len(self.pipe_nets), pipes=tuple(pipes))
+        use = PipeNetUse(id=self._next_pipe_net_id(), pipes=tuple(pipes))
         self.pipe_nets.append(use)
+        return use
+
+    def add_graph_pipe_net(self, transfer_graph: Any) -> GraphPipeNetUse:
+        """Append a graph PipeNet with one internal ID per device edge."""
+        edges = tuple(transfer_graph.iter_edges())
+        if not edges:
+            raise ValueError("graph-based PipeNet requires at least one transfer edge")
+        use = GraphPipeNetUse(
+            pipe_net_ids=tuple(self._next_pipe_net_id() for _ in edges),
+            edges=edges,
+            transfer_graph=transfer_graph,
+        )
+        self.graph_pipe_nets.append(use)
         return use
 
     def active_node_set(self, grid: Tuple[int, ...]) -> Optional[Set[int]]:
@@ -176,5 +205,6 @@ __all__ = [
     "NodeRange",
     "PipeUse",
     "PipeNetUse",
+    "GraphPipeNetUse",
     "OperationPipeNets",
 ]
