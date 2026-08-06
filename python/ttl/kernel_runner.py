@@ -562,7 +562,14 @@ def _validate_tensor_backed_dfb_tensor(
             f"DFB[{config.dfb_index}] tensor backing dtype {tensor.dtype} "
             f"does not match {expected_dtype}"
         )
-    tensor_page_size = int(tensor.get_tile().get_tile_size(tensor.dtype))
+    tensor_tile = tensor.get_tile()
+    tensor_tile_shape = tuple(int(dimension) for dimension in tensor_tile.tile_shape)
+    if tensor_tile_shape != config.tile:
+        raise ValueError(
+            f"DFB[{config.dfb_index}] tensor backing tile shape "
+            f"{tensor_tile_shape} does not match {config.tile}"
+        )
+    tensor_page_size = int(tensor_tile.get_tile_size(tensor.dtype))
     if tensor_page_size != config.page_size:
         raise ValueError(
             f"DFB[{config.dfb_index}] tensor backing page size "

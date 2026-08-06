@@ -11,12 +11,20 @@ from ttl.dataflow_buffer import DFBStorageSegment, PhysicalDFBConfig
 
 
 class _FakeTensor:
-    def __init__(self, device, address=0x2000, dtype=None, size_per_bank=1 << 20):
+    def __init__(
+        self,
+        device,
+        address=0x2000,
+        dtype=None,
+        size_per_bank=1 << 20,
+        tile_shape=(32, 32),
+    ):
         self._device = device
         self._address = address
         self.size_per_bank = size_per_bank
         self.dtype = dtype
         self.layout = "TILE"
+        self.tile_shape = tile_shape
 
     def device(self):
         return self._device
@@ -24,9 +32,8 @@ class _FakeTensor:
     def buffer_address(self):
         return self._address
 
-    @staticmethod
-    def get_tile():
-        return _FakeTTNN.Tile((32, 32))
+    def get_tile(self):
+        return _FakeTTNN.Tile(self.tile_shape)
 
     @staticmethod
     def memory_config():
@@ -571,6 +578,38 @@ def test_build_cb_descriptors_rejects_node_without_tensor_shard(monkeypatch):
         kernel_runner.build_cb_descriptors(
             tensors=[tensor],
             cb_configs=[_tensor_backing_config(0, nodes=((0, 0), (1, 0)))],
+            core_ranges=_FakeCoreRanges(),
+        )
+
+
+def test_build_cb_descriptors_rejects_equal_size_different_tile_shape(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+    )
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    tensor = _FakeTensor(object(), dtype=expected_dtype, tile_shape=(16, 32))
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        1024,
+        (32, 16),
+        (
+            DFBStorageSegment(
+                nodes=((0, 0),),
+                tensor_index=0,
+                byte_offset=0,
+                byte_size=1024,
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="tile shape.*16, 32.*32, 16"):
+        kernel_runner.build_cb_descriptors(
+            tensors=[tensor],
+            cb_configs=[config],
             core_ranges=_FakeCoreRanges(),
         )
 
