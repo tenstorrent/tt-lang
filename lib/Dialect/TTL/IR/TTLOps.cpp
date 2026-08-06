@@ -141,7 +141,21 @@ mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
   }
 
   if (TensorBackingAttr backing = getTensorBackingAttr()) {
-    int64_t pageSize = ttcore::getElementSizeBytes(cbTy.getElementType());
+    auto tileType = mlir::dyn_cast<ttcore::TileType>(cbTy.getElementType());
+    if (!tileType) {
+      return emitOpError()
+             << "tensor backing requires a TTCore tile element type, got "
+             << cbTy.getElementType();
+    }
+    // TODO(#812): Extend tensor backing after additional formats are specified.
+    if (tileType.getDataType() != ttcore::DataType::BFloat16 &&
+        tileType.getDataType() != ttcore::DataType::Float32) {
+      return emitOpError()
+             << "tensor backing supports only BF16 and FP32 tile element "
+                "types, got "
+             << tileType;
+    }
+    int64_t pageSize = static_cast<int64_t>(tileType.getSizeBytes());
     if (backing.getByteOffset() % pageSize != 0) {
       return emitOpError()
              << "tensor backing byte_offset must be aligned to the " << pageSize

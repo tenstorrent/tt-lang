@@ -42,3 +42,47 @@ module {
     return
   }
 }
+
+// -----
+
+// A sub-byte scalar type is not a valid tensor-backed page format.
+module {
+  func.func @i1_element_type() {
+    // expected-error @below {{tensor backing requires a TTCore tile element type}}
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index, tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 1>} : !ttl.cb<[1, 1], i1, 1>
+    return
+  }
+}
+
+// -----
+
+// An i4 element type is also smaller than one byte.
+module {
+  func.func @i4_element_type() {
+    // expected-error @below {{tensor backing requires a TTCore tile element type}}
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index, tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 1>} : !ttl.cb<[1, 1], i4, 1>
+    return
+  }
+}
+
+// -----
+
+// An index type has no fixed device page width.
+module {
+  func.func @index_element_type() {
+    // expected-error @below {{tensor backing requires a TTCore tile element type}}
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index, tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 1>} : !ttl.cb<[1, 1], index, 1>
+    return
+  }
+}
+
+// -----
+
+// Tensor-backed formats are limited to the data types defined by the specification.
+module {
+  func.func @unsupported_tile_data_type() {
+    // expected-error @below {{tensor backing supports only BF16 and FP32 tile element types}}
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index, tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 2048>} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f16>, 1>
+    return
+  }
+}
