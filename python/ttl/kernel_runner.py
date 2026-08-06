@@ -606,7 +606,7 @@ def _validate_tensor_backed_dfb_tensor(
     ):
         raise ValueError(
             f"DFB[{config.dfb_index}] tensor backing byte range exceeds the uint32 "
-            "descriptor ABI"
+            "descriptor fields"
         )
     if segment.byte_offset % config.page_size != 0:
         raise ValueError(

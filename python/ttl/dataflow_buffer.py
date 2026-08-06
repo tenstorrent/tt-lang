@@ -259,11 +259,11 @@ def make_tensor_backed_dfb(
     descriptor_limit = (1 << 32) - 1
     if byte_offset > descriptor_limit or byte_size > descriptor_limit:
         raise ValueError(
-            "tensor-backed DFB byte range exceeds the uint32 descriptor ABI"
+            "tensor-backed DFB byte range exceeds the uint32 descriptor fields"
         )
     if byte_offset + byte_size > descriptor_limit:
         raise ValueError(
-            "tensor-backed DFB byte range end exceeds the uint32 descriptor ABI"
+            "tensor-backed DFB byte range end exceeds the uint32 descriptor fields"
         )
     if byte_offset % page_size != 0:
         raise ValueError(

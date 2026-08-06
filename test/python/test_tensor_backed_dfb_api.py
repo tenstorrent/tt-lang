@@ -113,7 +113,7 @@ def test_make_tensor_backed_dfb_rejects_uint32_capacity_overflow(monkeypatch):
         "ttl.dtype_utils.is_ttnn_tensor", lambda tensor: isinstance(tensor, _FakeTensor)
     )
 
-    with pytest.raises(ValueError, match="uint32 descriptor ABI"):
+    with pytest.raises(ValueError, match="uint32 descriptor fields"):
         dataflow_buffer.make_tensor_backed_dfb(_FakeTensor(), shape=(1, 1 << 21))
 
 
