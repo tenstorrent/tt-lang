@@ -36,6 +36,7 @@ def TTL_CircularBuffer : TTL_Type<"CircularBuffer", "cb"> {
     "int64_t":$blockCount
   );
   let assemblyFormat = "`<` `[` $shape `]` `,` $elementType `,` $blockCount `>`";
+  let genVerifyDecl = 1;
 
   let extraClassDeclaration = [{
     int64_t getElementsPerBlock() const {
