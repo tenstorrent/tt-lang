@@ -10,6 +10,7 @@ Covers:
   operands (negate).
 - int/bool/float values as both template_args and func_args.
 - A DFB passed directly as a func_arg (CB index via get_compile_time_arg_val).
+- A tensor passed as a func_arg (runtime buffer base address).
 """
 
 import os
@@ -27,6 +28,9 @@ import ttl
 NEGATE_HEADER = os.path.join(os.path.dirname(__file__), "include", "negate_tile_op.hpp")
 TYPED_ARGS_HEADER = os.path.join(
     os.path.dirname(__file__), "include", "typed_args_op.hpp"
+)
+TENSOR_ADDRESS_HEADER = os.path.join(
+    os.path.dirname(__file__), "include", "tensor_address_op.hpp"
 )
 
 
@@ -114,6 +118,34 @@ def typed_args_extern(inp, out):
         blk.pop()
 
 
+@ttl.operation(grid=(1, 1))
+def tensor_address_extern(inp, out):
+    in_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        with in_dfb.wait() as in_blk, out_dfb.reserve() as out_blk:
+            ttl.call_extern_func(
+                TENSOR_ADDRESS_HEADER,
+                "tensor_address_alias_shim",
+                template_args=[ttl.get_dfb_id(out_dfb)],
+                func_args=[inp, inp, in_dfb, out_dfb],
+            )
+
+    @ttl.datamovement()
+    def dm_read():
+        blk = in_dfb.reserve()
+        ttl.copy(inp[0, 0], blk).wait()
+        blk.push()
+
+    @ttl.datamovement()
+    def dm_write():
+        blk = out_dfb.wait()
+        ttl.copy(blk, out[0, 0]).wait()
+        blk.pop()
+
+
 def test_negate_extern(device):
     inp_torch = torch.full((32, 32), 3.0, dtype=torch.bfloat16)
 
@@ -139,3 +171,38 @@ def test_typed_args_extern(device):
     # -inp * IntScale(2) * ScaleTpl(0.5) * scale_f(3.0) * int_factor(2)
     expected = -inp_torch * 6.0
     assert_allclose(result, expected)
+
+
+@pytest.mark.parametrize(
+    "torch_dtype,ttnn_dtype",
+    (
+        (torch.bfloat16, ttnn.bfloat16),
+        (torch.float32, ttnn.float32),
+    ),
+    ids=("bf16", "fp32"),
+)
+@pytest.mark.parametrize(
+    "memory_config",
+    (ttnn.L1_MEMORY_CONFIG, ttnn.DRAM_MEMORY_CONFIG),
+    ids=("l1", "dram"),
+)
+def test_tensor_address_extern(device, torch_dtype, ttnn_dtype, memory_config):
+    inp_torch = torch.full((32, 32), 4.0, dtype=torch_dtype)
+    inp = ttnn.from_torch(
+        inp_torch,
+        dtype=ttnn_dtype,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=memory_config,
+    )
+    out = ttnn.from_torch(
+        torch.zeros_like(inp_torch),
+        dtype=ttnn_dtype,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=ttnn.L1_MEMORY_CONFIG,
+    )
+
+    tensor_address_extern(inp, out)
+
+    assert_allclose(ttnn.to_torch(out), inp_torch)

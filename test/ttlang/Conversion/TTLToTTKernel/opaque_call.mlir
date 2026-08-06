@@ -50,3 +50,23 @@ func.func @call_with_dfb_func_arg() attributes {ttl.kernel_thread = #ttkernel.th
   ttl.opaque_call "use_cb" (%cb) {header = "use_cb.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> ()
   return
 }
+
+// -----
+
+// Tensor func_arg is lowered to its common runtime buffer address. The tensor
+// function argument becomes unused and is removed from the NOC kernel.
+// CHECK-LABEL: func.func @call_with_tensor_func_arg
+// CHECK: %[[INDEX:.*]] = arith.constant 0 : index
+// CHECK-NEXT: %[[ADDRESS:.*]] = ttkernel.get_common_arg_val(%[[INDEX]]) : (index) -> i32
+// CHECK-NEXT: ttkernel.opaque_call "use_tensor_address" (%[[ADDRESS]]) {header = "use_tensor_address.hpp"} : (i32) -> ()
+// CHECK-NOT: tensor<
+func.func @call_with_tensor_func_arg(
+    %tensor: tensor<1x1x!ttcore.tile<32x32, bf16>>) attributes {
+    ttl.kernel_thread = #ttkernel.thread<noc>,
+    ttl.crta_indices = [0 : i32]
+  } {
+  ttl.opaque_call "use_tensor_address" (%tensor)
+      {header = "use_tensor_address.hpp"}
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>) -> ()
+  return
+}

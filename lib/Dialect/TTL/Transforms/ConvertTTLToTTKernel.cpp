@@ -1708,6 +1708,21 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
         continue;
       }
 
+      // A tensor function argument denotes its runtime buffer base. External
+      // kernels that require layout-aware page addressing should use TTL
+      // tensor operations; opaque kernels such as DRAM-streaming readers own
+      // their bank and offset calculation and require the unmodified address.
+      if (mlir::isa<RankedTensorType>(origTy)) {
+        FailureOr<unsigned> argIdx = getTensorFuncArgIndex(origArg);
+        if (failed(argIdx)) {
+          return rewriter.notifyMatchFailure(
+              op, "tensor opaque_call operand must be a function argument");
+        }
+        convertedArgs.push_back(
+            getBufferAddressFromRuntimeArg(*argIdx, loc, rewriter));
+        continue;
+      }
+
       // Scalar floats are forwarded as-is. Following tt-metal's kernel
       // scalar-argument convention, a float reaches the callee as its raw
       // IEEE-754 bit pattern held in an integer register -- the C++ header

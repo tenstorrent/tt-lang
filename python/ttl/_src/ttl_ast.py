@@ -1838,7 +1838,9 @@ class TTLGenericCompiler(TTCompilerBase):
           function argument.
 
         Template args accept ``int``, ``bool`` (as 0/1), and ``float`` (as
-        IEEE-754 bit pattern). Func args accept those scalars plus DFBs.
+        IEEE-754 bit pattern). Func args accept those scalars, DFBs, and tensor
+        function arguments. A tensor lowers to its runtime buffer base address;
+        the external function owns bank and offset interpretation.
         """
         if len(args) < 2:
             self._raise_error(

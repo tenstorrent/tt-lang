@@ -1898,6 +1898,11 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     complete before the call returns. This external-code contract is assumed
     because the compiler does not inspect the C++ body.
 
+    A tensor operand must be a kernel function argument and lowers to that
+    tensor's runtime buffer base address as an `i32`. The external function is
+    responsible for bank selection, page offsets, and any required NoC address
+    construction. The operand does not create a dataflow buffer or copy data.
+
     An integer produced by `ttl.get_dfb_id`, including a template argument,
     does not declare a call-level DFB access. If the callee uses that index to
     access the DFB, the same DFB must also appear in `arg_operands`.
