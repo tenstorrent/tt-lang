@@ -160,10 +160,8 @@ def _make_cache_key(
 ) -> tuple:
     """Create cache key from tensor properties and runtime compute config parameters."""
     grid_key = tuple(resolved_grid)
-    tensor_key = tuple(
-        _get_tensor_cache_info(arg) for arg in args if is_ttnn_tensor(arg)
-    )
     tensor_args = [arg for arg in args if is_ttnn_tensor(arg)]
+    tensor_key = tuple(_get_tensor_cache_info(tensor) for tensor in tensor_args)
     first_position_by_identity = {}
     alias_partition = []
     for position, tensor in enumerate(tensor_args):
@@ -173,9 +171,9 @@ def _make_cache_key(
     # Include mesh shape so that single-device and multi-device compilations
     # with different shard shapes don't collide in the cache.
     mesh_key = None
-    for arg in args:
-        if is_ttnn_tensor(arg) and _is_mesh_tensor(arg):
-            mesh_key = tuple(arg.device().shape)
+    for tensor in tensor_args:
+        if _is_mesh_tensor(tensor):
+            mesh_key = tuple(tensor.device().shape)
             break
     return (
         tensor_key,
