@@ -168,11 +168,21 @@ def test_make_dfb_uses_default_tile_size():
 
 @pytest.mark.parametrize(
     "tile",
-    [(7, 13), (64, 32), (32, 64), (0, 32), (2**100, 32)],
+    [(7, 13), (64, 32), (32, 64), (2**100, 32)],
     ids=lambda tile_dimensions: f"{tile_dimensions[0]}x{tile_dimensions[1]}",
 )
 def test_make_dfb_rejects_non_tt_metal_tile(tile):
     with pytest.raises(ValueError, match="not constructible by tt-metal"):
+        make_dfb(ttnn.bfloat16, shape=(1, 1), block_count=2, tile=tile)
+
+
+@pytest.mark.parametrize(
+    "tile",
+    [(0, 32), (32, 0), (-1, 32), (32, -1)],
+    ids=lambda tile_dimensions: f"{tile_dimensions[0]}x{tile_dimensions[1]}",
+)
+def test_make_dfb_rejects_non_positive_tile(tile):
+    with pytest.raises(ValueError, match="Tile dimensions must be positive"):
         make_dfb(ttnn.bfloat16, shape=(1, 1), block_count=2, tile=tile)
 
 
