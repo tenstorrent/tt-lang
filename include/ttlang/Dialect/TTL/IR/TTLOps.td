@@ -38,6 +38,9 @@ def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
       independently of the physical slot selected by `cb_index`. Bindings in
       different kernels with the same `dfb_id` refer to the same logical
       buffer.
+    - `tensor_backing`, when present, binds the complete dataflow buffer
+      capacity to the specified byte range of an operation tensor argument.
+      The range is relative to the local shard on each launch node.
     Example:
 
     ```mlir
@@ -48,7 +51,8 @@ def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
   let arguments = (ins
     IndexAttr:$cb_index,
     DefaultValuedAttr<I64Attr, "2">:$block_count,
-    OptionalAttr<IndexAttr>:$dfb_id
+    OptionalAttr<IndexAttr>:$dfb_id,
+    OptionalAttr<TTL_TensorBackingAttr>:$tensor_backing
   );
   let results = (outs TTL_CircularBuffer:$result);
   let assemblyFormat = "`{` `cb_index` `=` $cb_index `,` `block_count` `=` $block_count `}` attr-dict `:` type($result)";

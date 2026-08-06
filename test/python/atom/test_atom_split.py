@@ -38,6 +38,32 @@ def test_unknown_ttl_op_is_rejected():
         split_function_body(fn, dfb_param_names=set())
 
 
+def test_tensor_backed_dfb_factory_and_publish_are_split_by_thread():
+    fn = _fn(
+        """
+        def k(inp):
+            inp_dfb = ttl.make_tensor_backed_dfb(inp, shape=(1, 1))
+            inp_dfb.publish()
+        """
+    )
+
+    result = split_function_body(
+        fn,
+        dfb_param_names=set(),
+        local_dfb_names={"inp_dfb"},
+    )
+
+    trisc = _thread_src(result, "trisc")
+    ncrisc = _thread_src(result, "ncrisc")
+    brisc = _thread_src(result, "brisc")
+    assert "make_tensor_backed_dfb" in trisc
+    assert "make_tensor_backed_dfb" in ncrisc
+    assert "make_tensor_backed_dfb" in brisc
+    assert "inp_dfb.publish()" not in trisc
+    assert "inp_dfb.publish()" in ncrisc
+    assert "inp_dfb.publish()" not in brisc
+
+
 def test_producer_with_no_uses_is_rejected():
     fn = _fn(
         """
