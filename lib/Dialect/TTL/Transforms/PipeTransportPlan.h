@@ -41,6 +41,7 @@ using PipeTransportStreamId = std::size_t;
 enum class PipeSynchronizationProtocol {
   ReceiverPost,
   Capacity,
+  Fabric,
 };
 
 /// Backend-independent schedule selected for one transfer stream.
@@ -244,7 +245,11 @@ public:
   const PipeTransportStream &
   getStreamForTransfer(PipeTransferNodeId transferNode) const;
 
-  /// Return the stream that owns `operation`.
+  /// Return the streams represented by one protocol operation.
+  ArrayRef<PipeTransportStreamId>
+  getStreamIdsForOperation(Operation *operation) const;
+
+  /// Return the unique stream represented by a static protocol operation.
   const PipeTransportStream &getStreamForOperation(Operation *operation) const;
 
   /// Return whether transport synchronization replaces this DFB operation.
@@ -271,7 +276,8 @@ private:
 
   SmallVector<PipeTransportStream, 0> streams;
   llvm::DenseMap<PipeTransferNodeId, PipeTransportStreamId> streamByTransfer;
-  llvm::DenseMap<Operation *, PipeTransportStreamId> streamByOperation;
+  llvm::DenseMap<Operation *, SmallVector<PipeTransportStreamId, 1>>
+      streamsByOperation;
   llvm::DenseSet<Operation *> ownedDFBLifecycleOperations;
   llvm::DenseMap<Operation *, PipeTransportStorageAccess>
       storageAccessByOperation;

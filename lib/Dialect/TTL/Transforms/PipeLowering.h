@@ -12,9 +12,12 @@
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 
+#include <cstddef>
 #include <optional>
 
 namespace mlir::tt {
@@ -24,6 +27,39 @@ class ValueOriginAnalysis;
 namespace mlir::tt::ttl {
 
 class PipeTransferIndex;
+
+inline constexpr llvm::StringLiteral kFabricRoutesAttrName =
+    "ttl.fabric_routes";
+inline constexpr llvm::StringLiteral kFabricDeviceDomainAttrName =
+    "ttl.fabric_device_domain";
+
+struct FabricRoute {
+  DeviceRefAttr localDevice;
+  DeviceRefAttr remoteDevice;
+  SmallVector<LaunchNodeCoord> sourceNodes;
+  std::size_t routeIndex;
+};
+
+struct FabricRoutePlan {
+  llvm::MapVector<func::FuncOp, SmallVector<FabricRoute>> routesByFunction;
+  llvm::DenseMap<Operation *, DeviceDomainAttr> deviceDomainsByFunction;
+  llvm::DenseMap<Operation *, std::size_t> sendRouteIndex;
+  llvm::SmallPtrSet<Operation *, 16> transferOps;
+};
+
+struct FabricRouteTarget {
+  Value destinationDeviceId;
+  Value destinationMeshId;
+};
+
+struct FabricRuntimeInfo {
+  Value manager;
+  Value routeId;
+  Value connectionCount;
+  SmallVector<FabricRouteTarget> routeTargets;
+};
+
+using FabricRuntimeMap = llvm::DenseMap<Operation *, FabricRuntimeInfo>;
 
 struct PipeInfo {
   PipeType pipeType;
@@ -211,6 +247,18 @@ getPipeResourceRequirements(const PipeResourcePlan &info,
 /// multiple ops contributes one entry.
 void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 
+/// Build per-kernel routing-plane records from transfers validated by
+/// PipeGraph.
+LogicalResult buildFabricRoutePlan(const PipeGraph &pipeGraph,
+                                   FabricRoutePlan &plan);
+
+/// Materialize the function attributes recorded by `plan`.
+void applyFabricRoutePlan(ModuleOp module, const FabricRoutePlan &plan);
+
+/// Materialize one routing-plane manager per kernel that uses fabric routes.
+void initializeFabricRuntime(const FabricRoutePlan &plan,
+                             FabricRuntimeMap &runtime);
+
 /// Build the pipe resource plan used by pipe lowering. Transfer intervals that
 /// cannot be bounded by dominance are conservatively treated as conflicting
 /// with every other transfer interval from the same source core.
@@ -273,15 +321,22 @@ void materializePipeTransportCompletionBarriers(
 void lowerInactivePipeTransferSend(PipeTransferSendOp op,
                                    ConversionPatternRewriter &rewriter);
 
-/// Lower the sender-side pipe transfer and signal receiver completion.
-LogicalResult lowerPipeTransferSend(
+/// Lower a runtime-selected sender-side transfer.
+LogicalResult
+lowerSelectedPipeTransferSend(PipeTransferSendOp op, Value srcCB,
+                              const PipeTransferPlan &transferPlan,
+                              const PipeResourcePlan &pipeResourcePlan,
+                              ConversionPatternRewriter &rewriter);
+
+/// Lower a static sender-side transfer and signal receiver completion.
+LogicalResult lowerStaticPipeTransferSend(
     PipeTransferSendOp op, Value srcCB, const PipeTransferPlan &transferPlan,
     const PipeTransportStream &transportStream,
     const PipeResourcePlan &pipeResourcePlan,
     const PipeCapacityPlan &pipeCapacityPlan,
     const PipeCounterProgressMap &senderCapacityCounters,
     const PipeComputedAddressCounterMap &computedAddressCounters,
-    ConversionPatternRewriter &rewriter);
+    const FabricRuntimeMap &fabricRuntime, ConversionPatternRewriter &rewriter);
 
 /// Remove a receiver post proven unreachable at its pipe endpoint.
 void lowerInactivePipeTransferPost(PipeTransferPostOp op,
