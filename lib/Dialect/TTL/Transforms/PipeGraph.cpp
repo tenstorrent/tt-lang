@@ -882,6 +882,16 @@ LaunchNodeDomain PipeGraph::getOperationLaunchDomain(Operation *op) const {
   return it->second;
 }
 
+const DFBAcquireReleaseIndex &
+PipeGraph::getDFBAcquireReleaseIndex(Operation *operation) const {
+  func::FuncOp function = operation->getParentOfType<func::FuncOp>();
+  assert(function && "DFB lifecycle operation must be inside a function");
+  auto lifecycle = dfbLifecycles.find(function.getOperation());
+  assert(lifecycle != dfbLifecycles.end() &&
+         "every function must have a DFB lifecycle index");
+  return *lifecycle->second;
+}
+
 static std::optional<int64_t>
 getReceiverAddressByteOffset(const PipeReceiverEndpoint &endpoint,
                              int64_t slot) {
@@ -1170,6 +1180,9 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
           transferIndex.getTransferCreate(sendOp.getOperation());
       PipeTransferContract transferContract =
           getPipeTransferContract(sendCreate);
+      int64_t blockSpan = getPipeTransferBlockSpan(sendCreate);
+      int64_t destinationGroupDepth =
+          getPipeTransferDestinationGroupDepth(sendCreate);
       for (const auto &endpoint : endpointsBySend[sendIndex]) {
         PipeTransferPostOp postOp = endpoint.second;
         PipeTransferCreateOp postCreate =
@@ -1179,12 +1192,32 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
               "pipe send and receiver post use different transfer contracts");
           return failure();
         }
+        if (getPipeTransferBlockSpan(postCreate) != blockSpan) {
+          auto diagnostic =
+              postOp.emitError("pipe send and receiver post use different "
+                               "transfer block spans");
+          diagnostic.attachNote(sendOp.getLoc())
+              << "corresponding pipe send uses block_span=" << blockSpan;
+          return failure();
+        }
+        if (getPipeTransferDestinationGroupDepth(postCreate) !=
+            destinationGroupDepth) {
+          auto diagnostic = postOp.emitError(
+              "pipe send and receiver post use different destination group "
+              "depths");
+          diagnostic.attachNote(sendOp.getLoc())
+              << "corresponding pipe send uses destination_group_depth="
+              << destinationGroupDepth;
+          return failure();
+        }
       }
 
       PipeTransferNodeId transferNodeId = pipeTransferNodes.size();
       pipeTransferNodes.push_back(PipeTransferNode{transferNodeId,
                                                    pipeKey,
                                                    transferContract,
+                                                   blockSpan,
+                                                   destinationGroupDepth,
                                                    sendOp.getOperation(),
                                                    {},
                                                    {}});
@@ -1457,6 +1490,7 @@ FailureOr<PipeGraph> PipeGraph::build(ModuleOp mod,
   graph.hasAnalyzedLaunchGrid = analysisState.hasLaunchGrid;
   graph.operationLaunchDomains =
       std::move(analysisState.operationLaunchDomains);
+  graph.dfbLifecycles = std::move(analysisState.dfbLifecycles);
   return std::move(graph);
 }
 

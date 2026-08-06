@@ -29,8 +29,10 @@
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/LogicalResult.h"
 
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/Support/raw_ostream.h"
 
 #define DEBUG_TYPE "ttl-validate-cb-budget"
@@ -43,12 +45,28 @@ namespace mlir::tt::ttl {
 namespace {
 
 static std::string formatShape(llvm::ArrayRef<int64_t> shape) {
-  std::string s;
-  llvm::raw_string_ostream os(s);
-  os << "[";
-  llvm::interleaveComma(shape, os);
-  os << "]";
-  return os.str();
+  std::string formattedShape;
+  llvm::raw_string_ostream outputStream(formattedShape);
+  outputStream << "[";
+  llvm::interleaveComma(shape, outputStream);
+  outputStream << "]";
+  return outputStream.str();
+}
+
+/// Formats the integer DFB budget usage percentage without overflowing.
+static std::string formatDFBUsagePercentage(uint64_t allocationBytes,
+                                            uint64_t budgetBytes) {
+  if (budgetBytes == 0) {
+    return "0";
+  }
+
+  // Multiplying a 64-bit allocation by 100 requires at most 71 bits.
+  llvm::APInt percentageNumerator(/*numBits=*/128, allocationBytes);
+  percentageNumerator *= 100;
+  llvm::APInt percentage = percentageNumerator.udiv(budgetBytes);
+  llvm::SmallString<24> percentageString;
+  percentage.toStringUnsigned(percentageString);
+  return percentageString.str().str();
 }
 
 struct TTLValidateCBBudgetPass
@@ -106,9 +124,10 @@ struct TTLValidateCBBudgetPass
           diag << " (compiler-allocated)";
         }
       }
-      uint64_t pct = budgetBytes ? (100 * totalBytes) / budgetBytes : 0;
+      std::string percentage =
+          formatDFBUsagePercentage(totalBytes, budgetBytes);
       diag << "\n  total: " << totalBytes << " / " << budgetBytes << " bytes ("
-           << pct << " percent)";
+           << percentage << " percent)";
       diag << "\n  hint: reduce DFB block shapes or block_count, or reduce "
               "compiler-inserted buffers (fusion splits)";
     };
@@ -120,7 +139,7 @@ struct TTLValidateCBBudgetPass
       int64_t reportIdx = sortedIndices.front();
       uint64_t reportMax = footprint.getBytes(reportIdx);
       for (int64_t idx : sortedIndices) {
-        uint64_t allocationBytes = footprint.getBytes(idx);
+        const uint64_t allocationBytes = footprint.getBytes(idx);
         if (allocationBytes > reportMax) {
           reportMax = allocationBytes;
           reportIdx = idx;

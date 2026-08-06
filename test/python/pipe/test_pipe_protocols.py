@@ -5,8 +5,9 @@
 """Pipe protocol equivalence and computed-address schedule regressions.
 
 The point-to-point pipe is eligible for computed receiver addresses by default;
---no-ttl-pipe-computed-addresses selects receiver-published addresses, and
---ttl-pipe-global-semaphores-only preserves computed addressing while placing
+--no-ttl-pipe-capacity-sync selects receiver-post synchronization, and
+--no-ttl-pipe-computed-addresses selects receiver-published addresses.
+--ttl-pipe-global-semaphores-only preserves protocol selection while placing
 all synchronization counters in GlobalSemaphore storage. All configurations
 must match torch and each other across dtypes. Repeated
 transfers into a receiver with multiple blocks exercise sender-side slot
@@ -77,6 +78,7 @@ def _make_point_to_point(recv_block_count, options=None):
 def _make_point_to_point_ops(recv_block_count):
     return (
         _make_point_to_point(recv_block_count),
+        _make_point_to_point(recv_block_count, options="--no-ttl-pipe-capacity-sync"),
         _make_point_to_point(
             recv_block_count, options="--no-ttl-pipe-computed-addresses"
         ),
@@ -185,8 +187,8 @@ def transfer_specific_completion(inp, out):
         pass
 
 
-# Computed and receiver-published addressing, with local-first or global-only
-# counter allocation, must produce identical point-to-point results.
+# Capacity-counter, receiver-post, and receiver-published protocols, with
+# local-first or global-only counter allocation, must produce identical results.
 @pytest.mark.parametrize("recv_block_count", [1, 2], ids=["bc1", "bc2"])
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 def test_pipe_protocols_match(device, dtype, recv_block_count):

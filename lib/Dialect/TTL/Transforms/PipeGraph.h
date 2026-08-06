@@ -25,6 +25,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -205,6 +206,8 @@ struct PipeTransferNode {
   PipeTransferNodeId id = 0;
   PipeKey pipe;
   PipeTransferContract transferContract = PipeTransferContract::PointToPoint;
+  int64_t blockSpan = 1;
+  int64_t destinationGroupDepth = 1;
   Operation *sendOp = nullptr;
   SmallVector<Operation *> receiverPostOps;
   SmallVector<PipeReceiverEndpointId> receiverEndpoints;
@@ -253,6 +256,16 @@ inline PipeTransferContract getPipeTransferContract(PipeTransferCreateOp op) {
   return op.getKind().getValue() == PipeTransferKind::Collective
              ? PipeTransferContract::Collective
              : PipeTransferContract::PointToPoint;
+}
+
+/// Return the number of original DFB blocks delivered by one transfer.
+inline int64_t getPipeTransferBlockSpan(PipeTransferCreateOp op) {
+  return static_cast<int64_t>(op.getBlockSpan());
+}
+
+/// Return the maximum number of resident transfers planned per receiver DFB.
+inline int64_t getPipeTransferDestinationGroupDepth(PipeTransferCreateOp op) {
+  return static_cast<int64_t>(op.getDestinationGroupDepth());
 }
 
 /// Graph of transfer definitions, receiver endpoints, physical receiver DFBs,
@@ -331,6 +344,10 @@ public:
 
   LaunchNodeDomain getOperationLaunchDomain(Operation *op) const;
 
+  /// Returns DFB acquisition and release relations for the enclosing kernel.
+  const DFBAcquireReleaseIndex &
+  getDFBAcquireReleaseIndex(Operation *operation) const;
+
 private:
   /// Record the DFB geometry and destination offset for one receive post.
   LogicalResult addPipeReceiver(Operation *op,
@@ -359,6 +376,8 @@ private:
   /// Cached operation-keyed analysis facts are valid only before lowering
   /// starts erasing or replacing IR operations.
   llvm::DenseMap<Operation *, LaunchNodeDomain> operationLaunchDomains;
+  llvm::DenseMap<Operation *, std::unique_ptr<DFBAcquireReleaseIndex>>
+      dfbLifecycles;
 };
 
 } // namespace mlir::tt::ttl

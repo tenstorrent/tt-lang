@@ -22,7 +22,11 @@ write_fake_lit() {
     local exit_code="${1:-0}"
     cat > "$BIN/llvm-lit" <<EOF
 #!/usr/bin/env bash
-printf 'env:%s cache:%s args:%s\n' "\${TT_VISIBLE_DEVICES:-}" "\${TT_METAL_CACHE:-}" "\$*" >> "$CALLS"
+printf 'env:%s cache:%s exec_root:%s args:%s\n' \
+    "\${TT_VISIBLE_DEVICES:-}" \
+    "\${TT_METAL_CACHE:-}" \
+    "\${TTLANG_LIT_TEST_EXEC_ROOT:-}" \
+    "\$*" >> "$CALLS"
 exit $exit_code
 EOF
     chmod +x "$BIN/llvm-lit"
@@ -35,10 +39,10 @@ EOF
 
     assert_success
     run cat "$CALLS"
-    assert_line --partial "env:0 cache:$PWD/build/test/python-lit-report-tt-metal-cache/shard-1 args:build/test/python --num-shards 3 --run-shard 1"
-    assert_line --partial "env:1 cache:$PWD/build/test/python-lit-report-tt-metal-cache/shard-2 args:build/test/python --num-shards 3 --run-shard 2"
-    assert_line --partial "env:2 cache:$PWD/build/test/python-lit-report-tt-metal-cache/shard-3 args:build/test/python --num-shards 3 --run-shard 3"
-    assert_line --partial "env: cache:$PWD/build/test/python-lit-report-tt-metal-cache/multidevice args:build/test/python --filter mesh_tensor"
+    assert_line --partial "env:0 cache:$PWD/build/test/python-lit-report-tt-metal-cache/shard-1 exec_root:$PWD/build/test/python-lit-report-lit-exec/shard-1 args:build/test/python --num-shards 3 --run-shard 1"
+    assert_line --partial "env:1 cache:$PWD/build/test/python-lit-report-tt-metal-cache/shard-2 exec_root:$PWD/build/test/python-lit-report-lit-exec/shard-2 args:build/test/python --num-shards 3 --run-shard 2"
+    assert_line --partial "env:2 cache:$PWD/build/test/python-lit-report-tt-metal-cache/shard-3 exec_root:$PWD/build/test/python-lit-report-lit-exec/shard-3 args:build/test/python --num-shards 3 --run-shard 3"
+    assert_line --partial "env: cache:$PWD/build/test/python-lit-report-tt-metal-cache/multidevice exec_root:$PWD/build/test/python-lit-report-lit-exec/multidevice args:build/test/python --filter mesh_tensor"
     assert_line --partial "python-lit-report-shard-1.xml"
     assert_line --partial "python-lit-report-multidevice.xml"
     [ "${#lines[@]}" -eq 4 ]
@@ -51,6 +55,7 @@ EOF
 
     assert_success
     run cat "$CALLS"
+    assert_output --partial "exec_root:$PWD/build/test/python-lit-report-lit-exec/serial"
     assert_output --partial "args:build/test/python -j1 --verbose"
     assert_output --partial "python-lit-report.xml"
     refute_output --partial "--num-shards"
