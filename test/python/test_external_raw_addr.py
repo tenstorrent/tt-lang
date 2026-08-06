@@ -5,6 +5,7 @@
 """Device coverage for runtime tensor addresses in external functions."""
 
 import os
+from functools import partial
 
 import pytest
 import torch
@@ -12,12 +13,19 @@ import torch
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 import ttl
-from ttlang_test_utils import to_dram, to_l1
+from ttlang_test_utils import to_dram, to_l1, to_l1_sharded
 
 
 RAW_ADDRESS_HEADER = os.path.join(
     os.path.dirname(__file__), "include", "raw_address_capture.hpp"
 )
+INPUT_MEMORY_CONFIGS = [
+    pytest.param(to_dram, id="dram-interleaved"),
+    pytest.param(to_l1, id="l1-interleaved"),
+    pytest.param(partial(to_l1_sharded, layout="height"), id="l1-height-sharded"),
+    pytest.param(partial(to_l1_sharded, layout="width"), id="l1-width-sharded"),
+    pytest.param(partial(to_l1_sharded, layout="block"), id="l1-block-sharded"),
+]
 
 
 @ttl.operation(grid=(1, 1))
@@ -51,16 +59,22 @@ def _assert_address_bits(output, expected_address):
     assert torch.all(output_bits == expected_bits)
 
 
-@pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
-def test_external_raw_address_uses_each_runtime_tensor(device, to_device):
+@pytest.mark.parametrize(
+    "dtype",
+    [torch.bfloat16, torch.float32],
+    ids=["bf16", "f32"],
+)
+@pytest.mark.parametrize("to_input", INPUT_MEMORY_CONFIGS)
+def test_external_raw_address_uses_each_runtime_tensor(device, dtype, to_input):
     """A cached program must read each invocation's common runtime argument."""
-    host = torch.zeros((32, 32), dtype=torch.float32)
-    first_input = to_device(host, device)
-    second_input = to_device(host, device)
+    host_input = torch.zeros((32, 32), dtype=dtype)
+    first_input = to_input(host_input, device)
+    second_input = to_input(host_input, device)
     assert first_input.buffer_address() != second_input.buffer_address()
 
-    first_output = to_device(host, device)
-    second_output = to_device(host, device)
+    host_output = torch.zeros((32, 32), dtype=torch.float32)
+    first_output = to_l1(host_output, device)
+    second_output = to_l1(host_output, device)
 
     external_raw_address_capture(first_input, first_output)
     external_raw_address_capture(second_input, second_output)

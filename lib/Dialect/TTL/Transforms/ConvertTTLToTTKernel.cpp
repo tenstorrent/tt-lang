@@ -50,6 +50,7 @@
 #include <limits>
 #include <optional>
 #include <utility>
+#include <variant>
 
 namespace mlir::tt::ttl {
 #define GEN_PASS_DEF_TTLCONVERTTTLTOTTKERNEL
@@ -213,6 +214,18 @@ static FailureOr<unsigned> getTensorFuncArgIndex(Value tensor) {
     return failure();
   }
   return blockArg.getArgNumber();
+}
+
+static FailureOr<int32_t> getValidatedDFBIndex(Value dfb, Operation *op) {
+  std::optional<int64_t> dfbIndex = getCBIndex(dfb);
+  if (!dfbIndex) {
+    return op->emitError("cannot resolve finalized DFB index");
+  }
+  if (*dfbIndex < 0 || *dfbIndex >= kMaxCircularBuffers) {
+    return op->emitError("finalized DFB index ")
+           << *dfbIndex << " is outside [0, " << kMaxCircularBuffers - 1 << "]";
+  }
+  return static_cast<int32_t>(*dfbIndex);
 }
 
 /// Get the L1 buffer address from runtime args for a tensor function argument.
@@ -1286,10 +1299,9 @@ struct GetDfbIdLowering : OpConversionPattern<GetDfbIdOp> {
   LogicalResult
   matchAndRewrite(GetDfbIdOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto dfbIdx = getCBIndex(op.getDfb());
-    if (!dfbIdx) {
-      return rewriter.notifyMatchFailure(
-          op, "cannot resolve DFB index for get_dfb_id operand");
+    FailureOr<int32_t> dfbIndex = getValidatedDFBIndex(op.getDfb(), op);
+    if (failed(dfbIndex)) {
+      return failure();
     }
     auto convertedDfb =
         utils::convertTTLCBToTTKernel(adaptor.getDfb(), rewriter, op.getLoc());
@@ -1325,6 +1337,22 @@ struct RawAddrLowering : OpConversionPattern<RawAddrOp> {
 // Opaque call lowering
 //===----------------------------------------------------------------------===//
 
+struct OpaqueScalarArgument {
+  Value value;
+};
+
+struct OpaqueDFBArgument {
+  int32_t index;
+};
+
+struct OpaqueTensorArgument {
+  Value tensor;
+  TensorAccessorInfo accessorInfo;
+};
+
+using OpaqueArgumentPlan =
+    std::variant<OpaqueScalarArgument, OpaqueDFBArgument, OpaqueTensorArgument>;
+
 struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -1338,10 +1366,9 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
       for (Attribute attribute : *sourceTemplateArgs) {
         auto templateArg = cast<ExternalTemplateArgAttr>(attribute);
         FailureOr<Attribute> convertedTemplateArg = convertTemplateArg(
-            templateArg, op.getTemplateDfbOperands(), rewriter);
+            templateArg, op.getTemplateDfbOperands(), op, rewriter);
         if (failed(convertedTemplateArg)) {
-          return rewriter.notifyMatchFailure(
-              op, "cannot resolve opaque_call template argument");
+          return failure();
         }
         templateArgs.push_back(*convertedTemplateArg);
       }
@@ -1356,57 +1383,58 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
       resultTypes.push_back(convertedType);
     }
 
-    SmallVector<Value> convertedArgs;
+    SmallVector<OpaqueArgumentPlan> argumentPlan;
+    argumentPlan.reserve(op.getArgOperands().size());
     for (auto [originalArg, adaptedArg] :
          llvm::zip(op.getArgOperands(), adaptor.getArgOperands())) {
       Type originalType = originalArg.getType();
 
-      // The external interface uses an unsigned physical index because DFB
-      // identifiers are never negative.
       if (mlir::isa<CircularBufferType>(originalType)) {
-        std::optional<int32_t> dfbIndex = getCBIndex(originalArg);
-        if (!dfbIndex) {
-          return rewriter.notifyMatchFailure(
-              op, "cannot resolve CB index for opaque_call operand");
+        FailureOr<int32_t> dfbIndex = getValidatedDFBIndex(originalArg, op);
+        if (failed(dfbIndex)) {
+          return failure();
         }
-        IntegerType unsignedI32 =
-            IntegerType::get(rewriter.getContext(), 32, IntegerType::Unsigned);
-        auto dfbIndexValue = ttk::GetCompileArgValOp::create(
-            rewriter, location, unsignedI32, *dfbIndex);
-        convertedArgs.push_back(dfbIndexValue);
+        argumentPlan.push_back(OpaqueDFBArgument{*dfbIndex});
         continue;
       }
 
-      // TensorAccessor preserves layout metadata that a raw address omits.
       if (mlir::isa<RankedTensorType>(originalType)) {
         if (!isNocKernelThread(op)) {
-          return rewriter.notifyMatchFailure(
-              op, "tensor opaque_call operands require a NOC kernel thread");
+          return op.emitError(
+              "tensor operands require a data movement (noc) thread");
         }
         FailureOr<TensorAccessorInfo> accessorInfo =
             getTensorAccessorInfo(originalArg, op, rewriter);
         if (failed(accessorInfo)) {
-          return rewriter.notifyMatchFailure(
-              op, "tensor opaque_call operand must be a function argument with "
-                  "TTL layout encoding");
+          return failure();
         }
-        Value bankBase = getBufferAddressFromRuntimeArg(accessorInfo->argIdx,
-                                                        location, rewriter);
-        Value accessor = materializeTensorAccessor(originalArg, bankBase,
-                                                   *accessorInfo, rewriter);
-        convertedArgs.push_back(accessor);
+        argumentPlan.push_back(
+            OpaqueTensorArgument{originalArg, *accessorInfo});
         continue;
       }
 
-      // Scalar floats are forwarded as-is. Following tt-metal's kernel
-      // scalar-argument convention, a float reaches the callee as its raw
-      // IEEE-754 bit pattern held in an integer register -- the C++ header
-      // may declare the parameter as `float`/`bf16` or as an unsigned
-      // integer and reinterpret; the bits are identical either way. The
-      // ttkernel-lower-scalar-fp-types pass rewrites scalar-float producers
-      // (e.g. a float arith.constant) into that integer bit pattern later
-      // in the pipeline.
-      convertedArgs.push_back(adaptedArg);
+      argumentPlan.push_back(OpaqueScalarArgument{adaptedArg});
+    }
+
+    SmallVector<Value> convertedArgs;
+    convertedArgs.reserve(argumentPlan.size());
+    for (const OpaqueArgumentPlan &argument : argumentPlan) {
+      if (const auto *scalar = std::get_if<OpaqueScalarArgument>(&argument)) {
+        convertedArgs.push_back(scalar->value);
+        continue;
+      }
+      if (const auto *dfb = std::get_if<OpaqueDFBArgument>(&argument)) {
+        IntegerType unsignedI32 =
+            IntegerType::get(rewriter.getContext(), 32, IntegerType::Unsigned);
+        convertedArgs.push_back(ttk::GetCompileArgValOp::create(
+            rewriter, location, unsignedI32, dfb->index));
+        continue;
+      }
+      const auto &tensor = std::get<OpaqueTensorArgument>(argument);
+      Value bankBase = getBufferAddressFromRuntimeArg(
+          tensor.accessorInfo.argIdx, location, rewriter);
+      convertedArgs.push_back(materializeTensorAccessor(
+          tensor.tensor, bankBase, tensor.accessorInfo, rewriter));
     }
 
     ArrayAttr templateArgsAttr;
@@ -1424,7 +1452,7 @@ private:
   /// Resolve DFB metadata before type conversion discards block geometry.
   static FailureOr<Attribute>
   convertTemplateArg(ExternalTemplateArgAttr templateArg,
-                     ValueRange templateDFBs,
+                     ValueRange templateDFBs, OpaqueCallOp op,
                      ConversionPatternRewriter &rewriter) {
     ExternalTemplateArgKind kind = templateArg.getKind();
     int64_t payload = templateArg.getValue();
@@ -1441,11 +1469,13 @@ private:
     }
 
     if (payload < 0 || static_cast<size_t>(payload) >= templateDFBs.size()) {
-      return failure();
+      return op.emitError("template DFB operand index ")
+             << payload << " is out of range for " << templateDFBs.size()
+             << " operands";
     }
     Value dfb = templateDFBs[static_cast<size_t>(payload)];
-    std::optional<int32_t> dfbIndex = getCBIndex(dfb);
-    if (!dfbIndex || *dfbIndex < 0) {
+    FailureOr<int32_t> dfbIndex = getValidatedDFBIndex(dfb, op);
+    if (failed(dfbIndex)) {
       return failure();
     }
     if (kind == ExternalTemplateArgKind::DFBIndex) {
@@ -1462,7 +1492,8 @@ private:
           static_cast<uint64_t>(pagesPerBlock) > maxDescriptorField ||
           static_cast<uint64_t>(blockCount) > maxDescriptorField ||
           *pageSizeBytes == 0 || *pageSizeBytes > maxDescriptorField) {
-        return failure();
+        return op.emitError(
+            "DFB descriptor dimensions or page size do not fit uint32_t");
       }
       return ttk::DFBDescriptorAttr::get(rewriter.getContext(), *dfbIndex,
                                          pagesPerBlock, blockCount,

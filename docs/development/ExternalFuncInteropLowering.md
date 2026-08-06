@@ -24,7 +24,7 @@ The Python interface currently supports void calls.
 | Integer or boolean in `template_args` | Signed integer or boolean constant | Must be compile-time evaluable. |
 | Float in `template_args` | Unsigned IEEE-754 f32 bit-pattern constant | Must be compile-time evaluable. |
 | Scalar in `func_args` | Lowered scalar parameter | Follows the TT-Metal kernel scalar convention. |
-| Base tensor in `func_args` | `TensorAccessor` parameter | Supported only in NOC kernels. |
+| Base tensor in `func_args` | `TensorAccessor` parameter | Supports tiled bf16 and fp32 tensors only in NOC kernels. |
 | `ttl.raw_addr(base_tensor)` in `func_args` | `uint32_t` runtime tensor buffer address | Slices and derived tensor values are rejected. |
 | Captured `ttnn.GlobalSemaphore` | `uint32_t` address literal or parameter | The address is fixed for the compiled operation. |
 
@@ -93,10 +93,10 @@ declare that the external function accesses DFB storage.
 ## Tensor arguments
 
 A base tensor in `func_args` becomes a `TensorAccessor` containing the runtime
-buffer address and compile-time accessor configuration. Only NOC kernels
-receive the required accessor compile-time arguments. Compute and Ethernet
-kernels must use a supported scalar or raw-address interface instead. The
-validated public matrix is TILE bf16 and fp32 tensors in DRAM and L1.
+buffer address and compile-time accessor configuration. The interface supports
+tiled bf16 and fp32 tensors in DRAM and L1. Only NOC kernels receive the
+required accessor compile-time arguments. Compute and Ethernet kernels must use
+a supported scalar or raw-address interface instead.
 
 `ttl.raw_addr(tensor)` reads the runtime tensor buffer address directly from the
 kernel common arguments. The operand must be an argument of the enclosing

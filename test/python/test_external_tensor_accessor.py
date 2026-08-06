@@ -5,6 +5,7 @@
 """Device coverage for external NOC functions receiving TensorAccessor."""
 
 import os
+from functools import partial
 
 import pytest
 import torch
@@ -12,13 +13,20 @@ import torch
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 import ttl
-from ttlang_test_utils import to_dram, to_l1
+from ttlang_test_utils import to_dram, to_l1, to_l1_sharded
 from utils.correctness import assert_allclose
 
 
 TENSOR_ACCESSOR_HEADER = os.path.join(
     os.path.dirname(__file__), "include", "tensor_accessor_read.hpp"
 )
+MEMORY_CONFIGS = [
+    pytest.param(to_dram, id="dram-interleaved"),
+    pytest.param(to_l1, id="l1-interleaved"),
+    pytest.param(partial(to_l1_sharded, layout="height"), id="l1-height-sharded"),
+    pytest.param(partial(to_l1_sharded, layout="width"), id="l1-width-sharded"),
+    pytest.param(partial(to_l1_sharded, layout="block"), id="l1-block-sharded"),
+]
 
 
 def _make_tensor_accessor_copy(data_format):
@@ -52,6 +60,37 @@ def _make_tensor_accessor_copy(data_format):
 
 BF16_TENSOR_ACCESSOR_COPY = _make_tensor_accessor_copy("bf16")
 F32_TENSOR_ACCESSOR_COPY = _make_tensor_accessor_copy("float32")
+
+
+def _make_multitile_tensor_accessor_copy(data_format):
+    @ttl.operation(grid=(1, 1))
+    def multitile_tensor_accessor_copy(inp, out):
+        transfer_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            pass
+
+        @ttl.datamovement()
+        def dm_read():
+            ttl.call_extern_func(
+                TENSOR_ACCESSOR_HEADER,
+                "tensor_accessor_read_page",
+                template_args=[ttl.dfb_descriptor(transfer_dfb), 3],
+                func_args=[inp],
+            )
+
+        @ttl.datamovement()
+        def dm_write():
+            source = transfer_dfb.wait()
+            ttl.copy(source, out[0, 0]).wait()
+            source.pop()
+
+    return multitile_tensor_accessor_copy
+
+
+BF16_MULTITILE_TENSOR_ACCESSOR_COPY = _make_multitile_tensor_accessor_copy("bf16")
+F32_MULTITILE_TENSOR_ACCESSOR_COPY = _make_multitile_tensor_accessor_copy("float32")
 
 
 def _make_tensor_accessor_pair_copy(data_format):
@@ -102,7 +141,7 @@ F32_TENSOR_ACCESSOR_PAIR_COPY = _make_tensor_accessor_pair_copy("float32")
     ],
     ids=["bf16", "f32"],
 )
-@pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
+@pytest.mark.parametrize("to_device", MEMORY_CONFIGS)
 def test_external_tensor_accessor(device, operation, dtype, to_device):
     """TensorAccessor preserves one tiled page across dtype and memory types."""
 
@@ -124,12 +163,38 @@ def test_external_tensor_accessor(device, operation, dtype, to_device):
 @pytest.mark.parametrize(
     ("operation", "dtype"),
     [
+        (BF16_MULTITILE_TENSOR_ACCESSOR_COPY, torch.bfloat16),
+        (F32_MULTITILE_TENSOR_ACCESSOR_COPY, torch.float32),
+    ],
+    ids=["bf16", "f32"],
+)
+@pytest.mark.parametrize("to_device", MEMORY_CONFIGS)
+def test_external_tensor_accessor_multitile(device, operation, dtype, to_device):
+    """TensorAccessor page IDs address nonzero tiles in a larger tensor."""
+
+    host = torch.arange(64 * 64, dtype=torch.float32).reshape(64, 64).to(dtype)
+    inp = to_device(host, device)
+    out = to_device(torch.zeros((32, 32), dtype=dtype), device)
+
+    operation(inp, out)
+
+    actual = ttnn.to_torch(out).float()
+    expected = host[32:64, 32:64].float()
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, expected, rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("operation", "dtype"),
+    [
         (BF16_TENSOR_ACCESSOR_PAIR_COPY, torch.bfloat16),
         (F32_TENSOR_ACCESSOR_PAIR_COPY, torch.float32),
     ],
     ids=["bf16", "f32"],
 )
-@pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
+@pytest.mark.parametrize("to_device", MEMORY_CONFIGS)
 def test_external_tensor_accessor_operand_order(device, operation, dtype, to_device):
     """Two TensorAccessor operands retain source order and runtime addresses."""
 

@@ -1999,17 +1999,20 @@ mlir::LogicalResult mlir::tt::ttl::RawElementWriteOp::verify() {
       "ttl.cb_reserve");
 }
 
+static bool isEnclosingKernelTensorArgument(mlir::Value tensor,
+                                            mlir::Operation *operation) {
+  auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(tensor.getType());
+  auto layout = tensorType ? mlir::dyn_cast_or_null<mlir::tt::ttl::LayoutAttr>(
+                                 tensorType.getEncoding())
+                           : nullptr;
+  auto blockArgument = mlir::dyn_cast<mlir::BlockArgument>(tensor);
+  auto kernel = mlir::tt::ttl::getEnclosingKernelThread(operation);
+  return layout && blockArgument && kernel && !kernel.isDeclaration() &&
+         blockArgument.getOwner() == &kernel.getBody().front();
+}
+
 mlir::LogicalResult mlir::tt::ttl::RawAddrOp::verify() {
-  Value tensor = getTensor();
-  auto tensorTy = mlir::dyn_cast<RankedTensorType>(tensor.getType());
-  auto layoutAttr =
-      tensorTy
-          ? mlir::dyn_cast_or_null<tt::ttl::LayoutAttr>(tensorTy.getEncoding())
-          : nullptr;
-  auto blockArg = mlir::dyn_cast<BlockArgument>(tensor);
-  auto kernel = getEnclosingKernelThread(getOperation());
-  if (!layoutAttr || !blockArg || !kernel || kernel.isDeclaration() ||
-      blockArg.getOwner() != &kernel.getBody().front()) {
+  if (!isEnclosingKernelTensorArgument(getTensor(), getOperation())) {
     return emitOpError("operand must be a function tensor argument with TTL "
                        "layout encoding; slices/views are not supported");
   }
@@ -2104,6 +2107,26 @@ mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
       })) {
     return emitOpError(
         "tensor function arguments require a data movement (noc) thread");
+  }
+  for (Value operand : getArgOperands()) {
+    auto tensorType = mlir::dyn_cast<RankedTensorType>(operand.getType());
+    if (!tensorType) {
+      continue;
+    }
+    if (!isEnclosingKernelTensorArgument(operand, getOperation())) {
+      return emitOpError("tensor operands must be arguments of the enclosing "
+                         "kernel function with TTL layout encoding; "
+                         "slices/views are not supported");
+    }
+    auto layout = mlir::cast<tt::ttl::LayoutAttr>(tensorType.getEncoding());
+    auto tileType =
+        mlir::dyn_cast<tt::ttcore::TileType>(layout.getElementType());
+    if (!tileType ||
+        (tileType.getDataType() != tt::ttcore::DataType::BFloat16 &&
+         tileType.getDataType() != tt::ttcore::DataType::Float32)) {
+      return emitOpError(
+          "TensorAccessor operands support only bf16 and f32 tile types");
+    }
   }
   std::optional<ArrayAttr> templateArgs = getTemplateArgs();
   if (!templateArgs) {

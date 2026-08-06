@@ -75,3 +75,32 @@ func.func @tensor_arg_in_compute(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>, #la
   ttl.opaque_call "foo" (%arg0) {header = "h.hpp"} : (tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) -> ()
   return
 }
+
+// -----
+// Test: a derived tensor has no common-runtime-argument mapping.
+#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
+func.func @derived_tensor_arg(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %derived = tensor.cast %arg0 : tensor<1x1x!ttcore.tile<32x32, f32>, #layout> to tensor<1x1x!ttcore.tile<32x32, f32>, #layout>
+  // expected-error @below {{'ttl.opaque_call' op tensor operands must be arguments of the enclosing kernel function with TTL layout encoding; slices/views are not supported}}
+  ttl.opaque_call "foo" (%derived) {header = "h.hpp"} : (tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) -> ()
+  return
+}
+
+// -----
+// Test: a tensor without TTL layout cannot be mapped to TensorAccessor metadata.
+func.func @tensor_arg_without_layout(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  // expected-error @below {{'ttl.opaque_call' op tensor operands must be arguments of the enclosing kernel function with TTL layout encoding; slices/views are not supported}}
+  ttl.opaque_call "foo" (%arg0) {header = "h.hpp"} : (tensor<1x1x!ttcore.tile<32x32, f32>>) -> ()
+  return
+}
+
+// -----
+// Test: TensorAccessor support is limited to the documented dtype contract.
+#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f16>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
+func.func @unsupported_tensor_accessor_dtype(%arg0: tensor<1x1x!ttcore.tile<32x32, f16>, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  // expected-error @below {{'ttl.opaque_call' op TensorAccessor operands support only bf16 and f32 tile types}}
+  ttl.opaque_call "foo" (%arg0) {header = "h.hpp"} : (tensor<1x1x!ttcore.tile<32x32, f16>, #layout>) -> ()
+  return
+}

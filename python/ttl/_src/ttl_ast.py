@@ -46,7 +46,18 @@ def _get_ttnn_global_semaphore_address(value) -> int:
         raise TypeError(f"expected ttnn GlobalSemaphore, got {type(value)}")
     import ttnn
 
-    return int(ttnn.get_global_semaphore_address(value))
+    address = ttnn.get_global_semaphore_address(value)
+    if type(address) is not int:
+        raise TypeError(
+            "ttnn.get_global_semaphore_address() must return one integer "
+            f"address, got {type(address)}"
+        )
+    if not 0 <= address < (1 << 32):
+        raise ValueError(
+            "ttnn.get_global_semaphore_address() result must fit in uint32_t, "
+            f"got {address}"
+        )
+    return address
 
 
 @dataclass(frozen=True)
@@ -611,7 +622,11 @@ class TTLGenericCompiler(TTCompilerBase):
         var_name = node.id
         if var_name in self.fn_globals:
             val = self.fn_globals[var_name]
-            if isinstance(val, int):
+            if type(val) is bool:
+                return arith.ConstantOp(
+                    IntegerType.get_signless(1, self.ctx), int(val)
+                ).result
+            if type(val) is int:
                 return arith.ConstantOp(
                     IntegerType.get_signless(64, self.ctx), val
                 ).result
@@ -1008,7 +1023,14 @@ class TTLGenericCompiler(TTCompilerBase):
                 if is_ttnn_tensor(val):
                     continue  # Already handled via function arguments
                 assert isinstance(name, str)
-                if isinstance(val, int):
+                if type(val) is bool:
+                    self._set_var(
+                        name,
+                        arith.ConstantOp(
+                            IntegerType.get_signless(1, self.ctx), int(val)
+                        ),
+                    )
+                elif type(val) is int:
                     self._set_var(name, arith.ConstantOp(IndexType.get(self.ctx), val))
                 elif isinstance(val, float):
                     self._set_var(name, arith.ConstantOp(F32Type.get(self.ctx), val))
@@ -1494,7 +1516,14 @@ class TTLGenericCompiler(TTCompilerBase):
             return _ExternalTemplateArg(arg_kind.Boolean, int(py_bool))
 
         def _float_bits(py_float: float) -> int:
-            return struct.unpack("<I", struct.pack("<f", py_float))[0]
+            try:
+                return struct.unpack("<I", struct.pack("<f", py_float))[0]
+            except OverflowError:
+                self._raise_error(
+                    node,
+                    "ttl.call_extern_func() float template argument must be "
+                    "representable as binary32",
+                )
 
         def _dfb_reference(kind):
             if len(node.args) != 1 or node.keywords:
