@@ -1,7 +1,10 @@
 // RUN: ttlang-opt %s --split-input-file -convert-ttl-to-ttkernel | FileCheck %s
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-form-pipe-transports,convert-ttl-to-ttkernel)' | FileCheck %s
+// The grouping pass must not expand any record-selected callback transfer.
+// RUN: ttlang-opt %s --split-input-file -ttl-form-pipe-transports | FileCheck %s --check-prefix=FORM
 
 // Summary: Verifies direct and table-driven PipeNet callback lowering through
-// pipe-transfer IR.
+// pipe-transfer IR, including when static transport grouping runs first.
 
 // Four source records exercise the inclusive direct-lowering boundary. Each
 // record emits one static guard and one payload write without a record loop.
@@ -228,6 +231,15 @@ func.func private @foreach_src_send_table_driven_receiver()
   }
   func.return
 }
+
+// Static transport grouping leaves record-selected callbacks for table-driven
+// lowering because one operation represents several possible transfers.
+// FORM-LABEL: func.func @foreach_src_send_table_driven
+// FORM: ttl.pipenet_foreach_src
+// FORM: ^bb0(%[[FORM_PIPE:.*]]: !ttl.selected_pipe_src):
+// FORM: %[[FORM_SEND:.*]] = ttl.copy %{{.*}}, %[[FORM_PIPE]]
+// FORM-NEXT: ttl.wait %[[FORM_SEND]]
+// FORM: return
 
 // CHECK-LABEL: func.func @foreach_src_send_table_driven
 // CHECK: scf.for
@@ -547,6 +559,18 @@ func.func @loopback_collective_receiver()
 // protocol operations and synchronization resources to the shared plan.
 
 module attributes {ttl.launch_grid = array<i64: 4, 1>} {
+
+// Static transfers become explicit IR for grouping while the selected transfer
+// remains attached to its record table.
+// FORM-LABEL: func.func @mixed_static_and_selected_sender
+// FORM: %[[STATIC_TRANSFER:.*]] = ttl.pipe_transfer.create
+// FORM: ttl.pipe_transfer.send %[[STATIC_TRANSFER]],
+// FORM: ttl.pipenet_foreach_src
+// FORM: ^bb0(%[[SELECTED_PIPE:.*]]: !ttl.selected_pipe_src):
+// FORM-NOT: ttl.pipe_transfer
+// FORM: %[[SELECTED_SEND:.*]] = ttl.copy %{{.*}}, %[[SELECTED_PIPE]]
+// FORM-NEXT: ttl.wait %[[SELECTED_SEND]]
+// FORM: return
 
 // CHECK-LABEL: func.func @mixed_static_and_selected_sender
 // CHECK-COUNT-2: ttkernel.noc_async_write

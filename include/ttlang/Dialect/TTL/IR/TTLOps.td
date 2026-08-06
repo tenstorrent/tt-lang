@@ -802,6 +802,10 @@ def TTL_PipeTransferCreateOp : TTL_Op<"pipe_transfer.create", [Pure]> {
     transport schedule may leave resident in each receiver DFB. The default
     depth of one preserves lockstep transfer semantics. A greater depth permits
     multiple grouped transfers to occupy distinct receiver slots.
+
+    Record-selected pipe references require the default span and destination
+    depth because one operation selects one scalar record at runtime. Grouped
+    transfers require a statically identified pipe reference.
   }];
   let arguments = (ins
     TTL_PipeReference:$pipe,

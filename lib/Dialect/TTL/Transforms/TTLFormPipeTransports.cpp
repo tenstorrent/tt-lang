@@ -736,7 +736,7 @@ struct TTLFormPipeTransportsPass
 
     ValueOriginAnalysis preExpansionAnalysis(module);
     if (failed(verifyTransferProvenance(module, preExpansionAnalysis)) ||
-        failed(expandPipeTransfers(module, preExpansionAnalysis))) {
+        failed(expandStaticPipeTransfers(module, preExpansionAnalysis))) {
       signalPassFailure();
       return;
     }
@@ -754,8 +754,11 @@ struct TTLFormPipeTransportsPass
       return;
     }
     const PipeTransferIndex &transferIndex = **maybeTransferIndex;
+    // Selected record-table callbacks remain high-level IR until conversion;
+    // the graph therefore contains only the static transfers expanded above.
+    PipeForeachLoweringInfo foreachLoweringInfo;
     FailureOr<PipeGraph> maybePipeGraph =
-        PipeGraph::build(module, transferIndex);
+        PipeGraph::build(module, transferIndex, foreachLoweringInfo);
     if (failed(maybePipeGraph)) {
       signalPassFailure();
       return;

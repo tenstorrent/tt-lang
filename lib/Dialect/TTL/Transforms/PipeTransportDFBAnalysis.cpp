@@ -124,10 +124,10 @@ bool hasPrivatePipeTransportDFBViews(const PipeTransportDFBUse &dfbUse,
   }
 
   Operation *user = reservedViewUsers.front();
-  const PipeTransferNode *transfer =
-      pipeGraph.getPipeTransferNodeForProtocolOp(user);
-  return isa<PipeTransferPostOp>(user) && transfer &&
-         transfer->id == dfbUse.transferNode;
+  ArrayRef<PipeTransferNodeId> transferNodes =
+      pipeGraph.getPipeTransferNodeIdsForProtocolOp(user);
+  return isa<PipeTransferPostOp>(user) &&
+         llvm::is_contained(transferNodes, dfbUse.transferNode);
 }
 
 FailureOr<PipeTransportDFBUse>
@@ -220,10 +220,10 @@ analyzePipeTransportDFBUse(scf::ForOp loop, Value dfb,
       continue;
     }
     if (role == PipeTransportDFBRole::Source) {
-      const PipeTransferNode *transfer =
-          pipeGraph.getPipeTransferNodeForProtocolOp(operation);
-      if (transfer && transfer->id == transferNode &&
-          isa<PipeTransferSendOp>(operation)) {
+      ArrayRef<PipeTransferNodeId> transferNodes =
+          pipeGraph.getPipeTransferNodeIdsForProtocolOp(operation);
+      if (isa<PipeTransferSendOp>(operation) &&
+          llvm::is_contained(transferNodes, transferNode)) {
         continue;
       }
     }

@@ -1,8 +1,11 @@
 // RUN: ttlang-opt %s -convert-ttl-to-ttkernel | FileCheck %s
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports,convert-ttl-to-ttkernel)' | FileCheck %s
 // RUN: ttlang-opt %s -ttl-verify-pipenet-guards
 
 // Verifies that one table-driven protocol operation receives distinct
 // resources for every matching record, including identical records.
+// Running static transport planning before conversion must preserve the same
+// selected-record address and synchronization tables.
 
 // CHECK: module attributes {ttl.launch_grid = array<i64: 2, 5>, ttl.pipe_sram_scratch_bytes = 32 : i64, ttl.pipe_sync_semaphore_count = 8 : i64}
 
@@ -46,9 +49,15 @@ func.func @gather_receiver()
 
 // CHECK-LABEL: func.func @gather_senders
 // CHECK: scf.for %[[INDEX:.*]] =
-// CHECK: ttkernel.experimental.constant_table_lookup %[[INDEX]], [6, 6, 6, 6, 6, 7] : index
+// CHECK: %[[READY_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[INDEX]], [6, 6, 6, 6, 6, 7] : index
+// CHECK: %[[READY_SEM:.*]] = ttkernel.get_semaphore(%[[READY_INDEX]])
+// CHECK: %[[READY_ADDR:.*]] = ttkernel.reinterpret_cast(%[[READY_SEM]])
+// CHECK: %[[COMPLETION_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[INDEX]], [0, 2, 3, 4, 5, 1] : index
+// CHECK: %[[COMPLETION_SEM:.*]] = ttkernel.get_semaphore(%[[COMPLETION_INDEX]])
+// CHECK: %[[COMPLETION_NOC_ADDR:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[COMPLETION_SEM]], {{.*}})
+// CHECK: ttkernel.experimental.semaphore_wait(%[[READY_ADDR]], {{.*}})
 // CHECK: ttkernel.noc_async_write %
-// CHECK: ttkernel.experimental.constant_table_lookup %[[INDEX]], [0, 2, 3, 4, 5, 1] : index
+// CHECK: ttkernel.noc_semaphore_inc(%[[COMPLETION_NOC_ADDR]], {{.*}})
 func.func @gather_senders()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}

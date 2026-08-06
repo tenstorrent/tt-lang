@@ -600,10 +600,6 @@ public:
   virtual void preparePayloadWrite() = 0;
   virtual LogicalResult emitPayloadWrite(Value srcAddr, Value dstAddr,
                                          Value totalSizeBytes) = 0;
-  /// Emit one payload write for each page in a contiguous unicast payload.
-  virtual LogicalResult emitPayloadPageWrites(Value srcAddr, Value dstAddr,
-                                              int64_t pageCount,
-                                              int64_t pageSizeBytes) = 0;
   virtual void emitPayloadWriteBarrier() = 0;
   virtual LogicalResult
   emitReceiverCompletionIncrement(Value receiverCompletionCounterAddr) = 0;
@@ -804,7 +800,7 @@ public:
   /// Emit page-addressed unicast writes for one transport payload.
   LogicalResult emitPayloadPageWrites(Value srcAddr, Value dstAddr,
                                       int64_t pageCount,
-                                      int64_t pageSizeBytes) override {
+                                      int64_t pageSizeBytes) {
     assert(pipeType.hasSingleReceiver() &&
            "page writes require a unicast transport");
     assert(pageCount > 1 && pageSizeBytes > 0 &&
@@ -1502,7 +1498,7 @@ void lowerInactivePipeTransferSend(PipeTransferSendOp op,
 
 LogicalResult lowerPipeTransferSend(
     PipeTransferSendOp op, Value srcCB, const PipeTransferPlan &transferPlan,
-    const PipeTransportStream &transportStream,
+    const PipeTransportPlan &pipeTransportPlan,
     const PipeResourcePlan &pipeResourcePlan,
     const PipeCapacityPlan &pipeCapacityPlan,
     const PipeCounterProgressMap &senderCapacityCounters,
@@ -1517,6 +1513,8 @@ LogicalResult lowerPipeTransferSend(
     return lowerSelectedPipeTransferSend(op, srcCB, transferPlan,
                                          pipeResourcePlan, rewriter);
   }
+  const PipeTransportStream &transportStream =
+      pipeTransportPlan.getStreamForOperation(op);
   PipeType pipeType = pipeRef.getStaticPipeType();
   const PipeResourceInfo &pipeResource = transferPlan.getResources();
   const PipeSendPlan &sendPlan = transferPlan.getSend();
@@ -1645,9 +1643,9 @@ LogicalResult lowerPipeTransferSend(
       shouldEmitPayloadPageWrites(op, pipeType, transportStream);
   LogicalResult writeResult =
       usePageWrites
-          ? transport.emitPayloadPageWrites(srcAddr, dstAddr,
-                                            packetization.pageCount,
-                                            packetization.pageSizeBytes)
+          ? nocTransport.emitPayloadPageWrites(srcAddr, dstAddr,
+                                               packetization.pageCount,
+                                               packetization.pageSizeBytes)
           : transport.emitPayloadWrite(srcAddr, dstAddr, totalSizeVal);
   if (failed(writeResult)) {
     return failure();
@@ -2818,6 +2816,17 @@ LogicalResult buildPipeResourcePlan(
 void finalizePipeTransportResources(const PipeTransportPlan &transportPlan,
                                     PipeResourcePlan &pipeResourcePlan) {
   int64_t transportScratchBytes = transportPlan.getSramScratchBytes();
+  SmallVector<std::pair<Operation *, PipeResourceInfo *>> resources;
+  resources.reserve(pipeResourcePlan.resources.size());
+  for (auto &[operation, resource] : pipeResourcePlan.resources) {
+    resources.emplace_back(operation, &resource);
+  }
+  for (auto &[operation, selectedResources] :
+       pipeResourcePlan.selectedResources) {
+    for (PipeResourceInfo &resource : selectedResources) {
+      resources.emplace_back(operation, &resource);
+    }
+  }
 
   llvm::MapVector<FuncOp, int64_t> nextComputedCounterIndex;
   for (const auto &[function, initializations] :
@@ -2880,29 +2889,29 @@ void finalizePipeTransportResources(const PipeTransportPlan &transportPlan,
     };
     PipeAddressStorageInfo scratchAddress =
         PipeAddressStorageInfo::transportScratch(computedAddress);
-    for (auto &[operation, resource] : pipeResourcePlan.resources) {
+    for (auto [operation, resource] : resources) {
       (void)operation;
-      if (resource.transferNode == stream.getTransferNode()) {
-        resource.addressStorage = scratchAddress;
+      if (resource->transferNode == stream.getTransferNode()) {
+        resource->addressStorage = scratchAddress;
       }
     }
   }
 
   llvm::MapVector<FuncOp, llvm::SmallSetVector<int64_t, 4>> dfbIndicesBySender;
-  for (const auto &[operation, resource] : pipeResourcePlan.resources) {
+  for (auto [operation, resource] : resources) {
     auto sendOp = dyn_cast<PipeTransferSendOp>(operation);
-    if (!sendOp || !resource.addressStorage.usesComputedReceiverDFB()) {
+    if (!sendOp || !resource->addressStorage.usesComputedReceiverDFB()) {
       continue;
     }
-    assert(resource.addressStorage.computedAddress.has_value() &&
+    assert(resource->addressStorage.computedAddress.has_value() &&
            "computed receiver DFB is missing address information");
     dfbIndicesBySender[sendOp->getParentOfType<FuncOp>()].insert(
-        resource.addressStorage.computedAddress->receiverDFBIndex);
+        resource->addressStorage.computedAddress->receiverDFBIndex);
   }
 
   pipeResourcePlan.computedAddressDFBIndices.clear();
-  llvm::DenseMap<PipeTransferNodeId, PipeAddressStorageInfo>
-      addressStorageByTransfer;
+  llvm::DenseMap<PipeTransferNodeId, PipeResourceInfo *>
+      senderResourceByTransfer;
   for (auto &[senderFunc, dfbIndexSet] : dfbIndicesBySender) {
     SmallVector<int64_t> dfbIndices(dfbIndexSet.begin(), dfbIndexSet.end());
     llvm::sort(dfbIndices);
@@ -2912,14 +2921,14 @@ void finalizePipeTransportResources(const PipeTransportPlan &transportPlan,
         });
   }
 
-  for (auto &[operation, resource] : pipeResourcePlan.resources) {
+  for (auto [operation, resource] : resources) {
     auto sendOp = dyn_cast<PipeTransferSendOp>(operation);
     if (!sendOp) {
       continue;
     }
-    if (resource.addressStorage.usesComputedReceiverDFB()) {
+    if (resource->addressStorage.usesComputedReceiverDFB()) {
       PipeComputedAddressInfo &computedAddress =
-          *resource.addressStorage.computedAddress;
+          *resource->addressStorage.computedAddress;
       FuncOp senderFunc = sendOp->getParentOfType<FuncOp>();
       auto indicesIt =
           pipeResourcePlan.computedAddressDFBIndices.find(senderFunc);
@@ -2934,40 +2943,40 @@ void finalizePipeTransportResources(const PipeTransportPlan &transportPlan,
           getNumTensorFunctionArgs(senderFunc) +
           std::distance(dfbIndices.begin(), dfbIndexIt);
     }
-    auto [addressIt, inserted] = addressStorageByTransfer.try_emplace(
-        resource.transferNode, resource.addressStorage);
-    (void)addressIt;
-    assert(inserted && "pipe transfer has multiple sender resources");
+    auto [resourceIt, inserted] =
+        senderResourceByTransfer.try_emplace(resource->transferNode, resource);
+    assert((inserted || resourceIt->second->pipe == resource->pipe) &&
+           "pipe transfer has inconsistent sender resources");
   }
 
-  for (auto &[operation, resource] : pipeResourcePlan.resources) {
+  for (auto [operation, resource] : resources) {
     (void)operation;
-    auto addressIt = addressStorageByTransfer.find(resource.transferNode);
-    assert(addressIt != addressStorageByTransfer.end() &&
+    auto senderIt = senderResourceByTransfer.find(resource->transferNode);
+    assert(senderIt != senderResourceByTransfer.end() &&
            "pipe transfer is missing sender address storage");
-    resource.addressStorage = addressIt->second;
+    resource->addressStorage = senderIt->second->addressStorage;
   }
 
   llvm::DenseMap<PipeSourceKey, llvm::DenseMap<int64_t, int64_t>>
       compactAddressOffsets;
   int64_t addressTableBytes = 0;
-  for (auto &[operation, resource] : pipeResourcePlan.resources) {
+  for (auto [operation, resource] : resources) {
     (void)operation;
-    if (resource.addressStorage.mode !=
+    if (resource->addressStorage.mode !=
         PipeAddressMode::ReceiverPublishedAddressTable) {
       continue;
     }
-    assert(resource.addressStorage.sramAddressTable.has_value() &&
+    assert(resource->addressStorage.sramAddressTable.has_value() &&
            "address-table pipe is missing SRAM storage");
-    int64_t oldOffset = resource.addressStorage.sramAddressTable->byteOffset;
+    int64_t oldOffset = resource->addressStorage.sramAddressTable->byteOffset;
     auto &sourceOffsets = compactAddressOffsets[PipeSourceKey{
-        resource.pipe.srcX, resource.pipe.srcY}];
+        resource->pipe.srcX, resource->pipe.srcY}];
     auto [offsetIt, inserted] = sourceOffsets.try_emplace(
         oldOffset,
         static_cast<int64_t>(sourceOffsets.size()) * kPipeAddressWordBytes);
     (void)inserted;
     int64_t compactOffset = offsetIt->second;
-    resource.addressStorage.sramAddressTable->byteOffset =
+    resource->addressStorage.sramAddressTable->byteOffset =
         transportScratchBytes + compactOffset;
     addressTableBytes =
         std::max(addressTableBytes, compactOffset + kPipeAddressWordBytes);

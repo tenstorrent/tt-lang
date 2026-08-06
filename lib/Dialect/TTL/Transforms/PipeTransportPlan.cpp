@@ -311,21 +311,22 @@ FailureOr<PipeTransportPlan> buildPipeTransportPlan(
   for (const PipeTransferNode &transferNode :
        pipeGraph.getPipeTransferNodes()) {
     auto sendOp = cast<PipeTransferSendOp>(transferNode.sendOp);
+    // A transport stream requires one statically identified transfer per
+    // sender operation. Record-selected senders retain record-table lowering.
+    ArrayRef<PipeTransferNodeId> sendTransferNodes =
+        pipeGraph.getPipeTransferNodeIdsForProtocolOp(sendOp);
+    assert(!sendTransferNodes.empty() &&
+           "PipeGraph sender must identify at least one transfer");
+    if (sendTransferNodes.size() != 1) {
+      assert(transferNode.blockSpan == 1 &&
+             "record-selected transfers must remain scalar");
+      continue;
+    }
     std::string ownershipFailure;
     FailureOr<PipeTransportDFBOwnership> storageOwnership =
         analyzePipeTransportDFBOwnership(transferNode, pipeGraph,
                                          ownershipFailure);
     auto sourceDFBType = cast<CircularBufferType>(sendOp.getSrc().getType());
-    auto tileType = dyn_cast<ttcore::TileType>(sourceDFBType.getElementType());
-    if (!tileType) {
-      sendOp.emitError("pipe transfer source DFB element type must be tile");
-      return failure();
-    }
-    if (sourceDFBType.getBlockCount() % transferNode.blockSpan != 0) {
-      sendOp.emitError("source DFB block count must be divisible by pipe "
-                       "transfer block span");
-      return failure();
-    }
 
     PipeTransportStream stream;
     stream.id = plan.streams.size();
@@ -342,22 +343,14 @@ FailureOr<PipeTransportPlan> buildPipeTransportPlan(
     stream.sourceStorage = PipeTransportSourceStorage{
         sourceDFBType.getBlockCount(), transferNode.blockSpan,
         sourceDFBType.getBlockCount() / transferNode.blockSpan};
-    std::optional<int64_t> maybePageCount = llvm::checkedMul(
-        sourceDFBType.getElementsPerBlock(), transferNode.blockSpan);
-    if (!maybePageCount) {
-      sendOp.emitError("pipe transfer page count exceeds int64_t");
+    FailureOr<PipeTransferPayload> maybePayload =
+        getPipeTransferPayload(sendOp, transferNode.blockSpan);
+    if (failed(maybePayload)) {
       return failure();
     }
-    int64_t pageCount = *maybePageCount;
-    int64_t pageSizeBytes = tileType.getSizeBytes();
-    std::optional<int64_t> maybePayloadSizeBytes =
-        llvm::checkedMul(pageCount, pageSizeBytes);
-    if (!maybePayloadSizeBytes) {
-      sendOp.emitError("pipe transfer payload size exceeds int64_t");
-      return failure();
-    }
-    stream.packetization = PipeTransportPacketization{pageCount, pageSizeBytes,
-                                                      *maybePayloadSizeBytes};
+    stream.packetization = PipeTransportPacketization{
+        maybePayload->elementCount, maybePayload->elementSizeBytes,
+        maybePayload->sizeBytes};
     stream.sourceReuse = PipeTransportSourceReuse::AfterCompletionGroup;
 
     for (PipeReceiverEndpointId endpointId : transferNode.receiverEndpoints) {
