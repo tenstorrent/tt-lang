@@ -650,6 +650,8 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
         if (candidate.physicalIndex != physicalIndex) {
           continue;
         }
+        // TODO(#813): Represent empty and unknown launch domains without
+        // selecting scratch storage.
         if (!candidate.launchDomain.known ||
             candidate.launchDomain.nodes.empty()) {
           analysisFailure.set(
