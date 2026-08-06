@@ -13,6 +13,7 @@ python my_kernel.py --no-ttl-maximize-dst
 | Flag | Default | Description |
 |---|---|---|
 | `--ttl-maximize-dst` / `--no-ttl-maximize-dst` | enabled | Partition compute iteration spaces into subblocks that maximize DST register utilization, and reorder tile operations within sync regions to group by kind. Disabling falls back to per-tile synchronization. |
+| `--ttl-accumulation-strategy {auto,dst,l1-pack}` | `auto` | Select tensor recurrence accumulation storage. `auto` uses DST when legal and otherwise uses L1 packer accumulation. |
 | `--ttl-fpu-binary-ops` / `--no-ttl-fpu-binary-ops` | enabled | Emit FPU binary elementwise ops (`add_tiles`, `sub_tiles`, `mul_tiles`) when both operands come from dataflow buffers. When disabled, binary ops use the SFPU path. |
 | `--ttl-block-matmul` / `--no-ttl-block-matmul` | enabled | Emit `matmul_block` (processes the full tile block atomically) instead of per-tile matmul loops. Disabling this option is not yet supported. |
 | `--ttl-subblock-sync` / `--no-ttl-subblock-sync` | disabled | Refine DFB reserve/push to per-subblock granularity, enabling `pack_tile_block` for contiguous subblocks. When disabled, user-placed reserve/push is preserved as written. |
@@ -24,6 +25,13 @@ python my_kernel.py --no-ttl-maximize-dst
 | `--ttl-reuse-user-dfbs` / `--no-ttl-reuse-user-dfbs` | enabled | Reuse physical DFB indices when concurrent-kernel liveness proves that compatible logical DFB lifetimes do not overlap. Disabling compacts provisional user indices without introducing new user-DFB sharing. |
 | `--ttl-dfb-exact-coloring-search-limit N` | `1000000` | Examine at most `N` states during deterministic exact DFB allocation when order-dependent first-fit does not satisfy a DFB index or L1 limit. This bounds compile time; reaching the limit reports an inconclusive result, not a capacity proof. |
 | `--ttl-specialize-cores` / `--no-ttl-specialize-cores` | disabled | Clone each TTKernel function whose control flow branches on a core coordinate once per launch coordinate (`ttkernel-specialize-cores`), replacing `my_logical_x_` / `my_logical_y_` with constants and tagging clones with `ttl.core_coord` for per-core dispatch. Opt-in. |
+
+**f32 accumulation precision:** `dst` keeps the accumulator in the DST register
+but feeds it back through SRCA on each step, which truncates to tf32 (10-bit
+mantissa); deep f32 recurrences therefore do not retain full f32 precision.
+`auto` selects `dst` for DST-compatible recurrences and inherits the same limit.
+Use `l1-pack` when full f32 accumulation precision is required; it accumulates
+in f32 L1.
 
 ### Other Ways to Set These
 
@@ -114,6 +122,7 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `maximize-dst` | bool | `true` | Enable DST maximization via subblock compute and scheduling. |
+| `accumulation-strategy` | string | `auto` | Tensor recurrence accumulation strategy: `auto`, `dst`, or `l1-pack`. |
 | `enable-fpu-binary-ops` | bool | `true` | Use FPU for binary add/sub/mul. |
 | `use-block-matmul` | bool | `true` | Lower matmul to block-level hardware calls (`matmul_block`). |
 | `subblock-sync` | bool | `false` | Refine DFB reserve/push to per-subblock granularity. |
@@ -129,9 +138,13 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 
 The pipeline runs these passes in order:
 
-- `ttl-materialize-loop-state` -- replace ranked-tensor loop-carried values with compiler-created DFBs
+- `ttl-form-accumulation-scopes` -- form semantic accumulation scopes for eligible tensor recurrences
+- `ttl-lower-accumulation-scopes` -- lower tensor accumulation scopes with `strategy=<accumulation-strategy>`
+- `ttl-materialize-loop-state` -- replace remaining ranked-tensor loop-carried values with compiler-created DFBs
 - `ttl-insert-copy-wait` -- insert missing `ttl.wait` after `ttl.copy` ops whose transfer handle has no wait user
-- `ttl-annotate-l1-acc-loops` -- detect `+=` accumulation loops and annotate for L1 packer accumulation
+- `ttl-auto-sync` -- run `ttl-insert-cb-sync` and `ttl-coalesce-dfb-acquires`
+- `ttl-insert-accumulation-scopes{kind=dfb}` -- form semantic accumulation scopes for user-written `+=` loops
+- `ttl-lower-accumulation-scopes{kind=dfb}` -- lower user-written `+=` scopes to L1 packer metadata
 - `ttl-create-producer-compute` -- create producer `ttl.compute` operations before intermediate materialization
 - `ttl-insert-intermediate-dfbs` -- materialize DFB-only operands, values that must be preserved before source release, and computed values stored by operations in multiple MLIR basic blocks; verify and error when `compiler-dfbs=false`
 - `convert-ttl-to-compute` -- lower TTL elementwise tensor ops to `ttl.compute` with tile ops
@@ -160,6 +173,31 @@ The pipeline runs these passes in order:
 
 Each pass can also be run standalone for testing. Only passes with configurable
 options are listed; the remaining passes have no options.
+
+#### `ttl-insert-accumulation-scopes`
+
+Insert semantic accumulation scopes before concrete strategy selection.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `kind` | string | `tensor` | Scope insertion kind. Supported values: `tensor`, `dfb`. |
+
+```bash
+ttlang-opt input.mlir -p 'func.func(ttl-insert-accumulation-scopes{kind=tensor})'
+```
+
+#### `ttl-lower-accumulation-scopes`
+
+Lower semantic accumulation scopes to a concrete storage strategy.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `kind` | string | `tensor` | Scope lowering kind. Supported values: `tensor`, `dfb`. |
+| `strategy` | string | `auto` | Tensor recurrence accumulation strategy. Supported values: `auto`, `dst`, `l1-pack`. Ignored for `kind=dfb`. |
+
+```bash
+ttlang-opt input.mlir -p 'func.func(ttl-lower-accumulation-scopes{strategy=dst})'
+```
 
 #### `ttl-insert-intermediate-dfbs`
 

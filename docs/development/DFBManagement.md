@@ -24,23 +24,27 @@ omit it until module finalization assigns a unique identity.
 The DFB-related passes in `ttl-to-ttkernel-pipeline` execute in this order:
 
 ```
-ttl-materialize-loop-state     (FuncOp)   Remove ranked-tensor scf.for iter_args
-ttl-insert-copy-wait           (FuncOp)   Insert missing ttl.wait ops
-ttl-annotate-l1-acc-loops      (FuncOp)   Mark user accumulation loops
-ttl-create-producer-compute    (FuncOp)   Create producer ttl.compute ops
-ttl-insert-intermediate-dfbs   (FuncOp)   Materialize compiler-allocated DFBs
-convert-ttl-to-compute         (FuncOp)   Lower remaining tensor ops
-ttl-insert-cb-sync             (FuncOp)   Insert remaining DFB synchronization
-ttl-verify-pipenet-guards      (Module)   Verify PipeNet launch-node domains
-ttl-verify-pipenet-schedule    (Module)   Verify PipeNet event ordering
-ttl-coalesce-dfb-acquires      (FuncOp)   Coalesce adjacent DFB acquisitions
-ttl-finalize-dfb-indices       (Module)   Finalize identities and allocations
-ttl-set-compute-kernel-config  (FuncOp)   Set per-kernel configuration
+ttl-form-accumulation-scopes       (FuncOp) Form tensor accumulation scopes
+ttl-lower-accumulation-scopes      (FuncOp) Select tensor accumulation storage
+ttl-materialize-loop-state         (FuncOp) Remove ranked-tensor scf.for iter_args
+ttl-insert-copy-wait               (FuncOp) Insert missing ttl.wait ops
+ttl-auto-sync                      (FuncOp) Insert/coalesce DFB synchronization
+ttl-insert-accumulation-scopes     (FuncOp) Form DFB accumulation scopes
+ttl-lower-accumulation-scopes      (FuncOp) Lower DFB accumulation metadata
+ttl-create-producer-compute        (FuncOp) Create producer ttl.compute ops
+ttl-insert-intermediate-dfbs       (FuncOp) Materialize compiler-created DFBs
+convert-ttl-to-compute             (FuncOp) Lower remaining tensor ops
+ttl-insert-cb-sync                 (FuncOp) Insert remaining DFB synchronization
+ttl-verify-pipenet-guards          (Module) Verify PipeNet launch-node domains
+ttl-verify-pipenet-schedule        (Module) Verify PipeNet event ordering
+ttl-coalesce-dfb-acquires          (FuncOp) Coalesce adjacent DFB acquisitions
+ttl-finalize-dfb-indices           (Module) Finalize identities and allocations
+ttl-set-compute-kernel-config      (FuncOp) Set per-kernel configuration
   ... DST assignment, loop lowering, scheduling ...
-ttl-annotate-cb-associations   (FuncOp)   Copy CB indices to tile ops
-ttl-verify-dfb-spsc            (Module)   Reject DFBs shared across threads
-convert-ttl-to-ttkernel        (Module)   Lower to TTKernel dialect
-ttkernel-insert-inits          (Module)   Insert hardware init calls
+ttl-annotate-cb-associations       (FuncOp) Copy DFB indices to tile ops
+ttl-verify-dfb-spsc                (Module) Verify producer/consumer uniqueness
+convert-ttl-to-ttkernel            (Module) Lower to TTKernel dialect
+ttkernel-insert-inits              (Module) Insert hardware init calls
 ```
 
 `ttl-finalize-dfb-indices` must precede
