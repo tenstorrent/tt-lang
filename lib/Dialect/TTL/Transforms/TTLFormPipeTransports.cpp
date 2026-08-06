@@ -763,12 +763,13 @@ struct TTLFormPipeTransportsPass
     PipeGraph &pipeGraph = *maybePipeGraph;
 
     // All-published planning bounds address-table storage independently of the
-    // receiver-address option selected by the later conversion pass.
+    // address and counter-storage options selected by the conversion pass.
     PipeResourcePlan conservativeResourcePlan;
-    if (failed(buildPipeResourcePlan(module, transferIndex, pipeGraph,
-                                     conservativeResourcePlan,
-                                     /*enableComputedAddresses=*/false,
-                                     /*synchronizationSelection=*/nullptr))) {
+    if (failed(buildPipeResourcePlan(
+            module, transferIndex, pipeGraph, conservativeResourcePlan,
+            /*enableComputedAddresses=*/false,
+            PipeCounterAllocationPolicy::LocalThenGlobal,
+            /*synchronizationSelection=*/nullptr))) {
       signalPassFailure();
       return;
     }
