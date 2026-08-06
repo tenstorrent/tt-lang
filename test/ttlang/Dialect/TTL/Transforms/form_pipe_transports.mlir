@@ -126,8 +126,8 @@
 // BOUND-LABEL: func.func @point_to_point
 // BOUND: %[[SRC:.*]] = ttl.bind_cb{cb_index = 0, block_count = 8} {dfb_id = 0 : index}
 // BOUND-NEXT: %[[DST:.*]] = ttl.bind_cb{cb_index = 1, block_count = 8} {dfb_id = 1 : index}
-// BOUND: %[[SCALAR_TRANSFER:.*]] = ttl.pipe_transfer.create %{{.*}} {expectedReceivers
-// BOUND: %[[GROUPED_TRANSFER:.*]] = ttl.pipe_transfer.create %{{.*}} {block_span = 4 : i64, destination_group_depth = 2 : i64
+// BOUND-DAG: %[[SCALAR_TRANSFER:.*]] = ttl.pipe_transfer.create %{{.*}} {kind = #ttl.pipe_transfer_kind<point_to_point>}
+// BOUND-DAG: %[[GROUPED_TRANSFER:.*]] = ttl.pipe_transfer.create %{{.*}} {block_span = 4 : i64, destination_group_depth = 2 : i64
 // BOUND: scf.for %[[GROUP_ITER:.*]] = %{{.*}} to %{{.*}} step %{{.*}} {
 // BOUND: ttl.tensor_slice %{{.*}}[%{{.*}}, %[[GROUP_ITER]]]
 // BOUND-SAME: -> tensor<1x4x!ttcore.tile<32x32, f32>,

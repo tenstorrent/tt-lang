@@ -244,7 +244,7 @@ public:
   const PipeTransportStream &
   getStreamForTransfer(PipeTransferNodeId transferNode) const;
 
-  /// Return the stream that owns `operation`.
+  /// Return the unique stream that owns `operation`.
   const PipeTransportStream &getStreamForOperation(Operation *operation) const;
 
   /// Return whether transport synchronization replaces this DFB operation.

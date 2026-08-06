@@ -9,6 +9,7 @@
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
+#include "ttlang/Dialect/TTL/Transforms/PipeTransferAnalysis.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
@@ -136,10 +137,10 @@ FailureOr<PipeTransferPayload> getPipeTransferPayload(PipeTransferSendOp sendOp,
 }
 
 static FailureOr<PipeSendPlan>
-buildPipeSendPlan(PipeTransferSendOp sendOp,
-                  const DominanceInfo &dominanceInfo) {
+buildPipeSendPlan(PipeTransferSendOp sendOp, const DominanceInfo &dominanceInfo,
+                  int64_t blockSpan) {
   FailureOr<PipeTransferPayload> maybePayload =
-      getPipeTransferPayload(sendOp, /*blockSpan=*/1);
+      getPipeTransferPayload(sendOp, blockSpan);
   if (failed(maybePayload)) {
     return failure();
   }
@@ -459,8 +460,10 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
         };
 
     if (sendOp) {
-      FailureOr<PipeSendPlan> maybeSendPlan =
-          buildPipeSendPlan(sendOp, dominanceInfo);
+      PipeTransferCreateOp transferCreate =
+          transferIndex.getTransferCreate(operation);
+      FailureOr<PipeSendPlan> maybeSendPlan = buildPipeSendPlan(
+          sendOp, dominanceInfo, getPipeTransferBlockSpan(transferCreate));
       if (failed(maybeSendPlan)) {
         return failure();
       }

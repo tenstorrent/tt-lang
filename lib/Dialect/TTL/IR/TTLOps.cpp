@@ -559,6 +559,13 @@ mlir::LogicalResult mlir::tt::ttl::PipeTransferCreateOp::verify() {
     return emitOpError()
            << "selected pipe transfer kind must match the records kind";
   }
+  if (getBlockSpan() != 1) {
+    return emitOpError() << "selected pipe transfer block_span must be 1";
+  }
+  if (getDestinationGroupDepth() != 1) {
+    return emitOpError()
+           << "selected pipe transfer destination_group_depth must be 1";
+  }
 
   return success();
 }

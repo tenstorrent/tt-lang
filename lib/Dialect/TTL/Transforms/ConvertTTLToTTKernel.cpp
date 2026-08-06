@@ -1396,9 +1396,8 @@ struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
     }
     return lowerPipeTransferSend(
         op, adaptor.getSrc(), pipeModulePlan.getTransferPlan(op.getOperation()),
-        pipeModulePlan.getTransportPlan().getStreamForOperation(op),
-        pipeResourcePlan, pipeCapacityPlan, senderCapacityCounters,
-        computedAddressCounters, rewriter);
+        pipeModulePlan.getTransportPlan(), pipeResourcePlan, pipeCapacityPlan,
+        senderCapacityCounters, computedAddressCounters, rewriter);
   }
 
 private:
@@ -2227,7 +2226,7 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   return success();
 }
 
-/// Phase 2: Lower tile compute ops and DST lifecycle ops to TTKernel.
+/// Lower tile compute operations and DST lifecycle operations to TTKernel.
 /// Tile compute ops are identified by TTLTileComputeOpTrait. ttl.compute is
 /// kept legal here because it is lowered to loops in an earlier pass
 /// (ttl-lower-to-loops).

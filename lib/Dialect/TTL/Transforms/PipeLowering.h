@@ -278,7 +278,7 @@ void lowerInactivePipeTransferSend(PipeTransferSendOp op,
 /// Lower the sender-side pipe transfer and signal receiver completion.
 LogicalResult lowerPipeTransferSend(
     PipeTransferSendOp op, Value srcCB, const PipeTransferPlan &transferPlan,
-    const PipeTransportStream &transportStream,
+    const PipeTransportPlan &pipeTransportPlan,
     const PipeResourcePlan &pipeResourcePlan,
     const PipeCapacityPlan &pipeCapacityPlan,
     const PipeCounterProgressMap &senderCapacityCounters,

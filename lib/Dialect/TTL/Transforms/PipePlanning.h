@@ -141,12 +141,6 @@ private:
   PipeCounterAllocator counterAllocator;
 };
 
-/// Synchronization performed before the sender writes a transfer payload.
-enum class PipeSynchronizationProtocol {
-  ReceiverPost,
-  Capacity,
-};
-
 /// Element count and byte size transferred by one sender operation.
 struct PipeTransferPayload {
   int64_t elementCount = 0;

@@ -44,6 +44,44 @@ func.func @pipe_transfer_destination_group_depth_positive() {
 }
 
 // -----
+
+// A selected record identifies one scalar transfer at runtime, so grouping
+// must remain on statically identified pipe transfers.
+func.func @selected_pipe_transfer_block_span() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %false = arith.constant false
+  %selected = ttl.select_pipe_src record(%c0) src (%c0, %c0) dst (%c1, %c0) to (%c1, %c0)
+      num_dests (%c1) src_in_dst (%false)
+      {records = #ttl.pipenet_records<net 0 pipes [
+        #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0>
+      ]>} : !ttl.selected_pipe_src
+  // expected-error @below {{'ttl.pipe_transfer.create' op selected pipe transfer block_span must be 1}}
+  %transfer = ttl.pipe_transfer.create %selected {block_span = 2 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+      : !ttl.selected_pipe_src -> !ttl.pipe_transfer
+  func.return
+}
+
+// -----
+
+// Selected record-table lowering allocates synchronization and address state
+// per scalar record rather than per grouped destination slot.
+func.func @selected_pipe_transfer_destination_group_depth() {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %false = arith.constant false
+  %selected = ttl.select_pipe_dst record(%c0) src (%c0, %c0) dst (%c1, %c0) to (%c1, %c0)
+      num_dests (%c1) src_in_dst (%false)
+      {records = #ttl.pipenet_records<net 0 pipes [
+        #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0>
+      ]>} : !ttl.selected_pipe_dst
+  // expected-error @below {{'ttl.pipe_transfer.create' op selected pipe transfer destination_group_depth must be 1}}
+  %transfer = ttl.pipe_transfer.create %selected {destination_group_depth = 2 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+      : !ttl.selected_pipe_dst -> !ttl.pipe_transfer
+  func.return
+}
+
+// -----
 // Test: point-to-point pipe transfer cannot target multiple receivers.
 func.func @pipe_transfer_point_to_point_multi_receiver() {
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
