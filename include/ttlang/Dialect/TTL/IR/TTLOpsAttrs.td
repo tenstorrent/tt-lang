@@ -130,7 +130,8 @@ def TTL_PipeNetRecordsAttr : TTL_Attr<"PipeNetRecords", "pipenet_records"> {
     source-level operation per record.
 
     `pipes` is in user PipeNet construction order. A launch node that matches
-    multiple records executes them in this order.
+    multiple records executes them in this order. Duplicate records are
+    distinct entries and execute as separate callback invocations.
   }];
 
   let parameters = (ins

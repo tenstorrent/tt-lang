@@ -169,6 +169,11 @@ def TTLConvertTTLToTTKernel
     PipeNet counters use local semaphore ids before GlobalSemaphore storage by
     default; the global-only option preserves all local semaphore ids for
     application use.
+
+    PipeNet IR must first pass `ttl-verify-pipenet-guards` and
+    `ttl-verify-pipenet-schedule`. Those passes establish endpoint containment,
+    exact launch-node domains, and single-block event regions required by
+    protocol planning.
   }];
 
   let options = [

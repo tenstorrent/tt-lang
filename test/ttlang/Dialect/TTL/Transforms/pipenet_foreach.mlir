@@ -3,7 +3,8 @@
 // Summary: Verifies direct and table-driven PipeNet callback lowering through
 // pipe-transfer IR.
 
-// Small source foreach lowering emits direct static guards.
+// Four source records exercise the inclusive direct-lowering boundary. Each
+// record emits one static guard and one payload write without a record loop.
 
 func.func private @foreach_src_send_direct_receiver()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
@@ -12,7 +13,9 @@ func.func private @foreach_src_send_direct_receiver()
   ttl.pipenet_foreach_dst attributes {
       records = #ttl.pipenet_records<net 0 name "row_net" pipes [
         #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0>,
-        #ttl.pipe_record<srcX = 0, srcY = 1, dstStartX = 1, dstStartY = 1, dstEndX = 1, dstEndY = 1>
+        #ttl.pipe_record<srcX = 0, srcY = 1, dstStartX = 1, dstStartY = 1, dstEndX = 1, dstEndY = 1>,
+        #ttl.pipe_record<srcX = 0, srcY = 2, dstStartX = 1, dstStartY = 2, dstEndX = 1, dstEndY = 2>,
+        #ttl.pipe_record<srcX = 0, srcY = 3, dstStartX = 1, dstStartY = 3, dstEndX = 1, dstEndY = 3>
       ]>} {
   ^bb0(%pipe: !ttl.selected_pipe_dst):
     %recv = ttl.cb_reserve %cb
@@ -31,10 +34,11 @@ func.func private @foreach_src_send_direct_receiver()
 
 // CHECK-LABEL: func.func @foreach_src_send_direct
 // CHECK-NOT: scf.for
-// CHECK-COUNT-2: ttkernel.noc_async_write %
+// CHECK-COUNT-4: ttkernel.noc_async_write %
 // CHECK-NOT: scf.for
 // CHECK-NOT: ttl.pipenet_foreach_src
 // CHECK-NOT: ttl.select_pipe_src
+// CHECK-NOT: ttkernel.noc_async_write %
 // CHECK: return
 func.func @foreach_src_send_direct()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
@@ -43,7 +47,9 @@ func.func @foreach_src_send_direct()
   ttl.pipenet_foreach_src attributes {
       records = #ttl.pipenet_records<net 0 name "row_net" pipes [
         #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0>,
-        #ttl.pipe_record<srcX = 0, srcY = 1, dstStartX = 1, dstStartY = 1, dstEndX = 1, dstEndY = 1>
+        #ttl.pipe_record<srcX = 0, srcY = 1, dstStartX = 1, dstStartY = 1, dstEndX = 1, dstEndY = 1>,
+        #ttl.pipe_record<srcX = 0, srcY = 2, dstStartX = 1, dstStartY = 2, dstEndX = 1, dstEndY = 2>,
+        #ttl.pipe_record<srcX = 0, srcY = 3, dstStartX = 1, dstStartY = 3, dstEndX = 1, dstEndY = 3>
       ]>} {
   ^bb0(%pipe: !ttl.selected_pipe_src):
     %xf = ttl.copy %cb, %pipe
@@ -58,7 +64,8 @@ func.func @foreach_src_send_direct()
 
 // -----
 
-// Small destination foreach lowering emits direct static guards.
+// Four destination records exercise the inclusive direct-lowering boundary.
+// Each record emits one address publication and one completion wait.
 
 func.func private @foreach_dst_receive_direct_sender()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
@@ -67,7 +74,9 @@ func.func private @foreach_dst_receive_direct_sender()
   ttl.pipenet_foreach_src attributes {
       records = #ttl.pipenet_records<net 0 name "row_net" pipes [
         #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0>,
-        #ttl.pipe_record<srcX = 0, srcY = 1, dstStartX = 1, dstStartY = 1, dstEndX = 1, dstEndY = 1>
+        #ttl.pipe_record<srcX = 0, srcY = 1, dstStartX = 1, dstStartY = 1, dstEndX = 1, dstEndY = 1>,
+        #ttl.pipe_record<srcX = 0, srcY = 2, dstStartX = 1, dstStartY = 2, dstEndX = 1, dstEndY = 2>,
+        #ttl.pipe_record<srcX = 0, srcY = 3, dstStartX = 1, dstStartY = 3, dstEndX = 1, dstEndY = 3>
       ]>} {
   ^bb0(%pipe: !ttl.selected_pipe_src):
     %xf = ttl.copy %cb, %pipe
@@ -86,9 +95,15 @@ func.func private @foreach_dst_receive_direct_sender()
 // CHECK: ttkernel.experimental.semaphore_wait_min(
 // CHECK: ttkernel.noc_inline_dw_write(
 // CHECK: ttkernel.experimental.semaphore_wait_min(
+// CHECK: ttkernel.noc_inline_dw_write(
+// CHECK: ttkernel.experimental.semaphore_wait_min(
+// CHECK: ttkernel.noc_inline_dw_write(
+// CHECK: ttkernel.experimental.semaphore_wait_min(
 // CHECK-NOT: scf.for
 // CHECK-NOT: ttl.pipenet_foreach_dst
 // CHECK-NOT: ttl.select_pipe_dst
+// CHECK-NOT: ttkernel.noc_inline_dw_write
+// CHECK-NOT: ttkernel.experimental.semaphore_wait_min
 // CHECK: return
 func.func @foreach_dst_receive_direct()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
@@ -97,7 +112,9 @@ func.func @foreach_dst_receive_direct()
   ttl.pipenet_foreach_dst attributes {
       records = #ttl.pipenet_records<net 0 name "row_net" pipes [
         #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0>,
-        #ttl.pipe_record<srcX = 0, srcY = 1, dstStartX = 1, dstStartY = 1, dstEndX = 1, dstEndY = 1>
+        #ttl.pipe_record<srcX = 0, srcY = 1, dstStartX = 1, dstStartY = 1, dstEndX = 1, dstEndY = 1>,
+        #ttl.pipe_record<srcX = 0, srcY = 2, dstStartX = 1, dstStartY = 2, dstEndX = 1, dstEndY = 2>,
+        #ttl.pipe_record<srcX = 0, srcY = 3, dstStartX = 1, dstStartY = 3, dstEndX = 1, dstEndY = 3>
       ]>} {
   ^bb0(%pipe: !ttl.selected_pipe_dst):
     %recv = ttl.cb_reserve %cb

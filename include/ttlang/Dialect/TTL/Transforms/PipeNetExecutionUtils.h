@@ -52,6 +52,8 @@ getActivePipeNetRecordIndex(ArrayRef<ActivePipeNetRecord> activeRecords,
 /// PipeNet callback loops execute their complete body once for each matching
 /// record. `resolveGeneratedRecordLoop` identifies loops created by lowering;
 /// high-level PipeNet foreach operations are recognized directly.
+/// Every region whose operations the callback interprets in execution order
+/// must contain one block so lexical traversal represents that order.
 ///
 /// `executionCountDivisor` is the product of matching record counts for the
 /// enclosing callback loops. It is unknown if that product overflows.
