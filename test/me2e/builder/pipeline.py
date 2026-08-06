@@ -19,6 +19,7 @@ def compile_ttl_to_ttkernel(
     module: Module,
     device: Optional[Any] = None,
     maximize_dst: bool = True,
+    accumulation_strategy: str = "auto",
     enable_fpu_binary_ops: bool = True,
     specialize_cores: bool = False,
 ) -> Module:
@@ -31,6 +32,7 @@ def compile_ttl_to_ttkernel(
         module: TTL MLIR module to compile.
         device: Optional TTNN device (unused, kept for API compat).
         maximize_dst: Enable DST maximization (subblocking + scheduling).
+        accumulation_strategy: Accumulation storage strategy.
         enable_fpu_binary_ops: Enable FPU binary op detection (add_tiles, etc).
         specialize_cores: Clone kernels that branch on a core coordinate
             once per launch coordinate (ttkernel-specialize-cores).
@@ -41,6 +43,7 @@ def compile_ttl_to_ttkernel(
     pipeline_options = " ".join(
         [
             f"maximize-dst={str(maximize_dst).lower()}",
+            f"accumulation-strategy={accumulation_strategy}",
             f"enable-fpu-binary-ops={str(enable_fpu_binary_ops).lower()}",
             f"specialize-cores={str(specialize_cores).lower()}",
             "lower-to-emitc=true",

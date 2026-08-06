@@ -340,6 +340,85 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
   }
 };
 
+/// Return true when a copy_tile exists only to adapt a dataflow-buffer tile to
+/// the compute body argument expected by tile_accumulate. Other uses require
+/// the copied DST tile to remain materialized.
+static bool isAccumulateContributionOnly(CopyTileOp copyTile) {
+  if (!copyTile.getDstToken().use_empty()) {
+    return false;
+  }
+
+  bool hasContributionUse = false;
+  for (OpOperand &use : copyTile.getDstTile().getUses()) {
+    auto accumulate = dyn_cast<TileAccumulateOp>(use.getOwner());
+    if (!accumulate ||
+        use.getOperandNumber() !=
+            accumulate.getContributionMutable().getOperandNumber()) {
+      return false;
+    }
+    hasContributionUse = true;
+  }
+  return hasContributionUse;
+}
+
+/// Lower in-place tile accumulation to the TTKernel operation that reuses the
+/// destination register as one binary operand. The contribution copy may be
+/// bypassed because binary_dest_reuse_tiles reads that operand directly from
+/// the dataflow buffer.
+struct TTLTileAccumulateToTTKernel : OpConversionPattern<TileAccumulateOp> {
+  TTLTileAccumulateToTTKernel(const TypeConverter &typeConverter,
+                              MLIRContext *ctx)
+      : OpConversionPattern<TileAccumulateOp>(typeConverter, ctx) {}
+
+  LogicalResult
+  matchAndRewrite(TileAccumulateOp op, TileAccumulateOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (op.getCombiner() != AccumulationCombiner::Add) {
+      return rewriter.notifyMatchFailure(op, "unsupported combiner");
+    }
+
+    Location loc = op.getLoc();
+    FailureOr<Value> accumulatorDst =
+        getSrcDstIndex(op.getAccumulator(), loc, rewriter);
+    if (failed(accumulatorDst)) {
+      return rewriter.notifyMatchFailure(
+          op, "failed to extract dst_index from accumulator");
+    }
+
+    auto funcOp = op->getParentOfType<func::FuncOp>();
+    if (!funcOp) {
+      return rewriter.notifyMatchFailure(op, "op not in function");
+    }
+
+    CopyTileOp contributionCopy =
+        op.getContribution().getDefiningOp<CopyTileOp>();
+    Value contributionSource = op.getContribution();
+    // lower-to-loops materializes compute block arguments with copy_tile, but
+    // the TTKernel op for destination reuse expects the contribution in its
+    // original dataflow buffer. This rewrite is valid only when the copy has no
+    // non-accumulation users.
+    if (contributionCopy && isAccumulateContributionOnly(contributionCopy)) {
+      contributionSource = contributionCopy.getSrc();
+    }
+
+    FailureOr<Value> contributionCB = lookupAndConvertCB(
+        contributionSource, funcOp, this->getTypeConverter(), rewriter, loc);
+    FailureOr<Value> contributionTileIndex =
+        computeCBTileIndex(contributionSource, rewriter, loc);
+    if (failed(contributionCB) || failed(contributionTileIndex)) {
+      return rewriter.notifyMatchFailure(
+          op, "failed to resolve DFB-backed contribution");
+    }
+
+    ttk::BinaryDestReuseTilesOp::create(
+        rewriter, loc, *contributionCB, *contributionTileIndex, *accumulatorDst,
+        ttk::EltwiseBinaryType::Add, ttk::BinaryDestReuseType::DestToSrcA);
+
+    rewriter.replaceOp(op, adaptor.getAccumulator());
+    return success();
+  }
+};
+
 /// Special pattern for MaxTileOp which uses 2-arg in-place form:
 /// DST[dst0] = max(DST[dst0], DST[dst1])
 /// TODO: Remove this special pattern once TTKernel adds a 3-arg max_binary_tile
@@ -459,6 +538,19 @@ struct TTLTileCopyToTTKernel : OpConversionPattern<CopyTileOp> {
   matchAndRewrite(CopyTileOp op, CopyTileOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
+
+    // tile_accumulate lowers to binary_dest_reuse_tiles, which reads the
+    // contribution DFB tile directly instead of loading it into DST.
+    if (isAccumulateContributionOnly(op)) {
+      // Preserve the token result for users that model copy ordering while
+      // leaving the tile value dataflow-buffer backed for tile_accumulate.
+      auto token = mlir::UnrealizedConversionCastOp::create(
+                       rewriter, loc, TypeRange{op.getResult(0).getType()},
+                       ValueRange{adaptor.getDstIndex()})
+                       .getResult(0);
+      rewriter.replaceOp(op, ValueRange{token, op.getSrc()});
+      return success();
+    }
 
     // Look up the CB by reading cb_index annotation from the compute op.
     auto funcOp = op->getParentOfType<func::FuncOp>();
@@ -1050,10 +1142,11 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
   patterns.add<TTL_OP##FPUTileLowering>(*typeConverter, ctx);
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
-  // DST-based ops (no type converter needed).
+  // DST-based ops.
   patterns.add<TTLTileFillToTTKernel>(ctx);
   patterns.add<TTLTileMulUnaryConstToTTKernel>(ctx);
   patterns.add<TTLTileTypecastToTTKernel>(ctx);
+  patterns.add<TTLTileAccumulateToTTKernel>(*typeConverter, ctx);
 
   // Copy ops need the type converter.
   patterns.add<TTLTileCopyToTTKernel>(*typeConverter, ctx);

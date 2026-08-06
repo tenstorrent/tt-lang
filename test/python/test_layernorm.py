@@ -235,7 +235,10 @@ def make_layernorm_kernel(dim_tiles):
                     istd = istd_dfb.reserve()
                     istd.store(
                         ttl.math.rsqrt(
-                            var_bc * ms + ttl.block.fill(1e-6, shape=var_bc.shape)
+                            var_bc * ms
+                            + ttl.block.fill(
+                                1e-6, shape=var_bc.shape, dtype=var_bc.dtype
+                            )
                         )
                     )
                     # Pass 3: normalize + affine
@@ -367,7 +370,10 @@ def make_layernorm_kernel_explicit(dim_tiles):
                     istd = istd_dfb.reserve()
                     istd.store(
                         ttl.math.rsqrt(
-                            var_bc * ms + ttl.block.fill(1e-6, shape=var_bc.shape)
+                            var_bc * ms
+                            + ttl.block.fill(
+                                1e-6, shape=var_bc.shape, dtype=var_bc.dtype
+                            )
                         )
                     )
                     istd.push()
@@ -428,7 +434,11 @@ def make_layernorm_kernel_minimal_dfbs(dim_tiles):
                         # Pass 1: mean via += L1 accumulation, then
                         # broadcast * ms.
                         with mean_dfb.reserve() as mean_blk:
-                            mean_blk.store(ttl.block.fill(0, shape=mean_blk.shape))
+                            mean_blk.store(
+                                ttl.block.fill(
+                                    0, shape=mean_blk.shape, dtype=mean_blk.dtype
+                                )
+                            )
                             for _ in range(dim_tiles):
                                 with x_dfb.wait() as xj:
                                     mean_blk += ttl.math.reduce_sum(xj, dims=[1])
@@ -441,7 +451,11 @@ def make_layernorm_kernel_minimal_dfbs(dim_tiles):
                         with mean_dfb.wait() as mean_val:
                             # Pass 2: variance into istd_dfb, then rsqrt.
                             with istd_dfb.reserve() as var_blk:
-                                var_blk.store(ttl.block.fill(0, shape=var_blk.shape))
+                                var_blk.store(
+                                    ttl.block.fill(
+                                        0, shape=var_blk.shape, dtype=var_blk.dtype
+                                    )
+                                )
                                 for _ in range(dim_tiles):
                                     with x_dfb.wait() as xj:
                                         diff = xj - mean_val
@@ -454,7 +468,11 @@ def make_layernorm_kernel_minimal_dfbs(dim_tiles):
                                             var_blk, dims=[1], shape=(1, 1)
                                         )
                                         * ms
-                                        + ttl.block.fill(1e-6, shape=var_blk.shape)
+                                        + ttl.block.fill(
+                                            1e-6,
+                                            shape=var_blk.shape,
+                                            dtype=var_blk.dtype,
+                                        )
                                     )
                                 )
 
@@ -473,6 +491,95 @@ def make_layernorm_kernel_minimal_dfbs(dim_tiles):
             x,
             weight,
             ln_bias,
+            mean_scale,
+            out,
+            dfbs,
+            tiles_per_core,
+            seq_tiles,
+            dim_tiles,
+            use_with=True,
+        )
+
+    return layernorm_kernel
+
+
+def make_layernorm_kernel_loop_carried(dim_tiles):
+    """Loop-carried variant of `make_layernorm_kernel_minimal_dfbs`: the
+    mean and variance reductions are written as plain-tensor recurrences
+    (`acc = acc + reduce_sum(...)`) instead of `+=` on a reserved block.
+    Both forms should lower to the same in-loop L1-accumulating store
+    via `ttl-materialize-loop-state` + `TTKernelInsertL1Accumulation`;
+    this variant exercises the loop-carried path the way `+=` exercises
+    the __iadd__ path."""
+
+    @ttl.operation(grid="auto")
+    def layernorm_kernel(x, weight, ln_bias, scaler, mean_scale, out):
+        grid_cols, _ = ttl.grid_size(dims=2)
+        seq_tiles = x.shape[0] // TILE
+        tiles_per_core = -(-seq_tiles // grid_cols)
+        dfbs = _alloc_dfbs(x, weight, ln_bias, scaler, mean_scale, out, full=False)
+        x_dfb, sc_dfb, ms_dfb = dfbs["x"], dfbs["sc"], dfbs["ms"]
+        w_dfb, b_dfb, out_dfb = dfbs["w"], dfbs["b"], dfbs["out"]
+        mean_dfb, istd_dfb = dfbs["mean"], dfbs["istd"]
+
+        @ttl.compute()
+        def compute():
+            core_x, _ = ttl.node(dims=2)
+            with sc_dfb.wait() as sc, ms_dfb.wait() as ms:
+                for local_t in range(tiles_per_core):
+                    tile_idx = core_x * tiles_per_core + local_t
+                    if tile_idx < seq_tiles:
+                        # Pass 1: mean via plain-tensor loop-carried.
+                        # First iter seeds; remaining iters accumulate.
+                        with x_dfb.wait() as xj0:
+                            mean = ttl.math.reduce_sum(xj0, sc, dims=[1])
+                        for _ in range(dim_tiles - 1):
+                            with x_dfb.wait() as xj:
+                                mean = mean + ttl.math.reduce_sum(xj, sc, dims=[1])
+                        with mean_dfb.reserve() as mean_blk:
+                            mean_blk.store(
+                                ttl.math.broadcast(mean, mean, dims=[1]) * ms
+                            )
+
+                        with mean_dfb.wait() as mean_val:
+                            # Pass 2: variance via plain-tensor loop-carried.
+                            with x_dfb.wait() as xj0:
+                                diff0 = xj0 - mean_val
+                                var = ttl.math.reduce_sum(diff0 * diff0, sc, dims=[1])
+                            for _ in range(dim_tiles - 1):
+                                with x_dfb.wait() as xj:
+                                    diff = xj - mean_val
+                                    var = var + ttl.math.reduce_sum(
+                                        diff * diff, sc, dims=[1]
+                                    )
+                            with istd_dfb.reserve() as var_blk:
+                                var_blk.store(
+                                    ttl.math.rsqrt(
+                                        ttl.math.broadcast(var, var, dims=[1]) * ms
+                                        + ttl.block.fill(
+                                            1e-6,
+                                            shape=var_blk.shape,
+                                            dtype=var_blk.dtype,
+                                        )
+                                    )
+                                )
+
+                            # Pass 3: normalize + affine (unchanged).
+                            with istd_dfb.wait() as inv_std:
+                                for _ in range(dim_tiles):
+                                    with (
+                                        x_dfb.wait() as xj,
+                                        w_dfb.wait() as wj,
+                                        b_dfb.wait() as bj,
+                                        out_dfb.reserve() as o,
+                                    ):
+                                        o.store((xj - mean_val) * inv_std * wj + bj)
+
+        _define_dm(
+            x,
+            weight,
+            ln_bias,
+            scaler,
             mean_scale,
             out,
             dfbs,
@@ -545,3 +652,26 @@ def test_layernorm_minimal_dfbs(seq_tiles, dim_tiles, device):
     multi-store-per-reserve pattern that `ConvertTTLToCompute`'s
     `cb_push` relocation must not move ahead of subsequent stores."""
     _run_layernorm(make_layernorm_kernel_minimal_dfbs, seq_tiles, dim_tiles, device)
+
+
+@pytest.mark.parametrize("seq_tiles,dim_tiles", [(2, 2)], ids=["2x2"])
+@pytest.mark.requires_device
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Loop-carried additive recurrence with a reduce-on-RHS "
+        "(`acc = acc + ttl.math.reduce_sum(...)`) leaves a raw "
+        "ttl.reduce alive: ttl-materialize-loop-state places the "
+        "ttl.reduce, ttl.add, ttl.store chain back-to-back in the "
+        "user's scf.for body, and convert-ttl-to-compute does not "
+        "form a compute scope across the chain, so the reduce reaches "
+        "convert-ttl-to-ttkernel unconverted. Follow-up tracked outside "
+        "this PR."
+    ),
+)
+def test_layernorm_loop_carried(seq_tiles, dim_tiles, device):
+    """Plain-tensor loop-carried variant of the minimal-DFB layernorm
+    (`acc = acc + reduce_sum(...)` instead of `+=` on a reserve block).
+    Exercises the `ttl-materialize-loop-state` lowering for additive
+    recurrences across the layernorm three-pass structure."""
+    _run_layernorm(make_layernorm_kernel_loop_carried, seq_tiles, dim_tiles, device)
