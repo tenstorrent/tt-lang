@@ -31,6 +31,7 @@ DeviceTransferAttr = ir.DeviceTransferAttr
 TransferEdgeAttr = ir.TransferEdgeAttr
 PipeRecordAttr = ir.PipeRecordAttr
 PipeNetRecordsAttr = ir.PipeNetRecordsAttr
+TensorBackingAttr = ir.TensorBackingAttr
 CircularBufferType = ir.CircularBufferType
 PipeType = ir.PipeType
 SelectedPipeSrcType = ir.SelectedPipeSrcType

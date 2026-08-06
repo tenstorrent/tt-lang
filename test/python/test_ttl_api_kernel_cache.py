@@ -10,25 +10,41 @@ import ttl.ttl_api as ttl_api
 
 
 class _FakeMemoryConfig:
-    def __init__(self, memory_space):
+    def __init__(self, memory_space, memory_layout):
         self.buffer_type = memory_space
+        self.memory_layout = memory_layout
+
+
+class _FakeTile:
+    def __init__(self, tile_shape):
+        self.tile_shape = tile_shape
 
 
 class _FakeTensor:
     def __init__(
         self,
         shape=(32, 32),
+        padded_shape=None,
         dtype="ttnn.bfloat16",
         memory_space="L1",
+        memory_layout="HEIGHT_SHARDED",
         layout="TILE",
+        tile=(32, 32),
+        allocation_capacity=1 << 20,
     ):
         self.shape = shape
+        self.padded_shape = padded_shape or shape
         self.dtype = dtype
         self.layout = layout
-        self._memory_config = _FakeMemoryConfig(memory_space)
+        self._memory_config = _FakeMemoryConfig(memory_space, memory_layout)
+        self._tile = _FakeTile(tile)
+        self.allocation_capacity = allocation_capacity
 
     def memory_config(self):
         return self._memory_config
+
+    def get_tile(self):
+        return self._tile
 
     def device(self):
         return None
@@ -100,12 +116,55 @@ def test_operation_cache_reuses_compiled_kernel_for_same_tensor_config(monkeypat
     def copy_kernel(input_tensor, output_tensor):
         pass
 
-    first_result = copy_kernel(_FakeTensor(), _FakeTensor())
-    second_result = copy_kernel(_FakeTensor(), _FakeTensor())
+    first_input = _FakeTensor()
+    first_output = _FakeTensor()
+    second_input = _FakeTensor()
+    second_output = _FakeTensor()
+    first_result = copy_kernel(first_input, first_output)
+    second_result = copy_kernel(second_input, second_output)
 
     assert len(compile_calls) == 1
     assert first_result == second_result == compile_calls[0]["program_hash"]
     assert len(compile_calls[0]["compiled_kernel"].runtime_args) == 2
+    assert compile_calls[0]["compiled_kernel"].runtime_args == [
+        (first_input, first_output),
+        (second_input, second_output),
+    ]
+
+
+def test_operation_cache_reuses_kernel_across_allocation_capacities(monkeypatch):
+    compile_calls = _install_recording_compile(monkeypatch)
+
+    @ttl_api.operation(grid=(1, 1))
+    def copy_kernel(input_tensor, output_tensor):
+        pass
+
+    copy_kernel(
+        _FakeTensor(allocation_capacity=2048),
+        _FakeTensor(allocation_capacity=2048),
+    )
+    copy_kernel(
+        _FakeTensor(allocation_capacity=4096),
+        _FakeTensor(allocation_capacity=4096),
+    )
+
+    assert len(compile_calls) == 1
+
+
+def test_operation_cache_separates_tensor_alias_partitions(monkeypatch):
+    """Backing argument identity affects captured tensor-storage indices."""
+    compile_calls = _install_recording_compile(monkeypatch)
+
+    @ttl_api.operation(grid=(1, 1))
+    def copy_kernel(input_tensor, output_tensor):
+        pass
+
+    shared_tensor = _FakeTensor()
+    copy_kernel(shared_tensor, shared_tensor)
+    copy_kernel(_FakeTensor(), _FakeTensor())
+    copy_kernel(shared_tensor, shared_tensor)
+
+    assert len(compile_calls) == 2
 
 
 def test_operation_cache_separates_tensor_config_changes(monkeypatch):
@@ -120,10 +179,19 @@ def test_operation_cache_separates_tensor_config_changes(monkeypatch):
     copy_kernel(_FakeTensor(memory_space="DRAM"), _FakeTensor(memory_space="DRAM"))
     copy_kernel(_FakeTensor(layout="ROW_MAJOR"), _FakeTensor(layout="ROW_MAJOR"))
     copy_kernel(_FakeTensor(dtype="ttnn.float32"), _FakeTensor(dtype="ttnn.float32"))
+    copy_kernel(
+        _FakeTensor(padded_shape=(64, 32)),
+        _FakeTensor(padded_shape=(64, 32)),
+    )
+    copy_kernel(
+        _FakeTensor(memory_layout="WIDTH_SHARDED"),
+        _FakeTensor(memory_layout="WIDTH_SHARDED"),
+    )
+    copy_kernel(_FakeTensor(tile=(16, 32)), _FakeTensor(tile=(16, 32)))
 
     program_hashes = {call["program_hash"] for call in compile_calls}
-    assert len(compile_calls) == 5
-    assert len(program_hashes) == 5
+    assert len(compile_calls) == 8
+    assert len(program_hashes) == 8
 
 
 def test_operation_cache_separates_resolved_grid_changes(monkeypatch):

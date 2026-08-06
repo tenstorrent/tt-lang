@@ -12,6 +12,7 @@ Decorators:
 
 Functions:
     ttl.make_dataflow_buffer_like() - Create a dataflow buffer
+    ttl.make_tensor_backed_dfb() - Bind a dataflow buffer to tensor L1 storage
     ttl.copy() - Asynchronous data transfer
     ttl.node(dims=2) - Get current core's coordinates as (x, y) tuple
     ttl.grid_size(dims=2) - Get grid size as (x_size, y_size) tuple
@@ -22,7 +23,11 @@ Math operations:
 
 from .ttl_api import compute, datamovement, Program
 from .atom import operation, DFB
-from .dataflow_buffer import make_dataflow_buffer_like, make_dfb
+from .dataflow_buffer import (
+    make_dataflow_buffer_like,
+    make_dfb,
+    make_tensor_backed_dfb,
+)
 from .operators import copy, node, grid_size, matmul
 
 # Math operations namespace
@@ -36,6 +41,7 @@ __all__ = [
     "Program",
     "make_dataflow_buffer_like",
     "make_dfb",
+    "make_tensor_backed_dfb",
     "copy",
     "node",
     "grid_size",

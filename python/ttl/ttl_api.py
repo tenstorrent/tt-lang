@@ -80,6 +80,7 @@ from ._src.ttl_ast import TTLGenericCompiler
 from .dataflow_buffer import (
     CircularBuffer,
     DataflowBuffer,
+    DFBStorageSegment,
     PhysicalDFBConfig,
     get_cb_count,
 )
@@ -130,15 +131,26 @@ def _get_registered_threads() -> List[Callable]:
 
 
 def _get_tensor_cache_info(tensor) -> tuple:
-    """Extract cache-relevant info from a tensor: (shape, dtype, memory_space, layout)."""
+    """Extract tensor properties that affect compilation or DFB descriptors."""
     shape = tuple(tensor.shape)
+    padded_shape = tuple(getattr(tensor, "padded_shape", tensor.shape))
     dtype = str(tensor.dtype)
     mem_config = tensor.memory_config()
     memory_space = (
         str(mem_config.buffer_type) if hasattr(mem_config, "buffer_type") else "unknown"
     )
+    memory_layout = (
+        str(mem_config.memory_layout)
+        if hasattr(mem_config, "memory_layout")
+        else "unknown"
+    )
     layout = str(tensor.layout) if hasattr(tensor, "layout") else "unknown"
-    return (shape, dtype, memory_space, layout)
+    tile = (
+        tuple(tensor.get_tile().tile_shape)
+        if "TILE" in layout and hasattr(tensor, "get_tile")
+        else None
+    )
+    return (shape, padded_shape, dtype, memory_space, memory_layout, layout, tile)
 
 
 def _make_cache_key(
@@ -155,6 +167,13 @@ def _make_cache_key(
     tensor_key = tuple(
         _get_tensor_cache_info(arg) for arg in args if is_ttnn_tensor(arg)
     )
+    tensor_args = [arg for arg in args if is_ttnn_tensor(arg)]
+    first_position_by_identity = {}
+    alias_partition = []
+    for position, tensor in enumerate(tensor_args):
+        identity = id(tensor)
+        first_position_by_identity.setdefault(identity, position)
+        alias_partition.append(first_position_by_identity[identity])
     # Include mesh shape so that single-device and multi-device compilations
     # with different shard shapes don't collide in the cache.
     mesh_key = None
@@ -164,6 +183,7 @@ def _make_cache_key(
             break
     return (
         tensor_key,
+        tuple(alias_partition),
         mesh_key,
         grid_key,
         fp32_dest_acc_en,
@@ -1458,6 +1478,76 @@ def _extract_dfb_allocations(module):
                 f"got {page_size}"
             )
 
+        storage_segments = []
+        seen_nodes = set()
+        if "storage_segments" in entry:
+            for segment_position, segment in enumerate(entry["storage_segments"]):
+                if "nodes" not in segment:
+                    raise ValueError(
+                        f"{attribute_name}[{position}].storage_segments"
+                        f"[{segment_position}] is missing 'nodes'"
+                    )
+                nodes = []
+                for node_position, node_attr in enumerate(segment["nodes"]):
+                    node = ArrayAttr(node_attr)
+                    if len(node) != 2:
+                        raise ValueError(
+                            f"{attribute_name}[{position}].storage_segments"
+                            f"[{segment_position}].nodes[{node_position}] must "
+                            "contain [x, y]"
+                        )
+                    coord = tuple(
+                        int(IntegerAttr(component).value) for component in node
+                    )
+                    if coord[0] < 0 or coord[1] < 0:
+                        raise ValueError(
+                            f"{attribute_name}[{position}] contains negative "
+                            f"launch-node coordinate {coord}"
+                        )
+                    if coord in seen_nodes:
+                        raise ValueError(
+                            f"{attribute_name}[{position}] assigns launch node "
+                            f"{coord} to multiple storage segments"
+                        )
+                    seen_nodes.add(coord)
+                    nodes.append(coord)
+                if not nodes:
+                    raise ValueError(
+                        f"{attribute_name}[{position}].storage_segments"
+                        f"[{segment_position}].nodes must not be empty"
+                    )
+
+                tensor_index = None
+                byte_offset = 0
+                byte_size = None
+                if "tensor_backing" in segment:
+                    backing = ttl.TensorBackingAttr.maybe_downcast(
+                        segment["tensor_backing"]
+                    )
+                    if backing is None:
+                        raise ValueError(
+                            f"{attribute_name}[{position}].storage_segments"
+                            f"[{segment_position}].tensor_backing has the wrong type"
+                        )
+                    tensor_index = backing.tensor_index
+                    byte_offset = backing.byte_offset
+                    byte_size = backing.byte_size
+                    expected_size = num_tiles * block_count * page_size
+                    if byte_size != expected_size:
+                        raise ValueError(
+                            f"{attribute_name}[{position}] tensor backing "
+                            "byte_size "
+                            f"must equal {expected_size}, got {byte_size}"
+                        )
+                storage_segments.append(
+                    DFBStorageSegment(
+                        nodes=tuple(sorted(nodes)),
+                        tensor_index=tensor_index,
+                        byte_offset=byte_offset,
+                        byte_size=byte_size,
+                    )
+                )
+
         seen_indices.add(dfb_index)
         configs.append(
             PhysicalDFBConfig(
@@ -1467,6 +1557,7 @@ def _extract_dfb_allocations(module):
                 block_count=block_count,
                 page_size=page_size,
                 tile=tile,
+                storage_segments=tuple(storage_segments),
             )
         )
 
