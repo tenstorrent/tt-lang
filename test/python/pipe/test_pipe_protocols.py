@@ -5,8 +5,10 @@
 """Pipe protocol equivalence and computed-address schedule regressions.
 
 The point-to-point pipe is eligible for computed receiver addresses by default;
---no-ttl-pipe-computed-addresses selects receiver-published addresses. Both
-protocols must match torch and each other across dtypes. Repeated
+--no-ttl-pipe-computed-addresses selects receiver-published addresses, and
+--ttl-pipe-global-semaphores-only preserves computed addressing while placing
+all synchronization counters in GlobalSemaphore storage. All configurations
+must match torch and each other across dtypes. Repeated
 transfers into a receiver with multiple blocks exercise sender-side slot
 counters. The schedule regressions require receiver-published addresses when
 control flow prevents static receiver-slot assignment, while distinct static
@@ -77,6 +79,9 @@ def _make_point_to_point_ops(recv_block_count):
         _make_point_to_point(recv_block_count),
         _make_point_to_point(
             recv_block_count, options="--no-ttl-pipe-computed-addresses"
+        ),
+        _make_point_to_point(
+            recv_block_count, options="--ttl-pipe-global-semaphores-only"
         ),
     )
 
@@ -180,25 +185,25 @@ def transfer_specific_completion(inp, out):
         pass
 
 
-# Computed and receiver-published address protocols must produce identical
-# point-to-point results.
+# Computed and receiver-published addressing, with local-first or global-only
+# counter allocation, must produce identical point-to-point results.
 @pytest.mark.parametrize("recv_block_count", [1, 2], ids=["bc1", "bc2"])
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 def test_pipe_protocols_match(device, dtype, recv_block_count):
     pipe_operations = _make_point_to_point_ops(recv_block_count)
     inp_torch = torch.randn(TILE, TILE, dtype=dtype)
 
-    protocol_results = []
+    configuration_results = []
     for pipe_operation in pipe_operations:
         output = to_dram(torch.zeros(TILE, TILE, dtype=dtype), device)
         pipe_operation(to_dram(inp_torch, device), output)
         ttnn.synchronize_device(device)
-        protocol_results.append(ttnn.to_torch(output).float())
+        configuration_results.append(ttnn.to_torch(output).float())
 
-    for protocol_result in protocol_results:
-        assert_pcc(protocol_result, inp_torch.float())
-    for protocol_result in protocol_results[1:]:
-        assert_pcc(protocol_results[0], protocol_result)
+    for configuration_result in configuration_results:
+        assert_pcc(configuration_result, inp_torch.float())
+    for configuration_result in configuration_results[1:]:
+        assert_pcc(configuration_results[0], configuration_result)
 
 
 # A collective source that is also a receiver must publish its address through
