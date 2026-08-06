@@ -6,7 +6,7 @@
 
 import pytest
 
-from ttl.dataflow_buffer import PhysicalDFBConfig
+from ttl.dataflow_buffer import DFBStorageSegment, PhysicalDFBConfig
 from ttl.dialects import ttcore  # noqa: F401
 from ttl.ir import Context, Module
 from ttl.ttl_api import _resolve_dfb_configs
@@ -56,6 +56,43 @@ def test_complete_physical_allocations_are_sorted():
         assert _resolve_dfb_configs(module) == [
             PhysicalDFBConfig(0, 2, "bfloat16", 2, 2048, None),
             PhysicalDFBConfig(1, 4, "float32", 3, 4096, None),
+        ]
+
+
+def test_tensor_backing_segments_preserve_nodes_and_tensor_range():
+    with Context():
+        module = Module.parse(
+            """module attributes {ttl.dfb_allocations = [{
+              block_count = 1 : i32,
+              dfb_index = 0 : i32,
+              element_type = !ttcore.tile<32x32, bf16>,
+              num_tiles = 1 : i32,
+              page_size = 2048 : i32,
+              storage_segments = [{
+                tensor_backing = #ttl.tensor_backing<
+                  tensor_index = 2, byte_offset = 2048, byte_size = 2048>,
+                nodes = [[1, 0], [0, 0]]
+              }]
+            }]} {}"""
+        )
+
+        assert _resolve_dfb_configs(module) == [
+            PhysicalDFBConfig(
+                0,
+                1,
+                "bfloat16",
+                1,
+                2048,
+                (32, 32),
+                (
+                    DFBStorageSegment(
+                        nodes=((0, 0), (1, 0)),
+                        tensor_index=2,
+                        byte_offset=2048,
+                        byte_size=2048,
+                    ),
+                ),
+            )
         ]
 
 

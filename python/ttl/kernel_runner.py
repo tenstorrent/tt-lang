@@ -34,7 +34,7 @@ def _ensure_ttnn():
     return ttnn
 
 
-from .dataflow_buffer import PhysicalDFBConfig
+from .dataflow_buffer import DFBStorageSegment, PhysicalDFBConfig
 from .constants import DEFAULT_L1_CB_BUDGET_BYTES
 from .dtype_utils import format_name_to_ttnn_dtype
 
@@ -60,6 +60,20 @@ def _validate_physical_dfb_config(
             f"DFB config at physical index {physical_index} has dfb_index "
             f"{config.dfb_index}"
         )
+    seen_nodes = set()
+    for segment_position, segment in enumerate(config.storage_segments):
+        if not segment.nodes:
+            raise ValueError(
+                f"DFB[{config.dfb_index}] storage segment {segment_position} "
+                "has no launch nodes"
+            )
+        for node in segment.nodes:
+            if node in seen_nodes:
+                raise ValueError(
+                    f"DFB[{config.dfb_index}] assigns launch node {node} to "
+                    "multiple storage segments"
+                )
+            seen_nodes.add(node)
 
 
 def _get_dfb_allocation(config: PhysicalDFBConfig) -> _DFBAllocation:
@@ -498,6 +512,153 @@ def normalize_program_hash(program_hash: Optional[int]) -> Optional[int]:
     return int(program_hash) & ((1 << 64) - 1)
 
 
+def _make_node_core_ranges(nodes: Tuple[Tuple[int, int], ...]) -> Any:
+    """Build an exact CoreRangeSet without including unselected nodes."""
+    return ttnn.CoreRangeSet(
+        [
+            ttnn.CoreRange(
+                ttnn.CoreCoord(node_x, node_y),
+                ttnn.CoreCoord(node_x, node_y),
+            )
+            for node_x, node_y in nodes
+        ]
+    )
+
+
+def _validate_tensor_backed_dfb_tensor(
+    tensor: Any,
+    config: PhysicalDFBConfig,
+    segment: DFBStorageSegment,
+    tensor_count: int,
+) -> None:
+    """Validate the public TTNN descriptor helper's tensor contract."""
+    tensor_index = segment.tensor_index
+    if tensor_index is None or tensor_index < 0 or tensor_index >= tensor_count:
+        raise ValueError(
+            f"DFB[{config.dfb_index}] tensor backing index {tensor_index} "
+            f"is outside [0, {tensor_count})"
+        )
+    if tensor is None:
+        raise ValueError(
+            f"DFB[{config.dfb_index}] tensor backing {tensor_index} is absent"
+        )
+    memory_config = tensor.memory_config()
+    if "L1" not in str(memory_config.buffer_type):
+        raise ValueError(f"DFB[{config.dfb_index}] tensor backing must use L1 storage")
+    if "HEIGHT_SHARDED" not in str(memory_config.memory_layout):
+        raise ValueError(
+            f"DFB[{config.dfb_index}] tensor backing must be height-sharded"
+        )
+    if hasattr(tensor, "layout") and "TILE" not in str(tensor.layout):
+        raise ValueError(f"DFB[{config.dfb_index}] tensor backing must use TILE layout")
+    expected_dtype = format_name_to_ttnn_dtype(config.data_format)
+    if config.data_format not in {"bfloat16", "bf16", "float32", "f32"}:
+        raise ValueError(
+            f"DFB[{config.dfb_index}] tensor backing format "
+            f"{config.data_format} is not supported; expected BF16 or FP32"
+        )
+    if tensor.dtype != expected_dtype:
+        raise ValueError(
+            f"DFB[{config.dfb_index}] tensor backing dtype {tensor.dtype} "
+            f"does not match {expected_dtype}"
+        )
+    tensor_page_size = int(tensor.get_tile().get_tile_size(tensor.dtype))
+    if tensor_page_size != config.page_size:
+        raise ValueError(
+            f"DFB[{config.dfb_index}] tensor backing page size "
+            f"{tensor_page_size} does not match {config.page_size}"
+        )
+    try:
+        tensor_nodes = {
+            (int(core.x), int(core.y))
+            for core in ttnn.get_optimal_worker_cores_for_sharded_tensor(tensor)
+        }
+    except (AttributeError, RuntimeError, TypeError, ValueError) as error:
+        raise ValueError(
+            f"DFB[{config.dfb_index}] cannot determine the tensor's sharded "
+            "L1 node set"
+        ) from error
+    missing_nodes = sorted(set(segment.nodes) - tensor_nodes)
+    if missing_nodes:
+        raise ValueError(
+            f"DFB[{config.dfb_index}] tensor backing has no shard data on "
+            f"launch nodes {missing_nodes}"
+        )
+    total_size = config.num_tiles * config.block_count * config.page_size
+    if segment.byte_size != total_size:
+        raise ValueError(
+            f"DFB[{config.dfb_index}] tensor backing byte_size must equal "
+            f"{total_size}, got {segment.byte_size}"
+        )
+    descriptor_limit = (1 << 32) - 1
+    if (
+        segment.byte_offset < 0
+        or segment.byte_offset > descriptor_limit
+        or total_size > descriptor_limit
+        or segment.byte_offset + total_size > descriptor_limit
+    ):
+        raise ValueError(
+            f"DFB[{config.dfb_index}] tensor backing byte range exceeds the uint32 "
+            "descriptor ABI"
+        )
+    if segment.byte_offset % config.page_size != 0:
+        raise ValueError(
+            f"DFB[{config.dfb_index}] byte_offset must be aligned to its "
+            f"{config.page_size}-byte page size"
+        )
+
+
+def _validate_tensor_backing_aliases(
+    tensors: List[Any], cb_configs: List[PhysicalDFBConfig]
+) -> None:
+    """Reject overlapping tensor storage not represented by one physical DFB."""
+    bindings = []
+    for config in cb_configs:
+        for segment in config.storage_segments:
+            if not segment.is_tensor_backed:
+                continue
+            tensor_index = segment.tensor_index
+            if tensor_index is None or tensor_index < 0 or tensor_index >= len(tensors):
+                raise ValueError(
+                    f"DFB[{config.dfb_index}] tensor backing index {tensor_index} "
+                    f"is outside [0, {len(tensors)})"
+                )
+            tensor = tensors[tensor_index]
+            _validate_tensor_backed_dfb_tensor(tensor, config, segment, len(tensors))
+            try:
+                absolute_start = int(tensor.buffer_address()) + segment.byte_offset
+            except (AttributeError, TypeError, ValueError):
+                raise ValueError(
+                    f"DFB[{config.dfb_index}] tensor backing does not expose a "
+                    "valid buffer_address()"
+                ) from None
+            absolute_end = absolute_start + segment.byte_size
+            nodes = frozenset(segment.nodes)
+            for (
+                previous_index,
+                previous_nodes,
+                previous_start,
+                previous_end,
+            ) in bindings:
+                if (
+                    nodes.isdisjoint(previous_nodes)
+                    or absolute_start >= previous_end
+                    or previous_start >= absolute_end
+                ):
+                    continue
+                if absolute_start != previous_start or absolute_end != previous_end:
+                    raise ValueError(
+                        "tensor-backed DFB byte ranges partially overlap on a "
+                        "shared launch node"
+                    )
+                if config.dfb_index != previous_index:
+                    raise ValueError(
+                        "identical tensor-backed DFB ranges require one physical "
+                        "DFB index on a shared launch node"
+                    )
+            bindings.append((config.dfb_index, nodes, absolute_start, absolute_end))
+
+
 def build_cb_descriptors(
     tensors: List[Any],
     cb_configs: List[PhysicalDFBConfig],
@@ -508,9 +669,8 @@ def build_cb_descriptors(
     Build circular buffer descriptors for ttnn.generic_op.
 
     Args:
-        tensors: List of ttnn.Tensor objects. Each tensor's position (0, 1, 2, ...)
-            corresponds to its CB index. For intermediate CBs (not backed by
-            input/output tensors), pass None in the corresponding position.
+        tensors: Positional operation tensors. Tensor-backed storage segments
+            refer to entries in this list by tensor index.
         cb_configs: Finalized runtime configurations indexed by physical DFB
             index.
         core_ranges: ttnn.CoreRangeSet for DFB allocation.
@@ -534,6 +694,8 @@ def build_cb_descriptors(
             f"{invalid_backing_indices}"
         )
 
+    _validate_tensor_backing_aliases(tensors, cb_configs)
+
     # Compute sizes first so overflow is diagnosed before creating descriptors.
     allocations = []
     static_cb_bytes = 0
@@ -548,7 +710,10 @@ def build_cb_descriptors(
             f"{allocation.total_size} bytes"
         )
         allocations.append(allocation)
-        if physical_index not in backing_tensors:
+        has_static_storage = not config.storage_segments or any(
+            not segment.is_tensor_backed for segment in config.storage_segments
+        )
+        if physical_index not in backing_tensors and has_static_storage:
             static_cb_bytes += allocation.total_size
             static_allocation_summaries.append(allocation_summary)
 
@@ -577,6 +742,7 @@ def build_cb_descriptors(
 
     cb_descriptors = []
     for cb_index, allocation in enumerate(allocations):
+        config = cb_configs[cb_index]
         tile_descriptor = (
             ttnn.TileDescriptor(ttnn.Tile(allocation.tile))
             if allocation.tile is not None
@@ -588,12 +754,17 @@ def build_cb_descriptors(
             page_size=allocation.page_size,
             **({"tile": tile_descriptor} if tile_descriptor is not None else {}),
         )
-        cb_desc = ttnn.CBDescriptor(
-            total_size=allocation.total_size,
-            core_ranges=core_ranges,
-            format_descriptors=[cb_format],
-        )
         if cb_index in backing_tensors:
+            if config.storage_segments:
+                raise ValueError(
+                    f"DFB[{cb_index}] cannot combine PipeNet computed-address "
+                    "storage with finalized storage segments"
+                )
+            cb_desc = ttnn.CBDescriptor(
+                total_size=allocation.total_size,
+                core_ranges=core_ranges,
+                format_descriptors=[cb_format],
+            )
             backing_desc = ttnn.cb_descriptor_from_sharded_tensor(
                 cb_index,
                 backing_tensors[cb_index],
@@ -601,7 +772,50 @@ def build_cb_descriptors(
                 core_ranges=core_ranges,
             )
             cb_desc.set_buffer_from_cb(backing_desc)
-        cb_descriptors.append(cb_desc)
+            cb_descriptors.append(cb_desc)
+            continue
+
+        if not config.storage_segments:
+            cb_descriptors.append(
+                ttnn.CBDescriptor(
+                    total_size=allocation.total_size,
+                    core_ranges=core_ranges,
+                    format_descriptors=[cb_format],
+                )
+            )
+            continue
+
+        for segment in config.storage_segments:
+            segment_core_ranges = _make_node_core_ranges(segment.nodes)
+            if not segment.is_tensor_backed:
+                cb_descriptors.append(
+                    ttnn.CBDescriptor(
+                        total_size=allocation.total_size,
+                        core_ranges=segment_core_ranges,
+                        format_descriptors=[cb_format],
+                    )
+                )
+                continue
+
+            if (
+                segment.tensor_index is None
+                or segment.tensor_index < 0
+                or segment.tensor_index >= len(tensors)
+            ):
+                raise ValueError(
+                    f"DFB[{config.dfb_index}] tensor backing index "
+                    f"{segment.tensor_index} is outside [0, {len(tensors)})"
+                )
+            tensor = tensors[segment.tensor_index]
+            cb_descriptors.append(
+                ttnn.cb_descriptor_from_sharded_tensor(
+                    cb_index,
+                    tensor,
+                    address_offset=segment.byte_offset,
+                    total_size=allocation.total_size,
+                    core_ranges=segment_core_ranges,
+                )
+            )
 
     return cb_descriptors
 
@@ -829,6 +1043,7 @@ def emit_runner_source(
     lines.append("import ttnn")
     lines.append("")
     lines.append("from ttl.dataflow_buffer import PhysicalDFBConfig")
+    lines.append("from ttl.dataflow_buffer import DFBStorageSegment")
     lines.append("from ttl.kernel_runner import (")
     lines.append("    KernelSpec,")
     lines.append("    build_cb_descriptors,")
@@ -908,6 +1123,16 @@ def emit_runner_source(
         lines.append(f"        block_count={config.block_count},")
         lines.append(f"        page_size={config.page_size},")
         lines.append(f"        tile={config.tile!r},")
+        if config.storage_segments:
+            lines.append("        storage_segments=(")
+            for segment in config.storage_segments:
+                lines.append("            DFBStorageSegment(")
+                lines.append(f"                nodes={segment.nodes!r},")
+                lines.append(f"                tensor_index={segment.tensor_index!r},")
+                lines.append(f"                byte_offset={segment.byte_offset},")
+                lines.append(f"                byte_size={segment.byte_size!r},")
+                lines.append("            ),")
+            lines.append("        ),")
         lines.append(f"    ),  # DFB {physical_index}")
     lines.append("]")
     lines.append("")

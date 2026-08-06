@@ -67,6 +67,9 @@ struct TTLValidateCBBudgetPass
     llvm::DenseMap<int64_t, BindCBOp> bindForIndex;
 
     auto walkResult = moduleOp.walk([&](BindCBOp bindOp) -> WalkResult {
+      if (bindOp.getTensorBackingAttr()) {
+        return WalkResult::advance();
+      }
       auto cbType = cast<CircularBufferType>(bindOp.getResult().getType());
       int64_t physicalIndex = bindOp.getCbIndex().getSExtValue();
       FailureOr<bool> increased = footprint.add(physicalIndex, cbType);
