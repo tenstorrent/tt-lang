@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+//
+// SPDX-License-Identifier: Apache-2.0
+
 // Verify that dataflow buffer types reject non-positive capacities.
 // RUN: ttlang-opt %s --verify-diagnostics --split-input-file
 
