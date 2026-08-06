@@ -2,11 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Pipe synchronization coverage for receiver-post protocols.
+"""Pipe synchronization coverage for receiver-post and capacity protocols.
 
 These tests cover cases where the receiver publishes one or more destination
-DFB addresses before waiting for completion, including local-semaphore
-exhaustion for completion and readiness counters.
+DFB addresses before waiting for completion, plus local-semaphore exhaustion
+for completion, readiness, and capacity counters.
 """
 
 import pytest
@@ -624,6 +624,11 @@ def make_full_grid_global_completion_kernel(sender_count, options=None):
     @ttl.operation(grid="full", options=options)
     def full_grid_global_completion(inp, out):
         grid_width, grid_height = ttl.grid_size(dims=2)
+        sender_coords = _full_grid_non_origin_coords(
+            grid_width,
+            grid_height,
+            sender_count,
+        )
         gather_net = ttl.PipeNet(
             _make_full_grid_many_to_one_pipes(
                 grid_width,
@@ -631,9 +636,20 @@ def make_full_grid_global_completion_kernel(sender_count, options=None):
                 sender_count,
             )
         )
+        capacity_net = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=sender_coords[0])])
 
         send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=1)
         recv_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=1)
+        capacity_send_dfb = ttl.make_dataflow_buffer_like(
+            inp,
+            shape=(1, 1),
+            block_count=1,
+        )
+        capacity_recv_dfb = ttl.make_dataflow_buffer_like(
+            inp,
+            shape=(1, 1),
+            block_count=1,
+        )
 
         @ttl.compute()
         def compute():
@@ -660,6 +676,21 @@ def make_full_grid_global_completion_kernel(sender_count, options=None):
                         ttl.copy(ready_blk, out[0, 0]).wait()
 
                 gather_net.if_dst(receive)
+
+            def send_capacity(pipe):
+                with capacity_send_dfb.reserve() as send_blk:
+                    ttl.copy(inp[0, 0], send_blk).wait()
+                    ttl.copy(send_blk, pipe).wait()
+
+            capacity_net.if_src(send_capacity)
+
+            def receive_capacity(pipe):
+                with capacity_recv_dfb.reserve() as recv_blk:
+                    ttl.copy(pipe, recv_blk).wait()
+                with capacity_recv_dfb.wait() as ready_blk:
+                    ttl.copy(ready_blk, out[0, 1]).wait()
+
+            capacity_net.if_dst(receive_capacity)
 
         @ttl.datamovement()
         def write_output():
@@ -1341,10 +1372,14 @@ def test_full_grid_unicast_fanout_uses_global_ready_counters(device, recipient_c
 )
 @pytest.mark.parametrize(
     "options",
-    [None, "--no-ttl-pipe-computed-addresses"],
-    ids=["ca-rp", "ra-rp"],
+    [
+        None,
+        "--no-ttl-pipe-capacity-sync",
+        "--no-ttl-pipe-computed-addresses",
+    ],
+    ids=["ca-cc", "ca-rp", "ra-rp"],
 )
-def test_many_to_one_uses_global_completion_counters(device, dtype, options):
+def test_many_to_one_global_counters_work_with_all_protocols(device, dtype, options):
     sender_count = 17
     device_grid = device.compute_with_storage_grid_size()
     grid_width, grid_height = device_grid.x, device_grid.y
@@ -1356,17 +1391,19 @@ def test_many_to_one_uses_global_completion_counters(device, dtype, options):
         grid_width * TILE,
         dtype=dtype,
     )
-    out_torch = torch.zeros(TILE, TILE, dtype=dtype)
+    out_torch = torch.zeros(TILE, 2 * TILE, dtype=dtype)
     source_coords = _full_grid_non_origin_coords(
         grid_width,
         grid_height,
         sender_count,
     )
     last_source_x, last_source_y = source_coords[-1]
-    expected = inp_torch[
+    expected = out_torch.clone()
+    expected[0:TILE, 0:TILE] = inp_torch[
         last_source_y * TILE : (last_source_y + 1) * TILE,
         last_source_x * TILE : (last_source_x + 1) * TILE,
     ]
+    expected[0:TILE, TILE : 2 * TILE] = inp_torch[0:TILE, 0:TILE]
 
     inp = to_dram(inp_torch, device)
     out = to_dram(out_torch, device)

@@ -11,9 +11,8 @@
 
 namespace mlir::tt::ttl {
 
-PipeCounterAllocator::PipeCounterAllocator(PipeCounterAllocationCounts counts,
-                                           PipeCounterAllocationPolicy policy)
-    : counts(counts), policy(policy) {
+PipeCounterAllocator::PipeCounterAllocator(PipeCounterAllocationCounts counts)
+    : counts(counts) {
   assert(counts.localSemaphoreCount >= 0 &&
          counts.localSemaphoreCount <= kMaxHardwareSemaphoreIds &&
          "initial local semaphore count exceeds the hardware id range");
@@ -31,8 +30,7 @@ PipeCounterInfo PipeCounterInfo::globalSemaphore(int64_t globalSemaphoreIndex) {
 }
 
 PipeCounterInfo PipeCounterAllocator::allocate() {
-  if (policy == PipeCounterAllocationPolicy::LocalThenGlobal &&
-      counts.localSemaphoreCount < kMaxHardwareSemaphoreIds) {
+  if (counts.localSemaphoreCount < kMaxHardwareSemaphoreIds) {
     return PipeCounterInfo::localSemaphore(counts.localSemaphoreCount++);
   }
   return allocateGlobal();
