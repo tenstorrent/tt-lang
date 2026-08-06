@@ -12,6 +12,39 @@ module {
 
 // -----
 
+// A negative offset cannot identify a byte range within a tensor shard.
+module {
+  func.func @negative_byte_offset() {
+    // expected-error @below {{byte_offset must be non-negative}}
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index, tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = -1, byte_size = 2048>} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    return
+  }
+}
+
+// -----
+
+// A zero-sized range cannot provide dataflow buffer storage.
+module {
+  func.func @zero_byte_size() {
+    // expected-error @below {{byte_size must be positive}}
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index, tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 0>} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    return
+  }
+}
+
+// -----
+
+// A negative size cannot identify a byte range within a tensor shard.
+module {
+  func.func @negative_byte_size() {
+    // expected-error @below {{byte_size must be positive}}
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index, tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = -1>} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    return
+  }
+}
+
+// -----
+
 // The backing offset must satisfy the public descriptor ABI.
 module {
   func.func @unaligned_byte_offset() {
