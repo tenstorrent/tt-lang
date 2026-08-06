@@ -86,6 +86,7 @@ Backups:
 | #803 | Current tip `3061dcf5` merged in checkpoint `43fe371c` |
 | Demo-only commits | Base checkpoint restored as `f95ff833`; row-broadcast checkpoint restored as `befca9df`; module-command documentation restored as `9cb84198`; operation-domain test adaptation restored as `db1b54f8`; full-grid work pending |
 | Integration fixes | Cross-leaf contracts preserved in `f6c02b39`; verifier contracts preserved in `1c9d8f5e` |
+| Tensor-backed row-page views | 1x32 tensor storage may be interpreted directly as 16x32 or 32x32 compute pages in `10e3c3aa` |
 
 ## Integration Resolutions
 
@@ -129,19 +130,24 @@ the integration branch.
 | Tensor-backed DFB + #803 | Preserve tensor-backed storage segments while using #803 validated subtile metadata and descriptors. Exclude tensor-backed storage from the statically allocated dataflow-buffer budget. | None; tensor-backed descriptors reference existing L1 storage and must not reserve a duplicate allocation. |
 | PipeNet leaves + #803 | Update PipeTransport allocation-size callers to #803's diagnostic API and report the exact allocation failure from the pass. | None; the source changes extend the same allocation utility contract. |
 | #651 + #803 | Classify integration-only `ttl.tile_accumulate` as a floating-point elementwise-binary compute target. | None; it lowers to the floating-point destination-reuse LLK, which has no integer lowering. |
+| Tensor-backed DFB + #803 | Allow validated 1x32 tensor storage to use 16x32 or 32x32 DFB compute pages. Preserve the tensor-owned address and replace only descriptor format metadata; validate the logical shard byte range before program construction. | Add the validated implementation to the tensor-backed DFB source branch after the RMSNorm comparison confirms the required workload contract. |
 
 ## Validation
 
 Current 2026-08-06 rebuild:
 
 - Host `ttlang-opt` build: passed at `43fe371c`.
-- MLIR: `ninja -C build check-ttlang-mlir`; 322 passed at `43fe371c`.
+- MLIR: `ninja -C build check-ttlang-mlir`; 322 passed at `10e3c3aa`.
 - Docker build: passed in `bnorris-ird3-v1.1.7` at `43fe371c`.
 - Docker subtile, tensor-backed DFB, physical DFB metadata, runtime-config,
   and kernel-runner tests: 433 passed in 142.07 seconds at `43fe371c`.
+- Docker tensor-backed DFB, descriptor, physical-metadata, runtime-config, and
+  kernel-runner regressions: 287 passed at `10e3c3aa`. This includes BF16 and
+  FP32 1x32-to-16x32 zero-copy device correctness and byte-range rejection.
+- Simulator tensor-backed DFB signature tests: 2 passed at `10e3c3aa`.
 - Targeted tensor-backed DFB and PipeNet hardware pytest: 189 passed and one
   expected failure in `bnorris-ird2-v1.1.7`.
-- Docker `check-ttlang-all`: not yet rerun at `43fe371c`. The previous attempt's
+- Docker `check-ttlang-all`: not yet rerun at `10e3c3aa`. The previous attempt's
   MLIR, Python bindings, and packaging passed. Its
   hardware pytest target encountered a sysmem mapping conflict after a separate
   fabric test acquired the device. Rerun after that test releases the device.
