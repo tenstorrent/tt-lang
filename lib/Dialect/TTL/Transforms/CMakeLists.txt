@@ -14,6 +14,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   DFBConcurrentKernelLivenessAnalysis.cpp
   DFBPhysicalAllocationPlan.cpp
   InterferenceGraphColoring.cpp
+  PipeNetExecutionUtils.cpp
   PipeGraph.cpp
   PipeLowering.cpp
   PipePlanning.cpp

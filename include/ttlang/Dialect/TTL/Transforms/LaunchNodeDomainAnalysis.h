@@ -113,6 +113,14 @@ bool launchNodeDomainsOverlap(const LaunchNodeDomain &lhs,
 bool knownLaunchNodeDomainContains(const LaunchNodeDomain &domain,
                                    LaunchNodeCoord coord);
 
+LaunchNodeDomain getPipeRecordSourceLaunchNodeDomain(PipeRecordAttr record);
+
+LaunchNodeDomain
+getPipeRecordDestinationLaunchNodeDomain(PipeRecordAttr record);
+
+LaunchNodeDomain getPipeRecordsRoleLaunchNodeDomain(PipeNetRecordsAttr records,
+                                                    PipeRole role);
+
 /// Read the PipeNet ids selected by a `ttl.pipenet_scope`.
 bool readPipeNetScopeIds(PipeNetScopeOp scopeOp, SmallVectorImpl<int64_t> &ids);
 
@@ -124,10 +132,10 @@ struct PipeNetScopeLaunchNodeDomains {
 
 /// Module-wide launch-grid and PipeNet role domains used by the analysis.
 ///
-/// `initialize` records the PipeNet source and destination domains from
-/// `ttl.create_pipe` ops. It also parses `ttl.launch_grid`; malformed or
-/// missing launch-grid attributes leave `hasLaunchGrid` false so each verifier
-/// can emit diagnostics with pass-specific context.
+/// `initialize` records PipeNet source and destination domains from static pipe
+/// declarations and PipeNet record tables. It also parses `ttl.launch_grid`;
+/// malformed or missing launch-grid attributes leave `hasLaunchGrid` false so
+/// each verifier can emit diagnostics with pass-specific context.
 struct LaunchNodeDomainState {
   LaunchNodeDomain baseDomain;
   llvm::DenseMap<int64_t, LaunchNodeDomain> netSourceDomains;
@@ -155,6 +163,13 @@ struct LaunchNodeDomainState {
   /// Return the launch nodes that have `role` for `netId`, or an unknown
   /// domain when no `ttl.create_pipe` declares that PipeNet.
   LaunchNodeDomain getRoleDomain(int64_t netId, PipeRole role) const;
+
+  /// Both declaration forms update the same domains so validation is
+  /// independent of declaration order.
+  void recordPipeNet(PipeType pipeType, Location loc,
+                     std::optional<StringRef> name = std::nullopt);
+
+  void recordPipeNetRecords(PipeNetRecordsAttr records, Location loc);
 
   /// Populate launch-grid and PipeNet role domains from the module.
   void initialize(ModuleOp module);
@@ -257,14 +272,21 @@ struct LaunchNodeDomainAnalysisOptions {
   std::function<void(PipeNetScopeOp, const LaunchNodeDomain &, Operation *,
                      const PipeNetScopeLaunchNodeDomains &)>
       pipeNetScopeCallback;
+
+  /// Return the launch nodes that may enter a generated region across all of
+  /// its dynamic invocations. Returning `std::nullopt` uses the region
+  /// operation's standard control-flow semantics.
+  std::function<std::optional<LaunchNodeDomain>(Operation *, unsigned)>
+      computeRegionDomain;
 };
 
 /// Forward dataflow analysis that propagates launch-node domains through
 /// structured control flow.
 ///
 /// Region branch transfers narrow domains for `scf.if`, `affine.if`,
-/// `ttl.if_src`, `ttl.if_dst`, and `ttl.pipenet_scope`. Other operations carry
-/// the incoming domain through unchanged.
+/// `ttl.if_src`, `ttl.if_dst`, `ttl.pipenet_foreach_src`,
+/// `ttl.pipenet_foreach_dst`, and `ttl.pipenet_scope`. Other operations
+/// propagate the incoming domain unchanged.
 class LaunchNodeDomainAnalysis
     : public dataflow::DenseForwardDataFlowAnalysis<LaunchNodeDomainLattice> {
 public:
