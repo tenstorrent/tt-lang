@@ -531,18 +531,19 @@ def _make_node_core_ranges(nodes: Tuple[Tuple[int, int], ...]) -> Any:
 
 
 def _validate_tensor_backed_dfb_binding(
-    tensor: Any,
+    tensors: List[Any],
     config: PhysicalDFBConfig,
     segment: DFBStorageSegment,
-    tensor_count: int,
-) -> None:
-    """Validate the public TTNN descriptor helper's tensor contract."""
+) -> Any:
+    """Validate one tensor binding and return its operation tensor."""
     tensor_index = segment.tensor_index
+    tensor_count = len(tensors)
     if tensor_index is None or tensor_index < 0 or tensor_index >= tensor_count:
         raise ValueError(
             f"DFB[{config.dfb_index}] tensor backing index {tensor_index} "
             f"is outside [0, {tensor_count})"
         )
+    tensor = tensors[tensor_index]
     if tensor is None:
         raise ValueError(
             f"DFB[{config.dfb_index}] tensor backing {tensor_index} is absent"
@@ -593,6 +594,7 @@ def _validate_tensor_backed_dfb_binding(
         byte_size=total_size,
         context=context,
     )
+    return tensor
 
 
 def _validate_tensor_backing_aliases(
@@ -604,14 +606,7 @@ def _validate_tensor_backing_aliases(
         for segment in config.storage_segments:
             if not segment.is_tensor_backed:
                 continue
-            tensor_index = segment.tensor_index
-            if tensor_index is None or tensor_index < 0 or tensor_index >= len(tensors):
-                raise ValueError(
-                    f"DFB[{config.dfb_index}] tensor backing index {tensor_index} "
-                    f"is outside [0, {len(tensors)})"
-                )
-            tensor = tensors[tensor_index]
-            _validate_tensor_backed_dfb_binding(tensor, config, segment, len(tensors))
+            tensor = _validate_tensor_backed_dfb_binding(tensors, config, segment)
             try:
                 absolute_start = int(tensor.buffer_address()) + segment.byte_offset
             except (AttributeError, TypeError, ValueError):
@@ -619,7 +614,10 @@ def _validate_tensor_backing_aliases(
                     f"DFB[{config.dfb_index}] tensor backing does not expose a "
                     "valid buffer_address()"
                 ) from None
-            absolute_end = absolute_start + segment.byte_size
+            absolute_end = (
+                absolute_start
+                + config.num_tiles * config.block_count * config.page_size
+            )
             nodes = frozenset(segment.nodes)
             for (
                 previous_index,
@@ -665,7 +663,8 @@ def build_cb_descriptors(
             receiver base is passed as a common runtime argument.
 
     Returns:
-        List of ttnn.CBDescriptor objects.
+        List of ttnn.CBDescriptor objects. A configuration with storage
+        segments produces one descriptor per segment.
     """
     _ensure_ttnn()
     if ttnn is None:
@@ -784,16 +783,9 @@ def build_cb_descriptors(
                 )
                 continue
 
-            if (
-                segment.tensor_index is None
-                or segment.tensor_index < 0
-                or segment.tensor_index >= len(tensors)
-            ):
-                raise ValueError(
-                    f"DFB[{config.dfb_index}] tensor backing index "
-                    f"{segment.tensor_index} is outside [0, {len(tensors)})"
-                )
-            tensor = tensors[segment.tensor_index]
+            tensor_index = segment.tensor_index
+            assert tensor_index is not None
+            tensor = tensors[tensor_index]
             cb_descriptors.append(
                 ttnn.cb_descriptor_from_sharded_tensor(
                     cb_index,
