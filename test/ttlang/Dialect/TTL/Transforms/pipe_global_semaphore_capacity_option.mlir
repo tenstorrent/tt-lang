@@ -18,17 +18,18 @@
 // LOCAL-NEXT: ttkernel.noc_semaphore_set(%[[LOCAL_CAPACITY_INIT_PTR]],
 // LOCAL: %[[LOCAL_COMPLETION_WAIT:.*]] = ttkernel.get_semaphore(%[[LOCAL_COMPLETION_INDEX]])
 // LOCAL-NEXT: %[[LOCAL_COMPLETION_WAIT_PTR:.*]] = ttkernel.reinterpret_cast(%[[LOCAL_COMPLETION_WAIT]])
-// LOCAL-NEXT: ttkernel.experimental.semaphore_wait_min(%[[LOCAL_COMPLETION_WAIT_PTR]],
-// LOCAL: ttkernel.cb_pop_front
 // LOCAL-NEXT: %[[LOCAL_CAPACITY_RELEASE:.*]] = ttkernel.get_semaphore(%[[LOCAL_CAPACITY_INDEX]])
 // LOCAL: %[[LOCAL_CAPACITY_RELEASE_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, %[[LOCAL_CAPACITY_RELEASE]],
+// LOCAL: ttkernel.experimental.semaphore_wait_min(%[[LOCAL_COMPLETION_WAIT_PTR]],
+// LOCAL: ttkernel.cb_pop_front
 // LOCAL-NEXT: ttkernel.noc_semaphore_inc(%[[LOCAL_CAPACITY_RELEASE_NOC]],
 // LOCAL: %[[LOCAL_CAPACITY_ACQUIRE:.*]] = ttkernel.get_semaphore(%[[LOCAL_CAPACITY_INDEX]])
 // LOCAL-NEXT: %[[LOCAL_CAPACITY_ACQUIRE_PTR:.*]] = ttkernel.reinterpret_cast(%[[LOCAL_CAPACITY_ACQUIRE]])
-// LOCAL: ttkernel.experimental.semaphore_wait_min(%[[LOCAL_CAPACITY_ACQUIRE_PTR]],
 // LOCAL: %[[LOCAL_COMPLETION_SIGNAL:.*]] = ttkernel.get_semaphore(%[[LOCAL_COMPLETION_INDEX]])
 // LOCAL: %[[LOCAL_COMPLETION_SIGNAL_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, %[[LOCAL_COMPLETION_SIGNAL]],
-// LOCAL-NEXT: ttkernel.noc_semaphore_inc(%[[LOCAL_COMPLETION_SIGNAL_NOC]],
+// LOCAL: ttkernel.experimental.semaphore_wait_min(%[[LOCAL_CAPACITY_ACQUIRE_PTR]],
+// LOCAL: ttkernel.noc_async_write
+// LOCAL: ttkernel.noc_semaphore_inc(%[[LOCAL_COMPLETION_SIGNAL_NOC]],
 
 // Global-only mode preserves the same two-counter plan and uses no local ids.
 // GLOBAL-LABEL: module attributes
@@ -42,17 +43,18 @@
 // GLOBAL-NEXT: ttkernel.noc_semaphore_set(%[[GLOBAL_CAPACITY_INIT_PTR]],
 // GLOBAL: %[[GLOBAL_COMPLETION_WAIT:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_COMPLETION_INDEX]])
 // GLOBAL-NEXT: %[[GLOBAL_COMPLETION_WAIT_PTR:.*]] = ttkernel.reinterpret_cast(%[[GLOBAL_COMPLETION_WAIT]])
-// GLOBAL-NEXT: ttkernel.experimental.semaphore_wait_min(%[[GLOBAL_COMPLETION_WAIT_PTR]],
-// GLOBAL: ttkernel.cb_pop_front
 // GLOBAL-NEXT: %[[GLOBAL_CAPACITY_RELEASE:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_CAPACITY_INDEX]])
 // GLOBAL: %[[GLOBAL_CAPACITY_RELEASE_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, %[[GLOBAL_CAPACITY_RELEASE]],
+// GLOBAL: ttkernel.experimental.semaphore_wait_min(%[[GLOBAL_COMPLETION_WAIT_PTR]],
+// GLOBAL: ttkernel.cb_pop_front
 // GLOBAL-NEXT: ttkernel.noc_semaphore_inc(%[[GLOBAL_CAPACITY_RELEASE_NOC]],
 // GLOBAL: %[[GLOBAL_CAPACITY_ACQUIRE:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_CAPACITY_INDEX]])
 // GLOBAL-NEXT: %[[GLOBAL_CAPACITY_ACQUIRE_PTR:.*]] = ttkernel.reinterpret_cast(%[[GLOBAL_CAPACITY_ACQUIRE]])
-// GLOBAL: ttkernel.experimental.semaphore_wait_min(%[[GLOBAL_CAPACITY_ACQUIRE_PTR]],
 // GLOBAL: %[[GLOBAL_COMPLETION_SIGNAL:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_COMPLETION_INDEX]])
 // GLOBAL: %[[GLOBAL_COMPLETION_SIGNAL_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, %[[GLOBAL_COMPLETION_SIGNAL]],
-// GLOBAL-NEXT: ttkernel.noc_semaphore_inc(%[[GLOBAL_COMPLETION_SIGNAL_NOC]],
+// GLOBAL: ttkernel.experimental.semaphore_wait_min(%[[GLOBAL_CAPACITY_ACQUIRE_PTR]],
+// GLOBAL: ttkernel.noc_async_write
+// GLOBAL: ttkernel.noc_semaphore_inc(%[[GLOBAL_COMPLETION_SIGNAL_NOC]],
 
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @select_capacity_counter_storage()
