@@ -115,6 +115,72 @@ func.func @passthrough_subtile(%arg: tensor<1x1x!ttcore.tile<16x16, bf16>>)
 
 // -----
 
+// Direct fill lowering preserves the result's physical tile dimensions.
+// CHECK-LABEL: func.func @direct_fill_subtile
+// CHECK:       %[[RESULT:.*]] = ttl.compute
+// CHECK-NEXT:  ^bb0(%[[OUTPUT:.*]]: !ttcore.tile<16x32, bf16>):
+// CHECK-NEXT:    %[[ROW:.*]] = ttl.iter_index 0
+// CHECK-NEXT:    %[[COL:.*]] = ttl.iter_index 1
+// CHECK-NEXT:    %[[FILL:.*]] = ttl.tile_fill 1.250000e+00{{.*}} : !ttcore.tile<16x32, bf16>
+// CHECK-NEXT:    ttl.tile_store %[[FILL]], %{{.*}}[%[[ROW]], %[[COL]]]
+// CHECK-NEXT:    ttl.yield
+// CHECK-NEXT:  } -> tensor<1x1x!ttcore.tile<16x32, bf16>>
+func.func @direct_fill_subtile()
+    -> tensor<1x1x!ttcore.tile<16x32, bf16>> {
+  %output_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<16x32, bf16>, 2>
+  %output = ttl.cb_reserve %output_dfb
+      : <[1, 1], !ttcore.tile<16x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<16x32, bf16>>
+  %result = ttl.fill 1.250000e+00
+      : tensor<1x1x!ttcore.tile<16x32, bf16>>
+  ttl.store %result, %output
+      : tensor<1x1x!ttcore.tile<16x32, bf16>>,
+        tensor<1x1x!ttcore.tile<16x32, bf16>>
+  return %result : tensor<1x1x!ttcore.tile<16x32, bf16>>
+}
+
+// -----
+
+// Fused fill lowering preserves physical tile dimensions through its consumer.
+// CHECK-LABEL: func.func @fused_fill_subtile
+// CHECK:       %[[RESULT:.*]] = ttl.compute
+// CHECK-NEXT:  ^bb0(%[[INPUT:.*]]: !ttcore.tile<32x16, f32>, %[[OUTPUT:.*]]: !ttcore.tile<32x16, f32>):
+// CHECK-NEXT:    %[[ROW:.*]] = ttl.iter_index 0
+// CHECK-NEXT:    %[[COL:.*]] = ttl.iter_index 1
+// CHECK-NEXT:    %[[FILL:.*]] = ttl.tile_fill 1.250000e+00{{.*}} : !ttcore.tile<32x16, f32>
+// CHECK-NEXT:    %[[SUM:.*]] = ttl.tile_add %[[INPUT]], %[[FILL]]{{.*}} -> !ttcore.tile<32x16, f32>
+// CHECK-NEXT:    ttl.tile_store %[[SUM]], %{{.*}}[%[[ROW]], %[[COL]]]
+// CHECK-NEXT:    ttl.yield
+// CHECK-NEXT:  } -> tensor<1x1x!ttcore.tile<32x16, f32>>
+func.func @fused_fill_subtile(
+    %arg: tensor<1x1x!ttcore.tile<32x16, f32>>)
+    -> tensor<1x1x!ttcore.tile<32x16, f32>> {
+  %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x16, f32>, 2>
+  %output_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x16, f32>, 2>
+  %input = ttl.attach_cb %arg, %input_dfb
+      : (tensor<1x1x!ttcore.tile<32x16, f32>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x16, f32>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x16, f32>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[1, 1], !ttcore.tile<32x16, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x16, f32>>
+  %fill = ttl.fill 1.250000e+00
+      : tensor<1x1x!ttcore.tile<32x16, f32>>
+  %result = ttl.add %input, %fill
+      : tensor<1x1x!ttcore.tile<32x16, f32>>,
+        tensor<1x1x!ttcore.tile<32x16, f32>>
+        -> tensor<1x1x!ttcore.tile<32x16, f32>>
+  ttl.store %result, %output
+      : tensor<1x1x!ttcore.tile<32x16, f32>>,
+        tensor<1x1x!ttcore.tile<32x16, f32>>
+  return %result : tensor<1x1x!ttcore.tile<32x16, f32>>
+}
+
+// -----
+
 // Integer tile types pass through compute creation without scalar-type
 // reconstruction.
 // CHECK-LABEL: func.func @integer_passthrough_subtile

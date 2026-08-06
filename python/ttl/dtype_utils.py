@@ -4,6 +4,8 @@
 
 """Data type conversion utilities between PyTorch, TTNN, and MLIR types."""
 
+import operator
+
 import torch
 
 from .constants import DEFAULT_TILE_SIZE
@@ -201,6 +203,33 @@ def format_name_to_ttnn_dtype(name: str):
             )
 
 
+def normalize_tile_dimensions(tile) -> tuple[int, int]:
+    """Return validated TT-Metal physical tile dimensions."""
+    try:
+        tile_height, tile_width = tile
+        normalized_tile = (
+            operator.index(tile_height),
+            operator.index(tile_width),
+        )
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"Tile must contain exactly two integer dimensions, got {tile!r}"
+        ) from None
+
+    if normalized_tile[0] <= 0 or normalized_tile[1] <= 0:
+        raise ValueError(f"Tile dimensions must be positive, got {normalized_tile}")
+    try:
+        is_supported_tile = ttcore.ir.TileType.is_tt_metal_tile_shape(*normalized_tile)
+    except (OverflowError, TypeError):
+        is_supported_tile = False
+    if not is_supported_tile:
+        raise ValueError(
+            "Tile dimensions are not constructible by tt-metal: "
+            f"{normalized_tile[0]}x{normalized_tile[1]}"
+        )
+    return normalized_tile
+
+
 def tile_bytes_from_dtype(dtype, tile=(DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)) -> int:
     """
     Calculate tile size in bytes from ttnn dtype.
@@ -221,22 +250,7 @@ def tile_bytes_from_dtype(dtype, tile=(DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)) ->
     Raises:
         ValueError: If dtype or its tile dimensions are not supported
     """
-    if len(tile) != 2:
-        raise ValueError(f"Expected 2D tile dimensions, got {tile}")
-    tile_height, tile_width = tile
-    if tile_height <= 0 or tile_width <= 0:
-        raise ValueError(f"Tile dimensions must be positive, got {tile}")
-    try:
-        is_supported_tile = ttcore.ir.TileType.is_tt_metal_tile_shape(
-            tile_height, tile_width
-        )
-    except (OverflowError, TypeError):
-        is_supported_tile = False
-    if not is_supported_tile:
-        raise ValueError(
-            "Tile dimensions are not constructible by tt-metal: "
-            f"{tile_height}x{tile_width}"
-        )
+    tile_height, tile_width = normalize_tile_dimensions(tile)
 
     _ensure_ttnn()
     if ttnn is None:
