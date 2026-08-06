@@ -16,12 +16,10 @@ class _FakeTensor:
         device,
         address=0x2000,
         dtype=None,
-        size_per_bank=1 << 20,
         tile_shape=(32, 32),
     ):
         self._device = device
         self._address = address
-        self.size_per_bank = size_per_bank
         self.dtype = dtype
         self.layout = "TILE"
         self.tile_shape = tile_shape
@@ -150,11 +148,6 @@ class _FakeTTNN:
     def cb_descriptor_from_sharded_tensor(
         cb_index, tensor, total_size, core_ranges, address_offset=0
     ):
-        if (
-            hasattr(tensor, "size_per_bank")
-            and address_offset + total_size > tensor.size_per_bank
-        ):
-            raise ValueError("address offset + total size exceeds buffer size")
         return {
             "cb_index": cb_index,
             "tensor": tensor,
@@ -672,15 +665,25 @@ def test_build_cb_descriptors_uses_current_tensor_allocation(monkeypatch):
     assert second_descriptor["tensor"] is second_tensor
 
 
-def test_build_cb_descriptors_rejects_range_beyond_current_allocation(monkeypatch):
-    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+def test_build_cb_descriptors_preserves_descriptor_helper_failure(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+
+    def fail_descriptor_creation(*_args, **_kwargs):
+        raise RuntimeError("TTNN descriptor construction failed")
+
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     monkeypatch.setattr(
         kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
     )
+    monkeypatch.setattr(
+        fake_ttnn,
+        "cb_descriptor_from_sharded_tensor",
+        fail_descriptor_creation,
+    )
     expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
-    tensor = _FakeTensor(object(), dtype=expected_dtype, size_per_bank=1024)
+    tensor = _FakeTensor(object(), dtype=expected_dtype)
 
-    with pytest.raises(ValueError, match="exceeds buffer size"):
+    with pytest.raises(RuntimeError, match="TTNN descriptor construction failed"):
         kernel_runner.build_cb_descriptors(
             tensors=[tensor],
             cb_configs=[_tensor_backing_config(0, nodes=((0, 0),))],
