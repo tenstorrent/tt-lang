@@ -10,9 +10,20 @@ from ttl import dataflow_buffer
 
 
 class _FakeMemoryConfig:
-    def __init__(self, buffer_type="L1", memory_layout="HEIGHT_SHARDED"):
+    def __init__(
+        self,
+        buffer_type="L1",
+        memory_layout="HEIGHT_SHARDED",
+        shard_shape=(32, 512),
+    ):
         self.buffer_type = buffer_type
         self.memory_layout = memory_layout
+        self.shard_spec = _FakeShardSpec(shard_shape)
+
+
+class _FakeShardSpec:
+    def __init__(self, shape):
+        self.shape = shape
 
 
 class _FakeTile:
@@ -31,10 +42,11 @@ class _FakeTensor:
         layout="TILE",
         buffer_type="L1",
         memory_layout="HEIGHT_SHARDED",
+        shard_shape=(32, 512),
     ):
         self.dtype = dtype
         self.layout = layout
-        self._memory_config = _FakeMemoryConfig(buffer_type, memory_layout)
+        self._memory_config = _FakeMemoryConfig(buffer_type, memory_layout, shard_shape)
 
     def memory_config(self):
         return self._memory_config
@@ -60,6 +72,34 @@ def test_make_tensor_backed_dfb_records_complete_capacity(monkeypatch):
     assert dfb.block_count == 2
     assert dfb.byte_offset == 2048
     assert dfb.byte_size == 16384
+
+
+def test_make_tensor_backed_dfb_accepts_range_ending_at_shard_boundary(monkeypatch):
+    monkeypatch.setattr(
+        "ttl.dtype_utils.is_ttnn_tensor", lambda tensor: isinstance(tensor, _FakeTensor)
+    )
+
+    dfb = dataflow_buffer.make_tensor_backed_dfb(
+        _FakeTensor(shard_shape=(32, 96)),
+        shape=(1, 2),
+        byte_offset=2048,
+    )
+
+    assert dfb.byte_offset == 2048
+    assert dfb.byte_size == 4096
+
+
+def test_make_tensor_backed_dfb_rejects_range_past_shard_boundary(monkeypatch):
+    monkeypatch.setattr(
+        "ttl.dtype_utils.is_ttnn_tensor", lambda tensor: isinstance(tensor, _FakeTensor)
+    )
+
+    with pytest.raises(ValueError, match="exceeds logical per-shard size 4096"):
+        dataflow_buffer.make_tensor_backed_dfb(
+            _FakeTensor(shard_shape=(32, 64)),
+            shape=(1, 2),
+            byte_offset=2048,
+        )
 
 
 @pytest.mark.parametrize(
@@ -127,12 +167,12 @@ def test_make_tensor_backed_dfb_requires_ttnn_tensor(monkeypatch):
 @pytest.mark.parametrize(
     ("tensor", "message"),
     [
-        (_FakeTensor(buffer_type="DRAM"), "requires an L1 tensor"),
+        (_FakeTensor(buffer_type="DRAM"), "must use L1 storage"),
         (
             _FakeTensor(memory_layout="WIDTH_SHARDED"),
-            "requires height-sharded memory",
+            "must be height-sharded",
         ),
-        (_FakeTensor(layout="ROW_MAJOR"), "requires TILE layout"),
+        (_FakeTensor(layout="ROW_MAJOR"), "must use TILE layout"),
         (_FakeTensor(dtype="int32"), "supports BF16 and FP32"),
     ],
     ids=["dram", "width_sharded", "row_major", "int32"],

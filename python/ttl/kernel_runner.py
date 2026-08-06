@@ -34,7 +34,12 @@ def _ensure_ttnn():
     return ttnn
 
 
-from .dataflow_buffer import DFBStorageSegment, PhysicalDFBConfig
+from .dataflow_buffer import (
+    DFBStorageSegment,
+    PhysicalDFBConfig,
+    _validate_tensor_backed_dfb_range,
+    _validate_tensor_backed_dfb_tensor,
+)
 from .constants import DEFAULT_L1_CB_BUDGET_BYTES
 from .dtype_utils import format_name_to_ttnn_dtype
 
@@ -525,7 +530,7 @@ def _make_node_core_ranges(nodes: Tuple[Tuple[int, int], ...]) -> Any:
     )
 
 
-def _validate_tensor_backed_dfb_tensor(
+def _validate_tensor_backed_dfb_binding(
     tensor: Any,
     config: PhysicalDFBConfig,
     segment: DFBStorageSegment,
@@ -542,38 +547,28 @@ def _validate_tensor_backed_dfb_tensor(
         raise ValueError(
             f"DFB[{config.dfb_index}] tensor backing {tensor_index} is absent"
         )
-    memory_config = tensor.memory_config()
-    if "L1" not in str(memory_config.buffer_type):
-        raise ValueError(f"DFB[{config.dfb_index}] tensor backing must use L1 storage")
-    if "HEIGHT_SHARDED" not in str(memory_config.memory_layout):
-        raise ValueError(
-            f"DFB[{config.dfb_index}] tensor backing must be height-sharded"
-        )
-    if hasattr(tensor, "layout") and "TILE" not in str(tensor.layout):
-        raise ValueError(f"DFB[{config.dfb_index}] tensor backing must use TILE layout")
     if config.data_format not in {"bfloat16", "bf16", "float32", "f32"}:
         raise ValueError(
             f"DFB[{config.dfb_index}] tensor backing format "
             f"{config.data_format} is not supported; expected BF16 or FP32"
         )
+    context = f"DFB[{config.dfb_index}] tensor backing"
+    properties = _validate_tensor_backed_dfb_tensor(tensor, context=context)
     expected_dtype = format_name_to_ttnn_dtype(config.data_format)
     if tensor.dtype != expected_dtype:
         raise ValueError(
             f"DFB[{config.dfb_index}] tensor backing dtype {tensor.dtype} "
             f"does not match {expected_dtype}"
         )
-    tensor_tile = tensor.get_tile()
-    tensor_tile_shape = tuple(int(dimension) for dimension in tensor_tile.tile_shape)
-    if tensor_tile_shape != config.tile:
+    if properties.tile_shape != config.tile:
         raise ValueError(
             f"DFB[{config.dfb_index}] tensor backing tile shape "
-            f"{tensor_tile_shape} does not match {config.tile}"
+            f"{properties.tile_shape} does not match {config.tile}"
         )
-    tensor_page_size = int(tensor_tile.get_tile_size(tensor.dtype))
-    if tensor_page_size != config.page_size:
+    if properties.page_size != config.page_size:
         raise ValueError(
             f"DFB[{config.dfb_index}] tensor backing page size "
-            f"{tensor_page_size} does not match {config.page_size}"
+            f"{properties.page_size} does not match {config.page_size}"
         )
     try:
         tensor_nodes = {
@@ -597,22 +592,12 @@ def _validate_tensor_backed_dfb_tensor(
             f"DFB[{config.dfb_index}] tensor backing byte_size must equal "
             f"{total_size}, got {segment.byte_size}"
         )
-    descriptor_limit = (1 << 32) - 1
-    if (
-        segment.byte_offset < 0
-        or segment.byte_offset > descriptor_limit
-        or total_size > descriptor_limit
-        or segment.byte_offset + total_size > descriptor_limit
-    ):
-        raise ValueError(
-            f"DFB[{config.dfb_index}] tensor backing byte range exceeds the uint32 "
-            "descriptor fields"
-        )
-    if segment.byte_offset % config.page_size != 0:
-        raise ValueError(
-            f"DFB[{config.dfb_index}] byte_offset must be aligned to its "
-            f"{config.page_size}-byte page size"
-        )
+    _validate_tensor_backed_dfb_range(
+        properties,
+        byte_offset=segment.byte_offset,
+        byte_size=total_size,
+        context=context,
+    )
 
 
 def _validate_tensor_backing_aliases(
@@ -631,7 +616,7 @@ def _validate_tensor_backing_aliases(
                     f"is outside [0, {len(tensors)})"
                 )
             tensor = tensors[tensor_index]
-            _validate_tensor_backed_dfb_tensor(tensor, config, segment, len(tensors))
+            _validate_tensor_backed_dfb_binding(tensor, config, segment, len(tensors))
             try:
                 absolute_start = int(tensor.buffer_address()) + segment.byte_offset
             except (AttributeError, TypeError, ValueError):

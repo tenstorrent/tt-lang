@@ -17,12 +17,14 @@ class _FakeTensor:
         address=0x2000,
         dtype=None,
         tile_shape=(32, 32),
+        shard_shape=(32, 64),
     ):
         self._device = device
         self._address = address
         self.dtype = dtype
         self.layout = "TILE"
         self.tile_shape = tile_shape
+        self.shard_shape = shard_shape
 
     def device(self):
         return self._device
@@ -33,11 +35,14 @@ class _FakeTensor:
     def get_tile(self):
         return _FakeTTNN.Tile(self.tile_shape)
 
-    @staticmethod
-    def memory_config():
+    def memory_config(self):
+        class ShardSpec:
+            shape = self.shard_shape
+
         class MemoryConfig:
             buffer_type = "L1"
             memory_layout = "HEIGHT_SHARDED"
+            shard_spec = ShardSpec()
 
         return MemoryConfig()
 
@@ -553,6 +558,29 @@ def test_build_cb_descriptors_binds_tensor_on_exact_nodes(monkeypatch):
     assert selected == [(0, 0), (1, 0)]
 
 
+def test_build_cb_descriptors_rejects_range_past_shard_boundary(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+    )
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    tensor = _FakeTensor(object(), dtype=expected_dtype, shard_shape=(32, 32))
+
+    with pytest.raises(ValueError, match="exceeds logical per-shard size 2048"):
+        kernel_runner.build_cb_descriptors(
+            tensors=[tensor],
+            cb_configs=[
+                _tensor_backing_config(
+                    0,
+                    nodes=((0, 0),),
+                    byte_offset=2048,
+                    byte_size=2048,
+                )
+            ],
+            core_ranges=_FakeCoreRanges(),
+        )
+
+
 def test_build_cb_descriptors_rejects_node_without_tensor_shard(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
@@ -630,9 +658,7 @@ def test_build_cb_descriptors_reports_unsupported_tensor_backing_format(monkeypa
         ),
     )
 
-    with pytest.raises(
-        ValueError, match="tensor backing format bfp8 is not supported"
-    ):
+    with pytest.raises(ValueError, match="tensor backing format bfp8 is not supported"):
         kernel_runner.build_cb_descriptors(
             tensors=[tensor],
             cb_configs=[config],

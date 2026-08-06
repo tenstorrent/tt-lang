@@ -13,6 +13,111 @@ from ttl.ir import *
 from ._src.ttl_ast import syntax
 from ttl.dialects import ttl
 
+_DFB_DESCRIPTOR_UINT32_MAX = (1 << 32) - 1
+
+
+@dataclass(frozen=True)
+class _TensorBackedDFBTensorProperties:
+    tile_shape: Tuple[int, int]
+    page_size: int
+    logical_shard_size_bytes: int
+
+
+def _validate_tensor_backed_dfb_tensor(
+    tensor: Any, *, context: str
+) -> _TensorBackedDFBTensorProperties:
+    """Validate public TTNN properties used by tensor-backed DFB storage."""
+    try:
+        memory_config = tensor.memory_config()
+    except (AttributeError, RuntimeError, TypeError, ValueError) as error:
+        raise ValueError(
+            f"{context} must expose a TTNN memory configuration"
+        ) from error
+
+    if "L1" not in str(memory_config.buffer_type):
+        raise ValueError(f"{context} must use L1 storage")
+    if "HEIGHT_SHARDED" not in str(memory_config.memory_layout):
+        raise ValueError(f"{context} must be height-sharded")
+    if "TILE" not in str(getattr(tensor, "layout", None)):
+        raise ValueError(f"{context} must use TILE layout")
+
+    dtype_name = str(tensor.dtype).rsplit(".", maxsplit=1)[-1].lower()
+    if dtype_name not in {"bfloat16", "float32"}:
+        raise ValueError(
+            f"{context} supports BF16 and FP32 tensors, got {tensor.dtype}"
+        )
+
+    try:
+        tile = tensor.get_tile()
+        tile_shape = tuple(int(dimension) for dimension in tile.tile_shape)
+        page_size = int(tile.get_tile_size(tensor.dtype))
+    except (AttributeError, RuntimeError, TypeError, ValueError) as error:
+        raise ValueError(f"{context} must expose a valid native tile") from error
+    if len(tile_shape) != 2 or any(dimension <= 0 for dimension in tile_shape):
+        raise ValueError(f"{context} has invalid native tile shape {tile_shape}")
+    if page_size <= 0:
+        raise ValueError(f"{context} has invalid native tile size {page_size}")
+
+    shard_spec = getattr(memory_config, "shard_spec", None)
+    try:
+        shard_shape = tuple(int(dimension) for dimension in shard_spec.shape)
+    except (AttributeError, TypeError, ValueError) as error:
+        raise ValueError(f"{context} must expose a valid shard_spec.shape") from error
+    if len(shard_shape) != 2 or any(dimension <= 0 for dimension in shard_shape):
+        raise ValueError(f"{context} has invalid shard shape {shard_shape}")
+
+    shard_rows, shard_columns = shard_shape
+    tile_rows, tile_columns = tile_shape
+    if shard_rows % tile_rows != 0 or shard_columns % tile_columns != 0:
+        raise ValueError(
+            f"{context} shard shape {shard_shape} must be divisible by native "
+            f"tile shape {tile_shape}"
+        )
+    logical_shard_size_bytes = (
+        (shard_rows // tile_rows) * (shard_columns // tile_columns) * page_size
+    )
+    return _TensorBackedDFBTensorProperties(
+        tile_shape=tile_shape,
+        page_size=page_size,
+        logical_shard_size_bytes=logical_shard_size_bytes,
+    )
+
+
+def _validate_tensor_backed_dfb_range(
+    properties: _TensorBackedDFBTensorProperties,
+    *,
+    byte_offset: int,
+    byte_size: int,
+    context: str,
+) -> None:
+    """Reject allocation-alignment slack that is not logical tensor data."""
+    if byte_offset < 0 or byte_size <= 0:
+        raise ValueError(f"{context} byte range must have positive size")
+    if (
+        byte_offset > _DFB_DESCRIPTOR_UINT32_MAX
+        or byte_size > _DFB_DESCRIPTOR_UINT32_MAX
+    ):
+        raise ValueError(f"{context} byte range exceeds the uint32 descriptor fields")
+    if byte_offset > _DFB_DESCRIPTOR_UINT32_MAX - byte_size:
+        raise ValueError(
+            f"{context} byte range end exceeds the uint32 descriptor fields"
+        )
+    if byte_offset % properties.page_size != 0:
+        raise ValueError(
+            f"{context} byte_offset must be aligned to the "
+            f"{properties.page_size}-byte DFB page size"
+        )
+    if (
+        byte_size > properties.logical_shard_size_bytes
+        or byte_offset > properties.logical_shard_size_bytes - byte_size
+    ):
+        raise ValueError(
+            f"{context} byte range [{byte_offset}, {byte_offset + byte_size}) "
+            "exceeds logical per-shard size "
+            f"{properties.logical_shard_size_bytes}"
+        )
+
+
 # Module-level counter for DFB index assignment in creation order
 _cb_index_counter = 0
 
@@ -236,45 +341,21 @@ def make_tensor_backed_dfb(
     ):
         raise ValueError(f"DFB shape dimensions must be positive integers, got {shape}")
 
-    memory_config = tensor.memory_config()
-    if "L1" not in str(memory_config.buffer_type):
-        raise ValueError("tensor-backed DFB storage requires an L1 tensor")
-    if "HEIGHT_SHARDED" not in str(memory_config.memory_layout):
-        raise ValueError(
-            "tensor-backed DFB storage currently requires height-sharded memory"
-        )
-    if hasattr(tensor, "layout") and "TILE" not in str(tensor.layout):
-        raise ValueError("tensor-backed DFB storage requires TILE layout")
-    dtype_name = str(tensor.dtype).rsplit(".", maxsplit=1)[-1].lower()
-    if dtype_name not in {"bfloat16", "float32"}:
-        raise ValueError(
-            "tensor-backed DFB storage currently supports BF16 and FP32, "
-            f"got {tensor.dtype}"
-        )
-
-    tile = tensor.get_tile()
-    tile_shape = tuple(tile.tile_shape)
-    page_size = int(tile.get_tile_size(tensor.dtype))
-    byte_size = math.prod(shape) * block_count * page_size
-    descriptor_limit = (1 << 32) - 1
-    if byte_offset > descriptor_limit or byte_size > descriptor_limit:
-        raise ValueError(
-            "tensor-backed DFB byte range exceeds the uint32 descriptor fields"
-        )
-    if byte_offset + byte_size > descriptor_limit:
-        raise ValueError(
-            "tensor-backed DFB byte range end exceeds the uint32 descriptor fields"
-        )
-    if byte_offset % page_size != 0:
-        raise ValueError(
-            f"byte_offset must be aligned to the {page_size}-byte DFB page size"
-        )
+    context = "tensor-backed DFB storage"
+    properties = _validate_tensor_backed_dfb_tensor(tensor, context=context)
+    byte_size = math.prod(shape) * block_count * properties.page_size
+    _validate_tensor_backed_dfb_range(
+        properties,
+        byte_offset=byte_offset,
+        byte_size=byte_size,
+        context=context,
+    )
 
     return DataflowBuffer(
         tensor,
         shape,
         block_count,
-        tile=tile_shape,
+        tile=properties.tile_shape,
         tensor_backing=tensor,
         byte_offset=byte_offset,
         byte_size=byte_size,
