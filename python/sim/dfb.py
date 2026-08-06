@@ -957,6 +957,19 @@ class Block:
         return self._shape
 
     @property
+    def tile(self) -> Tuple[int, int]:
+        """Get the physical dimensions of one tile in this block."""
+        if self.layout == ROW_MAJOR_LAYOUT:
+            raise ValueError("Row-major blocks do not have physical tile dimensions")
+        if _is_dry_run():
+            return TILE_SHAPE
+        element_shape = self._buf.shape
+        return (
+            element_shape[-2] // self._shape[-2],
+            element_shape[-1] // self._shape[-1],
+        )
+
+    @property
     def layout(self) -> IndexType:
         """Get the layout of the backing tensor (TILE_LAYOUT or ROW_MAJOR_LAYOUT)."""
         return self._buf.layout

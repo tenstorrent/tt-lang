@@ -24,6 +24,7 @@ from ttl.ir import (
 from ._generated_elementwise import *  # noqa: F401,F403
 from ._generated_elementwise import __all__ as _generated_all
 from ._src.ttl_ast import syntax
+from .constants import DEFAULT_TILE_SIZE
 from ttl.dialects import ttl
 from .pipe import Pipe
 
@@ -914,16 +915,22 @@ def transpose(input: TensorBlock) -> TensorBlock:
 
 
 @syntax("fill")
-def fill(value, *, shape, dtype=None) -> TensorBlock:
+def fill(
+    value,
+    *,
+    shape,
+    dtype=None,
+    tile=(DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE),
+) -> TensorBlock:
     """Produce a block of ``shape`` filled with a constant value.
 
-    Matches the spec form ``ttl.block.fill(value, shape)``. ``dtype`` selects
-    the per-element tile dtype and defaults to bf16, matching the simulator's
-    spec-form default. Accepts ``ttcore.DataType``, a torch dtype, or a ttnn
-    dtype. The downstream ``ttl.store`` determines the output CB used during
-    lowering; no output operand is required.
+    ``dtype`` selects the per-element dtype and defaults to bf16. ``tile``
+    selects the physical tile dimensions and defaults to 32x32. The downstream
+    ``ttl.store`` determines the output DFB used during lowering; no output
+    operand is required.
     """
     from ttl.dialects import ttcore
+    from .dtype_utils import normalize_tile_dimensions
     from .dtype_utils import tensor_dtype_to_ttcore_datatype
 
     fill_val = _get_constant_float(value)
@@ -932,6 +939,9 @@ def fill(value, *, shape, dtype=None) -> TensorBlock:
         raise ValueError("fill requires a non-empty shape")
     if any(s <= 0 for s in shape_list):
         raise ValueError(f"fill shape must be all-positive, got {tuple(shape_list)}")
+    tile_dimensions = normalize_tile_dimensions(
+        tuple(_get_constant_int(dimension) for dimension in tile)
+    )
 
     if dtype is None:
         ttcore_dtype = ttcore.DataType.BFloat16
@@ -941,7 +951,7 @@ def fill(value, *, shape, dtype=None) -> TensorBlock:
         ttcore_dtype = tensor_dtype_to_ttcore_datatype(dtype)
 
     ctx = Context.current
-    tile_type = ttcore.ir.TileType.get(ctx, 32, 32, ttcore_dtype)
+    tile_type = ttcore.ir.TileType.get(ctx, *tile_dimensions, ttcore_dtype)
     result_type = RankedTensorType.get(shape_list, tile_type)
     value_attr = FloatAttr.get(F32Type.get(ctx), fill_val)
     return ttl.fill(result_type, value_attr)

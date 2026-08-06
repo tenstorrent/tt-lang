@@ -16,7 +16,8 @@ import ttl
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from ttlang_test_utils import assert_allclose, to_l1
+from ttlang_test_utils import assert_allclose, to_dram, to_l1
+from utils.correctness import assert_allclose as assert_result_allclose
 
 
 @ttl.operation(grid=(1, 1))
@@ -157,3 +158,91 @@ def test_fill_shape_from_expression(device):
 
     expected = torch.full((32, 32), 7.0, dtype=torch.bfloat16)
     assert_allclose(result, expected, rtol=1e-2, atol=1e-2)
+
+
+@ttl.operation(grid=(1, 1))
+def subtile_fill_kernel(out):
+    """Fill an output DFB using its dtype and physical tile dimensions."""
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute_fn():
+        with out_dfb.reserve() as out_block:
+            out_block.store(
+                ttl.block.fill(
+                    1.25,
+                    shape=out_block.shape,
+                    dtype=out_block.dtype,
+                    tile=out_block.tile,
+                )
+            )
+
+    @ttl.datamovement()
+    def dm_read():
+        pass
+
+    @ttl.datamovement()
+    def dm_write():
+        with out_dfb.wait() as out_block:
+            ttl.copy(out_block, out[0, 0]).wait()
+
+
+@ttl.operation(grid=(1, 1))
+def subtile_fill_add_kernel(inp, out):
+    """Fuse a physical-tile-aware fill with elementwise addition."""
+    inp_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute_fn():
+        with inp_dfb.wait() as inp_block, out_dfb.reserve() as out_block:
+            filled = ttl.block.fill(
+                1.25,
+                shape=out_block.shape,
+                dtype=out_block.dtype,
+                tile=out_block.tile,
+            )
+            out_block.store(inp_block + filled)
+
+    @ttl.datamovement()
+    def dm_read():
+        with inp_dfb.reserve() as inp_block:
+            ttl.copy(inp[0, 0], inp_block).wait()
+
+    @ttl.datamovement()
+    def dm_write():
+        with out_dfb.wait() as out_block:
+            ttl.copy(out_block, out[0, 0]).wait()
+
+
+@pytest.mark.parametrize("operation", ["direct", "fused"])
+@pytest.mark.parametrize(
+    "tile",
+    [(16, 16), (16, 32), (32, 16), (32, 32)],
+    ids=lambda tile_dimensions: f"{tile_dimensions[0]}x{tile_dimensions[1]}",
+)
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("memory", ["dram", "l1"])
+def test_fill_physical_tile_dimensions(device, operation, tile, dtype, memory):
+    """Fill preserves every compute-supported dense tile size and dtype."""
+    input_torch = torch.full(tile, 2.0, dtype=dtype)
+    output_torch = torch.zeros(tile, dtype=dtype)
+    if memory == "l1":
+        inp = to_l1(input_torch, device, tile=tile)
+        out = to_l1(output_torch, device, tile=tile)
+    else:
+        inp = to_dram(input_torch, device, tile=tile)
+        out = to_dram(output_torch, device, tile=tile)
+
+    if operation == "direct":
+        subtile_fill_kernel(out)
+        expected = torch.full(tile, 1.25, dtype=dtype)
+    else:
+        subtile_fill_add_kernel(inp, out)
+        expected = input_torch + 1.25
+
+    result = ttnn.to_torch(out).float()
+    if dtype == torch.bfloat16:
+        assert_result_allclose(result, expected.float(), rtol=0.05, atol=1.0)
+    else:
+        assert_result_allclose(result, expected.float(), rtol=1e-5, atol=1e-5)
