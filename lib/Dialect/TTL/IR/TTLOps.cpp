@@ -84,10 +84,9 @@ llvm::LogicalResult TensorBackingAttr::verify(
   }
   constexpr int64_t maxDescriptorValue =
       static_cast<int64_t>(std::numeric_limits<uint32_t>::max());
-  if (byteOffset > maxDescriptorValue || byteSize > maxDescriptorValue ||
-      byteOffset > maxDescriptorValue - byteSize) {
+  if (byteOffset > maxDescriptorValue - byteSize) {
     return emitError()
-           << "byte_offset and byte_size must fit the uint32 descriptor ABI";
+           << "byte_offset and byte_size must fit the uint32 descriptor fields";
   }
   return llvm::success();
 }

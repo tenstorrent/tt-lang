@@ -45,7 +45,7 @@ module {
 
 // -----
 
-// The backing offset must satisfy the public descriptor ABI.
+// The backing offset must satisfy the public descriptor interface.
 module {
   func.func @unaligned_byte_offset() {
     // expected-error @below {{tensor backing byte_offset must be aligned to the 2048-byte dataflow buffer page size}}
@@ -70,7 +70,7 @@ module {
 // The range end must fit the uint32 API accepted by TTNN.
 module {
   func.func @range_end_overflow() {
-    // expected-error @below {{byte_offset and byte_size must fit the uint32 descriptor ABI}}
+    // expected-error @below {{byte_offset and byte_size must fit the uint32 descriptor fields}}
     %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index, tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 4294967295, byte_size = 2048>} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     return
   }
