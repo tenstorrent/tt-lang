@@ -115,6 +115,87 @@ func.func @passthrough_subtile(%arg: tensor<1x1x!ttcore.tile<16x16, bf16>>)
 
 // -----
 
+// Passthrough uses only unpack and pack, so it accepts storage-valid short and
+// narrow physical tile dimensions without requiring a matmul in the kernel.
+// CHECK-LABEL: func.func @passthrough_short_narrow_tile
+// CHECK:       %[[RESULT:.*]] = ttl.compute
+// CHECK-NEXT:  ^bb0(%[[INPUT:.*]]: !ttcore.tile<4x16, bf16>, %[[OUTPUT:.*]]: !ttcore.tile<4x16, bf16>):
+// CHECK:         ttl.tile_store %[[INPUT]],
+// CHECK:       } -> tensor<1x1x!ttcore.tile<4x16, bf16>>
+func.func @passthrough_short_narrow_tile(
+    %arg: tensor<1x1x!ttcore.tile<4x16, bf16>>)
+    -> tensor<1x1x!ttcore.tile<4x16, bf16>> {
+  %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<4x16, bf16>, 2>
+  %output_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<4x16, bf16>, 2>
+  %input = ttl.attach_cb %arg, %input_dfb
+      : (tensor<1x1x!ttcore.tile<4x16, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<4x16, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<4x16, bf16>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[1, 1], !ttcore.tile<4x16, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<4x16, bf16>>
+  ttl.store %input, %output
+      : tensor<1x1x!ttcore.tile<4x16, bf16>>,
+        tensor<1x1x!ttcore.tile<4x16, bf16>>
+  return %input : tensor<1x1x!ttcore.tile<4x16, bf16>>
+}
+
+// -----
+
+// A short-height passthrough remains valid without an enclosing matmul.
+// CHECK-LABEL: func.func @passthrough_short_tile
+// CHECK:       ^bb0(%[[INPUT:.*]]: !ttcore.tile<8x32, f32>, %[[OUTPUT:.*]]: !ttcore.tile<8x32, f32>):
+// CHECK:         ttl.tile_store %[[INPUT]],
+func.func @passthrough_short_tile(
+    %arg: tensor<1x1x!ttcore.tile<8x32, f32>>)
+    -> tensor<1x1x!ttcore.tile<8x32, f32>> {
+  %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<8x32, f32>, 2>
+  %output_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<8x32, f32>, 2>
+  %input = ttl.attach_cb %arg, %input_dfb
+      : (tensor<1x1x!ttcore.tile<8x32, f32>>,
+         !ttl.cb<[1, 1], !ttcore.tile<8x32, f32>, 2>)
+        -> tensor<1x1x!ttcore.tile<8x32, f32>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[1, 1], !ttcore.tile<8x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<8x32, f32>>
+  ttl.store %input, %output
+      : tensor<1x1x!ttcore.tile<8x32, f32>>,
+        tensor<1x1x!ttcore.tile<8x32, f32>>
+  return %input : tensor<1x1x!ttcore.tile<8x32, f32>>
+}
+
+// -----
+
+// Passthrough retains the existing f16 compiler support.
+// CHECK-LABEL: func.func @passthrough_f16
+// CHECK:       ^bb0(%[[INPUT:.*]]: !ttcore.tile<32x32, f16>, %[[OUTPUT:.*]]: !ttcore.tile<32x32, f16>):
+// CHECK:         ttl.tile_store %[[INPUT]],
+func.func @passthrough_f16(
+    %arg: tensor<1x1x!ttcore.tile<32x32, f16>>)
+    -> tensor<1x1x!ttcore.tile<32x32, f16>> {
+  %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f16>, 2>
+  %output_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f16>, 2>
+  %input = ttl.attach_cb %arg, %input_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, f16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, f16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, f16>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[1, 1], !ttcore.tile<32x32, f16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f16>>
+  ttl.store %input, %output
+      : tensor<1x1x!ttcore.tile<32x32, f16>>,
+        tensor<1x1x!ttcore.tile<32x32, f16>>
+  return %input : tensor<1x1x!ttcore.tile<32x32, f16>>
+}
+
+// -----
+
 // Direct fill lowering preserves the result's physical tile dimensions.
 // CHECK-LABEL: func.func @direct_fill_subtile
 // CHECK:       %[[RESULT:.*]] = ttl.compute

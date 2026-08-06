@@ -1263,24 +1263,14 @@ validateExistingComputeOps(func::FuncOp kernel,
   bool hasErrors = false;
   kernel.walk([&](ComputeOp compute) {
     bool containsMatmul = containsMatmulOperation(compute);
-    for (BlockArgument argument : compute.getBody().front().getArguments()) {
-      auto tileType = dyn_cast<ttcore::TileType>(argument.getType());
-      if (!tileType) {
-        continue;
-      }
-      std::string failureReason;
-      if (failed(target.validateKernelTileType(containsMatmul, tileType,
-                                               failureReason))) {
-        compute.emitOpError() << "block argument " << argument.getArgNumber()
-                              << " " << failureReason;
-        hasErrors = true;
-      }
-    }
-
+    bool requiresComputeShape = false;
     compute.walk([&](Operation *operation) {
-      if (!isTileComputeOp(operation)) {
+      std::optional<ComputePrimitive> primitive =
+          getComputePrimitive(operation);
+      if (!primitive) {
         return;
       }
+      requiresComputeShape |= *primitive != ComputePrimitive::Passthrough;
       std::string failureReason;
       if (failed(target.validateOperation(operation, containsMatmul,
                                           failureReason))) {
@@ -1288,6 +1278,21 @@ validateExistingComputeOps(func::FuncOp kernel,
         hasErrors = true;
       }
     });
+    if (requiresComputeShape) {
+      for (BlockArgument argument : compute.getBody().front().getArguments()) {
+        auto tileType = dyn_cast<ttcore::TileType>(argument.getType());
+        if (!tileType) {
+          continue;
+        }
+        std::string failureReason;
+        if (failed(target.validateKernelTileType(containsMatmul, tileType,
+                                                 failureReason))) {
+          compute.emitOpError() << "block argument " << argument.getArgNumber()
+                                << " " << failureReason;
+          hasErrors = true;
+        }
+      }
+    }
   });
   return failure(hasErrors);
 }

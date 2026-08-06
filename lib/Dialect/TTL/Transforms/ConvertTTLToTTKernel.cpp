@@ -2052,7 +2052,7 @@ validateTileOperationsForTarget(ModuleOp module,
   bool hasErrors = false;
   module.walk([&](func::FuncOp function) {
     function.walk([&](Operation *operation) {
-      if (!isTileComputeOp(operation)) {
+      if (!getComputePrimitive(operation)) {
         return;
       }
       bool containsMatmul = isa<TileMatmulBlockOp>(operation);

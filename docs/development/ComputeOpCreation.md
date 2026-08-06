@@ -175,13 +175,13 @@ environment is selected from the module's system description or
 implemented by all supported targets. Wormhole B0 and Blackhole currently
 provide the same compute capability set.
 
-Adding an architecture requires a `ComputeTargetEnvironment` subclass and a
-factory case for its `ttcore::Arch` value. The subclass must define every
-capability query; it must not inherit another architecture's results unless
-the two architectures share that documented contract. Tests must cover the
-new architecture's accepted and rejected tile dimensions, data types, and
-operation-specific combinations. The common environment must then be updated
-to remain the intersection of every supported target.
+Adding an architecture requires a capability implementation and an entry in
+`computeTargetRegistrations`. The registration table is the source for both
+explicit target lookup and the common environment, so an architecture cannot
+be available explicitly without contributing to the common intersection. An
+architecture may reuse an implementation only when the shared contract is
+documented. Tests must cover its accepted and rejected tile dimensions, data
+types, and operation-specific combinations.
 
 ## Candidate Planning
 

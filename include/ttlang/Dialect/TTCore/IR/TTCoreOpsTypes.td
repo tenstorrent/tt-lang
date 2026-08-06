@@ -717,7 +717,6 @@ def TTCore_Tile : TTCore_Type<"Tile", "tile", [MemRefElementTypeInterface, Float
       static TileType get(Type elementType, ArrayRef<int64_t> shape = getDefaultShape());
       /// Returns whether tt-metal can construct a Tile with these dimensions.
       static bool isTTMetalTileShape(ArrayRef<int64_t> shape);
-      /// Returns whether the current compute LLKs implement these dimensions.
       SmallVector<int64_t> getScalarShape(SmallVector<int64_t> tiledShape) const;
       SmallVector<int64_t> getTiledShape(SmallVector<int64_t> scalarShape) const;
       uint64_t getSizeBytes() const;

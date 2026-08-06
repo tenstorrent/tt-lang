@@ -1223,10 +1223,7 @@ bool hasStandaloneComputeOpCreationRecipe(Operation *source) {
     plan.inputs.push_back(source->getOperand(operandIndex));
   }
   std::string failureReason;
-  if (failed(buildOperationSpecificPlan(plan, failureReason))) {
-    return false;
-  }
-  return true;
+  return succeeded(buildOperationSpecificPlan(plan, failureReason));
 }
 
 PlanningResult<OutputPublicationPlan>

@@ -30,30 +30,6 @@ func.func @direct_unsupported_dimensions(
 
 // -----
 
-// Passthrough-store conversion also creates a compute operation and therefore
-// applies the same LLK dimension restriction.
-func.func @passthrough_unsupported_dimensions(
-    %argument: tensor<1x1x!ttcore.tile<4x16, u8>>) {
-  %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
-      : !ttl.cb<[1, 1], !ttcore.tile<4x16, u8>, 1>
-  %output_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
-      : !ttl.cb<[1, 1], !ttcore.tile<4x16, u8>, 1>
-  %input = ttl.attach_cb %argument, %input_dfb
-      : (tensor<1x1x!ttcore.tile<4x16, u8>>,
-         !ttl.cb<[1, 1], !ttcore.tile<4x16, u8>, 1>)
-        -> tensor<1x1x!ttcore.tile<4x16, u8>>
-  %output = ttl.cb_reserve %output_dfb
-      : <[1, 1], !ttcore.tile<4x16, u8>, 1>
-        -> tensor<1x1x!ttcore.tile<4x16, u8>>
-  // expected-error @below {{'ttl.store' op cannot lower tensor store to ttl.compute: passthrough store tile shape 4x16 is not supported by the current compute LLKs; supported shapes are 16x16, 16x32, 32x16, and 32x32}}
-  ttl.store %input, %output
-      : tensor<1x1x!ttcore.tile<4x16, u8>>,
-        tensor<1x1x!ttcore.tile<4x16, u8>>
-  func.return
-}
-
-// -----
-
 // BFP storage is valid at sub-tile dimensions, but compute creation retains
 // the conservative 32x32 restriction.
 func.func @direct_unsupported_bfp_dimensions(
@@ -241,5 +217,79 @@ func.func @integer_exp_unsupported_u32(
   ttl.store %result, %output
       : tensor<1x1x!ttcore.tile<16x32, u32>>,
         tensor<1x1x!ttcore.tile<16x32, u32>>
+  func.return
+}
+
+// -----
+
+// Typecast validation reports the complete target-independent input/result
+// relation before compute creation mutates the source operation.
+func.func @integer_typecast_unsupported(
+    %argument: tensor<1x1x!ttcore.tile<32x32, si32>>) {
+  %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, si32>, 1>
+  %output_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  %input = ttl.attach_cb %argument, %input_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, si32>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, si32>, 1>)
+        -> tensor<1x1x!ttcore.tile<32x32, si32>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  // expected-error @below {{'ttl.typecast' op only supports floating-point tile data types, but got input: !ttcore.tile<32x32, si32>, result: !ttcore.tile<32x32, bf16>}}
+  %result = ttl.typecast %input
+      : (tensor<1x1x!ttcore.tile<32x32, si32>>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %result, %output
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+        tensor<1x1x!ttcore.tile<32x32, bf16>>
+  func.return
+}
+
+// -----
+
+// Passthrough rejects storage-valid formats that the unpack/pack operation
+// does not preserve on device.
+func.func @passthrough_unsupported_u8(
+    %argument: tensor<1x1x!ttcore.tile<4x16, u8>>) {
+  %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<4x16, u8>, 1>
+  %output_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<4x16, u8>, 1>
+  %input = ttl.attach_cb %argument, %input_dfb
+      : (tensor<1x1x!ttcore.tile<4x16, u8>>,
+         !ttl.cb<[1, 1], !ttcore.tile<4x16, u8>, 1>)
+        -> tensor<1x1x!ttcore.tile<4x16, u8>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[1, 1], !ttcore.tile<4x16, u8>, 1>
+        -> tensor<1x1x!ttcore.tile<4x16, u8>>
+  // expected-error @below {{'ttl.store' op cannot lower tensor store to ttl.compute: passthrough store tile type !ttcore.tile<4x16, u8> is not supported; passthrough supports bf16, f16, f32, BFP, si32, u32, and u16 tiles}}
+  ttl.store %input, %output
+      : tensor<1x1x!ttcore.tile<4x16, u8>>,
+        tensor<1x1x!ttcore.tile<4x16, u8>>
+  func.return
+}
+
+// -----
+
+// BFP passthrough retains the 32x32 unpack/pack restriction.
+func.func @passthrough_unsupported_bfp_dimensions(
+    %argument: tensor<1x1x!ttcore.tile<16x32, bfp_bf8>>) {
+  %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<16x32, bfp_bf8>, 1>
+  %output_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<16x32, bfp_bf8>, 1>
+  %input = ttl.attach_cb %argument, %input_dfb
+      : (tensor<1x1x!ttcore.tile<16x32, bfp_bf8>>,
+         !ttl.cb<[1, 1], !ttcore.tile<16x32, bfp_bf8>, 1>)
+        -> tensor<1x1x!ttcore.tile<16x32, bfp_bf8>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[1, 1], !ttcore.tile<16x32, bfp_bf8>, 1>
+        -> tensor<1x1x!ttcore.tile<16x32, bfp_bf8>>
+  // expected-error @below {{'ttl.store' op cannot lower tensor store to ttl.compute: passthrough store BFP tiles require 32x32 dimensions, got 16x32}}
+  ttl.store %input, %output
+      : tensor<1x1x!ttcore.tile<16x32, bfp_bf8>>,
+        tensor<1x1x!ttcore.tile<16x32, bfp_bf8>>
   func.return
 }

@@ -11,6 +11,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <array>
@@ -47,6 +48,13 @@ bool isSupportedIntegerDataType(ttcore::DataType dataType) {
          dataType == ttcore::DataType::UInt16;
 }
 
+bool isSupportedPassthroughDataType(ttcore::DataType dataType) {
+  return dataType == ttcore::DataType::BFloat16 ||
+         dataType == ttcore::DataType::Float16 ||
+         dataType == ttcore::DataType::Float32 ||
+         isSupportedIntegerDataType(dataType) || isBFPDataType(dataType);
+}
+
 bool isIntegerDataType(ttcore::DataType dataType) {
   return !ttcore::isFloat(dataType);
 }
@@ -61,27 +69,14 @@ bool isElementwiseComputeShape(ttcore::TileType tileType) {
 }
 
 bool isMatmulKernelShape(ttcore::TileType tileType) {
+  // TT-Metal e908c313 labels short-height tiles host-loopback-only, but the
+  // device matmul matrix confirms that its matmul LLKs support them.
   return isElementwiseComputeShape(tileType) || hasTileShape(tileType, 1, 32) ||
          hasTileShape(tileType, 2, 32) || hasTileShape(tileType, 4, 32) ||
          hasTileShape(tileType, 8, 32);
 }
 
-std::optional<ttcore::TileType> getTileType(Type type) {
-  if (auto tileType = dyn_cast<ttcore::TileType>(type)) {
-    return tileType;
-  }
-  auto tensorType = dyn_cast<RankedTensorType>(type);
-  if (!tensorType) {
-    return std::nullopt;
-  }
-  if (auto tileType =
-          dyn_cast<ttcore::TileType>(tensorType.getElementType())) {
-    return tileType;
-  }
-  return std::nullopt;
-}
-
-class WormholeBlackholeComputeTargetEnvironment
+class WormholeBlackholeComputeTargetEnvironment final
     : public ComputeTargetEnvironment {
 public:
   LogicalResult
@@ -126,7 +121,7 @@ public:
     failureReason.clear();
     ttcore::DataType dataType = tileType.getDataType();
     if (!isIntegerDataType(dataType) ||
-        primitive == ComputePrimitive::Passthrough) {
+        primitive == ComputePrimitive::Typecast) {
       return success();
     }
 
@@ -153,10 +148,35 @@ public:
     return failure();
   }
 
-  LogicalResult validateMatmulTileTypes(
-      ttcore::TileType lhsType, ttcore::TileType rhsType,
-      ttcore::TileType resultType, bool transposeRhs,
-      std::string &failureReason) const final {
+  LogicalResult
+  validatePassthroughTileType(ttcore::TileType tileType,
+                              std::string &failureReason) const final {
+    failureReason.clear();
+    if (!isSupportedPassthroughDataType(tileType.getDataType())) {
+      llvm::raw_string_ostream diagnostic(failureReason);
+      diagnostic << "tile type " << tileType
+                 << " is not supported; passthrough supports bf16, f16, f32, "
+                    "BFP, si32, u32, and u16 tiles";
+      return failure();
+    }
+    constexpr std::array<int64_t, 2> defaultTileShape =
+        ttcore::TileType::getDefaultShape();
+    if (isBFPDataType(tileType.getDataType()) &&
+        (tileType.getHeight() != defaultTileShape[0] ||
+         tileType.getWidth() != defaultTileShape[1])) {
+      llvm::raw_string_ostream diagnostic(failureReason);
+      diagnostic << "BFP tiles require " << defaultTileShape[0] << "x"
+                 << defaultTileShape[1] << " dimensions, got "
+                 << tileType.getHeight() << "x" << tileType.getWidth();
+      return failure();
+    }
+    return success();
+  }
+
+  LogicalResult
+  validateMatmulTileTypes(ttcore::TileType lhsType, ttcore::TileType rhsType,
+                          ttcore::TileType resultType, bool transposeRhs,
+                          std::string &failureReason) const final {
     if (failed(verifyMatmulTileTypes(lhsType, rhsType, resultType, transposeRhs,
                                      failureReason))) {
       return failure();
@@ -202,23 +222,110 @@ public:
 
 };
 
-class WormholeComputeTargetEnvironment final
-    : public WormholeBlackholeComputeTargetEnvironment {
+class IntersectionComputeTargetEnvironment final
+    : public ComputeTargetEnvironment {
 public:
-  WormholeComputeTargetEnvironment() = default;
+  explicit IntersectionComputeTargetEnvironment(
+      SmallVector<std::unique_ptr<ComputeTargetEnvironment>, 2> environments)
+      : environments(std::move(environments)) {}
+
+  LogicalResult validateKernelTileType(bool containsMatmul,
+                                       ttcore::TileType tileType,
+                                       std::string &failureReason) const final {
+    for (const std::unique_ptr<ComputeTargetEnvironment> &environment :
+         environments) {
+      if (failed(environment->validateKernelTileType(containsMatmul, tileType,
+                                                     failureReason))) {
+        return failure();
+      }
+    }
+    return success();
+  }
+
+  LogicalResult
+  validatePrimitiveDataType(ComputePrimitive primitive,
+                            ttcore::TileType tileType,
+                            std::string &failureReason) const final {
+    for (const std::unique_ptr<ComputeTargetEnvironment> &environment :
+         environments) {
+      if (failed(environment->validatePrimitiveDataType(primitive, tileType,
+                                                        failureReason))) {
+        return failure();
+      }
+    }
+    return success();
+  }
+
+  LogicalResult
+  validatePassthroughTileType(ttcore::TileType tileType,
+                              std::string &failureReason) const final {
+    for (const std::unique_ptr<ComputeTargetEnvironment> &environment :
+         environments) {
+      if (failed(environment->validatePassthroughTileType(tileType,
+                                                          failureReason))) {
+        return failure();
+      }
+    }
+    return success();
+  }
+
+  LogicalResult
+  validateMatmulTileTypes(ttcore::TileType lhsType, ttcore::TileType rhsType,
+                          ttcore::TileType resultType, bool transposeRhs,
+                          std::string &failureReason) const final {
+    for (const std::unique_ptr<ComputeTargetEnvironment> &environment :
+         environments) {
+      if (failed(environment->validateMatmulTileTypes(
+              lhsType, rhsType, resultType, transposeRhs, failureReason))) {
+        return failure();
+      }
+    }
+    return success();
+  }
+
+private:
+  SmallVector<std::unique_ptr<ComputeTargetEnvironment>, 2> environments;
 };
 
-class BlackholeComputeTargetEnvironment final
-    : public WormholeBlackholeComputeTargetEnvironment {
-public:
-  BlackholeComputeTargetEnvironment() = default;
+using ComputeTargetFactory = std::unique_ptr<ComputeTargetEnvironment> (*)();
+
+struct ComputeTargetRegistration {
+  ttcore::Arch arch;
+  ComputeTargetFactory create;
 };
 
-class CommonComputeTargetEnvironment final
-    : public WormholeBlackholeComputeTargetEnvironment {
-public:
-  CommonComputeTargetEnvironment() = default;
-};
+std::unique_ptr<ComputeTargetEnvironment>
+createWormholeBlackholeTargetEnvironment() {
+  return std::make_unique<WormholeBlackholeComputeTargetEnvironment>();
+}
+
+constexpr std::array<ComputeTargetRegistration, 2> computeTargetRegistrations =
+    {{{ttcore::Arch::WormholeB0, &createWormholeBlackholeTargetEnvironment},
+      {ttcore::Arch::Blackhole, &createWormholeBlackholeTargetEnvironment}}};
+
+FailureOr<std::unique_ptr<ComputeTargetEnvironment>>
+createTargetEnvironment(ttcore::Arch arch, std::string &failureReason) {
+  auto registration = llvm::find_if(
+      computeTargetRegistrations, [&](const ComputeTargetRegistration &entry) {
+        return entry.arch == arch;
+      });
+  if (registration != computeTargetRegistrations.end()) {
+    return registration->create();
+  }
+  failureReason =
+      "Quasar compute LLK capabilities are not implemented by TT-Lang";
+  return failure();
+}
+
+std::unique_ptr<ComputeTargetEnvironment> createCommonTargetEnvironment() {
+  SmallVector<std::unique_ptr<ComputeTargetEnvironment>, 2> environments;
+  for (const ComputeTargetRegistration &registration :
+       computeTargetRegistrations) {
+    environments.push_back(registration.create());
+  }
+  return std::make_unique<IntersectionComputeTargetEnvironment>(
+      std::move(environments));
+}
 
 FailureOr<std::optional<ttcore::Arch>>
 getDeviceArch(ModuleOp module, std::string &failureReason) {
@@ -300,22 +407,9 @@ ComputeTargetEnvironment::get(Operation *operation,
   }
   std::optional<ttcore::Arch> arch = attributeArch ? attributeArch : *deviceArch;
   if (!arch) {
-    return std::unique_ptr<ComputeTargetEnvironment>(
-        std::make_unique<CommonComputeTargetEnvironment>());
+    return createCommonTargetEnvironment();
   }
-  switch (*arch) {
-  case ttcore::Arch::WormholeB0:
-    return std::unique_ptr<ComputeTargetEnvironment>(
-        std::make_unique<WormholeComputeTargetEnvironment>());
-  case ttcore::Arch::Blackhole:
-    return std::unique_ptr<ComputeTargetEnvironment>(
-        std::make_unique<BlackholeComputeTargetEnvironment>());
-  case ttcore::Arch::Quasar:
-    failureReason =
-        "Quasar compute LLK capabilities are not implemented by TT-Lang";
-    return failure();
-  }
-  llvm_unreachable("unknown TTCore architecture");
+  return createTargetEnvironment(*arch, failureReason);
 }
 
 LogicalResult ComputeTargetEnvironment::validateOperation(
@@ -328,10 +422,28 @@ LogicalResult ComputeTargetEnvironment::validateOperation(
     return failure();
   }
 
+  if (*primitive == ComputePrimitive::Typecast) {
+    FailureOr<ttcore::TileType> inputType =
+        getTileType(operation->getOperand(0).getType());
+    FailureOr<ttcore::TileType> resultType =
+        getTileType(operation->getResult(0).getType());
+    if (succeeded(inputType) && succeeded(resultType) &&
+        failed(
+            verifyTypecastTileTypes(*inputType, *resultType, failureReason))) {
+      return failure();
+    }
+  }
+
   for (Type type : llvm::concat<Type>(operation->getOperandTypes(),
                                       operation->getResultTypes())) {
-    std::optional<ttcore::TileType> tileType = getTileType(type);
-    if (!tileType) {
+    FailureOr<ttcore::TileType> tileType = getTileType(type);
+    if (failed(tileType)) {
+      continue;
+    }
+    if (*primitive == ComputePrimitive::Passthrough) {
+      if (failed(validatePassthroughTileType(*tileType, failureReason))) {
+        return failure();
+      }
       continue;
     }
     if (failed(validateKernelTileType(containsMatmul, *tileType,
@@ -342,30 +454,30 @@ LogicalResult ComputeTargetEnvironment::validateOperation(
     }
   }
 
-  std::optional<ttcore::TileType> lhsType;
-  std::optional<ttcore::TileType> rhsType;
-  std::optional<ttcore::TileType> resultType;
-  bool transposeRhs = false;
+  auto validateMatmul = [&](Type lhs, Type rhs, Type result,
+                            bool transposeRhs) {
+    FailureOr<ttcore::TileType> lhsType = getTileType(lhs);
+    FailureOr<ttcore::TileType> rhsType = getTileType(rhs);
+    FailureOr<ttcore::TileType> resultType = getTileType(result);
+    if (failed(lhsType) || failed(rhsType) || failed(resultType)) {
+      failureReason =
+          "expected matmul operands and result to contain tile types";
+      return failure();
+    }
+    return validateMatmulTileTypes(*lhsType, *rhsType, *resultType,
+                                   transposeRhs, failureReason);
+  };
   if (auto matmul = dyn_cast<MatmulOp>(operation)) {
-    lhsType = getTileType(matmul.getLhs().getType());
-    rhsType = getTileType(matmul.getRhs().getType());
-    resultType = getTileType(matmul.getResult().getType());
-    transposeRhs = matmul.getTransposeRhs();
-  } else if (auto matmul = dyn_cast<TileMatmulBlockOp>(operation)) {
-    lhsType = getTileType(matmul.getLhs().getType());
-    rhsType = getTileType(matmul.getRhs().getType());
-    resultType = getTileType(matmul.getResult().getType());
-    transposeRhs = matmul.getTransposeRhs();
-  } else {
-    return success();
+    return validateMatmul(matmul.getLhs().getType(), matmul.getRhs().getType(),
+                          matmul.getResult().getType(),
+                          matmul.getTransposeRhs());
   }
-
-  if (!lhsType || !rhsType || !resultType) {
-    failureReason = "expected matmul operands and result to contain tile types";
-    return failure();
+  if (auto matmul = dyn_cast<TileMatmulBlockOp>(operation)) {
+    return validateMatmul(matmul.getLhs().getType(), matmul.getRhs().getType(),
+                          matmul.getResult().getType(),
+                          matmul.getTransposeRhs());
   }
-  return validateMatmulTileTypes(*lhsType, *rhsType, *resultType, transposeRhs,
-                                 failureReason);
+  return success();
 }
 
 std::optional<ComputePrimitive> getComputePrimitive(Operation *operation) {

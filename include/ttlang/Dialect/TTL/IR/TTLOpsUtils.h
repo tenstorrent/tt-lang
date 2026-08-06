@@ -28,6 +28,14 @@
 
 namespace mlir::tt::ttl {
 
+/// Returns a tile type directly or from a ranked tensor element type.
+FailureOr<ttcore::TileType> getTileType(Type type);
+
+/// Validates the target-independent input and result relation for typecast.
+LogicalResult verifyTypecastTileTypes(ttcore::TileType inputType,
+                                      ttcore::TileType resultType,
+                                      std::string &failureReason);
+
 /// Validate the element data types and physical tile dimensions of a matmul.
 ///
 /// This is the target-independent type relation. For `lhs @ rhs`, the lhs tile

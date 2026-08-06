@@ -428,22 +428,10 @@ mlir::LogicalResult mlir::tt::ttl::CopyTileOp::verify() {
 mlir::LogicalResult mlir::tt::ttl::TileTypecastOp::verify() {
   auto inputTy = mlir::cast<tt::ttcore::TileType>(getInput().getType());
   auto resultTy = mlir::cast<tt::ttcore::TileType>(getResult().getType());
-
-  // The tile shape must be preserved; identity typecasts fold away.
-  if (inputTy.getShape() != resultTy.getShape()) {
-    return emitOpError()
-           << "input and result tile shapes must match, but got input: "
-           << inputTy << ", result: " << resultTy;
+  std::string failureReason;
+  if (failed(verifyTypecastTileTypes(inputTy, resultTy, failureReason))) {
+    return emitOpError() << failureReason;
   }
-
-  ttcore::DataType inputDtype = inputTy.getDataType();
-  ttcore::DataType resultDtype = resultTy.getDataType();
-  if (!ttcore::isFloat(inputDtype) || !ttcore::isFloat(resultDtype)) {
-    return emitOpError()
-           << "only supports floating-point tile data types, but got input: "
-           << inputTy << ", result: " << resultTy;
-  }
-
   return success();
 }
 
@@ -1620,23 +1608,6 @@ llvm::SmallVector<unsigned> mlir::tt::ttl::MulOp::getDFBInputOperandIndices() {
 // MatmulOp
 //===----------------------------------------------------------------------===//
 
-static mlir::FailureOr<mlir::tt::ttcore::TileType>
-getMatmulElementTileType(mlir::Type type) {
-  if (auto tileType = mlir::dyn_cast<mlir::tt::ttcore::TileType>(type)) {
-    return tileType;
-  }
-  auto tensorType = mlir::dyn_cast<mlir::RankedTensorType>(type);
-  if (!tensorType) {
-    return mlir::failure();
-  }
-  auto tileType =
-      mlir::dyn_cast<mlir::tt::ttcore::TileType>(tensorType.getElementType());
-  if (!tileType) {
-    return mlir::failure();
-  }
-  return tileType;
-}
-
 mlir::LogicalResult mlir::tt::ttl::MatmulOp::verify() {
   auto lhsType = mlir::cast<RankedTensorType>(getLhs().getType());
   auto rhsType = mlir::cast<RankedTensorType>(getRhs().getType());
@@ -1714,12 +1685,10 @@ mlir::LogicalResult mlir::tt::ttl::MatmulOp::verify() {
 }
 
 mlir::LogicalResult mlir::tt::ttl::TileMatmulBlockOp::verify() {
-  FailureOr<ttcore::TileType> lhsTileType =
-      getMatmulElementTileType(getLhs().getType());
-  FailureOr<ttcore::TileType> rhsTileType =
-      getMatmulElementTileType(getRhs().getType());
+  FailureOr<ttcore::TileType> lhsTileType = getTileType(getLhs().getType());
+  FailureOr<ttcore::TileType> rhsTileType = getTileType(getRhs().getType());
   FailureOr<ttcore::TileType> resultTileType =
-      getMatmulElementTileType(getResult().getType());
+      getTileType(getResult().getType());
   if (failed(lhsTileType)) {
     return emitOpError() << "lhs must be a tile or tensor of tiles, got "
                          << getLhs().getType();
@@ -1735,7 +1704,7 @@ mlir::LogicalResult mlir::tt::ttl::TileMatmulBlockOp::verify() {
 
   if (Value accumulator = getAccumulator()) {
     FailureOr<ttcore::TileType> accumulatorTileType =
-        getMatmulElementTileType(accumulator.getType());
+        getTileType(accumulator.getType());
     if (failed(accumulatorTileType)) {
       return emitOpError()
              << "accumulator must be a tile or tensor of tiles, got "

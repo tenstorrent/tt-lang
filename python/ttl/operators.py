@@ -925,7 +925,8 @@ def fill(
     """Produce a block of ``shape`` filled with a constant value.
 
     ``dtype`` selects the per-element dtype and defaults to bf16. ``tile``
-    selects the physical tile dimensions and defaults to 32x32. The downstream
+    selects TT-Metal-constructible physical dimensions and defaults to 32x32;
+    the compiler validates target-specific fill support. The downstream
     ``ttl.store`` determines the output DFB used during lowering; no output
     operand is required.
     """

@@ -327,11 +327,15 @@ struct DPrintLowering : OpConversionPattern<DPrintOp> {
       Value tileVal = op.getArgv()[0];
       auto tensorType = dyn_cast<RankedTensorType>(tileVal.getType());
       if (!tensorType) {
-        return op.emitError("tile mode operand must be a RankedTensorType");
+        return op.emitError(
+            "tile mode operand must be a RankedTensorType; use tensor mode "
+            "for scalar values");
       }
       auto tileType = dyn_cast<ttcore::TileType>(tensorType.getElementType());
       if (!tileType) {
-        return op.emitError("tile mode operand must have a tile element type");
+        return op.emitError(
+            "tile mode operand must have a tile element type; use tensor "
+            "mode for tensors with scalar element types");
       }
 
       // Trace tile back to its CB.

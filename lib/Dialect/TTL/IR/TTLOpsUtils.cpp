@@ -10,6 +10,41 @@
 
 namespace mlir::tt::ttl {
 
+FailureOr<ttcore::TileType> getTileType(Type type) {
+  if (auto tileType = dyn_cast<ttcore::TileType>(type)) {
+    return tileType;
+  }
+  auto tensorType = dyn_cast<RankedTensorType>(type);
+  if (!tensorType) {
+    return failure();
+  }
+  auto tileType = dyn_cast<ttcore::TileType>(tensorType.getElementType());
+  if (!tileType) {
+    return failure();
+  }
+  return tileType;
+}
+
+LogicalResult verifyTypecastTileTypes(ttcore::TileType inputType,
+                                      ttcore::TileType resultType,
+                                      std::string &failureReason) {
+  failureReason.clear();
+  llvm::raw_string_ostream diagnostic(failureReason);
+  if (inputType.getShape() != resultType.getShape()) {
+    diagnostic << "input and result tile shapes must match, but got input: "
+               << inputType << ", result: " << resultType;
+    return failure();
+  }
+  if (!ttcore::isFloat(inputType.getDataType()) ||
+      !ttcore::isFloat(resultType.getDataType())) {
+    diagnostic
+        << "only supports floating-point tile data types, but got input: "
+        << inputType << ", result: " << resultType;
+    return failure();
+  }
+  return success();
+}
+
 FailureOr<int64_t> getDFBId(Value cb) {
   auto bindOp = getDFBDeclaration(cb);
   if (!bindOp) {

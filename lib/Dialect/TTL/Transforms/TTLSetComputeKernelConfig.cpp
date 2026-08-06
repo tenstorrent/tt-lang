@@ -26,6 +26,8 @@ namespace mlir::tt::ttl {
 
 namespace {
 
+// TODO(#264): Any 32-bit argument enables fp32_dest_acc_en for the complete
+// compute op. Diagnose unsupported mixed-width uses or model per-op control.
 static bool has32BitTileArgs(ComputeOp computeOp) {
   Block *body = &computeOp.getRegion().front();
   if (!body) {
