@@ -386,8 +386,8 @@ Table 1. Pipe transfer resources, backing storage, and allocation scale.
 | Source payload block (`src_blk`) | User-reserved DFB block on the source node. | User DFB reserve depth. |
 | Destination payload block (`dst_blk`) | User-reserved DFB block on the destination node. | User DFB reserve depth. |
 | Address table | Compiler-managed SRAM scratch on each source node; 4 bytes per entry, with the total table allocation rounded up to 32-byte alignment. | Per source node: one entry per concurrently live transfer sourced by that node. |
-| Sender-ready counter | Source-node 4-byte SRAM semaphore slot or GlobalSemaphore-backed SRAM semaphore. | Per source node: one counter per concurrently live transfer sourced by that node. |
-| Receiver-completion counter | Destination-node 4-byte SRAM semaphore slot. | One logical counter per transfer node at each receiver. Transfers with disjoint receiver sets may reuse one semaphore index. |
+| Sender-ready counter | Source-node local semaphore or GlobalSemaphore-backed SRAM word. | Per source node: one counter per concurrently live transfer sourced by that node. |
+| Receiver-completion counter | Destination-node local semaphore or GlobalSemaphore-backed SRAM word. | One logical counter per transfer node at each receiver. Transfers with disjoint receiver sets may reuse one counter allocation. |
 
 Here, source node means a physical node in the launched device grid. It
 does not mean one allocation per static pipe. Many transfers from the
@@ -396,25 +396,40 @@ intervals overlap. The number of source nodes is bounded by the launched
 device grid, not by the number of static pipes.
 
 Receiver-completion allocation follows the physical receiver sets. Two
-transfer nodes that share any receiver use distinct semaphore indices because
-either send may complete first. Transfer nodes with disjoint receiver sets may
-use the same index because local semaphore storage is independent on each
-physical node. Repeated dynamic executions of one transfer node reuse its
-assigned semaphore and advance a cumulative expected-count value.
+transfer nodes that share any receiver use distinct counters because either
+send may complete first. Transfer nodes with disjoint receiver sets may reuse
+one counter allocation because the state is independent on each physical node.
+Repeated dynamic executions of one transfer node reuse its assigned counter
+and advance a cumulative expected-count value.
 
-The address table and semaphore-backed counters all reside in Tensix L1
-SRAM, but they use different allocation mechanisms. TTKernel local
-semaphores consume hardware semaphore ids. GlobalSemaphore-backed
-ready counters are host-created semaphore objects whose addresses are
-passed as common runtime arguments. Address-table storage is
-host-created L1 scratch containing only 32-bit receiver-published
-destination addresses.
+The compiler uses one allocation abstraction for completion and readiness
+counters. By default, it allocates completion counters first, using local
+semaphore ids before GlobalSemaphore storage. It then allocates readiness
+counters locally only if the entire per-kernel readiness allocation fits in the
+remaining local ids; otherwise all readiness counters use GlobalSemaphore
+storage. `--ttl-pipe-global-semaphores-only` allocates every compiler-managed
+PipeNet counter in GlobalSemaphore storage, preserving all local semaphore ids
+for application use. No PipeNet counter fails solely because all 16 local
+semaphore ids are occupied.
+
+The address table and synchronization counters all reside in Tensix L1 SRAM,
+but they use different allocation mechanisms. TTKernel local semaphores consume
+hardware semaphore ids. GlobalSemaphore-backed counters are host-created
+semaphore objects whose addresses are passed as common runtime arguments.
+Address-table storage is host-created L1 scratch containing only 32-bit
+receiver-published destination addresses.
+
+TT-Metal validates each kernel's combined unique and common runtime arguments
+against the target's kernel-configuration capacity. Its allocator separately
+validates L1 availability for GlobalSemaphore and address-table storage. These
+checks run during program construction, before dispatch, because their limits
+depend on the target and current device allocations.
 
 TTKernel conversion records the compiler-owned pipe resource plan with
 module attrs:
 
 - `ttl.pipe_sync_semaphore_count` for local pipe semaphores;
-- `ttl.pipe_global_semaphore_count` for GlobalSemaphore-backed ready
+- `ttl.pipe_global_semaphore_count` for GlobalSemaphore-backed PipeNet
   counters;
 - `ttl.pipe_sram_scratch_bytes` for receiver-authored address-table
   storage.
@@ -431,7 +446,8 @@ height-sharded TTNN tensor in L1. Each launched node receives one shard
 large enough to hold the aligned byte count. The tensor buffer address
 is the SRAM scratch base for that node. `build_pipe_runtime_resources`
 passes that buffer address as the first pipe-resource common runtime
-argument, followed by any GlobalSemaphore addresses. Computed receiver
+argument, followed by all GlobalSemaphore counter addresses in compiler
+allocation order. Computed receiver
 DFB bases, when present, precede these pipe-resource arguments. TTKernel
 lowering therefore maps pipe runtime arg 0 to common runtime arg index
 `num_tensor_args + num_computed_dfb_bases + 0`. It reads the scratch base
@@ -951,7 +967,7 @@ wait for all three posts. Absolute durations should not be compared
 between the two tables because their point-to-point and multicast
 workloads differ.
 
-### Ready-counter allocation
+### Synchronization-counter allocation
 
 `RP` uses sender-ready counters to record receive posts for a send.
 Lowering allocates them from the same live intervals as the address table.
@@ -961,23 +977,27 @@ Repeated executions of one transfer node use its assigned counter.
 Distinct transfer nodes for one logical pipe remain separate intervals
 and may reuse a counter only when those intervals do not overlap.
 
-Sender-ready counters use local hardware semaphores when the assigned
-ready-counter indices fit after the receiver-completion semaphore ids.
-Otherwise all sender-ready counters in the module use
-GlobalSemaphore-backed counters, and the compiler records the required
-count in `ttl.pipe_global_semaphore_count`.
+By default, completion colors consume the first local semaphore ids and then
+GlobalSemaphore storage. If every readiness color fits in the remaining local
+ids, readiness counters use those ids and the same color is reused on different
+source nodes. Otherwise all readiness counters use GlobalSemaphore storage,
+with one allocation per ready color. Each source node has distinct storage for
+that allocation. This all-global readiness rule gives every source node the
+same storage interpretation for a ready color.
+`--ttl-pipe-global-semaphores-only` preserves the same color assignments and
+reuse decisions while allocating every completion and readiness counter in
+GlobalSemaphore storage. The compiler records the final local and global
+totals in
+`ttl.pipe_sync_semaphore_count` and `ttl.pipe_global_semaphore_count`.
 
-Receiver completion uses the transfer-specific local semaphore in Table 1. It
-is cumulative across repeated dynamic executions of that transfer node: sends
-increment it, and waits consume it with monotonically increasing `wait_min`
-thresholds instead of resetting it per execution. The host runtime creates
-these local semaphores with initial value 0, and pipe lowering separately
-initializes the in-kernel wait-progress counter for each completion semaphore
-to 0. Transfers that share a physical receiver never share a completion
-semaphore index.
-Address-table storage, ready counting, and completion wait are allocated
-independently so address publication does not consume local semaphore
-ids.
+Receiver completion is cumulative across repeated executions of a transfer
+node: sends increment its shared counter, and waits consume it with
+monotonically increasing `wait_min` thresholds instead of resetting it per
+execution. Pipe lowering initializes a separate kernel-local wait-progress
+value to 0 for each completion counter used by a receiver function. Transfers
+that share a physical receiver never share a completion counter. Address-table
+storage and synchronization counters are allocated independently, so address
+publication does not consume local semaphore ids.
 
 Here, `wait_min` means the receiver waits until the semaphore value is at
 least the expected count; it does not require the semaphore to equal that
@@ -1098,9 +1118,9 @@ This example uses three synchronization values:
 
 | Name | Storage | Initial value | Updated by | Read by |
 | --- | --- | --- | --- | --- |
-| Sender-ready counter | Source-node semaphore at `%ready_sem_index`. If local semaphore ids are exhausted, this is a GlobalSemaphore-backed SRAM address passed as a common runtime argument. | 0 | Each receiver post increments it by 1 after publishing the destination DFB address. The sender resets it to 0 after waiting for all expected posts. | Sender send waits for it to equal `%expected_receivers`. |
-| Receiver-completion counter | Destination-node local semaphore at `%completion_sem_index`, assigned to one transfer node at this receiver. | 0 | Each dynamic execution of that transfer's send increments it by 1 after the payload write barrier. | The matching receiver wait uses `semaphore_wait_min` against its next expected cumulative count. |
-| Receiver wait-progress counter | Kernel-local `memref<1xi32>` on the receiver, shared only by waits that use the same completion semaphore. | 0 at function entry | Each matching `ttl.pipe_transfer.wait` increments it by 1 before waiting. | The receiver uses it as the threshold for `semaphore_wait_min`. |
+| Sender-ready counter | Source-node local semaphore or GlobalSemaphore-backed SRAM address. | 0 | Each receiver post increments it by 1 after publishing the destination DFB address. The sender resets it to 0 after waiting for all expected posts. | Sender send waits for it to equal `%expected_receivers`. |
+| Receiver-completion counter | Destination-node local semaphore or GlobalSemaphore-backed SRAM address assigned to this transfer node. | 0 | Each dynamic execution of that transfer's send increments it by 1 after the payload write barrier. | The matching receiver wait uses `semaphore_wait_min` against its next expected cumulative count. |
+| Receiver wait-progress counter | Kernel-local `memref<1xi32>` on the receiver, shared only by waits that use the same completion counter. | 0 at function entry | Each matching `ttl.pipe_transfer.wait` increments it by 1 before waiting. | The receiver uses it as the threshold for `semaphore_wait_min`. |
 
 The sender-ready counter is a reusable pre-send rendezvous counter. The
 receiver-completion counter is cumulative across executions of its transfer
@@ -1241,7 +1261,7 @@ Consequences:
 - The user's `if_dst` callback runs once per pipe whose destination includes
   the current node; each callback waits for its corresponding transfer.
 - `N` senders targeting one receiver do not coordinate with each other. They
-  increment distinct completion semaphores, so one sender cannot satisfy
+  increment distinct completion counters, so one sender cannot satisfy
   another sender's receive wait.
 
 TT-Metal primitive details for `noc_semaphore_inc_multicast`,
@@ -1262,11 +1282,11 @@ collective. The proof tracks four points in the lowered IR:
    the source node's SRAM address table.
 2. No inter-sender wait. Each sender waits only for its own receivers to post,
    then performs its NoC write and increments the receiver completion
-   semaphore. No sender reads a semaphore signaled by another sender.
-3. Receiver completion semaphores identify transfer nodes at each physical
-   receiver. Transfers that share a receiver have distinct semaphore indices;
-   transfers with disjoint receiver sets may reuse an index. Sender-ready
-   semaphores are per source-node transfer interval, so two same-source
+   counter. No sender reads a counter signaled by another sender.
+3. Receiver completion counters identify transfer nodes at each physical
+   receiver. Transfers that share a receiver have distinct allocations;
+   transfers with disjoint receiver sets may reuse one allocation.
+   Sender-ready counters are per source-node transfer interval, so two same-source
    transfers that overlap get distinct state and non-overlapping same-source
    transfers can reuse state. Address-table entries and the corresponding
    inline 32-bit NoC writes exist only in `RA/RP`.
@@ -1353,8 +1373,8 @@ closure, and module-scope PipeNets through `__globals__`. See the
 the enclosing-scope capture rule.
 
 Operation-local ids keep `ttl.create_pipe` ids stable across invocations and
-keep graph construction deterministic. Completion semaphore indices are
-allocated from transfer nodes and their physical receiver sets. The
+keep graph construction deterministic. Completion counters are allocated from
+transfer nodes and their physical receiver sets. The
 `OperationPipeNets`
 instance is built and validated before MLIR emission on the compiler
 side and before `Program(...)` runs on the simulator side.
@@ -1935,7 +1955,7 @@ compile-time properties not runtime-observable.
 | 88 | Runtime-dependent reservation recurrence selects `RA/RP` for point-to-point and rejects collective | X | | X |
 | 89 | Completion of one same-PipeNet transfer cannot satisfy another transfer's receive wait | X | | X |
 | 90 | Sixteen overlapping completion resources move sender-ready counters to GlobalSemaphore storage | | | X |
-| 91 | Seventeen overlapping completion resources exceed the hardware semaphore limit | | | X |
+| 91 | A seventeenth overlapping completion counter uses GlobalSemaphore storage | | | X |
 
 (1) Device-only due to a simulator divergence outside PipeNet
 verification: the simulator's block-state machine accepts
@@ -1957,7 +1977,7 @@ PipeNet IR and verifier rules describe receiver-owned payload storage,
 computed or receiver-authored destination addressing, counted readiness, and
 completion waits. They do not depend on the current TTNN or TTKernel API
 spelling.
-The current lowering has four API-specific binding points:
+The current lowering has three API-specific binding points:
 
 - [Device 2.0] Address-table storage is allocated today as host-created
   SRAM scratch and passed to kernels by address. A typed device-local
@@ -1967,14 +1987,11 @@ The current lowering has four API-specific binding points:
   inline 32-bit NoC write. A typed remote SRAM write or address-table
   API should replace the primitive call while preserving
   receiver-authored publication.
-- [Device 2.0] Sender-ready counters use local semaphores or
-  TTNN-created GlobalSemaphores whose addresses are passed as common
-  runtime arguments. A typed semaphore object API should bind those
-  counters directly from the same compiler resource plan.
-- [Device 2.0] Receiver completion currently uses transfer-specific local
-  semaphore counters. A typed completion object can replace the local
-  semaphore binding, but completion remains separate from address storage and
-  sender-ready counting.
+- [Device 2.0] Sender-ready and receiver-completion counters use local
+  semaphores until local ids are exhausted, then TTNN-created GlobalSemaphores
+  whose addresses are passed as common runtime arguments. A typed semaphore
+  object API should bind both storage kinds directly from the same compiler
+  resource plan while preserving each counter's protocol.
 ## Relation to upstream designs
 
 TT-Lang uses dedicated `ttl.pipe_transfer` IR instead of lowering
@@ -2140,7 +2157,7 @@ The shared graph and proof must preserve these fabric invariants:
 
   Out of scope for parametric PipeNets: per-iteration data-dependent runtime
   routing decided inside a kernel function. The TTKernel multicast handshake
-  allocates receiver-completion semaphores per transfer node and
+  allocates receiver-completion counters per transfer node and
   sender-ready counters plus address-table entries per transfer at kernel
   compile time. Reconfiguring an
   mcast group mid-kernel is not a tt-metal-supported operation; data-

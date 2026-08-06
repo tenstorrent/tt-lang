@@ -1537,7 +1537,8 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod,
                                     const PipeTransferIndex &transferIndex,
                                     const PipeGraph &pipeGraph,
                                     PipeResourcePlan &info,
-                                    bool enableComputedAddresses) {
+                                    bool enableComputedAddresses,
+                                    PipeCounterAllocationPolicy counterPolicy) {
   DominanceInfo dominanceInfo(mod);
   PostDominanceInfo postDominanceInfo(mod);
   FailureOr<SmallVector<PipeTransferAllocationUnit>> maybeUnits =
@@ -1562,29 +1563,33 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod,
     unit.maybeCompletionCounterColor = allocateCompletionCounterColor(
         unit.pipe, pipesByCompletionCounterColor);
   }
-  int64_t firstSourceLocalReadyCounterSemIdx =
-      static_cast<int64_t>(pipesByCompletionCounterColor.size());
+  PipeCounterAllocator counterAllocator(PipeCounterAllocationCounts{},
+                                        counterPolicy);
+  SmallVector<PipeCounterInfo> completionCounters;
+  completionCounters.reserve(pipesByCompletionCounterColor.size());
+  while (completionCounters.size() < pipesByCompletionCounterColor.size()) {
+    completionCounters.push_back(counterAllocator.allocate());
+  }
 
   auto [readyColorBySourceColor, maxReadyCountersPerSource] =
       compactColors(colorUsersBySource, [](std::size_t) { return true; });
 
-  // Use one ready-counter kind per kernel so host allocation has one compact
-  // descriptor layout.
+  // The same ready color is reused on different source cores, so every source
+  // must interpret that color as the same storage kind. GlobalSemaphore
+  // indices name separate storage on each source, so only same-source colors
+  // need distinct indices.
+  PipeCounterAllocationCounts counterCounts = counterAllocator.getCounts();
   bool useGlobalReadyCounters =
-      firstSourceLocalReadyCounterSemIdx + maxReadyCountersPerSource >
-      kMaxHardwareSemaphoreIds;
+      counterPolicy == PipeCounterAllocationPolicy::GlobalOnly ||
+      counterCounts.localSemaphoreCount + maxReadyCountersPerSource >
+          kMaxHardwareSemaphoreIds;
 
-  llvm::MapVector<PipeSourceKey, SmallVector<int64_t>> globalIndexBySourceColor;
-  int64_t nextGlobalSemaphoreIndex = 0;
-  if (useGlobalReadyCounters) {
-    for (const auto &[sourceKey, readyColors] : readyColorBySourceColor) {
-      SmallVector<int64_t> &indices = globalIndexBySourceColor[sourceKey];
-      indices.reserve(readyColors.size());
-      for (std::size_t color = 0, colorCount = readyColors.size();
-           color < colorCount; ++color) {
-        indices.push_back(nextGlobalSemaphoreIndex++);
-      }
-    }
+  SmallVector<PipeCounterInfo> readyCounterByColor;
+  readyCounterByColor.reserve(maxReadyCountersPerSource);
+  for (int64_t color = 0; color < maxReadyCountersPerSource; ++color) {
+    readyCounterByColor.push_back(useGlobalReadyCounters
+                                      ? counterAllocator.allocateGlobal()
+                                      : counterAllocator.allocate());
   }
 
   auto [addressColorBySourceColor, maxAddressColorsPerSource] =
@@ -1599,21 +1604,16 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod,
     const PipeTransferAllocationUnit &unit = indexedUnit.value();
     assert(unit.maybeCompletionCounterColor &&
            "pipe transfer is missing a completion counter color");
+    int64_t completionColor = *unit.maybeCompletionCounterColor;
+    assert(completionColor < static_cast<int64_t>(completionCounters.size()));
     PipeSourceKey sourceKey = getPipeSourceKey(unit.pipeType);
     auto sourceIt = readyColorBySourceColor.find(sourceKey);
     assert(sourceIt != readyColorBySourceColor.end());
     auto colorIt = sourceIt->second.find(unit.resourceColor);
     assert(colorIt != sourceIt->second.end());
     int64_t readyColor = colorIt->second;
-    PipeCounterInfo readyCounter = PipeCounterInfo::localSemaphore(
-        firstSourceLocalReadyCounterSemIdx + readyColor);
-    if (useGlobalReadyCounters) {
-      auto globalIt = globalIndexBySourceColor.find(sourceKey);
-      assert(globalIt != globalIndexBySourceColor.end());
-      assert(readyColor < static_cast<int64_t>(globalIt->second.size()));
-      readyCounter =
-          PipeCounterInfo::globalSemaphore(globalIt->second[readyColor]);
-    }
+    assert(readyColor < static_cast<int64_t>(readyCounterByColor.size()));
+    PipeCounterInfo readyCounter = readyCounterByColor[readyColor];
 
     auto computedIt =
         computedAddressPlan.infoByUnitIndex.find(indexedUnit.index());
@@ -1632,8 +1632,7 @@ LogicalResult buildPipeResourcePlan(ModuleOp mod,
     PipeResourceInfo pipeResource{
         unit.pipe,
         unit.transferContract,
-        PipeCompletionInfo{
-            PipeCounterInfo::localSemaphore(*unit.maybeCompletionCounterColor)},
+        PipeCompletionInfo{completionCounters[completionColor]},
         readyCounter,
         addressStorage,
     };
@@ -1666,75 +1665,6 @@ getPipeResourceRequirements(const PipeResourcePlan &info) {
       counts.globalSemaphoreCount,
       info.sramScratch.bytes,
   };
-}
-
-/// Verify local semaphore ids before emitting ttkernel.get_semaphore. The
-/// highest-id owner is tracked only to make over-limit diagnostics actionable.
-LogicalResult
-verifyPipeResourcePlanFitsHardware(ModuleOp mod, const PipeResourcePlan &info,
-                                   const PipeResourceRequirements &reqs) {
-  enum class PipeSemaphoreKind {
-    ReceiverCompletion,
-    SenderReady,
-  };
-
-  struct HighestSemaphore {
-    int64_t index = -1;
-    PipeSemaphoreKind kind = PipeSemaphoreKind::ReceiverCompletion;
-    std::optional<PipeKey> pipe;
-  };
-
-  HighestSemaphore highest;
-  for (const PipeResourceInfo &resource :
-       llvm::make_second_range(info.resources)) {
-    PipeCounterInfo completionCounter = resource.completion.counter;
-    if (completionCounter.getStorage() == PipeCounterStorage::LocalSemaphore &&
-        completionCounter.getIndex() > highest.index) {
-      highest = HighestSemaphore{completionCounter.getIndex(),
-                                 PipeSemaphoreKind::ReceiverCompletion,
-                                 resource.pipe};
-    }
-    PipeCounterInfo readyCounter = resource.readyCounter;
-    if (readyCounter.getStorage() == PipeCounterStorage::LocalSemaphore &&
-        readyCounter.getIndex() > highest.index) {
-      highest = HighestSemaphore{readyCounter.getIndex(),
-                                 PipeSemaphoreKind::SenderReady, resource.pipe};
-    }
-  }
-
-  int64_t requiredSemaphoreIds = reqs.syncSemaphoreCount;
-  if (requiredSemaphoreIds <= kMaxHardwareSemaphoreIds) {
-    return success();
-  }
-
-  auto diag = mod.emitError()
-              << "pipe synchronization requires " << requiredSemaphoreIds
-              << " hardware semaphore ids, exceeding TT hardware limit of "
-              << kMaxHardwareSemaphoreIds
-              << "; issue #619 tracks scalable pipe synchronization allocation";
-  Diagnostic &note = diag.attachNote(mod.getLoc())
-                     << "highest allocated semaphore id is " << highest.index
-                     << " for ";
-  auto appendPipe = [&](const PipeKey &pipe) {
-    note << "pipe net " << pipe.pipeNetId << " src(" << pipe.srcX << ", "
-         << pipe.srcY << ") dst(" << pipe.dstStartX << ", " << pipe.dstStartY
-         << ") to(" << pipe.dstEndX << ", " << pipe.dstEndY << ")";
-  };
-
-  switch (highest.kind) {
-  case PipeSemaphoreKind::ReceiverCompletion:
-    note << "receiver-completion counter for ";
-    assert(highest.pipe && "receiver-completion resource must have a pipe");
-    appendPipe(*highest.pipe);
-    break;
-  case PipeSemaphoreKind::SenderReady:
-    note << "sender-ready counter for ";
-    assert(highest.pipe && "sender-ready resource must have a pipe");
-    appendPipe(*highest.pipe);
-    break;
-  }
-
-  return failure();
 }
 
 void populatePipeLoweringPatterns(RewritePatternSet &patterns,
