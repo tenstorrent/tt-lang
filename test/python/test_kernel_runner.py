@@ -614,6 +614,39 @@ def test_build_cb_descriptors_rejects_equal_size_different_tile_shape(monkeypatc
         )
 
 
+def test_build_cb_descriptors_reports_unsupported_tensor_backing_format(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+    )
+    tensor = _FakeTensor(object(), dtype=object())
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfp8",
+        1,
+        2048,
+        (32, 32),
+        (
+            DFBStorageSegment(
+                nodes=((0, 0),),
+                tensor_index=0,
+                byte_offset=0,
+                byte_size=2048,
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        ValueError, match="tensor backing format bfp8 is not supported"
+    ):
+        kernel_runner.build_cb_descriptors(
+            tensors=[tensor],
+            cb_configs=[config],
+            core_ranges=_FakeCoreRanges(),
+        )
+
+
 def test_build_cb_descriptors_uses_current_tensor_allocation(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(

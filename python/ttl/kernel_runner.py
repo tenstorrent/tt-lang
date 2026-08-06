@@ -551,12 +551,12 @@ def _validate_tensor_backed_dfb_tensor(
         )
     if hasattr(tensor, "layout") and "TILE" not in str(tensor.layout):
         raise ValueError(f"DFB[{config.dfb_index}] tensor backing must use TILE layout")
-    expected_dtype = format_name_to_ttnn_dtype(config.data_format)
     if config.data_format not in {"bfloat16", "bf16", "float32", "f32"}:
         raise ValueError(
             f"DFB[{config.dfb_index}] tensor backing format "
             f"{config.data_format} is not supported; expected BF16 or FP32"
         )
+    expected_dtype = format_name_to_ttnn_dtype(config.data_format)
     if tensor.dtype != expected_dtype:
         raise ValueError(
             f"DFB[{config.dfb_index}] tensor backing dtype {tensor.dtype} "
