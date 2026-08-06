@@ -19,7 +19,7 @@ import torch
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 import ttl  # noqa: E402
-from ttlang_test_utils import to_dram, to_l1  # noqa: E402
+from ttlang_test_utils import to_dram, to_l1, to_l1_sharded  # noqa: E402
 from utils.correctness import assert_allclose  # noqa: E402
 
 pytestmark = pytest.mark.requires_device
@@ -191,22 +191,6 @@ def _count_final_dfb_allocations(final_mlir_path):
     return final_mlir.count("dfb_index =")
 
 
-def _to_height_sharded(torch_tensor, device):
-    dram_tensor = to_dram(torch_tensor, device)
-    tensor_rows, tensor_columns = torch_tensor.shape[-2:]
-    shard_spec = ttnn.ShardSpec(
-        ttnn.CoreRangeSet({ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))}),
-        (tensor_rows, tensor_columns),
-        ttnn.ShardOrientation.ROW_MAJOR,
-    )
-    memory_config = ttnn.MemoryConfig(
-        ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
-        ttnn.BufferType.L1,
-        shard_spec,
-    )
-    return ttnn.to_memory_config(dram_tensor, memory_config=memory_config)
-
-
 @pytest.mark.parametrize(
     ("operation", "dtype"),
     [
@@ -271,7 +255,7 @@ def test_external_multiply_with_dfb_allocation(
     [
         ("scratch", to_dram),
         ("scratch", to_l1),
-        ("tensor_backed", _to_height_sharded),
+        ("tensor_backed", to_l1_sharded),
     ],
     ids=["scratch-dram", "scratch-l1", "tensor-backed"],
 )
