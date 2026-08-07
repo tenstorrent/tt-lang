@@ -1014,7 +1014,7 @@ FailureOr<KernelConfigPlan> resolveKernelConfig(
       hasDestinationWidth(DestinationElementWidth::Bits32)) {
     destinationElementWidth = DestinationElementWidth::Bits32;
   }
-  if (preferFp32 &&
+  if (preferFp32 && policy.fp32DestAccumulation != ConfigSelection::Disabled &&
       destinationElementWidth == DestinationElementWidth::Bits16) {
     for (Operation *operation : supportedFullFp32Preferences) {
       operation->emitWarning()
