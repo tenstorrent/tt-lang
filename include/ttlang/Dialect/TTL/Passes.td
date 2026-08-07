@@ -343,6 +343,26 @@ def TTLPrintComputeOpCreationPlans
   let dependentDialects = [];
 }
 
+def TTLLowerComputePipelines
+    : Pass<"ttl-lower-compute-pipelines", "::mlir::func::FuncOp"> {
+  let summary = "Inline storage-neutral multi-stage compute graphs";
+  let description = [{
+    Replaces each `ttl.compute_pipeline` with the tensor operations recorded in
+    its ordered `ttl.compute_stage` bodies. Pipeline and stage block arguments
+    map to their explicit operands, and pipeline results map to the yielded
+    stage values.
+
+    The transformation preserves the original tensor SSA graph and makes no
+    storage or target-schedule decision. Subsequent compute creation and
+    intermediate dataflow buffer materialization therefore provide the
+    ordinary implementation for graphs without a selected target schedule.
+    All pipeline and stage structure is analyzed before any operation is
+    cloned or erased.
+  }];
+
+  let dependentDialects = [];
+}
+
 def TTLProducerComputeCreation
     : Pass<"ttl-create-producer-compute", "::mlir::func::FuncOp"> {
   let summary = "Create ttl.compute ops before compiler DFB materialization";

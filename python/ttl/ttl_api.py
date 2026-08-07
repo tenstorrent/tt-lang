@@ -2023,6 +2023,7 @@ def _lower_program_to_kernel(
             compiler_options.dfb_exact_coloring_search_limit
         )
         pipeline_passes = [
+            "func.func(ttl-lower-compute-pipelines)",
             "func.func(ttl-materialize-loop-state)",
             "func.func(ttl-insert-copy-wait)",
             "func.func(ttl-annotate-l1-acc-loops)",
