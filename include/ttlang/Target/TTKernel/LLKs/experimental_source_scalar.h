@@ -130,12 +130,9 @@ inline void reuseScalarAsSource() {
              ckernel::p_movd2b::MOV_1_ROW, 0);
 }
 
-template <std::uint32_t numTiles, DstSync dstSync, bool fp32DestAccEnabled,
-          MathFidelity mathFidelity>
-inline void applyScalar(std::uint32_t scalarDstIndex,
-                        std::uint32_t outputDstIndex) {
-  constexpr bool highFidelity = is_high_fidelity(mathFidelity);
-
+template <DstSync dstSync, bool fp32DestAccEnabled>
+inline void acquireScalar(std::uint32_t scalarDstIndex,
+                          std::uint32_t outputDstIndex) {
   ckernel::math::set_dst_write_addr<DstTileShape::Tile32x32,
                                     UnpackDestination::SrcRegs>(scalarDstIndex);
   reuseScalarAsSource();
@@ -149,6 +146,11 @@ inline void applyScalar(std::uint32_t scalarDstIndex,
   }
   ckernel::math::set_dst_write_addr<DstTileShape::Tile32x32,
                                     UnpackDestination::SrcRegs>(outputDstIndex);
+}
+
+template <std::uint32_t numTiles, MathFidelity mathFidelity>
+inline void applyScalar() {
+  constexpr bool highFidelity = is_high_fidelity(mathFidelity);
 
   if constexpr (highFidelity) {
     for (std::uint32_t tileIndex = 0; tileIndex < numTiles; ++tileIndex) {
@@ -157,6 +159,9 @@ inline void applyScalar(std::uint32_t scalarDstIndex,
   } else {
     ckernel_template::run();
   }
+}
+
+inline void releaseScalar() {
   TTI_SETRWC(ckernel::p_setrwc::CLR_B, 0, 0, 0, 0, ckernel::p_setrwc::SET_D);
 }
 
@@ -290,15 +295,21 @@ ALWI void initializeScalarMultiply(std::uint32_t inputDfb) {
   MATH((initializeMathForOperand<numTiles, MATH_FIDELITY>(inputDfb)));
 }
 
+inline void acquireSourceScalar(std::uint32_t scalarDstIndex,
+                                std::uint32_t outputDstIndex) {
+  MATH((acquireScalar<DST_SYNC_MODE, DST_ACCUM_MODE>(scalarDstIndex,
+                                                     outputDstIndex)));
+}
+
 template <std::uint32_t numTiles>
-ALWI void multiplyByScalar(std::uint32_t inputDfb, std::uint32_t scalarDstIndex,
-                           std::uint32_t outputDstIndex) {
+ALWI void multiplyBySourceScalar(std::uint32_t inputDfb) {
   UNPACK((llk_unpack_A<ckernel::BroadcastType::SCALAR, true,
                        ckernel::EltwiseBinaryReuseDestType::DEST_TO_SRCB>(
       inputDfb, 0)));
-  MATH((applyScalar<numTiles, DST_SYNC_MODE, DST_ACCUM_MODE, MATH_FIDELITY>(
-      scalarDstIndex, outputDstIndex)));
+  MATH((applyScalar<numTiles, MATH_FIDELITY>()));
 }
+
+inline void releaseSourceScalar() { MATH((releaseScalar())); }
 
 } // namespace source_scalar_detail
 
@@ -318,12 +329,27 @@ ALWI void source_scalar_mul_init(std::uint32_t inputDfb) {
   source_scalar_detail::initializeScalarMultiply<numTiles>(inputDfb);
 }
 
+ALWI void source_scalar_acquire(std::uint32_t scalarDstIndex,
+                                std::uint32_t outputDstIndex) {
+  source_scalar_detail::acquireSourceScalar(scalarDstIndex, outputDstIndex);
+}
+
+template <std::uint32_t numTiles>
+ALWI void source_scalar_mul(std::uint32_t inputDfb) {
+  source_scalar_detail::multiplyBySourceScalar<numTiles>(inputDfb);
+}
+
+ALWI void source_scalar_release() {
+  source_scalar_detail::releaseSourceScalar();
+}
+
 template <std::uint32_t numTiles>
 ALWI void source_scalar_mul(std::uint32_t inputDfb,
                             std::uint32_t scalarDstIndex,
                             std::uint32_t outputDstIndex) {
-  source_scalar_detail::multiplyByScalar<numTiles>(inputDfb, scalarDstIndex,
-                                                   outputDstIndex);
+  source_scalar_acquire(scalarDstIndex, outputDstIndex);
+  source_scalar_mul<numTiles>(inputDfb);
+  source_scalar_release();
 }
 
 } // namespace experimental
