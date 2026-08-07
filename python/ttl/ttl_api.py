@@ -77,7 +77,7 @@ from ._src.tensor_registry import (
     register_tensor_name,
     register_tensor_source,
 )
-from ._src.ttl_ast import TTLGenericCompiler
+from ._src.ttl_ast import TTLGenericCompiler, is_ttnn_global_semaphore
 from .dataflow_buffer import (
     CircularBuffer,
     DataflowBuffer,
@@ -1265,6 +1265,8 @@ def _collect_captures(
 
     def convert(name, val):
         if isinstance(val, (int, float)):
+            return val
+        elif is_ttnn_global_semaphore(val):
             return val
         elif is_ttnn_tensor(val):
             return val

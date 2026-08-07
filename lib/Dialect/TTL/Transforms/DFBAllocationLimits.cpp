@@ -7,8 +7,10 @@
 #include "ttlang/Dialect/TTCore/IR/TTCoreOps.h"
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTCore/IR/Utils.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cassert>
@@ -43,9 +45,13 @@ std::optional<uint64_t> tryBudgetFromModule(ModuleOp module) {
 
 FailureOr<uint64_t> getDFBAllocationSizeBytes(CircularBufferType type,
                                               std::string &failureReason) {
-  int64_t totalElements = type.getTotalElements();
-  if (totalElements < 0) {
-    failureReason = "invalid negative total element count for DFB";
+  FailureOr<uint64_t> pagesPerBlock = getDFBPagesPerBlock(type);
+  if (failed(pagesPerBlock)) {
+    failureReason = "DFB dimensions are not representable";
+    return failure();
+  }
+  if (type.getBlockCount() <= 0) {
+    failureReason = "DFB block count must be positive";
     return failure();
   }
   Type elementType = type.getElementType();
@@ -66,7 +72,19 @@ FailureOr<uint64_t> getDFBAllocationSizeBytes(CircularBufferType type,
                               ttcore::TileType::getDefaultShape(), *dataType)
             .getSizeBytes();
   }
-  return static_cast<uint64_t>(totalElements) * elementBytes;
+  std::optional<uint64_t> totalPages = llvm::checkedMulUnsigned(
+      *pagesPerBlock, static_cast<uint64_t>(type.getBlockCount()));
+  if (!totalPages) {
+    failureReason = "DFB allocation size is not representable";
+    return failure();
+  }
+  std::optional<uint64_t> allocationBytes =
+      llvm::checkedMulUnsigned(*totalPages, elementBytes);
+  if (!allocationBytes) {
+    failureReason = "DFB allocation size is not representable";
+    return failure();
+  }
+  return *allocationBytes;
 }
 
 FailureOr<bool> DFBAllocationFootprint::add(int64_t physicalIndex,

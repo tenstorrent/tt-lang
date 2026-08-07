@@ -38,6 +38,23 @@ foreach(header_name ${LLK_HEADERS})
   list(APPEND GENERATED_LLK_HEADERS ${output_file})
 endforeach()
 
+set(DFB_DESCRIPTOR_PRELUDE_SOURCE
+  "${CMAKE_SOURCE_DIR}/include/ttlang/Target/TTKernel/DFBDescriptorPrelude.inc")
+set(DFB_DESCRIPTOR_PRELUDE_GENERATED
+  "${CMAKE_BINARY_DIR}/include/ttlang/Target/TTKernel/DFBDescriptorPrelude_generated.h")
+add_custom_command(
+  OUTPUT ${DFB_DESCRIPTOR_PRELUDE_GENERATED}
+  COMMAND ${CMAKE_COMMAND}
+    -DINPUT_FILE=${DFB_DESCRIPTOR_PRELUDE_SOURCE}
+    -DOUTPUT_FILE=${DFB_DESCRIPTOR_PRELUDE_GENERATED}
+    -DVARIABLE_NAME=dfb_descriptor_prelude_generated
+    -P "${CMAKE_SOURCE_DIR}/cmake/modules/GenerateRawStringHeader.cmake"
+  DEPENDS ${DFB_DESCRIPTOR_PRELUDE_SOURCE}
+  COMMENT "Generating DFB descriptor prelude header"
+  VERBATIM
+)
+list(APPEND GENERATED_LLK_HEADERS ${DFB_DESCRIPTOR_PRELUDE_GENERATED})
+
 add_custom_target(TTKernelGeneratedLLKHeaders DEPENDS ${GENERATED_LLK_HEADERS})
 
 add_mlir_translation_library(TTKernelTargetCpp

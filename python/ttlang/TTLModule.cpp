@@ -9,6 +9,8 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 
 #include "mlir/CAPI/IR.h"
+#include "mlir/IR/Diagnostics.h"
+#include "mlir/IR/Location.h"
 
 #include <nanobind/stl/optional.h>
 #include <nanobind/stl/vector.h>
@@ -35,6 +37,33 @@ void populateTTLModule(nb::module_ &m) {
   m.attr("PIPE_COMPUTED_ADDRESS_DFB_INDICES_ATTR") =
       nb::str(kPipeComputedAddressDFBIndicesAttrName.data(),
               kPipeComputedAddressDFBIndicesAttrName.size());
+
+  nb::enum_<ExternalTemplateArgKind>(m, "ExternalTemplateArgKind")
+      .value("SignedInteger", ExternalTemplateArgKind::SignedInteger)
+      .value("Boolean", ExternalTemplateArgKind::Boolean)
+      .value("UnsignedInteger", ExternalTemplateArgKind::UnsignedInteger)
+      .value("DFBIndex", ExternalTemplateArgKind::DFBIndex)
+      .value("DFBDescriptor", ExternalTemplateArgKind::DFBDescriptor);
+
+  tt_attribute_class<ExternalTemplateArgAttr>(m, "ExternalTemplateArgAttr")
+      .def_static(
+          "get",
+          [](MlirContext context, ExternalTemplateArgKind kind, int64_t value) {
+            MLIRContext *cppContext = unwrap(context);
+            ExternalTemplateArgAttr attribute =
+                ExternalTemplateArgAttr::getChecked(
+                    [cppContext]() {
+                      return emitError(UnknownLoc::get(cppContext));
+                    },
+                    cppContext, kind, value);
+            if (!attribute) {
+              throw nb::value_error("invalid external template argument");
+            }
+            return wrap(attribute);
+          },
+          nb::arg("context"), nb::arg("kind"), nb::arg("value"))
+      .def_prop_ro("kind", &ExternalTemplateArgAttr::getKind)
+      .def_prop_ro("value", &ExternalTemplateArgAttr::getValue);
 
   //===--------------------------------------------------------------------===//
   // SliceAttr

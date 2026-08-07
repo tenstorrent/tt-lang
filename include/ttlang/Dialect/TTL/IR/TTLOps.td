@@ -1733,6 +1733,27 @@ def TTL_RawElementWriteOp : TTL_Op<"raw_element_write",
 }
 
 //===----------------------------------------------------------------------===//
+// Tensor raw address
+//===----------------------------------------------------------------------===//
+
+def TTL_RawAddrOp : TTL_Op<"raw_addr", [Pure]> {
+  let summary = "Get raw i32 base address for a tensor argument";
+  let description = [{
+    `ttl.raw_addr` returns the raw 32-bit base address associated with a
+    tensor function argument. This bypasses TensorAccessor materialization and
+    is intended for external-function interop where a raw pointer/address is
+    required.
+
+    Only data movement (noc) kernel threads receive the required common runtime
+    argument. Slice/view operands are unsupported.
+  }];
+  let arguments = (ins TTLLayoutTensor:$tensor);
+  let results = (outs I32:$result);
+  let assemblyFormat = "$tensor attr-dict `:` type($tensor) `->` type($result)";
+  let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
 // External function call (opaque)
 //===----------------------------------------------------------------------===//
 
@@ -1749,9 +1770,11 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     declares the callee. The lowering pass emits a `#include` directive
     for this header in the generated kernel source.
 
-    The `template_arg_vals` operands are i32 SSA values that become C++
-    template arguments on the emitted call. They are resolved to integer
-    literals at EmitC lowering time, e.g. `my_func<1, 2>(a, b)`.
+    The ordered `template_args` attributes become C++ template arguments.
+    Scalar entries contain their complete compile-time payload. DFB index and
+    descriptor entries reference `template_dfb_operands` by position, which
+    preserves DFB identity until allocation is finalized without representing
+    scalar metadata as SSA values.
 
     The `arg_operands` are forwarded as function arguments to the callee. A
     DFB operand declares that the callee may access that logical DFB from call
@@ -1761,9 +1784,14 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     complete before the call returns. This external-code contract is assumed
     because the compiler does not inspect the C++ body.
 
-    An integer produced by `ttl.get_dfb_id`, including a template argument,
+    `unsigned_arg_indices` identifies signless i32 operands that represent
+    unsigned addresses at the C++ boundary. The lowering inserts explicit
+    unsigned casts so overload resolution and parameter conversion do not
+    depend on an incidental signed intermediate type.
+
+    A DFB descriptor entry is itself a direct DFB dependency. A DFB index entry
     does not declare a call-level DFB access. If the callee uses that index to
-    access the DFB, the same DFB must also appear in `arg_operands`.
+    access storage, the same DFB must also appear in `arg_operands`.
 
     Results are optional; when absent the call is treated as a void function
     invocation.
@@ -1771,9 +1799,9 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     Example:
     ```mlir
     ttl.opaque_call "my_func" () {header = "my_header.hpp"} : () -> ()
-    %c1 = arith.constant 1 : i32
-    %c2 = arith.constant 2 : i32
-    ttl.opaque_call "add_vals" template_args(%c1, %c2)
+    ttl.opaque_call "add_vals" template_args [
+        #ttl.external_template_arg<signed_integer, 1>,
+        #ttl.external_template_arg<signed_integer, 2>]
         (%a, %b) {header = "math_utils.hpp"} : (i64, i64) -> ()
     ```
   }];
@@ -1781,15 +1809,23 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     StrAttr:$callee,
     StrAttr:$header,
     Variadic<AnyType>:$arg_operands,
-    Variadic<I32>:$template_arg_vals
+    Variadic<TTL_CircularBuffer>:$template_dfb_operands,
+    OptionalAttr<ArrayAttr>:$template_args,
+    OptionalAttr<DenseI32ArrayAttr>:$unsigned_arg_indices
   );
   let results = (outs Variadic<AnyType>);
   let assemblyFormat = [{
-    $callee (`template_args` `(` $template_arg_vals^ `)`)?
+    $callee (`template_args` $template_args^)?
+    (`template_dfbs` `(` $template_dfb_operands^ `:`
+     type($template_dfb_operands) `)`)?
     `(` $arg_operands `)` attr-dict `:`
     functional-type($arg_operands, results)
   }];
   let hasVerifier = 1;
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::Value> getDFBDependencyOperands();
+    ::llvm::SmallVector<::mlir::Value> getDFBIndexTemplateOperands();
+  }];
 }
 
 //===----------------------------------------------------------------------===//
