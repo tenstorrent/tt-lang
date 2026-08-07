@@ -20,7 +20,7 @@ struct RowNormalizationComputeAnalysis {
   Value inputTensor;
   Value gammaTensor;
   Value outputTensor;
-  SmallVector<TileStoreOp> stores;
+  TileStoreOp store;
   int64_t numTiles = 0;
   std::uint32_t dstCapacity = 0;
 };
@@ -59,7 +59,11 @@ analyzeRowNormalizationCompute(ComputeOp compute, std::string &reason) {
       continue;
     }
     if (auto store = dyn_cast<TileStoreOp>(&operation)) {
-      analysis.stores.push_back(store);
+      if (analysis.store) {
+        reason = "requires exactly one output store";
+        return failure();
+      }
+      analysis.store = store;
       continue;
     }
     if (!isa<IterIndexOp>(&operation)) {
@@ -67,13 +71,13 @@ analyzeRowNormalizationCompute(ComputeOp compute, std::string &reason) {
       return failure();
     }
   }
-  if (!analysis.block || analysis.stores.empty()) {
-    reason = "requires one block operation and at least one output store";
+  if (!analysis.block || !analysis.store) {
+    reason = "requires one block operation and one output store";
     return failure();
   }
   unsigned expectedInputCount = analysis.block.getHasGamma() ? 2 : 1;
   if (compute.getInputs().size() != expectedInputCount ||
-      compute.getOutputs().size() != 1 || analysis.stores.size() != 1) {
+      compute.getOutputs().size() != 1) {
     reason = "requires the exact input list, one output, and one output store";
     return failure();
   }
@@ -138,13 +142,12 @@ analyzeRowNormalizationCompute(ComputeOp compute, std::string &reason) {
     }
   }
 
-  TileStoreOp store = analysis.stores.front();
-  if (store.getTile() != analysis.block.getResult()) {
+  if (analysis.store.getTile() != analysis.block.getResult()) {
     reason = "output store must consume the block result";
     return failure();
   }
   FailureOr<unsigned> outputIndex =
-      compute.getOutputIndexForView(store.getView());
+      compute.getOutputIndexForView(analysis.store.getView());
   if (failed(outputIndex) || *outputIndex != 0 ||
       analysis.outputTensor != compute.getOutputs().front()) {
     reason = "block and store must map to the sole formal compute output";
@@ -188,18 +191,16 @@ LogicalResult generateRowNormalizationCompute(PatternRewriter &rewriter,
       analysis->block.getScaleAttr(), analysis->block.getEpsilonAttr(),
       analysis->block.getHasGammaAttr(), scalarDstIndex);
 
-  for (TileStoreOp originalStore : analysis->stores) {
-    for (int64_t tileIndex = 0; tileIndex < analysis->numTiles; ++tileIndex) {
-      Value outputDstIndex = constantIndex(sectionBuilder, loc, tileIndex);
-      Value outputTile =
-          DstIndexOp::create(sectionBuilder, loc, tileType,
-                             loweredBlock.getResult(), outputDstIndex);
-      SmallVector<Value> indices = {
-          constantIndex(sectionBuilder, loc, 0),
-          constantIndex(sectionBuilder, loc, tileIndex)};
-      TileStoreOp::create(sectionBuilder, loc, outputTile,
-                          originalStore.getView(), indices, outputDstIndex);
-    }
+  for (int64_t tileIndex = 0; tileIndex < analysis->numTiles; ++tileIndex) {
+    Value outputDstIndex = constantIndex(sectionBuilder, loc, tileIndex);
+    Value outputTile =
+        DstIndexOp::create(sectionBuilder, loc, tileType,
+                           loweredBlock.getResult(), outputDstIndex);
+    SmallVector<Value> indices = {
+        constantIndex(sectionBuilder, loc, 0),
+        constantIndex(sectionBuilder, loc, tileIndex)};
+    TileStoreOp::create(sectionBuilder, loc, outputTile,
+                        analysis->store.getView(), indices, outputDstIndex);
   }
 
   rewriter.replaceOp(op, op.getOutputs());
