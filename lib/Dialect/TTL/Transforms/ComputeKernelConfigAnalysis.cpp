@@ -585,16 +585,17 @@ struct UnsupportedComputePipelineSchedule {
   bool targetSupported;
 };
 
-struct ComputePipelineCapacityConflict {
-  Operation *pipeline;
+struct ComputeCapacityConflict {
+  Operation *operation;
   std::uint32_t requiredDstSlots;
   std::uint32_t availableDstSlots;
 };
 
-using ConfigConstraintConflict = std::variant<
-    DestinationWidthConflict, ExplicitUnpackConflict, DFBUnpackConflict,
-    UnsupportedDFBConfiguration, UnsupportedDestinationConfiguration,
-    UnsupportedComputePipelineSchedule, ComputePipelineCapacityConflict>;
+using ConfigConstraintConflict =
+    std::variant<DestinationWidthConflict, ExplicitUnpackConflict,
+                 DFBUnpackConflict, UnsupportedDFBConfiguration,
+                 UnsupportedDestinationConfiguration,
+                 UnsupportedComputePipelineSchedule, ComputeCapacityConflict>;
 
 struct ConfigurationCandidate {
   ConfigurationCandidate(DestinationElementWidth width, DstSyncMode syncMode)
@@ -789,7 +790,7 @@ void emitConfigConstraintConflict(func::FuncOp function,
               "selected compute-pipeline schedule is unsupported by the "
               "target");
         } else {
-          typedConflict.pipeline->emitOpError()
+          typedConflict.operation->emitOpError()
               << "selected compute-pipeline schedule requires "
               << typedConflict.requiredDstSlots << " DST slots, but at most "
               << typedConflict.availableDstSlots
@@ -893,6 +894,43 @@ struct ExecutionSearchState {
 using ExecutionSearchResult =
     std::variant<ExecutionSearchState, ConfigConstraintConflict>;
 
+ConfigConstraintResult applyComputeResourceConstraints(
+    ConfigConstraintState state, Operation *operation,
+    ArrayRef<ComputePipelineCapability> requiredCapabilities, Type elementType,
+    std::uint32_t requiredDstSlots, const KernelTargetEnvironment &target) {
+  std::uint32_t targetMaximum = std::numeric_limits<std::uint32_t>::max();
+  for (ComputePipelineCapability capability : requiredCapabilities) {
+    ComputePipelineCapabilityLimits limits =
+        target.getComputePipelineCapabilityLimits(capability, elementType);
+    if (!limits.maxTiles) {
+      return ConfigConstraintConflict(UnsupportedComputePipelineSchedule{
+          operation, limits.targetSupported});
+    }
+    targetMaximum = std::min(targetMaximum, *limits.maxTiles);
+  }
+  std::uint32_t maximumAvailable = 0;
+  for (const ConfigurationCandidate &candidate : state.candidates) {
+    std::uint32_t registerCapacity = getDstCapacity(
+        candidate.destinationElementWidth == DestinationElementWidth::Bits32,
+        candidate.dstSyncMode == DstSyncMode::Full);
+    maximumAvailable =
+        std::max(maximumAvailable, std::min(targetMaximum, registerCapacity));
+  }
+  llvm::erase_if(
+      state.candidates, [&](const ConfigurationCandidate &candidate) {
+        std::uint32_t registerCapacity =
+            getDstCapacity(candidate.destinationElementWidth ==
+                               DestinationElementWidth::Bits32,
+                           candidate.dstSyncMode == DstSyncMode::Full);
+        return std::min(targetMaximum, registerCapacity) < requiredDstSlots;
+      });
+  if (state.candidates.empty()) {
+    return ConfigConstraintConflict(
+        ComputeCapacityConflict{operation, requiredDstSlots, maximumAvailable});
+  }
+  return state;
+}
+
 ConfigConstraintResult applyExecutionConstraints(
     ConfigConstraintState state, const KernelExecutionOption &option,
     Operation *operation, const KernelTargetEnvironment &target,
@@ -907,41 +945,10 @@ ConfigConstraintResult applyExecutionConstraints(
 
   assert(option.pipelineKind && !option.pipelineCapabilities.empty() &&
          "compute-local pipeline schedule requires target capabilities");
-  std::uint32_t targetMaximum = std::numeric_limits<std::uint32_t>::max();
-  for (ComputePipelineCapability capability : option.pipelineCapabilities) {
-    ComputePipelineCapabilityLimits limits =
-        target.getComputePipelineCapabilityLimits(capability,
-                                                  option.pipelineElementType);
-    if (!limits.maxTiles) {
-      return ConfigConstraintConflict(UnsupportedComputePipelineSchedule{
-          operation, limits.targetSupported});
-    }
-    targetMaximum = std::min(targetMaximum, *limits.maxTiles);
-  }
-  ConfigConstraintState constrained =
-      std::get<ConfigConstraintState>(std::move(result));
-  std::uint32_t maximumAvailable = 0;
-  for (const ConfigurationCandidate &candidate : constrained.candidates) {
-    std::uint32_t registerCapacity = getDstCapacity(
-        candidate.destinationElementWidth == DestinationElementWidth::Bits32,
-        candidate.dstSyncMode == DstSyncMode::Full);
-    maximumAvailable =
-        std::max(maximumAvailable, std::min(targetMaximum, registerCapacity));
-  }
-  llvm::erase_if(
-      constrained.candidates, [&](const ConfigurationCandidate &candidate) {
-        std::uint32_t registerCapacity =
-            getDstCapacity(candidate.destinationElementWidth ==
-                               DestinationElementWidth::Bits32,
-                           candidate.dstSyncMode == DstSyncMode::Full);
-        return std::min(targetMaximum, registerCapacity) <
-               option.requiredDstSlots;
-      });
-  if (constrained.candidates.empty()) {
-    return ConfigConstraintConflict(ComputePipelineCapacityConflict{
-        operation, option.requiredDstSlots, maximumAvailable});
-  }
-  return constrained;
+  return applyComputeResourceConstraints(
+      std::get<ConfigConstraintState>(std::move(result)), operation,
+      option.pipelineCapabilities, option.pipelineElementType,
+      option.requiredDstSlots, target);
 }
 
 ComputePipelineScheduleRejection getComputePipelineScheduleRejection(
@@ -950,8 +957,7 @@ ComputePipelineScheduleRejection getComputePipelineScheduleRejection(
   return std::visit(
       [&](const auto &typedConflict) -> ComputePipelineScheduleRejection {
         using ConflictType = std::decay_t<decltype(typedConflict)>;
-        if constexpr (std::is_same_v<ConflictType,
-                                     ComputePipelineCapacityConflict>) {
+        if constexpr (std::is_same_v<ConflictType, ComputeCapacityConflict>) {
           return {ComputePipelineScheduleRejectionKind::DSTCapacity,
                   typedConflict.requiredDstSlots,
                   typedConflict.availableDstSlots};
