@@ -28,6 +28,10 @@ def TTL_Dialect : Dialect {
   let extraClassDeclaration = [{
     void registerTypes();
     void registerAttributes();
+
+    ::mlir::LogicalResult
+    verifyOperationAttribute(::mlir::Operation *operation,
+                             ::mlir::NamedAttribute attribute) override;
   }];
 
   let dependentDialects = [
