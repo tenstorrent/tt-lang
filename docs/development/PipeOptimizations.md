@@ -357,12 +357,6 @@ tests, and 81 Python lit tests. The suites also reported 3 skipped Python
 tests, 8 expected Python failures, 35 expected ME2E failures, and 1 unsupported
 Python lit test.
 
-Later review changes preserve `ttl.cb_wait` synchronization through generic DCE
-and avoid overflow in DFB budget diagnostics. They pass a host build, 208 MLIR
-tests, 66 non-device Python tests, and pre-commit. A clean Docker rebuild,
-`check-ttlang-all`, hardware correctness, and performance validation remain
-required before pushing the updated branch.
-
 #### Metal 2.0 DFB integration
 
 The proposed Metal 2.0 BLOCKED DFB interface in
