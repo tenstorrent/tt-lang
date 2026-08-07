@@ -163,8 +163,10 @@ public:
       }
       if (callee == "experimental::add_rsqrt_init" ||
           callee == "experimental::add_rsqrt" ||
+          callee == "experimental::source_scalar_acquire" ||
           callee == "experimental::source_scalar_mul_init" ||
-          callee == "experimental::source_scalar_mul") {
+          callee == "experimental::source_scalar_mul" ||
+          callee == "experimental::source_scalar_release") {
         emitLlk(experimental_source_scalar_generated,
                 experimental_source_scalar_generated_len);
       }

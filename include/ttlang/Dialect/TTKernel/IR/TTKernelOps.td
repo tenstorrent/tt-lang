@@ -621,29 +621,56 @@ def TTKernel_ExperimentalAddRsqrtOp :
   }];
 }
 
-def TTKernel_ExperimentalSourceScalarMulOp :
-    TTKernel_FPUOp<"experimental_source_scalar_mul"> {
-  let summary = "Multiply a contiguous input block by a retained scalar";
+def TTKernel_ExperimentalSourceScalarAcquireOp :
+    TTKernel_FPUOp<"experimental_source_scalar_acquire"> {
+  let summary = "Acquire one DST scalar as an immutable compute source";
   let description = [{
-    Moves the scalar at `scalar_dst_index` to a compute source register,
-    clears the acquired DST section, and multiplies `num_tiles` contiguous
-    input tiles by that scalar. Results start at `output_dst_index`.
+    Moves the scalar at `scalar_dst_index` to a compute source register and
+    clears the acquired DST section. Subsequent source-scalar consumers write
+    results beginning at `output_dst_index` until
+    `ttkernel.experimental_source_scalar_release` ends the lifetime.
 
-    The scalar is immutable while the operation executes and does not remain
-    live afterward. The operation does not commit, wait, release, or pack the
-    results.
+    The DST register buffer must be acquired before this operation. Source
+    scalar lifetimes cannot overlap.
+  }];
+  let arguments = (ins IndexLike:$scalar_dst_index,
+                       IndexLike:$output_dst_index);
+  let assemblyFormat = [{
+    `(` $scalar_dst_index `,` $output_dst_index `)`
+    attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def TTKernel_ExperimentalSourceScalarApplyMulOp :
+    TTKernel_FPUOp<"experimental_source_scalar_apply_mul"> {
+  let summary = "Multiply a contiguous input block by the acquired scalar";
+  let description = [{
+    Multiplies `num_tiles` contiguous input tiles by the source scalar acquired
+    by `ttkernel.experimental_source_scalar_acquire`. Results occupy contiguous
+    DST slots beginning at the acquired output index.
+
+    The operation leaves the scalar live for later consumers. It does not
+    commit, wait, release, or pack the results.
   }];
   let arguments = (ins TTKernel_CB:$input_cb,
-                       IndexLike:$scalar_dst_index,
-                       IndexLike:$output_dst_index,
                        I64Attr:$num_tiles,
                        TTCore_DataTypeAttr:$dtype);
   let assemblyFormat = [{
-    `(` $input_cb `,` $scalar_dst_index `,` $output_dst_index `)`
+    `(` $input_cb `)`
     `num_tiles` `=` $num_tiles `dtype` `=` $dtype
     attr-dict `:` functional-type(operands, results)
   }];
   let hasVerifier = 1;
+}
+
+def TTKernel_ExperimentalSourceScalarReleaseOp :
+    TTKernel_FPUOp<"experimental_source_scalar_release"> {
+  let summary = "Release the acquired compute source scalar";
+  let description = [{
+    Ends the current source-scalar lifetime and invalidates the compute source
+    register. The DST results produced by consumers remain available.
+  }];
+  let assemblyFormat = "attr-dict";
 }
 
 def TTKernel_ExperimentalMulReduceBlockOp :

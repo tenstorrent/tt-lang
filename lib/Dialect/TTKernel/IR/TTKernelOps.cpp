@@ -21,7 +21,7 @@
 
 namespace mlir::tt::ttkernel {
 
-::mlir::LogicalResult ExperimentalSourceScalarMulOp::verify() {
+::mlir::LogicalResult ExperimentalSourceScalarApplyMulOp::verify() {
   if (getNumTiles() < 1 || getNumTiles() > 8) {
     return emitOpError("num_tiles must be in the range [1, 8]");
   }

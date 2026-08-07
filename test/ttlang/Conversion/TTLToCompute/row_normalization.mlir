@@ -38,7 +38,9 @@
 // TTKERNEL-NEXT:  ttkernel.tile_regs_acquire
 // TTKERNEL-NEXT:  ttkernel.experimental_mul_reduce_block(%[[INPUT]], %[[INPUT]], %[[OUTPUT]]) num_tiles = 3
 // TTKERNEL-NEXT:  ttkernel.experimental_add_rsqrt(%[[SCALAR:[a-zA-Z0-9_]+]])
-// TTKERNEL-NEXT:  ttkernel.experimental_source_scalar_mul(%[[INPUT]], %[[SCALAR]], %[[SCALAR]]) num_tiles = 3 dtype = <bf16>
+// TTKERNEL-NEXT:  ttkernel.experimental_source_scalar_acquire(%[[SCALAR]], %[[SCALAR]])
+// TTKERNEL-NEXT:  ttkernel.experimental_source_scalar_apply_mul(%[[INPUT]]) num_tiles = 3 dtype = <bf16>
+// TTKERNEL-NEXT:  ttkernel.experimental_source_scalar_release
 // TTKERNEL-NEXT:  ttkernel.binary_dest_reuse_tiles_init(%[[GAMMA:[a-zA-Z0-9_]+]], <mul>, <dest_to_srca>)
 // TTKERNEL-NEXT:  ttkernel.binary_dest_reuse_tiles(%[[GAMMA]], %[[SCALAR]], %[[SCALAR]], <mul>, <dest_to_srca>)
 // TTKERNEL-NEXT:  ttkernel.binary_dest_reuse_tiles(%[[GAMMA]], %{{.*}}, %{{.*}}, <mul>, <dest_to_srca>)
@@ -56,8 +58,10 @@
 // CPP:       experimental::multiply_full_scalar_reduction_block<3>(get_compile_time_arg_val(0), get_compile_time_arg_val(0), get_compile_time_arg_val(2), {{.*}});
 // CPP-NEXT:  experimental::add_rsqrt_init();
 // CPP-NEXT:  experimental::add_rsqrt({{.*}}, 925353388U);
+// CPP-NEXT:  experimental::source_scalar_acquire({{.*}}, {{.*}});
 // CPP-NEXT:  experimental::source_scalar_mul_init<3>(get_compile_time_arg_val(0));
-// CPP-NEXT:  experimental::source_scalar_mul<3>(get_compile_time_arg_val(0), {{.*}}, {{.*}});
+// CPP-NEXT:  experimental::source_scalar_mul<3>(get_compile_time_arg_val(0));
+// CPP-NEXT:  experimental::source_scalar_release();
 // CPP-NEXT:  binary_dest_reuse_tiles_init<EltwiseBinaryType::ELWMUL, EltwiseBinaryReuseDestType::DEST_TO_SRCA>(get_compile_time_arg_val(1));
 // CPP-NEXT:  binary_dest_reuse_tiles<EltwiseBinaryType::ELWMUL, EltwiseBinaryReuseDestType::DEST_TO_SRCA>(get_compile_time_arg_val(1), {{.*}}, {{.*}});
 // CPP-NEXT:  binary_dest_reuse_tiles<EltwiseBinaryType::ELWMUL, EltwiseBinaryReuseDestType::DEST_TO_SRCA>(get_compile_time_arg_val(1), {{.*}}, {{.*}});
