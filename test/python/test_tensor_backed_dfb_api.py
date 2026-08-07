@@ -59,23 +59,33 @@ class _FakeTensor:
 
 
 @pytest.mark.parametrize(
-    ("dtype", "byte_offset", "expected_byte_size"),
+    ("dtype", "memory_layout", "byte_offset", "expected_byte_size"),
     [
-        ("bfloat16", 2048, 16384),
-        ("float32", 4096, 32768),
-        ("uint16", 2048, 16384),
+        ("bfloat16", "HEIGHT_SHARDED", 2048, 16384),
+        ("bfloat16", "WIDTH_SHARDED", 2048, 16384),
+        ("float32", "HEIGHT_SHARDED", 4096, 32768),
+        ("float32", "WIDTH_SHARDED", 4096, 32768),
+        ("uint16", "HEIGHT_SHARDED", 2048, 16384),
+        ("uint16", "WIDTH_SHARDED", 2048, 16384),
     ],
-    ids=["bf16", "fp32", "uint16"],
+    ids=[
+        "bf16-height",
+        "bf16-width",
+        "fp32-height",
+        "fp32-width",
+        "uint16-height",
+        "uint16-width",
+    ],
 )
 def test_make_tensor_backed_dfb_records_complete_capacity(
-    monkeypatch, dtype, byte_offset, expected_byte_size
+    monkeypatch, dtype, memory_layout, byte_offset, expected_byte_size
 ):
     monkeypatch.setattr(
         "ttl.dtype_utils.is_ttnn_tensor", lambda tensor: isinstance(tensor, _FakeTensor)
     )
     dataflow_buffer._reset_cb_counter()
 
-    tensor = _FakeTensor(dtype=dtype)
+    tensor = _FakeTensor(dtype=dtype, memory_layout=memory_layout)
     dfb = dataflow_buffer.make_tensor_backed_dfb(
         tensor, shape=(1, 4), block_count=2, byte_offset=byte_offset
     )
@@ -244,13 +254,13 @@ def test_make_tensor_backed_dfb_requires_ttnn_tensor(monkeypatch):
     [
         (_FakeTensor(buffer_type="DRAM"), "must use L1 storage"),
         (
-            _FakeTensor(memory_layout="WIDTH_SHARDED"),
-            "must be height-sharded",
+            _FakeTensor(memory_layout="BLOCK_SHARDED"),
+            "must be height-sharded or width-sharded",
         ),
         (_FakeTensor(layout="ROW_MAJOR"), "must use TILE layout"),
         (_FakeTensor(dtype="int32"), "supports BF16, FP32, and UINT16"),
     ],
-    ids=["dram", "width_sharded", "row_major", "int32"],
+    ids=["dram", "block_sharded", "row_major", "int32"],
 )
 def test_make_tensor_backed_dfb_rejects_unvalidated_tensor_contract(
     monkeypatch, tensor, message

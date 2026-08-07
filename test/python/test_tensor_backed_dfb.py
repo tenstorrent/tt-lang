@@ -202,7 +202,35 @@ def _to_height_sharded(torch_tensor, device, node_count):
     return ttnn.to_memory_config(dram_tensor, memory_config=memory_config)
 
 
-def _to_compact_height_sharded(torch_tensor, device, ttnn_dtype):
+def _to_width_sharded(torch_tensor, device, node_count):
+    dram_tensor = to_dram(torch_tensor, device)
+    tensor_rows, tensor_columns = torch_tensor.shape[-2:]
+    shard_spec = ttnn.ShardSpec(
+        ttnn.CoreRangeSet(
+            {
+                ttnn.CoreRange(
+                    ttnn.CoreCoord(0, 0),
+                    ttnn.CoreCoord(node_count - 1, 0),
+                )
+            }
+        ),
+        (tensor_rows, tensor_columns // node_count),
+        ttnn.ShardOrientation.ROW_MAJOR,
+    )
+    memory_config = ttnn.MemoryConfig(
+        ttnn.TensorMemoryLayout.WIDTH_SHARDED,
+        ttnn.BufferType.L1,
+        shard_spec,
+    )
+    return ttnn.to_memory_config(dram_tensor, memory_config=memory_config)
+
+
+def _to_compact_sharded(
+    torch_tensor,
+    device,
+    ttnn_dtype,
+    memory_layout=ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
+):
     """Store one 512-element row as sixteen contiguous 1x32 L1 pages."""
     shard_spec = ttnn.ShardSpec(
         ttnn.CoreRangeSet(
@@ -217,7 +245,7 @@ def _to_compact_height_sharded(torch_tensor, device, ttnn_dtype):
         ttnn.ShardOrientation.ROW_MAJOR,
     )
     memory_config = ttnn.MemoryConfig(
-        ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
+        memory_layout,
         ttnn.BufferType.L1,
         shard_spec,
     )
@@ -278,6 +306,46 @@ def test_dfb_storage_eltwise_mul(
 
 @pytest.mark.requires_device
 @pytest.mark.parametrize(
+    "torch_dtype",
+    [torch.bfloat16, torch.float32, torch.uint16],
+    ids=["bf16", "f32", "uint16"],
+)
+@pytest.mark.parametrize("tile_count", [1, 8], ids=["one_tile", "eight_tiles"])
+@pytest.mark.parametrize("node_count", [1, 2], ids=["one_node", "two_nodes"])
+def test_tensor_backed_dfb_width_sharded(device, torch_dtype, tile_count, node_count):
+    """Each DFB node aliases one contiguous shard of a width-sharded tensor."""
+    tensor_shape = (32, 32 * tile_count * node_count)
+    torch.manual_seed(0)
+    if torch_dtype == torch.uint16:
+        lhs_torch = torch.randint(0, 32, tensor_shape, dtype=torch.int32).to(
+            torch.uint16
+        )
+        rhs_torch = torch.randint(0, 32, tensor_shape, dtype=torch.int32).to(
+            torch.uint16
+        )
+        expected = (lhs_torch.to(torch.int32) * rhs_torch.to(torch.int32)).to(
+            torch.uint16
+        )
+    else:
+        lhs_torch = torch.rand(tensor_shape, dtype=torch_dtype)
+        rhs_torch = torch.rand(tensor_shape, dtype=torch_dtype)
+        expected = lhs_torch * rhs_torch
+
+    lhs = _to_width_sharded(lhs_torch, device, node_count)
+    rhs = _to_width_sharded(rhs_torch, device, node_count)
+    out = _to_width_sharded(torch.zeros_like(expected), device, node_count)
+
+    _make_kernel("tensor_backed", tile_count, node_count)(lhs, rhs, out)
+
+    actual = ttnn.to_torch(out)
+    if torch_dtype == torch.uint16:
+        assert_allclose(actual.float(), expected.float(), rtol=0.0, atol=0.0)
+    else:
+        assert_pcc(expected.float(), actual.float(), threshold=0.999)
+
+
+@pytest.mark.requires_device
+@pytest.mark.parametrize(
     "torch_dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"]
 )
 def test_tensor_backed_dfb_block_count_two(device, torch_dtype):
@@ -317,7 +385,17 @@ def test_tensor_backed_dfb_block_count_two(device, torch_dtype):
     ],
     ids=["bf16", "fp32", "uint16"],
 )
-def test_tensor_backed_subtile_view(device, torch_dtype, ttnn_dtype, rtol, atol):
+@pytest.mark.parametrize(
+    "memory_layout",
+    [
+        ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
+        ttnn.TensorMemoryLayout.WIDTH_SHARDED,
+    ],
+    ids=["height-sharded", "width-sharded"],
+)
+def test_tensor_backed_subtile_view(
+    device, torch_dtype, ttnn_dtype, rtol, atol, memory_layout
+):
     """A compute-page view must preserve the compact tensor's byte order."""
     torch.manual_seed(0)
     if torch_dtype == torch.uint16:
@@ -328,9 +406,11 @@ def test_tensor_backed_subtile_view(device, torch_dtype, ttnn_dtype, rtol, atol)
         rhs_source = torch.full((1, 512), 2.0, dtype=torch_dtype)
     expected = lhs_source.float() * rhs_source.float()
 
-    lhs = _to_compact_height_sharded(lhs_source, device, ttnn_dtype)
-    rhs = _to_compact_height_sharded(rhs_source, device, ttnn_dtype)
-    out = _to_compact_height_sharded(torch.zeros_like(lhs_source), device, ttnn_dtype)
+    lhs = _to_compact_sharded(lhs_source, device, ttnn_dtype, memory_layout)
+    rhs = _to_compact_sharded(rhs_source, device, ttnn_dtype, memory_layout)
+    out = _to_compact_sharded(
+        torch.zeros_like(lhs_source), device, ttnn_dtype, memory_layout
+    )
 
     TENSOR_BACKED_SUBTILE_VIEW_MUL[torch_dtype](lhs, rhs, out)
 
@@ -341,7 +421,7 @@ def test_tensor_backed_subtile_view(device, torch_dtype, ttnn_dtype, rtol, atol)
 @pytest.mark.requires_device
 def test_tensor_backed_subtile_view_rejects_out_of_bounds_range(device):
     source = torch.ones((1, 512), dtype=torch.bfloat16)
-    tensor = _to_compact_height_sharded(source, device, ttnn.bfloat16)
+    tensor = _to_compact_sharded(source, device, ttnn.bfloat16)
     node_ranges = ttnn.CoreRangeSet(
         {
             ttnn.CoreRange(
