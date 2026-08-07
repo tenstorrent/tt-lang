@@ -1288,15 +1288,6 @@ matchMultiplyReductionFusion(Operation *source) {
   if (!isFullScalarReduction(reduction)) {
     return reject(FusionNearMatchKind::NonFullReduction);
   }
-  if (postReductionScale &&
-      !hasOnlyUser(reduction.getResult(), postReductionScale)) {
-    return reject(FusionNearMatchKind::ExternalUsePreservation);
-  }
-  if (postReductionScale &&
-      !isFinitePositiveFloat(postReductionScale.getValueAttr())) {
-    return reject(FusionNearMatchKind::UnsupportedScale);
-  }
-
   auto scaler = reduction.getScaler().getDefiningOp<FillOp>();
   if (!scaler) {
     return reject(FusionNearMatchKind::UnsupportedScalarConsumer);
@@ -1323,6 +1314,14 @@ matchMultiplyReductionFusion(Operation *source) {
   }
   if (!isFinitePositiveFloat(scaler.getValueAttr())) {
     return reject(FusionNearMatchKind::UnsupportedScale);
+  }
+  if (postReductionScale ||
+      !scaler.getValueAttr().getValue().isExactlyValue(1.0)) {
+    // Full-scalar reduction applies its scaler in both hardware reduction
+    // stages. A following multiply has a separate source rounding point.
+    // The compound helper cannot preserve either non-unit spelling without a
+    // distinct finalization schedule.
+    return reject(FusionNearMatchKind::StrictFloatingPointMismatch);
   }
 
   if (!lhsType || !rhsType || !productType || !scalerType || !resultType ||
@@ -1383,9 +1382,6 @@ matchMultiplyReductionFusion(Operation *source) {
   match.trace.opsInOrder.insert(producer);
   match.trace.opsInOrder.insert(scaler);
   match.trace.opsInOrder.insert(reduction);
-  if (postReductionScale) {
-    match.trace.opsInOrder.insert(postReductionScale);
-  }
   for (Value input : match.inputs) {
     match.trace.rootInputs.insert(input);
     match.trace.lifetimeRootInputs.insert(input);
@@ -1426,11 +1422,7 @@ matchMultiplyReductionFusion(Operation *source) {
   FusionTargetSchedulePlan target;
   target.numTiles = static_cast<std::uint32_t>(numTiles);
   target.dataType = tileType.getDataType();
-  double semanticScale = scaler.getValueAttr().getValueAsDouble();
-  if (postReductionScale) {
-    semanticScale *= postReductionScale.getValueAttr().getValueAsDouble();
-  }
-  target.scale = FloatAttr::get(scaler.getValueAttr().getType(), semanticScale);
+  target.scale = scaler.getValueAttr();
   for (Value operand : {producer.getLhs(), producer.getRhs()}) {
     auto input = llvm::find(match.inputs, operand);
     assert(input != match.inputs.end() &&

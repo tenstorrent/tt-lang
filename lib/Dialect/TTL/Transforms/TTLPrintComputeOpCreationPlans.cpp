@@ -286,6 +286,7 @@ struct TTLPrintComputeOpCreationPlansPass
 
     raw_ostream &output = llvm::errs();
     output << "ComputeOp creation plan @" << kernel.getSymName() << "\n";
+    DenseSet<Operation *> printedFusionNearMatches;
     for (Operation *source : creations.getAnalyzedSources()) {
       const ComputeOpCreationPlan &creation =
           creations.getAnalyzedCreation(source);
@@ -380,6 +381,7 @@ struct TTLPrintComputeOpCreationPlansPass
               creations.getFusionNearMatch(source)) {
         output << "    near-match=" << formatFusionNearMatch(*nearMatch)
                << "\n";
+        printedFusionNearMatches.insert(source);
       }
       if (!creation.isLegal()) {
         output << "    rejected=" << creation.rejectionReason << "\n";
@@ -406,8 +408,25 @@ struct TTLPrintComputeOpCreationPlansPass
               creations.getFusionNearMatch(source)) {
         output << "    near-match=" << formatFusionNearMatch(*nearMatch)
                << "\n";
+        printedFusionNearMatches.insert(source);
       }
     }
+
+    // A recognized fusion can still be ineligible for ordinary compute
+    // creation. Preserve its typed near-match diagnostic independently.
+    kernel.walk([&](Operation *source) {
+      if (printedFusionNearMatches.contains(source)) {
+        return;
+      }
+      const FusionNearMatch *nearMatch = creations.getFusionNearMatch(source);
+      if (!nearMatch) {
+        return;
+      }
+      output << "  near-match-source ";
+      printOperation(output, source, operationIds);
+      output << " " << source->getName() << "\n";
+      output << "    near-match=" << formatFusionNearMatch(*nearMatch) << "\n";
+    });
 
     output << "  order=[";
     llvm::interleaveComma(
