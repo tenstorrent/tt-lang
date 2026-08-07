@@ -2055,15 +2055,8 @@ validateTileOperationsForTarget(ModuleOp module,
       if (!getComputePrimitive(operation)) {
         return;
       }
-      bool containsMatmul = isa<TileMatmulBlockOp>(operation);
-      if (auto compute = operation->getParentOfType<ComputeOp>()) {
-        containsMatmul = containsMatmulOperation(compute);
-      } else if (auto dstSection = operation->getParentOfType<DstSectionOp>()) {
-        containsMatmul = containsMatmulOperation(dstSection);
-      }
       std::string failureReason;
-      if (failed(target.validateOperation(operation, containsMatmul,
-                                          failureReason))) {
+      if (failed(target.validateOperation(operation, failureReason))) {
         operation->emitOpError(failureReason);
         hasErrors = true;
       }

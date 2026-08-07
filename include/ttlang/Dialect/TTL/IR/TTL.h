@@ -75,6 +75,23 @@ enum class PipeRole : int64_t {
   Active = 2,
 };
 
+/// Target-independent compute primitive implemented by a TTL operation.
+enum class ComputePrimitive {
+  Add,
+  Subtract,
+  Multiply,
+  ElementwiseBinary,
+  ElementwiseUnary,
+  Broadcast,
+  Reduce,
+  Transpose,
+  Fill,
+  Matmul,
+  Typecast,
+  MultiplyByConstant,
+  Passthrough,
+};
+
 /// A contiguous set of DST slots starting at `baseIndex`.
 struct DstFootprint {
   mlir::Value baseIndex;

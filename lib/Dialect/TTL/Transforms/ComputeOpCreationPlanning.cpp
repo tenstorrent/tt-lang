@@ -1104,12 +1104,10 @@ validateMatmulComputeTypes(MatmulOp matmul,
 
 static std::optional<PlanningDiagnostic>
 validatePlannedMatmuls(const ComputeOpCreationPlan &plan,
-                       const ComputeTargetEnvironment &target,
-                       bool &containsMatmul) {
+                       const ComputeTargetEnvironment &target) {
   DenseSet<Operation *> validatedMatmuls;
   auto validateMatmul =
       [&](MatmulOp matmul) -> std::optional<PlanningDiagnostic> {
-    containsMatmul = true;
     if (!validatedMatmuls.insert(matmul.getOperation()).second) {
       return std::nullopt;
     }
@@ -1141,9 +1139,8 @@ validatePlannedMatmuls(const ComputeOpCreationPlan &plan,
 static std::optional<PlanningDiagnostic>
 recordComputeTileTypes(ComputeOpCreationPlan &plan,
                        const ComputeTargetEnvironment &target) {
-  bool containsMatmul = false;
   if (std::optional<PlanningDiagnostic> diagnostic =
-          validatePlannedMatmuls(plan, target, containsMatmul)) {
+          validatePlannedMatmuls(plan, target)) {
     return diagnostic;
   }
   auto validateTileType = [&](ttcore::TileType tileType,
@@ -1164,8 +1161,7 @@ recordComputeTileTypes(ComputeOpCreationPlan &plan,
   if (failed(validateTileType(resultTileType, failureReason))) {
     return PlanningDiagnostic{plan.source, "compute result " + failureReason};
   }
-  if (failed(target.validateOperation(plan.source, containsMatmul,
-                                      failureReason))) {
+  if (failed(target.validateOperation(plan.source, failureReason))) {
     return PlanningDiagnostic{plan.source, std::move(failureReason)};
   }
 
@@ -1193,8 +1189,7 @@ recordComputeTileTypes(ComputeOpCreationPlan &plan,
       return PlanningDiagnostic{operationPlan.source,
                                 "fused compute result " + failureReason};
     }
-    if (failed(target.validateOperation(operationPlan.source, containsMatmul,
-                                        failureReason))) {
+    if (failed(target.validateOperation(operationPlan.source, failureReason))) {
       return PlanningDiagnostic{operationPlan.source, std::move(failureReason)};
     }
   }
@@ -1592,8 +1587,7 @@ static FailureOr<PassthroughStorePlan> buildPassthroughStorePlan(
         formatTensorOfTilesDiagnostic("passthrough store input", tensorType);
     return failure();
   }
-  if (failed(target.validateOperation(store, /*containsMatmul=*/false,
-                                      failureReason))) {
+  if (failed(target.validateOperation(store, failureReason))) {
     failureReason = "passthrough store " + failureReason;
     return failure();
   }

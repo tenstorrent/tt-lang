@@ -12,10 +12,10 @@
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <array>
-#include <cassert>
 
 namespace mlir::tt::ttl {
 
@@ -95,8 +95,9 @@ bool supportsShortHeightTiles(ComputePrimitive primitive) {
   case ComputePrimitive::Reduce:
   case ComputePrimitive::Transpose:
   case ComputePrimitive::Typecast:
-  case ComputePrimitive::Passthrough:
     return false;
+  case ComputePrimitive::Passthrough:
+    llvm_unreachable("passthrough tile shapes are validated separately");
   }
 }
 
@@ -166,10 +167,10 @@ public:
 
   LogicalResult
   validatePrimitiveTileShape(ComputePrimitive primitive,
-                             ttcore::TileType tileType, bool containsMatmul,
+                             ttcore::TileType tileType,
                              std::string &failureReason) const final {
     failureReason.clear();
-    if (containsMatmul || !isShortHeightComputeShape(tileType) ||
+    if (!isShortHeightComputeShape(tileType) ||
         supportsShortHeightTiles(primitive)) {
       return success();
     }
@@ -290,12 +291,12 @@ public:
 
   LogicalResult
   validatePrimitiveTileShape(ComputePrimitive primitive,
-                             ttcore::TileType tileType, bool containsMatmul,
+                             ttcore::TileType tileType,
                              std::string &failureReason) const final {
     for (const std::unique_ptr<ComputeTargetEnvironment> &environment :
          environments) {
-      if (failed(environment->validatePrimitiveTileShape(
-              primitive, tileType, containsMatmul, failureReason))) {
+      if (failed(environment->validatePrimitiveTileShape(primitive, tileType,
+                                                         failureReason))) {
         return failure();
       }
     }
@@ -460,7 +461,6 @@ ComputeTargetEnvironment::get(Operation *operation,
 
 LogicalResult
 ComputeTargetEnvironment::validateOperation(Operation *operation,
-                                            bool containsMatmul,
                                             std::string &failureReason) const {
   std::optional<ComputePrimitive> primitive = getComputePrimitive(operation);
   if (!primitive) {
@@ -493,8 +493,8 @@ ComputeTargetEnvironment::validateOperation(Operation *operation,
       continue;
     }
     if (failed(validateKernelTileType(*tileType, failureReason)) ||
-        failed(validatePrimitiveTileShape(*primitive, *tileType, containsMatmul,
-                                          failureReason)) ||
+        failed(
+            validatePrimitiveTileShape(*primitive, *tileType, failureReason)) ||
         failed(
             validatePrimitiveDataType(*primitive, *tileType, failureReason))) {
       return failure();
@@ -528,58 +528,9 @@ ComputeTargetEnvironment::validateOperation(Operation *operation,
 }
 
 std::optional<ComputePrimitive> getComputePrimitive(Operation *operation) {
-  if (isa<AddOp, AddTileOp>(operation)) {
-    return ComputePrimitive::Add;
-  }
-  if (isa<SubOp, SubTileOp>(operation)) {
-    return ComputePrimitive::Subtract;
-  }
-  if (isa<MulOp, MulTileOp>(operation)) {
-    return ComputePrimitive::Multiply;
-  }
-  if (isa<BlockBroadcastOp, TileBcastOp>(operation)) {
-    return ComputePrimitive::Broadcast;
-  }
-  if (isa<ReduceOp, TileReduceOp>(operation)) {
-    return ComputePrimitive::Reduce;
-  }
-  if (isa<TransposeOp, TileTransposeOp>(operation)) {
-    return ComputePrimitive::Transpose;
-  }
-  if (isa<FillOp, TileFillOp>(operation)) {
-    return ComputePrimitive::Fill;
-  }
-  if (isa<MatmulOp, TileMatmulBlockOp>(operation)) {
-    return ComputePrimitive::Matmul;
-  }
-  if (isa<TypecastOp, TileTypecastOp>(operation)) {
-    return ComputePrimitive::Typecast;
-  }
-  if (isa<MulUnaryConstOp, TileMulUnaryConstOp>(operation)) {
-    return ComputePrimitive::MultiplyByConstant;
-  }
-  if (isa<StoreOp, TileStoreOp>(operation)) {
-    return ComputePrimitive::Passthrough;
-  }
-  if (operation->hasTrait<TTLUnaryElementwiseOpTrait>() ||
-      operation->hasTrait<TTLTileUnaryOpTrait>()) {
-    return ComputePrimitive::ElementwiseUnary;
-  }
-  if (operation->hasTrait<TTLBinaryElementwiseOpTrait>() ||
-      operation->hasTrait<TTLTileBinaryOpTrait>()) {
-    return ComputePrimitive::ElementwiseBinary;
-  }
-  assert(!operation->hasTrait<TTLTileComputeOpTrait>() &&
-         "tile compute operation must have a target capability classification");
-  return std::nullopt;
-}
-
-bool containsMatmulOperation(Operation *scope) {
-  WalkResult result = scope->walk([](Operation *operation) {
-    return isa<MatmulOp, TileMatmulBlockOp>(operation) ? WalkResult::interrupt()
-                                                       : WalkResult::advance();
-  });
-  return result.wasInterrupted();
+  auto primitiveOp = dyn_cast<ComputePrimitiveOpInterface>(operation);
+  return primitiveOp ? std::optional(primitiveOp.getComputePrimitive())
+                     : std::nullopt;
 }
 
 } // namespace mlir::tt::ttl

@@ -1262,7 +1262,6 @@ validateExistingComputeOps(func::FuncOp kernel,
                            const ComputeTargetEnvironment &target) {
   bool hasErrors = false;
   kernel.walk([&](ComputeOp compute) {
-    bool containsMatmul = containsMatmulOperation(compute);
     bool requiresComputeShape = false;
     compute.walk([&](Operation *operation) {
       std::optional<ComputePrimitive> primitive =
@@ -1272,8 +1271,7 @@ validateExistingComputeOps(func::FuncOp kernel,
       }
       requiresComputeShape |= *primitive != ComputePrimitive::Passthrough;
       std::string failureReason;
-      if (failed(target.validateOperation(operation, containsMatmul,
-                                          failureReason))) {
+      if (failed(target.validateOperation(operation, failureReason))) {
         operation->emitOpError(failureReason);
         hasErrors = true;
       }

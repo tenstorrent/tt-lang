@@ -69,6 +69,98 @@ func.func @short_height_reduce_unsupported() {
 
 // -----
 
+// Short-height transpose is rejected independently of other operations in the
+// function.
+func.func @short_height_transpose_unsupported(
+    %argument: tensor<1x1x!ttcore.tile<8x32, bf16>>) {
+  %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<8x32, bf16>, 1>
+  %output_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<8x32, bf16>, 1>
+  %input = ttl.attach_cb %argument, %input_dfb
+      : (tensor<1x1x!ttcore.tile<8x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<8x32, bf16>, 1>)
+        -> tensor<1x1x!ttcore.tile<8x32, bf16>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[1, 1], !ttcore.tile<8x32, bf16>, 1>
+        -> tensor<1x1x!ttcore.tile<8x32, bf16>>
+  // expected-error @below {{'ttl.transpose' op tile shape 8x32 is not supported by this compute primitive; short-height tiles are supported by elementwise, fill, and matmul compute primitives}}
+  %result = ttl.transpose %input
+      : tensor<1x1x!ttcore.tile<8x32, bf16>>
+        -> tensor<1x1x!ttcore.tile<8x32, bf16>>
+  ttl.store %result, %output
+      : tensor<1x1x!ttcore.tile<8x32, bf16>>,
+        tensor<1x1x!ttcore.tile<8x32, bf16>>
+  func.return
+}
+
+// -----
+
+// Short-height broadcast is rejected independently of other operations in the
+// function.
+func.func @short_height_broadcast_unsupported(
+    %argument: tensor<1x1x!ttcore.tile<8x32, bf16>>) {
+  %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<8x32, bf16>, 1>
+  %output_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
+      : !ttl.cb<[1, 2], !ttcore.tile<8x32, bf16>, 1>
+  %input = ttl.attach_cb %argument, %input_dfb
+      : (tensor<1x1x!ttcore.tile<8x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<8x32, bf16>, 1>)
+        -> tensor<1x1x!ttcore.tile<8x32, bf16>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[1, 2], !ttcore.tile<8x32, bf16>, 1>
+        -> tensor<1x2x!ttcore.tile<8x32, bf16>>
+  // expected-error @below {{'ttl.block.broadcast' op tile shape 8x32 is not supported by this compute primitive; short-height tiles are supported by elementwise, fill, and matmul compute primitives}}
+  %result = ttl.block.broadcast %input dims = [1], shape = [1, 2]
+      : tensor<1x1x!ttcore.tile<8x32, bf16>>
+        -> tensor<1x2x!ttcore.tile<8x32, bf16>>
+  ttl.store %result, %output
+      : tensor<1x2x!ttcore.tile<8x32, bf16>>,
+        tensor<1x2x!ttcore.tile<8x32, bf16>>
+  func.return
+}
+
+// -----
+
+// A matmul in the same compute plan does not extend typecast's supported tile
+// dimensions.
+func.func @fused_matmul_typecast_short_height_unsupported(
+    %lhs_argument: tensor<1x1x!ttcore.tile<8x32, bf16>>,
+    %rhs_argument: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  %lhs_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<8x32, bf16>, 1>
+  %rhs_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  %output_dfb = ttl.bind_cb {cb_index = 2, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<8x32, f32>, 1>
+  %lhs = ttl.attach_cb %lhs_argument, %lhs_dfb
+      : (tensor<1x1x!ttcore.tile<8x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<8x32, bf16>, 1>)
+        -> tensor<1x1x!ttcore.tile<8x32, bf16>>
+  %rhs = ttl.attach_cb %rhs_argument, %rhs_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[1, 1], !ttcore.tile<8x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<8x32, f32>>
+  %matmul = ttl.matmul %lhs, %rhs
+      : tensor<1x1x!ttcore.tile<8x32, bf16>>,
+        tensor<1x1x!ttcore.tile<32x32, bf16>>
+        -> tensor<1x1x!ttcore.tile<8x32, bf16>>
+  // expected-error @below {{'ttl.typecast' op tile shape 8x32 is not supported by this compute primitive; short-height tiles are supported by elementwise, fill, and matmul compute primitives}}
+  %result = ttl.typecast %matmul
+      : (tensor<1x1x!ttcore.tile<8x32, bf16>>)
+        -> tensor<1x1x!ttcore.tile<8x32, f32>>
+  ttl.store %result, %output
+      : tensor<1x1x!ttcore.tile<8x32, f32>>,
+        tensor<1x1x!ttcore.tile<8x32, f32>>
+  func.return
+}
+
+// -----
+
 // BFP storage is valid at sub-tile dimensions, but compute creation retains
 // the conservative 32x32 restriction.
 func.func @direct_unsupported_bfp_dimensions(
