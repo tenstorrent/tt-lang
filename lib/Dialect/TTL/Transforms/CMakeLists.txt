@@ -21,6 +21,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   ConvertTTLToCompute.cpp
   ConvertTTLComputeToSCF.cpp
   ConvertTTLTileOpsToTTKernel.cpp
+  FixedBlockComputeAnalysis.cpp
   LowerDPrintToEmitC.cpp
   LaunchNodeDomainAnalysis.cpp
 

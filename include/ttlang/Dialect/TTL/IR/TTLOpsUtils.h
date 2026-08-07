@@ -338,6 +338,11 @@ inline bool isTileComputeOp(mlir::Operation *op) {
   return op->hasTrait<TTLTileComputeOpTrait>();
 }
 
+/// Return whether a block operation owns its complete DST schedule.
+inline bool isFixedBlockComputeOp(mlir::Operation *op) {
+  return op->hasTrait<TTLFixedBlockComputeOpTrait>();
+}
+
 /// Check if an operation is a unary elementwise tensor op.
 inline bool isUnaryElementwiseOp(mlir::Operation *op) {
   return op->hasTrait<TTLUnaryElementwiseOpTrait>();

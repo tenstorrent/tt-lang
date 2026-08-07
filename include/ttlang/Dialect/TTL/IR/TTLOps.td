@@ -1345,7 +1345,8 @@ def TTL_TileReduceOp : TTL_TileOp<"tile_reduce", "Reduce",
 
 def TTL_TileRowNormalizationBlockOp :
     TTL_TileOp<"tile_row_normalization_block",
-               [TTL_CBInputTileOpTrait, TTL_DstResultOpTrait]> {
+               [TTL_CBInputTileOpTrait, TTL_DstResultOpTrait,
+                TTL_FixedBlockComputeOpTrait]> {
   let summary = "Normalize one static row in one DST acquisition";
   let description = [{
     Computes `input * rsqrt(sum(input * input) * scale + epsilon)` for one
