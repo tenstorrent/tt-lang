@@ -85,7 +85,6 @@ _TORCH_UNARY_OPS: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
     # Basic unary math functions (from spec)
     "abs": torch.abs,
     "neg": torch.neg,
-    "exp": torch.exp,
     "exp2": torch.exp2,
     "expm1": torch.expm1,
     "log": torch.log,
@@ -195,6 +194,32 @@ def _apply_unary_with_params(
     result_block = Block.from_list(result_list, shape=block._shape)  # type: ignore[attr-defined]
     track_source_blocks(result_block, block)
     return result_block
+
+
+def exp(
+    block: Block,
+    *,
+    approx: bool = False,
+    scale: Optional[float] = None,
+    skip_clamp_check: bool = False,
+    iterations: int = 8,
+) -> Block:
+    """Element-wise exponential (simulator reference).
+
+    Mirrors the ``ttl.exp`` DSL signature. ``scale`` is numerically meaningful
+    (computes ``exp(scale * x)``); the remaining flags (``approx``,
+    ``skip_clamp_check``, ``iterations``) only control the hardware SFPU
+    approximation and are accepted for API parity but do not change the exact
+    reference result.
+    """
+    del approx, skip_clamp_check, iterations  # hardware-only knobs
+
+    def _op(t: torch.Tensor) -> torch.Tensor:
+        if scale is not None:
+            t = t * float(scale)
+        return torch.exp(t)
+
+    return _apply_unary_with_params(block, _op)
 
 
 # Binary operations

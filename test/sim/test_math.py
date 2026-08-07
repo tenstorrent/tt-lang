@@ -664,6 +664,29 @@ def test_exp_multitile():
     )
 
 
+def test_exp_scale_flag():
+    """Scale flag is numerically honored by the simulator: exp(scale * x)."""
+    t1 = [Tensor(torch.tensor([[0.0, 1.0]]))]
+    block1 = Block.from_list(t1, shape=(1, 1))
+
+    result = ttl.math.exp(block1, scale=2.0)
+
+    expected = torch.exp(2.0 * torch.tensor([[0.0, 1.0]]))
+    assert torch.allclose(result.to_list()[0].to_torch(), expected)
+
+
+def test_exp_approx_flags_ignored_numerically():
+    """Approximation-only flags are accepted and do not change the exact
+    reference result in the simulator."""
+    t1 = [Tensor(torch.tensor([[0.0, 1.0, -1.0]]))]
+    block1 = Block.from_list(t1, shape=(1, 1))
+
+    result = ttl.math.exp(block1, approx=True, skip_clamp_check=True, iterations=4)
+
+    expected = torch.exp(torch.tensor([[0.0, 1.0, -1.0]]))
+    assert torch.allclose(result.to_list()[0].to_torch(), expected)
+
+
 # Tests for reduce_max function
 
 
