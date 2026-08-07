@@ -1097,10 +1097,11 @@ struct TTLTileRowNormalizationBlockToTTKernel
         op.getScaleAttr().getValue(), resultType.getDataType());
     ttk::ExperimentalAddRsqrtOp::create(rewriter, loc, adaptor.getDstIndex(),
                                         op.getEpsilonAttr().getValue());
-    ttk::ExperimentalSourceScalarAcquireOp::create(
-        rewriter, loc, adaptor.getDstIndex(), adaptor.getDstIndex());
+    ttk::ExperimentalSourceScalarAcquireOp::create(rewriter, loc,
+                                                   adaptor.getDstIndex());
     ttk::ExperimentalSourceScalarApplyMulOp::create(
-        rewriter, loc, *inputDfb, numTiles, resultType.getDataType());
+        rewriter, loc, *inputDfb, adaptor.getDstIndex(), numTiles,
+        resultType.getDataType());
     ttk::ExperimentalSourceScalarReleaseOp::create(rewriter, loc);
 
     if (op.getHasGamma()) {

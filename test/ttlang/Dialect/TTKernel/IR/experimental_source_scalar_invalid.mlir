@@ -7,12 +7,11 @@ module {
     %input = ttkernel.get_compile_time_arg_val(0)
         : () -> !ttkernel.cb<18, !ttcore.tile<32x32, bf16>>
     %scalar = arith.constant 0 : index
-    ttkernel.experimental_source_scalar_acquire(%scalar, %scalar)
-        : (index, index) -> ()
+    ttkernel.experimental_source_scalar_acquire(%scalar) : (index) -> ()
     // expected-error @below {{'ttkernel.experimental_source_scalar_apply_mul' op num_tiles must be in the range [1, 8]}}
-    ttkernel.experimental_source_scalar_apply_mul(%input)
+    ttkernel.experimental_source_scalar_apply_mul(%input, %scalar)
         num_tiles = 9 dtype = <bf16>
-        : (!ttkernel.cb<18, !ttcore.tile<32x32, bf16>>) -> ()
+        : (!ttkernel.cb<18, !ttcore.tile<32x32, bf16>>, index) -> ()
     ttkernel.experimental_source_scalar_release
     return
   }
@@ -26,12 +25,11 @@ module {
     %input = ttkernel.get_compile_time_arg_val(0)
         : () -> !ttkernel.cb<6, !ttcore.tile<32x32, f32>>
     %scalar = arith.constant 0 : index
-    ttkernel.experimental_source_scalar_acquire(%scalar, %scalar)
-        : (index, index) -> ()
+    ttkernel.experimental_source_scalar_acquire(%scalar) : (index) -> ()
     // expected-error @below {{'ttkernel.experimental_source_scalar_apply_mul' op supports bf16 DFBs only}}
-    ttkernel.experimental_source_scalar_apply_mul(%input)
+    ttkernel.experimental_source_scalar_apply_mul(%input, %scalar)
         num_tiles = 3 dtype = <f32>
-        : (!ttkernel.cb<6, !ttcore.tile<32x32, f32>>) -> ()
+        : (!ttkernel.cb<6, !ttcore.tile<32x32, f32>>, index) -> ()
     ttkernel.experimental_source_scalar_release
     return
   }
@@ -45,12 +43,11 @@ module {
     %input = ttkernel.get_compile_time_arg_val(0)
         : () -> !ttkernel.cb<6, !ttcore.tile<32x32, f32>>
     %scalar = arith.constant 0 : index
-    ttkernel.experimental_source_scalar_acquire(%scalar, %scalar)
-        : (index, index) -> ()
+    ttkernel.experimental_source_scalar_acquire(%scalar) : (index) -> ()
     // expected-error @below {{'ttkernel.experimental_source_scalar_apply_mul' op dtype must match the input tile data type}}
-    ttkernel.experimental_source_scalar_apply_mul(%input)
+    ttkernel.experimental_source_scalar_apply_mul(%input, %scalar)
         num_tiles = 3 dtype = <bf16>
-        : (!ttkernel.cb<6, !ttcore.tile<32x32, f32>>) -> ()
+        : (!ttkernel.cb<6, !ttcore.tile<32x32, f32>>, index) -> ()
     ttkernel.experimental_source_scalar_release
     return
   }
@@ -63,10 +60,11 @@ module {
   func.func @consumer_without_acquire() {
     %input = ttkernel.get_compile_time_arg_val(0)
         : () -> !ttkernel.cb<6, !ttcore.tile<32x32, bf16>>
+    %output = arith.constant 0 : index
     // expected-error @below {{'ttkernel.experimental_source_scalar_apply_mul' op requires an active source scalar}}
-    ttkernel.experimental_source_scalar_apply_mul(%input)
+    ttkernel.experimental_source_scalar_apply_mul(%input, %output)
         num_tiles = 3 dtype = <bf16>
-        : (!ttkernel.cb<6, !ttcore.tile<32x32, bf16>>) -> ()
+        : (!ttkernel.cb<6, !ttcore.tile<32x32, bf16>>, index) -> ()
     return
   }
 }
@@ -88,11 +86,9 @@ module {
 module {
   func.func @overlapping_acquires() {
     %scalar = arith.constant 0 : index
-    ttkernel.experimental_source_scalar_acquire(%scalar, %scalar)
-        : (index, index) -> ()
+    ttkernel.experimental_source_scalar_acquire(%scalar) : (index) -> ()
     // expected-error @below {{'ttkernel.experimental_source_scalar_acquire' op cannot acquire while another source scalar is active}}
-    ttkernel.experimental_source_scalar_acquire(%scalar, %scalar)
-        : (index, index) -> ()
+    ttkernel.experimental_source_scalar_acquire(%scalar) : (index) -> ()
     ttkernel.experimental_source_scalar_release
     return
   }
@@ -105,8 +101,7 @@ module {
   func.func @missing_release() {
     %scalar = arith.constant 0 : index
     // expected-error @below {{'ttkernel.experimental_source_scalar_acquire' op requires a matching source-scalar release in the same block}}
-    ttkernel.experimental_source_scalar_acquire(%scalar, %scalar)
-        : (index, index) -> ()
+    ttkernel.experimental_source_scalar_acquire(%scalar) : (index) -> ()
     return
   }
 }
@@ -117,8 +112,7 @@ module {
 module {
   func.func @intervening_operation() {
     %scalar = arith.constant 0 : index
-    ttkernel.experimental_source_scalar_acquire(%scalar, %scalar)
-        : (index, index) -> ()
+    ttkernel.experimental_source_scalar_acquire(%scalar) : (index) -> ()
     // expected-error @below {{'ttkernel.tile_regs_commit' op only source-scalar consumers may execute between acquire and release}}
     ttkernel.tile_regs_commit() : () -> ()
     ttkernel.experimental_source_scalar_release
