@@ -461,10 +461,10 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   // tensor's element type so mixed-dtype fusion (e.g., bf16 input + f32
   // intermediate produced by a fused `ttl.typecast`) preserves per-value
   // precision. The output block arg type matches the sink tensor.
-  Type outputTileType = ttcore::TileType::get(type.getElementType());
+  Type outputTileType = getTileValueType(type.getElementType());
   auto getInputTileType = [&](Value root) -> Type {
     auto inputTensor = cast<RankedTensorType>(root.getType());
-    return ttcore::TileType::get(inputTensor.getElementType());
+    return getTileValueType(inputTensor.getElementType());
   };
 
   for (Value root : creation.inputs) {
@@ -583,6 +583,99 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   return success();
 }
 
+/// Applies a precomputed row-normalization schedule. Expression recognition,
+/// capacity, lifetimes, publication, and operation erasure are fixed by the
+/// immutable plan; application emits one block operation mechanically.
+static LogicalResult
+buildRowNormalizationCompute(Operation *sinkOp, PatternRewriter &rewriter,
+                             const ComputeOpCreationPlan &creation,
+                             const OutputPublicationPlan &outputs) {
+  assert(creation.recipe == ComputeOpCreationRecipe::RowNormalization &&
+         creation.rowNormalization &&
+         "row-normalization builder requires its typed schedule");
+  const RowNormalizationPlan &schedule = *creation.rowNormalization;
+  if (llvm::any_of(schedule.operations,
+                   [](const RowNormalizationOperationPlan &operation) {
+                     return !llvm::equal(operation.source->getOperands(),
+                                         operation.operands);
+                   })) {
+    return rewriter.notifyMatchFailure(
+        sinkOp, "row-normalization expression changed after planning");
+  }
+  if (!creation.instrumentation.empty()) {
+    return rewriter.notifyMatchFailure(
+        sinkOp, "row-normalization schedule contains instrumentation");
+  }
+
+  Location loc = sinkOp->getLoc();
+  RankedTensorType outputType = creation.resultType;
+  SmallVector<Attribute> maps;
+  for (AffineMap inputMap : creation.iteration.inputMaps) {
+    maps.push_back(AffineMapAttr::get(inputMap));
+  }
+  for (size_t outputIndex = 0; outputIndex < outputs.dfbs.size();
+       ++outputIndex) {
+    maps.push_back(AffineMapAttr::get(creation.iteration.outputMap));
+  }
+  SmallVector<Attribute> iteratorTypes =
+      buildIteratorTypeAttributes(rewriter, creation.iteration.iteratorTypes);
+
+  insertAtCreationAnchor(rewriter, outputs);
+  SmallVector<Value> outputViews;
+  SmallVector<Type> resultTypes;
+  for (Value outputDFB : outputs.dfbs) {
+    Value init =
+        buildInitTensor(rewriter, loc, outputType, creation.inputs.front());
+    outputViews.push_back(
+        AttachCBOp::create(rewriter, loc, init.getType(), init, outputDFB));
+    resultTypes.push_back(outputType);
+  }
+
+  auto computeOp = ComputeOp::create(
+      rewriter, loc, TypeRange(resultTypes), ValueRange(creation.inputs),
+      ValueRange(outputViews), rewriter.getArrayAttr(maps),
+      rewriter.getArrayAttr(iteratorTypes));
+  Block *body = rewriter.createBlock(&computeOp.getBody());
+  for (Value inputValue : creation.inputs) {
+    auto inputType = cast<RankedTensorType>(inputValue.getType());
+    body->addArgument(getTileValueType(inputType.getElementType()), loc);
+  }
+  Type outputTileType = getTileValueType(outputType.getElementType());
+  for (size_t outputIndex = 0; outputIndex < outputs.dfbs.size();
+       ++outputIndex) {
+    body->addArgument(outputTileType, loc);
+  }
+
+  rewriter.setInsertionPointToStart(body);
+  Value inputTile = body->getArgument(0);
+  bool hasGamma = schedule.gammaMode != RowNormalizationGammaMode::None;
+  Value gammaTile = hasGamma ? body->getArgument(1) : inputTile;
+  Value outputTile = body->getArgument(creation.inputs.size());
+  Value result =
+      createTileOpWithPlaceholderDstIndex<TileRowNormalizationBlockOp>(
+          rewriter, loc, outputTileType, inputTile, gammaTile, outputTile,
+          schedule.scale, schedule.epsilon, rewriter.getBoolAttr(hasGamma),
+          rewriter.getBoolAttr(schedule.gammaMode ==
+                               RowNormalizationGammaMode::RepeatedPage));
+
+  for (StoreOp store : outputs.stores) {
+    emitTileStore(rewriter, loc, result, computeOp, store, outputs);
+  }
+  YieldOp::create(rewriter, loc);
+
+  SmallVector<CBPushOp> replacedPushes;
+  replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
+                                   replacedPushes);
+  eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
+  rewriter.replaceOp(sinkOp, computeOp.getResult(0));
+  for (Operation *operation : llvm::reverse(creation.trace.opsInOrder)) {
+    if (operation != sinkOp && operation->use_empty()) {
+      rewriter.eraseOp(operation);
+    }
+  }
+  return success();
+}
+
 //===----------------------------------------------------------------------===//
 // Lowering to ttl.compute with tile ops
 //===----------------------------------------------------------------------===//
@@ -621,9 +714,9 @@ static LogicalResult buildComputeFromInputs(
     if (!inputType) {
       return rewriter.notifyMatchFailure(op, "input is not a ranked tensor");
     }
-    inputTileTypes.push_back(ttcore::TileType::get(inputType.getElementType()));
+    inputTileTypes.push_back(getTileValueType(inputType.getElementType()));
   }
-  Type outputTileType = ttcore::TileType::get(outputType.getElementType());
+  Type outputTileType = getTileValueType(outputType.getElementType());
 
   SmallVector<Attribute> maps;
   for (AffineMap inputMap : creation->iteration.inputMaps) {
@@ -705,7 +798,12 @@ static LogicalResult tryFusion(Operation *op, PatternRewriter &rewriter,
     if (failed(resolveCurrentOutputs(op, rewriter, *creation, outputs))) {
       return failure();
     }
-    return buildFusedCompute(op, rewriter, *creation, outputs);
+    if (creation->recipe == ComputeOpCreationRecipe::RowNormalization) {
+      return buildRowNormalizationCompute(op, rewriter, *creation, outputs);
+    }
+    if (creation->recipe == ComputeOpCreationRecipe::Fused) {
+      return buildFusedCompute(op, rewriter, *creation, outputs);
+    }
   }
   return rewriter.notifyMatchFailure(op, "operation has no fusable expression");
 }
@@ -1067,7 +1165,7 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
 
     Block *body = rewriter.createBlock(&computeOp.getBody());
     Type scalarType = inputType.getElementType();
-    Type tileType = ttcore::TileType::get(scalarType);
+    Type tileType = getTileValueType(scalarType);
     body->addArgument(tileType, loc);
     body->addArgument(tileType, loc);
 
