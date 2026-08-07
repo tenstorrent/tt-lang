@@ -2,9 +2,9 @@
 
 ## Overview
 
-`tt-lang-sim-cycles` estimates hardware cycle counts for a tt-lang program from two inputs: a **hardware profile** (peak rates) and a **simulator trace** (`tt-lang-sim --trace`). It applies an **analytical ideal-peak model** — cycles are computed as work-counts ÷ hardware rates — and assumes the hardware runs at peak performance with no utilization derating.
+`tt-lang-sim-cycles` estimates hardware cycle counts for a tt-lang program from two inputs: a **hardware profile** (peak rates) and the program's **trace events** (see `docs/TRACING.md`). It applies an **analytical ideal-peak model** — cycles are work-counts ÷ hardware rates — assuming the hardware runs at peak performance with no utilization derating.
 
-The estimator is a trace **consumer**: it reads the JSONL trace file and never imports the simulator. The trace file is the only contract between the two, which is why the estimator can run wherever a trace can be copied, independent of the sim.
+The estimator consumes trace events without importing the simulator, so it runs two ways: **inline** during a sim run (`--cycles`, on the in-memory trace) or **offline** from a saved JSONL trace, which can be copied and estimated anywhere.
 
 **Quick Start —**
 From a built checkout:
@@ -25,39 +25,37 @@ See [Command-Line Interface](#command-line-interface) for the full flag set.
 
 ## The Model
 
-The trace supplies **work** (how many tiles each op computes or moves) and **structure** (which kernel runs on which node). It never supplies time — the simulator tick is a logical clock, not a duration (see [Design Rationale](#design-rationale--why-ideal-peak-not-fit-to-trace)).
+The trace supplies **work** (how many tiles each op computes or moves) and **structure** (which kernel runs on which node). It never supplies time — the simulator tick is a logical clock, not a duration.
 
-Cycles come entirely from work ÷ rate.
+Cycles are estimated entirely from work ÷ rate.
 
 **Per op:** Compute and movement each have a peak rate from the profile:
 
 ```
-compute op:   cyc = tiles / R_compute(op_type, dtype)
+compute  op:  cyc = tiles / R_compute(op_type, dtype)
 movement op:  cyc = latency(locality) + (tiles × bytes_per_tile) / R_noc(locality)
 ```
 
 **Per kernel:** The compute engine and the data-movement engine run concurrently, so the kernel time is the larger of the two serial paths, not their sum:
 
 ```
-T_kernel = max( Σ cyc_compute , Σ cyc_movement )
+T_kernel = max(Σcyc_compute, Σcyc_movement)
 ```
 
-**Per program:** The model is throughput-bound, with two levels of overlap:
+**Per program:** The model is throughput-bound — kernel overlap, floored by a shared-memory ceiling:
 
-- *Within a node* — the reader / compute / writer kernels run on that core's concurrent RISCs, so the node's time is the `max` of its kernels.
-- *Across nodes* — distinct nodes are separate cores in parallel, so the program time is the `max` over nodes.
-- *Aggregate DRAM ceiling* — every core draws DRAM from one shared GDDR6 controller, so the program is also bounded below by `total_dram_bytes / dram_aggregate_bw`. Only `dram`-locality movement counts (local/remote L1 never touch the controller). This is a static divide-by-peak (a real hardware ceiling), not a queuing/fairness model; it is disabled when `dram_aggregate_bw = 0`.
+- *Across kernels* — a node's reader / compute / writer kernels overlap on its concurrent RISCs, and distinct nodes run in parallel, so the program time is the `max` over all kernels.
+- *Aggregate memory ceiling* — every core draws from one shared off-chip pool (GDDR6), so the program is also bounded below by `total_memory_bytes / memory_aggregate_bw`. Only `dram`-locality movement counts (L1 traffic stays on-chip).
 
 ```
-dram_floor = (Σ dram_bytes) / dram_aggregate_bw
-T_program  = max( max_node( max_{k ∈ node} T_kernel(k) ), dram_floor )
+memory_floor = (Σmemory_bytes) / memory_aggregate_bw
+node_bound   = max_k T_kernel(k)
+T_program    = max(node_bound, memory_floor)
 ```
 
-The per-node NoC term (a single core's transfer/latency) and the aggregate DRAM floor (the shared controller) model different resources, so the program takes the `max` of both.
+`node_bound` and `memory_floor` model different resources (per-core throughput vs shared bandwidth), so the program takes the `max`. The reported `bound` is `memory` when the shared floor wins, otherwise the busiest node's `compute`/`movement`. Without the ceiling, a K-sweep matmul stays `compute` at every K because each of N active cores is (incorrectly) given a private DRAM lane; the aggregate ceiling flips memory-heavy points to `memory`.
 
-The report records which one bound the program (`program_bound`: `per-node` | `aggregate-dram`) and the `dram_floor` value. Without the ceiling, a K-sweep matmul stays compute-bound at every K because each of N active cores is (incorrectly) given a private DRAM lane; the aggregate ceiling flips memory-heavy points to `aggregate-dram`.
-
-Under ideal-peak with full pipelining, connected producer/consumer kernels overlap in steady state, so there is no serial sum along a dependency chain. The roofline **is** the estimate — the model adds no serial-sum slack on top. Being ideal-peak, it is a tight lower bound (`measured ≥ estimate`; see [Hardware Validation](#hardware-validation)).
+Under ideal-peak with full pipelining, connected producer/consumer kernels overlap in steady state, so there is no serial sum along a dependency chain. The roofline **is** the estimate — the model adds no serial-sum slack on top. Being ideal-peak, it is a lower bound (`measured ≥ estimate`, see [Hardware Validation](#hardware-validation)); how *tight* the bound is depends on the workload and is not yet fully characterized.
 
 **Fill/drain — reported, not folded into the bound.**
 Pure throughput ignores a pipeline's fill (first item through read→compute→write) and drain (last item). A deterministic estimate of that overhead treats a node's kernels as stages with cycles `C_i` and `N` pipeline items (the write kernel's movement-op count; `N ≥ 1`):
@@ -65,13 +63,34 @@ Pure throughput ignores a pipeline's fill (first item through read→compute→w
 ```
 node_time  = max_i(C_i) + (Σ_i C_i - max_i C_i) / N     # fill/drain-inclusive per node
 fill_drain = max_node(node_time) − node_bound           # reported as `node_fill_drain`
-T_program  = max( node_bound, dram_floor )              # the roofline — the reported estimate
+T_program  = max( node_bound, memory_floor )              # the roofline — the reported estimate
 ```
 
 `fill_drain` is **reported for information only — it is NOT added to `T_program`.** It's a crude heuristic (assumes a read/compute/write stage shape, one item-count per node) that can *exceed* real per-node overhead — folding it in pushed the estimate *above* measured cycles on the reuse-matmul (P100a) at some sizes, breaking `measured ≥ estimate`. So it stays reported-only.
 
 **Out of scope — the rigorous latency regime.**
 Exact fill/drain and cross-node serialization from the real dependency DAG (`kernel_block.on`, dfb push/pop, pipe send/recv) are deferred; the correction above is a coarse per-node add-on, not a DAG traversal.
+
+---
+
+## Roofline (per board)
+
+The per-kernel `max(compute, movement)` is the time-domain form of the classic [roofline model](https://docs.nersc.gov/tools/performance/roofline/) (Williams, Waterman & Patterson, 2009): attainable performance is `min(peak_compute, peak_bandwidth × AI)`, where arithmetic intensity (AI) is FLOP per byte. One metric (here, FLOP) gives **one roofline per board** — a hardware ceiling, the best any application can reach, independent of the kernel. Other metrics (e.g. energy) give their own rooflines; we use the classic FLOP one.
+
+| Board | Peak compute (bf16 / FP16, datasheet) | Peak DRAM BW | Ridge AI |
+|---|---|---|---|
+| `wormhole_n300` | ~65 TFLOP/s (per chip) | 288 GB/s | ~228 FLOP/byte |
+| `blackhole_p100a` | ~166 TFLOP/s | 448 GB/s | ~370 FLOP/byte |
+
+- **Peak compute** — datasheet bf16/FP16 matmul peak. Wormhole N300: 131 TFLOP/s per card (2 ASICs, 64 Tensix each @ 1.0 GHz) → ~65/chip. Blackhole P100a: 120 Tensix @ 1.35 GHz → ~166 TFLOP/s (the datasheet's 664 BFP8 ÷ 4 for HiFi4). The estimator's default rate is bf16 HiFi4, matching these.
+- **DRAM BW is per chip:** N300 is 576 GB/s per card → 288/chip; P100a is 448 GB/s (7 of 8 GDDR6).
+- **Ridge AI** = peak compute ÷ peak BW — below it memory-bound, above it compute-bound.
+
+The report emits this per board when the profile sets `tensix_cores` (see [Output](#output)). Two caveats: FLOP counts **matmul only** (the SFPU rate is a placeholder), and the compute roof is the fixed **bf16/HiFi4** reference — a BFP8 (LoFi) kernel runs ~4× faster, so its `compute util` can exceed 100%.
+
+**Vocabulary.** `memory` is the roofline's off-chip bandwidth roof (the shared GDDR6 pool, the classic model's "memory bandwidth"); a per-node `movement` bound is one core's data-movement path (L1 + NoC + off-chip). The trace-level `dram` *locality* is a separate, lower-level tag and keeps its name.
+
+Sources: roofline model — [NERSC](https://docs.nersc.gov/tools/performance/roofline/) and the [Williams et al. paper](https://people.eecs.berkeley.edu/~kubitron/cs252/handouts/papers/RooflineVyNoYellow.pdf); board specs (Tensix count, clock, DRAM BW, peak FLOPs) — Tenstorrent product datasheets ([Blackhole](https://docs.tenstorrent.com/aibs/blackhole/specifications.html), [Wormhole](https://docs.tenstorrent.com/aibs/wormhole/specifications.html)).
 
 ---
 
@@ -100,7 +119,7 @@ This is what lets the estimate be label-free and deterministic: given a profile 
 | `compute_rate_default` | fallback tiles/cycle |
 | `noc_bw` | bytes/cycle by locality (`local_l1` / `remote_l1` / `dram`) |
 | `noc_latency` | fixed cycles per transfer, by locality |
-| `dram_aggregate_bw` | shared GDDR6 ceiling, B/cyc (JSON stores `dram_aggregate_gbps`, ÷`clock_ghz` at load; `0` disables the ceiling) |
+| `memory_aggregate_bw` | shared GDDR6 ceiling, B/cyc (JSON stores `memory_aggregate_gbps`, ÷`clock_ghz` at load; `0` disables the ceiling) |
 | `bytes_per_tile` | movement tile size; the dtype knob (bf16 2048 / fp32 4096 / bfp8 ~1088 B) |
 | `clock_ghz` | GHz; ns reporting **and** the DRAM GB/s→B/cyc conversion at load |
 | `dm_engines` | reserved for future overlap modelling |
@@ -119,7 +138,7 @@ All values are sourced from tt-metal and the Wormhole ISA docs:
 | `bytes_per_tile` | 2048 | bf16 32×32 tile (32·32·2 B) |
 | `dm_engines` | 2 | BRISC + NCRISC (METALIUM_GUIDE) |
 | `noc_bw` / `noc_latency` | 25.3 B/cyc, 293 cyc | **measured**, tt-metal `noc_latencies.yaml` (64 KB / 2589 cyc asymptote; 293-cyc small-transfer floor) |
-| `dram_aggregate_gbps` | 288 GB/s | 12 GDDR6 ch × 24 B/cyc @ 12 Gbps (tt-metal `Saturating_DRAM_bandwidth.md`); the **spec upper bound** is used. |
+| `memory_aggregate_gbps` | 288 GB/s | 12 GDDR6 ch × 24 B/cyc @ 12 Gbps (tt-metal `Saturating_DRAM_bandwidth.md`); the **spec upper bound** is used. |
 | matmul rate (default) | 1/64 | `16 × fidelity` cyc/tile; tt-lang sets no MathFidelity → tt-metal default **HiFi4**, fixed. |
 | matmul rate (fp32) | ≈1/68.5 | f32 args set `fp32_dest_acc_en` (`TTLSetComputeKernelConfig`) → ~7% slower. BH-calibrated. |
 | SFPU default | 1/32 | 32 elem/clk ideal 1-instruction floor (SFPU spec) |
@@ -167,7 +186,7 @@ Not instrumented:
 
 The pipeline produces one canonical `CycleEstimate`; every view is a pure function of it (compute once, render many).
 
-- **Summary** (default) — per-node roll-up: active nodes, per-node cycles, utilization, and a bound-class table (compute vs memory). `--include-zero-kernels` also lists idle nodes.
+- **Summary** (default) — per-node roll-up: active nodes, per-node cycles, utilization, and a bound-class table (compute vs movement). `--include-zero-kernels` also lists idle nodes.
 - **Detailed** (`--detailed`) — the full per-kernel table.
 - **JSON** (`--json-out`) — self-describing (`tool`, `schema_version`, profile, and per-kernel work + cycles).
 - **Re-render** (`--view-report REPORT.json`) — reload a saved JSON report and render it without re-running.
@@ -175,24 +194,33 @@ The pipeline produces one canonical `CycleEstimate`; every view is a pure functi
 Example summary tail:
 
 ```
+Nodes
+..............................................................................
 Type         Nodes    Avg Cycles           Max   Max node
-..............................................................................
 compute         48        54.61K        61.44K   node0
-memory           0          0.00          0.00   -
+movement         0             -             -   -
+  per-node max :  61.44K   (compute)
+  active nodes :  48 / 56   (8 idle)
 ------------------------------------------------------------------------------
-DRAM (shared)
+Memory (shared)
 ..............................................................................
-  read           :  46.0 MB
-  write          :  2.0 MB
-  bandwidth      :  288 B/cyc   (288 GB/s @ 1.0 GHz)
-  floor          :  174.76K
+  read         :  46.0 MB
+  write        :  2.0 MB
+  bandwidth    :  288 B/cyc   (288 GB/s @ 1.0 GHz)
+  floor        :  174.76K
 ------------------------------------------------------------------------------
-Program cycles :  174.76K   (aggregate-dram)
-Per-node max   :  61.44K    (compute)
-Active nodes   :  48 / 56   (8 idle)
+Program
+..............................................................................
+  cycles       :  174.76K
+  AI           :  150 FLOP/B
+  bound        :  memory
+  compute util :  66%
+  memory  util :  100%
 ```
 
-`Nodes` counts nodes *bound* by that resource; a node is memory-bound when its movement path exceeds its compute path. `Per-node max` is the slowest node's cycles and its bound reason; `Program cycles` shows the final program time and which resource set it (`per-node` or `aggregate-dram`). The `DRAM (shared)` block renders only when the profile models an aggregate DRAM ceiling (`dram_aggregate_bw > 0`); profiles without one omit it entirely.
+The **Nodes** block classifies each node compute- or movement-bound (movement = its movement path exceeds compute); `per-node max` is the slowest node and its reason, `active nodes` the utilization. The **Memory (shared)** block renders only when the profile sets an aggregate ceiling (`memory_aggregate_bw > 0`).
+
+The **Program** block is the answer: `cycles`, the program `AI` (matmul FLOP ÷ memory bytes), the `bound` that set it (`compute` \| `movement` \| `memory`), and each roof's utilization (achieved ÷ peak). `AI` and the `util` lines — plus the header's `peak compute` / `ridge AI` — render only when the profile sets `tensix_cores`.
 
 ---
 
@@ -251,11 +279,11 @@ python/
 
 ## Hardware Validation
 
-Program-level accuracy is checked against device cycles on a matmul K-sweep (Wormhole N300, Blackhole P100a), `measured ≥ estimate` at every point.
+Program-level accuracy is checked against device cycles on a matmul K-sweep (Wormhole N300, Blackhole P100a): `measured ≥ estimate` at every point. **Caveat:** every point is memory-bound, on `step_4` (which re-reads operands), so this validates the DRAM ceiling — not the compute roof — and the 1.2–1.7× gap reflects the kernel's access inefficiency as much as the model.
 
-Achieved DRAM utilization ~57–67% (WH) / ~82–92% (BH); tt-npe shows both DRAM-dominant, not NoC-bound (0% congestion).
+Achieved DRAM utilization ~57–67% (WH) / ~82–92% (BH); tt-npe confirms both are DRAM-dominant, not NoC-bound (0% congestion). The compute branch is exercised only on a small reuse-matmul (P100a); dtype movement scaling and the fp32 `fp32_dest_acc_en` penalty (~7%) are device-confirmed.
 
-The compute branch is exercised on a reuse-matmul (P100a) — the per-node compute bound holds. dtype movement scaling and the fp32 `fp32_dest_acc_en` penalty (~7%) are device-confirmed.
+A two-regime validation (memory- and compute-bound) against a well-tuned kernel — the test that would show the estimate is a *tight* ideal-peak reference, not just a lower bound — is still pending (see [Current Limitations & Deferred Work](#current-limitations--deferred-work)).
 
 ---
 
@@ -264,4 +292,5 @@ The compute branch is exercised on a reuse-matmul (P100a) — the per-node compu
 - **Multicast movement is uncounted** — pipe copies contribute zero bytes, so multicast-heavy kernels (reuse/mcast matmul) are under-counted.
 - **Broadcast / transpose** — not charged as compute.
 - **SFPU rate is a placeholder** — an ideal 1-instruction floor, not a calibrated per-op peak (matmul is solid).
+- **Two-regime validation** — validate compute- *and* memory-bound points against a well-tuned kernel (not `step_4`) to show the estimate is a *tight* ideal-peak reference, not just a lower bound. The available example kernels are per-node latency-bound (roof utilization <20%), so they exercise the roofline math but do not saturate either roof.
 - **Unified `sim_stats` entry** — one `stats|cycles` subcommand instead of two (needs discussion).

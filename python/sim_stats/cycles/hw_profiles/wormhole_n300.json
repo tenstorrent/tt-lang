@@ -7,5 +7,6 @@
   "clock_ghz": 1.0,
   "bytes_per_tile": 2048.0,
   "dm_engines": 2,
-  "dram_aggregate_gbps": 288.0
+  "memory_aggregate_gbps": 288.0,
+  "tensix_cores": 64
 }
