@@ -1101,7 +1101,7 @@ struct TTLTileRowNormalizationBlockToTTKernel
         resultType.getDataType());
     ttk::ExperimentalSourceScalarReleaseOp::create(rewriter, loc);
 
-    if (op.getHasGamma()) {
+    if (op.getGammaMode() != RowNormalizationGammaMode::None) {
       auto eltwiseType = ttk::EltwiseBinaryTypeAttr::get(
           rewriter.getContext(), ttk::EltwiseBinaryType::Mul);
       auto reuseType = ttk::BinaryDestReuseTypeAttr::get(

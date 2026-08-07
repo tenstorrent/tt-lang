@@ -11,7 +11,7 @@ module {
     // expected-error @below {{'ttl.tile_row_normalization_block' op supports bf16 tiles only}}
     %result = ttl.tile_row_normalization_block
         %input, %input, %output scale = 1.000000e+00 epsilon = 1.000000e-05
-        has_gamma = false num_tiles = 1 into dst[%c0]
+        gamma_mode = 0 : i32 num_tiles = 1 into dst[%c0]
         : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32>,
           !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
     return
@@ -29,7 +29,7 @@ module {
     // expected-error @below {{'ttl.tile_row_normalization_block' op scale must be finite and positive}}
     %result = ttl.tile_row_normalization_block
         %input, %input, %output scale = 0x7FC00000 epsilon = 1.000000e-05
-        has_gamma = false num_tiles = 1 into dst[%c0]
+        gamma_mode = 0 : i32 num_tiles = 1 into dst[%c0]
         : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>,
           !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
     return
@@ -47,7 +47,7 @@ module {
     // expected-error @below {{'ttl.tile_row_normalization_block' op epsilon must be finite and positive}}
     %result = ttl.tile_row_normalization_block
         %input, %input, %output scale = 1.000000e+00 epsilon = 0.000000e+00
-        has_gamma = false num_tiles = 1 into dst[%c0]
+        gamma_mode = 0 : i32 num_tiles = 1 into dst[%c0]
         : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>,
           !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
     return
@@ -66,7 +66,7 @@ module {
     // expected-error @below {{'ttl.tile_row_normalization_block' op gamma tensor shape must match the output shape}}
     %result = ttl.tile_row_normalization_block
         %input, %gamma, %output scale = 1.000000e+00 epsilon = 1.000000e-05
-        has_gamma = true num_tiles = 3 into dst[%c0]
+        gamma_mode = 1 : i32 num_tiles = 3 into dst[%c0]
         : tensor<1x3x!ttcore.tile<32x32, bf16>>,
           tensor<1x1x!ttcore.tile<32x32, bf16>>,
           tensor<1x3x!ttcore.tile<32x32, bf16>>
@@ -86,7 +86,7 @@ module {
     // expected-error @below {{'ttl.tile_row_normalization_block' op tensor operands must be static rank-2 tensors}}
     %result = ttl.tile_row_normalization_block
         %input, %input, %output scale = 1.000000e+00 epsilon = 1.000000e-05
-        has_gamma = false num_tiles = 1 into dst[%c0]
+        gamma_mode = 0 : i32 num_tiles = 1 into dst[%c0]
         : tensor<1x1x1x!ttcore.tile<32x32, bf16>>,
           tensor<1x1x1x!ttcore.tile<32x32, bf16>>,
           tensor<1x1x1x!ttcore.tile<32x32, bf16>>
@@ -106,7 +106,7 @@ module {
     // expected-error @below {{'ttl.tile_row_normalization_block' op input and output must have the same one-row tensor shape}}
     %result = ttl.tile_row_normalization_block
         %input, %input, %output scale = 1.000000e+00 epsilon = 1.000000e-05
-        has_gamma = false num_tiles = 2 into dst[%c0]
+        gamma_mode = 0 : i32 num_tiles = 2 into dst[%c0]
         : tensor<1x2x!ttcore.tile<32x32, bf16>>,
           tensor<1x2x!ttcore.tile<32x32, bf16>>,
           tensor<1x3x!ttcore.tile<32x32, bf16>>
@@ -124,10 +124,10 @@ module {
       %gamma: !ttcore.tile<32x32, bf16>,
       %output: !ttcore.tile<32x32, bf16>) {
     %c0 = arith.constant 0 : index
-    // expected-error @below {{'ttl.tile_row_normalization_block' op gamma must equal input when has_gamma is false}}
+    // expected-error @below {{'ttl.tile_row_normalization_block' op gamma must equal input when gamma_mode is none}}
     %result = ttl.tile_row_normalization_block
         %input, %gamma, %output scale = 1.000000e+00 epsilon = 1.000000e-05
-        has_gamma = false num_tiles = 1 into dst[%c0]
+        gamma_mode = 0 : i32 num_tiles = 1 into dst[%c0]
         : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>,
           !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
     return
@@ -145,7 +145,7 @@ module {
     // expected-error @below {{'ttl.tile_row_normalization_block' op num_tiles must match the row tensor width}}
     %result = ttl.tile_row_normalization_block
         %input, %input, %output scale = 1.000000e+00 epsilon = 1.000000e-05
-        has_gamma = false num_tiles = 2 into dst[%c0]
+        gamma_mode = 0 : i32 num_tiles = 2 into dst[%c0]
         : tensor<1x3x!ttcore.tile<32x32, bf16>>,
           tensor<1x3x!ttcore.tile<32x32, bf16>>,
           tensor<1x3x!ttcore.tile<32x32, bf16>>

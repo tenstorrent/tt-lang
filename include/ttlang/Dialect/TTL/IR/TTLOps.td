@@ -1511,8 +1511,9 @@ def TTL_TileRowNormalizationBlockOp :
     clears the acquired DST section, and writes the normalized row to the
     contiguous slots beginning at `dst_index`. `num_tiles` records the exact
     row width because scalarization replaces tensor operands with tile values.
-    The input, gamma, and output operands identify dataflow buffers; gamma is
-    equal to input when `has_gamma` is false and is not read in that mode.
+    The input, gamma, and output operands identify dataflow buffers. Gamma is
+    equal to input and is not read when `gamma_mode` is `none`; `full_row`
+    multiplies each output tile by the corresponding gamma tile.
 
     The operation is internal to block compute lowering. Its result represents
     the complete contiguous DST footprint, not one independently executable
@@ -1523,14 +1524,14 @@ def TTL_TileRowNormalizationBlockOp :
                        TTL_TileOrTensor:$output,
                        F32Attr:$scale,
                        F32Attr:$epsilon,
-                       BoolAttr:$has_gamma,
+                       TTL_RowNormalizationGammaModeAttr:$gamma_mode,
                        ConfinedAttr<I64Attr, [IntPositive]>:$num_tiles,
                        Index:$dst_index);
   let results = (outs TTL_TileOrTensor:$result);
   let assemblyFormat = [{
     $input `,` $gamma `,` $output
     `scale` `=` $scale `epsilon` `=` $epsilon
-    `has_gamma` `=` $has_gamma
+    `gamma_mode` `=` $gamma_mode
     `num_tiles` `=` $num_tiles
     `into` `dst` `[` $dst_index `]` attr-dict `:`
     type($input) `,` type($gamma) `,` type($output) `->` type($result)

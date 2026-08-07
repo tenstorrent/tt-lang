@@ -101,6 +101,9 @@ def TTL_AccumulationInitialModeAttr
                "accumulation_initial_mode">;
 def TTL_InputClampingAttr
     : EnumAttr<TTL_Dialect, TTL_InputClamping, "input_clamping">;
+def TTL_RowNormalizationGammaModeAttr
+    : EnumAttr<TTL_Dialect, TTL_RowNormalizationGammaMode,
+               "row_normalization_gamma_mode">;
 
 def TTL_Pipe : TTL_Type<"Pipe", "pipe"> {
   let summary = "Pipe for core-to-core data transfer";

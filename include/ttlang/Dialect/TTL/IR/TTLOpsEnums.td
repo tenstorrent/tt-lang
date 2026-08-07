@@ -158,4 +158,16 @@ def TTL_ComputePipelineSchedule : I32EnumAttr<
   let genSpecializedAttr = 0;
 }
 
+def TTL_RowNormalizationGammaMode_None :
+    I32EnumAttrCase<"None", 0, "none">;
+def TTL_RowNormalizationGammaMode_FullRow :
+    I32EnumAttrCase<"FullRow", 1, "full_row">;
+
+def TTL_RowNormalizationGammaMode : I32EnumAttr<
+    "RowNormalizationGammaMode", "row-normalization gamma mode",
+    [TTL_RowNormalizationGammaMode_None,
+     TTL_RowNormalizationGammaMode_FullRow]> {
+  let cppNamespace = "::mlir::tt::ttl";
+}
+
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSENUMS_TD
