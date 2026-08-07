@@ -2662,15 +2662,32 @@ public:
   }
 };
 
-class ExperimentalSourceScalarMulOpConversion
-    : public OpConversionPattern<ttkernel::ExperimentalSourceScalarMulOp> {
+class ExperimentalSourceScalarAcquireOpConversion
+    : public OpConversionPattern<ttkernel::ExperimentalSourceScalarAcquireOp> {
 public:
   using OpConversionPattern<
-      ttkernel::ExperimentalSourceScalarMulOp>::OpConversionPattern;
+      ttkernel::ExperimentalSourceScalarAcquireOp>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(ttkernel::ExperimentalSourceScalarMulOp op,
-                  ttkernel::ExperimentalSourceScalarMulOp::Adaptor adaptor,
+  matchAndRewrite(ttkernel::ExperimentalSourceScalarAcquireOp op,
+                  ttkernel::ExperimentalSourceScalarAcquireOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange(), "experimental::source_scalar_acquire",
+        ValueRange{adaptor.getScalarDstIndex(), adaptor.getOutputDstIndex()});
+    return success();
+  }
+};
+
+class ExperimentalSourceScalarApplyMulOpConversion
+    : public OpConversionPattern<ttkernel::ExperimentalSourceScalarApplyMulOp> {
+public:
+  using OpConversionPattern<
+      ttkernel::ExperimentalSourceScalarApplyMulOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ttkernel::ExperimentalSourceScalarApplyMulOp op,
+                  ttkernel::ExperimentalSourceScalarApplyMulOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
     auto templateArguments =
         ArrayAttr::get(op.getContext(),
@@ -2682,9 +2699,23 @@ public:
                                 ValueRange{adaptor.getInputCb()});
     rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
         op, TypeRange(), "experimental::source_scalar_mul", ArrayAttr(),
-        templateArguments,
-        ValueRange{adaptor.getInputCb(), adaptor.getScalarDstIndex(),
-                   adaptor.getOutputDstIndex()});
+        templateArguments, ValueRange{adaptor.getInputCb()});
+    return success();
+  }
+};
+
+class ExperimentalSourceScalarReleaseOpConversion
+    : public OpConversionPattern<ttkernel::ExperimentalSourceScalarReleaseOp> {
+public:
+  using OpConversionPattern<
+      ttkernel::ExperimentalSourceScalarReleaseOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ttkernel::ExperimentalSourceScalarReleaseOp op,
+                  ttkernel::ExperimentalSourceScalarReleaseOp::Adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange(), "experimental::source_scalar_release", ValueRange());
     return success();
   }
 };
@@ -3195,8 +3226,12 @@ public:
 
     patterns.add<TTKernelInvokeSFPIOpRewriter>(typeConverter, context);
     patterns.add<ExperimentalAddRsqrtOpConversion>(typeConverter, context);
-    patterns.add<ExperimentalSourceScalarMulOpConversion>(typeConverter,
-                                                          context);
+    patterns.add<ExperimentalSourceScalarAcquireOpConversion>(typeConverter,
+                                                              context);
+    patterns.add<ExperimentalSourceScalarApplyMulOpConversion>(typeConverter,
+                                                               context);
+    patterns.add<ExperimentalSourceScalarReleaseOpConversion>(typeConverter,
+                                                              context);
     patterns.add<ExperimentalMulReduceBlockOpConversion>(typeConverter,
                                                          context);
     patterns.add<TTKernelToEmitCGetDeviceIdFromLogicalMeshPositionOpRewriter>(
