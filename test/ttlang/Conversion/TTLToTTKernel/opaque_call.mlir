@@ -47,6 +47,17 @@ func.func @call_with_dfb_descriptor() attributes {ttl.kernel_thread = #ttkernel.
 
 // -----
 
+// Subtile dimensions change bytes per page, not the number of pages in a block.
+// CHECK-LABEL: func.func @call_with_subtile_dfb_descriptor
+// CHECK: ttkernel.opaque_call "describe" template_args [#ttkernel.dfb_descriptor<2, 6, 4, 32>]() {header = "describe.hpp"} : () -> ()
+func.func @call_with_subtile_dfb_descriptor() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %cb = ttl.bind_cb {cb_index = 2, block_count = 4} : !ttl.cb<[2, 3], !ttcore.tile<1x16, bf16>, 4>
+  ttl.opaque_call "describe" template_args [#ttl.external_template_arg<dfb_descriptor, 0>] template_dfbs(%cb : !ttl.cb<[2, 3], !ttcore.tile<1x16, bf16>, 4>) () {header = "describe.hpp"} : () -> ()
+  return
+}
+
+// -----
+
 // Scalar DFBs use one scalar element per page rather than tile storage size.
 // CHECK-LABEL: func.func @call_with_scalar_dfb_descriptor
 // CHECK: ttkernel.opaque_call "describe" template_args [#ttkernel.dfb_descriptor<2, 6, 4, 4>]() {header = "describe.hpp"} : () -> ()
