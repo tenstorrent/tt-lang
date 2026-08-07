@@ -560,6 +560,7 @@ def test_build_cb_descriptors_binds_tensor_on_exact_nodes(monkeypatch):
         for core_range in descriptor["core_ranges"].ranges
     ]
     assert selected == [(0, 0), (1, 0)]
+    assert descriptor.format_descriptors is None
 
 
 @pytest.mark.parametrize(
