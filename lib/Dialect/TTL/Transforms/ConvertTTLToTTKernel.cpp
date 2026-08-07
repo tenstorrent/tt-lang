@@ -190,6 +190,7 @@ static int64_t getDeviceCoordinateCommonArgBase(Operation *op) {
         return mlir::isa<RankedTensorType>(argument.getType());
       });
   return tensorArgumentCount +
+         getNumPipeComputedAddressRuntimeArgs(function) +
          getPipeRuntimeArgCount(op->getParentOfType<ModuleOp>());
 }
 

@@ -21,16 +21,17 @@
 // CHECK-SAME: source_nodes = [array<i64: 0, 0>]
 // CHECK-SAME: }]
 // CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1, 2>
+// CHECK-DAG: %[[SENDER_COORDINATE_INDEX:.*]] = arith.constant 4 : index
 // CHECK: %[[CONNECTION_MANAGER:.*]] = ttkernel.routing_plane.create_connection_manager
 // CHECK-NEXT: %[[CONNECTION_COUNT:.*]] = ttkernel.routing_plane.open_connections %[[CONNECTION_MANAGER]]
-// CHECK: %[[DEVICE_0:.*]] = ttkernel.get_common_arg_val
+// CHECK: %[[DEVICE_0:.*]] = ttkernel.get_common_arg_val(%[[SENDER_COORDINATE_INDEX]])
 // CHECK-NEXT: %[[IS_DEVICE_0:.*]] = arith.cmpi eq, %[[DEVICE_0]], %{{.*}} : i32
 // CHECK: %[[ROUTE_0:.*]] = ttkernel.get_arg_val
 // CHECK-NEXT: scf.if %[[IS_DEVICE_0]] {
 // CHECK: %[[PAYLOAD_0:.*]] = ttkernel.get_write_ptr
 // CHECK: ttkernel.routing_plane.fused_write_atomic_inc(%[[CONNECTION_MANAGER]], %[[CONNECTION_COUNT]], {{.*}}, {{.*}}, {{.*}}, %[[PAYLOAD_0]],
 // CHECK-NEXT: }
-// CHECK: %[[DEVICE_2:.*]] = ttkernel.get_common_arg_val
+// CHECK: %[[DEVICE_2:.*]] = ttkernel.get_common_arg_val(%[[SENDER_COORDINATE_INDEX]])
 // CHECK-NEXT: %[[IS_DEVICE_2:.*]] = arith.cmpi eq, %[[DEVICE_2]], %{{.*}} : i32
 // CHECK: %[[ROUTE_1:.*]] = ttkernel.get_arg_val
 // CHECK-NEXT: scf.if %[[IS_DEVICE_2]] {
@@ -72,7 +73,8 @@
     edge = <source = <coordinates = [2]>, destination = <coordinates = [3]>>>
 
 module attributes {ttl.launch_grid = array<i64: 1, 1>} {
-  func.func @senders() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  func.func @senders(%output: tensor<1x1x!ttcore.tile<32x32, f32>>)
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %src = ttl.bind_cb {cb_index = 0, block_count = 1}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     %pipe_0 = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 9 {

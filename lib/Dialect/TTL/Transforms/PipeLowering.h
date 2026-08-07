@@ -61,6 +61,10 @@ struct FabricRuntimeInfo {
 
 using FabricRuntimeMap = llvm::DenseMap<Operation *, FabricRuntimeInfo>;
 
+/// Return the number of receiver DFB bases passed after tensor addresses in a
+/// function's common runtime arguments.
+int64_t getNumPipeComputedAddressRuntimeArgs(func::FuncOp func);
+
 struct PipeInfo {
   PipeType pipeType;
   PipeTransferContract transferContract;
