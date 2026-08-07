@@ -13,6 +13,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang/Dialect/TTL/Transforms/ComputeOutputPublication.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"
@@ -105,15 +106,8 @@ static LogicalResult
 resolveCurrentOutputs(Operation *source, PatternRewriter &rewriter,
                       const ComputeOpCreationPlan &creation,
                       OutputPublicationPlan &outputs) {
-  PlanningResult<OutputPublicationPlan> resolved =
-      resolveOutputPublicationOperations(creation.outputs);
-  if (resolved.isInvalidIR()) {
-    return rewriter.notifyMatchFailure(source, resolved.getInvalidIR().message);
-  }
-  assert(resolved.isPlanned() &&
-         "output resolution has no recoverable rejection");
-  outputs = std::move(resolved).takePlan();
-  return success();
+  return resolveCurrentOutputPublication(source, rewriter, creation.outputs,
+                                         outputs);
 }
 
 static LogicalResult
@@ -157,80 +151,6 @@ buildIteratorTypeAttributes(OpBuilder &builder,
                         utils::stringifyIteratorType(type));
                   });
   return attributes;
-}
-
-static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
-                             Value exemplar) {
-  SmallVector<Value> dynDims;
-  for (auto dim : llvm::enumerate(type.getShape())) {
-    if (dim.value() == ShapedType::kDynamic) {
-      dynDims.push_back(tensor::DimOp::create(b, loc, exemplar, dim.index()));
-    }
-  }
-  return tensor::EmptyOp::create(b, loc, type.getShape(), type.getElementType(),
-                                 dynDims);
-}
-
-/// Selects the insertion position proven by output-publication planning.
-static void insertAtCreationAnchor(PatternRewriter &rewriter,
-                                   const OutputPublicationPlan &outputs) {
-  rewriter.setInsertionPoint(outputs.insertionAnchor);
-}
-
-/// Creates one tile store using the output transaction selected by planning.
-static void emitTileStore(PatternRewriter &rewriter, Location loc,
-                          Value tileResult, ComputeOp computeOp, StoreOp store,
-                          const OutputPublicationPlan &outputs) {
-  SmallVector<Value> iterIndices = getOrCreateIterIndices(rewriter, computeOp);
-  auto indexingMaps = computeOp.getIndexingMapsArray();
-  size_t numInputs = computeOp.getNumInputs();
-
-  FailureOr<unsigned> outputIndex =
-      computeOp.getOutputIndexForView(store.getView());
-  assert(succeeded(outputIndex) &&
-         "planned store must map to one formal compute output");
-  AffineMap outputMap = indexingMaps[numInputs + *outputIndex];
-  SmallVector<Value> indices =
-      applyIndexingMap(rewriter, loc, outputMap, iterIndices);
-
-  createTileOpWithPlaceholderDstIndex<TileStoreOp>(rewriter, loc, tileResult,
-                                                   store.getView(), indices);
-}
-
-static void
-replaceOutputPushesBeforeCompute(PatternRewriter &rewriter, ComputeOp computeOp,
-                                 const OutputPublicationPlan &outputs,
-                                 SmallVectorImpl<CBPushOp> &replacedPushes) {
-  OpBuilder::InsertionGuard guard(rewriter);
-  Operation *insertAfter = computeOp;
-  for (CBPushOp push : outputs.pushes) {
-    assert(push->getBlock() == computeOp->getBlock() &&
-           "pushes absorbed into a compute must be siblings of that compute");
-    // Publications already after the new compute preserve their ordering.
-    if (!push->isBeforeInBlock(computeOp)) {
-      continue;
-    }
-    rewriter.setInsertionPointAfter(insertAfter);
-    auto replacement = cast<CBPushOp>(rewriter.clone(*push));
-    insertAfter = replacement;
-    replacedPushes.push_back(push);
-  }
-}
-
-static void eraseAbsorbedOutputOps(PatternRewriter &rewriter,
-                                   const OutputPublicationPlan &outputs,
-                                   ComputeOp computeOp,
-                                   ArrayRef<CBPushOp> replacedPushes) {
-  for (StoreOp store : outputs.stores) {
-    assert(store->getBlock() == computeOp->getBlock() &&
-           "stores absorbed into a compute must be siblings of that compute");
-    rewriter.eraseOp(store);
-  }
-  for (CBPushOp push : replacedPushes) {
-    assert(push->getBlock() == computeOp->getBlock() &&
-           "pushes absorbed into a compute must be siblings of that compute");
-    rewriter.eraseOp(push);
-  }
 }
 
 //===----------------------------------------------------------------------===//
@@ -432,7 +352,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
       buildIteratorTypeAttributes(rewriter, creation.iteration.iteratorTypes);
 
   // Position compute after all reserves by inserting before the last store.
-  insertAtCreationAnchor(rewriter, outputs);
+  setInsertionPointToOutputPublication(rewriter, outputs);
 
   // Create init tensors and attach to output CBs.
   // Use the first root input as exemplar for dynamic dims. For fill-only
@@ -440,11 +360,12 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   SmallVector<Value> allInitAttached;
   SmallVector<Type> resultTypes;
   for (Value outputDFB : outputs.dfbs) {
-    Value init = creation.inputs.empty()
-                     ? tensor::EmptyOp::create(rewriter, loc, type.getShape(),
-                                               type.getElementType())
-                           .getResult()
-                     : buildInitTensor(rewriter, loc, type, creation.inputs[0]);
+    Value init =
+        creation.inputs.empty()
+            ? tensor::EmptyOp::create(rewriter, loc, type.getShape(),
+                                      type.getElementType())
+                  .getResult()
+            : createOutputInitTensor(rewriter, loc, type, creation.inputs[0]);
     Value initAttached =
         AttachCBOp::create(rewriter, loc, init.getType(), init, outputDFB);
     allInitAttached.push_back(initAttached);
@@ -543,7 +464,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   // Output stores and their instrumentation retain their complete source
   // order, including distinct signpost scopes around multiple stores.
   for (StoreOp store : outputs.stores) {
-    emitTileStore(rewriter, loc, finalResult, computeOp, store, outputs);
+    createComputeTileStore(rewriter, loc, finalResult, computeOp, store);
     instrumentationEmitter.emitAfter(store);
   }
   assert(instrumentationEmitter.emittedAll() &&
@@ -552,9 +473,9 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
 
   YieldOp::create(rewriter, loc);
   SmallVector<CBPushOp> replacedPushes;
-  replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
+  relocateOutputPushesAfterCompute(rewriter, computeOp, outputs,
                                    replacedPushes);
-  eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
+  eraseReplacedOutputPublication(rewriter, outputs, computeOp, replacedPushes);
   rewriter.replaceOp(sinkOp, computeOp.getResult(0));
 
   // Erase the fused ops in reverse topological order (sink to roots).
@@ -608,7 +529,7 @@ buildRowNormalizationPipeline(Operation *sinkOp, PatternRewriter &rewriter,
       rewriter.getArrayAttr({rewriter.getStringAttr("reduction"),
                              rewriter.getStringAttr("reduction")});
 
-  insertAtCreationAnchor(rewriter, outputs);
+  setInsertionPointToOutputPublication(rewriter, outputs);
   auto pipeline = ComputePipelineOp::create(
       rewriter, loc, TypeRange{creation.resultType},
       ValueRange(creation.inputs),
@@ -723,12 +644,12 @@ buildRowNormalizationCompute(Operation *sinkOp, PatternRewriter &rewriter,
   SmallVector<Attribute> iteratorTypes =
       buildIteratorTypeAttributes(rewriter, creation.iteration.iteratorTypes);
 
-  insertAtCreationAnchor(rewriter, outputs);
+  setInsertionPointToOutputPublication(rewriter, outputs);
   SmallVector<Value> outputViews;
   SmallVector<Type> resultTypes;
   for (Value outputDFB : outputs.dfbs) {
-    Value init =
-        buildInitTensor(rewriter, loc, outputType, creation.inputs.front());
+    Value init = createOutputInitTensor(rewriter, loc, outputType,
+                                        creation.inputs.front());
     outputViews.push_back(
         AttachCBOp::create(rewriter, loc, init.getType(), init, outputDFB));
     resultTypes.push_back(outputType);
@@ -759,14 +680,14 @@ buildRowNormalizationCompute(Operation *sinkOp, PatternRewriter &rewriter,
           schedule.scale, schedule.epsilon, rewriter.getBoolAttr(hasGamma));
 
   for (StoreOp store : outputs.stores) {
-    emitTileStore(rewriter, loc, result, computeOp, store, outputs);
+    createComputeTileStore(rewriter, loc, result, computeOp, store);
   }
   YieldOp::create(rewriter, loc);
 
   SmallVector<CBPushOp> replacedPushes;
-  replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
+  relocateOutputPushesAfterCompute(rewriter, computeOp, outputs,
                                    replacedPushes);
-  eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
+  eraseReplacedOutputPublication(rewriter, outputs, computeOp, replacedPushes);
   rewriter.replaceOp(sinkOp, computeOp.getResult(0));
   for (Operation *operation : llvm::reverse(creation.trace.opsInOrder)) {
     if (operation != sinkOp && operation->use_empty()) {
@@ -813,7 +734,7 @@ buildFusionGraphPipeline(Operation *sinkOp, PatternRewriter &rewriter,
   SmallVector<Attribute> iteratorTypes =
       buildIteratorTypeAttributes(rewriter, creation.iteration.iteratorTypes);
 
-  insertAtCreationAnchor(rewriter, outputs);
+  setInsertionPointToOutputPublication(rewriter, outputs);
   auto pipeline = ComputePipelineOp::create(
       rewriter, loc, TypeRange{outputType}, ValueRange(creation.inputs),
       ComputePipelineKindAttr::get(
@@ -894,12 +815,12 @@ buildFusionGraphCompute(Operation *sinkOp, PatternRewriter &rewriter,
   SmallVector<Attribute> iteratorTypes =
       buildIteratorTypeAttributes(rewriter, creation.iteration.iteratorTypes);
 
-  insertAtCreationAnchor(rewriter, outputs);
+  setInsertionPointToOutputPublication(rewriter, outputs);
   SmallVector<Value> outputViews;
   SmallVector<Type> resultTypes;
   for (Value outputDFB : outputs.dfbs) {
-    Value init =
-        buildInitTensor(rewriter, loc, outputType, creation.inputs.front());
+    Value init = createOutputInitTensor(rewriter, loc, outputType,
+                                        creation.inputs.front());
     outputViews.push_back(
         AttachCBOp::create(rewriter, loc, init.getType(), init, outputDFB));
     resultTypes.push_back(outputType);
@@ -925,14 +846,14 @@ buildFusionGraphCompute(Operation *sinkOp, PatternRewriter &rewriter,
       rewriter, loc, outputTileType, lhsTile, rhsTile, outputTile,
       target.scale);
   for (StoreOp store : outputs.stores) {
-    emitTileStore(rewriter, loc, result, computeOp, store, outputs);
+    createComputeTileStore(rewriter, loc, result, computeOp, store);
   }
   YieldOp::create(rewriter, loc);
 
   SmallVector<CBPushOp> replacedPushes;
-  replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
+  relocateOutputPushesAfterCompute(rewriter, computeOp, outputs,
                                    replacedPushes);
-  eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
+  eraseReplacedOutputPublication(rewriter, outputs, computeOp, replacedPushes);
   rewriter.replaceOp(sinkOp, computeOp.getResult(0));
   for (Operation *operation : llvm::reverse(creation.trace.opsInOrder)) {
     if (operation != sinkOp && operation->use_empty()) {
@@ -985,7 +906,7 @@ static LogicalResult buildComputeFromInputs(
   SmallVector<Attribute> iteratorTypes =
       buildIteratorTypeAttributes(rewriter, creation->iteration.iteratorTypes);
 
-  insertAtCreationAnchor(rewriter, outputs);
+  setInsertionPointToOutputPublication(rewriter, outputs);
 
   SmallVector<Value> allInitAttached;
   SmallVector<Type> resultTypes;
@@ -995,7 +916,7 @@ static LogicalResult buildComputeFromInputs(
             ? tensor::EmptyOp::create(rewriter, loc, outputType.getShape(),
                                       outputType.getElementType())
                   .getResult()
-            : buildInitTensor(rewriter, loc, outputType, inputs[0]);
+            : createOutputInitTensor(rewriter, loc, outputType, inputs[0]);
     Value initAttached =
         AttachCBOp::create(rewriter, loc, init.getType(), init, outputDFB);
     allInitAttached.push_back(initAttached);
@@ -1023,7 +944,7 @@ static LogicalResult buildComputeFromInputs(
       emitTileOp(rewriter, loc, creation->resultTileType, body, *creation);
   instrumentationEmitter.emitAfter(op);
   for (StoreOp store : outputs.stores) {
-    emitTileStore(rewriter, loc, result, computeOp, store, outputs);
+    createComputeTileStore(rewriter, loc, result, computeOp, store);
     instrumentationEmitter.emitAfter(store);
   }
   assert(instrumentationEmitter.emittedAll() &&
@@ -1031,9 +952,9 @@ static LogicalResult buildComputeFromInputs(
          "source anchor");
   YieldOp::create(rewriter, loc);
   SmallVector<CBPushOp> replacedPushes;
-  replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
+  relocateOutputPushesAfterCompute(rewriter, computeOp, outputs,
                                    replacedPushes);
-  eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
+  eraseReplacedOutputPublication(rewriter, outputs, computeOp, replacedPushes);
   rewriter.replaceOp(op, computeOp.getResult(0));
   for (const ComputeInstrumentationPlacement &placement :
        creation->instrumentation) {
@@ -1401,7 +1322,7 @@ struct LowerMatmulToCompute : PlannedComputeRewritePattern<MatmulOp> {
 
 /// Lowers passthrough ttl.store (CB-attached input) by creating a compute
 /// with tile_store. Stores whose input comes from an elementwise op are
-/// already erased by the elementwise builders (emitTileStores).
+/// already erased by the elementwise builders.
 struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
   LowerStoreToCompute(MLIRContext *context,
                       const KernelComputeOpCreationPlan &kernelPlan)
@@ -1428,7 +1349,7 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
     SmallVector<Attribute> iteratorTypes =
         buildIteratorTypeAttributes(rewriter, plan.iteration.iteratorTypes);
 
-    Value init = buildInitTensor(rewriter, loc, inputType, input);
+    Value init = createOutputInitTensor(rewriter, loc, inputType, input);
     Value initAttached =
         AttachCBOp::create(rewriter, loc, init.getType(), init, plan.outputDFB);
 
