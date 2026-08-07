@@ -25,14 +25,8 @@ bool PipeSynchronizationSelection::usesCapacityProtocol(Operation *op) const {
   return capacityTransferOps.contains(op);
 }
 
-bool PipeSynchronizationSelection::usesFabricProtocol(
-    PipeTransferSendOp op) const {
-  return fabricTransferOps.contains(op.getOperation());
-}
-
-bool PipeSynchronizationSelection::usesFabricProtocol(
-    PipeTransferPostOp op) const {
-  return fabricTransferOps.contains(op.getOperation());
+bool PipeSynchronizationSelection::usesFabricProtocol(Operation *op) const {
+  return fabricTransferOps.contains(op);
 }
 
 ArrayRef<PipeCapacityAcquireInfo>
@@ -433,9 +427,8 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
     assert((sendOp || postOp || waitOp) &&
            "pipe resources assigned to an unsupported operation");
     bool usesFabricProtocol =
-        sendOp   ? synchronizationSelection.usesFabricProtocol(sendOp)
-        : postOp ? synchronizationSelection.usesFabricProtocol(postOp)
-                 : false;
+        (sendOp || postOp) &&
+        synchronizationSelection.usesFabricProtocol(operation);
     bool usesCapacityProtocol =
         (sendOp || postOp) &&
         synchronizationSelection.usesCapacityProtocol(operation);

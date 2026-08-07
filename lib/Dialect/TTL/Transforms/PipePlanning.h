@@ -61,10 +61,7 @@ public:
   bool usesCapacityProtocol(Operation *op) const;
 
   /// Return whether `op` uses routing-plane fabric synchronization.
-  bool usesFabricProtocol(PipeTransferSendOp op) const;
-
-  /// Return whether `op` uses routing-plane fabric synchronization.
-  bool usesFabricProtocol(PipeTransferPostOp op) const;
+  bool usesFabricProtocol(Operation *op) const;
 
 private:
   friend FailureOr<PipeModulePlan>

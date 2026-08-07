@@ -150,18 +150,19 @@ LogicalResult buildFabricRoutePlan(const PipeGraph &pipeGraph,
     }
 
     FuncOp func = send->getParentOfType<FuncOp>();
-    DeviceDomainAttr &functionDomain = plan.deviceDomainsByFunction[func];
-    if (functionDomain && functionDomain != transfer.getDomain()) {
+    FunctionFabricRoutePlan &functionPlan = plan.routesByFunction[func];
+    if (functionPlan.deviceDomain &&
+        functionPlan.deviceDomain != transfer.getDomain()) {
       send.emitError(
           "all device transfers in one kernel must use the same device domain");
       result = failure();
       continue;
     }
-    functionDomain = transfer.getDomain();
+    functionPlan.deviceDomain = transfer.getDomain();
 
     DeviceRefAttr source = transfer.getEdge().getSource();
     std::size_t routeIndex = addFabricRoute(
-        plan.routesByFunction[func], source, destination,
+        functionPlan.routes, source, destination,
         PipeSourceKey{transferNode.pipe.srcX, transferNode.pipe.srcY});
     plan.sendRouteIndex[send] = routeIndex;
     plan.transferOps.insert(send);
@@ -169,18 +170,15 @@ LogicalResult buildFabricRoutePlan(const PipeGraph &pipeGraph,
       plan.transferOps.insert(postOp);
     }
   }
-  if (failed(result)) {
-    return failure();
-  }
-  return success();
+  return result;
 }
 
 void applyFabricRoutePlan(ModuleOp mod, const FabricRoutePlan &plan) {
   Builder builder(mod.getContext());
-  for (const auto &[func, routes] : plan.routesByFunction) {
+  for (const auto &[func, functionPlan] : plan.routesByFunction) {
     SmallVector<Attribute> routeAttrs;
-    routeAttrs.reserve(routes.size());
-    for (const FabricRoute &route : routes) {
+    routeAttrs.reserve(functionPlan.routes.size());
+    for (const FabricRoute &route : functionPlan.routes) {
       SmallVector<Attribute> sourceNodes;
       sourceNodes.reserve(route.sourceNodes.size());
       for (LaunchNodeCoord sourceNode : route.sourceNodes) {
@@ -198,8 +196,7 @@ void applyFabricRoutePlan(ModuleOp mod, const FabricRoutePlan &plan) {
     }
     func->setAttr(kFabricRoutesAttrName,
                   ArrayAttr::get(mod.getContext(), routeAttrs));
-    func->setAttr(kFabricDeviceDomainAttrName,
-                  plan.deviceDomainsByFunction.lookup(func));
+    func->setAttr(kFabricDeviceDomainAttrName, functionPlan.deviceDomain);
   }
 }
 
@@ -207,7 +204,7 @@ void initializeFabricRuntime(const FabricRoutePlan &plan,
                              FabricRuntimeMap &runtime) {
   for (const auto &entry : plan.routesByFunction) {
     FuncOp func = entry.first;
-    const SmallVector<FabricRoute> &routes = entry.second;
+    const SmallVector<FabricRoute> &routes = entry.second.routes;
     std::size_t routeCount = getFabricRouteCount(routes);
     OpBuilder builder(func.getContext());
     builder.setInsertionPointToStart(&func.getBody().front());
@@ -705,17 +702,11 @@ buildReceiverPublishedAddress(Value dst, Location loc,
 
 namespace {
 
-/// Emits transport-specific PipeNet synchronization and payload operations.
-/// A transport returns failure when it cannot implement a selected operation.
-class PipeTransportEmitter {
+/// Emits transport-specific PipeNet sender operations.
+class PipeSendTransportEmitter {
 public:
-  virtual ~PipeTransportEmitter() = default;
+  virtual ~PipeSendTransportEmitter() = default;
 
-  virtual LogicalResult emitReceiverAddressPublish(Value senderTableAddress,
-                                                   Value publishedAddress) = 0;
-  virtual void emitAddressPublishBarrier() = 0;
-  virtual LogicalResult
-  emitSenderReadyIncrement(Value senderReadyCounterAddr) = 0;
   virtual void preparePayloadWrite() = 0;
   virtual LogicalResult emitPayloadWrite(Value srcAddr, Value dstAddr,
                                          Value totalSizeBytes) = 0;
@@ -725,7 +716,20 @@ public:
   virtual void emitCompletionSignalBarrier() = 0;
 };
 
-class NocPipeTransportEmitterBase : public PipeTransportEmitter {
+/// Emits NoC operations performed while a receiver posts a transfer.
+class PipeReceiverPostTransportEmitter {
+public:
+  virtual ~PipeReceiverPostTransportEmitter() = default;
+
+  virtual LogicalResult emitReceiverAddressPublish(Value senderTableAddress,
+                                                   Value publishedAddress) = 0;
+  virtual void emitAddressPublishBarrier() = 0;
+  virtual LogicalResult
+  emitSenderReadyIncrement(Value senderReadyCounterAddr) = 0;
+};
+
+class NocPipeTransportEmitterBase : public PipeSendTransportEmitter,
+                                    public PipeReceiverPostTransportEmitter {
 protected:
   struct LogicalCore {
     Value x;
@@ -1232,37 +1236,16 @@ private:
   std::optional<DestinationRange> destinationRange;
 };
 
-class FabricPipeTransportEmitter final : public PipeTransportEmitter {
+class FabricPipeTransportEmitter final : public PipeSendTransportEmitter {
 public:
   FabricPipeTransportEmitter(Operation *op, PipeType pipeType,
                              std::size_t routeIndex,
                              const FabricRuntimeInfo &runtime,
                              ConversionPatternRewriter &rewriter)
-      : op(op), loc(op->getLoc()), pipeType(pipeType), routeIndex(routeIndex),
+      : loc(op->getLoc()), pipeType(pipeType), routeIndex(routeIndex),
         runtime(runtime), rewriter(rewriter),
         nocVal(
             arith::ConstantIntOp::create(rewriter, loc, getNocIndex(op), 8)) {}
-
-  LogicalResult emitReceiverAddressPublish(Value senderTableAddress,
-                                           Value publishedAddress) override {
-    op->emitError("fabric pipes require computed receiver DFB addresses");
-    return failure();
-  }
-
-  void emitAddressPublishBarrier() override {}
-
-  LogicalResult
-  emitSenderReadyIncrement(Value senderReadyCounterAddr) override {
-    Value remoteSemaphoreAddress = buildRemoteNocAddress(
-        pipeType.getSrcX(), pipeType.getSrcY(), senderReadyCounterAddr);
-    const FabricRouteTarget &target = getRouteTarget();
-    ttk::RoutingPlaneAtomicIncOp::create(
-        rewriter, loc, runtime.manager, runtime.routeId, buildConnectionIndex(),
-        target.destinationDeviceId, target.destinationMeshId,
-        remoteSemaphoreAddress,
-        arith::ConstantIntOp::create(rewriter, loc, 1, 32));
-    return success();
-  }
 
   void preparePayloadWrite() override {}
 
@@ -1336,7 +1319,6 @@ private:
     return runtime.routeTargets[routeIndex];
   }
 
-  Operation *op;
   Location loc;
   PipeType pipeType;
   std::size_t routeIndex;
@@ -1559,7 +1541,7 @@ lowerSelectedPipeTransferSend(PipeTransferSendOp op, Value srcCB,
 
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
   SelectedNocPipeTransportEmitter nocTransport(op, fields, rewriter);
-  PipeTransportEmitter &transport = nocTransport;
+  PipeSendTransportEmitter &transport = nocTransport;
 
   Value senderSemAddr = buildSelectedReadyCounterAddress(
       op, loc, resources, fields.recordIndex, pipeResourcePlan, rewriter);
@@ -1683,7 +1665,7 @@ LogicalResult lowerPipeTransferSend(
     }
   }
 
-  std::unique_ptr<PipeTransportEmitter> transport;
+  std::unique_ptr<PipeSendTransportEmitter> transport;
   if (usesFabric) {
     FuncOp func = op->getParentOfType<FuncOp>();
     auto runtimeIt = fabricRuntime.find(func);
@@ -1851,7 +1833,7 @@ static LogicalResult lowerSelectedPipeTransferPost(
          "selected receiver post requires published addressing");
 
   SelectedNocPipeTransportEmitter nocTransport(op, fields, rewriter);
-  PipeTransportEmitter &transport = nocTransport;
+  PipeReceiverPostTransportEmitter &transport = nocTransport;
 
   Value publishedAddress = buildReceiverPublishedAddress(
       dst, loc, *postPlan.addressPublication, rewriter);
@@ -1910,35 +1892,36 @@ LogicalResult lowerPipeTransferPost(
 
   bool usesFabric = transferPlan.getSynchronizationProtocol() ==
                     PipeSynchronizationProtocol::Fabric;
-  assert((!usesFabric || !postPlan.addressPublication) &&
-         "fabric transfer plan uses a receiver-published address");
-  std::unique_ptr<PipeTransportEmitter> transport;
+  if (usesFabric && postPlan.addressPublication) {
+    op.emitError("fabric pipe transfer requires a computed receiver DFB "
+                 "address");
+    return failure();
+  }
+
   if (!usesFabric) {
-    transport =
-        std::make_unique<NocPipeTransportEmitter>(op, pipeType, rewriter);
-  }
-
-  if (postPlan.addressPublication) {
-    AddressTableInfo addressTableInfo = getAddressTableInfo(op, pipeResource);
-    Value publishedAddress = buildReceiverPublishedAddress(
-        dst, loc, *postPlan.addressPublication, rewriter);
-    Value tableAddress =
-        buildAddressTableAddress(loc, addressTableInfo, rewriter);
-    if (failed(transport->emitReceiverAddressPublish(tableAddress,
-                                                     publishedAddress))) {
-      return failure();
+    NocPipeTransportEmitter transport(op, pipeType, rewriter);
+    if (postPlan.addressPublication) {
+      AddressTableInfo addressTableInfo = getAddressTableInfo(op, pipeResource);
+      Value publishedAddress = buildReceiverPublishedAddress(
+          dst, loc, *postPlan.addressPublication, rewriter);
+      Value tableAddress =
+          buildAddressTableAddress(loc, addressTableInfo, rewriter);
+      if (failed(transport.emitReceiverAddressPublish(tableAddress,
+                                                      publishedAddress))) {
+        return failure();
+      }
+      transport.emitAddressPublishBarrier();
     }
-    transport->emitAddressPublishBarrier();
-  }
 
-  if (transferPlan.getSynchronizationProtocol() ==
-      PipeSynchronizationProtocol::ReceiverPost) {
-    assert(pipeResource.readyCounter &&
-           "sender-ready protocol selected without a sender-ready counter");
-    Value senderReadyCounterAddr = buildPipeCounterAddress(
-        loc, func, *pipeResource.readyCounter, pipeResourcePlan, rewriter);
-    if (failed(transport->emitSenderReadyIncrement(senderReadyCounterAddr))) {
-      return failure();
+    if (transferPlan.getSynchronizationProtocol() ==
+        PipeSynchronizationProtocol::ReceiverPost) {
+      assert(pipeResource.readyCounter &&
+             "sender-ready protocol selected without a sender-ready counter");
+      Value senderReadyCounterAddr = buildPipeCounterAddress(
+          loc, func, *pipeResource.readyCounter, pipeResourcePlan, rewriter);
+      if (failed(transport.emitSenderReadyIncrement(senderReadyCounterAddr))) {
+        return failure();
+      }
     }
   }
 

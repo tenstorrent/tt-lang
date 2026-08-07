@@ -175,9 +175,9 @@ getReceiverDFBStreamKey(Value dfb, DeviceRefAttr receiverDevice) {
   return std::make_pair(receiverDevice, *maybeDFBIndex);
 }
 
-static LogicalResult
-recordReceiverPost(PipeTransferPostOp postOp, PipeGraphAnalysisState &state,
-                   const PipeTransferIndex &transferIndex) {
+static void recordReceiverPost(PipeTransferPostOp postOp,
+                               PipeGraphAnalysisState &state,
+                               const PipeTransferIndex &transferIndex) {
   PipeTransferCreateOp createOp =
       transferIndex.getTransferCreate(postOp.getOperation());
 
@@ -188,54 +188,47 @@ recordReceiverPost(PipeTransferPostOp postOp, PipeGraphAnalysisState &state,
   if (streamKey) {
     state.receiverPostsByStream[*streamKey].push_back(postOp);
   }
-  return success();
 }
 
-static LogicalResult recordReceiveWait(PipeTransferWaitOp waitOp,
-                                       PipeGraphAnalysisState &state,
-                                       const PipeTransferIndex &transferIndex) {
+static void recordReceiveWait(PipeTransferWaitOp waitOp,
+                              PipeGraphAnalysisState &state,
+                              const PipeTransferIndex &transferIndex) {
   for (Operation *postOp : transferIndex.getPossibleReceivePosts(waitOp)) {
     state.receiveWaitsByPost[postOp].push_back(waitOp);
   }
-  return success();
 }
 
 /// Collect protocol and receiver DFB operations once so graph analyses do not
 /// rescan the module for every receiver.
-static LogicalResult
-collectPipeGraphOperations(ModuleOp mod, const PipeTransferIndex &transferIndex,
-                           PipeGraphAnalysisState &state) {
-  WalkResult walkResult =
-      mod.walk<WalkOrder::PreOrder>([&](Operation *op) -> WalkResult {
-        LogicalResult recordResult = success();
-        llvm::TypeSwitch<Operation *>(op)
-            .Case<PipeTransferPostOp>([&](PipeTransferPostOp postOp) {
-              recordResult = recordReceiverPost(postOp, state, transferIndex);
-            })
-            .Case<PipeTransferSendOp>([&](PipeTransferSendOp sendOp) {
-              state.transferProtocolOps.push_back(sendOp.getOperation());
-            })
-            .Case<PipeTransferWaitOp>([&](PipeTransferWaitOp waitOp) {
-              recordResult = recordReceiveWait(waitOp, state, transferIndex);
-            })
-            .Case<CBPushOp>([&](CBPushOp pushOp) {
-              auto streamKey = getReceiverDFBStreamKey(
-                  pushOp.getCb(), getEnclosingReceiverDevice(pushOp));
-              if (streamKey) {
-                state.pushesByStream[*streamKey].push_back(pushOp);
-              }
-            })
-            .Case<CBPopOp>([&](CBPopOp popOp) {
-              auto streamKey = getReceiverDFBStreamKey(
-                  popOp.getCb(), getEnclosingReceiverDevice(popOp));
-              if (streamKey) {
-                state.popsByStream[*streamKey].push_back(popOp);
-              }
-            });
-        return failed(recordResult) ? WalkResult::interrupt()
-                                    : WalkResult::advance();
-      });
-  return success(!walkResult.wasInterrupted());
+static void collectPipeGraphOperations(ModuleOp mod,
+                                       const PipeTransferIndex &transferIndex,
+                                       PipeGraphAnalysisState &state) {
+  mod.walk<WalkOrder::PreOrder>([&](Operation *op) {
+    llvm::TypeSwitch<Operation *>(op)
+        .Case<PipeTransferPostOp>([&](PipeTransferPostOp postOp) {
+          recordReceiverPost(postOp, state, transferIndex);
+        })
+        .Case<PipeTransferSendOp>([&](PipeTransferSendOp sendOp) {
+          state.transferProtocolOps.push_back(sendOp.getOperation());
+        })
+        .Case<PipeTransferWaitOp>([&](PipeTransferWaitOp waitOp) {
+          recordReceiveWait(waitOp, state, transferIndex);
+        })
+        .Case<CBPushOp>([&](CBPushOp pushOp) {
+          auto streamKey = getReceiverDFBStreamKey(
+              pushOp.getCb(), getEnclosingReceiverDevice(pushOp));
+          if (streamKey) {
+            state.pushesByStream[*streamKey].push_back(pushOp);
+          }
+        })
+        .Case<CBPopOp>([&](CBPopOp popOp) {
+          auto streamKey = getReceiverDFBStreamKey(
+              popOp.getCb(), getEnclosingReceiverDevice(popOp));
+          if (streamKey) {
+            state.popsByStream[*streamKey].push_back(popOp);
+          }
+        });
+  });
 }
 
 /// Visit operations for this logical-device receiver and operations shared by
@@ -1886,9 +1879,7 @@ PipeGraph::build(ModuleOp mod, const PipeTransferIndex &transferIndex,
                  const PipeForeachLoweringInfo &foreachLoweringInfo) {
   PipeGraph graph;
   PipeGraphAnalysisState analysisState;
-  if (failed(collectPipeGraphOperations(mod, transferIndex, analysisState))) {
-    return failure();
-  }
+  collectPipeGraphOperations(mod, transferIndex, analysisState);
 
   analysisState.pipeRecordControlOps.insert(
       foreachLoweringInfo.controlOps.begin(),

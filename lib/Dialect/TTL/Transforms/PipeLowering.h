@@ -42,12 +42,16 @@ struct FabricRoute {
   std::size_t routeIndex;
 };
 
+/// Fabric routes and their logical device domain for one kernel function.
+struct FunctionFabricRoutePlan {
+  DeviceDomainAttr deviceDomain;
+  SmallVector<FabricRoute> routes;
+};
+
 /// Fabric routes and transfer associations derived before PipeNet lowering.
 struct FabricRoutePlan {
   /// Routes grouped by the kernel function that submits each transfer.
-  llvm::MapVector<func::FuncOp, SmallVector<FabricRoute>> routesByFunction;
-  /// Logical device domain used by each function containing fabric sends.
-  llvm::DenseMap<Operation *, DeviceDomainAttr> deviceDomainsByFunction;
+  llvm::MapVector<func::FuncOp, FunctionFabricRoutePlan> routesByFunction;
   /// Connection index selected for each fabric send.
   llvm::DenseMap<Operation *, std::size_t> sendRouteIndex;
   /// Send and receiver-post operations that use fabric synchronization.
