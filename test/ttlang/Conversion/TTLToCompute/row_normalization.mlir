@@ -36,8 +36,13 @@
 // TTKERNEL-NOT:   ttl.bind_cb
 // TTKERNEL:       ttkernel.init_sfpu(%[[INPUT:[a-zA-Z0-9_]+]], %[[OUTPUT:[a-zA-Z0-9_]+]])
 // TTKERNEL-NEXT:  ttkernel.tile_regs_acquire
-// TTKERNEL-NEXT:  ttkernel.experimental_row_normalization_block(%[[INPUT]], %[[GAMMA:[a-zA-Z0-9_]+]], %[[OUTPUT]]) num_tiles = 3
-// TTKERNEL-SAME:  has_gamma = true dtype = <bf16>
+// TTKERNEL-NEXT:  ttkernel.experimental_mul_reduce_block(%[[INPUT]], %[[INPUT]], %[[OUTPUT]]) num_tiles = 3
+// TTKERNEL-NEXT:  ttkernel.experimental_add_rsqrt(%[[SCALAR:[a-zA-Z0-9_]+]])
+// TTKERNEL-NEXT:  ttkernel.experimental_source_scalar_mul(%[[INPUT]], %[[SCALAR]], %[[SCALAR]]) num_tiles = 3 dtype = <bf16>
+// TTKERNEL-NEXT:  ttkernel.binary_dest_reuse_tiles_init(%[[GAMMA:[a-zA-Z0-9_]+]], <mul>, <dest_to_srca>)
+// TTKERNEL-NEXT:  ttkernel.binary_dest_reuse_tiles(%[[GAMMA]], %[[SCALAR]], %[[SCALAR]], <mul>, <dest_to_srca>)
+// TTKERNEL-NEXT:  ttkernel.binary_dest_reuse_tiles(%[[GAMMA]], %{{.*}}, %{{.*}}, <mul>, <dest_to_srca>)
+// TTKERNEL-NEXT:  ttkernel.binary_dest_reuse_tiles(%[[GAMMA]], %{{.*}}, %{{.*}}, <mul>, <dest_to_srca>)
 // TTKERNEL-NEXT:  ttkernel.tile_regs_commit
 // TTKERNEL-NEXT:  ttkernel.tile_regs_wait
 // TTKERNEL-NEXT:  ttkernel.pack_tile_block(%{{.*}}, %[[OUTPUT]], %{{.*}})
@@ -48,8 +53,15 @@
 // CPP-LABEL: void kernel_main()
 // CPP:       init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
 // CPP-NEXT:  tile_regs_acquire();
-// CPP-NEXT:  experimental::row_normalization_block<3, true, DataFormat::Float16_b>(
-// CPP-SAME:  1020331500U,
+// CPP:       experimental::multiply_full_scalar_reduction_block<3>(get_compile_time_arg_val(0), get_compile_time_arg_val(0), get_compile_time_arg_val(2), {{.*}});
+// CPP-NEXT:  experimental::add_rsqrt_init();
+// CPP-NEXT:  experimental::add_rsqrt({{.*}}, 925353388U);
+// CPP-NEXT:  experimental::source_scalar_mul_init<3>(get_compile_time_arg_val(0));
+// CPP-NEXT:  experimental::source_scalar_mul<3>(get_compile_time_arg_val(0), {{.*}}, {{.*}});
+// CPP-NEXT:  binary_dest_reuse_tiles_init<EltwiseBinaryType::ELWMUL, EltwiseBinaryReuseDestType::DEST_TO_SRCA>(get_compile_time_arg_val(1));
+// CPP-NEXT:  binary_dest_reuse_tiles<EltwiseBinaryType::ELWMUL, EltwiseBinaryReuseDestType::DEST_TO_SRCA>(get_compile_time_arg_val(1), {{.*}}, {{.*}});
+// CPP-NEXT:  binary_dest_reuse_tiles<EltwiseBinaryType::ELWMUL, EltwiseBinaryReuseDestType::DEST_TO_SRCA>(get_compile_time_arg_val(1), {{.*}}, {{.*}});
+// CPP-NEXT:  binary_dest_reuse_tiles<EltwiseBinaryType::ELWMUL, EltwiseBinaryReuseDestType::DEST_TO_SRCA>(get_compile_time_arg_val(1), {{.*}}, {{.*}});
 // CPP-NEXT:  tile_regs_commit();
 // CPP-NEXT:  tile_regs_wait();
 // CPP-NEXT:  pack_tile_block({{.*}}, get_compile_time_arg_val(2), {{.*}});

@@ -367,15 +367,6 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
         if (!inputCB) {
           inputCB = transpose.getIcb();
         }
-      } else if (auto normalization =
-                     dyn_cast<ttk::ExperimentalRowNormalizationBlockOp>(
-                         inner)) {
-        if (!inputCB) {
-          inputCB = normalization.getInputCb();
-        }
-        if (!outputCB) {
-          outputCB = normalization.getOutputCb();
-        }
       } else if (auto multiplyReduction =
                      dyn_cast<ttk::ExperimentalMulReduceBlockOp>(inner)) {
         if (!inputCB) {

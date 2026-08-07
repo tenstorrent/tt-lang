@@ -2638,42 +2638,53 @@ public:
   }
 };
 
-class ExperimentalRowNormalizationBlockOpConversion
-    : public OpConversionPattern<
-          ttkernel::ExperimentalRowNormalizationBlockOp> {
+class ExperimentalAddRsqrtOpConversion
+    : public OpConversionPattern<ttkernel::ExperimentalAddRsqrtOp> {
 public:
   using OpConversionPattern<
-      ttkernel::ExperimentalRowNormalizationBlockOp>::OpConversionPattern;
+      ttkernel::ExperimentalAddRsqrtOp>::OpConversionPattern;
 
-  LogicalResult matchAndRewrite(
-      ttkernel::ExperimentalRowNormalizationBlockOp op,
-      ttkernel::ExperimentalRowNormalizationBlockOp::Adaptor adaptor,
-      ConversionPatternRewriter &rewriter) const final {
-    auto createBitsLiteral = [&](FloatAttr value) {
-      std::uint64_t bits = value.getValue().bitcastToAPInt().getZExtValue();
-      return emitc::LiteralOp::create(rewriter, op.getLoc(),
-                                      rewriter.getI32Type(),
-                                      (Twine(bits) + "U").str());
-    };
-    // The fused LLK multiplies its scaler during both reduction stages, so its
-    // argument is the square root of the semantic scale.
-    FloatAttr reductionScaler = rewriter.getF32FloatAttr(
-        std::sqrt(op.getScaleAttr().getValueAsDouble()));
-    Value reductionScalerBits = createBitsLiteral(reductionScaler);
-    Value epsilonBits = createBitsLiteral(op.getEpsilonAttr());
-
-    SmallVector<Attribute, 4> templateArguments = {
-        emitc::OpaqueAttr::get(op.getContext(),
-                               std::to_string(op.getNumTiles())),
-        emitc::OpaqueAttr::get(op.getContext(),
-                               op.getHasGamma() ? "true" : "false"),
-        datatypeToDataformatEnumNameOpaqueAttr(rewriter, op.getDtype())};
-    SmallVector<Value, 5> operands = {
-        adaptor.getInputCb(), adaptor.getGammaCb(), adaptor.getOutputCb(),
-        reductionScalerBits, epsilonBits};
+  LogicalResult
+  matchAndRewrite(ttkernel::ExperimentalAddRsqrtOp op,
+                  ttkernel::ExperimentalAddRsqrtOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    std::uint64_t bits =
+        op.getAddendAttr().getValue().bitcastToAPInt().getZExtValue();
+    Value addendBits =
+        emitc::LiteralOp::create(rewriter, op.getLoc(), rewriter.getI32Type(),
+                                 (Twine(bits) + "U").str());
+    emitc::CallOpaqueOp::create(rewriter, op.getLoc(), TypeRange(),
+                                "experimental::add_rsqrt_init", ValueRange());
     rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
-        op, TypeRange(), "experimental::row_normalization_block", ArrayAttr(),
-        ArrayAttr::get(op.getContext(), templateArguments), operands);
+        op, TypeRange(), "experimental::add_rsqrt",
+        ValueRange{adaptor.getDstIndex(), addendBits});
+    return success();
+  }
+};
+
+class ExperimentalSourceScalarMulOpConversion
+    : public OpConversionPattern<ttkernel::ExperimentalSourceScalarMulOp> {
+public:
+  using OpConversionPattern<
+      ttkernel::ExperimentalSourceScalarMulOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ttkernel::ExperimentalSourceScalarMulOp op,
+                  ttkernel::ExperimentalSourceScalarMulOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    auto templateArguments =
+        ArrayAttr::get(op.getContext(),
+                       {emitc::OpaqueAttr::get(
+                           op.getContext(), std::to_string(op.getNumTiles()))});
+    emitc::CallOpaqueOp::create(rewriter, op.getLoc(), TypeRange(),
+                                "experimental::source_scalar_mul_init",
+                                ArrayAttr(), templateArguments,
+                                ValueRange{adaptor.getInputCb()});
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange(), "experimental::source_scalar_mul", ArrayAttr(),
+        templateArguments,
+        ValueRange{adaptor.getInputCb(), adaptor.getScalarDstIndex(),
+                   adaptor.getOutputDstIndex()});
     return success();
   }
 };
@@ -3183,8 +3194,9 @@ public:
         typeConverter, context, state, "async_write_barrier");
 
     patterns.add<TTKernelInvokeSFPIOpRewriter>(typeConverter, context);
-    patterns.add<ExperimentalRowNormalizationBlockOpConversion>(typeConverter,
-                                                                context);
+    patterns.add<ExperimentalAddRsqrtOpConversion>(typeConverter, context);
+    patterns.add<ExperimentalSourceScalarMulOpConversion>(typeConverter,
+                                                          context);
     patterns.add<ExperimentalMulReduceBlockOpConversion>(typeConverter,
                                                          context);
     patterns.add<TTKernelToEmitCGetDeviceIdFromLogicalMeshPositionOpRewriter>(
