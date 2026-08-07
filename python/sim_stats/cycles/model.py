@@ -8,7 +8,7 @@ Turns per-kernel work into cycles and combines them into a ``CycleEstimate``:
 - :func:`op_cycles` — one op's ideal-peak cycles (work / peak-rate).
 - :func:`kernel_cycles` — per-kernel ``max(compute, movement)`` (concurrent engines).
 - :func:`program_cycles` — throughput-bound ``max`` within a node and across nodes,
-  floored by the shared aggregate-DRAM ceiling (:func:`program_breakdown`).
+  floored by the shared aggregate-memory ceiling (:func:`program_breakdown`).
 - :func:`per_node_rollup` — the single per-node aggregation (max over a node).
 - :func:`build_estimate` — assemble the canonical ``CycleEstimate``.
 
@@ -33,6 +33,9 @@ from .types import (
     OpWork,
 )
 from ..utils import node_from_kernel, node_sort_key, role_from_kernel
+
+_TILE_DIM = 32  # Tenstorrent tile edge, fixed across parts
+FLOP_PER_MATMUL_TILE = 2 * _TILE_DIM**3  # 2·MACs per 32×32 tile-matmul
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +63,7 @@ def kernel_paths(work: KernelWork, hw: HardwareProfile) -> tuple[float, float]:
     return compute_path, movement_path
 
 
-def total_dram_bytes(kernels: list[KernelWork], hw: HardwareProfile) -> float:
+def total_memory_bytes(kernels: list[KernelWork], hw: HardwareProfile) -> float:
     """Program-wide bytes that hit the shared GDDR6 pool.
 
     Only ``locality == "dram"`` movement counts: local-L1 and remote-L1
@@ -75,14 +78,25 @@ def total_dram_bytes(kernels: list[KernelWork], hw: HardwareProfile) -> float:
     )
 
 
-def dram_bytes_by_direction(
+def total_matmul_flop(kernels: list[KernelWork]) -> float:
+    """Program-wide matmul FLOP for the roofline. Matmul only — the SFPU rate
+    is a placeholder, so non-matmul compute is excluded."""
+    return sum(
+        o.tiles * FLOP_PER_MATMUL_TILE
+        for k in kernels
+        for o in k.ops
+        if o.kind == "compute" and o.op_type == "matmul"
+    )
+
+
+def memory_bytes_by_direction(
     kernels: list[KernelWork], hw: HardwareProfile
 ) -> tuple[float, float]:
     """Split the DRAM-locality movement bytes into (read, write).
 
     Direction comes from the trace's ``copy_end`` ``direction`` field. Traffic with
     no direction (older traces) falls into read, so read + write always equals
-    :func:`total_dram_bytes`. Reporting/validation only — the ceiling is unsplit.
+    :func:`total_memory_bytes`. Reporting/validation only — the ceiling is unsplit.
     """
     read = write = 0.0
     for k in kernels:
@@ -127,8 +141,8 @@ def program_breakdown(
 ) -> tuple[float, str, float, float]:
     """Program cycles plus which bound set them.
 
-    Returns ``(program_cycles, program_bound, dram_floor, node_bound)`` where
-    ``program_bound`` is ``"aggregate-dram"`` if the shared DRAM floor dominates,
+    Returns ``(program_cycles, program_bound, memory_floor, node_bound)`` where
+    ``program_bound`` is ``"memory"`` if the shared memory floor dominates,
     else ``"per-node"``. See :func:`program_cycles` for the model rationale.
     """
     per_node: dict[str, float] = {}
@@ -145,16 +159,16 @@ def program_from_node_bound(
     """Select the program bound given an already-computed per-node ``node_bound``.
 
     Takes the ``max`` of the per-node throughput bound and the shared aggregate
-    DRAM floor. Callers that have already rolled up per-node cycles (e.g.
+    memory floor. Callers that have already rolled up per-node cycles (e.g.
     :func:`build_estimate`) pass ``node_bound`` here to avoid re-walking the
     kernels; :func:`program_breakdown` computes it and delegates.
     """
-    agg_bw = hw.dram_aggregate_bw
-    dram_floor = total_dram_bytes(kernels, hw) / agg_bw if agg_bw > 0.0 else 0.0
+    agg_bw = hw.memory_aggregate_bw
+    memory_floor = total_memory_bytes(kernels, hw) / agg_bw if agg_bw > 0.0 else 0.0
 
-    if dram_floor > node_bound:
-        return dram_floor, "aggregate-dram", dram_floor, node_bound
-    return node_bound, "per-node", dram_floor, node_bound
+    if memory_floor > node_bound:
+        return memory_floor, "memory", memory_floor, node_bound
+    return node_bound, "per-node", memory_floor, node_bound
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +197,7 @@ def per_node_rollup(kernel_estimates: list[KernelEstimate]) -> list[NodeEstimate
             compute=c,
             movement=m,
             cycles=cy,
-            bound="compute" if c > m else "memory",
+            bound="compute" if c > m else "movement",
         )
         for node, (c, m, cy) in agg.items()
     ]
@@ -244,7 +258,7 @@ def build_estimate(kernels: list[KernelWork], hw: HardwareProfile) -> CycleEstim
                 compute_cycles=compute,
                 movement_cycles=movement,
                 cycles=max(compute, movement),
-                bound="compute-bound" if compute > movement else "memory-bound",
+                bound="compute-bound" if compute > movement else "movement-bound",
             )
         )
 
@@ -258,7 +272,7 @@ def build_estimate(kernels: list[KernelWork], hw: HardwareProfile) -> CycleEstim
     )
     node_bound_reason = at_max[0].bound if at_max else "-"
 
-    # program_cycles is the throughput lower bound: max(node_bound, dram_floor).
+    # program_cycles is the throughput lower bound: max(node_bound, memory_floor).
     # Fill/drain is reported as an informational delta only — NOT folded into the
     # bound. It is a crude, unprovable heuristic that can exceed real per-node
     # overhead (device-confirmed on the reuse kernel: it broke `measured >= estimate`
@@ -266,11 +280,39 @@ def build_estimate(kernels: list[KernelWork], hw: HardwareProfile) -> CycleEstim
     fd_bound = per_node_fill_drain_bound(kernel_estimates, kernels)
     node_fill_drain = fd_bound - node_bound
 
-    prog_cycles, program_bound, dram_floor, _fd = program_from_node_bound(
+    prog_cycles, program_bound, memory_floor, _fd = program_from_node_bound(
         kernels, hw, node_bound
     )
 
-    dram_read, dram_write = dram_bytes_by_direction(kernels, hw)
+    memory_read, memory_write = memory_bytes_by_direction(kernels, hw)
+    total_bytes = memory_read + memory_write
+
+    # Roofline: board constants (peak compute, ridge AI) + this program's position.
+    peak_compute = hw.tensix_cores * FLOP_PER_MATMUL_TILE * hw.rate_for("matmul")
+    agg_bw = hw.memory_aggregate_bw
+    ridge_ai = peak_compute / agg_bw if agg_bw > 0.0 else 0.0
+    matmul_flop = total_matmul_flop(kernels)
+    if total_bytes > 0.0:
+        arithmetic_intensity = matmul_flop / total_bytes
+        roofline_bound = (
+            "compute"
+            if ridge_ai > 0.0 and arithmetic_intensity >= ridge_ai
+            else "memory"
+        )
+    else:
+        # No shared-memory traffic → infinite AI → compute-bound (if any matmul).
+        arithmetic_intensity = 0.0
+        roofline_bound = "compute" if matmul_flop > 0.0 else "memory"
+    compute_roof_pct = (
+        (matmul_flop / prog_cycles) / peak_compute * 100.0
+        if prog_cycles > 0.0 and peak_compute > 0.0
+        else 0.0
+    )
+    memory_roof_pct = (
+        (total_bytes / prog_cycles) / agg_bw * 100.0
+        if prog_cycles > 0.0 and agg_bw > 0.0
+        else 0.0
+    )
 
     return CycleEstimate(
         profile_name=hw.name,
@@ -280,14 +322,20 @@ def build_estimate(kernels: list[KernelWork], hw: HardwareProfile) -> CycleEstim
         active_nodes=sum(1 for n in nodes if n.cycles > 0.0),
         kernels=kernel_estimates,
         program_bound=program_bound,
-        dram_floor=dram_floor,
-        total_dram_bytes=dram_read + dram_write,
-        dram_read_bytes=dram_read,
-        dram_write_bytes=dram_write,
+        memory_floor=memory_floor,
+        total_memory_bytes=total_bytes,
+        memory_read_bytes=memory_read,
+        memory_write_bytes=memory_write,
         nodes=nodes,
         node_bound=node_bound,
         node_bound_reason=node_bound_reason,
         node_fill_drain=node_fill_drain,
+        peak_compute_flops_per_cyc=peak_compute,
+        ridge_ai=ridge_ai,
+        arithmetic_intensity=arithmetic_intensity,
+        roofline_bound=roofline_bound,
+        compute_roof_pct=compute_roof_pct,
+        memory_roof_pct=memory_roof_pct,
     )
 
 
@@ -336,8 +384,10 @@ def load_profile_json(path: Path | str) -> HardwareProfile:
             clock_ghz=clock_ghz,
             bytes_per_tile=bytes_per_tile,
             dm_engines=int(data.get("dm_engines", 1)),
-            # DRAM peak is a datasheet GB/s; normalize to B/cyc by the core clock.
-            dram_aggregate_bw=float(data.get("dram_aggregate_gbps", 0.0)) / clock_ghz,
+            # Memory peak is a datasheet GB/s; normalize to B/cyc by the core clock.
+            memory_aggregate_bw=float(data.get("memory_aggregate_gbps", 0.0))
+            / clock_ghz,
+            tensix_cores=int(data.get("tensix_cores", 0)),
         )
     except (AttributeError, TypeError, ValueError) as exc:
         raise ValueError(f"malformed hardware profile {p}: {exc}") from None

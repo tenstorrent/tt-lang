@@ -31,10 +31,15 @@ class HardwareProfile:
     compute_rate_default: float
     noc_bw: dict[str, float]
     noc_latency: dict[str, float]
-    clock_ghz: float  # load-bearing: also converts dram_aggregate_gbps -> B/cyc at load
+    clock_ghz: (
+        float  # load-bearing: also converts memory_aggregate_gbps -> B/cyc at load
+    )
     bytes_per_tile: float
     dm_engines: int = 1
-    dram_aggregate_bw: float = 0.0  # B/cyc; JSON stores gbps, converted ÷clock at load
+    memory_aggregate_bw: float = (
+        0.0  # B/cyc; JSON stores gbps, converted ÷clock at load
+    )
+    tensix_cores: int = 0  # chip-wide Tensix count; 0 → compute roof unavailable
 
     def rate_for(self, op_type: str, dtype: str = "") -> float:
         """Peak tiles/cycle: exact ``(op_type, dtype)`` → ``(op_type, "")`` → default."""
@@ -60,7 +65,8 @@ class HardwareProfile:
             "compute_rate_default": self.compute_rate_default,
             "noc_bw": dict(self.noc_bw),
             "noc_latency": dict(self.noc_latency),
-            "dram_aggregate_bw": self.dram_aggregate_bw,
+            "memory_aggregate_bw": self.memory_aggregate_bw,
+            "tensix_cores": self.tensix_cores,
         }
 
 
@@ -105,7 +111,7 @@ class NodeEstimate:
     compute: float
     movement: float
     cycles: float
-    bound: str  # "compute" | "memory"
+    bound: str  # "compute" | "movement"
 
 
 @dataclass(frozen=True)
@@ -123,17 +129,24 @@ class CycleEstimate:
     total_nodes: int
     active_nodes: int
     kernels: list[KernelEstimate] = field(default_factory=list[KernelEstimate])
-    program_bound: str = "per-node"  # "per-node" | "aggregate-dram"
-    dram_floor: float = 0.0
-    total_dram_bytes: float = 0.0
-    dram_read_bytes: float = 0.0
-    dram_write_bytes: float = 0.0
+    program_bound: str = "per-node"  # "per-node" | "memory"
+    memory_floor: float = 0.0
+    total_memory_bytes: float = 0.0
+    memory_read_bytes: float = 0.0
+    memory_write_bytes: float = 0.0
     nodes: list[NodeEstimate] = field(default_factory=list[NodeEstimate])
     node_bound: float = 0.0  # max over nodes of per-node cycles (throughput)
-    node_bound_reason: str = "compute"  # bound of the slowest node ("compute"|"memory")
+    node_bound_reason: str = "compute"  # slowest node's bound ("compute"|"movement")
     node_fill_drain: float = (
         0.0  # informational only; NOT in program_cycles (crude, can overshoot)
     )
+    # Roofline: board constants (peak/ridge) + program position (AI, roof-%).
+    peak_compute_flops_per_cyc: float = 0.0
+    ridge_ai: float = 0.0
+    arithmetic_intensity: float = 0.0
+    roofline_bound: str = "compute"  # "compute" | "memory"
+    compute_roof_pct: float = 0.0
+    memory_roof_pct: float = 0.0
 
 
 # Profile *data* is JSON under hw_profiles/, loaded by :mod:`model`

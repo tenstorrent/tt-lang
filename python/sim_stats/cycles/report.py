@@ -46,6 +46,14 @@ def _header(estimate: CycleEstimate, unit: str, label_w: int, width: int) -> Non
     print("\n" + "=" * width)
     print("Cycle Estimate — ideal-peak model")
     print(f"hw-profile: {estimate.profile_name}")
+    if estimate.peak_compute_flops_per_cyc > 0.0:
+        clock = float(estimate.profile.get("clock_ghz", 1.0))
+        cores = int(estimate.profile.get("tensix_cores", 0))
+        tflops = estimate.peak_compute_flops_per_cyc * clock / 1000.0
+        print(
+            f"  {'peak compute':<13}:  {tflops:.1f} TF/s   ({cores} Tensix, bf16 HiFi4)"
+        )
+        print(f"  {'ridge AI':<13}:  {estimate.ridge_ai:.0f} FLOP/B")
     if not estimate.profile.get("noc_bw"):
         print(
             "WARNING: profile has no noc_bw — movement modeled as free (latency only)"
@@ -53,14 +61,9 @@ def _header(estimate: CycleEstimate, unit: str, label_w: int, width: int) -> Non
     print("=" * width)  # title block / tables separator
     print(
         f"{unit:<{label_w}} {'Compute':>{_NUM_W}} "
-        f"{'Movement':>{_NUM_W}} {'Cycles':>{_NUM_W}}  Bound"
+        f"{'Movement':>{_NUM_W}} {'Cycles':>{_NUM_W}}  Type"
     )
     print("." * width)
-
-
-def _kv(label: str, value: str, note: str) -> str:
-    """A summary line: left label, value column, parenthetical note."""
-    return f"{label:<15}:  {value:<10}({note})"
 
 
 def _human_bytes(n: float) -> str:
@@ -78,21 +81,21 @@ def _human_bytes(n: float) -> str:
 
 
 def _stats_footer(estimate: CycleEstimate, width: int) -> None:
-    """Bound summary table, optional DRAM block, and program/per-node stats.
+    """Nodes rollup, optional shared-memory block, and the program summary.
 
-    A pure read of the pre-computed ``estimate.nodes`` / ``node_bound`` — no
-    cycle math happens here.
+    A pure read of the pre-computed ``estimate`` — no cycle math happens here.
     """
     active = [n for n in estimate.nodes if n.cycles > 0.0]
 
-    # Bound summary table (active nodes only) — its own section.
+    # Nodes — per-type rollup, then the per-node max and utilization.
     print("-" * width)
-    print(f"{'Type':<10}{'Nodes':>8}{'Avg Cycles':>14}{'Max':>14}   Max node")
+    print("Nodes")
     print("." * width)
+    print(f"{'Type':<10}{'Nodes':>8}{'Avg Cycles':>14}{'Max':>14}   Max node")
     by_bound: dict[str, list[NodeEstimate]] = {}
     for n in active:
         by_bound.setdefault(n.bound, []).append(n)
-    for bound in ("compute", "memory"):  # always show both types
+    for bound in ("compute", "movement"):  # always show both types
         rows = by_bound.get(bound, [])
         count = len(rows)
         if rows:
@@ -103,35 +106,55 @@ def _stats_footer(estimate: CycleEstimate, width: int) -> None:
             )[0]
             avg_s, max_s = abbrev_count(avg), abbrev_count(max_cy)
         else:
-            # Empty bound: dashes rather than 0.00, matching the "Max node" column.
+            # Empty type: dashes rather than 0.00, matching the "Max node" column.
             avg_s = max_s = max_node = "-"
         print(f"{bound:<10}{count:>8}{avg_s:>14}{max_s:>14}   {max_node}")
+    idle = estimate.total_nodes - estimate.active_nodes
+    print(
+        f"  {'per-node max':<13}:  {abbrev_count(estimate.node_bound)}"
+        f"   ({estimate.node_bound_reason})"
+    )
+    print(
+        f"  {'active nodes':<13}:  {estimate.active_nodes} / {estimate.total_nodes}"
+        f"   ({idle} idle)"
+    )
 
-    # DRAM (shared) block — only when the profile models an aggregate ceiling.
-    agg_bw = float(estimate.profile.get("dram_aggregate_bw", 0.0))
+    # Memory (shared) — only when the profile models an aggregate ceiling.
+    agg_bw = float(estimate.profile.get("memory_aggregate_bw", 0.0))
     if agg_bw > 0.0:
         clock = float(estimate.profile.get("clock_ghz", 1.0))
         gbps = agg_bw * clock
         print("-" * width)
-        print("DRAM (shared)")
+        print("Memory (shared)")
         print("." * width)
-        print(f"  {'read':<15}:  {_human_bytes(estimate.dram_read_bytes)}")
-        print(f"  {'write':<15}:  {_human_bytes(estimate.dram_write_bytes)}")
+        print(f"  {'read':<13}:  {_human_bytes(estimate.memory_read_bytes)}")
+        print(f"  {'write':<13}:  {_human_bytes(estimate.memory_write_bytes)}")
         print(
-            f"  {'bandwidth':<15}:  {agg_bw:g} B/cyc   "
+            f"  {'bandwidth':<13}:  {agg_bw:g} B/cyc   "
             f"({gbps:g} GB/s @ {clock:.1f} GHz)"
         )
-        print(f"  {'floor':<15}:  {abbrev_count(estimate.dram_floor)}")
+        print(f"  {'floor':<13}:  {abbrev_count(estimate.memory_floor)}")
 
-    # Summary — its own section.
-    idle = estimate.total_nodes - estimate.active_nodes
-    nodes = f"{estimate.active_nodes} / {estimate.total_nodes}"
+    # Program — the answer. `bound` is the resource that set it
+    # (compute | movement | memory); AI and roof utilization need a compute peak.
     print("-" * width)
-    prog = abbrev_count(estimate.program_cycles)
-    node_max = abbrev_count(estimate.node_bound)
-    print(_kv("Program cycles", prog, estimate.program_bound))
-    print(_kv("Per-node max", node_max, estimate.node_bound_reason))
-    print(_kv("Active nodes", nodes, f"{idle} idle"))
+    print("Program")
+    print("." * width)
+    print(f"  {'cycles':<13}:  {abbrev_count(estimate.program_cycles)}")
+    has_roofline = estimate.peak_compute_flops_per_cyc > 0.0
+    if has_roofline:
+        if estimate.total_memory_bytes == 0.0:  # no memory traffic → AI undefined
+            ai_line = "n/a (no memory traffic)"
+        else:
+            ai_line = f"{estimate.arithmetic_intensity:.0f} FLOP/B"
+        print(f"  {'AI':<13}:  {ai_line}")
+    bound = (
+        "memory" if estimate.program_bound == "memory" else estimate.node_bound_reason
+    )
+    print(f"  {'bound':<13}:  {bound}")
+    if has_roofline:
+        print(f"  {'compute util':<13}:  {estimate.compute_roof_pct:.0f}%")
+        print(f"  {'memory  util':<13}:  {estimate.memory_roof_pct:.0f}%")
     print("=" * width)
     if sum(k.compute_cycles for k in estimate.kernels) == 0.0:
         print(
@@ -185,13 +208,19 @@ def write_json(path: Path, estimate: CycleEstimate) -> None:
         "profile": estimate.profile,
         "program_cycles": estimate.program_cycles,
         "program_bound": estimate.program_bound,
-        "dram_floor": estimate.dram_floor,
-        "total_dram_bytes": estimate.total_dram_bytes,
-        "dram_read_bytes": estimate.dram_read_bytes,
-        "dram_write_bytes": estimate.dram_write_bytes,
+        "memory_floor": estimate.memory_floor,
+        "total_memory_bytes": estimate.total_memory_bytes,
+        "memory_read_bytes": estimate.memory_read_bytes,
+        "memory_write_bytes": estimate.memory_write_bytes,
         "node_bound": estimate.node_bound,
         "node_bound_reason": estimate.node_bound_reason,
         "node_fill_drain": estimate.node_fill_drain,
+        "peak_compute_flops_per_cyc": estimate.peak_compute_flops_per_cyc,
+        "ridge_ai": estimate.ridge_ai,
+        "arithmetic_intensity": estimate.arithmetic_intensity,
+        "roofline_bound": estimate.roofline_bound,
+        "compute_roof_pct": estimate.compute_roof_pct,
+        "memory_roof_pct": estimate.memory_roof_pct,
         "total_nodes": estimate.total_nodes,
         "active_nodes": estimate.active_nodes,
         "nodes": [asdict(n) for n in estimate.nodes],
@@ -245,14 +274,22 @@ def load_estimate(path: Path | str) -> CycleEstimate:
             active_nodes=int(data.get("active_nodes", 0)),
             kernels=kernels,
             program_bound=str(data.get("program_bound", "per-node")),
-            dram_floor=float(data.get("dram_floor", 0.0)),
-            total_dram_bytes=float(data.get("total_dram_bytes", 0.0)),
-            dram_read_bytes=float(data.get("dram_read_bytes", 0.0)),
-            dram_write_bytes=float(data.get("dram_write_bytes", 0.0)),
+            memory_floor=float(data.get("memory_floor", 0.0)),
+            total_memory_bytes=float(data.get("total_memory_bytes", 0.0)),
+            memory_read_bytes=float(data.get("memory_read_bytes", 0.0)),
+            memory_write_bytes=float(data.get("memory_write_bytes", 0.0)),
             nodes=nodes,
             node_bound=float(data.get("node_bound", 0.0)),
             node_bound_reason=str(data.get("node_bound_reason", "compute")),
             node_fill_drain=float(data.get("node_fill_drain", 0.0)),
+            peak_compute_flops_per_cyc=float(
+                data.get("peak_compute_flops_per_cyc", 0.0)
+            ),
+            ridge_ai=float(data.get("ridge_ai", 0.0)),
+            arithmetic_intensity=float(data.get("arithmetic_intensity", 0.0)),
+            roofline_bound=str(data.get("roofline_bound", "compute")),
+            compute_roof_pct=float(data.get("compute_roof_pct", 0.0)),
+            memory_roof_pct=float(data.get("memory_roof_pct", 0.0)),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(f"malformed cycle report {p}: {exc}") from None
