@@ -227,7 +227,7 @@ func.func @interleaved_pushes_wrong_order()
 // PLAN:       C1 {{.*}} kind=fused recipe=fused legal=true
 // PLAN:       fused {{.*}} tile-operation operands=1
 // PLAN-NEXT:  fused {{.*}} tile-operation operands=1
-// PLAN-NEXT:  order=[C1, C0]
+// PLAN:       order=[C1, C0]
 // CHECK:       %[[SHARED_DFB:.*]] = ttl.bind_cb{cb_index = 1
 // CHECK:       %[[OTHER_DFB:.*]] = ttl.bind_cb{cb_index = 2
 // CHECK:       ttl.cb_reserve %[[SHARED_DFB]]

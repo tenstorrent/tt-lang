@@ -81,6 +81,61 @@ static StringRef stringifyFusedRecipe(FusedOperationRecipe recipe) {
   llvm_unreachable("unknown fused operation recipe");
 }
 
+static StringRef stringifyFusionSemantic(FusionSemanticKind semantic) {
+  switch (semantic) {
+  case FusionSemanticKind::ElementwiseUnary:
+    return "elementwise-unary";
+  case FusionSemanticKind::ElementwiseBinary:
+    return "elementwise-binary";
+  case FusionSemanticKind::Broadcast:
+    return "broadcast";
+  case FusionSemanticKind::Fill:
+    return "fill";
+  case FusionSemanticKind::Matmul:
+    return "matmul";
+  case FusionSemanticKind::Reduction:
+    return "reduction";
+  }
+  llvm_unreachable("unknown fusion semantic kind");
+}
+
+static StringRef stringifyFusionEdgeKind(FusionEdgeKind kind) {
+  switch (kind) {
+  case FusionEdgeKind::FullTensor:
+    return "full-tensor";
+  case FusionEdgeKind::FullScalar:
+    return "full-scalar";
+  }
+  llvm_unreachable("unknown fusion edge kind");
+}
+
+static StringRef stringifyFusionCarrier(FusionCarrierKind carrier) {
+  switch (carrier) {
+  case FusionCarrierKind::MaterializedDFB:
+    return "materialized-dfb";
+  case FusionCarrierKind::DST:
+    return "dst";
+  case FusionCarrierKind::SourceRegister:
+    return "source-register";
+  case FusionCarrierKind::Recompute:
+    return "recompute";
+  }
+  llvm_unreachable("unknown fusion carrier kind");
+}
+
+static StringRef
+stringifyFusionPreservation(FusionPreservationKind preservation) {
+  switch (preservation) {
+  case FusionPreservationKind::EraseProducer:
+    return "erase-producer";
+  case FusionPreservationKind::KeepProducer:
+    return "keep-producer";
+  case FusionPreservationKind::RecomputeForFusion:
+    return "recompute-for-fusion";
+  }
+  llvm_unreachable("unknown fusion preservation kind");
+}
+
 static StringRef stringifyReason(IntermediateDFBReason reason) {
   switch (reason) {
   case IntermediateDFBReason::RequiredDFBOperand:
@@ -250,6 +305,30 @@ struct TTLPrintComputeOpCreationPlansPass
         printOperation(output, operationPlan.source, operationIds);
         output << " " << stringifyFusedRecipe(operationPlan.recipe)
                << " operands=" << operationPlan.operands.size() << "\n";
+      }
+      if (creation.fusionGraph) {
+        const FusionGraphPlan &graph = *creation.fusionGraph;
+        output << "    graph nodes=" << graph.nodes.size()
+               << " edges=" << graph.edges.size()
+               << " stages=" << graph.stages.size() << "\n";
+        for (auto [nodeIndex, node] : llvm::enumerate(graph.nodes)) {
+          output << "      N" << nodeIndex << " ";
+          printOperation(output, node.source, operationIds);
+          output << " semantic=" << stringifyFusionSemantic(node.semantic)
+                 << " stage=" << node.stageIndex
+                 << " pure=" << (node.isPure ? "true" : "false")
+                 << " speculatable=" << (node.isSpeculatable ? "true" : "false")
+                 << "\n";
+        }
+        for (auto [edgeIndex, edge] : llvm::enumerate(graph.edges)) {
+          output << "      E" << edgeIndex << " N" << edge.producerNode << "->N"
+                 << edge.consumerNode << " operand=" << edge.consumerOperand
+                 << " kind=" << stringifyFusionEdgeKind(edge.kind)
+                 << " carrier=" << stringifyFusionCarrier(edge.selectedCarrier)
+                 << " preservation="
+                 << stringifyFusionPreservation(edge.preservation)
+                 << " external-uses=" << edge.externalUses.size() << "\n";
+        }
       }
       for (const ComputeOpCreationWarning &warning : creation.warnings) {
         output << "    warning="

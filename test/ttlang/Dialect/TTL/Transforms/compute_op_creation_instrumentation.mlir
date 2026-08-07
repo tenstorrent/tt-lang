@@ -10,6 +10,10 @@
 
 // CHECK-LABEL: ComputeOp creation plan @movable_instrumentation
 // CHECK:       ttl.add kind=fused recipe=fused legal=true
+// CHECK:         graph nodes=2 edges=1 stages=1
+// CHECK-NEXT:      N0 {{.*}} semantic=matmul stage=0 pure=true speculatable=true
+// CHECK-NEXT:      N1 {{.*}} semantic=elementwise-binary stage=0 pure=true speculatable=true
+// CHECK-NEXT:      E0 N0->N1 operand=0 kind=full-tensor carrier=dst preservation=erase-producer external-uses=0
 // CHECK:       warning=instrumentation changes code generation: matmul-accumulator folding is disabled because the combined hardware operation cannot preserve the observation point between ttl.matmul and ttl.add; the instrumented program uses separate tile operations
 // IR-LABEL:    func.func @movable_instrumentation
 // IR:          ttl.compute
