@@ -268,7 +268,7 @@ static int64_t getNumTensorFunctionArgs(FuncOp func) {
   return numTensorArgs;
 }
 
-static int64_t getNumComputedAddressRuntimeArgs(FuncOp func) {
+int64_t getNumPipeComputedAddressRuntimeArgs(FuncOp func) {
   // Resource planning records the sorted receiver DFB list before lowering
   // computes common runtime argument indices.
   auto dfbIndices = func->getAttrOfType<DenseI32ArrayAttr>(
@@ -283,7 +283,7 @@ static int64_t getNumComputedAddressRuntimeArgs(FuncOp func) {
 static int64_t getPipeRuntimeCommonArgIndex(FuncOp func,
                                             int64_t pipeRuntimeArgIndex) {
   return getNumTensorFunctionArgs(func) +
-         getNumComputedAddressRuntimeArgs(func) + pipeRuntimeArgIndex;
+         getNumPipeComputedAddressRuntimeArgs(func) + pipeRuntimeArgIndex;
 }
 
 static int64_t getPipeRuntimeCommonArgIndex(Operation *op,

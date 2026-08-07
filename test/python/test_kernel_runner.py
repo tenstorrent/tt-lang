@@ -520,13 +520,16 @@ def test_build_kernel_descriptors_passes_computed_addresses_as_runtime_args(
         pipe_computed_address_base_addresses={1: 0x8000, 3: 0x9000},
         extra_common_runtime_args=[0xA000],
         expected_extra_common_runtime_args=1,
+        device_coordinates=[0, 1],
     )
 
     dfb_indices = [0, 1]
     pipe_dfb_bases = [0x8000, 0x9000]
     tensor_accessor_args = [0x44, 0x55]
     assert descriptors[0].compile_time_args == dfb_indices + tensor_accessor_args
-    assert descriptors[0].common_runtime_args == [0x2000] + pipe_dfb_bases + [0xA000]
+    assert descriptors[0].common_runtime_args == (
+        [0x2000] + pipe_dfb_bases + [0xA000] + [0, 1]
+    )
 
 
 def test_build_kernel_descriptors_appends_per_kernel_runtime_args(monkeypatch):
