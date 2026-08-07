@@ -778,6 +778,107 @@ static LogicalResult buildFusedIterationPlan(ComputeOpCreationPlan &plan,
   return success();
 }
 
+static FailureOr<FusionSemanticKind>
+classifyFusionSemantic(Operation *operation) {
+  if (isa<BlockBroadcastOp>(operation)) {
+    return FusionSemanticKind::Broadcast;
+  }
+  if (isa<FillOp>(operation)) {
+    return FusionSemanticKind::Fill;
+  }
+  if (isa<MatmulOp>(operation)) {
+    return FusionSemanticKind::Matmul;
+  }
+  if (isa<ReduceOp>(operation)) {
+    return FusionSemanticKind::Reduction;
+  }
+  if (isUnaryElementwiseOp(operation)) {
+    return FusionSemanticKind::ElementwiseUnary;
+  }
+  if (isBinaryElementwiseOp(operation)) {
+    return FusionSemanticKind::ElementwiseBinary;
+  }
+  return failure();
+}
+
+static LogicalResult buildSingleStageFusionGraph(ComputeOpCreationPlan &plan,
+                                                 std::string &failureReason) {
+  FusionGraphPlan graph;
+  DenseMap<Operation *, unsigned> nodeIndices;
+  DenseSet<Operation *> graphOperations(plan.trace.opsInOrder.begin(),
+                                        plan.trace.opsInOrder.end());
+
+  for (Operation *operation : plan.trace.opsInOrder) {
+    if (operation->getNumResults() != 1) {
+      failureReason = "fused operation must have exactly one result";
+      return failure();
+    }
+    auto resultType =
+        dyn_cast<RankedTensorType>(operation->getResult(0).getType());
+    FailureOr<FusionSemanticKind> semantic = classifyFusionSemantic(operation);
+    if (!resultType || failed(semantic)) {
+      failureReason = "fused operation has no semantic graph representation";
+      return failure();
+    }
+
+    unsigned nodeIndex = graph.nodes.size();
+    nodeIndices.try_emplace(operation, nodeIndex);
+    FusionNodePlan node;
+    node.source = operation;
+    node.semantic = *semantic;
+    llvm::append_range(node.operands, operation->getOperands());
+    node.resultType = resultType;
+    node.isPure = mlir::isPure(operation);
+    node.isSpeculatable = mlir::isSpeculatable(operation);
+    graph.nodes.push_back(std::move(node));
+  }
+
+  for (auto [consumerIndex, node] : llvm::enumerate(graph.nodes)) {
+    for (auto [operandIndex, operand] : llvm::enumerate(node.operands)) {
+      Operation *producer = operand.getDefiningOp();
+      auto producerIterator = nodeIndices.find(producer);
+      if (producerIterator == nodeIndices.end()) {
+        continue;
+      }
+      unsigned producerIndex = producerIterator->second;
+      if (producerIndex >= consumerIndex) {
+        failureReason = "fusion graph operations are not in dependency order";
+        return failure();
+      }
+
+      FusionEdgePlan edge;
+      edge.producerNode = producerIndex;
+      edge.consumerNode = consumerIndex;
+      edge.consumerOperand = operandIndex;
+      edge.value = operand;
+      edge.kind =
+          graph.nodes[producerIndex].semantic == FusionSemanticKind::Reduction
+              ? FusionEdgeKind::FullScalar
+              : FusionEdgeKind::FullTensor;
+      edge.legalCarriers.push_back(FusionCarrierKind::DST);
+      edge.selectedCarrier = FusionCarrierKind::DST;
+      for (OpOperand &use : operand.getUses()) {
+        if (!graphOperations.contains(use.getOwner())) {
+          edge.externalUses.push_back({use.getOwner(), use.getOperandNumber()});
+        }
+      }
+      edge.preservation = edge.externalUses.empty()
+                              ? FusionPreservationKind::EraseProducer
+                              : FusionPreservationKind::RecomputeForFusion;
+      graph.edges.push_back(std::move(edge));
+    }
+  }
+
+  FusionStagePlan stage;
+  stage.iteration = plan.iteration;
+  for (unsigned nodeIndex = 0; nodeIndex < graph.nodes.size(); ++nodeIndex) {
+    stage.nodes.push_back(nodeIndex);
+  }
+  graph.stages.push_back(std::move(stage));
+  plan.fusionGraph = std::move(graph);
+  return success();
+}
+
 struct MatchedRowNormalization {
   RowNormalizationPlan schedule;
   FusionTraceResult trace;
@@ -1032,7 +1133,10 @@ static LogicalResult buildOperationSpecificPlan(ComputeOpCreationPlan &plan,
     if (failed(buildFusedIterationPlan(plan, failureReason))) {
       return failure();
     }
-    return buildFusedOperationPlans(plan, failureReason);
+    if (failed(buildFusedOperationPlans(plan, failureReason))) {
+      return failure();
+    }
+    return buildSingleStageFusionGraph(plan, failureReason);
   }
 
   if (isa<BlockBroadcastOp>(plan.source)) {

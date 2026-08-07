@@ -183,6 +183,92 @@ struct ComputeIterationPlan {
   SmallVector<utils::IteratorType> iteratorTypes;
 };
 
+/// Target-independent operation semantics represented in a fusion graph.
+enum class FusionSemanticKind {
+  ElementwiseUnary,
+  ElementwiseBinary,
+  Broadcast,
+  Fill,
+  Matmul,
+  Reduction,
+};
+
+/// Relation between one producer result and one exact consumer operand.
+enum class FusionEdgeKind {
+  FullTensor,
+  FullScalar,
+};
+
+/// Storage or recomputation mechanism selected for a fusion edge.
+enum class FusionCarrierKind {
+  MaterializedDFB,
+  DST,
+  SourceRegister,
+  Recompute,
+};
+
+/// Treatment of a producer result that remains live outside the graph.
+enum class FusionPreservationKind {
+  EraseProducer,
+  KeepProducer,
+  RecomputeForFusion,
+};
+
+/// Stable identity of one use outside a fusion graph.
+struct FusionExternalUsePlan {
+  Operation *owner = nullptr;
+  unsigned operandIndex = 0;
+};
+
+/// One semantic operation in an immutable fusion graph.
+struct FusionNodePlan {
+  Operation *source = nullptr;
+  unsigned resultNumber = 0;
+  FusionSemanticKind semantic = FusionSemanticKind::ElementwiseUnary;
+  SmallVector<Value> operands;
+  RankedTensorType resultType;
+  unsigned stageIndex = 0;
+  bool isPure = false;
+  bool isSpeculatable = false;
+};
+
+/// One exact producer-result to consumer-operand dependency.
+struct FusionEdgePlan {
+  unsigned producerNode = 0;
+  unsigned consumerNode = 0;
+  unsigned consumerOperand = 0;
+  Value value;
+  FusionEdgeKind kind = FusionEdgeKind::FullTensor;
+  SmallVector<FusionExternalUsePlan> externalUses;
+  SmallVector<FusionCarrierKind> legalCarriers;
+  FusionCarrierKind selectedCarrier = FusionCarrierKind::MaterializedDFB;
+  FusionPreservationKind preservation = FusionPreservationKind::EraseProducer;
+};
+
+/// Operations that execute in one explicit iteration domain.
+struct FusionStagePlan {
+  ComputeIterationPlan iteration;
+  SmallVector<unsigned> nodes;
+  SmallVector<unsigned> inputEdges;
+  SmallVector<unsigned> outputEdges;
+};
+
+/// Complete target resource selection for one fusion graph.
+struct FusionResourcePlan {
+  std::uint32_t requiredDstSlots = 0;
+  std::uint32_t availableDstSlots = 0;
+  std::uint32_t dstAcquisitions = 0;
+  std::uint64_t intermediateDFBBytes = 0;
+};
+
+/// Immutable semantic graph used by target schedule selection.
+struct FusionGraphPlan {
+  SmallVector<FusionNodePlan> nodes;
+  SmallVector<FusionEdgePlan> edges;
+  SmallVector<FusionStagePlan, 1> stages;
+  std::optional<FusionResourcePlan> resources;
+};
+
 /// Placement of instrumentation copied into a created `ComputeOp` body.
 ///
 /// Fusion relocates evaluation into a new region. This record is required to
@@ -560,6 +646,9 @@ struct ComputeOpCreationPlan {
 
   /// Tile-level recipes in expression dependency order.
   SmallVector<FusedOperationPlan> fusedOperations;
+
+  /// Target-independent operation, dependency, and domain facts for fusion.
+  std::optional<FusionGraphPlan> fusionGraph;
 
   /// Complete capacity-fitting row-normalization schedule, when selected.
   std::optional<RowNormalizationPlan> rowNormalization;

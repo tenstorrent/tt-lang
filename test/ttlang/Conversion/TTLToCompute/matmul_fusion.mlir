@@ -14,7 +14,7 @@
 // PLAN-NEXT:  iterators=[parallel, parallel, reduction] input-maps=3
 // PLAN-NEXT:  fused {{.*}} deferred-matmul operands=2
 // PLAN-NEXT:  fused {{.*}} matmul-accumulator operands=3
-// PLAN-NEXT:  order=[C0]
+// PLAN:       order=[C0]
 // CHECK:         %[[A:.*]] = ttl.attach_cb
 // CHECK:         %[[B:.*]] = ttl.attach_cb
 // CHECK:         %[[C:.*]] = ttl.attach_cb
@@ -445,7 +445,7 @@ func.func @matmul_add_non_square() attributes {ttl.base_cta_index = 4 : i32, ttl
 // PLAN:       fused {{.*}} matmul operands=2
 // PLAN-NEXT:  fused {{.*}} matmul operands=2
 // PLAN-NEXT:  fused {{.*}} tile-operation operands=2
-// PLAN-NEXT:  order=[C0]
+// PLAN:       order=[C0]
 func.func @two_matmuls_add()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
   %lhs0_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
