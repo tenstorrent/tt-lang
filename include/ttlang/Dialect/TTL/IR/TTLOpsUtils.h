@@ -24,8 +24,29 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 
 namespace mlir::tt::ttl {
+
+/// Returns a tile type directly or from a ranked tensor element type.
+FailureOr<ttcore::TileType> getTileType(Type type);
+
+/// Validates the target-independent input and result relation for typecast.
+LogicalResult verifyTypecastTileTypes(ttcore::TileType inputType,
+                                      ttcore::TileType resultType,
+                                      std::string &failureReason);
+
+/// Validate the element data types and physical tile dimensions of a matmul.
+///
+/// This is the target-independent type relation. For `lhs @ rhs`, the lhs tile
+/// width equals the rhs tile height and the result tile dimensions are
+/// `[lhs.height, rhs.width]`. With `transposeRhs`, the rhs width is contracted
+/// and the result width is the rhs height.
+LogicalResult verifyMatmulTileTypes(ttcore::TileType lhsType,
+                                    ttcore::TileType rhsType,
+                                    ttcore::TileType resultType,
+                                    bool transposeRhs,
+                                    std::string &failureReason);
 
 /// Return the enclosing kernel-thread `func.func` (tagged with
 /// `ttl.kernel_thread`), or null if `op` is not inside one.
@@ -365,9 +386,10 @@ inline int64_t getNocIndex(mlir::Operation *op) {
 /// Return true when an add/sub/mul tile op is eligible to lower to its FPU
 /// form. Eligibility requires all of:
 ///   1. op carries TTLStrategyDependentBinaryOpTrait;
-///   2. the enclosing func.func has ttl.enable_fpu_binary_ops = true
-///      (absent or false ⇒ not eligible);
-///   3. both operands trace to the same CB-backed indexing source — either
+///   2. the result has a floating-point tile type;
+///   3. the enclosing func.func has ttl.enable_fpu_binary_ops = true
+///      (absent or false means not eligible);
+///   4. both operands trace to the same CB-backed indexing source, either
 ///      input block args of one ttl.compute with equal indexing maps
 ///      (pre-ttl-lower-to-loops), or tensor.extract ops with equal index
 ///      lists (post-ttl-lower-to-loops).
@@ -376,6 +398,11 @@ inline int64_t getNocIndex(mlir::Operation *op) {
 /// for the operands is the conversion pattern's responsibility.
 inline bool isFPUEligibleBinaryOp(mlir::Operation *op) {
   if (!op->hasTrait<TTLStrategyDependentBinaryOpTrait>()) {
+    return false;
+  }
+  auto resultType =
+      mlir::dyn_cast<ttcore::TileType>(op->getResult(0).getType());
+  if (!resultType || !ttcore::isFloat(resultType.getDataType())) {
     return false;
   }
   if (!getKernelBoolAttr(op, kEnableFPUBinaryOpsAttrName)) {

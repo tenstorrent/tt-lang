@@ -217,8 +217,8 @@ class TTL_ElementWiseBase<string mnemonic, list<Trait> traits>
 class TTL_ElementWiseBinary<string mnemonic, list<Trait> traits = []>
     : TTL_ElementWiseBase<
           mnemonic,
-          !listconcat(traits,
-                      [Pure, SameTypeOperands, TTL_BinaryElementwiseOpTrait])> {
+          !listconcat(traits, [Pure, SameOperandsAndResultType,
+                               TTL_BinaryElementwiseOpTrait])> {
   let summary = "Binary elementwise operation";
   let arguments = (ins AnyType:$lhs, AnyType:$rhs);
   let assemblyFormat =
@@ -228,7 +228,8 @@ class TTL_ElementWiseBinary<string mnemonic, list<Trait> traits = []>
 class TTL_ElementWiseUnary<string mnemonic, list<Trait> traits = []>
     : TTL_ElementWiseBase<
           mnemonic,
-          !listconcat(traits, [Pure, TTL_UnaryElementwiseOpTrait])> {
+          !listconcat(traits, [Pure, SameOperandsAndResultType,
+                               TTL_UnaryElementwiseOpTrait])> {
   let summary = "Unary elementwise operation";
   let arguments = (ins AnyType:$input);
   let assemblyFormat =
@@ -828,7 +829,7 @@ def TTL_DPrintOp
     Emits device debug print calls. Mode determines the output format:
     - "scalar": prints format string with scalar values
     - "cb": prints CB metadata (size, limit, ptrs)
-    - "tile": prints full 32x32 tile contents from a CB
+    - "tile": prints physical tile contents from a DFB using the operand dimensions
     - "tensor": prints raw memory pages from tensor backing buffer
     - "dst": dumps live DST register slots
 
@@ -1432,7 +1433,11 @@ def TTL_MatmulOp : TTL_Op<"matmul", [Pure,
     rhs[j, k]). The inner (K) dimensions then match as lhs.shape[1] ==
     rhs.shape[1], and the result shape is [lhs.shape[0], rhs.shape[0]].
 
-    Lowered to ttl.compute with ttl.tile_matmul_block by convert-ttl-to-compute.
+    Operand tile dimensions follow the same matrix relation. Without
+    `transpose_rhs`, `lhs.tile.width == rhs.tile.height` and the result tile is
+    `[lhs.tile.height, rhs.tile.width]`. With `transpose_rhs`, the rhs tile
+    width is contracted and the result tile width is the rhs tile height.
+    Operand and result tile element data types must match.
   }];
   let arguments = (ins AnyRankedTensor:$lhs, AnyRankedTensor:$rhs,
                        UnitAttr:$transpose_rhs);
@@ -1462,6 +1467,9 @@ def TTL_TileMatmulBlockOp : TTL_TileOp<"tile_matmul_block",
     transposed per-K addressing during TTKernel lowering.
 
     Maps to ttkernel.mm_block_init + ttkernel.matmul_block.
+
+    The lhs, rhs, and result tile types may have different dimensions. Their
+    physical dimensions follow the same contraction relation as `ttl.matmul`.
   }];
   let arguments = (ins TTL_TileOrTensor:$lhs, TTL_TileOrTensor:$rhs,
                        Optional<TTL_TileOrTensor>:$accumulator,
@@ -1471,6 +1479,7 @@ def TTL_TileMatmulBlockOp : TTL_TileOp<"tile_matmul_block",
     $lhs `,` $rhs (`,` $accumulator^)? `into` `dst` `[` $dst_index `]` attr-dict `:`
     type($lhs) `,` type($rhs) (`,` type($accumulator)^)? `->` type($result)
   }];
+  let hasVerifier = 1;
 }
 
 // Circular buffer synchronization operations

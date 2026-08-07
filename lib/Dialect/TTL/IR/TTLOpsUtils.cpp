@@ -6,8 +6,44 @@
 
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/raw_ostream.h"
 
 namespace mlir::tt::ttl {
+
+FailureOr<ttcore::TileType> getTileType(Type type) {
+  if (auto tileType = dyn_cast<ttcore::TileType>(type)) {
+    return tileType;
+  }
+  auto tensorType = dyn_cast<RankedTensorType>(type);
+  if (!tensorType) {
+    return failure();
+  }
+  auto tileType = dyn_cast<ttcore::TileType>(tensorType.getElementType());
+  if (!tileType) {
+    return failure();
+  }
+  return tileType;
+}
+
+LogicalResult verifyTypecastTileTypes(ttcore::TileType inputType,
+                                      ttcore::TileType resultType,
+                                      std::string &failureReason) {
+  failureReason.clear();
+  llvm::raw_string_ostream diagnostic(failureReason);
+  if (inputType.getShape() != resultType.getShape()) {
+    diagnostic << "input and result tile shapes must match, but got input: "
+               << inputType << ", result: " << resultType;
+    return failure();
+  }
+  if (!ttcore::isFloat(inputType.getDataType()) ||
+      !ttcore::isFloat(resultType.getDataType())) {
+    diagnostic
+        << "only supports floating-point tile data types, but got input: "
+        << inputType << ", result: " << resultType;
+    return failure();
+  }
+  return success();
+}
 
 FailureOr<int64_t> getDFBId(Value cb) {
   auto bindOp = getDFBDeclaration(cb);
@@ -96,6 +132,44 @@ LogicalResult verifyResolvedDFBIdentities(ModuleOp moduleOp,
         return isa<CBReserveOp, CBPushOp, CBWaitOp, CBPopOp>(operation);
       },
       getDFBId, "DFB lifecycle", DFBIdentityRequirement::Finalized);
+}
+
+LogicalResult verifyMatmulTileTypes(ttcore::TileType lhsType,
+                                    ttcore::TileType rhsType,
+                                    ttcore::TileType resultType,
+                                    bool transposeRhs,
+                                    std::string &failureReason) {
+  failureReason.clear();
+  llvm::raw_string_ostream diagnostic(failureReason);
+  if (lhsType.getDataType() != rhsType.getDataType()) {
+    diagnostic << "element data type mismatch: lhs has " << lhsType
+               << " but rhs has " << rhsType;
+    return failure();
+  }
+  if (resultType.getDataType() != lhsType.getDataType()) {
+    diagnostic << "result element data type " << resultType
+               << " must match input element data type " << lhsType;
+    return failure();
+  }
+
+  int64_t rhsK = transposeRhs ? rhsType.getWidth() : rhsType.getHeight();
+  if (lhsType.getWidth() != rhsK) {
+    diagnostic << "tile K dimension mismatch: lhs tile width "
+               << lhsType.getWidth() << " does not match rhs tile "
+               << (transposeRhs ? "width " : "height ") << rhsK;
+    return failure();
+  }
+
+  int64_t expectedResultWidth =
+      transposeRhs ? rhsType.getHeight() : rhsType.getWidth();
+  if (resultType.getHeight() != lhsType.getHeight() ||
+      resultType.getWidth() != expectedResultWidth) {
+    diagnostic << "result tile dimensions " << resultType.getHeight() << "x"
+               << resultType.getWidth() << " do not match expected "
+               << lhsType.getHeight() << "x" << expectedResultWidth;
+    return failure();
+  }
+  return success();
 }
 
 std::optional<BcastType> getTileBroadcastType(ArrayRef<int64_t> dims,

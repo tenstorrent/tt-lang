@@ -9,6 +9,7 @@
 #include "ttlang/Dialect/TTCore/IR/Utils.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <cassert>
 #include <optional>
@@ -40,9 +41,11 @@ std::optional<uint64_t> tryBudgetFromModule(ModuleOp module) {
 
 } // namespace
 
-FailureOr<uint64_t> getDFBAllocationSizeBytes(CircularBufferType type) {
+FailureOr<uint64_t> getDFBAllocationSizeBytes(CircularBufferType type,
+                                              std::string &failureReason) {
   int64_t totalElements = type.getTotalElements();
   if (totalElements < 0) {
+    failureReason = "invalid negative total element count for DFB";
     return failure();
   }
   Type elementType = type.getElementType();
@@ -50,14 +53,27 @@ FailureOr<uint64_t> getDFBAllocationSizeBytes(CircularBufferType type) {
   if (auto tileType = dyn_cast<ttcore::TileType>(elementType)) {
     elementBytes = tileType.getSizeBytes();
   } else {
-    elementBytes = ttcore::TileType::get(elementType).getSizeBytes();
+    std::optional<ttcore::DataType> dataType =
+        ttcore::elementTypeToDataTypeImpl(elementType);
+    if (!dataType) {
+      llvm::raw_string_ostream message(failureReason);
+      message << "cannot determine DFB page size for element type "
+              << elementType;
+      return failure();
+    }
+    elementBytes =
+        ttcore::TileType::get(elementType.getContext(),
+                              ttcore::TileType::getDefaultShape(), *dataType)
+            .getSizeBytes();
   }
   return static_cast<uint64_t>(totalElements) * elementBytes;
 }
 
 FailureOr<bool> DFBAllocationFootprint::add(int64_t physicalIndex,
-                                            CircularBufferType type) {
-  FailureOr<uint64_t> allocationBytes = getDFBAllocationSizeBytes(type);
+                                            CircularBufferType type,
+                                            std::string &failureReason) {
+  FailureOr<uint64_t> allocationBytes =
+      getDFBAllocationSizeBytes(type, failureReason);
   if (failed(allocationBytes)) {
     return failure();
   }

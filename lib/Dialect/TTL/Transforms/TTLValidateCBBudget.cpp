@@ -6,12 +6,12 @@
 //
 // TTL Validate CB Budget
 //
-// Validates that the sum of static circular-buffer backing stores (per unique
-// cb_index) does not exceed a per-core L1 budget. Per-slot sizes use
-// ttcore::TileType::getSizeBytes() when the CB already carries a tile type, and
-// ttcore::TileType::get(elemTy).getSizeBytes() for row-wise / scalar element
-// types. Python uses python/ttl/kernel_runner.py:build_cb_descriptors; if
-// those ever diverge, align them or share one implementation (see issue #511).
+// Validates that the sum of static dataflow-buffer backing stores (per unique
+// cb_index) does not exceed a per-core L1 budget. Explicit tile elements retain
+// their dimensions. Scalar elements map to a ttcore data type and use default
+// tile dimensions; unmappable element types are errors. Python uses
+// python/ttl/kernel_runner.py:build_cb_descriptors; if those implementations
+// diverge, align them or share one implementation (see issue #511).
 //
 //===----------------------------------------------------------------------===//
 
@@ -72,9 +72,11 @@ struct TTLValidateCBBudgetPass
       }
       auto cbType = cast<CircularBufferType>(bindOp.getResult().getType());
       int64_t physicalIndex = bindOp.getCbIndex().getSExtValue();
-      FailureOr<bool> increased = footprint.add(physicalIndex, cbType);
+      std::string failureReason;
+      FailureOr<bool> increased =
+          footprint.add(physicalIndex, cbType, failureReason);
       if (failed(increased)) {
-        bindOp.emitOpError() << "invalid negative total element count for CB";
+        bindOp.emitOpError() << failureReason;
         return WalkResult::interrupt();
       }
       if (*increased) {

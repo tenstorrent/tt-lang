@@ -1245,50 +1245,64 @@ def _collect_captures(
     }
 
 
-# Map MLIR element type names to ttnn-compatible data format names.
-# Keyed by exact MLIR type mnemonic (no substring matching).
-_MLIR_TYPE_TO_FORMAT = {
+# Map scalar MLIR element types to ttnn-compatible data format names.
+_MLIR_SCALAR_TYPE_TO_FORMAT = {
     "bf16": "bfloat16",
-    "bfp_bf4": "bfloat4_b",
-    "bfp_bf8": "bfloat8_b",
     "f16": "float16",
     "f32": "float32",
     "i32": "int32",
     "si32": "int32",
-    "u8": "uint8",
-    "u16": "uint16",
-    "u32": "uint32",
     "ui8": "uint8",
     "ui32": "uint32",
     "ui16": "uint16",
 }
 
 
-def _parse_mlir_element_type(element_type) -> tuple[str, Optional[tuple[int, int]]]:
+_MLIR_TILE_DATA_TYPE_TO_FORMAT = {
+    ttcore.DataType.Float32: "float32",
+    ttcore.DataType.Float16: "float16",
+    ttcore.DataType.BFloat16: "bfloat16",
+    ttcore.DataType.BFP_BFloat8: "bfloat8_b",
+    ttcore.DataType.BFP_BFloat4: "bfloat4_b",
+    ttcore.DataType.UInt32: "uint32",
+    ttcore.DataType.UInt16: "uint16",
+    ttcore.DataType.UInt8: "uint8",
+    ttcore.DataType.Int32: "int32",
+}
+
+
+def _parse_mlir_element_type(
+    element_type_attr,
+) -> tuple[str, Optional[tuple[int, int]]]:
     """Extract the data format and optional tile dimensions from a TypeAttr.
 
     The TypeAttr prints as e.g. "bf16" or "!ttcore.tile<32x32, bf16>".
     """
-    tile = None
-    type_value = getattr(element_type, "value", None)
-    if type_value is None:
-        raise TypeError(f"element_type must be an MLIR TypeAttr, got {element_type!r}")
-    tile_type = ttcore.ir.TileType.maybe_downcast(type_value)
+    if not isinstance(element_type_attr, TypeAttr):
+        raise ValueError(
+            "Physical DFB element_type metadata must be a TypeAttr, "
+            f"got {element_type_attr}"
+        )
+    element_type = element_type_attr.value
+    tile_type = ttcore.ir.TileType.maybe_downcast(element_type)
     if tile_type is not None:
-        tile = tuple(tile_type.shape)
+        data_type = ttcore.DataType(tile_type.data_type_as_int)
+        data_format = _MLIR_TILE_DATA_TYPE_TO_FORMAT.get(data_type)
+        if data_format is None:
+            raise ValueError(
+                "Physical DFB tile data type "
+                f"'{data_type.name}' is not supported by the ttnn runtime"
+            )
+        return data_format, tuple(tile_type.shape)
 
-    # For compound types like "!ttcore.tile<32x32, bf16>", extract the
-    # type after the last comma. For bare types like "bf16", use as-is.
-    type_str = str(element_type)
-    token = type_str.strip()
-    if "," in token:
-        token = token.rsplit(",", 1)[1].strip().rstrip(">").strip()
-    fmt = _MLIR_TYPE_TO_FORMAT.get(token)
-    if fmt is not None:
-        return fmt, tile
+    type_str = str(element_type).strip()
+    data_format = _MLIR_SCALAR_TYPE_TO_FORMAT.get(type_str)
+    if data_format is not None:
+        return data_format, None
+    known_types = list(_MLIR_SCALAR_TYPE_TO_FORMAT.keys())
     raise ValueError(
-        f"Unrecognized MLIR element type '{token}' (from '{type_str}'). "
-        f"Known types: {list(_MLIR_TYPE_TO_FORMAT.keys())}"
+        f"Unrecognized MLIR scalar element type '{type_str}'. "
+        f"Known types: {known_types}"
     )
 
 

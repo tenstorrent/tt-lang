@@ -141,7 +141,7 @@ def test_missing_complete_allocations_are_rejected():
         ([_entry(0, num_tiles=0)], "num_tiles must be positive"),
         ([_entry(0, block_count=0)], "block_count must be positive"),
         ([_entry(0, page_size=0)], "page_size must be positive"),
-        ([_entry(0, element_type="i1")], "Unrecognized MLIR element type"),
+        ([_entry(0, element_type="i1")], "Unrecognized MLIR scalar element type"),
         ([_entry(0), _entry(0)], "duplicate dfb_index 0"),
         ([_entry(1)], "dense physical index range"),
         (

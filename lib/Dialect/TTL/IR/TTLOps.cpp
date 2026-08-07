@@ -25,6 +25,7 @@
 #include <functional>
 #include <limits>
 #include <numeric>
+#include <string>
 
 #include "ttlang/Dialect/TTL/IR/TTLInterfaces.cpp.inc"
 
@@ -194,7 +195,6 @@ mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
              << allocationSize << ", got " << backing.getByteSize() << ")";
     }
   }
-
   return mlir::success();
 }
 
@@ -428,22 +428,10 @@ mlir::LogicalResult mlir::tt::ttl::CopyTileOp::verify() {
 mlir::LogicalResult mlir::tt::ttl::TileTypecastOp::verify() {
   auto inputTy = mlir::cast<tt::ttcore::TileType>(getInput().getType());
   auto resultTy = mlir::cast<tt::ttcore::TileType>(getResult().getType());
-
-  // The tile shape must be preserved; identity typecasts fold away.
-  if (inputTy.getShape() != resultTy.getShape()) {
-    return emitOpError()
-           << "input and result tile shapes must match, but got input: "
-           << inputTy << ", result: " << resultTy;
+  std::string failureReason;
+  if (failed(verifyTypecastTileTypes(inputTy, resultTy, failureReason))) {
+    return emitOpError() << failureReason;
   }
-
-  ttcore::DataType inputDtype = inputTy.getDataType();
-  ttcore::DataType resultDtype = resultTy.getDataType();
-  if (!ttcore::isFloat(inputDtype) || !ttcore::isFloat(resultDtype)) {
-    return emitOpError()
-           << "only supports floating-point tile data types, but got input: "
-           << inputTy << ", result: " << resultTy;
-  }
-
   return success();
 }
 
@@ -884,6 +872,11 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
       return emitOpError("block argument ")
              << i << " type " << actualTy
              << " does not match operand element type " << expectedElemTy;
+    }
+    auto tileType = dyn_cast<ttcore::TileType>(actualTy);
+    if (!tileType) {
+      return emitOpError("block argument ")
+             << i << " must have ttcore.tile type, got " << actualTy;
     }
   }
 
@@ -1665,19 +1658,70 @@ mlir::LogicalResult mlir::tt::ttl::MatmulOp::verify() {
                          << "]";
   }
 
-  if (lhsType.getElementType() != rhsType.getElementType()) {
-    return emitOpError() << "element type mismatch: lhs has "
-                         << lhsType.getElementType() << " but rhs has "
-                         << rhsType.getElementType();
-  }
-
-  if (resultType.getElementType() != lhsType.getElementType()) {
-    return emitOpError() << "result element type "
-                         << resultType.getElementType()
-                         << " must match input element type "
+  auto lhsTileType = mlir::dyn_cast<ttcore::TileType>(lhsType.getElementType());
+  if (!lhsTileType) {
+    return emitOpError() << "lhs element type must be ttcore.tile, got "
                          << lhsType.getElementType();
   }
+  auto rhsTileType = mlir::dyn_cast<ttcore::TileType>(rhsType.getElementType());
+  if (!rhsTileType) {
+    return emitOpError() << "rhs element type must be ttcore.tile, got "
+                         << rhsType.getElementType();
+  }
+  auto resultTileType =
+      mlir::dyn_cast<ttcore::TileType>(resultType.getElementType());
+  if (!resultTileType) {
+    return emitOpError() << "result element type must be ttcore.tile, got "
+                         << resultType.getElementType();
+  }
 
+  std::string failureReason;
+  if (failed(verifyMatmulTileTypes(lhsTileType, rhsTileType, resultTileType,
+                                   transposeRhs, failureReason))) {
+    return emitOpError() << failureReason;
+  }
+
+  return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::TileMatmulBlockOp::verify() {
+  FailureOr<ttcore::TileType> lhsTileType = getTileType(getLhs().getType());
+  FailureOr<ttcore::TileType> rhsTileType = getTileType(getRhs().getType());
+  FailureOr<ttcore::TileType> resultTileType =
+      getTileType(getResult().getType());
+  if (failed(lhsTileType)) {
+    return emitOpError() << "lhs must be a tile or tensor of tiles, got "
+                         << getLhs().getType();
+  }
+  if (failed(rhsTileType)) {
+    return emitOpError() << "rhs must be a tile or tensor of tiles, got "
+                         << getRhs().getType();
+  }
+  if (failed(resultTileType)) {
+    return emitOpError() << "result must be a tile or tensor of tiles, got "
+                         << getResult().getType();
+  }
+
+  if (Value accumulator = getAccumulator()) {
+    FailureOr<ttcore::TileType> accumulatorTileType =
+        getTileType(accumulator.getType());
+    if (failed(accumulatorTileType)) {
+      return emitOpError()
+             << "accumulator must be a tile or tensor of tiles, got "
+             << accumulator.getType();
+    }
+    if (*accumulatorTileType != *resultTileType) {
+      return emitOpError() << "accumulator tile type " << *accumulatorTileType
+                           << " must match result tile type "
+                           << *resultTileType;
+    }
+  }
+
+  std::string failureReason;
+  if (failed(verifyMatmulTileTypes(*lhsTileType, *rhsTileType, *resultTileType,
+                                   getTransposeRhs(), failureReason))) {
+    return emitOpError() << failureReason;
+  }
   return success();
 }
 

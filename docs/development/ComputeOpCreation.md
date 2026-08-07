@@ -160,6 +160,29 @@ new storage before final creation.
 The planners do not modify IR. Operation handles and SSA values in a plan are
 valid only while the analyzed kernel is unchanged.
 
+## Compute Target Capabilities
+
+`ttcore::TileType` validates dimensions that `tt_metal::Tile` can represent.
+TTL operation verifiers enforce target-independent type relations, including
+matmul K compatibility and result dimensions. Neither layer defines LLK
+capabilities.
+
+`ComputeTargetEnvironment` owns architecture-specific compute constraints. It
+validates kernel tile dimensions, primitive data-type support, and matmul LLK
+combinations before compute creation or TTKernel conversion modifies IR. The
+environment is selected from the module's system description or
+`ttl.target_arch`. Modules without either use the intersection of capabilities
+implemented by all supported targets. Wormhole B0 and Blackhole currently
+provide the same compute capability set.
+
+Adding an architecture requires a capability implementation and an entry in
+`computeTargetRegistrations`. The registration table is the source for both
+explicit target lookup and the common environment, so an architecture cannot
+be available explicitly without contributing to the common intersection. An
+architecture may reuse an implementation only when the shared contract is
+documented. Tests must cover its accepted and rejected tile dimensions, data
+types, and operation-specific combinations.
+
 ## Candidate Planning
 
 Candidate planning records the source operands and result uses before

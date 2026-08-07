@@ -24,6 +24,7 @@ from ttl.ir import (
 from ._generated_elementwise import *  # noqa: F401,F403
 from ._generated_elementwise import __all__ as _generated_all
 from ._src.ttl_ast import syntax
+from .constants import DEFAULT_TILE_SIZE
 from ttl.dialects import ttl
 from .pipe import Pipe
 
@@ -98,6 +99,15 @@ def _get_constant_float(val) -> float:
     return v
 
 
+def _get_constant_bool(val) -> bool:
+    if isinstance(val, bool):
+        return val
+    value = get_constant_int_value(val)
+    if value is None:
+        raise ValueError(f"Expected constant bool, got {type(val).__name__}")
+    return bool(value)
+
+
 def _tile_hw(elem_type) -> Optional[Tuple[int, int]]:
     """Return (H, W) when ``elem_type`` is a TileType, else None."""
     from ttl.dialects import ttcore
@@ -153,11 +163,11 @@ class TensorBlock:
         Returns:
             Result tensor with the same shape as inputs.
         """
-        return ttl.add(ast_self.type, ast_self, rhs)
+        return ttl.add(ast_self, rhs)
 
     def __sub__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
         """Element-wise subtraction using ttl.sub."""
-        return ttl.sub(ast_self.type, ast_self, rhs)
+        return ttl.sub(ast_self, rhs)
 
     def __mul__(ast_self: TensorBlock, rhs) -> TensorBlock:
         """Multiplication.
@@ -171,7 +181,7 @@ class TensorBlock:
             ctx = ast_self.type.context
             value_attr = FloatAttr.get(F32Type.get(ctx), c)
             return ttl.mul_unary_const(ast_self, value_attr)
-        return ttl.mul(ast_self.type, ast_self, rhs)
+        return ttl.mul(ast_self, rhs)
 
     def __rmul__(ast_self: TensorBlock, lhs) -> TensorBlock:
         """Reflected multiplication for `scalar * self`."""
@@ -184,23 +194,23 @@ class TensorBlock:
 
     def __truediv__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
         """Element-wise division using ttl.div."""
-        return ttl.div(ast_self.type, ast_self, rhs)
+        return ttl.div(ast_self, rhs)
 
     def __gt__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
         """Element-wise greater-than using ttl.gt."""
-        return ttl.gt(ast_self.type, ast_self, rhs)
+        return ttl.gt(ast_self, rhs)
 
     def __lt__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
         """Element-wise less-than using ttl.lt."""
-        return ttl.lt(ast_self.type, ast_self, rhs)
+        return ttl.lt(ast_self, rhs)
 
     def __eq__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:  # type: ignore[override]
         """Element-wise equality using ttl.eq."""
-        return ttl.eq(ast_self.type, ast_self, rhs)
+        return ttl.eq(ast_self, rhs)
 
     def __ne__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:  # type: ignore[override]
         """Element-wise inequality using ttl.ne."""
-        return ttl.ne(ast_self.type, ast_self, rhs)
+        return ttl.ne(ast_self, rhs)
 
     def __matmul__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
         """Matrix multiplication using ttl.matmul.
@@ -846,11 +856,41 @@ def _build_matmul(lhs: TensorBlock, rhs: TensorBlock, *, transpose_rhs: bool):
             f"matmul K dimension mismatch: lhs has {lhs_shape[1]} columns but "
             f"rhs has {rhs_k} {'columns' if transpose else 'rows'}"
         )
+
+    from ttl.dialects import ttcore
+
+    lhs_tile = ttcore.ir.TileType.maybe_downcast(lhs_type.element_type)
+    rhs_tile = ttcore.ir.TileType.maybe_downcast(rhs_type.element_type)
+    if lhs_tile is None or rhs_tile is None:
+        raise ValueError(
+            "matmul requires tile-typed operands, got "
+            f"lhs={lhs_type.element_type}, rhs={rhs_type.element_type}"
+        )
+    lhs_dtype = ttcore.DataType(lhs_tile.data_type_as_int)
+    rhs_dtype = ttcore.DataType(rhs_tile.data_type_as_int)
+    if lhs_dtype != rhs_dtype:
+        raise ValueError(
+            "matmul operand tile data types must match, got "
+            f"lhs={lhs_type.element_type}, rhs={rhs_type.element_type}"
+        )
+
+    lhs_tile_height, lhs_tile_width = map(int, lhs_tile.shape)
+    rhs_tile_height, rhs_tile_width = map(int, rhs_tile.shape)
+    rhs_tile_k = rhs_tile_width if transpose else rhs_tile_height
+    if lhs_tile_width != rhs_tile_k:
+        raise ValueError(
+            "matmul tile K dimension mismatch: lhs tile width "
+            f"{lhs_tile_width} does not match rhs tile "
+            f"{'width' if transpose else 'height'} {rhs_tile_k}"
+        )
+
     n = rhs_shape[0] if transpose else rhs_shape[1]
     result_shape = [lhs_shape[0], n]
-    result_type = RankedTensorType.get(
-        result_shape, lhs_type.element_type, lhs_type.encoding
+    result_tile_width = rhs_tile_height if transpose else rhs_tile_width
+    result_tile = ttcore.ir.TileType.get(
+        lhs_type.context, lhs_tile_height, result_tile_width, lhs_dtype
     )
+    result_type = RankedTensorType.get(result_shape, result_tile, lhs_type.encoding)
     if transpose:
         return ttl.matmul(result_type, lhs, rhs, transpose_rhs=True)
     return ttl.matmul(result_type, lhs, rhs)
@@ -884,16 +924,23 @@ def transpose(input: TensorBlock) -> TensorBlock:
 
 
 @syntax("fill")
-def fill(value, *, shape, dtype=None) -> TensorBlock:
+def fill(
+    value,
+    *,
+    shape,
+    dtype=None,
+    tile=(DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE),
+) -> TensorBlock:
     """Produce a block of ``shape`` filled with a constant value.
 
-    Matches the spec form ``ttl.block.fill(value, shape)``. ``dtype`` selects
-    the per-element tile dtype and defaults to bf16, matching the simulator's
-    spec-form default. Accepts ``ttcore.DataType``, a torch dtype, or a ttnn
-    dtype. The downstream ``ttl.store`` determines the output CB used during
-    lowering; no output operand is required.
+    ``dtype`` selects the per-element dtype and defaults to bf16. ``tile``
+    selects TT-Metal-constructible physical dimensions and defaults to 32x32;
+    the compiler validates target-specific fill support. The downstream
+    ``ttl.store`` determines the output DFB used during lowering; no output
+    operand is required.
     """
     from ttl.dialects import ttcore
+    from .dtype_utils import normalize_tile_dimensions
     from .dtype_utils import tensor_dtype_to_ttcore_datatype
 
     fill_val = _get_constant_float(value)
@@ -902,6 +949,9 @@ def fill(value, *, shape, dtype=None) -> TensorBlock:
         raise ValueError("fill requires a non-empty shape")
     if any(s <= 0 for s in shape_list):
         raise ValueError(f"fill shape must be all-positive, got {tuple(shape_list)}")
+    tile_dimensions = normalize_tile_dimensions(
+        tuple(_get_constant_int(dimension) for dimension in tile)
+    )
 
     if dtype is None:
         ttcore_dtype = ttcore.DataType.BFloat16
@@ -911,7 +961,7 @@ def fill(value, *, shape, dtype=None) -> TensorBlock:
         ttcore_dtype = tensor_dtype_to_ttcore_datatype(dtype)
 
     ctx = Context.current
-    tile_type = ttcore.ir.TileType.get(ctx, 32, 32, ttcore_dtype)
+    tile_type = ttcore.ir.TileType.get(ctx, *tile_dimensions, ttcore_dtype)
     result_type = RankedTensorType.get(shape_list, tile_type)
     value_attr = FloatAttr.get(F32Type.get(ctx), fill_val)
     return ttl.fill(result_type, value_attr)
@@ -1036,7 +1086,6 @@ def exp(
     scale_attr = None if scale_f is None else FloatAttr.get(F32Type.get(ctx), scale_f)
 
     return ttl.exp(
-        input.type,
         input,
         approx=approx_attr,
         scale=scale_attr,
