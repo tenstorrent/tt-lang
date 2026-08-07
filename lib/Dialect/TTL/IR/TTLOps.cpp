@@ -1800,9 +1800,6 @@ mlir::LogicalResult mlir::tt::ttl::TileRowNormalizationBlockOp::verify() {
   if (getHasGamma() && *gammaTileType != *outputTileType) {
     return emitOpError("gamma tile type must match the output tile type");
   }
-  if (!getHasGamma() && getRepeatGamma()) {
-    return emitOpError("repeat_gamma requires has_gamma");
-  }
   if (!getHasGamma() && getGamma() != getInput()) {
     return emitOpError("gamma must equal input when has_gamma is false");
   }
@@ -1837,12 +1834,8 @@ mlir::LogicalResult mlir::tt::ttl::TileRowNormalizationBlockOp::verify() {
         "input and output must have the same one-row tensor shape");
   }
   if (getHasGamma()) {
-    bool gammaShapeMatches =
-        getRepeatGamma()
-            ? gammaTensor.getDimSize(0) == 1 && gammaTensor.getDimSize(1) == 1
-            : gammaTensor.getShape() == outputTensor.getShape();
-    if (!gammaShapeMatches) {
-      return emitOpError("gamma tensor shape does not match gamma mode");
+    if (gammaTensor.getShape() != outputTensor.getShape()) {
+      return emitOpError("gamma tensor shape must match the output shape");
     }
   }
   return success();

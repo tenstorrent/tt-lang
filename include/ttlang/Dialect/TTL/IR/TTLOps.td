@@ -1332,8 +1332,7 @@ def TTL_TileRowNormalizationBlockOp :
   let description = [{
     Computes `input * rsqrt(sum(input * input) * scale + epsilon)` for one
     rank-2 row of tiles. The optional gamma tensor is multiplied into the
-    normalized result before publication. When `repeat_gamma` is true, gamma
-    contains one tile that is reused for every output tile.
+    normalized result before publication.
 
     `dst_index` identifies the first output slot. The operation initially
     stores the inverse RMS scalar there, moves it to a compute source register,
@@ -1352,13 +1351,12 @@ def TTL_TileRowNormalizationBlockOp :
                        F32Attr:$scale,
                        F32Attr:$epsilon,
                        BoolAttr:$has_gamma,
-                       BoolAttr:$repeat_gamma,
                        Index:$dst_index);
   let results = (outs TTL_TileOrTensor:$result);
   let assemblyFormat = [{
     $input `,` $gamma `,` $output
     `scale` `=` $scale `epsilon` `=` $epsilon
-    `has_gamma` `=` $has_gamma `repeat_gamma` `=` $repeat_gamma
+    `has_gamma` `=` $has_gamma
     `into` `dst` `[` $dst_index `]` attr-dict `:`
     type($input) `,` type($gamma) `,` type($output) `->` type($result)
   }];

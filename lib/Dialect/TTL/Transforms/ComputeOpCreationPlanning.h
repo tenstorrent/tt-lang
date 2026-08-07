@@ -146,7 +146,6 @@ enum class ComputeOpCreationRecipe {
 enum class RowNormalizationGammaMode {
   None,
   FullRow,
-  RepeatedPage,
 };
 
 /// Exact operation state retained for row-normalization plan application.

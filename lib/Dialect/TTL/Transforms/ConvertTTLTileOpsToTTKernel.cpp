@@ -1059,7 +1059,7 @@ struct TTLTileRowNormalizationBlockToTTKernel
         rewriter, loc, *inputDfb, *gammaDfb, *outputDfb,
         static_cast<std::uint64_t>(inputType.getNumElements()),
         op.getScaleAttr().getValue(), op.getEpsilonAttr().getValue(),
-        op.getHasGamma(), op.getRepeatGamma(), resultType.getDataType());
+        op.getHasGamma(), resultType.getDataType());
     rewriter.replaceOp(op, adaptor.getInput());
     return success();
   }

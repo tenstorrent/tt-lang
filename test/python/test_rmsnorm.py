@@ -111,58 +111,10 @@ def make_rmsnorm_kernel(tile_height, num_tiles, gamma_mode):
 
         return rmsnorm_kernel
 
-    @ttl.operation(grid=(1, 1))
-    def rmsnorm_kernel(input_tensor, gamma_tensor, output_tensor):
-        input_dfb = ttl.make_dataflow_buffer_like(
-            input_tensor, shape=(1, num_tiles), block_count=2
-        )
-        gamma_dfb = ttl.make_dataflow_buffer_like(
-            gamma_tensor, shape=(1, 1), block_count=2
-        )
-        output_dfb = ttl.make_dataflow_buffer_like(
-            output_tensor, shape=(1, num_tiles), block_count=2
-        )
-
-        @ttl.compute()
-        def compute():
-            with (
-                input_dfb.wait() as input_block,
-                gamma_dfb.wait() as gamma_block,
-                output_dfb.reserve() as output_block,
-            ):
-                squared = input_block * input_block
-                reduced = ttl.math.reduce_sum(squared, dims=[0, 1])
-                mean_square = reduced * scale
-                biased = mean_square + ttl.block.fill(
-                    EPSILON,
-                    shape=mean_square.shape,
-                    tile=(tile_height, TILE_WIDTH),
-                )
-                inverse_rms = ttl.math.rsqrt(biased)
-                scalar = ttl.block.broadcast(
-                    inverse_rms, dims=[0, 1], shape=input_block.shape
-                )
-                repeated_gamma = ttl.block.broadcast(
-                    gamma_block, dims=[1], shape=input_block.shape
-                )
-                output_block.store(input_block * scalar * repeated_gamma)
-
-        @ttl.datamovement()
-        def dm_read():
-            with input_dfb.reserve() as input_block:
-                ttl.copy(input_tensor[0:1, 0:num_tiles], input_block).wait()
-            with gamma_dfb.reserve() as gamma_block:
-                ttl.copy(gamma_tensor[0:1, 0:1], gamma_block).wait()
-
-        @ttl.datamovement()
-        def dm_write():
-            with output_dfb.wait() as output_block:
-                ttl.copy(output_block, output_tensor[0:1, 0:num_tiles]).wait()
-
-    return rmsnorm_kernel
+    raise ValueError(f"unsupported gamma mode: {gamma_mode}")
 
 
-GAMMA_MODES = ("none", "full", "repeated")
+GAMMA_MODES = ("none", "full")
 ROW_CASES = ((16, 1, 512), (16, 3, 1536), (32, 7, 7168))
 RMSNORM_KERNELS = {
     (tile_height, num_tiles, gamma_mode): make_rmsnorm_kernel(
@@ -197,8 +149,7 @@ def test_rmsnorm(device, tile_height, num_tiles, width, gamma_mode):
     shape = (tile_height, num_tiles * TILE_WIDTH)
     assert shape[0] * shape[1] == width
     input_torch = torch.randn(shape, dtype=torch.bfloat16)
-    gamma_shape = (tile_height, TILE_WIDTH) if gamma_mode == "repeated" else shape
-    gamma_torch = torch.randn(gamma_shape, dtype=torch.bfloat16)
+    gamma_torch = torch.randn(shape, dtype=torch.bfloat16)
     output_torch = torch.zeros(shape, dtype=torch.bfloat16)
 
     input_tensor = to_dram_with_tile(input_torch, device, tile_height)
@@ -214,7 +165,5 @@ def test_rmsnorm(device, tile_height, num_tiles, width, gamma_mode):
     expected = input_float * torch.rsqrt(input_float.square().mean() + EPSILON)
     if gamma_mode == "full":
         expected = expected * gamma_torch.float()
-    elif gamma_mode == "repeated":
-        expected = expected * gamma_torch.float().repeat(1, num_tiles)
     assert_pcc(expected, result, threshold=0.999)
     assert_allclose(result, expected, rtol=0.05, atol=1.0)

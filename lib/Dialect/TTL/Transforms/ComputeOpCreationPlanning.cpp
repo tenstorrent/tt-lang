@@ -888,7 +888,6 @@ matchRowNormalization(Operation *source) {
   MulOp normalized = finalMultiply;
   Value gamma;
   RowNormalizationGammaMode gammaMode = RowNormalizationGammaMode::None;
-  BlockBroadcastOp gammaBroadcast;
 
   Value input;
   BlockBroadcastOp scalarBroadcast;
@@ -918,27 +917,10 @@ matchRowNormalization(Operation *source) {
       return std::nullopt;
     }
 
-    if (getAttachedCB(gamma)) {
-      gammaMode = RowNormalizationGammaMode::FullRow;
-    } else {
-      gammaBroadcast = gamma.getDefiningOp<BlockBroadcastOp>();
-      if (!gammaBroadcast || !hasOnlyUser(gamma, source) ||
-          !getAttachedCB(gammaBroadcast.getInput())) {
-        return std::nullopt;
-      }
-      auto gammaInputType =
-          dyn_cast<RankedTensorType>(gammaBroadcast.getInput().getType());
-      llvm::SmallDenseSet<int64_t> gammaDimensions =
-          normalizeDimsToSet(gammaBroadcast.getDims(), 2);
-      if (!gammaInputType || !gammaInputType.hasStaticShape() ||
-          gammaInputType.getRank() != 2 || gammaInputType.getDimSize(0) != 1 ||
-          gammaInputType.getDimSize(1) != 1 || gammaDimensions.size() != 1 ||
-          !gammaDimensions.contains(1)) {
-        return std::nullopt;
-      }
-      gamma = gammaBroadcast.getInput();
-      gammaMode = RowNormalizationGammaMode::RepeatedPage;
+    if (!getAttachedCB(gamma)) {
+      return std::nullopt;
     }
+    gammaMode = RowNormalizationGammaMode::FullRow;
   }
 
   auto inputType = dyn_cast<RankedTensorType>(input.getType());
@@ -972,12 +954,7 @@ matchRowNormalization(Operation *source) {
         gammaType.getElementType() != inputType.getElementType()) {
       return std::nullopt;
     }
-    if (gammaMode == RowNormalizationGammaMode::FullRow &&
-        gammaType != resultType) {
-      return std::nullopt;
-    }
-    if (gammaMode == RowNormalizationGammaMode::RepeatedPage &&
-        gammaBroadcast.getResult().getType() != resultType) {
+    if (gammaType != resultType) {
       return std::nullopt;
     }
   }
@@ -1011,9 +988,6 @@ matchRowNormalization(Operation *source) {
   recordOperation(inverseRms);
   recordOperation(scalarBroadcast);
   recordOperation(normalized);
-  if (gammaBroadcast) {
-    recordOperation(gammaBroadcast);
-  }
   if (source != normalized.getOperation()) {
     recordOperation(source);
   }
@@ -1041,11 +1015,6 @@ static LogicalResult buildOperationSpecificPlan(ComputeOpCreationPlan &plan,
     if (plan.rowNormalization->gammaMode ==
         RowNormalizationGammaMode::FullRow) {
       plan.iteration.inputMaps.push_back(identity);
-    } else if (plan.rowNormalization->gammaMode ==
-               RowNormalizationGammaMode::RepeatedPage) {
-      AffineExpr zero = getAffineConstantExpr(0, context);
-      plan.iteration.inputMaps.push_back(
-          AffineMap::get(2, 0, {zero, zero}, context));
     }
     plan.iteration.outputMap = identity;
     plan.iteration.iteratorTypes.assign(2, utils::IteratorType::parallel);
