@@ -363,6 +363,24 @@ def TTLLowerComputePipelines
   let dependentDialects = [];
 }
 
+def TTLLowerSourceScalarScopes
+    : Pass<"ttl-lower-source-scalar-scopes", "::mlir::func::FuncOp"> {
+  let summary = "Inline target-independent source-scalar resource scopes";
+  let description = [{
+    Replaces each `ttl.source_scalar_scope` with the tensor operations recorded
+    in its ordered producer and consumer stages. The producer's full-scalar
+    result maps to the consumer region's source-scalar block argument, and the
+    scope results map to the consumer's yielded values.
+
+    This lowering preserves the retained-scalar schedule marker on result
+    producers so the existing target compute creation remains unchanged. All
+    scope and stage structure is analyzed before any operation is cloned or
+    erased.
+  }];
+
+  let dependentDialects = [];
+}
+
 def TTLProducerComputeCreation
     : Pass<"ttl-create-producer-compute", "::mlir::func::FuncOp"> {
   let summary = "Create ttl.compute ops before compiler DFB materialization";
