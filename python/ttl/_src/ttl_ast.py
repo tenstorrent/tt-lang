@@ -686,6 +686,12 @@ class TTLGenericCompiler(TTCompilerBase):
         for node in ast.walk(statement):
             if isinstance(node, ast.ExceptHandler) and node.name is not None:
                 assigned_names.add(node.name)
+            elif isinstance(node, ast.alias) and node.name != "*":
+                assigned_names.add(node.asname or node.name.split(".")[0])
+            elif isinstance(
+                node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            ):
+                assigned_names.add(node.name)
             elif isinstance(node, (ast.Global, ast.Nonlocal)):
                 assigned_names.update(node.names)
         return assigned_names
@@ -821,6 +827,13 @@ class TTLGenericCompiler(TTCompilerBase):
                 loop_assigned_names.update(
                     self._plan_pipe_identity_statements(
                         statement.body, loop_bindings, branch_selections
+                    )
+                )
+                for target_name in loop_assigned_names:
+                    loop_bindings[target_name] = _NotPipeIdentity()
+                loop_assigned_names.update(
+                    self._plan_pipe_identity_statements(
+                        statement.orelse, loop_bindings, branch_selections
                     )
                 )
                 for target_name in loop_assigned_names:

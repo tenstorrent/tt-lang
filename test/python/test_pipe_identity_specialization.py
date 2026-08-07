@@ -148,6 +148,12 @@ def callback(pipe):
         "source_device_index: int = 1",
         "del source_device_index",
         "try:\n    pass\nexcept Exception as source_device_index:\n    pass",
+        "import math as source_device_index",
+        "from math import pi as source_device_index",
+        "def source_device_index():\n    pass",
+        "async def source_device_index():\n    pass",
+        "class source_device_index:\n    pass",
+        "for unused in range(1):\n    pass\nelse:\n    source_device_index = 1",
     ],
 )
 def test_callback_plan_discards_identity_after_reassignment(mutation):
