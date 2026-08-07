@@ -421,8 +421,9 @@ def TTLAssignDST
     - Assigns dst_index SSA operands to tile math operations
     - Checks capacity and emits diagnostics on overflow
 
-    DST operations must be directly contained in the `ttl.compute` body. The
-    pass diagnoses nested DST operations before modifying IR.
+    Nested DST operations are preserved when their destination and source
+    indices are resolved and they do not require copy insertion. The pass
+    diagnoses unsupported nested operations before modifying IR.
   }];
 
   let options = [

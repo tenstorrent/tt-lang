@@ -5,7 +5,6 @@
 #ifndef TTLANG_DIALECT_TTL_TRANSFORMS_COMPUTEKERNELCONFIGANALYSIS_H
 #define TTLANG_DIALECT_TTL_TRANSFORMS_COMPUTEKERNELCONFIGANALYSIS_H
 
-#include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TileExecution.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -66,7 +65,6 @@ public:
   static FailureOr<std::unique_ptr<KernelTargetEnvironment>>
   get(func::FuncOp function);
 
-  virtual std::optional<ttcore::Arch> getArch() const = 0;
   virtual bool supportsDestinationElementWidth(
       TilePrimitive primitive, Type elementType,
       DestinationElementWidth destinationElementWidth) const = 0;

@@ -71,22 +71,6 @@ constexpr int64_t kPlaceholderIndex = std::numeric_limits<int64_t>::max();
 
 static bool isTileValue(Value v) { return isa<ttcore::TileType>(v.getType()); }
 
-static LogicalResult verifyDSTOperationPlacement(ComputeOp computeOp) {
-  Block *body = &computeOp.getRegion().front();
-  WalkResult result = computeOp.getRegion().walk([&](Operation *operation) {
-    if (operation->getBlock() == body ||
-        !dyn_cast<DstAccessOpInterface>(operation)) {
-      return WalkResult::advance();
-    }
-
-    operation->emitOpError()
-        << "nested DST operations are not supported by ttl-assign-dst; "
-           "expected the operation directly in the ttl.compute body";
-    return WalkResult::interrupt();
-  });
-  return success(!result.wasInterrupted());
-}
-
 //===----------------------------------------------------------------------===//
 // Equivalence Classes for Merged Intervals
 //===----------------------------------------------------------------------===//
@@ -142,19 +126,16 @@ static FailureOr<CopyTileOp> createCopyTileForArg(
 // Phase 1: Copy Insertion
 //===----------------------------------------------------------------------===//
 
-/// Return distinct DST consumers of `value` in block order.
-static SmallVector<Operation *> getSortedConsumers(Value v) {
+/// Return distinct DST consumers of `value`.
+static SmallVector<Operation *> getDSTConsumers(Value value) {
   llvm::SmallSetVector<Operation *, 4> consumers;
-  for (OpOperand &use : v.getUses()) {
+  for (OpOperand &use : value.getUses()) {
     if (!isDstInput(use) || isDstInputMaterializedByOperation(use)) {
       continue;
     }
     consumers.insert(use.getOwner());
   }
-  SmallVector<Operation *> sortedConsumers = llvm::to_vector(consumers);
-  llvm::sort(sortedConsumers,
-             [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
-  return sortedConsumers;
+  return llvm::to_vector(consumers);
 }
 
 /// Check if any consumer is an in-place operation (overwrites DST input).
@@ -162,6 +143,93 @@ static bool hasInPlaceConsumer(ArrayRef<Operation *> consumers) {
   return llvm::any_of(consumers, [](Operation *op) {
     return op->hasTrait<TTLInPlaceOpTrait>();
   });
+}
+
+static LogicalResult verifyNestedDSTRequirements(ComputeOp computeOp) {
+  Block *body = &computeOp.getRegion().front();
+  WalkResult result = computeOp.getRegion().walk([&](Operation *operation) {
+    if (operation->getBlock() == body ||
+        !isa<DstAccessOpInterface>(operation)) {
+      return WalkResult::advance();
+    }
+
+    auto emitUnsupported = [&](StringRef requirement) {
+      operation->emitOpError()
+          << "nested DST operation requires " << requirement
+          << " by ttl-assign-dst; expected the operation directly in the "
+             "ttl.compute body";
+      return WalkResult::interrupt();
+    };
+
+    if (operation->hasAttr(kDstPlaceholderAttrName)) {
+      return emitUnsupported("destination assignment");
+    }
+    if (std::optional<Value> dstIndex = getTileOpDstIndex(operation)) {
+      std::optional<int64_t> constantIndex = getConstantIntValue(*dstIndex);
+      if (constantIndex && *constantIndex == kUnassignedDstIndex) {
+        return emitUnsupported("destination assignment");
+      }
+    }
+    if (auto copyTile = dyn_cast<CopyTileOp>(operation);
+        copyTile && copyTile.getSrcIndices().empty()) {
+      return emitUnsupported("source-index materialization");
+    }
+    if (auto tileStore = dyn_cast<TileStoreOp>(operation);
+        tileStore && tileStore.getIndices().empty()) {
+      return emitUnsupported("store-index materialization");
+    }
+
+    for (OpOperand &operand : operation->getOpOperands()) {
+      if (!isDstInput(operand) || isDstInputMaterializedByOperation(operand)) {
+        continue;
+      }
+      bool usesDestinationAsFirstInput =
+          operation->hasTrait<TTLInPlaceOpTrait>() &&
+          operand.getOperandNumber() == 0;
+      if (!usesDestinationAsFirstInput &&
+          failed(getDstFootprint(operand.get()))) {
+        return emitUnsupported("source DST index resolution");
+      }
+    }
+    return WalkResult::advance();
+  });
+  if (result.wasInterrupted()) {
+    return failure();
+  }
+
+  auto verifyValue = [&](Value value) -> LogicalResult {
+    if (!isTileValue(value)) {
+      return success();
+    }
+    SmallVector<Operation *> consumers = getDSTConsumers(value);
+    if (consumers.size() <= 1 || !hasInPlaceConsumer(consumers)) {
+      return success();
+    }
+    auto nestedConsumer = llvm::find_if(consumers, [&](Operation *consumer) {
+      return consumer->getBlock() != body;
+    });
+    if (nestedConsumer == consumers.end()) {
+      return success();
+    }
+    (*nestedConsumer)->emitOpError()
+        << "nested DST consumer requires copy insertion by ttl-assign-dst; "
+           "expected the operation directly in the ttl.compute body";
+    return failure();
+  };
+
+  for (Value blockArgument : body->getArguments()) {
+    if (failed(verifyValue(blockArgument))) {
+      return failure();
+    }
+  }
+  for (Operation &operation : *body) {
+    for (Value result : operation.getResults()) {
+      if (failed(verifyValue(result))) {
+        return failure();
+      }
+    }
+  }
+  return success();
 }
 
 /// Phase 1: Insert copy operations for multi-consumer values where any
@@ -184,7 +252,7 @@ static void insertCopiesForMultiConsumerValues(ComputeOp computeOp,
       return;
     }
 
-    auto consumers = getSortedConsumers(v);
+    auto consumers = getDSTConsumers(v);
     if (consumers.size() <= 1) {
       return; // No multi-consumer
     }
@@ -193,6 +261,15 @@ static void insertCopiesForMultiConsumerValues(ComputeOp computeOp,
     if (!hasInPlaceConsumer(consumers)) {
       return; // No in-place consumers - no copies needed
     }
+
+    assert(llvm::all_of(consumers,
+                        [&](Operation *consumer) {
+                          return consumer->getBlock() == body;
+                        }) &&
+           "nested consumer requiring copy insertion passed preflight");
+    llvm::sort(consumers, [](Operation *lhs, Operation *rhs) {
+      return lhs->isBeforeInBlock(rhs);
+    });
 
     valuesToCopy.push_back({v, consumers});
   };
@@ -561,17 +638,17 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
 
-    WalkResult placementResult = funcOp.walk([&](ComputeOp computeOp) {
-      return failed(verifyDSTOperationPlacement(computeOp))
-                 ? WalkResult::interrupt()
-                 : WalkResult::advance();
-    });
-    if (placementResult.wasInterrupted()) {
+    if (failed(verifyTileExecutionSemantics(funcOp))) {
       signalPassFailure();
       return;
     }
 
-    if (failed(verifyTileExecutionSemantics(funcOp))) {
+    WalkResult requirementsResult = funcOp.walk([&](ComputeOp computeOp) {
+      return failed(verifyNestedDSTRequirements(computeOp))
+                 ? WalkResult::interrupt()
+                 : WalkResult::advance();
+    });
+    if (requirementsResult.wasInterrupted()) {
       signalPassFailure();
       return;
     }

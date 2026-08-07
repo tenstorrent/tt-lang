@@ -676,8 +676,6 @@ getWormholeBlackholeSupportedDFBConfigurations(TilePrimitive primitive,
 class UnspecifiedKernelTargetEnvironment final
     : public KernelTargetEnvironment {
 public:
-  std::optional<ttcore::Arch> getArch() const override { return std::nullopt; }
-
   bool supportsDestinationElementWidth(
       TilePrimitive, Type elementType,
       DestinationElementWidth destinationElementWidth) const override {
@@ -701,8 +699,6 @@ public:
 class WormholeBlackholeKernelTargetEnvironment
     : public KernelTargetEnvironment {
 public:
-  std::optional<ttcore::Arch> getArch() const final { return arch; }
-
   bool supportsDestinationElementWidth(
       TilePrimitive primitive, Type elementType,
       DestinationElementWidth destinationElementWidth) const final {
@@ -729,21 +725,11 @@ public:
     return getWormholeBlackholeSupportedDFBConfigurations(primitive, route,
                                                           elementType);
   }
-
-protected:
-  explicit WormholeBlackholeKernelTargetEnvironment(ttcore::Arch arch)
-      : arch(arch) {}
-
-private:
-  ttcore::Arch arch;
 };
 
 class WormholeKernelTargetEnvironment final
     : public WormholeBlackholeKernelTargetEnvironment {
 public:
-  WormholeKernelTargetEnvironment()
-      : WormholeBlackholeKernelTargetEnvironment(ttcore::Arch::WormholeB0) {}
-
   FullFp32AccumulationSupport
   getFullFp32AccumulationSupport(FullFp32AccumulationKind kind) const override {
     return {kind == FullFp32AccumulationKind::Matmul, std::nullopt};
@@ -753,9 +739,6 @@ public:
 class BlackholeKernelTargetEnvironment final
     : public WormholeBlackholeKernelTargetEnvironment {
 public:
-  BlackholeKernelTargetEnvironment()
-      : WormholeBlackholeKernelTargetEnvironment(ttcore::Arch::Blackhole) {}
-
   FullFp32AccumulationSupport
   getFullFp32AccumulationSupport(FullFp32AccumulationKind kind) const override {
     if (kind == FullFp32AccumulationKind::ReduceRow) {
@@ -999,6 +982,7 @@ FailureOr<KernelConfigPlan> resolveKernelConfig(
   }
 
   bool preferFp32 = false;
+  SmallVector<Operation *> supportedFullFp32Preferences;
   for (const FullFp32AccumulationUse &use :
        requirements.fullFp32AccumulationUses) {
     bool isMatmul = use.kind == FullFp32AccumulationKind::Matmul;
@@ -1011,6 +995,7 @@ FailureOr<KernelConfigPlan> resolveKernelConfig(
         target.getFullFp32AccumulationSupport(use.kind);
     if (support.supported) {
       preferFp32 = true;
+      supportedFullFp32Preferences.push_back(use.operation);
       continue;
     }
     if (support.fallbackWarning) {
@@ -1028,6 +1013,14 @@ FailureOr<KernelConfigPlan> resolveKernelConfig(
   if ((preferFp32 || !hasDestinationWidth(DestinationElementWidth::Bits16)) &&
       hasDestinationWidth(DestinationElementWidth::Bits32)) {
     destinationElementWidth = DestinationElementWidth::Bits32;
+  }
+  if (preferFp32 &&
+      destinationElementWidth == DestinationElementWidth::Bits16) {
+    for (Operation *operation : supportedFullFp32Preferences) {
+      operation->emitWarning()
+          << "preferred full-fp32 accumulation is unavailable in the resolved "
+             "kernel configuration; using non-full-fp32 lowering";
+    }
   }
   auto selectedCandidate = llvm::find_if(
       resolvedState.constraints.candidates,

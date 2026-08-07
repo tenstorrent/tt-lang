@@ -3,8 +3,9 @@
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 module {
-  // Reject a DST operation nested in a conditional before modifying IR.
-  func.func @nested_dst_operation(
+  // Reject copy insertion whose consumers span the compute body and a nested
+  // region before sorting operations from different blocks.
+  func.func @cross_region_copy_insertion(
       %input: tensor<1x1x!ttcore.tile<32x32, f32>>,
       %output: tensor<1x1x!ttcore.tile<32x32, f32>>, %condition: i1)
       -> tensor<1x1x!ttcore.tile<32x32, f32>>
@@ -37,8 +38,13 @@ module {
       %column = ttl.iter_index 1 : index
       ttl.tile_store %output_tile, %reserved_output[%row, %column] from dst[%c0]
           : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+      %direct = ttl.tile_exp %input_tile into dst[%c0]
+          : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+      ttl.tile_store %direct, %reserved_output[%row, %column] from dst[%c0]
+          : !ttcore.tile<32x32, f32>,
+            tensor<1x1x!ttcore.tile<32x32, f32>>
       scf.if %condition {
-        // expected-error @below {{'ttl.tile_exp' op nested DST operations are not supported by ttl-assign-dst; expected the operation directly in the ttl.compute body}}
+        // expected-error @below {{'ttl.tile_exp' op nested DST consumer requires copy insertion by ttl-assign-dst; expected the operation directly in the ttl.compute body}}
         %nested = ttl.tile_exp %input_tile into dst[%c0]
             : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
         ttl.tile_store %nested, %reserved_output[%row, %column] from dst[%c0]
@@ -56,8 +62,9 @@ module {
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 module {
-  // Reject a DST operation nested in a loop before modifying IR.
-  func.func @nested_dst_operation_in_loop(
+  // Reject a nested non-in-place operation whose source DST indices are not
+  // represented by its operands.
+  func.func @nested_unresolved_source_dst_indices(
       %input: tensor<1x1x!ttcore.tile<32x32, f32>>,
       %output: tensor<1x1x!ttcore.tile<32x32, f32>>)
       -> tensor<1x1x!ttcore.tile<32x32, f32>>
@@ -92,9 +99,11 @@ module {
       ttl.tile_store %output_tile, %reserved_output[%row, %column] from dst[%c0]
           : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
       scf.for %iteration = %c0 to %c1 step %c1 {
-        // expected-error @below {{'ttl.tile_exp' op nested DST operations are not supported by ttl-assign-dst; expected the operation directly in the ttl.compute body}}
-        %nested = ttl.tile_exp %input_tile into dst[%c0]
-            : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+        // expected-error @below {{'ttl.tile_add' op nested DST operation requires source DST index resolution by ttl-assign-dst; expected the operation directly in the ttl.compute body}}
+        %nested = ttl.tile_add %input_tile, %output_tile into dst[%c0]
+            {ttl.tile_execution_strategy = #ttl.tile_execution_strategy<sfpu>}
+            : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32>
+            -> !ttcore.tile<32x32, f32>
         ttl.tile_store %nested, %reserved_output[%row, %column] from dst[%c0]
             : !ttcore.tile<32x32, f32>,
               tensor<1x1x!ttcore.tile<32x32, f32>>
