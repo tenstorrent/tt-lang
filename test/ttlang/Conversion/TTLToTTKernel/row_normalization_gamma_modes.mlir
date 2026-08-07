@@ -11,8 +11,8 @@ module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
 // CHECK-NEXT:  ttkernel.tile_regs_acquire
 // CHECK-NEXT:  ttkernel.experimental_mul_reduce_block(%[[NO_GAMMA_INPUT]], %[[NO_GAMMA_INPUT]], %[[NO_GAMMA_OUTPUT]]) num_tiles = 3
 // CHECK-NEXT:  ttkernel.experimental_add_rsqrt(%[[SCALAR:[a-zA-Z0-9_]+]])
-// CHECK-NEXT:  ttkernel.experimental_source_scalar_acquire(%[[SCALAR]], %[[SCALAR]])
-// CHECK-NEXT:  ttkernel.experimental_source_scalar_apply_mul(%[[NO_GAMMA_INPUT]]) num_tiles = 3 dtype = <bf16>
+// CHECK-NEXT:  ttkernel.experimental_source_scalar_acquire(%[[SCALAR]])
+// CHECK-NEXT:  ttkernel.experimental_source_scalar_apply_mul(%[[NO_GAMMA_INPUT]], %[[SCALAR]]) num_tiles = 3 dtype = <bf16>
 // CHECK-NEXT:  ttkernel.experimental_source_scalar_release
 // CHECK-NOT:   ttkernel.binary_dest_reuse_tiles
 // CHECK-NEXT:  ttkernel.tile_regs_commit

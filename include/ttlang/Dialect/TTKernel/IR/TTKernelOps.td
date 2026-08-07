@@ -626,17 +626,16 @@ def TTKernel_ExperimentalSourceScalarAcquireOp :
   let summary = "Acquire one DST scalar as an immutable compute source";
   let description = [{
     Moves the scalar at `scalar_dst_index` to a compute source register and
-    clears the acquired DST section. Subsequent source-scalar consumers write
-    results beginning at `output_dst_index` until
+    clears the acquired DST section. Each subsequent source-scalar consumer
+    selects its own output DST index until
     `ttkernel.experimental_source_scalar_release` ends the lifetime.
 
     The DST register buffer must be acquired before this operation. Source
     scalar lifetimes cannot overlap.
   }];
-  let arguments = (ins IndexLike:$scalar_dst_index,
-                       IndexLike:$output_dst_index);
+  let arguments = (ins IndexLike:$scalar_dst_index);
   let assemblyFormat = [{
-    `(` $scalar_dst_index `,` $output_dst_index `)`
+    `(` $scalar_dst_index `)`
     attr-dict `:` functional-type(operands, results)
   }];
   let hasVerifier = 1;
@@ -648,16 +647,17 @@ def TTKernel_ExperimentalSourceScalarApplyMulOp :
   let description = [{
     Multiplies `num_tiles` contiguous input tiles by the source scalar acquired
     by `ttkernel.experimental_source_scalar_acquire`. Results occupy contiguous
-    DST slots beginning at the acquired output index.
+    DST slots beginning at `output_dst_index`.
 
     The operation leaves the scalar live for later consumers. It does not
     commit, wait, release, or pack the results.
   }];
   let arguments = (ins TTKernel_CB:$input_cb,
+                       IndexLike:$output_dst_index,
                        I64Attr:$num_tiles,
                        TTCore_DataTypeAttr:$dtype);
   let assemblyFormat = [{
-    `(` $input_cb `)`
+    `(` $input_cb `,` $output_dst_index `)`
     `num_tiles` `=` $num_tiles `dtype` `=` $dtype
     attr-dict `:` functional-type(operands, results)
   }];

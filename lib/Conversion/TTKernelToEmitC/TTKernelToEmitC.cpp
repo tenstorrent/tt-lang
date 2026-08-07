@@ -2679,7 +2679,7 @@ public:
                   ConversionPatternRewriter &rewriter) const final {
     rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
         op, TypeRange(), "experimental::source_scalar_acquire",
-        ValueRange{adaptor.getScalarDstIndex(), adaptor.getOutputDstIndex()});
+        ValueRange{adaptor.getScalarDstIndex()});
     return success();
   }
 };
@@ -2704,7 +2704,8 @@ public:
                                 ValueRange{adaptor.getInputCb()});
     rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
         op, TypeRange(), "experimental::source_scalar_mul", ArrayAttr(),
-        templateArguments, ValueRange{adaptor.getInputCb()});
+        templateArguments,
+        ValueRange{adaptor.getInputCb(), adaptor.getOutputDstIndex()});
     return success();
   }
 };

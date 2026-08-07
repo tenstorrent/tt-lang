@@ -132,8 +132,7 @@ inline void reuseScalarAsSource() {
 }
 
 template <DstSync dstSync, bool fp32DestAccEnabled>
-inline void acquireScalar(std::uint32_t scalarDstIndex,
-                          std::uint32_t outputDstIndex) {
+inline void acquireScalar(std::uint32_t scalarDstIndex) {
   ckernel::math::set_dst_write_addr<DstTileShape::Tile32x32,
                                     UnpackDestination::SrcRegs>(scalarDstIndex);
   reuseScalarAsSource();
@@ -145,6 +144,9 @@ inline void acquireScalar(std::uint32_t scalarDstIndex,
     TT_ZEROACC(ckernel::p_zeroacc::CLR_HALF, fp32DestAccEnabled, 0, ADDR_MOD_1,
                dest_offset_id);
   }
+}
+
+inline void selectOutput(std::uint32_t outputDstIndex) {
   ckernel::math::set_dst_write_addr<DstTileShape::Tile32x32,
                                     UnpackDestination::SrcRegs>(outputDstIndex);
 }
@@ -295,14 +297,14 @@ ALWI void initializeScalarMultiply(std::uint32_t inputDfb) {
   MATH((initializeMathForOperand<numTiles, MATH_FIDELITY>(inputDfb)));
 }
 
-inline void acquireSourceScalar(std::uint32_t scalarDstIndex,
-                                std::uint32_t outputDstIndex) {
-  MATH((acquireScalar<DST_SYNC_MODE, DST_ACCUM_MODE>(scalarDstIndex,
-                                                     outputDstIndex)));
+inline void acquireSourceScalar(std::uint32_t scalarDstIndex) {
+  MATH((acquireScalar<DST_SYNC_MODE, DST_ACCUM_MODE>(scalarDstIndex)));
 }
 
 template <std::uint32_t numTiles>
-ALWI void multiplyBySourceScalar(std::uint32_t inputDfb) {
+ALWI void multiplyBySourceScalar(std::uint32_t inputDfb,
+                                 std::uint32_t outputDstIndex) {
+  MATH((selectOutput(outputDstIndex)));
   UNPACK((llk_unpack_A<ckernel::BroadcastType::SCALAR, true,
                        ckernel::EltwiseBinaryReuseDestType::DEST_TO_SRCB>(
       inputDfb, 0)));
@@ -329,14 +331,15 @@ ALWI void source_scalar_mul_init(std::uint32_t inputDfb) {
   source_scalar_detail::initializeScalarMultiply<numTiles>(inputDfb);
 }
 
-ALWI void source_scalar_acquire(std::uint32_t scalarDstIndex,
-                                std::uint32_t outputDstIndex) {
-  source_scalar_detail::acquireSourceScalar(scalarDstIndex, outputDstIndex);
+ALWI void source_scalar_acquire(std::uint32_t scalarDstIndex) {
+  source_scalar_detail::acquireSourceScalar(scalarDstIndex);
 }
 
 template <std::uint32_t numTiles>
-ALWI void source_scalar_mul(std::uint32_t inputDfb) {
-  source_scalar_detail::multiplyBySourceScalar<numTiles>(inputDfb);
+ALWI void source_scalar_mul(std::uint32_t inputDfb,
+                            std::uint32_t outputDstIndex) {
+  source_scalar_detail::multiplyBySourceScalar<numTiles>(inputDfb,
+                                                         outputDstIndex);
 }
 
 ALWI void source_scalar_release() {
@@ -347,8 +350,8 @@ template <std::uint32_t numTiles>
 ALWI void source_scalar_mul(std::uint32_t inputDfb,
                             std::uint32_t scalarDstIndex,
                             std::uint32_t outputDstIndex) {
-  source_scalar_acquire(scalarDstIndex, outputDstIndex);
-  source_scalar_mul<numTiles>(inputDfb);
+  source_scalar_acquire(scalarDstIndex);
+  source_scalar_mul<numTiles>(inputDfb, outputDstIndex);
   source_scalar_release();
 }
 
