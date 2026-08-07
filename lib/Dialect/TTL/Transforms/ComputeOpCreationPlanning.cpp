@@ -801,14 +801,16 @@ classifyFusionSemantic(Operation *operation) {
   return failure();
 }
 
-static LogicalResult buildSingleStageFusionGraph(ComputeOpCreationPlan &plan,
-                                                 std::string &failureReason) {
+static FailureOr<FusionGraphPlan>
+buildSingleStageFusionGraph(const FusionTraceResult &trace,
+                            const ComputeIterationPlan &iteration,
+                            std::string &failureReason) {
   FusionGraphPlan graph;
   DenseMap<Operation *, unsigned> nodeIndices;
-  DenseSet<Operation *> graphOperations(plan.trace.opsInOrder.begin(),
-                                        plan.trace.opsInOrder.end());
+  DenseSet<Operation *> graphOperations(trace.opsInOrder.begin(),
+                                        trace.opsInOrder.end());
 
-  for (Operation *operation : plan.trace.opsInOrder) {
+  for (Operation *operation : trace.opsInOrder) {
     if (operation->getNumResults() != 1) {
       failureReason = "fused operation must have exactly one result";
       return failure();
@@ -870,13 +872,12 @@ static LogicalResult buildSingleStageFusionGraph(ComputeOpCreationPlan &plan,
   }
 
   FusionStagePlan stage;
-  stage.iteration = plan.iteration;
+  stage.iteration = iteration;
   for (unsigned nodeIndex = 0; nodeIndex < graph.nodes.size(); ++nodeIndex) {
     stage.nodes.push_back(nodeIndex);
   }
   graph.stages.push_back(std::move(stage));
-  plan.fusionGraph = std::move(graph);
-  return success();
+  return graph;
 }
 
 struct MatchedRowNormalization {
@@ -1136,7 +1137,13 @@ static LogicalResult buildOperationSpecificPlan(ComputeOpCreationPlan &plan,
     if (failed(buildFusedOperationPlans(plan, failureReason))) {
       return failure();
     }
-    return buildSingleStageFusionGraph(plan, failureReason);
+    FailureOr<FusionGraphPlan> graph =
+        buildSingleStageFusionGraph(plan.trace, plan.iteration, failureReason);
+    if (failed(graph)) {
+      return failure();
+    }
+    plan.fusionGraph = std::move(*graph);
+    return success();
   }
 
   if (isa<BlockBroadcastOp>(plan.source)) {

@@ -55,6 +55,8 @@ static StringRef stringifyRecipe(ComputeOpCreationRecipe recipe) {
     return "fused";
   case ComputeOpCreationRecipe::RowNormalization:
     return "row_normalization";
+  case ComputeOpCreationRecipe::FusionGraph:
+    return "fusion-graph";
   case ComputeOpCreationRecipe::Elide:
     return "elide";
   }

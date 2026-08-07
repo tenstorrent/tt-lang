@@ -140,6 +140,9 @@ enum class ComputeOpCreationRecipe {
   /// Emit one capacity-fitting row-normalization block schedule.
   RowNormalization,
 
+  /// Emit the target schedule selected for an immutable fusion graph.
+  FusionGraph,
+
   /// Replace an identity operation with its input without creating a
   /// `ComputeOp`.
   Elide,
@@ -261,12 +264,27 @@ struct FusionResourcePlan {
   std::uint64_t intermediateDFBBytes = 0;
 };
 
+/// Target operation selected after semantic graph legality succeeds.
+enum class FusionTargetScheduleKind {
+  MultiplyFullScalarReduction,
+};
+
+/// Exact target inputs and static schedule parameters for graph application.
+struct FusionTargetSchedulePlan {
+  FusionTargetScheduleKind kind =
+      FusionTargetScheduleKind::MultiplyFullScalarReduction;
+  SmallVector<unsigned, 2> inputIndices;
+  std::uint32_t numTiles = 0;
+  ttcore::DataType dataType = ttcore::DataType::BFloat16;
+};
+
 /// Immutable semantic graph used by target schedule selection.
 struct FusionGraphPlan {
   SmallVector<FusionNodePlan> nodes;
   SmallVector<FusionEdgePlan> edges;
   SmallVector<FusionStagePlan, 1> stages;
   std::optional<FusionResourcePlan> resources;
+  std::optional<FusionTargetSchedulePlan> targetSchedule;
 };
 
 /// Placement of instrumentation copied into a created `ComputeOp` body.
