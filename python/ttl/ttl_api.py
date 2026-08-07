@@ -2042,7 +2042,7 @@ def _lower_program_to_kernel(
                 "cse",
             ]
         pipeline_passes += [
-            "func.func(convert-ttkernel-to-emitc)",
+            "convert-ttkernel-to-emitc",
             "symbol-dce",
         ]
 

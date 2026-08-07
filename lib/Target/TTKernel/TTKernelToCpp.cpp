@@ -28,10 +28,12 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Target/Cpp/CppEmitter.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/raw_ostream.h"
@@ -328,6 +330,27 @@ cloneEntryIntoStandaloneModule(func::FuncOp origEntry, ThreadType threadType) {
 
   OpBuilder builder(ctx);
 
+  SymbolTableCollection symbolTables;
+  llvm::DenseSet<emitc::GlobalOp> seenGlobals;
+  SmallVector<emitc::GlobalOp> referencedGlobals;
+  bool missingGlobal = false;
+  origEntry.walk([&](emitc::GetGlobalOp getGlobalOp) {
+    emitc::GlobalOp global =
+        symbolTables.lookupNearestSymbolFrom<emitc::GlobalOp>(
+            getGlobalOp, getGlobalOp.getNameAttr());
+    if (!global) {
+      getGlobalOp.emitOpError("does not reference an emitc.global");
+      missingGlobal = true;
+      return;
+    }
+    if (seenGlobals.insert(global).second) {
+      referencedGlobals.push_back(global);
+    }
+  });
+  if (missingGlobal) {
+    return failure();
+  }
+
   // We will wrap everything in a standalone module op so that we can run the
   // translation.
   auto moduleWrapper = builder.create<mlir::ModuleOp>(loc, "module_wrapper");
@@ -336,6 +359,10 @@ cloneEntryIntoStandaloneModule(func::FuncOp origEntry, ThreadType threadType) {
   Region *kernelMainRegion;
   {
     ScopedModuleHelper threadConfigHelper(&builder, loc, region, threadType);
+
+    for (emitc::GlobalOp global : referencedGlobals) {
+      builder.clone(*global);
+    }
 
     // Clone 'region' into a new func op nested inside 'moduleWrapper':
     auto kernelMain = builder.create<func::FuncOp>(

@@ -10,12 +10,10 @@
 
 namespace experimental {
 
-template <std::size_t BitsPerValue, std::uint64_t... PackedWords>
-FORCE_INLINE std::size_t constant_table_lookup(std::size_t index) {
+template <std::size_t BitsPerValue>
+FORCE_INLINE std::size_t
+constant_table_lookup(std::size_t index, const std::uint64_t *packed_table) {
   static_assert(BitsPerValue > 0 && BitsPerValue < 64);
-  // Packed words limit generated source size without allocating a runtime
-  // table in kernel stack storage.
-  static constexpr std::uint64_t packed_table[] = {PackedWords...};
   constexpr std::uint64_t value_mask = (std::uint64_t{1} << BitsPerValue) - 1;
   const std::size_t bit_offset = index * BitsPerValue;
   const std::size_t word_index = bit_offset / 64;

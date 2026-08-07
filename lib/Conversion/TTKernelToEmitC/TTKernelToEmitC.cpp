@@ -19,6 +19,7 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LLVM.h"
@@ -30,6 +31,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/bit.h"
+#include "llvm/Support/xxhash.h"
 
 #include <array>
 #include <functional>
@@ -1205,6 +1207,64 @@ static SmallVector<uint64_t> packConstantTable(ArrayRef<int64_t> values,
   return packedWords;
 }
 
+static std::string getConstantTableSymbolName(ArrayRef<uint64_t> packedWords) {
+  SmallString<128> serializedWords;
+  for (uint64_t packedWord : packedWords) {
+    serializedWords += llvm::utohexstr(packedWord);
+    serializedWords += '_';
+  }
+  return "__ttlang_constant_table_" +
+         llvm::utohexstr(llvm::xxh3_64bits(StringRef(serializedWords)));
+}
+
+static emitc::GlobalOp
+getOrCreateConstantTableGlobal(ConversionPatternRewriter &rewriter,
+                               Operation *anchor,
+                               ArrayRef<uint64_t> packedWords) {
+  // Static storage keeps device-compiler parsing independent of table length;
+  // a template argument for every packed word scales parsing with the table.
+  ModuleOp module = anchor->getParentOfType<ModuleOp>();
+  assert(module && "constant table lookup must be nested in a module");
+
+  IntegerType wordType = IntegerType::get(
+      rewriter.getContext(), 64, IntegerType::SignednessSemantics::Unsigned);
+  auto arrayType = emitc::ArrayType::get(
+      {static_cast<int64_t>(packedWords.size())}, wordType);
+  std::string initializerText = "{";
+  for (auto [wordIndex, packedWord] : llvm::enumerate(packedWords)) {
+    if (wordIndex != 0) {
+      initializerText += ", ";
+    }
+    initializerText += "0x" + llvm::utohexstr(packedWord) + "ULL";
+  }
+  initializerText += "}";
+  auto initializer =
+      emitc::OpaqueAttr::get(rewriter.getContext(), initializerText);
+
+  std::string baseName = getConstantTableSymbolName(packedWords);
+  std::string symbolName = baseName;
+  for (unsigned suffix = 0;; ++suffix) {
+    Operation *existing = SymbolTable::lookupSymbolIn(module, symbolName);
+    if (!existing) {
+      break;
+    }
+    auto global = dyn_cast<emitc::GlobalOp>(existing);
+    if (global && global.getType() == arrayType &&
+        global.getInitialValueAttr() == initializer) {
+      return global;
+    }
+    symbolName = baseName + "_" + std::to_string(suffix + 1);
+  }
+
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPointToStart(module.getBody());
+  return emitc::GlobalOp::create(rewriter, anchor->getLoc(), symbolName,
+                                 arrayType, initializer,
+                                 /*externSpecifier=*/false,
+                                 /*staticSpecifier=*/true,
+                                 /*constSpecifier=*/true);
+}
+
 class TTKernelConstantTableLookupOpRewriter
     : public OpConversionPattern<ttkernel::ConstantTableLookupOp> {
 public:
@@ -1235,20 +1295,20 @@ public:
     SmallVector<uint64_t> packedWords =
         packConstantTable(op.getValues(), bitsPerValue);
 
+    emitc::GlobalOp table =
+        getOrCreateConstantTableGlobal(rewriter, op, packedWords);
+    auto tableRef = emitc::GetGlobalOp::create(
+        rewriter, op.getLoc(), table.getType(), table.getSymName());
+
     SmallVector<Attribute> templateArgs;
-    templateArgs.reserve(packedWords.size() + 1);
+    templateArgs.reserve(1);
     templateArgs.push_back(
         emitc::OpaqueAttr::get(op.getContext(), std::to_string(bitsPerValue)));
-    // Hex literals preserve the packed bits without signed conversion and use
-    // fewer source characters than one decimal argument per table element.
-    for (uint64_t packedWord : packedWords) {
-      templateArgs.push_back(emitc::OpaqueAttr::get(
-          op.getContext(), "0x" + llvm::utohexstr(packedWord) + "ULL"));
-    }
     auto call = emitc::CallOpaqueOp::create(
         rewriter, op.getLoc(), resultType,
         "experimental::constant_table_lookup", ArrayAttr(),
-        rewriter.getArrayAttr(templateArgs), adaptor.getIndex());
+        rewriter.getArrayAttr(templateArgs),
+        ValueRange{adaptor.getIndex(), tableRef});
     rewriter.replaceOp(op, call.getResult(0));
     return success();
   }
@@ -2818,12 +2878,20 @@ public:
       ConvertTTKernelToEmitCPass>::ConvertTTKernelToEmitCBase;
 
   void runOnOperation() final {
-    func::FuncOp funcOp = getOperation();
+    ModuleOp module = getOperation();
     TTKernelToEmitCConversionState state;
-    ConversionPlan config(funcOp.getContext(), state);
-    if (failed(visit(funcOp, config))) {
-      signalPassFailure();
-      return;
+    ConversionPlan config(module.getContext(), state);
+    for (func::FuncOp funcOp : module.getOps<func::FuncOp>()) {
+      if (!funcOp->hasAttr(ttkernel::ThreadTypeAttr::name)) {
+        continue;
+      }
+      if (mayHaveRuntimeCBArgs(funcOp)) {
+        assignRuntimeCBArgIndices(funcOp);
+      }
+      if (failed(applyFullConversion(funcOp, config.target, config.patterns))) {
+        signalPassFailure();
+        return;
+      }
     }
   }
 
@@ -2849,17 +2917,6 @@ public:
     TTKernelToEmitCTypeConverter typeConverter;
     FrozenRewritePatternSet patterns;
   };
-
-  static LogicalResult visit(func::FuncOp funcOp, ConversionPlan &config) {
-    if (!funcOp->hasAttr(ttkernel::ThreadTypeAttr::name)) {
-      return success();
-    }
-
-    if (mayHaveRuntimeCBArgs(funcOp)) {
-      assignRuntimeCBArgIndices(funcOp);
-    }
-    return applyFullConversion(funcOp, config.target, config.patterns);
-  }
 
   static FrozenRewritePatternSet
   buildPatterns(MLIRContext *context,
