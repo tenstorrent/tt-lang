@@ -10,7 +10,7 @@ from typing import Any, List, Optional, Set
 
 from ttl.pykernel._src.kernel_ast import TTCompilerBase
 from ttl.pykernel._src.utils import _get_type_str
-from ttl.dialects import arith, func, ttcore, ttkernel
+from ttl.dialects import arith, func, scf, ttcore, ttkernel
 from ttl.ir import *
 
 from ..constants import DEFAULT_TILE_SIZE
@@ -166,6 +166,53 @@ class CompilerContext:
     tiled: bool
 
 
+@dataclass(frozen=True)
+class _NotPipeIdentity:
+    """The expression does not depend on graph callback identity metadata."""
+
+
+@dataclass(frozen=True)
+class _PipeIdentityValue:
+    """A Python value derived from graph callback identity metadata."""
+
+    value: object
+
+
+@dataclass(frozen=True)
+class _PipeIdentityPredicate:
+    """A callback identity predicate evaluated for one graph edge."""
+
+    value: bool
+
+
+@dataclass(frozen=True)
+class _InvalidPipeIdentity:
+    """An invalid expression that depends on graph callback identity metadata."""
+
+    message: str
+
+
+@dataclass(frozen=True)
+class _PipeIdentityBranchSelection:
+    """A compile-time branch decision for one callback `if` statement."""
+
+    node: ast.If
+    value: bool
+
+
+@dataclass(frozen=True)
+class _PipeIdentityPlan:
+    """Immutable branch decisions for one materialized graph edge."""
+
+    branch_selections: tuple[_PipeIdentityBranchSelection, ...]
+
+    def predicate_for(self, node):
+        for selection in self.branch_selections:
+            if selection.node is node:
+                return _PipeIdentityPredicate(selection.value)
+        return _NotPipeIdentity()
+
+
 class TTLGenericCompiler(TTCompilerBase):
     """Compiler that generates TTL dialect ops from Python AST."""
 
@@ -220,6 +267,8 @@ class TTLGenericCompiler(TTCompilerBase):
         # Include paths collected from ttl.call_extern_func invocations,
         # forwarded to the JIT compiler as -I flags.
         self._opaque_include_paths: list[str] = []
+
+        self._pipe_identity_plans: list[_PipeIdentityPlan] = []
 
     def _set_var(self, var_name, value):
         # Capture direct PipeNet variable names so the verifier can render
@@ -541,14 +590,111 @@ class TTLGenericCompiler(TTCompilerBase):
             return
         return super().visit_For(node)
 
+    def _device_domain_attr(self, domain):
+        components = [
+            ttl.DeviceDomainComponentAttr.get(
+                self.ctx, component.name, list(component.extent)
+            )
+            for component in domain.components
+        ]
+        return ttl.DeviceDomainAttr.get(self.ctx, components)
+
+    def _device_ref_attr(self, device_ref):
+        return ttl.DeviceRefAttr.get(
+            self.ctx, [list(coordinate) for coordinate in device_ref.coordinates]
+        )
+
+    def _device_range_attr(self, device_range):
+        return ttl.DeviceRangeAttr.get(
+            self.ctx,
+            self._device_ref_attr(device_range.lo),
+            self._device_ref_attr(device_range.hi),
+        )
+
+    def _device_transfer_attr(self, domain, edge):
+        from ..domains import DeviceRange
+
+        source = self._device_ref_attr(edge.source)
+        if isinstance(edge.destination, DeviceRange):
+            edge_attr = ttl.TransferEdgeAttr.get(
+                self.ctx,
+                source,
+                destination_range=self._device_range_attr(edge.destination),
+            )
+        else:
+            edge_attr = ttl.TransferEdgeAttr.get(
+                self.ctx,
+                source,
+                destination=self._device_ref_attr(edge.destination),
+            )
+        return ttl.DeviceTransferAttr.get(
+            self.ctx, self._device_domain_attr(domain), edge_attr
+        )
+
+    def _materialize_graph_pipes(self, pipenet):
+        from ..pipe import Pipe
+
+        pipes = []
+        grid_cols, grid_rows = self.context.grid
+        for pipe_net_id, edge in zip(pipenet._graph_pipe_net_ids, pipenet._graph_edges):
+            for node_y in range(grid_rows):
+                for node_x in range(grid_cols):
+                    pipe = Pipe(src=(node_x, node_y), dst=(node_x, node_y))
+                    pipe.pipe_net_id = pipe_net_id
+                    pipe._device_domain = pipenet.graph.domain
+                    pipe._device_edge = edge
+                    pipes.append(pipe)
+        return pipes
+
+    def _emit_device_endpoint_predicate(self, domain, endpoint):
+        from ..domains import DeviceRange
+
+        domain_attr = self._device_domain_attr(domain)
+        if isinstance(endpoint, DeviceRange):
+            return ttl.is_device_in_range(
+                domain_attr, self._device_range_attr(endpoint)
+            )
+        return ttl.is_device(domain_attr, self._device_ref_attr(endpoint))
+
+    def _emit_graph_role_predicate(self, pipenet, role):
+        predicates = []
+        for edge in pipenet._graph_edges:
+            if role in ("is_src", "is_active"):
+                predicates.append(
+                    self._emit_device_endpoint_predicate(
+                        pipenet.graph.domain, edge.source
+                    )
+                )
+            if role in ("is_dst", "is_active"):
+                predicates.append(
+                    self._emit_device_endpoint_predicate(
+                        pipenet.graph.domain, edge.destination
+                    )
+                )
+        assert predicates, "graph PipeNet must contain at least one edge"
+        result = predicates[0]
+        for predicate in predicates[1:]:
+            result = arith.ori(result, predicate)
+        return result
+
     def visit_Assign(self, node):
-        """Handle tuple unpacking for TTL functions like core(dims=2)."""
+        """Bind host metadata, preserve pipe identity, or unpack tuples."""
         if self._bind_pipe_net_metadata_assignment(node):
             return
         if self._bind_static_metadata_alias_assignment(node):
             return
+        identity_value = self._evaluate_pipe_identity_expression(node.value)
+        if isinstance(identity_value, _InvalidPipeIdentity):
+            self._raise_error(node.value, identity_value.message)
 
         if not isinstance(node.targets[0], ast.Tuple):
+            if isinstance(identity_value, _PipeIdentityValue) and all(
+                isinstance(target, ast.Name) for target in node.targets
+            ):
+                for target in node.targets:
+                    self._set_var(target.id, identity_value.value)
+                return
+
             return super().visit_Assign(node)
 
         value = self.visit(node.value)
@@ -699,6 +845,12 @@ class TTLGenericCompiler(TTCompilerBase):
                 if self._is_pipenet_predicate_call(node):
                     return self._handle_pipenet_predicate(node)
 
+                if self._is_device_domain_predicate_call(node):
+                    return self._handle_device_domain_predicate(node)
+
+                if self._is_device_domain_current_index_call(node):
+                    return self._handle_device_domain_current_index(node)
+
                 return self._try_emit_auto_signposts(
                     node, lambda: super(TTLGenericCompiler, self).visit_Call(node)
                 )
@@ -834,6 +986,8 @@ class TTLGenericCompiler(TTCompilerBase):
         )
         if node.args or node.keywords:
             self._raise_error(node, f"PipeNet.{method}() takes no arguments")
+        if pipenet.is_graph:
+            return self._emit_graph_role_predicate(pipenet, method)
         op = self._PIPENET_PREDICATE_OPS[method](
             pipe_net_id=IntegerAttr.get(
                 IntegerType.get_signless(64, self.ctx), pipenet.pipe_net_id
@@ -841,9 +995,193 @@ class TTLGenericCompiler(TTCompilerBase):
         )
         return op
 
+    def _device_domain_call_receiver(self, node):
+        if not isinstance(node.func, ast.Attribute):
+            return None
+        if not isinstance(node.func.value, ast.Name):
+            return None
+        domain_name = node.func.value.id
+        table = self._var_exists(domain_name)
+        domain = table[domain_name] if table else self.fn_globals.get(domain_name)
+        from ..domains import DeviceDomain
+
+        return domain if isinstance(domain, DeviceDomain) else None
+
+    def _is_device_domain_predicate_call(self, node):
+        return (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "is_current"
+            and self._device_domain_call_receiver(node) is not None
+        )
+
+    def _is_device_domain_current_index_call(self, node):
+        return (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "current_index"
+            and self._device_domain_call_receiver(node) is not None
+        )
+
+    def _static_device_reference(self, node):
+        from ..domains import DeviceRef
+
+        if isinstance(node, ast.Name):
+            value = self.fn_globals.get(node.id)
+            if isinstance(value, (DeviceRef, int, tuple, list)):
+                return value
+        try:
+            return ast.literal_eval(node)
+        except (ValueError, TypeError, SyntaxError):
+            self._raise_error(
+                node,
+                "DeviceDomain.is_current() requires a static device reference",
+            )
+
+    def _handle_device_domain_predicate(self, node):
+        domain = self._device_domain_call_receiver(node)
+        assert domain is not None
+        if len(node.args) != 1 or node.keywords:
+            self._raise_error(
+                node, "DeviceDomain.is_current() requires one device reference"
+            )
+        device = domain.device_ref(self._static_device_reference(node.args[0]))
+        return self._emit_device_endpoint_predicate(domain, device)
+
+    def _handle_device_domain_current_index(self, node):
+        domain = self._device_domain_call_receiver(node)
+        assert domain is not None
+        if node.args or node.keywords:
+            self._raise_error(
+                node, "DeviceDomain.current_index() does not accept arguments"
+            )
+        return ttl.current_device_index(self._device_domain_attr(domain))
+
+    @staticmethod
+    def _pipe_identity_assigned_names(target):
+        if isinstance(target, ast.Name):
+            return {target.id}
+        if isinstance(target, (ast.Tuple, ast.List)):
+            names = set()
+            for element in target.elts:
+                names.update(TTLGenericCompiler._pipe_identity_assigned_names(element))
+            return names
+        if isinstance(target, ast.Starred):
+            return TTLGenericCompiler._pipe_identity_assigned_names(target.value)
+        return set()
+
+    def _plan_pipe_identity_statements(
+        self, statements, identity_bindings, branch_selections
+    ):
+        """Plan identity branches using straight-line callback semantics."""
+        assigned_names = set()
+        for statement in statements:
+            if isinstance(statement, ast.Assign):
+                identity_value = self._evaluate_pipe_identity_expression(
+                    statement.value, identity_bindings
+                )
+                if isinstance(identity_value, _InvalidPipeIdentity):
+                    self._raise_error(statement.value, identity_value.message)
+
+                target_names = set()
+                for target in statement.targets:
+                    target_names.update(self._pipe_identity_assigned_names(target))
+                assigned_names.update(target_names)
+                if isinstance(identity_value, _PipeIdentityValue) and all(
+                    isinstance(target, ast.Name) for target in statement.targets
+                ):
+                    for target_name in target_names:
+                        identity_bindings[target_name] = identity_value
+                else:
+                    for target_name in target_names:
+                        identity_bindings[target_name] = _NotPipeIdentity()
+                continue
+
+            if isinstance(statement, ast.If):
+                identity_predicate = self._evaluate_pipe_identity_predicate(
+                    statement.test, identity_bindings
+                )
+                if isinstance(identity_predicate, _InvalidPipeIdentity):
+                    self._raise_error(statement.test, identity_predicate.message)
+                if isinstance(identity_predicate, _PipeIdentityPredicate):
+                    branch_selections.append(
+                        _PipeIdentityBranchSelection(
+                            statement, identity_predicate.value
+                        )
+                    )
+                    selected_body = (
+                        statement.body if identity_predicate.value else statement.orelse
+                    )
+                    assigned_names.update(
+                        self._plan_pipe_identity_statements(
+                            selected_body, identity_bindings, branch_selections
+                        )
+                    )
+                    continue
+
+                body_bindings = dict(identity_bindings)
+                else_bindings = dict(identity_bindings)
+                runtime_assigned_names = self._plan_pipe_identity_statements(
+                    statement.body, body_bindings, branch_selections
+                )
+                runtime_assigned_names.update(
+                    self._plan_pipe_identity_statements(
+                        statement.orelse, else_bindings, branch_selections
+                    )
+                )
+                for target_name in runtime_assigned_names:
+                    identity_bindings[target_name] = _NotPipeIdentity()
+                assigned_names.update(runtime_assigned_names)
+                continue
+
+            if isinstance(statement, ast.With):
+                for item in statement.items:
+                    if item.optional_vars is None:
+                        continue
+                    for target_name in self._pipe_identity_assigned_names(
+                        item.optional_vars
+                    ):
+                        identity_bindings[target_name] = _NotPipeIdentity()
+                        assigned_names.add(target_name)
+                assigned_names.update(
+                    self._plan_pipe_identity_statements(
+                        statement.body, identity_bindings, branch_selections
+                    )
+                )
+                continue
+
+            if isinstance(statement, ast.For):
+                loop_bindings = dict(identity_bindings)
+                loop_assigned_names = self._pipe_identity_assigned_names(
+                    statement.target
+                )
+                for target_name in loop_assigned_names:
+                    loop_bindings[target_name] = _NotPipeIdentity()
+                loop_assigned_names.update(
+                    self._plan_pipe_identity_statements(
+                        statement.body, loop_bindings, branch_selections
+                    )
+                )
+                for target_name in loop_assigned_names:
+                    identity_bindings[target_name] = _NotPipeIdentity()
+                assigned_names.update(loop_assigned_names)
+
+        return assigned_names
+
+    def _plan_pipe_identity_callback(
+        self, callback_body, pipe_param_name, pipe_identity
+    ):
+        branch_selections = []
+        identity_bindings = {
+            pipe_param_name: _PipeIdentityValue(pipe_identity),
+        }
+        if isinstance(callback_body, list):
+            self._plan_pipe_identity_statements(
+                callback_body, identity_bindings, branch_selections
+            )
+        return _PipeIdentityPlan(tuple(branch_selections))
+
     def _handle_pipenet_callback(self, node):
         """Handle pipenet.if_src(callback) or pipenet.if_dst(callback) calls."""
-        from ..pipe import PipeNet
+        from ..pipe import DstPipeIdentity, PipeNet, SrcPipeIdentity
 
         method_name = node.func.attr
         pipenet = self._resolve_pipe_net_receiver(
@@ -899,6 +1237,79 @@ class TTLGenericCompiler(TTCompilerBase):
         # is always non-empty.
         pipe_net_name = self._resolve_pipe_net_name(pipenet)
 
+        decl_file = getattr(pipenet, "_source_file", None)
+        decl_line = getattr(pipenet, "_source_line", None)
+
+        if pipenet.is_graph:
+            materialized_pipes = self._materialize_graph_pipes(pipenet)
+            planned_callbacks = []
+            # Diagnose every materialized edge before callback emission so an
+            # invalid later edge cannot leave a partially emitted sequence.
+            for pipe in materialized_pipes:
+                pipe_identity = (
+                    SrcPipeIdentity(pipe)
+                    if method_name == "if_src"
+                    else DstPipeIdentity(pipe)
+                )
+                planned_callbacks.append(
+                    (
+                        pipe,
+                        pipe_identity,
+                        self._plan_pipe_identity_callback(
+                            callback_body, pipe_param_name, pipe_identity
+                        ),
+                    )
+                )
+
+            for pipe, pipe_identity, identity_plan in planned_callbacks:
+                # Emit the pipe MLIR value
+                pipe_val = self._emit_pipe_from_capture(
+                    pipe,
+                    pipe_net_name=pipe_net_name,
+                    source_file=decl_file,
+                    source_line=decl_line,
+                )
+                pipe._mlir_value = pipe_val
+
+                def emit_node_callback():
+                    if method_name == "if_src":
+                        op = ttl.if_src(pipe_val)
+                    else:
+                        op = ttl.if_dst(pipe_val)
+
+                    block = Block.create_at_start(op.body)
+                    with InsertionPoint(block):
+                        self.symbol_tables.append({})
+                        self.symbol_tables[-1][pipe_param_name] = pipe_val
+                        self.symbol_tables[-1][
+                            f"__{pipe_param_name}_identity"
+                        ] = pipe_identity
+                        self._pipe_identity_plans.append(identity_plan)
+                        try:
+                            if isinstance(callback_body, list):
+                                for stmt in callback_body:
+                                    self.visit(stmt)
+                            else:
+                                self.visit(callback_body)
+                        finally:
+                            self._pipe_identity_plans.pop()
+                            self.symbol_tables.pop()
+                        ttl.yield_([])
+
+                endpoint = (
+                    pipe._device_edge.source
+                    if method_name == "if_src"
+                    else pipe._device_edge.destination
+                )
+                predicate = self._emit_device_endpoint_predicate(
+                    pipe._device_domain, endpoint
+                )
+                device_if = scf.IfOp(predicate)
+                with InsertionPoint(device_if.then_block):
+                    emit_node_callback()
+                    scf.YieldOp([])
+            return None
+
         pipe_records = [
             ttl.PipeRecordAttr.get(
                 self.ctx,
@@ -918,8 +1329,6 @@ class TTLGenericCompiler(TTCompilerBase):
             pipe_net_name=pipe_net_name,
             pipes=pipe_records,
         )
-        decl_file = getattr(pipenet, "_source_file", None)
-        decl_line = getattr(pipenet, "_source_line", None)
         loc = None
         if decl_file and decl_line is not None:
             loc = Location.file(decl_file, decl_line, 1, self.ctx)
@@ -958,6 +1367,81 @@ class TTLGenericCompiler(TTCompilerBase):
                 if isinstance(e, TTLangCompileError):
                     raise
                 self._raise_error(node, str(e))
+
+    def _evaluate_pipe_identity_predicate(self, node, identity_bindings=None):
+        """Evaluate an identity comparison before emitting callback IR."""
+        if not isinstance(node, ast.Compare):
+            return _NotPipeIdentity()
+
+        operands = [node.left, *node.comparators]
+        evaluated_operands = [
+            self._evaluate_pipe_identity_expression(operand, identity_bindings)
+            for operand in operands
+        ]
+        for evaluated_operand in evaluated_operands:
+            if isinstance(evaluated_operand, _InvalidPipeIdentity):
+                return evaluated_operand
+
+        has_identity_operand = any(
+            isinstance(evaluated_operand, _PipeIdentityValue)
+            for evaluated_operand in evaluated_operands
+        )
+        if not has_identity_operand:
+            return _NotPipeIdentity()
+        if len(node.ops) != 1 or len(node.comparators) != 1:
+            return _InvalidPipeIdentity(
+                "pipe callback identity predicates require a single comparison"
+            )
+
+        resolved_operands = []
+        for operand, evaluated_operand in zip(operands, evaluated_operands):
+            if isinstance(evaluated_operand, _PipeIdentityValue):
+                resolved_operands.append(evaluated_operand.value)
+                continue
+            try:
+                resolved_operands.append(ast.literal_eval(operand))
+            except (ValueError, TypeError, SyntaxError):
+                return _InvalidPipeIdentity(
+                    "pipe callback identity comparisons require a literal "
+                    "non-identity operand"
+                )
+
+        lhs, rhs = resolved_operands
+        operation = node.ops[0]
+        try:
+            if isinstance(operation, ast.Eq):
+                return _PipeIdentityPredicate(lhs == rhs)
+            if isinstance(operation, ast.NotEq):
+                return _PipeIdentityPredicate(lhs != rhs)
+            if isinstance(operation, ast.Lt):
+                return _PipeIdentityPredicate(lhs < rhs)
+            if isinstance(operation, ast.LtE):
+                return _PipeIdentityPredicate(lhs <= rhs)
+            if isinstance(operation, ast.Gt):
+                return _PipeIdentityPredicate(lhs > rhs)
+            if isinstance(operation, ast.GtE):
+                return _PipeIdentityPredicate(lhs >= rhs)
+        except TypeError as error:
+            return _InvalidPipeIdentity(
+                f"invalid pipe callback identity comparison: {error}"
+            )
+
+        return _InvalidPipeIdentity(
+            "pipe callback identity comparison operator "
+            f"{type(operation).__name__} is not supported"
+        )
+
+    def visit_If(self, node):
+        if self._pipe_identity_plans:
+            planned_predicate = self._pipe_identity_plans[-1].predicate_for(node)
+            if isinstance(planned_predicate, _PipeIdentityPredicate):
+                selected_body = node.body if planned_predicate.value else node.orelse
+                self._reject_unsupported_language_constructs(selected_body)
+                for statement in selected_body:
+                    self.visit(statement)
+                return
+
+        return super().visit_If(node)
 
     def visit_Compare(self, node):
         """Attach the comparison's AST source location to the emitted
@@ -1105,6 +1589,15 @@ class TTLGenericCompiler(TTCompilerBase):
         """Override to set location context and catch errors for method calls."""
         with self._loc_for_node(node):
             try:
+                identity_value = self._evaluate_pipe_identity_expression(node)
+                if isinstance(identity_value, _InvalidPipeIdentity):
+                    self._raise_error(node, identity_value.message)
+                if isinstance(identity_value, _PipeIdentityValue):
+                    if func_args or kwargs:
+                        self._raise_error(
+                            node, "Pipe callback identity properties are not callable"
+                        )
+                    return identity_value.value
                 # Handle ttl.XXX and ttl.math.XXX attribute access
                 if (
                     self._is_ttl_module_access(node)
@@ -1185,8 +1678,58 @@ class TTLGenericCompiler(TTCompilerBase):
                     raise
                 self._raise_error(node, str(e))
 
+    def _evaluate_pipe_identity_expression(self, node, identity_bindings=None):
+        if isinstance(node, ast.Name):
+            if identity_bindings is not None:
+                return identity_bindings.get(node.id, _NotPipeIdentity())
+
+            identity_name = f"__{node.id}_identity"
+            table = self._var_exists(identity_name)
+            if table:
+                return _PipeIdentityValue(table[identity_name])
+            return _NotPipeIdentity()
+
+        if isinstance(node, ast.Attribute):
+            receiver = self._evaluate_pipe_identity_expression(
+                node.value, identity_bindings
+            )
+            if not isinstance(receiver, _PipeIdentityValue):
+                return receiver
+            try:
+                return _PipeIdentityValue(getattr(receiver.value, node.attr))
+            except AttributeError:
+                return _InvalidPipeIdentity(
+                    f"pipe callback identity has no property {node.attr!r}"
+                )
+            except (TypeError, ValueError) as error:
+                return _InvalidPipeIdentity(
+                    f"invalid pipe callback identity property {node.attr!r}: {error}"
+                )
+
+        if isinstance(node, ast.Subscript):
+            receiver = self._evaluate_pipe_identity_expression(
+                node.value, identity_bindings
+            )
+            if not isinstance(receiver, _PipeIdentityValue):
+                return receiver
+            try:
+                index = ast.literal_eval(node.slice)
+                return _PipeIdentityValue(receiver.value[index])
+            except (IndexError, KeyError, TypeError, ValueError, SyntaxError) as error:
+                return _InvalidPipeIdentity(
+                    f"invalid pipe callback identity subscript: {error}"
+                )
+
+        return _NotPipeIdentity()
+
     def visit_Subscript(self, node):
         """Handle tensor[row, col] or tensor[r0:r1, c0:c1] indexing."""
+        identity_value = self._evaluate_pipe_identity_expression(node)
+        if isinstance(identity_value, _InvalidPipeIdentity):
+            self._raise_error(node, identity_value.message)
+        if isinstance(identity_value, _PipeIdentityValue):
+            return identity_value.value
+
         tbl = self._var_exists(node.value.id)
         if not tbl:
             self._raise_error(node, f"Unknown variable: {node.value.id}")
@@ -1207,6 +1750,8 @@ class TTLGenericCompiler(TTCompilerBase):
         if isinstance(node, ast.Constant):
             return arith.ConstantOp(IndexType.get(self.ctx), node.value)
         val = self.visit(node)
+        if isinstance(val, int) and not isinstance(val, bool):
+            return arith.ConstantOp(IndexType.get(self.ctx), val)
         if isinstance(val.type, IndexType):
             return val
         return arith.IndexCastOp(IndexType.get(self.ctx), val)
@@ -1351,6 +1896,10 @@ class TTLGenericCompiler(TTCompilerBase):
             kwargs["pipe_net_name"] = pipe_net_name
         if pipe.is_collective:
             kwargs["is_collective"] = True
+        if hasattr(pipe, "_device_edge"):
+            kwargs["device_transfer"] = self._device_transfer_attr(
+                pipe._device_domain, pipe._device_edge
+            )
         if source_file and source_line is not None:
             kwargs["loc"] = Location.file(source_file, source_line, 1, self.ctx)
         return ttl.create_pipe(
@@ -1421,6 +1970,7 @@ class TTLGenericCompiler(TTCompilerBase):
 
             # Prepopulate other captures (non-tensor).
             from ..dataflow_buffer import DataflowBuffer
+            from ..domains import DeviceDomain
             from ..pipe import Pipe, PipeNet, _iter_pipe_nets_in_value
 
             for name, val in self.captures.items():
@@ -1453,6 +2003,8 @@ class TTLGenericCompiler(TTCompilerBase):
                     sem_addr = _get_ttnn_global_semaphore_address(val)
                     i32_ty = IntegerType.get_signless(32, self.ctx)
                     self._set_var(name, arith.ConstantOp(i32_ty, sem_addr).result)
+                elif isinstance(val, DeviceDomain):
+                    self._set_var(name, val)
                 elif any(_iter_pipe_nets_in_value(val, set())):
                     self._set_var(name, val)
                 else:
@@ -1466,12 +2018,13 @@ class TTLGenericCompiler(TTCompilerBase):
             # Captures take precedence: a closure cell shadows a global
             # of the same name.
             for name, val in self.fn_globals.items():
-                if not isinstance(val, PipeNet):
+                if not isinstance(val, (PipeNet, DeviceDomain)):
                     continue
                 if any(name in tbl for tbl in self.symbol_tables):
                     continue
                 self._set_var(name, val)
-                self._pipe_net_names.setdefault(id(val), name)
+                if isinstance(val, PipeNet):
+                    self._pipe_net_names.setdefault(id(val), name)
 
             for target in node.body:
                 self.visit(target)
@@ -1769,11 +2322,17 @@ class TTLGenericCompiler(TTCompilerBase):
             if pipenet is None:
                 return
             role = 0 if func.attr == "if_src" else 1
-            item = (pipenet.pipe_net_id, role)
-            if item in seen:
-                return
-            seen.add(item)
-            roles.append(item)
+            pipe_net_ids = (
+                pipenet._graph_pipe_net_ids
+                if pipenet.is_graph
+                else (pipenet.pipe_net_id,)
+            )
+            for pipe_net_id in pipe_net_ids:
+                item = (pipe_net_id, role)
+                if item in seen:
+                    continue
+                seen.add(item)
+                roles.append(item)
 
         def collect_statement(stmt):
             if isinstance(stmt, ast.Assign):

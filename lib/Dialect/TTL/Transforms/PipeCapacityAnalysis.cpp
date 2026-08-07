@@ -6,7 +6,6 @@
 
 #include "DFBAcquireReleaseAnalysis.h"
 #include "PipeTransportDFBAnalysis.h"
-#include "mlir/IR/BuiltinOps.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "llvm/ADT/DenseMap.h"
@@ -229,8 +228,7 @@ static bool checkAndCollectPop(CBPopOp popOp,
 }
 
 /// Collect releases from transport ownership or the physical receiver DFB.
-static bool collectAndCheckPops(ArrayRef<CBPopOp> candidatePops,
-                                const PipeCapacityEndpointFacts &endpointFacts,
+static bool collectAndCheckPops(const PipeCapacityEndpointFacts &endpointFacts,
                                 const PipeGraph &pipeGraph,
                                 ArrayRef<CBPopOp> ownedPops,
                                 SmallVectorImpl<CBPopOp> &pops) {
@@ -240,6 +238,8 @@ static bool collectAndCheckPops(ArrayRef<CBPopOp> candidatePops,
       valid &= checkAndCollectPop(popOp, endpointFacts, pipeGraph, pops);
     }
   } else {
+    SmallVector<CBPopOp> candidatePops;
+    pipeGraph.appendReceiverDFBPops(endpointFacts.receiverDFB, candidatePops);
     LaunchNodeDomain receiverDomain =
         getSingleLaunchNodeDomain({endpointFacts.receiverDFB.receiver.x,
                                    endpointFacts.receiverDFB.receiver.y});
@@ -261,8 +261,7 @@ static bool collectAndCheckPops(ArrayRef<CBPopOp> candidatePops,
 
 } // namespace
 
-PipeCapacityAnalysisResult analyzePipeCapacity(ModuleOp mod,
-                                               const PipeGraph &pipeGraph) {
+PipeCapacityAnalysisResult analyzePipeCapacity(const PipeGraph &pipeGraph) {
   PipeCapacityAnalysisResult result;
   if (!pipeGraph.hasLaunchGrid()) {
     LLVM_DEBUG(llvm::dbgs()
@@ -275,14 +274,6 @@ PipeCapacityAnalysisResult analyzePipeCapacity(ModuleOp mod,
                           << " receiver DFB node(s), "
                           << pipeGraph.getPipeReceiverEndpoints().size()
                           << " receiver endpoint(s)\n");
-
-  llvm::DenseMap<int64_t, SmallVector<CBPopOp>> popsByDFBIndex;
-  mod.walk([&](CBPopOp popOp) {
-    std::optional<int64_t> maybeDFBIndex = getCBIndex(popOp.getCb());
-    if (maybeDFBIndex) {
-      popsByDFBIndex[*maybeDFBIndex].push_back(popOp);
-    }
-  });
 
   for (const PipeReceiverEndpoint &receiverEndpoint :
        pipeGraph.getPipeReceiverEndpoints()) {
@@ -355,17 +346,11 @@ PipeCapacityAnalysisResult analyzePipeCapacity(ModuleOp mod,
     }
     endpointFacts.send = *maybeSendOp;
 
-    auto candidatePopsIt =
-        popsByDFBIndex.find(endpointFacts.receiverDFB.dfbIndex);
-    ArrayRef<CBPopOp> candidatePops;
-    if (candidatePopsIt != popsByDFBIndex.end()) {
-      candidatePops = candidatePopsIt->second;
-    }
     ArrayRef<CBPopOp> ownedPops =
         transportOwnsStorage
             ? ArrayRef<CBPopOp>(transportOwnership->destination.pops)
             : ArrayRef<CBPopOp>();
-    if (!collectAndCheckPops(candidatePops, endpointFacts, pipeGraph, ownedPops,
+    if (!collectAndCheckPops(endpointFacts, pipeGraph, ownedPops,
                              endpointFacts.pops)) {
       continue;
     }

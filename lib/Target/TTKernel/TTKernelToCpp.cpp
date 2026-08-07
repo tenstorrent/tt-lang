@@ -196,6 +196,10 @@ public:
         headers.insert("api/dataflow/noc.h");
       }
 
+      if (value.starts_with("tt::tt_fabric::RoutingPlaneConnectionManager")) {
+        headers.insert("tt_metal/fabric/hw/inc/linear/api.h");
+      }
+
       // Some callees are embedded in VerbatimOps.
       for (const auto &[callee, reqs] : headerMap) {
         if (value.starts_with(callee)) {

@@ -60,14 +60,16 @@ getPipeTransferContractForPipeValue(ValueOriginAnalysis &analysis, Value pipe) {
 }
 
 /// Create one scalar transfer reference for `pipe`.
-static PipeTransferCreateOp createPipeTransfer(OpBuilder &builder,
-                                               Location location, Value pipe,
-                                               PipeTransferContract contract) {
+static PipeTransferCreateOp
+createPipeTransfer(OpBuilder &builder, Location location, Value pipe,
+                   PipeTransferContract contract,
+                   DeviceTransferAttr deviceTransfer) {
   auto kindAttr = PipeTransferKindAttr::get(builder.getContext(),
                                             getPipeTransferKind(contract));
+  IntegerAttr scalarSpan = builder.getI64IntegerAttr(1);
   return PipeTransferCreateOp::create(
       builder, location, PipeTransferType::get(builder.getContext()), pipe,
-      kindAttr);
+      kindAttr, scalarSpan, scalarSpan, deviceTransfer);
 }
 
 /// Return the PipeNet id encoded by a static or selected pipe value.
@@ -83,7 +85,7 @@ static FailureOr<int64_t> getPipeNetIdForPipeValue(Operation *operation,
 /// Reuse a transfer for a direct create op or create one at the use site.
 static Value getOrCreatePipeTransfer(
     OpBuilder &builder, Location location, Value pipe,
-    PipeTransferContract contract,
+    PipeTransferContract contract, DeviceTransferAttr deviceTransfer,
     llvm::MapVector<Value, Value> &transferByDirectCreatePipe) {
   Value key = traceUnrealizedCasts(pipe);
   if (auto createPipe = key.getDefiningOp<CreatePipeOp>()) {
@@ -93,21 +95,23 @@ static Value getOrCreatePipeTransfer(
     }
     OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPointAfter(createPipe);
-    auto transferOp =
-        createPipeTransfer(builder, createPipe.getLoc(), key, contract);
+    auto transferOp = createPipeTransfer(builder, createPipe.getLoc(), key,
+                                         contract, deviceTransfer);
     transferByDirectCreatePipe[key] = transferOp.getTransfer();
     return transferOp.getTransfer();
   }
 
   // A shared transfer for block arguments and region results would require a
   // new dominance choice. Keeping it at the use preserves current semantics.
-  return createPipeTransfer(builder, location, pipe, contract).getTransfer();
+  return createPipeTransfer(builder, location, pipe, contract, deviceTransfer)
+      .getTransfer();
 }
 
 /// High-level pipe copy and its proven transfer contract.
 struct PipeCopyExpansion {
   CopyOp copy;
   PipeTransferContract contract;
+  DeviceTransferAttr deviceTransfer;
   std::optional<int64_t> pipeNetId;
 };
 
@@ -203,12 +207,21 @@ buildPipeTransferExpansionPlan(ModuleOp module, ValueOriginAnalysis &analysis,
                "pipe values";
         result = failure();
       } else {
+        FailureOr<std::optional<DeviceTransferAttr>> maybeDeviceTransfer =
+            findUniquePipeDeviceTransfer(analysis, op.getSrc());
         FailureOr<int64_t> pipeNetId =
             getPipeNetIdForPipeValue(op, op.getSrc());
-        if (failed(pipeNetId)) {
+        if (failed(maybeDeviceTransfer)) {
+          op.emitError() << "requires every possible pipe definition to use "
+                            "the same logical-device transfer";
+          result = failure();
+        } else if (failed(pipeNetId)) {
           result = failure();
         } else {
-          plan.receiveCopies.push_back({op, *contract, *pipeNetId});
+          plan.receiveCopies.push_back(
+              {op, *contract,
+               maybeDeviceTransfer->value_or(DeviceTransferAttr()),
+               *pipeNetId});
         }
       }
       return;
@@ -225,7 +238,18 @@ buildPipeTransferExpansionPlan(ModuleOp module, ValueOriginAnalysis &analysis,
                "pipe values";
         result = failure();
       } else {
-        plan.sendCopies.push_back({op, *contract, std::nullopt});
+        FailureOr<std::optional<DeviceTransferAttr>> maybeDeviceTransfer =
+            findUniquePipeDeviceTransfer(analysis, op.getDst());
+        if (failed(maybeDeviceTransfer)) {
+          op.emitError() << "requires every possible pipe definition to use "
+                            "the same logical-device transfer";
+          result = failure();
+        } else {
+          plan.sendCopies.push_back(
+              {op, *contract,
+               maybeDeviceTransfer->value_or(DeviceTransferAttr()),
+               std::nullopt});
+        }
       }
     }
   });
@@ -287,7 +311,8 @@ applyPipeTransferExpansionPlan(ModuleOp module,
     builder.setInsertionPointAfter(createPipe);
     auto transferOp =
         createPipeTransfer(builder, createPipe.getLoc(), createPipe.getResult(),
-                           getPipeTransferContract(createPipe));
+                           getPipeTransferContract(createPipe),
+                           createPipe.getDeviceTransferAttr());
     transferByDirectCreatePipe[createPipe.getResult()] =
         transferOp.getTransfer();
   }
@@ -296,9 +321,9 @@ applyPipeTransferExpansionPlan(ModuleOp module,
     CopyOp copyOp = expansion.copy;
     assert(expansion.pipeNetId && "receiver expansion is missing PipeNet id");
     builder.setInsertionPoint(copyOp);
-    Value transfer =
-        getOrCreatePipeTransfer(builder, copyOp.getLoc(), copyOp.getSrc(),
-                                expansion.contract, transferByDirectCreatePipe);
+    Value transfer = getOrCreatePipeTransfer(
+        builder, copyOp.getLoc(), copyOp.getSrc(), expansion.contract,
+        expansion.deviceTransfer, transferByDirectCreatePipe);
     auto postOp = PipeTransferPostOp::create(
         builder, copyOp.getLoc(),
         PipeTokenType::get(builder.getContext(), *expansion.pipeNetId),
@@ -313,9 +338,9 @@ applyPipeTransferExpansionPlan(ModuleOp module,
   for (const PipeCopyExpansion &expansion : plan.sendCopies) {
     CopyOp copyOp = expansion.copy;
     builder.setInsertionPoint(copyOp);
-    Value transfer =
-        getOrCreatePipeTransfer(builder, copyOp.getLoc(), copyOp.getDst(),
-                                expansion.contract, transferByDirectCreatePipe);
+    Value transfer = getOrCreatePipeTransfer(
+        builder, copyOp.getLoc(), copyOp.getDst(), expansion.contract,
+        expansion.deviceTransfer, transferByDirectCreatePipe);
     auto sendOp = PipeTransferSendOp::create(builder, copyOp.getLoc(),
                                              copyOp.getResult().getType(),
                                              transfer, copyOp.getSrc());

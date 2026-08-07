@@ -93,6 +93,30 @@ func.func @pipe_transfer_point_to_point_multi_receiver() {
 
 // -----
 
+// Test: a transfer reference must preserve its defining pipe's device transfer.
+#pipe_device_transfer = #ttl.device_transfer<
+    domain = <components = <name = "device", extent = [1, 2]>>,
+    edge = <source = <coordinates = [0, 0]>,
+            destination = <coordinates = [0, 1]>>>
+#other_device_transfer = #ttl.device_transfer<
+    domain = <components = <name = "device", extent = [1, 2]>>,
+    edge = <source = <coordinates = [0, 1]>,
+            destination = <coordinates = [0, 0]>>>
+func.func @pipe_transfer_device_transfer_mismatch() {
+  %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0 {
+      deviceTransfer = #pipe_device_transfer}
+      : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+  // expected-error @below {{'ttl.pipe_transfer.create' op deviceTransfer must match the defining ttl.create_pipe}}
+  %transfer = ttl.pipe_transfer.create %pipe {
+      deviceTransfer = #other_device_transfer,
+      kind = #ttl.pipe_transfer_kind<point_to_point>}
+      : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+      -> !ttl.pipe_transfer
+  func.return
+}
+
+// -----
+
 // Test: pipe transfer send result is a write handle.
 func.func @pipe_transfer_send_requires_write_handle() {
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>

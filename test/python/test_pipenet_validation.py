@@ -17,6 +17,41 @@ def test_empty_pipenet_rejected():
         ttl.PipeNet([])
 
 
+def test_pipenet_requires_exactly_one_representation():
+    domain = ttl.DeviceDomain((1, 2))
+    graph = ttl.TransferGraph.edges(domain, edges=[((0, 0), (0, 1))])
+
+    with pytest.raises(ValueError, match="exactly one of pipes or graph"):
+        ttl.PipeNet()
+    with pytest.raises(ValueError, match="exactly one of pipes or graph"):
+        ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(1, 0))], graph=graph)
+
+
+def test_pipenet_accepts_transfer_graph():
+    domain = ttl.DeviceDomain((1, 2))
+    graph = ttl.TransferGraph.edges(domain, edges=[((0, 0), (0, 1))])
+
+    net = ttl.PipeNet(graph=graph)
+
+    assert net.is_graph
+    assert net.graph is graph
+    assert net.pipes == []
+
+
+def test_pipenet_graph_requires_transfer_graph():
+    with pytest.raises(TypeError, match="TransferGraph"):
+        ttl.PipeNet(graph=object())
+
+
+def test_pipenet_graph_defers_target_routability_validation():
+    domain = ttl.DeviceDomain((2, 2))
+    graph = ttl.TransferGraph.edges(domain, edges=[((0, 0), (1, 0))])
+
+    net = ttl.PipeNet(graph=graph)
+
+    assert net.graph is graph
+
+
 def test_within_pipenet_overlapping_collective_dst_allowed():
     """Two collective pipes whose destination rectangles intersect inside a
     single PipeNet are allowed.

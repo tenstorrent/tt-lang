@@ -12,9 +12,12 @@
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 
+#include <cstddef>
 #include <optional>
 
 namespace mlir::tt {
@@ -24,6 +27,49 @@ class ValueOriginAnalysis;
 namespace mlir::tt::ttl {
 
 class PipeTransferIndex;
+
+inline constexpr llvm::StringLiteral kFabricRoutesAttrName =
+    "ttl.fabric_routes";
+inline constexpr llvm::StringLiteral kFabricDeviceDomainAttrName =
+    "ttl.fabric_device_domain";
+
+/// One logical device route shared by sends from `sourceNodes`.
+/// `routeIndex` identifies the connection within `localDevice`.
+struct FabricRoute {
+  DeviceRefAttr localDevice;
+  DeviceRefAttr remoteDevice;
+  SmallVector<LaunchNodeCoord> sourceNodes;
+  std::size_t routeIndex;
+};
+
+/// Fabric routes and transfer associations derived before PipeNet lowering.
+struct FabricRoutePlan {
+  /// Routes grouped by the kernel function that submits each transfer.
+  llvm::MapVector<func::FuncOp, SmallVector<FabricRoute>> routesByFunction;
+  /// Logical device domain used by each function containing fabric sends.
+  llvm::DenseMap<Operation *, DeviceDomainAttr> deviceDomainsByFunction;
+  /// Connection index selected for each fabric send.
+  llvm::DenseMap<Operation *, std::size_t> sendRouteIndex;
+  /// Send and receiver-post operations that use fabric synchronization.
+  llvm::SmallPtrSet<Operation *, 16> transferOps;
+};
+
+/// Runtime values identifying one resolved fabric destination.
+struct FabricRouteTarget {
+  Value destinationDeviceId;
+  Value destinationMeshId;
+};
+
+/// Per-function routing-plane state materialized before transfer lowering.
+struct FabricRuntimeInfo {
+  Value manager;
+  Value routeId;
+  Value connectionCount;
+  SmallVector<FabricRouteTarget> routeTargets;
+};
+
+/// Routing-plane state indexed by its kernel function.
+using FabricRuntimeMap = llvm::DenseMap<Operation *, FabricRuntimeInfo>;
 
 struct PipeInfo {
   PipeType pipeType;
@@ -211,6 +257,18 @@ getPipeResourceRequirements(const PipeResourcePlan &info,
 /// multiple ops contributes one entry.
 void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 
+/// Build per-kernel routing-plane records from transfers validated by
+/// PipeGraph.
+LogicalResult buildFabricRoutePlan(const PipeGraph &pipeGraph,
+                                   FabricRoutePlan &plan);
+
+/// Materialize the function attributes recorded by `plan`.
+void applyFabricRoutePlan(ModuleOp module, const FabricRoutePlan &plan);
+
+/// Materialize one routing-plane manager per kernel that uses fabric routes.
+void initializeFabricRuntime(const FabricRoutePlan &plan,
+                             FabricRuntimeMap &runtime);
+
 /// Build the pipe resource plan used by pipe lowering. Transfer intervals that
 /// cannot be bounded by dominance are conservatively treated as conflicting
 /// with every other transfer interval from the same source core.
@@ -283,7 +341,7 @@ LogicalResult lowerPipeTransferSend(
     const PipeCapacityPlan &pipeCapacityPlan,
     const PipeCounterProgressMap &senderCapacityCounters,
     const PipeComputedAddressCounterMap &computedAddressCounters,
-    ConversionPatternRewriter &rewriter);
+    const FabricRuntimeMap &fabricRuntime, ConversionPatternRewriter &rewriter);
 
 /// Remove a receiver post proven unreachable at its pipe endpoint.
 void lowerInactivePipeTransferPost(PipeTransferPostOp op,

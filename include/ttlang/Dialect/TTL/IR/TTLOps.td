@@ -557,6 +557,52 @@ def TTL_CoreYOp : TTL_Op<"core_y", [Pure]> {
 // Pipe operations (for multi-core communication)
 //===----------------------------------------------------------------------===//
 
+def TTL_IsDeviceOp : TTL_Op<"is_device", [Pure]> {
+  let summary = "Test whether the kernel executes on a logical device";
+  let description = [{
+    Returns true when the current logical device matches `device` in `domain`.
+    Logical device coordinates are runtime values supplied by the host. Target
+    lowering determines how those coordinates map to physical devices.
+  }];
+  let arguments = (ins
+    TTL_DeviceDomainAttr:$domain,
+    TTL_DeviceRefAttr:$device
+  );
+  let results = (outs I1:$result);
+  let assemblyFormat = "$device `in` $domain attr-dict `:` type($result)";
+  let hasVerifier = 1;
+}
+
+def TTL_CurrentDeviceIndexOp : TTL_Op<"current_device_index", [Pure]> {
+  let summary = "Get the current logical device index";
+  let description = [{
+    Returns the zero-based row-major order of the current logical device in
+    `domain`. Component and axis order follow the order stored in the domain.
+    The result depends only on the logical device coordinates, not on physical
+    device identifiers or fabric topology.
+  }];
+  let arguments = (ins TTL_DeviceDomainAttr:$domain);
+  let results = (outs Index:$result);
+  let assemblyFormat = "$domain attr-dict `:` type($result)";
+}
+
+def TTL_IsDeviceInRangeOp : TTL_Op<"is_device_in_range", [Pure]> {
+  let summary = "Test whether the kernel executes in a logical device range";
+  let description = [{
+    Returns true when the current logical device is in the half-open `range`
+    within `domain`. Logical device coordinates are runtime values supplied by
+    the host. Target lowering determines how those coordinates map to physical
+    devices.
+  }];
+  let arguments = (ins
+    TTL_DeviceDomainAttr:$domain,
+    TTL_DeviceRangeAttr:$range
+  );
+  let results = (outs I1:$result);
+  let assemblyFormat = "$range `in` $domain attr-dict `:` type($result)";
+  let hasVerifier = 1;
+}
+
 def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
   let summary = "Create a pipe for core-to-core communication";
   let description = [{
@@ -591,7 +637,8 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
     // `a_pipe_net.is_active()` instead of `net_<id>.is_active()`).
     // No effect on op semantics.
     OptionalAttr<StrAttr>:$pipeNetName,
-    OptionalAttr<BoolAttr>:$isCollective
+    OptionalAttr<BoolAttr>:$isCollective,
+    OptionalAttr<TTL_DeviceTransferAttr>:$deviceTransfer
   );
   let results = (outs TTL_Pipe:$result);
   let assemblyFormat = [{
@@ -622,7 +669,8 @@ def TTL_CreatePipeOp : TTL_Op<"create_pipe", [Pure]> {
             $_builder.getI64IntegerAttr(dstEndY),
             $_builder.getI64IntegerAttr(pipeNetId),
             /*pipeNetName=*/StringAttr(),
-            /*isCollective=*/BoolAttr());
+            /*isCollective=*/BoolAttr(),
+            /*deviceTransfer=*/DeviceTransferAttr());
     }]>
   ];
 }
@@ -796,7 +844,9 @@ def TTL_PipeTransferCreateOp : TTL_Op<"pipe_transfer.create", [Pure]> {
     transfer consists of one send and one corresponding post for each receiver.
     The sender and receiver callbacks may use different references because each
     constructs its pipe value independently. The attributes record the common
-    point-to-point or collective contract.
+    point-to-point or collective contract and the optional logical-device
+    transfer. The logical-device transfer is absent for transfers within one
+    device.
 
     `block_span` is the number of consecutive original DFB blocks delivered by
     one transfer. Scalar transfers use the default span of one. Grouping
@@ -817,7 +867,8 @@ def TTL_PipeTransferCreateOp : TTL_Op<"pipe_transfer.create", [Pure]> {
     TTL_PipeTransferKindAttr:$kind,
     DefaultValuedAttr<ConfinedAttr<I64Attr, [IntPositive]>, "1">:$block_span,
     DefaultValuedAttr<ConfinedAttr<I64Attr, [IntPositive]>, "1">:
-         $destination_group_depth
+         $destination_group_depth,
+    OptionalAttr<TTL_DeviceTransferAttr>:$deviceTransfer
   );
   let results = (outs TTL_PipeTransfer:$transfer);
   let assemblyFormat = "$pipe attr-dict `:` type($pipe) `->` type($transfer)";
