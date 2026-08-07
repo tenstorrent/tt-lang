@@ -2535,12 +2535,10 @@ mlir::LogicalResult mlir::tt::ttl::TileRowNormalizationBlockOp::verify() {
     return emitOpError("gamma must equal input when has_gamma is false");
   }
 
-  const llvm::APFloat &scale = getScaleAttr().getValue();
-  const llvm::APFloat &epsilon = getEpsilonAttr().getValue();
-  if (!scale.isFinite() || scale.isZero() || scale.isNegative()) {
+  if (!isFinitePositiveFloat(getScaleAttr())) {
     return emitOpError("scale must be finite and positive");
   }
-  if (!epsilon.isFinite() || epsilon.isZero() || epsilon.isNegative()) {
+  if (!isFinitePositiveFloat(getEpsilonAttr())) {
     return emitOpError("epsilon must be finite and positive");
   }
 

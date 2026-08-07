@@ -999,11 +999,6 @@ static bool isUnitFill(Value value, Operation *expectedUser, FillOp &fill) {
          fill.getValueAttr().getValueAsDouble() == 1.0;
 }
 
-static bool isFinitePositiveFloat(FloatAttr value) {
-  const llvm::APFloat &number = value.getValue();
-  return number.isFinite() && !number.isZero() && !number.isNegative();
-}
-
 static bool matchAddWithConstant(Value value, Operation *expectedUser,
                                  MulUnaryConstOp &scaledReduction,
                                  FillOp &epsilonFill) {
