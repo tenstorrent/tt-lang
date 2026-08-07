@@ -106,10 +106,15 @@ FailureOr<bool> DFBAllocationFootprint::add(int64_t physicalIndex,
   return true;
 }
 
-uint64_t DFBAllocationFootprint::getTotalBytes() const {
+FailureOr<uint64_t> DFBAllocationFootprint::getTotalBytes() const {
   uint64_t totalBytes = 0;
   for (uint64_t allocationBytes : llvm::make_second_range(maxBytesByIndex)) {
-    totalBytes += allocationBytes;
+    std::optional<uint64_t> updatedTotal =
+        llvm::checkedAddUnsigned(totalBytes, allocationBytes);
+    if (!updatedTotal) {
+      return failure();
+    }
+    totalBytes = *updatedTotal;
   }
   return totalBytes;
 }

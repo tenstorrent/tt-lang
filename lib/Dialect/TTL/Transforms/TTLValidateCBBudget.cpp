@@ -113,7 +113,14 @@ struct TTLValidateCBBudgetPass
       return;
     }
 
-    uint64_t totalBytes = footprint.getTotalBytes();
+    FailureOr<uint64_t> maybeTotalBytes = footprint.getTotalBytes();
+    if (failed(maybeTotalBytes)) {
+      moduleOp.emitOpError()
+          << "total DFB allocation size is not representable as uint64_t";
+      signalPassFailure();
+      return;
+    }
+    uint64_t totalBytes = *maybeTotalBytes;
     SmallVector<int64_t, kMaxCircularBuffers> sortedIndices =
         footprint.getSortedPhysicalIndices();
 

@@ -34,7 +34,8 @@ public:
                       std::string &failureReason);
 
   bool empty() const { return maxBytesByIndex.empty(); }
-  uint64_t getTotalBytes() const;
+  /// Returns the total allocation size, or failure when the sum overflows.
+  FailureOr<uint64_t> getTotalBytes() const;
   /// Returns the total after applying per-index minimum allocation sizes.
   FailureOr<uint64_t> getTotalBytesWithMinimumAllocations(
       const llvm::DenseMap<int64_t, uint64_t> &minimumBytesByIndex) const;
