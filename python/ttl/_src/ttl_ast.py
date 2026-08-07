@@ -605,7 +605,7 @@ class TTLGenericCompiler(TTCompilerBase):
 
     def _handle_pipenet_callback(self, node):
         """Handle pipenet.if_src(callback) or pipenet.if_dst(callback) calls."""
-        from ..pipe import PipeNet
+        from ..pipe import DstPipeIdentity, PipeNet, SrcPipeIdentity
 
         method_name = node.func.attr
         var_name = node.func.value.id
