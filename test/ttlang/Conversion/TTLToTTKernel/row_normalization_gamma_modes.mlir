@@ -9,8 +9,10 @@ module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
 // CHECK-LABEL: func.func @row_normalization_no_gamma
 // CHECK:       ttkernel.init_sfpu(%[[NO_GAMMA_INPUT:[a-zA-Z0-9_]+]], %[[NO_GAMMA_OUTPUT:[a-zA-Z0-9_]+]])
 // CHECK-NEXT:  ttkernel.tile_regs_acquire
-// CHECK-NEXT:  ttkernel.experimental_row_normalization_block(%[[NO_GAMMA_INPUT]], %[[NO_GAMMA_INPUT]], %[[NO_GAMMA_OUTPUT]]) num_tiles = 3
-// CHECK-SAME:  has_gamma = false dtype = <bf16>
+// CHECK-NEXT:  ttkernel.experimental_mul_reduce_block(%[[NO_GAMMA_INPUT]], %[[NO_GAMMA_INPUT]], %[[NO_GAMMA_OUTPUT]]) num_tiles = 3
+// CHECK-NEXT:  ttkernel.experimental_add_rsqrt(%[[SCALAR:[a-zA-Z0-9_]+]])
+// CHECK-NEXT:  ttkernel.experimental_source_scalar_mul(%[[NO_GAMMA_INPUT]], %[[SCALAR]], %[[SCALAR]]) num_tiles = 3 dtype = <bf16>
+// CHECK-NOT:   ttkernel.binary_dest_reuse_tiles
 // CHECK-NEXT:  ttkernel.tile_regs_commit
 // CHECK-NEXT:  ttkernel.tile_regs_wait
 // CHECK-NEXT:  ttkernel.pack_tile_block(%{{.*}}, %[[NO_GAMMA_OUTPUT]], %{{.*}})

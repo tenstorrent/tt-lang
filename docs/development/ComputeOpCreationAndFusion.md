@@ -375,19 +375,21 @@ decides whether the entire reduction remains in one DST acquisition.
 `ttl-select-compute-pipeline-schedules` adds each recognized pipeline to the
 immutable kernel-configuration problem with two alternatives:
 
-- `retained_scalar` requires the target compound primitive and one DST slot per
-  input tile; and
+- `retained_scalar` records its required compute-local capabilities and one DST
+  slot per input tile; and
 - `materialized` retains tensor semantics without prospective internal
   resources and is lowered through ordinary compute creation.
 
 The solver selects destination width, synchronization mode, tile strategies,
-and pipeline schedules together. Effective capacity is the minimum of the
-selected DST configuration and the target helper limit. Blackhole provides the
-current bf16 retained schedules for one through eight tiles. Wormhole B0 and an
-unspecified target select materialized execution because no equivalent
-compound helper has been validated for those targets. Capacity, target, dtype,
-and kernel-configuration rejection reasons are available through the
-`ttl-reduction-fusion` missed-remark category.
+and pipeline schedules together. SumOfSquares requires compound multiply and
+full-scalar reduction. Row normalization requires that capability plus
+source-scalar retention. Effective capacity is the minimum of the selected DST
+configuration and every required capability limit. Blackhole provides both
+bf16 capabilities for one through eight tiles. Wormhole B0 and an unspecified
+target select materialized execution until their complete required capability
+sets are validated. Capacity, target, dtype, and kernel-configuration rejection
+reasons are available through the `ttl-reduction-fusion` missed-remark
+category.
 
 Pipeline lowering transfers the selected schedule to the inlined result
 operation. A retained schedule creates `ttl.tile_mul_reduce_block` or
@@ -396,21 +398,23 @@ same specialization and proceeds through ordinary intermediate DFB planning.
 The final kernel-configuration pass validates the operations that remain after
 this transformation.
 
-The row-normalization target lowering performs the sum of squares, applies
-scale and epsilon, computes reciprocal square root, moves the scalar to a
-compute source register, clears the acquired DST section, and multiplies it
-across all input tiles. Optional gamma multiplication occurs before the output
-block is packed. The generated retained schedule uses one DST acquisition and
-no intermediate DFB. SumOfSquares similarly retains all products until the
+The row-normalization target lowering emits composable TTKernel operations for
+compound reduction, add-plus-rsqrt finalization, retained source-scalar
+multiplication, and optional gamma multiplication. The source-scalar operation
+moves the scalar to a compute source register, clears the acquired DST section,
+and multiplies it across all input tiles. The output block is packed after the
+complete sequence. The generated retained schedule uses one DST acquisition
+and no intermediate DFB. SumOfSquares similarly retains all products until the
 full scalar reduction completes and publishes only element `[0, 0]`.
 
-The row-normalization LLK applies its reduction scaler during both reduction
-stages. TTKernel-to-C++ lowering passes the square root of the semantic scale so
-the complete reduction applies the scale once.
+The compound reduction LLK applies its scaler during both reduction stages.
+TTKernel-to-C++ lowering passes the square root of the semantic scale so the
+complete reduction applies the scale once.
 
 `ttl.compute_pipeline` establishes the target-independent multi-domain
-representation. The current retained alternatives still select two compound
-block primitives. General scalar reuse additionally requires explicit
+representation. The current retained alternatives select a compound reduction
+when required and a separate source-scalar consumer. General scalar reuse
+additionally requires explicit
 cross-stage carrier lifetimes, multiple scalar consumers, external publication,
 and target capabilities for each scalar finalization and consumer operation.
 Unsupported graphs continue through materialized lowering without changing
@@ -768,8 +772,9 @@ operations and user DFB publications.
   lowers the capacity-fitting row-normalization compute to one DST section.
 - `lib/Dialect/TTL/Transforms/ConvertTTLTileOpsToTTKernel.cpp` converts the
   block schedule after DFB identities are available.
-- `include/ttlang/Target/TTKernel/LLKs/experimental_row_normalization.h`
-  implements scalar-retaining row normalization within one DST acquisition.
+- `include/ttlang/Target/TTKernel/LLKs/experimental_source_scalar.h` implements
+  scalar finalization and retained-scalar multiplication within one DST
+  acquisition.
 - `lib/Dialect/TTL/Transforms/TTLInsertIntermediateDFBs.cpp` applies grouped
   compiler-DFB materialization plans.
 - `lib/Dialect/TTL/Transforms/TTLPrintComputeOpCreationPlans.cpp` prints

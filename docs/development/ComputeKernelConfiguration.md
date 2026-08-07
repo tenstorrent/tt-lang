@@ -61,7 +61,8 @@ architectures is invalid.
 
 When neither source is present, the compiler uses only configuration relations
 shared by every registered target. It does not assume a Wormhole B0 or
-Blackhole compound schedule. This environment is limited to compiler testing.
+Blackhole compute-local schedule. This environment is limited to compiler
+testing.
 Pipelines that emit device kernels must attach an architecture before this
 pass.
 
@@ -78,10 +79,11 @@ The current TT-Lang runtime launches Wormhole B0 and Blackhole through
 `ttnn.ComputeConfigDescriptor`. Both expose 16-bit and 32-bit destination
 elements. Their current broadcast LLKs restrict non-32-bit broadcast inputs to
 16-bit destination elements. Blackhole row reduction and Wormhole reduction
-also restrict full-fp32 accumulation. Blackhole provides the current bf16
-retained schedules for multiply/full-scalar reduction and row normalization at
-one through eight tiles. Wormhole B0 has no validated implementation of those
-compound schedules and selects materialized execution.
+also restrict full-fp32 accumulation. Compute-pipeline schedules record
+compound multiply/full-scalar reduction and source-scalar retention as
+independent capabilities. Blackhole provides both bf16 capabilities for one
+through eight tiles. Wormhole B0 has no validated complete implementation of
+either capability and selects materialized execution.
 
 Quasar requires the Gen2 configuration descriptor, global unpack routing, and
 Quasar kernel launch mechanism. The current TT-Lang runtime does not implement

@@ -603,31 +603,44 @@ def TTKernel_BinaryDestReuseTilesOp : TTKernel_FPUOp<"binary_dest_reuse_tiles"> 
     }];
 }
 
-def TTKernel_ExperimentalRowNormalizationBlockOp :
-    TTKernel_FPUOp<"experimental_row_normalization_block"> {
-  let summary = "Normalize one row in a single DST acquisition";
+def TTKernel_ExperimentalAddRsqrtOp :
+    TTKernel_FPUOp<"experimental_add_rsqrt"> {
+  let summary = "Add a scalar constant and apply reciprocal square root";
   let description = [{
-    Computes a full-row sum of squares, applies scale, epsilon, and reciprocal
-    square root, then reuses the retained scalar across a contiguous block of
-    input tiles. Optional gamma multiplication occurs in place before packing.
+    Adds `addend` to the scalar in `dst_index` and replaces it with its
+    reciprocal square root. The other DST slots are unchanged.
 
-    The operation does not acquire, commit, wait, release, reserve, push, pop,
-    or pack. Those transactions remain explicit surrounding TTKernel
-    operations.
+    The DST register buffer must be acquired before this operation. The
+    operation does not commit, wait, release, or pack the result.
+  }];
+  let arguments = (ins IndexLike:$dst_index,
+                       F32Attr:$addend);
+  let assemblyFormat = [{
+    `(` $dst_index `)` `addend` `=` $addend
+    attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def TTKernel_ExperimentalSourceScalarMulOp :
+    TTKernel_FPUOp<"experimental_source_scalar_mul"> {
+  let summary = "Multiply a contiguous input block by a retained scalar";
+  let description = [{
+    Moves the scalar at `scalar_dst_index` to a compute source register,
+    clears the acquired DST section, and multiplies `num_tiles` contiguous
+    input tiles by that scalar. Results start at `output_dst_index`.
+
+    The scalar is immutable while the operation executes and does not remain
+    live afterward. The operation does not commit, wait, release, or pack the
+    results.
   }];
   let arguments = (ins TTKernel_CB:$input_cb,
-                       TTKernel_CB:$gamma_cb,
-                       TTKernel_CB:$output_cb,
+                       IndexLike:$scalar_dst_index,
+                       IndexLike:$output_dst_index,
                        I64Attr:$num_tiles,
-                       F32Attr:$scale,
-                       F32Attr:$epsilon,
-                       BoolAttr:$has_gamma,
                        TTCore_DataTypeAttr:$dtype);
   let assemblyFormat = [{
-    `(` $input_cb `,` $gamma_cb `,` $output_cb `)`
-    `num_tiles` `=` $num_tiles `scale` `=` $scale
-    `epsilon` `=` $epsilon `has_gamma` `=` $has_gamma
-    `dtype` `=` $dtype
+    `(` $input_cb `,` $scalar_dst_index `,` $output_dst_index `)`
+    `num_tiles` `=` $num_tiles `dtype` `=` $dtype
     attr-dict `:` functional-type(operands, results)
   }];
   let hasVerifier = 1;

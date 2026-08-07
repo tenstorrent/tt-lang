@@ -1056,8 +1056,8 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
   }
 };
 
-/// Lower the planned row-normalization block after its tensor operands have
-/// acquired concrete TTKernel DFB identities.
+/// Lower the planned row normalization to composable target operations after
+/// its tensor operands have acquired concrete TTKernel DFB identities.
 struct TTLTileRowNormalizationBlockToTTKernel
     : OpConversionPattern<TileRowNormalizationBlockOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -1090,11 +1090,30 @@ struct TTLTileRowNormalizationBlockToTTKernel
           op, "requires a static tensor input and tile result");
     }
 
-    ttk::ExperimentalRowNormalizationBlockOp::create(
-        rewriter, loc, *inputDfb, *gammaDfb, *outputDfb,
-        static_cast<std::uint64_t>(inputType.getNumElements()),
-        op.getScaleAttr().getValue(), op.getEpsilonAttr().getValue(),
-        op.getHasGamma(), resultType.getDataType());
+    std::uint64_t numTiles =
+        static_cast<std::uint64_t>(inputType.getNumElements());
+    ttk::ExperimentalMulReduceBlockOp::create(
+        rewriter, loc, *inputDfb, *inputDfb, *outputDfb, numTiles,
+        op.getScaleAttr().getValue(), resultType.getDataType());
+    ttk::ExperimentalAddRsqrtOp::create(rewriter, loc, adaptor.getDstIndex(),
+                                        op.getEpsilonAttr().getValue());
+    ttk::ExperimentalSourceScalarMulOp::create(
+        rewriter, loc, *inputDfb, adaptor.getDstIndex(), adaptor.getDstIndex(),
+        numTiles, resultType.getDataType());
+
+    if (op.getHasGamma()) {
+      auto eltwiseType = ttk::EltwiseBinaryTypeAttr::get(
+          rewriter.getContext(), ttk::EltwiseBinaryType::Mul);
+      auto reuseType = ttk::BinaryDestReuseTypeAttr::get(
+          rewriter.getContext(), ttk::BinaryDestReuseType::DestToSrcA);
+      ttk::BinaryDestReuseTilesInitOp::create(rewriter, loc, *gammaDfb,
+                                              eltwiseType, reuseType);
+      for (std::uint64_t tileIndex = 0; tileIndex < numTiles; ++tileIndex) {
+        Value index = arith::ConstantIndexOp::create(rewriter, loc, tileIndex);
+        ttk::BinaryDestReuseTilesOp::create(rewriter, loc, *gammaDfb, index,
+                                            index, eltwiseType, reuseType);
+      }
+    }
     rewriter.replaceOp(op, adaptor.getInput());
     return success();
   }

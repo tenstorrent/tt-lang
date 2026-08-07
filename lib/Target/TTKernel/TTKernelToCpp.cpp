@@ -17,7 +17,6 @@
 #include "ttlang/Target/TTKernel/LLKs/experimental_pack_untilize_llks_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_padding_llks_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_reg_api_generated.h"
-#include "ttlang/Target/TTKernel/LLKs/experimental_row_normalization_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_semaphore_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_source_scalar_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_tilize_llks_generated.h"
@@ -158,16 +157,16 @@ public:
         emitLlk(experimental_matmul_llks_generated,
                 experimental_matmul_llks_generated_len);
       }
-      if (callee == "experimental::multiply_full_scalar_reduction_block" ||
-          callee == "experimental::row_normalization_block") {
+      if (callee == "experimental::multiply_full_scalar_reduction_block") {
         emitLlk(experimental_mul_reduce_generated,
                 experimental_mul_reduce_generated_len);
       }
-      if (callee == "experimental::row_normalization_block") {
+      if (callee == "experimental::add_rsqrt_init" ||
+          callee == "experimental::add_rsqrt" ||
+          callee == "experimental::source_scalar_mul_init" ||
+          callee == "experimental::source_scalar_mul") {
         emitLlk(experimental_source_scalar_generated,
                 experimental_source_scalar_generated_len);
-        emitLlk(experimental_row_normalization_generated,
-                experimental_row_normalization_generated_len);
       }
       if (callee == "experimental::write_row_mask_tile" ||
           callee == "experimental::write_col_mask_tile" ||
