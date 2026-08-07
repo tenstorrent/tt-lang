@@ -797,9 +797,11 @@ def build_cb_descriptors(
                 total_size=allocation.total_size,
                 core_ranges=segment_core_ranges,
             )
-            # Preserve the tensor-owned address while applying the compiler-
-            # validated DFB interpretation to the contiguous backing bytes.
-            backing_descriptor.format_descriptors = [cb_format]
+            native_tile = tuple(tensor.get_tile().tile_shape)
+            if native_tile != config.tile:
+                # A physical view retains the tensor-owned address but needs
+                # the DFB page interpretation selected by the source program.
+                backing_descriptor.format_descriptors = [cb_format]
             cb_descriptors.append(backing_descriptor)
 
     return cb_descriptors

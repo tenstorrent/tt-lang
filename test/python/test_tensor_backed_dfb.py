@@ -110,6 +110,32 @@ def dfb_storage_mul(lhs, rhs, out):
             out_block = out_dfb.wait()
             out_block.pop()
 """,
+    "tensor_backed_view": """
+import ttl
+
+@ttl.operation(grid=(1, 1))
+def dfb_storage_mul(lhs, rhs, out):
+    lhs_dfb = ttl.make_tensor_backed_dfb(
+        lhs, shape=(1, 3), tile=(16, 32)
+    )
+    out_dfb = ttl.make_tensor_backed_dfb(
+        out, shape=(1, 3), tile=(16, 32)
+    )
+
+    @ttl.compute()
+    def compute_fn():
+        with lhs_dfb.wait() as lhs_block, out_dfb.reserve() as out_block:
+            out_block.store(lhs_block)
+
+    @ttl.datamovement()
+    def publish_input():
+        lhs_dfb.publish()
+
+    @ttl.datamovement()
+    def consume_output():
+        with out_dfb.wait():
+            pass
+""",
 }
 
 
@@ -158,6 +184,37 @@ def _to_height_sharded(torch_tensor, device, node_count):
         shard_spec,
     )
     return ttnn.to_memory_config(dram_tensor, memory_config=memory_config)
+
+
+def _to_compact_height_sharded(torch_tensor, device):
+    """Create one compact 1x32-tiled row in sharded L1."""
+    tensor_rows, tensor_columns = torch_tensor.shape[-2:]
+    shard_spec = ttnn.ShardSpec(
+        ttnn.CoreRangeSet(
+            {
+                ttnn.CoreRange(
+                    ttnn.CoreCoord(0, 0),
+                    ttnn.CoreCoord(0, 0),
+                )
+            }
+        ),
+        (tensor_rows, tensor_columns),
+        ttnn.ShardOrientation.ROW_MAJOR,
+    )
+    memory_config = ttnn.MemoryConfig(
+        ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
+        ttnn.BufferType.L1,
+        shard_spec,
+    )
+    dtype = ttnn.bfloat16 if torch_tensor.dtype == torch.bfloat16 else ttnn.float32
+    return ttnn.from_torch(
+        torch_tensor,
+        dtype=dtype,
+        layout=ttnn.TILE_LAYOUT,
+        tile=ttnn.Tile((1, 32)),
+        device=device,
+        memory_config=memory_config,
+    )
 
 
 @pytest.mark.requires_device
@@ -257,6 +314,34 @@ def test_tensor_backed_dfb_nonzero_byte_offset(device, torch_dtype):
         assert_allclose(actual, expected.float(), rtol=0.05, atol=1.0)
     else:
         assert_allclose(actual, expected.float(), rtol=5e-3, atol=1e-4)
+
+
+@pytest.mark.requires_device
+@pytest.mark.parametrize(
+    "torch_dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"]
+)
+def test_tensor_backed_dfb_physical_view_round_trip(device, torch_dtype):
+    """A multi-column compact row survives a 16x32 physical DFB view."""
+    storage_page_count = 48
+    tensor_shape = (1, 32 * storage_page_count)
+    input_torch = (
+        torch.arange(tensor_shape[1], dtype=torch.float32)
+        .reshape(tensor_shape)
+        .to(torch_dtype)
+    )
+    input_tensor = _to_compact_height_sharded(input_torch, device)
+    output_tensor = _to_compact_height_sharded(torch.zeros_like(input_torch), device)
+
+    _make_kernel("tensor_backed_view", tile_count=3, node_count=1)(
+        input_tensor, input_tensor, output_tensor
+    )
+
+    actual = ttnn.to_torch(output_tensor).float()
+    expected = input_torch.float()
+    if torch_dtype == torch.bfloat16:
+        assert_allclose(actual, expected, rtol=0.01, atol=1.0)
+    else:
+        assert_allclose(actual, expected, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.requires_device

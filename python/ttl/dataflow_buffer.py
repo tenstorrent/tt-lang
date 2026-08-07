@@ -125,7 +125,7 @@ def _tensor_backed_dfb_view_properties(
     tile: Optional[Tuple[int, int]],
     context: str,
 ) -> _TensorBackedDFBTensorProperties:
-    """Validate a compute-page view over compact tensor storage."""
+    """Validate a physical compute-page view over compact tensor storage."""
     if tile is None:
         return properties
     try:
@@ -371,9 +371,11 @@ def make_tensor_backed_dfb(
 ) -> DataflowBuffer:
     """Bind a DFB's complete capacity to a sharded L1 tensor byte range.
 
-    ``tile`` may group contiguous 1x32 storage pages into 16x32 or 32x32
-    compute pages without moving data. Other storage reinterpretations are
-    rejected.
+    ``tile`` may reinterpret consecutive bytes from 1x32 storage pages as
+    16x32 or 32x32 compute pages without moving data. This is a physical view,
+    not a logical tensor reshape: it does not preserve TTNN tensor coordinates
+    when a shard contains multiple native-tile columns. Other storage
+    reinterpretations are rejected.
     """
     from .dtype_utils import is_ttnn_tensor
 
