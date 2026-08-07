@@ -9,7 +9,6 @@
 #include <cstdint>
 
 #include "api/compute/eltwise_binary.h"
-#include "api/compute/experimental/mul_reduce_scalar.h"
 
 #ifdef TRISC_MATH
 #include "ckernel_include.h"
@@ -319,11 +318,9 @@ ALWI void row_normalization_block(std::uint32_t inputDfb,
   float reductionStageScaler;
   __builtin_memcpy(&reductionStageScaler, &reductionScalerBits,
                    sizeof(reductionStageScaler));
-  ckernel::mul_reduce_scalar_init(inputDfb, inputDfb);
   MATH((row_normalization_detail::initializeAddRsqrt<APPROX>()));
-  ckernel::mul_reduce_scalar_tile(inputDfb, inputDfb, outputDfb, numTiles,
-                                  reductionStageScaler);
-  ckernel::mul_reduce_scalar_uninit();
+  multiply_full_scalar_reduction_block<numTiles>(inputDfb, inputDfb, outputDfb,
+                                                 reductionStageScaler);
 
   MATH((
       row_normalization_detail::applyAddRsqrt<APPROX, DST_ACCUM_MODE, false, 1>(
