@@ -113,23 +113,42 @@ elision.
 
 ## Pipeline Contract
 
-`ComputeOp` creation and intermediate materialization use this order:
+The complete compiler pipeline uses two compute-creation sequences:
 
 ```text
-ttl-create-producer-compute
+ttl-lower-compute-pipelines
+  -> ttl-create-producer-compute
   -> ttl-insert-intermediate-dfbs
   -> convert-ttl-to-compute
-  -> ttl-auto-sync
+  -> ttl-insert-cb-sync
+  -> ttl-finalize-dfb-indices
+  -> ttl-select-compute-pipeline-schedules
+  -> ttl-lower-compute-pipelines
+  -> ttl-create-producer-compute
+  -> ttl-insert-intermediate-dfbs
+  -> convert-ttl-to-compute
+  -> ttl-insert-cb-sync
+  -> ttl-finalize-dfb-indices
+  -> ttl-set-compute-kernel-config
 ```
 
 `ttl-create-producer-compute` applies creation plans that are legal in the
-original kernel. Rejected candidates remain unchanged so intermediate DFB insertion can
-repair storage or publication constraints. `ttl-insert-intermediate-dfbs`
-computes its own immutable plan, inserts the required storage, and rewrites the
-selected consumer operands. `convert-ttl-to-compute` then rebuilds creation
-and lifetime plans from the modified kernel and requires every output store to
-be assigned. `ttl-auto-sync` inserts absent DFB pushes and pops after final
-uses are known.
+original kernel. Rejected candidates remain unchanged so intermediate DFB
+insertion can repair storage or publication constraints.
+`ttl-insert-intermediate-dfbs` computes its own immutable plan, inserts the
+required storage, and rewrites the selected consumer operands.
+`convert-ttl-to-compute` rebuilds creation and lifetime plans from the modified
+kernel. It creates ordinary `ttl.compute` operations immediately and preserves
+recognized multi-domain graphs as `ttl.compute_pipeline` operations.
+
+The first DFB finalization exposes physical input identities required by
+kernel-configuration analysis. `ttl-select-compute-pipeline-schedules` resolves
+kernel configuration and schedule alternatives together, then applies only the
+pipeline schedule decisions. `ttl-lower-compute-pipelines` inlines the selected
+pipeline stages. The second compute-creation sequence emits the selected
+compute-local block or the ordinary materialized operations and finalizes any
+new DFBs. `ttl-set-compute-kernel-config` resolves and applies the configuration
+for the resulting operations before DST assignment.
 
 No plan survives a pass that modifies the kernel. Each of the three TT-Lang
 pipeline entry points must preserve and test this order:
@@ -314,8 +333,8 @@ generic tracer therefore requires an unstored elementwise producer of a
 reduction to be materialized in a DFB. Direct reduction creation also requires
 DFB-backed input and scaler operands.
 
-Row normalization uses a target-specific schedule when the complete operation
-sequence has this semantic form:
+Row normalization recognition accepts the following semantic form without
+consulting the target or kernel configuration:
 
 ```text
 squared = input * input
@@ -326,52 +345,62 @@ normalized = input * broadcast(inverse_rms)
 result = normalized * gamma  // optional
 ```
 
-Recognition occurs during immutable candidate analysis. The resulting
-`RowNormalizationPlan` records every absorbed operation and its operands, the
-input and optional gamma values, scalar attributes, row tile count, effective
-DST capacity, and gamma mode. Application verifies the recorded operands and
-emits one `ttl.tile_row_normalization_block`; it does not repeat recognition or
-legality analysis.
+Immutable analysis records every absorbed operation and operand, the input and
+optional gamma values, scalar attributes, row tile count, publication
+transaction, and the three iteration domains. Initial conversion creates a
+three-stage `ttl.compute_pipeline` with
+`pipeline_kind = row_normalization`. The stages compute the full scalar
+reduction, finalize the scalar, and consume the scalar across the row. Stage
+results remain tensor SSA values and do not imply DFB storage.
 
-The schedule is selected only when all of these conditions hold:
+SumOfSquares uses the same mechanism with
+`pipeline_kind = multiply_full_scalar_reduction`. Its single reduction stage
+keeps the multiply and full scalar sum together while schedule selection
+decides whether the entire reduction remains in one DST acquisition.
 
-- the target is Blackhole and the DFB data type is bf16;
-- input and result are the same static rank-2 one-row tensor type;
-- the row contains at least one tile and fits the effective DST capacity,
-  restricted to the block helper's eight-tile limit;
-- the sum reduces both tensor dimensions and uses a unit reduction scaler;
-- scale and epsilon are finite and positive;
-- each internal value has the uses required by the schedule;
-- optional gamma has the complete row type;
-- publication contains exactly one reserve/store transaction; and
-- no instrumentation would be absorbed into the block schedule.
+`ttl-select-compute-pipeline-schedules` adds each recognized pipeline to the
+immutable kernel-configuration problem with two alternatives:
 
-Failure to satisfy a specialization condition leaves the expression available
-to ordinary creation and intermediate DFB materialization. A rejected
-specialization does not modify IR.
+- `retained_scalar` requires the target compound primitive and one DST slot per
+  input tile; and
+- `materialized` retains tensor semantics without prospective internal
+  resources and is lowered through ordinary compute creation.
 
-`LowerRowNormalizationCompute` verifies the planned compute against its target,
-formal inputs and output, row size, DST capacity, and store before mutation. It
-then creates one DST section for the entire row. Target lowering performs the
-sum of squares, applies scale and epsilon, computes reciprocal square root,
-moves the retained scalar to a compute source register, clears the acquired DST
-section, and multiplies it across all input tiles. Optional gamma multiplication
-occurs before the output block is packed. The generated kernel therefore uses
-one DST acquisition and no intermediate DFB.
+The solver selects destination width, synchronization mode, tile strategies,
+and pipeline schedules together. Effective capacity is the minimum of the
+selected DST configuration and the target helper limit. Blackhole provides the
+current bf16 retained schedules for one through eight tiles. Wormhole B0 and an
+unspecified target select materialized execution because no equivalent
+compound helper has been validated for those targets. Capacity, target, dtype,
+and kernel-configuration rejection reasons are available through the
+`ttl-reduction-fusion` missed-remark category.
+
+Pipeline lowering transfers the selected schedule to the inlined result
+operation. A retained schedule creates `ttl.tile_mul_reduce_block` or
+`ttl.tile_row_normalization_block`; a materialized schedule cannot rematch the
+same specialization and proceeds through ordinary intermediate DFB planning.
+The final kernel-configuration pass validates the operations that remain after
+this transformation.
+
+The row-normalization target lowering performs the sum of squares, applies
+scale and epsilon, computes reciprocal square root, moves the scalar to a
+compute source register, clears the acquired DST section, and multiplies it
+across all input tiles. Optional gamma multiplication occurs before the output
+block is packed. The generated retained schedule uses one DST acquisition and
+no intermediate DFB. SumOfSquares similarly retains all products until the
+full scalar reduction completes and publishes only element `[0, 0]`.
 
 The row-normalization LLK applies its reduction scaler during both reduction
 stages. TTKernel-to-C++ lowering passes the square root of the semantic scale so
 the complete reduction applies the scale once.
 
-This schedule establishes the required representation for general reduction
-fusion but does not make the generic tracer multi-domain. A general planner
-must record ordered stages with independent iteration domains, explicit
-cross-stage values, and target storage capabilities. It must select whether a
-reduction result remains in DST, moves to a source register, or is materialized
-in a DFB from complete liveness, use, capacity, and publication facts. Extra
-consumers require either a recorded publication or materialization; spelling
-changes such as division by square root require semantic recipe equivalence.
-Application must remain mechanical and execute only the selected typed plan.
+`ttl.compute_pipeline` establishes the target-independent multi-domain
+representation. The current retained alternatives still select two compound
+block primitives. General scalar reuse additionally requires explicit
+cross-stage carrier lifetimes, multiple scalar consumers, external publication,
+and target capabilities for each scalar finalization and consumer operation.
+Unsupported graphs continue through materialized lowering without changing
+their tensor semantics.
 
 ### Cross-Region Recomputation
 

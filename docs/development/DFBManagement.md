@@ -331,7 +331,8 @@ consumers that now receive DFB-attached operands. The following
 ### DFB Lifetime and `ComputeOp` Creation Planning
 
 This section defines the DFB ownership, availability, and materialization facts
-used by `ComputeOp` creation. [ComputeOpCreation.md](ComputeOpCreation.md) is the
+used by `ComputeOp` creation.
+[ComputeOpCreationAndFusion.md](ComputeOpCreationAndFusion.md) is the
 authoritative design for candidate planning, fusion, output-store placement,
 kernel-wide selection, and mechanical application.
 
@@ -438,7 +439,7 @@ Output-store planning groups stores by their `cb_reserve` operations and
 prevents one compute from combining several reserve transactions of the same
 DFB. This preserves producer-pointer order when a push moves after the created
 `ttl.compute`. Kernel-wide selection and application ordering are described in
-`ComputeOpCreation.md`.
+`ComputeOpCreationAndFusion.md`.
 
 The analysis is kernel-local because creation moves operations only within
 one kernel. Producer and consumer pointer states are separate, and the

@@ -14,6 +14,7 @@ strategy can impose different requirements on those shared settings.
 TTCore target attributes ---> KernelTargetEnvironment ---+
 pass options and attrs -----> KernelConfigPolicy --------+--> resolver
 TTL tile operations --------> KernelRequirements --------+       |
+semantic pipelines ---------> schedule alternatives -----+       |
                                                                  v
                                                          KernelConfigPlan
                                                                  |
@@ -58,10 +59,11 @@ existing TTCore system and device descriptions. If both sources are present,
 their architectures must agree. A device selecting chips with different
 architectures is invalid.
 
-When neither source is present, the compiler uses the current shared Wormhole
-B0/Blackhole configuration relations without architecture-specific
-restrictions. This environment is limited to compiler testing. Pipelines that
-emit device kernels must attach an architecture before this pass.
+When neither source is present, the compiler uses only configuration relations
+shared by every registered target. It does not assume a Wormhole B0 or
+Blackhole compound schedule. This environment is limited to compiler testing.
+Pipelines that emit device kernels must attach an architecture before this
+pass.
 
 Capability queries contain architecture and backend restrictions. They consume
 only target-independent execution categories, element types, and operand
@@ -76,7 +78,10 @@ The current TT-Lang runtime launches Wormhole B0 and Blackhole through
 `ttnn.ComputeConfigDescriptor`. Both expose 16-bit and 32-bit destination
 elements. Their current broadcast LLKs restrict non-32-bit broadcast inputs to
 16-bit destination elements. Blackhole row reduction and Wormhole reduction
-also restrict full-fp32 accumulation.
+also restrict full-fp32 accumulation. Blackhole provides the current bf16
+retained schedules for multiply/full-scalar reduction and row normalization at
+one through eight tiles. Wormhole B0 has no validated implementation of those
+compound schedules and selects materialized execution.
 
 Quasar requires the Gen2 configuration descriptor, global unpack routing, and
 Quasar kernel launch mechanism. The current TT-Lang runtime does not implement
@@ -121,12 +126,20 @@ input storage width. The width query uses the TTCore tile element type, so a
 supported operation with 32-bit integer destination elements requires 32-bit
 destination registers without an integer-type exception in this analysis.
 
+A compiler-recognized `ttl.compute_pipeline` contributes schedule alternatives
+instead of fixed tile operations. Each option records its semantic pipeline
+kind, schedule, DFB and destination requirements, element type, and required
+DST footprint. The ordinary materialized schedule remains legal when a target
+does not provide the compute-local schedule. The pipeline verifier proves the
+semantic graph before configuration analysis consumes its kind.
+
 ## Resolution
 
 The resolver maintains a finite set of complete target configurations:
 
 ```text
 destination element width:     {Bits16, Bits32}
+DST synchronization mode:      {DoubleBuffered, Full}
 DFB N unpack mode:              {Default, UnpackToDestination}
 ```
 
@@ -139,12 +152,19 @@ Fixed operation requirements are then intersected with the target-supported
 relations. Each strategy option is represented by the same requirement types
 as a fixed operation.
 
-Strategy selection and configuration selection are solved together. The
-search chooses the unresolved operation with the fewest compatible options,
-applies one option to a copy of the current domains, and continues until every
-operation has a strategy. The resolver tries FPU before SFPU after hard
-constraints are satisfied, preserving the default FPU preference without
-depending on interface result order.
+Tile-strategy, pipeline-schedule, and configuration selection are solved
+together. The search chooses the unresolved decision with the fewest compatible
+options, applies one option to a copy of the current domains, and continues
+until every decision is resolved. The resolver tries retained target schedules
+and FPU tile strategies before their ordinary alternatives after hard
+constraints are satisfied.
+
+A retained pipeline schedule intersects target capability, element type, DST
+footprint, destination width, and synchronization mode. Capacity uses the
+smaller of the physical DST capacity selected by the kernel configuration and
+the target helper limit. Selection records a typed reason when the retained
+schedule is rejected for target, element type, capacity, or another
+kernel-configuration requirement.
 
 Joint resolution is required for correctness. A fixed SFPU consumer can require
 unpack-to-DST-f32 for a DFB that is also read by an eligible binary operation.
@@ -156,9 +176,11 @@ After all hard constraints are satisfied, reduce and matmul preferences select
 32-bit destination elements when they remain supported. Preferences never make
 a valid domain empty.
 
-DST synchronization currently has no operation-specific compatibility
-constraints. `enabled` selects full synchronization; `auto` and `disabled`
-select double-buffered synchronization.
+Pipeline footprint can make synchronization mode operation-specific because
+full and double-buffered modes expose different DST capacities. `enabled` and
+`disabled` remain hard policy constraints. `auto` retains both modes until all
+operation and schedule choices are resolved and prefers double-buffered mode
+when both remain legal.
 
 An empty domain produces a diagnostic identifying both incompatible
 requirements. The resolver retains typed conflict evidence rather than
@@ -169,13 +191,17 @@ reconstructing a cause from mutated IR.
 Resolution returns a `KernelConfigPlan` containing:
 
 - one selected strategy for each operation with alternatives;
+- one selected schedule and optional typed rejection for each semantic
+  pipeline;
 - one destination element width;
 - one DST synchronization mode;
 - the sorted set of DFB indices using unpack-to-DST-f32.
 
-Only the resolver can construct a plan. Plan application writes operation
-strategy attributes and function configuration attributes without re-deriving
-policy or introducing additional failure points. The input-only
+Only the resolver can construct a plan. The schedule-selection pass applies
+only pipeline decisions so selected pipelines can be lowered before final DFB
+allocation. The final configuration pass applies tile strategies, pipeline
+decisions, and function configuration attributes without re-deriving policy or
+introducing additional failure points. The input-only
 `ttl.enable_fpu_binary_ops` policy attribute is removed. Application derives no
 additional policy.
 
@@ -189,7 +215,10 @@ additional policy.
   kernel.
 - One concrete destination width and synchronization mode apply to the complete
   kernel.
-- Strategy selection is stable across later IR rewrites.
+- Tile-strategy and pipeline-schedule selection use the same immutable kernel
+  requirements and target domains.
+- Pipeline schedule selection occurs before any target-specific pipeline
+  lowering.
 - Failure before plan application leaves IR unchanged.
 - Unknown execution semantics and unresolved DFB identities are errors.
 
@@ -199,16 +228,26 @@ The relevant ordering is:
 
 ```text
 ttl-finalize-dfb-indices
+ttl-select-compute-pipeline-schedules
+ttl-lower-compute-pipelines
+ttl-create-producer-compute
+ttl-insert-intermediate-dfbs
+convert-ttl-to-compute
+ttl-finalize-dfb-indices
 ttl-set-compute-kernel-config
 ttl-assign-dst
 ...
 convert-ttl-to-ttkernel
 ```
 
-DFB finalization must run first because the plan writes physical DFB indices to
-`ttl.unpack_to_dest_fp32`. DST assignment must run after strategy selection
-because operand routes determine copy insertion and register allocation.
-TTKernel conversion consumes the same selected strategies.
+The first DFB finalization resolves input identities required by schedule
+selection. The selection pass applies no function configuration attributes.
+Pipeline lowering and the second compute-creation sequence then create the
+selected target block or materialized DFBs. The second DFB finalization resolves
+their physical identities before final configuration. DST assignment runs
+after strategy selection because operand routes determine copy insertion and
+register allocation. TTKernel conversion consumes the same selected
+strategies.
 
 Passes between strategy selection and conversion must preserve the selected
 operand routes. A pass that cannot preserve them must reject the operation
