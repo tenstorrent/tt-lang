@@ -25,6 +25,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -331,6 +332,10 @@ public:
 
   LaunchNodeDomain getOperationLaunchDomain(Operation *op) const;
 
+  /// Returns DFB acquisition and release relations for the enclosing kernel.
+  const DFBAcquireReleaseIndex &
+  getDFBAcquireReleaseIndex(Operation *operation) const;
+
 private:
   /// Record the DFB geometry and destination offset for one receive post.
   LogicalResult addPipeReceiver(Operation *op,
@@ -359,6 +364,8 @@ private:
   /// Cached operation-keyed analysis facts are valid only before lowering
   /// starts erasing or replacing IR operations.
   llvm::DenseMap<Operation *, LaunchNodeDomain> operationLaunchDomains;
+  llvm::DenseMap<Operation *, std::unique_ptr<DFBAcquireReleaseIndex>>
+      dfbLifecycles;
 };
 
 } // namespace mlir::tt::ttl

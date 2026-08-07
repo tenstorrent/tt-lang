@@ -20,6 +20,7 @@ python my_kernel.py --no-ttl-maximize-dst
 | `--ttl-strict-f32-acc` / `--no-ttl-strict-f32-acc` | disabled | Error at compile time if a `+=` accumulation loop's output block exceeds f32 DST capacity (4 tiles with double-buffering). When enabled, guarantees each accumulation step fits in a single DST section without subblocking. |
 | `--ttl-compiler-dfbs` / `--no-ttl-compiler-dfbs` | enabled | Insert compiler-allocated intermediate DFBs when an operation requires DFB-attached inputs, fusion would read a source after its DFB is released, or a computed value is stored by operations in multiple MLIR basic blocks. When disabled, the compiler emits an error if materialization is required. |
 | `--ttl-pipe-computed-addresses` / `--no-ttl-pipe-computed-addresses` | enabled | Use computed receiver DFB addresses for eligible PipeNet transfers. When disabled, transfers use receiver-published destination addresses; multicast still requires proven equal runtime receiver addresses. |
+| `--ttl-pipe-capacity-sync` / `--no-ttl-pipe-capacity-sync` | enabled | Use capacity-counter synchronization when the receiver wait and pop execute on the receiver NOC thread and the computed-address transfer passes the DFB ownership and count proofs. When disabled, computed-address transfers use receiver-post synchronization. |
 | `--ttl-pipe-global-semaphores-only` / `--no-ttl-pipe-global-semaphores-only` | disabled | Allocate all compiler-managed PipeNet synchronization counters in GlobalSemaphore storage, leaving local hardware semaphore ids available to the application. |
 | `--ttl-reuse-user-dfbs` / `--no-ttl-reuse-user-dfbs` | enabled | Reuse physical DFB indices when concurrent-kernel liveness proves that compatible logical DFB lifetimes do not overlap. Disabling compacts provisional user indices without introducing new user-DFB sharing. |
 | `--ttl-dfb-exact-coloring-search-limit N` | `1000000` | Examine at most `N` states during deterministic exact DFB allocation when order-dependent first-fit does not satisfy a DFB index or L1 limit. This bounds compile time; reaching the limit reports an inconclusive result, not a capacity proof. |
@@ -121,6 +122,7 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 | `strict-f32-acc` | bool | `false` | Error if a `+=` accumulation loop's output block exceeds f32 DST capacity. |
 | `compiler-dfbs` | bool | `true` | Insert compiler-allocated intermediate DFBs for DFB-only operands, source-lifetime preservation, and computed values stored by operations in multiple MLIR basic blocks. Error if disabled and any operation requires one. |
 | `pipe-computed-addresses` | bool | `true` | Use computed receiver DFB addresses for eligible PipeNet transfers. When disabled, transfers use receiver-published destination addresses; multicast still requires proven equal runtime receiver addresses. |
+| `pipe-capacity-sync` | bool | `true` | Use capacity-counter synchronization when the receiver wait and pop execute on the receiver NOC thread and the computed-address transfer passes the DFB ownership and count proofs. When disabled, computed-address transfers use receiver-post synchronization. |
 | `pipe-global-semaphores-only` | bool | `false` | Allocate all compiler-managed PipeNet synchronization counters in GlobalSemaphore storage, leaving local hardware semaphore ids available to the application. |
 | `reuse-user-dfbs` | bool | `true` | Reuse physical DFB indices for compatible logical DFBs with proven non-overlapping concurrent lifetimes. |
 | `exact-coloring-search-limit` | uint64 | `1000000` | Maximum states examined during deterministic exact DFB allocation before reporting an inconclusive result. |
@@ -148,7 +150,7 @@ The pipeline runs these passes in order:
 - `ttl-verify-dfb-spsc` -- verify per-node DFB producer/consumer uniqueness after finalization
 - `ttl-erase-pipenet-scopes` -- remove verified PipeNet structural markers
 - `ttl-validate-cb-budget` -- verify static DFB storage fits the per-core L1 budget
-- `convert-ttl-to-ttkernel` -- lower TTL DMA and PipeNet operations to TTKernel, selecting destination addressing and synchronization-counter storage
+- `convert-ttl-to-ttkernel` -- lower TTL DMA and PipeNet operations to TTKernel, selecting destination addressing, synchronization protocol, and synchronization-counter storage
 - `ttkernel-insert-inits` -- insert hardware init ops before compute ops
 - `ttkernel-insert-l1-accumulation` -- insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops
 - `ttkernel-combine-pack-tiles` -- combine consecutive `pack_tile` into `pack_tile_block` *(only if `combine-pack-tiles=true`)*
@@ -229,6 +231,21 @@ Partition `ttl.compute` into DST-sized subblocks.
 ttlang-opt input.mlir -p 'func.func(ttl-subblock-compute-for-dst{subblock-sync=true})'
 ```
 
+#### `convert-ttl-to-ttkernel`
+
+Lower TTL data movement and PipeNet operations to TTKernel.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `reduce-full-fp32` | bool | `true` | Enable FP32 accumulation for reduce operations. |
+| `pipe-computed-addresses` | bool | `true` | Use computed receiver DFB addresses for eligible PipeNet transfers. When false, transfers use receiver-published destination addresses; multicast still requires proven equal runtime receiver addresses. |
+| `pipe-capacity-sync` | bool | `true` | Use capacity-counter synchronization when the receiver wait and pop execute on the receiver NOC thread and the computed-address transfer passes the DFB ownership and count proofs. When false, computed-address transfers use receiver-post synchronization. |
+| `pipe-global-semaphores-only` | bool | `false` | Allocate all compiler-managed PipeNet synchronization counters in GlobalSemaphore storage. |
+
+```bash
+ttlang-opt input.mlir -p 'builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=false pipe-global-semaphores-only=true})'
+```
+
 #### `ttl-dump-cb-flow-graph`
 
 Analyze dataflow buffer producer/consumer relationships and dump the flow graph.
@@ -239,20 +256,6 @@ Analyze dataflow buffer producer/consumer relationships and dump the flow graph.
 
 ```bash
 ttlang-opt input.mlir -p 'ttl-dump-cb-flow-graph{output="/tmp/cb_graph.json"}'
-```
-
-#### `convert-ttl-to-ttkernel`
-
-Lower TTL data movement and PipeNet operations to TTKernel operations.
-
-| Option | Type | Default | Description |
-|---|---|---|---|
-| `reduce-full-fp32` | bool | `true` | Enable FP32 accumulation for reduce operations. |
-| `pipe-computed-addresses` | bool | `true` | Use computed receiver DFB addresses for eligible PipeNet transfers. When false, use receiver-published destination addresses; multicast still requires proven equal runtime receiver addresses. |
-| `pipe-global-semaphores-only` | bool | `false` | Allocate all compiler-managed PipeNet synchronization counters in GlobalSemaphore storage. |
-
-```bash
-ttlang-opt input.mlir -p 'builtin.module(convert-ttl-to-ttkernel{pipe-global-semaphores-only=true})'
 ```
 
 #### `ttkernel-specialize-cores`

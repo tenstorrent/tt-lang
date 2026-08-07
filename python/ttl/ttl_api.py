@@ -2013,6 +2013,7 @@ def _lower_program_to_kernel(
 
         reduce_fp32_flag = int(compiler_options.reduce_full_fp32)
         pipe_computed_flag = int(compiler_options.pipe_computed_addresses)
+        pipe_capacity_sync_flag = int(compiler_options.pipe_capacity_sync)
         pipe_global_semaphores_only_flag = int(
             compiler_options.pipe_global_semaphores_only
         )
@@ -2021,6 +2022,7 @@ def _lower_program_to_kernel(
             (
                 f"convert-ttl-to-ttkernel{{reduce-full-fp32={reduce_fp32_flag} "
                 f"pipe-computed-addresses={pipe_computed_flag} "
+                f"pipe-capacity-sync={pipe_capacity_sync_flag} "
                 f"pipe-global-semaphores-only={pipe_global_semaphores_only_flag}}}"
             ),
             "func.func(ttkernel-lower-scalar-fp-types)",

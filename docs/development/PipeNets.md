@@ -55,41 +55,56 @@ program.
 
 ## Semantics
 
-Lowering selects one of two receiver-post protocols:
+Lowering selects the destination-address mechanism independently from
+the sender synchronization mechanism:
 
 - `RA`: receiver-authored address.
 - `CA`: computed address.
 - `RP`: receiver-post synchronization.
+- `CC`: capacity-counter synchronization.
 
-The slash in a mode name combines the address mechanism with receiver-post
-synchronization.
+The slash in a mode name combines one address mechanism with one
+synchronization mechanism.
 
 | Mode | Destination address | Send condition |
 | --- | --- | --- |
 | `RA/RP` | Each receiver publishes its reserved DFB address. | Every required receiver has posted. |
 | `CA/RP` | The sender computes each receiver DFB address. | Every required receiver has posted. |
+| `CA/CC` | The sender computes each receiver DFB address. | Every required receiver has capacity. |
 
-Both modes use the same payload write and receiver-completion
+`RA/CC` is unsupported because CC permits a send without a current
+receiver post, so the sender must compute the destination address.
+
+All three modes use the same payload write and receiver-completion
 signal. A sender-ready increment means that the receiver has reserved
 destination storage; it does not mean that the payload write is
 complete. The sender signals payload completion separately after its
 NoC write barrier.
 
-| Protocol event or property | `RA/RP` | `CA/RP` |
-| --- | --- | --- |
-| Receiver reserves a destination DFB block | Yes | Yes |
-| Receiver publishes the reserved block address | Yes: one inline 32-bit NoC write per post | No |
-| Receiver increments the sender-ready counter | After the published address is visible | After reserving the block |
-| Condition for the sender's payload write | Every required receiver has posted | Every required receiver has posted |
-| Sender obtains the destination address | Reads the published address-table entry | Computes `DFB base + slot * block stride + static offset` |
-| Sender/receiver synchronization | Per-transfer receiver-post rendezvous | Per-transfer receiver-post rendezvous |
-| Multicast | Supported when receiver runtime addresses are proven equal | Supported with proven equal receiver runtime addresses |
+| Protocol event or property | `RA/RP` | `CA/RP` | `CA/CC` |
+| --- | --- | --- | --- |
+| Receiver reserves a destination DFB block | Yes | Yes | Yes |
+| Receiver publishes the reserved block address | Yes: one inline 32-bit NoC write per post | No | No |
+| Receiver increments the sender-ready counter | After the published address is visible | After reserving the block | No |
+| Condition for the sender's payload write | Every required receiver has posted | Every required receiver has posted | The receiver has available DFB capacity |
+| Sender obtains the destination address | Reads the published address-table entry | Computes `DFB base + slot * block stride + static offset` | Computes the same address |
+| Receiver action after popping a block | No capacity update | No capacity update | Increments the sender's capacity counter |
+| Sender/receiver synchronization | Per-transfer receiver-post rendezvous | Per-transfer receiver-post rendezvous | Sender may use the next computed slot when a capacity credit is available |
+| Multicast | Supported when receiver runtime addresses are proven equal | Supported with proven equal receiver runtime addresses | Not currently supported; uses `CA/RP` instead |
 
 The practical difference is address publication, not send admission.
 `CA/RP` does not permit the sender to run before the receiver post. It
 removes the receiver's address write and the sender's address-table read
 when the compiler can prove that its computed address is the address of
 the block the receiver reserved.
+
+`CA/CC` also removes the per-transfer receiver-post rendezvous. The
+capacity counter starts with one credit per free receiver DFB slot.
+The sender can use the next computed slot when a credit is available,
+and the receiver returns a credit by incrementing the capacity counter
+after its pop. This allows sender and receiver execution to overlap
+across multiple DFB slots and removes the receiver-post synchronization
+traffic.
 
 Point-to-point transfers use `RA/RP` when the sender cannot materialize a
 proven receiver address sequence. Multicast can use either address mechanism
@@ -131,11 +146,12 @@ Pipe transfers have the following operational semantics:
 - `ttl.copy(pipe, dst_blk)` posts a receive for the user-reserved
   destination block and returns a transfer handle. `RP` records the
   post as a send condition. `RA/RP` also publishes the runtime
-  destination address; `CA/RP` computes it on the sender.
+  destination address; both CA modes compute it on the sender.
 - Waiting on that transfer handle waits for the sender's completion
   signal for that posted receive.
-- `ttl.copy(src_blk, pipe)` starts a send and waits until every
-  destination has posted a receive. The send then writes `src_blk` directly to the
+- `ttl.copy(src_blk, pipe)` starts a send. `RP` waits until every
+  destination has posted a receive; `CC` waits until every destination
+  has capacity. The send then writes `src_blk` directly to the
   receiver-owned DFB storage, waits for the payload write to complete,
   and signals completion to the receivers.
 - The returned send handle preserves the general TTL copy API. For pipe
@@ -346,13 +362,13 @@ that can complete the receive.
 
 ## Pipe transfer resource model and TTKernel lowering
 
-Pipe lowering first expands public pipe operations to Pipe Transfer IR:
+Pipe lowering first expands high-level pipe operations to Pipe Transfer IR:
 
 - `ttl.copy(pipe, dst_blk)` expands to `ttl.pipe_transfer.post`.
 - `ttl.copy(src_blk, pipe)` expands to `ttl.pipe_transfer.send`.
 - `ttl.wait` on a pipe receive handle expands to
   `ttl.pipe_transfer.wait`.
-- `ttl.wait` on a pipe send handle remains a public `ttl.wait` until
+- `ttl.wait` on a pipe send handle remains a high-level `ttl.wait` until
   TTKernel conversion, where it is erased because `ttl.pipe_transfer.send`
   has already waited for the payload write and signaled completion.
 
@@ -387,30 +403,32 @@ Table 1. Pipe transfer resources, backing storage, and allocation scale.
 | Destination payload block (`dst_blk`) | User-reserved DFB block on the destination node. | User DFB reserve depth. |
 | Address table | Compiler-managed SRAM scratch on each source node; 4 bytes per entry, with the total table allocation rounded up to 32-byte alignment. | Per source node: one entry per concurrently live transfer sourced by that node. |
 | Sender-ready counter | Source-node local semaphore or GlobalSemaphore-backed SRAM word. | Per source node: one counter per concurrently live transfer sourced by that node. |
+| Sender-capacity counter | Source-node local semaphore or GlobalSemaphore-backed SRAM word. | Per source node, one counter per proven receiver endpoint in `CA/CC` mode. Different source nodes may reuse an allocation when their initial capacities match. |
 | Receiver-completion counter | Destination-node local semaphore or GlobalSemaphore-backed SRAM word. | One logical counter per transfer node at each receiver. Transfers with disjoint receiver sets may reuse one counter allocation. |
 
 Here, source node means a physical node in the launched device grid. It
-does not mean one allocation per static pipe. Many transfers from the
-same source node reuse the same allocation slot unless their live
-intervals overlap. The number of source nodes is bounded by the launched
-device grid, not by the number of static pipes.
+does not mean one allocation per static pipe. Address-table entries and
+sender-ready counters from the same source node reuse an allocation slot
+unless their live intervals overlap. The number of source nodes is bounded
+by the launched device grid, not by the number of static pipes.
 
 Receiver-completion allocation follows the physical receiver sets. Two
-transfer nodes that share any receiver use distinct counters because either
-send may complete first. Transfer nodes with disjoint receiver sets may reuse
-one counter allocation because the state is independent on each physical node.
-Repeated dynamic executions of one transfer node reuse its assigned counter
-and advance a cumulative expected-count value.
+transfer nodes that share any receiver use distinct counters because
+either send may complete first. Transfer nodes with disjoint receiver sets may
+reuse one counter allocation because the state is independent on each physical
+node. Repeated dynamic executions of one transfer node reuse its assigned
+counter and advance a cumulative expected-count value.
 
-The compiler uses one allocation abstraction for completion and readiness
-counters. By default, it allocates completion counters first, using local
-semaphore ids before GlobalSemaphore storage. It then allocates readiness
+The compiler uses one allocation abstraction for completion, readiness, and
+capacity counters. By default, it allocates completion counters first, using
+local semaphore ids before GlobalSemaphore storage. It then allocates readiness
 counters locally only if the entire per-kernel readiness allocation fits in the
 remaining local ids; otherwise all readiness counters use GlobalSemaphore
-storage. `--ttl-pipe-global-semaphores-only` allocates every compiler-managed
-PipeNet counter in GlobalSemaphore storage, preserving all local semaphore ids
-for application use. No PipeNet counter fails solely because all 16 local
-semaphore ids are occupied.
+storage. Capacity counters use any remaining local ids and then
+GlobalSemaphore storage. `--ttl-pipe-global-semaphores-only` allocates every
+compiler-managed PipeNet counter in GlobalSemaphore storage, preserving all
+local semaphore ids for application use. No PipeNet counter fails solely
+because all 16 local semaphore ids are occupied.
 
 The address table and synchronization counters all reside in Tensix L1 SRAM,
 but they use different allocation mechanisms. TTKernel local semaphores consume
@@ -474,7 +492,8 @@ future typed device APIs should change only the runtime binding
 mechanism, not the IR-level resource model.
 
 The `RA/RP` address-table entry and `RP` sender-ready counter do not
-remain live until the public transfer handle is waited on. They carry
+remain live until the transfer handle returned by `ttl.copy` is waited
+on. They carry
 only pre-send state: the receiver-published DFB address and the count
 proving that the required receivers have posted. After the send resets
 the ready counter and, for `RA/RP`, reads the address-table entry, those
@@ -550,7 +569,7 @@ their live intervals do not overlap.
 Address-table storage is L1 scratch, not semaphore storage, so it does
 not consume semaphore ids.
 
-### CA/RP: computed receiver address
+### CA/RP and CA/CC: computed receiver address
 
 Some transfers do not need receiver-authored address publication. When the
 graph proves a receiver address sequence that the sender can materialize, the
@@ -602,9 +621,50 @@ pointer by `slot_span` blocks and permits it to return to the first block only
 when the advance reaches `block_count` exactly. The condition is evaluated over
 the reachable recurrence; repeat-stride divisibility is not required.
 
-When the address proof succeeds, lowering selects `CA/RP`. The address-table
-write and read are removed, but the receiver still increments the sender-ready
-counter and the sender still waits for every required receiver to post.
+When the address proof succeeds but the capacity proof does not,
+lowering selects `CA/RP`. The address-table write and read are removed,
+but the receiver still increments the sender-ready counter and the
+sender still waits for every required receiver to post.
+
+When both proofs succeed, lowering selects `CA/CC`. The capacity
+counter is initialized to the receiver DFB `block_count`, and the
+receiver's remote increment after a pop is its only writer. The sender
+tracks its cumulative acquire count in a kernel-local counter and waits
+for the capacity counter to reach that count before each payload
+write. The sender never writes the shared capacity counter, so a receiver
+release cannot race with a sender update.
+
+`CA/CC` uses these events:
+
+1. Function entry initializes `%capacity_counter` to the receiver DFB
+   `block_count` with `ttkernel.noc_semaphore_set` on its local or
+   GlobalSemaphore-backed pointer, and allocates a zero-initialized kernel-local
+   cumulative-acquire counter for the sender.
+2. Before each payload write, the sender loads its cumulative-acquire
+   counter, adds the acquire count, stores the incremented value back,
+   and waits until `%capacity_counter` reaches that value with
+   `ttkernel.experimental.semaphore_wait_min`. The sender never writes
+   `%capacity_counter` before computing `%dst_addr` and issuing the payload
+   NoC write.
+3. The sender still signals receiver completion after the payload write
+   barrier, using the transfer node's receiver-completion counter. All three
+   modes use the same completion mechanism.
+4. The receiver executes its normal receive wait, push, wait-front, and
+   pop sequence.
+5. Lowering emits `ttkernel.noc_semaphore_inc` to the source-node
+   capacity counter after the proven receiver pop, followed by
+   `ttkernel.noc_async_atomic_barrier`.
+
+The receiver wait and pop must execute on the receiver's NOC thread because
+the capacity release is a NoC semaphore increment. A transfer whose consumer
+thread owns the pop retains receiver-post synchronization. Debug output from
+`-debug-only=ttl-pipe-capacity-analysis` reports why a transfer was not
+selected for `CA/CC`.
+
+`CA/CC` removes receiver writes to the source-node address table and
+receiver increments of the sender-ready counter. The receiver-completion
+counter remains unchanged because it reports payload arrival, not sender
+capacity.
 
 #### Receiver address-sequence proof
 
@@ -891,13 +951,19 @@ for T in pipe_graph.transfer_nodes:
 
     if fabric_transport(T):
         synchronization_mode(T) = FABRIC_FLOW_CONTROL
+    else if address_mode(T) == CA
+       and capacity_sync_enabled
+       and capacity_proof(T):
+        synchronization_mode(T) = CC
     else:
         synchronization_mode(T) = RP
 ```
 
-Fabric transfers use `CA`, routing-plane flow control, and a
-receiver-completion counter. Local transfers use receiver-post sender
-readiness.
+The current capacity proof restricts `CC` to intra-device point-to-point NoC
+transfers, so intra-device collectives select `CA/RP` or `RA/RP`. Fabric
+transfers use `CA`, routing-plane flow control, and a receiver-completion
+counter. They use neither receiver-post sender readiness nor the `CC` capacity
+protocol.
 
 ##### Partial-overlap example
 
@@ -919,31 +985,163 @@ two address classes and rejects the multicast. A uniform-repeat-stride
 predicate would reject all cases; pointwise equivalence accepts exactly the
 legal one.
 
+#### CA/CC capacity proof
+
+For each receiver endpoint `E`, let `D` be its finalized receiver DFB.
+The proof establishes this invariant:
+
+```text
+admitted_sends(E) <= block_count(D) + completed_one_block_pops(D)
+```
+
+The capacity counter is the right side: it starts at `block_count(D)`
+and the receiver increments it once after each proven one-block pop. The
+sender's cumulative-acquire counter assigns threshold `k` to send `k`.
+The send is admitted only after `capacity_counter(E) >= k`, so it has either
+one initially free block or one block released by a pop.
+
+`PipeGraph` enumerates all receiver endpoints and groups them by receiver
+device, receiver node, and finalized DFB index. Capacity analysis proves
+the following predicates:
+
+| Predicate | Required facts |
+| --- | --- |
+| `single_writer(E, D)` | `writer_endpoints(D) == {E}`. |
+| `unit_span(E)` | The receiver reserve for `E` spans one DFB block. |
+| `pipe_only_producer(D)` | Every push whose domain overlaps the receiver node has a known domain containing that node, executes on its NOC thread, pushes a whole number of blocks, and has one owning reserve. That reserve owns one or more matching posts; each post has a receive completion wait before the push in the same receiver control context; each post belongs to exactly one push; and the push block count equals the sum of the posts' receiver-slot spans. Receiver-side `ttl.if_dst` regions known to execute on the node preserve this order. |
+| `valid_posts(E, D)` | At least one matching post exists. Every post overlapping the receiver node has exactly that node's domain, executes on its NOC thread, and targets `D`. |
+| `valid_sends(E)` | At least one matching send exists. Every send has exactly the source-node domain and executes on its NOC thread. |
+| `valid_pops(E, D)` | At least one matching pop exists. Every pop overlapping the receiver node has exactly that node's domain, executes on its NOC thread, releases one block, and has one owning DFB wait that has the same domain, thread, and block count. |
+
+Capacity analysis records these predicates as `PipeCapacityEndpointFacts`. It
+does not inspect computed-address resources or allocate counters. The module
+planner selects `CA/CC` only when every endpoint of transfer node `T` has
+capacity facts and `T` has computed receiver-address resources.
+
+`single_writer(E, D)` makes each pop attributable to `E`:
+`ttl.cb_pop` identifies `D`, not the transfer node that supplied the popped
+block. If another endpoint writes `D`, the release owner is not proven.
+
+The analysis is:
+
+```text
+for E in pipe_graph.receiver_endpoints:
+    D = receiver_dfb(E)
+    if not (single_writer(E, D)
+            and unit_span(E)
+            and pipe_only_producer(D)
+            and valid_posts(E, D)
+            and valid_sends(E)
+            and valid_pops(E, D)):
+        continue
+    proven[E] = {sends(E), pops(E, D), block_count(D)}
+
+preliminary_resources = allocate_resources(capacity_selection={})
+
+for T in pipe_graph.transfer_nodes:
+    if not (all(E in proven for E in T.receiver_endpoints)
+            and computed_address(T, preliminary_resources)):
+        mode(T) = ("CA/RP" if computed_address(T, preliminary_resources)
+                   else "RA/RP")
+        continue
+    capacity_selection.add(T)
+
+final_resources = allocate_resources(capacity_selection)
+for T in capacity_selection:
+    for E in T.receiver_endpoints:
+        capacity = allocate_counter_after(
+            final_resources, initial=proven[E].block_count)
+        record_acquire_before(proven[E].sends, capacity, count=1)
+        record_release_after(proven[E].pops, capacity, count=1)
+    mode(T) = "CA/CC"
+```
+
+Selection is all-or-none per transfer node because one send writes every
+endpoint. Multicast uses `CA/RP` when computed addressing is proven. It can use
+`RA/RP` only when the transfer node has a proven one-class receiver address
+partition. Its receiver post, wait, and pop operations execute over the
+complete receiver range, so
+`valid_posts` and `valid_pops` cannot establish an exact single-node
+domain for each endpoint. Extending `CA/CC` to multicast requires
+per-receiver release facts and independent capacity accounting, tracked
+in https://github.com/tenstorrent/tt-lang/issues/728.
+
 The `--ttl-pipe-computed-addresses` option, enabled by default, selects
-`CA/RP` for eligible transfers.
+`CA/RP` or `CA/CC` for eligible transfers.
 `--no-ttl-pipe-computed-addresses` requests `RA/RP`; multicast is rejected if
 its receiver address sequences are not proven pointwise equal.
+The `--ttl-pipe-capacity-sync` option, also enabled by default,
+selects `CA/CC` when the capacity proof succeeds.
+`--no-ttl-pipe-capacity-sync` forces computed-address transfers to
+use `CA/RP` and has no effect on `RA/RP` transfers.
+`--ttl-pipe-global-semaphores-only` changes only the storage selected for
+compiler-managed completion, readiness, and capacity counters. It does not
+change addressing or synchronization protocol selection.
 
 ### Protocol performance
 
 The measurements below come from the Blackhole device profiler. Each row is the
-median of 50 warm dispatches after 5 warmup dispatches. The comparisons report
-sender data-movement kernel duration. All workloads transfer BF16 32-by-32
-tiles with sender `block_count = 2` and receiver `block_count = 8`. The
-benchmark inspects final MLIR to reject a run if the compiler did not select
-the requested protocol. Every output was bit-exact.
+median of 50 warm dispatches after 5 warmup dispatches. The ready-receiver and
+multicast comparisons report sender data-movement kernel duration. The
+pipelined-receiver comparison reports the complete interval from the earliest
+sender or receiver kernel start to the latest kernel completion. All workloads
+transfer BF16 32-by-32 tiles with sender `block_count = 2` and receiver
+`block_count = 8`. The benchmark inspects final MLIR to reject a run if the
+compiler did not select the requested protocol. Every output was bit-exact.
 
 #### Ready receiver: protocol overhead
 
-The point-to-point workload has one sender and one receiver. The reduction is
-`(RA/RP sender time - CA/RP sender time) / RA/RP sender time`:
+The point-to-point workload has one sender and one receiver. It compares all
+three protocols side by side. Each reduction is
+`(RA/RP sender time - compared sender time) / RA/RP sender time`:
 
-| Transfers | `CA/RP` sender (us) | `RA/RP` sender (us) | `CA/RP` time reduction vs `RA/RP` |
-| ---: | ---: | ---: | ---: |
-| 64 | 54.457 | 59.688 | 8.76% |
-| 256 | 217.340 | 238.946 | 9.04% |
-| 1024 | 868.520 | 955.681 | 9.12% |
-| 4096 | 3473.896 | 3825.039 | 9.18% |
+| Transfers | `CA/CC` sender (us) | `CA/RP` sender (us) | `RA/RP` sender (us) | `CA/CC` time reduction vs `RA/RP` | `CA/RP` time reduction vs `RA/RP` |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 64 | 54.616 | 54.457 | 59.688 | 8.50% | 8.76% |
+| 256 | 217.294 | 217.340 | 238.946 | 9.06% | 9.04% |
+| 1024 | 868.510 | 868.520 | 955.681 | 9.12% | 9.12% |
+| 4096 | 3474.474 | 3473.896 | 3825.039 | 9.17% | 9.18% |
+
+`CA/CC` and `CA/RP` differ by at most 0.3% in this workload. Receiver-post
+synchronization is not on the critical execution time when the receiver stays
+ready, so computed addressing accounts for the measured improvement over
+`RA/RP`.
+
+#### Pipelined receiver: CA/CC overlap
+
+The ready-receiver workload is a protocol-overhead control; it does not expose
+the scheduling difference between `CA/RP` and `CA/CC`. The pipelined-receiver
+workload retains each received DFB block while writing it to four distinct
+output locations:
+
+```python
+with recv_dfb.wait() as recv_block:
+    for output_index in range(receiver_work):
+        ttl.copy(
+            recv_block,
+            out[output_index, transfer_index],
+        ).wait()
+# The context exit pops the block; CA/CC then returns its capacity.
+```
+
+With `CA/RP`, the receiver cannot post the next reservation until those writes
+and the pop complete. With `CA/CC`, the sender can write later free DFB slots
+while the receiver processes earlier slots. The reduction columns use the
+operation times named in their headers:
+
+| Transfers | `CA/CC` operation (us) | `CA/RP` operation (us) | `RA/RP` operation (us) | `CA/CC` reduction vs `CA/RP` | `CA/RP` reduction vs `RA/RP` | `CA/CC` reduction vs `RA/RP` |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 64 | 89.252 | 101.847 | 114.044 | 12.37% | 10.69% | 21.74% |
+| 256 | 354.841 | 406.895 | 456.470 | 12.79% | 10.86% | 22.26% |
+| 1024 | 1416.960 | 1623.742 | 1823.716 | 12.73% | 10.97% | 22.30% |
+| 4096 | 5661.811 | 6495.647 | 7305.041 | 12.84% | 11.08% | 22.49% |
+
+`CA/CC` reduces complete operation time by 12.4-12.8% relative to `CA/RP` in
+this pipelined workload. A 20-run calibration at 256 transfers measured only a
+1.74% reduction with receiver `block_count = 1`, then 12.64% with
+`block_count = 2` and 12.75% with `block_count = 4`. The benefit therefore
+comes from overlapping sender work with receiver processing once the receiver
+DFB is at least double-buffered.
 
 #### Multicast: address publication
 
@@ -984,10 +1182,16 @@ source nodes. Otherwise all readiness counters use GlobalSemaphore storage,
 with one allocation per ready color. Each source node has distinct storage for
 that allocation. This all-global readiness rule gives every source node the
 same storage interpretation for a ready color.
-`--ttl-pipe-global-semaphores-only` preserves the same color assignments and
-reuse decisions while allocating every completion and readiness counter in
-GlobalSemaphore storage. The compiler records the final local and global
-totals in
+
+Capacity counters are allocated after completion and readiness counters. Each
+capacity counter uses the next local semaphore id when one remains and otherwise
+uses the next GlobalSemaphore allocation. A capacity counter remains live for
+the whole kernel, so endpoints on the same source node use distinct counters.
+Endpoints on different source nodes may reuse an allocation when their initial
+capacities match; the unconditional function-entry initialization then writes
+the same value to each source node's independent counter storage. The compiler
+preserves the same color assignments and reuse decisions in global-only mode;
+only the storage class changes. The compiler records the final local and global totals in
 `ttl.pipe_sync_semaphore_count` and `ttl.pipe_global_semaphore_count`.
 
 Receiver completion is cumulative across repeated executions of a transfer
@@ -1222,8 +1426,8 @@ it waits until enough DFB blocks are free before posting receiver readiness.
 
 Each receive post identifies the physical start slot selected by its owning DFB
 reserve. A `PipeReceiverEndpoint` records that initial slot and the modular
-repeat stride derived from the producer schedule. `CA/RP` computes the
-resulting address sequence. `RA/RP` publishes the address selected by the
+repeat stride derived from the producer schedule. `CA/RP` and `CA/CC` compute
+the resulting address sequence. `RA/RP` publishes the address selected by the
 runtime reserve. The destination-address mechanism does not alter multicast
 legality: a collective transfer node must have one pointwise receiver-address
 equivalence class over its occurrence domain.
@@ -1277,12 +1481,14 @@ collective. The proof tracks four points in the lowered IR:
 1. Receiver address sequences are graph properties. `PipeGraph` proves each
    physical DFB's producer schedule, derives each endpoint's address
    recurrence, and proves the pointwise address partition for collective
-   endpoints. `CA/RP` uses a constant slot or a sender-local counter advanced
-   by `repeat_stride`. `RA/RP` uses the receiver-published address recorded in
-   the source node's SRAM address table.
-2. No inter-sender wait. Each sender waits only for its own receivers to post,
-   then performs its NoC write and increments the receiver completion
-   counter. No sender reads a counter signaled by another sender.
+   endpoints. `CA/RP` and `CA/CC` use a constant slot or a sender-local counter
+   advanced by `repeat_stride`. `RA/RP` uses the receiver-published address
+   recorded in the source node's SRAM address table.
+2. No inter-sender wait. In `RP`, each sender waits only for its own
+   receivers to post. In `CC`, each sender waits only for its own capacity
+   counter. The sender then performs its NoC write and increments the
+   receiver completion counter. No sender reads a counter signaled by
+   another sender.
 3. Receiver completion counters identify transfer nodes at each physical
    receiver. Transfers that share a receiver have distinct allocations;
    transfers with disjoint receiver sets may reuse one allocation.
@@ -1297,6 +1503,7 @@ collective. The proof tracks four points in the lowered IR:
 The only places execution can stall are:
 
 - An `RP` sender waiting for its receivers to post.
+- A `CC` sender waiting for receiver DFB capacity.
 - A receiver waiting for its transfer's completion count to reach the expected
   value.
 - Hardware NoC bandwidth contention (physical, not compiler-inserted).
@@ -1533,7 +1740,8 @@ The analyses have non-overlapping responsibilities:
 | DFB acquire/release ownership | Relate reserves, posts, waits, pushes, waits-front, and pops without inferring ownership from lexical proximity. |
 | Pipe rendezvous schedule | Verify one-to-one send/post occurrence counts and the wait-for dependencies of exact receive handles. |
 | `PipeGraph` | Match each send with one post per receiver, connect its endpoints to physical receiver DFBs, and prove endpoint address sequences. |
-| Pipe resource plan | Select protocols and allocate counters, address storage, and sender-local sequence state from graph facts. |
+| Pipe capacity analysis | Prove which receiver endpoints have unambiguous one-block capacity releases. |
+| Pipe module plan | Select protocols and allocate counters, address storage, and sender-local sequence state from analysis facts. |
 
 Synchronization verification and `PipeGraph` share execution-multiplicity
 proofs. The verifier diagnoses invalid occurrence correspondence. `PipeGraph`
@@ -1574,7 +1782,7 @@ reinterpret:
 | Endpoint receiver address-sequence proof | Computed-address resource planning. |
 | Proven transfer address partition | Collective legality and protocol selection. |
 | Endpoint contiguous-write proof | NoC payload lowering. |
-| Receiver DFB writer endpoints and reservation schedule | Address-sequence and slot-liveness analyses. |
+| Receiver DFB writer endpoints and reservation schedule | Capacity and slot-liveness analyses. |
 
 Lowering does not reconstruct a batch size from maximum assigned slots. It
 consumes the endpoint's `ReceiverAddressSequenceProof`. A constant recurrence
@@ -1924,11 +2132,11 @@ compile-time properties not runtime-observable.
 | 58 | Verifier rejects unguarded pipe-coupled op in `scf.for` / `scf.execute_region` |  |  |  X  |
 | 59 | Lowering: overlapping collective senders get distinct slot offsets in IR |  |  |  X  |
 | 60 | Lowering: slot assignment is order-independent under user pipe reordering |  |  |  X  |
-| 61 | Lowering: transfers sharing a receiver use distinct completion counters; disjoint receiver sets may reuse one semaphore index |  |  |  X  |
+| 61 | Lowering: transfers sharing a receiver use distinct completion counters; disjoint receiver sets may reuse one counter allocation |  |  |  X  |
 | 62 | Lowering: loopback collective uses `noc_async_write_multicast_loopback_src` + local receiver-completion increment |  |  |  X  |
 | 63 | Address graph rejects a reserve that exceeds `block_count` or crosses the DFB ring end |  |  |  X  |
 | 63a| Sequential local receives reuse one DFB block while another thread consumes it | X | X | X |
-| 64 | Lowering: aggregate collective receive posts increment one sender-ready count |  |  |  X  |
+| 64 | Lowering: aggregate collective receive posts increment one sender-ready count when `CA/CC` is not selected |  |  |  X  |
 | 65 | Lowering: non-loopback collective uses a computed receiver address when its graph sequence is materializable | X | | X |
 | 66 | Semaphore counting: collective address storage does not allocate semaphore ids | | X | |
 | 67 | Schedule verifier rejects receive wait before the send that completes it | X | | X |
@@ -1956,6 +2164,7 @@ compile-time properties not runtime-observable.
 | 89 | Completion of one same-PipeNet transfer cannot satisfy another transfer's receive wait | X | | X |
 | 90 | Sixteen overlapping completion resources move sender-ready counters to GlobalSemaphore storage | | | X |
 | 91 | A seventeenth overlapping completion counter uses GlobalSemaphore storage | | | X |
+| 92 | A capacity counter uses GlobalSemaphore storage when completion and readiness consume all local semaphore ids | | | X |
 
 (1) Device-only due to a simulator divergence outside PipeNet
 verification: the simulator's block-state machine accepts
@@ -1974,9 +2183,9 @@ rejection contract; it `pytest.skip`s on the simulator runner.
 ## Device API transition notes
 
 PipeNet IR and verifier rules describe receiver-owned payload storage,
-computed or receiver-authored destination addressing, counted readiness, and
-completion waits. They do not depend on the current TTNN or TTKernel API
-spelling.
+computed or receiver-authored destination addressing, counted readiness or
+capacity, and completion waits. They do not depend on the current TTNN or
+TTKernel API spelling.
 The current lowering has three API-specific binding points:
 
 - [Device 2.0] Address-table storage is allocated today as host-created
@@ -1987,11 +2196,12 @@ The current lowering has three API-specific binding points:
   inline 32-bit NoC write. A typed remote SRAM write or address-table
   API should replace the primitive call while preserving
   receiver-authored publication.
-- [Device 2.0] Sender-ready and receiver-completion counters use local
-  semaphores until local ids are exhausted, then TTNN-created GlobalSemaphores
-  whose addresses are passed as common runtime arguments. A typed semaphore
-  object API should bind both storage kinds directly from the same compiler
-  resource plan while preserving each counter's protocol.
+- [Device 2.0] Sender-ready, receiver-completion, and sender-capacity counters
+  use local semaphores until local ids are exhausted, then TTNN-created
+  GlobalSemaphores whose addresses are passed as common runtime arguments. A
+  typed semaphore object API should bind both storage kinds directly from the
+  same compiler resource plan while preserving each counter's protocol.
+
 ## Relation to upstream designs
 
 TT-Lang uses dedicated `ttl.pipe_transfer` IR instead of lowering
@@ -2086,6 +2296,7 @@ The shared graph and proof must preserve these fabric invariants:
   not make the assigned slot available to another fabric transfer in the same
   invocation;
 * fabric completion uses remotely addressable synchronization storage;
+* `CC` capacity counters are not selected for fabric transfers.
 
 ## Future work
 

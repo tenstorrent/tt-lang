@@ -61,6 +61,9 @@ enum class PipeAddressMode {
 };
 
 struct PipeResourcePlan;
+class PipeTransferPlan;
+class PipeCapacityPlan;
+class PipeSynchronizationSelection;
 
 /// Receiver-side completion state for one transfer definition.
 struct PipeCompletionInfo {
@@ -99,7 +102,8 @@ struct PipeResourceInfo {
   PipeKey pipe;
   PipeTransferContract transferContract;
   PipeCompletionInfo completion;
-  PipeCounterInfo readyCounter;
+  /// Absent when the transfer does not use receiver-post sender readiness.
+  std::optional<PipeCounterInfo> readyCounter;
   PipeAddressStorageInfo addressStorage;
 };
 
@@ -148,6 +152,8 @@ struct PipeResourcePlan {
   /// the same transfer definition.
   llvm::MapVector<func::FuncOp, SmallVector<PipeComputedAddressCounterInitInfo>>
       computedAddressCounterInitializations;
+  /// Receiver DFB indices supplied as common runtime arguments to each sender.
+  llvm::MapVector<func::FuncOp, SmallVector<int32_t>> computedAddressDFBIndices;
 };
 
 /// Resource totals consumed by TTKernel lowering and runtime setup.
@@ -159,7 +165,8 @@ struct PipeResourceRequirements {
 
 /// Return all pipe resource totals derived from the selected allocation plan.
 PipeResourceRequirements
-getPipeResourceRequirements(const PipeResourcePlan &info);
+getPipeResourceRequirements(const PipeResourcePlan &info,
+                            const PipeCapacityPlan *pipeCapacityPlan = nullptr);
 
 /// Walk `mod` once and group every pipe transfer by its net id.
 /// Deduplicates by (src, dst start/end) so the same pipe appearing on
@@ -169,12 +176,21 @@ void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 /// Build the pipe resource plan used by pipe lowering. Transfer intervals that
 /// cannot be bounded by dominance are conservatively treated as conflicting
 /// with every other transfer interval from the same source core.
-LogicalResult
-buildPipeResourcePlan(ModuleOp mod, const PipeTransferIndex &transferIndex,
-                      const PipeGraph &pipeGraph, PipeResourcePlan &info,
-                      bool enableComputedAddresses = true,
-                      PipeCounterAllocationPolicy counterPolicy =
-                          PipeCounterAllocationPolicy::LocalThenGlobal);
+LogicalResult buildPipeResourcePlan(
+    ModuleOp mod, const PipeTransferIndex &transferIndex,
+    const PipeGraph &pipeGraph, PipeResourcePlan &info,
+    bool enableComputedAddresses = true,
+    PipeCounterAllocationPolicy counterPolicy =
+        PipeCounterAllocationPolicy::LocalThenGlobal,
+    const PipeSynchronizationSelection *synchronizationSelection = nullptr);
+
+/// Initialize sender-side capacity counters and allocate one kernel-local
+/// progress value per counter. The sender waits for the shared counter to reach
+/// its cumulative acquired count, so only receivers increment the shared word.
+void initializePipeCapacityCounters(
+    const PipeCapacityPlan &pipeCapacityPlan,
+    const PipeResourcePlan &pipeResourcePlan,
+    PipeCounterProgressMap &senderCapacityCounters);
 
 /// Emit sender-local slot counters for computed receiver addresses whose
 /// physical receiver DFB slot advances at runtime.
@@ -188,19 +204,35 @@ void initializePipePostSequenceCounters(
     const PipeResourcePlan &pipeResourcePlan,
     PipeCounterProgressMap &postSequenceCounters);
 
+/// Remove a sender operation proven unreachable at its pipe endpoint.
+void lowerInactivePipeTransferSend(PipeTransferSendOp op,
+                                   ConversionPatternRewriter &rewriter);
+
 /// Lower the sender-side pipe transfer and signal receiver completion.
 LogicalResult lowerPipeTransferSend(
-    PipeTransferSendOp op, Value srcCB, bool isConsumerCB,
-    ValueOriginAnalysis &analysis, const PipeResourcePlan &pipeResourcePlan,
+    PipeTransferSendOp op, Value srcCB, const PipeTransferPlan &transferPlan,
+    const PipeResourcePlan &pipeResourcePlan,
+    const PipeCapacityPlan &pipeCapacityPlan,
+    const PipeCounterProgressMap &senderCapacityCounters,
     const PipeComputedAddressCounterMap &computedAddressCounters,
     ConversionPatternRewriter &rewriter);
 
+/// Remove a receiver post proven unreachable at its pipe endpoint.
+void lowerInactivePipeTransferPost(PipeTransferPostOp op,
+                                   ConversionPatternRewriter &rewriter);
+
 /// Lower the receiver-side pipe rendezvous.
 LogicalResult lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
-                                    ValueOriginAnalysis &analysis,
+                                    const PipeTransferPlan &transferPlan,
                                     const PipeCounterProgressMap &counters,
                                     const PipeResourcePlan &pipeResourcePlan,
                                     ConversionPatternRewriter &rewriter);
+
+/// Lower a dataflow buffer pop and emit any proven pipe capacity releases.
+LogicalResult lowerCBPop(CBPopOp op, Value cb,
+                         const PipeCapacityPlan &pipeCapacityPlan,
+                         const PipeResourcePlan &pipeResourcePlan,
+                         ConversionPatternRewriter &rewriter);
 
 /// Lower the receiver-side pipe receive completion wait.
 LogicalResult lowerPipeTransferWait(PipeTransferWaitOp op, Value tokenSequence,

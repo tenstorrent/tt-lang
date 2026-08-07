@@ -164,11 +164,11 @@ def TTLConvertTTLToTTKernel
   let description = [{
     Converts TTL DFB, copy, wait, and PipeNet operations to TTKernel DFB, NoC,
     and semaphore operations. PipeNet lowering selects receiver-published or
-    computed destination addresses according to the pass option and transfer
-    eligibility. Every transfer uses receiver-post synchronization. PipeNet
-    counters use local semaphore ids before GlobalSemaphore storage by default;
-    the global-only option preserves all local semaphore ids for application
-    use.
+    computed destination addresses and receiver-post or capacity-counter
+    synchronization according to the pass options and transfer eligibility.
+    PipeNet counters use local semaphore ids before GlobalSemaphore storage by
+    default; the global-only option preserves all local semaphore ids for
+    application use.
   }];
 
   let options = [
@@ -180,6 +180,13 @@ def TTLConvertTTLToTTKernel
            "When disabled, pipe transfers use receiver-published destination "
            "addresses; multicast still requires proven equal runtime "
            "receiver addresses.">,
+    Option<"pipeCapacitySync", "pipe-capacity-sync",
+           "bool", "true",
+           "Use capacity-counter synchronization when the receiver wait and "
+           "pop execute on the receiver NOC thread and the computed-address "
+           "transfer passes the DFB ownership and count proofs. "
+           "When disabled, computed-address transfers use receiver-post "
+           "synchronization.">,
     Option<"pipeGlobalSemaphoresOnly", "pipe-global-semaphores-only",
            "bool", "false",
            "Allocate all compiler-managed PipeNet synchronization counters "
