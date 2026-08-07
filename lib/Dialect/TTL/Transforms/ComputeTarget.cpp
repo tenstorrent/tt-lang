@@ -409,9 +409,8 @@ getDeviceArch(ModuleOp module, std::string &failureReason) {
 
 } // namespace
 
-FailureOr<std::unique_ptr<ComputeTargetEnvironment>>
-ComputeTargetEnvironment::get(Operation *operation,
-                              std::string &failureReason) {
+FailureOr<std::optional<ttcore::Arch>>
+resolveComputeTargetArch(Operation *operation, std::string &failureReason) {
   failureReason.clear();
   ModuleOp module = dyn_cast<ModuleOp>(operation);
   if (!module) {
@@ -424,19 +423,14 @@ ComputeTargetEnvironment::get(Operation *operation,
 
   std::optional<ttcore::Arch> attributeArch;
   Attribute rawTargetArch = module->getAttr(kTargetArchAttrName);
-  auto targetArch = dyn_cast_or_null<StringAttr>(rawTargetArch);
+  auto targetArch = dyn_cast_or_null<ttcore::ArchAttr>(rawTargetArch);
   if (rawTargetArch && !targetArch) {
-    failureReason = (kTargetArchAttrName + " must be a string attribute").str();
+    failureReason =
+        (kTargetArchAttrName + " must be a #ttcore.arch attribute").str();
     return failure();
   }
   if (targetArch) {
-    attributeArch = ttcore::symbolizeArch(targetArch.getValue());
-    if (!attributeArch) {
-      failureReason = (kTargetArchAttrName + " has unsupported value '" +
-                       targetArch.getValue() + "'")
-                          .str();
-      return failure();
-    }
+    attributeArch = targetArch.getValue();
   }
 
   FailureOr<std::optional<ttcore::Arch>> deviceArch =
@@ -450,12 +444,21 @@ ComputeTargetEnvironment::get(Operation *operation,
             .str();
     return failure();
   }
-  std::optional<ttcore::Arch> arch =
-      attributeArch ? attributeArch : *deviceArch;
-  if (!arch) {
+  return attributeArch ? attributeArch : *deviceArch;
+}
+
+FailureOr<std::unique_ptr<ComputeTargetEnvironment>>
+ComputeTargetEnvironment::get(Operation *operation,
+                              std::string &failureReason) {
+  FailureOr<std::optional<ttcore::Arch>> arch =
+      resolveComputeTargetArch(operation, failureReason);
+  if (failed(arch)) {
+    return failure();
+  }
+  if (!*arch) {
     return createCommonTargetEnvironment();
   }
-  return createTargetEnvironment(*arch, failureReason);
+  return createTargetEnvironment(**arch, failureReason);
 }
 
 LogicalResult

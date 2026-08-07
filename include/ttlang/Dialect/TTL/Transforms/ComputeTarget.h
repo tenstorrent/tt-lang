@@ -11,9 +11,15 @@
 #include "mlir/Support/LogicalResult.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace mlir::tt::ttl {
+
+/// Resolve the optional architecture selected by the module attribute or
+/// default device. Both sources must agree when present.
+FailureOr<std::optional<ttcore::Arch>>
+resolveComputeTargetArch(Operation *operation, std::string &failureReason);
 
 /// Target-independent primitive used by compute capability queries.
 enum class ComputePrimitive {

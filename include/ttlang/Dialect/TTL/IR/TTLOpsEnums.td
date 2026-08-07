@@ -90,6 +90,15 @@ def TTL_InputClamping : I32EnumAttr<"InputClamping", "TTL exp input clamping mod
   let cppNamespace = "::mlir::tt::ttl";
 }
 
+def TTL_AccumulationCombiner_Add : I32EnumAttrCase<"Add", 0, "add">;
+// TODO(#646): Add non-additive combiners once their DST-resident legality and
+// lowering behavior are specified.
+
+def TTL_AccumulationCombiner : I32EnumAttr<"AccumulationCombiner",
+    "TTL accumulation combiner", [TTL_AccumulationCombiner_Add]> {
+  let cppNamespace = "::mlir::tt::ttl";
+}
+
 // Buffer type for tensor memory placement.
 // Values match TTNN BufferType enum for compatibility.
 def TTL_BufferType_DRAM       : I32EnumAttrCase<"DRAM",       0, "dram">;

@@ -145,7 +145,7 @@ func.func @tile_bcast_u8(
 
 // Target selection rejects architectures without implemented LLK capabilities.
 // expected-error @below {{'builtin.module' op Quasar compute LLK capabilities are not implemented by TT-Lang}}
-module attributes {ttl.target_arch = "quasar"} {
+module attributes {ttl.target_arch = #ttcore.arch<quasar>} {
   func.func @unsupported_target() {
     func.return
   }

@@ -3,12 +3,14 @@
 // Summary: Verifies that ttl-verify-pipenet-guards accepts role-contained
 // PipeNet work, and that ttl-erase-pipenet-scopes inlines and erases the
 // `ttl.pipenet_scope` markers so downstream lowering sees a scope-free IR.
+// Each split module includes the finalization metadata required by the
+// verifier; its descriptor contents are irrelevant to guard analysis.
 
 // A copy into a pipe is valid only on the source node. A copy out of a pipe is
 // valid only on destination nodes. Existing ttl.if_src/ttl.if_dst regions
 // provide those execution domains.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @copy_roles_valid
   // CHECK: %[[PIPE0:.*]] = ttl.create_pipe
   // CHECK: %[[CB0:.*]] = ttl.bind_cb
@@ -46,7 +48,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // A ttl.pipenet_scope is accepted when the surrounding predicate is contained
 // in the declared role domain. The verifier erases the scope.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @scope_erased_after_verification
   // CHECK-NOT: ttl.pipenet_scope
   // CHECK: ttl.if_src
@@ -73,7 +75,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // DFB waits are accepted when every waiting node is covered by a producer
 // domain for the same logical DFB.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @producer
   // CHECK: ttl.cb_push
   // CHECK-LABEL: func.func @consumer
@@ -111,7 +113,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // silently lost, causing a false "no other thread fills" diagnostic on the
 // consumer's `cb_wait`.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @producer_chained_cb_casts
   // CHECK-LABEL: func.func @consumer_chained_cb_casts
   func.func @producer_chained_cb_casts() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
@@ -150,7 +152,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // ttl.is_src is recognized structurally: the verifier doesn't fall back to
 // per-node arith analysis.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @is_src_predicate
   // CHECK: ttl.is_src
   // CHECK: ttl.copy
@@ -174,7 +176,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // ttl.is_dst recognition.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @is_dst_predicate
   // CHECK: ttl.is_dst
   // CHECK: %[[RECV1:.*]] = ttl.cb_reserve
@@ -203,7 +205,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // Two PipeNets with disjoint active sets: each ttl.copy validates against
 // its own pipe's role, not the union.
 
-module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [4 : i64, 4 : i64]} {
   // CHECK-LABEL: func.func @two_pipenets_disjoint
   // CHECK: %[[RECV_A:.*]] = ttl.cb_reserve
   // CHECK: ttl.copy {{.*}}, %[[RECV_A]]
@@ -243,7 +245,7 @@ module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
 // Loops do not narrow the execution domain. A user guard outside an scf.for
 // still covers a pipe-coupled op inside the loop body.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @scf_for_no_predicate
   // CHECK: scf.for
   // CHECK: ttl.copy
@@ -273,7 +275,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // affine.if user guard whose IntegerSet implies the source role.
 
 #srcSet = affine_set<(d0) : (d0 == 0)>
-module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [4 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_if_guard
   // CHECK: affine.if
   // CHECK: ttl.copy
@@ -441,7 +443,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // ttl.is_active in a scope spanning both src and dst roles.
 
-module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [4 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @is_active_scope
   // CHECK: ttl.is_active
   // CHECK-NOT: ttl.pipenet_scope
@@ -466,7 +468,7 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
 // nodes active in BOTH PipeNets. Used for relay-style threads that touch
 // two nets in the same body.
 
-module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [4 : i64, 4 : i64]} {
   // CHECK-LABEL: func.func @nested_is_active_intersect
   // CHECK: ttl.is_active
   // CHECK: ttl.is_active
@@ -502,7 +504,7 @@ module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
 // Unsigned comparison uses the index bit pattern. At core 0, `x - 1` is the
 // maximum unsigned index value and is greater than zero.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @unsigned_wrapped_coordinate_guard
   // CHECK: arith.cmpi ugt
   // CHECK: ttl.copy
@@ -531,7 +533,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // Standard integer folding evaluates remainder expressions in launch-node
 // predicates. On a two-core row, `x % 2 == 0` selects only the source core.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @remainder_coordinate_guard
   // CHECK: arith.remsi
   // CHECK: ttl.copy
@@ -560,7 +562,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // `arith.cmpi ne`: the guard `x != 1` is true on coords {0}, which is the
 // pipe source.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @cmpi_ne_guard
   // CHECK: arith.cmpi ne
   // CHECK: ttl.copy
@@ -586,7 +588,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // `arith.cmpi sle`: `x <= 0` is true on {0}.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @cmpi_sle_guard
   // CHECK: arith.cmpi sle
   // CHECK: ttl.copy
@@ -612,7 +614,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // `arith.cmpi sgt`: `x > 0` is true on dst nodes.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @cmpi_sgt_guard
   // CHECK: arith.cmpi sgt
   // CHECK: %[[RECV2:.*]] = ttl.cb_reserve
@@ -642,7 +644,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // `arith.cmpi sge`: `x >= 1` is true on dst nodes.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @cmpi_sge_guard
   // CHECK: arith.cmpi sge
   // CHECK: %[[RECV3:.*]] = ttl.cb_reserve
@@ -672,7 +674,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // Conjunction of two coord predicates narrows by intersection.
 
-module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [4 : i64, 4 : i64]} {
   // CHECK-LABEL: func.func @andi_two_coords
   // CHECK: arith.andi
   // CHECK: ttl.copy
@@ -702,7 +704,7 @@ module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
 // Disjunction over two coord predicates: each clause covers a distinct
 // pipe role; the joint then-domain covers both src and dst.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @ori_two_coords
   // CHECK: arith.ori
   // CHECK: ttl.is_src
@@ -741,7 +743,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // reads as "exactly one of A, B is true". Here `x == 0` xor `false` reduces
 // to `x == 0`, the source.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @xori_guard
   // CHECK: arith.xori
   // CHECK: ttl.is_src
@@ -777,7 +779,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // `arith.subi` and `arith.index_cast` inside the predicate are both
 // recognized by `evalIndex`.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @evalindex_subi_indexcast
   // CHECK: arith.index_cast
   // CHECK: arith.subi
@@ -808,7 +810,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // `affine.if` constraint with `Mul`: `2 * d0 == 0` is true at `d0 = 0`.
 
 #mulSet = affine_set<(d0) : (2 * d0 == 0)>
-module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [4 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_if_mul
   // CHECK: affine.if
   // CHECK: ttl.copy
@@ -836,7 +838,7 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
 // {1, 2, 3} are outside src and the copy would be rejected.
 
 #modSet = affine_set<(d0) : (d0 mod 4 == 0)>
-module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [4 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_if_mod
   // CHECK: affine.if
   // CHECK: ttl.copy
@@ -863,7 +865,7 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
 // guard before the source copy.
 
 #floordivSet = affine_set<(d0) : (d0 floordiv 2 == 0)>
-module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [4 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_if_floordiv
   // CHECK: affine.if
   // CHECK: arith.cmpi
@@ -893,7 +895,7 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
 // `affine.if` constraint with `CeilDiv`: `d0 ceildiv 2 == 0` is true on {0}.
 
 #ceildivSet = affine_set<(d0) : (d0 ceildiv 2 == 0)>
-module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [4 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_if_ceildiv
   // CHECK: affine.if
   // CHECK: ttl.copy
@@ -920,7 +922,7 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
 // the dim value. Here `s0 = 0`, so `d0 - s0 == 0` reduces to `d0 == 0`.
 
 #symSet = affine_set<(d0)[s0] : (d0 - s0 == 0)>
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_if_symbol
   // CHECK: affine.if
   // CHECK: ttl.copy
@@ -948,7 +950,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // special-case verifier code; the user guard at the head of bb1 still covers
 // the pipe-coupled op there.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @multi_block
   // CHECK: cf.cond_br
   // CHECK: ttl.is_src
@@ -980,7 +982,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // `arith.cmpi` evaluation. The conjunction's then-domain is the intersection
 // of {(0,0)} (src) and {(x,0) for x in 0..2}, which is {(0,0)}.
 
-module attributes {ttl.launch_grid = [3 : i64, 2 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [3 : i64, 2 : i64]} {
   // CHECK-LABEL: func.func @mixed_predicate_andi
   // CHECK: ttl.is_src
   // CHECK: arith.andi
@@ -1014,7 +1016,7 @@ module attributes {ttl.launch_grid = [3 : i64, 2 : i64]} {
 // else-side pipe receive must validate against the else-domain being a subset
 // of the pipe destination.
 
-module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 2 : i64]} {
   // CHECK-LABEL: func.func @andi_else_domain
   // CHECK: arith.andi
   // CHECK: ttl.copy
@@ -1056,7 +1058,7 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
 // the else region runs on {1} (dst), where a pipe-to-DFB copy is valid.
 
 #srcOnly = affine_set<(d0) : (d0 == 0)>
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_if_else_branch
   // CHECK: affine.if
   // CHECK: ttl.copy
@@ -1091,7 +1093,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // `scf.while` adds no predicate to its body. The user guard outside still
 // covers the pipe-coupled op inside the after-region.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @scf_while_no_predicate
   // CHECK: scf.while
   // CHECK: ttl.copy
@@ -1126,7 +1128,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // `scf.execute_region` adds no predicate. User guard outside still covers.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @scf_execute_region_no_predicate
   // CHECK: scf.execute_region
   // CHECK: ttl.copy
@@ -1154,7 +1156,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // `scf.while` at function top level, with the pipe-coupled op behind an
 // `if_src` inside the body.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @scf_while_top_level
   // CHECK: scf.while
   // CHECK: ttl.if_src
@@ -1189,7 +1191,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // `affine.for` adds no predicate. User guard outside still covers.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_for_no_predicate
   // CHECK: affine.for
   // CHECK: ttl.copy
@@ -1217,7 +1219,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // performs the `ttl.copy(cb, pipe)`. Helper relies on the caller-side
 // guard flowing through the call edge.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func private @send_helper
   // CHECK: ttl.copy
   // CHECK-LABEL: func.func @kernel_caller_guards
@@ -1252,7 +1254,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // the verifier should accept.
 
 #dstRange = affine_set<(d0) : (d0 - 1 >= 0)>
-module attributes {ttl.launch_grid = [3 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [3 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_if_inequality
   // CHECK: affine.if
   // CHECK: %[[RECV6:.*]] = ttl.cb_reserve
@@ -1323,7 +1325,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // constraint loop that breaks on the first failing constraint.
 
 #twoConstraints = affine_set<(d0) : (d0 >= 0, 0 - d0 >= 0)>
-module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [4 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_if_multi_constraint
   // CHECK: affine.if
   // CHECK: ttl.copy
@@ -1351,7 +1353,7 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
 // launch grid.
 
 #originSet = affine_set<(d0, d1) : (d0 == 0, d1 == 0)>
-module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 2 : i64]} {
   // CHECK-LABEL: func.func @affine_if_multi_dim
   // CHECK: affine.if
   // CHECK: ttl.copy
@@ -1380,7 +1382,7 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
 // runs on {1, 2} (the pipe destination range) and validates the receive.
 
 #dstHalf = affine_set<(d0) : (d0 - 1 >= 0)>
-module attributes {ttl.launch_grid = [3 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [3 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_if_inequality_else
   // CHECK: affine.if
   // CHECK: %[[RECV7:.*]] = ttl.cb_reserve

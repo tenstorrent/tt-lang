@@ -1011,7 +1011,7 @@ struct LowerMatmulToCompute : PlannedComputeRewritePattern<MatmulOp> {
 
 /// Lowers passthrough ttl.store (CB-attached input) by creating a compute
 /// with tile_store. Stores whose input comes from an elementwise op are
-/// already erased by the elementwise builders (emitTileStores).
+/// already erased when their producers are incorporated into a ComputeOp.
 struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
   LowerStoreToCompute(MLIRContext *context,
                       const KernelComputeOpCreationPlan &kernelPlan)
