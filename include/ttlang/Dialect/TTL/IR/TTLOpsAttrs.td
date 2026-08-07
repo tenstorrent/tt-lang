@@ -6,7 +6,6 @@
 #define TTLANG_DIALECT_TTL_IR_TTLOPSATTRS_TD
 
 include "ttlang/Dialect/TTL/IR/TTLBase.td"
-include "ttlang/Dialect/TTL/IR/TTLAttrInterfaces.td"
 include "ttlang/Dialect/TTL/IR/TTLOpsEnums.td"
 include "mlir/IR/AttrTypeBase.td"
 
@@ -140,95 +139,6 @@ def TTL_TransferEdgeAttr : TTL_Attr<"TransferEdge", "transfer_edge"> {
     "DeviceRefAttr":$source,
     OptionalParameter<"DeviceRefAttr">:$destination,
     OptionalParameter<"DeviceRangeAttr">:$destinationRange
-  );
-  let assemblyFormat = "`<` struct(params) `>`";
-  let genVerifyDecl = 1;
-}
-
-def TTL_AxisNeighborTransferAttr :
-    TTL_Attr<"AxisNeighborTransfer", "axis_neighbor_transfer",
-             [TTL_StructuredTransferAttrInterface]> {
-  let summary = "Transfer relation between axis neighbors";
-  let description = [{
-    Describes transfers from each device to the device at the specified
-    positive offset along one logical domain axis. `wrap` includes transfers
-    that cross the axis boundary.
-  }];
-  let parameters = (ins
-    "StringAttr":$component,
-    "int64_t":$axis,
-    "int64_t":$offset,
-    "BoolAttr":$wrap
-  );
-  let assemblyFormat = "`<` struct(params) `>`";
-  let genVerifyDecl = 1;
-}
-
-def TTL_StencilTransferAttr :
-    TTL_Attr<"StencilTransfer", "stencil_transfer",
-             [TTL_StructuredTransferAttrInterface]> {
-  let summary = "Transfer relation defined by neighbor offsets";
-  let description = [{
-    Describes the union of directed translations in `offsets` within one
-    logical domain component. Each offset has the component rank and may
-    contain positive and negative values. `wrap` applies each translation
-    modulo the component extent; otherwise, transfers outside the component
-    are omitted.
-  }];
-  let parameters = (ins
-    "StringAttr":$component,
-    ArrayRefParameter<"DenseI64ArrayAttr">:$offsets,
-    "BoolAttr":$wrap
-  );
-  let assemblyFormat = "`<` struct(params) `>`";
-  let genVerifyDecl = 1;
-}
-
-def TTL_GatherTransferAttr :
-    TTL_Attr<"GatherTransfer", "gather_transfer",
-             [TTL_StructuredTransferAttrInterface]> {
-  let summary = "Transfer relation from every device to one root";
-  let description = [{
-    Describes transfers within each product-domain slice from every non-root
-    device in `component` to `root`. The root contains only the selected
-    component's coordinate.
-  }];
-  let parameters = (ins
-    "StringAttr":$component,
-    "DeviceRefAttr":$root
-  );
-  let assemblyFormat = "`<` struct(params) `>`";
-  let genVerifyDecl = 1;
-}
-
-def TTL_ScatterTransferAttr :
-    TTL_Attr<"ScatterTransfer", "scatter_transfer",
-             [TTL_StructuredTransferAttrInterface]> {
-  let summary = "Transfer relation from one source to every other device";
-  let description = [{
-    Describes transfers within each product-domain slice from `source` to every
-    other device in `component`. The source contains only the selected
-    component's coordinate.
-  }];
-  let parameters = (ins
-    "StringAttr":$component,
-    "DeviceRefAttr":$source
-  );
-  let assemblyFormat = "`<` struct(params) `>`";
-  let genVerifyDecl = 1;
-}
-
-def TTL_TransferGraphAttr : TTL_Attr<"TransferGraph", "transfer_graph"> {
-  let summary = "Transfer relation over a logical device domain";
-  let description = [{
-    Describes device-level communication independently from node endpoints and
-    dataflow buffer operands. The relation is either an explicit non-empty edge
-    list or one structured transfer descriptor that denotes at least one edge.
-  }];
-  let parameters = (ins
-    "DeviceDomainAttr":$domain,
-    OptionalArrayRefParameter<"TransferEdgeAttr">:$edges,
-    OptionalParameter<"StructuredTransferAttrInterface">:$structured
   );
   let assemblyFormat = "`<` struct(params) `>`";
   let genVerifyDecl = 1;
