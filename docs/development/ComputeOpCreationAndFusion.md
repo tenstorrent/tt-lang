@@ -367,6 +367,13 @@ three-stage `ttl.compute_pipeline` with
 reduction, finalize the scalar, and consume the scalar across the row. Stage
 results remain tensor SSA values and do not imply DFB storage.
 
+The recognized pipeline verifier checks the complete operation sequence,
+operand relations, domains, tensor types, and scalar constants. The scale and
+epsilon must be finite and positive because retained lowering applies them in
+target primitives with that contract. Compiler-selected schedule metadata is
+also dialect-verified as `#ttl.compute_pipeline_schedule`; malformed metadata
+is rejected before planning rather than reaching a transformation assertion.
+
 SumOfSquares uses the same mechanism with
 `pipeline_kind = multiply_full_scalar_reduction`. Its single reduction stage
 keeps the multiply and full scalar sum together while schedule selection
@@ -407,18 +414,38 @@ complete sequence. The generated retained schedule uses one DST acquisition
 and no intermediate DFB. SumOfSquares similarly retains all products until the
 full scalar reduction completes and publishes only element `[0, 0]`.
 
+TTKernel represents source-register ownership as explicit acquire, consumer,
+and release operations. Verification analyzes the complete containing block
+before target conversion. It requires one active source scalar, a matching
+release in the same block, and only source-scalar consumers during the active
+lifetime. Several consumers may share one acquisition. This prevents operation
+ordering or target conversion from silently creating overlapping or
+unterminated hardware-resource lifetimes.
+
 The compound reduction LLK applies its scaler during both reduction stages.
 TTKernel-to-C++ lowering passes the square root of the semantic scale so the
 complete reduction applies the scale once.
 
 `ttl.compute_pipeline` establishes the target-independent multi-domain
 representation. The current retained alternatives select a compound reduction
-when required and a separate source-scalar consumer. General scalar reuse
-additionally requires explicit
-cross-stage carrier lifetimes, multiple scalar consumers, external publication,
-and target capabilities for each scalar finalization and consumer operation.
-Unsupported graphs continue through materialized lowering without changing
-their tensor semantics.
+when required and a separate source-scalar consumer. The
+`ttl.source_scalar_scope` plan records every zero-indexed consumer operand, and
+TTKernel permits multiple consumers within one source-scalar lifetime. Current
+target compute creation emits that lifetime only for the recognized
+row-normalization recipe. Applying the representation to LayerNorm, softmax,
+and L2 normalization requires target recipes and capabilities for their scalar
+finalization and consumer operations. Other graphs continue through
+materialized lowering without changing their tensor semantics.
+
+The source-scalar LLK follows the tt-metal destination-reuse interface:
+the scalar moves from DST to source B, source B is broadcast across each input
+tile, and release clears the retained source state. At tt-metal revision
+`c86f5000d`, a model-local Blackhole RMSNorm implementation contains the same
+mechanism, but that revision has no public source-scalar compute API or Wormhole
+RMSNorm implementation. TT-Lang therefore keeps the target capability disabled
+on Wormhole until the complete source-register lifetime and numerical behavior
+are validated there. The compiler does not infer Wormhole support from the
+architecture-independent multiply-reduction primitive.
 
 ### Cross-Region Recomputation
 
@@ -670,6 +697,11 @@ The design preserves these properties:
     output publication before mutation. Lowering revalidates the planned
     `ttl.compute` and retains the scalar within one DST transaction.
 
+11. **Target resource lifetime.** TTKernel verification accepts each retained
+    source scalar only within one balanced acquire-consumer-release sequence.
+    No unrelated target operation can execute while the source register is
+    owned by that sequence.
+
 The proof assumes verified TTL operation types, valid DFB FIFO semantics, and
 recognized view-preserving operations for acquired DFB storage. Conservative
 or unresolved DFB ownership returns "may be released" and may require a
@@ -701,6 +733,9 @@ The corresponding upstream implementations are:
 - [dead-code analysis](https://github.com/llvm/llvm-project/blob/4279d524cc78d0bac294bb29257c62665121d9f1/mlir/include/mlir/Analysis/DataFlow/DeadCodeAnalysis.h)
 - [One-Shot Bufferize analysis state](https://github.com/llvm/llvm-project/blob/4279d524cc78d0bac294bb29257c62665121d9f1/mlir/include/mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h)
 - [LLVM VPlan](https://github.com/llvm/llvm-project/blob/4279d524cc78d0bac294bb29257c62665121d9f1/llvm/lib/Transforms/Vectorize/VPlan.h)
+- [tt-metal multiply/full-scalar-reduction API](https://github.com/tenstorrent/tt-metal/blob/c86f5000dca19e27cb7e56ddb5ab06d80fe355c7/tt_metal/hw/inc/api/compute/experimental/mul_reduce_scalar.h)
+- [tt-metal model-local Blackhole retained-scalar implementation](https://github.com/tenstorrent/tt-metal/blob/c86f5000dca19e27cb7e56ddb5ab06d80fe355c7/models/demos/deepseek_v3_b1/kernel_includes/tt_llk/tt_llk_blackhole/llk_lib/llk_math_rmsnorm_bcast_scalar_dest_reuse.h)
+- [tt-metal model-local Blackhole add-plus-rsqrt implementation](https://github.com/tenstorrent/tt-metal/blob/c86f5000dca19e27cb7e56ddb5ab06d80fe355c7/models/demos/deepseek_v3_b1/kernel_includes/tt_metal/include/compute_kernel_api/add_rsqrt.h)
 
 Upstream does not model the TTL-specific relations required here. TT-Lang adds:
 
@@ -727,10 +762,13 @@ not modify IR.
 The compiler tests cover direct and fused recipes, overlapping candidates,
 cross-region recomputation, instrumentation placement, output transactions,
 released inputs, multi-output accumulating computes, plan invalidation, and
-disabled compiler DFBs. Runtime tests validate representative creation and
-materialization results in bf16 and f32. The largest representative program is
-the eight-node flash-attention chain, which combines many atom-composed tensor
-operations and user DFB publications.
+disabled compiler DFBs. Reduction-fusion tests additionally cover recognized
+pipeline validation, schedule metadata, capacity rejection, source-scalar
+lifetime balance, multiple retained-scalar consumers, generated TTKernel and
+C++, and absence of intermediate DFBs. Runtime tests validate RMSNorm,
+SumOfSquares, and representative materialization results. The largest
+representative program is the eight-node flash-attention chain, which combines
+many atom-composed tensor operations and user DFB publications.
 
 ## Limitations and Future Work
 
@@ -745,6 +783,8 @@ operations and user DFB publications.
 - Generic fused expressions currently use one iteration domain. Reduction
   results reused by another domain require an explicit capacity-fitting block
   schedule; row normalization is the first such schedule.
+- The source-scalar scope and TTKernel lifetime support several consumers, but
+  target compute creation currently emits them only for row normalization.
 - Cross-block fusion rejects instrumentation that cannot be ordered relative
   to the sink block.
 - `ttl.tile_store` does not encode its formal output index. The compiler traces
@@ -775,6 +815,9 @@ operations and user DFB publications.
 - `include/ttlang/Target/TTKernel/LLKs/experimental_source_scalar.h` implements
   scalar finalization and retained-scalar multiplication within one DST
   acquisition.
+- `include/ttlang/Dialect/TTKernel/IR/TTKernelOps.td` and
+  `lib/Dialect/TTKernel/IR/TTKernelOps.cpp` define and verify the explicit
+  source-scalar lifetime transactions.
 - `lib/Dialect/TTL/Transforms/TTLInsertIntermediateDFBs.cpp` applies grouped
   compiler-DFB materialization plans.
 - `lib/Dialect/TTL/Transforms/TTLPrintComputeOpCreationPlans.cpp` prints
