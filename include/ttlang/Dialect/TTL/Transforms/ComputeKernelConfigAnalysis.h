@@ -58,6 +58,18 @@ struct DFBHardwareConfiguration {
   DFBUnpackMode unpackMode;
 };
 
+/// One compute-local facility required by a pipeline schedule.
+enum class ComputePipelineCapability {
+  MultiplyFullScalarReduction,
+  SourceScalarRetention,
+};
+
+/// Target and element-type support for one compute-local facility.
+struct ComputePipelineCapabilityLimits {
+  bool targetSupported = false;
+  std::optional<std::uint32_t> maxTiles;
+};
+
 /// Immutable hardware and backend capabilities for one kernel target.
 class KernelTargetEnvironment {
 public:
@@ -71,10 +83,9 @@ public:
       DestinationElementWidth destinationElementWidth) const = 0;
   virtual FullFp32AccumulationSupport
   getFullFp32AccumulationSupport(FullFp32AccumulationKind kind) const = 0;
-  virtual std::optional<std::uint32_t>
-  getMaxComputePipelineTiles(ComputePipelineKind kind,
-                             ComputePipelineSchedule schedule,
-                             Type elementType) const = 0;
+  virtual ComputePipelineCapabilityLimits
+  getComputePipelineCapabilityLimits(ComputePipelineCapability capability,
+                                     Type elementType) const = 0;
   virtual llvm::SmallVector<DFBHardwareConfiguration, 4>
   getSupportedDFBConfigurations(TilePrimitive primitive, TileOperandRoute route,
                                 Type elementType) const = 0;
@@ -169,6 +180,7 @@ using SourceScalarRetentionPlanPtr =
 struct ComputePipelineScheduleOption {
   ComputePipelineKind kind;
   ComputePipelineSchedule schedule;
+  llvm::SmallVector<ComputePipelineCapability, 2> requiredCapabilities;
   llvm::SmallVector<DFBInputUse> dfbInputUses;
   llvm::SmallVector<DestinationUse> destinationUses;
   std::uint32_t requiredDstSlots = 0;
