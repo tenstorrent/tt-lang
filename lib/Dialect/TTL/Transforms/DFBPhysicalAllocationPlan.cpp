@@ -576,7 +576,7 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
   }
   if (failed(allocationBytes)) {
     analysisFailure.set(moduleOp,
-                        "DFB allocation has an invalid negative element count");
+                        "DFB allocation size is not representable as uint64_t");
     return failure();
   }
   if (*allocationBytes > l1BudgetBytes) {

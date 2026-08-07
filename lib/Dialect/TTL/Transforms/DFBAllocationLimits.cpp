@@ -45,8 +45,24 @@ std::optional<uint64_t> tryBudgetFromModule(ModuleOp module) {
 } // namespace
 
 FailureOr<uint64_t> getDFBAllocationSizeBytes(CircularBufferType type) {
-  int64_t totalElements = type.getTotalElements();
-  if (totalElements < 0) {
+  uint64_t totalElements = 1;
+  for (int64_t dimension : type.getShape()) {
+    if (dimension <= 0) {
+      return failure();
+    }
+    std::optional<uint64_t> updatedTotal = llvm::checkedMulUnsigned(
+        totalElements, static_cast<uint64_t>(dimension));
+    if (!updatedTotal) {
+      return failure();
+    }
+    totalElements = *updatedTotal;
+  }
+  if (type.getBlockCount() <= 0) {
+    return failure();
+  }
+  std::optional<uint64_t> allocationElements = llvm::checkedMulUnsigned(
+      totalElements, static_cast<uint64_t>(type.getBlockCount()));
+  if (!allocationElements) {
     return failure();
   }
   Type elementType = type.getElementType();
@@ -56,7 +72,12 @@ FailureOr<uint64_t> getDFBAllocationSizeBytes(CircularBufferType type) {
   } else {
     elementBytes = ttcore::TileType::get(elementType).getSizeBytes();
   }
-  return static_cast<uint64_t>(totalElements) * elementBytes;
+  std::optional<uint64_t> allocationBytes =
+      llvm::checkedMulUnsigned(*allocationElements, elementBytes);
+  if (!allocationBytes) {
+    return failure();
+  }
+  return *allocationBytes;
 }
 
 FailureOr<bool> DFBAllocationFootprint::add(int64_t physicalIndex,
@@ -73,10 +94,15 @@ FailureOr<bool> DFBAllocationFootprint::add(int64_t physicalIndex,
   return true;
 }
 
-uint64_t DFBAllocationFootprint::getTotalBytes() const {
+FailureOr<uint64_t> DFBAllocationFootprint::getTotalBytes() const {
   uint64_t totalBytes = 0;
   for (uint64_t allocationBytes : llvm::make_second_range(maxBytesByIndex)) {
-    totalBytes += allocationBytes;
+    std::optional<uint64_t> updatedTotal =
+        llvm::checkedAddUnsigned(totalBytes, allocationBytes);
+    if (!updatedTotal) {
+      return failure();
+    }
+    totalBytes = *updatedTotal;
   }
   return totalBytes;
 }

@@ -92,7 +92,8 @@ struct TTLValidateCBBudgetPass
       int64_t physicalIndex = bindOp.getCbIndex().getSExtValue();
       FailureOr<bool> increased = footprint.add(physicalIndex, cbType);
       if (failed(increased)) {
-        bindOp.emitOpError() << "invalid negative total element count for CB";
+        bindOp.emitOpError()
+            << "DFB allocation size is not representable as uint64_t";
         return WalkResult::interrupt();
       }
       if (*increased) {
@@ -110,7 +111,14 @@ struct TTLValidateCBBudgetPass
       return;
     }
 
-    uint64_t totalBytes = footprint.getTotalBytes();
+    FailureOr<uint64_t> maybeTotalBytes = footprint.getTotalBytes();
+    if (failed(maybeTotalBytes)) {
+      moduleOp.emitOpError()
+          << "total DFB allocation size is not representable as uint64_t";
+      signalPassFailure();
+      return;
+    }
+    uint64_t totalBytes = *maybeTotalBytes;
     SmallVector<int64_t, kMaxCircularBuffers> sortedIndices =
         footprint.getSortedPhysicalIndices();
 
