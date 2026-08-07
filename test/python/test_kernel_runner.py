@@ -4,6 +4,7 @@
 
 """Python-only tests for ttl.kernel_runner resource allocation helpers."""
 
+from enum import Enum
 from types import SimpleNamespace
 
 import pytest
@@ -136,6 +137,24 @@ class _FakeTTNN:
 
     class WriterConfigDescriptor:
         pass
+
+    class DataMovementProcessor(Enum):
+        RISCV_0 = 0
+        RISCV_1 = 1
+
+    class NOC(Enum):
+        RISCV_0_default = 0
+        RISCV_1_default = 1
+
+    class NOC_MODE(Enum):
+        DM_DEDICATED_NOC = 0
+        DM_DYNAMIC_NOC = 1
+
+    class DataMovementConfigDescriptor:
+        def __init__(self, processor, noc, noc_mode):
+            self.processor = processor
+            self.noc = noc
+            self.noc_mode = noc_mode
 
     class KernelDescriptor:
         def __init__(
@@ -367,12 +386,13 @@ def test_build_pipe_runtime_resources_appends_global_semaphore_args(monkeypatch)
 
 
 def test_build_kernel_descriptors_checks_pipe_runtime_arg_count(monkeypatch):
-    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     spec = kernel_runner.KernelSpec(
         path="/tmp/kernel.cpp",
         thread_type="noc",
         tensor_indices=[0],
-        config=object(),
+        config=fake_ttnn.ReaderConfigDescriptor(),
     )
     tensor = _FakeTensor(object(), address=0x2000)
 
@@ -430,6 +450,45 @@ def test_build_kernel_descriptors_filters_specialized_runtime_args(monkeypatch):
     )
 
     assert descriptors[0].runtime_args == [("core-1", [11])]
+
+
+@pytest.mark.parametrize(
+    ("processor", "thread_name"),
+    [
+        (_FakeTTNN.DataMovementProcessor.RISCV_1, "ncrisc"),
+        (_FakeTTNN.DataMovementProcessor.RISCV_0, "brisc"),
+    ],
+)
+def test_explicit_data_movement_config_maps_runtime_args_by_processor(
+    monkeypatch, processor, thread_name
+):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    config = fake_ttnn.DataMovementConfigDescriptor(
+        processor=processor,
+        noc=fake_ttnn.NOC.RISCV_0_default,
+        noc_mode=fake_ttnn.NOC_MODE.DM_DYNAMIC_NOC,
+    )
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="noc",
+        tensor_indices=[],
+        config=config,
+    )
+    expected_args = [("core-0", [7])]
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[],
+        tensor_accessor_args=[],
+        core_ranges=_FakeCoreRanges(),
+        grid_cols=1,
+        grid_rows=1,
+        num_cbs=0,
+        runtime_args_by_thread={thread_name: expected_args},
+    )
+
+    assert descriptors[0].runtime_args == expected_args
 
 
 def test_run_kernel_without_pipe_resources_does_not_require_device(monkeypatch):
@@ -929,6 +988,35 @@ def test_emit_runner_source_omits_program_hash_by_default():
     )
 
     assert "PROGRAM_HASH = None" in source
+
+
+def test_emit_runner_source_preserves_explicit_data_movement_config(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    config = fake_ttnn.DataMovementConfigDescriptor(
+        processor=fake_ttnn.DataMovementProcessor.RISCV_1,
+        noc=fake_ttnn.NOC.RISCV_0_default,
+        noc_mode=fake_ttnn.NOC_MODE.DM_DYNAMIC_NOC,
+    )
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="noc",
+        tensor_indices=[],
+        config=config,
+    )
+
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[spec],
+        cb_configs=[],
+        grid_cols=1,
+        grid_rows=1,
+        num_tensors=1,
+    )
+
+    assert "('data_movement', 'RISCV_1', 'RISCV_0_default', 'DM_DYNAMIC_NOC')" in source
+    assert "processor=getattr(ttnn.DataMovementProcessor, processor)" in source
+    assert "noc=getattr(ttnn.NOC, noc)" in source
+    assert "noc_mode=getattr(ttnn.NOC_MODE, noc_mode)" in source
 
 
 def test_emit_runner_source_preserves_positional_options():
