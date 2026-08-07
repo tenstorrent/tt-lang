@@ -62,6 +62,61 @@ def subtile_add(lhs, rhs, out):
 
 
 @ttl.operation(grid=(1, 1))
+def short_height_situ(gate, up, out):
+    gate_dfb = ttl.make_tensor_backed_dfb(gate, shape=(1, 3), block_count=1)
+    up_dfb = ttl.make_tensor_backed_dfb(up, shape=(1, 3), block_count=1)
+    output_dfb = ttl.make_tensor_backed_dfb(out, shape=(1, 3), block_count=1)
+
+    @ttl.compute()
+    def compute():
+        gate_block = gate_dfb.wait()
+        up_block = up_dfb.wait()
+        output_block = output_dfb.reserve()
+        quarter = ttl.block.fill(
+            0.25,
+            shape=gate_block.shape,
+            dtype=gate_block.dtype,
+            tile=gate_block.tile,
+        )
+        four = ttl.block.fill(
+            4.0,
+            shape=gate_block.shape,
+            dtype=gate_block.dtype,
+            tile=gate_block.tile,
+        )
+        one_twenty_fifth = ttl.block.fill(
+            0.04,
+            shape=up_block.shape,
+            dtype=up_block.dtype,
+            tile=up_block.tile,
+        )
+        twenty_five = ttl.block.fill(
+            25.0,
+            shape=up_block.shape,
+            dtype=up_block.dtype,
+            tile=up_block.tile,
+        )
+        gate_result = (
+            four * ttl.math.tanh(gate_block * quarter) * ttl.math.sigmoid(gate_block)
+        )
+        up_result = twenty_five * ttl.math.tanh(up_block * one_twenty_fifth)
+        output_block.store(gate_result * up_result)
+        output_block.push()
+        up_block.pop()
+        gate_block.pop()
+
+    @ttl.datamovement()
+    def publish_inputs():
+        gate_dfb.publish()
+        up_dfb.publish()
+
+    @ttl.datamovement()
+    def consume_output():
+        output_block = output_dfb.wait()
+        output_block.pop()
+
+
+@ttl.operation(grid=(1, 1))
 def subtile_sub(lhs, rhs, out):
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), block_count=2)
     rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), block_count=2)
@@ -230,7 +285,9 @@ def subtile_reduce(inp, out):
             ttl.copy(output_block, out[0:1, 0:1]).wait()
 
 
+SHORT_HEIGHT_TILE_SIZES = [(1, 32), (2, 32), (4, 32), (8, 32)]
 COMPUTE_TILE_SIZES = [(16, 16), (16, 32), (32, 16), (32, 32)]
+ELEMENTWISE_TILE_SIZES = SHORT_HEIGHT_TILE_SIZES + COMPUTE_TILE_SIZES
 MATMUL_TILE_CONFIGS = [
     ((height, 32), (32, 32), (height, 32)) for height in [1, 2, 4, 8, 16, 32]
 ] + [
@@ -282,8 +339,36 @@ def _to_device(torch_tensor, device, tile_hw, dtype, memory_config):
     )
 
 
+def _to_height_sharded_l1(torch_tensor, device, tile_hw):
+    tensor_height, tensor_width = torch_tensor.shape
+    shard_spec = ttnn.ShardSpec(
+        ttnn.CoreRangeSet(
+            {
+                ttnn.CoreRange(
+                    ttnn.CoreCoord(0, 0),
+                    ttnn.CoreCoord(0, 0),
+                )
+            }
+        ),
+        (tensor_height, tensor_width),
+        ttnn.ShardOrientation.ROW_MAJOR,
+    )
+    memory_config = ttnn.MemoryConfig(
+        ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
+        ttnn.BufferType.L1,
+        shard_spec,
+    )
+    return _to_device(
+        torch_tensor,
+        device,
+        tile_hw,
+        ttnn.bfloat16,
+        memory_config,
+    )
+
+
 @pytest.mark.parametrize(
-    "tile_hw", COMPUTE_TILE_SIZES, ids=lambda tile: f"{tile[0]}x{tile[1]}"
+    "tile_hw", ELEMENTWISE_TILE_SIZES, ids=lambda tile: f"{tile[0]}x{tile[1]}"
 )
 @pytest.mark.parametrize(
     "torch_dtype,ttnn_dtype,rtol,atol",
@@ -314,7 +399,7 @@ def test_subtile_exp(
 
 
 @pytest.mark.parametrize(
-    "tile_hw", COMPUTE_TILE_SIZES, ids=lambda tile: f"{tile[0]}x{tile[1]}"
+    "tile_hw", ELEMENTWISE_TILE_SIZES, ids=lambda tile: f"{tile[0]}x{tile[1]}"
 )
 @pytest.mark.parametrize(
     "torch_dtype,ttnn_dtype,rtol,atol",
@@ -340,6 +425,31 @@ def test_subtile_add(
     actual = ttnn.to_torch(output_tensor).reshape(tile_hw).float()
     expected = lhs_source.float() + rhs_source.float()
     assert_allclose(actual, expected, rtol=rtol, atol=atol)
+
+
+@pytest.mark.parametrize(
+    "tile_hw", SHORT_HEIGHT_TILE_SIZES, ids=lambda tile: f"{tile[0]}x{tile[1]}"
+)
+def test_short_height_tensor_backed_situ(device, tile_hw):
+    """The K3 SiTU expression runs over three direct sharded-L1 pages."""
+    tile_height, tile_width = tile_hw
+    tensor_shape = (tile_height, 3 * tile_width)
+    torch.manual_seed(0)
+    gate = torch.randn(tensor_shape, dtype=torch.bfloat16)
+    up = torch.randn(tensor_shape, dtype=torch.bfloat16)
+    output = torch.zeros(tensor_shape, dtype=torch.bfloat16)
+    expected = (4.0 * torch.tanh(gate.float() / 4.0) * torch.sigmoid(gate.float())) * (
+        25.0 * torch.tanh(up.float() / 25.0)
+    )
+
+    gate_tensor = _to_height_sharded_l1(gate, device, tile_hw)
+    up_tensor = _to_height_sharded_l1(up, device, tile_hw)
+    output_tensor = _to_height_sharded_l1(output, device, tile_hw)
+
+    short_height_situ(gate_tensor, up_tensor, output_tensor)
+
+    actual = ttnn.to_torch(output_tensor).reshape(tensor_shape).float()
+    assert_allclose(actual, expected, rtol=5e-2, atol=1e-1)
 
 
 @pytest.mark.parametrize("kernel,expected_value", INTEGER_OPERATIONS)

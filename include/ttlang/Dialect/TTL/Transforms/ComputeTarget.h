@@ -42,13 +42,18 @@ public:
   get(Operation *operation, std::string &failureReason);
 
   virtual LogicalResult
-  validateKernelTileType(bool containsMatmul, ttcore::TileType tileType,
+  validateKernelTileType(ttcore::TileType tileType,
                          std::string &failureReason) const = 0;
 
   virtual LogicalResult
   validatePrimitiveDataType(ComputePrimitive primitive,
                             ttcore::TileType tileType,
                             std::string &failureReason) const = 0;
+
+  virtual LogicalResult
+  validatePrimitiveTileShape(ComputePrimitive primitive,
+                             ttcore::TileType tileType, bool containsMatmul,
+                             std::string &failureReason) const = 0;
 
   virtual LogicalResult
   validateMatmulTileTypes(ttcore::TileType lhsType, ttcore::TileType rhsType,
