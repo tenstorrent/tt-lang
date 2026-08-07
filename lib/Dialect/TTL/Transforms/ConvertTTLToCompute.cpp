@@ -19,6 +19,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/IR/Remarks.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
@@ -1468,6 +1469,31 @@ validateExistingComputeOps(func::FuncOp kernel,
   return failure(hasErrors);
 }
 
+static void
+emitFusionNearMatchRemarks(func::FuncOp kernel,
+                           const KernelComputeOpCreationPlan &kernelPlan) {
+  kernel.walk([&](Operation *source) {
+    const FusionNearMatch *nearMatch = kernelPlan.getFusionNearMatch(source);
+    if (!nearMatch) {
+      return;
+    }
+    bool absorbedBySelectedFusion = llvm::any_of(
+        kernelPlan.getCreationOrder(), [&](Operation *selectedSource) {
+          const ComputeOpCreationPlan &creation =
+              kernelPlan.getAnalyzedCreation(selectedSource);
+          return creation.fusionGraph &&
+                 creation.trace.opsInOrder.contains(source);
+        });
+    if (absorbedBySelectedFusion) {
+      return;
+    }
+    remark::missed(source->getLoc(), remark::RemarkOpts::name("ReductionFusion")
+                                         .category("ttl-reduction-fusion")
+                                         .function(kernel.getSymName()))
+        << formatFusionNearMatch(*nearMatch);
+  });
+}
+
 static LogicalResult runTTLToCompute(func::FuncOp kernel,
                                      TTLToComputeMode mode) {
   if (kernel.isExternal()) {
@@ -1519,6 +1545,10 @@ static LogicalResult runTTLToCompute(func::FuncOp kernel,
   assert(plannedKernel.isPlanned() &&
          "kernel ComputeOp creation planning has no recoverable rejection");
   KernelComputeOpCreationPlan kernelPlan = std::move(plannedKernel).takePlan();
+
+  if (mode == TTLToComputeMode::ProducerCreation) {
+    emitFusionNearMatchRemarks(kernel, kernelPlan);
+  }
 
   if (mode == TTLToComputeMode::FinalConversion &&
       !kernelPlan.getUnassignedStores().empty()) {
