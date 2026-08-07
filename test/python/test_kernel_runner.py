@@ -426,9 +426,7 @@ def test_build_kernel_descriptors_filters_specialized_runtime_args(monkeypatch):
         grid_cols=2,
         grid_rows=1,
         num_cbs=0,
-        runtime_args_by_thread={
-            "brisc": [("core-0", [10]), ("core-1", [11])]
-        },
+        runtime_args_by_thread={"brisc": [("core-0", [10]), ("core-1", [11])]},
     )
 
     assert descriptors[0].runtime_args == [("core-1", [11])]
@@ -590,6 +588,29 @@ def test_cb_descriptor_override_accounts_for_disjoint_cores(monkeypatch):
     assert result == descriptors
 
 
+def test_cb_descriptor_override_counts_aliased_formats_once(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", 96)
+    core = _FakeExplicitCoreRanges(((0, 0), (0, 0)))
+    descriptor = _fake_cb_descriptor(0, core, total_size=96, page_size=32)
+    descriptor.format_descriptors.append(
+        SimpleNamespace(
+            buffer_index=1,
+            data_format="bf16",
+            page_size=96,
+            tile=SimpleNamespace(height=32, width=32),
+        )
+    )
+
+    result = kernel_runner.validate_cb_descriptors_override(
+        descriptors=[descriptor],
+        program_core_ranges=core,
+        tensors=[_FakeTensorWithoutDevice()],
+        num_cbs=2,
+    )
+
+    assert result == [descriptor]
+
+
 def test_cb_descriptor_override_rejects_overlapping_id_on_one_core(monkeypatch):
     monkeypatch.setattr(kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", 128)
     core = _FakeExplicitCoreRanges(((0, 0), (0, 0)))
@@ -739,8 +760,7 @@ def test_cb_pages_by_core_specializes_selected_ids(monkeypatch):
         128,
     ]
     assert [
-        descriptor.format_descriptors[0].buffer_index
-        for descriptor in descriptors
+        descriptor.format_descriptors[0].buffer_index for descriptor in descriptors
     ] == [1, 1, 0, 0]
 
 
@@ -823,8 +843,7 @@ def test_cb_pages_by_core_preserves_specialization_order(monkeypatch):
     )
 
     assert [
-        descriptor.format_descriptors[0].buffer_index
-        for descriptor in descriptors
+        descriptor.format_descriptors[0].buffer_index for descriptor in descriptors
     ] == [1, 1, 0, 0]
 
 
