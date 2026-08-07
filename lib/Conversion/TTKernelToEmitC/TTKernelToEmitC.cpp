@@ -2606,50 +2606,6 @@ private:
   std::reference_wrapper<TTKernelToEmitCConversionState> state;
 };
 
-class TTKernelRoutingPlaneAtomicIncOpRewriter
-    : public OpConversionPattern<ttkernel::RoutingPlaneAtomicIncOp> {
-  using Op = ttkernel::RoutingPlaneAtomicIncOp;
-
-public:
-  using OpConversionPattern::OpConversionPattern;
-
-  LogicalResult
-  matchAndRewrite(Op op, Op::Adaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const final {
-    emitc::VerbatimOp::create(
-        rewriter, op.getLoc(),
-        rewriter.getStringAttr(
-            "{{\n"
-            "  auto *packet_header = PacketHeaderPool::header_table[{}].first "
-            "+ {};\n"
-            "#if defined(FABRIC_2D)\n"
-            "  tt::tt_fabric::fabric_set_unicast_route(\n"
-            "      packet_header, static_cast<uint16_t>({}), "
-            "static_cast<uint16_t>({}));\n"
-            "#else\n"
-            "  tt::tt_fabric::fabric_set_unicast_route(\n"
-            "      packet_header, static_cast<uint16_t>({}));\n"
-            "#endif\n"
-            "  auto &sender = {}.get(static_cast<uint8_t>({})).sender;\n"
-            "  packet_header->to_noc_unicast_atomic_inc("
-            "tt::tt_fabric::NocUnicastAtomicIncCommandHeader{{{}, "
-            "static_cast<uint32_t>({})});\n"
-            "  sender.wait_for_empty_write_slot();\n"
-            "  sender.send_payload_flush_blocking_from_address("
-            "reinterpret_cast<uint32_t>(packet_header), "
-            "sizeof(PACKET_HEADER_TYPE));\n"
-            "}"),
-        ValueRange{adaptor.getRouteId(), adaptor.getConnectionIndex(),
-                   adaptor.getDestinationDeviceId(),
-                   adaptor.getDestinationMeshId(),
-                   adaptor.getDestinationDeviceId(), adaptor.getManager(),
-                   adaptor.getConnectionIndex(), adaptor.getSemaphoreAddress(),
-                   adaptor.getIncrement()});
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
 class TTKernelRoutingPlaneFusedWriteAtomicIncOpRewriter
     : public OpConversionPattern<ttkernel::RoutingPlaneFusedWriteAtomicIncOp> {
   using Op = ttkernel::RoutingPlaneFusedWriteAtomicIncOp;
@@ -3487,8 +3443,7 @@ public:
     patterns.add<TTKernelCreateRoutingPlaneConnectionManagerOpRewriter,
                  TTKernelOpenRoutingPlaneConnectionsOpRewriter>(typeConverter,
                                                                 context, state);
-    patterns.add<TTKernelRoutingPlaneAtomicIncOpRewriter,
-                 TTKernelRoutingPlaneFusedWriteAtomicIncOpRewriter,
+    patterns.add<TTKernelRoutingPlaneFusedWriteAtomicIncOpRewriter,
                  TTKernelCloseRoutingPlaneConnectionsOpRewriter>(typeConverter,
                                                                  context);
 

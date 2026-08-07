@@ -21,17 +21,6 @@
 // CHECK-NEXT: packet_header, static_cast<uint16_t>([[DEST_DEVICE]]));
 // CHECK-NEXT: #endif
 // CHECK-NEXT: auto &sender = [[MANAGER]].get(static_cast<uint8_t>([[INDEX]])).sender;
-// CHECK-NEXT: packet_header->to_noc_unicast_atomic_inc(tt::tt_fabric::NocUnicastAtomicIncCommandHeader{
-// CHECK: sender.send_payload_flush_blocking_from_address(
-// CHECK: auto *packet_header = PacketHeaderPool::header_table[[[ROUTE_ID]]].first + [[INDEX]];
-// CHECK-NEXT: #if defined(FABRIC_2D)
-// CHECK-NEXT: tt::tt_fabric::fabric_set_unicast_route(
-// CHECK-NEXT: packet_header, static_cast<uint16_t>([[DEST_DEVICE]]), static_cast<uint16_t>([[DEST_MESH]]));
-// CHECK-NEXT: #else
-// CHECK-NEXT: tt::tt_fabric::fabric_set_unicast_route(
-// CHECK-NEXT: packet_header, static_cast<uint16_t>([[DEST_DEVICE]]));
-// CHECK-NEXT: #endif
-// CHECK-NEXT: auto &sender = [[MANAGER]].get(static_cast<uint8_t>([[INDEX]])).sender;
 // CHECK: packet_header->to_noc_fused_unicast_write_atomic_inc(tt::tt_fabric::NocUnicastAtomicIncFusedCommandHeader{
 // CHECK: sender.send_payload_without_header_non_blocking_from_address(
 // CHECK: sender.send_payload_flush_blocking_from_address(
@@ -65,11 +54,6 @@ module {
     %route_id = ttkernel.routing_plane.open_connections
       %manager, %count runtime_arg_base = 4
       : (!ttkernel.routing_plane_connection_manager, i32) -> i32
-    ttkernel.routing_plane.atomic_inc(
-      %manager, %route_id, %connection_index, %destination_device_id,
-      %destination_mesh_id, %semaphore_address, %increment)
-      : (!ttkernel.routing_plane_connection_manager, i32, i32, i32, i32,
-         !ttkernel.noc_addr, i32) -> ()
     ttkernel.routing_plane.fused_write_atomic_inc(
       %manager, %route_id, %connection_index, %destination_device_id,
       %destination_mesh_id, %source, %size,

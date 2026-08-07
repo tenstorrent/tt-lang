@@ -4388,29 +4388,6 @@ def TTKernel_OpenRoutingPlaneConnectionsOp :
   }];
 }
 
-def TTKernel_RoutingPlaneAtomicIncOp :
-    TTKernel_Op<"routing_plane.atomic_inc"> {
-  let summary = "Increment a remote semaphore through one fabric connection";
-  let description = [{
-    Sends a non-posted atomic increment to `semaphoreAddress` through the
-    connection selected by `connectionIndex`. `destinationDeviceId` identifies
-    the final destination; `destinationMeshId` also selects the mesh when mesh
-    routing is enabled.
-  }];
-  let arguments = (ins
-    TTKernel_RoutingPlaneConnectionManager:$manager,
-    I32:$routeId,
-    I32:$connectionIndex,
-    I32:$destinationDeviceId,
-    I32:$destinationMeshId,
-    TTKernel_NocAddr:$semaphoreAddress,
-    I32:$increment
-  );
-  let assemblyFormat = [{
-    `(` operands `)` attr-dict `:` functional-type(operands, results)
-  }];
-}
-
 def TTKernel_RoutingPlaneFusedWriteAtomicIncOp :
     TTKernel_Op<"routing_plane.fused_write_atomic_inc"> {
   let summary = "Write a payload and increment a remote semaphore";
