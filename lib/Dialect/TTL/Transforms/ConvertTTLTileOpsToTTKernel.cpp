@@ -1083,15 +1083,12 @@ struct TTLTileRowNormalizationBlockToTTKernel
           op, "cannot find or convert row-normalization DFBs");
     }
 
-    auto inputType = dyn_cast<RankedTensorType>(op.getInput().getType());
     auto resultType = dyn_cast<ttcore::TileType>(op.getResult().getType());
-    if (!inputType || !inputType.hasStaticShape() || !resultType) {
-      return rewriter.notifyMatchFailure(
-          op, "requires a static tensor input and tile result");
+    if (!resultType) {
+      return rewriter.notifyMatchFailure(op, "requires a tile result");
     }
 
-    std::uint64_t numTiles =
-        static_cast<std::uint64_t>(inputType.getNumElements());
+    std::uint64_t numTiles = op.getNumTiles();
     ttk::ExperimentalMulReduceBlockOp::create(
         rewriter, loc, *inputDfb, *inputDfb, *outputDfb, numTiles,
         op.getScaleAttr().getValue(), resultType.getDataType());
@@ -1149,16 +1146,13 @@ struct TTLTileMulReduceBlockToTTKernel
           op, "cannot find or convert multiply-reduction DFBs");
     }
 
-    auto lhsType = dyn_cast<RankedTensorType>(op.getLhs().getType());
     auto resultType = dyn_cast<ttcore::TileType>(op.getResult().getType());
-    if (!lhsType || !lhsType.hasStaticShape() || !resultType) {
-      return rewriter.notifyMatchFailure(
-          op, "requires a static tensor input and tile result");
+    if (!resultType) {
+      return rewriter.notifyMatchFailure(op, "requires a tile result");
     }
 
     ttk::ExperimentalMulReduceBlockOp::create(
-        rewriter, loc, *lhsDfb, *rhsDfb, *outputDfb,
-        static_cast<std::uint64_t>(lhsType.getNumElements()),
+        rewriter, loc, *lhsDfb, *rhsDfb, *outputDfb, op.getNumTiles(),
         op.getScaleAttr().getValue(), resultType.getDataType());
     rewriter.replaceOp(op, adaptor.getLhs());
     return success();

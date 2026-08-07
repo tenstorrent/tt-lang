@@ -315,11 +315,12 @@ getDefaultTileExecutionInfo(Operation *operation,
     }
     return info;
   }
-  if (isa<TileMulReduceBlockOp>(operation)) {
+  if (auto multiplyReduction = dyn_cast<TileMulReduceBlockOp>(operation)) {
     info.primitive = TilePrimitive::MultiplyFullScalarReduction;
     info.operandRoutes[0] = TileOperandRoute::DataflowBuffer;
     info.operandRoutes[1] = TileOperandRoute::DataflowBuffer;
     info.fullFp32Accumulation = FullFp32AccumulationKind::ReduceScalar;
+    info.requiredDstSlots = multiplyReduction.getNumTiles();
     return info;
   }
   if (auto normalization = dyn_cast<TileRowNormalizationBlockOp>(operation)) {
@@ -328,6 +329,7 @@ getDefaultTileExecutionInfo(Operation *operation,
     if (normalization.getHasGamma()) {
       info.operandRoutes[1] = TileOperandRoute::DataflowBuffer;
     }
+    info.requiredDstSlots = normalization.getNumTiles();
     return info;
   }
   if (isa<TileTransposeOp>(operation)) {
@@ -396,6 +398,10 @@ LogicalResult verifyTileExecutionInfo(Operation *operation,
         << "defines " << info.dstOperandsMaterializedByOperation.size()
         << " DST operand materialization entries for "
         << operation->getNumOperands() << " operands";
+    return failure();
+  }
+  if (info.requiredDstSlots == 0) {
+    operation->emitOpError("defines a zero-slot DST residency requirement");
     return failure();
   }
   return success();
@@ -580,31 +586,6 @@ static int64_t getMatmulBlockOutputTileCount(TileMatmulBlockOp op) {
   return lhsType.getDimSize(0) * rhsType.getDimSize(1);
 }
 
-/// Row normalization moves its scalar to a compute source register before
-/// overwriting the acquired DST section with the normalized row.
-static int64_t
-getRowNormalizationBlockTileCount(TileRowNormalizationBlockOp op) {
-  if (isa<ttcore::TileType>(op.getInput().getType())) {
-    return 1;
-  }
-  auto inputType = dyn_cast<RankedTensorType>(op.getInput().getType());
-  assert(inputType && inputType.hasStaticShape() &&
-         "verified row-normalization tensor form must have static shape");
-  return inputType.getNumElements();
-}
-
-/// Multiply-reduction retains every product tile until the scalar reduction
-/// completes, while publishing only the scalar in the first DST slot.
-static int64_t getMulReduceBlockTileCount(TileMulReduceBlockOp op) {
-  if (isa<ttcore::TileType>(op.getLhs().getType())) {
-    return 1;
-  }
-  auto lhsType = dyn_cast<RankedTensorType>(op.getLhs().getType());
-  assert(lhsType && lhsType.hasStaticShape() &&
-         "verified multiply-reduction tensor form must have static shape");
-  return lhsType.getNumElements();
-}
-
 /// Interface defaults require resolved DST operands because callers use this
 /// after DST assignment, where unresolved tile residency is invalid IR.
 static LogicalResult
@@ -651,11 +632,11 @@ SmallVector<DstFootprint, 2> getDefaultDstWriteFootprints(Operation *op) {
   }
   if (auto normalization = dyn_cast<TileRowNormalizationBlockOp>(op)) {
     return {{normalization.getDstIndex(),
-             getRowNormalizationBlockTileCount(normalization)}};
+             static_cast<int64_t>(normalization.getNumTiles())}};
   }
   if (auto multiplyReduction = dyn_cast<TileMulReduceBlockOp>(op)) {
     return {{multiplyReduction.getDstIndex(),
-             getMulReduceBlockTileCount(multiplyReduction)}};
+             static_cast<int64_t>(multiplyReduction.getNumTiles())}};
   }
   if (auto dstIndex = getTileOpDstIndex(op)) {
     return {{*dstIndex, 1}};
@@ -679,7 +660,7 @@ FailureOr<DstFootprint> getDefaultResultDstFootprint(Operation *op,
   }
   if (auto normalization = dyn_cast<TileRowNormalizationBlockOp>(op)) {
     return DstFootprint{normalization.getDstIndex(),
-                        getRowNormalizationBlockTileCount(normalization)};
+                        static_cast<int64_t>(normalization.getNumTiles())};
   }
   if (auto multiplyReduction = dyn_cast<TileMulReduceBlockOp>(op)) {
     return DstFootprint{multiplyReduction.getDstIndex(), 1};

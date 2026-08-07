@@ -587,7 +587,7 @@ struct UnsupportedComputePipelineSchedule {
 
 struct ComputeCapacityConflict {
   Operation *operation;
-  std::uint32_t requiredDstSlots;
+  std::uint64_t requiredDstSlots;
   std::uint32_t availableDstSlots;
 };
 
@@ -791,8 +791,8 @@ void emitConfigConstraintConflict(func::FuncOp function,
               "target");
         } else {
           typedConflict.operation->emitOpError()
-              << "selected compute-pipeline schedule requires "
-              << typedConflict.requiredDstSlots << " DST slots, but at most "
+              << "requires " << typedConflict.requiredDstSlots
+              << " simultaneous DST slots, but at most "
               << typedConflict.availableDstSlots
               << " are available under the kernel configuration";
         }
@@ -897,7 +897,7 @@ using ExecutionSearchResult =
 ConfigConstraintResult applyComputeResourceConstraints(
     ConfigConstraintState state, Operation *operation,
     ArrayRef<ComputePipelineCapability> requiredCapabilities, Type elementType,
-    std::uint32_t requiredDstSlots, const KernelTargetEnvironment &target) {
+    std::uint64_t requiredDstSlots, const KernelTargetEnvironment &target) {
   std::uint32_t targetMaximum = std::numeric_limits<std::uint32_t>::max();
   for (ComputePipelineCapability capability : requiredCapabilities) {
     ComputePipelineCapabilityLimits limits =
@@ -959,7 +959,7 @@ ComputePipelineScheduleRejection getComputePipelineScheduleRejection(
         using ConflictType = std::decay_t<decltype(typedConflict)>;
         if constexpr (std::is_same_v<ConflictType, ComputeCapacityConflict>) {
           return {ComputePipelineScheduleRejectionKind::DSTCapacity,
-                  typedConflict.requiredDstSlots,
+                  retainedOption.requiredDstSlots,
                   typedConflict.availableDstSlots};
         }
         if constexpr (std::is_same_v<ConflictType,
@@ -1243,6 +1243,42 @@ KernelConfigPolicy::get(func::FuncOp function, StringRef fp32Selection,
   return policy;
 }
 
+static FailureOr<std::optional<ComputeResourceUse>>
+getComputeResourceUse(Operation *operation, const TileExecutionInfo &info) {
+  SmallVector<ComputePipelineCapability, 2> capabilities;
+  switch (info.primitive) {
+  case TilePrimitive::MultiplyFullScalarReduction:
+    capabilities.push_back(
+        ComputePipelineCapability::MultiplyFullScalarReduction);
+    break;
+  case TilePrimitive::RowNormalization:
+    capabilities.push_back(
+        ComputePipelineCapability::MultiplyFullScalarReduction);
+    capabilities.push_back(ComputePipelineCapability::SourceScalarRetention);
+    break;
+  default:
+    if (info.requiredDstSlots == 1) {
+      return std::optional<ComputeResourceUse>();
+    }
+    operation->emitOpError(
+        "defines multi-slot DST residency without compute-resource semantics");
+    return failure();
+  }
+
+  if (operation->getNumOperands() == 0) {
+    operation->emitOpError(
+        "defines compute-resource semantics without a tile operand");
+    return failure();
+  }
+  FailureOr<Type> elementType =
+      getRequiredTileElementType(operation->getOperand(0), operation);
+  if (failed(elementType)) {
+    return failure();
+  }
+  return std::optional<ComputeResourceUse>(ComputeResourceUse{
+      operation, std::move(capabilities), *elementType, info.requiredDstSlots});
+}
+
 FailureOr<KernelRequirements> collectKernelRequirements(func::FuncOp function) {
   KernelRequirements requirements;
   WalkResult result = function.walk([&](Operation *operation) {
@@ -1299,6 +1335,15 @@ FailureOr<KernelRequirements> collectKernelRequirements(func::FuncOp function) {
       requirements.fullFp32AccumulationUses.push_back(
           {operation, *info->fullFp32Accumulation});
     }
+    FailureOr<std::optional<ComputeResourceUse>> computeResourceUse =
+        getComputeResourceUse(operation, *info);
+    if (failed(computeResourceUse)) {
+      return WalkResult::interrupt();
+    }
+    if (*computeResourceUse) {
+      requirements.computeResourceUses.push_back(
+          std::move(**computeResourceUse));
+    }
     return WalkResult::advance();
   });
   if (result.wasInterrupted()) {
@@ -1340,6 +1385,15 @@ FailureOr<KernelConfigPlan> resolveKernelConfig(
   ConfigConstraintResult fixedResult = applyConfigConstraints(
       initialState, target, policy, requirements.dfbInputUses,
       requirements.destinationUses);
+  for (const ComputeResourceUse &use : requirements.computeResourceUses) {
+    if (std::holds_alternative<ConfigConstraintConflict>(fixedResult)) {
+      break;
+    }
+    fixedResult = applyComputeResourceConstraints(
+        std::get<ConfigConstraintState>(std::move(fixedResult)), use.operation,
+        use.requiredCapabilities, use.elementType, use.requiredDstSlots,
+        target);
+  }
   if (std::holds_alternative<ConfigConstraintConflict>(fixedResult)) {
     emitConfigConstraintConflict(
         function, std::get<ConfigConstraintConflict>(std::move(fixedResult)));

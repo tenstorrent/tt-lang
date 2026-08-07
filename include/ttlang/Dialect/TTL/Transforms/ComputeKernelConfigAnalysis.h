@@ -152,6 +152,14 @@ struct FullFp32AccumulationUse {
   FullFp32AccumulationKind kind;
 };
 
+/// Fixed operation requirements for target facilities and DST residency.
+struct ComputeResourceUse {
+  Operation *operation;
+  llvm::SmallVector<ComputePipelineCapability, 2> requiredCapabilities;
+  Type elementType;
+  std::uint64_t requiredDstSlots;
+};
+
 /// One exact compute-stage operand that consumes a retained full scalar.
 struct SourceScalarConsumerPlan {
   Operation *stage;
@@ -220,6 +228,7 @@ struct KernelRequirements {
   llvm::SmallVector<DFBInputUse> dfbInputUses;
   llvm::SmallVector<DestinationUse> destinationUses;
   llvm::SmallVector<FullFp32AccumulationUse> fullFp32AccumulationUses;
+  llvm::SmallVector<ComputeResourceUse> computeResourceUses;
   llvm::SmallVector<TileExecutionChoice, 0> tileStrategyChoices;
   llvm::SmallVector<ComputePipelineScheduleChoice, 0> pipelineScheduleChoices;
 };

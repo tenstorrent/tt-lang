@@ -70,6 +70,10 @@ analyzeFusionCompute(ComputeOp compute, std::string &reason) {
     return failure();
   }
   analysis.numTiles = lhsType.getNumElements();
+  if (analysis.numTiles != static_cast<int64_t>(analysis.block.getNumTiles())) {
+    reason = "num_tiles must match the input tensor domain";
+    return failure();
+  }
 
   analysis.dstCapacity = std::min<std::uint32_t>(8, analysis.fixed.dstCapacity);
   if (analysis.numTiles < 1 || analysis.numTiles > analysis.dstCapacity) {
@@ -113,7 +117,7 @@ LogicalResult generateFusionCompute(PatternRewriter &rewriter, Location loc,
   auto loweredBlock = TileMulReduceBlockOp::create(
       sectionBuilder, loc, tileType, analysis->lhsTensor, analysis->rhsTensor,
       analysis->fixed.outputTensor, analysis->block.getScaleAttr(),
-      scalarDstIndex);
+      analysis->block.getNumTilesAttr(), scalarDstIndex);
   SmallVector<Value> indices = {constantIndex(sectionBuilder, loc, 0),
                                 constantIndex(sectionBuilder, loc, 0)};
   TileStoreOp::create(sectionBuilder, loc, loweredBlock.getResult(),

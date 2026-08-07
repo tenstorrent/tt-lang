@@ -2570,6 +2570,9 @@ mlir::LogicalResult mlir::tt::ttl::TileRowNormalizationBlockOp::verify() {
     return emitOpError(
         "input and output must have the same one-row tensor shape");
   }
+  if (inputTensor.getNumElements() != static_cast<int64_t>(getNumTiles())) {
+    return emitOpError("num_tiles must match the row tensor width");
+  }
   if (getHasGamma()) {
     if (gammaTensor.getShape() != outputTensor.getShape()) {
       return emitOpError("gamma tensor shape must match the output shape");
@@ -2616,6 +2619,9 @@ mlir::LogicalResult mlir::tt::ttl::TileMulReduceBlockOp::verify() {
     }
     if (lhsTensorType != rhsTensorType) {
       return emitOpError("lhs and rhs tensor types must match");
+    }
+    if (lhsTensorType.getNumElements() != static_cast<int64_t>(getNumTiles())) {
+      return emitOpError("num_tiles must match the input tensor domain");
     }
     if (outputTensorType.getDimSize(0) != 1 ||
         outputTensorType.getDimSize(1) != 1) {
