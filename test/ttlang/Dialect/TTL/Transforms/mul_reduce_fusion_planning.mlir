@@ -4,12 +4,11 @@
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute))' --remarks-filter-missed='ttl-reduction-fusion' -o /dev/null 2>&1 | FileCheck %s --check-prefix=REMARK
 // REMARK-NOT: Function=fp32_half_four_tiles
 
-// Four tiles exactly fit fp32 half-sync DST capacity. A post-reduction scalar
-// multiply is represented by the target schedule's semantic scale.
+// Four tiles exactly fit fp32 half-sync DST capacity.
 // CHECK-LABEL: ComputeOp creation plan @fp32_half_four_tiles
-// CHECK:       ttl.mul_unary_const kind=fused recipe=fusion-graph legal=true inputs=1
+// CHECK:       ttl.reduce kind=fused recipe=fusion-graph legal=true inputs=1
 // CHECK:       target=multiply-full-scalar-reduction inputs=[0, 0] tiles=4
-// CHECK-SAME:  scale=5.000000e-01
+// CHECK-SAME:  scale=1.000000e+00
 // CHECK:       resources dst=4/4 acquisitions=1
 module attributes {ttl.target_arch = "blackhole"} {
   func.func @fp32_half_four_tiles()
@@ -36,13 +35,10 @@ module attributes {ttl.target_arch = "blackhole"} {
         : (tensor<1x4x!ttcore.tile<32x32, bf16>>,
           tensor<1x1x!ttcore.tile<32x32, bf16>>)
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    %scaled = ttl.mul_unary_const %reduced, 5.000000e-01
-        : tensor<1x1x!ttcore.tile<32x32, bf16>>
-          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     %output = ttl.cb_reserve %output_dfb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.store %scaled, %output
+    ttl.store %reduced, %output
         : tensor<1x1x!ttcore.tile<32x32, bf16>>,
           tensor<1x1x!ttcore.tile<32x32, bf16>>
     return
@@ -130,7 +126,7 @@ module attributes {ttl.target_arch = "blackhole"} {
         : tensor<1x8x!ttcore.tile<32x32, bf16>>,
           tensor<1x8x!ttcore.tile<32x32, bf16>>
           -> tensor<1x8x!ttcore.tile<32x32, bf16>>
-    %scaler = ttl.fill 2.000000e+00
+    %scaler = ttl.fill 1.000000e+00
         : tensor<1x1x!ttcore.tile<32x32, bf16>>
     %reduced = ttl.reduce %product, %scaler 0 : i32 [0, 1]
         : (tensor<1x8x!ttcore.tile<32x32, bf16>>,
