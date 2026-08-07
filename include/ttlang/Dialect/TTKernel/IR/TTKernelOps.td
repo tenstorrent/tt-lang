@@ -633,6 +633,32 @@ def TTKernel_ExperimentalRowNormalizationBlockOp :
   let hasVerifier = 1;
 }
 
+def TTKernel_ExperimentalMulReduceBlockOp :
+    TTKernel_FPUOp<"experimental_mul_reduce_block"> {
+  let summary = "Multiply tensors and reduce to one scalar";
+  let description = [{
+    Multiplies corresponding tiles from two dataflow buffers and performs a
+    full scalar sum reduction while retaining all intermediate products in one
+    DST acquisition. Only the first DST slot contains the defined result.
+
+    The operation does not acquire, commit, wait, release, reserve, push, pop,
+    or pack. Those transactions remain explicit surrounding TTKernel
+    operations.
+  }];
+  let arguments = (ins TTKernel_CB:$lhs_cb,
+                       TTKernel_CB:$rhs_cb,
+                       TTKernel_CB:$output_cb,
+                       I64Attr:$num_tiles,
+                       F32Attr:$scale,
+                       TTCore_DataTypeAttr:$dtype);
+  let assemblyFormat = [{
+    `(` $lhs_cb `,` $rhs_cb `,` $output_cb `)`
+    `num_tiles` `=` $num_tiles `scale` `=` $scale `dtype` `=` $dtype
+    attr-dict `:` functional-type(operands, results)
+  }];
+  let hasVerifier = 1;
+}
+
 def TTKernel_UnaryBcastInitOp : TTKernel_InitOp<"unary_bcast_init"> {
     let summary = "Init function";
     let description = [{

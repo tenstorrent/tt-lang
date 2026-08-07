@@ -126,6 +126,15 @@ static StringRef stringifyFusionCarrier(FusionCarrierKind carrier) {
 }
 
 static StringRef
+stringifyFusionTargetSchedule(FusionTargetScheduleKind schedule) {
+  switch (schedule) {
+  case FusionTargetScheduleKind::MultiplyFullScalarReduction:
+    return "multiply-full-scalar-reduction";
+  }
+  llvm_unreachable("unknown fusion target schedule");
+}
+
+static StringRef
 stringifyFusionPreservation(FusionPreservationKind preservation) {
   switch (preservation) {
   case FusionPreservationKind::EraseProducer:
@@ -330,6 +339,23 @@ struct TTLPrintComputeOpCreationPlansPass
                  << " preservation="
                  << stringifyFusionPreservation(edge.preservation)
                  << " external-uses=" << edge.externalUses.size() << "\n";
+        }
+        if (graph.targetSchedule) {
+          output << "      target="
+                 << stringifyFusionTargetSchedule(graph.targetSchedule->kind)
+                 << " inputs=[";
+          llvm::interleaveComma(graph.targetSchedule->inputIndices, output);
+          output << "] tiles=" << graph.targetSchedule->numTiles << " dtype="
+                 << ttcore::DataTypeAttr::get(kernel.getContext(),
+                                              graph.targetSchedule->dataType)
+                 << " scale=" << graph.targetSchedule->scale << "\n";
+        }
+        if (graph.resources) {
+          output << "      resources dst=" << graph.resources->requiredDstSlots
+                 << "/" << graph.resources->availableDstSlots
+                 << " acquisitions=" << graph.resources->dstAcquisitions
+                 << " eliminated-intermediate-dfb-bytes="
+                 << graph.resources->intermediateDFBBytes << "\n";
         }
       }
       for (const ComputeOpCreationWarning &warning : creation.warnings) {

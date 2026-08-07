@@ -61,6 +61,33 @@ namespace mlir::tt::ttkernel {
   return success();
 }
 
+::mlir::LogicalResult ExperimentalMulReduceBlockOp::verify() {
+  if (getNumTiles() < 1 || getNumTiles() > 8) {
+    return emitOpError("num_tiles must be in the range [1, 8]");
+  }
+  if (getDtype() != ttcore::DataType::BFloat16) {
+    return emitOpError("supports bf16 DFBs only");
+  }
+  const llvm::APFloat &scale = getScaleAttr().getValue();
+  if (!scale.isFinite() || scale.isZero() || scale.isNegative()) {
+    return emitOpError("scale must be finite and positive");
+  }
+
+  auto lhsCBType = mlir::cast<CBType>(getLhsCb().getType());
+  auto rhsCBType = mlir::cast<CBType>(getRhsCb().getType());
+  auto outputCBType = mlir::cast<CBType>(getOutputCb().getType());
+  if (lhsCBType.getElementType() != rhsCBType.getElementType() ||
+      lhsCBType.getElementType() != outputCBType.getElementType()) {
+    return emitOpError("input and output dataflow buffer types must match");
+  }
+  auto outputTileType =
+      mlir::dyn_cast<ttcore::TileType>(outputCBType.getElementType());
+  if (!outputTileType || outputTileType.getDataType() != getDtype()) {
+    return emitOpError("dtype must match the output tile data type");
+  }
+  return success();
+}
+
 void ComputeKernelHWStartupOp::print(::mlir::OpAsmPrinter &printer) {
   printer << "(" << getIcb0();
   if (getIcb1()) {
