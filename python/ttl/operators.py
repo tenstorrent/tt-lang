@@ -1211,12 +1211,13 @@ def read_index(block, *coords):
 
     Coordinates follow ``raw_element_read``. Fractional values truncate
     toward zero. The source value must be finite, nonnegative, and no greater
-    than INT32_MAX.
+    than INT32_MAX; behavior is undefined otherwise.
 
     Only supported in data movement (noc) threads.
     """
     if len(coords) < 1:
         raise ValueError("read_index requires at least one coordinate")
+    # Validate before op construction so unsupported dtypes raise in Python.
     _get_block_scalar_type(block)
     return ttl.read_index(block, _as_index_values(block, coords))
 

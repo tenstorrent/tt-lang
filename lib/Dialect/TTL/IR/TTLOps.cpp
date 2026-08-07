@@ -2225,12 +2225,8 @@ verifyRawElementAccess(mlir::Operation *op, mlir::Value block,
            << ") must match block tensor rank (" << blockRank << ")";
   }
 
-  mlir::Type elemTy = blockTy.getElementType();
-  if (auto tileTy = mlir::dyn_cast<mlir::tt::ttcore::TileType>(elemTy)) {
-    return mlir::tt::ttcore::dataTypeToElementType(op->getContext(),
-                                                   tileTy.getDataType());
-  }
-  return elemTy;
+  mlir::Type elementType = blockTy.getElementType();
+  return mlir::tt::ttl::getTileElementType(elementType).value_or(elementType);
 }
 
 mlir::LogicalResult mlir::tt::ttl::RawElementReadOp::verify() {
