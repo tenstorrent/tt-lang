@@ -35,7 +35,8 @@ Tile operations implement `TileExecutionOpInterface`. The interface reports:
 - which DST operands the operation lowering initializes itself;
 - whether the result is resident in DST;
 - the full-fp32 accumulation category, when configurable;
-- whether repeated operations accumulate into an existing DST slot.
+- whether repeated operations accumulate into an existing DST slot; and
+- the maximum simultaneous DST residency required by the operation.
 
 These facts are independent of the target. Target support is queried through
 `KernelTargetEnvironment`.
@@ -77,13 +78,13 @@ rather than inheriting another target's behavior.
 
 The current TT-Lang runtime launches Wormhole B0 and Blackhole through
 `ttnn.ComputeConfigDescriptor`. Both expose 16-bit and 32-bit destination
-elements. Their current broadcast LLKs restrict non-32-bit broadcast inputs to
-16-bit destination elements. Blackhole row reduction and Wormhole reduction
-also restrict full-fp32 accumulation. Compute-pipeline schedules record
-compound multiply/full-scalar reduction and source-scalar retention as
-independent capabilities. Blackhole provides both bf16 capabilities for one
-through eight tiles. Wormhole B0 has no validated complete implementation of
-either capability and selects materialized execution.
+elements, and BF16 broadcast supports either destination width. Blackhole row
+reduction and Wormhole reduction restrict full-fp32 accumulation.
+Compute-pipeline schedules record compound multiply/full-scalar reduction and
+source-scalar retention as independent capabilities. Blackhole provides both
+bf16 capabilities for one through eight tiles. Wormhole B0 has no validated
+complete implementation of either capability and selects materialized
+execution.
 
 Quasar requires the Gen2 configuration descriptor, global unpack routing, and
 Quasar kernel launch mechanism. The current TT-Lang runtime does not implement
@@ -128,6 +129,15 @@ input storage width. The width query uses the TTCore tile element type, so a
 supported operation with 32-bit integer destination elements requires 32-bit
 destination registers without an integer-type exception in this analysis.
 
+Fixed operations that use compute-local facilities contribute a
+`ComputeResourceUse` containing target capabilities, element type, and exact
+DST residency. `ttl.tile_mul_reduce_block` and
+`ttl.tile_row_normalization_block` encode their domain in `num_tiles` because
+their enclosing `ttl.compute` scalarizes tensor operands before final
+configuration. Tile execution semantics transfer that immutable attribute to
+the kernel requirements. The analysis does not infer the domain by chasing
+enclosing operations or transformed SSA operands.
+
 A compiler-recognized `ttl.compute_pipeline` contributes schedule alternatives
 instead of fixed tile operations. Each option records its semantic pipeline
 kind, schedule, DFB and destination requirements, element type, and required
@@ -151,8 +161,9 @@ route. `TileOperandRoute` separately records the primitive's physical operand
 route; the unpack mode does not describe that route for formats where the
 setting is inert. Hard policy constraints restrict the initial candidates.
 Fixed operation requirements are then intersected with the target-supported
-relations. Each strategy option is represented by the same requirement types
-as a fixed operation.
+relations. Fixed compute-resource requirements additionally restrict target
+capabilities and physical DST capacity. Each strategy option is represented by
+the same requirement types as a fixed operation.
 
 Tile-strategy, pipeline-schedule, and configuration selection are solved
 together. The search chooses the unresolved decision with the fewest compatible
@@ -219,6 +230,8 @@ additional policy.
   kernel.
 - Tile-strategy and pipeline-schedule selection use the same immutable kernel
   requirements and target domains.
+- Fixed block resource requirements survive tensor scalarization and are
+  applied again during final kernel configuration.
 - Pipeline schedule selection occurs before any target-specific pipeline
   lowering.
 - Failure before plan application leaves IR unchanged.
