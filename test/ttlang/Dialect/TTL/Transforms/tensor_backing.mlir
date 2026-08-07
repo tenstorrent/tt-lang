@@ -18,6 +18,27 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
+// UINT16 tensor-backed DFBs retain their page type and allocation metadata.
+
+// COMMON-LABEL: func.func @uint16_tensor_backing
+// COMMON: ttl.bind_cb{{.*}}tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 2048>
+module attributes {ttl.launch_grid = array<i64: 1, 1>} {
+  func.func @uint16_tensor_backing()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.noc_index = 0 : i32} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+        {dfb_id = 0 : index, tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 2048>}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, u16>, 1>
+    %view = ttl.cb_reserve %dfb
+        : <[1, 1], !ttcore.tile<32x32, u16>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, u16>>
+    ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, u16>, 1>
+    return
+  }
+}
+
+// -----
+
 // DFBs with different tensor backing may share one hardware index when their
 // exact launch-node domains are disjoint.
 

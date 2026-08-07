@@ -637,6 +637,8 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
       return failure();
     }
     auto dfbType = cast<CircularBufferType>(assignment->type);
+    // TODO(#815): Define page sizes for packed sub-byte scratch DFB elements.
+    // TODO(#816): Diagnose scratch DFB element types without a byte width.
     DFBPhysicalAllocationDescriptor descriptor{
         physicalIndex,
         static_cast<int32_t>(dfbType.getElementsPerBlock()),
@@ -656,6 +658,8 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
         if (candidate.physicalIndex != physicalIndex) {
           continue;
         }
+        // TODO(#813): Represent empty and unknown launch domains without
+        // selecting scratch storage.
         if (!candidate.launchDomain.known ||
             candidate.launchDomain.nodes.empty()) {
           analysisFailure.set(

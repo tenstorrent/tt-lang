@@ -27,6 +27,7 @@ enum class ComputePrimitive {
   Transpose,
   Fill,
   Matmul,
+  RowNormalization,
   Typecast,
   MultiplyByConstant,
   Passthrough,

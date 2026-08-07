@@ -54,8 +54,10 @@ dispatch.
 Descriptor binding does not make input pages readable. `publish()` emits one
 reserve/push pair for the complete DFB capacity. These protocol operations
 advance the DFB producer state without moving bytes. Compute then uses the
-normal wait/pop protocol. A tensor-backed output uses reserve/store/push so the
-packer writes directly into the output tensor allocation.
+normal wait/pop protocol. Consumers acquire and pop every block in FIFO order;
+the DFB can be reused after the complete published capacity has been popped. A
+tensor-backed output uses reserve/store/push so the packer writes directly into
+the output tensor allocation.
 
 `ttl.bind_cb` records the optional `#ttl.tensor_backing` identity as an
 operation tensor index, byte offset, and byte size. Finalization emits exact

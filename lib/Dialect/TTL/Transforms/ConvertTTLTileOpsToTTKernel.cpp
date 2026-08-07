@@ -1155,6 +1155,50 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
   }
 };
 
+/// Lower the planned row-normalization block after its tensor operands have
+/// acquired concrete TTKernel DFB identities.
+struct TTLTileRowNormalizationBlockToTTKernel
+    : OpConversionPattern<TileRowNormalizationBlockOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileRowNormalizationBlockOp op,
+                  TileRowNormalizationBlockOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    auto funcOp = op->getParentOfType<func::FuncOp>();
+    if (!funcOp) {
+      return rewriter.notifyMatchFailure(op, "op not in function");
+    }
+    const TypeConverter *typeConverter = this->getTypeConverter();
+    FailureOr<Value> inputDfb =
+        lookupAndConvertCB(op.getInput(), funcOp, typeConverter, rewriter, loc);
+    FailureOr<Value> gammaDfb =
+        lookupAndConvertCB(op.getGamma(), funcOp, typeConverter, rewriter, loc);
+    FailureOr<Value> outputDfb = lookupAndConvertCB(
+        op.getOutput(), funcOp, typeConverter, rewriter, loc);
+    if (failed(inputDfb) || failed(gammaDfb) || failed(outputDfb)) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot find or convert row-normalization DFBs");
+    }
+
+    auto inputType = dyn_cast<RankedTensorType>(op.getInput().getType());
+    auto resultType = dyn_cast<ttcore::TileType>(op.getResult().getType());
+    if (!inputType || !inputType.hasStaticShape() || !resultType) {
+      return rewriter.notifyMatchFailure(
+          op, "requires a static tensor input and tile result");
+    }
+
+    ttk::ExperimentalRowNormalizationBlockOp::create(
+        rewriter, loc, *inputDfb, *gammaDfb, *outputDfb,
+        static_cast<std::uint64_t>(inputType.getNumElements()),
+        op.getScaleAttr().getValue(), op.getEpsilonAttr().getValue(),
+        op.getHasGamma(), op.getRepeatGamma(), resultType.getDataType());
+    rewriter.replaceOp(op, adaptor.getInput());
+    return success();
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // Fill Tile Op Lowering
 //===----------------------------------------------------------------------===//
@@ -1259,6 +1303,7 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
 
   // Matmul block needs the type converter for CB lookup.
   patterns.add<TTLTileMatmulBlockToTTKernel>(*typeConverter, ctx);
+  patterns.add<TTLTileRowNormalizationBlockToTTKernel>(*typeConverter, ctx);
 }
 
 } // namespace mlir::tt::ttl

@@ -774,9 +774,8 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
         return failure();
       }
       std::optional<std::uint64_t> maybeExecutionCount =
-          getConcreteTransferExecutionCount(postOp.getOperation(),
-                                            *maybeLocation, *pipeRef,
-                                            analysisState);
+          getConcreteTransferExecutionCount(
+              postOp.getOperation(), *maybeLocation, *pipeRef, analysisState);
       if (endpointAssignment.initialSlot) {
         endpointAssignment.valid = false;
         continue;

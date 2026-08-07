@@ -2926,6 +2926,44 @@ public:
   }
 };
 
+class ExperimentalRowNormalizationBlockOpConversion
+    : public OpConversionPattern<
+          ttkernel::ExperimentalRowNormalizationBlockOp> {
+public:
+  using OpConversionPattern<
+      ttkernel::ExperimentalRowNormalizationBlockOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(
+      ttkernel::ExperimentalRowNormalizationBlockOp op,
+      ttkernel::ExperimentalRowNormalizationBlockOp::Adaptor adaptor,
+      ConversionPatternRewriter &rewriter) const final {
+    auto createBitsLiteral = [&](FloatAttr value) {
+      std::uint64_t bits = value.getValue().bitcastToAPInt().getZExtValue();
+      return emitc::LiteralOp::create(rewriter, op.getLoc(),
+                                      rewriter.getI32Type(),
+                                      (Twine(bits) + "U").str());
+    };
+    Value scaleBits = createBitsLiteral(op.getScaleAttr());
+    Value epsilonBits = createBitsLiteral(op.getEpsilonAttr());
+
+    SmallVector<Attribute, 4> templateArguments = {
+        emitc::OpaqueAttr::get(op.getContext(),
+                               std::to_string(op.getNumTiles())),
+        emitc::OpaqueAttr::get(op.getContext(),
+                               op.getHasGamma() ? "true" : "false"),
+        emitc::OpaqueAttr::get(op.getContext(),
+                               op.getRepeatGamma() ? "true" : "false"),
+        datatypeToDataformatEnumNameOpaqueAttr(rewriter, op.getDtype())};
+    SmallVector<Value, 5> operands = {
+        adaptor.getInputCb(), adaptor.getGammaCb(), adaptor.getOutputCb(),
+        scaleBits, epsilonBits};
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange(), "experimental::row_normalization_block", ArrayAttr(),
+        ArrayAttr::get(op.getContext(), templateArguments), operands);
+    return success();
+  }
+};
+
 // Arith MaxUIOp doesn't have an emitc lowering. We can lower it to a call to
 // std::max.
 class ArithMaxUIRewriter : public OpConversionPattern<arith::MaxUIOp> {
@@ -3411,6 +3449,8 @@ public:
         typeConverter, context, state, "async_write_barrier");
 
     patterns.add<TTKernelInvokeSFPIOpRewriter>(typeConverter, context);
+    patterns.add<ExperimentalRowNormalizationBlockOpConversion>(typeConverter,
+                                                                context);
     patterns.add<TTKernelToEmitCGetDeviceIdFromLogicalMeshPositionOpRewriter>(
         typeConverter, context, state);
 

@@ -145,10 +145,9 @@ FailureOr<DFBAllocationFootprint>
 getDFBAllocationFootprint(ModuleOp module, std::string &failureReason) {
   DFBAllocationFootprint footprint;
   WalkResult walkResult = module.walk([&](BindCBOp bindOp) {
-    FailureOr<bool> increased =
-        footprint.add(bindOp.getCbIndex().getSExtValue(),
-                      cast<CircularBufferType>(bindOp.getResult().getType()),
-                      failureReason);
+    FailureOr<bool> increased = footprint.add(
+        bindOp.getCbIndex().getSExtValue(),
+        cast<CircularBufferType>(bindOp.getResult().getType()), failureReason);
     return failed(increased) ? WalkResult::interrupt() : WalkResult::advance();
   });
   if (walkResult.wasInterrupted()) {

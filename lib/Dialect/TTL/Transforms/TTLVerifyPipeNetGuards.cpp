@@ -228,10 +228,10 @@ struct ModuleState {
     FailureOr<SelectedPipeRecords> selectedDst =
         getSelectedPipeRecords(copyOp.getDst());
     if (succeeded(selectedDst)) {
-      appendSelectedPipeEvents(
-          op, copyOp.getDst(), selectedDst->records, PipeEventKind::Send,
-          domain, unanalyzableOp, /*receivePost=*/nullptr,
-          selectedDst->maybeForeachOp, events);
+      appendSelectedPipeEvents(op, copyOp.getDst(), selectedDst->records,
+                               PipeEventKind::Send, domain, unanalyzableOp,
+                               /*receivePost=*/nullptr,
+                               selectedDst->maybeForeachOp, events);
       return events;
     }
     if (mlir::isa<SelectedPipeSrcType, SelectedPipeDstType>(
@@ -246,9 +246,8 @@ struct ModuleState {
         event.pipe = copyOp.getSrc();
         event.pipeType = pipeType;
         event.kind = PipeEventKind::ReceivePost;
-        event.domain =
-            domain.intersectWith(getPipeDestinationLaunchNodeDomain(
-                pipeType, launchDomains.baseDomain));
+        event.domain = domain.intersectWith(getPipeDestinationLaunchNodeDomain(
+            pipeType, launchDomains.baseDomain));
         event.unanalyzableOp = unanalyzableOp;
         events.push_back(event);
       }
@@ -772,13 +771,11 @@ PipeCoordIdentity getPipeCoordIdentity(PipeType pipeType,
 }
 
 /// Add one graph node for a synchronization event at one call-site occurrence.
-PipeScheduleNodeId
-addPipeScheduleNode(SmallVectorImpl<PipeScheduleNode> &nodes,
-                    const PipeEvent &event,
-                    const LaunchExecutionLocation &location,
-                    func::FuncOp kernelFunction,
-                    ArrayRef<PipeCallSite> callSites,
-                    std::optional<std::uint64_t> executionCountDivisor) {
+PipeScheduleNodeId addPipeScheduleNode(
+    SmallVectorImpl<PipeScheduleNode> &nodes, const PipeEvent &event,
+    const LaunchExecutionLocation &location, func::FuncOp kernelFunction,
+    ArrayRef<PipeCallSite> callSites,
+    std::optional<std::uint64_t> executionCountDivisor) {
   PipeScheduleNodeId nodeId = nodes.size();
   nodes.push_back({event.op,
                    event.pipeType,
@@ -1674,9 +1671,9 @@ WalkResult walkPipeEventsInProgramOrder(
     SmallVectorImpl<ActivePipeNetRecord> &activeRecords,
     std::optional<std::uint64_t> executionCountDivisor,
     llvm::DenseSet<Operation *> &diagnosedRecursiveCalls,
-    llvm::function_ref<WalkResult(
-        const PipeEvent &, const LaunchExecutionLocation &,
-        ArrayRef<PipeCallSite>, std::optional<std::uint64_t>)>
+    llvm::function_ref<
+        WalkResult(const PipeEvent &, const LaunchExecutionLocation &,
+                   ArrayRef<PipeCallSite>, std::optional<std::uint64_t>)>
         visitEvent) {
   auto resolveGeneratedRecordLoop =
       [](Operation *) -> std::optional<PipeNetRecordLoop> {
@@ -1883,9 +1880,9 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
                         nodes, *matchingNodes, event, function, state))) {
                   return WalkResult::interrupt();
                 }
-                PipeScheduleNodeId nodeId = addPipeScheduleNode(
-                    nodes, event, location, function, activeCallSites,
-                    executionCountDivisor);
+                PipeScheduleNodeId nodeId =
+                    addPipeScheduleNode(nodes, event, location, function,
+                                        activeCallSites, executionCountDivisor);
                 ++scheduleNodeCount;
                 matchingNodes->push_back(nodeId);
                 if (event.kind == PipeEventKind::ReceivePost) {

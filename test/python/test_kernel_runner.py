@@ -22,6 +22,7 @@ class _FakeTensor:
         dtype=None,
         size_per_bank=1 << 20,
         tile_shape=(32, 32),
+        shard_shape=None,
     ):
         self._device = device
         self._address = address
@@ -29,6 +30,7 @@ class _FakeTensor:
         self.dtype = dtype
         self.layout = "TILE"
         self.tile_shape = tile_shape
+        self.shard_shape = shard_shape
 
     def device(self):
         return self._device
@@ -42,9 +44,13 @@ class _FakeTensor:
     def memory_config(self):
         tile_elements = self.tile_shape[0] * self.tile_shape[1]
         storage_bytes = max(self.size_per_bank, tile_elements * 2)
+        shard_shape = self.shard_shape or (
+            self.tile_shape[0],
+            storage_bytes // (2 * self.tile_shape[0]),
+        )
 
         class ShardSpec:
-            shape = (self.tile_shape[0], storage_bytes // (2 * self.tile_shape[0]))
+            shape = shard_shape
 
         class MemoryConfig:
             buffer_type = "L1"
@@ -965,6 +971,29 @@ def test_build_cb_descriptors_applies_tensor_backed_row_page_view(monkeypatch):
     assert format_descriptor.tile.tile.tile_shape == (16, 32)
 
 
+def test_build_cb_descriptors_rejects_range_past_shard_boundary(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+    )
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    tensor = _FakeTensor(object(), dtype=expected_dtype, shard_shape=(32, 32))
+
+    with pytest.raises(ValueError, match="exceeds logical per-shard size 2048"):
+        kernel_runner.build_cb_descriptors(
+            tensors=[tensor],
+            cb_configs=[
+                _tensor_backing_config(
+                    0,
+                    nodes=((0, 0),),
+                    byte_offset=2048,
+                    byte_size=2048,
+                )
+            ],
+            core_ranges=_FakeCoreRanges(),
+        )
+
+
 def test_build_cb_descriptors_rejects_node_without_tensor_shard(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
@@ -983,6 +1012,69 @@ def test_build_cb_descriptors_rejects_node_without_tensor_shard(monkeypatch):
         kernel_runner.build_cb_descriptors(
             tensors=[tensor],
             cb_configs=[_tensor_backing_config(0, nodes=((0, 0), (1, 0)))],
+            core_ranges=_FakeCoreRanges(),
+        )
+
+
+def test_build_cb_descriptors_rejects_equal_size_different_tile_shape(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+    )
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    tensor = _FakeTensor(object(), dtype=expected_dtype, tile_shape=(16, 32))
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        1024,
+        (32, 16),
+        (
+            DFBStorageSegment(
+                nodes=((0, 0),),
+                tensor_index=0,
+                byte_offset=0,
+                byte_size=1024,
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="tile views require.*16, 32.*32, 16"):
+        kernel_runner.build_cb_descriptors(
+            tensors=[tensor],
+            cb_configs=[config],
+            core_ranges=_FakeCoreRanges(),
+        )
+
+
+def test_build_cb_descriptors_reports_unsupported_tensor_backing_format(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+    )
+    tensor = _FakeTensor(object(), dtype=object())
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfp8",
+        1,
+        2048,
+        (32, 32),
+        (
+            DFBStorageSegment(
+                nodes=((0, 0),),
+                tensor_index=0,
+                byte_offset=0,
+                byte_size=2048,
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="tensor backing format bfp8 is not supported"):
+        kernel_runner.build_cb_descriptors(
+            tensors=[tensor],
+            cb_configs=[config],
             core_ranges=_FakeCoreRanges(),
         )
 
@@ -1012,15 +1104,25 @@ def test_build_cb_descriptors_uses_current_tensor_allocation(monkeypatch):
     assert second_descriptor["tensor"] is second_tensor
 
 
-def test_build_cb_descriptors_rejects_range_beyond_current_allocation(monkeypatch):
-    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+def test_build_cb_descriptors_preserves_descriptor_helper_failure(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+
+    def fail_descriptor_creation(*_args, **_kwargs):
+        raise RuntimeError("TTNN descriptor construction failed")
+
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     monkeypatch.setattr(
         kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
     )
+    monkeypatch.setattr(
+        fake_ttnn,
+        "cb_descriptor_from_sharded_tensor",
+        fail_descriptor_creation,
+    )
     expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
-    tensor = _FakeTensor(object(), dtype=expected_dtype, size_per_bank=1024)
+    tensor = _FakeTensor(object(), dtype=expected_dtype)
 
-    with pytest.raises(ValueError, match="exceeds buffer size"):
+    with pytest.raises(RuntimeError, match="TTNN descriptor construction failed"):
         kernel_runner.build_cb_descriptors(
             tensors=[tensor],
             cb_configs=[_tensor_backing_config(0, nodes=((0, 0),))],

@@ -389,6 +389,9 @@ std::optional<ComputePrimitive> getComputePrimitive(Operation *operation) {
   if (isa<TTL_OP##Op, TILE_OP>(operation))                                     \
     return ComputePrimitive::ElementwiseUnary;
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
+  if (isa<ExpOp, ExpTileOp>(operation)) {
+    return ComputePrimitive::ElementwiseUnary;
+  }
   if (isa<BlockBroadcastOp, TileBcastOp>(operation)) {
     return ComputePrimitive::Broadcast;
   }
@@ -403,6 +406,9 @@ std::optional<ComputePrimitive> getComputePrimitive(Operation *operation) {
   }
   if (isa<MatmulOp, TileMatmulBlockOp>(operation)) {
     return ComputePrimitive::Matmul;
+  }
+  if (isa<TileRowNormalizationBlockOp>(operation)) {
+    return ComputePrimitive::RowNormalization;
   }
   if (isa<TypecastOp, TileTypecastOp>(operation)) {
     return ComputePrimitive::Typecast;

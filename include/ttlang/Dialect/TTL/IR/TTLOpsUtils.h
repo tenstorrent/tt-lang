@@ -63,8 +63,8 @@ FailureOr<SelectedPipeRecords> getSelectedPipeRecords(Value pipe);
 LogicalResult verifyMatmulTileTypes(ttcore::TileType lhsType,
                                     ttcore::TileType rhsType,
                                     ttcore::TileType resultType,
-                                     bool transposeRhs,
-                                     std::string &failureReason);
+                                    bool transposeRhs,
+                                    std::string &failureReason);
 
 /// Return the enclosing kernel-thread `func.func` (tagged with
 /// `ttl.kernel_thread`), or null if `op` is not inside one.
@@ -247,6 +247,14 @@ inline std::optional<mlir::Type> getTileElementType(mlir::Type type) {
     return tileType.getElementType();
   }
   return std::nullopt;
+}
+
+/// Preserve an existing physical tile type or tile a scalar element type.
+inline ttcore::TileType getTileValueType(mlir::Type elementType) {
+  if (auto tileType = mlir::dyn_cast<ttcore::TileType>(elementType)) {
+    return tileType;
+  }
+  return ttcore::TileType::get(elementType);
 }
 
 /// Check tilization consistency between two element types.

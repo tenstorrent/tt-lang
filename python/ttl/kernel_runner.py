@@ -36,7 +36,12 @@ def _ensure_ttnn():
     return ttnn
 
 
-from .dataflow_buffer import DFBStorageSegment, PhysicalDFBConfig
+from .dataflow_buffer import (
+    DFBStorageSegment,
+    PhysicalDFBConfig,
+    _get_tensor_backed_dfb_view_properties,
+    _validate_tensor_backed_dfb_range,
+)
 from .constants import DEFAULT_L1_CB_BUDGET_BYTES
 from .dtype_utils import format_name_to_ttnn_dtype
 
@@ -613,33 +618,24 @@ def _make_node_core_ranges(nodes: Tuple[Tuple[int, int], ...]) -> Any:
     )
 
 
-def _validate_tensor_backed_dfb_tensor(
-    tensor: Any,
+def _validate_tensor_backed_dfb_binding(
+    tensors: List[Any],
     config: PhysicalDFBConfig,
     segment: DFBStorageSegment,
-    tensor_count: int,
-) -> None:
-    """Validate the public TTNN descriptor helper's tensor contract."""
+) -> Any:
+    """Validate one tensor binding and return its operation tensor."""
     tensor_index = segment.tensor_index
+    tensor_count = len(tensors)
     if tensor_index is None or tensor_index < 0 or tensor_index >= tensor_count:
         raise ValueError(
             f"DFB[{config.dfb_index}] tensor backing index {tensor_index} "
             f"is outside [0, {tensor_count})"
         )
+    tensor = tensors[tensor_index]
     if tensor is None:
         raise ValueError(
             f"DFB[{config.dfb_index}] tensor backing {tensor_index} is absent"
         )
-    memory_config = tensor.memory_config()
-    if "L1" not in str(memory_config.buffer_type):
-        raise ValueError(f"DFB[{config.dfb_index}] tensor backing must use L1 storage")
-    if "HEIGHT_SHARDED" not in str(memory_config.memory_layout):
-        raise ValueError(
-            f"DFB[{config.dfb_index}] tensor backing must be height-sharded"
-        )
-    if hasattr(tensor, "layout") and "TILE" not in str(tensor.layout):
-        raise ValueError(f"DFB[{config.dfb_index}] tensor backing must use TILE layout")
-    expected_dtype = format_name_to_ttnn_dtype(config.data_format)
     if config.data_format not in {
         "bfloat16",
         "bf16",
@@ -653,39 +649,22 @@ def _validate_tensor_backed_dfb_tensor(
             f"DFB[{config.dfb_index}] tensor backing format "
             f"{config.data_format} is not supported; expected BF16, FP32, or UINT16"
         )
+    context = f"DFB[{config.dfb_index}] tensor backing"
+    if config.tile is None:
+        raise ValueError(f"{context} requires tiled DFB metadata")
+    properties = _get_tensor_backed_dfb_view_properties(
+        tensor, tile=config.tile, context=context
+    )
+    expected_dtype = format_name_to_ttnn_dtype(config.data_format)
     if tensor.dtype != expected_dtype:
         raise ValueError(
             f"DFB[{config.dfb_index}] tensor backing dtype {tensor.dtype} "
             f"does not match {expected_dtype}"
         )
-    storage_tile = tensor.get_tile()
-    storage_tile_shape = tuple(storage_tile.tile_shape)
-    view_tile_shape = config.tile
-    if view_tile_shape is None:
+    if properties.page_size != config.page_size:
         raise ValueError(
-            f"DFB[{config.dfb_index}] tensor backing requires tiled DFB metadata"
-        )
-    if view_tile_shape != storage_tile_shape:
-        supported_view = storage_tile_shape == (1, 32) and view_tile_shape in {
-            (16, 32),
-            (32, 32),
-        }
-        if not supported_view:
-            raise ValueError(
-                f"DFB[{config.dfb_index}] tensor backing cannot reinterpret "
-                f"{storage_tile_shape} storage as {view_tile_shape} pages"
-            )
-    storage_page_size = int(storage_tile.get_tile_size(tensor.dtype))
-    storage_elements_per_page = math.prod(storage_tile_shape)
-    view_elements_per_page = math.prod(view_tile_shape)
-    if (
-        view_elements_per_page % storage_elements_per_page != 0
-        or config.page_size
-        != storage_page_size * (view_elements_per_page // storage_elements_per_page)
-    ):
-        raise ValueError(
-            f"DFB[{config.dfb_index}] tensor backing page size {config.page_size} "
-            f"does not match the {storage_tile_shape} -> {view_tile_shape} view"
+            f"DFB[{config.dfb_index}] tensor backing page size "
+            f"{properties.page_size} does not match {config.page_size}"
         )
     try:
         tensor_nodes = {
@@ -709,45 +688,13 @@ def _validate_tensor_backed_dfb_tensor(
             f"DFB[{config.dfb_index}] tensor backing byte_size must equal "
             f"{total_size}, got {segment.byte_size}"
         )
-    descriptor_limit = (1 << 32) - 1
-    if (
-        segment.byte_offset < 0
-        or segment.byte_offset > descriptor_limit
-        or total_size > descriptor_limit
-        or segment.byte_offset + total_size > descriptor_limit
-    ):
-        raise ValueError(
-            f"DFB[{config.dfb_index}] tensor backing byte range exceeds the uint32 "
-            "descriptor ABI"
-        )
-    if segment.byte_offset % config.page_size != 0:
-        raise ValueError(
-            f"DFB[{config.dfb_index}] byte_offset must be aligned to its "
-            f"{config.page_size}-byte page size"
-        )
-    shard_spec = memory_config.shard_spec
-    if shard_spec is None:
-        raise ValueError(
-            f"DFB[{config.dfb_index}] tensor backing has no shard specification"
-        )
-    try:
-        shard_elements = math.prod(int(dimension) for dimension in shard_spec.shape)
-    except (AttributeError, TypeError, ValueError):
-        raise ValueError(
-            f"DFB[{config.dfb_index}] tensor backing has no valid shard shape"
-        ) from None
-    if shard_elements % storage_elements_per_page != 0:
-        raise ValueError(
-            f"DFB[{config.dfb_index}] tensor backing shard does not contain an "
-            f"integral number of {storage_tile_shape} storage pages"
-        )
-    storage_bytes = (shard_elements // storage_elements_per_page) * storage_page_size
-    if segment.byte_offset + total_size > storage_bytes:
-        raise ValueError(
-            f"DFB[{config.dfb_index}] tensor backing byte range end "
-            f"{segment.byte_offset + total_size} exceeds the {storage_bytes}-byte "
-            "shard allocation"
-        )
+    _validate_tensor_backed_dfb_range(
+        properties,
+        byte_offset=segment.byte_offset,
+        byte_size=total_size,
+        context=context,
+    )
+    return tensor
 
 
 def _validate_tensor_backing_aliases(
@@ -759,14 +706,7 @@ def _validate_tensor_backing_aliases(
         for segment in config.storage_segments:
             if not segment.is_tensor_backed:
                 continue
-            tensor_index = segment.tensor_index
-            if tensor_index is None or tensor_index < 0 or tensor_index >= len(tensors):
-                raise ValueError(
-                    f"DFB[{config.dfb_index}] tensor backing index {tensor_index} "
-                    f"is outside [0, {len(tensors)})"
-                )
-            tensor = tensors[tensor_index]
-            _validate_tensor_backed_dfb_tensor(tensor, config, segment, len(tensors))
+            tensor = _validate_tensor_backed_dfb_binding(tensors, config, segment)
             try:
                 absolute_start = int(tensor.buffer_address()) + segment.byte_offset
             except (AttributeError, TypeError, ValueError):
@@ -774,7 +714,10 @@ def _validate_tensor_backing_aliases(
                     f"DFB[{config.dfb_index}] tensor backing does not expose a "
                     "valid buffer_address()"
                 ) from None
-            absolute_end = absolute_start + segment.byte_size
+            absolute_end = (
+                absolute_start
+                + config.num_tiles * config.block_count * config.page_size
+            )
             nodes = frozenset(segment.nodes)
             for (
                 previous_index,
@@ -820,7 +763,8 @@ def build_cb_descriptors(
             receiver base is passed as a common runtime argument.
 
     Returns:
-        List of ttnn.CBDescriptor objects.
+        List of ttnn.CBDescriptor objects. A configuration with storage
+        segments produces one descriptor per segment.
     """
     _ensure_ttnn()
     if ttnn is None:
@@ -948,16 +892,9 @@ def build_cb_descriptors(
                 )
                 continue
 
-            if (
-                segment.tensor_index is None
-                or segment.tensor_index < 0
-                or segment.tensor_index >= len(tensors)
-            ):
-                raise ValueError(
-                    f"DFB[{config.dfb_index}] tensor backing index "
-                    f"{segment.tensor_index} is outside [0, {len(tensors)})"
-                )
-            tensor = tensors[segment.tensor_index]
+            tensor_index = segment.tensor_index
+            assert tensor_index is not None
+            tensor = tensors[tensor_index]
             backing_descriptor = ttnn.cb_descriptor_from_sharded_tensor(
                 cb_index,
                 tensor,
