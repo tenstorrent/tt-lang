@@ -402,8 +402,19 @@ Pipeline lowering transfers the selected schedule to the inlined result
 operation. A retained schedule creates `ttl.tile_mul_reduce_block` or
 `ttl.tile_row_normalization_block`; a materialized schedule cannot rematch the
 same specialization and proceeds through ordinary intermediate DFB planning.
-The final kernel-configuration pass validates the operations that remain after
-this transformation.
+Both fixed block operations encode `num_tiles`. Compute creation copies this
+value from the immutable schedule plan, and block lowering preserves it when
+tensor iteration is scalarized to tile operands. The verifier requires the
+attribute to match the tensor domain while tensor operands are present. The
+final kernel-configuration pass consumes the encoded value instead of trying
+to recover a row width from scalarized SSA operands.
+
+Fixed block execution semantics report their exact simultaneous DST residency
+and target capabilities. Final configuration intersects those requirements
+with destination width and synchronization mode before DST assignment. This
+second check preserves the configuration selected for the semantic pipeline;
+for example, a five-tile fp32 row requires full synchronization rather than
+reverting to the four-slot double-buffered configuration.
 
 The row-normalization target lowering emits composable TTKernel operations for
 compound reduction, add-plus-rsqrt finalization, retained source-scalar
@@ -697,7 +708,10 @@ The design preserves these properties:
 10. **Capacity-fitting reduction schedule.** Row-normalization fusion checks
     the complete expression, target support, DST capacity, value uses, and
     output publication before mutation. Lowering revalidates the planned
-    `ttl.compute` and retains the scalar within one DST transaction.
+    `ttl.compute`, preserves the planned tile count through scalarization, and
+    retains the scalar within one DST transaction. Final kernel configuration
+    applies the same capability and residency constraints before DST
+    assignment.
 
 11. **Target resource lifetime.** TTKernel verification accepts each retained
     source scalar only within one balanced acquire-consumer-release sequence.
@@ -767,11 +781,13 @@ released inputs, multi-output accumulating computes, plan invalidation, and
 disabled compiler DFBs. Reduction-fusion tests additionally cover recognized
 pipeline validation, schedule metadata, capacity rejection, source-scalar
 lifetime balance, multiple retained-scalar consumers with distinct output
-indices, generated TTKernel and C++, and absence of intermediate DFBs. Runtime
-tests validate RMSNorm, SumOfSquares, and representative materialization
-results. The largest representative program is the eight-node flash-attention
-chain, which combines many atom-composed tensor operations and user DFB
-publications.
+indices, fixed-block tile-count preservation, generated TTKernel and C++, and
+absence of intermediate DFBs. Runtime tests validate RMSNorm, SumOfSquares,
+automatic full synchronization at the five-tile fp32 boundary, explicit
+ordinary materialization under half synchronization, and representative
+materialization results. The largest representative program is the eight-node
+flash-attention chain, which combines many atom-composed tensor operations and
+user DFB publications.
 
 ## Limitations and Future Work
 
