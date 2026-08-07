@@ -39,7 +39,7 @@
 // CPP-LABEL: void kernel_main()
 // CPP:       init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
 // CPP-NEXT:  tile_regs_acquire();
-// CPP-NEXT:  experimental::row_normalization_block<3, true, false, DataFormat::Float16_b>(
+// CPP-NEXT:  experimental::row_normalization_block<3, true, false, DataFormat::Float16_b>({{.*}}, {{.*}}, {{.*}}, 1020331500U, 925353388U);
 // CPP-NEXT:  tile_regs_commit();
 // CPP-NEXT:  tile_regs_wait();
 // CPP-NEXT:  pack_tile_block({{.*}}, get_compile_time_arg_val(2), {{.*}});

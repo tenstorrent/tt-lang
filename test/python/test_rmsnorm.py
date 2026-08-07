@@ -10,7 +10,7 @@ import ttl
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from utils.correctness import assert_pcc  # noqa: E402
+from utils.correctness import assert_allclose, assert_pcc  # noqa: E402
 
 TILE_WIDTH = 32
 EPSILON = 1.0e-5
@@ -217,3 +217,4 @@ def test_rmsnorm(device, tile_height, num_tiles, width, gamma_mode):
     elif gamma_mode == "repeated":
         expected = expected * gamma_torch.float().repeat(1, num_tiles)
     assert_pcc(expected, result, threshold=0.999)
+    assert_allclose(result, expected, rtol=0.05, atol=0.1)

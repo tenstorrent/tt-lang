@@ -32,6 +32,7 @@
 #include "llvm/ADT/bit.h"
 
 #include <array>
+#include <cmath>
 #include <functional>
 #include <string>
 
@@ -2937,14 +2938,19 @@ public:
       ttkernel::ExperimentalRowNormalizationBlockOp op,
       ttkernel::ExperimentalRowNormalizationBlockOp::Adaptor adaptor,
       ConversionPatternRewriter &rewriter) const final {
-    auto createBitsLiteral = [&](FloatAttr value) {
-      std::uint64_t bits = value.getValue().bitcastToAPInt().getZExtValue();
+    auto createBitsLiteral = [&](std::uint32_t bits) {
       return emitc::LiteralOp::create(rewriter, op.getLoc(),
                                       rewriter.getI32Type(),
                                       (Twine(bits) + "U").str());
     };
-    Value scaleBits = createBitsLiteral(op.getScaleAttr());
-    Value epsilonBits = createBitsLiteral(op.getEpsilonAttr());
+    // The LLK multiplies by its scalar during both reduction dimensions.
+    // Passing sqrt(scale) implements the operation's single scale factor.
+    float reductionScalar =
+        std::sqrt(static_cast<float>(op.getScaleAttr().getValueAsDouble()));
+    Value reductionScalarBits =
+        createBitsLiteral(llvm::bit_cast<std::uint32_t>(reductionScalar));
+    Value epsilonBits = createBitsLiteral(static_cast<std::uint32_t>(
+        op.getEpsilonAttr().getValue().bitcastToAPInt().getZExtValue()));
 
     SmallVector<Attribute, 4> templateArguments = {
         emitc::OpaqueAttr::get(op.getContext(),
@@ -2956,7 +2962,7 @@ public:
         datatypeToDataformatEnumNameOpaqueAttr(rewriter, op.getDtype())};
     SmallVector<Value, 5> operands = {
         adaptor.getInputCb(), adaptor.getGammaCb(), adaptor.getOutputCb(),
-        scaleBits, epsilonBits};
+        reductionScalarBits, epsilonBits};
     rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
         op, TypeRange(), "experimental::row_normalization_block", ArrayAttr(),
         ArrayAttr::get(op.getContext(), templateArguments), operands);

@@ -386,10 +386,11 @@ ALWI void multiplyByScalar(std::uint32_t inputDfb, std::uint32_t scalarDstIndex,
 
 template <std::uint32_t numTiles, bool hasGamma, bool repeatGamma,
           DataFormat dataFormat>
-ALWI void
-row_normalization_block(std::uint32_t inputDfb, std::uint32_t gammaDfb,
-                        std::uint32_t outputDfb, std::uint32_t scaleBits,
-                        std::uint32_t epsilonBits) {
+ALWI void row_normalization_block(std::uint32_t inputDfb,
+                                  std::uint32_t gammaDfb,
+                                  std::uint32_t outputDfb,
+                                  std::uint32_t reductionScalarBits,
+                                  std::uint32_t epsilonBits) {
   static_assert(numTiles >= 1 && numTiles <= 8,
                 "row normalization requires 1 to 8 tiles");
   static_assert(dataFormat == DataFormat::Float16_b,
@@ -397,12 +398,13 @@ row_normalization_block(std::uint32_t inputDfb, std::uint32_t gammaDfb,
   static_assert(hasGamma || !repeatGamma,
                 "repeated gamma requires gamma multiplication");
 
-  float scale;
-  __builtin_memcpy(&scale, &scaleBits, sizeof(scale));
+  float reductionScalar;
+  __builtin_memcpy(&reductionScalar, &reductionScalarBits,
+                   sizeof(reductionScalar));
   ckernel::mul_reduce_scalar_init(inputDfb, inputDfb);
   MATH((row_normalization_detail::initializeAddRsqrt<APPROX>()));
   ckernel::mul_reduce_scalar_tile(inputDfb, inputDfb, outputDfb, numTiles,
-                                  scale);
+                                  reductionScalar);
   ckernel::mul_reduce_scalar_uninit();
 
   MATH((
