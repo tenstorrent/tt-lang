@@ -442,18 +442,26 @@ getComputePipelineScheduleChoice(ComputePipelineOp pipeline) {
   }
 
   TilePrimitive retainedPrimitive;
+  SmallVector<ComputePipelineCapability, 2> requiredCapabilities;
   switch (pipelineKind.getValue()) {
   case ComputePipelineKind::MultiplyFullScalarReduction:
     retainedPrimitive = TilePrimitive::MultiplyFullScalarReduction;
+    requiredCapabilities.push_back(
+        ComputePipelineCapability::MultiplyFullScalarReduction);
     break;
   case ComputePipelineKind::RowNormalization:
     retainedPrimitive = TilePrimitive::RowNormalization;
+    requiredCapabilities.push_back(
+        ComputePipelineCapability::MultiplyFullScalarReduction);
+    requiredCapabilities.push_back(
+        ComputePipelineCapability::SourceScalarRetention);
     break;
   }
 
   ComputePipelineScheduleOption retained{
       pipelineKind.getValue(),
       ComputePipelineSchedule::RetainedScalar,
+      std::move(requiredCapabilities),
       {},
       {},
       static_cast<std::uint32_t>(inputType.getNumElements()),
@@ -500,6 +508,7 @@ getComputePipelineScheduleChoice(ComputePipelineOp pipeline) {
   ComputePipelineScheduleOption materialized{
       pipelineKind.getValue(),
       ComputePipelineSchedule::Materialized,
+      {},
       {},
       {},
       0,
@@ -573,6 +582,7 @@ struct UnsupportedDestinationConfiguration {
 
 struct UnsupportedComputePipelineSchedule {
   Operation *pipeline;
+  bool targetSupported;
 };
 
 struct ComputePipelineCapacityConflict {
@@ -800,6 +810,7 @@ struct KernelExecutionOption {
   std::optional<TileExecutionStrategy> tileStrategy;
   std::optional<ComputePipelineKind> pipelineKind;
   std::optional<ComputePipelineSchedule> pipelineSchedule;
+  SmallVector<ComputePipelineCapability, 2> pipelineCapabilities;
   Type pipelineElementType;
   std::uint32_t requiredDstSlots = 0;
   SourceScalarRetentionPlanPtr sourceScalar;
@@ -833,6 +844,7 @@ getKernelExecutionOptions(const KernelRequirements &requirements,
                                std::nullopt,
                                std::nullopt,
                                {},
+                               {},
                                0,
                                nullptr});
     }
@@ -863,8 +875,8 @@ getKernelExecutionOptions(const KernelRequirements &requirements,
                              : option.destinationUses.front().elementType;
       choiceOptions.push_back({option.dfbInputUses, option.destinationUses,
                                std::nullopt, option.kind, option.schedule,
-                               elementType, option.requiredDstSlots,
-                               option.sourceScalar});
+                               option.requiredCapabilities, elementType,
+                               option.requiredDstSlots, option.sourceScalar});
     }
     allOptions.push_back({choice.pipeline,
                           ExecutionChoiceKind::ComputePipelineSchedule,
@@ -893,14 +905,18 @@ ConfigConstraintResult applyExecutionConstraints(
     return result;
   }
 
-  assert(option.pipelineKind && "pipeline schedule requires semantic kind");
-  std::optional<std::uint32_t> targetMaximum =
-      target.getMaxComputePipelineTiles(*option.pipelineKind,
-                                        *option.pipelineSchedule,
-                                        option.pipelineElementType);
-  if (!targetMaximum) {
-    return ConfigConstraintConflict(
-        UnsupportedComputePipelineSchedule{operation});
+  assert(option.pipelineKind && !option.pipelineCapabilities.empty() &&
+         "compute-local pipeline schedule requires target capabilities");
+  std::uint32_t targetMaximum = std::numeric_limits<std::uint32_t>::max();
+  for (ComputePipelineCapability capability : option.pipelineCapabilities) {
+    ComputePipelineCapabilityLimits limits =
+        target.getComputePipelineCapabilityLimits(capability,
+                                                  option.pipelineElementType);
+    if (!limits.maxTiles) {
+      return ConfigConstraintConflict(UnsupportedComputePipelineSchedule{
+          operation, limits.targetSupported});
+    }
+    targetMaximum = std::min(targetMaximum, *limits.maxTiles);
   }
   ConfigConstraintState constrained =
       std::get<ConfigConstraintState>(std::move(result));
@@ -910,7 +926,7 @@ ConfigConstraintResult applyExecutionConstraints(
         candidate.destinationElementWidth == DestinationElementWidth::Bits32,
         candidate.dstSyncMode == DstSyncMode::Full);
     maximumAvailable =
-        std::max(maximumAvailable, std::min(*targetMaximum, registerCapacity));
+        std::max(maximumAvailable, std::min(targetMaximum, registerCapacity));
   }
   llvm::erase_if(
       constrained.candidates, [&](const ConfigurationCandidate &candidate) {
@@ -918,7 +934,7 @@ ConfigConstraintResult applyExecutionConstraints(
             getDstCapacity(candidate.destinationElementWidth ==
                                DestinationElementWidth::Bits32,
                            candidate.dstSyncMode == DstSyncMode::Full);
-        return std::min(*targetMaximum, registerCapacity) <
+        return std::min(targetMaximum, registerCapacity) <
                option.requiredDstSlots;
       });
   if (constrained.candidates.empty()) {
@@ -930,7 +946,6 @@ ConfigConstraintResult applyExecutionConstraints(
 
 ComputePipelineScheduleRejection getComputePipelineScheduleRejection(
     const ConfigConstraintConflict &conflict,
-    const KernelTargetEnvironment &target,
     const KernelExecutionOption &retainedOption) {
   return std::visit(
       [&](const auto &typedConflict) -> ComputePipelineScheduleRejection {
@@ -943,9 +958,8 @@ ComputePipelineScheduleRejection getComputePipelineScheduleRejection(
         }
         if constexpr (std::is_same_v<ConflictType,
                                      UnsupportedComputePipelineSchedule>) {
-          bool supportedTarget = target.getArch() == ttcore::Arch::Blackhole;
           return {
-              supportedTarget
+              typedConflict.targetSupported
                   ? ComputePipelineScheduleRejectionKind::UnsupportedElementType
                   : ComputePipelineScheduleRejectionKind::UnsupportedTarget,
               retainedOption.requiredDstSlots, 0};
@@ -1061,10 +1075,10 @@ public:
     return {true, std::nullopt};
   }
 
-  std::optional<std::uint32_t>
-  getMaxComputePipelineTiles(ComputePipelineKind, ComputePipelineSchedule,
-                             Type) const override {
-    return std::nullopt;
+  ComputePipelineCapabilityLimits
+  getComputePipelineCapabilityLimits(ComputePipelineCapability,
+                                     Type) const override {
+    return {};
   }
 
   SmallVector<DFBHardwareConfiguration, 4>
@@ -1114,10 +1128,10 @@ public:
     return {kind == FullFp32AccumulationKind::Matmul, std::nullopt};
   }
 
-  std::optional<std::uint32_t>
-  getMaxComputePipelineTiles(ComputePipelineKind, ComputePipelineSchedule,
-                             Type) const override {
-    return std::nullopt;
+  ComputePipelineCapabilityLimits
+  getComputePipelineCapabilityLimits(ComputePipelineCapability,
+                                     Type) const override {
+    return {};
   }
 };
 
@@ -1134,17 +1148,15 @@ public:
     return {true, std::nullopt};
   }
 
-  std::optional<std::uint32_t>
-  getMaxComputePipelineTiles(ComputePipelineKind kind,
-                             ComputePipelineSchedule schedule,
-                             Type elementType) const override {
-    if (schedule == ComputePipelineSchedule::RetainedScalar &&
-        elementType.isBF16() &&
-        (kind == ComputePipelineKind::MultiplyFullScalarReduction ||
-         kind == ComputePipelineKind::RowNormalization)) {
-      return 8;
+  ComputePipelineCapabilityLimits
+  getComputePipelineCapabilityLimits(ComputePipelineCapability capability,
+                                     Type elementType) const override {
+    if (capability != ComputePipelineCapability::MultiplyFullScalarReduction &&
+        capability != ComputePipelineCapability::SourceScalarRetention) {
+      return {};
     }
-    return std::nullopt;
+    return {true, elementType.isBF16() ? std::optional<std::uint32_t>(8)
+                                       : std::nullopt};
   }
 };
 
@@ -1440,7 +1452,7 @@ FailureOr<KernelConfigPlan> resolveKernelConfig(
                   retainedResult)) {
             rejection = getComputePipelineScheduleRejection(
                 std::get<ConfigConstraintConflict>(std::move(retainedResult)),
-                target, *retained);
+                *retained);
           }
         }
       }
