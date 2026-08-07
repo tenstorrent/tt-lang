@@ -392,6 +392,36 @@ static FailureOr<Type> getResultTileType(Operation *source) {
   return ttcore::TileType::get(tensorType.getElementType());
 }
 
+static ExpFlagsPlan buildExpFlagsPlan(ExpOp exp,
+                                      FloatAttr scaleOverride = nullptr) {
+  FloatAttr scale = scaleOverride ? scaleOverride : exp.getScaleAttr();
+  return ExpFlagsPlan{
+      exp.getApproxAttr(),
+      scale,
+      exp.getInputClampingAttr(),
+      exp.getIterationsAttr(),
+  };
+}
+
+/// Returns true when folding `producer` into `consumer` would move its effect
+/// past an observable operation.
+static bool hasInterveningComputeSideEffect(Operation *producer,
+                                            Operation *consumer) {
+  if (producer->getBlock() != consumer->getBlock() ||
+      !producer->isBeforeInBlock(consumer)) {
+    return true;
+  }
+  for (Operation *operation = producer->getNextNode();
+       operation && operation != consumer;
+       operation = operation->getNextNode()) {
+    if (isRelocatableComputeInstrumentation(operation) ||
+        !isMemoryEffectFree(operation)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 static FailureOr<unsigned> findFusedRootInput(const ComputeOpCreationPlan &plan,
                                               Value value,
                                               FusedInputRole role) {
@@ -407,6 +437,22 @@ static LogicalResult buildFusedOperationPlans(ComputeOpCreationPlan &plan,
                                               std::string &failureReason) {
   DenseSet<Operation *> fusedOperations(plan.trace.opsInOrder.begin(),
                                         plan.trace.opsInOrder.end());
+  DenseMap<Operation *, MulUnaryConstOp> scaledExpInputs;
+  DenseSet<Operation *> deferredExpScaleMuls;
+  for (Operation *operation : plan.trace.opsInOrder) {
+    auto exp = dyn_cast<ExpOp>(operation);
+    if (!exp || exp.getScaleAttr()) {
+      continue;
+    }
+    auto multiply = exp.getInput().getDefiningOp<MulUnaryConstOp>();
+    if (multiply && multiply->hasOneUse() &&
+        fusedOperations.contains(multiply) &&
+        !hasInterveningComputeSideEffect(multiply, exp)) {
+      scaledExpInputs.try_emplace(exp, multiply);
+      deferredExpScaleMuls.insert(multiply);
+    }
+  }
+
   DenseMap<Operation *, SmallVector<MatmulOp>> foldCandidates;
   for (Operation *operation : plan.trace.opsInOrder) {
     auto matmul = dyn_cast<MatmulOp>(operation);
@@ -514,10 +560,18 @@ static LogicalResult buildFusedOperationPlans(ComputeOpCreationPlan &plan,
         return failure();
       }
       operationPlan.transposeRhs = foldedMatmul.getTransposeRhs();
+    } else if (deferredExpScaleMuls.contains(operation)) {
+      operationPlan.recipe = FusedOperationRecipe::DeferredExpScale;
     } else if (isElementwiseOp(operation) || isa<FillOp>(operation)) {
-      for (Value operand : getElementwiseOperands(operation)) {
-        if (failed(addOperand(operand, FusedInputRole::Parallel))) {
+      if (auto multiply = scaledExpInputs.lookup(operation)) {
+        if (failed(addOperand(multiply.getInput(), FusedInputRole::Parallel))) {
           return failure();
+        }
+      } else {
+        for (Value operand : getElementwiseOperands(operation)) {
+          if (failed(addOperand(operand, FusedInputRole::Parallel))) {
+            return failure();
+          }
         }
       }
       operationPlan.recipe = FusedOperationRecipe::TileOperation;
@@ -525,6 +579,13 @@ static LogicalResult buildFusedOperationPlans(ComputeOpCreationPlan &plan,
         operationPlan.constantValue = multiply.getValueAttr();
       } else if (auto fill = dyn_cast<FillOp>(operation)) {
         operationPlan.constantValue = fill.getValueAttr();
+      } else if (auto exp = dyn_cast<ExpOp>(operation)) {
+        if (auto multiply = scaledExpInputs.lookup(operation)) {
+          operationPlan.expFlags =
+              buildExpFlagsPlan(exp, multiply.getValueAttr());
+        } else {
+          operationPlan.expFlags = buildExpFlagsPlan(exp);
+        }
       }
     } else {
       failureReason = "fused operation has no tile-level recipe";
@@ -819,6 +880,12 @@ static LogicalResult buildOperationSpecificPlan(ComputeOpCreationPlan &plan,
   }
   if (isa<TypecastOp>(plan.source)) {
     plan.recipe = ComputeOpCreationRecipe::Typecast;
+    buildIdentityIterationPlan(plan);
+    return success();
+  }
+  if (auto exp = dyn_cast<ExpOp>(plan.source)) {
+    plan.recipe = ComputeOpCreationRecipe::Elementwise;
+    plan.expFlags = buildExpFlagsPlan(exp);
     buildIdentityIterationPlan(plan);
     return success();
   }

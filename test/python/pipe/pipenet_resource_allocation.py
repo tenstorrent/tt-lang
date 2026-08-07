@@ -314,16 +314,20 @@ def make_ksplit_resource_allocation_kernel(grid_dim):
 # Transfers with disjoint receiver sets reuse completion semaphores. The six
 # completion semaphores are followed by the sender-ready semaphore at index 6.
 # FINAL-LABEL: module attributes
-# FINAL-SAME: ttl.pipe_sram_scratch_bytes = 32 : i64
 # FINAL-SAME: ttl.pipe_sync_semaphore_count = 7 : i64
+# FINAL-NOT: ttl.pipe_sram_scratch_bytes
 # FINAL-NOT: ttl.pipe_global_semaphore_count
+# FINAL: func.func @post_receives_and_send
+# The output DFB occupies physical index 1 while both receiver DFBs are live, so
+# computed addressing uses receiver indices 0 and 2.
+# FINAL-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 0, 2>
 #
 # CHECK-CPP-LABEL: === post_receives_and_send kernel written to {{.*}} ===
 # CHECK-CPP-DAG: {{(size_t|int32_t)}} [[READY:v[0-9]+]] = 6;
-# CHECK-CPP: noc0.inline_dw_write<NocOptions::INLINE_L1>
 # CHECK-CPP: get_semaphore([[READY]])
 # CHECK-CPP: reinterpret_cast<tt_l1_ptr uint32_t*>
 # CHECK-CPP: experimental::semaphore_wait
+# CHECK-CPP: get_common_arg_val<uint32_t>
 # CHECK-CPP: noc0.async_write(
 # CHECK-CPP: noc_semaphore_inc
 #

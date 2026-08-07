@@ -68,12 +68,7 @@ struct TTLInsertCBSyncPass
   void runOnOperation() override {
     func::FuncOp func = getOperation();
 
-    SmallVector<Operation *> reserves;
-    SmallVector<Operation *> waits;
-    SmallVector<Operation *> pushes;
-    SmallVector<Operation *> pops;
-
-    collectDFBAcquireReleaseOps(func, reserves, waits, pushes, pops);
+    DFBAcquireReleaseOperations operations = collectDFBAcquireReleaseOps(func);
 
     OpBuilder builder(func.getContext());
 
@@ -82,13 +77,13 @@ struct TTLInsertCBSyncPass
     // must check the set before touching any op wrapper method.
     DenseSet<Operation *> erased;
 
-    insertMissingReleases(reserves, pushes, erased, builder,
-                          [](OpBuilder &b, Location loc, Value cb) {
+    insertMissingReleases(operations.reserves, operations.pushes, erased,
+                          builder, [](OpBuilder &b, Location loc, Value cb) {
                             CBPushOp::create(b, loc, cb,
                                              /*num_tiles=*/IntegerAttr{});
                           });
 
-    insertMissingReleases(waits, pops, erased, builder,
+    insertMissingReleases(operations.waits, operations.pops, erased, builder,
                           [](OpBuilder &b, Location loc, Value cb) {
                             CBPopOp::create(b, loc, cb,
                                             /*num_tiles=*/IntegerAttr{});

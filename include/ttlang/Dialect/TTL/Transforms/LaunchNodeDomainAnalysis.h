@@ -99,6 +99,16 @@ LaunchNodeDomain
 getPipeDestinationLaunchNodeDomain(PipeType pipeType,
                                    const LaunchNodeDomain &baseDomain);
 
+/// Return the domain containing exactly `coord`.
+LaunchNodeDomain getSingleLaunchNodeDomain(LaunchNodeCoord coord);
+
+/// Return true if two launch-node domains may share at least one node.
+///
+/// Unknown domains are treated as overlapping because callers cannot prove
+/// disjointness from incomplete facts.
+bool launchNodeDomainsOverlap(const LaunchNodeDomain &lhs,
+                              const LaunchNodeDomain &rhs);
+
 /// Return true if `domain` is known and contains `coord`.
 bool knownLaunchNodeDomainContains(const LaunchNodeDomain &domain,
                                    LaunchNodeCoord coord);
@@ -133,6 +143,8 @@ struct LaunchNodeDomainState {
       executionCountAnalysesByFunctionAndCoord;
   bool sawError = false;
   bool hasLaunchGrid = false;
+  Operation *errorOperation = nullptr;
+  std::string errorMessage;
 
   /// Return true if the module contains at least one declared PipeNet.
   bool hasPipes() const;
@@ -147,6 +159,12 @@ struct LaunchNodeDomainState {
   /// Populate launch-grid and PipeNet role domains from the module.
   void initialize(ModuleOp module);
 };
+
+/// Evaluate a predicate at one launch coordinate using integer constants,
+/// coordinate expressions, and PipeNet role domains.
+std::optional<bool>
+evaluatePredicateAtLaunchNode(Value value, LaunchNodeCoord coord,
+                              const LaunchNodeDomainState &state);
 
 /// Return the exact execution count of `op` at `coord`. Launch-node facts
 /// specialize coordinate and PipeNet predicates before the generic execution
@@ -170,6 +188,15 @@ bool proveEqualUnresolvedExecutionCountAtLaunchNodes(
         resolveLhsFunctionArgument,
     llvm::function_ref<std::optional<Value>(BlockArgument)>
         resolveRhsFunctionArgument);
+
+/// Prove that two operations execute equally often at their launch nodes.
+/// Exact counts prove equality directly. Otherwise, the operations must share
+/// equivalent unresolved control flow that does not require call-site values.
+bool proveEqualExecutionCountAtLaunchNodes(Operation *lhs,
+                                           LaunchNodeCoord lhsCoord,
+                                           Operation *rhs,
+                                           LaunchNodeCoord rhsCoord,
+                                           const LaunchNodeDomainState &state);
 
 /// Return the operation with the earlier source location.
 ///
@@ -213,6 +240,10 @@ private:
 
 /// Optional callbacks and analysis behavior requested by a verifier.
 struct LaunchNodeDomainAnalysisOptions {
+  /// Emit malformed PipeNet-scope diagnostics during analysis. Analyses that
+  /// return typed failures disable this and forward the recorded error.
+  bool emitInvalidPipeNetDiagnostics = true;
+
   /// Intersect the active domain with each `ttl.pipenet_scope` role domain when
   /// entering the scope body.
   bool narrowPipeNetScopes = false;

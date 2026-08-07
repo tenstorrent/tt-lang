@@ -37,6 +37,33 @@ inline mlir::func::FuncOp getEnclosingKernelThread(mlir::Operation *op) {
   return nullptr;
 }
 
+/// Return the TTKernel thread type attached to `func`.
+///
+/// The helper accepts both the TTL attribute used before conversion and the
+/// TTKernel attribute used after conversion because analysis utilities may run
+/// on either side of the attr rewrite.
+inline std::optional<mlir::tt::ttkernel::ThreadType>
+getKernelThreadType(mlir::func::FuncOp func) {
+  if (!func) {
+    return std::nullopt;
+  }
+  if (auto attr = func->getAttrOfType<mlir::tt::ttkernel::ThreadTypeAttr>(
+          mlir::tt::ttkernel::ThreadTypeAttr::name)) {
+    return attr.getValue();
+  }
+  if (auto attr = func->getAttrOfType<mlir::tt::ttkernel::ThreadTypeAttr>(
+          kKernelThreadAttrName)) {
+    return attr.getValue();
+  }
+  return std::nullopt;
+}
+
+/// Return true if `op` belongs to a NOC kernel thread.
+inline bool isNocKernelThread(mlir::Operation *op) {
+  return getKernelThreadType(op->getParentOfType<mlir::func::FuncOp>()) ==
+         mlir::tt::ttkernel::ThreadType::Noc;
+}
+
 /// Trace through unrealized conversion casts to the original value
 /// (cycle-safe).
 inline mlir::Value traceUnrealizedCasts(mlir::Value value) {
@@ -100,6 +127,16 @@ inline mlir::tt::ttl::CBReserveOp findCBReserveForPipeReceive(mlir::Value dst) {
 /// Returns a null operation when `dfb` does not resolve to `ttl.bind_cb`.
 inline BindCBOp getDFBDeclaration(mlir::Value dfb) {
   return traceUnrealizedCasts(dfb).getDefiningOp<BindCBOp>();
+}
+
+/// Returns true when a direct DFB operand may access physical storage.
+///
+/// Callers first identify a DFB operand. Unknown operations conservatively
+/// access storage; only operations with defined identity-only semantics are
+/// excluded.
+inline bool mayAccessDFBStorage(mlir::Operation *operation) {
+  return !mlir::isa<AttachCBOp, GetDfbIdOp, mlir::UnrealizedConversionCastOp>(
+      operation);
 }
 
 /// Resolve the CB index attached to `cb`, accepting either the pre-conversion

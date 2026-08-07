@@ -3,11 +3,18 @@ add_mlir_dialect_library(TTLangTTLTransforms
   IntermediateDFBPlanning.cpp
   ConvertTTLToTTKernel.cpp
   DFBAcquireReleaseAnalysis.cpp
+  DFBAllocationLimits.cpp
   DFBLogicalIdentityAnalysis.cpp
   DFBValueLifetimeAnalysis.cpp
   DFBMaterialization.cpp
+  PipeCapacityAnalysis.cpp
+  PipeCounter.cpp
+  DFBConcurrentKernelLivenessAnalysis.cpp
+  DFBPhysicalAllocationPlan.cpp
+  InterferenceGraphColoring.cpp
   PipeGraph.cpp
   PipeLowering.cpp
+  PipePlanning.cpp
   PipeTransferAnalysis.cpp
   ConvertTTLToCompute.cpp
   ConvertTTLComputeToSCF.cpp

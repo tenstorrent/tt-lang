@@ -35,7 +35,11 @@ from typing import Any, Callable, Dict, Optional, Set, Tuple
 
 # Factory calls whose results are shared by every thread of an operation, so their
 # construction is lifted out of the body and evaluated once.
-DFB_FACTORY_NAMES: Set[str] = {"make_dfb", "make_dataflow_buffer_like"}
+DFB_FACTORY_NAMES: Set[str] = {
+    "make_dfb",
+    "make_dataflow_buffer_like",
+    "make_tensor_backed_dfb",
+}
 PIPE_FACTORY_NAMES: Set[str] = {"Pipe", "PipeNet"}
 SETUP_FACTORY_NAMES: Set[str] = DFB_FACTORY_NAMES | PIPE_FACTORY_NAMES
 

@@ -48,7 +48,7 @@ def _ensure_ttnn():
 import ttl._mlir_libs._ttlang  # Register tt-lang passes
 from ttl._mlir_libs._ttlang import ttl_ir as _ttl_ir
 from ttl.pykernel._src.utils import _cleanup_source_code
-from ttl.dialects import ttcore, ttkernel
+from ttl.dialects import ttcore, ttkernel, ttl as ttl_dialect
 from ttl.ir import *
 from ttl.ir import DenseI32ArrayAttr
 from ttl.passes import (
@@ -80,6 +80,7 @@ from ._src.ttl_ast import TTLGenericCompiler
 from .dataflow_buffer import (
     CircularBuffer,
     DataflowBuffer,
+    DFBStorageSegment,
     PhysicalDFBConfig,
     get_cb_count,
 )
@@ -127,15 +128,26 @@ def _get_registered_threads() -> List[Callable]:
 
 
 def _get_tensor_cache_info(tensor) -> tuple:
-    """Extract cache-relevant info from a tensor: (shape, dtype, memory_space, layout)."""
+    """Extract tensor properties that affect compilation or DFB descriptors."""
     shape = tuple(tensor.shape)
+    padded_shape = tuple(getattr(tensor, "padded_shape", tensor.shape))
     dtype = str(tensor.dtype)
     mem_config = tensor.memory_config()
     memory_space = (
         str(mem_config.buffer_type) if hasattr(mem_config, "buffer_type") else "unknown"
     )
+    memory_layout = (
+        str(mem_config.memory_layout)
+        if hasattr(mem_config, "memory_layout")
+        else "unknown"
+    )
     layout = str(tensor.layout) if hasattr(tensor, "layout") else "unknown"
-    return (shape, dtype, memory_space, layout)
+    tile = (
+        tuple(tensor.get_tile().tile_shape)
+        if "TILE" in layout and hasattr(tensor, "get_tile")
+        else None
+    )
+    return (shape, padded_shape, dtype, memory_space, memory_layout, layout, tile)
 
 
 def _make_cache_key(
@@ -148,18 +160,24 @@ def _make_cache_key(
 ) -> tuple:
     """Create cache key from tensor properties and runtime compute config parameters."""
     grid_key = tuple(resolved_grid)
-    tensor_key = tuple(
-        _get_tensor_cache_info(arg) for arg in args if is_ttnn_tensor(arg)
-    )
+    tensor_args = [arg for arg in args if is_ttnn_tensor(arg)]
+    tensor_key = tuple(_get_tensor_cache_info(tensor) for tensor in tensor_args)
+    first_position_by_identity = {}
+    alias_partition = []
+    for position, tensor in enumerate(tensor_args):
+        identity = id(tensor)
+        first_position_by_identity.setdefault(identity, position)
+        alias_partition.append(first_position_by_identity[identity])
     # Include mesh shape so that single-device and multi-device compilations
     # with different shard shapes don't collide in the cache.
     mesh_key = None
-    for arg in args:
-        if is_ttnn_tensor(arg) and _is_mesh_tensor(arg):
-            mesh_key = tuple(arg.device().shape)
+    for tensor in tensor_args:
+        if _is_mesh_tensor(tensor):
+            mesh_key = tuple(tensor.device().shape)
             break
     return (
         tensor_key,
+        tuple(alias_partition),
         mesh_key,
         grid_key,
         fp32_dest_acc_en,
@@ -566,6 +584,7 @@ class CompiledTTNNKernel:
         pipe_sram_scratch_bytes=0,
         num_pipe_global_semaphores=0,
         opaque_include_paths=None,
+        kernel_pipe_computed_address_dfb_indices=None,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -592,7 +611,9 @@ class CompiledTTNNKernel:
             pipe_sram_scratch_bytes: Per-core SRAM scratch bytes used by
                 PipeNet metadata.
             num_pipe_global_semaphores: Number of GlobalSemaphore-backed
-                PipeNet ready counters used by this kernel.
+                PipeNet counters used by this kernel.
+            kernel_pipe_computed_address_dfb_indices: Per-kernel receiver DFB indices whose
+                L1 bases are supplied as common runtime args.
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
@@ -610,6 +631,9 @@ class CompiledTTNNKernel:
         self.num_pipe_sync_semaphores = num_pipe_sync_semaphores
         self.pipe_sram_scratch_bytes = pipe_sram_scratch_bytes
         self.num_pipe_global_semaphores = num_pipe_global_semaphores
+        self.kernel_pipe_computed_address_dfb_indices = (
+            kernel_pipe_computed_address_dfb_indices or [[] for _ in kernel_paths]
+        )
         self._pipe_global_semaphore_lifetime = []
         self.opaque_include_paths = opaque_include_paths or []
 
@@ -640,6 +664,9 @@ class CompiledTTNNKernel:
                 tensor_indices=tensor_indices,
                 config=config,
                 compiler_include_paths=self.opaque_include_paths,
+                pipe_computed_address_dfb_indices=self.kernel_pipe_computed_address_dfb_indices[
+                    kernel_idx
+                ],
                 core_ranges=self.kernel_core_ranges[kernel_idx],
             )
             kernel_specs.append(spec)
@@ -749,9 +776,7 @@ def _get_kernel_bool_attr(module, kernel_name: str, attr_name: str) -> bool:
 def _get_kernel_i32_array_attr(module, kernel_name: str, attr_name: str):
     """Read a `DenseI32ArrayAttr` func.func attribute as a list of ints.
 
-    Returns an empty list when the attribute is missing. Used by the runtime
-    bridge to consume the per-CB UnpackToDestFp32 selection emitted by
-    `ttl-set-compute-kernel-config`.
+    Returns an empty list when the attribute is missing.
     """
     operation = _lookup_kernel_func_op(module, kernel_name)
     attr = operation.attributes.get(attr_name, None)
@@ -962,6 +987,7 @@ def _compile_ttnn_kernel(
     kernel_paths = []
     kernel_configs = []
     kernel_arg_specs = []
+    kernel_pipe_computed_address_dfb_indices = []
     # Per-kernel single-core ranges (specialization path) and tensor indices
     # read from ttl.crta_indices. Both stay aligned with kernel_info order.
     kernel_core_ranges = []
@@ -985,6 +1011,11 @@ def _compile_ttnn_kernel(
         cpp_source = ttkernel_to_cpp_by_name(module, name)
         kernel_path = _write_kernel_to_tmp(name, cpp_source)
         kernel_paths.append((kernel_path, thread_type))
+        kernel_pipe_computed_address_dfb_indices.append(
+            _get_kernel_i32_array_attr(
+                module, name, _ttl_ir.PIPE_COMPUTED_ADDRESS_DFB_INDICES_ATTR
+            )
+        )
 
         # The specialized clone's launch coordinates (None on the default,
         # whole-grid path). Used to build the per-kernel dispatch range below.
@@ -1071,6 +1102,7 @@ def _compile_ttnn_kernel(
         pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
         num_pipe_global_semaphores=num_pipe_global_semaphores,
         opaque_include_paths=opaque_include_paths or [],
+        kernel_pipe_computed_address_dfb_indices=kernel_pipe_computed_address_dfb_indices,
     )
 
     if verbose:
@@ -1088,6 +1120,9 @@ def _compile_ttnn_kernel(
                 tensor_indices=tensor_indices,
                 config=kernel_configs[kernel_idx],
                 compiler_include_paths=opaque_include_paths or [],
+                pipe_computed_address_dfb_indices=kernel_pipe_computed_address_dfb_indices[
+                    kernel_idx
+                ],
                 core_ranges=kernel_core_ranges[kernel_idx],
             )
             kernel_specs_for_emit.append(spec)
@@ -1313,6 +1348,76 @@ def _extract_dfb_allocations(module):
                 f"got {page_size}"
             )
 
+        storage_segments = []
+        seen_nodes = set()
+        if "storage_segments" in entry:
+            for segment_position, segment in enumerate(entry["storage_segments"]):
+                if "nodes" not in segment:
+                    raise ValueError(
+                        f"{attribute_name}[{position}].storage_segments"
+                        f"[{segment_position}] is missing 'nodes'"
+                    )
+                nodes = []
+                for node_position, node_attr in enumerate(segment["nodes"]):
+                    node = ArrayAttr(node_attr)
+                    if len(node) != 2:
+                        raise ValueError(
+                            f"{attribute_name}[{position}].storage_segments"
+                            f"[{segment_position}].nodes[{node_position}] must "
+                            "contain [x, y]"
+                        )
+                    coord = tuple(
+                        int(IntegerAttr(component).value) for component in node
+                    )
+                    if coord[0] < 0 or coord[1] < 0:
+                        raise ValueError(
+                            f"{attribute_name}[{position}] contains negative "
+                            f"launch-node coordinate {coord}"
+                        )
+                    if coord in seen_nodes:
+                        raise ValueError(
+                            f"{attribute_name}[{position}] assigns launch node "
+                            f"{coord} to multiple storage segments"
+                        )
+                    seen_nodes.add(coord)
+                    nodes.append(coord)
+                if not nodes:
+                    raise ValueError(
+                        f"{attribute_name}[{position}].storage_segments"
+                        f"[{segment_position}].nodes must not be empty"
+                    )
+
+                tensor_index = None
+                byte_offset = 0
+                byte_size = None
+                if "tensor_backing" in segment:
+                    backing = ttl_dialect.TensorBackingAttr.maybe_downcast(
+                        segment["tensor_backing"]
+                    )
+                    if backing is None:
+                        raise ValueError(
+                            f"{attribute_name}[{position}].storage_segments"
+                            f"[{segment_position}].tensor_backing has the wrong type"
+                        )
+                    tensor_index = backing.tensor_index
+                    byte_offset = backing.byte_offset
+                    byte_size = backing.byte_size
+                    expected_size = num_tiles * block_count * page_size
+                    if byte_size != expected_size:
+                        raise ValueError(
+                            f"{attribute_name}[{position}] tensor backing "
+                            "byte_size "
+                            f"must equal {expected_size}, got {byte_size}"
+                        )
+                storage_segments.append(
+                    DFBStorageSegment(
+                        nodes=tuple(sorted(nodes)),
+                        tensor_index=tensor_index,
+                        byte_offset=byte_offset,
+                        byte_size=byte_size,
+                    )
+                )
+
         seen_indices.add(dfb_index)
         configs.append(
             PhysicalDFBConfig(
@@ -1322,6 +1427,7 @@ def _extract_dfb_allocations(module):
                 block_count=block_count,
                 page_size=page_size,
                 tile=tile,
+                storage_segments=tuple(storage_segments),
             )
         )
 
@@ -1838,6 +1944,10 @@ def _lower_program_to_kernel(
         assign_dst_pass = "ttl-assign-dst"
 
         compiler_dfbs_flag = int(compiler_options.compiler_dfbs)
+        reuse_user_dfbs_flag = int(compiler_options.reuse_user_dfbs)
+        exact_coloring_search_limit = (
+            compiler_options.dfb_exact_coloring_search_limit
+        )
         pipeline_passes = [
             "func.func(ttl-materialize-loop-state)",
             "func.func(ttl-insert-copy-wait)",
@@ -1848,7 +1958,10 @@ def _lower_program_to_kernel(
             "func.func(ttl-insert-cb-sync)",
             "ttl-verify-pipenet",
             "func.func(ttl-coalesce-dfb-acquires)",
-            "ttl-finalize-dfb-indices",
+            "ttl-finalize-dfb-indices{"
+            f"reuse-user-dfbs={reuse_user_dfbs_flag} "
+            f"exact-coloring-search-limit={exact_coloring_search_limit}"
+            "}",
             set_compute_config_pass,
             f"func.func({assign_dst_pass})",
         ]
@@ -1897,9 +2010,19 @@ def _lower_program_to_kernel(
             pipeline_passes.append(f'ttl-dump-cb-flow-graph{{output="{cb_flow_json}"}}')
 
         reduce_fp32_flag = int(compiler_options.reduce_full_fp32)
+        pipe_computed_flag = int(compiler_options.pipe_computed_addresses)
+        pipe_capacity_sync_flag = int(compiler_options.pipe_capacity_sync)
+        pipe_global_semaphores_only_flag = int(
+            compiler_options.pipe_global_semaphores_only
+        )
         pipeline_passes += [
             "ttl-lower-dprint-to-emitc",
-            f"convert-ttl-to-ttkernel{{reduce-full-fp32={reduce_fp32_flag}}}",
+            (
+                f"convert-ttl-to-ttkernel{{reduce-full-fp32={reduce_fp32_flag} "
+                f"pipe-computed-addresses={pipe_computed_flag} "
+                f"pipe-capacity-sync={pipe_capacity_sync_flag} "
+                f"pipe-global-semaphores-only={pipe_global_semaphores_only_flag}}}"
+            ),
             "func.func(ttkernel-lower-scalar-fp-types)",
             "ttkernel-insert-inits",
             "ttkernel-insert-l1-accumulation",

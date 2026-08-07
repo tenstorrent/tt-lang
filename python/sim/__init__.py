@@ -101,6 +101,7 @@ class _TTLNamespace:
         self.operation = operation
         self.grid_size = grid_size
         self.make_dataflow_buffer_like = make_dataflow_buffer_like
+        self.make_tensor_backed_dfb = self._make_tensor_backed_dfb
         self.compute = compute
         self.datamovement = datamovement
         self.node = node
@@ -120,6 +121,12 @@ class _TTLNamespace:
         self.ROW_MAJOR_LAYOUT = ROW_MAJOR_LAYOUT
         self.block = _TTLBlockNamespace()
         self.math = _TTLMathNamespace()
+
+    @staticmethod
+    def _make_tensor_backed_dfb(tensor, shape, *, block_count=1, byte_offset=0):
+        raise NotImplementedError(
+            "the simulator does not model tensor-backed DFB storage"
+        )
 
     @staticmethod
     def signpost(*args: Any, **kwargs: Any) -> _SignpostContextManager:

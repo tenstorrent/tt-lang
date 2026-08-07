@@ -23,6 +23,7 @@
 #include "llvm/ADT/TypeSwitch.h" // IWYU pragma: keep
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <numeric>
 
 #include "ttlang/Dialect/TTL/IR/TTLInterfaces.cpp.inc"
@@ -65,6 +66,42 @@ SliceAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
   if (step < 0 && stop > start) {
     return emitError() << "slice stop (" << stop << ") must be <= start ("
                        << start << ") when step is negative";
+  }
+  return llvm::success();
+}
+
+llvm::LogicalResult TensorBackingAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    int64_t tensorIndex, int64_t byteOffset, int64_t byteSize) {
+  if (tensorIndex < 0) {
+    return emitError() << "tensor_index must be non-negative";
+  }
+  if (byteOffset < 0) {
+    return emitError() << "byte_offset must be non-negative";
+  }
+  if (byteSize <= 0) {
+    return emitError() << "byte_size must be positive";
+  }
+  constexpr int64_t maxDescriptorValue =
+      static_cast<int64_t>(std::numeric_limits<uint32_t>::max());
+  if (byteOffset > maxDescriptorValue - byteSize) {
+    return emitError()
+           << "byte_offset and byte_size must fit the uint32 descriptor fields";
+  }
+  return llvm::success();
+}
+
+llvm::LogicalResult CircularBufferType::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    ArrayRef<int64_t> shape, Type, int64_t blockCount) {
+  for (int64_t dimension : shape) {
+    if (dimension <= 0) {
+      return emitError() << "shape dimensions must be positive, got "
+                         << dimension;
+    }
+  }
+  if (blockCount <= 0) {
+    return emitError() << "block_count must be positive, got " << blockCount;
   }
   return llvm::success();
 }
@@ -115,6 +152,47 @@ mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
   if (blockCount != cbTy.getBlockCount()) {
     return emitOpError() << "block_count must match result type block count ("
                          << cbTy.getBlockCount() << ")";
+  }
+
+  if (TensorBackingAttr backing = getTensorBackingAttr()) {
+    auto tileType = mlir::dyn_cast<ttcore::TileType>(cbTy.getElementType());
+    if (!tileType) {
+      return emitOpError()
+             << "tensor backing requires a TTCore tile element type, got "
+             << cbTy.getElementType();
+    }
+    // TODO(#812): Extend tensor backing after additional formats are specified.
+    if (tileType.getDataType() != ttcore::DataType::BFloat16 &&
+        tileType.getDataType() != ttcore::DataType::Float32) {
+      return emitOpError()
+             << "tensor backing supports only BF16 and FP32 tile element "
+                "types, got "
+             << tileType;
+    }
+    int64_t pageSize = static_cast<int64_t>(tileType.getSizeBytes());
+    if (backing.getByteOffset() % pageSize != 0) {
+      return emitOpError()
+             << "tensor backing byte_offset must be aligned to the " << pageSize
+             << "-byte dataflow buffer page size";
+    }
+    int64_t totalElements = cbTy.getTotalElements();
+    if (totalElements <= 0 || static_cast<uint64_t>(totalElements) >
+                                  std::numeric_limits<uint64_t>::max() /
+                                      static_cast<uint64_t>(pageSize)) {
+      return emitOpError() << "tensor backing capacity is not representable";
+    }
+    uint64_t allocationSize =
+        static_cast<uint64_t>(totalElements) * static_cast<uint64_t>(pageSize);
+    if (allocationSize >
+        static_cast<uint64_t>(std::numeric_limits<int64_t>::max())) {
+      return emitOpError() << "tensor backing capacity is not representable";
+    }
+    if (backing.getByteSize() != static_cast<int64_t>(allocationSize)) {
+      return emitOpError()
+             << "tensor backing byte_size must equal the complete dataflow "
+                "buffer capacity (expected "
+             << allocationSize << ", got " << backing.getByteSize() << ")";
+    }
   }
 
   return mlir::success();

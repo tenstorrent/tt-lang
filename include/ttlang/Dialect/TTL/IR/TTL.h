@@ -22,6 +22,7 @@ namespace mlir::tt::ttl {
 /// Default tile dimensions used for TTL tensors.
 inline constexpr int32_t kDefaultTileHeight = 32;
 inline constexpr int32_t kDefaultTileWidth = 32;
+/// Physical DFB indices supported by TT kernel hardware.
 inline constexpr int32_t kMaxCircularBuffers = 32;
 /// TT kernel hardware semaphore id capacity. Mirrored by
 /// python/ttl/constants.py for simulator-side resource checks.
@@ -148,6 +149,11 @@ constexpr llvm::StringLiteral
     kPipeGlobalSemaphoreCountAttrName("ttl.pipe_global_semaphore_count");
 constexpr llvm::StringLiteral
     kPipeSramScratchBytesAttrName("ttl.pipe_sram_scratch_bytes");
+
+/// Function attribute listing receiver DFB indices whose L1 base addresses are
+/// passed after tensor buffer addresses as common runtime arguments.
+constexpr llvm::StringLiteral kPipeComputedAddressDFBIndicesAttrName(
+    "ttl.pipe_computed_address_dfb_indices");
 
 /// Marker on BindCBOp to distinguish compiler-allocated DFBs from user-declared
 /// ones.

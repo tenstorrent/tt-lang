@@ -36,6 +36,7 @@ def TTL_CircularBuffer : TTL_Type<"CircularBuffer", "cb"> {
     "int64_t":$blockCount
   );
   let assemblyFormat = "`<` `[` $shape `]` `,` $elementType `,` $blockCount `>`";
+  let genVerifyDecl = 1;
 
   let extraClassDeclaration = [{
     int64_t getElementsPerBlock() const {
@@ -58,12 +59,12 @@ def TTL_TransferHandle : TTL_Type<"TransferHandle", "transfer_handle"> {
 }
 
 def TTL_PipeTransfer : TTL_Type<"PipeTransfer", "pipe_transfer"> {
-  let summary = "Pipe transfer contract";
+  let summary = "Pipe transfer reference";
   let description = [{
-    Represents one logical receiver-posted pipe transfer before physical
-    synchronization resources are assigned. The transfer value identifies the
-    source/receiver relation and the point-to-point or collective contract; it
-    is not a TTKernel semaphore, SRAM table, GlobalSemaphore, or DFB slot.
+    Represents a reference used by a pipe send or receiver post. One logical
+    transfer may have distinct reference values when the sender and receiver
+    callbacks declare the pipe independently. The value is not a TTKernel
+    semaphore, SRAM table, GlobalSemaphore, or DFB slot.
   }];
 }
 
@@ -98,6 +99,8 @@ def TTL_ReduceTypeAttr : EnumAttr<TTL_Dialect, TTL_ReduceType, "reduce_type">;
 def TTL_AccumulationInitialModeAttr
     : EnumAttr<TTL_Dialect, TTL_AccumulationInitialMode,
                "accumulation_initial_mode">;
+def TTL_InputClampingAttr
+    : EnumAttr<TTL_Dialect, TTL_InputClamping, "input_clamping">;
 
 def TTL_Pipe : TTL_Type<"Pipe", "pipe"> {
   let summary = "Pipe for core-to-core data transfer";

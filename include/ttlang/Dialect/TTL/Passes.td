@@ -160,18 +160,38 @@ def TTLMaterializeLoopState
 
 def TTLConvertTTLToTTKernel
     : Pass<"convert-ttl-to-ttkernel", "::mlir::ModuleOp"> {
-  let summary = "Lower TTL DMA ops to TTKernel using global barriers (temporary)";
+  let summary = "Lower TTL data movement and PipeNet operations to TTKernel";
   let description = [{
-    Converts TTL DMA ops to TTKernel noc ops. Uses global barriers until TRID
-    barriers are available. Covers bind_cb, copy, wait MVP path.
-
-    TODO(ttl): Refine lowering to emit real CB handles and proper NOC addresses.
-    Issue: #77 (umbrella issue with subtasks #78-#89).
+    Converts TTL DFB, copy, wait, and PipeNet operations to TTKernel DFB, NoC,
+    and semaphore operations. PipeNet lowering selects receiver-published or
+    computed destination addresses and receiver-post or capacity-counter
+    synchronization according to the pass options and transfer eligibility.
+    PipeNet counters use local semaphore ids before GlobalSemaphore storage by
+    default; the global-only option preserves all local semaphore ids for
+    application use.
   }];
 
   let options = [
     Option<"reduceFullFp32", "reduce-full-fp32", "bool", "true",
-           "Enable FP32 accumulation for reduce operations.">
+           "Enable FP32 accumulation for reduce operations.">,
+    Option<"pipeComputedAddresses", "pipe-computed-addresses",
+           "bool", "true",
+           "Use computed receiver DFB addresses for eligible pipe transfers. "
+           "When disabled, pipe transfers use receiver-published destination "
+           "addresses; multicast still requires proven equal runtime "
+           "receiver addresses.">,
+    Option<"pipeCapacitySync", "pipe-capacity-sync",
+           "bool", "true",
+           "Use capacity-counter synchronization when the receiver wait and "
+           "pop execute on the receiver NOC thread and the computed-address "
+           "transfer passes the DFB ownership and count proofs. "
+           "When disabled, computed-address transfers use receiver-post "
+           "synchronization.">,
+    Option<"pipeGlobalSemaphoresOnly", "pipe-global-semaphores-only",
+           "bool", "false",
+           "Allocate all compiler-managed PipeNet synchronization counters "
+           "in GlobalSemaphore storage, leaving local hardware semaphore ids "
+           "available to the application.">
   ];
 
   let dependentDialects = [
@@ -818,24 +838,68 @@ def TTLFinalizeDFBIndices
     The logical identity remains independent of the physical `cb_index`, so
     later analyses can distinguish DFBs that share one hardware slot.
 
-    Compiler-created DFBs enter this pass with kernel-local provisional
-    indices. The pass assigns each kernel a disjoint module-wide index range,
-    then applies deterministic first-fit interval coloring, partitioned by
-    CircularBufferType. A half-open lifetime starts at the first `cb_reserve` or
-    `cb_wait` and ends immediately after the last `cb_pop`. DFBs whose lifetimes
-    do not overlap are assigned the same physical index. See
-    docs/development/DFBManagement.md.
+    With `reuse-user-dfbs` enabled, the pass analyzes all logical DFBs,
+    including declarations shared across kernels. Reuse requires exact
+    `CircularBufferType` equality, equal transaction tile counts that divide
+    the DFB capacity, and identical read- and write-pointer processors on each
+    launch node. These requirements preserve hardware counter and ring-pointer
+    state. A logical DFB without an exact single lifecycle or a proven lifetime
+    order conflicts with every other DFB. Unsupported or unknown control flow
+    can reduce reuse but cannot produce an unsafe physical assignment.
+
+    The allocator represents each logical DFB as a vertex, each pair that
+    cannot share as an edge, and each physical index as a color. First-fit
+    quickly produces a valid assignment by giving each DFB the lowest index
+    not used by one of its conflicts, but its result depends on DFB order and
+    may use more indices than necessary. A found set of pairwise-conflicting
+    DFBs proves that at least that many indices are required.
+
+    Exhaustive assignment search can grow exponentially, so it runs only when
+    first-fit prevents acceptance and the pairwise-conflict lower bound does
+    not already prove failure. The physical-index check asks directly whether
+    an assignment fits the available indices. Minimum physical-index-count
+    search runs only when an otherwise valid assignment exceeds the L1 budget.
+    Each search examines at most `exact-coloring-search-limit` deterministic
+    states to bound compile time. Reaching that limit reports an inconclusive
+    allocation diagnostic; it does not report that hardware capacity was
+    proved insufficient.
+
+    Every storage-accessing operation with a direct DFB operand is treated as a
+    runtime access from operation entry through completion. Every direct DFB
+    operand of `ttl.opaque_call` is a possible read or write; both require the
+    same storage-liveness interval. Identity-only `ttl.attach_cb` and
+    `ttl.get_dfb_id` operations do not access storage. An external call whose
+    C++ body implements the DFB protocol does not provide the visible reserve,
+    push, wait, and pop operations required to prove a bounded lifecycle.
+
+    Disabling `reuse-user-dfbs` compacts distinct provisional user indices
+    without introducing new sharing between user DFBs, then assigns only
+    compiler-created DFBs. Both modes use the same lifetime proof and conflict
+    relation for every DFB whose index they select.
+
+    Every used compiler-created DFB must contain `ttl.cb_reserve`,
+    `ttl.cb_push`, `ttl.cb_wait`, and `ttl.cb_pop`. An unused declaration is
+    legal and remains live through the end of its kernel.
 
     The pass rejects copied DFB-index attributes from later passes. It computes
-    all physical assignments and runtime metadata and validates capacity before
-    modifying the IR, so a capacity error leaves provisional
-    indices and existing kernel attributes unchanged. After validation, it
-    applies the physical assignments and logical identities, updates
-    `ttl.base_cta_index`, and builds the `ttl.dfb_allocations` module attribute
-    for the Python runtime. The attribute contains one descriptor per physical
-    index, including user-declared and compiler-created DFBs, and records the
-    page size computed from the finalized element type.
+    all physical assignments and runtime metadata and validates the 32-index
+    hardware limit before modifying the IR. Applying the validated plan updates
+    physical indices and `ttl.base_cta_index`, assigns missing compiler-created
+    logical IDs, and builds `ttl.dfb_allocations` for the Python runtime. The
+    attribute contains one descriptor per physical index, including
+    user-declared and compiler-created DFBs, and records the page size computed
+    from the finalized element type. See docs/development/DFBManagement.md.
   }];
+
+  let options = [
+    Option<"reuseUserDFBs", "reuse-user-dfbs", "bool", "true",
+           "Reuse physical DFB indices for logical DFBs with proven "
+           "non-overlapping lifetimes across concurrent kernels.">,
+    Option<"exactColoringSearchStateLimit", "exact-coloring-search-limit",
+           "uint64_t", "1000000",
+           "Maximum states examined by exact DFB allocation before reporting "
+           "an inconclusive result.">
+  ];
 }
 
 def TTLValidateCBBudget

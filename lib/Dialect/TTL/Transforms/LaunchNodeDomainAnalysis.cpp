@@ -23,6 +23,7 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/Twine.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -143,6 +144,20 @@ getPipeDestinationLaunchNodeDomain(PipeType pipeType,
     }
   }
   return result;
+}
+
+LaunchNodeDomain getSingleLaunchNodeDomain(LaunchNodeCoord coord) {
+  LaunchNodeDomain result;
+  result.nodes.insert(coord);
+  return result;
+}
+
+bool launchNodeDomainsOverlap(const LaunchNodeDomain &lhs,
+                              const LaunchNodeDomain &rhs) {
+  if (!lhs.known || !rhs.known) {
+    return true;
+  }
+  return !lhs.intersectWith(rhs).nodes.empty();
 }
 
 bool knownLaunchNodeDomainContains(const LaunchNodeDomain &domain,
@@ -280,7 +295,7 @@ createLaunchNodeIntegerEvaluator(LaunchNodeCoord coord,
       });
 }
 
-static std::optional<bool>
+std::optional<bool>
 evaluatePredicateAtLaunchNode(Value value, LaunchNodeCoord coord,
                               const LaunchNodeDomainState &state) {
   std::optional<llvm::APInt> maybeValue =
@@ -679,6 +694,26 @@ bool proveEqualUnresolvedExecutionCountAtLaunchNodes(
   });
 }
 
+bool proveEqualExecutionCountAtLaunchNodes(Operation *lhs,
+                                           LaunchNodeCoord lhsCoord,
+                                           Operation *rhs,
+                                           LaunchNodeCoord rhsCoord,
+                                           const LaunchNodeDomainState &state) {
+  std::optional<std::uint64_t> maybeLhsCount =
+      getExactExecutionCountAtLaunchNode(lhs, lhsCoord, state);
+  std::optional<std::uint64_t> maybeRhsCount =
+      getExactExecutionCountAtLaunchNode(rhs, rhsCoord, state);
+  if (maybeLhsCount && maybeRhsCount) {
+    return *maybeLhsCount == *maybeRhsCount;
+  }
+  auto resolveNoFunctionArguments = [](BlockArgument) -> std::optional<Value> {
+    return std::nullopt;
+  };
+  return proveEqualUnresolvedExecutionCountAtLaunchNodes(
+      lhs, lhsCoord, rhs, rhsCoord, state, resolveNoFunctionArguments,
+      resolveNoFunctionArguments);
+}
+
 /// Find a source file location through common composed MLIR location wrappers.
 static FileLineColLoc findFileLineColLoc(Location loc) {
   if (auto fileLoc = mlir::dyn_cast<FileLineColLoc>(loc)) {
@@ -799,28 +834,34 @@ getBranchLaunchNodeDomains(Value condition, const LaunchNodeDomain &current,
 /// Decode the PipeNet role metadata carried by one `ttl.pipenet_scope`.
 static std::optional<PipeNetScopeLaunchNodeDomains>
 getPipeNetScopeLaunchNodeDomains(PipeNetScopeOp scopeOp,
-                                 LaunchNodeDomainState &state) {
+                                 LaunchNodeDomainState &state,
+                                 bool emitDiagnostics) {
+  auto recordError = [&](const Twine &message) {
+    state.sawError = true;
+    state.errorOperation = scopeOp;
+    state.errorMessage = message.str();
+    if (emitDiagnostics) {
+      scopeOp.emitOpError() << message;
+    }
+  };
   SmallVector<int64_t> ids;
   SmallVector<int64_t> roles;
   if (!readI64ArrayAttr(scopeOp.getOperation(), kPipeNetIdsAttrName, ids) ||
       !readI64ArrayAttr(scopeOp.getOperation(), kPipeNetRolesAttrName, roles)) {
-    scopeOp.emitOpError() << "requires `" << kPipeNetIdsAttrName << "` and `"
-                          << kPipeNetRolesAttrName << "` attributes";
-    state.sawError = true;
+    recordError(Twine("requires `") + kPipeNetIdsAttrName + "` and `" +
+                kPipeNetRolesAttrName + "` attributes");
     return std::nullopt;
   }
   if (ids.size() != roles.size()) {
-    scopeOp.emitOpError() << "requires equal-length PipeNet id and role arrays";
-    state.sawError = true;
+    recordError("requires equal-length PipeNet id and role arrays");
     return std::nullopt;
   }
   PipeNetScopeLaunchNodeDomains result;
   for (auto [pipeNetId, roleValue] : llvm::zip_equal(ids, roles)) {
     if (roleValue != static_cast<int64_t>(PipeRole::Source) &&
         roleValue != static_cast<int64_t>(PipeRole::Destination)) {
-      scopeOp.emitOpError() << "has invalid PipeNet role " << roleValue
-                            << " (expected 0=src or 1=dst)";
-      state.sawError = true;
+      recordError(Twine("has invalid PipeNet role ") + Twine(roleValue) +
+                  " (expected 0=src or 1=dst)");
       return std::nullopt;
     }
     auto role = static_cast<PipeRole>(roleValue);
@@ -953,7 +994,8 @@ void LaunchNodeDomainAnalysis::visitRegionBranchControlFlowTransfer(
             getPipeDestinationLaunchNodeDomain(pipeType, state.baseDomain));
       })
       .Case<PipeNetScopeOp>([&](PipeNetScopeOp scopeOp) {
-        auto scope = getPipeNetScopeLaunchNodeDomains(scopeOp, state);
+        auto scope = getPipeNetScopeLaunchNodeDomains(
+            scopeOp, state, options.emitInvalidPipeNetDiagnostics);
         if (!scope) {
           return;
         }
