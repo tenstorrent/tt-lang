@@ -664,14 +664,14 @@ struct TTLLowerToLoopsPass
         return signalPassFailure();
       }
     }
-    WalkResult rowNormalizationResult = func.walk([](ComputeOp computeOp) {
+    bool invalidRowNormalization = false;
+    func.walk([&](ComputeOp computeOp) {
       if (computeOp.containsOp<TileRowNormalizationBlockOp>() &&
           failed(verifyRowNormalizationCompute(computeOp))) {
-        return WalkResult::interrupt();
+        invalidRowNormalization = true;
       }
-      return WalkResult::advance();
     });
-    if (rowNormalizationResult.wasInterrupted()) {
+    if (invalidRowNormalization) {
       return signalPassFailure();
     }
 
