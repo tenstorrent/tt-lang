@@ -418,9 +418,11 @@ TTKernel represents source-register ownership as explicit acquire, consumer,
 and release operations. Verification analyzes the complete containing block
 before target conversion. It requires one active source scalar, a matching
 release in the same block, and only source-scalar consumers during the active
-lifetime. Several consumers may share one acquisition. This prevents operation
-ordering or target conversion from silently creating overlapping or
-unterminated hardware-resource lifetimes.
+lifetime. Acquisition owns only the scalar; each consumer selects its output
+DST index. Several consumers may therefore share one acquisition while writing
+distinct result ranges. This prevents operation ordering or target conversion
+from silently creating overlapping or unterminated hardware-resource
+lifetimes.
 
 The compound reduction LLK applies its scaler during both reduction stages.
 TTKernel-to-C++ lowering passes the square root of the semantic scale so the
@@ -699,8 +701,8 @@ The design preserves these properties:
 
 11. **Target resource lifetime.** TTKernel verification accepts each retained
     source scalar only within one balanced acquire-consumer-release sequence.
-    No unrelated target operation can execute while the source register is
-    owned by that sequence.
+    Each consumer selects its output DST index, and no unrelated target
+    operation can execute while the source register is owned by that sequence.
 
 The proof assumes verified TTL operation types, valid DFB FIFO semantics, and
 recognized view-preserving operations for acquired DFB storage. Conservative
@@ -764,11 +766,12 @@ cross-region recomputation, instrumentation placement, output transactions,
 released inputs, multi-output accumulating computes, plan invalidation, and
 disabled compiler DFBs. Reduction-fusion tests additionally cover recognized
 pipeline validation, schedule metadata, capacity rejection, source-scalar
-lifetime balance, multiple retained-scalar consumers, generated TTKernel and
-C++, and absence of intermediate DFBs. Runtime tests validate RMSNorm,
-SumOfSquares, and representative materialization results. The largest
-representative program is the eight-node flash-attention chain, which combines
-many atom-composed tensor operations and user DFB publications.
+lifetime balance, multiple retained-scalar consumers with distinct output
+indices, generated TTKernel and C++, and absence of intermediate DFBs. Runtime
+tests validate RMSNorm, SumOfSquares, and representative materialization
+results. The largest representative program is the eight-node flash-attention
+chain, which combines many atom-composed tensor operations and user DFB
+publications.
 
 ## Limitations and Future Work
 
