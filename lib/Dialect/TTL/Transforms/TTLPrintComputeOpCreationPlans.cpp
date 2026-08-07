@@ -72,6 +72,8 @@ static StringRef stringifyFusedRecipe(FusedOperationRecipe recipe) {
     return "deferred-matmul";
   case FusedOperationRecipe::MatmulAccumulator:
     return "matmul-accumulator";
+  case FusedOperationRecipe::DeferredExpScale:
+    return "deferred-exp-scale";
   }
   llvm_unreachable("unknown fused operation recipe");
 }

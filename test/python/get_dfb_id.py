@@ -12,8 +12,9 @@ Verify that ttl.get_dfb_id() in template_args emits ttl.get_dfb_id in the
 initial MLIR and lowers to a raw integer literal in the generated C++.
 
 The compute thread calls ttl.call_extern_func with DFB IDs and a literal
-constant as template args.  Stub data-movement threads satisfy the TTNN
-interop 3-kernel requirement.
+constant as template args. The same DFBs are direct function arguments so the
+allocator can retain their storage dependencies. Stub data-movement threads
+satisfy the TTNN interop 3-kernel requirement.
 """
 
 import os
@@ -38,6 +39,7 @@ def get_dfb_id_kernel(inp):
             FAKE_HEADER,
             "my_shim",
             template_args=[ttl.get_dfb_id(scratch), ttl.get_dfb_id(in_dfb), 1],
+            func_args=[scratch, in_dfb],
         )
 
     @ttl.datamovement()
@@ -67,14 +69,15 @@ def get_dfb_id_kernel(inp):
 # CHECK: %[[C1:.*]] = arith.constant 1 : i32
 
 # The opaque_call receives template arg values as SSA operands
-# CHECK: ttl.opaque_call "my_shim" template_args(%[[ID_SCRATCH]], %[[ID_IN]], %[[C1]])
+# CHECK: ttl.opaque_call "my_shim" template_args(%[[ID_SCRATCH]], %[[ID_IN]], %[[C1]]) (%[[SCRATCH]], %[[IN_CB]])
 
 # =============================================================================
 # C++ output checks -- verify raw integers in template args
 # =============================================================================
 
 # CHECK-CPP: === compute kernel written to {{.*}} ===
-# CHECK-CPP: my_shim<1, 0, 1>()
+# CHECK-CPP: my_shim<[[SCRATCH_INDEX:[0-9]+]], [[IN_INDEX:[0-9]+]], 1>
+# CHECK-CPP-SAME: (get_compile_time_arg_val([[SCRATCH_INDEX]]), get_compile_time_arg_val([[IN_INDEX]]))
 
 
 if __name__ == "__main__":

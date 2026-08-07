@@ -53,6 +53,7 @@
 | 0.17 | 04/28/2026 | Move `broadcast`, `transpose`, `where`, `mask`, `mask_posinf`, `fill`, `squeeze`, `unsqueeze` to `ttl.block` |
 | 0.18 | 06/16/2026 | Add `ttl.raw_element_read` and `ttl.raw_element_write` |
 | 0.19 | 06/15/2026 | Unified-body `ttl.operation` with thread assignment and composition; add multi-kernel operation with explicit kernels |
+| 0.20 | 06/23/2026 | Add `ttl.exp` hardware flags and scaled exponential canonicalization |
 
 
 ## Introduction
@@ -159,6 +160,8 @@ The `ttl.node` function returns *node coordinates* of the current node. Node coo
 
 A *dataflow buffer* is a communication primitive for synchronizing the passing of data between threads running on the same node. A dataflow buffer is created with the `ttl.make_dataflow_buffer_like` function by passing TT-NN tensor, *shape* and *block count*.
 
+`ttl.make_dataflow_buffer_like` allocates scratch DFB storage. `ttl.make_tensor_backed_dfb` instead uses the complete compiled DFB capacity at a page-aligned byte offset in a TILE, height-sharded L1 operation tensor. Tensor-backed DFBs support BF16 and FP32. A data movement thread calls `publish()` once to make an already-resident input capacity readable without copying its bytes. Tensor-backed outputs use the normal reserve, store and push protocol.
+
 The shape is expressed as a tuple with outermost dimension first and innermost dimension last. For `ttl.math` functions that take dimension indexes, the outermost dimension is indexed as 0, next to outermost as 1. It is possible to use negative dimension indexes to index from innermost dimension. This way the innermost dimension is indexed as -1, next to innermost as -2. The TT-NN tensor determines basic properties (likeness) such as data type and *shape unit*. Shape unit can be either a tile (32 by 32 scalar elements) or a scalar element. In order for block to be used with tiled tensor, it needs to have at least two dimensions (see example below). In this case, the translation from Torch shape affects two innermost dimensions. For example, if a TT-NN tensor is of tiled layout and has Torch shape of `(2, 2, 120, 30)`, the corresponding block that fits this entire tensor will have shape of `(2, 2, 4, 1)`.
 
 #### Tiled tensor shape example
@@ -182,6 +185,8 @@ A dataflow buffer is constructed in the scope of an operation function but its o
 | Type alias/Function | Description |
 | :---- | :---- |
 |  `ttl.make_dataflow_buffer_like(ttnn.Tensor: likeness_tensor, shape: ttl.Shape, block_count: ttl.Size = 2) -> ttl.DataflowBuffer` | Create a dataflow buffer by inheriting basic properties from `likeness_tensor`. |
+| `ttl.make_tensor_backed_dfb(ttnn.Tensor: tensor, shape: ttl.Shape, block_count: ttl.Size = 1, byte_offset: ttl.Size = 0) -> ttl.DataflowBuffer` | Create a dataflow buffer whose complete capacity uses a byte range of `tensor`'s node-local L1 allocation. |
+| `ttl.DataflowBuffer.publish(self)` | Publish the complete capacity of a tensor-backed input without copying bytes. |
 |  `ttl.DataflowBuffer.reserve(self) -> ttl.Block` | Reserve and return a block from a dataflow buffer. **This function is blocking** and will wait until a *free* block is available. A free block is typically used by a producer to write the data into. |
 | `ttl.Block.push(self)` | Push a block to a dataflow buffer. This function is called by the producer to signal the consumer that a block *filled* with data is available. **This function is non-blocking.** |
 | `ttl.DataflowBuffer.wait(self) -> ttl.Block` | Wait for and return a block from a dataflow buffer. **This function is blocking** and will wait until a block filled with data is available. A filled block is typically used by a consumer to read data from. |
@@ -455,7 +460,7 @@ TT-Lang includes ability to print information to the standard output for debuggi
 | `ttl.BlockExpr.__abs__(self) -> ttl.BlockExpr`<br><br>`ttl.math.abs(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Absolute value. Example: `abs(a)`, `ttl.math.abs(a)`. |
 | `ttl.BlockExpr.__neg__(self) -> ttl.BlockExpr`<br><br>`ttl.math.neg(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Negation. Example: `-a`, `ttl.math.neg(a)`. |
 | `ttl.BlockExpr.__pow__(self, exponent: ttl.NaturalInt) -> ttl.BlockExpr`<br><br>`ttl.math.pow(expr: ttl.BlockExpr, exponent: ttl.NaturalInt) -> ttl.BlockExpr` | Power with scalar unsigned integer exponent. Example; `a ** 2`, `ttl.math.pow(a, 2)`. |
-| `ttl.math.exp(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Natural base exponential (`e^x`) |
+| `ttl.math.exp(expr: ttl.BlockExpr, *, approx: bool = False, scale: Optional[float] = None, skip_clamp_check: bool = False, iterations: ttl.PositiveInt = 8) -> ttl.BlockExpr` | Natural base exponential. Computes `e^x` by default. When `scale` is provided, computes `e^(scale * x)`. |
 | `ttl.math.exp2(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Base 2 exponential (`2^x`) |
 | `ttl.math.expm1(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Natural base exponential minus one (`ttl.math.exp(x) - 1`) |
 | `ttl.math.log(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Natural logarithm |
@@ -465,6 +470,14 @@ TT-Lang includes ability to print information to the standard output for debuggi
 | `ttl.math.rsqrt(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Reciprocal square root (`1 / ttl.math.sqrt(x)`) |
 | `ttl.math.recip(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Reciprocal (`1 / x`) |
 | `ttl.math.rsub(a: ttl.BlockExpr, b: ttl.NaturalInt) -> ttl.BlockExpr` | Subtract a from b where b is scalar unsigned integer (`b - a`) |
+
+The `ttl.math.exp` function exposes hardware exponential options. The `approx`
+flag enables approximate exponential evaluation. The `scale` argument applies
+a compile-time scalar multiplier before the exponential. The
+`skip_clamp_check` flag disables clamping of very negative inputs in
+approximate mode. This is faster, but inputs below approximately `-88.5` can
+produce incorrect negative outputs. The `iterations` argument controls the
+number of SFPU lane iterations and defaults to 8.
 
 ### Trigonometric unary math functions
 

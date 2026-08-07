@@ -12,6 +12,7 @@
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "ttl-pipe-capacity-analysis"
@@ -76,9 +77,9 @@ void PipeCapacityPlan::addInitialization(func::FuncOp function,
 }
 
 void PipeCapacityPlan::initializeCounterAllocation(
-    PipeCounterAllocationCounts counts) {
+    PipeCounterAllocationCounts counts, PipeCounterAllocationPolicy policy) {
   assert(empty() && "capacity counter allocation must be initialized first");
-  counterAllocator = PipeCounterAllocator(counts);
+  counterAllocator = PipeCounterAllocator(counts, policy);
 }
 
 PipeCounterInfo PipeCapacityPlan::allocateCounter() {
@@ -93,27 +94,49 @@ PipeModulePlan::getTransferPlan(Operation *operation) const {
   return planIt->second;
 }
 
-static PipeType getPipeType(MLIRContext *context,
-                            const PipeResourceInfo &resources) {
-  const PipeKey &pipe = resources.pipe;
-  return PipeType::get(context, pipe.srcX, pipe.srcY, pipe.dstStartX,
-                       pipe.dstStartY, pipe.dstEndX, pipe.dstEndY,
-                       pipe.pipeNetId);
-}
-
-static FailureOr<PipeSendPlan>
-buildPipeSendPlan(PipeTransferSendOp sendOp, const DominanceInfo &dominanceInfo,
-                  const FabricRoutePlan *fabricRoutePlan) {
+FailureOr<PipeTransferPayload> getPipeTransferPayload(PipeTransferSendOp sendOp,
+                                                      int64_t blockSpan) {
   FailureOr<CircularBufferType> maybeDFBType =
       utils::getTTLCircularBufferType(sendOp.getSrc());
   if (failed(maybeDFBType)) {
     sendOp.emitError("pipe transfer source must have a TTL DFB type");
     return failure();
   }
-  auto tileType =
-      llvm::dyn_cast<ttcore::TileType>((*maybeDFBType).getElementType());
+  CircularBufferType dfbType = *maybeDFBType;
+  auto tileType = llvm::dyn_cast<ttcore::TileType>(dfbType.getElementType());
   if (!tileType) {
     sendOp.emitError("pipe transfer source DFB element type must be tile");
+    return failure();
+  }
+  if (blockSpan <= 0 || dfbType.getBlockCount() % blockSpan != 0) {
+    sendOp.emitError("source DFB block count must be divisible by pipe "
+                     "transfer block span");
+    return failure();
+  }
+
+  std::optional<int64_t> maybeElementCount =
+      llvm::checkedMul(dfbType.getElementsPerBlock(), blockSpan);
+  if (!maybeElementCount) {
+    sendOp.emitError("pipe transfer element count exceeds int64_t");
+    return failure();
+  }
+  int64_t elementSizeBytes = tileType.getSizeBytes();
+  std::optional<int64_t> maybeSizeBytes =
+      llvm::checkedMul(*maybeElementCount, elementSizeBytes);
+  if (!maybeSizeBytes) {
+    sendOp.emitError("pipe transfer payload size exceeds int64_t");
+    return failure();
+  }
+  return PipeTransferPayload{*maybeElementCount, elementSizeBytes,
+                             *maybeSizeBytes};
+}
+
+static FailureOr<PipeSendPlan>
+buildPipeSendPlan(PipeTransferSendOp sendOp, const DominanceInfo &dominanceInfo,
+                  const FabricRoutePlan *fabricRoutePlan) {
+  FailureOr<PipeTransferPayload> maybePayload =
+      getPipeTransferPayload(sendOp, /*blockSpan=*/1);
+  if (failed(maybePayload)) {
     return failure();
   }
 
@@ -123,10 +146,6 @@ buildPipeSendPlan(PipeTransferSendOp sendOp, const DominanceInfo &dominanceInfo,
                dominanceInfo.dominates(user, sendOp);
       });
 
-  int64_t elementCount = 1;
-  for (int64_t dimension : (*maybeDFBType).getShape()) {
-    elementCount *= dimension;
-  }
   std::optional<std::size_t> fabricRouteIndex;
   if (fabricRoutePlan) {
     auto routeIt = fabricRoutePlan->sendRouteIndex.find(sendOp.getOperation());
@@ -134,11 +153,7 @@ buildPipeSendPlan(PipeTransferSendOp sendOp, const DominanceInfo &dominanceInfo,
       fabricRouteIndex = routeIt->second;
     }
   }
-  return PipeSendPlan{
-      readFromDFB,
-      elementCount * static_cast<int64_t>(tileType.getSizeBytes()),
-      fabricRouteIndex,
-  };
+  return PipeSendPlan{readFromDFB, maybePayload->sizeBytes, fabricRouteIndex};
 }
 
 static FailureOr<PipePostPlan>
@@ -262,16 +277,17 @@ static bool containsSourceNode(ArrayRef<PipeCapacityReleaseTarget> sourceNodes,
 
 class PipeCapacityPlanBuilder {
 public:
-  static void
-  buildSelectedCapacityPlan(ArrayRef<PipeTransferNodeId> selectedTransfers,
-                            const PipeCapacityAnalysisResult &capacityFacts,
-                            const PipeGraph &pipeGraph,
-                            const PipeResourcePlan &resources,
-                            PipeCapacityPlan &plan) {
+  static void buildSelectedCapacityPlan(
+      ArrayRef<PipeTransferNodeId> selectedTransfers,
+      const PipeCapacityAnalysisResult &capacityFacts,
+      const PipeGraph &pipeGraph, const PipeResourcePlan &resources,
+      PipeCounterAllocationPolicy counterPolicy, PipeCapacityPlan &plan) {
     PipeResourceRequirements requirements =
         getPipeResourceRequirements(resources);
-    plan.initializeCounterAllocation(PipeCounterAllocationCounts{
-        requirements.syncSemaphoreCount, requirements.globalSemaphoreCount});
+    plan.initializeCounterAllocation(
+        PipeCounterAllocationCounts{requirements.syncSemaphoreCount,
+                                    requirements.globalSemaphoreCount},
+        counterPolicy);
     SmallVector<PipeCapacityCounterColor> counterColors;
     for (PipeTransferNodeId transferNodeId : selectedTransfers) {
       const PipeTransferNode &transferNode =
@@ -352,7 +368,7 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
     PipeResourcePlan preliminaryResourcePlan;
     if (failed(buildPipeResourcePlan(
             module, transferIndex, pipeGraph, preliminaryResourcePlan,
-            options.enableComputedAddresses,
+            options.enableComputedAddresses, options.counterAllocationPolicy,
             fabricRoutePlan ? &synchronizationSelection : nullptr))) {
       return failure();
     }
@@ -370,7 +386,8 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
     }
     if (failed(buildPipeResourcePlan(
             module, transferIndex, pipeGraph, plan.resourcePlan,
-            options.enableComputedAddresses, &synchronizationSelection))) {
+            options.enableComputedAddresses, options.counterAllocationPolicy,
+            &synchronizationSelection))) {
       return failure();
     }
     SmallVector<PipeTransferNodeId> finalSelectedCapacityTransfers =
@@ -384,10 +401,11 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
     }
     PipeCapacityPlanBuilder::buildSelectedCapacityPlan(
         selectedCapacityTransfers, capacityFacts, pipeGraph, plan.resourcePlan,
-        plan.capacityPlan);
+        options.counterAllocationPolicy, plan.capacityPlan);
   } else if (failed(buildPipeResourcePlan(
                  module, transferIndex, pipeGraph, plan.resourcePlan,
                  options.enableComputedAddresses,
+                 options.counterAllocationPolicy,
                  fabricRoutePlan ? &synchronizationSelection : nullptr))) {
     return failure();
   }
@@ -406,35 +424,46 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
   });
 
   DominanceInfo dominanceInfo(module);
-  for (const auto &resourceEntry : plan.resourcePlan.resources) {
-    Operation *operation = resourceEntry.first;
-    const PipeResourceInfo &resources = resourceEntry.second;
+  auto addTransferPlan =
+      [&](Operation *operation, PipeReference pipeReference,
+          PipeTransferPlan::Resources resources) -> LogicalResult {
     auto sendOp = dyn_cast<PipeTransferSendOp>(operation);
     auto postOp = dyn_cast<PipeTransferPostOp>(operation);
-    if (!sendOp && !postOp) {
-      assert(isa<PipeTransferWaitOp>(operation) &&
-             "pipe resources assigned to an unsupported operation");
-      continue;
-    }
+    auto waitOp = dyn_cast<PipeTransferWaitOp>(operation);
+    assert((sendOp || postOp || waitOp) &&
+           "pipe resources assigned to an unsupported operation");
     bool usesFabricProtocol =
-        sendOp ? synchronizationSelection.usesFabricProtocol(sendOp)
-               : synchronizationSelection.usesFabricProtocol(postOp);
+        sendOp   ? synchronizationSelection.usesFabricProtocol(sendOp)
+        : postOp ? synchronizationSelection.usesFabricProtocol(postOp)
+                 : false;
     bool usesCapacityProtocol =
+        (sendOp || postOp) &&
         synchronizationSelection.usesCapacityProtocol(operation);
     PipeSynchronizationProtocol synchronizationProtocol =
         usesFabricProtocol     ? PipeSynchronizationProtocol::Fabric
         : usesCapacityProtocol ? PipeSynchronizationProtocol::Capacity
                                : PipeSynchronizationProtocol::ReceiverPost;
     if (usesFabricProtocol &&
-        !resources.addressStorage.usesComputedReceiverDFB()) {
+        !std::holds_alternative<PipeResourceInfo>(resources)) {
+      operation->emitError(
+          "fabric pipe transfers require a statically known pipe");
+      return failure();
+    }
+    const PipeResourceInfo *staticResources =
+        std::get_if<PipeResourceInfo>(&resources);
+    if (usesFabricProtocol &&
+        !staticResources->addressStorage.usesComputedReceiverDFB()) {
       auto diagnostic = operation->emitError(
           "fabric pipe transfer requires computed receiver DFB addresses");
-      const PipeTransferNode *transferNode =
-          pipeGraph.getPipeTransferNodeForProtocolOp(operation);
-      assert(transferNode && "planned pipe operation is absent from PipeGraph");
+      ArrayRef<PipeTransferNodeId> transferNodeIds =
+          pipeGraph.getPipeTransferNodeIdsForProtocolOp(operation);
+      assert(transferNodeIds.size() == 1 &&
+             "static pipe operation must have one transfer node");
+      const PipeTransferNode &transferNode =
+          pipeGraph.getPipeTransferNode(transferNodeIds.front());
       bool attachedReason = false;
       for (PipeReceiverEndpointId endpointId :
-           pipeGraph.getPipeReceiverEndpoints(transferNode->id)) {
+           pipeGraph.getPipeReceiverEndpoints(transferNode.id)) {
         const PipeReceiverEndpoint &endpoint =
             pipeGraph.getPipeReceiverEndpoint(endpointId);
         const PipeReceiverDFBNode &receiverDFB =
@@ -455,10 +484,10 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
           break;
         }
       }
-      if (!attachedReason && !transferNode->receiverEndpoints.empty()) {
+      if (!attachedReason && !transferNode.receiverEndpoints.empty()) {
         const PipeReceiverEndpoint &endpoint =
             pipeGraph.getPipeReceiverEndpoint(
-                transferNode->receiverEndpoints.front());
+                transferNode.receiverEndpoints.front());
         diagnostic.attachNote(endpoint.receiverDFBInfo.loc)
             << "receiver address sequences are not proven equal for every "
                "transfer occurrence";
@@ -466,15 +495,16 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
       return failure();
     }
 
-    auto addTransferPlan = [&](auto operationPlan) {
-      PipeTransferPlan transferPlan(getPipeType(module.getContext(), resources),
-                                    resources, synchronizationProtocol,
-                                    std::move(operationPlan));
-      auto [planIt, inserted] =
-          plan.transferPlans.insert({operation, std::move(transferPlan)});
-      (void)planIt;
-      assert(inserted && "pipe operation has more than one transfer plan");
-    };
+    auto insertTransferPlan =
+        [&](PipeTransferPlan::OperationPlan operationPlan) {
+          PipeTransferPlan transferPlan(
+              std::move(pipeReference), std::move(resources),
+              synchronizationProtocol, std::move(operationPlan));
+          auto [planIt, inserted] =
+              plan.transferPlans.insert({operation, std::move(transferPlan)});
+          (void)planIt;
+          assert(inserted && "pipe operation has more than one transfer plan");
+        };
 
     if (sendOp) {
       FailureOr<PipeSendPlan> maybeSendPlan =
@@ -482,14 +512,49 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
       if (failed(maybeSendPlan)) {
         return failure();
       }
-      addTransferPlan(*maybeSendPlan);
-    } else {
+      insertTransferPlan(*maybeSendPlan);
+    } else if (postOp) {
+      const PipeResourceInfo &postResources =
+          std::holds_alternative<PipeResourceInfo>(resources)
+              ? std::get<PipeResourceInfo>(resources)
+              : std::get<SmallVector<PipeResourceInfo>>(resources).front();
       FailureOr<PipePostPlan> maybePostPlan =
-          buildPipePostPlan(postOp, resources);
+          buildPipePostPlan(postOp, postResources);
       if (failed(maybePostPlan)) {
         return failure();
       }
-      addTransferPlan(*maybePostPlan);
+      insertTransferPlan(*maybePostPlan);
+    } else {
+      insertTransferPlan(PipeWaitPlan{});
+    }
+    return success();
+  };
+
+  for (const auto &[operation, resources] : plan.resourcePlan.resources) {
+    FailureOr<PipeReference> maybePipeReference =
+        getPipeReferenceForProtocolOp(operation, transferIndex);
+    if (failed(maybePipeReference)) {
+      return failure();
+    }
+    assert(maybePipeReference->isStatic() &&
+           "static resources require a static pipe reference");
+    if (failed(addTransferPlan(operation, std::move(*maybePipeReference),
+                               resources))) {
+      return failure();
+    }
+  }
+  for (const auto &[operation, resources] :
+       plan.resourcePlan.selectedResources) {
+    FailureOr<PipeReference> maybePipeReference =
+        getPipeReferenceForProtocolOp(operation, transferIndex);
+    if (failed(maybePipeReference)) {
+      return failure();
+    }
+    assert(maybePipeReference->isSelected() &&
+           "selected resources require a selected pipe reference");
+    if (failed(addTransferPlan(operation, std::move(*maybePipeReference),
+                               SmallVector<PipeResourceInfo>(resources)))) {
+      return failure();
     }
   }
 

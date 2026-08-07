@@ -42,6 +42,8 @@ namespace ttk = mlir::tt::ttkernel;
 
 namespace {
 
+constexpr int64_t defaultExpIterations = 8;
+
 /// Materializes a float attribute as an i32 carrying its IEEE 754 bits. Scalar
 /// SFPU tile APIs take i32 params even for float scalars.
 static Value floatAttrToI32Bits(OpBuilder &rewriter, Location loc,
@@ -49,6 +51,14 @@ static Value floatAttrToI32Bits(OpBuilder &rewriter, Location loc,
   auto f32Val = arith::ConstantOp::create(
       rewriter, loc, rewriter.getF32FloatAttr(attr.getValueAsDouble()));
   return arith::BitcastOp::create(rewriter, loc, rewriter.getI32Type(), f32Val);
+}
+
+/// Materializes a float attribute as an i32 attribute carrying its IEEE 754
+/// bits.
+static IntegerAttr floatAttrToI32BitsAttr(OpBuilder &builder, FloatAttr attr) {
+  uint32_t bits =
+      static_cast<uint32_t>(attr.getValue().bitcastToAPInt().getZExtValue());
+  return builder.getI32IntegerAttr(bits);
 }
 
 /// Look up a CB for a copy_tile source.
@@ -286,6 +296,51 @@ struct TTLTileTypecastToTTKernel : OpConversionPattern<TileTypecastOp> {
     Value dstIdxVal = adaptor.getDstIndex();
     ttk::TypecastTileOp::create(rewriter, loc, dstIdxVal, inDtypeAttr,
                                 outDtypeAttr);
+    rewriter.replaceOp(op, adaptor.getInput());
+    return success();
+  }
+};
+
+/// Lower ttl.tile_exp to ttkernel.exp_tile, forwarding the hardware exp flags.
+///
+/// Cannot reuse the generic unary SFPU template because exp_tile carries
+/// flags. The matching exp_tile_init (with its own flags) is emitted later by
+/// the TTKernelInsertInits pass, which reads the flags off this exp_tile op.
+///
+/// TTKernel interface:
+///   ttkernel.exp_tile : (tile_index, approx?, input_clamping?, iterations?,
+///                        scale?)
+///   ttkernel.exp_tile_init : (approx?, scale?, input_clamping?)
+/// where InputClamping shares the underlying values of ttl::InputClamping.
+struct TTLTileExpToTTKernel : OpConversionPattern<ExpTileOp> {
+  using OpConversionPattern<ExpTileOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ExpTileOp op, ExpTileOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value dstIdxVal = adaptor.getDstIndex();
+
+    BoolAttr approxAttr;
+    if (op.getApprox()) {
+      approxAttr = rewriter.getBoolAttr(true);
+    }
+    ttk::InputClampingAttr inputClampingAttr;
+    if (op.getInputClamping() != ttl::InputClamping::ClampToNegative) {
+      inputClampingAttr = ttk::InputClampingAttr::get(
+          rewriter.getContext(),
+          static_cast<ttk::InputClamping>(op.getInputClamping()));
+    }
+    IntegerAttr iterationsAttr;
+    if (op.getIterations() != defaultExpIterations) {
+      iterationsAttr = rewriter.getI32IntegerAttr(op.getIterations());
+    }
+    IntegerAttr scaleAttr;
+    if (auto ttlScaleAttr = op.getScaleAttr()) {
+      scaleAttr = floatAttrToI32BitsAttr(rewriter, ttlScaleAttr);
+    }
+    ttk::ExpTileOp::create(rewriter, loc, dstIdxVal, approxAttr,
+                           inputClampingAttr, iterationsAttr, scaleAttr);
     rewriter.replaceOp(op, adaptor.getInput());
     return success();
   }
@@ -1054,6 +1109,7 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
   patterns.add<TTLTileFillToTTKernel>(ctx);
   patterns.add<TTLTileMulUnaryConstToTTKernel>(ctx);
   patterns.add<TTLTileTypecastToTTKernel>(ctx);
+  patterns.add<TTLTileExpToTTKernel>(ctx);
 
   // Copy ops need the type converter.
   patterns.add<TTLTileCopyToTTKernel>(*typeConverter, ctx);

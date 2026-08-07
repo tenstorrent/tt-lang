@@ -52,6 +52,7 @@ from .dataflow_buffer import (
     _reset_cb_counter,
     make_dataflow_buffer_like,
     make_dfb,
+    make_tensor_backed_dfb,
 )
 from .dtype_utils import is_ttnn_tensor
 from .operators import _set_current_grid
@@ -74,7 +75,11 @@ from .ttl_api import (
 # Names whose top-level ``x = <name>(...)`` assigns are lifted out of the body
 # and evaluated to capture objects (DataflowBuffer / Pipe / PipeNet) before the
 # split, the same way @ttl.operation constructs them in its setup body.
-_DFB_FACTORY_NAMES = {"make_dfb", "make_dataflow_buffer_like"}
+_DFB_FACTORY_NAMES = {
+    "make_dfb",
+    "make_dataflow_buffer_like",
+    "make_tensor_backed_dfb",
+}
 _PIPE_FACTORY_NAMES = {"Pipe", "PipeNet"}
 _SETUP_FACTORY_NAMES = _DFB_FACTORY_NAMES | _PIPE_FACTORY_NAMES
 
@@ -83,8 +88,8 @@ class DFB:
     """Marker annotation for a DataFlow buffer parameter.
 
     Only meaningful on an operation that is expanded into another operation: the
-    caller declares the buffer (ttl.make_dfb / make_dataflow_buffer_like)
-    and passes it in, and the inliner substitutes it at the call site.
+    caller declares the buffer with a DFB factory and passes it in, and the
+    inliner substitutes it at the call site.
     """
 
 
@@ -456,6 +461,7 @@ def _lift_setup(
     ns = dict(scope)
     ns.setdefault("make_dfb", make_dfb)
     ns.setdefault("make_dataflow_buffer_like", make_dataflow_buffer_like)
+    ns.setdefault("make_tensor_backed_dfb", make_tensor_backed_dfb)
     ns.setdefault("ttl", _ttl)
 
     dfbs: Dict[str, DataflowBuffer] = {}

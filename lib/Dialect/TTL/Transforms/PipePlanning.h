@@ -46,6 +46,10 @@ struct PipePlanningOptions {
   /// Use sender-local capacity counters for transfers proven safe.
   bool enableCapacitySynchronization = false;
 
+  /// Select storage for compiler-managed synchronization counters.
+  PipeCounterAllocationPolicy counterAllocationPolicy =
+      PipeCounterAllocationPolicy::LocalThenGlobal;
+
   /// Select routing-plane fabric synchronization for routed transfers.
   const FabricRoutePlan *fabricRoutePlan = nullptr;
 };
@@ -129,7 +133,8 @@ private:
   void addInitialization(func::FuncOp func, PipeCapacityInitInfo info);
 
   /// Continue allocation after the completion and readiness counters.
-  void initializeCounterAllocation(PipeCounterAllocationCounts counts);
+  void initializeCounterAllocation(PipeCounterAllocationCounts counts,
+                                   PipeCounterAllocationPolicy policy);
 
   /// Allocate storage for one proven sender-capacity counter.
   PipeCounterInfo allocateCounter();
@@ -147,6 +152,17 @@ enum class PipeSynchronizationProtocol {
   Capacity,
   Fabric,
 };
+
+/// Element count and byte size transferred by one sender operation.
+struct PipeTransferPayload {
+  int64_t elementCount = 0;
+  int64_t elementSizeBytes = 0;
+  int64_t sizeBytes = 0;
+};
+
+/// Return the payload represented by `blockSpan` consecutive source DFB blocks.
+FailureOr<PipeTransferPayload> getPipeTransferPayload(PipeTransferSendOp sendOp,
+                                                      int64_t blockSpan);
 
 /// Sender-side DFB access and payload size for one transfer.
 struct PipeSendPlan {
@@ -166,14 +182,33 @@ struct PipePostPlan {
   std::optional<PipeReceiverAddressPublicationPlan> addressPublication;
 };
 
-/// Complete lowering decisions for one send or receiver post operation.
+/// Receiver-wait lowering has no operation-specific decisions.
+struct PipeWaitPlan {};
+
+/// Complete lowering decisions for one active pipe protocol operation.
 class PipeTransferPlan {
 public:
-  /// Return the transfer's source, receiver range, and PipeNet id.
-  PipeType getPipeType() const { return pipeType; }
+  /// Return the static or record-selected pipe represented by this operation.
+  const PipeReference &getPipeReference() const { return pipeReference; }
 
-  /// Return the completion, readiness, and address resources.
-  const PipeResourceInfo &getResources() const { return resources; }
+  /// Return whether runtime record selection determines the transfer.
+  bool isSelected() const {
+    return std::holds_alternative<SmallVector<PipeResourceInfo>>(resources);
+  }
+
+  /// Return resources for a statically known transfer.
+  const PipeResourceInfo &getResources() const {
+    assert(!isSelected() &&
+           "static resources requested for a selected transfer");
+    return std::get<PipeResourceInfo>(resources);
+  }
+
+  /// Return the record-indexed resources for a selected transfer.
+  ArrayRef<PipeResourceInfo> getSelectedResources() const {
+    assert(isSelected() &&
+           "selected resources requested for a static transfer");
+    return std::get<SmallVector<PipeResourceInfo>>(resources);
+  }
 
   /// Return the selected sender-readiness protocol.
   PipeSynchronizationProtocol getSynchronizationProtocol() const {
@@ -185,6 +220,16 @@ public:
     return std::holds_alternative<PipeSendPlan>(operationPlan);
   }
 
+  /// Return whether this plan describes a receiver-post operation.
+  bool isPost() const {
+    return std::holds_alternative<PipePostPlan>(operationPlan);
+  }
+
+  /// Return whether this plan describes a receiver-wait operation.
+  bool isWait() const {
+    return std::holds_alternative<PipeWaitPlan>(operationPlan);
+  }
+
   /// Return sender-only lowering information.
   const PipeSendPlan &getSend() const {
     assert(isSend() && "send plan requested for a receiver post");
@@ -193,7 +238,7 @@ public:
 
   /// Return receiver-post-only lowering information.
   const PipePostPlan &getPost() const {
-    assert(!isSend() && "receiver-post plan requested for a send");
+    assert(isPost() && "receiver-post plan requested for another operation");
     return std::get<PipePostPlan>(operationPlan);
   }
 
@@ -203,24 +248,22 @@ private:
                       const PipeTransferIndex &, const PipeGraph &,
                       const PipePlanningOptions &);
 
-  PipeTransferPlan(PipeType pipeType, const PipeResourceInfo &resources,
-                   PipeSynchronizationProtocol synchronizationProtocol,
-                   PipeSendPlan sendPlan)
-      : pipeType(pipeType), resources(resources),
-        synchronizationProtocol(synchronizationProtocol),
-        operationPlan(std::move(sendPlan)) {}
+  using Resources =
+      std::variant<PipeResourceInfo, SmallVector<PipeResourceInfo>>;
+  using OperationPlan = std::variant<PipeSendPlan, PipePostPlan, PipeWaitPlan>;
 
-  PipeTransferPlan(PipeType pipeType, const PipeResourceInfo &resources,
+  PipeTransferPlan(PipeReference pipeReference, Resources resources,
                    PipeSynchronizationProtocol synchronizationProtocol,
-                   PipePostPlan postPlan)
-      : pipeType(pipeType), resources(resources),
+                   OperationPlan operationPlan)
+      : pipeReference(std::move(pipeReference)),
+        resources(std::move(resources)),
         synchronizationProtocol(synchronizationProtocol),
-        operationPlan(std::move(postPlan)) {}
+        operationPlan(std::move(operationPlan)) {}
 
-  PipeType pipeType;
-  PipeResourceInfo resources;
+  PipeReference pipeReference;
+  Resources resources;
   PipeSynchronizationProtocol synchronizationProtocol;
-  std::variant<PipeSendPlan, PipePostPlan> operationPlan;
+  OperationPlan operationPlan;
 };
 
 /// PipeNet decisions shared by all lowering patterns for one module.
@@ -245,7 +288,7 @@ public:
     return completedPipeSendWaits;
   }
 
-  /// Return the lowering plan for an active send or receiver post.
+  /// Return the lowering plan for an active pipe protocol operation.
   const PipeTransferPlan &getTransferPlan(Operation *operation) const;
 
 private:

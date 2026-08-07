@@ -7,7 +7,7 @@
 
 include "mlir/Pass/PassBase.td"
 
-def ConvertTTKernelToEmitC : Pass<"convert-ttkernel-to-emitc", "::mlir::func::FuncOp"> {
+def ConvertTTKernelToEmitC : Pass<"convert-ttkernel-to-emitc", "::mlir::ModuleOp"> {
   let summary = "Convert TTKernel dialect to EmitC dialect.";
   let dependentDialects = ["mlir::emitc::EmitCDialect", "mlir::func::FuncDialect",
                            "mlir::tt::ttkernel::TTKernelDialect"];

@@ -200,6 +200,9 @@ enum class FusedOperationRecipe {
 
   /// Emit one accumulating matmul for a previously deferred matmul and add.
   MatmulAccumulator,
+
+  /// Emit no multiply because a following exp consumes its constant as scale.
+  DeferredExpScale,
 };
 
 /// One tensor operand consumed by a fused tile-level recipe.
@@ -210,6 +213,14 @@ struct FusedOperationOperand {
   /// Compute input slot for an external root; absent for an earlier fused
   /// result produced inside the compute body.
   std::optional<unsigned> rootInputIndex;
+};
+
+/// Hardware configuration captured for an exp tile recipe.
+struct ExpFlagsPlan {
+  BoolAttr approx;
+  FloatAttr scale;
+  InputClampingAttr inputClamping;
+  IntegerAttr iterations;
 };
 
 /// Immutable tile recipe for one absorbed tensor operation.
@@ -249,6 +260,9 @@ struct FusedOperationPlan {
 
   /// Scalar used by fill and multiply-constant recipes.
   std::optional<FloatAttr> constantValue;
+
+  /// Hardware flags used by an exp recipe.
+  std::optional<ExpFlagsPlan> expFlags;
 };
 
 /// Stable identity of one source-result use during plan application.
@@ -492,6 +506,9 @@ struct ComputeOpCreationPlan {
 
   /// Scalar constant used by fill and multiply-constant recipes.
   std::optional<FloatAttr> constantValue;
+
+  /// Hardware flags used by a direct exp recipe.
+  std::optional<ExpFlagsPlan> expFlags;
 
   /// Expression absorbed by fused creation. Empty for direct creation.
   FusionTraceResult trace;

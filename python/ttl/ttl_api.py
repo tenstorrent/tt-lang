@@ -48,7 +48,7 @@ def _ensure_ttnn():
 import ttl._mlir_libs._ttlang  # Register tt-lang passes
 from ttl._mlir_libs._ttlang import ttl_ir as _ttl_ir
 from ttl.pykernel._src.utils import _cleanup_source_code
-from ttl.dialects import ttl, ttcore, ttkernel
+from ttl.dialects import ttcore, ttkernel, ttl as ttl_dialect
 from ttl.ir import *
 from ttl.ir import DenseI32ArrayAttr, DenseI64ArrayAttr, DictAttr
 from ttl.passes import (
@@ -80,6 +80,7 @@ from ._src.ttl_ast import TTLGenericCompiler
 from .dataflow_buffer import (
     CircularBuffer,
     DataflowBuffer,
+    DFBStorageSegment,
     PhysicalDFBConfig,
     get_cb_count,
 )
@@ -130,15 +131,26 @@ def _get_registered_threads() -> List[Callable]:
 
 
 def _get_tensor_cache_info(tensor) -> tuple:
-    """Extract cache-relevant info from a tensor: (shape, dtype, memory_space, layout)."""
+    """Extract tensor properties that affect compilation or DFB descriptors."""
     shape = tuple(tensor.shape)
+    padded_shape = tuple(getattr(tensor, "padded_shape", tensor.shape))
     dtype = str(tensor.dtype)
     mem_config = tensor.memory_config()
     memory_space = (
         str(mem_config.buffer_type) if hasattr(mem_config, "buffer_type") else "unknown"
     )
+    memory_layout = (
+        str(mem_config.memory_layout)
+        if hasattr(mem_config, "memory_layout")
+        else "unknown"
+    )
     layout = str(tensor.layout) if hasattr(tensor, "layout") else "unknown"
-    return (shape, dtype, memory_space, layout)
+    tile = (
+        tuple(tensor.get_tile().tile_shape)
+        if "TILE" in layout and hasattr(tensor, "get_tile")
+        else None
+    )
+    return (shape, padded_shape, dtype, memory_space, memory_layout, layout, tile)
 
 
 def _make_cache_key(
@@ -151,18 +163,24 @@ def _make_cache_key(
 ) -> tuple:
     """Create cache key from tensor properties and runtime compute config parameters."""
     grid_key = tuple(resolved_grid)
-    tensor_key = tuple(
-        _get_tensor_cache_info(arg) for arg in args if is_ttnn_tensor(arg)
-    )
+    tensor_args = [arg for arg in args if is_ttnn_tensor(arg)]
+    tensor_key = tuple(_get_tensor_cache_info(tensor) for tensor in tensor_args)
+    first_position_by_identity = {}
+    alias_partition = []
+    for position, tensor in enumerate(tensor_args):
+        identity = id(tensor)
+        first_position_by_identity.setdefault(identity, position)
+        alias_partition.append(first_position_by_identity[identity])
     # Include mesh shape so that single-device and multi-device compilations
     # with different shard shapes don't collide in the cache.
     mesh_key = None
-    for arg in args:
-        if is_ttnn_tensor(arg) and _is_mesh_tensor(arg):
-            mesh_key = tuple(arg.device().shape)
+    for tensor in tensor_args:
+        if _is_mesh_tensor(tensor):
+            mesh_key = tuple(tensor.device().shape)
             break
     return (
         tensor_key,
+        tuple(alias_partition),
         mesh_key,
         grid_key,
         fp32_dest_acc_en,
@@ -914,8 +932,8 @@ def _get_kernel_fabric_routes(module, kernel_name: str):
     routes = []
     for route_attr in ArrayAttr(attr):
         route = DictAttr(route_attr)
-        local = ttl.DeviceRefAttr.maybe_downcast(route["local"])
-        remote = ttl.DeviceRefAttr.maybe_downcast(route["remote"])
+        local = ttl_dialect.DeviceRefAttr.maybe_downcast(route["local"])
+        remote = ttl_dialect.DeviceRefAttr.maybe_downcast(route["remote"])
         if local is None or remote is None:
             raise ValueError(
                 f"Expected DeviceRefAttr entries in ttl.fabric_routes on "
@@ -1444,6 +1462,76 @@ def _extract_dfb_allocations(module):
                 f"got {page_size}"
             )
 
+        storage_segments = []
+        seen_nodes = set()
+        if "storage_segments" in entry:
+            for segment_position, segment in enumerate(entry["storage_segments"]):
+                if "nodes" not in segment:
+                    raise ValueError(
+                        f"{attribute_name}[{position}].storage_segments"
+                        f"[{segment_position}] is missing 'nodes'"
+                    )
+                nodes = []
+                for node_position, node_attr in enumerate(segment["nodes"]):
+                    node = ArrayAttr(node_attr)
+                    if len(node) != 2:
+                        raise ValueError(
+                            f"{attribute_name}[{position}].storage_segments"
+                            f"[{segment_position}].nodes[{node_position}] must "
+                            "contain [x, y]"
+                        )
+                    coord = tuple(
+                        int(IntegerAttr(component).value) for component in node
+                    )
+                    if coord[0] < 0 or coord[1] < 0:
+                        raise ValueError(
+                            f"{attribute_name}[{position}] contains negative "
+                            f"launch-node coordinate {coord}"
+                        )
+                    if coord in seen_nodes:
+                        raise ValueError(
+                            f"{attribute_name}[{position}] assigns launch node "
+                            f"{coord} to multiple storage segments"
+                        )
+                    seen_nodes.add(coord)
+                    nodes.append(coord)
+                if not nodes:
+                    raise ValueError(
+                        f"{attribute_name}[{position}].storage_segments"
+                        f"[{segment_position}].nodes must not be empty"
+                    )
+
+                tensor_index = None
+                byte_offset = 0
+                byte_size = None
+                if "tensor_backing" in segment:
+                    backing = ttl_dialect.TensorBackingAttr.maybe_downcast(
+                        segment["tensor_backing"]
+                    )
+                    if backing is None:
+                        raise ValueError(
+                            f"{attribute_name}[{position}].storage_segments"
+                            f"[{segment_position}].tensor_backing has the wrong type"
+                        )
+                    tensor_index = backing.tensor_index
+                    byte_offset = backing.byte_offset
+                    byte_size = backing.byte_size
+                    expected_size = num_tiles * block_count * page_size
+                    if byte_size != expected_size:
+                        raise ValueError(
+                            f"{attribute_name}[{position}] tensor backing "
+                            "byte_size "
+                            f"must equal {expected_size}, got {byte_size}"
+                        )
+                storage_segments.append(
+                    DFBStorageSegment(
+                        nodes=tuple(sorted(nodes)),
+                        tensor_index=tensor_index,
+                        byte_offset=byte_offset,
+                        byte_size=byte_size,
+                    )
+                )
+
         seen_indices.add(dfb_index)
         configs.append(
             PhysicalDFBConfig(
@@ -1453,6 +1541,7 @@ def _extract_dfb_allocations(module):
                 block_count=block_count,
                 page_size=page_size,
                 tile=tile,
+                storage_segments=tuple(storage_segments),
             )
         )
 
@@ -1975,6 +2064,10 @@ def _lower_program_to_kernel(
         assign_dst_pass = "ttl-assign-dst"
 
         compiler_dfbs_flag = int(compiler_options.compiler_dfbs)
+        reuse_user_dfbs_flag = int(compiler_options.reuse_user_dfbs)
+        exact_coloring_search_limit = (
+            compiler_options.dfb_exact_coloring_search_limit
+        )
         pipeline_passes = [
             "func.func(ttl-materialize-loop-state)",
             "func.func(ttl-insert-copy-wait)",
@@ -1985,7 +2078,10 @@ def _lower_program_to_kernel(
             "func.func(ttl-insert-cb-sync)",
             "ttl-verify-pipenet",
             "func.func(ttl-coalesce-dfb-acquires)",
-            "ttl-finalize-dfb-indices",
+            "ttl-finalize-dfb-indices{"
+            f"reuse-user-dfbs={reuse_user_dfbs_flag} "
+            f"exact-coloring-search-limit={exact_coloring_search_limit}"
+            "}",
             set_compute_config_pass,
             f"func.func({assign_dst_pass})",
         ]
@@ -2036,9 +2132,17 @@ def _lower_program_to_kernel(
         reduce_fp32_flag = int(compiler_options.reduce_full_fp32)
         pipe_computed_flag = int(compiler_options.pipe_computed_addresses)
         pipe_capacity_sync_flag = int(compiler_options.pipe_capacity_sync)
+        pipe_global_semaphores_only_flag = int(
+            compiler_options.pipe_global_semaphores_only
+        )
         pipeline_passes += [
             "ttl-lower-dprint-to-emitc",
-            f"convert-ttl-to-ttkernel{{reduce-full-fp32={reduce_fp32_flag} pipe-computed-addresses={pipe_computed_flag} pipe-capacity-sync={pipe_capacity_sync_flag}}}",
+            (
+                f"convert-ttl-to-ttkernel{{reduce-full-fp32={reduce_fp32_flag} "
+                f"pipe-computed-addresses={pipe_computed_flag} "
+                f"pipe-capacity-sync={pipe_capacity_sync_flag} "
+                f"pipe-global-semaphores-only={pipe_global_semaphores_only_flag}}}"
+            ),
             "func.func(ttkernel-lower-scalar-fp-types)",
             "ttkernel-insert-inits",
             "ttkernel-insert-l1-accumulation",
@@ -2058,7 +2162,7 @@ def _lower_program_to_kernel(
                 "cse",
             ]
         pipeline_passes += [
-            "func.func(convert-ttkernel-to-emitc)",
+            "convert-ttkernel-to-emitc",
             "symbol-dce",
         ]
 

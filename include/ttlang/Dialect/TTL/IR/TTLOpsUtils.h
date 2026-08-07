@@ -28,6 +28,21 @@
 
 namespace mlir::tt::ttl {
 
+/// PipeNet records associated with a selected-pipe value. `maybeForeachOp`
+/// identifies the enclosing foreach operation when the value is its block
+/// argument.
+struct SelectedPipeRecords {
+  PipeNetRecordsAttr records;
+  Operation *maybeForeachOp = nullptr;
+};
+
+/// Return the records associated with a selected-pipe value.
+///
+/// Supported values are results of `ttl.select_pipe_src` or
+/// `ttl.select_pipe_dst`, and the pipe block argument of
+/// `ttl.pipenet_foreach_src` or `ttl.pipenet_foreach_dst`.
+FailureOr<SelectedPipeRecords> getSelectedPipeRecords(Value pipe);
+
 /// Return the enclosing kernel-thread `func.func` (tagged with
 /// `ttl.kernel_thread`), or null if `op` is not inside one.
 inline mlir::func::FuncOp getEnclosingKernelThread(mlir::Operation *op) {
@@ -147,6 +162,16 @@ inline BindCBOp getDFBDeclaration(mlir::Value dfb) {
   return traceUnrealizedCasts(dfb).getDefiningOp<BindCBOp>();
 }
 
+/// Returns true when a direct DFB operand may access physical storage.
+///
+/// Callers first identify a DFB operand. Unknown operations conservatively
+/// access storage; only operations with defined identity-only semantics are
+/// excluded.
+inline bool mayAccessDFBStorage(mlir::Operation *operation) {
+  return !mlir::isa<AttachCBOp, GetDfbIdOp, mlir::UnrealizedConversionCastOp>(
+      operation);
+}
+
 /// Resolve the CB index attached to `cb`, accepting either the pre-conversion
 /// BindCBOp or the post-conversion GetCompileArgValOp.
 inline std::optional<int64_t> getCBIndex(mlir::Value cb) {
@@ -263,14 +288,16 @@ inline mlir::Value getAttachedCB(mlir::Value tensor) {
 
 /// Returns true when `op` receives from a pipe into DFB-backed storage.
 inline bool isPipeReceiveCopy(CopyOp op) {
-  return mlir::isa<PipeType>(op.getSrc().getType()) &&
+  return mlir::isa<PipeType, SelectedPipeSrcType, SelectedPipeDstType>(
+             op.getSrc().getType()) &&
          getAttachedCB(op.getDst());
 }
 
 /// Returns true when `op` sends from a DFB into a pipe.
 inline bool isPipeSendCopy(CopyOp op) {
   return mlir::isa<CircularBufferType>(op.getSrc().getType()) &&
-         mlir::isa<PipeType>(op.getDst().getType());
+         mlir::isa<PipeType, SelectedPipeSrcType, SelectedPipeDstType>(
+             op.getDst().getType());
 }
 
 /// Normalize a Python-style dim (allowing negative indices) against `rank`

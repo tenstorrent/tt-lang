@@ -33,7 +33,13 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   // still distinct and before later transformations rewrite pipe operations.
   buildTTLVerifyPipeNetPipeline(pm);
   pm.addNestedPass<func::FuncOp>(createTTLCoalesceDFBAcquires());
-  pm.addPass(createTTLFinalizeDFBIndices());
+  {
+    TTLFinalizeDFBIndicesOptions finalizeOptions;
+    finalizeOptions.reuseUserDFBs = options.reuseUserDFBs;
+    finalizeOptions.exactColoringSearchStateLimit =
+        options.exactColoringSearchStateLimit;
+    pm.addPass(createTTLFinalizeDFBIndices(finalizeOptions));
+  }
   {
     TTLSetComputeKernelConfigOptions configOpts;
     configOpts.reduceFullFp32 = options.reduceFullFp32;
@@ -66,6 +72,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     ttkOpts.reduceFullFp32 = options.reduceFullFp32;
     ttkOpts.pipeComputedAddresses = options.pipeComputedAddresses;
     ttkOpts.pipeCapacitySync = options.pipeCapacitySync;
+    ttkOpts.pipeGlobalSemaphoresOnly = options.pipeGlobalSemaphoresOnly;
     pm.addPass(createTTLConvertTTLToTTKernel(ttkOpts));
   }
   pm.addPass(createTTKernelInsertInits());
@@ -82,7 +89,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   }
   if (options.lowerToEmitC) {
     pm.addPass(createLowerAffinePass());
-    pm.addNestedPass<func::FuncOp>(::mlir::tt::createConvertTTKernelToEmitC());
+    pm.addPass(::mlir::tt::createConvertTTKernelToEmitC());
     pm.addPass(createCanonicalizerPass());
     pm.addPass(mlir::emitc::createFormExpressionsPass());
   }

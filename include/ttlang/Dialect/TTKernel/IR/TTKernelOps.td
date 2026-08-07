@@ -4053,6 +4053,26 @@ def TTKernel_GetCompileArgValOp : TTKernel_Op<"get_compile_time_arg_val",
     }];
 }
 
+def TTKernel_ConstantTableLookupOp
+    : TTKernel_Op<"experimental.constant_table_lookup", [Pure]> {
+    let summary = "Look up an element in an immutable compile-time table.";
+    let description = [{
+      Returns the element at `index` from the non-empty `values` table. Every
+      table value must be non-negative. A constant index is verified to be
+      within the table bounds; a dynamic index must satisfy the same
+      precondition.
+    }];
+
+    let arguments = (ins Index:$index, DenseI64ArrayAttr:$values);
+    let results = (outs Index:$result);
+
+    let assemblyFormat = [{
+      $index `,` $values attr-dict `:` type($index)
+    }];
+    let hasFolder = 1;
+    let hasVerifier = 1;
+}
+
 
 //===----------------------------------------------------------------------===//
 // TTKernel Helper functions
@@ -4087,6 +4107,21 @@ def TTKernel_CastToL1PtrOp : TTKernel_Op<"reinterpret_cast"> {
 
     let assemblyFormat = [{
       `(` $addr `)` attr-dict `:` functional-type(operands, results)
+    }];
+}
+
+def TTKernel_CastToL1AddrOp : TTKernel_Op<"cast_to_l1_addr", [Pure]> {
+    let summary = "Normalize a value to an L1 address.";
+    let description = [{
+      Converts an integer L1 address, typed L1 address, or local semaphore
+      address to `l1_addr` without changing its representation.
+    }];
+
+    let arguments = (ins AnyTypeOf<[I32, TTKernel_L1Addr, TTKernel_LocalSemaphore]>:$addr);
+    let results = (outs TTKernel_L1Addr:$result);
+
+    let assemblyFormat = [{
+      $addr attr-dict `:` type($addr) `to` type($result)
     }];
 }
 

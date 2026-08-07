@@ -53,6 +53,41 @@ only within the static producer domain for that DFB index). The
 verifier reads the IR and emits diagnostics; it does not rewrite the
 program.
 
+## PipeNet callbacks and generated code
+
+A PipeNet record is one `ttl.Pipe` declaration: one source coordinate and one
+point-to-point destination or collective destination range. The Python
+frontend represents `net.if_src(callback)` and `net.if_dst(callback)` with one
+`ttl.pipenet_foreach_src` or `ttl.pipenet_foreach_dst` region. The region owns
+the ordered record list and contains one copy of the callback body. At runtime,
+each launch node executes that body once for every record in which the node has
+the requested source or destination role. Multiple matching records execute in
+PipeNet construction order.
+
+TTKernel conversion uses two representations:
+
+- For one to four records, conversion emits one static pipe and one coordinate
+  condition per record. This avoids loop and table-lookup overhead for small
+  PipeNets.
+- For five or more records, conversion emits one loop over immutable coordinate
+  and resource tables. `ttl.select_pipe_src` or `ttl.select_pipe_dst`
+  represents the current record inside the loop. This table-driven form emits
+  one callback and transfer protocol body; only the immutable table contents
+  grow with the number of records.
+
+The immutable tables become bit-packed C++ template arguments stored outside
+the kernel stack. Pipe graph analysis still creates one transfer node per
+record. A selected-pipe type identifies whether iteration selected the record
+by its source or destination coordinates; copy operand position determines
+whether that record is used for a send or receive. Launch-domain verification
+proves that the selected callback executes on the required endpoint.
+
+Resource planning stores each record's address-table entry and synchronization
+indices in record order, and the loop index selects the corresponding values.
+Pipe graph analysis maps the shared protocol operation and record index to a
+distinct transfer node, so each record retains its own address-sequence proof
+and runtime resources.
+
 ## Semantics
 
 Lowering selects the destination-address mechanism independently from
@@ -374,13 +409,14 @@ Pipe lowering first expands high-level pipe operations to Pipe Transfer IR:
 
 A transfer node represents one payload transfer: one send, one receiver post
 for each destination, and receiver completion. Sender and receiver callbacks
-may create separate `ttl.create_pipe` values. Correspondence analysis matches
-the send and receiver posts into one transfer node. A dynamic transfer instance
-is one runtime execution of that node, such as one loop iteration. In `RP`, an
-instance is live after its receiver posts and before the send consumes their
-sender-ready count. In `RA/RP`, its published address is live for the same
-interval. Resource allocation treats the sender-ready counter and address-table
-entry as live from the earliest receiver post through the send.
+may use separate static pipe values or selected-record operations.
+Correspondence analysis matches the send and receiver posts into one transfer
+node. A dynamic transfer instance is one runtime execution of that node, such
+as one loop iteration. In `RP`, an instance is live after its receiver posts
+and before the send consumes their sender-ready count. In `RA/RP`, its
+published address is live for the same interval. Resource allocation treats
+the sender-ready counter and address-table entry as live from the earliest
+receiver post through the send.
 
 A `PipeKey` contains the declared source coordinate, receiver rectangle, and
 PipeNet id. It identifies a communication relation, not one transfer node.
@@ -420,12 +456,15 @@ node. Repeated dynamic executions of one transfer node reuse its assigned
 counter and advance a cumulative expected-count value.
 
 The compiler uses one allocation abstraction for completion, readiness, and
-capacity counters. It allocates completion counters first. It then allocates
-readiness counters locally only if the entire per-kernel readiness allocation
-fits in the remaining local ids; otherwise all readiness counters use
-GlobalSemaphore storage. Capacity counters use any remaining local ids and
-then GlobalSemaphore storage. No PipeNet counter fails solely because all 16
-local semaphore ids are occupied.
+capacity counters. By default, it allocates completion counters first, using
+local semaphore ids before GlobalSemaphore storage. It then allocates readiness
+counters locally only if the entire per-kernel readiness allocation fits in the
+remaining local ids; otherwise all readiness counters use GlobalSemaphore
+storage. Capacity counters use any remaining local ids and then
+GlobalSemaphore storage. `--ttl-pipe-global-semaphores-only` allocates every
+compiler-managed PipeNet counter in GlobalSemaphore storage, preserving all
+local semaphore ids for application use. No PipeNet counter fails solely
+because all 16 local semaphore ids are occupied.
 
 The address table and synchronization counters all reside in Tensix L1 SRAM,
 but they use different allocation mechanisms. TTKernel local semaphores consume
@@ -1071,6 +1110,9 @@ The `--ttl-pipe-capacity-sync` option, also enabled by default,
 selects `CA/CC` when the capacity proof succeeds.
 `--no-ttl-pipe-capacity-sync` forces computed-address transfers to
 use `CA/RP` and has no effect on `RA/RP` transfers.
+`--ttl-pipe-global-semaphores-only` changes only the storage selected for
+compiler-managed completion, readiness, and capacity counters. It does not
+change addressing or synchronization protocol selection.
 
 ### Protocol performance
 
@@ -1169,7 +1211,7 @@ Repeated executions of one transfer node use its assigned counter.
 Distinct transfer nodes for one logical pipe remain separate intervals
 and may reuse a counter only when those intervals do not overlap.
 
-Completion colors consume the first local semaphore ids and then
+By default, completion colors consume the first local semaphore ids and then
 GlobalSemaphore storage. If every readiness color fits in the remaining local
 ids, readiness counters use those ids and the same color is reused on different
 source nodes. Otherwise all readiness counters use GlobalSemaphore storage,
@@ -1184,17 +1226,20 @@ the whole kernel, so endpoints on the same source node use distinct counters.
 Endpoints on different source nodes may reuse an allocation when their initial
 capacities match; the unconditional function-entry initialization then writes
 the same value to each source node's independent counter storage. The compiler
-records the final local and global totals in
+preserves the same color assignments and reuse decisions in global-only mode;
+only the storage class changes. The compiler records the final local and global totals in
 `ttl.pipe_sync_semaphore_count` and `ttl.pipe_global_semaphore_count`.
 
 Receiver completion is cumulative across repeated executions of a transfer
 node: sends increment its shared counter, and waits consume it with
 monotonically increasing `wait_min` thresholds instead of resetting it per
-execution. Pipe lowering initializes a separate kernel-local wait-progress
-value to 0 for each completion counter used by a receiver function. Transfers
-that share a physical receiver never share a completion counter. Address-table
-storage and synchronization counters are allocated independently, so address
-publication does not consume local semaphore ids.
+execution. Each receive post increments a kernel-local sequence for its
+completion counter and returns that sequence in the transfer token. The wait
+uses the token directly, so storing or reordering tokens does not associate a
+wait with a later post. Transfers that share a physical receiver never share a
+completion counter. Address-table storage and synchronization counters are
+allocated independently, so address publication does not consume local
+semaphore ids.
 
 Here, `wait_min` means the receiver waits until the semaphore value is at
 least the expected count; it does not require the semaphore to equal that
@@ -1225,11 +1270,11 @@ feature in the current TT-Metal NoC architecture.
 `ttl.wait` on the transfer handle returned by `ttl.copy(pipe, dst_blk)`
 expands to `ttl.pipe_transfer.wait`. TTKernel lowering resolves the defining
 receive post to its transfer node and waits on that transfer's cumulative
-completion state. The receiver keeps a local runtime counter and waits until
-the receiver-completion counter is at least that local count, so repeated
-point-to-point and collective receives in loops advance across iterations
-without reusing stale completion state. Completion of another transfer in the
-same PipeNet cannot satisfy this wait.
+completion state. The receive post returns its next sequence value in the
+transfer token. The wait blocks until the receiver-completion counter reaches
+that value, so repeated point-to-point and collective receives in loops do not
+reuse stale completion state. Completion of another transfer in the same
+PipeNet cannot satisfy this wait.
 
 `RA/RP` fixes the multi-iteration write-pointer issue by making
 the receiver-owned DFB address authoritative. It also makes same-thread
@@ -1279,7 +1324,6 @@ receiver-completion signal.
 
 ```mlir
 %transfer = ttl.pipe_transfer.create %pipe {
-  expectedReceivers = 1 : i64,
   kind = #ttl.pipe_transfer_kind<point_to_point>
 } : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
     -> !ttl.pipe_transfer
@@ -1306,10 +1350,9 @@ ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
 
 For `RA/RP`, TTKernel lowering emits receiver-side code that publishes
 the destination DFB address to the source-node address table and
-increments the sender-ready counter. Each receiver keeps a local count of how
-many payload completions it has consumed for this transfer node. On each
-receive wait, lowering increments that local count and waits until the
-transfer-specific receiver-completion counter is at least that value.
+increments the sender-ready counter. Each receive post also increments a local
+sequence for its completion counter and returns that value in the transfer
+token. A receive wait uses the token as the required completion count.
 The TTKernel snippets below show only pipe-protocol operations and omit
 type annotations.
 
@@ -1317,11 +1360,11 @@ This example uses three synchronization values:
 
 | Name | Storage | Initial value | Updated by | Read by |
 | --- | --- | --- | --- | --- |
-| Sender-ready counter | Source-node local semaphore or GlobalSemaphore-backed SRAM address. | 0 | Each receiver post increments it by 1 after publishing the destination DFB address. The sender resets it to 0 after waiting for all expected posts. | Sender send waits for it to equal `%expected_receivers`. |
-| Receiver-completion counter | Destination-node local semaphore or GlobalSemaphore-backed SRAM address assigned to this transfer node. | 0 | Each dynamic execution of that transfer's send increments it by 1 after the payload write barrier. | The matching receiver wait uses `semaphore_wait_min` against its next expected cumulative count. |
-| Receiver wait-progress counter | Kernel-local `memref<1xi32>` on the receiver, shared only by waits that use the same completion counter. | 0 at function entry | Each matching `ttl.pipe_transfer.wait` increments it by 1 before waiting. | The receiver uses it as the threshold for `semaphore_wait_min`. |
+| Sender-ready counter | Source-node semaphore at `%ready_sem_index`. If local semaphore ids are exhausted, this is a GlobalSemaphore-backed SRAM address passed as a common runtime argument. | 0 | Each receiver post increments it by 1 after publishing the destination DFB address. The sender resets it to 0 after waiting for all expected posts. | Sender send waits for it to equal `%expected_receivers`. |
+| Receiver-completion counter | Destination-node local semaphore or GlobalSemaphore-backed SRAM address, assigned to one transfer node at this receiver. | 0 | Each dynamic execution of that transfer's send increments it by 1 after the payload write barrier. | The matching receiver wait uses `semaphore_wait_min` with the sequence stored in its transfer token. |
+| Receiver post-sequence counter | Kernel-local `memref<1xi32>` for a static completion counter. A table-driven receiver uses one `memref<Nxi32>`, where `N` is the number of distinct completion counters referenced by the records. | 0 at function entry | Each matching `ttl.pipe_transfer.post` increments the element for its completion counter. | The post returns the new value in its transfer token; the corresponding wait uses that token as its completion threshold. |
 
-The sender-ready counter is a reusable pre-send rendezvous counter. The
+The sender-ready counter is a reusable pre-send synchronization counter. The
 receiver-completion counter is cumulative across executions of its transfer
 node for the whole kernel execution and is not reset by pipe lowering.
 
@@ -1338,15 +1381,15 @@ ttkernel.noc_async_write_barrier(%noc)
 %ready_noc_addr = ttkernel.get_noc_addr(%src_x, %src_y, %ready_addr, %noc)
 ttkernel.noc_semaphore_inc(%ready_noc_addr, %one, %noc)
 
-// Advance the receiver's local cumulative wait threshold.
-%old_count = memref.load %recv_counter[%zero]
-%new_count = arith.addi %old_count, %one_i32 : i32
-memref.store %new_count, %recv_counter[%zero]
+// Assign this post's completion sequence before its token can be reordered.
+%old_sequence = memref.load %post_sequence[%zero]
+%token_sequence = arith.addi %old_sequence, %one_i32 : i32
+memref.store %token_sequence, %post_sequence[%zero]
 
-// Read the receiver-completion counter until it is at least %new_count.
+// A later wait consumes the sequence returned by this post.
 %completion_addr = ttkernel.get_semaphore(%completion_sem_index)
 %completion_ptr = ttkernel.reinterpret_cast<tt_l1_ptr uint32_t*>(%completion_addr)
-ttkernel.experimental::semaphore_wait_min(%completion_ptr, %new_count)
+ttkernel.experimental::semaphore_wait_min(%completion_ptr, %token_sequence)
 ```
 
 The sender-side code waits until the receiver has published the address,
@@ -1574,10 +1617,10 @@ closure, and module-scope PipeNets through `__globals__`. See the
 [language specification](https://github.com/tenstorrent/tt-lang/blob/main/docs/sphinx/specs/TTLangSpecification.md) for
 the enclosing-scope capture rule.
 
-Operation-local ids keep `ttl.create_pipe` ids stable across invocations and
-keep graph construction deterministic. Completion counters are allocated from
-transfer nodes and their physical receiver sets. The
-`OperationPipeNets`
+Operation-local PipeNet ids keep static pipe values and record tables stable
+across invocations and keep graph construction deterministic. Completion
+counters are allocated from transfer nodes and their physical receiver sets.
+The `OperationPipeNets`
 instance is built and validated before MLIR emission on the compiler
 side and before `Program(...)` runs on the simulator side.
 `PipeNet.__init__` also builds a one-PipeNet `OperationPipeNets` and
@@ -1865,7 +1908,7 @@ error: 'ttl.copy' op this `ttl.copy(buffer, pipe)` sends data on PipeNet 0
        from a node that is not a source of any pipe in that net; wrap the
        copy in `net_0.if_src(...)` or guard with `if net_0.is_src(): ...`
 note: example node where the guard does not hold: node=(1, 0)
-note: PipeNet 0 declared here  (at create_pipe location)
+note: PipeNet 0 declared here  (at PipeNet declaration location)
 note: suggested guard: `net_0.is_src()`
 ```
 
@@ -1931,7 +1974,7 @@ The verifier relies on these input properties.
 | Invariant | Rationale |
 | --- | --- |
 | `ttl.launch_grid` module attribute present | Subset checks require a finite launch-coordinate domain. The pass emits a module-level error and fails if the attribute is missing. |
-| `ttl.create_pipe` source/destination coordinates are static `I64Attr`s, encoded both on the op and in the result `PipeType` | Domain construction reads the attributes directly to materialize each pipe's source unit box and destination range as concrete `Coord` sets, and `PipeLowering.cpp` emits `arith.ConstantIndexOp` for each coordinate when building per-node source and destination predicates. The static-attribute encoding is a property of today's IR, not a fundamental constraint of the verifier or lowering; see "Future work: parametric PipeNets" for the approach to runtime-bound coordinates. |
+| PipeNet source/destination coordinates are static `I64Attr`s in `ttl.create_pipe` or `#ttl.pipe_record` | Domain construction materializes each source coordinate and destination range as concrete `Coord` sets. Lowering emits constants for direct records and immutable lookup tables for larger record lists. The static encoding is a property of today's IR, not a fundamental constraint; see "Future work: parametric PipeNets" for runtime-bound coordinates. |
 | Every DFB has a concrete, unique provisional index | DFB wait checks associate producers and consumers before physical index reuse. `ttl-insert-intermediate-dfbs` assigns new compiler-created DFBs the next unused provisional index. |
 | One operation per module | The verifier walks all pipes in the module to compute role domains; co-compiling multiple operations would require per-operation scoping. |
 
@@ -2325,18 +2368,14 @@ The shared graph and proof must preserve these fabric invariants:
 * Parametric PipeNets - runtime-bound pipe coordinates resolved at
   kernel-launch time rather than `@ttl.operation` decoration time. The
   current pipeline resolves `ttl.Pipe(src=..., dst=...)` arguments to
-  Python `int` / `slice` literals during frontend tracing, materializes
-  them as `I64Attr`s on `ttl.create_pipe`, and embeds them into the
-  result `PipeType`. A parametric variant requires three coordinated
-  changes:
-  1. IR: extend `ttl.create_pipe` with an alternative form whose
-     source/destination coordinates are SSA `index` operands rather
-     than attributes, and replace the static coordinate fields on
-     `PipeType` with a static bounding-box attribute (so the verifier
-     and downstream passes still have a coarse-grained type
-     invariant). The static form remains the lowering target for
-     `@ttl.operation` invocations whose coordinates are known at
-     trace time.
+  Python `int` / `slice` literals during frontend tracing and
+  materializes them as attributes on `ttl.create_pipe` or
+  `#ttl.pipe_record`. A parametric variant requires three coordinated changes:
+  1. IR: add a representation whose source/destination coordinates are SSA
+     `index` values rather than attributes. Static bounds must remain available
+     so verification and downstream analyses retain a finite launch-node
+     domain. The current attribute form remains appropriate when coordinates
+     are known during frontend tracing.
   2. Verifier: replace the `std::set<Coord>` `Domain` with a symbolic
      representation, either an upstream Presburger set
      (`mlir::presburger::IntegerRelation`) or a structured
@@ -2349,16 +2388,13 @@ The shared graph and proof must preserve these fabric invariants:
      `ttl.is_dst` / `ttl.is_active` recognition stays structural; the
      per-coord enumeration in `evalBool` becomes a constraint
      constructor.
-  3. Lowering: `PipeLowering.cpp` materializes pipe source/destination
-     coordinates as `arith.ConstantIndexOp` from `PipeType::getSrcX/Y`
-     and the destination range bounds. Threading SSA values through to
-     `noc_async_write_multicast` and the per-pipe match expressions is
-     mechanical: tt-metal's multicast NoC primitives already accept
-     runtime coordinates, and `IsSrcLowering` / `IsDstLowering` already
-     construct per-pipe `arith.cmpi` / `arith.andi` / `arith.ori`
-     chains over the pipe's coordinate values; they currently chain
-     against constants but would chain against the SSA operands
-     instead.
+  3. Lowering: direct records currently become constant coordinates, while
+     larger record lists become immutable coordinate tables. Runtime-bound
+     coordinates must instead remain SSA values through source/destination
+     matching and NoC operation creation. TT-Metal's multicast NoC primitives
+     already accept runtime coordinates, and `IsSrcLowering` /
+     `IsDstLowering` already construct `arith.cmpi` / `arith.andi` /
+     `arith.ori` expressions over pipe coordinates.
 
   Frontend surface: `ttl.Pipe(src=ttl.runtime_arg("M"), ...)` or a
   similar SSA-typed coordinate, with the `OperationPipeNets`

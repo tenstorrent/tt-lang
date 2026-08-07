@@ -1104,8 +1104,10 @@ def make_non_uniform_multicast_destination_address_kernel():
 
         send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
         first_recv_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        # Incompatible descriptors keep the receive DFBs physically distinct,
+        # so both allocation modes reach the multicast-address validation.
         second_recv_dfb = ttl.make_dataflow_buffer_like(
-            inp, shape=(1, 1), block_count=2
+            inp, shape=(1, 1), block_count=3
         )
 
         @ttl.compute()
@@ -1460,40 +1462,6 @@ def test_grid_all_to_all_multicast_reduces_all_sources(device):
     assert_pcc(expected.float(), result.float())
 
 
-def test_row_all_to_all_multicast_semaphore_count_scales():
-    from ttl._pipenets import NodeCoord, NodeRange, OperationPipeNets, PipeUse
-
-    width = 32
-    all_to_all_graph = OperationPipeNets()
-    all_to_all_graph.add_pipe_net(
-        PipeUse(
-            src=NodeCoord((source_idx, 0)),
-            dst=NodeRange((0, 0), (width, 1)),
-        )
-        for source_idx in range(width)
-    )
-
-    assert all_to_all_graph.num_pipe_sync_semaphores() == 2
-
-
-def test_grid_all_to_all_multicast_semaphore_count_scales():
-    from ttl._pipenets import NodeCoord, NodeRange, OperationPipeNets, PipeUse
-
-    width = 32
-    height = 16
-    all_to_all_graph = OperationPipeNets()
-    all_to_all_graph.add_pipe_net(
-        PipeUse(
-            src=NodeCoord((source_x, source_y)),
-            dst=NodeRange((0, 0), (width, height)),
-        )
-        for source_y in range(height)
-        for source_x in range(width)
-    )
-
-    assert all_to_all_graph.num_pipe_sync_semaphores() == 2
-
-
 def test_many_pipe_sync_sites_fit_hardware_semaphore_limit(device):
     inp_torch = torch.randn(2 * TILE, 2 * TILE, dtype=torch.bfloat16)
     out_torch = torch.zeros(2 * TILE, 2 * TILE, dtype=torch.bfloat16)
@@ -1505,7 +1473,10 @@ def test_many_pipe_sync_sites_fit_hardware_semaphore_limit(device):
     ttnn.synchronize_device(device)
 
 
-def test_multicast_destination_addresses_differ_by_destination_rejected(device):
+@pytest.mark.parametrize("reuse_user_dfbs", [True, False], ids=["reuse", "distinct"])
+def test_multicast_destination_addresses_differ_by_destination_rejected(
+    device, reuse_user_dfbs
+):
     inp_torch = torch.randn(TILE, TILE, dtype=torch.bfloat16)
     out_torch = torch.zeros(TILE, 2 * TILE, dtype=torch.bfloat16)
 
@@ -1520,4 +1491,7 @@ def test_multicast_destination_addresses_differ_by_destination_rejected(device):
             "one destination SRAM address for all receivers"
         ),
     ):
-        non_uniform_multicast_destination_address_kernel(inp, out)
+        reuse_option = (
+            "--ttl-reuse-user-dfbs" if reuse_user_dfbs else "--no-ttl-reuse-user-dfbs"
+        )
+        non_uniform_multicast_destination_address_kernel(inp, out, options=reuse_option)

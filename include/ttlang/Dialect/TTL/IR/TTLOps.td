@@ -38,6 +38,9 @@ def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
       independently of the physical slot selected by `cb_index`. Bindings in
       different kernels with the same `dfb_id` refer to the same logical
       buffer.
+    - `tensor_backing`, when present, binds the complete dataflow buffer
+      capacity to the specified byte range of an operation tensor argument.
+      The range is relative to the local shard on each launch node.
     Example:
 
     ```mlir
@@ -48,7 +51,8 @@ def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
   let arguments = (ins
     IndexAttr:$cb_index,
     DefaultValuedAttr<I64Attr, "2">:$block_count,
-    OptionalAttr<IndexAttr>:$dfb_id
+    OptionalAttr<IndexAttr>:$dfb_id,
+    OptionalAttr<TTL_TensorBackingAttr>:$tensor_backing
   );
   let results = (outs TTL_CircularBuffer:$result);
   let assemblyFormat = "`{` `cb_index` `=` $cb_index `,` `block_count` `=` $block_count `}` attr-dict `:` type($result)";
@@ -337,11 +341,13 @@ def TTL_ComputeOp : TTL_Op<"compute", [
 
 def TTL_YieldOp : TTL_Op<"yield", [ReturnLike, Terminator,
     ParentOneOf<["ComputeOp", "DstSectionOp", "IfSrcOp", "IfDstOp",
+                 "PipeNetForeachSrcOp", "PipeNetForeachDstOp",
                  "PipeNetScopeOp", "AccumulationScopeOp"]>]> {
   let summary = "Terminate a TTL region body";
   let description = [{
     `ttl.yield` terminates the body of `ttl.compute`, `ttl.dst_section`,
-    `ttl.if_src`, `ttl.if_dst`, `ttl.pipenet_scope`, and
+    `ttl.if_src`, `ttl.if_dst`, `ttl.pipenet_foreach_src`,
+    `ttl.pipenet_foreach_dst`, `ttl.pipenet_scope`, and
     `ttl.accumulation_scope`. In `ttl.accumulation_scope`, it carries one
     updated value per accumulation output. Other TTL regions use an
     operand-less terminator.
@@ -714,6 +720,112 @@ def TTL_IfDstOp : TTL_Op<"if_dst",
   }];
 }
 
+def TTL_PipeNetForeachSrcOp : TTL_Op<"pipenet_foreach_src",
+    [SingleBlockImplicitTerminator<"YieldOp">,
+     DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
+  let summary = "Iterate over source pipe records in a PipeNet";
+  let description = [{
+    Executes the body region once for each static PipeNet record whose source
+    coordinate matches the current launch node. The body receives a
+    `!ttl.selected_pipe_src` argument representing the selected record for that
+    iteration.
+
+    The records in `$records` are ordered by user PipeNet construction
+    order. That order defines program order for a launch node that matches
+    multiple records.
+  }];
+
+  let arguments = (ins
+    TTL_PipeNetRecordsAttr:$records
+  );
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = "attr-dict-with-keyword $body";
+  let hasVerifier = 1;
+}
+
+def TTL_PipeNetForeachDstOp : TTL_Op<"pipenet_foreach_dst",
+    [SingleBlockImplicitTerminator<"YieldOp">,
+     DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
+  let summary = "Iterate over destination pipe records in a PipeNet";
+  let description = [{
+    Executes the body region once for each static PipeNet record whose
+    destination range contains the current launch node. The body receives a
+    `!ttl.selected_pipe_dst` argument representing the selected record for that
+    iteration.
+
+    The records in `$records` are ordered by user PipeNet construction
+    order. That order defines program order for a launch node that matches
+    multiple records.
+  }];
+
+  let arguments = (ins
+    TTL_PipeNetRecordsAttr:$records
+  );
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = "attr-dict-with-keyword $body";
+  let hasVerifier = 1;
+}
+
+def TTL_SelectPipeSrcOp : TTL_Op<"select_pipe_src", [Pure]> {
+  let summary = "Represent a record selected by source iteration";
+  let description = [{
+    Represents a PipeNet record selected because the current launch node is its
+    source. The operands contain the selected record fields. `$recordIndex`
+    identifies the record in `$records`; the remaining operands contain that
+    record's coordinates and receiver count. `$srcInDstRange` is true when the
+    source coordinate belongs to the destination range. `$records` identifies
+    the PipeNet and its transfer contract.
+  }];
+
+  let arguments = (ins
+    Index:$recordIndex,
+    Index:$srcX,
+    Index:$srcY,
+    Index:$dstStartX,
+    Index:$dstStartY,
+    Index:$dstEndX,
+    Index:$dstEndY,
+    Index:$numDests,
+    I1:$srcInDstRange,
+    TTL_PipeNetRecordsAttr:$records
+  );
+  let results = (outs TTL_SelectedPipeSrc:$pipe);
+  let assemblyFormat = [{
+    `record` `(` $recordIndex `)` `src` `(` $srcX `,` $srcY `)` `dst` `(` $dstStartX `,` $dstStartY `)` `to` `(` $dstEndX `,` $dstEndY `)`
+    `num_dests` `(` $numDests `)` `src_in_dst` `(` $srcInDstRange `)` attr-dict `:` type($pipe)
+  }];
+}
+
+def TTL_SelectPipeDstOp : TTL_Op<"select_pipe_dst", [Pure]> {
+  let summary = "Represent a record selected by destination iteration";
+  let description = [{
+    Represents a PipeNet record selected because the current launch node is one
+    of its destinations. The operands contain the selected record fields.
+    `$recordIndex` identifies the record in `$records`; the remaining operands
+    contain that record's coordinates and receiver count. `$srcInDstRange` is
+    true when the source coordinate belongs to the destination range.
+    `$records` identifies the PipeNet and its transfer contract.
+  }];
+
+  let arguments = (ins
+    Index:$recordIndex,
+    Index:$srcX,
+    Index:$srcY,
+    Index:$dstStartX,
+    Index:$dstStartY,
+    Index:$dstEndX,
+    Index:$dstEndY,
+    Index:$numDests,
+    I1:$srcInDstRange,
+    TTL_PipeNetRecordsAttr:$records
+  );
+  let results = (outs TTL_SelectedPipeDst:$pipe);
+  let assemblyFormat = [{
+    `record` `(` $recordIndex `)` `src` `(` $srcX `,` $srcY `)` `dst` `(` $dstStartX `,` $dstStartY `)` `to` `(` $dstEndX `,` $dstEndY `)`
+    `num_dests` `(` $numDests `)` `src_in_dst` `(` $srcInDstRange `)` attr-dict `:` type($pipe)
+  }];
+}
+
 def TTL_PipeTransferCreateOp : TTL_Op<"pipe_transfer.create", [Pure]> {
   let summary = "Create a pipe transfer reference";
   let description = [{
@@ -726,9 +838,8 @@ def TTL_PipeTransferCreateOp : TTL_Op<"pipe_transfer.create", [Pure]> {
     device.
   }];
   let arguments = (ins
-    TTL_Pipe:$pipe,
+    TTL_PipeReference:$pipe,
     TTL_PipeTransferKindAttr:$kind,
-    I64Attr:$expectedReceivers,
     OptionalAttr<TTL_DeviceTransferAttr>:$deviceTransfer
   );
   let results = (outs TTL_PipeTransfer:$transfer);
@@ -1152,8 +1263,6 @@ multiclass TTL_UnaryElementwisePair<string mnemonic, string kernelOp> {
   }
 }
 
-// Define all unary elementwise ops using the multiclass
-defm TTL_Exp : TTL_UnaryElementwisePair<"exp", "exp_tile">;
 defm TTL_Exp2 : TTL_UnaryElementwisePair<"exp2", "exp2_tile">;
 defm TTL_Log : TTL_UnaryElementwisePair<"log", "log_tile">;
 defm TTL_Sqrt : TTL_UnaryElementwisePair<"sqrt", "sqrt_tile">;
@@ -1182,6 +1291,52 @@ defm TTL_Softsign : TTL_UnaryElementwisePair<"softsign", "softsign_tile">;
 defm TTL_Signbit : TTL_UnaryElementwisePair<"signbit", "signbit_tile">;
 defm TTL_Frac : TTL_UnaryElementwisePair<"frac", "frac_tile">;
 defm TTL_Trunc : TTL_UnaryElementwisePair<"trunc", "trunc_tile">;
+
+//===----------------------------------------------------------------------===//
+// Exp Operations (Tensor + Tile)
+//===----------------------------------------------------------------------===//
+//
+// `exp` is broken out of the generic unary multiclass because it carries
+// hardware SFPU flags that the generic ops do not. The flags are forwarded
+// unchanged from the tensor op to the tile op and then to the TTKernel
+// exp_tile / exp_tile_init ops during lowering. All flags are optional or
+// default-valued so that `ttl.exp %x` (and tile form) keep their plain
+// spelling when no flags are set.
+//
+// Flags (mirroring tt-metal ckernel::exp_tile / exp_tile_init):
+//   approx          - enable the fast approximate exp.
+//   scale           - optional scale factor `s`; when present the op computes
+//                     exp(s * x) (sets scale_en at the TTKernel level).
+//   input_clamping  - clamp behaviour for very negative inputs (only relevant
+//                     for approximate mode); defaults to ClampToNegative.
+//   iterations      - number of SFPU lane iterations (default 8).
+
+// Shared flag arguments for both the tensor and tile exp ops.
+defvar TTL_ExpFlags = (ins
+    DefaultValuedAttr<BoolAttr, "false">:$approx,
+    OptionalAttr<F32Attr>:$scale,
+    DefaultValuedAttr<TTL_InputClampingAttr,
+        "::mlir::tt::ttl::InputClamping::ClampToNegative">:$input_clamping,
+    DefaultValuedAttr<I32Attr, "8">:$iterations);
+
+def TTL_ExpOp : TTL_ElementWiseUnary<"exp"> {
+  let description = [{
+    Elementwise exp on tensors. Lowered to ttl.compute with ttl.tile_exp.
+    Carries optional hardware exp flags (approx / scale / input_clamping /
+    iterations) that are forwarded to the tile op during lowering.
+  }];
+  let arguments = !con((ins AnyType:$input), TTL_ExpFlags);
+}
+
+def TTL_ExpTileOp : TTL_TileUnaryOp<"tile_exp"> {
+  let description = [{
+    Tile-level exp. Maps to ttkernel.exp_tile. Carries the same hardware exp
+    flags as ttl.exp; they are forwarded to the TTKernel exp_tile / exp_tile_init
+    ops during conversion.
+  }];
+  let arguments = !con((ins TTL_TileType:$input, Index:$dst_index),
+                       TTL_ExpFlags);
+}
 
 //===----------------------------------------------------------------------===//
 // Typecast Operations (Tensor + Tile)
@@ -1712,9 +1867,20 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     template arguments on the emitted call. They are resolved to integer
     literals at EmitC lowering time, e.g. `my_func<1, 2>(a, b)`.
 
-    The `arg_operands` are forwarded as function arguments to the callee.
-    Results are optional; when absent the call is treated as a void
-    function invocation.
+    The `arg_operands` are forwarded as function arguments to the callee. A
+    DFB operand declares that the callee may access that logical DFB from call
+    entry through call completion; storage liveness does not distinguish reads
+    from writes. Every DFB accessed by the callee or a transitive helper must
+    appear as a DFB operand, and all synchronous and asynchronous accesses must
+    complete before the call returns. This external-code contract is assumed
+    because the compiler does not inspect the C++ body.
+
+    An integer produced by `ttl.get_dfb_id`, including a template argument,
+    does not declare a call-level DFB access. If the callee uses that index to
+    access the DFB, the same DFB must also appear in `arg_operands`.
+
+    Results are optional; when absent the call is treated as a void function
+    invocation.
 
     Example:
     ```mlir
@@ -1748,9 +1914,10 @@ def TTL_GetDfbIdOp : TTL_Op<"get_dfb_id", [Pure]> {
   let summary = "Get the integer index for a dataflow buffer";
   let description = [{
     Returns the integer DFB index for the given dataflow buffer as an
-    i32 SSA value. Typically consumed by `ttl.opaque_call` template
-    args, which keeps the DFB live through SSA dataflow. At EmitC time
-    this resolves to a raw integer literal.
+    i32 SSA value. At EmitC time this resolves to a raw integer literal.
+    Integer SSA dataflow does not preserve a call-level DFB access; an
+    external callee that accesses the DFB must also receive it as a DFB
+    operand.
   }];
   let arguments = (ins TTL_CircularBuffer:$dfb);
   let results = (outs I32:$result);

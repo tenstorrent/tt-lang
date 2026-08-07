@@ -138,7 +138,7 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
       scf.yield %pipe1
           : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
     }
-    // expected-error @below {{requires every possible pipe definition at this call site to be ttl.create_pipe with the same device transfer}}
+    // expected-error @below {{requires every possible pipe definition at this call site to use the same logical-device transfer}}
     %send = ttl.copy %src, %pipe
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
            !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)

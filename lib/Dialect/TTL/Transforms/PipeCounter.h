@@ -15,6 +15,12 @@ enum class PipeCounterStorage {
   GlobalSemaphore,
 };
 
+/// Selects which storage classes automatic PipeNet counter allocation may use.
+enum class PipeCounterAllocationPolicy {
+  LocalThenGlobal,
+  GlobalOnly,
+};
+
 /// Identifies one PipeNet counter and its allocated storage.
 class PipeCounterInfo {
 public:
@@ -48,12 +54,15 @@ struct PipeCounterAllocationCounts {
   void include(PipeCounterInfo counter);
 };
 
-/// Allocates local semaphore ids first, then GlobalSemaphore storage.
+/// Allocates PipeNet counters according to a selected storage policy.
 class PipeCounterAllocator {
 public:
-  explicit PipeCounterAllocator(PipeCounterAllocationCounts counts = {});
+  explicit PipeCounterAllocator(
+      PipeCounterAllocationCounts counts = {},
+      PipeCounterAllocationPolicy policy =
+          PipeCounterAllocationPolicy::LocalThenGlobal);
 
-  /// Allocate the next counter using the shared local-then-global policy.
+  /// Allocate the next counter using the selected storage policy.
   PipeCounterInfo allocate();
 
   /// Allocate a counter that must use GlobalSemaphore storage.
@@ -63,6 +72,7 @@ public:
 
 private:
   PipeCounterAllocationCounts counts;
+  PipeCounterAllocationPolicy policy;
 };
 
 } // namespace mlir::tt::ttl

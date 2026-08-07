@@ -283,7 +283,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
     %transfer = ttl.pipe_transfer.create %pipe
-        {expectedReceivers = 2 : i64, kind = #ttl.pipe_transfer_kind<collective>}
+        {kind = #ttl.pipe_transfer_kind<collective>}
         : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> -> !ttl.pipe_transfer
     ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0> {
       %recv = ttl.cb_reserve %dst_cb
@@ -396,7 +396,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
     %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %dst_cb = ttl.bind_cb {cb_index = 1, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %transfer = ttl.pipe_transfer.create %p {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+    %transfer = ttl.pipe_transfer.create %p {kind = #ttl.pipe_transfer_kind<point_to_point>}
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> -> !ttl.pipe_transfer
     ttl.if_dst %p : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
       %recv = ttl.cb_reserve %dst_cb : <[1, 1], !ttcore.tile<32x32, f32>, 1> -> tensor<1x1x!ttcore.tile<32x32, f32>>

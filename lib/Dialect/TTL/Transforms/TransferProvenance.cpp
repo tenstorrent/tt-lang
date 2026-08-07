@@ -3,6 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
+
+#include "PipeGraph.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
@@ -37,6 +39,15 @@ findUniquePipeDeviceTransferImpl(
   return analysis.getOrigins(pipe)
       .uniqueMapped<std::optional<DeviceTransferAttr>>(
           [&](Value origin) -> FailureOr<std::optional<DeviceTransferAttr>> {
+            if (origin.getDefiningOp<SelectPipeSrcOp>() ||
+                origin.getDefiningOp<SelectPipeDstOp>()) {
+              return std::optional<DeviceTransferAttr>();
+            }
+            if (isa<BlockArgument>(origin) &&
+                isa<SelectedPipeSrcType, SelectedPipeDstType>(
+                    origin.getType())) {
+              return std::optional<DeviceTransferAttr>();
+            }
             auto createPipe = origin.getDefiningOp<CreatePipeOp>();
             if (createPipe) {
               DeviceTransferAttr deviceTransfer =
@@ -177,9 +188,12 @@ LogicalResult verifyPost(PipeTransferPostOp op, ValueOriginAnalysis &analysis) {
            << "requires every possible transfer value to derive from the "
               "same ttl.pipe_transfer.create";
   }
-  auto pipeType = cast<PipeType>(create->getPipe().getType());
+  FailureOr<PipeReference> pipeRef = getPipeReference(op, create->getPipe());
+  if (failed(pipeRef)) {
+    return failure();
+  }
   auto tokenType = cast<PipeTokenType>(op.getToken().getType());
-  if (tokenType.getPipeNetId() != pipeType.getPipeNetId()) {
+  if (tokenType.getPipeNetId() != pipeRef->getPipeNetId()) {
     return op.emitOpError() << "token pipeNetId must match transfer pipeNetId";
   }
   return success();
