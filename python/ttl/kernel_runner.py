@@ -474,7 +474,7 @@ def build_pipe_computed_address_dfb_tensors(
     pipe_computed_address_dfb_indices: Optional[List[int]] = None,
     device: Optional[Any] = None,
 ) -> Dict[int, Any]:
-    """Allocate hidden L1 backing tensors for computed pipe receiver DFBs."""
+    """Allocate hidden L1 backing for computed DFBs without finalized storage."""
     dfb_indices = sorted(set(pipe_computed_address_dfb_indices or []))
     if not dfb_indices:
         return {}
@@ -493,10 +493,41 @@ def build_pipe_computed_address_dfb_tensors(
         config = cb_configs[dfb_index]
         allocation = _get_dfb_allocation(config)
         _validate_physical_dfb_config(config, dfb_index)
+        if config.storage_segments:
+            continue
         backing_tensors[dfb_index] = _allocate_l1_sharded_storage_tensor(
             core_ranges, allocation.total_size, device
         )
     return backing_tensors
+
+
+def _resolve_tensor_backed_computed_address_base(
+    tensors: List[Any], config: PhysicalDFBConfig
+) -> int:
+    """Resolve the common runtime base for a finalized computed-address DFB."""
+    assert config.storage_segments
+    base_addresses = set()
+    for segment in config.storage_segments:
+        if not segment.is_tensor_backed:
+            raise ValueError(
+                f"computed-address DFB[{config.dfb_index}] finalized storage "
+                "must be tensor-backed"
+            )
+        tensor = _validate_tensor_backed_dfb_binding(tensors, config, segment)
+        try:
+            base_address = int(tensor.buffer_address()) + segment.byte_offset
+        except (AttributeError, TypeError, ValueError):
+            raise ValueError(
+                f"computed-address DFB[{config.dfb_index}] tensor backing does "
+                "not expose a valid buffer_address()"
+            ) from None
+        base_addresses.add(base_address)
+    if len(base_addresses) != 1:
+        raise ValueError(
+            f"computed-address DFB[{config.dfb_index}] requires one common "
+            "tensor-backed base address across finalized storage segments"
+        )
+    return next(iter(base_addresses))
 
 
 def build_pipe_runtime_resources(
@@ -557,6 +588,12 @@ def build_pipe_runtime_resources(
         dfb_index: int(tensor.buffer_address())
         for dfb_index, tensor in computed_address_dfb_tensors.items()
     }
+    for dfb_index in sorted(set(computed_address_dfb_indices)):
+        config = cb_configs[dfb_index]
+        if config.storage_segments:
+            computed_address_base_addresses[dfb_index] = (
+                _resolve_tensor_backed_computed_address_base(tensors, config)
+            )
     if os.environ.get("TTLANG_DEBUG_FABRIC_ARGS"):
         for dfb_index, tensor in computed_address_dfb_tensors.items():
             device_addresses = [

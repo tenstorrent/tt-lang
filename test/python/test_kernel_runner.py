@@ -381,6 +381,81 @@ def test_build_pipe_runtime_resources_appends_global_semaphore_args(monkeypatch)
     assert resources.expected_extra_common_runtime_args == 2
 
 
+def test_build_pipe_runtime_resources_uses_finalized_tensor_computed_base(
+    monkeypatch,
+):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+    )
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    tensor = _FakeTensor(object(), address=0x4000, dtype=expected_dtype)
+    config = _tensor_backing_config(
+        0,
+        nodes=((0, 0),),
+        byte_offset=2048,
+        byte_size=2048,
+    )
+
+    resources = kernel_runner.build_pipe_runtime_resources(
+        tensors=[tensor],
+        cb_configs=[config],
+        core_ranges=_FakeCoreRanges(),
+        pipe_computed_address_dfb_indices=[0],
+    )
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[tensor],
+        cb_configs=[config],
+        core_ranges=_FakeCoreRanges(),
+        pipe_computed_address_backing_tensors=(resources.computed_address_dfb_tensors),
+    )
+
+    assert resources.computed_address_dfb_tensors == {}
+    assert resources.computed_address_base_addresses == {0: 0x4800}
+    assert descriptors[0]["tensor"] is tensor
+    assert descriptors[0]["address_offset"] == 2048
+
+
+def test_build_pipe_runtime_resources_rejects_nonuniform_finalized_bases(
+    monkeypatch,
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    tensors = [
+        _FakeTensor(object(), address=0x2000, dtype=expected_dtype),
+        _FakeTensor(object(), address=0x4000, dtype=expected_dtype),
+    ]
+    config = PhysicalDFBConfig(
+        dfb_index=0,
+        num_tiles=1,
+        data_format="bfloat16",
+        block_count=1,
+        page_size=2048,
+        tile=(32, 32),
+        storage_segments=(
+            DFBStorageSegment(
+                nodes=((0, 0),),
+                tensor_index=0,
+                byte_size=2048,
+            ),
+            DFBStorageSegment(
+                nodes=((1, 0),),
+                tensor_index=1,
+                byte_size=2048,
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="requires one common tensor-backed base"):
+        kernel_runner.build_pipe_runtime_resources(
+            tensors=tensors,
+            cb_configs=[config],
+            core_ranges=_FakeCoreRanges(),
+            pipe_computed_address_dfb_indices=[0],
+        )
+
+
 def test_build_kernel_descriptors_checks_pipe_runtime_arg_count(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     spec = kernel_runner.KernelSpec(
