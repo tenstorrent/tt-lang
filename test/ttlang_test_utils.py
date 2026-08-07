@@ -226,15 +226,16 @@ def torch_dtype_from_env(var_name: str, default: str = "bf16"):
     return torch_dtype_from_name(os.environ.get(var_name, default))
 
 
-def to_dram(torch_tensor, device):
+def to_dram(torch_tensor, device, *, mesh_mapper=None):
     """Create a TTNN tensor in DRAM from a torch tensor.
 
     Args:
-        torch_tensor: Source torch tensor
-        device: TTNN device handle
+        torch_tensor: Source torch tensor.
+        device: TTNN device or mesh handle.
+        mesh_mapper: Optional mapping from the source tensor to a device mesh.
 
     Returns:
-        TTNN tensor in DRAM with TILE_LAYOUT
+        TTNN tensor in DRAM with TILE_LAYOUT.
     """
     from ttl.dtype_utils import torch_dtype_to_ttnn_datatype
 
@@ -247,6 +248,7 @@ def to_dram(torch_tensor, device):
         layout=ttnn.TILE_LAYOUT,
         device=device,
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        mesh_mapper=mesh_mapper,
     )
 
 
