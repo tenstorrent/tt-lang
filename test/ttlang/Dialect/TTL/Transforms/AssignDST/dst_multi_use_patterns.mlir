@@ -28,14 +28,14 @@
 // CHECK-NEXT:        %[[I0:.*]] = ttl.iter_index 0 : index
 // CHECK-NEXT:        %[[I1:.*]] = ttl.iter_index 1 : index
 // FPU binary add: both operands are block args, no copy_tile needed
-// CHECK:           %[[SUM:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+// CHECK:           %[[SUM:.*]] = ttl.tile_add %[[A]], %[[B]] into dst[%c0] {{.*}} : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
 // Copy C before sub (SFPU operand needs copy_tile)
 // CHECK:           %{{.*}}, %[[TC:.*]] = ttl.copy_tile %[[C]][%[[I0]], %[[I1]]] into dst[%c1]
 // CHECK-NEXT:      %[[DIFF:.*]] = ttl.tile_sub %[[SUM]], %[[TC]] into dst[%c1]
 // Copy D before mul (SFPU operand needs copy_tile)
 // CHECK:           %{{.*}}, %[[TD:.*]] = ttl.copy_tile %[[D]][%[[I0]], %[[I1]]] into dst[%c2]
 // CHECK-NEXT:      %[[PROD:.*]] = ttl.tile_mul %[[SUM]], %[[TD]] into dst[%c0]
-// CHECK-NEXT:      %[[COMBO:.*]] = ttl.tile_add %[[DIFF]], %[[PROD]] into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+// CHECK-NEXT:      %[[COMBO:.*]] = ttl.tile_add %[[DIFF]], %[[PROD]] into dst[%c0] {{.*}} : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
 // SEPARATE:        ttl.tile_add {{.*}} into dst[%c3]
 // CHECK:           ttl.tile_store %[[COMBO]], %{{.*}}[%[[I0]], %[[I1]]]
 // CHECK-NEXT:      ttl.yield
@@ -105,7 +105,7 @@ func.func @diamond_intermediate_reuse(%a: tensor<2x2x!ttcore.tile<32x32, bf16>>,
 // CHECK-NEXT:        %[[I0:.*]] = ttl.iter_index 0 : index
 // CHECK-NEXT:        %[[I1:.*]] = ttl.iter_index 1 : index
 // FPU binary add: both operands are block args, no copy_tile needed
-// CHECK:           %[[INTERMEDIATE:.*]] = ttl.tile_add %[[ARG0]], %[[ARG1]] into dst[%c0] : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+// CHECK:           %[[INTERMEDIATE:.*]] = ttl.tile_add %[[ARG0]], %[[ARG1]] into dst[%c0] {{.*}} : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
 // copy_dst preserves intermediate for mul (fan-out use)
 // CHECK-NEXT:      %[[COPY_DST1:.*]] = ttl.copy_dst %[[INTERMEDIATE]] into dst[%c1]
 // Copy ARG2 before mul (SFPU operand needs copy_tile)

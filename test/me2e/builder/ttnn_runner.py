@@ -54,7 +54,6 @@ def run_binary_op(
     input_a: torch.Tensor,
     input_b: torch.Tensor,
     kernel_dir: Path,
-    enable_fp32_accumulation: bool = False,
 ) -> torch.Tensor:
     """
     Run a binary operation on device.
@@ -66,8 +65,6 @@ def run_binary_op(
         input_a: First input tensor.
         input_b: Second input tensor.
         kernel_dir: Directory containing kernel C++ files.
-        enable_fp32_accumulation: If True, enable fp32 dest accumulation on compute.
-
     Returns:
         Output tensor as torch tensor.
     """
@@ -77,7 +74,6 @@ def run_binary_op(
         compute_kernel=compute_kernel,
         inputs=[input_a, input_b],
         kernel_dir=kernel_dir,
-        enable_fp32_accumulation=enable_fp32_accumulation,
     )
 
 
@@ -87,7 +83,6 @@ def run_unary_op(
     compute_kernel: KernelSpec,
     input_a: torch.Tensor,
     kernel_dir: Path,
-    enable_fp32_accumulation: bool = False,
 ) -> torch.Tensor:
     """
     Run a unary operation on device.
@@ -98,8 +93,6 @@ def run_unary_op(
         compute_kernel: Compute kernel spec.
         input_a: Input tensor.
         kernel_dir: Directory containing kernel C++ files.
-        enable_fp32_accumulation: If True, enable fp32 dest accumulation on compute.
-
     Returns:
         Output tensor as torch tensor.
     """
@@ -109,8 +102,23 @@ def run_unary_op(
         compute_kernel=compute_kernel,
         inputs=[input_a],
         kernel_dir=kernel_dir,
-        enable_fp32_accumulation=enable_fp32_accumulation,
     )
+
+
+def _get_compute_config(compute_kernel: KernelSpec):
+    """Translate compiler-selected kernel configuration to TTNN."""
+    config = ttnn.ComputeConfigDescriptor()
+    config.fp32_dest_acc_en = compute_kernel.fp32_dest_acc_en
+    config.dst_full_sync_en = compute_kernel.dst_full_sync_en
+    if compute_kernel.unpack_to_dest_fp32:
+        configured_indices = set(compute_kernel.unpack_to_dest_fp32)
+        for dfb_index in range(64):
+            config.unpack_to_dest_mode.append(
+                ttnn.UnpackToDestMode.UnpackToDestFp32
+                if dfb_index in configured_indices
+                else ttnn.UnpackToDestMode.Default
+            )
+    return config
 
 
 def _run_op(
@@ -119,7 +127,6 @@ def _run_op(
     compute_kernel: KernelSpec,
     inputs: List[torch.Tensor],
     kernel_dir: Path,
-    enable_fp32_accumulation: bool = False,
 ) -> torch.Tensor:
     """
     Run an operation on device using shared kernel_runner infrastructure.
@@ -133,8 +140,6 @@ def _run_op(
         compute_kernel: Compute kernel spec.
         inputs: List of input tensors.
         kernel_dir: Directory containing kernel C++ files.
-        enable_fp32_accumulation: If True, enable fp32 dest accumulation on compute.
-
     Returns:
         Output tensor as torch tensor.
     """
@@ -192,9 +197,7 @@ def _run_op(
             path=str(kernel_dir / f"{compute_kernel.name}.cpp"),
             thread_type="compute",
             tensor_indices=[],  # Compute kernels don't access tensors directly.
-            config=ttnn.ComputeConfigDescriptor(
-                fp32_dest_acc_en=enable_fp32_accumulation,
-            ),
+            config=_get_compute_config(compute_kernel),
         ),
     ]
 

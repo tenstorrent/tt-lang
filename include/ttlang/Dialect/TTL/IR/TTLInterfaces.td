@@ -110,8 +110,8 @@ def TTL_DstAccessOpInterface : OpInterface<"DstAccessOpInterface"> {
 
   let methods = [
     InterfaceMethod<
-      /*desc=*/"Return DST slots read by this operation.",
-      /*retTy=*/"::llvm::SmallVector<::mlir::tt::ttl::DstFootprint, 2>",
+      /*desc=*/"Return DST slots read by this operation after tile execution semantics and DST residency are resolved.",
+      /*retTy=*/"::mlir::FailureOr<::llvm::SmallVector<::mlir::tt::ttl::DstFootprint, 2>>",
       /*methodName=*/"getDstReadFootprints",
       /*args=*/(ins),
       /*methodBody=*/"",
@@ -140,6 +140,39 @@ def TTL_DstAccessOpInterface : OpInterface<"DstAccessOpInterface"> {
             $_op.getOperation(), result);
       }]
     >
+  ];
+}
+
+def TTL_TileExecutionOpInterface : OpInterface<"TileExecutionOpInterface"> {
+  let description = [{
+    Tile operations expose target-independent execution semantics through this
+    interface. An execution strategy determines operand routes and DST
+    behavior independently of target capabilities.
+  }];
+
+  let cppNamespace = "::mlir::tt::ttl";
+
+  let methods = [
+    InterfaceMethod<
+      /*desc=*/"Return execution strategies structurally permitted by the current operands.",
+      /*retTy=*/"::llvm::SmallVector<::mlir::tt::ttl::TileExecutionStrategy, 2>",
+      /*methodName=*/"getLegalExecutionStrategies",
+      /*args=*/(ins),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/[{
+        return ::mlir::tt::ttl::getDefaultLegalTileExecutionStrategies(
+            $_op.getOperation());
+      }]>,
+    InterfaceMethod<
+      /*desc=*/"Return execution semantics for the supplied strategy.",
+      /*retTy=*/"::mlir::FailureOr<::mlir::tt::ttl::TileExecutionInfo>",
+      /*methodName=*/"getTileExecutionInfo",
+      /*args=*/(ins "::std::optional<::mlir::tt::ttl::TileExecutionStrategy>":$strategy),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/[{
+        return ::mlir::tt::ttl::getDefaultTileExecutionInfo(
+            $_op.getOperation(), strategy);
+      }]>
   ];
 }
 

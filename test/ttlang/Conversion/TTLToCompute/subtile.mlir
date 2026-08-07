@@ -287,3 +287,38 @@ func.func @integer_passthrough_subtile(
         tensor<1x1x!ttcore.tile<32x16, u32>>
   return %input : tensor<1x1x!ttcore.tile<32x16, u32>>
 }
+
+// -----
+
+// Direct elementwise lowering preserves a 16x32 physical tile type on every
+// compute block argument and tile result.
+// CHECK-LABEL: func.func @direct_16x32_subtile
+// CHECK:       %[[RESULT:.*]] = ttl.compute
+// CHECK-NEXT:  ^bb0(%[[INPUT:.*]]: !ttcore.tile<16x32, bf16>, %[[OUTPUT:.*]]: !ttcore.tile<16x32, bf16>):
+// CHECK-NEXT:    %[[ROW:.*]] = ttl.iter_index 0
+// CHECK-NEXT:    %[[COL:.*]] = ttl.iter_index 1
+// CHECK-NEXT:    %[[EXP:.*]] = ttl.tile_exp %[[INPUT]]{{.*}} -> !ttcore.tile<16x32, bf16>
+// CHECK-NEXT:    ttl.tile_store %[[EXP]], %{{.*}}[%[[ROW]], %[[COL]]]
+// CHECK:       } -> tensor<1x1x!ttcore.tile<16x32, bf16>>
+func.func @direct_16x32_subtile(
+    %arg: tensor<1x1x!ttcore.tile<16x32, bf16>>)
+    -> tensor<1x1x!ttcore.tile<16x32, bf16>> {
+  %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<16x32, bf16>, 2>
+  %output_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<16x32, bf16>, 2>
+  %input = ttl.attach_cb %arg, %input_dfb
+      : (tensor<1x1x!ttcore.tile<16x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<16x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<16x32, bf16>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[1, 1], !ttcore.tile<16x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<16x32, bf16>>
+  %result = ttl.exp %input
+      : tensor<1x1x!ttcore.tile<16x32, bf16>>
+        -> tensor<1x1x!ttcore.tile<16x32, bf16>>
+  ttl.store %result, %output
+      : tensor<1x1x!ttcore.tile<16x32, bf16>>,
+        tensor<1x1x!ttcore.tile<16x32, bf16>>
+  return %result : tensor<1x1x!ttcore.tile<16x32, bf16>>
+}

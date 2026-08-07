@@ -61,7 +61,7 @@ func.func @u32_destination() {
 
 // Purpose: u16 compute values retain 16-bit destination registers.
 // CHECK-LABEL: func.func @u16_destination
-// CHECK-NOT: fp32_dest_acc_en
+// CHECK-SAME: fp32_dest_acc_en = false
 func.func @u16_destination() {
   %input_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<16x32, u16>, 2>
   %output_cb = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<16x32, u16>, 2>

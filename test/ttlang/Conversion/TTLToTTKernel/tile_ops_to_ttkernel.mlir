@@ -58,7 +58,7 @@ func.func @tile_sqrt(%a: !ttcore.tile<32x32, f32>) -> !ttcore.tile<32x32, f32> {
 func.func @tile_add(%a: !ttcore.tile<32x32, f32>, %b: !ttcore.tile<32x32, f32>) -> !ttcore.tile<32x32, f32> {
   %c0 = arith.constant 0 : index
   ttkernel.tile_regs_acquire() : () -> ()
-  %sum = ttl.tile_add %a, %b into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %sum = ttl.tile_add %a, %b into dst[%c0] {ttl.tile_execution_strategy = #ttl.tile_execution_strategy<sfpu>} : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
   ttkernel.tile_regs_release() : () -> ()
   func.return %sum : !ttcore.tile<32x32, f32>
 }
@@ -71,7 +71,7 @@ func.func @tile_add(%a: !ttcore.tile<32x32, f32>, %b: !ttcore.tile<32x32, f32>) 
 func.func @tile_sub(%a: !ttcore.tile<32x32, f32>, %b: !ttcore.tile<32x32, f32>) -> !ttcore.tile<32x32, f32> {
   %c0 = arith.constant 0 : index
   ttkernel.tile_regs_acquire() : () -> ()
-  %diff = ttl.tile_sub %a, %b into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %diff = ttl.tile_sub %a, %b into dst[%c0] {ttl.tile_execution_strategy = #ttl.tile_execution_strategy<sfpu>} : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
   ttkernel.tile_regs_release() : () -> ()
   func.return %diff : !ttcore.tile<32x32, f32>
 }
@@ -84,7 +84,7 @@ func.func @tile_sub(%a: !ttcore.tile<32x32, f32>, %b: !ttcore.tile<32x32, f32>) 
 func.func @tile_mul(%a: !ttcore.tile<32x32, f32>, %b: !ttcore.tile<32x32, f32>) -> !ttcore.tile<32x32, f32> {
   %c0 = arith.constant 0 : index
   ttkernel.tile_regs_acquire() : () -> ()
-  %prod = ttl.tile_mul %a, %b into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %prod = ttl.tile_mul %a, %b into dst[%c0] {ttl.tile_execution_strategy = #ttl.tile_execution_strategy<sfpu>} : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
   ttkernel.tile_regs_release() : () -> ()
   func.return %prod : !ttcore.tile<32x32, f32>
 }
@@ -103,9 +103,9 @@ func.func @tile_integer_si32(%lhs: !ttcore.tile<16x32, si32>, %rhs: !ttcore.tile
   %c1 = arith.constant 1 : index
   %c2 = arith.constant 2 : index
   ttkernel.tile_regs_acquire() : () -> ()
-  %sum = ttl.tile_add %lhs, %rhs into dst[%c0] : !ttcore.tile<16x32, si32>, !ttcore.tile<16x32, si32> -> !ttcore.tile<16x32, si32>
-  %difference = ttl.tile_sub %sum, %rhs into dst[%c1] : !ttcore.tile<16x32, si32>, !ttcore.tile<16x32, si32> -> !ttcore.tile<16x32, si32>
-  %product = ttl.tile_mul %difference, %lhs into dst[%c2] : !ttcore.tile<16x32, si32>, !ttcore.tile<16x32, si32> -> !ttcore.tile<16x32, si32>
+  %sum = ttl.tile_add %lhs, %rhs into dst[%c0] {ttl.tile_execution_strategy = #ttl.tile_execution_strategy<sfpu>} : !ttcore.tile<16x32, si32>, !ttcore.tile<16x32, si32> -> !ttcore.tile<16x32, si32>
+  %difference = ttl.tile_sub %sum, %rhs into dst[%c1] {ttl.tile_execution_strategy = #ttl.tile_execution_strategy<sfpu>} : !ttcore.tile<16x32, si32>, !ttcore.tile<16x32, si32> -> !ttcore.tile<16x32, si32>
+  %product = ttl.tile_mul %difference, %lhs into dst[%c2] {ttl.tile_execution_strategy = #ttl.tile_execution_strategy<sfpu>} : !ttcore.tile<16x32, si32>, !ttcore.tile<16x32, si32> -> !ttcore.tile<16x32, si32>
   ttkernel.tile_regs_release() : () -> ()
   func.return %product : !ttcore.tile<16x32, si32>
 }
@@ -119,9 +119,9 @@ func.func @tile_integer_u32(%lhs: !ttcore.tile<16x32, u32>, %rhs: !ttcore.tile<1
   %c1 = arith.constant 1 : index
   %c2 = arith.constant 2 : index
   ttkernel.tile_regs_acquire() : () -> ()
-  %sum = ttl.tile_add %lhs, %rhs into dst[%c0] : !ttcore.tile<16x32, u32>, !ttcore.tile<16x32, u32> -> !ttcore.tile<16x32, u32>
-  %difference = ttl.tile_sub %sum, %rhs into dst[%c1] : !ttcore.tile<16x32, u32>, !ttcore.tile<16x32, u32> -> !ttcore.tile<16x32, u32>
-  %product = ttl.tile_mul %difference, %lhs into dst[%c2] : !ttcore.tile<16x32, u32>, !ttcore.tile<16x32, u32> -> !ttcore.tile<16x32, u32>
+  %sum = ttl.tile_add %lhs, %rhs into dst[%c0] {ttl.tile_execution_strategy = #ttl.tile_execution_strategy<sfpu>} : !ttcore.tile<16x32, u32>, !ttcore.tile<16x32, u32> -> !ttcore.tile<16x32, u32>
+  %difference = ttl.tile_sub %sum, %rhs into dst[%c1] {ttl.tile_execution_strategy = #ttl.tile_execution_strategy<sfpu>} : !ttcore.tile<16x32, u32>, !ttcore.tile<16x32, u32> -> !ttcore.tile<16x32, u32>
+  %product = ttl.tile_mul %difference, %lhs into dst[%c2] {ttl.tile_execution_strategy = #ttl.tile_execution_strategy<sfpu>} : !ttcore.tile<16x32, u32>, !ttcore.tile<16x32, u32> -> !ttcore.tile<16x32, u32>
   ttkernel.tile_regs_release() : () -> ()
   func.return %product : !ttcore.tile<16x32, u32>
 }
@@ -135,9 +135,9 @@ func.func @tile_integer_u16(%lhs: !ttcore.tile<16x32, u16>, %rhs: !ttcore.tile<1
   %c1 = arith.constant 1 : index
   %c2 = arith.constant 2 : index
   ttkernel.tile_regs_acquire() : () -> ()
-  %sum = ttl.tile_add %lhs, %rhs into dst[%c0] : !ttcore.tile<16x32, u16>, !ttcore.tile<16x32, u16> -> !ttcore.tile<16x32, u16>
-  %difference = ttl.tile_sub %sum, %rhs into dst[%c1] : !ttcore.tile<16x32, u16>, !ttcore.tile<16x32, u16> -> !ttcore.tile<16x32, u16>
-  %product = ttl.tile_mul %difference, %lhs into dst[%c2] : !ttcore.tile<16x32, u16>, !ttcore.tile<16x32, u16> -> !ttcore.tile<16x32, u16>
+  %sum = ttl.tile_add %lhs, %rhs into dst[%c0] {ttl.tile_execution_strategy = #ttl.tile_execution_strategy<sfpu>} : !ttcore.tile<16x32, u16>, !ttcore.tile<16x32, u16> -> !ttcore.tile<16x32, u16>
+  %difference = ttl.tile_sub %sum, %rhs into dst[%c1] {ttl.tile_execution_strategy = #ttl.tile_execution_strategy<sfpu>} : !ttcore.tile<16x32, u16>, !ttcore.tile<16x32, u16> -> !ttcore.tile<16x32, u16>
+  %product = ttl.tile_mul %difference, %lhs into dst[%c2] {ttl.tile_execution_strategy = #ttl.tile_execution_strategy<sfpu>} : !ttcore.tile<16x32, u16>, !ttcore.tile<16x32, u16> -> !ttcore.tile<16x32, u16>
   ttkernel.tile_regs_release() : () -> ()
   func.return %product : !ttcore.tile<16x32, u16>
 }
@@ -191,7 +191,7 @@ func.func @tile_compare_ops(%a: !ttcore.tile<32x32, f32>, %b: !ttcore.tile<32x32
 func.func @tile_chain(%a: !ttcore.tile<32x32, f32>, %b: !ttcore.tile<32x32, f32>) -> !ttcore.tile<32x32, f32> {
   %c0 = arith.constant 0 : index
   ttkernel.tile_regs_acquire() : () -> ()
-  %sum = ttl.tile_add %a, %b into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %sum = ttl.tile_add %a, %b into dst[%c0] {ttl.tile_execution_strategy = #ttl.tile_execution_strategy<sfpu>} : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
   %exp = ttl.tile_exp %sum into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
   ttkernel.tile_regs_release() : () -> ()
   func.return %exp : !ttcore.tile<32x32, f32>
@@ -217,8 +217,8 @@ func.func @tile_add_block_args(%a: !ttcore.tile<32x32, f32>, %b: !ttcore.tile<32
   %c2 = arith.constant 2 : index
   %c3 = arith.constant 3 : index
   ttkernel.tile_regs_acquire() : () -> ()
-  %sum = ttl.tile_add %a, %b into dst[%c2] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-  %result = ttl.tile_add %sum, %a into dst[%c3] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %sum = ttl.tile_add %a, %b into dst[%c2] {ttl.tile_execution_strategy = #ttl.tile_execution_strategy<sfpu>} : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %result = ttl.tile_add %sum, %a into dst[%c3] {ttl.tile_execution_strategy = #ttl.tile_execution_strategy<sfpu>} : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
   ttkernel.tile_regs_release() : () -> ()
   func.return %result : !ttcore.tile<32x32, f32>
 }
@@ -251,9 +251,9 @@ func.func @tile_axby_pattern(%a: !ttcore.tile<32x32, f32>, %x: !ttcore.tile<32x3
   %c1 = arith.constant 1 : index
   %c2 = arith.constant 2 : index
   ttkernel.tile_regs_acquire() : () -> ()
-  %term1 = ttl.tile_mul %a, %x into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-  %term2 = ttl.tile_mul %b, %y into dst[%c1] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-  %result = ttl.tile_add %term1, %term2 into dst[%c2] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %term1 = ttl.tile_mul %a, %x into dst[%c0] {ttl.tile_execution_strategy = #ttl.tile_execution_strategy<sfpu>} : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %term2 = ttl.tile_mul %b, %y into dst[%c1] {ttl.tile_execution_strategy = #ttl.tile_execution_strategy<sfpu>} : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %result = ttl.tile_add %term1, %term2 into dst[%c2] {ttl.tile_execution_strategy = #ttl.tile_execution_strategy<sfpu>} : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
   ttkernel.tile_regs_release() : () -> ()
   func.return %result : !ttcore.tile<32x32, f32>
 }

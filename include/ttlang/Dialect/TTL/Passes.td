@@ -420,6 +420,10 @@ def TTLAssignDST
     - Inserts ttl.copy_tile for block arguments
     - Assigns dst_index SSA operands to tile math operations
     - Checks capacity and emits diagnostics on overflow
+
+    Nested DST operations are preserved when their destination and source
+    indices are resolved and they do not require copy insertion. The pass
+    diagnoses unsupported nested operations before modifying IR.
   }];
 
   let options = [
@@ -439,29 +443,28 @@ def TTLAssignDST
 
 def TTLSetComputeKernelConfig
     : Pass<"ttl-set-compute-kernel-config", "::mlir::func::FuncOp"> {
-  let summary = "Set ttl.compute kernel configuration attributes";
+  let summary = "Resolve compute-kernel configuration";
   let description = [{
-    Sets fp32_dest_acc_en, dst_full_sync_en, and ttl.enable_fpu_binary_ops
-    attributes on the enclosing func.func when they are not already
-    configured. These are per-kernel compile-time settings; any op in the
-    function can read them via getKernelBoolAttr().
+    Selects tile execution strategies and resolves kernel-wide destination
+    element width, synchronization mode, and per-dataflow-buffer unpack mode.
+    Target capabilities, user policy, and target-independent kernel
+    requirements are analyzed separately. The pass validates a complete
+    configuration before writing operation or function attributes.
   }];
 
   let options = [
-    Option<"fp32DestAccEn", "fp32-dest-acc-en", "bool", "false",
-           "Set default fp32_dest_acc_en when not already configured.">,
-    Option<"dstFullSyncEn", "dst-full-sync-en", "bool", "false",
-           "Set default dst_full_sync_en when not already configured.">,
+    Option<"fp32DestAccEn", "fp32-dest-acc-en", "std::string", "\"auto\"",
+           "Select fp32 destination accumulation: auto, enabled, or disabled.">,
+    Option<"dstFullSyncEn", "dst-full-sync-en", "std::string", "\"auto\"",
+           "Select full DST synchronization: auto, enabled, or disabled.">,
     Option<"reduceFullFp32", "reduce-full-fp32", "bool", "true",
-           "Enable FP32 accumulation for reduce operations. "
-           "Sets fp32_dest_acc_en on the kernel when any compute op contains reduce.">,
+           "Prefer FP32 accumulation for reduce operations when supported.">,
     Option<"matmulFullFp32", "matmul-full-fp32", "bool", "true",
-           "Enable FP32 accumulation for matmul operations. "
-           "Sets fp32_dest_acc_en on the kernel when any compute op contains matmul_block.">,
+           "Prefer FP32 accumulation for matmul operations when supported.">,
     Option<"enableFPUBinaryOps", "enable-fpu-binary-ops", "bool", "true",
-           "Allow lowering eligible tile add/sub/mul to FPU binary form. "
-           "Written as the ttl.enable_fpu_binary_ops attribute on the func and "
-           "consumed by isFPUEligibleBinaryOp(). Disable to force the SFPU path.">
+           "Allow tile add/sub/mul with matching operand coordinates and "
+           "DFB-backed operands to select the FPU strategy. "
+           "Disable to select the SFPU strategy.">
   ];
 
   let dependentDialects = [
@@ -588,6 +591,9 @@ def TTLScheduleOperations
     : Pass<"ttl-schedule-operations", "::mlir::func::FuncOp"> {
   let summary = "Group tile operations by kind within sync regions";
   let description = [{
+    Requires `ttl-set-compute-kernel-config` to select execution strategies for
+    tile operations that support alternatives.
+
     Reorders tile operations within sync regions (`tile_regs_acquire` to
     `tile_regs_commit`) to group by operation kind. After `ttl-lower-to-loops`
     unrolls a subblocked compute, tile ops from different iterations are

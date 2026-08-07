@@ -400,9 +400,6 @@ createIntegerBinaryOp(SourceOp op, Value lhsIndex, Value rhsIndex,
 ///
 /// Source DST indices are resolved from the operand-defining ops' dst_index.
 /// The output index comes from this op's dst_index operand.
-/// The FPU variant (TTLTileBinaryFPUToTTKernel) is registered with higher
-/// benefit so it is tried first; this SFPU pattern is the unconditional
-/// fallback.
 template <typename SourceOp, typename InitOp, typename TTKernelComputeOp>
 struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
   TTLTileBinaryToTTKernel(MLIRContext *ctx)
@@ -411,6 +408,13 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
   LogicalResult
   matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    if (op->template hasTrait<TTLStrategyDependentBinaryOpTrait>()) {
+      FailureOr<TileExecutionStrategy> strategy =
+          getSelectedTileExecutionStrategy(op);
+      if (failed(strategy) || *strategy != TileExecutionStrategy::SFPU) {
+        return rewriter.notifyMatchFailure(op, "SFPU strategy is not selected");
+      }
+    }
     Location loc = op.getLoc();
 
     auto src0 = getSrcDstIndex(op.getLhs(), loc, rewriter);
@@ -471,9 +475,7 @@ struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
 /// FPU binary ops: read both operands from CBs, write result to DST.
 /// add_tiles(in0_cb, in1_cb, in0_tile_index, in1_tile_index, dst_index)
 ///
-/// Only matches strategy-dependent binary ops (add/sub/mul) that are
-/// currently FPU-eligible per isFPUEligibleBinaryOp. Registered with higher
-/// benefit than the SFPU pattern so this predicate is tried first.
+/// Only matches binary tile ops whose selected strategy is FPU.
 template <typename SourceOp, typename InitOp, typename TTKernelComputeOp>
 struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
   TTLTileBinaryFPUToTTKernel(const TypeConverter &typeConverter,
@@ -486,8 +488,10 @@ struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
     if (isIntegerTileType(op.getResult().getType())) {
       return rewriter.notifyMatchFailure(op, "integer operations require SFPU");
     }
-    if (!isFPUEligibleBinaryOp(op)) {
-      return rewriter.notifyMatchFailure(op, "not FPU-eligible");
+    FailureOr<TileExecutionStrategy> strategy =
+        getSelectedTileExecutionStrategy(op);
+    if (failed(strategy) || *strategy != TileExecutionStrategy::FPU) {
+      return rewriter.notifyMatchFailure(op, "FPU strategy is not selected");
     }
 
     Location loc = op.getLoc();
@@ -530,9 +534,8 @@ struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
               llvm::Twine(rhsTensorTy.getNumElements()));
     }
 
-    // CB tile index: both operands share the same index because
-    // isFPUEligibleBinaryOp only matches when the two tensor.extract ops use
-    // identical induction indices (the lowered form of matching maps).
+    // FPU strategy selection proves that both extracts use the same tile
+    // coordinates before DST assignment can change operand provenance.
     auto cbIdx = computeCBTileIndex(op.getLhs(), rewriter, loc);
     if (failed(cbIdx)) {
       return rewriter.notifyMatchFailure(
@@ -795,11 +798,7 @@ struct CBInputTileOpSetup {
 
 /// Lower ttl.tile_reduce to ttkernel.reduce_tile.
 struct TTLTileReduceToTTKernel : OpConversionPattern<TileReduceOp> {
-  bool fullFp32;
-
-  TTLTileReduceToTTKernel(TypeConverter &converter, MLIRContext *ctx,
-                          bool fullFp32)
-      : OpConversionPattern<TileReduceOp>(converter, ctx), fullFp32(fullFp32) {}
+  using OpConversionPattern<TileReduceOp>::OpConversionPattern;
 
   LogicalResult
   matchAndRewrite(TileReduceOp op, TileReduceOp::Adaptor adaptor,
@@ -837,12 +836,6 @@ struct TTLTileReduceToTTKernel : OpConversionPattern<TileReduceOp> {
         ttk::ReduceTypeAttr::get(op.getContext(), ttkReduceType),
         ttk::ReduceDimAttr::get(op.getContext(), op.getReduceDim()));
 
-    if (fullFp32 && isBlackholeTarget(op) &&
-        op.getReduceDim() == ttk::ReduceDim::Row) {
-      op.emitWarning()
-          << "full-fp32 row reduce is unavailable on Blackhole (tt-metal "
-             "#47311); using non-full-fp32 reduce lowering";
-    }
     // Propagate output CB index for per-op init insertion.
     if (auto cbIdxAttr =
             op->getAttrOfType<IntegerAttr>(kReduceOutputCBIndexAttrName)) {
@@ -1118,8 +1111,7 @@ struct TTLTileMulUnaryConstToTTKernel
 //===----------------------------------------------------------------------===//
 
 void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
-                                          RewritePatternSet &patterns,
-                                          bool reduceFullFp32) {
+                                          RewritePatternSet &patterns) {
   MLIRContext *ctx = patterns.getContext();
 
   // DST lifecycle ops (1:1 conversion, no operands/results).
@@ -1161,7 +1153,7 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
   patterns.add<TTLTileBcastToTTKernel>(*typeConverter, ctx);
 
   // Reduce and transpose ops need the type converter for CB lookup.
-  patterns.add<TTLTileReduceToTTKernel>(*typeConverter, ctx, reduceFullFp32);
+  patterns.add<TTLTileReduceToTTKernel>(*typeConverter, ctx);
   patterns.add<TTLTileTransposeToTTKernel>(*typeConverter, ctx);
 
   // Matmul block needs the type converter for CB lookup.

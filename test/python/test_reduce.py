@@ -1479,7 +1479,7 @@ def test_matmul_then_reduce(device, dtype):
 REDUCE_BCAST_MATMUL_TEMPLATE = """
 import ttl
 
-@ttl.operation(grid=(1, 1), fp32_dest_acc_en=True)
+@ttl.operation(grid=(1, 1))
 def reduce_bcast_matmul_kernel(reduce_in, mat_b, out):
     reduce_dfb = ttl.make_dataflow_buffer_like(reduce_in, shape=({mt}, {kt}), block_count=2)
     red_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)

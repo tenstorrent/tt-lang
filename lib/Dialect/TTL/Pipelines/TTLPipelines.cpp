@@ -43,6 +43,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   {
     TTLSetComputeKernelConfigOptions configOpts;
     configOpts.reduceFullFp32 = options.reduceFullFp32;
+    configOpts.matmulFullFp32 = options.matmulFullFp32;
     configOpts.enableFPUBinaryOps = options.enableFPUBinaryOps;
     pm.addNestedPass<func::FuncOp>(createTTLSetComputeKernelConfig(configOpts));
   }

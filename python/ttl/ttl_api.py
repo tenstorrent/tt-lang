@@ -56,6 +56,7 @@ from ttl.passes import (
     get_ttkernel_names,
     ttkernel_to_cpp_by_name,
 )
+
 from ttl.passmanager import PassManager
 
 
@@ -105,6 +106,11 @@ from .kernel_runner import (
 from .operators import CopyTransferHandler, TensorBlock, copy
 from .compiler_options import CompilerOptions
 from .ttl_utils import get_thread_type_string
+
+_TTCORE_ARCH_BY_DEVICE_NAME = {
+    "blackhole": ttcore.Arch.Blackhole,
+    "wormhole_b0": ttcore.Arch.WormholeB0,
+}
 
 # Thread registry for automatic collection of @compute and @datamovement threads
 _thread_registry: List[Callable] = []
@@ -482,18 +488,32 @@ def _detect_device_arch(device) -> Optional[str]:
 
 
 def _device_target_arch(args) -> Optional[str]:
-    """Return the first detected tensor device architecture, or None."""
+    """Return the common tensor device architecture, or None for host inputs."""
+    target_arch = None
     for arg in args:
-        if not is_ttnn_tensor(arg) or not hasattr(arg, "device"):
+        if not is_ttnn_tensor(arg):
             continue
-        device = arg.device()
+        try:
+            device = arg.device()
+        except Exception as error:
+            raise ValueError(
+                "Unsupported or undetectable TT device architecture"
+            ) from error
         if device is None:
             continue
         arch = _detect_device_arch(device)
         if arch is None:
-            continue
-        return arch
-    return None
+            raise ValueError("Unsupported or undetectable TT device architecture")
+        if arch not in _TTCORE_ARCH_BY_DEVICE_NAME:
+            raise ValueError(f"Unsupported TT device architecture: {arch}")
+        if target_arch is None:
+            target_arch = arch
+        elif target_arch != arch:
+            raise ValueError(
+                "Tensor arguments use different TT device architectures: "
+                f"{target_arch} and {arch}"
+            )
+    return target_arch
 
 
 def _resolve_grid(grid, args, kwargs):
@@ -761,7 +781,10 @@ def _get_kernel_bool_attr(module, kernel_name: str, attr_name: str) -> bool:
     operation = _lookup_kernel_func_op(module, kernel_name)
     attr = operation.attributes.get(attr_name, None)
     if attr is None:
-        return False
+        raise ValueError(
+            f"Required compiler-generated attribute '{attr_name}' is missing "
+            f"from compute kernel '{kernel_name}'"
+        )
     attr_text = str(attr).strip()
     if attr_text == "true":
         return True
@@ -774,10 +797,24 @@ def _get_kernel_bool_attr(module, kernel_name: str, attr_name: str) -> bool:
 
 
 def _get_kernel_i32_array_attr(module, kernel_name: str, attr_name: str):
-    """Read a `DenseI32ArrayAttr` func.func attribute as a list of ints.
+    """Read a required `DenseI32ArrayAttr` kernel attribute."""
+    operation = _lookup_kernel_func_op(module, kernel_name)
+    attr = operation.attributes.get(attr_name, None)
+    if attr is None:
+        raise ValueError(
+            f"Required compiler-generated attribute '{attr_name}' is missing "
+            f"from compute kernel '{kernel_name}'"
+        )
+    if not isinstance(attr, DenseI32ArrayAttr):
+        raise ValueError(
+            f"Expected DenseI32ArrayAttr for '{attr_name}' on kernel "
+            f"'{kernel_name}', got {attr}"
+        )
+    return list(attr)
 
-    Returns an empty list when the attribute is missing.
-    """
+
+def _get_optional_kernel_i32_array_attr(module, kernel_name: str, attr_name: str):
+    """Read an optional `DenseI32ArrayAttr` kernel attribute."""
     operation = _lookup_kernel_func_op(module, kernel_name)
     attr = operation.attributes.get(attr_name, None)
     if attr is None:
@@ -1000,7 +1037,8 @@ def _compile_ttnn_kernel(
                 module, name, "ttl.unpack_to_dest_fp32"
             ),
         }
-        for name, _ in kernel_info
+        for name, thread_type in kernel_info
+        if thread_type == "compute"
     }
 
     # Build thread-to-kernel mapping for profiling
@@ -1012,7 +1050,7 @@ def _compile_ttnn_kernel(
         kernel_path = _write_kernel_to_tmp(name, cpp_source)
         kernel_paths.append((kernel_path, thread_type))
         kernel_pipe_computed_address_dfb_indices.append(
-            _get_kernel_i32_array_attr(
+            _get_optional_kernel_i32_array_attr(
                 module, name, _ttl_ir.PIPE_COMPUTED_ADDRESS_DFB_INDICES_ATTR
             )
         )
@@ -1906,7 +1944,9 @@ def _lower_program_to_kernel(
             ctx,
         )
         if target_arch is not None:
-            module.operation.attributes["ttl.target_arch"] = StringAttr.get(target_arch)
+            module.operation.attributes["ttl.target_arch"] = ttcore.ir.ArchAttr.get(
+                ctx, int(_TTCORE_ARCH_BY_DEVICE_NAME[target_arch])
+            )
 
         # Insert standalone thread functions directly into module
         with InsertionPoint(module.body):
@@ -1931,11 +1971,13 @@ def _lower_program_to_kernel(
         config_options = []
         if fp32_dest_acc_en is not None:
             config_options.append(
-                f"fp32-dest-acc-en={1 if fp32_dest_acc_en else 0}"
+                "fp32-dest-acc-en="
+                + ("enabled" if fp32_dest_acc_en else "disabled")
             )
         if dst_full_sync_en is not None:
             config_options.append(
-                f"dst-full-sync-en={1 if dst_full_sync_en else 0}"
+                "dst-full-sync-en="
+                + ("enabled" if dst_full_sync_en else "disabled")
             )
         config_options.append(
             f"reduce-full-fp32={int(compiler_options.reduce_full_fp32)}"

@@ -119,4 +119,16 @@ def TTL_TensorMemoryLayout : I32EnumAttr<
   let cppNamespace = "::mlir::tt::ttl";
 }
 
+def TTL_TileExecutionStrategy_FPU :
+    I32EnumAttrCase<"FPU", 0, "fpu">;
+def TTL_TileExecutionStrategy_SFPU :
+    I32EnumAttrCase<"SFPU", 1, "sfpu">;
+
+def TTL_TileExecutionStrategy : I32EnumAttr<
+    "TileExecutionStrategy", "tile execution strategy",
+    [TTL_TileExecutionStrategy_FPU, TTL_TileExecutionStrategy_SFPU]> {
+  let cppNamespace = "::mlir::tt::ttl";
+  let genSpecializedAttr = 0;
+}
+
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSENUMS_TD
