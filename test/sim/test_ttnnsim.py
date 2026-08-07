@@ -1261,8 +1261,14 @@ def test_the_shape_and_tile_surface_matches_the_installed_ttnn():
     assert tile.face_shape == ttnn.Tile().face_shape
     assert tile.num_faces == ttnn.Tile().num_faces
     assert repr(tile) == repr(ttnn.Tile())
+
+    # The sizes come from ttnn.tile_size rather than from the tile itself:
+    # Tile.get_tile_size pads the shared exponents to the device's L1 alignment,
+    # so it reads the device context and raises a map lookup error where none has
+    # been initialized -- and these tests open no device. ttnn's free function is
+    # the same number for the 32x32 tile and answers without one.
     for dtype_name in ("bfloat16", "float32", "bfloat8_b"):
-        real_size = tile.get_tile_size(getattr(real_ttnn, dtype_name))
+        real_size = real_ttnn.tile_size(getattr(real_ttnn, dtype_name))
         assert real_size == ttnn.Tile().get_tile_size(
             getattr(ttnn, dtype_name)
         ), f"{dtype_name} tile size drifted"
