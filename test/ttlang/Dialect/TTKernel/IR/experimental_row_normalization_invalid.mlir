@@ -22,6 +22,8 @@ module {
   }
 }
 
+// -----
+
 // The target helper supports bf16 DFBs only.
 module {
   func.func @unsupported_dtype() {
@@ -36,6 +38,46 @@ module {
         : (!ttkernel.cb<6, !ttcore.tile<32x32, f32>>,
            !ttkernel.cb<6, !ttcore.tile<32x32, f32>>,
            !ttkernel.cb<6, !ttcore.tile<32x32, f32>>) -> ()
+    return
+  }
+}
+
+// -----
+
+// The semantic scale must be finite and positive.
+module {
+  func.func @nonfinite_scale() {
+    %input = ttkernel.get_compile_time_arg_val(0)
+        : () -> !ttkernel.cb<6, !ttcore.tile<32x32, bf16>>
+    %output = ttkernel.get_compile_time_arg_val(1)
+        : () -> !ttkernel.cb<6, !ttcore.tile<32x32, bf16>>
+    // expected-error @below {{'ttkernel.experimental_row_normalization_block' op scale must be finite and positive}}
+    ttkernel.experimental_row_normalization_block(%input, %input, %output)
+        num_tiles = 3 scale = 0x7FC00000 epsilon = 1.000000e-05
+        has_gamma = false dtype = <bf16>
+        : (!ttkernel.cb<6, !ttcore.tile<32x32, bf16>>,
+           !ttkernel.cb<6, !ttcore.tile<32x32, bf16>>,
+           !ttkernel.cb<6, !ttcore.tile<32x32, bf16>>) -> ()
+    return
+  }
+}
+
+// -----
+
+// Epsilon must be finite and positive.
+module {
+  func.func @nonpositive_epsilon() {
+    %input = ttkernel.get_compile_time_arg_val(0)
+        : () -> !ttkernel.cb<6, !ttcore.tile<32x32, bf16>>
+    %output = ttkernel.get_compile_time_arg_val(1)
+        : () -> !ttkernel.cb<6, !ttcore.tile<32x32, bf16>>
+    // expected-error @below {{'ttkernel.experimental_row_normalization_block' op epsilon must be finite and positive}}
+    ttkernel.experimental_row_normalization_block(%input, %input, %output)
+        num_tiles = 3 scale = 1.000000e+00 epsilon = 0.000000e+00
+        has_gamma = false dtype = <bf16>
+        : (!ttkernel.cb<6, !ttcore.tile<32x32, bf16>>,
+           !ttkernel.cb<6, !ttcore.tile<32x32, bf16>>,
+           !ttkernel.cb<6, !ttcore.tile<32x32, bf16>>) -> ()
     return
   }
 }
