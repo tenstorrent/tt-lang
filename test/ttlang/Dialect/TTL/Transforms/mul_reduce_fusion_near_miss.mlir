@@ -1,8 +1,8 @@
 // Verifies that recognized multiply-reduction graphs report one typed reason
 // when target selection cannot preserve an absorbed result.
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(func.func(ttl-print-compute-op-creation-plans))' -o /dev/null 2>&1 | FileCheck %s --check-prefix=PLAN
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute))' -o /dev/null 2>&1 | FileCheck %s --check-prefix=QUIET --allow-empty
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute))' --remarks-filter-missed='ttl-reduction-fusion' -o /dev/null 2>&1 | FileCheck %s --check-prefix=REMARK
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-print-compute-op-creation-plans))' -o /dev/null 2>&1 | FileCheck %s --check-prefix=PLAN
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute))' -o /dev/null 2>&1 | FileCheck %s --check-prefix=QUIET --allow-empty
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute))' --remarks-filter-missed='ttl-reduction-fusion' -o /dev/null 2>&1 | FileCheck %s --check-prefix=REMARK
 // QUIET-NOT:  [Missed] ReductionFusion
 
 // The product publication is an additional use that the fixed target schedule
@@ -49,6 +49,52 @@ module attributes {ttl.target_arch = "blackhole"} {
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.store %reduced, %scalar_output
+        : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+          tensor<1x1x!ttcore.tile<32x32, bf16>>
+    return
+  }
+}
+
+// -----
+
+// Observing DST between the product and reduction cannot move into the fixed
+// block schedule. The typed reason explains why instrumentation selects the
+// ordinary materialized lowering.
+// PLAN-LABEL: ComputeOp creation plan @instrumented_product
+// PLAN:       ttl.reduce kind=fused recipe=fusion-graph legal=false
+// PLAN:         near-match=multiply-full-scalar-reduction fusion not selected: the selected schedule cannot preserve instrumentation order; ordinary materialized lowering remains selected; retained-intermediate-dfb-bytes=10240; additional-dst-acquisitions=2
+// PLAN-NEXT:    rejected=fixed fusion block cannot preserve instrumentation inside the absorbed expression
+// REMARK:     remark: [Missed] ReductionFusion | Category:ttl-reduction-fusion | Function=instrumented_product
+// REMARK-SAME: Remark="multiply-full-scalar-reduction fusion not selected: the selected schedule cannot preserve instrumentation order; ordinary materialized lowering remains selected; retained-intermediate-dfb-bytes=10240; additional-dst-acquisitions=2"
+module attributes {ttl.target_arch = "blackhole"} {
+  func.func @instrumented_product()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 4], !ttcore.tile<32x32, bf16>, 2>
+    %output_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %wait = ttl.cb_wait %input_dfb
+        : <[1, 4], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x4x!ttcore.tile<32x32, bf16>>
+    %input = ttl.attach_cb %wait, %input_dfb
+        : (tensor<1x4x!ttcore.tile<32x32, bf16>>,
+           !ttl.cb<[1, 4], !ttcore.tile<32x32, bf16>, 2>)
+          -> tensor<1x4x!ttcore.tile<32x32, bf16>>
+    %product = ttl.mul %input, %input
+        : tensor<1x4x!ttcore.tile<32x32, bf16>>,
+          tensor<1x4x!ttcore.tile<32x32, bf16>>
+          -> tensor<1x4x!ttcore.tile<32x32, bf16>>
+    "ttl.dprint"() {fmt = "after product", mode = "dst"} : () -> ()
+    %scaler = ttl.fill 1.000000e+00
+        : tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %reduced = ttl.reduce %product, %scaler 0 : i32 [0, 1]
+        : (tensor<1x4x!ttcore.tile<32x32, bf16>>,
+           tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %output = ttl.cb_reserve %output_dfb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %reduced, %output
         : tensor<1x1x!ttcore.tile<32x32, bf16>>,
           tensor<1x1x!ttcore.tile<32x32, bf16>>
     return
