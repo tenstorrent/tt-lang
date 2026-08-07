@@ -1819,6 +1819,37 @@ def TTL_RawElementReadOp : TTL_Op<"raw_element_read",
   let hasVerifier = 1;
 }
 
+def TTL_ReadIndexOp : TTL_Op<"read_index",
+    [MemoryEffects<[MemRead]>, TTL_DataMovementOpTrait]> {
+  let summary = "Read a nonnegative scalar element as an index";
+  let description = [{
+    `ttl.read_index` reads a single f32 or bf16 scalar element from a block
+    acquired from a dataflow buffer by `ttl.cb_wait` and converts it to an
+    index. Coordinates are flat scalar-element positions and follow the same
+    layout-independent rules as `ttl.raw_element_read`.
+
+    Conversion truncates fractional values toward zero. The source value must
+    be finite, nonnegative, and no greater than INT32_MAX. This operation is
+    intended for tensor-provided offsets such as table indices and positions.
+
+    This operation is restricted to data movement (noc) threads.
+
+    Example:
+    ```mlir
+    %index = ttl.read_index %block[%row, %column]
+             : tensor<1x1x!ttcore.tile<32x32, f32>> -> index
+    ```
+  }];
+  let arguments = (ins
+    AnyRankedTensor:$block,
+    Variadic<Index>:$coords
+  );
+  let results = (outs Index:$result);
+  let assemblyFormat =
+      "$block `[` $coords `]` attr-dict `:` type($block) `->` type($result)";
+  let hasVerifier = 1;
+}
+
 def TTL_RawElementWriteOp : TTL_Op<"raw_element_write",
     [MemoryEffects<[MemRead, MemWrite]>, TTL_DataMovementOpTrait]> {
   let summary = "Write a scalar value to a block at flat coordinates";
