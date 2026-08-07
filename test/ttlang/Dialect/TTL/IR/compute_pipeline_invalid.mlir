@@ -417,3 +417,165 @@ func.func @invalid_row_normalization_kind(
   }
   return
 }
+
+// -----
+
+// A recognized row-normalization pipeline requires a positive scale.
+func.func @row_normalization_negative_scale(
+    %input: tensor<1x1x!ttcore.tile<32x32, bf16>>)
+    -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
+  // expected-error @below {{'ttl.compute_pipeline' op row_normalization scale must be finite and positive}}
+  %result = ttl.compute_pipeline ins(%input)
+      {pipeline_kind = #ttl.compute_pipeline_kind<row_normalization>}
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
+    ^bb0(%pipeline_input: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+      %reduced = ttl.compute_stage ins(%pipeline_input)
+          indexing_maps = [affine_map<(dim0, dim1) -> (dim0, dim1)>,
+                           affine_map<(dim0, dim1) -> (0, 0)>]
+          iterator_types = ["reduction", "reduction"]
+          : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
+        ^bb0(%stage_input: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+          %square = ttl.mul %stage_input, %stage_input
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                tensor<1x1x!ttcore.tile<32x32, bf16>>
+                -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+          %scaler = ttl.fill 1.000000e+00
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+          %sum = ttl.reduce %square, %scaler 0 : i32 [0, 1]
+              : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                 tensor<1x1x!ttcore.tile<32x32, bf16>>)
+                -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+          ttl.compute_stage_yield %sum
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+      }
+      %inverse = ttl.compute_stage ins(%reduced)
+          indexing_maps = [affine_map<(dim0, dim1) -> (dim0, dim1)>,
+                           affine_map<(dim0, dim1) -> (dim0, dim1)>]
+          iterator_types = ["parallel", "parallel"]
+          : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
+        ^bb0(%stage_scalar: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+          %scaled = ttl.mul_unary_const %stage_scalar, -1.000000e+00
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+                -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+          %epsilon = ttl.fill 1.000000e-05
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+          %biased = ttl.add %scaled, %epsilon
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                tensor<1x1x!ttcore.tile<32x32, bf16>>
+                -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+          %value = ttl.rsqrt %biased
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+                -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+          ttl.compute_stage_yield %value
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+      }
+      %normalized = ttl.compute_stage ins(%pipeline_input, %inverse)
+          indexing_maps = [affine_map<(dim0, dim1) -> (dim0, dim1)>,
+                           affine_map<(dim0, dim1) -> (0, 0)>,
+                           affine_map<(dim0, dim1) -> (dim0, dim1)>]
+          iterator_types = ["parallel", "parallel"]
+          : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
+        ^bb0(%stage_input: tensor<1x1x!ttcore.tile<32x32, bf16>>,
+             %stage_scalar: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+          %broadcast = ttl.block.broadcast %stage_scalar
+              dims = [0, 1], shape = [1, 1]
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+                -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+          %value = ttl.mul %stage_input, %broadcast
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                tensor<1x1x!ttcore.tile<32x32, bf16>>
+                -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+          ttl.compute_stage_yield %value
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+      }
+      ttl.compute_pipeline_yield %normalized
+          : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  return %result : tensor<1x1x!ttcore.tile<32x32, bf16>>
+}
+
+// -----
+
+// A recognized row-normalization pipeline requires a positive epsilon.
+func.func @row_normalization_negative_epsilon(
+    %input: tensor<1x1x!ttcore.tile<32x32, bf16>>)
+    -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
+  // expected-error @below {{'ttl.compute_pipeline' op row_normalization epsilon must be finite and positive}}
+  %result = ttl.compute_pipeline ins(%input)
+      {pipeline_kind = #ttl.compute_pipeline_kind<row_normalization>}
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
+    ^bb0(%pipeline_input: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+      %reduced = ttl.compute_stage ins(%pipeline_input)
+          indexing_maps = [affine_map<(dim0, dim1) -> (dim0, dim1)>,
+                           affine_map<(dim0, dim1) -> (0, 0)>]
+          iterator_types = ["reduction", "reduction"]
+          : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
+        ^bb0(%stage_input: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+          %square = ttl.mul %stage_input, %stage_input
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                tensor<1x1x!ttcore.tile<32x32, bf16>>
+                -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+          %scaler = ttl.fill 1.000000e+00
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+          %sum = ttl.reduce %square, %scaler 0 : i32 [0, 1]
+              : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                 tensor<1x1x!ttcore.tile<32x32, bf16>>)
+                -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+          ttl.compute_stage_yield %sum
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+      }
+      %inverse = ttl.compute_stage ins(%reduced)
+          indexing_maps = [affine_map<(dim0, dim1) -> (dim0, dim1)>,
+                           affine_map<(dim0, dim1) -> (dim0, dim1)>]
+          iterator_types = ["parallel", "parallel"]
+          : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
+        ^bb0(%stage_scalar: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+          %scaled = ttl.mul_unary_const %stage_scalar, 1.000000e+00
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+                -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+          %epsilon = ttl.fill -1.000000e-05
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+          %biased = ttl.add %scaled, %epsilon
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                tensor<1x1x!ttcore.tile<32x32, bf16>>
+                -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+          %value = ttl.rsqrt %biased
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+                -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+          ttl.compute_stage_yield %value
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+      }
+      %normalized = ttl.compute_stage ins(%pipeline_input, %inverse)
+          indexing_maps = [affine_map<(dim0, dim1) -> (dim0, dim1)>,
+                           affine_map<(dim0, dim1) -> (0, 0)>,
+                           affine_map<(dim0, dim1) -> (dim0, dim1)>]
+          iterator_types = ["parallel", "parallel"]
+          : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
+        ^bb0(%stage_input: tensor<1x1x!ttcore.tile<32x32, bf16>>,
+             %stage_scalar: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+          %broadcast = ttl.block.broadcast %stage_scalar
+              dims = [0, 1], shape = [1, 1]
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+                -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+          %value = ttl.mul %stage_input, %broadcast
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                tensor<1x1x!ttcore.tile<32x32, bf16>>
+                -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+          ttl.compute_stage_yield %value
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+      }
+      ttl.compute_pipeline_yield %normalized
+          : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  return %result : tensor<1x1x!ttcore.tile<32x32, bf16>>
+}

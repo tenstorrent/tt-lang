@@ -1259,6 +1259,14 @@ verifyRowNormalizationPipeline(ComputePipelineOp pipeline) {
         "row_normalization finalization stage must scale, add epsilon, and "
         "compute reciprocal square root");
   }
+  if (!isFinitePositiveFloat(scaledReduction.getValueAttr())) {
+    return pipeline.emitOpError(
+        "row_normalization scale must be finite and positive");
+  }
+  if (!isFinitePositiveFloat(epsilon.getValueAttr())) {
+    return pipeline.emitOpError(
+        "row_normalization epsilon must be finite and positive");
+  }
 
   auto scalarBroadcast = dyn_cast<BlockBroadcastOp>(consumerOperations[0]);
   auto normalized = dyn_cast<MulOp>(consumerOperations[1]);
