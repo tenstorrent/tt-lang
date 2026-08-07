@@ -16,17 +16,22 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 
 namespace mlir::tt::ttl {
 
 /// Returns the per-node L1 bytes occupied by one physical DFB descriptor.
-FailureOr<uint64_t> getDFBAllocationSizeBytes(CircularBufferType type);
+/// On failure, `failureReason` describes the invalid allocation type.
+FailureOr<uint64_t> getDFBAllocationSizeBytes(CircularBufferType type,
+                                              std::string &failureReason);
 
 /// Per-node L1 footprint aggregated by unique physical DFB index.
 class DFBAllocationFootprint {
 public:
   /// Adds one assignment and returns true when it increases the index size.
-  FailureOr<bool> add(int64_t physicalIndex, CircularBufferType type);
+  /// On failure, `failureReason` describes the invalid allocation type.
+  FailureOr<bool> add(int64_t physicalIndex, CircularBufferType type,
+                      std::string &failureReason);
 
   bool empty() const { return maxBytesByIndex.empty(); }
   uint64_t getTotalBytes() const;

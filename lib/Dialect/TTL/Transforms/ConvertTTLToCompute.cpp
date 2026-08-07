@@ -1285,8 +1285,7 @@ validateExistingComputeOps(func::FuncOp kernel,
           continue;
         }
         std::string failureReason;
-        if (failed(target.validateKernelTileType(containsMatmul, tileType,
-                                                 failureReason))) {
+        if (failed(target.validateKernelTileType(tileType, failureReason))) {
           compute.emitOpError() << "block argument " << argument.getArgNumber()
                                 << " " << failureReason;
           hasErrors = true;

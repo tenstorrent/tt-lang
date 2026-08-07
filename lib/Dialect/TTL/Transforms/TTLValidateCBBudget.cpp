@@ -72,9 +72,11 @@ struct TTLValidateCBBudgetPass
       }
       auto cbType = cast<CircularBufferType>(bindOp.getResult().getType());
       int64_t physicalIndex = bindOp.getCbIndex().getSExtValue();
-      FailureOr<bool> increased = footprint.add(physicalIndex, cbType);
+      std::string failureReason;
+      FailureOr<bool> increased =
+          footprint.add(physicalIndex, cbType, failureReason);
       if (failed(increased)) {
-        bindOp.emitOpError() << "invalid negative total element count for CB";
+        bindOp.emitOpError() << failureReason;
         return WalkResult::interrupt();
       }
       if (*increased) {

@@ -1148,8 +1148,7 @@ recordComputeTileTypes(ComputeOpCreationPlan &plan,
   }
   auto validateTileType = [&](ttcore::TileType tileType,
                               std::string &failureReason) {
-    return target.validateKernelTileType(containsMatmul, tileType,
-                                         failureReason);
+    return target.validateKernelTileType(tileType, failureReason);
   };
 
   auto resultTileType =

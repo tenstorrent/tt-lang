@@ -15,6 +15,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <array>
+#include <cassert>
 
 namespace mlir::tt::ttl {
 
@@ -63,40 +64,55 @@ bool hasTileShape(ttcore::TileType tileType, int64_t height, int64_t width) {
   return tileType.getHeight() == height && tileType.getWidth() == width;
 }
 
-bool isElementwiseComputeShape(ttcore::TileType tileType) {
+bool isStandardComputeShape(ttcore::TileType tileType) {
   return (tileType.getHeight() == 16 || tileType.getHeight() == 32) &&
          (tileType.getWidth() == 16 || tileType.getWidth() == 32);
 }
 
-bool isMatmulKernelShape(ttcore::TileType tileType) {
-  // TT-Metal e908c313 labels short-height tiles host-loopback-only, but the
-  // device matmul matrix confirms that its matmul LLKs support them.
-  return isElementwiseComputeShape(tileType) || hasTileShape(tileType, 1, 32) ||
-         hasTileShape(tileType, 2, 32) || hasTileShape(tileType, 4, 32) ||
-         hasTileShape(tileType, 8, 32);
+bool isShortHeightComputeShape(ttcore::TileType tileType) {
+  return (tileType.getHeight() == 1 || tileType.getHeight() == 2 ||
+          tileType.getHeight() == 4 || tileType.getHeight() == 8) &&
+         tileType.getWidth() == 32;
+}
+
+bool isComputeShape(ttcore::TileType tileType) {
+  return isStandardComputeShape(tileType) ||
+         isShortHeightComputeShape(tileType);
+}
+
+bool supportsShortHeightTiles(ComputePrimitive primitive) {
+  switch (primitive) {
+  case ComputePrimitive::Add:
+  case ComputePrimitive::Subtract:
+  case ComputePrimitive::Multiply:
+  case ComputePrimitive::ElementwiseBinary:
+  case ComputePrimitive::ElementwiseUnary:
+  case ComputePrimitive::Fill:
+  case ComputePrimitive::Matmul:
+  case ComputePrimitive::MultiplyByConstant:
+    return true;
+  case ComputePrimitive::Broadcast:
+  case ComputePrimitive::Reduce:
+  case ComputePrimitive::Transpose:
+  case ComputePrimitive::Typecast:
+  case ComputePrimitive::Passthrough:
+    return false;
+  }
 }
 
 class WormholeBlackholeComputeTargetEnvironment final
     : public ComputeTargetEnvironment {
 public:
-  LogicalResult
-  validateKernelTileType(bool containsMatmul, ttcore::TileType tileType,
-                         std::string &failureReason) const final {
+  LogicalResult validateKernelTileType(ttcore::TileType tileType,
+                                       std::string &failureReason) const final {
     failureReason.clear();
-    bool supportedShape = containsMatmul ? isMatmulKernelShape(tileType)
-                                         : isElementwiseComputeShape(tileType);
-    if (!supportedShape) {
+    if (!isComputeShape(tileType)) {
       llvm::raw_string_ostream diagnostic(failureReason);
       diagnostic << "tile shape " << tileType.getHeight() << "x"
-                 << tileType.getWidth();
-      if (containsMatmul) {
-        diagnostic << " is not supported by compute kernels containing "
-                      "matmul; supported shapes are 1x32, 2x32, 4x32, 8x32, "
-                      "16x16, 16x32, 32x16, and 32x32";
-      } else {
-        diagnostic << " is not supported by the current compute LLKs; "
-                      "supported shapes are 16x16, 16x32, 32x16, and 32x32";
-      }
+                 << tileType.getWidth()
+                 << " is not supported by the current compute LLKs; "
+                    "supported shapes are 1x32, 2x32, 4x32, 8x32, 16x16, "
+                    "16x32, 32x16, and 32x32";
       return failure();
     }
 
@@ -149,6 +165,25 @@ public:
   }
 
   LogicalResult
+  validatePrimitiveTileShape(ComputePrimitive primitive,
+                             ttcore::TileType tileType, bool containsMatmul,
+                             std::string &failureReason) const final {
+    failureReason.clear();
+    if (containsMatmul || !isShortHeightComputeShape(tileType) ||
+        supportsShortHeightTiles(primitive)) {
+      return success();
+    }
+
+    llvm::raw_string_ostream diagnostic(failureReason);
+    diagnostic << "tile shape " << tileType.getHeight() << "x"
+               << tileType.getWidth()
+               << " is not supported by this compute primitive; "
+                  "short-height tiles are supported by elementwise, fill, "
+                  "and matmul compute primitives";
+    return failure();
+  }
+
+  LogicalResult
   validatePassthroughTileType(ttcore::TileType tileType,
                               std::string &failureReason) const final {
     failureReason.clear();
@@ -184,8 +219,7 @@ public:
 
     for (ttcore::TileType tileType : {lhsType, rhsType, resultType}) {
       std::string tileFailureReason;
-      if (failed(validateKernelTileType(/*containsMatmul=*/true, tileType,
-                                        tileFailureReason))) {
+      if (failed(validateKernelTileType(tileType, tileFailureReason))) {
         failureReason = std::move(tileFailureReason);
         return failure();
       }
@@ -200,8 +234,8 @@ public:
     if (!hasTileShape(rhsType, 32, 32) && !hasTileShape(rhsType, 32, 16) &&
         !hasTileShape(rhsType, 16, 32)) {
       llvm::raw_string_ostream diagnostic(failureReason);
-      diagnostic << "matmul rhs tile dimensions " << rhsType.getHeight()
-                 << "x" << rhsType.getWidth()
+      diagnostic << "matmul rhs tile dimensions " << rhsType.getHeight() << "x"
+                 << rhsType.getWidth()
                  << " are not implemented by the current compute LLKs; "
                     "supported rhs dimensions are 16x32, 32x16, and 32x32";
       return failure();
@@ -219,7 +253,6 @@ public:
     }
     return success();
   }
-
 };
 
 class IntersectionComputeTargetEnvironment final
@@ -229,13 +262,12 @@ public:
       SmallVector<std::unique_ptr<ComputeTargetEnvironment>, 2> environments)
       : environments(std::move(environments)) {}
 
-  LogicalResult validateKernelTileType(bool containsMatmul,
-                                       ttcore::TileType tileType,
+  LogicalResult validateKernelTileType(ttcore::TileType tileType,
                                        std::string &failureReason) const final {
     for (const std::unique_ptr<ComputeTargetEnvironment> &environment :
          environments) {
-      if (failed(environment->validateKernelTileType(containsMatmul, tileType,
-                                                     failureReason))) {
+      if (failed(
+              environment->validateKernelTileType(tileType, failureReason))) {
         return failure();
       }
     }
@@ -250,6 +282,20 @@ public:
          environments) {
       if (failed(environment->validatePrimitiveDataType(primitive, tileType,
                                                         failureReason))) {
+        return failure();
+      }
+    }
+    return success();
+  }
+
+  LogicalResult
+  validatePrimitiveTileShape(ComputePrimitive primitive,
+                             ttcore::TileType tileType, bool containsMatmul,
+                             std::string &failureReason) const final {
+    for (const std::unique_ptr<ComputeTargetEnvironment> &environment :
+         environments) {
+      if (failed(environment->validatePrimitiveTileShape(
+              primitive, tileType, containsMatmul, failureReason))) {
         return failure();
       }
     }
@@ -331,8 +377,7 @@ FailureOr<std::optional<ttcore::Arch>>
 getDeviceArch(ModuleOp module, std::string &failureReason) {
   auto systemDesc = module->getAttrOfType<ttcore::SystemDescAttr>(
       ttcore::SystemDescAttr::name);
-  auto device =
-      ttcore::lookupDeviceOp(module, ttcore::getDefaultDeviceName());
+  auto device = ttcore::lookupDeviceOp(module, ttcore::getDefaultDeviceName());
   if (!systemDesc || !device) {
     return std::optional<ttcore::Arch>();
   }
@@ -405,18 +450,19 @@ ComputeTargetEnvironment::get(Operation *operation,
             .str();
     return failure();
   }
-  std::optional<ttcore::Arch> arch = attributeArch ? attributeArch : *deviceArch;
+  std::optional<ttcore::Arch> arch =
+      attributeArch ? attributeArch : *deviceArch;
   if (!arch) {
     return createCommonTargetEnvironment();
   }
   return createTargetEnvironment(*arch, failureReason);
 }
 
-LogicalResult ComputeTargetEnvironment::validateOperation(
-    Operation *operation, bool containsMatmul,
-    std::string &failureReason) const {
-  std::optional<ComputePrimitive> primitive =
-      getComputePrimitive(operation);
+LogicalResult
+ComputeTargetEnvironment::validateOperation(Operation *operation,
+                                            bool containsMatmul,
+                                            std::string &failureReason) const {
+  std::optional<ComputePrimitive> primitive = getComputePrimitive(operation);
   if (!primitive) {
     failureReason = "has no compute-target capability classification";
     return failure();
@@ -446,10 +492,11 @@ LogicalResult ComputeTargetEnvironment::validateOperation(
       }
       continue;
     }
-    if (failed(validateKernelTileType(containsMatmul, *tileType,
-                                      failureReason)) ||
-        failed(validatePrimitiveDataType(*primitive, *tileType,
-                                         failureReason))) {
+    if (failed(validateKernelTileType(*tileType, failureReason)) ||
+        failed(validatePrimitiveTileShape(*primitive, *tileType, containsMatmul,
+                                          failureReason)) ||
+        failed(
+            validatePrimitiveDataType(*primitive, *tileType, failureReason))) {
       return failure();
     }
   }
@@ -490,14 +537,6 @@ std::optional<ComputePrimitive> getComputePrimitive(Operation *operation) {
   if (isa<MulOp, MulTileOp>(operation)) {
     return ComputePrimitive::Multiply;
   }
-  if (isa<DivOp, DivTileOp, EqOp, EqTileOp, NeOp, NeTileOp, GtOp, GtTileOp,
-          LtOp, LtTileOp, MaxOp, MaxTileOp, MinOp, MinTileOp>(operation)) {
-    return ComputePrimitive::ElementwiseBinary;
-  }
-#define TTL_UNARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)              \
-  if (isa<TTL_OP##Op, TILE_OP>(operation))                                    \
-    return ComputePrimitive::ElementwiseUnary;
-#include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
   if (isa<BlockBroadcastOp, TileBcastOp>(operation)) {
     return ComputePrimitive::Broadcast;
   }
@@ -522,14 +561,23 @@ std::optional<ComputePrimitive> getComputePrimitive(Operation *operation) {
   if (isa<StoreOp, TileStoreOp>(operation)) {
     return ComputePrimitive::Passthrough;
   }
+  if (operation->hasTrait<TTLUnaryElementwiseOpTrait>() ||
+      operation->hasTrait<TTLTileUnaryOpTrait>()) {
+    return ComputePrimitive::ElementwiseUnary;
+  }
+  if (operation->hasTrait<TTLBinaryElementwiseOpTrait>() ||
+      operation->hasTrait<TTLTileBinaryOpTrait>()) {
+    return ComputePrimitive::ElementwiseBinary;
+  }
+  assert(!operation->hasTrait<TTLTileComputeOpTrait>() &&
+         "tile compute operation must have a target capability classification");
   return std::nullopt;
 }
 
 bool containsMatmulOperation(Operation *scope) {
   WalkResult result = scope->walk([](Operation *operation) {
-    return isa<MatmulOp, TileMatmulBlockOp>(operation)
-               ? WalkResult::interrupt()
-               : WalkResult::advance();
+    return isa<MatmulOp, TileMatmulBlockOp>(operation) ? WalkResult::interrupt()
+                                                       : WalkResult::advance();
   });
   return result.wasInterrupted();
 }
