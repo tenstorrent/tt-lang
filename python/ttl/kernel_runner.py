@@ -712,10 +712,10 @@ def build_cb_descriptors(
             remaining_bytes = get_min_remaining_l1_for_device(device)
             break
 
-    # Must stay aligned with MLIR ttl-validate-cb-budget (TileType::getSizeBytes)
-    # and TTNN Tile::get_tile_size; see issue #511. Computed-address backing
-    # tensors are allocated separately before this check, so their L1 is already
-    # reflected in remaining_bytes; counting them here would double-charge them.
+    # Must stay aligned with MLIR ttl-validate-cb-budget and the finalized DFB
+    # page-size metadata. Computed-address backing tensors are allocated
+    # separately before this check, so their L1 is already reflected in
+    # remaining_bytes; counting them here would double-charge them.
     if static_cb_bytes > remaining_bytes:
         breakdown = "\n".join(static_allocation_summaries)
         raise ValueError(

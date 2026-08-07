@@ -5,6 +5,8 @@
 # Pytest for the ttlang python bindings -- TTL, TTCore, and TTKernel dialects
 # together.
 
+import pytest
+
 from ttl import ir as ttlang_ir
 from ttl import passes as ttlang_passes
 from ttl.dialects import ttl as ttl_dialect
@@ -26,3 +28,12 @@ def test_ttl_ttcore_and_ttkernel_same_context():
         assert str(thread_attr) == "#ttkernel.thread<compute>"
         assert str(sl) == "#ttl.slice<start = 0, stop = 8, step = 2>"
         assert hasattr(ttlang_passes, "get_ttkernel_names")
+
+
+def test_external_template_argument_validation():
+    with ttlang_ir.Context() as ctx, ttlang_ir.Location.unknown():
+        ttl_dialect.ensure_dialects_registered(ctx)
+        with pytest.raises(ValueError, match="invalid external template argument"):
+            ttl_dialect.ir.ExternalTemplateArgAttr.get(
+                ctx, ttl_dialect.ir.ExternalTemplateArgKind.Boolean, 5
+            )

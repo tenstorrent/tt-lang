@@ -37,6 +37,15 @@ func.func @wide_integer_template_arg() {
 
 // -----
 
+// Index-typed IntegerAttr values are outside the C++ integer contract.
+func.func @index_integer_template_arg() {
+  // expected-error @below {{'ttkernel.opaque_call' op integer template arg must have type si32 or ui32}}
+  ttkernel.opaque_call "foo" template_args [0 : index] () {header = "h.hpp"} : () -> ()
+  return
+}
+
+// -----
+
 // Only typed static argument attributes may appear in the ordered list.
 func.func @unsupported_template_arg() {
   // expected-error @below {{'ttkernel.opaque_call' op template arg must be a signed i32, boolean, unsigned i32, or DFB descriptor attribute}}

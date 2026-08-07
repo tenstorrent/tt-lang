@@ -31,7 +31,7 @@ from .auto_profile import (
 from .tensor_registry import get_tensor_global_index, get_tensor_source
 
 
-def _is_ttnn_global_semaphore(value) -> bool:
+def is_ttnn_global_semaphore(value) -> bool:
     """Require the exact TTNN type so local and lookalike objects are rejected."""
     try:
         from ttnn._ttnn.global_semaphore import global_semaphore
@@ -42,7 +42,7 @@ def _is_ttnn_global_semaphore(value) -> bool:
 
 def _get_ttnn_global_semaphore_address(value) -> int:
     """Return one GlobalSemaphore address without suppressing TTNN failures."""
-    if not _is_ttnn_global_semaphore(value):
+    if not is_ttnn_global_semaphore(value):
         raise TypeError(f"expected ttnn GlobalSemaphore, got {type(value)}")
     import ttnn
 
@@ -632,7 +632,7 @@ class TTLGenericCompiler(TTCompilerBase):
                 ).result
             if isinstance(val, float):
                 return arith.ConstantOp(F32Type.get(self.ctx), val).result
-            if _is_ttnn_global_semaphore(val):
+            if is_ttnn_global_semaphore(val):
                 self._raise_error(
                     node,
                     "ttnn.GlobalSemaphore must be captured by an operation "
@@ -1054,7 +1054,7 @@ class TTLGenericCompiler(TTCompilerBase):
                     # Stamp variable name (first-seen wins) so the
                     # compiler can use it in diagnostics.
                     self._pipe_net_names.setdefault(id(val), name)
-                elif _is_ttnn_global_semaphore(val):
+                elif is_ttnn_global_semaphore(val):
                     sem_addr = _get_ttnn_global_semaphore_address(val)
                     i32_ty = IntegerType.get_signless(32, self.ctx)
                     self._set_var(name, arith.ConstantOp(i32_ty, sem_addr).result)
@@ -1592,7 +1592,7 @@ class TTLGenericCompiler(TTCompilerBase):
                 return _signed_integer(val)
             if isinstance(val, float):
                 return _unsigned_integer(_float_bits(val))
-            if _is_ttnn_global_semaphore(val):
+            if is_ttnn_global_semaphore(val):
                 sem_addr = _get_ttnn_global_semaphore_address(val)
                 return _unsigned_integer(sem_addr)
 
@@ -1604,7 +1604,7 @@ class TTLGenericCompiler(TTCompilerBase):
                 return _signed_integer(val)
             if isinstance(val, float):
                 return _unsigned_integer(_float_bits(val))
-            if _is_ttnn_global_semaphore(val):
+            if is_ttnn_global_semaphore(val):
                 self._raise_error(
                     node,
                     "ttnn.GlobalSemaphore must be captured by an operation "
@@ -1798,7 +1798,7 @@ class TTLGenericCompiler(TTCompilerBase):
                 ) or (
                     isinstance(elt, ast.Name)
                     and elt.id in self.captures
-                    and _is_ttnn_global_semaphore(self.captures[elt.id])
+                    and is_ttnn_global_semaphore(self.captures[elt.id])
                 )
                 arg = self.visit(elt)
                 if isinstance(arg, tuple):

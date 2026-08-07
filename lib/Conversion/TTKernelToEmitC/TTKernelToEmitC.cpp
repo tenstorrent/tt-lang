@@ -2123,8 +2123,14 @@ public:
           return rewriter.notifyMatchFailure(
               op, "unsupported static opaque_call template argument");
         }
+        auto integerType = dyn_cast<IntegerType>(integerValue.getType());
+        if (!integerType) {
+          return rewriter.notifyMatchFailure(
+              op, "opaque_call integer template argument has non-integer "
+                  "type");
+        }
         std::string literal;
-        if (cast<IntegerType>(integerValue.getType()).isUnsigned()) {
+        if (integerType.isUnsigned()) {
           literal =
               std::to_string(integerValue.getValue().getZExtValue()) + "U";
         } else {

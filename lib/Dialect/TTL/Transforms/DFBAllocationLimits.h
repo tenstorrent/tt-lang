@@ -19,9 +19,6 @@
 
 namespace mlir::tt::ttl {
 
-/// Centralizes page size so L1 accounting and runtime metadata cannot diverge.
-FailureOr<uint64_t> getDFBPageSizeBytes(CircularBufferType type);
-
 /// Returns the per-node L1 bytes occupied by one physical DFB descriptor.
 FailureOr<uint64_t> getDFBAllocationSizeBytes(CircularBufferType type);
 

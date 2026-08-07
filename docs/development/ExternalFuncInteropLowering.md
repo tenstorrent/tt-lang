@@ -19,13 +19,13 @@ The Python interface currently supports void calls.
 | Source argument | Generated C++ interface | Restrictions |
 | --- | --- | --- |
 | `ttl.dfb_descriptor(dfb)` in `template_args` | `ttlang::DFBDescriptor<...>` template type | Declares a direct DFB dependency. |
-| `ttl.get_dfb_id(dfb)` in `template_args` | Physical DFB index `uint32_t` literal | The same DFB must also appear in `func_args` when the callee accesses it. |
+| `ttl.get_dfb_id(dfb)` in `template_args` | Physical DFB index `uint32_t` literal | When the callee accesses DFB storage, the same DFB must declare a dependency through `func_args` or a `ttl.dfb_descriptor` template argument. |
 | DFB in `func_args` | Physical DFB index `uint32_t` parameter | Declares a direct DFB dependency. |
 | Integer or boolean in `template_args` | Signed integer or boolean constant | Must be compile-time evaluable. |
 | Float in `template_args` | Unsigned IEEE-754 f32 bit-pattern constant | Must be compile-time evaluable. |
 | Scalar in `func_args` | Lowered scalar parameter | Follows the TT-Metal kernel scalar convention. |
 | Base tensor in `func_args` | `TensorAccessor` parameter | Supports tiled bf16 and fp32 tensors only in NOC kernels. |
-| `ttl.raw_addr(base_tensor)` in `func_args` | `uint32_t` runtime tensor buffer address | Slices and derived tensor values are rejected. |
+| `ttl.raw_addr(base_tensor)` in `func_args` | `uint32_t` runtime tensor buffer address | Supports only NOC kernels; slices and derived tensor values are rejected. |
 | Captured `ttnn.GlobalSemaphore` | `uint32_t` address literal or parameter | The address is fixed for the compiled operation. |
 
 A bare DFB in `template_args` is ambiguous and rejected. The explicit wrapper
@@ -96,10 +96,10 @@ A base tensor in `func_args` becomes a `TensorAccessor` containing the runtime
 buffer address and compile-time accessor configuration. The interface supports
 tiled bf16 and fp32 tensors in DRAM and L1. Only NOC kernels receive the
 required accessor compile-time arguments. Compute and Ethernet kernels must use
-a supported scalar or raw-address interface instead.
+a supported scalar interface instead.
 
 `ttl.raw_addr(tensor)` reads the runtime tensor buffer address directly from the
-kernel common arguments. The operand must be an argument of the enclosing
+NOC kernel common arguments. The operand must be an argument of the enclosing
 kernel-thread function with TTL layout encoding. A nested region argument,
 slice, view, or computed tensor has no defined runtime-argument mapping and is
 rejected. A raw address provides no layout, view offset, page size, alignment,

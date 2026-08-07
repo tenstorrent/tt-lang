@@ -7,6 +7,7 @@
 #include "ttlang/Dialect/TTCore/IR/TTCoreOps.h"
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTCore/IR/Utils.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CheckedArithmetic.h"
@@ -41,21 +42,22 @@ std::optional<uint64_t> tryBudgetFromModule(ModuleOp module) {
 
 } // namespace
 
-FailureOr<uint64_t> getDFBPageSizeBytes(CircularBufferType type) {
-  return ttcore::getElementSizeBytes(type.getElementType());
-}
-
 FailureOr<uint64_t> getDFBAllocationSizeBytes(CircularBufferType type) {
-  int64_t totalElements = type.getTotalElements();
-  if (totalElements < 0) {
+  FailureOr<uint64_t> pagesPerBlock = getDFBPagesPerBlock(type);
+  if (failed(pagesPerBlock) || type.getBlockCount() <= 0) {
     return failure();
   }
   FailureOr<uint64_t> pageSizeBytes = getDFBPageSizeBytes(type);
   if (failed(pageSizeBytes)) {
     return failure();
   }
-  std::optional<uint64_t> allocationBytes = llvm::checkedMulUnsigned(
-      static_cast<uint64_t>(totalElements), *pageSizeBytes);
+  std::optional<uint64_t> totalPages = llvm::checkedMulUnsigned(
+      *pagesPerBlock, static_cast<uint64_t>(type.getBlockCount()));
+  if (!totalPages) {
+    return failure();
+  }
+  std::optional<uint64_t> allocationBytes =
+      llvm::checkedMulUnsigned(*totalPages, *pageSizeBytes);
   if (!allocationBytes) {
     return failure();
   }

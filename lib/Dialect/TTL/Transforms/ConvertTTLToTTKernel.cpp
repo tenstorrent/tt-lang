@@ -1483,20 +1483,28 @@ private:
     }
     if (kind == ExternalTemplateArgKind::DFBDescriptor) {
       auto dfbType = cast<CircularBufferType>(dfb.getType());
+      FailureOr<uint64_t> pagesPerBlock = getDFBPagesPerBlock(dfbType);
       FailureOr<uint64_t> pageSizeBytes = getDFBPageSizeBytes(dfbType);
-      int64_t pagesPerBlock = dfbType.getElementsPerBlock();
       int64_t blockCount = dfbType.getBlockCount();
       constexpr uint64_t maxDescriptorField =
           std::numeric_limits<uint32_t>::max();
-      if (failed(pageSizeBytes) || pagesPerBlock <= 0 || blockCount <= 0 ||
-          static_cast<uint64_t>(pagesPerBlock) > maxDescriptorField ||
-          static_cast<uint64_t>(blockCount) > maxDescriptorField ||
-          *pageSizeBytes == 0 || *pageSizeBytes > maxDescriptorField) {
+      if (failed(pageSizeBytes)) {
         return op.emitError(
-            "DFB descriptor dimensions or page size do not fit uint32_t");
+                   "DFB descriptor element type must occupy a positive whole "
+                   "number of bytes, got ")
+               << dfbType.getElementType();
+      }
+      if (failed(pagesPerBlock) || blockCount <= 0) {
+        return op.emitError("DFB descriptor dimensions are not representable");
+      }
+      if (*pagesPerBlock > maxDescriptorField ||
+          static_cast<uint64_t>(blockCount) > maxDescriptorField ||
+          *pageSizeBytes > maxDescriptorField) {
+        return op.emitError(
+            "DFB descriptor dimensions or page size exceed uint32_t");
       }
       return ttk::DFBDescriptorAttr::get(rewriter.getContext(), *dfbIndex,
-                                         pagesPerBlock, blockCount,
+                                         *pagesPerBlock, blockCount,
                                          static_cast<int64_t>(*pageSizeBytes));
     }
     llvm_unreachable("unhandled external template argument kind");

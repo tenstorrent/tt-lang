@@ -26,3 +26,14 @@ func.func @raw_addr_rejects_region_argument(%arg0: tensor<1x1x!ttcore.tile<32x32
   }
   return
 }
+
+// -----
+
+// Compute kernels do not receive tensor common runtime arguments.
+#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
+func.func @raw_addr_rejects_compute_thread(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  // expected-error @below {{'ttl.raw_addr' op requires an enclosing data movement (noc) kernel thread}}
+  %addr = ttl.raw_addr %arg0 : tensor<1x1x!ttcore.tile<32x32, f32>, #layout> -> i32
+  return
+}

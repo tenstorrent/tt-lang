@@ -10,6 +10,7 @@
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/DFBLogicalIdentityAnalysis.h"
 #include "ttlang/Dialect/TTL/Transforms/InterferenceGraphColoring.h"
 
@@ -527,16 +528,35 @@ static FailureOr<PhysicalAllocationCandidate> computeReuseAllocation(
   return failure();
 }
 
+static void setInvalidDFBPageSizeFailure(CircularBufferType dfbType,
+                                         Operation *operation,
+                                         DFBAnalysisFailure &analysisFailure) {
+  std::string message;
+  llvm::raw_string_ostream messageStream(message);
+  messageStream << "DFB element type must occupy a positive whole number of "
+                   "bytes, got "
+                << dfbType.getElementType();
+  analysisFailure.set(operation, messageStream.str());
+}
+
 /// Returns the L1 bytes required by the unique physical assignments.
 static FailureOr<uint64_t>
-computeAllocationBytes(ArrayRef<DFBPhysicalIndexAssignment> assignments) {
+computeAllocationBytes(ArrayRef<DFBPhysicalIndexAssignment> assignments,
+                       DFBAnalysisFailure &analysisFailure) {
   DFBAllocationFootprint footprint;
   for (const DFBPhysicalIndexAssignment &assignment : assignments) {
     if (assignment.tensorBacking) {
       continue;
     }
-    if (failed(footprint.add(assignment.physicalIndex,
-                             cast<CircularBufferType>(assignment.type)))) {
+    auto dfbType = cast<CircularBufferType>(assignment.type);
+    if (failed(getDFBPageSizeBytes(dfbType))) {
+      setInvalidDFBPageSizeFailure(dfbType, assignment.declarations.front(),
+                                   analysisFailure);
+      return failure();
+    }
+    if (failed(footprint.add(assignment.physicalIndex, dfbType))) {
+      analysisFailure.set(assignment.declarations.front(),
+                          "DFB allocation size is not representable");
       return failure();
     }
   }
@@ -558,7 +578,7 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
   }
 
   FailureOr<uint64_t> allocationBytes =
-      computeAllocationBytes(allocation->assignments);
+      computeAllocationBytes(allocation->assignments, analysisFailure);
   uint64_t l1BudgetBytes = getUsableDFBL1Bytes(moduleOp);
   if (succeeded(allocationBytes) && *allocationBytes > l1BudgetBytes &&
       !allocation->minimumProven) {
@@ -566,7 +586,8 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
     if (failed(allocation)) {
       return failure();
     }
-    allocationBytes = computeAllocationBytes(allocation->assignments);
+    allocationBytes =
+        computeAllocationBytes(allocation->assignments, analysisFailure);
   }
   if (allocation->exactSearchLimitReached) {
     setExactSearchLimitFailure(moduleOp, allocation->physicalDFBCount,
@@ -576,8 +597,6 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
     return failure();
   }
   if (failed(allocationBytes)) {
-    analysisFailure.set(moduleOp,
-                        "DFB allocation has an invalid negative element count");
     return failure();
   }
   if (*allocationBytes > l1BudgetBytes) {
@@ -632,16 +651,28 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
       return failure();
     }
     auto dfbType = cast<CircularBufferType>(assignment->type);
+    FailureOr<uint64_t> pagesPerBlock = getDFBPagesPerBlock(dfbType);
     FailureOr<uint64_t> pageSizeBytes = getDFBPageSizeBytes(dfbType);
-    if (failed(pageSizeBytes) ||
-        *pageSizeBytes > std::numeric_limits<int32_t>::max()) {
+    if (failed(pageSizeBytes)) {
+      setInvalidDFBPageSizeFailure(dfbType, assignment->declarations.front(),
+                                   analysisFailure);
+      return failure();
+    }
+    if (failed(pagesPerBlock) ||
+        *pagesPerBlock > std::numeric_limits<int32_t>::max() ||
+        dfbType.getBlockCount() > std::numeric_limits<int32_t>::max()) {
+      analysisFailure.set(assignment->declarations.front(),
+                          "DFB dimensions do not fit runtime metadata");
+      return failure();
+    }
+    if (*pageSizeBytes > std::numeric_limits<int32_t>::max()) {
       analysisFailure.set(assignment->declarations.front(),
                           "DFB page size does not fit runtime metadata");
       return failure();
     }
     DFBPhysicalAllocationDescriptor descriptor{
         physicalIndex,
-        static_cast<int32_t>(dfbType.getElementsPerBlock()),
+        static_cast<int32_t>(*pagesPerBlock),
         dfbType.getElementType(),
         static_cast<int32_t>(*pageSizeBytes),
         static_cast<int32_t>(dfbType.getBlockCount()),

@@ -18,6 +18,7 @@
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -70,9 +71,15 @@ struct TTLValidateCBBudgetPass
       }
       auto cbType = cast<CircularBufferType>(bindOp.getResult().getType());
       int64_t physicalIndex = bindOp.getCbIndex().getSExtValue();
+      if (failed(getDFBPageSizeBytes(cbType))) {
+        bindOp.emitOpError()
+            << "element type must occupy a positive whole number of bytes, got "
+            << cbType.getElementType();
+        return WalkResult::interrupt();
+      }
       FailureOr<bool> increased = footprint.add(physicalIndex, cbType);
       if (failed(increased)) {
-        bindOp.emitOpError() << "invalid negative total element count for CB";
+        bindOp.emitOpError() << "allocation size is not representable";
         return WalkResult::interrupt();
       }
       if (*increased) {

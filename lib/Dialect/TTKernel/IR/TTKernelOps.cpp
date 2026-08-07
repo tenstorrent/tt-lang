@@ -654,8 +654,8 @@ void UnpackStallOnPackOp::getCanonicalizationPatterns(
       return emitOpError("template arg must be a signed i32, boolean, "
                          "unsigned i32, or DFB descriptor attribute");
     }
-    IntegerType integerType = cast<IntegerType>(integerArg.getType());
-    if (integerType.getWidth() != 32 ||
+    auto integerType = dyn_cast<IntegerType>(integerArg.getType());
+    if (!integerType || integerType.getWidth() != 32 ||
         (!integerType.isSigned() && !integerType.isUnsigned())) {
       return emitOpError("integer template arg must have type si32 or ui32");
     }

@@ -1700,7 +1700,8 @@ def TTL_RawAddrOp : TTL_Op<"raw_addr", [Pure]> {
     is intended for external-function interop where a raw pointer/address is
     required.
 
-    Slice/view operands are intentionally unsupported.
+    Only data movement (noc) kernel threads receive the required common runtime
+    argument. Slice/view operands are unsupported.
   }];
   let arguments = (ins TTLLayoutTensor:$tensor);
   let results = (outs I32:$result);

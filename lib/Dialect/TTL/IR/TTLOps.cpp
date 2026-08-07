@@ -2089,6 +2089,10 @@ static bool isEnclosingKernelTensorArgument(mlir::Value tensor,
 }
 
 mlir::LogicalResult mlir::tt::ttl::RawAddrOp::verify() {
+  if (!isNocKernelThread(getOperation())) {
+    return emitOpError(
+        "requires an enclosing data movement (noc) kernel thread");
+  }
   if (!isEnclosingKernelTensorArgument(getTensor(), getOperation())) {
     return emitOpError("operand must be a function tensor argument with TTL "
                        "layout encoding; slices/views are not supported");
@@ -2233,6 +2237,30 @@ mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
              << operandIndex << " is out of range for "
              << getTemplateDfbOperands().size() << " operands";
     }
+    if (kind == ExternalTemplateArgKind::DFBDescriptor) {
+      auto dfbType = cast<CircularBufferType>(
+          getTemplateDfbOperands()[static_cast<size_t>(operandIndex)]
+              .getType());
+      FailureOr<uint64_t> pageSizeBytes = getDFBPageSizeBytes(dfbType);
+      if (failed(pageSizeBytes)) {
+        return emitOpError(
+                   "DFB descriptor element type must occupy a positive whole "
+                   "number of bytes, got ")
+               << dfbType.getElementType();
+      }
+      FailureOr<uint64_t> pagesPerBlock = getDFBPagesPerBlock(dfbType);
+      if (failed(pagesPerBlock)) {
+        return emitOpError("DFB descriptor dimensions are not representable");
+      }
+      constexpr uint64_t maxDescriptorField =
+          std::numeric_limits<uint32_t>::max();
+      if (*pagesPerBlock > maxDescriptorField ||
+          static_cast<uint64_t>(dfbType.getBlockCount()) > maxDescriptorField ||
+          *pageSizeBytes > maxDescriptorField) {
+        return emitOpError(
+            "DFB descriptor dimensions or page size exceed uint32_t");
+      }
+    }
     referencedDFBs.set(static_cast<size_t>(operandIndex));
   }
   if (referencedDFBs.count() != getTemplateDfbOperands().size()) {
@@ -2259,6 +2287,8 @@ static llvm::SmallVector<mlir::Value> getTemplateDFBOperandsByKind(
       continue;
     }
     size_t operandIndex = static_cast<size_t>(templateArg.getValue());
+    assert(operandIndex < call.getTemplateDfbOperands().size() &&
+           "opaque_call must be verified before querying template DFBs");
     mlir::Value operand = call.getTemplateDfbOperands()[operandIndex];
     if (!llvm::is_contained(operands, operand)) {
       operands.push_back(operand);
