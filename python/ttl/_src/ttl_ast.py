@@ -1628,8 +1628,10 @@ class TTLGenericCompiler(TTCompilerBase):
                 "ttl.dfb_descriptor(dfb) for allocation metadata or "
                 "ttl.get_dfb_id(dfb) for an integer index",
             )
+        def_op = resolved
+        if not isinstance(def_op, arith.ConstantOp):
+            def_op = getattr(resolved, "owner", None)
         if isinstance(resolved_type, IntegerType):
-            def_op = resolved.owner if hasattr(resolved, "owner") else None
             if isinstance(def_op, arith.ConstantOp):
                 value_attr = def_op.value
                 if isinstance(value_attr, IntegerAttr):
@@ -1642,7 +1644,6 @@ class TTLGenericCompiler(TTCompilerBase):
                 "compile-time constants",
             )
         if isinstance(resolved_type, IndexType):
-            def_op = resolved.owner if hasattr(resolved, "owner") else None
             if isinstance(def_op, arith.ConstantOp):
                 value_attr = def_op.value
                 if isinstance(value_attr, IntegerAttr):

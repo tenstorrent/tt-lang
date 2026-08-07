@@ -11,10 +11,11 @@
 Verify that ttl.get_dfb_id() in template_args preserves DFB identity in the
 initial MLIR and lowers to a raw integer literal in the generated C++.
 
-The compute thread calls ttl.call_extern_func with DFB IDs and a literal
-constant as template args. The same DFBs are direct function arguments so the
-allocator can retain their storage dependencies. Stub data-movement threads
-satisfy the TTNN interop 3-kernel requirement.
+The compute thread calls ttl.call_extern_func with DFB IDs and a captured
+integer assigned to a local alias. The alias exercises the index-typed
+arith.constant template-argument branch. The same DFBs are direct function
+arguments so the allocator can retain their storage dependencies. Stub
+data-movement threads satisfy the TTNN interop 3-kernel requirement.
 """
 
 import os
@@ -28,31 +29,42 @@ import ttl
 FAKE_HEADER = "/dev/null/fake_shim.hpp"
 
 
-@ttl.operation(grid=(1, 1))
-def get_dfb_id_kernel(inp):
-    in_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=1)
-    scratch = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=1)
+def _make_get_dfb_id_kernel(captured_template_value):
+    @ttl.operation(grid=(1, 1))
+    def get_dfb_id_kernel(inp):
+        in_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=1)
+        scratch = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=1)
 
-    @ttl.compute()
-    def compute():
-        ttl.call_extern_func(
-            FAKE_HEADER,
-            "my_shim",
-            template_args=[ttl.get_dfb_id(scratch), ttl.get_dfb_id(in_dfb), 1],
-            func_args=[scratch, in_dfb],
-        )
+        @ttl.compute()
+        def compute():
+            local_template_value = captured_template_value
+            ttl.call_extern_func(
+                FAKE_HEADER,
+                "my_shim",
+                template_args=[
+                    ttl.get_dfb_id(scratch),
+                    ttl.get_dfb_id(in_dfb),
+                    local_template_value,
+                ],
+                func_args=[scratch, in_dfb],
+            )
 
-    @ttl.datamovement()
-    def dm_read():
-        blk = in_dfb.reserve()
-        tx = ttl.copy(inp[0, 0], blk)
-        tx.wait()
-        blk.push()
+        @ttl.datamovement()
+        def dm_read():
+            blk = in_dfb.reserve()
+            tx = ttl.copy(inp[0, 0], blk)
+            tx.wait()
+            blk.push()
 
-    @ttl.datamovement()
-    def dm_write():
-        blk = in_dfb.wait()
-        blk.pop()
+        @ttl.datamovement()
+        def dm_write():
+            blk = in_dfb.wait()
+            blk.pop()
+
+    return get_dfb_id_kernel
+
+
+get_dfb_id_kernel = _make_get_dfb_id_kernel(1)
 
 
 # =============================================================================
