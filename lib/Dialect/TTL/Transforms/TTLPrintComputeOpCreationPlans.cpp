@@ -376,6 +376,11 @@ struct TTLPrintComputeOpCreationPlansPass
         printOperation(output, removedUse.owner, operationIds);
         output << " operand=" << removedUse.operandIndex << "\n";
       }
+      if (const FusionNearMatch *nearMatch =
+              creations.getFusionNearMatch(source)) {
+        output << "    near-match=" << formatFusionNearMatch(*nearMatch)
+               << "\n";
+      }
       if (!creation.isLegal()) {
         output << "    rejected=" << creation.rejectionReason << "\n";
       }
@@ -397,6 +402,11 @@ struct TTLPrintComputeOpCreationPlansPass
       printOperation(output, source, operationIds);
       output << " " << source->getName()
              << " reason=" << creations.getRejectionReason(source) << "\n";
+      if (const FusionNearMatch *nearMatch =
+              creations.getFusionNearMatch(source)) {
+        output << "    near-match=" << formatFusionNearMatch(*nearMatch)
+               << "\n";
+      }
     }
 
     output << "  order=[";

@@ -279,6 +279,42 @@ struct FusionTargetSchedulePlan {
   FloatAttr scale;
 };
 
+/// First decisive reason a recognized fusion family is not selected.
+enum class FusionNearMatchKind {
+  UnsupportedTarget,
+  UnsupportedDtype,
+  DynamicDomain,
+  NonFullReduction,
+  UnsupportedReduction,
+  UnsupportedScalarConsumer,
+  UnsupportedScale,
+  StrictFloatingPointMismatch,
+  ExternalUsePreservation,
+  UnsupportedOperandShape,
+  MissingDFBInput,
+  DSTCapacity,
+  PublicationConflict,
+  InstrumentationConflict,
+  DFBLifetimeConflict,
+  SourceRegisterConflict,
+  UnprofitableRecomputation,
+};
+
+/// Typed missed-optimization facts retained independently of selection.
+struct FusionNearMatch {
+  Operation *candidate = nullptr;
+  FusionTargetScheduleKind family =
+      FusionTargetScheduleKind::MultiplyFullScalarReduction;
+  FusionNearMatchKind kind = FusionNearMatchKind::UnsupportedTarget;
+  std::uint64_t requiredDstSlots = 0;
+  std::uint32_t availableDstSlots = 0;
+  std::uint64_t estimatedIntermediateDFBBytes = 0;
+  std::uint32_t estimatedAdditionalDstAcquisitions = 0;
+};
+
+/// Format one near match for both plan diagnostics and optimization remarks.
+std::string formatFusionNearMatch(const FusionNearMatch &nearMatch);
+
 /// Immutable semantic graph used by target schedule selection.
 struct FusionGraphPlan {
   SmallVector<FusionNodePlan> nodes;
@@ -691,6 +727,9 @@ struct ComputeOpCreationPlan {
   /// Application fails closed if any recorded use remains.
   SmallVector<ComputeOpCreationUse> preCreationRemovedUses;
 
+  /// Recognized fusion family rejected before or after target selection.
+  std::optional<FusionNearMatch> fusionNearMatch;
+
   /// Reserve, store, and publication transactions affected by creation.
   OutputPublicationPlan outputs;
 
@@ -721,6 +760,9 @@ struct ComputeOpCreationRejection {
 
   /// Complete candidate retained when dependency selection needs its trace.
   std::optional<ComputeOpCreationPlan> candidate;
+
+  /// Recognized fusion family and its first decisive rejection.
+  std::optional<FusionNearMatch> fusionNearMatch;
 };
 
 /// Immutable plan for a DFB-to-DFB passthrough store compute.
@@ -782,6 +824,9 @@ public:
   std::optional<ComputeOpCreationRejectionKind>
   getRejectionKind(Operation *source) const;
 
+  /// Returns the recognized fusion near match for `source`, when present.
+  const FusionNearMatch *getFusionNearMatch(Operation *source) const;
+
   /// Returns whether `source` has a complete creation record.
   bool hasCreationRecord(Operation *source) const {
     return creations.contains(source);
@@ -829,6 +874,7 @@ private:
   DenseMap<Operation *, PassthroughStorePlan> passthroughStores;
   DenseMap<Operation *, std::string> rejectionReasons;
   DenseMap<Operation *, ComputeOpCreationRejectionKind> rejectionKinds;
+  DenseMap<Operation *, FusionNearMatch> fusionNearMatches;
   SmallVector<Operation *> analyzedSources;
   SmallVector<Operation *> creationOrder;
   SmallVector<StoreOp> unassignedStores;

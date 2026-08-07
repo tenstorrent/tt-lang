@@ -1,6 +1,8 @@
 // Verifies multiply/full-scalar-reduction selection at effective DST capacity
 // boundaries, with distinct inputs and a non-unit semantic scale.
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-print-compute-op-creation-plans))' -o /dev/null 2>&1 | FileCheck %s
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute))' --remarks-filter-missed='ttl-reduction-fusion' -o /dev/null 2>&1 | FileCheck %s --check-prefix=REMARK
+// REMARK-NOT: Function=fp32_half_four_tiles
 
 // Four tiles exactly fit fp32 half-sync DST capacity. A post-reduction scalar
 // multiply is represented by the target schedule's semantic scale.
@@ -54,6 +56,10 @@ module attributes {ttl.target_arch = "blackhole"} {
 // CHECK-LABEL: ComputeOp creation plan @fp32_half_five_tiles
 // CHECK-NOT:   target=multiply-full-scalar-reduction
 // CHECK:       rejected-source {{.*}} ttl.reduce
+// CHECK-NEXT:    near-match=multiply-full-scalar-reduction fusion not selected: the reduction requires 5 DST slots, but 4 are available; ordinary materialized lowering remains selected; retained-intermediate-dfb-bytes=12288; additional-dst-acquisitions=2
+// REMARK:      remark: [Missed] ReductionFusion | Category:ttl-reduction-fusion | Function=fp32_half_five_tiles
+// REMARK-SAME: Remark="multiply-full-scalar-reduction fusion not selected: the reduction requires 5 DST slots, but 4 are available; ordinary materialized lowering remains selected; retained-intermediate-dfb-bytes=12288; additional-dst-acquisitions=2"
+// REMARK-NOT:  Function=bf16_eight_tiles_distinct_inputs
 module attributes {ttl.target_arch = "blackhole"} {
   func.func @fp32_half_five_tiles()
       attributes {fp32_dest_acc_en = true,
@@ -146,6 +152,9 @@ module attributes {ttl.target_arch = "blackhole"} {
 // CHECK-LABEL: ComputeOp creation plan @bf16_full_nine_tiles
 // CHECK-NOT:   target=multiply-full-scalar-reduction
 // CHECK:       rejected-source {{.*}} ttl.reduce
+// CHECK-NEXT:    near-match=multiply-full-scalar-reduction fusion not selected: the reduction requires 9 DST slots, but 8 are available; ordinary materialized lowering remains selected; retained-intermediate-dfb-bytes=20480; additional-dst-acquisitions=2
+// REMARK:      remark: [Missed] ReductionFusion | Category:ttl-reduction-fusion | Function=bf16_full_nine_tiles
+// REMARK-SAME: Remark="multiply-full-scalar-reduction fusion not selected: the reduction requires 9 DST slots, but 8 are available; ordinary materialized lowering remains selected; retained-intermediate-dfb-bytes=20480; additional-dst-acquisitions=2"
 module attributes {ttl.target_arch = "blackhole"} {
   func.func @bf16_full_nine_tiles()
       attributes {dst_full_sync_en = true,

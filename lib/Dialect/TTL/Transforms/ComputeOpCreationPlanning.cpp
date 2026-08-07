@@ -33,6 +33,85 @@ getComputeOpCreationWarningMessage(ComputeOpCreationWarningKind kind) {
   llvm_unreachable("unknown ComputeOp creation warning kind");
 }
 
+std::string formatFusionNearMatch(const FusionNearMatch &nearMatch) {
+  std::string message;
+  llvm::raw_string_ostream output(message);
+  switch (nearMatch.family) {
+  case FusionTargetScheduleKind::MultiplyFullScalarReduction:
+    output << "multiply-full-scalar-reduction fusion not selected: ";
+    break;
+  }
+  switch (nearMatch.kind) {
+  case FusionNearMatchKind::UnsupportedTarget:
+    output << "the target does not provide this schedule";
+    break;
+  case FusionNearMatchKind::UnsupportedDtype:
+    output << "the schedule requires bf16 tile operands";
+    break;
+  case FusionNearMatchKind::DynamicDomain:
+    output << "the schedule requires a static rank-2 domain";
+    break;
+  case FusionNearMatchKind::NonFullReduction:
+    output << "the reduction must include both rank-2 dimensions";
+    break;
+  case FusionNearMatchKind::UnsupportedReduction:
+    output << "the schedule requires a sum reduction";
+    break;
+  case FusionNearMatchKind::UnsupportedScalarConsumer:
+    output << "the scalar producer or consumer is not supported by the "
+              "schedule";
+    break;
+  case FusionNearMatchKind::UnsupportedScale:
+    output << "the semantic scale must be finite and positive";
+    break;
+  case FusionNearMatchKind::StrictFloatingPointMismatch:
+    output << "the schedule would change strict floating-point semantics";
+    break;
+  case FusionNearMatchKind::ExternalUsePreservation:
+    output << "an additional use of an absorbed result cannot be preserved";
+    break;
+  case FusionNearMatchKind::UnsupportedOperandShape:
+    output << "the operand and scalar result types do not satisfy the "
+              "schedule contract";
+    break;
+  case FusionNearMatchKind::MissingDFBInput:
+    output << "the input operands are not dataflow-buffer-backed";
+    break;
+  case FusionNearMatchKind::DSTCapacity:
+    output << "the reduction requires " << nearMatch.requiredDstSlots
+           << " DST slots, but " << nearMatch.availableDstSlots
+           << " are available";
+    break;
+  case FusionNearMatchKind::PublicationConflict:
+    output << "the selected schedule cannot preserve output publication";
+    break;
+  case FusionNearMatchKind::InstrumentationConflict:
+    output << "the selected schedule cannot preserve instrumentation order";
+    break;
+  case FusionNearMatchKind::DFBLifetimeConflict:
+    output << "the selected schedule cannot preserve input dataflow buffer "
+              "lifetimes";
+    break;
+  case FusionNearMatchKind::SourceRegisterConflict:
+    output << "the selected schedule has a source-register lifetime conflict";
+    break;
+  case FusionNearMatchKind::UnprofitableRecomputation:
+    output << "preserving additional uses would require unprofitable "
+              "recomputation";
+    break;
+  }
+  output << "; ordinary materialized lowering remains selected";
+  if (nearMatch.estimatedIntermediateDFBBytes != 0) {
+    output << "; retained-intermediate-dfb-bytes="
+           << nearMatch.estimatedIntermediateDFBBytes;
+  }
+  if (nearMatch.estimatedAdditionalDstAcquisitions != 0) {
+    output << "; additional-dst-acquisitions="
+           << nearMatch.estimatedAdditionalDstAcquisitions;
+  }
+  return message;
+}
+
 namespace {
 
 static PlanningResult<SmallVector<StoreOp>, OutputPublicationRejection>
@@ -1175,62 +1254,105 @@ struct MatchedFusionGraph {
   FusionGraphPlan graph;
 };
 
-static std::optional<MatchedFusionGraph>
+struct MultiplyReductionFusionMatch {
+  std::optional<MatchedFusionGraph> plan;
+  std::optional<FusionNearMatch> nearMatch;
+};
+
+static MultiplyReductionFusionMatch
 matchMultiplyReductionFusion(Operation *source) {
   MulUnaryConstOp postReductionScale = dyn_cast<MulUnaryConstOp>(source);
   ReduceOp reduction =
       postReductionScale
           ? postReductionScale.getInput().getDefiningOp<ReduceOp>()
           : dyn_cast<ReduceOp>(source);
-  if (!reduction || reduction.getReduceType() != ReduceType::Sum ||
-      !isBlackholeTarget(source)) {
-    return std::nullopt;
-  }
-  if (postReductionScale &&
-      (!hasOnlyUser(reduction.getResult(), postReductionScale) ||
-       !isFinitePositiveFloat(postReductionScale.getValueAttr()))) {
-    return std::nullopt;
+  if (!reduction) {
+    return {};
   }
 
   auto producer = reduction.getInput().getDefiningOp<MulOp>();
-  auto scaler = reduction.getScaler().getDefiningOp<FillOp>();
-  if (!producer || !scaler || !hasOnlyUser(producer.getResult(), reduction) ||
-      !hasOnlyUser(scaler.getResult(), reduction)) {
-    return std::nullopt;
-  }
-  if (!isFinitePositiveFloat(scaler.getValueAttr())) {
-    return std::nullopt;
+  if (!producer) {
+    return {};
   }
 
+  FusionNearMatch nearMatch;
+  nearMatch.candidate = source;
+  auto reject = [&](FusionNearMatchKind kind) {
+    nearMatch.kind = kind;
+    return MultiplyReductionFusionMatch{std::nullopt, nearMatch};
+  };
+
+  if (reduction.getReduceType() != ReduceType::Sum) {
+    return reject(FusionNearMatchKind::UnsupportedReduction);
+  }
+  if (!isFullScalarReduction(reduction)) {
+    return reject(FusionNearMatchKind::NonFullReduction);
+  }
+  if (postReductionScale &&
+      !hasOnlyUser(reduction.getResult(), postReductionScale)) {
+    return reject(FusionNearMatchKind::ExternalUsePreservation);
+  }
+  if (postReductionScale &&
+      !isFinitePositiveFloat(postReductionScale.getValueAttr())) {
+    return reject(FusionNearMatchKind::UnsupportedScale);
+  }
+
+  auto scaler = reduction.getScaler().getDefiningOp<FillOp>();
+  if (!scaler) {
+    return reject(FusionNearMatchKind::UnsupportedScalarConsumer);
+  }
   auto lhsType = getTensorType(producer.getLhs());
   auto rhsType = getTensorType(producer.getRhs());
   auto productType = getTensorType(producer.getResult());
   auto scalerType = getTensorType(scaler.getResult());
   auto resultType = getTensorType(reduction.getResult());
+  if (lhsType && scalerType && lhsType.hasStaticShape() &&
+      scalerType.hasStaticShape()) {
+    if (auto estimateTileType =
+            dyn_cast<ttcore::TileType>(lhsType.getElementType())) {
+      nearMatch.estimatedIntermediateDFBBytes =
+          (static_cast<std::uint64_t>(lhsType.getNumElements()) +
+           static_cast<std::uint64_t>(scalerType.getNumElements())) *
+          estimateTileType.getSizeBytes();
+      nearMatch.estimatedAdditionalDstAcquisitions = 2;
+    }
+  }
+  if (!hasOnlyUser(producer.getResult(), reduction) ||
+      !hasOnlyUser(scaler.getResult(), reduction)) {
+    return reject(FusionNearMatchKind::ExternalUsePreservation);
+  }
+  if (!isFinitePositiveFloat(scaler.getValueAttr())) {
+    return reject(FusionNearMatchKind::UnsupportedScale);
+  }
+
   if (!lhsType || !rhsType || !productType || !scalerType || !resultType ||
-      !lhsType.hasStaticShape() || !rhsType.hasStaticShape() ||
+      lhsType.getRank() != 2 || rhsType.getRank() != 2 ||
+      productType.getRank() != 2 || scalerType.getRank() != 2 ||
+      resultType.getRank() != 2) {
+    return reject(FusionNearMatchKind::UnsupportedOperandShape);
+  }
+  if (!lhsType.hasStaticShape() || !rhsType.hasStaticShape() ||
       !productType.hasStaticShape() || !scalerType.hasStaticShape() ||
-      !resultType.hasStaticShape() || lhsType.getRank() != 2 ||
-      lhsType != rhsType || lhsType != productType ||
-      scalerType.getRank() != 2 || scalerType.getDimSize(0) != 1 ||
-      scalerType.getDimSize(1) != 1 || resultType.getRank() != 2 ||
+      !resultType.hasStaticShape()) {
+    return reject(FusionNearMatchKind::DynamicDomain);
+  }
+  if (lhsType != rhsType || lhsType != productType ||
+      scalerType.getDimSize(0) != 1 || scalerType.getDimSize(1) != 1 ||
       resultType.getDimSize(0) != 1 || resultType.getDimSize(1) != 1 ||
-      !getAttachedCB(producer.getLhs()) || !getAttachedCB(producer.getRhs())) {
-    return std::nullopt;
+      resultType.getElementType() != lhsType.getElementType() ||
+      scalerType.getElementType() != lhsType.getElementType()) {
+    return reject(FusionNearMatchKind::UnsupportedOperandShape);
   }
 
   auto tileType = dyn_cast<ttcore::TileType>(lhsType.getElementType());
-  if (!tileType || tileType.getDataType() != ttcore::DataType::BFloat16 ||
-      resultType.getElementType() != lhsType.getElementType() ||
-      scalerType.getElementType() != lhsType.getElementType()) {
-    return std::nullopt;
+  if (!getAttachedCB(producer.getLhs()) || !getAttachedCB(producer.getRhs())) {
+    return reject(FusionNearMatchKind::MissingDFBInput);
   }
-
-  std::string failureReason;
-  FailureOr<ReductionDomainPlan> domain =
-      buildReductionDomainPlan(reduction, failureReason);
-  if (failed(domain) || domain->dimension != ttkernel::ReduceDim::Scalar) {
-    return std::nullopt;
+  if (!tileType || tileType.getDataType() != ttcore::DataType::BFloat16) {
+    return reject(FusionNearMatchKind::UnsupportedDtype);
+  }
+  if (!isBlackholeTarget(source)) {
+    return reject(FusionNearMatchKind::UnsupportedTarget);
   }
 
   std::uint32_t dstCapacity =
@@ -1238,9 +1360,18 @@ matchMultiplyReductionFusion(Operation *source) {
                      getKernelBoolAttr(source, kDstFullSyncEnAttrName));
   dstCapacity = std::min<std::uint32_t>(8, dstCapacity);
   std::uint64_t numTiles = static_cast<std::uint64_t>(lhsType.getNumElements());
+  nearMatch.requiredDstSlots = numTiles;
+  nearMatch.availableDstSlots = dstCapacity;
   if (numTiles < 1 || numTiles > dstCapacity) {
-    return std::nullopt;
+    return reject(FusionNearMatchKind::DSTCapacity);
   }
+
+  std::string failureReason;
+  FailureOr<ReductionDomainPlan> domain =
+      buildReductionDomainPlan(reduction, failureReason);
+  assert(succeeded(domain) &&
+         domain->dimension == ttkernel::ReduceDim::Scalar &&
+         "full rank-2 reduction must have a scalar domain");
 
   MatchedFusionGraph match;
   addUniqueValue(match.inputs, producer.getLhs());
@@ -1266,7 +1397,7 @@ matchMultiplyReductionFusion(Operation *source) {
       llvm::any_of(graph->nodes, [](const FusionNodePlan &node) {
         return !node.isPure || !node.isSpeculatable;
       })) {
-    return std::nullopt;
+    return reject(FusionNearMatchKind::UnsupportedScalarConsumer);
   }
   match.graph = std::move(*graph);
 
@@ -1308,7 +1439,27 @@ matchMultiplyReductionFusion(Operation *source) {
         static_cast<unsigned>(std::distance(match.inputs.begin(), input)));
   }
   match.graph.targetSchedule = std::move(target);
-  return match;
+  return {std::move(match), std::nullopt};
+}
+
+static void recordSelectedFusionNearMatch(ComputeOpCreationPlan &plan,
+                                          FusionNearMatchKind kind) {
+  if (!plan.fusionGraph || !plan.fusionGraph->targetSchedule) {
+    return;
+  }
+  FusionNearMatch nearMatch;
+  nearMatch.candidate = plan.source;
+  nearMatch.family = plan.fusionGraph->targetSchedule->kind;
+  nearMatch.kind = kind;
+  if (plan.fusionGraph->resources) {
+    nearMatch.requiredDstSlots = plan.fusionGraph->resources->requiredDstSlots;
+    nearMatch.availableDstSlots =
+        plan.fusionGraph->resources->availableDstSlots;
+    nearMatch.estimatedIntermediateDFBBytes =
+        plan.fusionGraph->resources->intermediateDFBBytes;
+    nearMatch.estimatedAdditionalDstAcquisitions = 2;
+  }
+  plan.fusionNearMatch = nearMatch;
 }
 
 static LogicalResult buildOperationSpecificPlan(ComputeOpCreationPlan &plan,
@@ -1908,9 +2059,14 @@ FailureOr<SmallVector<Value>> collectComputeOpCreationLifetimeInputs(
 static PlanningResult<ComputeOpCreationPlan, ComputeOpCreationRejection>
 rejectComputeOpCreation(
     Operation *source, ComputeOpCreationRejectionKind kind, std::string message,
-    std::optional<ComputeOpCreationPlan> candidate = std::nullopt) {
+    std::optional<ComputeOpCreationPlan> candidate = std::nullopt,
+    std::optional<FusionNearMatch> fusionNearMatch = std::nullopt) {
+  if (candidate && candidate->fusionNearMatch) {
+    fusionNearMatch = candidate->fusionNearMatch;
+  }
   return PlanningResult<ComputeOpCreationPlan, ComputeOpCreationRejection>::
-      rejected({source, kind, std::move(message), std::move(candidate)});
+      rejected({source, kind, std::move(message), std::move(candidate),
+                std::move(fusionNearMatch)});
 }
 
 static PlanningResult<ComputeOpCreationPlan, ComputeOpCreationRejection>
@@ -1937,6 +2093,9 @@ buildComputeOpCreationPlan(Operation *source,
   for (OpOperand &use : source->getResult(0).getUses()) {
     plan.resultUses.push_back({use.getOwner(), use.getOperandNumber()});
   }
+  MultiplyReductionFusionMatch multiplyReductionFusion =
+      matchMultiplyReductionFusion(source);
+  plan.fusionNearMatch = multiplyReductionFusion.nearMatch;
 
   if (isComputeOpCreationElision(source)) {
     plan.kind = ComputeOpCreationKind::Elide;
@@ -1950,13 +2109,13 @@ buildComputeOpCreationPlan(Operation *source,
     if (plan.rowNormalization->gammaMode != RowNormalizationGammaMode::None) {
       plan.inputs.push_back(plan.rowNormalization->gamma);
     }
-  } else if (std::optional<MatchedFusionGraph> fusionGraph =
-                 matchMultiplyReductionFusion(source)) {
+  } else if (multiplyReductionFusion.plan) {
+    MatchedFusionGraph fusionGraph = std::move(*multiplyReductionFusion.plan);
     plan.kind = ComputeOpCreationKind::Fused;
-    plan.inputs = std::move(fusionGraph->inputs);
-    plan.trace = std::move(fusionGraph->trace);
-    plan.iteration = std::move(fusionGraph->iteration);
-    plan.fusionGraph = std::move(fusionGraph->graph);
+    plan.inputs = std::move(fusionGraph.inputs);
+    plan.trace = std::move(fusionGraph.trace);
+    plan.iteration = std::move(fusionGraph.iteration);
+    plan.fusionGraph = std::move(fusionGraph.graph);
   } else if (std::optional<SmallVector<Value>> directInputs =
                  collectDirectInputs(source,
                                      [](OpOperand &) { return false; })) {
@@ -1975,18 +2134,21 @@ buildComputeOpCreationPlan(Operation *source,
               ? "reduce input is an unstored compute result; store the "
                 "intermediate result to a dataflow buffer before passing it "
                 "to reduce (see issue #474)"
-              : "reduce input must be dataflow-buffer-backed");
+              : "reduce input must be dataflow-buffer-backed",
+          std::nullopt, plan.fusionNearMatch);
     }
     return rejectComputeOpCreation(
         source, ComputeOpCreationRejectionKind::UnmaterializedInput,
-        "reduce scaler must be dataflow-buffer-backed");
+        "reduce scaler must be dataflow-buffer-backed", std::nullopt,
+        plan.fusionNearMatch);
   } else {
     plan.trace = traceFusionToRoots(source->getResult(0));
     if (plan.trace.failureReason != TraceFailureReason::Success ||
         plan.trace.opsInOrder.empty()) {
       return rejectComputeOpCreation(
           source, ComputeOpCreationRejectionKind::UnsupportedCandidate,
-          "operation has no defined ttl.compute input semantics");
+          "operation has no defined ttl.compute input semantics", std::nullopt,
+          plan.fusionNearMatch);
     }
     plan.kind = ComputeOpCreationKind::Fused;
     llvm::append_range(plan.inputs, plan.trace.rootInputs);
@@ -1995,7 +2157,7 @@ buildComputeOpCreationPlan(Operation *source,
   if (failed(buildOperationSpecificPlan(plan, failureReason))) {
     return rejectComputeOpCreation(
         source, ComputeOpCreationRejectionKind::UnsupportedCandidate,
-        std::move(failureReason));
+        std::move(failureReason), std::nullopt, plan.fusionNearMatch);
   }
 
   if (plan.kind != ComputeOpCreationKind::Elide) {
@@ -2032,9 +2194,11 @@ buildComputeOpCreationPlan(Operation *source,
         invalidIR(diagnostic.operation, diagnostic.message);
   }
   if (outputs.isRejected()) {
+    recordSelectedFusionNearMatch(plan,
+                                  FusionNearMatchKind::PublicationConflict);
     return rejectComputeOpCreation(
         source, ComputeOpCreationRejectionKind::UnsupportedOutputPublication,
-        outputs.getRejection().message);
+        outputs.getRejection().message, std::nullopt, plan.fusionNearMatch);
   }
   plan.outputs = std::move(outputs).takePlan();
 
@@ -2050,6 +2214,8 @@ buildComputeOpCreationPlan(Operation *source,
               "transaction"
             : "fixed fusion block requires exactly one output store "
               "transaction";
+    recordSelectedFusionNearMatch(plan,
+                                  FusionNearMatchKind::PublicationConflict);
     return rejectComputeOpCreation(
         source, plan.rejectionKind, plan.rejectionReason,
         std::optional<ComputeOpCreationPlan>(std::move(plan)));
@@ -2062,6 +2228,8 @@ buildComputeOpCreationPlan(Operation *source,
           plan.instrumentation, failureReason))) {
     plan.rejectionKind = ComputeOpCreationRejectionKind::UnsupportedCandidate;
     plan.rejectionReason = failureReason;
+    recordSelectedFusionNearMatch(plan,
+                                  FusionNearMatchKind::InstrumentationConflict);
     return rejectComputeOpCreation(
         source, plan.rejectionKind, plan.rejectionReason,
         std::optional<ComputeOpCreationPlan>(std::move(plan)));
@@ -2081,6 +2249,8 @@ buildComputeOpCreationPlan(Operation *source,
     plan.rejectionReason =
         "fixed fusion block cannot preserve instrumentation inside the "
         "absorbed expression";
+    recordSelectedFusionNearMatch(plan,
+                                  FusionNearMatchKind::InstrumentationConflict);
   }
 
   SmallVector<ComputeOpCreationInstrumentationBoundary>
@@ -2094,6 +2264,8 @@ buildComputeOpCreationPlan(Operation *source,
     plan.rejectionReason =
         "creating ttl.compute would move instrumentation across a "
         "non-reorderable operation";
+    recordSelectedFusionNearMatch(plan,
+                                  FusionNearMatchKind::InstrumentationConflict);
   }
 
   if (plan.isLegal()) {
@@ -2103,12 +2275,16 @@ buildComputeOpCreationPlan(Operation *source,
       plan.rejectionReason =
           "one compute cannot publish multiple reserve transactions of the "
           "same dataflow buffer";
+      recordSelectedFusionNearMatch(plan,
+                                    FusionNearMatchKind::PublicationConflict);
     } else if (lifetimes.anyValueMayBeReleased(plan.inputs,
                                                plan.outputs.insertionAnchor)) {
       plan.rejectionKind = ComputeOpCreationRejectionKind::InputMayBeReleased;
       plan.rejectionReason =
           "moving tensor evaluation to the final output store would read a "
           "dataflow buffer value after its pop";
+      recordSelectedFusionNearMatch(plan,
+                                    FusionNearMatchKind::DFBLifetimeConflict);
     } else {
       for (OpOperand &use : source->getResult(0).getUses()) {
         if (!isComputeOpCreationUsePreserved(plan.outputs, use,
@@ -2123,6 +2299,8 @@ buildComputeOpCreationPlan(Operation *source,
         plan.rejectionReason =
             "ttl.compute inserted at the final output store would not "
             "dominate every surviving result use";
+        recordSelectedFusionNearMatch(
+            plan, FusionNearMatchKind::ExternalUsePreservation);
       }
     }
   }
@@ -2264,6 +2442,10 @@ ComputeOpCreationPlanner::build() const {
     if (creation.isRejected()) {
       ComputeOpCreationRejection rejection =
           std::move(creation).takeRejection();
+      if (rejection.fusionNearMatch) {
+        kernelPlan.fusionNearMatches.try_emplace(
+            source, std::move(*rejection.fusionNearMatch));
+      }
       if (!rejection.candidate) {
         kernelPlan.rejectionKinds.try_emplace(source, rejection.kind);
         kernelPlan.rejectionReasons.try_emplace(source,
@@ -2274,7 +2456,11 @@ ComputeOpCreationPlanner::build() const {
       candidates.push_back(source);
       return;
     }
-    kernelPlan.creations.try_emplace(source, std::move(creation).takePlan());
+    ComputeOpCreationPlan plan = std::move(creation).takePlan();
+    if (plan.fusionNearMatch) {
+      kernelPlan.fusionNearMatches.try_emplace(source, *plan.fusionNearMatch);
+    }
+    kernelPlan.creations.try_emplace(source, std::move(plan));
     candidates.push_back(source);
   });
   if (invalidIR) {
@@ -2508,6 +2694,15 @@ KernelComputeOpCreationPlan::getRejectionKind(Operation *source) const {
     return std::nullopt;
   }
   return rejection->second;
+}
+
+const FusionNearMatch *
+KernelComputeOpCreationPlan::getFusionNearMatch(Operation *source) const {
+  auto nearMatch = fusionNearMatches.find(source);
+  if (nearMatch == fusionNearMatches.end()) {
+    return nullptr;
+  }
+  return &nearMatch->second;
 }
 
 PlanningDiagnostic
