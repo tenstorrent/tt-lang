@@ -1697,8 +1697,9 @@ def TTL_ReadIndexOp : TTL_Op<"read_index",
     layout-independent rules as `ttl.raw_element_read`.
 
     Conversion truncates fractional values toward zero. The source value must
-    be finite, nonnegative, and no greater than INT32_MAX. This operation is
-    intended for tensor-provided offsets such as table indices and positions.
+    be finite, nonnegative, and no greater than INT32_MAX; behavior is
+    undefined otherwise. This operation is intended for tensor-provided
+    offsets such as table indices and positions.
 
     This operation is restricted to data movement (noc) threads.
 

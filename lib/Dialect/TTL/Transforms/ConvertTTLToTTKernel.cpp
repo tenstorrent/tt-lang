@@ -1598,7 +1598,7 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
 // Raw Element Access Lowering
 //===----------------------------------------------------------------------===//
 
-/// Return the scalar type and matching integer type for a raw element access.
+/// Return the integer storage type and bit width for a raw element access.
 /// f32 -> (i32, 32), bf16 -> (i16, 16).
 static std::pair<Type, unsigned> getIntTypeForFloat(MLIRContext *ctx,
                                                     Type floatTy) {
@@ -1748,12 +1748,17 @@ resolveCBForRawElement(Value adaptedBlock, Value originalBlock,
   return utils::convertTTLCBToTTKernel(origCB, rewriter, loc, typeConverter);
 }
 
-/// Convert the raw IEEE-754 representation of a finite, nonnegative f32 or
-/// bf16 value to i32 with truncation toward zero. Both shift operands are
-/// clamped because arith.select evaluates both candidate values.
-static Value decodeNonnegativeFloatToI32(Value rawBits, unsigned mantissaWidth,
+/// Convert the raw IEEE-754 representation of a finite, nonnegative float to
+/// i32 with truncation toward zero. Both shift operands are clamped because
+/// arith.select evaluates both candidate values.
+static Value decodeNonnegativeFloatToI32(Value rawBits, FloatType floatType,
                                          ConversionPatternRewriter &rewriter,
                                          Location loc) {
+  unsigned mantissaWidth = floatType.getFPMantissaWidth() - 1;
+  unsigned exponentWidth = floatType.getWidth() - mantissaWidth - 1;
+  uint32_t exponentMask = (uint32_t{1} << exponentWidth) - 1;
+  uint32_t exponentBias = (uint32_t{1} << (exponentWidth - 1)) - 1;
+
   auto i32Type = rewriter.getI32Type();
   auto constant = [&](int64_t value) -> Value {
     return arith::ConstantIntOp::create(rewriter, loc, value, 32);
@@ -1780,8 +1785,10 @@ static Value decodeNonnegativeFloatToI32(Value rawBits, unsigned mantissaWidth,
 
   Value exponentShift = constant(mantissaWidth);
   Value exponent = arith::ShRUIOp::create(rewriter, loc, bits, exponentShift);
-  exponent = arith::AndIOp::create(rewriter, loc, exponent, constant(0xff));
-  exponent = arith::SubIOp::create(rewriter, loc, exponent, constant(127));
+  exponent =
+      arith::AndIOp::create(rewriter, loc, exponent, constant(exponentMask));
+  exponent =
+      arith::SubIOp::create(rewriter, loc, exponent, constant(exponentBias));
 
   uint32_t mantissaMask = (uint32_t{1} << mantissaWidth) - 1;
   uint32_t hiddenBit = uint32_t{1} << mantissaWidth;
@@ -1853,11 +1860,8 @@ struct ReadIndexLowering : OpConversionPattern<ReadIndexOp> {
     Location loc = op.getLoc();
     auto blockType = mlir::cast<RankedTensorType>(op.getBlock().getType());
     Type elementType = blockType.getElementType();
-    Type scalarType = elementType;
-    if (auto tileType = mlir::dyn_cast<tt::ttcore::TileType>(elementType)) {
-      scalarType = tt::ttcore::dataTypeToElementType(rewriter.getContext(),
-                                                     tileType.getDataType());
-    }
+    Type scalarType = getTileElementType(elementType).value_or(elementType);
+    auto floatType = mlir::cast<FloatType>(scalarType);
     auto [integerType, elementWidth] =
         getIntTypeForFloat(rewriter.getContext(), scalarType);
 
@@ -1874,9 +1878,8 @@ struct ReadIndexLowering : OpConversionPattern<ReadIndexOp> {
                            elementWidth, rewriter, loc);
     Value rawBits = ttk::LoadFromL1Op::create(rewriter, loc, integerType,
                                               l1Pointer, offset);
-    unsigned mantissaWidth = scalarType.isF32() ? 23 : 7;
     Value integerValue =
-        decodeNonnegativeFloatToI32(rawBits, mantissaWidth, rewriter, loc);
+        decodeNonnegativeFloatToI32(rawBits, floatType, rewriter, loc);
     Value indexValue = arith::IndexCastOp::create(
         rewriter, loc, rewriter.getIndexType(), integerValue);
     rewriter.replaceOp(op, indexValue);
