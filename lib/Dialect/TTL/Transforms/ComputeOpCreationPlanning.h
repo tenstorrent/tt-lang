@@ -276,6 +276,7 @@ struct FusionTargetSchedulePlan {
   SmallVector<unsigned, 2> inputIndices;
   std::uint32_t numTiles = 0;
   ttcore::DataType dataType = ttcore::DataType::BFloat16;
+  FloatAttr scale;
 };
 
 /// Immutable semantic graph used by target schedule selection.

@@ -1382,6 +1382,35 @@ def TTL_TileRowNormalizationBlockOp :
   let hasVerifier = 1;
 }
 
+def TTL_TileMulReduceBlockOp :
+    TTL_TileOp<"tile_mul_reduce_block",
+               [TTL_CBInputTileOpTrait, TTL_DstResultOpTrait,
+                TTL_FixedBlockComputeOpTrait]> {
+  let summary = "Multiply tensors and perform one full scalar reduction";
+  let description = [{
+    Computes `scale * sum(lhs * rhs)` across every element of matching static
+    rank-2 tensors. The multiply results remain in the acquired DST section and
+    feed the full scalar sum without dataflow buffer materialization. Only
+    element `[0, 0]` of the result tile is defined.
+
+    `dst_index` identifies the scalar result slot. The operation is internal to
+    fixed block-compute lowering. Its temporary DST footprint contains one slot
+    per input tile even though its final result occupies one slot.
+  }];
+  let arguments = (ins TTL_TileOrTensor:$lhs,
+                       TTL_TileOrTensor:$rhs,
+                       TTL_TileOrTensor:$output,
+                       F32Attr:$scale,
+                       Index:$dst_index);
+  let results = (outs TTL_TileOrTensor:$result);
+  let assemblyFormat = [{
+    $lhs `,` $rhs `,` $output `scale` `=` $scale
+    `into` `dst` `[` $dst_index `]` attr-dict `:`
+    type($lhs) `,` type($rhs) `,` type($output) `->` type($result)
+  }];
+  let hasVerifier = 1;
+}
+
 //===----------------------------------------------------------------------===//
 // Transpose Operation
 //===----------------------------------------------------------------------===//

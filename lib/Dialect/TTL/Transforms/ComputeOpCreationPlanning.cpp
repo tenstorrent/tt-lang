@@ -853,10 +853,17 @@ buildSingleStageFusionGraph(const FusionTraceResult &trace,
       edge.consumerNode = consumerIndex;
       edge.consumerOperand = operandIndex;
       edge.value = operand;
-      edge.kind =
-          graph.nodes[producerIndex].semantic == FusionSemanticKind::Reduction
-              ? FusionEdgeKind::FullScalar
-              : FusionEdgeKind::FullTensor;
+      const FusionNodePlan &producerNode = graph.nodes[producerIndex];
+      bool carriesFullScalar =
+          (producerNode.semantic == FusionSemanticKind::Reduction &&
+           producerNode.resultType.hasStaticShape() &&
+           producerNode.resultType.getNumElements() == 1) ||
+          (isa<ReduceOp>(node.source) && operandIndex == 1 &&
+           producerNode.semantic == FusionSemanticKind::Fill &&
+           producerNode.resultType.hasStaticShape() &&
+           producerNode.resultType.getNumElements() == 1);
+      edge.kind = carriesFullScalar ? FusionEdgeKind::FullScalar
+                                    : FusionEdgeKind::FullTensor;
       edge.legalCarriers.push_back(FusionCarrierKind::DST);
       edge.selectedCarrier = FusionCarrierKind::DST;
       for (OpOperand &use : operand.getUses()) {
@@ -1161,6 +1168,149 @@ buildReductionDomainPlan(ReduceOp reduce, std::string &failureReason) {
   return domain;
 }
 
+struct MatchedFusionGraph {
+  SmallVector<Value> inputs;
+  FusionTraceResult trace;
+  ComputeIterationPlan iteration;
+  FusionGraphPlan graph;
+};
+
+static std::optional<MatchedFusionGraph>
+matchMultiplyReductionFusion(Operation *source) {
+  MulUnaryConstOp postReductionScale = dyn_cast<MulUnaryConstOp>(source);
+  ReduceOp reduction =
+      postReductionScale
+          ? postReductionScale.getInput().getDefiningOp<ReduceOp>()
+          : dyn_cast<ReduceOp>(source);
+  if (!reduction || reduction.getReduceType() != ReduceType::Sum ||
+      !isBlackholeTarget(source)) {
+    return std::nullopt;
+  }
+  if (postReductionScale &&
+      (!hasOnlyUser(reduction.getResult(), postReductionScale) ||
+       !isFinitePositiveFloat(postReductionScale.getValueAttr()))) {
+    return std::nullopt;
+  }
+
+  auto producer = reduction.getInput().getDefiningOp<MulOp>();
+  auto scaler = reduction.getScaler().getDefiningOp<FillOp>();
+  if (!producer || !scaler || !hasOnlyUser(producer.getResult(), reduction) ||
+      !hasOnlyUser(scaler.getResult(), reduction)) {
+    return std::nullopt;
+  }
+  if (!isFinitePositiveFloat(scaler.getValueAttr())) {
+    return std::nullopt;
+  }
+
+  auto lhsType = getTensorType(producer.getLhs());
+  auto rhsType = getTensorType(producer.getRhs());
+  auto productType = getTensorType(producer.getResult());
+  auto scalerType = getTensorType(scaler.getResult());
+  auto resultType = getTensorType(reduction.getResult());
+  if (!lhsType || !rhsType || !productType || !scalerType || !resultType ||
+      !lhsType.hasStaticShape() || !rhsType.hasStaticShape() ||
+      !productType.hasStaticShape() || !scalerType.hasStaticShape() ||
+      !resultType.hasStaticShape() || lhsType.getRank() != 2 ||
+      lhsType != rhsType || lhsType != productType ||
+      scalerType.getRank() != 2 || scalerType.getDimSize(0) != 1 ||
+      scalerType.getDimSize(1) != 1 || resultType.getRank() != 2 ||
+      resultType.getDimSize(0) != 1 || resultType.getDimSize(1) != 1 ||
+      !getAttachedCB(producer.getLhs()) || !getAttachedCB(producer.getRhs())) {
+    return std::nullopt;
+  }
+
+  auto tileType = dyn_cast<ttcore::TileType>(lhsType.getElementType());
+  if (!tileType || tileType.getDataType() != ttcore::DataType::BFloat16 ||
+      resultType.getElementType() != lhsType.getElementType() ||
+      scalerType.getElementType() != lhsType.getElementType()) {
+    return std::nullopt;
+  }
+
+  std::string failureReason;
+  FailureOr<ReductionDomainPlan> domain =
+      buildReductionDomainPlan(reduction, failureReason);
+  if (failed(domain) || domain->dimension != ttkernel::ReduceDim::Scalar) {
+    return std::nullopt;
+  }
+
+  std::uint32_t dstCapacity =
+      getDstCapacity(getKernelBoolAttr(source, kFp32DestAccEnAttrName),
+                     getKernelBoolAttr(source, kDstFullSyncEnAttrName));
+  dstCapacity = std::min<std::uint32_t>(8, dstCapacity);
+  std::uint64_t numTiles = static_cast<std::uint64_t>(lhsType.getNumElements());
+  if (numTiles < 1 || numTiles > dstCapacity) {
+    return std::nullopt;
+  }
+
+  MatchedFusionGraph match;
+  addUniqueValue(match.inputs, producer.getLhs());
+  addUniqueValue(match.inputs, producer.getRhs());
+  match.iteration.inputMaps.assign(match.inputs.size(), domain->inputMap);
+  match.iteration.outputMap = domain->outputMap;
+  match.iteration.iteratorTypes = domain->iteratorTypes;
+
+  match.trace.opsInOrder.insert(producer);
+  match.trace.opsInOrder.insert(scaler);
+  match.trace.opsInOrder.insert(reduction);
+  if (postReductionScale) {
+    match.trace.opsInOrder.insert(postReductionScale);
+  }
+  for (Value input : match.inputs) {
+    match.trace.rootInputs.insert(input);
+    match.trace.lifetimeRootInputs.insert(input);
+  }
+
+  FailureOr<FusionGraphPlan> graph =
+      buildSingleStageFusionGraph(match.trace, match.iteration, failureReason);
+  if (failed(graph) ||
+      llvm::any_of(graph->nodes, [](const FusionNodePlan &node) {
+        return !node.isPure || !node.isSpeculatable;
+      })) {
+    return std::nullopt;
+  }
+  match.graph = std::move(*graph);
+
+  for (FusionEdgePlan &edge : match.graph.edges) {
+    const FusionNodePlan &producerNode = match.graph.nodes[edge.producerNode];
+    edge.legalCarriers.clear();
+    edge.legalCarriers.push_back(FusionCarrierKind::MaterializedDFB);
+    if (producerNode.semantic == FusionSemanticKind::Fill) {
+      edge.legalCarriers.push_back(FusionCarrierKind::Recompute);
+      edge.selectedCarrier = FusionCarrierKind::Recompute;
+    } else {
+      edge.legalCarriers.push_back(FusionCarrierKind::DST);
+      edge.selectedCarrier = FusionCarrierKind::DST;
+    }
+  }
+
+  FusionResourcePlan resources;
+  resources.requiredDstSlots = static_cast<std::uint32_t>(numTiles);
+  resources.availableDstSlots = dstCapacity;
+  resources.dstAcquisitions = 1;
+  resources.intermediateDFBBytes =
+      (numTiles + static_cast<std::uint64_t>(scalerType.getNumElements())) *
+      tileType.getSizeBytes();
+  match.graph.resources = resources;
+
+  FusionTargetSchedulePlan target;
+  target.numTiles = static_cast<std::uint32_t>(numTiles);
+  target.dataType = tileType.getDataType();
+  double semanticScale = scaler.getValueAttr().getValueAsDouble();
+  if (postReductionScale) {
+    semanticScale *= postReductionScale.getValueAttr().getValueAsDouble();
+  }
+  target.scale = FloatAttr::get(scaler.getValueAttr().getType(), semanticScale);
+  for (Value operand : {producer.getLhs(), producer.getRhs()}) {
+    auto input = llvm::find(match.inputs, operand);
+    assert(input != match.inputs.end() &&
+           "target operand must be a graph input");
+    target.inputIndices.push_back(
+        static_cast<unsigned>(std::distance(match.inputs.begin(), input)));
+  }
+  match.graph.targetSchedule = std::move(target);
+  return match;
+}
+
 static LogicalResult buildOperationSpecificPlan(ComputeOpCreationPlan &plan,
                                                 std::string &failureReason) {
   if (plan.kind == ComputeOpCreationKind::Elide) {
@@ -1178,6 +1328,10 @@ static LogicalResult buildOperationSpecificPlan(ComputeOpCreationPlan &plan,
     }
     plan.iteration.outputMap = identity;
     plan.iteration.iteratorTypes.assign(2, utils::IteratorType::parallel);
+    return success();
+  }
+  if (plan.fusionGraph && plan.fusionGraph->targetSchedule) {
+    plan.recipe = ComputeOpCreationRecipe::FusionGraph;
     return success();
   }
   if (plan.kind == ComputeOpCreationKind::Fused) {
@@ -1796,6 +1950,13 @@ buildComputeOpCreationPlan(Operation *source,
     if (plan.rowNormalization->gammaMode != RowNormalizationGammaMode::None) {
       plan.inputs.push_back(plan.rowNormalization->gamma);
     }
+  } else if (std::optional<MatchedFusionGraph> fusionGraph =
+                 matchMultiplyReductionFusion(source)) {
+    plan.kind = ComputeOpCreationKind::Fused;
+    plan.inputs = std::move(fusionGraph->inputs);
+    plan.trace = std::move(fusionGraph->trace);
+    plan.iteration = std::move(fusionGraph->iteration);
+    plan.fusionGraph = std::move(fusionGraph->graph);
   } else if (std::optional<SmallVector<Value>> directInputs =
                  collectDirectInputs(source,
                                      [](OpOperand &) { return false; })) {
@@ -1877,14 +2038,18 @@ buildComputeOpCreationPlan(Operation *source,
   }
   plan.outputs = std::move(outputs).takePlan();
 
-  if (plan.rowNormalization &&
+  if ((plan.rowNormalization ||
+       plan.recipe == ComputeOpCreationRecipe::FusionGraph) &&
       (plan.outputs.transactions.size() != 1 || plan.outputs.dfbs.size() != 1 ||
        plan.outputs.stores.size() != 1)) {
     plan.rejectionKind =
         ComputeOpCreationRejectionKind::UnsupportedOutputPublication;
     plan.rejectionReason =
-        "row-normalization block requires exactly one output store "
-        "transaction";
+        plan.rowNormalization
+            ? "row-normalization block requires exactly one output store "
+              "transaction"
+            : "fixed fusion block requires exactly one output store "
+              "transaction";
     return rejectComputeOpCreation(
         source, plan.rejectionKind, plan.rejectionReason,
         std::optional<ComputeOpCreationPlan>(std::move(plan)));
@@ -1908,6 +2073,14 @@ buildComputeOpCreationPlan(Operation *source,
     plan.rejectionReason =
         "row-normalization block fusion cannot preserve instrumentation "
         "inside the absorbed expression";
+  }
+  if (plan.recipe == ComputeOpCreationRecipe::FusionGraph &&
+      !plan.instrumentation.empty()) {
+    plan.rejectionKind =
+        ComputeOpCreationRejectionKind::InstrumentationWouldBeReordered;
+    plan.rejectionReason =
+        "fixed fusion block cannot preserve instrumentation inside the "
+        "absorbed expression";
   }
 
   SmallVector<ComputeOpCreationInstrumentationBoundary>

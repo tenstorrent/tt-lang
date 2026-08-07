@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#include "ttlang/Dialect/TTL/Transforms/LowerFusionCompute.h"
 #include "ttlang/Dialect/TTL/Transforms/LowerMatmulCompute.h"
 #include "ttlang/Dialect/TTL/Transforms/LowerRowNormalizationCompute.h"
 
@@ -333,6 +334,9 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     }
     if (op.containsOp<TileRowNormalizationBlockOp>()) {
       return generateRowNormalizationCompute(rewriter, loc, op);
+    }
+    if (op.containsOp<TileMulReduceBlockOp>()) {
+      return generateFusionCompute(rewriter, loc, op);
     }
 
     // Side-effect-only loops: no iter_args, no tensor.insert, no scf.yield
@@ -672,6 +676,16 @@ struct TTLLowerToLoopsPass
       }
     });
     if (invalidRowNormalization) {
+      return signalPassFailure();
+    }
+    bool invalidFusionCompute = false;
+    func.walk([&](ComputeOp computeOp) {
+      if (computeOp.containsOp<TileMulReduceBlockOp>() &&
+          failed(verifyFusionCompute(computeOp))) {
+        invalidFusionCompute = true;
+      }
+    });
+    if (invalidFusionCompute) {
       return signalPassFailure();
     }
 

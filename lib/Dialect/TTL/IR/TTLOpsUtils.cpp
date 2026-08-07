@@ -546,6 +546,18 @@ getRowNormalizationBlockTileCount(TileRowNormalizationBlockOp op) {
   return inputType.getNumElements();
 }
 
+/// Multiply-reduction retains every product tile until the scalar reduction
+/// completes, while publishing only the scalar in the first DST slot.
+static int64_t getMulReduceBlockTileCount(TileMulReduceBlockOp op) {
+  if (isa<ttcore::TileType>(op.getLhs().getType())) {
+    return 1;
+  }
+  auto lhsType = dyn_cast<RankedTensorType>(op.getLhs().getType());
+  assert(lhsType && lhsType.hasStaticShape() &&
+         "verified multiply-reduction tensor form must have static shape");
+  return lhsType.getNumElements();
+}
+
 /// Interface defaults require resolved DST operands because callers use this
 /// after DST assignment, where unresolved tile residency is invalid IR.
 static LogicalResult
@@ -594,6 +606,10 @@ SmallVector<DstFootprint, 2> getDefaultDstWriteFootprints(Operation *op) {
     return {{normalization.getDstIndex(),
              getRowNormalizationBlockTileCount(normalization)}};
   }
+  if (auto multiplyReduction = dyn_cast<TileMulReduceBlockOp>(op)) {
+    return {{multiplyReduction.getDstIndex(),
+             getMulReduceBlockTileCount(multiplyReduction)}};
+  }
   if (auto dstIndex = getTileOpDstIndex(op)) {
     return {{*dstIndex, 1}};
   }
@@ -617,6 +633,9 @@ FailureOr<DstFootprint> getDefaultResultDstFootprint(Operation *op,
   if (auto normalization = dyn_cast<TileRowNormalizationBlockOp>(op)) {
     return DstFootprint{normalization.getDstIndex(),
                         getRowNormalizationBlockTileCount(normalization)};
+  }
+  if (auto multiplyReduction = dyn_cast<TileMulReduceBlockOp>(op)) {
+    return DstFootprint{multiplyReduction.getDstIndex(), 1};
   }
   if (auto dstIndex = getTileOpDstIndex(op)) {
     return DstFootprint{*dstIndex, 1};

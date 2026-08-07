@@ -2683,6 +2683,33 @@ public:
   }
 };
 
+class ExperimentalMulReduceBlockOpConversion
+    : public OpConversionPattern<ttkernel::ExperimentalMulReduceBlockOp> {
+public:
+  using OpConversionPattern<
+      ttkernel::ExperimentalMulReduceBlockOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ttkernel::ExperimentalMulReduceBlockOp op,
+                  ttkernel::ExperimentalMulReduceBlockOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    FloatAttr reductionScaler = rewriter.getF32FloatAttr(
+        std::sqrt(op.getScaleAttr().getValueAsDouble()));
+    Value reductionScalerValue =
+        arith::ConstantOp::create(rewriter, op.getLoc(), reductionScaler);
+    SmallVector<Attribute, 1> templateArguments = {emitc::OpaqueAttr::get(
+        op.getContext(), std::to_string(op.getNumTiles()))};
+    SmallVector<Value, 4> operands = {adaptor.getLhsCb(), adaptor.getRhsCb(),
+                                      adaptor.getOutputCb(),
+                                      reductionScalerValue};
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange(), "experimental::multiply_full_scalar_reduction_block",
+        ArrayAttr(), ArrayAttr::get(op.getContext(), templateArguments),
+        operands);
+    return success();
+  }
+};
+
 // Arith MaxUIOp doesn't have an emitc lowering. We can lower it to a call to
 // std::max.
 class ArithMaxUIRewriter : public OpConversionPattern<arith::MaxUIOp> {
@@ -3164,6 +3191,8 @@ public:
     patterns.add<TTKernelInvokeSFPIOpRewriter>(typeConverter, context);
     patterns.add<ExperimentalRowNormalizationBlockOpConversion>(typeConverter,
                                                                 context);
+    patterns.add<ExperimentalMulReduceBlockOpConversion>(typeConverter,
+                                                         context);
     patterns.add<TTKernelToEmitCGetDeviceIdFromLogicalMeshPositionOpRewriter>(
         typeConverter, context, state);
 

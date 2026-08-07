@@ -657,6 +657,93 @@ buildRowNormalizationCompute(Operation *sinkOp, PatternRewriter &rewriter,
   return success();
 }
 
+/// Applies the target schedule selected from an immutable semantic fusion
+/// graph. Application verifies recorded identities and emits the schedule
+/// without re-running recognition or resource policy.
+static LogicalResult
+buildFusionGraphCompute(Operation *sinkOp, PatternRewriter &rewriter,
+                        const ComputeOpCreationPlan &creation,
+                        const OutputPublicationPlan &outputs) {
+  assert(creation.recipe == ComputeOpCreationRecipe::FusionGraph &&
+         creation.fusionGraph && creation.fusionGraph->targetSchedule &&
+         "fusion-graph builder requires a selected target schedule");
+  const FusionGraphPlan &graph = *creation.fusionGraph;
+  const FusionTargetSchedulePlan &target = *graph.targetSchedule;
+  if (llvm::any_of(graph.nodes, [](const FusionNodePlan &node) {
+        return !node.source ||
+               !llvm::equal(node.source->getOperands(), node.operands);
+      })) {
+    return rewriter.notifyMatchFailure(
+        sinkOp, "fusion graph changed after target schedule selection");
+  }
+  if (target.kind != FusionTargetScheduleKind::MultiplyFullScalarReduction ||
+      target.inputIndices.size() != 2 || !target.scale ||
+      llvm::any_of(target.inputIndices, [&](unsigned inputIndex) {
+        return inputIndex >= creation.inputs.size();
+      })) {
+    return rewriter.notifyMatchFailure(sinkOp,
+                                       "invalid fusion target schedule");
+  }
+
+  Location loc = sinkOp->getLoc();
+  RankedTensorType outputType = creation.resultType;
+  SmallVector<Attribute> maps;
+  for (AffineMap inputMap : creation.iteration.inputMaps) {
+    maps.push_back(AffineMapAttr::get(inputMap));
+  }
+  maps.append(outputs.dfbs.size(),
+              AffineMapAttr::get(creation.iteration.outputMap));
+  SmallVector<Attribute> iteratorTypes =
+      buildIteratorTypeAttributes(rewriter, creation.iteration.iteratorTypes);
+
+  insertAtCreationAnchor(rewriter, outputs);
+  SmallVector<Value> outputViews;
+  SmallVector<Type> resultTypes;
+  for (Value outputDFB : outputs.dfbs) {
+    Value init =
+        buildInitTensor(rewriter, loc, outputType, creation.inputs.front());
+    outputViews.push_back(
+        AttachCBOp::create(rewriter, loc, init.getType(), init, outputDFB));
+    resultTypes.push_back(outputType);
+  }
+
+  auto computeOp = ComputeOp::create(
+      rewriter, loc, TypeRange(resultTypes), ValueRange(creation.inputs),
+      ValueRange(outputViews), rewriter.getArrayAttr(maps),
+      rewriter.getArrayAttr(iteratorTypes));
+  Block *body = rewriter.createBlock(&computeOp.getBody());
+  for (Value input : creation.inputs) {
+    auto inputType = cast<RankedTensorType>(input.getType());
+    body->addArgument(getTileValueType(inputType.getElementType()), loc);
+  }
+  Type outputTileType = getTileValueType(outputType.getElementType());
+  body->addArgument(outputTileType, loc);
+
+  rewriter.setInsertionPointToStart(body);
+  Value lhsTile = body->getArgument(target.inputIndices[0]);
+  Value rhsTile = body->getArgument(target.inputIndices[1]);
+  Value outputTile = body->getArgument(creation.inputs.size());
+  Value result = createTileOpWithPlaceholderDstIndex<TileMulReduceBlockOp>(
+      rewriter, loc, outputTileType, lhsTile, rhsTile, outputTile,
+      target.scale);
+  for (StoreOp store : outputs.stores) {
+    emitTileStore(rewriter, loc, result, computeOp, store, outputs);
+  }
+  YieldOp::create(rewriter, loc);
+
+  SmallVector<CBPushOp> replacedPushes;
+  replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
+                                   replacedPushes);
+  eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
+  rewriter.replaceOp(sinkOp, computeOp.getResult(0));
+  for (Operation *operation : llvm::reverse(creation.trace.opsInOrder)) {
+    if (operation != sinkOp && operation->use_empty()) {
+      rewriter.eraseOp(operation);
+    }
+  }
+  return success();
+}
+
 //===----------------------------------------------------------------------===//
 // Lowering to ttl.compute with tile ops
 //===----------------------------------------------------------------------===//
@@ -767,6 +854,7 @@ static LogicalResult tryFusion(Operation *op, PatternRewriter &rewriter,
   }
   if (creation->kind != ComputeOpCreationKind::Fused ||
       (creation->recipe != ComputeOpCreationRecipe::RowNormalization &&
+       creation->recipe != ComputeOpCreationRecipe::FusionGraph &&
        creation->recipe != ComputeOpCreationRecipe::Fused)) {
     return rewriter.notifyMatchFailure(op,
                                        "operation has no fusable expression");
@@ -777,6 +865,9 @@ static LogicalResult tryFusion(Operation *op, PatternRewriter &rewriter,
   }
   if (creation->recipe == ComputeOpCreationRecipe::RowNormalization) {
     return buildRowNormalizationCompute(op, rewriter, *creation, outputs);
+  }
+  if (creation->recipe == ComputeOpCreationRecipe::FusionGraph) {
+    return buildFusionGraphCompute(op, rewriter, *creation, outputs);
   }
   return buildFusedCompute(op, rewriter, *creation, outputs);
 }
@@ -1180,14 +1271,8 @@ struct LowerReduceToCompute : PlannedComputeRewritePattern<ReduceOp> {
       return failure();
     }
 
-    if (!getAttachedCB(op.getScaler())) {
-      return rewriter.notifyMatchFailure(op,
-                                         "reduce scaler must be CB-attached");
-    }
-
-    if (!getAttachedCB(op.getInput())) {
-      return rewriter.notifyMatchFailure(op,
-                                         "reduce input must be DFB-attached");
+    if (!getAttachedCB(op.getScaler()) || !getAttachedCB(op.getInput())) {
+      return tryFusion(op.getOperation(), rewriter, this->kernelPlan);
     }
 
     return buildComputeFromInputs(

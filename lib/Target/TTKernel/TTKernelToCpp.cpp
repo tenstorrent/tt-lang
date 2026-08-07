@@ -157,9 +157,12 @@ public:
         emitLlk(experimental_matmul_llks_generated,
                 experimental_matmul_llks_generated_len);
       }
-      if (callee == "experimental::row_normalization_block") {
+      if (callee == "experimental::multiply_full_scalar_reduction_block" ||
+          callee == "experimental::row_normalization_block") {
         emitLlk(experimental_mul_reduce_generated,
                 experimental_mul_reduce_generated_len);
+      }
+      if (callee == "experimental::row_normalization_block") {
         emitLlk(experimental_row_normalization_generated,
                 experimental_row_normalization_generated_len);
       }

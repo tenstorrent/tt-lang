@@ -1886,6 +1886,58 @@ mlir::LogicalResult mlir::tt::ttl::TileRowNormalizationBlockOp::verify() {
 }
 
 //===----------------------------------------------------------------------===//
+// TileMulReduceBlockOp
+//===----------------------------------------------------------------------===//
+
+mlir::LogicalResult mlir::tt::ttl::TileMulReduceBlockOp::verify() {
+  FailureOr<ttcore::TileType> lhsTileType =
+      getContainedTileType(getLhs().getType());
+  FailureOr<ttcore::TileType> rhsTileType =
+      getContainedTileType(getRhs().getType());
+  FailureOr<ttcore::TileType> outputTileType =
+      getContainedTileType(getOutput().getType());
+  FailureOr<ttcore::TileType> resultTileType =
+      getContainedTileType(getResult().getType());
+  if (failed(lhsTileType) || failed(rhsTileType) || failed(outputTileType) ||
+      failed(resultTileType)) {
+    return emitOpError("lhs, rhs, output, and result must contain tiles");
+  }
+  if (*lhsTileType != *rhsTileType || *lhsTileType != *outputTileType ||
+      *lhsTileType != *resultTileType) {
+    return emitOpError("lhs, rhs, output, and result tile types must match");
+  }
+  if (lhsTileType->getDataType() != ttcore::DataType::BFloat16) {
+    return emitOpError("supports bf16 tiles only");
+  }
+
+  auto lhsTensorType = dyn_cast<RankedTensorType>(getLhs().getType());
+  auto rhsTensorType = dyn_cast<RankedTensorType>(getRhs().getType());
+  auto outputTensorType = dyn_cast<RankedTensorType>(getOutput().getType());
+  bool hasTensorOperand = lhsTensorType || rhsTensorType || outputTensorType;
+  if (hasTensorOperand) {
+    if (!lhsTensorType || !rhsTensorType || !outputTensorType ||
+        !lhsTensorType.hasStaticShape() || !rhsTensorType.hasStaticShape() ||
+        !outputTensorType.hasStaticShape() || lhsTensorType.getRank() != 2 ||
+        rhsTensorType.getRank() != 2 || outputTensorType.getRank() != 2) {
+      return emitOpError("tensor operands must be static rank-2 tensors");
+    }
+    if (lhsTensorType != rhsTensorType) {
+      return emitOpError("lhs and rhs tensor types must match");
+    }
+    if (outputTensorType.getDimSize(0) != 1 ||
+        outputTensorType.getDimSize(1) != 1) {
+      return emitOpError("output tensor must have shape 1x1");
+    }
+  }
+
+  const llvm::APFloat &scale = getScaleAttr().getValue();
+  if (!scale.isFinite() || scale.isZero() || scale.isNegative()) {
+    return emitOpError("scale must be finite and positive");
+  }
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
 // BlockBroadcastOp
 //===----------------------------------------------------------------------===//
 
