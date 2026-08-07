@@ -569,10 +569,12 @@ static int64_t getMatmulBlockOutputTileCount(TileMatmulBlockOp op) {
 /// overwriting the acquired DST section with the normalized row.
 static int64_t
 getRowNormalizationBlockTileCount(TileRowNormalizationBlockOp op) {
-  auto inputType = dyn_cast<RankedTensorType>(op.getInput().getType());
-  if (!inputType || !inputType.hasStaticShape()) {
+  if (isa<ttcore::TileType>(op.getInput().getType())) {
     return 1;
   }
+  auto inputType = dyn_cast<RankedTensorType>(op.getInput().getType());
+  assert(inputType && inputType.hasStaticShape() &&
+         "verified row-normalization tensor form must have static shape");
   return inputType.getNumElements();
 }
 
