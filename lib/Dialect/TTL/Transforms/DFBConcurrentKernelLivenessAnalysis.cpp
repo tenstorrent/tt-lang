@@ -361,6 +361,7 @@ static LogicalResult collectLogicalDFBs(
       DFBLogicalLifecycle logicalDFB;
       logicalDFB.logicalId = logicalId;
       logicalDFB.type = declaration.getResult().getType();
+      logicalDFB.tensorBacking = declaration.getTensorBackingAttr();
       logicalDFB.compilerCreated =
           declaration->hasAttr(kCompilerAllocatedAttrName);
       logicalDFBs.push_back(std::move(logicalDFB));

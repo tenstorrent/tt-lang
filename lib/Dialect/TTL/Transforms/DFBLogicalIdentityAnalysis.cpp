@@ -63,7 +63,7 @@ DFBLogicalIdentityAnalysis::DFBLogicalIdentityAnalysis(Operation *operation) {
   int64_t nextCompilerId = compilerDeclarationCount > 0 ? maxExplicitId + 1 : 0;
   llvm::DenseMap<int64_t, BindCBOp> firstDeclarationById;
   // Declarations with one logical ID describe one allocation, so they must
-  // agree on the complete DFB type in every participating kernel.
+  // agree on the complete DFB type and storage in every participating kernel.
   for (BindCBOp bindOp : declarations) {
     auto dfbId = bindOp.getDfbId();
     int64_t logicalId = dfbId ? dfbId->getSExtValue() : nextCompilerId++;
@@ -73,11 +73,24 @@ DFBLogicalIdentityAnalysis::DFBLogicalIdentityAnalysis(Operation *operation) {
                          bindOp.getResult().getType()) {
       std::string message;
       llvm::raw_string_ostream messageStream(message);
-      messageStream
-          << "logical DFB " << logicalId
-          << " has inconsistent types across kernel functions: expected "
-          << firstDeclarationIt->second.getResult().getType() << " but found "
-          << bindOp.getResult().getType();
+      messageStream << "logical DFB " << logicalId
+                    << " has inconsistent types across kernel functions: "
+                       "expected "
+                    << firstDeclarationIt->second.getResult().getType()
+                    << " but found " << bindOp.getResult().getType();
+      errorOperation = bindOp;
+      errorMessage = messageStream.str();
+      return;
+    }
+    if (!inserted && firstDeclarationIt->second.getTensorBackingAttr() !=
+                         bindOp.getTensorBackingAttr()) {
+      std::string message;
+      llvm::raw_string_ostream messageStream(message);
+      messageStream << "logical DFB " << logicalId
+                    << " has inconsistent tensor backing across kernel "
+                       "functions: expected "
+                    << firstDeclarationIt->second.getTensorBackingAttr()
+                    << " but found " << bindOp.getTensorBackingAttr();
       errorOperation = bindOp;
       errorMessage = messageStream.str();
       return;

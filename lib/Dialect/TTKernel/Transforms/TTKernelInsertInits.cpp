@@ -162,6 +162,18 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
                                         typecastOp.getOutDtypeAttr());
       }};
 
+  // ExpTile: exp_tile_init configures the SFPU per exp flags. It takes approx,
+  // scale (the fp32 scale factor template), and input_clamping read off the
+  // exp_tile op. scale_en / iterations are compute-only and not part of the
+  // init. (exp is excluded from the generic unary macro above for this reason.)
+  map[mlir::TypeID::get<ttk::ExpTileOp>()] = {
+      [](OpBuilder &b, Location l, Operation *computeOp) {
+        auto expOp = cast<ttk::ExpTileOp>(computeOp);
+        ttk::ExpTileInitOp::create(b, l, expOp.getApproxAttr(),
+                                   expOp.getScaleAttr(),
+                                   expOp.getInputClampingAttr());
+      }};
+
   // Transpose: resolves output CB from annotated attribute.
   map[mlir::TypeID::get<ttk::TransposeTileOp>()] = {
       [](OpBuilder &b, Location l, Operation *computeOp) {
@@ -228,6 +240,27 @@ static InitKey computeInitKey(Operation *op) {
   if (auto typecast = dyn_cast<ttk::TypecastTileOp>(op)) {
     int64_t disc = (static_cast<int64_t>(typecast.getInDtype()) << 16) |
                    static_cast<int64_t>(typecast.getOutDtype());
+    return {typeId, {}, disc};
+  }
+
+  // For exp: distinct flag combinations configure exp_tile_init differently
+  // and must not share an init. The init depends on approx, input_clamping,
+  // and the fp32 scale template, so encode all three in the discriminator.
+  // scale_en / iterations are compute-only and do not affect the init.
+  if (auto exp = dyn_cast<ttk::ExpTileOp>(op)) {
+    uint32_t scaleBits = 0x3F800000u; // default 1.0f for exp_tile_init.
+    if (auto scaleAttr = exp.getScaleAttr()) {
+      scaleBits = static_cast<uint32_t>(scaleAttr.getInt());
+    }
+    BoolAttr approxAttr = exp.getApproxAttr();
+    bool approx = approxAttr && approxAttr.getValue();
+    int64_t inputClamping =
+        static_cast<int64_t>(ttk::InputClamping::ClampToNegative);
+    if (auto inputClampingAttr = exp.getInputClampingAttr()) {
+      inputClamping = static_cast<int64_t>(inputClampingAttr.getValue());
+    }
+    int64_t disc = (static_cast<int64_t>(scaleBits) << 8) |
+                   (static_cast<int64_t>(approx) << 1) | inputClamping;
     return {typeId, {}, disc};
   }
 
