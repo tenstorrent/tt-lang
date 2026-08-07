@@ -270,6 +270,13 @@ CONFIG_RMSNORM_KERNELS = {
     )
     for fp32_dest_acc_en, dst_full_sync_en in KERNEL_CONFIGS
 }
+COLUMN_BROADCAST_FP32_KERNEL = make_rmsnorm_kernel(
+    32,
+    4,
+    "column_broadcast",
+    fp32_dest_acc_en=True,
+    dst_full_sync_en=False,
+)
 MATERIALIZED_RMSNORM_KERNEL = make_materialized_rmsnorm_kernel(16, 3)
 
 
@@ -354,6 +361,19 @@ def test_rmsnorm_kernel_config(device, fp32_dest_acc_en, dst_full_sync_en):
         width=4096,
         gamma_mode="none",
         kernel=CONFIG_RMSNORM_KERNELS[(fp32_dest_acc_en, dst_full_sync_en)],
+    )
+    assert_rmsnorm_close(result, expected)
+
+
+def test_rmsnorm_column_broadcast_fp32_dest(device):
+    """Run BF16 column broadcast with 32-bit destination accumulation."""
+    result, expected = run_rmsnorm(
+        device,
+        tile_height=32,
+        num_tiles=4,
+        width=4096,
+        gamma_mode="column_broadcast",
+        kernel=COLUMN_BROADCAST_FP32_KERNEL,
     )
     assert_rmsnorm_close(result, expected)
 
