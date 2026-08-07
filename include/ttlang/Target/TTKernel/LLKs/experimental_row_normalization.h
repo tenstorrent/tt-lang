@@ -384,8 +384,7 @@ ALWI void multiplyByScalar(std::uint32_t inputDfb, std::uint32_t scalarDstIndex,
 
 } // namespace row_normalization_detail
 
-template <std::uint32_t numTiles, bool hasGamma, bool repeatGamma,
-          DataFormat dataFormat>
+template <std::uint32_t numTiles, bool hasGamma, DataFormat dataFormat>
 ALWI void row_normalization_block(std::uint32_t inputDfb,
                                   std::uint32_t gammaDfb,
                                   std::uint32_t outputDfb,
@@ -395,8 +394,6 @@ ALWI void row_normalization_block(std::uint32_t inputDfb,
                 "row normalization requires 1 to 8 tiles");
   static_assert(dataFormat == DataFormat::Float16_b,
                 "row normalization supports bf16 DFBs only");
-  static_assert(hasGamma || !repeatGamma,
-                "repeated gamma requires gamma multiplication");
 
   float reductionScaler;
   __builtin_memcpy(&reductionScaler, &reductionScalerBits,
@@ -419,13 +416,10 @@ ALWI void row_normalization_block(std::uint32_t inputDfb,
         ckernel::EltwiseBinaryType::ELWMUL,
         ckernel::EltwiseBinaryReuseDestType::DEST_TO_SRCA>(gammaDfb);
     for (std::uint32_t tileIndex = 0; tileIndex < numTiles; ++tileIndex) {
-      constexpr std::uint32_t repeatedGammaIndex = 0;
-      std::uint32_t gammaTileIndex =
-          repeatGamma ? repeatedGammaIndex : tileIndex;
       ckernel::binary_dest_reuse_tiles<
           ckernel::EltwiseBinaryType::ELWMUL,
           ckernel::EltwiseBinaryReuseDestType::DEST_TO_SRCA>(
-          gammaDfb, gammaTileIndex, tileIndex);
+          gammaDfb, tileIndex, tileIndex);
     }
   }
 }

@@ -132,12 +132,8 @@ analyzeRowNormalizationCompute(ComputeOp compute, std::string &reason) {
       reason = "gamma must be a static rank-2 tensor";
       return failure();
     }
-    bool gammaShapeMatches =
-        analysis.block.getRepeatGamma()
-            ? gammaType.getDimSize(0) == 1 && gammaType.getDimSize(1) == 1
-            : gammaType == outputType;
-    if (!gammaShapeMatches) {
-      reason = "gamma tensor shape does not match the selected gamma mode";
+    if (gammaType != outputType) {
+      reason = "gamma tensor shape must match the output shape";
       return failure();
     }
   }
@@ -190,8 +186,7 @@ LogicalResult generateRowNormalizationCompute(PatternRewriter &rewriter,
       sectionBuilder, loc, tileType, analysis->inputTensor,
       analysis->gammaTensor, analysis->outputTensor,
       analysis->block.getScaleAttr(), analysis->block.getEpsilonAttr(),
-      analysis->block.getHasGammaAttr(), analysis->block.getRepeatGammaAttr(),
-      scalarDstIndex);
+      analysis->block.getHasGammaAttr(), scalarDstIndex);
 
   for (TileStoreOp originalStore : analysis->stores) {
     for (int64_t tileIndex = 0; tileIndex < analysis->numTiles; ++tileIndex) {
