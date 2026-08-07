@@ -13,10 +13,52 @@
 
 namespace mlir::tt::ttl {
 
+#define GEN_PASS_DEF_TTLSELECTCOMPUTEPIPELINESCHEDULES
 #define GEN_PASS_DEF_TTLSETCOMPUTEKERNELCONFIG
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 
 namespace {
+
+static FailureOr<KernelConfigPlan>
+analyzeKernelConfig(func::FuncOp function, StringRef fp32DestAccEn,
+                    StringRef dstFullSyncEn, bool reduceFullFp32,
+                    bool matmulFullFp32, bool enableFPUBinaryOps) {
+  FailureOr<std::unique_ptr<KernelTargetEnvironment>> target =
+      KernelTargetEnvironment::get(function);
+  FailureOr<KernelConfigPolicy> policy = KernelConfigPolicy::get(
+      function, fp32DestAccEn, dstFullSyncEn, reduceFullFp32, matmulFullFp32,
+      enableFPUBinaryOps);
+  if (failed(target) || failed(policy)) {
+    return failure();
+  }
+
+  FailureOr<KernelRequirements> requirements =
+      collectKernelRequirements(function);
+  if (failed(requirements)) {
+    return failure();
+  }
+  return resolveKernelConfig(function, **target, *policy, *requirements);
+}
+
+struct TTLSelectComputePipelineSchedulesPass
+    : public impl::TTLSelectComputePipelineSchedulesBase<
+          TTLSelectComputePipelineSchedulesPass> {
+  using Base = impl::TTLSelectComputePipelineSchedulesBase<
+      TTLSelectComputePipelineSchedulesPass>;
+  using Base::Base;
+
+  void runOnOperation() override {
+    func::FuncOp function = getOperation();
+    FailureOr<KernelConfigPlan> plan =
+        analyzeKernelConfig(function, fp32DestAccEn, dstFullSyncEn,
+                            reduceFullFp32, matmulFullFp32, enableFPUBinaryOps);
+    if (failed(plan)) {
+      signalPassFailure();
+      return;
+    }
+    applyComputePipelineSchedulePlan(function, *plan);
+  }
+};
 
 struct TTLSetComputeKernelConfigPass
     : public impl::TTLSetComputeKernelConfigBase<
@@ -27,25 +69,9 @@ struct TTLSetComputeKernelConfigPass
 
   void runOnOperation() override {
     func::FuncOp function = getOperation();
-    FailureOr<std::unique_ptr<KernelTargetEnvironment>> target =
-        KernelTargetEnvironment::get(function);
-    FailureOr<KernelConfigPolicy> policy = KernelConfigPolicy::get(
-        function, fp32DestAccEn, dstFullSyncEn, reduceFullFp32, matmulFullFp32,
-        enableFPUBinaryOps);
-    if (failed(target) || failed(policy)) {
-      signalPassFailure();
-      return;
-    }
-
-    FailureOr<KernelRequirements> requirements =
-        collectKernelRequirements(function);
-    if (failed(requirements)) {
-      signalPassFailure();
-      return;
-    }
-
     FailureOr<KernelConfigPlan> plan =
-        resolveKernelConfig(function, **target, *policy, *requirements);
+        analyzeKernelConfig(function, fp32DestAccEn, dstFullSyncEn,
+                            reduceFullFp32, matmulFullFp32, enableFPUBinaryOps);
     if (failed(plan)) {
       signalPassFailure();
       return;

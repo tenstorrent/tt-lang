@@ -48,6 +48,8 @@ constexpr llvm::StringLiteral
 /// Selected strategy on tile operations with execution alternatives.
 constexpr llvm::StringLiteral
     kTileExecutionStrategyAttrName("ttl.tile_execution_strategy");
+constexpr llvm::StringLiteral kSelectedComputePipelineScheduleAttrName(
+    "ttl.selected_compute_pipeline_schedule");
 
 /// PipeNet role exposed by `is_src` / `is_dst` / `is_active` predicate ops
 /// and by `pipenet_scope` declarations.

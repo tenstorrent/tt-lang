@@ -12,9 +12,12 @@
 
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Remarks.h"
+#include "mlir/IR/SymbolTable.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <limits>
@@ -292,6 +295,99 @@ getTileExecutionChoice(TileExecutionOpInterface executionOp) {
                              static_cast<bool>(selectedAttr)};
 }
 
+/// Collect target-independent alternatives for a recognized semantic
+/// pipeline. The retained-scalar option names only resources that exist before
+/// ordinary materialization creates its internal DFBs.
+FailureOr<ComputePipelineScheduleChoice>
+getComputePipelineScheduleChoice(ComputePipelineOp pipeline) {
+  ComputePipelineKindAttr pipelineKind = pipeline.getPipelineKindAttr();
+  if (!pipelineKind) {
+    pipeline.emitOpError("has no configuration semantics for pipeline_kind");
+    return failure();
+  }
+  if (pipeline.getInputs().empty()) {
+    pipeline.emitOpError("recognized pipeline requires at least one input");
+    return failure();
+  }
+
+  auto inputType =
+      dyn_cast<RankedTensorType>(pipeline.getInputs().front().getType());
+  if (!inputType || !inputType.hasStaticShape() || inputType.getRank() != 2 ||
+      inputType.getNumElements() < 1 ||
+      static_cast<std::uint64_t>(inputType.getNumElements()) >
+          std::numeric_limits<std::uint32_t>::max()) {
+    pipeline.emitOpError(
+        "recognized pipeline requires a non-empty static rank-2 input");
+    return failure();
+  }
+  FailureOr<Type> elementType =
+      getRequiredTileElementType(pipeline.getInputs().front(), pipeline);
+  if (failed(elementType)) {
+    return failure();
+  }
+
+  TilePrimitive retainedPrimitive;
+  switch (pipelineKind.getValue()) {
+  case ComputePipelineKind::MultiplyFullScalarReduction:
+    retainedPrimitive = TilePrimitive::MultiplyFullScalarReduction;
+    break;
+  case ComputePipelineKind::RowNormalization:
+    retainedPrimitive = TilePrimitive::RowNormalization;
+    break;
+  }
+
+  ComputePipelineScheduleOption retained{
+      pipelineKind.getValue(),
+      ComputePipelineSchedule::RetainedScalar,
+      {},
+      {},
+      static_cast<std::uint32_t>(inputType.getNumElements())};
+  for (auto [operandIndex, input] : llvm::enumerate(pipeline.getInputs())) {
+    auto currentType = dyn_cast<RankedTensorType>(input.getType());
+    FailureOr<Type> currentElementType =
+        getRequiredTileElementType(input, pipeline);
+    if (!currentType || currentType != inputType ||
+        failed(currentElementType) || *currentElementType != *elementType) {
+      pipeline.emitOpError(
+          "recognized pipeline inputs must have one tensor type");
+      return failure();
+    }
+    FailureOr<std::optional<int64_t>> dfbIndex =
+        resolveDataflowBufferIndex(input, pipeline);
+    if (failed(dfbIndex)) {
+      return failure();
+    }
+    if (!*dfbIndex) {
+      pipeline.emitOpError("recognized pipeline input must be DFB-backed");
+      return failure();
+    }
+    retained.dfbInputUses.push_back(
+        {**dfbIndex, pipeline, static_cast<unsigned>(operandIndex),
+         retainedPrimitive, TileOperandRoute::DataflowBuffer, *elementType});
+  }
+  retained.destinationUses.push_back(
+      {pipeline, retainedPrimitive, *elementType});
+
+  ComputePipelineScheduleOption materialized{
+      pipelineKind.getValue(),
+      ComputePipelineSchedule::Materialized,
+      {},
+      {},
+      0};
+
+  SmallVector<ComputePipelineScheduleOption, 2> options;
+  ComputePipelineScheduleAttr selected = pipeline.getSelectedScheduleAttr();
+  if (!selected ||
+      selected.getValue() == ComputePipelineSchedule::RetainedScalar) {
+    options.push_back(std::move(retained));
+  }
+  if (!selected ||
+      selected.getValue() == ComputePipelineSchedule::Materialized) {
+    options.push_back(std::move(materialized));
+  }
+  return ComputePipelineScheduleChoice{pipeline, std::move(options)};
+}
+
 struct DestinationWidthEvidence {
   Operation *operation;
   std::optional<DestinationUse> use;
@@ -345,24 +441,38 @@ struct UnsupportedDestinationConfiguration {
   DestinationUse use;
 };
 
-using ConfigConstraintConflict =
-    std::variant<DestinationWidthConflict, ExplicitUnpackConflict,
-                 DFBUnpackConflict, UnsupportedDFBConfiguration,
-                 UnsupportedDestinationConfiguration>;
+struct UnsupportedComputePipelineSchedule {
+  Operation *pipeline;
+};
+
+struct ComputePipelineCapacityConflict {
+  Operation *pipeline;
+  std::uint32_t requiredDstSlots;
+  std::uint32_t availableDstSlots;
+};
+
+using ConfigConstraintConflict = std::variant<
+    DestinationWidthConflict, ExplicitUnpackConflict, DFBUnpackConflict,
+    UnsupportedDFBConfiguration, UnsupportedDestinationConfiguration,
+    UnsupportedComputePipelineSchedule, ComputePipelineCapacityConflict>;
 
 struct ConfigurationCandidate {
-  explicit ConfigurationCandidate(DestinationElementWidth width)
-      : destinationElementWidth(width) {}
+  ConfigurationCandidate(DestinationElementWidth width, DstSyncMode syncMode)
+      : destinationElementWidth(width), dstSyncMode(syncMode) {}
 
   DestinationElementWidth destinationElementWidth;
+  DstSyncMode dstSyncMode;
   llvm::MapVector<int64_t, llvm::SmallSet<DFBUnpackMode, 2>> unpackModes;
   llvm::DenseMap<int64_t, DFBInputUse> firstUnpackUses;
 };
 
 struct ConfigConstraintState {
   ConfigConstraintState() {
-    candidates.emplace_back(DestinationElementWidth::Bits16);
-    candidates.emplace_back(DestinationElementWidth::Bits32);
+    for (DestinationElementWidth width :
+         {DestinationElementWidth::Bits16, DestinationElementWidth::Bits32}) {
+      candidates.emplace_back(width, DstSyncMode::DoubleBuffered);
+      candidates.emplace_back(width, DstSyncMode::Full);
+    }
   }
 
   llvm::SmallVector<ConfigurationCandidate, 2> candidates;
@@ -526,32 +636,73 @@ void emitConfigConstraintConflict(func::FuncOp function,
               << "dataflow buffer " << typedConflict.use.dfbIndex
               << " has no target-supported destination-width and unpack-route "
                  "configuration";
-        } else {
+        } else if constexpr (std::is_same_v<
+                                 ConflictType,
+                                 UnsupportedDestinationConfiguration>) {
           typedConflict.use.operation->emitOpError()
               << "has no target-supported destination element width for "
               << typedConflict.use.elementType << " elements";
+        } else if constexpr (std::is_same_v<
+                                 ConflictType,
+                                 UnsupportedComputePipelineSchedule>) {
+          typedConflict.pipeline->emitOpError(
+              "selected compute-pipeline schedule is unsupported by the "
+              "target");
+        } else {
+          typedConflict.pipeline->emitOpError()
+              << "selected compute-pipeline schedule requires "
+              << typedConflict.requiredDstSlots << " DST slots, but at most "
+              << typedConflict.availableDstSlots
+              << " are available under the kernel configuration";
         }
       },
       conflict);
 }
 
-using TileStrategyOptions = SmallVector<TileExecutionOption, 2>;
-using KernelTileStrategyOptions = SmallVector<TileStrategyOptions, 0>;
+enum class ExecutionChoiceKind {
+  TileStrategy,
+  ComputePipelineSchedule,
+};
 
-/// Apply strategy policy without changing the collected requirements.
-FailureOr<KernelTileStrategyOptions>
-getTileStrategyOptions(const KernelRequirements &requirements,
-                       const KernelConfigPolicy &policy) {
-  KernelTileStrategyOptions allOptions;
-  allOptions.reserve(requirements.tileStrategyChoices.size());
+struct KernelExecutionOption {
+  llvm::SmallVector<DFBInputUse> dfbInputUses;
+  llvm::SmallVector<DestinationUse> destinationUses;
+  std::optional<TileExecutionStrategy> tileStrategy;
+  std::optional<ComputePipelineKind> pipelineKind;
+  std::optional<ComputePipelineSchedule> pipelineSchedule;
+  Type pipelineElementType;
+  std::uint32_t requiredDstSlots = 0;
+};
+
+struct KernelExecutionChoiceOptions {
+  Operation *operation;
+  ExecutionChoiceKind kind;
+  SmallVector<KernelExecutionOption, 2> options;
+};
+
+using KernelExecutionOptions = SmallVector<KernelExecutionChoiceOptions, 0>;
+
+/// Apply execution policy without changing the collected requirements.
+FailureOr<KernelExecutionOptions>
+getKernelExecutionOptions(const KernelRequirements &requirements,
+                          const KernelConfigPolicy &policy) {
+  KernelExecutionOptions allOptions;
+  allOptions.reserve(requirements.tileStrategyChoices.size() +
+                     requirements.pipelineScheduleChoices.size());
   for (const TileExecutionChoice &choice : requirements.tileStrategyChoices) {
-    TileStrategyOptions choiceOptions;
+    SmallVector<KernelExecutionOption, 2> choiceOptions;
     for (const TileExecutionOption &option : choice.options) {
       if (option.strategy == TileExecutionStrategy::FPU &&
           !policy.allowFPUBinary) {
         continue;
       }
-      choiceOptions.push_back(option);
+      choiceOptions.push_back({option.dfbInputUses,
+                               option.destinationUses,
+                               option.strategy,
+                               std::nullopt,
+                               std::nullopt,
+                               {},
+                               0});
     }
     if (choiceOptions.empty()) {
       if (choice.hasExplicitStrategy) {
@@ -563,30 +714,122 @@ getTileStrategyOptions(const KernelRequirements &requirements,
       }
       return failure();
     }
-    llvm::stable_sort(choiceOptions, [](const TileExecutionOption &lhs,
-                                        const TileExecutionOption &rhs) {
-      return lhs.strategy == TileExecutionStrategy::FPU &&
-             rhs.strategy != TileExecutionStrategy::FPU;
+    llvm::stable_sort(choiceOptions, [](const KernelExecutionOption &lhs,
+                                        const KernelExecutionOption &rhs) {
+      return lhs.tileStrategy == TileExecutionStrategy::FPU &&
+             rhs.tileStrategy != TileExecutionStrategy::FPU;
     });
-    allOptions.push_back(std::move(choiceOptions));
+    allOptions.push_back({choice.operation, ExecutionChoiceKind::TileStrategy,
+                          std::move(choiceOptions)});
+  }
+  for (const ComputePipelineScheduleChoice &choice :
+       requirements.pipelineScheduleChoices) {
+    SmallVector<KernelExecutionOption, 2> choiceOptions;
+    for (const ComputePipelineScheduleOption &option : choice.options) {
+      Type elementType = option.destinationUses.empty()
+                             ? Type()
+                             : option.destinationUses.front().elementType;
+      choiceOptions.push_back({option.dfbInputUses, option.destinationUses,
+                               std::nullopt, option.kind, option.schedule,
+                               elementType, option.requiredDstSlots});
+    }
+    allOptions.push_back({choice.pipeline,
+                          ExecutionChoiceKind::ComputePipelineSchedule,
+                          std::move(choiceOptions)});
   }
   return allOptions;
 }
 
-struct StrategySearchState {
+struct ExecutionSearchState {
   ConfigConstraintState constraints;
-  SmallVector<std::optional<TileExecutionStrategy>> selections;
+  SmallVector<std::optional<unsigned>> selections;
 };
 
-using StrategySearchResult =
-    std::variant<StrategySearchState, ConfigConstraintConflict>;
+using ExecutionSearchResult =
+    std::variant<ExecutionSearchState, ConfigConstraintConflict>;
 
-/// Select strategies jointly with shared per-DFB unpack constraints.
-StrategySearchResult
-resolveTileStrategies(ArrayRef<TileStrategyOptions> allOptions,
-                      const KernelTargetEnvironment &target,
-                      const KernelConfigPolicy &policy,
-                      StrategySearchState state) {
+ConfigConstraintResult applyExecutionConstraints(
+    ConfigConstraintState state, const KernelExecutionOption &option,
+    Operation *operation, const KernelTargetEnvironment &target,
+    const KernelConfigPolicy &policy) {
+  ConfigConstraintResult result =
+      applyConfigConstraints(std::move(state), target, policy,
+                             option.dfbInputUses, option.destinationUses);
+  if (std::holds_alternative<ConfigConstraintConflict>(result) ||
+      option.pipelineSchedule != ComputePipelineSchedule::RetainedScalar) {
+    return result;
+  }
+
+  assert(option.pipelineKind && "pipeline schedule requires semantic kind");
+  std::optional<std::uint32_t> targetMaximum =
+      target.getMaxComputePipelineTiles(*option.pipelineKind,
+                                        *option.pipelineSchedule,
+                                        option.pipelineElementType);
+  if (!targetMaximum) {
+    return ConfigConstraintConflict(
+        UnsupportedComputePipelineSchedule{operation});
+  }
+  ConfigConstraintState constrained =
+      std::get<ConfigConstraintState>(std::move(result));
+  std::uint32_t maximumAvailable = 0;
+  for (const ConfigurationCandidate &candidate : constrained.candidates) {
+    std::uint32_t registerCapacity = getDstCapacity(
+        candidate.destinationElementWidth == DestinationElementWidth::Bits32,
+        candidate.dstSyncMode == DstSyncMode::Full);
+    maximumAvailable =
+        std::max(maximumAvailable, std::min(*targetMaximum, registerCapacity));
+  }
+  llvm::erase_if(
+      constrained.candidates, [&](const ConfigurationCandidate &candidate) {
+        std::uint32_t registerCapacity =
+            getDstCapacity(candidate.destinationElementWidth ==
+                               DestinationElementWidth::Bits32,
+                           candidate.dstSyncMode == DstSyncMode::Full);
+        return std::min(*targetMaximum, registerCapacity) <
+               option.requiredDstSlots;
+      });
+  if (constrained.candidates.empty()) {
+    return ConfigConstraintConflict(ComputePipelineCapacityConflict{
+        operation, option.requiredDstSlots, maximumAvailable});
+  }
+  return constrained;
+}
+
+ComputePipelineScheduleRejection getComputePipelineScheduleRejection(
+    const ConfigConstraintConflict &conflict,
+    const KernelTargetEnvironment &target,
+    const KernelExecutionOption &retainedOption) {
+  return std::visit(
+      [&](const auto &typedConflict) -> ComputePipelineScheduleRejection {
+        using ConflictType = std::decay_t<decltype(typedConflict)>;
+        if constexpr (std::is_same_v<ConflictType,
+                                     ComputePipelineCapacityConflict>) {
+          return {ComputePipelineScheduleRejectionKind::DSTCapacity,
+                  typedConflict.requiredDstSlots,
+                  typedConflict.availableDstSlots};
+        }
+        if constexpr (std::is_same_v<ConflictType,
+                                     UnsupportedComputePipelineSchedule>) {
+          bool supportedTarget = target.getArch() == ttcore::Arch::Blackhole;
+          return {
+              supportedTarget
+                  ? ComputePipelineScheduleRejectionKind::UnsupportedElementType
+                  : ComputePipelineScheduleRejectionKind::UnsupportedTarget,
+              retainedOption.requiredDstSlots, 0};
+        }
+        return {
+            ComputePipelineScheduleRejectionKind::KernelConfigurationConflict,
+            retainedOption.requiredDstSlots, 0};
+      },
+      conflict);
+}
+
+/// Select tile strategies and pipeline schedules with shared constraints.
+ExecutionSearchResult
+resolveExecutionChoices(ArrayRef<KernelExecutionChoiceOptions> allOptions,
+                        const KernelTargetEnvironment &target,
+                        const KernelConfigPolicy &policy,
+                        ExecutionSearchState state) {
   std::optional<size_t> selectedChoice;
   size_t fewestCompatibleOptions = std::numeric_limits<size_t>::max();
 
@@ -596,10 +839,9 @@ resolveTileStrategies(ArrayRef<TileStrategyOptions> allOptions,
     }
     size_t compatibleOptions = 0;
     std::optional<ConfigConstraintConflict> choiceConflict;
-    for (const TileExecutionOption &option : options) {
-      ConfigConstraintResult result =
-          applyConfigConstraints(state.constraints, target, policy,
-                                 option.dfbInputUses, option.destinationUses);
+    for (const KernelExecutionOption &option : options.options) {
+      ConfigConstraintResult result = applyExecutionConstraints(
+          state.constraints, option, options.operation, target, policy);
       if (std::holds_alternative<ConfigConstraintState>(result)) {
         ++compatibleOptions;
       } else if (!choiceConflict) {
@@ -620,14 +862,14 @@ resolveTileStrategies(ArrayRef<TileStrategyOptions> allOptions,
     return state;
   }
 
-  // Option order preserves the FPU preference after shared constraints are
-  // satisfied. Resolving the most constrained operation limits backtracking.
+  // Option order preserves target-schedule and FPU preferences after shared
+  // constraints are satisfied. The most constrained choice limits search.
   std::optional<ConfigConstraintConflict> immediateConflict;
   std::optional<ConfigConstraintConflict> branchConflict;
-  for (const TileExecutionOption &option : allOptions[*selectedChoice]) {
-    ConfigConstraintResult result =
-        applyConfigConstraints(state.constraints, target, policy,
-                               option.dfbInputUses, option.destinationUses);
+  const KernelExecutionChoiceOptions &choice = allOptions[*selectedChoice];
+  for (auto [optionIndex, option] : llvm::enumerate(choice.options)) {
+    ConfigConstraintResult result = applyExecutionConstraints(
+        state.constraints, option, choice.operation, target, policy);
     if (std::holds_alternative<ConfigConstraintConflict>(result)) {
       if (!immediateConflict) {
         immediateConflict =
@@ -635,12 +877,12 @@ resolveTileStrategies(ArrayRef<TileStrategyOptions> allOptions,
       }
       continue;
     }
-    StrategySearchState nextState = state;
+    ExecutionSearchState nextState = state;
     nextState.constraints = std::get<ConfigConstraintState>(std::move(result));
-    nextState.selections[*selectedChoice] = option.strategy;
-    StrategySearchResult searchResult =
-        resolveTileStrategies(allOptions, target, policy, std::move(nextState));
-    if (std::holds_alternative<StrategySearchState>(searchResult)) {
+    nextState.selections[*selectedChoice] = optionIndex;
+    ExecutionSearchResult searchResult = resolveExecutionChoices(
+        allOptions, target, policy, std::move(nextState));
+    if (std::holds_alternative<ExecutionSearchState>(searchResult)) {
       return searchResult;
     }
     if (!branchConflict) {
@@ -684,6 +926,12 @@ public:
   FullFp32AccumulationSupport
   getFullFp32AccumulationSupport(FullFp32AccumulationKind) const override {
     return {true, std::nullopt};
+  }
+
+  std::optional<std::uint32_t>
+  getMaxComputePipelineTiles(ComputePipelineKind, ComputePipelineSchedule,
+                             Type) const override {
+    return std::nullopt;
   }
 
   SmallVector<DFBHardwareConfiguration, 4>
@@ -732,6 +980,12 @@ public:
   getFullFp32AccumulationSupport(FullFp32AccumulationKind kind) const override {
     return {kind == FullFp32AccumulationKind::Matmul, std::nullopt};
   }
+
+  std::optional<std::uint32_t>
+  getMaxComputePipelineTiles(ComputePipelineKind, ComputePipelineSchedule,
+                             Type) const override {
+    return std::nullopt;
+  }
 };
 
 class BlackholeKernelTargetEnvironment final
@@ -745,6 +999,19 @@ public:
               "#47311); using non-full-fp32 reduce lowering"};
     }
     return {true, std::nullopt};
+  }
+
+  std::optional<std::uint32_t>
+  getMaxComputePipelineTiles(ComputePipelineKind kind,
+                             ComputePipelineSchedule schedule,
+                             Type elementType) const override {
+    if (schedule == ComputePipelineSchedule::RetainedScalar &&
+        elementType.isBF16() &&
+        (kind == ComputePipelineKind::MultiplyFullScalarReduction ||
+         kind == ComputePipelineKind::RowNormalization)) {
+      return 8;
+    }
+    return std::nullopt;
   }
 };
 
@@ -839,6 +1106,22 @@ KernelConfigPolicy::get(func::FuncOp function, StringRef fp32Selection,
 FailureOr<KernelRequirements> collectKernelRequirements(func::FuncOp function) {
   KernelRequirements requirements;
   WalkResult result = function.walk([&](Operation *operation) {
+    if (auto pipeline = dyn_cast<ComputePipelineOp>(operation)) {
+      if (!pipeline.getPipelineKind()) {
+        pipeline.emitOpError(
+            "must be lowered before compute-kernel configuration");
+        return WalkResult::interrupt();
+      }
+      FailureOr<ComputePipelineScheduleChoice> choice =
+          getComputePipelineScheduleChoice(pipeline);
+      if (failed(choice)) {
+        return WalkResult::interrupt();
+      }
+      requirements.pipelineScheduleChoices.push_back(std::move(*choice));
+      requirements.fullFp32AccumulationUses.push_back(
+          {pipeline, FullFp32AccumulationKind::ReduceScalar});
+      return WalkResult::skip();
+    }
     auto executionOp = dyn_cast<TileExecutionOpInterface>(operation);
     if (!executionOp) {
       if (isTileComputeOp(operation)) {
@@ -903,6 +1186,17 @@ FailureOr<KernelConfigPlan> resolveKernelConfig(
                    });
     initialState.requires16Bits = {function.getOperation(), std::nullopt};
   }
+  if (policy.dstSynchronization == ConfigSelection::Enabled) {
+    llvm::erase_if(initialState.candidates,
+                   [](const ConfigurationCandidate &candidate) {
+                     return candidate.dstSyncMode != DstSyncMode::Full;
+                   });
+  } else if (policy.dstSynchronization == ConfigSelection::Disabled) {
+    llvm::erase_if(
+        initialState.candidates, [](const ConfigurationCandidate &candidate) {
+          return candidate.dstSyncMode != DstSyncMode::DoubleBuffered;
+        });
+  }
   ConfigConstraintResult fixedResult = applyConfigConstraints(
       initialState, target, policy, requirements.dfbInputUses,
       requirements.destinationUses);
@@ -910,33 +1204,6 @@ FailureOr<KernelConfigPlan> resolveKernelConfig(
     emitConfigConstraintConflict(
         function, std::get<ConfigConstraintConflict>(std::move(fixedResult)));
     return failure();
-  }
-
-  FailureOr<KernelTileStrategyOptions> allOptions =
-      getTileStrategyOptions(requirements, policy);
-  if (failed(allOptions)) {
-    return failure();
-  }
-  StrategySearchState searchState{
-      std::get<ConfigConstraintState>(std::move(fixedResult)),
-      SmallVector<std::optional<TileExecutionStrategy>>(
-          requirements.tileStrategyChoices.size())};
-  StrategySearchResult searchResult = resolveTileStrategies(
-      *allOptions, target, policy, std::move(searchState));
-  if (std::holds_alternative<ConfigConstraintConflict>(searchResult)) {
-    emitConfigConstraintConflict(
-        function, std::get<ConfigConstraintConflict>(std::move(searchResult)));
-    return failure();
-  }
-  StrategySearchState resolvedState =
-      std::get<StrategySearchState>(std::move(searchResult));
-
-  SmallVector<TileExecutionDecision> tileStrategies;
-  tileStrategies.reserve(requirements.tileStrategyChoices.size());
-  for (auto [choice, strategy] : llvm::zip_equal(
-           requirements.tileStrategyChoices, resolvedState.selections)) {
-    assert(strategy && "successful strategy search must select every op");
-    tileStrategies.push_back({choice.operation, *strategy});
   }
 
   bool preferFp32 = false;
@@ -958,6 +1225,95 @@ FailureOr<KernelConfigPlan> resolveKernelConfig(
     }
     if (support.fallbackWarning) {
       use.operation->emitWarning() << *support.fallbackWarning;
+    }
+  }
+
+  FailureOr<KernelExecutionOptions> allOptions =
+      getKernelExecutionOptions(requirements, policy);
+  if (failed(allOptions)) {
+    return failure();
+  }
+  ConfigConstraintState fixedState =
+      std::get<ConfigConstraintState>(std::move(fixedResult));
+  auto search = [&](ConfigConstraintState constraints) {
+    return resolveExecutionChoices(
+        *allOptions, target, policy,
+        ExecutionSearchState{
+            std::move(constraints),
+            SmallVector<std::optional<unsigned>>(allOptions->size())});
+  };
+
+  std::optional<ExecutionSearchResult> searchResult;
+  if (preferFp32 && llvm::any_of(fixedState.candidates,
+                                 [](const ConfigurationCandidate &candidate) {
+                                   return candidate.destinationElementWidth ==
+                                          DestinationElementWidth::Bits32;
+                                 })) {
+    ConfigConstraintState preferredState = fixedState;
+    llvm::erase_if(preferredState.candidates,
+                   [](const ConfigurationCandidate &candidate) {
+                     return candidate.destinationElementWidth !=
+                            DestinationElementWidth::Bits32;
+                   });
+    ExecutionSearchResult preferredResult = search(std::move(preferredState));
+    if (std::holds_alternative<ExecutionSearchState>(preferredResult)) {
+      searchResult = std::move(preferredResult);
+    }
+  }
+  if (!searchResult) {
+    searchResult = search(std::move(fixedState));
+  }
+  if (std::holds_alternative<ConfigConstraintConflict>(*searchResult)) {
+    emitConfigConstraintConflict(
+        function, std::get<ConfigConstraintConflict>(std::move(*searchResult)));
+    return failure();
+  }
+  ExecutionSearchState resolvedState =
+      std::get<ExecutionSearchState>(std::move(*searchResult));
+
+  SmallVector<TileExecutionDecision> tileStrategies;
+  tileStrategies.reserve(requirements.tileStrategyChoices.size());
+  SmallVector<ComputePipelineScheduleDecision> pipelineSchedules;
+  pipelineSchedules.reserve(requirements.pipelineScheduleChoices.size());
+  for (auto [choiceIndex, choice] : llvm::enumerate(*allOptions)) {
+    std::optional<unsigned> selectedOption =
+        resolvedState.selections[choiceIndex];
+    assert(selectedOption && *selectedOption < choice.options.size() &&
+           "successful execution search must select every choice");
+    const KernelExecutionOption &option = choice.options[*selectedOption];
+    switch (choice.kind) {
+    case ExecutionChoiceKind::TileStrategy:
+      assert(option.tileStrategy && !option.pipelineKind &&
+             !option.pipelineSchedule &&
+             "tile choice must select a tile strategy");
+      tileStrategies.push_back({choice.operation, *option.tileStrategy});
+      break;
+    case ExecutionChoiceKind::ComputePipelineSchedule:
+      assert(option.pipelineKind && option.pipelineSchedule &&
+             !option.tileStrategy &&
+             "pipeline choice must select a pipeline schedule");
+      std::optional<ComputePipelineScheduleRejection> rejection;
+      if (*option.pipelineSchedule == ComputePipelineSchedule::Materialized) {
+        auto retained = llvm::find_if(
+            choice.options, [](const KernelExecutionOption &candidate) {
+              return candidate.pipelineSchedule ==
+                     ComputePipelineSchedule::RetainedScalar;
+            });
+        if (retained != choice.options.end()) {
+          ConfigConstraintResult retainedResult =
+              applyExecutionConstraints(resolvedState.constraints, *retained,
+                                        choice.operation, target, policy);
+          if (std::holds_alternative<ConfigConstraintConflict>(
+                  retainedResult)) {
+            rejection = getComputePipelineScheduleRejection(
+                std::get<ConfigConstraintConflict>(std::move(retainedResult)),
+                target, *retained);
+          }
+        }
+      }
+      pipelineSchedules.push_back(
+          {choice.operation, *option.pipelineSchedule, rejection});
+      break;
     }
   }
   auto hasDestinationWidth = [&](DestinationElementWidth width) {
@@ -983,19 +1339,25 @@ FailureOr<KernelConfigPlan> resolveKernelConfig(
   auto selectedCandidate = llvm::find_if(
       resolvedState.constraints.candidates,
       [&](const ConfigurationCandidate &candidate) {
-        return candidate.destinationElementWidth == destinationElementWidth;
+        return candidate.destinationElementWidth == destinationElementWidth &&
+               candidate.dstSyncMode == DstSyncMode::DoubleBuffered;
       });
+  if (selectedCandidate == resolvedState.constraints.candidates.end()) {
+    selectedCandidate = llvm::find_if(
+        resolvedState.constraints.candidates,
+        [&](const ConfigurationCandidate &candidate) {
+          return candidate.destinationElementWidth == destinationElementWidth;
+        });
+  }
   assert(selectedCandidate != resolvedState.constraints.candidates.end() &&
          "resolved destination width must have a candidate");
 
-  DstSyncMode syncMode = policy.dstSynchronization == ConfigSelection::Enabled
-                             ? DstSyncMode::Full
-                             : DstSyncMode::DoubleBuffered;
+  DstSyncMode syncMode = selectedCandidate->dstSyncMode;
 
   if (policy.unpackToDestFp32) {
     return KernelConfigPlan(destinationElementWidth, syncMode,
-                            *policy.unpackToDestFp32,
-                            std::move(tileStrategies));
+                            *policy.unpackToDestFp32, std::move(tileStrategies),
+                            std::move(pipelineSchedules));
   }
 
   SmallVector<int32_t> unpackToDestFp32;
@@ -1006,9 +1368,51 @@ FailureOr<KernelConfigPlan> resolveKernelConfig(
     }
   }
   llvm::sort(unpackToDestFp32);
-  return KernelConfigPlan(destinationElementWidth, syncMode,
-                          std::move(unpackToDestFp32),
-                          std::move(tileStrategies));
+  return KernelConfigPlan(
+      destinationElementWidth, syncMode, std::move(unpackToDestFp32),
+      std::move(tileStrategies), std::move(pipelineSchedules));
+}
+
+void applyComputePipelineSchedulePlan(func::FuncOp function,
+                                      const KernelConfigPlan &plan) {
+  MLIRContext *context = function.getContext();
+  for (const ComputePipelineScheduleDecision &decision :
+       plan.getComputePipelineSchedules()) {
+    auto pipeline = cast<ComputePipelineOp>(decision.pipeline);
+    pipeline.setSelectedScheduleAttr(
+        ComputePipelineScheduleAttr::get(context, decision.schedule));
+    if (!decision.rejection) {
+      continue;
+    }
+    ComputePipelineKind kind = pipeline.getPipelineKindAttr().getValue();
+    std::string message;
+    llvm::raw_string_ostream output(message);
+    output << stringifyComputePipelineKind(kind) << " fusion not selected: ";
+    switch (decision.rejection->kind) {
+    case ComputePipelineScheduleRejectionKind::UnsupportedTarget:
+      output << "the target does not provide the retained-scalar schedule";
+      break;
+    case ComputePipelineScheduleRejectionKind::UnsupportedElementType:
+      output << "the retained-scalar schedule does not support the pipeline "
+                "element type";
+      break;
+    case ComputePipelineScheduleRejectionKind::DSTCapacity:
+      output << "the reduction requires "
+             << decision.rejection->requiredDstSlots << " DST slots, but "
+             << decision.rejection->availableDstSlots << " are available";
+      break;
+    case ComputePipelineScheduleRejectionKind::KernelConfigurationConflict:
+      output << "the retained-scalar schedule conflicts with another "
+                "kernel-wide compute requirement";
+      break;
+    }
+    output << "; ordinary materialized lowering remains selected";
+    remark::missed(pipeline.getLoc(),
+                   remark::RemarkOpts::name("ReductionFusion")
+                       .category("ttl-reduction-fusion")
+                       .function(function.getSymName()))
+        << message;
+  }
 }
 
 void applyKernelConfigPlan(func::FuncOp function,
@@ -1019,6 +1423,7 @@ void applyKernelConfigPlan(func::FuncOp function,
         kTileExecutionStrategyAttrName,
         TileExecutionStrategyAttr::get(context, decision.strategy));
   }
+  applyComputePipelineSchedulePlan(function, plan);
   function->setAttr(
       kFp32DestAccEnAttrName,
       BoolAttr::get(context, plan.getDestinationElementWidth() ==

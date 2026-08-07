@@ -538,6 +538,9 @@ PlanningResult<IntermediateDFBPlan> IntermediateDFBPlanner::build() const {
   DominanceInfo dominanceInfo(kernel);
   kernel->walk([&](DFBInputOpInterface dfbInputOp) {
     Operation *operation = dfbInputOp.getOperation();
+    if (operation->getParentOfType<ComputePipelineOp>()) {
+      return;
+    }
     for (unsigned operandIndex : dfbInputOp.getDFBInputOperandIndices()) {
       OpOperand &operand = operation->getOpOperand(operandIndex);
       Value value = operand.get();
@@ -567,12 +570,19 @@ PlanningResult<IntermediateDFBPlan> IntermediateDFBPlanner::build() const {
     previousRequirementCount = state.getRequirements().size();
     addComputeResultUseRequirements(state);
     kernel->walk([&](Operation *operation) {
+      if (operation->getParentOfType<ComputePipelineOp>()) {
+        return;
+      }
       if (isElementwiseOp(operation)) {
         addExpressionReleaseRequirements(operation, lifetimes, state);
       }
     });
     std::optional<PlanningDiagnostic> diagnostic;
     WalkResult creationWalk = kernel->walk([&](Operation *operation) {
+      if (isa<ComputePipelineOp>(operation) ||
+          operation->getParentOfType<ComputePipelineOp>()) {
+        return WalkResult::advance();
+      }
       if (failed(addCreationRequirements(operation, lifetimes, dominanceInfo,
                                          state, diagnostic))) {
         return WalkResult::interrupt();

@@ -3,8 +3,8 @@
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-to-ttkernel-pipeline{matmul-full-fp32=false})' --dump-pass-pipeline 2>&1 | FileCheck %s --check-prefix=MATMUL-DISABLED
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-to-ttkernel-pipeline{matmul-full-fp32=true})' --dump-pass-pipeline 2>&1 | FileCheck %s --check-prefix=MATMUL-ENABLED
 
-// Verify PipeNet schedule semantics before later transformations modify the
-// high-level pipe and DFB operations or reuse provisional DFB indices.
+// Verify PipeNet schedule semantics after each compute-creation sequence and
+// before later transformations modify high-level pipe and DFB operations.
 
 // CHECK-LABEL: Pass Manager with
 // CHECK:        ttl-create-producer-compute
@@ -25,8 +25,21 @@
 // CHECK-NEXT: ),
 // CHECK-NEXT: ttl-finalize-dfb-indices{exact-coloring-search-limit=1000000 reuse-user-dfbs=true},
 // CHECK-NEXT: func.func(
-// CHECK-NOT:    ttl-verify-pipenet-guards
-// CHECK-NOT:    ttl-verify-pipenet-schedule
+// CHECK-NEXT:   ttl-select-compute-pipeline-schedules
+// CHECK-NEXT: ),
+// CHECK-NEXT: func.func(
+// CHECK-NEXT:   ttl-lower-compute-pipelines
+// CHECK-NEXT: ),
+// CHECK:        ttl-insert-cb-sync
+// CHECK-NEXT: ),
+// CHECK-NEXT: ttl-verify-pipenet-guards,
+// CHECK-NEXT: ttl-verify-pipenet-schedule,
+// CHECK-NEXT: func.func(
+// CHECK-NEXT:   ttl-coalesce-dfb-acquires
+// CHECK-NEXT: ),
+// CHECK-NEXT: ttl-finalize-dfb-indices{exact-coloring-search-limit=1000000 reuse-user-dfbs=true},
+// CHECK-NEXT: func.func(
+// CHECK-NEXT:   ttl-set-compute-kernel-config
 // CHECK:        ttl-annotate-cb-associations
 // CHECK-NEXT: ),
 // CHECK-NOT:  ttl-verify-pipenet-guards

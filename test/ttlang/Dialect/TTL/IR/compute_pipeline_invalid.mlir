@@ -327,3 +327,93 @@ func.func @stage_capture(
   }
   return
 }
+
+// -----
+
+// A selected schedule applies only to a compiler-recognized semantic graph.
+func.func @schedule_without_kind(
+    %input: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  // expected-error @below {{'ttl.compute_pipeline' op selected_schedule requires a compiler-recognized pipeline_kind}}
+  %result = ttl.compute_pipeline ins(%input)
+      {selected_schedule = #ttl.compute_pipeline_schedule<materialized>}
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    ^bb0(%pipeline_input: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+      %stage = ttl.compute_stage ins(%pipeline_input)
+          indexing_maps = [affine_map<(dim0, dim1) -> (dim0, dim1)>,
+                           affine_map<(dim0, dim1) -> (dim0, dim1)>]
+          iterator_types = ["parallel", "parallel"]
+          : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+        ^bb0(%stage_input: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+          %value = ttl.exp %stage_input
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+                -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+          ttl.compute_stage_yield %value
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+      }
+      ttl.compute_pipeline_yield %stage
+          : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  return
+}
+
+// -----
+
+// A multiply-reduction kind must contain the recognized semantic operations.
+func.func @invalid_multiply_reduction_kind(
+    %input: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  // expected-error @below {{'ttl.compute_pipeline' op multiply_full_scalar_reduction stage requires multiply, fill, and reduction operations}}
+  %result = ttl.compute_pipeline ins(%input)
+      {pipeline_kind = #ttl.compute_pipeline_kind<multiply_full_scalar_reduction>}
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    ^bb0(%pipeline_input: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+      %stage = ttl.compute_stage ins(%pipeline_input)
+          indexing_maps = [affine_map<(dim0, dim1) -> (dim0, dim1)>,
+                           affine_map<(dim0, dim1) -> (dim0, dim1)>]
+          iterator_types = ["parallel", "parallel"]
+          : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+        ^bb0(%stage_input: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+          %value = ttl.exp %stage_input
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+                -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+          ttl.compute_stage_yield %value
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+      }
+      ttl.compute_pipeline_yield %stage
+          : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  return
+}
+
+// -----
+
+// A row-normalization kind must contain its three semantic domains.
+func.func @invalid_row_normalization_kind(
+    %input: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  // expected-error @below {{'ttl.compute_pipeline' op row_normalization requires three stages, one result, and one or two inputs}}
+  %result = ttl.compute_pipeline ins(%input)
+      {pipeline_kind = #ttl.compute_pipeline_kind<row_normalization>}
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    ^bb0(%pipeline_input: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+      %stage = ttl.compute_stage ins(%pipeline_input)
+          indexing_maps = [affine_map<(dim0, dim1) -> (dim0, dim1)>,
+                           affine_map<(dim0, dim1) -> (dim0, dim1)>]
+          iterator_types = ["parallel", "parallel"]
+          : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+        ^bb0(%stage_input: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+          %value = ttl.exp %stage_input
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+                -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+          ttl.compute_stage_yield %value
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+      }
+      ttl.compute_pipeline_yield %stage
+          : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  return
+}

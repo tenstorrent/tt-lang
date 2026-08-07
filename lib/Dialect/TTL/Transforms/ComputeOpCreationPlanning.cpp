@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <functional>
+#include <limits>
 
 namespace mlir::tt::ttl {
 
@@ -1072,7 +1073,14 @@ static bool matchNormalizedProduct(MulOp normalized, Value &input,
 
 static std::optional<MatchedRowNormalization>
 matchRowNormalization(Operation *source) {
-  if (!isBlackholeTarget(source)) {
+  Attribute rawSelectedSchedule =
+      source->getAttr(kSelectedComputePipelineScheduleAttrName);
+  auto selectedSchedule =
+      dyn_cast_or_null<ComputePipelineScheduleAttr>(rawSelectedSchedule);
+  assert((!rawSelectedSchedule || selectedSchedule) &&
+         "compiler-selected pipeline schedule must use its enum attribute");
+  if (selectedSchedule &&
+      selectedSchedule.getValue() == ComputePipelineSchedule::Materialized) {
     return std::nullopt;
   }
   auto finalMultiply = dyn_cast<MulOp>(source);
@@ -1134,12 +1142,8 @@ matchRowNormalization(Operation *source) {
   if (dataType != ttcore::DataType::BFloat16) {
     return std::nullopt;
   }
-  bool isFloat32 = getKernelBoolAttr(source, kFp32DestAccEnAttrName);
-  std::uint32_t dstCapacity = getDstCapacity(
-      isFloat32, getKernelBoolAttr(source, kDstFullSyncEnAttrName));
-  dstCapacity = std::min<std::uint32_t>(8, dstCapacity);
   if (numTiles < 1 || static_cast<std::uint64_t>(numTiles) >
-                          static_cast<std::uint64_t>(dstCapacity)) {
+                          std::numeric_limits<std::uint32_t>::max()) {
     return std::nullopt;
   }
 
@@ -1164,7 +1168,6 @@ matchRowNormalization(Operation *source) {
   match.schedule.scale = scaledReduction.getValueAttr();
   match.schedule.epsilon = epsilonFill.getValueAttr();
   match.schedule.numTiles = numTiles;
-  match.schedule.dstCapacity = dstCapacity;
   match.schedule.gammaMode = gammaMode;
 
   auto recordOperation = [&](Operation *operation) {
@@ -1261,6 +1264,16 @@ struct MultiplyReductionFusionMatch {
 
 static MultiplyReductionFusionMatch
 matchMultiplyReductionFusion(Operation *source) {
+  Attribute rawSelectedSchedule =
+      source->getAttr(kSelectedComputePipelineScheduleAttrName);
+  auto selectedSchedule =
+      dyn_cast_or_null<ComputePipelineScheduleAttr>(rawSelectedSchedule);
+  assert((!rawSelectedSchedule || selectedSchedule) &&
+         "compiler-selected pipeline schedule must use its enum attribute");
+  if (selectedSchedule &&
+      selectedSchedule.getValue() == ComputePipelineSchedule::Materialized) {
+    return {};
+  }
   MulUnaryConstOp postReductionScale = dyn_cast<MulUnaryConstOp>(source);
   ReduceOp reduction =
       postReductionScale
@@ -1350,19 +1363,10 @@ matchMultiplyReductionFusion(Operation *source) {
   if (!tileType || tileType.getDataType() != ttcore::DataType::BFloat16) {
     return reject(FusionNearMatchKind::UnsupportedDtype);
   }
-  if (!isBlackholeTarget(source)) {
-    return reject(FusionNearMatchKind::UnsupportedTarget);
-  }
-
-  std::uint32_t dstCapacity =
-      getDstCapacity(getKernelBoolAttr(source, kFp32DestAccEnAttrName),
-                     getKernelBoolAttr(source, kDstFullSyncEnAttrName));
-  dstCapacity = std::min<std::uint32_t>(8, dstCapacity);
   std::uint64_t numTiles = static_cast<std::uint64_t>(lhsType.getNumElements());
   nearMatch.requiredDstSlots = numTiles;
-  nearMatch.availableDstSlots = dstCapacity;
-  if (numTiles < 1 || numTiles > dstCapacity) {
-    return reject(FusionNearMatchKind::DSTCapacity);
+  if (numTiles < 1 || numTiles > std::numeric_limits<std::uint32_t>::max()) {
+    return reject(FusionNearMatchKind::UnsupportedOperandShape);
   }
 
   std::string failureReason;
@@ -1412,7 +1416,6 @@ matchMultiplyReductionFusion(Operation *source) {
 
   FusionResourcePlan resources;
   resources.requiredDstSlots = static_cast<std::uint32_t>(numTiles);
-  resources.availableDstSlots = dstCapacity;
   resources.dstAcquisitions = 1;
   resources.intermediateDFBBytes =
       (numTiles + static_cast<std::uint64_t>(scalerType.getNumElements())) *
@@ -1445,8 +1448,10 @@ static void recordSelectedFusionNearMatch(ComputeOpCreationPlan &plan,
   nearMatch.kind = kind;
   if (plan.fusionGraph->resources) {
     nearMatch.requiredDstSlots = plan.fusionGraph->resources->requiredDstSlots;
-    nearMatch.availableDstSlots =
-        plan.fusionGraph->resources->availableDstSlots;
+    if (plan.fusionGraph->resources->availableDstSlots) {
+      nearMatch.availableDstSlots =
+          *plan.fusionGraph->resources->availableDstSlots;
+    }
     nearMatch.estimatedIntermediateDFBBytes =
         plan.fusionGraph->resources->intermediateDFBBytes;
     nearMatch.estimatedAdditionalDstAcquisitions = 2;
@@ -2417,6 +2422,10 @@ ComputeOpCreationPlanner::build() const {
   std::optional<PlanningDiagnostic> invalidIR;
   kernel->walk([&](Operation *source) {
     if (invalidIR) {
+      return;
+    }
+    if (isa<ComputePipelineOp>(source) ||
+        source->getParentOfType<ComputePipelineOp>()) {
       return;
     }
     if (source->getNumResults() != 1) {

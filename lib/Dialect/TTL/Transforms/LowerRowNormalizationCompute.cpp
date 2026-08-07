@@ -16,6 +16,14 @@
 namespace mlir::tt::ttl {
 namespace {
 
+static bool targetProvidesRowNormalizationSchedule(Operation *operation) {
+  ModuleOp module = operation->getParentOfType<ModuleOp>();
+  auto target =
+      module ? module->getAttrOfType<ttcore::ArchAttr>(kTargetArchAttrName)
+             : ttcore::ArchAttr();
+  return target && target.getValue() == ttcore::Arch::Blackhole;
+}
+
 struct RowNormalizationComputeAnalysis {
   FixedBlockComputeAnalysis fixed;
   TileRowNormalizationBlockOp block;
@@ -58,7 +66,7 @@ analyzeRowNormalizationCompute(ComputeOp compute, std::string &reason) {
     reason = "gamma must equal input when gamma multiplication is disabled";
     return failure();
   }
-  if (!isBlackholeTarget(compute)) {
+  if (!targetProvidesRowNormalizationSchedule(compute)) {
     reason = "row-normalization block lowering requires a Blackhole target";
     return failure();
   }

@@ -166,7 +166,6 @@ struct RowNormalizationPlan {
   FloatAttr scale;
   FloatAttr epsilon;
   int64_t numTiles = 0;
-  std::uint32_t dstCapacity = 0;
   RowNormalizationGammaMode gammaMode = RowNormalizationGammaMode::None;
   SmallVector<RowNormalizationOperationPlan> operations;
 };
@@ -259,7 +258,7 @@ struct FusionStagePlan {
 /// Complete target resource selection for one fusion graph.
 struct FusionResourcePlan {
   std::uint32_t requiredDstSlots = 0;
-  std::uint32_t availableDstSlots = 0;
+  std::optional<std::uint32_t> availableDstSlots;
   std::uint32_t dstAcquisitions = 0;
   std::uint64_t intermediateDFBBytes = 0;
 };

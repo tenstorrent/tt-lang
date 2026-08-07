@@ -53,11 +53,6 @@ analyzeFusionCompute(ComputeOp compute, std::string &reason) {
   }
   analysis.fixed = std::move(*fixed);
 
-  if (!isBlackholeTarget(compute)) {
-    reason = "multiply-reduction block lowering requires a Blackhole target";
-    return failure();
-  }
-
   analysis.lhsTensor = analysis.fixed.inputTensors.front();
   analysis.rhsTensor = analysis.block.getRhs() == analysis.block.getLhs()
                            ? analysis.lhsTensor

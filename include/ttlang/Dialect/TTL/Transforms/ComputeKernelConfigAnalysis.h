@@ -11,6 +11,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -70,6 +71,10 @@ public:
       DestinationElementWidth destinationElementWidth) const = 0;
   virtual FullFp32AccumulationSupport
   getFullFp32AccumulationSupport(FullFp32AccumulationKind kind) const = 0;
+  virtual std::optional<std::uint32_t>
+  getMaxComputePipelineTiles(ComputePipelineKind kind,
+                             ComputePipelineSchedule schedule,
+                             Type elementType) const = 0;
   virtual llvm::SmallVector<DFBHardwareConfiguration, 4>
   getSupportedDFBConfigurations(TilePrimitive primitive, TileOperandRoute route,
                                 Type elementType) const = 0;
@@ -136,12 +141,49 @@ struct FullFp32AccumulationUse {
   FullFp32AccumulationKind kind;
 };
 
+/// Requirements for one legal compute-pipeline schedule.
+struct ComputePipelineScheduleOption {
+  ComputePipelineKind kind;
+  ComputePipelineSchedule schedule;
+  llvm::SmallVector<DFBInputUse> dfbInputUses;
+  llvm::SmallVector<DestinationUse> destinationUses;
+  std::uint32_t requiredDstSlots = 0;
+};
+
+/// Schedule alternatives retained for kernel-wide resolution.
+struct ComputePipelineScheduleChoice {
+  Operation *pipeline;
+  llvm::SmallVector<ComputePipelineScheduleOption, 2> options;
+};
+
+enum class ComputePipelineScheduleRejectionKind {
+  UnsupportedTarget,
+  UnsupportedElementType,
+  DSTCapacity,
+  KernelConfigurationConflict,
+};
+
+/// Reason the preferred retained-scalar schedule was not selected.
+struct ComputePipelineScheduleRejection {
+  ComputePipelineScheduleRejectionKind kind;
+  std::uint32_t requiredDstSlots = 0;
+  std::uint32_t availableDstSlots = 0;
+};
+
+/// Schedule selected for one semantic compute pipeline.
+struct ComputePipelineScheduleDecision {
+  Operation *pipeline;
+  ComputePipelineSchedule schedule;
+  std::optional<ComputePipelineScheduleRejection> rejection;
+};
+
 /// Target-independent requirements collected from immutable TTL IR.
 struct KernelRequirements {
   llvm::SmallVector<DFBInputUse> dfbInputUses;
   llvm::SmallVector<DestinationUse> destinationUses;
   llvm::SmallVector<FullFp32AccumulationUse> fullFp32AccumulationUses;
   llvm::SmallVector<TileExecutionChoice, 0> tileStrategyChoices;
+  llvm::SmallVector<ComputePipelineScheduleChoice, 0> pipelineScheduleChoices;
 };
 
 /// Complete configuration selected before any IR mutation. Apply the plan
@@ -158,6 +200,10 @@ public:
   llvm::ArrayRef<TileExecutionDecision> getTileStrategies() const {
     return tileStrategies;
   }
+  llvm::ArrayRef<ComputePipelineScheduleDecision>
+  getComputePipelineSchedules() const {
+    return computePipelineSchedules;
+  }
 
 private:
   friend FailureOr<KernelConfigPlan> resolveKernelConfig(
@@ -167,15 +213,19 @@ private:
   KernelConfigPlan(DestinationElementWidth destinationElementWidth,
                    DstSyncMode dstSyncMode,
                    llvm::SmallVector<int32_t> unpackToDestFp32,
-                   llvm::SmallVector<TileExecutionDecision> tileStrategies)
+                   llvm::SmallVector<TileExecutionDecision> tileStrategies,
+                   llvm::SmallVector<ComputePipelineScheduleDecision>
+                       computePipelineSchedules)
       : destinationElementWidth(destinationElementWidth),
         dstSyncMode(dstSyncMode), unpackToDestFp32(std::move(unpackToDestFp32)),
-        tileStrategies(std::move(tileStrategies)) {}
+        tileStrategies(std::move(tileStrategies)),
+        computePipelineSchedules(std::move(computePipelineSchedules)) {}
 
   DestinationElementWidth destinationElementWidth;
   DstSyncMode dstSyncMode;
   llvm::SmallVector<int32_t> unpackToDestFp32;
   llvm::SmallVector<TileExecutionDecision> tileStrategies;
+  llvm::SmallVector<ComputePipelineScheduleDecision> computePipelineSchedules;
 };
 
 /// Collect target-independent requirements and legal tile strategies.
@@ -188,6 +238,10 @@ FailureOr<KernelConfigPlan> resolveKernelConfig(
 
 /// Apply a resolved plan without deriving additional configuration policy.
 void applyKernelConfigPlan(func::FuncOp function, const KernelConfigPlan &plan);
+
+/// Apply only compute pipeline schedule decisions from a resolved plan.
+void applyComputePipelineSchedulePlan(func::FuncOp function,
+                                      const KernelConfigPlan &plan);
 
 } // namespace mlir::tt::ttl
 

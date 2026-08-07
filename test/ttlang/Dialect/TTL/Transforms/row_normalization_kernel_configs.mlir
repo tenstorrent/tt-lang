@@ -1,13 +1,17 @@
-// Verifies row-normalization planning at DST capacity boundaries for every
-// kernel register configuration exercised by the fused LLK.
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-print-compute-op-creation-plans))' -o /dev/null 2>&1 | FileCheck %s
+// Verifies row-normalization schedule selection at DST capacity boundaries for
+// every kernel register configuration exercised by the retained schedule.
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute,ttl-insert-intermediate-dfbs,convert-ttl-to-compute,ttl-select-compute-pipeline-schedules{matmul-full-fp32=0 reduce-full-fp32=0}))' | FileCheck %s
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute,ttl-insert-intermediate-dfbs,convert-ttl-to-compute,ttl-select-compute-pipeline-schedules{matmul-full-fp32=0 reduce-full-fp32=0}))' --remarks-filter-missed='ttl-reduction-fusion' -o /dev/null 2>&1 | FileCheck %s --check-prefix=REMARK
 
 // Four fp32 half-sync tiles exactly fill the effective DST capacity.
-// CHECK-LABEL: ComputeOp creation plan @fp32_half_sync_fits
-// CHECK:       ttl.mul kind=fused recipe=row_normalization legal=true
-module attributes {ttl.target_arch = "blackhole"} {
+// CHECK-LABEL: func.func @fp32_half_sync_fits
+// CHECK:       ttl.compute_pipeline
+// CHECK-SAME:  pipeline_kind = #ttl.compute_pipeline_kind<row_normalization>
+// CHECK-SAME:  selected_schedule = #ttl.compute_pipeline_schedule<retained_scalar>
+// REMARK-NOT:  Function=fp32_half_sync_fits
+module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @fp32_half_sync_fits()
-      attributes {fp32_dest_acc_en = true,
+      attributes {dst_full_sync_en = false, fp32_dest_acc_en = true,
                   ttl.kernel_thread = #ttkernel.thread<compute>} {
     %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
         : !ttl.cb<[1, 4], !ttcore.tile<32x32, bf16>, 2>
@@ -62,11 +66,15 @@ module attributes {ttl.target_arch = "blackhole"} {
 // -----
 
 // A fifth fp32 half-sync tile requires materialized lowering.
-// CHECK-LABEL: ComputeOp creation plan @fp32_half_sync_exceeds_capacity
-// CHECK-NOT:   recipe=row_normalization
-module attributes {ttl.target_arch = "blackhole"} {
+// CHECK-LABEL: func.func @fp32_half_sync_exceeds_capacity
+// CHECK:       ttl.compute_pipeline
+// CHECK-SAME:  pipeline_kind = #ttl.compute_pipeline_kind<row_normalization>
+// CHECK-SAME:  selected_schedule = #ttl.compute_pipeline_schedule<materialized>
+// REMARK:      remark: [Missed] ReductionFusion | Category:ttl-reduction-fusion | Function=fp32_half_sync_exceeds_capacity
+// REMARK-SAME: Remark="row_normalization fusion not selected: the reduction requires 5 DST slots, but 4 are available; ordinary materialized lowering remains selected"
+module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @fp32_half_sync_exceeds_capacity()
-      attributes {fp32_dest_acc_en = true,
+      attributes {dst_full_sync_en = false, fp32_dest_acc_en = true,
                   ttl.kernel_thread = #ttkernel.thread<compute>} {
     %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
         : !ttl.cb<[1, 5], !ttcore.tile<32x32, bf16>, 2>
@@ -121,9 +129,12 @@ module attributes {ttl.target_arch = "blackhole"} {
 // -----
 
 // Full sync retains the helper's eight-tile limit under bf16 accumulation.
-// CHECK-LABEL: ComputeOp creation plan @bf16_full_sync_fits
-// CHECK:       ttl.mul kind=fused recipe=row_normalization legal=true
-module attributes {ttl.target_arch = "blackhole"} {
+// CHECK-LABEL: func.func @bf16_full_sync_fits
+// CHECK:       ttl.compute_pipeline
+// CHECK-SAME:  pipeline_kind = #ttl.compute_pipeline_kind<row_normalization>
+// CHECK-SAME:  selected_schedule = #ttl.compute_pipeline_schedule<retained_scalar>
+// REMARK-NOT:  Function=bf16_full_sync_fits
+module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @bf16_full_sync_fits()
       attributes {dst_full_sync_en = true,
                   ttl.kernel_thread = #ttkernel.thread<compute>} {
@@ -180,9 +191,12 @@ module attributes {ttl.target_arch = "blackhole"} {
 // -----
 
 // Full sync restores eight usable tiles under fp32 accumulation.
-// CHECK-LABEL: ComputeOp creation plan @fp32_full_sync_fits
-// CHECK:       ttl.mul kind=fused recipe=row_normalization legal=true
-module attributes {ttl.target_arch = "blackhole"} {
+// CHECK-LABEL: func.func @fp32_full_sync_fits
+// CHECK:       ttl.compute_pipeline
+// CHECK-SAME:  pipeline_kind = #ttl.compute_pipeline_kind<row_normalization>
+// CHECK-SAME:  selected_schedule = #ttl.compute_pipeline_schedule<retained_scalar>
+// REMARK-NOT:  Function=fp32_full_sync_fits
+module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @fp32_full_sync_fits()
       attributes {dst_full_sync_en = true, fp32_dest_acc_en = true,
                   ttl.kernel_thread = #ttkernel.thread<compute>} {

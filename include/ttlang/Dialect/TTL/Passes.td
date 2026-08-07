@@ -461,6 +461,33 @@ def TTLAssignDST
   ];
 }
 
+def TTLSelectComputePipelineSchedules
+    : Pass<"ttl-select-compute-pipeline-schedules",
+           "::mlir::func::FuncOp"> {
+  let summary = "Select target-specific compute pipeline schedules";
+  let description = [{
+    Resolves the complete compute-kernel configuration on immutable IR, then
+    records only compute pipeline schedule decisions. The selected schedules
+    allow pipeline lowering and intermediate dataflow-buffer materialization
+    to complete before the final kernel configuration is resolved and applied.
+  }];
+
+  let options = [
+    Option<"fp32DestAccEn", "fp32-dest-acc-en", "std::string", "\"auto\"",
+           "Select fp32 destination accumulation: auto, enabled, or disabled.">,
+    Option<"dstFullSyncEn", "dst-full-sync-en", "std::string", "\"auto\"",
+           "Select full DST synchronization: auto, enabled, or disabled.">,
+    Option<"reduceFullFp32", "reduce-full-fp32", "bool", "true",
+           "Prefer FP32 accumulation for reduce operations when supported.">,
+    Option<"matmulFullFp32", "matmul-full-fp32", "bool", "true",
+           "Prefer FP32 accumulation for matmul operations when supported.">,
+    Option<"enableFPUBinaryOps", "enable-fpu-binary-ops", "bool", "true",
+           "Allow tile add/sub/mul with matching operand coordinates and "
+           "DFB-backed operands to select the FPU strategy. "
+           "Disable to select the SFPU strategy.">
+  ];
+}
+
 def TTLSetComputeKernelConfig
     : Pass<"ttl-set-compute-kernel-config", "::mlir::func::FuncOp"> {
   let summary = "Resolve compute-kernel configuration";

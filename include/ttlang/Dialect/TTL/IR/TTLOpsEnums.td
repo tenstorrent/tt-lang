@@ -153,4 +153,31 @@ def TTL_TileExecutionStrategy : I32EnumAttr<
   let genSpecializedAttr = 0;
 }
 
+def TTL_ComputePipelineKind_MultiplyFullScalarReduction :
+    I32EnumAttrCase<"MultiplyFullScalarReduction", 0,
+                    "multiply_full_scalar_reduction">;
+def TTL_ComputePipelineKind_RowNormalization :
+    I32EnumAttrCase<"RowNormalization", 1, "row_normalization">;
+
+def TTL_ComputePipelineKind : I32EnumAttr<
+    "ComputePipelineKind", "semantic compute pipeline kind",
+    [TTL_ComputePipelineKind_MultiplyFullScalarReduction,
+     TTL_ComputePipelineKind_RowNormalization]> {
+  let cppNamespace = "::mlir::tt::ttl";
+  let genSpecializedAttr = 0;
+}
+
+def TTL_ComputePipelineSchedule_Materialized :
+    I32EnumAttrCase<"Materialized", 0, "materialized">;
+def TTL_ComputePipelineSchedule_RetainedScalar :
+    I32EnumAttrCase<"RetainedScalar", 1, "retained_scalar">;
+
+def TTL_ComputePipelineSchedule : I32EnumAttr<
+    "ComputePipelineSchedule", "selected compute pipeline schedule",
+    [TTL_ComputePipelineSchedule_Materialized,
+     TTL_ComputePipelineSchedule_RetainedScalar]> {
+  let cppNamespace = "::mlir::tt::ttl";
+  let genSpecializedAttr = 0;
+}
+
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSENUMS_TD

@@ -26,6 +26,8 @@ enum class TilePrimitive {
   BroadcastRow,
   BroadcastScalar,
   Reduce,
+  MultiplyFullScalarReduction,
+  RowNormalization,
   Transpose,
   Fill,
   Matmul,

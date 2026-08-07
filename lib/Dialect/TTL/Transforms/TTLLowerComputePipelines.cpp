@@ -38,6 +38,7 @@ struct ComputeStageInliningPlan {
 
 struct ComputePipelineInliningPlan {
   ComputePipelineOp pipeline;
+  std::optional<ComputePipelineSchedule> selectedSchedule;
   SmallVector<BlockArgument> arguments;
   SmallVector<Value> inputs;
   SmallVector<ComputeStageInliningPlan, 1> stages;
@@ -89,6 +90,14 @@ analyzePipeline(ComputePipelineOp pipeline, std::string &reason) {
 
   ComputePipelineInliningPlan plan;
   plan.pipeline = pipeline;
+  if (ComputePipelineScheduleAttr selected =
+          pipeline.getSelectedScheduleAttr()) {
+    plan.selectedSchedule = selected.getValue();
+  }
+  if (pipeline.getPipelineKindAttr() && !plan.selectedSchedule) {
+    reason = "recognized pipeline has no selected schedule";
+    return failure();
+  }
   llvm::append_range(plan.arguments, body.getArguments());
   llvm::append_range(plan.inputs, pipeline.getInputs());
   DenseSet<Value> availableValues(body.getArguments().begin(),
@@ -121,6 +130,10 @@ analyzePipeline(ComputePipelineOp pipeline, std::string &reason) {
     return failure();
   }
   llvm::append_range(plan.yieldedValues, pipelineYield.getValues());
+  if (pipeline.getPipelineKindAttr() && plan.yieldedValues.size() != 1) {
+    reason = "recognized pipeline must yield exactly one result";
+    return failure();
+  }
   return plan;
 }
 
@@ -150,6 +163,14 @@ static void applyPipelinePlan(const ComputePipelineInliningPlan &plan,
   replacements.reserve(plan.yieldedValues.size());
   for (Value yieldedValue : plan.yieldedValues) {
     replacements.push_back(mapping.lookup(yieldedValue));
+  }
+  if (plan.selectedSchedule) {
+    Operation *selectedSource = replacements.front().getDefiningOp();
+    assert(selectedSource &&
+           "recognized pipeline result must have a defining operation");
+    selectedSource->setAttr(kSelectedComputePipelineScheduleAttrName,
+                            ComputePipelineScheduleAttr::get(
+                                rewriter.getContext(), *plan.selectedSchedule));
   }
   rewriter.replaceOp(plan.pipeline, replacements);
 }
