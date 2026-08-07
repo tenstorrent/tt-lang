@@ -2672,8 +2672,6 @@ public:
                                std::to_string(op.getNumTiles())),
         emitc::OpaqueAttr::get(op.getContext(),
                                op.getHasGamma() ? "true" : "false"),
-        emitc::OpaqueAttr::get(op.getContext(),
-                               op.getRepeatGamma() ? "true" : "false"),
         datatypeToDataformatEnumNameOpaqueAttr(rewriter, op.getDtype())};
     SmallVector<Value, 5> operands = {
         adaptor.getInputCb(), adaptor.getGammaCb(), adaptor.getOutputCb(),
