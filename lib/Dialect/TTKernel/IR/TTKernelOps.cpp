@@ -21,7 +21,68 @@
 
 namespace mlir::tt::ttkernel {
 
+static bool isSourceScalarLifetimeOp(Operation *operation) {
+  return isa<ExperimentalSourceScalarAcquireOp,
+             ExperimentalSourceScalarApplyMulOp,
+             ExperimentalSourceScalarReleaseOp>(operation);
+}
+
+static LogicalResult verifySourceScalarLifetimeSequence(Operation *operation) {
+  Block *block = operation->getBlock();
+  for (Operation &preceding : *block) {
+    if (&preceding == operation) {
+      break;
+    }
+    if (isSourceScalarLifetimeOp(&preceding)) {
+      return success();
+    }
+  }
+
+  ExperimentalSourceScalarAcquireOp activeAcquire;
+  for (Operation &candidate : block->without_terminator()) {
+    if (auto acquire = dyn_cast<ExperimentalSourceScalarAcquireOp>(candidate)) {
+      if (activeAcquire) {
+        return acquire.emitOpError(
+            "cannot acquire while another source scalar is active");
+      }
+      activeAcquire = acquire;
+      continue;
+    }
+    if (auto apply = dyn_cast<ExperimentalSourceScalarApplyMulOp>(candidate)) {
+      if (!activeAcquire) {
+        return apply.emitOpError("requires an active source scalar");
+      }
+      continue;
+    }
+    if (auto release = dyn_cast<ExperimentalSourceScalarReleaseOp>(candidate)) {
+      if (!activeAcquire) {
+        return release.emitOpError("requires an active source scalar");
+      }
+      activeAcquire = {};
+      continue;
+    }
+    if (activeAcquire) {
+      return candidate.emitOpError(
+          "only source-scalar consumers may execute between acquire and "
+          "release");
+    }
+  }
+
+  if (activeAcquire) {
+    return activeAcquire.emitOpError(
+        "requires a matching source-scalar release in the same block");
+  }
+  return success();
+}
+
+::mlir::LogicalResult ExperimentalSourceScalarAcquireOp::verify() {
+  return verifySourceScalarLifetimeSequence(*this);
+}
+
 ::mlir::LogicalResult ExperimentalSourceScalarApplyMulOp::verify() {
+  if (failed(verifySourceScalarLifetimeSequence(*this))) {
+    return failure();
+  }
   if (getNumTiles() < 1 || getNumTiles() > 8) {
     return emitOpError("num_tiles must be in the range [1, 8]");
   }
@@ -36,6 +97,10 @@ namespace mlir::tt::ttkernel {
     return emitOpError("dtype must match the input tile data type");
   }
   return success();
+}
+
+::mlir::LogicalResult ExperimentalSourceScalarReleaseOp::verify() {
+  return verifySourceScalarLifetimeSequence(*this);
 }
 
 ::mlir::LogicalResult ExperimentalMulReduceBlockOp::verify() {
