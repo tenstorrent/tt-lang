@@ -33,6 +33,7 @@ enum class ComputePrimitive {
   Transpose,
   Fill,
   Matmul,
+  RowNormalization,
   Typecast,
   MultiplyByConstant,
   Passthrough,
@@ -45,6 +46,10 @@ public:
 
   static FailureOr<std::unique_ptr<ComputeTargetEnvironment>>
   get(Operation *operation, std::string &failureReason);
+
+  virtual LogicalResult
+  validatePrimitiveAvailability(ComputePrimitive primitive,
+                                std::string &failureReason) const = 0;
 
   virtual LogicalResult
   validateKernelTileType(ttcore::TileType tileType,

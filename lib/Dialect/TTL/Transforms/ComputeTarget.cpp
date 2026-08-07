@@ -94,6 +94,7 @@ bool supportsShortHeightTiles(ComputePrimitive primitive) {
   case ComputePrimitive::Broadcast:
   case ComputePrimitive::Reduce:
   case ComputePrimitive::Transpose:
+  case ComputePrimitive::RowNormalization:
   case ComputePrimitive::Typecast:
   case ComputePrimitive::Passthrough:
     return false;
@@ -103,6 +104,22 @@ bool supportsShortHeightTiles(ComputePrimitive primitive) {
 class WormholeBlackholeComputeTargetEnvironment final
     : public ComputeTargetEnvironment {
 public:
+  explicit WormholeBlackholeComputeTargetEnvironment(
+      bool supportsRowNormalization)
+      : supportsRowNormalization(supportsRowNormalization) {}
+
+  LogicalResult
+  validatePrimitiveAvailability(ComputePrimitive primitive,
+                                std::string &failureReason) const final {
+    failureReason.clear();
+    if (primitive != ComputePrimitive::RowNormalization ||
+        supportsRowNormalization) {
+      return success();
+    }
+    failureReason = "row-normalization compute requires a Blackhole target";
+    return failure();
+  }
+
   LogicalResult validateKernelTileType(ttcore::TileType tileType,
                                        std::string &failureReason) const final {
     failureReason.clear();
@@ -253,6 +270,9 @@ public:
     }
     return success();
   }
+
+private:
+  bool supportsRowNormalization;
 };
 
 class IntersectionComputeTargetEnvironment final
@@ -261,6 +281,19 @@ public:
   explicit IntersectionComputeTargetEnvironment(
       SmallVector<std::unique_ptr<ComputeTargetEnvironment>, 2> environments)
       : environments(std::move(environments)) {}
+
+  LogicalResult
+  validatePrimitiveAvailability(ComputePrimitive primitive,
+                                std::string &failureReason) const final {
+    for (const std::unique_ptr<ComputeTargetEnvironment> &environment :
+         environments) {
+      if (failed(environment->validatePrimitiveAvailability(primitive,
+                                                            failureReason))) {
+        return failure();
+      }
+    }
+    return success();
+  }
 
   LogicalResult validateKernelTileType(ttcore::TileType tileType,
                                        std::string &failureReason) const final {
@@ -340,14 +373,17 @@ struct ComputeTargetRegistration {
   ComputeTargetFactory create;
 };
 
-std::unique_ptr<ComputeTargetEnvironment>
-createWormholeBlackholeTargetEnvironment() {
-  return std::make_unique<WormholeBlackholeComputeTargetEnvironment>();
+std::unique_ptr<ComputeTargetEnvironment> createWormholeTargetEnvironment() {
+  return std::make_unique<WormholeBlackholeComputeTargetEnvironment>(false);
+}
+
+std::unique_ptr<ComputeTargetEnvironment> createBlackholeTargetEnvironment() {
+  return std::make_unique<WormholeBlackholeComputeTargetEnvironment>(true);
 }
 
 constexpr std::array<ComputeTargetRegistration, 2> computeTargetRegistrations =
-    {{{ttcore::Arch::WormholeB0, &createWormholeBlackholeTargetEnvironment},
-      {ttcore::Arch::Blackhole, &createWormholeBlackholeTargetEnvironment}}};
+    {{{ttcore::Arch::WormholeB0, &createWormholeTargetEnvironment},
+      {ttcore::Arch::Blackhole, &createBlackholeTargetEnvironment}}};
 
 FailureOr<std::unique_ptr<ComputeTargetEnvironment>>
 createTargetEnvironment(ttcore::Arch arch, std::string &failureReason) {
@@ -470,6 +506,9 @@ ComputeTargetEnvironment::validateOperation(Operation *operation,
     failureReason = "has no compute-target capability classification";
     return failure();
   }
+  if (failed(validatePrimitiveAvailability(*primitive, failureReason))) {
+    return failure();
+  }
 
   if (*primitive == ComputePrimitive::Typecast) {
     FailureOr<ttcore::TileType> inputType =
@@ -554,6 +593,9 @@ std::optional<ComputePrimitive> getComputePrimitive(Operation *operation) {
   }
   if (isa<MatmulOp, TileMatmulBlockOp>(operation)) {
     return ComputePrimitive::Matmul;
+  }
+  if (isa<TileRowNormalizationBlockOp>(operation)) {
+    return ComputePrimitive::RowNormalization;
   }
   if (isa<TypecastOp, TileTypecastOp>(operation)) {
     return ComputePrimitive::Typecast;

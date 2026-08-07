@@ -68,6 +68,10 @@ class _FakeCoreRanges:
         return _FakeBoundingBox()
 
 
+class _FakeTensorCBDescriptor(dict):
+    format_descriptors = None
+
+
 class _FakeTTNN:
     def __init__(self):
         self.create_calls = []
@@ -153,13 +157,13 @@ class _FakeTTNN:
     def cb_descriptor_from_sharded_tensor(
         cb_index, tensor, total_size, core_ranges, address_offset=0
     ):
-        return {
-            "cb_index": cb_index,
-            "tensor": tensor,
-            "address_offset": address_offset,
-            "total_size": total_size,
-            "core_ranges": core_ranges,
-        }
+        return _FakeTensorCBDescriptor(
+            cb_index=cb_index,
+            tensor=tensor,
+            address_offset=address_offset,
+            total_size=total_size,
+            core_ranges=core_ranges,
+        )
 
     @staticmethod
     def get_optimal_worker_cores_for_sharded_tensor(_tensor):
@@ -556,6 +560,61 @@ def test_build_cb_descriptors_binds_tensor_on_exact_nodes(monkeypatch):
         for core_range in descriptor["core_ranges"].ranges
     ]
     assert selected == [(0, 0), (1, 0)]
+    assert descriptor.format_descriptors is None
+
+
+@pytest.mark.parametrize(
+    ("view_tile", "num_tiles", "shard_shape", "page_size"),
+    [
+        ((16, 32), 3, (16, 96), 1024),
+        ((32, 32), 7, (32, 224), 2048),
+    ],
+    ids=["16x32", "32x32"],
+)
+def test_build_cb_descriptors_binds_compact_storage_view(
+    monkeypatch, view_tile, num_tiles, shard_shape, page_size
+):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+    )
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    tensor = _FakeTensor(
+        object(),
+        dtype=expected_dtype,
+        tile_shape=(1, 32),
+        shard_shape=shard_shape,
+    )
+    total_size = num_tiles * page_size
+    config = PhysicalDFBConfig(
+        0,
+        num_tiles,
+        "bfloat16",
+        1,
+        page_size,
+        view_tile,
+        (
+            DFBStorageSegment(
+                nodes=((0, 0),),
+                tensor_index=0,
+                byte_offset=0,
+                byte_size=total_size,
+            ),
+        ),
+    )
+
+    descriptor = kernel_runner.build_cb_descriptors(
+        tensors=[tensor],
+        cb_configs=[config],
+        core_ranges=_FakeCoreRanges(),
+    )[0]
+
+    assert descriptor["tensor"] is tensor
+    assert descriptor["total_size"] == total_size
+    format_descriptor = descriptor.format_descriptors[0]
+    assert format_descriptor.page_size == page_size
+    assert format_descriptor.tile.tile.tile_shape == view_tile
 
 
 def test_build_cb_descriptors_rejects_range_past_shard_boundary(monkeypatch):

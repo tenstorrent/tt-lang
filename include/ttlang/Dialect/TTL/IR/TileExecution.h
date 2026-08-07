@@ -29,6 +29,7 @@ enum class TilePrimitive {
   Transpose,
   Fill,
   Matmul,
+  RowNormalization,
   Store,
   DstIndex,
 };

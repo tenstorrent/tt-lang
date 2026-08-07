@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "ttlang/Dialect/TTL/Transforms/LowerMatmulCompute.h"
+#include "ttlang/Dialect/TTL/Transforms/LowerRowNormalizationCompute.h"
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
@@ -430,6 +431,9 @@ struct LowerComputeToLoops : OpRewritePattern<ComputeOp> {
     if (useBlockMatmul && op.containsOp<TileMatmulBlockOp>()) {
       return generateMatmulCompute(rewriter, loc, op, indexingMaps, iterTypes);
     }
+    if (op.containsOp<TileRowNormalizationBlockOp>()) {
+      return generateRowNormalizationCompute(rewriter, loc, op);
+    }
 
     // Side-effect-only loops: no iter_args, no tensor.insert, no scf.yield
     // with tensor values. Stores are explicit side effects (tile_store).
@@ -755,6 +759,16 @@ struct TTLLowerToLoopsPass
       if (capacityResult.wasInterrupted()) {
         return signalPassFailure();
       }
+    }
+    bool invalidRowNormalization = false;
+    func.walk([&](ComputeOp computeOp) {
+      if (computeOp.containsOp<TileRowNormalizationBlockOp>() &&
+          failed(verifyRowNormalizationCompute(computeOp))) {
+        invalidRowNormalization = true;
+      }
+    });
+    if (invalidRowNormalization) {
+      return signalPassFailure();
     }
 
     // Step 1: Lower compute ops to scf.for tile loops.
