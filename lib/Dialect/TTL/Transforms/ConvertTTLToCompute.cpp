@@ -624,21 +624,14 @@ buildRowNormalizationCompute(Operation *sinkOp, PatternRewriter &rewriter,
     return rewriter.notifyMatchFailure(
         sinkOp, "row-normalization expression changed after planning");
   }
-  if (!creation.instrumentation.empty()) {
-    return rewriter.notifyMatchFailure(
-        sinkOp, "row-normalization schedule contains instrumentation");
-  }
-
   Location loc = sinkOp->getLoc();
   RankedTensorType outputType = creation.resultType;
   SmallVector<Attribute> maps;
   for (AffineMap inputMap : creation.iteration.inputMaps) {
     maps.push_back(AffineMapAttr::get(inputMap));
   }
-  for (size_t outputIndex = 0; outputIndex < outputs.dfbs.size();
-       ++outputIndex) {
-    maps.push_back(AffineMapAttr::get(creation.iteration.outputMap));
-  }
+  maps.append(outputs.dfbs.size(),
+              AffineMapAttr::get(creation.iteration.outputMap));
   SmallVector<Attribute> iteratorTypes =
       buildIteratorTypeAttributes(rewriter, creation.iteration.iteratorTypes);
 
@@ -663,10 +656,9 @@ buildRowNormalizationCompute(Operation *sinkOp, PatternRewriter &rewriter,
     body->addArgument(getTileValueType(inputType.getElementType()), loc);
   }
   Type outputTileType = getTileValueType(outputType.getElementType());
-  for (size_t outputIndex = 0; outputIndex < outputs.dfbs.size();
-       ++outputIndex) {
-    body->addArgument(outputTileType, loc);
-  }
+  SmallVector<Type> outputTileTypes(outputs.dfbs.size(), outputTileType);
+  SmallVector<Location> outputLocations(outputs.dfbs.size(), loc);
+  body->addArguments(outputTileTypes, outputLocations);
 
   rewriter.setInsertionPointToStart(body);
   Value inputTile = body->getArgument(0);
@@ -804,19 +796,20 @@ static LogicalResult tryFusion(Operation *op, PatternRewriter &rewriter,
   if (failed(getCreationPlan(op, rewriter, kernelPlan, creation))) {
     return failure();
   }
-  if (creation->kind == ComputeOpCreationKind::Fused) {
-    OutputPublicationPlan outputs;
-    if (failed(resolveCurrentOutputs(op, rewriter, *creation, outputs))) {
-      return failure();
-    }
-    if (creation->recipe == ComputeOpCreationRecipe::RowNormalization) {
-      return buildRowNormalizationCompute(op, rewriter, *creation, outputs);
-    }
-    if (creation->recipe == ComputeOpCreationRecipe::Fused) {
-      return buildFusedCompute(op, rewriter, *creation, outputs);
-    }
+  if (creation->kind != ComputeOpCreationKind::Fused ||
+      (creation->recipe != ComputeOpCreationRecipe::RowNormalization &&
+       creation->recipe != ComputeOpCreationRecipe::Fused)) {
+    return rewriter.notifyMatchFailure(op,
+                                       "operation has no fusable expression");
   }
-  return rewriter.notifyMatchFailure(op, "operation has no fusable expression");
+  OutputPublicationPlan outputs;
+  if (failed(resolveCurrentOutputs(op, rewriter, *creation, outputs))) {
+    return failure();
+  }
+  if (creation->recipe == ComputeOpCreationRecipe::RowNormalization) {
+    return buildRowNormalizationCompute(op, rewriter, *creation, outputs);
+  }
+  return buildFusedCompute(op, rewriter, *creation, outputs);
 }
 
 /// Build a ttl.compute op with a single binary tile operation in the body.
