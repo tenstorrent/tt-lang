@@ -37,6 +37,7 @@ def _ensure_ttnn():
 from .dataflow_buffer import (
     DFBStorageSegment,
     PhysicalDFBConfig,
+    _tensor_backed_dfb_view_properties,
     _validate_tensor_backed_dfb_range,
     _validate_tensor_backed_dfb_tensor,
 )
@@ -555,6 +556,9 @@ def _validate_tensor_backed_dfb_binding(
         )
     context = f"DFB[{config.dfb_index}] tensor backing"
     properties = _validate_tensor_backed_dfb_tensor(tensor, context=context)
+    properties = _tensor_backed_dfb_view_properties(
+        properties, tile=config.tile, context=context
+    )
     expected_dtype = format_name_to_ttnn_dtype(config.data_format)
     if tensor.dtype != expected_dtype:
         raise ValueError(
@@ -786,15 +790,17 @@ def build_cb_descriptors(
             tensor_index = segment.tensor_index
             assert tensor_index is not None
             tensor = tensors[tensor_index]
-            cb_descriptors.append(
-                ttnn.cb_descriptor_from_sharded_tensor(
-                    cb_index,
-                    tensor,
-                    address_offset=segment.byte_offset,
-                    total_size=allocation.total_size,
-                    core_ranges=segment_core_ranges,
-                )
+            backing_descriptor = ttnn.cb_descriptor_from_sharded_tensor(
+                cb_index,
+                tensor,
+                address_offset=segment.byte_offset,
+                total_size=allocation.total_size,
+                core_ranges=segment_core_ranges,
             )
+            # Preserve the tensor-owned address while applying the compiler-
+            # validated DFB interpretation to the contiguous backing bytes.
+            backing_descriptor.format_descriptors = [cb_format]
+            cb_descriptors.append(backing_descriptor)
 
     return cb_descriptors
 
