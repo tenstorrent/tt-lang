@@ -14,8 +14,8 @@
 #include "mlir/IR/PatternMatch.h"
 
 #include "llvm/ADT/DenseSet.h"
-#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 
 #include <optional>
 #include <string>
@@ -44,8 +44,8 @@ struct ComputePipelineInliningPlan {
   SmallVector<Value> yieldedValues;
 };
 
-static FailureOr<ComputeStageInliningPlan>
-analyzeStage(ComputeStageOp stage, std::string &reason) {
+static FailureOr<ComputeStageInliningPlan> analyzeStage(ComputeStageOp stage,
+                                                        std::string &reason) {
   if (stage.getBody().getBlocks().size() != 1) {
     reason = "stage body must contain exactly one block";
     return failure();
@@ -81,8 +81,7 @@ analyzePipeline(ComputePipelineOp pipeline, std::string &reason) {
   }
   Block &body = pipeline.getBody().front();
   auto pipelineYield = dyn_cast<ComputePipelineYieldOp>(body.getTerminator());
-  if (!pipelineYield ||
-      body.getNumArguments() != pipeline.getInputs().size() ||
+  if (!pipelineYield || body.getNumArguments() != pipeline.getInputs().size() ||
       pipelineYield.getValues().size() != pipeline.getResults().size()) {
     reason = "pipeline body no longer matches its verified inputs and results";
     return failure();
@@ -107,13 +106,13 @@ analyzePipeline(ComputePipelineOp pipeline, std::string &reason) {
           "stage input does not come from a pipeline input or preceding stage";
       return failure();
     }
-    FailureOr<ComputeStageInliningPlan> stagePlan =
-        analyzeStage(stage, reason);
+    FailureOr<ComputeStageInliningPlan> stagePlan = analyzeStage(stage, reason);
     if (failed(stagePlan)) {
       return failure();
     }
     plan.stages.push_back(std::move(*stagePlan));
-    availableValues.insert(stage.getResults().begin(), stage.getResults().end());
+    availableValues.insert(stage.getResults().begin(),
+                           stage.getResults().end());
   }
   if (llvm::any_of(pipelineYield.getValues(), [&](Value yieldedValue) {
         return !availableValues.contains(yieldedValue);
@@ -156,8 +155,7 @@ static void applyPipelinePlan(const ComputePipelineInliningPlan &plan,
 }
 
 class TTLLowerComputePipelinesPass
-    : public impl::TTLLowerComputePipelinesBase<
-          TTLLowerComputePipelinesPass> {
+    : public impl::TTLLowerComputePipelinesBase<TTLLowerComputePipelinesPass> {
 public:
   using impl::TTLLowerComputePipelinesBase<
       TTLLowerComputePipelinesPass>::TTLLowerComputePipelinesBase;
