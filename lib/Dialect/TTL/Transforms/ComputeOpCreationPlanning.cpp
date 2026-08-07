@@ -1110,6 +1110,57 @@ matchRowNormalization(Operation *source) {
   return match;
 }
 
+struct ReductionDomainPlan {
+  ttkernel::ReduceDim dimension;
+  AffineMap inputMap;
+  AffineMap outputMap;
+  SmallVector<utils::IteratorType> iteratorTypes;
+};
+
+static FailureOr<ReductionDomainPlan>
+buildReductionDomainPlan(ReduceOp reduce, std::string &failureReason) {
+  RankedTensorType inputType = getTensorType(reduce.getInput());
+  if (!inputType || inputType.getRank() != 2) {
+    failureReason = "reduce requires a rank-2 input";
+    return failure();
+  }
+  FailureOr<ttkernel::ReduceDim> reduceDimension =
+      getReduceDimension(reduce.getDims(), inputType.getRank());
+  if (failed(reduceDimension)) {
+    failureReason = "unsupported reduction dimensions";
+    return failure();
+  }
+
+  ReductionDomainPlan domain;
+  domain.dimension = *reduceDimension;
+  MLIRContext *context = reduce->getContext();
+  AffineExpr dimensionM = getAffineDimExpr(0, context);
+  AffineExpr dimensionN = getAffineDimExpr(1, context);
+  AffineExpr constantZero = getAffineConstantExpr(0, context);
+  domain.inputMap = AffineMap::getMultiDimIdentityMap(2, context);
+  switch (*reduceDimension) {
+  case ttkernel::ReduceDim::Col:
+    domain.outputMap =
+        AffineMap::get(2, 0, {constantZero, dimensionN}, context);
+    domain.iteratorTypes = {utils::IteratorType::reduction,
+                            utils::IteratorType::parallel};
+    break;
+  case ttkernel::ReduceDim::Row:
+    domain.outputMap =
+        AffineMap::get(2, 0, {dimensionM, constantZero}, context);
+    domain.iteratorTypes = {utils::IteratorType::parallel,
+                            utils::IteratorType::reduction};
+    break;
+  case ttkernel::ReduceDim::Scalar:
+    domain.outputMap =
+        AffineMap::get(2, 0, {constantZero, constantZero}, context);
+    domain.iteratorTypes = {utils::IteratorType::reduction,
+                            utils::IteratorType::reduction};
+    break;
+  }
+  return domain;
+}
+
 static LogicalResult buildOperationSpecificPlan(ComputeOpCreationPlan &plan,
                                                 std::string &failureReason) {
   if (plan.kind == ComputeOpCreationKind::Elide) {
@@ -1187,45 +1238,16 @@ static LogicalResult buildOperationSpecificPlan(ComputeOpCreationPlan &plan,
   }
   if (auto reduce = dyn_cast<ReduceOp>(plan.source)) {
     plan.recipe = ComputeOpCreationRecipe::Reduce;
-    RankedTensorType inputType = getTensorType(reduce.getInput());
-    if (!inputType || inputType.getRank() != 2) {
-      failureReason = "reduce requires a rank-2 input";
+    FailureOr<ReductionDomainPlan> domain =
+        buildReductionDomainPlan(reduce, failureReason);
+    if (failed(domain)) {
       return failure();
     }
-    FailureOr<ttkernel::ReduceDim> reduceDimension =
-        getReduceDimension(reduce.getDims(), inputType.getRank());
-    if (failed(reduceDimension)) {
-      failureReason = "unsupported reduction dimensions";
-      return failure();
-    }
-    plan.reduceDimension = *reduceDimension;
+    plan.reduceDimension = domain->dimension;
     plan.reduceType = reduce.getReduceType();
-    MLIRContext *context = plan.source->getContext();
-    AffineExpr dimensionM = getAffineDimExpr(0, context);
-    AffineExpr dimensionN = getAffineDimExpr(1, context);
-    AffineExpr constantZero = getAffineConstantExpr(0, context);
-    AffineMap inputMap = AffineMap::getMultiDimIdentityMap(2, context);
-    switch (*reduceDimension) {
-    case ttkernel::ReduceDim::Col:
-      plan.iteration.outputMap =
-          AffineMap::get(2, 0, {constantZero, dimensionN}, context);
-      plan.iteration.iteratorTypes = {utils::IteratorType::reduction,
-                                      utils::IteratorType::parallel};
-      break;
-    case ttkernel::ReduceDim::Row:
-      plan.iteration.outputMap =
-          AffineMap::get(2, 0, {dimensionM, constantZero}, context);
-      plan.iteration.iteratorTypes = {utils::IteratorType::parallel,
-                                      utils::IteratorType::reduction};
-      break;
-    case ttkernel::ReduceDim::Scalar:
-      plan.iteration.outputMap =
-          AffineMap::get(2, 0, {constantZero, constantZero}, context);
-      plan.iteration.iteratorTypes = {utils::IteratorType::reduction,
-                                      utils::IteratorType::reduction};
-      break;
-    }
-    plan.iteration.inputMaps = {inputMap, plan.iteration.outputMap};
+    plan.iteration.inputMaps = {domain->inputMap, domain->outputMap};
+    plan.iteration.outputMap = domain->outputMap;
+    plan.iteration.iteratorTypes = domain->iteratorTypes;
     return success();
   }
   if (isa<MulUnaryConstOp>(plan.source)) {
