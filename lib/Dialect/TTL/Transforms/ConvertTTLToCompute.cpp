@@ -677,7 +677,8 @@ buildRowNormalizationCompute(Operation *sinkOp, PatternRewriter &rewriter,
   Value result =
       createTileOpWithPlaceholderDstIndex<TileRowNormalizationBlockOp>(
           rewriter, loc, outputTileType, inputTile, gammaTile, outputTile,
-          schedule.scale, schedule.epsilon, rewriter.getBoolAttr(hasGamma));
+          schedule.scale, schedule.epsilon, rewriter.getBoolAttr(hasGamma),
+          rewriter.getI64IntegerAttr(schedule.numTiles));
 
   for (StoreOp store : outputs.stores) {
     createComputeTileStore(rewriter, loc, result, computeOp, store);
@@ -843,8 +844,8 @@ buildFusionGraphCompute(Operation *sinkOp, PatternRewriter &rewriter,
   Value rhsTile = body->getArgument(target.inputIndices[1]);
   Value outputTile = body->getArgument(creation.inputs.size());
   Value result = createTileOpWithPlaceholderDstIndex<TileMulReduceBlockOp>(
-      rewriter, loc, outputTileType, lhsTile, rhsTile, outputTile,
-      target.scale);
+      rewriter, loc, outputTileType, lhsTile, rhsTile, outputTile, target.scale,
+      rewriter.getI64IntegerAttr(target.numTiles));
   for (StoreOp store : outputs.stores) {
     createComputeTileStore(rewriter, loc, result, computeOp, store);
   }

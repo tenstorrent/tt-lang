@@ -10,7 +10,7 @@ module {
     %c0 = arith.constant 0 : index
     // expected-error @below {{'ttl.tile_mul_reduce_block' op supports bf16 tiles only}}
     %result = ttl.tile_mul_reduce_block
-        %lhs, %lhs, %output scale = 1.000000e+00 into dst[%c0]
+        %lhs, %lhs, %output scale = 1.000000e+00 num_tiles = 1 into dst[%c0]
         : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32>,
           !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
     return
@@ -28,7 +28,7 @@ module {
     %c0 = arith.constant 0 : index
     // expected-error @below {{'ttl.tile_mul_reduce_block' op lhs and rhs tensor types must match}}
     %result = ttl.tile_mul_reduce_block
-        %lhs, %rhs, %output scale = 1.000000e+00 into dst[%c0]
+        %lhs, %rhs, %output scale = 1.000000e+00 num_tiles = 2 into dst[%c0]
         : tensor<1x2x!ttcore.tile<32x32, bf16>>,
           tensor<1x3x!ttcore.tile<32x32, bf16>>,
           tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -47,7 +47,7 @@ module {
     %c0 = arith.constant 0 : index
     // expected-error @below {{'ttl.tile_mul_reduce_block' op output tensor must have shape 1x1}}
     %result = ttl.tile_mul_reduce_block
-        %input, %input, %output scale = 1.000000e+00 into dst[%c0]
+        %input, %input, %output scale = 1.000000e+00 num_tiles = 2 into dst[%c0]
         : tensor<1x2x!ttcore.tile<32x32, bf16>>,
           tensor<1x2x!ttcore.tile<32x32, bf16>>,
           tensor<1x2x!ttcore.tile<32x32, bf16>>
@@ -66,9 +66,29 @@ module {
     %c0 = arith.constant 0 : index
     // expected-error @below {{'ttl.tile_mul_reduce_block' op scale must be finite and positive}}
     %result = ttl.tile_mul_reduce_block
-        %input, %input, %output scale = 0.000000e+00 into dst[%c0]
+        %input, %input, %output scale = 0.000000e+00 num_tiles = 1 into dst[%c0]
         : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>,
           !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+    return
+  }
+}
+
+// -----
+
+// Scalarization metadata must equal the tensor input domain.
+module {
+  func.func @mismatched_num_tiles(
+      %input: tensor<1x3x!ttcore.tile<32x32, bf16>>,
+      %output: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    %c0 = arith.constant 0 : index
+    // expected-error @below {{'ttl.tile_mul_reduce_block' op num_tiles must match the input tensor domain}}
+    %result = ttl.tile_mul_reduce_block
+        %input, %input, %output scale = 1.000000e+00 num_tiles = 2
+        into dst[%c0]
+        : tensor<1x3x!ttcore.tile<32x32, bf16>>,
+          tensor<1x3x!ttcore.tile<32x32, bf16>>,
+          tensor<1x1x!ttcore.tile<32x32, bf16>>
+          -> !ttcore.tile<32x32, bf16>
     return
   }
 }

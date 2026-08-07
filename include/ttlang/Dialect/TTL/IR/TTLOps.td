@@ -1509,9 +1509,10 @@ def TTL_TileRowNormalizationBlockOp :
     `dst_index` identifies the first output slot. The operation initially
     stores the inverse RMS scalar there, moves it to a compute source register,
     clears the acquired DST section, and writes the normalized row to the
-    contiguous slots beginning at `dst_index`. The input, gamma, and output
-    operands identify dataflow buffers; gamma is equal to input when
-    `has_gamma` is false and is not read in that mode.
+    contiguous slots beginning at `dst_index`. `num_tiles` records the exact
+    row width because scalarization replaces tensor operands with tile values.
+    The input, gamma, and output operands identify dataflow buffers; gamma is
+    equal to input when `has_gamma` is false and is not read in that mode.
 
     The operation is internal to block compute lowering. Its result represents
     the complete contiguous DST footprint, not one independently executable
@@ -1523,12 +1524,14 @@ def TTL_TileRowNormalizationBlockOp :
                        F32Attr:$scale,
                        F32Attr:$epsilon,
                        BoolAttr:$has_gamma,
+                       ConfinedAttr<I64Attr, [IntPositive]>:$num_tiles,
                        Index:$dst_index);
   let results = (outs TTL_TileOrTensor:$result);
   let assemblyFormat = [{
     $input `,` $gamma `,` $output
     `scale` `=` $scale `epsilon` `=` $epsilon
     `has_gamma` `=` $has_gamma
+    `num_tiles` `=` $num_tiles
     `into` `dst` `[` $dst_index `]` attr-dict `:`
     type($input) `,` type($gamma) `,` type($output) `->` type($result)
   }];
@@ -1546,18 +1549,21 @@ def TTL_TileMulReduceBlockOp :
     feed the full scalar sum without dataflow buffer materialization. Only
     element `[0, 0]` of the result tile is defined.
 
-    `dst_index` identifies the scalar result slot. The operation is internal to
-    fixed block-compute lowering. Its temporary DST footprint contains one slot
-    per input tile even though its final result occupies one slot.
+    `dst_index` identifies the scalar result slot. `num_tiles` records the exact
+    input domain because scalarization replaces tensor operands with tile
+    values. The operation is internal to fixed block-compute lowering. Its
+    temporary DST footprint contains one slot per input tile even though its
+    final result occupies one slot.
   }];
   let arguments = (ins TTL_TileOrTensor:$lhs,
                        TTL_TileOrTensor:$rhs,
                        TTL_TileOrTensor:$output,
                        F32Attr:$scale,
+                       ConfinedAttr<I64Attr, [IntPositive]>:$num_tiles,
                        Index:$dst_index);
   let results = (outs TTL_TileOrTensor:$result);
   let assemblyFormat = [{
-    $lhs `,` $rhs `,` $output `scale` `=` $scale
+    $lhs `,` $rhs `,` $output `scale` `=` $scale `num_tiles` `=` $num_tiles
     `into` `dst` `[` $dst_index `]` attr-dict `:`
     type($lhs) `,` type($rhs) `,` type($output) `->` type($result)
   }];

@@ -277,6 +277,16 @@ COLUMN_BROADCAST_FP32_KERNEL = make_rmsnorm_kernel(
     fp32_dest_acc_en=True,
     dst_full_sync_en=False,
 )
+FIVE_TILE_FP32_KERNELS = {
+    dst_full_sync_en: make_rmsnorm_kernel(
+        32,
+        5,
+        "none",
+        fp32_dest_acc_en=True,
+        dst_full_sync_en=dst_full_sync_en,
+    )
+    for dst_full_sync_en in (None, False)
+}
 MATERIALIZED_RMSNORM_KERNEL = make_materialized_rmsnorm_kernel(16, 3)
 
 
@@ -376,6 +386,33 @@ def test_rmsnorm_column_broadcast_fp32_dest(device):
         kernel=COLUMN_BROADCAST_FP32_KERNEL,
     )
     assert_rmsnorm_close(result, expected)
+
+
+@pytest.mark.parametrize(
+    "dst_full_sync_en, expected_acquisitions",
+    ((None, 1), (False, 5)),
+    ids=("auto-full-sync", "explicit-half-sync"),
+)
+def test_rmsnorm_five_tile_fp32_dest(
+    device,
+    dst_full_sync_en,
+    expected_acquisitions,
+    monkeypatch,
+    tmp_path,
+):
+    """Preserve the selected schedule's DST capacity through final config."""
+    final_mlir = tmp_path / "rmsnorm.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir))
+    result, expected = run_rmsnorm(
+        device,
+        tile_height=32,
+        num_tiles=5,
+        width=5120,
+        gamma_mode="none",
+        kernel=FIVE_TILE_FP32_KERNELS[dst_full_sync_en],
+    )
+    assert_rmsnorm_close(result, expected)
+    assert final_mlir.read_text().count("tile_regs_acquire") == expected_acquisitions
 
 
 def test_rmsnorm_matches_materialized(device):
