@@ -1104,7 +1104,227 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   return success();
 }
 
+namespace mlir::tt::ttl {
+namespace {
+
+static LogicalResult
+verifyMultiplyFullScalarReductionPipeline(ComputePipelineOp pipeline) {
+  Block &pipelineBody = pipeline.getBody().front();
+  auto stages = pipelineBody.getOps<ComputeStageOp>();
+  if (!llvm::hasSingleElement(stages) || pipeline.getResults().size() != 1) {
+    return pipeline.emitOpError(
+        "multiply_full_scalar_reduction requires one stage and one result");
+  }
+  ComputeStageOp stage = *stages.begin();
+  if (stage.getResults().size() != 1 ||
+      stage.getBody().getBlocks().size() != 1) {
+    return pipeline.emitOpError(
+        "multiply_full_scalar_reduction requires one single-result stage");
+  }
+  Block &stageBody = stage.getBody().front();
+  if (!stageBody.mightHaveTerminator() ||
+      !isa<ComputeStageYieldOp>(stageBody.getTerminator())) {
+    return pipeline.emitOpError(
+        "multiply_full_scalar_reduction stage requires a stage yield");
+  }
+  if (std::distance(stageBody.without_terminator().begin(),
+                    stageBody.without_terminator().end()) != 3) {
+    return pipeline.emitOpError(
+        "multiply_full_scalar_reduction stage requires multiply, fill, and "
+        "reduction operations");
+  }
+  auto operation = stageBody.without_terminator().begin();
+  auto product = dyn_cast<MulOp>(&*operation++);
+  auto scaler = dyn_cast<FillOp>(&*operation++);
+  auto reduction = dyn_cast<ReduceOp>(&*operation);
+  auto stageYield = cast<ComputeStageYieldOp>(stageBody.getTerminator());
+  if (!product || !scaler || !reduction ||
+      reduction.getInput() != product.getResult() ||
+      reduction.getScaler() != scaler.getResult() ||
+      reduction.getReduceType() != ReduceType::Sum ||
+      reduction.getDims().size() != 2 || reduction.getDims()[0] != 0 ||
+      reduction.getDims()[1] != 1 ||
+      !scaler.getValueAttr().getValue().isExactlyValue(1.0) ||
+      stageYield.getValues().size() != 1 ||
+      stageYield.getValues().front() != reduction.getResult()) {
+    return pipeline.emitOpError(
+        "multiply_full_scalar_reduction must compute unit-scaled "
+        "reduce_sum(lhs * rhs, dims=[0, 1])");
+  }
+  if (!isa<BlockArgument>(product.getLhs()) ||
+      !isa<BlockArgument>(product.getRhs()) ||
+      cast<BlockArgument>(product.getLhs()).getOwner() != &stageBody ||
+      cast<BlockArgument>(product.getRhs()).getOwner() != &stageBody) {
+    return pipeline.emitOpError(
+        "multiply_full_scalar_reduction operands must be stage inputs");
+  }
+  auto resultType = dyn_cast<RankedTensorType>(reduction.getResult().getType());
+  if (!resultType || !resultType.hasStaticShape() ||
+      resultType.getRank() != 2 || resultType.getDimSize(0) != 1 ||
+      resultType.getDimSize(1) != 1) {
+    return pipeline.emitOpError(
+        "multiply_full_scalar_reduction result must have static shape 1x1");
+  }
+  return success();
+}
+
+static SmallVector<Operation *> getStageOperations(ComputeStageOp stage) {
+  SmallVector<Operation *> operations;
+  for (Operation &operation : stage.getBody().front().without_terminator()) {
+    operations.push_back(&operation);
+  }
+  return operations;
+}
+
+static bool hasCommutativeOperands(Operation *operation, Value first,
+                                   Value second) {
+  return operation->getNumOperands() == 2 &&
+         ((operation->getOperand(0) == first &&
+           operation->getOperand(1) == second) ||
+          (operation->getOperand(0) == second &&
+           operation->getOperand(1) == first));
+}
+
+static LogicalResult
+verifyRowNormalizationPipeline(ComputePipelineOp pipeline) {
+  Block &pipelineBody = pipeline.getBody().front();
+  SmallVector<ComputeStageOp> stages(
+      pipelineBody.getOps<ComputeStageOp>().begin(),
+      pipelineBody.getOps<ComputeStageOp>().end());
+  if (stages.size() != 3 || pipeline.getResults().size() != 1 ||
+      (pipeline.getInputs().size() != 1 && pipeline.getInputs().size() != 2)) {
+    return pipeline.emitOpError(
+        "row_normalization requires three stages, one result, and one or two "
+        "inputs");
+  }
+  if (llvm::any_of(stages, [](ComputeStageOp stage) {
+        return stage.getResults().size() != 1 ||
+               stage.getBody().getBlocks().size() != 1 ||
+               !stage.getBody().front().mightHaveTerminator() ||
+               !isa<ComputeStageYieldOp>(
+                   stage.getBody().front().getTerminator());
+      })) {
+    return pipeline.emitOpError(
+        "row_normalization requires three single-result stages");
+  }
+
+  SmallVector<Operation *> reductionOperations = getStageOperations(stages[0]);
+  SmallVector<Operation *> finalizationOperations =
+      getStageOperations(stages[1]);
+  SmallVector<Operation *> consumerOperations = getStageOperations(stages[2]);
+  bool hasGamma = pipeline.getInputs().size() == 2;
+  if (reductionOperations.size() != 3 || finalizationOperations.size() != 4 ||
+      consumerOperations.size() != (hasGamma ? 3 : 2)) {
+    return pipeline.emitOpError(
+        "row_normalization has an invalid stage operation count");
+  }
+
+  auto square = dyn_cast<MulOp>(reductionOperations[0]);
+  auto reductionScaler = dyn_cast<FillOp>(reductionOperations[1]);
+  auto reduction = dyn_cast<ReduceOp>(reductionOperations[2]);
+  Block &reductionBody = stages[0].getBody().front();
+  auto reductionYield =
+      cast<ComputeStageYieldOp>(reductionBody.getTerminator());
+  if (!square || !reductionScaler || !reduction ||
+      !hasCommutativeOperands(square, reductionBody.getArgument(0),
+                              reductionBody.getArgument(0)) ||
+      reduction.getInput() != square.getResult() ||
+      reduction.getScaler() != reductionScaler.getResult() ||
+      reduction.getReduceType() != ReduceType::Sum ||
+      reduction.getDims().size() != 2 || reduction.getDims()[0] != 0 ||
+      reduction.getDims()[1] != 1 ||
+      !reductionScaler.getValueAttr().getValue().isExactlyValue(1.0) ||
+      reductionYield.getValues().size() != 1 ||
+      reductionYield.getValues().front() != reduction.getResult()) {
+    return pipeline.emitOpError(
+        "row_normalization reduction stage must compute "
+        "reduce_sum(input * input, dims=[0, 1])");
+  }
+
+  auto scaledReduction = dyn_cast<MulUnaryConstOp>(finalizationOperations[0]);
+  auto epsilon = dyn_cast<FillOp>(finalizationOperations[1]);
+  auto biasedMeanSquare = dyn_cast<AddOp>(finalizationOperations[2]);
+  auto inverseRms = dyn_cast<RsqrtOp>(finalizationOperations[3]);
+  Block &finalizationBody = stages[1].getBody().front();
+  auto finalizationYield =
+      cast<ComputeStageYieldOp>(finalizationBody.getTerminator());
+  if (!scaledReduction || !epsilon || !biasedMeanSquare || !inverseRms ||
+      scaledReduction.getInput() != finalizationBody.getArgument(0) ||
+      !hasCommutativeOperands(biasedMeanSquare, scaledReduction.getResult(),
+                              epsilon.getResult()) ||
+      inverseRms.getInput() != biasedMeanSquare.getResult() ||
+      finalizationYield.getValues().size() != 1 ||
+      finalizationYield.getValues().front() != inverseRms.getResult()) {
+    return pipeline.emitOpError(
+        "row_normalization finalization stage must scale, add epsilon, and "
+        "compute reciprocal square root");
+  }
+
+  auto scalarBroadcast = dyn_cast<BlockBroadcastOp>(consumerOperations[0]);
+  auto normalized = dyn_cast<MulOp>(consumerOperations[1]);
+  MulOp gammaProduct =
+      hasGamma ? dyn_cast<MulOp>(consumerOperations[2]) : MulOp();
+  Block &consumerBody = stages[2].getBody().front();
+  auto consumerYield = cast<ComputeStageYieldOp>(consumerBody.getTerminator());
+  if (!scalarBroadcast || !normalized || (hasGamma && !gammaProduct)) {
+    return pipeline.emitOpError(
+        "row_normalization consumer stage requires broadcast and multiply "
+        "operations");
+  }
+  llvm::SmallDenseSet<int64_t> broadcastDimensions =
+      normalizeDimsToSet(scalarBroadcast.getDims(), 2);
+  Value result = hasGamma ? gammaProduct.getResult() : normalized.getResult();
+  if (scalarBroadcast.getInput() != consumerBody.getArgument(1) ||
+      broadcastDimensions.size() != 2 || !broadcastDimensions.contains(0) ||
+      !broadcastDimensions.contains(1) ||
+      !hasCommutativeOperands(normalized, consumerBody.getArgument(0),
+                              scalarBroadcast.getResult()) ||
+      (hasGamma && !hasCommutativeOperands(gammaProduct, normalized.getResult(),
+                                           consumerBody.getArgument(2))) ||
+      consumerYield.getValues().size() != 1 ||
+      consumerYield.getValues().front() != result) {
+    return pipeline.emitOpError(
+        "row_normalization consumer stage must broadcast the scalar and "
+        "multiply the input and optional gamma");
+  }
+
+  auto rowType =
+      dyn_cast<RankedTensorType>(pipeline.getInputs().front().getType());
+  auto scalarType =
+      dyn_cast<RankedTensorType>(stages[0].getResult(0).getType());
+  if (!rowType || !rowType.hasStaticShape() || rowType.getRank() != 2 ||
+      rowType.getDimSize(0) != 1 ||
+      pipeline.getResult(0).getType() != rowType || !scalarType ||
+      !scalarType.hasStaticShape() || scalarType.getRank() != 2 ||
+      scalarType.getDimSize(0) != 1 || scalarType.getDimSize(1) != 1 ||
+      stages[1].getResult(0).getType() != scalarType ||
+      (hasGamma && pipeline.getInputs()[1].getType() != rowType)) {
+    return pipeline.emitOpError(
+        "row_normalization requires matching static row inputs and a 1x1 "
+        "scalar");
+  }
+  if (stages[0].getInputs() != ValueRange{pipelineBody.getArgument(0)} ||
+      stages[1].getInputs() != ValueRange{stages[0].getResult(0)} ||
+      stages[2].getInputs().size() != pipeline.getInputs().size() + 1 ||
+      stages[2].getInputs()[0] != pipelineBody.getArgument(0) ||
+      stages[2].getInputs()[1] != stages[1].getResult(0) ||
+      (hasGamma && stages[2].getInputs()[2] != pipelineBody.getArgument(1))) {
+    return pipeline.emitOpError(
+        "row_normalization stages have invalid scalar or row dependencies");
+  }
+  return success();
+}
+
+} // namespace
+} // namespace mlir::tt::ttl
+
 mlir::LogicalResult mlir::tt::ttl::ComputePipelineOp::verify() {
+  ComputePipelineKindAttr pipelineKind = getPipelineKindAttr();
+  ComputePipelineScheduleAttr selectedSchedule = getSelectedScheduleAttr();
+  if (selectedSchedule && !pipelineKind) {
+    return emitOpError(
+        "selected_schedule requires a compiler-recognized pipeline_kind");
+  }
   if (getInputs().empty()) {
     return emitOpError("requires at least one input");
   }
@@ -1180,6 +1400,14 @@ mlir::LogicalResult mlir::tt::ttl::ComputePipelineOp::verify() {
         stageResult.getOwner()->getBlock() != &bodyBlock) {
       return emitOpError("yielded value ")
              << resultIndex << " must be a result of a stage in this pipeline";
+    }
+  }
+  if (pipelineKind) {
+    switch (pipelineKind.getValue()) {
+    case ComputePipelineKind::MultiplyFullScalarReduction:
+      return verifyMultiplyFullScalarReductionPipeline(*this);
+    case ComputePipelineKind::RowNormalization:
+      return verifyRowNormalizationPipeline(*this);
     }
   }
   return success();

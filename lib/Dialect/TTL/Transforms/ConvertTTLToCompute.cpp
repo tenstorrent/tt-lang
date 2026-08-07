@@ -18,6 +18,7 @@
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Remarks.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -575,9 +576,126 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   return success();
 }
 
-/// Applies a precomputed row-normalization schedule. Expression recognition,
-/// capacity, lifetimes, publication, and operation erasure are fixed by the
-/// immutable plan; application emits one block operation mechanically.
+/// Preserve row-normalization semantics until kernel configuration selects a
+/// schedule for its reduction, scalar finalization, and row-consumer stages.
+static LogicalResult
+buildRowNormalizationPipeline(Operation *sinkOp, PatternRewriter &rewriter,
+                              const ComputeOpCreationPlan &creation,
+                              const OutputPublicationPlan &outputs) {
+  assert(creation.recipe == ComputeOpCreationRecipe::RowNormalization &&
+         creation.rowNormalization &&
+         "row-normalization pipeline requires its typed plan");
+  const RowNormalizationPlan &schedule = *creation.rowNormalization;
+  bool hasGamma = schedule.gammaMode != RowNormalizationGammaMode::None;
+  if (schedule.operations.size() != (hasGamma ? 10 : 9) ||
+      llvm::any_of(schedule.operations,
+                   [](const RowNormalizationOperationPlan &operation) {
+                     return !llvm::equal(operation.source->getOperands(),
+                                         operation.operands);
+                   })) {
+    return rewriter.notifyMatchFailure(
+        sinkOp, "row-normalization expression changed after planning");
+  }
+
+  Location loc = sinkOp->getLoc();
+  MLIRContext *context = rewriter.getContext();
+  AffineMap identity = AffineMap::getMultiDimIdentityMap(2, context);
+  AffineExpr zero = getAffineConstantExpr(0, context);
+  AffineMap scalarMap = AffineMap::get(2, 0, {zero, zero}, context);
+  auto parallelIterators = rewriter.getArrayAttr(
+      {rewriter.getStringAttr("parallel"), rewriter.getStringAttr("parallel")});
+  auto reductionIterators =
+      rewriter.getArrayAttr({rewriter.getStringAttr("reduction"),
+                             rewriter.getStringAttr("reduction")});
+
+  insertAtCreationAnchor(rewriter, outputs);
+  auto pipeline = ComputePipelineOp::create(
+      rewriter, loc, TypeRange{creation.resultType},
+      ValueRange(creation.inputs),
+      ComputePipelineKindAttr::get(context,
+                                   ComputePipelineKind::RowNormalization),
+      ComputePipelineScheduleAttr());
+  Block *pipelineBody = rewriter.createBlock(&pipeline.getBody());
+  for (Value input : creation.inputs) {
+    pipelineBody->addArgument(input.getType(), loc);
+  }
+
+  auto createStage = [&](ValueRange stageInputs, ValueRange sourceInputs,
+                         ArrayRef<unsigned> operationIndices,
+                         Operation *resultSource, ArrayRef<AffineMap> maps,
+                         ArrayAttr iteratorTypes) {
+    assert(stageInputs.size() == sourceInputs.size() &&
+           "stage source inputs must match explicit inputs");
+    SmallVector<Attribute> mapAttributes;
+    mapAttributes.reserve(maps.size());
+    for (AffineMap map : maps) {
+      mapAttributes.push_back(AffineMapAttr::get(map));
+    }
+    Type resultType = resultSource->getResult(0).getType();
+    auto stage = ComputeStageOp::create(
+        rewriter, loc, TypeRange{resultType}, stageInputs,
+        rewriter.getArrayAttr(mapAttributes), iteratorTypes);
+    Block *stageBody = rewriter.createBlock(&stage.getBody());
+    for (Value input : stageInputs) {
+      stageBody->addArgument(input.getType(), loc);
+    }
+    IRMapping mapping;
+    for (auto [sourceInput, argument] :
+         llvm::zip_equal(sourceInputs, stageBody->getArguments())) {
+      mapping.map(sourceInput, argument);
+    }
+    rewriter.setInsertionPointToStart(stageBody);
+    for (unsigned operationIndex : operationIndices) {
+      rewriter.clone(*schedule.operations[operationIndex].source, mapping);
+    }
+    Value result = mapping.lookup(resultSource->getResult(0));
+    ComputeStageYieldOp::create(rewriter, loc, result);
+    rewriter.setInsertionPointAfter(stage);
+    return stage;
+  };
+
+  rewriter.setInsertionPointToStart(pipelineBody);
+  Value rowInput = pipelineBody->getArgument(0);
+  ComputeStageOp reductionStage = createStage(
+      ValueRange{rowInput}, ValueRange{schedule.input}, {0, 1, 2},
+      schedule.operations[2].source, {identity, scalarMap}, reductionIterators);
+  Value reducedScalar = reductionStage.getResult(0);
+  ComputeStageOp finalizationStage = createStage(
+      ValueRange{reducedScalar},
+      ValueRange{schedule.operations[2].source->getResult(0)}, {3, 4, 5, 6},
+      schedule.operations[6].source, {identity, identity}, parallelIterators);
+
+  SmallVector<Value> consumerInputs{rowInput, finalizationStage.getResult(0)};
+  SmallVector<Value> consumerSourceInputs{
+      schedule.input, schedule.operations[6].source->getResult(0)};
+  SmallVector<AffineMap> consumerMaps{identity, scalarMap};
+  if (hasGamma) {
+    consumerInputs.push_back(pipelineBody->getArgument(1));
+    consumerSourceInputs.push_back(schedule.gamma);
+    consumerMaps.push_back(identity);
+  }
+  consumerMaps.push_back(identity);
+  SmallVector<unsigned> consumerOperations{7, 8};
+  if (hasGamma) {
+    consumerOperations.push_back(9);
+  }
+  ComputeStageOp consumerStage =
+      createStage(consumerInputs, consumerSourceInputs, consumerOperations,
+                  sinkOp, consumerMaps, parallelIterators);
+  rewriter.setInsertionPointToEnd(pipelineBody);
+  ComputePipelineYieldOp::create(rewriter, loc, consumerStage.getResult(0));
+
+  rewriter.replaceOp(sinkOp, pipeline.getResult(0));
+  for (Operation *operation : llvm::reverse(creation.trace.opsInOrder)) {
+    if (operation != sinkOp && operation->use_empty()) {
+      rewriter.eraseOp(operation);
+    }
+  }
+  return success();
+}
+
+/// Apply the retained-scalar row-normalization schedule selected by kernel
+/// configuration.
 static LogicalResult
 buildRowNormalizationCompute(Operation *sinkOp, PatternRewriter &rewriter,
                              const ComputeOpCreationPlan &creation,
@@ -623,9 +741,9 @@ buildRowNormalizationCompute(Operation *sinkOp, PatternRewriter &rewriter,
   Block *body = rewriter.createBlock(&computeOp.getBody());
   for (Value inputValue : creation.inputs) {
     auto inputType = cast<RankedTensorType>(inputValue.getType());
-    body->addArgument(getTileValueType(inputType.getElementType()), loc);
+    body->addArgument(getTensorTileType(inputType), loc);
   }
-  Type outputTileType = getTileValueType(outputType.getElementType());
+  Type outputTileType = getTensorTileType(outputType);
   SmallVector<Type> outputTileTypes(outputs.dfbs.size(), outputTileType);
   SmallVector<Location> outputLocations(outputs.dfbs.size(), loc);
   body->addArguments(outputTileTypes, outputLocations);
@@ -658,9 +776,88 @@ buildRowNormalizationCompute(Operation *sinkOp, PatternRewriter &rewriter,
   return success();
 }
 
-/// Applies the target schedule selected from an immutable semantic fusion
-/// graph. Application verifies recorded identities and emits the schedule
-/// without re-running recognition or resource policy.
+/// Preserve a recognized semantic graph until kernel configuration selects
+/// storage for its internal values.
+static LogicalResult
+buildFusionGraphPipeline(Operation *sinkOp, PatternRewriter &rewriter,
+                         const ComputeOpCreationPlan &creation,
+                         const OutputPublicationPlan &outputs) {
+  assert(creation.recipe == ComputeOpCreationRecipe::FusionGraph &&
+         creation.fusionGraph && creation.fusionGraph->targetSchedule &&
+         "fusion-graph builder requires a recognized schedule family");
+  const FusionGraphPlan &graph = *creation.fusionGraph;
+  const FusionTargetSchedulePlan &target = *graph.targetSchedule;
+  if (llvm::any_of(graph.nodes, [](const FusionNodePlan &node) {
+        return !node.source ||
+               !llvm::equal(node.source->getOperands(), node.operands);
+      })) {
+    return rewriter.notifyMatchFailure(
+        sinkOp, "fusion graph changed after immutable planning");
+  }
+  if (target.kind != FusionTargetScheduleKind::MultiplyFullScalarReduction ||
+      target.inputIndices.size() != 2 || !target.scale ||
+      llvm::any_of(target.inputIndices, [&](unsigned inputIndex) {
+        return inputIndex >= creation.inputs.size();
+      })) {
+    return rewriter.notifyMatchFailure(sinkOp,
+                                       "invalid fusion schedule family");
+  }
+
+  Location loc = sinkOp->getLoc();
+  RankedTensorType outputType = creation.resultType;
+  SmallVector<Attribute> stageMaps;
+  for (AffineMap inputMap : creation.iteration.inputMaps) {
+    stageMaps.push_back(AffineMapAttr::get(inputMap));
+  }
+  stageMaps.push_back(AffineMapAttr::get(creation.iteration.outputMap));
+  SmallVector<Attribute> iteratorTypes =
+      buildIteratorTypeAttributes(rewriter, creation.iteration.iteratorTypes);
+
+  insertAtCreationAnchor(rewriter, outputs);
+  auto pipeline = ComputePipelineOp::create(
+      rewriter, loc, TypeRange{outputType}, ValueRange(creation.inputs),
+      ComputePipelineKindAttr::get(
+          rewriter.getContext(),
+          ComputePipelineKind::MultiplyFullScalarReduction),
+      ComputePipelineScheduleAttr());
+  Block *pipelineBody = rewriter.createBlock(&pipeline.getBody());
+  for (Value input : creation.inputs) {
+    pipelineBody->addArgument(input.getType(), loc);
+  }
+
+  rewriter.setInsertionPointToStart(pipelineBody);
+  auto stage = ComputeStageOp::create(
+      rewriter, loc, TypeRange{outputType}, pipelineBody->getArguments(),
+      rewriter.getArrayAttr(stageMaps), rewriter.getArrayAttr(iteratorTypes));
+  Block *stageBody = rewriter.createBlock(&stage.getBody());
+  for (BlockArgument argument : pipelineBody->getArguments()) {
+    stageBody->addArgument(argument.getType(), loc);
+  }
+
+  IRMapping mapping;
+  for (auto [input, argument] :
+       llvm::zip_equal(creation.inputs, stageBody->getArguments())) {
+    mapping.map(input, argument);
+  }
+  rewriter.setInsertionPointToStart(stageBody);
+  for (const FusionNodePlan &node : graph.nodes) {
+    rewriter.clone(*node.source, mapping);
+  }
+  Value stageResult = mapping.lookup(sinkOp->getResult(0));
+  ComputeStageYieldOp::create(rewriter, loc, stageResult);
+  rewriter.setInsertionPointToEnd(pipelineBody);
+  ComputePipelineYieldOp::create(rewriter, loc, stage.getResult(0));
+
+  rewriter.replaceOp(sinkOp, pipeline.getResult(0));
+  for (Operation *operation : llvm::reverse(creation.trace.opsInOrder)) {
+    if (operation != sinkOp && operation->use_empty()) {
+      rewriter.eraseOp(operation);
+    }
+  }
+  return success();
+}
+
+/// Emit the compute-local schedule selected by kernel configuration.
 static LogicalResult
 buildFusionGraphCompute(Operation *sinkOp, PatternRewriter &rewriter,
                         const ComputeOpCreationPlan &creation,
@@ -715,9 +912,9 @@ buildFusionGraphCompute(Operation *sinkOp, PatternRewriter &rewriter,
   Block *body = rewriter.createBlock(&computeOp.getBody());
   for (Value input : creation.inputs) {
     auto inputType = cast<RankedTensorType>(input.getType());
-    body->addArgument(getTileValueType(inputType.getElementType()), loc);
+    body->addArgument(getTensorTileType(inputType), loc);
   }
-  Type outputTileType = getTileValueType(outputType.getElementType());
+  Type outputTileType = getTensorTileType(outputType);
   body->addArgument(outputTileType, loc);
 
   rewriter.setInsertionPointToStart(body);
@@ -865,10 +1062,22 @@ static LogicalResult tryFusion(Operation *op, PatternRewriter &rewriter,
     return failure();
   }
   if (creation->recipe == ComputeOpCreationRecipe::RowNormalization) {
-    return buildRowNormalizationCompute(op, rewriter, *creation, outputs);
+    auto selectedSchedule = op->getAttrOfType<ComputePipelineScheduleAttr>(
+        kSelectedComputePipelineScheduleAttrName);
+    if (selectedSchedule && selectedSchedule.getValue() ==
+                                ComputePipelineSchedule::RetainedScalar) {
+      return buildRowNormalizationCompute(op, rewriter, *creation, outputs);
+    }
+    return buildRowNormalizationPipeline(op, rewriter, *creation, outputs);
   }
   if (creation->recipe == ComputeOpCreationRecipe::FusionGraph) {
-    return buildFusionGraphCompute(op, rewriter, *creation, outputs);
+    auto selectedSchedule = op->getAttrOfType<ComputePipelineScheduleAttr>(
+        kSelectedComputePipelineScheduleAttrName);
+    if (selectedSchedule && selectedSchedule.getValue() ==
+                                ComputePipelineSchedule::RetainedScalar) {
+      return buildFusionGraphCompute(op, rewriter, *creation, outputs);
+    }
+    return buildFusionGraphPipeline(op, rewriter, *creation, outputs);
   }
   return buildFusedCompute(op, rewriter, *creation, outputs);
 }
@@ -1481,7 +1690,7 @@ emitFusionNearMatchRemarks(func::FuncOp kernel,
         kernelPlan.getCreationOrder(), [&](Operation *selectedSource) {
           const ComputeOpCreationPlan &creation =
               kernelPlan.getAnalyzedCreation(selectedSource);
-          return creation.fusionGraph &&
+          return (creation.fusionGraph || creation.rowNormalization) &&
                  creation.trace.opsInOrder.contains(source);
         });
     if (absorbedBySelectedFusion) {
@@ -1515,6 +1724,9 @@ static LogicalResult runTTLToCompute(func::FuncOp kernel,
   // a pattern rewriter) is safe for the Python bindings.
   bool hasErrors = false;
   kernel.walk([&](BlockBroadcastOp op) {
+    if (op->getParentOfType<ComputePipelineOp>()) {
+      return;
+    }
     if (failed(validateBlockBroadcastOp(op, mode))) {
       hasErrors = true;
     }
@@ -1550,9 +1762,13 @@ static LogicalResult runTTLToCompute(func::FuncOp kernel,
     emitFusionNearMatchRemarks(kernel, kernelPlan);
   }
 
+  auto unloweredStore =
+      llvm::find_if(kernelPlan.getUnassignedStores(), [](StoreOp store) {
+        return !store.getTensor().getDefiningOp<ComputePipelineOp>();
+      });
   if (mode == TTLToComputeMode::FinalConversion &&
-      !kernelPlan.getUnassignedStores().empty()) {
-    StoreOp store = kernelPlan.getUnassignedStores().front();
+      unloweredStore != kernelPlan.getUnassignedStores().end()) {
+    StoreOp store = *unloweredStore;
     PlanningDiagnostic diagnostic =
         kernelPlan.getUnassignedStoreDiagnostic(store);
     diagnostic.operation->emitOpError(

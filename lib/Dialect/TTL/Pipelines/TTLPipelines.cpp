@@ -16,38 +16,67 @@ using namespace mlir;
 
 namespace mlir::tt::ttl {
 
+static void
+addProducerComputeCreation(OpPassManager &pm,
+                           const TTLToTTKernelPipelineOptions &options) {
+  pm.addNestedPass<func::FuncOp>(createTTLProducerComputeCreation());
+  TTLInsertIntermediateDFBsOptions dfbOptions;
+  dfbOptions.enable = options.compilerDFBs;
+  pm.addNestedPass<func::FuncOp>(createTTLInsertIntermediateDFBs(dfbOptions));
+  pm.addNestedPass<func::FuncOp>(createTTLConvertTTLToCompute());
+}
+
+static void addDFBFinalization(OpPassManager &pm,
+                               const TTLToTTKernelPipelineOptions &options) {
+  pm.addNestedPass<func::FuncOp>(createTTLInsertCBSync());
+  // Verify the complete high-level schedule while logical DFB identities are
+  // still distinct and before later transformations rewrite pipe operations.
+  buildTTLVerifyPipeNetPipeline(pm);
+  pm.addNestedPass<func::FuncOp>(createTTLCoalesceDFBAcquires());
+  TTLFinalizeDFBIndicesOptions finalizeOptions;
+  finalizeOptions.reuseUserDFBs = options.reuseUserDFBs;
+  finalizeOptions.exactColoringSearchStateLimit =
+      options.exactColoringSearchStateLimit;
+  pm.addPass(createTTLFinalizeDFBIndices(finalizeOptions));
+}
+
+static void addComputePipelineScheduleSelection(
+    OpPassManager &pm, const TTLToTTKernelPipelineOptions &options) {
+  TTLSelectComputePipelineSchedulesOptions configOptions;
+  configOptions.reduceFullFp32 = options.reduceFullFp32;
+  configOptions.matmulFullFp32 = options.matmulFullFp32;
+  configOptions.enableFPUBinaryOps = options.enableFPUBinaryOps;
+  pm.addNestedPass<func::FuncOp>(
+      createTTLSelectComputePipelineSchedules(configOptions));
+}
+
+static void addKernelConfig(OpPassManager &pm,
+                            const TTLToTTKernelPipelineOptions &options) {
+  TTLSetComputeKernelConfigOptions configOptions;
+  configOptions.reduceFullFp32 = options.reduceFullFp32;
+  configOptions.matmulFullFp32 = options.matmulFullFp32;
+  configOptions.enableFPUBinaryOps = options.enableFPUBinaryOps;
+  pm.addNestedPass<func::FuncOp>(
+      createTTLSetComputeKernelConfig(configOptions));
+}
+
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
   pm.addNestedPass<func::FuncOp>(createTTLLowerComputePipelines());
   pm.addNestedPass<func::FuncOp>(createTTLMaterializeLoopState());
   pm.addNestedPass<func::FuncOp>(createTTLInsertCopyWait());
   pm.addNestedPass<func::FuncOp>(createTTLAnnotateL1AccLoops());
-  pm.addNestedPass<func::FuncOp>(createTTLProducerComputeCreation());
-  {
-    TTLInsertIntermediateDFBsOptions dfbOpts;
-    dfbOpts.enable = options.compilerDFBs;
-    pm.addNestedPass<func::FuncOp>(createTTLInsertIntermediateDFBs(dfbOpts));
-  }
-  pm.addNestedPass<func::FuncOp>(createTTLConvertTTLToCompute());
-  pm.addNestedPass<func::FuncOp>(createTTLInsertCBSync());
-  // Verify the complete high-level schedule while logical DFB identities are
-  // still distinct and before later transformations rewrite pipe operations.
-  buildTTLVerifyPipeNetPipeline(pm);
-  pm.addNestedPass<func::FuncOp>(createTTLCoalesceDFBAcquires());
-  {
-    TTLFinalizeDFBIndicesOptions finalizeOptions;
-    finalizeOptions.reuseUserDFBs = options.reuseUserDFBs;
-    finalizeOptions.exactColoringSearchStateLimit =
-        options.exactColoringSearchStateLimit;
-    pm.addPass(createTTLFinalizeDFBIndices(finalizeOptions));
-  }
-  {
-    TTLSetComputeKernelConfigOptions configOpts;
-    configOpts.reduceFullFp32 = options.reduceFullFp32;
-    configOpts.matmulFullFp32 = options.matmulFullFp32;
-    configOpts.enableFPUBinaryOps = options.enableFPUBinaryOps;
-    pm.addNestedPass<func::FuncOp>(createTTLSetComputeKernelConfig(configOpts));
-  }
+  addProducerComputeCreation(pm, options);
+  addDFBFinalization(pm, options);
+  addComputePipelineScheduleSelection(pm, options);
+
+  // Schedule selection retains semantic pipelines until target and kernel
+  // constraints are known without publishing DFB-index-derived attributes.
+  pm.addNestedPass<func::FuncOp>(createTTLLowerComputePipelines());
+  addProducerComputeCreation(pm, options);
+  addDFBFinalization(pm, options);
+  addKernelConfig(pm, options);
+
   pm.addNestedPass<func::FuncOp>(createTTLAssignDST());
   if (options.maximizeDST) {
     TTLSubblockComputeForDSTOptions subblockOpts;

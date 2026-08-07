@@ -72,6 +72,28 @@ def TTL_TileExecutionStrategyAttr
   let assemblyFormat = "`<` $value `>`";
 }
 
+def TTL_ComputePipelineKindAttr
+    : TTL_Attr<"ComputePipelineKind", "compute_pipeline_kind"> {
+  let summary = "Recognized compute pipeline semantics";
+  let description = [{
+    Identifies the tensor computation represented by a compiler-recognized
+    compute pipeline independently of its selected execution schedule.
+  }];
+  let parameters = (ins "ComputePipelineKind":$value);
+  let assemblyFormat = "`<` $value `>`";
+}
+
+def TTL_ComputePipelineScheduleAttr
+    : TTL_Attr<"ComputePipelineSchedule", "compute_pipeline_schedule"> {
+  let summary = "Selected compute pipeline schedule";
+  let description = [{
+    Records the storage and execution schedule selected for a recognized
+    compute pipeline after target and kernel configuration analysis.
+  }];
+  let parameters = (ins "ComputePipelineSchedule":$value);
+  let assemblyFormat = "`<` $value `>`";
+}
+
 def TTL_LayoutAttr : TTL_Attr<"Layout", "layout"> {
   let summary = "Tensor layout encoding for grid distribution and memory placement";
   let description = [{

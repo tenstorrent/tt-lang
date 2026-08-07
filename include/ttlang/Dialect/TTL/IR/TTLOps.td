@@ -361,9 +361,18 @@ def TTL_ComputePipelineOp : TTL_Op<"compute_pipeline", [
     is a `ttl.compute_stage`, stages are ordered by SSA dominance, and values
     cannot be captured from outside the operation.
 
+    `pipeline_kind` identifies a compiler-recognized semantic graph for which
+    target schedules may be selected. `selected_schedule` records whether
+    cross-stage values remain materialized or use a compute-local carrier. It
+    does not change the tensor semantics of the pipeline.
+
   }];
 
-  let arguments = (ins Variadic<AnyRankedTensor>:$inputs);
+  let arguments = (ins Variadic<AnyRankedTensor>:$inputs,
+                        OptionalAttr<TTL_ComputePipelineKindAttr>:
+                            $pipeline_kind,
+                        OptionalAttr<TTL_ComputePipelineScheduleAttr>:
+                            $selected_schedule);
   let results = (outs Variadic<AnyRankedTensor>:$results);
   let regions = (region SizedRegion<1>:$body);
   let assemblyFormat = [{

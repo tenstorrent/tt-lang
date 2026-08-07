@@ -1986,6 +1986,9 @@ def _lower_program_to_kernel(
 
         # fmt: off
         set_compute_config_pass = "func.func(ttl-set-compute-kernel-config)"
+        select_compute_pipeline_pass = (
+            "func.func(ttl-select-compute-pipeline-schedules)"
+        )
         config_options = []
         if fp32_dest_acc_en is not None:
             config_options.append(
@@ -2012,6 +2015,11 @@ def _lower_program_to_kernel(
                 + " ".join(config_options)
                 + "})"
             )
+            select_compute_pipeline_pass = (
+                "func.func(ttl-select-compute-pipeline-schedules{"
+                + " ".join(config_options)
+                + "})"
+            )
 
         # NOTE: Pipeline pass ordering mirrors
         # lib/Dialect/TTL/Pipelines/TTLPipelines.cpp.
@@ -2022,14 +2030,12 @@ def _lower_program_to_kernel(
         exact_coloring_search_limit = (
             compiler_options.dfb_exact_coloring_search_limit
         )
-        pipeline_passes = [
-            "func.func(ttl-lower-compute-pipelines)",
-            "func.func(ttl-materialize-loop-state)",
-            "func.func(ttl-insert-copy-wait)",
-            "func.func(ttl-annotate-l1-acc-loops)",
+        producer_compute_passes = [
             "func.func(ttl-create-producer-compute)",
             f"func.func(ttl-insert-intermediate-dfbs{{enable={compiler_dfbs_flag}}})",
             "func.func(convert-ttl-to-compute)",
+        ]
+        dfb_finalization_passes = [
             "func.func(ttl-insert-cb-sync)",
             "ttl-verify-pipenet",
             "func.func(ttl-coalesce-dfb-acquires)",
@@ -2037,6 +2043,18 @@ def _lower_program_to_kernel(
             f"reuse-user-dfbs={reuse_user_dfbs_flag} "
             f"exact-coloring-search-limit={exact_coloring_search_limit}"
             "}",
+        ]
+        pipeline_passes = [
+            "func.func(ttl-lower-compute-pipelines)",
+            "func.func(ttl-materialize-loop-state)",
+            "func.func(ttl-insert-copy-wait)",
+            "func.func(ttl-annotate-l1-acc-loops)",
+            *producer_compute_passes,
+            *dfb_finalization_passes,
+            select_compute_pipeline_pass,
+            "func.func(ttl-lower-compute-pipelines)",
+            *producer_compute_passes,
+            *dfb_finalization_passes,
             set_compute_config_pass,
             f"func.func({assign_dst_pass})",
         ]

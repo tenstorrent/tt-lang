@@ -352,9 +352,11 @@ struct TTLPrintComputeOpCreationPlansPass
                  << " scale=" << graph.targetSchedule->scale << "\n";
         }
         if (graph.resources) {
-          output << "      resources dst=" << graph.resources->requiredDstSlots
-                 << "/" << graph.resources->availableDstSlots
-                 << " acquisitions=" << graph.resources->dstAcquisitions
+          output << "      resources dst=" << graph.resources->requiredDstSlots;
+          if (graph.resources->availableDstSlots) {
+            output << "/" << *graph.resources->availableDstSlots;
+          }
+          output << " acquisitions=" << graph.resources->dstAcquisitions
                  << " eliminated-intermediate-dfb-bytes="
                  << graph.resources->intermediateDFBBytes << "\n";
         }
