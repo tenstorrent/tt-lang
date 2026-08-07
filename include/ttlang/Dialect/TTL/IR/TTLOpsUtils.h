@@ -16,8 +16,10 @@
 #include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "mlir/Support/LogicalResult.h"
+#include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/FunctionExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -47,6 +49,11 @@ LogicalResult verifyMatmulTileTypes(ttcore::TileType lhsType,
                                     ttcore::TileType resultType,
                                     bool transposeRhs,
                                     std::string &failureReason);
+
+inline bool isFinitePositiveFloat(mlir::FloatAttr value) {
+  const llvm::APFloat &number = value.getValue();
+  return number.isFinite() && !number.isZero() && !number.isNegative();
+}
 
 /// Return the enclosing kernel-thread `func.func` (tagged with
 /// `ttl.kernel_thread`), or null if `op` is not inside one.
