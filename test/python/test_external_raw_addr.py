@@ -52,6 +52,30 @@ def external_raw_address_capture(inp, out):
         address_block.pop()
 
 
+@ttl.operation(grid=(1, 1))
+def external_compute_raw_address_capture(inp, out):
+    address_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        ttl.call_extern_func(
+            RAW_ADDRESS_HEADER,
+            "raw_address_capture",
+            template_args=[ttl.dfb_descriptor(address_dfb)],
+            func_args=[ttl.raw_addr(inp)],
+        )
+
+    @ttl.datamovement()
+    def dm_read():
+        pass
+
+    @ttl.datamovement()
+    def dm_write():
+        address_block = address_dfb.wait()
+        ttl.copy(address_block, out[0, 0]).wait()
+        address_block.pop()
+
+
 def _assert_address_bits(output, expected_address):
     """Compare bits because arbitrary addresses need not encode finite floats."""
     output_bits = ttnn.to_torch(output).contiguous().view(torch.int32)
@@ -65,7 +89,14 @@ def _assert_address_bits(output, expected_address):
     ids=["bf16", "f32"],
 )
 @pytest.mark.parametrize("to_input", INPUT_MEMORY_CONFIGS)
-def test_external_raw_address_uses_each_runtime_tensor(device, dtype, to_input):
+@pytest.mark.parametrize(
+    "operation",
+    [external_raw_address_capture, external_compute_raw_address_capture],
+    ids=["noc", "compute"],
+)
+def test_external_raw_address_uses_each_runtime_tensor(
+    device, dtype, to_input, operation
+):
     """A cached program must read each invocation's common runtime argument."""
     host_input = torch.zeros((32, 32), dtype=dtype)
     first_input = to_input(host_input, device)
@@ -76,8 +107,8 @@ def test_external_raw_address_uses_each_runtime_tensor(device, dtype, to_input):
     first_output = to_l1(host_output, device)
     second_output = to_l1(host_output, device)
 
-    external_raw_address_capture(first_input, first_output)
-    external_raw_address_capture(second_input, second_output)
+    operation(first_input, first_output)
+    operation(second_input, second_output)
 
     _assert_address_bits(first_output, first_input.buffer_address())
     _assert_address_bits(second_output, second_input.buffer_address())
