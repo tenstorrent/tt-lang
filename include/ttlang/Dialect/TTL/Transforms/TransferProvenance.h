@@ -39,11 +39,13 @@ FailureOr<std::optional<DeviceTransferAttr>>
 findUniquePipeDeviceTransfer(ValueOriginAnalysis &analysis, Value pipe);
 
 /// Return the device transfer shared by every possible pipe origin after
-/// resolving function entry arguments with `resolveFunctionArgument`.
+/// resolving function entry arguments with `resolveFunctionArguments`. An
+/// empty operand list represents an uncalled function argument with no known
+/// device transfer.
 FailureOr<std::optional<DeviceTransferAttr>> findUniquePipeDeviceTransfer(
     ValueOriginAnalysis &analysis, Value pipe,
-    llvm::function_ref<std::optional<Value>(BlockArgument)>
-        resolveFunctionArgument);
+    llvm::function_ref<FailureOr<SmallVector<Value>>(BlockArgument)>
+        resolveFunctionArguments);
 
 /// Returns the unique pipe receive whose handle may reach `value`. Returns no
 /// receive when none of the possible origins is a pipe receive, and failure

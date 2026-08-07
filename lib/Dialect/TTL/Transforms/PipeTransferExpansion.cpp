@@ -5,11 +5,14 @@
 #include "PipeTransferExpansion.h"
 
 #include "PipeGraph.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/SymbolTable.h"
 #include "ttlang/Analysis/ValueOriginAnalysis.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -129,6 +132,29 @@ buildPipeTransferExpansionPlan(ModuleOp module, ValueOriginAnalysis &analysis) {
   PipeTransferExpansionPlan plan;
   module.walk([&](CreatePipeOp op) { plan.createPipes.push_back(op); });
 
+  DenseMap<BlockArgument, SmallVector<Value>> operandsByFunctionArgument;
+  SymbolTableCollection symbolTables;
+  module.walk([&](func::CallOp call) {
+    func::FuncOp callee = symbolTables.lookupNearestSymbolFrom<func::FuncOp>(
+        call, call.getCalleeAttr());
+    if (!callee || callee.isExternal()) {
+      return;
+    }
+    for (auto [argument, operand] :
+         llvm::zip_equal(callee.getArguments(), call.getOperands())) {
+      operandsByFunctionArgument[argument].push_back(operand);
+    }
+  });
+  auto resolveFunctionArguments =
+      [&](BlockArgument argument) -> FailureOr<SmallVector<Value>> {
+    auto function =
+        dyn_cast_if_present<func::FuncOp>(argument.getOwner()->getParentOp());
+    if (!function || argument.getOwner() != &function.getBody().front()) {
+      return failure();
+    }
+    return operandsByFunctionArgument.lookup(argument);
+  };
+
   LogicalResult result = success();
   module.walk([&](CopyOp op) {
     if (isPipeReceiveCopy(op)) {
@@ -141,7 +167,8 @@ buildPipeTransferExpansionPlan(ModuleOp module, ValueOriginAnalysis &analysis) {
         result = failure();
       } else {
         FailureOr<std::optional<DeviceTransferAttr>> maybeDeviceTransfer =
-            findUniquePipeDeviceTransfer(analysis, op.getSrc());
+            findUniquePipeDeviceTransfer(analysis, op.getSrc(),
+                                         resolveFunctionArguments);
         FailureOr<int64_t> pipeNetId =
             getPipeNetIdForPipeValue(op, op.getSrc());
         if (failed(maybeDeviceTransfer)) {
@@ -169,7 +196,8 @@ buildPipeTransferExpansionPlan(ModuleOp module, ValueOriginAnalysis &analysis) {
         result = failure();
       } else {
         FailureOr<std::optional<DeviceTransferAttr>> maybeDeviceTransfer =
-            findUniquePipeDeviceTransfer(analysis, op.getDst());
+            findUniquePipeDeviceTransfer(analysis, op.getDst(),
+                                         resolveFunctionArguments);
         if (failed(maybeDeviceTransfer)) {
           op.emitError() << "requires every possible pipe definition to use "
                             "the same logical-device transfer";

@@ -79,6 +79,52 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
 
 // -----
 
+// A helper cannot encode one logical-device transfer when its callers supply
+// pipes from different device edges.
+
+#callsite_transfer_0 = #ttl.device_transfer<
+    domain = <components = <name = "device", extent = [1, 4]>>,
+    edge = <source = <coordinates = [0, 0]>,
+            destination = <coordinates = [0, 1]>>>
+#callsite_transfer_1 = #ttl.device_transfer<
+    domain = <components = <name = "device", extent = [1, 4]>>,
+    edge = <source = <coordinates = [0, 0]>,
+            destination = <coordinates = [0, 2]>>>
+
+module attributes {ttl.launch_grid = array<i64: 1, 1>} {
+  func.func private @pipe_callsite_receiver(
+      %pipe: !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>) {
+    %dst_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %dst = ttl.cb_reserve %dst_cb
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    // expected-error @below {{requires every possible pipe definition to use the same logical-device transfer}}
+    %handle = ttl.copy %pipe, %dst
+        : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+           tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.transfer_handle
+    func.return
+  }
+
+  func.func @pipe_callsite_caller()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe0 = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0 {
+        deviceTransfer = #callsite_transfer_0}
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %pipe1 = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0 {
+        deviceTransfer = #callsite_transfer_1}
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    func.call @pipe_callsite_receiver(%pipe0)
+        : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>) -> ()
+    func.call @pipe_callsite_receiver(%pipe1)
+        : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>) -> ()
+    func.return
+  }
+}
+
+// -----
+
 // Fabric cannot use receiver-published addresses. Report the specific DFB
 // producer-stream property that prevented computed addressing.
 
@@ -123,27 +169,6 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
     ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
     func.return
   }
-}
-
-// -----
-
-// A pipe block argument does not identify whether the transfer is within one
-// device or between logical devices.
-
-func.func @unknown_pipe_device_transfer(
-    %pipe: !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
-    attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  %dst_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
-      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-  %dst = ttl.cb_reserve %dst_cb
-      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
-      -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  // expected-error @below {{requires every possible pipe definition to use the same logical-device transfer}}
-  %handle = ttl.copy %pipe, %dst
-      : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
-         tensor<1x1x!ttcore.tile<32x32, f32>>)
-      -> !ttl.transfer_handle
-  func.return
 }
 
 // -----

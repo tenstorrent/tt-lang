@@ -42,6 +42,45 @@ func.func @if_dst_lowering() attributes { "ttl.kernel_thread" = #ttkernel.thread
 
 // -----
 
+// A pipe function argument without call sites retains the point-to-point
+// transfer contract encoded by its type.
+// CHECK-LABEL: func.func @pipe_block_argument
+// CHECK: ttkernel.noc_inline_dw_write
+// CHECK: ttkernel.experimental.semaphore_wait_min
+// CHECK-NOT: ttl.pipe_transfer
+func.func @pipe_block_argument(
+    %pipe: !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+    attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+  %dst_cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %dst = ttl.cb_reserve %dst_cb
+      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %handle = ttl.copy %pipe, %dst
+      : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+         tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.transfer_handle
+  ttl.wait %handle : !ttl.transfer_handle
+  func.return
+}
+
+// Define the sender half so the block-argument receiver belongs to a complete
+// transfer.
+func.func @pipe_block_argument_sender(
+    %pipe: !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+    attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+  %src_cb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %handle = ttl.copy %src_cb, %pipe
+      : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+         !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+      -> !ttl.transfer_handle<write>
+  ttl.wait %handle : !ttl.transfer_handle<write>
+  func.return
+}
+
+// -----
+
 // Adjacent barriers on different NoCs are not redundant.
 // CHECK-LABEL: func.func @different_noc_write_barriers_survive
 // CHECK-DAG: %[[NOC0:.*]] = arith.constant 0 : i8

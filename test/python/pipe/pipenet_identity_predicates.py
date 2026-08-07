@@ -22,6 +22,7 @@ pytest.importorskip("ttnn", exc_type=ImportError)
 
 DEVICE_DOMAIN = ttl.DeviceDomain((1, 2))
 EXCHANGE_NET = ttl.PipeNet(graph=ttl.TransferGraph.all_to_all(DEVICE_DOMAIN))
+ROOT_DEVICE_INDEX = 0
 
 
 class BFloat16Tensor:
@@ -73,12 +74,12 @@ def compile_identity_predicates():
         EXCHANGE_NET.if_src(select_destination)
 
         def select_source(pipe):
-            if pipe.source_device_index == 0:
+            if pipe.source_device_index == ROOT_DEVICE_INDEX:
                 selected_dfb = dst_zero_dfb
             else:
                 selected_dfb = dst_one_dfb
 
-            if 0 == pipe.source_device_index:
+            if ROOT_DEVICE_INDEX == pipe.source_device_index:
                 selected_dfb = dst_zero_dfb
 
             with selected_dfb.reserve() as _reserved_block:

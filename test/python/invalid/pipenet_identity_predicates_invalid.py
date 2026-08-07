@@ -82,7 +82,7 @@ if __name__ == "__main__":
 
 # CHAINED: error: pipe callback identity predicates require a single comparison
 # CHAINED: if 0 < pipe.source_device_index < 2:
-# DYNAMIC: error: pipe callback identity comparisons require a literal non-identity operand
+# DYNAMIC: error: pipe callback identity comparisons require a compile-time constant non-identity operand
 # DYNAMIC: if pipe.source_device_index == expected_source:
 # PROPERTY: error: pipe callback identity has no property 'unknown_device_index'
 # PROPERTY: if pipe.unknown_device_index == 0:

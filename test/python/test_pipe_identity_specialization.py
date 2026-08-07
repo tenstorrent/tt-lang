@@ -5,6 +5,7 @@
 """Unit coverage for graph callback identity predicate planning."""
 
 import ast
+import textwrap
 
 import pytest
 
@@ -27,8 +28,11 @@ def _predicate(source):
     return ast.parse(source, mode="eval").body
 
 
-def _compiler():
-    return object.__new__(TTLGenericCompiler)
+def _compiler(*, captures=None, globals_=None):
+    compiler = object.__new__(TTLGenericCompiler)
+    compiler.captures = captures or {}
+    compiler.fn_globals = globals_ or {}
+    return compiler
 
 
 def _evaluate(source, identity=None):
@@ -65,6 +69,23 @@ def test_non_identity_predicate_is_not_specialized():
     assert isinstance(result, _NotPipeIdentity)
 
 
+@pytest.mark.parametrize("constant_table", ["captures", "globals"])
+def test_pipe_identity_predicate_resolves_named_constant(constant_table):
+    compiler_args = {constant_table: {"ROOT": 1}}
+    compiler = _compiler(
+        captures=compiler_args.get("captures"),
+        globals_=compiler_args.get("globals"),
+    )
+
+    result = compiler._evaluate_pipe_identity_predicate(
+        _predicate("pipe.source_device_index == ROOT"),
+        {"pipe": _PipeIdentityValue(_PipeIdentity())},
+    )
+
+    assert isinstance(result, _PipeIdentityPredicate)
+    assert result.value is True
+
+
 @pytest.mark.parametrize(
     "source,message",
     [
@@ -74,7 +95,7 @@ def test_non_identity_predicate_is_not_specialized():
         ),
         (
             "pipe.source_device_index == runtime_value",
-            "require a literal non-identity operand",
+            "require a compile-time constant non-identity operand",
         ),
         (
             "pipe.unknown_device_index == 0",
@@ -118,3 +139,50 @@ def callback(pipe):
     assert outer_predicate.value is True
     assert isinstance(nested_predicate, _PipeIdentityPredicate)
     assert nested_predicate.value is True
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "source_device_index += 1",
+        "source_device_index: int = 1",
+        "del source_device_index",
+        "try:\n    pass\nexcept Exception as source_device_index:\n    pass",
+    ],
+)
+def test_callback_plan_discards_identity_after_reassignment(mutation):
+    callback = ast.parse(
+        f"""
+def callback(pipe):
+    source_device_index = pipe.source_device_index
+{textwrap.indent(mutation, "    ")}
+    if source_device_index == 1:
+        selected()
+"""
+    ).body[0]
+    conditional = callback.body[-1]
+
+    plan = _compiler()._plan_pipe_identity_callback(
+        callback.body, "pipe", _PipeIdentity(source_device_index=1)
+    )
+
+    assert isinstance(plan.predicate_for(conditional), _NotPipeIdentity)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "global source_device_index",
+        "def nested():\n    nonlocal source_device_index",
+    ],
+)
+def test_unmodeled_scope_declaration_discards_identity(source):
+    statement = ast.parse(source).body[0]
+    if isinstance(statement, ast.FunctionDef):
+        statement = statement.body[0]
+
+    assigned_names = TTLGenericCompiler._pipe_identity_statement_assigned_names(
+        statement
+    )
+
+    assert assigned_names == {"source_device_index"}

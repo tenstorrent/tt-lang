@@ -1686,7 +1686,12 @@ WalkResult walkPipeEventsInProgramOrder(
               }
             }
             auto resolveActiveFunctionArgument = [&](BlockArgument argument) {
-              return resolveFunctionArgument(argument, callSites);
+              SmallVector<Value> operands;
+              if (std::optional<Value> operand =
+                      resolveFunctionArgument(argument, callSites)) {
+                operands.push_back(*operand);
+              }
+              return FailureOr<SmallVector<Value>>(std::move(operands));
             };
             FailureOr<std::optional<DeviceTransferAttr>> maybeDeviceTransfer =
                 findUniquePipeDeviceTransfer(state.valueOrigins, event.pipe,

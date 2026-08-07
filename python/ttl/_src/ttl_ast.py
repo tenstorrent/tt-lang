@@ -675,6 +675,41 @@ class TTLGenericCompiler(TTCompilerBase):
             return TTLGenericCompiler._pipe_identity_assigned_names(target.value)
         return set()
 
+    @staticmethod
+    def _pipe_identity_statement_assigned_names(statement):
+        """Return names written by a statement the identity planner does not model."""
+        assigned_names = {
+            node.id
+            for node in ast.walk(statement)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del))
+        }
+        for node in ast.walk(statement):
+            if isinstance(node, ast.ExceptHandler) and node.name is not None:
+                assigned_names.add(node.name)
+            elif isinstance(node, (ast.Global, ast.Nonlocal)):
+                assigned_names.update(node.names)
+        return assigned_names
+
+    @staticmethod
+    def _is_pipe_identity_constant(value):
+        """Return whether a captured value has Python literal semantics."""
+        if value is None or value is Ellipsis:
+            return True
+        if type(value) in (bool, int, float, complex, str, bytes):
+            return True
+        if type(value) in (tuple, list, set, frozenset):
+            return all(
+                TTLGenericCompiler._is_pipe_identity_constant(element)
+                for element in value
+            )
+        if type(value) is dict:
+            return all(
+                TTLGenericCompiler._is_pipe_identity_constant(key)
+                and TTLGenericCompiler._is_pipe_identity_constant(element)
+                for key, element in value.items()
+            )
+        return False
+
     def _plan_pipe_identity_statements(
         self, statements, identity_bindings, branch_selections
     ):
@@ -697,6 +732,27 @@ class TTLGenericCompiler(TTCompilerBase):
                 ):
                     for target_name in target_names:
                         identity_bindings[target_name] = identity_value
+                else:
+                    for target_name in target_names:
+                        identity_bindings[target_name] = _NotPipeIdentity()
+                continue
+
+            if isinstance(statement, ast.AnnAssign):
+                target_names = self._pipe_identity_assigned_names(statement.target)
+                assigned_names.update(target_names)
+                identity_value = (
+                    self._evaluate_pipe_identity_expression(
+                        statement.value, identity_bindings
+                    )
+                    if statement.value is not None
+                    else _NotPipeIdentity()
+                )
+                if isinstance(identity_value, _InvalidPipeIdentity):
+                    self._raise_error(statement.value, identity_value.message)
+                if isinstance(identity_value, _PipeIdentityValue) and isinstance(
+                    statement.target, ast.Name
+                ):
+                    identity_bindings[statement.target.id] = identity_value
                 else:
                     for target_name in target_names:
                         identity_bindings[target_name] = _NotPipeIdentity()
@@ -770,6 +826,17 @@ class TTLGenericCompiler(TTCompilerBase):
                 for target_name in loop_assigned_names:
                     identity_bindings[target_name] = _NotPipeIdentity()
                 assigned_names.update(loop_assigned_names)
+                continue
+
+            # Unknown writes must discard identity provenance. Retaining a
+            # binding here could select a branch using a value that no longer
+            # exists when the callback is emitted.
+            statement_assigned_names = self._pipe_identity_statement_assigned_names(
+                statement
+            )
+            for target_name in statement_assigned_names:
+                identity_bindings[target_name] = _NotPipeIdentity()
+            assigned_names.update(statement_assigned_names)
 
         return assigned_names
 
@@ -1007,10 +1074,26 @@ class TTLGenericCompiler(TTCompilerBase):
             try:
                 resolved_operands.append(ast.literal_eval(operand))
             except (ValueError, TypeError, SyntaxError):
-                return _InvalidPipeIdentity(
-                    "pipe callback identity comparisons require a literal "
-                    "non-identity operand"
-                )
+                if not isinstance(operand, ast.Name):
+                    return _InvalidPipeIdentity(
+                        "pipe callback identity comparisons require a "
+                        "compile-time constant non-identity operand"
+                    )
+                constant_table = getattr(self, "captures", {})
+                if operand.id not in constant_table:
+                    constant_table = getattr(self, "fn_globals", {})
+                if operand.id not in constant_table:
+                    return _InvalidPipeIdentity(
+                        "pipe callback identity comparisons require a "
+                        "compile-time constant non-identity operand"
+                    )
+                constant_value = constant_table[operand.id]
+                if not self._is_pipe_identity_constant(constant_value):
+                    return _InvalidPipeIdentity(
+                        "pipe callback identity comparisons require a "
+                        "compile-time constant non-identity operand"
+                    )
+                resolved_operands.append(constant_value)
 
         lhs, rhs = resolved_operands
         operation = node.ops[0]
