@@ -98,6 +98,12 @@ private:
     LaunchNodeDomain sharedNodes =
         lhs.launchDomain.intersectWith(rhs.launchDomain);
     for (LaunchNodeCoord node : sharedNodes.nodes) {
+      if (lhs.tensorBacking != rhs.tensorBacking) {
+        addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
+                    DFBConflictReason::StorageMismatch, node,
+                    lhs.declarations.front(), rhs.declarations.front());
+        continue;
+      }
       const DFBPerNodeLifetime *lhsLifetime = lhs.findNodeLifetime(node);
       const DFBPerNodeLifetime *rhsLifetime = rhs.findNodeLifetime(node);
       if (!lhsLifetime || !rhsLifetime || !lhsLifetime->quiescence.proven() ||
@@ -399,9 +405,10 @@ static FailureOr<PhysicalAllocationCandidate> computeDistinctUserAllocation(
       physicalIndex = *logicalPhysicalIndex;
     }
 
-    allocation.assignments.push_back({logicalDFB.logicalId, physicalIndex,
-                                      logicalDFB.type, logicalDFB.declarations,
-                                      logicalDFB.bounded});
+    allocation.assignments.push_back(
+        {logicalDFB.logicalId, physicalIndex, logicalDFB.type,
+         logicalDFB.tensorBacking, logicalDFB.launchDomain,
+         logicalDFB.declarations, logicalDFB.bounded});
     allocation.physicalDFBCount =
         std::max(allocation.physicalDFBCount, physicalIndex + 1);
   }
@@ -488,9 +495,10 @@ static FailureOr<PhysicalAllocationCandidate> computeReuseAllocation(
     int32_t physicalIndex = assignment->assignments[indexedLogicalDFB.index()];
     allocation.physicalDFBCount =
         std::max(allocation.physicalDFBCount, physicalIndex + 1);
-    allocation.assignments.push_back({logicalDFB.logicalId, physicalIndex,
-                                      logicalDFB.type, logicalDFB.declarations,
-                                      logicalDFB.bounded});
+    allocation.assignments.push_back(
+        {logicalDFB.logicalId, physicalIndex, logicalDFB.type,
+         logicalDFB.tensorBacking, logicalDFB.launchDomain,
+         logicalDFB.declarations, logicalDFB.bounded});
   }
 
   if (allocation.physicalDFBCount <= kMaxCircularBuffers) {
@@ -523,6 +531,9 @@ static FailureOr<uint64_t>
 computeAllocationBytes(ArrayRef<DFBPhysicalIndexAssignment> assignments) {
   DFBAllocationFootprint footprint;
   for (const DFBPhysicalIndexAssignment &assignment : assignments) {
+    if (assignment.tensorBacking) {
+      continue;
+    }
     if (failed(footprint.add(assignment.physicalIndex,
                              cast<CircularBufferType>(assignment.type)))) {
       return failure();
@@ -608,7 +619,8 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
   SmallVector<DFBPhysicalAllocationDescriptor> descriptors;
   descriptors.reserve(sorted.size());
   for (auto [expectedIndex, indexedAssignment] : llvm::enumerate(sorted)) {
-    auto [physicalIndex, assignment] = indexedAssignment;
+    int32_t physicalIndex = indexedAssignment.first;
+    const DFBPhysicalIndexAssignment *assignment = indexedAssignment.second;
     if (physicalIndex != static_cast<int32_t>(expectedIndex)) {
       std::string message;
       llvm::raw_string_ostream messageStream(message);
@@ -619,14 +631,106 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
       return failure();
     }
     auto dfbType = cast<CircularBufferType>(assignment->type);
-    descriptors.push_back(
-        {physicalIndex, static_cast<int32_t>(dfbType.getElementsPerBlock()),
-         dfbType.getElementType(),
-         static_cast<int32_t>(
-             ttcore::getElementSizeBytes(dfbType.getElementType())),
-         static_cast<int32_t>(dfbType.getBlockCount())});
+    // TODO(#815): Define page sizes for packed sub-byte scratch DFB elements.
+    // TODO(#816): Diagnose scratch DFB element types without a byte width.
+    DFBPhysicalAllocationDescriptor descriptor{
+        physicalIndex,
+        static_cast<int32_t>(dfbType.getElementsPerBlock()),
+        dfbType.getElementType(),
+        static_cast<int32_t>(
+            ttcore::getElementSizeBytes(dfbType.getElementType())),
+        static_cast<int32_t>(dfbType.getBlockCount()),
+        {}};
+
+    bool hasTensorBacking = llvm::any_of(
+        assignments, [&](const DFBPhysicalIndexAssignment &candidate) {
+          return candidate.physicalIndex == physicalIndex &&
+                 static_cast<bool>(candidate.tensorBacking);
+        });
+    if (hasTensorBacking) {
+      for (const DFBPhysicalIndexAssignment &candidate : assignments) {
+        if (candidate.physicalIndex != physicalIndex) {
+          continue;
+        }
+        // TODO(#813): Represent empty and unknown launch domains without
+        // selecting scratch storage.
+        if (!candidate.launchDomain.known ||
+            candidate.launchDomain.nodes.empty()) {
+          analysisFailure.set(
+              candidate.declarations.front(),
+              "tensor-backed physical DFB requires an exact non-empty "
+              "launch-node domain");
+          return failure();
+        }
+        auto segmentIt = llvm::find_if(
+            descriptor.storageSegments,
+            [&](const DFBPhysicalStorageSegment &segment) {
+              return segment.tensorBacking == candidate.tensorBacking;
+            });
+        if (segmentIt == descriptor.storageSegments.end()) {
+          descriptor.storageSegments.push_back(
+              {LaunchNodeDomain{}, candidate.tensorBacking});
+          segmentIt = std::prev(descriptor.storageSegments.end());
+        }
+        segmentIt->launchDomain =
+            segmentIt->launchDomain.unionWith(candidate.launchDomain);
+      }
+      llvm::sort(descriptor.storageSegments,
+                 [](const DFBPhysicalStorageSegment &lhs,
+                    const DFBPhysicalStorageSegment &rhs) {
+                   return *lhs.launchDomain.nodes.begin() <
+                          *rhs.launchDomain.nodes.begin();
+                 });
+    }
+    descriptors.push_back(std::move(descriptor));
   }
   return descriptors;
+}
+
+/// Rejects storage ranges whose physical aliasing is not represented by one
+/// shared physical DFB index and an exact backing identity.
+static LogicalResult
+validateTensorBackingRanges(ArrayRef<DFBPhysicalIndexAssignment> assignments,
+                            DFBAnalysisFailure &analysisFailure) {
+  for (unsigned lhsIndex = 0; lhsIndex < assignments.size(); ++lhsIndex) {
+    const DFBPhysicalIndexAssignment &lhs = assignments[lhsIndex];
+    if (!lhs.tensorBacking) {
+      continue;
+    }
+    for (unsigned rhsIndex = lhsIndex + 1; rhsIndex < assignments.size();
+         ++rhsIndex) {
+      const DFBPhysicalIndexAssignment &rhs = assignments[rhsIndex];
+      if (!rhs.tensorBacking ||
+          lhs.tensorBacking.getTensorIndex() !=
+              rhs.tensorBacking.getTensorIndex() ||
+          !launchNodeDomainsOverlap(lhs.launchDomain, rhs.launchDomain)) {
+        continue;
+      }
+
+      int64_t lhsStart = lhs.tensorBacking.getByteOffset();
+      int64_t lhsEnd = lhsStart + lhs.tensorBacking.getByteSize();
+      int64_t rhsStart = rhs.tensorBacking.getByteOffset();
+      int64_t rhsEnd = rhsStart + rhs.tensorBacking.getByteSize();
+      if (lhsStart >= rhsEnd || rhsStart >= lhsEnd) {
+        continue;
+      }
+      if (lhs.tensorBacking != rhs.tensorBacking) {
+        analysisFailure.set(
+            rhs.declarations.front(),
+            "tensor-backed DFB byte ranges partially overlap on a shared "
+            "launch node");
+        return failure();
+      }
+      if (lhs.physicalIndex != rhs.physicalIndex) {
+        analysisFailure.set(
+            rhs.declarations.front(),
+            "identical tensor-backed DFB ranges require one proven shared "
+            "physical index on a shared launch node");
+        return failure();
+      }
+    }
+  }
+  return success();
 }
 
 } // namespace
@@ -675,6 +779,12 @@ DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
   }
   plan.assignments = std::move(allocation->assignments);
   plan.physicalDFBCount = allocation->physicalDFBCount;
+
+  if (failed(validateTensorBackingRanges(plan.assignments, analysisFailure))) {
+    errorOperation = analysisFailure.operation;
+    errorMessage = std::move(analysisFailure.message);
+    return;
+  }
 
   FailureOr<SmallVector<DFBPhysicalAllocationDescriptor>> descriptors =
       buildDescriptors(plan.assignments, analysisFailure);

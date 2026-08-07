@@ -213,6 +213,48 @@ func.func @intervening_operation()
 
 // -----
 
+// Folding a multiply into exp scaling must not move scaling past instrumentation
+// that observes DST. Keeping separate tile operations preserves the observation
+// point after the multiply and before exp.
+
+// CHECK-LABEL: ComputeOp creation plan @intervening_exp_scale_instrumentation
+// CHECK:       ttl.exp kind=fused recipe=fused legal=true
+// IR-LABEL:    func.func @intervening_exp_scale_instrumentation
+// IR:          ttl.compute
+// IR:            %[[SCALED:.*]] = ttl.tile_mul_unary_const
+// IR-NEXT:       ttl.dprint "after scale"
+// IR-NEXT:       ttl.tile_exp %[[SCALED]]
+func.func @intervening_exp_scale_instrumentation()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %output_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %input_wait = ttl.cb_wait %input_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %input = ttl.attach_cb %input_wait, %input_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %scaled = ttl.mul_unary_const %input, 2.000000e+00
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  "ttl.dprint"() {fmt = "after scale", mode = "dst"} : () -> ()
+  %result = ttl.exp %scaled
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %result, %output
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+        tensor<1x1x!ttcore.tile<32x32, bf16>>
+  return
+}
+
+// -----
+
 // A direct producer owns the signposts that surround its source operation.
 // A fused consumer may recompute that source, but must not move or duplicate
 // the producer's observable events.

@@ -93,6 +93,7 @@ struct DFBPerNodeLifetime {
 struct DFBLogicalLifecycle {
   int64_t logicalId = 0;
   Type type;
+  TensorBackingAttr tensorBacking;
   bool compilerCreated = false;
   SmallVector<BindCBOp> declarations;
   SmallVector<DFBAccessOccurrence> accesses;

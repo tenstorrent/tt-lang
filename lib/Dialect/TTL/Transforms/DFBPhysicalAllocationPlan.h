@@ -30,8 +30,16 @@ struct DFBPhysicalIndexAssignment {
   int64_t logicalId = 0;
   int32_t physicalIndex = 0;
   Type type;
+  TensorBackingAttr tensorBacking;
+  LaunchNodeDomain launchDomain;
   SmallVector<BindCBOp> declarations;
   bool bounded = false;
+};
+
+/// Storage used by one physical DFB on an exact launch-node domain.
+struct DFBPhysicalStorageSegment {
+  LaunchNodeDomain launchDomain;
+  TensorBackingAttr tensorBacking;
 };
 
 /// Runtime allocation descriptor for one physical DFB.
@@ -41,6 +49,7 @@ struct DFBPhysicalAllocationDescriptor {
   Type elementType;
   int32_t pageSize = 0;
   int32_t blockCount = 0;
+  SmallVector<DFBPhysicalStorageSegment> storageSegments;
 };
 
 /// Final base CTA index for one kernel.
@@ -52,6 +61,7 @@ struct DFBKernelBaseIndexAssignment {
 /// Semantic reason that two logical DFBs cannot share one physical index.
 enum class DFBConflictReason {
   DescriptorMismatch,
+  StorageMismatch,
   UnknownLaunchNodeDomain,
   UnprovenQuiescence,
   TransactionMismatch,

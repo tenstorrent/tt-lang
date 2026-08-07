@@ -859,12 +859,21 @@ class TTLGenericCompiler(TTCompilerBase):
         )
         # The frontend index identifies the logical DFB; finalization may
         # replace cb_index when reusing physical storage.
-        return ttl.bind_cb(
-            cb_type,
-            cb._cb_index,
-            block_count=cb.block_count,
-            dfb_id=cb._cb_index,
-        )
+        tensor_backing = None
+        if cb.tensor_backing is not None:
+            tensor_backing = ttl.TensorBackingAttr.get(
+                self.ctx,
+                get_tensor_global_index(cb.tensor_backing),
+                cb.byte_offset,
+                cb.byte_size,
+            )
+        bind_attributes = {
+            "block_count": cb.block_count,
+            "dfb_id": cb._cb_index,
+        }
+        if tensor_backing is not None:
+            bind_attributes["tensor_backing"] = tensor_backing
+        return ttl.bind_cb(cb_type, cb._cb_index, **bind_attributes)
 
     def _emit_pipe_from_capture(
         self, pipe, pipe_net_name=None, source_file=None, source_line=None

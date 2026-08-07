@@ -7,19 +7,44 @@
 import pytest
 
 from ttl import kernel_runner
-from ttl.dataflow_buffer import PhysicalDFBConfig
+from ttl.dataflow_buffer import DFBStorageSegment, PhysicalDFBConfig
 
 
 class _FakeTensor:
-    def __init__(self, device, address=0x2000):
+    def __init__(
+        self,
+        device,
+        address=0x2000,
+        dtype=None,
+        tile_shape=(32, 32),
+        shard_shape=(32, 64),
+    ):
         self._device = device
         self._address = address
+        self.dtype = dtype
+        self.layout = "TILE"
+        self.tile_shape = tile_shape
+        self.shard_shape = shard_shape
 
     def device(self):
         return self._device
 
     def buffer_address(self):
         return self._address
+
+    def get_tile(self):
+        return _FakeTTNN.Tile(self.tile_shape)
+
+    def memory_config(self):
+        class ShardSpec:
+            shape = self.shard_shape
+
+        class MemoryConfig:
+            buffer_type = "L1"
+            memory_layout = "HEIGHT_SHARDED"
+            shard_spec = ShardSpec()
+
+        return MemoryConfig()
 
 
 class _FakeTensorWithoutDevice:
@@ -110,14 +135,35 @@ class _FakeTTNN:
         def set_buffer_from_cb(self, backing_desc):
             self.backing_desc = backing_desc
 
+    class CoreCoord:
+        def __init__(self, x, y):
+            self.x = x
+            self.y = y
+
+    class CoreRange:
+        def __init__(self, start, end):
+            self.start = start
+            self.end = end
+
+    class CoreRangeSet:
+        def __init__(self, ranges):
+            self.ranges = tuple(ranges)
+
     @staticmethod
-    def cb_descriptor_from_sharded_tensor(cb_index, tensor, total_size, core_ranges):
+    def cb_descriptor_from_sharded_tensor(
+        cb_index, tensor, total_size, core_ranges, address_offset=0
+    ):
         return {
             "cb_index": cb_index,
             "tensor": tensor,
+            "address_offset": address_offset,
             "total_size": total_size,
             "core_ranges": core_ranges,
         }
+
+    @staticmethod
+    def get_optimal_worker_cores_for_sharded_tensor(_tensor):
+        return [_FakeTTNN.CoreCoord(0, 0), _FakeTTNN.CoreCoord(1, 0)]
 
     @staticmethod
     def generic_op(tensors, program):
@@ -469,6 +515,354 @@ def test_build_cb_descriptors_preserves_subtile_geometry(monkeypatch):
     assert format_descriptor.tile.tile.tile_shape == (16, 16)
 
 
+def test_build_cb_descriptors_binds_tensor_on_exact_nodes(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+    )
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    tensor = _FakeTensor(object(), dtype=expected_dtype)
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (
+            DFBStorageSegment(
+                nodes=((0, 0), (1, 0)),
+                tensor_index=0,
+                byte_offset=2048,
+                byte_size=2048,
+            ),
+        ),
+    )
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[tensor],
+        cb_configs=[config],
+        core_ranges=_FakeCoreRanges(),
+    )
+
+    assert len(descriptors) == 1
+    descriptor = descriptors[0]
+    assert descriptor["tensor"] is tensor
+    assert descriptor["address_offset"] == 2048
+    assert descriptor["total_size"] == 2048
+    selected = [
+        (core_range.start.x, core_range.start.y)
+        for core_range in descriptor["core_ranges"].ranges
+    ]
+    assert selected == [(0, 0), (1, 0)]
+
+
+def test_build_cb_descriptors_rejects_range_past_shard_boundary(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+    )
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    tensor = _FakeTensor(object(), dtype=expected_dtype, shard_shape=(32, 32))
+
+    with pytest.raises(ValueError, match="exceeds logical per-shard size 2048"):
+        kernel_runner.build_cb_descriptors(
+            tensors=[tensor],
+            cb_configs=[
+                _tensor_backing_config(
+                    0,
+                    nodes=((0, 0),),
+                    byte_offset=2048,
+                    byte_size=2048,
+                )
+            ],
+            core_ranges=_FakeCoreRanges(),
+        )
+
+
+def test_build_cb_descriptors_rejects_node_without_tensor_shard(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        fake_ttnn,
+        "get_optimal_worker_cores_for_sharded_tensor",
+        lambda _tensor: [_FakeTTNN.CoreCoord(0, 0)],
+    )
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+    )
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    tensor = _FakeTensor(object(), dtype=expected_dtype)
+
+    with pytest.raises(ValueError, match="no shard data on launch nodes.*1, 0"):
+        kernel_runner.build_cb_descriptors(
+            tensors=[tensor],
+            cb_configs=[_tensor_backing_config(0, nodes=((0, 0), (1, 0)))],
+            core_ranges=_FakeCoreRanges(),
+        )
+
+
+def test_build_cb_descriptors_rejects_equal_size_different_tile_shape(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+    )
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    tensor = _FakeTensor(object(), dtype=expected_dtype, tile_shape=(16, 32))
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        1024,
+        (32, 16),
+        (
+            DFBStorageSegment(
+                nodes=((0, 0),),
+                tensor_index=0,
+                byte_offset=0,
+                byte_size=1024,
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="tile shape.*16, 32.*32, 16"):
+        kernel_runner.build_cb_descriptors(
+            tensors=[tensor],
+            cb_configs=[config],
+            core_ranges=_FakeCoreRanges(),
+        )
+
+
+def test_build_cb_descriptors_reports_unsupported_tensor_backing_format(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+    )
+    tensor = _FakeTensor(object(), dtype=object())
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfp8",
+        1,
+        2048,
+        (32, 32),
+        (
+            DFBStorageSegment(
+                nodes=((0, 0),),
+                tensor_index=0,
+                byte_offset=0,
+                byte_size=2048,
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="tensor backing format bfp8 is not supported"):
+        kernel_runner.build_cb_descriptors(
+            tensors=[tensor],
+            cb_configs=[config],
+            core_ranges=_FakeCoreRanges(),
+        )
+
+
+def test_build_cb_descriptors_uses_current_tensor_allocation(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+    )
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    config = _tensor_backing_config(0, nodes=((0, 0),))
+    first_tensor = _FakeTensor(object(), address=0x2000, dtype=expected_dtype)
+    second_tensor = _FakeTensor(object(), address=0x4000, dtype=expected_dtype)
+
+    first_descriptor = kernel_runner.build_cb_descriptors(
+        tensors=[first_tensor],
+        cb_configs=[config],
+        core_ranges=_FakeCoreRanges(),
+    )[0]
+    second_descriptor = kernel_runner.build_cb_descriptors(
+        tensors=[second_tensor],
+        cb_configs=[config],
+        core_ranges=_FakeCoreRanges(),
+    )[0]
+
+    assert first_descriptor["tensor"] is first_tensor
+    assert second_descriptor["tensor"] is second_tensor
+
+
+def test_build_cb_descriptors_preserves_descriptor_helper_failure(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+
+    def fail_descriptor_creation(*_args, **_kwargs):
+        raise RuntimeError("TTNN descriptor construction failed")
+
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+    )
+    monkeypatch.setattr(
+        fake_ttnn,
+        "cb_descriptor_from_sharded_tensor",
+        fail_descriptor_creation,
+    )
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    tensor = _FakeTensor(object(), dtype=expected_dtype)
+
+    with pytest.raises(RuntimeError, match="TTNN descriptor construction failed"):
+        kernel_runner.build_cb_descriptors(
+            tensors=[tensor],
+            cb_configs=[_tensor_backing_config(0, nodes=((0, 0),))],
+            core_ranges=_FakeCoreRanges(),
+        )
+
+
+def _tensor_backing_config(
+    dfb_index, *, nodes, block_count=1, byte_offset=0, byte_size=2048
+):
+    return PhysicalDFBConfig(
+        dfb_index,
+        1,
+        "bfloat16",
+        block_count,
+        2048,
+        (32, 32),
+        (
+            DFBStorageSegment(
+                nodes=nodes,
+                tensor_index=dfb_index,
+                byte_offset=byte_offset,
+                byte_size=byte_size,
+            ),
+        ),
+    )
+
+
+def test_build_cb_descriptors_rejects_aliased_partial_tensor_ranges(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+    )
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    tensors = [
+        _FakeTensor(object(), address=0x4000, dtype=expected_dtype),
+        _FakeTensor(object(), address=0x4000, dtype=expected_dtype),
+    ]
+    configs = [
+        _tensor_backing_config(0, nodes=((0, 0),), block_count=2, byte_size=4096),
+        _tensor_backing_config(1, nodes=((0, 0),), byte_offset=2048, byte_size=2048),
+    ]
+
+    with pytest.raises(ValueError, match="byte ranges partially overlap"):
+        kernel_runner.build_cb_descriptors(
+            tensors=tensors,
+            cb_configs=configs,
+            core_ranges=_FakeCoreRanges(),
+        )
+
+
+def test_build_cb_descriptors_rejects_aliased_range_with_distinct_indices(
+    monkeypatch,
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+    )
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    tensors = [
+        _FakeTensor(object(), address=0x4000, dtype=expected_dtype),
+        _FakeTensor(object(), address=0x4000, dtype=expected_dtype),
+    ]
+    configs = [
+        _tensor_backing_config(0, nodes=((0, 0),)),
+        _tensor_backing_config(1, nodes=((0, 0),)),
+    ]
+
+    with pytest.raises(ValueError, match="require one physical DFB index"):
+        kernel_runner.build_cb_descriptors(
+            tensors=tensors,
+            cb_configs=configs,
+            core_ranges=_FakeCoreRanges(),
+        )
+
+
+def test_build_cb_descriptors_allows_same_address_on_disjoint_nodes(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+    )
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    tensors = [
+        _FakeTensor(object(), address=0x4000, dtype=expected_dtype),
+        _FakeTensor(object(), address=0x4000, dtype=expected_dtype),
+    ]
+    configs = [
+        _tensor_backing_config(0, nodes=((0, 0),)),
+        _tensor_backing_config(1, nodes=((1, 0),)),
+    ]
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=tensors,
+        cb_configs=configs,
+        core_ranges=_FakeCoreRanges(),
+    )
+
+    assert len(descriptors) == 2
+
+
+def test_build_cb_descriptors_excludes_tensor_backing_from_static_budget(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 1
+    )
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    tensor = _FakeTensor(object(), dtype=expected_dtype)
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[tensor],
+        cb_configs=[_tensor_backing_config(0, nodes=((0, 0),))],
+        core_ranges=_FakeCoreRanges(),
+    )
+
+    assert len(descriptors) == 1
+
+
+def test_build_cb_descriptors_charges_mixed_storage_once(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 1024
+    )
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    tensor = _FakeTensor(object(), dtype=expected_dtype)
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (
+            DFBStorageSegment(
+                nodes=((0, 0),),
+                tensor_index=0,
+                byte_offset=0,
+                byte_size=2048,
+            ),
+            DFBStorageSegment(nodes=((1, 0),)),
+        ),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Total circular buffer allocation \\(2048 bytes\\) exceeds L1 budget \\(1024 bytes\\)",
+    ):
+        kernel_runner.build_cb_descriptors(
+            tensors=[tensor],
+            cb_configs=[config],
+            core_ranges=_FakeCoreRanges(),
+        )
+
+
 def test_emit_runner_source_preserves_subtile_geometry(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
 
@@ -485,6 +879,30 @@ def test_emit_runner_source_preserves_subtile_geometry(monkeypatch):
     assert "block_count=2" in source
     assert "page_size=512" in source
     assert "tile=(16, 16)" in source
+
+
+def test_emit_runner_source_preserves_tensor_backing_segments(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    config = _tensor_backing_config(
+        0,
+        nodes=((0, 0), (1, 0)),
+        byte_offset=2048,
+        byte_size=2048,
+    )
+
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[],
+        cb_configs=[config],
+        grid_cols=2,
+        grid_rows=1,
+        num_tensors=1,
+    )
+
+    assert "from ttl.dataflow_buffer import DFBStorageSegment" in source
+    assert "nodes=((0, 0), (1, 0))" in source
+    assert "tensor_index=0" in source
+    assert "byte_offset=2048" in source
+    assert "byte_size=2048" in source
 
 
 def test_emit_runner_source_uses_shared_pipe_resource_helpers():

@@ -19,6 +19,53 @@ share one physical index without merging their producer/consumer protocols.
 Every user declaration carries `dfb_id`. Compiler-created declarations may
 omit it until module finalization assigns a unique identity.
 
+## Tensor-backed storage
+
+`ttl.make_tensor_backed_dfb` binds a DFB's complete capacity to a byte range
+of an operation tensor's node-local L1 allocation:
+
+```python
+input_dfb = ttl.make_tensor_backed_dfb(
+    input_tensor, shape=(1, tile_count), block_count=1
+)
+
+@ttl.datamovement()
+def publish_input():
+    input_dfb.publish()
+```
+
+The tensor must use TILE layout, height-sharded L1 storage, and BF16 or FP32.
+The optional `byte_offset` must be page-aligned. The bound byte size is
+`product(shape) * block_count * page_size`; allocation padding does not change
+the DFB capacity. The current contract supports one device and one or more
+launch nodes whose tensor shards use the same local DFB specification.
+
+The host creates or receives the device tensor before launching the operation.
+The tt-lang launcher binds the DFB descriptor to the current invocation's
+tensor with `ttnn.cb_descriptor_from_sharded_tensor`. Before binding, it uses
+`ttnn.get_optimal_worker_cores_for_sharded_tensor` to require shard data on
+every selected launch node. It does not copy tensor bytes while constructing
+the program. TTNN orders a host-originated upload before the operation
+dispatch.
+
+Descriptor binding does not make input pages readable. `publish()` emits one
+reserve/push pair for the complete DFB capacity. These protocol operations
+advance the DFB producer state without moving bytes. Compute then uses the
+normal wait/pop protocol. Consumers acquire and pop every block in FIFO order;
+the DFB can be reused after the complete published capacity has been popped. A
+tensor-backed output uses reserve/store/push so the packer writes directly into
+the output tensor allocation.
+
+`ttl.bind_cb` records the optional `#ttl.tensor_backing` identity as an
+operation tensor index, byte offset, and byte size. Finalization emits exact
+launch-node storage segments in `ttl.dfb_allocations`. Tensor-backed segments
+do not contribute static DFB L1 bytes because the tensor allocator already
+accounts for their storage. Scratch and tensor-backed segments may use the
+same physical DFB index only on disjoint launch nodes.
+
+The simulator exposes the same constructor signature but rejects it because
+simulated tensor-backed storage is not implemented.
+
 ## Pipeline
 
 The DFB-related passes in `ttl-to-ttkernel-pipeline` execute in this order:
@@ -84,8 +131,9 @@ bind_cb   cb_reserve                cb_wait              L1 buffer held
 
 `cb_reserve` claims a buffer slot for the packer; `cb_push` releases that slot
 to the unpacker. `cb_wait` blocks until the slot is available; `cb_pop`
-releases it back to the packer. `bind_cb` allocates the L1 backing storage and
-is shared by both sides.
+releases it back to the packer. `bind_cb` identifies the hardware binding
+shared by both sides. The launcher provisions either static scratch storage or
+the finalized tensor-backed storage for that binding.
 
 The hardware-visible occupancy of one DFB is the difference between published
 producer slots and released consumer slots. `cb_push` increases that occupancy

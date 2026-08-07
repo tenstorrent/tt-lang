@@ -12,7 +12,6 @@ so their DFBs remain live until all known uses complete.
 """
 
 import os
-import re
 
 import pytest
 import torch
@@ -20,7 +19,7 @@ import torch
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 import ttl  # noqa: E402
-from ttlang_test_utils import to_dram, to_l1  # noqa: E402
+from ttlang_test_utils import to_dram, to_l1, to_l1_sharded  # noqa: E402
 from utils.correctness import assert_allclose  # noqa: E402
 
 pytestmark = pytest.mark.requires_device
@@ -96,28 +95,19 @@ def _make_nested_copy_atom(data_format, level_count):
     return nested_copy
 
 
-def _make_external_composition_kernel(data_format):
+def _make_external_composition_body(data_format):
     nested_copy = _make_nested_copy_atom(data_format, OVER_CAPACITY_COMPOSITION_LEVELS)
 
-    @ttl.operation(grid=(1, 1))
-    def external_composition_kernel(lhs, rhs, result):
-        lhs_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
-        first_rhs_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
-        second_rhs_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+    @ttl.operation()
+    def external_composition_body(
+        lhs_dfb: ttl.DFB,
+        first_rhs_dfb: ttl.DFB,
+        second_rhs_dfb: ttl.DFB,
+        result_dfb: ttl.DFB,
+    ):
         product_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
         copied_product_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
         computed_product_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
-        result_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
-
-        lhs_destination = lhs_dfb.reserve()
-        ttl.copy(lhs[0, 0], lhs_destination).wait()
-        lhs_destination.push()
-        first_rhs_destination = first_rhs_dfb.reserve()
-        ttl.copy(rhs[0, 0], first_rhs_destination).wait()
-        first_rhs_destination.push()
-        second_rhs_destination = second_rhs_dfb.reserve()
-        ttl.copy(rhs[0, 0], second_rhs_destination).wait()
-        second_rhs_destination.push()
 
         _external_eltwise_mul(lhs_dfb, first_rhs_dfb, product_dfb)
         nested_copy(product_dfb, copied_product_dfb)
@@ -129,28 +119,76 @@ def _make_external_composition_kernel(data_format):
 
         _external_eltwise_mul(computed_product_dfb, second_rhs_dfb, result_dfb)
 
-        result_source = result_dfb.wait()
-        ttl.copy(result_source, result[0, 0]).wait()
-        result_source.pop()
+    return external_composition_body
+
+
+def _make_external_composition_kernel(data_format, tensor_backed):
+    external_composition_body = _make_external_composition_body(data_format)
+
+    if tensor_backed:
+
+        @ttl.operation(grid=(1, 1))
+        def external_composition_kernel(lhs, first_rhs, second_rhs, result):
+            lhs_dfb = ttl.make_tensor_backed_dfb(lhs, shape=(1, 1))
+            first_rhs_dfb = ttl.make_tensor_backed_dfb(first_rhs, shape=(1, 1))
+            second_rhs_dfb = ttl.make_tensor_backed_dfb(second_rhs, shape=(1, 1))
+            result_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+
+            lhs_dfb.publish()
+            first_rhs_dfb.publish()
+            second_rhs_dfb.publish()
+
+            external_composition_body(
+                lhs_dfb, first_rhs_dfb, second_rhs_dfb, result_dfb
+            )
+
+            result_source = result_dfb.wait()
+            ttl.copy(result_source, result[0, 0]).wait()
+            result_source.pop()
+
+    else:
+
+        @ttl.operation(grid=(1, 1))
+        def external_composition_kernel(lhs, first_rhs, second_rhs, result):
+            lhs_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+            first_rhs_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+            second_rhs_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+            result_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+
+            lhs_destination = lhs_dfb.reserve()
+            ttl.copy(lhs[0, 0], lhs_destination).wait()
+            lhs_destination.push()
+            first_rhs_destination = first_rhs_dfb.reserve()
+            ttl.copy(first_rhs[0, 0], first_rhs_destination).wait()
+            first_rhs_destination.push()
+            second_rhs_destination = second_rhs_dfb.reserve()
+            ttl.copy(second_rhs[0, 0], second_rhs_destination).wait()
+            second_rhs_destination.push()
+
+            external_composition_body(
+                lhs_dfb, first_rhs_dfb, second_rhs_dfb, result_dfb
+            )
+
+            result_source = result_dfb.wait()
+            ttl.copy(result_source, result[0, 0]).wait()
+            result_source.pop()
 
     return external_composition_kernel
 
 
 _external_bf16_multiply = _make_external_multiply_kernel("bf16")
 _external_f32_multiply = _make_external_multiply_kernel("float32")
-_external_bf16_composition = _make_external_composition_kernel("bf16")
-_external_f32_composition = _make_external_composition_kernel("float32")
+_external_bf16_composition = _make_external_composition_kernel("bf16", False)
+_external_f32_composition = _make_external_composition_kernel("float32", False)
+_tensor_backed_bf16_composition = _make_external_composition_kernel("bf16", True)
+_tensor_backed_f32_composition = _make_external_composition_kernel("float32", True)
 
 assert EXTERNAL_COMPOSITION_LOGICAL_DFBS > 32
 
 
 def _count_final_dfb_allocations(final_mlir_path):
     final_mlir = final_mlir_path.read_text()
-    allocations = re.search(
-        r"ttl\.dfb_allocations = \[(.*?)\](?:,|})", final_mlir, re.DOTALL
-    )
-    assert allocations is not None
-    return allocations.group(1).count("dfb_index =")
+    return final_mlir.count("dfb_index =")
 
 
 @pytest.mark.parametrize(
@@ -197,28 +235,53 @@ def test_external_multiply_with_dfb_allocation(
 
 
 @pytest.mark.parametrize(
-    ("operation", "dtype"),
+    ("scratch_operation", "tensor_backed_operation", "dtype"),
     [
-        (_external_bf16_composition, torch.bfloat16),
-        (_external_f32_composition, torch.float32),
+        (
+            _external_bf16_composition,
+            _tensor_backed_bf16_composition,
+            torch.bfloat16,
+        ),
+        (
+            _external_f32_composition,
+            _tensor_backed_f32_composition,
+            torch.float32,
+        ),
     ],
     ids=["bf16", "f32"],
 )
 @pytest.mark.parametrize(
-    ("memory_config", "to_device"),
-    [("dram", to_dram), ("l1", to_l1)],
-    ids=["dram", "l1"],
+    ("storage_kind", "to_device"),
+    [
+        ("scratch", to_dram),
+        ("scratch", to_l1),
+        ("tensor_backed", to_l1_sharded),
+    ],
+    ids=["scratch-dram", "scratch-l1", "tensor-backed"],
 )
 def test_external_composition_requires_dfb_reuse(
-    device, operation, dtype, memory_config, to_device, monkeypatch, tmp_path
+    device,
+    scratch_operation,
+    tensor_backed_operation,
+    dtype,
+    storage_kind,
+    to_device,
+    monkeypatch,
+    tmp_path,
 ):
     element_indices = torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE)
     lhs_host = ((element_indices.remainder(41) - 20) / 16).to(dtype)
     rhs_host = (((3 * element_indices).remainder(37) - 18) / 16).to(dtype)
 
     lhs = to_device(lhs_host, device)
-    rhs = to_device(rhs_host, device)
+    first_rhs = to_device(rhs_host, device)
+    second_rhs = to_device(rhs_host, device)
     result = to_device(torch.zeros_like(lhs_host), device)
+    operation = (
+        tensor_backed_operation
+        if storage_kind == "tensor_backed"
+        else scratch_operation
+    )
 
     # The disabled mode requires one physical index for each of the 38 logical
     # DFBs, proving that enabled execution cannot fit without index reuse.
@@ -226,11 +289,23 @@ def test_external_composition_requires_dfb_reuse(
         RuntimeError,
         match=("need 38 unspilled DFB indices " "but hardware supports at most 32"),
     ):
-        operation(lhs, rhs, result, options="--no-ttl-reuse-user-dfbs")
+        operation(
+            lhs,
+            first_rhs,
+            second_rhs,
+            result,
+            options="--no-ttl-reuse-user-dfbs",
+        )
 
     final_mlir_path = tmp_path / "external_atom_composition.mlir"
     monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
-    operation(lhs, rhs, result, options="--ttl-reuse-user-dfbs")
+    operation(
+        lhs,
+        first_rhs,
+        second_rhs,
+        result,
+        options="--ttl-reuse-user-dfbs",
+    )
     assert (
         _count_final_dfb_allocations(final_mlir_path)
         == EXTERNAL_COMPOSITION_PHYSICAL_DFBS
