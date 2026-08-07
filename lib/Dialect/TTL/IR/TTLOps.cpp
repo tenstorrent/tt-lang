@@ -2133,10 +2133,6 @@ static bool isEnclosingKernelTensorArgument(mlir::Value tensor,
 }
 
 mlir::LogicalResult mlir::tt::ttl::RawAddrOp::verify() {
-  if (!isNocKernelThread(getOperation())) {
-    return emitOpError(
-        "requires an enclosing data movement (noc) kernel thread");
-  }
   if (!isEnclosingKernelTensorArgument(getTensor(), getOperation())) {
     return emitOpError("operand must be a function tensor argument with TTL "
                        "layout encoding; slices/views are not supported");

@@ -111,3 +111,19 @@ func.func @call_with_raw_addr_func_arg(%arg0: tensor<1x1x!ttcore.tile<32x32, f32
   ttl.opaque_call "use_addr" (%addr) {header = "use_addr.hpp", unsigned_arg_indices = array<i32: 0>} : (i32) -> ()
   return
 }
+
+// -----
+
+#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
+
+// Raw addresses need no TensorAccessor, so compute kernels can use their tensor runtime argument.
+// CHECK-LABEL: func.func @call_with_compute_raw_addr_func_arg
+// CHECK-DAG: %[[C0_IDX:.*]] = arith.constant 0 : index
+// CHECK-DAG: %[[ADDR:.*]] = ttkernel.get_common_arg_val(%[[C0_IDX]]) : (index) -> i32
+// CHECK: ttkernel.opaque_call "use_addr"(%[[ADDR]]) {header = "use_addr.hpp", unsigned_arg_indices = array<i32: 0>} : (i32) -> ()
+func.func @call_with_compute_raw_addr_func_arg(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %addr = ttl.raw_addr %arg0 : tensor<1x1x!ttcore.tile<32x32, f32>, #layout> -> i32
+  ttl.opaque_call "use_addr" (%addr) {header = "use_addr.hpp", unsigned_arg_indices = array<i32: 0>} : (i32) -> ()
+  return
+}
