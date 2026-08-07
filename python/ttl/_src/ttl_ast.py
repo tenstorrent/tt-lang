@@ -772,6 +772,69 @@ class TTLGenericCompiler(TTCompilerBase):
                     raise
                 self._raise_error(node, str(e))
 
+    def _evaluate_pipe_identity_predicate(self, node):
+        """Evaluate a callback-identity comparison while materializing its pipe."""
+        if (
+            not isinstance(node, ast.Compare)
+            or len(node.ops) != 1
+            or len(node.comparators) != 1
+        ):
+            return self._NO_PIPE_IDENTITY_VALUE
+
+        lhs = self._evaluate_pipe_identity_expression(node.left)
+        rhs = self._evaluate_pipe_identity_expression(node.comparators[0])
+        lhs_is_identity = lhs is not self._NO_PIPE_IDENTITY_VALUE
+        rhs_is_identity = rhs is not self._NO_PIPE_IDENTITY_VALUE
+        if not lhs_is_identity and not rhs_is_identity:
+            return self._NO_PIPE_IDENTITY_VALUE
+
+        try:
+            if not lhs_is_identity:
+                lhs = ast.literal_eval(node.left)
+            if not rhs_is_identity:
+                rhs = ast.literal_eval(node.comparators[0])
+        except (ValueError, TypeError, SyntaxError):
+            self._raise_error(
+                node,
+                "pipe callback identity comparisons require a literal "
+                "non-identity operand",
+            )
+
+        operation = node.ops[0]
+        try:
+            if isinstance(operation, ast.Eq):
+                return lhs == rhs
+            if isinstance(operation, ast.NotEq):
+                return lhs != rhs
+            if isinstance(operation, ast.Lt):
+                return lhs < rhs
+            if isinstance(operation, ast.LtE):
+                return lhs <= rhs
+            if isinstance(operation, ast.Gt):
+                return lhs > rhs
+            if isinstance(operation, ast.GtE):
+                return lhs >= rhs
+        except TypeError as error:
+            self._raise_error(
+                node, f"invalid pipe callback identity comparison: {error}"
+            )
+
+        self._raise_error(
+            node,
+            f"pipe callback identity comparison operator "
+            f"{type(operation).__name__} is not supported",
+        )
+
+    def visit_If(self, node):
+        identity_predicate = self._evaluate_pipe_identity_predicate(node.test)
+        if identity_predicate is self._NO_PIPE_IDENTITY_VALUE:
+            return super().visit_If(node)
+
+        self._reject_unsupported_language_constructs([node])
+        selected_body = node.body if identity_predicate else node.orelse
+        for statement in selected_body:
+            self.visit(statement)
+
     def visit_Compare(self, node):
         """Attach the comparison's AST source location to the emitted
         `arith.cmpi`, so verifier and runtime diagnostics that reference the
