@@ -10,6 +10,7 @@ set(LLK_HEADERS
   experimental_pack_untilize_llks
   experimental_invoke_sfpi_llks
   experimental_matmul_llks
+  experimental_mul_reduce
   experimental_padding_llks
   experimental_coord_translation
   experimental_fabric_topology_info

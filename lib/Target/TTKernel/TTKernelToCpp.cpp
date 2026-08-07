@@ -14,6 +14,7 @@
 #include "ttlang/Target/TTKernel/LLKs/experimental_fabric_topology_info_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_invoke_sfpi_llks_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_matmul_llks_generated.h"
+#include "ttlang/Target/TTKernel/LLKs/experimental_mul_reduce_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_pack_untilize_llks_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_padding_llks_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_reg_api_generated.h"
@@ -160,6 +161,8 @@ public:
                 experimental_matmul_llks_generated_len);
       }
       if (callee == "experimental::row_normalization_block") {
+        emitLlk(experimental_mul_reduce_generated,
+                experimental_mul_reduce_generated_len);
         emitLlk(experimental_row_normalization_generated,
                 experimental_row_normalization_generated_len);
       }
