@@ -73,6 +73,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   // Schedule selection retains semantic pipelines until target and kernel
   // constraints are known without publishing DFB-index-derived attributes.
   pm.addNestedPass<func::FuncOp>(createTTLLowerComputePipelines());
+  pm.addNestedPass<func::FuncOp>(createTTLLowerSourceScalarScopes());
   addProducerComputeCreation(pm, options);
   addDFBFinalization(pm, options);
   addKernelConfig(pm, options);

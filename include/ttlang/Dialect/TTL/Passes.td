@@ -485,9 +485,12 @@ def TTLSelectComputePipelineSchedules
   let summary = "Select target-specific compute pipeline schedules";
   let description = [{
     Resolves the complete compute-kernel configuration on immutable IR, then
-    records only compute pipeline schedule decisions. The selected schedules
-    allow pipeline lowering and intermediate dataflow-buffer materialization
-    to complete before the final kernel configuration is resolved and applied.
+    applies only compute pipeline schedule decisions. Retained full-scalar
+    decisions form `ttl.source_scalar_scope` operations from the recorded
+    producer-consumer split; other decisions remain attributes on
+    `ttl.compute_pipeline`. The selected schedules allow pipeline lowering and
+    intermediate dataflow-buffer materialization to complete before the final
+    kernel configuration is resolved and applied.
   }];
 
   let options = [

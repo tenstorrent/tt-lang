@@ -2055,6 +2055,7 @@ def _lower_program_to_kernel(
             *dfb_finalization_passes,
             select_compute_pipeline_pass,
             "func.func(ttl-lower-compute-pipelines)",
+            "func.func(ttl-lower-source-scalar-scopes)",
             *producer_compute_passes,
             *dfb_finalization_passes,
             set_compute_config_pass,

@@ -152,8 +152,9 @@ The pipeline runs these passes in order:
 - `ttl-verify-pipenet-guards`, then `ttl-verify-pipenet-schedule` -- verify PipeNet launch domains and event ordering while logical DFB identities remain distinct and before physical DFB allocation
 - `ttl-coalesce-dfb-acquires` -- coalesce compatible DFB acquires
 - `ttl-finalize-dfb-indices` -- assign logical DFBs to physical indices, validate capacity, and emit runtime metadata; `reuse-user-dfbs` controls user-DFB reuse and `exact-coloring-search-limit` bounds exhaustive fixed-limit and minimum physical-index-count queries
-- `ttl-select-compute-pipeline-schedules` -- resolve kernel configuration and target schedule alternatives together, then record only the selected pipeline schedules
+- `ttl-select-compute-pipeline-schedules` -- resolve kernel configuration and target schedule alternatives together, then apply selected schedules and form retained source-scalar scopes
 - `ttl-lower-compute-pipelines` -- inline selected pipeline stages and retain their selected schedule on the result operation
+- `ttl-lower-source-scalar-scopes` -- inline planned producer-consumer scalar lifetimes while preserving the retained-schedule marker for target compute creation
 - `ttl-create-producer-compute`, `ttl-insert-intermediate-dfbs`, `convert-ttl-to-compute`, `ttl-insert-cb-sync`, PipeNet verification, `ttl-coalesce-dfb-acquires`, and `ttl-finalize-dfb-indices` -- lower the selected compute-local blocks or ordinary materialized operations and finalize any new DFBs
 - `ttl-set-compute-kernel-config` -- select tile execution strategies and resolve kernel-wide DST and per-DFB unpack configuration
 - `ttl-assign-dst` -- DST register allocation (linear scan with copy insertion)

@@ -30,6 +30,9 @@
 // CHECK-NEXT: func.func(
 // CHECK-NEXT:   ttl-lower-compute-pipelines
 // CHECK-NEXT: ),
+// CHECK-NEXT: func.func(
+// CHECK-NEXT:   ttl-lower-source-scalar-scopes
+// CHECK-NEXT: ),
 // CHECK:        ttl-insert-cb-sync
 // CHECK-NEXT: ),
 // CHECK-NEXT: ttl-verify-pipenet-guards,

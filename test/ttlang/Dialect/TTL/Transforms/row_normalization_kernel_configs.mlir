@@ -5,9 +5,14 @@
 
 // Four fp32 half-sync tiles exactly fill the effective DST capacity.
 // CHECK-LABEL: func.func @fp32_half_sync_fits
-// CHECK:       ttl.compute_pipeline
-// CHECK-SAME:  pipeline_kind = #ttl.compute_pipeline_kind<row_normalization>
-// CHECK-SAME:  selected_schedule = #ttl.compute_pipeline_schedule<retained_scalar>
+// CHECK:       ttl.source_scalar_scope
+// CHECK:       producer {
+// CHECK:         ttl.compute_stage
+// CHECK:         ttl.compute_stage
+// CHECK:         ttl.source_scalar_yield
+// CHECK:       } consumer {
+// CHECK:         ttl.compute_stage
+// CHECK:         ttl.source_scalar_yield
 // REMARK-NOT:  Function=fp32_half_sync_fits
 module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @fp32_half_sync_fits()
@@ -130,9 +135,14 @@ module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
 
 // Full sync retains the helper's eight-tile limit under bf16 accumulation.
 // CHECK-LABEL: func.func @bf16_full_sync_fits
-// CHECK:       ttl.compute_pipeline
-// CHECK-SAME:  pipeline_kind = #ttl.compute_pipeline_kind<row_normalization>
-// CHECK-SAME:  selected_schedule = #ttl.compute_pipeline_schedule<retained_scalar>
+// CHECK:       ttl.source_scalar_scope
+// CHECK:       producer {
+// CHECK:         ttl.compute_stage
+// CHECK:         ttl.compute_stage
+// CHECK:         ttl.source_scalar_yield
+// CHECK:       } consumer {
+// CHECK:         ttl.compute_stage
+// CHECK:         ttl.source_scalar_yield
 // REMARK-NOT:  Function=bf16_full_sync_fits
 module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @bf16_full_sync_fits()
@@ -192,9 +202,14 @@ module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
 
 // Full sync restores eight usable tiles under fp32 accumulation.
 // CHECK-LABEL: func.func @fp32_full_sync_fits
-// CHECK:       ttl.compute_pipeline
-// CHECK-SAME:  pipeline_kind = #ttl.compute_pipeline_kind<row_normalization>
-// CHECK-SAME:  selected_schedule = #ttl.compute_pipeline_schedule<retained_scalar>
+// CHECK:       ttl.source_scalar_scope
+// CHECK:       producer {
+// CHECK:         ttl.compute_stage
+// CHECK:         ttl.compute_stage
+// CHECK:         ttl.source_scalar_yield
+// CHECK:       } consumer {
+// CHECK:         ttl.compute_stage
+// CHECK:         ttl.source_scalar_yield
 // REMARK-NOT:  Function=fp32_full_sync_fits
 module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @fp32_full_sync_fits()
