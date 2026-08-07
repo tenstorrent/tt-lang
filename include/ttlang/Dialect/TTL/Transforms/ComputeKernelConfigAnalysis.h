@@ -141,6 +141,30 @@ struct FullFp32AccumulationUse {
   FullFp32AccumulationKind kind;
 };
 
+/// One exact compute-stage operand that consumes a retained full scalar.
+struct SourceScalarConsumerPlan {
+  Operation *stage;
+  unsigned operandIndex;
+};
+
+/// One stage and its exact tensor inputs at planning time.
+struct SourceScalarStagePlan {
+  Operation *stage;
+  llvm::SmallVector<Value> inputs;
+};
+
+/// Immutable producer-consumer split for one source-scalar lifetime.
+struct SourceScalarRetentionPlan {
+  Operation *producerStage;
+  unsigned producerResult;
+  llvm::SmallVector<SourceScalarStagePlan> producerStages;
+  llvm::SmallVector<SourceScalarStagePlan> consumerStages;
+  llvm::SmallVector<SourceScalarConsumerPlan> consumers;
+};
+
+using SourceScalarRetentionPlanPtr =
+    std::shared_ptr<const SourceScalarRetentionPlan>;
+
 /// Requirements for one legal compute-pipeline schedule.
 struct ComputePipelineScheduleOption {
   ComputePipelineKind kind;
@@ -148,6 +172,7 @@ struct ComputePipelineScheduleOption {
   llvm::SmallVector<DFBInputUse> dfbInputUses;
   llvm::SmallVector<DestinationUse> destinationUses;
   std::uint32_t requiredDstSlots = 0;
+  SourceScalarRetentionPlanPtr sourceScalar;
 };
 
 /// Schedule alternatives retained for kernel-wide resolution.
@@ -175,6 +200,7 @@ struct ComputePipelineScheduleDecision {
   Operation *pipeline;
   ComputePipelineSchedule schedule;
   std::optional<ComputePipelineScheduleRejection> rejection;
+  SourceScalarRetentionPlanPtr sourceScalar;
 };
 
 /// Target-independent requirements collected from immutable TTL IR.
@@ -237,11 +263,12 @@ FailureOr<KernelConfigPlan> resolveKernelConfig(
     const KernelConfigPolicy &policy, const KernelRequirements &requirements);
 
 /// Apply a resolved plan without deriving additional configuration policy.
-void applyKernelConfigPlan(func::FuncOp function, const KernelConfigPlan &plan);
+LogicalResult applyKernelConfigPlan(func::FuncOp function,
+                                    const KernelConfigPlan &plan);
 
 /// Apply only compute pipeline schedule decisions from a resolved plan.
-void applyComputePipelineSchedulePlan(func::FuncOp function,
-                                      const KernelConfigPlan &plan);
+LogicalResult applyComputePipelineSchedulePlan(func::FuncOp function,
+                                               const KernelConfigPlan &plan);
 
 } // namespace mlir::tt::ttl
 

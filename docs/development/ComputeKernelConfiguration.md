@@ -230,6 +230,7 @@ The relevant ordering is:
 ttl-finalize-dfb-indices
 ttl-select-compute-pipeline-schedules
 ttl-lower-compute-pipelines
+ttl-lower-source-scalar-scopes
 ttl-create-producer-compute
 ttl-insert-intermediate-dfbs
 convert-ttl-to-compute
@@ -242,8 +243,10 @@ convert-ttl-to-ttkernel
 
 The first DFB finalization resolves input identities required by schedule
 selection. The selection pass applies no function configuration attributes.
-Pipeline lowering and the second compute-creation sequence then create the
-selected target block or materialized DFBs. The second DFB finalization resolves
+For retained full-scalar edges, it applies the recorded resource split as a
+`ttl.source_scalar_scope`; unsupported schedules remain materialized pipelines.
+Pipeline and source-scalar-scope lowering then expose the selected operations
+to the second compute-creation sequence. The second DFB finalization resolves
 their physical identities before final configuration. DST assignment runs
 after strategy selection because operand routes determine copy insertion and
 register allocation. TTKernel conversion consumes the same selected

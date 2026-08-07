@@ -56,7 +56,9 @@ struct TTLSelectComputePipelineSchedulesPass
       signalPassFailure();
       return;
     }
-    applyComputePipelineSchedulePlan(function, *plan);
+    if (failed(applyComputePipelineSchedulePlan(function, *plan))) {
+      signalPassFailure();
+    }
   }
 };
 
@@ -76,7 +78,9 @@ struct TTLSetComputeKernelConfigPass
       signalPassFailure();
       return;
     }
-    applyKernelConfigPlan(function, *plan);
+    if (failed(applyKernelConfigPlan(function, *plan))) {
+      signalPassFailure();
+    }
   }
 };
 

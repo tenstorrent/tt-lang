@@ -124,6 +124,7 @@ ttl-lower-compute-pipelines
   -> ttl-finalize-dfb-indices
   -> ttl-select-compute-pipeline-schedules
   -> ttl-lower-compute-pipelines
+  -> ttl-lower-source-scalar-scopes
   -> ttl-create-producer-compute
   -> ttl-insert-intermediate-dfbs
   -> convert-ttl-to-compute
@@ -144,11 +145,24 @@ recognized multi-domain graphs as `ttl.compute_pipeline` operations.
 The first DFB finalization exposes physical input identities required by
 kernel-configuration analysis. `ttl-select-compute-pipeline-schedules` resolves
 kernel configuration and schedule alternatives together, then applies only the
-pipeline schedule decisions. `ttl-lower-compute-pipelines` inlines the selected
-pipeline stages. The second compute-creation sequence emits the selected
-compute-local block or the ordinary materialized operations and finalizes any
-new DFBs. `ttl-set-compute-kernel-config` resolves and applies the configuration
-for the resulting operations before DST assignment.
+pipeline schedule decisions. A selected source-scalar lifetime becomes a
+`ttl.source_scalar_scope` with producer and consumer regions; the consumer's
+first block argument identifies the retained full scalar. Other selected
+pipelines remain `ttl.compute_pipeline` operations.
+
+`ttl-lower-compute-pipelines` inlines the remaining pipeline stages.
+`ttl-lower-source-scalar-scopes` validates and inlines the scoped stages while
+preserving the retained-schedule marker for target compute creation. The second
+compute-creation sequence emits the selected compute-local block or the
+ordinary materialized operations and finalizes any new DFBs.
+`ttl-set-compute-kernel-config` resolves and applies the configuration for the
+resulting operations before DST assignment.
+
+The source-scalar plan records the producer stage and result, the complete
+producer-consumer split, and every consumer operand. Plan application validates
+those identities before mutation. The scope verifier requires a static
+full-scalar producer result, zero-indexed consumer maps, and stage-owned scope
+results; the source-scalar block argument cannot escape directly.
 
 No plan survives a pass that modifies the kernel. Each of the three TT-Lang
 pipeline entry points must preserve and test this order:

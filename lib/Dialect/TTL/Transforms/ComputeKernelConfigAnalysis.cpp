@@ -12,6 +12,8 @@
 
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/IRMapping.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Remarks.h"
 #include "mlir/IR/SymbolTable.h"
 #include "llvm/ADT/MapVector.h"
@@ -295,6 +297,119 @@ getTileExecutionChoice(TileExecutionOpInterface executionOp) {
                              static_cast<bool>(selectedAttr)};
 }
 
+static bool isFullScalarType(RankedTensorType type) {
+  return type.hasStaticShape() &&
+         llvm::all_of(type.getShape(),
+                      [](int64_t dimension) { return dimension == 1; });
+}
+
+static bool isFullScalarMap(AffineMap map) {
+  return llvm::all_of(map.getResults(), [](AffineExpr expression) {
+    auto constant = dyn_cast<AffineConstantExpr>(expression);
+    return constant && constant.getValue() == 0;
+  });
+}
+
+/// Find a producer-consumer split whose only cross-boundary stage result is a
+/// full scalar consumed through zero-indexed operand maps.
+static std::optional<SourceScalarRetentionPlan>
+buildSourceScalarRetentionPlan(ComputePipelineOp pipeline) {
+  Block &body = pipeline.getBody().front();
+  SmallVector<ComputeStageOp> stages(body.getOps<ComputeStageOp>().begin(),
+                                     body.getOps<ComputeStageOp>().end());
+  auto getStageIndex = [&](Operation *operation) -> std::optional<unsigned> {
+    auto stage = dyn_cast_or_null<ComputeStageOp>(operation);
+    if (!stage) {
+      return std::nullopt;
+    }
+    auto iterator = llvm::find(stages, stage);
+    if (iterator == stages.end()) {
+      return std::nullopt;
+    }
+    return static_cast<unsigned>(std::distance(stages.begin(), iterator));
+  };
+
+  auto pipelineYield = cast<ComputePipelineYieldOp>(body.getTerminator());
+  for (unsigned producerIndex = static_cast<unsigned>(stages.size());
+       producerIndex > 0; --producerIndex) {
+    ComputeStageOp producerStage = stages[producerIndex - 1];
+    for (OpResult scalarResult : llvm::reverse(producerStage.getResults())) {
+      auto scalarType = dyn_cast<RankedTensorType>(scalarResult.getType());
+      if (!scalarType || !isFullScalarType(scalarType)) {
+        continue;
+      }
+
+      SourceScalarRetentionPlan plan;
+      plan.producerStage = producerStage;
+      plan.producerResult = scalarResult.getResultNumber();
+      bool validCandidate = true;
+      for (OpOperand &use : scalarResult.getUses()) {
+        auto consumerStage = dyn_cast<ComputeStageOp>(use.getOwner());
+        std::optional<unsigned> consumerIndex = getStageIndex(use.getOwner());
+        if (!consumerStage || !consumerIndex ||
+            *consumerIndex < producerIndex ||
+            use.getOperandNumber() >= consumerStage.getInputs().size()) {
+          validCandidate = false;
+          break;
+        }
+        auto map = cast<AffineMapAttr>(
+                       consumerStage.getIndexingMaps()[use.getOperandNumber()])
+                       .getValue();
+        if (!isFullScalarMap(map)) {
+          validCandidate = false;
+          break;
+        }
+        plan.consumers.push_back({consumerStage, use.getOperandNumber()});
+      }
+      if (!validCandidate || plan.consumers.empty()) {
+        continue;
+      }
+
+      for (unsigned consumerIndex = producerIndex;
+           consumerIndex < stages.size() && validCandidate; ++consumerIndex) {
+        for (Value input : stages[consumerIndex].getInputs()) {
+          if (input == scalarResult || isa<BlockArgument>(input)) {
+            continue;
+          }
+          auto result = dyn_cast<OpResult>(input);
+          std::optional<unsigned> definingStageIndex =
+              result ? getStageIndex(result.getOwner()) : std::nullopt;
+          if (!definingStageIndex || *definingStageIndex < producerIndex) {
+            validCandidate = false;
+            break;
+          }
+        }
+      }
+      for (Value yieldedValue : pipelineYield.getValues()) {
+        auto result = dyn_cast<OpResult>(yieldedValue);
+        std::optional<unsigned> definingStageIndex =
+            result ? getStageIndex(result.getOwner()) : std::nullopt;
+        if (!definingStageIndex || *definingStageIndex < producerIndex) {
+          validCandidate = false;
+          break;
+        }
+      }
+      if (!validCandidate) {
+        continue;
+      }
+
+      for (unsigned stageIndex = 0; stageIndex < producerIndex; ++stageIndex) {
+        plan.producerStages.push_back(
+            {stages[stageIndex],
+             llvm::to_vector(stages[stageIndex].getInputs())});
+      }
+      for (unsigned stageIndex = producerIndex; stageIndex < stages.size();
+           ++stageIndex) {
+        plan.consumerStages.push_back(
+            {stages[stageIndex],
+             llvm::to_vector(stages[stageIndex].getInputs())});
+      }
+      return plan;
+    }
+  }
+  return std::nullopt;
+}
+
 /// Collect target-independent alternatives for a recognized semantic
 /// pipeline. The retained-scalar option names only resources that exist before
 /// ordinary materialization creates its internal DFBs.
@@ -341,7 +456,21 @@ getComputePipelineScheduleChoice(ComputePipelineOp pipeline) {
       ComputePipelineSchedule::RetainedScalar,
       {},
       {},
-      static_cast<std::uint32_t>(inputType.getNumElements())};
+      static_cast<std::uint32_t>(inputType.getNumElements()),
+      nullptr};
+  std::optional<SourceScalarRetentionPlan> sourceScalar =
+      buildSourceScalarRetentionPlan(pipeline);
+  if (sourceScalar) {
+    retained.sourceScalar = std::make_shared<const SourceScalarRetentionPlan>(
+        std::move(*sourceScalar));
+  }
+  if (pipelineKind.getValue() == ComputePipelineKind::RowNormalization &&
+      !retained.sourceScalar) {
+    pipeline.emitOpError(
+        "row_normalization retained schedule requires one full-scalar "
+        "producer-consumer lifetime");
+    return failure();
+  }
   for (auto [operandIndex, input] : llvm::enumerate(pipeline.getInputs())) {
     auto currentType = dyn_cast<RankedTensorType>(input.getType());
     FailureOr<Type> currentElementType =
@@ -373,7 +502,8 @@ getComputePipelineScheduleChoice(ComputePipelineOp pipeline) {
       ComputePipelineSchedule::Materialized,
       {},
       {},
-      0};
+      0,
+      nullptr};
 
   SmallVector<ComputePipelineScheduleOption, 2> options;
   ComputePipelineScheduleAttr selected = pipeline.getSelectedScheduleAttr();
@@ -672,6 +802,7 @@ struct KernelExecutionOption {
   std::optional<ComputePipelineSchedule> pipelineSchedule;
   Type pipelineElementType;
   std::uint32_t requiredDstSlots = 0;
+  SourceScalarRetentionPlanPtr sourceScalar;
 };
 
 struct KernelExecutionChoiceOptions {
@@ -702,7 +833,8 @@ getKernelExecutionOptions(const KernelRequirements &requirements,
                                std::nullopt,
                                std::nullopt,
                                {},
-                               0});
+                               0,
+                               nullptr});
     }
     if (choiceOptions.empty()) {
       if (choice.hasExplicitStrategy) {
@@ -731,7 +863,8 @@ getKernelExecutionOptions(const KernelRequirements &requirements,
                              : option.destinationUses.front().elementType;
       choiceOptions.push_back({option.dfbInputUses, option.destinationUses,
                                std::nullopt, option.kind, option.schedule,
-                               elementType, option.requiredDstSlots});
+                               elementType, option.requiredDstSlots,
+                               option.sourceScalar});
     }
     allOptions.push_back({choice.pipeline,
                           ExecutionChoiceKind::ComputePipelineSchedule,
@@ -1311,8 +1444,8 @@ FailureOr<KernelConfigPlan> resolveKernelConfig(
           }
         }
       }
-      pipelineSchedules.push_back(
-          {choice.operation, *option.pipelineSchedule, rejection});
+      pipelineSchedules.push_back({choice.operation, *option.pipelineSchedule,
+                                   rejection, option.sourceScalar});
       break;
     }
   }
@@ -1373,57 +1506,185 @@ FailureOr<KernelConfigPlan> resolveKernelConfig(
       std::move(tileStrategies), std::move(pipelineSchedules));
 }
 
-void applyComputePipelineSchedulePlan(func::FuncOp function,
-                                      const KernelConfigPlan &plan) {
+static LogicalResult
+validateSourceScalarRetentionPlan(ComputePipelineOp pipeline,
+                                  const SourceScalarRetentionPlan &plan) {
+  Block &body = pipeline.getBody().front();
+  SmallVector<Operation *> stages;
+  for (ComputeStageOp stage : body.getOps<ComputeStageOp>()) {
+    stages.push_back(stage);
+  }
+  SmallVector<Operation *> plannedStages;
+  for (const SourceScalarStagePlan &stage : plan.producerStages) {
+    plannedStages.push_back(stage.stage);
+  }
+  for (const SourceScalarStagePlan &stage : plan.consumerStages) {
+    plannedStages.push_back(stage.stage);
+  }
+  if (!llvm::equal(stages, plannedStages) || plan.producerStages.empty() ||
+      plan.consumerStages.empty() ||
+      plan.producerStage != plan.producerStages.back().stage ||
+      plan.producerResult >= plan.producerStage->getNumResults()) {
+    return pipeline.emitOpError(
+        "source-scalar resource plan no longer matches the pipeline stages");
+  }
+  auto stageInputsChanged = [](const SourceScalarStagePlan &stage) {
+    return !llvm::equal(stage.stage->getOperands(), stage.inputs);
+  };
+  if (llvm::any_of(plan.producerStages, stageInputsChanged) ||
+      llvm::any_of(plan.consumerStages, stageInputsChanged)) {
+    return pipeline.emitOpError(
+        "source-scalar resource plan no longer matches stage inputs");
+  }
+
+  Value scalar = plan.producerStage->getResult(plan.producerResult);
+  SmallVector<std::pair<Operation *, unsigned>> actualConsumers;
+  for (OpOperand &use : scalar.getUses()) {
+    actualConsumers.emplace_back(use.getOwner(), use.getOperandNumber());
+  }
+  if (actualConsumers.size() != plan.consumers.size()) {
+    return pipeline.emitOpError(
+        "source-scalar resource plan no longer matches scalar uses");
+  }
+  for (const SourceScalarConsumerPlan &consumer : plan.consumers) {
+    if (!llvm::is_contained(actualConsumers,
+                            std::pair<Operation *, unsigned>{
+                                consumer.stage, consumer.operandIndex})) {
+      return pipeline.emitOpError(
+          "source-scalar resource plan no longer matches scalar consumers");
+    }
+  }
+  return success();
+}
+
+static void formSourceScalarScope(ComputePipelineOp pipeline,
+                                  const SourceScalarRetentionPlan &plan,
+                                  IRRewriter &rewriter) {
+  Block &pipelineBody = pipeline.getBody().front();
+  auto pipelineYield =
+      cast<ComputePipelineYieldOp>(pipelineBody.getTerminator());
+  Location location = pipeline.getLoc();
+
+  rewriter.setInsertionPoint(pipeline);
+  auto scope = SourceScalarScopeOp::create(
+      rewriter, location, pipeline.getResultTypes(), pipeline.getInputs());
+
+  Block *producerBody = rewriter.createBlock(&scope.getProducer());
+  for (Value input : pipeline.getInputs()) {
+    producerBody->addArgument(input.getType(), location);
+  }
+  IRMapping producerMapping;
+  for (auto [pipelineArgument, producerArgument] : llvm::zip_equal(
+           pipelineBody.getArguments(), producerBody->getArguments())) {
+    producerMapping.map(pipelineArgument, producerArgument);
+  }
+  rewriter.setInsertionPointToStart(producerBody);
+  for (const SourceScalarStagePlan &stage : plan.producerStages) {
+    rewriter.clone(*stage.stage, producerMapping);
+  }
+  Value scalar = plan.producerStage->getResult(plan.producerResult);
+  Value retainedScalar = producerMapping.lookup(scalar);
+  SourceScalarYieldOp::create(rewriter, location, retainedScalar);
+
+  Block *consumerBody = rewriter.createBlock(&scope.getConsumer());
+  consumerBody->addArgument(retainedScalar.getType(), location);
+  for (Value input : pipeline.getInputs()) {
+    consumerBody->addArgument(input.getType(), location);
+  }
+  IRMapping consumerMapping;
+  consumerMapping.map(scalar, consumerBody->getArgument(0));
+  for (auto [pipelineArgument, consumerArgument] :
+       llvm::zip_equal(pipelineBody.getArguments(),
+                       consumerBody->getArguments().drop_front())) {
+    consumerMapping.map(pipelineArgument, consumerArgument);
+  }
+  rewriter.setInsertionPointToStart(consumerBody);
+  for (const SourceScalarStagePlan &stage : plan.consumerStages) {
+    rewriter.clone(*stage.stage, consumerMapping);
+  }
+  SmallVector<Value> yieldedValues;
+  yieldedValues.reserve(pipelineYield.getValues().size());
+  for (Value yieldedValue : pipelineYield.getValues()) {
+    yieldedValues.push_back(consumerMapping.lookup(yieldedValue));
+  }
+  SourceScalarYieldOp::create(rewriter, location, yieldedValues);
+  rewriter.replaceOp(pipeline, scope.getResults());
+}
+
+LogicalResult applyComputePipelineSchedulePlan(func::FuncOp function,
+                                               const KernelConfigPlan &plan) {
+  for (const ComputePipelineScheduleDecision &decision :
+       plan.getComputePipelineSchedules()) {
+    auto pipeline = dyn_cast<ComputePipelineOp>(decision.pipeline);
+    if (!pipeline) {
+      return function.emitOpError(
+          "compute-pipeline schedule plan references an invalid operation");
+    }
+    if (decision.sourceScalar && failed(validateSourceScalarRetentionPlan(
+                                     pipeline, *decision.sourceScalar))) {
+      return failure();
+    }
+  }
+
   MLIRContext *context = function.getContext();
+  IRRewriter rewriter(context);
   for (const ComputePipelineScheduleDecision &decision :
        plan.getComputePipelineSchedules()) {
     auto pipeline = cast<ComputePipelineOp>(decision.pipeline);
-    pipeline.setSelectedScheduleAttr(
-        ComputePipelineScheduleAttr::get(context, decision.schedule));
-    if (!decision.rejection) {
+    if (decision.rejection) {
+      ComputePipelineKind kind = pipeline.getPipelineKindAttr().getValue();
+      std::string message;
+      llvm::raw_string_ostream output(message);
+      output << stringifyComputePipelineKind(kind) << " fusion not selected: ";
+      switch (decision.rejection->kind) {
+      case ComputePipelineScheduleRejectionKind::UnsupportedTarget:
+        output << "the target does not provide the retained-scalar schedule";
+        break;
+      case ComputePipelineScheduleRejectionKind::UnsupportedElementType:
+        output << "the retained-scalar schedule does not support the pipeline "
+                  "element type";
+        break;
+      case ComputePipelineScheduleRejectionKind::DSTCapacity:
+        output << "the reduction requires "
+               << decision.rejection->requiredDstSlots << " DST slots, but "
+               << decision.rejection->availableDstSlots << " are available";
+        break;
+      case ComputePipelineScheduleRejectionKind::KernelConfigurationConflict:
+        output << "the retained-scalar schedule conflicts with another "
+                  "kernel-wide compute requirement";
+        break;
+      }
+      output << "; ordinary materialized lowering remains selected";
+      remark::missed(pipeline.getLoc(),
+                     remark::RemarkOpts::name("ReductionFusion")
+                         .category("ttl-reduction-fusion")
+                         .function(function.getSymName()))
+          << message;
+    }
+
+    if (decision.sourceScalar) {
+      assert(decision.schedule == ComputePipelineSchedule::RetainedScalar &&
+             "source-scalar plan requires the retained schedule");
+      formSourceScalarScope(pipeline, *decision.sourceScalar, rewriter);
       continue;
     }
-    ComputePipelineKind kind = pipeline.getPipelineKindAttr().getValue();
-    std::string message;
-    llvm::raw_string_ostream output(message);
-    output << stringifyComputePipelineKind(kind) << " fusion not selected: ";
-    switch (decision.rejection->kind) {
-    case ComputePipelineScheduleRejectionKind::UnsupportedTarget:
-      output << "the target does not provide the retained-scalar schedule";
-      break;
-    case ComputePipelineScheduleRejectionKind::UnsupportedElementType:
-      output << "the retained-scalar schedule does not support the pipeline "
-                "element type";
-      break;
-    case ComputePipelineScheduleRejectionKind::DSTCapacity:
-      output << "the reduction requires "
-             << decision.rejection->requiredDstSlots << " DST slots, but "
-             << decision.rejection->availableDstSlots << " are available";
-      break;
-    case ComputePipelineScheduleRejectionKind::KernelConfigurationConflict:
-      output << "the retained-scalar schedule conflicts with another "
-                "kernel-wide compute requirement";
-      break;
-    }
-    output << "; ordinary materialized lowering remains selected";
-    remark::missed(pipeline.getLoc(),
-                   remark::RemarkOpts::name("ReductionFusion")
-                       .category("ttl-reduction-fusion")
-                       .function(function.getSymName()))
-        << message;
+    pipeline.setSelectedScheduleAttr(
+        ComputePipelineScheduleAttr::get(context, decision.schedule));
   }
+  return success();
 }
 
-void applyKernelConfigPlan(func::FuncOp function,
-                           const KernelConfigPlan &plan) {
+LogicalResult applyKernelConfigPlan(func::FuncOp function,
+                                    const KernelConfigPlan &plan) {
+  if (failed(applyComputePipelineSchedulePlan(function, plan))) {
+    return failure();
+  }
   MLIRContext *context = function.getContext();
   for (const TileExecutionDecision &decision : plan.getTileStrategies()) {
     decision.operation->setAttr(
         kTileExecutionStrategyAttrName,
         TileExecutionStrategyAttr::get(context, decision.strategy));
   }
-  applyComputePipelineSchedulePlan(function, plan);
   function->setAttr(
       kFp32DestAccEnAttrName,
       BoolAttr::get(context, plan.getDestinationElementWidth() ==
@@ -1435,6 +1696,7 @@ void applyKernelConfigPlan(func::FuncOp function,
       kUnpackToDestFp32AttrName,
       DenseI32ArrayAttr::get(context, plan.getUnpackToDestFp32()));
   function->removeAttr(kEnableFPUBinaryOpsAttrName);
+  return success();
 }
 
 } // namespace mlir::tt::ttl
