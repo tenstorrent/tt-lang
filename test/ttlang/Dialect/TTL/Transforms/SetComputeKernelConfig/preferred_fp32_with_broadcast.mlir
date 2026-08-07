@@ -1,16 +1,14 @@
-// Verifies a supported full-fp32 preference emits a warning when another
-// kernel requirement forces 16-bit destination elements.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config))' --verify-diagnostics
+// Verifies that BF16 column broadcast preserves a supported full-fp32
+// accumulation preference.
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config))' | FileCheck %s
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// A Blackhole bf16 column broadcast forces 16-bit destination elements, so a
-// supported matmul full-fp32 preference falls back with a diagnostic.
-// CHECK-LABEL: func.func @matmul_broadcast_fallback
-// CHECK-SAME: fp32_dest_acc_en = false
+// Blackhole BF16 column broadcast supports 32-bit destination elements.
+// CHECK-LABEL: func.func @matmul_broadcast
+// CHECK-SAME: fp32_dest_acc_en = true
 module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
-  func.func @matmul_broadcast_fallback(
+  func.func @matmul_broadcast(
       %lhs: tensor<1x1x!ttcore.tile<32x32, bf16>>,
       %rhs: tensor<1x1x!ttcore.tile<32x32, bf16>>,
       %bias: tensor<1x1x!ttcore.tile<32x32, bf16>>,
@@ -57,7 +55,6 @@ module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
          %rhs_tile: !ttcore.tile<32x32, bf16>,
          %bias_tile: !ttcore.tile<32x32, bf16>,
          %output_tile: !ttcore.tile<32x32, bf16>):
-      // expected-warning @below {{preferred full-fp32 accumulation is unavailable in the resolved kernel configuration; using non-full-fp32 lowering}}
       %product = ttl.tile_matmul_block %lhs_tile, %rhs_tile into dst[%c0]
           : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>
           -> !ttcore.tile<32x32, bf16>
