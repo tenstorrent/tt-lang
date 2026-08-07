@@ -420,6 +420,9 @@ def TTLAssignDST
     - Inserts ttl.copy_tile for block arguments
     - Assigns dst_index SSA operands to tile math operations
     - Checks capacity and emits diagnostics on overflow
+
+    DST operations must be directly contained in the `ttl.compute` body. The
+    pass diagnoses nested DST operations before modifying IR.
   }];
 
   let options = [

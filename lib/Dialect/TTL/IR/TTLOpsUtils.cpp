@@ -189,11 +189,11 @@ getDefaultTileExecutionInfo(Operation *operation,
     info.operandRoutes[0] = TileOperandRoute::DataflowBuffer;
     return info;
   }
-  if (isa<TileReduceOp>(operation)) {
+  if (auto reduce = dyn_cast<TileReduceOp>(operation)) {
     info.primitive = TilePrimitive::Reduce;
     info.operandRoutes[0] = TileOperandRoute::DataflowBuffer;
     info.operandRoutes[1] = TileOperandRoute::DataflowBuffer;
-    switch (cast<TileReduceOp>(operation).getReduceDim()) {
+    switch (reduce.getReduceDim()) {
     case ttkernel::ReduceDim::Row:
       info.fullFp32Accumulation = FullFp32AccumulationKind::ReduceRow;
       break;

@@ -2,13 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for device target-arch detection used by the TTL Python wrapper."""
+"""Unit tests for TT device options used by the TTL Python wrapper."""
 
 from unittest import mock
 
 import pytest
 
+import ttl.dialects.ttl as ttl
 import ttl.ttl_api as ttl_api
+from ttl.ir import Context, Module
 
 
 class _TensorWithDevice:
@@ -92,3 +94,85 @@ class TestDeviceTargetArch:
         )
         with pytest.raises(ValueError, match="different TT device architectures"):
             ttl_api._device_target_arch(args)
+
+
+class TestKernelI32ArrayAttr:
+    def test_optional_attribute_may_be_absent(self):
+        context = Context()
+        ttl.ensure_dialects_registered(context)
+
+        with context:
+            module = Module.parse("module { func.func @reader() { return } }")
+            assert (
+                ttl_api._get_optional_kernel_i32_array_attr(
+                    module, "reader", "ttl.pipe_computed_address_dfb_indices"
+                )
+                == []
+            )
+
+    def test_optional_attribute_is_read_when_present(self):
+        context = Context()
+        ttl.ensure_dialects_registered(context)
+
+        with context:
+            module = Module.parse(
+                """
+                module {
+                  func.func @reader() attributes {
+                    ttl.pipe_computed_address_dfb_indices = array<i32: 2, 5>
+                  } {
+                    return
+                  }
+                }
+                """
+            )
+            assert ttl_api._get_optional_kernel_i32_array_attr(
+                module, "reader", "ttl.pipe_computed_address_dfb_indices"
+            ) == [2, 5]
+
+    def test_optional_attribute_is_validated_when_present(self):
+        context = Context()
+        ttl.ensure_dialects_registered(context)
+
+        with context:
+            module = Module.parse(
+                """
+                module {
+                  func.func @reader() attributes {
+                    ttl.pipe_computed_address_dfb_indices = 2 : i32
+                  } {
+                    return
+                  }
+                }
+                """
+            )
+            with pytest.raises(ValueError, match="Expected DenseI32ArrayAttr"):
+                ttl_api._get_optional_kernel_i32_array_attr(
+                    module, "reader", "ttl.pipe_computed_address_dfb_indices"
+                )
+
+    def test_required_attribute_must_be_present(self):
+        context = Context()
+        ttl.ensure_dialects_registered(context)
+
+        with context:
+            module = Module.parse(
+                """
+                module {
+                  func.func @compute_kernel() attributes {
+                    dst_full_sync_en = false,
+                    fp32_dest_acc_en = false
+                  } {
+                    return
+                  }
+                }
+                """
+            )
+            with pytest.raises(
+                ValueError,
+                match="Required compiler-generated attribute "
+                "'ttl.unpack_to_dest_fp32' is missing",
+            ):
+                ttl_api._get_kernel_i32_array_attr(
+                    module, "compute_kernel", "ttl.unpack_to_dest_fp32"
+                )

@@ -71,6 +71,22 @@ constexpr int64_t kPlaceholderIndex = std::numeric_limits<int64_t>::max();
 
 static bool isTileValue(Value v) { return isa<ttcore::TileType>(v.getType()); }
 
+static LogicalResult verifyDSTOperationPlacement(ComputeOp computeOp) {
+  Block *body = &computeOp.getRegion().front();
+  WalkResult result = computeOp.getRegion().walk([&](Operation *operation) {
+    if (operation->getBlock() == body ||
+        !dyn_cast<DstAccessOpInterface>(operation)) {
+      return WalkResult::advance();
+    }
+
+    operation->emitOpError()
+        << "nested DST operations are not supported by ttl-assign-dst; "
+           "expected the operation directly in the ttl.compute body";
+    return WalkResult::interrupt();
+  });
+  return success(!result.wasInterrupted());
+}
+
 //===----------------------------------------------------------------------===//
 // Equivalence Classes for Merged Intervals
 //===----------------------------------------------------------------------===//
@@ -544,6 +560,16 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
 
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
+
+    WalkResult placementResult = funcOp.walk([&](ComputeOp computeOp) {
+      return failed(verifyDSTOperationPlacement(computeOp))
+                 ? WalkResult::interrupt()
+                 : WalkResult::advance();
+    });
+    if (placementResult.wasInterrupted()) {
+      signalPassFailure();
+      return;
+    }
 
     if (failed(verifyTileExecutionSemantics(funcOp))) {
       signalPassFailure();

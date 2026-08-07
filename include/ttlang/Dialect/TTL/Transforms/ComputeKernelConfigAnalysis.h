@@ -45,6 +45,12 @@ enum class DFBUnpackMode {
   UnpackToDestination,
 };
 
+/// Target support and fallback warning for a preferred accumulation mode.
+struct FullFp32AccumulationSupport {
+  bool supported;
+  std::optional<StringRef> fallbackWarning;
+};
+
 /// One target-supported combination of shared destination width and per-DFB
 /// unpack selection.
 struct DFBHardwareConfiguration {
@@ -64,8 +70,8 @@ public:
   virtual bool supportsDestinationElementWidth(
       TilePrimitive primitive, Type elementType,
       DestinationElementWidth destinationElementWidth) const = 0;
-  virtual bool
-  supportsFullFp32Accumulation(FullFp32AccumulationKind kind) const = 0;
+  virtual FullFp32AccumulationSupport
+  getFullFp32AccumulationSupport(FullFp32AccumulationKind kind) const = 0;
   virtual llvm::SmallVector<DFBHardwareConfiguration, 4>
   getSupportedDFBConfigurations(TilePrimitive primitive, TileOperandRoute route,
                                 Type elementType) const = 0;

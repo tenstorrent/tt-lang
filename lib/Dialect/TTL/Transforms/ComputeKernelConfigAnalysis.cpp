@@ -300,9 +300,9 @@ struct DestinationWidthEvidence {
 };
 
 /// Diagnose the two constraints that eliminated every destination width.
-void emitDestinationWidthConflict(func::FuncOp function,
-                                  DestinationWidthEvidence requires32Bits,
-                                  DestinationWidthEvidence requires16Bits) {
+void emitDestinationWidthConflict(
+    func::FuncOp function, const DestinationWidthEvidence &requires32Bits,
+    const DestinationWidthEvidence &requires16Bits) {
   if (!requires16Bits.use) {
     requires32Bits.operation->emitOpError(
         "requires 32-bit destination elements, but fp32 destination "
@@ -685,8 +685,9 @@ public:
            !requires32BitDestination(elementType);
   }
 
-  bool supportsFullFp32Accumulation(FullFp32AccumulationKind) const override {
-    return true;
+  FullFp32AccumulationSupport
+  getFullFp32AccumulationSupport(FullFp32AccumulationKind) const override {
+    return {true, std::nullopt};
   }
 
   SmallVector<DFBHardwareConfiguration, 4>
@@ -743,9 +744,9 @@ public:
   WormholeKernelTargetEnvironment()
       : WormholeBlackholeKernelTargetEnvironment(ttcore::Arch::WormholeB0) {}
 
-  bool
-  supportsFullFp32Accumulation(FullFp32AccumulationKind kind) const override {
-    return kind == FullFp32AccumulationKind::Matmul;
+  FullFp32AccumulationSupport
+  getFullFp32AccumulationSupport(FullFp32AccumulationKind kind) const override {
+    return {kind == FullFp32AccumulationKind::Matmul, std::nullopt};
   }
 };
 
@@ -755,9 +756,14 @@ public:
   BlackholeKernelTargetEnvironment()
       : WormholeBlackholeKernelTargetEnvironment(ttcore::Arch::Blackhole) {}
 
-  bool
-  supportsFullFp32Accumulation(FullFp32AccumulationKind kind) const override {
-    return kind != FullFp32AccumulationKind::ReduceRow;
+  FullFp32AccumulationSupport
+  getFullFp32AccumulationSupport(FullFp32AccumulationKind kind) const override {
+    if (kind == FullFp32AccumulationKind::ReduceRow) {
+      return {false,
+              "full-fp32 row reduce is unavailable on Blackhole (tt-metal "
+              "#47311); using non-full-fp32 reduce lowering"};
+    }
+    return {true, std::nullopt};
   }
 };
 
@@ -1001,15 +1007,14 @@ FailureOr<KernelConfigPlan> resolveKernelConfig(
     if (!preferred) {
       continue;
     }
-    if (target.supportsFullFp32Accumulation(use.kind)) {
+    FullFp32AccumulationSupport support =
+        target.getFullFp32AccumulationSupport(use.kind);
+    if (support.supported) {
       preferFp32 = true;
       continue;
     }
-    if (target.getArch() == ttcore::Arch::Blackhole &&
-        use.kind == FullFp32AccumulationKind::ReduceRow) {
-      use.operation->emitWarning()
-          << "full-fp32 row reduce is unavailable on Blackhole (tt-metal "
-             "#47311); using non-full-fp32 reduce lowering";
+    if (support.fallbackWarning) {
+      use.operation->emitWarning() << *support.fallbackWarning;
     }
   }
   auto hasDestinationWidth = [&](DestinationElementWidth width) {
