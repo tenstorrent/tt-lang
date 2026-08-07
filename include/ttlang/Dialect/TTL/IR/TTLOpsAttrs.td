@@ -7,6 +7,7 @@
 
 include "ttlang/Dialect/TTL/IR/TTLBase.td"
 include "ttlang/Dialect/TTL/IR/TTLOpsEnums.td"
+include "mlir/IR/AttrTypeBase.td"
 
 //===----------------------------------------------------------------------===//
 // TTL attribute definitions
@@ -118,6 +119,57 @@ def TTL_LayoutAttr : TTL_Attr<"Layout", "layout"> {
                        " `grid` `=` `[` $grid `]` `,`"
                        " `memory` `=` $memoryLayout `>`";
 
+  let genVerifyDecl = 1;
+}
+
+def TTL_PipeRecordAttr : TTL_Attr<"PipeRecord", "pipe_record"> {
+  let summary = "Static PipeNet pipe record";
+  let description = [{
+    Encodes one static PipeNet record for PipeNet foreach ops. The owning
+    `#ttl.pipenet_records` attribute contains the PipeNet id; each record
+    contains source and destination coordinates plus a flag selecting
+    point-to-point or collective semantics.
+
+    `isCollective` is a frontend-supplied flag, not derived from coordinates:
+    `slice(i, i + 1)` is a singleton collective record with one destination
+    node, but it must preserve the PipeNet-level collective contract.
+  }];
+
+  let parameters = (ins
+    "int64_t":$srcX,
+    "int64_t":$srcY,
+    "int64_t":$dstStartX,
+    "int64_t":$dstStartY,
+    "int64_t":$dstEndX,
+    "int64_t":$dstEndY,
+    DefaultValuedParameter<"bool", "false">:$isCollective
+  );
+
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
+def TTL_PipeNetRecordsAttr : TTL_Attr<"PipeNetRecords", "pipenet_records"> {
+  let summary = "Identifies a PipeNet and contains its static pipe records";
+  let description = [{
+    Identifies a PipeNet by id and contains the ordered list of
+    `#ttl.pipe_record` attributes that make up the net. PipeNet foreach ops use
+    this attribute to represent callback iteration without creating one
+    source-level operation per record.
+
+    `pipes` is in user PipeNet construction order. A launch node that matches
+    multiple records executes them in this order. Duplicate records are
+    distinct entries and execute as separate callback invocations.
+  }];
+
+  let parameters = (ins
+    "int64_t":$pipeNetId,
+    OptionalParameter<"::mlir::StringAttr">:$pipeNetName,
+    ArrayRefParameter<"::mlir::tt::ttl::PipeRecordAttr">:$pipes
+  );
+
+  let assemblyFormat = "`<` `net` $pipeNetId (`name` $pipeNetName^)? "
+                       "`pipes` `[` $pipes `]` `>`";
   let genVerifyDecl = 1;
 }
 

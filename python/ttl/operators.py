@@ -509,15 +509,27 @@ def _process_tensor_subscript(subscript_tuple, cb_shape):
 
 
 def _is_pipe(val):
-    """Check if a value is a pipe (either MLIR PipeType or Python Pipe with MLIR value)."""
-    if hasattr(val, "type") and ttl.PipeType.maybe_downcast(val.type):
+    """Check if a value is a pipe reference."""
+    if not hasattr(val, "type"):
+        return isinstance(val, Pipe) and hasattr(val, "_mlir_value")
+    if ttl.PipeType.maybe_downcast(val.type):
+        return True
+    if ttl.SelectedPipeSrcType.maybe_downcast(val.type):
+        return True
+    if ttl.SelectedPipeDstType.maybe_downcast(val.type):
         return True
     return isinstance(val, Pipe) and hasattr(val, "_mlir_value")
 
 
 def _get_pipe_mlir_value(pipe):
-    """Get the MLIR value for a pipe (either MLIR value or Python Pipe object)."""
-    if hasattr(pipe, "type") and ttl.PipeType.maybe_downcast(pipe.type):
+    """Get the MLIR value for a pipe reference."""
+    if not hasattr(pipe, "type"):
+        return pipe._mlir_value
+    if ttl.PipeType.maybe_downcast(pipe.type):
+        return pipe
+    if ttl.SelectedPipeSrcType.maybe_downcast(pipe.type):
+        return pipe
+    if ttl.SelectedPipeDstType.maybe_downcast(pipe.type):
         return pipe
     return pipe._mlir_value
 

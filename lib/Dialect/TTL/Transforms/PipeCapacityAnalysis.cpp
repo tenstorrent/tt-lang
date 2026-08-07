@@ -5,6 +5,7 @@
 #include "PipeCapacityAnalysis.h"
 
 #include "DFBAcquireReleaseAnalysis.h"
+#include "PipeTransportDFBAnalysis.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
@@ -12,6 +13,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/Debug.h"
 
 #include <cstddef>
@@ -111,6 +113,8 @@ getCapacityEndpointFacts(const PipeGraph &pipeGraph,
       receiverEndpoint.receiverDFB,
       PipeCapacityReleaseTarget{transferNode.pipe.srcX, transferNode.pipe.srcY},
       receiverEndpoint.receiverDFBInfo.blockCount,
+      receiverEndpoint.receiverDFBInfo.receiverSlotSpanBlocks,
+      false,
       PipeTransferSendOp(),
       {},
   };
@@ -175,62 +179,78 @@ checkSend(const PipeCapacityEndpointFacts &endpointFacts,
   return sendOp;
 }
 
-static bool collectAndCheckPops(ArrayRef<CBPopOp> candidatePops,
-                                const PipeCapacityEndpointFacts &endpointFacts,
-                                const PipeGraph &pipeGraph,
-                                SmallVectorImpl<CBPopOp> &pops) {
+/// Validate one receiver release and record it for capacity lowering.
+static bool checkAndCollectPop(CBPopOp popOp,
+                               const PipeCapacityEndpointFacts &endpointFacts,
+                               const PipeGraph &pipeGraph,
+                               SmallVectorImpl<CBPopOp> &pops) {
   LaunchNodeDomain receiverDomain =
       getSingleLaunchNodeDomain({endpointFacts.receiverDFB.receiver.x,
                                  endpointFacts.receiverDFB.receiver.y});
+  LaunchNodeDomain popDomain =
+      pipeGraph.getOperationLaunchDomain(popOp.getOperation());
+  if (!(popDomain == receiverDomain) || !isNocKernelThread(popOp)) {
+    debugRejectEndpoint(endpointFacts, "pop is not in the receiver NOC domain");
+    return false;
+  }
+  std::optional<int64_t> maybeReleasedBlocks =
+      getDFBTransactionBlockCount(popOp);
+  if (!maybeReleasedBlocks ||
+      *maybeReleasedBlocks != endpointFacts.receiverBlocksPerTransfer) {
+    debugRejectEndpoint(endpointFacts,
+                        "pop does not release the transfer's DFB block span");
+    return false;
+  }
+  ArrayRef<Operation *> owners =
+      pipeGraph.getDFBAcquireReleaseIndex(popOp).getReleaseIntervalOwners(
+          popOp);
+  if (owners.size() != 1 || !isa<CBWaitOp>(owners.front())) {
+    debugRejectEndpoint(endpointFacts,
+                        "pop is not owned by a matching receiver wait");
+    return false;
+  }
+  CBWaitOp waitOp = cast<CBWaitOp>(owners.front());
+  LaunchNodeDomain waitDomain =
+      pipeGraph.getOperationLaunchDomain(waitOp.getOperation());
+  if (!(waitDomain == receiverDomain) || !isNocKernelThread(waitOp)) {
+    debugRejectEndpoint(endpointFacts,
+                        "wait is not in the receiver NOC domain");
+    return false;
+  }
+  std::optional<int64_t> maybeWaitedBlocks =
+      getDFBTransactionBlockCount(waitOp);
+  if (!maybeWaitedBlocks || *maybeWaitedBlocks != *maybeReleasedBlocks) {
+    debugRejectEndpoint(endpointFacts,
+                        "wait and pop release different DFB block counts");
+    return false;
+  }
+  pops.push_back(popOp);
+  return true;
+}
+
+/// Collect releases from transport ownership or the physical receiver DFB.
+static bool collectAndCheckPops(ArrayRef<CBPopOp> candidatePops,
+                                const PipeCapacityEndpointFacts &endpointFacts,
+                                const PipeGraph &pipeGraph,
+                                ArrayRef<CBPopOp> ownedPops,
+                                SmallVectorImpl<CBPopOp> &pops) {
   bool valid = true;
-  for (CBPopOp popOp : candidatePops) {
-    LaunchNodeDomain popDomain =
-        pipeGraph.getOperationLaunchDomain(popOp.getOperation());
-    if (!launchNodeDomainsOverlap(popDomain, receiverDomain)) {
-      continue;
+  if (!ownedPops.empty()) {
+    for (CBPopOp popOp : ownedPops) {
+      valid &= checkAndCollectPop(popOp, endpointFacts, pipeGraph, pops);
     }
-    if (!isExactlyDomain(popOp, receiverDomain, pipeGraph) ||
-        !isNocKernelThread(popOp)) {
-      debugRejectEndpoint(endpointFacts,
-                          "pop is not in the receiver NOC domain");
-      valid = false;
-      continue;
+  } else {
+    LaunchNodeDomain receiverDomain =
+        getSingleLaunchNodeDomain({endpointFacts.receiverDFB.receiver.x,
+                                   endpointFacts.receiverDFB.receiver.y});
+    for (CBPopOp popOp : candidatePops) {
+      LaunchNodeDomain popDomain =
+          pipeGraph.getOperationLaunchDomain(popOp.getOperation());
+      if (!launchNodeDomainsOverlap(popDomain, receiverDomain)) {
+        continue;
+      }
+      valid &= checkAndCollectPop(popOp, endpointFacts, pipeGraph, pops);
     }
-    std::optional<int64_t> maybeReleasedBlocks =
-        getDFBTransactionBlockCount(popOp);
-    if (!maybeReleasedBlocks || *maybeReleasedBlocks != 1) {
-      debugRejectEndpoint(endpointFacts, "pop does not release one DFB block");
-      valid = false;
-      continue;
-    }
-    ArrayRef<Operation *> owners =
-        pipeGraph.getDFBAcquireReleaseIndex(popOp).getReleaseIntervalOwners(
-            popOp);
-    if (owners.size() != 1 || !isa<CBWaitOp>(owners.front())) {
-      debugRejectEndpoint(endpointFacts,
-                          "pop is not owned by a matching receiver wait");
-      valid = false;
-      continue;
-    }
-    CBWaitOp waitOp = cast<CBWaitOp>(owners.front());
-    LaunchNodeDomain waitDomain =
-        pipeGraph.getOperationLaunchDomain(waitOp.getOperation());
-    if (!isExactlyDomain(waitOp, receiverDomain, pipeGraph) ||
-        !isNocKernelThread(waitOp)) {
-      debugRejectEndpoint(endpointFacts,
-                          "wait is not in the receiver NOC domain");
-      valid = false;
-      continue;
-    }
-    std::optional<int64_t> maybeWaitedBlocks =
-        getDFBTransactionBlockCount(waitOp);
-    if (!maybeWaitedBlocks || *maybeWaitedBlocks != *maybeReleasedBlocks) {
-      debugRejectEndpoint(endpointFacts,
-                          "wait and pop release different DFB block counts");
-      valid = false;
-      continue;
-    }
-    pops.push_back(popOp);
   }
   if (valid && pops.empty()) {
     debugRejectEndpoint(endpointFacts, "no matching receiver pops");
@@ -271,6 +291,25 @@ PipeCapacityAnalysisResult analyzePipeCapacity(ModuleOp mod,
     debugCandidateEndpoint(endpointFacts);
     const PipeTransferNode &transferNode =
         pipeGraph.getPipeTransferNode(endpointFacts.transferNode);
+    std::string ownershipFailure;
+    FailureOr<PipeTransportDFBOwnership> transportOwnership =
+        analyzePipeTransportDFBOwnership(transferNode, pipeGraph,
+                                         ownershipFailure);
+    bool transportOwnsStorage =
+        succeeded(transportOwnership) &&
+        transportOwnership->endpoint == receiverEndpoint.id;
+    if (transportOwnsStorage) {
+      std::optional<int64_t> initialCapacity = llvm::checkedMul(
+          transferNode.blockSpan, transferNode.destinationGroupDepth);
+      if (!initialCapacity) {
+        debugRejectEndpoint(endpointFacts,
+                            "transport capacity exceeds int64_t");
+        continue;
+      }
+      endpointFacts.initialCapacity = *initialCapacity;
+      endpointFacts.receiverBlocksPerTransfer = transferNode.blockSpan;
+      endpointFacts.transportOwnsStorage = true;
+    }
 
     // The current capacity protocol proves one receiver's progress per
     // endpoint. Collective progress requires a separate proof that a fast
@@ -283,36 +322,26 @@ PipeCapacityAnalysisResult analyzePipeCapacity(ModuleOp mod,
       continue;
     }
 
-    ArrayRef<PipeReceiverEndpointId> writerEndpoints =
-        pipeGraph.getReceiverDFBWriterEndpoints(endpointFacts.receiverDFBNode);
-    if (writerEndpoints.size() != 1) {
-      std::string reason = "receiver DFB has " +
-                           std::to_string(writerEndpoints.size()) +
-                           " writer endpoint(s)";
-      debugRejectEndpoint(endpointFacts, reason);
-      continue;
-    }
+    if (!transportOwnsStorage) {
+      ArrayRef<PipeReceiverEndpointId> writerEndpoints =
+          pipeGraph.getReceiverDFBWriterEndpoints(
+              endpointFacts.receiverDFBNode);
+      if (writerEndpoints.size() != 1) {
+        std::string reason = "receiver DFB has " +
+                             std::to_string(writerEndpoints.size()) +
+                             " writer endpoint(s)";
+        debugRejectEndpoint(endpointFacts, reason);
+        continue;
+      }
 
-    const PipeReceiverDFBNode &receiverDFBNode =
-        pipeGraph.getReceiverDFBNode(endpointFacts.receiverDFBNode);
-    if (!receiverDFBNode.hasProvenPipeOnlyProducerStream) {
-      debugRejectEndpoint(endpointFacts,
-                          "receiver DFB producer stream is not proven "
-                          "pipe-only");
-      continue;
-    }
-
-    // Capacity adds one unit per pop, so each matching reserve must also
-    // consume one block. Enforce that invariant here even though pop validation
-    // currently rejects wider spans.
-    if (receiverEndpoint.receiverDFBInfo.receiverSlotSpanBlocks != 1) {
-      std::string reason =
-          "receiver reserve spans " +
-          std::to_string(
-              receiverEndpoint.receiverDFBInfo.receiverSlotSpanBlocks) +
-          " DFB blocks; capacity accounting assumes one";
-      debugRejectEndpoint(endpointFacts, reason);
-      continue;
+      const PipeReceiverDFBNode &receiverDFBNode =
+          pipeGraph.getReceiverDFBNode(endpointFacts.receiverDFBNode);
+      if (!receiverDFBNode.hasProvenPipeOnlyProducerStream) {
+        debugRejectEndpoint(endpointFacts,
+                            "receiver DFB producer stream is not proven "
+                            "pipe-only");
+        continue;
+      }
     }
 
     if (!checkPosts(endpointFacts, pipeGraph)) {
@@ -332,7 +361,11 @@ PipeCapacityAnalysisResult analyzePipeCapacity(ModuleOp mod,
     if (candidatePopsIt != popsByDFBIndex.end()) {
       candidatePops = candidatePopsIt->second;
     }
-    if (!collectAndCheckPops(candidatePops, endpointFacts, pipeGraph,
+    ArrayRef<CBPopOp> ownedPops =
+        transportOwnsStorage
+            ? ArrayRef<CBPopOp>(transportOwnership->destination.pops)
+            : ArrayRef<CBPopOp>();
+    if (!collectAndCheckPops(candidatePops, endpointFacts, pipeGraph, ownedPops,
                              endpointFacts.pops)) {
       continue;
     }

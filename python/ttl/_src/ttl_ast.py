@@ -213,9 +213,8 @@ class TTLGenericCompiler(TTCompilerBase):
 
         # Map id(PipeNet object) -> Python variable name the user assigned
         # it to. Populated from captures/globals at function entry and
-        # from body-local PipeNet assignments. Read by `_emit_pipe_from_capture`
-        # to stamp the user's variable name onto each `ttl.create_pipe`
-        # so the verifier can name PipeNets by user-facing identifier.
+        # from body-local PipeNet assignments. The name is stored on emitted
+        # pipe declarations so diagnostics use the user's identifier.
         self._pipe_net_names: dict[int, str] = {}
 
         # Include paths collected from ttl.call_extern_func invocations,
@@ -844,7 +843,7 @@ class TTLGenericCompiler(TTCompilerBase):
 
     def _handle_pipenet_callback(self, node):
         """Handle pipenet.if_src(callback) or pipenet.if_dst(callback) calls."""
-        from ..pipe import PipeNet, SrcPipeIdentity, DstPipeIdentity
+        from ..pipe import PipeNet
 
         method_name = node.func.attr
         pipenet = self._resolve_pipe_net_receiver(
@@ -900,45 +899,51 @@ class TTLGenericCompiler(TTCompilerBase):
         # is always non-empty.
         pipe_net_name = self._resolve_pipe_net_name(pipenet)
 
-        # Iterate over all pipes and emit if_src/if_dst for each
+        pipe_records = [
+            ttl.PipeRecordAttr.get(
+                self.ctx,
+                pipe.src[0],
+                pipe.src[1],
+                pipe.dst_start[0],
+                pipe.dst_start[1],
+                pipe.dst_end[0],
+                pipe.dst_end[1],
+                pipe.is_collective,
+            )
+            for pipe in pipenet.pipes
+        ]
+        records_attr = ttl.PipeNetRecordsAttr.get(
+            self.ctx,
+            pipenet.pipe_net_id,
+            pipe_net_name=pipe_net_name,
+            pipes=pipe_records,
+        )
         decl_file = getattr(pipenet, "_source_file", None)
         decl_line = getattr(pipenet, "_source_line", None)
-        for pipe in pipenet.pipes:
-            # Emit the pipe MLIR value
-            pipe_val = self._emit_pipe_from_capture(
-                pipe,
-                pipe_net_name=pipe_net_name,
-                source_file=decl_file,
-                source_line=decl_line,
-            )
-            pipe._mlir_value = pipe_val
+        loc = None
+        if decl_file and decl_line is not None:
+            loc = Location.file(decl_file, decl_line, 1, self.ctx)
 
-            # Create the appropriate PipeIdentity
-            if method_name == "if_src":
-                pipe_identity = SrcPipeIdentity(pipe)
-                op = ttl.if_src(pipe_val)
+        if method_name == "if_src":
+            op = ttl.pipenet_foreach_src(records_attr, loc=loc)
+            pipe_type = ttl.SelectedPipeSrcType.get(self.ctx)
+        else:
+            op = ttl.pipenet_foreach_dst(records_attr, loc=loc)
+            pipe_type = ttl.SelectedPipeDstType.get(self.ctx)
+
+        block = Block.create_at_start(op.body, [pipe_type])
+        with InsertionPoint(block):
+            self.symbol_tables.append({})
+            self.symbol_tables[-1][pipe_param_name] = block.arguments[0]
+
+            if isinstance(callback_body, list):
+                for stmt in callback_body:
+                    self.visit(stmt)
             else:
-                pipe_identity = DstPipeIdentity(pipe)
-                op = ttl.if_dst(pipe_val)
+                self.visit(callback_body)
 
-            # Create body block and compile callback inside
-            block = Block.create_at_start(op.body)
-            with InsertionPoint(block):
-                # Bind the pipe parameter to the MLIR pipe value.
-                # TODO: bind to PipeIdentity instead so .src/.dst work
-                # on the callback parameter per the spec.
-                self.symbol_tables.append({})
-                self.symbol_tables[-1][pipe_param_name] = pipe_val
-                self.symbol_tables[-1][f"__{pipe_param_name}_identity"] = pipe_identity
-
-                if isinstance(callback_body, list):
-                    for stmt in callback_body:
-                        self.visit(stmt)
-                else:
-                    self.visit(callback_body)
-
-                self.symbol_tables.pop()
-                ttl.yield_([])
+            self.symbol_tables.pop()
+            ttl.yield_([])
 
         return None  # Statement, no return value
 

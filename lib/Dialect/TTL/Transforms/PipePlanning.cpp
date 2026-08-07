@@ -9,9 +9,11 @@
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
+#include "ttlang/Dialect/TTL/Transforms/PipeTransferAnalysis.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/Debug.h"
 
 #define DEBUG_TYPE "ttl-pipe-capacity-analysis"
@@ -40,6 +42,20 @@ PipeCapacityPlan::lookupReleases(CBPopOp op) const {
     return {};
   }
   return releaseIt->second;
+}
+
+SmallVector<CBPopOp, 1>
+PipeCapacityPlan::findReleaseOps(PipeTransferNodeId transferNode) const {
+  SmallVector<CBPopOp, 1> releaseOps;
+  for (const auto &[operation, releaseInfos] : releases) {
+    if (llvm::any_of(releaseInfos,
+                     [&](const PipeCapacityReleaseInfo &releaseInfo) {
+                       return releaseInfo.transferNode == transferNode;
+                     })) {
+      releaseOps.push_back(cast<CBPopOp>(operation));
+    }
+  }
+  return releaseOps;
 }
 
 void PipeCapacityPlan::addAcquire(PipeTransferSendOp op,
@@ -83,27 +99,49 @@ PipeModulePlan::getTransferPlan(Operation *operation) const {
   return planIt->second;
 }
 
-static PipeType getPipeType(MLIRContext *context,
-                            const PipeResourceInfo &resources) {
-  const PipeKey &pipe = resources.pipe;
-  return PipeType::get(context, pipe.srcX, pipe.srcY, pipe.dstStartX,
-                       pipe.dstStartY, pipe.dstEndX, pipe.dstEndY,
-                       pipe.pipeNetId);
-}
-
-static FailureOr<PipeSendPlan>
-buildPipeSendPlan(PipeTransferSendOp sendOp,
-                  const DominanceInfo &dominanceInfo) {
+FailureOr<PipeTransferPayload> getPipeTransferPayload(PipeTransferSendOp sendOp,
+                                                      int64_t blockSpan) {
   FailureOr<CircularBufferType> maybeDFBType =
       utils::getTTLCircularBufferType(sendOp.getSrc());
   if (failed(maybeDFBType)) {
     sendOp.emitError("pipe transfer source must have a TTL DFB type");
     return failure();
   }
-  auto tileType =
-      llvm::dyn_cast<ttcore::TileType>((*maybeDFBType).getElementType());
+  CircularBufferType dfbType = *maybeDFBType;
+  auto tileType = llvm::dyn_cast<ttcore::TileType>(dfbType.getElementType());
   if (!tileType) {
     sendOp.emitError("pipe transfer source DFB element type must be tile");
+    return failure();
+  }
+  if (blockSpan <= 0 || dfbType.getBlockCount() % blockSpan != 0) {
+    sendOp.emitError("source DFB block count must be divisible by pipe "
+                     "transfer block span");
+    return failure();
+  }
+
+  std::optional<int64_t> maybeElementCount =
+      llvm::checkedMul(dfbType.getElementsPerBlock(), blockSpan);
+  if (!maybeElementCount) {
+    sendOp.emitError("pipe transfer element count exceeds int64_t");
+    return failure();
+  }
+  int64_t elementSizeBytes = tileType.getSizeBytes();
+  std::optional<int64_t> maybeSizeBytes =
+      llvm::checkedMul(*maybeElementCount, elementSizeBytes);
+  if (!maybeSizeBytes) {
+    sendOp.emitError("pipe transfer payload size exceeds int64_t");
+    return failure();
+  }
+  return PipeTransferPayload{*maybeElementCount, elementSizeBytes,
+                             *maybeSizeBytes};
+}
+
+static FailureOr<PipeSendPlan>
+buildPipeSendPlan(PipeTransferSendOp sendOp, const DominanceInfo &dominanceInfo,
+                  int64_t blockSpan) {
+  FailureOr<PipeTransferPayload> maybePayload =
+      getPipeTransferPayload(sendOp, blockSpan);
+  if (failed(maybePayload)) {
     return failure();
   }
 
@@ -113,18 +151,13 @@ buildPipeSendPlan(PipeTransferSendOp sendOp,
                dominanceInfo.dominates(user, sendOp);
       });
 
-  int64_t elementCount = 1;
-  for (int64_t dimension : (*maybeDFBType).getShape()) {
-    elementCount *= dimension;
-  }
-  return PipeSendPlan{readFromDFB, elementCount * static_cast<int64_t>(
-                                                      tileType.getSizeBytes())};
+  return PipeSendPlan{readFromDFB, maybePayload->sizeBytes};
 }
 
 static FailureOr<PipePostPlan>
 buildPipePostPlan(PipeTransferPostOp postOp,
                   const PipeResourceInfo &resources) {
-  if (resources.addressStorage.usesComputedReceiverDFB()) {
+  if (resources.addressStorage.usesComputedReceiverAddress()) {
     return PipePostPlan{};
   }
 
@@ -185,6 +218,9 @@ isCapacityProtocolLowerable(const PipeCapacityEndpointFacts &endpointFacts,
     return false;
   }
   const PipeResourceInfo &resource = resourceIt->second;
+  if (endpointFacts.transportOwnsStorage) {
+    return true;
+  }
   if (!resource.addressStorage.usesComputedReceiverDFB()) {
     debugSkipResource(resource, "receiver address is not computed");
     return false;
@@ -256,12 +292,13 @@ public:
       auto resourceIt = resources.resources.find(transferNode.sendOp);
       assert(resourceIt != resources.resources.end() &&
              "selected capacity transfer is missing final resources");
-      assert(resourceIt->second.addressStorage.usesComputedReceiverDFB() &&
-             "selected capacity transfer lost computed receiver addresses");
       for (PipeReceiverEndpointId endpoint :
            pipeGraph.getPipeReceiverEndpoints(transferNode.id)) {
         const PipeCapacityEndpointFacts &endpointFacts =
             capacityFacts.getEndpointFacts(endpoint);
+        assert((endpointFacts.transportOwnsStorage ||
+                resourceIt->second.addressStorage.usesComputedReceiverDFB()) &&
+               "selected capacity transfer has no direct receiver address");
         PipeCounterInfo capacityCounter =
             allocateCapacityCounter(endpointFacts, counterColors, plan);
         recordEndpointCapacityFacts(endpointFacts, capacityCounter, plan);
@@ -274,15 +311,18 @@ private:
   recordEndpointCapacityFacts(const PipeCapacityEndpointFacts &endpointFacts,
                               PipeCounterInfo capacityCounter,
                               PipeCapacityPlan &plan) {
-    plan.addAcquire(endpointFacts.send,
-                    PipeCapacityAcquireInfo{capacityCounter, 1});
+    plan.addAcquire(
+        endpointFacts.send,
+        PipeCapacityAcquireInfo{capacityCounter,
+                                endpointFacts.receiverBlocksPerTransfer});
     plan.addInitialization(
         endpointFacts.send->getParentOfType<func::FuncOp>(),
         PipeCapacityInitInfo{capacityCounter, endpointFacts.initialCapacity});
     for (CBPopOp popOp : endpointFacts.pops) {
-      plan.addRelease(popOp,
-                      PipeCapacityReleaseInfo{endpointFacts.releaseTarget,
-                                              capacityCounter, 1});
+      plan.addRelease(popOp, PipeCapacityReleaseInfo{
+                                 endpointFacts.transferNode,
+                                 endpointFacts.releaseTarget, capacityCounter,
+                                 endpointFacts.receiverBlocksPerTransfer});
     }
   }
 
@@ -364,6 +404,21 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
     return failure();
   }
 
+  auto selectSynchronizationProtocol = [&](PipeTransferNodeId transferNodeId) {
+    const PipeTransferNode &transferNode =
+        pipeGraph.getPipeTransferNode(transferNodeId);
+    auto sendOp = cast<PipeTransferSendOp>(transferNode.sendOp);
+    return synchronizationSelection.usesCapacityProtocol(sendOp)
+               ? PipeSynchronizationProtocol::Capacity
+               : PipeSynchronizationProtocol::ReceiverPost;
+  };
+  FailureOr<PipeTransportPlan> maybeTransportPlan = buildPipeTransportPlan(
+      pipeGraph, plan.capacityPlan, selectSynchronizationProtocol);
+  if (failed(maybeTransportPlan)) {
+    return failure();
+  }
+  plan.transportPlan = std::move(*maybeTransportPlan);
+  finalizePipeTransportResources(plan.transportPlan, plan.resourcePlan);
   const PipeCapacityPlan *maybeCapacityPlan =
       options.enableCapacitySynchronization ? &plan.capacityPlan : nullptr;
   plan.resourceRequirements =
@@ -378,46 +433,83 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
   });
 
   DominanceInfo dominanceInfo(module);
-  for (const auto &resourceEntry : plan.resourcePlan.resources) {
-    Operation *operation = resourceEntry.first;
-    const PipeResourceInfo &resources = resourceEntry.second;
+  auto addTransferPlan =
+      [&](Operation *operation, PipeReference pipeReference,
+          PipeTransferPlan::Resources resources) -> LogicalResult {
     auto sendOp = dyn_cast<PipeTransferSendOp>(operation);
     auto postOp = dyn_cast<PipeTransferPostOp>(operation);
-    if (!sendOp && !postOp) {
-      assert(isa<PipeTransferWaitOp>(operation) &&
-             "pipe resources assigned to an unsupported operation");
-      continue;
-    }
+    auto waitOp = dyn_cast<PipeTransferWaitOp>(operation);
+    assert((sendOp || postOp || waitOp) &&
+           "pipe resources assigned to an unsupported operation");
     bool usesCapacityProtocol =
+        (sendOp || postOp) &&
         synchronizationSelection.usesCapacityProtocol(operation);
     PipeSynchronizationProtocol synchronizationProtocol =
         usesCapacityProtocol ? PipeSynchronizationProtocol::Capacity
                              : PipeSynchronizationProtocol::ReceiverPost;
 
-    auto addTransferPlan = [&](auto operationPlan) {
-      PipeTransferPlan transferPlan(getPipeType(module.getContext(), resources),
-                                    resources, synchronizationProtocol,
-                                    std::move(operationPlan));
-      auto [planIt, inserted] =
-          plan.transferPlans.insert({operation, std::move(transferPlan)});
-      (void)planIt;
-      assert(inserted && "pipe operation has more than one transfer plan");
-    };
+    auto insertTransferPlan =
+        [&](PipeTransferPlan::OperationPlan operationPlan) {
+          PipeTransferPlan transferPlan(
+              std::move(pipeReference), std::move(resources),
+              synchronizationProtocol, std::move(operationPlan));
+          auto [planIt, inserted] =
+              plan.transferPlans.insert({operation, std::move(transferPlan)});
+          (void)planIt;
+          assert(inserted && "pipe operation has more than one transfer plan");
+        };
 
     if (sendOp) {
-      FailureOr<PipeSendPlan> maybeSendPlan =
-          buildPipeSendPlan(sendOp, dominanceInfo);
+      PipeTransferCreateOp transferCreate =
+          transferIndex.getTransferCreate(operation);
+      FailureOr<PipeSendPlan> maybeSendPlan = buildPipeSendPlan(
+          sendOp, dominanceInfo, getPipeTransferBlockSpan(transferCreate));
       if (failed(maybeSendPlan)) {
         return failure();
       }
-      addTransferPlan(*maybeSendPlan);
-    } else {
+      insertTransferPlan(*maybeSendPlan);
+    } else if (postOp) {
+      const PipeResourceInfo &postResources =
+          std::holds_alternative<PipeResourceInfo>(resources)
+              ? std::get<PipeResourceInfo>(resources)
+              : std::get<SmallVector<PipeResourceInfo>>(resources).front();
       FailureOr<PipePostPlan> maybePostPlan =
-          buildPipePostPlan(postOp, resources);
+          buildPipePostPlan(postOp, postResources);
       if (failed(maybePostPlan)) {
         return failure();
       }
-      addTransferPlan(*maybePostPlan);
+      insertTransferPlan(*maybePostPlan);
+    } else {
+      insertTransferPlan(PipeWaitPlan{});
+    }
+    return success();
+  };
+
+  for (const auto &[operation, resources] : plan.resourcePlan.resources) {
+    FailureOr<PipeReference> maybePipeReference =
+        getPipeReferenceForProtocolOp(operation, transferIndex);
+    if (failed(maybePipeReference)) {
+      return failure();
+    }
+    assert(maybePipeReference->isStatic() &&
+           "static resources require a static pipe reference");
+    if (failed(addTransferPlan(operation, std::move(*maybePipeReference),
+                               resources))) {
+      return failure();
+    }
+  }
+  for (const auto &[operation, resources] :
+       plan.resourcePlan.selectedResources) {
+    FailureOr<PipeReference> maybePipeReference =
+        getPipeReferenceForProtocolOp(operation, transferIndex);
+    if (failed(maybePipeReference)) {
+      return failure();
+    }
+    assert(maybePipeReference->isSelected() &&
+           "selected resources require a selected pipe reference");
+    if (failed(addTransferPlan(operation, std::move(*maybePipeReference),
+                               SmallVector<PipeResourceInfo>(resources)))) {
+      return failure();
     }
   }
 
@@ -427,6 +519,9 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
 void applyPipeModuleAttributes(ModuleOp module, const PipeModulePlan &plan) {
   Builder builder(module.getContext());
   const PipeResourcePlan &resources = plan.getResourcePlan();
+  module.walk([&](func::FuncOp function) {
+    function->removeAttr(kPipeComputedAddressDFBIndicesAttrName);
+  });
   for (const auto &[function, dfbIndices] :
        resources.computedAddressDFBIndices) {
     function->setAttr(kPipeComputedAddressDFBIndicesAttrName,
