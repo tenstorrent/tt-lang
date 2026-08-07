@@ -1841,7 +1841,7 @@ mlir::LogicalResult mlir::tt::ttl::ReduceOp::verify() {
 //===----------------------------------------------------------------------===//
 
 static mlir::FailureOr<mlir::tt::ttcore::TileType>
-getRowNormalizationTileType(mlir::Type type) {
+getContainedTileType(mlir::Type type) {
   if (auto tileType = mlir::dyn_cast<mlir::tt::ttcore::TileType>(type)) {
     return tileType;
   }
@@ -1859,13 +1859,13 @@ getRowNormalizationTileType(mlir::Type type) {
 
 mlir::LogicalResult mlir::tt::ttl::TileRowNormalizationBlockOp::verify() {
   FailureOr<ttcore::TileType> inputTileType =
-      getRowNormalizationTileType(getInput().getType());
+      getContainedTileType(getInput().getType());
   FailureOr<ttcore::TileType> gammaTileType =
-      getRowNormalizationTileType(getGamma().getType());
+      getContainedTileType(getGamma().getType());
   FailureOr<ttcore::TileType> outputTileType =
-      getRowNormalizationTileType(getOutput().getType());
+      getContainedTileType(getOutput().getType());
   FailureOr<ttcore::TileType> resultTileType =
-      getRowNormalizationTileType(getResult().getType());
+      getContainedTileType(getResult().getType());
   if (failed(inputTileType) || failed(gammaTileType) ||
       failed(outputTileType) || failed(resultTileType)) {
     return emitOpError("input, gamma, output, and result must contain tiles");
