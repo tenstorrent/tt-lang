@@ -1,10 +1,10 @@
-// Verify that non-f32 broadcasts reject f32 DST mode on every architecture
-// and broadcast dimension whose LLK ignores that configuration, including an
-// automatic conflict with an f32 SFPU operation.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config))' --split-input-file --verify-diagnostics
+// Verify that every BF16 broadcast kind supports 32-bit destination
+// accumulation on Wormhole and Blackhole.
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config))' --split-input-file | FileCheck %s
 
 module attributes {ttl.target_arch = #ttcore.arch<wormhole_b0>} {
-  // expected-error @below {{'func.func' op explicit 32-bit destination elements are unsupported by the kernel's tile operations}}
+  // CHECK-LABEL: func.func @wormhole_column
+  // CHECK: ttl.tile_bcast
   func.func @wormhole_column(
       %input: tensor<1x1x!ttcore.tile<32x32, bf16>>,
       %output: tensor<1x1x!ttcore.tile<32x32, bf16>>)
@@ -20,7 +20,6 @@ module attributes {ttl.target_arch = #ttcore.arch<wormhole_b0>} {
         : tensor<1x1x!ttcore.tile<32x32, bf16>>
     %output_tile = tensor.extract %output[%zero, %zero]
         : tensor<1x1x!ttcore.tile<32x32, bf16>>
-    // expected-note @below {{the target does not support 32-bit destination elements for ttl.tile_bcast with 'bf16' elements}}
     %broadcast = ttl.tile_bcast %input_tile, %output_tile 1 : i32
         into dst[%zero]
         : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>)
@@ -32,7 +31,8 @@ module attributes {ttl.target_arch = #ttcore.arch<wormhole_b0>} {
 // -----
 
 module attributes {ttl.target_arch = #ttcore.arch<wormhole_b0>} {
-  // expected-error @below {{'func.func' op explicit 32-bit destination elements are unsupported by the kernel's tile operations}}
+  // CHECK-LABEL: func.func @wormhole_row
+  // CHECK: ttl.tile_bcast
   func.func @wormhole_row(
       %input: tensor<1x1x!ttcore.tile<32x32, bf16>>,
       %output: tensor<1x1x!ttcore.tile<32x32, bf16>>)
@@ -48,7 +48,6 @@ module attributes {ttl.target_arch = #ttcore.arch<wormhole_b0>} {
         : tensor<1x1x!ttcore.tile<32x32, bf16>>
     %output_tile = tensor.extract %output[%zero, %zero]
         : tensor<1x1x!ttcore.tile<32x32, bf16>>
-    // expected-note @below {{the target does not support 32-bit destination elements for ttl.tile_bcast with 'bf16' elements}}
     %broadcast = ttl.tile_bcast %input_tile, %output_tile 2 : i32
         into dst[%zero]
         : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>)
@@ -60,7 +59,8 @@ module attributes {ttl.target_arch = #ttcore.arch<wormhole_b0>} {
 // -----
 
 module attributes {ttl.target_arch = #ttcore.arch<wormhole_b0>} {
-  // expected-error @below {{'func.func' op explicit 32-bit destination elements are unsupported by the kernel's tile operations}}
+  // CHECK-LABEL: func.func @wormhole_scalar
+  // CHECK: ttl.tile_bcast
   func.func @wormhole_scalar(
       %input: tensor<1x1x!ttcore.tile<32x32, bf16>>,
       %output: tensor<1x1x!ttcore.tile<32x32, bf16>>)
@@ -76,7 +76,6 @@ module attributes {ttl.target_arch = #ttcore.arch<wormhole_b0>} {
         : tensor<1x1x!ttcore.tile<32x32, bf16>>
     %output_tile = tensor.extract %output[%zero, %zero]
         : tensor<1x1x!ttcore.tile<32x32, bf16>>
-    // expected-note @below {{the target does not support 32-bit destination elements for ttl.tile_bcast with 'bf16' elements}}
     %broadcast = ttl.tile_bcast %input_tile, %output_tile 3 : i32
         into dst[%zero]
         : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>)
@@ -88,7 +87,8 @@ module attributes {ttl.target_arch = #ttcore.arch<wormhole_b0>} {
 // -----
 
 module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
-  // expected-error @below {{'func.func' op explicit 32-bit destination elements are unsupported by the kernel's tile operations}}
+  // CHECK-LABEL: func.func @blackhole_column
+  // CHECK: ttl.tile_bcast
   func.func @blackhole_column(
       %input: tensor<1x1x!ttcore.tile<32x32, bf16>>,
       %output: tensor<1x1x!ttcore.tile<32x32, bf16>>)
@@ -104,7 +104,6 @@ module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
         : tensor<1x1x!ttcore.tile<32x32, bf16>>
     %output_tile = tensor.extract %output[%zero, %zero]
         : tensor<1x1x!ttcore.tile<32x32, bf16>>
-    // expected-note @below {{the target does not support 32-bit destination elements for ttl.tile_bcast with 'bf16' elements}}
     %broadcast = ttl.tile_bcast %input_tile, %output_tile 1 : i32
         into dst[%zero]
         : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>)
@@ -115,10 +114,12 @@ module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
 
 // -----
 
-// Verify the default policy reports both requirements when an f32 SFPU
-// operation and a non-f32 broadcast require incompatible kernel-wide modes.
+// BF16 broadcast and F32 SFPU execution share one 32-bit destination mode.
 module attributes {ttl.target_arch = #ttcore.arch<wormhole_b0>} {
-  func.func @automatic_mixed_dst_mode_conflict(
+  // CHECK-LABEL: func.func @automatic_mixed_dst_mode
+  // CHECK: ttl.tile_exp
+  // CHECK: ttl.tile_bcast
+  func.func @automatic_mixed_dst_mode(
       %f32_input: tensor<1x1x!ttcore.tile<32x32, f32>>,
       %bf16_input: tensor<1x1x!ttcore.tile<32x32, bf16>>,
       %bf16_output: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
@@ -141,10 +142,8 @@ module attributes {ttl.target_arch = #ttcore.arch<wormhole_b0>} {
         : tensor<1x1x!ttcore.tile<32x32, bf16>>
     %bf16_output_tile = tensor.extract %bf16_output[%zero, %zero]
         : tensor<1x1x!ttcore.tile<32x32, bf16>>
-    // expected-error @below {{'ttl.tile_exp' op requires 32-bit destination elements, but no kernel-wide destination width supports all tile operations}}
     %exp = ttl.tile_exp %f32_tile into dst[%zero]
         : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-    // expected-note @below {{the target does not support 32-bit destination elements for ttl.tile_bcast with 'bf16' elements}}
     %broadcast = ttl.tile_bcast %bf16_tile, %bf16_output_tile 1 : i32
         into dst[%zero]
         : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>)
@@ -156,7 +155,8 @@ module attributes {ttl.target_arch = #ttcore.arch<wormhole_b0>} {
 // -----
 
 module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
-  // expected-error @below {{'func.func' op explicit 32-bit destination elements are unsupported by the kernel's tile operations}}
+  // CHECK-LABEL: func.func @blackhole_row
+  // CHECK: ttl.tile_bcast
   func.func @blackhole_row(
       %input: tensor<1x1x!ttcore.tile<32x32, bf16>>,
       %output: tensor<1x1x!ttcore.tile<32x32, bf16>>)
@@ -172,7 +172,6 @@ module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
         : tensor<1x1x!ttcore.tile<32x32, bf16>>
     %output_tile = tensor.extract %output[%zero, %zero]
         : tensor<1x1x!ttcore.tile<32x32, bf16>>
-    // expected-note @below {{the target does not support 32-bit destination elements for ttl.tile_bcast with 'bf16' elements}}
     %broadcast = ttl.tile_bcast %input_tile, %output_tile 2 : i32
         into dst[%zero]
         : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>)
@@ -184,7 +183,8 @@ module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
 // -----
 
 module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
-  // expected-error @below {{'func.func' op explicit 32-bit destination elements are unsupported by the kernel's tile operations}}
+  // CHECK-LABEL: func.func @blackhole_scalar
+  // CHECK: ttl.tile_bcast
   func.func @blackhole_scalar(
       %input: tensor<1x1x!ttcore.tile<32x32, bf16>>,
       %output: tensor<1x1x!ttcore.tile<32x32, bf16>>)
@@ -200,7 +200,6 @@ module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
         : tensor<1x1x!ttcore.tile<32x32, bf16>>
     %output_tile = tensor.extract %output[%zero, %zero]
         : tensor<1x1x!ttcore.tile<32x32, bf16>>
-    // expected-note @below {{the target does not support 32-bit destination elements for ttl.tile_bcast with 'bf16' elements}}
     %broadcast = ttl.tile_bcast %input_tile, %output_tile 3 : i32
         into dst[%zero]
         : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>)

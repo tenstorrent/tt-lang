@@ -1093,23 +1093,12 @@ class WormholeBlackholeKernelTargetEnvironment
     : public KernelTargetEnvironment {
 public:
   bool supportsDestinationElementWidth(
-      TilePrimitive primitive, Type elementType,
+      TilePrimitive, Type elementType,
       DestinationElementWidth destinationElementWidth) const final {
     if (destinationElementWidth == DestinationElementWidth::Bits16) {
       return !requires32BitDestination(elementType);
     }
-    if (requires32BitDestination(elementType)) {
-      return true;
-    }
-    switch (primitive) {
-    case TilePrimitive::BroadcastColumn:
-    case TilePrimitive::BroadcastRow:
-    case TilePrimitive::BroadcastScalar:
-      // These LLKs interpret non-32-bit inputs using the default DST format.
-      return false;
-    default:
-      return true;
-    }
+    return true;
   }
 
   SmallVector<DFBHardwareConfiguration, 4>
