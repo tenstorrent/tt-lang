@@ -70,8 +70,7 @@ def make_scaled_sum_of_squares(scale):
                 output_dfb.reserve() as output_block,
             ):
                 output_block.store(
-                    scale
-                    * ttl.math.reduce_sum(input_block * input_block, dims=[0, 1])
+                    scale * ttl.math.reduce_sum(input_block * input_block, dims=[0, 1])
                 )
 
         @ttl.datamovement()

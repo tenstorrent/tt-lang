@@ -80,8 +80,7 @@ analyzeFusionCompute(ComputeOp compute, std::string &reason) {
   if (analysis.numTiles < 1 || analysis.numTiles > analysis.dstCapacity) {
     reason =
         (Twine("multiply-reduction requires ") + Twine(analysis.numTiles) +
-         " DST slots, but effective capacity is " +
-         Twine(analysis.dstCapacity))
+         " DST slots, but effective capacity is " + Twine(analysis.dstCapacity))
             .str();
     return failure();
   }
@@ -105,8 +104,7 @@ LogicalResult verifyFusionCompute(ComputeOp op) {
 LogicalResult generateFusionCompute(PatternRewriter &rewriter, Location loc,
                                     ComputeOp op) {
   std::string reason;
-  FailureOr<FusionComputeAnalysis> analysis =
-      analyzeFusionCompute(op, reason);
+  FailureOr<FusionComputeAnalysis> analysis = analyzeFusionCompute(op, reason);
   if (failed(analysis)) {
     return rewriter.notifyMatchFailure(op, reason);
   }
@@ -124,8 +122,7 @@ LogicalResult generateFusionCompute(PatternRewriter &rewriter, Location loc,
   SmallVector<Value> indices = {constantIndex(sectionBuilder, loc, 0),
                                 constantIndex(sectionBuilder, loc, 0)};
   TileStoreOp::create(sectionBuilder, loc, loweredBlock.getResult(),
-                      analysis->fixed.store.getView(), indices,
-                      scalarDstIndex);
+                      analysis->fixed.store.getView(), indices, scalarDstIndex);
 
   rewriter.replaceOp(op, op.getOutputs());
   return success();
