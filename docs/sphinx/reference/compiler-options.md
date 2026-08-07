@@ -141,16 +141,20 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 
 The pipeline runs these passes in order:
 
+- `ttl-lower-compute-pipelines` -- inline ordinary pipelines that do not require target schedule selection
 - `ttl-materialize-loop-state` -- replace ranked-tensor loop-carried values with compiler-created DFBs
 - `ttl-insert-copy-wait` -- insert missing `ttl.wait` after `ttl.copy` ops whose transfer handle has no wait user
 - `ttl-annotate-l1-acc-loops` -- detect `+=` accumulation loops and annotate for L1 packer accumulation
 - `ttl-create-producer-compute` -- create producer `ttl.compute` operations before intermediate materialization
 - `ttl-insert-intermediate-dfbs` -- materialize DFB-only operands, values that must be preserved before source release, and computed values stored by operations in multiple MLIR basic blocks; verify and error when `compiler-dfbs=false`
-- `convert-ttl-to-compute` -- lower TTL elementwise tensor ops to `ttl.compute` with tile ops
+- `convert-ttl-to-compute` -- lower TTL tensor operations to `ttl.compute` and preserve recognized multi-domain graphs as `ttl.compute_pipeline`
 - `ttl-insert-cb-sync` -- insert missing DFB synchronization
 - `ttl-verify-pipenet-guards`, then `ttl-verify-pipenet-schedule` -- verify PipeNet launch domains and event ordering while logical DFB identities remain distinct and before physical DFB allocation
 - `ttl-coalesce-dfb-acquires` -- coalesce compatible DFB acquires
 - `ttl-finalize-dfb-indices` -- assign logical DFBs to physical indices, validate capacity, and emit runtime metadata; `reuse-user-dfbs` controls user-DFB reuse and `exact-coloring-search-limit` bounds exhaustive fixed-limit and minimum physical-index-count queries
+- `ttl-select-compute-pipeline-schedules` -- resolve kernel configuration and target schedule alternatives together, then record only the selected pipeline schedules
+- `ttl-lower-compute-pipelines` -- inline selected pipeline stages and retain their selected schedule on the result operation
+- `ttl-create-producer-compute`, `ttl-insert-intermediate-dfbs`, `convert-ttl-to-compute`, `ttl-insert-cb-sync`, PipeNet verification, `ttl-coalesce-dfb-acquires`, and `ttl-finalize-dfb-indices` -- lower the selected compute-local blocks or ordinary materialized operations and finalize any new DFBs
 - `ttl-set-compute-kernel-config` -- select tile execution strategies and resolve kernel-wide DST and per-DFB unpack configuration
 - `ttl-assign-dst` -- DST register allocation (linear scan with copy insertion)
 - `ttl-subblock-compute-for-dst` -- tile `ttl.compute` into DST-sized subblocks *(only if `maximize-dst=true`)*; optionally refine reserve/push to per-subblock granularity *(only if `subblock-sync=true`)*
@@ -216,6 +220,25 @@ for the algorithm and invariants.
 
 ```bash
 ttlang-opt input.mlir -p 'func.func(ttl-set-compute-kernel-config{fp32-dest-acc-en=enabled})'
+```
+
+#### `ttl-select-compute-pipeline-schedules`
+
+Resolve the same immutable kernel-configuration problem as
+`ttl-set-compute-kernel-config`, but apply only recognized compute-pipeline
+schedule decisions. This pass runs before selected pipelines are lowered and
+before their ordinary alternatives allocate intermediate DFBs.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `fp32-dest-acc-en` | string | `auto` | Select 32-bit destination elements: `auto`, `enabled`, or `disabled`. |
+| `dst-full-sync-en` | string | `auto` | Select full DST synchronization: `auto`, `enabled`, or `disabled`. |
+| `reduce-full-fp32` | bool | `true` | Prefer full-fp32 reduce accumulation when supported. |
+| `matmul-full-fp32` | bool | `true` | Prefer full-fp32 matmul accumulation when supported. |
+| `enable-fpu-binary-ops` | bool | `true` | Allow eligible add/sub/mul operations to select FPU. |
+
+```bash
+ttlang-opt input.mlir -p 'func.func(ttl-select-compute-pipeline-schedules{dst-full-sync-en=disabled})'
 ```
 
 #### `ttl-assign-dst`
