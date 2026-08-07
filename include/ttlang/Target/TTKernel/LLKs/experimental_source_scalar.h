@@ -92,11 +92,12 @@ inline void applyAddRsqrt(std::uint32_t dstIndex, std::uint32_t addendBits) {
 }
 
 template <std::uint32_t numTiles, MathFidelity mathFidelity>
-inline void configureMathMop(std::uint32_t numFaces) {
+inline void configureMathMop(const ckernel::TensorShape &tensorShape) {
   static_assert(numTiles >= 1 && numTiles <= 8,
                 "source-scalar multiplication requires 1 to 8 tiles");
-  LLK_ASSERT(numFaces == 1 || numFaces == 2 || numFaces == 4,
-             "numFaces must be 1, 2, or 4");
+  LLK_ASSERT(ckernel::validate_tensor_shape_tile_dependent_ops_(tensorShape),
+             "invalid source-scalar tensor shape");
+  const std::uint32_t numFaces = tensorShape.total_num_faces();
   constexpr bool highFidelity = is_high_fidelity(mathFidelity);
   constexpr auto broadcastType = ckernel::p_elwise::SRCB_BCAST_ALL;
 
@@ -166,7 +167,9 @@ inline void releaseScalar() {
 }
 
 template <MathFidelity mathFidelity>
-inline void configureMathAddressModifiers(std::uint32_t numFaces) {
+inline void
+configureMathAddressModifiers(const ckernel::TensorShape &tensorShape) {
+  const std::uint32_t numFaces = tensorShape.total_num_faces();
   constexpr bool highFidelity = is_high_fidelity(mathFidelity);
   constexpr std::uint32_t fidelityIncrement = highFidelity ? 1 : 0;
 
@@ -220,11 +223,9 @@ inline void configureMathAddressModifiers(std::uint32_t numFaces) {
 }
 
 template <std::uint32_t numTiles, MathFidelity mathFidelity>
-inline void initializeMath(std::uint32_t numFaces) {
-  LLK_ASSERT(numFaces == 1 || numFaces == 2 || numFaces == 4,
-             "numFaces must be 1, 2, or 4");
-  configureMathAddressModifiers<mathFidelity>(numFaces);
-  configureMathMop<numTiles, mathFidelity>(numFaces);
+inline void initializeMath(const ckernel::TensorShape &tensorShape) {
+  configureMathAddressModifiers<mathFidelity>(tensorShape);
+  configureMathMop<numTiles, mathFidelity>(tensorShape);
   TTI_SETC16(CLR_DVALID_SrcA_Disable_ADDR32, 0);
   ckernel::math::reset_counters(ckernel::p_setrwc::SET_ABD_F);
 }
@@ -232,7 +233,7 @@ inline void initializeMath(std::uint32_t numFaces) {
 template <std::uint32_t numTiles, MathFidelity mathFidelity>
 inline void initializeMathForOperand(std::uint32_t operand) {
   const std::uint32_t operandId = get_operand_id(operand);
-  initializeMath<numTiles, mathFidelity>(get_operand_num_faces(operandId));
+  initializeMath<numTiles, mathFidelity>(get_operand_tensor_shape(operandId));
 }
 
 #endif // TRISC_MATH
@@ -246,9 +247,10 @@ using ckernel::SrcB;
 using ckernel::unpacker::config_unpacker_x_end;
 
 template <std::uint32_t numTiles>
-inline void configureUnpackMop(std::uint32_t numFaces) {
-  LLK_ASSERT(numFaces == 1 || numFaces == 2 || numFaces == 4,
-             "numFaces must be 1, 2, or 4");
+inline void configureUnpackMop(const ckernel::TensorShape &tensorShape) {
+  LLK_ASSERT(ckernel::validate_tensor_shape_tile_dependent_ops_(tensorShape),
+             "invalid source-scalar tensor shape");
+  const std::uint32_t numFaces = tensorShape.total_num_faces();
 
   static constexpr std::uint32_t unpackSourceA =
       TT_OP_UNPACR(SrcA, 0b1, 0, 0, 0, 1, 1, ckernel::p_unpacr::RAREFYB_DISABLE,
@@ -271,18 +273,16 @@ inline void configureUnpackMop(std::uint32_t numFaces) {
 }
 
 template <std::uint32_t numTiles>
-inline void initializeUnpack(std::uint32_t faceRowDimension,
-                             std::uint32_t numFaces) {
+inline void initializeUnpack(const ckernel::TensorShape &tensorShape) {
   cfg_reg_rmw_tensix<THCON_SEC0_REG2_Haloize_mode_RMW>(0);
-  config_unpacker_x_end<ckernel::p_setadc::UNP_B>(faceRowDimension);
-  configureUnpackMop<numTiles>(numFaces);
+  config_unpacker_x_end<ckernel::p_setadc::UNP_B>(tensorShape.face_r_dim);
+  configureUnpackMop<numTiles>(tensorShape);
 }
 
 template <std::uint32_t numTiles>
 inline void initializeUnpackForOperand(std::uint32_t operand) {
   const std::uint32_t operandId = get_operand_id(operand);
-  initializeUnpack<numTiles>(get_operand_face_r_dim(operandId),
-                             get_operand_num_faces(operandId));
+  initializeUnpack<numTiles>(get_operand_tensor_shape(operandId));
 }
 
 #endif // TRISC_UNPACK
