@@ -382,11 +382,46 @@ def TTL_ComputePipelineOp : TTL_Op<"compute_pipeline", [
   let hasVerifier = 1;
 }
 
+def TTL_SourceScalarScopeOp : TTL_Op<"source_scalar_scope", [
+    IsolatedFromAbove,
+    Pure
+  ]> {
+  let summary = "Structured lifetime for one retained full scalar";
+  let description = [{
+    `ttl.source_scalar_scope` represents a multi-stage tensor computation in
+    which one full-scalar value remains in compute-local storage between its
+    producer and every consumer. The operation preserves tensor semantics and
+    does not select a target-specific register or instruction.
+
+    The producer region receives one block argument per operation input and
+    yields exactly one static full-scalar tensor. The consumer region receives
+    that scalar as its first block argument followed by one block argument per
+    operation input. Consumer stages access the scalar through zero-indexed
+    operand maps, which represent full broadcast from the scalar domain. The
+    scalar block argument cannot be returned directly from the scope.
+
+    Both regions contain ordered `ttl.compute_stage` operations. The consumer
+    region yields one stage result for each operation result. This structure
+    makes scalar acquisition, use, and release explicit while leaving target
+    resource selection to later lowering.
+  }];
+
+  let arguments = (ins Variadic<AnyRankedTensor>:$inputs);
+  let results = (outs Variadic<AnyRankedTensor>:$results);
+  let regions = (region SizedRegion<1>:$producer,
+                         SizedRegion<1>:$consumer);
+  let assemblyFormat = [{
+    `ins` `(` $inputs `)` attr-dict `:` functional-type($inputs, $results)
+    `producer` $producer `consumer` $consumer
+  }];
+  let hasVerifier = 1;
+}
+
 def TTL_ComputeStageOp : TTL_Op<"compute_stage", [
     IsolatedFromAbove,
     Pure,
     SingleBlock,
-    ParentOneOf<["ComputePipelineOp"]>
+    ParentOneOf<["ComputePipelineOp", "SourceScalarScopeOp"]>
   ]> {
   let summary = "One tensor computation stage with one iteration domain";
   let description = [{
@@ -441,6 +476,21 @@ def TTL_ComputeStageYieldOp : TTL_Op<"compute_stage_yield", [
   let description = [{
     Returns one tensor value for each result of the enclosing
     `ttl.compute_stage`, in result order.
+  }];
+  let arguments = (ins Variadic<AnyRankedTensor>:$values);
+  let assemblyFormat = "$values attr-dict `:` type($values)";
+}
+
+def TTL_SourceScalarYieldOp : TTL_Op<"source_scalar_yield", [
+    ReturnLike,
+    Terminator,
+    ParentOneOf<["SourceScalarScopeOp"]>
+  ]> {
+  let summary = "Terminate a retained source-scalar region";
+  let description = [{
+    In the producer region, returns the full scalar transferred to
+    compute-local storage. In the consumer region, returns the tensor results
+    published by the enclosing `ttl.source_scalar_scope`.
   }];
   let arguments = (ins Variadic<AnyRankedTensor>:$values);
   let assemblyFormat = "$values attr-dict `:` type($values)";

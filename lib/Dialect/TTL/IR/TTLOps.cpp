@@ -1413,6 +1413,175 @@ mlir::LogicalResult mlir::tt::ttl::ComputePipelineOp::verify() {
   return success();
 }
 
+namespace {
+
+static mlir::LogicalResult verifySourceScalarStageRegion(
+    mlir::tt::ttl::SourceScalarScopeOp scope, mlir::Region &region,
+    mlir::ValueRange yieldedValues, llvm::StringRef regionName) {
+  mlir::Block &body = region.front();
+  llvm::SmallVector<mlir::Value> availableValues(body.getArguments().begin(),
+                                                 body.getArguments().end());
+  bool hasStage = false;
+  for (mlir::Operation &operation : body.without_terminator()) {
+    auto stage = mlir::dyn_cast<mlir::tt::ttl::ComputeStageOp>(&operation);
+    if (!stage) {
+      return scope.emitOpError() << regionName
+                                 << " region may contain only "
+                                    "ttl.compute_stage operations; found "
+                                 << operation.getName();
+    }
+    hasStage = true;
+    for (mlir::Value input : stage.getInputs()) {
+      if (!llvm::is_contained(availableValues, input)) {
+        return scope.emitOpError()
+               << regionName
+               << " stage input must come from a region argument or an "
+                  "earlier stage";
+      }
+    }
+    for (mlir::OpResult result : stage.getResults()) {
+      if (result.use_empty()) {
+        return scope.emitOpError() << regionName << " stage result "
+                                   << result.getResultNumber() << " is unused";
+      }
+      availableValues.push_back(result);
+    }
+  }
+  if (!hasStage) {
+    return scope.emitOpError() << regionName
+                               << " region requires at least one "
+                                  "ttl.compute_stage";
+  }
+  for (auto [resultIndex, yieldedValue] : llvm::enumerate(yieldedValues)) {
+    auto stageResult = mlir::dyn_cast<mlir::OpResult>(yieldedValue);
+    if (!stageResult ||
+        !mlir::isa<mlir::tt::ttl::ComputeStageOp>(stageResult.getOwner()) ||
+        stageResult.getOwner()->getBlock() != &body) {
+      return scope.emitOpError()
+             << regionName << " yielded value " << resultIndex
+             << " must be a result of a stage in that region";
+    }
+  }
+  return mlir::success();
+}
+
+static bool isFullScalarTensorType(mlir::RankedTensorType type) {
+  return type.hasStaticShape() &&
+         llvm::all_of(type.getShape(),
+                      [](int64_t dimension) { return dimension == 1; });
+}
+
+static bool isFullScalarOperandMap(mlir::AffineMap map) {
+  return llvm::all_of(map.getResults(), [](mlir::AffineExpr expression) {
+    auto constant = mlir::dyn_cast<mlir::AffineConstantExpr>(expression);
+    return constant && constant.getValue() == 0;
+  });
+}
+
+} // namespace
+
+mlir::LogicalResult mlir::tt::ttl::SourceScalarScopeOp::verify() {
+  if (getInputs().empty()) {
+    return emitOpError("requires at least one input");
+  }
+  if (getResults().empty()) {
+    return emitOpError("requires at least one result");
+  }
+  if (getProducer().getBlocks().size() != 1 ||
+      getConsumer().getBlocks().size() != 1) {
+    return emitOpError("producer and consumer regions must each have exactly "
+                       "one block");
+  }
+
+  Block &producerBody = getProducer().front();
+  Block &consumerBody = getConsumer().front();
+  if (producerBody.getNumArguments() != getInputs().size()) {
+    return emitOpError("producer region requires one block argument per input");
+  }
+  if (consumerBody.getNumArguments() != getInputs().size() + 1) {
+    return emitOpError(
+        "consumer region requires the source scalar followed by one block "
+        "argument per input");
+  }
+  for (auto [inputIndex, input] : llvm::enumerate(getInputs())) {
+    if (producerBody.getArgument(inputIndex).getType() != input.getType()) {
+      return emitOpError("producer argument ")
+             << inputIndex << " type must match input type " << input.getType();
+    }
+    if (consumerBody.getArgument(inputIndex + 1).getType() != input.getType()) {
+      return emitOpError("consumer input argument ")
+             << inputIndex << " type must match input type " << input.getType();
+    }
+  }
+
+  if (!producerBody.mightHaveTerminator() ||
+      !consumerBody.mightHaveTerminator()) {
+    return emitOpError("producer and consumer regions require terminators");
+  }
+  auto producerYield =
+      mlir::dyn_cast<SourceScalarYieldOp>(producerBody.getTerminator());
+  auto consumerYield =
+      mlir::dyn_cast<SourceScalarYieldOp>(consumerBody.getTerminator());
+  if (!producerYield || !consumerYield) {
+    return emitOpError("producer and consumer regions must terminate with "
+                       "ttl.source_scalar_yield");
+  }
+  if (producerYield.getValues().size() != 1) {
+    return emitOpError("producer region must yield exactly one full scalar");
+  }
+  auto scalarType = mlir::dyn_cast<RankedTensorType>(
+      producerYield.getValues().front().getType());
+  if (!scalarType || !isFullScalarTensorType(scalarType)) {
+    return emitOpError(
+        "producer region must yield a static full-scalar tensor");
+  }
+  BlockArgument sourceScalar = consumerBody.getArgument(0);
+  if (sourceScalar.getType() != scalarType) {
+    return emitOpError("consumer source-scalar argument type ")
+           << sourceScalar.getType() << " must match producer scalar type "
+           << scalarType;
+  }
+  if (sourceScalar.use_empty()) {
+    return emitOpError("consumer source-scalar argument must be used");
+  }
+  for (OpOperand &use : sourceScalar.getUses()) {
+    auto stage = mlir::dyn_cast<ComputeStageOp>(use.getOwner());
+    if (!stage || stage->getBlock() != &consumerBody ||
+        use.getOperandNumber() >= stage.getInputs().size()) {
+      return emitOpError(
+          "consumer source scalar may be used only as a compute-stage input");
+    }
+    auto map = mlir::cast<AffineMapAttr>(
+                   stage.getIndexingMaps()[use.getOperandNumber()])
+                   .getValue();
+    if (!isFullScalarOperandMap(map)) {
+      return emitOpError(
+          "consumer source-scalar inputs require a zero-indexed full-scalar "
+          "map");
+    }
+  }
+
+  if (consumerYield.getValues().size() != getResults().size()) {
+    return emitOpError("consumer region must yield one value per result");
+  }
+  for (auto [resultIndex, yieldedValue] :
+       llvm::enumerate(consumerYield.getValues())) {
+    if (yieldedValue.getType() != getResult(resultIndex).getType()) {
+      return emitOpError("consumer yielded value ")
+             << resultIndex << " type " << yieldedValue.getType()
+             << " must match result type " << getResult(resultIndex).getType();
+    }
+  }
+
+  if (failed(verifySourceScalarStageRegion(
+          *this, getProducer(), producerYield.getValues(), "producer")) ||
+      failed(verifySourceScalarStageRegion(
+          *this, getConsumer(), consumerYield.getValues(), "consumer"))) {
+    return failure();
+  }
+  return success();
+}
+
 mlir::LogicalResult mlir::tt::ttl::ComputeStageOp::verify() {
   if (getInputs().empty()) {
     return emitOpError("requires at least one input");

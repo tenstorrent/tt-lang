@@ -24,6 +24,7 @@
 namespace mlir::tt::ttl {
 
 #define GEN_PASS_DEF_TTLLOWERCOMPUTEPIPELINES
+#define GEN_PASS_DEF_TTLLOWERSOURCESCALARSCOPES
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 
 namespace {
@@ -42,6 +43,18 @@ struct ComputePipelineInliningPlan {
   SmallVector<BlockArgument> arguments;
   SmallVector<Value> inputs;
   SmallVector<ComputeStageInliningPlan, 1> stages;
+  SmallVector<Value> yieldedValues;
+};
+
+struct SourceScalarScopeInliningPlan {
+  SourceScalarScopeOp scope;
+  SmallVector<BlockArgument> producerArguments;
+  SmallVector<Value> inputs;
+  SmallVector<ComputeStageInliningPlan, 1> producerStages;
+  Value retainedScalar;
+  BlockArgument consumerScalarArgument;
+  SmallVector<BlockArgument> consumerInputArguments;
+  SmallVector<ComputeStageInliningPlan, 1> consumerStages;
   SmallVector<Value> yieldedValues;
 };
 
@@ -137,15 +150,67 @@ analyzePipeline(ComputePipelineOp pipeline, std::string &reason) {
   return plan;
 }
 
-static void applyPipelinePlan(const ComputePipelineInliningPlan &plan,
-                              IRRewriter &rewriter) {
-  IRMapping mapping;
-  for (auto [argument, input] : llvm::zip_equal(plan.arguments, plan.inputs)) {
-    mapping.map(argument, input);
+static FailureOr<SourceScalarScopeInliningPlan>
+analyzeSourceScalarScope(SourceScalarScopeOp scope, std::string &reason) {
+  if (scope.getProducer().getBlocks().size() != 1 ||
+      scope.getConsumer().getBlocks().size() != 1) {
+    reason = "source-scalar regions must each contain exactly one block";
+    return failure();
+  }
+  Block &producerBody = scope.getProducer().front();
+  Block &consumerBody = scope.getConsumer().front();
+  auto producerYield =
+      dyn_cast<SourceScalarYieldOp>(producerBody.getTerminator());
+  auto consumerYield =
+      dyn_cast<SourceScalarYieldOp>(consumerBody.getTerminator());
+  if (!producerYield || !consumerYield ||
+      producerBody.getNumArguments() != scope.getInputs().size() ||
+      producerYield.getValues().size() != 1 ||
+      consumerBody.getNumArguments() != scope.getInputs().size() + 1 ||
+      consumerYield.getValues().size() != scope.getResults().size()) {
+    reason = "source-scalar scope no longer matches its verified signature";
+    return failure();
   }
 
-  rewriter.setInsertionPoint(plan.pipeline);
-  for (const ComputeStageInliningPlan &stagePlan : plan.stages) {
+  SourceScalarScopeInliningPlan plan;
+  plan.scope = scope;
+  llvm::append_range(plan.producerArguments, producerBody.getArguments());
+  llvm::append_range(plan.inputs, scope.getInputs());
+  plan.retainedScalar = producerYield.getValues().front();
+  plan.consumerScalarArgument = consumerBody.getArgument(0);
+  llvm::append_range(plan.consumerInputArguments,
+                     consumerBody.getArguments().drop_front());
+  for (Operation &operation : producerBody.without_terminator()) {
+    auto stage = dyn_cast<ComputeStageOp>(&operation);
+    if (!stage) {
+      reason = "source-scalar producer contains a non-stage operation";
+      return failure();
+    }
+    FailureOr<ComputeStageInliningPlan> stagePlan = analyzeStage(stage, reason);
+    if (failed(stagePlan)) {
+      return failure();
+    }
+    plan.producerStages.push_back(std::move(*stagePlan));
+  }
+  for (Operation &operation : consumerBody.without_terminator()) {
+    auto stage = dyn_cast<ComputeStageOp>(&operation);
+    if (!stage) {
+      reason = "source-scalar consumer contains a non-stage operation";
+      return failure();
+    }
+    FailureOr<ComputeStageInliningPlan> stagePlan = analyzeStage(stage, reason);
+    if (failed(stagePlan)) {
+      return failure();
+    }
+    plan.consumerStages.push_back(std::move(*stagePlan));
+  }
+  llvm::append_range(plan.yieldedValues, consumerYield.getValues());
+  return plan;
+}
+
+static void inlineStages(ArrayRef<ComputeStageInliningPlan> stagePlans,
+                         IRMapping &mapping, IRRewriter &rewriter) {
+  for (const ComputeStageInliningPlan &stagePlan : stagePlans) {
     for (auto [argument, input] :
          llvm::zip_equal(stagePlan.arguments, stagePlan.inputs)) {
       mapping.map(argument, mapping.lookup(input));
@@ -158,6 +223,17 @@ static void applyPipelinePlan(const ComputePipelineInliningPlan &plan,
       mapping.map(result, mapping.lookup(yieldedValue));
     }
   }
+}
+
+static void applyPipelinePlan(const ComputePipelineInliningPlan &plan,
+                              IRRewriter &rewriter) {
+  IRMapping mapping;
+  for (auto [argument, input] : llvm::zip_equal(plan.arguments, plan.inputs)) {
+    mapping.map(argument, input);
+  }
+
+  rewriter.setInsertionPoint(plan.pipeline);
+  inlineStages(plan.stages, mapping, rewriter);
 
   SmallVector<Value> replacements;
   replacements.reserve(plan.yieldedValues.size());
@@ -173,6 +249,40 @@ static void applyPipelinePlan(const ComputePipelineInliningPlan &plan,
                                 rewriter.getContext(), *plan.selectedSchedule));
   }
   rewriter.replaceOp(plan.pipeline, replacements);
+}
+
+static void
+applySourceScalarScopePlan(const SourceScalarScopeInliningPlan &plan,
+                           IRRewriter &rewriter) {
+  IRMapping mapping;
+  for (auto [argument, input] :
+       llvm::zip_equal(plan.producerArguments, plan.inputs)) {
+    mapping.map(argument, input);
+  }
+
+  rewriter.setInsertionPoint(plan.scope);
+  inlineStages(plan.producerStages, mapping, rewriter);
+  Value retainedScalar = mapping.lookup(plan.retainedScalar);
+  mapping.map(plan.consumerScalarArgument, retainedScalar);
+  for (auto [argument, input] :
+       llvm::zip_equal(plan.consumerInputArguments, plan.inputs)) {
+    mapping.map(argument, input);
+  }
+  inlineStages(plan.consumerStages, mapping, rewriter);
+
+  SmallVector<Value> replacements;
+  replacements.reserve(plan.yieldedValues.size());
+  for (Value yieldedValue : plan.yieldedValues) {
+    Value replacement = mapping.lookup(yieldedValue);
+    Operation *producer = replacement.getDefiningOp();
+    assert(producer && "source-scalar result must have a defining operation");
+    producer->setAttr(
+        kSelectedComputePipelineScheduleAttrName,
+        ComputePipelineScheduleAttr::get(
+            rewriter.getContext(), ComputePipelineSchedule::RetainedScalar));
+    replacements.push_back(replacement);
+  }
+  rewriter.replaceOp(plan.scope, replacements);
 }
 
 class TTLLowerComputePipelinesPass
@@ -204,6 +314,40 @@ public:
     IRRewriter rewriter(&getContext());
     for (const ComputePipelineInliningPlan &plan : llvm::reverse(plans)) {
       applyPipelinePlan(plan, rewriter);
+    }
+  }
+};
+
+class TTLLowerSourceScalarScopesPass
+    : public impl::TTLLowerSourceScalarScopesBase<
+          TTLLowerSourceScalarScopesPass> {
+public:
+  using impl::TTLLowerSourceScalarScopesBase<
+      TTLLowerSourceScalarScopesPass>::TTLLowerSourceScalarScopesBase;
+
+  void runOnOperation() override {
+    SmallVector<SourceScalarScopeInliningPlan, 1> plans;
+    std::optional<std::pair<SourceScalarScopeOp, std::string>> invalidScope;
+    getOperation().walk([&](SourceScalarScopeOp scope) {
+      std::string reason;
+      FailureOr<SourceScalarScopeInliningPlan> plan =
+          analyzeSourceScalarScope(scope, reason);
+      if (failed(plan)) {
+        invalidScope = std::make_pair(scope, std::move(reason));
+        return WalkResult::interrupt();
+      }
+      plans.push_back(std::move(*plan));
+      return WalkResult::advance();
+    });
+    if (invalidScope) {
+      invalidScope->first.emitOpError(invalidScope->second);
+      signalPassFailure();
+      return;
+    }
+
+    IRRewriter rewriter(&getContext());
+    for (const SourceScalarScopeInliningPlan &plan : llvm::reverse(plans)) {
+      applySourceScalarScopePlan(plan, rewriter);
     }
   }
 };
