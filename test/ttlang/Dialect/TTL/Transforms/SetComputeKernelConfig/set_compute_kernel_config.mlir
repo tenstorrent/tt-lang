@@ -163,6 +163,55 @@ func.func @bf16_reduce_col_auto_fp32(
 
 // -----
 
+#map_reduce_col = affine_map<(d0, d1) -> (d0, d1)>
+
+// An explicit 16-bit destination constraint overrides the supported full-fp32
+// reduce preference.
+// DEFAULT-LABEL: func.func @bf16_reduce_col_explicit_16bit
+// DEFAULT-SAME: fp32_dest_acc_en = false
+func.func @bf16_reduce_col_explicit_16bit(
+    %a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
+    %scaler: tensor<1x1x!ttcore.tile<32x32, bf16>>)
+    -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    attributes {fp32_dest_acc_en = false,
+                ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %c0 = arith.constant 0 : index
+  %init = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+
+  %a_cb = ttl.attach_cb %a, %cb0
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %scaler_cb = ttl.attach_cb %scaler, %cb1
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %init_cb = ttl.attach_cb %init, %cb2
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+  %out_view = ttl.cb_reserve %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %res = ttl.compute
+      ins(%a_cb, %scaler_cb : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                              tensor<1x1x!ttcore.tile<32x32, bf16>>)
+      outs(%init_cb : tensor<1x1x!ttcore.tile<32x32, bf16>>)
+      {indexing_maps = [#map_reduce_col, #map_reduce_col, #map_reduce_col],
+       iterator_types = ["parallel", "parallel"]} {
+    ^bb0(%a_tile: !ttcore.tile<32x32, bf16>, %scaler_tile: !ttcore.tile<32x32, bf16>, %out_tile: !ttcore.tile<32x32, bf16>):
+      %i = ttl.iter_index 0 : index
+      %j = ttl.iter_index 1 : index
+      %red = ttl.tile_reduce %a_tile, %scaler_tile, %out_tile 0 : i32 <reduce_dim_col> into dst[%c0] : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>) -> !ttcore.tile<32x32, bf16>
+      ttl.tile_store %red, %out_view[%i, %j] from dst[%c0] : !ttcore.tile<32x32, bf16>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.yield
+  } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+  return %res : tensor<1x1x!ttcore.tile<32x32, bf16>>
+}
+
+// -----
+
 #map_reduce_row = affine_map<(d0, d1) -> (d0, d1)>
 
 // A row reduce on an unspecified target retains the supported f32 preference.
