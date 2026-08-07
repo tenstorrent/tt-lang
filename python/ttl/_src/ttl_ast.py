@@ -1826,6 +1826,8 @@ class TTLGenericCompiler(TTCompilerBase):
                 template_args=[1, True, 1.5],   # C++ template arguments
                 func_args=[a, b],               # C++ function arguments
                 include_paths=["/path/to/inc"], # -I flags for JIT compiler
+                result_type="i64",              # optional scalar result
+                thread="ncrisc",                # optional split ownership
             )
 
         DFBs can appear in either template_args or func_args:
@@ -1864,7 +1866,13 @@ class TTLGenericCompiler(TTCompilerBase):
             for kw in keywords:
                 kw_map[kw.arg] = kw.value
 
-        _valid_kwargs = {"template_args", "func_args", "include_paths"}
+        _valid_kwargs = {
+            "template_args",
+            "func_args",
+            "include_paths",
+            "result_type",
+            "thread",
+        }
         unexpected = set(kw_map) - _valid_kwargs
         if unexpected:
             self._raise_error(
@@ -1873,6 +1881,15 @@ class TTLGenericCompiler(TTCompilerBase):
                 f"{', '.join(sorted(unexpected))}. "
                 f"Valid keywords are: {', '.join(sorted(_valid_kwargs))}",
             )
+
+        if "thread" in kw_map:
+            thread = self._resolve_string_value(kw_map["thread"], "thread")
+            if thread not in ("trisc", "ncrisc", "brisc"):
+                self._raise_error(
+                    kw_map["thread"],
+                    "ttl.call_extern_func() thread must be 'trisc', "
+                    "'ncrisc', or 'brisc'",
+                )
 
         template_arg_vals = []
         if "template_args" in kw_map:
@@ -1897,13 +1914,30 @@ class TTLGenericCompiler(TTCompilerBase):
             paths = self._resolve_string_list(kw_map["include_paths"], "include_paths")
             self._opaque_include_paths.extend(paths)
 
-        ttl.opaque_call(
-            [],
+        result_types = []
+        if "result_type" in kw_map:
+            result_type = self._resolve_string_value(
+                kw_map["result_type"], "result_type"
+            )
+            result_widths = {"i32": 32, "i64": 64}
+            if result_type not in result_widths:
+                self._raise_error(
+                    kw_map["result_type"],
+                    "ttl.call_extern_func() result_type supports 'i32' or 'i64'",
+                )
+            result_types.append(
+                IntegerType.get_signless(result_widths[result_type], self.ctx)
+            )
+
+        opaque_call = ttl.opaque_call(
+            result_types,
             callee,
             header,
             func_args,
             template_arg_vals,
         )
+        if result_types:
+            return opaque_call
 
     def visit_With(self, node):
         """

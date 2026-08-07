@@ -125,7 +125,26 @@ _BLOCK_METHODS: Dict[str, str] = {
     "store": "trisc",
     "pop": "deferred",
     "push": "deferred",
+    # Opaque code can fill pre-reserved storage without an ordinary tt-lang
+    # value to identify which thread owns the producer operation.
+    "push_compute": "trisc",
+    "push_brisc": "brisc",
+    "push_ncrisc": "ncrisc",
+    "pop_ncrisc": "ncrisc",
 }
+
+
+def _explicit_extern_thread(call: ast.Call) -> Optional[str]:
+    """Return call_extern_func(..., thread="...") ownership metadata."""
+    if not isinstance(call.func, ast.Name) or call.func.id != "call_extern_func":
+        return None
+    for keyword in call.keywords:
+        if keyword.arg == "thread" and isinstance(keyword.value, ast.Constant):
+            value = keyword.value.value
+            if value in THREADS:
+                return value
+    return None
+
 
 # Methods on a DFB name that produce a block.
 _DFB_PRODUCING_METHODS: Set[str] = {"wait", "reserve"}
@@ -482,7 +501,9 @@ class _AnchorTagger:
         to ``_classify_ttl_call``; resolves ``<block>.store/pop/push`` here,
         since deferred block methods need this scope's inferred block threads.
         """
-        thread = _classify_ttl_call(call.func, self._dm_thread)
+        thread = _explicit_extern_thread(call)
+        if thread is None:
+            thread = _classify_ttl_call(call.func, self._dm_thread)
         if thread is not None:
             return thread
 
@@ -495,8 +516,8 @@ class _AnchorTagger:
                     return _materialize_thread(method, self._dm_thread)
             if func.value.id in self._producers:
                 method = _BLOCK_METHODS.get(func.attr)
-                if method == "trisc":
-                    return "trisc"
+                if method in THREADS:
+                    return method
                 if method == "deferred":
                     bt = self.block_threads.get(func.value.id)
                     if bt and len(bt) == 1:
@@ -770,14 +791,17 @@ def _collect_block_users(
     def visit(node, visible, dm):
         if isinstance(node, ast.Call):
             func = node.func
-            thread = _classify_ttl_call(func, dm)
+            thread = _explicit_extern_thread(node)
+            if thread is None:
+                thread = _classify_ttl_call(func, dm)
             sub_dm = dm
             if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
                 recv = func.value.id
                 method = func.attr
-                if thread is None and recv in visible and method == "store":
-                    users[recv].add("trisc")
-                    thread = "trisc"
+                block_thread = _BLOCK_METHODS.get(method)
+                if thread is None and recv in visible and block_thread in THREADS:
+                    users[recv].add(block_thread)
+                    thread = block_thread
                 if method in _PIPENET_METHODS:
                     sub_dm = _PIPENET_METHODS[method]
             if thread is not None:

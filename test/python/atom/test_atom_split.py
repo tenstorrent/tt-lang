@@ -75,6 +75,64 @@ def test_producer_with_no_uses_is_rejected():
         split_function_body(fn, dfb_param_names=set(), local_dfb_names={"a_cb"})
 
 
+def test_push_compute_anchors_opaque_producer_to_trisc():
+    fn = _fn(
+        """
+        def k():
+            block = out_dfb.reserve()
+            call_extern_func("opaque.hpp", "fill_reserved", func_args=[out_dfb])
+            block.push_compute()
+        """
+    )
+    result = split_function_body(fn, dfb_param_names=set(), local_dfb_names={"out_dfb"})
+    assert "block = out_dfb.reserve()" in _thread_src(result, "trisc")
+    assert "block.push_compute()" in _thread_src(result, "trisc")
+    assert "out_dfb.reserve()" not in _thread_src(result, "ncrisc")
+    assert "out_dfb.reserve()" not in _thread_src(result, "brisc")
+
+
+@pytest.mark.parametrize(
+    ("method", "thread"),
+    [("push_brisc", "brisc"), ("push_ncrisc", "ncrisc")],
+)
+def test_explicit_dm_push_anchors_opaque_producer(method, thread):
+    fn = _fn(
+        f"""
+        def k():
+            block = out_dfb.reserve()
+            call_extern_func(
+                "opaque.hpp", "fill_reserved", func_args=[out_dfb],
+                thread="{thread}")
+            block.{method}()
+        """
+    )
+    result = split_function_body(fn, dfb_param_names=set(), local_dfb_names={"out_dfb"})
+    owned = _thread_src(result, thread)
+    assert "block = out_dfb.reserve()" in owned
+    assert f"block.{method}()" in owned
+    for other_thread in {"trisc", "ncrisc", "brisc"} - {thread}:
+        assert "out_dfb.reserve()" not in _thread_src(result, other_thread)
+        assert "fill_reserved" not in _thread_src(result, other_thread)
+
+
+def test_explicit_ncrisc_pop_anchors_opaque_consumer():
+    fn = _fn(
+        """
+        def k():
+            block = in_dfb.wait()
+            call_extern_func(
+                "opaque.hpp", "consume", func_args=[in_dfb], thread="ncrisc")
+            block.pop_ncrisc()
+        """
+    )
+    result = split_function_body(fn, dfb_param_names=set(), local_dfb_names={"in_dfb"})
+    ncrisc = _thread_src(result, "ncrisc")
+    assert "block = in_dfb.wait()" in ncrisc
+    assert "block.pop_ncrisc()" in ncrisc
+    assert "in_dfb.wait()" not in _thread_src(result, "trisc")
+    assert "in_dfb.wait()" not in _thread_src(result, "brisc")
+
+
 def test_producer_split_across_ncrisc_and_brisc_is_rejected():
     """A single reserve whose block feeds both an if_src (BRISC) and an
     if_dst (NCRISC) callback would double-reserve the CB."""
