@@ -53,7 +53,7 @@ func.func @row_normalization_no_gamma()
     %normalized = ttl.tile_row_normalization_block
         %input_tile, %input_tile, %output_tile
         scale = 3.255208e-04 epsilon = 1.000000e-05
-        has_gamma = false num_tiles = 3 into dst[%c-1]
+        gamma_mode = 0 : i32 num_tiles = 3 into dst[%c-1]
         {ttl.dst_placeholder}
         : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>,
           !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>

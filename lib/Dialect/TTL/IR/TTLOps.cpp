@@ -2536,11 +2536,12 @@ mlir::LogicalResult mlir::tt::ttl::TileRowNormalizationBlockOp::verify() {
   if (inputTileType->getDataType() != ttcore::DataType::BFloat16) {
     return emitOpError("supports bf16 tiles only");
   }
-  if (getHasGamma() && *gammaTileType != *outputTileType) {
+  bool hasGamma = getGammaMode() != RowNormalizationGammaMode::None;
+  if (hasGamma && *gammaTileType != *outputTileType) {
     return emitOpError("gamma tile type must match the output tile type");
   }
-  if (!getHasGamma() && getGamma() != getInput()) {
-    return emitOpError("gamma must equal input when has_gamma is false");
+  if (!hasGamma && getGamma() != getInput()) {
+    return emitOpError("gamma must equal input when gamma_mode is none");
   }
 
   if (!isFinitePositiveFloat(getScaleAttr())) {
@@ -2573,7 +2574,7 @@ mlir::LogicalResult mlir::tt::ttl::TileRowNormalizationBlockOp::verify() {
   if (inputTensor.getNumElements() != static_cast<int64_t>(getNumTiles())) {
     return emitOpError("num_tiles must match the row tensor width");
   }
-  if (getHasGamma()) {
+  if (hasGamma) {
     if (gammaTensor.getShape() != outputTensor.getShape()) {
       return emitOpError("gamma tensor shape must match the output shape");
     }

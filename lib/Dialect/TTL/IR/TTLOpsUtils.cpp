@@ -326,7 +326,7 @@ getDefaultTileExecutionInfo(Operation *operation,
   if (auto normalization = dyn_cast<TileRowNormalizationBlockOp>(operation)) {
     info.primitive = TilePrimitive::RowNormalization;
     info.operandRoutes[0] = TileOperandRoute::DataflowBuffer;
-    if (normalization.getHasGamma()) {
+    if (normalization.getGammaMode() != RowNormalizationGammaMode::None) {
       info.operandRoutes[1] = TileOperandRoute::DataflowBuffer;
     }
     info.requiredDstSlots = normalization.getNumTiles();

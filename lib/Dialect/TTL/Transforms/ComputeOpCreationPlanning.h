@@ -148,11 +148,6 @@ enum class ComputeOpCreationRecipe {
   Elide,
 };
 
-enum class RowNormalizationGammaMode {
-  None,
-  FullRow,
-};
-
 /// Exact operation state retained for row-normalization plan application.
 struct RowNormalizationOperationPlan {
   Operation *source = nullptr;

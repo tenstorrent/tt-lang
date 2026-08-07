@@ -50,7 +50,9 @@ analyzeRowNormalizationCompute(ComputeOp compute, std::string &reason) {
   }
 
   SmallVector<Value> bodyInputs = {analysis.block.getInput()};
-  if (analysis.block.getHasGamma()) {
+  bool hasGamma =
+      analysis.block.getGammaMode() != RowNormalizationGammaMode::None;
+  if (hasGamma) {
     bodyInputs.push_back(analysis.block.getGamma());
   }
   FailureOr<FixedBlockComputeAnalysis> fixed = analyzeFixedBlockCompute(
@@ -61,8 +63,7 @@ analyzeRowNormalizationCompute(ComputeOp compute, std::string &reason) {
   }
   analysis.fixed = std::move(*fixed);
 
-  if (!analysis.block.getHasGamma() &&
-      analysis.block.getGamma() != analysis.block.getInput()) {
+  if (!hasGamma && analysis.block.getGamma() != analysis.block.getInput()) {
     reason = "gamma must equal input when gamma multiplication is disabled";
     return failure();
   }
@@ -97,7 +98,7 @@ analyzeRowNormalizationCompute(ComputeOp compute, std::string &reason) {
     return failure();
   }
 
-  if (analysis.block.getHasGamma()) {
+  if (hasGamma) {
     auto gammaType =
         dyn_cast<RankedTensorType>(analysis.fixed.inputTensors[1].getType());
     if (!gammaType || !gammaType.hasStaticShape() || gammaType.getRank() != 2) {
@@ -144,10 +145,11 @@ LogicalResult generateRowNormalizationCompute(PatternRewriter &rewriter,
   Type tileType = analysis->block.getResult().getType();
   auto loweredBlock = TileRowNormalizationBlockOp::create(
       sectionBuilder, loc, tileType, analysis->fixed.inputTensors[0],
-      analysis->block.getHasGamma() ? analysis->fixed.inputTensors[1]
-                                    : analysis->fixed.inputTensors[0],
+      analysis->block.getGammaMode() != RowNormalizationGammaMode::None
+          ? analysis->fixed.inputTensors[1]
+          : analysis->fixed.inputTensors[0],
       analysis->fixed.outputTensor, analysis->block.getScaleAttr(),
-      analysis->block.getEpsilonAttr(), analysis->block.getHasGammaAttr(),
+      analysis->block.getEpsilonAttr(), analysis->block.getGammaModeAttr(),
       analysis->block.getNumTilesAttr(), scalarDstIndex);
 
   for (int64_t tileIndex = 0; tileIndex < analysis->numTiles; ++tileIndex) {
