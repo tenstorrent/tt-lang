@@ -639,6 +639,7 @@ def TTKernel_ExperimentalSourceScalarAcquireOp :
     `(` $scalar_dst_index `,` $output_dst_index `)`
     attr-dict `:` functional-type(operands, results)
   }];
+  let hasVerifier = 1;
 }
 
 def TTKernel_ExperimentalSourceScalarApplyMulOp :
@@ -671,6 +672,7 @@ def TTKernel_ExperimentalSourceScalarReleaseOp :
     register. The DST results produced by consumers remain available.
   }];
   let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
 }
 
 def TTKernel_ExperimentalMulReduceBlockOp :
