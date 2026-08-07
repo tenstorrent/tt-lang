@@ -94,7 +94,6 @@ def exp(
     scale_attr = None if scale_f is None else FloatAttr.get(F32Type.get(ctx), scale_f)
 
     return ttl.exp(
-        input.type,
         input,
         approx=approx_attr,
         scale=scale_attr,
