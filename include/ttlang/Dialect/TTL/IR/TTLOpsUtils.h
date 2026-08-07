@@ -193,6 +193,14 @@ inline std::optional<mlir::Type> getTileElementType(mlir::Type type) {
   return std::nullopt;
 }
 
+/// Preserve an existing physical tile type or tile a scalar element type.
+inline ttcore::TileType getTileValueType(mlir::Type elementType) {
+  if (auto tileType = mlir::dyn_cast<ttcore::TileType>(elementType)) {
+    return tileType;
+  }
+  return ttcore::TileType::get(elementType);
+}
+
 /// Check tilization consistency between two element types.
 /// - Both non-tile: success (no tilization to compare).
 /// - Exactly one side tiled: error (mixed tile/scalar is invalid).

@@ -884,14 +884,14 @@ def transpose(input: TensorBlock) -> TensorBlock:
 
 
 @syntax("fill")
-def fill(value, *, shape, dtype=None) -> TensorBlock:
+def fill(value, *, shape, dtype=None, tile=None) -> TensorBlock:
     """Produce a block of ``shape`` filled with a constant value.
 
     Matches the spec form ``ttl.block.fill(value, shape)``. ``dtype`` selects
     the per-element tile dtype and defaults to bf16, matching the simulator's
-    spec-form default. Accepts ``ttcore.DataType``, a torch dtype, or a ttnn
-    dtype. The downstream ``ttl.store`` determines the output CB used during
-    lowering; no output operand is required.
+    spec-form default. ``tile`` selects the physical tile dimensions and
+    defaults to 32x32. The downstream ``ttl.store`` determines the output DFB
+    used during lowering; no output operand is required.
     """
     from ttl.dialects import ttcore
     from .dtype_utils import tensor_dtype_to_ttcore_datatype
@@ -910,8 +910,21 @@ def fill(value, *, shape, dtype=None) -> TensorBlock:
     else:
         ttcore_dtype = tensor_dtype_to_ttcore_datatype(dtype)
 
+    tile_dimensions = (32, 32) if tile is None else tuple(tile)
+    if len(tile_dimensions) != 2:
+        raise ValueError(
+            f"fill tile must contain two dimensions, got {tile_dimensions}"
+        )
+    tile_height, tile_width = (
+        _get_constant_int(dimension) for dimension in tile_dimensions
+    )
+    if tile_height <= 0 or tile_width <= 0:
+        raise ValueError(
+            f"fill tile dimensions must be positive, got {tile_dimensions}"
+        )
+
     ctx = Context.current
-    tile_type = ttcore.ir.TileType.get(ctx, 32, 32, ttcore_dtype)
+    tile_type = ttcore.ir.TileType.get(ctx, tile_height, tile_width, ttcore_dtype)
     result_type = RankedTensorType.get(shape_list, tile_type)
     value_attr = FloatAttr.get(F32Type.get(ctx), fill_val)
     return ttl.fill(result_type, value_attr)
