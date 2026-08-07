@@ -28,7 +28,7 @@
 // TTKERNEL:       ttkernel.init_sfpu(%[[INPUT:[a-zA-Z0-9_]+]], %[[OUTPUT:[a-zA-Z0-9_]+]])
 // TTKERNEL-NEXT:  ttkernel.tile_regs_acquire
 // TTKERNEL-NEXT:  ttkernel.experimental_row_normalization_block(%[[INPUT]], %[[GAMMA:[a-zA-Z0-9_]+]], %[[OUTPUT]]) num_tiles = 3
-// TTKERNEL-SAME:  has_gamma = true repeat_gamma = false dtype = <bf16>
+// TTKERNEL-SAME:  has_gamma = true dtype = <bf16>
 // TTKERNEL-NEXT:  ttkernel.tile_regs_commit
 // TTKERNEL-NEXT:  ttkernel.tile_regs_wait
 // TTKERNEL-NEXT:  ttkernel.pack_tile_block(%{{.*}}, %[[OUTPUT]], %{{.*}})
@@ -39,7 +39,7 @@
 // CPP-LABEL: void kernel_main()
 // CPP:       init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
 // CPP-NEXT:  tile_regs_acquire();
-// CPP-NEXT:  experimental::row_normalization_block<3, true, false, DataFormat::Float16_b>(
+// CPP-NEXT:  experimental::row_normalization_block<3, true, DataFormat::Float16_b>(
 // CPP-SAME:  1020331500U,
 // CPP-NEXT:  tile_regs_commit();
 // CPP-NEXT:  tile_regs_wait();

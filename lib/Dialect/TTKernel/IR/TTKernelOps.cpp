@@ -29,9 +29,6 @@ namespace mlir::tt::ttkernel {
   if (getNumTiles() < 1 || getNumTiles() > 8) {
     return emitOpError("num_tiles must be in the range [1, 8]");
   }
-  if (!getHasGamma() && getRepeatGamma()) {
-    return emitOpError("repeat_gamma requires has_gamma");
-  }
   if (!getHasGamma() && getGammaCb() != getInputCb()) {
     return emitOpError("gamma_cb must equal input_cb when has_gamma is false");
   }

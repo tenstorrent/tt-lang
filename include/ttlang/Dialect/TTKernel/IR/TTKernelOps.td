@@ -652,13 +652,12 @@ def TTKernel_ExperimentalRowNormalizationBlockOp :
                        F32Attr:$scale,
                        F32Attr:$epsilon,
                        BoolAttr:$has_gamma,
-                       BoolAttr:$repeat_gamma,
                        TTCore_DataTypeAttr:$dtype);
   let assemblyFormat = [{
     `(` $input_cb `,` $gamma_cb `,` $output_cb `)`
     `num_tiles` `=` $num_tiles `scale` `=` $scale
     `epsilon` `=` $epsilon `has_gamma` `=` $has_gamma
-    `repeat_gamma` `=` $repeat_gamma `dtype` `=` $dtype
+    `dtype` `=` $dtype
     attr-dict `:` functional-type(operands, results)
   }];
   let hasVerifier = 1;
