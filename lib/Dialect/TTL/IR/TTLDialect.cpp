@@ -7,6 +7,7 @@
 #include "mlir/IR/DialectImplementation.h"
 #include "ttlang/Dialect/TTCore/IR/TTCore.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "llvm/ADT/TypeSwitch.h"
 
@@ -23,4 +24,17 @@ void mlir::tt::ttl::TTLDialect::initialize() {
       >();
   registerTypes();
   registerAttributes();
+}
+
+mlir::LogicalResult mlir::tt::ttl::TTLDialect::verifyOperationAttribute(
+    mlir::Operation *operation, mlir::NamedAttribute attribute) {
+  if (attribute.getName() != kSelectedComputePipelineScheduleAttrName) {
+    return mlir::success();
+  }
+  if (!mlir::isa<ComputePipelineScheduleAttr>(attribute.getValue())) {
+    return operation->emitError()
+           << "attribute '" << attribute.getName().getValue()
+           << "' must be a #ttl.compute_pipeline_schedule attribute";
+  }
+  return mlir::success();
 }
