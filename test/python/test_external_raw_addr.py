@@ -19,6 +19,7 @@ from ttlang_test_utils import to_dram, to_l1, to_l1_sharded
 RAW_ADDRESS_HEADER = os.path.join(
     os.path.dirname(__file__), "include", "raw_address_capture.hpp"
 )
+OUTPUT_WORD_COUNT = 32 * 32
 INPUT_MEMORY_CONFIGS = [
     pytest.param(to_dram, id="dram-interleaved"),
     pytest.param(to_l1, id="l1-interleaved"),
@@ -54,15 +55,13 @@ def external_raw_address_capture(inp, out):
 
 @ttl.operation(grid=(1, 1))
 def external_compute_raw_address_capture(inp, out):
-    address_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
-
     @ttl.compute()
     def compute():
         ttl.call_extern_func(
             RAW_ADDRESS_HEADER,
-            "raw_address_capture",
-            template_args=[ttl.dfb_descriptor(address_dfb)],
-            func_args=[ttl.raw_addr(inp)],
+            "raw_address_capture_compute",
+            template_args=[OUTPUT_WORD_COUNT],
+            func_args=[ttl.raw_addr(inp), ttl.raw_addr(out)],
         )
 
     @ttl.datamovement()
@@ -71,9 +70,7 @@ def external_compute_raw_address_capture(inp, out):
 
     @ttl.datamovement()
     def dm_write():
-        address_block = address_dfb.wait()
-        ttl.copy(address_block, out[0, 0]).wait()
-        address_block.pop()
+        pass
 
 
 def _assert_address_bits(output, expected_address):
@@ -104,8 +101,12 @@ def test_external_raw_address_uses_each_runtime_tensor(
     assert first_input.buffer_address() != second_input.buffer_address()
 
     host_output = torch.zeros((32, 32), dtype=torch.float32)
-    first_output = to_l1(host_output, device)
-    second_output = to_l1(host_output, device)
+    if operation is external_compute_raw_address_capture:
+        first_output = to_l1_sharded(host_output, device, layout="height")
+        second_output = to_l1_sharded(host_output, device, layout="height")
+    else:
+        first_output = to_l1(host_output, device)
+        second_output = to_l1(host_output, device)
 
     operation(first_input, first_output)
     operation(second_input, second_output)
