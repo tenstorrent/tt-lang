@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "ttlang/Dialect/TTL/Transforms/LowerRowNormalizationCompute.h"
+#include "ttlang/Dialect/TTL/Transforms/FixedBlockComputeAnalysis.h"
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
@@ -16,34 +17,11 @@ namespace mlir::tt::ttl {
 namespace {
 
 struct RowNormalizationComputeAnalysis {
+  FixedBlockComputeAnalysis fixed;
   TileRowNormalizationBlockOp block;
-  Value inputTensor;
-  Value gammaTensor;
-  Value outputTensor;
-  TileStoreOp store;
   int64_t numTiles = 0;
   std::uint32_t dstCapacity = 0;
 };
-
-static FailureOr<Value> getInputTensor(ComputeOp compute, Value bodyValue) {
-  std::optional<unsigned> argumentIndex = traceToBlockArgIndex(bodyValue);
-  if (!argumentIndex || *argumentIndex >= compute.getInputs().size()) {
-    return failure();
-  }
-  return compute.getInputs()[*argumentIndex];
-}
-
-static FailureOr<Value> getOutputTensor(ComputeOp compute, Value bodyValue) {
-  std::optional<unsigned> argumentIndex = traceToBlockArgIndex(bodyValue);
-  if (!argumentIndex || *argumentIndex < compute.getInputs().size()) {
-    return failure();
-  }
-  unsigned outputIndex = *argumentIndex - compute.getInputs().size();
-  if (outputIndex >= compute.getOutputs().size()) {
-    return failure();
-  }
-  return compute.getOutputs()[outputIndex];
-}
 
 static FailureOr<RowNormalizationComputeAnalysis>
 analyzeRowNormalizationCompute(ComputeOp compute, std::string &reason) {
@@ -56,31 +34,25 @@ analyzeRowNormalizationCompute(ComputeOp compute, std::string &reason) {
         return failure();
       }
       analysis.block = block;
-      continue;
-    }
-    if (auto store = dyn_cast<TileStoreOp>(&operation)) {
-      if (analysis.store) {
-        reason = "requires exactly one output store";
-        return failure();
-      }
-      analysis.store = store;
-      continue;
-    }
-    if (!isa<IterIndexOp>(&operation)) {
-      reason = "row-normalization compute contains an unsupported body op";
-      return failure();
     }
   }
-  if (!analysis.block || !analysis.store) {
-    reason = "requires one block operation and one output store";
+  if (!analysis.block) {
+    reason = "requires exactly one ttl.tile_row_normalization_block";
     return failure();
   }
-  unsigned expectedInputCount = analysis.block.getHasGamma() ? 2 : 1;
-  if (compute.getInputs().size() != expectedInputCount ||
-      compute.getOutputs().size() != 1) {
-    reason = "requires the exact input list, one output, and one output store";
+
+  SmallVector<Value> bodyInputs = {analysis.block.getInput()};
+  if (analysis.block.getHasGamma()) {
+    bodyInputs.push_back(analysis.block.getGamma());
+  }
+  FailureOr<FixedBlockComputeAnalysis> fixed = analyzeFixedBlockCompute(
+      compute, analysis.block, bodyInputs, analysis.block.getOutput(),
+      analysis.block.getResult(), reason);
+  if (failed(fixed)) {
     return failure();
   }
+  analysis.fixed = std::move(*fixed);
+
   if (!analysis.block.getHasGamma() &&
       analysis.block.getGamma() != analysis.block.getInput()) {
     reason = "gamma must equal input when gamma multiplication is disabled";
@@ -91,22 +63,10 @@ analyzeRowNormalizationCompute(ComputeOp compute, std::string &reason) {
     return failure();
   }
 
-  FailureOr<Value> inputTensor =
-      getInputTensor(compute, analysis.block.getInput());
-  FailureOr<Value> gammaTensor =
-      getInputTensor(compute, analysis.block.getGamma());
-  FailureOr<Value> outputTensor =
-      getOutputTensor(compute, analysis.block.getOutput());
-  if (failed(inputTensor) || failed(gammaTensor) || failed(outputTensor)) {
-    reason = "block operands must map to formal compute inputs and outputs";
-    return failure();
-  }
-  analysis.inputTensor = *inputTensor;
-  analysis.gammaTensor = *gammaTensor;
-  analysis.outputTensor = *outputTensor;
-
-  auto inputType = dyn_cast<RankedTensorType>(analysis.inputTensor.getType());
-  auto outputType = dyn_cast<RankedTensorType>(analysis.outputTensor.getType());
+  Value inputTensor = analysis.fixed.inputTensors.front();
+  auto inputType = dyn_cast<RankedTensorType>(inputTensor.getType());
+  auto outputType =
+      dyn_cast<RankedTensorType>(analysis.fixed.outputTensor.getType());
   if (!inputType || !outputType || !inputType.hasStaticShape() ||
       !outputType.hasStaticShape() || inputType.getRank() != 2 ||
       outputType.getRank() != 2 || inputType.getDimSize(0) != 1 ||
@@ -116,12 +76,7 @@ analyzeRowNormalizationCompute(ComputeOp compute, std::string &reason) {
   }
   analysis.numTiles = inputType.getNumElements();
 
-  FailureOr<std::uint32_t> capacity = computeDSTCapacity(compute);
-  if (failed(capacity)) {
-    reason = "cannot determine effective DST capacity";
-    return failure();
-  }
-  analysis.dstCapacity = std::min<std::uint32_t>(8, *capacity);
+  analysis.dstCapacity = std::min<std::uint32_t>(8, analysis.fixed.dstCapacity);
   if (analysis.numTiles < 1 || analysis.numTiles > analysis.dstCapacity) {
     reason =
         (Twine("row requires ") + Twine(analysis.numTiles) +
@@ -131,7 +86,8 @@ analyzeRowNormalizationCompute(ComputeOp compute, std::string &reason) {
   }
 
   if (analysis.block.getHasGamma()) {
-    auto gammaType = dyn_cast<RankedTensorType>(analysis.gammaTensor.getType());
+    auto gammaType =
+        dyn_cast<RankedTensorType>(analysis.fixed.inputTensors[1].getType());
     if (!gammaType || !gammaType.hasStaticShape() || gammaType.getRank() != 2) {
       reason = "gamma must be a static rank-2 tensor";
       return failure();
@@ -142,17 +98,6 @@ analyzeRowNormalizationCompute(ComputeOp compute, std::string &reason) {
     }
   }
 
-  if (analysis.store.getTile() != analysis.block.getResult()) {
-    reason = "output store must consume the block result";
-    return failure();
-  }
-  FailureOr<unsigned> outputIndex =
-      compute.getOutputIndexForView(analysis.store.getView());
-  if (failed(outputIndex) || *outputIndex != 0 ||
-      analysis.outputTensor != compute.getOutputs().front()) {
-    reason = "block and store must map to the sole formal compute output";
-    return failure();
-  }
   return analysis;
 }
 
@@ -186,10 +131,12 @@ LogicalResult generateRowNormalizationCompute(PatternRewriter &rewriter,
   Value scalarDstIndex = constantIndex(sectionBuilder, loc, 0);
   Type tileType = analysis->block.getResult().getType();
   auto loweredBlock = TileRowNormalizationBlockOp::create(
-      sectionBuilder, loc, tileType, analysis->inputTensor,
-      analysis->gammaTensor, analysis->outputTensor,
-      analysis->block.getScaleAttr(), analysis->block.getEpsilonAttr(),
-      analysis->block.getHasGammaAttr(), scalarDstIndex);
+      sectionBuilder, loc, tileType, analysis->fixed.inputTensors[0],
+      analysis->block.getHasGamma() ? analysis->fixed.inputTensors[1]
+                                    : analysis->fixed.inputTensors[0],
+      analysis->fixed.outputTensor, analysis->block.getScaleAttr(),
+      analysis->block.getEpsilonAttr(), analysis->block.getHasGammaAttr(),
+      scalarDstIndex);
 
   for (int64_t tileIndex = 0; tileIndex < analysis->numTiles; ++tileIndex) {
     Value outputDstIndex = constantIndex(sectionBuilder, loc, tileIndex);
@@ -200,7 +147,8 @@ LogicalResult generateRowNormalizationCompute(PatternRewriter &rewriter,
         constantIndex(sectionBuilder, loc, 0),
         constantIndex(sectionBuilder, loc, tileIndex)};
     TileStoreOp::create(sectionBuilder, loc, outputTile,
-                        analysis->store.getView(), indices, outputDstIndex);
+                        analysis->fixed.store.getView(), indices,
+                        outputDstIndex);
   }
 
   rewriter.replaceOp(op, op.getOutputs());

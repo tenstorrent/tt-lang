@@ -89,5 +89,7 @@ def TTL_CBOutputTileOpTrait : TTL_Trait<"TTLCBOutputTileOpTrait", []>;
 def TTL_DstResultOpTrait : TTL_Trait<"TTLDstResultOpTrait", []>;
 def TTL_StrategyDependentBinaryOpTrait
     : TTL_Trait<"TTLStrategyDependentBinaryOpTrait", []>;
+def TTL_FixedBlockComputeOpTrait
+    : TTL_Trait<"TTLFixedBlockComputeOpTrait", []>;
 
 #endif // TTLANG_DIALECT_TTL_IR_TTLBASE_TD

@@ -654,9 +654,15 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
     }
 
     funcOp.walk([&](ComputeOp computeOp) {
-      // This block schedule owns a fixed contiguous DST layout. Its complete
-      // capacity check and assignment occur in LowerRowNormalizationCompute.
-      if (computeOp.containsOp<TileRowNormalizationBlockOp>()) {
+      // Fixed block operations validate and assign their complete contiguous
+      // DST layout before expansion in ttl-lower-to-loops.
+      if (computeOp.getBody()
+              .walk([](Operation *operation) {
+                return isFixedBlockComputeOp(operation)
+                           ? WalkResult::interrupt()
+                           : WalkResult::advance();
+              })
+              .wasInterrupted()) {
         return;
       }
       Block *body = &computeOp.getRegion().front();

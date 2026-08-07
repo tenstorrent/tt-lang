@@ -211,6 +211,12 @@ class TTLStrategyDependentBinaryOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType,
                                       TTLStrategyDependentBinaryOpTrait> {};
 
+/// Trait for block operations that own their complete DST schedule.
+template <typename ConcreteType>
+class TTLFixedBlockComputeOpTrait
+    : public mlir::OpTrait::TraitBase<ConcreteType,
+                                      TTLFixedBlockComputeOpTrait> {};
+
 /// Trait for tile operations whose result overwrites the DST input in-place.
 template <typename ConcreteType>
 class TTLInPlaceOpTrait
