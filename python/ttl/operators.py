@@ -99,6 +99,15 @@ def _get_constant_float(val) -> float:
     return v
 
 
+def _get_constant_bool(val) -> bool:
+    if isinstance(val, bool):
+        return val
+    value = get_constant_int_value(val)
+    if value is None:
+        raise ValueError(f"Expected constant bool, got {type(val).__name__}")
+    return bool(value)
+
+
 def _tile_hw(elem_type) -> Optional[Tuple[int, int]]:
     """Return (H, W) when ``elem_type`` is a TileType, else None."""
     from ttl.dialects import ttcore

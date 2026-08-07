@@ -6,21 +6,60 @@
 // Direct compute creation validates the result before modifying the source
 // operation.
 func.func @direct_unsupported_dimensions(
-    %argument: tensor<1x1x!ttcore.tile<8x32, bf16>>) {
+    %argument: tensor<1x1x!ttcore.tile<8x16, bf16>>) {
+  %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<8x16, bf16>, 1>
+  %output_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<8x16, bf16>, 1>
+  %input = ttl.attach_cb %argument, %input_dfb
+      : (tensor<1x1x!ttcore.tile<8x16, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<8x16, bf16>, 1>)
+        -> tensor<1x1x!ttcore.tile<8x16, bf16>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[1, 1], !ttcore.tile<8x16, bf16>, 1>
+        -> tensor<1x1x!ttcore.tile<8x16, bf16>>
+  // expected-error @below {{'ttl.exp' op compute result tile shape 8x16 is not supported by the current compute LLKs; supported shapes are 1x32, 2x32, 4x32, 8x32, 16x16, 16x32, 32x16, and 32x32}}
+  %result = ttl.exp %input
+      : tensor<1x1x!ttcore.tile<8x16, bf16>>
+        -> tensor<1x1x!ttcore.tile<8x16, bf16>>
+  ttl.store %result, %output
+      : tensor<1x1x!ttcore.tile<8x16, bf16>>,
+        tensor<1x1x!ttcore.tile<8x16, bf16>>
+  func.return
+}
+
+// -----
+
+// Short-height support is restricted to elementwise, fill, and matmul
+// primitives whose LLKs have been validated for these dimensions.
+func.func @short_height_reduce_unsupported() {
   %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
       : !ttl.cb<[1, 1], !ttcore.tile<8x32, bf16>, 1>
-  %output_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
+  %scaler_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
       : !ttl.cb<[1, 1], !ttcore.tile<8x32, bf16>, 1>
-  %input = ttl.attach_cb %argument, %input_dfb
+  %output_dfb = ttl.bind_cb {cb_index = 2, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<8x32, bf16>, 1>
+  %input_wait = ttl.cb_wait %input_dfb
+      : <[1, 1], !ttcore.tile<8x32, bf16>, 1>
+        -> tensor<1x1x!ttcore.tile<8x32, bf16>>
+  %input = ttl.attach_cb %input_wait, %input_dfb
+      : (tensor<1x1x!ttcore.tile<8x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<8x32, bf16>, 1>)
+        -> tensor<1x1x!ttcore.tile<8x32, bf16>>
+  %scaler_wait = ttl.cb_wait %scaler_dfb
+      : <[1, 1], !ttcore.tile<8x32, bf16>, 1>
+        -> tensor<1x1x!ttcore.tile<8x32, bf16>>
+  %scaler = ttl.attach_cb %scaler_wait, %scaler_dfb
       : (tensor<1x1x!ttcore.tile<8x32, bf16>>,
          !ttl.cb<[1, 1], !ttcore.tile<8x32, bf16>, 1>)
         -> tensor<1x1x!ttcore.tile<8x32, bf16>>
   %output = ttl.cb_reserve %output_dfb
       : <[1, 1], !ttcore.tile<8x32, bf16>, 1>
         -> tensor<1x1x!ttcore.tile<8x32, bf16>>
-  // expected-error @below {{'ttl.exp' op compute result tile shape 8x32 is not supported by the current compute LLKs; supported shapes are 16x16, 16x32, 32x16, and 32x32}}
-  %result = ttl.exp %input
-      : tensor<1x1x!ttcore.tile<8x32, bf16>>
+  // expected-error @below {{'ttl.reduce' op tile shape 8x32 is not supported by this compute primitive; short-height tiles are supported by elementwise, fill, and matmul compute primitives}}
+  %result = ttl.reduce %input, %scaler 0 : i32 [0, 1]
+      : (tensor<1x1x!ttcore.tile<8x32, bf16>>,
+         tensor<1x1x!ttcore.tile<8x32, bf16>>)
         -> tensor<1x1x!ttcore.tile<8x32, bf16>>
   ttl.store %result, %output
       : tensor<1x1x!ttcore.tile<8x32, bf16>>,
@@ -45,7 +84,7 @@ func.func @passthrough_unsupported_dimensions(
   %output = ttl.cb_reserve %output_dfb
       : <[1, 1], !ttcore.tile<4x16, u8>, 1>
         -> tensor<1x1x!ttcore.tile<4x16, u8>>
-  // expected-error @below {{'ttl.store' op cannot lower tensor store to ttl.compute: passthrough store tile shape 4x16 is not supported by the current compute LLKs; supported shapes are 16x16, 16x32, 32x16, and 32x32}}
+  // expected-error @below {{'ttl.store' op cannot lower tensor store to ttl.compute: passthrough store tile shape 4x16 is not supported by the current compute LLKs; supported shapes are 1x32, 2x32, 4x32, 8x32, 16x16, 16x32, 32x16, and 32x32}}
   ttl.store %input, %output
       : tensor<1x1x!ttcore.tile<4x16, u8>>,
         tensor<1x1x!ttcore.tile<4x16, u8>>
