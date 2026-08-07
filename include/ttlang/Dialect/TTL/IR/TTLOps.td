@@ -343,6 +343,100 @@ def TTL_ComputeOp : TTL_Op<"compute", [
   }];
 }
 
+def TTL_ComputePipelineOp : TTL_Op<"compute_pipeline", [
+    IsolatedFromAbove,
+    Pure,
+    SingleBlock
+  ]> {
+  let summary = "Multi-stage tensor compute graph";
+  let description = [{
+    `ttl.compute_pipeline` groups tensor computations whose stages have
+    different iteration domains. Inputs enter through body block arguments.
+    `ttl.compute_stage` results form the internal SSA graph, and
+    `ttl.compute_pipeline_yield` maps live graph values to the operation
+    results.
+
+    The operation describes computation and live-result ownership without
+    selecting storage for values between stages. Every operation in the body
+    is a `ttl.compute_stage`, stages are ordered by SSA dominance, and values
+    cannot be captured from outside the operation.
+
+  }];
+
+  let arguments = (ins Variadic<AnyRankedTensor>:$inputs);
+  let results = (outs Variadic<AnyRankedTensor>:$results);
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = [{
+    `ins` `(` $inputs `)` attr-dict `:` functional-type($inputs, $results)
+    $body
+  }];
+  let hasVerifier = 1;
+}
+
+def TTL_ComputeStageOp : TTL_Op<"compute_stage", [
+    IsolatedFromAbove,
+    Pure,
+    SingleBlock,
+    ParentOneOf<["ComputePipelineOp"]>
+  ]> {
+  let summary = "One tensor computation stage with one iteration domain";
+  let description = [{
+    `ttl.compute_stage` groups a pure, speculatable tensor expression under one
+    explicit iteration domain. The body receives one tensor block argument per
+    input and returns one tensor value per result through
+    `ttl.compute_stage_yield`.
+
+    `indexing_maps` contains one projected-permutation map per input and result.
+    `iterator_types` defines the complete stage domain using `parallel` and
+    `reduction` dimensions. Reduction dimensions must occur in an input map and
+    cannot occur in a result map. The operation does not select storage for its
+    results or for values consumed by another stage.
+  }];
+
+  let arguments = (ins
+    Variadic<AnyRankedTensor>:$inputs,
+    AffineMapArrayAttr:$indexing_maps,
+    ArrayAttr:$iterator_types
+  );
+  let results = (outs Variadic<AnyRankedTensor>:$results);
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = [{
+    `ins` `(` $inputs `)`
+    `indexing_maps` `=` $indexing_maps
+    `iterator_types` `=` $iterator_types
+    attr-dict `:` functional-type($inputs, $results) $body
+  }];
+  let hasVerifier = 1;
+}
+
+def TTL_ComputePipelineYieldOp : TTL_Op<"compute_pipeline_yield", [
+    ReturnLike,
+    Terminator,
+    ParentOneOf<["ComputePipelineOp"]>
+  ]> {
+  let summary = "Return live tensor values from a compute pipeline";
+  let description = [{
+    Returns one tensor value for each result of the enclosing
+    `ttl.compute_pipeline`, in result order.
+  }];
+  let arguments = (ins Variadic<AnyRankedTensor>:$values);
+  let assemblyFormat = "$values attr-dict `:` type($values)";
+}
+
+def TTL_ComputeStageYieldOp : TTL_Op<"compute_stage_yield", [
+    ReturnLike,
+    Terminator,
+    ParentOneOf<["ComputeStageOp"]>
+  ]> {
+  let summary = "Return tensor values from a compute stage";
+  let description = [{
+    Returns one tensor value for each result of the enclosing
+    `ttl.compute_stage`, in result order.
+  }];
+  let arguments = (ins Variadic<AnyRankedTensor>:$values);
+  let assemblyFormat = "$values attr-dict `:` type($values)";
+}
+
 def TTL_YieldOp : TTL_Op<"yield", [ReturnLike, Terminator,
     ParentOneOf<["ComputeOp", "DstSectionOp", "IfSrcOp", "IfDstOp",
                  "PipeNetScopeOp", "AccumulationScopeOp"]>]> {

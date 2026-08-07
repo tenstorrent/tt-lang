@@ -1,0 +1,329 @@
+// Verifies structural, domain, purity, and isolation errors for multi-stage
+// tensor compute graphs.
+// RUN: ttlang-opt %s --split-input-file --verify-diagnostics
+
+// A pipeline block has one argument for each explicit input.
+func.func @pipeline_block_argument_count(
+    %input: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  // expected-error @below {{'ttl.compute_pipeline' op body requires one block argument per input, got 2 block arguments for 1 inputs}}
+  %result = ttl.compute_pipeline ins(%input)
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    ^bb0(%first: tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         %second: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+      ttl.compute_pipeline_yield %first
+          : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  return
+}
+
+// -----
+
+// Every pipeline result has one explicit yielded graph value.
+func.func @pipeline_yield_count(
+    %input: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  // expected-error @below {{'ttl.compute_pipeline' op body must yield one value per result, got 1 yielded values for 2 results}}
+  %results:2 = ttl.compute_pipeline ins(%input)
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        -> (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+            tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    ^bb0(%pipeline_input: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+      %stage = ttl.compute_stage ins(%pipeline_input)
+          indexing_maps = [affine_map<(dim0, dim1) -> (dim0, dim1)>,
+                           affine_map<(dim0, dim1) -> (dim0, dim1)>]
+          iterator_types = ["parallel", "parallel"]
+          : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+        ^bb0(%stage_input: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+          %value = ttl.exp %stage_input
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+                -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+          ttl.compute_stage_yield %value
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+      }
+      ttl.compute_pipeline_yield %stage
+          : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  return
+}
+
+// -----
+
+// Tensor operations belong to a stage rather than directly to the pipeline.
+func.func @pipeline_direct_operation(
+    %input: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  // expected-error @below {{'ttl.compute_pipeline' op body may contain only ttl.compute_stage operations; found ttl.exp}}
+  %result = ttl.compute_pipeline ins(%input)
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    ^bb0(%pipeline_input: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+      %value = ttl.exp %pipeline_input
+          : tensor<1x1x!ttcore.tile<32x32, bf16>>
+            -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.compute_pipeline_yield %value
+          : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  return
+}
+
+// -----
+
+// Pipeline results identify stage results, not uncomputed input values.
+func.func @pipeline_passthrough_result(
+    %input: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  // expected-error @below {{'ttl.compute_pipeline' op yielded value 1 must be a result of a stage in this pipeline}}
+  %results:2 = ttl.compute_pipeline ins(%input)
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        -> (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+            tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    ^bb0(%pipeline_input: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+      %stage = ttl.compute_stage ins(%pipeline_input)
+          indexing_maps = [affine_map<(dim0, dim1) -> (dim0, dim1)>,
+                           affine_map<(dim0, dim1) -> (dim0, dim1)>]
+          iterator_types = ["parallel", "parallel"]
+          : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+        ^bb0(%stage_input: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+          %value = ttl.exp %stage_input
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+                -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+          ttl.compute_stage_yield %value
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+      }
+      ttl.compute_pipeline_yield %stage, %pipeline_input
+          : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+            tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  return
+}
+
+// -----
+
+// Every planned stage result has a consumer or external result mapping.
+func.func @unused_stage_result(
+    %input: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  // expected-error @below {{'ttl.compute_pipeline' op stage result 0 is unused}}
+  %result = ttl.compute_pipeline ins(%input)
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    ^bb0(%pipeline_input: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+      %unused = ttl.compute_stage ins(%pipeline_input)
+          indexing_maps = [affine_map<(dim0, dim1) -> (dim0, dim1)>,
+                           affine_map<(dim0, dim1) -> (dim0, dim1)>]
+          iterator_types = ["parallel", "parallel"]
+          : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+        ^bb0(%stage_input: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+          %value = ttl.exp %stage_input
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+                -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+          ttl.compute_stage_yield %value
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+      }
+      %used = ttl.compute_stage ins(%pipeline_input)
+          indexing_maps = [affine_map<(dim0, dim1) -> (dim0, dim1)>,
+                           affine_map<(dim0, dim1) -> (dim0, dim1)>]
+          iterator_types = ["parallel", "parallel"]
+          : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+        ^bb0(%stage_input: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+          %value = ttl.exp %stage_input
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+                -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+          ttl.compute_stage_yield %value
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+      }
+      ttl.compute_pipeline_yield %used
+          : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  return
+}
+
+// -----
+
+// A stage block has one tensor argument for each explicit stage input.
+func.func @stage_block_argument_count(
+    %input: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  %result = ttl.compute_pipeline ins(%input)
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    ^bb0(%pipeline_input: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+      // expected-error @below {{'ttl.compute_stage' op body requires one block argument per input, got 2 block arguments for 1 inputs}}
+      %stage = ttl.compute_stage ins(%pipeline_input)
+          indexing_maps = [affine_map<(dim0, dim1) -> (dim0, dim1)>,
+                           affine_map<(dim0, dim1) -> (dim0, dim1)>]
+          iterator_types = ["parallel", "parallel"]
+          : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+        ^bb0(%first: tensor<1x1x!ttcore.tile<32x32, bf16>>,
+             %second: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+          %value = ttl.exp %first
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+                -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+          ttl.compute_stage_yield %value
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+      }
+      ttl.compute_pipeline_yield %stage
+          : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  return
+}
+
+// -----
+
+// Every stage result has one explicit yielded tensor value.
+func.func @stage_yield_count(
+    %input: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  %results:2 = ttl.compute_pipeline ins(%input)
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        -> (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+            tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    ^bb0(%pipeline_input: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+      // expected-error @below {{'ttl.compute_stage' op body must yield one value per result, got 1 yielded values for 2 results}}
+      %stage:2 = ttl.compute_stage ins(%pipeline_input)
+          indexing_maps = [affine_map<(dim0, dim1) -> (dim0, dim1)>,
+                           affine_map<(dim0, dim1) -> (dim0, dim1)>,
+                           affine_map<(dim0, dim1) -> (dim0, dim1)>]
+          iterator_types = ["parallel", "parallel"]
+          : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+        ^bb0(%stage_input: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+          %value = ttl.exp %stage_input
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+                -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+          ttl.compute_stage_yield %value
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+      }
+      ttl.compute_pipeline_yield %stage#0, %stage#1
+          : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+            tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  return
+}
+
+// -----
+
+// A reduced dimension cannot occur in a stage result indexing map.
+func.func @result_references_reduction_dimension(
+    %input: tensor<1x4x!ttcore.tile<32x32, bf16>>) {
+  %result = ttl.compute_pipeline ins(%input)
+      : (tensor<1x4x!ttcore.tile<32x32, bf16>>)
+        -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    ^bb0(%pipeline_input: tensor<1x4x!ttcore.tile<32x32, bf16>>):
+      // expected-error @below {{'ttl.compute_stage' op result 0 indexing map cannot reference reduction dimension 1}}
+      %stage = ttl.compute_stage ins(%pipeline_input)
+          indexing_maps = [affine_map<(dim0, dim1) -> (dim0, dim1)>,
+                           affine_map<(dim0, dim1) -> (0, dim1)>]
+          iterator_types = ["parallel", "reduction"]
+          : (tensor<1x4x!ttcore.tile<32x32, bf16>>)
+            -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+        ^bb0(%stage_input: tensor<1x4x!ttcore.tile<32x32, bf16>>):
+          %product = ttl.mul %stage_input, %stage_input
+              : tensor<1x4x!ttcore.tile<32x32, bf16>>,
+                tensor<1x4x!ttcore.tile<32x32, bf16>>
+                -> tensor<1x4x!ttcore.tile<32x32, bf16>>
+          %scaler = ttl.fill 1.000000e+00
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+          %sum = ttl.reduce %product, %scaler 0 : i32 [0, 1]
+              : (tensor<1x4x!ttcore.tile<32x32, bf16>>,
+                 tensor<1x1x!ttcore.tile<32x32, bf16>>)
+                -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+          ttl.compute_stage_yield %sum
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+      }
+      ttl.compute_pipeline_yield %stage
+          : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  return
+}
+
+// -----
+
+// Every reduction dimension needs an input extent source.
+func.func @unreferenced_reduction_dimension(
+    %input: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  %result = ttl.compute_pipeline ins(%input)
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    ^bb0(%pipeline_input: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+      // expected-error @below {{'ttl.compute_stage' op reduction dimension 1 must be referenced by at least one input indexing map}}
+      %stage = ttl.compute_stage ins(%pipeline_input)
+          indexing_maps = [affine_map<(dim0, dim1) -> (dim0, 0)>,
+                           affine_map<(dim0, dim1) -> (dim0, 0)>]
+          iterator_types = ["parallel", "reduction"]
+          : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+        ^bb0(%stage_input: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+          %value = ttl.exp %stage_input
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+                -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+          ttl.compute_stage_yield %value
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+      }
+      ttl.compute_pipeline_yield %stage
+          : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  return
+}
+
+// -----
+
+// Instrumentation cannot be represented as a pure stage operation.
+func.func @impure_stage_operation(
+    %input: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  %result = ttl.compute_pipeline ins(%input)
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    ^bb0(%pipeline_input: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+      // expected-error @below {{'ttl.compute_stage' op stage operations must be pure and speculatable; found ttl.dprint}}
+      %stage = ttl.compute_stage ins(%pipeline_input)
+          indexing_maps = [affine_map<(dim0, dim1) -> (dim0, dim1)>,
+                           affine_map<(dim0, dim1) -> (dim0, dim1)>]
+          iterator_types = ["parallel", "parallel"]
+          : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+        ^bb0(%stage_input: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+          "ttl.dprint"() {fmt = "inside stage", mode = "scalar"} : () -> ()
+          %value = ttl.exp %stage_input
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+                -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+          ttl.compute_stage_yield %value
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+      }
+      ttl.compute_pipeline_yield %stage
+          : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  return
+}
+
+// -----
+
+// A stage receives external values only through explicit operands.
+func.func @stage_capture(
+    %input: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  %result = ttl.compute_pipeline ins(%input)
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+    ^bb0(%pipeline_input: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+      // expected-note @below {{required by region isolation constraints}}
+      %stage = ttl.compute_stage ins(%pipeline_input)
+          indexing_maps = [affine_map<(dim0, dim1) -> (dim0, dim1)>,
+                           affine_map<(dim0, dim1) -> (dim0, dim1)>]
+          iterator_types = ["parallel", "parallel"]
+          : (tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> (tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+        ^bb0(%stage_input: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+          // expected-error @below {{'ttl.add' op using value defined outside the region}}
+          %value = ttl.add %stage_input, %pipeline_input
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                tensor<1x1x!ttcore.tile<32x32, bf16>>
+                -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+          ttl.compute_stage_yield %value
+              : tensor<1x1x!ttcore.tile<32x32, bf16>>
+      }
+      ttl.compute_pipeline_yield %stage
+          : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  }
+  return
+}

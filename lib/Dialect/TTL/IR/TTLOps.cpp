@@ -12,6 +12,7 @@
 #include "mlir/IR/AffineMap.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/DialectImplementation.h" // IWYU pragma: keep
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/TilingInterface.h"
 #include "mlir/Support/LogicalResult.h"
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
@@ -1136,6 +1137,253 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     }
   }
 
+  return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::ComputePipelineOp::verify() {
+  if (getInputs().empty()) {
+    return emitOpError("requires at least one input");
+  }
+  if (getResults().empty()) {
+    return emitOpError("requires at least one result");
+  }
+  if (getBody().getBlocks().size() != 1) {
+    return emitOpError("body must have exactly one block");
+  }
+
+  Block &bodyBlock = getBody().front();
+  if (bodyBlock.getNumArguments() != getInputs().size()) {
+    return emitOpError("body requires one block argument per input, got ")
+           << bodyBlock.getNumArguments() << " block arguments for "
+           << getInputs().size() << " inputs";
+  }
+  for (auto [inputIndex, input] : llvm::enumerate(getInputs())) {
+    BlockArgument bodyArgument = bodyBlock.getArgument(inputIndex);
+    if (bodyArgument.getType() != input.getType()) {
+      return emitOpError("body argument ")
+             << inputIndex << " type " << bodyArgument.getType()
+             << " must match input type " << input.getType();
+    }
+    if (bodyArgument.use_empty()) {
+      return emitOpError("body argument ") << inputIndex << " is unused";
+    }
+  }
+
+  if (!bodyBlock.mightHaveTerminator()) {
+    return emitOpError("body block must have a terminator");
+  }
+  auto pipelineYield =
+      dyn_cast<ComputePipelineYieldOp>(bodyBlock.getTerminator());
+  if (!pipelineYield) {
+    return emitOpError(
+        "body block must be terminated with ttl.compute_pipeline_yield");
+  }
+  if (pipelineYield.getValues().size() != getResults().size()) {
+    return emitOpError("body must yield one value per result, got ")
+           << pipelineYield.getValues().size() << " yielded values for "
+           << getResults().size() << " results";
+  }
+
+  bool hasStage = false;
+  for (Operation &operation : bodyBlock.without_terminator()) {
+    auto stage = dyn_cast<ComputeStageOp>(&operation);
+    if (!stage) {
+      return emitOpError("body may contain only ttl.compute_stage operations; "
+                         "found ")
+             << operation.getName();
+    }
+    hasStage = true;
+    for (OpResult result : stage.getResults()) {
+      if (result.use_empty()) {
+        return emitOpError("stage result ")
+               << result.getResultNumber() << " is unused";
+      }
+    }
+  }
+  if (!hasStage) {
+    return emitOpError("body requires at least one ttl.compute_stage");
+  }
+
+  for (auto [resultIndex, yieldedValue] :
+       llvm::enumerate(pipelineYield.getValues())) {
+    if (yieldedValue.getType() != getResult(resultIndex).getType()) {
+      return emitOpError("yielded value ")
+             << resultIndex << " type " << yieldedValue.getType()
+             << " must match result type " << getResult(resultIndex).getType();
+    }
+    auto stageResult = dyn_cast<OpResult>(yieldedValue);
+    if (!stageResult || !isa<ComputeStageOp>(stageResult.getOwner()) ||
+        stageResult.getOwner()->getBlock() != &bodyBlock) {
+      return emitOpError("yielded value ")
+             << resultIndex << " must be a result of a stage in this pipeline";
+    }
+  }
+  return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::ComputeStageOp::verify() {
+  if (getInputs().empty()) {
+    return emitOpError("requires at least one input");
+  }
+  if (getResults().empty()) {
+    return emitOpError("requires at least one result");
+  }
+  if (getBody().getBlocks().size() != 1) {
+    return emitOpError("body must have exactly one block");
+  }
+
+  Block &bodyBlock = getBody().front();
+  if (bodyBlock.getNumArguments() != getInputs().size()) {
+    return emitOpError("body requires one block argument per input, got ")
+           << bodyBlock.getNumArguments() << " block arguments for "
+           << getInputs().size() << " inputs";
+  }
+  for (auto [inputIndex, input] : llvm::enumerate(getInputs())) {
+    BlockArgument bodyArgument = bodyBlock.getArgument(inputIndex);
+    if (bodyArgument.getType() != input.getType()) {
+      return emitOpError("body argument ")
+             << inputIndex << " type " << bodyArgument.getType()
+             << " must match input type " << input.getType();
+    }
+    if (bodyArgument.use_empty()) {
+      return emitOpError("body argument ") << inputIndex << " is unused";
+    }
+  }
+
+  if (!bodyBlock.mightHaveTerminator()) {
+    return emitOpError("body block must have a terminator");
+  }
+  auto stageYield = dyn_cast<ComputeStageYieldOp>(bodyBlock.getTerminator());
+  if (!stageYield) {
+    return emitOpError(
+        "body block must be terminated with ttl.compute_stage_yield");
+  }
+  if (stageYield.getValues().size() != getResults().size()) {
+    return emitOpError("body must yield one value per result, got ")
+           << stageYield.getValues().size() << " yielded values for "
+           << getResults().size() << " results";
+  }
+
+  ArrayAttr maps = getIndexingMaps();
+  size_t expectedMapCount = getInputs().size() + getResults().size();
+  if (maps.size() != expectedMapCount) {
+    return emitOpError("expected ")
+           << expectedMapCount << " indexing maps but got " << maps.size();
+  }
+  SmallVector<bool> isReductionDim;
+  if (failed(verifyComputeIteratorTypes(getOperation(), getIteratorTypes(),
+                                        isReductionDim))) {
+    return failure();
+  }
+
+  size_t iteratorCount = getIteratorTypes().size();
+  int64_t maximumTensorRank = 0;
+  for (Type tensorType :
+       llvm::concat<Type>(getInputs().getTypes(), getResultTypes())) {
+    maximumTensorRank = std::max(maximumTensorRank,
+                                 cast<RankedTensorType>(tensorType).getRank());
+  }
+  if (iteratorCount < static_cast<size_t>(maximumTensorRank)) {
+    return emitOpError("iterator_types count (")
+           << iteratorCount << ") must be >= maximum tensor rank ("
+           << maximumTensorRank << ")";
+  }
+
+  SmallVector<bool> dimsReferencedByInputs(iteratorCount, false);
+  for (auto [inputIndex, input] : llvm::enumerate(getInputs())) {
+    auto tensorType = cast<RankedTensorType>(input.getType());
+    if (!tensorType.hasStaticShape()) {
+      return emitOpError("input ") << inputIndex << " must have a static shape";
+    }
+    AffineMap map = cast<AffineMapAttr>(maps[inputIndex]).getValue();
+    if (failed(verifyComputeIndexingMap(getOperation(), map, tensorType,
+                                        iteratorCount, "input", inputIndex,
+                                        &dimsReferencedByInputs))) {
+      return failure();
+    }
+  }
+
+  size_t resultMapOffset = getInputs().size();
+  for (auto [resultIndex, result] : llvm::enumerate(getResults())) {
+    auto tensorType = cast<RankedTensorType>(result.getType());
+    if (!tensorType.hasStaticShape()) {
+      return emitOpError("result ")
+             << resultIndex << " must have a static shape";
+    }
+    AffineMap map =
+        cast<AffineMapAttr>(maps[resultMapOffset + resultIndex]).getValue();
+    if (failed(verifyComputeIndexingMap(getOperation(), map, tensorType,
+                                        iteratorCount, "result", resultIndex,
+                                        /*dimsReferenced=*/nullptr))) {
+      return failure();
+    }
+    for (AffineExpr expression : map.getResults()) {
+      auto dimExpression = dyn_cast<AffineDimExpr>(expression);
+      if (dimExpression && isReductionDim[dimExpression.getPosition()]) {
+        return emitOpError("result ")
+               << resultIndex
+               << " indexing map cannot reference reduction dimension "
+               << dimExpression.getPosition();
+      }
+    }
+  }
+  for (size_t dimension = 0; dimension < iteratorCount; ++dimension) {
+    if (isReductionDim[dimension] && !dimsReferencedByInputs[dimension]) {
+      return emitOpError("reduction dimension ")
+             << dimension
+             << " must be referenced by at least one input indexing map";
+    }
+  }
+
+  for (Operation &operation : bodyBlock.without_terminator()) {
+    if (operation.getNumRegions() != 0) {
+      return emitOpError("stage operations cannot contain regions; found ")
+             << operation.getName();
+    }
+    if (!isPure(&operation) || !isSpeculatable(&operation)) {
+      return emitOpError("stage operations must be pure and speculatable; "
+                         "found ")
+             << operation.getName();
+    }
+    if (operation.getNumResults() == 0) {
+      return emitOpError("stage operation must produce a tensor result; found ")
+             << operation.getName();
+    }
+    for (Value operand : operation.getOperands()) {
+      if (!isa<RankedTensorType>(operand.getType())) {
+        return emitOpError("stage operation operands must be ranked tensors; "
+                           "found ")
+               << operand.getType() << " on " << operation.getName();
+      }
+    }
+    for (Value result : operation.getResults()) {
+      if (!isa<RankedTensorType>(result.getType())) {
+        return emitOpError("stage operation results must be ranked tensors; "
+                           "found ")
+               << result.getType() << " on " << operation.getName();
+      }
+      if (result.use_empty()) {
+        return emitOpError("stage operation result is unused on ")
+               << operation.getName();
+      }
+    }
+  }
+
+  for (auto [resultIndex, yieldedValue] :
+       llvm::enumerate(stageYield.getValues())) {
+    if (yieldedValue.getType() != getResult(resultIndex).getType()) {
+      return emitOpError("yielded value ")
+             << resultIndex << " type " << yieldedValue.getType()
+             << " must match result type " << getResult(resultIndex).getType();
+    }
+    auto operationResult = dyn_cast<OpResult>(yieldedValue);
+    if (!operationResult ||
+        operationResult.getOwner()->getBlock() != &bodyBlock) {
+      return emitOpError("yielded value ")
+             << resultIndex
+             << " must be produced by an operation in this stage";
+    }
+  }
   return success();
 }
 
