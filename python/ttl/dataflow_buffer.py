@@ -6,6 +6,7 @@
 
 from dataclasses import dataclass
 import math
+import operator
 from typing import Any, Optional, Tuple
 
 from ttl.ir import *
@@ -118,6 +119,51 @@ def _validate_tensor_backed_dfb_range(
             "exceeds logical per-shard size "
             f"{properties.logical_shard_size_bytes}"
         )
+
+
+def _tensor_backed_dfb_view_properties(
+    properties: _TensorBackedDFBTensorProperties,
+    *,
+    tile: Optional[Tuple[int, int]],
+    context: str,
+) -> _TensorBackedDFBTensorProperties:
+    """Validate a compute-page view over compact tensor storage."""
+    if tile is None:
+        return properties
+    try:
+        tile_shape = tuple(operator.index(dimension) for dimension in tile)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"{context} tile must contain exactly two integer dimensions, "
+            f"got {tile!r}"
+        ) from None
+    if len(tile_shape) != 2:
+        raise ValueError(
+            f"{context} tile must contain exactly two integer dimensions, "
+            f"got {tile!r}"
+        )
+    if tile_shape == properties.tile_shape:
+        return properties
+
+    supported_view = properties.tile_shape == (1, 32) and tile_shape in {
+        (16, 32),
+        (32, 32),
+    }
+    if not supported_view:
+        raise ValueError(
+            f"{context} tile shape {properties.tile_shape} does not match "
+            f"{tile_shape}; tile views require 1x32 tensor storage and a "
+            "16x32 or 32x32 DFB tile"
+        )
+
+    storage_elements = math.prod(properties.tile_shape)
+    view_elements = math.prod(tile_shape)
+    page_size = properties.page_size * (view_elements // storage_elements)
+    return _TensorBackedDFBTensorProperties(
+        tile_shape=tile_shape,
+        page_size=page_size,
+        logical_shard_size_bytes=properties.logical_shard_size_bytes,
+    )
 
 
 # Module-level counter for DFB index assignment in creation order
@@ -324,8 +370,14 @@ def make_tensor_backed_dfb(
     *,
     block_count: int = 1,
     byte_offset: int = 0,
+    tile: Optional[Tuple[int, int]] = None,
 ) -> DataflowBuffer:
-    """Bind a DFB's complete capacity to a sharded L1 tensor byte range."""
+    """Bind a DFB's complete capacity to a sharded L1 tensor byte range.
+
+    ``tile`` may group contiguous 1x32 storage pages into 16x32 or 32x32
+    compute pages without moving data. Other storage reinterpretations are
+    rejected.
+    """
     from .dtype_utils import is_ttnn_tensor
 
     if not is_ttnn_tensor(tensor):
@@ -346,6 +398,9 @@ def make_tensor_backed_dfb(
 
     context = "tensor-backed DFB storage"
     properties = _validate_tensor_backed_dfb_tensor(tensor, context=context)
+    properties = _tensor_backed_dfb_view_properties(
+        properties, tile=tile, context=context
+    )
     byte_size = math.prod(shape) * block_count * properties.page_size
     _validate_tensor_backed_dfb_range(
         properties,

@@ -533,6 +533,17 @@ static int64_t getMatmulBlockOutputTileCount(TileMatmulBlockOp op) {
   return lhsType.getDimSize(0) * rhsType.getDimSize(1);
 }
 
+/// Row normalization moves its scalar to a compute source register before
+/// overwriting the acquired DST section with the normalized row.
+static int64_t
+getRowNormalizationBlockTileCount(TileRowNormalizationBlockOp op) {
+  auto inputType = dyn_cast<RankedTensorType>(op.getInput().getType());
+  if (!inputType || !inputType.hasStaticShape()) {
+    return 1;
+  }
+  return inputType.getNumElements();
+}
+
 /// Interface defaults require resolved DST operands because callers use this
 /// after DST assignment, where unresolved tile residency is invalid IR.
 static LogicalResult
@@ -568,14 +579,18 @@ getDefaultDstReadFootprints(Operation *op) {
   return footprints;
 }
 
-/// Most tile ops write one explicit `dst_index`; block matmul is the current
-/// multi-slot writer and stores only read DST for packing.
+/// Most tile ops write one explicit `dst_index`; block operations may write a
+/// contiguous range, and stores only read DST for packing.
 SmallVector<DstFootprint, 2> getDefaultDstWriteFootprints(Operation *op) {
   if (isa<TileStoreOp, DstIndexOp>(op)) {
     return {};
   }
   if (auto matmul = dyn_cast<TileMatmulBlockOp>(op)) {
     return {{matmul.getDstIndex(), getMatmulBlockOutputTileCount(matmul)}};
+  }
+  if (auto normalization = dyn_cast<TileRowNormalizationBlockOp>(op)) {
+    return {{normalization.getDstIndex(),
+             getRowNormalizationBlockTileCount(normalization)}};
   }
   if (auto dstIndex = getTileOpDstIndex(op)) {
     return {{*dstIndex, 1}};
@@ -596,6 +611,10 @@ FailureOr<DstFootprint> getDefaultResultDstFootprint(Operation *op,
   if (auto matmul = dyn_cast<TileMatmulBlockOp>(op)) {
     return DstFootprint{matmul.getDstIndex(),
                         getMatmulBlockOutputTileCount(matmul)};
+  }
+  if (auto normalization = dyn_cast<TileRowNormalizationBlockOp>(op)) {
+    return DstFootprint{normalization.getDstIndex(),
+                        getRowNormalizationBlockTileCount(normalization)};
   }
   if (auto dstIndex = getTileOpDstIndex(op)) {
     return DstFootprint{*dstIndex, 1};
