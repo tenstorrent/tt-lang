@@ -50,7 +50,6 @@ using ckernel::ckernel_template;
 using ckernel::dest_offset_id;
 using ckernel::DstSync;
 using ckernel::DstTileShape;
-using ckernel::EltwiseBinaryType;
 using ckernel::MathFidelity;
 using ckernel::to_underlying;
 using ckernel::UnpackDestination;
@@ -93,10 +92,8 @@ inline void applyAddRsqrt(std::uint32_t dstIndex, std::uint32_t addendBits) {
       dstIndex, VectorMode::RC_custom, addendBits);
 }
 
-template <EltwiseBinaryType binaryType, std::uint32_t numTiles,
-          MathFidelity mathFidelity>
-inline void configureMathMop(std::uint32_t numFaces = 4,
-                             std::uint32_t accumulateToDest = 0) {
+template <std::uint32_t numTiles, MathFidelity mathFidelity>
+inline void configureMathMop(std::uint32_t numFaces) {
   static_assert(numTiles >= 1 && numTiles <= 8,
                 "row normalization requires 1 to 8 tiles");
   LLK_ASSERT(numFaces == 1 || numFaces == 2 || numFaces == 4,
@@ -104,57 +101,26 @@ inline void configureMathMop(std::uint32_t numFaces = 4,
   constexpr bool highFidelity = is_high_fidelity(mathFidelity);
   constexpr auto broadcastType = ckernel::p_elwise::SRCB_BCAST_ALL;
 
-  if constexpr (binaryType == EltwiseBinaryType::ELWADD) {
+  if constexpr (highFidelity) {
     ckernel_template operationTemplate(
-        numTiles, numFaces,
-        TT_OP_ELWADD(0, accumulateToDest, broadcastType, ADDR_MOD_0, 0),
-        TT_OP_ELWADD(ckernel::p_setrwc::CLR_A, accumulateToDest, broadcastType,
-                     ADDR_MOD_2, 0));
-    operationTemplate.set_last_inner_loop_instr(
-        TT_OP_ELWADD(ckernel::p_setrwc::CLR_A, accumulateToDest, broadcastType,
-                     ADDR_MOD_3, 0));
-    operationTemplate.set_last_outer_loop_instr(
-        TT_OP_ELWADD(ckernel::p_setrwc::CLR_A, accumulateToDest, broadcastType,
-                     ADDR_MOD_3, 0));
+        numFaces, to_underlying(mathFidelity),
+        TT_OP_ELWMUL(0, 0, broadcastType, ADDR_MOD_0, 0),
+        TT_OP_ELWMUL(0, 0, broadcastType, ADDR_MOD_2, 0));
+    operationTemplate.set_last_inner_loop_instr(TT_OP_ELWMUL(
+        ckernel::p_setrwc::CLR_A, 0, broadcastType, ADDR_MOD_3, 0));
+    operationTemplate.set_last_outer_loop_instr(TT_OP_ELWMUL(
+        ckernel::p_setrwc::CLR_A, 0, broadcastType, ADDR_MOD_4, 0));
     operationTemplate.program();
-  } else if constexpr (binaryType == EltwiseBinaryType::ELWSUB) {
-    ckernel_template operationTemplate(
-        numTiles, numFaces,
-        TT_OP_ELWSUB(0, accumulateToDest, broadcastType, ADDR_MOD_0, 0),
-        TT_OP_ELWSUB(ckernel::p_setrwc::CLR_A, accumulateToDest, broadcastType,
-                     ADDR_MOD_2, 0));
-    operationTemplate.set_last_inner_loop_instr(
-        TT_OP_ELWSUB(ckernel::p_setrwc::CLR_A, accumulateToDest, broadcastType,
-                     ADDR_MOD_3, 0));
-    operationTemplate.set_last_outer_loop_instr(
-        TT_OP_ELWSUB(ckernel::p_setrwc::CLR_A, accumulateToDest, broadcastType,
-                     ADDR_MOD_3, 0));
-    operationTemplate.program();
-  } else if constexpr (binaryType == EltwiseBinaryType::ELWMUL) {
-    if constexpr (highFidelity) {
-      ckernel_template operationTemplate(
-          numFaces, to_underlying(mathFidelity),
-          TT_OP_ELWMUL(0, 0, broadcastType, ADDR_MOD_0, 0),
-          TT_OP_ELWMUL(0, 0, broadcastType, ADDR_MOD_2, 0));
-      operationTemplate.set_last_inner_loop_instr(TT_OP_ELWMUL(
-          ckernel::p_setrwc::CLR_A, 0, broadcastType, ADDR_MOD_3, 0));
-      operationTemplate.set_last_outer_loop_instr(TT_OP_ELWMUL(
-          ckernel::p_setrwc::CLR_A, 0, broadcastType, ADDR_MOD_4, 0));
-      operationTemplate.program();
-    } else {
-      ckernel_template operationTemplate(
-          numTiles, numFaces, TT_OP_ELWMUL(0, 0, broadcastType, ADDR_MOD_0, 0),
-          TT_OP_ELWMUL(ckernel::p_setrwc::CLR_A, 0, broadcastType, ADDR_MOD_2,
-                       0));
-      operationTemplate.set_last_inner_loop_instr(TT_OP_ELWMUL(
-          ckernel::p_setrwc::CLR_A, 0, broadcastType, ADDR_MOD_3, 0));
-      operationTemplate.set_last_outer_loop_instr(TT_OP_ELWMUL(
-          ckernel::p_setrwc::CLR_A, 0, broadcastType, ADDR_MOD_3, 0));
-      operationTemplate.program();
-    }
   } else {
-    static_assert(binaryType == EltwiseBinaryType::ELWADD,
-                  "unsupported binary operation");
+    ckernel_template operationTemplate(
+        numTiles, numFaces, TT_OP_ELWMUL(0, 0, broadcastType, ADDR_MOD_0, 0),
+        TT_OP_ELWMUL(ckernel::p_setrwc::CLR_A, 0, broadcastType, ADDR_MOD_2,
+                     0));
+    operationTemplate.set_last_inner_loop_instr(TT_OP_ELWMUL(
+        ckernel::p_setrwc::CLR_A, 0, broadcastType, ADDR_MOD_3, 0));
+    operationTemplate.set_last_outer_loop_instr(TT_OP_ELWMUL(
+        ckernel::p_setrwc::CLR_A, 0, broadcastType, ADDR_MOD_3, 0));
+    operationTemplate.program();
   }
 }
 
@@ -165,9 +131,8 @@ inline void reuseScalarAsSource() {
              ckernel::p_movd2b::MOV_1_ROW, 0);
 }
 
-template <EltwiseBinaryType binaryType, std::uint32_t numTiles, DstSync dstSync,
-          bool fp32DestAccEnabled, MathFidelity mathFidelity,
-          bool clearDest = false>
+template <std::uint32_t numTiles, DstSync dstSync, bool fp32DestAccEnabled,
+          MathFidelity mathFidelity>
 inline void applyScalar(std::uint32_t scalarDstIndex,
                         std::uint32_t outputDstIndex) {
   constexpr bool highFidelity = is_high_fidelity(mathFidelity);
@@ -175,20 +140,18 @@ inline void applyScalar(std::uint32_t scalarDstIndex,
   ckernel::math::set_dst_write_addr<DstTileShape::Tile32x32,
                                     UnpackDestination::SrcRegs>(scalarDstIndex);
   reuseScalarAsSource();
-  if constexpr (clearDest) {
-    if constexpr (dstSync == DstSync::SyncFull) {
-      TT_ZEROACC(ckernel::p_zeroacc::CLR_ALL, fp32DestAccEnabled, 0, ADDR_MOD_1,
-                 0);
-    } else {
-      static_assert(dstSync == DstSync::SyncHalf);
-      TT_ZEROACC(ckernel::p_zeroacc::CLR_HALF, fp32DestAccEnabled, 0,
-                 ADDR_MOD_1, dest_offset_id);
-    }
+  if constexpr (dstSync == DstSync::SyncFull) {
+    TT_ZEROACC(ckernel::p_zeroacc::CLR_ALL, fp32DestAccEnabled, 0, ADDR_MOD_1,
+               0);
+  } else {
+    static_assert(dstSync == DstSync::SyncHalf);
+    TT_ZEROACC(ckernel::p_zeroacc::CLR_HALF, fp32DestAccEnabled, 0, ADDR_MOD_1,
+               dest_offset_id);
   }
   ckernel::math::set_dst_write_addr<DstTileShape::Tile32x32,
                                     UnpackDestination::SrcRegs>(outputDstIndex);
 
-  if constexpr (binaryType == EltwiseBinaryType::ELWMUL && highFidelity) {
+  if constexpr (highFidelity) {
     for (std::uint32_t tileIndex = 0; tileIndex < numTiles; ++tileIndex) {
       ckernel_template::run();
     }
@@ -198,7 +161,7 @@ inline void applyScalar(std::uint32_t scalarDstIndex,
   TTI_SETRWC(ckernel::p_setrwc::CLR_B, 0, 0, 0, 0, ckernel::p_setrwc::SET_D);
 }
 
-template <EltwiseBinaryType binaryType, MathFidelity mathFidelity>
+template <MathFidelity mathFidelity>
 inline void configureMathAddressModifiers(std::uint32_t numFaces) {
   constexpr bool highFidelity = is_high_fidelity(mathFidelity);
   constexpr std::uint32_t fidelityIncrement = highFidelity ? 1 : 0;
@@ -216,7 +179,7 @@ inline void configureMathAddressModifiers(std::uint32_t numFaces) {
   }
       .set(ADDR_MOD_1);
 
-  if constexpr (binaryType == EltwiseBinaryType::ELWMUL && highFidelity) {
+  if constexpr (highFidelity) {
     addr_mod_t{.srca = {.incr = 0, .clr = 1},
                .srcb = {.incr = 0, .clr = 1},
                .dest = {.incr = 0, .clr = 0, .cr = 1},
@@ -252,46 +215,34 @@ inline void configureMathAddressModifiers(std::uint32_t numFaces) {
   }
 }
 
-template <EltwiseBinaryType binaryType, std::uint32_t numTiles,
-          MathFidelity mathFidelity>
-inline void initializeMath(std::uint32_t numFaces,
-                           std::uint32_t accumulateToDest) {
+template <std::uint32_t numTiles, MathFidelity mathFidelity>
+inline void initializeMath(std::uint32_t numFaces) {
   LLK_ASSERT(numFaces == 1 || numFaces == 2 || numFaces == 4,
              "numFaces must be 1, 2, or 4");
-  configureMathAddressModifiers<binaryType, mathFidelity>(numFaces);
-  configureMathMop<binaryType, numTiles, mathFidelity>(numFaces,
-                                                       accumulateToDest);
+  configureMathAddressModifiers<mathFidelity>(numFaces);
+  configureMathMop<numTiles, mathFidelity>(numFaces);
   TTI_SETC16(CLR_DVALID_SrcA_Disable_ADDR32, 0);
   ckernel::math::reset_counters(ckernel::p_setrwc::SET_ABD_F);
 }
 
-template <EltwiseBinaryType binaryType, std::uint32_t numTiles,
-          MathFidelity mathFidelity>
+template <std::uint32_t numTiles, MathFidelity mathFidelity>
 inline void initializeMathForOperand(std::uint32_t operand) {
   const std::uint32_t operandId = get_operand_id(operand);
-  initializeMath<binaryType, numTiles, mathFidelity>(
-      get_operand_num_faces(operandId), 0);
+  initializeMath<numTiles, mathFidelity>(get_operand_num_faces(operandId));
 }
 
 #endif // TRISC_MATH
 
 #ifdef TRISC_UNPACK
 
-using ckernel::BroadcastType;
 using ckernel::cfg_reg_rmw_tensix;
 using ckernel::ckernel_template;
-using ckernel::EltwiseBinaryReuseDestType;
-using ckernel::load_replay_buf;
 using ckernel::SrcA;
 using ckernel::SrcB;
 using ckernel::unpacker::config_unpacker_x_end;
 
-template <std::uint32_t numTiles, BroadcastType broadcastType,
-          bool accumulateToDest, EltwiseBinaryReuseDestType binaryReuseDest>
-inline void configureUnpackMop(bool transposeFaces, std::uint32_t numFaces) {
-  static_assert(broadcastType == BroadcastType::SCALAR && accumulateToDest &&
-                    binaryReuseDest == EltwiseBinaryReuseDestType::DEST_TO_SRCB,
-                "row normalization requires scalar DEST_TO_SRCB reuse");
+template <std::uint32_t numTiles>
+inline void configureUnpackMop(std::uint32_t numFaces) {
   LLK_ASSERT(numFaces == 1 || numFaces == 2 || numFaces == 4,
              "numFaces must be 1, 2, or 4");
 
@@ -309,55 +260,25 @@ inline void configureUnpackMop(bool transposeFaces, std::uint32_t numFaces) {
     return;
   }
 
-  if (transposeFaces) {
-    LLK_ASSERT(numTiles == 1, "transposed scalar reuse supports one tile");
-    LLK_ASSERT(numFaces == 4, "transposed scalar reuse requires four faces");
-    constexpr std::uint32_t replayLength = 5;
-    load_replay_buf(0, replayLength, [] {
-      TTI_UNPACR(SrcA, 0b10, 0, 0, 0, 1, 1, ckernel::p_unpacr::RAREFYB_DISABLE,
-                 0, 0, 0, 0, 1);
-      TTI_UNPACR(SrcA, 0b10, 0, 0, 0, 1, 1, ckernel::p_unpacr::RAREFYB_DISABLE,
-                 0, 0, 0, 0, 1);
-      TTI_SETADCZW(ckernel::p_setadc::UNP_A, 0, 0, 0, 1, 0b0001);
-      TTI_UNPACR(SrcA, 0b10, 0, 0, 0, 1, 1, ckernel::p_unpacr::RAREFYB_DISABLE,
-                 0, 0, 0, 0, 1);
-      TTI_UNPACR(SrcA, 0b10, 0, 0, 0, 1, 1, ckernel::p_unpacr::RAREFYB_DISABLE,
-                 0, 0, 0, 0, 1);
-    });
-    ckernel_template unpackTemplate(1, 1, lltt::replay_insn(0, replayLength));
-    unpackTemplate.set_start_op(setSourceBValid);
-    unpackTemplate.program();
-    return;
-  }
-
   const std::uint32_t iterations = numTiles * numFaces / 2;
   ckernel_template unpackTemplate(1, iterations, unpackSourceA, unpackSourceA);
   unpackTemplate.set_start_op(setSourceBValid);
   unpackTemplate.program();
 }
 
-template <std::uint32_t numTiles, BroadcastType broadcastType,
-          bool accumulateToDest, EltwiseBinaryReuseDestType binaryReuseDest>
-inline void initializeUnpack(std::uint32_t transposeFaces,
-                             std::uint32_t transposeWithinFace,
-                             std::uint32_t faceRowDimension,
+template <std::uint32_t numTiles>
+inline void initializeUnpack(std::uint32_t faceRowDimension,
                              std::uint32_t numFaces) {
-  cfg_reg_rmw_tensix<THCON_SEC0_REG2_Haloize_mode_RMW>(transposeWithinFace);
-  constexpr std::uint32_t unpackSelection = broadcastType == BroadcastType::NONE
-                                                ? ckernel::p_setadc::UNP_A
-                                                : ckernel::p_setadc::UNP_B;
-  config_unpacker_x_end<unpackSelection>(faceRowDimension);
-  configureUnpackMop<numTiles, broadcastType, accumulateToDest,
-                     binaryReuseDest>(transposeFaces > 0, numFaces);
+  cfg_reg_rmw_tensix<THCON_SEC0_REG2_Haloize_mode_RMW>(0);
+  config_unpacker_x_end<ckernel::p_setadc::UNP_B>(faceRowDimension);
+  configureUnpackMop<numTiles>(numFaces);
 }
 
 template <std::uint32_t numTiles>
 inline void initializeUnpackForOperand(std::uint32_t operand) {
   const std::uint32_t operandId = get_operand_id(operand);
-  initializeUnpack<numTiles, BroadcastType::SCALAR, true,
-                   EltwiseBinaryReuseDestType::DEST_TO_SRCB>(
-      false, false, get_operand_face_r_dim(operandId),
-      get_operand_num_faces(operandId));
+  initializeUnpack<numTiles>(get_operand_face_r_dim(operandId),
+                             get_operand_num_faces(operandId));
 }
 
 #endif // TRISC_UNPACK
@@ -367,8 +288,7 @@ ALWI void initializeScalarReuse(std::uint32_t inputDfb) {
   static_assert(numTiles >= 1 && numTiles <= 8,
                 "row normalization requires 1 to 8 tiles");
   UNPACK((initializeUnpackForOperand<numTiles>(inputDfb)));
-  MATH((initializeMathForOperand<ckernel::EltwiseBinaryType::ELWMUL, numTiles,
-                                 MATH_FIDELITY>(inputDfb)));
+  MATH((initializeMathForOperand<numTiles, MATH_FIDELITY>(inputDfb)));
 }
 
 template <std::uint32_t numTiles>
@@ -377,9 +297,8 @@ ALWI void multiplyByScalar(std::uint32_t inputDfb, std::uint32_t scalarDstIndex,
   UNPACK((llk_unpack_A<ckernel::BroadcastType::SCALAR, true,
                        ckernel::EltwiseBinaryReuseDestType::DEST_TO_SRCB>(
       inputDfb, 0)));
-  MATH((applyScalar<ckernel::EltwiseBinaryType::ELWMUL, numTiles, DST_SYNC_MODE,
-                    DST_ACCUM_MODE, MATH_FIDELITY, true>(scalarDstIndex,
-                                                         outputDstIndex)));
+  MATH((applyScalar<numTiles, DST_SYNC_MODE, DST_ACCUM_MODE, MATH_FIDELITY>(
+      scalarDstIndex, outputDstIndex)));
 }
 
 } // namespace row_normalization_detail
@@ -395,13 +314,15 @@ ALWI void row_normalization_block(std::uint32_t inputDfb,
   static_assert(dataFormat == DataFormat::Float16_b,
                 "row normalization supports bf16 DFBs only");
 
-  float reductionScaler;
-  __builtin_memcpy(&reductionScaler, &reductionScalerBits,
-                   sizeof(reductionScaler));
+  // mul_reduce_scalar_tile applies its scaler during both reduction stages.
+  // TTKernel lowering therefore passes sqrt of the semantic reduction scale.
+  float reductionStageScaler;
+  __builtin_memcpy(&reductionStageScaler, &reductionScalerBits,
+                   sizeof(reductionStageScaler));
   ckernel::mul_reduce_scalar_init(inputDfb, inputDfb);
   MATH((row_normalization_detail::initializeAddRsqrt<APPROX>()));
   ckernel::mul_reduce_scalar_tile(inputDfb, inputDfb, outputDfb, numTiles,
-                                  reductionScaler);
+                                  reductionStageScaler);
   ckernel::mul_reduce_scalar_uninit();
 
   MATH((
