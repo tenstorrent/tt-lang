@@ -1748,6 +1748,70 @@ resolveCBForRawElement(Value adaptedBlock, Value originalBlock,
   return utils::convertTTLCBToTTKernel(origCB, rewriter, loc, typeConverter);
 }
 
+/// Convert the raw IEEE-754 representation of a finite, nonnegative f32 or
+/// bf16 value to i32 with truncation toward zero. Both shift operands are
+/// clamped because arith.select evaluates both candidate values.
+static Value decodeNonnegativeFloatToI32(Value rawBits, unsigned mantissaWidth,
+                                         ConversionPatternRewriter &rewriter,
+                                         Location loc) {
+  auto i32Type = rewriter.getI32Type();
+  auto constant = [&](int64_t value) -> Value {
+    return arith::ConstantIntOp::create(rewriter, loc, value, 32);
+  };
+
+  Value bits = rawBits;
+  if (rawBits.getType().getIntOrFloatBitWidth() < 32) {
+    bits = arith::ExtUIOp::create(rewriter, loc, i32Type, rawBits);
+  }
+
+  Value zero = constant(0);
+  Value maximumShift = constant(31);
+  auto clampShift = [&](Value shift) -> Value {
+    Value isNegative = arith::CmpIOp::create(
+        rewriter, loc, arith::CmpIPredicate::slt, shift, zero);
+    Value nonnegativeShift =
+        arith::SelectOp::create(rewriter, loc, isNegative, zero, shift);
+    Value isTooLarge =
+        arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::sgt,
+                              nonnegativeShift, maximumShift);
+    return arith::SelectOp::create(rewriter, loc, isTooLarge, maximumShift,
+                                   nonnegativeShift);
+  };
+
+  Value exponentShift = constant(mantissaWidth);
+  Value exponent = arith::ShRUIOp::create(rewriter, loc, bits, exponentShift);
+  exponent = arith::AndIOp::create(rewriter, loc, exponent, constant(0xff));
+  exponent = arith::SubIOp::create(rewriter, loc, exponent, constant(127));
+
+  uint32_t mantissaMask = (uint32_t{1} << mantissaWidth) - 1;
+  uint32_t hiddenBit = uint32_t{1} << mantissaWidth;
+  Value significand =
+      arith::AndIOp::create(rewriter, loc, bits, constant(mantissaMask));
+  significand =
+      arith::OrIOp::create(rewriter, loc, significand, constant(hiddenBit));
+
+  Value leftShift =
+      arith::SubIOp::create(rewriter, loc, exponent, constant(mantissaWidth));
+  Value rightShift =
+      arith::SubIOp::create(rewriter, loc, constant(mantissaWidth), exponent);
+  leftShift = clampShift(leftShift);
+  rightShift = clampShift(rightShift);
+
+  Value shiftedLeft =
+      arith::ShLIOp::create(rewriter, loc, significand, leftShift);
+  Value shiftedRight =
+      arith::ShRUIOp::create(rewriter, loc, significand, rightShift);
+  Value usesLeftShift =
+      arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::sge, exponent,
+                            constant(mantissaWidth));
+  Value magnitude = arith::SelectOp::create(rewriter, loc, usesLeftShift,
+                                            shiftedLeft, shiftedRight);
+
+  Value isBelowOne = arith::CmpIOp::create(
+      rewriter, loc, arith::CmpIPredicate::slt, exponent, zero);
+  return arith::SelectOp::create(rewriter, loc, isBelowOne, zero, magnitude);
+}
+
 struct RawElementReadLowering : OpConversionPattern<RawElementReadOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -1776,6 +1840,46 @@ struct RawElementReadLowering : OpConversionPattern<RawElementReadOp> {
     auto viewCast =
         UnrealizedConversionCastOp::create(rewriter, loc, scalarTy, loaded);
     rewriter.replaceOp(op, viewCast.getResult(0));
+    return success();
+  }
+};
+
+struct ReadIndexLowering : OpConversionPattern<ReadIndexOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ReadIndexOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    auto blockType = mlir::cast<RankedTensorType>(op.getBlock().getType());
+    Type elementType = blockType.getElementType();
+    Type scalarType = elementType;
+    if (auto tileType = mlir::dyn_cast<tt::ttcore::TileType>(elementType)) {
+      scalarType = tt::ttcore::dataTypeToElementType(rewriter.getContext(),
+                                                     tileType.getDataType());
+    }
+    auto [integerType, elementWidth] =
+        getIntTypeForFloat(rewriter.getContext(), scalarType);
+
+    FailureOr<Value> cb =
+        resolveCBForRawElement(adaptor.getBlock(), op.getBlock(), rewriter, loc,
+                               this->getTypeConverter());
+    if (failed(cb)) {
+      return rewriter.notifyMatchFailure(
+          op, "block does not trace to a dataflow buffer");
+    }
+
+    auto [l1Pointer, offset] =
+        emitL1PtrAndOffset(*cb, op.getBlock(), blockType, adaptor.getCoords(),
+                           elementWidth, rewriter, loc);
+    Value rawBits = ttk::LoadFromL1Op::create(rewriter, loc, integerType,
+                                              l1Pointer, offset);
+    unsigned mantissaWidth = scalarType.isF32() ? 23 : 7;
+    Value integerValue =
+        decodeNonnegativeFloatToI32(rawBits, mantissaWidth, rewriter, loc);
+    Value indexValue = arith::IndexCastOp::create(
+        rewriter, loc, rewriter.getIndexType(), integerValue);
+    rewriter.replaceOp(op, indexValue);
     return success();
   }
 };
@@ -1852,7 +1956,7 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   // until the tile ops lowering phase. Raw element access ops are lowered here
   // despite carrying the DataMovement trait.
   target.addDynamicallyLegalDialect<tt::ttl::TTLDialect>([](Operation *op) {
-    if (llvm::isa<RawElementReadOp, RawElementWriteOp>(op)) {
+    if (llvm::isa<RawElementReadOp, ReadIndexOp, RawElementWriteOp>(op)) {
       return false;
     }
     return tt::ttl::isTileComputeOp(op) ||
@@ -1957,7 +2061,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   patterns.add<BindCBLowering, TensorSliceLowering, CBReserveLowering,
                CBPushLowering, CBWaitLowering, TileStoreLowering, StoreLowering,
                CoreXLowering, CoreYLowering, RawElementReadLowering,
-               RawElementWriteLowering, RawAddrLowering, OpaqueCallLowering,
+               ReadIndexLowering, RawElementWriteLowering, RawAddrLowering,
+               OpaqueCallLowering,
                GetDfbIdLowering>(typeConverter, &ctx);
   patterns.add<CBPopLowering>(typeConverter, &ctx, pipeCapacityPlan,
                               pipeResourcePlan);
