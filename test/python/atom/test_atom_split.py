@@ -214,6 +214,28 @@ def test_chained_copy_wait_routes_to_data_movement():
     assert "ttl.copy" not in _thread_src(result, "brisc")
 
 
+def test_read_index_routes_to_data_movement():
+    """Tensor-provided indices remain with their dataflow buffer acquire."""
+    fn = _fn(
+        """
+        def k(weights, output):
+            index_block = index_dfb.wait()
+            slot = ttl.read_index(index_block, 0, 0)
+            ttl.copy(weights[slot], output)
+        """
+    )
+
+    result = split_function_body(
+        fn,
+        dfb_param_names=set(),
+        local_dfb_names={"index_dfb"},
+    )
+
+    assert "ttl.read_index" not in _thread_src(result, "trisc")
+    assert "ttl.read_index" in _thread_src(result, "ncrisc")
+    assert "ttl.read_index" not in _thread_src(result, "brisc")
+
+
 def test_compute_and_dm_route_to_separate_threads():
     """Copies land on NCRISC, the compute op on TRISC, and the unused
     BRISC thread is empty."""

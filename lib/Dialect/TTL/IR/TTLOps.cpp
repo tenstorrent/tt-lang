@@ -2186,23 +2186,14 @@ mlir::LogicalResult mlir::tt::ttl::CreatePipeOp::verify() {
 // Raw element access verifiers (shared logic + per-op entry points)
 //===----------------------------------------------------------------------===//
 
-/// Shared verification for raw_element_read and raw_element_write. Checks:
-///   1. Enclosing function is a data movement (noc) kernel thread.
-///   2. Block must trace to the expected CB acquire op (CBWaitOp for reads,
-///      CBReserveOp for writes).
-///   3. Block must be at least rank 1 (rank-0 not supported).
-///   4. Coordinate count matches block tensor rank.
-///   5. Scalar type matches block's underlying element dtype.
-///
-/// `ExpectedAcquireOp` is the CB acquire op type that the block must trace
-/// to (CBWaitOp for reads, CBReserveOp for writes). `acquireName` is the
-/// human-readable op name used in the diagnostic (e.g. "ttl.cb_wait").
+/// Verify the thread, dataflow buffer acquisition, and coordinates shared by
+/// scalar block accesses. The returned scalar type lets each operation enforce
+/// its distinct type contract without repeating those invariants.
 template <typename ExpectedAcquireOp>
-static mlir::LogicalResult
-verifyRawElementOp(mlir::Operation *op, mlir::Value block,
-                   mlir::RankedTensorType blockTy, mlir::ValueRange coords,
-                   mlir::Type scalarTy, llvm::StringRef acquireName) {
-  // 1. Must be inside a noc kernel thread function.
+static mlir::FailureOr<mlir::Type>
+verifyRawElementAccess(mlir::Operation *op, mlir::Value block,
+                       mlir::RankedTensorType blockTy, mlir::ValueRange coords,
+                       llvm::StringRef acquireName) {
   auto func = mlir::tt::ttl::getEnclosingKernelThread(op);
   if (!func) {
     return op->emitOpError()
@@ -2217,7 +2208,6 @@ verifyRawElementOp(mlir::Operation *op, mlir::Value block,
            << "is only allowed in data movement (noc) threads";
   }
 
-  // 2. Block must trace to the expected CB acquire op.
   mlir::Operation *acquireOp = mlir::tt::ttl::findCBAcquireOp(block);
   if (!acquireOp) {
     return op->emitOpError()
@@ -2228,51 +2218,63 @@ verifyRawElementOp(mlir::Operation *op, mlir::Value block,
                              << ", but traces to " << acquireOp->getName();
   }
 
-  // 3. Block must have at least one dimension.
   int64_t blockRank = blockTy.getRank();
-  if (blockRank == 0) {
-    return op->emitOpError()
-           << "block must be at least rank 1, got rank-0 tensor";
-  }
-
-  // 4. Coordinate count must match block tensor rank.
   if (static_cast<int64_t>(coords.size()) != blockRank) {
     return op->emitOpError()
            << "coordinate count (" << coords.size()
            << ") must match block tensor rank (" << blockRank << ")";
   }
 
-  // 5. Resolve the expected scalar type from the block element type.
   mlir::Type elemTy = blockTy.getElementType();
-  mlir::Type expectedScalarTy;
   if (auto tileTy = mlir::dyn_cast<mlir::tt::ttcore::TileType>(elemTy)) {
-    expectedScalarTy = mlir::tt::ttcore::dataTypeToElementType(
-        op->getContext(), tileTy.getDataType());
-  } else {
-    expectedScalarTy = elemTy;
+    return mlir::tt::ttcore::dataTypeToElementType(op->getContext(),
+                                                   tileTy.getDataType());
   }
-
-  if (scalarTy != expectedScalarTy) {
-    return op->emitOpError()
-           << "scalar type (" << scalarTy
-           << ") must match block element dtype (" << expectedScalarTy << ")";
-  }
-
-  return mlir::success();
+  return elemTy;
 }
 
 mlir::LogicalResult mlir::tt::ttl::RawElementReadOp::verify() {
   auto blockTy = mlir::cast<RankedTensorType>(getBlock().getType());
-  return verifyRawElementOp<mlir::tt::ttl::CBWaitOp>(
-      getOperation(), getBlock(), blockTy, getCoords(), getResult().getType(),
-      "ttl.cb_wait");
+  FailureOr<Type> expectedScalarTy = verifyRawElementAccess<CBWaitOp>(
+      getOperation(), getBlock(), blockTy, getCoords(), "ttl.cb_wait");
+  if (failed(expectedScalarTy)) {
+    return failure();
+  }
+  if (getResult().getType() != *expectedScalarTy) {
+    return emitOpError() << "scalar type (" << getResult().getType()
+                         << ") must match block element dtype ("
+                         << *expectedScalarTy << ")";
+  }
+  return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::ReadIndexOp::verify() {
+  auto blockTy = mlir::cast<RankedTensorType>(getBlock().getType());
+  FailureOr<Type> scalarTy = verifyRawElementAccess<CBWaitOp>(
+      getOperation(), getBlock(), blockTy, getCoords(), "ttl.cb_wait");
+  if (failed(scalarTy)) {
+    return failure();
+  }
+  if (!scalarTy->isF32() && !scalarTy->isBF16()) {
+    return emitOpError() << "requires an f32 or bf16 block element type, got "
+                         << *scalarTy;
+  }
+  return success();
 }
 
 mlir::LogicalResult mlir::tt::ttl::RawElementWriteOp::verify() {
   auto blockTy = mlir::cast<RankedTensorType>(getBlock().getType());
-  return verifyRawElementOp<mlir::tt::ttl::CBReserveOp>(
-      getOperation(), getBlock(), blockTy, getCoords(), getValue().getType(),
-      "ttl.cb_reserve");
+  FailureOr<Type> expectedScalarTy = verifyRawElementAccess<CBReserveOp>(
+      getOperation(), getBlock(), blockTy, getCoords(), "ttl.cb_reserve");
+  if (failed(expectedScalarTy)) {
+    return failure();
+  }
+  if (getValue().getType() != *expectedScalarTy) {
+    return emitOpError() << "scalar type (" << getValue().getType()
+                         << ") must match block element dtype ("
+                         << *expectedScalarTy << ")";
+  }
+  return success();
 }
 
 static bool isEnclosingKernelTensorArgument(mlir::Value tensor,
