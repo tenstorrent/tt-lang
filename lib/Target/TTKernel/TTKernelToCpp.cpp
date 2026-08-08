@@ -17,6 +17,7 @@
 #include "ttlang/Target/TTKernel/LLKs/experimental_pack_untilize_llks_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_padding_llks_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_reg_api_generated.h"
+#include "ttlang/Target/TTKernel/LLKs/experimental_routing_plane_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_semaphore_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_tilize_llks_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_untilize_llks_generated.h"
@@ -135,6 +136,10 @@ public:
       if (callee == "experimental::constant_table_lookup") {
         emitLlk(experimental_constant_table_generated,
                 experimental_constant_table_generated_len);
+      }
+      if (callee == "experimental::routing_plane_atomic_inc") {
+        emitLlk(experimental_routing_plane_generated,
+                experimental_routing_plane_generated_len);
       }
       if (callee == "experimental::close_fabric_connections" ||
           callee == "experimental::setup_fabric_connections" ||

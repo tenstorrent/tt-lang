@@ -4,6 +4,9 @@
 // RUN: FileCheck %s --input-file=%t.cpp
 
 // CHECK: #include "tt_metal/fabric/hw/inc/linear/api.h"
+// CHECK: static __attribute__((noinline)) void routing_plane_atomic_inc(
+// CHECK: packet_header->to_noc_unicast_atomic_inc(
+// CHECK: sender.send_payload_flush_blocking_from_address(
 // CHECK-LABEL: void kernel_main() {
 // CHECK: tt::tt_fabric::RoutingPlaneConnectionManager [[MANAGER:.*]];
 // CHECK: size_t [[ARG_INDEX:.*]] = 4;
@@ -12,10 +15,11 @@
 // CHECK-NEXT: open_connections([[MANAGER]], [[COUNT]], [[ARG_INDEX]]);
 // CHECK-NEXT: PacketHeaderPool::reset();
 // CHECK-NEXT: [[ROUTE_ID]] = PacketHeaderPool::allocate_header_n([[COUNT]]);
-// CHECK: auto *packet_header = PacketHeaderPool::header_table[[[ROUTE_ID]]].first + [[INDEX:.*]];
+// CHECK: experimental::routing_plane_atomic_inc([[MANAGER]], [[ROUTE_ID]], [[INDEX:[^,]+]], [[DEST_DEVICE:[^,]+]], [[DEST_MESH:[^,]+]],
+// CHECK: auto *packet_header = PacketHeaderPool::header_table[[[ROUTE_ID]]].first + [[INDEX]];
 // CHECK-NEXT: #if defined(FABRIC_2D)
 // CHECK-NEXT: tt::tt_fabric::fabric_set_unicast_route(
-// CHECK-NEXT: packet_header, static_cast<uint16_t>([[DEST_DEVICE:.*]]), static_cast<uint16_t>([[DEST_MESH:.*]]));
+// CHECK-NEXT: packet_header, static_cast<uint16_t>([[DEST_DEVICE]]), static_cast<uint16_t>([[DEST_MESH]]));
 // CHECK-NEXT: #else
 // CHECK-NEXT: tt::tt_fabric::fabric_set_unicast_route(
 // CHECK-NEXT: packet_header, static_cast<uint16_t>([[DEST_DEVICE]]));
@@ -54,6 +58,11 @@ module {
     %route_id = ttkernel.routing_plane.open_connections
       %manager, %count runtime_arg_base = 4
       : (!ttkernel.routing_plane_connection_manager, i32) -> i32
+    ttkernel.routing_plane.atomic_inc(
+      %manager, %route_id, %connection_index, %destination_device_id,
+      %destination_mesh_id, %semaphore_address, %increment)
+      : (!ttkernel.routing_plane_connection_manager, i32, i32, i32, i32,
+         !ttkernel.noc_addr, i32) -> ()
     ttkernel.routing_plane.fused_write_atomic_inc(
       %manager, %route_id, %connection_index, %destination_device_id,
       %destination_mesh_id, %source, %size,

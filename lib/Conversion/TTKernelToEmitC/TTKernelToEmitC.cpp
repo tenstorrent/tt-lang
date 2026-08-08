@@ -2606,6 +2606,23 @@ private:
   std::reference_wrapper<TTKernelToEmitCConversionState> state;
 };
 
+class TTKernelRoutingPlaneAtomicIncOpRewriter
+    : public OpConversionPattern<ttkernel::RoutingPlaneAtomicIncOp> {
+  using Op = ttkernel::RoutingPlaneAtomicIncOp;
+
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(Op op, Op::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange(), "experimental::routing_plane_atomic_inc", nullptr,
+        nullptr, adaptor.getOperands());
+    return success();
+  }
+};
+
 class TTKernelRoutingPlaneFusedWriteAtomicIncOpRewriter
     : public OpConversionPattern<ttkernel::RoutingPlaneFusedWriteAtomicIncOp> {
   using Op = ttkernel::RoutingPlaneFusedWriteAtomicIncOp;
@@ -3443,7 +3460,8 @@ public:
     patterns.add<TTKernelCreateRoutingPlaneConnectionManagerOpRewriter,
                  TTKernelOpenRoutingPlaneConnectionsOpRewriter>(typeConverter,
                                                                 context, state);
-    patterns.add<TTKernelRoutingPlaneFusedWriteAtomicIncOpRewriter,
+    patterns.add<TTKernelRoutingPlaneAtomicIncOpRewriter,
+                 TTKernelRoutingPlaneFusedWriteAtomicIncOpRewriter,
                  TTKernelCloseRoutingPlaneConnectionsOpRewriter>(typeConverter,
                                                                  context);
 
