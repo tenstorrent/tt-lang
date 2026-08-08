@@ -922,6 +922,33 @@ def test_selector_tuple_order_does_not_change_kernel_order():
     ]
 
 
+def test_named_kernel_order_uses_operation_identity_to_break_name_ties():
+    """Distinct operations provide a total order for same-named kernels."""
+    operation_b_reader = Kernel(KernelKind.DATA_MOVEMENT)
+    operation_b_reader._bind("reader", "operation.b")
+    operation_a_reader = Kernel(KernelKind.DATA_MOVEMENT)
+    operation_a_reader._bind("reader", "operation.a")
+    function = _fn(
+        """
+        def k():
+            ttl.call_extern_func("reader.hpp", "b", kernel=operation_b_reader)
+            ttl.call_extern_func("reader.hpp", "a", kernel=operation_a_reader)
+        """
+    )
+
+    result = split_function_body(
+        function,
+        dfb_param_names=set(),
+        logical_kernels={
+            "operation_b_reader": operation_b_reader,
+            "operation_a_reader": operation_a_reader,
+        },
+    )
+
+    assert result.kernels == (operation_a_reader, operation_b_reader)
+    assert tuple(_assign_backend_kernel_slots(result).values()) == result.kernels
+
+
 def test_logical_kernel_capacity_uses_supplied_target_limit():
     """Capacity diagnostics use backend-provided limits for each kernel kind."""
     readers = {

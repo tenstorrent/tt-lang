@@ -283,9 +283,15 @@ def _selector_sort_key(selector: KernelSelector):
         KernelKind.DATA_MOVEMENT: 1,
     }
     if isinstance(selector, KernelKind):
-        return kind_order[selector], 0, ""
+        return kind_order[selector], 0, "", "", ""
     role_order = 1 if selector._implicit_role is not None else 2
-    return kind_order[selector.kind], role_order, selector.identity
+    return (
+        kind_order[selector.kind],
+        role_order,
+        selector.identity,
+        selector._operation_identity or "",
+        selector._implicit_role or "",
+    )
 
 
 def _selector_implicit_role(selector: KernelSelector) -> Optional[str]:
