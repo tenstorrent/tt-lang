@@ -1864,7 +1864,8 @@ class TTLGenericCompiler(TTCompilerBase):
         - ``template_args=[ttl.dfb_descriptor(dfb)]`` -- allocation metadata
           becomes a C++ template type.
         - ``template_args=[ttl.get_dfb_id(dfb)]`` -- the physical index becomes
-          an integer template argument; the DFB must also be in func_args.
+          an integer template argument; the DFB must also be a function
+          argument, descriptor, or dependency-only DFB.
         - ``func_args=[dfb]`` -- the DFB is passed as a runtime
           ``get_compile_time_arg_val(N)`` call, providing the DFB index as a
           function argument.

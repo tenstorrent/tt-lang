@@ -424,9 +424,11 @@ static LogicalResult collectLogicalDFBs(
     } else {
       llvm::append_range(dfbOperands, operation->getOperands());
     }
-    SmallVector<unsigned> operationLogicalIndices;
+    SmallVector<std::optional<unsigned>> dependencyLogicalIndices;
+    dependencyLogicalIndices.reserve(dfbOperands.size());
     for (Value operand : dfbOperands) {
       if (!isa<CircularBufferType>(operand.getType())) {
+        dependencyLogicalIndices.push_back(std::nullopt);
         continue;
       }
       FailureOr<int64_t> logicalId = identityAnalysis.getLogicalId(operand);
@@ -438,13 +440,20 @@ static LogicalResult collectLogicalDFBs(
         return WalkResult::interrupt();
       }
       auto logicalIt = logicalIndexById.find(*logicalId);
-      assert(logicalIt != logicalIndexById.end());
-      if (!llvm::is_contained(operationLogicalIndices, logicalIt->second)) {
-        operationLogicalIndices.push_back(logicalIt->second);
-      }
+      assert(logicalIt != logicalIndexById.end() &&
+             "resolved DFB identity must have a logical lifecycle");
+      dependencyLogicalIndices.push_back(logicalIt->second);
     }
     if (!access) {
-      for (unsigned logicalIndex : operationLogicalIndices) {
+      SmallVector<unsigned> uniqueLogicalIndices;
+      for (std::optional<unsigned> logicalIndex : dependencyLogicalIndices) {
+        if (!logicalIndex ||
+            llvm::is_contained(uniqueLogicalIndices, *logicalIndex)) {
+          continue;
+        }
+        uniqueLogicalIndices.push_back(*logicalIndex);
+      }
+      for (unsigned logicalIndex : uniqueLogicalIndices) {
         logicalDFBs[logicalIndex].accesses.push_back(
             {operation, std::nullopt, 0, 0, LaunchNodeDomain::unknown(),
              nullptr});
@@ -452,33 +461,30 @@ static LogicalResult collectLogicalDFBs(
       return WalkResult::advance();
     }
 
-    DenseSet<Value> effectedDFBs;
+    llvm::BitVector effectedDependencies(dfbOperands.size());
     for (const DFBProtocolEffect &effect : access.getDFBProtocolEffects()) {
-      FailureOr<int64_t> logicalId = identityAnalysis.getLogicalId(effect.dfb);
-      if (failed(logicalId)) {
-        analysisFailure.set(
-            operation,
-            "DFB protocol effect operand must resolve to ttl.bind_cb before "
-            "physical index allocation");
-        return WalkResult::interrupt();
-      }
-      auto logicalIt = logicalIndexById.find(*logicalId);
-      assert(logicalIt != logicalIndexById.end());
-      logicalDFBs[logicalIt->second].accesses.push_back(
+      assert(effect.dependencyIndex < dependencyLogicalIndices.size() &&
+             "protocol effect must reference a dependency occurrence");
+      std::optional<unsigned> logicalIndex =
+          dependencyLogicalIndices[effect.dependencyIndex];
+      assert(logicalIndex &&
+             "protocol effect dependency must have dataflow buffer type");
+      assert(effect.dfb == dfbOperands[effect.dependencyIndex] &&
+             "protocol effect value must match its dependency occurrence");
+      logicalDFBs[*logicalIndex].accesses.push_back(
           {operation, effect.kind, effect.numTiles, effect.sequenceIndex,
            LaunchNodeDomain::unknown(), nullptr});
-      effectedDFBs.insert(effect.dfb);
+      effectedDependencies.set(effect.dependencyIndex);
     }
-    for (Value operand : dfbOperands) {
+    for (auto [dependencyIndex, operand] : llvm::enumerate(dfbOperands)) {
       if (!isa<CircularBufferType>(operand.getType()) ||
-          effectedDFBs.contains(operand)) {
+          effectedDependencies.test(dependencyIndex)) {
         continue;
       }
-      FailureOr<int64_t> logicalId = identityAnalysis.getLogicalId(operand);
-      assert(succeeded(logicalId) && "DFB dependencies were validated above");
-      auto logicalIt = logicalIndexById.find(*logicalId);
-      assert(logicalIt != logicalIndexById.end());
-      logicalDFBs[logicalIt->second].accesses.push_back(
+      std::optional<unsigned> logicalIndex =
+          dependencyLogicalIndices[dependencyIndex];
+      assert(logicalIndex && "DFB dependencies were validated above");
+      logicalDFBs[*logicalIndex].accesses.push_back(
           {operation, std::nullopt, 0, 0, LaunchNodeDomain::unknown(),
            nullptr});
     }
