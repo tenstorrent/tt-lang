@@ -81,10 +81,10 @@ The current TT-Lang runtime launches Wormhole B0 and Blackhole through
 elements, and BF16 broadcast supports either destination width. Blackhole row
 reduction and Wormhole reduction restrict full-fp32 accumulation.
 Compute-pipeline schedules record compound multiply/full-scalar reduction and
-source-scalar retention as independent capabilities. Blackhole provides both
-bf16 capabilities for one through eight tiles. Wormhole B0 has no validated
-complete implementation of either capability and selects materialized
-execution.
+source-scalar retention as independent capabilities. Target implementations
+report each capability's supported element types and effective DST capacity.
+The solver selects a retained schedule only when the target provides every
+required capability.
 
 Quasar requires the Gen2 configuration descriptor, global unpack routing, and
 Quasar kernel launch mechanism. The current TT-Lang runtime does not implement
