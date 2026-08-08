@@ -13,7 +13,7 @@
 // PLAN-NEXT:    near-match=multiply-full-scalar-reduction fusion not selected: an additional use of an absorbed result cannot be preserved; ordinary materialized lowering remains selected; retained-intermediate-dfb-bytes=10240; additional-dst-acquisitions=2
 // REMARK:     remark: [Missed] ReductionFusion | Category:ttl-reduction-fusion | Function=published_product
 // REMARK-SAME: Remark="multiply-full-scalar-reduction fusion not selected: an additional use of an absorbed result cannot be preserved; ordinary materialized lowering remains selected; retained-intermediate-dfb-bytes=10240; additional-dst-acquisitions=2"
-module attributes {ttl.target_arch = "blackhole"} {
+module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @published_product()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
@@ -67,7 +67,7 @@ module attributes {ttl.target_arch = "blackhole"} {
 // REMARK-SAME: Remark="multiply-full-scalar-reduction fusion not selected: the selected schedule cannot preserve output publication; ordinary materialized lowering remains selected; retained-intermediate-dfb-bytes=10240; additional-dst-acquisitions=2"
 // REMARK:     remark: [Missed] ReductionFusion | Category:ttl-reduction-fusion | Function=post_reduction_scale
 // REMARK-SAME: Remark="multiply-full-scalar-reduction fusion not selected: the schedule would change strict floating-point semantics; ordinary materialized lowering remains selected; retained-intermediate-dfb-bytes=10240; additional-dst-acquisitions=2"
-module attributes {ttl.target_arch = "blackhole"} {
+module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @post_reduction_scale()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
@@ -113,7 +113,7 @@ module attributes {ttl.target_arch = "blackhole"} {
 // PLAN-NEXT:    near-match=multiply-full-scalar-reduction fusion not selected: the schedule would change strict floating-point semantics; ordinary materialized lowering remains selected; retained-intermediate-dfb-bytes=10240; additional-dst-acquisitions=2
 // REMARK:     remark: [Missed] ReductionFusion | Category:ttl-reduction-fusion | Function=nonunit_reduction_scaler
 // REMARK-SAME: Remark="multiply-full-scalar-reduction fusion not selected: the schedule would change strict floating-point semantics; ordinary materialized lowering remains selected; retained-intermediate-dfb-bytes=10240; additional-dst-acquisitions=2"
-module attributes {ttl.target_arch = "blackhole"} {
+module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @nonunit_reduction_scaler()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
@@ -158,7 +158,7 @@ module attributes {ttl.target_arch = "blackhole"} {
 // PLAN-NEXT:    rejected=fixed fusion block cannot preserve instrumentation inside the absorbed expression
 // REMARK:     remark: [Missed] ReductionFusion | Category:ttl-reduction-fusion | Function=instrumented_product
 // REMARK-SAME: Remark="multiply-full-scalar-reduction fusion not selected: the selected schedule cannot preserve instrumentation order; ordinary materialized lowering remains selected; retained-intermediate-dfb-bytes=10240; additional-dst-acquisitions=2"
-module attributes {ttl.target_arch = "blackhole"} {
+module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @instrumented_product()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
