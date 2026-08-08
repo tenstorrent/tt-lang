@@ -67,6 +67,24 @@ func.func @producer_transaction()
 
 // -----
 
+// A hidden pop conservatively invalidates concrete acquired storage.
+// CHECK-LABEL: DFB value lifetimes @external_release
+// CHECK: A0 consumer tiles=1
+// CHECK: ttl.signpost A0=may-be-released
+func.func @external_release()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %input = ttl.cb_wait %dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.opaque_call "release" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<pop, 0, 1>] () {header = "effects.hpp"} : () -> ()
+  ttl.signpost "after external release"
+  return
+}
+
+// -----
+
 // A tile-counted release can consume several earlier acquisitions without
 // releasing a later acquisition on the same DFB.
 // CHECK-LABEL: DFB value lifetimes @multi_acquisition_release

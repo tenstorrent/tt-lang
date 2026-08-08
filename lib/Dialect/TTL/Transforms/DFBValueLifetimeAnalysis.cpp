@@ -204,6 +204,10 @@ public:
     return associatedIdentityOrder;
   }
 
+  ArrayRef<Operation *> getIdentitiesForUnknownAccess() const {
+    return allIdentities;
+  }
+
   bool isAssociated(Operation *identity) const {
     return associatedIdentities.contains(identity);
   }
@@ -303,6 +307,24 @@ public:
         } else if (identities.isAssociated(identity) || isRecordedOwner) {
           transferred[identity] = DFBStorageState::MayBeUnavailable;
         }
+      }
+    }
+
+    auto access = dyn_cast<DFBAccessOpInterface>(operation);
+    if (access && !isDFBReleaseOp(operation)) {
+      for (const DFBProtocolEffect &effect : access.getDFBProtocolEffects()) {
+        if (effect.kind != DFBProtocolEffectKind::Push &&
+            effect.kind != DFBProtocolEffectKind::Pop) {
+          continue;
+        }
+        for (Operation *identity : identities.getIdentities(effect.dfb)) {
+          transferred[identity] = DFBStorageState::MayBeUnavailable;
+        }
+      }
+    }
+    if (access && access.hasUnknownDFBAccess()) {
+      for (Operation *identity : identities.getIdentitiesForUnknownAccess()) {
+        transferred[identity] = DFBStorageState::MayBeUnavailable;
       }
     }
 

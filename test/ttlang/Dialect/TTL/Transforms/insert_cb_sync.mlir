@@ -47,6 +47,30 @@ func.func @compute_wait_no_pop(
 
 // -----
 
+// Hidden push and pop effects satisfy automatic synchronization without
+// emitting duplicate concrete releases.
+// CHECK-LABEL: func.func @external_releases_preserved
+// CHECK: %[[PRODUCER:.*]] = ttl.bind_cb
+// CHECK-NEXT: %[[CONSUMER:.*]] = ttl.bind_cb
+// CHECK-NEXT: ttl.cb_reserve %[[PRODUCER]]
+// CHECK-NEXT: ttl.opaque_call "publish" dfb_dependencies(%[[PRODUCER]] : !ttl.cb<{{.*}}>) dfb_effects [#ttl.dfb_protocol_effect<push, 0, 1>] ()
+// CHECK-NOT: ttl.cb_push
+// CHECK: ttl.cb_wait %[[CONSUMER]]
+// CHECK-NEXT: ttl.opaque_call "release" dfb_dependencies(%[[CONSUMER]] : !ttl.cb<{{.*}}>) dfb_effects [#ttl.dfb_protocol_effect<pop, 0, 1>] ()
+// CHECK-NOT: ttl.cb_pop
+// CHECK: return
+func.func @external_releases_preserved() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %producer = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %consumer = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %reserved = ttl.cb_reserve %producer : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.opaque_call "publish" dfb_dependencies(%producer : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<push, 0, 1>] () {header = "effects.hpp"} : () -> ()
+  %waited = ttl.cb_wait %consumer : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.opaque_call "release" dfb_dependencies(%consumer : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<pop, 0, 1>] () {header = "effects.hpp"} : () -> ()
+  func.return
+}
+
+// -----
+
 // Test 3: DM thread, chase copy -> transfer_handle -> wait chain.
 
 // CHECK-LABEL: func.func @dm_reserve_copy_chain
