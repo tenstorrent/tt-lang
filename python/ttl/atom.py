@@ -52,7 +52,6 @@ from .dataflow_buffer import (
 from .dtype_utils import is_ttnn_tensor
 from .kernel import (
     Kernel,
-    KernelKind,
     KernelSelector,
     _bind_kernel_declarations,
     _operation_identity,
@@ -720,9 +719,8 @@ def _compile_atom(
     captures.update(nets)
     captures.update(spec.external_pipenets)
 
-    # TTNN interop requires exactly 3 kernels (1 compute + 2 data movement);
-    # emit all three even when a thread has no work, filling it with a pass
-    # body, the same shape @ttl.operation produces.
+    # TTNN interop requires one emitted thread for every backend slot. Empty
+    # slots retain a pass body so argument metadata stays aligned with slot order.
     threads = []
     thread_logical_kernels = []
     any_real_work = False
