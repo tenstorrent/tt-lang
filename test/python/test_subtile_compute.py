@@ -62,6 +62,49 @@ def subtile_add(lhs, rhs, out):
 
 
 @ttl.operation(grid=(1, 1))
+def subtile_passthrough(inp, out):
+    input_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    output_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        with input_dfb.wait() as input_block:
+            with output_dfb.reserve() as output_block:
+                output_block.store(input_block)
+
+    @ttl.datamovement()
+    def reader():
+        with input_dfb.reserve() as input_block:
+            ttl.copy(inp[0:1, 0:1], input_block).wait()
+
+    @ttl.datamovement()
+    def writer():
+        with output_dfb.wait() as output_block:
+            ttl.copy(output_block, out[0:1, 0:1]).wait()
+
+
+@ttl.operation(grid=(1, 1))
+def short_height_tensor_backed_passthrough(inp, out):
+    input_dfb = ttl.make_tensor_backed_dfb(inp, shape=(1, 3), block_count=1)
+    output_dfb = ttl.make_tensor_backed_dfb(out, shape=(1, 3), block_count=1)
+
+    @ttl.compute()
+    def compute():
+        with input_dfb.wait() as input_block:
+            with output_dfb.reserve() as output_block:
+                output_block.store(input_block)
+
+    @ttl.datamovement()
+    def publish_input():
+        input_dfb.publish()
+
+    @ttl.datamovement()
+    def consume_output():
+        output_block = output_dfb.wait()
+        output_block.pop()
+
+
+@ttl.operation(grid=(1, 1))
 def short_height_situ(gate, up, out):
     gate_dfb = ttl.make_tensor_backed_dfb(gate, shape=(1, 3), block_count=1)
     up_dfb = ttl.make_tensor_backed_dfb(up, shape=(1, 3), block_count=1)
@@ -308,6 +351,13 @@ DTYPES = [
     (torch.bfloat16, ttnn.bfloat16, 5e-2, 1.0),
     (torch.float32, ttnn.float32, 1e-3, 1e-3),
 ]
+PASSTHROUGH_DTYPES = [
+    (torch.bfloat16, ttnn.bfloat16),
+    (torch.float32, ttnn.float32),
+    (torch.int32, ttnn.int32),
+    (torch.uint32, ttnn.uint32),
+    (torch.uint16, ttnn.uint16),
+]
 MATMUL_DTYPES = [
     (torch.bfloat16, ttnn.bfloat16, 0.999),
     (torch.float32, ttnn.float32, 0.9999),
@@ -425,6 +475,50 @@ def test_subtile_add(
     actual = ttnn.to_torch(output_tensor).reshape(tile_hw).float()
     expected = lhs_source.float() + rhs_source.float()
     assert_allclose(actual, expected, rtol=rtol, atol=atol)
+
+
+@pytest.mark.parametrize(
+    "tile_hw", SHORT_HEIGHT_TILE_SIZES, ids=lambda tile: f"{tile[0]}x{tile[1]}"
+)
+@pytest.mark.parametrize(
+    "torch_dtype,ttnn_dtype",
+    PASSTHROUGH_DTYPES,
+    ids=["bf16", "fp32", "int32", "uint32", "uint16"],
+)
+@pytest.mark.parametrize("memory_config", MEMORY_CONFIGS)
+def test_short_height_passthrough(
+    device, tile_hw, torch_dtype, ttnn_dtype, memory_config
+):
+    source = (torch.arange(tile_hw[0] * tile_hw[1]) % 17).reshape(tile_hw)
+    source = source.to(torch_dtype)
+    output_source = torch.zeros(tile_hw, dtype=torch_dtype)
+    input_tensor = _to_device(source, device, tile_hw, ttnn_dtype, memory_config)
+    output_tensor = _to_device(
+        output_source, device, tile_hw, ttnn_dtype, memory_config
+    )
+
+    subtile_passthrough(input_tensor, output_tensor)
+
+    actual = ttnn.to_torch(output_tensor).reshape(tile_hw).float()
+    assert_allclose(actual, source.float(), rtol=0.0, atol=0.0)
+
+
+@pytest.mark.parametrize(
+    "tile_hw", SHORT_HEIGHT_TILE_SIZES, ids=lambda tile: f"{tile[0]}x{tile[1]}"
+)
+def test_short_height_tensor_backed_passthrough(device, tile_hw):
+    tile_height, tile_width = tile_hw
+    tensor_shape = (tile_height, 3 * tile_width)
+    source = (torch.arange(tile_height * 3 * tile_width) % 17).reshape(tensor_shape)
+    source = source.to(torch.bfloat16)
+    output = torch.zeros(tensor_shape, dtype=torch.bfloat16)
+    input_tensor = _to_height_sharded_l1(source, device, tile_hw)
+    output_tensor = _to_height_sharded_l1(output, device, tile_hw)
+
+    short_height_tensor_backed_passthrough(input_tensor, output_tensor)
+
+    actual = ttnn.to_torch(output_tensor).reshape(tensor_shape).float()
+    assert_allclose(actual, source.float(), rtol=0.0, atol=0.0)
 
 
 @pytest.mark.parametrize(
