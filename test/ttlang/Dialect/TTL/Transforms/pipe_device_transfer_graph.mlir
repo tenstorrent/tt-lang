@@ -7,7 +7,7 @@
 // retain its route, predicate, payload send, completion wait, and receiver DFB.
 
 // CHECK-LABEL: module attributes
-// CHECK-SAME: ttl.pipe_global_semaphore_count = 1 : i64
+// CHECK-SAME: ttl.pipe_global_semaphore_count = 2 : i64
 // CHECK-SAME: ttl.pipe_sync_semaphore_count = 0 : i64
 // CHECK-LABEL: func.func @senders
 // CHECK-SAME: ttl.fabric_routes = [
@@ -38,12 +38,15 @@
 // CHECK-NOT: ttkernel.routing_plane.fused_write_atomic_inc
 // CHECK: ttkernel.routing_plane.close_connections(%[[CONNECTION_MANAGER]],
 // CHECK-LABEL: func.func @receivers
+// CHECK: %[[RECEIVER_CONNECTION_MANAGER:.*]] = ttkernel.routing_plane.create_connection_manager
+// CHECK-NEXT: %[[RECEIVER_CONNECTION_COUNT:.*]] = ttkernel.routing_plane.open_connections %[[RECEIVER_CONNECTION_MANAGER]]
 // CHECK: %[[RECEIVER_DFB_0:.*]] = ttkernel.get_compile_time_arg_val(1)
 // CHECK-NEXT: %[[RECEIVER_DFB_1:.*]] = ttkernel.get_compile_time_arg_val(2)
 // CHECK: %[[DEVICE_3:.*]] = ttkernel.get_common_arg_val
 // CHECK-NEXT: %[[IS_DEVICE_3:.*]] = arith.cmpi eq, %[[DEVICE_3]], %{{.*}} : i32
 // CHECK-NEXT: scf.if %[[IS_DEVICE_3]] {
 // CHECK-NEXT: ttkernel.cb_reserve_back(%[[RECEIVER_DFB_1]],
+// CHECK: ttkernel.routing_plane.atomic_inc(%[[RECEIVER_CONNECTION_MANAGER]], %[[RECEIVER_CONNECTION_COUNT]],
 // CHECK: ttkernel.experimental.semaphore_wait_min
 // CHECK-NEXT: ttkernel.cb_push_back(%[[RECEIVER_DFB_1]],
 // CHECK-NEXT: }
@@ -51,10 +54,12 @@
 // CHECK-NEXT: %[[IS_DEVICE_1:.*]] = arith.cmpi eq, %[[DEVICE_1]], %{{.*}} : i32
 // CHECK-NEXT: scf.if %[[IS_DEVICE_1]] {
 // CHECK-NEXT: ttkernel.cb_reserve_back(%[[RECEIVER_DFB_0]],
+// CHECK: ttkernel.routing_plane.atomic_inc(%[[RECEIVER_CONNECTION_MANAGER]], %[[RECEIVER_CONNECTION_COUNT]],
 // CHECK: ttkernel.experimental.semaphore_wait_min
 // CHECK-NEXT: ttkernel.cb_push_back(%[[RECEIVER_DFB_0]],
 // CHECK-NEXT: }
 // CHECK-NOT: ttkernel.experimental.semaphore_wait_min
+// CHECK-NEXT: ttkernel.routing_plane.close_connections(%[[RECEIVER_CONNECTION_MANAGER]],
 // CHECK-NEXT: return
 
 #domain = #ttl.device_domain<components = <name = "device", extent = [4]>>

@@ -10,6 +10,7 @@ contract for invalid PipeNet configurations.
 
 import pytest
 import ttl
+from ttl.ttl_api import _build_pipenet_graph
 
 
 def test_empty_pipenet_rejected():
@@ -50,6 +51,49 @@ def test_pipenet_graph_defers_target_routability_validation():
     net = ttl.PipeNet(graph=graph)
 
     assert net.graph is graph
+
+
+def test_operation_pipenets_infers_graph_device_domain():
+    domain = ttl.DeviceDomain((1, 2))
+    graph = ttl.TransferGraph.edges(domain, edges=[((0, 0), (0, 1))])
+    operation_pipenets = _build_pipenet_graph([ttl.PipeNet(graph=graph)])
+
+    assert operation_pipenets.resolve_device_domain(None) == domain
+
+
+def test_operation_pipenets_rejects_mismatched_device_domains():
+    graph_domain = ttl.DeviceDomain((1, 2))
+    operation_domain = ttl.DeviceDomain((2, 1))
+    graph = ttl.TransferGraph.edges(graph_domain, edges=[((0, 0), (0, 1))])
+    operation_pipenets = _build_pipenet_graph([ttl.PipeNet(graph=graph)])
+
+    with pytest.raises(ValueError, match="device_domain must match"):
+        operation_pipenets.resolve_device_domain(operation_domain)
+
+
+def test_operation_pipenets_rejects_multiple_graph_device_domains():
+    horizontal_domain = ttl.DeviceDomain((1, 2))
+    vertical_domain = ttl.DeviceDomain((2, 1))
+    horizontal_graph = ttl.TransferGraph.edges(
+        horizontal_domain, edges=[((0, 0), (0, 1))]
+    )
+    vertical_graph = ttl.TransferGraph.edges(vertical_domain, edges=[((0, 0), (1, 0))])
+    operation_pipenets = _build_pipenet_graph(
+        [ttl.PipeNet(graph=horizontal_graph), ttl.PipeNet(graph=vertical_graph)]
+    )
+
+    with pytest.raises(ValueError, match="must use the same DeviceDomain"):
+        operation_pipenets.resolve_device_domain(None)
+
+
+def test_graph_pipenet_keeps_mixed_operation_active_on_full_grid():
+    domain = ttl.DeviceDomain((1, 2))
+    graph = ttl.TransferGraph.edges(domain, edges=[((0, 0), (0, 1))])
+    graph_net = ttl.PipeNet(graph=graph)
+    local_net = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(1, 0))])
+    operation_pipenets = _build_pipenet_graph([graph_net, local_net])
+
+    assert operation_pipenets.active_node_set((2, 2)) is None
 
 
 def test_within_pipenet_overlapping_collective_dst_allowed():

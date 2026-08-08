@@ -78,6 +78,194 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
 
 // -----
 
+// Selected source and destination properties describe the same transfer row
+// from different endpoint callbacks. Record-aware execution counts discard
+// the inactive branch before pairing each send with its receiver post.
+
+// CHECK-LABEL: func.func @record_predicate_sender
+// CHECK: ttl.pipenet_foreach_src
+// CHECK: ttl.selected_pipe_destination_device_index
+// CHECK: scf.if
+// CHECK: ttl.copy
+// CHECK: ttl.copy
+// CHECK-LABEL: func.func @record_predicate_receiver
+// CHECK: ttl.pipenet_foreach_dst
+// CHECK: ttl.selected_pipe_source_device_index
+// CHECK: scf.if
+// CHECK: ttl.copy
+// CHECK: ttl.copy
+
+#record_domain = #ttl.device_domain<
+    components = <name = "device", extent = [2]>>
+#record_predicate_records = #ttl.pipenet_records<
+    net 11 name "record_predicates" pipes [
+  #ttl.pipe_record<
+      srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
+      dstEndX = 0, dstEndY = 0,
+      deviceTransfer = <
+        domain = #record_domain,
+        edge = <source = <coordinates = [0]>,
+                destination = <coordinates = [1]>>>>,
+  #ttl.pipe_record<
+      srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
+      dstEndX = 0, dstEndY = 0,
+      deviceTransfer = <
+        domain = #record_domain,
+        edge = <source = <coordinates = [1]>,
+                destination = <coordinates = [0]>>>>
+]>
+
+module attributes {ttl.launch_grid = array<i64: 1, 1>} {
+  func.func @record_predicate_sender()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %src_zero = ttl.bind_cb {cb_index = 0, block_count = 1}
+        {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %src_one = ttl.bind_cb {cb_index = 1, block_count = 1}
+        {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %zero = arith.constant 0 : index
+    ttl.pipenet_foreach_src attributes {
+        records = #record_predicate_records} {
+    ^bb0(%pipe: !ttl.selected_pipe_src):
+      %destination = ttl.selected_pipe_destination_device_index %pipe
+          : !ttl.selected_pipe_src
+      %select_zero = arith.cmpi eq, %destination, %zero : index
+      scf.if %select_zero {
+        %send = ttl.copy %src_zero, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+               !ttl.selected_pipe_src) -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+      } else {
+        %send = ttl.copy %src_one, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+               !ttl.selected_pipe_src) -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
+      ttl.yield
+    }
+    func.return
+  }
+
+  func.func @record_predicate_receiver()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %dst_zero = ttl.bind_cb {cb_index = 2, block_count = 1}
+        {dfb_id = 2 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %dst_one = ttl.bind_cb {cb_index = 3, block_count = 1}
+        {dfb_id = 3 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %zero = arith.constant 0 : index
+    ttl.pipenet_foreach_dst attributes {
+        records = #record_predicate_records} {
+    ^bb0(%pipe: !ttl.selected_pipe_dst):
+      %source = ttl.selected_pipe_source_device_index %pipe
+          : !ttl.selected_pipe_dst
+      %select_zero = arith.cmpi eq, %source, %zero : index
+      scf.if %select_zero {
+        %reserved = ttl.cb_reserve %dst_zero
+            : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+            -> tensor<1x1x!ttcore.tile<32x32, f32>>
+        %post = ttl.copy %pipe, %reserved
+            : (!ttl.selected_pipe_dst,
+               tensor<1x1x!ttcore.tile<32x32, f32>>)
+            -> !ttl.transfer_handle
+        ttl.wait %post : !ttl.transfer_handle
+        ttl.cb_push %dst_zero : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+      } else {
+        %reserved = ttl.cb_reserve %dst_one
+            : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+            -> tensor<1x1x!ttcore.tile<32x32, f32>>
+        %post = ttl.copy %pipe, %reserved
+            : (!ttl.selected_pipe_dst,
+               tensor<1x1x!ttcore.tile<32x32, f32>>)
+            -> !ttl.transfer_handle
+        ttl.wait %post : !ttl.transfer_handle
+        ttl.cb_push %dst_one : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+      }
+      ttl.yield
+    }
+    func.return
+  }
+}
+
+// -----
+
+// Nested graph callbacks enumerate only combinations whose selected records
+// execute on the same logical device. The sender therefore has one occurrence
+// per edge, matching the receiver that has no outer callback.
+
+// CHECK-LABEL: func.func @nested_graph_sender
+// CHECK: ttl.pipenet_foreach_src
+// CHECK: ttl.pipenet_foreach_src
+// CHECK: ttl.copy
+// CHECK-LABEL: func.func @nested_graph_receiver
+// CHECK: ttl.pipenet_foreach_dst
+// CHECK: ttl.copy
+
+#nested_domain = #ttl.device_domain<
+    components = <name = "device", extent = [2]>>
+#nested_records = #ttl.pipenet_records<net 7 name "nested_graph" pipes [
+  #ttl.pipe_record<
+      srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
+      dstEndX = 0, dstEndY = 0,
+      deviceTransfer = <
+        domain = #nested_domain,
+        edge = <source = <coordinates = [0]>,
+                destination = <coordinates = [1]>>>>,
+  #ttl.pipe_record<
+      srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
+      dstEndX = 0, dstEndY = 0,
+      deviceTransfer = <
+        domain = #nested_domain,
+        edge = <source = <coordinates = [1]>,
+                destination = <coordinates = [0]>>>>
+]>
+
+module attributes {ttl.launch_grid = array<i64: 1, 1>} {
+  func.func @nested_graph_sender()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %src = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    ttl.pipenet_foreach_src attributes {records = #nested_records} {
+    ^bb0(%outer_pipe: !ttl.selected_pipe_src):
+      ttl.pipenet_foreach_src attributes {records = #nested_records} {
+      ^bb0(%inner_pipe: !ttl.selected_pipe_src):
+        %send = ttl.copy %src, %inner_pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+               !ttl.selected_pipe_src)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+        ttl.yield
+      }
+      ttl.yield
+    }
+    func.return
+  }
+
+  func.func @nested_graph_receiver()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    ttl.pipenet_foreach_dst attributes {records = #nested_records} {
+    ^bb0(%pipe: !ttl.selected_pipe_dst):
+      %reserved = ttl.cb_reserve %dst
+          : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      %post = ttl.copy %pipe, %reserved
+          : (!ttl.selected_pipe_dst,
+             tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.transfer_handle
+      ttl.wait %post : !ttl.transfer_handle
+      ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+      ttl.yield
+    }
+    func.return
+  }
+}
+
+// -----
+
 // A helper's pipe argument resolves through the active call site before the
 // send, post, and wait are specialized to their logical devices.
 

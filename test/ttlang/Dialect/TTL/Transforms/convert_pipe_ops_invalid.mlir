@@ -173,6 +173,20 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
+// Role predicates must reference a PipeNet declared by high-level pipe IR.
+
+func.func @unknown_role_predicate()
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  // expected-error @below {{references unknown PipeNet 7}}
+  %is_src = ttl.is_src {pipe_net_id = 7 : i64}
+  scf.if %is_src {
+    scf.yield
+  }
+  func.return
+}
+
+// -----
+
 // A send and its corresponding receiver post must identify the same
 // logical-device transfer.
 

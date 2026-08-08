@@ -7,16 +7,15 @@
 // CHECK-LABEL: func.func @overlap_two_receives_use_distinct_completion
 // CHECK-DAG: %[[SEM_A:.*]] = arith.constant 0 : index
 // CHECK-DAG: %[[SEM_B:.*]] = arith.constant 1 : index
-// CHECK-DAG: %[[CTR_A:.*]] = memref.alloca() : memref<1xi32>
-// CHECK-DAG: %[[CTR_B:.*]] = memref.alloca() : memref<1xi32>
+// CHECK: %[[COUNTERS:.*]] = memref.alloca() : memref<2xi32>
 // CHECK: %[[DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK: ttkernel.cb_reserve_back(%[[DFB]]
 // CHECK: %[[WP1:.*]] = ttkernel.get_write_ptr(%[[DFB]])
 // CHECK: ttkernel.noc_inline_dw_write({{.*}}, %[[WP1]]
 // CHECK: ttkernel.noc_semaphore_inc
-// CHECK: %[[V1:.*]] = memref.load %[[CTR_A]]
+// CHECK: %[[V1:.*]] = memref.load %[[COUNTERS]][%[[SEM_A]]]
 // CHECK: %[[N1:.*]] = arith.addi %[[V1]]
-// CHECK: memref.store %[[N1]], %[[CTR_A]]
+// CHECK: memref.store %[[N1]], %[[COUNTERS]][%[[SEM_A]]]
 // CHECK: %[[COMP_A:.*]] = ttkernel.get_semaphore(%[[SEM_A]])
 // CHECK: %[[WAIT_PTR1:.*]] = ttkernel.reinterpret_cast(%[[COMP_A]])
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[WAIT_PTR1]], %[[N1]])
@@ -25,9 +24,9 @@
 // CHECK: %[[WP2:.*]] = ttkernel.get_write_ptr(%[[DFB]])
 // CHECK: ttkernel.noc_inline_dw_write({{.*}}, %[[WP2]]
 // CHECK: ttkernel.noc_semaphore_inc
-// CHECK: %[[V2:.*]] = memref.load %[[CTR_B]]
+// CHECK: %[[V2:.*]] = memref.load %[[COUNTERS]][%[[SEM_B]]]
 // CHECK: %[[N2:.*]] = arith.addi %[[V2]]
-// CHECK: memref.store %[[N2]], %[[CTR_B]]
+// CHECK: memref.store %[[N2]], %[[COUNTERS]][%[[SEM_B]]]
 // CHECK: %[[COMP_B:.*]] = ttkernel.get_semaphore(%[[SEM_B]])
 // CHECK: %[[WAIT_PTR2:.*]] = ttkernel.reinterpret_cast(%[[COMP_B]])
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[WAIT_PTR2]], %[[N2]])

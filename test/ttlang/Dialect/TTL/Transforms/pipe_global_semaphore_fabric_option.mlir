@@ -5,15 +5,16 @@
 // Summary: Verifies counter-storage selection for a module containing both
 // intra-device and fabric PipeNet transfers.
 
-// The default allocates the intra-device completion and ready counters from
-// local semaphore ids. Fabric completion requires GlobalSemaphore storage.
+// The default allocates the intra-device completion counter from a local
+// semaphore id. Fabric readiness requires GlobalSemaphore storage, so every
+// counter in the shared ready-color class is global.
 // LOCAL-LABEL: module attributes
-// LOCAL-SAME: ttl.pipe_global_semaphore_count = 1 : i64
-// LOCAL-SAME: ttl.pipe_sync_semaphore_count = 2 : i64
+// LOCAL-SAME: ttl.pipe_global_semaphore_count = 3 : i64
+// LOCAL-SAME: ttl.pipe_sync_semaphore_count = 1 : i64
 // LOCAL-LABEL: func.func @local_transfer
 // LOCAL-DAG: %[[LOCAL_COMPLETION_INDEX:.*]] = arith.constant 0 : index
-// LOCAL-DAG: %[[LOCAL_READY_INDEX:.*]] = arith.constant 1 : index
-// LOCAL: %[[LOCAL_READY:.*]] = ttkernel.get_semaphore(%[[LOCAL_READY_INDEX]])
+// LOCAL-DAG: %[[LOCAL_READY_INDEX:.*]] = arith.constant 2 : index
+// LOCAL: %[[LOCAL_READY:.*]] = ttkernel.get_common_arg_val(%[[LOCAL_READY_INDEX]])
 // LOCAL: %[[LOCAL_READY_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, %[[LOCAL_READY]], {{.*}})
 // LOCAL-NEXT: ttkernel.noc_semaphore_inc(%[[LOCAL_READY_NOC]]
 // LOCAL: %[[LOCAL_COMPLETION:.*]] = ttkernel.get_semaphore(%[[LOCAL_COMPLETION_INDEX]])
@@ -21,21 +22,29 @@
 // LOCAL-NEXT: ttkernel.noc_semaphore_inc(%[[LOCAL_COMPLETION_NOC]]
 // LOCAL-LABEL: func.func @fabric_sender
 // LOCAL-DAG: %[[LOCAL_FABRIC_DONE_INDEX:.*]] = arith.constant 1 : index
+// LOCAL-DAG: %[[LOCAL_FABRIC_READY_INDEX:.*]] = arith.constant 3 : index
+// LOCAL: %[[LOCAL_FABRIC_READY:.*]] = ttkernel.get_common_arg_val(%[[LOCAL_FABRIC_READY_INDEX]])
+// LOCAL-NEXT: %[[LOCAL_FABRIC_READY_PTR:.*]] = ttkernel.reinterpret_cast(%[[LOCAL_FABRIC_READY]])
+// LOCAL-NEXT: ttkernel.experimental.semaphore_wait_min(%[[LOCAL_FABRIC_READY_PTR]]
 // LOCAL: %[[LOCAL_FABRIC_DONE:.*]] = ttkernel.get_common_arg_val(%[[LOCAL_FABRIC_DONE_INDEX]])
 // LOCAL: %[[LOCAL_REMOTE_DONE:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[LOCAL_FABRIC_DONE]], {{.*}})
 // LOCAL: ttkernel.routing_plane.fused_write_atomic_inc({{.*}}, %[[LOCAL_REMOTE_DONE]], {{.*}})
 // LOCAL-NOT: ttkernel.get_semaphore
 // LOCAL-LABEL: func.func @fabric_receiver
 // LOCAL-DAG: %[[LOCAL_FABRIC_WAIT_INDEX:.*]] = arith.constant 0 : index
+// LOCAL-DAG: %[[LOCAL_FABRIC_READY_TARGET_INDEX:.*]] = arith.constant 2 : index
+// LOCAL: %[[LOCAL_FABRIC_READY_TARGET:.*]] = ttkernel.get_common_arg_val(%[[LOCAL_FABRIC_READY_TARGET_INDEX]])
+// LOCAL: %[[LOCAL_FABRIC_READY_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[LOCAL_FABRIC_READY_TARGET]], {{.*}})
+// LOCAL-NEXT: ttkernel.routing_plane.atomic_inc({{.*}}, %[[LOCAL_FABRIC_READY_NOC]], {{.*}})
 // LOCAL: %[[LOCAL_FABRIC_WAIT:.*]] = ttkernel.get_common_arg_val(%[[LOCAL_FABRIC_WAIT_INDEX]])
 // LOCAL-NEXT: %[[LOCAL_FABRIC_WAIT_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[LOCAL_FABRIC_WAIT]])
 // LOCAL: ttkernel.experimental.semaphore_wait_min(%[[LOCAL_FABRIC_WAIT_PTR]]
 // LOCAL-NOT: ttkernel.get_semaphore
 
 // Global-only mode moves the intra-device counters to GlobalSemaphore storage;
-// the fabric completion counter remains global.
+// the fabric completion and readiness counters remain global.
 // GLOBAL-LABEL: module attributes
-// GLOBAL-SAME: ttl.pipe_global_semaphore_count = 3 : i64
+// GLOBAL-SAME: ttl.pipe_global_semaphore_count = 4 : i64
 // GLOBAL-SAME: ttl.pipe_sync_semaphore_count = 0 : i64
 // GLOBAL-LABEL: func.func @local_transfer
 // GLOBAL-DAG: %[[GLOBAL_COMPLETION_INDEX:.*]] = arith.constant 1 : index
@@ -48,11 +57,19 @@
 // GLOBAL-NEXT: ttkernel.noc_semaphore_inc(%[[GLOBAL_COMPLETION_NOC]]
 // GLOBAL-LABEL: func.func @fabric_sender
 // GLOBAL-DAG: %[[GLOBAL_FABRIC_DONE_INDEX:.*]] = arith.constant 2 : index
+// GLOBAL-DAG: %[[GLOBAL_FABRIC_READY_INDEX:.*]] = arith.constant 4 : index
+// GLOBAL: %[[GLOBAL_FABRIC_READY:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_FABRIC_READY_INDEX]])
+// GLOBAL-NEXT: %[[GLOBAL_FABRIC_READY_PTR:.*]] = ttkernel.reinterpret_cast(%[[GLOBAL_FABRIC_READY]])
+// GLOBAL-NEXT: ttkernel.experimental.semaphore_wait_min(%[[GLOBAL_FABRIC_READY_PTR]]
 // GLOBAL: %[[GLOBAL_FABRIC_DONE:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_FABRIC_DONE_INDEX]])
 // GLOBAL: %[[GLOBAL_REMOTE_DONE:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[GLOBAL_FABRIC_DONE]], {{.*}})
 // GLOBAL: ttkernel.routing_plane.fused_write_atomic_inc({{.*}}, %[[GLOBAL_REMOTE_DONE]], {{.*}})
 // GLOBAL-LABEL: func.func @fabric_receiver
 // GLOBAL-DAG: %[[GLOBAL_FABRIC_WAIT_INDEX:.*]] = arith.constant 1 : index
+// GLOBAL-DAG: %[[GLOBAL_FABRIC_READY_TARGET_INDEX:.*]] = arith.constant 3 : index
+// GLOBAL: %[[GLOBAL_FABRIC_READY_TARGET:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_FABRIC_READY_TARGET_INDEX]])
+// GLOBAL: %[[GLOBAL_FABRIC_READY_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[GLOBAL_FABRIC_READY_TARGET]], {{.*}})
+// GLOBAL-NEXT: ttkernel.routing_plane.atomic_inc({{.*}}, %[[GLOBAL_FABRIC_READY_NOC]], {{.*}})
 // GLOBAL: %[[GLOBAL_FABRIC_WAIT:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_FABRIC_WAIT_INDEX]])
 // GLOBAL-NEXT: %[[GLOBAL_FABRIC_WAIT_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[GLOBAL_FABRIC_WAIT]])
 // GLOBAL: ttkernel.experimental.semaphore_wait_min(%[[GLOBAL_FABRIC_WAIT_PTR]]

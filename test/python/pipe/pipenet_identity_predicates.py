@@ -5,12 +5,11 @@
 # REQUIRES: ttnn
 # UNSUPPORTED: system-darwin
 # RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.identity.mlir TTLANG_CASE=identity %python %s
-# RUN: FileCheck %s --input-file=%t.identity.mlir --check-prefix=IDENTITY --implicit-check-not=arith.cmpi
-# RUN: FileCheck %s --input-file=%t.identity.mlir --check-prefix=IDENTITY-SCF
+# RUN: FileCheck %s --input-file=%t.identity.mlir --check-prefix=IDENTITY
 # RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.runtime.mlir TTLANG_CASE=runtime %python %s
 # RUN: FileCheck %s --input-file=%t.runtime.mlir --check-prefix=RUNTIME
 
-"""Frontend IR coverage for graph callback identity specialization."""
+"""Frontend IR coverage for runtime-selected graph callback identities."""
 
 import os
 
@@ -44,47 +43,40 @@ def compile_identity_predicates():
     @ttl.datamovement()
     def identity_dm():
         def select_destination(pipe):
+            destination = pipe.dst
+            destination_x = destination[0]
+            destination_y = destination[1]
             destination_device_index = pipe.destination_device_index
-            selected_dfb = src_one_dfb
             if pipe.destination_device_index == 0:
-                selected_dfb = src_zero_dfb
-                branch_local_dfb = selected_dfb
-                if destination_device_index <= 0:
-                    nested_dfb = branch_local_dfb
+                with src_zero_dfb.reserve() as _reserved_block:
+                    pass
             else:
-                branch_local_dfb = selected_dfb
-                nested_dfb = branch_local_dfb
+                with src_one_dfb.reserve() as _reserved_block:
+                    pass
 
-            if destination_device_index != -1:
-                operator_dfb = nested_dfb
-            if destination_device_index < 2:
-                operator_dfb = nested_dfb
-            if 0 <= destination_device_index:
-                operator_dfb = nested_dfb
-            if destination_device_index > -1:
-                operator_dfb = nested_dfb
-            if destination_device_index >= 0:
-                operator_dfb = nested_dfb
-
-            with operator_dfb.reserve() as _reserved_block:
+            if destination_device_index != 2:
                 pass
-            with operator_dfb.wait() as _ready_block:
+            if destination_device_index < 2:
+                pass
+            if 0 <= destination_device_index:
+                pass
+            if destination_device_index > 0:
+                pass
+            if destination_device_index >= 0:
                 pass
 
         EXCHANGE_NET.if_src(select_destination)
 
         def select_source(pipe):
+            source_x, source_y = pipe.src
             if pipe.source_device_index == ROOT_DEVICE_INDEX:
-                selected_dfb = dst_zero_dfb
+                with dst_zero_dfb.reserve() as _reserved_block:
+                    pass
             else:
-                selected_dfb = dst_one_dfb
+                with dst_one_dfb.reserve() as _reserved_block:
+                    pass
 
             if ROOT_DEVICE_INDEX == pipe.source_device_index:
-                selected_dfb = dst_zero_dfb
-
-            with selected_dfb.reserve() as _reserved_block:
-                pass
-            with selected_dfb.wait() as _ready_block:
                 pass
 
         EXCHANGE_NET.if_dst(select_source)
@@ -107,7 +99,7 @@ def compile_runtime_predicate():
     def runtime_dm():
         def select_node(pipe):
             node_x, _node_y = ttl.node(dims=2)
-            if node_x == 0:
+            if pipe.destination_device_index == node_x:
                 with runtime_dfb.reserve() as _reserved_block:
                     pass
 
@@ -130,48 +122,31 @@ if __name__ == "__main__":
 # IDENTITY-DAG: %[[SRC_ONE:.+]] = ttl.bind_cb{{.*}} {dfb_id = 1 : index}
 # IDENTITY-DAG: %[[DST_ZERO:.+]] = ttl.bind_cb{{.*}} {dfb_id = 2 : index}
 # IDENTITY-DAG: %[[DST_ONE:.+]] = ttl.bind_cb{{.*}} {dfb_id = 3 : index}
-# IDENTITY: %[[PIPE_0:.+]] = ttl.create_pipe
-# IDENTITY-SAME: source = <coordinates = [0, 0]>, destination = <coordinates = [0, 1]>
-# IDENTITY: %[[IS_SOURCE_0:.+]] = ttl.is_device <coordinates = [0, 0]>
-# IDENTITY-NEXT: scf.if %[[IS_SOURCE_0]] {
-# IDENTITY-NEXT: ttl.if_src %[[PIPE_0]]
-# IDENTITY-NEXT: %{{.+}} = ttl.cb_reserve %[[SRC_ONE]]
-# IDENTITY: ttl.cb_wait %[[SRC_ONE]]
-# IDENTITY: %[[PIPE_1:.+]] = ttl.create_pipe
-# IDENTITY-SAME: source = <coordinates = [0, 1]>, destination = <coordinates = [0, 0]>
-# IDENTITY: %[[IS_SOURCE_1:.+]] = ttl.is_device <coordinates = [0, 1]>
-# IDENTITY-NEXT: scf.if %[[IS_SOURCE_1]] {
-# IDENTITY-NEXT: ttl.if_src %[[PIPE_1]]
-# IDENTITY-NEXT: %{{.+}} = ttl.cb_reserve %[[SRC_ZERO]]
-# IDENTITY: ttl.cb_wait %[[SRC_ZERO]]
-# IDENTITY: %[[PIPE_2:.+]] = ttl.create_pipe
-# IDENTITY-SAME: source = <coordinates = [0, 0]>, destination = <coordinates = [0, 1]>
-# IDENTITY: %[[IS_DESTINATION_0:.+]] = ttl.is_device <coordinates = [0, 1]>
-# IDENTITY-NEXT: scf.if %[[IS_DESTINATION_0]] {
-# IDENTITY-NEXT: ttl.if_dst %[[PIPE_2]]
-# IDENTITY-NEXT: %{{.+}} = ttl.cb_reserve %[[DST_ZERO]]
-# IDENTITY: ttl.cb_wait %[[DST_ZERO]]
-# IDENTITY: %[[PIPE_3:.+]] = ttl.create_pipe
-# IDENTITY-SAME: source = <coordinates = [0, 1]>, destination = <coordinates = [0, 0]>
-# IDENTITY: %[[IS_DESTINATION_1:.+]] = ttl.is_device <coordinates = [0, 0]>
-# IDENTITY-NEXT: scf.if %[[IS_DESTINATION_1]] {
-# IDENTITY-NEXT: ttl.if_dst %[[PIPE_3]]
-# IDENTITY-NEXT: %{{.+}} = ttl.cb_reserve %[[DST_ONE]]
-# IDENTITY: ttl.cb_wait %[[DST_ONE]]
-# IDENTITY-NOT: scf.if
+# IDENTITY-NOT: ttl.create_pipe
+# IDENTITY-NOT: ttl.is_device
+# IDENTITY: ttl.pipenet_foreach_src attributes
+# IDENTITY: ^bb0(%[[SRC_PIPE:.+]]: !ttl.selected_pipe_src):
+# IDENTITY-NEXT: %[[DST_X:.+]], %[[DST_Y:.+]], %[[DST_END_X:.+]], %[[DST_END_Y:.+]] = ttl.selected_pipe_destination_coordinates %[[SRC_PIPE]]
+# IDENTITY-NEXT: %[[DST_DEVICE:.+]] = ttl.selected_pipe_destination_device_index %[[SRC_PIPE]]
+# IDENTITY: arith.cmpi ne, %[[DST_DEVICE]],
+# IDENTITY: arith.cmpi slt, %[[DST_DEVICE]],
+# IDENTITY: arith.cmpi sle,
+# IDENTITY: arith.cmpi sgt, %[[DST_DEVICE]],
+# IDENTITY: arith.cmpi sge, %[[DST_DEVICE]],
+# IDENTITY: ttl.pipenet_foreach_dst attributes
+# IDENTITY: ^bb0(%[[DST_PIPE:.+]]: !ttl.selected_pipe_dst):
+# IDENTITY-NEXT: %[[SRC_X:.+]], %[[SRC_Y:.+]] = ttl.selected_pipe_source_coordinates %[[DST_PIPE]]
+# IDENTITY-NEXT: %[[SRC_DEVICE:.+]] = ttl.selected_pipe_source_device_index %[[DST_PIPE]]
+# IDENTITY: arith.cmpi eq, %[[SRC_DEVICE]],
 # IDENTITY: return
 
-# The only SCF conditions are the four graph endpoint predicates. Identity
-# predicates are specialized before emission and add no nested SCF regions.
-# IDENTITY-SCF-COUNT-4: scf.if
-# IDENTITY-SCF-NOT: scf.if
-
 # RUNTIME-LABEL: func.func @runtime_dm
-# RUNTIME: %[[RUNTIME_PIPE:.+]] = ttl.create_pipe
-# RUNTIME: %[[IS_RUNTIME_SOURCE:.+]] = ttl.is_device
-# RUNTIME-NEXT: scf.if %[[IS_RUNTIME_SOURCE]] {
-# RUNTIME-NEXT: ttl.if_src %[[RUNTIME_PIPE]]
+# RUNTIME-NOT: ttl.create_pipe
+# RUNTIME-NOT: ttl.is_device
+# RUNTIME: ttl.pipenet_foreach_src attributes
+# RUNTIME: ^bb0(%[[RUNTIME_PIPE:.+]]: !ttl.selected_pipe_src):
 # RUNTIME: %[[NODE_X:.+]] = ttl.core_x
-# RUNTIME: %[[RUNTIME_CONDITION:.+]] = arith.cmpi eq, %[[NODE_X]], %{{.+}}
+# RUNTIME: %[[DEVICE:.+]] = ttl.selected_pipe_destination_device_index %[[RUNTIME_PIPE]]
+# RUNTIME-NEXT: %[[RUNTIME_CONDITION:.+]] = arith.cmpi eq, %[[DEVICE]], %[[NODE_X]]
 # RUNTIME-NEXT: scf.if %[[RUNTIME_CONDITION]] {
 # RUNTIME-NEXT: %{{.+}} = ttl.cb_reserve

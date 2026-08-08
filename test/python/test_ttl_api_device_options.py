@@ -175,7 +175,11 @@ class TestMeshProgramPlacement:
         calls = []
 
         monkeypatch.setattr(ttl_api, "_get_registered_threads", lambda: [object()])
-        monkeypatch.setattr(ttl_api, "_build_operation_pipenets", lambda *_: object())
+        monkeypatch.setattr(
+            ttl_api,
+            "_build_operation_pipenets",
+            lambda *_: ttl_api._build_pipenet_graph([]),
+        )
 
         def fake_lower_program_to_kernel(**kwargs):
             calls.append(kwargs)
