@@ -985,7 +985,6 @@ matchRowNormalization(Operation *source,
   match.schedule.scale = scaledReduction.getValueAttr();
   match.schedule.epsilon = epsilonFill.getValueAttr();
   match.schedule.numTiles = numTiles;
-  match.schedule.dstCapacity = dstCapacity;
   match.schedule.gammaMode = gammaMode;
 
   auto recordOperation = [&](Operation *operation) {
