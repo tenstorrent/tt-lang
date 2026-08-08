@@ -110,6 +110,10 @@ analyzeRowNormalizationCompute(ComputeOp compute, std::string &reason) {
     return failure();
   }
   analysis.numTiles = inputType.getNumElements();
+  if (analysis.numTiles != static_cast<int64_t>(analysis.block.getNumTiles())) {
+    reason = "num_tiles must match the row tensor width";
+    return failure();
+  }
 
   FailureOr<std::uint32_t> capacity = computeDSTCapacity(compute);
   if (failed(capacity)) {
@@ -184,7 +188,8 @@ LogicalResult generateRowNormalizationCompute(PatternRewriter &rewriter,
       sectionBuilder, loc, tileType, analysis->inputTensor,
       analysis->gammaTensor, analysis->outputTensor,
       analysis->block.getScaleAttr(), analysis->block.getEpsilonAttr(),
-      analysis->block.getHasGammaAttr(), scalarDstIndex);
+      analysis->block.getHasGammaAttr(), analysis->block.getNumTilesAttr(),
+      scalarDstIndex);
 
   for (int64_t tileIndex = 0; tileIndex < analysis->numTiles; ++tileIndex) {
     Value outputDstIndex = constantIndex(sectionBuilder, loc, tileIndex);
