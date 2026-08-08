@@ -156,6 +156,14 @@ construct the logical `DeviceDomain` from it instead of encoding a fixed
 extent. The extent defines logical membership and row-major ordering; it does
 not define fabric adjacency.
 
+The current host runtime uses an identity binding from flattened
+`DeviceDomain` coordinates to the `MeshDevice` logical arrangement and
+requires their extents to match. This is a target-binding restriction, not a
+`DeviceDomain` invariant. A general binding maps each `DeviceRef` to a
+`MeshCoordinate`, passes the original logical coordinates to device role
+predicates, and uses the mapped coordinate with `get_fabric_node_id()` for
+control-plane route resolution.
+
 The same distinction applies to `FabricNodeId::chip_id`. It is an identifier
 within a physical mesh, not a general distance metric. A target resolver must
 consult TT-Metal's control-plane description to determine whether a transfer
@@ -351,6 +359,16 @@ The TTL dialect defines:
 
 These attributes contain no target route fields. Their verifiers check domain
 membership, coordinate rank, and transfer structure.
+
+A graph PipeNet lowers to one ordered `PipeNetRecordsAttr` and one callback
+region for each source or destination role. The callback receives a selected
+record whose coordinate and logical-device fields come from immutable tables.
+This keeps callback code independent of the global edge count; it does not
+clone the callback for every transfer edge. The current representation still
+stores one metadata row per edge and launch node combination and scans the
+table on each logical device. Per-device record indices can reduce the scan
+cost, while target-level structured descriptors can reduce metadata, without
+changing the domain or callback semantics.
 
 ### Pipe lowering
 
