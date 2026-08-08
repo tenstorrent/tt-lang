@@ -8,6 +8,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
 #include "mlir/IR/BuiltinTypes.h"
+#include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 
@@ -26,11 +27,50 @@ static bool isBefore(Operation *before, Operation *after) {
   return before->isBeforeInBlock(after);
 }
 
-/// Direct DFB copies can use the same DFB value on either source or
-/// destination operands. Only the operand that corresponds to the acquire class
-/// consumes the acquired slot.
+static bool protocolUseMatchesAcquire(DFBAcquireInterval interval,
+                                      DFBAccessOpInterface access) {
+  if (access.hasUnknownDFBAccess()) {
+    return true;
+  }
+
+  SmallVector<Value> dependencies = access.getDFBDependencyOperands();
+  llvm::BitVector effectfulDependencies(dependencies.size());
+  for (const DFBProtocolEffect &effect : access.getDFBProtocolEffects()) {
+    assert(effect.dependencyIndex < dependencies.size() &&
+           "DFB protocol effect dependency index must be valid");
+    assert(dependencies[effect.dependencyIndex] == effect.dfb &&
+           "DFB protocol effect must reference its dependency occurrence");
+    if (effect.dfb != interval.dfb) {
+      continue;
+    }
+    effectfulDependencies.set(effect.dependencyIndex);
+    if ((interval.kind == DFBAcquireReleaseKind::Producer &&
+         isProducerDFBProtocolEffect(effect.kind)) ||
+        (interval.kind == DFBAcquireReleaseKind::Consumer &&
+         isConsumerDFBProtocolEffect(effect.kind))) {
+      return true;
+    }
+  }
+
+  bool foundDependency = false;
+  for (auto [dependencyIndex, dependency] : llvm::enumerate(dependencies)) {
+    if (dependency != interval.dfb) {
+      continue;
+    }
+    foundDependency = true;
+    if (!effectfulDependencies.test(dependencyIndex)) {
+      return true;
+    }
+  }
+  return !foundDependency;
+}
+
 static bool directDFBUseMatchesAcquire(DFBAcquireInterval interval,
                                        Operation *user) {
+  if (auto access = dyn_cast<DFBAccessOpInterface>(user)) {
+    return protocolUseMatchesAcquire(interval, access);
+  }
+
   auto copy = dyn_cast<CopyOp>(user);
   if (!copy) {
     return true;

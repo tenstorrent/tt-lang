@@ -114,28 +114,14 @@ static bool isDerivedDFBIndexAttribute(StringRef attributeName) {
          attributeName == kTransposeOutputCBIndexAttrName;
 }
 
-/// Reserve and push must resolve to one producer-side owner before reuse can
-/// preserve write-pointer progression.
-static bool effectAdvancesWritePointer(DFBProtocolEffectKind effect) {
-  return effect == DFBProtocolEffectKind::Reserve ||
-         effect == DFBProtocolEffectKind::Push;
-}
-
-/// Wait and pop must resolve to one consumer-side owner before reuse can
-/// preserve read-pointer progression.
-static bool effectAdvancesReadPointer(DFBProtocolEffectKind effect) {
-  return effect == DFBProtocolEffectKind::Wait ||
-         effect == DFBProtocolEffectKind::Pop;
-}
-
 /// Resolves the hardware pointer owner only from explicit kernel semantics.
 /// Missing or invalid ownership attributes remain unknown because assuming a
 /// processor could permit unsafe physical-index reuse.
 static std::optional<DFBPointerOwner>
 getPointerOwner(Operation *operation, LaunchNodeCoord node,
                 DFBProtocolEffectKind effect) {
-  if (!effectAdvancesWritePointer(effect) &&
-      !effectAdvancesReadPointer(effect)) {
+  if (!isProducerDFBProtocolEffect(effect) &&
+      !isConsumerDFBProtocolEffect(effect)) {
     return std::nullopt;
   }
   func::FuncOp kernel = operation->getParentOfType<func::FuncOp>();
@@ -148,7 +134,7 @@ getPointerOwner(Operation *operation, LaunchNodeCoord node,
     return std::nullopt;
   }
 
-  DFBPointerDirection direction = effectAdvancesWritePointer(effect)
+  DFBPointerDirection direction = isProducerDFBProtocolEffect(effect)
                                       ? DFBPointerDirection::Write
                                       : DFBPointerDirection::Read;
   if (thread.getValue() == ttkernel::ThreadType::Compute) {
