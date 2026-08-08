@@ -89,29 +89,29 @@ func.func @fused_subtile(
 // constructs the compute block arguments.
 // CHECK-LABEL: func.func @passthrough_subtile
 // CHECK:       %[[RESULT:.*]] = ttl.compute
-// CHECK-NEXT:  ^bb0(%[[INPUT:.*]]: !ttcore.tile<16x16, bf16>, %[[OUTPUT:.*]]: !ttcore.tile<16x16, bf16>):
+// CHECK-NEXT:  ^bb0(%[[INPUT:.*]]: !ttcore.tile<1x32, bf16>, %[[OUTPUT:.*]]: !ttcore.tile<1x32, bf16>):
 // CHECK-NEXT:    %[[ROW:.*]] = ttl.iter_index 0
 // CHECK-NEXT:    %[[COL:.*]] = ttl.iter_index 1
 // CHECK-NEXT:    ttl.tile_store %[[INPUT]], %{{.*}}[%[[ROW]], %[[COL]]]
 // CHECK-NEXT:    ttl.yield
-// CHECK-NEXT:  } -> tensor<1x1x!ttcore.tile<16x16, bf16>>
-func.func @passthrough_subtile(%arg: tensor<1x1x!ttcore.tile<16x16, bf16>>)
-    -> tensor<1x1x!ttcore.tile<16x16, bf16>> {
+// CHECK-NEXT:  } -> tensor<1x1x!ttcore.tile<1x32, bf16>>
+func.func @passthrough_subtile(%arg: tensor<1x1x!ttcore.tile<1x32, bf16>>)
+    -> tensor<1x1x!ttcore.tile<1x32, bf16>> {
   %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
-      : !ttl.cb<[1, 1], !ttcore.tile<16x16, bf16>, 2>
+      : !ttl.cb<[1, 1], !ttcore.tile<1x32, bf16>, 2>
   %output_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
-      : !ttl.cb<[1, 1], !ttcore.tile<16x16, bf16>, 2>
+      : !ttl.cb<[1, 1], !ttcore.tile<1x32, bf16>, 2>
   %input = ttl.attach_cb %arg, %input_dfb
-      : (tensor<1x1x!ttcore.tile<16x16, bf16>>,
-         !ttl.cb<[1, 1], !ttcore.tile<16x16, bf16>, 2>)
-        -> tensor<1x1x!ttcore.tile<16x16, bf16>>
+      : (tensor<1x1x!ttcore.tile<1x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<1x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<1x32, bf16>>
   %output = ttl.cb_reserve %output_dfb
-      : <[1, 1], !ttcore.tile<16x16, bf16>, 2>
-        -> tensor<1x1x!ttcore.tile<16x16, bf16>>
+      : <[1, 1], !ttcore.tile<1x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<1x32, bf16>>
   ttl.store %input, %output
-      : tensor<1x1x!ttcore.tile<16x16, bf16>>,
-        tensor<1x1x!ttcore.tile<16x16, bf16>>
-  return %input : tensor<1x1x!ttcore.tile<16x16, bf16>>
+      : tensor<1x1x!ttcore.tile<1x32, bf16>>,
+        tensor<1x1x!ttcore.tile<1x32, bf16>>
+  return %input : tensor<1x1x!ttcore.tile<1x32, bf16>>
 }
 
 // -----
