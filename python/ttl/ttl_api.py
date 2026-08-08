@@ -12,8 +12,9 @@ import inspect
 import os
 import random
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Union
+from typing import Callable, Dict, List, Mapping, Optional, Union
 
 ttnn = None  # Lazy-loaded on first access via _ensure_ttnn()
 
@@ -107,7 +108,9 @@ from .kernel import (
     Kernel,
     KernelKind,
     KernelSelector,
+    _PIPE_SOURCE_KERNEL_ROLE,
     _bind_kernel_declarations,
+    _format_kernel_capacity_error,
     _operation_identity,
     _selector_implicit_role,
     _selector_kind,
@@ -120,6 +123,50 @@ _TTCORE_ARCH_BY_DEVICE_NAME = {
     "blackhole": ttcore.Arch.Blackhole,
     "wormhole_b0": ttcore.Arch.WormholeB0,
 }
+
+
+@dataclass(frozen=True)
+class _BackendKernelSlot:
+    kind: KernelKind
+    kernel_type: str
+    source_name: str
+    implicit_role: Optional[str] = None
+
+
+_COMMON_BACKEND_KERNEL_SLOTS = (
+    _BackendKernelSlot(KernelKind.COMPUTE, "compute", "trisc"),
+    _BackendKernelSlot(KernelKind.DATA_MOVEMENT, "datamovement", "ncrisc"),
+    _BackendKernelSlot(
+        KernelKind.DATA_MOVEMENT,
+        "datamovement",
+        "brisc",
+        implicit_role=_PIPE_SOURCE_KERNEL_ROLE,
+    ),
+)
+_BACKEND_KERNEL_SLOTS_BY_ARCH = {
+    target_arch: _COMMON_BACKEND_KERNEL_SLOTS
+    for target_arch in _TTCORE_ARCH_BY_DEVICE_NAME
+}
+
+
+def _backend_kernel_slots(
+    target_arch: Optional[str] = None,
+) -> tuple[_BackendKernelSlot, ...]:
+    """Return the processor slots declared by the selected backend target."""
+    if target_arch is None:
+        return _COMMON_BACKEND_KERNEL_SLOTS
+    try:
+        return _BACKEND_KERNEL_SLOTS_BY_ARCH[target_arch]
+    except KeyError:
+        raise ValueError(f"unsupported target architecture {target_arch!r}") from None
+
+
+def _backend_kernel_capacities(
+    target_arch: Optional[str] = None,
+) -> Mapping[KernelKind, int]:
+    slots = _backend_kernel_slots(target_arch)
+    return {kind: sum(slot.kind == kind for slot in slots) for kind in KernelKind}
+
 
 # Thread registry for automatic collection of @compute and @datamovement threads
 _thread_registry: List[Callable] = []
@@ -142,7 +189,10 @@ def _get_registered_threads() -> List[Callable]:
     return threads
 
 
-def _validate_explicit_logical_kernel_uses(threads: List[Callable]) -> None:
+def _validate_explicit_logical_kernel_uses(
+    threads: List[Callable],
+    kernel_capacities: Optional[Mapping[KernelKind, int]] = None,
+) -> None:
     """Require each named logical kernel to identify one explicit thread."""
     thread_by_kernel: Dict[Kernel, Callable] = {}
     for thread in threads:
@@ -157,6 +207,17 @@ def _validate_explicit_logical_kernel_uses(threads: List[Callable]) -> None:
                 f"{previous_thread.__name__!r} and {thread.__name__!r}"
             )
         thread_by_kernel[logical_kernel] = thread
+
+    if kernel_capacities is None:
+        return
+    selectors = tuple(thread._logical_kernel for thread in threads)
+    for kind in KernelKind:
+        capacity = kernel_capacities[kind]
+        selected = tuple(
+            selector for selector in selectors if _selector_kind(selector) == kind
+        )
+        if len(selected) > capacity:
+            raise ValueError(_format_kernel_capacity_error(kind, selected, capacity))
 
 
 def _captured_kernel_declarations(function: Callable) -> Dict[str, Kernel]:
@@ -995,6 +1056,7 @@ def _compile_ttnn_kernel(
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
     opaque_include_paths: Optional[List[str]] = None,
+    target_arch: Optional[str] = None,
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -1053,18 +1115,39 @@ def _compile_ttnn_kernel(
 
     compute_count = sum(1 for _, t in kernel_info if t == "compute")
     dm_count = sum(1 for _, t in kernel_info if t == "noc")
+    kernel_capacities = _backend_kernel_capacities(target_arch)
+    kernel_counts = {
+        KernelKind.COMPUTE: compute_count,
+        KernelKind.DATA_MOVEMENT: dm_count,
+    }
     if not specialize_cores:
-        # Validate kernel count: for now we must have exactly 3 kernels (1 compute + 2 data movement).
-        # Each core has only 2 NOCs, so more than 2 DM kernels causes NOC conflicts.
-        # TODO: in the future we should figure out how to map arbitrary kernels.
-        if len(kernel_info) != 3:
+        for kind in KernelKind:
+            if kernel_counts[kind] > kernel_capacities[kind]:
+                selected = tuple(
+                    selector
+                    for selector in kernel_logical_selectors
+                    if selector is not None and _selector_kind(selector) == kind
+                )
+                if len(selected) != kernel_counts[kind]:
+                    selected = (kind,) * kernel_counts[kind]
+                raise ValueError(
+                    _format_kernel_capacity_error(
+                        kind, selected, kernel_capacities[kind]
+                    )
+                )
+        if kernel_counts != kernel_capacities:
+            required = ", ".join(
+                f"{kernel_capacities[kind]} {kind.value}" for kind in KernelKind
+            )
+            provided = ", ".join(
+                f"{kernel_counts[kind]} {kind.value}" for kind in KernelKind
+            )
             raise ValueError(
-                f"TTNN interop requires exactly 3 kernels (1 compute + 2 data movement), "
-                f"got {len(kernel_info)} kernels ({compute_count} compute, {dm_count} data movement). "
-                f"Each core has only 2 NOCs, so more than 2 DM kernels causes NOC conflicts."
+                f"TTNN interop requires the target kernel set ({required}); "
+                f"the operation provides {provided}"
             )
     else:
-        # Check no core has more than one compute or two NOC kernels.
+        # Validate every specialized core against the selected target.
         grid_cols, grid_rows = grid
         all_cores = [(x, y) for y in range(grid_rows) for x in range(grid_cols)]
         per_core_counts = {}
@@ -1077,11 +1160,17 @@ def _compile_ttnn_kernel(
                 elif thread_type == "noc":
                     counts[1] += 1
         for coord, (n_compute, n_noc) in per_core_counts.items():
-            if n_compute > 1 or n_noc > 2:
+            if (
+                n_compute > kernel_capacities[KernelKind.COMPUTE]
+                or n_noc > kernel_capacities[KernelKind.DATA_MOVEMENT]
+            ):
                 raise ValueError(
                     f"Per-core specialization assigned {n_compute} compute and "
-                    f"{n_noc} data movement kernels to core {coord}. Each core "
-                    f"supports at most one compute and two NOC kernels."
+                    f"{n_noc} data movement kernels to core {coord}. The target "
+                    f"supports at most "
+                    f"{kernel_capacities[KernelKind.COMPUTE]} compute and "
+                    f"{kernel_capacities[KernelKind.DATA_MOVEMENT]} data movement "
+                    "kernels per core."
                 )
 
     if verbose:
@@ -1940,7 +2029,9 @@ def _compile_kernel(
             "@ttl.datamovement() function inside your kernel."
         )
 
-    _validate_explicit_logical_kernel_uses(threads)
+    _validate_explicit_logical_kernel_uses(
+        threads, _backend_kernel_capacities(target_arch)
+    )
 
     pipenets = _build_operation_pipenets(f, threads)
 
@@ -2362,6 +2453,7 @@ def _lower_program_to_kernel(
             pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=pipe_global_semaphore_count,
             opaque_include_paths=opaque_include_paths,
+            target_arch=target_arch,
         )
         return compiled_kernel
 

@@ -23,7 +23,9 @@ from ttl.kernel import (
     Kernel,
     KernelKind,
     KernelSelector,
+    _DFB_RELEASE_METHODS,
     _PIPE_SOURCE_KERNEL_ROLE,
+    _format_kernel_capacity_error,
     _format_selector,
     _selector_kind,
     _selector_sort_key,
@@ -31,7 +33,6 @@ from ttl.kernel import (
 
 _EXTERNAL_CALL_NAME = "call_extern_func"
 _KERNEL_KEYWORD = "kernel"
-_BLOCK_RELEASE_METHODS = frozenset(("push", "pop"))
 _PIPE_SOURCE_KERNEL = Kernel._implicit(
     KernelKind.DATA_MOVEMENT,
     _PIPE_SOURCE_KERNEL_ROLE,
@@ -170,11 +171,6 @@ class _KernelSelectorResolver:
                 raise TypeError(
                     f"logical kernel {name!r} must be a Kernel, got "
                     f"{type(kernel).__name__}"
-                )
-            if kernel.identity != name:
-                raise ValueError(
-                    f"logical kernel mapping name {name!r} does not match "
-                    f"its operation-local identity {kernel.identity!r}"
                 )
             self.selector_scope[name] = kernel
 
@@ -800,7 +796,7 @@ class _KernelKeywordStripper(ast.NodeTransformer):
             isinstance(node.func, ast.Attribute)
             and isinstance(node.func.value, ast.Name)
             and node.func.value.id in self.block_names
-            and node.func.attr in _BLOCK_RELEASE_METHODS
+            and node.func.attr in _DFB_RELEASE_METHODS
         )
         if _is_external_call(node) or is_release:
             node.keywords = [
@@ -843,9 +839,7 @@ def _validate_kernel_capacities(
             )
             raise _split_error(
                 diagnostic_node,
-                f"operation requires {required} {kind.value} kernels, but the "
-                f"target supports {capacity}; selected kernels: "
-                f"{_format_kernels(selected)}",
+                _format_kernel_capacity_error(kind, selected, capacity),
             )
 
 
@@ -1137,7 +1131,7 @@ def _collect_block_ownership(
             if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
                 receiver = func.value.id
                 method = func.attr
-                if receiver in visible and method in _BLOCK_RELEASE_METHODS:
+                if receiver in visible and method in _DFB_RELEASE_METHODS:
                     explicit = selector_resolver.resolve_release(node)
                     if explicit is not None:
                         explicit_releases[receiver].append((node, explicit))

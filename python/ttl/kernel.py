@@ -6,14 +6,17 @@
 
 from __future__ import annotations
 
+import hashlib
+import inspect
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable, Final, Mapping, Optional, Tuple, Union
+from typing import Callable, Final, Iterable, Mapping, Optional, Tuple, Union
 
 from .dialects._ttl_enum_gen import LogicalKernelKind as _TableGenLogicalKernelKind
 
 
 _PIPE_SOURCE_KERNEL_ROLE: Final[str] = "pipe_source"
+_DFB_RELEASE_METHODS: Final = frozenset(("push", "pop"))
 
 
 class KernelKind(Enum):
@@ -192,9 +195,56 @@ ExternalKernelSelection = Union[KernelSelector, Tuple[KernelSelector, ...]]
 ReleaseKernelSelection = KernelSelector
 
 
+def _encode_identity_literal(value) -> Optional[bytes]:
+    """Encode a supported compile-time literal without Python repr details."""
+    if value is None:
+        return b"none"
+    if isinstance(value, bool):
+        return b"bool:true" if value else b"bool:false"
+    if isinstance(value, int):
+        return f"int:{value}".encode("ascii")
+    if isinstance(value, float):
+        return f"float:{value.hex()}".encode("ascii")
+    if isinstance(value, str):
+        encoded = value.encode("utf-8")
+        return f"str:{len(encoded)}:".encode("ascii") + encoded
+    if isinstance(value, (tuple, list)):
+        elements = []
+        for element in value:
+            encoded = _encode_identity_literal(element)
+            if encoded is None:
+                return None
+            elements.append(f"{len(encoded)}:".encode("ascii") + encoded)
+        kind = b"tuple" if isinstance(value, tuple) else b"list"
+        return kind + b":" + b"".join(elements)
+    return None
+
+
 def _operation_identity(function: Callable) -> str:
-    """Return the source identity shared by both operation forms."""
-    return f"{function.__module__}.{function.__qualname__}"
+    """Return a deterministic semantic identity shared by both operation forms."""
+    base_identity = f"{function.__module__}.{function.__qualname__}"
+    try:
+        nonlocal_captures = inspect.getclosurevars(function).nonlocals
+    except (TypeError, ValueError):
+        return base_identity
+
+    encoded_captures = []
+    for name, value in sorted(nonlocal_captures.items()):
+        encoded = _encode_identity_literal(value)
+        if encoded is None:
+            continue
+        encoded_name = name.encode("utf-8")
+        encoded_captures.append(
+            f"{len(encoded_name)}:".encode("ascii")
+            + encoded_name
+            + f"{len(encoded)}:".encode("ascii")
+            + encoded
+        )
+    if not encoded_captures:
+        return base_identity
+
+    digest = hashlib.sha256(b"".join(encoded_captures)).hexdigest()[:16]
+    return f"{base_identity}[captures={digest}]"
 
 
 def _bind_kernel_declarations(
@@ -248,6 +298,20 @@ def _format_selector(selector: KernelSelector) -> str:
     if isinstance(selector, KernelKind):
         return selector.value
     return f"{selector.kind.value} kernel {selector.identity!r}"
+
+
+def _format_kernel_capacity_error(
+    kind: KernelKind,
+    selected: Iterable[KernelSelector],
+    capacity: int,
+) -> str:
+    selected = tuple(selected)
+    selected_text = ", ".join(_format_selector(selector) for selector in selected)
+    required = len(selected)
+    return (
+        f"operation requires {required} {kind.value} kernels, but the target "
+        f"supports {capacity}; selected kernels: {selected_text}"
+    )
 
 
 __all__ = [

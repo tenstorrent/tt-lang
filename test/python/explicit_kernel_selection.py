@@ -36,20 +36,20 @@ def explicit_selected_add(inp, out):
             output_block.store(input_block + input_block)
         else:
             output_block.store(input_block)
-        input_block.pop()
-        output_block.push()
+        input_block.pop(kernel=compute_kernel)
+        output_block.push(kernel=compute_kernel)
 
     @ttl.datamovement(kernel=reader_kernel)
     def reader_thread():
         input_block = input_dfb.reserve()
         ttl.copy(inp[0, 0], input_block).wait()
-        input_block.push()
+        input_block.push(kernel=reader_kernel)
 
     @ttl.datamovement()
     def writer_thread():
         output_block = output_dfb.wait()
         ttl.copy(output_block, out[0, 0]).wait()
-        output_block.pop()
+        output_block.pop(kernel=ttl.KernelKind.DATA_MOVEMENT)
 
 
 # CHECK-LABEL: func.func @compute_thread

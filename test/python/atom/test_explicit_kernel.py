@@ -94,3 +94,32 @@ def test_explicit_threads_reject_reused_named_kernel():
         ),
     ):
         _validate_explicit_logical_kernel_uses(threads)
+
+
+def test_explicit_threads_use_target_kernel_capacity_diagnostic():
+    """Explicit threads report the same logical capacity terms as splitting."""
+    _clear_thread_registry()
+
+    @ttl.compute()
+    def first_compute():
+        pass
+
+    @ttl.compute()
+    def second_compute():
+        pass
+
+    threads = _get_registered_threads()
+    with pytest.raises(
+        ValueError,
+        match=(
+            "operation requires 2 compute kernels, but the target supports 1; "
+            "selected kernels: compute, compute"
+        ),
+    ):
+        _validate_explicit_logical_kernel_uses(
+            threads,
+            {
+                ttl.KernelKind.COMPUTE: 1,
+                ttl.KernelKind.DATA_MOVEMENT: 2,
+            },
+        )

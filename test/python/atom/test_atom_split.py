@@ -140,8 +140,8 @@ def test_captured_kernel_cannot_have_two_names():
         reader.identity
 
 
-def test_composition_copies_captured_kernel_into_final_operation():
-    """A composed capture receives a fresh identity owned by the caller."""
+def test_composition_preserves_captured_kernel_handle():
+    """Composition retains the callee-owned handle used by child resources."""
     reader = Kernel(KernelKind.DATA_MOVEMENT)
 
     @ttl.operation()
@@ -155,9 +155,11 @@ def test_composition_copies_captured_kernel_into_final_operation():
     spec = selected_caller._spec
     assert len(spec.logical_kernels) == 1
     inlined_reader = next(iter(spec.logical_kernels.values()))
-    assert inlined_reader is not reader
-    assert inlined_reader.identity.startswith("reader__selected_callee_inl_")
-    assert inlined_reader._operation_identity == spec.operation_identity
+    assert inlined_reader is reader
+    assert inlined_reader.identity == "reader"
+    assert (
+        inlined_reader._operation_identity == selected_callee._spec.operation_identity
+    )
 
     result = split_function_body(
         spec.fn_ast,
@@ -165,11 +167,11 @@ def test_composition_copies_captured_kernel_into_final_operation():
         logical_kernels=spec.logical_kernels,
         kernel_capacities=_backend_kernel_capacities(),
     )
-    assert result.kernels == (inlined_reader,)
+    assert result.kernels == (reader,)
 
 
-def test_composition_kernel_suffix_is_stable_across_caller_registration():
-    """Earlier composition in the process does not change the suffix."""
+def test_repeated_composition_reuses_callee_logical_kernel():
+    """Sequential calls to one helper share its declared logical kernel."""
     reader = Kernel(KernelKind.DATA_MOVEMENT)
 
     @ttl.operation()
@@ -177,16 +179,71 @@ def test_composition_kernel_suffix_is_stable_across_caller_registration():
         ttl.call_extern_func("reader.hpp", "reader", kernel=reader)
 
     @ttl.operation(grid=(1, 1))
-    def first_caller():
+    def selected_caller():
         selected_callee()
+        selected_callee()
+
+    spec = selected_caller._spec
+    assert tuple(spec.logical_kernels.values()) == (reader,)
+
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names=set(),
+        logical_kernels=spec.logical_kernels,
+        kernel_capacities=_backend_kernel_capacities(),
+    )
+    assert result.kernels == (reader,)
+
+
+def test_factory_instances_with_different_captures_keep_distinct_kernels():
+    """Different immutable captures distinguish factory-created operations."""
+
+    def make_helper(entry):
+        reader = Kernel(KernelKind.DATA_MOVEMENT)
+
+        @ttl.operation()
+        def selected_helper():
+            ttl.call_extern_func("reader.hpp", entry, kernel=reader)
+
+        return selected_helper, reader
+
+    first_helper, first_reader = make_helper("first_entry")
+    second_helper, second_reader = make_helper("second_entry")
 
     @ttl.operation(grid=(1, 1))
-    def second_caller():
-        selected_callee()
+    def selected_caller():
+        first_helper()
+        second_helper()
 
-    first_name = next(iter(first_caller._spec.logical_kernels))
-    second_name = next(iter(second_caller._spec.logical_kernels))
-    assert first_name == second_name
+    assert (
+        first_helper._spec.operation_identity != second_helper._spec.operation_identity
+    )
+    assert first_reader != second_reader
+    assert set(selected_caller._spec.logical_kernels.values()) == {
+        first_reader,
+        second_reader,
+    }
+
+
+def test_factory_instances_with_equal_captures_share_logical_identity():
+    """Equivalent immutable captures retain deterministic identity."""
+
+    def make_helper(entry):
+        reader = Kernel(KernelKind.DATA_MOVEMENT)
+
+        @ttl.operation()
+        def selected_helper():
+            ttl.call_extern_func("reader.hpp", entry, kernel=reader)
+
+        return selected_helper, reader
+
+    first_helper, first_reader = make_helper("shared_entry")
+    second_helper, second_reader = make_helper("shared_entry")
+
+    assert (
+        first_helper._spec.operation_identity == second_helper._spec.operation_identity
+    )
+    assert first_reader == second_reader
 
 
 def test_composition_preserves_body_local_kernel_declaration():

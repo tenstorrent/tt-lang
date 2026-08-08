@@ -73,8 +73,17 @@ Operation registration binds each `Kernel` handle in place exactly once to its
 source name and owning operation. Equality and hashing require this binding and
 include the kernel kind and complete logical identity. Equality or hashing of an
 unbound handle is an error because Python object identity is not a stable logical
-kernel identity. The bound identity is retained as typed function metadata and
-remains available on `KernelSpec` after core specialization.
+kernel identity. A deterministic fingerprint of immutable nonlocal captures
+distinguishes factory-created operations whose generated code differs.
+Composition retains the callee-owned bound handle, and repeated sequential calls
+to the same callee share it. The bound identity is retained as typed function
+metadata and remains available on `KernelSpec` after composition and core
+specialization.
+
+One target-indexed backend slot table supplies logical capacity validation,
+logical-to-processor assignment, and final TTNN interop validation. Explicit and
+unified operations therefore report capacity failures with the same logical
+kernel kinds and identities.
 
 ## Argument contract
 
