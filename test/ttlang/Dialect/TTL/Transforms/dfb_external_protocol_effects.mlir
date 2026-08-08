@@ -78,6 +78,25 @@ module {
 
 // -----
 
+// An effect on one aliased dependency occurrence does not summarize another
+// occurrence, so the omitted occurrence keeps the first lifecycle unbounded.
+// CHECK-LABEL: func.func @aliased_dependency_occurrence
+// CHECK-SAME: ttl.base_cta_index = 2 : i32
+// CHECK: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+// CHECK-NEXT: ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+
+module {
+  func.func @aliased_dependency_occurrence() attributes {ttl.kernel_thread = #ttkernel.thread<compute>, ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    %first = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
+    %second = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
+    ttl.opaque_call "first" dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>, #ttl.dfb_protocol_effect<push, 0, 1>, #ttl.dfb_protocol_effect<wait, 0, 1>, #ttl.dfb_protocol_effect<pop, 0, 1>] (%first, %first) {header = "effects.hpp"} : (!ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>, !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>) -> ()
+    ttl.opaque_call "second" dfb_dependencies(%second : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>, #ttl.dfb_protocol_effect<push, 0, 1>, #ttl.dfb_protocol_effect<wait, 0, 1>, #ttl.dfb_protocol_effect<pop, 0, 1>] () {header = "effects.hpp"} : () -> ()
+    return
+  }
+}
+
+// -----
+
 // Unknown access overlaps every user-managed DFB in the allocation scope and
 // disables reuse even when the listed summaries are complete.
 // CHECK-LABEL: func.func @unknown_access
