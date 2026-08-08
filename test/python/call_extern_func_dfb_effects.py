@@ -58,7 +58,7 @@ def external_metadata_kernel(inp):
 # The composed call retains automatic and dependency-only DFB identity. The
 # effect list order and distinct tile counts are preserved exactly.
 # INITIAL-LABEL: func.func @external_metadata_kernel__ncrisc
-# INITIAL-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "__main__.external_stage">
+# INITIAL-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "__main__.external_metadata_kernel:{{[0-9]+}}">
 # INITIAL-DAG: %[[SOURCE:.*]] = ttl.bind_cb
 # INITIAL-DAG: %[[DESTINATION:.*]] = ttl.bind_cb
 # INITIAL: ttl.opaque_call "external_stage" template_args [#ttl.external_template_arg<dfb_index, 0>] template_dfbs(%[[SOURCE]] : !ttl.cb<{{.*}}>) dfb_dependencies(%[[DESTINATION]] : !ttl.cb<{{.*}}>) dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 2>, #ttl.dfb_protocol_effect<pop, 0, 2>, #ttl.dfb_protocol_effect<reserve, 1, 1>, #ttl.dfb_protocol_effect<push, 1, 1>] (%[[SOURCE]]) {header = "/dev/null/fake_shim.hpp", unknown_dfb_access}
