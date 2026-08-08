@@ -16,12 +16,22 @@ TILE_WIDTH = 32
 EPSILON = 1.0e-5
 
 
-def make_rmsnorm_kernel(tile_height, num_tiles, gamma_mode):
+def make_rmsnorm_kernel(
+    tile_height,
+    num_tiles,
+    gamma_mode,
+    fp32_dest_acc_en=None,
+    dst_full_sync_en=None,
+):
     scale = 1.0 / (num_tiles * tile_height * TILE_WIDTH)
 
     if gamma_mode == "none":
 
-        @ttl.operation(grid=(1, 1))
+        @ttl.operation(
+            grid=(1, 1),
+            fp32_dest_acc_en=fp32_dest_acc_en,
+            dst_full_sync_en=dst_full_sync_en,
+        )
         def rmsnorm_kernel(input_tensor, gamma_tensor, output_tensor):
             input_dfb = ttl.make_dataflow_buffer_like(
                 input_tensor, shape=(1, num_tiles), block_count=2
@@ -64,7 +74,11 @@ def make_rmsnorm_kernel(tile_height, num_tiles, gamma_mode):
 
     if gamma_mode == "full":
 
-        @ttl.operation(grid=(1, 1))
+        @ttl.operation(
+            grid=(1, 1),
+            fp32_dest_acc_en=fp32_dest_acc_en,
+            dst_full_sync_en=dst_full_sync_en,
+        )
         def rmsnorm_kernel(input_tensor, gamma_tensor, output_tensor):
             input_dfb = ttl.make_dataflow_buffer_like(
                 input_tensor, shape=(1, num_tiles), block_count=2
@@ -114,6 +128,72 @@ def make_rmsnorm_kernel(tile_height, num_tiles, gamma_mode):
     raise ValueError(f"unsupported gamma mode: {gamma_mode}")
 
 
+def make_materialized_rmsnorm_kernel(tile_height, num_tiles):
+    """Build an equivalent RMSNorm with explicit intermediate DFBs."""
+    scale = 1.0 / (num_tiles * tile_height * TILE_WIDTH)
+
+    @ttl.operation(grid=(1, 1))
+    def rmsnorm_kernel(input_tensor, gamma_tensor, output_tensor):
+        input_dfb = ttl.make_dataflow_buffer_like(
+            input_tensor, shape=(1, num_tiles), block_count=2
+        )
+        squared_dfb = ttl.make_dataflow_buffer_like(
+            input_tensor, shape=(1, num_tiles), block_count=2
+        )
+        reduced_dfb = ttl.make_dataflow_buffer_like(
+            input_tensor, shape=(1, 1), block_count=2
+        )
+        inverse_rms_dfb = ttl.make_dataflow_buffer_like(
+            input_tensor, shape=(1, 1), block_count=2
+        )
+        output_dfb = ttl.make_dataflow_buffer_like(
+            output_tensor, shape=(1, num_tiles), block_count=2
+        )
+
+        @ttl.compute()
+        def compute():
+            with input_dfb.wait() as input_block:
+                with squared_dfb.reserve() as squared_block:
+                    squared_block.store(input_block * input_block)
+
+                with squared_dfb.wait() as squared_block:
+                    with reduced_dfb.reserve() as reduced_block:
+                        reduced_block.store(
+                            ttl.math.reduce_sum(squared_block, dims=[0, 1])
+                        )
+
+                with reduced_dfb.wait() as reduced_block:
+                    with inverse_rms_dfb.reserve() as inverse_rms_block:
+                        mean_square = reduced_block * scale
+                        biased = mean_square + ttl.block.fill(
+                            EPSILON,
+                            shape=mean_square.shape,
+                            tile=(tile_height, TILE_WIDTH),
+                        )
+                        inverse_rms_block.store(ttl.math.rsqrt(biased))
+
+                with (
+                    inverse_rms_dfb.wait() as inverse_rms_block,
+                    output_dfb.reserve() as output_block,
+                ):
+                    scalar = ttl.block.broadcast(
+                        inverse_rms_block, dims=[0, 1], shape=input_block.shape
+                    )
+                    output_block.store(input_block * scalar)
+
+        @ttl.datamovement()
+        def dm_read():
+            with input_dfb.reserve() as input_block:
+                ttl.copy(input_tensor[0:1, 0:num_tiles], input_block).wait()
+
+        @ttl.datamovement()
+        def dm_write():
+            with output_dfb.wait() as output_block:
+                ttl.copy(output_block, output_tensor[0:1, 0:num_tiles]).wait()
+
+    return rmsnorm_kernel
+
+
 GAMMA_MODES = ("none", "full")
 ROW_CASES = ((16, 1, 512), (16, 3, 1536), (32, 7, 7168))
 RMSNORM_KERNELS = {
@@ -123,6 +203,18 @@ RMSNORM_KERNELS = {
     for tile_height, num_tiles, _ in ROW_CASES
     for gamma_mode in GAMMA_MODES
 }
+KERNEL_CONFIGS = ((False, False), (True, False), (False, True), (True, True))
+CONFIG_RMSNORM_KERNELS = {
+    (fp32_dest_acc_en, dst_full_sync_en): make_rmsnorm_kernel(
+        32,
+        4,
+        "none",
+        fp32_dest_acc_en=fp32_dest_acc_en,
+        dst_full_sync_en=dst_full_sync_en,
+    )
+    for fp32_dest_acc_en, dst_full_sync_en in KERNEL_CONFIGS
+}
+MATERIALIZED_RMSNORM_KERNEL = make_materialized_rmsnorm_kernel(16, 3)
 
 
 def to_dram_with_tile(torch_tensor, device, tile_height):
@@ -137,15 +229,8 @@ def to_dram_with_tile(torch_tensor, device, tile_height):
     )
 
 
-@pytest.mark.parametrize(
-    "tile_height, num_tiles, width",
-    ROW_CASES,
-    ids=[str(row_case[2]) for row_case in ROW_CASES],
-)
-@pytest.mark.parametrize("gamma_mode", GAMMA_MODES)
-def test_rmsnorm(device, tile_height, num_tiles, width, gamma_mode):
-    """Normalize benchmark row widths across supported gamma modes."""
-    # The specialized hardware operation intentionally accepts bf16 tiles only.
+def run_rmsnorm(device, tile_height, num_tiles, width, gamma_mode, kernel):
+    """Run one RMSNorm kernel and return its result and reference."""
     shape = (tile_height, num_tiles * TILE_WIDTH)
     assert shape[0] * shape[1] == width
     input_torch = torch.randn(shape, dtype=torch.bfloat16)
@@ -156,14 +241,83 @@ def test_rmsnorm(device, tile_height, num_tiles, width, gamma_mode):
     gamma_tensor = to_dram_with_tile(gamma_torch, device, tile_height)
     output_tensor = to_dram_with_tile(output_torch, device, tile_height)
 
-    RMSNORM_KERNELS[(tile_height, num_tiles, gamma_mode)](
-        input_tensor, gamma_tensor, output_tensor
-    )
+    kernel(input_tensor, gamma_tensor, output_tensor)
     result = ttnn.to_torch(output_tensor).float()
 
     input_float = input_torch.float()
     expected = input_float * torch.rsqrt(input_float.square().mean() + EPSILON)
     if gamma_mode == "full":
         expected = expected * gamma_torch.float()
+    return result, expected
+
+
+def assert_rmsnorm_close(result, expected):
+    """Check RMSNorm correlation and magnitude at bf16 precision."""
     assert_pcc(expected, result, threshold=0.999)
-    assert_allclose(result, expected, rtol=0.05, atol=1.0)
+    assert_allclose(result, expected, rtol=0.05, atol=0.4)
+
+
+@pytest.mark.parametrize(
+    "tile_height, num_tiles, width",
+    ROW_CASES,
+    ids=[str(row_case[2]) for row_case in ROW_CASES],
+)
+@pytest.mark.parametrize("gamma_mode", GAMMA_MODES)
+def test_rmsnorm(device, tile_height, num_tiles, width, gamma_mode):
+    """Normalize benchmark row widths across supported gamma modes."""
+    # The specialized hardware operation intentionally accepts bf16 tiles only.
+    result, expected = run_rmsnorm(
+        device,
+        tile_height,
+        num_tiles,
+        width,
+        gamma_mode,
+        RMSNORM_KERNELS[(tile_height, num_tiles, gamma_mode)],
+    )
+    assert_rmsnorm_close(result, expected)
+
+
+@pytest.mark.parametrize(
+    "fp32_dest_acc_en, dst_full_sync_en",
+    KERNEL_CONFIGS,
+    ids=["bf16-half", "fp32-half", "bf16-full", "fp32-full"],
+)
+def test_rmsnorm_kernel_config(device, fp32_dest_acc_en, dst_full_sync_en):
+    """Exercise the fused LLK under every DST register configuration."""
+    result, expected = run_rmsnorm(
+        device,
+        tile_height=32,
+        num_tiles=4,
+        width=4096,
+        gamma_mode="none",
+        kernel=CONFIG_RMSNORM_KERNELS[(fp32_dest_acc_en, dst_full_sync_en)],
+    )
+    assert_rmsnorm_close(result, expected)
+
+
+def test_rmsnorm_matches_materialized(device):
+    """Compare scalar-retaining fusion with explicit DFB materialization."""
+    tile_height = 16
+    num_tiles = 3
+    shape = (tile_height, num_tiles * TILE_WIDTH)
+    input_torch = torch.randn(shape, dtype=torch.bfloat16)
+    gamma_torch = torch.zeros(shape, dtype=torch.bfloat16)
+    output_torch = torch.zeros(shape, dtype=torch.bfloat16)
+    materialized_output_torch = torch.zeros(shape, dtype=torch.bfloat16)
+
+    input_tensor = to_dram_with_tile(input_torch, device, tile_height)
+    gamma_tensor = to_dram_with_tile(gamma_torch, device, tile_height)
+    output_tensor = to_dram_with_tile(output_torch, device, tile_height)
+    materialized_output_tensor = to_dram_with_tile(
+        materialized_output_torch, device, tile_height
+    )
+
+    RMSNORM_KERNELS[(tile_height, num_tiles, "none")](
+        input_tensor, gamma_tensor, output_tensor
+    )
+    MATERIALIZED_RMSNORM_KERNEL(input_tensor, gamma_tensor, materialized_output_tensor)
+
+    result = ttnn.to_torch(output_tensor).float()
+    materialized_result = ttnn.to_torch(materialized_output_tensor).float()
+    assert_pcc(materialized_result, result, threshold=0.999)
+    assert_allclose(result, materialized_result, rtol=0.05, atol=0.2)
