@@ -1917,9 +1917,11 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     effect indexes the ordered dependency list and carries a positive static
     tile count. Repeated effects retain list order. The summary does not emit
     protocol calls. Effects omitted for a dependency occurrence leave its
-    access opaque for the call duration. The `unknown_dfb_access` unit
-    attribute declares that the callee may also access unlisted user-managed
-    DFBs and disables physical-index reuse in affected allocation scopes.
+    access opaque for the call duration. If one DFB occupies multiple
+    dependency occurrences, every occurrence requires its own effects to avoid
+    an opaque call-duration access. The `unknown_dfb_access` unit attribute
+    declares that the callee may also access unlisted user-managed DFBs and
+    disables physical-index reuse in affected allocation scopes.
 
     Every asynchronous DFB access must also complete before the call returns.
     A callee with outstanding asynchronous work requires a separate explicit
