@@ -161,7 +161,8 @@ transactions with matching tile counts. A partial summary is valid but remains
 conservative: it does not prove physical-index reuse. A dependency occurrence
 with no listed effect is an opaque storage access for the complete call
 duration, including when operand adaptation aliases multiple occurrences to
-the same SSA DFB.
+the same SSA DFB. Every aliased occurrence requires its own effects to avoid an
+opaque call-duration access.
 
 `unknown_dfb_access=True` declares that external C++ may access user-managed
 DFBs not present in the dependency list. This is distinct from malformed

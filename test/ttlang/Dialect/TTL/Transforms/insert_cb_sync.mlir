@@ -71,6 +71,30 @@ func.func @external_releases_preserved() attributes {ttl.kernel_thread = #ttkern
 
 // -----
 
+// Opposite-direction external effects do not consume the current acquired
+// slot, so automatic releases precede those external transactions.
+// CHECK-LABEL: func.func @external_opposite_direction_release_placement
+// CHECK: %[[PRODUCER:.*]] = ttl.bind_cb
+// CHECK-NEXT: %[[CONSUMER:.*]] = ttl.bind_cb
+// CHECK-NEXT: ttl.cb_reserve %[[PRODUCER]]
+// CHECK-NEXT: ttl.cb_push %[[PRODUCER]]
+// CHECK-NEXT: ttl.opaque_call "consume"
+// CHECK-NEXT: ttl.cb_wait %[[CONSUMER]]
+// CHECK-NEXT: ttl.cb_pop %[[CONSUMER]]
+// CHECK-NEXT: ttl.opaque_call "produce"
+// CHECK-NEXT: return
+func.func @external_opposite_direction_release_placement() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %producer = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %consumer = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %reserved = ttl.cb_reserve %producer : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.opaque_call "consume" dfb_dependencies(%producer : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 1>, #ttl.dfb_protocol_effect<pop, 0, 1>] () {header = "effects.hpp"} : () -> ()
+  %waited = ttl.cb_wait %consumer : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.opaque_call "produce" dfb_dependencies(%consumer : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>, #ttl.dfb_protocol_effect<push, 0, 1>] () {header = "effects.hpp"} : () -> ()
+  func.return
+}
+
+// -----
+
 // Unknown access extends every user-managed acquisition interval but not a
 // compiler-created intermediate interval.
 // CHECK-LABEL: func.func @unknown_access_release_placement
