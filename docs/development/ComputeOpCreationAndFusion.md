@@ -391,12 +391,12 @@ The solver selects destination width, synchronization mode, tile strategies,
 and pipeline schedules together. SumOfSquares requires compound multiply and
 full-scalar reduction. Row normalization requires that capability plus
 source-scalar retention. Effective capacity is the minimum of the selected DST
-configuration and every required capability limit. Blackhole provides both
-bf16 capabilities for one through eight tiles. Wormhole B0 and an unspecified
-target select materialized execution until their complete required capability
-sets are validated. Capacity, target, dtype, and kernel-configuration rejection
-reasons are available through the `ttl-reduction-fusion` missed-remark
-category.
+configuration and every required capability limit. Each target reports support
+and capacity independently for compound reduction and source-scalar retention.
+A target or element type without the complete required capability set selects
+materialized execution. Capacity, target, dtype, and kernel-configuration
+rejection reasons are available through the `ttl-reduction-fusion`
+missed-remark category.
 
 Pipeline lowering transfers the selected schedule to the inlined result
 operation. A retained schedule creates `ttl.tile_mul_reduce_block` or
@@ -450,15 +450,12 @@ and L2 normalization requires target recipes and capabilities for their scalar
 finalization and consumer operations. Other graphs continue through
 materialized lowering without changing their tensor semantics.
 
-The source-scalar LLK follows the tt-metal destination-reuse interface:
-the scalar moves from DST to source B, source B is broadcast across each input
-tile, and release clears the retained source state. At tt-metal revision
-`c86f5000d`, a model-local Blackhole RMSNorm implementation contains the same
-mechanism, but that revision has no public source-scalar compute API or Wormhole
-RMSNorm implementation. TT-Lang therefore keeps the target capability disabled
-on Wormhole until the complete source-register lifetime and numerical behavior
-are validated there. The compiler does not infer Wormhole support from the
-architecture-independent multiply-reduction primitive.
+The source-scalar LLK follows the tt-metal destination-reuse interface: the
+scalar moves from DST to source B, source B is broadcast across each input
+tile, and release clears the retained source state. A target declares
+source-scalar retention only when its compute implementation preserves the
+complete source-register lifetime and numerical contract. Support for compound
+reduction does not imply support for source-scalar retention.
 
 ### Cross-Region Recomputation
 
@@ -749,9 +746,8 @@ The corresponding upstream implementations are:
 - [dead-code analysis](https://github.com/llvm/llvm-project/blob/4279d524cc78d0bac294bb29257c62665121d9f1/mlir/include/mlir/Analysis/DataFlow/DeadCodeAnalysis.h)
 - [One-Shot Bufferize analysis state](https://github.com/llvm/llvm-project/blob/4279d524cc78d0bac294bb29257c62665121d9f1/mlir/include/mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h)
 - [LLVM VPlan](https://github.com/llvm/llvm-project/blob/4279d524cc78d0bac294bb29257c62665121d9f1/llvm/lib/Transforms/Vectorize/VPlan.h)
-- [tt-metal multiply/full-scalar-reduction API](https://github.com/tenstorrent/tt-metal/blob/c86f5000dca19e27cb7e56ddb5ab06d80fe355c7/tt_metal/hw/inc/api/compute/experimental/mul_reduce_scalar.h)
-- [tt-metal model-local Blackhole retained-scalar implementation](https://github.com/tenstorrent/tt-metal/blob/c86f5000dca19e27cb7e56ddb5ab06d80fe355c7/models/demos/deepseek_v3_b1/kernel_includes/tt_llk/tt_llk_blackhole/llk_lib/llk_math_rmsnorm_bcast_scalar_dest_reuse.h)
-- [tt-metal model-local Blackhole add-plus-rsqrt implementation](https://github.com/tenstorrent/tt-metal/blob/c86f5000dca19e27cb7e56ddb5ab06d80fe355c7/models/demos/deepseek_v3_b1/kernel_includes/tt_metal/include/compute_kernel_api/add_rsqrt.h)
+- [tt-metal multiply/full-scalar-reduction API](https://github.com/tenstorrent/tt-metal/blob/e908c31332b60860ed0d4186452dc880cdd5a81d/tt_metal/hw/inc/api/compute/experimental/mul_reduce_scalar.h)
+- [tt-metal destination-reuse binary API](https://github.com/tenstorrent/tt-metal/blob/e908c31332b60860ed0d4186452dc880cdd5a81d/tt_metal/hw/inc/api/compute/eltwise_binary.h)
 
 Upstream does not model the TTL-specific relations required here. TT-Lang adds:
 
