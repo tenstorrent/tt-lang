@@ -163,7 +163,6 @@ struct RowNormalizationPlan {
   FloatAttr scale;
   FloatAttr epsilon;
   int64_t numTiles = 0;
-  std::uint32_t dstCapacity = 0;
   RowNormalizationGammaMode gammaMode = RowNormalizationGammaMode::None;
   SmallVector<RowNormalizationOperationPlan> operations;
 };
