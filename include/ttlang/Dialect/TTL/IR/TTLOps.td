@@ -1916,10 +1916,10 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     actions completed synchronously before the external call returns. Each
     effect indexes the ordered dependency list and carries a positive static
     tile count. Repeated effects retain list order. The summary does not emit
-    protocol calls. Effects omitted for a dependency leave its access opaque
-    for the call duration. The `unknown_dfb_access` unit attribute declares
-    that the callee may also access unlisted user-managed DFBs and disables
-    physical-index reuse in affected allocation scopes.
+    protocol calls. Effects omitted for a dependency occurrence leave its
+    access opaque for the call duration. The `unknown_dfb_access` unit
+    attribute declares that the callee may also access unlisted user-managed
+    DFBs and disables physical-index reuse in affected allocation scopes.
 
     Every asynchronous DFB access must also complete before the call returns.
     A callee with outstanding asynchronous work requires a separate explicit
@@ -1955,7 +1955,7 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     OptionalAttr<ArrayAttr>:$template_args,
     OptionalAttr<DenseI32ArrayAttr>:$unsigned_arg_indices,
     OptionalAttr<TTL_DFBProtocolEffectArrayAttr>:$dfb_effects,
-    OptionalAttr<UnitAttr>:$unknown_dfb_access
+    UnitAttr:$unknown_dfb_access
   );
   let results = (outs Variadic<AnyType>);
   let assemblyFormat = [{
