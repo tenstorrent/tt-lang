@@ -71,6 +71,23 @@ def TTL_ExternalTemplateArgKind : I32EnumAttr<
   let genSpecializedAttr = 0;
 }
 
+def TTL_DFBProtocolEffectKind_Reserve :
+    I32EnumAttrCase<"Reserve", 0, "reserve">;
+def TTL_DFBProtocolEffectKind_Push :
+    I32EnumAttrCase<"Push", 1, "push">;
+def TTL_DFBProtocolEffectKind_Wait :
+    I32EnumAttrCase<"Wait", 2, "wait">;
+def TTL_DFBProtocolEffectKind_Pop :
+    I32EnumAttrCase<"Pop", 3, "pop">;
+
+def TTL_DFBProtocolEffectKind : I32EnumAttr<
+    "DFBProtocolEffectKind", "Dataflow buffer protocol effect kind",
+    [TTL_DFBProtocolEffectKind_Reserve, TTL_DFBProtocolEffectKind_Push,
+     TTL_DFBProtocolEffectKind_Wait, TTL_DFBProtocolEffectKind_Pop]> {
+  let cppNamespace = "::mlir::tt::ttl";
+  let genSpecializedAttr = 0;
+}
+
 def TTL_BcastType_Col    : I32EnumAttrCase<"Col",    1, "col">;
 def TTL_BcastType_Row    : I32EnumAttrCase<"Row",    2, "row">;
 def TTL_BcastType_Scalar : I32EnumAttrCase<"Scalar", 3, "scalar">;

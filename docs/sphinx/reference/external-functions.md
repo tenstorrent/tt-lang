@@ -11,6 +11,9 @@ ttl.call_extern_func(
     *,
     template_args=None,
     func_args=None,
+    dfb_dependencies=None,
+    dfb_effects=None,
+    unknown_dfb_access=False,
     include_paths=None,
     kernel=None,
 )
@@ -119,9 +122,65 @@ Tensor slices, views, and computed tensor values are not valid external
 arguments. `ttl.raw_addr` provides no layout, view offset, page size, alignment,
 or bounds metadata.
 
-When `ttl.get_dfb_id(dfb)` identifies storage accessed by the external
-function, the same DFB must appear as a direct dependency through `func_args`
-or `ttl.dfb_descriptor(dfb)`.
+When an external function consumes `ttl.get_dfb_id(dfb)`, the same DFB must be
+a dependency through `func_args`, `ttl.dfb_descriptor(dfb)`, or
+`dfb_dependencies`. An index value does not declare storage access by itself.
+
+## DFB dependencies and protocol effects
+
+`dfb_dependencies` declares DFB storage used by external C++ without adding
+C++ function arguments. DFBs in `func_args` and DFB descriptors in
+`template_args` are dependencies automatically. `dfb_dependencies` must
+contain distinct DFBs that are not already automatic dependencies.
+
+`dfb_effects` is an ordered list of synchronous DFB protocol actions. Each
+action references one dependency and has a positive, statically resolvable tile
+count:
+
+```python
+ttl.call_extern_func(
+    HEADER,
+    "external_stage",
+    template_args=[ttl.get_dfb_id(source)],
+    func_args=[source],
+    dfb_dependencies=[destination],
+    dfb_effects=[
+        ttl.DFBEffect.wait(source, tiles=2),
+        ttl.DFBEffect.pop(source, tiles=2),
+        ttl.DFBEffect.reserve(destination, tiles=1),
+        ttl.DFBEffect.push(destination, tiles=1),
+    ],
+    kernel=ttl.KernelKind.DATA_MOVEMENT,
+)
+```
+
+The supported actions are `ttl.DFBEffect.reserve`, `push`, `wait`, and `pop`.
+List order is execution order. Repeated transactions retain every action and
+its position. A bounded lifecycle requires ordered reserve/push and wait/pop
+transactions with matching tile counts. A partial summary is valid but remains
+conservative: it does not prove physical-index reuse. A dependency with no
+listed effect is an opaque storage access for the complete call duration.
+
+`unknown_dfb_access=True` declares that external C++ may access user-managed
+DFBs not present in the dependency list. This is distinct from malformed
+metadata. It disables user DFB physical-index reuse in every allocation scope
+where the call may execute. Listed dependencies and effects remain available
+to other verification.
+
+Every listed effect is complete when the external function returns. External
+work that continues after return requires separate explicit completion
+semantics and cannot be represented by this synchronous effect list. Effects
+describe external behavior; they do not emit reserve, push, wait, or pop calls.
+Dependency-only operands and all effect metadata leave the generated C++ call
+signature unchanged.
+
+The IR stores each effect as a generated enum and a typed attribute indexing
+the call's ordered dependency-occurrence list. Occurrence positions do not
+change when operation adaptation maps distinct operands to the same DFB.
+Separate executable operations would misrepresent actions already performed in
+C++, while integer or string dictionaries would permit untyped effect kinds.
+Callee-name, header-name, and generated-C++ inspection do not provide a
+semantic contract and are not used.
 
 ## Include directories
 
@@ -140,7 +199,8 @@ ttl.call_extern_func(
 ## DFB synchronization ownership
 
 External C++ must complete its resource accesses before returning. The compiler
-does not infer reserve, wait, push, or pop operations from the C++ body.
+does not infer reserve, wait, push, or pop operations from the C++ body; the
+`dfb_effects` contract supplies those facts when required.
 
 `TensorBlock.push` and `TensorBlock.pop` accept one `kernel=` selector when a
 DFB transaction has no other use from which ownership can be inferred.

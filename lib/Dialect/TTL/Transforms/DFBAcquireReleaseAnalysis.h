@@ -156,6 +156,8 @@ struct DFBAcquireReleaseOperations {
   SmallVector<Operation *> pops;
   SmallVector<Operation *> acquisitions;
   SmallVector<Operation *> releases;
+  SmallVector<Operation *> producerProtocolReleases;
+  SmallVector<Operation *> consumerProtocolReleases;
 };
 
 /// Collects DFB lifecycle operations from `func` in walk order.
