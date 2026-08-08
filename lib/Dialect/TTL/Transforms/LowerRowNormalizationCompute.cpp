@@ -5,7 +5,6 @@
 #include "ttlang/Dialect/TTL/Transforms/LowerRowNormalizationCompute.h"
 #include "ttlang/Dialect/TTL/Transforms/FixedBlockComputeAnalysis.h"
 
-#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
@@ -15,14 +14,6 @@
 
 namespace mlir::tt::ttl {
 namespace {
-
-static bool targetProvidesRowNormalizationSchedule(Operation *operation) {
-  ModuleOp module = operation->getParentOfType<ModuleOp>();
-  auto target =
-      module ? module->getAttrOfType<ttcore::ArchAttr>(kTargetArchAttrName)
-             : ttcore::ArchAttr();
-  return target && target.getValue() == ttcore::Arch::Blackhole;
-}
 
 struct RowNormalizationComputeAnalysis {
   FixedBlockComputeAnalysis fixed;
@@ -67,11 +58,6 @@ analyzeRowNormalizationCompute(ComputeOp compute, std::string &reason) {
     reason = "gamma must equal input when gamma multiplication is disabled";
     return failure();
   }
-  if (!targetProvidesRowNormalizationSchedule(compute)) {
-    reason = "row-normalization block lowering requires a Blackhole target";
-    return failure();
-  }
-
   Value inputTensor = analysis.fixed.inputTensors.front();
   auto inputType = dyn_cast<RankedTensorType>(inputTensor.getType());
   auto outputType =
