@@ -40,9 +40,8 @@ func.func @dfb_accumulate_ignores_tensor_dst_strategy() {
 // CHECK-DAG: %[[C1_I32:.*]] = arith.constant 1 : i32
 // CHECK: ttkernel.pack_tile
 // CHECK: ttkernel.pack_reconfig_l1_acc(%[[C1_I32]])
-// CHECK-NEXT: scf.for
+// CHECK-NEXT: ttkernel.tile_regs_acquire
 // CHECK: ttkernel.pack_tile
-// CHECK: } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = {{.*}} : i64}
 // CHECK: ttkernel.cb_push_back
 // CHECK-NEXT: ttkernel.pack_reconfig_l1_acc(%[[C0_I32]])
 func.func @dfb_straight_line_accumulate_existing() {
