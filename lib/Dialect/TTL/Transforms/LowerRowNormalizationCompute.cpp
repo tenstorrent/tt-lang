@@ -86,11 +86,6 @@ analyzeRowNormalizationCompute(ComputeOp compute, std::string &reason) {
     reason = "gamma must equal input when gamma multiplication is disabled";
     return failure();
   }
-  if (!isBlackholeTarget(compute)) {
-    reason = "row-normalization block lowering requires a Blackhole target";
-    return failure();
-  }
-
   FailureOr<Value> inputTensor =
       getInputTensor(compute, analysis.block.getInput());
   FailureOr<Value> gammaTensor =

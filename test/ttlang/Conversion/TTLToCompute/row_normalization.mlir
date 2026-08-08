@@ -47,7 +47,7 @@
 // CPP-NEXT:  tile_regs_release();
 // CPP-NOT:   tile_regs_acquire();
 
-module attributes {ttl.target_arch = "blackhole"} {
+module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @row_normalization_full_gamma()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}

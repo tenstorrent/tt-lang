@@ -620,11 +620,10 @@ buildRowNormalizationCompute(Operation *sinkOp, PatternRewriter &rewriter,
       ValueRange(outputViews), rewriter.getArrayAttr(maps),
       rewriter.getArrayAttr(iteratorTypes));
   Block *body = rewriter.createBlock(&computeOp.getBody());
-  for (Value inputValue : creation.inputs) {
-    auto inputType = cast<RankedTensorType>(inputValue.getType());
-    body->addArgument(getTileValueType(inputType.getElementType()), loc);
+  for (ttcore::TileType inputTileType : creation.inputTileTypes) {
+    body->addArgument(inputTileType, loc);
   }
-  Type outputTileType = getTileValueType(outputType.getElementType());
+  Type outputTileType = creation.resultTileType;
   SmallVector<Type> outputTileTypes(outputs.dfbs.size(), outputTileType);
   SmallVector<Location> outputLocations(outputs.dfbs.size(), loc);
   body->addArguments(outputTileTypes, outputLocations);

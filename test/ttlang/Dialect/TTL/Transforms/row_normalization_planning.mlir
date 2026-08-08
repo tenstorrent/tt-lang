@@ -6,7 +6,7 @@
 // CHECK-LABEL: ComputeOp creation plan @row_normalization_commuted
 // CHECK:       ttl.mul kind=fused recipe=row_normalization legal=true inputs=1 outputs=1 transactions=1
 // CHECK:       order=[C0]
-module attributes {ttl.target_arch = "blackhole"} {
+module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @row_normalization_commuted()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
@@ -64,7 +64,7 @@ module attributes {ttl.target_arch = "blackhole"} {
 // Wormhole retains the ordinary materialized lowering.
 // CHECK-LABEL: ComputeOp creation plan @row_normalization_wrong_arch
 // CHECK-NOT:   recipe=row_normalization
-module attributes {ttl.target_arch = "wormhole_b0"} {
+module attributes {ttl.target_arch = #ttcore.arch<wormhole_b0>} {
   func.func @row_normalization_wrong_arch()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
@@ -123,7 +123,7 @@ module attributes {ttl.target_arch = "wormhole_b0"} {
 // capacity limit.
 // CHECK-LABEL: ComputeOp creation plan @row_normalization_exceeds_capacity
 // CHECK-NOT:   recipe=row_normalization
-module attributes {ttl.target_arch = "blackhole"} {
+module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @row_normalization_exceeds_capacity()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
@@ -182,7 +182,7 @@ module attributes {ttl.target_arch = "blackhole"} {
 // CHECK-LABEL: ComputeOp creation plan @row_normalization_multiple_outputs
 // CHECK:       ttl.mul kind=fused recipe=row_normalization legal=false inputs=1 outputs=2 transactions=2
 // CHECK:       rejected=row-normalization block requires exactly one output store transaction
-module attributes {ttl.target_arch = "blackhole"} {
+module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @row_normalization_multiple_outputs()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
