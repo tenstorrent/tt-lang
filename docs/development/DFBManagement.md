@@ -1791,6 +1791,12 @@ The verifiers enforce:
 4. Scalar read and write types match the block element type.
 5. Only `f32` and `bf16` block elements are accepted.
 
+This is a scalar-access lowering restriction, not a DFB storage restriction.
+The lowering maps the 32-bit and 16-bit IEEE-754 representations to TTKernel
+L1 integer loads and stores. `ttl.read_index` decodes those representations
+with integer operations because noc kernels do not support generic
+floating-point-to-integer conversion.
+
 `ttl.read_index` truncates fractional values toward zero and returns an MLIR
 index. Its source must be finite, nonnegative, and no greater than INT32_MAX;
 behavior is undefined otherwise. The element-access operations carry
@@ -1805,10 +1811,6 @@ offsets. For tiled blocks, the offset includes face-order decomposition
 (4x16x16 faces per 32x32 tile). For row-major blocks, coordinates
 linearize directly. See `computeRawElementOffset` in
 `ConvertTTLToTTKernel.cpp`.
-
-`ttl.read_index` decodes f32 and bf16 IEEE-754 storage with integer operations
-because data movement kernels do not support generic floating-point-to-integer
-conversion.
 
 ### Supported Value Sources for Writes
 
