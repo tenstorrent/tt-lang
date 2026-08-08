@@ -69,6 +69,15 @@ class _ExternalTemplateArg:
     value: object
 
 
+@dataclass(frozen=True)
+class _ExternalDFBEffect:
+    """One parsed external-call DFB effect before dependency indexing."""
+
+    kind: object
+    dfb: object
+    num_tiles: int
+
+
 def _make_file_loc(ctx, source_file: str, node, line_offset: int = 0) -> Location:
     """Create an MLIR file location from an AST node."""
     if not hasattr(node, "lineno"):
@@ -1732,6 +1741,101 @@ class TTLGenericCompiler(TTCompilerBase):
             )
         return [self._resolve_string_value(elt, param_name) for elt in node.elts]
 
+    def _resolve_static_int(self, node, param_name):
+        """Resolve a statically known Python integer without emitting SSA."""
+        literal = self._signed_int_literal(node)
+        if literal is not None:
+            return literal
+        if isinstance(node, ast.Name):
+            for namespace in (self.captures, self.fn_globals):
+                value = namespace.get(node.id)
+                if type(value) is int:
+                    return value
+        self._raise_error(
+            node,
+            f"ttl.call_extern_func() {param_name} must be a statically "
+            "resolvable integer",
+        )
+
+    def _resolve_static_bool(self, node, param_name):
+        """Resolve a statically known Python boolean without emitting SSA."""
+        if isinstance(node, ast.Constant) and type(node.value) is bool:
+            return node.value
+        if isinstance(node, ast.Name):
+            for namespace in (self.captures, self.fn_globals):
+                value = namespace.get(node.id)
+                if type(value) is bool:
+                    return value
+        self._raise_error(
+            node,
+            f"ttl.call_extern_func() {param_name} must be a statically "
+            "resolvable bool",
+        )
+
+    def _resolve_dfb_value(self, node, param_name):
+        """Resolve one DFB expression and reject other SSA values."""
+        value = self.visit(node)
+        if ttl.CircularBufferType.maybe_downcast(getattr(value, "type", None)) is None:
+            self._raise_error(
+                node, f"ttl.call_extern_func() {param_name} element must be a DFB"
+            )
+        return value
+
+    def _resolve_dfb_effect(self, node):
+        """Resolve ``DFBEffect.<kind>(dfb, tiles=N)`` to typed facts."""
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            self._raise_error(
+                node,
+                "ttl.call_extern_func() dfb_effects element must be a "
+                "ttl.DFBEffect reserve, push, wait, or pop",
+            )
+
+        effect_owner = node.func.value
+        is_qualified_owner = (
+            isinstance(effect_owner, ast.Attribute)
+            and effect_owner.attr == "DFBEffect"
+            and isinstance(effect_owner.value, ast.Name)
+            and effect_owner.value.id == "ttl"
+        )
+        is_direct_owner = (
+            isinstance(effect_owner, ast.Name) and effect_owner.id == "DFBEffect"
+        )
+        effect_name = node.func.attr
+        effect_kinds = {
+            "reserve": ttl.ir.DFBProtocolEffectKind.Reserve,
+            "push": ttl.ir.DFBProtocolEffectKind.Push,
+            "wait": ttl.ir.DFBProtocolEffectKind.Wait,
+            "pop": ttl.ir.DFBProtocolEffectKind.Pop,
+        }
+        if (
+            not (is_qualified_owner or is_direct_owner)
+            or effect_name not in effect_kinds
+        ):
+            self._raise_error(
+                node,
+                "ttl.call_extern_func() dfb_effects element must be a "
+                "ttl.DFBEffect reserve, push, wait, or pop",
+            )
+        if len(node.args) != 1:
+            self._raise_error(
+                node,
+                f"ttl.DFBEffect.{effect_name}() requires exactly one DFB argument",
+            )
+        keyword_values = {keyword.arg: keyword.value for keyword in node.keywords}
+        if set(keyword_values) != {"tiles"}:
+            self._raise_error(
+                node,
+                f"ttl.DFBEffect.{effect_name}() requires one tiles= keyword",
+            )
+        num_tiles = self._resolve_static_int(keyword_values["tiles"], "effect tiles")
+        if num_tiles <= 0:
+            self._raise_error(
+                keyword_values["tiles"],
+                "ttl.call_extern_func() effect tiles must be positive",
+            )
+        dfb = self._resolve_dfb_value(node.args[0], "dfb_effects")
+        return _ExternalDFBEffect(effect_kinds[effect_name], dfb, num_tiles)
+
     def _visit_get_dfb_id(self, node):
         """Emit ttl.get_dfb_id for the DFB argument, return the i32 MLIR result."""
         if len(node.args) != 1 or node.keywords:
@@ -1770,6 +1874,12 @@ class TTLGenericCompiler(TTCompilerBase):
                 callee_name,                    # string (literal or variable)
                 template_args=[1, ttl.dfb_descriptor(dfb)],
                 func_args=[a, b],               # C++ function arguments
+                dfb_dependencies=[scratch_dfb], # not a C++ argument
+                dfb_effects=[
+                    ttl.DFBEffect.wait(dfb, tiles=1),
+                    ttl.DFBEffect.pop(dfb, tiles=1),
+                ],
+                unknown_dfb_access=False,
                 include_paths=["/path/to/inc"], # -I flags for JIT compiler
             )
 
@@ -1809,7 +1919,14 @@ class TTLGenericCompiler(TTCompilerBase):
             for kw in keywords:
                 kw_map[kw.arg] = kw.value
 
-        _valid_kwargs = {"template_args", "func_args", "include_paths"}
+        _valid_kwargs = {
+            "template_args",
+            "func_args",
+            "dfb_dependencies",
+            "dfb_effects",
+            "unknown_dfb_access",
+            "include_paths",
+        }
         unexpected = set(kw_map) - _valid_kwargs
         if unexpected:
             self._raise_error(
@@ -1857,6 +1974,37 @@ class TTLGenericCompiler(TTCompilerBase):
                     unsigned_arg_indices.append(len(func_args))
                 func_args.append(arg)
 
+        dependency_dfb_operands = []
+        if "dfb_dependencies" in kw_map:
+            dependency_node = kw_map["dfb_dependencies"]
+            if not isinstance(dependency_node, ast.List):
+                self._raise_error(
+                    dependency_node,
+                    "ttl.call_extern_func() dfb_dependencies must be a list",
+                )
+            dependency_dfb_operands = [
+                self._resolve_dfb_value(element, "dfb_dependencies")
+                for element in dependency_node.elts
+            ]
+
+        resolved_dfb_effects = []
+        if "dfb_effects" in kw_map:
+            effects_node = kw_map["dfb_effects"]
+            if not isinstance(effects_node, ast.List):
+                self._raise_error(
+                    effects_node,
+                    "ttl.call_extern_func() dfb_effects must be a list",
+                )
+            resolved_dfb_effects = [
+                self._resolve_dfb_effect(element) for element in effects_node.elts
+            ]
+
+        unknown_dfb_access = False
+        if "unknown_dfb_access" in kw_map:
+            unknown_dfb_access = self._resolve_static_bool(
+                kw_map["unknown_dfb_access"], "unknown_dfb_access"
+            )
+
         if "include_paths" in kw_map:
             paths = self._resolve_string_list(kw_map["include_paths"], "include_paths")
             self._opaque_include_paths.extend(paths)
@@ -1875,6 +2023,48 @@ class TTLGenericCompiler(TTCompilerBase):
             template_arg_attrs.append(
                 ttl.ir.ExternalTemplateArgAttr.get(self.ctx, template_arg.kind, payload)
             )
+
+        automatic_dependencies = [
+            func_arg
+            for func_arg in func_args
+            if ttl.CircularBufferType.maybe_downcast(getattr(func_arg, "type", None))
+            is not None
+        ]
+        automatic_dependencies.extend(
+            template_arg.value
+            for template_arg in resolved_template_args
+            if template_arg.kind == ttl.ir.ExternalTemplateArgKind.DFBDescriptor
+        )
+        if any(
+            dependency in automatic_dependencies
+            or dependency in dependency_dfb_operands[:dependency_index]
+            for dependency_index, dependency in enumerate(dependency_dfb_operands)
+        ):
+            self._raise_error(
+                kw_map["dfb_dependencies"],
+                "ttl.call_extern_func() dfb_dependencies must contain only "
+                "distinct dependency-only DFBs",
+            )
+        ordered_dependencies = automatic_dependencies + dependency_dfb_operands
+
+        effect_attrs = []
+        for effect in resolved_dfb_effects:
+            try:
+                dependency_index = ordered_dependencies.index(effect.dfb)
+            except ValueError:
+                self._raise_error(
+                    kw_map["dfb_effects"],
+                    "ttl.call_extern_func() DFB effect references a DFB that "
+                    "is not a function argument, descriptor, or dependency",
+                )
+            effect_attrs.append(
+                ttl.ir.DFBProtocolEffectAttr.get(
+                    self.ctx,
+                    effect.kind,
+                    dependency_index,
+                    effect.num_tiles,
+                )
+            )
         template_args_attr = (
             ArrayAttr.get(template_arg_attrs) if template_arg_attrs else None
         )
@@ -1883,6 +2073,8 @@ class TTLGenericCompiler(TTCompilerBase):
             if unsigned_arg_indices
             else None
         )
+        effects_attr = ArrayAttr.get(effect_attrs) if effect_attrs else None
+        unknown_dfb_access_attr = UnitAttr.get(self.ctx) if unknown_dfb_access else None
 
         ttl.opaque_call(
             [],
@@ -1890,8 +2082,11 @@ class TTLGenericCompiler(TTCompilerBase):
             header,
             func_args,
             template_dfb_operands,
+            dependency_dfb_operands,
             template_args=template_args_attr,
             unsigned_arg_indices=unsigned_arg_indices_attr,
+            dfb_effects=effects_attr,
+            unknown_dfb_access=unknown_dfb_access_attr,
         )
 
     def visit_With(self, node):

@@ -36,7 +36,7 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-/// Domain fact recorded for one dataflow buffer acquire operation.
+/// Domain fact recorded for one dataflow buffer producer or consumer action.
 struct AcquireDomain {
   LaunchNodeDomain domain;
   Operation *unanalyzableOp = nullptr;
@@ -63,10 +63,15 @@ struct ModuleState : LaunchNodeDomainState {
   llvm::DenseMap<Operation *, AcquireDomain> acquireDomains;
 };
 
-/// Record the launch-node domain that reaches a producer or consumer acquire.
+/// Record the launch-node domain that reaches a producer or consumer action.
 void recordAcquireDomain(Operation *op, const LaunchNodeDomain &domain,
                          Operation *unanalyzableOp, ModuleState &state) {
-  if (!isa<CBReserveOp, CBWaitOp>(op)) {
+  auto access = dyn_cast<DFBAccessOpInterface>(op);
+  if (!access ||
+      llvm::none_of(access.getDFBProtocolEffects(), [](const auto &effect) {
+        return effect.kind == DFBProtocolEffectKind::Reserve ||
+               effect.kind == DFBProtocolEffectKind::Wait;
+      })) {
     return;
   }
   state.acquireDomains[op] = {domain, unanalyzableOp};
@@ -217,8 +222,13 @@ struct TTLVerifyDFBSPSCPass
 
     bool hasAcquire = false;
     module.walk([&](Operation *op) {
+      auto access = dyn_cast<DFBAccessOpInterface>(op);
       hasAcquire |=
-          isa<CBReserveOp, CBWaitOp>(op) && getEnclosingKernelThread(op);
+          access && getEnclosingKernelThread(op) &&
+          llvm::any_of(access.getDFBProtocolEffects(), [](const auto &effect) {
+            return effect.kind == DFBProtocolEffectKind::Reserve ||
+                   effect.kind == DFBProtocolEffectKind::Wait;
+          });
     });
     if (!hasAcquire) {
       return;
@@ -275,10 +285,16 @@ struct TTLVerifyDFBSPSCPass
     };
 
     module.walk([&](Operation *op) {
-      if (auto reserveOp = dyn_cast<CBReserveOp>(op)) {
-        record(producersByDFB, op, reserveOp.getCb());
-      } else if (auto waitOp = dyn_cast<CBWaitOp>(op)) {
-        record(consumersByDFB, op, waitOp.getCb());
+      auto access = dyn_cast<DFBAccessOpInterface>(op);
+      if (!access) {
+        return;
+      }
+      for (const DFBProtocolEffect &effect : access.getDFBProtocolEffects()) {
+        if (effect.kind == DFBProtocolEffectKind::Reserve) {
+          record(producersByDFB, op, effect.dfb);
+        } else if (effect.kind == DFBProtocolEffectKind::Wait) {
+          record(consumersByDFB, op, effect.dfb);
+        }
       }
     });
 

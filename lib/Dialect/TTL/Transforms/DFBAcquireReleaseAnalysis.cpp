@@ -113,6 +113,15 @@ static Operation *findNextSameKindAcquire(Value dfb, Operation *acquire,
   return boundary;
 }
 
+static bool hasProtocolEffect(Operation *operation, Value dfb,
+                              DFBProtocolEffectKind kind) {
+  auto access = dyn_cast<DFBAccessOpInterface>(operation);
+  return access &&
+         llvm::any_of(access.getDFBProtocolEffects(), [&](const auto &effect) {
+           return effect.dfb == dfb && effect.kind == kind;
+         });
+}
+
 } // namespace
 
 bool isDFBAcquireOp(Operation *op) { return isa<CBReserveOp, CBWaitOp>(op); }
@@ -314,6 +323,19 @@ DFBAcquireReleaseOperations collectDFBAcquireReleaseOps(func::FuncOp func) {
       operations.pops.push_back(op);
       operations.releases.push_back(op);
     }
+    auto access = dyn_cast<DFBAccessOpInterface>(op);
+    if (!access) {
+      return;
+    }
+    for (const DFBProtocolEffect &effect : access.getDFBProtocolEffects()) {
+      if (effect.kind == DFBProtocolEffectKind::Push &&
+          !llvm::is_contained(operations.producerProtocolReleases, op)) {
+        operations.producerProtocolReleases.push_back(op);
+      } else if (effect.kind == DFBProtocolEffectKind::Pop &&
+                 !llvm::is_contained(operations.consumerProtocolReleases, op)) {
+        operations.consumerProtocolReleases.push_back(op);
+      }
+    }
   });
   return operations;
 }
@@ -396,6 +418,10 @@ findOwnedDFBReleases(DFBAcquireInterval interval, Operation *lastOwnedUse,
                      const llvm::DenseSet<Operation *> *erased) {
   DFBReleaseSearch result;
   Block *block = interval.acquire->getBlock();
+  DFBProtocolEffectKind releaseKind =
+      interval.kind == DFBAcquireReleaseKind::Producer
+          ? DFBProtocolEffectKind::Push
+          : DFBProtocolEffectKind::Pop;
 
   bool useExtendsPastBoundary =
       lastOwnedUse && lastOwnedUse != interval.acquire &&
@@ -408,7 +434,7 @@ findOwnedDFBReleases(DFBAcquireInterval interval, Operation *lastOwnedUse,
     if (erased && erased->contains(release)) {
       continue;
     }
-    if (getDFBReleaseDFB(release) != interval.dfb) {
+    if (!hasProtocolEffect(release, interval.dfb, releaseKind)) {
       continue;
     }
 
