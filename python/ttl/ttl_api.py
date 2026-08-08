@@ -855,11 +855,33 @@ class CompiledTTNNKernel:
         self.kernel_fabric_routes = kernel_fabric_routes or [[] for _ in kernel_paths]
         self.mesh_program_placements = mesh_program_placements
         self.device_domain = device_domain
-        self.kernel_logical_selectors = kernel_logical_selectors or [
-            None for _ in kernel_paths
-        ]
+        self.kernel_logical_selectors = (
+            list(kernel_logical_selectors)
+            if kernel_logical_selectors is not None
+            else [None for _ in kernel_paths]
+        )
+        if runtime_resource_factory is not None:
+            if len(self.kernel_logical_selectors) != len(kernel_paths):
+                raise ValueError(
+                    f"@ttl.operation {operation_name!r}: runtime_resource_factory "
+                    "requires one logical-kernel selector per compiled kernel; "
+                    f"got {len(self.kernel_logical_selectors)} selectors for "
+                    f"{len(kernel_paths)} kernels"
+                )
+            missing_selector_indices = [
+                kernel_index
+                for kernel_index, selector in enumerate(self.kernel_logical_selectors)
+                if selector is None
+            ]
+            if missing_selector_indices:
+                raise ValueError(
+                    f"@ttl.operation {operation_name!r}: runtime_resource_factory "
+                    "requires logical-kernel selectors for compiled kernel indices "
+                    f"{missing_selector_indices}"
+                )
         self.operation_name = operation_name
         self.runtime_resource_factory = runtime_resource_factory
+        self._runtime_resource_lifetimes = ()
         self._pipe_global_semaphore_lifetime = []
         self.opaque_include_paths = opaque_include_paths or []
         self._fabric_route_cache = _FabricRouteCache()
@@ -916,7 +938,15 @@ class CompiledTTNNKernel:
             fabric_route_cache=self._fabric_route_cache,
             runtime_resource_factory=self.runtime_resource_factory,
             operation_name=self.operation_name,
+            runtime_resource_lifetime_commit=(
+                self._commit_runtime_resource_lifetimes
+                if self.runtime_resource_factory is not None
+                else None
+            ),
         )
+
+    def _commit_runtime_resource_lifetimes(self, lifetimes: tuple[object, ...]) -> None:
+        self._runtime_resource_lifetimes = lifetimes
 
 
 def _write_kernel_to_tmp(name: str, source: str) -> str:
