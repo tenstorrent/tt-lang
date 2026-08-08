@@ -93,6 +93,15 @@ Operation registration binds a captured thread selector before compilation.
 This permits the same handle to identify the compiled kernel in runtime
 configuration APIs.
 
+Composing a unified operation preserves each callee-owned handle, including
+its operation identity. Repeated sequential calls to the same composed
+operation share that logical kernel instead of consuming additional target
+kernel resources. The original handle therefore remains equal to the
+`KernelSpec.logical_kernel` value produced for the composed program.
+Factory-created operations with different immutable nonlocal captures receive
+different deterministic operation identities. Equal captures retain the same
+identity.
+
 An external call accepts one selector or a nonempty tuple of distinct
 selectors. A tuple emits the call once in every selected logical kernel. A
 call may omit `kernel=` when its enclosing callback already determines one
@@ -101,7 +110,8 @@ the compiler cannot infer placement from C++ code.
 
 The target backend assigns logical kernels to its supported kernel resources.
 Compilation fails when an operation requests more kernels of a kind than the
-target supports.
+target supports. Unified and explicit multi-kernel operations use the same
+target capacity table and diagnostic terms.
 
 ## Template arguments
 
@@ -184,4 +194,6 @@ derived from the acquired block's uses and release. An explicit release
 selector that conflicts with inferred ownership is invalid.
 
 The release selector affects unified-operation splitting only. Generated IR
-and C++ retain the ordinary argument-free DFB release operation.
+and C++ retain the ordinary argument-free DFB release operation. An explicit
+thread may use the same signature, but its thread decorator already determines
+ownership, so the release selector has no additional effect.

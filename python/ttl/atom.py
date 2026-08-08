@@ -54,7 +54,6 @@ from .kernel import (
     Kernel,
     KernelKind,
     KernelSelector,
-    _PIPE_SOURCE_KERNEL_ROLE,
     _bind_kernel_declarations,
     _operation_identity,
     _selector_implicit_role,
@@ -64,6 +63,9 @@ from .operators import _set_current_grid
 from .pipe import PipeNet
 from .ttl_api import (
     Program,
+    _BackendKernelSlot,
+    _backend_kernel_capacities,
+    _backend_kernel_slots,
     _build_pipenet_graph,
     _canonical_tensor_args,
     _detect_memory_space_from_tensor,
@@ -86,38 +88,14 @@ _KERNEL_FACTORY_NAMES = {"Kernel"}
 _SETUP_FACTORY_NAMES = _DFB_FACTORY_NAMES | _PIPE_FACTORY_NAMES | _KERNEL_FACTORY_NAMES
 
 
-@dataclass(frozen=True)
-class _BackendKernelSlot:
-    kind: KernelKind
-    kernel_type: str
-    source_name: str
-    implicit_role: Optional[str] = None
-
-
-_BACKEND_KERNEL_SLOTS = (
-    _BackendKernelSlot(KernelKind.COMPUTE, "compute", "trisc"),
-    _BackendKernelSlot(KernelKind.DATA_MOVEMENT, "datamovement", "ncrisc"),
-    _BackendKernelSlot(
-        KernelKind.DATA_MOVEMENT,
-        "datamovement",
-        "brisc",
-        implicit_role=_PIPE_SOURCE_KERNEL_ROLE,
-    ),
-)
-
-
-def _backend_kernel_capacities() -> Dict[KernelKind, int]:
-    return {
-        kind: sum(slot.kind == kind for slot in _BACKEND_KERNEL_SLOTS)
-        for kind in KernelKind
-    }
-
-
-def _assign_backend_kernel_slots(split) -> Dict[_BackendKernelSlot, KernelSelector]:
+def _assign_backend_kernel_slots(
+    split, target_arch: Optional[str] = None
+) -> Dict[_BackendKernelSlot, KernelSelector]:
     assignments: Dict[_BackendKernelSlot, KernelSelector] = {}
     remaining = list(split.kernels)
+    backend_slots = _backend_kernel_slots(target_arch)
 
-    for slot in _BACKEND_KERNEL_SLOTS:
+    for slot in backend_slots:
         if slot.implicit_role is None:
             selector: KernelSelector = slot.kind
             if selector in remaining:
@@ -140,7 +118,7 @@ def _assign_backend_kernel_slots(split) -> Dict[_BackendKernelSlot, KernelSelect
         slot = next(
             (
                 candidate
-                for candidate in _BACKEND_KERNEL_SLOTS
+                for candidate in backend_slots
                 if candidate not in assignments
                 and candidate.kind == _selector_kind(selector)
             ),
@@ -158,8 +136,9 @@ def _assign_backend_kernel_slots(split) -> Dict[_BackendKernelSlot, KernelSelect
 def _backend_kernel_bodies(
     split,
     assignments: Mapping[_BackendKernelSlot, KernelSelector],
+    target_arch: Optional[str],
 ) -> Iterator[Tuple[_BackendKernelSlot, Optional[KernelSelector], List[ast.stmt]]]:
-    for slot in _BACKEND_KERNEL_SLOTS:
+    for slot in _backend_kernel_slots(target_arch):
         logical_kernel = assignments.get(slot)
         body = (
             split.body_for(logical_kernel)
@@ -376,6 +355,7 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
     external_pipenets = dict(inlined_pipenets)
     compile_time_captures: Dict[str, Any] = {}
     logical_kernels: Dict[str, Kernel] = dict(inlined_logical_kernels)
+    captured_logical_kernels: Dict[str, Kernel] = {}
     for capture_name in sorted(loaded_names & captured_values.keys()):
         value = captured_values[capture_name]
         if isinstance(value, DataflowBuffer):
@@ -387,7 +367,8 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
         if isinstance(value, PipeNet):
             external_pipenets[capture_name] = value
         elif isinstance(value, Kernel):
-            logical_kernels[capture_name] = value
+            if not any(value is kernel for kernel in logical_kernels.values()):
+                captured_logical_kernels[capture_name] = value
         elif _is_compile_time_literal(value):
             compile_time_captures[capture_name] = copy.deepcopy(value)
         elif not isinstance(value, types.ModuleType) and not callable(value):
@@ -397,7 +378,8 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
                 f"{type(value).__name__}"
             )
 
-    _bind_logical_kernels(logical_kernels, operation_identity)
+    _bind_logical_kernels(captured_logical_kernels, operation_identity)
+    logical_kernels.update(captured_logical_kernels)
 
     frozen_scope = dict(scope)
     frozen_scope.update(compile_time_captures)
@@ -704,10 +686,12 @@ def _compile_atom(
         local_dfb_names=set(dfbs),
         logical_kernels=logical_kernels,
         selector_scope=selector_scope,
-        kernel_capacities=_backend_kernel_capacities(),
+        kernel_capacities=_backend_kernel_capacities(target_arch),
     )
-    backend_assignments = _assign_backend_kernel_slots(split)
-    backend_bodies = tuple(_backend_kernel_bodies(split, backend_assignments))
+    backend_assignments = _assign_backend_kernel_slots(split, target_arch)
+    backend_bodies = tuple(
+        _backend_kernel_bodies(split, backend_assignments, target_arch)
+    )
 
     if os.environ.get("TTLANG_ATOM_DUMP_SPLIT"):
         for slot, _, body in backend_bodies:

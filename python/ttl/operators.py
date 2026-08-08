@@ -305,7 +305,8 @@ class TensorBlock:
         written and is ready for consumers. This operation is non-blocking.
 
         Must be called on a block acquired via reserve(). ``kernel`` assigns
-        an otherwise uninferable release to one logical kernel.
+        an otherwise uninferable release to one logical kernel. An explicit
+        thread ignores it because its decorator already determines ownership.
 
         Example:
             block = dfb.reserve()
@@ -331,7 +332,8 @@ class TensorBlock:
         consumed and space is available for producers. This operation is non-blocking.
 
         Must be called on a block acquired via wait(). ``kernel`` assigns an
-        otherwise uninferable release to one logical kernel.
+        otherwise uninferable release to one logical kernel. An explicit thread
+        ignores it because its decorator already determines ownership.
 
         Example:
             block = dfb.wait()

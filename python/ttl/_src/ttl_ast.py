@@ -23,6 +23,7 @@ from ..layouts import (
     detect_memory_layout,
     TENSOR_MEMORY_LAYOUT_INTERLEAVED,
 )
+from ..kernel import _DFB_RELEASE_METHODS
 from ..ttl_utils import get_thread_type_string
 from .auto_profile import (
     get_line_mapper,
@@ -353,6 +354,8 @@ class TTLGenericCompiler(TTCompilerBase):
         """Override to set location context, catch errors, and inject auto-profiling."""
         with self._loc_for_node(node):
             try:
+                self._strip_explicit_release_kernel_selector(node)
+
                 # Intercept print() to handle keyword arguments.
                 if (
                     not isinstance(node.func, ast.Attribute)
@@ -385,6 +388,25 @@ class TTLGenericCompiler(TTCompilerBase):
                 if isinstance(e, TTLangCompileError):
                     raise
                 self._raise_error(node, str(e))
+
+    def _strip_explicit_release_kernel_selector(self, node: ast.Call) -> None:
+        """Remove release placement because the thread decorator owns it."""
+        if not isinstance(node.func, ast.Attribute):
+            return
+        if node.func.attr not in _DFB_RELEASE_METHODS:
+            return
+        if not isinstance(node.func.value, ast.Name):
+            return
+        receiver_table = self._var_exists(node.func.value.id)
+        if not receiver_table:
+            return
+        from ..operators import _is_block
+
+        if not _is_block(receiver_table[node.func.value.id]):
+            return
+        node.keywords = [
+            keyword for keyword in node.keywords if keyword.arg != "kernel"
+        ]
 
     def visit_AugAssign(self, node):
         """Handle augmented assignment on tensor values.

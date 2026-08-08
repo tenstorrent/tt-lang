@@ -315,7 +315,6 @@ def _expand_call(
         scope,
         reserved_names,
         logical_kernels,
-        suffix,
     )
 
     local_names = _collect_local_names(spec.fn_ast)
@@ -386,17 +385,24 @@ def _add_logical_kernel_bindings(
     scope: Dict[str, object],
     reserved_names: Set[str],
     logical_kernels: Dict[str, Kernel],
-    suffix: str,
 ) -> None:
     loaded_names = _loaded_names(spec.fn_ast.body)
     for name, kernel in spec.logical_kernels.items():
         if name not in loaded_names or name in bindings:
             continue
-        fresh_name = _fresh_name(name, suffix, reserved_names)
-        bindings[name] = ast.Name(id=fresh_name, ctx=ast.Load())
-        inlined_kernel = Kernel(kernel.kind)
-        scope[fresh_name] = inlined_kernel
-        logical_kernels[fresh_name] = inlined_kernel
+        existing_name = next(
+            (
+                candidate_name
+                for candidate_name, candidate in logical_kernels.items()
+                if candidate == kernel
+            ),
+            None,
+        )
+        if existing_name is None:
+            existing_name = _fresh_name(f"{spec.name}__{name}", "", reserved_names)
+            scope[existing_name] = kernel
+            logical_kernels[existing_name] = kernel
+        bindings[name] = ast.Name(id=existing_name, ctx=ast.Load())
 
 
 def _literal_node(value: object) -> ast.expr:
