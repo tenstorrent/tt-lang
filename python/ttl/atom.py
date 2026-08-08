@@ -33,7 +33,7 @@ import os
 import textwrap
 import types
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Tuple, Union
 
 import ttl as _ttl
 from ttl.pykernel._src.utils import _cleanup_source_code
@@ -55,6 +55,8 @@ from .kernel import (
     KernelKind,
     KernelSelector,
     _PIPE_SOURCE_KERNEL_ROLE,
+    _bind_kernel_declarations,
+    _operation_identity,
     _selector_implicit_role,
     _selector_kind,
 )
@@ -153,6 +155,20 @@ def _assign_backend_kernel_slots(split) -> Dict[_BackendKernelSlot, KernelSelect
             )
         assignments[slot] = selector
     return assignments
+
+
+def _backend_kernel_bodies(
+    split,
+    assignments: Mapping[_BackendKernelSlot, KernelSelector],
+) -> Iterator[Tuple[_BackendKernelSlot, Optional[KernelSelector], List[ast.stmt]]]:
+    for slot in _BACKEND_KERNEL_SLOTS:
+        logical_kernel = assignments.get(slot)
+        body = (
+            split.body_for(logical_kernel)
+            if logical_kernel is not None
+            else [ast.Pass()]
+        )
+        yield slot, logical_kernel, body
 
 
 class DFB:
@@ -336,9 +352,7 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
         elif stripped.startswith("def ") or stripped.startswith("async def "):
             break
     line_offset = start_lineno + num_decorator_lines - 1
-    operation_identity = (
-        f"{fn.__module__}.{fn.__qualname__}:{fn.__code__.co_firstlineno}"
-    )
+    operation_identity = _operation_identity(fn)
 
     module = ast.parse(_cleanup_source_code(fn))
     if len(module.body) != 1 or not isinstance(module.body[0], ast.FunctionDef):
@@ -350,7 +364,9 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
 
     # Inline statement-level calls to other unified operations, then keep
     # the post-inline AST + source.
-    inlined_pipenets = inline_atom_calls(fn_def, scope, caller_name=name)
+    inlined_pipenets, inlined_logical_kernels = inline_atom_calls(
+        fn_def, scope, caller_name=name
+    )
     _validate_resource_declarations(fn_def, name)
 
     loaded_names = set()
@@ -361,7 +377,7 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
     captured_values = _captured_values(fn)
     external_pipenets = dict(inlined_pipenets)
     compile_time_captures: Dict[str, Any] = {}
-    logical_kernels: Dict[str, Kernel] = {}
+    logical_kernels: Dict[str, Kernel] = dict(inlined_logical_kernels)
     for capture_name in sorted(loaded_names & captured_values.keys()):
         value = captured_values[capture_name]
         if isinstance(value, DataflowBuffer):
@@ -410,27 +426,9 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
 
 def _bind_logical_kernels(
     logical_kernels: Dict[str, Kernel], operation_identity: str
-) -> Dict[str, Kernel]:
+) -> None:
     """Bind captured declarations in place during operation registration."""
-    source_names: Dict[int, str] = {}
-    for name, kernel in logical_kernels.items():
-        previous_name = source_names.get(id(kernel))
-        if previous_name is not None:
-            raise ValueError(
-                "one logical Kernel handle reached the final operation under "
-                f"multiple names: {previous_name!r} and {name!r}"
-            )
-        source_names[id(kernel)] = name
-        if kernel._identity is not None:
-            raise ValueError(
-                f"logical Kernel {name!r} is already bound as "
-                f"{kernel.identity!r} to operation "
-                f"{kernel._operation_identity!r}"
-            )
-
-    for name, kernel in logical_kernels.items():
-        kernel._bind(name, operation_identity)
-    return logical_kernels
+    _bind_kernel_declarations(logical_kernels, operation_identity)
 
 
 def _is_compile_time_literal(value: Any) -> bool:
@@ -591,7 +589,7 @@ def _lift_setup(
         elif isinstance(value, PipeNet):
             nets[name] = value
         elif isinstance(value, Kernel):
-            value = value._bind(name, operation_identity)
+            value._bind(name, operation_identity)
             kernels[name] = value
         ns[name] = value
         # A bare Pipe remains in ns for a later PipeNet reference.
@@ -696,6 +694,8 @@ def _compile_atom(
         operation_identity=spec.operation_identity,
     )
     logical_kernels.update(lifted_logical_kernels)
+    selector_scope = dict(eval_scope)
+    selector_scope.update(logical_kernels)
 
     # Assign each PipeNet a distinct operation-local id (and validate), the
     # same graph @ttl.operation builds; it also yields the runner's pipe
@@ -712,18 +712,14 @@ def _compile_atom(
         dfb_param_names=set(spec.dfb_param_names),
         local_dfb_names=set(dfbs),
         logical_kernels=logical_kernels,
+        selector_scope=selector_scope,
         kernel_capacities=_backend_kernel_capacities(),
     )
     backend_assignments = _assign_backend_kernel_slots(split)
+    backend_bodies = tuple(_backend_kernel_bodies(split, backend_assignments))
 
     if os.environ.get("TTLANG_ATOM_DUMP_SPLIT"):
-        for slot in _BACKEND_KERNEL_SLOTS:
-            logical_kernel = backend_assignments.get(slot)
-            body = (
-                split.body_for(logical_kernel)
-                if logical_kernel is not None
-                else [ast.Pass()]
-            )
+        for slot, _, body in backend_bodies:
             _dbg = _synthesize_thread_module(f"{spec.name}__{slot.source_name}", body)
             print(f"\n===== @ttl.operation split: {slot.source_name} =====")
             print(ast.unparse(_dbg))
@@ -746,13 +742,7 @@ def _compile_atom(
     threads = []
     thread_logical_kernels = []
     any_real_work = False
-    for slot in _BACKEND_KERNEL_SLOTS:
-        logical_kernel = backend_assignments.get(slot)
-        body = (
-            split.body_for(logical_kernel)
-            if logical_kernel is not None
-            else [ast.Pass()]
-        )
+    for slot, logical_kernel, body in backend_bodies:
         any_real_work = any_real_work or _has_real_work(body)
         fn_name = f"{spec.name}__{slot.source_name}"
         threads.append(

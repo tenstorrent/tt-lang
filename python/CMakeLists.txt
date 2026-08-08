@@ -131,8 +131,8 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     compiler_options.py
     constants.py
     diagnostics.py
-    kernel_runner.py
     kernel.py
+    kernel_runner.py
     pipe.py
     ttl.py
     ttl_api.py

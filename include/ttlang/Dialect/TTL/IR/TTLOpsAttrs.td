@@ -15,12 +15,10 @@ include "ttlang/Dialect/TTL/IR/TTLOpsEnums.td"
 def TTL_LogicalKernelAttr : TTL_Attr<"LogicalKernel", "logical_kernel"> {
   let summary = "Target-independent identity of one operation kernel";
   let description = [{
-    Records the logical kind and operation-local identity assigned before
-    backend kernel selection. A canonical kind selector omits its identity. An
-    explicit operation handle records its identity and owning operation.
-    Compiler-owned affinity kernels use `role` instead of an operation.
-    Kernel specialization preserves this function attribute on every clone so
-    runtime resources can select clones by logical identity.
+    Records the logical kind and operation-local identity of a kernel function.
+    A canonical kind selector omits its identity. An explicit operation handle
+    records its identity and owning operation. Compiler-owned affinity kernels
+    use `role` instead of an operation.
   }];
   let parameters = (ins
     "LogicalKernelKind":$kind,

@@ -16,6 +16,7 @@ from typing import Any, Callable, Dict, List
 
 from .blockstate import KernelType
 from .context import get_context
+from .kernel import KernelSelector
 from .typedefs import BindableTemplate
 
 
@@ -78,7 +79,9 @@ def get_registered_kernels() -> List[BindableTemplate]:
     return kernels
 
 
-def compute() -> Callable[[FunctionType], BindableTemplate]:
+def compute(
+    *, kernel: KernelSelector | None = None
+) -> Callable[[FunctionType], BindableTemplate]:
     """
     Decorator to mark a function as a compute operation.
 
@@ -88,6 +91,8 @@ def compute() -> Callable[[FunctionType], BindableTemplate]:
     Returns:
         A BindableTemplate that can be bound to specific execution contexts
     """
+
+    del kernel
 
     def decorator(func: FunctionType) -> BindableTemplate:
         class ComputeTemplate:
@@ -107,7 +112,9 @@ def compute() -> Callable[[FunctionType], BindableTemplate]:
     return decorator
 
 
-def datamovement() -> Callable[[FunctionType], BindableTemplate]:
+def datamovement(
+    *, kernel: KernelSelector | None = None
+) -> Callable[[FunctionType], BindableTemplate]:
     """
     Decorator to mark a function as a data movement operation.
 
@@ -117,6 +124,8 @@ def datamovement() -> Callable[[FunctionType], BindableTemplate]:
     Returns:
         A BindableTemplate that can be bound to specific execution contexts
     """
+
+    del kernel
 
     def decorator(func: FunctionType) -> BindableTemplate:
         class DMTemplate:

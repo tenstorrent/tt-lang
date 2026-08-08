@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Final, Optional, Tuple, Union
+from typing import Callable, Final, Mapping, Optional, Tuple, Union
 
 from .dialects._ttl_enum_gen import LogicalKernelKind as _TableGenLogicalKernelKind
 
@@ -104,8 +104,8 @@ class Kernel:
         self,
         identity: str,
         operation_identity: str,
-    ) -> "Kernel":
-        """Bind this declaration to one operation and return the same handle."""
+    ) -> None:
+        """Bind this declaration to one operation."""
         self._binding.bind(
             _KernelIdentity(
                 identity,
@@ -113,7 +113,6 @@ class Kernel:
                 implicit_role=None,
             )
         )
-        return self
 
     @classmethod
     def _from_metadata(
@@ -191,6 +190,35 @@ class Kernel:
 KernelSelector = Union[KernelKind, Kernel]
 ExternalKernelSelection = Union[KernelSelector, Tuple[KernelSelector, ...]]
 ReleaseKernelSelection = KernelSelector
+
+
+def _operation_identity(function: Callable) -> str:
+    """Return the source identity shared by both operation forms."""
+    return f"{function.__module__}.{function.__qualname__}"
+
+
+def _bind_kernel_declarations(
+    logical_kernels: Mapping[str, Kernel], operation_identity: str
+) -> None:
+    """Bind uniquely named declarations during operation registration."""
+    source_names = {}
+    for name, kernel in logical_kernels.items():
+        previous_name = source_names.get(id(kernel))
+        if previous_name is not None:
+            raise ValueError(
+                "one logical Kernel handle reached the final operation under "
+                f"multiple names: {previous_name!r} and {name!r}"
+            )
+        source_names[id(kernel)] = name
+        if kernel._identity is not None:
+            raise ValueError(
+                f"logical Kernel {name!r} is already bound as "
+                f"{kernel.identity!r} to operation "
+                f"{kernel._operation_identity!r}"
+            )
+
+    for name, kernel in logical_kernels.items():
+        kernel._bind(name, operation_identity)
 
 
 def _selector_kind(selector: KernelSelector) -> KernelKind:
