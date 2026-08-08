@@ -184,11 +184,14 @@ def TTL_RowNormalizationGammaMode_None :
     I32EnumAttrCase<"None", 0, "none">;
 def TTL_RowNormalizationGammaMode_FullRow :
     I32EnumAttrCase<"FullRow", 1, "full_row">;
+def TTL_RowNormalizationGammaMode_RepeatedColumn :
+    I32EnumAttrCase<"RepeatedColumn", 2, "repeated_column">;
 
 def TTL_RowNormalizationGammaMode : I32EnumAttr<
     "RowNormalizationGammaMode", "row-normalization gamma mode",
     [TTL_RowNormalizationGammaMode_None,
-     TTL_RowNormalizationGammaMode_FullRow]> {
+     TTL_RowNormalizationGammaMode_FullRow,
+     TTL_RowNormalizationGammaMode_RepeatedColumn]> {
   let cppNamespace = "::mlir::tt::ttl";
 }
 

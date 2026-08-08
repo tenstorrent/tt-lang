@@ -1513,7 +1513,9 @@ def TTL_TileRowNormalizationBlockOp :
     row width because scalarization replaces tensor operands with tile values.
     The input, gamma, and output operands identify dataflow buffers. Gamma is
     equal to input and is not read when `gamma_mode` is `none`; `full_row`
-    multiplies each output tile by the corresponding gamma tile.
+    multiplies each output tile by the corresponding gamma tile;
+    `repeated_column` broadcasts the first column of gamma tile zero across
+    every output tile.
 
     The operation is internal to block compute lowering. Its result represents
     the complete contiguous DST footprint, not one independently executable

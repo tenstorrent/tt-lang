@@ -1249,8 +1249,11 @@ verifyRowNormalizationPipeline(ComputePipelineOp pipeline) {
       getStageOperations(stages[1]);
   SmallVector<Operation *> consumerOperations = getStageOperations(stages[2]);
   bool hasGamma = pipeline.getInputs().size() == 2;
+  bool hasRepeatedColumnGamma = hasGamma && consumerOperations.size() == 4;
   if (reductionOperations.size() != 3 || finalizationOperations.size() != 4 ||
-      consumerOperations.size() != (hasGamma ? 3 : 2)) {
+      (!hasGamma && consumerOperations.size() != 2) ||
+      (hasGamma && consumerOperations.size() != 3 &&
+       consumerOperations.size() != 4)) {
     return pipeline.emitOpError(
         "row_normalization has an invalid stage operation count");
   }
@@ -1306,25 +1309,43 @@ verifyRowNormalizationPipeline(ComputePipelineOp pipeline) {
 
   auto scalarBroadcast = dyn_cast<BlockBroadcastOp>(consumerOperations[0]);
   auto normalized = dyn_cast<MulOp>(consumerOperations[1]);
+  BlockBroadcastOp gammaBroadcast =
+      hasRepeatedColumnGamma ? dyn_cast<BlockBroadcastOp>(consumerOperations[2])
+                             : BlockBroadcastOp();
   MulOp gammaProduct =
-      hasGamma ? dyn_cast<MulOp>(consumerOperations[2]) : MulOp();
+      hasGamma
+          ? dyn_cast<MulOp>(consumerOperations[hasRepeatedColumnGamma ? 3 : 2])
+          : MulOp();
   Block &consumerBody = stages[2].getBody().front();
   auto consumerYield = cast<ComputeStageYieldOp>(consumerBody.getTerminator());
-  if (!scalarBroadcast || !normalized || (hasGamma && !gammaProduct)) {
+  if (!scalarBroadcast || !normalized ||
+      (hasRepeatedColumnGamma && !gammaBroadcast) ||
+      (hasGamma && !gammaProduct)) {
     return pipeline.emitOpError(
         "row_normalization consumer stage requires broadcast and multiply "
         "operations");
   }
   llvm::SmallDenseSet<int64_t> broadcastDimensions =
       normalizeDimsToSet(scalarBroadcast.getDims(), 2);
+  llvm::SmallDenseSet<int64_t> gammaBroadcastDimensions;
+  if (hasRepeatedColumnGamma) {
+    gammaBroadcastDimensions = normalizeDimsToSet(gammaBroadcast.getDims(), 2);
+  }
   Value result = hasGamma ? gammaProduct.getResult() : normalized.getResult();
+  Value gammaOperand = hasRepeatedColumnGamma
+                           ? gammaBroadcast.getResult()
+                           : (hasGamma ? consumerBody.getArgument(2) : Value());
   if (scalarBroadcast.getInput() != consumerBody.getArgument(1) ||
       broadcastDimensions.size() != 2 || !broadcastDimensions.contains(0) ||
       !broadcastDimensions.contains(1) ||
       !hasCommutativeOperands(normalized, consumerBody.getArgument(0),
                               scalarBroadcast.getResult()) ||
+      (hasRepeatedColumnGamma &&
+       (gammaBroadcast.getInput() != consumerBody.getArgument(2) ||
+        gammaBroadcastDimensions.size() != 1 ||
+        !gammaBroadcastDimensions.contains(1))) ||
       (hasGamma && !hasCommutativeOperands(gammaProduct, normalized.getResult(),
-                                           consumerBody.getArgument(2))) ||
+                                           gammaOperand)) ||
       consumerYield.getValues().size() != 1 ||
       consumerYield.getValues().front() != result) {
     return pipeline.emitOpError(
@@ -1336,16 +1357,24 @@ verifyRowNormalizationPipeline(ComputePipelineOp pipeline) {
       dyn_cast<RankedTensorType>(pipeline.getInputs().front().getType());
   auto scalarType =
       dyn_cast<RankedTensorType>(stages[0].getResult(0).getType());
+  auto gammaType =
+      hasGamma ? dyn_cast<RankedTensorType>(pipeline.getInputs()[1].getType())
+               : RankedTensorType();
   if (!rowType || !rowType.hasStaticShape() || rowType.getRank() != 2 ||
       rowType.getDimSize(0) != 1 ||
       pipeline.getResult(0).getType() != rowType || !scalarType ||
       !scalarType.hasStaticShape() || scalarType.getRank() != 2 ||
       scalarType.getDimSize(0) != 1 || scalarType.getDimSize(1) != 1 ||
       stages[1].getResult(0).getType() != scalarType ||
-      (hasGamma && pipeline.getInputs()[1].getType() != rowType)) {
+      (hasGamma &&
+       (!gammaType || !gammaType.hasStaticShape() || gammaType.getRank() != 2 ||
+        gammaType.getElementType() != rowType.getElementType())) ||
+      (hasGamma && !hasRepeatedColumnGamma && gammaType != rowType) ||
+      (hasRepeatedColumnGamma &&
+       (gammaType.getDimSize(0) != 1 || gammaType.getDimSize(1) != 1))) {
     return pipeline.emitOpError(
-        "row_normalization requires matching static row inputs and a 1x1 "
-        "scalar");
+        "row_normalization requires a static input row, compatible gamma, "
+        "and a 1x1 scalar");
   }
   if (stages[0].getInputs() != ValueRange{pipelineBody.getArgument(0)} ||
       stages[1].getInputs() != ValueRange{stages[0].getResult(0)} ||
@@ -2536,7 +2565,8 @@ mlir::LogicalResult mlir::tt::ttl::TileRowNormalizationBlockOp::verify() {
   if (inputTileType->getDataType() != ttcore::DataType::BFloat16) {
     return emitOpError("supports bf16 tiles only");
   }
-  bool hasGamma = getGammaMode() != RowNormalizationGammaMode::None;
+  RowNormalizationGammaMode gammaMode = getGammaMode();
+  bool hasGamma = gammaMode != RowNormalizationGammaMode::None;
   if (hasGamma && *gammaTileType != *outputTileType) {
     return emitOpError("gamma tile type must match the output tile type");
   }
@@ -2574,10 +2604,14 @@ mlir::LogicalResult mlir::tt::ttl::TileRowNormalizationBlockOp::verify() {
   if (inputTensor.getNumElements() != static_cast<int64_t>(getNumTiles())) {
     return emitOpError("num_tiles must match the row tensor width");
   }
-  if (hasGamma) {
+  if (gammaMode == RowNormalizationGammaMode::FullRow) {
     if (gammaTensor.getShape() != outputTensor.getShape()) {
       return emitOpError("gamma tensor shape must match the output shape");
     }
+  } else if (gammaMode == RowNormalizationGammaMode::RepeatedColumn &&
+             (gammaTensor.getDimSize(0) != 1 ||
+              gammaTensor.getDimSize(1) != 1)) {
+    return emitOpError("repeated-column gamma tensor must have shape 1x1");
   }
   return success();
 }
