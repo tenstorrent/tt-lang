@@ -1956,6 +1956,7 @@ resolveCBForRawElement(Value adaptedBlock, Value originalBlock,
 static Value decodeNonnegativeFloatToI32(Value rawBits, FloatType floatType,
                                          ConversionPatternRewriter &rewriter,
                                          Location loc) {
+  assert(floatType.getWidth() <= 32 && "decode packs the significand into i32");
   unsigned mantissaWidth = floatType.getFPMantissaWidth() - 1;
   unsigned exponentWidth = floatType.getWidth() - mantissaWidth - 1;
   uint32_t exponentMask = (uint32_t{1} << exponentWidth) - 1;
