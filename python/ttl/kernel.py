@@ -8,14 +8,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional, Tuple, Union
+from typing import Final, Optional, Tuple, Union
+
+from .dialects._ttl_enum_gen import LogicalKernelKind as _TableGenLogicalKernelKind
+
+
+_PIPE_SOURCE_KERNEL_ROLE: Final[str] = "pipe_source"
 
 
 class KernelKind(Enum):
     """A portable class of kernels supported by a target backend."""
 
-    COMPUTE = "compute"
-    DATA_MOVEMENT = "data_movement"
+    COMPUTE = str(_TableGenLogicalKernelKind.Compute)
+    DATA_MOVEMENT = str(_TableGenLogicalKernelKind.DataMovement)
 
 
 @dataclass(frozen=True)

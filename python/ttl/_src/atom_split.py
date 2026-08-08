@@ -15,30 +15,44 @@ from __future__ import annotations
 import ast
 import copy
 from dataclasses import dataclass
-from typing import Dict, FrozenSet, List, Mapping, Optional, Set, Tuple
+from enum import Enum, auto
+from typing import Dict, FrozenSet, List, Mapping, Optional, Set, Tuple, Union
 
 from ttl.kernel import (
     Kernel,
     KernelKind,
     KernelSelector,
+    _PIPE_SOURCE_KERNEL_ROLE,
     _format_selector,
     _selector_kind,
     _selector_sort_key,
 )
 
-_PIPE_SOURCE_KERNEL = Kernel._implicit(KernelKind.DATA_MOVEMENT, "pipe_source")
+_EXTERNAL_CALL_NAME = "call_extern_func"
+_KERNEL_KEYWORD = "kernel"
+_BLOCK_RELEASE_METHODS = frozenset(("push", "pop"))
+_PIPE_SOURCE_KERNEL = Kernel._implicit(
+    KernelKind.DATA_MOVEMENT,
+    _PIPE_SOURCE_KERNEL_ROLE,
+)
+
+
+class _Placement(Enum):
+    DATA_MOVEMENT = auto()
+    CONTROL = auto()
+    DEFERRED = auto()
 
 
 # ----- op registry ----------------------------------------------------------
 
 
-# ``"dm"`` resolves to the current callback's logical data-movement kernel.
-# ``"control"`` does not constrain placement.
-_TTL_OPS: Dict[str, object] = {
+# DATA_MOVEMENT resolves to the current callback's logical data-movement
+# kernel. CONTROL does not constrain placement.
+_TTL_OPS: Dict[str, Union[KernelKind, _Placement]] = {
     # Data movement
-    "copy": "dm",
-    "element_read": "dm",
-    "element_write": "dm",
+    "copy": _Placement.DATA_MOVEMENT,
+    "element_read": _Placement.DATA_MOVEMENT,
+    "element_write": _Placement.DATA_MOVEMENT,
     # Compute
     "fill": KernelKind.COMPUTE,
     "matmul": KernelKind.COMPUTE,
@@ -62,19 +76,19 @@ _TTL_OPS: Dict[str, object] = {
     "sigmoid": KernelKind.COMPUTE,
     "gelu": KernelKind.COMPUTE,
     # Compile-time / scalar producers: duplicated, not anchored.
-    "Pipe": "control",
-    "PipeNet": "control",
-    "make_dataflow_buffer_like": "control",
-    "make_tensor_backed_dfb": "control",
-    "node": "control",
-    "dfb_descriptor": "control",
-    "get_dfb_id": "control",
-    "raw_addr": "control",
-    "grid_size": "control",
-    "dims": "control",
-    "cores": "control",
-    "tile_index": "control",
-    "signpost": "control",
+    "Pipe": _Placement.CONTROL,
+    "PipeNet": _Placement.CONTROL,
+    "make_dataflow_buffer_like": _Placement.CONTROL,
+    "make_tensor_backed_dfb": _Placement.CONTROL,
+    "node": _Placement.CONTROL,
+    "dfb_descriptor": _Placement.CONTROL,
+    "get_dfb_id": _Placement.CONTROL,
+    "raw_addr": _Placement.CONTROL,
+    "grid_size": _Placement.CONTROL,
+    "dims": _Placement.CONTROL,
+    "cores": _Placement.CONTROL,
+    "tile_index": _Placement.CONTROL,
+    "signpost": _Placement.CONTROL,
 }
 
 # ttl.<ns>.<name>(...) -> logical kind for every name in the namespace.
@@ -90,15 +104,15 @@ _PIPENET_METHODS: Dict[str, KernelSelector] = {
 }
 
 # Block releases use the transaction owner computed before statement planning.
-_BLOCK_METHODS: Dict[str, str] = {
-    "store": "compute",
-    "pop": "deferred",
-    "push": "deferred",
+_BLOCK_METHODS: Dict[str, Union[KernelKind, _Placement]] = {
+    "store": KernelKind.COMPUTE,
+    "pop": _Placement.DEFERRED,
+    "push": _Placement.DEFERRED,
 }
 
 # Methods on a DFB name that produce a block.
 _DFB_PRODUCING_METHODS: Set[str] = {"wait", "reserve"}
-_DFB_DIRECT_METHODS: Dict[str, str] = {"publish": "dm"}
+_DFB_DIRECT_METHODS: Dict[str, _Placement] = {"publish": _Placement.DATA_MOVEMENT}
 
 
 # ----- shared call classification ------------------------------------------
@@ -108,7 +122,7 @@ def _materialize_kernels(
     classification: object,
     data_movement_kernels: FrozenSet[KernelSelector],
 ) -> Optional[FrozenSet[KernelSelector]]:
-    if classification == "dm":
+    if classification is _Placement.DATA_MOVEMENT:
         return data_movement_kernels
     if isinstance(classification, KernelKind):
         return frozenset({classification})
@@ -118,10 +132,10 @@ def _materialize_kernels(
 def _is_external_call(call: ast.Call) -> bool:
     func = call.func
     if isinstance(func, ast.Name):
-        return func.id == "call_extern_func"
+        return func.id == _EXTERNAL_CALL_NAME
     return (
         isinstance(func, ast.Attribute)
-        and func.attr == "call_extern_func"
+        and func.attr == _EXTERNAL_CALL_NAME
         and isinstance(func.value, ast.Name)
         and func.value.id == "ttl"
     )
@@ -129,7 +143,7 @@ def _is_external_call(call: ast.Call) -> bool:
 
 def _kernel_keyword(call: ast.Call) -> Optional[ast.expr]:
     for keyword in call.keywords:
-        if keyword.arg == "kernel":
+        if keyword.arg == _KERNEL_KEYWORD:
             return keyword.value
     return None
 
@@ -708,9 +722,9 @@ class _AnchorPlanner:
                     return _materialize_kernels(method, self._data_movement_kernels)
             if func.value.id in self._producers:
                 method = _BLOCK_METHODS.get(func.attr)
-                if method == "compute":
-                    return frozenset({KernelKind.COMPUTE})
-                if method == "deferred":
+                if isinstance(method, KernelKind):
+                    return frozenset({method})
+                if method is _Placement.DEFERRED:
                     owner = self.block_owners.get(func.value.id)
                     if owner is not None:
                         return frozenset({owner})
@@ -723,13 +737,13 @@ class _AnchorPlanner:
 class _KernelKeywordStripper(ast.NodeTransformer):
     def visit_Call(self, node: ast.Call):
         node = self.generic_visit(node)
-        is_release = isinstance(node.func, ast.Attribute) and node.func.attr in {
-            "push",
-            "pop",
-        }
+        is_release = (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr in _BLOCK_RELEASE_METHODS
+        )
         if _is_external_call(node) or is_release:
             node.keywords = [
-                keyword for keyword in node.keywords if keyword.arg != "kernel"
+                keyword for keyword in node.keywords if keyword.arg != _KERNEL_KEYWORD
             ]
         return node
 
@@ -1011,7 +1025,7 @@ def _collect_block_ownership(
             if root in visible:
                 inferred_users[root].update(kernels)
         for kw in node.keywords:
-            if kw.arg == "kernel":
+            if kw.arg == _KERNEL_KEYWORD:
                 continue
             root = _expr_root_name(kw.value)
             if root in visible:
@@ -1031,7 +1045,7 @@ def _collect_block_ownership(
             if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
                 receiver = func.value.id
                 method = func.attr
-                if receiver in visible and method in {"push", "pop"}:
+                if receiver in visible and method in _BLOCK_RELEASE_METHODS:
                     explicit = selector_resolver.resolve_release(node)
                     if explicit is not None:
                         explicit_releases[receiver].append((node, explicit))

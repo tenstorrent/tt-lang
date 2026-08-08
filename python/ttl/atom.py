@@ -54,6 +54,7 @@ from .kernel import (
     Kernel,
     KernelKind,
     KernelSelector,
+    _PIPE_SOURCE_KERNEL_ROLE,
     _selector_implicit_role,
     _selector_kind,
 )
@@ -100,7 +101,7 @@ _BACKEND_KERNEL_SLOTS = (
         KernelKind.DATA_MOVEMENT,
         "datamovement",
         "brisc",
-        implicit_role="pipe_source",
+        implicit_role=_PIPE_SOURCE_KERNEL_ROLE,
     ),
 )
 
