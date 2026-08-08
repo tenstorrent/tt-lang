@@ -39,6 +39,9 @@ _TTL_OPS: Dict[str, object] = {
     "copy": "dm",
     "element_read": "dm",
     "element_write": "dm",
+    "raw_element_read": "dm",
+    "raw_element_write": "dm",
+    "read_index": "dm",
     # Compute
     "fill": KernelKind.COMPUTE,
     "matmul": KernelKind.COMPUTE,
@@ -52,6 +55,7 @@ _TTL_OPS: Dict[str, object] = {
     "sub": KernelKind.COMPUTE,
     "div": KernelKind.COMPUTE,
     "recip": KernelKind.COMPUTE,
+    "rsqrt": KernelKind.COMPUTE,
     "neg": KernelKind.COMPUTE,
     "sqrt": KernelKind.COMPUTE,
     "tanh": KernelKind.COMPUTE,
@@ -61,6 +65,10 @@ _TTL_OPS: Dict[str, object] = {
     "sign": KernelKind.COMPUTE,
     "sigmoid": KernelKind.COMPUTE,
     "gelu": KernelKind.COMPUTE,
+    "silu": KernelKind.COMPUTE,
+    "max": KernelKind.COMPUTE,
+    "min": KernelKind.COMPUTE,
+    "typecast": KernelKind.COMPUTE,
     # Compile-time / scalar producers: duplicated, not anchored.
     "Pipe": "control",
     "PipeNet": "control",

@@ -188,6 +188,50 @@ def test_unknown_ttl_op_is_rejected():
         split_function_body(fn, dfb_param_names=set())
 
 
+@pytest.mark.parametrize(
+    "expression",
+    (
+        "ttl.max(first, second)",
+        "ttl.min(first, second)",
+        "ttl.rsqrt(first)",
+        "ttl.silu(first)",
+        "ttl.typecast(first, 'bf16')",
+    ),
+)
+def test_supported_compute_ops_are_classified(expression):
+    fn = _fn(
+        f"""
+        def operation(first, second):
+            {expression}
+        """
+    )
+
+    result = split_function_body(fn, dfb_param_names=set())
+
+    assert expression in _kind_src(result, KernelKind.COMPUTE)
+
+
+@pytest.mark.parametrize(
+    "expression",
+    (
+        "ttl.raw_element_read(block, 0, 0)",
+        "ttl.raw_element_write(block, 0, 0, value)",
+        "ttl.read_index(block, 0, 0)",
+    ),
+)
+def test_supported_data_movement_ops_are_classified(expression):
+    fn = _fn(
+        f"""
+        def operation(block, value):
+            {expression}
+        """
+    )
+
+    result = split_function_body(fn, dfb_param_names=set())
+
+    assert expression in _kind_src(result, KernelKind.DATA_MOVEMENT)
+
+
 def test_raw_addr_is_a_kernel_neutral_scalar_producer():
     fn = _fn(
         """
