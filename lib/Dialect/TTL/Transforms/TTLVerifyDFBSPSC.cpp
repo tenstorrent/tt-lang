@@ -63,16 +63,6 @@ struct ModuleState : LaunchNodeDomainState {
   llvm::DenseMap<Operation *, ProtocolActionDomain> protocolActionDomains;
 };
 
-static bool isProducerAction(DFBProtocolEffectKind kind) {
-  return kind == DFBProtocolEffectKind::Reserve ||
-         kind == DFBProtocolEffectKind::Push;
-}
-
-static bool isConsumerAction(DFBProtocolEffectKind kind) {
-  return kind == DFBProtocolEffectKind::Wait ||
-         kind == DFBProtocolEffectKind::Pop;
-}
-
 /// Record the launch-node domain that reaches a producer or consumer action.
 void recordProtocolActionDomain(Operation *op, const LaunchNodeDomain &domain,
                                 Operation *unanalyzableOp, ModuleState &state) {
@@ -296,9 +286,9 @@ struct TTLVerifyDFBSPSCPass
         return;
       }
       for (const DFBProtocolEffect &effect : access.getDFBProtocolEffects()) {
-        if (isProducerAction(effect.kind)) {
+        if (isProducerDFBProtocolEffect(effect.kind)) {
           record(producersByDFB, op, effect.dfb);
-        } else if (isConsumerAction(effect.kind)) {
+        } else if (isConsumerDFBProtocolEffect(effect.kind)) {
           record(consumersByDFB, op, effect.dfb);
         }
       }
