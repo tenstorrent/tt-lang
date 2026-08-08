@@ -33,7 +33,7 @@ import os
 import textwrap
 import types
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
 
 import ttl as _ttl
 from ttl.pykernel._src.utils import _cleanup_source_code
@@ -71,6 +71,7 @@ from .ttl_api import (
     _lower_program_to_kernel,
     _make_operation_wrapper,
     _run_thread_compiler,
+    _slot_idle_kernel,
     _validate_operation_options,
     pykernel_gen,
 )
@@ -136,15 +137,28 @@ def _backend_kernel_bodies(
     split,
     assignments: Mapping[_BackendKernelSlot, KernelSelector],
     target_arch: Optional[str],
-) -> Iterator[Tuple[_BackendKernelSlot, Optional[KernelSelector], List[ast.stmt]]]:
+) -> Tuple[Tuple[_BackendKernelSlot, KernelSelector, List[ast.stmt]], ...]:
+    """Pair every backend slot with a logical kernel and the body it emits.
+
+    A slot the plan left unassigned still produces a kernel, so it takes its idle
+    logical identity rather than none; runtime resources can then select every
+    emitted kernel by identity.
+    """
+    bodies = []
     for slot in _backend_kernel_slots(target_arch):
         logical_kernel = assignments.get(slot)
-        body = (
-            split.body_for(logical_kernel)
-            if logical_kernel is not None
-            else [ast.Pass()]
+        if logical_kernel is None:
+            bodies.append((slot, _slot_idle_kernel(slot), [ast.Pass()]))
+            continue
+        bodies.append((slot, logical_kernel, split.body_for(logical_kernel)))
+
+    selectors = [logical_kernel for _, logical_kernel, _ in bodies]
+    if len(set(selectors)) != len(selectors):
+        raise AssertionError(
+            f"backend slots produced duplicate logical identities {selectors!r}; "
+            "each emitted kernel must be selectable by identity"
         )
-        yield slot, logical_kernel, body
+    return tuple(bodies)
 
 
 class DFB:

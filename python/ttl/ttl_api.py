@@ -168,6 +168,18 @@ def _backend_kernel_capacities(
     return {kind: sum(slot.kind == kind for slot in slots) for kind in KernelKind}
 
 
+def _slot_idle_kernel(slot: _BackendKernelSlot) -> KernelSelector:
+    """Return the logical identity a slot carries when it holds no work.
+
+    A slot the target reserves for a compiler-owned affinity keeps that role. Any
+    other slot is the canonical kernel of its kind, which is unoccupied precisely
+    when no selector of that kind was planned.
+    """
+    if slot.implicit_role is None:
+        return slot.kind
+    return Kernel._implicit(slot.kind, slot.implicit_role)
+
+
 # Thread registry for automatic collection of @compute and @datamovement threads
 _thread_registry: List[Callable] = []
 
