@@ -82,13 +82,13 @@ bool supportsShortHeightTiles(ComputePrimitive primitive) {
   case ComputePrimitive::Fill:
   case ComputePrimitive::Matmul:
   case ComputePrimitive::MultiplyByConstant:
+  case ComputePrimitive::Passthrough:
     return true;
   case ComputePrimitive::Broadcast:
   case ComputePrimitive::Reduce:
   case ComputePrimitive::Transpose:
   case ComputePrimitive::RowNormalization:
   case ComputePrimitive::Typecast:
-  case ComputePrimitive::Passthrough:
     return false;
   }
 }
@@ -186,7 +186,7 @@ public:
                << tileType.getWidth()
                << " is not supported by this compute primitive; "
                   "short-height tiles are supported by elementwise, fill, "
-                  "and matmul compute primitives";
+                  "matmul, and passthrough compute primitives";
     return failure();
   }
 
