@@ -1303,8 +1303,7 @@ def _build_pipenet_graph(nets):
         if net.is_graph:
             net_use = graph.add_graph_pipe_net(net.graph)
             net._graph_edges = net_use.edges
-            net._graph_pipe_net_ids = net_use.pipe_net_ids
-            net.pipe_net_id = net_use.pipe_net_ids[0]
+            net.pipe_net_id = net_use.pipe_net_id
             continue
         net_use = graph.add_pipe_net(_pipe_to_pipe_use(p) for p in net.pipes)
         net.pipe_net_id = net_use.id
@@ -1815,10 +1814,6 @@ def _compile_kernel(
     has_ttnn_tensors = any(is_ttnn_tensor(arg) for arg in args)
 
     compile_args = args
-    mesh_program_placements = _default_mesh_program_placements_with_domain(
-        args, device_domain
-    )
-
     # For TTNN tensors, detect memory space from tensor's buffer type.
     # L1 tensors use simple NOC addressing, DRAM uses bank-aware addressing.
     # TODO: Check all tensors and handle mixed memory spaces.
@@ -1877,6 +1872,10 @@ def _compile_kernel(
         )
 
     pipenets = _build_operation_pipenets(f, threads)
+    device_domain = pipenets.resolve_device_domain(device_domain)
+    mesh_program_placements = _default_mesh_program_placements_with_domain(
+        args, device_domain
+    )
 
     launch_grid = grid
 

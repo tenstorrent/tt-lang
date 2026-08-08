@@ -177,7 +177,6 @@ inline bool isCollectiveTransfer(PipeTransferContract contract) {
 
 /// Receiver DFB geometry for one transfer definition.
 struct ReceiverDFBInfo {
-  DeviceRefAttr receiverDevice;
   int64_t dfbIndex;
   CircularBufferType dfbType;
   bool hasStaticTileOffset;
@@ -236,6 +235,7 @@ struct PipeTransferNode {
   PipeKey pipe;
   PipeTransferContract transferContract = PipeTransferContract::PointToPoint;
   DeviceTransferAttr deviceTransfer;
+  std::optional<std::uint64_t> sendRecordIndex;
   Operation *sendOp = nullptr;
   SmallVector<Operation *> receiverPostOps;
   SmallVector<PipeReceiverEndpointId> receiverEndpoints;
@@ -249,6 +249,7 @@ struct PipeReceiverEndpoint {
   PipeReceiverCoord receiver;
   PipeReceiverDFBKey receiverDFB;
   ReceiverDFBInfo receiverDFBInfo;
+  std::optional<std::uint64_t> postRecordIndex;
   Operation *postOp = nullptr;
   ReceiverAddressSequenceProof addressSequence;
 };
@@ -299,14 +300,6 @@ inline PipeKey getPipeKey(PipeRecordAttr record, int64_t pipeNetId) {
           record.getDstEndX(),
           record.getDstEndY(),
           pipeNetId};
-}
-
-inline PipeType getPipeTypeFromRecord(MLIRContext *context,
-                                      PipeRecordAttr record,
-                                      int64_t pipeNetId) {
-  return PipeType::get(context, record.getSrcX(), record.getSrcY(),
-                       record.getDstStartX(), record.getDstStartY(),
-                       record.getDstEndX(), record.getDstEndY(), pipeNetId);
 }
 
 /// A pipe operand represented either by a static type or by one selected
@@ -389,6 +382,11 @@ getPipeReferenceForProtocolOp(Operation *protocolOp,
 /// Enumerate the static pipe types represented by a pipe reference.
 SmallVector<PipeType> getPipeTypesFromReference(MLIRContext *context,
                                                 const PipeReference &ref);
+
+/// Return the logical-device transfer associated with one pipe record.
+DeviceTransferAttr
+getPipeRecordDeviceTransfer(const PipeReference &ref, std::size_t recordIndex,
+                            DeviceTransferAttr staticDeviceTransfer);
 
 /// Graph of transfer definitions, receiver endpoints, physical receiver DFBs,
 /// and proven receiver address sequences.

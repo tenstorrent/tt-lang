@@ -176,21 +176,33 @@ void populateTTLModule(nb::module_ &m) {
           "get",
           [](MlirContext ctx, int64_t srcX, int64_t srcY, int64_t dstStartX,
              int64_t dstStartY, int64_t dstEndX, int64_t dstEndY,
-             bool isCollective) {
+             bool isCollective, std::optional<MlirAttribute> deviceTransfer) {
+            DeviceTransferAttr deviceTransferAttr;
+            if (deviceTransfer) {
+              deviceTransferAttr =
+                  mlir::cast<DeviceTransferAttr>(unwrap(*deviceTransfer));
+            }
             return wrap(PipeRecordAttr::get(unwrap(ctx), srcX, srcY, dstStartX,
                                             dstStartY, dstEndX, dstEndY,
-                                            isCollective));
+                                            isCollective, deviceTransferAttr));
           },
           nb::arg("context"), nb::arg("src_x"), nb::arg("src_y"),
           nb::arg("dst_start_x"), nb::arg("dst_start_y"), nb::arg("dst_end_x"),
-          nb::arg("dst_end_y"), nb::arg("is_collective") = false)
+          nb::arg("dst_end_y"), nb::arg("is_collective") = false,
+          nb::arg("device_transfer").none() = nb::none())
       .def_prop_ro("src_x", &PipeRecordAttr::getSrcX)
       .def_prop_ro("src_y", &PipeRecordAttr::getSrcY)
       .def_prop_ro("dst_start_x", &PipeRecordAttr::getDstStartX)
       .def_prop_ro("dst_start_y", &PipeRecordAttr::getDstStartY)
       .def_prop_ro("dst_end_x", &PipeRecordAttr::getDstEndX)
       .def_prop_ro("dst_end_y", &PipeRecordAttr::getDstEndY)
-      .def_prop_ro("is_collective", &PipeRecordAttr::getIsCollective);
+      .def_prop_ro("is_collective", &PipeRecordAttr::getIsCollective)
+      .def_prop_ro("device_transfer", [](PipeRecordAttr &self) -> nb::object {
+        if (DeviceTransferAttr transfer = self.getDeviceTransfer()) {
+          return nb::cast(wrap(transfer));
+        }
+        return nb::none();
+      });
 
   //===--------------------------------------------------------------------===//
   // PipeNetRecordsAttr

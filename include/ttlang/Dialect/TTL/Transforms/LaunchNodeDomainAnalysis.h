@@ -140,13 +140,18 @@ bool launchNodeDomainsOverlap(const LaunchNodeDomain &lhs,
 bool knownLaunchNodeDomainContains(const LaunchNodeDomain &domain,
                                    LaunchNodeCoord coord);
 
-LaunchNodeDomain getPipeRecordSourceLaunchNodeDomain(PipeRecordAttr record);
-
-LaunchNodeDomain
-getPipeRecordDestinationLaunchNodeDomain(PipeRecordAttr record);
+LaunchNodeDomain getPipeRecordRoleLaunchNodeDomain(PipeRecordAttr record,
+                                                   PipeRole role);
 
 LaunchNodeDomain getPipeRecordsRoleLaunchNodeDomain(PipeNetRecordsAttr records,
                                                     PipeRole role);
+
+/// Return whether `record` selects `location` for `role`. A result is unknown
+/// when a device-qualified record is compared with a node-only or unrelated
+/// device location.
+std::optional<bool>
+pipeRecordRoleMatchesAtLaunchLocation(PipeRecordAttr record, PipeRole role,
+                                      const LaunchExecutionLocation &location);
 
 /// Read the PipeNet ids selected by a `ttl.pipenet_scope`.
 bool readPipeNetScopeIds(PipeNetScopeOp scopeOp, SmallVectorImpl<int64_t> &ids);
@@ -213,6 +218,18 @@ std::optional<bool>
 evaluatePredicateAtLaunchLocation(Value value,
                                   const LaunchExecutionLocation &location,
                                   const LaunchNodeDomainState &state);
+
+/// Evaluate an integer or index value at one launch location.
+std::optional<llvm::APInt>
+evaluateIntegerAtLaunchLocation(Value value,
+                                const LaunchExecutionLocation &location,
+                                const LaunchNodeDomainState &state);
+
+/// Return the exact invocation count of a non-loop region at one launch
+/// location when TTL control semantics determine it.
+std::optional<std::uint64_t> getRegionInvocationCountAtLaunchLocation(
+    Region &region, const LaunchExecutionLocation &location,
+    const LaunchNodeDomainState &state);
 
 /// Return the exact execution count of `op` at `coord`. Launch-node facts
 /// specialize coordinate and PipeNet predicates before the generic execution

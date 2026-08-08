@@ -15,10 +15,7 @@ PipeNet supports the spec's callback API:
 
 import inspect
 import warnings
-from typing import TYPE_CHECKING, Callable, List, Optional, Tuple, Union
-
-if TYPE_CHECKING:
-    from .domains import DeviceRange, DeviceRef
+from typing import Callable, List, Optional, Tuple, Union
 
 # Type aliases matching the spec
 CoreCoord = Tuple[int, int]
@@ -44,20 +41,15 @@ class SrcPipeIdentity:
         return (self._pipe.dst_start, self._pipe.dst_end)
 
     @property
-    def destination_device(self) -> Union["DeviceRef", "DeviceRange"]:
-        """Return the destination device of a graph-based pipe."""
-        if not hasattr(self._pipe, "_device_edge"):
-            raise ValueError(
-                "destination_device is available only for graph-based PipeNets"
-            )
-        return self._pipe._device_edge.destination
-
-    @property
     def destination_device_index(self) -> int:
         """Return the destination's row-major order in the device domain."""
         from .domains import DeviceRange
 
-        destination = self.destination_device
+        if not hasattr(self._pipe, "_device_edge"):
+            raise ValueError(
+                "destination_device_index is available only for graph-based PipeNets"
+            )
+        destination = self._pipe._device_edge.destination
         if isinstance(destination, DeviceRange):
             raise ValueError(
                 "destination_device_index is unavailable for device ranges"
@@ -82,16 +74,13 @@ class DstPipeIdentity:
         return self._pipe.src
 
     @property
-    def source_device(self) -> "DeviceRef":
-        """Return the source device of a graph-based pipe."""
-        if not hasattr(self._pipe, "_device_edge"):
-            raise ValueError("source_device is available only for graph-based PipeNets")
-        return self._pipe._device_edge.source
-
-    @property
     def source_device_index(self) -> int:
         """Return the source's row-major order in the device domain."""
-        return self._pipe._device_domain.index_order(self.source_device)
+        if not hasattr(self._pipe, "_device_edge"):
+            raise ValueError(
+                "source_device_index is available only for graph-based PipeNets"
+            )
+        return self._pipe._device_domain.index_order(self._pipe._device_edge.source)
 
 
 class Pipe:
@@ -277,7 +266,6 @@ class PipeNet:
         self.pipes: List[Pipe] = []
         self.graph: Optional[TransferGraph] = None
         self._graph_edges = ()
-        self._graph_pipe_net_ids = ()
         if graph is not None:
             if not isinstance(graph, TransferGraph):
                 raise TypeError(

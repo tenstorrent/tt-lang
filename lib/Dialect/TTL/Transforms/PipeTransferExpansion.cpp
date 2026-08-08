@@ -155,59 +155,56 @@ buildPipeTransferExpansionPlan(ModuleOp module, ValueOriginAnalysis &analysis) {
     return operandsByFunctionArgument.lookup(argument);
   };
 
+  struct PipeCopyFacts {
+    PipeTransferContract contract;
+    DeviceTransferAttr deviceTransfer;
+  };
+  auto collectPipeCopyFacts = [&](CopyOp op,
+                                  Value pipe) -> FailureOr<PipeCopyFacts> {
+    FailureOr<PipeTransferContract> contract =
+        getPipeTransferContractForPipeValue(analysis, pipe);
+    if (failed(contract)) {
+      op.emitError() << "requires a consistent transfer contract for all "
+                        "possible pipe values";
+      return failure();
+    }
+    FailureOr<std::optional<DeviceTransferAttr>> maybeDeviceTransfer =
+        findUniquePipeDeviceTransfer(analysis, pipe, resolveFunctionArguments);
+    if (failed(maybeDeviceTransfer)) {
+      op.emitError() << "requires every possible pipe definition to use the "
+                        "same logical-device transfer";
+      return failure();
+    }
+    return PipeCopyFacts{*contract,
+                         maybeDeviceTransfer->value_or(DeviceTransferAttr())};
+  };
+
   LogicalResult result = success();
   module.walk([&](CopyOp op) {
     if (isPipeReceiveCopy(op)) {
-      FailureOr<PipeTransferContract> contract =
-          getPipeTransferContractForPipeValue(analysis, op.getSrc());
-      if (failed(contract)) {
-        op.emitError()
-            << "requires a consistent transfer contract for all possible "
-               "pipe values";
+      FailureOr<PipeCopyFacts> maybeFacts =
+          collectPipeCopyFacts(op, op.getSrc());
+      if (failed(maybeFacts)) {
+        result = failure();
+        return;
+      }
+      FailureOr<int64_t> pipeNetId = getPipeNetIdForPipeValue(op, op.getSrc());
+      if (failed(pipeNetId)) {
         result = failure();
       } else {
-        FailureOr<std::optional<DeviceTransferAttr>> maybeDeviceTransfer =
-            findUniquePipeDeviceTransfer(analysis, op.getSrc(),
-                                         resolveFunctionArguments);
-        FailureOr<int64_t> pipeNetId =
-            getPipeNetIdForPipeValue(op, op.getSrc());
-        if (failed(maybeDeviceTransfer)) {
-          op.emitError() << "requires every possible pipe definition to use "
-                            "the same logical-device transfer";
-          result = failure();
-        } else if (failed(pipeNetId)) {
-          result = failure();
-        } else {
-          plan.receiveCopies.push_back(
-              {op, *contract,
-               maybeDeviceTransfer->value_or(DeviceTransferAttr()),
-               *pipeNetId});
-        }
+        plan.receiveCopies.push_back(
+            {op, maybeFacts->contract, maybeFacts->deviceTransfer, *pipeNetId});
       }
       return;
     }
     if (isPipeSendCopy(op)) {
-      FailureOr<PipeTransferContract> contract =
-          getPipeTransferContractForPipeValue(analysis, op.getDst());
-      if (failed(contract)) {
-        op.emitError()
-            << "requires a consistent transfer contract for all possible "
-               "pipe values";
+      FailureOr<PipeCopyFacts> maybeFacts =
+          collectPipeCopyFacts(op, op.getDst());
+      if (failed(maybeFacts)) {
         result = failure();
       } else {
-        FailureOr<std::optional<DeviceTransferAttr>> maybeDeviceTransfer =
-            findUniquePipeDeviceTransfer(analysis, op.getDst(),
-                                         resolveFunctionArguments);
-        if (failed(maybeDeviceTransfer)) {
-          op.emitError() << "requires every possible pipe definition to use "
-                            "the same logical-device transfer";
-          result = failure();
-        } else {
-          plan.sendCopies.push_back(
-              {op, *contract,
-               maybeDeviceTransfer->value_or(DeviceTransferAttr()),
-               std::nullopt});
-        }
+        plan.sendCopies.push_back({op, maybeFacts->contract,
+                                   maybeFacts->deviceTransfer, std::nullopt});
       }
     }
   });

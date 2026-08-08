@@ -173,7 +173,7 @@ class DeviceRange:
 
 @dataclass(frozen=True)
 class TransferEdge:
-    """Device-level transfer edge without core or dataflow-buffer binding."""
+    """Device-level transfer edge without node or dataflow-buffer binding."""
 
     source: DeviceRef
     destination: Union[DeviceRef, DeviceRange]

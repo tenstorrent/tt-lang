@@ -584,6 +584,7 @@ def _compile_atom(
     for net in nets.values():
         all_nets[id(net)] = net
     pipe_graph = _build_pipenet_graph(all_nets.values())
+    device_domain = pipe_graph.resolve_device_domain(device_domain)
 
     split = split_function_body(
         fn_def=stripped_fn,

@@ -355,7 +355,7 @@ llvm::LogicalResult
 PipeRecordAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
                        int64_t srcX, int64_t srcY, int64_t dstStartX,
                        int64_t dstStartY, int64_t dstEndX, int64_t dstEndY,
-                       bool isCollective) {
+                       bool isCollective, DeviceTransferAttr deviceTransfer) {
   if (srcX < 0 || srcY < 0) {
     return emitError() << "source coordinates must be non-negative";
   }
@@ -385,6 +385,23 @@ llvm::LogicalResult PipeNetRecordsAttr::verify(
       })) {
     return emitError()
            << "all pipe records must be either point-to-point or collective";
+  }
+  DeviceTransferAttr firstTransfer = pipes.front().getDeviceTransfer();
+  DeviceDomainAttr deviceDomain =
+      firstTransfer ? firstTransfer.getDomain() : DeviceDomainAttr();
+  for (PipeRecordAttr record : pipes) {
+    DeviceTransferAttr transfer = record.getDeviceTransfer();
+    if (static_cast<bool>(transfer) != static_cast<bool>(firstTransfer)) {
+      return emitError()
+             << "pipe records must consistently identify device transfers";
+    }
+    if (transfer && transfer.getDomain() != deviceDomain) {
+      return emitError()
+             << "all pipe records must use the same logical device domain";
+    }
+    if (transfer && !transfer.getEdge().getDestination()) {
+      return emitError() << "graph pipe records require one destination device";
+    }
   }
   return llvm::success();
 }
@@ -644,6 +661,13 @@ verifyPipeNetForeachBody(mlir::Operation *op, mlir::Region &body,
     if (copy && (copy.getSrc() == pipeArg || copy.getDst() == pipeArg)) {
       continue;
     }
+    if (mlir::isa<mlir::tt::ttl::SelectedPipeSourceDeviceIndexOp,
+                  mlir::tt::ttl::SelectedPipeDestinationDeviceIndexOp,
+                  mlir::tt::ttl::SelectedPipeSourceCoordinatesOp,
+                  mlir::tt::ttl::SelectedPipeDestinationCoordinatesOp>(
+            use.getOwner())) {
+      continue;
+    }
     return op->emitOpError() << "selected pipe argument has unsupported use by "
                              << use.getOwner()->getName();
   }
@@ -658,6 +682,58 @@ mlir::LogicalResult mlir::tt::ttl::PipeNetForeachSrcOp::verify() {
 mlir::LogicalResult mlir::tt::ttl::PipeNetForeachDstOp::verify() {
   return verifyPipeNetForeachBody(getOperation(), getBody(),
                                   SelectedPipeDstType::get(getContext()));
+}
+
+static mlir::LogicalResult
+verifySelectedPipeDeviceIndex(mlir::Operation *op, mlir::Value pipe,
+                              bool requirePointDestination) {
+  mlir::FailureOr<mlir::tt::ttl::SelectedPipeRecords> maybeRecords =
+      mlir::tt::ttl::getSelectedPipeRecords(pipe);
+  if (mlir::failed(maybeRecords)) {
+    return op->emitOpError()
+           << "requires a selected pipe with an associated record table";
+  }
+  for (mlir::tt::ttl::PipeRecordAttr record :
+       maybeRecords->records.getPipes()) {
+    mlir::tt::ttl::DeviceTransferAttr transfer = record.getDeviceTransfer();
+    if (!transfer) {
+      return op->emitOpError()
+             << "requires every selected record to identify a device transfer";
+    }
+    if (requirePointDestination && !transfer.getEdge().getDestination()) {
+      return op->emitOpError() << "does not support a device-range destination";
+    }
+  }
+  return mlir::success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::SelectedPipeSourceDeviceIndexOp::verify() {
+  return verifySelectedPipeDeviceIndex(getOperation(), getPipe(),
+                                       /*requirePointDestination=*/false);
+}
+
+mlir::LogicalResult
+mlir::tt::ttl::SelectedPipeDestinationDeviceIndexOp::verify() {
+  return verifySelectedPipeDeviceIndex(getOperation(), getPipe(),
+                                       /*requirePointDestination=*/true);
+}
+
+static mlir::LogicalResult verifySelectedPipeCoordinates(mlir::Operation *op,
+                                                         mlir::Value pipe) {
+  if (mlir::failed(mlir::tt::ttl::getSelectedPipeRecords(pipe))) {
+    return op->emitOpError()
+           << "requires a selected pipe with an associated record table";
+  }
+  return mlir::success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::SelectedPipeSourceCoordinatesOp::verify() {
+  return verifySelectedPipeCoordinates(getOperation(), getPipe());
+}
+
+mlir::LogicalResult
+mlir::tt::ttl::SelectedPipeDestinationCoordinatesOp::verify() {
+  return verifySelectedPipeCoordinates(getOperation(), getPipe());
 }
 
 static mlir::Operation *getSelectedPipeDef(mlir::Value pipe) {
@@ -708,6 +784,11 @@ mlir::LogicalResult mlir::tt::ttl::PipeTransferCreateOp::verify() {
   }
 
   Value pipe = traceUnrealizedCasts(getPipe());
+  if (mlir::isa<SelectedPipeSrcType, SelectedPipeDstType>(pipe.getType()) &&
+      getDeviceTransferAttr()) {
+    return emitOpError()
+           << "selected pipe device transfers are stored in the record table";
+  }
   if (auto createPipe = pipe.getDefiningOp<CreatePipeOp>();
       createPipe &&
       createPipe.getDeviceTransferAttr() != getDeviceTransferAttr()) {
@@ -2399,6 +2480,34 @@ mlir::LogicalResult mlir::tt::ttl::RawElementWriteOp::verify() {
 //===----------------------------------------------------------------------===//
 // PipeNetPredicateOpInterface implementations.
 //===----------------------------------------------------------------------===//
+
+template <typename PredicateOp>
+static mlir::LogicalResult verifyPipeNetPredicate(PredicateOp op) {
+  mlir::tt::ttl::PipeNetRecordsAttr records = op.getRecordsAttr();
+  int64_t pipeNetId = op.getPipeNetIdAttr().getInt();
+  if (records && records.getPipeNetId() != pipeNetId) {
+    return op.emitOpError()
+           << "record table identifies PipeNet " << records.getPipeNetId()
+           << ", but pipe_net_id is " << pipeNetId;
+  }
+  if (records && !records.getPipes().front().getDeviceTransfer()) {
+    return op.emitOpError()
+           << "record table must identify logical-device transfers";
+  }
+  return mlir::success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::IsSrcOp::verify() {
+  return verifyPipeNetPredicate(*this);
+}
+
+mlir::LogicalResult mlir::tt::ttl::IsDstOp::verify() {
+  return verifyPipeNetPredicate(*this);
+}
+
+mlir::LogicalResult mlir::tt::ttl::IsActiveOp::verify() {
+  return verifyPipeNetPredicate(*this);
+}
 
 int64_t mlir::tt::ttl::IsSrcOp::getReferencedPipeNetId() {
   return getPipeNetId();

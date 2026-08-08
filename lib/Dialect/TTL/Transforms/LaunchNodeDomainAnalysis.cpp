@@ -221,20 +221,15 @@ bool knownLaunchNodeDomainContains(const LaunchNodeDomain &domain,
   return domain.known && domain.nodes.find(coord) != domain.nodes.end();
 }
 
-LaunchNodeDomain getPipeRecordSourceLaunchNodeDomain(PipeRecordAttr record) {
+LaunchNodeDomain getPipeRecordRoleLaunchNodeDomain(PipeRecordAttr record,
+                                                   PipeRole role) {
   LaunchNodeDomain result;
-  result.nodes.insert({record.getSrcX(), record.getSrcY()});
-  return result;
-}
-
-LaunchNodeDomain
-getPipeRecordDestinationLaunchNodeDomain(PipeRecordAttr record) {
-  LaunchNodeDomain result;
-  for (int64_t nodeX = record.getDstStartX(); nodeX <= record.getDstEndX();
-       ++nodeX) {
-    for (int64_t nodeY = record.getDstStartY(); nodeY <= record.getDstEndY();
-         ++nodeY) {
-      result.nodes.insert({nodeX, nodeY});
+  for (const PipeRecordRoleFacts &facts :
+       getPipeRecordRoleFacts(record, role)) {
+    for (int64_t nodeX = facts.minX; nodeX <= facts.maxX; ++nodeX) {
+      for (int64_t nodeY = facts.minY; nodeY <= facts.maxY; ++nodeY) {
+        result.nodes.insert({nodeX, nodeY});
+      }
     }
   }
   return result;
@@ -245,9 +240,7 @@ LaunchNodeDomain getPipeRecordsRoleLaunchNodeDomain(PipeNetRecordsAttr records,
   LaunchNodeDomain result;
   for (PipeRecordAttr record : records.getPipes()) {
     LaunchNodeDomain recordDomain =
-        role == PipeRole::Source
-            ? getPipeRecordSourceLaunchNodeDomain(record)
-            : getPipeRecordDestinationLaunchNodeDomain(record);
+        getPipeRecordRoleLaunchNodeDomain(record, role);
     result = result.unionWith(recordDomain);
   }
   return result;
@@ -414,6 +407,9 @@ evaluateLaunchNodeContextValue(Value value, LaunchNodeCoord coord,
   }
   if (state) {
     if (auto predicate = value.getDefiningOp<PipeNetPredicateOpInterface>()) {
+      if (predicate.getReferencedRecords()) {
+        return std::nullopt;
+      }
       bool selected = knownLaunchNodeDomainContains(
           state->getRoleDomain(predicate.getReferencedPipeNetId(),
                                predicate.getReferencedRole()),
@@ -424,10 +420,64 @@ evaluateLaunchNodeContextValue(Value value, LaunchNodeCoord coord,
   return std::nullopt;
 }
 
+std::optional<bool>
+pipeRecordRoleMatchesAtLaunchLocation(PipeRecordAttr record, PipeRole role,
+                                      const LaunchExecutionLocation &location) {
+  bool hasUnknownDeviceMatch = false;
+  for (const PipeRecordRoleFacts &facts :
+       getPipeRecordRoleFacts(record, role)) {
+    bool nodeMatches =
+        location.node.x >= facts.minX && location.node.x <= facts.maxX &&
+        location.node.y >= facts.minY && location.node.y <= facts.maxY;
+    if (!nodeMatches) {
+      continue;
+    }
+    if (!facts.device) {
+      return true;
+    }
+    if (!location.device || location.deviceDomain != facts.deviceDomain) {
+      hasUnknownDeviceMatch = true;
+      continue;
+    }
+    if (location.device == facts.device) {
+      return true;
+    }
+  }
+  return hasUnknownDeviceMatch ? std::nullopt : std::optional<bool>(false);
+}
+
+static std::optional<bool> evaluatePipeNetPredicateAtLaunchLocation(
+    PipeNetPredicateOpInterface predicate,
+    const LaunchExecutionLocation &location) {
+  PipeNetRecordsAttr records = predicate.getReferencedRecords();
+  if (!records) {
+    return std::nullopt;
+  }
+  bool selected = false;
+  for (PipeRecordAttr record : records.getPipes()) {
+    std::optional<bool> recordMatches = pipeRecordRoleMatchesAtLaunchLocation(
+        record, predicate.getReferencedRole(), location);
+    if (!recordMatches) {
+      return std::nullopt;
+    }
+    selected |= *recordMatches;
+  }
+  return selected;
+}
+
 static std::optional<llvm::APInt>
 evaluateLaunchLocationContextValue(Value value,
                                    const LaunchExecutionLocation &location,
                                    const LaunchNodeDomainState *state) {
+  if (auto predicate = value.getDefiningOp<PipeNetPredicateOpInterface>()) {
+    if (predicate.getReferencedRecords()) {
+      std::optional<bool> selected =
+          evaluatePipeNetPredicateAtLaunchLocation(predicate, location);
+      return selected ? std::optional<llvm::APInt>(llvm::APInt(
+                            /*numBits=*/1, *selected))
+                      : std::nullopt;
+    }
+  }
   if (std::optional<llvm::APInt> nodeValue =
           evaluateLaunchNodeContextValue(value, location.node, state)) {
     return nodeValue;
@@ -447,6 +497,15 @@ evaluateLaunchLocationContextValue(Value value,
     return llvm::APInt(
         /*numBits=*/1,
         deviceRangeContains(isDeviceInRangeOp.getRange(), location.device));
+  }
+  if (auto currentDeviceOp = value.getDefiningOp<CurrentDeviceIndexOp>()) {
+    if (!location.device ||
+        location.deviceDomain != currentDeviceOp.getDomain()) {
+      return std::nullopt;
+    }
+    return llvm::APInt(
+        IndexType::kInternalStorageBitWidth,
+        getLogicalDeviceIndex(currentDeviceOp.getDomain(), location.device));
   }
   return std::nullopt;
 }
@@ -480,18 +539,26 @@ evaluatePredicateAtLaunchLocation(Value value,
                                   const LaunchExecutionLocation &location,
                                   const LaunchNodeDomainState &state) {
   std::optional<llvm::APInt> maybeValue =
-      createLaunchLocationIntegerEvaluator(location, &state).evaluate(value);
+      evaluateIntegerAtLaunchLocation(value, location, state);
   if (!maybeValue || maybeValue->getBitWidth() != 1) {
     return std::nullopt;
   }
   return maybeValue->getBoolValue();
 }
 
+std::optional<llvm::APInt>
+evaluateIntegerAtLaunchLocation(Value value,
+                                const LaunchExecutionLocation &location,
+                                const LaunchNodeDomainState &state) {
+  return createLaunchLocationIntegerEvaluator(location, &state).evaluate(value);
+}
+
 namespace {
 
 static std::optional<std::uint64_t>
-getRegionInvocationCountAtLaunchNode(Region &region, LaunchNodeCoord coord,
-                                     const LaunchNodeDomainState &state) {
+evaluateRegionInvocationCountAtLaunchLocation(
+    Region &region, const LaunchExecutionLocation &location,
+    const LaunchNodeDomainState &state) {
   Operation *parent = region.getParentOp();
   if (isa<PipeNetScopeOp>(parent)) {
     return 1;
@@ -499,7 +566,7 @@ getRegionInvocationCountAtLaunchNode(Region &region, LaunchNodeCoord coord,
   if (auto ifSrcOp = dyn_cast<IfSrcOp>(parent)) {
     auto pipeType = cast<PipeType>(ifSrcOp.getPipe().getType());
     return knownLaunchNodeDomainContains(
-               getPipeSourceLaunchNodeDomain(pipeType), coord)
+               getPipeSourceLaunchNodeDomain(pipeType), location.node)
                ? 1
                : 0;
   }
@@ -507,24 +574,33 @@ getRegionInvocationCountAtLaunchNode(Region &region, LaunchNodeCoord coord,
     auto pipeType = cast<PipeType>(ifDstOp.getPipe().getType());
     return knownLaunchNodeDomainContains(
                getPipeDestinationLaunchNodeDomain(pipeType, state.baseDomain),
-               coord)
+               location.node)
                ? 1
                : 0;
   }
   if (auto foreachSrcOp = dyn_cast<PipeNetForeachSrcOp>(parent)) {
-    return llvm::count_if(
-        foreachSrcOp.getRecords().getPipes(), [&](PipeRecordAttr record) {
-          return record.getSrcX() == coord.x && record.getSrcY() == coord.y;
-        });
+    std::uint64_t count = 0;
+    for (PipeRecordAttr record : foreachSrcOp.getRecords().getPipes()) {
+      std::optional<bool> matches = pipeRecordRoleMatchesAtLaunchLocation(
+          record, PipeRole::Source, location);
+      if (!matches) {
+        return std::nullopt;
+      }
+      count += *matches;
+    }
+    return count;
   }
   if (auto foreachDstOp = dyn_cast<PipeNetForeachDstOp>(parent)) {
-    return llvm::count_if(foreachDstOp.getRecords().getPipes(),
-                          [&](PipeRecordAttr record) {
-                            return coord.x >= record.getDstStartX() &&
-                                   coord.x <= record.getDstEndX() &&
-                                   coord.y >= record.getDstStartY() &&
-                                   coord.y <= record.getDstEndY();
-                          });
+    std::uint64_t count = 0;
+    for (PipeRecordAttr record : foreachDstOp.getRecords().getPipes()) {
+      std::optional<bool> matches = pipeRecordRoleMatchesAtLaunchLocation(
+          record, PipeRole::Destination, location);
+      if (!matches) {
+        return std::nullopt;
+      }
+      count += *matches;
+    }
+    return count;
   }
   if (auto affineIfOp = dyn_cast<affine::AffineIfOp>(parent)) {
     LaunchNodeDomainResult trueDomain =
@@ -532,13 +608,20 @@ getRegionInvocationCountAtLaunchNode(Region &region, LaunchNodeCoord coord,
     if (!trueDomain.domain.known) {
       return std::nullopt;
     }
-    bool selectsThen = knownLaunchNodeDomainContains(trueDomain.domain, coord);
+    bool selectsThen =
+        knownLaunchNodeDomainContains(trueDomain.domain, location.node);
     return (selectsThen == (region.getRegionNumber() == 0)) ? 1 : 0;
   }
   return std::nullopt;
 }
 
 } // namespace
+
+std::optional<std::uint64_t> getRegionInvocationCountAtLaunchLocation(
+    Region &region, const LaunchExecutionLocation &location,
+    const LaunchNodeDomainState &state) {
+  return evaluateRegionInvocationCountAtLaunchLocation(region, location, state);
+}
 
 std::optional<std::uint64_t>
 getExactExecutionCountAtLaunchNode(Operation *op, LaunchNodeCoord coord,
@@ -566,8 +649,8 @@ getExactExecutionCountAtLaunchLocation(Operation *op,
           return evaluateLaunchLocationContextValue(value, location, &state);
         },
         [location, &state](Region &region) {
-          return getRegionInvocationCountAtLaunchNode(region, location.node,
-                                                      state);
+          return getRegionInvocationCountAtLaunchLocation(region, location,
+                                                          state);
         });
     analysisIt =
         analysesByLocation.emplace(location, std::move(analysis)).first;
@@ -1013,6 +1096,9 @@ getBranchDomainsImpl(Value condition, const LaunchNodeDomain &current,
   if (auto pred = condition.getDefiningOp<PipeNetPredicateOpInterface>()) {
     LaunchNodeDomain roleDomain = state.getRoleDomain(
         pred.getReferencedPipeNetId(), pred.getReferencedRole());
+    if (pred.getReferencedRecords()) {
+      return {current.intersectWith(roleDomain), current};
+    }
     return exactBranches(roleDomain, current, state.baseDomain);
   }
   if (auto andOp = condition.getDefiningOp<arith::AndIOp>()) {

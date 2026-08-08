@@ -197,7 +197,8 @@ def TTL_PipeRecordAttr : TTL_Attr<"PipeRecord", "pipe_record"> {
     Encodes one static PipeNet record for PipeNet foreach ops. The owning
     `#ttl.pipenet_records` attribute contains the PipeNet id; each record
     contains source and destination coordinates plus a flag selecting
-    point-to-point or collective semantics.
+    point-to-point or collective semantics. `deviceTransfer` identifies the
+    logical-device edge for graph PipeNets and is absent for local PipeNets.
 
     `isCollective` is a frontend-supplied flag, not derived from coordinates:
     `slice(i, i + 1)` is a singleton collective record with one destination
@@ -211,7 +212,8 @@ def TTL_PipeRecordAttr : TTL_Attr<"PipeRecord", "pipe_record"> {
     "int64_t":$dstStartY,
     "int64_t":$dstEndX,
     "int64_t":$dstEndY,
-    DefaultValuedParameter<"bool", "false">:$isCollective
+    DefaultValuedParameter<"bool", "false">:$isCollective,
+    OptionalParameter<"DeviceTransferAttr">:$deviceTransfer
   );
 
   let assemblyFormat = "`<` struct(params) `>`";

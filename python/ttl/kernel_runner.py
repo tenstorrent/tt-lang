@@ -1191,24 +1191,6 @@ def run_kernel_on_device(
     if pipe_global_semaphore_lifetime is not None:
         pipe_global_semaphore_lifetime[:] = pipe_runtime_resources.global_semaphores
 
-    # Build kernel descriptors.
-    kernel_descriptors = build_kernel_descriptors(
-        kernel_specs=kernel_specs,
-        tensors=tensors,
-        tensor_accessor_args=tensor_accessor_args,
-        core_ranges=core_ranges,
-        grid_cols=grid_cols,
-        grid_rows=grid_rows,
-        num_cbs=len(cb_configs),
-        pipe_computed_address_base_addresses=(
-            pipe_runtime_resources.computed_address_base_addresses
-        ),
-        extra_common_runtime_args=pipe_runtime_resources.extra_common_runtime_args,
-        expected_extra_common_runtime_args=(
-            pipe_runtime_resources.expected_extra_common_runtime_args
-        ),
-    )
-
     # Build CB descriptors.
     cb_descriptors = build_cb_descriptors(
         tensors=tensors,
@@ -1224,16 +1206,37 @@ def run_kernel_on_device(
         count=num_pipe_sync_semaphores,
     )
 
-    # Build and execute program.
-    program_descriptor = build_program_descriptor(
-        kernel_descriptors=kernel_descriptors,
-        cb_descriptors=cb_descriptors,
-        semaphore_descriptors=semaphore_descriptors,
-    )
     normalized_program_hash = normalize_program_hash(program_hash)
-    if normalized_program_hash is not None:
-        program_descriptor.custom_program_hash = normalized_program_hash
-    program = program_descriptor
+
+    def build_device_program(device_coordinates=None):
+        kernel_descriptors = build_kernel_descriptors(
+            kernel_specs=kernel_specs,
+            tensors=tensors,
+            tensor_accessor_args=tensor_accessor_args,
+            core_ranges=core_ranges,
+            grid_cols=grid_cols,
+            grid_rows=grid_rows,
+            num_cbs=len(cb_configs),
+            pipe_computed_address_base_addresses=(
+                pipe_runtime_resources.computed_address_base_addresses
+            ),
+            extra_common_runtime_args=(
+                pipe_runtime_resources.extra_common_runtime_args
+            ),
+            expected_extra_common_runtime_args=(
+                pipe_runtime_resources.expected_extra_common_runtime_args
+            ),
+            device_coordinates=device_coordinates,
+        )
+        program_descriptor = build_program_descriptor(
+            kernel_descriptors=kernel_descriptors,
+            cb_descriptors=cb_descriptors,
+            semaphore_descriptors=semaphore_descriptors,
+        )
+        if normalized_program_hash is not None:
+            program_descriptor.custom_program_hash = normalized_program_hash
+        return program_descriptor
+
     if device_domain is not None:
         mesh_device = _first_device(tensors)
         fabric_routes = kernel_fabric_routes or [[] for _ in kernel_specs]
@@ -1241,32 +1244,7 @@ def run_kernel_on_device(
         for mesh_coordinate, runtime_coordinates in _iter_device_domain_coordinates(
             device_domain
         ):
-            device_kernel_descriptors = build_kernel_descriptors(
-                kernel_specs=kernel_specs,
-                tensors=tensors,
-                tensor_accessor_args=tensor_accessor_args,
-                core_ranges=core_ranges,
-                grid_cols=grid_cols,
-                grid_rows=grid_rows,
-                num_cbs=len(cb_configs),
-                pipe_computed_address_base_addresses=(
-                    pipe_runtime_resources.computed_address_base_addresses
-                ),
-                extra_common_runtime_args=(
-                    pipe_runtime_resources.extra_common_runtime_args
-                ),
-                expected_extra_common_runtime_args=(
-                    pipe_runtime_resources.expected_extra_common_runtime_args
-                ),
-                device_coordinates=runtime_coordinates,
-            )
-            device_program = build_program_descriptor(
-                kernel_descriptors=device_kernel_descriptors,
-                cb_descriptors=cb_descriptors,
-                semaphore_descriptors=semaphore_descriptors,
-            )
-            if normalized_program_hash is not None:
-                device_program.custom_program_hash = normalized_program_hash
+            device_program = build_device_program(runtime_coordinates)
             configure_routing_plane_runtime_args(
                 program_descriptor=device_program,
                 kernel_fabric_routes=fabric_routes,
@@ -1278,11 +1256,14 @@ def run_kernel_on_device(
             )
             program_descriptors[mesh_coordinate] = device_program
         program = build_device_mesh_program_descriptor(program_descriptors)
-    elif mesh_program_placements is not None:
-        program = build_mesh_program_descriptor(
-            program_descriptor=program_descriptor,
-            mesh_program_placements=mesh_program_placements,
-        )
+    else:
+        program_descriptor = build_device_program()
+        program = program_descriptor
+        if mesh_program_placements is not None:
+            program = build_mesh_program_descriptor(
+                program_descriptor=program_descriptor,
+                mesh_program_placements=mesh_program_placements,
+            )
 
     # ttnn.generic_op requires io_tensors to contain at least one input
     # and one output (size >= 2).  Output-only kernels (e.g. fill with no

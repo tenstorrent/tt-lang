@@ -140,21 +140,32 @@ buildPipeSendPlan(PipeTransferSendOp sendOp, const DominanceInfo &dominanceInfo,
                dominanceInfo.dominates(user, sendOp);
       });
 
-  std::optional<std::size_t> fabricRouteIndex;
-  if (fabricRoutePlan) {
-    auto routeIt = fabricRoutePlan->sendRouteIndex.find(sendOp.getOperation());
-    if (routeIt != fabricRoutePlan->sendRouteIndex.end()) {
-      fabricRouteIndex = routeIt->second;
-    }
-  }
-  return PipeSendPlan{readFromDFB, maybePayload->sizeBytes, fabricRouteIndex};
+  ArrayRef<std::size_t> fabricRouteIndices =
+      fabricRoutePlan
+          ? fabricRoutePlan->lookupRouteIndices(sendOp.getOperation())
+          : ArrayRef<std::size_t>();
+  return PipeSendPlan{readFromDFB, maybePayload->sizeBytes,
+                      SmallVector<std::size_t>(fabricRouteIndices)};
 }
 
 static FailureOr<PipePostPlan>
 buildPipePostPlan(PipeTransferPostOp postOp,
-                  const PipeResourceInfo &resources) {
-  if (resources.addressStorage.usesComputedReceiverDFB()) {
-    return PipePostPlan{};
+                  ArrayRef<PipeResourceInfo> resources,
+                  const FabricRoutePlan *fabricRoutePlan) {
+  ArrayRef<std::size_t> fabricRouteIndices =
+      fabricRoutePlan
+          ? fabricRoutePlan->lookupRouteIndices(postOp.getOperation())
+          : ArrayRef<std::size_t>();
+  SmallVector<PipeAddressMode> addressModes =
+      llvm::map_to_vector(resources, [](const PipeResourceInfo &resource) {
+        return resource.addressStorage.mode;
+      });
+  if (llvm::all_of(resources, [](const PipeResourceInfo &resource) {
+        return resource.addressStorage.usesComputedReceiverDFB();
+      })) {
+    return PipePostPlan{/*addressPublication=*/std::nullopt,
+                        std::move(addressModes),
+                        SmallVector<std::size_t>(fabricRouteIndices)};
   }
 
   Value receiverDFB = getAttachedCB(postOp.getDst());
@@ -174,8 +185,22 @@ buildPipePostPlan(PipeTransferPostOp postOp,
     postOp.emitError("pipe receiver DFB element type must be tile");
     return failure();
   }
-  return PipePostPlan{PipeReceiverAddressPublicationPlan{
-      receiverDFB, static_cast<int64_t>(tileType.getSizeBytes())}};
+  return PipePostPlan{
+      PipeReceiverAddressPublicationPlan{
+          receiverDFB, static_cast<int64_t>(tileType.getSizeBytes())},
+      std::move(addressModes), SmallVector<std::size_t>(fabricRouteIndices)};
+}
+
+template <typename Resources>
+static bool allUseComputedReceiverDFB(const Resources &resources) {
+  if (const auto *staticResources = std::get_if<PipeResourceInfo>(&resources)) {
+    return staticResources->addressStorage.usesComputedReceiverDFB();
+  }
+  return llvm::all_of(
+      std::get<SmallVector<PipeResourceInfo>>(resources),
+      [](const PipeResourceInfo &resource) {
+        return resource.addressStorage.usesComputedReceiverDFB();
+      });
 }
 
 static void printPipe(llvm::raw_ostream &os, const PipeKey &pipe) {
@@ -208,7 +233,7 @@ static bool isCapacityProtocolLowerable(
   const PipeTransferNode &transferNode =
       pipeGraph.getPipeTransferNode(endpointFacts.transferNode);
   if (fabricRoutePlan &&
-      fabricRoutePlan->sendRouteIndex.contains(transferNode.sendOp)) {
+      !fabricRoutePlan->lookupRouteIndices(transferNode.sendOp).empty()) {
     debugRejectEndpoint(endpointFacts,
                         "device transfer uses routing-plane flow control");
     return false;
@@ -338,20 +363,21 @@ private:
   }
 };
 
-FailureOr<PipeModulePlan>
-buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
-                    const PipeTransferIndex &transferIndex,
-                    const PipeGraph &pipeGraph,
-                    const PipePlanningOptions &options) {
+FailureOr<PipeModulePlan> buildPipeModulePlan(
+    ModuleOp module, ValueOriginAnalysis &analysis,
+    const PipeTransferIndex &transferIndex, const PipeGraph &pipeGraph,
+    const PipeNetIndex &pipeNetIndex, const PipePlanningOptions &options) {
   PipeModulePlan plan;
   PipeSynchronizationSelection synchronizationSelection;
-  buildPipeNetIndex(module, plan.pipeNetIndex);
+  plan.pipeNetIndex = pipeNetIndex;
 
   const FabricRoutePlan *fabricRoutePlan = options.fabricRoutePlan;
   if (fabricRoutePlan) {
-    synchronizationSelection.fabricTransferOps.insert(
-        fabricRoutePlan->transferOps.begin(),
-        fabricRoutePlan->transferOps.end());
+    for (const auto &[operation, routeIndices] :
+         fabricRoutePlan->routeIndices) {
+      assert(!routeIndices.empty() && "fabric route table must not be empty");
+      synchronizationSelection.fabricTransferOps.insert(operation);
+    }
   }
 
   if (options.enableCapacitySynchronization) {
@@ -436,48 +462,48 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
         usesFabricProtocol     ? PipeSynchronizationProtocol::Fabric
         : usesCapacityProtocol ? PipeSynchronizationProtocol::Capacity
                                : PipeSynchronizationProtocol::ReceiverPost;
-    if (usesFabricProtocol &&
-        !std::holds_alternative<PipeResourceInfo>(resources)) {
-      operation->emitError(
-          "fabric pipe transfers require a statically known pipe");
-      return failure();
-    }
-    const PipeResourceInfo *staticResources =
-        std::get_if<PipeResourceInfo>(&resources);
-    if (usesFabricProtocol &&
-        !staticResources->addressStorage.usesComputedReceiverDFB()) {
+    if (usesFabricProtocol && !allUseComputedReceiverDFB(resources)) {
       auto diagnostic = operation->emitError(
           "fabric pipe transfer requires computed receiver DFB addresses");
       ArrayRef<PipeTransferNodeId> transferNodeIds =
           pipeGraph.getPipeTransferNodeIdsForProtocolOp(operation);
-      assert(transferNodeIds.size() == 1 &&
-             "static pipe operation must have one transfer node");
-      const PipeTransferNode &transferNode =
-          pipeGraph.getPipeTransferNode(transferNodeIds.front());
       bool attachedReason = false;
-      for (PipeReceiverEndpointId endpointId :
-           pipeGraph.getPipeReceiverEndpoints(transferNode.id)) {
-        const PipeReceiverEndpoint &endpoint =
-            pipeGraph.getPipeReceiverEndpoint(endpointId);
-        const PipeReceiverDFBNode &receiverDFB =
-            pipeGraph.getReceiverDFBNode(endpoint.receiverDFBNode);
-        if (!receiverDFB.hasProvenPipeOnlyProducerStream) {
-          diagnostic.attachNote(endpoint.receiverDFBInfo.loc)
-              << "receiver DFB " << endpoint.receiverDFBInfo.dfbIndex << ": "
-              << receiverDFB.pipeOnlyProducerStreamFailureReason;
-          attachedReason = true;
-          break;
+      for (PipeTransferNodeId transferNodeId : transferNodeIds) {
+        const PipeTransferNode &transferNode =
+            pipeGraph.getPipeTransferNode(transferNodeId);
+        for (PipeReceiverEndpointId endpointId :
+             pipeGraph.getPipeReceiverEndpoints(transferNode.id)) {
+          const PipeReceiverEndpoint &endpoint =
+              pipeGraph.getPipeReceiverEndpoint(endpointId);
+          const PipeReceiverDFBNode &receiverDFB =
+              pipeGraph.getReceiverDFBNode(endpoint.receiverDFBNode);
+          if (!receiverDFB.hasProvenPipeOnlyProducerStream) {
+            diagnostic.attachNote(endpoint.receiverDFBInfo.loc)
+                << "receiver DFB " << endpoint.receiverDFBInfo.dfbIndex << ": "
+                << receiverDFB.pipeOnlyProducerStreamFailureReason;
+            attachedReason = true;
+            break;
+          }
+          if (endpoint.addressSequence.getKind() ==
+              ReceiverAddressSequenceProofKind::FullyDynamic) {
+            diagnostic.attachNote(endpoint.receiverDFBInfo.loc)
+                << "receiver DFB " << endpoint.receiverDFBInfo.dfbIndex
+                << " has no proven receiver address sequence";
+            attachedReason = true;
+            break;
+          }
         }
-        if (endpoint.addressSequence.getKind() ==
-            ReceiverAddressSequenceProofKind::FullyDynamic) {
-          diagnostic.attachNote(endpoint.receiverDFBInfo.loc)
-              << "receiver DFB " << endpoint.receiverDFBInfo.dfbIndex
-              << " has no proven receiver address sequence";
-          attachedReason = true;
+        if (attachedReason) {
           break;
         }
       }
-      if (!attachedReason && !transferNode.receiverEndpoints.empty()) {
+      if (!attachedReason) {
+        assert(!transferNodeIds.empty() &&
+               "pipe resources require at least one transfer node");
+        const PipeTransferNode &transferNode =
+            pipeGraph.getPipeTransferNode(transferNodeIds.front());
+        assert(!transferNode.receiverEndpoints.empty() &&
+               "pipe transfer node requires at least one receiver endpoint");
         const PipeReceiverEndpoint &endpoint =
             pipeGraph.getPipeReceiverEndpoint(
                 transferNode.receiverEndpoints.front());
@@ -507,12 +533,17 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
       }
       insertTransferPlan(*maybeSendPlan);
     } else if (postOp) {
-      const PipeResourceInfo &postResources =
-          std::holds_alternative<PipeResourceInfo>(resources)
-              ? std::get<PipeResourceInfo>(resources)
-              : std::get<SmallVector<PipeResourceInfo>>(resources).front();
-      FailureOr<PipePostPlan> maybePostPlan =
-          buildPipePostPlan(postOp, postResources);
+      FailureOr<PipePostPlan> maybePostPlan = [&]() {
+        if (const auto *staticResource =
+                std::get_if<PipeResourceInfo>(&resources)) {
+          return buildPipePostPlan(
+              postOp, ArrayRef<PipeResourceInfo>(staticResource, 1),
+              fabricRoutePlan);
+        }
+        return buildPipePostPlan(
+            postOp, std::get<SmallVector<PipeResourceInfo>>(resources),
+            fabricRoutePlan);
+      }();
       if (failed(maybePostPlan)) {
         return failure();
       }
@@ -523,32 +554,27 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
     return success();
   };
 
-  for (const auto &[operation, resources] : plan.resourcePlan.resources) {
-    FailureOr<PipeReference> maybePipeReference =
-        getPipeReferenceForProtocolOp(operation, transferIndex);
-    if (failed(maybePipeReference)) {
-      return failure();
-    }
-    assert(maybePipeReference->isStatic() &&
-           "static resources require a static pipe reference");
-    if (failed(addTransferPlan(operation, std::move(*maybePipeReference),
-                               resources))) {
-      return failure();
-    }
-  }
-  for (const auto &[operation, resources] :
-       plan.resourcePlan.selectedResources) {
-    FailureOr<PipeReference> maybePipeReference =
-        getPipeReferenceForProtocolOp(operation, transferIndex);
-    if (failed(maybePipeReference)) {
-      return failure();
-    }
-    assert(maybePipeReference->isSelected() &&
-           "selected resources require a selected pipe reference");
-    if (failed(addTransferPlan(operation, std::move(*maybePipeReference),
-                               SmallVector<PipeResourceInfo>(resources)))) {
-      return failure();
-    }
+  LogicalResult traversalResult = plan.resourcePlan.forEachResourceTable(
+      [&](Operation *operation, ArrayRef<PipeResourceInfo> resources,
+          PipeResourceTableKind tableKind) {
+        FailureOr<PipeReference> maybePipeReference =
+            getPipeReferenceForProtocolOp(operation, transferIndex);
+        if (failed(maybePipeReference)) {
+          return failure();
+        }
+        if (tableKind == PipeResourceTableKind::Static) {
+          assert(maybePipeReference->isStatic() && resources.size() == 1 &&
+                 "static resources require one static pipe reference");
+          return addTransferPlan(operation, std::move(*maybePipeReference),
+                                 resources.front());
+        }
+        assert(maybePipeReference->isSelected() &&
+               "selected resources require a selected pipe reference");
+        return addTransferPlan(operation, std::move(*maybePipeReference),
+                               SmallVector<PipeResourceInfo>(resources));
+      });
+  if (failed(traversalResult)) {
+    return failure();
   }
 
   return plan;

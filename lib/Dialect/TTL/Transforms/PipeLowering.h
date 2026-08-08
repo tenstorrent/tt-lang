@@ -15,6 +15,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 
 #include <cstddef>
@@ -33,7 +34,7 @@ inline constexpr llvm::StringLiteral kFabricRoutesAttrName =
 inline constexpr llvm::StringLiteral kFabricDeviceDomainAttrName =
     "ttl.fabric_device_domain";
 
-/// One logical device route shared by sends from `sourceNodes`.
+/// One logical device route used by `sourceNodes` in a kernel function.
 /// `routeIndex` identifies the connection within `localDevice`.
 struct FabricRoute {
   DeviceRefAttr localDevice;
@@ -52,16 +53,16 @@ struct FunctionFabricRoutePlan {
 struct FabricRoutePlan {
   /// Routes grouped by the kernel function that submits each transfer.
   llvm::MapVector<func::FuncOp, FunctionFabricRoutePlan> routesByFunction;
-  /// Connection index selected for each fabric send.
-  llvm::DenseMap<Operation *, std::size_t> sendRouteIndex;
-  /// Send and receiver-post operations that use fabric synchronization.
-  llvm::SmallPtrSet<Operation *, 16> transferOps;
-};
+  /// Connection indices in selected-record order. Static operations have one
+  /// entry.
+  llvm::MapVector<Operation *, SmallVector<std::size_t>> routeIndices;
 
-/// Runtime values identifying one resolved fabric destination.
-struct FabricRouteTarget {
-  Value destinationDeviceId;
-  Value destinationMeshId;
+  ArrayRef<std::size_t> lookupRouteIndices(Operation *operation) const {
+    auto routeIt = routeIndices.find(operation);
+    return routeIt == routeIndices.end()
+               ? ArrayRef<std::size_t>()
+               : ArrayRef<std::size_t>(routeIt->second);
+  }
 };
 
 /// Per-function routing-plane state materialized before transfer lowering.
@@ -69,7 +70,7 @@ struct FabricRuntimeInfo {
   Value manager;
   Value routeId;
   Value connectionCount;
-  SmallVector<FabricRouteTarget> routeTargets;
+  std::size_t routeCount = 0;
 };
 
 /// Routing-plane state indexed by its kernel function.
@@ -111,6 +112,7 @@ enum class PipeAddressMode {
 };
 
 struct PipeResourcePlan;
+class PipeModulePlan;
 class PipeTransferPlan;
 class PipeCapacityPlan;
 class PipeSynchronizationSelection;
@@ -167,17 +169,15 @@ struct PipeCounterProgress {
 using PipeCounterProgressMap =
     llvm::MapVector<func::FuncOp, SmallVector<PipeCounterProgress>>;
 
-struct PipeSelectedPostSequenceCounters {
+struct PipeCounterTable {
   /// Indexed by `counters` so runtime record selection does not require one
   /// control-flow branch per transfer definition.
-  Value completionSequences;
+  Value values;
   SmallVector<PipeCounterInfo> counters;
 };
 
-/// Per-function state keeps completion progress cumulative when selected
-/// records reuse a counter.
-using PipeSelectedPostSequenceMap =
-    llvm::MapVector<func::FuncOp, PipeSelectedPostSequenceCounters>;
+/// Per-function counter tables indexed by a compile-time or selected record.
+using PipeCounterTableMap = llvm::MapVector<func::FuncOp, PipeCounterTable>;
 
 /// Initial value for one sender-local computed-address slot counter.
 struct PipeComputedAddressCounterInitInfo {
@@ -185,11 +185,8 @@ struct PipeComputedAddressCounterInitInfo {
   int64_t initialSlot = 0;
 };
 
-/// Per-function map: computed-address slot counter index -> kernel-local i32
-/// counter used by senders whose receiver DFB ring position advances at
-/// runtime.
-using PipeComputedAddressCounterMap =
-    llvm::MapVector<func::FuncOp, llvm::MapVector<int64_t, Value>>;
+/// Per-function table of sender-local computed-address slot counters.
+using PipeComputedAddressCounterMap = llvm::MapVector<func::FuncOp, Value>;
 
 /// pipeNetId -> deduplicated list of pipes in that net. Built once
 /// before lowering so is_src/is_dst/is_active patterns avoid walking the
@@ -199,6 +196,8 @@ using PipeNetIndex = llvm::MapVector<int64_t, SmallVector<PipeInfo>>;
 struct PipeSramScratchInfo {
   int64_t bytes = 0;
 };
+
+enum class PipeResourceTableKind { Static, Selected };
 
 /// Static resource allocation used by pipe lowering. Each protocol operation
 /// maps to its transfer-specific completion, readiness, and address resources.
@@ -219,6 +218,12 @@ struct PipeResourcePlan {
       computedAddressCounterInitializations;
   /// Receiver DFB indices supplied as common runtime arguments to each sender.
   llvm::MapVector<func::FuncOp, SmallVector<int32_t>> computedAddressDFBIndices;
+
+  /// Visit each protocol operation and its complete resource table.
+  LogicalResult forEachResourceTable(
+      llvm::function_ref<LogicalResult(Operation *, ArrayRef<PipeResourceInfo>,
+                                       PipeResourceTableKind)>
+          callback) const;
 };
 
 /// Resource totals consumed by TTKernel lowering and runtime setup.
@@ -233,14 +238,14 @@ PipeResourceRequirements
 getPipeResourceRequirements(const PipeResourcePlan &info,
                             const PipeCapacityPlan *pipeCapacityPlan = nullptr);
 
-/// Walk `mod` once and group every pipe transfer by its net id.
-/// Deduplicates by (src, dst start/end) so the same pipe appearing on
-/// multiple ops contributes one entry.
-void buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
+/// Build and validate the high-level PipeNet declarations used by role
+/// predicates. Duplicate records contribute one entry per transfer contract.
+LogicalResult buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 
 /// Build per-kernel routing-plane records from transfers validated by
 /// PipeGraph.
-LogicalResult buildFabricRoutePlan(const PipeGraph &pipeGraph,
+LogicalResult buildFabricRoutePlan(const PipeTransferIndex &transferIndex,
+                                   const PipeGraph &pipeGraph,
                                    FabricRoutePlan &plan);
 
 /// Materialize the function attributes recorded by `plan`.
@@ -269,6 +274,12 @@ void initializePipeCapacityCounters(
     const PipeResourcePlan &pipeResourcePlan,
     PipeCounterProgressMap &senderCapacityCounters);
 
+/// Allocate one kernel-local cumulative readiness value for every fabric
+/// sender. Receivers are the only writers of the shared readiness counter.
+void initializeFabricReadyCounters(const PipeModulePlan &pipeModulePlan,
+                                   const PipeResourcePlan &pipeResourcePlan,
+                                   PipeCounterTableMap &fabricReadyCounters);
+
 /// Emit sender-local slot counters for computed receiver addresses whose
 /// physical receiver DFB slot advances at runtime.
 void initializePipeComputedAddressCounters(
@@ -279,8 +290,7 @@ void initializePipeComputedAddressCounters(
 /// for every completion counter used by that function.
 void initializePipePostSequenceCounters(
     const PipeResourcePlan &pipeResourcePlan,
-    PipeCounterProgressMap &postSequenceCounters,
-    PipeSelectedPostSequenceMap &selectedPostSequenceCounters);
+    PipeCounterTableMap &postSequenceCounters);
 
 /// Remove a sender operation proven unreachable at its pipe endpoint.
 void lowerInactivePipeTransferSend(PipeTransferSendOp op,
@@ -292,6 +302,7 @@ LogicalResult lowerPipeTransferSend(
     const PipeResourcePlan &pipeResourcePlan,
     const PipeCapacityPlan &pipeCapacityPlan,
     const PipeCounterProgressMap &senderCapacityCounters,
+    const PipeCounterTableMap &fabricReadyCounters,
     const PipeComputedAddressCounterMap &computedAddressCounters,
     const FabricRuntimeMap &fabricRuntime, ConversionPatternRewriter &rewriter);
 
@@ -301,10 +312,9 @@ void lowerInactivePipeTransferPost(PipeTransferPostOp op,
 
 LogicalResult lowerPipeTransferPost(
     PipeTransferPostOp op, Value dst, const PipeTransferPlan &transferPlan,
-    const PipeCounterProgressMap &counters,
-    const PipeSelectedPostSequenceMap &selectedPostSequenceCounters,
+    const PipeCounterTableMap &postSequenceCounters,
     const PipeResourcePlan &pipeResourcePlan,
-    ConversionPatternRewriter &rewriter);
+    const FabricRuntimeMap &fabricRuntime, ConversionPatternRewriter &rewriter);
 
 /// Lower a dataflow buffer pop and emit any proven pipe capacity releases.
 LogicalResult lowerCBPop(CBPopOp op, Value cb,
