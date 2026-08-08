@@ -31,9 +31,7 @@ def logical_kernel_module():
 
 
 def test_recovers_canonical_kernel_kind(logical_kernel_module):
-    recovered = _get_kernel_logical_selector(
-        logical_kernel_module, "canonical_compute"
-    )
+    recovered = _get_kernel_logical_selector(logical_kernel_module, "canonical_compute")
     assert recovered is KernelKind.COMPUTE
 
 
