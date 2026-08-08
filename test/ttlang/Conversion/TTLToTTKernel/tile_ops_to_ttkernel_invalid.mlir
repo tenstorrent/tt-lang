@@ -135,6 +135,40 @@ func.func @tile_reduce_short_height_mixed_types(
 
 // -----
 
+// Short-height tile reduction supports only the validated 8x32 geometry.
+func.func @tile_reduce_short_height_shape(
+    %input: !ttcore.tile<4x32, bf16>,
+    %scaler: !ttcore.tile<4x32, bf16>,
+    %output: !ttcore.tile<4x32, bf16>) -> !ttcore.tile<4x32, bf16>
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %c0 = arith.constant 0 : index
+  // expected-error @below {{'ttl.tile_reduce' op short-height reduction supports only matching 8x32 input, scaler, and result tile types}}
+  %result = ttl.tile_reduce %input, %scaler, %output 0 : i32 <reduce_dim_row>
+      into dst[%c0]
+      : (!ttcore.tile<4x32, bf16>, !ttcore.tile<4x32, bf16>,
+         !ttcore.tile<4x32, bf16>) -> !ttcore.tile<4x32, bf16>
+  func.return %result : !ttcore.tile<4x32, bf16>
+}
+
+// -----
+
+// Short-height tile reduction supports only BF16 and FP32 data.
+func.func @tile_reduce_short_height_f16(
+    %input: !ttcore.tile<8x32, f16>,
+    %scaler: !ttcore.tile<8x32, f16>,
+    %output: !ttcore.tile<8x32, f16>) -> !ttcore.tile<8x32, f16>
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %c0 = arith.constant 0 : index
+  // expected-error @below {{'ttl.tile_reduce' op 8x32 reduction supports only bf16 and f32 tiles}}
+  %result = ttl.tile_reduce %input, %scaler, %output 0 : i32 <reduce_dim_row>
+      into dst[%c0]
+      : (!ttcore.tile<8x32, f16>, !ttcore.tile<8x32, f16>,
+         !ttcore.tile<8x32, f16>) -> !ttcore.tile<8x32, f16>
+  func.return %result : !ttcore.tile<8x32, f16>
+}
+
+// -----
+
 // Integer transpose has no corresponding LLK implementation.
 func.func @tile_transpose_u32(
     %input: !ttcore.tile<16x16, u32>,
@@ -187,6 +221,34 @@ func.func @tile_bcast_short_height_row(
       : (!ttcore.tile<8x32, f32>, !ttcore.tile<8x32, f32>)
         -> !ttcore.tile<8x32, f32>
   func.return %result : !ttcore.tile<8x32, f32>
+}
+
+// -----
+
+// Short-height tile broadcast supports only the validated 8x32 geometry.
+func.func @tile_bcast_short_height_shape(
+    %input: !ttcore.tile<4x32, f32>,
+    %output: !ttcore.tile<4x32, f32>) -> !ttcore.tile<4x32, f32> {
+  %c0 = arith.constant 0 : index
+  // expected-error @below {{'ttl.tile_bcast' op short-height broadcast supports only matching 8x32 input and result tile types}}
+  %result = ttl.tile_bcast %input, %output 1 : i32 into dst[%c0]
+      : (!ttcore.tile<4x32, f32>, !ttcore.tile<4x32, f32>)
+        -> !ttcore.tile<4x32, f32>
+  func.return %result : !ttcore.tile<4x32, f32>
+}
+
+// -----
+
+// Short-height tile broadcast supports only BF16 and FP32 data.
+func.func @tile_bcast_short_height_f16(
+    %input: !ttcore.tile<8x32, f16>,
+    %output: !ttcore.tile<8x32, f16>) -> !ttcore.tile<8x32, f16> {
+  %c0 = arith.constant 0 : index
+  // expected-error @below {{'ttl.tile_bcast' op 8x32 broadcast supports only bf16 and f32 tiles}}
+  %result = ttl.tile_bcast %input, %output 1 : i32 into dst[%c0]
+      : (!ttcore.tile<8x32, f16>, !ttcore.tile<8x32, f16>)
+        -> !ttcore.tile<8x32, f16>
+  func.return %result : !ttcore.tile<8x32, f16>
 }
 
 // -----

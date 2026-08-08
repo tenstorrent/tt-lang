@@ -219,6 +219,9 @@ public:
   LogicalResult validateBroadcast(const BroadcastCapability &capability,
                                   std::string &failureReason) const final {
     failureReason.clear();
+    if (!capability.tileBroadcast) {
+      return success();
+    }
     bool hasShortHeightTile = isShortHeightComputeShape(capability.inputType) ||
                               isShortHeightComputeShape(capability.resultType);
     if (!hasShortHeightTile) {
@@ -237,8 +240,7 @@ public:
       failureReason = "8x32 broadcast supports only bf16 and f32 tiles";
       return failure();
     }
-    if (!capability.tileBroadcast ||
-        *capability.tileBroadcast != BcastType::Col) {
+    if (*capability.tileBroadcast != BcastType::Col) {
       failureReason = "8x32 broadcast supports only column broadcast";
       return failure();
     }
