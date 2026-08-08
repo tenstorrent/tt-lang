@@ -17,35 +17,55 @@ COMPUTE_TILE = (32, 32)
 NUM_TILES = WIDTH // (COMPUTE_TILE[0] * COMPUTE_TILE[1])
 
 
-@ttl.operation(
-    grid=(1, 1),
-    fp32_dest_acc_en=False,
-    dst_full_sync_en=False,
-    options="--no-ttl-reduce-full-fp32",
-)
-def sum_of_squares(input_tensor, output_tensor):
-    input_dfb = ttl.make_tensor_backed_dfb(
-        input_tensor, shape=(1, NUM_TILES), tile=COMPUTE_TILE
+def make_sum_of_squares(use_negative_dimensions=False):
+    @ttl.operation(
+        grid=(1, 1),
+        fp32_dest_acc_en=False,
+        dst_full_sync_en=False,
+        options="--no-ttl-reduce-full-fp32",
     )
-    output_dfb = ttl.make_tensor_backed_dfb(
-        output_tensor, shape=(1, 1), tile=COMPUTE_TILE
-    )
+    def sum_of_squares(input_tensor, output_tensor):
+        input_dfb = ttl.make_tensor_backed_dfb(
+            input_tensor, shape=(1, NUM_TILES), tile=COMPUTE_TILE
+        )
+        output_dfb = ttl.make_tensor_backed_dfb(
+            output_tensor, shape=(1, 1), tile=COMPUTE_TILE
+        )
 
-    @ttl.compute()
-    def compute():
-        with input_dfb.wait() as input_block, output_dfb.reserve() as output_block:
-            output_block.store(
-                ttl.math.reduce_sum(input_block * input_block, dims=[0, 1])
-            )
+        if use_negative_dimensions:
 
-    @ttl.datamovement()
-    def read():
-        input_dfb.publish()
+            @ttl.compute()
+            def compute():
+                with (
+                    input_dfb.wait() as input_block,
+                    output_dfb.reserve() as output_block,
+                ):
+                    output_block.store(
+                        ttl.math.reduce_sum(input_block * input_block, dims=[-2, -1])
+                    )
 
-    @ttl.datamovement()
-    def write():
-        with output_dfb.wait():
-            pass
+        else:
+
+            @ttl.compute()
+            def compute():
+                with (
+                    input_dfb.wait() as input_block,
+                    output_dfb.reserve() as output_block,
+                ):
+                    output_block.store(
+                        ttl.math.reduce_sum(input_block * input_block, dims=[0, 1])
+                    )
+
+        @ttl.datamovement()
+        def read():
+            input_dfb.publish()
+
+        @ttl.datamovement()
+        def write():
+            with output_dfb.wait():
+                pass
+
+    return sum_of_squares
 
 
 def make_scaled_sum_of_squares(scale):
@@ -55,7 +75,7 @@ def make_scaled_sum_of_squares(scale):
         dst_full_sync_en=False,
         options="--no-ttl-reduce-full-fp32",
     )
-    def sum_of_squares(input_tensor, output_tensor):
+    def scaled_sum_of_squares(input_tensor, output_tensor):
         input_dfb = ttl.make_tensor_backed_dfb(
             input_tensor, shape=(1, NUM_TILES), tile=COMPUTE_TILE
         )
@@ -82,12 +102,13 @@ def make_scaled_sum_of_squares(scale):
             with output_dfb.wait():
                 pass
 
-    return sum_of_squares
+    return scaled_sum_of_squares
 
 
 SUM_OF_SQUARES_KERNELS = {
-    1.0: sum_of_squares,
-    0.5: make_scaled_sum_of_squares(0.5),
+    "unit-positive": make_sum_of_squares(),
+    "unit-negative": make_sum_of_squares(use_negative_dimensions=True),
+    "nonunit-positive": make_scaled_sum_of_squares(0.5),
 }
 
 
@@ -101,8 +122,15 @@ def one_core_l1_height_sharded(shape):
     )
 
 
-@pytest.mark.parametrize("scale", (1.0, 0.5), ids=("unit", "nonunit"))
-def test_sum_of_squares(device, scale):
+@pytest.mark.parametrize(
+    ("kernel_name", "scale"),
+    (
+        ("unit-positive", 1.0),
+        ("unit-negative", 1.0),
+        ("nonunit-positive", 0.5),
+    ),
+)
+def test_sum_of_squares(device, kernel_name, scale):
     """Square and reduce seven BF16 pages with the requested scale."""
     torch.manual_seed(0)
     input_torch = torch.randn((1, WIDTH), dtype=torch.bfloat16)
@@ -124,7 +152,7 @@ def test_sum_of_squares(device, scale):
         memory_config=one_core_l1_height_sharded(output_torch.shape),
     )
 
-    SUM_OF_SQUARES_KERNELS[scale](input_tensor, output_tensor)
+    SUM_OF_SQUARES_KERNELS[kernel_name](input_tensor, output_tensor)
 
     result = ttnn.to_torch(output_tensor).float()[0, 0]
     expected = (scale * input_torch.float().square().sum()).to(torch.bfloat16).float()
