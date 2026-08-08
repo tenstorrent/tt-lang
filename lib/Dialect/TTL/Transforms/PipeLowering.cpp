@@ -2858,8 +2858,11 @@ void finalizePipeTransportResources(const PipeTransportPlan &transportPlan,
       assert(sendResource != pipeResourcePlan.resources.end() &&
              "transport stream is missing sender resources");
       if (sendResource->second.addressStorage.computedAddress) {
-        dynamicSlotCounterIndex = sendResource->second.addressStorage
-                                      .computedAddress->dynamicSlotCounterIndex;
+        const PipeComputedAddressInfo &computedAddress =
+            *sendResource->second.addressStorage.computedAddress;
+        assert(computedAddress.initialSlot == 0 &&
+               "transport-owned storage must start at slot zero");
+        dynamicSlotCounterIndex = computedAddress.dynamicSlotCounterIndex;
       }
       if (!dynamicSlotCounterIndex) {
         FuncOp senderFunc =
