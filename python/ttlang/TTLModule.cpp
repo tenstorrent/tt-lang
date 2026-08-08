@@ -119,6 +119,35 @@ void populateTTLModule(nb::module_ &m) {
       .def_prop_ro("kind", &ExternalTemplateArgAttr::getKind)
       .def_prop_ro("value", &ExternalTemplateArgAttr::getValue);
 
+  nb::enum_<DFBProtocolEffectKind>(m, "DFBProtocolEffectKind")
+      .value("Reserve", DFBProtocolEffectKind::Reserve)
+      .value("Push", DFBProtocolEffectKind::Push)
+      .value("Wait", DFBProtocolEffectKind::Wait)
+      .value("Pop", DFBProtocolEffectKind::Pop);
+
+  tt_attribute_class<DFBProtocolEffectAttr>(m, "DFBProtocolEffectAttr")
+      .def_static(
+          "get",
+          [](MlirContext context, DFBProtocolEffectKind kind,
+             int64_t dependencyIndex, int64_t numTiles) {
+            MLIRContext *cppContext = unwrap(context);
+            DFBProtocolEffectAttr attribute = DFBProtocolEffectAttr::getChecked(
+                [cppContext]() {
+                  return emitError(UnknownLoc::get(cppContext));
+                },
+                cppContext, kind, dependencyIndex, numTiles);
+            if (!attribute) {
+              throw nb::value_error("invalid DFB protocol effect");
+            }
+            return wrap(attribute);
+          },
+          nb::arg("context"), nb::arg("kind"), nb::arg("dependency_index"),
+          nb::arg("num_tiles"))
+      .def_prop_ro("kind", &DFBProtocolEffectAttr::getKind)
+      .def_prop_ro("dependency_index",
+                   &DFBProtocolEffectAttr::getDependencyIndex)
+      .def_prop_ro("num_tiles", &DFBProtocolEffectAttr::getNumTiles);
+
   //===--------------------------------------------------------------------===//
   // SliceAttr
   //===--------------------------------------------------------------------===//
