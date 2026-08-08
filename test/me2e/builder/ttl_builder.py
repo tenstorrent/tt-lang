@@ -137,14 +137,9 @@ def build_ttl_module(
                     raise ValueError(f"Unknown TTL op: ttl.{op_str}")
 
                 if arity == 1:
-                    result = op_func(
-                        tile_tensor_type,
-                        attached_inputs[0],
-                        loc=loc,
-                    )
+                    result = op_func(attached_inputs[0], loc=loc)
                 elif arity == 2:
                     result = op_func(
-                        tile_tensor_type,
                         attached_inputs[0],
                         attached_inputs[1],
                         loc=loc,

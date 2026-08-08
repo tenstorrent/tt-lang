@@ -116,3 +116,64 @@ func.func @compute_with_cbs_reuse(%a: tensor<2x2x!ttcore.tile<32x32, f32>>,
   } -> tensor<2x2x!ttcore.tile<32x32, f32>>
   func.return %0 : tensor<2x2x!ttcore.tile<32x32, f32>>
 }
+
+// -----
+
+// A nested matmul enables the additional matmul tile dimensions for the
+// complete compute region.
+// CHECK-LABEL: func.func @compute_with_nested_matmul_subtile
+// CHECK:       ttl.compute
+// CHECK:       scf.if
+// CHECK:       ttl.tile_matmul_block
+func.func @compute_with_nested_matmul_subtile(
+    %condition: i1,
+    %lhs: tensor<1x1x!ttcore.tile<1x32, bf16>>,
+    %rhs: tensor<1x1x!ttcore.tile<32x32, bf16>>,
+    %lhs_dfb: !ttl.cb<[1, 1], !ttcore.tile<1x32, bf16>, 2>,
+    %rhs_dfb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+    %output_dfb: !ttl.cb<[1, 1], !ttcore.tile<1x32, bf16>, 2>)
+    -> tensor<1x1x!ttcore.tile<1x32, bf16>> {
+  %init = tensor.empty() : tensor<1x1x!ttcore.tile<1x32, bf16>>
+  %attached_lhs = ttl.attach_cb %lhs, %lhs_dfb
+      : (tensor<1x1x!ttcore.tile<1x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<1x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<1x32, bf16>>
+  %attached_rhs = ttl.attach_cb %rhs, %rhs_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %attached_init = ttl.attach_cb %init, %output_dfb
+      : (tensor<1x1x!ttcore.tile<1x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<1x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<1x32, bf16>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[1, 1], !ttcore.tile<1x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<1x32, bf16>>
+  %result = ttl.compute
+      ins(%attached_lhs, %attached_rhs
+          : tensor<1x1x!ttcore.tile<1x32, bf16>>,
+            tensor<1x1x!ttcore.tile<32x32, bf16>>)
+      outs(%attached_init : tensor<1x1x!ttcore.tile<1x32, bf16>>)
+      {indexing_maps = [affine_map<(row, column) -> (row, column)>,
+                        affine_map<(row, column) -> (row, column)>,
+                        affine_map<(row, column) -> (row, column)>],
+       iterator_types = ["parallel", "parallel"]} {
+  ^bb0(%lhs_tile: !ttcore.tile<1x32, bf16>,
+       %rhs_tile: !ttcore.tile<32x32, bf16>,
+       %output_tile: !ttcore.tile<1x32, bf16>):
+    %c0 = arith.constant 0 : index
+    %product = scf.if %condition -> (!ttcore.tile<1x32, bf16>) {
+      %product = ttl.tile_matmul_block %lhs_tile, %rhs_tile into dst[%c0]
+          : !ttcore.tile<1x32, bf16>, !ttcore.tile<32x32, bf16>
+            -> !ttcore.tile<1x32, bf16>
+      scf.yield %product : !ttcore.tile<1x32, bf16>
+    } else {
+      scf.yield %output_tile : !ttcore.tile<1x32, bf16>
+    }
+    ttl.tile_store %product, %output[%c0, %c0] from dst[%c0]
+        : !ttcore.tile<1x32, bf16>,
+          tensor<1x1x!ttcore.tile<1x32, bf16>>
+    ttl.yield
+  } -> tensor<1x1x!ttcore.tile<1x32, bf16>>
+  func.return %result : tensor<1x1x!ttcore.tile<1x32, bf16>>
+}

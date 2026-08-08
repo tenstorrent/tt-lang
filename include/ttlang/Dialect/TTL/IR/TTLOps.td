@@ -209,16 +209,19 @@ def TTL_WaitOp : TTL_Op<"wait", [MemoryEffects<[MemRead, MemWrite]>]> {
 // Elementwise compute operations (shared ElementWise base)
 //===----------------------------------------------------------------------===//
 
-class TTL_ElementWiseBase<string mnemonic, list<Trait> traits>
-    : TTL_Op<mnemonic, traits> {
+class TTL_ElementWiseBase<string mnemonic, string primitive,
+                          list<Trait> traits>
+    : TTL_ComputePrimitiveOp<mnemonic, primitive, traits> {
   let results = (outs AnyType:$result);
 }
 
-class TTL_ElementWiseBinary<string mnemonic, list<Trait> traits = []>
+class TTL_ElementWiseBinary<string mnemonic,
+                            string primitive = "ElementwiseBinary",
+                            list<Trait> traits = []>
     : TTL_ElementWiseBase<
-          mnemonic,
-          !listconcat(traits,
-                      [Pure, SameTypeOperands, TTL_BinaryElementwiseOpTrait])> {
+          mnemonic, primitive,
+          !listconcat(traits, [Pure, SameOperandsAndResultType,
+                               TTL_BinaryElementwiseOpTrait])> {
   let summary = "Binary elementwise operation";
   let arguments = (ins AnyType:$lhs, AnyType:$rhs);
   let assemblyFormat =
@@ -227,8 +230,9 @@ class TTL_ElementWiseBinary<string mnemonic, list<Trait> traits = []>
 
 class TTL_ElementWiseUnary<string mnemonic, list<Trait> traits = []>
     : TTL_ElementWiseBase<
-          mnemonic,
-          !listconcat(traits, [Pure, TTL_UnaryElementwiseOpTrait])> {
+          mnemonic, "ElementwiseUnary",
+          !listconcat(traits, [Pure, SameOperandsAndResultType,
+                               TTL_UnaryElementwiseOpTrait])> {
   let summary = "Unary elementwise operation";
   let arguments = (ins AnyType:$input);
   let assemblyFormat =
@@ -828,7 +832,7 @@ def TTL_DPrintOp
     Emits device debug print calls. Mode determines the output format:
     - "scalar": prints format string with scalar values
     - "cb": prints CB metadata (size, limit, ptrs)
-    - "tile": prints full 32x32 tile contents from a CB
+    - "tile": prints physical tile contents from a DFB using the operand dimensions
     - "tensor": prints raw memory pages from tensor backing buffer
     - "dst": dumps live DST register slots
 
@@ -861,10 +865,13 @@ def TTL_DPrintOp
 
 // Base class for tile operations
 // Note: These ops are NOT Pure because they write to DST registers.
-class TTL_TileOp<string mnemonic, list<Trait> traits = []>
-    : TTL_Op<mnemonic, !listconcat(traits, [TTL_TileComputeOpTrait,
-                                             TTL_DstAccessOpInterface,
-                                             TTL_TileExecutionOpInterface])>;
+class TTL_TileOp<string mnemonic, string primitive,
+                 list<Trait> traits = []>
+    : TTL_ComputePrimitiveOp<
+          mnemonic, primitive,
+          !listconcat(traits, [TTL_TileComputeOpTrait,
+                               TTL_DstAccessOpInterface,
+                               TTL_TileExecutionOpInterface])>;
 
 def TTL_TileType : Type<
     CPred<"llvm::isa<mlir::tt::ttcore::TileType>($_self)">,
@@ -1011,10 +1018,13 @@ def TTL_DstIndexOp : TTL_Op<"dst_index",
 // Common base for tile binary ops. Carries traits that hold unconditionally
 // (binary, writes to DST, all types match). Subclasses add the input-source
 // trait that reflects the op's actual hardware behavior.
-class TTL_TileBinaryOpBase<string mnemonic, list<Trait> traits = []>
-    : TTL_TileOp<mnemonic, !listconcat(traits, [TTL_TileBinaryOpTrait,
-                                                 TTL_DstResultOpTrait,
-                                                 AllTypesMatch<["lhs", "rhs", "result"]>])> {
+class TTL_TileBinaryOpBase<string mnemonic,
+                           string primitive = "ElementwiseBinary",
+                           list<Trait> traits = []>
+    : TTL_TileOp<mnemonic, primitive,
+                 !listconcat(traits, [TTL_TileBinaryOpTrait,
+                                      TTL_DstResultOpTrait,
+                                      AllTypesMatch<["lhs", "rhs", "result"]>])> {
   let summary = "Binary tile operation";
   let arguments = (ins TTL_TileType:$lhs, TTL_TileType:$rhs, Index:$dst_index);
   let results = (outs TTL_TileType:$result);
@@ -1024,20 +1034,23 @@ class TTL_TileBinaryOpBase<string mnemonic, list<Trait> traits = []>
 // Always-SFPU binary tile op: reads both operands from DST unconditionally.
 // Use for ops with no FPU equivalent (div, max, min).
 class TTL_TileSfpuBinaryOp<string mnemonic, list<Trait> traits = []>
-    : TTL_TileBinaryOpBase<mnemonic, !listconcat(traits, [TTL_DSTInputsTrait])>;
+    : TTL_TileBinaryOpBase<mnemonic, "ElementwiseBinary",
+                           !listconcat(traits, [TTL_DSTInputsTrait])>;
 
 // The selected FPU/SFPU strategy determines whether operands are consumed from
 // dataflow buffers or DST.
-class TTL_TileStrategyDepBinaryOp<string mnemonic, list<Trait> traits = []>
-    : TTL_TileBinaryOpBase<mnemonic,
+class TTL_TileStrategyDepBinaryOp<string mnemonic, string primitive,
+                                  list<Trait> traits = []>
+    : TTL_TileBinaryOpBase<mnemonic, primitive,
                            !listconcat(traits,
                                        [TTL_StrategyDependentBinaryOpTrait])>;
 
 class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
-    : TTL_TileOp<mnemonic, !listconcat(traits, [TTL_TileUnaryOpTrait,
-                                                 TTL_DSTInputsTrait, TTL_InPlaceOpTrait,
-                                                 TTL_DstResultOpTrait,
-                                                 AllTypesMatch<["input", "result"]>])> {
+    : TTL_TileOp<mnemonic, "ElementwiseUnary",
+                 !listconcat(traits, [TTL_TileUnaryOpTrait,
+                                      TTL_DSTInputsTrait, TTL_InPlaceOpTrait,
+                                      TTL_DstResultOpTrait,
+                                      AllTypesMatch<["input", "result"]>])> {
   let summary = "Unary tile operation";
   let arguments = (ins TTL_TileType:$input, Index:$dst_index);
   let results = (outs TTL_TileType:$result);
@@ -1053,11 +1066,12 @@ class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
 // assignment.
 multiclass TTL_BinaryStrategyDepElementwisePair<string mnemonic,
                                                 string kernelOp,
+                                                string primitive,
                                                 list<Trait> opTraits = []> {
-  def Op : TTL_ElementWiseBinary<mnemonic, opTraits> {
+  def Op : TTL_ElementWiseBinary<mnemonic, primitive, opTraits> {
     let description = "Elementwise "#mnemonic#" on tensors. Lowered to ttl.compute with ttl.tile_"#mnemonic#".";
   }
-  def TileOp : TTL_TileStrategyDepBinaryOp<"tile_"#mnemonic> {
+  def TileOp : TTL_TileStrategyDepBinaryOp<"tile_"#mnemonic, primitive> {
     let description = "Tile-level "#mnemonic#". Maps to ttkernel."#kernelOp#".";
   }
 }
@@ -1075,9 +1089,9 @@ multiclass TTL_BinarySfpuElementwisePair<string mnemonic, string kernelOp,
 }
 
 // Define all binary elementwise ops using the multiclasses
-defm TTL_Add : TTL_BinaryStrategyDepElementwisePair<"add", "add_tiles">;
-defm TTL_Sub : TTL_BinaryStrategyDepElementwisePair<"sub", "sub_tiles">;
-defm TTL_Mul : TTL_BinaryStrategyDepElementwisePair<"mul", "mul_tiles",
+defm TTL_Add : TTL_BinaryStrategyDepElementwisePair<"add", "add_tiles", "Add">;
+defm TTL_Sub : TTL_BinaryStrategyDepElementwisePair<"sub", "sub_tiles", "Subtract">;
+defm TTL_Mul : TTL_BinaryStrategyDepElementwisePair<"mul", "mul_tiles", "Multiply",
     [DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>]>;
 defm TTL_Div : TTL_BinarySfpuElementwisePair<"div", "div_binary_tile">;
 defm TTL_Max : TTL_BinarySfpuElementwisePair<"max", "max_tiles",
@@ -1194,7 +1208,7 @@ def TTL_ExpTileOp : TTL_TileUnaryOp<"tile_exp"> {
 // unary elementwise multiclass (which constrains all operand and result
 // element types to match).
 
-def TTL_TypecastOp : TTL_Op<"typecast",
+def TTL_TypecastOp : TTL_ComputePrimitiveOp<"typecast", "Typecast",
     [Pure, TTL_UnaryElementwiseOpTrait]> {
   let summary = "Elementwise typecast on tensors";
   let description = [{
@@ -1210,7 +1224,7 @@ def TTL_TypecastOp : TTL_Op<"typecast",
   let hasFolder = 1;
 }
 
-def TTL_TileTypecastOp : TTL_TileOp<"tile_typecast",
+def TTL_TileTypecastOp : TTL_TileOp<"tile_typecast", "Typecast",
     [TTL_TileUnaryOpTrait, TTL_DSTInputsTrait, TTL_InPlaceOpTrait,
      TTL_DstResultOpTrait]> {
   let summary = "Tile-level typecast operation";
@@ -1232,7 +1246,7 @@ def TTL_TileTypecastOp : TTL_TileOp<"tile_typecast",
 // Broadcast Operation
 //===----------------------------------------------------------------------===//
 
-def TTL_BlockBroadcastOp : TTL_Op<"block.broadcast", [Pure,
+def TTL_BlockBroadcastOp : TTL_ComputePrimitiveOp<"block.broadcast", "Broadcast", [Pure,
     DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>]> {
   let summary = "Broadcast a block over specified dimensions to a target shape";
   let description = [{
@@ -1264,7 +1278,8 @@ def TTL_BlockBroadcastOp : TTL_Op<"block.broadcast", [Pure,
   let hasVerifier = 1;
 }
 
-def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", [TTL_CBInputTileOpTrait, TTL_DstResultOpTrait]> {
+def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", "Broadcast",
+    [TTL_CBInputTileOpTrait, TTL_DstResultOpTrait]> {
   let summary = "Tile-level broadcast operation";
   let description = [{
     Broadcasts a row, column, or scalar tile into a full 32x32 tile.
@@ -1281,7 +1296,7 @@ def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", [TTL_CBInputTileOpTrait, TTL_DstR
 // Reduce Operation
 //===----------------------------------------------------------------------===//
 
-def TTL_ReduceOp : TTL_Op<"reduce", [Pure,
+def TTL_ReduceOp : TTL_ComputePrimitiveOp<"reduce", "Reduce", [Pure,
     DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>]> {
   let summary = "Reduce a tensor along specified dimensions with a scaling factor";
   let description = [{
@@ -1309,7 +1324,7 @@ def TTL_ReduceOp : TTL_Op<"reduce", [Pure,
   let hasVerifier = 1;
 }
 
-def TTL_TileReduceOp : TTL_TileOp<"tile_reduce",
+def TTL_TileReduceOp : TTL_TileOp<"tile_reduce", "Reduce",
     [TTL_CBInputTileOpTrait, TTL_AccumulatingOpTrait, TTL_DstResultOpTrait]> {
   let summary = "Tile-level reduction with scaling";
   let description = [{
@@ -1332,7 +1347,7 @@ def TTL_TileReduceOp : TTL_TileOp<"tile_reduce",
 // Transpose Operation
 //===----------------------------------------------------------------------===//
 
-def TTL_TransposeOp : TTL_Op<"transpose", [Pure,
+def TTL_TransposeOp : TTL_ComputePrimitiveOp<"transpose", "Transpose", [Pure,
     DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>]> {
   let summary = "Transpose a 2D tensor of tiles";
   let description = [{
@@ -1346,7 +1361,8 @@ def TTL_TransposeOp : TTL_Op<"transpose", [Pure,
   let hasVerifier = 1;
 }
 
-def TTL_TileTransposeOp : TTL_TileOp<"tile_transpose", [TTL_CBInputTileOpTrait, TTL_DstResultOpTrait]> {
+def TTL_TileTransposeOp : TTL_TileOp<"tile_transpose", "Transpose",
+    [TTL_CBInputTileOpTrait, TTL_DstResultOpTrait]> {
   let summary = "Tile-level 32x32 transpose (dataflow buffer input, DST output)";
   let description = [{
     Transposes a 32x32 tile from a dataflow buffer and writes the result
@@ -1363,7 +1379,7 @@ def TTL_TileTransposeOp : TTL_TileOp<"tile_transpose", [TTL_CBInputTileOpTrait, 
 // Fill Operation
 //===----------------------------------------------------------------------===//
 
-def TTL_FillOp : TTL_Op<"fill", [Pure]> {
+def TTL_FillOp : TTL_ComputePrimitiveOp<"fill", "Fill", [Pure]> {
   let summary = "Fill a tensor with a constant value";
   let description = [{
     Fills all elements of a tensor with the given f32 value.
@@ -1375,7 +1391,8 @@ def TTL_FillOp : TTL_Op<"fill", [Pure]> {
   let hasVerifier = 1;
 }
 
-def TTL_TileFillOp : TTL_TileOp<"tile_fill", [TTL_DstResultOpTrait]> {
+def TTL_TileFillOp : TTL_TileOp<"tile_fill", "Fill",
+    [TTL_DstResultOpTrait]> {
   let summary = "Tile-level fill operation";
   let description = [{
     Fills a DST register tile with a constant f32 value.
@@ -1387,6 +1404,7 @@ def TTL_TileFillOp : TTL_TileOp<"tile_fill", [TTL_DstResultOpTrait]> {
 }
 
 def TTL_TileMulUnaryConstOp : TTL_TileOp<"tile_mul_unary_const",
+    "MultiplyByConstant",
     [TTL_TileUnaryOpTrait, TTL_DSTInputsTrait, TTL_InPlaceOpTrait,
      TTL_DstResultOpTrait, AllTypesMatch<["input", "result"]>]> {
   let summary = "Tile-level multiply by a compile-time scalar constant";
@@ -1402,7 +1420,8 @@ def TTL_TileMulUnaryConstOp : TTL_TileOp<"tile_mul_unary_const",
       "type($input) `->` type($result)";
 }
 
-def TTL_MulUnaryConstOp : TTL_Op<"mul_unary_const",
+def TTL_MulUnaryConstOp : TTL_ComputePrimitiveOp<
+    "mul_unary_const", "MultiplyByConstant",
     [Pure, TTL_UnaryElementwiseOpTrait,
      DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>,
      AllTypesMatch<["input", "result"]>]> {
@@ -1421,7 +1440,7 @@ def TTL_MulUnaryConstOp : TTL_Op<"mul_unary_const",
 // Matrix Multiplication
 //===----------------------------------------------------------------------===//
 
-def TTL_MatmulOp : TTL_Op<"matmul", [Pure,
+def TTL_MatmulOp : TTL_ComputePrimitiveOp<"matmul", "Matmul", [Pure,
     DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>]> {
   let summary = "Matrix multiply two tensors of tiles";
   let description = [{
@@ -1435,7 +1454,11 @@ def TTL_MatmulOp : TTL_Op<"matmul", [Pure,
     rhs[j, k]). The inner (K) dimensions then match as lhs.shape[1] ==
     rhs.shape[1], and the result shape is [lhs.shape[0], rhs.shape[0]].
 
-    Lowered to ttl.compute with ttl.tile_matmul_block by convert-ttl-to-compute.
+    Operand tile dimensions follow the same matrix relation. Without
+    `transpose_rhs`, `lhs.tile.width == rhs.tile.height` and the result tile is
+    `[lhs.tile.height, rhs.tile.width]`. With `transpose_rhs`, the rhs tile
+    width is contracted and the result tile width is the rhs tile height.
+    Operand and result tile element data types must match.
   }];
   let arguments = (ins AnyRankedTensor:$lhs, AnyRankedTensor:$rhs,
                        UnitAttr:$transpose_rhs);
@@ -1445,7 +1468,7 @@ def TTL_MatmulOp : TTL_Op<"matmul", [Pure,
   let hasVerifier = 1;
 }
 
-def TTL_TileMatmulBlockOp : TTL_TileOp<"tile_matmul_block",
+def TTL_TileMatmulBlockOp : TTL_TileOp<"tile_matmul_block", "Matmul",
     [TTL_CBInputTileOpTrait, TTL_DstResultOpTrait]> {
   let summary = "Block-level matrix multiply-accumulate (CB inputs, DST output)";
   let description = [{
@@ -1465,6 +1488,9 @@ def TTL_TileMatmulBlockOp : TTL_TileOp<"tile_matmul_block",
     transposed per-K addressing during TTKernel lowering.
 
     Maps to ttkernel.mm_block_init + ttkernel.matmul_block.
+
+    The lhs, rhs, and result tile types may have different dimensions. Their
+    physical dimensions follow the same contraction relation as `ttl.matmul`.
   }];
   let arguments = (ins TTL_TileOrTensor:$lhs, TTL_TileOrTensor:$rhs,
                        Optional<TTL_TileOrTensor>:$accumulator,
@@ -1474,6 +1500,7 @@ def TTL_TileMatmulBlockOp : TTL_TileOp<"tile_matmul_block",
     $lhs `,` $rhs (`,` $accumulator^)? `into` `dst` `[` $dst_index `]` attr-dict `:`
     type($lhs) `,` type($rhs) (`,` type($accumulator)^)? `->` type($result)
   }];
+  let hasVerifier = 1;
 }
 
 // Circular buffer synchronization operations
@@ -1590,7 +1617,8 @@ def TTL_CBPopOp : TTL_Op<"cb_pop", [MemoryEffects<[MemWrite]>]> {
   let hasVerifier = 1;
 }
 
-def TTL_StoreOp : TTL_Op<"store", [MemoryEffects<[MemWrite]>]> {
+def TTL_StoreOp : TTL_ComputePrimitiveOp<"store", "Passthrough",
+    [MemoryEffects<[MemWrite]>]> {
   let summary = "Store a tensor to a circular buffer reserve view";
   let description = [{
     `ttl.store` represents the user's intent to store a computed tensor into
@@ -1769,7 +1797,7 @@ def TTL_GetDfbIdOp : TTL_Op<"get_dfb_id", [Pure]> {
   let assemblyFormat = "$dfb attr-dict `:` type($dfb)";
 }
 
-def TTL_TileStoreOp : TTL_Op<"tile_store",
+def TTL_TileStoreOp : TTL_ComputePrimitiveOp<"tile_store", "Passthrough",
     [MemoryEffects<[MemWrite]>, TTL_DstResultOpTrait,
      TTL_DstAccessOpInterface, TTL_TileExecutionOpInterface]> {
   let summary = "Store a tile into a circular buffer view";

@@ -649,9 +649,9 @@ def test_shared_dfb_fixed_and_strategy_consumers(dtype, tile_hw, device):
     rhs_torch = torch.randn(tile_height, tile_width, dtype=dtype)
     out_torch = torch.zeros(tile_height, tile_width, dtype=dtype)
 
-    lhs = to_dram(lhs_torch, device, tile_hw=tile_hw)
-    rhs = to_dram(rhs_torch, device, tile_hw=tile_hw)
-    out = to_dram(out_torch, device, tile_hw=tile_hw)
+    lhs = to_dram(lhs_torch, device, tile=tile_hw)
+    rhs = to_dram(rhs_torch, device, tile=tile_hw)
+    out = to_dram(out_torch, device, tile=tile_hw)
 
     shared_dfb_fixed_and_strategy_consumers(lhs, rhs, out)
 

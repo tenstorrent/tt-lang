@@ -24,8 +24,29 @@
 
 #include <cstdint>
 #include <optional>
+#include <string>
 
 namespace mlir::tt::ttl {
+
+/// Returns a tile type directly or from a ranked tensor element type.
+FailureOr<ttcore::TileType> getTileType(Type type);
+
+/// Validates the target-independent input and result relation for typecast.
+LogicalResult verifyTypecastTileTypes(ttcore::TileType inputType,
+                                      ttcore::TileType resultType,
+                                      std::string &failureReason);
+
+/// Validate the element data types and physical tile dimensions of a matmul.
+///
+/// This is the target-independent type relation. For `lhs @ rhs`, the lhs tile
+/// width equals the rhs tile height and the result tile dimensions are
+/// `[lhs.height, rhs.width]`. With `transposeRhs`, the rhs width is contracted
+/// and the result width is the rhs height.
+LogicalResult verifyMatmulTileTypes(ttcore::TileType lhsType,
+                                    ttcore::TileType rhsType,
+                                    ttcore::TileType resultType,
+                                    bool transposeRhs,
+                                    std::string &failureReason);
 
 /// Return the enclosing kernel-thread `func.func` (tagged with
 /// `ttl.kernel_thread`), or null if `op` is not inside one.

@@ -48,11 +48,9 @@ class ComputeThreadBuilder(ThreadBuilder):
                 raise ValueError(f"Unknown TTL op: ttl.{op_str}")
 
             if arity == 1:
-                result = op_func(self.tile_tensor_type, inputs[0], loc=self.loc)
+                result = op_func(inputs[0], loc=self.loc)
             elif arity == 2:
-                result = op_func(
-                    self.tile_tensor_type, inputs[0], inputs[1], loc=self.loc
-                )
+                result = op_func(inputs[0], inputs[1], loc=self.loc)
             else:
                 raise ValueError(f"Unsupported arity: {arity}")
 
@@ -91,7 +89,7 @@ class ComputeThreadBuilder(ThreadBuilder):
                 input_cbs=[0, 1],
                 output_cbs=[2],
                 compute_fn=lambda inputs: [
-                    ttl.exp(tt, ttl.add(tt, inputs[0], inputs[1], loc=loc), loc=loc)
+                    ttl.exp(ttl.add(inputs[0], inputs[1], loc=loc), loc=loc)
                 ],
             )
         """

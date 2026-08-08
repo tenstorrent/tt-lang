@@ -4,16 +4,14 @@
 
 #include "ttlang/Dialect/TTL/Transforms/ComputeKernelConfigAnalysis.h"
 
-#include "ttlang/Dialect/TTCore/IR/TTCoreOps.h"
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
-#include "ttlang/Dialect/TTCore/IR/Utils.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
+#include "ttlang/Dialect/TTL/Transforms/ComputeTarget.h"
 
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinOps.h"
-#include "mlir/IR/SymbolTable.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallSet.h"
@@ -760,59 +758,19 @@ KernelTargetEnvironment::get(func::FuncOp function) {
     return failure();
   }
 
-  Attribute rawTarget = module->getAttr(kTargetArchAttrName);
-  auto targetAttr = dyn_cast_or_null<ttcore::ArchAttr>(rawTarget);
-  if (rawTarget && !targetAttr) {
-    module.emitOpError() << kTargetArchAttrName
-                         << " must be a #ttcore.arch attribute";
+  std::string targetFailureReason;
+  FailureOr<std::optional<ttcore::Arch>> targetArch =
+      resolveComputeTargetArch(function, targetFailureReason);
+  if (failed(targetArch)) {
+    module.emitOpError(targetFailureReason);
     return failure();
   }
-  std::optional<ttcore::Arch> targetArch;
-  if (targetAttr) {
-    targetArch = targetAttr.getValue();
-  }
-
-  auto systemDesc = module->getAttrOfType<ttcore::SystemDescAttr>(
-      ttcore::SystemDescAttr::name);
-  auto device =
-      module.lookupSymbol<ttcore::DeviceOp>(ttcore::getDefaultDeviceName());
-  if (systemDesc && device) {
-    ArrayRef<unsigned> chipIds = device.getDeviceAttr().getChipIds();
-    if (chipIds.empty()) {
-      device.emitOpError("has no selected chip");
-      return failure();
-    }
-    auto invalidChip = llvm::find_if(chipIds, [&](unsigned chipId) {
-      return chipId >= systemDesc.getChipDescIndices().size();
-    });
-    if (invalidChip != chipIds.end()) {
-      device.emitOpError() << "selects chip " << *invalidChip
-                           << " outside the system description";
-      return failure();
-    }
-    ttcore::Arch deviceArch =
-        systemDesc.getChipDesc(chipIds.front()).getArch().getValue();
-    if (llvm::any_of(llvm::drop_begin(chipIds), [&](unsigned chipId) {
-          return systemDesc.getChipDesc(chipId).getArch().getValue() !=
-                 deviceArch;
-        })) {
-      device.emitOpError("selects chips with different architectures");
-      return failure();
-    }
-    if (targetArch && *targetArch != deviceArch) {
-      module.emitOpError() << kTargetArchAttrName
-                           << " does not match the selected device arch";
-      return failure();
-    }
-    targetArch = deviceArch;
-  }
-
-  if (!targetArch) {
+  if (!*targetArch) {
     return std::unique_ptr<KernelTargetEnvironment>(
         std::make_unique<UnspecifiedKernelTargetEnvironment>());
   }
 
-  switch (*targetArch) {
+  switch (**targetArch) {
   case ttcore::Arch::WormholeB0:
     return std::unique_ptr<KernelTargetEnvironment>(
         std::make_unique<WormholeKernelTargetEnvironment>());
@@ -828,7 +786,7 @@ KernelTargetEnvironment::get(func::FuncOp function) {
   module.emitOpError()
       << "compute-kernel configuration is not implemented for target "
          "architecture "
-      << ttcore::ArchAttr::get(module.getContext(), *targetArch);
+      << ttcore::ArchAttr::get(module.getContext(), **targetArch);
   return failure();
 }
 

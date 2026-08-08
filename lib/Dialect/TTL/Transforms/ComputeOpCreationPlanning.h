@@ -29,9 +29,11 @@
 #include "mlir/IR/ValueRange.h"
 #include "mlir/Support/LogicalResult.h"
 #include "ttlang/Analysis/PlanningResult.h"
+#include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
+#include "ttlang/Dialect/TTL/Transforms/ComputeTarget.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/FunctionExtras.h"
 #include "llvm/ADT/STLExtras.h"
@@ -243,8 +245,8 @@ struct FusedOperationPlan {
   /// Tensor dependencies and their external compute input slots.
   SmallVector<FusedOperationOperand> operands;
 
-  /// Tile result type derived from the source result.
-  Type resultTileType;
+  /// Exact tile result type recorded from the source result.
+  ttcore::TileType resultTileType;
 
   /// Hardware broadcast kind for a tile-broadcast recipe.
   std::optional<BcastType> tileBroadcast;
@@ -476,6 +478,11 @@ struct ComputeOpCreationPlan {
   /// Complete ordered tensor inputs read by the created `ComputeOp`.
   SmallVector<Value> inputs;
 
+  /// Exact tile type for each entry in `inputs`.
+  ///
+  /// Empty for an identity elision, which creates no `ComputeOp`.
+  SmallVector<ttcore::TileType> inputTileTypes;
+
   /// Indexing role for each fused input. A value appears more than once when
   /// distinct uses require different affine maps. Empty for direct creation.
   SmallVector<FusedInputRole> fusedInputRoles;
@@ -488,6 +495,11 @@ struct ComputeOpCreationPlan {
 
   /// Result tensor type used by the created `ComputeOp`.
   RankedTensorType resultType;
+
+  /// Exact result tile type recorded during planning.
+  ///
+  /// Null for an identity elision, which creates no `ComputeOp`.
+  ttcore::TileType resultTileType;
 
   /// Precomputed indexing maps and iterator types.
   ComputeIterationPlan iteration;
@@ -601,6 +613,9 @@ struct PassthroughStorePlan {
   /// Tensor type shared by the passthrough input and result.
   RankedTensorType tensorType;
 
+  /// Exact tile type shared by the passthrough input and result.
+  ttcore::TileType tileType;
+
   /// Identity iteration used by the passthrough compute.
   ComputeIterationPlan iteration;
 
@@ -689,14 +704,16 @@ private:
 class ComputeOpCreationPlanner {
 public:
   ComputeOpCreationPlanner(func::FuncOp kernel,
-                           const DFBValueLifetimeAnalysis &lifetimes)
-      : kernel(kernel), lifetimes(lifetimes) {}
+                           const DFBValueLifetimeAnalysis &lifetimes,
+                           const ComputeTargetEnvironment &target)
+      : kernel(kernel), lifetimes(lifetimes), target(target) {}
 
   PlanningResult<KernelComputeOpCreationPlan> build() const;
 
 private:
   func::FuncOp kernel;
   const DFBValueLifetimeAnalysis &lifetimes;
+  const ComputeTargetEnvironment &target;
 };
 
 } // namespace mlir::tt::ttl

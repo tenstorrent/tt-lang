@@ -687,14 +687,29 @@ class TTLGenericCompiler(TTCompilerBase):
                 # Tensor-typed attributes are resolved from the SSA value type
                 # so spec-form ops can construct result types without reading a
                 # destination DFB during lowering.
-                if not func_args and not kwargs and node.attr in ("shape", "dtype"):
+                if (
+                    not func_args
+                    and not kwargs
+                    and node.attr
+                    in {
+                        "shape",
+                        "dtype",
+                        "tile",
+                    }
+                ):
                     value = self.visit(node.value)
                     if value is not None and hasattr(value, "type"):
-                        # A DFB block's .shape is its tile-block shape; checked
-                        # before the tensor case so cb.shape works too.
                         cb_ty = ttl.CircularBufferType.maybe_downcast(value.type)
                         if cb_ty is not None:
-                            return tuple(cb_ty.shape)
+                            if node.attr == "shape":
+                                return tuple(cb_ty.shape)
+                            tile_ty = ttcore.ir.TileType.maybe_downcast(
+                                cb_ty.element_type
+                            )
+                            if tile_ty is not None:
+                                if node.attr == "tile":
+                                    return tuple(tile_ty.shape)
+                                return ttcore.DataType(tile_ty.data_type_as_int)
                         tensor_ty = RankedTensorType.maybe_downcast(value.type)
                         if tensor_ty is not None:
                             if node.attr == "shape":
@@ -703,6 +718,8 @@ class TTLGenericCompiler(TTCompilerBase):
                                 tensor_ty.element_type
                             )
                             if tile_ty is not None:
+                                if node.attr == "tile":
+                                    return tuple(tile_ty.shape)
                                 return ttcore.DataType(tile_ty.data_type_as_int)
                             if tensor_ty.element_type == F32Type.get(self.ctx):
                                 return ttcore.DataType.Float32

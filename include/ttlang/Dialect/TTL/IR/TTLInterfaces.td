@@ -98,6 +98,30 @@ def TTL_AccumulationScopeOpInterface
   ];
 }
 
+def TTL_ComputePrimitiveOpInterface
+    : OpInterface<"ComputePrimitiveOpInterface"> {
+  let description = [{
+    Operations that implement a target-independent compute primitive. The
+    primitive identifies the hardware capability required by both tensor-level
+    and tile-level forms without depending on operation-name dispatch.
+  }];
+
+  let cppNamespace = "::mlir::tt::ttl";
+
+  let methods = [
+    InterfaceMethod<
+      /*desc=*/"Return the target-independent compute primitive implemented "
+               "by this operation.",
+      /*retTy=*/"::mlir::tt::ttl::ComputePrimitive",
+      /*methodName=*/"getComputePrimitive",
+      /*args=*/(ins),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/[{
+        return ConcreteOp::getComputePrimitiveKind();
+      }]>
+  ];
+}
+
 def TTL_DstAccessOpInterface : OpInterface<"DstAccessOpInterface"> {
   let description = [{
     Tile-level operations that expose concrete DST register reads, writes, and
