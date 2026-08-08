@@ -588,6 +588,14 @@ ComputeTargetEnvironment::validateOperation(Operation *operation,
                             "schedule";
       return failure();
     }
+    if (normalization.getNumTiles() > *limits.maxTiles) {
+      failureReason =
+          (Twine("row-normalization schedule requires ") +
+           Twine(normalization.getNumTiles()) +
+           " tiles, but the target supports at most " + Twine(*limits.maxTiles))
+              .str();
+      return failure();
+    }
   }
   return success();
 }

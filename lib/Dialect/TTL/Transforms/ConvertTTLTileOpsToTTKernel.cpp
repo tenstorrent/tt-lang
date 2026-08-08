@@ -1083,16 +1083,13 @@ struct TTLTileRowNormalizationBlockToTTKernel
           op, "cannot find or convert row-normalization DFBs");
     }
 
-    auto inputType = dyn_cast<RankedTensorType>(op.getInput().getType());
     auto resultType = dyn_cast<ttcore::TileType>(op.getResult().getType());
-    if (!inputType || !inputType.hasStaticShape() || !resultType) {
-      return rewriter.notifyMatchFailure(
-          op, "requires a static tensor input and tile result");
+    if (!resultType) {
+      return rewriter.notifyMatchFailure(op, "requires a tile result");
     }
 
     ttk::ExperimentalRowNormalizationBlockOp::create(
-        rewriter, loc, *inputDfb, *gammaDfb, *outputDfb,
-        static_cast<std::uint64_t>(inputType.getNumElements()),
+        rewriter, loc, *inputDfb, *gammaDfb, *outputDfb, op.getNumTiles(),
         op.getScaleAttr().getValue(), op.getEpsilonAttr().getValue(),
         op.getHasGamma(), resultType.getDataType());
     rewriter.replaceOp(op, adaptor.getInput());
