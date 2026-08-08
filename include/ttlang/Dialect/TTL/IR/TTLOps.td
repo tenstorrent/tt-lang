@@ -1570,6 +1570,7 @@ def TTL_TileReduceOp : TTL_TileOp<"tile_reduce", "Reduce",
 
 def TTL_TileRowNormalizationBlockOp :
     TTL_TileOp<"tile_row_normalization_block",
+               "Reduce",
                [TTL_CBInputTileOpTrait, TTL_DstResultOpTrait]> {
   let summary = "Normalize one static row in one DST acquisition";
   let description = [{

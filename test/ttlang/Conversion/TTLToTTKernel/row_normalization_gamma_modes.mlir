@@ -3,7 +3,7 @@
 
 #identity = affine_map<(row, column) -> (row, column)>
 
-module attributes {ttl.target_arch = "blackhole"} {
+module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
 
 // Gamma-disabled lowering reuses the input DFB operand without reading gamma.
 // CHECK-LABEL: func.func @row_normalization_no_gamma

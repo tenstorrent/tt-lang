@@ -10,6 +10,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/TTL/Transforms/AccumulationUtils.h"
+#include "ttlang/Dialect/TTL/Transforms/ComputeTarget.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"
@@ -760,10 +761,29 @@ struct TTLLowerToLoopsPass
       }
     }
     bool invalidRowNormalization = false;
+    std::string targetFailureReason;
+    FailureOr<std::unique_ptr<ComputeTargetEnvironment>> target =
+        ComputeTargetEnvironment::get(func, targetFailureReason);
+    if (failed(target)) {
+      func.emitOpError(targetFailureReason);
+      return signalPassFailure();
+    }
     func.walk([&](ComputeOp computeOp) {
-      if (computeOp.containsOp<TileRowNormalizationBlockOp>() &&
-          failed(verifyRowNormalizationCompute(computeOp))) {
-        invalidRowNormalization = true;
+      TileRowNormalizationBlockOp block;
+      for (TileRowNormalizationBlockOp candidate :
+           computeOp.getBody().getOps<TileRowNormalizationBlockOp>()) {
+        block = candidate;
+        break;
+      }
+      if (block) {
+        std::string capabilityFailureReason;
+        if (failed(
+                (*target)->validateOperation(block, capabilityFailureReason))) {
+          block.emitOpError(capabilityFailureReason);
+          invalidRowNormalization = true;
+        } else if (failed(verifyRowNormalizationCompute(computeOp))) {
+          invalidRowNormalization = true;
+        }
       }
     });
     if (invalidRowNormalization) {

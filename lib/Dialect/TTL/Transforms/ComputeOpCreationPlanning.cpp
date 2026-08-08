@@ -890,10 +890,8 @@ static bool matchNormalizedProduct(MulOp normalized, Value &input,
 }
 
 static std::optional<MatchedRowNormalization>
-matchRowNormalization(Operation *source) {
-  if (!isBlackholeTarget(source)) {
-    return std::nullopt;
-  }
+matchRowNormalization(Operation *source,
+                      const ComputeTargetEnvironment &target) {
   auto finalMultiply = dyn_cast<MulOp>(source);
   if (!finalMultiply) {
     return std::nullopt;
@@ -953,10 +951,16 @@ matchRowNormalization(Operation *source) {
   if (dataType != ttcore::DataType::BFloat16) {
     return std::nullopt;
   }
+  ComputeScheduleCapabilityLimits limits = target.getScheduleCapabilityLimits(
+      ComputeScheduleCapability::RowNormalization,
+      cast<ttcore::TileType>(inputType.getElementType()));
+  if (!limits.maxTiles) {
+    return std::nullopt;
+  }
   bool isFloat32 = getKernelBoolAttr(source, kFp32DestAccEnAttrName);
   std::uint32_t dstCapacity = getDstCapacity(
       isFloat32, getKernelBoolAttr(source, kDstFullSyncEnAttrName));
-  dstCapacity = std::min<std::uint32_t>(8, dstCapacity);
+  dstCapacity = std::min(*limits.maxTiles, dstCapacity);
   if (numTiles < 1 || static_cast<std::uint64_t>(numTiles) >
                           static_cast<std::uint64_t>(dstCapacity)) {
     return std::nullopt;
@@ -1920,7 +1924,7 @@ buildComputeOpCreationPlan(Operation *source,
     plan.kind = ComputeOpCreationKind::Elide;
     plan.inputs = {cast<TypecastOp>(source).getInput()};
   } else if (std::optional<MatchedRowNormalization> rowNormalization =
-                 matchRowNormalization(source)) {
+                 matchRowNormalization(source, target)) {
     plan.kind = ComputeOpCreationKind::Fused;
     plan.trace = std::move(rowNormalization->trace);
     plan.rowNormalization = std::move(rowNormalization->schedule);
