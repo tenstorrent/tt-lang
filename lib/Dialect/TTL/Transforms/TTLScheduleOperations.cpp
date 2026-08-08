@@ -257,6 +257,11 @@ struct TTLScheduleOperationsPass
   void runOnOperation() override {
     func::FuncOp funcOp = getOperation();
 
+    if (failed(verifyTileExecutionSemantics(funcOp))) {
+      signalPassFailure();
+      return;
+    }
+
     WalkResult result = funcOp.walk([&](DstSectionOp dstSection) {
       SmallVector<Operation *, 16> pendingTileOps;
       auto schedulePendingTileOps = [&]() -> LogicalResult {

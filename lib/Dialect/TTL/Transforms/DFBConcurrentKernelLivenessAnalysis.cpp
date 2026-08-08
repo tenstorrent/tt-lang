@@ -264,10 +264,7 @@ static LogicalResult verifyCustomFunctionIndexDependency(
     const DFBLogicalIdentityAnalysis &identityAnalysis,
     DFBAnalysisFailure &analysisFailure) {
   SmallVector<int64_t> dependencyIds;
-  for (Value operand : call.getArgOperands()) {
-    if (!isa<CircularBufferType>(operand.getType())) {
-      continue;
-    }
+  for (Value operand : call.getDFBDependencyOperands()) {
     FailureOr<int64_t> dependencyLogicalId =
         identityAnalysis.getLogicalId(operand);
     if (succeeded(dependencyLogicalId)) {
@@ -398,11 +395,36 @@ static LogicalResult collectLogicalDFBs(
                                                 analysisFailure))) {
       return WalkResult::interrupt();
     }
+    if (auto call = dyn_cast<OpaqueCallOp>(operation)) {
+      // Static index references have no SSA consumer for the general index-use
+      // analysis to visit, so validate their declared storage dependency here.
+      for (Value indexDFB : call.getDFBIndexTemplateOperands()) {
+        FailureOr<int64_t> logicalId = identityAnalysis.getLogicalId(indexDFB);
+        if (failed(logicalId)) {
+          analysisFailure.set(
+              call, "DFB index template argument must resolve to a logical "
+                    "DFB before physical index allocation");
+          return WalkResult::interrupt();
+        }
+        if (failed(verifyCustomFunctionIndexDependency(
+                call, *logicalId, identityAnalysis, analysisFailure))) {
+          return WalkResult::interrupt();
+        }
+      }
+    }
     if (!mayAccessDFBStorage(operation)) {
       return WalkResult::advance();
     }
+    SmallVector<Value> dfbOperands;
+    if (auto call = dyn_cast<OpaqueCallOp>(operation)) {
+      // Descriptor references are storage dependencies even though they do
+      // not become runtime operands.
+      dfbOperands = call.getDFBDependencyOperands();
+    } else {
+      llvm::append_range(dfbOperands, operation->getOperands());
+    }
     SmallVector<unsigned> operationLogicalIndices;
-    for (Value operand : operation->getOperands()) {
+    for (Value operand : dfbOperands) {
       if (!isa<CircularBufferType>(operand.getType())) {
         continue;
       }

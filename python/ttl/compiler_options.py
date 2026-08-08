@@ -46,7 +46,7 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         dest="enable_fpu_binary_ops",
         action=argparse.BooleanOptionalAction,
-        help="Use FPU for binary add/sub/mul (default: enabled).",
+        help="Allow FPU strategy selection for binary add/sub/mul (default: enabled).",
     )
     p.add_argument(
         "--ttl-block-matmul",
@@ -74,14 +74,14 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         dest="reduce_full_fp32",
         action=argparse.BooleanOptionalAction,
-        help="Enable FP32 accumulation for reduce operations (default: enabled).",
+        help="Prefer FP32 accumulation for reduce operations (default: enabled).",
     )
     p.add_argument(
         "--ttl-matmul-full-fp32",
         default=None,
         dest="matmul_full_fp32",
         action=argparse.BooleanOptionalAction,
-        help="Enable FP32 accumulation for matmul operations (default: enabled).",
+        help="Prefer FP32 accumulation for matmul operations (default: enabled).",
     )
     p.add_argument(
         "--ttl-strict-f32-acc",
@@ -189,7 +189,8 @@ class CompilerOptions:
     """Compiler pipeline options for kernel compilation.
 
     Frozen so it's hashable and usable directly as a cache key component.
-    Does NOT include TTNN compute config (fp32_dest_acc_en, dst_full_sync_en).
+    Does NOT include TTNN compute config (fp32_dest_acc_en, dst_full_sync_en,
+    math_fidelity).
 
     Priority ordering (highest wins)::
 

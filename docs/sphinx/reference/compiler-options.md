@@ -13,10 +13,12 @@ python my_kernel.py --no-ttl-maximize-dst
 | Flag | Default | Description |
 |---|---|---|
 | `--ttl-maximize-dst` / `--no-ttl-maximize-dst` | enabled | Partition compute iteration spaces into subblocks that maximize DST register utilization, and reorder tile operations within sync regions to group by kind. Disabling falls back to per-tile synchronization. |
-| `--ttl-fpu-binary-ops` / `--no-ttl-fpu-binary-ops` | enabled | Emit FPU binary elementwise ops (`add_tiles`, `sub_tiles`, `mul_tiles`) when both operands come from dataflow buffers. When disabled, binary ops use the SFPU path. |
+| `--ttl-fpu-binary-ops` / `--no-ttl-fpu-binary-ops` | enabled | Allow FPU strategy selection for binary add, subtract, and multiply when their operands permit it. Disabling selects SFPU. |
 | `--ttl-block-matmul` / `--no-ttl-block-matmul` | enabled | Emit `matmul_block` (processes the full tile block atomically) instead of per-tile matmul loops. Disabling this option is not yet supported. |
 | `--ttl-subblock-sync` / `--no-ttl-subblock-sync` | disabled | Refine DFB reserve/push to per-subblock granularity, enabling `pack_tile_block` for contiguous subblocks. When disabled, user-placed reserve/push is preserved as written. |
 | `--ttl-combine-pack-tiles` / `--no-ttl-combine-pack-tiles` | enabled | Combine consecutive `pack_tile` ops on the same DFB with contiguous DST and DFB indices into a single `pack_tile_block` call. |
+| `--ttl-reduce-full-fp32` / `--no-ttl-reduce-full-fp32` | enabled | Prefer full-fp32 accumulation for reduce operations when supported by the target and the complete kernel configuration. |
+| `--ttl-matmul-full-fp32` / `--no-ttl-matmul-full-fp32` | enabled | Prefer full-fp32 accumulation for matmul operations when supported by the target and the complete kernel configuration. |
 | `--ttl-strict-f32-acc` / `--no-ttl-strict-f32-acc` | disabled | Error at compile time if a `+=` accumulation loop's output block exceeds f32 DST capacity (4 tiles with double-buffering). When enabled, guarantees each accumulation step fits in a single DST section without subblocking. |
 | `--ttl-compiler-dfbs` / `--no-ttl-compiler-dfbs` | enabled | Insert compiler-allocated intermediate DFBs when an operation requires DFB-attached inputs, fusion would read a source after its DFB is released, or a computed value is stored by operations in multiple MLIR basic blocks. When disabled, the compiler emits an error if materialization is required. |
 | `--ttl-pipe-computed-addresses` / `--no-ttl-pipe-computed-addresses` | enabled | Use computed receiver DFB addresses for eligible PipeNet transfers. When disabled, transfers use receiver-published destination addresses; multicast still requires proven equal runtime receiver addresses. |
@@ -48,16 +50,22 @@ my_kernel(tensor_a, tensor_b, options="--no-ttl-fpu-binary-ops")
 
 ## Compute Configuration
 
-These two parameters are set on the `@ttl.operation` decorator (not via command-line
+These parameters are set on the `@ttl.operation` decorator (not via command-line
 flags) and control the TTNN compute kernel hardware configuration:
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `fp32_dest_acc_en` | `bool` or `None` | `None` | Enable f32 accumulation in the DST register file. When `None`, auto-detected from input tensor dtypes (enabled when any input is f32). |
-| `dst_full_sync_en` | `bool` or `None` | `None` | Enable full DST synchronization (single-buffering mode). Doubles DST capacity (f32: 8, f16/bf16: 16) at the cost of a full sync between math and pack threads. |
+| `fp32_dest_acc_en` | `bool` or `None` | `None` | Constrain the Wormhole B0/Blackhole DST register-file element width: `true` selects 32-bit elements and `false` selects 16-bit elements. When `None`, resolve the width from target capabilities and tile-operation requirements. |
+| `dst_full_sync_en` | `bool` or `None` | `None` | Enable full DST synchronization (single-buffering mode). Doubles DST capacity (32-bit elements: 8, 16-bit elements: 16) at the cost of a full sync between math and pack threads. |
+| `math_fidelity` | `str` or `None` | `None` | Set the compute math fidelity to `LoFi`, `HiFi2`, `HiFi3`, or `HiFi4`. When `None`, retain the TTNN default. |
 
 ```python
-@ttl.operation(grid=(2, 2), fp32_dest_acc_en=True, dst_full_sync_en=False)
+@ttl.operation(
+    grid=(2, 2),
+    fp32_dest_acc_en=True,
+    dst_full_sync_en=False,
+    math_fidelity="HiFi4",
+)
 def my_kernel(a, b): ...
 ```
 
@@ -115,10 +123,12 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `maximize-dst` | bool | `true` | Enable DST maximization via subblock compute and scheduling. |
-| `enable-fpu-binary-ops` | bool | `true` | Use FPU for binary add/sub/mul. |
+| `enable-fpu-binary-ops` | bool | `true` | Allow FPU strategy selection for binary add/sub/mul. |
 | `use-block-matmul` | bool | `true` | Lower matmul to block-level hardware calls (`matmul_block`). |
 | `subblock-sync` | bool | `false` | Refine DFB reserve/push to per-subblock granularity. |
 | `combine-pack-tiles` | bool | `true` | Combine consecutive `pack_tile` ops into `pack_tile_block`. |
+| `reduce-full-fp32` | bool | `true` | Prefer full-fp32 reduce accumulation when supported. |
+| `matmul-full-fp32` | bool | `true` | Prefer full-fp32 matmul accumulation when supported. |
 | `strict-f32-acc` | bool | `false` | Error if a `+=` accumulation loop's output block exceeds f32 DST capacity. |
 | `compiler-dfbs` | bool | `true` | Insert compiler-allocated intermediate DFBs for DFB-only operands, source-lifetime preservation, and computed values stored by operations in multiple MLIR basic blocks. Error if disabled and any operation requires one. |
 | `pipe-computed-addresses` | bool | `true` | Use computed receiver DFB addresses for eligible PipeNet transfers. When disabled, transfers use receiver-published destination addresses; multicast still requires proven equal runtime receiver addresses. |
@@ -141,7 +151,7 @@ The pipeline runs these passes in order:
 - `ttl-verify-pipenet-guards`, then `ttl-verify-pipenet-schedule` -- verify PipeNet launch domains and event ordering while logical DFB identities remain distinct and before physical DFB allocation
 - `ttl-coalesce-dfb-acquires` -- coalesce compatible DFB acquires
 - `ttl-finalize-dfb-indices` -- assign logical DFBs to physical indices, validate capacity, and emit runtime metadata; `reuse-user-dfbs` controls user-DFB reuse and `exact-coloring-search-limit` bounds exhaustive fixed-limit and minimum physical-index-count queries
-- `ttl-set-compute-kernel-config` -- set `fp32_dest_acc_en` / `dst_full_sync_en` defaults
+- `ttl-set-compute-kernel-config` -- select tile execution strategies and resolve kernel-wide DST and per-DFB unpack configuration
 - `ttl-assign-dst` -- DST register allocation (linear scan with copy insertion)
 - `ttl-subblock-compute-for-dst` -- tile `ttl.compute` into DST-sized subblocks *(only if `maximize-dst=true`)*; optionally refine reserve/push to per-subblock granularity *(only if `subblock-sync=true`)*
 - `ttl-lower-to-loops` -- lower `ttl.compute` to `scf.for` loops; matmul computes are expanded inline via `generateMatmulCompute`
@@ -192,15 +202,20 @@ ttlang-opt input.mlir -p 'builtin.module(ttl-finalize-dfb-indices{reuse-user-dfb
 
 #### `ttl-set-compute-kernel-config`
 
-Set default compute kernel configuration attributes on `ttl.compute` ops.
+Resolve tile execution strategies and shared compute-kernel configuration. See
+[Compute Kernel Configuration](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/ComputeKernelConfiguration.md)
+for the algorithm and invariants.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `fp32-dest-acc-en` | bool | `false` | Default `fp32_dest_acc_en` when not already configured. |
-| `dst-full-sync-en` | bool | `false` | Default `dst_full_sync_en` when not already configured. |
+| `fp32-dest-acc-en` | string | `auto` | Select 32-bit destination elements through the Wormhole B0/Blackhole `fp32_dest_acc_en` setting: `auto`, `enabled`, or `disabled`. |
+| `dst-full-sync-en` | string | `auto` | Select full DST synchronization: `auto`, `enabled`, or `disabled`. |
+| `reduce-full-fp32` | bool | `true` | Prefer full-fp32 reduce accumulation when supported. |
+| `matmul-full-fp32` | bool | `true` | Prefer full-fp32 matmul accumulation when supported. |
+| `enable-fpu-binary-ops` | bool | `true` | Allow eligible add/sub/mul operations to select FPU. |
 
 ```bash
-ttlang-opt input.mlir -p 'func.func(ttl-set-compute-kernel-config{fp32-dest-acc-en=1})'
+ttlang-opt input.mlir -p 'func.func(ttl-set-compute-kernel-config{fp32-dest-acc-en=enabled})'
 ```
 
 #### `ttl-assign-dst`
@@ -210,12 +225,11 @@ merging.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `dst-capacity` | uint32_t | `0` (auto) | Override DST register capacity. Auto-computed from `fp32_dest_acc_en` and `dst_full_sync_en` by default. Single-buffering (`dst_full_sync_en=true`): f32=8, f16/bf16=16. Double-buffering (default): f32=4, f16/bf16=8. |
+| `dst-capacity` | uint32_t | `0` (auto) | Override DST register capacity. Auto-computed from `fp32_dest_acc_en` and `dst_full_sync_en` by default. Single-buffering (`dst_full_sync_en=true`): 32-bit elements=8, 16-bit elements=16. Double-buffering (default): 32-bit elements=4, 16-bit elements=8. |
 | `separate-output-region` | bool | `false` | Allocate outputs in a separate DST region (needed for reductions and some loop optimizations). |
-| `enable-fpu-binary-ops` | bool | `true` | Use FPU for binary add/sub/mul when both operands come from DFBs. When disabled, binary ops use the SFPU path. |
 
 ```bash
-ttlang-opt input.mlir -p 'func.func(ttl-assign-dst{dst-capacity=16 enable-fpu-binary-ops=0})'
+ttlang-opt input.mlir -p 'func.func(ttl-assign-dst{dst-capacity=16})'
 ```
 
 #### `ttl-subblock-compute-for-dst`

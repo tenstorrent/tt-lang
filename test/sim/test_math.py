@@ -1386,6 +1386,15 @@ def test_fill_single_tile():
     assert (result.to_list()[0].to_torch() == 0.0).all()
 
 
+def test_fill_physical_tile_dimensions():
+    """fill constructs and reports the requested physical tile dimensions."""
+    result = ttl.block.fill(2.0, shape=(2, 3), tile=(16, 32))
+
+    assert result.shape == (2, 3)
+    assert result.tile == (16, 32)
+    assert result.to_list()[0].shape == (16, 32)
+
+
 def test_fill_requires_2d():
     """fill rejects shapes with fewer than 2 dimensions."""
     with pytest.raises(ValueError, match="at least 2 dimensions"):

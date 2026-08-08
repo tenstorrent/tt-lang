@@ -538,6 +538,7 @@ def _compile_atom(
     program_hash: int,
     fp32_dest_acc_en: Optional[bool],
     dst_full_sync_en: Optional[bool],
+    math_fidelity: Optional[str],
     target_arch: Optional[str],
     compiler_options: CompilerOptions,
 ):
@@ -650,6 +651,7 @@ def _compile_atom(
         target_arch=target_arch,
         fp32_dest_acc_en=fp32_dest_acc_en,
         dst_full_sync_en=dst_full_sync_en,
+        math_fidelity=math_fidelity,
         compiler_options=compiler_options,
         program_hash=program_hash,
         l1_budget_override=l1_budget_override,
@@ -679,6 +681,7 @@ def _compile_unified_operation(
         program_hash,
         fp32_dest_acc_en=decorator_options["fp32_dest_acc_en"],
         dst_full_sync_en=decorator_options["dst_full_sync_en"],
+        math_fidelity=decorator_options["math_fidelity"],
         target_arch=target_arch,
         compiler_options=compiler_options,
     )
@@ -709,6 +712,7 @@ class Atom:
             grid=decorator_options["grid"],
             fp32_dest_acc_en=decorator_options["fp32_dest_acc_en"],
             dst_full_sync_en=decorator_options["dst_full_sync_en"],
+            math_fidelity=decorator_options["math_fidelity"],
             options=decorator_options["options"],
             prepare_call=prepare_call,
         )
@@ -734,6 +738,7 @@ def _unified_operation(
     tiled: bool = True,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
+    math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
 ) -> Callable:
     """Build the unified-body form selected by ``@ttl.operation``.
@@ -742,7 +747,7 @@ def _unified_operation(
     / dst-sync overrides, compiler options). A grid is required for a
     top-level operation; a composed operation used only for expansion needs none.
     """
-    _validate_operation_options(num_outs, memory_space, tiled)
+    _validate_operation_options(num_outs, memory_space, tiled, math_fidelity)
 
     def _decorator(f):
         spec = _build_atom_spec(f)
@@ -755,6 +760,7 @@ def _unified_operation(
                 "tiled": tiled,
                 "fp32_dest_acc_en": fp32_dest_acc_en,
                 "dst_full_sync_en": dst_full_sync_en,
+                "math_fidelity": math_fidelity,
                 "options": options,
             },
         )
@@ -771,6 +777,7 @@ def operation(
     tiled: bool = True,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
+    math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
 ) -> Callable:
     """Define a unified-body or explicit multi-kernel operation."""
@@ -789,6 +796,7 @@ def operation(
                 tiled=tiled,
                 fp32_dest_acc_en=fp32_dest_acc_en,
                 dst_full_sync_en=dst_full_sync_en,
+                math_fidelity=math_fidelity,
                 options=options,
                 _prepare_call=prepare_call,
             )(fn)
@@ -802,6 +810,7 @@ def operation(
             tiled=tiled,
             fp32_dest_acc_en=fp32_dest_acc_en,
             dst_full_sync_en=dst_full_sync_en,
+            math_fidelity=math_fidelity,
             options=options,
         )(fn)
 

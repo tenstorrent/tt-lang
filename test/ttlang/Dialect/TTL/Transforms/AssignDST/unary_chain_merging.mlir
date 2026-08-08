@@ -14,8 +14,7 @@
 // - Block arg and all unary results should have the same interval [0, 3]
 // - All values get allocated to the same DST register
 
-// Phase 1 directly: copy insertion only (FPU eligibility is no longer
-// stamped as an attribute; isFPUEligibleBinaryOp resolves on demand).
+// Copy insertion consumes the strategy selected by kernel configuration.
 // CHECK: === Phase 1: Copy Insertion ===
 
 // Verify Phase 2 merging happens

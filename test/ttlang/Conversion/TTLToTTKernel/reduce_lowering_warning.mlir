@@ -1,10 +1,10 @@
-// Summary: Tests diagnostics for reduce tile op lowering to TTKernel.
-
+// Verify configuration reports unavailable full-fp32 reduction before
+// TTKernel conversion.
 // RUN: ttlang-opt %s --verify-diagnostics \
-// RUN:   -pass-pipeline='builtin.module(convert-ttl-to-ttkernel{reduce-full-fp32=true})'
+// RUN:   -pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config),convert-ttl-to-ttkernel)'
 
-// Blackhole REDUCE_ROW disables full-fp32 lowering because of issue #533.
-module attributes {ttl.target_arch = "blackhole"} {
+// Blackhole row reduction cannot use full-fp32 accumulation (tt-metal #47311).
+module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @blackhole_reduce_sum_dim1_warning() attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>} {
     %c0 = arith.constant 0 : index
     %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>

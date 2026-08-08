@@ -14,7 +14,7 @@ from enum import Enum
 from pathlib import Path
 from typing import List, Tuple
 
-from ttl.ir import Module, ArrayAttr, IntegerAttr
+from ttl.ir import Module, ArrayAttr, DenseI32ArrayAttr, IntegerAttr
 from ttl.passes import ttkernel_to_cpp_by_name, get_ttkernel_names
 from ttl.dialects import func
 
@@ -36,6 +36,17 @@ class KernelSpec:
     tensor_indices: List[int] = field(default_factory=list)  # Global tensor indices
     compile_args: List[int] = field(default_factory=list)
     runtime_args: List[int] = field(default_factory=list)
+    fp32_dest_acc_en: bool = False
+    dst_full_sync_en: bool = False
+    unpack_to_dest_fp32: List[int] = field(default_factory=list)
+
+
+def _get_kernel_func(module: Module, kernel_name: str) -> func.FuncOp:
+    """Return the compiled function for a kernel symbol."""
+    for operation in module.body.operations:
+        if isinstance(operation, func.FuncOp) and operation.name.value == kernel_name:
+            return operation
+    raise ValueError(f"Kernel function '{kernel_name}' not found")
 
 
 def _get_kernel_tensor_indices(module: Module, kernel_name: str) -> List[int]:
@@ -52,16 +63,51 @@ def _get_kernel_tensor_indices(module: Module, kernel_name: str) -> List[int]:
     Returns:
         List of global tensor indices accessed by the kernel.
     """
-    # Find the function in the module.
-    for op in module.body.operations:
-        if isinstance(op, func.FuncOp) and op.name.value == kernel_name:
-            # Check for ttl.crta_indices attribute.
-            if "ttl.crta_indices" in op.attributes:
-                crta_attr = op.attributes["ttl.crta_indices"]
-                if isinstance(crta_attr, ArrayAttr):
-                    return [int(IntegerAttr(idx).value) for idx in crta_attr]
-            return []
+    operation = _get_kernel_func(module, kernel_name)
+    if "ttl.crta_indices" in operation.attributes:
+        crta_attr = operation.attributes["ttl.crta_indices"]
+        if isinstance(crta_attr, ArrayAttr):
+            return [int(IntegerAttr(index).value) for index in crta_attr]
     return []
+
+
+def _get_kernel_bool_attr(module: Module, kernel_name: str, attr_name: str) -> bool:
+    """Return a required compiler-generated boolean kernel attribute."""
+    operation = _get_kernel_func(module, kernel_name)
+    attribute = operation.attributes.get(attr_name)
+    if attribute is None:
+        raise ValueError(
+            f"Required compiler-generated attribute '{attr_name}' is missing "
+            f"from compute kernel '{kernel_name}'"
+        )
+    attribute_text = str(attribute).strip()
+    if attribute_text == "true":
+        return True
+    if attribute_text == "false":
+        return False
+    raise ValueError(
+        f"Expected boolean attribute '{attr_name}' on kernel '{kernel_name}', "
+        f"got {attribute_text!r}"
+    )
+
+
+def _get_kernel_i32_array_attr(
+    module: Module, kernel_name: str, attr_name: str
+) -> List[int]:
+    """Return a compiler-generated dense i32 array kernel attribute."""
+    operation = _get_kernel_func(module, kernel_name)
+    attribute = operation.attributes.get(attr_name)
+    if attribute is None:
+        raise ValueError(
+            f"Required compiler-generated attribute '{attr_name}' is missing "
+            f"from compute kernel '{kernel_name}'"
+        )
+    if not isinstance(attribute, DenseI32ArrayAttr):
+        raise ValueError(
+            f"Expected dense i32 array attribute '{attr_name}' on kernel "
+            f"'{kernel_name}', got {attribute}"
+        )
+    return list(attribute)
 
 
 def translate_module_to_kernels(
@@ -109,6 +155,15 @@ def translate_module_to_kernels(
         if thread_type == ThreadType.COMPUTE:
             if compute_kernel is not None:
                 raise ValueError("Multiple compute kernels found")
+            spec.fp32_dest_acc_en = _get_kernel_bool_attr(
+                module, name, "fp32_dest_acc_en"
+            )
+            spec.dst_full_sync_en = _get_kernel_bool_attr(
+                module, name, "dst_full_sync_en"
+            )
+            spec.unpack_to_dest_fp32 = _get_kernel_i32_array_attr(
+                module, name, "ttl.unpack_to_dest_fp32"
+            )
             compute_kernel = spec
         else:
             noc_kernels.append(spec)
@@ -159,6 +214,9 @@ def write_kernels(
         metadata[kernel.name] = {
             "thread_type": kernel.thread_type.value,
             "tensor_indices": kernel.tensor_indices,
+            "fp32_dest_acc_en": kernel.fp32_dest_acc_en,
+            "dst_full_sync_en": kernel.dst_full_sync_en,
+            "unpack_to_dest_fp32": kernel.unpack_to_dest_fp32,
         }
 
     # Write metadata file.
