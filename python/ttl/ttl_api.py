@@ -118,6 +118,7 @@ from .kernel import (
     _selector_implicit_role,
     _selector_kind,
 )
+from .runtime_resources import ProgramRuntimeResources
 from .operators import CopyTransferHandler, TensorBlock, copy
 from .compiler_options import CompilerOptions
 from .ttl_utils import get_thread_type_string
@@ -791,6 +792,10 @@ class CompiledTTNNKernel:
         mesh_program_placements=None,
         device_domain=None,
         kernel_logical_selectors=None,
+        operation_name="<anonymous>",
+        runtime_resource_factory: Optional[
+            Callable[..., ProgramRuntimeResources]
+        ] = None,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -825,6 +830,8 @@ class CompiledTTNNKernel:
                 execution uses ttnn.MeshProgramDescriptor.
             device_domain: Logical device domain used for per-device dispatch.
             kernel_logical_selectors: Logical selector for each compiled kernel.
+            operation_name: User-facing operation name for runtime diagnostics.
+            runtime_resource_factory: Optional per-invocation resource callback.
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
@@ -851,6 +858,8 @@ class CompiledTTNNKernel:
         self.kernel_logical_selectors = kernel_logical_selectors or [
             None for _ in kernel_paths
         ]
+        self.operation_name = operation_name
+        self.runtime_resource_factory = runtime_resource_factory
         self._pipe_global_semaphore_lifetime = []
         self.opaque_include_paths = opaque_include_paths or []
         self._fabric_route_cache = _FabricRouteCache()
@@ -905,6 +914,8 @@ class CompiledTTNNKernel:
             device_domain=self.device_domain,
             kernel_fabric_routes=self.kernel_fabric_routes,
             fabric_route_cache=self._fabric_route_cache,
+            runtime_resource_factory=self.runtime_resource_factory,
+            operation_name=self.operation_name,
         )
 
 
@@ -1190,6 +1201,8 @@ def _compile_ttnn_kernel(
     mesh_program_placements=None,
     device_domain=None,
     target_arch: Optional[str] = None,
+    operation_name: str = "<anonymous>",
+    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -1459,6 +1472,8 @@ def _compile_ttnn_kernel(
         mesh_program_placements=mesh_program_placements,
         device_domain=device_domain,
         kernel_logical_selectors=kernel_logical_selectors,
+        operation_name=operation_name,
+        runtime_resource_factory=runtime_resource_factory,
     )
 
     if verbose:
@@ -2076,6 +2091,7 @@ def _compile_kernel(
     compiler_options: CompilerOptions = CompilerOptions(),
     device_domain=None,
     l1_budget_override: int = 0,
+    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
 ) -> Optional[CompiledTTNNKernel]:
     """
     Compile kernel function to MLIR and return CompiledTTNNKernel.
@@ -2206,6 +2222,8 @@ def _compile_kernel(
         mesh_program_placements=mesh_program_placements,
         device_domain=device_domain,
         logical_kernels=[thread._logical_kernel for thread in threads],
+        operation_name=f.__name__,
+        runtime_resource_factory=runtime_resource_factory,
     )
 
 
@@ -2228,6 +2246,8 @@ def _lower_program_to_kernel(
     mesh_program_placements,
     device_domain,
     logical_kernels=None,
+    operation_name="<anonymous>",
+    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
 ):
     """Lower compiled threads to a CompiledTTNNKernel.
 
@@ -2609,6 +2629,8 @@ def _lower_program_to_kernel(
             mesh_program_placements=mesh_program_placements,
             device_domain=device_domain,
             target_arch=target_arch,
+            operation_name=operation_name,
+            runtime_resource_factory=runtime_resource_factory,
         )
         return compiled_kernel
 
@@ -2765,6 +2787,7 @@ def pykernel_gen(
     dst_full_sync_en: Optional[bool] = None,
     math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
+    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     _prepare_call: Optional[Callable] = None,
     device_domain=None,
 ) -> Callable:
@@ -2787,6 +2810,7 @@ def pykernel_gen(
         math_fidelity: Optional TTNN compute math fidelity
         options: Compiler option string (e.g., "--no-ttl-maximize-dst")
         device_domain: Optional logical device domain for mesh execution.
+        runtime_resource_factory: Optional per-invocation resource callback
 
     Returns:
         Decorated function that compiles and executes the kernel
@@ -2850,6 +2874,7 @@ def pykernel_gen(
                 compiler_options=compiler_options,
                 device_domain=device_domain,
                 l1_budget_override=l1_budget_override,
+                runtime_resource_factory=runtime_resource_factory,
             )
 
         return _make_operation_wrapper(
