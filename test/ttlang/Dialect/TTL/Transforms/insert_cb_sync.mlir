@@ -71,6 +71,33 @@ func.func @external_releases_preserved() attributes {ttl.kernel_thread = #ttkern
 
 // -----
 
+// Unknown access extends every user-managed acquisition interval but not a
+// compiler-created intermediate interval.
+// CHECK-LABEL: func.func @unknown_access_release_placement
+// CHECK: %[[FIRST_USER:.*]] = ttl.bind_cb
+// CHECK-NEXT: %[[SECOND_USER:.*]] = ttl.bind_cb
+// CHECK-NEXT: %[[INTERMEDIATE:.*]] = ttl.bind_cb{{.*}}ttl.compiler_allocated
+// CHECK-NEXT: ttl.cb_reserve %[[FIRST_USER]]
+// CHECK-NEXT: ttl.cb_reserve %[[SECOND_USER]]
+// CHECK-NEXT: ttl.cb_reserve %[[INTERMEDIATE]]
+// CHECK-NEXT: ttl.cb_push %[[INTERMEDIATE]]
+// CHECK-NEXT: ttl.opaque_call "unknown"
+// CHECK-NEXT: ttl.cb_push %[[SECOND_USER]]
+// CHECK-NEXT: ttl.cb_push %[[FIRST_USER]]
+// CHECK-NEXT: return
+func.func @unknown_access_release_placement() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %first_user = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %second_user = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %intermediate = ttl.bind_cb {cb_index = 2, block_count = 2} {ttl.compiler_allocated} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %first_user_slot = ttl.cb_reserve %first_user : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %second_user_slot = ttl.cb_reserve %second_user : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %intermediate_slot = ttl.cb_reserve %intermediate : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.opaque_call "unknown" () {header = "effects.hpp", unknown_dfb_access} : () -> ()
+  return
+}
+
+// -----
+
 // Test 3: DM thread, chase copy -> transfer_handle -> wait chain.
 
 // CHECK-LABEL: func.func @dm_reserve_copy_chain
