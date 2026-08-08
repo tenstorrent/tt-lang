@@ -2095,6 +2095,9 @@ mlir::LogicalResult mlir::tt::ttl::TileRowNormalizationBlockOp::verify() {
     return emitOpError(
         "input and output must have the same one-row tensor shape");
   }
+  if (inputTensor.getNumElements() != static_cast<int64_t>(getNumTiles())) {
+    return emitOpError("num_tiles must match the row tensor width");
+  }
   if (getHasGamma()) {
     if (gammaTensor.getShape() != outputTensor.getShape()) {
       return emitOpError("gamma tensor shape must match the output shape");
