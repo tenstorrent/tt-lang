@@ -36,6 +36,54 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
+// Hidden reserve effects in two overlapping kernels violate SPSC.
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @first_hidden_producer() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    // expected-note @+1 {{dataflow buffer declared here}}
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 41 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-error @below {{logical DFB 41 has multiple producer kernels active on the same launched node}}
+    // expected-note @below {{example overlapping node: core_x=0, core_y=0}}
+    // expected-note @below {{tt-metal CBs are single-producer single-consumer; allocate one DFB per producer}}
+    ttl.opaque_call "produce_a" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>] () {header = "effects.hpp"} : () -> ()
+    func.return
+  }
+
+  func.func @second_hidden_producer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 41 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-note @below {{also reserved here}}
+    ttl.opaque_call "produce_b" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>] () {header = "effects.hpp"} : () -> ()
+    func.return
+  }
+}
+
+// -----
+
+// Hidden wait effects in two overlapping kernels violate SPSC.
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @first_hidden_consumer() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    // expected-note @+1 {{dataflow buffer declared here}}
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 42 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-error @below {{logical DFB 42 has multiple consumer kernels active on the same launched node}}
+    // expected-note @below {{example overlapping node: core_x=0, core_y=0}}
+    // expected-note @below {{tt-metal CBs are single-producer single-consumer; allocate one DFB per consumer}}
+    ttl.opaque_call "consume_a" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 1>] () {header = "effects.hpp"} : () -> ()
+    func.return
+  }
+
+  func.func @second_hidden_consumer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 42 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-note @below {{also waited on here}}
+    ttl.opaque_call "consume_b" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 1>] () {header = "effects.hpp"} : () -> ()
+    func.return
+  }
+}
+
+// -----
+
 // Two producer threads overlap on core (1, 0), so the DFB is not SPSC.
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {

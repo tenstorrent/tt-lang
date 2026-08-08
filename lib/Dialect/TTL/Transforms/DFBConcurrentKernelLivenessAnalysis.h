@@ -27,9 +27,6 @@
 
 namespace mlir::tt::ttl {
 
-/// Protocol or opaque storage effect performed by one DFB access.
-enum class DFBProtocolEffect { Reserve, Push, Wait, Pop, OpaqueAccess };
-
 /// Hardware processor that owns one DFB ring pointer.
 enum class DFBPointerProcessor { Noc0, Noc1, Pack, Unpack };
 
@@ -54,7 +51,6 @@ struct DFBPointerOwner {
 enum class DFBQuiescenceFailureReason {
   None,
   MissingProtocolEffect,
-  RepeatedProtocolEffect,
   UnsupportedControlFlow,
   MismatchedTransaction,
   IncompleteUseOrder,
@@ -72,7 +68,9 @@ struct DFBQuiescenceProof {
 /// Immutable occurrence of one logical DFB access.
 struct DFBAccessOccurrence {
   Operation *operation = nullptr;
-  DFBProtocolEffect effect = DFBProtocolEffect::OpaqueAccess;
+  std::optional<DFBProtocolEffectKind> protocolEffect;
+  int64_t numTiles = 0;
+  unsigned sequenceIndex = 0;
   LaunchNodeDomain launchDomain;
   Operation *unanalyzableDomainOperation = nullptr;
 };
@@ -81,9 +79,9 @@ struct DFBAccessOccurrence {
 struct DFBPerNodeLifetime {
   LaunchNodeCoord node;
   SmallVector<unsigned> occurrenceIndices;
-  SmallVector<Operation *> earliestOperations;
-  SmallVector<Operation *> terminalOperations;
-  std::optional<int64_t> transactionTileCount;
+  SmallVector<unsigned> earliestEntryEvents;
+  SmallVector<unsigned> terminalCompletionEvents;
+  SmallVector<int64_t> transactionTileCounts;
   std::optional<DFBPointerOwner> writePointerOwner;
   std::optional<DFBPointerOwner> readPointerOwner;
   DFBQuiescenceProof quiescence;
