@@ -94,6 +94,9 @@ constexpr llvm::StringLiteral
 /// the attribute value is a `ttkernel.thread` enum.
 constexpr llvm::StringLiteral kKernelThreadAttrName("ttl.kernel_thread");
 
+/// Func-level target-independent logical-kernel identity.
+constexpr llvm::StringLiteral kLogicalKernelAttrName("ttl.logical_kernel");
+
 /// Number of tiles per DST sync region.
 constexpr llvm::StringLiteral kUnrollFactorAttrName("ttl.unroll_factor");
 

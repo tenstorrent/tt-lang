@@ -122,8 +122,6 @@ _TTCORE_ARCH_BY_DEVICE_NAME = {
 # Thread registry for automatic collection of @compute and @datamovement threads
 _thread_registry: List[Callable] = []
 
-_LOGICAL_KERNEL_ATTR = "ttl.logical_kernel"
-
 
 def _register_thread(thread_fn: Callable) -> None:
     """Register a thread function during decoration."""
@@ -902,12 +900,14 @@ def _get_kernel_core_coords(module, kernel_name: str):
 def _get_kernel_logical_selector(module, kernel_name: str) -> Optional[KernelSelector]:
     """Recover logical-kernel metadata retained by specialization clones."""
     operation = _lookup_kernel_func_op(module, kernel_name)
-    raw_attribute = operation.attributes.get(_LOGICAL_KERNEL_ATTR, None)
+    raw_attribute = operation.attributes.get(_ttl_ir.LOGICAL_KERNEL_ATTR, None)
     if raw_attribute is None:
         return None
     attribute = ttl_dialect.LogicalKernelAttr.maybe_downcast(raw_attribute)
     if attribute is None:
-        raise ValueError(f"Invalid '{_LOGICAL_KERNEL_ATTR}' on kernel {kernel_name!r}")
+        raise ValueError(
+            f"Invalid '{_ttl_ir.LOGICAL_KERNEL_ATTR}' on kernel {kernel_name!r}"
+        )
 
     if attribute.kind == ttl_dialect.ir.LogicalKernelKind.Compute:
         kind = KernelKind.COMPUTE
@@ -2020,7 +2020,7 @@ def _lower_program_to_kernel(
                     identity = logical_kernel.identity
                     operation_identity = logical_kernel._operation_identity
                     implicit_role = _selector_implicit_role(logical_kernel)
-                ct.func_entry.attributes[_LOGICAL_KERNEL_ATTR] = (
+                ct.func_entry.attributes[_ttl_ir.LOGICAL_KERNEL_ATTR] = (
                     ttl_dialect.LogicalKernelAttr.get(
                         ctx,
                         ir_kind,
