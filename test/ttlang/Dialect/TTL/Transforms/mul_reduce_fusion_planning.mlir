@@ -52,8 +52,8 @@ module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
 
 // -----
 
-// Wormhole recognizes the semantic graph and selects ordinary materialized
-// execution because it does not provide the compound retained schedule.
+// A target without the compound capability recognizes the semantic graph and
+// selects ordinary materialized execution.
 // CHECK-LABEL: ComputeOp creation plan @wormhole_materialized
 // CHECK:       target=multiply-full-scalar-reduction inputs=[0, 0] tiles=1
 // SELECT-LABEL: func.func @wormhole_materialized
@@ -106,7 +106,7 @@ module attributes {ttl.target_arch = #ttcore.arch<wormhole_b0>} {
 // -----
 
 // An unspecified target uses the intersection of registered capabilities and
-// therefore does not assume the Blackhole compound schedule.
+// therefore does not assume a target-specific compound schedule.
 // CHECK-LABEL: ComputeOp creation plan @unspecified_target_materialized
 // CHECK:       target=multiply-full-scalar-reduction inputs=[0, 0] tiles=1
 // SELECT-LABEL: func.func @unspecified_target_materialized

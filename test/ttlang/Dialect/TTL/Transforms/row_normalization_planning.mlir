@@ -61,12 +61,13 @@ module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
 
 // -----
 
-// Recognition records the same semantic pipeline on Wormhole. Target schedule
-// selection is tested separately.
-// CHECK-LABEL: ComputeOp creation plan @row_normalization_wrong_arch
+// Recognition records the same semantic pipeline on a target that does not
+// provide the retained schedule. Target schedule selection is tested
+// separately.
+// CHECK-LABEL: ComputeOp creation plan @row_normalization_target_independent
 // CHECK:       ttl.mul kind=fused recipe=row_normalization legal=true
 module attributes {ttl.target_arch = #ttcore.arch<wormhole_b0>} {
-  func.func @row_normalization_wrong_arch()
+  func.func @row_normalization_target_independent()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
