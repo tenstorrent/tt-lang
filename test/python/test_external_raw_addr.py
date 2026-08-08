@@ -73,6 +73,16 @@ def external_compute_raw_address_capture(inp, out):
         pass
 
 
+@ttl.operation(grid=(1, 1))
+def external_unified_raw_address_capture(inp, out):
+    call_extern_func(
+        RAW_ADDRESS_HEADER,
+        "raw_address_capture_unified",
+        template_args=[OUTPUT_WORD_COUNT],
+        func_args=[ttl.raw_addr(inp), ttl.raw_addr(out)],
+    )
+
+
 def _assert_address_bits(output, expected_address):
     """Compare bits because arbitrary addresses need not encode finite floats."""
     output_bits = ttnn.to_torch(output).contiguous().view(torch.int32)
@@ -88,8 +98,12 @@ def _assert_address_bits(output, expected_address):
 @pytest.mark.parametrize("to_input", INPUT_MEMORY_CONFIGS)
 @pytest.mark.parametrize(
     "operation",
-    [external_raw_address_capture, external_compute_raw_address_capture],
-    ids=["noc", "compute"],
+    [
+        external_raw_address_capture,
+        external_compute_raw_address_capture,
+        external_unified_raw_address_capture,
+    ],
+    ids=["noc", "compute", "unified"],
 )
 def test_external_raw_address_uses_each_runtime_tensor(
     device, dtype, to_input, operation
@@ -101,7 +115,10 @@ def test_external_raw_address_uses_each_runtime_tensor(
     assert first_input.buffer_address() != second_input.buffer_address()
 
     host_output = torch.zeros((32, 32), dtype=torch.float32)
-    if operation is external_compute_raw_address_capture:
+    if operation in (
+        external_compute_raw_address_capture,
+        external_unified_raw_address_capture,
+    ):
         first_output = to_l1_sharded(host_output, device, layout="height")
         second_output = to_l1_sharded(host_output, device, layout="height")
     else:

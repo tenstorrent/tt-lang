@@ -38,3 +38,14 @@ inline void raw_address_capture(uint32_t tensor_address) {
   cb_push_back(Destination::index, Destination::pages_per_block);
 }
 #endif
+
+template <uint32_t WordCount>
+inline void raw_address_capture_unified(uint32_t tensor_address,
+                                        uint32_t output_address) {
+#if defined(COMPILE_FOR_TRISC)
+  raw_address_capture_compute<WordCount>(tensor_address, output_address);
+#else
+  (void)tensor_address;
+  (void)output_address;
+#endif
+}
