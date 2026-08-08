@@ -1032,6 +1032,105 @@ def test_build_cb_descriptors_excludes_computed_address_backing_tensors(
         )
 
 
+def test_build_cb_descriptors_combines_computed_and_tensor_backing(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+    )
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    tensor = _FakeTensor(object(), dtype=expected_dtype)
+    computed_backing = object()
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (
+            DFBStorageSegment(nodes=((0, 0),)),
+            DFBStorageSegment(
+                nodes=((1, 0),),
+                tensor_index=0,
+                byte_offset=2048,
+                byte_size=2048,
+            ),
+        ),
+    )
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[tensor],
+        cb_configs=[config],
+        core_ranges=_FakeCoreRanges(),
+        pipe_computed_address_backing_tensors={0: computed_backing},
+    )
+
+    assert len(descriptors) == 2
+    computed_descriptor, tensor_descriptor = descriptors
+    assert computed_descriptor.backing_desc["tensor"] is computed_backing
+    computed_nodes = [
+        (core_range.start.x, core_range.start.y)
+        for core_range in computed_descriptor.core_ranges.ranges
+    ]
+    assert computed_nodes == [(0, 0)]
+    assert tensor_descriptor["tensor"] is tensor
+    tensor_nodes = [
+        (core_range.start.x, core_range.start.y)
+        for core_range in tensor_descriptor["core_ranges"].ranges
+    ]
+    assert tensor_nodes == [(1, 0)]
+
+
+def test_build_computed_address_backing_uses_compiler_storage_nodes(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    allocation_calls = []
+
+    def allocate_storage(core_ranges, num_bytes, device):
+        allocation_calls.append((core_ranges, num_bytes, device))
+        return object()
+
+    monkeypatch.setattr(
+        kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_storage
+    )
+    device = object()
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (
+            DFBStorageSegment(nodes=((0, 0), (0, 1))),
+            DFBStorageSegment(
+                nodes=((1, 0),),
+                tensor_index=0,
+                byte_offset=0,
+                byte_size=2048,
+            ),
+        ),
+    )
+
+    backing_tensors = kernel_runner.build_pipe_computed_address_dfb_tensors(
+        tensors=[],
+        cb_configs=[config],
+        core_ranges=_FakeCoreRanges(),
+        pipe_computed_address_dfb_indices=[0],
+        device=device,
+    )
+
+    assert list(backing_tensors) == [0]
+    assert len(allocation_calls) == 1
+    selected_core_ranges, num_bytes, selected_device = allocation_calls[0]
+    selected_nodes = [
+        (core_range.start.x, core_range.start.y)
+        for core_range in selected_core_ranges.ranges
+    ]
+    assert selected_nodes == [(0, 0), (0, 1)]
+    assert num_bytes == 2048
+    assert selected_device is device
+
+
 def test_build_cb_descriptors_preserves_subtile_geometry(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(
