@@ -1,5 +1,5 @@
 // Verifies row-normalization recognition with commuted operands and
-// conservative rejection on unsupported architecture or DST capacity.
+// conservative rejection when the target lacks the schedule or DST capacity.
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-print-compute-op-creation-plans))' -o /dev/null 2>&1 | FileCheck %s
 
 // Commuting the scalar add and final product does not change recognition.
@@ -61,11 +61,11 @@ module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
 
 // -----
 
-// Wormhole retains the ordinary materialized lowering.
-// CHECK-LABEL: ComputeOp creation plan @row_normalization_wrong_arch
+// A target without the schedule capability retains ordinary materialization.
+// CHECK-LABEL: ComputeOp creation plan @row_normalization_unsupported_schedule
 // CHECK-NOT:   recipe=row_normalization
 module attributes {ttl.target_arch = #ttcore.arch<wormhole_b0>} {
-  func.func @row_normalization_wrong_arch()
+  func.func @row_normalization_unsupported_schedule()
       attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -119,8 +119,7 @@ module attributes {ttl.target_arch = #ttcore.arch<wormhole_b0>} {
 
 // -----
 
-// A nine-tile Blackhole row exceeds the specialized helper and effective DST
-// capacity limit.
+// A nine-tile row exceeds the schedule and effective DST capacity limits.
 // CHECK-LABEL: ComputeOp creation plan @row_normalization_exceeds_capacity
 // CHECK-NOT:   recipe=row_normalization
 module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
