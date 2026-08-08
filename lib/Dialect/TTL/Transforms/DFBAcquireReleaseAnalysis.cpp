@@ -154,13 +154,11 @@ getDFBAcquireReleaseKind(Operation *op) {
 }
 
 int64_t getDFBLifecycleTileCount(Operation *operation) {
-  if (auto numTiles = operation->getAttrOfType<IntegerAttr>("num_tiles")) {
-    return numTiles.getInt();
-  }
-
-  Value dfb = isDFBAcquireOp(operation) ? getDFBAcquireDFB(operation)
-                                        : getDFBReleaseDFB(operation);
-  return cast<CircularBufferType>(dfb.getType()).getElementsPerBlock();
+  auto access = cast<DFBAccessOpInterface>(operation);
+  SmallVector<DFBProtocolEffect> effects = access.getDFBProtocolEffects();
+  assert(effects.size() == 1 &&
+         "concrete DFB lifecycle ops have exactly one protocol effect");
+  return effects.front().numTiles;
 }
 
 std::optional<int64_t> getDFBTransactionBlockCount(Operation *operation) {
@@ -353,7 +351,8 @@ Operation *findLastDFBAcquireOwnedUse(DFBAcquireInterval interval) {
   llvm::DenseSet<Operation *> visited;
   SmallVector<Value, 8> worklist;
 
-  auto extend = [&](Operation *user, bool ignoreBoundary) {
+  auto extend = [&](Operation *user, bool ignoreBoundary,
+                    bool propagateResults) {
     Operation *projected = nullptr;
     if (!projectToAcquireBlock(interval, user, projected, ignoreBoundary)) {
       return false;
@@ -362,8 +361,10 @@ Operation *findLastDFBAcquireOwnedUse(DFBAcquireInterval interval) {
       return false;
     }
     updateLatestUse(projected, last);
-    for (Value result : user->getResults()) {
-      worklist.push_back(result);
+    if (propagateResults) {
+      for (Value result : user->getResults()) {
+        worklist.push_back(result);
+      }
     }
     return true;
   };
@@ -378,7 +379,7 @@ Operation *findLastDFBAcquireOwnedUse(DFBAcquireInterval interval) {
         if (isa<CBPushOp, CBPopOp>(user)) {
           continue;
         }
-        extend(user, ignoreBoundary);
+        extend(user, ignoreBoundary, /*propagateResults=*/true);
       }
     }
   };
@@ -397,9 +398,20 @@ Operation *findLastDFBAcquireOwnedUse(DFBAcquireInterval interval) {
     if (!directDFBUseMatchesAcquire(interval, user)) {
       continue;
     }
-    extend(user, /*ignoreBoundary=*/false);
+    extend(user, /*ignoreBoundary=*/false, /*propagateResults=*/true);
   }
   drainWorklist(/*ignoreBoundary=*/false);
+
+  if (isUserManagedDFB(interval.dfb)) {
+    func::FuncOp kernel = interval.acquire->getParentOfType<func::FuncOp>();
+    kernel.walk([&](Operation *operation) {
+      auto access = dyn_cast<DFBAccessOpInterface>(operation);
+      if (access && access.hasUnknownDFBAccess()) {
+        extend(operation, /*ignoreBoundary=*/false,
+               /*propagateResults=*/false);
+      }
+    });
+  }
 
   // Tensor SSA uses keep naming the slot acquired by this operation even after
   // a later DFB acquire advances the pointer. Applying the direct-DFB boundary
@@ -412,10 +424,9 @@ Operation *findLastDFBAcquireOwnedUse(DFBAcquireInterval interval) {
   return last;
 }
 
-DFBReleaseSearch
-findOwnedDFBReleases(DFBAcquireInterval interval, Operation *lastOwnedUse,
-                     ArrayRef<Operation *> releases,
-                     const llvm::DenseSet<Operation *> *erased) {
+DFBReleaseSearch findOwnedDFBReleases(DFBAcquireInterval interval,
+                                      Operation *lastOwnedUse,
+                                      ArrayRef<Operation *> releases) {
   DFBReleaseSearch result;
   Block *block = interval.acquire->getBlock();
   DFBProtocolEffectKind releaseKind =
@@ -428,12 +439,6 @@ findOwnedDFBReleases(DFBAcquireInterval interval, Operation *lastOwnedUse,
       interval.kindBoundary && !isBefore(lastOwnedUse, interval.kindBoundary);
 
   for (Operation *release : releases) {
-    // `ttl-insert-cb-sync` may erase releases while iterating. The set contains
-    // raw pointers to erased operations, so membership must be checked before
-    // reading the operation through an op wrapper.
-    if (erased && erased->contains(release)) {
-      continue;
-    }
     if (!hasProtocolEffect(release, interval.dfb, releaseKind)) {
       continue;
     }

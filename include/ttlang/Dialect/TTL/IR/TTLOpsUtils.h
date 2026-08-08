@@ -150,6 +150,12 @@ inline BindCBOp getDFBDeclaration(mlir::Value dfb) {
   return traceUnrealizedCasts(dfb).getDefiningOp<BindCBOp>();
 }
 
+/// Returns true unless the DFB resolves to a compiler-created declaration.
+inline bool isUserManagedDFB(mlir::Value dfb) {
+  BindCBOp declaration = getDFBDeclaration(dfb);
+  return !declaration || !declaration->hasAttr(kCompilerAllocatedAttrName);
+}
+
 /// Returns true when a direct DFB operand may access physical storage.
 ///
 /// Callers first identify a DFB operand. Unknown operations conservatively

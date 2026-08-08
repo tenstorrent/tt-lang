@@ -1543,11 +1543,10 @@ mlir::Value mlir::tt::ttl::CBReserveOp::getViewSource() { return getCb(); }
 
 mlir::Value mlir::tt::ttl::CBWaitOp::getViewSource() { return getCb(); }
 
-static int64_t getConcreteDFBProtocolTileCount(mlir::Operation *operation,
+static int64_t getConcreteDFBProtocolTileCount(std::optional<uint64_t> numTiles,
                                                mlir::Value dfb) {
-  if (auto numTiles =
-          operation->getAttrOfType<mlir::IntegerAttr>("num_tiles")) {
-    return numTiles.getInt();
+  if (numTiles) {
+    return static_cast<int64_t>(*numTiles);
   }
   return mlir::cast<mlir::tt::ttl::CircularBufferType>(dfb.getType())
       .getElementsPerBlock();
@@ -1561,7 +1560,7 @@ static int64_t getConcreteDFBProtocolTileCount(mlir::Operation *operation,
   llvm::SmallVector<mlir::tt::ttl::DFBProtocolEffect>                          \
   mlir::tt::ttl::OpType::getDFBProtocolEffects() {                             \
     return {{getCb(), mlir::tt::ttl::DFBProtocolEffectKind::EffectKind,        \
-             getConcreteDFBProtocolTileCount(getOperation(), getCb()), 0}};    \
+             getConcreteDFBProtocolTileCount(getNumTiles(), getCb()), 0, 0}};  \
   }                                                                            \
   llvm::SmallVector<mlir::Value>                                               \
   mlir::tt::ttl::OpType::getDFBIndexOperands() {                               \
@@ -2393,6 +2392,15 @@ mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
                << effect.getDependencyIndex() << " is out of range for "
                << dependencies.size() << " dependencies";
       }
+      auto dfbType = cast<CircularBufferType>(
+          dependencies[static_cast<size_t>(effect.getDependencyIndex())]
+              .getType());
+      if (effect.getNumTiles() > dfbType.getTotalElements()) {
+        return emitOpError("DFB protocol effect ")
+               << effectIndex << " tile count " << effect.getNumTiles()
+               << " exceeds dependency " << effect.getDependencyIndex()
+               << " capacity " << dfbType.getTotalElements();
+      }
     }
   }
   return success();
@@ -2459,11 +2467,12 @@ mlir::tt::ttl::OpaqueCallOp::getDFBProtocolEffects() {
            "opaque_call must be verified before querying DFB effects");
     effects.push_back({dependencies[dependencyIndex], effect.getKind(),
                        effect.getNumTiles(),
+                       static_cast<unsigned>(dependencyIndex),
                        static_cast<unsigned>(sequenceIndex)});
   }
   return effects;
 }
 
 bool mlir::tt::ttl::OpaqueCallOp::hasUnknownDFBAccess() {
-  return getUnknownDfbAccess().value_or(false);
+  return getUnknownDfbAccess();
 }
