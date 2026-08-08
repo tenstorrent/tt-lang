@@ -83,15 +83,15 @@ static bool isDstInputTileComputeOp(Operation *op) {
          isa<TileBcastOp, TileTransposeOp>(op);
 }
 
-/// Return true if `op` benefits from `UnpackToDestFp32` when its input is an
-/// f32 tile fed directly from a CB. This is the SFPU subset of
-/// `isDstInputTileComputeOp`: tile_bcast and tile_transpose are also
-/// DST-input ops, but their LLK paths (unary_bcast, transpose_dest) do not
-/// support `UnpackToDestFp32` mode and produce incorrect results when it is
-/// enabled on their source CB (see tt-llk #1338). They are therefore
-/// excluded here so the CB stays in the default unpack mode.
+/// Return true if `op` reads an f32 tile directly from a CB into DST.
+/// A passthrough is represented by `TileStoreOp` before DST assignment and by
+/// `CopyTileOp` afterward; neither has the arithmetic tile-op trait. Tile bcast
+/// and transpose use LLKs that do not support `UnpackToDestFp32` (tt-llk
+/// #1338), so their source CBs retain the default unpack mode.
 static inline bool wantsUnpackToDestFp32(Operation *op) {
-  return isDstInputTileComputeOp(op) && !isa<TileBcastOp, TileTransposeOp>(op);
+  return isa<CopyTileOp, TileStoreOp>(op) ||
+         (isDstInputTileComputeOp(op) &&
+          !isa<TileBcastOp, TileTransposeOp>(op));
 }
 
 /// Return the CB index when `value` is an f32 input block argument of
