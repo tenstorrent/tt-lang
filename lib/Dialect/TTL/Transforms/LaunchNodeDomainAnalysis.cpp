@@ -103,6 +103,35 @@ bool LaunchExecutionLocation::operator==(
          device == rhs.device;
 }
 
+LaunchExecutionDomain LaunchExecutionDomain::unknown() {
+  return {/*known=*/false, {}};
+}
+
+LaunchExecutionDomain
+LaunchExecutionDomain::unionWith(const LaunchExecutionDomain &rhs) const {
+  if (!known || !rhs.known) {
+    return LaunchExecutionDomain::unknown();
+  }
+  LaunchExecutionDomain result;
+  std::set_union(locations.begin(), locations.end(), rhs.locations.begin(),
+                 rhs.locations.end(),
+                 std::inserter(result.locations, result.locations.end()));
+  return result;
+}
+
+LaunchExecutionDomain
+LaunchExecutionDomain::intersectWith(const LaunchExecutionDomain &rhs) const {
+  if (!known || !rhs.known) {
+    return LaunchExecutionDomain::unknown();
+  }
+  LaunchExecutionDomain result;
+  std::set_intersection(
+      locations.begin(), locations.end(), rhs.locations.begin(),
+      rhs.locations.end(),
+      std::inserter(result.locations, result.locations.end()));
+  return result;
+}
+
 FailureOr<LaunchExecutionLocation>
 getPipeExecutionLocation(LaunchNodeCoord node, DeviceTransferAttr transfer,
                          PipeRole role) {
@@ -365,6 +394,7 @@ void LaunchNodeDomainState::recordPipeNetRecords(PipeNetRecordsAttr records,
 
 void LaunchNodeDomainState::initialize(ModuleOp module) {
   executionCountAnalysesByFunctionAndLocation.clear();
+  deviceDomains.clear();
   if (!module->hasAttr(kLaunchGridAttrName)) {
     hasLaunchGrid = false;
   } else {
@@ -399,6 +429,111 @@ void LaunchNodeDomainState::initialize(ModuleOp module) {
   module.walk([&](SelectPipeDstOp op) {
     recordPipeNetRecords(op.getRecords(), op.getLoc());
   });
+  auto recordDeviceDomain = [&](DeviceDomainAttr domain) {
+    if (domain && !llvm::is_contained(deviceDomains, domain)) {
+      deviceDomains.push_back(domain);
+    }
+  };
+  module.walk([&](IsDeviceOp op) { recordDeviceDomain(op.getDomain()); });
+  module.walk(
+      [&](IsDeviceInRangeOp op) { recordDeviceDomain(op.getDomain()); });
+  module.walk(
+      [&](CurrentDeviceIndexOp op) { recordDeviceDomain(op.getDomain()); });
+}
+
+namespace {
+
+static FailureOr<SmallVector<DeviceRefAttr>>
+enumerateDeviceDomain(DeviceDomainAttr domain,
+                      std::uint64_t maximumDeviceCount) {
+  if (maximumDeviceCount == 0) {
+    return failure();
+  }
+  std::uint64_t deviceCount = 1;
+  for (DeviceDomainComponentAttr component : domain.getComponents()) {
+    for (int64_t extent : component.getExtent().asArrayRef()) {
+      if (extent <= 0 || deviceCount > maximumDeviceCount /
+                                           static_cast<std::uint64_t>(extent)) {
+        return failure();
+      }
+      deviceCount *= static_cast<std::uint64_t>(extent);
+    }
+  }
+
+  SmallVector<DeviceRefAttr> devices;
+  devices.reserve(deviceCount);
+  SmallVector<SmallVector<int64_t>> coordinates(domain.getComponents().size());
+  std::function<void(unsigned, unsigned)> enumerateAxis =
+      [&](unsigned componentIndex, unsigned axisIndex) {
+        if (componentIndex == domain.getComponents().size()) {
+          SmallVector<DenseI64ArrayAttr> coordinateAttrs;
+          coordinateAttrs.reserve(coordinates.size());
+          for (ArrayRef<int64_t> componentCoordinates : coordinates) {
+            coordinateAttrs.push_back(DenseI64ArrayAttr::get(
+                domain.getContext(), componentCoordinates));
+          }
+          devices.push_back(
+              DeviceRefAttr::get(domain.getContext(), coordinateAttrs));
+          return;
+        }
+
+        ArrayRef<int64_t> extent =
+            domain.getComponents()[componentIndex].getExtent().asArrayRef();
+        if (axisIndex == extent.size()) {
+          enumerateAxis(componentIndex + 1, 0);
+          return;
+        }
+        coordinates[componentIndex].push_back(0);
+        for (int64_t coordinate = 0; coordinate < extent[axisIndex];
+             ++coordinate) {
+          coordinates[componentIndex].back() = coordinate;
+          enumerateAxis(componentIndex, axisIndex + 1);
+        }
+        coordinates[componentIndex].pop_back();
+      };
+  enumerateAxis(0, 0);
+  return devices;
+}
+
+} // namespace
+
+LaunchExecutionDomain getLaunchExecutionDomain(
+    Operation *operation, const LaunchNodeDomain &launchNodeDomain,
+    LaunchNodeDomainState &state, std::uint64_t maximumDeviceCount) {
+  if (!launchNodeDomain.known) {
+    return LaunchExecutionDomain::unknown();
+  }
+  LaunchExecutionDomain result;
+  if (state.deviceDomains.empty()) {
+    for (LaunchNodeCoord node : launchNodeDomain.nodes) {
+      result.locations.insert(LaunchExecutionLocation(node));
+    }
+    return result;
+  }
+  if (state.deviceDomains.size() != 1) {
+    return LaunchExecutionDomain::unknown();
+  }
+
+  DeviceDomainAttr deviceDomain = state.deviceDomains.front();
+  FailureOr<SmallVector<DeviceRefAttr>> devices =
+      enumerateDeviceDomain(deviceDomain, maximumDeviceCount);
+  if (failed(devices)) {
+    return LaunchExecutionDomain::unknown();
+  }
+  for (LaunchNodeCoord node : launchNodeDomain.nodes) {
+    for (DeviceRefAttr device : *devices) {
+      LaunchExecutionLocation location(node, deviceDomain, device);
+      std::optional<std::uint64_t> executionCount =
+          getExactExecutionCountAtLaunchLocation(operation, location, state);
+      if (!executionCount) {
+        return LaunchExecutionDomain::unknown();
+      }
+      if (*executionCount != 0) {
+        result.locations.insert(location);
+      }
+    }
+  }
+  return result;
 }
 
 static std::optional<llvm::APInt>

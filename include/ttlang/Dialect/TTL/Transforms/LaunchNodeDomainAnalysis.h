@@ -77,6 +77,23 @@ struct LaunchExecutionLocation {
   bool operator==(const LaunchExecutionLocation &rhs) const;
 };
 
+/// Exact set of worker-core and logical-device locations that may execute an
+/// operation. A node-only location represents code without a logical device
+/// domain. Unknown domains remain conservative for ownership proofs.
+struct LaunchExecutionDomain {
+  bool known = true;
+  std::set<LaunchExecutionLocation> locations;
+
+  /// Return a domain whose execution locations are not statically known.
+  static LaunchExecutionDomain unknown();
+
+  /// Return the execution locations reached through either domain.
+  LaunchExecutionDomain unionWith(const LaunchExecutionDomain &rhs) const;
+
+  /// Return the execution locations common to both domains.
+  LaunchExecutionDomain intersectWith(const LaunchExecutionDomain &rhs) const;
+};
+
 /// Return the source or destination execution location for a pipe event.
 /// Local pipe events return a node-only location. A fabric destination range
 /// has no single execution location and returns failure.
@@ -169,6 +186,7 @@ struct LaunchNodeDomainState {
   llvm::DenseMap<int64_t, LaunchNodeDomain> netDestinationDomains;
   llvm::DenseMap<int64_t, SmallVector<Location>> pipeNetLocs;
   llvm::DenseMap<int64_t, std::string> pipeNetNames;
+  SmallVector<DeviceDomainAttr> deviceDomains;
   /// Reuse each function-and-location analysis across all operations in the
   /// function. The cached analyses reference the current IR and must not be
   /// queried after a transformation mutates the function.
@@ -201,6 +219,16 @@ struct LaunchNodeDomainState {
   /// Populate launch-grid and PipeNet role domains from the module.
   void initialize(ModuleOp module);
 };
+
+/// Refine a launch-node domain with exact logical-device predicates.
+///
+/// Modules without logical-device predicates retain node-only locations. A
+/// single logical-device domain is enumerated and each operation's execution
+/// count is specialized at every location. Multiple domains or an enumeration
+/// larger than `maximumDeviceCount` return an unknown domain.
+LaunchExecutionDomain getLaunchExecutionDomain(
+    Operation *operation, const LaunchNodeDomain &launchNodeDomain,
+    LaunchNodeDomainState &state, std::uint64_t maximumDeviceCount = 1024);
 
 /// Evaluate a predicate at one launch coordinate using integer constants,
 /// coordinate expressions, and PipeNet role domains.
