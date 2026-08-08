@@ -17,6 +17,7 @@
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/TTL/Transforms/AccumulationUtils.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Dominance.h"
@@ -26,6 +27,7 @@
 #include "llvm/ADT/SmallVector.h"
 
 #include <optional>
+#include <utility>
 
 #define DEBUG_TYPE "ttl-insert-accumulation-scopes"
 
@@ -156,7 +158,7 @@ static bool containsPlainStoreToView(Operation *operation, Value view) {
 /// Determine whether iteration 0 should overwrite L1 or accumulate onto a value
 /// produced by a preceding non-accumulating store to the same output view.
 static FailureOr<AccumulationInitialMode>
-getInitialModeForAccumulatingStore(StoreOp store, scf::ForOp loop) {
+getInitialModeForAccumulatingStore(StoreOp store, Operation *anchor) {
   Value view = store.getView();
   Value targetDFB;
   if (auto reserve = findCBReserveForView(view)) {
@@ -165,14 +167,14 @@ getInitialModeForAccumulatingStore(StoreOp store, scf::ForOp loop) {
     targetDFB = getAttachedCB(view);
   }
 
-  Block *block = loop->getBlock();
-  if (!block || block->begin() == Block::iterator(loop)) {
+  Block *block = anchor->getBlock();
+  if (!block || block->begin() == Block::iterator(anchor)) {
     return AccumulationInitialMode::Overwrite;
   }
 
   auto isSameDFB = [&](Value cb) { return targetDFB && cb == targetDFB; };
 
-  for (auto iter = Block::reverse_iterator(Block::iterator(loop));
+  for (auto iter = Block::reverse_iterator(Block::iterator(anchor));
        iter != block->rend(); ++iter) {
     Operation *operation = &*iter;
     if (auto priorStore = dyn_cast<StoreOp>(operation)) {
@@ -298,7 +300,7 @@ static LogicalResult insertDFBAccumulationScope(scf::ForOp loop,
     }
 
     FailureOr<AccumulationInitialMode> mode =
-        getInitialModeForAccumulatingStore(store, loop);
+        getInitialModeForAccumulatingStore(store, loop.getOperation());
     if (failed(mode)) {
       hadFailure = true;
       return store.emitError(
@@ -339,6 +341,50 @@ static LogicalResult insertDFBAccumulationScope(scf::ForOp loop,
   return success();
 }
 
+/// Represent a straight-line accumulating store as a one-iteration loop so
+/// later compute subblocking retains the L1 packer accumulation policy.
+static LogicalResult insertStraightLineDFBAccumulationScope(
+    StoreOp store, AccumulationInitialMode initialMode,
+    DominanceInfo &domInfo, RewriterBase &rewriter) {
+  Operation *reserveOp = nullptr;
+  if (auto reserve = findCBReserveForView(store.getView())) {
+    reserveOp = reserve.getOperation();
+  } else {
+    reserveOp = store.getView().getDefiningOp();
+  }
+  if (reserveOp && !domInfo.properlyDominates(reserveOp, store)) {
+    return store.emitError(
+        "accumulating store requires an output reserve that dominates the "
+        "store");
+  }
+
+  Location location = store.getLoc();
+  rewriter.setInsertionPoint(store);
+  Value lowerBound = arith::ConstantIndexOp::create(rewriter, location, 0);
+  Value upperBound = arith::ConstantIndexOp::create(rewriter, location, 1);
+  Value step = arith::ConstantIndexOp::create(rewriter, location, 1);
+  scf::ForOp loop =
+      scf::ForOp::create(rewriter, location, lowerBound, upperBound, step);
+  rewriter.moveOpBefore(store, loop.getBody(),
+                        loop.getBody()->getTerminator()->getIterator());
+
+  rewriter.setInsertionPoint(loop);
+  MLIRContext *context = store.getContext();
+  ArrayAttr initialModes = rewriter.getArrayAttr(
+      {AccumulationInitialModeAttr::get(context, initialMode)});
+  auto scope = AccumulationScopeOp::create(
+      rewriter, location, ValueRange{store.getView()}, ValueRange{},
+      initialModes);
+  SmallVector<Type, 1> outputTypes{store.getView().getType()};
+  SmallVector<Location, 1> outputLocations{store.getView().getLoc()};
+  Block *body = rewriter.createBlock(&scope.getBody(), {}, outputTypes,
+                                     outputLocations);
+  rewriter.moveOpBefore(loop, body, body->end());
+  rewriter.setInsertionPointToEnd(body);
+  YieldOp::create(rewriter, location, body->getArguments());
+  return success();
+}
+
 struct TTLInsertAccumulationScopesPass
     : public impl::TTLInsertAccumulationScopesBase<
           TTLInsertAccumulationScopesPass> {
@@ -354,11 +400,47 @@ struct TTLInsertAccumulationScopesPass
       return;
     }
 
+    SmallVector<std::pair<StoreOp, AccumulationInitialMode>, 2>
+        straightLineStores;
+    if (kind == "dfb") {
+      WalkResult collectionResult = getOperation().walk([&](StoreOp store) {
+        if (!store.getAccumulate() ||
+            store->getParentOfType<scf::ForOp>() ||
+            store->getParentOfType<AccumulationScopeOp>()) {
+          return WalkResult::advance();
+        }
+        FailureOr<AccumulationInitialMode> initialMode =
+            getInitialModeForAccumulatingStore(store, store.getOperation());
+        if (failed(initialMode)) {
+          store.emitError(
+              "cannot determine L1 accumulation initial mode for "
+              "straight-line +=; keep initialization as a preceding store "
+              "to the same output view");
+          return WalkResult::interrupt();
+        }
+        straightLineStores.emplace_back(store, *initialMode);
+        return WalkResult::advance();
+      });
+      if (collectionResult.wasInterrupted()) {
+        signalPassFailure();
+        return;
+      }
+    }
+
+    IRRewriter rewriter(&getContext());
+    DominanceInfo straightLineDomInfo(getOperation());
+    for (auto [store, initialMode] : straightLineStores) {
+      if (failed(insertStraightLineDFBAccumulationScope(
+              store, initialMode, straightLineDomInfo, rewriter))) {
+        signalPassFailure();
+        return;
+      }
+    }
+
     SmallVector<scf::ForOp> loops;
     getOperation().walk<WalkOrder::PostOrder>(
         [&](scf::ForOp loop) { loops.push_back(loop); });
 
-    IRRewriter rewriter(&getContext());
     DominanceInfo domInfo(getOperation());
     bool hadFailure = false;
     for (scf::ForOp loop : loops) {

@@ -105,6 +105,35 @@ def short_height_tensor_backed_passthrough(inp, out):
 
 
 @ttl.operation(grid=(1, 1))
+def short_height_tensor_backed_store_then_accumulate(initial, contribution, out):
+    initial_dfb = ttl.make_tensor_backed_dfb(initial, shape=(1, 3), block_count=1)
+    contribution_dfb = ttl.make_tensor_backed_dfb(
+        contribution, shape=(1, 3), block_count=1
+    )
+    output_dfb = ttl.make_tensor_backed_dfb(out, shape=(1, 3), block_count=1)
+
+    @ttl.compute()
+    def compute():
+        with (
+            initial_dfb.wait() as initial_block,
+            contribution_dfb.wait() as contribution_block,
+            output_dfb.reserve() as output_block,
+        ):
+            output_block.store(initial_block)
+            output_block += contribution_block
+
+    @ttl.datamovement()
+    def publish_inputs():
+        initial_dfb.publish()
+        contribution_dfb.publish()
+
+    @ttl.datamovement()
+    def consume_output():
+        output_block = output_dfb.wait()
+        output_block.pop()
+
+
+@ttl.operation(grid=(1, 1))
 def short_height_situ(gate, up, out):
     gate_dfb = ttl.make_tensor_backed_dfb(gate, shape=(1, 3), block_count=1)
     up_dfb = ttl.make_tensor_backed_dfb(up, shape=(1, 3), block_count=1)
@@ -519,6 +548,31 @@ def test_short_height_tensor_backed_passthrough(device, tile_hw):
 
     actual = ttnn.to_torch(output_tensor).reshape(tensor_shape).float()
     assert_allclose(actual, source.float(), rtol=0.0, atol=0.0)
+
+
+@pytest.mark.parametrize(
+    "tile_hw", SHORT_HEIGHT_TILE_SIZES, ids=lambda tile: f"{tile[0]}x{tile[1]}"
+)
+def test_short_height_tensor_backed_store_then_accumulate(device, tile_hw):
+    tile_height, tile_width = tile_hw
+    tensor_shape = (tile_height, 3 * tile_width)
+    element_count = tile_height * 3 * tile_width
+    initial = (torch.arange(element_count) % 17).reshape(tensor_shape)
+    contribution = (torch.arange(element_count) % 13).reshape(tensor_shape)
+    initial = initial.to(torch.bfloat16)
+    contribution = contribution.to(torch.bfloat16)
+    output = torch.zeros(tensor_shape, dtype=torch.bfloat16)
+    initial_tensor = _to_height_sharded_l1(initial, device, tile_hw)
+    contribution_tensor = _to_height_sharded_l1(contribution, device, tile_hw)
+    output_tensor = _to_height_sharded_l1(output, device, tile_hw)
+
+    short_height_tensor_backed_store_then_accumulate(
+        initial_tensor, contribution_tensor, output_tensor
+    )
+
+    actual = ttnn.to_torch(output_tensor).reshape(tensor_shape).float()
+    expected = initial.float() + contribution.float()
+    assert_allclose(actual, expected, rtol=0.0, atol=0.0)
 
 
 @pytest.mark.parametrize(
