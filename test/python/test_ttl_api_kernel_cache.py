@@ -146,6 +146,25 @@ def test_operation_propagates_math_fidelity(monkeypatch):
     assert compile_calls[0]["compile_options"]["math_fidelity"] == "HiFi3"
 
 
+def test_cache_key_separates_math_fidelity(monkeypatch):
+    monkeypatch.setattr(
+        ttl_api, "is_ttnn_tensor", lambda arg: isinstance(arg, _FakeTensor)
+    )
+    tensors = (_FakeTensor(), _FakeTensor())
+    common_options = {
+        "args": tensors,
+        "resolved_grid": (1, 1),
+        "fp32_dest_acc_en": False,
+        "dst_full_sync_en": False,
+        "target_arch": "blackhole",
+    }
+
+    hifi2_key = ttl_api._make_cache_key(math_fidelity="HiFi2", **common_options)
+    hifi4_key = ttl_api._make_cache_key(math_fidelity="HiFi4", **common_options)
+
+    assert hifi2_key != hifi4_key
+
+
 def test_operation_rejects_invalid_math_fidelity():
     with pytest.raises(ValueError, match="math_fidelity must be one of"):
         ttl_api.operation(grid=(1, 1), math_fidelity="HiFi5")

@@ -86,7 +86,7 @@ from .dataflow_buffer import (
     get_cb_count,
 )
 from .pipe import Pipe, PipeNet
-from .constants import SUPPORTED_MATH_FIDELITIES, SUPPORTED_MEMORY_SPACES
+from .constants import SUPPORTED_MEMORY_SPACES, validate_math_fidelity
 from .diagnostics import (
     TTLangCompileError,
     find_variable_assignment,
@@ -2353,9 +2353,7 @@ def _validate_operation_options(
         )
     if not isinstance(tiled, bool):
         raise TypeError(f"tiled must be a boolean, got {type(tiled).__name__}")
-    if math_fidelity is not None and math_fidelity not in SUPPORTED_MATH_FIDELITIES:
-        supported = ", ".join(repr(value) for value in SUPPORTED_MATH_FIDELITIES)
-        raise ValueError(f"math_fidelity must be one of {supported}")
+    validate_math_fidelity(math_fidelity)
 
 
 def pykernel_gen(

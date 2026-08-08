@@ -11,7 +11,7 @@ specified grid configurations.
 import types
 from typing import Any, Callable, Optional, Union, cast
 
-from ttl.constants import SUPPORTED_MATH_FIDELITIES
+from ttl.constants import validate_math_fidelity
 
 from .blockstate import KernelType
 from .typedefs import Shape
@@ -76,9 +76,7 @@ def operation(
             f"{', '.join(sorted(unknown))}"
         )
 
-    if math_fidelity is not None and math_fidelity not in SUPPORTED_MATH_FIDELITIES:
-        supported = ", ".join(repr(value) for value in SUPPORTED_MATH_FIDELITIES)
-        raise ValueError(f"math_fidelity must be one of {supported}")
+    validate_math_fidelity(math_fidelity)
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
         # Set grid to default if 'auto' or 'full'

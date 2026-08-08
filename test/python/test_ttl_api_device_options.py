@@ -10,6 +10,7 @@ import pytest
 
 import ttl.dialects.ttl as ttl
 import ttl.ttl_api as ttl_api
+from ttl.constants import SUPPORTED_MATH_FIDELITIES
 from ttl.ir import Context, Module
 
 
@@ -179,7 +180,7 @@ class TestKernelI32ArrayAttr:
 
 
 class TestMathFidelity:
-    @pytest.mark.parametrize("math_fidelity", ttl_api.SUPPORTED_MATH_FIDELITIES)
+    @pytest.mark.parametrize("math_fidelity", SUPPORTED_MATH_FIDELITIES)
     def test_maps_supported_value(self, math_fidelity):
         fidelity_value = object()
         ttnn_module = mock.Mock()
