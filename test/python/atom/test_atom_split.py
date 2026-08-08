@@ -21,6 +21,7 @@ import ttl
 from ttl._src.atom_split import split_function_body
 from ttl.atom import (
     _assign_backend_kernel_slots,
+    _backend_kernel_bodies,
     _backend_kernel_capacities,
     _build_atom_spec,
     _lift_setup,
@@ -84,6 +85,38 @@ def test_kernel_resource_is_lifted_before_logical_split():
     )
     assignments = _assign_backend_kernel_slots(result)
     assert tuple(assignments.values()) == (reader,)
+
+
+def test_empty_backend_kernels_retain_logical_selectors():
+    """Empty backend fillers retain stable target-independent selectors."""
+    reader = _logical_kernel(KernelKind.DATA_MOVEMENT, "reader")
+    function = _fn(
+        """
+        def k():
+            ttl.call_extern_func("reader.hpp", "reader", kernel=reader)
+        """
+    )
+    result = split_function_body(
+        function,
+        dfb_param_names=set(),
+        logical_kernels={"reader": reader},
+        kernel_capacities=_backend_kernel_capacities(),
+    )
+    assignments = _assign_backend_kernel_slots(result)
+
+    first = tuple(_backend_kernel_bodies(result, assignments, None))
+    second = tuple(_backend_kernel_bodies(result, assignments, None))
+    selectors = tuple(selector for _, selector, _ in first)
+
+    assert selectors == tuple(selector for _, selector, _ in second)
+    assert selectors[0] is KernelKind.COMPUTE
+    assert selectors[1] is reader
+    assert isinstance(selectors[2], Kernel)
+    assert selectors[2].kind is KernelKind.DATA_MOVEMENT
+    assert selectors[2].identity == "<pipe_source>"
+    assert selectors[2]._implicit_role == "pipe_source"
+    assert isinstance(first[0][2][0], ast.Pass)
+    assert isinstance(first[2][2][0], ast.Pass)
 
 
 def test_captured_kernel_is_bound_for_final_operation():
