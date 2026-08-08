@@ -37,7 +37,7 @@ namespace mlir::tt::ttl {
 namespace {
 
 /// Domain fact recorded for one dataflow buffer producer or consumer action.
-struct AcquireDomain {
+struct ProtocolActionDomain {
   LaunchNodeDomain domain;
   Operation *unanalyzableOp = nullptr;
 };
@@ -60,21 +60,27 @@ struct DFBParticipantSet {
 
 /// Analysis state shared by the dataflow solver and the verifier pass.
 struct ModuleState : LaunchNodeDomainState {
-  llvm::DenseMap<Operation *, AcquireDomain> acquireDomains;
+  llvm::DenseMap<Operation *, ProtocolActionDomain> protocolActionDomains;
 };
 
+static bool isProducerAction(DFBProtocolEffectKind kind) {
+  return kind == DFBProtocolEffectKind::Reserve ||
+         kind == DFBProtocolEffectKind::Push;
+}
+
+static bool isConsumerAction(DFBProtocolEffectKind kind) {
+  return kind == DFBProtocolEffectKind::Wait ||
+         kind == DFBProtocolEffectKind::Pop;
+}
+
 /// Record the launch-node domain that reaches a producer or consumer action.
-void recordAcquireDomain(Operation *op, const LaunchNodeDomain &domain,
-                         Operation *unanalyzableOp, ModuleState &state) {
+void recordProtocolActionDomain(Operation *op, const LaunchNodeDomain &domain,
+                                Operation *unanalyzableOp, ModuleState &state) {
   auto access = dyn_cast<DFBAccessOpInterface>(op);
-  if (!access ||
-      llvm::none_of(access.getDFBProtocolEffects(), [](const auto &effect) {
-        return effect.kind == DFBProtocolEffectKind::Reserve ||
-               effect.kind == DFBProtocolEffectKind::Wait;
-      })) {
+  if (!access || access.getDFBProtocolEffects().empty()) {
     return;
   }
-  state.acquireDomains[op] = {domain, unanalyzableOp};
+  state.protocolActionDomains[op] = {domain, unanalyzableOp};
 }
 
 /// Add a thread participant, merging repeated acquires from the same thread.
@@ -220,17 +226,17 @@ struct TTLVerifyDFBSPSCPass
       return;
     }
 
-    bool hasAcquire = false;
+    bool hasAcquisitionAction = false;
     module.walk([&](Operation *op) {
       auto access = dyn_cast<DFBAccessOpInterface>(op);
-      hasAcquire |=
+      hasAcquisitionAction |=
           access && getEnclosingKernelThread(op) &&
           llvm::any_of(access.getDFBProtocolEffects(), [](const auto &effect) {
             return effect.kind == DFBProtocolEffectKind::Reserve ||
                    effect.kind == DFBProtocolEffectKind::Wait;
           });
     });
-    if (!hasAcquire) {
+    if (!hasAcquisitionAction) {
       return;
     }
 
@@ -240,7 +246,7 @@ struct TTLVerifyDFBSPSCPass
       module.emitError()
           << "ttl-verify-dfb-spsc requires a `ttl.launch_grid` module "
              "attribute (an i64 array of length 2 with positive entries) "
-             "when verifying DFB acquire ops";
+             "when verifying DFB acquire actions";
       signalPassFailure();
       return;
     }
@@ -252,7 +258,7 @@ struct TTLVerifyDFBSPSCPass
     options.operationCallback = [&](Operation *op,
                                     const LaunchNodeDomain &domain,
                                     Operation *unanalyzableOp) {
-      recordAcquireDomain(op, domain, unanalyzableOp, state);
+      recordProtocolActionDomain(op, domain, unanalyzableOp, state);
     };
     solver.load<LaunchNodeDomainAnalysis>(state, options);
     if (failed(solver.initializeAndRun(module))) {
@@ -275,13 +281,13 @@ struct TTLVerifyDFBSPSCPass
       }
       FailureOr<int64_t> dfbId = getDFBId(cb);
       assert(succeeded(dfbId) && "DFB identities were verified");
-      auto domainIt = state.acquireDomains.find(op);
-      AcquireDomain acquireDomain =
-          domainIt == state.acquireDomains.end()
-              ? AcquireDomain{LaunchNodeDomain::unknown(), op}
+      auto domainIt = state.protocolActionDomains.find(op);
+      ProtocolActionDomain actionDomain =
+          domainIt == state.protocolActionDomains.end()
+              ? ProtocolActionDomain{LaunchNodeDomain::unknown(), op}
               : domainIt->second;
-      addParticipant(perDFB[*dfbId], thread, op, acquireDomain.domain,
-                     acquireDomain.unanalyzableOp);
+      addParticipant(perDFB[*dfbId], thread, op, actionDomain.domain,
+                     actionDomain.unanalyzableOp);
     };
 
     module.walk([&](Operation *op) {
@@ -290,9 +296,9 @@ struct TTLVerifyDFBSPSCPass
         return;
       }
       for (const DFBProtocolEffect &effect : access.getDFBProtocolEffects()) {
-        if (effect.kind == DFBProtocolEffectKind::Reserve) {
+        if (isProducerAction(effect.kind)) {
           record(producersByDFB, op, effect.dfb);
-        } else if (effect.kind == DFBProtocolEffectKind::Wait) {
+        } else if (isConsumerAction(effect.kind)) {
           record(consumersByDFB, op, effect.dfb);
         }
       }
@@ -300,14 +306,14 @@ struct TTLVerifyDFBSPSCPass
 
     bool sawError = false;
     for (auto &entry : producersByDFB) {
-      sawError |= verifyParticipantSet(entry.first, entry.second,
-                                       bindSites.lookup(entry.first),
-                                       "producer", "reserved");
+      sawError |= verifyParticipantSet(
+          entry.first, entry.second, bindSites.lookup(entry.first), "producer",
+          "performed a producer action");
     }
     for (auto &entry : consumersByDFB) {
-      sawError |= verifyParticipantSet(entry.first, entry.second,
-                                       bindSites.lookup(entry.first),
-                                       "consumer", "waited on");
+      sawError |= verifyParticipantSet(
+          entry.first, entry.second, bindSites.lookup(entry.first), "consumer",
+          "performed a consumer action");
     }
 
     if (sawError) {

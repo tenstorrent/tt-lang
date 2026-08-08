@@ -131,3 +131,12 @@ func.func @effect_nonpositive_tile_count() attributes {ttl.kernel_thread = #ttke
   ttl.opaque_call "foo" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 0>] () {header = "h.hpp"} : () -> ()
   return
 }
+
+// -----
+// Test: one protocol action cannot exceed the dependency's physical capacity.
+func.func @effect_tile_count_exceeds_capacity() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  // expected-error @below {{'ttl.opaque_call' op DFB protocol effect 0 tile count 2 exceeds dependency 0 capacity 1}}
+  ttl.opaque_call "foo" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 2>] () {header = "h.hpp"} : () -> ()
+  return
+}

@@ -158,8 +158,10 @@ The supported actions are `ttl.DFBEffect.reserve`, `push`, `wait`, and `pop`.
 List order is execution order. Repeated transactions retain every action and
 its position. A bounded lifecycle requires ordered reserve/push and wait/pop
 transactions with matching tile counts. A partial summary is valid but remains
-conservative: it does not prove physical-index reuse. A dependency with no
-listed effect is an opaque storage access for the complete call duration.
+conservative: it does not prove physical-index reuse. A dependency occurrence
+with no listed effect is an opaque storage access for the complete call
+duration, including when operand adaptation aliases multiple occurrences to
+the same SSA DFB.
 
 `unknown_dfb_access=True` declares that external C++ may access user-managed
 DFBs not present in the dependency list. This is distinct from malformed
