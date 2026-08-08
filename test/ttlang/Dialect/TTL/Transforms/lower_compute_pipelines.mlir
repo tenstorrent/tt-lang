@@ -3,7 +3,7 @@
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(func.func(ttl-lower-compute-pipelines))' | FileCheck %s --check-prefix=INLINE
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(func.func(ttl-lower-compute-pipelines,ttl-create-producer-compute,ttl-insert-intermediate-dfbs,convert-ttl-to-compute,ttl-insert-cb-sync))' | FileCheck %s --check-prefix=MATERIALIZED
 
-module attributes {ttl.target_arch = "wormhole_b0"} {
+module attributes {ttl.target_arch = #ttcore.arch<wormhole_b0>} {
   // A consumer pipeline is analyzed before its producer is rewritten. The
   // resulting tensor operations retain the two-operation SSA chain.
   // INLINE-LABEL: func.func @pipeline_dependency_order

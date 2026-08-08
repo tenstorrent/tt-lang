@@ -1498,6 +1498,7 @@ def TTL_TileReduceOp : TTL_TileOp<"tile_reduce", "Reduce",
 
 def TTL_TileRowNormalizationBlockOp :
     TTL_TileOp<"tile_row_normalization_block",
+               "Reduce",
                [TTL_CBInputTileOpTrait, TTL_DstResultOpTrait,
                 TTL_FixedBlockComputeOpTrait]> {
   let summary = "Normalize one static row in one DST acquisition";
@@ -1543,6 +1544,7 @@ def TTL_TileRowNormalizationBlockOp :
 
 def TTL_TileMulReduceBlockOp :
     TTL_TileOp<"tile_mul_reduce_block",
+               "Reduce",
                [TTL_CBInputTileOpTrait, TTL_DstResultOpTrait,
                 TTL_FixedBlockComputeOpTrait]> {
   let summary = "Multiply tensors and perform one full scalar reduction";
