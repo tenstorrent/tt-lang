@@ -56,7 +56,7 @@ func.func @short_height_reduce_unsupported() {
   %output = ttl.cb_reserve %output_dfb
       : <[1, 1], !ttcore.tile<8x32, bf16>, 1>
         -> tensor<1x1x!ttcore.tile<8x32, bf16>>
-  // expected-error @below {{'ttl.reduce' op tile shape 8x32 is not supported by this compute primitive; short-height tiles are supported by elementwise, fill, and matmul compute primitives}}
+  // expected-error @below {{'ttl.reduce' op tile shape 8x32 is not supported by this compute primitive; short-height tiles are supported by elementwise, fill, matmul, and passthrough compute primitives}}
   %result = ttl.reduce %input, %scaler 0 : i32 [0, 1]
       : (tensor<1x1x!ttcore.tile<8x32, bf16>>,
          tensor<1x1x!ttcore.tile<8x32, bf16>>)
