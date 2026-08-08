@@ -173,6 +173,7 @@ class _ParamInfo:
 @dataclass
 class _AtomSpec:
     name: str
+    operation_identity: str
     fn: Callable
     source: str
     source_file: str
@@ -183,6 +184,7 @@ class _AtomSpec:
     compile_time_captures: Dict[str, Any]
     frozen_scope: Dict[str, Any]
     external_pipenets: Dict[str, PipeNet]
+    logical_kernels: Dict[str, Kernel]
 
 
 class _ReturnFinder(ast.NodeVisitor):
@@ -333,6 +335,9 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
         elif stripped.startswith("def ") or stripped.startswith("async def "):
             break
     line_offset = start_lineno + num_decorator_lines - 1
+    operation_identity = (
+        f"{fn.__module__}.{fn.__qualname__}:{fn.__code__.co_firstlineno}"
+    )
 
     module = ast.parse(_cleanup_source_code(fn))
     if len(module.body) != 1 or not isinstance(module.body[0], ast.FunctionDef):
@@ -355,7 +360,8 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
     captured_values = _captured_values(fn)
     external_pipenets = dict(inlined_pipenets)
     compile_time_captures: Dict[str, Any] = {}
-    for capture_name in loaded_names & captured_values.keys():
+    logical_kernels: Dict[str, Kernel] = {}
+    for capture_name in sorted(loaded_names & captured_values.keys()):
         value = captured_values[capture_name]
         if isinstance(value, DataflowBuffer):
             raise ValueError(
@@ -365,6 +371,8 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
             )
         if isinstance(value, PipeNet):
             external_pipenets[capture_name] = value
+        elif isinstance(value, Kernel):
+            logical_kernels[capture_name] = value
         elif _is_compile_time_literal(value):
             compile_time_captures[capture_name] = copy.deepcopy(value)
         elif not isinstance(value, types.ModuleType) and not callable(value):
@@ -374,13 +382,17 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
                 f"{type(value).__name__}"
             )
 
+    _bind_logical_kernels(logical_kernels, operation_identity)
+
     frozen_scope = dict(scope)
     frozen_scope.update(compile_time_captures)
+    frozen_scope.update(logical_kernels)
     source = ast.unparse(fn_def)
 
     params = _classify_params(fn)
     return _AtomSpec(
         name=name,
+        operation_identity=operation_identity,
         fn=fn,
         source=source,
         source_file=source_file,
@@ -391,7 +403,33 @@ def _build_atom_spec(fn: Callable) -> _AtomSpec:
         compile_time_captures=compile_time_captures,
         frozen_scope=frozen_scope,
         external_pipenets=external_pipenets,
+        logical_kernels=logical_kernels,
     )
+
+
+def _bind_logical_kernels(
+    logical_kernels: Dict[str, Kernel], operation_identity: str
+) -> Dict[str, Kernel]:
+    """Bind captured declarations in place during operation registration."""
+    source_names: Dict[int, str] = {}
+    for name, kernel in logical_kernels.items():
+        previous_name = source_names.get(id(kernel))
+        if previous_name is not None:
+            raise ValueError(
+                "one logical Kernel handle reached the final operation under "
+                f"multiple names: {previous_name!r} and {name!r}"
+            )
+        source_names[id(kernel)] = name
+        if kernel._identity is not None:
+            raise ValueError(
+                f"logical Kernel {name!r} is already bound as "
+                f"{kernel.identity!r} to operation "
+                f"{kernel._operation_identity!r}"
+            )
+
+    for name, kernel in logical_kernels.items():
+        kernel._bind(name, operation_identity)
+    return logical_kernels
 
 
 def _is_compile_time_literal(value: Any) -> bool:
@@ -516,6 +554,7 @@ def _validate_resource_declarations(
 def _lift_setup(
     fn_def: ast.FunctionDef,
     scope: Dict[str, Any],
+    operation_identity: str,
 ) -> Tuple[
     ast.FunctionDef,
     Dict[str, DataflowBuffer],
@@ -551,7 +590,7 @@ def _lift_setup(
         elif isinstance(value, PipeNet):
             nets[name] = value
         elif isinstance(value, Kernel):
-            value = value._bind(name)
+            value = value._bind(name, operation_identity)
             kernels[name] = value
         ns[name] = value
         # A bare Pipe remains in ns for a later PipeNet reference.
@@ -620,7 +659,9 @@ def _compile_atom(
 
     # The shared operation wrapper supplies values in signature order.
     bound_arguments = {param.name: value for param, value in zip(spec.params, args)}
+    logical_kernels = dict(spec.logical_kernels)
     eval_scope = dict(spec.frozen_scope)
+    eval_scope.update(logical_kernels)
     eval_scope.update(bound_arguments)
 
     # Register ttnn tensors so the per-thread compiler can resolve global
@@ -648,9 +689,12 @@ def _compile_atom(
     _reset_cb_counter()
     _set_current_grid(grid)
 
-    stripped_fn, dfbs, nets, logical_kernels = _lift_setup(
-        copy.deepcopy(spec.fn_ast), eval_scope
+    stripped_fn, dfbs, nets, lifted_logical_kernels = _lift_setup(
+        copy.deepcopy(spec.fn_ast),
+        eval_scope,
+        operation_identity=spec.operation_identity,
     )
+    logical_kernels.update(lifted_logical_kernels)
 
     # Assign each PipeNet a distinct operation-local id (and validate), the
     # same graph @ttl.operation builds; it also yields the runner's pipe
@@ -699,6 +743,7 @@ def _compile_atom(
     # emit all three even when a thread has no work, filling it with a pass
     # body, the same shape @ttl.operation produces.
     threads = []
+    thread_logical_kernels = []
     any_real_work = False
     for slot in _BACKEND_KERNEL_SLOTS:
         logical_kernel = backend_assignments.get(slot)
@@ -712,6 +757,7 @@ def _compile_atom(
         threads.append(
             _make_thread_callable(spec, slot.kernel_type, fn_name, body, captures)
         )
+        thread_logical_kernels.append(logical_kernel)
 
     if not any_real_work:
         raise ValueError(
@@ -742,6 +788,7 @@ def _compile_atom(
         l1_budget_override=l1_budget_override,
         kernel_source_file=spec.source_file,
         kernel_line_offset=spec.line_offset,
+        logical_kernels=thread_logical_kernels,
     )
 
 

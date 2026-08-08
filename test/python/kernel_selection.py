@@ -6,6 +6,8 @@
 # RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
+# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_FINAL_MLIR=%t.final.mlir TTLANG_COMPILER_OPTIONS=--ttl-specialize-cores %python %s > %t.specialized.output 2>&1
+# RUN: FileCheck %s --check-prefix=SPECIALIZED < %t.final.mlir
 
 """Compile logical-kernel selectors with every external-call argument class."""
 
@@ -19,11 +21,11 @@ import ttnn
 from ttl import KernelKind, call_extern_func
 
 FAKE_HEADER = "/dev/null/fake_shim.hpp"
+reader = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
 
 
-@ttl.operation(grid=(1, 1))
+@ttl.operation(grid=(2, 1))
 def selected_external_calls(inp):
-    reader = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
     descriptor_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=1)
     drain_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=1)
 
@@ -35,13 +37,15 @@ def selected_external_calls(inp):
         include_paths=["/tmp"],
         kernel=ttl.KernelKind.COMPUTE,
     )
-    call_extern_func(
-        FAKE_HEADER,
-        "reader_entry",
-        template_args=[5],
-        func_args=[ttl.raw_addr(inp)],
-        kernel=reader,
-    )
+    core_x, _ = ttl.node(dims=2)
+    if core_x == 0:
+        call_extern_func(
+            FAKE_HEADER,
+            "reader_entry",
+            template_args=[5],
+            func_args=[ttl.raw_addr(inp)],
+            kernel=reader,
+        )
     ttl.call_extern_func(
         FAKE_HEADER,
         "shared_entry",
@@ -56,11 +60,15 @@ def selected_external_calls(inp):
 # CHECK-DAG: ttl.opaque_call "reader_entry"
 # CHECK-DAG: ttl.opaque_call "shared_entry"
 # CHECK-DAG: ttl.opaque_call "shared_entry"
+# CHECK-DAG: ttl.logical_kernel = #ttl.logical_kernel<kind = compute>
+# CHECK-DAG: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation =
 
 # CHECK-CPP-DAG: compute_entry<
 # CHECK-CPP-DAG: reader_entry<5>
 # CHECK-CPP-DAG: shared_entry()
 # CHECK-CPP-DAG: shared_entry()
+
+# SPECIALIZED-COUNT-2: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation =
 
 
 if __name__ == "__main__":

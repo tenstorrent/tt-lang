@@ -18,91 +18,169 @@ class KernelKind(Enum):
     DATA_MOVEMENT = "data_movement"
 
 
+@dataclass(frozen=True)
+class _KernelIdentity:
+    name: str
+    operation: Optional[str]
+    implicit_role: Optional[str]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not self.name:
+            raise ValueError("Kernel identity must be a nonempty string")
+        if self.operation is not None and (
+            not isinstance(self.operation, str) or not self.operation
+        ):
+            raise ValueError("Kernel operation identity must be a nonempty string")
+        if self.implicit_role is not None and (
+            not isinstance(self.implicit_role, str) or not self.implicit_role
+        ):
+            raise ValueError("Kernel implicit role must be a nonempty string")
+        if (self.operation is None) == (self.implicit_role is None):
+            raise ValueError(
+                "Kernel identity requires exactly one operation or implicit role"
+            )
+
+
+class _KernelBinding:
+    """One-time mutable holder for an immutable logical identity."""
+
+    def __init__(self) -> None:
+        self._identity: Optional[_KernelIdentity] = None
+
+    @property
+    def identity(self) -> Optional[_KernelIdentity]:
+        return self._identity
+
+    def bind(self, identity: _KernelIdentity) -> None:
+        if self._identity is not None:
+            raise ValueError(
+                f"Kernel is already bound as {self._identity.name!r} to "
+                f"operation {self._identity.operation!r}"
+            )
+        self._identity = identity
+
+
 @dataclass(frozen=True, eq=False)
 class Kernel:
     """An operation-local logical kernel with a stable source identity.
 
-    Kernel declarations are top-level resources in a unified operation. The
-    operation setup binds the declaration's assignment name as its identity.
+    Kernel handles are static operation resources. Operation registration or
+    setup binds the handle's capture or assignment name as its identity.
     """
 
     kind: KernelKind
-    _identity: Optional[str] = field(default=None, repr=False)
-    _implicit_role: Optional[str] = field(default=None, repr=False)
+    _binding: _KernelBinding = field(
+        default_factory=_KernelBinding,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.kind, KernelKind):
             raise TypeError(
                 "Kernel kind must be a KernelKind, got " f"{type(self.kind).__name__}"
             )
-        if self._identity is not None and (
-            not isinstance(self._identity, str) or not self._identity
-        ):
-            raise ValueError("Kernel identity must be a nonempty string")
 
     @classmethod
     def _create_bound(
         cls,
         kind: KernelKind,
         identity: str,
+        operation_identity: Optional[str] = None,
         implicit_role: Optional[str] = None,
     ) -> "Kernel":
-        return cls(kind, identity, implicit_role)
+        kernel = cls(kind)
+        kernel._binding.bind(
+            _KernelIdentity(identity, operation_identity, implicit_role)
+        )
+        return kernel
 
-    def _bind(self, identity: str) -> "Kernel":
-        if self._identity is not None:
-            if self._identity != identity:
-                raise ValueError(
-                    f"Kernel is already bound as {self._identity!r}, not {identity!r}"
-                )
-            return self
-        if not isinstance(identity, str) or not identity:
-            raise ValueError("Kernel identity must be a nonempty string")
-        return self._create_bound(self.kind, identity)
+    def _bind(
+        self,
+        identity: str,
+        operation_identity: str,
+    ) -> "Kernel":
+        """Bind this declaration to one operation and return the same handle."""
+        self._binding.bind(
+            _KernelIdentity(
+                identity,
+                operation_identity,
+                implicit_role=None,
+            )
+        )
+        return self
+
+    @classmethod
+    def _from_metadata(
+        cls,
+        kind: KernelKind,
+        identity: str,
+        operation_identity: Optional[str],
+        implicit_role: Optional[str] = None,
+    ) -> "Kernel":
+        return cls._create_bound(
+            kind,
+            identity,
+            operation_identity=operation_identity,
+            implicit_role=implicit_role,
+        )
 
     @classmethod
     def _implicit(cls, kind: KernelKind, role: str) -> "Kernel":
         return cls._create_bound(kind, f"<{role}>", implicit_role=role)
 
     @property
+    def _identity(self) -> Optional[str]:
+        identity = self._binding.identity
+        return identity.name if identity is not None else None
+
+    @property
+    def _operation_identity(self) -> Optional[str]:
+        identity = self._binding.identity
+        return identity.operation if identity is not None else None
+
+    @property
+    def _implicit_role(self) -> Optional[str]:
+        identity = self._binding.identity
+        return identity.implicit_role if identity is not None else None
+
+    @property
     def identity(self) -> str:
-        if self._identity is None:
+        identity = self._binding.identity
+        if identity is None:
             raise ValueError(
                 "Kernel has no operation-local identity; declare it as a "
-                "top-level assignment in @ttl.operation"
+                "capture or top-level assignment in @ttl.operation"
             )
-        return self._identity
+        return identity.name
 
     def __eq__(self, other) -> bool:
         if not isinstance(other, Kernel):
             return NotImplemented
-        if self._identity is None or other._identity is None:
+        identity = self._binding.identity
+        other_identity = other._binding.identity
+        if identity is None or other_identity is None:
             raise ValueError(
                 "Kernel equality requires operation-local identities; declare "
-                "both kernels as top-level assignments in @ttl.operation"
+                "both kernels as captures or top-level assignments in "
+                "@ttl.operation"
             )
-        return (
-            self.kind,
-            self._identity,
-            self._implicit_role,
-        ) == (
-            other.kind,
-            other._identity,
-            other._implicit_role,
-        )
+        return (self.kind, identity) == (other.kind, other_identity)
 
     def __hash__(self) -> int:
-        if self._identity is None:
+        identity = self._binding.identity
+        if identity is None:
             raise ValueError(
                 "Kernel hashing requires an operation-local identity; declare "
-                "the kernel as a top-level assignment in @ttl.operation"
+                "the kernel as a capture or top-level assignment in "
+                "@ttl.operation"
             )
-        return hash((self.kind, self._identity, self._implicit_role))
+        return hash((self.kind, identity))
 
     def __repr__(self) -> str:
-        if self._identity is None:
+        if self._binding.identity is None:
             return f"Kernel({self.kind!r})"
-        return f"Kernel({self.kind!r}, identity={self._identity!r})"
+        return f"Kernel({self.kind!r}, identity={self.identity!r})"
 
 
 KernelSelector = Union[KernelKind, Kernel]
