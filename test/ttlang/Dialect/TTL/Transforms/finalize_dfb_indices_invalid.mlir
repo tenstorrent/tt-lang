@@ -156,12 +156,12 @@ func.func @missing_pop()
 }
 
 // -----
+// expected-error @-1 {{cannot determine DFB page size for element type i4}}
 
 // Runtime DFB metadata cannot represent a fractional-byte page.
 func.func @sub_byte_page_size()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
                 ttl.base_cta_index = 1 : i32, ttl.crta_indices = []} {
-  // expected-error @below {{DFB element type must occupy a positive whole number of bytes, got i4}}
   %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
       : !ttl.cb<[128], i4, 2>
   return

@@ -134,7 +134,7 @@ func.func @high_usage_under_budget_tile_f32() {
 
 // -----
 
-// Row-wise builtin bf16 uses one 2-byte scalar per slot.
+// Row-wise builtin bf16 uses the default 32x32 physical tile allocation.
 
 func.func @under_budget_row_bf16() {
   %cb0 = ttl.bind_cb{cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], bf16, 2>
@@ -145,20 +145,20 @@ func.func @under_budget_row_bf16() {
 
 func.func @overflow_row_bf16() {
   // expected-error @below {{exceeds L1 budget}}
-  %cb0 = ttl.bind_cb{cb_index = 0, block_count = 1} : !ttl.cb<[733185, 1], bf16, 1>
+  %cb0 = ttl.bind_cb{cb_index = 0, block_count = 1} : !ttl.cb<[717, 1], bf16, 1>
   func.return
 }
 
 // -----
 
 func.func @high_usage_under_budget_row_bf16() {
-  %cb0 = ttl.bind_cb{cb_index = 0, block_count = 1} : !ttl.cb<[1, 660000], bf16, 1>
+  %cb0 = ttl.bind_cb{cb_index = 0, block_count = 1} : !ttl.cb<[1, 645], bf16, 1>
   func.return
 }
 
 // -----
 
-// Row-wise builtin f32 uses one 4-byte scalar per slot.
+// Row-wise builtin f32 uses the default 32x32 physical tile allocation.
 
 func.func @under_budget_row_f32() {
   %cb0 = ttl.bind_cb{cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], f32, 2>
@@ -169,14 +169,14 @@ func.func @under_budget_row_f32() {
 
 func.func @overflow_row_f32() {
   // expected-error @below {{exceeds L1 budget}}
-  %cb0 = ttl.bind_cb{cb_index = 0, block_count = 1} : !ttl.cb<[366593, 1], f32, 1>
+  %cb0 = ttl.bind_cb{cb_index = 0, block_count = 1} : !ttl.cb<[359, 1], f32, 1>
   func.return
 }
 
 // -----
 
 func.func @high_usage_under_budget_row_f32() {
-  %cb0 = ttl.bind_cb{cb_index = 0, block_count = 1} : !ttl.cb<[1, 330000], f32, 1>
+  %cb0 = ttl.bind_cb{cb_index = 0, block_count = 1} : !ttl.cb<[1, 323], f32, 1>
   func.return
 }
 

@@ -25,7 +25,7 @@ The Python interface currently supports void calls.
 | Float in `template_args` | Unsigned IEEE-754 f32 bit-pattern constant | Must be compile-time evaluable. |
 | Scalar in `func_args` | Lowered scalar parameter | Follows the TT-Metal kernel scalar convention. |
 | Base tensor in `func_args` | `TensorAccessor` parameter | Supports tiled bf16 and fp32 tensors only in NOC kernels. |
-| `ttl.raw_addr(base_tensor)` in `func_args` | `uint32_t` runtime tensor buffer address | Supports only NOC kernels; slices and derived tensor values are rejected. |
+| `ttl.raw_addr(base_tensor)` in `func_args` | `uint32_t` runtime tensor buffer address | Supports NOC and compute kernels; slices and derived tensor values are rejected. |
 | Captured `ttnn.GlobalSemaphore` | `uint32_t` address literal or parameter | The address is fixed for the compiled operation. |
 
 A bare DFB in `template_args` is ambiguous and rejected. The explicit wrapper
@@ -99,11 +99,12 @@ required accessor compile-time arguments. Compute and Ethernet kernels must use
 a supported scalar interface instead.
 
 `ttl.raw_addr(tensor)` reads the runtime tensor buffer address directly from the
-NOC kernel common arguments. The operand must be an argument of the enclosing
-kernel-thread function with TTL layout encoding. A nested region argument,
-slice, view, or computed tensor has no defined runtime-argument mapping and is
-rejected. A raw address provides no layout, view offset, page size, alignment,
-or bounds metadata.
+NOC or compute kernel common arguments. It does not construct a
+`TensorAccessor` or consume accessor compile-time arguments. The operand must be
+an argument of the enclosing kernel-thread function with TTL layout encoding. A
+nested region argument, slice, view, or computed tensor has no defined
+runtime-argument mapping and is rejected. A raw address provides no layout,
+view offset, page size, alignment, or bounds metadata.
 
 ## Global semaphores
 
