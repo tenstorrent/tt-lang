@@ -333,8 +333,10 @@ def assert_rmsnorm_close(result, expected):
 )
 @pytest.mark.parametrize("gamma_mode", GAMMA_MODES)
 def test_rmsnorm(device, tile_height, num_tiles, width, gamma_mode):
-    """Normalize benchmark row widths across supported gamma modes."""
+    """Validate fixed-block and ordinary gamma variants at benchmark widths."""
     # The specialized hardware operation intentionally accepts bf16 tiles only.
+    # Column-broadcast gamma exercises ordinary compute creation because the
+    # fixed-block schedule accepts only absent or full-row gamma.
     result, expected = run_rmsnorm(
         device,
         tile_height,
