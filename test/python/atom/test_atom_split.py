@@ -21,6 +21,7 @@ from ttl._src.atom_split import split_function_body
 from ttl.atom import (
     _assign_backend_kernel_slots,
     _backend_kernel_capacities,
+    _build_atom_spec,
     _lift_setup,
 )
 from ttl.kernel import Kernel, KernelKind
@@ -46,7 +47,7 @@ def _kind_src(result, kind: KernelKind, index: int = 0) -> str:
 
 
 def _logical_kernel(kind: KernelKind, name: str) -> Kernel:
-    return Kernel(kind)._bind(name)
+    return Kernel(kind)._bind(name, "test.operation")
 
 
 def test_kernel_resource_is_lifted_before_logical_split():
@@ -59,7 +60,11 @@ def test_kernel_resource_is_lifted_before_logical_split():
         """
     )
 
-    stripped, dfbs, nets, logical_kernels = _lift_setup(function, {"ttl": ttl})
+    stripped, dfbs, nets, logical_kernels = _lift_setup(
+        function,
+        {"ttl": ttl},
+        "test.operation",
+    )
 
     assert not dfbs
     assert not nets
@@ -76,6 +81,69 @@ def test_kernel_resource_is_lifted_before_logical_split():
     )
     assignments = _assign_backend_kernel_slots(result)
     assert tuple(assignments.values()) == (reader,)
+
+
+def test_captured_kernel_is_bound_for_final_operation():
+    """Registration binds the captured source handle in place."""
+    reader = Kernel(KernelKind.DATA_MOVEMENT)
+
+    def operation():
+        ttl.call_extern_func("reader.hpp", "reader", kernel=reader)
+
+    spec = _build_atom_spec(operation)
+
+    assert spec.logical_kernels["reader"] is reader
+    assert reader.identity == "reader"
+    assert reader._operation_identity == spec.operation_identity
+
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names=set(),
+        logical_kernels=spec.logical_kernels,
+        kernel_capacities=_backend_kernel_capacities(),
+    )
+    assert result.kernels == (reader,)
+
+
+def test_captured_kernel_cannot_bind_to_two_operations():
+    """One public handle has one operation-local binding."""
+    sender = Kernel(KernelKind.DATA_MOVEMENT)
+
+    def first_operation():
+        ttl.call_extern_func("first.hpp", "first", kernel=sender)
+
+    first_spec = _build_atom_spec(first_operation)
+    assert sender._operation_identity == first_spec.operation_identity
+
+    def second_operation():
+        ttl.call_extern_func("second.hpp", "second", kernel=sender)
+
+    with pytest.raises(ValueError, match="already bound"):
+        _build_atom_spec(second_operation)
+
+
+def test_captured_kernel_cannot_have_two_names():
+    """Alias validation completes before the handle is bound."""
+    reader = Kernel(KernelKind.DATA_MOVEMENT)
+    reader_alias = reader
+
+    def operation():
+        ttl.call_extern_func("reader.hpp", "reader", kernel=reader)
+        ttl.call_extern_func("reader.hpp", "reader", kernel=reader_alias)
+
+    with pytest.raises(ValueError, match="multiple names"):
+        _build_atom_spec(operation)
+    with pytest.raises(ValueError, match="no operation-local identity"):
+        reader.identity
+
+
+def test_bound_kernel_equality_uses_logical_identity():
+    """Equivalent bindings compare equally without object-address identity."""
+    first = Kernel(KernelKind.DATA_MOVEMENT)._bind("reader", "operation")
+    second = Kernel(KernelKind.DATA_MOVEMENT)._bind("reader", "operation")
+
+    assert first == second
+    assert hash(first) == hash(second)
 
 
 def test_split_analysis_does_not_mutate_input_ast():

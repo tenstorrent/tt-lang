@@ -39,25 +39,34 @@ def compute_external(inp):
 ```
 
 An operation-local `Kernel` distinguishes multiple kernels with the same
-kind. A `Kernel` declaration is a static top-level operation resource.
+kind. An operation factory may create one handle and capture it in the
+operation and related factory callbacks. Operation registration binds the
+same handle in place using its capture name and deterministic operation
+identity.
 
 ```python
-@ttl.operation(grid=(1, 1))
-def selected_external(inp):
+def make_selected_external():
     reader = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
 
-    ttl.call_extern_func(
-        HEADER,
-        "reader_entry",
-        func_args=[inp],
-        kernel=reader,
-    )
-    ttl.call_extern_func(
-        HEADER,
-        "shared_entry",
-        kernel=(ttl.KernelKind.COMPUTE, reader),
-    )
+    @ttl.operation(grid=(1, 1))
+    def selected_external(inp):
+        ttl.call_extern_func(
+            HEADER,
+            "reader_entry",
+            func_args=[inp],
+            kernel=reader,
+        )
+        ttl.call_extern_func(
+            HEADER,
+            "shared_entry",
+            kernel=(ttl.KernelKind.COMPUTE, reader),
+        )
+
+    return selected_external
 ```
+
+A handle used only by the operation may instead be declared as a static
+top-level assignment in the operation body.
 
 An external call accepts one selector or a nonempty tuple of distinct
 selectors. A tuple emits the call once in every selected logical kernel. A
