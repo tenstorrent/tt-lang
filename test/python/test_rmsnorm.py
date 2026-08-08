@@ -2,11 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""RMSNorm rows lowered through scalar reuse in one DST acquisition."""
+"""RMSNorm row-fusion and ordinary-lowering device coverage."""
 
 import pytest
 import torch
 import ttl
+from ttl import ttl_api
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
@@ -14,6 +15,19 @@ from utils.correctness import assert_allclose, assert_pcc  # noqa: E402
 
 TILE_WIDTH = 32
 EPSILON = 1.0e-5
+ROW_NORMALIZATION_TARGET_ARCHS = frozenset({"blackhole"})
+
+
+def require_row_normalization_schedule(device):
+    """Skip schedule-specific cases when the pinned LLK lacks the schedule."""
+    target_arch = ttl_api._detect_device_arch(device)
+    if target_arch is None:
+        pytest.fail("unable to determine the test device architecture")
+    if target_arch not in ROW_NORMALIZATION_TARGET_ARCHS:
+        pytest.skip(
+            "the pinned target dependency does not implement the fixed-block "
+            "row-normalization schedule"
+        )
 
 
 def make_rmsnorm_kernel(
@@ -333,10 +347,12 @@ def assert_rmsnorm_close(result, expected):
 )
 @pytest.mark.parametrize("gamma_mode", GAMMA_MODES)
 def test_rmsnorm(device, tile_height, num_tiles, width, gamma_mode):
-    """Validate fixed-block and ordinary gamma variants at benchmark widths."""
+    """Validate RMSNorm semantics at benchmark widths and gamma modes."""
     # The specialized hardware operation intentionally accepts bf16 tiles only.
     # Column-broadcast gamma exercises ordinary compute creation because the
-    # fixed-block schedule accepts only absent or full-row gamma.
+    # fixed-block schedule accepts only absent or full-row gamma. Targets whose
+    # dependencies lack that schedule use ordinary compute creation for all
+    # modes.
     result, expected = run_rmsnorm(
         device,
         tile_height,
@@ -355,6 +371,7 @@ def test_rmsnorm(device, tile_height, num_tiles, width, gamma_mode):
 )
 def test_rmsnorm_kernel_config(device, fp32_dest_acc_en, dst_full_sync_en):
     """Exercise the fused LLK under every DST register configuration."""
+    require_row_normalization_schedule(device)
     result, expected = run_rmsnorm(
         device,
         tile_height=32,
@@ -372,6 +389,7 @@ def test_rmsnorm_five_tile_fp32_dest(
     tmp_path,
 ):
     """Select full synchronization when FP32 destination needs five slots."""
+    require_row_normalization_schedule(device)
     final_mlir = tmp_path / "rmsnorm.mlir"
     monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir))
     result, expected = run_rmsnorm(
