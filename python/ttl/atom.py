@@ -67,6 +67,7 @@ from .kernel import (
 )
 from .operators import _set_current_grid
 from .pipe import PipeNet
+from .runtime_resources import ProgramRuntimeResources
 from .ttl_api import (
     Program,
     _BackendKernelSlot,
@@ -441,6 +442,7 @@ def _compile_atom(
     target_arch: Optional[str],
     compiler_options: CompilerOptions,
     l1_budget_override: int,
+    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
 ):
 
     # The shared operation wrapper supplies values in signature order.
@@ -560,6 +562,8 @@ def _compile_atom(
         kernel_source_file=spec.source_file,
         kernel_line_offset=spec.line_offset,
         logical_kernels=thread_logical_kernels,
+        operation_name=spec.name,
+        runtime_resource_factory=runtime_resource_factory,
     )
 
 
@@ -589,6 +593,7 @@ def _compile_unified_operation(
         target_arch=target_arch,
         compiler_options=compiler_options,
         l1_budget_override=l1_budget_override,
+        runtime_resource_factory=decorator_options["runtime_resource_factory"],
     )
 
 
@@ -648,6 +653,7 @@ def _unified_operation(
     dst_full_sync_en: Optional[bool] = None,
     math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
+    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
 ) -> Callable:
     """Build the unified-body form selected by ``@ttl.operation``.
 
@@ -670,6 +676,7 @@ def _unified_operation(
                 "dst_full_sync_en": dst_full_sync_en,
                 "math_fidelity": math_fidelity,
                 "options": options,
+                "runtime_resource_factory": runtime_resource_factory,
             },
         )
 
@@ -687,6 +694,7 @@ def operation(
     dst_full_sync_en: Optional[bool] = None,
     math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
+    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
 ) -> Callable:
     """Define a unified-body or explicit multi-kernel operation."""
 
@@ -706,6 +714,7 @@ def operation(
                 dst_full_sync_en=dst_full_sync_en,
                 math_fidelity=math_fidelity,
                 options=options,
+                runtime_resource_factory=runtime_resource_factory,
                 _prepare_call=prepare_call,
             )(fn)
             wrapped._ttl_operation_kind = "multi_kernel"
@@ -720,6 +729,7 @@ def operation(
             dst_full_sync_en=dst_full_sync_en,
             math_fidelity=math_fidelity,
             options=options,
+            runtime_resource_factory=runtime_resource_factory,
         )(fn)
 
     return _decorator
