@@ -62,9 +62,13 @@ static bool protocolUseMatchesAcquire(DFBAcquireInterval interval,
       return true;
     }
   }
+  // Index-only template operands use the DFB without declaring a storage
+  // dependency.
   return !foundDependency;
 }
 
+// Returns true when `user` may consume this acquired slot; unclassified
+// accesses remain conservative.
 static bool directDFBUseMatchesAcquire(DFBAcquireInterval interval,
                                        Operation *user) {
   if (auto access = dyn_cast<DFBAccessOpInterface>(user)) {
