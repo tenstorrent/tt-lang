@@ -315,6 +315,28 @@ class TestMeshProgramPlacement:
             is compiled_kernel._pipe_global_semaphore_cache
         )
 
+    @pytest.mark.parametrize("logical_selectors", [None, [], [None]])
+    def test_resource_factory_requires_complete_logical_selectors(
+        self, logical_selectors
+    ):
+        with pytest.raises(
+            ValueError,
+            match="runtime_resource_factory requires .*logical-kernel selector",
+        ):
+            ttl_api.CompiledTTNNKernel(
+                kernel_paths=[("kernel.cpp", "compute")],
+                kernel_configs=[object()],
+                kernel_arg_specs=[[]],
+                num_tensors=1,
+                core_ranges=_CoreRanges(),
+                kernel_tensor_indices=[[]],
+                kernel_logical_selectors=logical_selectors,
+                operation_name="resource_operation",
+                runtime_resource_factory=lambda **_kwargs: (
+                    ttl.ProgramRuntimeResources()
+                ),
+            )
+
 
 class TestKernelI32ArrayAttr:
     def test_optional_attribute_may_be_absent(self):
