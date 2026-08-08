@@ -189,10 +189,10 @@ public:
 
   LogicalResult
   validatePrimitiveTileShape(ComputePrimitive primitive,
-                             ttcore::TileType tileType, bool containsMatmul,
+                             ttcore::TileType tileType,
                              std::string &failureReason) const final {
     failureReason.clear();
-    if (containsMatmul || !isShortHeightComputeShape(tileType) ||
+    if (!isShortHeightComputeShape(tileType) ||
         supportsShortHeightTiles(primitive)) {
       return success();
     }
@@ -399,12 +399,12 @@ public:
 
   LogicalResult
   validatePrimitiveTileShape(ComputePrimitive primitive,
-                             ttcore::TileType tileType, bool containsMatmul,
+                             ttcore::TileType tileType,
                              std::string &failureReason) const final {
     for (const std::unique_ptr<ComputeTargetEnvironment> &environment :
          environments) {
-      if (failed(environment->validatePrimitiveTileShape(
-              primitive, tileType, containsMatmul, failureReason))) {
+      if (failed(environment->validatePrimitiveTileShape(primitive, tileType,
+                                                         failureReason))) {
         return failure();
       }
     }
@@ -701,7 +701,6 @@ ComputeTargetEnvironment::get(Operation *operation,
 
 LogicalResult
 ComputeTargetEnvironment::validateOperation(Operation *operation,
-                                            bool containsMatmul,
                                             std::string &failureReason) const {
   std::optional<ComputePrimitive> primitive = getComputePrimitive(operation);
   if (!primitive) {
@@ -737,8 +736,8 @@ ComputeTargetEnvironment::validateOperation(Operation *operation,
       continue;
     }
     if (failed(validateKernelTileType(*tileType, failureReason)) ||
-        failed(validatePrimitiveTileShape(*primitive, *tileType, containsMatmul,
-                                          failureReason)) ||
+        failed(
+            validatePrimitiveTileShape(*primitive, *tileType, failureReason)) ||
         failed(
             validatePrimitiveDataType(*primitive, *tileType, failureReason))) {
       return failure();
@@ -832,14 +831,6 @@ std::optional<ComputePrimitive> getComputePrimitive(Operation *operation) {
   assert(!operation->hasTrait<TTLTileComputeOpTrait>() &&
          "tile compute operation must have a target capability classification");
   return std::nullopt;
-}
-
-bool containsMatmulOperation(Operation *scope) {
-  WalkResult result = scope->walk([](Operation *operation) {
-    return isa<MatmulOp, TileMatmulBlockOp>(operation) ? WalkResult::interrupt()
-                                                       : WalkResult::advance();
-  });
-  return result.wasInterrupted();
 }
 
 } // namespace mlir::tt::ttl

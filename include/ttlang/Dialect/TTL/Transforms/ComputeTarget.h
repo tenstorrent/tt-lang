@@ -81,7 +81,7 @@ public:
 
   virtual LogicalResult
   validatePrimitiveTileShape(ComputePrimitive primitive,
-                             ttcore::TileType tileType, bool containsMatmul,
+                             ttcore::TileType tileType,
                              std::string &failureReason) const = 0;
 
   virtual LogicalResult
@@ -99,7 +99,7 @@ public:
                           ttcore::TileType resultType, bool transposeRhs,
                           std::string &failureReason) const = 0;
 
-  LogicalResult validateOperation(Operation *operation, bool containsMatmul,
+  LogicalResult validateOperation(Operation *operation,
                                   std::string &failureReason) const;
 
 protected:
@@ -108,8 +108,6 @@ protected:
 
 /// Return the target-independent primitive implemented by a TTL operation.
 std::optional<ComputePrimitive> getComputePrimitive(Operation *operation);
-
-bool containsMatmulOperation(Operation *scope);
 
 } // namespace mlir::tt::ttl
 

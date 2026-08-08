@@ -90,8 +90,7 @@ analyzeRowNormalizationCompute(ComputeOp compute, std::string &reason) {
   FailureOr<std::unique_ptr<ComputeTargetEnvironment>> target =
       ComputeTargetEnvironment::get(compute, reason);
   if (failed(target) ||
-      failed((*target)->validateOperation(analysis.block,
-                                          /*containsMatmul=*/false, reason))) {
+      failed((*target)->validateOperation(analysis.block, reason))) {
     return failure();
   }
 
