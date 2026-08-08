@@ -7,8 +7,9 @@
 //===----------------------------------------------------------------------===//
 //
 // Rejects modules in which a logical dataflow buffer has more than one producer
-// or consumer kernel active on the same launched node. Logical identity
-// remains distinct when non-overlapping DFBs share a physical `cb_index`.
+// or consumer kernel active on the same worker core and logical device. Logical
+// identity remains distinct when non-overlapping DFBs share a physical
+// `cb_index`.
 // tt-metal CBs are single-producer single-consumer at the API level; see
 // `docs/development/DFBManagement.md` for the rationale.
 //
@@ -38,7 +39,7 @@ namespace {
 
 /// Domain fact recorded for one dataflow buffer producer or consumer action.
 struct ProtocolActionDomain {
-  LaunchNodeDomain domain;
+  LaunchNodeDomain launchNodeDomain;
   Operation *unanalyzableOp = nullptr;
 };
 
@@ -49,7 +50,7 @@ struct ProtocolActionDomain {
 struct DFBParticipant {
   func::FuncOp thread;
   Operation *op = nullptr;
-  LaunchNodeDomain domain;
+  LaunchExecutionDomain domain;
   Operation *unanalyzableOp = nullptr;
 };
 
@@ -75,7 +76,8 @@ void recordProtocolActionDomain(Operation *op, const LaunchNodeDomain &domain,
 
 /// Add a thread participant, merging repeated acquires from the same thread.
 void addParticipant(DFBParticipantSet &set, func::FuncOp thread, Operation *op,
-                    const LaunchNodeDomain &domain, Operation *unanalyzableOp) {
+                    const LaunchExecutionDomain &domain,
+                    Operation *unanalyzableOp) {
   DFBParticipant participant{thread, op, domain, unanalyzableOp};
   auto [it, inserted] = set.participants.insert({thread, participant});
   if (inserted) {
@@ -102,16 +104,20 @@ void attachCommonNotes(InFlightDiagnostic &diag, Operation *bindSite,
 /// Emit the error for two participant domains with a proven common launch node.
 void emitOverlapError(int64_t logicalId, const DFBParticipant &lhs,
                       const DFBParticipant &rhs,
-                      const LaunchNodeDomain &overlap, Operation *bindSite,
+                      const LaunchExecutionDomain &overlap, Operation *bindSite,
                       llvm::StringRef role, llvm::StringRef verbedHere) {
   InFlightDiagnostic diag = lhs.op->emitError()
                             << "logical DFB " << logicalId << " has multiple "
                             << role
                             << " kernels active on the same launched node";
-  if (!overlap.nodes.empty()) {
-    LaunchNodeCoord example = *overlap.nodes.begin();
-    diag.attachNote() << "example overlapping node: core_x=" << example.x
-                      << ", core_y=" << example.y;
+  if (!overlap.locations.empty()) {
+    const LaunchExecutionLocation &example = *overlap.locations.begin();
+    Diagnostic &note = diag.attachNote();
+    note << "example overlapping node: core_x=" << example.node.x
+         << ", core_y=" << example.node.y;
+    if (example.device) {
+      note << ", logical_device=" << example.device;
+    }
   }
   diag.attachNote(rhs.op->getLoc()) << "also " << verbedHere << " here";
   attachCommonNotes(diag, bindSite, role);
@@ -163,8 +169,8 @@ bool verifyParticipantSet(int64_t logicalId, const DFBParticipantSet &set,
     const DFBParticipant &lhs = lhsIt->second;
     for (auto rhsIt = std::next(lhsIt); rhsIt != end; ++rhsIt) {
       const DFBParticipant &rhs = rhsIt->second;
-      LaunchNodeDomain overlap = lhs.domain.intersectWith(rhs.domain);
-      if (overlap.known && !overlap.nodes.empty()) {
+      LaunchExecutionDomain overlap = lhs.domain.intersectWith(rhs.domain);
+      if (overlap.known && !overlap.locations.empty()) {
         emitOverlapError(logicalId, lhs, rhs, overlap, bindSite, role,
                          verbedHere);
         return true;
@@ -276,8 +282,14 @@ struct TTLVerifyDFBSPSCPass
           domainIt == state.protocolActionDomains.end()
               ? ProtocolActionDomain{LaunchNodeDomain::unknown(), op}
               : domainIt->second;
-      addParticipant(perDFB[*dfbId], thread, op, actionDomain.domain,
-                     actionDomain.unanalyzableOp);
+      LaunchExecutionDomain executionDomain =
+          getLaunchExecutionDomain(op, actionDomain.launchNodeDomain, state);
+      Operation *unanalyzableOp =
+          executionDomain.known
+              ? actionDomain.unanalyzableOp
+              : pickEarlierBySourceLoc(actionDomain.unanalyzableOp, op);
+      addParticipant(perDFB[*dfbId], thread, op, executionDomain,
+                     unanalyzableOp);
     };
 
     module.walk([&](Operation *op) {
