@@ -57,3 +57,48 @@ func.func @dfb_accumulate_existing_scope(
   }
   func.return %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>
 }
+
+// -----
+
+// A straight-line accumulating store is represented by a one-iteration loop.
+
+// CHECK-LABEL: func.func @dfb_straight_line_accumulate_existing_scope
+// CHECK: ttl.store
+// CHECK: ttl.accumulation_scope outs(%{{.*}} : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+// CHECK: ^bb0(%{{.*}}: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+// CHECK:   scf.for
+// CHECK:     ttl.store
+// CHECK:   ttl.yield %{{.*}} : tensor<1x1x!ttcore.tile<32x32, bf16>>
+// CHECK: } initial_modes([accumulate_existing])
+func.func @dfb_straight_line_accumulate_existing_scope(
+    %arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>,
+    %arg1: tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %init = ttl.attach_cb %arg0, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %input = ttl.attach_cb %arg1, %cb1 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %reserve = ttl.cb_reserve %cb2 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %init, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %input, %reserve {accumulate} : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  func.return %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>
+}
+
+// -----
+
+// Without an earlier store, the single contribution creates the output.
+
+// CHECK-LABEL: func.func @dfb_straight_line_overwrite_scope
+// CHECK: ttl.accumulation_scope outs(%{{.*}} : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+// CHECK:   scf.for
+// CHECK:     ttl.store
+// CHECK: } initial_modes([overwrite])
+func.func @dfb_straight_line_overwrite_scope(
+    %arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %input = ttl.attach_cb %arg0, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %reserve = ttl.cb_reserve %cb1 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %input, %reserve {accumulate} : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  func.return %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>
+}

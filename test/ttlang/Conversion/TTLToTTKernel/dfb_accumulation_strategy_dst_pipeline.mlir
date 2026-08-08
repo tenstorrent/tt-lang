@@ -30,3 +30,30 @@ func.func @dfb_accumulate_ignores_tensor_dst_strategy() {
   }
   func.return
 }
+
+// -----
+
+// A straight-line store followed by += must retain accumulate-existing mode
+// through compute subblocking and TTKernel conversion.
+// CHECK-LABEL: func.func @dfb_straight_line_accumulate_existing
+// CHECK-DAG: %[[C0_I32:.*]] = arith.constant 0 : i32
+// CHECK-DAG: %[[C1_I32:.*]] = arith.constant 1 : i32
+// CHECK: ttkernel.pack_tile
+// CHECK: ttkernel.pack_reconfig_l1_acc(%[[C1_I32]])
+// CHECK-NEXT: scf.for
+// CHECK: ttkernel.pack_tile
+// CHECK: } {ttl.l1_acc_initial = 1 : i32, ttl.l1_acc_loop, ttl.l1_acc_scope_id = {{.*}} : i64}
+// CHECK: ttkernel.cb_push_back
+// CHECK-NEXT: ttkernel.pack_reconfig_l1_acc(%[[C0_I32]])
+func.func @dfb_straight_line_accumulate_existing() {
+  %cb_init = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb_contribution = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb_out = ttl.bind_cb {cb_index = 2, block_count = 2} {dfb_id = 2 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %initial = ttl.cb_wait %cb_init : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %contribution = ttl.cb_wait %cb_contribution : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %reserve = ttl.cb_reserve %cb_out : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %initial, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %contribution, %reserve {accumulate} : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_push %cb_out : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  func.return
+}

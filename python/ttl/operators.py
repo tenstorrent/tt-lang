@@ -243,10 +243,10 @@ class TensorBlock:
     def __iadd__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
         """Accumulate into a reserved block via L1 packer accumulation.
 
-        Emits ttl.store with the ``accumulate`` attribute. When used
-        inside a loop, the compiler inserts ``pack_reconfig_l1_acc``
-        guards so that each iteration adds to the existing L1 value
-        instead of overwriting.
+        Emits ttl.store with the ``accumulate`` attribute. The compiler
+        inserts ``pack_reconfig_l1_acc`` guards so the store adds to the
+        existing L1 value instead of overwriting. Straight-line accumulation
+        executes once; loop accumulation executes once per iteration.
 
         This is an interim mechanism; the spec's full pattern
         (``fill`` + lazy ``BlockExpr`` ``+=`` + ``store``) is deferred
