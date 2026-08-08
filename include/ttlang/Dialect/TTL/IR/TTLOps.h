@@ -28,6 +28,7 @@ struct DFBProtocolEffect {
   mlir::Value dfb;
   DFBProtocolEffectKind kind = DFBProtocolEffectKind::Reserve;
   int64_t numTiles = 0;
+  unsigned dependencyIndex = 0;
   unsigned sequenceIndex = 0;
 };
 
