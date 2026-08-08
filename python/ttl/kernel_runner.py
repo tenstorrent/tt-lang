@@ -1199,8 +1199,9 @@ def build_pipe_computed_address_dfb_tensors(
         config = cb_configs[dfb_index]
         allocation = _get_dfb_allocation(config)
         _validate_physical_dfb_config(config, dfb_index)
+        backing_core_ranges = _computed_address_storage_core_ranges(config, core_ranges)
         backing_tensors[dfb_index] = _allocate_l1_sharded_storage_tensor(
-            core_ranges, allocation.total_size, device
+            backing_core_ranges, allocation.total_size, device
         )
     return backing_tensors
 
@@ -1355,6 +1356,29 @@ def _make_node_core_ranges(nodes: Tuple[Tuple[int, int], ...]) -> Any:
     )
 
 
+def _computed_address_storage_core_ranges(
+    config: PhysicalDFBConfig, core_ranges: Any
+) -> Any:
+    """Select nodes that use compiler-managed storage for a physical DFB."""
+    if not config.storage_segments:
+        return core_ranges
+
+    storage_nodes = sorted(
+        {
+            node
+            for segment in config.storage_segments
+            if not segment.is_tensor_backed
+            for node in segment.nodes
+        }
+    )
+    if not storage_nodes:
+        raise ValueError(
+            f"computed-address DFB[{config.dfb_index}] has no "
+            "compiler-managed storage segment"
+        )
+    return _make_node_core_ranges(tuple(storage_nodes))
+
+
 def _validate_tensor_backed_dfb_binding(
     tensors: List[Any],
     config: PhysicalDFBConfig,
@@ -1469,6 +1493,32 @@ def _validate_tensor_backing_aliases(
             bindings.append((config.dfb_index, nodes, absolute_start, absolute_end))
 
 
+def _build_tensor_backed_dfb_descriptor(
+    tensors: List[Any],
+    config: PhysicalDFBConfig,
+    allocation: _DFBAllocation,
+    cb_format: Any,
+    segment: DFBStorageSegment,
+) -> Any:
+    tensor_index = segment.tensor_index
+    assert tensor_index is not None
+    tensor = tensors[tensor_index]
+    segment_core_ranges = _make_node_core_ranges(segment.nodes)
+    descriptor = ttnn.cb_descriptor_from_sharded_tensor(
+        config.dfb_index,
+        tensor,
+        address_offset=segment.byte_offset,
+        total_size=allocation.total_size,
+        core_ranges=segment_core_ranges,
+    )
+    native_tile = tuple(tensor.get_tile().tile_shape)
+    if native_tile != config.tile:
+        # A physical view retains the tensor-owned address but needs the DFB
+        # page interpretation selected by the source program.
+        descriptor.format_descriptors = [cb_format]
+    return descriptor
+
+
 def build_cb_descriptors(
     tensors: List[Any],
     cb_configs: List[PhysicalDFBConfig],
@@ -1566,24 +1616,31 @@ def build_cb_descriptors(
             **({"tile": tile_descriptor} if tile_descriptor is not None else {}),
         )
         if cb_index in backing_tensors:
-            if config.storage_segments:
-                raise ValueError(
-                    f"DFB[{cb_index}] cannot combine PipeNet computed-address "
-                    "storage with finalized storage segments"
-                )
+            backing_core_ranges = _computed_address_storage_core_ranges(
+                config, core_ranges
+            )
             cb_desc = ttnn.CBDescriptor(
                 total_size=allocation.total_size,
-                core_ranges=core_ranges,
+                core_ranges=backing_core_ranges,
                 format_descriptors=[cb_format],
             )
             backing_desc = ttnn.cb_descriptor_from_sharded_tensor(
                 cb_index,
                 backing_tensors[cb_index],
                 total_size=allocation.total_size,
-                core_ranges=core_ranges,
+                core_ranges=backing_core_ranges,
             )
             cb_desc.set_buffer_from_cb(backing_desc)
             cb_descriptors.append(cb_desc)
+
+            for segment in config.storage_segments:
+                if not segment.is_tensor_backed:
+                    continue
+                cb_descriptors.append(
+                    _build_tensor_backed_dfb_descriptor(
+                        tensors, config, allocation, cb_format, segment
+                    )
+                )
             continue
 
         if not config.storage_segments:
@@ -1608,16 +1665,9 @@ def build_cb_descriptors(
                 )
                 continue
 
-            tensor_index = segment.tensor_index
-            assert tensor_index is not None
-            tensor = tensors[tensor_index]
             cb_descriptors.append(
-                ttnn.cb_descriptor_from_sharded_tensor(
-                    cb_index,
-                    tensor,
-                    address_offset=segment.byte_offset,
-                    total_size=allocation.total_size,
-                    core_ranges=segment_core_ranges,
+                _build_tensor_backed_dfb_descriptor(
+                    tensors, config, allocation, cb_format, segment
                 )
             )
 
