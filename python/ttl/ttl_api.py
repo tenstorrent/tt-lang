@@ -860,6 +860,7 @@ class CompiledTTNNKernel:
         ]
         self.operation_name = operation_name
         self.runtime_resource_factory = runtime_resource_factory
+        self._runtime_resource_lifetimes = ()
         self._pipe_global_semaphore_lifetime = []
         self.opaque_include_paths = opaque_include_paths or []
         self._fabric_route_cache = _FabricRouteCache()
@@ -916,7 +917,15 @@ class CompiledTTNNKernel:
             fabric_route_cache=self._fabric_route_cache,
             runtime_resource_factory=self.runtime_resource_factory,
             operation_name=self.operation_name,
+            runtime_resource_lifetime_commit=(
+                self._commit_runtime_resource_lifetimes
+                if self.runtime_resource_factory is not None
+                else None
+            ),
         )
+
+    def _commit_runtime_resource_lifetimes(self, lifetimes: tuple[object, ...]) -> None:
+        self._runtime_resource_lifetimes = lifetimes
 
 
 def _write_kernel_to_tmp(name: str, source: str) -> str:
