@@ -961,11 +961,14 @@ public:
       template_args.push_back(
           datatypeToDataformatEnumValueOpaqueAttr(builder, op.getOutDtype()));
       return ArrayAttr::get(op.getContext(), template_args);
-    } else if constexpr (std::is_same_v<SourceOp,
-                                        ttkernel::BinaryDestReuseTilesInitOp> ||
-                         std::is_same_v<SourceOp,
-                                        ttkernel::BinaryDestReuseTilesOp>) {
-      SmallVector<Attribute, 2> template_args;
+    } else if constexpr (
+        std::is_same_v<SourceOp, ttkernel::BinaryDestReuseTilesInitOp> ||
+        std::is_same_v<SourceOp, ttkernel::BinaryDestReuseTilesOp> ||
+        std::is_same_v<SourceOp,
+                       ttkernel::ExperimentalBinaryDestReuseBcastTilesInitOp> ||
+        std::is_same_v<SourceOp,
+                       ttkernel::ExperimentalBinaryDestReuseBcastTilesOp>) {
+      SmallVector<Attribute, 3> template_args;
       StringRef eltwiseType;
       switch (op.getEltwiseBinaryType()) {
       case ttkernel::EltwiseBinaryType::Add:
@@ -980,6 +983,15 @@ public:
       }
       template_args.push_back(
           emitc::OpaqueAttr::get(op.getContext(), eltwiseType));
+      if constexpr (
+          std::is_same_v<
+              SourceOp,
+              ttkernel::ExperimentalBinaryDestReuseBcastTilesInitOp> ||
+          std::is_same_v<SourceOp,
+                         ttkernel::ExperimentalBinaryDestReuseBcastTilesOp>) {
+        template_args.push_back(emitc::OpaqueAttr::get(
+            op.getContext(), getBroadcastType(op.getBcastType())));
+      }
       StringRef reuseType =
           op.getReuseType() == ttkernel::BinaryDestReuseType::DestToSrcA
               ? "EltwiseBinaryReuseDestType::DEST_TO_SRCA"
@@ -2983,6 +2995,10 @@ public:
         TTKernelToEmitCOpaqueRewriter<ttkernel::SubTilesOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::BinaryDestReuseTilesInitOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::BinaryDestReuseTilesOp>,
+        TTKernelToEmitCOpaqueRewriter<
+            ttkernel::ExperimentalBinaryDestReuseBcastTilesInitOp>,
+        TTKernelToEmitCOpaqueRewriter<
+            ttkernel::ExperimentalBinaryDestReuseBcastTilesOp>,
 
         // Transpose Ops
         TTKernelToEmitCOpaqueRewriter<ttkernel::TransposeInitOp>,

@@ -8,6 +8,7 @@ set(LLK_HEADERS
     ${CMAKE_SOURCE_DIR}/include/ttlang/Target/TTKernel/LLKs/experimental_pack_untilize_llks.h
     ${CMAKE_SOURCE_DIR}/include/ttlang/Target/TTKernel/LLKs/experimental_invoke_sfpi_llks.h
     ${CMAKE_SOURCE_DIR}/include/ttlang/Target/TTKernel/LLKs/experimental_matmul_llks.h
+    ${CMAKE_SOURCE_DIR}/include/ttlang/Target/TTKernel/LLKs/experimental_binary_dest_reuse_bcast.h
     ${CMAKE_SOURCE_DIR}/include/ttlang/Target/TTKernel/LLKs/experimental_mul_reduce.h
     ${CMAKE_SOURCE_DIR}/include/ttlang/Target/TTKernel/LLKs/experimental_padding_llks.h
     ${CMAKE_SOURCE_DIR}/include/ttlang/Target/TTKernel/LLKs/experimental_coord_translation.h

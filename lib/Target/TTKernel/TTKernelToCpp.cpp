@@ -6,6 +6,7 @@
 
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 
+#include "ttlang/Target/TTKernel/LLKs/experimental_binary_dest_reuse_bcast_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_coord_translation_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_fabric_1d_routing_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_fabric_2d_routing_generated.h"
@@ -156,6 +157,11 @@ public:
       if (callee == "experimental::matmul_block") {
         emitLlk(experimental_matmul_llks_generated,
                 experimental_matmul_llks_generated_len);
+      }
+      if (callee == "experimental::binary_dest_reuse_bcast_tiles_init" ||
+          callee == "experimental::binary_dest_reuse_bcast_tiles") {
+        emitLlk(experimental_binary_dest_reuse_bcast_generated,
+                experimental_binary_dest_reuse_bcast_generated_len);
       }
       if (callee == "experimental::multiply_full_scalar_reduction_block") {
         emitLlk(experimental_mul_reduce_generated,

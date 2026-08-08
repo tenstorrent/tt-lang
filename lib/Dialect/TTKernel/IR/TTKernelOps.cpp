@@ -21,6 +21,56 @@
 
 namespace mlir::tt::ttkernel {
 
+static LogicalResult verifyBinaryDestReuseBroadcast(
+    Operation *operation, EltwiseBinaryType eltwiseType, BcastType bcastType,
+    BinaryDestReuseType reuseType) {
+  if (eltwiseType != EltwiseBinaryType::Mul) {
+    return operation->emitOpError("supports multiplication only");
+  }
+  if (bcastType != BcastType::Col) {
+    return operation->emitOpError("supports column broadcast only");
+  }
+  if (reuseType != BinaryDestReuseType::DestToSrcA) {
+    return operation->emitOpError(
+        "requires dest_to_srca because broadcast applies to source B");
+  }
+  return success();
+}
+
+::mlir::LogicalResult ExperimentalBinaryDestReuseBcastTilesInitOp::verify() {
+  return verifyBinaryDestReuseBroadcast(getOperation(), getEltwiseBinaryType(),
+                                        getBcastType(), getReuseType());
+}
+
+::mlir::LogicalResult ExperimentalBinaryDestReuseBcastTilesOp::verify() {
+  if (failed(verifyBinaryDestReuseBroadcast(getOperation(),
+                                            getEltwiseBinaryType(),
+                                            getBcastType(), getReuseType()))) {
+    return failure();
+  }
+
+  for (Operation *preceding = getOperation()->getPrevNode(); preceding;
+       preceding = preceding->getPrevNode()) {
+    auto init =
+        dyn_cast<ExperimentalBinaryDestReuseBcastTilesInitOp>(preceding);
+    if (!init) {
+      continue;
+    }
+    if (init.getInCb() != getInCb() ||
+        init.getEltwiseBinaryType() != getEltwiseBinaryType() ||
+        init.getBcastType() != getBcastType() ||
+        init.getReuseType() != getReuseType()) {
+      return emitOpError(
+          "requires a preceding broadcast destination-reuse initialization "
+          "with identical operands and attributes");
+    }
+    return success();
+  }
+  return emitOpError(
+      "requires a preceding broadcast destination-reuse initialization in "
+      "the same block");
+}
+
 static bool isSourceScalarLifetimeOp(Operation *operation) {
   return isa<ExperimentalSourceScalarAcquireOp,
              ExperimentalSourceScalarApplyMulOp,
