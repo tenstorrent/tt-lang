@@ -603,6 +603,56 @@ def TTKernel_BinaryDestReuseTilesOp : TTKernel_FPUOp<"binary_dest_reuse_tiles"> 
     }];
 }
 
+def TTKernel_ExperimentalBinaryDestReuseBcastTilesInitOp :
+    TTKernel_InitOp<"experimental.binary_dest_reuse_bcast_tiles_init"> {
+  let summary = "Initialize a broadcast binary operation with DST reuse";
+  let description = [{
+    Configures multiplication whose left operand is retained in DST and whose
+    right operand is column-broadcast from a dataflow buffer.
+
+    The current LLK capability requires `reuse_type` to be `dest_to_srca` so
+    that the broadcast dataflow-buffer operand occupies source B. This
+    operation must precede
+    `ttkernel.experimental.binary_dest_reuse_bcast_tiles` with identical
+    attributes.
+  }];
+  let arguments = (ins TTKernel_CB:$in_cb,
+                       TTKernel_EltwiseBinaryTypeAttr:$eltwise_binary_type,
+                       TTKernel_BcastTypeAttr:$bcast_type,
+                       TTKernel_BinaryDestReuseTypeAttr:$reuse_type);
+  let assemblyFormat = [{
+    `(` $in_cb `,` $eltwise_binary_type `,` $bcast_type `,` $reuse_type `)`
+    attr-dict `:` functional-type(operands, results)
+  }];
+  let hasVerifier = 1;
+}
+
+def TTKernel_ExperimentalBinaryDestReuseBcastTilesOp :
+    TTKernel_FPUOp<"experimental.binary_dest_reuse_bcast_tiles"> {
+  let summary = "Apply a broadcast binary operation with DST reuse";
+  let description = [{
+    Column-broadcasts the dataflow-buffer tile selected by `in_tile_index`,
+    multiplies it with the value already in `DST[dst_tile_index]`, and writes
+    the result back to the same DST slot.
+
+    The DST register section must be acquired. `reuse_type` must be
+    `dest_to_srca`, which gives the broadcast dataflow-buffer operand source-B
+    semantics.
+  }];
+  let arguments = (ins TTKernel_CB:$in_cb,
+                       IndexLike:$in_tile_index,
+                       IndexLike:$dst_tile_index,
+                       TTKernel_EltwiseBinaryTypeAttr:$eltwise_binary_type,
+                       TTKernel_BcastTypeAttr:$bcast_type,
+                       TTKernel_BinaryDestReuseTypeAttr:$reuse_type);
+  let assemblyFormat = [{
+    `(` $in_cb `,` $in_tile_index `,` $dst_tile_index `,`
+    $eltwise_binary_type `,` $bcast_type `,` $reuse_type `)`
+    attr-dict `:` functional-type(operands, results)
+  }];
+  let hasVerifier = 1;
+}
+
 def TTKernel_ExperimentalAddRsqrtOp :
     TTKernel_FPUOp<"experimental_add_rsqrt"> {
   let summary = "Add a scalar constant and apply reciprocal square root";
