@@ -15,7 +15,7 @@ building and execution.
 
 from dataclasses import dataclass, field
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 ttnn = None  # Lazy-loaded via _ensure_ttnn()
 
@@ -43,6 +43,7 @@ from .dataflow_buffer import (
 from .constants import DEFAULT_L1_CB_BUDGET_BYTES
 from .dtype_utils import format_name_to_ttnn_dtype
 from .kernel import KernelSelector
+from .runtime_resources import ProgramRuntimeResources
 
 
 @dataclass(frozen=True)
@@ -833,6 +834,8 @@ def run_kernel_on_device(
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
     pipe_global_semaphore_lifetime: Optional[List[Any]] = None,
+    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
+    operation_name: str = "<anonymous>",
 ) -> Any:
     """
     Execute kernels on device using ttnn.generic_op.
@@ -858,6 +861,9 @@ def run_kernel_on_device(
         pipe_global_semaphore_lifetime: Optional list replaced with the current
             call's GlobalSemaphore objects. Cached kernels keep this bounded
             owner list so repeated calls do not retain old semaphore objects.
+        runtime_resource_factory: Optional callback that returns declarative
+            resources for the current invocation.
+        operation_name: User-facing operation name for callback diagnostics.
 
     Returns:
         Result from ttnn.generic_op (typically None or output tensor).
@@ -865,6 +871,35 @@ def run_kernel_on_device(
     _ensure_ttnn()
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
+
+    program_resources = ProgramRuntimeResources()
+    if runtime_resource_factory is not None:
+        try:
+            program_resources = runtime_resource_factory(
+                tensors=tuple(tensors),
+                core_ranges=core_ranges,
+                first_free_semaphore_id=num_pipe_sync_semaphores,
+            )
+        except Exception as error:
+            raise RuntimeError(
+                f"@ttl.operation {operation_name!r}: runtime resource factory "
+                f"failed: {error}"
+            ) from error
+        if not isinstance(program_resources, ProgramRuntimeResources):
+            raise TypeError(
+                f"@ttl.operation {operation_name!r}: runtime_resource_factory "
+                "must return ProgramRuntimeResources, got "
+                f"{type(program_resources).__name__}"
+            )
+        if (
+            program_resources.semaphore_descriptors
+            or program_resources.kernel_resources
+            or program_resources.lifetimes
+        ):
+            raise ValueError(
+                f"@ttl.operation {operation_name!r}: nonempty runtime resources "
+                "require a complete resource plan"
+            )
 
     # Build tensor accessor args.
     tensor_accessor_args = build_tensor_accessor_args(tensors)

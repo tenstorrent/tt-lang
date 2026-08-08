@@ -116,6 +116,7 @@ from .kernel import (
     _selector_implicit_role,
     _selector_kind,
 )
+from .runtime_resources import ProgramRuntimeResources
 from .operators import CopyTransferHandler, TensorBlock, copy
 from .compiler_options import CompilerOptions
 from .ttl_utils import get_thread_type_string
@@ -734,6 +735,10 @@ class CompiledTTNNKernel:
         opaque_include_paths=None,
         kernel_pipe_computed_address_dfb_indices=None,
         kernel_logical_selectors=None,
+        operation_name="<anonymous>",
+        runtime_resource_factory: Optional[
+            Callable[..., ProgramRuntimeResources]
+        ] = None,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -764,6 +769,8 @@ class CompiledTTNNKernel:
             kernel_pipe_computed_address_dfb_indices: Per-kernel receiver DFB indices whose
                 L1 bases are supplied as common runtime args.
             kernel_logical_selectors: Logical selector for each compiled kernel.
+            operation_name: User-facing operation name for runtime diagnostics.
+            runtime_resource_factory: Optional per-invocation resource callback.
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
@@ -788,6 +795,8 @@ class CompiledTTNNKernel:
             None for _ in kernel_paths
         ]
         self._pipe_global_semaphore_lifetime = []
+        self.operation_name = operation_name
+        self.runtime_resource_factory = runtime_resource_factory
         self.opaque_include_paths = opaque_include_paths or []
 
     def __call__(self, *args):
@@ -836,6 +845,8 @@ class CompiledTTNNKernel:
             pipe_sram_scratch_bytes=self.pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=self.num_pipe_global_semaphores,
             pipe_global_semaphore_lifetime=self._pipe_global_semaphore_lifetime,
+            runtime_resource_factory=self.runtime_resource_factory,
+            operation_name=self.operation_name,
         )
 
 
@@ -1084,6 +1095,8 @@ def _compile_ttnn_kernel(
     num_pipe_global_semaphores: int = 0,
     opaque_include_paths: Optional[List[str]] = None,
     target_arch: Optional[str] = None,
+    operation_name: str = "<anonymous>",
+    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -1348,6 +1361,8 @@ def _compile_ttnn_kernel(
         opaque_include_paths=opaque_include_paths or [],
         kernel_pipe_computed_address_dfb_indices=kernel_pipe_computed_address_dfb_indices,
         kernel_logical_selectors=kernel_logical_selectors,
+        operation_name=operation_name,
+        runtime_resource_factory=runtime_resource_factory,
     )
 
     if verbose:
@@ -1959,6 +1974,7 @@ def _compile_kernel(
     target_arch: Optional[str] = None,
     compiler_options: CompilerOptions = CompilerOptions(),
     l1_budget_override: int = 0,
+    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
 ) -> Optional[CompiledTTNNKernel]:
     """
     Compile kernel function to MLIR and return CompiledTTNNKernel.
@@ -2086,6 +2102,8 @@ def _compile_kernel(
         kernel_source_file=kernel_source_file,
         kernel_line_offset=kernel_line_offset,
         logical_kernels=[thread._logical_kernel for thread in threads],
+        operation_name=f.__name__,
+        runtime_resource_factory=runtime_resource_factory,
     )
 
 
@@ -2106,6 +2124,8 @@ def _lower_program_to_kernel(
     kernel_source_file,
     kernel_line_offset,
     logical_kernels=None,
+    operation_name="<anonymous>",
+    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
 ):
     """Lower compiled threads to a CompiledTTNNKernel.
 
@@ -2485,6 +2505,8 @@ def _lower_program_to_kernel(
             num_pipe_global_semaphores=pipe_global_semaphore_count,
             opaque_include_paths=opaque_include_paths,
             target_arch=target_arch,
+            operation_name=operation_name,
+            runtime_resource_factory=runtime_resource_factory,
         )
         return compiled_kernel
 
@@ -2641,6 +2663,7 @@ def pykernel_gen(
     dst_full_sync_en: Optional[bool] = None,
     math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
+    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     _prepare_call: Optional[Callable] = None,
 ) -> Callable:
     """
@@ -2661,6 +2684,7 @@ def pykernel_gen(
         dst_full_sync_en: Optional override for dst_full_sync_en
         math_fidelity: Optional TTNN compute math fidelity
         options: Compiler option string (e.g., "--no-ttl-maximize-dst")
+        runtime_resource_factory: Optional per-invocation resource callback
 
     Returns:
         Decorated function that compiles and executes the kernel
@@ -2723,6 +2747,7 @@ def pykernel_gen(
                 target_arch=target_arch,
                 compiler_options=compiler_options,
                 l1_budget_override=l1_budget_override,
+                runtime_resource_factory=runtime_resource_factory,
             )
 
         return _make_operation_wrapper(
