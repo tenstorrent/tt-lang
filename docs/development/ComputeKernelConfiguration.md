@@ -84,7 +84,8 @@ Compute-pipeline schedules record compound multiply/full-scalar reduction and
 source-scalar retention as independent capabilities. Target implementations
 report each capability's supported element types and effective DST capacity.
 The solver selects a retained schedule only when the target provides every
-required capability.
+required capability. Capability availability follows the tt-metal revision;
+it is not inferred from architecture identity in the fusion planner.
 
 Quasar requires the Gen2 configuration descriptor, global unpack routing, and
 Quasar kernel launch mechanism. The current TT-Lang runtime does not implement

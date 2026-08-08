@@ -205,8 +205,8 @@ validates kernel tile dimensions, primitive data-type support, and matmul LLK
 combinations before compute creation or TTKernel conversion modifies IR. The
 environment is selected from the module's system description or
 `ttl.target_arch`. Modules without either use the intersection of capabilities
-implemented by all supported targets. Wormhole B0 and Blackhole currently
-provide the same compute capability set.
+implemented by all supported targets. Shared primitive validation does not
+imply that versioned compound LLKs are available on every target.
 
 Adding an architecture requires a capability implementation and an entry in
 `computeTargetRegistrations`. The registration table is the source for both
