@@ -14,6 +14,52 @@ inside C++.
 
 The Python interface currently supports void calls.
 
+## Logical-kernel selection
+
+A `call_extern_func` in a unified `@ttl.operation` accepts a `kernel=` selector.
+`KernelKind.COMPUTE` and `KernelKind.DATA_MOVEMENT` select the compiler-owned
+canonical kernel of that kind:
+
+```python
+ttl.call_extern_func(
+    HEADER,
+    "compute_entry",
+    kernel=ttl.KernelKind.COMPUTE,
+)
+```
+
+An operation-local `Kernel` distinguishes multiple logical kernels of the same
+kind. Its declaration is a static top-level operation resource:
+
+```python
+reader = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+
+ttl.call_extern_func(HEADER, "reader_entry", kernel=reader)
+ttl.call_extern_func(
+    HEADER,
+    "shared_entry",
+    kernel=(ttl.KernelKind.COMPUTE, reader),
+)
+```
+
+An external call accepts one selector or a nonempty tuple of distinct
+selectors. A tuple emits the call once in every selected logical kernel. A call
+may omit `kernel=` when its enclosing callback already determines one logical
+kernel. Otherwise, omission is invalid because opaque code cannot be assigned
+by inspecting its implementation.
+
+`TensorBlock.push` and `TensorBlock.pop` also accept `kernel=`, but only one
+selector. An explicit selector assigns an otherwise-unused DFB transaction:
+
+```python
+unused = input_dfb.wait()
+unused.pop(kernel=ttl.KernelKind.DATA_MOVEMENT)
+```
+
+`reserve` and `wait` do not accept a selector. Their ownership comes from the
+acquired block's uses and release. The selector is consumed during unified-body
+splitting and does not alter the external-call IR or C++ interface.
+
 ## Argument contract
 
 | Source argument | Generated C++ interface | Restrictions |
@@ -44,6 +90,7 @@ ttl.call_extern_func(
         ttl.dfb_descriptor(source),
         ttl.dfb_descriptor(destination),
     ],
+    kernel=ttl.KernelKind.DATA_MOVEMENT,
 )
 ```
 
@@ -84,6 +131,7 @@ ttl.call_extern_func(
     "legacy_copy",
     template_args=[ttl.get_dfb_id(source)],
     func_args=[source],
+    kernel=ttl.KernelKind.DATA_MOVEMENT,
 )
 ```
 
