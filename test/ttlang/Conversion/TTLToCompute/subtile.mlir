@@ -322,3 +322,108 @@ func.func @direct_16x32_subtile(
         tensor<1x1x!ttcore.tile<16x32, bf16>>
   return %result : tensor<1x1x!ttcore.tile<16x32, bf16>>
 }
+
+// -----
+
+// Row reduction preserves the 8x32 tile type for the input, scaler, result,
+// and output dataflow buffer.
+// CHECK-LABEL: func.func @short_height_reduce_row
+// CHECK:       ^bb0(%[[INPUT:.*]]: !ttcore.tile<8x32, bf16>, %[[SCALER:.*]]: !ttcore.tile<8x32, bf16>, %[[OUTPUT:.*]]: !ttcore.tile<8x32, bf16>):
+// CHECK:         %[[REDUCED:.*]] = ttl.tile_reduce %[[INPUT]], %[[SCALER]], %[[OUTPUT]] 0 : i32 <reduce_dim_row>{{.*}}: (!ttcore.tile<8x32, bf16>, !ttcore.tile<8x32, bf16>, !ttcore.tile<8x32, bf16>) -> !ttcore.tile<8x32, bf16>
+// CHECK:         ttl.tile_store %[[REDUCED]], %{{.*}}{{.*}}: !ttcore.tile<8x32, bf16>, tensor<1x1x!ttcore.tile<8x32, bf16>>
+func.func @short_height_reduce_row(
+    %input_argument: tensor<1x1x!ttcore.tile<8x32, bf16>>,
+    %scaler_argument: tensor<1x1x!ttcore.tile<8x32, bf16>>)
+    -> tensor<1x1x!ttcore.tile<8x32, bf16>> {
+  %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<8x32, bf16>, 2>
+  %scaler_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<8x32, bf16>, 2>
+  %output_dfb = ttl.bind_cb {cb_index = 2, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<8x32, bf16>, 2>
+  %input = ttl.attach_cb %input_argument, %input_dfb
+      : (tensor<1x1x!ttcore.tile<8x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<8x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<8x32, bf16>>
+  %scaler = ttl.attach_cb %scaler_argument, %scaler_dfb
+      : (tensor<1x1x!ttcore.tile<8x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<8x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<8x32, bf16>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[1, 1], !ttcore.tile<8x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<8x32, bf16>>
+  %result = ttl.reduce %input, %scaler 0 : i32 [1]
+      : (tensor<1x1x!ttcore.tile<8x32, bf16>>,
+         tensor<1x1x!ttcore.tile<8x32, bf16>>)
+        -> tensor<1x1x!ttcore.tile<8x32, bf16>>
+  ttl.store %result, %output
+      : tensor<1x1x!ttcore.tile<8x32, bf16>>,
+        tensor<1x1x!ttcore.tile<8x32, bf16>>
+  return %result : tensor<1x1x!ttcore.tile<8x32, bf16>>
+}
+
+// -----
+
+// Column broadcast preserves the 8x32 tile type through tile lowering.
+// CHECK-LABEL: func.func @short_height_broadcast_col
+// CHECK:       ^bb0(%[[INPUT:.*]]: !ttcore.tile<8x32, f32>, %[[OUTPUT:.*]]: !ttcore.tile<8x32, f32>):
+// CHECK:         %[[BROADCAST:.*]] = ttl.tile_bcast %[[INPUT]], %[[OUTPUT]] 1 : i32{{.*}}: (!ttcore.tile<8x32, f32>, !ttcore.tile<8x32, f32>) -> !ttcore.tile<8x32, f32>
+// CHECK:         ttl.tile_store %[[BROADCAST]], %{{.*}}{{.*}}: !ttcore.tile<8x32, f32>, tensor<1x1x!ttcore.tile<8x32, f32>>
+func.func @short_height_broadcast_col(
+    %input_argument: tensor<1x1x!ttcore.tile<8x32, f32>>)
+    -> tensor<1x1x!ttcore.tile<8x32, f32>> {
+  %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<8x32, f32>, 2>
+  %output_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<8x32, f32>, 2>
+  %input = ttl.attach_cb %input_argument, %input_dfb
+      : (tensor<1x1x!ttcore.tile<8x32, f32>>,
+         !ttl.cb<[1, 1], !ttcore.tile<8x32, f32>, 2>)
+        -> tensor<1x1x!ttcore.tile<8x32, f32>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[1, 1], !ttcore.tile<8x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<8x32, f32>>
+  %result = ttl.block.broadcast %input dims = [1], shape = [1, 1]
+      : tensor<1x1x!ttcore.tile<8x32, f32>>
+        -> tensor<1x1x!ttcore.tile<8x32, f32>>
+  ttl.store %result, %output
+      : tensor<1x1x!ttcore.tile<8x32, f32>>,
+        tensor<1x1x!ttcore.tile<8x32, f32>>
+  return %result : tensor<1x1x!ttcore.tile<8x32, f32>>
+}
+
+// -----
+
+// An outer-dimension broadcast changes only the affine input map and does not
+// require an intra-tile broadcast primitive.
+// CHECK-DAG:   #[[$OUTER_BCAST_MAP:.*]] = affine_map<(d0, d1, d2) -> (0, d1, d2)>
+// CHECK-LABEL: func.func @short_height_broadcast_outer_dimension
+// CHECK:       %[[RESULT:.*]] = ttl.compute
+// CHECK-SAME:    ins(%{{.*}} : tensor<1x1x1x!ttcore.tile<8x32, bf16>>)
+// CHECK-SAME:    outs(%{{.*}} : tensor<2x1x1x!ttcore.tile<8x32, bf16>>)
+// CHECK-SAME:    indexing_maps = [#[[$OUTER_BCAST_MAP]],
+// CHECK:       ^bb0(%[[INPUT:.*]]: !ttcore.tile<8x32, bf16>, %[[OUTPUT:.*]]: !ttcore.tile<8x32, bf16>):
+// CHECK-NOT:     ttl.tile_bcast
+// CHECK:         ttl.tile_store %[[INPUT]], %{{.*}}{{.*}}: !ttcore.tile<8x32, bf16>, tensor<2x1x1x!ttcore.tile<8x32, bf16>>
+func.func @short_height_broadcast_outer_dimension(
+    %input_argument: tensor<1x1x1x!ttcore.tile<8x32, bf16>>)
+    -> tensor<2x1x1x!ttcore.tile<8x32, bf16>> {
+  %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1, 1], !ttcore.tile<8x32, bf16>, 2>
+  %output_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[2, 1, 1], !ttcore.tile<8x32, bf16>, 2>
+  %input = ttl.attach_cb %input_argument, %input_dfb
+      : (tensor<1x1x1x!ttcore.tile<8x32, bf16>>,
+         !ttl.cb<[1, 1, 1], !ttcore.tile<8x32, bf16>, 2>)
+        -> tensor<1x1x1x!ttcore.tile<8x32, bf16>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[2, 1, 1], !ttcore.tile<8x32, bf16>, 2>
+        -> tensor<2x1x1x!ttcore.tile<8x32, bf16>>
+  %result = ttl.block.broadcast %input dims = [0], shape = [2, 1, 1]
+      : tensor<1x1x1x!ttcore.tile<8x32, bf16>>
+        -> tensor<2x1x1x!ttcore.tile<8x32, bf16>>
+  ttl.store %result, %output
+      : tensor<2x1x1x!ttcore.tile<8x32, bf16>>,
+        tensor<2x1x1x!ttcore.tile<8x32, bf16>>
+  return %result : tensor<2x1x1x!ttcore.tile<8x32, bf16>>
+}
