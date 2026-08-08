@@ -204,8 +204,8 @@ public:
     return associatedIdentityOrder;
   }
 
-  ArrayRef<Operation *> getIdentitiesForUnknownAccess() const {
-    return allIdentities;
+  ArrayRef<Operation *> getUserManagedIdentities() const {
+    return userManagedIdentities;
   }
 
   bool isAssociated(Operation *identity) const {
@@ -230,11 +230,17 @@ private:
   DFBValueIdentityIndex(func::FuncOp kernel,
                         std::unique_ptr<DFBAcquireReleaseIndex> releaseOwners)
       : releaseOwners(std::move(releaseOwners)) {
+    auto recordIdentity = [&](Value dfb, Operation *identity) {
+      identitiesByDFB[dfb].push_back(identity);
+      allIdentities.push_back(identity);
+      if (isUserManagedDFB(dfb)) {
+        userManagedIdentities.push_back(identity);
+      }
+    };
     kernel.walk([&](Operation *operation) {
       if (isDFBAcquireOp(operation)) {
         Value dfb = getDFBAcquireDFB(operation);
-        identitiesByDFB[dfb].push_back(operation);
-        allIdentities.push_back(operation);
+        recordIdentity(dfb, operation);
         return;
       }
       auto association = dyn_cast<AttachCBOp>(operation);
@@ -242,8 +248,7 @@ private:
         return;
       }
       Value dfb = association.getCb();
-      identitiesByDFB[dfb].push_back(operation);
-      allIdentities.push_back(operation);
+      recordIdentity(dfb, operation);
       associatedIdentityOrder.push_back(operation);
       associatedIdentities.insert(operation);
     });
@@ -251,6 +256,7 @@ private:
 
   std::unique_ptr<DFBAcquireReleaseIndex> releaseOwners;
   SmallVector<Operation *> allIdentities;
+  SmallVector<Operation *> userManagedIdentities;
   SmallVector<Operation *> associatedIdentityOrder;
   DenseMap<Value, SmallVector<Operation *>> identitiesByDFB;
   llvm::DenseSet<Operation *> associatedIdentities;
@@ -323,7 +329,7 @@ public:
       }
     }
     if (access && access.hasUnknownDFBAccess()) {
-      for (Operation *identity : identities.getIdentitiesForUnknownAccess()) {
+      for (Operation *identity : identities.getUserManagedIdentities()) {
         transferred[identity] = DFBStorageState::MayBeUnavailable;
       }
     }
