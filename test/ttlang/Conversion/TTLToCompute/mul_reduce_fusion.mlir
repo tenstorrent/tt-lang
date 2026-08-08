@@ -78,7 +78,7 @@ module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
           -> tensor<1x7x!ttcore.tile<32x32, bf16>>
     %scaler = ttl.fill 1.000000e+00
         : tensor<1x1x!ttcore.tile<32x32, bf16>>
-    %reduced = ttl.reduce %square, %scaler 0 : i32 [0, 1]
+    %reduced = ttl.reduce %square, %scaler 0 : i32 [-2, -1]
         : (tensor<1x7x!ttcore.tile<32x32, bf16>>,
            tensor<1x1x!ttcore.tile<32x32, bf16>>)
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>

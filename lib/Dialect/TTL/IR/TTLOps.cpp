@@ -1143,6 +1143,13 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
 namespace mlir::tt::ttl {
 namespace {
 
+static bool hasFullRankTwoReductionDimensions(ReduceOp reduction) {
+  llvm::SmallDenseSet<int64_t> dimensions =
+      normalizeDimsToSet(reduction.getDims(), 2);
+  return dimensions.size() == 2 && dimensions.contains(0) &&
+         dimensions.contains(1);
+}
+
 static LogicalResult
 verifyMultiplyFullScalarReductionPipeline(ComputePipelineOp pipeline) {
   Block &pipelineBody = pipeline.getBody().front();
@@ -1178,8 +1185,7 @@ verifyMultiplyFullScalarReductionPipeline(ComputePipelineOp pipeline) {
       reduction.getInput() != product.getResult() ||
       reduction.getScaler() != scaler.getResult() ||
       reduction.getReduceType() != ReduceType::Sum ||
-      reduction.getDims().size() != 2 || reduction.getDims()[0] != 0 ||
-      reduction.getDims()[1] != 1 ||
+      !hasFullRankTwoReductionDimensions(reduction) ||
       !scaler.getValueAttr().getValue().isExactlyValue(1.0) ||
       stageYield.getValues().size() != 1 ||
       stageYield.getValues().front() != reduction.getResult()) {
@@ -1270,8 +1276,7 @@ verifyRowNormalizationPipeline(ComputePipelineOp pipeline) {
       reduction.getInput() != square.getResult() ||
       reduction.getScaler() != reductionScaler.getResult() ||
       reduction.getReduceType() != ReduceType::Sum ||
-      reduction.getDims().size() != 2 || reduction.getDims()[0] != 0 ||
-      reduction.getDims()[1] != 1 ||
+      !hasFullRankTwoReductionDimensions(reduction) ||
       !reductionScaler.getValueAttr().getValue().isExactlyValue(1.0) ||
       reductionYield.getValues().size() != 1 ||
       reductionYield.getValues().front() != reduction.getResult()) {
