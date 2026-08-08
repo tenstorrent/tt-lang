@@ -30,6 +30,7 @@ from .dataflow_buffer import (
     make_tensor_backed_dfb,
 )
 from .operators import (
+    DFBEffect,
     call_extern_func,
     copy,
     dfb_descriptor,
@@ -59,6 +60,7 @@ __all__ = [
     "grid_size",
     "matmul",
     "call_extern_func",
+    "DFBEffect",
     "dfb_descriptor",
     "get_dfb_id",
     "raw_addr",
