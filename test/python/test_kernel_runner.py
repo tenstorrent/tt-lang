@@ -6,10 +6,19 @@
 
 from collections import defaultdict
 from typing import NamedTuple
+from dataclasses import FrozenInstanceError
 
 import pytest
 
-from ttl import kernel_runner
+from ttl import (
+    CoreRuntimeArgs,
+    KernelDefine,
+    KernelKind,
+    KernelRuntimeResources,
+    ProgramRuntimeResources,
+    kernel_runner,
+)
+from ttl.ttl import ProgramRuntimeResources as TTLProgramRuntimeResources
 from ttl.dataflow_buffer import DFBStorageSegment, PhysicalDFBConfig
 from ttl.domains import DeviceDomain
 
@@ -188,6 +197,12 @@ class _FakeTTNN:
         def __setitem__(self, key, value):
             self.mesh_programs.append((key, value))
 
+    class SemaphoreDescriptor:
+        def __init__(self, semaphore_id, core_ranges, initial_value):
+            self.id = semaphore_id
+            self.core_ranges = core_ranges
+            self.initial_value = initial_value
+
     class KernelDescriptor:
         def __init__(
             self,
@@ -362,6 +377,24 @@ def _make_fake_fabric_program(kernel_count):
         for kernel_index in range(kernel_count)
     ]
     return _FakeTTNN.ProgramDescriptor(kernels=kernels, cbs=[], semaphores=[])
+
+
+def test_runtime_resource_records_are_frozen_with_tuple_defaults():
+    core_args = CoreRuntimeArgs(core=object(), values=(1, 2))
+    define = KernelDefine(name="MODE", value="1")
+    kernel_resources = KernelRuntimeResources(
+        kernel=KernelKind.DATA_MOVEMENT,
+        runtime_args=(core_args,),
+        defines=(define,),
+    )
+    resources = ProgramRuntimeResources(kernel_resources=(kernel_resources,))
+
+    assert TTLProgramRuntimeResources is ProgramRuntimeResources
+    assert ProgramRuntimeResources().semaphore_descriptors == ()
+    assert ProgramRuntimeResources().kernel_resources == ()
+    assert ProgramRuntimeResources().lifetimes == ()
+    with pytest.raises(FrozenInstanceError):
+        resources.lifetimes = ()
 
 
 def test_build_pipe_global_semaphores_empty_does_not_require_ttnn(monkeypatch):
@@ -1263,6 +1296,82 @@ def test_routing_plane_route_cache_tracks_mesh_and_fabric_config(monkeypatch):
     configure(_FakeMeshDevice())
     assert len(fake_ttnn.fabric_direction_calls) == 3
     assert len(fake_ttnn.fabric_setup_calls) == 4
+
+
+def test_run_kernel_invokes_empty_runtime_resource_factory(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    tensor = _FakeTensorWithoutDevice()
+    observed = {}
+
+    def make_resources(*, tensors, core_ranges, first_free_semaphore_id):
+        observed["tensors"] = tensors
+        observed["core_ranges"] = core_ranges
+        observed["first_free_semaphore_id"] = first_free_semaphore_id
+        return ProgramRuntimeResources()
+
+    core_ranges = _FakeCoreRanges()
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[],
+        tensors=[tensor],
+        cb_configs=[],
+        core_ranges=core_ranges,
+        num_pipe_sync_semaphores=2,
+        runtime_resource_factory=make_resources,
+        operation_name="empty_resources",
+    )
+
+    assert observed == {
+        "tensors": (tensor,),
+        "core_ranges": core_ranges,
+        "first_free_semaphore_id": 2,
+    }
+    assert [descriptor.id for descriptor in result["program"].semaphores] == [0, 1]
+
+
+def test_run_kernel_rejects_wrong_runtime_resource_factory_result(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+
+    with pytest.raises(
+        TypeError,
+        match=(
+            "@ttl.operation 'wrong_result': runtime_resource_factory must return "
+            "ProgramRuntimeResources, got dict"
+        ),
+    ):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[_FakeTensorWithoutDevice()],
+            cb_configs=[],
+            core_ranges=_FakeCoreRanges(),
+            runtime_resource_factory=lambda **_kwargs: {},
+            operation_name="wrong_result",
+        )
+
+
+def test_run_kernel_contextualizes_runtime_resource_factory_failure(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    factory_error = ValueError("factory detail")
+
+    def fail_factory(**_kwargs):
+        raise factory_error
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            "@ttl.operation 'factory_failure': runtime resource factory failed: "
+            "factory detail"
+        ),
+    ) as exception_info:
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[_FakeTensorWithoutDevice()],
+            cb_configs=[],
+            core_ranges=_FakeCoreRanges(),
+            runtime_resource_factory=fail_factory,
+            operation_name="factory_failure",
+        )
+
+    assert exception_info.value.__cause__ is factory_error
 
 
 def test_run_kernel_sets_custom_program_hash(monkeypatch):
