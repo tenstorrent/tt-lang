@@ -2219,8 +2219,9 @@ mlir::LogicalResult mlir::tt::ttl::CreatePipeOp::verify() {
 template <typename ExpectedAcquireOp>
 static mlir::FailureOr<mlir::Type>
 verifyRawElementAccess(mlir::Operation *op, mlir::Value block,
-                       mlir::RankedTensorType blockTy, mlir::ValueRange coords,
-                       llvm::StringRef acquireName) {
+                       mlir::RankedTensorType blockTy,
+                       mlir::ValueRange coords) {
+  llvm::StringRef acquireName = ExpectedAcquireOp::getOperationName();
   auto func = mlir::tt::ttl::getEnclosingKernelThread(op);
   if (!func) {
     return op->emitOpError()
@@ -2259,7 +2260,7 @@ verifyRawElementAccess(mlir::Operation *op, mlir::Value block,
 mlir::LogicalResult mlir::tt::ttl::RawElementReadOp::verify() {
   auto blockTy = mlir::cast<RankedTensorType>(getBlock().getType());
   FailureOr<Type> expectedScalarTy = verifyRawElementAccess<CBWaitOp>(
-      getOperation(), getBlock(), blockTy, getCoords(), "ttl.cb_wait");
+      getOperation(), getBlock(), blockTy, getCoords());
   if (failed(expectedScalarTy)) {
     return failure();
   }
@@ -2274,7 +2275,7 @@ mlir::LogicalResult mlir::tt::ttl::RawElementReadOp::verify() {
 mlir::LogicalResult mlir::tt::ttl::ReadIndexOp::verify() {
   auto blockTy = mlir::cast<RankedTensorType>(getBlock().getType());
   FailureOr<Type> scalarTy = verifyRawElementAccess<CBWaitOp>(
-      getOperation(), getBlock(), blockTy, getCoords(), "ttl.cb_wait");
+      getOperation(), getBlock(), blockTy, getCoords());
   if (failed(scalarTy)) {
     return failure();
   }
@@ -2288,7 +2289,7 @@ mlir::LogicalResult mlir::tt::ttl::ReadIndexOp::verify() {
 mlir::LogicalResult mlir::tt::ttl::RawElementWriteOp::verify() {
   auto blockTy = mlir::cast<RankedTensorType>(getBlock().getType());
   FailureOr<Type> expectedScalarTy = verifyRawElementAccess<CBReserveOp>(
-      getOperation(), getBlock(), blockTy, getCoords(), "ttl.cb_reserve");
+      getOperation(), getBlock(), blockTy, getCoords());
   if (failed(expectedScalarTy)) {
     return failure();
   }
