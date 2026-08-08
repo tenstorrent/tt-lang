@@ -1106,12 +1106,30 @@ struct TTLTileRowNormalizationBlockToTTKernel
           rewriter.getContext(), ttk::EltwiseBinaryType::Mul);
       auto reuseType = ttk::BinaryDestReuseTypeAttr::get(
           rewriter.getContext(), ttk::BinaryDestReuseType::DestToSrcA);
-      ttk::BinaryDestReuseTilesInitOp::create(rewriter, loc, *gammaDfb,
-                                              eltwiseType, reuseType);
-      for (std::uint64_t tileIndex = 0; tileIndex < numTiles; ++tileIndex) {
-        Value index = arith::ConstantIndexOp::create(rewriter, loc, tileIndex);
-        ttk::BinaryDestReuseTilesOp::create(rewriter, loc, *gammaDfb, index,
-                                            index, eltwiseType, reuseType);
+      bool repeatsColumn =
+          op.getGammaMode() == RowNormalizationGammaMode::RepeatedColumn;
+      if (repeatsColumn) {
+        auto broadcastType =
+            ttk::BcastTypeAttr::get(rewriter.getContext(), ttk::BcastType::Col);
+        ttk::ExperimentalBinaryDestReuseBcastTilesInitOp::create(
+            rewriter, loc, *gammaDfb, eltwiseType, broadcastType, reuseType);
+        Value firstGammaTile = arith::ConstantIndexOp::create(rewriter, loc, 0);
+        for (std::uint64_t tileIndex = 0; tileIndex < numTiles; ++tileIndex) {
+          Value outputIndex =
+              arith::ConstantIndexOp::create(rewriter, loc, tileIndex);
+          ttk::ExperimentalBinaryDestReuseBcastTilesOp::create(
+              rewriter, loc, *gammaDfb, firstGammaTile, outputIndex,
+              eltwiseType, broadcastType, reuseType);
+        }
+      } else {
+        ttk::BinaryDestReuseTilesInitOp::create(rewriter, loc, *gammaDfb,
+                                                eltwiseType, reuseType);
+        for (std::uint64_t tileIndex = 0; tileIndex < numTiles; ++tileIndex) {
+          Value index =
+              arith::ConstantIndexOp::create(rewriter, loc, tileIndex);
+          ttk::BinaryDestReuseTilesOp::create(rewriter, loc, *gammaDfb, index,
+                                              index, eltwiseType, reuseType);
+        }
       }
     }
     rewriter.replaceOp(op, adaptor.getInput());

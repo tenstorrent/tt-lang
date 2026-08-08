@@ -508,7 +508,13 @@ buildRowNormalizationPipeline(Operation *sinkOp, PatternRewriter &rewriter,
          "row-normalization pipeline requires its typed plan");
   const RowNormalizationPlan &schedule = *creation.rowNormalization;
   bool hasGamma = schedule.gammaMode != RowNormalizationGammaMode::None;
-  if (schedule.operations.size() != (hasGamma ? 10 : 9) ||
+  std::size_t expectedOperationCount = 9;
+  if (schedule.gammaMode == RowNormalizationGammaMode::FullRow) {
+    expectedOperationCount = 10;
+  } else if (schedule.gammaMode == RowNormalizationGammaMode::RepeatedColumn) {
+    expectedOperationCount = 11;
+  }
+  if (schedule.operations.size() != expectedOperationCount ||
       llvm::any_of(schedule.operations,
                    [](const RowNormalizationOperationPlan &operation) {
                      return !llvm::equal(operation.source->getOperands(),
@@ -593,11 +599,16 @@ buildRowNormalizationPipeline(Operation *sinkOp, PatternRewriter &rewriter,
   if (hasGamma) {
     consumerInputs.push_back(pipelineBody->getArgument(1));
     consumerSourceInputs.push_back(schedule.gamma);
-    consumerMaps.push_back(identity);
+    consumerMaps.push_back(schedule.gammaMode ==
+                                   RowNormalizationGammaMode::RepeatedColumn
+                               ? scalarMap
+                               : identity);
   }
   consumerMaps.push_back(identity);
   SmallVector<unsigned> consumerOperations{7, 8};
-  if (hasGamma) {
+  if (schedule.gammaMode == RowNormalizationGammaMode::RepeatedColumn) {
+    consumerOperations.append({9, 10});
+  } else if (hasGamma) {
     consumerOperations.push_back(9);
   }
   ComputeStageOp consumerStage =

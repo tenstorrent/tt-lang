@@ -91,8 +91,17 @@ analyzeRowNormalizationCompute(ComputeOp compute, std::string &reason) {
       reason = "gamma must be a static rank-2 tensor";
       return failure();
     }
-    if (gammaType != outputType) {
+    if (analysis.block.getGammaMode() == RowNormalizationGammaMode::FullRow &&
+        gammaType != outputType) {
       reason = "gamma tensor shape must match the output shape";
+      return failure();
+    }
+    if (analysis.block.getGammaMode() ==
+            RowNormalizationGammaMode::RepeatedColumn &&
+        (gammaType.getDimSize(0) != 1 || gammaType.getDimSize(1) != 1 ||
+         gammaType.getElementType() != outputType.getElementType())) {
+      reason = "repeated-column gamma must have shape 1x1 and match the "
+               "output tile type";
       return failure();
     }
   }

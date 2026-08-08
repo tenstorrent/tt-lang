@@ -993,6 +993,12 @@ static bool isFullScalarBroadcast(BlockBroadcastOp broadcast) {
          dimensions.contains(1);
 }
 
+static bool isColumnBroadcast(BlockBroadcastOp broadcast) {
+  llvm::SmallDenseSet<int64_t> dimensions =
+      normalizeDimsToSet(broadcast.getDims(), 2);
+  return dimensions.size() == 1 && dimensions.contains(1);
+}
+
 static bool isUnitFill(Value value, Operation *expectedUser, FillOp &fill) {
   fill = value.getDefiningOp<FillOp>();
   return fill && hasOnlyUser(value, expectedUser) &&
@@ -1085,6 +1091,7 @@ matchRowNormalization(Operation *source) {
 
   MulOp normalized = finalMultiply;
   Value gamma;
+  BlockBroadcastOp repeatedGammaBroadcast;
   RowNormalizationGammaMode gammaMode = RowNormalizationGammaMode::None;
 
   Value input;
@@ -1115,10 +1122,18 @@ matchRowNormalization(Operation *source) {
       return std::nullopt;
     }
 
-    if (!getAttachedCB(gamma)) {
-      return std::nullopt;
+    if (getAttachedCB(gamma)) {
+      gammaMode = RowNormalizationGammaMode::FullRow;
+    } else {
+      repeatedGammaBroadcast = gamma.getDefiningOp<BlockBroadcastOp>();
+      if (!repeatedGammaBroadcast || !hasOnlyUser(gamma, source) ||
+          !isColumnBroadcast(repeatedGammaBroadcast) ||
+          !getAttachedCB(repeatedGammaBroadcast.getInput())) {
+        return std::nullopt;
+      }
+      gamma = repeatedGammaBroadcast.getInput();
+      gammaMode = RowNormalizationGammaMode::RepeatedColumn;
     }
-    gammaMode = RowNormalizationGammaMode::FullRow;
   }
 
   auto inputType = dyn_cast<RankedTensorType>(input.getType());
@@ -1148,7 +1163,14 @@ matchRowNormalization(Operation *source) {
         gammaType.getElementType() != inputType.getElementType()) {
       return std::nullopt;
     }
-    if (gammaType != resultType) {
+    if (gammaMode == RowNormalizationGammaMode::FullRow &&
+        gammaType != resultType) {
+      return std::nullopt;
+    }
+    if (gammaMode == RowNormalizationGammaMode::RepeatedColumn &&
+        (gammaType.getRank() != 2 || !gammaType.hasStaticShape() ||
+         gammaType.getDimSize(0) != 1 || gammaType.getDimSize(1) != 1 ||
+         repeatedGammaBroadcast.getResult().getType() != resultType)) {
       return std::nullopt;
     }
   }
@@ -1181,6 +1203,9 @@ matchRowNormalization(Operation *source) {
   recordOperation(inverseRms);
   recordOperation(scalarBroadcast);
   recordOperation(normalized);
+  if (gammaMode == RowNormalizationGammaMode::RepeatedColumn) {
+    recordOperation(repeatedGammaBroadcast);
+  }
   if (source != normalized.getOperation()) {
     recordOperation(source);
   }
@@ -1465,9 +1490,18 @@ static LogicalResult buildOperationSpecificPlan(ComputeOpCreationPlan &plan,
     MLIRContext *context = plan.source->getContext();
     AffineMap identity = AffineMap::getMultiDimIdentityMap(2, context);
     plan.iteration.inputMaps.push_back(identity);
-    if (plan.rowNormalization->gammaMode ==
-        RowNormalizationGammaMode::FullRow) {
+    switch (plan.rowNormalization->gammaMode) {
+    case RowNormalizationGammaMode::None:
+      break;
+    case RowNormalizationGammaMode::FullRow:
       plan.iteration.inputMaps.push_back(identity);
+      break;
+    case RowNormalizationGammaMode::RepeatedColumn: {
+      AffineExpr zero = getAffineConstantExpr(0, context);
+      plan.iteration.inputMaps.push_back(
+          AffineMap::get(2, 0, {zero, zero}, context));
+      break;
+    }
     }
     plan.iteration.outputMap = identity;
     plan.iteration.iteratorTypes.assign(2, utils::IteratorType::parallel);

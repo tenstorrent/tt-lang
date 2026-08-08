@@ -343,9 +343,13 @@ def assert_rmsnorm_close(result, expected):
     ids=[str(row_case[2]) for row_case in ROW_CASES],
 )
 @pytest.mark.parametrize("gamma_mode", GAMMA_MODES)
-def test_rmsnorm(device, tile_height, num_tiles, width, gamma_mode):
+def test_rmsnorm(
+    device, tile_height, num_tiles, width, gamma_mode, monkeypatch, tmp_path
+):
     """Normalize benchmark row widths across supported gamma modes."""
     # The specialized hardware operation intentionally accepts bf16 tiles only.
+    final_mlir = tmp_path / "rmsnorm.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir))
     result, expected = run_rmsnorm(
         device,
         tile_height,
@@ -355,6 +359,7 @@ def test_rmsnorm(device, tile_height, num_tiles, width, gamma_mode):
         RMSNORM_KERNELS[(tile_height, num_tiles, gamma_mode)],
     )
     assert_rmsnorm_close(result, expected)
+    assert final_mlir.read_text().count("tile_regs_acquire") == 1
 
 
 @pytest.mark.parametrize(
@@ -375,8 +380,10 @@ def test_rmsnorm_kernel_config(device, fp32_dest_acc_en, dst_full_sync_en):
     assert_rmsnorm_close(result, expected)
 
 
-def test_rmsnorm_column_broadcast_fp32_dest(device):
+def test_rmsnorm_column_broadcast_fp32_dest(device, monkeypatch, tmp_path):
     """Run BF16 column broadcast with 32-bit destination accumulation."""
+    final_mlir = tmp_path / "rmsnorm.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir))
     result, expected = run_rmsnorm(
         device,
         tile_height=32,
@@ -386,6 +393,7 @@ def test_rmsnorm_column_broadcast_fp32_dest(device):
         kernel=COLUMN_BROADCAST_FP32_KERNEL,
     )
     assert_rmsnorm_close(result, expected)
+    assert final_mlir.read_text().count("tile_regs_acquire") == 1
 
 
 @pytest.mark.parametrize(

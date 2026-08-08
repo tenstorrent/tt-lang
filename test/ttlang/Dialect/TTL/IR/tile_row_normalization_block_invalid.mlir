@@ -77,6 +77,27 @@ module {
 
 // -----
 
+// Repeated-column gamma must contain one source tile.
+module {
+  func.func @mismatched_repeated_column_gamma(
+      %input: tensor<1x3x!ttcore.tile<32x32, bf16>>,
+      %gamma: tensor<1x2x!ttcore.tile<32x32, bf16>>,
+      %output: tensor<1x3x!ttcore.tile<32x32, bf16>>) {
+    %c0 = arith.constant 0 : index
+    // expected-error @below {{'ttl.tile_row_normalization_block' op repeated-column gamma tensor must have shape 1x1}}
+    %result = ttl.tile_row_normalization_block
+        %input, %gamma, %output scale = 1.000000e+00 epsilon = 1.000000e-05
+        gamma_mode = 2 : i32 num_tiles = 3 into dst[%c0]
+        : tensor<1x3x!ttcore.tile<32x32, bf16>>,
+          tensor<1x2x!ttcore.tile<32x32, bf16>>,
+          tensor<1x3x!ttcore.tile<32x32, bf16>>
+          -> tensor<1x3x!ttcore.tile<32x32, bf16>>
+    return
+  }
+}
+
+// -----
+
 // Tensor operands must be static rank-2 values.
 module {
   func.func @invalid_tensor_rank(
