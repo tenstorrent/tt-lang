@@ -6,6 +6,15 @@
 
 DEFAULT_TILE_SIZE = 32
 SUPPORTED_MEMORY_SPACES = frozenset(["L1", "DRAM"])
+SUPPORTED_MATH_FIDELITIES = ("LoFi", "HiFi2", "HiFi3", "HiFi4")
+
+
+def validate_math_fidelity(math_fidelity: str | None) -> None:
+    if math_fidelity is None or math_fidelity in SUPPORTED_MATH_FIDELITIES:
+        return
+    supported = ", ".join(repr(value) for value in SUPPORTED_MATH_FIDELITIES)
+    raise ValueError(f"math_fidelity must be one of {supported}")
+
 
 # Per-core static CB region budget (bytes) when IR has no system descriptor:
 # Wormhole and Blackhole total L1 (1464 KiB) minus reserved kernel space (128 KiB)

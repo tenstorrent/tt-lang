@@ -90,6 +90,7 @@ struct PipeSramAddressTableInfo {
 struct PipeComputedAddressInfo {
   int64_t receiverDFBIndex = 0;
   int64_t baseRuntimeCommonArgIndex = 0;
+  int64_t baseByteOffset = 0;
   /// Initial physical receiver DFB block assigned to this transfer.
   int64_t initialSlot = 0;
   /// `slot(i + 1) = (slot(i) + repeatStride) % blockCount`.
@@ -109,6 +110,7 @@ struct PipeComputedAddressInfo {
 enum class PipeAddressMode {
   ReceiverPublishedAddressTable,
   ComputedReceiverDFB,
+  TransportScratch,
 };
 
 struct PipeResourcePlan;
@@ -116,6 +118,8 @@ class PipeModulePlan;
 class PipeTransferPlan;
 class PipeCapacityPlan;
 class PipeSynchronizationSelection;
+class PipeTransportPlan;
+class PipeTransportStream;
 
 /// Receiver-side completion state for one transfer definition.
 struct PipeCompletionInfo {
@@ -137,8 +141,22 @@ struct PipeAddressStorageInfo {
                                   std::nullopt, computedAddress};
   }
 
+  static PipeAddressStorageInfo
+  transportScratch(PipeComputedAddressInfo computedAddress) {
+    return PipeAddressStorageInfo{PipeAddressMode::TransportScratch,
+                                  std::nullopt, computedAddress};
+  }
+
+  bool usesComputedReceiverAddress() const {
+    return mode != PipeAddressMode::ReceiverPublishedAddressTable;
+  }
+
   bool usesComputedReceiverDFB() const {
     return mode == PipeAddressMode::ComputedReceiverDFB;
+  }
+
+  bool usesTransportScratch() const {
+    return mode == PipeAddressMode::TransportScratch;
   }
 
   PipeAddressMode mode = PipeAddressMode::ReceiverPublishedAddressTable;
@@ -151,6 +169,7 @@ struct PipeAddressStorageInfo {
 /// Address storage and readiness synchronization are independent protocol
 /// choices: computed addresses do not determine which ready counter is used.
 struct PipeResourceInfo {
+  PipeTransferNodeId transferNode = 0;
   PipeKey pipe;
   PipeTransferContract transferContract;
   PipeCompletionInfo completion;
@@ -187,6 +206,10 @@ struct PipeComputedAddressCounterInitInfo {
 
 /// Per-function table of sender-local computed-address slot counters.
 using PipeComputedAddressCounterMap = llvm::MapVector<func::FuncOp, Value>;
+
+/// Per-function receiver-local slot counters for transport-owned storage.
+using PipeTransportSlotCounterMap =
+    llvm::MapVector<func::FuncOp, llvm::MapVector<int64_t, Value>>;
 
 /// pipeNetId -> deduplicated list of pipes in that net. Built once
 /// before lowering so is_src/is_dst/is_active patterns avoid walking the
@@ -266,6 +289,19 @@ LogicalResult buildPipeResourcePlan(
         PipeCounterAllocationPolicy::LocalThenGlobal,
     const PipeSynchronizationSelection *synchronizationSelection = nullptr);
 
+/// Replace grouped transport DFB backing with compiler-managed SRAM scratch.
+///
+/// The transport plan has already proven exclusive ownership of the grouped
+/// lifecycle. This function assigns scratch-backed receiver addresses, removes
+/// obsolete computed-DFB runtime arguments, and places address-table storage
+/// after the transport allocation.
+void finalizePipeTransportResources(const PipeTransportPlan &transportPlan,
+                                    PipeResourcePlan &pipeResourcePlan);
+
+/// Build an address within the per-core PipeNet SRAM scratch allocation.
+Value buildPipeSramScratchAddress(Operation *operation, int64_t byteOffset,
+                                  OpBuilder &builder);
+
 /// Initialize sender-side capacity counters and allocate one kernel-local
 /// progress value per counter. The sender waits for the shared counter to reach
 /// its cumulative acquired count, so only receivers increment the shared word.
@@ -286,11 +322,26 @@ void initializePipeComputedAddressCounters(
     const PipeResourcePlan &pipeResourcePlan,
     PipeComputedAddressCounterMap &computedAddressCounters);
 
+/// Emit receiver-local slot counters for bounded transport-owned storage.
+void initializePipeTransportSlotCounters(
+    const PipeTransportPlan &pipeTransportPlan,
+    PipeTransportSlotCounterMap &slotCounters);
+
+/// Return the receiver-local slot counter assigned to `operation`.
+Value lookupPipeTransportSlotCounter(
+    Operation *operation, int64_t counterIndex,
+    const PipeTransportSlotCounterMap &slotCounters);
+
 /// At each receiver function entry, emit one zero-initialized sequence counter
 /// for every completion counter used by that function.
 void initializePipePostSequenceCounters(
     const PipeResourcePlan &pipeResourcePlan,
     PipeCounterTableMap &postSequenceCounters);
+
+/// Translate iteration-domain credit completion into NoC atomic barriers after
+/// the selected source and receiver loops.
+void materializePipeTransportCompletionBarriers(
+    const PipeTransportPlan &pipeTransportPlan);
 
 /// Remove a sender operation proven unreachable at its pipe endpoint.
 void lowerInactivePipeTransferSend(PipeTransferSendOp op,
@@ -299,6 +350,7 @@ void lowerInactivePipeTransferSend(PipeTransferSendOp op,
 /// Lower the sender-side pipe transfer and signal receiver completion.
 LogicalResult lowerPipeTransferSend(
     PipeTransferSendOp op, Value srcCB, const PipeTransferPlan &transferPlan,
+    const PipeTransportPlan &pipeTransportPlan,
     const PipeResourcePlan &pipeResourcePlan,
     const PipeCapacityPlan &pipeCapacityPlan,
     const PipeCounterProgressMap &senderCapacityCounters,
@@ -319,6 +371,8 @@ LogicalResult lowerPipeTransferPost(
 /// Lower a dataflow buffer pop and emit any proven pipe capacity releases.
 LogicalResult lowerCBPop(CBPopOp op, Value cb,
                          const PipeCapacityPlan &pipeCapacityPlan,
+                         const PipeTransportPlan &pipeTransportPlan,
+                         const PipeTransportSlotCounterMap &slotCounters,
                          const PipeResourcePlan &pipeResourcePlan,
                          ConversionPatternRewriter &rewriter);
 

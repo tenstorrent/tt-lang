@@ -66,6 +66,10 @@ else:
         node,
         grid_size,
         math,
+        call_extern_func,
+        dfb_descriptor,
+        get_dfb_id,
+        raw_addr,
     )
 
     from ttl._generated_elementwise import *  # noqa: F401,F403
@@ -115,5 +119,9 @@ else:
         "grid_size",
         "math",
         "signpost",
+        "call_extern_func",
+        "dfb_descriptor",
+        "get_dfb_id",
+        "raw_addr",
         *_elementwise_all,
     ]

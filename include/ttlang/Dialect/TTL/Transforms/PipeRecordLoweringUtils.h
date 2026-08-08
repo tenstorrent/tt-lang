@@ -68,10 +68,10 @@ inline Value buildConstantIndexTableLookup(OpBuilder &builder, Location loc,
 /// Return whether a launch node equals a point coordinate.
 inline Value buildNodePointMatch(OpBuilder &builder, Location loc, Value nodeX,
                                  Value nodeY, Value pointX, Value pointY) {
-  Value xMatches = arith::CmpIOp::create(
-      builder, loc, arith::CmpIPredicate::eq, nodeX, pointX);
-  Value yMatches = arith::CmpIOp::create(
-      builder, loc, arith::CmpIPredicate::eq, nodeY, pointY);
+  Value xMatches = arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::eq,
+                                         nodeX, pointX);
+  Value yMatches = arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::eq,
+                                         nodeY, pointY);
   return arith::AndIOp::create(builder, loc, xMatches, yMatches);
 }
 
@@ -79,14 +79,14 @@ inline Value buildNodePointMatch(OpBuilder &builder, Location loc, Value nodeX,
 inline Value buildNodeRangeMatch(OpBuilder &builder, Location loc, Value nodeX,
                                  Value nodeY, Value minX, Value minY,
                                  Value maxX, Value maxY) {
-  Value geMinX = arith::CmpIOp::create(
-      builder, loc, arith::CmpIPredicate::sge, nodeX, minX);
-  Value leMaxX = arith::CmpIOp::create(
-      builder, loc, arith::CmpIPredicate::sle, nodeX, maxX);
-  Value geMinY = arith::CmpIOp::create(
-      builder, loc, arith::CmpIPredicate::sge, nodeY, minY);
-  Value leMaxY = arith::CmpIOp::create(
-      builder, loc, arith::CmpIPredicate::sle, nodeY, maxY);
+  Value geMinX = arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::sge,
+                                       nodeX, minX);
+  Value leMaxX = arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::sle,
+                                       nodeX, maxX);
+  Value geMinY = arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::sge,
+                                       nodeY, minY);
+  Value leMaxY = arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::sle,
+                                       nodeY, maxY);
   Value inRangeX = arith::AndIOp::create(builder, loc, geMinX, leMaxX);
   Value inRangeY = arith::AndIOp::create(builder, loc, geMinY, leMaxY);
   return arith::AndIOp::create(builder, loc, inRangeX, inRangeY);

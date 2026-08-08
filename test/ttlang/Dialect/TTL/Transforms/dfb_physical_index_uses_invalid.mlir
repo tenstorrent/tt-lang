@@ -53,3 +53,22 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
     return
   }
 }
+
+// -----
+
+// A DFB-index template argument exposes the physical index but does not by
+// itself declare that the custom function accesses the referenced storage.
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @index_template_without_dependency()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-error @below {{'ttl.opaque_call' op custom function consumes the physical index for logical DFB 0 without listing that DFB as a dependency operand}}
+    ttl.opaque_call "read_dfb_by_index"
+        template_args [#ttl.external_template_arg<dfb_index, 0>]
+        template_dfbs(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        () {header = "read_dfb_by_index.hpp"} : () -> ()
+    return
+  }
+}

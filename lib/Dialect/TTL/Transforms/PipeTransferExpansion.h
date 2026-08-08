@@ -27,6 +27,11 @@ namespace mlir::tt::ttl {
 LogicalResult expandPipeTransfers(ModuleOp module,
                                   ValueOriginAnalysis &analysis);
 
+/// Replace high-level copies and waits whose pipe operand has `ttl.pipe` type.
+/// Record-selected callback operands remain high-level IR for later expansion.
+LogicalResult expandStaticPipeTransfers(ModuleOp module,
+                                        ValueOriginAnalysis &analysis);
+
 } // namespace mlir::tt::ttl
 
 #endif // TTLANG_DIALECT_TTL_TRANSFORMS_PIPETRANSFEREXPANSION_H

@@ -65,13 +65,15 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   // COMPUTED-DAG: %[[BLOCK_COUNT:.*]] = arith.constant 4 : i32
   // COMPUTED-DAG: %[[REPEAT_STRIDE:.*]] = arith.constant 2 : i32
   // COMPUTED-DAG: %[[BLOCK_BYTES:.*]] = arith.constant 4096 : i32
+  // COMPUTED: ttkernel.noc_async_write_one_packet_set_state({{.*}}, %[[BLOCK_BYTES]]
+  // COMPUTED: %[[SRC_ADDR:.*]] = ttkernel.get_write_ptr
   // COMPUTED: %[[SLOT:.*]] = memref.load %[[SLOT_COUNTER:.*]]
   // COMPUTED-NEXT: %[[SLOT_OFFSET:.*]] = arith.muli %[[SLOT]], %[[BLOCK_BYTES]]
   // COMPUTED-NEXT: %[[DST_ADDR:.*]] = arith.addi {{.*}}, %[[SLOT_OFFSET]]
   // COMPUTED-NEXT: %[[ADVANCED_SLOT:.*]] = arith.addi %[[SLOT]], %[[REPEAT_STRIDE]]
   // COMPUTED-NEXT: %[[NEXT_SLOT:.*]] = arith.remui %[[ADVANCED_SLOT]], %[[BLOCK_COUNT]]
   // COMPUTED-NEXT: memref.store %[[NEXT_SLOT]], %[[SLOT_COUNTER]]
-  // COMPUTED-NEXT: ttkernel.noc_async_write {{.*}}, %[[DST_ADDR]], %[[BLOCK_BYTES]]
+  // COMPUTED-NEXT: ttkernel.noc_async_write_one_packet_with_state(%[[SRC_ADDR]], %[[DST_ADDR]]
   // COMPUTED-NOT: ttkernel.load_from_l1
   // COMPUTED: return
 
@@ -89,10 +91,13 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   // PUBLISHED: return
   // PUBLISHED-LABEL: func.func @repeated_reservation_reaches_dfb_end_sender
   // PUBLISHED-NOT: ttl.pipe_computed_address_dfb_indices
+  // PUBLISHED-DAG: %[[PUBLISHED_BLOCK_BYTES:.*]] = arith.constant 4096 : i32
   // PUBLISHED: %[[ADDRESS_TABLE:.*]] = ttkernel.get_common_arg_val
   // PUBLISHED-NEXT: %[[ADDRESS_TABLE_PTR:.*]] = ttkernel.reinterpret_cast(%[[ADDRESS_TABLE]])
+  // PUBLISHED: ttkernel.noc_async_write_one_packet_set_state({{.*}}, %[[PUBLISHED_BLOCK_BYTES]]
+  // PUBLISHED: %[[PUBLISHED_SRC_ADDR:.*]] = ttkernel.get_write_ptr
   // PUBLISHED-NEXT: %[[PUBLISHED_DST_ADDR:.*]] = ttkernel.load_from_l1(%[[ADDRESS_TABLE_PTR]]
-  // PUBLISHED: ttkernel.noc_async_write {{.*}}, %[[PUBLISHED_DST_ADDR]]
+  // PUBLISHED-NEXT: ttkernel.noc_async_write_one_packet_with_state(%[[PUBLISHED_SRC_ADDR]], %[[PUBLISHED_DST_ADDR]]
   // PUBLISHED: return
   func.func @repeated_reservation_reaches_dfb_end()
       attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
@@ -217,8 +222,8 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   // PUBLISHED: %[[X_MATCHES:.*]] = arith.cmpi eq, %[[CURRENT_X]], %[[ZERO]] : index
   // PUBLISHED-NEXT: %[[Y_MATCHES:.*]] = arith.cmpi eq, %[[CURRENT_Y]], %[[ZERO]] : index
   // PUBLISHED-NEXT: %[[RECEIVER_IS_SOURCE:.*]] = arith.andi %[[X_MATCHES]], %[[Y_MATCHES]] : i1
+  // PUBLISHED-NEXT: %[[TABLE_PTR:.*]] = ttkernel.reinterpret_cast(%[[TABLE_ADDRESS]])
   // PUBLISHED-NEXT: scf.if %[[RECEIVER_IS_SOURCE]] {
-  // PUBLISHED-NEXT:   %[[TABLE_PTR:.*]] = ttkernel.reinterpret_cast(%[[TABLE_ADDRESS]])
   // PUBLISHED-NEXT:   ttkernel.store_to_l1(%[[PUBLISHED_ADDRESS]], %[[TABLE_PTR]], %[[ZERO_I32]])
   // PUBLISHED-NEXT: } else {
   // PUBLISHED-NEXT:   ttkernel.noc_inline_dw_write(core[%[[SOURCE_X]], %[[SOURCE_Y]]], %[[TABLE_ADDRESS]], %[[PUBLISHED_ADDRESS]], {{.*}})

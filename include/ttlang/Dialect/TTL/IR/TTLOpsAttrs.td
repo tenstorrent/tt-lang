@@ -159,6 +159,34 @@ def TTL_DeviceTransferAttr : TTL_Attr<"DeviceTransfer", "device_transfer"> {
   let genVerifyDecl = 1;
 }
 
+def TTL_TileExecutionStrategyAttr
+    : TTL_Attr<"TileExecutionStrategy", "tile_execution_strategy"> {
+  let summary = "Selected tile execution strategy";
+  let description = [{
+    Identifies the execution strategy that defines operand routing and DST
+    behavior for a tile operation with execution-strategy alternatives.
+  }];
+  let parameters = (ins "TileExecutionStrategy":$value);
+  let assemblyFormat = "`<` $value `>`";
+}
+
+def TTL_ExternalTemplateArgAttr
+    : TTL_Attr<"ExternalTemplateArg", "external_template_arg"> {
+  let summary = "Static argument to an external C++ template";
+  let description = [{
+    Records one ordered external template argument without representing static
+    metadata as an SSA value. For DFB index and descriptor arguments, `value`
+    indexes the opaque call's `template_dfb_operands` segment. Other kinds
+    store the complete 32-bit literal payload.
+  }];
+  let parameters = (ins
+    "ExternalTemplateArgKind":$kind,
+    "int64_t":$value
+  );
+  let assemblyFormat = "`<` $kind `,` $value `>`";
+  let genVerifyDecl = 1;
+}
+
 def TTL_LayoutAttr : TTL_Attr<"Layout", "layout"> {
   let summary = "Tensor layout encoding for grid distribution and memory placement";
   let description = [{

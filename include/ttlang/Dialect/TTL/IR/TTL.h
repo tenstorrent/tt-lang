@@ -11,6 +11,8 @@
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/Support/LogicalResult.h"
+#include "ttlang/Target/TargetInfo.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include <cstdint>
@@ -38,34 +40,14 @@ class TTLTileOpTrait
 constexpr llvm::StringLiteral kCBIndexAttrPrefix("ttl.cb_index.");
 
 /// Runtime configuration attributes.
-constexpr llvm::StringLiteral kTargetArchAttrName("ttl.target_arch");
 constexpr llvm::StringLiteral kFp32DestAccEnAttrName("fp32_dest_acc_en");
 constexpr llvm::StringLiteral kDstFullSyncEnAttrName("dst_full_sync_en");
 constexpr llvm::StringLiteral
     kUnpackToDestFp32AttrName("ttl.unpack_to_dest_fp32");
 
-/// Canonical target_arch values. Mirrored in python/ttl/ttl_api.py.
-constexpr llvm::StringLiteral kBlackholeArchName("blackhole");
-constexpr llvm::StringLiteral kWormholeB0ArchName("wormhole_b0");
-
-inline bool hasTargetArch(Operation *op, llvm::StringRef archName) {
-  ModuleOp moduleOp = op->getParentOfType<ModuleOp>();
-  if (!moduleOp) {
-    return false;
-  }
-
-  auto targetArch = moduleOp->getAttrOfType<StringAttr>(kTargetArchAttrName);
-  return targetArch && targetArch.getValue() == archName;
-}
-
-inline bool isBlackholeTarget(Operation *op) {
-  return hasTargetArch(op, kBlackholeArchName);
-}
-
-inline bool isWormholeB0Target(Operation *op) {
-  return hasTargetArch(op, kWormholeB0ArchName);
-}
-
+/// Selected strategy on tile operations with execution alternatives.
+constexpr llvm::StringLiteral
+    kTileExecutionStrategyAttrName("ttl.tile_execution_strategy");
 /// PipeNet role exposed by `is_src` / `is_dst` / `is_active` predicate ops
 /// and by `pipenet_scope` declarations.
 enum class PipeRole : int64_t {
@@ -74,21 +56,37 @@ enum class PipeRole : int64_t {
   Active = 2,
 };
 
+/// Target-independent compute primitive implemented by a TTL operation.
+enum class ComputePrimitive {
+  Add,
+  Subtract,
+  Multiply,
+  ElementwiseBinary,
+  ElementwiseUnary,
+  Broadcast,
+  Reduce,
+  Transpose,
+  Fill,
+  Matmul,
+  Typecast,
+  MultiplyByConstant,
+  Passthrough,
+};
+
 /// A contiguous set of DST slots starting at `baseIndex`.
 struct DstFootprint {
   mlir::Value baseIndex;
   int64_t tileCount = 1;
 };
 
-llvm::SmallVector<DstFootprint, 2>
+mlir::FailureOr<llvm::SmallVector<DstFootprint, 2>>
 getDefaultDstReadFootprints(mlir::Operation *op);
 llvm::SmallVector<DstFootprint, 2>
 getDefaultDstWriteFootprints(mlir::Operation *op);
 mlir::FailureOr<DstFootprint> getDefaultResultDstFootprint(mlir::Operation *op,
                                                            mlir::Value result);
 
-/// Func-level: enable FPU lowering for eligible tile add/sub/mul.
-/// Set by TTLSetComputeKernelConfig, read via getKernelBoolAttr.
+/// Function-level policy for selecting FPU add, subtract, and multiply.
 constexpr llvm::StringLiteral
     kEnableFPUBinaryOpsAttrName("ttl.enable_fpu_binary_ops");
 
@@ -206,9 +204,7 @@ template <typename ConcreteType>
 class TTLDSTInputsTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, TTLDSTInputsTrait> {};
 
-/// Participation marker for binary tile ops (add/sub/mul) whose input source
-/// is decided by operand provenance rather than op identity. The eligibility
-/// answer is computed by isFPUEligibleBinaryOp() in TTLOpsUtils.h.
+/// Marks binary tile ops that support both FPU and SFPU execution strategies.
 template <typename ConcreteType>
 class TTLStrategyDependentBinaryOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType,

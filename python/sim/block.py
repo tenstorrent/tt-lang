@@ -12,6 +12,7 @@ Functions: broadcast, fill, mask, mask_posinf, where, squeeze, unsqueeze,
 transpose.
 """
 
+import operator
 from typing import Callable, List, Tuple
 
 import torch
@@ -230,12 +231,17 @@ def broadcast(
     return result_block
 
 
-def fill(value: float, shape: Tuple[int, ...]) -> Block:
+def fill(
+    value: float,
+    shape: Tuple[int, ...],
+    tile: Tuple[int, int] = TILE_SHAPE,
+) -> Block:
     """Return a temporary tiled block of the specified shape filled with value.
 
     Args:
         value: The scalar value to fill every element with.
         shape: Grid shape of the resulting block (at least 2-dimensional).
+        tile: Physical tile dimensions as ``(height, width)``.
 
     Returns:
         A temporary Block of the specified shape with every element set to value.
@@ -245,11 +251,20 @@ def fill(value: float, shape: Tuple[int, ...]) -> Block:
         raise ValueError(
             "fill requires a shape with at least 2 dimensions for tiled layout"
         )
+    try:
+        tile_h, tile_w = tile
+        tile_h = operator.index(tile_h)
+        tile_w = operator.index(tile_w)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"Tile must contain exactly two integer dimensions, got {tile!r}"
+        ) from None
+    if tile_h <= 0 or tile_w <= 0:
+        raise ValueError(f"Tile dimensions must be positive, got {tile}")
 
     if _is_dry_run():
         return _dry_run_result(shape)
 
-    tile_h, tile_w = TILE_SHAPE
     batch = shape[:-2]
     TM, TK = shape[-2], shape[-1]
 

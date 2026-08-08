@@ -11,8 +11,17 @@ Provides compilation from TTL dialect to TTKernel dialect.
 import os
 from typing import Any, Optional
 
+from ttl.dialects import ttcore
 from ttl.ir import Module
 from ttl.passmanager import PassManager
+
+from .device_arch import get_mock_arch_from_device
+
+
+_TTCORE_ARCH_BY_DEVICE_NAME = {
+    "blackhole": ttcore.Arch.Blackhole,
+    "wormhole_b0": ttcore.Arch.WormholeB0,
+}
 
 
 def compile_ttl_to_ttkernel(
@@ -29,15 +38,21 @@ def compile_ttl_to_ttkernel(
 
     Args:
         module: TTL MLIR module to compile.
-        device: Optional TTNN device (unused, kept for API compat).
+        device: Optional TTNN device used to select target capabilities. A
+            compiler-only invocation without a device uses a Wormhole mock.
         maximize_dst: Enable DST maximization (subblocking + scheduling).
-        enable_fpu_binary_ops: Enable FPU binary op detection (add_tiles, etc).
+        enable_fpu_binary_ops: Allow FPU strategy selection for add/sub/mul.
         specialize_cores: Clone kernels that branch on a core coordinate
             once per launch coordinate (ttkernel-specialize-cores).
 
     Returns:
         Compiled module with TTKernel/EmitC ops.
     """
+    target_arch = get_mock_arch_from_device(device)
+    module.operation.attributes["ttl.target_arch"] = ttcore.ir.ArchAttr.get(
+        module.context, int(_TTCORE_ARCH_BY_DEVICE_NAME[target_arch])
+    )
+
     pipeline_options = " ".join(
         [
             f"maximize-dst={str(maximize_dst).lower()}",

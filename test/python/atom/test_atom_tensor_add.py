@@ -20,7 +20,7 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 from ttlang_test_utils import assert_allclose, to_l1
 
 
-@ttl.operation(grid=(1, 1))
+@ttl.operation(grid=(1, 1), math_fidelity="LoFi")
 def atom_tensor_add(a, b, out):
     a_cb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
     b_cb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)

@@ -1597,6 +1597,9 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
         assert(sendCreate.getDeviceTransferAttr() == deviceTransfer &&
                "static send must retain its device transfer");
       }
+      int64_t blockSpan = getPipeTransferBlockSpan(sendCreate);
+      int64_t destinationGroupDepth =
+          getPipeTransferDestinationGroupDepth(sendCreate);
       for (const auto &endpoint : endpointsBySend[sendIndex]) {
         PipeTransferPostOp postOp = endpoint.second.op;
         PipeTransferCreateOp postCreate =
@@ -1610,6 +1613,24 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
           assert(postCreate.getDeviceTransferAttr() == deviceTransfer &&
                  "static post must retain its device transfer");
         }
+        if (getPipeTransferBlockSpan(postCreate) != blockSpan) {
+          auto diagnostic =
+              postOp.emitError("pipe send and receiver post use different "
+                               "transfer block spans");
+          diagnostic.attachNote(sendOp.getLoc())
+              << "corresponding pipe send uses block_span=" << blockSpan;
+          return failure();
+        }
+        if (getPipeTransferDestinationGroupDepth(postCreate) !=
+            destinationGroupDepth) {
+          auto diagnostic = postOp.emitError(
+              "pipe send and receiver post use different destination group "
+              "depths");
+          diagnostic.attachNote(sendOp.getLoc())
+              << "corresponding pipe send uses destination_group_depth="
+              << destinationGroupDepth;
+          return failure();
+        }
       }
 
       PipeTransferNodeId transferNodeId = pipeTransferNodes.size();
@@ -1618,6 +1639,8 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
                                                    transferContract,
                                                    deviceTransfer,
                                                    sendCandidate.recordIndex,
+                                                   blockSpan,
+                                                   destinationGroupDepth,
                                                    sendOp.getOperation(),
                                                    {},
                                                    {}});

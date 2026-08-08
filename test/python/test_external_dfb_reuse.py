@@ -4,11 +4,11 @@
 
 """Runtime coverage for DFB allocation with external C++ operations.
 
-The external multiply follows a direct-DFB interface: every accessed DFB is a
-function argument, while the C++ body owns its compute-thread DFB protocol.
+The external multiply receives typed DFB descriptors, which are direct DFB
+dependencies, while the C++ body owns its compute-thread DFB protocol.
 The larger inlinable atom composition separates two calls with native data
 movement and compute. The allocator cannot inspect the external DFB accesses,
-so their DFBs remain live until all known uses complete.
+so DFBs whose protocol exists only in C++ remain conservatively unbounded.
 """
 
 import os
@@ -47,7 +47,11 @@ def _external_eltwise_mul(lhs: ttl.DFB, rhs: ttl.DFB, result: ttl.DFB):
     call_extern_func(
         EXTERNAL_MULTIPLY_HEADER,
         "ttl_external_eltwise_mul",
-        func_args=[lhs, rhs, result],
+        template_args=[
+            dfb_descriptor(lhs),
+            dfb_descriptor(rhs),
+            dfb_descriptor(result),
+        ],
     )
 
 
@@ -205,8 +209,17 @@ def _count_final_dfb_allocations(final_mlir_path):
     ids=["dram", "l1"],
 )
 @pytest.mark.parametrize("reuse_user_dfbs", [True, False], ids=["reuse", "distinct"])
+@pytest.mark.parametrize(
+    "specialize_cores", [False, True], ids=["generic-cores", "specialized-cores"]
+)
 def test_external_multiply_with_dfb_allocation(
-    device, operation, dtype, memory_config, to_device, reuse_user_dfbs
+    device,
+    operation,
+    dtype,
+    memory_config,
+    to_device,
+    reuse_user_dfbs,
+    specialize_cores,
 ):
     element_indices = torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE)
     lhs_host = ((element_indices.remainder(41) - 20) / 16).to(dtype)
@@ -219,7 +232,10 @@ def test_external_multiply_with_dfb_allocation(
     reuse_option = (
         "--ttl-reuse-user-dfbs" if reuse_user_dfbs else "--no-ttl-reuse-user-dfbs"
     )
-    operation(lhs, rhs, result, options=reuse_option)
+    specialization_option = (
+        "--ttl-specialize-cores" if specialize_cores else "--no-ttl-specialize-cores"
+    )
+    operation(lhs, rhs, result, options=f"{reuse_option} {specialization_option}")
 
     actual = ttnn.to_torch(result).float()
     expected = lhs_host.float() * rhs_host.float()

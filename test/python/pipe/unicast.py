@@ -93,9 +93,11 @@ def unicast_pipe(inp, out):
 # then write the payload and signal completion.
 # CHECK-CPP: === dm_read kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
+# The receiver DFB base is loop-invariant and may be materialized before the
+# synchronization sequence.
+# CHECK-CPP-DAG: get_common_arg_val<uint32_t>(
 # CHECK-CPP: experimental::semaphore_wait(
 # CHECK-CPP: noc_semaphore_set(
-# CHECK-CPP: get_common_arg_val<uint32_t>(
 # CHECK-CPP: noc0.async_write(
 # CHECK-CPP: noc0.async_write_barrier();
 # CHECK-CPP: noc_semaphore_inc(

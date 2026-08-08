@@ -7,18 +7,18 @@
 // resources use distinct compiler-managed common arguments and counter slots.
 // CHECK-LABEL: func.func @sender()
 // CHECK: scf.for %[[RECORD:.*]] =
-// CHECK: scf.if
-// CHECK-NEXT: %[[ROUTE:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD]], [0, 1] : index
+// CHECK: %[[ROUTE:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD]], [0, 1] : index
 // CHECK-NEXT: %[[READY_ARG_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD]], [2, 3] : index
 // CHECK-NEXT: %[[READY_ADDRESS:.*]] = ttkernel.get_common_arg_val(%[[READY_ARG_INDEX]]) : (index) -> i32
 // CHECK-NEXT: %[[READY_COUNTER:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD]], [0, 1] : index
-// CHECK: ttkernel.experimental.semaphore_wait_min
 // CHECK: %[[DEST_DEVICE_ARG_INDEX:.*]] = arith.addi %[[ROUTE]], {{.*}} : index
 // CHECK: %[[DEST_MESH_ARG_INDEX:.*]] = arith.addi %[[ROUTE]], {{.*}} : index
 // CHECK: ttkernel.get_arg_val(%[[DEST_DEVICE_ARG_INDEX]]) : (index) -> i32
 // CHECK: ttkernel.get_arg_val(%[[DEST_MESH_ARG_INDEX]]) : (index) -> i32
 // CHECK: %[[CONNECTION_ARG_INDEX:.*]] = arith.addi %[[ROUTE]], {{.*}} : index
 // CHECK-NEXT: %[[CONNECTION:.*]] = ttkernel.get_arg_val(%[[CONNECTION_ARG_INDEX]]) : (index) -> i32
+// CHECK: scf.if
+// CHECK: ttkernel.experimental.semaphore_wait_min
 // CHECK: ttkernel.routing_plane.fused_write_atomic_inc({{.*}}, %[[CONNECTION]],
 
 // Each receiver record resolves its own logical device and reverse-route
@@ -27,7 +27,6 @@
 // CHECK: scf.for %[[RECORD:.*]] =
 // CHECK: %[[DEST_DEVICE:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD]], [1, 2] : index
 // CHECK: arith.cmpi eq, {{.*}}, %[[DEST_DEVICE]] : index
-// CHECK: scf.if
 // CHECK: %[[COMPLETION_ARG_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD]], [1, 2] : index
 // CHECK-NEXT: %[[COMPLETION_ADDRESS:.*]] = ttkernel.get_common_arg_val(%[[COMPLETION_ARG_INDEX]]) : (index) -> i32
 // CHECK-NEXT: %[[REVERSE_ROUTE:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD]], [0, 0] : index
@@ -37,7 +36,12 @@
 // CHECK: ttkernel.get_arg_val(%[[REVERSE_MESH_ARG_INDEX]]) : (index) -> i32
 // CHECK: %[[REVERSE_CONNECTION_ARG_INDEX:.*]] = arith.addi %[[REVERSE_ROUTE]], {{.*}} : index
 // CHECK-NEXT: %[[REVERSE_CONNECTION:.*]] = ttkernel.get_arg_val(%[[REVERSE_CONNECTION_ARG_INDEX]]) : (index) -> i32
+// CHECK: %[[COMPLETION_COUNTER:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD]], [0, 0] : index
+// CHECK-NEXT: %[[COMPLETION_STATE_ARG_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD]], [0, 0] : index
+// CHECK-NEXT: ttkernel.get_common_arg_val(%[[COMPLETION_STATE_ARG_INDEX]]) : (index) -> i32
+// CHECK: scf.if
 // CHECK: ttkernel.routing_plane.atomic_inc({{.*}}, %[[REVERSE_CONNECTION]],
+// CHECK: memref.load {{.*}}[%[[COMPLETION_COUNTER]]]
 
 #domain = #ttl.device_domain<components = <name = "device", extent = [3]>>
 #records = #ttl.pipenet_records<net 0 name "selected_tables" pipes [

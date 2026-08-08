@@ -114,9 +114,11 @@ Both functions can be used inside operation functions and kernel functions.
 
 A dataflow buffer is a communication primitive for synchronizing the passing of data between kernel functions within one node. An analogy is a conveyor belt in a factory: the producer (data movement kernel) places items onto the belt, and the consumer (compute kernel) picks them up. The belt has a fixed number of blocks, and when full, the producer must wait for the consumer to free up space.
 
-A dataflow buffer is created with the `ttl.make_dataflow_buffer_like` function by passing a TT-NN tensor, shape, and block count.
+A dataflow buffer is created with `ttl.make_dataflow_buffer_like` by passing a TT-NN tensor, shape, and block count, or with `ttl.make_dfb` by passing an explicit dtype, shape, block count, and optional physical tile dimensions.
 
 The TT-NN tensor determines basic properties (likeness) such as data type and shape unit. The shape unit is a whole tile if the tensor has a tiled layout and is a scalar if the tensor has a row-major layout. Shape determines the shape of a block returned by one of the acquisition functions and is expressed in shape units. block count determines the total size of L1 memory allocated as a product of block size and block count. For the most common case block count defaults to 2 to enable double buffering.
+
+Physical tile dimensions supported by tt-metal have height 1, 2, 4, 8, 16, or 32 and width 16 or 32. Compute operations generally support 16x16, 16x32, 32x16, and 32x32 tiles. Elementwise operations, fills, and matmul additionally support 1x32, 2x32, 4x32, and 8x32 tiles. Each operation is validated independently, so fusion with a matmul does not extend another primitive's supported dimensions. Matmul requires matching physical K dimensions and derives the result tile dimensions from the lhs height and rhs width. Current matmul LLKs accept 16x32, 32x16, or 32x32 rhs tiles and reject a 16x16 lhs. Transposed matmul also rejects a 32x16 rhs and the 32x32-lhs-by-16x32-rhs configuration. BFP compute operations currently require 32x32 tiles; data movement supports every physical tile dimension listed above.
 
 ```{mermaid}
 graph LR
@@ -174,6 +176,7 @@ new code should use `DataflowBuffer`.
 | Function | Description |
 | :---- | :---- |
 | `ttl.make_dataflow_buffer_like(ttnn.Tensor: likeness_tensor, shape: ttl.Shape, block_count: ttl.Size) -> ttl.DataflowBuffer` | Create a dataflow buffer by inheriting basic properties from `likeness_tensor`. |
+| `ttl.make_dfb(dtype, shape: ttl.Shape, block_count: ttl.Size = 2, tile: tuple[int, int] = (32, 32)) -> ttl.DataflowBuffer` | Create a dataflow buffer with an explicit dtype and physical tile dimensions. |
 | `ttl.DataflowBuffer.reserve(self) -> ttl.Block` | Reserve and return a block from a dataflow buffer. **This function is blocking** and will wait until a free block is available. A free block is typically used by a producer to write the data into. |
 | `ttl.DataflowBuffer.push(self)` | Push a block to a dataflow buffer. This function is called by the producer to signal the consumer that a block filled with data is available. **This function is non-blocking.** |
 | `ttl.DataflowBuffer.wait(self) -> ttl.Block` | Wait for and return a block from a dataflow buffer. **This function is blocking** and will wait until a block filled with data is available. A filled block is typically used by a consumer to read data from. |

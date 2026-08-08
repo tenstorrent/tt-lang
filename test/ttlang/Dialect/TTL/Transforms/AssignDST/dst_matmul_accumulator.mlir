@@ -1,15 +1,13 @@
-// Summary: Matmul accumulator and output share the same DST register.
-// The 3-operand tile_matmul_block(lhs, rhs, accumulator) has its accumulator
-// and output intervals merged so they receive the same dst_idx. The actual
-// copy_tile to pre-load the accumulator into DST is emitted during TTKernel
-// lowering, not here; this test verifies the interval merge only.
+// Verify the matmul accumulator and result share a DST register. Matmul
+// lowering initializes that register from the accumulator tensor.
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst{dst-capacity=8}),canonicalize,cse)' | FileCheck %s
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // CHECK-LABEL: func.func @matmul_with_accumulator
-// Accumulator and output merged to dst_idx = 0. Three operands preserved.
+// The accumulator and result use the same DST register without a generic copy.
 // CHECK: ^bb0(%[[A:.*]]: !ttcore.tile<32x32, bf16>, %[[B:.*]]: !ttcore.tile<32x32, bf16>, %[[C:.*]]: !ttcore.tile<32x32, bf16>, %{{.*}}: !ttcore.tile<32x32, bf16>):
+// CHECK-NOT: ttl.copy_tile
 // CHECK: %[[MM:.*]] = ttl.tile_matmul_block %[[A]], %[[B]], %[[C]] into dst[%c0]
 func.func @matmul_with_accumulator(
     %a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
@@ -55,6 +53,7 @@ func.func @matmul_with_accumulator(
 
 // CHECK-LABEL: func.func @matmul_accumulator_relu
 // CHECK: ^bb0(%[[A2:.*]]: !ttcore.tile<32x32, bf16>, %[[B2:.*]]: !ttcore.tile<32x32, bf16>, %[[C2:.*]]: !ttcore.tile<32x32, bf16>, %{{.*}}: !ttcore.tile<32x32, bf16>):
+// CHECK-NOT: ttl.copy_tile
 // CHECK: %[[MM2:.*]] = ttl.tile_matmul_block %[[A2]], %[[B2]], %[[C2]] into dst[%c0]
 // CHECK: ttl.tile_relu %[[MM2]] into dst[%c0]
 func.func @matmul_accumulator_relu(

@@ -319,7 +319,7 @@ def make_ksplit_resource_allocation_kernel(grid_dim):
 # CHECK-CPP-LABEL: === post_receives_and_send kernel written to {{.*}} ===
 # CHECK-CPP: noc0.inline_dw_write<NocOptions::INLINE_L1>
 # CHECK-CPP: noc0.async_write_barrier
-# CHECK-CPP: size_t [[SELECTED_READY:v[0-9]+]] = experimental::constant_table_lookup<
+# CHECK-CPP: size_t [[SELECTED_READY:v[0-9]+]] = experimental::constant_table_lookup<2>
 # CHECK-CPP-NEXT: int32_t {{v[0-9]+}} = get_semaphore([[SELECTED_READY]]);
 # CHECK-CPP: reinterpret_cast<tt_l1_ptr uint32_t*>
 # CHECK-CPP: experimental::semaphore_wait

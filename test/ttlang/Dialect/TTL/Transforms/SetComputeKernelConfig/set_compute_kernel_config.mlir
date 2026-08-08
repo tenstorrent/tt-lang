@@ -1,7 +1,6 @@
-// Summary: Verify ttl-set-compute-kernel-config sets kernel config on func.func.
-// Attributes are per-kernel (set on the function, not individual compute ops).
+// Verify kernel configuration resolution from operation requirements, target
+// capabilities, and pass policy.
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config))' --split-input-file | FileCheck %s --check-prefix=DEFAULT
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{fp32-dest-acc-en=1 dst-full-sync-en=1}))' --split-input-file | FileCheck %s --check-prefix=OVERRIDE
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{matmul-full-fp32=0}))' --split-input-file | FileCheck %s --check-prefix=NO-MATMUL-FP32
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{reduce-full-fp32=0}))' --split-input-file | FileCheck %s --check-prefix=NO-REDUCE-FP32
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=0}))' --split-input-file | FileCheck %s --check-prefix=FPUOFF
@@ -10,23 +9,19 @@
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: f32 tile args enable fp32_dest_acc_en on the function.
-// ttl.enable_fpu_binary_ops is written from the pass option (default true,
-// override =0 via FPUOFF) regardless of dtype.
+// f32 DST values require f32 destination accumulation. The resolver selects an
+// FPU binary strategy compatible with the complete kernel configuration.
 // DEFAULT-LABEL: func.func @f32_auto_enable
+// DEFAULT-SAME: dst_full_sync_en = false
 // DEFAULT-SAME: fp32_dest_acc_en = true
-// DEFAULT-SAME: ttl.enable_fpu_binary_ops = true
-// DEFAULT-NOT: dst_full_sync_en
-// OVERRIDE-LABEL: func.func @f32_auto_enable
-// OVERRIDE-SAME: dst_full_sync_en = true
-// OVERRIDE-SAME: fp32_dest_acc_en = true
-// OVERRIDE-SAME: ttl.enable_fpu_binary_ops = true
-// f32 tile args still trigger fp32 even with matmul-full-fp32=0.
+// DEFAULT-SAME: ttl.unpack_to_dest_fp32 = array<i32>
+// DEFAULT-NOT: ttl.enable_fpu_binary_ops
+// DEFAULT: ttl.tile_add {{.*}}ttl.tile_execution_strategy = #ttl.tile_execution_strategy<fpu>
+// Disabling a matmul preference does not alter the f32 semantic requirement.
 // NO-MATMUL-FP32-LABEL: func.func @f32_auto_enable
 // NO-MATMUL-FP32-SAME: fp32_dest_acc_en = true
-// NO-MATMUL-FP32-SAME: ttl.enable_fpu_binary_ops = true
 // FPUOFF-LABEL: func.func @f32_auto_enable
-// FPUOFF-SAME: ttl.enable_fpu_binary_ops = false
+// FPUOFF: ttl.tile_add {{.*}}ttl.tile_execution_strategy = #ttl.tile_execution_strategy<sfpu>
 func.func @f32_auto_enable(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
                            %b: tensor<1x1x!ttcore.tile<32x32, f32>>)
     -> tensor<1x1x!ttcore.tile<32x32, f32>> {
@@ -69,19 +64,15 @@ func.func @f32_auto_enable(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: bf16 with no special ops -- no fp32_dest_acc_en by default,
-// but override enables both.
+// A bf16 kernel without an accumulation preference selects default DST mode.
 // DEFAULT-LABEL: func.func @bf16_no_special_ops
-// DEFAULT-NOT: fp32_dest_acc_en
-// DEFAULT-NOT: dst_full_sync_en
-// OVERRIDE-LABEL: func.func @bf16_no_special_ops
-// OVERRIDE-SAME: dst_full_sync_en = true
-// OVERRIDE-SAME: fp32_dest_acc_en = true
+// DEFAULT-SAME: dst_full_sync_en = false
+// DEFAULT-SAME: fp32_dest_acc_en = false
 // NO-MATMUL-FP32-LABEL: func.func @bf16_no_special_ops
-// NO-MATMUL-FP32-NOT: fp32_dest_acc_en
-// NO-MATMUL-FP32-NOT: dst_full_sync_en
+// NO-MATMUL-FP32-SAME: dst_full_sync_en = false
+// NO-MATMUL-FP32-SAME: fp32_dest_acc_en = false
 // NO-REDUCE-FP32-LABEL: func.func @bf16_no_special_ops
-// NO-REDUCE-FP32-NOT: fp32_dest_acc_en
+// NO-REDUCE-FP32-SAME: fp32_dest_acc_en = false
 func.func @bf16_no_special_ops(%a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
                                %b: tensor<1x1x!ttcore.tile<32x32, bf16>>)
     -> tensor<1x1x!ttcore.tile<32x32, bf16>> {
@@ -123,15 +114,13 @@ func.func @bf16_no_special_ops(%a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
 
 #map_reduce_col = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: bf16 non-ROW reduce triggers fp32_dest_acc_en through reduce-full-fp32.
+// A supported reduce preference selects f32 DST mode.
 // DEFAULT-LABEL: func.func @bf16_reduce_col_auto_fp32
 // DEFAULT-SAME: fp32_dest_acc_en = true
-// OVERRIDE-LABEL: func.func @bf16_reduce_col_auto_fp32
-// OVERRIDE-SAME: fp32_dest_acc_en = true
 // NO-MATMUL-FP32-LABEL: func.func @bf16_reduce_col_auto_fp32
 // NO-MATMUL-FP32-SAME: fp32_dest_acc_en = true
 // NO-REDUCE-FP32-LABEL: func.func @bf16_reduce_col_auto_fp32
-// NO-REDUCE-FP32-NOT: fp32_dest_acc_en
+// NO-REDUCE-FP32-SAME: fp32_dest_acc_en = false
 func.func @bf16_reduce_col_auto_fp32(
     %a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
     %scaler: tensor<1x1x!ttcore.tile<32x32, bf16>>)
@@ -176,16 +165,13 @@ func.func @bf16_reduce_col_auto_fp32(
 
 #map_reduce_row = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: bf16 ROW reduce triggers fp32_dest_acc_en when no target_arch is
-// set (the issue #533 workaround applies only on Blackhole).
+// A row reduce on an unspecified target retains the supported f32 preference.
 // DEFAULT-LABEL: func.func @bf16_reduce_row_auto_fp32
 // DEFAULT-SAME: fp32_dest_acc_en = true
-// OVERRIDE-LABEL: func.func @bf16_reduce_row_auto_fp32
-// OVERRIDE-SAME: fp32_dest_acc_en = true
 // NO-MATMUL-FP32-LABEL: func.func @bf16_reduce_row_auto_fp32
 // NO-MATMUL-FP32-SAME: fp32_dest_acc_en = true
 // NO-REDUCE-FP32-LABEL: func.func @bf16_reduce_row_auto_fp32
-// NO-REDUCE-FP32-NOT: fp32_dest_acc_en
+// NO-REDUCE-FP32-SAME: fp32_dest_acc_en = false
 func.func @bf16_reduce_row_auto_fp32(
     %a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
     %scaler: tensor<1x1x!ttcore.tile<32x32, bf16>>)
@@ -230,11 +216,11 @@ func.func @bf16_reduce_row_auto_fp32(
 
 #map_reduce_row = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: Blackhole ROW reduce does not trigger fp32_dest_acc_en, because
-// tt-metal disables fp32 accumulation in the row-reduce LLK (tt-metal #47311).
+// Blackhole row reduce does not support full-fp32 accumulation.
 // BLACKHOLE-LABEL: func.func @blackhole_bf16_reduce_row_no_auto_fp32
+// BLACKHOLE-SAME: fp32_dest_acc_en = false
 // BLACKHOLE-SAME: ttl.kernel_thread = #ttkernel.thread<compute>
-module attributes {ttl.target_arch = "blackhole"} {
+module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @blackhole_bf16_reduce_row_no_auto_fp32(
       %a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
       %scaler: tensor<1x1x!ttcore.tile<32x32, bf16>>)
@@ -280,12 +266,11 @@ module attributes {ttl.target_arch = "blackhole"} {
 
 #map_mixed_reduce = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: A Blackhole compute op containing both a ROW and a COL reduce
-// must still enable fp32_dest_acc_en — the workaround only suppresses the
-// auto-enable when the *only* fp32-justifying reduces are ROW reduces.
+// A supported column reduce selects f32 mode even when another reduce cannot
+// use full-fp32 accumulation.
 // BLACKHOLE-LABEL: func.func @blackhole_bf16_reduce_row_and_col_auto_fp32
 // BLACKHOLE-SAME: fp32_dest_acc_en = true
-module attributes {ttl.target_arch = "blackhole"} {
+module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @blackhole_bf16_reduce_row_and_col_auto_fp32(
       %a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
       %scaler: tensor<1x1x!ttcore.tile<32x32, bf16>>)
@@ -333,12 +318,11 @@ module attributes {ttl.target_arch = "blackhole"} {
 
 #map_reduce_row = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: Wormhole reduce does not trigger fp32_dest_acc_en from
-// reduce-full-fp32.
+// Wormhole does not support full-fp32 reduction.
 // WORMHOLE-LABEL: func.func @wormhole_bf16_reduce_row_no_auto_fp32
-// WORMHOLE-NOT: fp32_dest_acc_en
+// WORMHOLE-SAME: fp32_dest_acc_en = false
 // WORMHOLE-SAME: ttl.kernel_thread = #ttkernel.thread<compute>
-module attributes {ttl.target_arch = "wormhole_b0"} {
+module attributes {ttl.target_arch = #ttcore.arch<wormhole_b0>} {
   func.func @wormhole_bf16_reduce_row_no_auto_fp32(
       %a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
       %scaler: tensor<1x1x!ttcore.tile<32x32, bf16>>)
@@ -384,22 +368,19 @@ module attributes {ttl.target_arch = "wormhole_b0"} {
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: Existing func-level attributes are preserved (not overwritten).
+// Function attributes are hard constraints and override pass preferences.
 // DEFAULT-LABEL: func.func @preserve_existing
 // DEFAULT-SAME: dst_full_sync_en = false
-// DEFAULT-SAME: fp32_dest_acc_en = false
-// OVERRIDE-LABEL: func.func @preserve_existing
-// OVERRIDE-SAME: dst_full_sync_en = false
-// OVERRIDE-SAME: fp32_dest_acc_en = false
+// DEFAULT-SAME: fp32_dest_acc_en = true
 // NO-MATMUL-FP32-LABEL: func.func @preserve_existing
 // NO-MATMUL-FP32-SAME: dst_full_sync_en = false
-// NO-MATMUL-FP32-SAME: fp32_dest_acc_en = false
+// NO-MATMUL-FP32-SAME: fp32_dest_acc_en = true
 // NO-REDUCE-FP32-LABEL: func.func @preserve_existing
-// NO-REDUCE-FP32-SAME: fp32_dest_acc_en = false
+// NO-REDUCE-FP32-SAME: fp32_dest_acc_en = true
 func.func @preserve_existing(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
                              %b: tensor<1x1x!ttcore.tile<32x32, f32>>)
     -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    attributes {dst_full_sync_en = false, fp32_dest_acc_en = false} {
+    attributes {dst_full_sync_en = false, fp32_dest_acc_en = true} {
   %c0 = arith.constant 0 : index
   %init = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, f32>>
 
@@ -438,15 +419,11 @@ func.func @preserve_existing(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
 
 #map3 = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: bf16 matmul triggers fp32_dest_acc_en via matmul-full-fp32 (default).
-// With matmul-full-fp32=0, bf16 matmul does not trigger fp32_dest_acc_en.
+// Matmul policy prefers f32 DST mode when supported.
 // DEFAULT-LABEL: func.func @bf16_matmul_auto_fp32
 // DEFAULT-SAME: fp32_dest_acc_en = true
-// OVERRIDE-LABEL: func.func @bf16_matmul_auto_fp32
-// OVERRIDE-SAME: dst_full_sync_en = true
-// OVERRIDE-SAME: fp32_dest_acc_en = true
 // NO-MATMUL-FP32-LABEL: func.func @bf16_matmul_auto_fp32
-// NO-MATMUL-FP32-NOT: fp32_dest_acc_en
+// NO-MATMUL-FP32-SAME: fp32_dest_acc_en = false
 // NO-REDUCE-FP32-LABEL: func.func @bf16_matmul_auto_fp32
 // NO-REDUCE-FP32-SAME: fp32_dest_acc_en = true
 func.func @bf16_matmul_auto_fp32(
@@ -492,19 +469,15 @@ func.func @bf16_matmul_auto_fp32(
 
 #map4 = affine_map<(d0, d1) -> (d0, d1)>
 
-// Purpose: bf16 matmul + bcast in the same kernel suppresses matmul-triggered
-// fp32_dest_acc_en. unary_bcast produces incorrect results under fp32 DST
-// format with bf16 CBs, so the kernel must stay in bf16 mode.
-// DEFAULT-LABEL: func.func @bf16_matmul_bcast_no_fp32
-// DEFAULT-NOT: fp32_dest_acc_en
-// OVERRIDE-LABEL: func.func @bf16_matmul_bcast_no_fp32
-// OVERRIDE-SAME: dst_full_sync_en = true
-// OVERRIDE-SAME: fp32_dest_acc_en = true
-// NO-MATMUL-FP32-LABEL: func.func @bf16_matmul_bcast_no_fp32
-// NO-MATMUL-FP32-NOT: fp32_dest_acc_en
-// NO-REDUCE-FP32-LABEL: func.func @bf16_matmul_bcast_no_fp32
-// NO-REDUCE-FP32-NOT: fp32_dest_acc_en
-func.func @bf16_matmul_bcast_no_fp32(
+// A column broadcast supports f32 DST mode, so the matmul preference remains
+// effective. Disabling that preference selects default DST mode.
+// DEFAULT-LABEL: func.func @bf16_matmul_column_bcast
+// DEFAULT-SAME: fp32_dest_acc_en = true
+// NO-MATMUL-FP32-LABEL: func.func @bf16_matmul_column_bcast
+// NO-MATMUL-FP32-SAME: fp32_dest_acc_en = false
+// NO-REDUCE-FP32-LABEL: func.func @bf16_matmul_column_bcast
+// NO-REDUCE-FP32-SAME: fp32_dest_acc_en = true
+func.func @bf16_matmul_column_bcast(
     %a: tensor<1x1x!ttcore.tile<32x32, bf16>>,
     %b: tensor<1x1x!ttcore.tile<32x32, bf16>>,
     %bias: tensor<1x1x!ttcore.tile<32x32, bf16>>)
@@ -551,4 +524,43 @@ func.func @bf16_matmul_bcast_no_fp32(
   } -> tensor<1x1x!ttcore.tile<32x32, bf16>>
 
   return %res2 : tensor<1x1x!ttcore.tile<32x32, bf16>>
+}
+
+// -----
+
+// An unspecified target applies no architecture-specific broadcast
+// restriction while still resolving target-independent f32 requirements.
+// DEFAULT-LABEL: func.func @unspecified_target_row_broadcast
+// DEFAULT-SAME: fp32_dest_acc_en = true
+// DEFAULT-SAME: ttl.unpack_to_dest_fp32 = array<i32: 0>
+func.func @unspecified_target_row_broadcast(
+    %f32_input: tensor<1x1x!ttcore.tile<32x32, f32>>,
+    %bf16_input: tensor<1x1x!ttcore.tile<32x32, bf16>>,
+    %output: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  %f32_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %bf16_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %f32_attached = ttl.attach_cb %f32_input, %f32_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, f32>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %bf16_attached = ttl.attach_cb %bf16_input, %bf16_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %zero = arith.constant 0 : index
+  %f32_tile = tensor.extract %f32_attached[%zero, %zero]
+      : tensor<1x1x!ttcore.tile<32x32, f32>>
+  %bf16_tile = tensor.extract %bf16_attached[%zero, %zero]
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %output_tile = tensor.extract %output[%zero, %zero]
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %exponential = ttl.tile_exp %f32_tile into dst[%zero]
+      : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+  %broadcast = ttl.tile_bcast %bf16_tile, %output_tile 2 : i32
+      into dst[%zero]
+      : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>)
+        -> !ttcore.tile<32x32, bf16>
+  return
 }

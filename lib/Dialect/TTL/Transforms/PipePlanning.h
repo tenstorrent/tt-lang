@@ -17,6 +17,7 @@
 #include "PipeCapacityAnalysis.h"
 #include "PipeCounter.h"
 #include "PipeLowering.h"
+#include "PipeTransportPlan.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
@@ -81,6 +82,8 @@ struct PipeCapacityAcquireInfo {
 
 /// Capacity returned to a sender after one receiver DFB pop.
 struct PipeCapacityReleaseInfo {
+  /// PipeGraph transfer whose receiver capacity is released.
+  PipeTransferNodeId transferNode = 0;
   PipeCapacityReleaseTarget target;
   PipeCounterInfo counter;
   int64_t count = 1;
@@ -100,6 +103,9 @@ public:
 
   /// Return the capacity released immediately after `op`.
   ArrayRef<PipeCapacityReleaseInfo> lookupReleases(CBPopOp op) const;
+
+  /// Find the DFB pops that release capacity for `transferNode`.
+  SmallVector<CBPopOp, 1> findReleaseOps(PipeTransferNodeId transferNode) const;
 
   /// Return the shared-counter initializations grouped by sender function.
   const llvm::MapVector<func::FuncOp, SmallVector<PipeCapacityInitInfo>> &
@@ -141,13 +147,6 @@ private:
   llvm::MapVector<func::FuncOp, SmallVector<PipeCapacityInitInfo>>
       initializations;
   PipeCounterAllocator counterAllocator;
-};
-
-/// Synchronization performed before the sender writes a transfer payload.
-enum class PipeSynchronizationProtocol {
-  ReceiverPost,
-  Capacity,
-  Fabric,
 };
 
 /// Element count and byte size transferred by one sender operation.
@@ -282,6 +281,9 @@ public:
   /// Return transfer topology grouped by PipeNet id.
   const PipeNetIndex &getPipeNetIndex() const { return pipeNetIndex; }
 
+  /// Return backend-independent scheduling and storage decisions.
+  const PipeTransportPlan &getTransportPlan() const { return transportPlan; }
+
   /// Return send waits whose payload writes complete within the send operation.
   const llvm::SmallPtrSetImpl<Operation *> &getCompletedPipeSendWaits() const {
     return completedPipeSendWaits;
@@ -300,6 +302,7 @@ private:
   PipeCapacityPlan capacityPlan;
   PipeResourceRequirements resourceRequirements;
   PipeNetIndex pipeNetIndex;
+  PipeTransportPlan transportPlan;
   llvm::SmallPtrSet<Operation *, 8> completedPipeSendWaits;
   llvm::MapVector<Operation *, PipeTransferPlan> transferPlans;
 };

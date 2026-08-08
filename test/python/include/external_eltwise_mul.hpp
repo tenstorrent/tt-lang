@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// External compute operation used to validate direct DFB operands. The
+// External compute operation used to validate typed DFB descriptors. The
 // external function owns the compute-thread DFB protocol.
 #pragma once
 
@@ -11,27 +11,26 @@
 #include "api/compute/eltwise_binary.h"
 #endif
 
-static inline void ttl_external_eltwise_mul(int lhs, int rhs, int result) {
+template <typename Lhs, typename Rhs, typename Result>
+static inline void ttl_external_eltwise_mul() {
 #if defined(COMPILE_FOR_TRISC)
   using namespace ckernel;
 
-  cb_reserve_back(result, 1);
-  cb_wait_front(lhs, 1);
-  cb_wait_front(rhs, 1);
-  binary_op_init_common(lhs, rhs, result);
-  mul_tiles_init(lhs, rhs);
+  static_assert(Lhs::pages_per_block == Rhs::pages_per_block);
+  static_assert(Lhs::pages_per_block == Result::pages_per_block);
+  cb_reserve_back(Result::index, Result::pages_per_block);
+  cb_wait_front(Lhs::index, Lhs::pages_per_block);
+  cb_wait_front(Rhs::index, Rhs::pages_per_block);
+  binary_op_init_common(Lhs::index, Rhs::index, Result::index);
+  mul_tiles_init(Lhs::index, Rhs::index);
   tile_regs_acquire();
-  mul_tiles(lhs, rhs, 0, 0, 0);
+  mul_tiles(Lhs::index, Rhs::index, 0, 0, 0);
   tile_regs_commit();
-  cb_pop_front(lhs, 1);
-  cb_pop_front(rhs, 1);
+  cb_pop_front(Lhs::index, Lhs::pages_per_block);
+  cb_pop_front(Rhs::index, Rhs::pages_per_block);
   tile_regs_wait();
-  pack_tile(0, result);
-  cb_push_back(result, 1);
+  pack_tile(0, Result::index);
+  cb_push_back(Result::index, Result::pages_per_block);
   tile_regs_release();
-#else
-  (void)lhs;
-  (void)rhs;
-  (void)result;
 #endif
 }

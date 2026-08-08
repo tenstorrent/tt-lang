@@ -1,5 +1,4 @@
-// Summary: Verify ttl.unpack_to_dest_fp32 lists the SFPU f32 CB-to-DST inputs.
-//
+// Verify f32 DFB inputs consumed through DST select unpack-to-DST-f32 mode.
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config))' --split-input-file | FileCheck %s
 
 #map = affine_map<(d0, d1) -> (d0, d1)>

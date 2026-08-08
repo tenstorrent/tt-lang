@@ -210,11 +210,15 @@ if __name__ == "__main__":
 # CHECK-INITIAL-NOT: ttl.create_pipe
 
 # CHECK-CPP: ALL-TO-ALL-EDGE-COUNT: 992
-# CHECK-CPP: {{noc[0-9]*\.async_write\(}}
-# CHECK-CPP: {{noc[0-9]*\.async_write_multicast}}
-# CHECK-CPP: experimental::constant_table_lookup<
-# CHECK-CPP: tt::tt_fabric::RoutingPlaneConnectionManager
-# CHECK-CPP: experimental::routing_plane_atomic_inc
+# The generated kernels may compute record-table fields before their transport
+# operations; these checks require the independent code-generation features.
+# CHECK-CPP-DAG: {{noc[0-9]*\.async_write\(}}
+# CHECK-CPP-DAG: {{noc[0-9]*\.async_write_multicast}}
+# CHECK-CPP-DAG: experimental::constant_table_lookup<
+# CHECK-CPP-DAG: tt::tt_fabric::RoutingPlaneConnectionManager
+# CHECK-CPP-DAG: to_noc_fused_unicast_write_atomic_inc
+# CHECK-CPP-DAG: send_payload_without_header_non_blocking_from_address
+# CHECK-CPP-DAG: experimental::routing_plane_atomic_inc
 
 # CHECK-LOOPS-COUNT-8: for (
 # CHECK-LOOPS-NOT: for (
