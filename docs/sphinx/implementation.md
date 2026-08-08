@@ -10,6 +10,7 @@ This section collects design documents and pipeline traces that describe how TT-
 - [Compute Kernel Configuration](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/ComputeKernelConfiguration.md) - joint tile-strategy and kernel-configuration resolution
 - [DST Register Allocation](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/DST_Allocation.md) — how the `TTLAssignDST` pass assigns destination registers to tile operations
 - [DST Register Utilization](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/DST_Utilization.md) — maximizing tile throughput per DST synchronization cycle
+- [External Function Interop Lowering](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/ExternalFuncInteropLowering.md) - typed DFB descriptors and argument mapping for `ttl.call_extern_func`
 
 ## Lowering Pipeline Traces
 

@@ -14,7 +14,9 @@
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/InferIntRangeInterface.h"
 
+#include <cstdint>
 #include <limits>
+#include <optional>
 
 #define GET_OP_CLASSES
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.cpp.inc"
@@ -631,8 +633,34 @@ void UnpackStallOnPackOp::getCanonicalizationPatterns(
 }
 
 ::mlir::LogicalResult OpaqueCallOp::verify() {
-  return mlir::tt::utils::verifyOpaqueCall<GetDfbIdOp>(
-      getOperation(), getCallee(), getHeader(), getTemplateArgVals());
+  if (failed(mlir::tt::utils::verifyOpaqueCallNames(getOperation(), getCallee(),
+                                                    getHeader()))) {
+    return failure();
+  }
+  if (failed(mlir::tt::utils::verifyOpaqueCallUnsignedArgIndices(
+          getOperation(), getUnsignedArgIndices(), getArgOperands()))) {
+    return failure();
+  }
+  std::optional<ArrayAttr> templateArgs = getTemplateArgs();
+  if (!templateArgs) {
+    return success();
+  }
+  for (Attribute templateArg : *templateArgs) {
+    if (isa<BoolAttr, DFBDescriptorAttr>(templateArg)) {
+      continue;
+    }
+    auto integerArg = dyn_cast<IntegerAttr>(templateArg);
+    if (!integerArg) {
+      return emitOpError("template arg must be a signed i32, boolean, "
+                         "unsigned i32, or DFB descriptor attribute");
+    }
+    auto integerType = dyn_cast<IntegerType>(integerArg.getType());
+    if (!integerType || integerType.getWidth() != 32 ||
+        (!integerType.isSigned() && !integerType.isUnsigned())) {
+      return emitOpError("integer template arg must have type si32 or ui32");
+    }
+  }
+  return success();
 }
 
 } // namespace mlir::tt::ttkernel

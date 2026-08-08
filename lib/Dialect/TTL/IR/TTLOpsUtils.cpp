@@ -6,6 +6,7 @@
 
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/raw_ostream.h"
 
 namespace mlir::tt::ttl {
@@ -55,6 +56,37 @@ FailureOr<int64_t> getDFBId(Value cb) {
     return failure();
   }
   return dfbId->getSExtValue();
+}
+
+FailureOr<uint64_t> getDFBPagesPerBlock(CircularBufferType type) {
+  uint64_t pagesPerBlock = 1;
+  for (int64_t dimension : type.getShape()) {
+    if (dimension <= 0) {
+      return failure();
+    }
+    std::optional<uint64_t> product = llvm::checkedMulUnsigned(
+        pagesPerBlock, static_cast<uint64_t>(dimension));
+    if (!product) {
+      return failure();
+    }
+    pagesPerBlock = *product;
+  }
+  return pagesPerBlock;
+}
+
+FailureOr<uint64_t> getDFBPageSizeBytes(CircularBufferType type) {
+  Type elementType = type.getElementType();
+  if (auto tileType = dyn_cast<ttcore::TileType>(elementType)) {
+    return tileType.getSizeBytes();
+  }
+  if (!elementType.isIntOrFloat()) {
+    return failure();
+  }
+  uint64_t bitWidth = elementType.getIntOrFloatBitWidth();
+  if (bitWidth == 0 || bitWidth % 8 != 0) {
+    return failure();
+  }
+  return bitWidth / 8;
 }
 
 LogicalResult verifyDFBOperandIdentities(

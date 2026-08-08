@@ -29,6 +29,33 @@ from ttl.dialects import ttl
 from .pipe import Pipe
 
 
+def call_extern_func(
+    header: str,
+    callee: str,
+    *,
+    template_args=None,
+    func_args=None,
+    include_paths=None,
+) -> None:
+    """Call an external C++ function from a compiled kernel."""
+    raise RuntimeError("ttl.call_extern_func() is valid only in a compiled kernel")
+
+
+def dfb_descriptor(dfb):
+    """Use finalized DFB allocation metadata as a C++ template type."""
+    raise RuntimeError("ttl.dfb_descriptor() is valid only in a compiled kernel")
+
+
+def get_dfb_id(dfb):
+    """Use a finalized physical DFB index as an integer value."""
+    raise RuntimeError("ttl.get_dfb_id() is valid only in a compiled kernel")
+
+
+def raw_addr(tensor):
+    """Use a base tensor's runtime buffer address as an integer value."""
+    raise RuntimeError("ttl.raw_addr() is valid only in a compiled kernel")
+
+
 def _arith_constant_op(val):
     """If val is (or is the result of) an arith.constant, return the typed ConstantOp."""
     if isinstance(val, arith.ConstantOp):
@@ -1221,5 +1248,9 @@ __all__ = [
     "exp",
     "raw_element_read",
     "raw_element_write",
+    "call_extern_func",
+    "dfb_descriptor",
+    "get_dfb_id",
+    "raw_addr",
     *_generated_all,
 ]
