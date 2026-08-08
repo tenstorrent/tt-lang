@@ -1800,15 +1800,10 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
 // Raw Element Access Lowering
 //===----------------------------------------------------------------------===//
 
-/// Return the integer storage type and bit width for a raw element access.
-/// f32 -> (i32, 32), bf16 -> (i16, 16).
-static std::pair<Type, unsigned> getIntTypeForFloat(MLIRContext *ctx,
-                                                    Type floatTy) {
-  if (floatTy.isF32()) {
-    return {IntegerType::get(ctx, 32), 32};
-  }
-  assert(floatTy.isBF16());
-  return {IntegerType::get(ctx, 16), 16};
+/// Return the same-width signless integer type used for raw float storage.
+static IntegerType getIntegerStorageType(MLIRContext *context,
+                                         FloatType floatType) {
+  return IntegerType::get(context, floatType.getWidth());
 }
 
 /// Compute the flat element offset for a raw element access operation.
@@ -1956,24 +1951,26 @@ resolveCBForRawElement(Value adaptedBlock, Value originalBlock,
 static Value decodeNonnegativeFloatToI32(Value rawBits, FloatType floatType,
                                          ConversionPatternRewriter &rewriter,
                                          Location loc) {
-  assert(floatType.getWidth() <= 32 && "decode packs the significand into i32");
+  auto i32Type = rewriter.getI32Type();
+  unsigned outputWidth = i32Type.getWidth();
+  assert(floatType.getWidth() <= outputWidth &&
+         "decode packs the significand into i32");
   unsigned mantissaWidth = floatType.getFPMantissaWidth() - 1;
   unsigned exponentWidth = floatType.getWidth() - mantissaWidth - 1;
   uint32_t exponentMask = (uint32_t{1} << exponentWidth) - 1;
   uint32_t exponentBias = (uint32_t{1} << (exponentWidth - 1)) - 1;
 
-  auto i32Type = rewriter.getI32Type();
   auto constant = [&](int64_t value) -> Value {
-    return arith::ConstantIntOp::create(rewriter, loc, value, 32);
+    return arith::ConstantIntOp::create(rewriter, loc, value, outputWidth);
   };
 
   Value bits = rawBits;
-  if (rawBits.getType().getIntOrFloatBitWidth() < 32) {
+  if (rawBits.getType().getIntOrFloatBitWidth() < outputWidth) {
     bits = arith::ExtUIOp::create(rewriter, loc, i32Type, rawBits);
   }
 
   Value zero = constant(0);
-  Value maximumShift = constant(31);
+  Value maximumShift = constant(outputWidth - 1);
   auto clampShift = [&](Value shift) -> Value {
     Value isNegative = arith::CmpIOp::create(
         rewriter, loc, arith::CmpIPredicate::slt, shift, zero);
@@ -1986,8 +1983,9 @@ static Value decodeNonnegativeFloatToI32(Value rawBits, FloatType floatType,
                                    nonnegativeShift);
   };
 
-  Value exponentShift = constant(mantissaWidth);
-  Value exponent = arith::ShRUIOp::create(rewriter, loc, bits, exponentShift);
+  Value mantissaWidthValue = constant(mantissaWidth);
+  Value exponent =
+      arith::ShRUIOp::create(rewriter, loc, bits, mantissaWidthValue);
   exponent =
       arith::AndIOp::create(rewriter, loc, exponent, constant(exponentMask));
   exponent =
@@ -2001,9 +1999,9 @@ static Value decodeNonnegativeFloatToI32(Value rawBits, FloatType floatType,
       arith::OrIOp::create(rewriter, loc, significand, constant(hiddenBit));
 
   Value leftShift =
-      arith::SubIOp::create(rewriter, loc, exponent, constant(mantissaWidth));
+      arith::SubIOp::create(rewriter, loc, exponent, mantissaWidthValue);
   Value rightShift =
-      arith::SubIOp::create(rewriter, loc, constant(mantissaWidth), exponent);
+      arith::SubIOp::create(rewriter, loc, mantissaWidthValue, exponent);
   leftShift = clampShift(leftShift);
   rightShift = clampShift(rightShift);
 
@@ -2011,9 +2009,8 @@ static Value decodeNonnegativeFloatToI32(Value rawBits, FloatType floatType,
       arith::ShLIOp::create(rewriter, loc, significand, leftShift);
   Value shiftedRight =
       arith::ShRUIOp::create(rewriter, loc, significand, rightShift);
-  Value usesLeftShift =
-      arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::sge, exponent,
-                            constant(mantissaWidth));
+  Value usesLeftShift = arith::CmpIOp::create(
+      rewriter, loc, arith::CmpIPredicate::sge, exponent, mantissaWidthValue);
   Value magnitude = arith::SelectOp::create(rewriter, loc, usesLeftShift,
                                             shiftedLeft, shiftedRight);
 
@@ -2031,8 +2028,9 @@ struct RawElementReadLowering : OpConversionPattern<RawElementReadOp> {
     auto loc = op.getLoc();
     auto blockType = mlir::cast<RankedTensorType>(op.getBlock().getType());
     Type scalarTy = op.getResult().getType();
-    auto [intTy, elemWidth] =
-        getIntTypeForFloat(rewriter.getContext(), scalarTy);
+    IntegerType intTy = getIntegerStorageType(rewriter.getContext(),
+                                              mlir::cast<FloatType>(scalarTy));
+    unsigned elemWidth = intTy.getWidth();
 
     auto cb = resolveCBForRawElement(adaptor.getBlock(), op.getBlock(),
                                      rewriter, loc, this->getTypeConverter());
@@ -2065,8 +2063,9 @@ struct ReadIndexLowering : OpConversionPattern<ReadIndexOp> {
     Type elementType = blockType.getElementType();
     Type scalarType = getTileElementType(elementType).value_or(elementType);
     auto floatType = mlir::cast<FloatType>(scalarType);
-    auto [integerType, elementWidth] =
-        getIntTypeForFloat(rewriter.getContext(), scalarType);
+    IntegerType integerType =
+        getIntegerStorageType(rewriter.getContext(), floatType);
+    unsigned elementWidth = integerType.getWidth();
 
     FailureOr<Value> cb =
         resolveCBForRawElement(adaptor.getBlock(), op.getBlock(), rewriter, loc,
@@ -2099,8 +2098,9 @@ struct RawElementWriteLowering : OpConversionPattern<RawElementWriteOp> {
     auto loc = op.getLoc();
     auto blockType = mlir::cast<RankedTensorType>(op.getBlock().getType());
     Type scalarTy = op.getValue().getType();
-    auto [intTy, elemWidth] =
-        getIntTypeForFloat(rewriter.getContext(), scalarTy);
+    IntegerType intTy = getIntegerStorageType(rewriter.getContext(),
+                                              mlir::cast<FloatType>(scalarTy));
+    unsigned elemWidth = intTy.getWidth();
 
     auto cb = resolveCBForRawElement(adaptor.getBlock(), op.getBlock(),
                                      rewriter, loc, this->getTypeConverter());
