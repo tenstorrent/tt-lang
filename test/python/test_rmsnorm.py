@@ -270,6 +270,12 @@ CONFIG_RMSNORM_KERNELS = {
     )
     for fp32_dest_acc_en, dst_full_sync_en in KERNEL_CONFIGS
 }
+FIVE_TILE_FP32_KERNEL = make_rmsnorm_kernel(
+    32,
+    5,
+    "none",
+    fp32_dest_acc_en=True,
+)
 MATERIALIZED_RMSNORM_KERNEL = make_materialized_rmsnorm_kernel(16, 3)
 
 
@@ -356,6 +362,26 @@ def test_rmsnorm_kernel_config(device, fp32_dest_acc_en, dst_full_sync_en):
         kernel=CONFIG_RMSNORM_KERNELS[(fp32_dest_acc_en, dst_full_sync_en)],
     )
     assert_rmsnorm_close(result, expected)
+
+
+def test_rmsnorm_five_tile_fp32_dest(
+    device,
+    monkeypatch,
+    tmp_path,
+):
+    """Select full synchronization when FP32 destination needs five slots."""
+    final_mlir = tmp_path / "rmsnorm.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir))
+    result, expected = run_rmsnorm(
+        device,
+        tile_height=32,
+        num_tiles=5,
+        width=5120,
+        gamma_mode="none",
+        kernel=FIVE_TILE_FP32_KERNEL,
+    )
+    assert_rmsnorm_close(result, expected)
+    assert final_mlir.read_text().count("tile_regs_acquire") == 1
 
 
 def test_rmsnorm_matches_materialized(device):

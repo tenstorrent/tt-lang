@@ -318,7 +318,7 @@ generic tracer therefore requires an unstored elementwise producer of a
 reduction to be materialized in a DFB. Direct reduction creation also requires
 DFB-backed input and scaler operands.
 
-Row normalization uses a target-specific schedule when the complete operation
+Row normalization uses a target-supported schedule when the complete operation
 sequence has this semantic form:
 
 ```text
@@ -339,10 +339,10 @@ legality analysis.
 
 The schedule is selected only when all of these conditions hold:
 
-- the target is Blackhole and the DFB data type is bf16;
+- the target exposes the row-normalization capability for the DFB element type;
 - input and result are the same static rank-2 one-row tensor type;
-- the row contains at least one tile and fits the effective DST capacity,
-  restricted to the block helper's eight-tile limit;
+- the row contains at least one tile, does not exceed the target schedule limit,
+  and fits a DST configuration permitted by explicit kernel attributes;
 - the sum reduces both tensor dimensions and uses a unit reduction scaler;
 - scale and epsilon are finite and positive;
 - each internal value has the uses required by the schedule;
@@ -351,8 +351,8 @@ The schedule is selected only when all of these conditions hold:
 - no instrumentation would be absorbed into the block schedule.
 
 Failure to satisfy a specialization condition leaves the expression available
-to ordinary creation and intermediate DFB materialization. A rejected
-specialization does not modify IR.
+to the remaining compute-creation mechanisms and intermediate DFB
+materialization. A rejected specialization does not modify IR.
 
 `LowerRowNormalizationCompute` verifies the planned compute against its target,
 formal inputs and output, row size, DST capacity, and store before mutation. It
@@ -362,6 +362,13 @@ moves the retained scalar to a compute source register, clears the acquired DST
 section, and multiplies it across all input tiles. Optional gamma multiplication
 occurs before the output block is packed. The generated kernel therefore uses
 one DST acquisition and no intermediate DFB.
+
+`num_tiles` preserves the exact fixed-block residency after tensor operands are
+scalarized to tile values. Kernel-configuration resolution intersects this
+requirement with destination width and synchronization candidates. Automatic
+synchronization prefers double buffering when the row fits and selects full
+synchronization when it is required for capacity. An explicit configuration
+that cannot hold the row produces a capacity diagnostic before DST assignment.
 
 The row-normalization LLK applies its reduction scaler during both reduction
 stages. TTKernel-to-C++ lowering passes the square root of the semantic scale so

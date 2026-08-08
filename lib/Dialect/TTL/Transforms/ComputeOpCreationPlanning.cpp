@@ -957,9 +957,14 @@ matchRowNormalization(Operation *source,
   if (!limits.maxTiles) {
     return std::nullopt;
   }
-  bool isFloat32 = getKernelBoolAttr(source, kFp32DestAccEnAttrName);
-  std::uint32_t dstCapacity = getDstCapacity(
-      isFloat32, getKernelBoolAttr(source, kDstFullSyncEnAttrName));
+  func::FuncOp function = source->getParentOfType<func::FuncOp>();
+  auto fp32Constraint =
+      function->getAttrOfType<BoolAttr>(kFp32DestAccEnAttrName);
+  auto fullSyncConstraint =
+      function->getAttrOfType<BoolAttr>(kDstFullSyncEnAttrName);
+  bool isFloat32 = fp32Constraint && fp32Constraint.getValue();
+  bool fullSync = !fullSyncConstraint || fullSyncConstraint.getValue();
+  std::uint32_t dstCapacity = getDstCapacity(isFloat32, fullSync);
   dstCapacity = std::min(*limits.maxTiles, dstCapacity);
   if (numTiles < 1 || static_cast<std::uint64_t>(numTiles) >
                           static_cast<std::uint64_t>(dstCapacity)) {

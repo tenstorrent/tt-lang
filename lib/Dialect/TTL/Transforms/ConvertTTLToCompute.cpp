@@ -667,7 +667,8 @@ buildRowNormalizationCompute(Operation *sinkOp, PatternRewriter &rewriter,
   Value result =
       createTileOpWithPlaceholderDstIndex<TileRowNormalizationBlockOp>(
           rewriter, loc, outputTileType, inputTile, gammaTile, outputTile,
-          schedule.scale, schedule.epsilon, rewriter.getBoolAttr(hasGamma));
+          schedule.scale, schedule.epsilon, rewriter.getBoolAttr(hasGamma),
+          rewriter.getI64IntegerAttr(schedule.numTiles));
 
   for (StoreOp store : outputs.stores) {
     emitTileStore(rewriter, loc, result, computeOp, store, outputs);

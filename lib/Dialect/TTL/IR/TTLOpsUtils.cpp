@@ -415,6 +415,7 @@ getDefaultTileExecutionInfo(Operation *operation,
     if (normalization.getHasGamma()) {
       info.operandRoutes[1] = TileOperandRoute::DataflowBuffer;
     }
+    info.requiredDstSlots = normalization.getNumTiles();
     return info;
   }
   if (isa<TileTransposeOp>(operation)) {
@@ -493,6 +494,10 @@ LogicalResult verifyTileExecutionInfo(Operation *operation,
         << "defines " << info.dstOperandsMaterializedByOperation.size()
         << " DST operand materialization entries for "
         << operation->getNumOperands() << " operands";
+    return failure();
+  }
+  if (info.requiredDstSlots == 0) {
+    operation->emitOpError("defines a zero-slot DST residency requirement");
     return failure();
   }
   return success();
@@ -700,19 +705,6 @@ static int64_t getMatmulBlockOutputTileCount(TileMatmulBlockOp op) {
   return lhsType.getDimSize(0) * rhsType.getDimSize(1);
 }
 
-/// Row normalization moves its scalar to a compute source register before
-/// overwriting the acquired DST section with the normalized row.
-static int64_t
-getRowNormalizationBlockTileCount(TileRowNormalizationBlockOp op) {
-  if (isa<ttcore::TileType>(op.getInput().getType())) {
-    return 1;
-  }
-  auto inputType = dyn_cast<RankedTensorType>(op.getInput().getType());
-  assert(inputType && inputType.hasStaticShape() &&
-         "verified row-normalization tensor form must have static shape");
-  return inputType.getNumElements();
-}
-
 /// Interface defaults require resolved DST operands because callers use this
 /// after DST assignment, where unresolved tile residency is invalid IR.
 static LogicalResult
@@ -759,7 +751,7 @@ SmallVector<DstFootprint, 2> getDefaultDstWriteFootprints(Operation *op) {
   }
   if (auto normalization = dyn_cast<TileRowNormalizationBlockOp>(op)) {
     return {{normalization.getDstIndex(),
-             getRowNormalizationBlockTileCount(normalization)}};
+             static_cast<int64_t>(normalization.getNumTiles())}};
   }
   if (auto dstIndex = getTileOpDstIndex(op)) {
     return {{*dstIndex, 1}};
@@ -783,7 +775,7 @@ FailureOr<DstFootprint> getDefaultResultDstFootprint(Operation *op,
   }
   if (auto normalization = dyn_cast<TileRowNormalizationBlockOp>(op)) {
     return DstFootprint{normalization.getDstIndex(),
-                        getRowNormalizationBlockTileCount(normalization)};
+                        static_cast<int64_t>(normalization.getNumTiles())};
   }
   if (auto dstIndex = getTileOpDstIndex(op)) {
     return DstFootprint{*dstIndex, 1};
