@@ -44,6 +44,7 @@ from .dataflow_buffer import (
 )
 from .constants import DEFAULT_L1_CB_BUDGET_BYTES
 from .dtype_utils import format_name_to_ttnn_dtype
+from .kernel import KernelSelector
 
 
 @dataclass(frozen=True)
@@ -162,6 +163,7 @@ class KernelSpec:
             the whole-grid core_ranges passed to build_kernel_descriptors is used.
         extra_common_runtime_args: Per-kernel runtime args appended after
             shared compiler-managed arguments.
+        logical_kernel: Target-independent selector retained across kernel cloning.
     """
 
     path: str
@@ -172,6 +174,7 @@ class KernelSpec:
     pipe_computed_address_dfb_indices: List[int] = field(default_factory=list)
     core_ranges: Optional[Any] = None
     extra_common_runtime_args: Optional[List[int]] = None
+    logical_kernel: Optional[KernelSelector] = None
 
 
 @dataclass

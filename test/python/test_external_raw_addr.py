@@ -119,6 +119,41 @@ def external_multi_kernel_raw_address_capture(inp, out):
     unused.pop(kernel=reader)
 
 
+shared_reader = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+
+
+@ttl.operation()
+def _external_first_half(inp, out):
+    ttl.call_extern_func(
+        RAW_ADDRESS_HEADER,
+        "raw_address_capture_data_movement",
+        template_args=[0, SELECTED_OUTPUT_WORD_COUNT, 0],
+        func_args=[ttl.raw_addr(inp), ttl.raw_addr(out)],
+        kernel=shared_reader,
+    )
+
+
+@ttl.operation()
+def _external_second_half(inp, out):
+    ttl.call_extern_func(
+        RAW_ADDRESS_HEADER,
+        "raw_address_capture_data_movement",
+        template_args=[
+            SELECTED_OUTPUT_WORD_COUNT,
+            SELECTED_OUTPUT_WORD_COUNT,
+            -1,
+        ],
+        func_args=[ttl.raw_addr(inp), ttl.raw_addr(out)],
+        kernel=shared_reader,
+    )
+
+
+@ttl.operation(grid=(1, 1))
+def external_composed_raw_address_capture(inp, out):
+    _external_first_half(inp, out)
+    _external_second_half(inp, out)
+
+
 def _assert_address_bits(output, expected_address):
     """Compare bits because arbitrary addresses need not encode finite floats."""
     output_bits = ttnn.to_torch(output).contiguous().view(torch.int32)
@@ -192,3 +227,28 @@ def test_external_call_can_execute_in_multiple_logical_kernels(device, dtype, to
     )
     assert torch.all(output_bits[:SELECTED_OUTPUT_WORD_COUNT] == expected_compute)
     assert torch.all(output_bits[SELECTED_OUTPUT_WORD_COUNT:] == expected_data)
+
+
+@pytest.mark.parametrize(
+    "dtype",
+    [torch.bfloat16, torch.float32],
+    ids=["bf16", "f32"],
+)
+@pytest.mark.parametrize("to_input", INPUT_MEMORY_CONFIGS)
+def test_composed_external_calls_share_one_logical_kernel(device, dtype, to_input):
+    """Two child operations execute on one captured data-movement kernel."""
+    host_input = torch.zeros((32, 32), dtype=dtype)
+    input_tensor = to_input(host_input, device)
+    host_output = torch.zeros((32, 32), dtype=torch.float32)
+    output = to_l1_sharded(host_output, device, layout="height")
+
+    external_composed_raw_address_capture(input_tensor, output)
+
+    input_address = input_tensor.buffer_address()
+    output_bits = ttnn.to_torch(output).contiguous().view(torch.int32).flatten()
+    expected_first = torch.tensor(input_address, dtype=torch.uint32).view(torch.int32)
+    expected_second = torch.tensor(input_address ^ 0xFFFFFFFF, dtype=torch.uint32).view(
+        torch.int32
+    )
+    assert torch.all(output_bits[:SELECTED_OUTPUT_WORD_COUNT] == expected_first)
+    assert torch.all(output_bits[SELECTED_OUTPUT_WORD_COUNT:] == expected_second)

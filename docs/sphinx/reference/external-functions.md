@@ -59,6 +59,11 @@ def selected_external(inp):
     )
 ```
 
+Factories may capture and reuse one `Kernel` handle across several composed
+operations. Registration preserves the factory-owned handle. Compilation of
+the final composed operation binds its deterministic operation-local identity,
+so every child that captures the same handle executes in one logical kernel.
+
 An external call accepts one selector or a nonempty tuple of distinct
 selectors. A tuple emits the call once in every selected logical kernel. A
 call may omit `kernel=` when its enclosing callback already determines one

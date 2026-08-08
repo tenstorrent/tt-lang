@@ -65,3 +65,19 @@ inline void raw_address_capture_selected(uint32_t tensor_address,
   cb_push_back(Drain::index, Drain::pages_per_block);
 #endif
 }
+
+template <uint32_t WordOffset, uint32_t WordCount, int32_t XorMask>
+inline void raw_address_capture_data_movement(uint32_t tensor_address,
+                                              uint32_t output_address) {
+#if defined(COMPILE_FOR_TRISC)
+  (void)tensor_address;
+  (void)output_address;
+#else
+  auto *output =
+      reinterpret_cast<volatile tt_l1_ptr uint32_t *>(output_address);
+  for (uint32_t word_index = 0; word_index < WordCount; ++word_index) {
+    output[WordOffset + word_index] =
+        tensor_address ^ static_cast<uint32_t>(XorMask);
+  }
+#endif
+}

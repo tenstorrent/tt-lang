@@ -14,6 +14,26 @@ include "mlir/IR/AttrTypeBase.td"
 // TTL attribute definitions
 //===----------------------------------------------------------------------===//
 
+def TTL_LogicalKernelAttr : TTL_Attr<"LogicalKernel", "logical_kernel"> {
+  let summary = "Target-independent identity of one operation kernel";
+  let description = [{
+    Records the logical kind and operation-local identity assigned before
+    backend kernel selection. A canonical kind selector omits its identity. An
+    explicit operation handle records its identity and owning operation.
+    Compiler-owned affinity kernels use `role` instead of an operation.
+    Kernel specialization preserves this function attribute on every clone so
+    runtime resources can select clones by logical identity.
+  }];
+  let parameters = (ins
+    "LogicalKernelKind":$kind,
+    OptionalParameter<"StringAttr">:$identity,
+    OptionalParameter<"StringAttr">:$operation,
+    OptionalParameter<"StringAttr">:$role
+  );
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
 def TTL_SliceAttr : TTL_Attr<"Slice", "slice"> {
   let summary = "Slice specification for core range";
   let parameters = (ins

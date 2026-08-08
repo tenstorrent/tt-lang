@@ -21,6 +21,8 @@ from ttl._src.atom_split import split_function_body
 from ttl.atom import (
     _assign_backend_kernel_slots,
     _backend_kernel_capacities,
+    _bind_logical_kernels,
+    _build_atom_spec,
     _lift_setup,
 )
 from ttl.kernel import Kernel, KernelKind
@@ -46,7 +48,7 @@ def _kind_src(result, kind: KernelKind, index: int = 0) -> str:
 
 
 def _logical_kernel(kind: KernelKind, name: str) -> Kernel:
-    return Kernel(kind)._bind(name)
+    return Kernel(kind)._bind(name, "test.operation")
 
 
 def test_kernel_resource_is_lifted_before_logical_split():
@@ -59,7 +61,11 @@ def test_kernel_resource_is_lifted_before_logical_split():
         """
     )
 
-    stripped, dfbs, nets, logical_kernels = _lift_setup(function, {"ttl": ttl})
+    stripped, dfbs, nets, logical_kernels = _lift_setup(
+        function,
+        {"ttl": ttl},
+        "test.operation",
+    )
 
     assert not dfbs
     assert not nets
@@ -76,6 +82,75 @@ def test_kernel_resource_is_lifted_before_logical_split():
     )
     assignments = _assign_backend_kernel_slots(result)
     assert tuple(assignments.values()) == (reader,)
+
+
+def test_captured_kernel_is_bound_only_for_final_operation():
+    sender = Kernel(KernelKind.DATA_MOVEMENT)
+
+    def operation():
+        ttl.call_extern_func("sender.hpp", "sender", kernel=sender)
+
+    spec = _build_atom_spec(operation)
+
+    assert spec.logical_kernels == {"sender": sender}
+    with pytest.raises(ValueError, match="no operation-local identity"):
+        sender.identity
+
+    bound_kernels = _bind_logical_kernels(
+        spec.logical_kernels,
+        spec.operation_identity,
+    )
+    bound_sender = bound_kernels["sender"]
+    assert bound_sender is not sender
+    assert bound_sender.identity == "sender"
+    assert bound_sender._operation_identity == spec.operation_identity
+
+
+def test_composed_operations_share_one_factory_owned_kernel():
+    sender = Kernel(KernelKind.DATA_MOVEMENT)
+
+    @ttl.operation()
+    def first_operation():
+        ttl.call_extern_func("sender.hpp", "first", kernel=sender)
+
+    @ttl.operation()
+    def second_operation():
+        ttl.call_extern_func("sender.hpp", "second", kernel=sender)
+
+    def composed_operation():
+        first_operation()
+        second_operation()
+
+    spec = _build_atom_spec(composed_operation)
+    assert tuple(spec.logical_kernels.values()) == (sender,)
+
+    bound_kernels = _bind_logical_kernels(
+        spec.logical_kernels,
+        spec.operation_identity,
+    )
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names=set(),
+        logical_kernels=bound_kernels,
+        kernel_capacities=_backend_kernel_capacities(),
+    )
+
+    assert result.kernels == tuple(bound_kernels.values())
+    kernel_source = _kernel_src(result, result.kernels[0])
+    assert "'first'" in kernel_source
+    assert "'second'" in kernel_source
+    with pytest.raises(ValueError, match="no operation-local identity"):
+        sender.identity
+
+
+def test_bound_kernel_equality_includes_operation_identity():
+    first = Kernel(KernelKind.DATA_MOVEMENT)._bind("sender", "first.operation")
+    same = Kernel(KernelKind.DATA_MOVEMENT)._bind("sender", "first.operation")
+    second = Kernel(KernelKind.DATA_MOVEMENT)._bind("sender", "second.operation")
+
+    assert first == same
+    assert hash(first) == hash(same)
+    assert first != second
 
 
 def test_split_analysis_does_not_mutate_input_ast():

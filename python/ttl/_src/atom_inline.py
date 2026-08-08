@@ -124,17 +124,19 @@ def inline_atom_calls(
     fn_def: ast.FunctionDef,
     fn_globals: Dict[str, object],
     caller_name: str,
-) -> Dict[str, object]:
+) -> Tuple[Dict[str, object], Dict[str, object]]:
     reserved_names = _identifier_names(fn_def)
     external_pipenets = {}
+    external_logical_kernels = {}
     fn_def.body = _inline_statements(
         fn_def.body,
         fn_globals,
         caller_name,
         reserved_names,
         external_pipenets,
+        external_logical_kernels,
     )
-    return external_pipenets
+    return external_pipenets, external_logical_kernels
 
 
 def _inline_statements(
@@ -143,6 +145,7 @@ def _inline_statements(
     caller_name: str,
     reserved_names: Set[str],
     external_pipenets: Dict[str, object],
+    external_logical_kernels: Dict[str, object],
 ) -> List[ast.stmt]:
     result: List[ast.stmt] = []
     for statement in statements:
@@ -152,6 +155,7 @@ def _inline_statements(
             caller_name,
             reserved_names,
             external_pipenets,
+            external_logical_kernels,
         )
         match = _standalone_operation_call(statement, scope)
         if match is None:
@@ -167,6 +171,7 @@ def _inline_statements(
                 scope,
                 reserved_names,
                 external_pipenets,
+                external_logical_kernels,
             )
         )
     return result
@@ -178,6 +183,7 @@ def _inline_compound_bodies(
     caller_name: str,
     reserved_names: Set[str],
     external_pipenets: Dict[str, object],
+    external_logical_kernels: Dict[str, object],
 ) -> None:
     for attribute in ("body", "orelse", "finalbody"):
         body = getattr(statement, attribute, None)
@@ -191,6 +197,7 @@ def _inline_compound_bodies(
             caller_name,
             reserved_names,
             external_pipenets,
+            external_logical_kernels,
         )
         setattr(statement, attribute, inlined)
 
@@ -205,6 +212,7 @@ def _inline_compound_bodies(
                 caller_name,
                 reserved_names,
                 external_pipenets,
+                external_logical_kernels,
             )
 
 
@@ -278,6 +286,7 @@ def _expand_call(
     scope: Dict[str, object],
     reserved_names: Set[str],
     external_pipenets: Dict[str, object],
+    external_logical_kernels: Dict[str, object],
 ) -> List[ast.stmt]:
     spec = callee._spec
     bindings = _bind_args_to_params(spec, call, caller_name)
@@ -290,6 +299,13 @@ def _expand_call(
         reserved_names,
         external_pipenets,
         suffix,
+    )
+    _add_external_logical_kernel_bindings(
+        spec,
+        bindings,
+        scope,
+        reserved_names,
+        external_logical_kernels,
     )
 
     local_names = _collect_local_names(spec.fn_ast)
@@ -343,6 +359,44 @@ def _add_external_pipenet_bindings(
         external_pipenets[fresh_name] = pipenet
 
 
+def _add_external_logical_kernel_bindings(
+    spec,
+    bindings: Dict[str, ast.expr],
+    scope: Dict[str, object],
+    reserved_names: Set[str],
+    external_logical_kernels: Dict[str, object],
+) -> None:
+    """Map shared factory handles to one deterministic caller resource name."""
+    loaded_names = _loaded_names(spec.fn_ast.body)
+    for name, kernel in spec.logical_kernels.items():
+        if name not in loaded_names or name in bindings:
+            continue
+
+        final_name = next(
+            (
+                existing_name
+                for existing_name, existing_kernel in external_logical_kernels.items()
+                if existing_kernel is kernel
+            ),
+            None,
+        )
+        if final_name is None:
+            final_name = next(
+                (
+                    scope_name
+                    for scope_name in sorted(reserved_names)
+                    if scope.get(scope_name) is kernel
+                ),
+                None,
+            )
+        if final_name is None:
+            final_name = _fresh_resource_name(name, reserved_names)
+
+        bindings[name] = ast.Name(id=final_name, ctx=ast.Load())
+        scope[final_name] = kernel
+        external_logical_kernels[final_name] = kernel
+
+
 def _literal_node(value: object) -> ast.expr:
     if isinstance(value, tuple):
         elements = [_literal_node(element) for element in value]
@@ -370,6 +424,16 @@ def _fresh_name(base: str, suffix: str, reserved_names: Set[str]) -> str:
     while candidate in reserved_names:
         discriminator += 1
         candidate = f"{base}{suffix}_{discriminator}"
+    reserved_names.add(candidate)
+    return candidate
+
+
+def _fresh_resource_name(base: str, reserved_names: Set[str]) -> str:
+    candidate = base
+    discriminator = 0
+    while candidate in reserved_names:
+        discriminator += 1
+        candidate = f"{base}__resource{discriminator}"
     reserved_names.add(candidate)
     return candidate
 

@@ -106,6 +106,13 @@ from .kernel_runner import (
     run_kernel_on_device,
     emit_runner_file,
 )
+from .kernel import (
+    Kernel,
+    KernelKind,
+    KernelSelector,
+    _selector_implicit_role,
+    _selector_kind,
+)
 from .operators import CopyTransferHandler, TensorBlock, copy
 from .compiler_options import CompilerOptions
 from .ttl_utils import get_thread_type_string
@@ -117,6 +124,8 @@ _TTCORE_ARCH_BY_DEVICE_NAME = {
 
 # Thread registry for automatic collection of @compute and @datamovement threads
 _thread_registry: List[Callable] = []
+
+_LOGICAL_KERNEL_ATTR = "ttl.logical_kernel"
 
 
 def _register_thread(thread_fn: Callable) -> None:
@@ -677,6 +686,7 @@ class CompiledTTNNKernel:
         kernel_fabric_routes=None,
         mesh_program_placements=None,
         device_domain=None,
+        kernel_logical_selectors=None,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -708,6 +718,7 @@ class CompiledTTNNKernel:
                 L1 bases are supplied as common runtime args.
             mesh_program_placements: Optional mesh device ranges. When present,
                 execution uses ttnn.MeshProgramDescriptor.
+            kernel_logical_selectors: Logical selector for each compiled kernel.
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
@@ -731,6 +742,9 @@ class CompiledTTNNKernel:
         self.kernel_fabric_routes = kernel_fabric_routes or [[] for _ in kernel_paths]
         self.mesh_program_placements = mesh_program_placements
         self.device_domain = device_domain
+        self.kernel_logical_selectors = kernel_logical_selectors or [
+            None for _ in kernel_paths
+        ]
         self._pipe_global_semaphore_lifetime = []
         self.opaque_include_paths = opaque_include_paths or []
         self._fabric_direction_cache = _FabricDirectionCache()
@@ -766,6 +780,7 @@ class CompiledTTNNKernel:
                     kernel_idx
                 ],
                 core_ranges=self.kernel_core_ranges[kernel_idx],
+                logical_kernel=self.kernel_logical_selectors[kernel_idx],
             )
             kernel_specs.append(spec)
 
@@ -941,6 +956,33 @@ def _get_kernel_core_coords(module, kernel_name: str):
     return coords
 
 
+def _get_kernel_logical_selector(module, kernel_name: str) -> Optional[KernelSelector]:
+    """Recover logical-kernel metadata retained by specialization clones."""
+    operation = _lookup_kernel_func_op(module, kernel_name)
+    raw_attribute = operation.attributes.get(_LOGICAL_KERNEL_ATTR, None)
+    if raw_attribute is None:
+        return None
+    attribute = ttl_dialect.LogicalKernelAttr.maybe_downcast(raw_attribute)
+    if attribute is None:
+        raise ValueError(f"Invalid '{_LOGICAL_KERNEL_ATTR}' on kernel {kernel_name!r}")
+
+    if attribute.kind == ttl_dialect.ir.LogicalKernelKind.Compute:
+        kind = KernelKind.COMPUTE
+    elif attribute.kind == ttl_dialect.ir.LogicalKernelKind.DataMovement:
+        kind = KernelKind.DATA_MOVEMENT
+    else:
+        raise ValueError(f"Unknown logical kernel kind on kernel {kernel_name!r}")
+
+    if not attribute.identity:
+        return kind
+    return Kernel._from_metadata(
+        kind,
+        attribute.identity,
+        operation_identity=attribute.operation,
+        implicit_role=attribute.role,
+    )
+
+
 def _get_kernel_noc_index(module, kernel_name: str):
     """Read the `ttl.noc_index` attribute (0 = reader, 1 = writer).
 
@@ -1080,6 +1122,9 @@ def _compile_ttnn_kernel(
     # When present, get_ttkernel_names returns per-coordinate clones instead of
     # a single (compute + reader + writer) triple.
     kernel_coords = [_get_kernel_core_coords(module, name) for name, _ in kernel_info]
+    kernel_logical_selectors = [
+        _get_kernel_logical_selector(module, name) for name, _ in kernel_info
+    ]
     specialize_cores = any(coords is not None for coords in kernel_coords)
 
     compute_count = sum(1 for _, t in kernel_info if t == "compute")
@@ -1265,6 +1310,7 @@ def _compile_ttnn_kernel(
         kernel_fabric_routes=kernel_fabric_routes,
         mesh_program_placements=mesh_program_placements,
         device_domain=device_domain,
+        kernel_logical_selectors=kernel_logical_selectors,
     )
 
     if verbose:
@@ -1286,6 +1332,7 @@ def _compile_ttnn_kernel(
                     kernel_idx
                 ],
                 core_ranges=kernel_core_ranges[kernel_idx],
+                logical_kernel=kernel_logical_selectors[kernel_idx],
             )
             kernel_specs_for_emit.append(spec)
 
@@ -2003,6 +2050,7 @@ def _lower_program_to_kernel(
     kernel_line_offset,
     mesh_program_placements,
     device_domain,
+    logical_kernels=None,
 ):
     """Lower compiled threads to a CompiledTTNNKernel.
 
@@ -2013,6 +2061,10 @@ def _lower_program_to_kernel(
     # Always generate source locations for error messages
     # TTLANG_DEBUG_LOCATIONS only controls whether locations are printed in MLIR output
     print_debug_locations = os.environ.get("TTLANG_DEBUG_LOCATIONS", "0") == "1"
+    if logical_kernels is not None and len(logical_kernels) != len(program.threads):
+        raise ValueError(
+            "logical kernel metadata must align one-to-one with program threads"
+        )
 
     ctx = Context()
     loc = Location.unknown(ctx)
@@ -2028,7 +2080,7 @@ def _lower_program_to_kernel(
         kernel_line_offsets = {}
         noc_kernel_idx = 0
 
-        for compile_thread in program.threads:
+        for thread_index, compile_thread in enumerate(program.threads):
             try:
                 ct = compile_thread(*program.args, **program.kwargs)
             except TTLangCompileError as e:
@@ -2064,6 +2116,34 @@ def _lower_program_to_kernel(
                     IntegerType.get_signless(32, ctx), noc_kernel_idx
                 )
                 noc_kernel_idx += 1
+
+            logical_kernel = (
+                logical_kernels[thread_index] if logical_kernels is not None else None
+            )
+            if logical_kernel is not None:
+                kind = _selector_kind(logical_kernel)
+                ir_kind = {
+                    KernelKind.COMPUTE: ttl_dialect.ir.LogicalKernelKind.Compute,
+                    KernelKind.DATA_MOVEMENT: (
+                        ttl_dialect.ir.LogicalKernelKind.DataMovement
+                    ),
+                }[kind]
+                identity = None
+                operation_identity = None
+                implicit_role = None
+                if isinstance(logical_kernel, Kernel):
+                    identity = logical_kernel.identity
+                    operation_identity = logical_kernel._operation_identity
+                    implicit_role = _selector_implicit_role(logical_kernel)
+                ct.func_entry.attributes[_LOGICAL_KERNEL_ATTR] = (
+                    ttl_dialect.LogicalKernelAttr.get(
+                        ctx,
+                        ir_kind,
+                        identity,
+                        operation_identity,
+                        implicit_role,
+                    )
+                )
 
             # Collect source info for error reporting
             if hasattr(ct, "source_file") and hasattr(ct, "source_lines"):
