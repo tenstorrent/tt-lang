@@ -39,7 +39,14 @@ atexit.register(_cleanup_temp_kernel_files)
 
 # Add test root to path for shared utilities.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from ttlang_test_utils import is_hardware_available, is_ttnn_available
+from ttlang_test_utils import (
+    is_hardware_available,
+    is_ttnn_available,
+    pin_xdist_worker_to_device,
+)
+
+
+pin_xdist_worker_to_device()
 
 # =============================================================================
 # Feature detection
@@ -49,12 +56,9 @@ _ttnn_available = is_ttnn_available()
 _hardware_available = is_hardware_available()
 _ttnn_import_failed = False  # Set True after first failed import to prevent nanobind re-registration crash
 
-# Lit tests that should not be collected by pytest (they have # RUN: directives)
+# Helper modules pytest must not collect as tests.
 collect_ignore = [
     "conftest.py",
-    "test_ttnn_interop_add.py",
-    "test_dram_interleaved_add.py",
-    "test_large_dram_streaming.py",
     "utils.py",
 ]
 
@@ -74,6 +78,11 @@ def pytest_configure(config):
     config.addinivalue_line(
         "markers", "requires_device: skip test if no TT device is available"
     )
+    config.addinivalue_line(
+        "markers",
+        "multi_device: needs a fabric mesh; excluded from the "
+        "per-chip parallel run and executed serially",
+    )
 
 
 # =============================================================================
@@ -83,7 +92,7 @@ def pytest_configure(config):
 
 @pytest.fixture
 def ttnn_device():
-    """Fixture that provides a TTNN device, skipping if unavailable."""
+    """Provide an isolated TTNN device using WORKER dispatch."""
     global _ttnn_import_failed
     if not _ttnn_available or _ttnn_import_failed:
         pytest.skip("TTNN not available")
@@ -96,7 +105,13 @@ def ttnn_device():
         _ttnn_import_failed = True
         raise
 
-    device = ttnn.open_device(device_id=0)
+    if os.environ.get("TT_METAL_SIMULATOR"):
+        device = ttnn.open_device(device_id=0)
+    else:
+        dispatch_core_config = ttnn.DispatchCoreConfig(ttnn.DispatchCoreType.WORKER)
+        device = ttnn.open_device(
+            device_id=0, dispatch_core_config=dispatch_core_config
+        )
     yield device
     ttnn.close_device(device)
 
@@ -109,8 +124,7 @@ def seed_rng():
     torch.manual_seed(42)
 
 
-# Alias for convenience - most tests use 'device' as the fixture name
 @pytest.fixture
 def device(ttnn_device):
-    """Alias for ttnn_device fixture."""
+    """Alias for the isolated TTNN device fixture."""
     return ttnn_device

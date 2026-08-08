@@ -37,6 +37,28 @@ def TTL_PipeTransferKind : I32EnumAttr<
   let genSpecializedAttr = 0;
 }
 
+def TTL_ExternalTemplateArgKind_SignedInteger :
+    I32EnumAttrCase<"SignedInteger", 0, "signed_integer">;
+def TTL_ExternalTemplateArgKind_Boolean :
+    I32EnumAttrCase<"Boolean", 1, "boolean">;
+def TTL_ExternalTemplateArgKind_UnsignedInteger :
+    I32EnumAttrCase<"UnsignedInteger", 2, "unsigned_integer">;
+def TTL_ExternalTemplateArgKind_DFBIndex :
+    I32EnumAttrCase<"DFBIndex", 3, "dfb_index">;
+def TTL_ExternalTemplateArgKind_DFBDescriptor :
+    I32EnumAttrCase<"DFBDescriptor", 4, "dfb_descriptor">;
+
+def TTL_ExternalTemplateArgKind : I32EnumAttr<
+    "ExternalTemplateArgKind", "External function template argument kind",
+    [TTL_ExternalTemplateArgKind_SignedInteger,
+     TTL_ExternalTemplateArgKind_Boolean,
+     TTL_ExternalTemplateArgKind_UnsignedInteger,
+     TTL_ExternalTemplateArgKind_DFBIndex,
+     TTL_ExternalTemplateArgKind_DFBDescriptor]> {
+  let cppNamespace = "::mlir::tt::ttl";
+  let genSpecializedAttr = 0;
+}
+
 def TTL_BcastType_Col    : I32EnumAttrCase<"Col",    1, "col">;
 def TTL_BcastType_Row    : I32EnumAttrCase<"Row",    2, "row">;
 def TTL_BcastType_Scalar : I32EnumAttrCase<"Scalar", 3, "scalar">;
@@ -55,6 +77,38 @@ def TTL_ReduceType_Max : I32EnumAttrCase<"Max", 1, "max">;
 
 def TTL_ReduceType : I32EnumAttr<"ReduceType", "TTL reduction function type",
     [TTL_ReduceType_Sum, TTL_ReduceType_Max]> {
+  let cppNamespace = "::mlir::tt::ttl";
+}
+
+def TTL_AccumulationInitialMode_Overwrite
+    : I32EnumAttrCase<"Overwrite", 0, "overwrite">;
+def TTL_AccumulationInitialMode_AccumulateExisting
+    : I32EnumAttrCase<"AccumulateExisting", 1, "accumulate_existing">;
+def TTL_AccumulationInitialMode_Init : I32EnumAttrCase<"Init", 2, "init">;
+
+def TTL_AccumulationInitialMode : I32EnumAttr<"AccumulationInitialMode",
+    "TTL accumulation initial-value mode",
+    [TTL_AccumulationInitialMode_Overwrite,
+     TTL_AccumulationInitialMode_AccumulateExisting,
+     TTL_AccumulationInitialMode_Init]> {
+        let cppNamespace = "::mlir::tt::ttl";
+}
+
+//===----------------------------------------------------------------------===//
+// Exp input clamping
+//===----------------------------------------------------------------------===//
+
+// Controls whether the (approximate) exp clamps very negative inputs before
+// the SFPU evaluation. Underlying values match tt-metal's ckernel::InputClamping
+// and the TTKernel InputClamping enum so the lowering can forward by value:
+//   None (0): no clamp -- faster, but inputs below ~-88.5 produce incorrect
+//             outputs (guaranteed negative; consider packer ReLU).
+//   ClampToNegative (1): clamp very negative inputs -- safer, slightly slower.
+def TTL_InputClamping_None            : I32EnumAttrCase<"None",            0, "none">;
+def TTL_InputClamping_ClampToNegative : I32EnumAttrCase<"ClampToNegative", 1, "clamp_to_negative">;
+
+def TTL_InputClamping : I32EnumAttr<"InputClamping", "TTL exp input clamping mode",
+    [TTL_InputClamping_None, TTL_InputClamping_ClampToNegative]> {
   let cppNamespace = "::mlir::tt::ttl";
 }
 
@@ -85,6 +139,18 @@ def TTL_TensorMemoryLayout : I32EnumAttr<
      TTL_TensorMemoryLayout_HeightSharded, TTL_TensorMemoryLayout_WidthSharded,
      TTL_TensorMemoryLayout_BlockSharded]> {
   let cppNamespace = "::mlir::tt::ttl";
+}
+
+def TTL_TileExecutionStrategy_FPU :
+    I32EnumAttrCase<"FPU", 0, "fpu">;
+def TTL_TileExecutionStrategy_SFPU :
+    I32EnumAttrCase<"SFPU", 1, "sfpu">;
+
+def TTL_TileExecutionStrategy : I32EnumAttr<
+    "TileExecutionStrategy", "tile execution strategy",
+    [TTL_TileExecutionStrategy_FPU, TTL_TileExecutionStrategy_SFPU]> {
+  let cppNamespace = "::mlir::tt::ttl";
+  let genSpecializedAttr = 0;
 }
 
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSENUMS_TD

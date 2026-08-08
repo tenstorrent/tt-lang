@@ -57,7 +57,7 @@ def __tutorial_operation(
     # Assumes the tensor is evenly divisible by the grid size.
 
     rows_per_node = a.shape[0] // TILE_SIZE // row_tiles_per_block // grid_rows
-    cols_per_node = a.shape[1] // TILE_SIZE // col_tiles_per_block // grid_rows
+    cols_per_node = a.shape[1] // TILE_SIZE // col_tiles_per_block // grid_cols
 
     a_dfb = ttl.make_dataflow_buffer_like(
         a, shape=(row_tiles_per_block, col_tiles_per_block), block_count=2

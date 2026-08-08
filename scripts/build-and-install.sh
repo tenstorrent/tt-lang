@@ -10,7 +10,9 @@
 # Modes (mutually exclusive):
 #   (default)              Full pipeline: configure + install tt-metal + build + install + finalize
 #   --toolchain-only       Configure only (LLVM + tt-metal) + finalize; no tt-lang build
-#   --llvm-toolchain-only  Configure only (LLVM) + finalize using an external tt-metal; no tt-lang build
+#   --llvm-toolchain-only  Configure and finalize LLVM only; no tt-lang build
+#   --ttmetal-toolchain-only
+#                          Configure and finalize tt-metal only; no tt-lang build
 #   --configure-only       Configure only; keep build dirs for downstream steps
 #   --install-ttmetal      Install tt-metal artifacts from build dir into toolchain
 #   --build-and-install    Build tt-lang + install (assumes configure already ran)
@@ -22,8 +24,6 @@
 #   --rebuild-ttmetal             Rebuild tt-metal from submodule while keeping LLVM
 #                                 from the toolchain (sets -DTTLANG_USE_TOOLCHAIN_TTMETAL=OFF)
 #   --remove-build-dir            Remove CMAKE_BINARY_DIR after finalize (for Docker builds)
-#   --accept-ttmetal-mismatch     Pass -DTTLANG_ACCEPT_TTMETAL_MISMATCH=ON to cmake
-#                                 configure to bypass the tt-metal SHA verification
 #   --external-tt-metal-dir <path>
 #                                 Use an existing tt-metal source or install tree
 #   --external-tt-metal-build-dir <path>
@@ -36,13 +36,16 @@
 #                                 (pypi, external, or bundled)
 #
 # Typical multi-stage usage (build outside Docker, copy results in):
-#   1. build-and-install.sh --configure-only               # Build LLVM + tt-metal
-#   2. build-and-install.sh --install-ttmetal              # Install tt-metal into toolchain
-#   3. cp -a toolchain/ ird-toolchain/                     # Save ird toolchain
-#   4. build-and-install.sh --build-and-install            # Build + install tt-lang
-#   5. build-and-install.sh --finalize --remove-build-dir  # Normalize + cleanup
+#   1. build-and-install.sh --configure-only               # Build and install toolchain components
+#   2. cp -a toolchain/ ird-toolchain/                     # Save ird toolchain
+#   3. build-and-install.sh --build-and-install            # Build + install tt-lang
+#   4. build-and-install.sh --finalize --remove-build-dir  # Normalize + cleanup
 
-set -e
+set -Eeo pipefail
+
+# Fail loudly and non-zero on any error -- inside functions (-E) and pipelines
+# (pipefail) too -- so a failure is never reported as success.
+trap 'rc=$?; echo "ERROR: build-and-install.sh failed (exit $rc) at: ${BASH_COMMAND}" >&2; exit $rc' ERR
 
 # When running inside a Docker container with volume-mounted repos, git
 # will refuse to operate due to ownership mismatch ("dubious ownership").
@@ -58,7 +61,6 @@ MODE="full"
 REMOVE_BUILD_DIR=false
 FORCE_REBUILD=false
 REBUILD_TTMETAL=false
-ACCEPT_TTMETAL_MISMATCH=false
 PYTHON_EXECUTABLE=""
 PYTHON_VENV=""
 EXTERNAL_TT_METAL_DIR=""
@@ -73,6 +75,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --llvm-toolchain-only)
             MODE="llvm-toolchain-only"
+            shift
+            ;;
+        --ttmetal-toolchain-only)
+            MODE="ttmetal-toolchain-only"
             shift
             ;;
         --configure-only)
@@ -105,10 +111,6 @@ while [[ $# -gt 0 ]]; do
             ;;
         --remove-build-dir)
             REMOVE_BUILD_DIR=true
-            shift
-            ;;
-        --accept-ttmetal-mismatch)
-            ACCEPT_TTMETAL_MISMATCH=true
             shift
             ;;
         --external-tt-metal-dir)
@@ -163,11 +165,6 @@ if [ -n "$EXTERNAL_TT_METAL_BUILD_DIR" ] && [ -z "$EXTERNAL_TT_METAL_DIR" ]; the
     exit 1
 fi
 
-if [ "$MODE" = "llvm-toolchain-only" ] && [ -z "$EXTERNAL_TT_METAL_DIR" ]; then
-    echo "ERROR: --llvm-toolchain-only requires --external-tt-metal-dir" >&2
-    exit 1
-fi
-
 if [ -n "$TTNN_DEP_MODE" ]; then
     case "$TTNN_DEP_MODE" in
         pypi | external | bundled)
@@ -181,7 +178,9 @@ if [ -n "$TTNN_DEP_MODE" ]; then
 fi
 
 TTLANG_TOOLCHAIN_DIR="${TTLANG_TOOLCHAIN_DIR:-/opt/ttlang-toolchain}"
-if [ "$MODE" = "toolchain-only" ] || [ "$MODE" = "llvm-toolchain-only" ]; then
+if [ "$MODE" = "toolchain-only" ] ||
+    [ "$MODE" = "llvm-toolchain-only" ] ||
+    [ "$MODE" = "ttmetal-toolchain-only" ]; then
     CMAKE_BINARY_DIR="${CMAKE_BINARY_DIR:-build-toolchain}"
 else
     CMAKE_BINARY_DIR="${CMAKE_BINARY_DIR:-build}"
@@ -204,21 +203,12 @@ do_configure() {
         _use_toolchain=OFF
     fi
 
-    if [ "$MODE" = "llvm-toolchain-only" ]; then
-        _build_toolchain=OFF
-    fi
-
     # Per-component override: rebuild tt-metal from submodule while still
     # consuming LLVM from the toolchain. Defaults to TTLANG_USE_TOOLCHAIN
     # unless --rebuild-ttmetal sets it to OFF.
     local _use_toolchain_ttmetal=$_use_toolchain
     if [ "$REBUILD_TTMETAL" = true ]; then
         _use_toolchain_ttmetal=OFF
-    fi
-
-    local _accept_ttmetal_mismatch=OFF
-    if [ "$ACCEPT_TTMETAL_MISMATCH" = true ]; then
-        _accept_ttmetal_mismatch=ON
     fi
 
     local _python_args=()
@@ -237,21 +227,33 @@ do_configure() {
         _external_ttmetal_args+=("-DTTLANG_EXTERNAL_TT_METAL_BUILD_DIR=$EXTERNAL_TT_METAL_BUILD_DIR")
     fi
 
+    local _toolchain_component=all
+    if [ "$MODE" = "llvm-toolchain-only" ]; then
+        _toolchain_component=llvm
+    elif [ "$MODE" = "ttmetal-toolchain-only" ]; then
+        _toolchain_component=tt-metal
+    fi
+
     cmake -G Ninja -B "$CMAKE_BINARY_DIR" \
         -DCMAKE_BUILD_TYPE=Release \
         -DTTLANG_USE_TOOLCHAIN=$_use_toolchain \
         -DTTLANG_USE_TOOLCHAIN_TTMETAL=$_use_toolchain_ttmetal \
-        -DTTLANG_TOOLCHAIN_DIR=$TTLANG_TOOLCHAIN_DIR \
-        -DTTLANG_PYTHON_VENV=$TTLANG_TOOLCHAIN_DIR/venv \
+        "-DTTLANG_TOOLCHAIN_DIR=$TTLANG_TOOLCHAIN_DIR" \
+        "-DTTLANG_PYTHON_VENV=$TTLANG_TOOLCHAIN_DIR/venv" \
         -DTTLANG_ENABLE_PERF_TRACE=ON \
         -DTTLANG_FORCE_TOOLCHAIN_REBUILD=$_force_rebuild \
         -DTTLANG_BUILD_TOOLCHAIN=$_build_toolchain \
-        -DTTLANG_ACCEPT_TTMETAL_MISMATCH=$_accept_ttmetal_mismatch \
+        -DTTLANG_TOOLCHAIN_COMPONENT=$_toolchain_component \
         "${_external_ttmetal_args[@]}" \
         "${_python_args[@]}"
 
     echo "=== Disk space after configure ==="
-    df -BM
+    df -h
+
+    if [ "$MODE" = "llvm-toolchain-only" ] ||
+        [ "$MODE" = "ttmetal-toolchain-only" ]; then
+        return
+    fi
 
     source "$CMAKE_BINARY_DIR/env/activate"
 
@@ -276,7 +278,7 @@ do_build_and_install() {
     cmake --build "$CMAKE_BINARY_DIR"
 
     echo "=== Disk space after build ==="
-    df -BM
+    df -h
 
     echo "=== Installing tt-lang ==="
     cmake --install "$CMAKE_BINARY_DIR" --prefix "$TTLANG_TOOLCHAIN_DIR"
@@ -284,21 +286,28 @@ do_build_and_install() {
 
 # ---- Finalize (normalize toolchain + cleanup) ----
 do_finalize() {
-    echo "=== Normalizing and cleaning up toolchain ==="
-    if [ -f /tmp/normalize-toolchain-install.sh ]; then
-        bash /tmp/normalize-toolchain-install.sh "$TTLANG_TOOLCHAIN_DIR"
-    elif [ -f .github/scripts/normalize-toolchain-install.sh ]; then
-        bash .github/scripts/normalize-toolchain-install.sh "$TTLANG_TOOLCHAIN_DIR"
-    fi
+    # Normalize (relocatable packaging) + cleanup (stubbing binaries to slim
+    # Docker images) are Linux-CI artifact steps: they need GNU coreutils/bash 4
+    # and would gut a local in-place toolchain. Only run them on Linux.
+    if [ "$(uname -s)" = "Linux" ]; then
+        echo "=== Normalizing and cleaning up toolchain ==="
+        if [ -f /tmp/normalize-toolchain-install.sh ]; then
+            bash /tmp/normalize-toolchain-install.sh "$TTLANG_TOOLCHAIN_DIR"
+        elif [ -f .github/scripts/normalize-toolchain-install.sh ]; then
+            bash .github/scripts/normalize-toolchain-install.sh "$TTLANG_TOOLCHAIN_DIR"
+        fi
 
-    if [ -f /tmp/cleanup-toolchain.sh ]; then
-        bash /tmp/cleanup-toolchain.sh "$TTLANG_TOOLCHAIN_DIR"
-    elif [ -f .github/containers/cleanup-toolchain.sh ]; then
-        bash .github/containers/cleanup-toolchain.sh "$TTLANG_TOOLCHAIN_DIR"
-    fi
+        if [ -f /tmp/cleanup-toolchain.sh ]; then
+            bash /tmp/cleanup-toolchain.sh "$TTLANG_TOOLCHAIN_DIR"
+        elif [ -f .github/containers/cleanup-toolchain.sh ]; then
+            bash .github/containers/cleanup-toolchain.sh "$TTLANG_TOOLCHAIN_DIR"
+        fi
 
-    # Clean up temp scripts
-    rm -f /tmp/normalize-toolchain-install.sh /tmp/cleanup-toolchain.sh
+        # Clean up temp scripts
+        rm -f /tmp/normalize-toolchain-install.sh /tmp/cleanup-toolchain.sh
+    else
+        echo "=== Skipping toolchain normalize/cleanup on $(uname -s) (Linux-CI packaging only; toolchain used in place) ==="
+    fi
 
     if [ "$REMOVE_BUILD_DIR" = true ]; then
         echo "=== Removing build directory: $CMAKE_BINARY_DIR ==="
@@ -306,7 +315,7 @@ do_finalize() {
     fi
 
     echo "=== Disk space after cleanup ==="
-    df -BM
+    df -h
 }
 
 # ---- Test toolchain (separate build using installed toolchain) ----
@@ -343,24 +352,12 @@ do_test_toolchain() {
 case "$MODE" in
     full)
         do_configure
-        # Only install tt-metal into the toolchain when we actually built it
-        # from submodule. With TTLANG_USE_TOOLCHAIN_TTMETAL=ON (the default
-        # when a toolchain copy exists), BuildTTMetal.cmake skips the build
-        # and there is nothing in $CMAKE_BINARY_DIR/tt-metal to install.
-        if [ "$REBUILD_TTMETAL" = true ] || [ "$FORCE_REBUILD" = true ]; then
-            do_install_ttmetal
-        fi
         do_build_and_install
         do_finalize
         echo "=== Build complete ==="
         ;;
     toolchain-only)
         do_configure
-        if [ "$REBUILD_TTMETAL" = true ] || [ "$FORCE_REBUILD" = true ]; then
-            do_install_ttmetal
-        else
-            echo "=== Skipping tt-metal install: not rebuilt (pass --rebuild-ttmetal or --force-rebuild to install) ==="
-        fi
         do_finalize
         echo "=== Toolchain build complete ==="
         ;;
@@ -368,6 +365,11 @@ case "$MODE" in
         do_configure
         do_finalize
         echo "=== LLVM toolchain build complete ==="
+        ;;
+    ttmetal-toolchain-only)
+        do_configure
+        do_finalize
+        echo "=== tt-metal toolchain build complete ==="
         ;;
     configure-only)
         do_configure

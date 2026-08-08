@@ -27,6 +27,26 @@ def TTL_SliceAttr : TTL_Attr<"Slice", "slice"> {
   }];
 }
 
+def TTL_TensorBackingAttr
+    : TTL_Attr<"TensorBacking", "tensor_backing"> {
+  let summary = "Tensor storage used by a dataflow buffer";
+  let description = [{
+    Identifies a byte range in one operation tensor argument that supplies the
+    storage for a dataflow buffer. The range is relative to each launch node's
+    tensor shard. It must match the complete dataflow buffer capacity and must
+    remain valid for the complete program execution.
+  }];
+  let parameters = (ins
+    "int64_t":$tensorIndex,
+    "int64_t":$byteOffset,
+    "int64_t":$byteSize
+  );
+  let assemblyFormat = "`<` `tensor_index` `=` $tensorIndex `,`"
+                       " `byte_offset` `=` $byteOffset `,`"
+                       " `byte_size` `=` $byteSize `>`";
+  let genVerifyDecl = 1;
+}
+
 def TTL_PipeTransferKindAttr : TTL_Attr<"PipeTransferKind",
                                         "pipe_transfer_kind"> {
   let summary = "Pipe transfer kind";
@@ -39,6 +59,34 @@ def TTL_PipeTransferKindAttr : TTL_Attr<"PipeTransferKind",
     "PipeTransferKind":$value
   );
   let assemblyFormat = "`<` $value `>`";
+}
+
+def TTL_TileExecutionStrategyAttr
+    : TTL_Attr<"TileExecutionStrategy", "tile_execution_strategy"> {
+  let summary = "Selected tile execution strategy";
+  let description = [{
+    Identifies the execution strategy that defines operand routing and DST
+    behavior for a tile operation with execution-strategy alternatives.
+  }];
+  let parameters = (ins "TileExecutionStrategy":$value);
+  let assemblyFormat = "`<` $value `>`";
+}
+
+def TTL_ExternalTemplateArgAttr
+    : TTL_Attr<"ExternalTemplateArg", "external_template_arg"> {
+  let summary = "Static argument to an external C++ template";
+  let description = [{
+    Records one ordered external template argument without representing static
+    metadata as an SSA value. For DFB index and descriptor arguments, `value`
+    indexes the opaque call's `template_dfb_operands` segment. Other kinds
+    store the complete 32-bit literal payload.
+  }];
+  let parameters = (ins
+    "ExternalTemplateArgKind":$kind,
+    "int64_t":$value
+  );
+  let assemblyFormat = "`<` $kind `,` $value `>`";
+  let genVerifyDecl = 1;
 }
 
 def TTL_LayoutAttr : TTL_Attr<"Layout", "layout"> {

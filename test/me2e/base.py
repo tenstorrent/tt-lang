@@ -17,7 +17,11 @@ from pathlib import Path
 
 import pytest
 import torch
-from .config import validate_against_golden, validate_exact_mask_against_golden
+from .config import (
+    ME2E_OUTPUT_ROOT,
+    validate_against_golden,
+    validate_exact_mask_against_golden,
+)
 
 
 class ME2ETestBase:
@@ -33,10 +37,11 @@ class ME2ETestBase:
     OUTPUT_DIR: Path
 
     @pytest.fixture(scope="class", autouse=True)
-    def setup(self, request):
+    @classmethod
+    def setup(cls):
         """Initialize test class with output directory."""
-        request.cls.OUTPUT_DIR = Path(f"build/test/me2e/{request.cls.__name__}")
-        request.cls.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        cls.OUTPUT_DIR = ME2E_OUTPUT_ROOT / cls.__name__
+        cls.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     def output_file(self, name: str) -> Path:
         """Get path for intermediate file."""
@@ -158,11 +163,29 @@ class ME2ETestBase:
             # Determine thread type from metadata or name fallback.
             thread_type_str = kernel_meta.get("thread_type", "")
             if thread_type_str == "compute" or "compute" in name.lower():
+                required_config_fields = (
+                    "fp32_dest_acc_en",
+                    "dst_full_sync_en",
+                    "unpack_to_dest_fp32",
+                )
+                missing_config_fields = [
+                    field
+                    for field in required_config_fields
+                    if field not in kernel_meta
+                ]
+                if missing_config_fields:
+                    raise ValueError(
+                        f"Compute kernel '{name}' metadata is missing required "
+                        f"configuration fields: {', '.join(missing_config_fields)}"
+                    )
                 compute_kernel = KernelSpec(
                     name=name,
                     thread_type=ThreadType.COMPUTE,
                     source=source,
                     tensor_indices=tensor_indices,
+                    fp32_dest_acc_en=kernel_meta["fp32_dest_acc_en"],
+                    dst_full_sync_en=kernel_meta["dst_full_sync_en"],
+                    unpack_to_dest_fp32=kernel_meta["unpack_to_dest_fp32"],
                 )
             else:
                 noc_kernels.append(
@@ -178,7 +201,6 @@ class ME2ETestBase:
             pytest.skip("No compute kernel found in kernel files.")
 
         # Run based on arity.
-        fp32_accum = inputs[0].dtype == torch.float32
         if len(inputs) == 2:
             result = run_binary_op(
                 device=device,
@@ -187,7 +209,6 @@ class ME2ETestBase:
                 input_a=inputs[0],
                 input_b=inputs[1],
                 kernel_dir=kernel_dir,
-                enable_fp32_accumulation=fp32_accum,
             )
         else:
             result = run_unary_op(
@@ -196,7 +217,6 @@ class ME2ETestBase:
                 compute_kernel=compute_kernel,
                 input_a=inputs[0],
                 kernel_dir=kernel_dir,
-                enable_fp32_accumulation=fp32_accum,
             )
 
         # Save result for validation.

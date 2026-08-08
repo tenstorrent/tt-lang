@@ -40,6 +40,13 @@ jobs:
         run: |
           pytest test/sim/ -v -n auto
 
+      - name: Run matmul-tutorial tests (dry-run)
+        env:
+          PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/python:${{ github.workspace }}/examples
+          TTLANG_SIM_ONLY: "1"
+        run: |
+          pytest test/sim/test_examples.py --run-matmul-tutorial-dry -m matmul_tutorial -v
+
       - name: Run Python API tests under simulator
         run: |
           python test/scripts/tt-lang-sim-pytest test/python/test_elementwise_ops.py -v

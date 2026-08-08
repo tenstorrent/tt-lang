@@ -8,8 +8,8 @@
 include "ttlang/Dialect/TTL/IR/TTLBase.td"
 include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.td"
 include "ttlang/Dialect/TTL/IR/TTLOpsTypes.td"
-include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.td"
-include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.td"
+include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.td"
+include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/DestinationStyleOpInterface.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
@@ -34,16 +34,25 @@ def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
 
     - `cb_index` is the circular buffer hardware slot index (0-31).
     - `block_count` is the number of blocks (default 2 for double buffering).
+    - `dfb_id`, when present, identifies the logical dataflow buffer
+      independently of the physical slot selected by `cb_index`. Bindings in
+      different kernels with the same `dfb_id` refer to the same logical
+      buffer.
+    - `tensor_backing`, when present, binds the complete dataflow buffer
+      capacity to the specified byte range of an operation tensor argument.
+      The range is relative to the local shard on each launch node.
     Example:
 
     ```mlir
-    %cb = ttl.bind_cb {cb_index = 0 : index, block_count = 2}
-          : !ttl.cb<[1, 1], f32, 2>
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     ```
   }];
   let arguments = (ins
     IndexAttr:$cb_index,
-    DefaultValuedAttr<I64Attr, "2">:$block_count
+    DefaultValuedAttr<I64Attr, "2">:$block_count,
+    OptionalAttr<IndexAttr>:$dfb_id,
+    OptionalAttr<TTL_TensorBackingAttr>:$tensor_backing
   );
   let results = (outs TTL_CircularBuffer:$result);
   let assemblyFormat = "`{` `cb_index` `=` $cb_index `,` `block_count` `=` $block_count `}` attr-dict `:` type($result)";
@@ -133,7 +142,7 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
     encoding (transfers all tiles via loop).
 
     TODO(ttl): Add an optional TRID attribute (range 0..15) when TRID-specific
-    ttkernel noc ops are available in tt-mlir. Issue: #87.
+    TTKernel NOC ops are available. Issue: #87.
 
     Example:
 
@@ -172,7 +181,7 @@ def TTL_WaitOp : TTL_Op<"wait", [MemoryEffects<[MemRead, MemWrite]>]> {
     used.
 
     TODO(ttl): Add an optional TRID attribute (range 0..15) when TRID-specific
-    barriers are available in ttkernel (tt-mlir). Issue: #87.
+    barriers are available in TTKernel. Issue: #87.
 
     Example:
 
@@ -200,16 +209,19 @@ def TTL_WaitOp : TTL_Op<"wait", [MemoryEffects<[MemRead, MemWrite]>]> {
 // Elementwise compute operations (shared ElementWise base)
 //===----------------------------------------------------------------------===//
 
-class TTL_ElementWiseBase<string mnemonic, list<Trait> traits>
-    : TTL_Op<mnemonic, traits> {
+class TTL_ElementWiseBase<string mnemonic, string primitive,
+                          list<Trait> traits>
+    : TTL_ComputePrimitiveOp<mnemonic, primitive, traits> {
   let results = (outs AnyType:$result);
 }
 
-class TTL_ElementWiseBinary<string mnemonic, list<Trait> traits = []>
+class TTL_ElementWiseBinary<string mnemonic,
+                            string primitive = "ElementwiseBinary",
+                            list<Trait> traits = []>
     : TTL_ElementWiseBase<
-          mnemonic,
-          !listconcat(traits,
-                      [Pure, SameTypeOperands, TTL_BinaryElementwiseOpTrait])> {
+          mnemonic, primitive,
+          !listconcat(traits, [Pure, SameOperandsAndResultType,
+                               TTL_BinaryElementwiseOpTrait])> {
   let summary = "Binary elementwise operation";
   let arguments = (ins AnyType:$lhs, AnyType:$rhs);
   let assemblyFormat =
@@ -218,8 +230,9 @@ class TTL_ElementWiseBinary<string mnemonic, list<Trait> traits = []>
 
 class TTL_ElementWiseUnary<string mnemonic, list<Trait> traits = []>
     : TTL_ElementWiseBase<
-          mnemonic,
-          !listconcat(traits, [Pure, TTL_UnaryElementwiseOpTrait])> {
+          mnemonic, "ElementwiseUnary",
+          !listconcat(traits, [Pure, SameOperandsAndResultType,
+                               TTL_UnaryElementwiseOpTrait])> {
   let summary = "Unary elementwise operation";
   let arguments = (ins AnyType:$input);
   let assemblyFormat =
@@ -314,6 +327,12 @@ def TTL_ComputeOp : TTL_Op<"compute", [
     // reductions where the output shape is smaller than the iteration domain.
     int64_t getTotalIterationTiles();
 
+    /// Returns the unique formal output index whose attached DFB matches
+    /// `view`. Failure means the association is absent or ambiguous.
+    /// TODO(bnorris): Encode this association in `ttl.tile_store` and remove
+    /// DFB-based discovery. See #797.
+    FailureOr<unsigned> getOutputIndexForView(Value view);
+
     // Return whether the body contains an op of the given type.
     template <typename OpTy>
     bool containsOp() {
@@ -326,16 +345,58 @@ def TTL_ComputeOp : TTL_Op<"compute", [
 
 def TTL_YieldOp : TTL_Op<"yield", [ReturnLike, Terminator,
     ParentOneOf<["ComputeOp", "DstSectionOp", "IfSrcOp", "IfDstOp",
-                 "PipeNetScopeOp"]>]> {
+                 "PipeNetScopeOp", "AccumulationScopeOp"]>]> {
   let summary = "Terminate a TTL region body";
   let description = [{
     `ttl.yield` terminates the body of `ttl.compute`, `ttl.dst_section`,
-    `ttl.if_src`, `ttl.if_dst`, and `ttl.pipenet_scope`. It carries no
-    operands and produces no results; the trait
-    `SingleBlockImplicitTerminator` auto-inserts it.
+    `ttl.if_src`, `ttl.if_dst`, `ttl.pipenet_scope`, and
+    `ttl.accumulation_scope`. In `ttl.accumulation_scope`, it carries one
+    updated value per accumulation output. Other TTL regions use an
+    operand-less terminator.
   }];
-  let assemblyFormat = "attr-dict";
+  let arguments = (ins Variadic<AnyType>:$values);
+  let assemblyFormat = "attr-dict ($values^ `:` type($values))?";
+  let hasVerifier = 1;
   let builders = [OpBuilder<(ins), [{ /* nothing to do */ }]>];
+}
+
+//===----------------------------------------------------------------------===//
+// Accumulation scope
+//===----------------------------------------------------------------------===//
+
+def TTL_AccumulationScopeOp : TTL_Op<"accumulation_scope", [
+    AttrSizedOperandSegments,
+    SingleBlockImplicitTerminator<"YieldOp">,
+    RecursiveMemoryEffects,
+    DeclareOpInterfaceMethods<TTL_AccumulationScopeOpInterface>
+  ]> {
+  let summary = "Structured accumulation scope";
+  let description = [{
+    `ttl.accumulation_scope` records an accumulation policy for one or more
+    destination tensors. The operation does not prescribe whether the
+    accumulated value is stored in DST, a dataflow buffer, or another
+    target-specific storage mechanism.
+
+    The `initial_modes` attribute contains one entry per output. `inits`
+    contains one operand for each output whose initial mode is `init`, in output
+    order.
+
+    The body uses one block argument per output and yields one value per output.
+    This form makes
+    cross-output data dependence an SSA property: if the yielded value for one
+    output uses another output's updated value, normal SSA use-def edges encode
+    that dependency.
+  }];
+
+  let arguments = (ins
+    Variadic<AnyRankedTensor>:$outputs,
+    Variadic<AnyRankedTensor>:$inits,
+    ArrayAttr:$initial_modes
+  );
+  let regions = (region SizedRegion<1>:$body);
+
+  let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -345,7 +406,8 @@ def TTL_YieldOp : TTL_Op<"yield", [ReturnLike, Terminator,
 def TTL_DstSectionOp : TTL_Op<"dst_section", [
     SingleBlockImplicitTerminator<"YieldOp">,
     RecursiveMemoryEffects,
-    NoRegionArguments
+    NoRegionArguments,
+    DeclareOpInterfaceMethods<RegionBranchOpInterface>
   ]> {
   let summary = "DST register acquisition scope";
   let description = [{
@@ -613,12 +675,13 @@ def TTL_IfDstOp : TTL_Op<"if_dst",
 }
 
 def TTL_PipeTransferCreateOp : TTL_Op<"pipe_transfer.create", [Pure]> {
-  let summary = "Create an internal pipe transfer";
+  let summary = "Create a pipe transfer reference";
   let description = [{
-    Creates the internal transfer object for one logical pipe. The transfer
-    records the receiver-posted contract before synchronization resources are
-    assigned. A point-to-point transfer has one receiver; a collective transfer
-    has a receiver set participating in one transfer contract.
+    Creates a reference used by a pipe send or receiver post. A complete
+    transfer consists of one send and one corresponding post for each receiver.
+    The sender and receiver callbacks may use different references because each
+    constructs its pipe value independently. The attributes record the common
+    point-to-point or collective contract.
   }];
   let arguments = (ins
     TTL_Pipe:$pipe,
@@ -632,11 +695,12 @@ def TTL_PipeTransferCreateOp : TTL_Op<"pipe_transfer.create", [Pure]> {
 
 def TTL_PipeTransferPostOp : TTL_Op<"pipe_transfer.post",
     [MemoryEffects<[MemRead, MemWrite]>]> {
-  let summary = "Publish a pipe receive destination";
+  let summary = "Post a pipe receive destination";
   let description = [{
-    Publishes the receiver-owned destination DFB slot address for a pipe
-    transfer. The operation contributes to the transfer's receiver-ready count
-    and returns the token that represents receiver-side completion.
+    Registers the receiver-owned destination DFB slot for a pipe transfer and
+    returns the token that represents receiver-side completion. The selected
+    address and synchronization protocols determine whether lowering publishes
+    the address or signals sender readiness.
   }];
   let arguments = (ins
     TTL_PipeTransfer:$transfer,
@@ -644,17 +708,16 @@ def TTL_PipeTransferPostOp : TTL_Op<"pipe_transfer.post",
   );
   let results = (outs TTL_PipeToken:$token);
   let assemblyFormat = "$transfer `,` $dst attr-dict `:` functional-type(operands, results)";
-  let hasVerifier = 1;
 }
 
 def TTL_PipeTransferSendOp : TTL_Op<"pipe_transfer.send",
     [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Send a pipe transfer payload";
   let description = [{
-    Waits until the receiver-publication condition is satisfied, then writes the
-    source DFB payload to the receiver-owned destination storage and signals
-    receiver completion. The returned write handle preserves the existing
-    `ttl.wait` ordering contract for send-side code.
+    Waits until the selected synchronization condition is satisfied, then
+    writes the source DFB payload to the receiver-owned destination storage and
+    signals receiver completion. The returned write handle preserves the
+    existing `ttl.wait` ordering contract for send-side code.
   }];
   let arguments = (ins
     TTL_PipeTransfer:$transfer,
@@ -677,23 +740,23 @@ def TTL_PipeTransferWaitOp : TTL_Op<"pipe_transfer.wait",
     TTL_PipeToken:$token
   );
   let assemblyFormat = "$token attr-dict `:` type($token)";
-  let hasVerifier = 1;
 }
 
 def TTL_PipeNetScopeOp : TTL_Op<"pipenet_scope",
     [SingleBlockImplicitTerminator<"YieldOp">,
      DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
-  let summary = "Mark a DFB region that depends on PipeNet roles";
+  let summary = "Mark a DFB region restricted to PipeNet endpoints";
   let description = [{
     Marks a region whose dataflow-buffer acquire/release sequence must execute
-    only on nodes with specific PipeNet roles. The operation does not change
-    runtime behavior; it records the role contract for the enclosed region.
+    only on specified source or destination nodes of a PipeNet. The operation
+    does not change runtime behavior; it records these execution requirements
+    for the enclosed region.
 
-    Role requirements are stored in attributes:
+    The requirements are stored in parallel arrays:
 
     - `ttl.pipe_net_ids`: array of PipeNet ids.
-    - `ttl.pipe_net_roles`: array of role ids, where 0 is source and 1 is
-      destination.
+    - `ttl.pipe_net_roles`: array of endpoint selectors, where 0 is source and
+      1 is destination.
   }];
   let regions = (region SizedRegion<1>:$body);
   let assemblyFormat = "attr-dict-with-keyword $body";
@@ -762,13 +825,14 @@ def TTL_SignpostOp : TTL_Op<"signpost", []> {
 // Debug print operations
 //===----------------------------------------------------------------------===//
 
-def TTL_DPrintOp : TTL_Op<"dprint", []> {
+def TTL_DPrintOp
+    : TTL_Op<"dprint", [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Debug print from device kernel";
   let description = [{
     Emits device debug print calls. Mode determines the output format:
     - "scalar": prints format string with scalar values
     - "cb": prints CB metadata (size, limit, ptrs)
-    - "tile": prints full 32x32 tile contents from a CB
+    - "tile": prints physical tile contents from a DFB using the operand dimensions
     - "tensor": prints raw memory pages from tensor backing buffer
     - "dst": dumps live DST register slots
 
@@ -778,6 +842,10 @@ def TTL_DPrintOp : TTL_Op<"dprint", []> {
     ttl.dprint "input" (%cb) {mode = "cb"} : (!ttl.cb<...>)
     ttl.dprint "after exp" () {mode = "dst"}
     ```
+
+    Debug output is an observable side effect. Transformations must preserve
+    its order relative to tensor evaluation unless they move the print with
+    the observed computation.
   }];
 
   let arguments = (ins
@@ -797,9 +865,13 @@ def TTL_DPrintOp : TTL_Op<"dprint", []> {
 
 // Base class for tile operations
 // Note: These ops are NOT Pure because they write to DST registers.
-class TTL_TileOp<string mnemonic, list<Trait> traits = []>
-    : TTL_Op<mnemonic, !listconcat(traits, [TTL_TileComputeOpTrait,
-                                             TTL_DstAccessOpInterface])>;
+class TTL_TileOp<string mnemonic, string primitive,
+                 list<Trait> traits = []>
+    : TTL_ComputePrimitiveOp<
+          mnemonic, primitive,
+          !listconcat(traits, [TTL_TileComputeOpTrait,
+                               TTL_DstAccessOpInterface,
+                               TTL_TileExecutionOpInterface])>;
 
 def TTL_TileType : Type<
     CPred<"llvm::isa<mlir::tt::ttcore::TileType>($_self)">,
@@ -853,7 +925,8 @@ def TTL_CopyTileOp : TTL_Op<"copy_tile",
                              TTL_CBInputTileOpTrait,
                              TTL_DataMovementOpTrait,
                              TTL_DstResultOpTrait,
-                             TTL_DstAccessOpInterface]> {
+                             TTL_DstAccessOpInterface,
+                             TTL_TileExecutionOpInterface]> {
   let summary = "Copy a tile from a circular buffer into a DST register";
   let description = [{
     Performs a CB -> DST copy, matching `copy_tile_init` + `copy_tile` in the
@@ -898,7 +971,8 @@ def TTL_CopyDstOp : TTL_Op<"copy_dst",
                             MemoryEffects<[MemRead, MemWrite]>,
                             TTL_DSTInputsTrait,
                             TTL_DataMovementOpTrait,
-                            TTL_DstAccessOpInterface]> {
+                            TTL_DstAccessOpInterface,
+                            TTL_TileExecutionOpInterface]> {
   let summary = "Copy a tile from one DST register to another";
   let description = [{
     Performs DST -> DST copy for multi-consumer value preservation. Used when
@@ -926,7 +1000,8 @@ def TTL_CopyDstOp : TTL_Op<"copy_dst",
 }
 
 def TTL_DstIndexOp : TTL_Op<"dst_index",
-    [Pure, TTL_DstAccessOpInterface, AllTypesMatch<["source", "result"]>]> {
+    [Pure, TTL_DstAccessOpInterface, TTL_TileExecutionOpInterface,
+     AllTypesMatch<["source", "result"]>]> {
   let summary = "Index a tile value resident in a specific DST slot";
   let description = [{
     `ttl.dst_index` names an existing DST-resident tile at `dst_index` while
@@ -943,10 +1018,13 @@ def TTL_DstIndexOp : TTL_Op<"dst_index",
 // Common base for tile binary ops. Carries traits that hold unconditionally
 // (binary, writes to DST, all types match). Subclasses add the input-source
 // trait that reflects the op's actual hardware behavior.
-class TTL_TileBinaryOpBase<string mnemonic, list<Trait> traits = []>
-    : TTL_TileOp<mnemonic, !listconcat(traits, [TTL_TileBinaryOpTrait,
-                                                 TTL_DstResultOpTrait,
-                                                 AllTypesMatch<["lhs", "rhs", "result"]>])> {
+class TTL_TileBinaryOpBase<string mnemonic,
+                           string primitive = "ElementwiseBinary",
+                           list<Trait> traits = []>
+    : TTL_TileOp<mnemonic, primitive,
+                 !listconcat(traits, [TTL_TileBinaryOpTrait,
+                                      TTL_DstResultOpTrait,
+                                      AllTypesMatch<["lhs", "rhs", "result"]>])> {
   let summary = "Binary tile operation";
   let arguments = (ins TTL_TileType:$lhs, TTL_TileType:$rhs, Index:$dst_index);
   let results = (outs TTL_TileType:$result);
@@ -956,21 +1034,23 @@ class TTL_TileBinaryOpBase<string mnemonic, list<Trait> traits = []>
 // Always-SFPU binary tile op: reads both operands from DST unconditionally.
 // Use for ops with no FPU equivalent (div, max, min).
 class TTL_TileSfpuBinaryOp<string mnemonic, list<Trait> traits = []>
-    : TTL_TileBinaryOpBase<mnemonic, !listconcat(traits, [TTL_DSTInputsTrait])>;
+    : TTL_TileBinaryOpBase<mnemonic, "ElementwiseBinary",
+                           !listconcat(traits, [TTL_DSTInputsTrait])>;
 
-// Strategy-dependent binary tile op: input source is determined by operand
-// provenance at lowering time. add/sub/mul live here; isFPUEligibleBinaryOp
-// resolves the choice from the current IR.
-class TTL_TileStrategyDepBinaryOp<string mnemonic, list<Trait> traits = []>
-    : TTL_TileBinaryOpBase<mnemonic,
+// The selected FPU/SFPU strategy determines whether operands are consumed from
+// dataflow buffers or DST.
+class TTL_TileStrategyDepBinaryOp<string mnemonic, string primitive,
+                                  list<Trait> traits = []>
+    : TTL_TileBinaryOpBase<mnemonic, primitive,
                            !listconcat(traits,
                                        [TTL_StrategyDependentBinaryOpTrait])>;
 
 class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
-    : TTL_TileOp<mnemonic, !listconcat(traits, [TTL_TileUnaryOpTrait,
-                                                 TTL_DSTInputsTrait, TTL_InPlaceOpTrait,
-                                                 TTL_DstResultOpTrait,
-                                                 AllTypesMatch<["input", "result"]>])> {
+    : TTL_TileOp<mnemonic, "ElementwiseUnary",
+                 !listconcat(traits, [TTL_TileUnaryOpTrait,
+                                      TTL_DSTInputsTrait, TTL_InPlaceOpTrait,
+                                      TTL_DstResultOpTrait,
+                                      AllTypesMatch<["input", "result"]>])> {
   let summary = "Unary tile operation";
   let arguments = (ins TTL_TileType:$input, Index:$dst_index);
   let results = (outs TTL_TileType:$result);
@@ -981,16 +1061,17 @@ class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
 // Binary Elementwise Operations (Tensor + Tile Ops)
 //===----------------------------------------------------------------------===//
 
-// Multiclass for paired tensor + strategy-dependent tile binary ops.
-// Used by add/sub/mul, where the tile op may lower to either an FPU or
-// SFPU TTKernel form depending on operand provenance.
+// Multiclass for tensor operations paired with FPU/SFPU tile operations.
+// Add, subtract, and multiply select one tile execution strategy before DST
+// assignment.
 multiclass TTL_BinaryStrategyDepElementwisePair<string mnemonic,
                                                 string kernelOp,
+                                                string primitive,
                                                 list<Trait> opTraits = []> {
-  def Op : TTL_ElementWiseBinary<mnemonic, opTraits> {
+  def Op : TTL_ElementWiseBinary<mnemonic, primitive, opTraits> {
     let description = "Elementwise "#mnemonic#" on tensors. Lowered to ttl.compute with ttl.tile_"#mnemonic#".";
   }
-  def TileOp : TTL_TileStrategyDepBinaryOp<"tile_"#mnemonic> {
+  def TileOp : TTL_TileStrategyDepBinaryOp<"tile_"#mnemonic, primitive> {
     let description = "Tile-level "#mnemonic#". Maps to ttkernel."#kernelOp#".";
   }
 }
@@ -1008,9 +1089,9 @@ multiclass TTL_BinarySfpuElementwisePair<string mnemonic, string kernelOp,
 }
 
 // Define all binary elementwise ops using the multiclasses
-defm TTL_Add : TTL_BinaryStrategyDepElementwisePair<"add", "add_tiles">;
-defm TTL_Sub : TTL_BinaryStrategyDepElementwisePair<"sub", "sub_tiles">;
-defm TTL_Mul : TTL_BinaryStrategyDepElementwisePair<"mul", "mul_tiles",
+defm TTL_Add : TTL_BinaryStrategyDepElementwisePair<"add", "add_tiles", "Add">;
+defm TTL_Sub : TTL_BinaryStrategyDepElementwisePair<"sub", "sub_tiles", "Subtract">;
+defm TTL_Mul : TTL_BinaryStrategyDepElementwisePair<"mul", "mul_tiles", "Multiply",
     [DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>]>;
 defm TTL_Div : TTL_BinarySfpuElementwisePair<"div", "div_binary_tile">;
 defm TTL_Max : TTL_BinarySfpuElementwisePair<"max", "max_tiles",
@@ -1041,8 +1122,6 @@ multiclass TTL_UnaryElementwisePair<string mnemonic, string kernelOp> {
   }
 }
 
-// Define all unary elementwise ops using the multiclass
-defm TTL_Exp : TTL_UnaryElementwisePair<"exp", "exp_tile">;
 defm TTL_Exp2 : TTL_UnaryElementwisePair<"exp2", "exp2_tile">;
 defm TTL_Log : TTL_UnaryElementwisePair<"log", "log_tile">;
 defm TTL_Sqrt : TTL_UnaryElementwisePair<"sqrt", "sqrt_tile">;
@@ -1073,6 +1152,52 @@ defm TTL_Frac : TTL_UnaryElementwisePair<"frac", "frac_tile">;
 defm TTL_Trunc : TTL_UnaryElementwisePair<"trunc", "trunc_tile">;
 
 //===----------------------------------------------------------------------===//
+// Exp Operations (Tensor + Tile)
+//===----------------------------------------------------------------------===//
+//
+// `exp` is broken out of the generic unary multiclass because it carries
+// hardware SFPU flags that the generic ops do not. The flags are forwarded
+// unchanged from the tensor op to the tile op and then to the TTKernel
+// exp_tile / exp_tile_init ops during lowering. All flags are optional or
+// default-valued so that `ttl.exp %x` (and tile form) keep their plain
+// spelling when no flags are set.
+//
+// Flags (mirroring tt-metal ckernel::exp_tile / exp_tile_init):
+//   approx          - enable the fast approximate exp.
+//   scale           - optional scale factor `s`; when present the op computes
+//                     exp(s * x) (sets scale_en at the TTKernel level).
+//   input_clamping  - clamp behaviour for very negative inputs (only relevant
+//                     for approximate mode); defaults to ClampToNegative.
+//   iterations      - number of SFPU lane iterations (default 8).
+
+// Shared flag arguments for both the tensor and tile exp ops.
+defvar TTL_ExpFlags = (ins
+    DefaultValuedAttr<BoolAttr, "false">:$approx,
+    OptionalAttr<F32Attr>:$scale,
+    DefaultValuedAttr<TTL_InputClampingAttr,
+        "::mlir::tt::ttl::InputClamping::ClampToNegative">:$input_clamping,
+    DefaultValuedAttr<I32Attr, "8">:$iterations);
+
+def TTL_ExpOp : TTL_ElementWiseUnary<"exp"> {
+  let description = [{
+    Elementwise exp on tensors. Lowered to ttl.compute with ttl.tile_exp.
+    Carries optional hardware exp flags (approx / scale / input_clamping /
+    iterations) that are forwarded to the tile op during lowering.
+  }];
+  let arguments = !con((ins AnyType:$input), TTL_ExpFlags);
+}
+
+def TTL_ExpTileOp : TTL_TileUnaryOp<"tile_exp"> {
+  let description = [{
+    Tile-level exp. Maps to ttkernel.exp_tile. Carries the same hardware exp
+    flags as ttl.exp; they are forwarded to the TTKernel exp_tile / exp_tile_init
+    ops during conversion.
+  }];
+  let arguments = !con((ins TTL_TileType:$input, Index:$dst_index),
+                       TTL_ExpFlags);
+}
+
+//===----------------------------------------------------------------------===//
 // Typecast Operations (Tensor + Tile)
 //===----------------------------------------------------------------------===//
 //
@@ -1083,7 +1208,7 @@ defm TTL_Trunc : TTL_UnaryElementwisePair<"trunc", "trunc_tile">;
 // unary elementwise multiclass (which constrains all operand and result
 // element types to match).
 
-def TTL_TypecastOp : TTL_Op<"typecast",
+def TTL_TypecastOp : TTL_ComputePrimitiveOp<"typecast", "Typecast",
     [Pure, TTL_UnaryElementwiseOpTrait]> {
   let summary = "Elementwise typecast on tensors";
   let description = [{
@@ -1099,7 +1224,7 @@ def TTL_TypecastOp : TTL_Op<"typecast",
   let hasFolder = 1;
 }
 
-def TTL_TileTypecastOp : TTL_TileOp<"tile_typecast",
+def TTL_TileTypecastOp : TTL_TileOp<"tile_typecast", "Typecast",
     [TTL_TileUnaryOpTrait, TTL_DSTInputsTrait, TTL_InPlaceOpTrait,
      TTL_DstResultOpTrait]> {
   let summary = "Tile-level typecast operation";
@@ -1121,7 +1246,7 @@ def TTL_TileTypecastOp : TTL_TileOp<"tile_typecast",
 // Broadcast Operation
 //===----------------------------------------------------------------------===//
 
-def TTL_BlockBroadcastOp : TTL_Op<"block.broadcast", [
+def TTL_BlockBroadcastOp : TTL_ComputePrimitiveOp<"block.broadcast", "Broadcast", [Pure,
     DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>]> {
   let summary = "Broadcast a block over specified dimensions to a target shape";
   let description = [{
@@ -1153,7 +1278,8 @@ def TTL_BlockBroadcastOp : TTL_Op<"block.broadcast", [
   let hasVerifier = 1;
 }
 
-def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", [TTL_CBInputTileOpTrait, TTL_DstResultOpTrait]> {
+def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", "Broadcast",
+    [TTL_CBInputTileOpTrait, TTL_DstResultOpTrait]> {
   let summary = "Tile-level broadcast operation";
   let description = [{
     Broadcasts a row, column, or scalar tile into a full 32x32 tile.
@@ -1170,7 +1296,7 @@ def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", [TTL_CBInputTileOpTrait, TTL_DstR
 // Reduce Operation
 //===----------------------------------------------------------------------===//
 
-def TTL_ReduceOp : TTL_Op<"reduce", [Pure,
+def TTL_ReduceOp : TTL_ComputePrimitiveOp<"reduce", "Reduce", [Pure,
     DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>]> {
   let summary = "Reduce a tensor along specified dimensions with a scaling factor";
   let description = [{
@@ -1198,7 +1324,7 @@ def TTL_ReduceOp : TTL_Op<"reduce", [Pure,
   let hasVerifier = 1;
 }
 
-def TTL_TileReduceOp : TTL_TileOp<"tile_reduce",
+def TTL_TileReduceOp : TTL_TileOp<"tile_reduce", "Reduce",
     [TTL_CBInputTileOpTrait, TTL_AccumulatingOpTrait, TTL_DstResultOpTrait]> {
   let summary = "Tile-level reduction with scaling";
   let description = [{
@@ -1221,7 +1347,7 @@ def TTL_TileReduceOp : TTL_TileOp<"tile_reduce",
 // Transpose Operation
 //===----------------------------------------------------------------------===//
 
-def TTL_TransposeOp : TTL_Op<"transpose", [Pure,
+def TTL_TransposeOp : TTL_ComputePrimitiveOp<"transpose", "Transpose", [Pure,
     DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>]> {
   let summary = "Transpose a 2D tensor of tiles";
   let description = [{
@@ -1235,7 +1361,8 @@ def TTL_TransposeOp : TTL_Op<"transpose", [Pure,
   let hasVerifier = 1;
 }
 
-def TTL_TileTransposeOp : TTL_TileOp<"tile_transpose", [TTL_CBInputTileOpTrait, TTL_DstResultOpTrait]> {
+def TTL_TileTransposeOp : TTL_TileOp<"tile_transpose", "Transpose",
+    [TTL_CBInputTileOpTrait, TTL_DstResultOpTrait]> {
   let summary = "Tile-level 32x32 transpose (dataflow buffer input, DST output)";
   let description = [{
     Transposes a 32x32 tile from a dataflow buffer and writes the result
@@ -1252,7 +1379,7 @@ def TTL_TileTransposeOp : TTL_TileOp<"tile_transpose", [TTL_CBInputTileOpTrait, 
 // Fill Operation
 //===----------------------------------------------------------------------===//
 
-def TTL_FillOp : TTL_Op<"fill", [Pure]> {
+def TTL_FillOp : TTL_ComputePrimitiveOp<"fill", "Fill", [Pure]> {
   let summary = "Fill a tensor with a constant value";
   let description = [{
     Fills all elements of a tensor with the given f32 value.
@@ -1264,7 +1391,8 @@ def TTL_FillOp : TTL_Op<"fill", [Pure]> {
   let hasVerifier = 1;
 }
 
-def TTL_TileFillOp : TTL_TileOp<"tile_fill", [TTL_DstResultOpTrait]> {
+def TTL_TileFillOp : TTL_TileOp<"tile_fill", "Fill",
+    [TTL_DstResultOpTrait]> {
   let summary = "Tile-level fill operation";
   let description = [{
     Fills a DST register tile with a constant f32 value.
@@ -1276,6 +1404,7 @@ def TTL_TileFillOp : TTL_TileOp<"tile_fill", [TTL_DstResultOpTrait]> {
 }
 
 def TTL_TileMulUnaryConstOp : TTL_TileOp<"tile_mul_unary_const",
+    "MultiplyByConstant",
     [TTL_TileUnaryOpTrait, TTL_DSTInputsTrait, TTL_InPlaceOpTrait,
      TTL_DstResultOpTrait, AllTypesMatch<["input", "result"]>]> {
   let summary = "Tile-level multiply by a compile-time scalar constant";
@@ -1291,7 +1420,8 @@ def TTL_TileMulUnaryConstOp : TTL_TileOp<"tile_mul_unary_const",
       "type($input) `->` type($result)";
 }
 
-def TTL_MulUnaryConstOp : TTL_Op<"mul_unary_const",
+def TTL_MulUnaryConstOp : TTL_ComputePrimitiveOp<
+    "mul_unary_const", "MultiplyByConstant",
     [Pure, TTL_UnaryElementwiseOpTrait,
      DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>,
      AllTypesMatch<["input", "result"]>]> {
@@ -1310,7 +1440,7 @@ def TTL_MulUnaryConstOp : TTL_Op<"mul_unary_const",
 // Matrix Multiplication
 //===----------------------------------------------------------------------===//
 
-def TTL_MatmulOp : TTL_Op<"matmul", [Pure,
+def TTL_MatmulOp : TTL_ComputePrimitiveOp<"matmul", "Matmul", [Pure,
     DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>]> {
   let summary = "Matrix multiply two tensors of tiles";
   let description = [{
@@ -1319,16 +1449,26 @@ def TTL_MatmulOp : TTL_Op<"matmul", [Pure,
     must match: lhs.shape[1] == rhs.shape[0]. Result shape is
     [lhs.shape[0], rhs.shape[1]].
 
-    Lowered to ttl.compute with ttl.tile_matmul_block by convert-ttl-to-compute.
+    When the optional `transpose_rhs` unit attribute is set, `rhs` is the
+    transpose of B and stored as [N, K]: result[i, j] = sum_k(lhs[i, k] *
+    rhs[j, k]). The inner (K) dimensions then match as lhs.shape[1] ==
+    rhs.shape[1], and the result shape is [lhs.shape[0], rhs.shape[0]].
+
+    Operand tile dimensions follow the same matrix relation. Without
+    `transpose_rhs`, `lhs.tile.width == rhs.tile.height` and the result tile is
+    `[lhs.tile.height, rhs.tile.width]`. With `transpose_rhs`, the rhs tile
+    width is contracted and the result tile width is the rhs tile height.
+    Operand and result tile element data types must match.
   }];
-  let arguments = (ins AnyRankedTensor:$lhs, AnyRankedTensor:$rhs);
+  let arguments = (ins AnyRankedTensor:$lhs, AnyRankedTensor:$rhs,
+                       UnitAttr:$transpose_rhs);
   let results = (outs AnyRankedTensor:$result);
   let assemblyFormat =
       "$lhs `,` $rhs attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)";
   let hasVerifier = 1;
 }
 
-def TTL_TileMatmulBlockOp : TTL_TileOp<"tile_matmul_block",
+def TTL_TileMatmulBlockOp : TTL_TileOp<"tile_matmul_block", "Matmul",
     [TTL_CBInputTileOpTrait, TTL_DstResultOpTrait]> {
   let summary = "Block-level matrix multiply-accumulate (CB inputs, DST output)";
   let description = [{
@@ -1342,16 +1482,25 @@ def TTL_TileMatmulBlockOp : TTL_TileOp<"tile_matmul_block",
     accumulator + lhs @ rhs, exploiting matmul_block's additive
     accumulation to eliminate an explicit add.
 
-    Maps to ttkernel.mm_block_init + ttkernel.experimental::matmul_block.
+    When the optional `transpose_rhs` unit attribute is set, the B operand
+    is the transpose of the multiplicand and stored as [N, K]; the attribute
+    is forwarded to matmul_block's transpose argument and selects the
+    transposed per-K addressing during TTKernel lowering.
+
+    Maps to ttkernel.mm_block_init + ttkernel.matmul_block.
+
+    The lhs, rhs, and result tile types may have different dimensions. Their
+    physical dimensions follow the same contraction relation as `ttl.matmul`.
   }];
   let arguments = (ins TTL_TileOrTensor:$lhs, TTL_TileOrTensor:$rhs,
                        Optional<TTL_TileOrTensor>:$accumulator,
-                       Index:$dst_index);
+                       Index:$dst_index, UnitAttr:$transpose_rhs);
   let results = (outs TTL_TileOrTensor:$result);
   let assemblyFormat = [{
     $lhs `,` $rhs (`,` $accumulator^)? `into` `dst` `[` $dst_index `]` attr-dict `:`
     type($lhs) `,` type($rhs) (`,` type($accumulator)^)? `->` type($result)
   }];
+  let hasVerifier = 1;
 }
 
 // Circular buffer synchronization operations
@@ -1379,7 +1528,7 @@ def TTL_CBReserveOp : TTL_Op<"cb_reserve",
   }];
   let arguments = (ins
     TTL_CircularBuffer:$cb,
-    OptionalAttr<I64Attr>:$num_tiles
+    ConfinedAttr<OptionalAttr<I64Attr>, [IntPositive]>:$num_tiles
   );
   let results = (outs AnyRankedTensor:$result);
   let assemblyFormat = "$cb attr-dict `:` type($cb) `->` type($result)";
@@ -1406,7 +1555,7 @@ def TTL_CBPushOp : TTL_Op<"cb_push", [MemoryEffects<[MemWrite]>]> {
   }];
   let arguments = (ins
     TTL_CircularBuffer:$cb,
-    OptionalAttr<I64Attr>:$num_tiles
+    ConfinedAttr<OptionalAttr<I64Attr>, [IntPositive]>:$num_tiles
   );
   let assemblyFormat = "$cb attr-dict `:` type($cb)";
   let hasVerifier = 1;
@@ -1434,7 +1583,7 @@ def TTL_CBWaitOp : TTL_Op<"cb_wait",
   }];
   let arguments = (ins
     TTL_CircularBuffer:$cb,
-    OptionalAttr<I64Attr>:$num_tiles
+    ConfinedAttr<OptionalAttr<I64Attr>, [IntPositive]>:$num_tiles
   );
   let results = (outs AnyRankedTensor:$result);
   let assemblyFormat = "$cb attr-dict `:` type($cb) `->` type($result)";
@@ -1462,13 +1611,14 @@ def TTL_CBPopOp : TTL_Op<"cb_pop", [MemoryEffects<[MemWrite]>]> {
   }];
   let arguments = (ins
     TTL_CircularBuffer:$cb,
-    OptionalAttr<I64Attr>:$num_tiles
+    ConfinedAttr<OptionalAttr<I64Attr>, [IntPositive]>:$num_tiles
   );
   let assemblyFormat = "$cb attr-dict `:` type($cb)";
   let hasVerifier = 1;
 }
 
-def TTL_StoreOp : TTL_Op<"store", [MemoryEffects<[MemWrite]>]> {
+def TTL_StoreOp : TTL_ComputePrimitiveOp<"store", "Passthrough",
+    [MemoryEffects<[MemWrite]>]> {
   let summary = "Store a tensor to a circular buffer reserve view";
   let description = [{
     `ttl.store` represents the user's intent to store a computed tensor into
@@ -1569,9 +1719,125 @@ def TTL_RawElementWriteOp : TTL_Op<"raw_element_write",
   let hasVerifier = 1;
 }
 
-def TTL_TileStoreOp : TTL_Op<"tile_store",
+//===----------------------------------------------------------------------===//
+// Tensor raw address
+//===----------------------------------------------------------------------===//
+
+def TTL_RawAddrOp : TTL_Op<"raw_addr", [Pure]> {
+  let summary = "Get raw i32 base address for a tensor argument";
+  let description = [{
+    `ttl.raw_addr` returns the raw 32-bit base address associated with a
+    tensor function argument. This bypasses TensorAccessor materialization and
+    is intended for external-function interop where a raw pointer/address is
+    required.
+
+    Every kernel that references the tensor receives its buffer base as a common
+    runtime argument. Unlike a tensor operand to `ttl.opaque_call`, this op does
+    not materialize a `TensorAccessor` or require its compile-time arguments.
+    Slice/view operands are unsupported.
+  }];
+  let arguments = (ins TTLLayoutTensor:$tensor);
+  let results = (outs I32:$result);
+  let assemblyFormat = "$tensor attr-dict `:` type($tensor) `->` type($result)";
+  let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
+// External function call (opaque)
+//===----------------------------------------------------------------------===//
+
+def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
+    [MemoryEffects<[MemRead, MemWrite]>, AttrSizedOperandSegments]> {
+  let summary = "Call an external C/C++ function by name";
+  let description = [{
+    `ttl.opaque_call` emits a call to an external C/C++ function whose
+    declaration is provided by a user-specified header file. The callee
+    name and header path are string attributes; the call is opaque to the
+    compiler (no inlining, no type checking of the foreign signature).
+
+    The `header` attribute specifies the path to the C/C++ header that
+    declares the callee. The lowering pass emits a `#include` directive
+    for this header in the generated kernel source.
+
+    The ordered `template_args` attributes become C++ template arguments.
+    Scalar entries contain their complete compile-time payload. DFB index and
+    descriptor entries reference `template_dfb_operands` by position, which
+    preserves DFB identity until allocation is finalized without representing
+    scalar metadata as SSA values.
+
+    The `arg_operands` are forwarded as function arguments to the callee. A
+    DFB operand declares that the callee may access that logical DFB from call
+    entry through call completion; storage liveness does not distinguish reads
+    from writes. Every DFB accessed by the callee or a transitive helper must
+    appear as a DFB operand, and all synchronous and asynchronous accesses must
+    complete before the call returns. This external-code contract is assumed
+    because the compiler does not inspect the C++ body.
+
+    `unsigned_arg_indices` identifies signless i32 operands that represent
+    unsigned addresses at the C++ boundary. The lowering inserts explicit
+    unsigned casts so overload resolution and parameter conversion do not
+    depend on an incidental signed intermediate type.
+
+    A DFB descriptor entry is itself a direct DFB dependency. A DFB index entry
+    does not declare a call-level DFB access. If the callee uses that index to
+    access storage, the same DFB must also appear in `arg_operands`.
+
+    Results are optional; when absent the call is treated as a void function
+    invocation.
+
+    Example:
+    ```mlir
+    ttl.opaque_call "my_func" () {header = "my_header.hpp"} : () -> ()
+    ttl.opaque_call "add_vals" template_args [
+        #ttl.external_template_arg<signed_integer, 1>,
+        #ttl.external_template_arg<signed_integer, 2>]
+        (%a, %b) {header = "math_utils.hpp"} : (i64, i64) -> ()
+    ```
+  }];
+  let arguments = (ins
+    StrAttr:$callee,
+    StrAttr:$header,
+    Variadic<AnyType>:$arg_operands,
+    Variadic<TTL_CircularBuffer>:$template_dfb_operands,
+    OptionalAttr<ArrayAttr>:$template_args,
+    OptionalAttr<DenseI32ArrayAttr>:$unsigned_arg_indices
+  );
+  let results = (outs Variadic<AnyType>);
+  let assemblyFormat = [{
+    $callee (`template_args` $template_args^)?
+    (`template_dfbs` `(` $template_dfb_operands^ `:`
+     type($template_dfb_operands) `)`)?
+    `(` $arg_operands `)` attr-dict `:`
+    functional-type($arg_operands, results)
+  }];
+  let hasVerifier = 1;
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::Value> getDFBDependencyOperands();
+    ::llvm::SmallVector<::mlir::Value> getDFBIndexTemplateOperands();
+  }];
+}
+
+//===----------------------------------------------------------------------===//
+// DFB index query
+//===----------------------------------------------------------------------===//
+
+def TTL_GetDfbIdOp : TTL_Op<"get_dfb_id", [Pure]> {
+  let summary = "Get the integer index for a dataflow buffer";
+  let description = [{
+    Returns the integer DFB index for the given dataflow buffer as an
+    i32 SSA value. At EmitC time this resolves to a raw integer literal.
+    Integer SSA dataflow does not preserve a call-level DFB access; an
+    external callee that accesses the DFB must also receive it as a DFB
+    operand.
+  }];
+  let arguments = (ins TTL_CircularBuffer:$dfb);
+  let results = (outs I32:$result);
+  let assemblyFormat = "$dfb attr-dict `:` type($dfb)";
+}
+
+def TTL_TileStoreOp : TTL_ComputePrimitiveOp<"tile_store", "Passthrough",
     [MemoryEffects<[MemWrite]>, TTL_DstResultOpTrait,
-     TTL_DstAccessOpInterface]> {
+     TTL_DstAccessOpInterface, TTL_TileExecutionOpInterface]> {
   let summary = "Store a tile into a circular buffer view";
   let description = [{
     `ttl.tile_store` packs a single tile from the DST register into a circular

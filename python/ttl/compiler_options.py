@@ -20,6 +20,13 @@ import sys
 from typing import Optional, Sequence
 
 
+def _nonnegative_int(value: str) -> int:
+    parsed_value = int(value)
+    if parsed_value < 0:
+        raise argparse.ArgumentTypeError("must be nonnegative")
+    return parsed_value
+
+
 def _make_parser() -> argparse.ArgumentParser:
     """Build the compiler options parser.
 
@@ -39,7 +46,7 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         dest="enable_fpu_binary_ops",
         action=argparse.BooleanOptionalAction,
-        help="Use FPU for binary add/sub/mul (default: enabled).",
+        help="Allow FPU strategy selection for binary add/sub/mul (default: enabled).",
     )
     p.add_argument(
         "--ttl-block-matmul",
@@ -67,14 +74,14 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         dest="reduce_full_fp32",
         action=argparse.BooleanOptionalAction,
-        help="Enable FP32 accumulation for reduce operations (default: enabled).",
+        help="Prefer FP32 accumulation for reduce operations (default: enabled).",
     )
     p.add_argument(
         "--ttl-matmul-full-fp32",
         default=None,
         dest="matmul_full_fp32",
         action=argparse.BooleanOptionalAction,
-        help="Enable FP32 accumulation for matmul operations (default: enabled).",
+        help="Prefer FP32 accumulation for matmul operations (default: enabled).",
     )
     p.add_argument(
         "--ttl-strict-f32-acc",
@@ -88,7 +95,65 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         dest="compiler_dfbs",
         action=argparse.BooleanOptionalAction,
-        help="Insert compiler-allocated intermediate DFBs for fused computations (default: enabled).",
+        help=(
+            "Insert compiler-allocated intermediate DFBs when materialization "
+            "is required for DFB-only operands, source lifetimes, or computed "
+            "values stored by operations in multiple MLIR basic blocks "
+            "(default: enabled)."
+        ),
+    )
+    p.add_argument(
+        "--ttl-pipe-computed-addresses",
+        default=None,
+        dest="pipe_computed_addresses",
+        action=argparse.BooleanOptionalAction,
+        help="Use computed receiver DFB addresses for eligible pipe transfers; receiver-published multicast still requires proven equal runtime addresses (default: enabled).",
+    )
+    p.add_argument(
+        "--ttl-pipe-capacity-sync",
+        default=None,
+        dest="pipe_capacity_sync",
+        action=argparse.BooleanOptionalAction,
+        help="Use capacity-counter synchronization when a computed-address "
+        "transfer's receiver wait and pop run on the receiver NOC thread and "
+        "pass the DFB ownership and count proofs; disabling uses receiver-post "
+        "synchronization (default: enabled).",
+    )
+    p.add_argument(
+        "--ttl-pipe-global-semaphores-only",
+        default=None,
+        dest="pipe_global_semaphores_only",
+        action=argparse.BooleanOptionalAction,
+        help=(
+            "Allocate all compiler-managed PipeNet synchronization counters in "
+            "GlobalSemaphore storage, leaving local hardware semaphore ids "
+            "available to the application (default: disabled)."
+        ),
+    )
+    p.add_argument(
+        "--ttl-reuse-user-dfbs",
+        default=None,
+        dest="reuse_user_dfbs",
+        action=argparse.BooleanOptionalAction,
+        help="Reuse physical DFB indices only for logical lifetimes proven "
+        "not to overlap across concurrent kernels (default: enabled).",
+    )
+    p.add_argument(
+        "--ttl-dfb-exact-coloring-search-limit",
+        default=None,
+        dest="dfb_exact_coloring_search_limit",
+        type=_nonnegative_int,
+        help="Limit exact DFB allocation to this many deterministic search "
+        "states (default: 1000000).",
+    )
+    p.add_argument(
+        "--ttl-specialize-cores",
+        default=None,
+        dest="specialize_cores",
+        action=argparse.BooleanOptionalAction,
+        help="Clone each kernel that branches on a core coordinate once per "
+        "launch coordinate, const-folding core_x / core_y so dead branches are "
+        "removed (ttkernel-specialize-cores). Opt-in (default: disabled).",
     )
     p.add_argument(
         "--ttl-l1-budget",
@@ -124,7 +189,8 @@ class CompilerOptions:
     """Compiler pipeline options for kernel compilation.
 
     Frozen so it's hashable and usable directly as a cache key component.
-    Does NOT include TTNN compute config (fp32_dest_acc_en, dst_full_sync_en).
+    Does NOT include TTNN compute config (fp32_dest_acc_en, dst_full_sync_en,
+    math_fidelity).
 
     Priority ordering (highest wins)::
 
@@ -145,6 +211,12 @@ class CompilerOptions:
     matmul_full_fp32: bool = True
     strict_f32_acc: bool = False
     compiler_dfbs: bool = True
+    pipe_computed_addresses: bool = True
+    pipe_capacity_sync: bool = True
+    pipe_global_semaphores_only: bool = False
+    reuse_user_dfbs: bool = True
+    dfb_exact_coloring_search_limit: int = 1_000_000
+    specialize_cores: bool = False
     l1_budget: int = dataclasses.field(default=0, compare=False, hash=False)
 
     # Fields that were explicitly provided (not defaulted). Excluded from

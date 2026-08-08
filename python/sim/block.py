@@ -12,14 +12,20 @@ Functions: broadcast, fill, mask, mask_posinf, where, squeeze, unsqueeze,
 transpose.
 """
 
+import operator
 from typing import Callable, List, Tuple
 
 import torch
 
 from .constants import TILE_SHAPE
-from .dfb import Block, check_same_layout, track_source_blocks
+from .context import get_context
+from .dfb import Block, check_same_layout, track_source_blocks, _dry_run_result
 from .blockstate import BlockAcquisition, KernelType
 from .ttnnsim import ROW_MAJOR_LAYOUT, Tensor
+
+
+def _is_dry_run() -> bool:
+    return get_context().config.dry_run
 
 
 def _apply_binary_op(
@@ -35,6 +41,8 @@ def _apply_binary_op(
         raise ValueError(
             f"Shape mismatch in binary op: a has shape {a_shape}, b has shape {b_shape}"
         )
+    if _is_dry_run():
+        return _dry_run_result(a_shape, a, b)
     layout = a.layout
     a_tensors = [t.to_torch() for t in a.to_list()]
     b_tensors = [t.to_torch() for t in b.to_list()]
@@ -64,6 +72,8 @@ def _apply_ternary_op(
             f"Shape mismatch in ternary op: a has shape {a_shape}, "
             f"b has shape {b_shape}, c has shape {c_shape}"
         )
+    if _is_dry_run():
+        return _dry_run_result(a_shape, a, b, c)
     layout = a.layout
     a_tensors = [t.to_torch() for t in a.to_list()]
     b_tensors = [t.to_torch() for t in b.to_list()]
@@ -163,6 +173,9 @@ def broadcast(
                 f"broadcast shape mismatch at dimension {i}: block has {s}, target has {t}"
             )
 
+    if _is_dry_run():
+        return _dry_run_result(shape, block)
+
     # Expand the element tensor to match the target shape.  The reshape /
     # indexing below treats the last two dims of ``shape`` as the within-tile
     # axes, so this function only handles blocks with at least two grid
@@ -218,12 +231,17 @@ def broadcast(
     return result_block
 
 
-def fill(value: float, shape: Tuple[int, ...]) -> Block:
+def fill(
+    value: float,
+    shape: Tuple[int, ...],
+    tile: Tuple[int, int] = TILE_SHAPE,
+) -> Block:
     """Return a temporary tiled block of the specified shape filled with value.
 
     Args:
         value: The scalar value to fill every element with.
         shape: Grid shape of the resulting block (at least 2-dimensional).
+        tile: Physical tile dimensions as ``(height, width)``.
 
     Returns:
         A temporary Block of the specified shape with every element set to value.
@@ -233,8 +251,20 @@ def fill(value: float, shape: Tuple[int, ...]) -> Block:
         raise ValueError(
             "fill requires a shape with at least 2 dimensions for tiled layout"
         )
+    try:
+        tile_h, tile_w = tile
+        tile_h = operator.index(tile_h)
+        tile_w = operator.index(tile_w)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"Tile must contain exactly two integer dimensions, got {tile!r}"
+        ) from None
+    if tile_h <= 0 or tile_w <= 0:
+        raise ValueError(f"Tile dimensions must be positive, got {tile}")
 
-    tile_h, tile_w = TILE_SHAPE
+    if _is_dry_run():
+        return _dry_run_result(shape)
+
     batch = shape[:-2]
     TM, TK = shape[-2], shape[-1]
 
@@ -347,6 +377,10 @@ def squeeze(block: Block, dims: List[int]) -> Block:
         norm_dims.add(nd)
 
     new_shape = tuple(s for i, s in enumerate(block_shape) if i not in norm_dims)
+
+    if _is_dry_run():
+        return _dry_run_result(new_shape, block)
+
     tiles = block.to_list()
     result = Block.from_list(tiles, new_shape)
     track_source_blocks(result, block)
@@ -396,6 +430,9 @@ def unsqueeze(block: Block, dims: List[int]) -> Block:
         result_list.insert(pos, 1)
     new_shape = tuple(result_list)
 
+    if _is_dry_run():
+        return _dry_run_result(new_shape, block)
+
     tiles = block.to_list()
     result = Block.from_list(tiles, new_shape)
     track_source_blocks(result, block)
@@ -420,10 +457,13 @@ def transpose(block: Block) -> Block:
             f"transpose requires a 2-D block grid, got shape {block._shape}"  # type: ignore[attr-defined]
         )
 
+    M, N = block._shape  # type: ignore[attr-defined]
+
+    if _is_dry_run():
+        return _dry_run_result((N, M), block)
+
     layout = block.layout
     transposed_tiles = [Tensor(t.to_torch().T, layout) for t in block.to_list()]
-
-    M, N = block._shape  # type: ignore[attr-defined]
     reordered_tiles: List[Tensor] = []
     for j in range(N):
         for i in range(M):

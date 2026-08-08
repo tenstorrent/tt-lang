@@ -90,8 +90,8 @@ func.func @matmul_scale_bias(
 // Pack to both output CBs.
 // CHECK:      ttkernel.tile_regs_commit
 // CHECK-NEXT: ttkernel.tile_regs_wait
-// CHECK-NEXT: ttkernel.pack_tile(%[[C0]], %[[CB_OUT1]], %[[C0]]
 // CHECK-NEXT: ttkernel.pack_tile(%[[C0]], %[[CB_OUT0]], %[[C0]]
+// CHECK-NEXT: ttkernel.pack_tile(%[[C0]], %[[CB_OUT1]], %[[C0]]
 // CHECK-NEXT: ttkernel.tile_regs_release
 
 func.func @matmul_scale_dual_output(

@@ -11,8 +11,17 @@ Provides compilation from TTL dialect to TTKernel dialect.
 import os
 from typing import Any, Optional
 
+from ttl.dialects import ttcore
 from ttl.ir import Module
 from ttl.passmanager import PassManager
+
+from .device_arch import get_mock_arch_from_device
+
+
+_TTCORE_ARCH_BY_DEVICE_NAME = {
+    "blackhole": ttcore.Arch.Blackhole,
+    "wormhole_b0": ttcore.Arch.WormholeB0,
+}
 
 
 def compile_ttl_to_ttkernel(
@@ -20,6 +29,7 @@ def compile_ttl_to_ttkernel(
     device: Optional[Any] = None,
     maximize_dst: bool = True,
     enable_fpu_binary_ops: bool = True,
+    specialize_cores: bool = False,
 ) -> Module:
     """
     Run the TTL-to-TTKernel pass pipeline on the module.
@@ -28,53 +38,30 @@ def compile_ttl_to_ttkernel(
 
     Args:
         module: TTL MLIR module to compile.
-        device: Optional TTNN device (unused, kept for API compat).
+        device: Optional TTNN device used to select target capabilities. A
+            compiler-only invocation without a device uses a Wormhole mock.
         maximize_dst: Enable DST maximization (subblocking + scheduling).
-        enable_fpu_binary_ops: Enable FPU binary op detection (add_tiles, etc).
+        enable_fpu_binary_ops: Allow FPU strategy selection for add/sub/mul.
+        specialize_cores: Clone kernels that branch on a core coordinate
+            once per launch coordinate (ttkernel-specialize-cores).
 
     Returns:
         Compiled module with TTKernel/EmitC ops.
     """
-    fpu_flag = int(enable_fpu_binary_ops)
-    set_compute_config_pass = (
-        f"ttl-set-compute-kernel-config{{enable-fpu-binary-ops={fpu_flag}}}"
+    target_arch = get_mock_arch_from_device(device)
+    module.operation.attributes["ttl.target_arch"] = ttcore.ir.ArchAttr.get(
+        module.context, int(_TTCORE_ARCH_BY_DEVICE_NAME[target_arch])
     )
 
-    # Build per-function passes.
-    func_passes = [
-        "ttl-insert-intermediate-dfbs",
-        "ttl-insert-copy-wait",
-        "ttl-auto-sync",
-        "convert-ttl-to-compute",
-        set_compute_config_pass,
-        "ttl-assign-dst",
-    ]
-    if maximize_dst:
-        func_passes.append("ttl-subblock-compute-for-dst")
-    dst_acc_str = "true" if maximize_dst else "false"
-    func_passes.append(f"ttl-lower-to-loops{{dst-accumulation={dst_acc_str}}}")
-    if maximize_dst:
-        func_passes.append("ttl-schedule-operations")
-    func_pipeline = ",".join(func_passes)
-
-    pipeline_str = (
-        f"builtin.module("
-        f"func.func({func_pipeline}),"
-        f"ttl-finalize-dfb-indices,"
-        f"func.func(ttl-annotate-cb-associations),"
-        f"ttl-verify-pipenet-guards,"
-        f"ttl-verify-dfb-spsc,"
-        f"ttl-erase-pipenet-scopes,"
-        f"ttl-validate-cb-budget,"
-        f"convert-ttl-to-ttkernel,"
-        f"ttkernel-insert-inits,"
-        f"canonicalize,"
-        f"cse,"
-        f"lower-affine,"
-        f"convert-ttkernel-to-emitc,"
-        f"canonicalize"
-        f")"
+    pipeline_options = " ".join(
+        [
+            f"maximize-dst={str(maximize_dst).lower()}",
+            f"enable-fpu-binary-ops={str(enable_fpu_binary_ops).lower()}",
+            f"specialize-cores={str(specialize_cores).lower()}",
+            "lower-to-emitc=true",
+        ]
     )
+    pipeline_str = f"builtin.module(ttl-to-ttkernel-pipeline{{{pipeline_options}}})"
 
     pm = PassManager.parse(pipeline_str, context=module.context)
     pm.enable_verifier(True)

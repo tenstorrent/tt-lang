@@ -3,10 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: ttnn, tt-device
-# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
+# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.reuse.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
+# RUN: FileCheck %s --check-prefix=CHECK-CPP-REUSE < %t.reuse.output
+# Stable logical-index checks run separately from the default allocator checks.
+# RUN: env TTLANG_COMPILE_ONLY=1 %python %s --no-ttl-reuse-user-dfbs > %t.output 2>&1
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
-# RUN: env TTLANG_COMPILE_ONLY=1 %python %s --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.sfpu.output 2>&1
+# RUN: env TTLANG_COMPILE_ONLY=1 %python %s --no-ttl-reuse-user-dfbs --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.sfpu.output 2>&1
 # RUN: FileCheck %s --check-prefix=CHECK-CPP-SFPU < %t.sfpu.output
 
 """
@@ -70,9 +73,9 @@ def add_kernel(lhs, rhs, out):
 # CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}
 
 # Bind circular buffers (alphabetical order of capture names: lhs_cb, out_cb, rhs_cb)
-# CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
-# CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2
-# CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
+# CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+# CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2, block_count = 2} {dfb_id = 2 : index}
+# CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 1 : index}
 
 # Wait for input CBs
 # CHECK: %[[L:.+]] = ttl.cb_wait %[[CB0]]
@@ -104,8 +107,8 @@ def add_kernel(lhs, rhs, out):
 # CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [0 : i32, 1 : i32], ttl.kernel_thread = #ttkernel.thread<noc>, ttl.noc_index = 0 : i32}
 
 # Bind CBs (alphabetical order: lhs_cb, rhs_cb)
-# CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
-# CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1
+# CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+# CHECK: %[[CB1:.+]] = ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 1 : index}
 
 # First input: reserve, slice, copy, wait, push
 # CHECK: ttl.cb_reserve %[[CB0]]
@@ -126,7 +129,7 @@ def add_kernel(lhs, rhs, out):
 # CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [2 : i32], ttl.kernel_thread = #ttkernel.thread<noc>, ttl.noc_index = 1 : i32}
 
 # Wait for output DFB, slice, copy to device, pop
-# CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2
+# CHECK: %[[CB2:.+]] = ttl.bind_cb{cb_index = 2, block_count = 2} {dfb_id = 2 : index}
 # CHECK: ttl.cb_wait %[[CB2]]
 # CHECK: %[[SLICE2:.+]] = ttl.tensor_slice %arg0
 # CHECK: %[[TX:.+]] = ttl.copy %[[CB2]], %[[SLICE2]] : {{.*}} -> !ttl.transfer_handle<write>
@@ -137,7 +140,25 @@ def add_kernel(lhs, rhs, out):
 # C++ Kernel Checks - Verify generated compute kernel
 # =============================================================================
 
-# CHECK-CPP: // add_compute
+# Default allocation may permute physical indices while preserving every
+# logical DFB use across the three kernels.
+# CHECK-CPP-REUSE-LABEL: === add_compute kernel written to {{.*}} ===
+# CHECK-CPP-REUSE: cb_ctarg_0.wait_front(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_2.wait_front(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_1.reserve_back(
+# CHECK-CPP-REUSE: cb_ctarg_0.pop_front(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_2.pop_front(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_1.push_back(
+# CHECK-CPP-REUSE-LABEL: === dm_read kernel written to {{.*}} ===
+# CHECK-CPP-REUSE: cb_ctarg_0.reserve_back(
+# CHECK-CPP-REUSE: cb_ctarg_0.push_back(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_2.reserve_back(
+# CHECK-CPP-REUSE: cb_ctarg_2.push_back(
+# CHECK-CPP-REUSE-LABEL: === dm_write kernel written to {{.*}} ===
+# CHECK-CPP-REUSE: cb_ctarg_1.wait_front(
+# CHECK-CPP-REUSE: cb_ctarg_1.pop_front(
+
+# CHECK-CPP: === add_compute kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP-DAG: CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
 # CHECK-CPP-DAG: CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
@@ -179,7 +200,7 @@ def add_kernel(lhs, rhs, out):
 # C++ Kernel Checks - Verify generated dm_read kernel
 # =============================================================================
 
-# CHECK-CPP: // dm_read
+# CHECK-CPP: === dm_read kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP-DAG: CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
 # CHECK-CPP-DAG: CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
@@ -188,8 +209,8 @@ def add_kernel(lhs, rhs, out):
 # CHECK-CPP: [[CB0]].reserve_back(
 # CHECK-CPP: auto {{.*}} = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 3>(), 0>();
 # CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor(
-# CHECK-CPP: noc_async_read_tile({{.*}}[[CB0]].get_write_ptr()
-# CHECK-CPP: noc.async_read_barrier<Noc::BarrierMode::FULL>();
+# CHECK-CPP: async_read({{.*}}CoreLocalMem<uint32_t>([[CB0]].get_write_ptr())
+# CHECK-CPP: async_read_barrier();
 # CHECK-CPP: [[CB0]].push_back(
 
 # Second input: reserve DFB, read tile, push DFB
@@ -199,15 +220,15 @@ def add_kernel(lhs, rhs, out):
 # CHECK-CPP: [[CB1]].reserve_back(
 # CHECK-CPP: auto {{.*}} = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<1, 3>(), 1>();
 # CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor(
-# CHECK-CPP: noc_async_read_tile({{.*}}[[CB1]].get_write_ptr()
-# CHECK-CPP: noc.async_read_barrier<Noc::BarrierMode::FULL>();
+# CHECK-CPP: async_read({{.*}}CoreLocalMem<uint32_t>([[CB1]].get_write_ptr())
+# CHECK-CPP: async_read_barrier();
 # CHECK-CPP: [[CB1]].push_back(
 
 # =============================================================================
 # C++ Kernel Checks - Verify generated dm_write kernel
 # =============================================================================
 
-# CHECK-CPP: // dm_write
+# CHECK-CPP: === dm_write kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP-DAG: CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
 
@@ -215,8 +236,8 @@ def add_kernel(lhs, rhs, out):
 # CHECK-CPP: [[CB2]].wait_front(
 # CHECK-CPP: auto {{.*}} = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<2, 3>(), 0>();
 # CHECK-CPP: TensorAccessor{{.*}}= TensorAccessor(
-# CHECK-CPP: noc_async_write_tile({{.*}}[[CB2]].get_read_ptr()
-# CHECK-CPP: noc.async_write_barrier<Noc::BarrierMode::FULL>();
+# CHECK-CPP: async_write(CoreLocalMem<uint32_t>([[CB2]].get_read_ptr())
+# CHECK-CPP: async_write_barrier();
 # CHECK-CPP: [[CB2]].pop_front(
 
 
@@ -224,7 +245,7 @@ def add_kernel(lhs, rhs, out):
 # SFPU path checks (--no-ttl-maximize-dst --no-ttl-fpu-binary-ops)
 # =============================================================================
 
-# CHECK-CPP-SFPU: // add_compute
+# CHECK-CPP-SFPU: === add_compute kernel written to {{.*}} ===
 # CHECK-CPP-SFPU: void kernel_main()
 # CHECK-CPP-SFPU-DAG: CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
 # CHECK-CPP-SFPU-DAG: CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));

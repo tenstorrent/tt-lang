@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
+"""
+Run a tt-lang-sim script under cProfile and print a hotspot report.
+
+All arguments are forwarded to tt-lang-sim unchanged.  Use --save FILE to
+save the binary cProfile stats for later inspection with python -m pstats.
+
+The --save option is consumed by this wrapper and must appear before any ``--``
+separator (which marks the start of the script's own arguments). Placing it
+after all other simulator options also avoids ambiguity with options that begin
+with --.
+
+Usage:
+    tt-lang-sim-profile SCRIPT.py [SIMULATOR_OPTIONS...]
+    tt-lang-sim-profile SCRIPT.py [SIMULATOR_OPTIONS...] --save FILE
+
+Examples:
+    tt-lang-sim-profile examples/matmul-tutorial/step_1_single_node_single_tile_block.py --dry-run
+    tt-lang-sim-profile examples/matmul-tutorial/step_1_single_node_single_tile_block.py --dry-run --save /tmp/stats.prof
+"""
+
+import cProfile
+import pstats
+import sys
+from pathlib import Path
+
+# Resolve the repo root from the script's own location so this works when
+# invoked as test/scripts/tt-lang-sim-profile or from an arbitrary cwd.
+_SCRIPT_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _SCRIPT_DIR.parent.parent
+
+# Sources: python/sim; installed ttlang: python_packages/ttl/sim.
+if (_REPO_ROOT / "python" / "sim" / "ttlang_sim.py").exists():
+    sys.path.insert(0, str(_REPO_ROOT / "python"))
+    _SIM_MODULE = "sim.ttlang_sim"
+elif (_REPO_ROOT / "python_packages" / "ttl" / "sim" / "ttlang_sim.py").exists():
+    sys.path.insert(0, str(_REPO_ROOT / "python_packages"))
+    _SIM_MODULE = "ttl.sim.ttlang_sim"
+else:
+    print(
+        "tt-lang-sim-profile: cannot locate the sim package.",
+        file=sys.stderr,
+    )
+    print(
+        f"  checked: {_REPO_ROOT}/python/sim/ttlang_sim.py (source tree)",
+        file=sys.stderr,
+    )
+    print(
+        f"  checked: {_REPO_ROOT}/python_packages/ttl/sim/ttlang_sim.py (installed)",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
+def _extract_save_arg(argv: list) -> tuple:
+    """Remove the profiler's --save FILE from argv; return (output_file, remaining_argv).
+
+    Only the portion before the first ``--`` separator is scanned. A ``--``
+    marks the start of the script's own arguments, which are forwarded verbatim,
+    so e.g. ``... -- --save out`` keeps ``--save out`` for the script rather than
+    capturing it here. Everything other than the profiler's --save option is
+    passed through to tt-lang-sim unchanged.
+    """
+    # Split off the script's own arguments at the first "--"; they are never
+    # scanned for --save and are appended to the forwarded args verbatim.
+    try:
+        sep = argv.index("--")
+    except ValueError:
+        head, tail = argv, []
+    else:
+        head, tail = argv[:sep], argv[sep:]
+
+    output_file = ""
+    remaining = []
+    i = 0
+    while i < len(head):
+        if head[i] == "--save":
+            if i + 1 >= len(head):
+                print(
+                    "tt-lang-sim-profile: --save requires a FILE argument",
+                    file=sys.stderr,
+                )
+                sys.exit(2)
+            output_file = head[i + 1]
+            i += 2
+        elif head[i].startswith("--save="):
+            output_file = head[i][len("--save=") :]
+            i += 1
+        else:
+            remaining.append(head[i])
+            i += 1
+    return output_file, remaining + tail
+
+
+def _emit_profile_report(profiler: cProfile.Profile, output_file: str) -> None:
+    """Print top hotspots to stderr and optionally dump binary stats to a file."""
+    if output_file:
+        profiler.dump_stats(output_file)
+        print(
+            f"\n[tt-lang-sim-profile] cProfile stats written to {output_file}",
+            file=sys.stderr,
+        )
+
+    print(
+        "\n[tt-lang-sim-profile] === cProfile top 30 by cumulative time ===",
+        file=sys.stderr,
+    )
+    pstats.Stats(profiler, stream=sys.stderr).sort_stats("cumulative").print_stats(30)
+    print(
+        "[tt-lang-sim-profile] === cProfile top 30 by internal time ===",
+        file=sys.stderr,
+    )
+    pstats.Stats(profiler, stream=sys.stderr).sort_stats("tottime").print_stats(30)
+
+
+def main() -> None:
+    output_file, forward_argv = _extract_save_arg(sys.argv[1:])
+    # Replace argv so that ttlang_sim.main() sees only the sim arguments.
+    sys.argv = [sys.argv[0]] + forward_argv
+
+    if _SIM_MODULE == "sim.ttlang_sim":
+        from sim.ttlang_sim import main as sim_main
+    else:
+        from ttl.sim.ttlang_sim import main as sim_main  # type: ignore[no-redef]
+
+    profiler = cProfile.Profile()
+    profiler.enable()
+    try:
+        sim_main()
+    finally:
+        profiler.disable()
+        _emit_profile_report(profiler, output_file)
+
+
+if __name__ == "__main__":
+    main()

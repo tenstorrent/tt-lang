@@ -16,10 +16,6 @@ Simplified from the Engram pipe_conv_kernel pattern. Tests:
   - Lambda callbacks with PipeNet
 """
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import pytest
 import torch
 import ttl

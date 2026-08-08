@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Resolve the inputs of the S3 PyPI publish workflow into a single set of
-# step outputs. Stable tag pushes use the tag version, scheduled runs compute
-# a nightly version, and scheduled runs force `overwrite_releases=true`.
+# step outputs. Scheduled runs compute a date-based development version and
+# force `overwrite_releases=true`; workflow_dispatch runs use explicit inputs.
 #
 # Required env:
 #   DISPATCH_DOCKER_TAG          May be empty (workflow_dispatch input).
@@ -14,31 +14,21 @@
 #   DISPATCH_WHEEL_VARIANT       pypi|light|bundled|bundled-and-light, may be
 #                                empty for non-dispatch events.
 #   EVENT_NAME                   github.event_name.
-#   GITHUB_REF                   github.ref, required for push events.
 #   GITHUB_OUTPUT                Path that receives the resolved outputs.
 #                                Falls back to stdout when unset.
 #
 # Outputs (written to $GITHUB_OUTPUT):
 #   docker_tag, dry_run, overwrite_releases, version_override, wheel_variant,
-#   wheel_variants, wheel_matrix, allow_final_internal_version
+#   wheel_variants, bundled_selected, manylinux_selected,
+#   manylinux_wheel_matrix, allow_final_internal_version
 
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/tt-metal-version-utils.sh
 . "$script_dir/lib/tt-metal-version-utils.sh"
-
-stable_tag_version() {
-    local ref="$1"
-
-    if [[ "$ref" =~ ^refs/tags/v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-        printf '%s.%s.%s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
-        return 0
-    fi
-
-    echo "S3 release-tag publish requires a stable tag like refs/tags/vX.Y.Z (got '$ref')." >&2
-    return 1
-}
+# shellcheck source=lib/docker-image-utils.sh
+. "$script_dir/lib/docker-image-utils.sh"
 
 is_stable_version() {
     [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
@@ -62,23 +52,45 @@ overwrite_releases="$DISPATCH_OVERWRITE_RELEASES"
 version_override="${DISPATCH_VERSION_OVERRIDE:-}"
 wheel_variant="${DISPATCH_WHEEL_VARIANT:-}"
 
-if [[ -z "$version_override" ]]; then
-    if [[ "$EVENT_NAME" == "push" ]]; then
-        version_override=$(stable_tag_version "${GITHUB_REF:-}")
-    else
-        version_override=$(python3 "$script_dir/compute-nightly-version.py")
-    fi
+case "$dry_run" in
+    true | false) ;;
+    *)
+        echo "DISPATCH_DRY_RUN must be true or false" >&2
+        exit 2
+        ;;
+esac
+case "$overwrite_releases" in
+    true | false) ;;
+    *)
+        echo "DISPATCH_OVERWRITE_RELEASES must be true or false" >&2
+        exit 2
+        ;;
+esac
+if [[ -n "$docker_tag" ]] && ! ttlang_validate_docker_tag "$docker_tag"; then
+    echo "DISPATCH_DOCKER_TAG is not a valid Docker tag" >&2
+    exit 2
 fi
+
+case "$EVENT_NAME" in
+    workflow_dispatch | schedule)
+        ;;
+    push)
+        echo "S3 PyPI publishing does not run for push events; use workflow_dispatch from refs/heads/main or the scheduled main-branch run." >&2
+        exit 1
+        ;;
+    *)
+        echo "Unsupported S3 PyPI publish event: $EVENT_NAME" >&2
+        exit 1
+        ;;
+esac
+
+if [[ -z "$version_override" ]]; then
+    version_override=$(python3 "$script_dir/compute-nightly-version.py")
+fi
+version_override=$(python3 "$script_dir/normalize-pep440-version.py" "$version_override")
 
 if [[ -z "$wheel_variant" ]]; then
     case "$EVENT_NAME" in
-        push)
-            if pypi_aligned; then
-                wheel_variant=light
-            else
-                wheel_variant=bundled-and-light
-            fi
-            ;;
         schedule)
             wheel_variant=bundled-and-light
             ;;
@@ -92,19 +104,27 @@ fi
 case "$wheel_variant" in
     bundled)
         wheel_variants='["bundled"]'
-        wheel_matrix='{"include":[{"wheel_variant":"bundled","ttnn_dep_mode":"bundled"}]}'
+        bundled_selected=true
+        manylinux_selected=false
+        manylinux_wheel_matrix='{"include":[]}'
         ;;
     light)
         wheel_variants='["light"]'
-        wheel_matrix='{"include":[{"wheel_variant":"light","ttnn_dep_mode":"external"}]}'
+        bundled_selected=false
+        manylinux_selected=true
+        manylinux_wheel_matrix='{"include":[{"wheel_variant":"light","ttnn_dep_mode":"external","build_sim_wheel":false}]}'
         ;;
     bundled-and-light)
         wheel_variants='["bundled","light"]'
-        wheel_matrix='{"include":[{"wheel_variant":"bundled","ttnn_dep_mode":"bundled"},{"wheel_variant":"light","ttnn_dep_mode":"external"}]}'
+        bundled_selected=true
+        manylinux_selected=true
+        manylinux_wheel_matrix='{"include":[{"wheel_variant":"light","ttnn_dep_mode":"external","build_sim_wheel":false}]}'
         ;;
     pypi)
         wheel_variants='["pypi"]'
-        wheel_matrix='{"include":[{"wheel_variant":"pypi","ttnn_dep_mode":"pypi"}]}'
+        bundled_selected=false
+        manylinux_selected=true
+        manylinux_wheel_matrix='{"include":[{"wheel_variant":"pypi","ttnn_dep_mode":"pypi","build_sim_wheel":true}]}'
         ;;
     *)
         echo "Unknown S3 wheel variant: $wheel_variant" >&2
@@ -114,7 +134,7 @@ esac
 
 if is_stable_version "$version_override" && variant_includes_bundled "$wheel_variant" && pypi_aligned; then
     echo "Refusing to publish bundled tt-lang==$version_override to S3 because public PyPI publishing is aligned for this tt-metal tag." >&2
-    echo "Use the light or pypi S3 variant, or use a distinct internal version." >&2
+    echo "Use the light or pypi S3 variant, or use a distinct S3 version." >&2
     exit 1
 fi
 
@@ -127,6 +147,12 @@ if [[ "$EVENT_NAME" == "schedule" ]]; then
     overwrite_releases=true
 fi
 
+if [[ "${GITHUB_REF:-}" != refs/heads/main &&
+      ("$dry_run" != true || -z "$docker_tag") ]]; then
+    echo "Publishing is restricted to refs/heads/main (got ${GITHUB_REF:-unset}). Non-main dry runs must provide docker_tag." >&2
+    exit 1
+fi
+
 output_file="${GITHUB_OUTPUT:-/dev/stdout}"
 {
     echo "docker_tag=$docker_tag"
@@ -135,12 +161,17 @@ output_file="${GITHUB_OUTPUT:-/dev/stdout}"
     echo "version_override=$version_override"
     echo "wheel_variant=$wheel_variant"
     echo "wheel_variants=$wheel_variants"
-    echo "wheel_matrix=$wheel_matrix"
+    echo "bundled_selected=$bundled_selected"
+    echo "manylinux_selected=$manylinux_selected"
+    echo "manylinux_wheel_matrix=$manylinux_wheel_matrix"
     echo "allow_final_internal_version=$allow_final_internal_version"
 } >> "$output_file"
 
 echo "Resolved wheel_variant=$wheel_variant"
 echo "Resolved wheel_variants=$wheel_variants"
+echo "Resolved bundled_selected=$bundled_selected"
+echo "Resolved manylinux_selected=$manylinux_selected"
+echo "Resolved manylinux_wheel_matrix=$manylinux_wheel_matrix"
 echo "Resolved version_override=$version_override"
 echo "Resolved allow_final_internal_version=$allow_final_internal_version"
 echo "Resolved dry_run=$dry_run"
@@ -148,5 +179,5 @@ echo "Resolved overwrite_releases=$overwrite_releases"
 if [[ -n "$docker_tag" ]]; then
     echo "Using existing docker_tag=$docker_tag"
 else
-    echo "No docker_tag provided; build-docker will create one"
+    echo "No docker_tag provided; required builder workflows will create it"
 fi

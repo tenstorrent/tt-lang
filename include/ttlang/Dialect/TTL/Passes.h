@@ -5,7 +5,7 @@
 #ifndef TTLANG_DIALECT_TTL_PASSES_H
 #define TTLANG_DIALECT_TTL_PASSES_H
 
-#include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -27,13 +27,9 @@ namespace mlir::tt::ttl {
 #define GEN_PASS_REGISTRATION
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 
-/// Populate patterns for lowering TTL elementwise tensor ops to ttl.compute.
-void populateTTLToComputePatterns(RewritePatternSet &patterns);
-
 /// Populate patterns for lowering ttl.tile_* ops to TTKernel.
 void populateTTLTileOpsToTTKernelPatterns(mlir::TypeConverter *typeConverter,
-                                          RewritePatternSet &patterns,
-                                          bool reduceFullFp32 = true);
+                                          RewritePatternSet &patterns);
 
 } // namespace mlir::tt::ttl
 

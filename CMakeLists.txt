@@ -17,6 +17,22 @@ include(TTLangUtils)
 include(GetVersionFromGit)
 ttlang_set_version("${TTLANG_VERSION}")
 
+# CI passes the commits as env vars; git is the local fallback.
+if(DEFINED ENV{TTLANG_GIT_COMMIT} AND NOT "$ENV{TTLANG_GIT_COMMIT}" STREQUAL "")
+  set(TTLANG_GIT_COMMIT "$ENV{TTLANG_GIT_COMMIT}")
+else()
+  ttlang_get_submodule_sha("${CMAKE_SOURCE_DIR}" TTLANG_GIT_COMMIT)
+endif()
+ttlang_read_tt_metal_version_var(TT_METAL_TAG TTLANG_TT_METAL_TAG)
+if(DEFINED ENV{TT_METAL_COMMIT} AND NOT "$ENV{TT_METAL_COMMIT}" STREQUAL "")
+  set(TTLANG_TT_METAL_COMMIT "$ENV{TT_METAL_COMMIT}")
+elseif(DEFINED ENV{TT_METAL_SHORT_SHA} AND NOT "$ENV{TT_METAL_SHORT_SHA}" STREQUAL "")
+  set(TTLANG_TT_METAL_COMMIT "$ENV{TT_METAL_SHORT_SHA}")
+else()
+  ttlang_get_gitlink_sha("${CMAKE_SOURCE_DIR}" "third-party/tt-metal" TTLANG_TT_METAL_COMMIT)
+endif()
+message(STATUS "  Provenance:       ttlang=${TTLANG_GIT_COMMIT} tt-metal=${TTLANG_TT_METAL_TAG} (${TTLANG_TT_METAL_COMMIT})")
+
 option(CODE_COVERAGE "Enable coverage reporting" OFF)
 option(TTLANG_ENABLE_DOCS "Enable Sphinx documentation build" OFF)
 option(TTLANG_SIM_ONLY "Set up Python environment for simulator only (skip compiler build)" OFF)
@@ -39,38 +55,20 @@ include(TTLangCompilerSetup)
 # ---------------------------------------------------------------------------
 # Toolchain options (declared early because TTLangPython needs them).
 # ---------------------------------------------------------------------------
-option(TTLANG_USE_TOOLCHAIN "Use pre-built LLVM from ttlang toolchain" OFF)
-option(TTLANG_BUILD_TOOLCHAIN
-  "Build LLVM and tt-metal into a reusable toolchain directory" OFF)
-
-# Per-component toolchain overrides. By default they follow TTLANG_USE_TOOLCHAIN
-# but can be set independently, e.g. to rebuild tt-metal from submodule while
-# still consuming LLVM from a pre-built toolchain.
-option(TTLANG_USE_TOOLCHAIN_TTMETAL
-  "Use pre-built tt-metal from ttlang toolchain (defaults to TTLANG_USE_TOOLCHAIN)"
-  ${TTLANG_USE_TOOLCHAIN})
-
-# External tt-metal override: point at an existing tt-metal installation
-# (install-ttmetal.sh output layout) instead of the toolchain copy or the
-# submodule. Takes precedence over TTLANG_USE_TOOLCHAIN_TTMETAL. See
-# BuildTTMetal.cmake for the required directory layout.
-set(TTLANG_EXTERNAL_TT_METAL_DIR "" CACHE PATH
-  "Path to an existing tt-metal installation; overrides the toolchain or submodule build.")
-if(NOT DEFINED TTLANG_TOOLCHAIN_DIR)
-  if(DEFINED ENV{TTLANG_TOOLCHAIN_DIR})
-    set(TTLANG_TOOLCHAIN_DIR "$ENV{TTLANG_TOOLCHAIN_DIR}" CACHE PATH
-      "tt-lang toolchain directory")
-  elseif(TTLANG_USE_TOOLCHAIN)
-    set(TTLANG_TOOLCHAIN_DIR "/opt/ttlang-toolchain" CACHE PATH
-      "tt-lang toolchain directory" FORCE)
-  endif()
-endif()
+include(TTLangToolchainOptions)
 
 # ---------------------------------------------------------------------------
 # Python venv setup (must run before BuildLLVM so that find_package(Python3)
 # resolves against the venv, not a system Python).
 # ---------------------------------------------------------------------------
 include(TTLangPython)
+
+# Component builds produce independent cache artifacts without configuring
+# tt-lang targets.
+include(TTLangToolchainComponent)
+if(TTLANG_TOOLCHAIN_COMPONENT_CONFIGURED)
+  return()
+endif()
 
 # ---------------------------------------------------------------------------
 # Simulator-only mode: create venv, install requirements, generate activate
@@ -149,10 +147,7 @@ include(BuildLLVM)
 include_directories(SYSTEM ${LLVM_INCLUDE_DIRS})
 include_directories(SYSTEM ${MLIR_INCLUDE_DIRS})
 
-# ---------------------------------------------------------------------------
-# Minimal tt-mlir build (from submodule)
-# ---------------------------------------------------------------------------
-include(BuildTTMLIRMinimal)
+include(BuildTTLangDialects)
 
 # Detect Python dev packages (Python3, pybind11, nanobind) using MLIR's
 # helpers. Must run after BuildLLVM and before add_subdirectory(python).
@@ -247,9 +242,10 @@ install(DIRECTORY python/sim_stats DESTINATION python_packages
         FILES_MATCHING PATTERN "*.py"
         PATTERN "__pycache__" EXCLUDE)
 
-# Install tt-lang-sim script to bin directory
+# Install command-line scripts to the bin directory.
 install(PROGRAMS "${CMAKE_SOURCE_DIR}/bin/tt-lang-sim" DESTINATION bin)
 install(PROGRAMS "${CMAKE_SOURCE_DIR}/bin/tt-lang-sim-stats" DESTINATION bin)
+install(PROGRAMS "${CMAKE_SOURCE_DIR}/bin/tt-triage" DESTINATION bin)
 
 # ---------------------------------------------------------------------------
 # Configuration summary

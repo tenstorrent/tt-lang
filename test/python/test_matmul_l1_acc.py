@@ -12,10 +12,6 @@ additively to L1.
 Tests single-core and multicore configurations with various block sizes.
 """
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v --tb=short
-
 import pytest
 import torch
 import ttl

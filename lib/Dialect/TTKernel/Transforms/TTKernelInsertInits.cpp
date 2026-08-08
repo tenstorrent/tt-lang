@@ -26,9 +26,9 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
-#include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelTraits.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernelTraits.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
@@ -87,6 +87,21 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
       }};
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
+  map[mlir::TypeID::get<ttk::AddIntTileOp>()] = {
+      [](OpBuilder &builder, Location location, Operation *) {
+        ttk::AddIntTileInitOp::create(builder, location);
+      }};
+  map[mlir::TypeID::get<ttk::SubIntTileOp>()] = {
+      [](OpBuilder &builder, Location location, Operation *) {
+        ttk::SubIntTileInitOp::create(builder, location);
+      }};
+  map[mlir::TypeID::get<ttk::MulIntTileOp>()] = {
+      [](OpBuilder &builder, Location location, Operation *computeOp) {
+        auto multiply = cast<ttk::MulIntTileOp>(computeOp);
+        ttk::MulIntTileInitOp::create(builder, location,
+                                      multiply.getDtypeAttr());
+      }};
+
 #define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
   map[mlir::TypeID::get<ttk::TTK_COMPUTE>()] = {                               \
       [](OpBuilder &b, Location l, Operation *) {                              \
@@ -142,12 +157,9 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
     auto reduceOp = cast<ttk::ReduceTileOp>(computeOp);
     Value outputCB = resolveOutputCB(computeOp, kReduceOutputCBIndexAttrName);
     assert(outputCB && "output CB required for reduce_init");
-    auto initOp = ttk::ReduceInitOp::create(
-        b, l, reduceOp.getInCb(), reduceOp.getScalingCb(), outputCB,
-        reduceOp.getReduceTypeAttr(), reduceOp.getReduceDimAttr());
-    if (reduceOp.getFullFp32()) {
-      initOp.setFullFp32(true);
-    }
+    ttk::ReduceInitOp::create(b, l, reduceOp.getInCb(), reduceOp.getScalingCb(),
+                              outputCB, reduceOp.getReduceTypeAttr(),
+                              reduceOp.getReduceDimAttr());
   }};
 
   map[mlir::TypeID::get<ttk::FillTileOp>()] = {
@@ -163,6 +175,18 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
         auto typecastOp = cast<ttk::TypecastTileOp>(computeOp);
         ttk::TypecastTileInitOp::create(b, l, typecastOp.getInDtypeAttr(),
                                         typecastOp.getOutDtypeAttr());
+      }};
+
+  // ExpTile: exp_tile_init configures the SFPU per exp flags. It takes approx,
+  // scale (the fp32 scale factor template), and input_clamping read off the
+  // exp_tile op. scale_en / iterations are compute-only and not part of the
+  // init. (exp is excluded from the generic unary macro above for this reason.)
+  map[mlir::TypeID::get<ttk::ExpTileOp>()] = {
+      [](OpBuilder &b, Location l, Operation *computeOp) {
+        auto expOp = cast<ttk::ExpTileOp>(computeOp);
+        ttk::ExpTileInitOp::create(b, l, expOp.getApproxAttr(),
+                                   expOp.getScaleAttr(),
+                                   expOp.getInputClampingAttr());
       }};
 
   // Transpose: resolves output CB from annotated attribute.
@@ -215,12 +239,9 @@ static InitKey computeInitKey(Operation *op) {
         typeId, {bcast.getInCb()}, static_cast<int64_t>(bcast.getBcastType())};
   }
 
-  // Different full_fp32 modes select a different LLK kernel branch and must
-  // not share an init.
   if (auto reduce = dyn_cast<ttk::ReduceTileOp>(op)) {
     int64_t disc = (static_cast<int64_t>(reduce.getReduceType()) << 16) |
-                   (static_cast<int64_t>(reduce.getReduceDim()) << 8) |
-                   static_cast<int64_t>(reduce.getFullFp32());
+                   static_cast<int64_t>(reduce.getReduceDim());
     return {typeId, {reduce.getInCb(), reduce.getScalingCb()}, disc};
   }
 
@@ -234,6 +255,31 @@ static InitKey computeInitKey(Operation *op) {
   if (auto typecast = dyn_cast<ttk::TypecastTileOp>(op)) {
     int64_t disc = (static_cast<int64_t>(typecast.getInDtype()) << 16) |
                    static_cast<int64_t>(typecast.getOutDtype());
+    return {typeId, {}, disc};
+  }
+
+  if (auto multiply = dyn_cast<ttk::MulIntTileOp>(op)) {
+    return {typeId, {}, static_cast<int64_t>(multiply.getDtype())};
+  }
+
+  // For exp: distinct flag combinations configure exp_tile_init differently
+  // and must not share an init. The init depends on approx, input_clamping,
+  // and the fp32 scale template, so encode all three in the discriminator.
+  // scale_en / iterations are compute-only and do not affect the init.
+  if (auto exp = dyn_cast<ttk::ExpTileOp>(op)) {
+    uint32_t scaleBits = 0x3F800000u; // default 1.0f for exp_tile_init.
+    if (auto scaleAttr = exp.getScaleAttr()) {
+      scaleBits = static_cast<uint32_t>(scaleAttr.getInt());
+    }
+    BoolAttr approxAttr = exp.getApproxAttr();
+    bool approx = approxAttr && approxAttr.getValue();
+    int64_t inputClamping =
+        static_cast<int64_t>(ttk::InputClamping::ClampToNegative);
+    if (auto inputClampingAttr = exp.getInputClampingAttr()) {
+      inputClamping = static_cast<int64_t>(inputClampingAttr.getValue());
+    }
+    int64_t disc = (static_cast<int64_t>(scaleBits) << 8) |
+                   (static_cast<int64_t>(approx) << 1) | inputClamping;
     return {typeId, {}, disc};
   }
 
@@ -326,12 +372,19 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
       auto collectOutputCB = [&](Value packCB, Operation *packOp) {
         if (!outputCB) {
           outputCB = packCB;
-        } else if (outputCB != packCB &&
-                   outputCB.getType() != packCB.getType()) {
-          packOp->emitOpError(
-              "sync region packs to output CBs with different data formats; "
-              "common init cannot configure multiple PACK formats");
-          hadError = true;
+        } else if (outputCB != packCB) {
+          // PACK initialization depends on the DFB element type; capacity does
+          // not affect the configured data format.
+          mlir::Type outputElementType =
+              mlir::cast<ttk::CBType>(outputCB.getType()).getElementType();
+          mlir::Type packElementType =
+              mlir::cast<ttk::CBType>(packCB.getType()).getElementType();
+          if (outputElementType != packElementType) {
+            packOp->emitOpError(
+                "sync region packs to output CBs with different data formats; "
+                "common init cannot configure multiple PACK formats");
+            hadError = true;
+          }
         }
       };
       if (auto pack = dyn_cast<ttk::PackTileOp>(inner)) {
@@ -463,11 +516,8 @@ struct TTKernelInsertInitsPass
     auto computeToInit = buildComputeToInitMap();
 
     auto emitReduceUninit = [](OpBuilder &builder, Location loc,
-                               ttk::ReduceTileOp prevReduce) {
-      auto uninit = ttk::ReduceUninitOp::create(builder, loc);
-      if (prevReduce && prevReduce.getFullFp32()) {
-        uninit.setFullFp32(true);
-      }
+                               ttk::ReduceTileOp) {
+      ttk::ReduceUninitOp::create(builder, loc);
     };
 
     auto processOp = [&](Operation &topOp, std::optional<InitKey> &prevKey,

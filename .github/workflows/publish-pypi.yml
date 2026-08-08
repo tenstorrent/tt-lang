@@ -7,18 +7,22 @@ name: Publish to PyPI
 on:
   push:
     tags:
-      # Public PyPI rejects PEP 440 local-version labels (e.g. +light), so the
-      # internal-wheel tags are intentionally excluded here.
+      # Public PyPI rejects PEP 440 local-version labels such as +light.
       - 'v[0-9]+.[0-9]+.[0-9]+'
       - 'v[0-9]+.[0-9]+.[0-9]+-*'
   workflow_dispatch:
     inputs:
-      docker_tag:
-        description: "Docker image tag for the ird container."
+      ttlang_sha:
+        description: "Full SHA of the release-tagged tt-lang commit to publish."
         type: string
         required: true
+      docker_tag:
+        description: "Existing manylinux_2_34 wheel-builder tag. Empty builds the images."
+        type: string
+        default: ""
+        required: false
       dry_run:
-        description: "Skip tag enforcement and the PyPI upload (for pipeline testing). build-wheels and test-dist-tutorials still run; pass an existing docker_tag so build-docker is skipped."
+        description: "Build and test a nightly-versioned wheel without enforcing a release tag or uploading to PyPI."
         type: boolean
         default: false
 
@@ -27,79 +31,94 @@ permissions:
 
 jobs:
   preflight:
-    name: "Verify release tag"
-    runs-on: ubuntu-latest
+    name: "Verify release target"
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
-      tag_version: ${{ steps.parse.outputs.tag_version }}
+      tag_version: ${{ steps.resolve.outputs.tag_version }}
+      wheel_version: ${{ steps.resolve.outputs.wheel_version }}
     steps:
-      - name: Checkout tt-lang
+      - name: Checkout workflow source
         uses: actions/checkout@v6
 
-      - name: Echo dispatch inputs
-        if: github.event_name == 'workflow_dispatch'
-        run: |
-          echo "dry_run=${{ inputs.dry_run }}"
-          echo "docker_tag=${{ inputs.docker_tag }}"
+      - name: Checkout release source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ttlang_sha || github.sha }}
+          path: release-source
+          fetch-depth: 0
+          fetch-tags: true
 
-      - name: Install packaging (for PEP 440 normalization in require-release-tag.sh)
+      - name: Install packaging
         if: ${{ github.event_name == 'push' || inputs.dry_run != true }}
         run: python3 -m pip install --user packaging
 
-      - name: Require release tag
-        id: parse
-        if: ${{ github.event_name == 'push' || inputs.dry_run != true }}
-        run: .github/scripts/require-release-tag.sh
+      - name: Resolve publish inputs
+        id: resolve
+        env:
+          DOCKER_TAG: ${{ inputs.docker_tag }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.dry_run) || 'false' }}
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_SOURCE: ${{ github.workspace }}/release-source
+          TTLANG_SHA: ${{ inputs.ttlang_sha }}
+        run: .github/scripts/resolve-pypi-publish-inputs.sh
 
       - name: Require PyPI ttnn alignment
         if: ${{ github.event_name == 'push' || inputs.dry_run != true }}
+        env:
+          TTLANG_TT_METAL_VERSION_FILE: ${{ github.workspace }}/release-source/third-party/tt-metal-version
         run: .github/scripts/require-pypi-ttnn-alignment.sh
 
-  build-docker:
+  build-wheel-images:
     needs: preflight
     if: ${{ github.event_name == 'push' || inputs.docker_tag == '' }}
     permissions:
       contents: read
       packages: write
-      checks: write
-    uses: ./.github/workflows/call-build-docker.yml
+    uses: ./.github/workflows/call-build-wheel-images.yml
     secrets: inherit
     with:
-      push: true
+      ttlang_sha_override: ${{ inputs.ttlang_sha }}
 
   build-wheels:
-    needs: [preflight, build-docker]
-    if: ${{ always() && needs.preflight.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') }}
+    needs: [preflight, build-wheel-images]
+    if: ${{ always() && needs.preflight.result == 'success' && (needs.build-wheel-images.result == 'success' || needs.build-wheel-images.result == 'skipped') }}
     permissions:
       contents: read
       packages: read
-    uses: ./.github/workflows/call-build-wheels.yml
+    uses: ./.github/workflows/call-build-manylinux-wheels.yml
     with:
-      docker_tag: ${{ (github.event_name == 'workflow_dispatch' && inputs.docker_tag != '' && inputs.docker_tag) || needs.build-docker.outputs.docker-tag }}
+      docker_tag: ${{ inputs.docker_tag != '' && inputs.docker_tag || needs.build-wheel-images.outputs.docker-tag }}
+      version_override: ${{ needs.preflight.outputs.wheel_version }}
+      ttnn_dep_mode: pypi
+      build_sim_wheel: true
+      artifact_name: tt-lang-wheels
+      ttlang_sha_override: ${{ inputs.ttlang_sha }}
 
-  test-dist-tutorials:
-    needs: [preflight, build-docker, build-wheels]
-    if: ${{ always() && needs.preflight.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') && needs.build-wheels.result == 'success' }}
+  test-wheels:
+    needs: [preflight, build-wheel-images, build-wheels]
+    if: ${{ always() && needs.preflight.result == 'success' && (needs.build-wheel-images.result == 'success' || needs.build-wheel-images.result == 'skipped') && needs.build-wheels.result == 'success' }}
     permissions:
+      checks: write
       contents: read
       packages: read
-      checks: write
-    uses: ./.github/workflows/call-test-dist-tutorials.yml
-    secrets: inherit
+    uses: ./.github/workflows/call-test-manylinux-wheels.yml
     with:
       runs-on: n150
-      dist_docker_tag: ${{ (github.event_name == 'workflow_dispatch' && inputs.docker_tag != '' && inputs.docker_tag) || needs.build-docker.outputs.docker-tag }}
+      docker_tag: ${{ inputs.docker_tag != '' && inputs.docker_tag || needs.build-wheel-images.outputs.docker-tag }}
+      artifact_name: tt-lang-wheels
+      ttnn_dep_mode: pypi
+      ttlang_sha_override: ${{ inputs.ttlang_sha }}
 
   publish:
     name: "Publish to PyPI"
-    needs: [preflight, build-wheels, test-dist-tutorials]
-    if: ${{ (github.event_name == 'push' || inputs.dry_run != true) && needs.test-dist-tutorials.result == 'success' }}
-    runs-on: ubuntu-latest
+    needs: [preflight, build-wheels, test-wheels]
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.dry_run != true && needs.preflight.result == 'success' && needs.build-wheels.result == 'success' && needs.test-wheels.result == 'success' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: pypi
     permissions:
       id-token: write
-
     steps:
       - name: Checkout tt-lang
         uses: actions/checkout@v6
@@ -108,32 +127,34 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: tt-lang-wheels
-          path: dist/
+          path: dist
 
       - name: List wheels
-        run: ls -lh dist/
+        run: .github/scripts/summarize-wheel-artifact.sh dist
 
       - name: Verify wheel version matches tag
-        run: .github/scripts/verify-wheel-version.sh "${{ needs.preflight.outputs.tag_version }}" dist
+        env:
+          TAG_VERSION: ${{ needs.preflight.outputs.tag_version }}
+        run: .github/scripts/verify-wheel-version.sh "$TAG_VERSION" dist
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 
   dry-run-summary:
     name: "Dry-run summary"
-    needs: [preflight, build-wheels]
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
-    runs-on: ubuntu-latest
+    needs: [preflight, build-wheels, test-wheels]
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.dry_run == true && needs.preflight.result == 'success' && needs.build-wheels.result == 'success' && needs.test-wheels.result == 'success' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      - name: Checkout tt-lang
+        uses: actions/checkout@v6
+
       - name: Download wheels
         uses: actions/download-artifact@v8
         with:
           name: tt-lang-wheels
-          path: dist/
+          path: dist
 
       - name: Summarize
-        run: |
-          echo "::notice::Dry run complete; no upload performed."
-          echo "Wheels that would have been published:"
-          ls -lh dist/
+        run: .github/scripts/summarize-wheel-artifact.sh --dry-run dist

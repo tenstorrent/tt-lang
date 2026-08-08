@@ -56,6 +56,72 @@ def TTL_PipeNetPredicateOpInterface
   ];
 }
 
+def TTL_AccumulationScopeOpInterface
+    : OpInterface<"AccumulationScopeOpInterface"> {
+  let description = [{
+    Region-like operations that explicitly describe accumulation semantics.
+    The interface separates the accumulation policy from the storage mechanism,
+    so consumers can reason about the declared policy directly.
+  }];
+
+  let cppNamespace = "::mlir::tt::ttl";
+
+  let methods = [
+    InterfaceMethod<
+      /*desc=*/"Return true when this operation instance carries active "
+               "accumulation semantics.",
+      /*retTy=*/"bool",
+      /*methodName=*/"isAccumulation",
+      /*args=*/(ins)>,
+    InterfaceMethod<
+      /*desc=*/"Return the destination tensor operands governed by the "
+               "accumulation policy.",
+      /*retTy=*/"::mlir::ValueRange",
+      /*methodName=*/"getAccumulationOutputs",
+      /*args=*/(ins)>,
+    InterfaceMethod<
+      /*desc=*/"Return init operands for outputs whose initial mode requires "
+               "one.",
+      /*retTy=*/"::mlir::ValueRange",
+      /*methodName=*/"getAccumulationInits",
+      /*args=*/(ins)>,
+    InterfaceMethod<
+      /*desc=*/"Return one initial-value mode per accumulation output.",
+      /*retTy=*/"::llvm::SmallVector<::mlir::tt::ttl::AccumulationInitialMode>",
+      /*methodName=*/"getAccumulationInitialModes",
+      /*args=*/(ins)>,
+    InterfaceMethod<
+      /*desc=*/"Return the region containing the accumulation body.",
+      /*retTy=*/"::mlir::Region &",
+      /*methodName=*/"getAccumulationBody",
+      /*args=*/(ins)>,
+  ];
+}
+
+def TTL_ComputePrimitiveOpInterface
+    : OpInterface<"ComputePrimitiveOpInterface"> {
+  let description = [{
+    Operations that implement a target-independent compute primitive. The
+    primitive identifies the hardware capability required by both tensor-level
+    and tile-level forms without depending on operation-name dispatch.
+  }];
+
+  let cppNamespace = "::mlir::tt::ttl";
+
+  let methods = [
+    InterfaceMethod<
+      /*desc=*/"Return the target-independent compute primitive implemented "
+               "by this operation.",
+      /*retTy=*/"::mlir::tt::ttl::ComputePrimitive",
+      /*methodName=*/"getComputePrimitive",
+      /*args=*/(ins),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/[{
+        return ConcreteOp::getComputePrimitiveKind();
+      }]>
+  ];
+}
+
 def TTL_DstAccessOpInterface : OpInterface<"DstAccessOpInterface"> {
   let description = [{
     Tile-level operations that expose concrete DST register reads, writes, and
@@ -68,8 +134,8 @@ def TTL_DstAccessOpInterface : OpInterface<"DstAccessOpInterface"> {
 
   let methods = [
     InterfaceMethod<
-      /*desc=*/"Return DST slots read by this operation.",
-      /*retTy=*/"::llvm::SmallVector<::mlir::tt::ttl::DstFootprint, 2>",
+      /*desc=*/"Return DST slots read by this operation after tile execution semantics and DST residency are resolved.",
+      /*retTy=*/"::mlir::FailureOr<::llvm::SmallVector<::mlir::tt::ttl::DstFootprint, 2>>",
       /*methodName=*/"getDstReadFootprints",
       /*args=*/(ins),
       /*methodBody=*/"",
@@ -98,6 +164,39 @@ def TTL_DstAccessOpInterface : OpInterface<"DstAccessOpInterface"> {
             $_op.getOperation(), result);
       }]
     >
+  ];
+}
+
+def TTL_TileExecutionOpInterface : OpInterface<"TileExecutionOpInterface"> {
+  let description = [{
+    Tile operations expose target-independent execution semantics through this
+    interface. An execution strategy determines operand routes and DST
+    behavior independently of target capabilities.
+  }];
+
+  let cppNamespace = "::mlir::tt::ttl";
+
+  let methods = [
+    InterfaceMethod<
+      /*desc=*/"Return execution strategies structurally permitted by the current operands.",
+      /*retTy=*/"::llvm::SmallVector<::mlir::tt::ttl::TileExecutionStrategy, 2>",
+      /*methodName=*/"getLegalExecutionStrategies",
+      /*args=*/(ins),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/[{
+        return ::mlir::tt::ttl::getDefaultLegalTileExecutionStrategies(
+            $_op.getOperation());
+      }]>,
+    InterfaceMethod<
+      /*desc=*/"Return execution semantics for the supplied strategy.",
+      /*retTy=*/"::mlir::FailureOr<::mlir::tt::ttl::TileExecutionInfo>",
+      /*methodName=*/"getTileExecutionInfo",
+      /*args=*/(ins "::std::optional<::mlir::tt::ttl::TileExecutionStrategy>":$strategy),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/[{
+        return ::mlir::tt::ttl::getDefaultTileExecutionInfo(
+            $_op.getOperation(), strategy);
+      }]>
   ];
 }
 

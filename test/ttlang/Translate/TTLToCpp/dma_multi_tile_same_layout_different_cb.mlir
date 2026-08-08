@@ -16,8 +16,8 @@
 #layout = #ttl.layout<shape = [2, 2], element_type = !ttcore.tile<32x32, f32>,
                       buffer = dram, grid = [1, 1], memory = interleaved>
 
-// CHECK-LABEL: // same_layout_different_cb
-// CHECK: void kernel_main() {
+// CHECK-LABEL: void kernel_main() {
+// CHECK:   Noc noc0(0);
 // CHECK-DAG:   size_t [[TILE_STEP:v[0-9]+]] = 1;
 // CHECK-DAG:   size_t [[TILES_BOUND:v[0-9]+]] = 2;
 // CHECK-DAG:   size_t [[PAGE_SIZE:v[0-9]+]] = 4096;
@@ -48,10 +48,10 @@
 // CHECK:       int32_t [[TILE1_OFFSET:v[0-9]+]] = (int32_t) [[TILE1_OFFSET_PTR]];
 // CHECK:       ptrdiff_t [[CB_ADDR1_PTR:v[0-9]+]] = (ptrdiff_t) [[CB_ADDR1_IDX]];
 // CHECK:       int32_t [[CB_ADDR1:v[0-9]+]] = (int32_t) [[CB_ADDR1_PTR]];
-// CHECK:       noc_async_read_tile([[TILE1_OFFSET]], [[ACC1]], [[CB_ADDR1]]);
+// CHECK:       noc0.async_read([[ACC1]], CoreLocalMem<uint32_t>([[CB_ADDR1]]), [[ACC1]].get_aligned_page_size(), {.page_id = static_cast<uint32_t>([[TILE1_OFFSET]])}, {});
 // CHECK:     }
 // CHECK:   }
-// CHECK:   noc.async_read_barrier<Noc::BarrierMode::FULL>();
+// CHECK:   noc0.async_read_barrier();
 
 // Second copy: 64x64 (2x2 tiles) → CB [4,1] - SAME tensor layout, DIFFERENT CB shape
 // CHECK:   int32_t [[RT_ARG2:v[0-9]+]] = get_common_arg_val<uint32_t>([[TILE_STEP]]);
@@ -73,10 +73,10 @@
 // CHECK:       int32_t [[TILE2_OFFSET:v[0-9]+]] = (int32_t) [[TILE2_OFFSET_PTR]];
 // CHECK:       ptrdiff_t [[CB_ADDR2_PTR:v[0-9]+]] = (ptrdiff_t) [[CB_ADDR2_IDX]];
 // CHECK:       int32_t [[CB_ADDR2:v[0-9]+]] = (int32_t) [[CB_ADDR2_PTR]];
-// CHECK:       noc_async_read_tile([[TILE2_OFFSET]], [[ACC2]], [[CB_ADDR2]]);
+// CHECK:       noc0.async_read([[ACC2]], CoreLocalMem<uint32_t>([[CB_ADDR2]]), [[ACC2]].get_aligned_page_size(), {.page_id = static_cast<uint32_t>([[TILE2_OFFSET]])}, {});
 // CHECK:     }
 // CHECK:   }
-// CHECK:   noc.async_read_barrier<Noc::BarrierMode::FULL>();
+// CHECK:   noc0.async_read_barrier();
 // CHECK:   return;
 // CHECK-NEXT: }
 
@@ -84,8 +84,8 @@ module {
   func.func @same_layout_different_cb(%arg0: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, %arg1: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>)
       attributes {ttl.base_cta_index = 2 : i32, ttl.crta_indices = [0, 1], ttl.kernel_thread = #ttkernel.thread<noc>} {
     %c0 = arith.constant 0 : index
-    %cb1 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
-    %cb2 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
+    %cb1 = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
+    %cb2 = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
 
     // First copy: 64x64 → CB [2,2]
     %slice0 = ttl.tensor_slice %arg0[%c0, %c0] : tensor<2x2x!ttcore.tile<32x32, f32>, #layout> -> tensor<2x2x!ttcore.tile<32x32, f32>, #layout>

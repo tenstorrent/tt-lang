@@ -24,8 +24,36 @@ from ttl.ir import (
 from ._generated_elementwise import *  # noqa: F401,F403
 from ._generated_elementwise import __all__ as _generated_all
 from ._src.ttl_ast import syntax
+from .constants import DEFAULT_TILE_SIZE
 from ttl.dialects import ttl
 from .pipe import Pipe
+
+
+def call_extern_func(
+    header: str,
+    callee: str,
+    *,
+    template_args=None,
+    func_args=None,
+    include_paths=None,
+) -> None:
+    """Call an external C++ function from a compiled kernel."""
+    raise RuntimeError("ttl.call_extern_func() is valid only in a compiled kernel")
+
+
+def dfb_descriptor(dfb):
+    """Use finalized DFB allocation metadata as a C++ template type."""
+    raise RuntimeError("ttl.dfb_descriptor() is valid only in a compiled kernel")
+
+
+def get_dfb_id(dfb):
+    """Use a finalized physical DFB index as an integer value."""
+    raise RuntimeError("ttl.get_dfb_id() is valid only in a compiled kernel")
+
+
+def raw_addr(tensor):
+    """Use a base tensor's runtime buffer address as an integer value."""
+    raise RuntimeError("ttl.raw_addr() is valid only in a compiled kernel")
 
 
 def _arith_constant_op(val):
@@ -98,6 +126,26 @@ def _get_constant_float(val) -> float:
     return v
 
 
+def _get_constant_bool(val) -> bool:
+    if isinstance(val, bool):
+        return val
+    value = get_constant_int_value(val)
+    if value is None:
+        raise ValueError(f"Expected constant bool, got {type(val).__name__}")
+    return bool(value)
+
+
+def _tile_hw(elem_type) -> Optional[Tuple[int, int]]:
+    """Return (H, W) when ``elem_type`` is a TileType, else None."""
+    from ttl.dialects import ttcore
+
+    tile = ttcore.ir.TileType.maybe_downcast(elem_type)
+    if tile is None:
+        return None
+    shape = list(tile.shape)
+    return (int(shape[0]), int(shape[1]))
+
+
 # Type aliases for common patterns
 CoreCoordinate = Tuple[int, int]
 IndexedTensor = Union["TensorBlock", Tuple["TensorBlock", Tuple[int, ...]]]
@@ -142,11 +190,11 @@ class TensorBlock:
         Returns:
             Result tensor with the same shape as inputs.
         """
-        return ttl.add(ast_self.type, ast_self, rhs)
+        return ttl.add(ast_self, rhs)
 
     def __sub__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
         """Element-wise subtraction using ttl.sub."""
-        return ttl.sub(ast_self.type, ast_self, rhs)
+        return ttl.sub(ast_self, rhs)
 
     def __mul__(ast_self: TensorBlock, rhs) -> TensorBlock:
         """Multiplication.
@@ -160,7 +208,7 @@ class TensorBlock:
             ctx = ast_self.type.context
             value_attr = FloatAttr.get(F32Type.get(ctx), c)
             return ttl.mul_unary_const(ast_self, value_attr)
-        return ttl.mul(ast_self.type, ast_self, rhs)
+        return ttl.mul(ast_self, rhs)
 
     def __rmul__(ast_self: TensorBlock, lhs) -> TensorBlock:
         """Reflected multiplication for `scalar * self`."""
@@ -173,39 +221,32 @@ class TensorBlock:
 
     def __truediv__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
         """Element-wise division using ttl.div."""
-        return ttl.div(ast_self.type, ast_self, rhs)
+        return ttl.div(ast_self, rhs)
 
     def __gt__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
         """Element-wise greater-than using ttl.gt."""
-        return ttl.gt(ast_self.type, ast_self, rhs)
+        return ttl.gt(ast_self, rhs)
 
     def __lt__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
         """Element-wise less-than using ttl.lt."""
-        return ttl.lt(ast_self.type, ast_self, rhs)
+        return ttl.lt(ast_self, rhs)
 
     def __eq__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:  # type: ignore[override]
         """Element-wise equality using ttl.eq."""
-        return ttl.eq(ast_self.type, ast_self, rhs)
+        return ttl.eq(ast_self, rhs)
 
     def __ne__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:  # type: ignore[override]
         """Element-wise inequality using ttl.ne."""
-        return ttl.ne(ast_self.type, ast_self, rhs)
+        return ttl.ne(ast_self, rhs)
 
     def __matmul__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
         """Matrix multiplication using ttl.matmul.
 
         Computes C[M,N] = A[M,K] * B[K,N]. Both operands must be
-        CB-attached tensors of tiles.
+        CB-attached tensors of tiles. This is sugar for the non-transposed
+        ``ttl.matmul`` free function.
         """
-        lhs_type = ast_self.type
-        rhs_type = rhs.type
-        lhs_shape = list(lhs_type.shape)
-        rhs_shape = list(rhs_type.shape)
-        result_shape = [lhs_shape[0], rhs_shape[1]]
-        result_type = RankedTensorType.get(
-            result_shape, lhs_type.element_type, lhs_type.encoding
-        )
-        return ttl.matmul(result_type, ast_self, rhs)
+        return _build_matmul(ast_self, rhs, transpose_rhs=False)
 
     def store(ast_self: TensorBlock, rhs: TensorBlock) -> None:
         """Store result tensor to the output CB reserve view (overwrite).
@@ -218,6 +259,12 @@ class TensorBlock:
                 "store() must be called on a block acquired from reserve(), not a regular tensor"
             )
         reserve = _get_reserve_from_block(ast_self)
+        _require_matching_tile_shapes(
+            rhs.type.element_type,
+            reserve.type.element_type,
+            "source",
+            "destination CB",
+        )
         ttl.store(rhs, reserve)
 
     def __iadd__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
@@ -345,11 +392,14 @@ def _is_block(value) -> bool:
     """Check if a value is a block (result of cb.reserve() or cb.wait()).
 
     A block is a tensor with an attached CB, produced by ttl.attach_cb.
+    BlockArguments (e.g. scf.for iter_args) report a `Block` as their
+    owner, not an `Operation`, so they are never blocks in this sense.
     """
     if not hasattr(value, "owner") or value.owner is None:
         return False
-    owner_name = value.owner.name
-    return owner_name == "ttl.attach_cb"
+    if not hasattr(value.owner, "name"):
+        return False
+    return value.owner.name == "ttl.attach_cb"
 
 
 def _get_reserve_from_block(block):
@@ -380,6 +430,28 @@ def _get_cb_shape(cb_val):
     if cb_type is None:
         raise ValueError(f"Expected CircularBufferType, got {cb_val.type}")
     return list(cb_type.shape)
+
+
+def _require_matching_tile_shapes(lhs_elem, rhs_elem, lhs_name: str, rhs_name: str):
+    """Reject copies/stores with inconsistent tilization.
+
+    Both non-tile is allowed. Mixing tile and non-tile, or two different
+    tile shapes, is an error.
+    """
+    lhs = _tile_hw(lhs_elem)
+    rhs = _tile_hw(rhs_elem)
+    if lhs is None and rhs is None:
+        return
+    if lhs is None or rhs is None:
+        raise ValueError(
+            f"cannot mix tiled and non-tiled element types; got "
+            f"{lhs_name}={lhs_elem}, {rhs_name}={rhs_elem}"
+        )
+    if lhs != rhs:
+        raise ValueError(
+            f"{lhs_name} tile shape {lhs[0]}x{lhs[1]} must match "
+            f"{rhs_name} tile shape {rhs[0]}x{rhs[1]}"
+        )
 
 
 def _process_tensor_subscript(subscript_tuple, cb_shape):
@@ -537,10 +609,22 @@ def copy(src, dst) -> CopyTransferHandler:
 
     if dst_is_block and not src_is_block:
         # Read: device tensor/slice -> block (CB)
+        dst_cb_ty = ttl.CircularBufferType.maybe_downcast(dst_cb.type)
+        if dst_cb_ty is None:
+            raise ValueError(f"Expected CircularBufferType, got {dst_cb.type}")
+        _require_matching_tile_shapes(
+            src.type.element_type, dst_cb_ty.element_type, "tensor", "CB"
+        )
         xf_type = Type.parse("!ttl.transfer_handle<read>", ctx)
         return ttl.copy(xf_type, src, dst_cb)
     elif src_is_block and not dst_is_block:
         # Write: block (CB) -> device tensor/slice
+        src_cb_ty = ttl.CircularBufferType.maybe_downcast(src_cb.type)
+        if src_cb_ty is None:
+            raise ValueError(f"Expected CircularBufferType, got {src_cb.type}")
+        _require_matching_tile_shapes(
+            dst.type.element_type, src_cb_ty.element_type, "tensor", "CB"
+        )
         xf_type = Type.parse("!ttl.transfer_handle<write>", ctx)
         return ttl.copy(xf_type, src_cb, dst)
     else:
@@ -578,6 +662,7 @@ def node(*, dims):
     return (ttl.core_x(), ttl.core_y())
 
 
+@syntax("grid_size")
 def grid_size(*, dims):
     """
     Get the size of the grid.
@@ -756,6 +841,99 @@ def reduce_max(input: TensorBlock, *, dims: List[int]) -> TensorBlock:
     return _reduce_impl(input, dims, reduce_type=1)
 
 
+def _resolve_transpose_flag(val) -> bool:
+    """Resolve a transpose keyword into a Python bool.
+
+    Inside ``@ttl.compute``, ``True``/``False`` literals are lowered to i1
+    ``arith.constant`` SSA values by the AST compiler, so accept either a
+    Python bool (from the default argument) or a constant int/i1 value.
+    """
+    if isinstance(val, bool):
+        return val
+    iv = get_constant_int_value(val)
+    if iv is not None:
+        return bool(iv)
+    raise ValueError("transpose_rhs must be a compile-time boolean constant")
+
+
+def _build_matmul(lhs: TensorBlock, rhs: TensorBlock, *, transpose_rhs: bool):
+    """Build a ttl.matmul op, computing the result shape from the operands.
+
+    For the non-transposed form ``rhs`` is ``[K, N]``; for the transposed
+    form (``transpose_rhs``) ``rhs`` is ``[N, K]`` and the matmul computes
+    ``C[M, N] = A[M, K] * B[N, K]^T``.
+    """
+    transpose = _resolve_transpose_flag(transpose_rhs)
+    lhs_type = lhs.type
+    rhs_type = rhs.type
+    lhs_shape = list(lhs_type.shape)
+    rhs_shape = list(rhs_type.shape)
+    if len(lhs_shape) != 2 or len(rhs_shape) != 2:
+        raise ValueError(
+            f"matmul requires rank-2 operands, got lhs rank {len(lhs_shape)} "
+            f"and rhs rank {len(rhs_shape)}"
+        )
+
+    # K is lhs columns. For transposed rhs [N, K], K is rhs.shape[1] and N is
+    # rhs.shape[0]; otherwise rhs is [K, N], so K is rhs.shape[0] and N is
+    # rhs.shape[1].
+    rhs_k = rhs_shape[1] if transpose else rhs_shape[0]
+    if lhs_shape[1] != rhs_k:
+        raise ValueError(
+            f"matmul K dimension mismatch: lhs has {lhs_shape[1]} columns but "
+            f"rhs has {rhs_k} {'columns' if transpose else 'rows'}"
+        )
+
+    from ttl.dialects import ttcore
+
+    lhs_tile = ttcore.ir.TileType.maybe_downcast(lhs_type.element_type)
+    rhs_tile = ttcore.ir.TileType.maybe_downcast(rhs_type.element_type)
+    if lhs_tile is None or rhs_tile is None:
+        raise ValueError(
+            "matmul requires tile-typed operands, got "
+            f"lhs={lhs_type.element_type}, rhs={rhs_type.element_type}"
+        )
+    lhs_dtype = ttcore.DataType(lhs_tile.data_type_as_int)
+    rhs_dtype = ttcore.DataType(rhs_tile.data_type_as_int)
+    if lhs_dtype != rhs_dtype:
+        raise ValueError(
+            "matmul operand tile data types must match, got "
+            f"lhs={lhs_type.element_type}, rhs={rhs_type.element_type}"
+        )
+
+    lhs_tile_height, lhs_tile_width = map(int, lhs_tile.shape)
+    rhs_tile_height, rhs_tile_width = map(int, rhs_tile.shape)
+    rhs_tile_k = rhs_tile_width if transpose else rhs_tile_height
+    if lhs_tile_width != rhs_tile_k:
+        raise ValueError(
+            "matmul tile K dimension mismatch: lhs tile width "
+            f"{lhs_tile_width} does not match rhs tile "
+            f"{'width' if transpose else 'height'} {rhs_tile_k}"
+        )
+
+    n = rhs_shape[0] if transpose else rhs_shape[1]
+    result_shape = [lhs_shape[0], n]
+    result_tile_width = rhs_tile_height if transpose else rhs_tile_width
+    result_tile = ttcore.ir.TileType.get(
+        lhs_type.context, lhs_tile_height, result_tile_width, lhs_dtype
+    )
+    result_type = RankedTensorType.get(result_shape, result_tile, lhs_type.encoding)
+    if transpose:
+        return ttl.matmul(result_type, lhs, rhs, transpose_rhs=True)
+    return ttl.matmul(result_type, lhs, rhs)
+
+
+@syntax("matmul")
+def matmul(lhs: TensorBlock, rhs: TensorBlock, *, transpose_rhs=False) -> TensorBlock:
+    """Matrix multiply two CB-attached tensors of tiles.
+
+    Computes ``C[M, N] = A[M, K] * B[K, N]``. When ``transpose_rhs`` is set,
+    ``rhs`` is provided as ``[N, K]`` and the matmul computes
+    ``C[M, N] = A[M, K] * B[N, K]^T`` using the hardware transpose path.
+    """
+    return _build_matmul(lhs, rhs, transpose_rhs=transpose_rhs)
+
+
 @syntax("transpose")
 def transpose(input: TensorBlock) -> TensorBlock:
     """Transpose a 2D block: (M, N) -> (N, M)."""
@@ -773,16 +951,23 @@ def transpose(input: TensorBlock) -> TensorBlock:
 
 
 @syntax("fill")
-def fill(value, *, shape, dtype=None) -> TensorBlock:
+def fill(
+    value,
+    *,
+    shape,
+    dtype=None,
+    tile=(DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE),
+) -> TensorBlock:
     """Produce a block of ``shape`` filled with a constant value.
 
-    Matches the spec form ``ttl.block.fill(value, shape)``. ``dtype`` selects
-    the per-element tile dtype and defaults to bf16, matching the simulator's
-    spec-form default. Accepts ``ttcore.DataType``, a torch dtype, or a ttnn
-    dtype. The downstream ``ttl.store`` determines the output CB used during
-    lowering; no output operand is required.
+    ``dtype`` selects the per-element dtype and defaults to bf16. ``tile``
+    selects TT-Metal-constructible physical dimensions and defaults to 32x32;
+    the compiler validates target-specific fill support. The downstream
+    ``ttl.store`` determines the output DFB used during lowering; no output
+    operand is required.
     """
     from ttl.dialects import ttcore
+    from .dtype_utils import normalize_tile_dimensions
     from .dtype_utils import tensor_dtype_to_ttcore_datatype
 
     fill_val = _get_constant_float(value)
@@ -791,6 +976,9 @@ def fill(value, *, shape, dtype=None) -> TensorBlock:
         raise ValueError("fill requires a non-empty shape")
     if any(s <= 0 for s in shape_list):
         raise ValueError(f"fill shape must be all-positive, got {tuple(shape_list)}")
+    tile_dimensions = normalize_tile_dimensions(
+        tuple(_get_constant_int(dimension) for dimension in tile)
+    )
 
     if dtype is None:
         ttcore_dtype = ttcore.DataType.BFloat16
@@ -800,7 +988,7 @@ def fill(value, *, shape, dtype=None) -> TensorBlock:
         ttcore_dtype = tensor_dtype_to_ttcore_datatype(dtype)
 
     ctx = Context.current
-    tile_type = ttcore.ir.TileType.get(ctx, 32, 32, ttcore_dtype)
+    tile_type = ttcore.ir.TileType.get(ctx, *tile_dimensions, ttcore_dtype)
     result_type = RankedTensorType.get(shape_list, tile_type)
     value_attr = FloatAttr.get(F32Type.get(ctx), fill_val)
     return ttl.fill(result_type, value_attr)
@@ -872,6 +1060,65 @@ def typecast(input: TensorBlock, dtype) -> TensorBlock:
         input_type.shape, out_tile_type, input_type.encoding
     )
     return ttl.typecast(result_type, input)
+
+
+@syntax("exp")
+def exp(
+    input: TensorBlock,
+    *,
+    approx: bool = False,
+    scale: Optional[float] = None,
+    skip_clamp_check: bool = False,
+    iterations: int = 8,
+) -> TensorBlock:
+    """Element-wise exponential.
+
+    With default arguments this matches the plain hardware ``exp_tile`` (no
+    approximation, no scaling, clamped). Keyword flags expose the SFPU exp
+    template parameters:
+
+    Args:
+        input: Input tensor (CB-attached). Each element is a tile.
+        approx: Enable the fast approximate exp.
+        scale: Optional scale factor ``s``; when set the op computes
+            ``exp(s * x)``. ``None`` (default) disables scaling.
+        skip_clamp_check: When ``True``, disables clamping of very negative
+            inputs (``InputClamping::None``): faster, but inputs below ~-88.5
+            produce incorrect (guaranteed-negative) outputs. Only meaningful
+            with ``approx=True``. Defaults to ``False`` (``ClampToNegative``).
+        iterations: Number of SFPU lane iterations (default 8).
+
+    Returns:
+        Result tensor with the same shape and dtype as ``input``.
+    """
+    from ttl.ir import BoolAttr, IntegerType
+
+    ctx = input.type.context
+    i32 = IntegerType.get_signless(32, ctx)
+
+    # Flag literals passed inside a compute body arrive as arith.constant
+    # values, so resolve them through the constant helpers.
+    approx_b = _get_constant_bool(approx)
+    skip_clamp_b = _get_constant_bool(skip_clamp_check)
+    iterations_i = _get_constant_int(iterations)
+    scale_f = None if scale is None else _get_constant_float(scale)
+
+    # Pass None for any flag left at its default so the op keeps its plain
+    # spelling (the ODS default applies). input_clamping is an integer-backed
+    # enum attribute (built like ttl.reduce's reduce_type); None=0,
+    # ClampToNegative=1.
+    approx_attr = BoolAttr.get(True) if approx_b else None
+    iterations_attr = IntegerAttr.get(i32, iterations_i) if iterations_i != 8 else None
+    clamping_attr = IntegerAttr.get(i32, 0) if skip_clamp_b else None
+    scale_attr = None if scale_f is None else FloatAttr.get(F32Type.get(ctx), scale_f)
+
+    return ttl.exp(
+        input,
+        approx=approx_attr,
+        scale=scale_attr,
+        input_clamping=clamping_attr,
+        iterations=iterations_attr,
+    )
 
 
 def _get_block_scalar_type(block):
@@ -995,9 +1242,15 @@ __all__ = [
     "core",
     "grid_size",
     "signpost",
+    "matmul",
     "fill",
     "typecast",
+    "exp",
     "raw_element_read",
     "raw_element_write",
+    "call_extern_func",
+    "dfb_descriptor",
+    "get_dfb_id",
+    "raw_addr",
     *_generated_all,
 ]

@@ -26,6 +26,7 @@ except ImportError:
     grid=(1, 1),
     fp32_dest_acc_en=True,
     dst_full_sync_en=False,
+    math_fidelity="HiFi4",
 )
 def add_kernel_f32(lhs, rhs, out):
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), block_count=2)

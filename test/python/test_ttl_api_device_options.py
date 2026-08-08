@@ -2,13 +2,16 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for device target-arch detection used by the TTL Python wrapper."""
+"""Unit tests for TT device options used by the TTL Python wrapper."""
 
 from unittest import mock
 
 import pytest
 
+import ttl.dialects.ttl as ttl
 import ttl.ttl_api as ttl_api
+from ttl.constants import SUPPORTED_MATH_FIDELITIES
+from ttl.ir import Context, Module
 
 
 class _TensorWithDevice:
@@ -60,23 +63,137 @@ class TestDeviceTargetArch:
         device = _DeviceWithArchAttribute("BLACKHOLE")
         assert ttl_api._device_target_arch((_TensorWithDevice(device),)) == "blackhole"
 
-    def test_unknown_arch_returns_normalized_string(self):
-        device = _DeviceWithArchAttribute("future_arch")
-        assert (
-            ttl_api._device_target_arch((_TensorWithDevice(device),)) == "future_arch"
-        )
+    def test_quasar_arch_is_rejected(self):
+        device = _DeviceWithArchMethod("Arch.QUASAR")
+        with pytest.raises(ValueError, match="Unsupported TT device architecture"):
+            ttl_api._device_target_arch((_TensorWithDevice(device),))
 
-    def test_no_recognized_arch_attribute_returns_none(self):
-        assert ttl_api._device_target_arch((_TensorWithDevice(object()),)) is None
+    def test_unknown_arch_is_rejected(self):
+        device = _DeviceWithArchAttribute("future_arch")
+        with pytest.raises(ValueError, match="Unsupported TT device architecture"):
+            ttl_api._device_target_arch((_TensorWithDevice(device),))
+
+    def test_no_recognized_arch_attribute_is_rejected(self):
+        with pytest.raises(
+            ValueError, match="Unsupported or undetectable TT device architecture"
+        ):
+            ttl_api._device_target_arch((_TensorWithDevice(object()),))
 
     def test_no_tensor_args_returns_none(self):
         assert ttl_api._device_target_arch(()) is None
 
-    def test_raising_arch_attribute_returns_none(self):
-        # hasattr() swallows the AttributeError-or-otherwise; detection
-        # falls through to the next attribute and ultimately returns None
-        # when none resolve.
-        assert (
+    def test_raising_arch_attribute_is_rejected(self):
+        with pytest.raises(
+            ValueError, match="Unsupported or undetectable TT device architecture"
+        ):
             ttl_api._device_target_arch((_TensorWithDevice(_DeviceWithRaisingArch()),))
-            is None
+
+    def test_different_device_architectures_are_rejected(self):
+        args = (
+            _TensorWithDevice(_DeviceWithArchAttribute("Arch.WORMHOLE_B0")),
+            _TensorWithDevice(_DeviceWithArchAttribute("Arch.BLACKHOLE")),
         )
+        with pytest.raises(ValueError, match="different TT device architectures"):
+            ttl_api._device_target_arch(args)
+
+
+class TestKernelI32ArrayAttr:
+    def test_optional_attribute_may_be_absent(self):
+        context = Context()
+        ttl.ensure_dialects_registered(context)
+
+        with context:
+            module = Module.parse("module { func.func @reader() { return } }")
+            assert (
+                ttl_api._get_optional_kernel_i32_array_attr(
+                    module, "reader", "ttl.pipe_computed_address_dfb_indices"
+                )
+                == []
+            )
+
+    def test_optional_attribute_is_read_when_present(self):
+        context = Context()
+        ttl.ensure_dialects_registered(context)
+
+        with context:
+            module = Module.parse(
+                """
+                module {
+                  func.func @reader() attributes {
+                    ttl.pipe_computed_address_dfb_indices = array<i32: 2, 5>
+                  } {
+                    return
+                  }
+                }
+                """
+            )
+            assert ttl_api._get_optional_kernel_i32_array_attr(
+                module, "reader", "ttl.pipe_computed_address_dfb_indices"
+            ) == [2, 5]
+
+    def test_optional_attribute_is_validated_when_present(self):
+        context = Context()
+        ttl.ensure_dialects_registered(context)
+
+        with context:
+            module = Module.parse(
+                """
+                module {
+                  func.func @reader() attributes {
+                    ttl.pipe_computed_address_dfb_indices = 2 : i32
+                  } {
+                    return
+                  }
+                }
+                """
+            )
+            with pytest.raises(ValueError, match="Expected DenseI32ArrayAttr"):
+                ttl_api._get_optional_kernel_i32_array_attr(
+                    module, "reader", "ttl.pipe_computed_address_dfb_indices"
+                )
+
+    def test_required_attribute_must_be_present(self):
+        context = Context()
+        ttl.ensure_dialects_registered(context)
+
+        with context:
+            module = Module.parse(
+                """
+                module {
+                  func.func @compute_kernel() attributes {
+                    dst_full_sync_en = false,
+                    fp32_dest_acc_en = false
+                  } {
+                    return
+                  }
+                }
+                """
+            )
+            with pytest.raises(
+                ValueError,
+                match="Required compiler-generated attribute "
+                "'ttl.unpack_to_dest_fp32' is missing",
+            ):
+                ttl_api._get_kernel_i32_array_attr(
+                    module, "compute_kernel", "ttl.unpack_to_dest_fp32"
+                )
+
+
+class TestMathFidelity:
+    @pytest.mark.parametrize("math_fidelity", SUPPORTED_MATH_FIDELITIES)
+    def test_maps_supported_value(self, math_fidelity):
+        fidelity_value = object()
+        ttnn_module = mock.Mock()
+        setattr(ttnn_module.MathFidelity, math_fidelity, fidelity_value)
+        config = mock.Mock()
+
+        ttl_api._set_math_fidelity(config, ttnn_module, math_fidelity)
+
+        assert config.math_fidelity is fidelity_value
+
+    def test_missing_ttnn_value_is_rejected(self):
+        ttnn_module = mock.Mock()
+        del ttnn_module.MathFidelity.HiFi4
+
+        with pytest.raises(RuntimeError, match="does not provide MathFidelity.HiFi4"):
+            ttl_api._set_math_fidelity(mock.Mock(), ttnn_module, "HiFi4")

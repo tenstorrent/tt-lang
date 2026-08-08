@@ -1,7 +1,7 @@
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-set-compute-kernel-config{enable-fpu-binary-ops=0 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst),cse,canonicalize)' | FileCheck %s
 
 // Basic elementwise operations lowered to ttl.compute with tile ops and DST assignment.
-// Note: enable-fpu-binary-ops=0 keeps SFPU lowering path (not testing FPU detection).
+// Disabling FPU selection makes binary operands use DST.
 // Input provides explicit bind_cb and attach_cb ops; pass creates compute.
 
 #map = affine_map<(d0, d1) -> (d0, d1)>

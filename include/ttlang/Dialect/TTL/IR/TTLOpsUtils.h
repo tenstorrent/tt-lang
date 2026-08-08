@@ -5,26 +5,48 @@
 #ifndef TTLANG_DIALECT_TTL_IR_TTLOPSUTILS_H
 #define TTLANG_DIALECT_TTL_IR_TTLOPSUTILS_H
 
+#include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
-#include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/Utils/Utils.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
-#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
+#include "mlir/Support/LogicalResult.h"
+#include "llvm/ADT/FunctionExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 
 #include <cstdint>
 #include <optional>
+#include <string>
 
 namespace mlir::tt::ttl {
+
+/// Returns a tile type directly or from a ranked tensor element type.
+FailureOr<ttcore::TileType> getTileType(Type type);
+
+/// Validates the target-independent input and result relation for typecast.
+LogicalResult verifyTypecastTileTypes(ttcore::TileType inputType,
+                                      ttcore::TileType resultType,
+                                      std::string &failureReason);
+
+/// Validate the element data types and physical tile dimensions of a matmul.
+///
+/// This is the target-independent type relation. For `lhs @ rhs`, the lhs tile
+/// width equals the rhs tile height and the result tile dimensions are
+/// `[lhs.height, rhs.width]`. With `transposeRhs`, the rhs width is contracted
+/// and the result width is the rhs height.
+LogicalResult verifyMatmulTileTypes(ttcore::TileType lhsType,
+                                    ttcore::TileType rhsType,
+                                    ttcore::TileType resultType,
+                                    bool transposeRhs,
+                                    std::string &failureReason);
 
 /// Return the enclosing kernel-thread `func.func` (tagged with
 /// `ttl.kernel_thread`), or null if `op` is not inside one.
@@ -34,6 +56,33 @@ inline mlir::func::FuncOp getEnclosingKernelThread(mlir::Operation *op) {
     return func;
   }
   return nullptr;
+}
+
+/// Return the TTKernel thread type attached to `func`.
+///
+/// The helper accepts both the TTL attribute used before conversion and the
+/// TTKernel attribute used after conversion because analysis utilities may run
+/// on either side of the attr rewrite.
+inline std::optional<mlir::tt::ttkernel::ThreadType>
+getKernelThreadType(mlir::func::FuncOp func) {
+  if (!func) {
+    return std::nullopt;
+  }
+  if (auto attr = func->getAttrOfType<mlir::tt::ttkernel::ThreadTypeAttr>(
+          mlir::tt::ttkernel::ThreadTypeAttr::name)) {
+    return attr.getValue();
+  }
+  if (auto attr = func->getAttrOfType<mlir::tt::ttkernel::ThreadTypeAttr>(
+          kKernelThreadAttrName)) {
+    return attr.getValue();
+  }
+  return std::nullopt;
+}
+
+/// Return true if `op` belongs to a NOC kernel thread.
+inline bool isNocKernelThread(mlir::Operation *op) {
+  return getKernelThreadType(op->getParentOfType<mlir::func::FuncOp>()) ==
+         mlir::tt::ttkernel::ThreadType::Noc;
 }
 
 /// Trace through unrealized conversion casts to the original value
@@ -53,112 +102,38 @@ inline mlir::Value traceUnrealizedCasts(mlir::Value value) {
   return value;
 }
 
-/// Trace a transfer handle through tensor containers and loop-carried values
-/// to the first value accepted by `match`.
-template <typename ResultT, typename MatchFn>
-inline ResultT
-traceTransferHandleSource(mlir::Value value, MatchFn match,
-                          llvm::SmallPtrSetImpl<mlir::Value> &seen) {
-  value = traceUnrealizedCasts(value);
-  if (!seen.insert(value).second) {
-    return ResultT();
-  }
-
-  if (ResultT result = match(value)) {
-    return result;
-  }
-  if (auto extractOp = value.getDefiningOp<mlir::tensor::ExtractOp>()) {
-    return traceTransferHandleSource<ResultT>(extractOp.getTensor(), match,
-                                              seen);
-  }
-  if (auto insertOp = value.getDefiningOp<mlir::tensor::InsertOp>()) {
-    return traceTransferHandleSource<ResultT>(insertOp.getScalar(), match,
-                                              seen);
-  }
-  if (auto result = mlir::dyn_cast<mlir::OpResult>(value)) {
-    if (auto loop =
-            mlir::dyn_cast<mlir::LoopLikeOpInterface>(result.getOwner())) {
-      auto yieldedOpt = loop.getYieldedValuesMutable();
-      auto resultsOpt = loop.getLoopResults();
-      if (yieldedOpt && resultsOpt) {
-        auto yielded = *yieldedOpt;
-        auto results = *resultsOpt;
-        for (unsigned idx = 0; idx < results.size(); ++idx) {
-          if (results[idx] == result) {
-            return traceTransferHandleSource<ResultT>(yielded[idx].get(), match,
-                                                      seen);
-          }
-        }
-      }
-    }
-  }
-  if (auto blockArg = mlir::dyn_cast<mlir::BlockArgument>(value)) {
-    mlir::Operation *parent = blockArg.getOwner()->getParentOp();
-    if (auto loop = mlir::dyn_cast_or_null<mlir::LoopLikeOpInterface>(parent)) {
-      auto iterArgs = loop.getRegionIterArgs();
-      auto inits = loop.getInitsMutable();
-      for (unsigned idx = 0; idx < iterArgs.size(); ++idx) {
-        if (iterArgs[idx] == blockArg) {
-          return traceTransferHandleSource<ResultT>(inits[idx].get(), match,
-                                                    seen);
-        }
-      }
-    }
-  }
-
-  return ResultT();
-}
-
-/// Trace a tensor value back to its originating CB acquire operation
-/// (CBWaitOp or CBReserveOp). Traces through unrealized_conversion_cast,
-/// AttachCBOp, and tensor.extract_slice. Returns the acquire Operation*,
-/// or null if the chain does not end at one.
+/// Trace a tensor value through view-preserving operations to its DFB acquire.
+///
+/// Casts, DFB associations, slices, and extracts preserve the acquired storage
+/// identity and may occur in any order. Other tensor operations terminate the
+/// search because their results do not necessarily alias the acquired slot.
+/// Returns null when the chain does not end at `ttl.cb_wait` or
+/// `ttl.cb_reserve`.
 inline mlir::Operation *findCBAcquireOp(mlir::Value tensor) {
-  tensor = traceUnrealizedCasts(tensor);
-  if (auto attach = tensor.getDefiningOp<AttachCBOp>()) {
-    tensor = attach.getTensor();
+  while (true) {
     tensor = traceUnrealizedCasts(tensor);
-  }
-  while (auto slice = tensor.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
-    tensor = slice.getSource();
-    tensor = traceUnrealizedCasts(tensor);
-  }
-  if (auto viewLike = tensor.getDefiningOp<mlir::ViewLikeOpInterface>()) {
-    mlir::Value source = viewLike.getViewSource();
-    if (mlir::isa<CircularBufferType>(source.getType())) {
-      return viewLike.getOperation();
+    if (auto attach = tensor.getDefiningOp<AttachCBOp>()) {
+      tensor = attach.getTensor();
+      continue;
     }
+    if (auto slice = tensor.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
+      tensor = slice.getSource();
+      continue;
+    }
+    if (auto extract = tensor.getDefiningOp<mlir::tensor::ExtractOp>()) {
+      tensor = extract.getTensor();
+      continue;
+    }
+    mlir::Operation *definition = tensor.getDefiningOp();
+    if (mlir::isa_and_nonnull<CBWaitOp, CBReserveOp>(definition)) {
+      return definition;
+    }
+    return nullptr;
   }
-  return nullptr;
 }
 
-/// Trace a pipe transfer value through casts, tensor containers, and
-/// loop-carried values to the transfer creation op.
-inline PipeTransferCreateOp
-findPipeTransferCreateForTransfer(mlir::Value transfer) {
-  llvm::SmallPtrSet<mlir::Value, 16> seen;
-  return traceTransferHandleSource<PipeTransferCreateOp>(
-      transfer,
-      [](mlir::Value source) {
-        return source.getDefiningOp<PipeTransferCreateOp>();
-      },
-      seen);
-}
-
-/// Trace a pipe token through casts, tensor containers, and loop-carried values
-/// to the receive post that created it.
-inline PipeTransferPostOp findPipeTransferPostForToken(mlir::Value token) {
-  llvm::SmallPtrSet<mlir::Value, 16> seen;
-  return traceTransferHandleSource<PipeTransferPostOp>(
-      token,
-      [](mlir::Value source) {
-        return source.getDefiningOp<PipeTransferPostOp>();
-      },
-      seen);
-}
-
-/// Walk through `tensor.extract_slice` ops and return the underlying
-/// `ttl.cb_reserve` op, or null if the chain doesn't end at one.
+/// Returns the `ttl.cb_reserve` underlying the supported view-preserving
+/// operations, or null if the chain does not end at one.
 inline mlir::tt::ttl::CBReserveOp findCBReserveForView(mlir::Value view) {
   return mlir::dyn_cast_or_null<CBReserveOp>(findCBAcquireOp(view));
 }
@@ -166,6 +141,23 @@ inline mlir::tt::ttl::CBReserveOp findCBReserveForView(mlir::Value view) {
 /// Return the user reserve that produced a pipe receive destination block.
 inline mlir::tt::ttl::CBReserveOp findCBReserveForPipeReceive(mlir::Value dst) {
   return mlir::dyn_cast_or_null<CBReserveOp>(findCBAcquireOp(dst));
+}
+
+/// Returns the DFB declaration reached through unrealized conversion casts.
+///
+/// Returns a null operation when `dfb` does not resolve to `ttl.bind_cb`.
+inline BindCBOp getDFBDeclaration(mlir::Value dfb) {
+  return traceUnrealizedCasts(dfb).getDefiningOp<BindCBOp>();
+}
+
+/// Returns true when a direct DFB operand may access physical storage.
+///
+/// Callers first identify a DFB operand. Unknown operations conservatively
+/// access storage; only operations with defined identity-only semantics are
+/// excluded.
+inline bool mayAccessDFBStorage(mlir::Operation *operation) {
+  return !mlir::isa<AttachCBOp, GetDfbIdOp, mlir::UnrealizedConversionCastOp>(
+      operation);
 }
 
 /// Resolve the CB index attached to `cb`, accepting either the pre-conversion
@@ -181,6 +173,46 @@ inline std::optional<int64_t> getCBIndex(mlir::Value cb) {
   return std::nullopt;
 }
 
+/// Returns the logical DFB ID on the `ttl.bind_cb` reached from `cb`.
+///
+/// Returns failure when `cb` does not resolve to a declaration with `dfb_id`.
+FailureOr<int64_t> getDFBId(mlir::Value cb);
+
+/// Returns the number of pages in one DFB block.
+FailureOr<uint64_t> getDFBPagesPerBlock(CircularBufferType type);
+
+/// Returns the hardware page size for a DFB element type.
+/// Scalar elements must occupy a positive whole number of bytes.
+FailureOr<uint64_t> getDFBPageSizeBytes(CircularBufferType type);
+
+/// Selects the identity contract diagnosed by verifyDFBOperandIdentities.
+enum class DFBIdentityRequirement {
+  /// The caller's analysis can resolve logical identity before finalization.
+  Logical,
+  /// The declaration must contain its finalized `dfb_id` attribute.
+  Finalized
+};
+
+/// Verifies the DFB operands selected by `operationFilter` with one resolver.
+///
+/// The caller defines which operations its analysis consumes and supplies the
+/// identity resolver appropriate to its pipeline position. Centralizing the
+/// operand walk prevents analyses from selecting different DFB operands when
+/// a recognized operation gains another operand.
+LogicalResult verifyDFBOperandIdentities(
+    ModuleOp moduleOp, StringRef consumerPass,
+    llvm::function_ref<bool(Operation *)> operationFilter,
+    llvm::function_ref<FailureOr<int64_t>(Value)> identityResolver,
+    StringRef operandDescription, DFBIdentityRequirement requirement);
+
+/// Verifies that DFB finalization completed and every logical ID is resolvable.
+///
+/// Requires allocation metadata, a `dfb_id` on every declaration, and a
+/// resolvable declaration for every DFB lifecycle operand. `consumerPass` is
+/// included in diagnostics so the required pipeline ordering is explicit.
+LogicalResult verifyResolvedDFBIdentities(ModuleOp moduleOp,
+                                          StringRef consumerPass);
+
 /// Return the element type for a ttcore::TileType.
 inline std::optional<mlir::Type> getTileElementType(mlir::Type type) {
   if (auto tileType = mlir::dyn_cast<ttcore::TileType>(type)) {
@@ -189,10 +221,46 @@ inline std::optional<mlir::Type> getTileElementType(mlir::Type type) {
   return std::nullopt;
 }
 
-/// Return true when `tensor` was acquired from a CB via ttl.cb_wait or
-/// ttl.cb_reserve (the only two ViewLikeOpInterface implementations whose
-/// view source is a CircularBufferType). Traces through
-/// unrealized_conversion_cast, ttl.attach_cb, and tensor.extract_slice.
+/// Return the tensor's tile type without discarding physical tile dimensions.
+/// Scalar-element tensors use the target-independent default tile dimensions.
+inline ttcore::TileType getTensorTileType(mlir::RankedTensorType tensorType) {
+  if (auto tileType =
+          mlir::dyn_cast<ttcore::TileType>(tensorType.getElementType())) {
+    return tileType;
+  }
+  return ttcore::TileType::get(tensorType.getElementType());
+}
+
+/// Check tilization consistency between two element types.
+/// - Both non-tile: success (no tilization to compare).
+/// - Exactly one side tiled: error (mixed tile/scalar is invalid).
+/// - Both tiled with differing HxW: error.
+/// - Both tiled with matching HxW: success.
+inline LogicalResult emitIfTileShapeMismatch(Operation *op, Type lhs, Type rhs,
+                                             StringRef lhsName,
+                                             StringRef rhsName) {
+  auto lhsTile = dyn_cast<ttcore::TileType>(lhs);
+  auto rhsTile = dyn_cast<ttcore::TileType>(rhs);
+  if (!lhsTile && !rhsTile) {
+    return success();
+  }
+  if (!lhsTile || !rhsTile) {
+    return op->emitOpError()
+           << "cannot mix tiled and non-tiled element types; got " << lhsName
+           << "=" << lhs << ", " << rhsName << "=" << rhs;
+  }
+  if (lhsTile.getHeight() == rhsTile.getHeight() &&
+      lhsTile.getWidth() == rhsTile.getWidth()) {
+    return success();
+  }
+  return op->emitOpError() << lhsName << " tile shape (" << lhsTile.getHeight()
+                           << "x" << lhsTile.getWidth() << ") must match "
+                           << rhsName << " tile shape (" << rhsTile.getHeight()
+                           << "x" << rhsTile.getWidth() << ")";
+}
+
+/// Return true when `tensor` aliases a `ttl.cb_wait` or `ttl.cb_reserve`
+/// result through the view-preserving operations accepted above.
 inline bool isCBAcquireView(mlir::Value tensor) {
   return findCBAcquireOp(tensor) != nullptr;
 }
@@ -223,6 +291,18 @@ inline mlir::Value getAttachedCB(mlir::Value tensor) {
   return mlir::Value();
 }
 
+/// Returns true when `op` receives from a pipe into DFB-backed storage.
+inline bool isPipeReceiveCopy(CopyOp op) {
+  return mlir::isa<PipeType>(op.getSrc().getType()) &&
+         getAttachedCB(op.getDst());
+}
+
+/// Returns true when `op` sends from a DFB into a pipe.
+inline bool isPipeSendCopy(CopyOp op) {
+  return mlir::isa<CircularBufferType>(op.getSrc().getType()) &&
+         mlir::isa<PipeType>(op.getDst().getType());
+}
+
 /// Normalize a Python-style dim (allowing negative indices) against `rank`
 /// into a non-negative index. Negative dims wrap from the end (-1 is the
 /// last dim). Does not bounds-check; callers should validate the result is
@@ -242,6 +322,16 @@ normalizeDimsToSet(mlir::ArrayRef<int64_t> dims, int64_t rank) {
   return result;
 }
 
+/// Returns the intra-tile broadcast required by `dims`, or no value when the
+/// broadcast affects only dimensions represented by the compute indexing map.
+std::optional<BcastType> getTileBroadcastType(ArrayRef<int64_t> dims,
+                                              int64_t rank);
+
+/// Returns the rank-2 hardware reduction orientation represented by `dims`.
+/// Failure indicates a non-rank-2 tensor or no supported reduced dimension.
+FailureOr<ttkernel::ReduceDim> getReduceDimension(ArrayRef<int64_t> dims,
+                                                  int64_t rank);
+
 /// True for arithmetic/math tile ops (add, mul, exp, ...); false for data
 /// movement and DST lifecycle ops.
 inline bool isTileComputeOp(mlir::Operation *op) {
@@ -256,23 +346,6 @@ inline bool isUnaryElementwiseOp(mlir::Operation *op) {
 /// Check if an operation is a binary elementwise tensor op.
 inline bool isBinaryElementwiseOp(mlir::Operation *op) {
   return op->hasTrait<TTLBinaryElementwiseOpTrait>();
-}
-
-/// Return whether a reduce op supports full-fp32 accumulation on its target.
-inline bool isFullFp32ReduceSupported(TileReduceOp reduceOp) {
-  // Wormhole full_fp32 requires FP32 DST and changes existing reduce results.
-  if (isWormholeB0Target(reduceOp)) {
-    return false;
-  }
-
-  // TODO(#533): Blackhole REDUCE_ROW full-fp32 produces incorrect results.
-  return !isBlackholeTarget(reduceOp) ||
-         reduceOp.getReduceDim() != mlir::tt::ttkernel::ReduceDim::Row;
-}
-
-/// Apply the user request and target restrictions for reduce full-fp32.
-inline bool shouldUseFullFp32Reduce(TileReduceOp reduceOp, bool requested) {
-  return requested && isFullFp32ReduceSupported(reduceOp);
 }
 
 /// Check if an operation is a tile-level unary op (executes in-place on DST).
@@ -296,64 +369,16 @@ inline bool getKernelBoolAttr(mlir::Operation *op, llvm::StringRef attrName) {
   return false;
 }
 
-/// Return true when an add/sub/mul tile op is eligible to lower to its FPU
-/// form. Eligibility requires all of:
-///   1. op carries TTLStrategyDependentBinaryOpTrait;
-///   2. the enclosing func.func has ttl.enable_fpu_binary_ops = true
-///      (absent or false ⇒ not eligible);
-///   3. both operands trace to the same CB-backed indexing source — either
-///      input block args of one ttl.compute with equal indexing maps
-///      (pre-ttl-lower-to-loops), or tensor.extract ops with equal index
-///      lists (post-ttl-lower-to-loops).
-///
-/// This is a structural predicate over the IR; resolving a usable CB handle
-/// for the operands is the conversion pattern's responsibility.
-inline bool isFPUEligibleBinaryOp(mlir::Operation *op) {
-  if (!op->hasTrait<TTLStrategyDependentBinaryOpTrait>()) {
-    return false;
+/// NOC index for the kernel enclosing `op`: 0 = reader/NCRISC, 1 =
+/// writer/BRISC. A func without `ttl.noc_index` (e.g. test IR fed straight to
+/// lowering) takes the reader default, not an error.
+inline int64_t getNocIndex(mlir::Operation *op) {
+  auto funcOp = op->getParentOfType<mlir::func::FuncOp>();
+  assert(funcOp && "getNocIndex called on op outside of func.func");
+  if (auto attr = funcOp->getAttrOfType<mlir::IntegerAttr>(kNocIndexAttrName)) {
+    return attr.getInt();
   }
-  if (!getKernelBoolAttr(op, kEnableFPUBinaryOpsAttrName)) {
-    return false;
-  }
-  mlir::Value lhs = op->getOperand(0);
-  mlir::Value rhs = op->getOperand(1);
-
-  // Pre-lower-to-loops: input block args of one ttl.compute with equal maps.
-  if (auto lhsArg = mlir::dyn_cast<mlir::BlockArgument>(lhs)) {
-    auto rhsArg = mlir::dyn_cast<mlir::BlockArgument>(rhs);
-    if (!rhsArg || lhsArg.getOwner() != rhsArg.getOwner()) {
-      return false;
-    }
-    auto computeOp =
-        mlir::dyn_cast_or_null<ComputeOp>(lhsArg.getOwner()->getParentOp());
-    if (!computeOp) {
-      return false;
-    }
-    unsigned numInputs = computeOp.getNumInputs();
-    if (lhsArg.getArgNumber() >= numInputs ||
-        rhsArg.getArgNumber() >= numInputs) {
-      return false;
-    }
-    auto indexingMaps = computeOp.getIndexingMapsArray();
-    return indexingMaps[lhsArg.getArgNumber()] ==
-           indexingMaps[rhsArg.getArgNumber()];
-  }
-
-  // Post-lower-to-loops: tensor.extract ops with identical indices. CB
-  // attachment is guaranteed by loop lowering and re-verified by the FPU
-  // conversion pattern's CB lookup, so no getAttachedCB check is needed here.
-  auto lhsExtract = lhs.getDefiningOp<mlir::tensor::ExtractOp>();
-  auto rhsExtract = rhs.getDefiningOp<mlir::tensor::ExtractOp>();
-  return lhsExtract && rhsExtract &&
-         lhsExtract.getIndices() == rhsExtract.getIndices();
-}
-
-/// True if op reads inputs from CB at runtime. Unconditional for trait-bearing
-/// ops (bcast/transpose/reduce/...); conditional for strategy-dep add/sub/mul
-/// (delegated to isFPUEligibleBinaryOp). The strategy-dep answer can flip
-/// across TTLAssignDST copy insertion — re-query, do not cache.
-inline bool isCBInputOp(mlir::Operation *op) {
-  return op->hasTrait<TTLCBInputTileOpTrait>() || isFPUEligibleBinaryOp(op);
+  return 0;
 }
 
 /// Check if an operation is any elementwise tensor op (unary or binary).
@@ -380,22 +405,46 @@ enum class TraceFailureReason {
   NotFusableOp,
 };
 
-/// Result of tracing through fusable ops to CB-attached roots.
+/// Result of tracing through fusable operations to DFB inputs or operands
+/// selected for DFB materialization.
 struct FusionTraceResult {
-  /// CB-attached input values that form the roots of the chain.
+  /// Input values at which tracing stopped. These are normally DFB-attached;
+  /// an operand selected for later materialization may contribute its current,
+  /// unattached value.
   llvm::SmallSetVector<mlir::Value, 2> rootInputs;
+
+  /// Roots whose current storage remains an input after planned replacements.
+  ///
+  /// A planned materialization supplies new storage, so that occurrence does
+  /// not constrain creation by the original value's release. If another
+  /// unmaterialized occurrence reaches the same value, it remains in this set.
+  llvm::SmallSetVector<mlir::Value, 2> lifetimeRootInputs;
+
   /// Operations in the chain, topologically ordered (roots first, sink last).
   llvm::SmallSetVector<mlir::Operation *, 4> opsInOrder;
   /// Failure reason (Success if tracing succeeded).
   TraceFailureReason failureReason = TraceFailureReason::Success;
   /// The value where tracing failed (only set on failure).
   mlir::Value failedValue;
+  /// Operand whose definition could not be included in the fused expression.
+  mlir::OpOperand *failedOperand = nullptr;
 };
 
 /// Trace a value through fusable ops (elementwise, matmul, bcast) to
-/// CB-attached roots. On failure, the result's `failureReason` and
+/// DFB-attached roots. On failure, the result's `failureReason` and
 /// `failedValue` are set.
 FusionTraceResult traceFusionToRoots(mlir::Value value);
+
+/// Trace a value through fusable operations, stopping at selected operands.
+///
+/// A selected operand is recorded as a root without tracing its definition.
+/// This models a planned materialization that replaces the operand with a
+/// DFB-attached value before fusion. Every selected operand must be replaced
+/// before the trace is used to form a compute; otherwise the returned roots do
+/// not prove creation legality. The query does not modify IR.
+FusionTraceResult traceFusionToRoots(
+    mlir::Value value,
+    llvm::function_ref<bool(mlir::OpOperand &)> isMaterializationPlanned);
 
 /// Return a human-readable description of a trace failure reason.
 llvm::StringRef describeTraceFailure(TraceFailureReason reason);
@@ -418,7 +467,7 @@ enum class TileOpCategory : uint8_t {
   Unknown = 255
 };
 
-/// Classify a TTL tile op into its category.
+/// Classify a TTL tile op into its category after strategy resolution.
 /// Uses TTL traits and attributes for O(1) per-call classification.
 TileOpCategory classifyTileOp(mlir::Operation *op);
 

@@ -4,8 +4,10 @@
 
 #include "ttlang/Dialect/TTL/Passes.h" // IWYU pragma: keep
 
+#include "DFBAllocationLimits.h"
 #include "PipeGraph.h"
 #include "PipeLowering.h"
+#include "PipePlanning.h"
 #include "ttlang/Dialect/TTKernel/Transforms/TTKernelCleanupPatterns.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -15,34 +17,40 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
-#include "mlir/IR/Dominance.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Types.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
+#include "ttlang/Dialect/TTL/Transforms/ComputeTarget.h"
+#include "ttlang/Dialect/TTL/Transforms/PipeTransferAnalysis.h"
+#include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
-#include "ttmlir/Dialect/TTCore/IR/TTCoreOpsTypes.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernel.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOps.h"
-#include "ttmlir/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Casting.h"
+#include <cstdint>
 #include <cstdlib>
+#include <limits>
+#include <optional>
 #include <utility>
+#include <variant>
 
 namespace mlir::tt::ttl {
 #define GEN_PASS_DEF_TTLCONVERTTTLTOTTKERNEL
@@ -65,24 +73,39 @@ constexpr llvm::StringLiteral kExpandLinearizeIndexAttr =
 class TTLToTTKernelTypeConverter : public TypeConverter {
 public:
   TTLToTTKernelTypeConverter() {
-    // Specific conversions first; identity fallback last.
+    // TypeConverter invokes the most recently registered applicable callback.
+    addConversion([](Type type) { return type; });
+
+    // Layout-encoded tensors remain available to CopyLowering until their
+    // runtime TensorAccessor has been materialized. Other tensors recursively
+    // convert their element type so tensors of pipe tokens remain legal.
+    addConversion([this](RankedTensorType t) -> Type {
+      if (t.getEncoding() && mlir::isa<tt::ttl::LayoutAttr>(t.getEncoding())) {
+        return t;
+      }
+      Type convertedElementType = convertType(t.getElementType());
+      if (!convertedElementType || convertedElementType == t.getElementType()) {
+        return t;
+      }
+      return RankedTensorType::get(t.getShape(), convertedElementType,
+                                   t.getEncoding());
+    });
+
     // CB: lower to TTKernel CB type with flattened element count.
     addConversion([](CircularBufferType t) -> Type {
       return ttk::CBType::get(t.getContext(), t.getTotalElements(),
                               t.getElementType());
     });
-    // Tensor -> TensorAccessor for TTKernel when TTL layout is present.
-    addConversion([](RankedTensorType t) -> Type {
-      if (t.getEncoding() && mlir::isa<tt::ttl::LayoutAttr>(t.getEncoding())) {
-        return ttk::TensorAccessorType::get(t.getContext());
-      }
-      return t;
+    addConversion([](PipeTokenType type) -> Type {
+      return IntegerType::get(type.getContext(), 32);
     });
-    // Preserve transfer handle types so ttl.wait can inspect transfer
-    // direction. TRID-aware lowering will be added later.
-    addConversion([](TransferHandleType t) -> Type { return t; });
-    // Identity fallback must be last.
-    addConversion([](Type t) { return t; });
+    // High-level pipe copies return TransferHandleType. Their post sequence may
+    // pass through SCF or tensor containers. DMA handles use the same runtime
+    // representation, but their waits depend only on precomputed provenance
+    // and lower to barriers without inspecting this value.
+    addConversion([](TransferHandleType type) -> Type {
+      return IntegerType::get(type.getContext(), 32);
+    });
 
     auto castMaterialization = [](OpBuilder &builder, Type resultType,
                                   ValueRange inputs, Location loc) -> Value {
@@ -95,6 +118,56 @@ public:
   }
 };
 
+static Value createConvertedTensorOp(tensor::EmptyOp op,
+                                     tensor::EmptyOp::Adaptor adaptor,
+                                     Type convertedType,
+                                     ConversionPatternRewriter &rewriter) {
+  return tensor::EmptyOp::create(rewriter, op.getLoc(), convertedType,
+                                 adaptor.getDynamicSizes());
+}
+
+static Value createConvertedTensorOp(tensor::InsertOp op,
+                                     tensor::InsertOp::Adaptor adaptor,
+                                     Type convertedType,
+                                     ConversionPatternRewriter &rewriter) {
+  return tensor::InsertOp::create(rewriter, op.getLoc(), convertedType,
+                                  adaptor.getScalar(), adaptor.getDest(),
+                                  adaptor.getIndices());
+}
+
+static Value createConvertedTensorOp(tensor::ExtractOp op,
+                                     tensor::ExtractOp::Adaptor adaptor,
+                                     Type convertedType,
+                                     ConversionPatternRewriter &rewriter) {
+  return tensor::ExtractOp::create(rewriter, op.getLoc(), convertedType,
+                                   adaptor.getTensor(), adaptor.getIndices());
+}
+
+static Value createConvertedTensorOp(tensor::CastOp op,
+                                     tensor::CastOp::Adaptor adaptor,
+                                     Type convertedType,
+                                     ConversionPatternRewriter &rewriter) {
+  return tensor::CastOp::create(rewriter, op.getLoc(), convertedType,
+                                adaptor.getSource());
+}
+
+template <typename TensorOp>
+struct TensorOpTypeConversion : OpConversionPattern<TensorOp> {
+  using OpConversionPattern<TensorOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TensorOp op, typename TensorOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Type convertedType = this->getTypeConverter()->convertType(op.getType());
+    if (!convertedType) {
+      return rewriter.notifyMatchFailure(op, "failed to convert result type");
+    }
+    rewriter.replaceOp(
+        op, createConvertedTensorOp(op, adaptor, convertedType, rewriter));
+    return success();
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // Helper utilities.
 //===----------------------------------------------------------------------===//
@@ -102,12 +175,13 @@ public:
 /// Convert ttl.kernel_thread -> ttkernel.thread if present, returning the
 /// resolved thread type from whichever attribute exists.
 static std::optional<ttk::ThreadType> convertThreadAttr(Operation *op) {
-  if (auto a = op->getAttrOfType<ttk::ThreadTypeAttr>("ttkernel.thread")) {
+  if (auto a =
+          op->getAttrOfType<ttk::ThreadTypeAttr>(ttk::ThreadTypeAttr::name)) {
     return a.getValue();
   }
   if (auto a = op->getAttrOfType<ttk::ThreadTypeAttr>(kKernelThreadAttrName)) {
     op->removeAttr(kKernelThreadAttrName);
-    op->setAttr("ttkernel.thread", a);
+    op->setAttr(ttk::ThreadTypeAttr::name, a);
     return a.getValue();
   }
   return std::nullopt;
@@ -126,19 +200,32 @@ struct ExpandMarkedLinearizeIndex
   }
 };
 
-/// Get the function argument index for a tensor value.
-/// Returns the index if the tensor is a block argument of an entry block,
-/// otherwise returns failure. Used to map tensors to runtime args.
+/// Get the function argument index used to map a tensor to runtime arguments.
+/// A region block argument is rejected because its position is unrelated to
+/// the enclosing kernel function signature.
 static FailureOr<unsigned> getTensorFuncArgIndex(Value tensor) {
   auto blockArg = llvm::dyn_cast<BlockArgument>(tensor);
   if (!blockArg) {
     return failure();
   }
   Block *block = blockArg.getParentBlock();
-  if (!block || !block->isEntryBlock()) {
+  auto func = block ? dyn_cast<func::FuncOp>(block->getParentOp()) : nullptr;
+  if (!func || func.isDeclaration() || block != &func.getBody().front()) {
     return failure();
   }
   return blockArg.getArgNumber();
+}
+
+static FailureOr<int32_t> getValidatedDFBIndex(Value dfb, Operation *op) {
+  std::optional<int64_t> dfbIndex = getCBIndex(dfb);
+  if (!dfbIndex) {
+    return op->emitError("cannot resolve finalized DFB index");
+  }
+  if (*dfbIndex < 0 || *dfbIndex >= kMaxCircularBuffers) {
+    return op->emitError("finalized DFB index ")
+           << *dfbIndex << " is outside [0, " << kMaxCircularBuffers - 1 << "]";
+  }
+  return static_cast<int32_t>(*dfbIndex);
 }
 
 /// Get the L1 buffer address from runtime args for a tensor function argument.
@@ -246,33 +333,16 @@ struct BindCBLowering : OpConversionPattern<BindCBOp> {
 // CB synchronization operation lowering patterns
 //===----------------------------------------------------------------------===//
 
-// Trace through unrealized casts to get the original TTL CB type.
-static CircularBufferType getTTLCBType(Value cb) {
-  if (auto ttlCbTy = mlir::dyn_cast<CircularBufferType>(cb.getType())) {
-    return ttlCbTy;
-  }
-  if (auto castOp = cb.getDefiningOp<UnrealizedConversionCastOp>()) {
-    if (castOp.getInputs().size() == 1) {
-      if (auto ttlCbTy = mlir::dyn_cast<CircularBufferType>(
-              castOp.getInputs()[0].getType())) {
-        return ttlCbTy;
-      }
-    }
-  }
-  return nullptr;
-}
-
 // Tile count: use the `num_tiles` attribute if present (per-subblock
 // reserve/push), otherwise derive from the DFB type shape (full block).
-static Value computeNumTiles(Operation *sourceOp, Value cb,
+static Value computeNumTiles(Operation *sourceOp, CircularBufferType dfbType,
                              ConversionPatternRewriter &rewriter,
                              Location loc) {
   if (auto attr = sourceOp->getAttrOfType<IntegerAttr>("num_tiles")) {
     return arith::ConstantIntOp::create(rewriter, loc, attr.getInt(), 32);
   }
-  auto ttlCbTy = getTTLCBType(cb);
-  int64_t numTiles = ttlCbTy ? ttlCbTy.getElementsPerBlock() : 1;
-  return arith::ConstantIntOp::create(rewriter, loc, numTiles, 32);
+  return arith::ConstantIntOp::create(rewriter, loc,
+                                      dfbType.getElementsPerBlock(), 32);
 }
 
 template <typename SourceOp, typename TargetOp, bool HasResult>
@@ -284,8 +354,9 @@ struct CBOpLowering : OpConversionPattern<SourceOp> {
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op.getLoc();
     Value originalCb = op.getCb();
-    auto ttlCbTy = getTTLCBType(originalCb);
-    if (!ttlCbTy) {
+    FailureOr<CircularBufferType> maybeDFBType =
+        utils::getTTLCircularBufferType(originalCb);
+    if (failed(maybeDFBType)) {
       return rewriter.notifyMatchFailure(op, "failed to get TTL CB type");
     }
 
@@ -295,7 +366,7 @@ struct CBOpLowering : OpConversionPattern<SourceOp> {
       return rewriter.notifyMatchFailure(op, "failed to convert CB operand");
     }
 
-    Value numTiles = computeNumTiles(op, originalCb, rewriter, loc);
+    Value numTiles = computeNumTiles(op, *maybeDFBType, rewriter, loc);
     TargetOp::create(rewriter, loc, *convertedCb, numTiles);
 
     if constexpr (HasResult) {
@@ -315,8 +386,26 @@ using CBPushLowering =
     CBOpLowering<CBPushOp, ttk::CBPushBackOp, /*HasResult=*/false>;
 using CBWaitLowering =
     CBOpLowering<CBWaitOp, ttk::CBWaitFrontOp, /*HasResult=*/true>;
-using CBPopLowering =
-    CBOpLowering<CBPopOp, ttk::CBPopFrontOp, /*HasResult=*/false>;
+
+struct CBPopLowering : OpConversionPattern<CBPopOp> {
+  CBPopLowering(const TypeConverter &typeConverter, MLIRContext *context,
+                const PipeCapacityPlan &pipeCapacityPlan,
+                const PipeResourcePlan &pipeResourcePlan)
+      : OpConversionPattern(typeConverter, context),
+        pipeCapacityPlan(pipeCapacityPlan), pipeResourcePlan(pipeResourcePlan) {
+  }
+
+  LogicalResult
+  matchAndRewrite(CBPopOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    return lowerCBPop(op, adaptor.getCb(), pipeCapacityPlan, pipeResourcePlan,
+                      rewriter);
+  }
+
+private:
+  const PipeCapacityPlan &pipeCapacityPlan;
+  const PipeResourcePlan &pipeResourcePlan;
+};
 
 /// Trace back from a view value to the underlying TTKernel CB.
 /// Traverses ViewLikeOpInterface ops (CBReserveOp, CBWaitOp) and casts.
@@ -481,39 +570,9 @@ static std::optional<TransferKind> getTransferKindFromHandleType(Type t) {
   return transferHandle.getKind();
 }
 
-static bool isPipeReceiveCopy(CopyOp op) {
-  return llvm::isa<PipeType>(op.getSrc().getType()) &&
-         getAttachedCB(op.getDst());
-}
-
-static bool isPipeSendCopy(CopyOp op) {
-  return llvm::isa<CircularBufferType>(op.getSrc().getType()) &&
-         llvm::isa<PipeType>(op.getDst().getType());
-}
-
-static CopyOp findPipeReceiveCopy(Value value) {
-  llvm::SmallPtrSet<Value, 16> seen;
-  return traceTransferHandleSource<CopyOp>(
-      value,
-      [](Value source) {
-        auto copyOp = source.getDefiningOp<CopyOp>();
-        if (!copyOp) {
-          return CopyOp();
-        }
-        if (isPipeReceiveCopy(copyOp)) {
-          return copyOp;
-        }
-        return CopyOp();
-      },
-      seen);
-}
-
-static PipeTransferSendOp findPipeTransferSend(Value value) {
-  llvm::SmallPtrSet<Value, 16> seen;
-  return traceTransferHandleSource<PipeTransferSendOp>(
-      value,
-      [](Value source) { return source.getDefiningOp<PipeTransferSendOp>(); },
-      seen);
+static FailureOr<CopyOp> findPipeReceiveCopy(ValueOriginAnalysis &analysis,
+                                             Value value) {
+  return analysis.getOrigins(value).uniqueDefiningOp<CopyOp>(isPipeReceiveCopy);
 }
 
 static PipeTransferKind getPipeTransferKind(PipeTransferContract contract) {
@@ -521,28 +580,30 @@ static PipeTransferKind getPipeTransferKind(PipeTransferContract contract) {
                                         : PipeTransferKind::PointToPoint;
 }
 
-static CreatePipeOp findCreatePipeForPipeValue(Value pipe) {
-  llvm::SmallPtrSet<Value, 16> seen;
-  return traceTransferHandleSource<CreatePipeOp>(
-      pipe, [](Value source) { return source.getDefiningOp<CreatePipeOp>(); },
-      seen);
-}
-
-static PipeTransferContract getPipeTransferContractForPipeValue(Value pipe) {
-  if (CreatePipeOp createPipe = findCreatePipeForPipeValue(pipe)) {
-    return getPipeTransferContract(createPipe);
-  }
-  // Function and block arguments do not carry CreatePipeOp attrs; use the
-  // PipeType-derived contract only when no defining pipe op can be traced.
-  auto pipeType = mlir::cast<PipeType>(traceUnrealizedCasts(pipe).getType());
-  return pipeType.hasMultipleReceivers() ? PipeTransferContract::Collective
-                                         : PipeTransferContract::PointToPoint;
+/// Return the contract shared by every possible value of a pipe operand.
+///
+/// A defining create op preserves a degenerate one-receiver collective. A
+/// block argument has no create op, so its pipe type supplies the contract.
+static FailureOr<PipeTransferContract>
+getPipeTransferContractForPipeValue(ValueOriginAnalysis &analysis, Value pipe) {
+  return analysis.getOrigins(pipe).uniqueMapped<PipeTransferContract>(
+      [](Value origin) -> FailureOr<PipeTransferContract> {
+        if (auto createPipe = origin.getDefiningOp<CreatePipeOp>()) {
+          return getPipeTransferContract(createPipe);
+        }
+        if (isa<BlockArgument>(origin) && isa<PipeType>(origin.getType())) {
+          return cast<PipeType>(origin.getType()).hasMultipleReceivers()
+                     ? PipeTransferContract::Collective
+                     : PipeTransferContract::PointToPoint;
+        }
+        return failure();
+      });
 }
 
 static PipeTransferCreateOp createPipeTransfer(OpBuilder &builder, Location loc,
-                                               Value pipe) {
+                                               Value pipe,
+                                               PipeTransferContract contract) {
   auto pipeType = mlir::cast<PipeType>(traceUnrealizedCasts(pipe).getType());
-  PipeTransferContract contract = getPipeTransferContractForPipeValue(pipe);
   auto kindAttr = PipeTransferKindAttr::get(builder.getContext(),
                                             getPipeTransferKind(contract));
   auto expectedReceiversAttr =
@@ -553,7 +614,7 @@ static PipeTransferCreateOp createPipeTransfer(OpBuilder &builder, Location loc,
 }
 
 static Value getOrCreatePipeTransfer(
-    OpBuilder &builder, Location loc, Value pipe,
+    OpBuilder &builder, Location loc, Value pipe, PipeTransferContract contract,
     llvm::MapVector<Value, Value> &transferByDirectCreatePipe) {
   Value key = traceUnrealizedCasts(pipe);
   if (auto createPipe = key.getDefiningOp<CreatePipeOp>()) {
@@ -563,7 +624,8 @@ static Value getOrCreatePipeTransfer(
     }
     OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPointAfter(createPipe);
-    auto transferOp = createPipeTransfer(builder, createPipe.getLoc(), key);
+    auto transferOp =
+        createPipeTransfer(builder, createPipe.getLoc(), key, contract);
     transferByDirectCreatePipe[key] = transferOp.getTransfer();
     return transferOp.getTransfer();
   }
@@ -571,95 +633,125 @@ static Value getOrCreatePipeTransfer(
   // Non-direct pipe values can be block arguments or region results. A shared
   // cached transfer for those values would need dominance analysis; creating it
   // at the use site keeps the transfer local to the post/send that consumes it.
-  return createPipeTransfer(builder, loc, pipe).getTransfer();
+  return createPipeTransfer(builder, loc, pipe, contract).getTransfer();
 }
 
-static LogicalResult verifyPipeTransferWaits(ModuleOp mod) {
-  LogicalResult result = success();
-  mod.walk(
-      [&](PipeTransferWaitOp waitOp) {
-        PipeTransferPostOp postOp =
-            findPipeTransferPostForToken(waitOp.getToken());
-        if (!postOp) {
-          waitOp.emitError()
-              << "requires token derived from ttl.pipe_transfer.post";
-          result = failure();
-          return;
-        }
-        auto waitTokenType =
-            mlir::cast<PipeTokenType>(waitOp.getToken().getType());
-        auto postTokenType =
-            mlir::cast<PipeTokenType>(postOp.getToken().getType());
-        if (waitTokenType.getPipeNetId() != postTokenType.getPipeNetId()) {
-          waitOp.emitError()
-              << "token pipeNetId must match pipe transfer post pipeNetId";
-          result = failure();
-        }
-      });
-  return result;
-}
+/// High-level pipe copy and its proven transfer contract.
+struct PipeCopyExpansion {
+  CopyOp copy;
+  PipeTransferContract contract;
+};
 
-static LogicalResult expandPipeTransferOps(ModuleOp mod) {
+/// Receive-handle wait and the PipeNet id used to create its typed token.
+struct PipeReceiveWaitExpansion {
+  WaitOp wait;
+  int64_t pipeNetId = 0;
+};
+
+/// Operations replaced when high-level pipe copies become Pipe Transfer IR.
+struct PipeTransferExpansionPlan {
   SmallVector<CreatePipeOp> createPipes;
-  mod.walk([&](CreatePipeOp op) { createPipes.push_back(op); });
+  SmallVector<PipeCopyExpansion> receiveCopies;
+  SmallVector<PipeCopyExpansion> sendCopies;
+  SmallVector<PipeReceiveWaitExpansion> receiveWaits;
+  SmallVector<WaitOp> unreachableReceiveWaits;
+};
 
-  SmallVector<CopyOp> receiveCopies;
-  SmallVector<CopyOp> sendCopies;
+static FailureOr<PipeTransferExpansionPlan>
+buildPipeTransferExpansionPlan(ModuleOp mod, ValueOriginAnalysis &analysis) {
+  PipeTransferExpansionPlan plan;
+  mod.walk([&](CreatePipeOp op) { plan.createPipes.push_back(op); });
+
+  LogicalResult result = success();
   mod.walk([&](CopyOp op) {
     if (isPipeReceiveCopy(op)) {
-      receiveCopies.push_back(op);
+      FailureOr<PipeTransferContract> contract =
+          getPipeTransferContractForPipeValue(analysis, op.getSrc());
+      if (failed(contract)) {
+        op.emitError()
+            << "requires a consistent transfer contract for all possible "
+               "pipe values";
+        result = failure();
+      } else {
+        plan.receiveCopies.push_back({op, *contract});
+      }
       return;
     }
     if (isPipeSendCopy(op)) {
-      sendCopies.push_back(op);
+      FailureOr<PipeTransferContract> contract =
+          getPipeTransferContractForPipeValue(analysis, op.getDst());
+      if (failed(contract)) {
+        op.emitError()
+            << "requires a consistent transfer contract for all possible "
+               "pipe values";
+        result = failure();
+      } else {
+        plan.sendCopies.push_back({op, *contract});
+      }
     }
   });
-
-  struct ReceiveWaitExpansion {
-    WaitOp waitOp;
-    int64_t pipeNetId;
-  };
-  SmallVector<ReceiveWaitExpansion> receiveWaits;
-  LogicalResult result = success();
-  mod.walk(
-      [&](WaitOp waitOp) {
-        auto handleType =
-            mlir::dyn_cast<TransferHandleType>(waitOp.getXf().getType());
-        if (!handleType || handleType.getKind()) {
-          return;
-        }
-        CopyOp copyOp = findPipeReceiveCopy(waitOp.getXf());
-        if (!copyOp) {
-          waitOp.emitError()
-              << "untyped transfer handle wait must reference a pipe receive "
-                 "ttl.copy";
-          result = failure();
-          return;
-        }
-        auto pipeType = mlir::cast<PipeType>(
-            traceUnrealizedCasts(copyOp.getSrc()).getType());
-        receiveWaits.push_back({waitOp, pipeType.getPipeNetId()});
-      });
   if (failed(result)) {
     return failure();
   }
 
+  mod.walk([&](WaitOp waitOp) {
+    auto handleType =
+        mlir::dyn_cast<TransferHandleType>(waitOp.getXf().getType());
+    if (!handleType || handleType.getKind()) {
+      return;
+    }
+    if (analysis.getOrigins(waitOp.getXf()).empty()) {
+      plan.unreachableReceiveWaits.push_back(waitOp);
+      return;
+    }
+    FailureOr<CopyOp> maybeCopyOp =
+        findPipeReceiveCopy(analysis, waitOp.getXf());
+    if (failed(maybeCopyOp)) {
+      waitOp.emitError() << "untyped transfer handle wait requires every "
+                            "possible source to be the same pipe receive "
+                            "ttl.copy";
+      result = failure();
+      return;
+    }
+    CopyOp copyOp = *maybeCopyOp;
+    auto pipeType =
+        mlir::cast<PipeType>(traceUnrealizedCasts(copyOp.getSrc()).getType());
+    plan.receiveWaits.push_back({waitOp, pipeType.getPipeNetId()});
+  });
+  if (failed(result)) {
+    return failure();
+  }
+  return plan;
+}
+
+static void
+applyPipeTransferExpansionPlan(ModuleOp mod,
+                               const PipeTransferExpansionPlan &plan) {
+  // Origin analysis proved that no reachable transfer handle reaches these
+  // waits, so they have no observable effect.
+  for (WaitOp waitOp : plan.unreachableReceiveWaits) {
+    waitOp.erase();
+  }
+
   OpBuilder builder(mod.getContext());
   llvm::MapVector<Value, Value> transferByDirectCreatePipe;
-  for (CreatePipeOp createPipe : createPipes) {
+  for (CreatePipeOp createPipe : plan.createPipes) {
     builder.setInsertionPointAfter(createPipe);
-    auto transferOp = createPipeTransfer(builder, createPipe.getLoc(),
-                                         createPipe.getResult());
+    auto transferOp =
+        createPipeTransfer(builder, createPipe.getLoc(), createPipe.getResult(),
+                           getPipeTransferContract(createPipe));
     transferByDirectCreatePipe[createPipe.getResult()] =
         transferOp.getTransfer();
   }
 
-  for (CopyOp copyOp : receiveCopies) {
+  for (const PipeCopyExpansion &expansion : plan.receiveCopies) {
+    CopyOp copyOp = expansion.copy;
     auto pipeType =
         mlir::cast<PipeType>(traceUnrealizedCasts(copyOp.getSrc()).getType());
     builder.setInsertionPoint(copyOp);
-    Value transfer = getOrCreatePipeTransfer(
-        builder, copyOp.getLoc(), copyOp.getSrc(), transferByDirectCreatePipe);
+    Value transfer =
+        getOrCreatePipeTransfer(builder, copyOp.getLoc(), copyOp.getSrc(),
+                                expansion.contract, transferByDirectCreatePipe);
     auto postOp = PipeTransferPostOp::create(
         builder, copyOp.getLoc(),
         PipeTokenType::get(builder.getContext(), pipeType.getPipeNetId()),
@@ -671,10 +763,12 @@ static LogicalResult expandPipeTransferOps(ModuleOp mod) {
     copyOp->erase();
   }
 
-  for (CopyOp copyOp : sendCopies) {
+  for (const PipeCopyExpansion &expansion : plan.sendCopies) {
+    CopyOp copyOp = expansion.copy;
     builder.setInsertionPoint(copyOp);
-    Value transfer = getOrCreatePipeTransfer(
-        builder, copyOp.getLoc(), copyOp.getDst(), transferByDirectCreatePipe);
+    Value transfer =
+        getOrCreatePipeTransfer(builder, copyOp.getLoc(), copyOp.getDst(),
+                                expansion.contract, transferByDirectCreatePipe);
     auto sendOp = PipeTransferSendOp::create(builder, copyOp.getLoc(),
                                              copyOp.getResult().getType(),
                                              transfer, copyOp.getSrc());
@@ -682,8 +776,8 @@ static LogicalResult expandPipeTransferOps(ModuleOp mod) {
     copyOp->erase();
   }
 
-  for (const ReceiveWaitExpansion &wait : receiveWaits) {
-    WaitOp waitOp = wait.waitOp;
+  for (const PipeReceiveWaitExpansion &wait : plan.receiveWaits) {
+    WaitOp waitOp = wait.wait;
     builder.setInsertionPoint(waitOp);
     auto tokenCast = UnrealizedConversionCastOp::create(
         builder, waitOp.getLoc(),
@@ -693,8 +787,6 @@ static LogicalResult expandPipeTransferOps(ModuleOp mod) {
                                tokenCast.getResult(0));
     waitOp->erase();
   }
-
-  return success();
 }
 
 /// Compute CTA index for a tensor function argument.
@@ -863,15 +955,16 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
     return failure();
   }
 
-  auto cbType = getTTLCBType(cb);
-  if (!cbType) {
+  FailureOr<CircularBufferType> maybeDFBType =
+      utils::getTTLCircularBufferType(cb);
+  if (failed(maybeDFBType)) {
     return rewriter.notifyMatchFailure(op, "failed to get CB type");
   }
 
   SmallVector<int64_t> tensorGridShape = getTileGridShapeFromValue(tensor);
   unsigned tensorRank = tensorGridShape.size();
 
-  auto cbShape = cbType.getShape();
+  auto cbShape = (*maybeDFBType).getShape();
 
   if (startIndices.size() != tensorRank) {
     return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
@@ -910,6 +1003,9 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
   auto pageSizeIdx = arith::ConstantIndexOp::create(
       rewriter, loc, accessorInfo->pageSizeBytes);
   auto i32Ty = rewriter.getI32Type();
+  int64_t nocIndex = getNocIndex(op);
+  Value nocVal = arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
+                                           rewriter.getI8IntegerAttr(nocIndex));
 
   SmallVector<int64_t> cbBounds(cbShape.begin(), cbShape.end());
 
@@ -956,10 +1052,10 @@ static LogicalResult lowerTensorCBCopy(CopyOp op, TensorSliceOp sliceOp,
 
         if (isRead) {
           ttk::NocAsyncReadTileOp::create(loopBuilder, bodyLoc, tensorTileIdx32,
-                                          accessor, cbAddr);
+                                          accessor, cbAddr, nocVal);
         } else {
-          ttk::NocAsyncWriteTileOp::create(loopBuilder, bodyLoc,
-                                           tensorTileIdx32, accessor, cbAddr);
+          ttk::NocAsyncWriteTileOp::create(
+              loopBuilder, bodyLoc, tensorTileIdx32, accessor, cbAddr, nocVal);
         }
       });
 
@@ -1056,110 +1152,136 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
 struct PipeTransferPostLowering : OpConversionPattern<PipeTransferPostOp> {
   PipeTransferPostLowering(const TypeConverter &typeConverter,
                            MLIRContext *context,
+                           const PipeModulePlan &pipeModulePlan,
+                           const PipeCounterProgressMap &counters,
                            const PipeResourcePlan &pipeResourcePlan)
       : OpConversionPattern(typeConverter, context),
+        pipeModulePlan(pipeModulePlan), counters(counters),
         pipeResourcePlan(pipeResourcePlan) {}
 
   LogicalResult
   matchAndRewrite(PipeTransferPostOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    // The receive destination is inspected for its TTL DFB provenance
-    // (`ttl.cb_reserve`, `ttl.attach_cb`, and slice offset), so this lowering
-    // must use the original SSA value rather than the converted adaptor value.
-    return lowerPipeTransferPost(op, op.getDst(), pipeResourcePlan, rewriter);
+    // Slice-offset materialization requires the original destination tensor,
+    // while the plan supplies the already-resolved receiver DFB.
+    if (pipeResourcePlan.staticallyInactiveOps.contains(op.getOperation())) {
+      lowerInactivePipeTransferPost(op, rewriter);
+      return success();
+    }
+    return lowerPipeTransferPost(
+        op, op.getDst(), pipeModulePlan.getTransferPlan(op.getOperation()),
+        counters, pipeResourcePlan, rewriter);
   }
 
 private:
+  const PipeModulePlan &pipeModulePlan;
+  const PipeCounterProgressMap &counters;
   const PipeResourcePlan &pipeResourcePlan;
 };
 
 struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
-  PipeTransferSendLowering(const TypeConverter &typeConverter,
+  PipeTransferSendLowering(
+      const TypeConverter &typeConverter, MLIRContext *context,
+      const PipeModulePlan &pipeModulePlan,
+      const PipeResourcePlan &pipeResourcePlan,
+      const PipeCapacityPlan &pipeCapacityPlan,
+      const PipeCounterProgressMap &senderCapacityCounters,
+      const PipeComputedAddressCounterMap &computedAddressCounters)
+      : OpConversionPattern(typeConverter, context),
+        pipeModulePlan(pipeModulePlan), pipeResourcePlan(pipeResourcePlan),
+        pipeCapacityPlan(pipeCapacityPlan),
+        senderCapacityCounters(senderCapacityCounters),
+        computedAddressCounters(computedAddressCounters) {}
+
+  LogicalResult
+  matchAndRewrite(PipeTransferSendOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    if (pipeResourcePlan.staticallyInactiveOps.contains(op.getOperation())) {
+      lowerInactivePipeTransferSend(op, rewriter);
+      return success();
+    }
+    return lowerPipeTransferSend(
+        op, adaptor.getSrc(), pipeModulePlan.getTransferPlan(op.getOperation()),
+        pipeResourcePlan, pipeCapacityPlan, senderCapacityCounters,
+        computedAddressCounters, rewriter);
+  }
+
+private:
+  const PipeModulePlan &pipeModulePlan;
+  const PipeResourcePlan &pipeResourcePlan;
+  const PipeCapacityPlan &pipeCapacityPlan;
+  const PipeCounterProgressMap &senderCapacityCounters;
+  const PipeComputedAddressCounterMap &computedAddressCounters;
+};
+
+struct PipeTransferWaitLowering : OpConversionPattern<PipeTransferWaitOp> {
+  PipeTransferWaitLowering(const TypeConverter &typeConverter,
                            MLIRContext *context,
                            const PipeResourcePlan &pipeResourcePlan)
       : OpConversionPattern(typeConverter, context),
         pipeResourcePlan(pipeResourcePlan) {}
 
   LogicalResult
-  matchAndRewrite(PipeTransferSendOp op, OpAdaptor adaptor,
+  matchAndRewrite(PipeTransferWaitOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    // DFB -> Pipe: source core sends data to the pipe receivers.
-    // Determine DFB access context: consumer (cb_wait/cb_pop) vs producer
-    // (cb_reserve/cb_push). This controls whether the source address comes
-    // from the DFB read pointer or write pointer.
-    DominanceInfo domInfo(op->getParentOfType<func::FuncOp>());
-    bool isConsumerCB =
-        llvm::any_of(op.getSrc().getUsers(), [&](Operation *user) {
-          return mlir::isa<CBWaitOp>(user) &&
-                 user->getOperand(0) == op.getSrc() &&
-                 domInfo.dominates(user, op);
-        });
-    return lowerPipeTransferSend(op, adaptor.getSrc(), isConsumerCB,
-                                 pipeResourcePlan, rewriter);
-  }
-
-private:
-  const PipeResourcePlan &pipeResourcePlan;
-};
-
-struct PipeTransferWaitLowering : OpConversionPattern<PipeTransferWaitOp> {
-  PipeTransferWaitLowering(const TypeConverter &typeConverter,
-                           MLIRContext *context,
-                           const PipeNetCounterMap *pipeNetCounters,
-                           const PipeResourcePlan &pipeResourcePlan)
-      : OpConversionPattern(typeConverter, context),
-        pipeNetCounters(pipeNetCounters), pipeResourcePlan(pipeResourcePlan) {}
-
-  LogicalResult
-  matchAndRewrite(PipeTransferWaitOp op, OpAdaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    return lowerPipeTransferWait(op, pipeNetCounters, pipeResourcePlan,
+    return lowerPipeTransferWait(op, adaptor.getToken(), pipeResourcePlan,
                                  rewriter);
   }
 
 private:
-  const PipeNetCounterMap *pipeNetCounters;
   const PipeResourcePlan &pipeResourcePlan;
 };
 
 struct WaitLowering : OpConversionPattern<WaitOp> {
-  using OpConversionPattern::OpConversionPattern;
+  WaitLowering(const TypeConverter &typeConverter, MLIRContext *context,
+               const llvm::SmallPtrSetImpl<Operation *> &completedPipeSends)
+      : OpConversionPattern(typeConverter, context),
+        completedPipeSends(completedPipeSends) {}
 
   LogicalResult
   matchAndRewrite(WaitOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (findPipeTransferSend(op.getXf())) {
+    if (completedPipeSends.contains(op)) {
       // Pipe sends wait for the payload write before signaling receiver
       // completion, so the send handle is complete when the send op returns.
       rewriter.eraseOp(op);
       return success();
     }
 
-    // TODO(ttl): Lower ttl.wait to TRID-specific barriers keyed by the transfer
-    // handle (read vs write barrier based on transfer direction). Issue: #87.
+    // TODO(ttl): Lower ttl.wait to the TRID-specific barrier selected by the
+    // transfer handle direction (read or write). Issue: #87.
     //
     // MVP behavior: emit the corresponding global barrier based on transfer
     // direction. Pipe receive waits are expanded to ttl.pipe_transfer.wait
     // before this conversion.
-    auto kind = getTransferKindFromHandleType(adaptor.getXf().getType());
+    auto kind = getTransferKindFromHandleType(op.getXf().getType());
     if (!kind) {
       return op.emitError("untyped transfer handle survived pipe receive "
                           "expansion");
     }
-    if (*kind == TransferKind::read) {
-      ttk::NocAsyncReadBarrierOp::create(rewriter, op.getLoc(), Value());
-    } else if (*kind == TransferKind::write) {
-      ttk::NocAsyncWriteBarrierOp::create(rewriter, op.getLoc(), Value());
-    } else {
-      // Future-proofing: TransferKind is currently {read, write}, but fail
-      // explicitly if it ever expands without updating the lowering.
+    // Future-proofing: TransferKind is currently {read, write}, but fail
+    // explicitly before mutating IR if it ever expands without updating the
+    // lowering.
+    if (*kind != TransferKind::read && *kind != TransferKind::write) {
       return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
         diag << "unsupported TransferKind for ttl.wait lowering";
       });
     }
+    int64_t nocIndex = getNocIndex(op);
+    Value nocVal =
+        arith::ConstantOp::create(rewriter, op.getLoc(), rewriter.getI8Type(),
+                                  rewriter.getI8IntegerAttr(nocIndex));
+    if (*kind == TransferKind::read) {
+      ttk::NocAsyncReadBarrierOp::create(rewriter, op.getLoc(), nocVal);
+    } else {
+      ttk::NocAsyncWriteBarrierOp::create(rewriter, op.getLoc(), nocVal);
+    }
     rewriter.eraseOp(op);
     return success();
   }
+
+private:
+  const llvm::SmallPtrSetImpl<Operation *> &completedPipeSends;
 };
 
 //===----------------------------------------------------------------------===//
@@ -1190,6 +1312,228 @@ struct CoreYLowering : OpConversionPattern<CoreYOp> {
   }
 };
 
+//===----------------------------------------------------------------------===//
+// DFB index query lowering
+//===----------------------------------------------------------------------===//
+
+struct GetDfbIdLowering : OpConversionPattern<GetDfbIdOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(GetDfbIdOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    FailureOr<int32_t> dfbIndex = getValidatedDFBIndex(op.getDfb(), op);
+    if (failed(dfbIndex)) {
+      return failure();
+    }
+    auto convertedDfb =
+        utils::convertTTLCBToTTKernel(adaptor.getDfb(), rewriter, op.getLoc());
+    if (failed(convertedDfb)) {
+      return rewriter.notifyMatchFailure(op, "failed to convert DFB type");
+    }
+    auto newOp = ttk::GetDfbIdOp::create(rewriter, op.getLoc(),
+                                         rewriter.getI32Type(), *convertedDfb);
+    rewriter.replaceOp(op, newOp.getResult());
+    return success();
+  }
+};
+
+struct RawAddrLowering : OpConversionPattern<RawAddrOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(RawAddrOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    FailureOr<unsigned> argIdx = getTensorFuncArgIndex(op.getTensor());
+    if (failed(argIdx)) {
+      return rewriter.notifyMatchFailure(
+          op, "raw_addr operand must be a function tensor argument");
+    }
+    Value bankBase =
+        getBufferAddressFromRuntimeArg(*argIdx, op.getLoc(), rewriter);
+    rewriter.replaceOp(op, bankBase);
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// Opaque call lowering
+//===----------------------------------------------------------------------===//
+
+struct OpaqueScalarArgument {
+  Value value;
+};
+
+struct OpaqueDFBArgument {
+  int32_t index;
+};
+
+struct OpaqueTensorArgument {
+  Value tensor;
+  TensorAccessorInfo accessorInfo;
+};
+
+using OpaqueArgumentPlan =
+    std::variant<OpaqueScalarArgument, OpaqueDFBArgument, OpaqueTensorArgument>;
+
+struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(OpaqueCallOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location location = op.getLoc();
+
+    SmallVector<Attribute> templateArgs;
+    if (std::optional<ArrayAttr> sourceTemplateArgs = op.getTemplateArgs()) {
+      for (Attribute attribute : *sourceTemplateArgs) {
+        auto templateArg = cast<ExternalTemplateArgAttr>(attribute);
+        FailureOr<Attribute> convertedTemplateArg = convertTemplateArg(
+            templateArg, op.getTemplateDfbOperands(), op, rewriter);
+        if (failed(convertedTemplateArg)) {
+          return failure();
+        }
+        templateArgs.push_back(*convertedTemplateArg);
+      }
+    }
+
+    SmallVector<Type> resultTypes;
+    for (Type resultType : op.getResultTypes()) {
+      Type convertedType = getTypeConverter()->convertType(resultType);
+      if (!convertedType) {
+        return rewriter.notifyMatchFailure(op, "failed to convert result type");
+      }
+      resultTypes.push_back(convertedType);
+    }
+
+    SmallVector<OpaqueArgumentPlan> argumentPlan;
+    argumentPlan.reserve(op.getArgOperands().size());
+    for (auto [originalArg, adaptedArg] :
+         llvm::zip(op.getArgOperands(), adaptor.getArgOperands())) {
+      Type originalType = originalArg.getType();
+
+      if (mlir::isa<CircularBufferType>(originalType)) {
+        FailureOr<int32_t> dfbIndex = getValidatedDFBIndex(originalArg, op);
+        if (failed(dfbIndex)) {
+          return failure();
+        }
+        argumentPlan.push_back(OpaqueDFBArgument{*dfbIndex});
+        continue;
+      }
+
+      if (mlir::isa<RankedTensorType>(originalType)) {
+        if (!isNocKernelThread(op)) {
+          return op.emitError(
+              "tensor operands require a data movement (noc) thread");
+        }
+        FailureOr<TensorAccessorInfo> accessorInfo =
+            getTensorAccessorInfo(originalArg, op, rewriter);
+        if (failed(accessorInfo)) {
+          return failure();
+        }
+        argumentPlan.push_back(
+            OpaqueTensorArgument{originalArg, *accessorInfo});
+        continue;
+      }
+
+      argumentPlan.push_back(OpaqueScalarArgument{adaptedArg});
+    }
+
+    SmallVector<Value> convertedArgs;
+    convertedArgs.reserve(argumentPlan.size());
+    for (const OpaqueArgumentPlan &argument : argumentPlan) {
+      if (const auto *scalar = std::get_if<OpaqueScalarArgument>(&argument)) {
+        convertedArgs.push_back(scalar->value);
+        continue;
+      }
+      if (const auto *dfb = std::get_if<OpaqueDFBArgument>(&argument)) {
+        IntegerType unsignedI32 =
+            IntegerType::get(rewriter.getContext(), 32, IntegerType::Unsigned);
+        convertedArgs.push_back(ttk::GetCompileArgValOp::create(
+            rewriter, location, unsignedI32, dfb->index));
+        continue;
+      }
+      const auto &tensor = std::get<OpaqueTensorArgument>(argument);
+      Value bankBase = getBufferAddressFromRuntimeArg(
+          tensor.accessorInfo.argIdx, location, rewriter);
+      convertedArgs.push_back(materializeTensorAccessor(
+          tensor.tensor, bankBase, tensor.accessorInfo, rewriter));
+    }
+
+    ArrayAttr templateArgsAttr;
+    if (!templateArgs.empty()) {
+      templateArgsAttr = rewriter.getArrayAttr(templateArgs);
+    }
+    auto newOp = ttk::OpaqueCallOp::create(
+        rewriter, location, resultTypes, op.getCalleeAttr(), op.getHeaderAttr(),
+        convertedArgs, templateArgsAttr, op.getUnsignedArgIndicesAttr());
+    rewriter.replaceOp(op, newOp->getResults());
+    return success();
+  }
+
+private:
+  /// Resolve DFB metadata before type conversion discards block geometry.
+  static FailureOr<Attribute>
+  convertTemplateArg(ExternalTemplateArgAttr templateArg,
+                     ValueRange templateDFBs, OpaqueCallOp op,
+                     ConversionPatternRewriter &rewriter) {
+    ExternalTemplateArgKind kind = templateArg.getKind();
+    int64_t payload = templateArg.getValue();
+    if (kind == ExternalTemplateArgKind::SignedInteger) {
+      IntegerType signedI32 =
+          IntegerType::get(rewriter.getContext(), 32, IntegerType::Signed);
+      return rewriter.getIntegerAttr(signedI32, payload);
+    }
+    if (kind == ExternalTemplateArgKind::Boolean) {
+      return rewriter.getBoolAttr(payload != 0);
+    }
+    if (kind == ExternalTemplateArgKind::UnsignedInteger) {
+      return rewriter.getUI32IntegerAttr(static_cast<uint32_t>(payload));
+    }
+
+    if (payload < 0 || static_cast<size_t>(payload) >= templateDFBs.size()) {
+      return op.emitError("template DFB operand index ")
+             << payload << " is out of range for " << templateDFBs.size()
+             << " operands";
+    }
+    Value dfb = templateDFBs[static_cast<size_t>(payload)];
+    FailureOr<int32_t> dfbIndex = getValidatedDFBIndex(dfb, op);
+    if (failed(dfbIndex)) {
+      return failure();
+    }
+    if (kind == ExternalTemplateArgKind::DFBIndex) {
+      return rewriter.getUI32IntegerAttr(static_cast<uint32_t>(*dfbIndex));
+    }
+    if (kind == ExternalTemplateArgKind::DFBDescriptor) {
+      auto dfbType = cast<CircularBufferType>(dfb.getType());
+      FailureOr<uint64_t> pagesPerBlock = getDFBPagesPerBlock(dfbType);
+      FailureOr<uint64_t> pageSizeBytes = getDFBPageSizeBytes(dfbType);
+      int64_t blockCount = dfbType.getBlockCount();
+      constexpr uint64_t maxDescriptorField =
+          std::numeric_limits<uint32_t>::max();
+      if (failed(pageSizeBytes)) {
+        return op.emitError(
+                   "DFB descriptor element type must occupy a positive whole "
+                   "number of bytes, got ")
+               << dfbType.getElementType();
+      }
+      if (failed(pagesPerBlock) || blockCount <= 0) {
+        return op.emitError("DFB descriptor dimensions are not representable");
+      }
+      if (*pagesPerBlock > maxDescriptorField ||
+          static_cast<uint64_t>(blockCount) > maxDescriptorField ||
+          *pageSizeBytes > maxDescriptorField) {
+        return op.emitError(
+            "DFB descriptor dimensions or page size exceed uint32_t");
+      }
+      return ttk::DFBDescriptorAttr::get(rewriter.getContext(), *dfbIndex,
+                                         *pagesPerBlock, blockCount,
+                                         static_cast<int64_t>(*pageSizeBytes));
+    }
+    llvm_unreachable("unhandled external template argument kind");
+  }
+};
+
 /// Tensor-level ttl.store ops must be lowered to tile_store by
 /// convert-ttl-to-compute. Any surviving to this point is a miscompile.
 struct StoreLowering : OpConversionPattern<StoreOp> {
@@ -1215,8 +1559,7 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
       return failure();
     }
     op->removeAttr(kKernelThreadAttrName);
-    op->removeAttr("ttl.noc_index");
-    op->setAttr("ttkernel.thread", ttlAttr);
+    op->setAttr(ttk::ThreadTypeAttr::name, ttlAttr);
 
     // If function has arguments, we need to transform them
     if (op.getNumArguments() > 0) {
@@ -1455,18 +1798,23 @@ struct RawElementWriteLowering : OpConversionPattern<RawElementWriteOp> {
       return rewriter.notifyMatchFailure(op, "block does not trace to a CB");
     }
 
-    auto intVal =
-        utils::materializeIntBits(adaptor.getValue(), intTy, rewriter, loc);
-    if (failed(intVal)) {
-      return rewriter.notifyMatchFailure(
-          op, "could not materialize integer bits from float value");
+    Value floatVal = adaptor.getValue();
+    Value intVal;
+    if (auto cast = floatVal.getDefiningOp<UnrealizedConversionCastOp>();
+        cast && cast.getInputs().size() == 1 &&
+        cast.getInputs()[0].getType() == intTy) {
+      intVal = cast.getInputs()[0];
+    } else {
+      intVal =
+          UnrealizedConversionCastOp::create(rewriter, loc, intTy, floatVal)
+              .getResult(0);
     }
 
     auto [l1Ptr, offset] =
         emitL1PtrAndOffset(*cb, op.getBlock(), blockType, adaptor.getCoords(),
                            elemWidth, rewriter, loc);
 
-    ttk::StoreToL1Op::create(rewriter, loc, *intVal, l1Ptr, offset);
+    ttk::StoreToL1Op::create(rewriter, loc, intVal, l1Ptr, offset);
     rewriter.eraseOp(op);
     return success();
   }
@@ -1480,13 +1828,13 @@ struct RawElementWriteLowering : OpConversionPattern<RawElementWriteOp> {
 static LogicalResult
 lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                       TTLToTTKernelTypeConverter &typeConverter,
-                      StringRef passName) {
+                      StringRef passName, bool pipeComputedAddresses,
+                      bool pipeCapacitySync, bool pipeGlobalSemaphoresOnly) {
   ConversionTarget target(ctx);
   target.addIllegalDialect<tt::ttl::TTLDialect>();
   target.addLegalDialect<affine::AffineDialect, arith::ArithDialect,
                          BuiltinDialect, memref::MemRefDialect, scf::SCFDialect,
-                         func::FuncDialect, tensor::TensorDialect,
-                         ttkernel::TTKernelDialect>();
+                         func::FuncDialect, ttkernel::TTKernelDialect>();
 
   // Structural ops remain legal (converted elsewhere or kept as-is).
   target.addLegalOp<ComputeOp, YieldOp, AttachCBOp, DstIndexOp>();
@@ -1523,76 +1871,98 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
            typeConverter.isLegal(&op.getBody());
   });
 
-  // Validate explicit transfer IR before expansion mutates public pipe copies.
-  if (failed(verifyPipeTransferWaits(mod))) {
+  // Validate explicit transfer IR and resolve every high-level pipe copy before
+  // expansion mutates the values used by the analysis.
+  {
+    ValueOriginAnalysis preExpansionAnalysis(mod);
+    if (failed(verifyTransferProvenance(mod, preExpansionAnalysis))) {
+      return failure();
+    }
+    FailureOr<PipeTransferExpansionPlan> maybeExpansionPlan =
+        buildPipeTransferExpansionPlan(mod, preExpansionAnalysis);
+    if (failed(maybeExpansionPlan)) {
+      return failure();
+    }
+    applyPipeTransferExpansionPlan(mod, *maybeExpansionPlan);
+  }
+
+  // All remaining provenance consumers share this root-scoped cache.
+  ValueOriginAnalysis transferAnalysis(mod);
+  if (failed(verifyTransferProvenance(mod, transferAnalysis))) {
     return failure();
   }
-  if (failed(expandPipeTransferOps(mod))) {
+  FailureOr<std::unique_ptr<PipeTransferIndex>> maybeTransferIndex =
+      PipeTransferIndex::create(mod, transferAnalysis);
+  if (failed(maybeTransferIndex)) {
     return failure();
   }
-  // Expansion creates pipe_transfer.wait from public ttl.wait; validate those
-  // token chains before graph and resource planning.
-  if (failed(verifyPipeTransferWaits(mod))) {
-    return failure();
-  }
+  const PipeTransferIndex &transferIndex = **maybeTransferIndex;
 
   // Validate receiver DFB consistency before lowering emits the pipe
   // synchronization protocol.
-  auto pipeGraphOrErr = PipeGraph::build(mod);
+  auto pipeGraphOrErr = PipeGraph::build(mod, transferIndex);
   if (failed(pipeGraphOrErr)) {
     return failure();
   }
 
-  // Per-PipeNet runtime counters for cumulative receive wait_min.
-  PipeNetCounterMap pipeNetCounters;
-  allocatePipeNetReceiveCounters(mod, pipeNetCounters);
-
-  // Per-net-id pipe list, shared by IsSrc/IsDst/IsActive lowerings so they
-  // don't walk the module per match.
-  PipeNetIndex pipeNetIndex;
-  buildPipeNetIndex(mod, pipeNetIndex);
-  PipeResourcePlan pipeResourcePlan;
-  if (failed(buildPipeResourcePlan(mod, pipeResourcePlan))) {
+  PipePlanningOptions pipePlanningOptions;
+  pipePlanningOptions.enableComputedAddresses = pipeComputedAddresses;
+  pipePlanningOptions.enableCapacitySynchronization = pipeCapacitySync;
+  pipePlanningOptions.counterAllocationPolicy =
+      pipeGlobalSemaphoresOnly ? PipeCounterAllocationPolicy::GlobalOnly
+                               : PipeCounterAllocationPolicy::LocalThenGlobal;
+  FailureOr<PipeModulePlan> maybePipeModulePlan =
+      buildPipeModulePlan(mod, transferAnalysis, transferIndex, *pipeGraphOrErr,
+                          pipePlanningOptions);
+  if (failed(maybePipeModulePlan)) {
     return failure();
   }
-  PipeResourceRequirements pipeResourceRequirements =
-      getPipeResourceRequirements(pipeResourcePlan);
-  if (failed(verifyPipeResourcePlanFitsHardware(mod, pipeResourcePlan,
-                                                pipeResourceRequirements))) {
-    return failure();
-  }
-  mod->setAttr(kPipeSyncSemaphoreCountAttrName,
-               IntegerAttr::get(IntegerType::get(&ctx, 64),
-                                pipeResourceRequirements.syncSemaphoreCount));
-  if (pipeResourceRequirements.globalSemaphoreCount > 0) {
-    mod->setAttr(
-        kPipeGlobalSemaphoreCountAttrName,
-        IntegerAttr::get(IntegerType::get(&ctx, 64),
-                         pipeResourceRequirements.globalSemaphoreCount));
-  }
-  if (pipeResourceRequirements.sramScratchBytes > 0) {
-    mod->setAttr(kPipeSramScratchBytesAttrName,
-                 IntegerAttr::get(IntegerType::get(&ctx, 64),
-                                  pipeResourceRequirements.sramScratchBytes));
-  }
+  PipeModulePlan pipeModulePlan = std::move(*maybePipeModulePlan);
+  applyPipeModuleAttributes(mod, pipeModulePlan);
+  const PipeResourcePlan &pipeResourcePlan = pipeModulePlan.getResourcePlan();
+  const PipeCapacityPlan &pipeCapacityPlan = pipeModulePlan.getCapacityPlan();
   // [Device 2.0] The kPipeSyncSemaphoreCountAttrName,
   // kPipeGlobalSemaphoreCountAttrName, and kPipeSramScratchBytesAttrName attrs
   // are the current host/runtime ABI for pipe resource binding. Keep the
   // allocation decision in this compiler plan so future typed device APIs only
   // change runtime binding code.
+  PipeCounterProgressMap senderCapacityCounters;
+  initializePipeCapacityCounters(pipeCapacityPlan, pipeResourcePlan,
+                                 senderCapacityCounters);
+  PipeCounterProgressMap postSequenceCounters;
+  initializePipePostSequenceCounters(pipeResourcePlan, postSequenceCounters);
+  PipeComputedAddressCounterMap computedAddressCounters;
+  initializePipeComputedAddressCounters(pipeResourcePlan,
+                                        computedAddressCounters);
 
   RewritePatternSet patterns(&ctx);
+  scf::populateSCFStructuralTypeConversionsAndLegality(typeConverter, patterns,
+                                                       target);
+  target.addDynamicallyLegalDialect<tensor::TensorDialect>(
+      [&](Operation *op) { return typeConverter.isLegal(op); });
+  patterns.add<TensorOpTypeConversion<tensor::EmptyOp>,
+               TensorOpTypeConversion<tensor::InsertOp>,
+               TensorOpTypeConversion<tensor::ExtractOp>,
+               TensorOpTypeConversion<tensor::CastOp>>(typeConverter, &ctx);
   patterns.add<CopyLowering>(typeConverter, &ctx);
-  patterns.add<PipeTransferPostLowering, PipeTransferSendLowering>(
-      typeConverter, &ctx, pipeResourcePlan);
-  patterns.add<PipeTransferWaitLowering>(typeConverter, &ctx, &pipeNetCounters,
+  patterns.add<PipeTransferPostLowering>(typeConverter, &ctx, pipeModulePlan,
+                                         postSequenceCounters,
                                          pipeResourcePlan);
-  patterns.add<BindCBLowering, TensorSliceLowering, WaitLowering,
-               CBReserveLowering, CBPushLowering, CBWaitLowering, CBPopLowering,
-               TileStoreLowering, StoreLowering, CoreXLowering, CoreYLowering,
-               RawElementReadLowering, RawElementWriteLowering>(typeConverter,
-                                                                &ctx);
-  populatePipeLoweringPatterns(patterns, typeConverter, pipeNetIndex);
+  patterns.add<PipeTransferSendLowering>(
+      typeConverter, &ctx, pipeModulePlan, pipeResourcePlan, pipeCapacityPlan,
+      senderCapacityCounters, computedAddressCounters);
+  patterns.add<PipeTransferWaitLowering>(typeConverter, &ctx, pipeResourcePlan);
+  patterns.add<WaitLowering>(typeConverter, &ctx,
+                             pipeModulePlan.getCompletedPipeSendWaits());
+  patterns.add<BindCBLowering, TensorSliceLowering, CBReserveLowering,
+               CBPushLowering, CBWaitLowering, TileStoreLowering, StoreLowering,
+               CoreXLowering, CoreYLowering, RawElementReadLowering,
+               RawElementWriteLowering, RawAddrLowering, OpaqueCallLowering,
+               GetDfbIdLowering>(typeConverter, &ctx);
+  patterns.add<CBPopLowering>(typeConverter, &ctx, pipeCapacityPlan,
+                              pipeResourcePlan);
+  populatePipeLoweringPatterns(patterns, typeConverter,
+                               pipeModulePlan.getPipeNetIndex());
   populateFunctionOpInterfaceTypeConversionPattern(
       func::FuncOp::getOperationName(), patterns, typeConverter);
 
@@ -1626,14 +1996,13 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   return success();
 }
 
-/// Phase 2: Lower tile compute ops and DST lifecycle ops to TTKernel.
+/// Lower tile compute operations and DST lifecycle operations to TTKernel.
 /// Tile compute ops are identified by TTLTileComputeOpTrait. ttl.compute is
 /// kept legal here because it is lowered to loops in an earlier pass
 /// (ttl-lower-to-loops).
 static LogicalResult
 lowerTileOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
-                       TTLToTTKernelTypeConverter &typeConverter,
-                       bool reduceFullFp32) {
+                       TTLToTTKernelTypeConverter &typeConverter) {
   ConversionTarget computeTarget(ctx);
   computeTarget.addLegalDialect<ttkernel::TTKernelDialect>();
   computeTarget.addLegalDialect<affine::AffineDialect, arith::ArithDialect>();
@@ -1666,8 +2035,7 @@ lowerTileOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
       });
 
   RewritePatternSet computePatterns(&ctx);
-  populateTTLTileOpsToTTKernelPatterns(&typeConverter, computePatterns,
-                                       reduceFullFp32);
+  populateTTLTileOpsToTTKernelPatterns(&typeConverter, computePatterns);
   return applyPartialConversion(mod, computeTarget, std::move(computePatterns));
 }
 
@@ -1827,6 +2195,25 @@ static void expandDstSections(ModuleOp mod) {
 // TTLConvertTTLToTTKernelPass
 //===----------------------------------------------------------------------===//
 
+static LogicalResult
+validateTileOperationsForTarget(ModuleOp module,
+                                const ComputeTargetEnvironment &target) {
+  bool hasErrors = false;
+  module.walk([&](func::FuncOp function) {
+    function.walk([&](Operation *operation) {
+      if (!getComputePrimitive(operation)) {
+        return;
+      }
+      std::string failureReason;
+      if (failed(target.validateOperation(operation, failureReason))) {
+        operation->emitOpError(failureReason);
+        hasErrors = true;
+      }
+    });
+  });
+  return failure(hasErrors);
+}
+
 struct TTLConvertTTLToTTKernelPass
     : impl::TTLConvertTTLToTTKernelBase<TTLConvertTTLToTTKernelPass> {
   using TTLConvertTTLToTTKernelBase::TTLConvertTTLToTTKernelBase;
@@ -1836,20 +2223,38 @@ struct TTLConvertTTLToTTKernelPass
     ModuleOp mod = getOperation();
     TTLToTTKernelTypeConverter typeConverter;
 
+    std::string targetFailureReason;
+    FailureOr<std::unique_ptr<ComputeTargetEnvironment>> target =
+        ComputeTargetEnvironment::get(mod, targetFailureReason);
+    if (failed(target)) {
+      mod.emitOpError(targetFailureReason);
+      signalPassFailure();
+      return;
+    }
+    if (failed(validateTileOperationsForTarget(mod, **target))) {
+      signalPassFailure();
+      return;
+    }
+    if (failed(verifyTileExecutionSemantics(mod))) {
+      signalPassFailure();
+      return;
+    }
+
     // Phase 0: Expand DstSectionOp into four TTL sync ops. This inlines the
     // DstSectionOp body and inserts acquire/commit/wait/release around it,
     // with stores reordered to the pack phase (after wait).
     expandDstSections(mod);
 
     // Phase 1: Lower TTL ops to TTKernel (bind_cb, copy, wait, cb ops, store)
-    if (failed(lowerTTLOpsToTTKernel(mod, ctx, typeConverter, getName()))) {
+    if (failed(lowerTTLOpsToTTKernel(mod, ctx, typeConverter, getName(),
+                                     pipeComputedAddresses, pipeCapacitySync,
+                                     pipeGlobalSemaphoresOnly))) {
       signalPassFailure();
       return;
     }
 
     // Phase 2: Lower tile compute ops to TTKernel (tile_add, tile_mul, ...)
-    if (failed(
-            lowerTileOpsToTTKernel(mod, ctx, typeConverter, reduceFullFp32))) {
+    if (failed(lowerTileOpsToTTKernel(mod, ctx, typeConverter))) {
       signalPassFailure();
       return;
     }

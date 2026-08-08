@@ -11,6 +11,7 @@
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/Support/LogicalResult.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include <cstdint>
@@ -22,6 +23,7 @@ namespace mlir::tt::ttl {
 /// Default tile dimensions used for TTL tensors.
 inline constexpr int32_t kDefaultTileHeight = 32;
 inline constexpr int32_t kDefaultTileWidth = 32;
+/// Physical DFB indices supported by TT kernel hardware.
 inline constexpr int32_t kMaxCircularBuffers = 32;
 /// TT kernel hardware semaphore id capacity. Mirrored by
 /// python/ttl/constants.py for simulator-side resource checks.
@@ -43,27 +45,9 @@ constexpr llvm::StringLiteral kDstFullSyncEnAttrName("dst_full_sync_en");
 constexpr llvm::StringLiteral
     kUnpackToDestFp32AttrName("ttl.unpack_to_dest_fp32");
 
-/// Canonical target_arch values. Mirrored in python/ttl/ttl_api.py.
-constexpr llvm::StringLiteral kBlackholeArchName("blackhole");
-constexpr llvm::StringLiteral kWormholeB0ArchName("wormhole_b0");
-
-inline bool hasTargetArch(Operation *op, llvm::StringRef archName) {
-  ModuleOp moduleOp = op->getParentOfType<ModuleOp>();
-  if (!moduleOp) {
-    return false;
-  }
-
-  auto targetArch = moduleOp->getAttrOfType<StringAttr>(kTargetArchAttrName);
-  return targetArch && targetArch.getValue() == archName;
-}
-
-inline bool isBlackholeTarget(Operation *op) {
-  return hasTargetArch(op, kBlackholeArchName);
-}
-
-inline bool isWormholeB0Target(Operation *op) {
-  return hasTargetArch(op, kWormholeB0ArchName);
-}
+/// Selected strategy on tile operations with execution alternatives.
+constexpr llvm::StringLiteral
+    kTileExecutionStrategyAttrName("ttl.tile_execution_strategy");
 
 /// PipeNet role exposed by `is_src` / `is_dst` / `is_active` predicate ops
 /// and by `pipenet_scope` declarations.
@@ -73,21 +57,37 @@ enum class PipeRole : int64_t {
   Active = 2,
 };
 
+/// Target-independent compute primitive implemented by a TTL operation.
+enum class ComputePrimitive {
+  Add,
+  Subtract,
+  Multiply,
+  ElementwiseBinary,
+  ElementwiseUnary,
+  Broadcast,
+  Reduce,
+  Transpose,
+  Fill,
+  Matmul,
+  Typecast,
+  MultiplyByConstant,
+  Passthrough,
+};
+
 /// A contiguous set of DST slots starting at `baseIndex`.
 struct DstFootprint {
   mlir::Value baseIndex;
   int64_t tileCount = 1;
 };
 
-llvm::SmallVector<DstFootprint, 2>
+mlir::FailureOr<llvm::SmallVector<DstFootprint, 2>>
 getDefaultDstReadFootprints(mlir::Operation *op);
 llvm::SmallVector<DstFootprint, 2>
 getDefaultDstWriteFootprints(mlir::Operation *op);
 mlir::FailureOr<DstFootprint> getDefaultResultDstFootprint(mlir::Operation *op,
                                                            mlir::Value result);
 
-/// Func-level: enable FPU lowering for eligible tile add/sub/mul.
-/// Set by TTLSetComputeKernelConfig, read via getKernelBoolAttr.
+/// Function-level policy for selecting FPU add, subtract, and multiply.
 constexpr llvm::StringLiteral
     kEnableFPUBinaryOpsAttrName("ttl.enable_fpu_binary_ops");
 
@@ -97,6 +97,12 @@ constexpr llvm::StringLiteral kKernelThreadAttrName("ttl.kernel_thread");
 
 /// Number of tiles per DST sync region.
 constexpr llvm::StringLiteral kUnrollFactorAttrName("ttl.unroll_factor");
+
+/// Func-level: NOC index (0 = reader/NCRISC, 1 = writer/BRISC) of a
+/// datamovement kernel; set by the frontend, read via getNocIndex during
+/// TTL->TTKernel lowering and by the ttnn runtime bridge for reader/writer
+/// config assignment. Mirrored in python/ttl/ttl_api.py.
+constexpr llvm::StringLiteral kNocIndexAttrName("ttl.noc_index");
 
 /// Marks an scf.for as a compiler-generated subblock loop. Integer value is
 /// the linearization stride for this dimension.
@@ -132,9 +138,8 @@ constexpr llvm::StringLiteral
 /// Placeholder marker on copy_tile (replaced during DST assignment).
 constexpr llvm::StringLiteral kPlaceholderCopyAttrName("ttl.placeholder_copy");
 
-/// Module attribute carrying compiler-allocated DFB metadata.
-constexpr llvm::StringLiteral
-    kCompilerAllocatedDFBsAttrName("ttl.compiler_allocated_dfbs");
+/// Module attribute containing one runtime descriptor per physical DFB index.
+constexpr llvm::StringLiteral kDFBAllocationsAttrName("ttl.dfb_allocations");
 
 /// Module attributes carrying compiler-owned pipe resource allocation.
 constexpr llvm::StringLiteral
@@ -143,6 +148,11 @@ constexpr llvm::StringLiteral
     kPipeGlobalSemaphoreCountAttrName("ttl.pipe_global_semaphore_count");
 constexpr llvm::StringLiteral
     kPipeSramScratchBytesAttrName("ttl.pipe_sram_scratch_bytes");
+
+/// Function attribute listing receiver DFB indices whose L1 base addresses are
+/// passed after tensor buffer addresses as common runtime arguments.
+constexpr llvm::StringLiteral kPipeComputedAddressDFBIndicesAttrName(
+    "ttl.pipe_computed_address_dfb_indices");
 
 /// Marker on BindCBOp to distinguish compiler-allocated DFBs from user-declared
 /// ones.
@@ -195,9 +205,7 @@ template <typename ConcreteType>
 class TTLDSTInputsTrait
     : public mlir::OpTrait::TraitBase<ConcreteType, TTLDSTInputsTrait> {};
 
-/// Participation marker for binary tile ops (add/sub/mul) whose input source
-/// is decided by operand provenance rather than op identity. The eligibility
-/// answer is computed by isFPUEligibleBinaryOp() in TTLOpsUtils.h.
+/// Marks binary tile ops that support both FPU and SFPU execution strategies.
 template <typename ConcreteType>
 class TTLStrategyDependentBinaryOpTrait
     : public mlir::OpTrait::TraitBase<ConcreteType,
@@ -263,13 +271,6 @@ inline std::optional<int64_t> getCBIndexAttr(mlir::Operation *compute,
   }
   return std::nullopt;
 }
-
-//===----------------------------------------------------------------------===//
-// Compiler-Allocated DFB Utilities
-//===----------------------------------------------------------------------===//
-
-/// Return the next available DFB index for the module.
-int32_t getNextAvailableDFBIndex(mlir::ModuleOp mod);
 
 } // namespace mlir::tt::ttl
 

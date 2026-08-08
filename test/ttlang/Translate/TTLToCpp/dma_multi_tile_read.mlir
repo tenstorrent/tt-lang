@@ -12,8 +12,8 @@
 #layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
                       buffer = dram, grid = [1, 1], memory = interleaved>
 
-// CHECK-LABEL: // dma_multi_tile_read
-// CHECK: void kernel_main() {
+// CHECK-LABEL: void kernel_main() {
+// CHECK:   Noc noc0(0);
 // CHECK-DAG:   size_t [[TILE_STEP:v[0-9]+]] = 1;
 // CHECK-DAG:   size_t [[TILES_BOUND:v[0-9]+]] = 2;
 // CHECK-DAG:   size_t [[PAGE_SIZE:v[0-9]+]] = 4096;
@@ -38,16 +38,16 @@
 // CHECK:       int32_t [[TILE_OFFSET:v[0-9]+]] = (int32_t) [[TILE_OFFSET_PTR]];
 // CHECK:       ptrdiff_t [[CB_ADDR_PTR:v[0-9]+]] = (ptrdiff_t) [[CB_ADDR_IDX]];
 // CHECK:       int32_t [[CB_ADDR:v[0-9]+]] = (int32_t) [[CB_ADDR_PTR]];
-// CHECK:       noc_async_read_tile([[TILE_OFFSET]], [[ACCESSOR]], [[CB_ADDR]]);
+// CHECK:       noc0.async_read([[ACCESSOR]], CoreLocalMem<uint32_t>([[CB_ADDR]]), [[ACCESSOR]].get_aligned_page_size(), {.page_id = static_cast<uint32_t>([[TILE_OFFSET]])}, {});
 // CHECK:     }
 // CHECK:   }
-// CHECK:   noc.async_read_barrier<Noc::BarrierMode::FULL>();
+// CHECK:   noc0.async_read_barrier();
 // CHECK:   return;
 // CHECK-NEXT: }
 module {
   func.func @dma_multi_tile_read(%arg0: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
     %c0 = arith.constant 0 : index
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
     %slice = ttl.tensor_slice %arg0[%c0, %c0] : tensor<2x2x!ttcore.tile<32x32, f32>, #layout> -> tensor<2x2x!ttcore.tile<32x32, f32>, #layout>
     %xf = ttl.copy %slice, %cb : (tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>) -> !ttl.transfer_handle<read>
     ttl.wait %xf : !ttl.transfer_handle<read>

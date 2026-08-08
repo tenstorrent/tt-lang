@@ -71,8 +71,7 @@ def dprint_test_kernel(inp, out):
 # C++ Kernel Checks - Verify dprint in compute kernel
 # =============================================================================
 
-# CHECK: === compute kernel written to
-# CHECK: // compute
+# CHECK: === compute kernel written to {{.*}} ===
 # CHECK: #include "api/debug/dprint.h"
 # CHECK: void kernel_main()
 
@@ -95,7 +94,9 @@ def dprint_test_kernel(inp, out):
 
 # Tile print in compute auto-defaults to pack thread
 # CHECK: PACK({
+# CHECK: for (uint16_t r = 0; r < 16; ++r) {
 # CHECK: TSLICE(get_compile_time_arg_val(
+# CHECK-SAME: .w1=16
 # CHECK: });
 
 # Mixed-arg: scalar label + tile object
@@ -103,7 +104,9 @@ def dprint_test_kernel(inp, out):
 # CHECK: DPRINT("tile:\n");
 # CHECK: });
 # CHECK: PACK({
+# CHECK: for (uint16_t r = 0; r < 16; ++r) {
 # CHECK: TSLICE(get_compile_time_arg_val(
+# CHECK-SAME: .w1=16
 # CHECK: });
 
 # DST dump after exp auto-defaults to math thread
@@ -114,7 +117,9 @@ def dprint_test_kernel(inp, out):
 
 # Thread conditioning: explicit pack-only tile print
 # CHECK: PACK({
+# CHECK: for (uint16_t r = 0; r < 16; ++r) {
 # CHECK: TSLICE(get_compile_time_arg_val(
+# CHECK-SAME: .w1=16
 # CHECK: });
 
 # Thread conditioning: explicit math-only scalar print
@@ -126,8 +131,7 @@ def dprint_test_kernel(inp, out):
 # C++ Kernel Checks - Verify dprint with variables in dm_read kernel
 # =============================================================================
 
-# CHECK: === dm_read kernel written to
-# CHECK: // dm_read
+# CHECK: === dm_read kernel written to {{.*}} ===
 # CHECK: #include "api/debug/dprint.h"
 # CHECK: void kernel_main()
 # CHECK: DPRINT("dm_read core: {} {}\n", get_absolute_logical_x(), get_absolute_logical_y());
@@ -146,8 +150,7 @@ def dprint_test_kernel(inp, out):
 # C++ Kernel Checks - Verify no dprint in dm_write kernel (no print calls)
 # =============================================================================
 
-# CHECK: === dm_write kernel written to
-# CHECK: // dm_write
+# CHECK: === dm_write kernel written to {{.*}} ===
 # CHECK-NOT: #include "api/debug/dprint.h"
 # CHECK: void kernel_main()
 
@@ -169,6 +172,7 @@ if __name__ == "__main__":
             inp_torch,
             dtype=ttnn.bfloat16,
             layout=ttnn.TILE_LAYOUT,
+            tile=ttnn.Tile((16, 16)),
             device=device,
             memory_config=ttnn.L1_MEMORY_CONFIG,
         )
@@ -176,6 +180,7 @@ if __name__ == "__main__":
             out_torch,
             dtype=ttnn.bfloat16,
             layout=ttnn.TILE_LAYOUT,
+            tile=ttnn.Tile((16, 16)),
             device=device,
             memory_config=ttnn.L1_MEMORY_CONFIG,
         )

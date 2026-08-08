@@ -30,7 +30,7 @@ setup() {
     BASE=$(cd "$REPO" && git rev-parse HEAD)
 }
 
-# --- Per-path uplift detection: each of the 5 uplift paths separately. ---
+# --- Per-path uplift detection: each uplift path separately. ---
 
 @test "diff in third-party/tt-metal-version marks uplift=true" {
     echo "modified" >> "$REPO/third-party/tt-metal-version"
@@ -60,11 +60,65 @@ setup() {
     assert_equal "$(run_detect "$BASE" "$head")" "true"
 }
 
+@test "diff in .github/containers/Dockerfile marks uplift=true" {
+    echo "modified" >> "$REPO/.github/containers/Dockerfile"
+    commit_all "$REPO" "uplift"
+    head=$(cd "$REPO" && git rev-parse HEAD)
+    assert_equal "$(run_detect "$BASE" "$head")" "true"
+}
+
 @test "diff in requirements-runtime.txt marks uplift=true" {
     echo "modified" >> "$REPO/requirements-runtime.txt"
     commit_all "$REPO" "uplift"
     head=$(cd "$REPO" && git rev-parse HEAD)
     assert_equal "$(run_detect "$BASE" "$head")" "true"
+}
+
+@test "diff in bin/tt-triage marks uplift=true" {
+    echo "modified" >> "$REPO/bin/tt-triage"
+    commit_all "$REPO" "uplift"
+    head=$(cd "$REPO" && git rev-parse HEAD)
+    assert_equal "$(run_detect "$BASE" "$head")" "true"
+}
+
+@test "diff in BuildLLVM.cmake marks uplift=true" {
+    echo "modified" >> "$REPO/cmake/modules/BuildLLVM.cmake"
+    commit_all "$REPO" "uplift"
+    head=$(cd "$REPO" && git rev-parse HEAD)
+    assert_equal "$(run_detect "$BASE" "$head")" "true"
+}
+
+@test "diff in requirements.txt marks uplift=true" {
+    echo "modified" >> "$REPO/requirements.txt"
+    commit_all "$REPO" "uplift"
+    head=$(cd "$REPO" && git rev-parse HEAD)
+    assert_equal "$(run_detect "$BASE" "$head")" "true"
+}
+
+@test "diff in build-and-install.sh marks uplift=true" {
+    echo "modified" >> "$REPO/scripts/build-and-install.sh"
+    commit_all "$REPO" "uplift"
+    head=$(cd "$REPO" && git rev-parse HEAD)
+    assert_equal "$(run_detect "$BASE" "$head")" "true"
+}
+
+@test "every UPLIFT_PATHS entry exists in the real checkout" {
+    while IFS= read -r uplift_path; do
+        [ -e "$TTLANG_REPO_ROOT/$uplift_path" ]
+    done < <(list_uplift_paths "$SCRIPTS_DIR/uplift-paths.sh")
+}
+
+@test "each UPLIFT_PATHS entry marks uplift=true" {
+    while IFS= read -r uplift_path; do
+        repo=$(mkrepo)
+        install_scripts_in_repo "$repo"
+        base=$(cd "$repo" && git rev-parse HEAD)
+        modify_repo_path "$repo" "$uplift_path"
+        commit_all "$repo" "uplift $uplift_path"
+        head=$(cd "$repo" && git rev-parse HEAD)
+        REPO="$repo"
+        assert_equal "$(run_detect "$base" "$head")" "true"
+    done < <(list_uplift_paths "$SCRIPTS_DIR/uplift-paths.sh")
 }
 
 # --- No-diff case ---
@@ -83,22 +137,25 @@ setup() {
     assert_equal "$(run_detect "$BASE" "$head")" "false"
 }
 
-# --- Regression: tt-mlir is NOT uplift (built fresh by call-build.yml) ---
-# Guards against a future "is tt-mlir uplift?" mistake re-adding it to
-# UPLIFT_PATHS.
-@test "diff in third-party/tt-mlir alone -> uplift=false" {
-    mkdir -p "$REPO/third-party/tt-mlir"
-    echo "tt-mlir bump" > "$REPO/third-party/tt-mlir/sentinel"
-    commit_all "$REPO" "tt-mlir-only"
-    head=$(cd "$REPO" && git rev-parse HEAD)
-    assert_equal "$(run_detect "$BASE" "$head")" "false"
-}
-
 # --- Regression: pyproject.toml is NOT uplift (covered by wheel filter,
 # not container content) ---
 @test "diff in pyproject.toml alone -> uplift=false" {
     echo "[project]" > "$REPO/pyproject.toml"
     commit_all "$REPO" "pyproject-only"
+    head=$(cd "$REPO" && git rev-parse HEAD)
+    assert_equal "$(run_detect "$BASE" "$head")" "false"
+}
+
+@test "diff in wheel-builder driver alone -> uplift=false" {
+    echo "modified" >> "$REPO/.github/containers/build-wheel-manylinux-images.sh"
+    commit_all "$REPO" "wheel builder driver"
+    head=$(cd "$REPO" && git rev-parse HEAD)
+    assert_equal "$(run_detect "$BASE" "$head")" "false"
+}
+
+@test "diff in wheel-builder Dockerfile alone -> uplift=false" {
+    echo "modified" >> "$REPO/.github/containers/Dockerfile.wheel-manylinux-2-34"
+    commit_all "$REPO" "wheel builder Dockerfile"
     head=$(cd "$REPO" && git rev-parse HEAD)
     assert_equal "$(run_detect "$BASE" "$head")" "false"
 }

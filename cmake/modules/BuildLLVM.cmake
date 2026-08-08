@@ -155,11 +155,12 @@ if(NOT _VENV_PYTHON)
   )
 endif()
 
-# Install/update tt-lang Python requirements on every configure (pip is a
-# no-op when packages are already satisfied).  requirements.txt includes all
-# runtime dependencies: MLIR bindings, tt-metal/ttnn, and tt-lang itself.
-ttlang_pip_install_requirements("${_VENV_PYTHON}"
-  "${CMAKE_SOURCE_DIR}/requirements.txt" FATAL)
+# Component-only wheel builds install runtime requirements in a later Docker
+# layer so requirement changes do not invalidate the LLVM compilation cache.
+if(TTLANG_INSTALL_RUNTIME_REQUIREMENTS)
+  ttlang_pip_install_requirements("${_VENV_PYTHON}"
+    "${CMAKE_SOURCE_DIR}/requirements.txt" FATAL)
+endif()
 
 set(Python3_EXECUTABLE "${_VENV_PYTHON}")
 message(STATUS "Python venv: ${TTLANG_PYTHON_VENV}")
@@ -201,6 +202,12 @@ else()
     set(_LLVM_CCACHE_BUILD OFF)
   endif()
 
+  set(_TTLANG_LLVM_EXTRA_CMAKE_ARGS)
+  if(DEFINED ENV{TTLANG_LLVM_EXTRA_CMAKE_ARGS} AND
+     NOT "$ENV{TTLANG_LLVM_EXTRA_CMAKE_ARGS}" STREQUAL "")
+    set(_TTLANG_LLVM_EXTRA_CMAKE_ARGS "$ENV{TTLANG_LLVM_EXTRA_CMAKE_ARGS}")
+  endif()
+
   ttlang_get_submodule_sha("${LLVM_SUBMODULE_DIR}" _LLVM_SUBMODULE_SHA)
   string(SUBSTRING "${_LLVM_SUBMODULE_SHA}" 0 7 _LLVM_SHORT_SHA)
 
@@ -210,6 +217,9 @@ else()
   message(STATUS "  Build dir:     ${LLVM_BUILD_DIR}")
   message(STATUS "  Install dir:   ${LLVM_INSTALL_DIR}")
   message(STATUS "  ccache:        ${_LLVM_CCACHE_BUILD}")
+  if(_TTLANG_LLVM_EXTRA_CMAKE_ARGS)
+    message(STATUS "  Extra args:    ${_TTLANG_LLVM_EXTRA_CMAKE_ARGS}")
+  endif()
 
   # Install LLVM-specific Python build dependencies (nanobind, PyYAML, etc.
   # for MLIR Python bindings) and lit for test execution.
@@ -263,6 +273,10 @@ else()
       -DMLIR_ENABLE_BINDINGS_PYTHON=ON
       -DPython3_EXECUTABLE=${Python3_EXECUTABLE}
     )
+
+    if(_TTLANG_LLVM_EXTRA_CMAKE_ARGS)
+      list(APPEND _LLVM_CMAKE_ARGS ${_TTLANG_LLVM_EXTRA_CMAKE_ARGS})
+    endif()
 
     # --- Configure ---
     message(STATUS "Configuring LLVM/MLIR...")

@@ -9,37 +9,24 @@ import pytest
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     parser.addoption(
-        "--run-matmul-tutorial-ttnn",
+        "--run-matmul-tutorial-dry",
         action="store_true",
         default=False,
-        help="Run matmul-tutorial tests that require real ttnn (steps 0 and 7); skipped by default.",
-    )
-    parser.addoption(
-        "--run-matmul-tutorial-no-ttnn",
-        action="store_true",
-        default=False,
-        help="Run matmul-tutorial simulator tests that do not require ttnn (steps 2-6); skipped by default.",
+        help="Run matmul-tutorial simulator tests in dry-run mode (steps 0 and 2-7; step 1 excluded as too slow); skipped by default.",
     )
 
 
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
-    skip_ttnn = pytest.mark.skip(
-        reason="matmul-tutorial test requiring ttnn; pass --run-matmul-tutorial-ttnn to enable"
-    )
-    skip_no_ttnn = pytest.mark.skip(
-        reason="matmul-tutorial simulator test; pass --run-matmul-tutorial-no-ttnn to enable"
+    skip_matmul_tutorial = pytest.mark.skip(
+        reason="matmul-tutorial simulator test; pass --run-matmul-tutorial-dry to enable"
     )
     for item in items:
-        if item.get_closest_marker("matmul_tutorial_ttnn") and not config.getoption(
-            "--run-matmul-tutorial-ttnn"
+        if item.get_closest_marker("matmul_tutorial") and not config.getoption(
+            "--run-matmul-tutorial-dry"
         ):
-            item.add_marker(skip_ttnn)
-        if item.get_closest_marker("matmul_tutorial_no_ttnn") and not config.getoption(
-            "--run-matmul-tutorial-no-ttnn"
-        ):
-            item.add_marker(skip_no_ttnn)
+            item.add_marker(skip_matmul_tutorial)
 
 
 from greenlet import greenlet
@@ -48,19 +35,26 @@ from sim.context import set_current_kernel_type, reset_context
 from sim.greenlet_scheduler import (
     GreenletScheduler,
     KernelId,
+    _KernelState,
     set_scheduler,
     set_scheduler_algorithm,
 )
+from sim.trace import set_tracing
 
 
 @pytest.fixture(autouse=True)
 def reset_simulator_context():
     """Reset simulator context before each test to ensure test isolation.
 
-    This ensures that modifications to context config (e.g., max_dfbs) or
-    state in one test don't leak into other tests when running in parallel.
+    Resets both the simulator context (config, scheduler, registry, trace
+    events) and the trace module's process-wide configuration so that
+    modifications in one test do not leak into others when running in
+    parallel.  Trace state is reset here rather than inside
+    ``reset_context()`` to keep ``context.py`` free of trace imports
+    (see the docstring on :func:`sim.context.reset_context`).
     """
     reset_context()
+    set_tracing(frozenset())
     yield
 
 
@@ -83,8 +77,12 @@ def setup_scheduler_and_kernel_context(kernel_type: KernelType) -> GreenletSched
     # Set kernel context
     set_current_kernel_type(kernel_type)
 
-    # Set the main greenlet to the current greenlet (for switching back)
+    # Set the main greenlet to the current greenlet (for switching back) and
+    # cache its bound ``.switch`` method the same way ``GreenletScheduler.run``
+    # does, so any test that drives ``block_current_kernel`` directly has the
+    # fast-path slot populated.
     scheduler._main_greenlet = greenlet.getcurrent()
+    scheduler._main_switch = scheduler._main_greenlet.switch
 
     # Simulate being within node 0 with a valid KernelId so that
     # get_current_node_id() returns "node0" and shard-locality stats work in tests.
@@ -92,15 +90,10 @@ def setup_scheduler_and_kernel_context(kernel_type: KernelType) -> GreenletSched
     # for readable display in any test diagnostics.
     test_greenlet = greenlet(lambda: None)
     tid = KernelId(0, kernel_type, kernel_type.name.lower())
+    state = _KernelState(test_greenlet, kernel_type)
     scheduler._current_kernel_id = tid
-    scheduler._active[tid] = (
-        test_greenlet,
-        None,  # blocking_obj
-        "",  # operation
-        kernel_type,
-        "",  # location
-        None,  # raw_loc
-    )
+    scheduler._current_state = state
+    scheduler._active[tid] = state
     scheduler._has_made_progress[tid] = False
 
     return scheduler

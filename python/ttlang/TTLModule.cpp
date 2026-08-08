@@ -9,6 +9,8 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 
 #include "mlir/CAPI/IR.h"
+#include "mlir/IR/Diagnostics.h"
+#include "mlir/IR/Location.h"
 
 #include <nanobind/stl/optional.h>
 #include <nanobind/stl/vector.h>
@@ -32,6 +34,36 @@ void populateTTLModule(nb::module_ &m) {
   m.attr("PIPE_SRAM_SCRATCH_BYTES_ATTR") =
       nb::str(kPipeSramScratchBytesAttrName.data(),
               kPipeSramScratchBytesAttrName.size());
+  m.attr("PIPE_COMPUTED_ADDRESS_DFB_INDICES_ATTR") =
+      nb::str(kPipeComputedAddressDFBIndicesAttrName.data(),
+              kPipeComputedAddressDFBIndicesAttrName.size());
+
+  nb::enum_<ExternalTemplateArgKind>(m, "ExternalTemplateArgKind")
+      .value("SignedInteger", ExternalTemplateArgKind::SignedInteger)
+      .value("Boolean", ExternalTemplateArgKind::Boolean)
+      .value("UnsignedInteger", ExternalTemplateArgKind::UnsignedInteger)
+      .value("DFBIndex", ExternalTemplateArgKind::DFBIndex)
+      .value("DFBDescriptor", ExternalTemplateArgKind::DFBDescriptor);
+
+  tt_attribute_class<ExternalTemplateArgAttr>(m, "ExternalTemplateArgAttr")
+      .def_static(
+          "get",
+          [](MlirContext context, ExternalTemplateArgKind kind, int64_t value) {
+            MLIRContext *cppContext = unwrap(context);
+            ExternalTemplateArgAttr attribute =
+                ExternalTemplateArgAttr::getChecked(
+                    [cppContext]() {
+                      return emitError(UnknownLoc::get(cppContext));
+                    },
+                    cppContext, kind, value);
+            if (!attribute) {
+              throw nb::value_error("invalid external template argument");
+            }
+            return wrap(attribute);
+          },
+          nb::arg("context"), nb::arg("kind"), nb::arg("value"))
+      .def_prop_ro("kind", &ExternalTemplateArgAttr::getKind)
+      .def_prop_ro("value", &ExternalTemplateArgAttr::getValue);
 
   //===--------------------------------------------------------------------===//
   // SliceAttr
@@ -48,6 +80,24 @@ void populateTTLModule(nb::module_ &m) {
       .def_prop_ro("start", &SliceAttr::getStart)
       .def_prop_ro("stop", &SliceAttr::getStop)
       .def_prop_ro("step", &SliceAttr::getStep);
+
+  //===--------------------------------------------------------------------===//
+  // TensorBackingAttr
+  //===--------------------------------------------------------------------===//
+
+  tt_attribute_class<TensorBackingAttr>(m, "TensorBackingAttr")
+      .def_static(
+          "get",
+          [](MlirContext ctx, int64_t tensorIndex, int64_t byteOffset,
+             int64_t byteSize) {
+            return wrap(TensorBackingAttr::get(unwrap(ctx), tensorIndex,
+                                               byteOffset, byteSize));
+          },
+          nb::arg("context"), nb::arg("tensor_index"), nb::arg("byte_offset"),
+          nb::arg("byte_size"))
+      .def_prop_ro("tensor_index", &TensorBackingAttr::getTensorIndex)
+      .def_prop_ro("byte_offset", &TensorBackingAttr::getByteOffset)
+      .def_prop_ro("byte_size", &TensorBackingAttr::getByteSize);
 
   //===--------------------------------------------------------------------===//
   // CircularBufferType

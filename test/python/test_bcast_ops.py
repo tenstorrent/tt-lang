@@ -10,10 +10,6 @@ Also tests composition patterns like (a * b) + bcast(c), and PyTorch-style
 negative ``dims`` (e.g. ``[-2]``, ``[-1]``, ``[-2, -1]``).
 """
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v
-
 import os
 import subprocess
 import sys
@@ -989,7 +985,10 @@ def _bcast_validation_kernel(dims_literal):
     src = f"""\
 import os
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
-import ttl, torch
+import torch
+import ttnn
+
+import ttl
 
 @ttl.operation(grid=(1, 1))
 def kern(inp, out):
@@ -1004,14 +1003,21 @@ def kern(inp, out):
     def dm_read():
         with inp_dfb.reserve() as blk:
             ttl.copy(inp[0:32, 0:32], blk).wait()
-            blk.push()
     @ttl.datamovement()
     def dm_write():
         with out_dfb.wait() as blk:
             ttl.copy(blk, out[0:32, 0:32]).wait()
 
-inp = torch.ones((32, 32), dtype=torch.bfloat16)
-out = torch.zeros((32, 32), dtype=torch.bfloat16)
+inp = ttnn.from_torch(
+    torch.ones((32, 32), dtype=torch.bfloat16),
+    dtype=ttnn.bfloat16,
+    layout=ttnn.TILE_LAYOUT,
+)
+out = ttnn.from_torch(
+    torch.zeros((32, 32), dtype=torch.bfloat16),
+    dtype=ttnn.bfloat16,
+    layout=ttnn.TILE_LAYOUT,
+)
 kern(inp, out)
 """
     with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False) as f:

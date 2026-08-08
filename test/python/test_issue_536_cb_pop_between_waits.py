@@ -4,10 +4,6 @@
 
 """Regression for #536: consecutive waits on one DFB need intervening pops."""
 
-# REQUIRES: ttnn
-# UNSUPPORTED: system-darwin
-# RUN: %python -m pytest %s -v --tb=short
-
 import pytest
 import torch
 

@@ -16,6 +16,13 @@ endif()
 # Compiler flags
 add_compile_options(-Wall -Wextra -Wpedantic -Werror -Wno-unused-parameter)
 
+# GCC emits singletons as STB_GNU_UNIQUE, which glibc merges process-wide even
+# under RTLD_LOCAL, so two LLVM-embedding extensions in one process collide at
+# import. Weak symbols avoid it; clang never emits them and rejects this flag.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  add_compile_options(-fno-gnu-unique)
+endif()
+
 # Suppress redundant -U option warning on macOS when building Python extensions.
 if(APPLE)
   string(APPEND CMAKE_SHARED_LINKER_FLAGS " -Wl,-w")

@@ -3,10 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: tt-device
-# RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.output 2>&1
+# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.reuse.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
+# RUN: FileCheck %s --check-prefix=CHECK-CPP-REUSE < %t.reuse.output
+# Stable logical-index checks run separately from the default allocator checks.
+# RUN: env %python %s --no-ttl-reuse-user-dfbs --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.output 2>&1
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
-# RUN: env %python %s > %t.fpu.output 2>&1
+# RUN: env %python %s --no-ttl-reuse-user-dfbs > %t.fpu.output 2>&1
 # RUN: FileCheck %s --check-prefix=CHECK-CPP-FPU < %t.fpu.output
 
 """
@@ -94,8 +97,9 @@ def add_with_kernel(lhs, rhs, out):
 
 # 'with' exit: push output, pop inputs (reverse order)
 # CHECK: ttl.cb_push %[[CB2]]
-# CHECK: ttl.cb_pop %[[CB1]]
-# CHECK: ttl.cb_pop %[[CB0]]
+# CHECK-NEXT: ttl.cb_pop %[[CB1]]
+# CHECK-NEXT: ttl.cb_pop %[[CB0]]
+# CHECK-NEXT: return
 
 # =============================================================================
 # Initial IR Checks - Data movement with 'with' pattern
@@ -112,11 +116,12 @@ def add_with_kernel(lhs, rhs, out):
 # CHECK: ttl.cb_push
 
 # Second DFB: reserve (with DFB association), copy, push
-# CHECK: ttl.cb_reserve
+# CHECK-NEXT: {{.*}}ttl.cb_reserve
 # CHECK: ttl.attach_cb
 # CHECK: ttl.copy {{.*}} -> !ttl.transfer_handle<read>
 # CHECK: ttl.wait
 # CHECK: ttl.cb_push
+# CHECK-NEXT: return
 
 # CHECK-LABEL: func.func @dm_write
 # CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [2 : i32], ttl.kernel_thread = #ttkernel.thread<noc>, ttl.noc_index = 1 : i32}
@@ -127,12 +132,31 @@ def add_with_kernel(lhs, rhs, out):
 # CHECK: ttl.copy {{.*}} -> !ttl.transfer_handle<write>
 # CHECK: ttl.wait
 # CHECK: ttl.cb_pop
+# CHECK-NEXT: return
 
 # =============================================================================
 # C++ Kernel Checks - Verify generated code
 # =============================================================================
 
-# CHECK-CPP: // add_compute
+# Default allocation may permute physical indices while preserving every
+# logical DFB use across the three kernels.
+# CHECK-CPP-REUSE-LABEL: === add_compute kernel written to {{.*}} ===
+# CHECK-CPP-REUSE: cb_ctarg_0.wait_front(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_2.wait_front(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_1.reserve_back(
+# CHECK-CPP-REUSE: cb_ctarg_1.push_back(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_2.pop_front(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_0.pop_front(
+# CHECK-CPP-REUSE-LABEL: === dm_read kernel written to {{.*}} ===
+# CHECK-CPP-REUSE: cb_ctarg_0.reserve_back(
+# CHECK-CPP-REUSE: cb_ctarg_0.push_back(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_2.reserve_back(
+# CHECK-CPP-REUSE: cb_ctarg_2.push_back(
+# CHECK-CPP-REUSE-LABEL: === dm_write kernel written to {{.*}} ===
+# CHECK-CPP-REUSE: cb_ctarg_1.wait_front(
+# CHECK-CPP-REUSE: cb_ctarg_1.pop_front(
+
+# CHECK-CPP: === add_compute kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP-DAG: CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
 # CHECK-CPP-DAG: CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
@@ -160,25 +184,25 @@ def add_with_kernel(lhs, rhs, out):
 # CHECK-CPP: [[CB1]].pop_front(
 # CHECK-CPP: [[CB0]].pop_front(
 
-# CHECK-CPP: // dm_read
+# CHECK-CPP: === dm_read kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP: .reserve_back(
-# CHECK-CPP: noc_async_read_tile(
-# CHECK-CPP: noc.async_read_barrier<Noc::BarrierMode::FULL>();
+# CHECK-CPP: async_read(
+# CHECK-CPP: async_read_barrier();
 # CHECK-CPP: .push_back(
 
-# CHECK-CPP: // dm_write
+# CHECK-CPP: === dm_write kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP: .wait_front(
-# CHECK-CPP: noc_async_write_tile(
-# CHECK-CPP: noc.async_write_barrier<Noc::BarrierMode::FULL>();
+# CHECK-CPP: async_write(
+# CHECK-CPP: async_write_barrier();
 # CHECK-CPP: .pop_front(
 
 # =============================================================================
 # FPU path checks (default: --ttl-maximize-dst --ttl-fpu-binary-ops)
 # =============================================================================
 
-# CHECK-CPP-FPU: // add_compute
+# CHECK-CPP-FPU: === add_compute kernel written to {{.*}} ===
 # CHECK-CPP-FPU: void kernel_main()
 # CHECK-CPP-FPU-DAG: CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
 # CHECK-CPP-FPU-DAG: CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));

@@ -9,26 +9,33 @@ Provides unified feature detection (ttnn availability, hardware detection),
 tensor creation helpers, and comparison utilities. Used across pytest conftest
 files, lit configuration, and test scripts.
 
-Device availability is determined by checking environment variables and
-/dev/tenstorrent* files, avoiding the slow ttnn.GetNumAvailableDevices() call.
+Device availability is checked without importing ttnn.
 """
 
 import glob
 import importlib.util
 import os
 import sys
+from contextlib import contextmanager
 from typing import Any, Sequence
 
 # =============================================================================
 # Feature detection
 # =============================================================================
 
-# Check device availability: env vars first (for simulator), then CMake config.
+# Prefer runtime state over the wheel's build-time device flag.
 _hardware_available = False
+
+
+def _has_tenstorrent_device_node() -> bool:
+    return bool(glob.glob("/dev/tenstorrent/*") or glob.glob("/dev/tenstorrent[0-9]*"))
+
 
 if os.environ.get("TT_METAL_SIMULATOR"):
     _hardware_available = True
 elif os.environ.get("TTLANG_HAS_DEVICE") == "1":
+    _hardware_available = True
+elif _has_tenstorrent_device_node():
     _hardware_available = True
 else:
     try:
@@ -36,7 +43,7 @@ else:
 
         _hardware_available = HAS_TT_DEVICE
     except ImportError:
-        _hardware_available = bool(glob.glob("/dev/tenstorrent*"))
+        _hardware_available = False
 
 # Set compile-only mode if no hardware.
 if not _hardware_available:
@@ -86,12 +93,38 @@ def is_hardware_available() -> bool:
     Checks in order:
     1. TT_METAL_SIMULATOR environment variable (simulation mode)
     2. TTLANG_HAS_DEVICE environment variable (set by CMake)
-    3. Physical device files (/dev/tenstorrent*)
+    3. Runtime device nodes (/dev/tenstorrent/* or /dev/tenstorrent[0-9]*)
+    4. ttl.config.HAS_TT_DEVICE, the wheel's build-time value (fallback)
+
+    Step 3 precedes step 4 so an installed light wheel, built with no device
+    and therefore HAS_TT_DEVICE=False, still runs on a host that has a chip.
 
     Returns:
         True if hardware or simulator is available, False otherwise.
     """
     return _hardware_available
+
+
+def pin_xdist_worker_to_device() -> None:
+    """Restrict a pytest-xdist worker to one chip and cache directory."""
+    if os.environ.get("TTLANG_PIN_XDIST_WORKERS_TO_DEVICES") != "1":
+        return
+    worker_name = os.environ.get("PYTEST_XDIST_WORKER")
+    if not worker_name:
+        return
+    worker_index = "".join(
+        character for character in worker_name if character.isdigit()
+    )
+    if not worker_index:
+        return
+    if "TT_VISIBLE_DEVICES" not in os.environ:
+        os.environ["TT_VISIBLE_DEVICES"] = worker_index
+    cache_root = os.environ.get("TTLANG_XDIST_TT_METAL_CACHE_ROOT")
+    if cache_root:
+        cache_root = os.path.abspath(cache_root)
+        cache_dir = os.path.join(cache_root, f"worker-{worker_index}")
+        os.makedirs(cache_dir, exist_ok=True)
+        os.environ["TT_METAL_CACHE"] = cache_dir
 
 
 def require_ttnn():
@@ -116,16 +149,78 @@ def require_hardware(message: str = "Skipping test - no hardware available"):
 
 
 # =============================================================================
+# Mesh fabric utilities
+# =============================================================================
+
+
+class FabricMeshUnavailable(RuntimeError):
+    pass
+
+
+@contextmanager
+def open_fabric_mesh(requested_mesh_shape: tuple[int, int] | None = None):
+    """Open a 1D fabric mesh spanning every visible device by default."""
+    ttnn_module = _get_ttnn()
+    if ttnn_module is None:
+        raise FabricMeshUnavailable("TTNN not available")
+
+    if requested_mesh_shape is None:
+        # FABRIC_1D requires a 1D topology even when physical discovery is 2-D.
+        requested_mesh_shape = (1, ttnn_module.get_num_devices())
+    else:
+        requested_mesh_shape = tuple(requested_mesh_shape)
+    if (
+        len(requested_mesh_shape) != 2
+        or requested_mesh_shape[0] != 1
+        or requested_mesh_shape[1] < 1
+    ):
+        raise ValueError(
+            "FABRIC_1D requires a logical mesh shape of (1, num_devices) with "
+            "num_devices greater than zero"
+        )
+
+    mesh_device = None
+    try:
+        ttnn_module.set_fabric_config(ttnn_module.FabricConfig.FABRIC_1D)
+        mesh_device = ttnn_module.open_mesh_device(
+            ttnn_module.MeshShape(requested_mesh_shape)
+        )
+        yield mesh_device
+    finally:
+        if mesh_device is not None:
+            ttnn_module.close_mesh_device(mesh_device)
+        ttnn_module.set_fabric_config(ttnn_module.FabricConfig.DISABLED)
+
+
+# =============================================================================
 # Tensor creation utilities
 # =============================================================================
 
 
-def to_dram(torch_tensor, device):
+def torch_dtype_from_name(name: str):
+    """Parse common test dtype names into PyTorch dtypes."""
+    import torch
+
+    normalized = name.lower()
+    if normalized in ("bf16", "bfloat16"):
+        return torch.bfloat16
+    if normalized in ("fp32", "f32", "float32"):
+        return torch.float32
+    raise ValueError(f"Unsupported torch dtype name {name!r}")
+
+
+def torch_dtype_from_env(var_name: str, default: str = "bf16"):
+    """Read a PyTorch dtype name from an environment variable."""
+    return torch_dtype_from_name(os.environ.get(var_name, default))
+
+
+def to_dram(torch_tensor, device, tile=None):
     """Create a TTNN tensor in DRAM from a torch tensor.
 
     Args:
         torch_tensor: Source torch tensor
         device: TTNN device handle
+        tile: Optional physical tile dimensions
 
     Returns:
         TTNN tensor in DRAM with TILE_LAYOUT
@@ -135,23 +230,30 @@ def to_dram(torch_tensor, device):
     ttnn = _get_ttnn()
     if ttnn is None:
         raise RuntimeError("TTNN not available")
+    tensor_kwargs = {}
+    if tile is not None:
+        tensor_kwargs["tile"] = ttnn.Tile(tile)
     return ttnn.from_torch(
         torch_tensor,
         dtype=torch_dtype_to_ttnn_datatype(torch_tensor.dtype),
         layout=ttnn.TILE_LAYOUT,
         device=device,
         memory_config=ttnn.DRAM_MEMORY_CONFIG,
+        **tensor_kwargs,
     )
 
 
-def to_l1(torch_tensor, device):
+def to_l1(torch_tensor, device, tile=None):
     """Create a TTNN tensor in L1 from a torch tensor.
 
-    Creates in DRAM first then moves to L1 (required by TTNN).
+    Default tiles are created in DRAM then moved to L1. Custom tiles are
+    constructed directly in L1 because TTNN's conversion loses their tile
+    descriptor.
 
     Args:
         torch_tensor: Source torch tensor
         device: TTNN device handle
+        tile: Optional physical tile dimensions
 
     Returns:
         TTNN tensor in L1 with TILE_LAYOUT
@@ -159,7 +261,20 @@ def to_l1(torch_tensor, device):
     ttnn = _get_ttnn()
     if ttnn is None:
         raise RuntimeError("TTNN not available")
-    dram_tensor = to_dram(torch_tensor, device)
+    if tile is not None:
+        from ttl.dtype_utils import torch_dtype_to_ttnn_datatype
+
+        # TTNN's DRAM-to-L1 conversion allocates a default 32x32 destination.
+        # Direct construction is required to preserve a custom physical tile.
+        return ttnn.from_torch(
+            torch_tensor,
+            dtype=torch_dtype_to_ttnn_datatype(torch_tensor.dtype),
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            memory_config=ttnn.L1_MEMORY_CONFIG,
+            tile=ttnn.Tile(tile),
+        )
+    dram_tensor = to_dram(torch_tensor, device, tile=tile)
     return ttnn.to_memory_config(dram_tensor, memory_config=ttnn.L1_MEMORY_CONFIG)
 
 
@@ -336,6 +451,8 @@ __all__ = [
     "is_hardware_available",
     "require_ttnn",
     "require_hardware",
+    "torch_dtype_from_name",
+    "torch_dtype_from_env",
     "to_dram",
     "to_l1",
     "to_l1_sharded",

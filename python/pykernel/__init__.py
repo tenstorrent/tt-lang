@@ -2,4 +2,4 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 #
-# NOTE: This package was copied from tt-mlir/tools/pykernel
+# NOTE: This package was imported into tt-lang pykernel

@@ -51,9 +51,10 @@ class FusedOpTestBase(ME2ETestBase):
     INPUT_RANGE: Tuple[float, float] = (-1.0, 1.0)
 
     @pytest.fixture(scope="class")
-    def config(self) -> E2EConfig:
+    @classmethod
+    def config(cls) -> E2EConfig:
         """Get test configuration."""
-        return E2EConfig(grid_shape=self.INPUT_SHAPE, dtype=self.INPUT_DTYPE)
+        return E2EConfig(grid_shape=cls.INPUT_SHAPE, dtype=cls.INPUT_DTYPE)
 
     def torch_reference(self, *inputs: Tensor) -> Tensor:
         """
@@ -164,9 +165,9 @@ class TestExpAddFused(FusedOpTestBase):
         compute_mlir = f"""
 // Compute thread for exp(a + b) fused operation.
 func.func @compute_exp_add() attributes {{ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}} {{
-  %cb0 = ttl.bind_cb {{cb_index = 0, block_count = {bc}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
-  %cb1 = ttl.bind_cb {{cb_index = 1, block_count = {bc}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
-  %cb_out = ttl.bind_cb {{cb_index = 2, block_count = {bc}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
+  %cb0 = ttl.bind_cb {{cb_index = 0, block_count = {bc}}} {{dfb_id = 0 : index}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
+  %cb1 = ttl.bind_cb {{cb_index = 1, block_count = {bc}}} {{dfb_id = 1 : index}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
+  %cb_out = ttl.bind_cb {{cb_index = 2, block_count = {bc}}} {{dfb_id = 2 : index}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
 
   // Wait for input data from reader.
   %a = ttl.cb_wait %cb0 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
@@ -240,9 +241,9 @@ class TestReluMulFused(FusedOpTestBase):
         compute_mlir = f"""
 // Compute thread for relu(a * b) fused operation.
 func.func @compute_relu_mul() attributes {{ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}} {{
-  %cb0 = ttl.bind_cb {{cb_index = 0, block_count = {bc}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
-  %cb1 = ttl.bind_cb {{cb_index = 1, block_count = {bc}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
-  %cb_out = ttl.bind_cb {{cb_index = 2, block_count = {bc}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
+  %cb0 = ttl.bind_cb {{cb_index = 0, block_count = {bc}}} {{dfb_id = 0 : index}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
+  %cb1 = ttl.bind_cb {{cb_index = 1, block_count = {bc}}} {{dfb_id = 1 : index}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
+  %cb_out = ttl.bind_cb {{cb_index = 2, block_count = {bc}}} {{dfb_id = 2 : index}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
 
   // Wait for input data from reader.
   %a = ttl.cb_wait %cb0 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>
@@ -317,8 +318,8 @@ class TestSqrtAbsFused(FusedOpTestBase):
         compute_mlir = f"""
 // Compute thread for sqrt(abs(a)) fused operation.
 func.func @compute_sqrt_abs() attributes {{ttl.base_cta_index = 2 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}} {{
-  %cb0 = ttl.bind_cb {{cb_index = 0, block_count = {bc}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
-  %cb_out = ttl.bind_cb {{cb_index = 1, block_count = {bc}}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
+  %cb0 = ttl.bind_cb {{cb_index = 0, block_count = {bc}}} {{dfb_id = 0 : index}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
+  %cb_out = ttl.bind_cb {{cb_index = 1, block_count = {bc}}} {{dfb_id = 1 : index}} : !ttl.cb<[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}>
 
   // Wait for input data from reader.
   %a = ttl.cb_wait %cb0 : <[{rows}, {cols}], !ttcore.tile<32x32, {dtype}>, {bc}> -> tensor<{rows}x{cols}x!ttcore.tile<32x32, {dtype}>>

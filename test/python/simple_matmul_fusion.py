@@ -90,11 +90,11 @@ def matmul_fusion_kernel(a, b, c, out):
 # accumulates (DST += A*B), then pack. No add_tiles or add_binary_tile.
 # =============================================================================
 
-# CHECK-CPP:       mm_block_init(
+# CHECK-CPP:       matmul_block_init(
 # CHECK-CPP:       tile_regs_acquire
 # CHECK-CPP-NEXT:  copy_tile_init(
 # CHECK-CPP-NEXT:  copy_tile(
-# CHECK-CPP-NEXT:  mm_block_init_short(
+# CHECK-CPP-NEXT:  matmul_block_init(
 # CHECK-CPP-NEXT:  matmul_block(
 # CHECK-CPP-NEXT:  tile_regs_commit
 # CHECK-CPP-NEXT:  tile_regs_wait

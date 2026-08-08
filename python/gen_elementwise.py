@@ -17,6 +17,12 @@ import argparse
 import re
 from pathlib import Path
 
+# Ops that are hand-written in ttl.operators (because they take extra keyword
+# arguments / hardware flags) and must NOT get an auto-generated wrapper, even
+# if they appear in TTLElementwiseOps.def. `exp` carries approx / scale /
+# input_clamping / iterations flags.
+HANDWRITTEN_OPS = {"exp"}
+
 HEADER = '''\
 # SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 #
@@ -44,7 +50,7 @@ BINARY_OP_TEMPLATE = '''\
 @syntax("{name}")
 def {name}(lhs: "TensorBlock", rhs: "TensorBlock") -> "TensorBlock":
     """Element-wise {name} operation."""
-    return ttl.{name}(lhs.type, lhs, rhs)
+    return ttl.{name}(lhs, rhs)
 
 '''
 
@@ -52,7 +58,7 @@ UNARY_OP_TEMPLATE = '''\
 @syntax("{name}")
 def {name}(input: "TensorBlock") -> "TensorBlock":
     """Element-wise {name} operation."""
-    return ttl.{name}(input.type, input)
+    return ttl.{name}(input)
 
 '''
 
@@ -102,6 +108,11 @@ def parse_def_file(def_path: Path) -> tuple[list[str], list[str]]:
             "ttk_compute",
         ):
             unary_ops.append(name)
+
+    # Drop any hand-written ops so they don't get a generic auto-generated
+    # wrapper that would shadow the hand-written one.
+    binary_ops = [op for op in binary_ops if op not in HANDWRITTEN_OPS]
+    unary_ops = [op for op in unary_ops if op not in HANDWRITTEN_OPS]
 
     return binary_ops, unary_ops
 

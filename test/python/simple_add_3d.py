@@ -3,12 +3,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: ttnn, tt-device
-# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.output 2>&1
+# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.reuse.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
+# RUN: FileCheck %s --check-prefix=CHECK-CPP-REUSE < %t.reuse.output
+# Stable logical-index checks run separately from the default allocator checks.
+# RUN: env TTLANG_COMPILE_ONLY=1 %python %s --no-ttl-reuse-user-dfbs --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.output 2>&1
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
-# RUN: env TTLANG_COMPILE_ONLY=1 %python %s > %t.fpu.block.output 2>&1
+# RUN: env TTLANG_COMPILE_ONLY=1 %python %s --no-ttl-reuse-user-dfbs > %t.fpu.block.output 2>&1
 # RUN: FileCheck %s --check-prefix=CHECK-CPP-FPU-BLOCK < %t.fpu.block.output
-# RUN: env TTLANG_COMPILE_ONLY=1 %python %s --no-ttl-combine-pack-tiles > %t.fpu.output 2>&1
+# RUN: env TTLANG_COMPILE_ONLY=1 %python %s --no-ttl-reuse-user-dfbs --no-ttl-combine-pack-tiles > %t.fpu.output 2>&1
 # RUN: FileCheck %s --check-prefix=CHECK-CPP-FPU < %t.fpu.output
 
 """
@@ -74,9 +77,9 @@ def add_3d_kernel(lhs, rhs, out):
 # CHECK-LABEL: func.func @add_compute
 
 # 3D CB shapes
-# CHECK: ttl.bind_cb{cb_index = 0, block_count = 2} : <[2, 2, 2], !ttcore.tile<32x32, bf16>, 2>
-# CHECK: ttl.bind_cb{cb_index = 2, block_count = 2} : <[2, 2, 2], !ttcore.tile<32x32, bf16>, 2>
-# CHECK: ttl.bind_cb{cb_index = 1, block_count = 2} : <[2, 2, 2], !ttcore.tile<32x32, bf16>, 2>
+# CHECK: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index} : <[2, 2, 2], !ttcore.tile<32x32, bf16>, 2>
+# CHECK: ttl.bind_cb{cb_index = 2, block_count = 2} {dfb_id = 2 : index} : <[2, 2, 2], !ttcore.tile<32x32, bf16>, 2>
+# CHECK: ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 1 : index} : <[2, 2, 2], !ttcore.tile<32x32, bf16>, 2>
 
 # Wait/reserve produce 3D tensors of tiles
 # CHECK: ttl.cb_wait %{{.*}} : <[2, 2, 2], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x2x2x!ttcore.tile<32x32, bf16>>
@@ -112,8 +115,26 @@ def add_3d_kernel(lhs, rhs, out):
 # C++ Kernel Checks - Verify 3D loop nests in generated code
 # =============================================================================
 
+# Default allocation may permute physical indices while preserving every
+# logical DFB use across the three kernels.
+# CHECK-CPP-REUSE-LABEL: === add_compute kernel written to {{.*}} ===
+# CHECK-CPP-REUSE: cb_ctarg_0.wait_front(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_2.wait_front(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_1.reserve_back(
+# CHECK-CPP-REUSE: cb_ctarg_0.pop_front(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_2.pop_front(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_1.push_back(
+# CHECK-CPP-REUSE-LABEL: === dm_read kernel written to {{.*}} ===
+# CHECK-CPP-REUSE: cb_ctarg_0.reserve_back(
+# CHECK-CPP-REUSE: cb_ctarg_0.push_back(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_2.reserve_back(
+# CHECK-CPP-REUSE: cb_ctarg_2.push_back(
+# CHECK-CPP-REUSE-LABEL: === dm_write kernel written to {{.*}} ===
+# CHECK-CPP-REUSE: cb_ctarg_1.wait_front(
+# CHECK-CPP-REUSE: cb_ctarg_1.pop_front(
+
 # Compute kernel: 3 nested loops over 2x2x2 tile grid
-# CHECK-CPP: // add_compute
+# CHECK-CPP: === add_compute kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP-DAG: CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
 # CHECK-CPP-DAG: CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));
@@ -133,32 +154,32 @@ def add_3d_kernel(lhs, rhs, out):
 # CHECK-CPP:       pack_tile<true>(
 # CHECK-CPP:       tile_regs_release();
 
-# DM read kernel: 3 nested loops with noc_async_read_tile
-# CHECK-CPP: // dm_read
+# DM read kernel: 3 nested loops with async_read
+# CHECK-CPP: === dm_read kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP-DAG: CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
 # CHECK-CPP: [[CB0]].reserve_back(
 # CHECK-CPP: for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
 # CHECK-CPP:   for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
 # CHECK-CPP:     for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
-# CHECK-CPP:       noc_async_read_tile(
+# CHECK-CPP:       async_read(
 
-# DM write kernel: 3 nested loops with noc_async_write_tile
-# CHECK-CPP: // dm_write
+# DM write kernel: 3 nested loops with async_write
+# CHECK-CPP: === dm_write kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 # CHECK-CPP-DAG: CircularBuffer [[CB2:.*]](get_compile_time_arg_val(2));
 # CHECK-CPP: [[CB2]].wait_front(
 # CHECK-CPP: for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
 # CHECK-CPP:   for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
 # CHECK-CPP:     for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
-# CHECK-CPP:       noc_async_write_tile(
+# CHECK-CPP:       async_write(
 
 # =============================================================================
 # FPU path checks (default: --ttl-maximize-dst --ttl-fpu-binary-ops)
 # 2x2x2 = 8 tiles fits in DST (bf16), fully unrolled with FPU binary add
 # =============================================================================
 
-# CHECK-CPP-FPU: // add_compute
+# CHECK-CPP-FPU: === add_compute kernel written to {{.*}} ===
 # CHECK-CPP-FPU: void kernel_main()
 # CHECK-CPP-FPU-DAG: CircularBuffer [[CB0:.*]](get_compile_time_arg_val(0));
 # CHECK-CPP-FPU-DAG: CircularBuffer [[CB1:.*]](get_compile_time_arg_val(1));

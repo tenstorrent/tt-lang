@@ -13,12 +13,20 @@ python my_kernel.py --no-ttl-maximize-dst
 | Flag | Default | Description |
 |---|---|---|
 | `--ttl-maximize-dst` / `--no-ttl-maximize-dst` | enabled | Partition compute iteration spaces into subblocks that maximize DST register utilization, and reorder tile operations within sync regions to group by kind. Disabling falls back to per-tile synchronization. |
-| `--ttl-fpu-binary-ops` / `--no-ttl-fpu-binary-ops` | enabled | Emit FPU binary elementwise ops (`add_tiles`, `sub_tiles`, `mul_tiles`) when both operands come from dataflow buffers. When disabled, binary ops use the SFPU path. |
+| `--ttl-fpu-binary-ops` / `--no-ttl-fpu-binary-ops` | enabled | Allow FPU strategy selection for binary add, subtract, and multiply when their operands permit it. Disabling selects SFPU. |
 | `--ttl-block-matmul` / `--no-ttl-block-matmul` | enabled | Emit `matmul_block` (processes the full tile block atomically) instead of per-tile matmul loops. Disabling this option is not yet supported. |
 | `--ttl-subblock-sync` / `--no-ttl-subblock-sync` | disabled | Refine DFB reserve/push to per-subblock granularity, enabling `pack_tile_block` for contiguous subblocks. When disabled, user-placed reserve/push is preserved as written. |
 | `--ttl-combine-pack-tiles` / `--no-ttl-combine-pack-tiles` | enabled | Combine consecutive `pack_tile` ops on the same DFB with contiguous DST and DFB indices into a single `pack_tile_block` call. |
+| `--ttl-reduce-full-fp32` / `--no-ttl-reduce-full-fp32` | enabled | Prefer full-fp32 accumulation for reduce operations when supported by the target and the complete kernel configuration. |
+| `--ttl-matmul-full-fp32` / `--no-ttl-matmul-full-fp32` | enabled | Prefer full-fp32 accumulation for matmul operations when supported by the target and the complete kernel configuration. |
 | `--ttl-strict-f32-acc` / `--no-ttl-strict-f32-acc` | disabled | Error at compile time if a `+=` accumulation loop's output block exceeds f32 DST capacity (4 tiles with double-buffering). When enabled, guarantees each accumulation step fits in a single DST section without subblocking. |
-| `--ttl-compiler-dfbs` / `--no-ttl-compiler-dfbs` | enabled | Insert compiler-allocated intermediate DFBs at fusion split points where an operation requires DFB-attached inputs (reduce, broadcast, matmul, transpose). When disabled, the compiler emits an error if any fused computation requires an intermediate DFB. |
+| `--ttl-compiler-dfbs` / `--no-ttl-compiler-dfbs` | enabled | Insert compiler-allocated intermediate DFBs when an operation requires DFB-attached inputs, fusion would read a source after its DFB is released, or a computed value is stored by operations in multiple MLIR basic blocks. When disabled, the compiler emits an error if materialization is required. |
+| `--ttl-pipe-computed-addresses` / `--no-ttl-pipe-computed-addresses` | enabled | Use computed receiver DFB addresses for eligible PipeNet transfers. When disabled, transfers use receiver-published destination addresses; multicast still requires proven equal runtime receiver addresses. |
+| `--ttl-pipe-capacity-sync` / `--no-ttl-pipe-capacity-sync` | enabled | Use capacity-counter synchronization when the receiver wait and pop execute on the receiver NOC thread and the computed-address transfer passes the DFB ownership and count proofs. When disabled, computed-address transfers use receiver-post synchronization. |
+| `--ttl-pipe-global-semaphores-only` / `--no-ttl-pipe-global-semaphores-only` | disabled | Allocate all compiler-managed PipeNet synchronization counters in GlobalSemaphore storage, leaving local hardware semaphore ids available to the application. |
+| `--ttl-reuse-user-dfbs` / `--no-ttl-reuse-user-dfbs` | enabled | Reuse physical DFB indices when concurrent-kernel liveness proves that compatible logical DFB lifetimes do not overlap. Disabling compacts provisional user indices without introducing new user-DFB sharing. |
+| `--ttl-dfb-exact-coloring-search-limit N` | `1000000` | Examine at most `N` states during deterministic exact DFB allocation when order-dependent first-fit does not satisfy a DFB index or L1 limit. This bounds compile time; reaching the limit reports an inconclusive result, not a capacity proof. |
+| `--ttl-specialize-cores` / `--no-ttl-specialize-cores` | disabled | Clone each TTKernel function whose control flow branches on a core coordinate once per launch coordinate (`ttkernel-specialize-cores`), replacing `my_logical_x_` / `my_logical_y_` with constants and tagging clones with `ttl.core_coord` for per-core dispatch. Opt-in. |
 
 ### Other Ways to Set These
 
@@ -42,16 +50,22 @@ my_kernel(tensor_a, tensor_b, options="--no-ttl-fpu-binary-ops")
 
 ## Compute Configuration
 
-These two parameters are set on the `@ttl.operation` decorator (not via command-line
+These parameters are set on the `@ttl.operation` decorator (not via command-line
 flags) and control the TTNN compute kernel hardware configuration:
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `fp32_dest_acc_en` | `bool` or `None` | `None` | Enable f32 accumulation in the DST register file. When `None`, auto-detected from input tensor dtypes (enabled when any input is f32). |
-| `dst_full_sync_en` | `bool` or `None` | `None` | Enable full DST synchronization (single-buffering mode). Doubles DST capacity (f32: 8, f16/bf16: 16) at the cost of a full sync between math and pack threads. |
+| `fp32_dest_acc_en` | `bool` or `None` | `None` | Constrain the Wormhole B0/Blackhole DST register-file element width: `true` selects 32-bit elements and `false` selects 16-bit elements. When `None`, resolve the width from target capabilities and tile-operation requirements. |
+| `dst_full_sync_en` | `bool` or `None` | `None` | Enable full DST synchronization (single-buffering mode). Doubles DST capacity (32-bit elements: 8, 16-bit elements: 16) at the cost of a full sync between math and pack threads. |
+| `math_fidelity` | `str` or `None` | `None` | Set the compute math fidelity to `LoFi`, `HiFi2`, `HiFi3`, or `HiFi4`. When `None`, retain the TTNN default. |
 
 ```python
-@ttl.operation(grid=(2, 2), fp32_dest_acc_en=True, dst_full_sync_en=False)
+@ttl.operation(
+    grid=(2, 2),
+    fp32_dest_acc_en=True,
+    dst_full_sync_en=False,
+    math_fidelity="HiFi4",
+)
 def my_kernel(a, b): ...
 ```
 
@@ -109,33 +123,49 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `maximize-dst` | bool | `true` | Enable DST maximization via subblock compute and scheduling. |
-| `enable-fpu-binary-ops` | bool | `true` | Use FPU for binary add/sub/mul. |
-| `use-block-matmul` | bool | `true` | Lower matmul to block-level hardware calls (`experimental::matmul_block`). |
+| `enable-fpu-binary-ops` | bool | `true` | Allow FPU strategy selection for binary add/sub/mul. |
+| `use-block-matmul` | bool | `true` | Lower matmul to block-level hardware calls (`matmul_block`). |
 | `subblock-sync` | bool | `false` | Refine DFB reserve/push to per-subblock granularity. |
 | `combine-pack-tiles` | bool | `true` | Combine consecutive `pack_tile` ops into `pack_tile_block`. |
+| `reduce-full-fp32` | bool | `true` | Prefer full-fp32 reduce accumulation when supported. |
+| `matmul-full-fp32` | bool | `true` | Prefer full-fp32 matmul accumulation when supported. |
 | `strict-f32-acc` | bool | `false` | Error if a `+=` accumulation loop's output block exceeds f32 DST capacity. |
-| `compiler-dfbs` | bool | `true` | Insert compiler-allocated intermediate DFBs for fused computations. Error if disabled and any operation requires one. |
+| `compiler-dfbs` | bool | `true` | Insert compiler-allocated intermediate DFBs for DFB-only operands, source-lifetime preservation, and computed values stored by operations in multiple MLIR basic blocks. Error if disabled and any operation requires one. |
+| `pipe-computed-addresses` | bool | `true` | Use computed receiver DFB addresses for eligible PipeNet transfers. When disabled, transfers use receiver-published destination addresses; multicast still requires proven equal runtime receiver addresses. |
+| `pipe-capacity-sync` | bool | `true` | Use capacity-counter synchronization when the receiver wait and pop execute on the receiver NOC thread and the computed-address transfer passes the DFB ownership and count proofs. When disabled, computed-address transfers use receiver-post synchronization. |
+| `pipe-global-semaphores-only` | bool | `false` | Allocate all compiler-managed PipeNet synchronization counters in GlobalSemaphore storage, leaving local hardware semaphore ids available to the application. |
+| `reuse-user-dfbs` | bool | `true` | Reuse physical DFB indices for compatible logical DFBs with proven non-overlapping concurrent lifetimes. |
+| `exact-coloring-search-limit` | uint64 | `1000000` | Maximum states examined during deterministic exact DFB allocation before reporting an inconclusive result. |
+| `specialize-cores` | bool | `false` | Clone TTKernel functions that branch on a core coordinate once per launch coordinate (`ttkernel-specialize-cores`), then run `canonicalize` / `cse`. Maps from `--ttl-specialize-cores`. |
 | `lower-to-emitc` | bool | `false` | Run the TTKernel-to-EmitC backend (produces C++ source). |
 
 The pipeline runs these passes in order:
 
-- `ttl-insert-intermediate-dfbs` — allocate compiler-managed DFBs for intermediate values (transposes, etc.); verify and error when `compiler-dfbs=false`
-- `ttl-insert-copy-wait` — insert missing `ttl.wait` after `ttl.copy` ops whose transfer handle has no wait user
-- `ttl-insert-cb-sync` — insert DFB wait/pop/reserve/push around compute regions
-- `ttl-annotate-l1-acc-loops` — detect `+=` accumulation loops and annotate for L1 packer accumulation
-- `convert-ttl-to-compute` — lower TTL elementwise tensor ops to `ttl.compute` with tile ops
-- `ttl-set-compute-kernel-config` — set `fp32_dest_acc_en` / `dst_full_sync_en` defaults
-- `ttl-assign-dst` — DST register allocation (linear scan with copy insertion)
-- `ttl-subblock-compute-for-dst` — tile `ttl.compute` into DST-sized subblocks *(only if `maximize-dst=true`)*; optionally refine reserve/push to per-subblock granularity *(only if `subblock-sync=true`)*
-- `ttl-insert-tile-regs-sync` — insert math/pack thread synchronization
-- `ttl-lower-to-loops` — lower `ttl.compute` to `scf.for` loops; matmul computes are expanded inline via `generateMatmulCompute`
-- `ttl-schedule-operations` — reorder tile ops by dependency depth and kind *(only if `maximize-dst=true`)*
-- `ttl-annotate-cb-associations` — annotate block args with DFB indices
-- `convert-ttl-to-ttkernel` — lower TTL DMA ops to TTKernel
-- `ttkernel-insert-inits` — insert hardware init ops before compute ops
-- `ttkernel-insert-l1-accumulation` — insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops
-- `ttkernel-combine-pack-tiles` — combine consecutive `pack_tile` into `pack_tile_block` *(only if `combine-pack-tiles=true`)*
+- `ttl-materialize-loop-state` -- replace ranked-tensor loop-carried values with compiler-created DFBs
+- `ttl-insert-copy-wait` -- insert missing `ttl.wait` after `ttl.copy` ops whose transfer handle has no wait user
+- `ttl-annotate-l1-acc-loops` -- detect `+=` accumulation loops and annotate for L1 packer accumulation
+- `ttl-create-producer-compute` -- create producer `ttl.compute` operations before intermediate materialization
+- `ttl-insert-intermediate-dfbs` -- materialize DFB-only operands, values that must be preserved before source release, and computed values stored by operations in multiple MLIR basic blocks; verify and error when `compiler-dfbs=false`
+- `convert-ttl-to-compute` -- lower TTL elementwise tensor ops to `ttl.compute` with tile ops
+- `ttl-insert-cb-sync` -- insert missing DFB synchronization
+- `ttl-verify-pipenet-guards`, then `ttl-verify-pipenet-schedule` -- verify PipeNet launch domains and event ordering while logical DFB identities remain distinct and before physical DFB allocation
+- `ttl-coalesce-dfb-acquires` -- coalesce compatible DFB acquires
+- `ttl-finalize-dfb-indices` -- assign logical DFBs to physical indices, validate capacity, and emit runtime metadata; `reuse-user-dfbs` controls user-DFB reuse and `exact-coloring-search-limit` bounds exhaustive fixed-limit and minimum physical-index-count queries
+- `ttl-set-compute-kernel-config` -- select tile execution strategies and resolve kernel-wide DST and per-DFB unpack configuration
+- `ttl-assign-dst` -- DST register allocation (linear scan with copy insertion)
+- `ttl-subblock-compute-for-dst` -- tile `ttl.compute` into DST-sized subblocks *(only if `maximize-dst=true`)*; optionally refine reserve/push to per-subblock granularity *(only if `subblock-sync=true`)*
+- `ttl-lower-to-loops` -- lower `ttl.compute` to `scf.for` loops; matmul computes are expanded inline via `generateMatmulCompute`
+- `ttl-schedule-operations` -- reorder tile ops by dependency depth and kind *(only if `maximize-dst=true`)*
+- `ttl-annotate-cb-associations` -- annotate block args with DFB indices
+- `ttl-verify-dfb-spsc` -- verify per-node DFB producer/consumer uniqueness after finalization
+- `ttl-erase-pipenet-scopes` -- remove verified PipeNet structural markers
+- `ttl-validate-cb-budget` -- verify static DFB storage fits the per-core L1 budget
+- `convert-ttl-to-ttkernel` -- lower TTL DMA and PipeNet operations to TTKernel, selecting destination addressing, synchronization protocol, and synchronization-counter storage
+- `ttkernel-insert-inits` -- insert hardware init ops before compute ops
+- `ttkernel-insert-l1-accumulation` -- insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops
+- `ttkernel-combine-pack-tiles` -- combine consecutive `pack_tile` into `pack_tile_block` *(only if `combine-pack-tiles=true`)*
 - Canonicalization and CSE cleanup
+- `ttkernel-specialize-cores`, then `canonicalize`, `cse` -- per-core clone and const-fold of coordinate branches; tags clones with `ttl.core_coord` *(only if `specialize-cores=true`)*
 - *(if `lower-to-emitc=true`)* `lower-affine`, `convert-ttkernel-to-emitc`, `emitc-form-expressions`
 
 ### Individual Pass Options
@@ -145,7 +175,8 @@ options are listed; the remaining passes have no options.
 
 #### `ttl-insert-intermediate-dfbs`
 
-Insert compiler-allocated intermediate DFBs at fusion split points.
+Insert compiler-allocated intermediate DFBs where tensor SSA values require
+concrete DFB storage.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
@@ -155,17 +186,36 @@ Insert compiler-allocated intermediate DFBs at fusion split points.
 ttlang-opt input.mlir -p 'func.func(ttl-insert-intermediate-dfbs{enable=false})'
 ```
 
-#### `ttl-set-compute-kernel-config`
+#### `ttl-finalize-dfb-indices`
 
-Set default compute kernel configuration attributes on `ttl.compute` ops.
+Assign physical indices to logical DFBs and emit the complete runtime
+allocation table.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `fp32-dest-acc-en` | bool | `false` | Default `fp32_dest_acc_en` when not already configured. |
-| `dst-full-sync-en` | bool | `false` | Default `dst_full_sync_en` when not already configured. |
+| `reuse-user-dfbs` | bool | `true` | Reuse a physical index when concurrent-kernel liveness proves that two compatible logical DFB lifetimes cannot overlap. When false, compact provisional user indices without introducing new user-DFB sharing and apply the same lifetime proof only to compiler-created DFBs. |
+| `exact-coloring-search-limit` | uint64 | `1000000` | Examine at most this many states during deterministic exact DFB allocation. Exhaustive search is used only when order-dependent first-fit prevents acceptance. Reaching the limit fails with an inconclusive-search diagnostic rather than a false capacity diagnostic. |
 
 ```bash
-ttlang-opt input.mlir -p 'func.func(ttl-set-compute-kernel-config{fp32-dest-acc-en=1})'
+ttlang-opt input.mlir -p 'builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=false exact-coloring-search-limit=1000000})'
+```
+
+#### `ttl-set-compute-kernel-config`
+
+Resolve tile execution strategies and shared compute-kernel configuration. See
+[Compute Kernel Configuration](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/ComputeKernelConfiguration.md)
+for the algorithm and invariants.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `fp32-dest-acc-en` | string | `auto` | Select 32-bit destination elements through the Wormhole B0/Blackhole `fp32_dest_acc_en` setting: `auto`, `enabled`, or `disabled`. |
+| `dst-full-sync-en` | string | `auto` | Select full DST synchronization: `auto`, `enabled`, or `disabled`. |
+| `reduce-full-fp32` | bool | `true` | Prefer full-fp32 reduce accumulation when supported. |
+| `matmul-full-fp32` | bool | `true` | Prefer full-fp32 matmul accumulation when supported. |
+| `enable-fpu-binary-ops` | bool | `true` | Allow eligible add/sub/mul operations to select FPU. |
+
+```bash
+ttlang-opt input.mlir -p 'func.func(ttl-set-compute-kernel-config{fp32-dest-acc-en=enabled})'
 ```
 
 #### `ttl-assign-dst`
@@ -175,12 +225,11 @@ merging.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `dst-capacity` | uint32_t | `0` (auto) | Override DST register capacity. Auto-computed from `fp32_dest_acc_en` and `dst_full_sync_en` by default. Single-buffering (`dst_full_sync_en=true`): f32=8, f16/bf16=16. Double-buffering (default): f32=4, f16/bf16=8. |
+| `dst-capacity` | uint32_t | `0` (auto) | Override DST register capacity. Auto-computed from `fp32_dest_acc_en` and `dst_full_sync_en` by default. Single-buffering (`dst_full_sync_en=true`): 32-bit elements=8, 16-bit elements=16. Double-buffering (default): 32-bit elements=4, 16-bit elements=8. |
 | `separate-output-region` | bool | `false` | Allocate outputs in a separate DST region (needed for reductions and some loop optimizations). |
-| `enable-fpu-binary-ops` | bool | `true` | Use FPU for binary add/sub/mul when both operands come from DFBs. When disabled, binary ops use the SFPU path. |
 
 ```bash
-ttlang-opt input.mlir -p 'func.func(ttl-assign-dst{dst-capacity=16 enable-fpu-binary-ops=0})'
+ttlang-opt input.mlir -p 'func.func(ttl-assign-dst{dst-capacity=16})'
 ```
 
 #### `ttl-subblock-compute-for-dst`
@@ -196,6 +245,21 @@ Partition `ttl.compute` into DST-sized subblocks.
 ttlang-opt input.mlir -p 'func.func(ttl-subblock-compute-for-dst{subblock-sync=true})'
 ```
 
+#### `convert-ttl-to-ttkernel`
+
+Lower TTL data movement and PipeNet operations to TTKernel.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `reduce-full-fp32` | bool | `true` | Enable FP32 accumulation for reduce operations. |
+| `pipe-computed-addresses` | bool | `true` | Use computed receiver DFB addresses for eligible PipeNet transfers. When false, transfers use receiver-published destination addresses; multicast still requires proven equal runtime receiver addresses. |
+| `pipe-capacity-sync` | bool | `true` | Use capacity-counter synchronization when the receiver wait and pop execute on the receiver NOC thread and the computed-address transfer passes the DFB ownership and count proofs. When false, computed-address transfers use receiver-post synchronization. |
+| `pipe-global-semaphores-only` | bool | `false` | Allocate all compiler-managed PipeNet synchronization counters in GlobalSemaphore storage. |
+
+```bash
+ttlang-opt input.mlir -p 'builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=false pipe-global-semaphores-only=true})'
+```
+
 #### `ttl-dump-cb-flow-graph`
 
 Analyze dataflow buffer producer/consumer relationships and dump the flow graph.
@@ -206,4 +270,28 @@ Analyze dataflow buffer producer/consumer relationships and dump the flow graph.
 
 ```bash
 ttlang-opt input.mlir -p 'ttl-dump-cb-flow-graph{output="/tmp/cb_graph.json"}'
+```
+
+#### `ttkernel-specialize-cores`
+
+Clone TTKernel functions that branch on a core coordinate once per launch
+coordinate. Requires a module-level `ttl.launch_grid` attribute (an i64 array
+of length 2 with positive entries). Missing or malformed `ttl.launch_grid` is
+a hard error. A valid single-core grid (product <= 1) skips specialization.
+
+Only `scf.if` conditions derived from `ttkernel.my_logical_x_` /
+`ttkernel.my_logical_y_` trigger cloning. Functions with symbol uses (for
+example `func.call` targets) are left unspecialized with a warning so erasing
+the original does not leave dangling `SymbolRefAttr`s; unrelated functions in
+the module are still specialized. Each clone replaces coordinate reads with
+`arith.constant`s and is tagged with `ttl.core_coord` for runtime dispatch.
+Downstream `canonicalize` / `cse` fold the now-constant branches.
+
+This pass is off by default. Enable it through the pipeline option
+`specialize-cores` (Python: `--ttl-specialize-cores`):
+
+```bash
+ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{specialize-cores=true lower-to-emitc=true}'
+# Or stand-alone:
+ttlang-opt input.mlir -p 'builtin.module(ttkernel-specialize-cores,canonicalize,cse)'
 ```

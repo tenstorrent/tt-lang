@@ -40,6 +40,30 @@ output_value() {
     assert_output --partial "EVENT_NAME is required"
 }
 
+@test "boolean inputs must be canonical" {
+    DISPATCH_DRY_RUN=yes run -2 "$SCRIPT"
+    assert_output --partial "DISPATCH_DRY_RUN must be true or false"
+
+    DISPATCH_OVERWRITE_RELEASES=yes run -2 "$SCRIPT"
+    assert_output --partial "DISPATCH_OVERWRITE_RELEASES must be true or false"
+}
+
+@test "docker tag rejects GitHub output injection" {
+    DISPATCH_DOCKER_TAG=$'valid\npublish_needed=false' run -2 "$SCRIPT"
+    assert_output --partial "DISPATCH_DOCKER_TAG is not a valid Docker tag"
+    [[ ! -s "$GITHUB_OUTPUT_FILE" ]]
+}
+
+@test "version input is validated and normalized" {
+    malicious_version='<script>alert(1)</script>'
+    DISPATCH_VERSION_OVERRIDE="$malicious_version" run -1 "$SCRIPT"
+    assert_output --partial "Invalid PEP 440 version"
+    refute_output --partial "$malicious_version"
+
+    DISPATCH_VERSION_OVERRIDE=1.2.3-rc1 run -0 "$SCRIPT"
+    assert_equal "$(output_value version_override)" "1.2.3rc1"
+}
+
 @test "workflow_dispatch with explicit inputs -> pass-through" {
     DISPATCH_DOCKER_TAG=mytag \
     DISPATCH_DRY_RUN=true \
@@ -55,7 +79,9 @@ output_value() {
     assert_equal "$(output_value version_override)" "1.2.3.dev20260101"
     assert_equal "$(output_value wheel_variant)" "light"
     assert_equal "$(output_value wheel_variants)" '["light"]'
-    assert_equal "$(output_value wheel_matrix)" '{"include":[{"wheel_variant":"light","ttnn_dep_mode":"external"}]}'
+    assert_equal "$(output_value bundled_selected)" "false"
+    assert_equal "$(output_value manylinux_selected)" "true"
+    assert_equal "$(output_value manylinux_wheel_matrix)" '{"include":[{"wheel_variant":"light","ttnn_dep_mode":"external","build_sim_wheel":false}]}'
     assert_output --partial "Using existing docker_tag=mytag"
 }
 
@@ -64,7 +90,9 @@ output_value() {
 
     assert_equal "$(output_value wheel_variant)" "bundled-and-light"
     assert_equal "$(output_value wheel_variants)" '["bundled","light"]'
-    assert_equal "$(output_value wheel_matrix)" '{"include":[{"wheel_variant":"bundled","ttnn_dep_mode":"bundled"},{"wheel_variant":"light","ttnn_dep_mode":"external"}]}'
+    assert_equal "$(output_value bundled_selected)" "true"
+    assert_equal "$(output_value manylinux_selected)" "true"
+    assert_equal "$(output_value manylinux_wheel_matrix)" '{"include":[{"wheel_variant":"light","ttnn_dep_mode":"external","build_sim_wheel":false}]}'
     assert_output --partial 'Resolved wheel_variants=["bundled","light"]'
 }
 
@@ -73,9 +101,9 @@ output_value() {
     assert_output --partial "Unknown S3 wheel variant: garbage"
 }
 
-@test "empty docker_tag -> hint about build-docker" {
+@test "empty docker_tag -> hint about builder workflows" {
     DISPATCH_DOCKER_TAG="" run -0 "$SCRIPT"
-    assert_output --partial "No docker_tag provided; build-docker will create one"
+    assert_output --partial "No docker_tag provided; required builder workflows will create it"
 }
 
 @test "schedule event forces overwrite_releases=true even if dispatch said false" {
@@ -87,6 +115,9 @@ output_value() {
     DISPATCH_WHEEL_VARIANT="" EVENT_NAME=schedule run -0 "$SCRIPT"
     assert_equal "$(output_value wheel_variant)" "bundled-and-light"
     assert_equal "$(output_value wheel_variants)" '["bundled","light"]'
+    assert_equal "$(output_value bundled_selected)" "true"
+    assert_equal "$(output_value manylinux_selected)" "true"
+    assert_equal "$(output_value manylinux_wheel_matrix)" '{"include":[{"wheel_variant":"light","ttnn_dep_mode":"external","build_sim_wheel":false}]}'
 }
 
 @test "schedule event keeps overwrite_releases=true if already set" {
@@ -99,41 +130,31 @@ output_value() {
     assert_equal "$(output_value overwrite_releases)" "false"
 }
 
-@test "stable tag push publishes bundled and light when public PyPI is blocked" {
-    version_file=$(make_tt_metal_version_file \
-        "$TEST_TT_METAL_RC1_TAG" \
-        "$TEST_TT_METAL_NEXT_TAG")
-
-    DISPATCH_VERSION_OVERRIDE="" \
-    DISPATCH_WHEEL_VARIANT="" \
-    EVENT_NAME=push \
-    GITHUB_REF=refs/tags/v1.2.3 \
-    TTLANG_TT_METAL_VERSION_FILE="$version_file" \
-        run -0 "$SCRIPT"
-
-    assert_equal "$(output_value version_override)" "1.2.3"
-    assert_equal "$(output_value wheel_variant)" "bundled-and-light"
-    assert_equal "$(output_value wheel_variants)" '["bundled","light"]'
-    assert_equal "$(output_value overwrite_releases)" "false"
-    assert_equal "$(output_value allow_final_internal_version)" "true"
+@test "pypi uses the shared manylinux build and includes sim" {
+    DISPATCH_WHEEL_VARIANT=pypi run -0 "$SCRIPT"
+    assert_equal "$(output_value bundled_selected)" "false"
+    assert_equal "$(output_value manylinux_selected)" "true"
+    assert_equal "$(output_value manylinux_wheel_matrix)" '{"include":[{"wheel_variant":"pypi","ttnn_dep_mode":"pypi","build_sim_wheel":true}]}'
 }
 
-@test "stable tag push publishes only light when public PyPI is aligned" {
-    version_file=$(make_tt_metal_version_file \
-        "$TEST_TT_METAL_RC2_TAG" \
-        "$TEST_TT_METAL_TAG")
+@test "non-main dry run requires an existing docker tag" {
+    GITHUB_REF=refs/heads/feature \
+    DISPATCH_DRY_RUN=true \
+    DISPATCH_DOCKER_TAG="" \
+        run -1 "$SCRIPT"
+    assert_output --partial "Non-main dry runs must provide docker_tag"
+}
 
-    DISPATCH_VERSION_OVERRIDE="" \
-    DISPATCH_WHEEL_VARIANT="" \
-    EVENT_NAME=push \
-    GITHUB_REF=refs/tags/v1.2.3 \
-    TTLANG_TT_METAL_VERSION_FILE="$version_file" \
+@test "non-main dry run with an existing docker tag is allowed" {
+    GITHUB_REF=refs/heads/feature \
+    DISPATCH_DRY_RUN=true \
+    DISPATCH_DOCKER_TAG=existing \
         run -0 "$SCRIPT"
+}
 
-    assert_equal "$(output_value version_override)" "1.2.3"
-    assert_equal "$(output_value wheel_variant)" "light"
-    assert_equal "$(output_value wheel_variants)" '["light"]'
-    assert_equal "$(output_value allow_final_internal_version)" "true"
+@test "push event is rejected" {
+    EVENT_NAME=push run -1 "$SCRIPT"
+    assert_output --partial "S3 PyPI publishing does not run for push events"
 }
 
 @test "stable manual bundled publish is rejected when public PyPI is aligned" {
@@ -150,27 +171,19 @@ output_value() {
     assert_output --partial "Refusing to publish bundled tt-lang==1.2.3 to S3"
 }
 
-@test "push event rejects non-stable tag when version is unset" {
-    DISPATCH_VERSION_OVERRIDE="" \
-    DISPATCH_WHEEL_VARIANT="" \
-    EVENT_NAME=push \
-    GITHUB_REF=refs/tags/v1.2.3-rc1 \
-        run -1 "$SCRIPT"
-
-    assert_output --partial "S3 release-tag publish requires a stable tag"
+@test "unsupported event is rejected" {
+    EVENT_NAME=pull_request run -1 "$SCRIPT"
+    assert_output --partial "Unsupported S3 PyPI publish event: pull_request"
 }
 
 @test "empty version_override invokes compute-nightly-version.py" {
-    # Mock compute-nightly-version.py on PATH so we don't need git history.
-    mock_bin="$BATS_TEST_TMPDIR/mock-bin"
-    mkdir -p "$mock_bin"
-    # The script invokes the compute-nightly script by absolute path
-    # ($script_dir/compute-nightly-version.py), so shadow that file specifically.
+    # Shadow the helper next to a copied resolver so git history is not needed.
     shadow_dir="$BATS_TEST_TMPDIR/shadow-scripts"
     mkdir -p "$shadow_dir/tests"
     # Copy real script and its sibling lib (so the sourced helper resolves),
     # then override compute-nightly.
     cp "$SCRIPT" "$shadow_dir/"
+    cp "$SCRIPTS_DIR/normalize-pep440-version.py" "$shadow_dir/"
     cp -r "$SCRIPTS_DIR/lib" "$shadow_dir/"
     cat > "$shadow_dir/compute-nightly-version.py" <<'EOF'
 #!/usr/bin/env python3
@@ -189,6 +202,9 @@ EOF
     assert_output --partial "version_override=42.42.42.dev20260527"
     assert_output --partial "wheel_variant=bundled"
     assert_output --partial 'wheel_variants=["bundled"]'
+    assert_output --partial "bundled_selected=true"
+    assert_output --partial "manylinux_selected=false"
+    assert_output --partial 'manylinux_wheel_matrix={"include":[]}'
     assert_output --partial "allow_final_internal_version=false"
 }
 

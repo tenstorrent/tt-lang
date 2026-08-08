@@ -70,6 +70,55 @@ setup() {
     refute_output --partial "### Published wheels"
 }
 
+@test "--dry-run-if selects dry-run output from a boolean value" {
+    run -0 "$SCRIPT" --dry-run-if true bundled "$VER"
+    assert_output --partial "### Wheel publish dry run"
+
+    run -0 "$SCRIPT" --dry-run-if false bundled "$VER"
+    assert_output --partial "### Published wheels"
+    refute_output --partial "### Wheel publish dry run"
+}
+
+@test "--dry-run-if rejects non-boolean values" {
+    run -2 "$SCRIPT" --dry-run-if yes bundled "$VER"
+}
+
+@test "--index-subdir points install commands at the subdir index" {
+    run -0 "$SCRIPT" --index-subdir 2026-06 light "$VER"
+    assert_output --partial "https://pypi.eng.aws.tenstorrent.com/2026-06/"
+    assert_output --partial "tt-lang-light==$VER"
+    refute_output --partial "extra-index-url https://pypi.eng.aws.tenstorrent.com/ "
+}
+
+@test "--index-subdir composes with --dry-run" {
+    run -0 "$SCRIPT" --dry-run --index-subdir 13adda8 light "$VER"
+    assert_output --partial "### Wheel publish dry run"
+    assert_output --partial "https://pypi.eng.aws.tenstorrent.com/13adda8/"
+}
+
+@test "--index-subdir without a value -> usage error (exit 2)" {
+    run -2 "$SCRIPT" --index-subdir
+}
+
+@test "--find-links-subdir points install commands at the direct wheel directory" {
+    run -0 "$SCRIPT" --find-links-subdir tt-lang/13adda8 light "$VER"
+    assert_output --partial "Wheel directory: https://pypi.eng.aws.tenstorrent.com/tt-lang/13adda8/"
+    assert_output --partial "--find-links https://pypi.eng.aws.tenstorrent.com/tt-lang/13adda8/"
+    assert_output --partial "tt-lang-light==$VER"
+    assert_output --partial "tt-lang==$VER+light"
+    refute_output --partial "extra-index-url https://pypi.eng.aws.tenstorrent.com/tt-lang/13adda8/"
+}
+
+@test "--find-links-subdir and --index-subdir conflict" {
+    run -2 "$SCRIPT" --index-subdir 2026-06 --find-links-subdir tt-lang/13adda8 light "$VER"
+    assert_output --partial "mutually exclusive"
+}
+
+@test "no --index-subdir keeps the flat-root index url" {
+    run -0 "$SCRIPT" light "$VER"
+    assert_output --partial "extra-index-url https://pypi.eng.aws.tenstorrent.com/ "
+}
+
 @test "appends to GITHUB_STEP_SUMMARY when set" {
     GITHUB_STEP_SUMMARY="$SUMMARY_FILE" run -0 "$SCRIPT" pypi "$VER"
     # Output to stdout should be empty when redirected.

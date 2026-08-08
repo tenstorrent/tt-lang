@@ -1,7 +1,15 @@
 # Build directories
-build/
-.build/
-*.build/
+/build*/
+/.build/
+/*.build/
+/third-party/llvm-project/build*/
+/third-party/tt-metal/build*/
+/third-party/*/.cpmcache/
+/ird-toolchain/
+/dist*/
+/*.whl
+/docker*.log
+/.docker-image-*
 
 # Python cache
 __pycache__/
@@ -24,6 +32,7 @@ build/env/
 
 # Git
 .git/
+.wheel-workflow-src/.git/
 .gitignore
 
 # Docker temp

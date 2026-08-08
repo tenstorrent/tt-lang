@@ -4,7 +4,7 @@
 - **Environment**: `source build/env/activate` (activate virtual environment first, use actual build dir)
 - **Configure**: `cmake -G Ninja -B build`;
   with pre-built LLVM: `cmake -G Ninja -B build -DMLIR_PREFIX=/path/to/llvm-install`;
-  with ttmlir toolchain: `cmake -G Ninja -B build -DTTLANG_USE_TOOLCHAIN=ON`
+  with tt-lang toolchain: `cmake -G Ninja -B build -DTTLANG_USE_TOOLCHAIN=ON`
 - **Build**: `cmake --build build`
 - **Lint**: `pre-commit run --all-files` (includes clang-format, black,
   copyright checks)
@@ -15,22 +15,63 @@
 - **Python lit tests**: `llvm-lit test/python/` (hardware execution tests)
 - **Simulation tests**: `pytest test/sim/` (software simulation of runtime behavior); add `--run-slow` to include slow tests (hardware CI always passes this flag; GitHub-hosted CI does not)
 
+## Docker
+
+- Run Docker commands directly. Never use `sudo docker`; the user has Docker
+  daemon access through group membership.
+
 ## Code Style Guidelines
 - **C++ Style**: LLVM style (see .clang-format, .clang-tidy)
 - **Naming**: UpperCamelCase for types, lowerCamelCase for variables/functions
 - **Includes**: Absolute paths from tt-lang root, sorted: main header → local →
   LLVM → system
-- **Comments**: Full sentences, explain why not what, TODO with alias and issue
-  link
+- **Comments**: See [Comments](#comments) below.
 - **Python**: PEP 8 with black formatter (v23.x), Python 3.10+ only
 - **Functions**: Bottom-up order, helpers before callers, static/anonymous
   namespace for .cpp
 - **Namespaces**: Lowercase, avoid `using namespace`, no aliases in headers
 - **Error Handling**: Early returns to reduce nesting, no alternative tokens (&&
   not and)
+- **Callback Naming**: Name callbacks by the computation they perform, following
+  upstream MLIR conventions such as `computeUbMinusLb`, not by when they are
+  consulted. Use `ValueEvaluator` / `valueEvaluator` for integer value
+  evaluation callbacks; do not call them fallbacks.
 - **Unicode**: Avoid Unicode characters in code and documentation. Use ASCII
   equivalents instead (e.g., `->` instead of `→`). This ensures compatibility
   across different editors, terminals, and build environments.
+
+### Comments
+
+A comment exists for one reason: to let the next reader understand the code.
+Comments occupy space and must be maintained, so write one only when the code
+itself cannot carry the information.
+
+- **Follow LLVM commenting conventions** in substance, location, and style:
+  https://llvm.org/docs/CodingStandards.html#commenting. Use `///` doxygen
+  comments on declarations in headers, `//` for implementation notes in `.cpp`
+  files, and write full sentences with capitalization and a period. Do not
+  repeat a header's doc comment above the definition.
+- **Default to writing no comment.** The function name, signature, and body
+  usually suffice. A comment is justified only when it states one of:
+  1. Contract or role -- what callers can rely on, not the steps taken.
+  2. Why this and not the obvious alternative -- the constraint, prior bug, or
+     framework quirk that motivated the choice.
+  3. An invariant the type system cannot express.
+- **Do not narrate the code.** Reject comments that restate the function name,
+  paraphrase the body in English, explain the *absence* of code, or hedge
+  informally ("we just", "basically", "the trick is"). One line beats three.
+- **Do not repeat a comment.** State a fact in exactly one place -- the
+  declaration, the TableGen `description`, or a design document -- and nowhere
+  else. Detailed op and pass documentation lives in the `.td`, not the `.cpp`;
+  `.cpp` comments explain non-obvious implementation only.
+- **Rationale belongs in the PR, not the source.** Design decisions,
+  alternatives considered, performance measurements, and why a block of code
+  sits in one location rather than another go in the PR description. When a
+  decision must be recorded in the repository, write it up under `docs/`.
+- **Prose rules match [Documentation Style](#documentation-style)**: no
+  metaphorical verbs (write "execute", not "fire"; "delete", not "blow away"),
+  no invented jargon, ASCII only.
+- **TODOs** reference an issue number without an issue URL.
 
 ## MLIR implementation
 - Follow the conventions in llvm-project for directory organization and naming
@@ -49,6 +90,46 @@
   the pass creates; do not include the starting dialect.
 - **Debugging**: use `--debug-only=dialect-conversion` with `ttlang-opt`
 - Use enums instead of integer literals for encoding items in a category.
+
+### Nonlocal Transformation Design
+
+- When legality depends on multiple operations, regions, uses, or resource
+  lifetimes, analyze the complete transformation scope on immutable IR before
+  rewriting. Greedy pattern order must not determine semantic decisions.
+- Record every application decision in a typed plan, including operands, uses,
+  transactions, indexing, dependencies, and diagnostics. Application verifies
+  and executes the plan; it does not rediscover policy. Discard the plan after
+  any IR mutation.
+- Model stateful resources with explicit acquisition, release, ownership, and
+  publication transactions. Resource association, adjacency, use-list order,
+  and integer identity are not lifetime proofs.
+- Express repairs using semantic capabilities and exact consumer operands, not
+  operation-specific exceptions. When planned materialization changes storage,
+  distinguish the future input from current storage that constrains motion.
+- Represent interacting candidates with explicit dependencies and
+  preservation or erasure obligations. Compute mutually dependent requirements
+  as a monotone fixed point over a finite set and canonicalize results by IR
+  order.
+- Reuse upstream dataflow, dead-code, dominance, region-order, purity,
+  speculation, and operation-interface utilities for general compiler facts.
+  Add custom analysis only for dialect-specific semantics. Unreachable and
+  unknown are distinct; unknown results remain conservative.
+- Use typed planned, rejected, and invalid-IR outcomes. Diagnose malformed IR
+  and incomplete conversion before mutation; a rejected optimization leaves
+  valid IR unchanged. Never leave partially rewritten IR after failure.
+- Moving or recomputing operations across regions requires proof of SSA
+  dominance, purity and speculation safety, absence of memory effects,
+  resource availability at the destination, and preserved instrumentation
+  ordering.
+- When a transformation makes a new IR form common, audit downstream passes,
+  verifiers, and every compiler pipeline. Implement the form or emit a precise
+  diagnostic; do not rely on an assertion.
+- Validate nonlocal transformations with systematic input matrices and
+  baseline differential sweeps. Check generated-case counts and verifier
+  filtering, isolate every failure cause, and cover all compiler modes,
+  pipelines, dtypes, control-flow placements, and runtime-visible regressions.
+- Document the algorithm, correctness argument, assumptions, conservative
+  behavior, limitations, and upstream reuse in a design document.
 
 ### Op Creation API
 - Use the static `OpTy::create(builder, loc, ...)` form, **not** the deprecated

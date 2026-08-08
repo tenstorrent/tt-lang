@@ -44,12 +44,13 @@ primitive based on the Pipe shape. The mapping is:
 | Loopback multicast (`src` in dst range) | `noc_async_write_multicast_loopback_src` + remote `inc_multicast` + local `noc_semaphore_inc` | same as above |
 
 When several pipes target the same receiver and share its dataflow
-buffer, the receiver-side slot allocation is handled by
-`PipeGraph::assignGatherSlotIndices` (in
-`lib/Dialect/TTL/Transforms/PipeGraph.h`). It greedy-colors the pipes
-that share a `(receiver, cbIndex)` pair so each pipe gets a distinct
-slot index in the receiver dataflow buffer. `verifyReceiverDFBBlockCounts`
-then requires `block_count >= max_slot_idx + 1` per receiver. This
+buffer, the receiver-side slot allocation is handled by `PipeGraph` (in
+`lib/Dialect/TTL/Transforms/PipeGraph.h`). It follows receiver post
+order so each pipe gets the DFB slot reserved by its receive post, and
+requires multicast receivers to reserve the same slot for a given pipe
+because TT-Metal NoC multicast carries one destination address.
+`verifyReceiverDFBBlockCounts` then requires
+`block_count >= max_slot_idx + 1` per receiver. This
 makes overlapping multicast unrepresentable when more than 32 pipes
 target the same receiver: the tt-metal per-Tensix CB cap is 32
 (`NUM_CIRCULAR_BUFFERS` in
@@ -59,14 +60,15 @@ the count to equal the number of pipes.
 
 ### Multicast handshake protocol
 
-The sender and receiver in each multicast pipe coordinate via a
-per-PipeNet receiver counter, allocated by
-`allocatePipeNetCountersForMulticast` as a kernel-local
-`memref<1xi32>`. The lowering in `lib/Dialect/TTL/Transforms/PipeLowering.cpp`
-emits the following sequence (some arguments elided for brevity):
+The sender and receiver in each multicast pipe coordinate via a local
+receiver-completion semaphore and a kernel-local expected sequence allocated
+by `allocatePipePostSequenceCounters`. Pipe endpoint relations sharing a
+receiver use distinct completion semaphores; disjoint receiver sets may reuse
+an index. The lowering in `lib/Dialect/TTL/Transforms/PipeLowering.cpp` emits
+the following sequence (some arguments elided for brevity):
 
 ```
-                // one per (receiver, PipeNet); kernel-local memref<1xi32>
+                // one per completion semaphore used by this kernel
                 int32_t recv_counter[1] = {0};
 
 sender:    noc_async_write_multicast(data, recv_slot_addr, num_dests)
@@ -85,8 +87,7 @@ expectation in `recv_counter[0]` (one entry per `(receiver, PipeNet)`
 pair) and waits with `experimental::semaphore_wait_min` until the
 remote semaphore reaches at least that count. Each sender writes its
 data to a distinct slot in the receiver's CB (slot assignment from
-`PipeGraph::assignGatherSlotIndices`), so the data writes themselves
-also do not collide.
+`PipeGraph`), so the data writes themselves also do not collide.
 
 Loopback (`src` in `dst` range) skips the increment on the source
 core itself: the sender's `if_src` callback has already deposited the
@@ -168,9 +169,9 @@ plausible refactor rather than a behavior change.
 **Use existing MLIR collective dialects.** MLIR's
 [`shard`](https://mlir.llvm.org/docs/Dialects/ShardOps/) dialect
 (historically `mesh`) provides distributed-tensor sharding ops.
-tt-mlir's TTCore dialect has its own collective abstractions.
-tt-lang could lower to one of these instead of pattern-matching
-Pipes. Trade-off: pulls in a larger external dialect surface;
+TTCore could grow collective abstractions. tt-lang could lower to such
+abstractions instead of pattern-matching Pipes. Trade-off: increases the
+dialect surface;
 depends on whether the existing dialects' semantics fit tt-lang's
 intra-chip PipeNet model (the `shard` dialect targets distributed
 memory across SPMD nodes, which is closer to tt-lang's
@@ -741,13 +742,13 @@ The existing PipeNet protocol already uses this for the
 L1 word usable from any core in `core_grid`; the address is wired
 into the kernel as a compile-time arg, fetched at runtime via the
 TTKernel op
-[`ttkernel.get_semaphore`](https://github.com/tenstorrent/tt-mlir/blob/main/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td)
+[`ttkernel.get_semaphore`](../../include/ttlang/Dialect/TTKernel/IR/TTKernelOps.td)
 (declared at `TTKernelOps.td:3500`), and operated on with
 `noc_semaphore_inc`, `noc_semaphore_set`, etc. For arbitrary L1
 regions larger than 4 bytes, host-side `Buffer::create_l1_sharded`
 returns an L1 base address that can be passed similarly. This
 mechanism is sufficient for any future rewrite that needs a small
-fixed-size L1 region (e.g., a per-PipeNet shared counter) without
+fixed-size L1 region (e.g., a cross-core shared counter) without
 any new dialect surface; allocate a fresh semaphore alongside the
 existing `senderSem` / `recvSem` and operate on it with
 `noc_semaphore_inc` etc.
@@ -757,29 +758,26 @@ the host-side approach above is insufficient and a proper
 liveness-aware L1 allocator is needed. tt-lang will not adopt
 D2M's allocator (`memref.alloc` with
 [`ttcore::MemorySpace::DeviceL1`][ttcore-l1-enum] passed through
-the [`D2MAllocate`][d2m-allocate] pass — `addScratchToGeneric` in
-[`InsertScratchBuffers.cpp:130-177`][d2m-scratch] is the canonical
-example) — the project's stance is that the D2M dialect dependency
+the D2M allocation pass, including its scratch-buffer insertion logic)
+— the project's stance is that the D2M dialect dependency
 is cut. If a rewrite ever needs allocator-managed L1, tt-lang
 should grow its own TTL-side allocator targeting the same
 underlying tt-metal `Buffer` mechanism but driven from PipeGraph
 liveness rather than D2M's.
 
-Distinction from the existing per-PipeNet receiver counter: that
-counter is a `memref<1xi32>` with no memory-space attribute. The standard
-MemRefToEmitC patterns lower it to a stack-allocated `int32_t
-counter[1]` inside the kernel function — not L1-allocated. This is
-sufficient for that counter (each kernel invocation needs a fresh
-counter, no cross-core sharing). It is not sufficient for any
-counter that must be visible to other cores; that case requires
-the host-side semaphore mechanism above.
+Distinction from the existing receiver expected-sequence counter: that counter
+is a `memref<1xi32>` with no memory-space attribute. The standard MemRefToEmitC
+patterns lower it to a stack-allocated `int32_t counter[1]` inside the kernel
+function, not L1-allocated. This is sufficient because each kernel invocation
+needs fresh local state. A counter visible to other cores requires the
+host-side semaphore mechanism above.
 
 Recommendation by rewrite:
 
 | Rewrite | L1 need | Mechanism |
 |---|---|---|
 | 3.2.5 receiver-DFB sharing | Reuses an existing DFB | None; no new allocation |
-| Future cross-core counter | One 4-byte semaphore per PipeNet | Host-side `CreateSemaphore` |
+| Future cross-core counter | One 4-byte semaphore per synchronization relation | Host-side `CreateSemaphore` |
 | Future intermediate accumulator | Sized L1 region with liveness | TTL-side allocator (does not exist today; D2M's allocator is not an option) |
 
 The host-side mechanism covers every L1 need the §3.2 rewrites
@@ -787,9 +785,7 @@ have today.
 Path B becomes load-bearing only when a rewrite needs
 allocator-managed L1, which none of the rewrites in §3.2 require.
 
-[ttcore-l1-enum]: https://github.com/tenstorrent/tt-mlir/blob/main/include/ttmlir/Dialect/TTCore/IR/TTCoreOpsEnums.td#L64
-[d2m-allocate]: https://github.com/tenstorrent/tt-mlir/blob/main/lib/Dialect/D2M/Transforms/Allocate.cpp
-[d2m-scratch]: https://github.com/tenstorrent/tt-mlir/blob/main/lib/Dialect/D2M/Transforms/InsertScratchBuffers.cpp#L130-L177
+[ttcore-l1-enum]: ../../include/ttlang/Dialect/TTCore/IR/TTCoreOpsEnums.td
 
 ### 4.6 Multi-PipeNet composition
 
