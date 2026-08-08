@@ -29,8 +29,7 @@ class Kernel:
     def __post_init__(self) -> None:
         if not isinstance(self.kind, KernelKind):
             raise TypeError(
-                "Kernel kind must be a KernelKind, got "
-                f"{type(self.kind).__name__}"
+                "Kernel kind must be a KernelKind, got " f"{type(self.kind).__name__}"
             )
 
 

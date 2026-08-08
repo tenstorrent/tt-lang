@@ -60,6 +60,22 @@ unused.pop(kernel=ttl.KernelKind.DATA_MOVEMENT)
 acquired block's uses and release. The selector is consumed during unified-body
 splitting and does not alter the external-call IR or C++ interface.
 
+### Planning and identity invariants
+
+Unified-body splitting analyzes immutable source AST before cloning or pruning
+statements. Its immutable split plan records every statement selection, inferred
+and explicit DFB transaction ownership, required kernel counts, and target
+capacities. Split application consumes this plan without recomputing placement
+from mutated AST. Retaining the required counts and capacities makes the
+target-feasibility decision auditable after analysis.
+
+Operation registration binds each `Kernel` handle in place exactly once to its
+source name and owning operation. Equality and hashing require this binding and
+include the kernel kind and complete logical identity. Equality or hashing of an
+unbound handle is an error because Python object identity is not a stable logical
+kernel identity. The bound identity is retained as typed function metadata and
+remains available on `KernelSpec` after core specialization.
+
 ## Argument contract
 
 | Source argument | Generated C++ interface | Restrictions |

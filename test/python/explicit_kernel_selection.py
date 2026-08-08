@@ -29,9 +29,13 @@ def explicit_selected_add(inp, out):
 
     @ttl.compute(kernel=compute_kernel)
     def compute_thread():
+        core_x, _ = ttl.node(dims=2)
         input_block = input_dfb.wait()
         output_block = output_dfb.reserve()
-        output_block.store(input_block + input_block)
+        if core_x == 0:
+            output_block.store(input_block + input_block)
+        else:
+            output_block.store(input_block)
         input_block.pop()
         output_block.push()
 
@@ -55,7 +59,12 @@ def explicit_selected_add(inp, out):
 # CHECK-LABEL: func.func @writer_thread
 # CHECK-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>
 
-# SPECIALIZED: ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute_kernel", operation = "__main__.explicit_selected_add">
+# SPECIALIZED-LABEL: func.func @compute_thread_c0_0
+# SPECIALIZED-SAME: ttl.core_coord = {{\[\[}}0, 0]]
+# SPECIALIZED-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute_kernel", operation = "__main__.explicit_selected_add">
+# SPECIALIZED-LABEL: func.func @compute_thread_c1_0
+# SPECIALIZED-SAME: ttl.core_coord = {{\[\[}}1, 0]]
+# SPECIALIZED-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute_kernel", operation = "__main__.explicit_selected_add">
 # SPECIALIZED: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader_kernel", operation = "__main__.explicit_selected_add">
 # SPECIALIZED: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>
 
