@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import inspect
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Dict, FrozenSet, List, Mapping, Optional, Set, Tuple, Union
@@ -119,7 +120,7 @@ _DFB_DIRECT_METHODS: Dict[str, _Placement] = {"publish": _Placement.DATA_MOVEMEN
 
 
 def _materialize_kernels(
-    classification: object,
+    classification: Union[KernelKind, _Placement],
     data_movement_kernels: FrozenSet[KernelSelector],
 ) -> Optional[FrozenSet[KernelSelector]]:
     if classification is _Placement.DATA_MOVEMENT:
@@ -148,9 +149,22 @@ def _kernel_keyword(call: ast.Call) -> Optional[ast.expr]:
     return None
 
 
+class _DefaultTTLSelectorNamespace:
+    KernelKind = KernelKind
+
+
+_DEFAULT_TTL_SELECTOR_NAMESPACE = _DefaultTTLSelectorNamespace()
+_MISSING_SELECTOR_VALUE = object()
+
+
 class _KernelSelectorResolver:
-    def __init__(self, logical_kernels: Mapping[str, Kernel]):
+    def __init__(
+        self,
+        logical_kernels: Mapping[str, Kernel],
+        selector_scope: Mapping[str, object],
+    ):
         self.logical_kernels = dict(logical_kernels)
+        self.selector_scope = dict(selector_scope)
         for name, kernel in self.logical_kernels.items():
             if not isinstance(kernel, Kernel):
                 raise TypeError(
@@ -162,6 +176,7 @@ class _KernelSelectorResolver:
                     f"logical kernel mapping name {name!r} does not match "
                     f"its operation-local identity {kernel.identity!r}"
                 )
+            self.selector_scope[name] = kernel
 
     def resolve_external(
         self,
@@ -224,38 +239,47 @@ class _KernelSelectorResolver:
         return selected
 
     def _resolve_selector(self, node: ast.expr) -> KernelSelector:
-        kind = self._resolve_kind(node)
-        if kind is not None:
-            return kind
-        if isinstance(node, ast.Name) and node.id in self.logical_kernels:
-            return self.logical_kernels[node.id]
+        value = self._resolve_reference(node)
+        if isinstance(value, KernelKind):
+            return value
+        if isinstance(value, Kernel) and any(
+            value is kernel for kernel in self.logical_kernels.values()
+        ):
+            return value
+        if isinstance(node, ast.Attribute):
+            owner = self._resolve_reference(node.value)
+            if owner is KernelKind and value is _MISSING_SELECTOR_VALUE:
+                raise _split_error(
+                    node,
+                    f"unknown KernelKind member {node.attr!r}",
+                )
+        type_detail = ""
+        if value is not _MISSING_SELECTOR_VALUE:
+            type_detail = f", got {type(value).__name__}"
         raise _split_error(
             node,
             "kernel selector must be a KernelKind or Kernel declared as a "
-            "top-level operation resource",
+            f"top-level operation resource{type_detail}",
         )
 
-    @staticmethod
-    def _resolve_kind(node: ast.expr) -> Optional[KernelKind]:
+    def _resolve_reference(self, node: ast.expr):
+        if isinstance(node, ast.Name):
+            if node.id in self.selector_scope:
+                return self.selector_scope[node.id]
+            if node.id == "KernelKind":
+                return KernelKind
+            if node.id == "ttl":
+                return _DEFAULT_TTL_SELECTOR_NAMESPACE
+            return _MISSING_SELECTOR_VALUE
         if not isinstance(node, ast.Attribute):
-            return None
-        owner = node.value
-        is_kernel_kind = isinstance(owner, ast.Name) and owner.id == "KernelKind"
-        if isinstance(owner, ast.Attribute):
-            is_kernel_kind = (
-                owner.attr == "KernelKind"
-                and isinstance(owner.value, ast.Name)
-                and owner.value.id == "ttl"
-            )
-        if not is_kernel_kind:
-            return None
+            return _MISSING_SELECTOR_VALUE
+        owner = self._resolve_reference(node.value)
+        if owner is _MISSING_SELECTOR_VALUE:
+            return _MISSING_SELECTOR_VALUE
         try:
-            return KernelKind[node.attr]
-        except KeyError:
-            raise _split_error(
-                node,
-                f"unknown KernelKind member {node.attr!r}",
-            ) from None
+            return inspect.getattr_static(owner, node.attr)
+        except AttributeError:
+            return _MISSING_SELECTOR_VALUE
 
 
 def _classify_ttl_call(
@@ -350,10 +374,13 @@ class SplitResult:
 class _AnalysisState:
     def __init__(self):
         self.anchor_selections: Dict[int, FrozenSet[KernelSelector]] = {}
+        self.kernel_origins: Dict[KernelSelector, ast.stmt] = {}
         self.transactions: List[DFBTransactionPlan] = []
 
     def select(self, statement: ast.stmt, kernels: Set[KernelSelector]) -> None:
         self.anchor_selections[id(statement)] = frozenset(kernels)
+        for kernel in kernels:
+            self.kernel_origins.setdefault(kernel, statement)
 
 
 def split_function_body(
@@ -361,6 +388,7 @@ def split_function_body(
     dfb_param_names: Set[str],
     local_dfb_names: Optional[Set[str]] = None,
     logical_kernels: Optional[Mapping[str, Kernel]] = None,
+    selector_scope: Optional[Mapping[str, object]] = None,
     kernel_capacities: Optional[Mapping[KernelKind, int]] = None,
 ) -> SplitResult:
     """Split a unified operation body into target-independent logical kernels.
@@ -371,10 +399,13 @@ def split_function_body(
         local_dfb_names: names of DFBs declared inside the body via a DFB
             factory. Treated as DFB receivers for wait/reserve recognition.
         logical_kernels: lifted logical Kernel resources keyed by source name.
+        selector_scope: frozen operation scope used for selector references.
         kernel_capacities: target-provided maximum kernel counts by kind.
     """
     dfb_names = set(dfb_param_names) | (local_dfb_names or set())
-    selector_resolver = _KernelSelectorResolver(logical_kernels or {})
+    selector_resolver = _KernelSelectorResolver(
+        logical_kernels or {}, selector_scope or {}
+    )
     state = _AnalysisState()
     _AnchorPlanner(
         dfb_names=dfb_names,
@@ -386,7 +417,12 @@ def split_function_body(
     for selection in state.anchor_selections.values():
         selected_kernels.update(selection)
     ordered_kernels = tuple(sorted(selected_kernels, key=_selector_sort_key))
-    _validate_kernel_capacities(fn_def, ordered_kernels, kernel_capacities)
+    _validate_kernel_capacities(
+        fn_def,
+        ordered_kernels,
+        state.kernel_origins,
+        kernel_capacities,
+    )
 
     all_kernels = frozenset(ordered_kernels)
     statements = tuple(
@@ -474,6 +510,7 @@ class _AnchorPlanner:
     # --- entry ---
 
     def analyze(self, body: List[ast.stmt]) -> None:
+        _validate_dfb_acquire_keywords(body, self.dfb_names)
         self._discover_producers(body)
         self._discover_callback_kernels(body)
         inferred_users, explicit_releases = _collect_block_ownership(
@@ -602,6 +639,8 @@ class _AnchorPlanner:
                 self._state.select(stmt, kernels)
             for child in stmt.body:
                 self._annotate(child)
+            if kernels is not None:
+                self._validate_with_body_selection(stmt, kernels)
             return
         if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
             callback_kernels = frozenset(
@@ -667,6 +706,23 @@ class _AnchorPlanner:
             if owner is not None:
                 merged.add(owner)
         return merged if any_dfb else None
+
+    def _validate_with_body_selection(
+        self,
+        stmt: ast.With,
+        acquire_kernels: Set[KernelSelector],
+    ) -> None:
+        for nested_statement in _walk_statements(stmt.body):
+            nested_kernels = self._state.anchor_selections.get(id(nested_statement))
+            if nested_kernels is None or nested_kernels.issubset(acquire_kernels):
+                continue
+            raise _split_error(
+                nested_statement,
+                "statement selects logical kernels "
+                f"({_format_kernels(nested_kernels)}) outside its enclosing "
+                "DFB acquire owner "
+                f"({_format_kernels(acquire_kernels)})",
+            )
 
     def _block_kernel_set(self, block_name: str) -> Set[KernelSelector]:
         owner = self.block_owners.get(block_name)
@@ -735,10 +791,15 @@ class _AnchorPlanner:
 
 
 class _KernelKeywordStripper(ast.NodeTransformer):
+    def __init__(self, block_names: Set[str]):
+        self.block_names = block_names
+
     def visit_Call(self, node: ast.Call):
         node = self.generic_visit(node)
         is_release = (
             isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id in self.block_names
             and node.func.attr in _BLOCK_RELEASE_METHODS
         )
         if _is_external_call(node) or is_release:
@@ -761,6 +822,7 @@ def _walk_statements(statements: List[ast.stmt]):
 def _validate_kernel_capacities(
     fn_def: ast.FunctionDef,
     kernels: Tuple[KernelSelector, ...],
+    kernel_origins: Mapping[KernelSelector, ast.stmt],
     kernel_capacities: Optional[Mapping[KernelKind, int]],
 ) -> None:
     if kernel_capacities is None:
@@ -771,12 +833,19 @@ def _validate_kernel_capacities(
             raise ValueError(
                 f"kernel capacity for {kind.value} must be a nonnegative integer"
             )
-        required = sum(_selector_kind(kernel) == kind for kernel in kernels)
+        selected = tuple(kernel for kernel in kernels if _selector_kind(kernel) == kind)
+        required = len(selected)
         if required > capacity:
+            diagnostic_node = max(
+                (kernel_origins[kernel] for kernel in selected),
+                key=lambda statement: getattr(statement, "lineno", 0),
+                default=fn_def,
+            )
             raise _split_error(
-                fn_def,
+                diagnostic_node,
                 f"operation requires {required} {kind.value} kernels, but the "
-                f"target supports {capacity}",
+                f"target supports {capacity}; selected kernels: "
+                f"{_format_kernels(selected)}",
             )
 
 
@@ -791,7 +860,9 @@ def _apply_split_plan(
         statement.statement_id: statement.kernels for statement in plan.statements
     }
     cloned = _prune_statement_list(body, kernel, selections, memo, insert_pass=True)
-    stripper = _KernelKeywordStripper()
+    stripper = _KernelKeywordStripper(
+        {transaction.block_name for transaction in plan.transactions}
+    )
     return [
         ast.fix_missing_locations(stripper.visit(statement)) for statement in cloned
     ]
@@ -859,6 +930,29 @@ def _assigned_copy_target(stmt: ast.stmt) -> Optional[str]:
     if func.attr != "copy":
         return None
     return stmt.targets[0].id
+
+
+def _validate_dfb_acquire_keywords(
+    statements: List[ast.stmt], dfb_names: Set[str]
+) -> None:
+    """Reject placement selectors on DFB acquisition operations."""
+    for statement in statements:
+        for node in _iter_skip_nested_fns(statement):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if not isinstance(func, ast.Attribute):
+                continue
+            if func.attr not in _DFB_PRODUCING_METHODS:
+                continue
+            if not isinstance(func.value, ast.Name) or func.value.id not in dfb_names:
+                continue
+            if _kernel_keyword(node) is not None:
+                raise _split_error(
+                    node,
+                    f"kernel= is not supported on DFB {func.attr}(); "
+                    "select release ownership on push() or pop()",
+                )
 
 
 def _bare_wait_assign_target(
@@ -1025,8 +1119,6 @@ def _collect_block_ownership(
             if root in visible:
                 inferred_users[root].update(kernels)
         for kw in node.keywords:
-            if kw.arg == _KERNEL_KEYWORD:
-                continue
             root = _expr_root_name(kw.value)
             if root in visible:
                 inferred_users[root].update(kernels)

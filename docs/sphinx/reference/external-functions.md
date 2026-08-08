@@ -68,6 +68,31 @@ def make_selected_external():
 A handle used only by the operation may instead be declared as a static
 top-level assignment in the operation body.
 
+Explicit multi-kernel operations use the same selectors on thread decorators.
+Each decorator accepts one selector whose kind matches the thread type. An
+omitted selector denotes the canonical kernel of that kind.
+
+```python
+def make_explicit_operation():
+    reader = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+
+    @ttl.operation(grid=(1, 1))
+    def explicit_operation(inp):
+        @ttl.compute(kernel=ttl.KernelKind.COMPUTE)
+        def compute_thread():
+            pass
+
+        @ttl.datamovement(kernel=reader)
+        def reader_thread():
+            pass
+
+    return explicit_operation
+```
+
+Operation registration binds a captured thread selector before compilation.
+This permits the same handle to identify the compiled kernel in runtime
+configuration APIs.
+
 An external call accepts one selector or a nonempty tuple of distinct
 selectors. A tuple emits the call once in every selected logical kernel. A
 call may omit `kernel=` when its enclosing callback already determines one
@@ -158,5 +183,5 @@ unused.pop(kernel=ttl.KernelKind.DATA_MOVEMENT)
 derived from the acquired block's uses and release. An explicit release
 selector that conflicts with inferred ownership is invalid.
 
-The selector affects unified-operation splitting only. Generated IR and C++
-retain the ordinary external call and argument-free DFB release operations.
+The release selector affects unified-operation splitting only. Generated IR
+and C++ retain the ordinary argument-free DFB release operation.

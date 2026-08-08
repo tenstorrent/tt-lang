@@ -107,6 +107,8 @@ from .kernel import (
     Kernel,
     KernelKind,
     KernelSelector,
+    _bind_kernel_declarations,
+    _operation_identity,
     _selector_implicit_role,
     _selector_kind,
 )
@@ -138,6 +140,35 @@ def _get_registered_threads() -> List[Callable]:
     threads = list(_thread_registry)
     _thread_registry.clear()
     return threads
+
+
+def _validate_explicit_logical_kernel_uses(threads: List[Callable]) -> None:
+    """Require each named logical kernel to identify one explicit thread."""
+    thread_by_kernel: Dict[Kernel, Callable] = {}
+    for thread in threads:
+        logical_kernel = thread._logical_kernel
+        if not isinstance(logical_kernel, Kernel):
+            continue
+        previous_thread = thread_by_kernel.get(logical_kernel)
+        if previous_thread is not None:
+            raise ValueError(
+                f"logical Kernel {logical_kernel.identity!r} is selected by "
+                "multiple explicit threads: "
+                f"{previous_thread.__name__!r} and {thread.__name__!r}"
+            )
+        thread_by_kernel[logical_kernel] = thread
+
+
+def _captured_kernel_declarations(function: Callable) -> Dict[str, Kernel]:
+    """Return logical kernels referenced by an explicit operation."""
+    closure = inspect.getclosurevars(function)
+    captures = dict(closure.globals)
+    captures.update(closure.nonlocals)
+    return {
+        name: value
+        for name, value in sorted(captures.items())
+        if isinstance(value, Kernel)
+    }
 
 
 def _get_tensor_cache_info(tensor) -> tuple:
@@ -1652,6 +1683,7 @@ def _run_thread_compiler(
 def _compile(
     kernel_type: Optional[str] = None,
     verbose: bool = False,
+    logical_kernel: Optional[KernelSelector] = None,
 ) -> Callable:
     """
     Internal decorator for compiling kernel threads.
@@ -1659,12 +1691,34 @@ def _compile(
     Args:
         kernel_type: Type of kernel ("compute" or "datamovement")
         verbose: Enable verbose compilation output
+        logical_kernel: Target-independent logical kernel selector
 
     Returns:
         Decorator function for kernel compilation
     """
 
     def _decorator(f):
+        expected_kind = {
+            "compute": KernelKind.COMPUTE,
+            "datamovement": KernelKind.DATA_MOVEMENT,
+        }[kernel_type]
+        selected_kernel = expected_kind if logical_kernel is None else logical_kernel
+        if not isinstance(selected_kernel, (KernelKind, Kernel)):
+            raise TypeError(
+                "kernel must be a KernelKind or Kernel, got "
+                f"{type(selected_kernel).__name__}"
+            )
+        if _selector_kind(selected_kernel) != expected_kind:
+            raise ValueError(
+                f"{kernel_type} thread kernel kind must be "
+                f"{expected_kind.value}, got {_selector_kind(selected_kernel).value}"
+            )
+        if isinstance(selected_kernel, Kernel) and selected_kernel._identity is None:
+            raise ValueError(
+                "kernel handle must be captured by the enclosing @ttl.operation "
+                "before it is used by a thread decorator"
+            )
+
         # Capture source file at decoration time
         try:
             source_file = inspect.getfile(f)
@@ -1702,6 +1756,7 @@ def _compile(
 
         _wrapper._decorator_name = kernel_type + "_thread"
         _wrapper._source_file = source_file
+        _wrapper._logical_kernel = selected_kernel
         # Register thread for automatic collection
         _register_thread(_wrapper)
         if inspect.ismethod(f):
@@ -1711,7 +1766,9 @@ def _compile(
     return _decorator
 
 
-def compute(verbose: bool = False) -> Callable:
+def compute(
+    verbose: bool = False, *, kernel: Optional[KernelSelector] = None
+) -> Callable:
     """
     Decorator for compute thread functions.
 
@@ -1719,6 +1776,7 @@ def compute(verbose: bool = False) -> Callable:
 
     Args:
         verbose: Enable verbose compilation output
+        kernel: Logical compute kernel selected for this thread
 
     Returns:
         Decorator for compute kernel compilation
@@ -1726,10 +1784,13 @@ def compute(verbose: bool = False) -> Callable:
     return _compile(
         kernel_type="compute",
         verbose=verbose,
+        logical_kernel=kernel,
     )
 
 
-def datamovement(verbose: bool = False) -> Callable:
+def datamovement(
+    verbose: bool = False, *, kernel: Optional[KernelSelector] = None
+) -> Callable:
     """
     Decorator for data movement thread functions.
 
@@ -1737,6 +1798,7 @@ def datamovement(verbose: bool = False) -> Callable:
 
     Args:
         verbose: Enable verbose compilation output
+        kernel: Logical data-movement kernel selected for this thread
 
     Returns:
         Decorator for data movement kernel compilation
@@ -1744,6 +1806,7 @@ def datamovement(verbose: bool = False) -> Callable:
     return _compile(
         kernel_type="datamovement",
         verbose=verbose,
+        logical_kernel=kernel,
     )
 
 
@@ -1885,6 +1948,8 @@ def _compile_kernel(
             "@ttl.datamovement() function inside your kernel."
         )
 
+    _validate_explicit_logical_kernel_uses(threads)
+
     pipenets = _build_operation_pipenets(f, threads)
 
     launch_grid = grid
@@ -1916,6 +1981,7 @@ def _compile_kernel(
         l1_budget_override=l1_budget_override,
         kernel_source_file=kernel_source_file,
         kernel_line_offset=kernel_line_offset,
+        logical_kernels=[thread._logical_kernel for thread in threads],
     )
 
 
@@ -2519,6 +2585,10 @@ def pykernel_gen(
         iterator_types = []
 
     def _decorator(f):
+        _bind_kernel_declarations(
+            _captured_kernel_declarations(f), _operation_identity(f)
+        )
+
         def _compile_explicit(
             runtime_args,
             runtime_kwargs,

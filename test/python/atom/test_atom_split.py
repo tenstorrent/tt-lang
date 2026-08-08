@@ -12,6 +12,7 @@ split-time error paths for ambiguous kernel ownership and the basic
 compute/data-movement routing."""
 
 import ast
+import copy
 import textwrap
 
 import pytest
@@ -47,7 +48,9 @@ def _kind_src(result, kind: KernelKind, index: int = 0) -> str:
 
 
 def _logical_kernel(kind: KernelKind, name: str) -> Kernel:
-    return Kernel(kind)._bind(name, "test.operation")
+    kernel = Kernel(kind)
+    kernel._bind(name, "test.operation")
+    return kernel
 
 
 def test_kernel_resource_is_lifted_before_logical_split():
@@ -137,10 +140,93 @@ def test_captured_kernel_cannot_have_two_names():
         reader.identity
 
 
+def test_composition_copies_captured_kernel_into_final_operation():
+    """A composed capture receives a fresh identity owned by the caller."""
+    reader = Kernel(KernelKind.DATA_MOVEMENT)
+
+    @ttl.operation()
+    def selected_callee():
+        ttl.call_extern_func("reader.hpp", "reader", kernel=reader)
+
+    @ttl.operation(grid=(1, 1))
+    def selected_caller():
+        selected_callee()
+
+    spec = selected_caller._spec
+    assert len(spec.logical_kernels) == 1
+    inlined_reader = next(iter(spec.logical_kernels.values()))
+    assert inlined_reader is not reader
+    assert inlined_reader.identity.startswith("reader__selected_callee_inl_")
+    assert inlined_reader._operation_identity == spec.operation_identity
+
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names=set(),
+        logical_kernels=spec.logical_kernels,
+        kernel_capacities=_backend_kernel_capacities(),
+    )
+    assert result.kernels == (inlined_reader,)
+
+
+def test_composition_kernel_suffix_is_stable_across_caller_registration():
+    """Earlier composition in the process does not change the suffix."""
+    reader = Kernel(KernelKind.DATA_MOVEMENT)
+
+    @ttl.operation()
+    def selected_callee():
+        ttl.call_extern_func("reader.hpp", "reader", kernel=reader)
+
+    @ttl.operation(grid=(1, 1))
+    def first_caller():
+        selected_callee()
+
+    @ttl.operation(grid=(1, 1))
+    def second_caller():
+        selected_callee()
+
+    first_name = next(iter(first_caller._spec.logical_kernels))
+    second_name = next(iter(second_caller._spec.logical_kernels))
+    assert first_name == second_name
+
+
+def test_composition_preserves_body_local_kernel_declaration():
+    """An inlined local declaration is renamed and rebound to the caller."""
+
+    @ttl.operation()
+    def selected_callee():
+        local_reader = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+        ttl.call_extern_func("reader.hpp", "reader", kernel=local_reader)
+
+    @ttl.operation(grid=(1, 1))
+    def selected_caller():
+        selected_callee()
+
+    spec = selected_caller._spec
+    stripped, _, _, logical_kernels = _lift_setup(
+        copy.deepcopy(spec.fn_ast),
+        spec.frozen_scope,
+        spec.operation_identity,
+    )
+    assert len(logical_kernels) == 1
+    local_name, local_reader = next(iter(logical_kernels.items()))
+    assert local_name.startswith("local_reader__selected_callee_inl_")
+    assert local_reader._operation_identity == spec.operation_identity
+
+    result = split_function_body(
+        stripped,
+        dfb_param_names=set(),
+        logical_kernels=logical_kernels,
+        kernel_capacities=_backend_kernel_capacities(),
+    )
+    assert result.kernels == (local_reader,)
+
+
 def test_bound_kernel_equality_uses_logical_identity():
     """Equivalent bindings compare equally without object-address identity."""
-    first = Kernel(KernelKind.DATA_MOVEMENT)._bind("reader", "operation")
-    second = Kernel(KernelKind.DATA_MOVEMENT)._bind("reader", "operation")
+    first = Kernel(KernelKind.DATA_MOVEMENT)
+    second = Kernel(KernelKind.DATA_MOVEMENT)
+    first._bind("reader", "operation")
+    second._bind("reader", "operation")
 
     assert first == second
     assert hash(first) == hash(second)
@@ -564,6 +650,61 @@ def test_release_rejects_tuple_selector(method):
         )
 
 
+@pytest.mark.parametrize("acquire", ["reserve", "wait"])
+@pytest.mark.parametrize("form", ["assign", "with"])
+def test_acquire_rejects_kernel_selector(acquire, form):
+    """DFB acquisition ownership cannot be selected directly."""
+    if form == "assign":
+        source = f"""
+            def k():
+                block = buffer.{acquire}(kernel=ttl.KernelKind.DATA_MOVEMENT)
+        """
+    else:
+        source = f"""
+            def k():
+                with buffer.{acquire}(
+                    kernel=ttl.KernelKind.DATA_MOVEMENT
+                ) as block:
+                    block.pop()
+        """
+    fn = _fn(source)
+
+    with pytest.raises(
+        ValueError,
+        match=rf"kernel= is not supported on DFB {acquire}\(\)",
+    ):
+        split_function_body(fn, dfb_param_names={"buffer"})
+
+
+@pytest.mark.parametrize("acquire", ["reserve", "wait"])
+@pytest.mark.parametrize(
+    "selector",
+    [
+        "ttl.KernelKind.COMPUTE",
+        "named_compute",
+        "(ttl.KernelKind.DATA_MOVEMENT, ttl.KernelKind.COMPUTE)",
+    ],
+)
+def test_acquire_block_rejects_nested_selection_outside_owner(acquire, selector):
+    """A selected nested statement must execute with its DFB acquire."""
+    named_compute = _logical_kernel(KernelKind.COMPUTE, "named_compute")
+    fn = _fn(
+        f"""
+        def k(inp):
+            with buffer.{acquire}() as block:
+                ttl.copy(inp, block).wait()
+                ttl.call_extern_func("compute.hpp", "compute", kernel={selector})
+        """
+    )
+
+    with pytest.raises(ValueError, match="outside its enclosing DFB acquire owner"):
+        split_function_body(
+            fn,
+            dfb_param_names={"buffer"},
+            logical_kernels={"named_compute": named_compute},
+        )
+
+
 @pytest.mark.parametrize(
     "acquire, release",
     [("reserve", "push"), ("wait", "pop")],
@@ -652,6 +793,47 @@ def test_external_call_rejects_nonconstant_selector(selector):
         split_function_body(fn, dfb_param_names=set())
 
 
+def test_external_call_accepts_kernel_kind_import_alias():
+    """Selector resolution uses the frozen value rather than its spelling."""
+    fn = _fn(
+        """
+        def k():
+            ttl.call_extern_func("compute.hpp", "compute", kernel=KK.COMPUTE)
+        """
+    )
+
+    result = split_function_body(
+        fn,
+        dfb_param_names=set(),
+        selector_scope={"KK": KernelKind},
+    )
+
+    assert result.kernels == (KernelKind.COMPUTE,)
+
+
+def test_external_call_respects_rebound_kernel_kind_name():
+    """A rebound name is not interpreted as the public selector enum."""
+
+    class ReboundKernelKind:
+        COMPUTE = 42
+
+    fn = _fn(
+        """
+        def k():
+            ttl.call_extern_func(
+                "compute.hpp", "compute", kernel=KernelKind.COMPUTE
+            )
+        """
+    )
+
+    with pytest.raises(ValueError, match="KernelKind or Kernel.*got int"):
+        split_function_body(
+            fn,
+            dfb_param_names=set(),
+            selector_scope={"KernelKind": ReboundKernelKind},
+        )
+
+
 def test_selector_tuple_order_does_not_change_kernel_order():
     """Canonical kernel ordering is independent of selector tuple order."""
     reader = _logical_kernel(KernelKind.DATA_MOVEMENT, "reader")
@@ -710,3 +892,30 @@ def test_logical_kernel_capacity_uses_supplied_target_limit():
                 KernelKind.DATA_MOVEMENT: 1,
             },
         )
+
+
+def test_kernel_capacity_diagnostic_names_conflicts_at_last_introduction():
+    """Capacity failures identify the selected kernels and later statement."""
+    extra_compute = _logical_kernel(KernelKind.COMPUTE, "extra_compute")
+    fn = _fn(
+        """
+        def k(value):
+            ttl.call_extern_func("compute.hpp", "compute", kernel=extra_compute)
+            ttl.fill(value)
+        """
+    )
+
+    with pytest.raises(ValueError) as error:
+        split_function_body(
+            fn,
+            dfb_param_names=set(),
+            logical_kernels={"extra_compute": extra_compute},
+            kernel_capacities={
+                KernelKind.COMPUTE: 1,
+                KernelKind.DATA_MOVEMENT: 2,
+            },
+        )
+
+    message = str(error.value)
+    assert "selected kernels: compute, compute kernel 'extra_compute'" in message
+    assert "(line 4)" in message

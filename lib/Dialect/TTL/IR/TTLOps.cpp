@@ -43,10 +43,8 @@
 namespace mlir::tt::ttl {
 
 llvm::LogicalResult LogicalKernelAttr::verify(
-    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
-    LogicalKernelKind kind, StringAttr identity, StringAttr operation,
-    StringAttr role) {
-  (void)kind;
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError, LogicalKernelKind,
+    StringAttr identity, StringAttr operation, StringAttr role) {
   if (identity && identity.getValue().empty()) {
     return emitError() << "logical kernel identity must be nonempty";
   }

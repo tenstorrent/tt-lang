@@ -17,6 +17,7 @@ from .dfb import DFBStats
 from .constants import TILE_SHAPE
 from .copy import CopyTransaction, GroupTransfer, copy
 from .decorators import compute, datamovement
+from .kernel import Kernel, KernelKind
 from .nodecontext import node
 from .operation import operation
 from .pipe import DstPipeIdentity, DstT, Pipe, PipeNet, SrcPipeIdentity
@@ -95,6 +96,7 @@ class _TTLNamespace:
         from .copy import copy
         from .decorators import compute, datamovement
         from .nodecontext import node, grid_size
+        from .kernel import Kernel, KernelKind
         from .operation import operation
         from .pipe import DstPipeIdentity, DstT, Pipe, PipeNet, SrcPipeIdentity
         from .program import Program
@@ -106,6 +108,8 @@ class _TTLNamespace:
         self.make_tensor_backed_dfb = self._make_tensor_backed_dfb
         self.compute = compute
         self.datamovement = datamovement
+        self.Kernel = Kernel
+        self.KernelKind = KernelKind
         self.node = node
         self.copy = copy
         self.GroupTransfer = GroupTransfer
@@ -141,6 +145,8 @@ ttl = _TTLNamespace()
 
 __all__ = [
     "DFBStats",
+    "Kernel",
+    "KernelKind",
     "NodeCoord",
     "NodeRange",
     "DstT",

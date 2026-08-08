@@ -18,7 +18,7 @@ func.func @named() attributes {ttl.logical_kernel = #ttl.logical_kernel<kind = d
 
 // Compiler-owned affinities use a logical role instead of an operation id.
 // CHECK-LABEL: func.func @role
-// CHECK-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "<source>", role = "source">
-func.func @role() attributes {ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "<source>", role = "source">} {
+// CHECK-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "<pipe_source>", role = "pipe_source">
+func.func @role() attributes {ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "<pipe_source>", role = "pipe_source">} {
   return
 }

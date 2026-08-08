@@ -19,6 +19,7 @@ import torch
 import ttl
 import ttnn
 from ttl import KernelKind, call_extern_func
+from ttl import KernelKind as KK
 
 FAKE_HEADER = "/dev/null/fake_shim.hpp"
 reader = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
@@ -51,6 +52,7 @@ def selected_external_calls(inp):
         "shared_entry",
         kernel=(KernelKind.COMPUTE, reader),
     )
+    ttl.call_extern_func(FAKE_HEADER, "alias_entry", kernel=KK.COMPUTE)
 
     unused = drain_dfb.wait()
     unused.pop(kernel=reader)
@@ -60,6 +62,7 @@ def selected_external_calls(inp):
 # CHECK-DAG: ttl.opaque_call "reader_entry"
 # CHECK-DAG: ttl.opaque_call "shared_entry"
 # CHECK-DAG: ttl.opaque_call "shared_entry"
+# CHECK-DAG: ttl.opaque_call "alias_entry"
 # CHECK-DAG: ttl.logical_kernel = #ttl.logical_kernel<kind = compute>
 # CHECK-DAG: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation =
 
@@ -67,6 +70,7 @@ def selected_external_calls(inp):
 # CHECK-CPP-DAG: reader_entry<5>
 # CHECK-CPP-DAG: shared_entry()
 # CHECK-CPP-DAG: shared_entry()
+# CHECK-CPP-DAG: alias_entry()
 
 # SPECIALIZED-COUNT-2: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation =
 
