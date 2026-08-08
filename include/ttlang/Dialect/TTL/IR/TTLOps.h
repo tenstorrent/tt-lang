@@ -32,6 +32,16 @@ struct DFBProtocolEffect {
   unsigned sequenceIndex = 0;
 };
 
+inline bool isProducerDFBProtocolEffect(DFBProtocolEffectKind kind) {
+  return kind == DFBProtocolEffectKind::Reserve ||
+         kind == DFBProtocolEffectKind::Push;
+}
+
+inline bool isConsumerDFBProtocolEffect(DFBProtocolEffectKind kind) {
+  return kind == DFBProtocolEffectKind::Wait ||
+         kind == DFBProtocolEffectKind::Pop;
+}
+
 } // namespace mlir::tt::ttl
 
 #include "ttlang/Dialect/TTL/IR/TTLInterfaces.h.inc"
