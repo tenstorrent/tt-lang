@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Device coverage for subtile elementwise, matmul, and reduce operations."""
+"""Device coverage for subtile compute and DFB accumulation operations."""
 
 import pytest
 import torch

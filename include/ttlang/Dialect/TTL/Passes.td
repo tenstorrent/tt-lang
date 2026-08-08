@@ -270,7 +270,9 @@ def TTLInsertAccumulationScopes
     recognizes single-output additive tensor recurrences whose loop result is
     immediately stored to a dataflow buffer reservation. DFB mode recognizes
     user-written accumulating stores after DFB acquire/release structure is
-    canonical.
+    canonical. A straight-line accumulating store is represented as a
+    one-iteration loop so compute subblocking preserves its packer
+    accumulation policy.
 
     The pass records accumulation policy only. It does not select DST, L1
     packer accumulation, or explicit dataflow buffer state.
@@ -282,6 +284,7 @@ def TTLInsertAccumulationScopes
   ];
 
   let dependentDialects = [
+    "::mlir::arith::ArithDialect",
     "::mlir::scf::SCFDialect",
     "::mlir::tt::ttl::TTLDialect"
   ];
