@@ -77,13 +77,15 @@ struct TTLInsertCBSyncPass
     // must check the set before touching any op wrapper method.
     DenseSet<Operation *> erased;
 
-    insertMissingReleases(operations.reserves, operations.pushes, erased,
-                          builder, [](OpBuilder &b, Location loc, Value cb) {
+    insertMissingReleases(operations.reserves,
+                          operations.producerProtocolReleases, erased, builder,
+                          [](OpBuilder &b, Location loc, Value cb) {
                             CBPushOp::create(b, loc, cb,
                                              /*num_tiles=*/IntegerAttr{});
                           });
 
-    insertMissingReleases(operations.waits, operations.pops, erased, builder,
+    insertMissingReleases(operations.waits, operations.consumerProtocolReleases,
+                          erased, builder,
                           [](OpBuilder &b, Location loc, Value cb) {
                             CBPopOp::create(b, loc, cb,
                                             /*num_tiles=*/IntegerAttr{});
