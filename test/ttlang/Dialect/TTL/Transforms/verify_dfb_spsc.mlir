@@ -211,6 +211,57 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
+// Two consumer kernels on the same worker core may wait on one DFB when each
+// executes on a different logical device.
+// CHECK-LABEL: func.func @consumer_device_0
+// CHECK-LABEL: func.func @consumer_device_1
+#device_domain = #ttl.device_domain<
+    components = <name = "device", extent = [2]>>
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @producer_all_devices()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 22 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %slot = ttl.cb_reserve %cb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    func.return
+  }
+
+  func.func @consumer_device_0()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 22 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %is_device_0 = ttl.is_device <coordinates = [0]>
+        in #device_domain : i1
+    scf.if %is_device_0 {
+      %view = ttl.cb_wait %cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_pop %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    }
+    func.return
+  }
+
+  func.func @consumer_device_1()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 22 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %is_device_1 = ttl.is_device <coordinates = [1]>
+        in #device_domain : i1
+    scf.if %is_device_1 {
+      %view = ttl.cb_wait %cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_pop %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    }
+    func.return
+  }
+}
+
+// -----
+
 // Two logical DFBs may share a physical index when each remains SPSC.
 // CHECK-LABEL: func.func @first_reused_producer
 // CHECK-LABEL: func.func @first_reused_consumer
