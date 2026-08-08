@@ -1158,14 +1158,15 @@ def _get_block_scalar_type(block):
 
 def _as_index_values(block, coords):
     context = block.type.context
+    index_type = IndexType.get(context)
     index_values = []
     for coord in coords:
         if isinstance(coord, int):
-            index_values.append(arith.ConstantOp(IndexType.get(context), coord))
+            index_values.append(arith.ConstantOp(index_type, coord))
         elif hasattr(coord, "type") and isinstance(coord.type, IndexType):
             index_values.append(coord)
         else:
-            index_values.append(arith.IndexCastOp(IndexType.get(context), coord))
+            index_values.append(arith.IndexCastOp(index_type, coord))
     return index_values
 
 
