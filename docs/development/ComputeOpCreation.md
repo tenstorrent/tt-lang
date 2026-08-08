@@ -328,10 +328,11 @@ result = normalized * gamma  // optional
 
 Recognition occurs during immutable candidate analysis. The resulting
 `RowNormalizationPlan` records every absorbed operation and its operands, the
-input and optional gamma values, scalar attributes, row tile count, effective
-DST capacity, and gamma mode. Application verifies the recorded operands and
-emits one `ttl.tile_row_normalization_block`; it does not repeat recognition or
-legality analysis.
+input and optional gamma values, scalar attributes, row tile count, and gamma
+mode. Application verifies the recorded operands and emits one
+`ttl.tile_row_normalization_block`; it does not repeat recognition or legality
+analysis. Capacity is checked during planning and revalidated before compute
+lowering.
 
 The schedule is selected only when all of these conditions hold:
 
