@@ -654,6 +654,11 @@ struct TTLAssignDSTPass : public impl::TTLAssignDSTBase<TTLAssignDSTPass> {
     }
 
     funcOp.walk([&](ComputeOp computeOp) {
+      // This block schedule owns a fixed contiguous DST layout. Its complete
+      // capacity check and assignment occur in LowerRowNormalizationCompute.
+      if (computeOp.containsOp<TileRowNormalizationBlockOp>()) {
+        return;
+      }
       Block *body = &computeOp.getRegion().front();
 
       std::uint32_t capacity = dstCapacity;
