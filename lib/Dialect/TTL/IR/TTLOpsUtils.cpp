@@ -315,6 +315,14 @@ getDefaultTileExecutionInfo(Operation *operation,
     }
     return info;
   }
+  if (auto normalization = dyn_cast<TileRowNormalizationBlockOp>(operation)) {
+    info.primitive = TilePrimitive::Reduce;
+    info.operandRoutes[0] = TileOperandRoute::DataflowBuffer;
+    if (normalization.getHasGamma()) {
+      info.operandRoutes[1] = TileOperandRoute::DataflowBuffer;
+    }
+    return info;
+  }
   if (isa<TileTransposeOp>(operation)) {
     info.primitive = TilePrimitive::Transpose;
     info.operandRoutes[0] = TileOperandRoute::DataflowBuffer;
