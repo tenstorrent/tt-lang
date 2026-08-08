@@ -56,6 +56,8 @@ else:
     from ttl.ttl import (
         operation,
         DFB,
+        Kernel,
+        KernelKind,
         compute,
         datamovement,
         Program,
@@ -90,6 +92,8 @@ else:
         "build_info",
         "operation",
         "DFB",
+        "Kernel",
+        "KernelKind",
         "compute",
         "datamovement",
         "Program",

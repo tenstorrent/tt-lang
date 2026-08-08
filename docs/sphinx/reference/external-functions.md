@@ -1,0 +1,153 @@
+# External Functions
+
+`ttl.call_extern_func` invokes a void C++ function declared in a custom header.
+It supports static template arguments, runtime function arguments, custom
+include directories, and portable logical-kernel selection.
+
+```python
+ttl.call_extern_func(
+    header,
+    callee,
+    *,
+    template_args=None,
+    func_args=None,
+    include_paths=None,
+    kernel=None,
+)
+```
+
+`header` and `callee` are compile-time strings. `template_args`, `func_args`,
+and `include_paths` preserve source order. External functions currently return
+no value, and the compiler does not validate the C++ signature.
+
+## Logical-kernel selection
+
+A unified `@ttl.operation` assigns an external call to one or more logical
+kernels with `kernel=`. `KernelKind.COMPUTE` and
+`KernelKind.DATA_MOVEMENT` select the compiler-owned canonical kernel of that
+kind.
+
+```python
+@ttl.operation(grid=(1, 1))
+def compute_external(inp):
+    ttl.call_extern_func(
+        HEADER,
+        "compute_entry",
+        func_args=[ttl.raw_addr(inp)],
+        kernel=ttl.KernelKind.COMPUTE,
+    )
+```
+
+An operation-local `Kernel` distinguishes multiple kernels with the same
+kind. A `Kernel` declaration is a static top-level operation resource.
+
+```python
+@ttl.operation(grid=(1, 1))
+def selected_external(inp):
+    reader = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+
+    ttl.call_extern_func(
+        HEADER,
+        "reader_entry",
+        func_args=[inp],
+        kernel=reader,
+    )
+    ttl.call_extern_func(
+        HEADER,
+        "shared_entry",
+        kernel=(ttl.KernelKind.COMPUTE, reader),
+    )
+```
+
+An external call accepts one selector or a nonempty tuple of distinct
+selectors. A tuple emits the call once in every selected logical kernel. A
+call may omit `kernel=` when its enclosing callback already determines one
+logical kernel. A top-level opaque call without a selector is invalid because
+the compiler cannot infer placement from C++ code.
+
+The target backend assigns logical kernels to its supported kernel resources.
+Compilation fails when an operation requests more kernels of a kind than the
+target supports.
+
+## Template arguments
+
+`template_args` accepts compile-time values and explicit DFB wrappers.
+
+| Python argument | Generated C++ argument |
+| --- | --- |
+| `int` | Signed integer constant |
+| `bool` | Boolean constant |
+| `float` | Unsigned binary32 bit-pattern constant |
+| `ttl.dfb_descriptor(dfb)` | `ttlang::DFBDescriptor<index, pages_per_block, block_count, page_size>` type |
+| `ttl.get_dfb_id(dfb)` | Physical DFB index constant |
+
+A bare DFB is invalid in `template_args`. `ttl.dfb_descriptor` supplies typed
+allocation metadata. `ttl.get_dfb_id` supplies only an integer index.
+
+```python
+ttl.call_extern_func(
+    HEADER,
+    "external_copy",
+    template_args=[
+        ttl.dfb_descriptor(source_dfb),
+        ttl.dfb_descriptor(destination_dfb),
+        4,
+        False,
+    ],
+    kernel=ttl.KernelKind.DATA_MOVEMENT,
+)
+```
+
+## Function arguments
+
+`func_args` accepts lowered scalar values, DFBs, base tensors, and raw tensor
+addresses.
+
+| Python argument | Generated C++ argument | Restrictions |
+| --- | --- | --- |
+| Scalar value | Scalar parameter | Uses the kernel runtime-argument convention. |
+| DFB | Physical DFB index parameter | Declares a direct dependency on that DFB. |
+| Base tensor | `TensorAccessor` parameter | Supported in data-movement kernels for tiled BF16 and FP32 tensors. |
+| `ttl.raw_addr(tensor)` | `uint32_t` buffer address | Supported in compute and data-movement kernels. |
+
+Tensor slices, views, and computed tensor values are not valid external
+arguments. `ttl.raw_addr` provides no layout, view offset, page size, alignment,
+or bounds metadata.
+
+When `ttl.get_dfb_id(dfb)` identifies storage accessed by the external
+function, the same DFB must appear as a direct dependency through `func_args`
+or `ttl.dfb_descriptor(dfb)`.
+
+## Include directories
+
+`include_paths` contains compile-time directory strings added to external
+header lookup. The compiler emits the requested header before the call.
+
+```python
+ttl.call_extern_func(
+    "kernels/custom_entry.hpp",
+    "custom_entry",
+    include_paths=[PROJECT_INCLUDE_DIR],
+    kernel=ttl.KernelKind.COMPUTE,
+)
+```
+
+## DFB synchronization ownership
+
+External C++ must complete its resource accesses before returning. The compiler
+does not infer reserve, wait, push, or pop operations from the C++ body.
+
+`TensorBlock.push` and `TensorBlock.pop` accept one `kernel=` selector when a
+DFB transaction has no other use from which ownership can be inferred.
+
+```python
+unused = input_dfb.wait()
+unused.pop(kernel=ttl.KernelKind.DATA_MOVEMENT)
+```
+
+`reserve` and `wait` do not accept `kernel=`. Their logical-kernel ownership is
+derived from the acquired block's uses and release. An explicit release
+selector that conflicts with inferred ownership is invalid.
+
+The selector affects unified-operation splitting only. Generated IR and C++
+retain the ordinary external call and argument-free DFB release operations.
