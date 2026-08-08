@@ -1194,6 +1194,21 @@ class TestHardwareKeywordsIgnored:
         )
         kernel(a, b)
 
+    @pytest.mark.parametrize("math_fidelity", ["LoFi", "HiFi2", "HiFi3", "HiFi4"])
+    def test_math_fidelity_accepted(self, math_fidelity: str) -> None:
+        """Supported math fidelities do not raise."""
+        a = ttnn.from_torch(torch.zeros(32, 32))
+        b = ttnn.from_torch(torch.zeros(32, 32))
+        kernel = _make_passthrough_kernel(
+            ttl.operation(grid=(1, 1), math_fidelity=math_fidelity)
+        )
+        kernel(a, b)
+
+    def test_invalid_math_fidelity_rejected(self) -> None:
+        """Unsupported math fidelity raises before execution."""
+        with pytest.raises(ValueError, match="math_fidelity must be one of"):
+            ttl.operation(grid=(1, 1), math_fidelity="HiFi5")
+
     def test_multiple_hardware_kwargs_accepted(self) -> None:
         """Multiple hardware kwargs together do not raise."""
         a = ttnn.from_torch(torch.zeros(32, 32))
@@ -1203,6 +1218,7 @@ class TestHardwareKeywordsIgnored:
                 grid=(1, 1),
                 fp32_dest_acc_en=True,
                 dst_full_sync_en=False,
+                math_fidelity="HiFi4",
             )
         )
         kernel(a, b)

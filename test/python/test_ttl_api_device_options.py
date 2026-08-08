@@ -176,3 +176,23 @@ class TestKernelI32ArrayAttr:
                 ttl_api._get_kernel_i32_array_attr(
                     module, "compute_kernel", "ttl.unpack_to_dest_fp32"
                 )
+
+
+class TestMathFidelity:
+    @pytest.mark.parametrize("math_fidelity", ttl_api.SUPPORTED_MATH_FIDELITIES)
+    def test_maps_supported_value(self, math_fidelity):
+        fidelity_value = object()
+        ttnn_module = mock.Mock()
+        setattr(ttnn_module.MathFidelity, math_fidelity, fidelity_value)
+        config = mock.Mock()
+
+        ttl_api._set_math_fidelity(config, ttnn_module, math_fidelity)
+
+        assert config.math_fidelity is fidelity_value
+
+    def test_missing_ttnn_value_is_rejected(self):
+        ttnn_module = mock.Mock()
+        del ttnn_module.MathFidelity.HiFi4
+
+        with pytest.raises(RuntimeError, match="does not provide MathFidelity.HiFi4"):
+            ttl_api._set_math_fidelity(mock.Mock(), ttnn_module, "HiFi4")

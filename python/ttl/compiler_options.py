@@ -189,7 +189,8 @@ class CompilerOptions:
     """Compiler pipeline options for kernel compilation.
 
     Frozen so it's hashable and usable directly as a cache key component.
-    Does NOT include TTNN compute config (fp32_dest_acc_en, dst_full_sync_en).
+    Does NOT include TTNN compute config (fp32_dest_acc_en, dst_full_sync_en,
+    math_fidelity).
 
     Priority ordering (highest wins)::
 

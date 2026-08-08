@@ -50,16 +50,22 @@ my_kernel(tensor_a, tensor_b, options="--no-ttl-fpu-binary-ops")
 
 ## Compute Configuration
 
-These two parameters are set on the `@ttl.operation` decorator (not via command-line
+These parameters are set on the `@ttl.operation` decorator (not via command-line
 flags) and control the TTNN compute kernel hardware configuration:
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
 | `fp32_dest_acc_en` | `bool` or `None` | `None` | Constrain the Wormhole B0/Blackhole DST register-file element width: `true` selects 32-bit elements and `false` selects 16-bit elements. When `None`, resolve the width from target capabilities and tile-operation requirements. |
 | `dst_full_sync_en` | `bool` or `None` | `None` | Enable full DST synchronization (single-buffering mode). Doubles DST capacity (32-bit elements: 8, 16-bit elements: 16) at the cost of a full sync between math and pack threads. |
+| `math_fidelity` | `str` or `None` | `None` | Set the compute math fidelity to `LoFi`, `HiFi2`, `HiFi3`, or `HiFi4`. When `None`, retain the TTNN default. |
 
 ```python
-@ttl.operation(grid=(2, 2), fp32_dest_acc_en=True, dst_full_sync_en=False)
+@ttl.operation(
+    grid=(2, 2),
+    fp32_dest_acc_en=True,
+    dst_full_sync_en=False,
+    math_fidelity="HiFi4",
+)
 def my_kernel(a, b): ...
 ```
 

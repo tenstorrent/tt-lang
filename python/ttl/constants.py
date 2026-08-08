@@ -6,6 +6,7 @@
 
 DEFAULT_TILE_SIZE = 32
 SUPPORTED_MEMORY_SPACES = frozenset(["L1", "DRAM"])
+SUPPORTED_MATH_FIDELITIES = ("LoFi", "HiFi2", "HiFi3", "HiFi4")
 
 # Per-core static CB region budget (bytes) when IR has no system descriptor:
 # Wormhole and Blackhole total L1 (1464 KiB) minus reserved kernel space (128 KiB)

@@ -86,7 +86,7 @@ from .dataflow_buffer import (
     get_cb_count,
 )
 from .pipe import Pipe, PipeNet
-from .constants import SUPPORTED_MEMORY_SPACES
+from .constants import SUPPORTED_MATH_FIDELITIES, SUPPORTED_MEMORY_SPACES
 from .diagnostics import (
     TTLangCompileError,
     find_variable_assignment,
@@ -161,6 +161,7 @@ def _make_cache_key(
     resolved_grid: Union[tuple, List[int]],
     fp32_dest_acc_en: Optional[bool],
     dst_full_sync_en: Optional[bool],
+    math_fidelity: Optional[str],
     target_arch: Optional[str],
     compiler_options: CompilerOptions = CompilerOptions(),
 ) -> tuple:
@@ -188,6 +189,7 @@ def _make_cache_key(
         grid_key,
         fp32_dest_acc_en,
         dst_full_sync_en,
+        math_fidelity,
         target_arch,
         compiler_options,
     )
@@ -776,6 +778,15 @@ def _set_unpack_to_dest_fp32(config, ttnn_mod, cb_indices) -> None:
         )
 
 
+def _set_math_fidelity(config, ttnn_mod, math_fidelity: str) -> None:
+    try:
+        config.math_fidelity = getattr(ttnn_mod.MathFidelity, math_fidelity)
+    except AttributeError as error:
+        raise RuntimeError(
+            f"TTNN does not provide MathFidelity.{math_fidelity}"
+        ) from error
+
+
 def _get_kernel_bool_attr(module, kernel_name: str, attr_name: str) -> bool:
     """Read a boolean func.func attribute from a compiled kernel."""
     operation = _lookup_kernel_func_op(module, kernel_name)
@@ -902,6 +913,7 @@ def _compile_ttnn_kernel(
     program_hash=None,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
+    math_fidelity: Optional[str] = None,
     verbose=True,
     source_lines=None,
     all_source_lines=None,
@@ -1061,6 +1073,8 @@ def _compile_ttnn_kernel(
 
         if thread_type == "compute":
             config = ttnn.ComputeConfigDescriptor()
+            if math_fidelity is not None:
+                _set_math_fidelity(config, ttnn, math_fidelity)
             if fp32_dest_acc_en is not None:
                 config.fp32_dest_acc_en = fp32_dest_acc_en
             elif kernel_config_attrs[name]["fp32_dest_acc_en"]:
@@ -1713,6 +1727,7 @@ def _compile_kernel(
     program_hash: int,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
+    math_fidelity: Optional[str] = None,
     target_arch: Optional[str] = None,
     compiler_options: CompilerOptions = CompilerOptions(),
 ) -> Optional[CompiledTTNNKernel]:
@@ -1732,6 +1747,7 @@ def _compile_kernel(
         program_hash: Hash for tt-metal program cache
         fp32_dest_acc_en: Optional override for fp32_dest_acc_en
         dst_full_sync_en: Optional override for dst_full_sync_en
+        math_fidelity: Optional TTNN compute math fidelity
         target_arch: Optional TT device architecture for target-specific lowering
         compiler_options: Compiler pipeline options
 
@@ -1837,6 +1853,7 @@ def _compile_kernel(
         target_arch=target_arch,
         fp32_dest_acc_en=fp32_dest_acc_en,
         dst_full_sync_en=dst_full_sync_en,
+        math_fidelity=math_fidelity,
         compiler_options=compiler_options,
         program_hash=program_hash,
         l1_budget_override=l1_budget_override,
@@ -1855,6 +1872,7 @@ def _lower_program_to_kernel(
     target_arch,
     fp32_dest_acc_en,
     dst_full_sync_en,
+    math_fidelity,
     compiler_options,
     program_hash,
     l1_budget_override,
@@ -2188,6 +2206,7 @@ def _lower_program_to_kernel(
             program_hash=program_hash,
             fp32_dest_acc_en=fp32_dest_acc_en,
             dst_full_sync_en=dst_full_sync_en,
+            math_fidelity=math_fidelity,
             source_lines=profile_source_lines,
             all_source_lines=all_source_lines,
             kernel_line_offsets=kernel_line_offsets,
@@ -2233,6 +2252,7 @@ def _make_operation_wrapper(
     grid,
     fp32_dest_acc_en: Optional[bool],
     dst_full_sync_en: Optional[bool],
+    math_fidelity: Optional[str],
     options: Optional[str],
     prepare_call: Optional[Callable] = None,
 ) -> Callable:
@@ -2264,6 +2284,7 @@ def _make_operation_wrapper(
             resolved_grid=resolved_grid,
             fp32_dest_acc_en=fp32_dest_acc_en,
             dst_full_sync_en=dst_full_sync_en,
+            math_fidelity=math_fidelity,
             target_arch=target_arch,
             compiler_options=compiler_options,
         )
@@ -2320,7 +2341,9 @@ def _make_operation_wrapper(
     return _wrapper
 
 
-def _validate_operation_options(num_outs, memory_space, tiled) -> None:
+def _validate_operation_options(
+    num_outs, memory_space, tiled, math_fidelity: Optional[str]
+) -> None:
     if num_outs != 1:
         raise ValueError(f"num_outs must be 1, got {num_outs}")
     if memory_space not in SUPPORTED_MEMORY_SPACES:
@@ -2330,6 +2353,9 @@ def _validate_operation_options(num_outs, memory_space, tiled) -> None:
         )
     if not isinstance(tiled, bool):
         raise TypeError(f"tiled must be a boolean, got {type(tiled).__name__}")
+    if math_fidelity is not None and math_fidelity not in SUPPORTED_MATH_FIDELITIES:
+        supported = ", ".join(repr(value) for value in SUPPORTED_MATH_FIDELITIES)
+        raise ValueError(f"math_fidelity must be one of {supported}")
 
 
 def pykernel_gen(
@@ -2341,6 +2367,7 @@ def pykernel_gen(
     tiled: bool = True,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
+    math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
     _prepare_call: Optional[Callable] = None,
 ) -> Callable:
@@ -2360,17 +2387,18 @@ def pykernel_gen(
         tiled: Whether to use tiled layout
         fp32_dest_acc_en: Optional override for fp32_dest_acc_en
         dst_full_sync_en: Optional override for dst_full_sync_en
+        math_fidelity: Optional TTNN compute math fidelity
         options: Compiler option string (e.g., "--no-ttl-maximize-dst")
 
     Returns:
         Decorated function that compiles and executes the kernel
 
     Raises:
-        AssertionError: If required parameters are missing or invalid
+        ValueError: If required parameters or compute configuration are invalid
     """
     if grid is None:
         raise ValueError("grid parameter is required")
-    _validate_operation_options(num_outs, memory_space, tiled)
+    _validate_operation_options(num_outs, memory_space, tiled, math_fidelity)
     if iterator_types is not None and indexing_maps is None:
         raise ValueError("indexing_maps must be set when iterator_types is set")
 
@@ -2414,6 +2442,7 @@ def pykernel_gen(
                 program_hash,
                 fp32_dest_acc_en=fp32_dest_acc_en,
                 dst_full_sync_en=dst_full_sync_en,
+                math_fidelity=math_fidelity,
                 target_arch=target_arch,
                 compiler_options=compiler_options,
             )
@@ -2424,6 +2453,7 @@ def pykernel_gen(
             grid=grid,
             fp32_dest_acc_en=fp32_dest_acc_en,
             dst_full_sync_en=dst_full_sync_en,
+            math_fidelity=math_fidelity,
             options=options,
             prepare_call=_prepare_call,
         )

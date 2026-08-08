@@ -91,6 +91,11 @@ kernel-wide DST and synchronization settings use three-state selections:
 Full-fp32 reduce and matmul settings are preferences. The FPU binary setting
 controls whether the FPU strategy is available.
 
+The operation-level `math_fidelity` selection is forwarded to every generated
+TTNN compute descriptor. It does not participate in joint resolution because
+it does not change the current tile-strategy, DST, or DFB compatibility
+relations.
+
 An explicit `ttl.unpack_to_dest_fp32` attribute specifies the exact set of
 dataflow buffer indices using `ComputeConfigDescriptor::unpack_to_dest_mode`.
 It is validated by intersecting the selected setting with every consumer's
@@ -217,7 +222,8 @@ extend the typed target queries with an allowed configuration relation. A new
 architecture adds its own query implementation and runtime translation; it
 does not inherit Gen1 behavior by default. Runtime names such as
 `fp32_dest_acc_en` and `ttl.unpack_to_dest_fp32` remain at the IR/runtime
-translation boundary.
+translation boundary. Operation-only settings without compiler compatibility
+relations, such as `math_fidelity`, remain runtime descriptor inputs.
 
 ### Adding an Architecture or Configuration API
 

@@ -6,6 +6,8 @@
 
 import itertools
 
+import pytest
+
 import ttl.ttl_api as ttl_api
 
 
@@ -130,6 +132,23 @@ def test_operation_cache_reuses_compiled_kernel_for_same_tensor_config(monkeypat
         (first_input, first_output),
         (second_input, second_output),
     ]
+
+
+def test_operation_propagates_math_fidelity(monkeypatch):
+    compile_calls = _install_recording_compile(monkeypatch)
+
+    @ttl_api.operation(grid=(1, 1), math_fidelity="HiFi3")
+    def copy_kernel(input_tensor, output_tensor):
+        pass
+
+    copy_kernel(_FakeTensor(), _FakeTensor())
+
+    assert compile_calls[0]["compile_options"]["math_fidelity"] == "HiFi3"
+
+
+def test_operation_rejects_invalid_math_fidelity():
+    with pytest.raises(ValueError, match="math_fidelity must be one of"):
+        ttl_api.operation(grid=(1, 1), math_fidelity="HiFi5")
 
 
 def test_operation_cache_reuses_kernel_across_allocation_capacities(monkeypatch):
