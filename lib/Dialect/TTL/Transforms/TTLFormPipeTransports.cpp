@@ -373,9 +373,11 @@ getTransportScratchBytes(const PipeTransportLoopCandidate &candidate,
   for (const PipeTransferNode *transfer : candidate.transfers) {
     auto sendOp = cast<PipeTransferSendOp>(transfer->sendOp);
     auto sourceType = cast<CircularBufferType>(sendOp.getSrc().getType());
+    std::string failureReason;
     FailureOr<uint64_t> sourceBlockBytes = getDFBAllocationSizeBytes(
         CircularBufferType::get(sourceType.getContext(), sourceType.getShape(),
-                                sourceType.getElementType(), 1));
+                                sourceType.getElementType(), 1),
+        failureReason);
     if (failed(sourceBlockBytes)) {
       return std::nullopt;
     }
@@ -458,8 +460,9 @@ evaluateGrouping(PipeTransportLoopCandidate &candidate, int64_t groupSize,
     auto resizedType =
         CircularBufferType::get(oldType.getContext(), oldType.getShape(),
                                 oldType.getElementType(), blockCount);
+    std::string failureReason;
     FailureOr<uint64_t> allocationBytes =
-        getDFBAllocationSizeBytes(resizedType);
+        getDFBAllocationSizeBytes(resizedType, failureReason);
     if (failed(allocationBytes)) {
       return std::nullopt;
     }
@@ -498,7 +501,9 @@ getGroupSizeUpperBound(PipeTransportLoopCandidate &candidate,
     auto oldType = cast<CircularBufferType>(dfbUse.dfb.getType());
     auto oneBlockType = CircularBufferType::get(
         oldType.getContext(), oldType.getShape(), oldType.getElementType(), 1);
-    FailureOr<uint64_t> bytesPerBlock = getDFBAllocationSizeBytes(oneBlockType);
+    std::string failureReason;
+    FailureOr<uint64_t> bytesPerBlock =
+        getDFBAllocationSizeBytes(oneBlockType, failureReason);
     if (failed(bytesPerBlock) || *bytesPerBlock == 0) {
       return std::nullopt;
     }

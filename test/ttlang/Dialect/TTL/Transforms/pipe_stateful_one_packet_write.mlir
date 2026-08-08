@@ -464,7 +464,7 @@ func.func @default_target_rejects_large_one_packet_write(
 // CHECK: scf.for
 // CHECK: ttkernel.noc_async_write_one_packet_with_state
 // CHECK-NOT: ttkernel.noc_async_write{{[ (]}}
-module attributes {ttl.target_arch = "blackhole"} {
+module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @blackhole_accepts_large_one_packet_write(
       %src: i32, %dst: i32, %x: index, %y: index, %noc: i8) {
     %c0 = arith.constant 0 : index

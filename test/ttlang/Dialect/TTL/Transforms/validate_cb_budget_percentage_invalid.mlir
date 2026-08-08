@@ -16,7 +16,7 @@ func.func @large_valid_allocation() {
 // must reject the unrepresentable size instead of accepting a wrapped zero.
 
 func.func @allocation_size_overflow() {
-  // expected-error @below {{DFB allocation size is not representable as uint64_t}}
+  // expected-error @below {{DFB allocation size is not representable}}
   %cb0 = ttl.bind_cb{cb_index = 0, block_count = 1} : !ttl.cb<[9007199254740992, 1], !ttcore.tile<32x32, bf16>, 1>
   func.return
 }

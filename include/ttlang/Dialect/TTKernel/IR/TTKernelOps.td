@@ -4947,8 +4947,10 @@ def TTKernel_GetDfbIdOp : TTKernel_Op<"get_dfb_id", [Pure]> {
     let assemblyFormat = "$dfb attr-dict `:` type($dfb)";
 }
 
+// A single variadic operand group has no segment boundaries and cannot use
+// AttrSizedOperandSegments.
 def TTKernel_OpaqueCallOp : TTKernel_Op<"opaque_call",
-    [MemoryEffects<[MemRead, MemWrite]>, AttrSizedOperandSegments,
+    [MemoryEffects<[MemRead, MemWrite]>,
      TTKernel_NocCommandStateUnknownOpTrait]> {
     let summary = "Call an external C/C++ function declared in a user header.";
     let description = [{
