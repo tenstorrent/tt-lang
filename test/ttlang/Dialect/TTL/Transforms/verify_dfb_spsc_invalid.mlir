@@ -70,6 +70,48 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
+// Logical-device specialization must retain an overlap when two consumer
+// kernels execute on the same worker core and logical device.
+
+#device_domain = #ttl.device_domain<
+    components = <name = "device", extent = [2]>>
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @consumer_device_0_compute()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    // expected-note @+1 {{dataflow buffer declared here}}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 7 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %is_device_0 = ttl.is_device <coordinates = [0]>
+        in #device_domain : i1
+    scf.if %is_device_0 {
+      // expected-error @below {{logical DFB 7 has multiple consumer kernels active on the same launched node}}
+      // expected-note @below {{example overlapping node: core_x=0, core_y=0, logical_device=}}
+      // expected-note @below {{tt-metal CBs are single-producer single-consumer; allocate one DFB per consumer}}
+      %view = ttl.cb_wait %cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    }
+    func.return
+  }
+
+  func.func @consumer_device_0_noc()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 7 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %is_device_0 = ttl.is_device <coordinates = [0]>
+        in #device_domain : i1
+    scf.if %is_device_0 {
+      // expected-note @below {{also waited on here}}
+      %view = ttl.cb_wait %cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    }
+    func.return
+  }
+}
+
+// -----
+
 // Unknown coord-dependent predicates are rejected when multiple consumers
 // participate because the verifier cannot prove their domains are disjoint.
 
