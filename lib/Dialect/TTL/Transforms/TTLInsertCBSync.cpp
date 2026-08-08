@@ -33,12 +33,18 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-template <typename CreateReleaseFn>
-static void insertMissingReleases(ArrayRef<Operation *> acquires,
-                                  ArrayRef<Operation *> releases,
-                                  DenseSet<Operation *> &erased,
-                                  OpBuilder &builder,
-                                  CreateReleaseFn createRelease) {
+struct MissingReleasePlan {
+  Operation *acquire = nullptr;
+  Operation *insertionAfter = nullptr;
+  Value dfb;
+  SmallVector<Operation *> nestedConcreteReleases;
+};
+
+template <typename ConcreteReleaseOp>
+static PlanningResult<SmallVector<MissingReleasePlan>>
+planMissingReleases(ArrayRef<Operation *> acquires,
+                    ArrayRef<Operation *> releases, StringRef effectName) {
+  SmallVector<MissingReleasePlan> plans;
   for (Operation *acquire : acquires) {
     DFBAcquireInterval interval = makeDFBAcquireInterval(acquire, acquires);
 
@@ -47,19 +53,42 @@ static void insertMissingReleases(ArrayRef<Operation *> acquires,
     // acquire, so pass the final use into the release search.
     Operation *last = findLastDFBAcquireOwnedUse(interval);
     DFBReleaseSearch releaseSearch =
-        findOwnedDFBReleases(interval, last, releases, &erased);
+        findOwnedDFBReleases(interval, last, releases);
 
     if (releaseSearch.hasSameLevelRelease()) {
       continue;
     }
 
     for (Operation *nestedRelease : releaseSearch.nestedReleases) {
-      erased.insert(nestedRelease);
-      nestedRelease->erase();
+      if (!isa<ConcreteReleaseOp>(nestedRelease)) {
+        return PlanningResult<SmallVector<MissingReleasePlan>>::invalidIR(
+            nestedRelease,
+            ("external DFB " + effectName +
+             " effect must be in the same block as its acquisition")
+                .str());
+      }
     }
 
-    builder.setInsertionPointAfter(last);
-    createRelease(builder, acquire->getLoc(), interval.dfb);
+    plans.push_back(
+        {acquire, last, interval.dfb, std::move(releaseSearch.nestedReleases)});
+  }
+  return PlanningResult<SmallVector<MissingReleasePlan>>::planned(
+      std::move(plans));
+}
+
+template <typename CreateReleaseFn>
+static void applyMissingReleases(ArrayRef<MissingReleasePlan> plans,
+                                 DenseSet<Operation *> &erased,
+                                 OpBuilder &builder,
+                                 CreateReleaseFn createRelease) {
+  for (const MissingReleasePlan &plan : plans) {
+    for (Operation *nestedRelease : plan.nestedConcreteReleases) {
+      if (erased.insert(nestedRelease).second) {
+        nestedRelease->erase();
+      }
+    }
+    builder.setInsertionPointAfter(plan.insertionAfter);
+    createRelease(builder, plan.acquire->getLoc(), plan.dfb);
   }
 }
 
@@ -69,27 +98,39 @@ struct TTLInsertCBSyncPass
     func::FuncOp func = getOperation();
 
     DFBAcquireReleaseOperations operations = collectDFBAcquireReleaseOps(func);
+    auto producerPlan = planMissingReleases<CBPushOp>(
+        operations.reserves, operations.producerProtocolReleases, "push");
+    if (producerPlan.isInvalidIR()) {
+      const PlanningDiagnostic &diagnostic = producerPlan.getInvalidIR();
+      diagnostic.operation->emitError(diagnostic.message);
+      signalPassFailure();
+      return;
+    }
+    auto consumerPlan = planMissingReleases<CBPopOp>(
+        operations.waits, operations.consumerProtocolReleases, "pop");
+    if (consumerPlan.isInvalidIR()) {
+      const PlanningDiagnostic &diagnostic = consumerPlan.getInvalidIR();
+      diagnostic.operation->emitError(diagnostic.message);
+      signalPassFailure();
+      return;
+    }
 
     OpBuilder builder(func.getContext());
 
-    // Track erased ops so later iterations skip them before any accessor
-    // call. The set holds raw pointers to freed ops; release ownership search
-    // must check the set before touching any op wrapper method.
+    // One nested release may satisfy multiple planned acquisition intervals.
     DenseSet<Operation *> erased;
 
-    insertMissingReleases(operations.reserves,
-                          operations.producerProtocolReleases, erased, builder,
-                          [](OpBuilder &b, Location loc, Value cb) {
-                            CBPushOp::create(b, loc, cb,
-                                             /*num_tiles=*/IntegerAttr{});
-                          });
-
-    insertMissingReleases(operations.waits, operations.consumerProtocolReleases,
-                          erased, builder,
-                          [](OpBuilder &b, Location loc, Value cb) {
-                            CBPopOp::create(b, loc, cb,
+    applyMissingReleases(producerPlan.getPlan(), erased, builder,
+                         [](OpBuilder &builder, Location location, Value dfb) {
+                           CBPushOp::create(builder, location, dfb,
                                             /*num_tiles=*/IntegerAttr{});
-                          });
+                         });
+
+    applyMissingReleases(consumerPlan.getPlan(), erased, builder,
+                         [](OpBuilder &builder, Location location, Value dfb) {
+                           CBPopOp::create(builder, location, dfb,
+                                           /*num_tiles=*/IntegerAttr{});
+                         });
   }
 };
 

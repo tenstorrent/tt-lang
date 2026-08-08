@@ -85,6 +85,33 @@ func.func @external_release()
 
 // -----
 
+// Unknown access invalidates user-managed storage but cannot name a
+// compiler-created intermediate that is absent from the external contract.
+// CHECK-LABEL: DFB value lifetimes @unknown_user_access
+// CHECK: A0 consumer tiles=1
+// CHECK-NEXT: A1 consumer tiles=1
+// CHECK: ttl.signpost A0=may-be-released
+// CHECK-NEXT: {{.*}}ttl.signpost A1=available
+func.func @unknown_user_access()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %user = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %intermediate = ttl.bind_cb {cb_index = 1, block_count = 2}
+      {ttl.compiler_allocated}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %user_input = ttl.cb_wait %user
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %intermediate_input = ttl.cb_wait %intermediate
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.opaque_call "unknown" () {header = "effects.hpp", unknown_dfb_access} : () -> ()
+  ttl.signpost "after unknown access"
+  return
+}
+
+// -----
+
 // A tile-counted release can consume several earlier acquisitions without
 // releasing a later acquisition on the same DFB.
 // CHECK-LABEL: DFB value lifetimes @multi_acquisition_release
