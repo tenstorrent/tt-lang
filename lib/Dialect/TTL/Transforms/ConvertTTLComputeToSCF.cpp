@@ -637,6 +637,42 @@ unrollTileLoopNestAndAssignDST(SmallVector<scf::ForOp> &nest) {
   return success();
 }
 
+static LogicalResult validateRowNormalizationComputes(func::FuncOp func) {
+  SmallVector<ComputeOp> rowNormalizationComputes;
+  func.walk([&](ComputeOp computeOp) {
+    if (computeOp.containsOp<TileRowNormalizationBlockOp>()) {
+      rowNormalizationComputes.push_back(computeOp);
+    }
+  });
+  if (rowNormalizationComputes.empty()) {
+    return success();
+  }
+
+  std::string targetFailureReason;
+  FailureOr<std::unique_ptr<ComputeTargetEnvironment>> target =
+      ComputeTargetEnvironment::get(func, targetFailureReason);
+  if (failed(target)) {
+    func.emitOpError(targetFailureReason);
+    return failure();
+  }
+
+  bool hasInvalidCompute = false;
+  for (ComputeOp computeOp : rowNormalizationComputes) {
+    TileRowNormalizationBlockOp block =
+        *computeOp.getBody().getOps<TileRowNormalizationBlockOp>().begin();
+    std::string capabilityFailureReason;
+    if (failed((*target)->validateOperation(block, capabilityFailureReason))) {
+      block.emitOpError(capabilityFailureReason);
+      hasInvalidCompute = true;
+      continue;
+    }
+    if (failed(verifyRowNormalizationCompute(computeOp))) {
+      hasInvalidCompute = true;
+    }
+  }
+  return failure(hasInvalidCompute);
+}
+
 struct TTLLowerToLoopsPass
     : public tt::ttl::impl::TTLLowerToLoopsBase<TTLLowerToLoopsPass> {
   using tt::ttl::impl::TTLLowerToLoopsBase<
@@ -665,33 +701,7 @@ struct TTLLowerToLoopsPass
         return signalPassFailure();
       }
     }
-    bool invalidRowNormalization = false;
-    std::string targetFailureReason;
-    FailureOr<std::unique_ptr<ComputeTargetEnvironment>> target =
-        ComputeTargetEnvironment::get(func, targetFailureReason);
-    if (failed(target)) {
-      func.emitOpError(targetFailureReason);
-      return signalPassFailure();
-    }
-    func.walk([&](ComputeOp computeOp) {
-      TileRowNormalizationBlockOp block;
-      for (TileRowNormalizationBlockOp candidate :
-           computeOp.getBody().getOps<TileRowNormalizationBlockOp>()) {
-        block = candidate;
-        break;
-      }
-      if (block) {
-        std::string capabilityFailureReason;
-        if (failed(
-                (*target)->validateOperation(block, capabilityFailureReason))) {
-          block.emitOpError(capabilityFailureReason);
-          invalidRowNormalization = true;
-        } else if (failed(verifyRowNormalizationCompute(computeOp))) {
-          invalidRowNormalization = true;
-        }
-      }
-    });
-    if (invalidRowNormalization) {
+    if (failed(validateRowNormalizationComputes(func))) {
       return signalPassFailure();
     }
 
