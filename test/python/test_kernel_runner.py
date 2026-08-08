@@ -4,13 +4,17 @@
 
 """Python-only tests for ttl.kernel_runner resource allocation helpers."""
 
+from collections import defaultdict
 from dataclasses import FrozenInstanceError
+from typing import NamedTuple
+import weakref
 
 import pytest
 
 from ttl import (
     CoreRuntimeArgs,
     KernelDefine,
+    Kernel,
     KernelKind,
     KernelRuntimeResources,
     ProgramRuntimeResources,
@@ -62,20 +66,62 @@ class _FakeTensorWithoutDevice:
 
 
 class _FakeGridSize:
-    x = 1
-    y = 1
+    def __init__(self, x, y):
+        self.x = x
+        self.y = y
 
 
 class _FakeBoundingBox:
-    @staticmethod
-    def grid_size():
-        return _FakeGridSize()
+    def __init__(self, ranges):
+        self._ranges = ranges
+
+    def grid_size(self):
+        max_x = max(core_range.end.x for core_range in self._ranges)
+        max_y = max(core_range.end.y for core_range in self._ranges)
+        return _FakeGridSize(max_x + 1, max_y + 1)
+
+
+class _FakeCoreCoord(NamedTuple):
+    x: int
+    y: int
+
+
+class _FakeCoreRange(NamedTuple):
+    start: _FakeCoreCoord
+    end: _FakeCoreCoord
 
 
 class _FakeCoreRanges:
-    @staticmethod
-    def bounding_box():
-        return _FakeBoundingBox()
+    def __init__(self, ranges=(((0, 0), (0, 0)),)):
+        parsed_ranges = []
+        for core_range in ranges:
+            if len(core_range) == 4:
+                start_x, start_y, end_x, end_y = core_range
+                start = _FakeCoreCoord(start_x, start_y)
+                end = _FakeCoreCoord(end_x, end_y)
+            else:
+                start, end = core_range
+                start = _FakeCoreCoord(*start)
+                end = _FakeCoreCoord(*end)
+            parsed_ranges.append(_FakeCoreRange(start, end))
+        self._ranges = tuple(parsed_ranges)
+
+    def bounding_box(self):
+        return _FakeBoundingBox(self._ranges)
+
+    def ranges(self):
+        return self._ranges
+
+
+class _CopyingRuntimeArgumentRow(defaultdict):
+    def __init__(self):
+        super().__init__(list)
+
+    def __getitem__(self, key):
+        return list(super().__getitem__(key))
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, list(value))
 
 
 class _FakeTTNN:
@@ -100,10 +146,17 @@ class _FakeTTNN:
             self.custom_program_hash = None
 
     class SemaphoreDescriptor:
-        def __init__(self, semaphore_id, core_ranges, initial_value):
+        def __init__(
+            self,
+            semaphore_id,
+            core_ranges,
+            initial_value,
+            core_type="WORKER",
+        ):
             self.id = semaphore_id
             self.core_ranges = core_ranges
             self.initial_value = initial_value
+            self.core_type = core_type
 
     class KernelDescriptor:
         def __init__(
@@ -114,6 +167,8 @@ class _FakeTTNN:
             common_runtime_args,
             config,
             compiler_include_paths=None,
+            defines=None,
+            runtime_args=None,
         ):
             self.kernel_source = kernel_source
             self.core_ranges = core_ranges
@@ -121,6 +176,10 @@ class _FakeTTNN:
             self.common_runtime_args = common_runtime_args
             self.config = config
             self.compiler_include_paths = compiler_include_paths or []
+            self.defines = defines or []
+            self.runtime_args = defaultdict(_CopyingRuntimeArgumentRow)
+            for core, values in runtime_args or []:
+                self.runtime_args[core.x][core.y] = values
 
     class Tile:
         def __init__(self, tile_shape):
@@ -233,6 +292,874 @@ def test_runtime_resource_records_are_frozen_with_tuple_defaults():
     assert ProgramRuntimeResources().lifetimes == ()
     with pytest.raises(FrozenInstanceError):
         resources.lifetimes = ()
+
+
+def _kernel_spec(logical_kernel, core_ranges=None):
+    return kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="compute",
+        tensor_indices=[],
+        config=object(),
+        core_ranges=core_ranges,
+        logical_kernel=logical_kernel,
+    )
+
+
+def _plan_runtime_resources(resources, kernel_specs, core_ranges=None, first_free_id=0):
+    return kernel_runner.plan_program_runtime_resources(
+        operation_name="planned_operation",
+        resources=resources,
+        kernel_specs=kernel_specs,
+        operation_core_ranges=core_ranges or _FakeCoreRanges((((0, 0), (1, 1)),)),
+        first_free_semaphore_id=first_free_id,
+    )
+
+
+class _Indexable:
+    def __init__(self, value):
+        self.value = value
+
+    def __index__(self):
+        return self.value
+
+
+def test_plan_runtime_resources_normalizes_canonical_kernel_records():
+    owner = object()
+    resources = ProgramRuntimeResources(
+        kernel_resources=(
+            KernelRuntimeResources(
+                kernel=KernelKind.COMPUTE,
+                runtime_args=(
+                    CoreRuntimeArgs(_FakeCoreCoord(1, 1), (_Indexable(5), -2)),
+                    CoreRuntimeArgs(_FakeCoreCoord(0, 0), (7,)),
+                ),
+                defines=(KernelDefine("MODE", "test"),),
+            ),
+        ),
+        lifetimes=(owner,),
+    )
+
+    plan = _plan_runtime_resources(resources, [_kernel_spec(KernelKind.COMPUTE)])
+
+    assert plan.lifetimes == (owner,)
+    assert plan.semaphore_descriptors == ()
+    assert len(plan.kernel_descriptors) == 1
+    descriptor_plan = plan.kernel_descriptors[0]
+    assert descriptor_plan.logical_kernel == kernel_runner.LogicalKernelId(
+        KernelKind.COMPUTE, None, None, None
+    )
+    assert descriptor_plan.coordinates == ((0, 0), (1, 0), (0, 1), (1, 1))
+    assert [runtime_arg.coordinate for runtime_arg in descriptor_plan.runtime_args] == [
+        (0, 0),
+        (1, 1),
+    ]
+    assert [runtime_arg.values for runtime_arg in descriptor_plan.runtime_args] == [
+        (7,),
+        (5, -2),
+    ]
+    assert descriptor_plan.defines == (("MODE", "test"),)
+    with pytest.raises(FrozenInstanceError):
+        plan.lifetimes = ()
+
+
+def test_plan_runtime_resources_resolves_explicit_kernel_identity():
+    fabric_kernel = Kernel(KernelKind.DATA_MOVEMENT)
+    fabric_kernel._bind("fabric_kernel", "test.operation")
+    resources = ProgramRuntimeResources(
+        kernel_resources=(KernelRuntimeResources(kernel=fabric_kernel),)
+    )
+
+    plan = _plan_runtime_resources(resources, [_kernel_spec(fabric_kernel)])
+
+    assert plan.kernel_descriptors[0].logical_kernel == kernel_runner.LogicalKernelId(
+        KernelKind.DATA_MOVEMENT,
+        "fabric_kernel",
+        "test.operation",
+        None,
+    )
+
+
+@pytest.mark.parametrize("kernel_kind", tuple(KernelKind))
+def test_plan_runtime_resources_resolves_each_canonical_kernel_kind(kernel_kind):
+    resources = ProgramRuntimeResources(
+        kernel_resources=(KernelRuntimeResources(kernel=kernel_kind),)
+    )
+
+    plan = _plan_runtime_resources(resources, [_kernel_spec(kernel_kind)])
+
+    assert plan.kernel_descriptors[0].logical_kernel == kernel_runner.LogicalKernelId(
+        kernel_kind, None, None, None
+    )
+
+
+def test_plan_runtime_resources_targets_one_of_two_explicit_kernels():
+    selected_kernel = Kernel(KernelKind.DATA_MOVEMENT)
+    selected_kernel._bind("selected", "test.operation")
+    unselected_kernel = Kernel(KernelKind.DATA_MOVEMENT)
+    unselected_kernel._bind("unselected", "test.operation")
+    resources = ProgramRuntimeResources(
+        kernel_resources=(
+            KernelRuntimeResources(
+                kernel=selected_kernel,
+                defines=(KernelDefine("SELECTED", "1"),),
+            ),
+        )
+    )
+
+    plan = _plan_runtime_resources(
+        resources,
+        [_kernel_spec(selected_kernel), _kernel_spec(unselected_kernel)],
+    )
+
+    assert plan.kernel_descriptors[0].defines == (("SELECTED", "1"),)
+    assert plan.kernel_descriptors[1].defines == ()
+
+
+def test_plan_runtime_resources_rejects_kernel_bound_to_another_operation():
+    executing_kernel = Kernel(KernelKind.DATA_MOVEMENT)
+    executing_kernel._bind("fabric", "executing.operation")
+    foreign_kernel = Kernel(KernelKind.DATA_MOVEMENT)
+    foreign_kernel._bind("fabric", "foreign.operation")
+    resources = ProgramRuntimeResources(
+        kernel_resources=(KernelRuntimeResources(kernel=foreign_kernel),)
+    )
+
+    with pytest.raises(ValueError) as exception_info:
+        _plan_runtime_resources(resources, [_kernel_spec(executing_kernel)])
+    assert str(exception_info.value) == (
+        "@ttl.operation 'planned_operation': kernel resource 0 selects "
+        "data_movement kernel 'fabric', but the operation emitted no matching "
+        "kernel descriptor"
+    )
+
+
+def test_plan_runtime_resources_canonicalizes_range_order():
+    first_ranges = _FakeCoreRanges(
+        (
+            ((1, 1), (1, 1)),
+            ((0, 0), (1, 0)),
+            ((0, 1), (0, 1)),
+        )
+    )
+    second_ranges = _FakeCoreRanges(
+        (
+            ((0, 1), (1, 1)),
+            ((0, 0), (1, 0)),
+        )
+    )
+
+    first_plan = _plan_runtime_resources(
+        ProgramRuntimeResources(),
+        [_kernel_spec(KernelKind.COMPUTE)],
+        first_ranges,
+    )
+    second_plan = _plan_runtime_resources(
+        ProgramRuntimeResources(),
+        [_kernel_spec(KernelKind.COMPUTE)],
+        second_ranges,
+    )
+
+    assert first_plan.kernel_descriptors[0].coordinates == (
+        (0, 0),
+        (1, 0),
+        (0, 1),
+        (1, 1),
+    )
+    assert (
+        first_plan.kernel_descriptors[0].coordinates
+        == second_plan.kernel_descriptors[0].coordinates
+    )
+
+
+@pytest.mark.parametrize(
+    ("resources", "message"),
+    [
+        (
+            ProgramRuntimeResources(kernel_resources=[]),
+            "@ttl.operation 'planned_operation': kernel_resources must be a tuple, got list",
+        ),
+        (
+            ProgramRuntimeResources(lifetimes=[]),
+            "@ttl.operation 'planned_operation': lifetimes must be a tuple, got list",
+        ),
+        (
+            ProgramRuntimeResources(semaphore_descriptors=[]),
+            "@ttl.operation 'planned_operation': semaphore_descriptors must be a tuple, got list",
+        ),
+        (
+            ProgramRuntimeResources(kernel_resources=(object(),)),
+            (
+                "@ttl.operation 'planned_operation': kernel resource 0 must be "
+                "KernelRuntimeResources, got object"
+            ),
+        ),
+        (
+            ProgramRuntimeResources(
+                kernel_resources=(
+                    KernelRuntimeResources(
+                        kernel=KernelKind.COMPUTE,
+                        runtime_args=[],
+                    ),
+                )
+            ),
+            (
+                "@ttl.operation 'planned_operation': kernel resource 0 "
+                "runtime_args must be a tuple, got list"
+            ),
+        ),
+        (
+            ProgramRuntimeResources(
+                kernel_resources=(
+                    KernelRuntimeResources(
+                        kernel=KernelKind.COMPUTE,
+                        defines=[],
+                    ),
+                )
+            ),
+            (
+                "@ttl.operation 'planned_operation': kernel resource 0 defines "
+                "must be a tuple, got list"
+            ),
+        ),
+        (
+            ProgramRuntimeResources(
+                kernel_resources=(
+                    KernelRuntimeResources(
+                        kernel=KernelKind.COMPUTE,
+                        runtime_args=(object(),),
+                    ),
+                )
+            ),
+            (
+                "@ttl.operation 'planned_operation': kernel resource 0 runtime "
+                "argument 0 must be CoreRuntimeArgs, got object"
+            ),
+        ),
+        (
+            ProgramRuntimeResources(
+                kernel_resources=(
+                    KernelRuntimeResources(
+                        kernel=KernelKind.COMPUTE,
+                        runtime_args=(CoreRuntimeArgs(_FakeCoreCoord(0, 0), []),),
+                    ),
+                )
+            ),
+            (
+                "@ttl.operation 'planned_operation': kernel resource 0 runtime "
+                "argument 0 values must be a tuple, got list"
+            ),
+        ),
+        (
+            ProgramRuntimeResources(semaphore_descriptors=(object(),)),
+            (
+                "@ttl.operation 'planned_operation': semaphore descriptor 0 "
+                "must provide id"
+            ),
+        ),
+    ],
+)
+def test_plan_runtime_resources_rejects_mutable_or_malformed_records(
+    resources, message
+):
+    with pytest.raises((TypeError, ValueError)) as exception_info:
+        _plan_runtime_resources(resources, [_kernel_spec(KernelKind.COMPUTE)])
+    assert str(exception_info.value) == message
+
+
+def test_plan_runtime_resources_rejects_wrong_top_level_type():
+    with pytest.raises(TypeError) as exception_info:
+        _plan_runtime_resources({}, [_kernel_spec(KernelKind.COMPUTE)])
+    assert str(exception_info.value) == (
+        "@ttl.operation 'planned_operation': runtime_resource_factory must "
+        "return ProgramRuntimeResources, got dict"
+    )
+
+
+@pytest.mark.parametrize(
+    ("value", "type_name"),
+    [(True, "bool"), (object(), "object")],
+)
+def test_plan_runtime_resources_rejects_invalid_runtime_values(value, type_name):
+    resources = ProgramRuntimeResources(
+        kernel_resources=(
+            KernelRuntimeResources(
+                kernel=KernelKind.COMPUTE,
+                runtime_args=(CoreRuntimeArgs(_FakeCoreCoord(0, 0), (value,)),),
+            ),
+        )
+    )
+
+    with pytest.raises(TypeError) as exception_info:
+        _plan_runtime_resources(resources, [_kernel_spec(KernelKind.COMPUTE)])
+    assert str(exception_info.value) == (
+        "@ttl.operation 'planned_operation': kernel resource 0 runtime "
+        f"argument 0 value 0 must be an integer, got {type_name}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("core", "message"),
+    [
+        (
+            object(),
+            (
+                "@ttl.operation 'planned_operation': kernel resource 0 runtime "
+                "argument 0 core must provide integer x and y coordinates"
+            ),
+        ),
+        (
+            _FakeCoreCoord(-1, 0),
+            (
+                "@ttl.operation 'planned_operation': kernel resource 0 runtime "
+                "argument 0 core coordinate (-1, 0) must be nonnegative"
+            ),
+        ),
+        (
+            _FakeCoreCoord(True, 0),
+            (
+                "@ttl.operation 'planned_operation': kernel resource 0 runtime "
+                "argument 0 core.x must be an integer, got bool"
+            ),
+        ),
+        (
+            _FakeCoreCoord(2, 0),
+            (
+                "@ttl.operation 'planned_operation': kernel resource 0 runtime "
+                "argument 0 core (2, 0) is outside the operation core range"
+            ),
+        ),
+    ],
+)
+def test_plan_runtime_resources_rejects_invalid_runtime_cores(core, message):
+    resources = ProgramRuntimeResources(
+        kernel_resources=(
+            KernelRuntimeResources(
+                kernel=KernelKind.COMPUTE,
+                runtime_args=(CoreRuntimeArgs(core, (1,)),),
+            ),
+        )
+    )
+
+    with pytest.raises((TypeError, ValueError)) as exception_info:
+        _plan_runtime_resources(
+            resources,
+            [_kernel_spec(KernelKind.COMPUTE)],
+            _FakeCoreRanges((((0, 0), (1, 0)),)),
+        )
+    assert str(exception_info.value) == message
+
+
+def test_plan_runtime_resources_rejects_duplicate_runtime_core():
+    resources = ProgramRuntimeResources(
+        kernel_resources=(
+            KernelRuntimeResources(
+                kernel=KernelKind.COMPUTE,
+                runtime_args=(
+                    CoreRuntimeArgs(_FakeCoreCoord(0, 0), (1,)),
+                    CoreRuntimeArgs(_FakeCoreCoord(0, 0), (2,)),
+                ),
+            ),
+        )
+    )
+
+    with pytest.raises(ValueError) as exception_info:
+        _plan_runtime_resources(resources, [_kernel_spec(KernelKind.COMPUTE)])
+    assert str(exception_info.value) == (
+        "@ttl.operation 'planned_operation': kernel resource 0 specifies "
+        "runtime arguments for core (0, 0) more than once"
+    )
+
+
+@pytest.mark.parametrize(
+    ("defines", "message"),
+    [
+        (
+            (object(),),
+            (
+                "@ttl.operation 'planned_operation': kernel resource 0 define 0 "
+                "must be a KernelDefine, got object"
+            ),
+        ),
+        (
+            (KernelDefine("", "1"),),
+            (
+                "@ttl.operation 'planned_operation': kernel resource 0 define 0 "
+                "name must be nonempty and contain no NUL"
+            ),
+        ),
+        (
+            (KernelDefine("MODE", 1),),
+            (
+                "@ttl.operation 'planned_operation': kernel resource 0 define 0 "
+                "value must be a str, got int"
+            ),
+        ),
+        (
+            (KernelDefine("MODE", "1"), KernelDefine("MODE", "1")),
+            (
+                "@ttl.operation 'planned_operation': kernel resource 0 defines "
+                "name 'MODE' more than once"
+            ),
+        ),
+    ],
+)
+def test_plan_runtime_resources_rejects_invalid_defines(defines, message):
+    resources = ProgramRuntimeResources(
+        kernel_resources=(
+            KernelRuntimeResources(
+                kernel=KernelKind.COMPUTE,
+                defines=defines,
+            ),
+        )
+    )
+
+    with pytest.raises((TypeError, ValueError)) as exception_info:
+        _plan_runtime_resources(resources, [_kernel_spec(KernelKind.COMPUTE)])
+    assert str(exception_info.value) == message
+
+
+def test_plan_runtime_resources_rejects_unbound_kernel():
+    unbound_kernel = Kernel(KernelKind.DATA_MOVEMENT)
+    resources = ProgramRuntimeResources(
+        kernel_resources=(KernelRuntimeResources(kernel=unbound_kernel),)
+    )
+
+    with pytest.raises(ValueError) as exception_info:
+        _plan_runtime_resources(resources, [_kernel_spec(KernelKind.COMPUTE)])
+    assert str(exception_info.value) == (
+        "@ttl.operation 'planned_operation': kernel resource 0 uses an unbound Kernel"
+    )
+
+
+def test_plan_runtime_resources_rejects_physical_kernel_name():
+    resources = ProgramRuntimeResources(
+        kernel_resources=(KernelRuntimeResources(kernel="ncrisc"),)
+    )
+
+    with pytest.raises(TypeError) as exception_info:
+        _plan_runtime_resources(resources, [_kernel_spec(KernelKind.COMPUTE)])
+    assert str(exception_info.value) == (
+        "@ttl.operation 'planned_operation': kernel resource 0 must select a "
+        "KernelKind or Kernel, got str"
+    )
+
+
+def test_plan_runtime_resources_rejects_absent_logical_kernel():
+    resources = ProgramRuntimeResources(
+        kernel_resources=(KernelRuntimeResources(kernel=KernelKind.DATA_MOVEMENT),)
+    )
+
+    with pytest.raises(ValueError) as exception_info:
+        _plan_runtime_resources(resources, [_kernel_spec(KernelKind.COMPUTE)])
+    assert str(exception_info.value) == (
+        "@ttl.operation 'planned_operation': kernel resource 0 selects canonical "
+        "data_movement kernel, but the operation emitted no matching kernel descriptor"
+    )
+
+
+def test_plan_runtime_resources_rejects_duplicate_kernel_resource():
+    resources = ProgramRuntimeResources(
+        kernel_resources=(
+            KernelRuntimeResources(kernel=KernelKind.COMPUTE),
+            KernelRuntimeResources(kernel=KernelKind.COMPUTE),
+        )
+    )
+
+    with pytest.raises(ValueError) as exception_info:
+        _plan_runtime_resources(resources, [_kernel_spec(KernelKind.COMPUTE)])
+    assert str(exception_info.value) == (
+        "@ttl.operation 'planned_operation': runtime resources for canonical compute "
+        "kernel were specified more than once"
+    )
+
+
+def test_plan_runtime_resources_rejects_ambiguous_unspecialized_selector():
+    resources = ProgramRuntimeResources(
+        kernel_resources=(KernelRuntimeResources(kernel=KernelKind.DATA_MOVEMENT),)
+    )
+
+    with pytest.raises(ValueError) as exception_info:
+        _plan_runtime_resources(
+            resources,
+            [
+                _kernel_spec(KernelKind.DATA_MOVEMENT),
+                _kernel_spec(KernelKind.DATA_MOVEMENT),
+            ],
+        )
+    assert str(exception_info.value) == (
+        "@ttl.operation 'planned_operation': kernel resource 0 selects canonical "
+        "data_movement kernel with 2 descriptors; specialized resource partitioning "
+        "is required"
+    )
+
+
+def test_plan_runtime_resources_validates_semaphores():
+    core_ranges = _FakeCoreRanges((((0, 0), (1, 0)),))
+    semaphore = _FakeTTNN.SemaphoreDescriptor(
+        2,
+        core_ranges=core_ranges,
+        initial_value=_Indexable(3),
+        core_type="WORKER",
+    )
+    resources = ProgramRuntimeResources(semaphore_descriptors=(semaphore,))
+
+    plan = _plan_runtime_resources(
+        resources,
+        [_kernel_spec(KernelKind.COMPUTE)],
+        core_ranges,
+        first_free_id=2,
+    )
+
+    assert plan.semaphore_descriptors == (semaphore,)
+    assert plan.semaphore_descriptors[0].initial_value.value == 3
+    assert plan.semaphore_descriptors[0].core_type == "WORKER"
+
+
+def test_plan_runtime_resources_accepts_semaphore_id_zero_and_disjoint_ranges():
+    operation_ranges = _FakeCoreRanges((((0, 0), (1, 0)),))
+    first_semaphore = _FakeTTNN.SemaphoreDescriptor(
+        0,
+        _FakeCoreRanges((((0, 0), (0, 0)),)),
+        3,
+        core_type="WORKER",
+    )
+    second_semaphore = _FakeTTNN.SemaphoreDescriptor(
+        1,
+        _FakeCoreRanges((((1, 0), (1, 0)),)),
+        4,
+        core_type="ETH",
+    )
+
+    plan = _plan_runtime_resources(
+        ProgramRuntimeResources(
+            semaphore_descriptors=(first_semaphore, second_semaphore)
+        ),
+        [_kernel_spec(KernelKind.COMPUTE)],
+        operation_ranges,
+        first_free_id=0,
+    )
+
+    assert plan.semaphore_descriptors == (first_semaphore, second_semaphore)
+    assert [descriptor.initial_value for descriptor in plan.semaphore_descriptors] == [
+        3,
+        4,
+    ]
+    assert [descriptor.core_type for descriptor in plan.semaphore_descriptors] == [
+        "WORKER",
+        "ETH",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("semaphores", "first_free_id", "message"),
+    [
+        (
+            (
+                _FakeTTNN.SemaphoreDescriptor(
+                    0,
+                    _FakeCoreRanges(),
+                    0,
+                ),
+            ),
+            1,
+            (
+                "@ttl.operation 'planned_operation': semaphore descriptor 0 id 0 "
+                "is below first free semaphore id 1"
+            ),
+        ),
+        (
+            (
+                _FakeTTNN.SemaphoreDescriptor(1, _FakeCoreRanges(), 0),
+                _FakeTTNN.SemaphoreDescriptor(1, _FakeCoreRanges(), 0),
+            ),
+            1,
+            (
+                "@ttl.operation 'planned_operation': semaphore id 1 was "
+                "specified more than once"
+            ),
+        ),
+        (
+            (
+                _FakeTTNN.SemaphoreDescriptor(
+                    1,
+                    _FakeCoreRanges((((2, 0), (2, 0)),)),
+                    0,
+                ),
+            ),
+            1,
+            (
+                "@ttl.operation 'planned_operation': semaphore descriptor 0 has "
+                "cores outside the operation range: ((2, 0),)"
+            ),
+        ),
+        (
+            (_FakeTTNN.SemaphoreDescriptor(1, _FakeCoreRanges(), True),),
+            1,
+            (
+                "@ttl.operation 'planned_operation': semaphore descriptor 0 "
+                "initial_value must be an integer, got bool"
+            ),
+        ),
+        (
+            (
+                _FakeTTNN.SemaphoreDescriptor(
+                    1,
+                    _FakeCoreRanges(()),
+                    0,
+                ),
+            ),
+            1,
+            (
+                "@ttl.operation 'planned_operation': semaphore descriptor 0 "
+                "core_ranges must not be empty"
+            ),
+        ),
+    ],
+)
+def test_plan_runtime_resources_rejects_invalid_semaphores(
+    semaphores, first_free_id, message
+):
+    with pytest.raises((TypeError, ValueError)) as exception_info:
+        _plan_runtime_resources(
+            ProgramRuntimeResources(semaphore_descriptors=semaphores),
+            [_kernel_spec(KernelKind.COMPUTE)],
+            _FakeCoreRanges((((0, 0), (1, 0)),)),
+            first_free_id=first_free_id,
+        )
+    assert str(exception_info.value) == message
+
+
+def test_build_kernel_descriptors_materializes_planned_resources(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    core_ranges = _FakeCoreRanges((((0, 0), (1, 0)),))
+    spec = _kernel_spec(KernelKind.COMPUTE)
+    plan = _plan_runtime_resources(
+        ProgramRuntimeResources(
+            kernel_resources=(
+                KernelRuntimeResources(
+                    kernel=KernelKind.COMPUTE,
+                    runtime_args=(CoreRuntimeArgs(_FakeCoreCoord(1, 0), (4, 5)),),
+                    defines=(KernelDefine("MODE", "planned"),),
+                ),
+            )
+        ),
+        [spec],
+        core_ranges,
+    )
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[],
+        tensor_accessor_args=[],
+        core_ranges=core_ranges,
+        grid_cols=2,
+        grid_rows=1,
+        num_cbs=0,
+        descriptor_resource_plans=plan.kernel_descriptors,
+    )
+
+    assert descriptors[0].defines == [("MODE", "planned")]
+    assert len(descriptors[0].runtime_args) == 1
+    assert descriptors[0].runtime_args[1][0] == [4, 5]
+
+
+def test_run_kernel_materializes_resources_and_commits_lifetimes(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    core_ranges = _FakeCoreRanges((((0, 0), (1, 0)),))
+    owner = object()
+    committed_lifetimes = []
+
+    def make_resources(*, tensors, core_ranges, first_free_semaphore_id):
+        assert len(tensors) == 1
+        assert first_free_semaphore_id == 1
+        return ProgramRuntimeResources(
+            semaphore_descriptors=(
+                _FakeTTNN.SemaphoreDescriptor(
+                    1,
+                    core_ranges=core_ranges,
+                    initial_value=0,
+                ),
+            ),
+            kernel_resources=(
+                KernelRuntimeResources(
+                    kernel=KernelKind.COMPUTE,
+                    runtime_args=(CoreRuntimeArgs(_FakeCoreCoord(1, 0), (8, 9)),),
+                    defines=(KernelDefine("MODE", "runtime"),),
+                ),
+            ),
+            lifetimes=(owner,),
+        )
+
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[_kernel_spec(KernelKind.COMPUTE)],
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=[],
+        core_ranges=core_ranges,
+        num_pipe_sync_semaphores=1,
+        runtime_resource_factory=make_resources,
+        operation_name="resource_execution",
+        runtime_resource_lifetime_commit=committed_lifetimes.append,
+    )
+
+    program = result["program"]
+    assert [semaphore.id for semaphore in program.semaphores] == [0, 1]
+    assert program.kernels[0].defines == [("MODE", "runtime")]
+    assert program.kernels[0].runtime_args[1][0] == [8, 9]
+    assert committed_lifetimes == [(owner,)]
+
+
+def test_run_kernel_failure_preserves_runtime_resource_lifetimes(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+
+    def fail_generic_op(_tensors, _program):
+        raise RuntimeError("device execution failed")
+
+    fake_ttnn.generic_op = fail_generic_op
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    previous_owner = object()
+    retained_lifetimes = [(previous_owner,)]
+
+    with pytest.raises(RuntimeError, match="device execution failed"):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[_kernel_spec(KernelKind.COMPUTE)],
+            tensors=[_FakeTensorWithoutDevice()],
+            cb_configs=[],
+            core_ranges=_FakeCoreRanges(),
+            runtime_resource_factory=lambda **_kwargs: ProgramRuntimeResources(
+                lifetimes=(object(),)
+            ),
+            operation_name="failed_execution",
+            runtime_resource_lifetime_commit=lambda lifetimes: retained_lifetimes.__setitem__(
+                0, lifetimes
+            ),
+        )
+
+    assert retained_lifetimes == [(previous_owner,)]
+
+
+def test_run_kernel_plan_failure_preserves_runtime_resource_lifetimes(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    previous_owner = object()
+    retained_lifetimes = [(previous_owner,)]
+
+    with pytest.raises(TypeError) as exception_info:
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[_kernel_spec(KernelKind.COMPUTE)],
+            tensors=[_FakeTensorWithoutDevice()],
+            cb_configs=[],
+            core_ranges=_FakeCoreRanges(),
+            runtime_resource_factory=lambda **_kwargs: ProgramRuntimeResources(
+                kernel_resources=[]
+            ),
+            operation_name="failed_execution",
+            runtime_resource_lifetime_commit=lambda lifetimes: retained_lifetimes.__setitem__(
+                0, lifetimes
+            ),
+        )
+
+    assert str(exception_info.value) == (
+        "@ttl.operation 'failed_execution': kernel_resources must be a tuple, "
+        "got list"
+    )
+    assert retained_lifetimes == [(previous_owner,)]
+
+
+def test_run_kernel_descriptor_failure_preserves_runtime_resource_lifetimes(
+    monkeypatch,
+):
+    fake_ttnn = _FakeTTNN()
+
+    def fail_kernel_descriptor(**_kwargs):
+        raise RuntimeError("descriptor construction failed")
+
+    fake_ttnn.KernelDescriptor = fail_kernel_descriptor
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    previous_owner = object()
+    retained_lifetimes = [(previous_owner,)]
+
+    with pytest.raises(RuntimeError) as exception_info:
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[_kernel_spec(KernelKind.COMPUTE)],
+            tensors=[_FakeTensorWithoutDevice()],
+            cb_configs=[],
+            core_ranges=_FakeCoreRanges(),
+            runtime_resource_factory=lambda **_kwargs: ProgramRuntimeResources(
+                lifetimes=(object(),)
+            ),
+            operation_name="failed_execution",
+            runtime_resource_lifetime_commit=lambda lifetimes: retained_lifetimes.__setitem__(
+                0, lifetimes
+            ),
+        )
+
+    assert str(exception_info.value) == "descriptor construction failed"
+    assert retained_lifetimes == [(previous_owner,)]
+
+
+def test_run_kernel_keeps_new_lifetimes_alive_through_execution(monkeypatch):
+    class Owner:
+        pass
+
+    fake_ttnn = _FakeTTNN()
+    owner_reference = []
+
+    def make_resources(**_kwargs):
+        owner = Owner()
+        owner_reference.append(weakref.ref(owner))
+        return ProgramRuntimeResources(lifetimes=(owner,))
+
+    def verify_lifetime(_tensors, _program):
+        assert owner_reference[0]() is not None
+        return "executed"
+
+    fake_ttnn.generic_op = verify_lifetime
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    committed_lifetimes = []
+
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[_kernel_spec(KernelKind.COMPUTE)],
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=[],
+        core_ranges=_FakeCoreRanges(),
+        runtime_resource_factory=make_resources,
+        operation_name="lifetime_execution",
+        runtime_resource_lifetime_commit=committed_lifetimes.append,
+    )
+
+    assert result == "executed"
+    assert committed_lifetimes == [(owner_reference[0](),)]
+
+
+def test_run_kernel_checks_compiler_semaphore_ids_before_factory(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    invalid_descriptor = _FakeTTNN.SemaphoreDescriptor(
+        1,
+        _FakeCoreRanges(),
+        0,
+    )
+    monkeypatch.setattr(
+        kernel_runner,
+        "build_pipe_sync_semaphore_descriptors",
+        lambda **_kwargs: [invalid_descriptor],
+    )
+    factory_calls = []
+
+    with pytest.raises(RuntimeError) as exception_info:
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[_kernel_spec(KernelKind.COMPUTE)],
+            tensors=[_FakeTensorWithoutDevice()],
+            cb_configs=[],
+            core_ranges=_FakeCoreRanges(),
+            num_pipe_sync_semaphores=1,
+            runtime_resource_factory=lambda **_kwargs: factory_calls.append(True),
+            operation_name="invalid_compiler_semaphores",
+        )
+
+    assert str(exception_info.value) == (
+        "compiler-managed semaphore descriptors must use the dense ID range [0, 1)"
+    )
+    assert factory_calls == []
 
 
 def test_build_pipe_global_semaphores_uses_explicit_device(monkeypatch):
@@ -447,6 +1374,8 @@ def test_run_kernel_rejects_wrong_runtime_resource_factory_result(monkeypatch):
 def test_run_kernel_contextualizes_runtime_resource_factory_failure(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     factory_error = ValueError("factory detail")
+    previous_owner = object()
+    retained_lifetimes = [(previous_owner,)]
 
     def fail_factory(**_kwargs):
         raise factory_error
@@ -465,9 +1394,13 @@ def test_run_kernel_contextualizes_runtime_resource_factory_failure(monkeypatch)
             core_ranges=_FakeCoreRanges(),
             runtime_resource_factory=fail_factory,
             operation_name="factory_failure",
+            runtime_resource_lifetime_commit=lambda lifetimes: retained_lifetimes.__setitem__(
+                0, lifetimes
+            ),
         )
 
     assert exception_info.value.__cause__ is factory_error
+    assert retained_lifetimes == [(previous_owner,)]
 
 
 def test_run_kernel_sets_custom_program_hash(monkeypatch):

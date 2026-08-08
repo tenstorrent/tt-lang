@@ -10,6 +10,7 @@ import pytest
 
 import ttl.dialects.ttl as ttl
 import ttl.ttl_api as ttl_api
+from ttl import ProgramRuntimeResources
 from ttl.constants import SUPPORTED_MATH_FIDELITIES
 from ttl.ir import Context, Module
 
@@ -95,6 +96,25 @@ class TestDeviceTargetArch:
         )
         with pytest.raises(ValueError, match="different TT device architectures"):
             ttl_api._device_target_arch(args)
+
+
+@pytest.mark.parametrize("logical_selectors", [None, [], [None]])
+def test_resource_factory_requires_complete_logical_selectors(logical_selectors):
+    with pytest.raises(
+        ValueError,
+        match="runtime_resource_factory requires .*logical-kernel selector",
+    ):
+        ttl_api.CompiledTTNNKernel(
+            kernel_paths=[("kernel.cpp", "compute")],
+            kernel_configs=[object()],
+            kernel_arg_specs=[[]],
+            num_tensors=1,
+            core_ranges=object(),
+            kernel_tensor_indices=[[]],
+            kernel_logical_selectors=logical_selectors,
+            operation_name="resource_operation",
+            runtime_resource_factory=lambda **_kwargs: ProgramRuntimeResources(),
+        )
 
 
 class TestKernelI32ArrayAttr:
