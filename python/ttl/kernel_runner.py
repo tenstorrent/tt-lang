@@ -16,7 +16,7 @@ building and execution.
 from dataclasses import dataclass, field
 import itertools
 import os
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 ttnn = None  # Lazy-loaded via _ensure_ttnn()
 
@@ -49,6 +49,7 @@ from ._fabric_target import (
     configure_routing_plane_runtime_args as _configure_routing_plane_runtime_args,
 )
 from .kernel import KernelSelector
+from .runtime_resources import ProgramRuntimeResources
 
 
 @dataclass(frozen=True)
@@ -983,6 +984,8 @@ def run_kernel_on_device(
     kernel_fabric_routes: Optional[List[List[FabricRouteSpec]]] = None,
     fabric_route_cache: Optional[_FabricRouteCache] = None,
     device: Optional[Any] = None,
+    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
+    operation_name: str = "<anonymous>",
 ) -> Any:
     """
     Execute kernels on device using ttnn.generic_op.
@@ -1016,6 +1019,9 @@ def run_kernel_on_device(
             configuration remain unchanged.
         device: Optional device used for hidden runtime allocations and fabric
             binding. Tensor-backed calls infer it from the first device tensor.
+        runtime_resource_factory: Optional callback that returns declarative
+            resources for the current invocation.
+        operation_name: User-facing operation name for callback diagnostics.
 
     Returns:
         Result from ttnn.generic_op (typically None or output tensor).
@@ -1049,6 +1055,35 @@ def run_kernel_on_device(
     )
     if pipe_global_semaphore_lifetime is not None:
         pipe_global_semaphore_lifetime[:] = pipe_runtime_resources.global_semaphores
+
+    program_resources = ProgramRuntimeResources()
+    if runtime_resource_factory is not None:
+        try:
+            program_resources = runtime_resource_factory(
+                tensors=tuple(tensors),
+                core_ranges=core_ranges,
+                first_free_semaphore_id=num_pipe_sync_semaphores,
+            )
+        except Exception as error:
+            raise RuntimeError(
+                f"@ttl.operation {operation_name!r}: runtime resource factory "
+                f"failed: {error}"
+            ) from error
+        if not isinstance(program_resources, ProgramRuntimeResources):
+            raise TypeError(
+                f"@ttl.operation {operation_name!r}: runtime_resource_factory "
+                "must return ProgramRuntimeResources, got "
+                f"{type(program_resources).__name__}"
+            )
+        if (
+            program_resources.semaphore_descriptors
+            or program_resources.kernel_resources
+            or program_resources.lifetimes
+        ):
+            raise ValueError(
+                f"@ttl.operation {operation_name!r}: nonempty runtime resources "
+                "require a complete resource plan"
+            )
 
     # Build CB descriptors.
     cb_descriptors = build_cb_descriptors(

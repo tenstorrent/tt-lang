@@ -146,6 +146,24 @@ def test_operation_propagates_math_fidelity(monkeypatch):
     assert compile_calls[0]["compile_options"]["math_fidelity"] == "HiFi3"
 
 
+def test_explicit_operation_propagates_runtime_resource_factory(monkeypatch):
+    compile_calls = _install_recording_compile(monkeypatch)
+
+    def make_resources(**_kwargs):
+        return None
+
+    @ttl_api.operation(grid=(1, 1), runtime_resource_factory=make_resources)
+    def copy_kernel(input_tensor, output_tensor):
+        pass
+
+    copy_kernel(_FakeTensor(), _FakeTensor())
+
+    assert (
+        compile_calls[0]["compile_options"]["runtime_resource_factory"]
+        is make_resources
+    )
+
+
 def test_cache_key_separates_math_fidelity(monkeypatch):
     monkeypatch.setattr(
         ttl_api, "is_ttnn_tensor", lambda arg: isinstance(arg, _FakeTensor)
