@@ -4,7 +4,11 @@
 
 """Data type conversion utilities between PyTorch, TTNN, and MLIR types."""
 
+import operator
+
 import torch
+
+from .constants import DEFAULT_TILE_SIZE
 
 ttnn = None  # Lazy-loaded via _ensure_ttnn()
 
@@ -197,3 +201,95 @@ def format_name_to_ttnn_dtype(name: str):
             raise ValueError(
                 f"Unrecognized data format name '{name}' for ttnn.DataType"
             )
+
+
+def normalize_tile_dimensions(tile) -> tuple[int, int]:
+    """Return validated TT-Metal physical tile dimensions."""
+    try:
+        tile_height, tile_width = tile
+        normalized_tile = (
+            operator.index(tile_height),
+            operator.index(tile_width),
+        )
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"Tile must contain exactly two integer dimensions, got {tile!r}"
+        ) from None
+
+    if normalized_tile[0] <= 0 or normalized_tile[1] <= 0:
+        raise ValueError(f"Tile dimensions must be positive, got {normalized_tile}")
+    try:
+        is_supported_tile = ttcore.ir.TileType.is_tt_metal_tile_shape(*normalized_tile)
+    except (OverflowError, TypeError):
+        is_supported_tile = False
+    if not is_supported_tile:
+        raise ValueError(
+            "Tile dimensions are not constructible by tt-metal: "
+            f"{normalized_tile[0]}x{normalized_tile[1]}"
+        )
+    return normalized_tile
+
+
+def tile_bytes_from_dtype(dtype, tile=(DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)) -> int:
+    """
+    Calculate tile size in bytes from ttnn dtype.
+
+    The byte size matches ttcore::TileType::getSizeBytes(). Dense and BFP
+    formats scale with the physical tile dimensions. Every valid ttnn.DataType
+    with a corresponding ttcore::DataType is supported; FP8_E4M3 has no
+    ttcore representation. Compute eligibility is validated separately by the
+    compiler.
+
+    Args:
+        dtype: ttnn.DataType enum value
+        tile: Physical tile dimensions as (height, width)
+
+    Returns:
+        Tile size in bytes
+
+    Raises:
+        ValueError: If dtype or its tile dimensions are not supported
+    """
+    tile_height, tile_width = normalize_tile_dimensions(tile)
+
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+
+    tile_elements = tile_height * tile_width
+    # Local sizing keeps metadata generation independent of MetalContext, which
+    # tt-metal's Tile::get_tile_size uses to query L1 alignment.
+    # Keep this mapping synchronized with ttcore::TileType::getSizeBytes().
+    if dtype in (ttnn.DataType.BFLOAT16, ttnn.DataType.UINT16):
+        return tile_elements * 2
+    if dtype in (
+        ttnn.DataType.FLOAT32,
+        ttnn.DataType.INT32,
+        ttnn.DataType.UINT32,
+    ):
+        return tile_elements * 4
+    if dtype == ttnn.DataType.UINT8:
+        return tile_elements
+    bfp_dtypes = (
+        ttnn.DataType.BFLOAT8_B,
+        ttnn.DataType.BFLOAT4_B,
+    )
+    if dtype not in bfp_dtypes:
+        raise ValueError(f"Unsupported dtype for tile size calculation: {dtype}")
+    # tt-metal Tile::get_tile_size stores one exponent byte per 16-element face
+    # row and aligns the complete exponent section to L1.
+    # TODO(#511): Source L1 alignment from shared target metadata.
+    elements_per_exponent = 16
+    l1_alignment_bytes = 16
+    if tile_elements % elements_per_exponent != 0:
+        raise ValueError(
+            "BFP tile element count must be divisible by "
+            f"{elements_per_exponent}, got {tile_elements}"
+        )
+    exponent_count = tile_elements // elements_per_exponent
+    exponent_bytes = (
+        (exponent_count + l1_alignment_bytes - 1) // l1_alignment_bytes
+    ) * l1_alignment_bytes
+    if dtype == ttnn.DataType.BFLOAT8_B:
+        return tile_elements + exponent_bytes
+    return tile_elements // 2 + exponent_bytes

@@ -542,21 +542,15 @@ static void setInvalidDFBPageSizeFailure(CircularBufferType dfbType,
 /// Returns the L1 bytes required by the unique physical assignments.
 static FailureOr<uint64_t>
 computeAllocationBytes(ArrayRef<DFBPhysicalIndexAssignment> assignments,
-                       DFBAnalysisFailure &analysisFailure) {
+                       std::string &failureReason) {
   DFBAllocationFootprint footprint;
   for (const DFBPhysicalIndexAssignment &assignment : assignments) {
     if (assignment.tensorBacking) {
       continue;
     }
-    auto dfbType = cast<CircularBufferType>(assignment.type);
-    if (failed(getDFBPageSizeBytes(dfbType))) {
-      setInvalidDFBPageSizeFailure(dfbType, assignment.declarations.front(),
-                                   analysisFailure);
-      return failure();
-    }
-    if (failed(footprint.add(assignment.physicalIndex, dfbType))) {
-      analysisFailure.set(assignment.declarations.front(),
-                          "DFB allocation size is not representable");
+    if (failed(footprint.add(assignment.physicalIndex,
+                             cast<CircularBufferType>(assignment.type),
+                             failureReason))) {
       return failure();
     }
   }
@@ -577,26 +571,31 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
     return failure();
   }
 
-  FailureOr<uint64_t> allocationBytes =
-      computeAllocationBytes(allocation->assignments, analysisFailure);
+  std::string allocationSizeFailureReason;
+  FailureOr<uint64_t> allocationBytes = computeAllocationBytes(
+      allocation->assignments, allocationSizeFailureReason);
+  if (failed(allocationBytes)) {
+    analysisFailure.set(moduleOp, allocationSizeFailureReason);
+    return failure();
+  }
   uint64_t l1BudgetBytes = getUsableDFBL1Bytes(moduleOp);
-  if (succeeded(allocationBytes) && *allocationBytes > l1BudgetBytes &&
-      !allocation->minimumProven) {
+  if (*allocationBytes > l1BudgetBytes && !allocation->minimumProven) {
     allocation = computeAllocation(/*requireMinimum=*/true);
     if (failed(allocation)) {
       return failure();
     }
-    allocationBytes =
-        computeAllocationBytes(allocation->assignments, analysisFailure);
+    allocationBytes = computeAllocationBytes(allocation->assignments,
+                                             allocationSizeFailureReason);
+    if (failed(allocationBytes)) {
+      analysisFailure.set(moduleOp, allocationSizeFailureReason);
+      return failure();
+    }
   }
   if (allocation->exactSearchLimitReached) {
     setExactSearchLimitFailure(moduleOp, allocation->physicalDFBCount,
                                allocation->exactSearchStateCount,
                                exactColoringSearchStateLimit,
                                "the target L1 budget", analysisFailure);
-    return failure();
-  }
-  if (failed(allocationBytes)) {
     return failure();
   }
   if (*allocationBytes > l1BudgetBytes) {

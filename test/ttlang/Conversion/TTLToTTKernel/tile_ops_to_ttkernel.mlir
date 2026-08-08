@@ -89,6 +89,59 @@ func.func @tile_mul(%a: !ttcore.tile<32x32, f32>, %b: !ttcore.tile<32x32, f32>) 
   func.return %prod : !ttcore.tile<32x32, f32>
 }
 
+// Integer add, subtract, and multiply select the integer SFPU APIs for every
+// data type accepted by tt-metal.
+// CHECK-LABEL: func.func @tile_integer_si32
+// CHECK: ttkernel.add_int_tile_init
+// CHECK-NEXT: ttkernel.add_int_tile({{.*}}<si32>)
+// CHECK: ttkernel.sub_int_tile_init
+// CHECK-NEXT: ttkernel.sub_int_tile({{.*}}<si32>)
+// CHECK: ttkernel.mul_int_tile_init(<si32>)
+// CHECK-NEXT: ttkernel.mul_int_tile({{.*}}<si32>)
+func.func @tile_integer_si32(%lhs: !ttcore.tile<16x32, si32>, %rhs: !ttcore.tile<16x32, si32>) -> !ttcore.tile<16x32, si32> {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  ttkernel.tile_regs_acquire() : () -> ()
+  %sum = ttl.tile_add %lhs, %rhs into dst[%c0] : !ttcore.tile<16x32, si32>, !ttcore.tile<16x32, si32> -> !ttcore.tile<16x32, si32>
+  %difference = ttl.tile_sub %sum, %rhs into dst[%c1] : !ttcore.tile<16x32, si32>, !ttcore.tile<16x32, si32> -> !ttcore.tile<16x32, si32>
+  %product = ttl.tile_mul %difference, %lhs into dst[%c2] : !ttcore.tile<16x32, si32>, !ttcore.tile<16x32, si32> -> !ttcore.tile<16x32, si32>
+  ttkernel.tile_regs_release() : () -> ()
+  func.return %product : !ttcore.tile<16x32, si32>
+}
+
+// CHECK-LABEL: func.func @tile_integer_u32
+// CHECK: ttkernel.add_int_tile({{.*}}<u32>)
+// CHECK: ttkernel.sub_int_tile({{.*}}<u32>)
+// CHECK: ttkernel.mul_int_tile({{.*}}<u32>)
+func.func @tile_integer_u32(%lhs: !ttcore.tile<16x32, u32>, %rhs: !ttcore.tile<16x32, u32>) -> !ttcore.tile<16x32, u32> {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  ttkernel.tile_regs_acquire() : () -> ()
+  %sum = ttl.tile_add %lhs, %rhs into dst[%c0] : !ttcore.tile<16x32, u32>, !ttcore.tile<16x32, u32> -> !ttcore.tile<16x32, u32>
+  %difference = ttl.tile_sub %sum, %rhs into dst[%c1] : !ttcore.tile<16x32, u32>, !ttcore.tile<16x32, u32> -> !ttcore.tile<16x32, u32>
+  %product = ttl.tile_mul %difference, %lhs into dst[%c2] : !ttcore.tile<16x32, u32>, !ttcore.tile<16x32, u32> -> !ttcore.tile<16x32, u32>
+  ttkernel.tile_regs_release() : () -> ()
+  func.return %product : !ttcore.tile<16x32, u32>
+}
+
+// CHECK-LABEL: func.func @tile_integer_u16
+// CHECK: ttkernel.add_int_tile({{.*}}<u16>)
+// CHECK: ttkernel.sub_int_tile({{.*}}<u16>)
+// CHECK: ttkernel.mul_int_tile({{.*}}<u16>)
+func.func @tile_integer_u16(%lhs: !ttcore.tile<16x32, u16>, %rhs: !ttcore.tile<16x32, u16>) -> !ttcore.tile<16x32, u16> {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c2 = arith.constant 2 : index
+  ttkernel.tile_regs_acquire() : () -> ()
+  %sum = ttl.tile_add %lhs, %rhs into dst[%c0] : !ttcore.tile<16x32, u16>, !ttcore.tile<16x32, u16> -> !ttcore.tile<16x32, u16>
+  %difference = ttl.tile_sub %sum, %rhs into dst[%c1] : !ttcore.tile<16x32, u16>, !ttcore.tile<16x32, u16> -> !ttcore.tile<16x32, u16>
+  %product = ttl.tile_mul %difference, %lhs into dst[%c2] : !ttcore.tile<16x32, u16>, !ttcore.tile<16x32, u16> -> !ttcore.tile<16x32, u16>
+  ttkernel.tile_regs_release() : () -> ()
+  func.return %product : !ttcore.tile<16x32, u16>
+}
+
 // CHECK-LABEL: func.func @tile_max
 // CHECK: ttkernel.tile_regs_acquire
 // CHECK: ttkernel.binary_max_tile_init

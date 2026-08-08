@@ -23,6 +23,7 @@ import torch
 
 import ttl
 from ttl.diagnostics import TTLangCompileError
+from utils.correctness import assert_allclose
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
@@ -71,7 +72,7 @@ def _to_device(torch_tensor, device, tile_hw, dtype, memory_config):
 
 
 def _torch_dtype(tt_dtype):
-    if tt_dtype == ttnn.bfloat16:
+    if tt_dtype in (ttnn.bfloat16, ttnn.bfloat8_b, ttnn.bfloat4_b):
         return torch.bfloat16
     if tt_dtype == ttnn.uint8:
         return torch.uint8
@@ -85,6 +86,8 @@ TINY_COPY_CASES = [
     ((1, 16), ttnn.uint8, ttnn.DRAM_MEMORY_CONFIG, "dram_u8_1x16"),
     ((1, 16), ttnn.uint8, ttnn.L1_MEMORY_CONFIG, "l1_u8_1x16"),
     ((1, 32), ttnn.uint8, ttnn.DRAM_MEMORY_CONFIG, "dram_u8_1x32"),
+    ((8, 32), ttnn.bfloat8_b, ttnn.DRAM_MEMORY_CONFIG, "dram_bfp8_8x32"),
+    ((8, 32), ttnn.bfloat4_b, ttnn.DRAM_MEMORY_CONFIG, "dram_bfp4_8x32"),
 ]
 
 
@@ -112,6 +115,7 @@ def test_subtile_tensor_copy_single_tile(
     tile_bytes = tile.get_tile_size(tt_dtype)
     page = src.buffer_page_size()
     aligned = src.buffer_aligned_page_size()
+    expected = ttnn.to_torch(src).reshape(h, w)
     print(
         f"[{label}] tile_bytes={tile_bytes} page={page} aligned={aligned} "
         f"(aligned-page gap={aligned - page})"
@@ -120,13 +124,12 @@ def test_subtile_tensor_copy_single_tile(
     subtile_tensor_copy(src, dst)
 
     got = ttnn.to_torch(dst).reshape(h, w)
-    if torch_dtype == torch.bfloat16:
-        got = got.to(torch.bfloat16)
-        assert torch.equal(got, src_t), f"[{label}] mismatch got={got} exp={src_t}"
-    else:
+    if tt_dtype == ttnn.uint8:
         assert torch.equal(
-            got.to(torch.int64), src_t.to(torch.int64)
-        ), f"[{label}] mismatch got={got} exp={src_t}"
+            got.to(torch.int64), expected.to(torch.int64)
+        ), f"[{label}] mismatch got={got} exp={expected}"
+    else:
+        assert_allclose(got.float(), expected.float(), rtol=0.0, atol=0.0)
 
     ttnn.deallocate(src)
     ttnn.deallocate(dst)

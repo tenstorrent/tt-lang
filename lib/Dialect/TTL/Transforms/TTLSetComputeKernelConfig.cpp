@@ -26,18 +26,23 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-// TODO(#264): This function returns true if ANY arg is f32, enabling
-// fp32_dest_acc_en for the entire compute op. Consider emitting a diagnostic
-// when mixed dtypes are detected, or allowing per-operation fp32 control.
-static bool hasF32TileArgs(ComputeOp computeOp) {
+// TODO(#264): Any 32-bit argument enables fp32_dest_acc_en for the complete
+// compute op. Diagnose unsupported mixed-width uses or model per-op control.
+static bool has32BitTileArgs(ComputeOp computeOp) {
   Block *body = &computeOp.getRegion().front();
   if (!body) {
     return false;
   }
 
   return llvm::any_of(body->getArguments(), [](BlockArgument arg) {
-    std::optional<mlir::Type> elementType = getTileElementType(arg.getType());
-    return elementType && elementType->isF32();
+    auto tileType = dyn_cast<ttcore::TileType>(arg.getType());
+    if (!tileType) {
+      return false;
+    }
+    ttcore::DataType dataType = tileType.getDataType();
+    return dataType == ttcore::DataType::Float32 ||
+           dataType == ttcore::DataType::Int32 ||
+           dataType == ttcore::DataType::UInt32;
   });
 }
 
@@ -170,7 +175,7 @@ struct TTLSetComputeKernelConfigPass
         if (needsFp32) {
           return WalkResult::interrupt();
         }
-        if (hasF32TileArgs(computeOp)) {
+        if (has32BitTileArgs(computeOp)) {
           needsFp32 = true;
           return WalkResult::interrupt();
         }

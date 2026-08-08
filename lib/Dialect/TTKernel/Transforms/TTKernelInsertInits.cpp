@@ -87,6 +87,21 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
       }};
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
+  map[mlir::TypeID::get<ttk::AddIntTileOp>()] = {
+      [](OpBuilder &builder, Location location, Operation *) {
+        ttk::AddIntTileInitOp::create(builder, location);
+      }};
+  map[mlir::TypeID::get<ttk::SubIntTileOp>()] = {
+      [](OpBuilder &builder, Location location, Operation *) {
+        ttk::SubIntTileInitOp::create(builder, location);
+      }};
+  map[mlir::TypeID::get<ttk::MulIntTileOp>()] = {
+      [](OpBuilder &builder, Location location, Operation *computeOp) {
+        auto multiply = cast<ttk::MulIntTileOp>(computeOp);
+        ttk::MulIntTileInitOp::create(builder, location,
+                                      multiply.getDtypeAttr());
+      }};
+
 #define TTL_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)             \
   map[mlir::TypeID::get<ttk::TTK_COMPUTE>()] = {                               \
       [](OpBuilder &b, Location l, Operation *) {                              \
@@ -241,6 +256,10 @@ static InitKey computeInitKey(Operation *op) {
     int64_t disc = (static_cast<int64_t>(typecast.getInDtype()) << 16) |
                    static_cast<int64_t>(typecast.getOutDtype());
     return {typeId, {}, disc};
+  }
+
+  if (auto multiply = dyn_cast<ttk::MulIntTileOp>(op)) {
+    return {typeId, {}, static_cast<int64_t>(multiply.getDtype())};
   }
 
   // For exp: distinct flag combinations configure exp_tile_init differently

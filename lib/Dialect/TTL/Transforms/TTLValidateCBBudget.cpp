@@ -6,10 +6,12 @@
 //
 // TTL Validate CB Budget
 //
-// Validates that the sum of static circular-buffer backing stores (per unique
-// cb_index) does not exceed a per-core L1 budget. The shared allocation helper
-// keeps these sizes equal to the runtime DFB descriptors: one tile for tile
-// elements and one scalar for row-wise elements.
+// Validates that the sum of static dataflow-buffer backing stores (per unique
+// cb_index) does not exceed a per-core L1 budget. Explicit tile elements retain
+// their dimensions. Scalar elements map to a ttcore data type and use default
+// tile dimensions; unmappable element types are errors. Python uses
+// python/ttl/kernel_runner.py:build_cb_descriptors; if those implementations
+// diverge, align them or share one implementation (see issue #511).
 //
 //===----------------------------------------------------------------------===//
 
@@ -71,15 +73,11 @@ struct TTLValidateCBBudgetPass
       }
       auto cbType = cast<CircularBufferType>(bindOp.getResult().getType());
       int64_t physicalIndex = bindOp.getCbIndex().getSExtValue();
-      if (failed(getDFBPageSizeBytes(cbType))) {
-        bindOp.emitOpError()
-            << "element type must occupy a positive whole number of bytes, got "
-            << cbType.getElementType();
-        return WalkResult::interrupt();
-      }
-      FailureOr<bool> increased = footprint.add(physicalIndex, cbType);
+      std::string failureReason;
+      FailureOr<bool> increased =
+          footprint.add(physicalIndex, cbType, failureReason);
       if (failed(increased)) {
-        bindOp.emitOpError() << "allocation size is not representable";
+        bindOp.emitOpError() << failureReason;
         return WalkResult::interrupt();
       }
       if (*increased) {

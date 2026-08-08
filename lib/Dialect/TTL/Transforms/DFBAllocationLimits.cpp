@@ -11,6 +11,7 @@
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CheckedArithmetic.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <cassert>
 #include <optional>
@@ -42,31 +43,55 @@ std::optional<uint64_t> tryBudgetFromModule(ModuleOp module) {
 
 } // namespace
 
-FailureOr<uint64_t> getDFBAllocationSizeBytes(CircularBufferType type) {
+FailureOr<uint64_t> getDFBAllocationSizeBytes(CircularBufferType type,
+                                              std::string &failureReason) {
   FailureOr<uint64_t> pagesPerBlock = getDFBPagesPerBlock(type);
-  if (failed(pagesPerBlock) || type.getBlockCount() <= 0) {
+  if (failed(pagesPerBlock)) {
+    failureReason = "DFB dimensions are not representable";
     return failure();
   }
-  FailureOr<uint64_t> pageSizeBytes = getDFBPageSizeBytes(type);
-  if (failed(pageSizeBytes)) {
+  if (type.getBlockCount() <= 0) {
+    failureReason = "DFB block count must be positive";
     return failure();
+  }
+  Type elementType = type.getElementType();
+  uint64_t elementBytes;
+  if (auto tileType = dyn_cast<ttcore::TileType>(elementType)) {
+    elementBytes = tileType.getSizeBytes();
+  } else {
+    std::optional<ttcore::DataType> dataType =
+        ttcore::elementTypeToDataTypeImpl(elementType);
+    if (!dataType) {
+      llvm::raw_string_ostream message(failureReason);
+      message << "cannot determine DFB page size for element type "
+              << elementType;
+      return failure();
+    }
+    elementBytes =
+        ttcore::TileType::get(elementType.getContext(),
+                              ttcore::TileType::getDefaultShape(), *dataType)
+            .getSizeBytes();
   }
   std::optional<uint64_t> totalPages = llvm::checkedMulUnsigned(
       *pagesPerBlock, static_cast<uint64_t>(type.getBlockCount()));
   if (!totalPages) {
+    failureReason = "DFB allocation size is not representable";
     return failure();
   }
   std::optional<uint64_t> allocationBytes =
-      llvm::checkedMulUnsigned(*totalPages, *pageSizeBytes);
+      llvm::checkedMulUnsigned(*totalPages, elementBytes);
   if (!allocationBytes) {
+    failureReason = "DFB allocation size is not representable";
     return failure();
   }
   return *allocationBytes;
 }
 
 FailureOr<bool> DFBAllocationFootprint::add(int64_t physicalIndex,
-                                            CircularBufferType type) {
-  FailureOr<uint64_t> allocationBytes = getDFBAllocationSizeBytes(type);
+                                            CircularBufferType type,
+                                            std::string &failureReason) {
+  FailureOr<uint64_t> allocationBytes =
+      getDFBAllocationSizeBytes(type, failureReason);
   if (failed(allocationBytes)) {
     return failure();
   }

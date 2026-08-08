@@ -11,6 +11,7 @@
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/Support/LogicalResult.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include <cstdint>
@@ -72,6 +73,23 @@ enum class PipeRole : int64_t {
   Source = 0,
   Destination = 1,
   Active = 2,
+};
+
+/// Target-independent compute primitive implemented by a TTL operation.
+enum class ComputePrimitive {
+  Add,
+  Subtract,
+  Multiply,
+  ElementwiseBinary,
+  ElementwiseUnary,
+  Broadcast,
+  Reduce,
+  Transpose,
+  Fill,
+  Matmul,
+  Typecast,
+  MultiplyByConstant,
+  Passthrough,
 };
 
 /// A contiguous set of DST slots starting at `baseIndex`.
