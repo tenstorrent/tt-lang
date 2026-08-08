@@ -18,12 +18,12 @@ from typing import (
     Iterable,
     List,
     Optional,
-    Set,
     Tuple,
     TypeVar,
     Union,
 )
 
+from ttl._pipenets import iter_instances_in_metadata
 from ttl._pipenets import NodeCoord as PipeNodeCoord
 from ttl._pipenets import NodeRange as PipeNodeRange
 from ttl._pipenets import OperationPipeNets, PipeUse
@@ -382,12 +382,10 @@ def _iter_pipe_nets_in_func(func: Any) -> Iterable["PipeNet"]:
             value = cell.cell_contents
         except ValueError:
             continue
-        if isinstance(value, PipeNet):
-            yield value
+        yield from iter_instances_in_metadata(value, PipeNet, set())
     fn_globals = getattr(func, "__globals__", None) or {}
     for value in fn_globals.values():
-        if isinstance(value, PipeNet):
-            yield value
+        yield from iter_instances_in_metadata(value, PipeNet, set())
 
 
 class PipeNet(Generic[DstT]):
