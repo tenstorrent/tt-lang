@@ -483,10 +483,12 @@ getComputePipelineScheduleChoice(ComputePipelineOp pipeline) {
     auto currentType = dyn_cast<RankedTensorType>(input.getType());
     FailureOr<Type> currentElementType =
         getRequiredTileElementType(input, pipeline);
-    if (!currentType || currentType != inputType ||
+    if (!currentType || !currentType.hasStaticShape() ||
+        currentType.getRank() != 2 || currentType.getNumElements() < 1 ||
         failed(currentElementType) || *currentElementType != *elementType) {
       pipeline.emitOpError(
-          "recognized pipeline inputs must have one tensor type");
+          "recognized pipeline inputs must be non-empty static rank-2 tensors "
+          "with one tile element type");
       return failure();
     }
     FailureOr<std::optional<int64_t>> dfbIndex =
