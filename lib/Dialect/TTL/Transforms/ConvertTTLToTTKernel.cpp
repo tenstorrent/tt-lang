@@ -48,6 +48,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/CheckedArithmetic.h"
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
@@ -74,6 +75,10 @@ constexpr llvm::StringLiteral kExpandLinearizeIndexAttr =
 // Larger nets use one loop so the transfer protocol body is not duplicated for
 // every record.
 constexpr size_t kPipeNetForeachDirectRecordLimit = 4;
+// Coordinate-index tables may contain one offset per node and one record index
+// per node-record membership. Restrict their combined size so wide collective
+// ranges retain the compact full-record scan.
+constexpr size_t kPipeNetForeachIndexMetadataMultiplier = 4;
 
 // PipeGraph is defined in PipeGraph.h.
 
@@ -756,6 +761,138 @@ struct PipeForeachTables {
   SmallVector<int64_t> srcInDstRange;
 };
 
+struct PipeForeachRecordIndex {
+  int64_t minX;
+  int64_t minY;
+  int64_t maxX;
+  int64_t maxY;
+  int64_t width;
+  SmallVector<int64_t> offsets;
+  SmallVector<int64_t> recordIndices;
+};
+
+static std::optional<PipeForeachRecordIndex>
+buildPipeForeachRecordIndex(PipeNetRecordsAttr records, PipeRole role) {
+  ArrayRef<PipeRecordAttr> pipes = records.getPipes();
+  assert(!pipes.empty() && "PipeNet foreach records must not be empty");
+
+  auto getMinX = [role](PipeRecordAttr record) {
+    return role == PipeRole::Source ? record.getSrcX() : record.getDstStartX();
+  };
+  auto getMinY = [role](PipeRecordAttr record) {
+    return role == PipeRole::Source ? record.getSrcY() : record.getDstStartY();
+  };
+  auto getMaxX = [role](PipeRecordAttr record) {
+    return role == PipeRole::Source ? record.getSrcX() : record.getDstEndX();
+  };
+  auto getMaxY = [role](PipeRecordAttr record) {
+    return role == PipeRole::Source ? record.getSrcY() : record.getDstEndY();
+  };
+
+  int64_t minX = getMinX(pipes.front());
+  int64_t minY = getMinY(pipes.front());
+  int64_t maxX = getMaxX(pipes.front());
+  int64_t maxY = getMaxY(pipes.front());
+  for (PipeRecordAttr record : pipes.drop_front()) {
+    minX = std::min(minX, getMinX(record));
+    minY = std::min(minY, getMinY(record));
+    maxX = std::max(maxX, getMaxX(record));
+    maxY = std::max(maxY, getMaxY(record));
+  }
+
+  std::optional<std::uint64_t> width = llvm::checkedAddUnsigned(
+      static_cast<std::uint64_t>(maxX - minX), std::uint64_t{1});
+  std::optional<std::uint64_t> height = llvm::checkedAddUnsigned(
+      static_cast<std::uint64_t>(maxY - minY), std::uint64_t{1});
+  if (!width || !height) {
+    return std::nullopt;
+  }
+  std::optional<std::uint64_t> nodeCount =
+      llvm::checkedMulUnsigned(*width, *height);
+  std::optional<std::uint64_t> offsetCount =
+      nodeCount ? llvm::checkedAddUnsigned(*nodeCount, std::uint64_t{1})
+                : std::nullopt;
+  std::optional<std::uint64_t> metadataLimit = llvm::checkedMulUnsigned(
+      static_cast<std::uint64_t>(pipes.size()),
+      static_cast<std::uint64_t>(kPipeNetForeachIndexMetadataMultiplier));
+  if (!nodeCount || !offsetCount || !metadataLimit ||
+      *offsetCount > *metadataLimit ||
+      *nodeCount >
+          static_cast<std::uint64_t>(std::numeric_limits<int64_t>::max())) {
+    return std::nullopt;
+  }
+
+  std::uint64_t membershipCount = 0;
+  for (PipeRecordAttr record : pipes) {
+    std::uint64_t recordWidth =
+        static_cast<std::uint64_t>(getMaxX(record) - getMinX(record)) + 1;
+    std::uint64_t recordHeight =
+        static_cast<std::uint64_t>(getMaxY(record) - getMinY(record)) + 1;
+    std::optional<std::uint64_t> recordMembership =
+        llvm::checkedMulUnsigned(recordWidth, recordHeight);
+    if (!recordMembership) {
+      return std::nullopt;
+    }
+    std::optional<std::uint64_t> nextMembership =
+        llvm::checkedAddUnsigned(membershipCount, *recordMembership);
+    if (!nextMembership || *nextMembership > *metadataLimit) {
+      return std::nullopt;
+    }
+    membershipCount = *nextMembership;
+  }
+  std::optional<std::uint64_t> indexEntryCount =
+      llvm::checkedAddUnsigned(*offsetCount, membershipCount);
+  if (!indexEntryCount || *indexEntryCount > *metadataLimit ||
+      membershipCount >
+          static_cast<std::uint64_t>(std::numeric_limits<int64_t>::max())) {
+    return std::nullopt;
+  }
+
+  auto nodeIndex = [&](int64_t nodeX, int64_t nodeY) {
+    return static_cast<std::size_t>(
+        (nodeY - minY) * static_cast<int64_t>(*width) + nodeX - minX);
+  };
+  auto forEachRecordNode = [&](PipeRecordAttr record, auto &&callback) {
+    for (std::uint64_t nodeY = static_cast<std::uint64_t>(getMinY(record));
+         nodeY <= static_cast<std::uint64_t>(getMaxY(record)); ++nodeY) {
+      for (std::uint64_t nodeX = static_cast<std::uint64_t>(getMinX(record));
+           nodeX <= static_cast<std::uint64_t>(getMaxX(record)); ++nodeX) {
+        callback(static_cast<int64_t>(nodeX), static_cast<int64_t>(nodeY));
+      }
+    }
+  };
+  SmallVector<int64_t> counts(static_cast<std::size_t>(*nodeCount), 0);
+  for (PipeRecordAttr record : pipes) {
+    forEachRecordNode(record, [&](int64_t nodeX, int64_t nodeY) {
+      ++counts[nodeIndex(nodeX, nodeY)];
+    });
+  }
+
+  SmallVector<int64_t> offsets;
+  offsets.reserve(counts.size() + 1);
+  offsets.push_back(0);
+  for (int64_t count : counts) {
+    offsets.push_back(offsets.back() + count);
+  }
+  SmallVector<int64_t> nextOffset(ArrayRef<int64_t>(offsets).drop_back());
+  SmallVector<int64_t> recordIndices(static_cast<std::size_t>(membershipCount));
+  for (auto enumeratedRecord : llvm::enumerate(pipes)) {
+    forEachRecordNode(enumeratedRecord.value(),
+                      [&](int64_t nodeX, int64_t nodeY) {
+                        std::size_t index = nodeIndex(nodeX, nodeY);
+                        recordIndices[nextOffset[index]++] =
+                            static_cast<int64_t>(enumeratedRecord.index());
+                      });
+  }
+  return PipeForeachRecordIndex{minX,
+                                minY,
+                                maxX,
+                                maxY,
+                                static_cast<int64_t>(*width),
+                                std::move(offsets),
+                                std::move(recordIndices)};
+}
+
 static PipeForeachTables buildPipeForeachTables(OpBuilder &builder,
                                                 PipeNetRecordsAttr records) {
   SmallVector<int64_t> srcX;
@@ -910,6 +1047,75 @@ static LogicalResult lowerPipeNetForeachDirect(
   return success();
 }
 
+template <typename ForeachOp>
+static LogicalResult
+lowerPipeNetForeachIndexed(ForeachOp op, RewriterBase &rewriter, PipeRole role,
+                           const PipeForeachRecordIndex &recordIndex,
+                           PipeForeachLoweringInfo &foreachLoweringInfo) {
+  Location loc = op.getLoc();
+  PipeNetRecordsAttr records = op.getRecords();
+  PipeForeachTables tables = buildPipeForeachTables(rewriter, records);
+  rewriter.setInsertionPoint(op);
+
+  Value nodeX =
+      ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
+  Value nodeY =
+      ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
+  Value xInBounds = buildIntegerRangeMatch(rewriter, loc, nodeX,
+                                           recordIndex.minX, recordIndex.maxX);
+  Value yInBounds = buildIntegerRangeMatch(rewriter, loc, nodeY,
+                                           recordIndex.minY, recordIndex.maxY);
+  Value isInBounds = arith::AndIOp::create(rewriter, loc, xInBounds, yInBounds);
+  auto boundsIf = scf::IfOp::create(rewriter, loc, isInBounds,
+                                    /*withElseRegion=*/false);
+  foreachLoweringInfo.controlOps.push_back(boundsIf);
+  foreachLoweringInfo.ifThenDomains[boundsIf] =
+      getPipeRecordsRoleLaunchNodeDomain(records, role);
+
+  rewriter.setInsertionPointToStart(&boundsIf.getThenRegion().front());
+  Value minX = arith::ConstantIndexOp::create(rewriter, loc, recordIndex.minX);
+  Value minY = arith::ConstantIndexOp::create(rewriter, loc, recordIndex.minY);
+  Value width =
+      arith::ConstantIndexOp::create(rewriter, loc, recordIndex.width);
+  Value xOffset = arith::SubIOp::create(rewriter, loc, nodeX, minX);
+  Value yOffset = arith::SubIOp::create(rewriter, loc, nodeY, minY);
+  Value rowOffset = arith::MulIOp::create(rewriter, loc, yOffset, width);
+  Value nodeIndex = arith::AddIOp::create(rewriter, loc, rowOffset, xOffset);
+  Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  // Table lookups may be hoisted above the bounds condition during lowering.
+  Value safeNodeIndex =
+      arith::SelectOp::create(rewriter, loc, isInBounds, nodeIndex, zero);
+  Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
+  Value nextNodeIndex =
+      arith::AddIOp::create(rewriter, loc, safeNodeIndex, one);
+  Value lower = buildConstantTableLookup(rewriter, loc, recordIndex.offsets,
+                                         safeNodeIndex);
+  Value upper = buildConstantTableLookup(rewriter, loc, recordIndex.offsets,
+                                         nextNodeIndex);
+  auto forOp = scf::ForOp::create(rewriter, loc, lower, upper, one);
+  foreachLoweringInfo.recordLoops[forOp] = PipeNetRecordLoop{
+      records, role == PipeRole::Source ? PipeNetRecordSelection::Source
+                                        : PipeNetRecordSelection::Destination};
+  foreachLoweringInfo.controlOps.push_back(forOp);
+
+  rewriter.setInsertionPointToStart(forOp.getBody());
+  Value selectedRecordIndex = buildConstantTableLookup(
+      rewriter, loc, recordIndex.recordIndices, forOp.getInductionVar());
+  Value selectedPipe;
+  if (role == PipeRole::Source) {
+    selectedPipe = buildSelectedPipe<SelectPipeSrcOp, SelectedPipeSrcType>(
+                       rewriter, loc, records, tables, selectedRecordIndex)
+                       .getPipe();
+  } else {
+    selectedPipe = buildSelectedPipe<SelectPipeDstOp, SelectedPipeDstType>(
+                       rewriter, loc, records, tables, selectedRecordIndex)
+                       .getPipe();
+  }
+  clonePipeForeachBody(op, selectedPipe, rewriter);
+  rewriter.eraseOp(op);
+  return success();
+}
+
 static LogicalResult
 lowerPipeNetForeachSrc(PipeNetForeachSrcOp op, RewriterBase &rewriter,
                        PipeForeachLoweringInfo &foreachLoweringInfo) {
@@ -919,6 +1125,11 @@ lowerPipeNetForeachSrc(PipeNetForeachSrcOp op, RewriterBase &rewriter,
   if (shouldLowerPipeNetForeachDirect(records)) {
     return lowerPipeNetForeachDirect(op, rewriter, PipeRole::Source,
                                      foreachLoweringInfo, buildRecordSrcMatch);
+  }
+  if (std::optional<PipeForeachRecordIndex> recordIndex =
+          buildPipeForeachRecordIndex(records, PipeRole::Source)) {
+    return lowerPipeNetForeachIndexed(op, rewriter, PipeRole::Source,
+                                      *recordIndex, foreachLoweringInfo);
   }
 
   PipeForeachTables tables = buildPipeForeachTables(rewriter, records);
@@ -965,7 +1176,11 @@ lowerPipeNetForeachDst(PipeNetForeachDstOp op, RewriterBase &rewriter,
     return lowerPipeNetForeachDirect(op, rewriter, PipeRole::Destination,
                                      foreachLoweringInfo, buildRecordDstMatch);
   }
-
+  if (std::optional<PipeForeachRecordIndex> recordIndex =
+          buildPipeForeachRecordIndex(records, PipeRole::Destination)) {
+    return lowerPipeNetForeachIndexed(op, rewriter, PipeRole::Destination,
+                                      *recordIndex, foreachLoweringInfo);
+  }
   PipeForeachTables tables = buildPipeForeachTables(rewriter, records);
   Value lower = arith::ConstantIndexOp::create(rewriter, loc, 0);
   Value upper =

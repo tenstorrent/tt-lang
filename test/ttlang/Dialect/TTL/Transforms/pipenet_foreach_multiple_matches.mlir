@@ -14,7 +14,19 @@ module attributes {ttl.launch_grid = array<i64: 2, 5>} {
 // CHECK-LABEL: func.func @gather_receiver
 // Six distinct completion counters cover the six matching records.
 // CHECK: %[[COUNTERS:.*]] = memref.alloca() : memref<6xi32>
-// CHECK: scf.for %[[INDEX:.*]] =
+// Offset table lookups use a valid index even when conversion hoists them
+// above the receiver-only bounds condition.
+// CHECK: %[[X_IN_BOUNDS:.*]] = arith.andi
+// CHECK: %[[Y_IN_BOUNDS:.*]] = arith.andi
+// CHECK: %[[IN_BOUNDS:.*]] = arith.andi %[[X_IN_BOUNDS]], %[[Y_IN_BOUNDS]] : i1
+// CHECK: %[[NODE_INDEX:.*]] = arith.addi
+// CHECK: %[[SAFE_NODE_INDEX:.*]] = arith.select %[[IN_BOUNDS]], %[[NODE_INDEX]], {{.*}} : index
+// CHECK: %[[NEXT_NODE_INDEX:.*]] = arith.addi %[[SAFE_NODE_INDEX]], {{.*}} : index
+// CHECK: %[[LOWER:.*]] = ttkernel.experimental.constant_table_lookup %[[SAFE_NODE_INDEX]], [0, 6] : index
+// CHECK: %[[UPPER:.*]] = ttkernel.experimental.constant_table_lookup %[[NEXT_NODE_INDEX]], [0, 6] : index
+// CHECK: scf.if %[[IN_BOUNDS]]
+// CHECK: scf.for %[[MEMBERSHIP:.*]] =
+// CHECK: %[[INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[MEMBERSHIP]], [0, 1, 2, 3, 4, 5] : index
 // CHECK: ttkernel.experimental.constant_table_lookup %[[INDEX]], [6, 6, 6, 6, 6, 7] : index
 // CHECK: %[[PROGRESS_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[INDEX]], [0, 2, 3, 4, 5, 1] : index
 // CHECK: memref.load %[[COUNTERS]][%[[PROGRESS_INDEX]]] : memref<6xi32>
@@ -48,15 +60,18 @@ func.func @gather_receiver()
 }
 
 // CHECK-LABEL: func.func @gather_senders
-// CHECK: scf.for %[[INDEX:.*]] =
+// Each source executes its records in construction order. Source (0, 0)
+// therefore selects records 0 and 5 before the remaining source coordinates.
+// CHECK: scf.for %[[MEMBERSHIP:.*]] =
+// CHECK: %[[INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[MEMBERSHIP]], [0, 5, 1, 2, 3, 4] : index
 // CHECK: %[[READY_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[INDEX]], [6, 6, 6, 6, 6, 7] : index
 // CHECK: %[[READY_SEM:.*]] = ttkernel.get_semaphore(%[[READY_INDEX]])
 // CHECK: %[[READY_ADDR:.*]] = ttkernel.reinterpret_cast(%[[READY_SEM]])
+// CHECK: ttkernel.experimental.semaphore_wait(%[[READY_ADDR]], {{.*}})
+// CHECK: ttkernel.noc_async_write %
 // CHECK: %[[COMPLETION_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[INDEX]], [0, 2, 3, 4, 5, 1] : index
 // CHECK: %[[COMPLETION_SEM:.*]] = ttkernel.get_semaphore(%[[COMPLETION_INDEX]])
 // CHECK: %[[COMPLETION_NOC_ADDR:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[COMPLETION_SEM]], {{.*}})
-// CHECK: ttkernel.experimental.semaphore_wait(%[[READY_ADDR]], {{.*}})
-// CHECK: ttkernel.noc_async_write %
 // CHECK: ttkernel.noc_semaphore_inc(%[[COMPLETION_NOC_ADDR]], {{.*}})
 func.func @gather_senders()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
