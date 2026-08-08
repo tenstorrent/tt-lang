@@ -138,9 +138,15 @@ def _make_kernel(storage_kind, tile_count, node_count, byte_offset=0, block_coun
     return module.dfb_storage_mul
 
 
-def _to_height_sharded(torch_tensor, device, node_count):
+def _to_sharded(torch_tensor, device, node_count, memory_layout):
     dram_tensor = to_dram(torch_tensor, device)
     tensor_rows, tensor_columns = torch_tensor.shape[-2:]
+    if memory_layout == ttnn.TensorMemoryLayout.HEIGHT_SHARDED:
+        shard_shape = (tensor_rows // node_count, tensor_columns)
+    elif memory_layout == ttnn.TensorMemoryLayout.WIDTH_SHARDED:
+        shard_shape = (tensor_rows, tensor_columns // node_count)
+    else:
+        raise ValueError(f"unsupported test memory layout: {memory_layout}")
     shard_spec = ttnn.ShardSpec(
         ttnn.CoreRangeSet(
             {
@@ -150,15 +156,24 @@ def _to_height_sharded(torch_tensor, device, node_count):
                 )
             }
         ),
-        (tensor_rows // node_count, tensor_columns),
+        shard_shape,
         ttnn.ShardOrientation.ROW_MAJOR,
     )
     memory_config = ttnn.MemoryConfig(
-        ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
+        memory_layout,
         ttnn.BufferType.L1,
         shard_spec,
     )
     return ttnn.to_memory_config(dram_tensor, memory_config=memory_config)
+
+
+def _to_height_sharded(torch_tensor, device, node_count):
+    return _to_sharded(
+        torch_tensor,
+        device,
+        node_count,
+        ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
+    )
 
 
 @ttl.operation(grid=(1, 1))
@@ -212,6 +227,43 @@ def test_dfb_storage_eltwise_mul(
     out = _to_height_sharded(torch.zeros_like(expected), device, node_count)
 
     _make_kernel(storage_kind, tile_count, node_count)(lhs, rhs, out)
+
+    actual = ttnn.to_torch(out)
+    assert_pcc(expected.float(), actual.float(), threshold=0.999)
+
+
+@pytest.mark.requires_device
+@pytest.mark.parametrize(
+    "torch_dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"]
+)
+@pytest.mark.parametrize("tile_count", [1, 8], ids=["one_tile", "eight_tiles"])
+@pytest.mark.parametrize("node_count", [1, 2], ids=["one_node", "two_nodes"])
+@pytest.mark.parametrize(
+    "memory_layout",
+    [
+        ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
+        ttnn.TensorMemoryLayout.WIDTH_SHARDED,
+    ],
+    ids=["height-sharded", "width-sharded"],
+)
+def test_tensor_backed_dfb_sharded_memory_layouts(
+    device, torch_dtype, tile_count, node_count, memory_layout
+):
+    """Tensor-backed DFBs bind every supported node-local shard layout."""
+    if memory_layout == ttnn.TensorMemoryLayout.HEIGHT_SHARDED:
+        tensor_shape = (32 * node_count, 32 * tile_count)
+    else:
+        tensor_shape = (32, 32 * tile_count * node_count)
+    torch.manual_seed(0)
+    lhs_torch = torch.rand(tensor_shape, dtype=torch_dtype)
+    rhs_torch = torch.rand(tensor_shape, dtype=torch_dtype)
+    expected = lhs_torch * rhs_torch
+
+    lhs = _to_sharded(lhs_torch, device, node_count, memory_layout)
+    rhs = _to_sharded(rhs_torch, device, node_count, memory_layout)
+    out = _to_sharded(torch.zeros_like(expected), device, node_count, memory_layout)
+
+    _make_kernel("tensor_backed", tile_count, node_count)(lhs, rhs, out)
 
     actual = ttnn.to_torch(out)
     assert_pcc(expected.float(), actual.float(), threshold=0.999)
