@@ -1018,6 +1018,27 @@ def test_global_semaphore_cache_reallocates_for_new_device(monkeypatch):
     assert fake_ttnn.reset_calls == []
 
 
+def test_global_semaphore_cache_debug_events_are_ordered(monkeypatch, capsys):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setenv("TTLANG_DEBUG_PIPE_RUNTIME", "1")
+    cache = kernel_runner.PipeGlobalSemaphoreCache()
+    device = object()
+    core_ranges = _FakeCoreRanges()
+
+    cache.acquire([], core_ranges, 1, device)
+    cache.acquire([], core_ranges, 1, device)
+
+    assert capsys.readouterr().out.splitlines() == [
+        "[ttlang pipe runtime] global_semaphore_allocate "
+        "dispatch=1 addresses=(4096,)",
+        "[ttlang pipe runtime] global_semaphore_reset_begin "
+        "dispatch=2 semaphore=0 address=4096",
+        "[ttlang pipe runtime] global_semaphore_reset_end "
+        "dispatch=2 semaphore=0",
+    ]
+
+
 def test_build_cb_descriptors_excludes_computed_address_backing_tensors(
     monkeypatch,
 ):

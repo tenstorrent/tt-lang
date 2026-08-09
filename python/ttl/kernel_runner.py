@@ -201,6 +201,7 @@ class PipeGlobalSemaphoreCache:
     _core_ranges: Optional[Any] = field(default=None, init=False)
     _core_ranges_key: Optional[Tuple[Any, ...]] = field(default=None, init=False)
     _semaphores: List[Any] = field(default_factory=list, init=False)
+    _acquire_count: int = field(default=0, init=False)
 
     def acquire(
         self,
@@ -216,6 +217,7 @@ class PipeGlobalSemaphoreCache:
         ttnn_api = _ensure_ttnn()
         if ttnn_api is None:
             raise RuntimeError("ttnn is not available")
+        self._acquire_count += 1
         resource_device = device if device is not None else _first_device(tensors)
         core_ranges_key = _core_ranges_cache_key(core_ranges)
         same_core_ranges = (
@@ -229,8 +231,19 @@ class PipeGlobalSemaphoreCache:
             and len(self._semaphores) == count
         )
         if can_reuse:
-            for semaphore in self._semaphores:
+            for semaphore_index, semaphore in enumerate(self._semaphores):
+                _debug_pipe_runtime(
+                    "global_semaphore_reset_begin",
+                    dispatch=self._acquire_count,
+                    semaphore=semaphore_index,
+                    address=int(ttnn_api.get_global_semaphore_address(semaphore)),
+                )
                 ttnn_api.reset_global_semaphore_value(semaphore, 0)
+                _debug_pipe_runtime(
+                    "global_semaphore_reset_end",
+                    dispatch=self._acquire_count,
+                    semaphore=semaphore_index,
+                )
             return self._semaphores
 
         semaphores, _addresses = build_pipe_global_semaphores(
@@ -243,6 +256,14 @@ class PipeGlobalSemaphoreCache:
         self._core_ranges = core_ranges
         self._core_ranges_key = core_ranges_key
         self._semaphores = semaphores
+        _debug_pipe_runtime(
+            "global_semaphore_allocate",
+            dispatch=self._acquire_count,
+            addresses=tuple(
+                int(ttnn_api.get_global_semaphore_address(semaphore))
+                for semaphore in semaphores
+            ),
+        )
         return self._semaphores
 
 
@@ -381,6 +402,14 @@ def build_kernel_descriptors(
 
 def _align_up(value: int, alignment: int) -> int:
     return ((value + alignment - 1) // alignment) * alignment
+
+
+def _debug_pipe_runtime(event: str, **fields: Any) -> None:
+    """Emit ordered pipe-runtime events when explicitly requested."""
+    if os.environ.get("TTLANG_DEBUG_PIPE_RUNTIME") != "1":
+        return
+    details = " ".join(f"{name}={value}" for name, value in fields.items())
+    print(f"[ttlang pipe runtime] {event} {details}".rstrip(), flush=True)
 
 
 def _core_ranges_cache_key(core_ranges: Any) -> Optional[Tuple[Any, ...]]:
@@ -1344,7 +1373,14 @@ def run_kernel_on_device(
         ),
     )
 
-    return ttnn.generic_op(io_tensors, program)
+    _debug_pipe_runtime(
+        "generic_op_begin",
+        global_semaphores=len(pipe_runtime_resources.global_semaphores),
+        program_hash=normalized_program_hash,
+    )
+    result = ttnn.generic_op(io_tensors, program)
+    _debug_pipe_runtime("generic_op_end")
+    return result
 
 
 def _serialize_core_ranges(
