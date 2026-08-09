@@ -112,8 +112,13 @@ def test_make_tensor_backed_dfb_accepts_ttnn_memory_layout_enums(
 
 @pytest.mark.parametrize(
     "memory_layout",
-    ["INTERLEAVED", "BLOCK_SHARDED", "height_sharded"],
-    ids=["interleaved", "block-sharded", "non-enum-spelling"],
+    ["INTERLEAVED", "BLOCK_SHARDED", "height_sharded", "NOT_HEIGHT_SHARDED"],
+    ids=[
+        "interleaved",
+        "block-sharded",
+        "non-enum-spelling",
+        "substring-collision",
+    ],
 )
 def test_make_tensor_backed_dfb_rejects_unsupported_memory_layouts(
     monkeypatch, memory_layout
