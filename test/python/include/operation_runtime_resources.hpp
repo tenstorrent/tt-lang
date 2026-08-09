@@ -4,10 +4,11 @@
 
 #pragma once
 
+#include "api/dataflow/circular_buffer.h"
 #include "api/dataflow/dataflow_api.h"
 
-inline void write_operation_runtime_value(uint32_t outputAddress) {
-  const uint32_t outputValue = get_arg_val<uint32_t>(0);
+inline void write_operation_runtime_value(uint32_t outputDfb) {
+  uint32_t outputValue = get_arg_val<uint32_t>(0);
   const uint32_t semaphoreId = get_arg_val<uint32_t>(1);
   const uint32_t generation = get_arg_val<uint32_t>(2);
   auto *semaphore = reinterpret_cast<volatile tt_l1_ptr uint32_t *>(
@@ -16,17 +17,25 @@ inline void write_operation_runtime_value(uint32_t outputAddress) {
   noc_semaphore_set(semaphore, generation);
   noc_semaphore_wait(semaphore, generation);
 
-  auto *output = reinterpret_cast<volatile tt_l1_ptr uint32_t *>(outputAddress);
 #if defined(OUTPUT_BF16)
   constexpr uint32_t wordCount = 32 * 32 / 2;
-  const uint32_t packedValue = outputValue | (outputValue << 16);
-  for (uint32_t wordIndex = 0; wordIndex < wordCount; ++wordIndex) {
-    output[wordIndex] = packedValue;
-  }
+#if defined(OUTPUT_ALTERNATE)
+  outputValue = get_absolute_logical_x() == 0 ? 0x40E0 : 0x4100;
+#endif
+  outputValue |= outputValue << 16;
 #else
   constexpr uint32_t wordCount = 32 * 32;
-  for (uint32_t wordIndex = 0; wordIndex < wordCount; ++wordIndex) {
-    output[wordIndex] = outputValue;
-  }
+#if defined(OUTPUT_ALTERNATE)
+  outputValue = get_absolute_logical_x() == 0 ? 0x40E00000 : 0x41000000;
 #endif
+#endif
+
+  CircularBuffer output(outputDfb);
+  output.reserve_back(1);
+  auto *outputWords =
+      reinterpret_cast<volatile tt_l1_ptr uint32_t *>(output.get_write_ptr());
+  for (uint32_t wordIndex = 0; wordIndex < wordCount; ++wordIndex) {
+    outputWords[wordIndex] = outputValue;
+  }
+  output.push_back(1);
 }
