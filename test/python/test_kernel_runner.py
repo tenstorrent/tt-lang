@@ -695,6 +695,50 @@ def test_routing_plane_assigns_distinct_links_to_concurrent_managers(monkeypatch
     assert selected_links == [0, 1]
 
 
+def test_routing_plane_uses_control_plane_default_for_one_manager(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.delattr(_FakeTTNN, "get_forwarding_link_indices")
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program(1)
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[route]],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=1,
+        grid_rows=1,
+    )
+
+    assert fake_ttnn.fabric_setup_calls[0][2] == []
+    assert fake_ttnn.fabric_link_calls == []
+
+
+def test_routing_plane_requires_link_query_for_concurrent_managers(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.delattr(_FakeTTNN, "get_forwarding_link_indices")
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program(2)
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)
+
+    with pytest.raises(
+        RuntimeError,
+        match="TTNN must expose get_forwarding_link_indices",
+    ):
+        kernel_runner.configure_routing_plane_runtime_args(
+            program_descriptor=program,
+            kernel_fabric_routes=[[route], [route]],
+            mesh_device=_FakeMeshDevice(),
+            device_coordinates=(0, 0),
+            grid_cols=1,
+            grid_rows=1,
+        )
+
+    assert fake_ttnn.fabric_setup_calls == []
+    assert program.semaphores == []
+
+
 def test_routing_plane_preserves_noncontiguous_link_indices(monkeypatch):
     fake_ttnn = _FakeTTNN()
     destination = _FakeFabricNodeId(0, 1)

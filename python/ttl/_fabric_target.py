@@ -105,7 +105,7 @@ class FabricRouteCache:
 class _FabricConnectionRequest:
     destination_node_id: Any
     direction: int
-    eligible_links: Tuple[int, ...]
+    eligible_links: Optional[Tuple[int, ...]]
 
 
 @dataclass(frozen=True)
@@ -119,7 +119,7 @@ class _FabricManagerRequest:
 @dataclass(frozen=True)
 class _FabricConnectionBinding:
     destination_node_id: Any
-    link_index: int
+    link_index: Optional[int]
 
 
 @dataclass(frozen=True)
@@ -168,7 +168,7 @@ def _intersect_forwarding_links(
 
 def _assign_distinct_links(
     manager_requests: List[_FabricManagerRequest],
-) -> Dict[Tuple[int, int], int]:
+) -> Dict[Tuple[int, int], Optional[int]]:
     connections_by_direction = {}
     for manager_index, manager_request in enumerate(manager_requests):
         for connection_index, connection in enumerate(manager_request.connections):
@@ -178,11 +178,32 @@ def _assign_distinct_links(
 
     selected_links = {}
     for direction, connection_keys in connections_by_direction.items():
+        if len(connection_keys) == 1:
+            connection_key = connection_keys[0]
+            manager_index, connection_index = connection_key
+            connection = manager_requests[manager_index].connections[connection_index]
+            if connection.eligible_links is None:
+                # The control plane's default is sufficient when no other
+                # manager can contend for the same directional link.
+                selected_links[connection_key] = None
+                continue
+
+        if any(
+            manager_requests[manager_index].connections[connection_index].eligible_links
+            is None
+            for manager_index, connection_index in connection_keys
+        ):
+            raise RuntimeError(
+                "TTNN must expose get_forwarding_link_indices() to assign "
+                "concurrent fabric connections"
+            )
+
         link_owner = {}
 
         def assign_connection(connection_key, visited_links):
             manager_index, connection_index = connection_key
             connection = manager_requests[manager_index].connections[connection_index]
+            assert connection.eligible_links is not None
 
             # Preserve the control plane's preference unless a later request
             # cannot be satisfied without reassignment.
@@ -239,6 +260,9 @@ def build_fabric_target_binding_plan(
         _build_mesh_coordinate(ttnn_api, device_coordinates)
     )
     active_route_cache = route_cache or FabricRouteCache()
+    can_enumerate_forwarding_links = (
+        getattr(ttnn_api, "get_forwarding_link_indices", None) is not None
+    )
     manager_requests = []
     for kernel_index, routes in enumerate(kernel_fabric_routes):
         if not routes:
@@ -338,18 +362,20 @@ def build_fabric_target_binding_plan(
                 for connection_index, destination_node_id in enumerate(
                     connection_destination_node_ids
                 ):
-                    eligible_links = _intersect_forwarding_links(
-                        ttnn_api,
-                        active_route_cache,
-                        mesh_device,
-                        source_node_id,
-                        destinations_by_connection[connection_index],
-                    )
-                    if not eligible_links:
-                        raise ValueError(
-                            "fabric destinations sharing one direction have no "
-                            "common forwarding link"
+                    eligible_links = None
+                    if can_enumerate_forwarding_links:
+                        eligible_links = _intersect_forwarding_links(
+                            ttnn_api,
+                            active_route_cache,
+                            mesh_device,
+                            source_node_id,
+                            destinations_by_connection[connection_index],
                         )
+                        if not eligible_links:
+                            raise ValueError(
+                                "fabric destinations sharing one direction have "
+                                "no common forwarding link"
+                            )
                     connection_requests.append(
                         _FabricConnectionRequest(
                             destination_node_id=destination_node_id,
@@ -419,9 +445,15 @@ def apply_fabric_target_binding_plan(
             destination_node_ids = [
                 connection.destination_node_id for connection in manager.connections
             ]
-            connection_link_indices = [
-                connection.link_index for connection in manager.connections
+            explicit_link_indices = [
+                connection.link_index
+                for connection in manager.connections
+                if connection.link_index is not None
             ]
+            assert not explicit_link_indices or len(explicit_link_indices) == len(
+                manager.connections
+            )
+            connection_link_indices = explicit_link_indices
             fabric_args = ttnn_api.setup_routing_plane_connection(
                 plan.source_node_id,
                 destination_node_ids,

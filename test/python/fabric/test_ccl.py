@@ -154,7 +154,9 @@ def _make_fabric_operations(
     receive_block_count = max(2, device_count - 1)
     ring_axis = next(axis for axis, extent in enumerate(mesh_shape) if extent > 1)
     stencil_offsets = []
-    for axis in range(len(mesh_shape)):
+    for axis, extent in enumerate(mesh_shape):
+        if extent == 1:
+            continue
         for delta in (-1, 1):
             offset = [0] * len(mesh_shape)
             offset[axis] = delta

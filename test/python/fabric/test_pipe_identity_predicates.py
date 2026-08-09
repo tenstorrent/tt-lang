@@ -2,7 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Graph callback identity specialization on a Galaxy participant submesh."""
+"""Graph callback identity specialization on a two-device fabric submesh."""
+
+from math import prod
 
 import pytest
 import torch
@@ -10,88 +12,111 @@ import ttl
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from ttlang_test_utils import to_dram
+from ttlang_test_utils import get_fabric_mesh_shape, open_fabric_mesh, to_dram
 from utils.correctness import assert_allclose
 
 pytestmark = pytest.mark.multi_device
 
 TILE_SIZE = 32
-PARENT_MESH_SHAPE = (4, 8)
-PARTICIPANT_MESH_SHAPE = (1, 2)
-DEVICE_DOMAIN = ttl.DeviceDomain(PARTICIPANT_MESH_SHAPE)
-EXCHANGE_NET = ttl.PipeNet(graph=ttl.TransferGraph.all_to_all(DEVICE_DOMAIN))
 
 
-@ttl.operation(grid=(1, 1), device_domain=DEVICE_DOMAIN)
-def identity_selected_exchange(inp, out):
-    send_low_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
-    send_high_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
-    receive_low_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
-    receive_high_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+def _make_identity_selected_exchange(participant_mesh_shape: tuple[int, ...]):
+    device_domain = ttl.DeviceDomain(participant_mesh_shape)
+    exchange_net = ttl.PipeNet(graph=ttl.TransferGraph.all_to_all(device_domain))
 
-    @ttl.compute()
-    def idle_compute():
-        pass
+    @ttl.operation(grid=(1, 1), device_domain=device_domain)
+    def identity_selected_exchange(inp, out):
+        send_low_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        send_high_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        receive_low_dfb = ttl.make_dataflow_buffer_like(
+            inp, shape=(1, 1), block_count=2
+        )
+        receive_high_dfb = ttl.make_dataflow_buffer_like(
+            inp, shape=(1, 1), block_count=2
+        )
 
-    @ttl.datamovement()
-    def sender_node():
-        def send_to_peer(pipe):
-            if pipe.destination_device_index == 0:
-                with send_low_dfb.reserve() as send_block:
-                    ttl.copy(inp[0, 0], send_block).wait()
-                with send_low_dfb.wait() as send_block:
-                    ttl.copy(send_block, pipe).wait()
-            else:
-                with send_high_dfb.reserve() as send_block:
-                    ttl.copy(inp[0, 1], send_block).wait()
-                with send_high_dfb.wait() as send_block:
-                    ttl.copy(send_block, pipe).wait()
+        @ttl.compute()
+        def idle_compute():
+            pass
 
-        EXCHANGE_NET.if_src(send_to_peer)
+        @ttl.datamovement()
+        def sender_node():
+            def send_to_peer(pipe):
+                if pipe.destination_device_index == 0:
+                    with send_low_dfb.reserve() as send_block:
+                        ttl.copy(inp[0, 0], send_block).wait()
+                    with send_low_dfb.wait() as send_block:
+                        ttl.copy(send_block, pipe).wait()
+                else:
+                    with send_high_dfb.reserve() as send_block:
+                        ttl.copy(inp[0, 1], send_block).wait()
+                    with send_high_dfb.wait() as send_block:
+                        ttl.copy(send_block, pipe).wait()
 
-    @ttl.datamovement()
-    def receiver_node():
-        def receive_from_peer(pipe):
-            source_device_index = pipe.source_device_index
-            if source_device_index == 0:
-                with receive_low_dfb.reserve() as receive_block:
-                    ttl.copy(pipe, receive_block).wait()
-                with receive_low_dfb.wait() as receive_block:
-                    ttl.copy(receive_block, out[0, 0]).wait()
-            else:
-                with receive_high_dfb.reserve() as receive_block:
-                    ttl.copy(pipe, receive_block).wait()
-                with receive_high_dfb.wait() as receive_block:
-                    ttl.copy(receive_block, out[0, 1]).wait()
+            exchange_net.if_src(send_to_peer)
 
-        EXCHANGE_NET.if_dst(receive_from_peer)
+        @ttl.datamovement()
+        def receiver_node():
+            def receive_from_peer(pipe):
+                source_device_index = pipe.source_device_index
+                if source_device_index == 0:
+                    with receive_low_dfb.reserve() as receive_block:
+                        ttl.copy(pipe, receive_block).wait()
+                    with receive_low_dfb.wait() as receive_block:
+                        ttl.copy(receive_block, out[0, 0]).wait()
+                else:
+                    with receive_high_dfb.reserve() as receive_block:
+                        ttl.copy(pipe, receive_block).wait()
+                    with receive_high_dfb.wait() as receive_block:
+                        ttl.copy(receive_block, out[0, 1]).wait()
+
+            exchange_net.if_dst(receive_from_peer)
+
+    return identity_selected_exchange
 
 
 @pytest.fixture(scope="module")
-def participant_mesh():
-    required_devices = PARENT_MESH_SHAPE[0] * PARENT_MESH_SHAPE[1]
-    if ttnn.GetNumAvailableDevices() < required_devices:
-        pytest.skip(f"requires {required_devices} Galaxy devices")
+def fabric_mesh_shape():
+    if ttnn.get_num_devices() < 2:
+        pytest.skip("requires at least two devices")
+    mesh_shape = get_fabric_mesh_shape()
+    if prod(mesh_shape) < 2:
+        pytest.skip("requires a multi-device fabric mesh")
+    return mesh_shape
 
-    parent_mesh = None
-    participant_submesh = None
-    try:
-        ttnn.set_fabric_config(ttnn.FabricConfig.FABRIC_2D_TORUS_X)
-        parent_mesh = ttnn.open_mesh_device(ttnn.MeshShape(*PARENT_MESH_SHAPE))
-        participant_submesh = parent_mesh.create_submesh(
-            ttnn.MeshShape(*PARTICIPANT_MESH_SHAPE)
+
+@pytest.fixture(scope="module")
+def participant_mesh_shape(fabric_mesh_shape):
+    participant_axis = next(
+        axis for axis, extent in enumerate(fabric_mesh_shape) if extent > 1
+    )
+    return tuple(
+        2 if axis == participant_axis else 1 for axis in range(len(fabric_mesh_shape))
+    )
+
+
+@pytest.fixture(scope="module")
+def identity_selected_exchange(participant_mesh_shape):
+    return _make_identity_selected_exchange(participant_mesh_shape)
+
+
+@pytest.fixture(scope="module")
+def participant_mesh(fabric_mesh_shape, participant_mesh_shape):
+    with open_fabric_mesh(
+        requested_mesh_shape=fabric_mesh_shape,
+        fabric_config=ttnn.FabricConfig.FABRIC_2D,
+    ) as parent_mesh:
+        owns_participant_mesh = participant_mesh_shape != fabric_mesh_shape
+        mesh = (
+            parent_mesh.create_submesh(ttnn.MeshShape(participant_mesh_shape))
+            if owns_participant_mesh
+            else parent_mesh
         )
-        yield participant_submesh
-    finally:
         try:
-            if participant_submesh is not None:
-                ttnn.close_mesh_device(participant_submesh)
+            yield mesh
         finally:
-            try:
-                if parent_mesh is not None:
-                    ttnn.close_mesh_device(parent_mesh)
-            finally:
-                ttnn.set_fabric_config(ttnn.FabricConfig.DISABLED)
+            if owns_participant_mesh:
+                ttnn.close_mesh_device(mesh)
 
 
 @pytest.mark.parametrize(
@@ -102,9 +127,14 @@ def participant_mesh():
     ],
 )
 def test_pipe_identity_predicates_select_exact_segments(
-    participant_mesh, torch_dtype, rtol, atol
+    participant_mesh_shape,
+    participant_mesh,
+    identity_selected_exchange,
+    torch_dtype,
+    rtol,
+    atol,
 ):
-    logical_shape = (PARTICIPANT_MESH_SHAPE[1] * TILE_SIZE, 2 * TILE_SIZE)
+    logical_shape = (prod(participant_mesh_shape) * TILE_SIZE, 2 * TILE_SIZE)
     inp_torch = torch.arange(
         logical_shape[0] * logical_shape[1], dtype=torch.float32
     ).reshape(logical_shape)
