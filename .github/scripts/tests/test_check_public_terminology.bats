@@ -85,5 +85,19 @@ setup() {
         bash -c 'cd "$1" && exec "$2"' _ "$TEST_REPO" "$CHECK_SCRIPT"
 
     assert_failure
-    assert_output --partial "cannot resolve pull request base ref"
+    assert_output --partial "cannot resolve required diff base"
+}
+
+@test "rejects the prohibited identifier in a pushed commit range" {
+    push_base=$(git -C "$TEST_REPO" rev-parse HEAD)
+    git -C "$TEST_REPO" switch -q -c feature/row-fusion
+    printf '%s\n' "non-public bla""ze reference" > "$TEST_REPO/change.txt"
+    commit_all "$TEST_REPO" "add non-public reference"
+    git -C "$TEST_REPO" update-ref refs/remotes/origin/main HEAD
+
+    run env TTLANG_PUBLIC_DIFF_BASE="$push_base" \
+        bash -c 'cd "$1" && exec "$2"' _ "$TEST_REPO" "$CHECK_SCRIPT"
+
+    assert_failure
+    assert_output --partial "branch diff contains a non-public comparison identifier"
 }

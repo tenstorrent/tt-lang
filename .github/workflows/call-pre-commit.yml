@@ -18,3 +18,5 @@ jobs:
           python-version: "3.12"
       - name: Run pre-commit
         uses: pre-commit/action@v3.0.1
+        env:
+          TTLANG_PUBLIC_DIFF_BASE: ${{ github.event_name == 'push' && github.event.before || '' }}
