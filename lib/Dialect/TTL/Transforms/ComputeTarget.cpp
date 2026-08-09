@@ -756,6 +756,33 @@ ComputeTargetEnvironment::validateOperation(Operation *operation,
     return failed(capability) ? failure()
                               : validateBroadcast(*capability, failureReason);
   }
+  if (auto normalization = dyn_cast<TileRowNormalizationBlockOp>(operation)) {
+    FailureOr<ttcore::TileType> tileType =
+        getTileType(normalization.getInput().getType());
+    if (failed(tileType)) {
+      failureReason = "row-normalization input must contain a tile type";
+      return failure();
+    }
+    ComputeScheduleCapabilityLimits limits = getScheduleCapabilityLimits(
+        ComputeScheduleCapability::RowNormalization, *tileType);
+    if (!limits.maxTiles) {
+      failureReason = limits.targetSupported
+                          ? "row-normalization schedule does not support this "
+                            "tile type"
+                          : "target does not provide the row-normalization "
+                            "schedule";
+      return failure();
+    }
+    if (normalization.getNumTiles() > *limits.maxTiles) {
+      failureReason =
+          (Twine("row-normalization schedule requires ") +
+           Twine(normalization.getNumTiles()) +
+           " tiles, but the target supports at most " + Twine(*limits.maxTiles))
+              .str();
+      return failure();
+    }
+    return success();
+  }
   if (*primitive == ComputePrimitive::Reduce) {
     FailureOr<ReductionCapability> capability =
         getReductionCapability(operation, failureReason);
@@ -785,32 +812,6 @@ ComputeTargetEnvironment::validateOperation(Operation *operation,
     return validateMatmul(matmul.getLhs().getType(), matmul.getRhs().getType(),
                           matmul.getResult().getType(),
                           matmul.getTransposeRhs());
-  }
-  if (auto normalization = dyn_cast<TileRowNormalizationBlockOp>(operation)) {
-    FailureOr<ttcore::TileType> tileType =
-        getTileType(normalization.getInput().getType());
-    if (failed(tileType)) {
-      failureReason = "row-normalization input must contain a tile type";
-      return failure();
-    }
-    ComputeScheduleCapabilityLimits limits = getScheduleCapabilityLimits(
-        ComputeScheduleCapability::RowNormalization, *tileType);
-    if (!limits.maxTiles) {
-      failureReason = limits.targetSupported
-                          ? "row-normalization schedule does not support this "
-                            "tile type"
-                          : "target does not provide the row-normalization "
-                            "schedule";
-      return failure();
-    }
-    if (normalization.getNumTiles() > *limits.maxTiles) {
-      failureReason =
-          (Twine("row-normalization schedule requires ") +
-           Twine(normalization.getNumTiles()) +
-           " tiles, but the target supports at most " + Twine(*limits.maxTiles))
-              .str();
-      return failure();
-    }
   }
   return success();
 }

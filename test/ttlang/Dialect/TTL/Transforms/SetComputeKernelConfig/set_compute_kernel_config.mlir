@@ -66,7 +66,7 @@ func.func @f32_auto_enable(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
 // when they are not nested in ttl.compute.
 // DEFAULT-LABEL: func.func @direct_f32_dst_section_auto_enable
 // DEFAULT-SAME: fp32_dest_acc_en = true
-// DEFAULT-SAME: ttl.enable_fpu_binary_ops = true
+// DEFAULT-NOT: ttl.enable_fpu_binary_ops
 // OVERRIDE-LABEL: func.func @direct_f32_dst_section_auto_enable
 // OVERRIDE-SAME: dst_full_sync_en = true
 // OVERRIDE-SAME: fp32_dest_acc_en = true
@@ -76,7 +76,7 @@ func.func @f32_auto_enable(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
 // NO-REDUCE-FP32-SAME: fp32_dest_acc_en = true
 // FPUOFF-LABEL: func.func @direct_f32_dst_section_auto_enable
 // FPUOFF-SAME: fp32_dest_acc_en = true
-// FPUOFF-SAME: ttl.enable_fpu_binary_ops = false
+// FPUOFF-NOT: ttl.enable_fpu_binary_ops
 func.func @direct_f32_dst_section_auto_enable(
     %input: tensor<1x1x!ttcore.tile<32x32, f32>>) {
   %c0 = arith.constant 0 : index
