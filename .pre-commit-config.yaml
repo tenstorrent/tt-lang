@@ -20,6 +20,12 @@ repos:
       - id: check-toml
   - repo: local
     hooks:
+      - id: public-terminology
+        name: Reject non-public comparison identifiers
+        entry: .github/scripts/check-public-terminology.sh
+        language: system
+        pass_filenames: false
+        always_run: true
       - id: build-spec
         name: Regenerate TTLangSpecification.md from externalized examples
         entry: python3 docs/sphinx/specs/build_spec.py
