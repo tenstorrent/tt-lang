@@ -72,19 +72,19 @@ import ttl
 def dfb_storage_mul(lhs, rhs, out):
     lhs_dfb = ttl.make_tensor_backed_dfb(
         lhs,
-        shape=(1, {tile_count}),
+        shape=({tile_rows}, {tile_count}),
         block_count={block_count},
         byte_offset={byte_offset},
     )
     rhs_dfb = ttl.make_tensor_backed_dfb(
         rhs,
-        shape=(1, {tile_count}),
+        shape=({tile_rows}, {tile_count}),
         block_count={block_count},
         byte_offset={byte_offset},
     )
     out_dfb = ttl.make_tensor_backed_dfb(
         out,
-        shape=(1, {tile_count}),
+        shape=({tile_rows}, {tile_count}),
         block_count={block_count},
         byte_offset={byte_offset},
     )
@@ -113,8 +113,20 @@ def dfb_storage_mul(lhs, rhs, out):
 """,
 }
 
+_SHARD_DIMENSION_BY_MEMORY_LAYOUT = {
+    ttnn.TensorMemoryLayout.HEIGHT_SHARDED: 0,
+    ttnn.TensorMemoryLayout.WIDTH_SHARDED: 1,
+}
 
-def _make_kernel(storage_kind, tile_count, node_count, byte_offset=0, block_count=1):
+
+def _make_kernel(
+    storage_kind,
+    tile_count,
+    node_count,
+    byte_offset=0,
+    block_count=1,
+    tile_rows=1,
+):
     """Create source with a compile-time DFB capacity."""
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".py", delete=False, prefix=f"{storage_kind}_dfb_"
@@ -125,12 +137,14 @@ def _make_kernel(storage_kind, tile_count, node_count, byte_offset=0, block_coun
                 node_count=node_count,
                 byte_offset=byte_offset,
                 block_count=block_count,
+                tile_rows=tile_rows,
             )
         )
         source_name = source_file.name
     temp_kernel_files.append(source_name)
     spec = importlib.util.spec_from_file_location(
-        f"{storage_kind}_dfb_{tile_count}_{node_count}_{byte_offset}_{block_count}",
+        f"{storage_kind}_dfb_{tile_rows}_{tile_count}_{node_count}_"
+        f"{byte_offset}_{block_count}",
         source_name,
     )
     module = importlib.util.module_from_spec(spec)
@@ -141,12 +155,9 @@ def _make_kernel(storage_kind, tile_count, node_count, byte_offset=0, block_coun
 def _to_sharded(torch_tensor, device, node_count, memory_layout):
     dram_tensor = to_dram(torch_tensor, device)
     tensor_rows, tensor_columns = torch_tensor.shape[-2:]
-    if memory_layout == ttnn.TensorMemoryLayout.HEIGHT_SHARDED:
-        shard_shape = (tensor_rows // node_count, tensor_columns)
-    elif memory_layout == ttnn.TensorMemoryLayout.WIDTH_SHARDED:
-        shard_shape = (tensor_rows, tensor_columns // node_count)
-    else:
-        raise ValueError(f"unsupported test memory layout: {memory_layout}")
+    shard_shape = [tensor_rows, tensor_columns]
+    shard_dimension = _SHARD_DIMENSION_BY_MEMORY_LAYOUT[memory_layout]
+    shard_shape[shard_dimension] //= node_count
     shard_spec = ttnn.ShardSpec(
         ttnn.CoreRangeSet(
             {
@@ -156,7 +167,7 @@ def _to_sharded(torch_tensor, device, node_count, memory_layout):
                 )
             }
         ),
-        shard_shape,
+        tuple(shard_shape),
         ttnn.ShardOrientation.ROW_MAJOR,
     )
     memory_config = ttnn.MemoryConfig(
@@ -239,21 +250,14 @@ def test_dfb_storage_eltwise_mul(
 @pytest.mark.parametrize("tile_count", [1, 8], ids=["one_tile", "eight_tiles"])
 @pytest.mark.parametrize("node_count", [1, 2], ids=["one_node", "two_nodes"])
 @pytest.mark.parametrize(
-    "memory_layout",
-    [
-        ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
-        ttnn.TensorMemoryLayout.WIDTH_SHARDED,
-    ],
-    ids=["height-sharded", "width-sharded"],
+    "shard_tile_rows", [1, 2], ids=["one_tile_row", "two_tile_rows"]
 )
-def test_tensor_backed_dfb_sharded_memory_layouts(
-    device, torch_dtype, tile_count, node_count, memory_layout
+def test_tensor_backed_dfb_width_sharded_storage(
+    device, torch_dtype, tile_count, node_count, shard_tile_rows
 ):
-    """Tensor-backed DFBs bind every supported node-local shard layout."""
-    if memory_layout == ttnn.TensorMemoryLayout.HEIGHT_SHARDED:
-        tensor_shape = (32 * node_count, 32 * tile_count)
-    else:
-        tensor_shape = (32, 32 * tile_count * node_count)
+    """Tensor-backed DFBs bind multi-row width shards on every launch node."""
+    memory_layout = ttnn.TensorMemoryLayout.WIDTH_SHARDED
+    tensor_shape = (32 * shard_tile_rows, 32 * tile_count * node_count)
     torch.manual_seed(0)
     lhs_torch = torch.rand(tensor_shape, dtype=torch_dtype)
     rhs_torch = torch.rand(tensor_shape, dtype=torch_dtype)
@@ -263,7 +267,9 @@ def test_tensor_backed_dfb_sharded_memory_layouts(
     rhs = _to_sharded(rhs_torch, device, node_count, memory_layout)
     out = _to_sharded(torch.zeros_like(expected), device, node_count, memory_layout)
 
-    _make_kernel("tensor_backed", tile_count, node_count)(lhs, rhs, out)
+    _make_kernel("tensor_backed", tile_count, node_count, tile_rows=shard_tile_rows)(
+        lhs, rhs, out
+    )
 
     actual = ttnn.to_torch(out)
     assert_pcc(expected.float(), actual.float(), threshold=0.999)

@@ -45,7 +45,10 @@ def _validate_tensor_backed_dfb_tensor(
         raise ValueError(f"{context} must use L1 storage")
     memory_layout = str(memory_config.memory_layout).rsplit(".", maxsplit=1)[-1]
     if memory_layout not in SUPPORTED_TENSOR_BACKED_DFB_MEMORY_LAYOUTS:
-        raise ValueError(f"{context} must be height- or width-sharded")
+        raise ValueError(
+            f"{context} must be height- or width-sharded, "
+            f"got {memory_config.memory_layout}"
+        )
     if "TILE" not in str(getattr(tensor, "layout", None)):
         raise ValueError(f"{context} must use TILE layout")
 

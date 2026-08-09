@@ -92,6 +92,25 @@ def test_make_tensor_backed_dfb_accepts_supported_sharded_layouts(
 
 
 @pytest.mark.parametrize(
+    "memory_layout_name", ["HEIGHT_SHARDED", "WIDTH_SHARDED"], ids=["height", "width"]
+)
+def test_make_tensor_backed_dfb_accepts_ttnn_memory_layout_enums(
+    monkeypatch, memory_layout_name
+):
+    ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
+    monkeypatch.setattr(
+        "ttl.dtype_utils.is_ttnn_tensor", lambda tensor: isinstance(tensor, _FakeTensor)
+    )
+    memory_layout = getattr(ttnn.TensorMemoryLayout, memory_layout_name)
+
+    dfb = dataflow_buffer.make_tensor_backed_dfb(
+        _FakeTensor(memory_layout=memory_layout), shape=(1, 4)
+    )
+
+    assert dfb.shape == (1, 4)
+
+
+@pytest.mark.parametrize(
     "memory_layout",
     ["INTERLEAVED", "BLOCK_SHARDED", "height_sharded"],
     ids=["interleaved", "block-sharded", "non-enum-spelling"],
@@ -103,7 +122,10 @@ def test_make_tensor_backed_dfb_rejects_unsupported_memory_layouts(
         "ttl.dtype_utils.is_ttnn_tensor", lambda tensor: isinstance(tensor, _FakeTensor)
     )
 
-    with pytest.raises(ValueError, match="must be height- or width-sharded"):
+    with pytest.raises(
+        ValueError,
+        match=rf"must be height- or width-sharded, got {memory_layout}$",
+    ):
         dataflow_buffer.make_tensor_backed_dfb(
             _FakeTensor(memory_layout=memory_layout), shape=(1, 4)
         )
