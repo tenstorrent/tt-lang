@@ -14,7 +14,9 @@ building and execution.
 """
 
 from dataclasses import dataclass, field
+import hashlib
 import itertools
+import json
 import operator
 import os
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -219,6 +221,15 @@ class ProgramResourcePlan:
     semaphore_descriptors: Tuple[object, ...]
     kernel_descriptors: Tuple[_KernelDescriptorResourcePlan, ...]
     lifetimes: Tuple[object, ...]
+    structural_fingerprint: int
+
+
+@dataclass(frozen=True)
+class _SemaphoreResourceFingerprint:
+    semaphore_id: int
+    coordinates: Tuple[Tuple[int, int], ...]
+    initial_value: int
+    core_type: str
 
 
 @dataclass
@@ -521,14 +532,34 @@ def _normalize_runtime_args(
     )
 
 
+def _normalize_semaphore_core_type(
+    core_type: object,
+    *,
+    operation_name: str,
+    descriptor_index: int,
+) -> str:
+    if isinstance(core_type, str):
+        name = core_type
+    else:
+        name = getattr(core_type, "name", None)
+    if not isinstance(name, str) or not name:
+        raise TypeError(
+            f"@ttl.operation {operation_name!r}: semaphore descriptor "
+            f"{descriptor_index} core_type must be a named value, got "
+            f"{type(core_type).__name__}"
+        )
+    return name
+
+
 def _validate_semaphore_descriptors(
     semaphore_descriptors: Tuple[object, ...],
     *,
     operation_name: str,
     operation_coordinates: frozenset[Tuple[int, int]],
     first_free_semaphore_id: int,
-) -> None:
+) -> Tuple[_SemaphoreResourceFingerprint, ...]:
     seen_ids = set()
+    fingerprints = []
     for descriptor_index, descriptor in enumerate(semaphore_descriptors):
         semaphore_id = _normalize_index(
             descriptor.id,
@@ -547,25 +578,36 @@ def _validate_semaphore_descriptors(
                 f"{semaphore_id} was specified more than once"
             )
         seen_ids.add(semaphore_id)
-        descriptor_coordinates = frozenset(
-            _canonicalize_core_ranges(
-                descriptor.core_ranges,
-                operation_name=operation_name,
-                field=f"semaphore descriptor {descriptor_index} core_ranges",
-            )
+        descriptor_coordinates = _canonicalize_core_ranges(
+            descriptor.core_ranges,
+            operation_name=operation_name,
+            field=f"semaphore descriptor {descriptor_index} core_ranges",
         )
-        outside_coordinates = descriptor_coordinates - operation_coordinates
+        outside_coordinates = frozenset(descriptor_coordinates) - operation_coordinates
         if outside_coordinates:
             raise ValueError(
                 f"@ttl.operation {operation_name!r}: semaphore descriptor "
                 f"{descriptor_index} has cores outside the operation range: "
                 f"{tuple(sorted(outside_coordinates, key=lambda core: (core[1], core[0])))}"
             )
-        _normalize_index(
+        initial_value = _normalize_index(
             descriptor.initial_value,
             operation_name=operation_name,
             field=f"semaphore descriptor {descriptor_index} initial_value",
         )
+        fingerprints.append(
+            _SemaphoreResourceFingerprint(
+                semaphore_id=semaphore_id,
+                coordinates=descriptor_coordinates,
+                initial_value=initial_value,
+                core_type=_normalize_semaphore_core_type(
+                    descriptor.core_type,
+                    operation_name=operation_name,
+                    descriptor_index=descriptor_index,
+                ),
+            )
+        )
+    return tuple(sorted(fingerprints, key=lambda descriptor: descriptor.semaphore_id))
 
 
 def _validate_runtime_resource_record_types(
@@ -639,6 +681,62 @@ def _validate_runtime_resource_record_types(
                     f"{descriptor_index} must provide {field_name}"
                 )
     return resources
+
+
+_RESOURCE_PLAN_VERSION = 1
+_RESOURCE_PLAN_PERSONALIZATION = b"ttlang-rr-plan"
+_RESOURCE_HASH_PERSONALIZATION = b"ttlang-rr-hash"
+
+
+def _digest_primitive_payload(payload: object, personalization: bytes) -> int:
+    encoded_payload = json.dumps(
+        payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    digest = hashlib.blake2b(
+        encoded_payload,
+        digest_size=8,
+        person=personalization,
+    ).digest()
+    return int.from_bytes(digest, byteorder="big", signed=False)
+
+
+def _compute_resource_plan_fingerprint(
+    kernel_descriptors: Tuple[_KernelDescriptorResourcePlan, ...],
+    semaphore_descriptors: Tuple[_SemaphoreResourceFingerprint, ...],
+) -> int:
+    kernel_payload = tuple(
+        (
+            descriptor.logical_kernel.kind.value,
+            descriptor.logical_kernel.name,
+            descriptor.coordinates,
+            descriptor.defines,
+            tuple(
+                (runtime_arg.coordinate, len(runtime_arg.values))
+                for runtime_arg in descriptor.runtime_args
+            ),
+        )
+        for descriptor in kernel_descriptors
+    )
+    semaphore_payload = tuple(
+        (
+            descriptor.semaphore_id,
+            descriptor.coordinates,
+            descriptor.initial_value,
+            descriptor.core_type,
+        )
+        for descriptor in semaphore_descriptors
+    )
+    return _digest_primitive_payload(
+        (
+            "operation-runtime-resource-plan",
+            _RESOURCE_PLAN_VERSION,
+            kernel_payload,
+            semaphore_payload,
+        ),
+        _RESOURCE_PLAN_PERSONALIZATION,
+    )
 
 
 def plan_program_runtime_resources(
@@ -798,7 +896,7 @@ def plan_program_runtime_resources(
                 )
             descriptor_runtime_args.setdefault(descriptor_index, []).append(runtime_arg)
 
-    _validate_semaphore_descriptors(
+    semaphore_fingerprints = _validate_semaphore_descriptors(
         resources.semaphore_descriptors,
         operation_name=operation_name,
         operation_coordinates=operation_coordinates,
@@ -818,6 +916,10 @@ def plan_program_runtime_resources(
         semaphore_descriptors=resources.semaphore_descriptors,
         kernel_descriptors=kernel_descriptor_plans,
         lifetimes=resources.lifetimes,
+        structural_fingerprint=_compute_resource_plan_fingerprint(
+            kernel_descriptor_plans,
+            semaphore_fingerprints,
+        ),
     )
 
 
@@ -1238,6 +1340,24 @@ def normalize_program_hash(program_hash: Optional[int]) -> Optional[int]:
     if program_hash is None:
         return None
     return int(program_hash) & ((1 << 64) - 1)
+
+
+def combine_program_hash_with_runtime_resources(
+    program_hash: Optional[int], structural_fingerprint: int
+) -> Optional[int]:
+    """Combine compiler and runtime-resource structure into one uint64 hash."""
+    normalized_program_hash = normalize_program_hash(program_hash)
+    if normalized_program_hash is None:
+        return None
+    return _digest_primitive_payload(
+        (
+            "operation-runtime-resource-program-hash",
+            _RESOURCE_PLAN_VERSION,
+            normalized_program_hash,
+            structural_fingerprint,
+        ),
+        _RESOURCE_HASH_PERSONALIZATION,
+    )
 
 
 def _make_node_core_ranges(nodes: Tuple[Tuple[int, int], ...]) -> Any:
@@ -1804,6 +1924,11 @@ def run_kernel_on_device(
         semaphore_descriptors.extend(resource_plan.semaphore_descriptors)
 
     normalized_program_hash = normalize_program_hash(program_hash)
+    if resource_plan is not None:
+        normalized_program_hash = combine_program_hash_with_runtime_resources(
+            normalized_program_hash,
+            resource_plan.structural_fingerprint,
+        )
 
     def build_device_program(device_coordinates=None):
         kernel_descriptors = build_kernel_descriptors(
@@ -1908,6 +2033,24 @@ def _serialize_core_ranges(
     return serialized
 
 
+def _serialize_logical_kernel(
+    spec: KernelSpec,
+) -> Optional[Tuple[str, Optional[str], Optional[str], Optional[str]]]:
+    if spec.logical_kernel is None:
+        return None
+    logical_kernel = _normalize_logical_kernel_selector(
+        spec.logical_kernel,
+        operation_name="<emitted runner>",
+        source=f"kernel descriptor {spec.path!r}",
+    )
+    return (
+        logical_kernel.kind.value,
+        logical_kernel.name,
+        logical_kernel.operation,
+        logical_kernel.implicit_role,
+    )
+
+
 def _serialize_noc_role(spec: KernelSpec) -> Optional[int]:
     """Map KernelSpec.config to the ttl.noc_index role for the emitted runner.
 
@@ -1984,6 +2127,7 @@ def emit_runner_source(
     mesh_program_placements: Optional[List[Any]] = None,
     device_domain: Optional[Any] = None,
     kernel_fabric_routes: Optional[List[List[FabricRouteSpec]]] = None,
+    requires_runtime_resource_factory: bool = False,
 ) -> str:
     """
     Emit Python source code for a standalone runner that invokes ttnn.generic_op.
@@ -2009,6 +2153,7 @@ def emit_runner_source(
     lines.append("from ttl.dataflow_buffer import DFBStorageSegment")
     lines.append("from ttl.dataflow_buffer import PhysicalDFBConfig")
     lines.append("from ttl.domains import DeviceDomain")
+    lines.append("from ttl.kernel import Kernel, KernelKind")
     lines.append("from ttl.kernel_runner import (")
     lines.append("    FabricRouteSpec,")
     lines.append("    KernelSpec,")
@@ -2021,6 +2166,7 @@ def emit_runner_source(
     lines.append(f"GRID_COLS = {grid_cols}")
     lines.append(f"GRID_ROWS = {grid_rows}")
     lines.append(f"NUM_TENSORS = {num_tensors}")
+    lines.append(f"OPERATION_NAME = {kernel_name!r}")
     lines.append(f"PROGRAM_HASH = {normalize_program_hash(program_hash)!r}")
     lines.append(f"NUM_PIPE_SYNC_SEMAPHORES = {num_pipe_sync_semaphores}")
     lines.append(f"PIPE_SRAM_SCRATCH_BYTES = {pipe_sram_scratch_bytes}")
@@ -2088,6 +2234,11 @@ def emit_runner_source(
         lines.append(f"    {extra_args!r},  # {spec.thread_type}")
     lines.append("]")
     lines.append("")
+    lines.append("KERNEL_LOGICAL_IDENTITIES = [")
+    for spec in kernel_specs:
+        lines.append(f"    {_serialize_logical_kernel(spec)!r},")
+    lines.append("]")
+    lines.append("")
     lines.append("CB_CONFIGS = [")
     for physical_index, config in enumerate(cb_configs):
         _get_dfb_allocation(config)
@@ -2114,11 +2265,20 @@ def emit_runner_source(
     lines.append("")
 
     lines.append("")
-    lines.append("def run(tensors, device=None):")
+    if requires_runtime_resource_factory:
+        lines.append("def run(tensors, *, runtime_resource_factory, device=None):")
+    else:
+        lines.append("def run(tensors, device=None):")
     lines.append(f'    """Run the {kernel_name} on device."""')
     lines.append(
         f"    assert len(tensors) == {num_tensors}, f'Expected {num_tensors} tensors, got {{len(tensors)}}'"
     )
+    if requires_runtime_resource_factory:
+        lines.append("    if runtime_resource_factory is None:")
+        lines.append(
+            '        raise TypeError(f"emitted runner for {OPERATION_NAME!r} '
+            'requires runtime_resource_factory")'
+        )
     lines.append("")
     lines.append("    if device is None:")
     lines.append("        device = tensors[0].device()")
@@ -2139,6 +2299,17 @@ def emit_runner_source(
     lines.append("            )")
     lines.append("            for (sx, sy), (ex, ey) in ranges_spec")
     lines.append("        ])")
+    lines.append("")
+    lines.append("    def _logical_kernel_from_spec(identity_spec):")
+    lines.append("        if identity_spec is None:")
+    lines.append("            return None")
+    lines.append("        kind, name, operation, implicit_role = identity_spec")
+    lines.append("        kind = KernelKind(kind)")
+    lines.append("        if name is None:")
+    lines.append("            return kind")
+    lines.append("        return Kernel._from_metadata(")
+    lines.append("            kind, name, operation, implicit_role")
+    lines.append("        )")
     lines.append("")
     lines.append("    kernel_specs = []")
     lines.append("")
@@ -2171,6 +2342,10 @@ def emit_runner_source(
         "KERNEL_EXTRA_COMMON_RUNTIME_ARGS[kernel_idx],"
     )
     lines.append(
+        "                logical_kernel=_logical_kernel_from_spec("
+        "KERNEL_LOGICAL_IDENTITIES[kernel_idx]),"
+    )
+    lines.append(
         "                fabric_runtime_arg_base_common_index="
         "KERNEL_FABRIC_RUNTIME_ARG_BASE_COMMON_INDICES[kernel_idx],"
     )
@@ -2190,6 +2365,9 @@ def emit_runner_source(
     lines.append("        device_domain=DEVICE_DOMAIN,")
     lines.append("        kernel_fabric_routes=KERNEL_FABRIC_ROUTES,")
     lines.append("        device=device,")
+    if requires_runtime_resource_factory:
+        lines.append("        runtime_resource_factory=runtime_resource_factory,")
+    lines.append("        operation_name=OPERATION_NAME,")
     lines.append("    )")
     lines.append("")
 
@@ -2216,6 +2394,7 @@ def emit_runner_file(
     mesh_program_placements: Optional[List[Any]] = None,
     device_domain: Optional[Any] = None,
     kernel_fabric_routes: Optional[List[List[FabricRouteSpec]]] = None,
+    requires_runtime_resource_factory: bool = False,
 ) -> str:
     """
     Emit a Python runner file for the compiled kernel.
@@ -2243,6 +2422,7 @@ def emit_runner_file(
         mesh_program_placements=mesh_program_placements,
         device_domain=device_domain,
         kernel_fabric_routes=kernel_fabric_routes,
+        requires_runtime_resource_factory=requires_runtime_resource_factory,
     )
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
@@ -2270,6 +2450,7 @@ __all__ = [
     "build_pipe_runtime_resources",
     "build_pipe_sync_semaphore_descriptors",
     "normalize_program_hash",
+    "combine_program_hash_with_runtime_resources",
     "build_generic_op_io_tensors",
     "build_device_mesh_program_descriptor",
     "configure_routing_plane_runtime_args",
