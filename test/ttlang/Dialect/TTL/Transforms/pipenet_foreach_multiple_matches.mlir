@@ -7,7 +7,8 @@
 // Running static transport planning before conversion must preserve the same
 // selected-record address and synchronization tables.
 
-// CHECK: module attributes {ttl.launch_grid = array<i64: 2, 5>, ttl.pipe_sync_semaphore_count = 8 : i64}
+// Local selected records retain one receiver-published address table.
+// CHECK: module attributes {ttl.launch_grid = array<i64: 2, 5>, ttl.pipe_sram_scratch_bytes = 32 : i64, ttl.pipe_sync_semaphore_count = 8 : i64}
 
 module attributes {ttl.launch_grid = array<i64: 2, 5>} {
 
@@ -48,7 +49,6 @@ func.func @gather_receiver()
 }
 
 // CHECK-LABEL: func.func @gather_senders
-// CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
 // CHECK: scf.for %[[INDEX:.*]] =
 // CHECK: %[[READY_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[INDEX]], [6, 6, 6, 6, 6, 7] : index
 // CHECK: %[[READY_SEM:.*]] = ttkernel.get_semaphore(%[[READY_INDEX]])

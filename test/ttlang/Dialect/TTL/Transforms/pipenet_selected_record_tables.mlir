@@ -3,9 +3,15 @@
 // Summary: Verify selected fabric records preserve record-aligned route and
 // resource tables when one source device communicates with two destinations.
 
+// Fabric records compute receiver DFB addresses and do not allocate a
+// receiver-published address table.
+// CHECK-LABEL: module attributes
+// CHECK-NOT: ttl.pipe_sram_scratch_bytes
+
 // The sender uses route slots 0 and 1 for records 0 and 1. Its readiness
 // resources use distinct compiler-managed common arguments and counter slots.
 // CHECK-LABEL: func.func @sender()
+// CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
 // CHECK: scf.for %[[RECORD:.*]] =
 // CHECK: %[[ROUTE:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD]], [0, 1] : index
 // CHECK-NEXT: %[[READY_ARG_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD]], [2, 3] : index

@@ -492,8 +492,8 @@ func.func @nested_foreach_receiver()
 
 // -----
 
-// Selected loopback records use computed receiver DFB addresses, so receivers
-// publish readiness without publishing addresses.
+// Local selected loopback records publish receiver DFB addresses to keep the
+// table-driven sender kernel compact.
 
 module attributes {ttl.launch_grid = array<i64: 5, 1>} {
 
@@ -521,11 +521,10 @@ func.func @loopback_collective_sender()
 }
 
 // CHECK-LABEL: func.func @loopback_collective_sender
-// CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
 // CHECK: ttkernel.get_common_arg_val
 // CHECK-LABEL: func.func @loopback_collective_receiver
-// CHECK-NOT: ttkernel.store_to_l1
-// CHECK-NOT: ttkernel.noc_inline_dw_write
+// CHECK: ttkernel.store_to_l1
+// CHECK: ttkernel.noc_inline_dw_write
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: ttkernel.experimental.semaphore_wait_min
 // CHECK: return

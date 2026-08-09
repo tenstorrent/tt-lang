@@ -152,7 +152,7 @@ def test_row_column_unicast_forward_chains(device, monkeypatch, tmp_path):
 
     runner = runpy.run_path(str(runner_path))
     assert runner["NUM_PIPE_SYNC_SEMAPHORES"] == 4
-    assert runner["PIPE_SRAM_SCRATCH_BYTES"] == 0
+    assert runner["PIPE_SRAM_SCRATCH_BYTES"] == 32
     assert runner["NUM_PIPE_GLOBAL_SEMAPHORES"] == 0
 
     data_movement_kernel = next(

@@ -3588,6 +3588,12 @@ buildComputedAddressPlan(MutableArrayRef<PipeTransferAllocationUnit> units,
     PipeTransferAllocationUnit &unit = indexedUnit.value();
     const PipeTransferNode &transferNode =
         pipeGraph.getPipeTransferNode(unit.transferNodeId);
+    // Local table-driven transfers retain receiver publication because it
+    // produces substantially smaller kernels. Device transfers cannot publish
+    // receiver-local addresses directly, so they require this computation.
+    if (isSelectedTransferUnit(unit) && !transferNode.deviceTransfer) {
+      continue;
+    }
     const PipeReceiverEndpoint *receiverEndpoint =
         pipeGraph.getProvenReceiverAddressEndpoint(transferNode.id);
     if (!receiverEndpoint) {
