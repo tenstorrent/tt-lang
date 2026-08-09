@@ -98,7 +98,7 @@ from .dtype_utils import (
     torch_dtype_to_ttnn_datatype,
 )
 from .kernel_runner import (
-    _FabricDirectionCache,
+    _FabricRouteCache,
     FabricRouteSpec,
     KernelSpec,
     MeshProgramPlacement,
@@ -735,7 +735,7 @@ class CompiledTTNNKernel:
         self.device_domain = device_domain
         self._pipe_global_semaphore_lifetime = []
         self.opaque_include_paths = opaque_include_paths or []
-        self._fabric_direction_cache = _FabricDirectionCache()
+        self._fabric_route_cache = _FabricRouteCache()
 
     def __call__(self, *args):
         """Execute the kernel with the given tensors."""
@@ -785,7 +785,7 @@ class CompiledTTNNKernel:
             mesh_program_placements=self.mesh_program_placements,
             device_domain=self.device_domain,
             kernel_fabric_routes=self.kernel_fabric_routes,
-            fabric_direction_cache=self._fabric_direction_cache,
+            fabric_route_cache=self._fabric_route_cache,
         )
 
 
@@ -1322,6 +1322,8 @@ def _compile_ttnn_kernel(
             pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=num_pipe_global_semaphores,
             mesh_program_placements=mesh_program_placements,
+            device_domain=device_domain,
+            kernel_fabric_routes=kernel_fabric_routes,
         )
 
     return compiled_kernel
