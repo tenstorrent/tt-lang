@@ -11,7 +11,7 @@ from typing import Any, Optional, Tuple
 from ttl.ir import *
 
 from ._src.ttl_ast import syntax
-from .constants import DEFAULT_TILE_SIZE
+from .constants import DEFAULT_TILE_SIZE, SUPPORTED_TENSOR_BACKED_DFB_MEMORY_LAYOUTS
 from .dtype_utils import normalize_tile_dimensions
 from ttl.dialects import ttl
 
@@ -38,8 +38,12 @@ def _validate_tensor_backed_dfb_tensor(
 
     if "L1" not in str(memory_config.buffer_type):
         raise ValueError(f"{context} must use L1 storage")
-    if "HEIGHT_SHARDED" not in str(memory_config.memory_layout):
-        raise ValueError(f"{context} must be height-sharded")
+    memory_layout = str(memory_config.memory_layout).rsplit(".", maxsplit=1)[-1]
+    if memory_layout not in SUPPORTED_TENSOR_BACKED_DFB_MEMORY_LAYOUTS:
+        raise ValueError(
+            f"{context} must be height- or width-sharded, "
+            f"got {memory_config.memory_layout}"
+        )
     if "TILE" not in str(getattr(tensor, "layout", None)):
         raise ValueError(f"{context} must use TILE layout")
 
