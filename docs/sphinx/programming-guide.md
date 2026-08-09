@@ -20,6 +20,14 @@ See the [full compiler options reference](reference/compiler-options.md) for all
 
 `ttl.call_extern_func` invokes custom C++ from a selected compute or data-movement kernel. The [external functions reference](reference/external-functions.md) documents template arguments, runtime arguments, DFB descriptors, tensor addresses, include directories, and logical `kernel=` selectors.
 
+## Operation Runtime Resources
+
+`runtime_resource_factory` creates invocation-specific program semaphores,
+per-logical-kernel runtime arguments and definitions, and retained host owners.
+The [operation runtime resources reference](reference/operation-runtime-resources.md)
+documents its typed records, validation, specialization, cache identity, and
+emitted-runner contract.
+
 ## Print Debugging
 
 Use `print()` inside kernel code to emit device debug prints. Enable at runtime with `TT_METAL_DPRINT_CORES`:
