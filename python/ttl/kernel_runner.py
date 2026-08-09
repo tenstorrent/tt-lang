@@ -479,7 +479,7 @@ def build_pipe_computed_address_dfb_tensors(
     pipe_computed_address_dfb_indices: Optional[List[int]] = None,
     device: Optional[Any] = None,
 ) -> Dict[int, Any]:
-    """Allocate hidden L1 backing tensors for computed pipe receiver DFBs."""
+    """Allocate hidden L1 backing for compiler-managed receiver storage."""
     dfb_indices = sorted(set(pipe_computed_address_dfb_indices or []))
     if not dfb_indices:
         return {}
@@ -499,10 +499,80 @@ def build_pipe_computed_address_dfb_tensors(
         allocation = _get_dfb_allocation(config)
         _validate_physical_dfb_config(config, dfb_index)
         backing_core_ranges = _computed_address_storage_core_ranges(config, core_ranges)
+        if backing_core_ranges is None:
+            continue
         backing_tensors[dfb_index] = _allocate_l1_sharded_storage_tensor(
             backing_core_ranges, allocation.total_size, device
         )
     return backing_tensors
+
+
+def _common_tensor_buffer_address(tensor: Any, context: str) -> int:
+    """Return the common L1 base shared by every component device tensor."""
+    try:
+        declared_address = int(tensor.buffer_address())
+    except (AttributeError, TypeError, ValueError):
+        raise ValueError(f"{context} does not expose a valid buffer_address()") from None
+
+    get_device_tensors = getattr(ttnn, "get_device_tensors", None)
+    if get_device_tensors is None:
+        return declared_address
+    try:
+        component_tensors = list(get_device_tensors(tensor))
+    except (RuntimeError, TypeError, ValueError):
+        component_tensors = []
+    if not component_tensors:
+        return declared_address
+
+    component_addresses = {int(component.buffer_address()) for component in component_tensors}
+    if len(component_addresses) != 1 or declared_address not in component_addresses:
+        raise ValueError(
+            f"{context} requires one common L1 base across all component devices, "
+            f"got {sorted(component_addresses)}"
+        )
+    return declared_address
+
+
+def _build_computed_address_base_addresses(
+    tensors: List[Any],
+    cb_configs: List[PhysicalDFBConfig],
+    dfb_indices: List[int],
+    backing_tensors: Dict[int, Any],
+) -> Dict[int, int]:
+    """Resolve one runtime receiver base for every computed-address DFB."""
+    base_addresses = {}
+    for dfb_index in sorted(set(dfb_indices)):
+        config = cb_configs[dfb_index]
+        candidate_addresses = set()
+        if dfb_index in backing_tensors:
+            candidate_addresses.add(
+                _common_tensor_buffer_address(
+                    backing_tensors[dfb_index],
+                    f"computed-address DFB[{dfb_index}] compiler-managed backing",
+                )
+            )
+        for segment in config.storage_segments:
+            if not segment.is_tensor_backed:
+                continue
+            tensor = _validate_tensor_backed_dfb_binding(tensors, config, segment)
+            candidate_addresses.add(
+                _common_tensor_buffer_address(
+                    tensor,
+                    f"computed-address DFB[{dfb_index}] tensor backing",
+                )
+                + segment.byte_offset
+            )
+        if not candidate_addresses:
+            raise ValueError(
+                f"computed-address DFB[{dfb_index}] has no runtime backing storage"
+            )
+        if len(candidate_addresses) != 1:
+            raise ValueError(
+                f"computed-address DFB[{dfb_index}] requires one common L1 base "
+                f"across all storage segments, got {sorted(candidate_addresses)}"
+            )
+        base_addresses[dfb_index] = candidate_addresses.pop()
+    return base_addresses
 
 
 def build_pipe_runtime_resources(
@@ -572,21 +642,18 @@ def build_pipe_runtime_resources(
     expected_extra_common_runtime_args = (
         len(scratch_tensors) + num_pipe_global_semaphores
     )
-    computed_address_base_addresses = {
-        dfb_index: int(tensor.buffer_address())
-        for dfb_index, tensor in computed_address_dfb_tensors.items()
-    }
+    computed_address_base_addresses = _build_computed_address_base_addresses(
+        tensors,
+        cb_configs or [],
+        computed_address_dfb_indices,
+        computed_address_dfb_tensors,
+    )
     if os.environ.get("TTLANG_DEBUG_FABRIC_ARGS"):
-        for dfb_index, tensor in computed_address_dfb_tensors.items():
-            device_addresses = [
-                int(device_tensor.buffer_address())
-                for device_tensor in ttnn.get_device_tensors(tensor)
-            ]
+        for dfb_index, base_address in computed_address_base_addresses.items():
             print(
                 "computed DFB addresses:",
                 dfb_index,
-                computed_address_base_addresses[dfb_index],
-                device_addresses,
+                base_address,
                 flush=True,
             )
     return PipeRuntimeResources(
@@ -639,8 +706,8 @@ def _make_node_core_ranges(nodes: Tuple[Tuple[int, int], ...]) -> Any:
 
 def _computed_address_storage_core_ranges(
     config: PhysicalDFBConfig, core_ranges: Any
-) -> Any:
-    """Select nodes that use compiler-managed storage for a physical DFB."""
+) -> Optional[Any]:
+    """Select compiler-managed nodes, or None for fully tensor-backed storage."""
     if not config.storage_segments:
         return core_ranges
 
@@ -653,10 +720,7 @@ def _computed_address_storage_core_ranges(
         }
     )
     if not storage_nodes:
-        raise ValueError(
-            f"computed-address DFB[{config.dfb_index}] has no "
-            "compiler-managed storage segment"
-        )
+        return None
     return _make_node_core_ranges(tuple(storage_nodes))
 
 
@@ -900,6 +964,11 @@ def build_cb_descriptors(
             backing_core_ranges = _computed_address_storage_core_ranges(
                 config, core_ranges
             )
+            if backing_core_ranges is None:
+                raise ValueError(
+                    f"computed-address backing tensor for DFB[{cb_index}] has "
+                    "no compiler-managed storage segment"
+                )
             cb_desc = ttnn.CBDescriptor(
                 total_size=allocation.total_size,
                 core_ranges=backing_core_ranges,
