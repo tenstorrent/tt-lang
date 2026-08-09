@@ -249,11 +249,9 @@ def _normalize_logical_kernel_selector(
         ) from error
     operation_identity = selector._operation_identity
     implicit_role = selector._implicit_role
-    if (operation_identity is None) == (implicit_role is None):
-        raise ValueError(
-            f"@ttl.operation {operation_name!r}: {source} has invalid logical "
-            f"metadata for {selector.kind.value} kernel {name!r}"
-        )
+    assert (operation_identity is None) != (
+        implicit_role is None
+    ), "a bound Kernel must identify exactly one operation or compiler-owned role"
     return LogicalKernelId(
         selector.kind,
         name,
@@ -463,7 +461,7 @@ def _validate_semaphore_descriptors(
     operation_name: str,
     operation_coordinates: frozenset[Tuple[int, int]],
     first_free_semaphore_id: int,
-) -> Tuple[object, ...]:
+) -> None:
     seen_ids = set()
     for descriptor_index, descriptor in enumerate(semaphore_descriptors):
         semaphore_id = _normalize_index(
@@ -502,7 +500,6 @@ def _validate_semaphore_descriptors(
             operation_name=operation_name,
             field=f"semaphore descriptor {descriptor_index} initial_value",
         )
-    return semaphore_descriptors
 
 
 def _validate_runtime_resource_record_types(
@@ -638,16 +635,28 @@ def plan_program_runtime_resources(
         descriptor_coordinates.append(coordinates)
         descriptors_by_identity.setdefault(logical_kernel, []).append(kernel_spec_index)
 
-    descriptor_runtime_args: Dict[int, Tuple[_CoreRuntimeArgsPlan, ...]] = {}
+    for logical_kernel, matching_descriptors in descriptors_by_identity.items():
+        for position, previous_descriptor_index in enumerate(matching_descriptors):
+            previous_coordinates = frozenset(
+                descriptor_coordinates[previous_descriptor_index]
+            )
+            for descriptor_index in matching_descriptors[position + 1 :]:
+                overlap = tuple(
+                    candidate_coordinate
+                    for candidate_coordinate in descriptor_coordinates[descriptor_index]
+                    if candidate_coordinate in previous_coordinates
+                )
+                assert not overlap, (
+                    f"compiler emitted kernel descriptors "
+                    f"{previous_descriptor_index} and {descriptor_index} for "
+                    f"{_format_logical_kernel(logical_kernel)} with overlapping "
+                    f"cores {overlap}"
+                )
+
+    descriptor_runtime_args: Dict[int, List[_CoreRuntimeArgsPlan]] = {}
     descriptor_defines: Dict[int, Tuple[Tuple[str, str], ...]] = {}
     seen_resource_identities = set()
     for resource_index, kernel_resource in enumerate(resources.kernel_resources):
-        if not isinstance(kernel_resource, KernelRuntimeResources):
-            raise TypeError(
-                f"@ttl.operation {operation_name!r}: kernel resource "
-                f"{resource_index} must be KernelRuntimeResources, got "
-                f"{type(kernel_resource).__name__}"
-            )
         logical_kernel = _normalize_logical_kernel_selector(
             kernel_resource.kernel,
             operation_name=operation_name,
@@ -667,37 +676,47 @@ def plan_program_runtime_resources(
                 f"{resource_index} selects {_format_logical_kernel(logical_kernel)}, "
                 "but the operation emitted no matching kernel descriptor"
             )
-        if len(matching_descriptors) != 1:
-            raise ValueError(
-                f"@ttl.operation {operation_name!r}: kernel resource "
-                f"{resource_index} selects {_format_logical_kernel(logical_kernel)} "
-                f"with {len(matching_descriptors)} descriptors; specialized "
-                "resource partitioning is required"
-            )
-        descriptor_index = matching_descriptors[0]
-        descriptor_defines[descriptor_index] = _normalize_defines(
+        normalized_defines = _normalize_defines(
             kernel_resource.defines,
             operation_name=operation_name,
             resource_index=resource_index,
         )
+        for descriptor_index in matching_descriptors:
+            descriptor_defines[descriptor_index] = normalized_defines
         normalized_runtime_args = _normalize_runtime_args(
             kernel_resource.runtime_args,
             operation_name=operation_name,
             resource_index=resource_index,
             operation_coordinates=operation_coordinates,
         )
-        descriptor_coordinate_set = frozenset(descriptor_coordinates[descriptor_index])
         for runtime_arg_index, runtime_arg in enumerate(normalized_runtime_args):
-            if runtime_arg.coordinate not in descriptor_coordinate_set:
+            candidate_descriptors = [
+                descriptor_index
+                for descriptor_index in matching_descriptors
+                if runtime_arg.coordinate
+                in frozenset(descriptor_coordinates[descriptor_index])
+            ]
+            if not candidate_descriptors:
+                ranges = tuple(
+                    (descriptor_index, descriptor_coordinates[descriptor_index])
+                    for descriptor_index in matching_descriptors
+                )
                 raise ValueError(
                     f"@ttl.operation {operation_name!r}: kernel resource "
                     f"{resource_index} runtime argument {runtime_arg_index} core "
-                    f"{runtime_arg.coordinate} is outside kernel descriptor "
-                    f"{descriptor_index} range {descriptor_coordinates[descriptor_index]}"
+                    f"{runtime_arg.coordinate} is not covered by any descriptor "
+                    f"for {_format_logical_kernel(logical_kernel)}; descriptor "
+                    f"ranges are {ranges}"
                 )
-        descriptor_runtime_args[descriptor_index] = normalized_runtime_args
+            if len(candidate_descriptors) != 1:
+                raise AssertionError(
+                    "validated descriptor partitions must select exactly one "
+                    "descriptor"
+                )
+            descriptor_index = candidate_descriptors[0]
+            descriptor_runtime_args.setdefault(descriptor_index, []).append(runtime_arg)
 
-    semaphore_descriptors = _validate_semaphore_descriptors(
+    _validate_semaphore_descriptors(
         resources.semaphore_descriptors,
         operation_name=operation_name,
         operation_coordinates=operation_coordinates,
@@ -708,13 +727,13 @@ def plan_program_runtime_resources(
             kernel_spec_index=kernel_spec_index,
             logical_kernel=logical_kernel,
             coordinates=descriptor_coordinates[kernel_spec_index],
-            runtime_args=descriptor_runtime_args.get(kernel_spec_index, ()),
+            runtime_args=tuple(descriptor_runtime_args.get(kernel_spec_index, ())),
             defines=descriptor_defines.get(kernel_spec_index, ()),
         )
         for kernel_spec_index, logical_kernel in enumerate(descriptor_identities)
     )
     return ProgramResourcePlan(
-        semaphore_descriptors=semaphore_descriptors,
+        semaphore_descriptors=resources.semaphore_descriptors,
         kernel_descriptors=kernel_descriptor_plans,
         lifetimes=resources.lifetimes,
     )
