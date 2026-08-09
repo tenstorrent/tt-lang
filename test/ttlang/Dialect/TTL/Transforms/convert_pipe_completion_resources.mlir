@@ -451,7 +451,7 @@ module attributes {ttl.launch_grid = array<i64: 17, 1>} {
         : !ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 14>
     %p15 = ttl.create_pipe src(0, 0) dst(16, 0) to(16, 0) net 15
         : !ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 15>
-    %transfer15 = ttl.pipe_transfer.create %p15 {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>}
+    %transfer15 = ttl.pipe_transfer.create %p15 {kind = #ttl.pipe_transfer_kind<point_to_point>}
         : !ttl.pipe<src(0, 0) dst(16, 0) to(16, 0) net 15>
         -> !ttl.pipe_transfer
     %recv = ttl.cb_reserve %cb
@@ -689,19 +689,16 @@ module attributes {ttl.launch_grid = array<i64: 4, 1>} {
         : !ttl.pipe<src(1, 0) dst(3, 0) to(3, 0) net 1>
     %pipe2 = ttl.create_pipe src(2, 0) dst(0, 0) to(0, 0) net 2
         : !ttl.pipe<src(2, 0) dst(0, 0) to(0, 0) net 2>
-    %transfer0 = ttl.pipe_transfer.create %pipe0
-        {expectedReceivers = 1 : i64,
-         kind = #ttl.pipe_transfer_kind<point_to_point>}
+    %transfer0 = ttl.pipe_transfer.create %pipe0 {
+        kind = #ttl.pipe_transfer_kind<point_to_point>}
         : !ttl.pipe<src(0, 0) dst(2, 0) to(2, 0) net 0>
         -> !ttl.pipe_transfer
-    %transfer1 = ttl.pipe_transfer.create %pipe1
-        {expectedReceivers = 1 : i64,
-         kind = #ttl.pipe_transfer_kind<point_to_point>}
+    %transfer1 = ttl.pipe_transfer.create %pipe1 {
+        kind = #ttl.pipe_transfer_kind<point_to_point>}
         : !ttl.pipe<src(1, 0) dst(3, 0) to(3, 0) net 1>
         -> !ttl.pipe_transfer
-    %transfer2 = ttl.pipe_transfer.create %pipe2
-        {expectedReceivers = 1 : i64,
-         kind = #ttl.pipe_transfer_kind<point_to_point>}
+    %transfer2 = ttl.pipe_transfer.create %pipe2 {
+        kind = #ttl.pipe_transfer_kind<point_to_point>}
         : !ttl.pipe<src(2, 0) dst(0, 0) to(0, 0) net 2>
         -> !ttl.pipe_transfer
     ttl.if_dst %pipe0

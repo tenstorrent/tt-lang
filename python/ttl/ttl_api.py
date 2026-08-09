@@ -12,8 +12,9 @@ import inspect
 import os
 import random
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Union
 
 ttnn = None  # Lazy-loaded on first access via _ensure_ttnn()
 
@@ -50,7 +51,7 @@ from ttl._mlir_libs._ttlang import ttl_ir as _ttl_ir
 from ttl.pykernel._src.utils import _cleanup_source_code
 from ttl.dialects import ttcore, ttkernel, ttl as ttl_dialect
 from ttl.ir import *
-from ttl.ir import DenseI32ArrayAttr
+from ttl.ir import DenseI32ArrayAttr, DenseI64ArrayAttr, DictAttr
 from ttl.passes import (
     get_ttkernel_arg_spec,
     get_ttkernel_names,
@@ -98,10 +99,24 @@ from .dtype_utils import (
     torch_dtype_to_ttnn_datatype,
 )
 from .kernel_runner import (
+    _FabricRouteCache,
+    FabricRouteSpec,
     KernelSpec,
+    MeshProgramPlacement,
     get_min_remaining_l1_for_device,
     run_kernel_on_device,
     emit_runner_file,
+)
+from .kernel import (
+    Kernel,
+    KernelKind,
+    KernelSelector,
+    _PIPE_SOURCE_KERNEL_ROLE,
+    _bind_kernel_declarations,
+    _format_kernel_capacity_error,
+    _operation_identity,
+    _selector_implicit_role,
+    _selector_kind,
 )
 from .operators import CopyTransferHandler, TensorBlock, copy
 from .compiler_options import CompilerOptions
@@ -111,6 +126,62 @@ _TTCORE_ARCH_BY_DEVICE_NAME = {
     "blackhole": ttcore.Arch.Blackhole,
     "wormhole_b0": ttcore.Arch.WormholeB0,
 }
+
+
+@dataclass(frozen=True)
+class _BackendKernelSlot:
+    kind: KernelKind
+    kernel_type: str
+    source_name: str
+    implicit_role: Optional[str] = None
+
+
+_COMMON_BACKEND_KERNEL_SLOTS = (
+    _BackendKernelSlot(KernelKind.COMPUTE, "compute", "trisc"),
+    _BackendKernelSlot(KernelKind.DATA_MOVEMENT, "datamovement", "ncrisc"),
+    _BackendKernelSlot(
+        KernelKind.DATA_MOVEMENT,
+        "datamovement",
+        "brisc",
+        implicit_role=_PIPE_SOURCE_KERNEL_ROLE,
+    ),
+)
+_BACKEND_KERNEL_SLOTS_BY_ARCH = {
+    target_arch: _COMMON_BACKEND_KERNEL_SLOTS
+    for target_arch in _TTCORE_ARCH_BY_DEVICE_NAME
+}
+
+
+def _backend_kernel_slots(
+    target_arch: Optional[str] = None,
+) -> tuple[_BackendKernelSlot, ...]:
+    """Return the processor slots declared by the selected backend target."""
+    if target_arch is None:
+        return _COMMON_BACKEND_KERNEL_SLOTS
+    try:
+        return _BACKEND_KERNEL_SLOTS_BY_ARCH[target_arch]
+    except KeyError:
+        raise ValueError(f"unsupported target architecture {target_arch!r}") from None
+
+
+def _backend_kernel_capacities(
+    target_arch: Optional[str] = None,
+) -> Mapping[KernelKind, int]:
+    slots = _backend_kernel_slots(target_arch)
+    return {kind: sum(slot.kind == kind for slot in slots) for kind in KernelKind}
+
+
+def _slot_idle_kernel(slot: _BackendKernelSlot) -> KernelSelector:
+    """Return the logical identity a slot carries when it holds no work.
+
+    A slot the target reserves for a compiler-owned affinity keeps that role. Any
+    other slot is the canonical kernel of its kind, which is unoccupied precisely
+    when no selector of that kind was planned.
+    """
+    if slot.implicit_role is None:
+        return slot.kind
+    return Kernel._implicit(slot.kind, slot.implicit_role)
+
 
 # Thread registry for automatic collection of @compute and @datamovement threads
 _thread_registry: List[Callable] = []
@@ -131,6 +202,49 @@ def _get_registered_threads() -> List[Callable]:
     threads = list(_thread_registry)
     _thread_registry.clear()
     return threads
+
+
+def _validate_explicit_logical_kernel_uses(
+    threads: List[Callable],
+    kernel_capacities: Optional[Mapping[KernelKind, int]] = None,
+) -> None:
+    """Require each named logical kernel to identify one explicit thread."""
+    thread_by_kernel: Dict[Kernel, Callable] = {}
+    for thread in threads:
+        logical_kernel = thread._logical_kernel
+        if not isinstance(logical_kernel, Kernel):
+            continue
+        previous_thread = thread_by_kernel.get(logical_kernel)
+        if previous_thread is not None:
+            raise ValueError(
+                f"logical Kernel {logical_kernel.identity!r} is selected by "
+                "multiple explicit threads: "
+                f"{previous_thread.__name__!r} and {thread.__name__!r}"
+            )
+        thread_by_kernel[logical_kernel] = thread
+
+    if kernel_capacities is None:
+        return
+    selectors = tuple(thread._logical_kernel for thread in threads)
+    for kind in KernelKind:
+        capacity = kernel_capacities[kind]
+        selected = tuple(
+            selector for selector in selectors if _selector_kind(selector) == kind
+        )
+        if len(selected) > capacity:
+            raise ValueError(_format_kernel_capacity_error(kind, selected, capacity))
+
+
+def _captured_kernel_declarations(function: Callable) -> Dict[str, Kernel]:
+    """Return logical kernels referenced by an explicit operation."""
+    closure = inspect.getclosurevars(function)
+    captures = dict(closure.globals)
+    captures.update(closure.nonlocals)
+    return {
+        name: value
+        for name, value in sorted(captures.items())
+        if isinstance(value, Kernel)
+    }
 
 
 def _get_tensor_cache_info(tensor) -> tuple:
@@ -399,6 +513,58 @@ def _is_mesh_tensor(tensor) -> bool:
     return prod(shape) > 1
 
 
+def _default_mesh_program_placements(args: tuple):
+    """Return a full-mesh placement for mesh tensor execution."""
+    for arg in args:
+        if not _is_mesh_tensor(arg):
+            continue
+        mesh_shape = tuple(int(dim) for dim in arg.device().shape)
+        start = tuple(0 for _ in mesh_shape)
+        end = tuple(dim - 1 for dim in mesh_shape)
+        return [MeshProgramPlacement(start, end)]
+    return None
+
+
+def _mesh_program_placements_from_device_domain(device_domain):
+    """Return the default mesh placement for a logical device domain."""
+    if device_domain is None:
+        return None
+
+    from math import prod
+    from .domains import DeviceDomain
+
+    if not isinstance(device_domain, DeviceDomain):
+        raise TypeError(
+            f"device_domain must be a DeviceDomain, got {type(device_domain).__name__}"
+        )
+
+    extent = tuple(
+        int(dimension)
+        for component in device_domain.components
+        for dimension in component.extent
+    )
+    if prod(extent) <= 1:
+        return None
+    start = tuple(0 for _ in extent)
+    end = tuple(dim - 1 for dim in extent)
+    return [MeshProgramPlacement(start, end)]
+
+
+def _default_mesh_program_placements_with_domain(args: tuple, device_domain):
+    """Return mesh placements from tensors, or from device_domain metadata."""
+    tensor_placements = _default_mesh_program_placements(args)
+    domain_placements = _mesh_program_placements_from_device_domain(device_domain)
+    if tensor_placements is None:
+        return domain_placements
+    if domain_placements is None:
+        return tensor_placements
+    if tensor_placements != domain_placements:
+        raise ValueError(
+            "mesh tensor shape does not match operation device_domain extent"
+        )
+    return tensor_placements
+
+
 def _detect_memory_space_from_tensor(tensor, default: str) -> str:
     """Detect memory space (L1/DRAM) from a ttnn tensor's buffer type."""
     mem_config = tensor.memory_config()
@@ -621,6 +787,10 @@ class CompiledTTNNKernel:
         num_pipe_global_semaphores=0,
         opaque_include_paths=None,
         kernel_pipe_computed_address_dfb_indices=None,
+        kernel_fabric_routes=None,
+        mesh_program_placements=None,
+        device_domain=None,
+        kernel_logical_selectors=None,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -650,6 +820,11 @@ class CompiledTTNNKernel:
                 PipeNet counters used by this kernel.
             kernel_pipe_computed_address_dfb_indices: Per-kernel receiver DFB indices whose
                 L1 bases are supplied as common runtime args.
+            kernel_fabric_routes: Per-kernel routing-plane connection metadata.
+            mesh_program_placements: Optional mesh device ranges. When present,
+                execution uses ttnn.MeshProgramDescriptor.
+            device_domain: Logical device domain used for per-device dispatch.
+            kernel_logical_selectors: Logical selector for each compiled kernel.
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
@@ -670,8 +845,15 @@ class CompiledTTNNKernel:
         self.kernel_pipe_computed_address_dfb_indices = (
             kernel_pipe_computed_address_dfb_indices or [[] for _ in kernel_paths]
         )
+        self.kernel_fabric_routes = kernel_fabric_routes or [[] for _ in kernel_paths]
+        self.mesh_program_placements = mesh_program_placements
+        self.device_domain = device_domain
+        self.kernel_logical_selectors = kernel_logical_selectors or [
+            None for _ in kernel_paths
+        ]
         self._pipe_global_semaphore_lifetime = []
         self.opaque_include_paths = opaque_include_paths or []
+        self._fabric_route_cache = _FabricRouteCache()
 
     def __call__(self, *args):
         """Execute the kernel with the given tensors."""
@@ -704,6 +886,7 @@ class CompiledTTNNKernel:
                     kernel_idx
                 ],
                 core_ranges=self.kernel_core_ranges[kernel_idx],
+                logical_kernel=self.kernel_logical_selectors[kernel_idx],
             )
             kernel_specs.append(spec)
 
@@ -718,6 +901,10 @@ class CompiledTTNNKernel:
             pipe_sram_scratch_bytes=self.pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=self.num_pipe_global_semaphores,
             pipe_global_semaphore_lifetime=self._pipe_global_semaphore_lifetime,
+            mesh_program_placements=self.mesh_program_placements,
+            device_domain=self.device_domain,
+            kernel_fabric_routes=self.kernel_fabric_routes,
+            fabric_route_cache=self._fabric_route_cache,
         )
 
 
@@ -884,6 +1071,35 @@ def _get_kernel_core_coords(module, kernel_name: str):
     return coords
 
 
+def _get_kernel_logical_selector(module, kernel_name: str) -> Optional[KernelSelector]:
+    """Recover logical-kernel metadata retained by specialization clones."""
+    operation = _lookup_kernel_func_op(module, kernel_name)
+    raw_attribute = operation.attributes.get(_ttl_ir.LOGICAL_KERNEL_ATTR, None)
+    if raw_attribute is None:
+        return None
+    attribute = ttl_dialect.LogicalKernelAttr.maybe_downcast(raw_attribute)
+    if attribute is None:
+        raise ValueError(
+            f"Invalid '{_ttl_ir.LOGICAL_KERNEL_ATTR}' on kernel {kernel_name!r}"
+        )
+
+    if attribute.kind == ttl_dialect.ir.LogicalKernelKind.Compute:
+        kind = KernelKind.COMPUTE
+    elif attribute.kind == ttl_dialect.ir.LogicalKernelKind.DataMovement:
+        kind = KernelKind.DATA_MOVEMENT
+    else:
+        raise ValueError(f"Unknown logical kernel kind on kernel {kernel_name!r}")
+
+    if not attribute.identity:
+        return kind
+    return Kernel._from_metadata(
+        kind,
+        attribute.identity,
+        operation_identity=attribute.operation,
+        implicit_role=attribute.role,
+    )
+
+
 def _get_kernel_noc_index(module, kernel_name: str):
     """Read the `ttl.noc_index` attribute (0 = reader, 1 = writer).
 
@@ -917,6 +1133,41 @@ def _get_kernel_crta_indices(module, kernel_name: str):
     return [int(IntegerAttr(idx).value) for idx in attr]
 
 
+def _get_kernel_fabric_routes(module, kernel_name: str):
+    operation = _lookup_kernel_func_op(module, kernel_name)
+    attr = operation.attributes.get("ttl.fabric_routes", None)
+    if attr is None:
+        return []
+
+    routes = []
+    for route_attr in ArrayAttr(attr):
+        route = DictAttr(route_attr)
+        local = ttl_dialect.DeviceRefAttr.maybe_downcast(route["local"])
+        remote = ttl_dialect.DeviceRefAttr.maybe_downcast(route["remote"])
+        if local is None or remote is None:
+            raise ValueError(
+                f"Expected DeviceRefAttr entries in ttl.fabric_routes on "
+                f"kernel '{kernel_name}'"
+            )
+        source_nodes = tuple(
+            tuple(DenseI64ArrayAttr(source_node))
+            for source_node in ArrayAttr(route["source_nodes"])
+        )
+        routes.append(
+            FabricRouteSpec(
+                local_device=tuple(
+                    value for coordinate in local.coordinates for value in coordinate
+                ),
+                remote_device=tuple(
+                    value for coordinate in remote.coordinates for value in coordinate
+                ),
+                source_nodes=source_nodes,
+                route_index=int(route["route_index"]),
+            )
+        )
+    return routes
+
+
 def _compile_ttnn_kernel(
     module,
     args,
@@ -936,6 +1187,9 @@ def _compile_ttnn_kernel(
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
     opaque_include_paths: Optional[List[str]] = None,
+    mesh_program_placements=None,
+    device_domain=None,
+    target_arch: Optional[str] = None,
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -987,22 +1241,46 @@ def _compile_ttnn_kernel(
     # When present, get_ttkernel_names returns per-coordinate clones instead of
     # a single (compute + reader + writer) triple.
     kernel_coords = [_get_kernel_core_coords(module, name) for name, _ in kernel_info]
+    kernel_logical_selectors = [
+        _get_kernel_logical_selector(module, name) for name, _ in kernel_info
+    ]
     specialize_cores = any(coords is not None for coords in kernel_coords)
 
     compute_count = sum(1 for _, t in kernel_info if t == "compute")
     dm_count = sum(1 for _, t in kernel_info if t == "noc")
+    kernel_capacities = _backend_kernel_capacities(target_arch)
+    kernel_counts = {
+        KernelKind.COMPUTE: compute_count,
+        KernelKind.DATA_MOVEMENT: dm_count,
+    }
     if not specialize_cores:
-        # Validate kernel count: for now we must have exactly 3 kernels (1 compute + 2 data movement).
-        # Each core has only 2 NOCs, so more than 2 DM kernels causes NOC conflicts.
-        # TODO: in the future we should figure out how to map arbitrary kernels.
-        if len(kernel_info) != 3:
+        for kind in KernelKind:
+            if kernel_counts[kind] > kernel_capacities[kind]:
+                selected = tuple(
+                    selector
+                    for selector in kernel_logical_selectors
+                    if selector is not None and _selector_kind(selector) == kind
+                )
+                if len(selected) != kernel_counts[kind]:
+                    selected = (kind,) * kernel_counts[kind]
+                raise ValueError(
+                    _format_kernel_capacity_error(
+                        kind, selected, kernel_capacities[kind]
+                    )
+                )
+        if kernel_counts != kernel_capacities:
+            required = ", ".join(
+                f"{kernel_capacities[kind]} {kind.value}" for kind in KernelKind
+            )
+            provided = ", ".join(
+                f"{kernel_counts[kind]} {kind.value}" for kind in KernelKind
+            )
             raise ValueError(
-                f"TTNN interop requires exactly 3 kernels (1 compute + 2 data movement), "
-                f"got {len(kernel_info)} kernels ({compute_count} compute, {dm_count} data movement). "
-                f"Each core has only 2 NOCs, so more than 2 DM kernels causes NOC conflicts."
+                f"TTNN interop requires the target kernel set ({required}); "
+                f"the operation provides {provided}"
             )
     else:
-        # Check no core has more than one compute or two NOC kernels.
+        # Validate every specialized core against the selected target.
         grid_cols, grid_rows = grid
         all_cores = [(x, y) for y in range(grid_rows) for x in range(grid_cols)]
         per_core_counts = {}
@@ -1015,11 +1293,17 @@ def _compile_ttnn_kernel(
                 elif thread_type == "noc":
                     counts[1] += 1
         for coord, (n_compute, n_noc) in per_core_counts.items():
-            if n_compute > 1 or n_noc > 2:
+            if (
+                n_compute > kernel_capacities[KernelKind.COMPUTE]
+                or n_noc > kernel_capacities[KernelKind.DATA_MOVEMENT]
+            ):
                 raise ValueError(
                     f"Per-core specialization assigned {n_compute} compute and "
-                    f"{n_noc} data movement kernels to core {coord}. Each core "
-                    f"supports at most one compute and two NOC kernels."
+                    f"{n_noc} data movement kernels to core {coord}. The target "
+                    f"supports at most "
+                    f"{kernel_capacities[KernelKind.COMPUTE]} compute and "
+                    f"{kernel_capacities[KernelKind.DATA_MOVEMENT]} data movement "
+                    "kernels per core."
                 )
 
     if verbose:
@@ -1055,6 +1339,7 @@ def _compile_ttnn_kernel(
     # read from ttl.crta_indices. Both stay aligned with kernel_info order.
     kernel_core_ranges = []
     specialized_tensor_indices = []
+    kernel_fabric_routes = []
     kernel_config_attrs = {
         name: {
             "fp32_dest_acc_en": _get_kernel_bool_attr(module, name, "fp32_dest_acc_en"),
@@ -1080,6 +1365,7 @@ def _compile_ttnn_kernel(
                 module, name, _ttl_ir.PIPE_COMPUTED_ADDRESS_DFB_INDICES_ATTR
             )
         )
+        kernel_fabric_routes.append(_get_kernel_fabric_routes(module, name))
 
         # The specialized clone's launch coordinates (None on the default,
         # whole-grid path). Used to build the per-kernel dispatch range below.
@@ -1169,6 +1455,10 @@ def _compile_ttnn_kernel(
         num_pipe_global_semaphores=num_pipe_global_semaphores,
         opaque_include_paths=opaque_include_paths or [],
         kernel_pipe_computed_address_dfb_indices=kernel_pipe_computed_address_dfb_indices,
+        kernel_fabric_routes=kernel_fabric_routes,
+        mesh_program_placements=mesh_program_placements,
+        device_domain=device_domain,
+        kernel_logical_selectors=kernel_logical_selectors,
     )
 
     if verbose:
@@ -1190,6 +1480,7 @@ def _compile_ttnn_kernel(
                     kernel_idx
                 ],
                 core_ranges=kernel_core_ranges[kernel_idx],
+                logical_kernel=kernel_logical_selectors[kernel_idx],
             )
             kernel_specs_for_emit.append(spec)
 
@@ -1211,6 +1502,9 @@ def _compile_ttnn_kernel(
             num_pipe_sync_semaphores=num_pipe_sync_semaphores,
             pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=num_pipe_global_semaphores,
+            mesh_program_placements=mesh_program_placements,
+            device_domain=device_domain,
+            kernel_fabric_routes=kernel_fabric_routes,
         )
 
     return compiled_kernel
@@ -1232,20 +1526,12 @@ def _build_operation_pipenets(f: Callable, threads):
     def visit(func):
         if func is None:
             return
-        closure = getattr(func, "__closure__", None) or ()
-        for cell in closure:
-            try:
-                value = cell.cell_contents
-            except ValueError:
-                continue
-            for net in _iter_pipe_nets_in_value(value, set()):
-                if id(net) not in seen:
-                    seen[id(net)] = net
-        fn_globals = getattr(func, "__globals__", None) or {}
-        for value in fn_globals.values():
-            for net in _iter_pipe_nets_in_value(value, set()):
-                if id(net) not in seen:
-                    seen[id(net)] = net
+        closure_vars = inspect.getclosurevars(func)
+        for namespace in (closure_vars.nonlocals, closure_vars.globals):
+            for value in namespace.values():
+                for net in _iter_pipe_nets_in_value(value, set()):
+                    if id(net) not in seen:
+                        seen[id(net)] = net
 
     visit(f)
     for thread in threads:
@@ -1264,6 +1550,11 @@ def _build_pipenet_graph(nets):
 
     graph = OperationPipeNets()
     for net in nets:
+        if net.is_graph:
+            net_use = graph.add_graph_pipe_net(net.graph)
+            net._graph_edges = net_use.edges
+            net.pipe_net_id = net_use.pipe_net_id
+            continue
         net_use = graph.add_pipe_net(_pipe_to_pipe_use(p) for p in net.pipes)
         net.pipe_net_id = net_use.id
         # Assign every Pipe in this net the operation-local id so the AST
@@ -1286,8 +1577,8 @@ def _collect_captures(
 
     Returns:
         Dictionary mapping variable names to accepted capture values. Captures
-        may be scalars, tensors, DFBs, Pipes, PipeNets, or Python containers
-        that contain at least one PipeNet.
+        may be scalars, tensors, DFBs, Pipes, PipeNets, device domains, or
+        Python containers that contain at least one PipeNet.
 
     Raises:
         TypeError: If closure contains unsupported variable types
@@ -1296,6 +1587,8 @@ def _collect_captures(
         return {}
 
     def convert(name, val):
+        from .domains import DeviceDomain
+
         if isinstance(val, (int, float)):
             return val
         elif is_ttnn_global_semaphore(val):
@@ -1307,6 +1600,8 @@ def _collect_captures(
         elif isinstance(val, Pipe):
             return val
         elif isinstance(val, PipeNet):
+            return val
+        elif isinstance(val, DeviceDomain):
             return val
         elif any(_iter_pipe_nets_in_value(val, set())):
             return val
@@ -1611,6 +1906,7 @@ def _run_thread_compiler(
 def _compile(
     kernel_type: Optional[str] = None,
     verbose: bool = False,
+    logical_kernel: Optional[KernelSelector] = None,
 ) -> Callable:
     """
     Internal decorator for compiling kernel threads.
@@ -1618,12 +1914,34 @@ def _compile(
     Args:
         kernel_type: Type of kernel ("compute" or "datamovement")
         verbose: Enable verbose compilation output
+        logical_kernel: Target-independent logical kernel selector
 
     Returns:
         Decorator function for kernel compilation
     """
 
     def _decorator(f):
+        expected_kind = {
+            "compute": KernelKind.COMPUTE,
+            "datamovement": KernelKind.DATA_MOVEMENT,
+        }[kernel_type]
+        selected_kernel = expected_kind if logical_kernel is None else logical_kernel
+        if not isinstance(selected_kernel, (KernelKind, Kernel)):
+            raise TypeError(
+                "kernel must be a KernelKind or Kernel, got "
+                f"{type(selected_kernel).__name__}"
+            )
+        if _selector_kind(selected_kernel) != expected_kind:
+            raise ValueError(
+                f"{kernel_type} thread kernel kind must be "
+                f"{expected_kind.value}, got {_selector_kind(selected_kernel).value}"
+            )
+        if isinstance(selected_kernel, Kernel) and selected_kernel._identity is None:
+            raise ValueError(
+                "kernel handle must be captured by the enclosing @ttl.operation "
+                "before it is used by a thread decorator"
+            )
+
         # Capture source file at decoration time
         try:
             source_file = inspect.getfile(f)
@@ -1661,6 +1979,7 @@ def _compile(
 
         _wrapper._decorator_name = kernel_type + "_thread"
         _wrapper._source_file = source_file
+        _wrapper._logical_kernel = selected_kernel
         # Register thread for automatic collection
         _register_thread(_wrapper)
         if inspect.ismethod(f):
@@ -1670,7 +1989,9 @@ def _compile(
     return _decorator
 
 
-def compute(verbose: bool = False) -> Callable:
+def compute(
+    verbose: bool = False, *, kernel: Optional[KernelSelector] = None
+) -> Callable:
     """
     Decorator for compute thread functions.
 
@@ -1678,6 +1999,7 @@ def compute(verbose: bool = False) -> Callable:
 
     Args:
         verbose: Enable verbose compilation output
+        kernel: Logical compute kernel selected for this thread
 
     Returns:
         Decorator for compute kernel compilation
@@ -1685,10 +2007,13 @@ def compute(verbose: bool = False) -> Callable:
     return _compile(
         kernel_type="compute",
         verbose=verbose,
+        logical_kernel=kernel,
     )
 
 
-def datamovement(verbose: bool = False) -> Callable:
+def datamovement(
+    verbose: bool = False, *, kernel: Optional[KernelSelector] = None
+) -> Callable:
     """
     Decorator for data movement thread functions.
 
@@ -1696,6 +2021,7 @@ def datamovement(verbose: bool = False) -> Callable:
 
     Args:
         verbose: Enable verbose compilation output
+        kernel: Logical data-movement kernel selected for this thread
 
     Returns:
         Decorator for data movement kernel compilation
@@ -1703,6 +2029,7 @@ def datamovement(verbose: bool = False) -> Callable:
     return _compile(
         kernel_type="datamovement",
         verbose=verbose,
+        logical_kernel=kernel,
     )
 
 
@@ -1752,6 +2079,7 @@ def _compile_kernel(
     math_fidelity: Optional[str] = None,
     target_arch: Optional[str] = None,
     compiler_options: CompilerOptions = CompilerOptions(),
+    device_domain=None,
     l1_budget_override: int = 0,
 ) -> Optional[CompiledTTNNKernel]:
     """
@@ -1773,6 +2101,7 @@ def _compile_kernel(
         math_fidelity: Optional TTNN compute math fidelity
         target_arch: Optional TT device architecture for target-specific lowering
         compiler_options: Compiler pipeline options
+        device_domain: Optional logical device domain for mesh execution
         l1_budget_override: Explicit or device-derived L1 allocation budget
 
     Returns:
@@ -1790,11 +2119,7 @@ def _compile_kernel(
 
     has_ttnn_tensors = any(is_ttnn_tensor(arg) for arg in args)
 
-    # For mesh tensors, tensor.shape already returns the per-device shard
-    # dimensions, so no wrapping is needed.
-    is_mesh = has_ttnn_tensors and any(_is_mesh_tensor(arg) for arg in args)
     compile_args = args
-
     # For TTNN tensors, detect memory space from tensor's buffer type.
     # L1 tensors use simple NOC addressing, DRAM uses bank-aware addressing.
     # TODO: Check all tensors and handle mixed memory spaces.
@@ -1844,7 +2169,15 @@ def _compile_kernel(
             "@ttl.datamovement() function inside your kernel."
         )
 
+    _validate_explicit_logical_kernel_uses(
+        threads, _backend_kernel_capacities(target_arch)
+    )
+
     pipenets = _build_operation_pipenets(f, threads)
+    device_domain = pipenets.resolve_device_domain(device_domain)
+    mesh_program_placements = _default_mesh_program_placements_with_domain(
+        args, device_domain
+    )
 
     launch_grid = grid
 
@@ -1875,6 +2208,9 @@ def _compile_kernel(
         l1_budget_override=l1_budget_override,
         kernel_source_file=kernel_source_file,
         kernel_line_offset=kernel_line_offset,
+        mesh_program_placements=mesh_program_placements,
+        device_domain=device_domain,
+        logical_kernels=[thread._logical_kernel for thread in threads],
     )
 
 
@@ -1894,6 +2230,9 @@ def _lower_program_to_kernel(
     l1_budget_override,
     kernel_source_file,
     kernel_line_offset,
+    mesh_program_placements,
+    device_domain,
+    logical_kernels=None,
 ):
     """Lower compiled threads to a CompiledTTNNKernel.
 
@@ -1904,6 +2243,10 @@ def _lower_program_to_kernel(
     # Always generate source locations for error messages
     # TTLANG_DEBUG_LOCATIONS only controls whether locations are printed in MLIR output
     print_debug_locations = os.environ.get("TTLANG_DEBUG_LOCATIONS", "0") == "1"
+    if logical_kernels is not None and len(logical_kernels) != len(program.threads):
+        raise ValueError(
+            "logical kernel metadata must align one-to-one with program threads"
+        )
 
     ctx = Context()
     loc = Location.unknown(ctx)
@@ -1919,7 +2262,7 @@ def _lower_program_to_kernel(
         kernel_line_offsets = {}
         noc_kernel_idx = 0
 
-        for compile_thread in program.threads:
+        for thread_index, compile_thread in enumerate(program.threads):
             try:
                 ct = compile_thread(*program.args, **program.kwargs)
             except TTLangCompileError as e:
@@ -1967,6 +2310,34 @@ def _lower_program_to_kernel(
                     IntegerType.get_signless(32, ctx), noc_kernel_idx
                 )
                 noc_kernel_idx += 1
+
+            logical_kernel = (
+                logical_kernels[thread_index] if logical_kernels is not None else None
+            )
+            if logical_kernel is not None:
+                kind = _selector_kind(logical_kernel)
+                ir_kind = {
+                    KernelKind.COMPUTE: ttl_dialect.ir.LogicalKernelKind.Compute,
+                    KernelKind.DATA_MOVEMENT: (
+                        ttl_dialect.ir.LogicalKernelKind.DataMovement
+                    ),
+                }[kind]
+                identity = None
+                operation_identity = None
+                implicit_role = None
+                if isinstance(logical_kernel, Kernel):
+                    identity = logical_kernel.identity
+                    operation_identity = logical_kernel._operation_identity
+                    implicit_role = _selector_implicit_role(logical_kernel)
+                ct.func_entry.attributes[_ttl_ir.LOGICAL_KERNEL_ATTR] = (
+                    ttl_dialect.LogicalKernelAttr.get(
+                        ctx,
+                        ir_kind,
+                        identity,
+                        operation_identity,
+                        implicit_role,
+                    )
+                )
 
             # Collect source info for error reporting
             if hasattr(ct, "source_file") and hasattr(ct, "source_lines"):
@@ -2260,6 +2631,9 @@ def _lower_program_to_kernel(
             pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=pipe_global_semaphore_count,
             opaque_include_paths=opaque_include_paths,
+            mesh_program_placements=mesh_program_placements,
+            device_domain=device_domain,
+            target_arch=target_arch,
         )
         return compiled_kernel
 
@@ -2417,6 +2791,7 @@ def pykernel_gen(
     math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
     _prepare_call: Optional[Callable] = None,
+    device_domain=None,
 ) -> Callable:
     """
     Decorator for generating TTL kernels from Python functions.
@@ -2436,6 +2811,7 @@ def pykernel_gen(
         dst_full_sync_en: Optional override for dst_full_sync_en
         math_fidelity: Optional TTNN compute math fidelity
         options: Compiler option string (e.g., "--no-ttl-maximize-dst")
+        device_domain: Optional logical device domain for mesh execution.
 
     Returns:
         Decorated function that compiles and executes the kernel
@@ -2465,6 +2841,10 @@ def pykernel_gen(
         iterator_types = []
 
     def _decorator(f):
+        _bind_kernel_declarations(
+            _captured_kernel_declarations(f), _operation_identity(f)
+        )
+
         def _compile_explicit(
             runtime_args,
             runtime_kwargs,
@@ -2493,6 +2873,7 @@ def pykernel_gen(
                 math_fidelity=math_fidelity,
                 target_arch=target_arch,
                 compiler_options=compiler_options,
+                device_domain=device_domain,
                 l1_budget_override=l1_budget_override,
             )
 

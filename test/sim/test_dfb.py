@@ -26,7 +26,7 @@ from test_utils import (
     tensors_exact_equal,
 )
 
-from sim import TILE_SHAPE, copy, ttnn
+from sim import Kernel, KernelKind, TILE_SHAPE, copy, ttnn
 from sim.ttnnsim import ROW_MAJOR_LAYOUT, TILE_LAYOUT, Tensor
 from sim.dfb import (
     Block,
@@ -102,6 +102,24 @@ def test_dataflow_buffer_basic() -> None:
     read_view.pop()
 
     print("Basic DataflowBuffer test passed!")
+
+
+def test_logical_kernel_release_selectors_are_inert() -> None:
+    """Simulator releases accept both public selector forms."""
+    dfb = DataflowBuffer(likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=1)
+
+    write_view = dfb.reserve()
+    write_view.store(Block.from_tensor(make_ones_tile()))
+    write_view.push(kernel=KernelKind.COMPUTE)
+
+    read_view = dfb.wait()
+    output_dfb = DataflowBuffer(
+        likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=1
+    )
+    output_view = output_dfb.reserve()
+    output_view.store(read_view)
+    output_view.push()
+    read_view.pop(kernel=Kernel(KernelKind.DATA_MOVEMENT))
 
 
 def test_dataflow_buffer_multi_tile() -> None:

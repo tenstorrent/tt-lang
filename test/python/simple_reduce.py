@@ -49,7 +49,7 @@ def reduce_kernel(inp, out):
 # =============================================================================
 
 # CHECK-LABEL: func.func @reduce_compute
-# CHECK-SAME: attributes {{{.*}}ttl.kernel_thread = #ttkernel.thread<compute>}
+# CHECK-SAME: attributes {{{.*}}ttl.kernel_thread = #ttkernel.thread<compute>, ttl.logical_kernel = #ttl.logical_kernel<kind = compute>}
 
 # CHECK: ttl.bind_cb{cb_index = 0
 # CHECK: ttl.bind_cb{cb_index =

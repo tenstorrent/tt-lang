@@ -19,6 +19,7 @@
 #include "ttlang/Target/TTKernel/LLKs/experimental_padding_llks_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_reg_api_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_row_normalization_generated.h"
+#include "ttlang/Target/TTKernel/LLKs/experimental_routing_plane_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_semaphore_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_tilize_llks_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_untilize_llks_generated.h"
@@ -140,6 +141,10 @@ public:
         emitLlk(experimental_constant_table_generated,
                 experimental_constant_table_generated_len);
       }
+      if (callee == "experimental::routing_plane_atomic_inc") {
+        emitLlk(experimental_routing_plane_generated,
+                experimental_routing_plane_generated_len);
+      }
       if (callee == "experimental::close_fabric_connections" ||
           callee == "experimental::setup_fabric_connections" ||
           callee == "experimental::get_my_device_id" ||
@@ -194,6 +199,10 @@ public:
         headers.insert("api/core_local_mem.h");
         headers.insert("api/dataflow/endpoints.h");
         headers.insert("api/dataflow/noc.h");
+      }
+
+      if (value.starts_with("tt::tt_fabric::RoutingPlaneConnectionManager")) {
+        headers.insert("tt_metal/fabric/hw/inc/linear/api.h");
       }
 
       // Some callees are embedded in VerbatimOps.

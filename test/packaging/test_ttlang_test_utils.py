@@ -52,6 +52,7 @@ def _load_ttlang_test_utils(
     else:
         # None in sys.modules makes `from ttl.config import ...` raise ImportError.
         monkeypatch.setitem(sys.modules, "ttl", None)
+        monkeypatch.setitem(sys.modules, "ttl.config", None)
 
     real_glob = glob.glob
 
@@ -73,6 +74,45 @@ def _load_ttlang_test_utils(
     monkeypatch.setitem(sys.modules, module_name, module)
     spec.loader.exec_module(module)
     return module
+
+
+def _create_fake_fabric_ttnn(discovered_shape: tuple[int, ...]):
+    events = []
+
+    class MeshShape:
+        def __init__(self, shape):
+            self.shape = tuple(shape)
+
+    class SystemMeshDescriptor:
+        def shape(self):
+            return discovered_shape
+
+    fabric_config = types.SimpleNamespace(FABRIC_1D="fabric-1d", DISABLED="disabled")
+    mesh_device = object()
+
+    def set_fabric_config(config):
+        events.append(("configure", config))
+
+    def open_mesh_device(shape):
+        events.append(("open", shape.shape))
+        return mesh_device
+
+    def close_mesh_device(mesh):
+        events.append(("close", mesh))
+
+    fake_ttnn = types.SimpleNamespace(
+        FabricConfig=fabric_config,
+        MeshShape=MeshShape,
+        _ttnn=types.SimpleNamespace(
+            multi_device=types.SimpleNamespace(
+                SystemMeshDescriptor=SystemMeshDescriptor
+            )
+        ),
+        set_fabric_config=set_fabric_config,
+        open_mesh_device=open_mesh_device,
+        close_mesh_device=close_mesh_device,
+    )
+    return fake_ttnn, events, mesh_device
 
 
 def test_runtime_device_nodes_override_no_device_build_config(monkeypatch) -> None:
@@ -116,35 +156,9 @@ def test_no_nodes_and_ttl_unimportable_is_unavailable(monkeypatch) -> None:
     assert module.is_hardware_available() is False
 
 
-def test_fabric_1d_uses_linear_logical_mesh(monkeypatch) -> None:
+def test_fabric_mesh_uses_discovered_shape(monkeypatch) -> None:
     module = _load_ttlang_test_utils(monkeypatch)
-    events = []
-
-    class MeshShape:
-        def __init__(self, shape):
-            self.shape = tuple(shape)
-
-    fabric_config = types.SimpleNamespace(FABRIC_1D="fabric-1d", DISABLED="disabled")
-    mesh_device = object()
-
-    def set_fabric_config(config):
-        events.append(("configure", config))
-
-    def open_mesh_device(shape):
-        events.append(("open", shape.shape))
-        return mesh_device
-
-    def close_mesh_device(mesh):
-        events.append(("close", mesh))
-
-    fake_ttnn = types.SimpleNamespace(
-        FabricConfig=fabric_config,
-        MeshShape=MeshShape,
-        get_num_devices=lambda: 8,
-        set_fabric_config=set_fabric_config,
-        open_mesh_device=open_mesh_device,
-        close_mesh_device=close_mesh_device,
-    )
+    fake_ttnn, events, mesh_device = _create_fake_fabric_ttnn((2, 4))
     monkeypatch.setattr(module, "_get_ttnn", lambda: fake_ttnn)
 
     with module.open_fabric_mesh() as opened_mesh:
@@ -152,17 +166,23 @@ def test_fabric_1d_uses_linear_logical_mesh(monkeypatch) -> None:
 
     assert events == [
         ("configure", "fabric-1d"),
-        ("open", (1, 8)),
+        ("open", (2, 4)),
         ("close", mesh_device),
         ("configure", "disabled"),
     ]
 
 
-def test_fabric_1d_rejects_non_linear_logical_mesh(monkeypatch) -> None:
+def test_fabric_mesh_uses_requested_shape_and_config(monkeypatch) -> None:
     module = _load_ttlang_test_utils(monkeypatch)
-    fake_ttnn = types.SimpleNamespace()
+    fake_ttnn, events, mesh_device = _create_fake_fabric_ttnn((2, 4))
     monkeypatch.setattr(module, "_get_ttnn", lambda: fake_ttnn)
 
-    with pytest.raises(ValueError, match="FABRIC_1D requires"):
-        with module.open_fabric_mesh((2, 2)):
-            pass
+    with module.open_fabric_mesh((2, 2), fabric_config="fabric-2d") as opened_mesh:
+        assert opened_mesh is mesh_device
+
+    assert events == [
+        ("configure", "fabric-2d"),
+        ("open", (2, 2)),
+        ("close", mesh_device),
+        ("configure", "disabled"),
+    ]
