@@ -268,6 +268,7 @@ class TestMeshProgramPlacement:
             "dst_full_sync_en": None,
             "math_fidelity": None,
             "device_domain": domain,
+            "runtime_resource_factory": None,
         }
 
         result = ttl_atom._compile_unified_operation(
