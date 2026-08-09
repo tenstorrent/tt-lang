@@ -5,8 +5,13 @@
 """Python-only tests for ttl.kernel_runner resource allocation helpers."""
 
 from collections import defaultdict
-from typing import NamedTuple
 from dataclasses import FrozenInstanceError
+import os
+import subprocess
+import sys
+import textwrap
+from types import SimpleNamespace
+from typing import NamedTuple
 import weakref
 
 import pytest
@@ -384,6 +389,33 @@ class _FakeMeshDevice:
     @staticmethod
     def get_fabric_node_id(coordinate):
         return _FakeFabricNodeId(0, coordinate.coords[-1])
+
+
+class _EmittedCoreRangeSet:
+    def __init__(self, ranges):
+        self._ranges = tuple(ranges)
+
+    def ranges(self):
+        return self._ranges
+
+    def bounding_box(self):
+        return _FakeBoundingBox(self._ranges)
+
+
+def _load_emitted_runner(monkeypatch, source, run_kernel):
+    emitted_ttnn = SimpleNamespace(
+        ComputeConfigDescriptor=type("ComputeConfigDescriptor", (), {}),
+        ReaderConfigDescriptor=_FakeTTNN.ReaderConfigDescriptor,
+        WriterConfigDescriptor=_FakeTTNN.WriterConfigDescriptor,
+        CoreCoord=_FakeTTNN.CoreCoord,
+        CoreRange=_FakeTTNN.CoreRange,
+        CoreRangeSet=_EmittedCoreRangeSet,
+    )
+    monkeypatch.setitem(sys.modules, "ttnn", emitted_ttnn)
+    monkeypatch.setattr(kernel_runner, "run_kernel_on_device", run_kernel)
+    namespace = {"__name__": "emitted_runner_test"}
+    exec(compile(source, "<generated-runner>", "exec"), namespace)
+    return namespace
 
 
 def _make_fake_core_ranges(end=(0, 0)):
@@ -1242,6 +1274,205 @@ def test_plan_runtime_resources_accepts_semaphore_id_zero_and_disjoint_ranges():
     ]
 
 
+def _fingerprint_resource_plan(
+    *,
+    logical_kernel=KernelKind.COMPUTE,
+    kernel_specs=None,
+    define_name="MODE",
+    define_value="base",
+    runtime_core=(0, 0),
+    runtime_values=(7,),
+    semaphore_id=0,
+    semaphore_ranges=None,
+    semaphore_initial_value=0,
+    semaphore_core_type="WORKER",
+    lifetimes=(),
+):
+    operation_ranges = _FakeCoreRanges((((0, 0), (1, 0)),))
+    if kernel_specs is None:
+        kernel_specs = [_kernel_spec(logical_kernel)]
+    if semaphore_ranges is None:
+        semaphore_ranges = _FakeCoreRanges((((0, 0), (0, 0)),))
+    resources = ProgramRuntimeResources(
+        semaphore_descriptors=(
+            _FakeTTNN.SemaphoreDescriptor(
+                semaphore_id,
+                semaphore_ranges,
+                semaphore_initial_value,
+                core_type=semaphore_core_type,
+            ),
+        ),
+        kernel_resources=(
+            KernelRuntimeResources(
+                kernel=logical_kernel,
+                runtime_args=(
+                    CoreRuntimeArgs(_FakeCoreCoord(*runtime_core), runtime_values),
+                ),
+                defines=(KernelDefine(define_name, define_value),),
+            ),
+        ),
+        lifetimes=lifetimes,
+    )
+    return _plan_runtime_resources(resources, kernel_specs, operation_ranges)
+
+
+def test_runtime_resource_fingerprint_changes_for_every_structural_field():
+    base_fingerprint = _fingerprint_resource_plan().structural_fingerprint
+    named_kernel = Kernel._from_metadata(
+        KernelKind.COMPUTE,
+        "named_compute",
+        "test.operation",
+    )
+    specialized_specs = [
+        _kernel_spec(
+            KernelKind.COMPUTE,
+            _FakeCoreRanges((((0, 0), (0, 0)),)),
+        ),
+        _kernel_spec(
+            KernelKind.COMPUTE,
+            _FakeCoreRanges((((1, 0), (1, 0)),)),
+        ),
+    ]
+    variants = (
+        _fingerprint_resource_plan(
+            logical_kernel=KernelKind.DATA_MOVEMENT
+        ).structural_fingerprint,
+        _fingerprint_resource_plan(
+            logical_kernel=named_kernel,
+        ).structural_fingerprint,
+        _fingerprint_resource_plan(
+            kernel_specs=specialized_specs,
+        ).structural_fingerprint,
+        _fingerprint_resource_plan(define_name="OTHER").structural_fingerprint,
+        _fingerprint_resource_plan(define_value="changed").structural_fingerprint,
+        _fingerprint_resource_plan(runtime_core=(1, 0)).structural_fingerprint,
+        _fingerprint_resource_plan(runtime_values=(7, 8)).structural_fingerprint,
+        _fingerprint_resource_plan(semaphore_id=1).structural_fingerprint,
+        _fingerprint_resource_plan(
+            semaphore_ranges=_FakeCoreRanges((((1, 0), (1, 0)),))
+        ).structural_fingerprint,
+        _fingerprint_resource_plan(semaphore_initial_value=1).structural_fingerprint,
+        _fingerprint_resource_plan(semaphore_core_type="ETH").structural_fingerprint,
+    )
+
+    assert all(fingerprint != base_fingerprint for fingerprint in variants)
+
+
+def test_runtime_resource_fingerprint_excludes_invocation_values_and_lifetimes():
+    first_plan = _fingerprint_resource_plan(
+        runtime_values=(7, 8),
+        lifetimes=(object(),),
+    )
+    second_plan = _fingerprint_resource_plan(
+        runtime_values=(17, 18),
+        lifetimes=(object(), object()),
+    )
+
+    assert first_plan.structural_fingerprint == second_plan.structural_fingerprint
+
+
+def test_runtime_resource_fingerprint_canonicalizes_range_order():
+    forward_ranges = _FakeCoreRanges((((0, 0), (0, 0)), ((1, 0), (1, 0))))
+    reverse_ranges = _FakeCoreRanges((((1, 0), (1, 0)), ((0, 0), (0, 0))))
+
+    forward_plan = _fingerprint_resource_plan(
+        kernel_specs=[_kernel_spec(KernelKind.COMPUTE, forward_ranges)]
+    )
+    reverse_plan = _fingerprint_resource_plan(
+        kernel_specs=[_kernel_spec(KernelKind.COMPUTE, reverse_ranges)]
+    )
+
+    assert forward_plan.structural_fingerprint == reverse_plan.structural_fingerprint
+
+
+def test_runtime_resource_fingerprint_orders_semaphores_by_id():
+    core_ranges = _FakeCoreRanges((((0, 0), (1, 0)),))
+    first_semaphore = _FakeTTNN.SemaphoreDescriptor(
+        0,
+        _FakeCoreRanges((((0, 0), (0, 0)),)),
+        3,
+    )
+    second_semaphore = _FakeTTNN.SemaphoreDescriptor(
+        1,
+        _FakeCoreRanges((((1, 0), (1, 0)),)),
+        4,
+    )
+
+    fingerprints = []
+    for semaphores in (
+        (first_semaphore, second_semaphore),
+        (second_semaphore, first_semaphore),
+    ):
+        plan = _plan_runtime_resources(
+            ProgramRuntimeResources(semaphore_descriptors=semaphores),
+            [_kernel_spec(KernelKind.COMPUTE)],
+            core_ranges,
+        )
+        fingerprints.append(plan.structural_fingerprint)
+
+    assert fingerprints[0] == fingerprints[1]
+
+
+def test_runtime_resource_fingerprint_is_stable_across_python_hash_seeds():
+    script = textwrap.dedent(
+        """
+        from ttl import CoreRuntimeArgs, KernelDefine, KernelKind
+        from ttl import KernelRuntimeResources, ProgramRuntimeResources
+        from ttl import kernel_runner
+
+        class Coordinate:
+            def __init__(self, core_x, core_y):
+                self.x = core_x
+                self.y = core_y
+
+        class CoreRange:
+            def __init__(self, start, end):
+                self.start = Coordinate(*start)
+                self.end = Coordinate(*end)
+
+        class CoreRanges:
+            def ranges(self):
+                return (CoreRange((0, 0), (0, 0)),)
+
+        resources = ProgramRuntimeResources(kernel_resources=(
+            KernelRuntimeResources(
+                kernel=KernelKind.COMPUTE,
+                runtime_args=(CoreRuntimeArgs(Coordinate(0, 0), (7, 8)),),
+                defines=(KernelDefine("MODE", "stable"),),
+            ),
+        ))
+        plan = kernel_runner.plan_program_runtime_resources(
+            operation_name="seed_stability",
+            resources=resources,
+            kernel_specs=(kernel_runner.KernelSpec(
+                path="/tmp/kernel.cpp",
+                thread_type="compute",
+                tensor_indices=[],
+                config=object(),
+                logical_kernel=KernelKind.COMPUTE,
+            ),),
+            operation_core_ranges=CoreRanges(),
+            first_free_semaphore_id=0,
+            kernel_fabric_routes=((),),
+        )
+        print(plan.structural_fingerprint)
+        """
+    )
+    fingerprints = []
+    for hash_seed in ("1", "937"):
+        environment = dict(os.environ)
+        environment["PYTHONHASHSEED"] = hash_seed
+        fingerprints.append(
+            subprocess.check_output(
+                [sys.executable, "-c", script],
+                env=environment,
+                text=True,
+            ).strip()
+        )
+
+    assert fingerprints[0] == fingerprints[1]
+
+
 @pytest.mark.parametrize(
     ("semaphores", "first_free_id", "message"),
     [
@@ -1304,6 +1535,21 @@ def test_plan_runtime_resources_accepts_semaphore_id_zero_and_disjoint_ranges():
             (
                 "@ttl.operation 'planned_operation': semaphore descriptor 0 "
                 "core_ranges must not be empty"
+            ),
+        ),
+        (
+            (
+                _FakeTTNN.SemaphoreDescriptor(
+                    1,
+                    _FakeCoreRanges(),
+                    0,
+                    core_type=object(),
+                ),
+            ),
+            1,
+            (
+                "@ttl.operation 'planned_operation': semaphore descriptor 0 "
+                "core_type must be a named value, got object"
             ),
         ),
     ],
@@ -2627,6 +2873,145 @@ def test_run_kernel_passes_through_in_range_program_hash(monkeypatch):
     assert result["program"].custom_program_hash == 5
 
 
+def test_run_kernel_combines_program_hash_with_empty_resource_contract(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    core_ranges = _FakeCoreRanges()
+    empty_plan = _plan_runtime_resources(
+        ProgramRuntimeResources(),
+        [],
+        core_ranges,
+    )
+
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[],
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=[],
+        core_ranges=core_ranges,
+        program_hash=5,
+        runtime_resource_factory=lambda **_kwargs: ProgramRuntimeResources(),
+        operation_name="empty_resource_contract",
+    )
+
+    assert result["program"].custom_program_hash == (
+        kernel_runner.combine_program_hash_with_runtime_resources(
+            5,
+            empty_plan.structural_fingerprint,
+        )
+    )
+    assert result["program"].custom_program_hash != 5
+
+
+def test_run_kernel_leaves_resource_custom_hash_unset_without_compiler_hash(
+    monkeypatch,
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[_kernel_spec(KernelKind.COMPUTE)],
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=[],
+        core_ranges=_FakeCoreRanges(),
+        runtime_resource_factory=lambda **_kwargs: ProgramRuntimeResources(
+            kernel_resources=(
+                KernelRuntimeResources(
+                    kernel=KernelKind.COMPUTE,
+                    defines=(KernelDefine("MODE", "resource"),),
+                ),
+            )
+        ),
+        operation_name="resource_without_compiler_hash",
+    )
+
+    assert result["program"].custom_program_hash is None
+
+
+def test_run_kernel_reuses_structural_hash_while_updating_invocation_values(
+    monkeypatch,
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    next_values = iter((7, 19))
+    retained_lifetimes = []
+
+    def make_resources(**_kwargs):
+        return ProgramRuntimeResources(
+            kernel_resources=(
+                KernelRuntimeResources(
+                    kernel=KernelKind.COMPUTE,
+                    runtime_args=(
+                        CoreRuntimeArgs(
+                            _FakeCoreCoord(0, 0),
+                            (next(next_values),),
+                        ),
+                    ),
+                ),
+            ),
+            lifetimes=(object(),),
+        )
+
+    programs = []
+    for _call_index in range(2):
+        result = kernel_runner.run_kernel_on_device(
+            kernel_specs=[_kernel_spec(KernelKind.COMPUTE)],
+            tensors=[_FakeTensorWithoutDevice()],
+            cb_configs=[],
+            core_ranges=_FakeCoreRanges(),
+            program_hash=23,
+            runtime_resource_factory=make_resources,
+            operation_name="repeated_resources",
+            runtime_resource_lifetime_commit=retained_lifetimes.append,
+        )
+        programs.append(result["program"])
+
+    assert programs[0].custom_program_hash == programs[1].custom_program_hash
+    assert programs[0].kernels[0].runtime_args[0][0] == [7]
+    assert programs[1].kernels[0].runtime_args[0][0] == [19]
+    assert len(retained_lifetimes) == 2
+
+
+def test_device_domain_programs_receive_combined_resource_hash(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+    )
+    core_ranges = _FakeCoreRanges()
+    resources = ProgramRuntimeResources(
+        kernel_resources=(
+            KernelRuntimeResources(
+                kernel=KernelKind.COMPUTE,
+                defines=(KernelDefine("MODE", "mesh"),),
+            ),
+        )
+    )
+    resource_plan = _plan_runtime_resources(
+        resources,
+        [_kernel_spec(KernelKind.COMPUTE)],
+        core_ranges,
+    )
+    expected_hash = kernel_runner.combine_program_hash_with_runtime_resources(
+        31,
+        resource_plan.structural_fingerprint,
+    )
+
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[_kernel_spec(KernelKind.COMPUTE)],
+        tensors=[_FakeTensor(object())],
+        cb_configs=[],
+        core_ranges=core_ranges,
+        program_hash=31,
+        device_domain=DeviceDomain((1, 2)),
+        runtime_resource_factory=lambda **_kwargs: resources,
+        operation_name="mesh_resources",
+    )
+
+    child_programs = [
+        program for _coordinate, program in result["program"].mesh_programs
+    ]
+    assert len(child_programs) == 2
+    assert all(
+        program.custom_program_hash == expected_hash for program in child_programs
+    )
+
+
 def test_run_kernel_with_mesh_program_descriptor(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     tensor = _FakeTensorWithoutDevice()
@@ -3512,3 +3897,126 @@ def test_emit_runner_source_preserves_fabric_binding_metadata(monkeypatch):
     assert "kernel_fabric_routes=KERNEL_FABRIC_ROUTES" in source
     assert "KERNEL_FABRIC_RUNTIME_ARG_BASE_COMMON_INDICES = [0]" in source
     compile(source, "<generated-runner>", "exec")
+
+
+def test_emitted_runner_without_resources_executes_shared_runner(monkeypatch):
+    calls = []
+
+    def record_run(**kwargs):
+        calls.append(kwargs)
+        return "executed"
+
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[],
+        cb_configs=[],
+        grid_cols=1,
+        grid_rows=1,
+        num_tensors=1,
+        kernel_name="no_resources",
+    )
+    emitted_runner = _load_emitted_runner(monkeypatch, source, record_run)
+
+    result = emitted_runner["run"]([object()], device=object())
+
+    assert result == "executed"
+    assert len(calls) == 1
+    assert calls[0]["kernel_specs"] == []
+    assert "runtime_resource_factory" not in calls[0]
+    assert calls[0]["operation_name"] == "no_resources"
+
+
+def test_emitted_runner_requires_and_applies_runtime_resource_factory(monkeypatch):
+    runtime_kernel = Kernel._from_metadata(
+        KernelKind.COMPUTE,
+        "runtime_kernel",
+        "test.emitted_operation",
+    )
+    left_ranges = _FakeCoreRanges((((0, 0), (0, 0)),))
+    right_ranges = _FakeCoreRanges((((1, 0), (1, 0)),))
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[
+            _kernel_spec(runtime_kernel, left_ranges),
+            _kernel_spec(runtime_kernel, right_ranges),
+        ],
+        cb_configs=[],
+        grid_cols=2,
+        grid_rows=1,
+        num_tensors=1,
+        kernel_name="test.emitted_operation",
+        requires_runtime_resource_factory=True,
+    )
+    plans = []
+
+    def plan_run(**kwargs):
+        resources = kwargs["runtime_resource_factory"](
+            tensors=tuple(kwargs["tensors"]),
+            core_ranges=kwargs["core_ranges"],
+            first_free_semaphore_id=kwargs["num_pipe_sync_semaphores"],
+        )
+        plan = kernel_runner.plan_program_runtime_resources(
+            operation_name=kwargs["operation_name"],
+            resources=resources,
+            kernel_specs=kwargs["kernel_specs"],
+            operation_core_ranges=kwargs["core_ranges"],
+            first_free_semaphore_id=kwargs["num_pipe_sync_semaphores"],
+            kernel_fabric_routes=[() for _ in kwargs["kernel_specs"]],
+        )
+        plans.append(plan)
+        return plan
+
+    emitted_runner = _load_emitted_runner(monkeypatch, source, plan_run)
+    with pytest.raises(TypeError, match="runtime_resource_factory"):
+        emitted_runner["run"]([object()], device=object())
+    with pytest.raises(
+        TypeError,
+        match=(
+            "emitted runner for 'test.emitted_operation' requires "
+            "runtime_resource_factory"
+        ),
+    ):
+        emitted_runner["run"](
+            [object()],
+            runtime_resource_factory=None,
+            device=object(),
+        )
+
+    next_runtime_values = iter(((7, 8), (17, 18)))
+
+    def make_resources(**_kwargs):
+        left_value, right_value = next(next_runtime_values)
+        return ProgramRuntimeResources(
+            kernel_resources=(
+                KernelRuntimeResources(
+                    kernel=runtime_kernel,
+                    runtime_args=(
+                        CoreRuntimeArgs(_FakeCoreCoord(0, 0), (left_value,)),
+                        CoreRuntimeArgs(_FakeCoreCoord(1, 0), (right_value,)),
+                    ),
+                    defines=(KernelDefine("MODE", "emitted"),),
+                ),
+            )
+        )
+
+    for _call_index in range(2):
+        emitted_runner["run"](
+            [object()],
+            runtime_resource_factory=make_resources,
+            device=object(),
+        )
+
+    assert len(plans) == 2
+    assert [descriptor.coordinates for descriptor in plans[0].kernel_descriptors] == [
+        ((0, 0),),
+        ((1, 0),),
+    ]
+    assert [descriptor.defines for descriptor in plans[0].kernel_descriptors] == [
+        (("MODE", "emitted"),),
+        (("MODE", "emitted"),),
+    ]
+    assert [
+        descriptor.runtime_args[0].values for descriptor in plans[0].kernel_descriptors
+    ] == [(7,), (8,)]
+    assert [
+        descriptor.runtime_args[0].values for descriptor in plans[1].kernel_descriptors
+    ] == [(17,), (18,)]
+    assert plans[0].structural_fingerprint == plans[1].structural_fingerprint
