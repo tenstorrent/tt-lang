@@ -70,6 +70,7 @@ _TTL_OPS: Dict[str, str] = {
     "copy": "dm",
     "element_read": "dm",
     "element_write": "dm",
+    "read_index": "dm",
     # Compute
     "fill": "trisc",
     "matmul": "trisc",
