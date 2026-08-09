@@ -75,6 +75,12 @@ bool isShortHeightComputeShape(ttcore::TileType tileType) {
          tileType.getWidth() == 32;
 }
 
+bool isSupportedShortHeightFloatDataType(ttcore::TileType tileType) {
+  ttcore::DataType dataType = tileType.getDataType();
+  return dataType == ttcore::DataType::BFloat16 ||
+         dataType == ttcore::DataType::Float32;
+}
+
 bool isComputeShape(ttcore::TileType tileType) {
   return isStandardComputeShape(tileType) ||
          isShortHeightComputeShape(tileType);
@@ -90,9 +96,9 @@ bool supportsShortHeightTiles(ComputePrimitive primitive) {
   case ComputePrimitive::Fill:
   case ComputePrimitive::Matmul:
   case ComputePrimitive::MultiplyByConstant:
-    return true;
   case ComputePrimitive::Broadcast:
   case ComputePrimitive::Reduce:
+    return true;
   case ComputePrimitive::Transpose:
   case ComputePrimitive::Typecast:
     return false;
@@ -180,7 +186,8 @@ public:
                << tileType.getWidth()
                << " is not supported by this compute primitive; "
                   "short-height tiles are supported by elementwise, fill, "
-                  "and matmul compute primitives";
+                  "matmul, 8x32 row reduction, and 8x32 column broadcast "
+                  "compute primitives";
     return failure();
   }
 
@@ -204,6 +211,75 @@ public:
       diagnostic << "BFP tiles require " << defaultTileShape[0] << "x"
                  << defaultTileShape[1] << " dimensions, got "
                  << tileType.getHeight() << "x" << tileType.getWidth();
+      return failure();
+    }
+    return success();
+  }
+
+  LogicalResult validateBroadcast(const BroadcastCapability &capability,
+                                  std::string &failureReason) const final {
+    failureReason.clear();
+    if (!capability.tileBroadcast) {
+      return success();
+    }
+    bool hasShortHeightTile = isShortHeightComputeShape(capability.inputType) ||
+                              isShortHeightComputeShape(capability.resultType);
+    if (!hasShortHeightTile) {
+      return success();
+    }
+
+    if (!hasTileShape(capability.inputType, 8, 32) ||
+        !hasTileShape(capability.resultType, 8, 32) ||
+        capability.inputType != capability.resultType) {
+      failureReason = "short-height broadcast supports only matching 8x32 "
+                      "input and result tile types";
+      return failure();
+    }
+    if (!isSupportedShortHeightFloatDataType(capability.inputType) ||
+        !isSupportedShortHeightFloatDataType(capability.resultType)) {
+      failureReason = "8x32 broadcast supports only bf16 and f32 tiles";
+      return failure();
+    }
+    if (*capability.tileBroadcast != BcastType::Col) {
+      failureReason = "8x32 broadcast supports only column broadcast";
+      return failure();
+    }
+    return success();
+  }
+
+  LogicalResult validateReduction(const ReductionCapability &capability,
+                                  std::string &failureReason) const final {
+    failureReason.clear();
+    bool hasShortHeightTile =
+        isShortHeightComputeShape(capability.inputType) ||
+        isShortHeightComputeShape(capability.scalerType) ||
+        isShortHeightComputeShape(capability.resultType);
+    if (!hasShortHeightTile) {
+      return success();
+    }
+
+    if (!hasTileShape(capability.inputType, 8, 32) ||
+        !hasTileShape(capability.scalerType, 8, 32) ||
+        !hasTileShape(capability.resultType, 8, 32) ||
+        capability.inputType != capability.scalerType ||
+        capability.inputType != capability.resultType) {
+      failureReason = "short-height reduction supports only matching 8x32 "
+                      "input, scaler, and result tile types";
+      return failure();
+    }
+    if (!isSupportedShortHeightFloatDataType(capability.inputType) ||
+        !isSupportedShortHeightFloatDataType(capability.scalerType) ||
+        !isSupportedShortHeightFloatDataType(capability.resultType)) {
+      failureReason = "8x32 reduction supports only bf16 and f32 tiles";
+      return failure();
+    }
+    if (capability.reduceDimension != ttkernel::ReduceDim::Row) {
+      failureReason = "8x32 reduction supports only row reduction";
+      return failure();
+    }
+    if (capability.reduceType != ReduceType::Sum &&
+        capability.reduceType != ReduceType::Max) {
+      failureReason = "8x32 reduction supports only sum and max";
       return failure();
     }
     return success();
@@ -316,6 +392,28 @@ public:
     return success();
   }
 
+  LogicalResult validateBroadcast(const BroadcastCapability &capability,
+                                  std::string &failureReason) const final {
+    for (const std::unique_ptr<ComputeTargetEnvironment> &environment :
+         environments) {
+      if (failed(environment->validateBroadcast(capability, failureReason))) {
+        return failure();
+      }
+    }
+    return success();
+  }
+
+  LogicalResult validateReduction(const ReductionCapability &capability,
+                                  std::string &failureReason) const final {
+    for (const std::unique_ptr<ComputeTargetEnvironment> &environment :
+         environments) {
+      if (failed(environment->validateReduction(capability, failureReason))) {
+        return failure();
+      }
+    }
+    return success();
+  }
+
   LogicalResult
   validateMatmulTileTypes(ttcore::TileType lhsType, ttcore::TileType rhsType,
                           ttcore::TileType resultType, bool transposeRhs,
@@ -406,6 +504,110 @@ getDeviceArch(ModuleOp module, std::string &failureReason) {
     return failure();
   }
   return std::optional<ttcore::Arch>(arch);
+}
+
+FailureOr<ttcore::TileType> getRequiredTileType(Type type, StringRef role,
+                                                std::string &failureReason) {
+  FailureOr<ttcore::TileType> tileType = getTileType(type);
+  if (failed(tileType)) {
+    llvm::raw_string_ostream diagnostic(failureReason);
+    diagnostic << "expected " << role << " to contain a tile type";
+    return failure();
+  }
+  return *tileType;
+}
+
+FailureOr<BroadcastCapability>
+getBroadcastCapability(Operation *operation, std::string &failureReason) {
+  if (auto broadcast = dyn_cast<BlockBroadcastOp>(operation)) {
+    FailureOr<ttcore::TileType> inputType = getRequiredTileType(
+        broadcast.getInput().getType(), "broadcast input", failureReason);
+    if (failed(inputType)) {
+      return failure();
+    }
+    FailureOr<ttcore::TileType> resultType = getRequiredTileType(
+        broadcast.getResult().getType(), "broadcast result", failureReason);
+    if (failed(resultType)) {
+      return failure();
+    }
+    auto inputTensorType =
+        dyn_cast<RankedTensorType>(broadcast.getInput().getType());
+    if (!inputTensorType) {
+      failureReason = "expected broadcast input to be a ranked tensor";
+      return failure();
+    }
+    return BroadcastCapability{
+        *inputType, *resultType,
+        getTileBroadcastType(broadcast.getDims(), inputTensorType.getRank())};
+  }
+  if (auto broadcast = dyn_cast<TileBcastOp>(operation)) {
+    FailureOr<ttcore::TileType> inputType = getRequiredTileType(
+        broadcast.getInput().getType(), "broadcast input", failureReason);
+    if (failed(inputType)) {
+      return failure();
+    }
+    FailureOr<ttcore::TileType> resultType = getRequiredTileType(
+        broadcast.getResult().getType(), "broadcast result", failureReason);
+    if (failed(resultType)) {
+      return failure();
+    }
+    return BroadcastCapability{*inputType, *resultType,
+                               broadcast.getBcastType()};
+  }
+  failureReason = "has no broadcast capability representation";
+  return failure();
+}
+
+FailureOr<ReductionCapability>
+getReductionCapability(Operation *operation, std::string &failureReason) {
+  auto buildCapability = [&](Type input, Type scaler, Type result,
+                             ReduceType reduceType,
+                             ttkernel::ReduceDim reduceDimension)
+      -> FailureOr<ReductionCapability> {
+    FailureOr<ttcore::TileType> inputType =
+        getRequiredTileType(input, "reduction input", failureReason);
+    if (failed(inputType)) {
+      return failure();
+    }
+    FailureOr<ttcore::TileType> scalerType =
+        getRequiredTileType(scaler, "reduction scaler", failureReason);
+    if (failed(scalerType)) {
+      return failure();
+    }
+    FailureOr<ttcore::TileType> resultType =
+        getRequiredTileType(result, "reduction result", failureReason);
+    if (failed(resultType)) {
+      return failure();
+    }
+    return ReductionCapability{*inputType, *scalerType, *resultType, reduceType,
+                               reduceDimension};
+  };
+
+  if (auto reduction = dyn_cast<ReduceOp>(operation)) {
+    auto inputType = dyn_cast<RankedTensorType>(reduction.getInput().getType());
+    if (!inputType) {
+      failureReason = "expected reduction input to be a ranked tensor";
+      return failure();
+    }
+    FailureOr<ttkernel::ReduceDim> reduceDimension =
+        getReduceDimension(reduction.getDims(), inputType.getRank());
+    if (failed(reduceDimension)) {
+      failureReason = "has unsupported reduction dimensions";
+      return failure();
+    }
+    return buildCapability(reduction.getInput().getType(),
+                           reduction.getScaler().getType(),
+                           reduction.getResult().getType(),
+                           reduction.getReduceType(), *reduceDimension);
+  }
+  if (auto reduction = dyn_cast<TileReduceOp>(operation)) {
+    return buildCapability(reduction.getInput().getType(),
+                           reduction.getScaler().getType(),
+                           reduction.getResult().getType(),
+                           reduction.getReduceType(), reduction.getReduceDim());
+  }
+  failureReason = "has no reduction capability representation";
+  return failure();
 }
 
 } // namespace
@@ -502,6 +704,19 @@ ComputeTargetEnvironment::validateOperation(Operation *operation,
             validatePrimitiveDataType(*primitive, *tileType, failureReason))) {
       return failure();
     }
+  }
+
+  if (*primitive == ComputePrimitive::Broadcast) {
+    FailureOr<BroadcastCapability> capability =
+        getBroadcastCapability(operation, failureReason);
+    return failed(capability) ? failure()
+                              : validateBroadcast(*capability, failureReason);
+  }
+  if (*primitive == ComputePrimitive::Reduce) {
+    FailureOr<ReductionCapability> capability =
+        getReductionCapability(operation, failureReason);
+    return failed(capability) ? failure()
+                              : validateReduction(*capability, failureReason);
   }
 
   auto validateMatmul = [&](Type lhs, Type rhs, Type result,
