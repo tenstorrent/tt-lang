@@ -193,6 +193,59 @@ class PipeRuntimeResources:
     expected_extra_common_runtime_args: int
 
 
+@dataclass
+class PipeGlobalSemaphoreCache:
+    """Own stable compiler-managed GlobalSemaphores across cached dispatches."""
+
+    _device: Optional[Any] = field(default=None, init=False)
+    _core_ranges: Optional[Any] = field(default=None, init=False)
+    _core_ranges_key: Optional[Tuple[Any, ...]] = field(default=None, init=False)
+    _semaphores: List[Any] = field(default_factory=list, init=False)
+
+    def acquire(
+        self,
+        tensors: List[Any],
+        core_ranges: Any,
+        count: int,
+        device: Optional[Any] = None,
+    ) -> List[Any]:
+        """Return zeroed semaphores with addresses stable for one cache context."""
+        if count <= 0:
+            return []
+
+        ttnn_api = _ensure_ttnn()
+        if ttnn_api is None:
+            raise RuntimeError("ttnn is not available")
+        resource_device = device if device is not None else _first_device(tensors)
+        core_ranges_key = _core_ranges_cache_key(core_ranges)
+        same_core_ranges = (
+            self._core_ranges_key == core_ranges_key
+            if core_ranges_key is not None
+            else self._core_ranges is core_ranges
+        )
+        can_reuse = (
+            self._device is resource_device
+            and same_core_ranges
+            and len(self._semaphores) == count
+        )
+        if can_reuse:
+            for semaphore in self._semaphores:
+                ttnn_api.reset_global_semaphore_value(semaphore, 0)
+            return self._semaphores
+
+        semaphores, _addresses = build_pipe_global_semaphores(
+            tensors=tensors,
+            core_ranges=core_ranges,
+            count=count,
+            device=resource_device,
+        )
+        self._device = resource_device
+        self._core_ranges = core_ranges
+        self._core_ranges_key = core_ranges_key
+        self._semaphores = semaphores
+        return self._semaphores
+
+
 @dataclass(frozen=True)
 class MeshProgramPlacement:
     """Device range for one program inside a mesh descriptor."""
@@ -328,6 +381,23 @@ def build_kernel_descriptors(
 
 def _align_up(value: int, alignment: int) -> int:
     return ((value + alignment - 1) // alignment) * alignment
+
+
+def _core_ranges_cache_key(core_ranges: Any) -> Optional[Tuple[Any, ...]]:
+    """Return worker coordinates that determine GlobalSemaphore allocation."""
+    try:
+        ranges = core_ranges.ranges()
+    except (AttributeError, TypeError):
+        return None
+    return tuple(
+        (
+            int(core_range.start.x),
+            int(core_range.start.y),
+            int(core_range.end.x),
+            int(core_range.end.y),
+        )
+        for core_range in ranges
+    )
 
 
 def _first_device(tensors: List[Any]) -> Any:
@@ -524,6 +594,7 @@ def build_pipe_runtime_resources(
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
     pipe_computed_address_dfb_indices: Optional[List[int]] = None,
+    pipe_global_semaphore_cache: Optional[PipeGlobalSemaphoreCache] = None,
     device: Optional[Any] = None,
 ) -> PipeRuntimeResources:
     """Allocate pipe resources and build their appended common runtime args."""
@@ -556,12 +627,24 @@ def build_pipe_runtime_resources(
         scratch_bytes=pipe_sram_scratch_bytes,
         device=resource_device,
     )
-    global_semaphores, global_semaphore_addresses = build_pipe_global_semaphores(
-        tensors=tensors,
-        core_ranges=core_ranges,
-        count=num_pipe_global_semaphores,
-        device=resource_device,
-    )
+    if pipe_global_semaphore_cache is None:
+        global_semaphores, global_semaphore_addresses = build_pipe_global_semaphores(
+            tensors=tensors,
+            core_ranges=core_ranges,
+            count=num_pipe_global_semaphores,
+            device=resource_device,
+        )
+    else:
+        global_semaphores = pipe_global_semaphore_cache.acquire(
+            tensors=tensors,
+            core_ranges=core_ranges,
+            count=num_pipe_global_semaphores,
+            device=resource_device,
+        )
+        global_semaphore_addresses = [
+            int(ttnn.get_global_semaphore_address(semaphore))
+            for semaphore in global_semaphores
+        ]
     # Keep this order in sync with PipeLowering.cpp: optional SRAM scratch base,
     # then GlobalSemaphore counter addresses.
     # [Device 2.0] This is the current ABI for pipe resource records; future
@@ -1096,7 +1179,7 @@ def run_kernel_on_device(
     num_pipe_sync_semaphores: int = 0,
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
-    pipe_global_semaphore_lifetime: Optional[List[Any]] = None,
+    pipe_global_semaphore_cache: Optional[PipeGlobalSemaphoreCache] = None,
     mesh_program_placements: Optional[List[Any]] = None,
     device_domain: Optional[Any] = None,
     kernel_fabric_routes: Optional[List[List[FabricRouteSpec]]] = None,
@@ -1124,9 +1207,9 @@ def run_kernel_on_device(
             PipeNet metadata.
         num_pipe_global_semaphores: Number of GlobalSemaphore-backed PipeNet
             counters allocated by the compiler.
-        pipe_global_semaphore_lifetime: Optional list replaced with the current
-            call's GlobalSemaphore objects. Cached kernels keep this bounded
-            owner list so repeated calls do not retain old semaphore objects.
+        pipe_global_semaphore_cache: Optional cache that owns stable
+            GlobalSemaphore allocations across repeated program-cache hits and
+            resets their values before reuse.
         mesh_program_placements: Optional mesh device ranges. When present,
             execution uses ttnn.MeshProgramDescriptor instead of
             ttnn.ProgramDescriptor.
@@ -1164,10 +1247,9 @@ def run_kernel_on_device(
                 for dfb_index in spec.pipe_computed_address_dfb_indices
             }
         ),
+        pipe_global_semaphore_cache=pipe_global_semaphore_cache,
         device=device,
     )
-    if pipe_global_semaphore_lifetime is not None:
-        pipe_global_semaphore_lifetime[:] = pipe_runtime_resources.global_semaphores
 
     # Build CB descriptors.
     cb_descriptors = build_cb_descriptors(
@@ -1386,6 +1468,7 @@ def emit_runner_source(
     lines.append("    FabricRouteSpec,")
     lines.append("    KernelSpec,")
     lines.append("    MeshProgramPlacement,")
+    lines.append("    PipeGlobalSemaphoreCache,")
     lines.append("    run_kernel_on_device,")
     lines.append(")")
     lines.append("")
@@ -1397,6 +1480,7 @@ def emit_runner_source(
     lines.append(f"NUM_PIPE_SYNC_SEMAPHORES = {num_pipe_sync_semaphores}")
     lines.append(f"PIPE_SRAM_SCRATCH_BYTES = {pipe_sram_scratch_bytes}")
     lines.append(f"NUM_PIPE_GLOBAL_SEMAPHORES = {num_pipe_global_semaphores}")
+    lines.append("PIPE_GLOBAL_SEMAPHORE_CACHE = PipeGlobalSemaphoreCache()")
     if mesh_program_placements is None:
         lines.append("MESH_PROGRAM_PLACEMENTS = None")
     else:
@@ -1548,6 +1632,7 @@ def emit_runner_source(
     lines.append("        num_pipe_sync_semaphores=NUM_PIPE_SYNC_SEMAPHORES,")
     lines.append("        pipe_sram_scratch_bytes=PIPE_SRAM_SCRATCH_BYTES,")
     lines.append("        num_pipe_global_semaphores=NUM_PIPE_GLOBAL_SEMAPHORES,")
+    lines.append("        pipe_global_semaphore_cache=PIPE_GLOBAL_SEMAPHORE_CACHE,")
     lines.append("        mesh_program_placements=MESH_PROGRAM_PLACEMENTS,")
     lines.append("        device_domain=DEVICE_DOMAIN,")
     lines.append("        kernel_fabric_routes=KERNEL_FABRIC_ROUTES,")
@@ -1619,6 +1704,7 @@ __all__ = [
     "KernelSpec",
     "FabricRouteSpec",
     "MeshProgramPlacement",
+    "PipeGlobalSemaphoreCache",
     "PipeRuntimeResources",
     "build_tensor_accessor_args",
     "build_kernel_descriptors",

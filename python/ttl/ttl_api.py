@@ -103,6 +103,7 @@ from .kernel_runner import (
     FabricRouteSpec,
     KernelSpec,
     MeshProgramPlacement,
+    PipeGlobalSemaphoreCache,
     get_min_remaining_l1_for_device,
     run_kernel_on_device,
     emit_runner_file,
@@ -851,7 +852,7 @@ class CompiledTTNNKernel:
         self.kernel_logical_selectors = kernel_logical_selectors or [
             None for _ in kernel_paths
         ]
-        self._pipe_global_semaphore_lifetime = []
+        self._pipe_global_semaphore_cache = PipeGlobalSemaphoreCache()
         self.opaque_include_paths = opaque_include_paths or []
         self._fabric_route_cache = _FabricRouteCache()
 
@@ -900,7 +901,7 @@ class CompiledTTNNKernel:
             num_pipe_sync_semaphores=self.num_pipe_sync_semaphores,
             pipe_sram_scratch_bytes=self.pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=self.num_pipe_global_semaphores,
-            pipe_global_semaphore_lifetime=self._pipe_global_semaphore_lifetime,
+            pipe_global_semaphore_cache=self._pipe_global_semaphore_cache,
             mesh_program_placements=self.mesh_program_placements,
             device_domain=self.device_domain,
             kernel_fabric_routes=self.kernel_fabric_routes,
