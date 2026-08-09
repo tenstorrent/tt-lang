@@ -4,7 +4,8 @@
 // RUN: FileCheck %s --input-file=%t.cpp
 
 // CHECK: #include "tt_metal/fabric/hw/inc/linear/api.h"
-// CHECK: static __attribute__((noinline)) void routing_plane_atomic_inc(
+// CHECK: static __attribute__((noinline)) void
+// CHECK: routing_plane_atomic_inc(
 // CHECK: packet_header->to_noc_unicast_atomic_inc(
 // CHECK: sender.send_payload_flush_blocking_from_address(
 // CHECK-LABEL: void kernel_main() {

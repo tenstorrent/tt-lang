@@ -18,6 +18,8 @@ import itertools
 from dataclasses import dataclass, field
 from typing import Any, Iterable, List, Optional, Set, Tuple, Union
 
+from ttl.domains import DeviceRange
+
 
 @dataclass(frozen=True)
 class NodeCoord:
@@ -102,6 +104,11 @@ class OperationPipeNets:
         edges = tuple(transfer_graph.iter_edges())
         if not edges:
             raise ValueError("graph-based PipeNet requires at least one transfer edge")
+        if any(isinstance(edge.destination, DeviceRange) for edge in edges):
+            raise ValueError(
+                "graph-based PipeNet DeviceRange destinations require multicast "
+                "transport lowering"
+            )
         use = GraphPipeNetUse(
             pipe_net_id=self._next_pipe_net_id(),
             edges=edges,

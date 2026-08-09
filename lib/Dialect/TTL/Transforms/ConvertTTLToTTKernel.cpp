@@ -840,9 +840,27 @@ buildSelectedPipe(OpBuilder &builder, Location loc, PipeNetRecordsAttr records,
       records);
 }
 
+static void collectOutermostPipeNetForeachOps(
+    Operation *root, SmallVectorImpl<Operation *> &foreachWorklist) {
+  if (mlir::isa<PipeNetForeachSrcOp, PipeNetForeachDstOp>(root)) {
+    foreachWorklist.push_back(root);
+    return;
+  }
+  root->walk<WalkOrder::PreOrder>([&](Operation *nestedOp) {
+    if (nestedOp == root ||
+        !mlir::isa<PipeNetForeachSrcOp, PipeNetForeachDstOp>(nestedOp)) {
+      return WalkResult::advance();
+    }
+    foreachWorklist.push_back(nestedOp);
+    return WalkResult::skip();
+  });
+}
+
 template <typename ForeachOp>
-static void clonePipeForeachBody(ForeachOp foreachOp, Value selectedPipe,
-                                 OpBuilder &builder) {
+static void
+clonePipeForeachBody(ForeachOp foreachOp, Value selectedPipe,
+                     OpBuilder &builder,
+                     SmallVectorImpl<Operation *> &foreachWorklist) {
   IRMapping mapping;
   Block &sourceBlock = foreachOp.getBody().front();
   mapping.map(sourceBlock.getArgument(0), selectedPipe);
@@ -850,7 +868,8 @@ static void clonePipeForeachBody(ForeachOp foreachOp, Value selectedPipe,
     if (mlir::isa<YieldOp>(bodyOp)) {
       continue;
     }
-    builder.clone(bodyOp, mapping);
+    Operation *clonedOp = builder.clone(bodyOp, mapping);
+    collectOutermostPipeNetForeachOps(clonedOp, foreachWorklist);
   }
 }
 
@@ -893,7 +912,8 @@ static CreatePipeOp buildStaticPipeForRecord(RewriterBase &rewriter,
 template <typename ForeachOp>
 static void
 lowerPipeNetForeachDirect(ForeachOp op, RewriterBase &rewriter, PipeRole role,
-                          PipeForeachLoweringInfo &foreachLoweringInfo) {
+                          PipeForeachLoweringInfo &foreachLoweringInfo,
+                          SmallVectorImpl<Operation *> &foreachWorklist) {
   Location loc = op.getLoc();
   PipeNetRecordsAttr records = op.getRecords();
   rewriter.setInsertionPoint(op);
@@ -912,7 +932,7 @@ lowerPipeNetForeachDirect(ForeachOp op, RewriterBase &rewriter, PipeRole role,
     foreachLoweringInfo.ifThenDomains[ifOp] =
         getPipeRecordRoleLaunchNodeDomain(record, role);
     rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
-    clonePipeForeachBody(op, staticPipe, rewriter);
+    clonePipeForeachBody(op, staticPipe, rewriter, foreachWorklist);
     rewriter.setInsertionPointAfter(ifOp);
   }
   rewriter.eraseOp(op);
@@ -922,12 +942,14 @@ template <typename ForeachOp, typename SelectOp, typename SelectedPipeType>
 static void lowerPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
                                 PipeForeachLoweringInfo &foreachLoweringInfo,
                                 PipeRole role,
-                                PipeNetRecordSelection recordSelection) {
+                                PipeNetRecordSelection recordSelection,
+                                SmallVectorImpl<Operation *> &foreachWorklist) {
   Location loc = op.getLoc();
   rewriter.setInsertionPoint(op);
   PipeNetRecordsAttr records = op.getRecords();
   if (shouldLowerPipeNetForeachDirect(records)) {
-    lowerPipeNetForeachDirect(op, rewriter, role, foreachLoweringInfo);
+    lowerPipeNetForeachDirect(op, rewriter, role, foreachLoweringInfo,
+                              foreachWorklist);
     return;
   }
 
@@ -977,26 +999,28 @@ static void lowerPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
   foreachLoweringInfo.ifThenDomains[ifOp] =
       getPipeRecordsRoleLaunchNodeDomain(records, role);
   rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
-  clonePipeForeachBody(op, selectedPipe.getPipe(), rewriter);
+  clonePipeForeachBody(op, selectedPipe.getPipe(), rewriter, foreachWorklist);
   rewriter.eraseOp(op);
 }
 
 static void
 lowerPipeNetForeachSrc(PipeNetForeachSrcOp op, RewriterBase &rewriter,
-                       PipeForeachLoweringInfo &foreachLoweringInfo) {
+                       PipeForeachLoweringInfo &foreachLoweringInfo,
+                       SmallVectorImpl<Operation *> &foreachWorklist) {
   lowerPipeNetForeach<PipeNetForeachSrcOp, SelectPipeSrcOp,
-                      SelectedPipeSrcType>(op, rewriter, foreachLoweringInfo,
-                                           PipeRole::Source,
-                                           PipeNetRecordSelection::Source);
+                      SelectedPipeSrcType>(
+      op, rewriter, foreachLoweringInfo, PipeRole::Source,
+      PipeNetRecordSelection::Source, foreachWorklist);
 }
 
 static void
 lowerPipeNetForeachDst(PipeNetForeachDstOp op, RewriterBase &rewriter,
-                       PipeForeachLoweringInfo &foreachLoweringInfo) {
+                       PipeForeachLoweringInfo &foreachLoweringInfo,
+                       SmallVectorImpl<Operation *> &foreachWorklist) {
   lowerPipeNetForeach<PipeNetForeachDstOp, SelectPipeDstOp,
-                      SelectedPipeDstType>(op, rewriter, foreachLoweringInfo,
-                                           PipeRole::Destination,
-                                           PipeNetRecordSelection::Destination);
+                      SelectedPipeDstType>(
+      op, rewriter, foreachLoweringInfo, PipeRole::Destination,
+      PipeNetRecordSelection::Destination, foreachWorklist);
 }
 
 static void
@@ -1005,28 +1029,21 @@ lowerPipeNetForeachOps(ModuleOp mod,
   // A module-wide greedy rewrite also deletes unrelated unused pure reads.
   // Rewrite only foreach operations so this expansion cannot change other IR.
   IRRewriter rewriter(mod.getContext());
-  while (true) {
-    Operation *foreachOp = nullptr;
-    mod.walk<WalkOrder::PreOrder>([&](Operation *candidate) {
-      if (!mlir::isa<PipeNetForeachSrcOp, PipeNetForeachDstOp>(candidate)) {
-        return WalkResult::advance();
-      }
-      foreachOp = candidate;
-      return WalkResult::interrupt();
-    });
-    if (!foreachOp) {
-      return;
-    }
+  SmallVector<Operation *> foreachWorklist;
+  collectOutermostPipeNetForeachOps(mod, foreachWorklist);
+  for (size_t worklistIndex = 0; worklistIndex < foreachWorklist.size();
+       ++worklistIndex) {
+    Operation *foreachOp = foreachWorklist[worklistIndex];
 
     // Lower an outer callback before its nested callbacks. The outer rewrite
-    // clones its body, so any recorded control operations then remain in the
-    // module and continue to identify the generated record selection.
+    // queues only the outermost callbacks cloned from its body.
     if (auto foreachSrcOp = mlir::dyn_cast<PipeNetForeachSrcOp>(foreachOp)) {
-      lowerPipeNetForeachSrc(foreachSrcOp, rewriter, foreachLoweringInfo);
+      lowerPipeNetForeachSrc(foreachSrcOp, rewriter, foreachLoweringInfo,
+                             foreachWorklist);
       continue;
     }
     lowerPipeNetForeachDst(mlir::cast<PipeNetForeachDstOp>(foreachOp), rewriter,
-                           foreachLoweringInfo);
+                           foreachLoweringInfo, foreachWorklist);
   }
 }
 

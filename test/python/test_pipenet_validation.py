@@ -39,6 +39,18 @@ def test_pipenet_accepts_transfer_graph():
     assert net.pipes == []
 
 
+def test_graph_pipenet_rejects_device_range_until_multicast_lowering():
+    domain = ttl.DeviceDomain((1, 3))
+    destination = ttl.DeviceRange(lo=ttl.DeviceRef((0, 1)), hi=ttl.DeviceRef((1, 3)))
+    graph = ttl.TransferGraph.edges(domain, edges=[((0, 0), destination)])
+
+    with pytest.raises(
+        ValueError,
+        match="DeviceRange destinations require multicast transport lowering",
+    ):
+        _build_pipenet_graph([ttl.PipeNet(graph=graph)])
+
+
 def test_pipenet_graph_requires_transfer_graph():
     with pytest.raises(TypeError, match="TransferGraph"):
         ttl.PipeNet(graph=object())

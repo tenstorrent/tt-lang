@@ -2516,8 +2516,11 @@ lowerSelectedPipeTransferPost(PipeTransferPostOp op, Value dst,
       postPlan.addressModes, PipeAddressMode::ComputedReceiverDFB);
   assert(anyUsePublishedAddress == postPlan.addressPublication.has_value() &&
          "selected post address publication plan does not match its records");
-  assert((!usesFabric || allUseComputedAddress) &&
-         "selected fabric post requires computed receiver addresses");
+  if (usesFabric && !allUseComputedAddress) {
+    op.emitError(
+        "fabric pipe transfer requires a computed receiver DFB address");
+    return failure();
+  }
 
   const FabricRuntimeInfo *fabricRuntimeInfo = nullptr;
   if (usesFabric) {
@@ -2641,8 +2644,11 @@ lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
          "static fabric receiver post must have one route");
   assert(postPlan.addressModes.size() == 1 &&
          "static receiver post must have one address mode");
-  assert((!usesFabric || !postPlan.addressPublication) &&
-         "fabric receiver post requires computed receiver addresses");
+  if (usesFabric && postPlan.addressPublication) {
+    op.emitError(
+        "fabric pipe transfer requires a computed receiver DFB address");
+    return failure();
+  }
 
   if (usesFabric) {
     assert(pipeResource.readyCounter &&

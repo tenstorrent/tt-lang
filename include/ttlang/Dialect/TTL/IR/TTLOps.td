@@ -788,7 +788,9 @@ class TTL_SelectPipeOp<string mnemonic, string role, Type pipeType>
       "`$srcInDstRange` is true when the source coordinate belongs to the "
       "destination range. `$records` identifies the PipeNet and transfer "
       "contract. The device-index operands identify the logical-device edge "
-      "associated with the selected record.";
+      "associated with the selected record. They remain explicit operands for "
+      "all records so selected-pipe IR has one stable operand contract; "
+      "device-index accessors separately require graph records.";
   let arguments = (ins
     Index:$recordIndex,
     Index:$srcX,
