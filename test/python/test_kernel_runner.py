@@ -2891,6 +2891,79 @@ def test_build_computed_address_backing_uses_compiler_storage_nodes(monkeypatch)
     assert selected_device is device
 
 
+def test_computed_address_uses_fully_tensor_backed_dfb_base(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    tensor = _FakeTensor(object(), address=0x4000, dtype=expected_dtype)
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (
+            DFBStorageSegment(
+                nodes=((0, 0),),
+                tensor_index=0,
+                byte_offset=2048,
+                byte_size=2048,
+            ),
+        ),
+    )
+
+    resources = kernel_runner.build_pipe_runtime_resources(
+        tensors=[tensor],
+        cb_configs=[config],
+        core_ranges=_FakeCoreRanges(),
+        pipe_computed_address_dfb_indices=[0],
+    )
+
+    assert resources.computed_address_dfb_tensors == {}
+    assert resources.computed_address_base_addresses == {0: 0x4800}
+
+
+def test_computed_address_rejects_different_storage_segment_bases(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    tensors = [
+        _FakeTensor(object(), address=0x4000, dtype=expected_dtype),
+        _FakeTensor(object(), address=0x5000, dtype=expected_dtype),
+    ]
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (
+            DFBStorageSegment(
+                nodes=((0, 0),),
+                tensor_index=0,
+                byte_offset=0,
+                byte_size=2048,
+            ),
+            DFBStorageSegment(
+                nodes=((1, 0),),
+                tensor_index=1,
+                byte_offset=0,
+                byte_size=2048,
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="requires one common L1 base"):
+        kernel_runner.build_pipe_runtime_resources(
+            tensors=tensors,
+            cb_configs=[config],
+            core_ranges=_FakeCoreRanges(),
+            pipe_computed_address_dfb_indices=[0],
+        )
+
+
 def test_build_cb_descriptors_preserves_subtile_geometry(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(
