@@ -62,6 +62,38 @@ func.func @f32_auto_enable(%a: tensor<1x1x!ttcore.tile<32x32, f32>>,
 
 // -----
 
+// Purpose: direct f32 tile ops in ttl.dst_section enable fp32_dest_acc_en even
+// when they are not nested in ttl.compute.
+// DEFAULT-LABEL: func.func @direct_f32_dst_section_auto_enable
+// DEFAULT-SAME: fp32_dest_acc_en = true
+// DEFAULT-SAME: ttl.enable_fpu_binary_ops = true
+// OVERRIDE-LABEL: func.func @direct_f32_dst_section_auto_enable
+// OVERRIDE-SAME: dst_full_sync_en = true
+// OVERRIDE-SAME: fp32_dest_acc_en = true
+// NO-MATMUL-FP32-LABEL: func.func @direct_f32_dst_section_auto_enable
+// NO-MATMUL-FP32-SAME: fp32_dest_acc_en = true
+// NO-REDUCE-FP32-LABEL: func.func @direct_f32_dst_section_auto_enable
+// NO-REDUCE-FP32-SAME: fp32_dest_acc_en = true
+// FPUOFF-LABEL: func.func @direct_f32_dst_section_auto_enable
+// FPUOFF-SAME: fp32_dest_acc_en = true
+// FPUOFF-SAME: ttl.enable_fpu_binary_ops = false
+func.func @direct_f32_dst_section_auto_enable(
+    %input: tensor<1x1x!ttcore.tile<32x32, f32>>) {
+  %c0 = arith.constant 0 : index
+  %input_cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %output_cb = ttl.bind_cb {cb_index = 16, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %input_attached = ttl.attach_cb %input, %input_cb : (tensor<1x1x!ttcore.tile<32x32, f32>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>) -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %output = ttl.cb_reserve %output_cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %tile = tensor.extract %input_attached[%c0, %c0] : tensor<1x1x!ttcore.tile<32x32, f32>>
+  ttl.dst_section {
+    %dst_token, %copied = ttl.copy_tile %tile[%c0, %c0] into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttl.dst, !ttcore.tile<32x32, f32>
+    ttl.tile_store %copied, %output[%c0, %c0] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x1x!ttcore.tile<32x32, f32>>
+  }
+  return
+}
+
+// -----
+
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
 // A bf16 kernel without an accumulation preference selects default DST mode.

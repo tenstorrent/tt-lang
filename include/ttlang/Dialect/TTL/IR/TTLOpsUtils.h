@@ -63,6 +63,16 @@ LogicalResult verifyMatmulTileTypes(ttcore::TileType lhsType,
                                     bool transposeRhs,
                                     std::string &failureReason);
 
+/// Returns true if an operation has an attribute in the TTL namespace.
+inline bool hasTTLDialectAttribute(mlir::Operation *operation) {
+  for (mlir::NamedAttribute attribute : operation->getAttrs()) {
+    if (attribute.getName().getValue().starts_with("ttl.")) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /// Return the enclosing kernel-thread `func.func` (tagged with
 /// `ttl.kernel_thread`), or null if `op` is not inside one.
 inline mlir::func::FuncOp getEnclosingKernelThread(mlir::Operation *op) {
@@ -789,18 +799,6 @@ llvm::SmallDenseSet<Value, 2> getPackTileCBs(scf::ForOp loop);
 
 /// Returns true if two loops share any pack_tile CB target.
 bool sharePackCB(scf::ForOp loopA, scf::ForOp loopB);
-
-/// A group of consecutive sibling loops that pack to the same output CB.
-struct LoopGroup {
-  scf::ForOp rootLoop;
-  SmallVector<scf::ForOp> loops;
-  Operation *scopeEnd = nullptr;
-};
-
-/// Collect groups of annotated sibling loops that share a pack CB target.
-SmallVector<LoopGroup> collectLoopGroups(
-    ArrayRef<scf::ForOp> l1AccLoops,
-    const llvm::SmallDenseMap<Operation *, Operation *> &enablePointPerLoop);
 
 } // namespace mlir::tt::ttl
 
