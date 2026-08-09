@@ -1522,13 +1522,14 @@ def _compile_ttnn_kernel(
             num_tensors=len(args),
             output_path=runner_path,
             program_hash=program_hash,
-            kernel_name="ttlang_kernel",
+            kernel_name=operation_name,
             num_pipe_sync_semaphores=num_pipe_sync_semaphores,
             pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=num_pipe_global_semaphores,
             mesh_program_placements=mesh_program_placements,
             device_domain=device_domain,
             kernel_fabric_routes=kernel_fabric_routes,
+            requires_runtime_resource_factory=runtime_resource_factory is not None,
         )
 
     return compiled_kernel
