@@ -45,6 +45,7 @@ from .diagnostics import find_user_code_location
 from .dfbstate import DFBState
 from .constants import TILE_SHAPE
 from .errors import DFBContractError
+from .kernel import KernelSelector
 from .ttnnsim import (
     ROW_MAJOR_LAYOUT,
     TILE_LAYOUT,
@@ -220,14 +221,16 @@ class Block:
             f"expected={expected})"
         )
 
-    def pop(self) -> None:
+    def pop(self, *, kernel: Optional[KernelSelector] = None) -> None:
+        del kernel
         if self.dfb is None:
             raise RuntimeError(
                 "Block.pop() is only valid for blocks acquired from a DataflowBuffer."
             )
         self.dfb.pop_block()
 
-    def push(self) -> None:
+    def push(self, *, kernel: Optional[KernelSelector] = None) -> None:
+        del kernel
         if self.dfb is None:
             raise RuntimeError(
                 "Block.push() is only valid for blocks acquired from a DataflowBuffer."
