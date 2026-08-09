@@ -16,6 +16,10 @@ python examples/elementwise-tutorial/step_4_multinode_grid_full.py --no-ttl-maxi
 
 See the [full compiler options reference](reference/compiler-options.md) for all decorator parameters, `CompilerOptions` flags with their MLIR pass mappings, environment variables, and `ttlang-opt` pass options.
 
+## External Functions
+
+`ttl.call_extern_func` invokes custom C++ from a selected compute or data-movement kernel. The [external functions reference](reference/external-functions.md) documents template arguments, runtime arguments, DFB descriptors, tensor addresses, include directories, and logical `kernel=` selectors.
+
 ## Print Debugging
 
 Use `print()` inside kernel code to emit device debug prints. Enable at runtime with `TT_METAL_DPRINT_CORES`:

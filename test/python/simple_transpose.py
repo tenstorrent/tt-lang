@@ -49,7 +49,7 @@ def transpose_kernel(inp, out):
 # =============================================================================
 
 # CHECK-LABEL: func.func @transpose_compute
-# CHECK-SAME: attributes {{{.*}}ttl.kernel_thread = #ttkernel.thread<compute>}
+# CHECK-SAME: attributes {{{.*}}ttl.kernel_thread = #ttkernel.thread<compute>, ttl.logical_kernel = #ttl.logical_kernel<kind = compute>}
 
 # CHECK: %[[IN_CB:.+]] = ttl.bind_cb{cb_index = 0
 # CHECK: %[[OUT_CB:.+]] = ttl.bind_cb{cb_index = 1

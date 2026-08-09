@@ -56,7 +56,7 @@ def reduce_bcast_kernel(inp, out):
 # =============================================================================
 
 # CHECK-LABEL: func.func @compute_fn
-# CHECK-SAME: attributes {{{.*}}ttl.kernel_thread = #ttkernel.thread<compute>}
+# CHECK-SAME: attributes {{{.*}}ttl.kernel_thread = #ttkernel.thread<compute>, ttl.logical_kernel = #ttl.logical_kernel<kind = compute>}
 
 # Reduce stores into intermediate CB, then broadcast reads from it.
 # CHECK: ttl.reduce

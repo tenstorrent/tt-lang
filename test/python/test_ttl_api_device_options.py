@@ -189,7 +189,13 @@ class TestMeshProgramPlacement:
         domain = ttl.DeviceDomain((1, 2))
         calls = []
 
-        monkeypatch.setattr(ttl_api, "_get_registered_threads", lambda: [object()])
+        def compute_thread():
+            pass
+
+        compute_thread._logical_kernel = ttl.KernelKind.COMPUTE
+        monkeypatch.setattr(
+            ttl_api, "_get_registered_threads", lambda: [compute_thread]
+        )
         monkeypatch.setattr(
             ttl_api,
             "_build_operation_pipenets",
@@ -226,6 +232,7 @@ class TestMeshProgramPlacement:
         assert calls[0]["mesh_program_placements"] == [
             ttl_api.MeshProgramPlacement((0, 0), (0, 1))
         ]
+        assert calls[0]["logical_kernels"] == [ttl.KernelKind.COMPUTE]
 
     def test_operation_forwards_device_domain_to_explicit_compiler(self, monkeypatch):
         domain = ttl.DeviceDomain((1, 2))
