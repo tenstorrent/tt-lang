@@ -202,6 +202,12 @@ class PipeGlobalSemaphoreCache:
     _core_ranges_key: Optional[Tuple[Any, ...]] = field(default=None, init=False)
     _semaphores: List[Any] = field(default_factory=list, init=False)
     _acquire_count: int = field(default=0, init=False)
+    _allocated_on_last_acquire: bool = field(default=False, init=False)
+
+    @property
+    def allocated_on_last_acquire(self) -> bool:
+        """Whether the most recent acquire created persistent L1 allocations."""
+        return self._allocated_on_last_acquire
 
     def acquire(
         self,
@@ -211,6 +217,7 @@ class PipeGlobalSemaphoreCache:
         device: Optional[Any] = None,
     ) -> List[Any]:
         """Return zeroed semaphores with addresses stable for one cache context."""
+        self._allocated_on_last_acquire = False
         if count <= 0:
             return []
 
@@ -256,6 +263,7 @@ class PipeGlobalSemaphoreCache:
         self._core_ranges = core_ranges
         self._core_ranges_key = core_ranges_key
         self._semaphores = semaphores
+        self._allocated_on_last_acquire = True
         _debug_pipe_runtime(
             "global_semaphore_allocate",
             dispatch=self._acquire_count,

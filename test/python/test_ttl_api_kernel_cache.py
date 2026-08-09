@@ -53,16 +53,22 @@ class _FakeTensor:
 
 
 class _RecordingCompiledKernel:
-    def __init__(self, program_hash):
+    def __init__(self, program_hash, persistent_l1_resources=False):
         self.program_hash = program_hash
         self.runtime_args = []
+        self._allocation_pending = persistent_l1_resources
 
     def __call__(self, *runtime_args):
         self.runtime_args.append(runtime_args)
         return self.program_hash
 
+    def allocated_persistent_l1_resources_on_last_call(self):
+        allocated = self._allocation_pending
+        self._allocation_pending = False
+        return allocated
 
-def _install_recording_compile(monkeypatch):
+
+def _install_recording_compile(monkeypatch, *, persistent_l1_resources=False):
     compile_calls = []
     kernel_id_counter = itertools.count(1)
     hash_values = {}
@@ -90,7 +96,10 @@ def _install_recording_compile(monkeypatch):
         program_hash,
         **compile_options,
     ):
-        compiled_kernel = _RecordingCompiledKernel(program_hash)
+        compiled_kernel = _RecordingCompiledKernel(
+            program_hash,
+            persistent_l1_resources=persistent_l1_resources,
+        )
         compile_calls.append(
             {
                 "kernel_function": kernel_function,
@@ -299,6 +308,60 @@ def test_operation_cache_separates_device_derived_l1_budgets(monkeypatch):
     assert first_result == repeated_first_result
     assert compile_calls[0]["compile_options"]["l1_budget_override"] == 98304
     assert compile_calls[1]["compile_options"]["l1_budget_override"] == 73760
+
+
+def test_operation_cache_aliases_budget_after_persistent_l1_allocation(monkeypatch):
+    compile_calls = _install_recording_compile(
+        monkeypatch, persistent_l1_resources=True
+    )
+    budgets = iter((98304, 94208, 94208))
+    monkeypatch.setattr(
+        ttl_api,
+        "_resolve_l1_budget",
+        lambda runtime_args, compiler_options: next(budgets),
+    )
+
+    @ttl_api.operation(grid=(1, 1))
+    def copy_kernel(input_tensor, output_tensor):
+        pass
+
+    input_tensor = _FakeTensor()
+    output_tensor = _FakeTensor()
+    first_result = copy_kernel(input_tensor, output_tensor)
+    second_result = copy_kernel(input_tensor, output_tensor)
+
+    assert len(compile_calls) == 1
+    assert first_result == second_result
+    assert len(compile_calls[0]["compiled_kernel"].runtime_args) == 2
+    assert compile_calls[0]["compile_options"]["l1_budget_override"] == 98304
+
+
+def test_compile_only_cache_aliases_budget_after_first_dispatch(monkeypatch):
+    compile_calls = _install_recording_compile(
+        monkeypatch, persistent_l1_resources=True
+    )
+    budgets = iter((98304, 98304, 94208, 94208))
+    monkeypatch.setattr(
+        ttl_api,
+        "_resolve_l1_budget",
+        lambda runtime_args, compiler_options: next(budgets),
+    )
+
+    @ttl_api.operation(grid=(1, 1))
+    def copy_kernel(input_tensor, output_tensor):
+        pass
+
+    input_tensor = _FakeTensor()
+    output_tensor = _FakeTensor()
+    monkeypatch.setenv("TTLANG_COMPILE_ONLY", "1")
+    assert copy_kernel(input_tensor, output_tensor) is None
+    monkeypatch.delenv("TTLANG_COMPILE_ONLY")
+    first_result = copy_kernel(input_tensor, output_tensor)
+    second_result = copy_kernel(input_tensor, output_tensor)
+
+    assert len(compile_calls) == 1
+    assert first_result == second_result
+    assert len(compile_calls[0]["compiled_kernel"].runtime_args) == 2
 
 
 def _make_scaled_kernel(scale):

@@ -856,6 +856,10 @@ class CompiledTTNNKernel:
         self.opaque_include_paths = opaque_include_paths or []
         self._fabric_route_cache = _FabricRouteCache()
 
+    def allocated_persistent_l1_resources_on_last_call(self) -> bool:
+        """Return whether the last dispatch created compiler-owned L1 storage."""
+        return self._pipe_global_semaphore_cache.allocated_on_last_acquire
+
     def __call__(self, *args):
         """Execute the kernel with the given tensors."""
         if len(args) != self.num_tensors:
@@ -2701,16 +2705,19 @@ def _make_operation_wrapper(
         target_arch = _device_target_arch(runtime_args)
         l1_budget_override = _resolve_l1_budget(runtime_args, compiler_options)
 
-        cache_key = _make_cache_key(
-            runtime_args,
-            resolved_grid=resolved_grid,
-            fp32_dest_acc_en=fp32_dest_acc_en,
-            dst_full_sync_en=dst_full_sync_en,
-            math_fidelity=math_fidelity,
-            target_arch=target_arch,
-            compiler_options=compiler_options,
-            l1_budget_override=l1_budget_override,
-        )
+        def build_cache_key(budget: int) -> tuple:
+            return _make_cache_key(
+                runtime_args,
+                resolved_grid=resolved_grid,
+                fp32_dest_acc_en=fp32_dest_acc_en,
+                dst_full_sync_en=dst_full_sync_en,
+                math_fidelity=math_fidelity,
+                target_arch=target_arch,
+                compiler_options=compiler_options,
+                l1_budget_override=budget,
+            )
+
+        cache_key = build_cache_key(l1_budget_override)
 
         compiled_kernel = cache.get(cache_key)
         if compiled_kernel is None:
@@ -2730,6 +2737,18 @@ def _make_operation_wrapper(
             return None
 
         result = compiled_kernel(*runtime_args)
+
+        allocation_check = getattr(
+            compiled_kernel,
+            "allocated_persistent_l1_resources_on_last_call",
+            None,
+        )
+        if allocation_check is not None and allocation_check():
+            post_allocation_budget = _resolve_l1_budget(
+                runtime_args, compiler_options
+            )
+            post_allocation_key = build_cache_key(post_allocation_budget)
+            cache.setdefault(post_allocation_key, compiled_kernel)
 
         if is_auto_profile_enabled() and compiled_kernel.all_source_lines:
             _run_profiling_pipeline(
