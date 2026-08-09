@@ -207,12 +207,13 @@ ttl.call_extern_func(
 
 The supported actions are `ttl.DFBEffect.reserve`, `push`, `wait`, and `pop`.
 Every listed action occurs on every execution of the call, and list order is
-execution order. Conditional actions must use TTL control flow around a call
-with an unconditional summary, execute unconditionally in external C++, or be
-omitted so the dependency remains opaque. Repeated transactions retain every
-action and its position. A bounded lifecycle requires ordered reserve/push and
-wait/pop transactions with matching tile counts. A partial summary is valid
-but remains conservative: it does not prove physical-index reuse. A dependency
+execution order. Conditional actions must use TTL control flow around both the
+matching acquisition and a call with an unconditional summary, execute
+unconditionally in external C++, or be omitted so the dependency remains
+opaque. Repeated transactions retain every action and its position. A bounded
+lifecycle requires ordered reserve/push and wait/pop transactions with matching
+tile counts. A partial summary is valid but remains conservative: it does not
+prove physical-index reuse. A dependency
 occurrence with no listed effect is an opaque storage access for the complete
 call duration, including when operand adaptation aliases multiple occurrences
 to the same SSA DFB. Every aliased occurrence requires its own effects to avoid
