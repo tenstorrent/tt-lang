@@ -2744,9 +2744,7 @@ def _make_operation_wrapper(
             None,
         )
         if allocation_check is not None and allocation_check():
-            post_allocation_budget = _resolve_l1_budget(
-                runtime_args, compiler_options
-            )
+            post_allocation_budget = _resolve_l1_budget(runtime_args, compiler_options)
             post_allocation_key = build_cache_key(post_allocation_budget)
             cache.setdefault(post_allocation_key, compiled_kernel)
 
