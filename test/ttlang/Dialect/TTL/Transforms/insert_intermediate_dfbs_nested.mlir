@@ -1,14 +1,14 @@
 // Compiler-allocated bind_cb must live at the function body entry so its
 // cb_index is function-scoped and dominates every nested reserve/wait.
-// When the intermediate's defining op sits inside a structured region
-// (scf.for, scf.if), only bind_cb hoists; reserve/store/wait/attach
-// stay at the def site to keep per-invocation accounting intact.
+// When an intermediate is materialized inside a structured region (scf.for,
+// scf.if), only bind_cb hoists; reserve/store/wait/attach stay at the consumer
+// site to keep per-invocation accounting intact.
 
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-insert-intermediate-dfbs,ttl-insert-cb-sync),ttl-finalize-dfb-indices{reuse-user-dfbs=false})' | FileCheck %s
 
 // -----
 
-// Intermediate produced inside scf.for: bind_cb must be at function body
+// Intermediate consumed inside scf.for: bind_cb must be at function body
 // entry, the rest of the materialization bundle stays inside the loop.
 
 // CHECK-LABEL: func.func @intermediate_in_scf_for

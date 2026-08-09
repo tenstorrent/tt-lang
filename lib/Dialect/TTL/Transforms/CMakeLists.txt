@@ -1,4 +1,6 @@
 add_mlir_dialect_library(TTLangTTLTransforms
+  AccumulationAnalysis.cpp
+  AccumulationUtils.cpp
   ComputeOpCreationPlanning.cpp
   ComputeTarget.cpp
   ComputeKernelConfigAnalysis.cpp
@@ -31,15 +33,17 @@ add_mlir_dialect_library(TTLangTTLTransforms
   LowerMatmulCompute.cpp
   LowerSignpostToEmitC.cpp
   TTLAnnotateCBAssociations.cpp
-  TTLAnnotateL1AccLoops.cpp
   TTLCoalesceDFBAcquires.cpp
   TTLDumpCBFlowGraph.cpp
   TTLFinalizeDFBIndices.cpp
+  TTLFormAccumulationScopes.cpp
   TTLFormPipeTransports.cpp
   TTLValidateCBBudget.cpp
+  TTLInsertAccumulationScopes.cpp
   TTLInsertCBSync.cpp
   TTLInsertCopyWait.cpp
   TTLInsertIntermediateDFBs.cpp
+  TTLLowerAccumulationScopes.cpp
   TTLMaterializeLoopState.cpp
   TTLPrintDFBValueLifetimes.cpp
   TTLPrintComputeOpCreationPlans.cpp
