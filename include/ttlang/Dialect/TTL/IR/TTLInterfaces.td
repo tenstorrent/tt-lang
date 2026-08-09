@@ -12,8 +12,9 @@ def TTL_DFBAccessOpInterface : OpInterface<"DFBAccessOpInterface"> {
     Operations that expose dataflow buffer dependencies and ordered protocol
     actions. Dependencies identify every statically known DFB storage access.
     Protocol effects identify synchronous reserve, push, wait, and pop actions
-    in execution order. Unknown access is distinct from a malformed or partial
-    effect summary and conservatively applies to user-managed DFB storage.
+    that occur on every operation execution, in execution order. Unknown access
+    is distinct from a malformed or partial effect summary and conservatively
+    applies to user-managed DFB storage.
   }];
 
   let cppNamespace = "::mlir::tt::ttl";
