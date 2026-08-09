@@ -27,3 +27,33 @@ func.func @f32_dfb_used_by_bcast_and_sfpu(
         -> !ttcore.tile<32x32, f32>
   return
 }
+
+// -----
+
+// Purpose: A direct f32 DST recurrence requires kernel-wide
+// fp32_dest_acc_en, which is incompatible with the bf16 unary broadcast LLK.
+func.func @direct_f32_dst_with_bf16_bcast(
+    %f32_input: tensor<1x1x!ttcore.tile<32x32, f32>>,
+    %bf16_input: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  %c0 = arith.constant 0 : index
+  %f32_tile = tensor.extract %f32_input[%c0, %c0]
+      : tensor<1x1x!ttcore.tile<32x32, f32>>
+  %bf16_tile = tensor.extract %bf16_input[%c0, %c0]
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %bf16_output = tensor.empty()
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %bf16_output_tile = tensor.extract %bf16_output[%c0, %c0]
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>
+
+  ttl.dst_section {
+    %dst, %copied = ttl.copy_tile %f32_tile[%c0, %c0] into dst[%c0]
+        : !ttcore.tile<32x32, f32>
+          -> !ttl.dst, !ttcore.tile<32x32, f32>
+    // expected-error @below {{'ttl.tile_bcast' op cannot share a kernel with a direct f32 DST operation because fp32_dest_acc_en is kernel-wide}}
+    %broadcast = ttl.tile_bcast
+        %bf16_tile, %bf16_output_tile 2 : i32 into dst[%c0]
+        : (!ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16>)
+          -> !ttcore.tile<32x32, bf16>
+  }
+  return
+}

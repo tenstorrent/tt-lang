@@ -72,6 +72,7 @@ func.func @carried_add_loop_local_contribution() {
 // CHECK: %[[NEXT:.*]] = ttl.add %[[CURRENT]], %[[DELTA]]
 // CHECK: ttl.store %[[NEXT]]
 // CHECK-NOT: ttl.compute
+// CHECK-NOT: ttl.tile_accumulate
 
 // -----
 
