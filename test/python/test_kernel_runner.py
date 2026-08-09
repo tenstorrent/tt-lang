@@ -24,9 +24,41 @@ class _FakeTensor:
     def buffer_address(self):
         return self._address
 
+    @staticmethod
+    def is_per_core_allocated():
+        return False
+
 
 class _FakeTensorWithoutDevice:
     pass
+
+
+class _FakePerCoreDeviceTensor:
+    def __init__(self, grid, addresses):
+        self._grid = grid
+        self._addresses = dict(addresses)
+        self.address_calls = []
+
+    def memory_config(self):
+        return SimpleNamespace(shard_spec=SimpleNamespace(grid=self._grid))
+
+    def experimental_per_core_buffer_address(self, core):
+        coordinate = (core.x, core.y)
+        self.address_calls.append(coordinate)
+        return self._addresses[coordinate]
+
+
+class _FakePerCoreTensor:
+    def __init__(self, *device_tensors):
+        self.device_tensors = list(device_tensors)
+
+    @staticmethod
+    def is_per_core_allocated():
+        return True
+
+    @staticmethod
+    def buffer_address():
+        raise AssertionError("per-core tensors must not use buffer_address()")
 
 
 class _FakeGridSize:
@@ -50,6 +82,11 @@ class _FakeCoreCoord:
     def __init__(self, x, y):
         self.x = x
         self.y = y
+
+
+class _FakeCoreListGrid:
+    def __init__(self, *coordinates):
+        self.cores = [_FakeCoreCoord(x, y) for x, y in coordinates]
 
 
 class _FakeCoreRange:
@@ -183,6 +220,15 @@ class _FakeTTNN:
             "tensors": tensors,
             "program": program,
         }
+
+    @staticmethod
+    def get_device_tensors(tensor):
+        return tensor.device_tensors
+
+    @staticmethod
+    def corerange_to_cores(grid, *, row_wise):
+        assert row_wise is True
+        return grid.cores
 
     def create_global_semaphore(self, device, core_ranges, initial_value):
         semaphore = {
@@ -424,6 +470,91 @@ def test_build_kernel_descriptors_checks_pipe_runtime_arg_count(monkeypatch):
             extra_common_runtime_args=[0x3000],
             expected_extra_common_runtime_args=2,
         )
+
+
+def test_runtime_tensor_buffer_address_uses_normal_buffer_address(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+
+    assert (
+        kernel_runner._runtime_tensor_buffer_address(
+            _FakeTensor(object(), address=0x2080)
+        )
+        == 0x2080
+    )
+
+
+def test_build_kernel_descriptors_checks_every_per_core_address(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    first_device = _FakePerCoreDeviceTensor(
+        _FakeCoreListGrid((0, 0), (1, 0)),
+        {(0, 0): 0x4000, (1, 0): 0x4000},
+    )
+    second_device = _FakePerCoreDeviceTensor(
+        _FakeCoreListGrid((0, 1), (2, 1)),
+        {(0, 1): 0x4000, (2, 1): 0x4000},
+    )
+    tensor = _FakePerCoreTensor(first_device, second_device)
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="noc",
+        tensor_indices=[0],
+        config=fake_ttnn.ReaderConfigDescriptor(),
+    )
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[tensor],
+        tensor_accessor_args=[],
+        core_ranges=object(),
+        grid_cols=1,
+        grid_rows=1,
+        num_cbs=0,
+    )
+
+    assert descriptors[0].common_runtime_args == [0x4000]
+    assert first_device.address_calls == [(0, 0), (1, 0)]
+    assert second_device.address_calls == [(0, 1), (2, 1)]
+
+
+def test_runtime_tensor_buffer_address_rejects_nonuniform_per_core_addresses(
+    monkeypatch,
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    device_tensor = _FakePerCoreDeviceTensor(
+        _FakeCoreListGrid((0, 0), (1, 0)),
+        {(0, 0): 0x4000, (1, 0): 0x4040},
+    )
+
+    with pytest.raises(ValueError, match="one identical buffer address"):
+        kernel_runner._runtime_tensor_buffer_address(_FakePerCoreTensor(device_tensor))
+
+
+def test_runtime_tensor_buffer_address_rejects_unaligned_per_core_address(
+    monkeypatch,
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    device_tensor = _FakePerCoreDeviceTensor(
+        _FakeCoreListGrid((0, 0)),
+        {(0, 0): 0x4020},
+    )
+
+    with pytest.raises(ValueError, match="64-byte aligned"):
+        kernel_runner._runtime_tensor_buffer_address(_FakePerCoreTensor(device_tensor))
+
+
+def test_build_generic_op_io_tensors_excludes_per_core_dispatch_tensors():
+    normal_input = _FakeTensor(object(), address=0x2080)
+    normal_output = _FakeTensor(object(), address=0x20C0)
+    prefix = _FakePerCoreTensor()
+
+    assert kernel_runner.build_generic_op_io_tensors(
+        [normal_input, prefix, normal_output],
+        [],
+    ) == [normal_input, normal_output]
+
+    with pytest.raises(ValueError, match="output tensor cannot use per-core"):
+        kernel_runner.build_generic_op_io_tensors([normal_input, prefix], [])
 
 
 def test_build_kernel_descriptors_filters_specialized_runtime_args(monkeypatch):

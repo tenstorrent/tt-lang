@@ -213,6 +213,55 @@ def build_tensor_accessor_args(tensors: List[Any]) -> List[int]:
     return args
 
 
+def _runtime_tensor_buffer_address(tensor: Any) -> int:
+    """Return the common runtime address for a device tensor.
+
+    Normal tensors have one lockstep allocation and expose it through
+    ``buffer_address()``.  Per-core allocations do not have a single buffer
+    object, so validate the stronger ABI required by common runtime args: every
+    shard-grid core on every device must expose the same 64-byte-aligned
+    address.
+    """
+    is_per_core_allocated = getattr(tensor, "is_per_core_allocated", None)
+    if not callable(is_per_core_allocated) or not is_per_core_allocated():
+        return tensor.buffer_address()
+
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+
+    device_tensors = list(ttnn.get_device_tensors(tensor))
+    if not device_tensors:
+        raise ValueError("per-core tensor has no device tensors")
+
+    addresses = []
+    for device_index, device_tensor in enumerate(device_tensors):
+        memory_config = device_tensor.memory_config()
+        shard_spec = memory_config.shard_spec
+        if shard_spec is None:
+            raise ValueError(f"per-core tensor device {device_index} has no shard grid")
+        cores = list(ttnn.corerange_to_cores(shard_spec.grid, row_wise=True))
+        if not cores:
+            raise ValueError(
+                f"per-core tensor device {device_index} has an empty shard grid"
+            )
+        addresses.extend(
+            int(device_tensor.experimental_per_core_buffer_address(core))
+            for core in cores
+        )
+
+    unique_addresses = set(addresses)
+    if len(unique_addresses) != 1:
+        raise ValueError(
+            "per-core tensor requires one identical buffer address across "
+            "every device and shard-grid core"
+        )
+    address = unique_addresses.pop()
+    if address % 64:
+        raise ValueError("per-core tensor buffer address must be 64-byte aligned")
+    return address
+
+
 def build_kernel_descriptors(
     kernel_specs: List[KernelSpec],
     tensors: List[Any],
@@ -273,7 +322,7 @@ def build_kernel_descriptors(
         # Build common_runtime_args using tensor_indices.
         # C++ indexes by function-local position, we provide addresses in that order.
         common_runtime_args = [
-            tensors[idx].buffer_address() for idx in spec.tensor_indices
+            _runtime_tensor_buffer_address(tensors[idx]) for idx in spec.tensor_indices
         ]
         common_runtime_args.extend(extra_args)
 
@@ -1014,9 +1063,27 @@ def build_generic_op_io_tensors(
     pipe_sram_scratch_tensors: List[Any],
 ) -> List[Any]:
     """Return io_tensors for ttnn.generic_op, including pipe SRAM scratch."""
-    io_tensors = list(tensors) + list(pipe_sram_scratch_tensors)
+    if tensors:
+        output_is_per_core = getattr(
+            tensors[-1], "is_per_core_allocated", None
+        )
+        if callable(output_is_per_core) and output_is_per_core():
+            raise ValueError(
+                "kernel output tensor cannot use per-core allocation"
+            )
+    candidates = list(tensors) + list(pipe_sram_scratch_tensors)
+    io_tensors = []
+    for tensor in candidates:
+        is_per_core_allocated = getattr(tensor, "is_per_core_allocated", None)
+        if callable(is_per_core_allocated) and is_per_core_allocated():
+            # A per-core MeshTensor has single-coordinate device storage.  It
+            # stays live through ``tensors`` and its validated common address
+            # is passed to the kernels, but including it in generic_op's IO
+            # list can collapse mesh dispatch to that smallest coordinate set.
+            continue
+        io_tensors.append(tensor)
     if not io_tensors:
-        raise ValueError("kernel must have at least one output tensor")
+        raise ValueError("kernel must have at least one lockstep IO tensor")
     if len(io_tensors) < 2:
         io_tensors = [io_tensors[-1]] + io_tensors
     return io_tensors
