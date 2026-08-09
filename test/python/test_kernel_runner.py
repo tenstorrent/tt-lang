@@ -125,6 +125,11 @@ class _CopyingRuntimeArgumentRow(defaultdict):
         super().__setitem__(key, list(value))
 
 
+class _MalformedCoreRanges:
+    def ranges(self):
+        return (object(),)
+
+
 class _FakeTTNN:
     def __init__(self):
         self.create_calls = []
@@ -431,13 +436,24 @@ def _kernel_spec(logical_kernel, core_ranges=None):
     )
 
 
-def _plan_runtime_resources(resources, kernel_specs, core_ranges=None, first_free_id=0):
+def _plan_runtime_resources(
+    resources,
+    kernel_specs,
+    core_ranges=None,
+    first_free_id=0,
+    kernel_fabric_routes=None,
+):
     return kernel_runner.plan_program_runtime_resources(
         operation_name="planned_operation",
         resources=resources,
         kernel_specs=kernel_specs,
         operation_core_ranges=core_ranges or _FakeCoreRanges((((0, 0), (1, 1)),)),
         first_free_semaphore_id=first_free_id,
+        kernel_fabric_routes=(
+            kernel_fabric_routes
+            if kernel_fabric_routes is not None
+            else [() for _ in kernel_specs]
+        ),
     )
 
 
@@ -595,6 +611,42 @@ def test_plan_runtime_resources_canonicalizes_range_order():
         first_plan.kernel_descriptors[0].coordinates
         == second_plan.kernel_descriptors[0].coordinates
     )
+
+
+@pytest.mark.parametrize(
+    ("core_ranges", "message"),
+    [
+        (
+            object(),
+            (
+                "@ttl.operation 'planned_operation': operation core_ranges "
+                "must provide ranges()"
+            ),
+        ),
+        (
+            _MalformedCoreRanges(),
+            (
+                "@ttl.operation 'planned_operation': operation core_ranges "
+                "range 0 must provide start and end coordinates"
+            ),
+        ),
+        (
+            _FakeCoreRanges((((1, 0), (0, 0)),)),
+            (
+                "@ttl.operation 'planned_operation': operation core_ranges "
+                "range 0 has start (1, 0) after end (0, 0)"
+            ),
+        ),
+    ],
+)
+def test_plan_runtime_resources_rejects_invalid_core_ranges(core_ranges, message):
+    with pytest.raises((TypeError, ValueError)) as exception_info:
+        _plan_runtime_resources(
+            ProgramRuntimeResources(),
+            [_kernel_spec(KernelKind.COMPUTE)],
+            core_ranges,
+        )
+    assert str(exception_info.value) == message
 
 
 @pytest.mark.parametrize(
@@ -807,6 +859,13 @@ def test_plan_runtime_resources_rejects_duplicate_runtime_core():
             ),
         ),
         (
+            (KernelDefine(1, "1"),),
+            (
+                "@ttl.operation 'planned_operation': kernel resource 0 define 0 "
+                "name must be a str, got int"
+            ),
+        ),
+        (
             (KernelDefine("", "1"),),
             (
                 "@ttl.operation 'planned_operation': kernel resource 0 define 0 "
@@ -899,23 +958,230 @@ def test_plan_runtime_resources_rejects_duplicate_kernel_resource():
     )
 
 
-def test_plan_runtime_resources_rejects_ambiguous_unspecialized_selector():
+def test_plan_runtime_resources_rejects_negative_first_free_semaphore_id():
+    with pytest.raises(ValueError) as exception_info:
+        _plan_runtime_resources(
+            ProgramRuntimeResources(),
+            [_kernel_spec(KernelKind.COMPUTE)],
+            first_free_id=-1,
+        )
+    assert str(exception_info.value) == (
+        "@ttl.operation 'planned_operation': first_free_semaphore_id must be "
+        "nonnegative, got -1"
+    )
+
+
+def test_plan_runtime_resources_partitions_specialized_runtime_args_and_defines():
+    operation_ranges = _FakeCoreRanges((((0, 0), (1, 1)),))
+    left_ranges = _FakeCoreRanges((((0, 0), (0, 1)),))
+    right_ranges = _FakeCoreRanges((((1, 0), (1, 1)),))
     resources = ProgramRuntimeResources(
-        kernel_resources=(KernelRuntimeResources(kernel=KernelKind.DATA_MOVEMENT),)
+        kernel_resources=(
+            KernelRuntimeResources(
+                kernel=KernelKind.DATA_MOVEMENT,
+                runtime_args=(
+                    CoreRuntimeArgs(_FakeCoreCoord(1, 1), (11,)),
+                    CoreRuntimeArgs(_FakeCoreCoord(0, 1), (10,)),
+                    CoreRuntimeArgs(_FakeCoreCoord(1, 0), (9,)),
+                    CoreRuntimeArgs(_FakeCoreCoord(0, 0), (8,)),
+                ),
+                defines=(KernelDefine("MODE", "specialized"),),
+            ),
+        )
+    )
+
+    plan = _plan_runtime_resources(
+        resources,
+        [
+            _kernel_spec(KernelKind.DATA_MOVEMENT, left_ranges),
+            _kernel_spec(KernelKind.DATA_MOVEMENT, right_ranges),
+        ],
+        operation_ranges,
+    )
+
+    assert [
+        tuple(runtime_arg.coordinate for runtime_arg in descriptor.runtime_args)
+        for descriptor in plan.kernel_descriptors
+    ] == [((0, 0), (0, 1)), ((1, 0), (1, 1))]
+    assert [
+        tuple(runtime_arg.values for runtime_arg in descriptor.runtime_args)
+        for descriptor in plan.kernel_descriptors
+    ] == [((8,), (10,)), ((9,), (11,))]
+    assert [descriptor.defines for descriptor in plan.kernel_descriptors] == [
+        (("MODE", "specialized"),),
+        (("MODE", "specialized"),),
+    ]
+
+
+def test_plan_runtime_resources_accepts_empty_specialized_record_set():
+    operation_ranges = _FakeCoreRanges((((0, 0), (1, 0)),))
+
+    plan = _plan_runtime_resources(
+        ProgramRuntimeResources(
+            kernel_resources=(KernelRuntimeResources(kernel=KernelKind.DATA_MOVEMENT),)
+        ),
+        [
+            _kernel_spec(
+                KernelKind.DATA_MOVEMENT,
+                _FakeCoreRanges((((0, 0), (0, 0)),)),
+            ),
+            _kernel_spec(
+                KernelKind.DATA_MOVEMENT,
+                _FakeCoreRanges((((1, 0), (1, 0)),)),
+            ),
+        ],
+        operation_ranges,
+    )
+
+    assert [descriptor.runtime_args for descriptor in plan.kernel_descriptors] == [
+        (),
+        (),
+    ]
+
+
+@pytest.mark.parametrize("include_runtime_arg", [False, True])
+def test_plan_runtime_resources_rejects_overlapping_specialized_descriptors(
+    include_runtime_arg,
+):
+    shared_ranges = _FakeCoreRanges((((0, 0), (1, 0)),))
+    resources = ProgramRuntimeResources(
+        kernel_resources=(
+            KernelRuntimeResources(
+                kernel=KernelKind.COMPUTE,
+                runtime_args=(
+                    (CoreRuntimeArgs(_FakeCoreCoord(1, 0), (7,)),)
+                    if include_runtime_arg
+                    else ()
+                ),
+            ),
+        )
+    )
+
+    with pytest.raises(AssertionError) as exception_info:
+        _plan_runtime_resources(
+            resources,
+            [
+                _kernel_spec(KernelKind.COMPUTE, shared_ranges),
+                _kernel_spec(
+                    KernelKind.COMPUTE,
+                    _FakeCoreRanges((((1, 0), (1, 0)),)),
+                ),
+            ],
+            shared_ranges,
+        )
+    assert str(exception_info.value) == (
+        "compiler emitted kernel descriptors 0 and 1 for canonical compute "
+        "kernel with overlapping cores ((1, 0),)"
+    )
+
+
+def test_plan_runtime_resources_rejects_uncovered_specialized_runtime_arg():
+    operation_ranges = _FakeCoreRanges((((0, 0), (1, 1)),))
+    resources = ProgramRuntimeResources(
+        kernel_resources=(
+            KernelRuntimeResources(
+                kernel=KernelKind.COMPUTE,
+                runtime_args=(CoreRuntimeArgs(_FakeCoreCoord(0, 1), (7,)),),
+            ),
+        )
     )
 
     with pytest.raises(ValueError) as exception_info:
         _plan_runtime_resources(
             resources,
             [
-                _kernel_spec(KernelKind.DATA_MOVEMENT),
-                _kernel_spec(KernelKind.DATA_MOVEMENT),
+                _kernel_spec(
+                    KernelKind.COMPUTE,
+                    _FakeCoreRanges((((0, 0), (0, 0)),)),
+                ),
+                _kernel_spec(
+                    KernelKind.COMPUTE,
+                    _FakeCoreRanges((((1, 0), (1, 0)),)),
+                ),
             ],
+            operation_ranges,
         )
     assert str(exception_info.value) == (
-        "@ttl.operation 'planned_operation': kernel resource 0 selects canonical "
-        "data_movement kernel with 2 descriptors; specialized resource partitioning "
-        "is required"
+        "@ttl.operation 'planned_operation': kernel resource 0 runtime argument "
+        "0 core (0, 1) is not covered by any descriptor for canonical compute "
+        "kernel; descriptor ranges are ("
+        "(0, ((0, 0),)), (1, ((1, 0),)))"
+    )
+
+
+def test_plan_runtime_resources_rejects_fabric_route_count_mismatch():
+    with pytest.raises(ValueError) as exception_info:
+        _plan_runtime_resources(
+            ProgramRuntimeResources(),
+            [_kernel_spec(KernelKind.COMPUTE)],
+            kernel_fabric_routes=[],
+        )
+    assert str(exception_info.value) == (
+        "@ttl.operation 'planned_operation': kernel_fabric_routes must have one "
+        "entry per kernel descriptor: got 0 entries for 1 descriptors"
+    )
+
+
+def test_plan_runtime_resources_rejects_fabric_runtime_arg_collision():
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)
+    resources = ProgramRuntimeResources(
+        kernel_resources=(
+            KernelRuntimeResources(
+                kernel=KernelKind.COMPUTE,
+                runtime_args=(CoreRuntimeArgs(_FakeCoreCoord(0, 0), (7,)),),
+            ),
+        )
+    )
+
+    with pytest.raises(ValueError) as exception_info:
+        _plan_runtime_resources(
+            resources,
+            [_kernel_spec(KernelKind.COMPUTE)],
+            kernel_fabric_routes=((route,),),
+        )
+    assert str(exception_info.value) == (
+        "@ttl.operation 'planned_operation': caller runtime arguments for "
+        "canonical compute kernel descriptor 0 conflict with compiler-managed "
+        "fabric routes"
+    )
+
+
+def test_plan_runtime_resources_allows_defines_on_fabric_kernel():
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)
+    resources = ProgramRuntimeResources(
+        kernel_resources=(
+            KernelRuntimeResources(
+                kernel=KernelKind.COMPUTE,
+                defines=(KernelDefine("FABRIC_MODE", "1"),),
+            ),
+        )
+    )
+
+    plan = _plan_runtime_resources(
+        resources,
+        [_kernel_spec(KernelKind.COMPUTE)],
+        kernel_fabric_routes=((route,),),
+    )
+
+    assert plan.kernel_descriptors[0].defines == (("FABRIC_MODE", "1"),)
+    assert plan.kernel_descriptors[0].runtime_args == ()
+
+
+def test_plan_runtime_resources_rejects_descriptor_outside_operation_range():
+    with pytest.raises(ValueError) as exception_info:
+        _plan_runtime_resources(
+            ProgramRuntimeResources(),
+            [
+                _kernel_spec(
+                    KernelKind.COMPUTE,
+                    _FakeCoreRanges((((0, 0), (2, 0)),)),
+                )
+            ],
+            _FakeCoreRanges((((0, 0), (1, 0)),)),
+        )
+    assert str(exception_info.value) == (
+        "@ttl.operation 'planned_operation': kernel descriptor 0 has cores "
+        "outside the operation range: ((2, 0),)"
     )
 
 
@@ -1133,6 +1399,52 @@ def test_run_kernel_materializes_resources_and_commits_lifetimes(monkeypatch):
     assert program.kernels[0].defines == [("MODE", "runtime")]
     assert program.kernels[0].runtime_args[1][0] == [8, 9]
     assert committed_lifetimes == [(owner,)]
+
+
+def test_run_kernel_rejects_fabric_runtime_arg_collision_before_materialization(
+    monkeypatch,
+):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    materialized_descriptors = []
+
+    def record_descriptor_materialization(**_kwargs):
+        materialized_descriptors.append(True)
+        return []
+
+    monkeypatch.setattr(
+        kernel_runner,
+        "build_kernel_descriptors",
+        record_descriptor_materialization,
+    )
+
+    def make_resources(**_kwargs):
+        return ProgramRuntimeResources(
+            kernel_resources=(
+                KernelRuntimeResources(
+                    kernel=KernelKind.COMPUTE,
+                    runtime_args=(CoreRuntimeArgs(_FakeCoreCoord(0, 0), (7,)),),
+                ),
+            )
+        )
+
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)
+    with pytest.raises(
+        ValueError,
+        match="conflict with compiler-managed fabric routes",
+    ):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[_kernel_spec(KernelKind.COMPUTE)],
+            tensors=[_FakeTensorWithoutDevice()],
+            cb_configs=[],
+            core_ranges=_FakeCoreRanges(),
+            kernel_fabric_routes=[[route]],
+            runtime_resource_factory=make_resources,
+            operation_name="routed_collision",
+        )
+
+    assert materialized_descriptors == []
+    assert fake_ttnn.generic_op_calls == []
 
 
 def test_run_kernel_failure_preserves_runtime_resource_lifetimes(monkeypatch):
