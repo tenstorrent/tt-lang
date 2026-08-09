@@ -11,7 +11,6 @@ import sys
 from pathlib import Path
 
 
-# Signatures enforce the policy without publishing restricted text.
 _DEFAULT_SIGNATURES = {
     5: frozenset(
         {
@@ -137,7 +136,13 @@ def check_commit_message(
     commit_message_file: str, signatures: dict[int, frozenset[str]]
 ) -> None:
     check_content("branch name", current_branch_name().encode(), signatures)
-    check_content("commit message", Path(commit_message_file).read_bytes(), signatures)
+    git_directory = Path(
+        run_git(["rev-parse", "--absolute-git-dir"]).stdout.decode().strip()
+    ).resolve(strict=True)
+    message_file = Path(commit_message_file).resolve(strict=True)
+    if not message_file.is_relative_to(git_directory):
+        raise CheckFailure("commit message file is outside Git metadata")
+    check_content("commit message", message_file.read_bytes(), signatures)
 
 
 def check_push(signatures: dict[int, frozenset[str]]) -> None:

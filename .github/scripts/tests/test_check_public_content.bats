@@ -94,7 +94,8 @@ run_check() {
 }
 
 @test "rejects restricted content in a commit message" {
-    commit_message_file="$BATS_TEST_TMPDIR/commit-message"
+    git_directory=$(git -C "$TEST_REPO" rev-parse --absolute-git-dir)
+    commit_message_file="$git_directory/COMMIT_EDITMSG"
     printf '%s\n' "reference $RESTRICTED_TEXT" > "$commit_message_file"
 
     run_check bash -c 'cd "$1" && exec "$2" commit-message "$3"' \
@@ -102,6 +103,17 @@ run_check() {
 
     assert_failure
     assert_output --partial "commit message contains restricted public content"
+}
+
+@test "rejects a commit message file outside Git metadata" {
+    commit_message_file="$BATS_TEST_TMPDIR/commit-message"
+    printf '%s\n' "ordinary message" > "$commit_message_file"
+
+    run_check bash -c 'cd "$1" && exec "$2" commit-message "$3"' \
+        _ "$TEST_REPO" "$CHECK_SCRIPT" "$commit_message_file"
+
+    assert_failure
+    assert_output --partial "commit message file is outside Git metadata"
 }
 
 @test "rejects restricted content in the remote push branch" {
