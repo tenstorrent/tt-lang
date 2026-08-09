@@ -54,6 +54,7 @@
 | 0.18 | 06/16/2026 | Add `ttl.raw_element_read` and `ttl.raw_element_write` |
 | 0.19 | 06/15/2026 | Unified-body `ttl.operation` with thread assignment and composition; add multi-kernel operation with explicit kernels |
 | 0.20 | 06/23/2026 | Add `ttl.exp` hardware flags and scaled exponential canonicalization |
+| 0.21 | 08/07/2026 | Add `ttl.read_index` |
 
 
 ## Introduction
@@ -559,6 +560,7 @@ number of SFPU lane iterations and defaults to 8.
 | :---- | :---- |
 | `ttl.raw_element_read(block: ttl.Block, *coords: List[ttl.NaturalInt]) -> float` | Read a single scalar element from a block at the given coordinates. The block must be in `MR` or `RW` state. Can be used only in data movement kernels. Coordinates are flat scalar-element positions (one per block dimension). |
 | `ttl.raw_element_write(block: ttl.Block, *coords: List[ttl.NaturalInt], value: float)` | Write a scalar `value` to a block at the given coordinates. The block must be in `MW` or `RW` state. Can be used only in data movement kernels. |
+| `ttl.read_index(block: ttl.Block, *coords: List[ttl.NaturalInt]) -> ttl.NaturalInt` | Read an f32 or bf16 scalar from a block in `MR` or `RW` state and convert it to an index. Fractional values truncate toward zero. The source must be finite, nonnegative, and no greater than INT32_MAX; behavior is undefined otherwise. Can be used only in data movement kernels. |
 
 #### Limitations
 
