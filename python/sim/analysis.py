@@ -254,19 +254,24 @@ def _violations_for_func_def(
     * Simple named assignment: ``tx = ttl.copy(src, dst)``
     * Immediate method-chain on the result: ``ttl.copy(src, dst).wait()``
     """
+
+    def allow_copy_call_expr(call: ast.Call) -> None:
+        if _is_ttl_copy_call(call):
+            allowed.add(id(call))
+        elif (
+            isinstance(call.func, ast.Attribute)
+            and call.func.attr == "wait"
+            and isinstance(call.func.value, ast.Call)
+            and _is_ttl_copy_call(call.func.value)
+        ):
+            allowed.add(id(call.func.value))
+
     allowed: set[int] = set()
     for node in ast.walk(func_def):
         if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call):
-            call = node.value
-            if _is_ttl_copy_call(call):
-                allowed.add(id(call))
-            elif (
-                isinstance(call.func, ast.Attribute)
-                and call.func.attr == "wait"
-                and isinstance(call.func.value, ast.Call)
-                and _is_ttl_copy_call(call.func.value)
-            ):
-                allowed.add(id(call.func.value))
+            allow_copy_call_expr(node.value)
+        elif isinstance(node, ast.Lambda) and isinstance(node.body, ast.Call):
+            allow_copy_call_expr(node.body)
         elif (
             isinstance(node, ast.Assign)
             and len(node.targets) == 1
@@ -285,7 +290,8 @@ def _violations_for_func_def(
                 "ttl.copy() is used in an unsupported pattern. "
                 "Supported patterns: "
                 "'ttl.copy(src, dst)' (bare call) or "
-                "'tx = ttl.copy(src, dst)' (simple assignment)."
+                "'tx = ttl.copy(src, dst)' (simple assignment), or "
+                "'ttl.copy(src, dst).wait()' (immediate wait)."
             ),
             func_name=func_name,
         )
