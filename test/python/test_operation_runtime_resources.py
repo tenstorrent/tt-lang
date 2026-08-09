@@ -62,12 +62,22 @@ def _make_runtime_resource_operation(dtype):
 
     @ttl.operation(grid=(2, 1), runtime_resource_factory=make_resources)
     def runtime_resource_operation(out):
-        ttl.call_extern_func(
-            RUNTIME_RESOURCE_HEADER,
-            "write_operation_runtime_value",
-            func_args=[ttl.raw_addr(out)],
-            kernel=runtime_kernel,
-        )
+        core_x, _ = ttl.node(dims=2)
+        # Separate branches force per-core clones that exercise resource partitioning.
+        if core_x == 0:
+            ttl.call_extern_func(
+                RUNTIME_RESOURCE_HEADER,
+                "write_operation_runtime_value",
+                func_args=[ttl.raw_addr(out)],
+                kernel=runtime_kernel,
+            )
+        else:
+            ttl.call_extern_func(
+                RUNTIME_RESOURCE_HEADER,
+                "write_operation_runtime_value",
+                func_args=[ttl.raw_addr(out)],
+                kernel=runtime_kernel,
+            )
 
     return runtime_resource_operation
 
@@ -98,12 +108,22 @@ def _to_two_core_width_sharded(host_tensor, device):
     [torch.bfloat16, torch.float32],
     ids=["bf16", "f32"],
 )
-def test_operation_runtime_resources_materialize_per_core_values(device, dtype):
+@pytest.mark.parametrize(
+    "specialize_cores",
+    [False, True],
+    ids=["generic-cores", "specialized-cores"],
+)
+def test_operation_runtime_resources_materialize_per_core_values(
+    device, dtype, specialize_cores
+):
     """One logical kernel receives distinct values and one caller semaphore."""
     host_output = torch.zeros((32, 64), dtype=dtype)
     output = _to_two_core_width_sharded(host_output, device)
 
-    RUNTIME_RESOURCE_OPERATIONS[dtype](output)
+    options = (
+        "--ttl-specialize-cores" if specialize_cores else "--no-ttl-specialize-cores"
+    )
+    RUNTIME_RESOURCE_OPERATIONS[dtype](output, options=options)
 
     expected = torch.cat(
         (
