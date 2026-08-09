@@ -8,6 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from itertools import product
 from math import prod
+import runpy
 
 import pytest
 import torch
@@ -82,6 +83,52 @@ def _make_stencil_direction_operation(device_domain, stencil_net):
             stencil_net.if_dst(receive)
 
     return exchange_direction
+
+
+def _make_bidirectional_exchange_operation(mesh_shape):
+    device_domain = ttl.DeviceDomain(mesh_shape)
+    root_device = tuple(0 for _extent in mesh_shape)
+    peer_axis = next(axis for axis, extent in enumerate(mesh_shape) if extent > 1)
+    peer_device = tuple(
+        1 if axis == peer_axis else 0 for axis in range(len(mesh_shape))
+    )
+    exchange_net = ttl.PipeNet(
+        graph=ttl.TransferGraph.edges(
+            device_domain,
+            edges=[(root_device, peer_device), (peer_device, root_device)],
+        )
+    )
+
+    @ttl.operation(grid=(1, 1), device_domain=device_domain)
+    def bidirectional_exchange(inp, out):
+        send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        receive_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def idle_compute():
+            pass
+
+        @ttl.datamovement()
+        def sender_node():
+            def send(pipe):
+                with send_dfb.reserve() as send_block:
+                    ttl.copy(inp[0, 0], send_block).wait()
+                with send_dfb.wait() as send_block:
+                    ttl.copy(send_block, pipe).wait()
+
+            exchange_net.if_src(send)
+
+        @ttl.datamovement()
+        def receiver_node():
+            def receive(pipe):
+                with receive_dfb.reserve() as receive_block:
+                    ttl.copy(pipe, receive_block).wait()
+                with receive_dfb.wait() as receive_block:
+                    ttl.copy(receive_block, out[0, 0]).wait()
+
+            exchange_net.if_dst(receive)
+
+    return bidirectional_exchange
 
 
 def _make_collective_operations(
@@ -710,6 +757,79 @@ def test_point_to_point(
     expected = torch.zeros_like(inp_torch)
     expected[(device_count - 1) * TILE_SIZE :, :] = inp_torch[:TILE_SIZE, :]
     assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
+
+
+# Separate sender and receiver kernels require distinct forwarding links when
+# their connections execute concurrently in the same direction.
+@pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
+def test_bidirectional_exchange(
+    fabric_mesh_shape,
+    torch_dtype,
+    ttnn_dtype,
+    rtol,
+    atol,
+):
+    participant_axis = next(
+        axis for axis, extent in enumerate(fabric_mesh_shape) if extent > 1
+    )
+    participant_mesh_shape = tuple(
+        2 if axis == participant_axis else 1 for axis in range(len(fabric_mesh_shape))
+    )
+    device_count = prod(participant_mesh_shape)
+    logical_shape = (device_count * TILE_SIZE, TILE_SIZE)
+    inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
+    out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
+    bidirectional_exchange = _make_bidirectional_exchange_operation(
+        participant_mesh_shape
+    )
+
+    with _open_collective_mesh(fabric_mesh_shape) as parent_mesh:
+        mesh = parent_mesh.create_submesh(ttnn.MeshShape(participant_mesh_shape))
+        try:
+            inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
+            out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
+
+            bidirectional_exchange(inp, out)
+
+            result = _compose(mesh, out)
+        finally:
+            ttnn.close_mesh_device(mesh)
+
+    expected = torch.zeros_like(inp_torch)
+    expected[:TILE_SIZE, :] = inp_torch[-TILE_SIZE:, :]
+    expected[-TILE_SIZE:, :] = inp_torch[:TILE_SIZE, :]
+    assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
+
+
+def test_point_to_point_emitted_runner(
+    fabric_mesh_shape,
+    monkeypatch,
+    tmp_path,
+):
+    """The standalone runner preserves fabric target-binding metadata."""
+    device_count = prod(fabric_mesh_shape)
+    logical_shape = (device_count * TILE_SIZE, TILE_SIZE)
+    inp_torch = torch.randn(logical_shape, dtype=torch.bfloat16)
+    out_torch = torch.zeros(logical_shape, dtype=torch.bfloat16)
+    runner_path = tmp_path / "point_to_point_runner.py"
+    monkeypatch.setenv("TTLANG_EMIT_RUNNER", str(runner_path))
+    # Emission occurs during first compilation; earlier tests compile the
+    # module-scoped fixture operations before this environment variable is set.
+    fresh_collective_operations = _make_collective_operations(fabric_mesh_shape)
+
+    with _open_collective_mesh(fabric_mesh_shape) as mesh:
+        inp = _mesh_tensor(mesh, inp_torch, ttnn.bfloat16)
+        compiled_out = _mesh_tensor(mesh, out_torch, ttnn.bfloat16)
+        emitted_out = _mesh_tensor(mesh, out_torch, ttnn.bfloat16)
+
+        fresh_collective_operations.point_to_point(inp, compiled_out)
+        runner = runpy.run_path(str(runner_path))
+        runner["run"]([inp, emitted_out], device=mesh)
+        result = _compose(mesh, emitted_out)
+
+    expected = torch.zeros_like(inp_torch)
+    expected[(device_count - 1) * TILE_SIZE :, :] = inp_torch[:TILE_SIZE, :]
+    assert_allclose(result.float(), expected.float(), rtol=0.05, atol=1.0)
 
 
 # Verify that named Cartesian-product coordinates select the intended fabric
