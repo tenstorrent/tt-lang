@@ -30,7 +30,7 @@ func.func @call_with_template_args() attributes {ttl.kernel_thread = #ttkernel.t
 // CHECK: ttkernel.opaque_call "drain" template_args [2 : ui32]() {header = "drain.hpp"} : () -> ()
 func.func @call_with_dfb_template_arg() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
   %cb = ttl.bind_cb {cb_index = 2, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-  ttl.opaque_call "drain" template_args [#ttl.external_template_arg<dfb_index, 0>] template_dfbs(%cb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) () {header = "drain.hpp"} : () -> ()
+  ttl.opaque_call "drain" template_args [#ttl.external_template_arg<dfb_index, 0>] template_dfbs(%cb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) dfb_dependencies(%cb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) () {header = "drain.hpp"} : () -> ()
   return
 }
 
@@ -125,5 +125,19 @@ func.func @call_with_raw_addr_func_arg(%arg0: tensor<1x1x!ttcore.tile<32x32, f32
 func.func @call_with_compute_raw_addr_func_arg(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<compute>} {
   %addr = ttl.raw_addr %arg0 : tensor<1x1x!ttcore.tile<32x32, f32>, #layout> -> i32
   ttl.opaque_call "use_addr" (%addr) {header = "use_addr.hpp", unsigned_arg_indices = array<i32: 0>} : (i32) -> ()
+  return
+}
+
+// -----
+
+// Dependency and protocol metadata describe external behavior without adding
+// TTKernel call arguments or protocol operations.
+// CHECK-LABEL: func.func @dfb_protocol_metadata
+// CHECK-NOT: ttkernel.cb_
+// CHECK: ttkernel.opaque_call "hidden_protocol"() {header = "hidden_protocol.hpp"} : () -> ()
+// CHECK-NOT: ttkernel.cb_
+func.func @dfb_protocol_metadata() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %dfb = ttl.bind_cb {cb_index = 3, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  ttl.opaque_call "hidden_protocol" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>, #ttl.dfb_protocol_effect<push, 0, 1>] () {header = "hidden_protocol.hpp", unknown_dfb_access} : () -> ()
   return
 }

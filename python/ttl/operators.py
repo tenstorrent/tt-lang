@@ -35,6 +35,9 @@ def call_extern_func(
     *,
     template_args=None,
     func_args=None,
+    dfb_dependencies=None,
+    dfb_effects=None,
+    unknown_dfb_access: bool = False,
     include_paths=None,
     kernel: Optional[ExternalKernelSelection] = None,
 ) -> None:
@@ -45,6 +48,26 @@ def call_extern_func(
     unified-operation splitter removes the selector before AST lowering.
     """
     raise RuntimeError("ttl.call_extern_func() is valid only in a compiled kernel")
+
+
+class DFBEffect:
+    """Ordered synchronous DFB actions performed by an external call."""
+
+    @staticmethod
+    def reserve(dfb, *, tiles: int):
+        raise RuntimeError("ttl.DFBEffect.reserve() is valid only in a compiled kernel")
+
+    @staticmethod
+    def push(dfb, *, tiles: int):
+        raise RuntimeError("ttl.DFBEffect.push() is valid only in a compiled kernel")
+
+    @staticmethod
+    def wait(dfb, *, tiles: int):
+        raise RuntimeError("ttl.DFBEffect.wait() is valid only in a compiled kernel")
+
+    @staticmethod
+    def pop(dfb, *, tiles: int):
+        raise RuntimeError("ttl.DFBEffect.pop() is valid only in a compiled kernel")
 
 
 def dfb_descriptor(dfb):
@@ -1295,6 +1318,7 @@ __all__ = [
     "raw_element_write",
     "read_index",
     "call_extern_func",
+    "DFBEffect",
     "dfb_descriptor",
     "get_dfb_id",
     "raw_addr",

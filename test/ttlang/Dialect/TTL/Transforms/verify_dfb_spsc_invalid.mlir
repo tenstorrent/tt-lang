@@ -25,11 +25,113 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     %zero = arith.constant 0 : index
     %is_x0 = arith.cmpi eq, %core_x, %zero : index
     scf.if %is_x0 {
-      // expected-note @below {{also waited on here}}
+      // expected-note @below {{also performed a consumer action here}}
       %view = ttl.cb_wait %cb
           : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     }
+    func.return
+  }
+}
+
+// -----
+
+// Hidden reserve effects in two overlapping kernels violate SPSC.
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @first_hidden_producer() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    // expected-note @+1 {{dataflow buffer declared here}}
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 41 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-error @below {{logical DFB 41 has multiple producer kernels active on the same launched node}}
+    // expected-note @below {{example overlapping node: core_x=0, core_y=0}}
+    // expected-note @below {{tt-metal CBs are single-producer single-consumer; allocate one DFB per producer}}
+    ttl.opaque_call "produce_a" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>] () {header = "effects.hpp"} : () -> ()
+    func.return
+  }
+
+  func.func @second_hidden_producer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 41 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-note @below {{also performed a producer action here}}
+    ttl.opaque_call "produce_b" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>] () {header = "effects.hpp"} : () -> ()
+    func.return
+  }
+}
+
+// -----
+
+// Hidden wait effects in two overlapping kernels violate SPSC.
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @first_hidden_consumer() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    // expected-note @+1 {{dataflow buffer declared here}}
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 42 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-error @below {{logical DFB 42 has multiple consumer kernels active on the same launched node}}
+    // expected-note @below {{example overlapping node: core_x=0, core_y=0}}
+    // expected-note @below {{tt-metal CBs are single-producer single-consumer; allocate one DFB per consumer}}
+    ttl.opaque_call "consume_a" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 1>] () {header = "effects.hpp"} : () -> ()
+    func.return
+  }
+
+  func.func @second_hidden_consumer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 42 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-note @below {{also performed a consumer action here}}
+    ttl.opaque_call "consume_b" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 1>] () {header = "effects.hpp"} : () -> ()
+    func.return
+  }
+}
+
+// -----
+
+// A hidden push is a producer action and cannot run in a different thread from
+// the reserve on the same DFB.
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @reserver() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    // expected-note @+1 {{dataflow buffer declared here}}
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 43 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-error @below {{logical DFB 43 has multiple producer kernels active on the same launched node}}
+    // expected-note @below {{example overlapping node: core_x=0, core_y=0}}
+    // expected-note @below {{tt-metal CBs are single-producer single-consumer; allocate one DFB per producer}}
+    %slot = ttl.cb_reserve %dfb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    func.return
+  }
+
+  func.func @hidden_pusher() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 43 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-note @below {{also performed a producer action here}}
+    ttl.opaque_call "push" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<push, 0, 1>] () {header = "effects.hpp"} : () -> ()
+    func.return
+  }
+}
+
+// -----
+
+// A hidden pop is a consumer action and cannot run in a different thread from
+// the wait on the same DFB.
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @waiter() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    // expected-note @+1 {{dataflow buffer declared here}}
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 44 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-error @below {{logical DFB 44 has multiple consumer kernels active on the same launched node}}
+    // expected-note @below {{example overlapping node: core_x=0, core_y=0}}
+    // expected-note @below {{tt-metal CBs are single-producer single-consumer; allocate one DFB per consumer}}
+    %slot = ttl.cb_wait %dfb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    func.return
+  }
+
+  func.func @hidden_popper() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 44 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-note @below {{also performed a consumer action here}}
+    ttl.opaque_call "pop" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<pop, 0, 1>] () {header = "effects.hpp"} : () -> ()
     func.return
   }
 }
@@ -59,7 +161,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     %one = arith.constant 1 : index
     %is_x1 = arith.cmpi eq, %core_x, %one : index
     scf.if %is_x1 {
-      // expected-note @below {{also reserved here}}
+      // expected-note @below {{also performed a producer action here}}
       %slot = ttl.cb_reserve %cb
           : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -99,7 +201,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @other_consumer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 2 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    // expected-note @below {{also waited on here}}
+    // expected-note @below {{also performed a consumer action here}}
     %view = ttl.cb_wait %cb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -138,7 +240,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @other_producer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 6 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    // expected-note @below {{also reserved here}}
+    // expected-note @below {{also performed a producer action here}}
     %slot = ttl.cb_reserve %cb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
