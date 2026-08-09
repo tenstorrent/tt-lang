@@ -13,6 +13,7 @@
 #include "mlir/IR/Operation.h"
 #include "mlir/Support/LogicalResult.h"
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -39,6 +40,17 @@ struct ReductionCapability {
 /// default device. Both sources must agree when present.
 FailureOr<std::optional<ttcore::Arch>>
 resolveComputeTargetArch(Operation *operation, std::string &failureReason);
+
+/// Target schedule whose legality is not described by one compute primitive.
+enum class ComputeScheduleCapability {
+  RowNormalization,
+};
+
+/// Target and tile-type limits for one compute schedule.
+struct ComputeScheduleCapabilityLimits {
+  bool targetSupported = false;
+  std::optional<std::uint32_t> maxTiles;
+};
 
 /// Immutable LLK capabilities for one compute target.
 class ComputeTargetEnvironment {
@@ -76,6 +88,10 @@ public:
   validateMatmulTileTypes(ttcore::TileType lhsType, ttcore::TileType rhsType,
                           ttcore::TileType resultType, bool transposeRhs,
                           std::string &failureReason) const = 0;
+
+  virtual ComputeScheduleCapabilityLimits
+  getScheduleCapabilityLimits(ComputeScheduleCapability capability,
+                              ttcore::TileType tileType) const = 0;
 
   LogicalResult validateOperation(Operation *operation,
                                   std::string &failureReason) const;
