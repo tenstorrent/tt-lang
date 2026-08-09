@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""General collective communication coverage for fabric PipeNets."""
+"""General fabric communication coverage for PipeNets."""
 
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -36,7 +36,7 @@ FABRIC_REDUCTION_DTYPES = [
 
 
 @dataclass(frozen=True)
-class CollectiveOperations:
+class FabricOperations:
     point_to_point: Callable[..., None]
     product_point_to_point: Callable[..., None]
     axis_neighbor: Callable[..., None]
@@ -131,12 +131,12 @@ def _make_bidirectional_exchange_operation(mesh_shape):
     return bidirectional_exchange
 
 
-def _make_collective_operations(
+def _make_fabric_operations(
     mesh_shape: tuple[int, ...],
-) -> CollectiveOperations:
+) -> FabricOperations:
     device_count = prod(mesh_shape)
     if device_count < 2:
-        raise ValueError("collective operations require at least two devices")
+        raise ValueError("fabric operations require at least two devices")
 
     device_domain = ttl.DeviceDomain(mesh_shape)
     root_device = tuple(0 for _extent in mesh_shape)
@@ -669,7 +669,7 @@ def _make_collective_operations(
 
             all_to_all_net.if_dst(receive)
 
-    return CollectiveOperations(
+    return FabricOperations(
         point_to_point=point_to_point,
         product_point_to_point=product_point_to_point,
         axis_neighbor=axis_neighbor,
@@ -727,14 +727,14 @@ def fabric_mesh_shape():
 
 
 @pytest.fixture(scope="module")
-def collective_operations(fabric_mesh_shape):
-    return _make_collective_operations(fabric_mesh_shape)
+def fabric_operations(fabric_mesh_shape):
+    return _make_fabric_operations(fabric_mesh_shape)
 
 
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
 def test_point_to_point(
     fabric_mesh_shape,
-    collective_operations,
+    fabric_operations,
     torch_dtype,
     ttnn_dtype,
     rtol,
@@ -749,8 +749,8 @@ def test_point_to_point(
         inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
         out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
 
-        collective_operations.point_to_point(inp, out)
-        collective_operations.point_to_point(inp, out)
+        fabric_operations.point_to_point(inp, out)
+        fabric_operations.point_to_point(inp, out)
 
         result = _compose(mesh, out)
 
@@ -815,14 +815,14 @@ def test_point_to_point_emitted_runner(
     monkeypatch.setenv("TTLANG_EMIT_RUNNER", str(runner_path))
     # Emission occurs during first compilation; earlier tests compile the
     # module-scoped fixture operations before this environment variable is set.
-    fresh_collective_operations = _make_collective_operations(fabric_mesh_shape)
+    fresh_fabric_operations = _make_fabric_operations(fabric_mesh_shape)
 
     with _open_collective_mesh(fabric_mesh_shape) as mesh:
         inp = _mesh_tensor(mesh, inp_torch, ttnn.bfloat16)
         compiled_out = _mesh_tensor(mesh, out_torch, ttnn.bfloat16)
         emitted_out = _mesh_tensor(mesh, out_torch, ttnn.bfloat16)
 
-        fresh_collective_operations.point_to_point(inp, compiled_out)
+        fresh_fabric_operations.point_to_point(inp, compiled_out)
         runner = runpy.run_path(str(runner_path))
         runner["run"]([inp, emitted_out], device=mesh)
         result = _compose(mesh, emitted_out)
@@ -837,7 +837,7 @@ def test_point_to_point_emitted_runner(
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
 def test_product_domain_point_to_point(
     fabric_mesh_shape,
-    collective_operations,
+    fabric_operations,
     torch_dtype,
     ttnn_dtype,
     rtol,
@@ -852,7 +852,7 @@ def test_product_domain_point_to_point(
         inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
         out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
 
-        collective_operations.product_point_to_point(inp, out)
+        fabric_operations.product_point_to_point(inp, out)
 
         result = _compose(mesh, out)
 
@@ -866,7 +866,7 @@ def test_product_domain_point_to_point(
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
 def test_axis_neighbor(
     fabric_mesh_shape,
-    collective_operations,
+    fabric_operations,
     torch_dtype,
     ttnn_dtype,
     rtol,
@@ -884,7 +884,7 @@ def test_axis_neighbor(
         inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
         out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
 
-        collective_operations.axis_neighbor(inp, out)
+        fabric_operations.axis_neighbor(inp, out)
 
         result = _compose(mesh, out)
 
@@ -904,7 +904,7 @@ def test_axis_neighbor(
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
 def test_stencil_nearest_neighbors(
     fabric_mesh_shape,
-    collective_operations,
+    fabric_operations,
     torch_dtype,
     ttnn_dtype,
     rtol,
@@ -920,7 +920,7 @@ def test_stencil_nearest_neighbors(
         inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
         out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
 
-        collective_operations.stencil_nearest_neighbors(inp, out)
+        fabric_operations.stencil_nearest_neighbors(inp, out)
 
         result = _compose(mesh, out)
 
@@ -953,7 +953,7 @@ def test_stencil_nearest_neighbors(
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
 def test_broadcast(
     fabric_mesh_shape,
-    collective_operations,
+    fabric_operations,
     torch_dtype,
     ttnn_dtype,
     rtol,
@@ -968,7 +968,7 @@ def test_broadcast(
         inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
         out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
 
-        collective_operations.broadcast(inp, out)
+        fabric_operations.broadcast(inp, out)
 
         result = _compose(mesh, out)
 
@@ -979,7 +979,7 @@ def test_broadcast(
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
 def test_scatter(
     fabric_mesh_shape,
-    collective_operations,
+    fabric_operations,
     torch_dtype,
     ttnn_dtype,
     rtol,
@@ -995,7 +995,7 @@ def test_scatter(
         inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
         out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
 
-        collective_operations.scatter(inp, out)
+        fabric_operations.scatter(inp, out)
 
         result = _compose(mesh, out)
 
@@ -1006,7 +1006,7 @@ def test_scatter(
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
 def test_gather(
     fabric_mesh_shape,
-    collective_operations,
+    fabric_operations,
     torch_dtype,
     ttnn_dtype,
     rtol,
@@ -1022,7 +1022,7 @@ def test_gather(
         inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
         out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
 
-        collective_operations.gather(inp, out)
+        fabric_operations.gather(inp, out)
 
         result = _compose(mesh, out)
 
@@ -1036,7 +1036,7 @@ def test_gather(
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_REDUCTION_DTYPES)
 def test_reduce(
     fabric_mesh_shape,
-    collective_operations,
+    fabric_operations,
     torch_dtype,
     ttnn_dtype,
     rtol,
@@ -1051,7 +1051,7 @@ def test_reduce(
         inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
         out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
 
-        collective_operations.reduce(inp, out)
+        fabric_operations.reduce(inp, out)
 
         result = _compose(mesh, out)
 
@@ -1065,7 +1065,7 @@ def test_reduce(
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_REDUCTION_DTYPES)
 def test_all_reduce(
     fabric_mesh_shape,
-    collective_operations,
+    fabric_operations,
     torch_dtype,
     ttnn_dtype,
     rtol,
@@ -1080,7 +1080,7 @@ def test_all_reduce(
         inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
         out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
 
-        collective_operations.all_reduce(inp, out)
+        fabric_operations.all_reduce(inp, out)
 
         result = _compose(mesh, out)
 
@@ -1094,7 +1094,7 @@ def test_all_reduce(
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_REDUCTION_DTYPES)
 def test_reduce_scatter(
     fabric_mesh_shape,
-    collective_operations,
+    fabric_operations,
     torch_dtype,
     ttnn_dtype,
     rtol,
@@ -1110,7 +1110,7 @@ def test_reduce_scatter(
         inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
         out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
 
-        collective_operations.reduce_scatter(inp, out)
+        fabric_operations.reduce_scatter(inp, out)
 
         result = _compose(mesh, out)
 
@@ -1121,7 +1121,7 @@ def test_reduce_scatter(
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
 def test_all_gather(
     fabric_mesh_shape,
-    collective_operations,
+    fabric_operations,
     torch_dtype,
     ttnn_dtype,
     rtol,
@@ -1137,7 +1137,7 @@ def test_all_gather(
         inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
         out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
 
-        collective_operations.all_gather(inp, out)
+        fabric_operations.all_gather(inp, out)
 
         result = _compose(mesh, out)
 
@@ -1148,7 +1148,7 @@ def test_all_gather(
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
 def test_all_to_all(
     fabric_mesh_shape,
-    collective_operations,
+    fabric_operations,
     torch_dtype,
     ttnn_dtype,
     rtol,
@@ -1163,7 +1163,7 @@ def test_all_to_all(
         inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
         out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
 
-        collective_operations.all_to_all(inp, out)
+        fabric_operations.all_to_all(inp, out)
 
         result = _compose(mesh, out)
 
