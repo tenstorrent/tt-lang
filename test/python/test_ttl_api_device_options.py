@@ -334,8 +334,7 @@ class TestKernelI32ArrayAttr:
         ttl_dialect.ensure_dialects_registered(context)
 
         with context:
-            module = Module.parse(
-                """
+            module = Module.parse("""
                 module {
                   func.func @reader() attributes {
                     ttl.pipe_computed_address_dfb_indices = array<i32: 2, 5>
@@ -343,8 +342,7 @@ class TestKernelI32ArrayAttr:
                     return
                   }
                 }
-                """
-            )
+                """)
             assert ttl_api._get_optional_kernel_i32_array_attr(
                 module, "reader", "ttl.pipe_computed_address_dfb_indices"
             ) == [2, 5]
@@ -354,8 +352,7 @@ class TestKernelI32ArrayAttr:
         ttl_dialect.ensure_dialects_registered(context)
 
         with context:
-            module = Module.parse(
-                """
+            module = Module.parse("""
                 module {
                   func.func @reader() attributes {
                     ttl.pipe_computed_address_dfb_indices = 2 : i32
@@ -363,8 +360,7 @@ class TestKernelI32ArrayAttr:
                     return
                   }
                 }
-                """
-            )
+                """)
             with pytest.raises(ValueError, match="Expected DenseI32ArrayAttr"):
                 ttl_api._get_optional_kernel_i32_array_attr(
                     module, "reader", "ttl.pipe_computed_address_dfb_indices"
@@ -375,8 +371,7 @@ class TestKernelI32ArrayAttr:
         ttl_dialect.ensure_dialects_registered(context)
 
         with context:
-            module = Module.parse(
-                """
+            module = Module.parse("""
                 module {
                   func.func @compute_kernel() attributes {
                     dst_full_sync_en = false,
@@ -385,8 +380,7 @@ class TestKernelI32ArrayAttr:
                     return
                   }
                 }
-                """
-            )
+                """)
             with pytest.raises(
                 ValueError,
                 match="Required compiler-generated attribute "

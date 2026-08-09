@@ -524,7 +524,9 @@ def _common_tensor_buffer_address(tensor: Any, context: str) -> int:
     try:
         declared_address = int(tensor.buffer_address())
     except (AttributeError, TypeError, ValueError):
-        raise ValueError(f"{context} does not expose a valid buffer_address()") from None
+        raise ValueError(
+            f"{context} does not expose a valid buffer_address()"
+        ) from None
 
     get_device_tensors = getattr(ttnn, "get_device_tensors", None)
     if get_device_tensors is None:
@@ -536,7 +538,9 @@ def _common_tensor_buffer_address(tensor: Any, context: str) -> int:
     if not component_tensors:
         return declared_address
 
-    component_addresses = {int(component.buffer_address()) for component in component_tensors}
+    component_addresses = {
+        int(component.buffer_address()) for component in component_tensors
+    }
     if len(component_addresses) != 1 or declared_address not in component_addresses:
         raise ValueError(
             f"{context} requires one common L1 base across all component devices, "
