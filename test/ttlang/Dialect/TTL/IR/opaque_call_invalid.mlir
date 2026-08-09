@@ -104,3 +104,39 @@ func.func @unsupported_tensor_accessor_dtype(%arg0: tensor<1x1x!ttcore.tile<32x3
   ttl.opaque_call "foo" (%arg0) {header = "h.hpp"} : (tensor<1x1x!ttcore.tile<32x32, f16>, #layout>) -> ()
   return
 }
+
+// -----
+// Test: a protocol effect must select an existing dependency occurrence.
+func.func @effect_dependency_out_of_range() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  // expected-error @below {{'ttl.opaque_call' op DFB protocol effect 0 dependency index 1 is out of range for 1 dependencies}}
+  ttl.opaque_call "foo" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 1, 1>] () {header = "h.hpp"} : () -> ()
+  return
+}
+
+// -----
+// Test: a protocol effect dependency index must be nonnegative.
+func.func @effect_negative_dependency_index() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  // expected-error @below {{DFB dependency index must be nonnegative, got -1}}
+  ttl.opaque_call "foo" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) dfb_effects [#ttl.dfb_protocol_effect<reserve, -1, 1>] () {header = "h.hpp"} : () -> ()
+  return
+}
+
+// -----
+// Test: a protocol transaction count must be positive.
+func.func @effect_nonpositive_tile_count() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  // expected-error @below {{DFB protocol tile count must be positive, got 0}}
+  ttl.opaque_call "foo" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 0>] () {header = "h.hpp"} : () -> ()
+  return
+}
+
+// -----
+// Test: one protocol action cannot exceed the dependency's physical capacity.
+func.func @effect_tile_count_exceeds_capacity() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  // expected-error @below {{'ttl.opaque_call' op DFB protocol effect 0 tile count 2 exceeds dependency 0 capacity 1}}
+  ttl.opaque_call "foo" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 2>] () {header = "h.hpp"} : () -> ()
+  return
+}
