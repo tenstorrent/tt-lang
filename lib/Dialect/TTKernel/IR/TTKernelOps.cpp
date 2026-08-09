@@ -11,8 +11,10 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/InferIntRangeInterface.h"
+#include "llvm/ADT/STLExtras.h"
 
 #include <cstdint>
 #include <limits>
@@ -567,6 +569,39 @@ void MyLogicalYOp::inferResultRanges(
     mlir::SetIntRangeFn setResultRange) {
   setResultRange(getResult(),
                  getIndexRange(0, std::numeric_limits<uint32_t>::max()));
+}
+
+OpFoldResult ConstantTableLookupOp::fold(FoldAdaptor adaptor) {
+  auto indexAttr = dyn_cast_or_null<IntegerAttr>(adaptor.getIndex());
+  if (!indexAttr) {
+    return {};
+  }
+  int64_t index = indexAttr.getInt();
+  ArrayRef<int64_t> values = getValues();
+  if (index < 0 || static_cast<std::size_t>(index) >= values.size()) {
+    return {};
+  }
+  return IntegerAttr::get(getResult().getType(), values[index]);
+}
+
+LogicalResult ConstantTableLookupOp::verify() {
+  ArrayRef<int64_t> values = getValues();
+  if (values.empty()) {
+    return emitOpError("requires at least one table value");
+  }
+  if (llvm::any_of(values, [](int64_t value) { return value < 0; })) {
+    return emitOpError("requires non-negative table values");
+  }
+  APInt indexValue;
+  if (matchPattern(getIndex(), m_ConstantInt(&indexValue))) {
+    int64_t index = indexValue.getSExtValue();
+    if (index < 0 || static_cast<std::size_t>(index) >= values.size()) {
+      return emitOpError() << "constant index " << index
+                           << " is outside the table bounds [0, "
+                           << values.size() << ")";
+    }
+  }
+  return success();
 }
 
 void NocAsyncReadBarrierOp::getCanonicalizationPatterns(

@@ -34,7 +34,11 @@ public:
                       std::string &failureReason);
 
   bool empty() const { return maxBytesByIndex.empty(); }
-  uint64_t getTotalBytes() const;
+  /// Returns the total allocation size, or failure when the sum overflows.
+  FailureOr<uint64_t> getTotalBytes() const;
+  /// Returns the total after applying per-index minimum allocation sizes.
+  FailureOr<uint64_t> getTotalBytesWithMinimumAllocations(
+      const llvm::DenseMap<int64_t, uint64_t> &minimumBytesByIndex) const;
   uint64_t getBytes(int64_t physicalIndex) const;
   llvm::SmallVector<int64_t, kMaxCircularBuffers>
   getSortedPhysicalIndices() const;
@@ -42,6 +46,9 @@ public:
 private:
   llvm::DenseMap<int64_t, uint64_t> maxBytesByIndex;
 };
+
+/// Returns the per-node DFB footprint of all declarations in `module`.
+FailureOr<DFBAllocationFootprint> getDFBAllocationFootprint(ModuleOp module);
 
 /// Returns the target's usable per-node L1 bytes or the supported fallback.
 uint64_t

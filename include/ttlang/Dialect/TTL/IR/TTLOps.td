@@ -139,7 +139,13 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
 
     Exactly one operand must be a circular buffer (`!ttl.cb`). The other operand
     must be a ranked tensor (the result of a tensor slice) with TTL layout
-    encoding (transfers all tiles via loop).
+    encoding. The copy transfers the complete tensor in row-major tile order.
+
+    The tensor shape normally equals one dataflow buffer block. A copy may span
+    consecutive blocks by extending the tensor's innermost dimension by an
+    integer multiple of the block's innermost dimension. All outer dimensions
+    remain equal to the block shape. The span must not exceed the dataflow
+    buffer's block count.
 
     TODO(ttl): Add an optional TRID attribute (range 0..15) when TRID-specific
     TTKernel NOC ops are available. Issue: #87.
@@ -345,11 +351,13 @@ def TTL_ComputeOp : TTL_Op<"compute", [
 
 def TTL_YieldOp : TTL_Op<"yield", [ReturnLike, Terminator,
     ParentOneOf<["ComputeOp", "DstSectionOp", "IfSrcOp", "IfDstOp",
+                 "PipeNetForeachSrcOp", "PipeNetForeachDstOp",
                  "PipeNetScopeOp", "AccumulationScopeOp"]>]> {
   let summary = "Terminate a TTL region body";
   let description = [{
     `ttl.yield` terminates the body of `ttl.compute`, `ttl.dst_section`,
-    `ttl.if_src`, `ttl.if_dst`, `ttl.pipenet_scope`, and
+    `ttl.if_src`, `ttl.if_dst`, `ttl.pipenet_foreach_src`,
+    `ttl.pipenet_foreach_dst`, `ttl.pipenet_scope`, and
     `ttl.accumulation_scope`. In `ttl.accumulation_scope`, it carries one
     updated value per accumulation output. Other TTL regions use an
     operand-less terminator.
@@ -674,6 +682,112 @@ def TTL_IfDstOp : TTL_Op<"if_dst",
   }];
 }
 
+def TTL_PipeNetForeachSrcOp : TTL_Op<"pipenet_foreach_src",
+    [SingleBlockImplicitTerminator<"YieldOp">,
+     DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
+  let summary = "Iterate over source pipe records in a PipeNet";
+  let description = [{
+    Executes the body region once for each static PipeNet record whose source
+    coordinate matches the current launch node. The body receives a
+    `!ttl.selected_pipe_src` argument representing the selected record for that
+    iteration.
+
+    The records in `$records` are ordered by user PipeNet construction
+    order. That order defines program order for a launch node that matches
+    multiple records.
+  }];
+
+  let arguments = (ins
+    TTL_PipeNetRecordsAttr:$records
+  );
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = "attr-dict-with-keyword $body";
+  let hasVerifier = 1;
+}
+
+def TTL_PipeNetForeachDstOp : TTL_Op<"pipenet_foreach_dst",
+    [SingleBlockImplicitTerminator<"YieldOp">,
+     DeclareOpInterfaceMethods<RegionBranchOpInterface>]> {
+  let summary = "Iterate over destination pipe records in a PipeNet";
+  let description = [{
+    Executes the body region once for each static PipeNet record whose
+    destination range contains the current launch node. The body receives a
+    `!ttl.selected_pipe_dst` argument representing the selected record for that
+    iteration.
+
+    The records in `$records` are ordered by user PipeNet construction
+    order. That order defines program order for a launch node that matches
+    multiple records.
+  }];
+
+  let arguments = (ins
+    TTL_PipeNetRecordsAttr:$records
+  );
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = "attr-dict-with-keyword $body";
+  let hasVerifier = 1;
+}
+
+def TTL_SelectPipeSrcOp : TTL_Op<"select_pipe_src", [Pure]> {
+  let summary = "Represent a record selected by source iteration";
+  let description = [{
+    Represents a PipeNet record selected because the current launch node is its
+    source. The operands contain the selected record fields. `$recordIndex`
+    identifies the record in `$records`; the remaining operands contain that
+    record's coordinates and receiver count. `$srcInDstRange` is true when the
+    source coordinate belongs to the destination range. `$records` identifies
+    the PipeNet and its transfer contract.
+  }];
+
+  let arguments = (ins
+    Index:$recordIndex,
+    Index:$srcX,
+    Index:$srcY,
+    Index:$dstStartX,
+    Index:$dstStartY,
+    Index:$dstEndX,
+    Index:$dstEndY,
+    Index:$numDests,
+    I1:$srcInDstRange,
+    TTL_PipeNetRecordsAttr:$records
+  );
+  let results = (outs TTL_SelectedPipeSrc:$pipe);
+  let assemblyFormat = [{
+    `record` `(` $recordIndex `)` `src` `(` $srcX `,` $srcY `)` `dst` `(` $dstStartX `,` $dstStartY `)` `to` `(` $dstEndX `,` $dstEndY `)`
+    `num_dests` `(` $numDests `)` `src_in_dst` `(` $srcInDstRange `)` attr-dict `:` type($pipe)
+  }];
+}
+
+def TTL_SelectPipeDstOp : TTL_Op<"select_pipe_dst", [Pure]> {
+  let summary = "Represent a record selected by destination iteration";
+  let description = [{
+    Represents a PipeNet record selected because the current launch node is one
+    of its destinations. The operands contain the selected record fields.
+    `$recordIndex` identifies the record in `$records`; the remaining operands
+    contain that record's coordinates and receiver count. `$srcInDstRange` is
+    true when the source coordinate belongs to the destination range.
+    `$records` identifies the PipeNet and its transfer contract.
+  }];
+
+  let arguments = (ins
+    Index:$recordIndex,
+    Index:$srcX,
+    Index:$srcY,
+    Index:$dstStartX,
+    Index:$dstStartY,
+    Index:$dstEndX,
+    Index:$dstEndY,
+    Index:$numDests,
+    I1:$srcInDstRange,
+    TTL_PipeNetRecordsAttr:$records
+  );
+  let results = (outs TTL_SelectedPipeDst:$pipe);
+  let assemblyFormat = [{
+    `record` `(` $recordIndex `)` `src` `(` $srcX `,` $srcY `)` `dst` `(` $dstStartX `,` $dstStartY `)` `to` `(` $dstEndX `,` $dstEndY `)`
+    `num_dests` `(` $numDests `)` `src_in_dst` `(` $srcInDstRange `)` attr-dict `:` type($pipe)
+  }];
+}
+
 def TTL_PipeTransferCreateOp : TTL_Op<"pipe_transfer.create", [Pure]> {
   let summary = "Create a pipe transfer reference";
   let description = [{
@@ -682,11 +796,27 @@ def TTL_PipeTransferCreateOp : TTL_Op<"pipe_transfer.create", [Pure]> {
     The sender and receiver callbacks may use different references because each
     constructs its pipe value independently. The attributes record the common
     point-to-point or collective contract.
+
+    `block_span` is the number of consecutive original DFB blocks delivered by
+    one transfer. Scalar transfers use the default span of one. Grouping
+    transformations increase the span while preserving the original DFB block
+    geometry.
+
+    `destination_group_depth` is the number of complete transfers that the
+    transport schedule may leave resident in each receiver DFB. The default
+    depth of one preserves lockstep transfer semantics. A greater depth permits
+    multiple grouped transfers to occupy distinct receiver slots.
+
+    Record-selected pipe references require the default span and destination
+    depth because one operation selects one scalar record at runtime. Grouped
+    transfers require a statically identified pipe reference.
   }];
   let arguments = (ins
-    TTL_Pipe:$pipe,
+    TTL_PipeReference:$pipe,
     TTL_PipeTransferKindAttr:$kind,
-    I64Attr:$expectedReceivers
+    DefaultValuedAttr<ConfinedAttr<I64Attr, [IntPositive]>, "1">:$block_span,
+    DefaultValuedAttr<ConfinedAttr<I64Attr, [IntPositive]>, "1">:
+         $destination_group_depth
   );
   let results = (outs TTL_PipeTransfer:$transfer);
   let assemblyFormat = "$pipe attr-dict `:` type($pipe) `->` type($transfer)";
@@ -1562,7 +1692,7 @@ def TTL_CBPushOp : TTL_Op<"cb_push", [MemoryEffects<[MemWrite]>]> {
 }
 
 def TTL_CBWaitOp : TTL_Op<"cb_wait",
-    [MemoryEffects<[MemRead]>, DeclareOpInterfaceMethods<ViewLikeOpInterface>]> {
+    [DeclareOpInterfaceMethods<ViewLikeOpInterface>]> {
   let summary = "Wait for pages to be available in the circular buffer";
   let description = [{
     `ttl.cb_wait` blocks until pages are available in the circular buffer for
@@ -1570,6 +1700,8 @@ def TTL_CBWaitOp : TTL_Op<"cb_wait",
 
     This operation is used by consumer threads (typically compute kernels or
     data movement kernels writing to DRAM) to wait for data from producers.
+    The synchronization remains observable when the returned view has no SSA
+    uses.
 
     The number of pages defaults to the CB's elements per block, but can be
     overridden via the optional `num_tiles` attribute when the wait spans

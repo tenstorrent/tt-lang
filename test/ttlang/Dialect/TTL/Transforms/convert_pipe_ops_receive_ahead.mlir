@@ -11,8 +11,8 @@
 // CHECK-DAG: %[[SECOND_READY_IDX:.*]] = arith.constant 3 : index
 // CHECK-DAG: %[[SECOND_TABLE_OFF:.*]] = arith.constant 4 : i32
 // CHECK: ttkernel.noc_inline_dw_write
-// CHECK: scf.if
 // CHECK: arith.addi {{.*}}, %[[SECOND_TABLE_OFF]]
+// CHECK: scf.if
 // CHECK: ttkernel.noc_inline_dw_write
 // CHECK: ttkernel.get_semaphore(%[[FIRST_READY_IDX]])
 // CHECK: ttkernel.experimental.semaphore_wait
@@ -28,7 +28,6 @@ func.func @same_pipe_receive_ahead_across_blocks_allocates_two_slots()
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
   %transfer = ttl.pipe_transfer.create %p {
-      expectedReceivers = 1 : i64,
       kind = #ttl.pipe_transfer_kind<point_to_point>}
       : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
       -> !ttl.pipe_transfer

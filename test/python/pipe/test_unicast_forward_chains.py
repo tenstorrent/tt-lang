@@ -10,6 +10,10 @@ blocks across several loop iterations, so the test also exercises pipe
 write/read pointer tracking beyond the DFB depth.
 """
 
+import re
+import runpy
+from pathlib import Path
+
 import pytest
 import torch
 import ttl
@@ -123,7 +127,10 @@ def row_column_unicast_chains(row_in, col_in, out):
                 ).wait()
 
 
-def test_row_column_unicast_forward_chains(device):
+def test_row_column_unicast_forward_chains(device, monkeypatch, tmp_path):
+    runner_path = tmp_path / "row_column_unicast_chains_runner.py"
+    monkeypatch.setenv("TTLANG_EMIT_RUNNER", str(runner_path))
+
     row_in_torch = torch.randn(
         CHAIN_Y * CHAIN_ITERS * TILE, BLOCK_TILES * TILE, dtype=torch.bfloat16
     )
@@ -142,6 +149,22 @@ def test_row_column_unicast_forward_chains(device):
 
     row_column_unicast_chains(row_in, col_in, out)
     ttnn.synchronize_device(device)
+
+    runner = runpy.run_path(str(runner_path))
+    assert runner["NUM_PIPE_SYNC_SEMAPHORES"] == 4
+    assert runner["PIPE_SRAM_SCRATCH_BYTES"] == 32
+    assert runner["NUM_PIPE_GLOBAL_SEMAPHORES"] == 0
+
+    data_movement_kernel = next(
+        Path(kernel_path)
+        for kernel_path, _thread_type in runner["KERNEL_PATHS"]
+        if "read_forward_rows_then_columns" in kernel_path
+    )
+    kernel_source = data_movement_kernel.read_text()
+    assert len(kernel_source.encode()) < 24 * 1024
+    assert kernel_source.count("noc0.async_write(") == 2
+    assert "experimental::constant_table_lookup<" in kernel_source
+    assert re.search(r"^\s+size_t v\d+\[", kernel_source, re.MULTILINE) is None
 
     result = ttnn.to_torch(out)
     expected = torch.zeros_like(out_torch)

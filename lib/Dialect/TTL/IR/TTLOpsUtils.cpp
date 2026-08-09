@@ -545,6 +545,29 @@ FailureOr<ttkernel::ReduceDim> getReduceDimension(ArrayRef<int64_t> dims,
   return failure();
 }
 
+FailureOr<SelectedPipeRecords> getSelectedPipeRecords(Value pipe) {
+  pipe = traceUnrealizedCasts(pipe);
+  if (auto selectedSrc = pipe.getDefiningOp<SelectPipeSrcOp>()) {
+    return SelectedPipeRecords{selectedSrc.getRecords(), nullptr};
+  }
+  if (auto selectedDst = pipe.getDefiningOp<SelectPipeDstOp>()) {
+    return SelectedPipeRecords{selectedDst.getRecords(), nullptr};
+  }
+
+  auto blockArgument = mlir::dyn_cast<BlockArgument>(pipe);
+  if (!blockArgument || blockArgument.getArgNumber() != 0) {
+    return failure();
+  }
+  Operation *owner = blockArgument.getOwner()->getParentOp();
+  if (auto foreachSrc = mlir::dyn_cast<PipeNetForeachSrcOp>(owner)) {
+    return SelectedPipeRecords{foreachSrc.getRecords(), owner};
+  }
+  if (auto foreachDst = mlir::dyn_cast<PipeNetForeachDstOp>(owner)) {
+    return SelectedPipeRecords{foreachDst.getRecords(), owner};
+  }
+  return failure();
+}
+
 //===----------------------------------------------------------------------===//
 // DST access interface defaults
 //===----------------------------------------------------------------------===//

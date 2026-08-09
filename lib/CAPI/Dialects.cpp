@@ -91,7 +91,7 @@ void ttlangRegisterPasses() {
 bool ttlangRunTTKernelToEmitC(MlirModule module) {
   Operation *op = unwrap(mlirModuleGetOperation(module));
   PassManager passManager(op->getName());
-  passManager.addNestedPass<func::FuncOp>(tt::createConvertTTKernelToEmitC());
+  passManager.addPass(tt::createConvertTTKernelToEmitC());
   return succeeded(passManager.run(op));
 }
 

@@ -4,6 +4,8 @@
 
 #include "DFBAllocationLimits.h"
 
+#include "ttlang/Dialect/TTL/IR/TTLOps.h"
+
 #include "ttlang/Dialect/TTCore/IR/TTCoreOps.h"
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTCore/IR/Utils.h"
@@ -13,6 +15,7 @@
 #include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <algorithm>
 #include <cassert>
 #include <optional>
 
@@ -103,10 +106,41 @@ FailureOr<bool> DFBAllocationFootprint::add(int64_t physicalIndex,
   return true;
 }
 
-uint64_t DFBAllocationFootprint::getTotalBytes() const {
+FailureOr<uint64_t> DFBAllocationFootprint::getTotalBytes() const {
   uint64_t totalBytes = 0;
   for (uint64_t allocationBytes : llvm::make_second_range(maxBytesByIndex)) {
-    totalBytes += allocationBytes;
+    std::optional<uint64_t> updatedTotal =
+        llvm::checkedAddUnsigned(totalBytes, allocationBytes);
+    if (!updatedTotal) {
+      return failure();
+    }
+    totalBytes = *updatedTotal;
+  }
+  return totalBytes;
+}
+
+FailureOr<uint64_t> DFBAllocationFootprint::getTotalBytesWithMinimumAllocations(
+    const llvm::DenseMap<int64_t, uint64_t> &minimumBytesByIndex) const {
+  uint64_t totalBytes = 0;
+  for (const auto &[physicalIndex, allocationBytes] : maxBytesByIndex) {
+    uint64_t minimumBytes = minimumBytesByIndex.lookup(physicalIndex);
+    std::optional<uint64_t> updatedTotal = llvm::checkedAddUnsigned(
+        totalBytes, std::max(allocationBytes, minimumBytes));
+    if (!updatedTotal) {
+      return failure();
+    }
+    totalBytes = *updatedTotal;
+  }
+  for (const auto &[physicalIndex, minimumBytes] : minimumBytesByIndex) {
+    if (maxBytesByIndex.contains(physicalIndex)) {
+      continue;
+    }
+    std::optional<uint64_t> updatedTotal =
+        llvm::checkedAddUnsigned(totalBytes, minimumBytes);
+    if (!updatedTotal) {
+      return failure();
+    }
+    totalBytes = *updatedTotal;
   }
   return totalBytes;
 }
@@ -127,6 +161,21 @@ DFBAllocationFootprint::getSortedPhysicalIndices() const {
   }
   llvm::sort(physicalIndices);
   return physicalIndices;
+}
+
+FailureOr<DFBAllocationFootprint> getDFBAllocationFootprint(ModuleOp module) {
+  DFBAllocationFootprint footprint;
+  WalkResult walkResult = module.walk([&](BindCBOp bindOp) {
+    std::string failureReason;
+    FailureOr<bool> increased = footprint.add(
+        bindOp.getCbIndex().getSExtValue(),
+        cast<CircularBufferType>(bindOp.getResult().getType()), failureReason);
+    return failed(increased) ? WalkResult::interrupt() : WalkResult::advance();
+  });
+  if (walkResult.wasInterrupted()) {
+    return failure();
+  }
+  return footprint;
 }
 
 uint64_t getUsableDFBL1Bytes(ModuleOp module,

@@ -11,6 +11,7 @@
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/Support/LogicalResult.h"
+#include "ttlang/Target/TargetInfo.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
@@ -39,7 +40,6 @@ class TTLTileOpTrait
 constexpr llvm::StringLiteral kCBIndexAttrPrefix("ttl.cb_index.");
 
 /// Runtime configuration attributes.
-constexpr llvm::StringLiteral kTargetArchAttrName("ttl.target_arch");
 constexpr llvm::StringLiteral kFp32DestAccEnAttrName("fp32_dest_acc_en");
 constexpr llvm::StringLiteral kDstFullSyncEnAttrName("dst_full_sync_en");
 constexpr llvm::StringLiteral
@@ -48,7 +48,6 @@ constexpr llvm::StringLiteral
 /// Selected strategy on tile operations with execution alternatives.
 constexpr llvm::StringLiteral
     kTileExecutionStrategyAttrName("ttl.tile_execution_strategy");
-
 /// PipeNet role exposed by `is_src` / `is_dst` / `is_active` predicate ops
 /// and by `pipenet_scope` declarations.
 enum class PipeRole : int64_t {

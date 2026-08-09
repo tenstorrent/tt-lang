@@ -130,19 +130,22 @@ module attributes {ttl.launch_grid = array<i64: 6, 1>} {
 // A consumer thread can pop one block between two multicast receives without
 // changing their address sequence. Both sends reuse the computed
 // block-zero address at every receiver.
+// Address setup may be hoisted, but each write must use its computed address.
 
 // CHECK-LABEL: func.func @multicast_post
 // CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
 // CHECK: %[[MULTI_ZERO:.*]] = arith.constant 0 : index
 // CHECK-NOT: ttkernel.load_from_l1
 // CHECK-NOT: arith.muli
-// CHECK: %[[MULTI_DST_A:.*]] = ttkernel.get_common_arg_val(%[[MULTI_ZERO]])
-// CHECK-NEXT: ttkernel.noc_async_write_multicast({{.*}}, %[[MULTI_DST_A]], noc {{.*}})
+// CHECK-DAG: %[[MULTI_DST_A:.*]] = ttkernel.get_common_arg_val(%[[MULTI_ZERO]])
+// CHECK-DAG: %[[MULTI_DST_B:.*]] = ttkernel.get_common_arg_val(%[[MULTI_ZERO]])
+// CHECK-NOT: ttkernel.load_from_l1
+// CHECK-NOT: arith.muli
+// CHECK: ttkernel.noc_async_write_multicast({{.*}}, %[[MULTI_DST_A]], noc {{.*}})
 // CHECK-NOT: ttkernel.noc_async_write_multicast
 // CHECK-NOT: ttkernel.load_from_l1
 // CHECK-NOT: arith.muli
-// CHECK: %[[MULTI_DST_B:.*]] = ttkernel.get_common_arg_val(%[[MULTI_ZERO]])
-// CHECK-NEXT: ttkernel.noc_async_write_multicast({{.*}}, %[[MULTI_DST_B]], noc {{.*}})
+// CHECK: ttkernel.noc_async_write_multicast({{.*}}, %[[MULTI_DST_B]], noc {{.*}})
 // CHECK-NOT: ttkernel.noc_async_write_multicast
 // CHECK-NOT: ttkernel.load_from_l1
 // CHECK-NOT: arith.muli
@@ -221,6 +224,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 // Two sequential producer reservations can reuse one DFB block even when a
 // different kernel thread pops the first block. Both senders must use the
 // block-zero computed address without receiver address publication.
+// Address setup may be hoisted, but each write must use its computed address.
 
 // CHECK-LABEL: func.func @cross_thread_single_slot_posts
 // CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
@@ -229,12 +233,12 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 // CHECK-NOT: ttkernel.load_from_l1
 // CHECK-NOT: arith.muli
 // CHECK: %[[DST_A:.*]] = ttkernel.get_common_arg_val(%[[ZERO]])
-// CHECK-NEXT: ttkernel.noc_async_write %{{.*}}, core[{{.*}}], %[[DST_A]], %{{.*}}, noc %{{.*}}
+// CHECK: ttkernel.noc_async_write %{{.*}}, core[{{.*}}], %[[DST_A]], %{{.*}}, noc %{{.*}}
 // CHECK-NOT: ttkernel.noc_async_write {{.*}}
 // CHECK-NOT: ttkernel.load_from_l1
 // CHECK-NOT: arith.muli
 // CHECK: %[[DST_B:.*]] = ttkernel.get_common_arg_val(%[[ZERO]])
-// CHECK-NEXT: ttkernel.noc_async_write %{{.*}}, core[{{.*}}], %[[DST_B]], %{{.*}}, noc %{{.*}}
+// CHECK: ttkernel.noc_async_write %{{.*}}, core[{{.*}}], %[[DST_B]], %{{.*}}, noc %{{.*}}
 // CHECK-NOT: ttkernel.noc_async_write {{.*}}
 // CHECK-NOT: ttkernel.load_from_l1
 // CHECK-NOT: arith.muli
