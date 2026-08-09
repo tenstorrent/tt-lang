@@ -9,25 +9,28 @@
 // Transfers that share physical receivers use distinct completion counters
 // and independent expected-count state.
 // CHECK-LABEL: func.func @overlap_two_receives_use_distinct_completion
-// CHECK: %[[CTR1:.*]] = memref.alloca() : memref<1xi32>
-// CHECK: memref.store {{.*}}, %[[CTR1]]
-// CHECK: %[[CTR2:.*]] = memref.alloca() : memref<1xi32>
-// CHECK: memref.store {{.*}}, %[[CTR2]]
+// CHECK-DAG: %[[COUNTER_INDEX_0:.*]] = arith.constant 0 : index
+// CHECK-DAG: %[[COUNTER_INDEX_1:.*]] = arith.constant 1 : index
+// CHECK: %[[COUNTERS:.*]] = memref.alloca() : memref<2xi32>
+// CHECK: memref.store {{.*}}, %[[COUNTERS]][%[[COUNTER_INDEX_0]]]
+// CHECK: memref.store {{.*}}, %[[COUNTERS]][%[[COUNTER_INDEX_1]]]
 // CHECK: %[[DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
-// CHECK: ttkernel.cb_reserve_back(%[[DFB]]
-// CHECK-NOT: ttkernel.noc_inline_dw_write
-// CHECK: %[[V1:.*]] = memref.load %[[CTR1]]
-// CHECK: %[[N1:.*]] = arith.addi %[[V1]]
-// CHECK: memref.store %[[N1]], %[[CTR1]]
 // CHECK: %[[WAIT_PTR1:.*]] = ttkernel.reinterpret_cast
+// CHECK: scf.if
+// CHECK-NEXT: ttkernel.cb_reserve_back(%[[DFB]]
+// CHECK-NOT: ttkernel.noc_inline_dw_write
+// CHECK: %[[V1:.*]] = memref.load %[[COUNTERS]][%[[COUNTER_INDEX_0]]]
+// CHECK: %[[N1:.*]] = arith.addi %[[V1]]
+// CHECK: memref.store %[[N1]], %[[COUNTERS]][%[[COUNTER_INDEX_0]]]
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[WAIT_PTR1]], %[[N1]])
 // CHECK: ttkernel.cb_push_back(%[[DFB]]
-// CHECK: ttkernel.cb_reserve_back(%[[DFB]]
-// CHECK-NOT: ttkernel.noc_inline_dw_write
-// CHECK: %[[V2:.*]] = memref.load %[[CTR2]]
-// CHECK: %[[N2:.*]] = arith.addi %[[V2]]
-// CHECK: memref.store %[[N2]], %[[CTR2]]
 // CHECK: %[[WAIT_PTR2:.*]] = ttkernel.reinterpret_cast
+// CHECK: scf.if
+// CHECK-NEXT: ttkernel.cb_reserve_back(%[[DFB]]
+// CHECK-NOT: ttkernel.noc_inline_dw_write
+// CHECK: %[[V2:.*]] = memref.load %[[COUNTERS]][%[[COUNTER_INDEX_1]]]
+// CHECK: %[[N2:.*]] = arith.addi %[[V2]]
+// CHECK: memref.store %[[N2]], %[[COUNTERS]][%[[COUNTER_INDEX_1]]]
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[WAIT_PTR2]], %[[N2]])
 // CHECK: ttkernel.cb_push_back(%[[DFB]]
 module attributes {ttl.launch_grid = array<i64: 3, 4>} {
@@ -35,14 +38,18 @@ func.func @overlap_two_receives_use_distinct_completion() attributes { "ttl.kern
   %cb = ttl.bind_cb {cb_index = 0, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 4>
   %p1 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
   %p2 = ttl.create_pipe src(2, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>
-  %recv1 = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 4> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  %xf1 = ttl.copy %p1, %recv1 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-  ttl.wait %xf1 : !ttl.transfer_handle
-  ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 4>
-  %recv2 = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 4> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  %xf2 = ttl.copy %p2, %recv2 : (!ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-  ttl.wait %xf2 : !ttl.transfer_handle
-  ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 4>
+  ttl.if_dst %p1 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0> {
+    %recv1 = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 4> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %xf1 = ttl.copy %p1, %recv1 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+    ttl.wait %xf1 : !ttl.transfer_handle
+    ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 4>
+  }
+  ttl.if_dst %p2 : !ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0> {
+    %recv2 = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 4> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %xf2 = ttl.copy %p2, %recv2 : (!ttl.pipe<src(2, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+    ttl.wait %xf2 : !ttl.transfer_handle
+    ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 4>
+  }
   func.return
 }
 
@@ -88,14 +95,18 @@ func.func @disjoint_receivers_reuse_completion() attributes { "ttl.kernel_thread
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %p_net0 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 3) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>
   %p_net1 = ttl.create_pipe src(0, 1) dst(2, 0) to(2, 3) net 1 : !ttl.pipe<src(0, 1) dst(2, 0) to(2, 3) net 1>
-  %recv0 = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  %xf0 = ttl.copy %p_net0, %recv0 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-  ttl.wait %xf0 : !ttl.transfer_handle
-  ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
-  %recv1 = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
-  %xf1 = ttl.copy %p_net1, %recv1 : (!ttl.pipe<src(0, 1) dst(2, 0) to(2, 3) net 1>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
-  ttl.wait %xf1 : !ttl.transfer_handle
-  ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  ttl.if_dst %p_net0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0> {
+    %recv0 = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %xf0 = ttl.copy %p_net0, %recv0 : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 3) net 0>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+    ttl.wait %xf0 : !ttl.transfer_handle
+    ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  }
+  ttl.if_dst %p_net1 : !ttl.pipe<src(0, 1) dst(2, 0) to(2, 3) net 1> {
+    %recv1 = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %xf1 = ttl.copy %p_net1, %recv1 : (!ttl.pipe<src(0, 1) dst(2, 0) to(2, 3) net 1>, tensor<1x1x!ttcore.tile<32x32, f32>>) -> !ttl.transfer_handle
+    ttl.wait %xf1 : !ttl.transfer_handle
+    ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  }
   func.return
 }
 

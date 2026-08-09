@@ -9,6 +9,8 @@
 // Utilities for computing the launch-node domain that reaches each operation.
 // A domain is the set of `(core_x, core_y)` coordinates from `ttl.launch_grid`
 // that can execute a program point after applying structured predicates.
+// Execution-count queries may additionally specialize logical-device
+// predicates without adding devices to the launch-node lattice.
 // Verifiers use the domain facts from this helper while keeping their own
 // policy checks and diagnostics local to each pass.
 //
@@ -56,6 +58,31 @@ struct LaunchNodeCoord {
   bool operator<(const LaunchNodeCoord &rhs) const;
   bool operator==(const LaunchNodeCoord &rhs) const;
 };
+
+/// Launch node and optional logical device used to specialize execution count.
+///
+/// `node` identifies one entry in `ttl.launch_grid`. A node-only location has
+/// no device attributes. A device-aware location also supplies the domain that
+/// defines the device coordinates and one device in that domain.
+struct LaunchExecutionLocation {
+  explicit LaunchExecutionLocation(LaunchNodeCoord node);
+  LaunchExecutionLocation(LaunchNodeCoord node, DeviceDomainAttr deviceDomain,
+                          DeviceRefAttr device);
+
+  LaunchNodeCoord node;
+  DeviceDomainAttr deviceDomain;
+  DeviceRefAttr device;
+
+  bool operator<(const LaunchExecutionLocation &rhs) const;
+  bool operator==(const LaunchExecutionLocation &rhs) const;
+};
+
+/// Return the source or destination execution location for a pipe event.
+/// Local pipe events return a node-only location. A fabric destination range
+/// has no single execution location and returns failure.
+FailureOr<LaunchExecutionLocation>
+getPipeExecutionLocation(LaunchNodeCoord node, DeviceTransferAttr transfer,
+                         PipeRole role);
 
 /// Set of launch nodes that may execute a program point.
 ///
@@ -113,13 +140,18 @@ bool launchNodeDomainsOverlap(const LaunchNodeDomain &lhs,
 bool knownLaunchNodeDomainContains(const LaunchNodeDomain &domain,
                                    LaunchNodeCoord coord);
 
-LaunchNodeDomain getPipeRecordSourceLaunchNodeDomain(PipeRecordAttr record);
-
-LaunchNodeDomain
-getPipeRecordDestinationLaunchNodeDomain(PipeRecordAttr record);
+LaunchNodeDomain getPipeRecordRoleLaunchNodeDomain(PipeRecordAttr record,
+                                                   PipeRole role);
 
 LaunchNodeDomain getPipeRecordsRoleLaunchNodeDomain(PipeNetRecordsAttr records,
                                                     PipeRole role);
+
+/// Return whether `record` selects `location` for `role`. A result is unknown
+/// when a device-qualified record is compared with a node-only or unrelated
+/// device location.
+std::optional<bool>
+pipeRecordRoleMatchesAtLaunchLocation(PipeRecordAttr record, PipeRole role,
+                                      const LaunchExecutionLocation &location);
 
 /// Read the PipeNet ids selected by a `ttl.pipenet_scope`.
 bool readPipeNetScopeIds(PipeNetScopeOp scopeOp, SmallVectorImpl<int64_t> &ids);
@@ -142,13 +174,13 @@ struct LaunchNodeDomainState {
   llvm::DenseMap<int64_t, LaunchNodeDomain> netDestinationDomains;
   llvm::DenseMap<int64_t, SmallVector<Location>> pipeNetLocs;
   llvm::DenseMap<int64_t, std::string> pipeNetNames;
-  /// Reuse each function-and-coordinate analysis across all operations in the
+  /// Reuse each function-and-location analysis across all operations in the
   /// function. The cached analyses reference the current IR and must not be
   /// queried after a transformation mutates the function.
-  mutable llvm::DenseMap<
-      Operation *,
-      std::map<LaunchNodeCoord, std::unique_ptr<ExecutionCountAnalysis>>>
-      executionCountAnalysesByFunctionAndCoord;
+  mutable llvm::DenseMap<Operation *,
+                         std::map<LaunchExecutionLocation,
+                                  std::unique_ptr<ExecutionCountAnalysis>>>
+      executionCountAnalysesByFunctionAndLocation;
   bool sawError = false;
   bool hasLaunchGrid = false;
   Operation *errorOperation = nullptr;
@@ -181,6 +213,24 @@ std::optional<bool>
 evaluatePredicateAtLaunchNode(Value value, LaunchNodeCoord coord,
                               const LaunchNodeDomainState &state);
 
+/// Evaluate a predicate at one launch node and optional logical device.
+std::optional<bool>
+evaluatePredicateAtLaunchLocation(Value value,
+                                  const LaunchExecutionLocation &location,
+                                  const LaunchNodeDomainState &state);
+
+/// Evaluate an integer or index value at one launch location.
+std::optional<llvm::APInt>
+evaluateIntegerAtLaunchLocation(Value value,
+                                const LaunchExecutionLocation &location,
+                                const LaunchNodeDomainState &state);
+
+/// Return the exact invocation count of a non-loop region at one launch
+/// location when TTL control semantics determine it.
+std::optional<std::uint64_t> getRegionInvocationCountAtLaunchLocation(
+    Region &region, const LaunchExecutionLocation &location,
+    const LaunchNodeDomainState &state);
+
 /// Return the exact execution count of `op` at `coord`. Launch-node facts
 /// specialize coordinate and PipeNet predicates before the generic execution
 /// count analysis evaluates the enclosing control flow. Return `std::nullopt`
@@ -188,6 +238,13 @@ evaluatePredicateAtLaunchNode(Value value, LaunchNodeCoord coord,
 std::optional<std::uint64_t>
 getExactExecutionCountAtLaunchNode(Operation *op, LaunchNodeCoord coord,
                                    const LaunchNodeDomainState &state);
+
+/// Return the exact execution count of `op` at `location`, or no value when
+/// the count is not proven.
+std::optional<std::uint64_t>
+getExactExecutionCountAtLaunchLocation(Operation *op,
+                                       const LaunchExecutionLocation &location,
+                                       const LaunchNodeDomainState &state);
 
 /// Prove that two operations with unknown exact counts have equivalent
 /// control flow at their launch nodes.
@@ -204,6 +261,17 @@ bool proveEqualUnresolvedExecutionCountAtLaunchNodes(
     llvm::function_ref<std::optional<Value>(BlockArgument)>
         resolveRhsFunctionArgument);
 
+/// Prove that two operations with unknown exact counts have equivalent
+/// control flow at their launch locations.
+bool proveEqualUnresolvedExecutionCountAtLaunchLocations(
+    Operation *lhs, const LaunchExecutionLocation &lhsLocation, Operation *rhs,
+    const LaunchExecutionLocation &rhsLocation,
+    const LaunchNodeDomainState &state,
+    llvm::function_ref<std::optional<Value>(BlockArgument)>
+        resolveLhsFunctionArgument,
+    llvm::function_ref<std::optional<Value>(BlockArgument)>
+        resolveRhsFunctionArgument);
+
 /// Prove that two operations execute equally often at their launch nodes.
 /// Exact counts prove equality directly. Otherwise, the operations must share
 /// equivalent unresolved control flow that does not require call-site values.
@@ -212,6 +280,12 @@ bool proveEqualExecutionCountAtLaunchNodes(Operation *lhs,
                                            Operation *rhs,
                                            LaunchNodeCoord rhsCoord,
                                            const LaunchNodeDomainState &state);
+
+/// Prove that two operations execute equally often at their launch locations.
+bool proveEqualExecutionCountAtLaunchLocations(
+    Operation *lhs, const LaunchExecutionLocation &lhsLocation, Operation *rhs,
+    const LaunchExecutionLocation &rhsLocation,
+    const LaunchNodeDomainState &state);
 
 /// Return the operation with the earlier source location.
 ///

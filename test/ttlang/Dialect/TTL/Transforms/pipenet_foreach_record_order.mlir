@@ -16,8 +16,6 @@
 // CHECK: ttkernel.experimental.constant_table_lookup %[[RECORD]], [0, 0, 0, 0, 0]
 // CHECK: scf.if
 // CHECK: ttkernel.cb_reserve_back(%[[RECEIVER_DFB]], %[[ONE_I32]])
-// CHECK: %[[RECEIVER_WRITE_PTR:.*]] = ttkernel.get_write_ptr(%[[RECEIVER_DFB]])
-// CHECK: ttkernel.store_to_l1(%[[RECEIVER_WRITE_PTR]],
 // CHECK: ttkernel.noc_semaphore_inc
 // CHECK: ttkernel.experimental.semaphore_wait
 // CHECK: %[[SEND_WRITE_PTR:.*]] = ttkernel.get_write_ptr(%[[SEND_DFB]])

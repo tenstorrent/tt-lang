@@ -492,8 +492,8 @@ func.func @nested_foreach_receiver()
 
 // -----
 
-// A loopback collective publishes the source receiver address with a direct
-// L1 store and publishes the remote receiver address with a NoC write.
+// Local selected loopback records publish receiver DFB addresses to keep the
+// table-driven sender kernel compact.
 
 module attributes {ttl.launch_grid = array<i64: 5, 1>} {
 
@@ -520,9 +520,13 @@ func.func @loopback_collective_sender()
   func.return
 }
 
+// CHECK-LABEL: func.func @loopback_collective_sender
+// CHECK: ttkernel.get_common_arg_val
 // CHECK-LABEL: func.func @loopback_collective_receiver
-// CHECK-DAG: ttkernel.store_to_l1
-// CHECK-DAG: ttkernel.noc_inline_dw_write
+// CHECK: ttkernel.store_to_l1
+// CHECK: ttkernel.noc_inline_dw_write
+// CHECK: ttkernel.noc_semaphore_inc
+// CHECK: ttkernel.experimental.semaphore_wait_min
 // CHECK: return
 func.func @loopback_collective_receiver()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
