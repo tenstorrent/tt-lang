@@ -45,10 +45,8 @@ func.func @accumulate_add_reduction(
     %i = ttl.iter_index 0 : index
     %j = ttl.iter_index 1 : index
     %c0 = arith.constant 0 : index
-    %c1 = arith.constant 1 : index
     %acc_token, %acc = ttl.copy_tile %init_tile[%i] into dst[%c0] : !ttcore.tile<32x32, f32> -> !ttl.dst, !ttcore.tile<32x32, f32>
-    %contrib_token, %contrib = ttl.copy_tile %contrib_tile[%i, %j] into dst[%c1] : !ttcore.tile<32x32, f32> -> !ttl.dst, !ttcore.tile<32x32, f32>
-    %next = ttl.tile_accumulate %acc, %contrib add into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+    %next = ttl.tile_accumulate %acc, %contrib_tile add into dst[%c0] : !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
     ttl.tile_store %next, %out_view[%i] from dst[%c0] : !ttcore.tile<32x32, f32>, tensor<1x!ttcore.tile<32x32, f32>>
     ttl.yield
   } -> tensor<2x!ttcore.tile<32x32, f32>>

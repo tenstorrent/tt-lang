@@ -6,16 +6,15 @@
 #map_acc_init = affine_map<(d0, d1) -> (d0)>
 #map_acc_contrib = affine_map<(d0, d1) -> (d0, d1)>
 
-// The accumulator block argument is copied into DST[0]. The contribution is
-// copied into DST[1]. The accumulate op and final store both use DST[0].
+// The accumulator block argument is copied into DST[0]. The contribution
+// remains dataflow-buffer-backed. The accumulate op and final store use DST[0].
 // CHECK-LABEL: func.func @accumulate_add_dst_identity
 // CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
-// CHECK-DAG: %[[C1:.*]] = arith.constant 1 : index
 // CHECK: ttl.compute
 // CHECK-NEXT: ^bb0(%[[INIT_ARG:.*]]: !ttcore.tile<32x32, f32>, %[[CONTRIB_ARG:.*]]: !ttcore.tile<32x32, f32>, %{{.*}}: !ttcore.tile<32x32, f32>):
 // CHECK: %{{.*}}, %[[ACC:.*]] = ttl.copy_tile %[[INIT_ARG]][%{{.*}}] into dst[%[[C0]]]
-// CHECK: %{{.*}}, %[[CONTRIB:.*]] = ttl.copy_tile %[[CONTRIB_ARG]][%{{.*}}, %{{.*}}] into dst[%[[C1]]]
-// CHECK: %[[NEXT:.*]] = ttl.tile_accumulate %[[ACC]], %[[CONTRIB]] add into dst[%[[C0]]]
+// CHECK-NOT: ttl.copy_tile %[[CONTRIB_ARG]]
+// CHECK: %[[NEXT:.*]] = ttl.tile_accumulate %[[ACC]], %[[CONTRIB_ARG]] add into dst[%[[C0]]]
 // CHECK: ttl.tile_store %[[NEXT]], %{{.*}}[%{{.*}}] from dst[%[[C0]]]
 func.func @accumulate_add_dst_identity(
     %init_arg: tensor<1x!ttcore.tile<32x32, f32>>,
