@@ -1288,7 +1288,7 @@ class TTL_TileUnaryOp<string mnemonic, list<Trait> traits = []>
   let assemblyFormat = "$input `into` `dst` `[` $dst_index `]` attr-dict `:` type($input) `->` type($result)";
 }
 
-def TTL_TileAccumulateOp : TTL_TileOp<"tile_accumulate",
+def TTL_TileAccumulateOp : TTL_TileOp<"tile_accumulate", "ElementwiseBinary",
     [TTL_TileBinaryOpTrait, TTL_DSTInputsTrait, TTL_InPlaceOpTrait,
      TTL_AccumulatingOpTrait, TTL_DstResultOpTrait,
      AllTypesMatch<["accumulator", "contribution", "result"]>]> {
