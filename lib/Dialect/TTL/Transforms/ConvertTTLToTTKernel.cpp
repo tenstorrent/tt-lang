@@ -1860,6 +1860,27 @@ struct CoreYLowering : OpConversionPattern<CoreYOp> {
   }
 };
 
+struct SelectedPipeRecordIndexLowering
+    : OpConversionPattern<SelectedPipeRecordIndexOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(SelectedPipeRecordIndexOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Value selectedPipe = op.getPipe();
+    if (auto selectedSrc = selectedPipe.getDefiningOp<SelectPipeSrcOp>()) {
+      rewriter.replaceOp(op, selectedSrc.getRecordIndex());
+      return success();
+    }
+    if (auto selectedDst = selectedPipe.getDefiningOp<SelectPipeDstOp>()) {
+      rewriter.replaceOp(op, selectedDst.getRecordIndex());
+      return success();
+    }
+    return rewriter.notifyMatchFailure(
+        op, "selected pipe must be defined by a record selection operation");
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // DFB index query lowering
 //===----------------------------------------------------------------------===//
@@ -2530,10 +2551,10 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
       typeConverter, &ctx, pipeTransportPlan);
   patterns.add<BindCBLowering, TensorSliceLowering, TileStoreLowering,
                StoreLowering, CoreXLowering, CoreYLowering,
-               RawElementReadLowering, RawElementWriteLowering, RawAddrLowering,
-               OpaqueCallLowering, GetDfbIdLowering, IsDeviceLowering,
-               CurrentDeviceIndexLowering, IsDeviceInRangeLowering>(
-      typeConverter, &ctx);
+               SelectedPipeRecordIndexLowering, RawElementReadLowering,
+               RawElementWriteLowering, RawAddrLowering, OpaqueCallLowering,
+               GetDfbIdLowering, IsDeviceLowering, CurrentDeviceIndexLowering,
+               IsDeviceInRangeLowering>(typeConverter, &ctx);
   patterns.add<CBPopLowering>(typeConverter, &ctx, pipeCapacityPlan,
                               pipeTransportPlan, transportSlotCounters,
                               pipeResourcePlan);

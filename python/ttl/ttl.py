@@ -37,6 +37,7 @@ from .operators import (
     grid_size,
     matmul,
     node,
+    pipe_record_index,
     raw_addr,
 )
 
@@ -56,6 +57,7 @@ __all__ = [
     "make_tensor_backed_dfb",
     "copy",
     "node",
+    "pipe_record_index",
     "grid_size",
     "matmul",
     "call_extern_func",

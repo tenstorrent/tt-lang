@@ -254,6 +254,22 @@ def test_raw_addr_is_a_kernel_neutral_scalar_producer():
         assert "kernel=" not in kernel_source
 
 
+def test_pipe_record_index_is_a_kernel_neutral_scalar_producer():
+    fn = _fn(
+        """
+        def operation(pipe):
+            record_index = ttl.pipe_record_index(pipe)
+            ttl.raw_element_read(block, record_index, 0)
+        """
+    )
+
+    result = split_function_body(fn, dfb_param_names=set())
+
+    data_movement = _kind_src(result, KernelKind.DATA_MOVEMENT)
+    assert "record_index = ttl.pipe_record_index(pipe)" in data_movement
+    assert "ttl.raw_element_read(block, record_index, 0)" in data_movement
+
+
 def test_tensor_backed_dfb_factory_and_publish_are_split_by_kernel():
     fn = _fn(
         """

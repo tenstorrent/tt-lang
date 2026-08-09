@@ -550,6 +550,20 @@ def _get_pipe_mlir_value(pipe):
     return pipe._mlir_value
 
 
+@syntax("pipe_record_index")
+def pipe_record_index(pipe):
+    """Return the construction-order index of a selected PipeNet record."""
+    pipe_value = _get_pipe_mlir_value(pipe)
+    if not (
+        ttl.SelectedPipeSrcType.maybe_downcast(pipe_value.type)
+        or ttl.SelectedPipeDstType.maybe_downcast(pipe_value.type)
+    ):
+        raise ValueError(
+            "pipe_record_index() requires a pipe passed to a PipeNet callback"
+        )
+    return ttl.selected_pipe_record_index(pipe_value)
+
+
 @syntax("copy")
 def copy(src, dst) -> CopyTransferHandler:
     """

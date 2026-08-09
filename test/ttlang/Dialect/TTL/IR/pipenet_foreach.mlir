@@ -143,5 +143,9 @@ func.func @select_pipe_ops() {
       {records = #ttl.pipenet_records<net 0 pipes [
         #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0>
       ]>} : !ttl.selected_pipe_dst
+  // CHECK: ttl.selected_pipe_record_index %[[SRC:.*]] : !ttl.selected_pipe_src
+  %src_index = ttl.selected_pipe_record_index %src : !ttl.selected_pipe_src
+  // CHECK: ttl.selected_pipe_record_index %[[DST:.*]] : !ttl.selected_pipe_dst
+  %dst_index = ttl.selected_pipe_record_index %dst : !ttl.selected_pipe_dst
   func.return
 }

@@ -75,6 +75,17 @@ TTKernel conversion uses two representations:
   one callback and transfer protocol body; only the immutable table contents
   grow with the number of records.
 
+For a compact source or destination domain, conversion indexes each launch
+coordinate to its ordered list of matching records. This avoids scanning
+unrelated records while preserving construction order. Conversion retains the
+full-record scan when the coordinate index and membership tables would exceed
+four entries per PipeNet record.
+
+Inside a callback, `ttl.pipe_record_index(pipe)` returns the selected record's
+construction-order index. Generated operations can use that index to select
+record-specific payload data or destination storage without duplicating the
+callback body.
+
 The immutable tables become bit-packed C++ template arguments stored outside
 the kernel stack. Pipe graph analysis still creates one transfer node per
 record. A selected-pipe type identifies whether iteration selected the record

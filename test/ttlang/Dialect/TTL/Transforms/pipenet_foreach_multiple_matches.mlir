@@ -27,12 +27,14 @@ module attributes {ttl.launch_grid = array<i64: 2, 5>} {
 // CHECK: scf.if %[[IN_BOUNDS]]
 // CHECK: scf.for %[[MEMBERSHIP:.*]] =
 // CHECK: %[[INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[MEMBERSHIP]], [0, 1, 2, 3, 4, 5] : index
+// CHECK: %[[NEXT_INDEX:.*]] = arith.addi %[[INDEX]], {{.*}} : index
 // CHECK: ttkernel.experimental.constant_table_lookup %[[INDEX]], [6, 6, 6, 6, 6, 7] : index
 // CHECK: %[[PROGRESS_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[INDEX]], [0, 2, 3, 4, 5, 1] : index
 // CHECK: memref.load %[[COUNTERS]][%[[PROGRESS_INDEX]]] : memref<6xi32>
 // CHECK: ttkernel.experimental.semaphore_wait_min
 func.func @gather_receiver()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %record_indices = memref.alloca() : memref<6xindex>
   %cb = ttl.bind_cb {cb_index = 1, block_count = 6} {dfb_id = 1 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 6>
   ttl.pipenet_foreach_dst attributes {
@@ -45,6 +47,11 @@ func.func @gather_receiver()
         #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0, dstEndX = 1, dstEndY = 0>
       ]>} {
   ^bb0(%pipe: !ttl.selected_pipe_dst):
+    %record_index = ttl.selected_pipe_record_index %pipe : !ttl.selected_pipe_dst
+    %one = arith.constant 1 : index
+    %next_record_index = arith.addi %record_index, %one : index
+    memref.store %next_record_index, %record_indices[%record_index]
+        : memref<6xindex>
     %recv = ttl.cb_reserve %cb
         : <[1, 1], !ttcore.tile<32x32, f32>, 6>
         -> tensor<1x1x!ttcore.tile<32x32, f32>>

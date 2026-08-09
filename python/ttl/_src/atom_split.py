@@ -75,6 +75,7 @@ _TTL_OPS: Dict[str, object] = {
     "make_dataflow_buffer_like": "control",
     "make_tensor_backed_dfb": "control",
     "node": "control",
+    "pipe_record_index": "control",
     "dfb_descriptor": "control",
     "get_dfb_id": "control",
     "raw_addr": "control",

@@ -921,6 +921,11 @@ verifyPipeNetForeachBody(mlir::Operation *op, mlir::Region &body,
     if (copy && (copy.getSrc() == pipeArg || copy.getDst() == pipeArg)) {
       continue;
     }
+    auto recordIndex = mlir::dyn_cast<mlir::tt::ttl::SelectedPipeRecordIndexOp>(
+        use.getOwner());
+    if (recordIndex && recordIndex.getPipe() == pipeArg) {
+      continue;
+    }
     return op->emitOpError() << "selected pipe argument has unsupported use by "
                              << use.getOwner()->getName();
   }

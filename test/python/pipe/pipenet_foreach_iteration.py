@@ -77,7 +77,9 @@ def compile_single_receiver_collective():
     @ttl.datamovement()
     def recv_dm():
         def recv(pipe):
+            record_index = ttl.pipe_record_index(pipe)
             with recv_dfb.reserve() as recv_blk:
+                ttl.raw_element_write(recv_blk, 0, record_index % 32, 0.0)
                 ttl.copy(pipe, recv_blk).wait()
 
         SINGLE_RECEIVER_COLLECTIVE_NET.if_dst(recv)
@@ -105,7 +107,9 @@ def compile_all_to_all():
     @ttl.datamovement()
     def recv_dm():
         def receive(pipe):
+            record_index = ttl.pipe_record_index(pipe)
             with recv_dfb.reserve() as recv_block:
+                ttl.raw_element_write(recv_block, 0, record_index % 32, 0.0)
                 ttl.copy(pipe, recv_block).wait()
 
         ALL_TO_ALL_NET.if_dst(receive)
@@ -155,6 +159,7 @@ if __name__ == "__main__":
 # CHECK-INITIAL: ttl.pipenet_foreach_dst
 # CHECK-INITIAL-SAME: name "ALL_TO_ALL_NET"
 # CHECK-INITIAL: ^bb0(%{{.*}}: !ttl.selected_pipe_dst):
+# CHECK-INITIAL: ttl.selected_pipe_record_index
 # CHECK-INITIAL: ttl.copy
 # CHECK-INITIAL-NOT: ttl.if_src
 # CHECK-INITIAL-NOT: ttl.if_dst

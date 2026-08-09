@@ -713,6 +713,9 @@ struct PipeScheduleNode {
   PipeEventKind kind;
   /// Static receive post whose token is observed by this wait.
   Operation *receivePost;
+  /// Selected callback execution that contains this event, if any.
+  Operation *selectedForeachOp;
+  int64_t selectedRecordIndex;
   func::FuncOp kernelFunction;
   SmallVector<PipeCallSite> callSites;
   std::optional<std::uint64_t> executionCountDivisor;
@@ -765,6 +768,8 @@ addPipeScheduleNode(SmallVectorImpl<PipeScheduleNode> &nodes,
                    location,
                    event.kind,
                    event.receivePost,
+                   event.selectedForeachOp,
+                   event.selectedRecordIndex,
                    kernelFunction,
                    SmallVector<PipeCallSite>(callSites),
                    executionCountDivisor,
@@ -836,6 +841,8 @@ findReceivePostNodeForWait(ArrayRef<PipeScheduleNode> nodes,
         const PipeScheduleNode &postNode = nodes[postId];
         return postNode.op == waitNode.receivePost &&
                postNode.location == waitNode.location &&
+               postNode.selectedForeachOp == waitNode.selectedForeachOp &&
+               postNode.selectedRecordIndex == waitNode.selectedRecordIndex &&
                postNode.kernelFunction == waitNode.kernelFunction &&
                haveSamePipeCallSites(postNode.callSites, waitNode.callSites);
       });

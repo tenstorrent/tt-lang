@@ -837,6 +837,24 @@ def TTL_SelectPipeDstOp : TTL_Op<"select_pipe_dst", [Pure]> {
   }];
 }
 
+def TTL_SelectedPipeRecordIndexOp : TTL_Op<"selected_pipe_record_index", [Pure]> {
+  let summary = "Get the record index selected by PipeNet iteration";
+  let description = [{
+    Returns the zero-based construction-order index of the PipeNet record
+    represented by `$pipe`. This permits one callback body to select payload
+    data or destination storage associated with the current record while
+    preserving PipeNet construction order.
+
+    The operand must be the selected-pipe argument of a
+    `ttl.pipenet_foreach_src` or `ttl.pipenet_foreach_dst` body, or the result
+    of the corresponding `ttl.select_pipe_src` or `ttl.select_pipe_dst`
+    operation.
+  }];
+  let arguments = (ins TTL_SelectedPipe:$pipe);
+  let results = (outs Index:$index);
+  let assemblyFormat = "$pipe attr-dict `:` type($pipe)";
+}
+
 def TTL_PipeTransferCreateOp : TTL_Op<"pipe_transfer.create", [Pure]> {
   let summary = "Create a pipe transfer reference";
   let description = [{
