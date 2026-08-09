@@ -128,6 +128,9 @@ def _make_kernel(
     tile_rows=1,
 ):
     """Create source with a compile-time DFB capacity."""
+    assert (
+        storage_kind != "scratch" or tile_rows == 1
+    ), "scratch DFB template supports one tile row"
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".py", delete=False, prefix=f"{storage_kind}_dfb_"
     ) as source_file:
