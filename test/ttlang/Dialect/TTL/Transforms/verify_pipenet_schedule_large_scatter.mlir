@@ -24,9 +24,9 @@ module attributes {ttl.launch_grid = [9 : i64, 8 : i64]} {
     %receive = ttl.copy %pipe, %reserve
         : (!ttl.pipe<src(0, 0) dst(1, 0) to(8, 7) net 0>,
            tensor<1x1x!ttcore.tile<32x32, bf16>>)
-        -> !ttl.transfer_handle
+        -> !ttl.receive_request
     // CHECK-NEXT: ttl.wait %[[RECEIVE]]
-    ttl.wait %receive : !ttl.transfer_handle
+    ttl.wait %receive : !ttl.receive_request
     // CHECK-NEXT: ttl.cb_push %[[RECV_CB]]
     ttl.cb_push %recv_cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     // CHECK-NEXT: return

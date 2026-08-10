@@ -37,6 +37,8 @@ CircularBufferType = ir.CircularBufferType
 PipeType = ir.PipeType
 SelectedPipeSrcType = ir.SelectedPipeSrcType
 SelectedPipeDstType = ir.SelectedPipeDstType
+ReceiveRequestType = ir.ReceiveRequestType
+ReadyReceiveType = ir.ReadyReceiveType
 
 __all__ = [  # noqa: F405
     *[name for name in globals().keys() if not name.startswith("_")],

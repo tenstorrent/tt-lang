@@ -4530,6 +4530,29 @@ def _tensor_backing_config(
     )
 
 
+def test_pipe_runtime_resources_use_tensor_backed_computed_address_base(
+    monkeypatch,
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    tensor = _FakeTensor(object(), address=0x4000)
+    config = _tensor_backing_config(
+        0,
+        nodes=((0, 0),),
+        byte_offset=2048,
+        byte_size=2048,
+    )
+
+    resources = kernel_runner.build_pipe_runtime_resources(
+        tensors=[tensor],
+        core_ranges=_FakeCoreRanges(),
+        cb_configs=[config],
+        pipe_computed_address_dfb_indices=[0],
+    )
+
+    assert resources.computed_address_dfb_tensors == {}
+    assert resources.computed_address_base_addresses == {0: 0x4800}
+
+
 def test_build_cb_descriptors_rejects_aliased_partial_tensor_ranges(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(

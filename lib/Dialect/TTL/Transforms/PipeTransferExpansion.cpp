@@ -117,12 +117,19 @@ struct PipeReceiveWaitExpansion {
   int64_t pipeNetId = 0;
 };
 
+/// Wait-any and the PipeNet id inferred for each request operand.
+struct PipeReceiveWaitAnyExpansion {
+  WaitAnyOp wait;
+  SmallVector<int64_t> pipeNetIds;
+};
+
 /// Operations replaced when high-level pipe copies become pipe transfer IR.
 struct PipeTransferExpansionPlan {
   SmallVector<CreatePipeOp> createPipes;
   SmallVector<PipeCopyExpansion> receiveCopies;
   SmallVector<PipeCopyExpansion> sendCopies;
   SmallVector<PipeReceiveWaitExpansion> receiveWaits;
+  SmallVector<PipeReceiveWaitAnyExpansion> receiveWaitAnys;
   SmallVector<WaitOp> unreachableReceiveWaits;
 };
 
@@ -234,9 +241,7 @@ buildPipeTransferExpansionPlan(ModuleOp module, ValueOriginAnalysis &analysis,
   }
 
   module.walk([&](WaitOp waitOp) {
-    auto handleType =
-        mlir::dyn_cast<TransferHandleType>(waitOp.getXf().getType());
-    if (!handleType || handleType.getKind()) {
+    if (!mlir::isa<ReceiveRequestType>(waitOp.getXf().getType())) {
       return;
     }
     if (analysis.getOrigins(waitOp.getXf()).empty()) {
@@ -248,9 +253,8 @@ buildPipeTransferExpansionPlan(ModuleOp module, ValueOriginAnalysis &analysis,
     FailureOr<std::optional<CopyOp>> maybeCopyOp =
         findUniquePipeReceiveCopy(analysis, waitOp.getXf());
     if (failed(maybeCopyOp) || !*maybeCopyOp) {
-      waitOp.emitError() << "untyped transfer handle wait requires every "
-                            "possible source to be the same pipe receive "
-                            "ttl.copy";
+      waitOp.emitError() << "receive request wait requires every possible "
+                            "source to be the same pipe receive ttl.copy";
       result = failure();
       return;
     }
@@ -265,6 +269,51 @@ buildPipeTransferExpansionPlan(ModuleOp module, ValueOriginAnalysis &analysis,
       return;
     }
     plan.receiveWaits.push_back({waitOp, *pipeNetId});
+  });
+  module.walk([&](WaitAnyOp waitOp) {
+    PipeReceiveWaitAnyExpansion expansion;
+    expansion.wait = waitOp;
+    llvm::DenseSet<Operation *> receiveCopies;
+    for (Value request : waitOp.getRequests()) {
+      FailureOr<SmallVector<CopyOp>> maybeCopyOps =
+          findPipeReceiveCopies(analysis, request);
+      if (failed(maybeCopyOps)) {
+        waitOp.emitError()
+            << "requires every request origin to be a pipe receive ttl.copy";
+        result = failure();
+        return;
+      }
+      std::optional<int64_t> candidatePipeNetId;
+      for (CopyOp copyOp : *maybeCopyOps) {
+        if (!receiveCopies.insert(copyOp.getOperation()).second) {
+          waitOp.emitError()
+              << "requires request values with disjoint pipe receive origins";
+          result = failure();
+          return;
+        }
+        if (!shouldExpandPipeValue(copyOp.getSrc(), mode, selectedPipeKeys)) {
+          return;
+        }
+        FailureOr<int64_t> pipeNetId =
+            getPipeNetIdForPipeValue(waitOp, copyOp.getSrc());
+        if (failed(pipeNetId)) {
+          result = failure();
+          return;
+        }
+        if (candidatePipeNetId && *candidatePipeNetId != *pipeNetId) {
+          waitOp.emitError()
+              << "requires each request's origins to belong to one PipeNet";
+          result = failure();
+          return;
+        }
+        candidatePipeNetId = *pipeNetId;
+      }
+      assert(candidatePipeNetId && "request origin set must be nonempty");
+      expansion.pipeNetIds.push_back(*candidatePipeNetId);
+    }
+    if (expansion.pipeNetIds.size() == waitOp.getRequests().size()) {
+      plan.receiveWaitAnys.push_back(std::move(expansion));
+    }
   });
   if (failed(result)) {
     return failure();
@@ -332,6 +381,26 @@ applyPipeTransferExpansionPlan(ModuleOp module,
         ValueRange{waitOp.getXf()});
     PipeTransferWaitOp::create(builder, waitOp.getLoc(),
                                tokenCast.getResult(0));
+    waitOp->erase();
+  }
+
+  for (const PipeReceiveWaitAnyExpansion &wait : plan.receiveWaitAnys) {
+    WaitAnyOp waitOp = wait.wait;
+    builder.setInsertionPoint(waitOp);
+    SmallVector<Value> tokens;
+    tokens.reserve(wait.pipeNetIds.size());
+    for (auto [request, pipeNetId] :
+         llvm::zip_equal(waitOp.getRequests(), wait.pipeNetIds)) {
+      tokens.push_back(UnrealizedConversionCastOp::create(
+                           builder, waitOp.getLoc(),
+                           PipeTokenType::get(builder.getContext(), pipeNetId),
+                           ValueRange{request})
+                           .getResult(0));
+    }
+    auto internalWait = PipeTransferWaitAnyOp::create(
+        builder, waitOp.getLoc(), waitOp.getReady().getType(), tokens,
+        waitOp.getStart());
+    waitOp.getReady().replaceAllUsesWith(internalWait.getReady());
     waitOp->erase();
   }
 }
