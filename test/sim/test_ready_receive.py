@@ -96,6 +96,33 @@ def test_wait_any_skips_pending_requests() -> None:
     landing_blocks[1].push()
 
 
+def test_wait_any_scans_in_ascending_cyclic_order() -> None:
+    """The scan visits candidates in ascending cyclic order."""
+    requests, landing_blocks = make_ready_requests(4, ready_indices=(1, 3))
+
+    ready = wait_any(requests, start=0)
+
+    assert ready.index() == 1
+    assert requests[1].is_completed
+    assert not requests[3].is_completed
+    landing_blocks[1].push()
+    requests[3].wait()
+    landing_blocks[3].push()
+
+
+def test_wait_any_selects_the_first_ready_candidate() -> None:
+    """Selection stops after the first completed request in scan order."""
+    requests, landing_blocks = make_ready_requests(4, ready_indices=(2, 3))
+
+    ready = wait_any(requests, start=2)
+
+    assert ready.index() == 2
+    assert not requests[3].is_completed
+    landing_blocks[2].push()
+    requests[3].wait()
+    landing_blocks[3].push()
+
+
 def test_wait_any_rejects_invalid_request_sets() -> None:
     """The public API requires a nonempty tuple of distinct receive requests."""
     requests, landing_blocks = make_ready_requests(1)
