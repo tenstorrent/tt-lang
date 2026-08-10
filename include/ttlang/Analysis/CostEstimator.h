@@ -120,6 +120,12 @@ public:
     /// here at zero.
     uint64_t cost = 0;
 
+    /// True when `cost` came from the measured table for this kernel's exact
+    /// configuration, false when it fell back to a placeholder. Reported per
+    /// operation because a kernel is usually a mixture, and a mixed total should
+    /// not be read as if it were measured throughout.
+    bool measured = false;
+
     ResourceEffect effect;
 
     /// Filled in by scheduling. `stall` is the gap between the lane becoming
@@ -148,6 +154,17 @@ public:
     /// Accumulated cost at which the last lane retires. Zero when scheduling
     /// did not run.
     uint64_t totalCost = 0;
+
+    /// Placements whose cost the measured table does or does not cover, counted
+    /// per (operation, lane) placement rather than per distinct key, so the
+    /// figures say how much of *this* module's work is measured rather than how
+    /// much of the table was used.
+    ///
+    /// The costs actually scheduled are still the placeholders either way; these
+    /// only report what a measured run would find, so that coverage can be seen
+    /// before it is depended on.
+    uint64_t measuredPlacements = 0;
+    uint64_t unmeasuredPlacements = 0;
 
     /// Summary: per-lane totals and overall latency, all in cost. This is the
     /// default output, because the per-operation views below are debugging aids

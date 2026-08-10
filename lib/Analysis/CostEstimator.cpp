@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cinttypes>
+#include <cmath>
 #include <limits>
 #include <optional>
 
@@ -59,6 +60,64 @@ constexpr size_t kMaxTimelineRows = 200;
 constexpr size_t kMaxListedOpsPerLane = 30;
 
 using Lane = CostEstimator::Lane;
+
+/// One measured per-tile cost from the nightly tt-llk perf run.
+///
+/// The key is everything the measurement depends on, because a cost is only
+/// meaningful for the configuration it was taken in: the same LLK at 2 faces
+/// against 4 differs by roughly half, and an FPU multiply spans 22 to 88 cycles
+/// across math fidelities. A lookup that cannot match every field it needs has
+/// to miss rather than borrow a neighbouring configuration.
+///
+/// `variant` holds the benchmark-specific knobs as a `k=v;k=v` string, in the
+/// order gen_cost_table.py declared them, so a benchmark that sweeps something
+/// unusual does not silently average unlike measurements together.
+struct PerfWorkEntry {
+  llvm::StringRef op;
+  Lane lane;
+  llvm::StringRef inFormat;
+  llvm::StringRef outFormat;
+  bool destAcc;
+  llvm::StringRef fidelity;
+  llvm::StringRef dstSync;
+  unsigned faces;
+  llvm::StringRef variant;
+
+  /// Cycles per tile, and a per-call constant for entries fitted against a
+  /// block dimension (zero otherwise). Kept as measured: rounding to the
+  /// estimator's integer cost is the caller's decision.
+  double perTile;
+  double fixed;
+};
+
+/// One operation's contiguous run of entries, from the generated index.
+///
+/// A lookup happens once per placement, and a kernel whose loops unroll places
+/// hundreds of thousands, so narrowing the scan from the whole table to one
+/// operation is what keeps the estimate off the critical path of a compile.
+struct PerfOpRange {
+  llvm::StringRef op;
+  unsigned first;
+  unsigned count;
+};
+
+/// One measured init-zone cost. The benchmark takes a single measurement per
+/// lane covering every init block in the zone, so it is attributed to the
+/// group's primary operation and the other inits in that group cost nothing.
+struct PerfInitEntry {
+  llvm::StringRef op;
+  Lane lane;
+  llvm::StringRef inFormat;
+  llvm::StringRef outFormat;
+  bool destAcc;
+  llvm::StringRef fidelity;
+  llvm::StringRef dstSync;
+  unsigned faces;
+  llvm::StringRef variant;
+  double cost;
+};
+
+#include "CostTableBlackhole.inc"
 
 /// What one TTKernel operation costs on each lane it runs on.
 ///
@@ -556,6 +615,253 @@ Lane getDataMovementLane(func::FuncOp funcOp) {
   return Lane::Ncrisc;
 }
 
+/// The measured tables compiled in from CostTableBlackhole.inc.
+llvm::ArrayRef<PerfWorkEntry> getPerfWorkTable() { return kPerfWorkBlackhole; }
+llvm::ArrayRef<PerfInitEntry> getPerfInitTable() { return kPerfInitBlackhole; }
+
+/// The entries measured for one operation, or empty when it has none.
+///
+/// The generated index is sorted by operation name, so this is a binary search
+/// over it rather than a scan of the table. Both are static data; nothing is
+/// built at startup.
+template <typename Entry>
+llvm::ArrayRef<Entry> entriesForOp(llvm::ArrayRef<Entry> table,
+                                   llvm::ArrayRef<PerfOpRange> index,
+                                   llvm::StringRef op) {
+  const PerfOpRange *found = llvm::partition_point(
+      index, [&](const PerfOpRange &range) { return range.op < op; });
+  if (found == index.end() || found->op != op) {
+    return {};
+  }
+  return table.slice(found->first, found->count);
+}
+
+/// Architecture the compiled-in measurements were taken on. Costs do not
+/// transfer across architectures, so a caller that does not know its target must
+/// not use them.
+constexpr llvm::StringLiteral kPerfTableArch("blackhole");
+
+/// Data format as the perf CSVs spell it.
+///
+/// The benchmarks name formats the way the LLK does, so the table's keys are
+/// those spellings and a lookup has to translate. An unmapped type returns empty,
+/// which makes the lookup miss rather than match some other format's cost.
+llvm::StringRef getPerfFormatName(ttcore::DataType dataType) {
+  switch (dataType) {
+  case ttcore::DataType::BFloat16:
+    return "Float16_b";
+  case ttcore::DataType::Float16:
+    return "Float16";
+  case ttcore::DataType::Float32:
+    return "Float32";
+  case ttcore::DataType::BFP_BFloat8:
+    return "Bfp8_b";
+  case ttcore::DataType::BFP_Float8:
+    return "Bfp8";
+  case ttcore::DataType::Int32:
+    return "Int32";
+  default:
+    return {};
+  }
+}
+
+/// Format of the tiles a circular buffer holds, or empty when the operand is not
+/// a circular buffer of tiles.
+llvm::StringRef getCbFormatName(Value value) {
+  auto cbType = mlir::dyn_cast<ttkernel::CBType>(value.getType());
+  if (!cbType) {
+    return {};
+  }
+  auto tileType = mlir::dyn_cast<ttcore::TileType>(cbType.getElementType());
+  if (!tileType) {
+    return {};
+  }
+  return getPerfFormatName(tileType.getDataType());
+}
+
+/// Math fidelity ttnn defaults a ComputeConfigDescriptor to. Assumed rather than
+/// read; see KernelConfig.
+constexpr llvm::StringLiteral kDefaultFidelity("HiFi4");
+
+/// The configuration a measured cost is keyed on, recovered from one kernel
+/// function.
+///
+/// Everything here is read from the module except `fidelity`, which the pipeline
+/// never sets: ttl_api builds its ComputeConfigDescriptor with only
+/// fp32_dest_acc_en, dst_full_sync_en and unpack_to_dest_fp32, so the math
+/// fidelity is whatever ttnn defaults to. That default is recorded here rather
+/// than guessed per lookup, because the same FPU multiply spans 22 to 88 cycles
+/// across fidelities and a wrong guess is a 4x error.
+///
+/// `faces` is 4: the estimator has no subtile path, and the only measurements
+/// taken at 2 faces are the partial-face matmuls, which a 4-face key correctly
+/// fails to match.
+struct KernelConfig {
+  llvm::StringRef outFormat;
+  bool destAcc = false;
+  llvm::StringRef fidelity = kDefaultFidelity;
+  llvm::StringRef dstSync;
+  unsigned faces = 4;
+
+  /// Whether the unpacker writes straight to DST, skipping SrcA. One of the
+  /// benchmark knobs we can actually answer for, from the kernel's
+  /// unpack_to_dest_fp32 circular buffers.
+  bool unpackToDest = false;
+};
+
+/// Whether we can answer for every benchmark knob an entry was measured under.
+///
+/// An entry's `variant` names the knobs its benchmark swept. Some describe the
+/// kernel and we can recover them; the rest -- `approx_mode`, `iterations`,
+/// `fast_mode`, `stable_sort`, `throttle_level` and the matmul dimensions --
+/// describe the benchmark's own configuration and have no counterpart in our IR.
+///
+/// An entry naming one of those cannot be matched, and that is the point rather
+/// than a limitation. It is what stops a `pack_tile` measured inside an SFPU
+/// benchmark, whose variant carries `approx_mode` and `iterations`, from
+/// answering for a `pack_tile` in an FPU kernel: the two measure the same call in
+/// zones of different shape and differ by 15%, and nothing in our IR says which
+/// one applies. Requiring every named knob to be one we can supply picks the
+/// entry whose benchmark we can actually claim to resemble.
+bool variantMatches(llvm::StringRef variant, const KernelConfig &config) {
+  while (!variant.empty()) {
+    auto [entry, rest] = variant.split(';');
+    variant = rest;
+    auto [knob, value] = entry.split('=');
+    if (knob == "unpack_to_dest") {
+      if (value != (config.unpackToDest ? "True" : "False")) {
+        return false;
+      }
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+/// Recover the configuration from one kernel function.
+///
+/// The output format is the kernel's, not the operation's: a compute operation
+/// like `add_tiles` has no output circular buffer among its operands, while the
+/// measurement was keyed on the format the packer wrote. Taken from the pack
+/// operations in the function, and left empty when they disagree, so a kernel
+/// packing two formats misses rather than picking one of them.
+KernelConfig getKernelConfig(func::FuncOp funcOp) {
+  KernelConfig config;
+  if (auto destAcc =
+          funcOp->getAttrOfType<BoolAttr>(ttl::kFp32DestAccEnAttrName)) {
+    config.destAcc = destAcc.getValue();
+  }
+  if (auto fullSync =
+          funcOp->getAttrOfType<BoolAttr>(ttl::kDstFullSyncEnAttrName)) {
+    config.dstSync = fullSync.getValue() ? "Full" : "Half";
+  }
+
+  bool conflicting = false;
+  funcOp.walk([&](Operation *op) {
+    llvm::StringRef name = op->getName().stripDialect();
+    if (name != "pack_tile" && name != "pack_tile_block") {
+      return;
+    }
+    for (Value operand : op->getOperands()) {
+      llvm::StringRef format = getCbFormatName(operand);
+      if (format.empty()) {
+        continue;
+      }
+      if (config.outFormat.empty()) {
+        config.outFormat = format;
+      } else if (config.outFormat != format) {
+        conflicting = true;
+      }
+    }
+  });
+  if (conflicting) {
+    config.outFormat = {};
+  }
+  return config;
+}
+
+/// Whether a measured entry's key matches what we recovered.
+///
+/// Every field has to agree, `variant` included by way of variantMatches. A
+/// caller still receives every matching entry rather than the first, so that a
+/// key which cannot separate two different numbers shows up as a disagreement
+/// instead of being resolved by row order.
+bool keyMatches(llvm::StringRef op, Lane lane, llvm::StringRef inFormat,
+                const KernelConfig &config, llvm::StringRef entryOp,
+                Lane entryLane, llvm::StringRef entryIn,
+                llvm::StringRef entryOut, bool entryDestAcc,
+                llvm::StringRef entryFidelity, llvm::StringRef entrySync,
+                unsigned entryFaces, llvm::StringRef entryVariant) {
+  return entryOp == op && entryLane == lane && entryIn == inFormat &&
+         entryOut == config.outFormat && entryDestAcc == config.destAcc &&
+         entryFaces == config.faces &&
+         // The eltwise CSVs carry no dest_sync column, so those entries have an
+         // empty one and match any kernel's mode. Only an entry that names a
+         // mode has to agree with ours.
+         (entrySync.empty() || entrySync == config.dstSync) &&
+         // Likewise fidelity: it is empty for the SFPU benchmarks, whose cost
+         // does not depend on it, and for the ops that pin it themselves.
+         (entryFidelity.empty() || entryFidelity == config.fidelity) &&
+         variantMatches(entryVariant, config);
+}
+
+/// Measured per-tile cost of one operation on one lane, or nullopt when the
+/// tables do not cover the configuration.
+///
+/// Returns nullopt rather than a nearby number, and also when the matching
+/// entries disagree by more than a hair: two rows matching one key means the key
+/// is missing a field the measurement depended on, which is exactly the mistake
+/// that would put an unverifiable number into a report.
+std::optional<double> lookupPerfWork(llvm::StringRef op, Lane lane,
+                                     llvm::StringRef inFormat,
+                                     const KernelConfig &config) {
+  std::optional<double> found;
+  for (const PerfWorkEntry &entry :
+       entriesForOp(getPerfWorkTable(),
+                    llvm::ArrayRef(kPerfWorkBlackholeIndex), op)) {
+    if (!keyMatches(op, lane, inFormat, config, entry.op, entry.lane,
+                    entry.inFormat, entry.outFormat, entry.destAcc,
+                    entry.fidelity, entry.dstSync, entry.faces,
+                    entry.variant)) {
+      continue;
+    }
+    // Entries fitted against a block dimension carry a per-call constant the
+    // estimator has nowhere to put yet, since it costs an operation without
+    // reading its tile count. Skip them rather than drop the constant silently.
+    if (entry.fixed != 0.0) {
+      return std::nullopt;
+    }
+    if (found && std::abs(*found - entry.perTile) > 0.01 * *found) {
+      return std::nullopt;
+    }
+    found = entry.perTile;
+  }
+  return found;
+}
+
+/// Measured init-zone cost, on the same terms as lookupPerfWork.
+std::optional<double> lookupPerfInit(llvm::StringRef op, Lane lane,
+                                     llvm::StringRef inFormat,
+                                     const KernelConfig &config) {
+  std::optional<double> found;
+  for (const PerfInitEntry &entry :
+       entriesForOp(getPerfInitTable(),
+                    llvm::ArrayRef(kPerfInitBlackholeIndex), op)) {
+    if (!keyMatches(op, lane, inFormat, config, entry.op, entry.lane,
+                    entry.inFormat, entry.outFormat, entry.destAcc,
+                    entry.fidelity, entry.dstSync, entry.faces,
+                    entry.variant)) {
+      continue;
+    }
+    if (found && std::abs(*found - entry.cost) > 0.01 * *found) {
+      return std::nullopt;
+    }
+    found = entry.cost;
+  }
+  return found;
+}
+
 } // namespace
 
 llvm::ArrayRef<CostEstimator::Lane> CostEstimator::getAllLanes() {
@@ -585,8 +891,16 @@ std::string CostEstimator::Report::render() const {
   std::string text;
   llvm::raw_string_ostream out(text);
 
-  out << "cost estimate: scheduled with PLACEHOLDER per-lane costs; every "
-         "figure below is cost, not measured cycles\n";
+  uint64_t placements = measuredPlacements + unmeasuredPlacements;
+  out << "cost estimate: " << measuredPlacements << " of " << placements
+      << " placements measured";
+  if (placements > 0) {
+    out << llvm::format(" (%.0f%%)", 100.0 * measuredPlacements / placements);
+  }
+  out << ", the rest PLACEHOLDER\n";
+  out << "  measured on " << kPerfTableArch << " from "
+      << getPerfWorkTable().size() << " per-tile + " << getPerfInitTable().size()
+      << " init entries; per-operation provenance in the detail view\n";
 
   out << "  kernels:";
   for (llvm::StringRef kernel : kernels) {
@@ -663,8 +977,10 @@ std::string CostEstimator::Report::renderDetail() const {
       out << "    (idle)\n";
       continue;
     }
+    // The `src` column says where each cost came from, so a mixed report cannot
+    // be misread as measured throughout.
     out << "    " << llvm::left_justify("op", nameWidth)
-        << "  start    end   cost   wait\n";
+        << "  start    end   cost   wait  src\n";
     size_t listed =
         std::min<size_t>(laneReport.ops.size(), kMaxListedOpsPerLane);
     for (const PlacedOp &op :
@@ -672,6 +988,7 @@ std::string CostEstimator::Report::renderDetail() const {
       out << "    " << llvm::left_justify(op.name, nameWidth)
           << llvm::format("%7" PRIu64 "%7" PRIu64 "%7" PRIu64 "%7" PRIu64,
                           op.start, op.finish, op.cost, op.stall);
+      out << (op.measured ? "  meas" : "  plac");
       std::string where = formatLoc(op.loc);
       if (!where.empty()) {
         out << "  [" << where << "]";
@@ -1177,6 +1494,10 @@ private:
     std::optional<Lane> dmLane;
     Report *report;
     uint64_t seen = 0;
+
+    /// The measured table's key fields that come from the enclosing function
+    /// rather than from each operation.
+    KernelConfig config;
   };
 
   /// Record a gap the estimate cannot survive: diagnose it once per distinct
@@ -1208,6 +1529,7 @@ private:
     PlaceContext ctx;
     ctx.dmLane = dmLane;
     ctx.report = &report;
+    ctx.config = getKernelConfig(funcOp);
 
     // Walk regions structurally rather than with Operation::walk, because a
     // loop body has to be repeated in place: the correct lane order for a body
@@ -1338,13 +1660,45 @@ private:
       }
       const ThreadWork &work = found->second;
 
+      // Input format comes from the operation's own circular buffer, output
+      // format and the rest from the enclosing kernel; see KernelConfig.
+      //
+      // The first CB operand rather than operand zero: `pack_tile` leads with a
+      // DST index, so position is not a reliable way to find the buffer.
+      llvm::StringRef inFormat;
+      for (Value operand : op->getOperands()) {
+        inFormat = getCbFormatName(operand);
+        if (!inFormat.empty()) {
+          break;
+        }
+      }
+
       auto place = [&](Lane lane, std::optional<uint64_t> cost) {
         if (!cost) {
           return false;
         }
+
+        // Prefer the measured cost, falling back to the placeholder. Rounded to
+        // the nearest whole cost because the schedule counts in integers; the
+        // fraction dropped is under half a cost per placement, which no ranking
+        // turns on.
+        llvm::StringRef bare = op->getName().stripDialect();
+        std::optional<double> measuredCost =
+            lookupPerfWork(bare, lane, inFormat, ctx.config);
+        if (!measuredCost) {
+          measuredCost = lookupPerfInit(bare, lane, inFormat, ctx.config);
+        }
+        if (measuredCost) {
+          ++report.measuredPlacements;
+          cost = static_cast<uint64_t>(std::llround(*measuredCost));
+        } else {
+          ++report.unmeasuredPlacements;
+        }
+
         ResourceEffect effect = getResourceEffect(op, lane);
 
-        PlacedOp placed{name.str(), op->getLoc(), *cost, effect};
+        PlacedOp placed{name.str(), op->getLoc(), *cost,
+                        /*measured=*/measuredCost.has_value(), effect};
         if (placed.effect.kind != ResourceEffect::Kind::None &&
             placed.effect.tiles > 0) {
           if (std::optional<uint64_t> capacity = getCbCapacity(op)) {
