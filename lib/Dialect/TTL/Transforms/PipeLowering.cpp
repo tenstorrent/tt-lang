@@ -27,10 +27,10 @@
 #include "ttlang/Dialect/TTL/Transforms/PipeTransferAnalysis.h"
 #include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
-#include "ttlang/Dialect/Utils/UnionFind.h"
 #include "ttlang/Target/TargetInfo.h"
 #include "llvm/ADT/DenseMapInfo.h"
 #include "llvm/ADT/Hashing.h"
+#include "llvm/ADT/IntEqClasses.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/Support/MathExtras.h"
@@ -2613,7 +2613,11 @@ static FailureOr<SmallVector<std::size_t>>
 buildWaitAnyCompletionGroups(ModuleOp module,
                              ArrayRef<PipeTransferAllocationUnit> units,
                              const PipeTransferIndex &transferIndex) {
-  mlir::tt::utils::IndexUnionFind completionGroups(units.size());
+  if (units.size() > std::numeric_limits<unsigned>::max()) {
+    module.emitError("too many PipeNet resource allocation units");
+    return failure();
+  }
+  llvm::IntEqClasses completionGroups(static_cast<unsigned>(units.size()));
   using RecordUnit = std::pair<unsigned, std::size_t>;
   llvm::DenseMap<Operation *, SmallVector<RecordUnit>> unitsByPostRecord;
   for (auto indexedUnit : llvm::enumerate(units)) {
@@ -2673,7 +2677,8 @@ buildWaitAnyCompletionGroups(ModuleOp module,
                    "logical receive channel and destination DFB stream";
             return WalkResult::interrupt();
           }
-          completionGroups.merge(commonUnitIndex, matchingUnit->second);
+          completionGroups.join(static_cast<unsigned>(commonUnitIndex),
+                                static_cast<unsigned>(matchingUnit->second));
         }
       }
     }
@@ -2682,7 +2687,14 @@ buildWaitAnyCompletionGroups(ModuleOp module,
   if (walkResult.wasInterrupted()) {
     return failure();
   }
-  return completionGroups.getRepresentatives();
+  completionGroups.compress();
+  SmallVector<std::size_t> representatives;
+  representatives.reserve(units.size());
+  for (std::size_t unitIndex = 0; unitIndex < units.size(); ++unitIndex) {
+    representatives.push_back(
+        completionGroups[static_cast<unsigned>(unitIndex)]);
+  }
+  return representatives;
 }
 
 static bool usesSenderReadyCounter(
