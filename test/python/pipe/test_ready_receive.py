@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Device coverage for typed PipeNet receive requests and rotating wait-any."""
+"""Device coverage for selecting among completed PipeNet receives."""
 
 import pytest
 import torch
@@ -16,9 +16,7 @@ pytestmark = pytest.mark.requires_device
 
 
 @ttl.operation(grid=(1, 1))
-def ready_receive_rotating_tie(
-    inp, landing0, landing1, landing2, landing3, out
-):
+def ready_receive_rotating_tie(inp, landing0, landing1, landing2, landing3, out):
     pipe0 = ttl.Pipe(src=(0, 0), dst=(0, 0))
     pipe1 = ttl.Pipe(src=(0, 0), dst=(0, 0))
     pipe2 = ttl.Pipe(src=(0, 0), dst=(0, 0))
@@ -28,21 +26,12 @@ def ready_receive_rotating_tie(
     net2 = ttl.PipeNet([pipe2])
     net3 = ttl.PipeNet([pipe3])
 
-    input_dfb = ttl.make_tensor_backed_dfb(
-        inp, shape=(1, 1), block_count=4
-    )
-    landing_dfb0 = ttl.make_tensor_backed_dfb(
-        landing0, shape=(1, 1), block_count=1
-    )
-    landing_dfb1 = ttl.make_tensor_backed_dfb(
-        landing1, shape=(1, 1), block_count=1
-    )
-    landing_dfb2 = ttl.make_tensor_backed_dfb(
-        landing2, shape=(1, 1), block_count=1
-    )
-    landing_dfb3 = ttl.make_tensor_backed_dfb(
-        landing3, shape=(1, 1), block_count=1
-    )
+    input_dfb = ttl.make_tensor_backed_dfb(inp, shape=(1, 1), block_count=4)
+    landing_dfb0 = ttl.make_tensor_backed_dfb(landing0, shape=(1, 1), block_count=1)
+    landing_dfb1 = ttl.make_tensor_backed_dfb(landing1, shape=(1, 1), block_count=1)
+    landing_dfb2 = ttl.make_tensor_backed_dfb(landing2, shape=(1, 1), block_count=1)
+    landing_dfb3 = ttl.make_tensor_backed_dfb(landing3, shape=(1, 1), block_count=1)
+
     @ttl.compute()
     def compute():
         pass
@@ -80,9 +69,7 @@ def ready_receive_rotating_tie(
         ttl.copy(input3, pipe3).wait()
         input3.pop()
 
-        ready = ttl.wait_any(
-            (request0, request1, request2, request3), start=3
-        )
+        ready = ttl.wait_any((request0, request1, request2, request3), start=3)
         selected = ready.index()
         if selected == 0:
             request0.wait()
@@ -118,9 +105,7 @@ def ready_receive_rotating_tie(
 def _to_height_sharded(torch_tensor, device):
     dram_tensor = to_dram(torch_tensor, device)
     shard_spec = ttnn.ShardSpec(
-        ttnn.CoreRangeSet(
-            {ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))}
-        ),
+        ttnn.CoreRangeSet({ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))}),
         torch_tensor.shape[-2:],
         ttnn.ShardOrientation.ROW_MAJOR,
     )
@@ -136,14 +121,13 @@ def _to_height_sharded(torch_tensor, device):
     "torch_dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"]
 )
 def test_ready_receive_rotating_tie(device, torch_dtype):
-    """All-ready selection begins at index three and preserves payload data."""
+    """Selection begins at index three when every receive has completed."""
     torch.manual_seed(0)
     input_torch = torch.rand((32, 128), dtype=torch_dtype)
     expected = input_torch[:, 96:128]
     inp = _to_height_sharded(input_torch, device)
     landing_tensors = [
-        _to_height_sharded(torch.zeros_like(expected), device)
-        for _ in range(4)
+        _to_height_sharded(torch.zeros_like(expected), device) for _ in range(4)
     ]
     out = to_dram(torch.zeros_like(expected), device)
 
@@ -154,7 +138,5 @@ def test_ready_receive_rotating_tie(device, torch_dtype):
     )
     actual = ttnn.to_torch(out)
     threshold = 0.999 if torch_dtype == torch.bfloat16 else 0.99999
-    assert_pcc(
-        input_torch.float(), actual_landing.float(), threshold=threshold
-    )
+    assert_pcc(input_torch.float(), actual_landing.float(), threshold=threshold)
     assert_pcc(expected.float(), actual.float(), threshold=threshold)

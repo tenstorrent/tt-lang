@@ -501,7 +501,7 @@ class ReadyReceive:
 
 @syntax("wait_any")
 def wait_any(requests, start=0) -> ReadyReceive:
-    """Wait for the first ready receive request in rotating tuple order."""
+    """Select the first completed receive in cyclic order from start."""
     if not isinstance(requests, tuple):
         raise TypeError("wait_any() requests must be an explicitly ordered tuple")
     if not requests:

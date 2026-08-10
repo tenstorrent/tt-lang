@@ -225,7 +225,7 @@ def TTL_WaitAnyOp : TTL_Op<"wait_any",
   let description = [{
     Blocks until at least one request has completed. Candidates are inspected
     in cyclic operand order beginning at `start`, normalized modulo the number
-    of requests. The first ready request in that order is selected. Only the
+    of requests. The first completed request in that order is selected. Only the
     selected request becomes complete; all other requests remain pending.
 
     The request list must be nonempty and contain distinct SSA values. Requests

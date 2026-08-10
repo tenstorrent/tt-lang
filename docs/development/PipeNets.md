@@ -237,7 +237,7 @@ Pipe transfers have the following operational semantics:
   through direct calls. Recursive calls and schedules exceeding 4096 events
   after launch-node specialization and helper expansion are rejected.
 
-### Ready-receive selection
+### Selecting among completed receives
 
 `ttl.wait_any(requests, start)` waits until at least one PipeNet receive request
 is complete and returns a typed `ReadyReceive`. `requests` is a nonempty tuple
@@ -258,10 +258,10 @@ participate in a later `wait_any` or an exact `ReceiveRequest.wait()`. The
 selected request may also receive an exact wait; repeated waits observe the
 same completed transfer.
 
-Each candidate has a compiler-derived logical tag consisting of its PipeNet id,
+Each candidate has a compiler-derived identity consisting of its PipeNet id,
 pipe-transfer definition, and selected record index when record selection is
 dynamic. The program does not allocate or compare physical semaphore ids.
-Lowering maps every logical tag to a receiver-completion counter and a
+Lowering maps every identity to a receiver-completion counter and a
 cumulative expected sequence value, then polls those resources with a
 nonblocking semaphore threshold test. Alternate SSA definitions of one request
 are valid only when they denote the same logical channel and destination DFB

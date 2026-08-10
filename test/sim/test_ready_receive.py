@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for simulator ready-receive selection semantics."""
+"""Tests for simulator selection among completed receives."""
 
 import pytest
 
@@ -17,7 +17,7 @@ from sim.pipe import Pipe
 
 @pytest.fixture(autouse=True)
 def setup_scheduler_context(dm_kernel_context):
-    """Run ready-receive operations in a data-movement kernel context."""
+    """Run receive-selection operations in a data-movement kernel context."""
     pass
 
 
@@ -28,15 +28,12 @@ def make_ready_requests(
     set_current_kernel_type(KernelType.DM)
     pipes = tuple(Pipe(0, pipe_index + 1) for pipe_index in range(count))
     landing_dfbs = tuple(
-        DataflowBuffer(
-            likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=2
-        )
+        DataflowBuffer(likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=2)
         for _ in range(count)
     )
     landing_blocks = tuple(landing.reserve() for landing in landing_dfbs)
     requests = tuple(
-        copy(pipe, landing)
-        for pipe, landing in zip(pipes, landing_blocks, strict=True)
+        copy(pipe, landing) for pipe, landing in zip(pipes, landing_blocks, strict=True)
     )
 
     source_dfb = DataflowBuffer(
