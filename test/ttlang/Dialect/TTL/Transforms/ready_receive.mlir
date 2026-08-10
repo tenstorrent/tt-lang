@@ -3,6 +3,36 @@
 
 // RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-global-semaphores-only=false})' | FileCheck %s --check-prefix=LOCAL
 // RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-global-semaphores-only=true})' | FileCheck %s --check-prefix=GLOBAL
+// RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-global-semaphores-only=false})' | FileCheck %s --check-prefix=SEMANTICS
+
+// Verifies candidate-specific completion checks and ascending cyclic selection.
+// SEMANTICS-LABEL: func.func @ready_receive
+// SEMANTICS-DAG: %[[C0:.*]] = arith.constant 0 : index
+// SEMANTICS-DAG: %[[C1:.*]] = arith.constant 1 : index
+// SEMANTICS-DAG: %[[COUNT:.*]] = arith.constant 2 : i32
+// SEMANTICS: %[[CTR0:.*]] = memref.alloca()
+// SEMANTICS: %[[CTR1:.*]] = memref.alloca()
+// SEMANTICS: %[[SEQ0:.*]] = arith.addi
+// SEMANTICS: memref.store %[[SEQ0]], %[[CTR0]]
+// SEMANTICS: %[[SEQ1:.*]] = arith.addi
+// SEMANTICS: memref.store %[[SEQ1]], %[[CTR1]]
+// SEMANTICS: %[[START:.*]] = arith.remui %{{.*}}, %[[COUNT]] : i32
+// SEMANTICS: scf.while
+// SEMANTICS: scf.for %[[IV:.*]] = %{{.*}} to %{{.*}} step
+// SEMANTICS:   %[[OFF:.*]] = arith.index_cast %[[IV]] : index to i32
+// SEMANTICS:   %[[ROT:.*]] = arith.addi %[[START]], %[[OFF]] : i32
+// SEMANTICS:   %[[CAND:.*]] = arith.remui %[[ROT]], %[[COUNT]] : i32
+// SEMANTICS:   %[[CANDIDX:.*]] = arith.index_cast %[[CAND]] : i32 to index
+// SEMANTICS:   scf.index_switch %[[CANDIDX]]
+// SEMANTICS:   case 0 {
+// SEMANTICS:     %[[SEM0:.*]] = ttkernel.get_semaphore(%[[C0]])
+// SEMANTICS:     %[[PTR0:.*]] = ttkernel.reinterpret_cast(%[[SEM0]])
+// SEMANTICS:     ttkernel.experimental.semaphore_reached(%[[PTR0]], %[[SEQ0]])
+// SEMANTICS:   case 1 {
+// SEMANTICS:     %[[SEM1:.*]] = ttkernel.get_semaphore(%[[C1]])
+// SEMANTICS:     %[[PTR1:.*]] = ttkernel.reinterpret_cast(%[[SEM1]])
+// SEMANTICS:     ttkernel.experimental.semaphore_reached(%[[PTR1]], %[[SEQ1]])
+// SEMANTICS:   %[[NEXT:.*]] = arith.select %{{.*}}, %[[CAND]], %{{.*}} : i32
 
 // LOCAL-LABEL: func.func @ready_receive
 // LOCAL: %[[COUNT:.*]] = arith.constant 2 : i32
