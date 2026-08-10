@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import List, Tuple
 
 from ttl.dialects import ttcore
+from ttl.ir import BF16Type, F32Type
 
 from .constants import DEFAULT_TILE_SIZE
 from .dtype_utils import tensor_dtype_to_ttcore_datatype
@@ -15,13 +16,14 @@ from .dtype_utils import tensor_dtype_to_ttcore_datatype
 
 @dataclass(frozen=True)
 class LayoutConfig:
-    """Configuration for TTL layout creation."""
+    """Configuration for TTL tiled or row-major layout creation."""
 
     logical_shape: List[int]
     grid: List[int]
     dtype: str
     memory_layout: int = 0  # Default: TENSOR_MEMORY_LAYOUT_INTERLEAVED
     tile: Tuple[int, int] = (DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)
+    tiled: bool = True
 
 
 # BufferType enum values (match TTLOpsEnums.td)
@@ -55,9 +57,24 @@ def detect_memory_layout(tensor) -> int:
     return TENSOR_MEMORY_LAYOUT_INTERLEAVED
 
 
+def create_layout_element_type(ctx, config: LayoutConfig):
+    """Create the physical element type encoded by a TTL layout."""
+    ttcore_dtype = tensor_dtype_to_ttcore_datatype(config.dtype)
+    if config.tiled:
+        return ttcore.ir.TileType.get(ctx, config.tile[0], config.tile[1], ttcore_dtype)
+    if ttcore_dtype == ttcore.DataType.BFloat16:
+        return BF16Type.get(ctx)
+    if ttcore_dtype == ttcore.DataType.Float32:
+        return F32Type.get(ctx)
+    raise ValueError(
+        "Row-major TensorAccessor arguments support only bf16 and f32, "
+        f"got {config.dtype}"
+    )
+
+
 def create_layout(ctx, config: LayoutConfig):
     """
-    Create a TTLLayoutAttr for tiled tensors.
+    Create a TTLLayoutAttr for tiled or row-major tensors.
 
     Args:
         ctx: MLIR context
@@ -81,10 +98,7 @@ def create_layout(ctx, config: LayoutConfig):
     grid_cols, grid_rows = config.grid
     mlir_grid = [grid_rows, grid_cols]
 
-    ttcore_dtype = tensor_dtype_to_ttcore_datatype(config.dtype)
-    element_type = ttcore.ir.TileType.get(
-        ctx, config.tile[0], config.tile[1], ttcore_dtype
-    )
+    element_type = create_layout_element_type(ctx, config)
 
     # Import ttl.ir from our _ttlang extension module
     from ttl._mlir_libs._ttlang import ttl_ir

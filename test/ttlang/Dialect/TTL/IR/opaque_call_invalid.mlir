@@ -100,8 +100,18 @@ func.func @tensor_arg_without_layout(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>>
 #layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f16>,
                       buffer = dram, grid = [1, 1], memory = interleaved>
 func.func @unsupported_tensor_accessor_dtype(%arg0: tensor<1x1x!ttcore.tile<32x32, f16>, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  // expected-error @below {{'ttl.opaque_call' op TensorAccessor operands support only bf16 and f32 tile types}}
+  // expected-error @below {{'ttl.opaque_call' op TensorAccessor operands support only tiled or row-major bf16 and f32 types}}
   ttl.opaque_call "foo" (%arg0) {header = "h.hpp"} : (tensor<1x1x!ttcore.tile<32x32, f16>, #layout>) -> ()
+  return
+}
+
+// -----
+// Test: row-major TensorAccessor pages require one contiguous interleaved row.
+#layout = #ttl.layout<shape = [64, 7168], element_type = bf16,
+                      buffer = l1, grid = [1, 1], memory = height_sharded>
+func.func @sharded_row_major_tensor_accessor(%arg0: tensor<64x7168xbf16, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  // expected-error @below {{'ttl.opaque_call' op row-major TensorAccessor operands require interleaved memory}}
+  ttl.opaque_call "foo" (%arg0) {header = "h.hpp"} : (tensor<64x7168xbf16, #layout>) -> ()
   return
 }
 

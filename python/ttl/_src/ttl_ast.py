@@ -20,6 +20,7 @@ from ..dtype_utils import is_ttnn_tensor, tensor_dtype_to_ttcore_datatype
 from ..layouts import (
     LayoutConfig,
     create_layout,
+    create_layout_element_type,
     detect_memory_layout,
     TENSOR_MEMORY_LAYOUT_INTERLEAVED,
 )
@@ -118,7 +119,7 @@ def _ceil_div(a, b):
 def _build_tensor_type(ctx, tensor, grid, tiled, memory_space):
     """Build MLIR tensor type with TTLLayoutAttr encoding."""
     if not tiled:
-        raise ValueError("Only tiled tensors supported")
+        raise ValueError("Only tiled operations are supported")
     if memory_space not in ("L1", "DRAM"):
         raise ValueError(f"Only L1 or DRAM memory space supported, got {memory_space}")
     if len(grid) != 2:
@@ -137,33 +138,48 @@ def _build_tensor_type(ctx, tensor, grid, tiled, memory_space):
         )
 
     mem_layout = TENSOR_MEMORY_LAYOUT_INTERLEAVED
+    tensor_is_tiled = tiled
     if is_ttnn_tensor(tensor):
         mem_layout = detect_memory_layout(tensor)
+        tensor_layout = str(tensor.layout)
+        if "TILE" in tensor_layout:
+            tensor_is_tiled = True
+        elif "ROW_MAJOR" in tensor_layout:
+            tensor_is_tiled = False
+        else:
+            _raise_tensor_error(tensor, f"Unsupported TTNN layout {tensor.layout}")
+        if not tensor_is_tiled and mem_layout != TENSOR_MEMORY_LAYOUT_INTERLEAVED:
+            _raise_tensor_error(
+                tensor,
+                "Row-major TensorAccessor arguments currently require "
+                "interleaved memory",
+            )
 
     tile = (DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)
-    if is_ttnn_tensor(tensor) and hasattr(tensor, "get_tile"):
+    if tensor_is_tiled and is_ttnn_tensor(tensor) and hasattr(tensor, "get_tile"):
         tile = tuple(tensor.get_tile().tile_shape)
 
-    layout = create_layout(
-        ctx,
-        LayoutConfig(
-            logical_shape=shape,
-            grid=grid,
-            dtype=tensor.dtype,
-            memory_layout=mem_layout,
-            tile=tile,
-        ),
+    layout_config = LayoutConfig(
+        logical_shape=shape,
+        grid=grid,
+        dtype=tensor.dtype,
+        memory_layout=mem_layout,
+        tile=tile,
+        tiled=tensor_is_tiled,
     )
+    layout = create_layout(ctx, layout_config)
 
-    ttcore_dtype = tensor_dtype_to_ttcore_datatype(tensor.dtype)
-    element_type = ttcore.ir.TileType.get(ctx, tile[0], tile[1], ttcore_dtype)
+    element_type = create_layout_element_type(ctx, layout_config)
 
-    # Device shape: batch dims preserved, last 2 dims converted to tile counts
-    batch_dims = shape[:-2]
-    tensor_rows, tensor_cols = shape[-2], shape[-1]
-    total_row_tiles = _ceil_div(tensor_rows, tile[0])
-    total_col_tiles = _ceil_div(tensor_cols, tile[1])
-    device_shape = batch_dims + [total_row_tiles, total_col_tiles]
+    if tensor_is_tiled:
+        # Device shape: batch dims preserved, last 2 dims converted to tile counts
+        batch_dims = shape[:-2]
+        tensor_rows, tensor_cols = shape[-2], shape[-1]
+        total_row_tiles = _ceil_div(tensor_rows, tile[0])
+        total_col_tiles = _ceil_div(tensor_cols, tile[1])
+        device_shape = batch_dims + [total_row_tiles, total_col_tiles]
+    else:
+        device_shape = shape
 
     return RankedTensorType.get(device_shape, element_type, layout)
 

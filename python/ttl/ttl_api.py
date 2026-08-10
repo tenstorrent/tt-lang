@@ -1244,7 +1244,8 @@ def _compile_ttnn_kernel(
             f"Mixed tensor types would generate extra bounce kernels."
         )
 
-    # Validate TTNN tensors - must be L1 or DRAM and tilized
+    # Validate TTNN tensors. Operation verifiers enforce layout-specific uses;
+    # row-major tensors are valid TensorAccessor operands for external NOC code.
     for i, arg in enumerate(args):
         if is_ttnn_tensor(arg):
             mem_space = _detect_memory_space_from_tensor(arg, "unknown")
@@ -1252,10 +1253,13 @@ def _compile_ttnn_kernel(
                 raise ValueError(
                     f"TTNN interop requires L1 or DRAM memory space, but tensor {i} is in {mem_space}."
                 )
-            if hasattr(arg, "layout") and "TILE" not in str(arg.layout):
+            if hasattr(arg, "layout") and not any(
+                supported_layout in str(arg.layout)
+                for supported_layout in ("TILE", "ROW_MAJOR")
+            ):
                 raise ValueError(
-                    f"TTNN interop requires tilized tensors, but tensor {i} has layout {arg.layout}. "
-                    f"Use ttnn.to_layout(tensor, ttnn.TILE_LAYOUT) to convert."
+                    "TTNN interop requires tiled or row-major tensors, but "
+                    f"tensor {i} has layout {arg.layout}."
                 )
 
     # Detect the per-core specialization path: ttkernel-specialize-cores tags each

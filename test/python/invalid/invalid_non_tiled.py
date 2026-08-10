@@ -6,7 +6,7 @@
 # RUN: not %python %s 2>&1 | FileCheck %s
 
 """
-Validation test: non-tiled tensors are not supported.
+Validation test: non-tiled operation mode is not supported.
 
 This test verifies that using tiled=False raises the expected ValueError.
 The validation happens when building the MLIR type for tensors.
@@ -20,7 +20,7 @@ import ttnn
 import ttl
 
 
-# CHECK: ValueError: Only tiled tensors supported
+# CHECK: ValueError: Only tiled operations are supported
 # CHECK-NEXT:   --> {{.*}}invalid_non_tiled.py:[[LINE:[0-9]+]]:1
 # CHECK-NEXT:    |
 # CHECK-NEXT: [[LINE]] | @ttl.operation(grid=(1, 1), tiled=False)
@@ -28,7 +28,7 @@ import ttl
 # CHECK-NEXT:    |
 @ttl.operation(grid=(1, 1), tiled=False)
 def invalid_non_tiled_kernel(lhs, rhs, out):
-    """This kernel should fail because tiled=False is not supported."""
+    """This kernel should fail because tiled=False operation mode is unsupported."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), block_count=2)
     rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), block_count=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)

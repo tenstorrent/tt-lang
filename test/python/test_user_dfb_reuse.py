@@ -15,8 +15,8 @@ from utils.correctness import assert_allclose  # noqa: E402
 
 pytestmark = pytest.mark.requires_device
 
-# TTNN interop rejects non-tilized tensors before DFB lowering, so TILE is the
-# only supported tensor layout for these runtime cases.
+# These cases use native TTL data movement and compute operations, which require
+# tiled tensor arguments.
 TILE = 32
 OVER_CAPACITY_COMPOSITION_LEVELS = 5
 OVER_CAPACITY_LOGICAL_DFBS = (1 << OVER_CAPACITY_COMPOSITION_LEVELS) + 1
