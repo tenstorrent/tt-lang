@@ -2774,6 +2774,7 @@ class TTLGenericCompiler(TTCompilerBase):
                 ],
                 unknown_dfb_access=False,
                 include_paths=["/path/to/inc"], # -I flags for JIT compiler
+                result_type="i64",              # optional scalar result
             )
 
         DFBs use explicit forms in template_args and may appear directly in
@@ -2820,6 +2821,7 @@ class TTLGenericCompiler(TTCompilerBase):
             "dfb_effects",
             "unknown_dfb_access",
             "include_paths",
+            "result_type",
         }
         unexpected = set(kw_map) - _valid_kwargs
         if unexpected:
@@ -2903,6 +2905,21 @@ class TTLGenericCompiler(TTCompilerBase):
             paths = self._resolve_string_list(kw_map["include_paths"], "include_paths")
             self._opaque_include_paths.extend(paths)
 
+        result_types = []
+        if "result_type" in kw_map:
+            result_type = self._resolve_string_value(
+                kw_map["result_type"], "result_type"
+            )
+            result_widths = {"i32": 32, "i64": 64}
+            if result_type not in result_widths:
+                self._raise_error(
+                    kw_map["result_type"],
+                    "ttl.call_extern_func() result_type supports 'i32' or 'i64'",
+                )
+            result_types.append(
+                IntegerType.get_signless(result_widths[result_type], self.ctx)
+            )
+
         template_dfb_operands = []
         template_arg_attrs = []
         dfb_kinds = {
@@ -2970,8 +2987,8 @@ class TTLGenericCompiler(TTCompilerBase):
         effects_attr = ArrayAttr.get(effect_attrs) if effect_attrs else None
         unknown_dfb_access_attr = UnitAttr.get(self.ctx) if unknown_dfb_access else None
 
-        ttl.opaque_call(
-            [],
+        opaque_call = ttl.opaque_call(
+            result_types,
             callee,
             header,
             func_args,
@@ -2982,6 +2999,8 @@ class TTLGenericCompiler(TTCompilerBase):
             dfb_effects=effects_attr,
             unknown_dfb_access=unknown_dfb_access_attr,
         )
+        if result_types:
+            return opaque_call
 
     def visit_With(self, node):
         """

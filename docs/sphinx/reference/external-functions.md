@@ -1,8 +1,9 @@
 # External Functions
 
-`ttl.call_extern_func` invokes a void C++ function declared in a custom header.
-It supports static template arguments, runtime function arguments, custom
-include directories, and portable logical-kernel selection.
+`ttl.call_extern_func` invokes a C++ function declared in a custom header. It
+supports static template arguments, runtime function arguments, an optional
+scalar integer result, custom include directories, and portable logical-kernel
+selection.
 
 ```python
 ttl.call_extern_func(
@@ -15,13 +16,15 @@ ttl.call_extern_func(
     dfb_effects=None,
     unknown_dfb_access=False,
     include_paths=None,
+    result_type=None,
     kernel=None,
 )
 ```
 
 `header` and `callee` are compile-time strings. `template_args`, `func_args`,
-and `include_paths` preserve source order. External functions currently return
-no value, and the compiler does not validate the C++ signature.
+and `include_paths` preserve source order. `result_type="i32"` and
+`result_type="i64"` declare one scalar integer result; omitting `result_type`
+declares a void function. The compiler does not validate the C++ signature.
 
 ## Logical-kernel selection
 

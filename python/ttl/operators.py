@@ -39,13 +39,22 @@ def call_extern_func(
     dfb_effects=None,
     unknown_dfb_access: bool = False,
     include_paths=None,
+    result_type: Optional[str] = None,
     kernel: Optional[ExternalKernelSelection] = None,
-) -> None:
+    thread: Optional[str] = None,
+) -> Optional[int]:
     """Call external C++ in selected logical kernels.
 
     ``kernel`` accepts one ``KernelKind`` or operation-local ``Kernel``. A
     nonempty tuple emits the call once in each selected logical kernel. The
     unified-operation splitter removes the selector before AST lowering.
+
+    ``thread`` preserves legacy ``trisc``, ``ncrisc``, and ``brisc`` placement
+    while operations migrate to logical kernel selectors. It is mutually
+    exclusive with ``kernel``.
+
+    ``result_type`` accepts ``"i32"`` or ``"i64"`` when the external function
+    returns one scalar integer. Omitting it declares a void external function.
     """
     raise RuntimeError("ttl.call_extern_func() is valid only in a compiled kernel")
 

@@ -33,6 +33,9 @@ TYPED_ARGS_HEADER = os.path.join(
 SEMAPHORE_TEMPLATE_HEADER = os.path.join(
     os.path.dirname(__file__), "include", "semaphore_template_op.hpp"
 )
+SCALAR_RESULT_HEADER = os.path.join(
+    os.path.dirname(__file__), "include", "scalar_result_op.hpp"
+)
 MODULE_GLOBAL_SEMAPHORE = None
 
 
@@ -126,6 +129,80 @@ TYPED_ARGS_POSITIVE = _make_typed_args_extern(False)
 TYPED_ARGS_NEGATIVE = _make_typed_args_extern(True)
 
 
+@ttl.operation(grid=(1, 1))
+def scalar_result_i32(inp, out):
+    in_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        with in_dfb.wait() as in_blk, out_dfb.reserve() as out_blk:
+            predicate = ttl.call_extern_func(
+                SCALAR_RESULT_HEADER,
+                "scalar_result_i32",
+                result_type="i32",
+            )
+            if predicate:
+                ttl.call_extern_func(
+                    NEGATE_HEADER,
+                    "negate_tile_shim",
+                    template_args=[
+                        ttl.get_dfb_id(in_dfb),
+                        ttl.get_dfb_id(out_dfb),
+                    ],
+                    func_args=[in_dfb, out_dfb],
+                )
+
+    @ttl.datamovement()
+    def dm_read():
+        in_block = in_dfb.reserve()
+        ttl.copy(inp[0, 0], in_block).wait()
+        in_block.push()
+
+    @ttl.datamovement()
+    def dm_write():
+        out_block = out_dfb.wait()
+        ttl.copy(out_block, out[0, 0]).wait()
+        out_block.pop()
+
+
+@ttl.operation(grid=(1, 1))
+def scalar_result_i64(inp, out):
+    in_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+    @ttl.compute()
+    def compute():
+        with in_dfb.wait() as in_blk, out_dfb.reserve() as out_blk:
+            predicate = ttl.call_extern_func(
+                SCALAR_RESULT_HEADER,
+                "scalar_result_i64",
+                result_type="i64",
+            )
+            if predicate:
+                ttl.call_extern_func(
+                    NEGATE_HEADER,
+                    "negate_tile_shim",
+                    template_args=[
+                        ttl.get_dfb_id(in_dfb),
+                        ttl.get_dfb_id(out_dfb),
+                    ],
+                    func_args=[in_dfb, out_dfb],
+                )
+
+    @ttl.datamovement()
+    def dm_read():
+        in_block = in_dfb.reserve()
+        ttl.copy(inp[0, 0], in_block).wait()
+        in_block.push()
+
+    @ttl.datamovement()
+    def dm_write():
+        out_block = out_dfb.wait()
+        ttl.copy(out_block, out[0, 0]).wait()
+        out_block.pop()
+
+
 def test_negate_extern(device):
     inp_torch = torch.full((32, 32), 3.0, dtype=torch.bfloat16)
 
@@ -155,6 +232,22 @@ def test_typed_args_extern(device, operation, sign):
     result = ttnn.to_torch(out)
     expected = sign * inp_torch * 6.0
     assert_allclose(result, expected)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [scalar_result_i32, scalar_result_i64],
+    ids=["i32", "i64"],
+)
+def test_scalar_result_extern(device, operation):
+    inp_torch = torch.full((32, 32), 7.0, dtype=torch.bfloat16)
+
+    inp = to_l1(inp_torch, device)
+    out = to_l1(torch.zeros_like(inp_torch), device)
+
+    operation(inp, out)
+
+    assert_allclose(ttnn.to_torch(out), -inp_torch)
 
 
 def _make_semaphore_template_extern(global_sem):
