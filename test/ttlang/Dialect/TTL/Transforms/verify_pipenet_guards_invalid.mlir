@@ -18,6 +18,24 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 
 // -----
 
+// Internal wait-any tokens must originate from receiver posts.
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @wait_any_requires_post_token()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %token = builtin.unrealized_conversion_cast to !ttl.pipe_token<net 0>
+    %start = arith.constant 0 : index
+    // expected-error @below {{'ttl.pipe_transfer.wait_any' op requires every token value to derive from a ttl.pipe_transfer.post}}
+    %ready = ttl.pipe_transfer.wait_any %token start %start
+        : (!ttl.pipe_token<net 0>, index) -> !ttl.ready_receive
+    func.return
+  }
+}
+
+// -----
+
 // A DFB-to-pipe copy must execute only on the pipe source node.
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {

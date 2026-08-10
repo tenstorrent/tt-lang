@@ -604,28 +604,19 @@ buildPipeModulePlan(ModuleOp module, ValueOriginAnalysis &analysis,
           getPipeReferenceForProtocolOp(possiblePosts.front(), transferIndex);
       std::optional<PipeWaitAnyCandidatePlan::Resources> candidateResources =
           getWaitAnyResources(possiblePosts.front());
-      if (failed(maybePipeReference) || !commonDFBIndex ||
-          !candidateResources) {
-        waitOp.emitError()
-            << "candidate receiver post has incomplete logical channel, DFB, "
-               "or completion-resource information";
-        return WalkResult::interrupt();
-      }
+      assert(succeeded(maybePipeReference) && commonDFBIndex &&
+             candidateResources &&
+             "validated wait-any post is missing planned resources");
       for (Operation *post : possiblePosts.drop_front()) {
         auto postOp = cast<PipeTransferPostOp>(post);
         std::optional<int64_t> dfbIndex =
             getCBIndex(getAttachedCB(postOp.getDst()));
         std::optional<PipeWaitAnyCandidatePlan::Resources> resources =
             getWaitAnyResources(post);
-        if (transferIndex.getTransferCreate(post) != commonCreate ||
-            dfbIndex != commonDFBIndex || !resources ||
-            !haveSameCompletionResources(*candidateResources, *resources)) {
-          waitOp.emitError()
-              << "requires each candidate's possible posts to use one logical "
-                 "receive channel, destination DFB stream, and completion "
-                 "resource";
-          return WalkResult::interrupt();
-        }
+        assert(transferIndex.getTransferCreate(post) == commonCreate &&
+               dfbIndex == commonDFBIndex && resources &&
+               haveSameCompletionResources(*candidateResources, *resources) &&
+               "wait-any completion groups must share planned resources");
       }
       waitPlan.candidates.emplace_back(std::move(*maybePipeReference),
                                        std::move(*candidateResources));

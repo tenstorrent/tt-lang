@@ -721,3 +721,50 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
     func.return
   }
 }
+
+// -----
+
+// Two publications that can execute together cannot consume one receive post.
+module attributes {ttl.launch_grid = array<i64: 2, 2>} {
+  func.func @coexecuting_receiver_publications(%condition0: i1,
+                                               %condition1: i1)
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %landing = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 1) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 1) net 0>
+    %block = ttl.cb_reserve %landing
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    // expected-note @below {{receiver core_x=1, core_y=0 uses DFB 0: post is consumed by multiple co-executing pushes}}
+    %request = ttl.copy %pipe, %block
+        : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 1) net 0>,
+           tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.receive_request
+    ttl.wait %request : !ttl.receive_request
+    scf.if %condition0 {
+      ttl.cb_push %landing
+          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    }
+    scf.if %condition1 {
+      ttl.cb_push %landing
+          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    }
+    func.return
+  }
+
+  func.func @coexecuting_receiver_publications_sender()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %source = ttl.bind_cb {cb_index = 1, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 1) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 1) net 0>
+    // expected-error @below {{collective pipe receiver address sequences are not proven equal for every transfer occurrence}}
+    %send = ttl.copy %source, %pipe
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+           !ttl.pipe<src(0, 0) dst(1, 0) to(1, 1) net 0>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send : !ttl.transfer_handle<write>
+    func.return
+  }
+}

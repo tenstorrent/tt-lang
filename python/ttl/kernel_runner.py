@@ -1575,13 +1575,23 @@ def _get_pipe_computed_address_dfb_allocation_bytes(
             max_allocation_bytes = max(
                 max_allocation_bytes, _get_dfb_allocation(config).total_size
             )
-        if max_allocation_bytes == 0:
-            raise ValueError(
-                f"computed-address receiver DFB[{dfb_index}] has no "
-                "compiler-managed storage"
-            )
-        allocation_bytes_by_index[dfb_index] = max_allocation_bytes
+        if max_allocation_bytes > 0:
+            allocation_bytes_by_index[dfb_index] = max_allocation_bytes
     return allocation_bytes_by_index
+
+
+def _uses_tensor_backed_computed_address(
+    config: PhysicalDFBConfig, dfb_index: int
+) -> bool:
+    if not config.storage_segments:
+        return False
+    tensor_backed = [segment.is_tensor_backed for segment in config.storage_segments]
+    if any(tensor_backed) and not all(tensor_backed):
+        raise ValueError(
+            f"computed-address receiver DFB {dfb_index} requires either "
+            "tensor-backed storage on every segment or compiler storage"
+        )
+    return all(tensor_backed)
 
 
 def build_pipe_computed_address_dfb_tensors(
@@ -1618,13 +1628,16 @@ def build_pipe_computed_address_dfb_tensors(
             )
         config = cb_configs[dfb_index]
         _validate_physical_dfb_config(config, dfb_index)
-        if config.storage_segments:
+        if _uses_tensor_backed_computed_address(config, dfb_index):
             continue
-        backing_cores = (
-            set(program_cores)
-            if config.allocation_nodes is None
-            else set(config.allocation_nodes)
-        )
+        if config.allocation_nodes is not None:
+            backing_cores = set(config.allocation_nodes)
+        elif config.storage_segments:
+            backing_cores = {
+                node for segment in config.storage_segments for node in segment.nodes
+            }
+        else:
+            backing_cores = set(program_cores)
         outside_program = backing_cores - program_cores
         if outside_program:
             raise ValueError(
@@ -1660,13 +1673,8 @@ def _get_tensor_backed_computed_address_bases(
                 f"computed-address receiver DFB index {dfb_index} is invalid"
             )
         config = cb_configs[dfb_index]
-        if not config.storage_segments:
+        if not _uses_tensor_backed_computed_address(config, dfb_index):
             continue
-        if any(not segment.is_tensor_backed for segment in config.storage_segments):
-            raise ValueError(
-                f"computed-address receiver DFB {dfb_index} requires either "
-                "tensor-backed storage on every segment or compiler storage"
-            )
         segment_bases = set()
         for segment in config.storage_segments:
             tensor_index = segment.tensor_index

@@ -45,6 +45,77 @@ module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64
 
 // -----
 
+// A result-selection branch preserves the enclosing destination domain.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @selected_receive_producer
+  // CHECK: ttl.wait_any
+  // CHECK: scf.if
+  // CHECK: ttl.cb_push
+  // CHECK-LABEL: func.func @selected_receive_consumer
+  // CHECK: ttl.cb_wait
+  func.func @selected_receive_producer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe0 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %pipe1 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 1
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 1>
+    %landing0 = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %landing1 = ttl.bind_cb {cb_index = 1, block_count = 2}
+        {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.if_dst %pipe0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %block0 = ttl.cb_reserve %landing0
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %block1 = ttl.cb_reserve %landing1
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %request0 = ttl.copy %pipe0, %block0
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.receive_request
+      %request1 = ttl.copy %pipe1, %block1
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 1>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.receive_request
+      %start = arith.constant 0 : index
+      %ready = ttl.wait_any %request0, %request1 start %start
+          : (!ttl.receive_request, !ttl.receive_request, index)
+          -> !ttl.ready_receive
+      %selected = ttl.ready_receive_index %ready : !ttl.ready_receive
+      %zero = arith.constant 0 : index
+      %selected0 = arith.cmpi eq, %selected, %zero : index
+      scf.if %selected0 {
+        ttl.cb_push %landing0
+            : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      }
+    }
+    func.return
+  }
+
+  func.func @selected_receive_consumer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %pipe0 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %landing0 = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.if_dst %pipe0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %block = ttl.cb_wait %landing0
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    }
+    func.return
+  }
+}
+
+// -----
+
 // A ttl.pipenet_scope is accepted when the surrounding predicate is contained
 // in the declared role domain. The verifier erases the scope.
 

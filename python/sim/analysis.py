@@ -152,7 +152,23 @@ def _is_ttl_copy_call(node: ast.expr) -> bool:
     )
 
 
-def _wait_any_request_names(node: ast.AST) -> set[str]:
+def _resolve_request_tuple_names(
+    expression: ast.expr,
+    request_tuple_bindings: dict[str, frozenset[str]],
+) -> frozenset[str] | None:
+    if isinstance(expression, ast.Name):
+        return request_tuple_bindings.get(expression.id)
+    if not isinstance(expression, ast.Tuple) or not all(
+        isinstance(element, ast.Name) for element in expression.elts
+    ):
+        return None
+    return frozenset(element.id for element in expression.elts)
+
+
+def _wait_any_request_names(
+    node: ast.AST,
+    request_tuple_bindings: dict[str, frozenset[str]],
+) -> set[str]:
     """Return simple variables consumed by a ttl.wait_any tuple."""
     names: set[str] = set()
     for candidate in ast.walk(node):
@@ -163,15 +179,30 @@ def _wait_any_request_names(node: ast.AST) -> set[str]:
             and isinstance(candidate.func.value, ast.Name)
             and candidate.func.value.id == "ttl"
             and candidate.args
-            and isinstance(candidate.args[0], ast.Tuple)
         ):
             continue
-        names.update(
-            element.id
-            for element in candidate.args[0].elts
-            if isinstance(element, ast.Name)
+        resolved_names = _resolve_request_tuple_names(
+            candidate.args[0], request_tuple_bindings
         )
+        if resolved_names is not None:
+            names.update(resolved_names)
     return names
+
+
+def _update_request_tuple_bindings(
+    stmt: ast.stmt,
+    request_tuple_bindings: dict[str, frozenset[str]],
+) -> None:
+    if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
+        return
+    target = stmt.targets[0]
+    if not isinstance(target, ast.Name):
+        return
+    resolved_names = _resolve_request_tuple_names(stmt.value, request_tuple_bindings)
+    if resolved_names is None:
+        request_tuple_bindings.pop(target.id, None)
+        return
+    request_tuple_bindings[target.id] = resolved_names
 
 
 def _find_copy_records(
@@ -210,6 +241,7 @@ def _find_copy_records(
     # *after* it; a wait that precedes the assignment (e.g. at the top of a loop
     # body to release the previous iteration's copy) must not suppress injection.
     wait_abs_linenos: dict[str, list[int]] = {}
+    request_tuple_bindings: dict[str, frozenset[str]] = {}
     for stmt in stmts:
         for node in ast.walk(stmt):
             if (
@@ -224,8 +256,9 @@ def _find_copy_records(
                     file_start_line + node.lineno - 1
                 )
         synchronization_line = file_start_line + stmt.lineno - 1
-        for name in _wait_any_request_names(stmt):
+        for name in _wait_any_request_names(stmt, request_tuple_bindings):
             wait_abs_linenos.setdefault(name, []).append(synchronization_line)
+        _update_request_tuple_bindings(stmt, request_tuple_bindings)
 
     return [
         (var, ln)
