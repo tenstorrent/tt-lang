@@ -2636,14 +2636,9 @@ class TTLGenericCompiler(TTCompilerBase):
 
     def _resolve_static_int(self, node, param_name):
         """Resolve a statically known Python integer without emitting SSA."""
-        literal = self._signed_int_literal(node)
-        if literal is not None:
-            return literal
-        if isinstance(node, ast.Name):
-            for namespace in (self.captures, self.fn_globals):
-                value = namespace.get(node.id)
-                if type(value) is int:
-                    return value
+        value = self._resolve_static_python_value(node)
+        if type(value) is int:
+            return value
         self._raise_error(
             node,
             f"ttl.call_extern_func() {param_name} must be a statically "
