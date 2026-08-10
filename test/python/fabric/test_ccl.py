@@ -17,7 +17,11 @@ import ttl
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 from examples.multidevice_all_reduce import make_structured_all_reduce_operation
-from ttlang_test_utils import get_fabric_mesh_shape, open_fabric_mesh
+from ttlang_test_utils import (
+    get_fabric_mesh_shape,
+    open_fabric_mesh,
+    requires_forwarding_link_indices,
+)
 from utils.correctness import assert_allclose
 
 pytestmark = pytest.mark.multi_device
@@ -763,6 +767,7 @@ def test_point_to_point(
 
 # Separate sender and receiver kernels require distinct forwarding links when
 # their connections execute concurrently in the same direction.
+@requires_forwarding_link_indices(ttnn)
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
 def test_bidirectional_exchange(
     fabric_mesh_shape,
@@ -1093,6 +1098,7 @@ def test_all_reduce(
 
 # Verify that each destination receives and reduces its corresponding tile
 # from every source device.
+@requires_forwarding_link_indices(ttnn)
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_REDUCTION_DTYPES)
 def test_reduce_scatter(
     fabric_mesh_shape,
@@ -1120,6 +1126,7 @@ def test_reduce_scatter(
     assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
 
 
+@requires_forwarding_link_indices(ttnn)
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
 def test_all_gather(
     fabric_mesh_shape,
@@ -1147,6 +1154,7 @@ def test_all_gather(
     assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
 
 
+@requires_forwarding_link_indices(ttnn)
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
 def test_all_to_all(
     fabric_mesh_shape,

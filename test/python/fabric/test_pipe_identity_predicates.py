@@ -12,7 +12,12 @@ import ttl
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from ttlang_test_utils import get_fabric_mesh_shape, open_fabric_mesh, to_dram
+from ttlang_test_utils import (
+    get_fabric_mesh_shape,
+    open_fabric_mesh,
+    requires_forwarding_link_indices,
+    to_dram,
+)
 from utils.correctness import assert_allclose
 
 pytestmark = pytest.mark.multi_device
@@ -119,6 +124,7 @@ def participant_mesh(fabric_mesh_shape, participant_mesh_shape):
                 ttnn.close_mesh_device(mesh)
 
 
+@requires_forwarding_link_indices(ttnn)
 @pytest.mark.parametrize(
     "torch_dtype,rtol,atol",
     [

@@ -86,6 +86,16 @@ def is_ttnn_available() -> bool:
     return _ttnn_available
 
 
+def requires_forwarding_link_indices(ttnn_module):
+    import pytest
+
+    return pytest.mark.xfail(
+        condition=not hasattr(ttnn_module, "get_forwarding_link_indices"),
+        reason="requires TTNN get_forwarding_link_indices()",
+        strict=True,
+    )
+
+
 def is_hardware_available() -> bool:
     """
     Check if Tenstorrent hardware is available.
@@ -463,6 +473,7 @@ def to_l1_sharded(torch_tensor, device, layout="height"):
 __all__ = [
     "is_ttnn_available",
     "is_hardware_available",
+    "requires_forwarding_link_indices",
     "require_ttnn",
     "require_hardware",
     "torch_dtype_from_name",

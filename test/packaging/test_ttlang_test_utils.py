@@ -156,6 +156,26 @@ def test_no_nodes_and_ttl_unimportable_is_unavailable(monkeypatch) -> None:
     assert module.is_hardware_available() is False
 
 
+# Strict mode rejects an unexpected pass while the required binding is absent.
+@pytest.mark.parametrize("has_binding", [False, True])
+def test_forwarding_link_indices_compatibility_marker(
+    monkeypatch, has_binding: bool
+) -> None:
+    module = _load_ttlang_test_utils(monkeypatch)
+    fake_ttnn = types.SimpleNamespace()
+    if has_binding:
+        fake_ttnn.get_forwarding_link_indices = lambda: None
+
+    marker = module.requires_forwarding_link_indices(fake_ttnn).mark
+
+    assert marker.name == "xfail"
+    assert marker.kwargs == {
+        "condition": not has_binding,
+        "reason": "requires TTNN get_forwarding_link_indices()",
+        "strict": True,
+    }
+
+
 def test_fabric_mesh_uses_discovered_shape(monkeypatch) -> None:
     module = _load_ttlang_test_utils(monkeypatch)
     fake_ttnn, events, mesh_device = _create_fake_fabric_ttnn((2, 4))
