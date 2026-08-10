@@ -219,6 +219,9 @@ struct LaunchNodeDomainState {
   void recordPipeNet(PipeType pipeType, Location loc,
                      std::optional<StringRef> name = std::nullopt);
 
+  /// Record one logical-device domain used by a predicate or PipeNet record.
+  void recordDeviceDomain(DeviceDomainAttr domain);
+
   void recordPipeNetRecords(PipeNetRecordsAttr records, Location loc);
 
   /// Populate launch-grid and PipeNet role domains from the module.
