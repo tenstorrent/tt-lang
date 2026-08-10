@@ -101,23 +101,21 @@ def current_branch_name() -> str:
     return os.environ.get("GITHUB_REF_NAME", "")
 
 
-def resolve_diff_base() -> tuple[str, bool]:
+def resolve_diff_base() -> str:
     configured_base = os.environ.get("TTLANG_PUBLIC_DIFF_BASE", "")
     if configured_base:
-        return configured_base, True
+        return configured_base
 
     github_base_branch = os.environ.get("GITHUB_BASE_REF", "")
     if github_base_branch:
-        return f"refs/remotes/origin/{github_base_branch}", True
-    return "refs/remotes/origin/main", False
+        return f"refs/remotes/origin/{github_base_branch}"
+    return "refs/remotes/origin/main"
 
 
 def check_branch_diff(target_ref: str, signatures: dict[int, frozenset[str]]) -> None:
-    base_ref, base_is_required = resolve_diff_base()
+    base_ref = resolve_diff_base()
     if not ref_exists(base_ref):
-        if base_is_required:
-            raise CheckFailure(f"cannot resolve required diff base {base_ref}")
-        return
+        raise CheckFailure(f"cannot resolve required diff base {base_ref}")
 
     branch_diff = run_git(
         ["diff", "--no-ext-diff", "--no-color", f"{base_ref}...{target_ref}"]
@@ -150,23 +148,32 @@ def check_push(signatures: dict[int, frozenset[str]]) -> None:
     if target_ref in _ZERO_OBJECT_IDS:
         return
 
-    for description, variable_name in (
-        ("local branch name", "PRE_COMMIT_LOCAL_BRANCH"),
-        ("remote branch name", "PRE_COMMIT_REMOTE_BRANCH"),
-    ):
-        check_content(
-            description, os.environ.get(variable_name, "").encode(), signatures
-        )
+    if not target_ref:
+        target_ref = os.environ.get("PRE_COMMIT_LOCAL_BRANCH", "") or "HEAD"
+    if not ref_exists(target_ref):
+        raise CheckFailure(f"cannot resolve pushed target ref {target_ref}")
 
-    if target_ref and ref_exists(target_ref):
-        check_branch_diff(target_ref, signatures)
+    for description, branch_name in (
+        (
+            "local branch name",
+            os.environ.get("PRE_COMMIT_LOCAL_BRANCH", "") or current_branch_name(),
+        ),
+        ("remote branch name", os.environ.get("PRE_COMMIT_REMOTE_BRANCH", "")),
+    ):
+        check_content(description, branch_name.encode(), signatures)
+
+    check_branch_diff(target_ref, signatures)
 
     source_ref = os.environ.get("PRE_COMMIT_FROM_REF", "")
-    if source_ref and target_ref and ref_exists(source_ref) and ref_exists(target_ref):
-        commit_messages = run_git(
-            ["log", "--format=%B%x00", f"{source_ref}..{target_ref}"]
-        ).stdout
-        check_content("pushed commit metadata", commit_messages, signatures)
+    if not source_ref or source_ref in _ZERO_OBJECT_IDS or not ref_exists(source_ref):
+        source_ref = resolve_diff_base()
+    if not ref_exists(source_ref):
+        raise CheckFailure(f"cannot resolve pushed source ref {source_ref}")
+
+    commit_messages = run_git(
+        ["log", "--format=%B%x00", f"{source_ref}..{target_ref}"]
+    ).stdout
+    check_content("pushed commit metadata", commit_messages, signatures)
 
 
 def parse_arguments() -> argparse.Namespace:

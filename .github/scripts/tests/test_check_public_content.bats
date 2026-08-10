@@ -8,8 +8,9 @@ setup() {
     git -C "$TEST_REPO" update-ref refs/remotes/origin/main HEAD
     CHECK_SCRIPT="$TEST_REPO/.github/scripts/check-public-content.py"
     RESTRICTED_TEXT="private-reference"
-    RESTRICTED_HASH=$(printf '%s' "$RESTRICTED_TEXT" | sha256sum)
-    TEST_SIGNATURE="${#RESTRICTED_TEXT}:${RESTRICTED_HASH%% *}"
+    TEST_SIGNATURE=$(python3 -c \
+        'import hashlib, sys; content = sys.argv[1].lower().encode(); print(f"{len(content)}:{hashlib.sha256(content).hexdigest()}")' \
+        "$RESTRICTED_TEXT")
 }
 
 run_check() {
@@ -68,6 +69,17 @@ run_check() {
     assert_output --partial "staged diff contains restricted public content"
 }
 
+@test "rejects restricted content in a staged filename" {
+    printf '%s\n' "ordinary text" > "$TEST_REPO/$RESTRICTED_TEXT.txt"
+    git -C "$TEST_REPO" add "$RESTRICTED_TEXT.txt"
+
+    run_check env GITHUB_HEAD_REF=feature/row-fusion \
+        bash -c 'cd "$1" && exec "$2" change' _ "$TEST_REPO" "$CHECK_SCRIPT"
+
+    assert_failure
+    assert_output --partial "staged diff contains restricted public content"
+}
+
 @test "rejects removal of restricted content" {
     printf '%s\n' "$RESTRICTED_TEXT" > "$TEST_REPO/change.txt"
     commit_all "$TEST_REPO" "add restricted reference"
@@ -91,6 +103,28 @@ run_check() {
 
     assert_failure
     assert_output --partial "cannot resolve required diff base"
+}
+
+@test "rejects an unresolved default diff base" {
+    git -C "$TEST_REPO" update-ref -d refs/remotes/origin/main
+
+    run_check env -u GITHUB_BASE_REF -u TTLANG_PUBLIC_DIFF_BASE \
+        GITHUB_HEAD_REF=feature/row-fusion \
+        bash -c 'cd "$1" && exec "$2" change' _ "$TEST_REPO" "$CHECK_SCRIPT"
+
+    assert_failure
+    assert_output --partial "cannot resolve required diff base"
+}
+
+@test "accepts an ordinary commit message in Git metadata" {
+    git_directory=$(git -C "$TEST_REPO" rev-parse --absolute-git-dir)
+    commit_message_file="$git_directory/COMMIT_EDITMSG"
+    printf '%s\n' "ordinary message" > "$commit_message_file"
+
+    run_check bash -c 'cd "$1" && exec "$2" commit-message "$3"' \
+        _ "$TEST_REPO" "$CHECK_SCRIPT" "$commit_message_file"
+
+    assert_success
 }
 
 @test "rejects restricted content in a commit message" {
@@ -136,6 +170,22 @@ run_check() {
     target_ref=$(git -C "$TEST_REPO" rev-parse HEAD)
 
     run_check env PRE_COMMIT_FROM_REF="$source_ref" PRE_COMMIT_TO_REF="$target_ref" \
+        PRE_COMMIT_LOCAL_BRANCH=refs/heads/feature/row-fusion \
+        PRE_COMMIT_REMOTE_BRANCH=refs/heads/feature/row-fusion \
+        bash -c 'cd "$1" && exec "$2" push' _ "$TEST_REPO" "$CHECK_SCRIPT"
+
+    assert_failure
+    assert_output --partial "pushed commit metadata contains restricted public content"
+}
+
+@test "rejects restricted commit metadata on a new branch push" {
+    zero_ref=0000000000000000000000000000000000000000
+    git -C "$TEST_REPO" switch -q -c feature/row-fusion
+    printf '%s\n' "ordinary change" > "$TEST_REPO/change.txt"
+    commit_all "$TEST_REPO" "mention $RESTRICTED_TEXT"
+    target_ref=$(git -C "$TEST_REPO" rev-parse HEAD)
+
+    run_check env PRE_COMMIT_FROM_REF="$zero_ref" PRE_COMMIT_TO_REF="$target_ref" \
         PRE_COMMIT_LOCAL_BRANCH=refs/heads/feature/row-fusion \
         PRE_COMMIT_REMOTE_BRANCH=refs/heads/feature/row-fusion \
         bash -c 'cd "$1" && exec "$2" push' _ "$TEST_REPO" "$CHECK_SCRIPT"
