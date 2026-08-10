@@ -22,7 +22,7 @@ KERNEL_TEMPLATES = {
     "scratch": """
 import ttl
 
-@ttl.operation(grid=({node_count}, 1))
+@ttl.operation(grid=({grid_x}, {grid_y}))
 def dfb_storage_mul(lhs, rhs, out):
     lhs_dfb = ttl.make_dataflow_buffer_like(
         lhs, shape=(1, {tile_count}), block_count=2
@@ -68,7 +68,7 @@ def dfb_storage_mul(lhs, rhs, out):
     "tensor_backed": """
 import ttl
 
-@ttl.operation(grid=({node_count}, 1))
+@ttl.operation(grid=({grid_x}, {grid_y}))
 def dfb_storage_mul(lhs, rhs, out):
     lhs_dfb = ttl.make_tensor_backed_dfb(
         lhs,
@@ -122,7 +122,8 @@ _SHARD_DIMENSION_BY_MEMORY_LAYOUT = {
 def _make_kernel(
     storage_kind,
     tile_count,
-    node_count,
+    grid_x,
+    grid_y=1,
     byte_offset=0,
     block_count=1,
     tile_rows=1,
@@ -131,13 +132,17 @@ def _make_kernel(
     assert (
         storage_kind != "scratch" or tile_rows == 1
     ), "scratch DFB template supports one tile row"
+    assert (
+        storage_kind != "scratch" or grid_y == 1
+    ), "scratch DFB template supports one grid row"
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".py", delete=False, prefix=f"{storage_kind}_dfb_"
     ) as source_file:
         source_file.write(
             KERNEL_TEMPLATES[storage_kind].format(
                 tile_count=tile_count,
-                node_count=node_count,
+                grid_x=grid_x,
+                grid_y=grid_y,
                 byte_offset=byte_offset,
                 block_count=block_count,
                 tile_rows=tile_rows,
@@ -146,7 +151,7 @@ def _make_kernel(
         source_name = source_file.name
     temp_kernel_files.append(source_name)
     spec = importlib.util.spec_from_file_location(
-        f"{storage_kind}_dfb_{tile_rows}_{tile_count}_{node_count}_"
+        f"{storage_kind}_dfb_{tile_rows}_{tile_count}_{grid_x}_{grid_y}_"
         f"{byte_offset}_{block_count}",
         source_name,
     )
@@ -188,6 +193,42 @@ def _to_height_sharded(torch_tensor, device, node_count):
         node_count,
         ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
     )
+
+
+def _to_block_sharded(
+    torch_tensor,
+    device,
+    grid_x,
+    grid_y,
+    shard_shape,
+    shard_orientation,
+):
+    dram_tensor = to_dram(torch_tensor, device)
+    shard_spec = ttnn.ShardSpec(
+        ttnn.CoreRangeSet(
+            {
+                ttnn.CoreRange(
+                    ttnn.CoreCoord(0, 0),
+                    ttnn.CoreCoord(grid_x - 1, grid_y - 1),
+                )
+            }
+        ),
+        shard_shape,
+        shard_orientation,
+    )
+    memory_config = ttnn.MemoryConfig(
+        ttnn.TensorMemoryLayout.BLOCK_SHARDED,
+        ttnn.BufferType.L1,
+        shard_spec,
+    )
+    return ttnn.to_memory_config(dram_tensor, memory_config=memory_config)
+
+
+def _assert_dtype_aware_allclose(actual, expected, torch_dtype):
+    if torch_dtype == torch.bfloat16:
+        assert_allclose(actual.float(), expected.float(), rtol=0.05, atol=1e-2)
+    else:
+        assert_allclose(actual.float(), expected.float(), rtol=5e-3, atol=1e-4)
 
 
 @ttl.operation(grid=(1, 1))
@@ -275,7 +316,65 @@ def test_tensor_backed_dfb_width_sharded_storage(
     )
 
     actual = ttnn.to_torch(out)
-    assert_pcc(expected.float(), actual.float(), threshold=0.999)
+    _assert_dtype_aware_allclose(actual, expected, torch_dtype)
+
+
+@pytest.mark.requires_device
+@pytest.mark.parametrize(
+    "torch_dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"]
+)
+@pytest.mark.parametrize(
+    "shard_orientation",
+    [ttnn.ShardOrientation.ROW_MAJOR, ttnn.ShardOrientation.COL_MAJOR],
+    ids=["row-major", "column-major"],
+)
+@pytest.mark.parametrize(
+    ("shard_tile_rows", "shard_tile_columns"),
+    [(1, 1), (2, 2)],
+    ids=["one-tile-shard", "four-tile-shard"],
+)
+def test_tensor_backed_dfb_block_sharded_storage(
+    device,
+    torch_dtype,
+    shard_orientation,
+    shard_tile_rows,
+    shard_tile_columns,
+):
+    """Tensor-backed DFBs bind each block shard on its launch node."""
+    grid_x = 2
+    grid_y = 2
+    shard_shape = (32 * shard_tile_rows, 32 * shard_tile_columns)
+    tensor_shape = (shard_shape[0] * grid_y, shard_shape[1] * grid_x)
+    torch.manual_seed(0)
+    lhs_torch = torch.rand(tensor_shape, dtype=torch_dtype)
+    rhs_torch = torch.rand(tensor_shape, dtype=torch_dtype)
+    expected = lhs_torch * rhs_torch
+
+    lhs = _to_block_sharded(
+        lhs_torch, device, grid_x, grid_y, shard_shape, shard_orientation
+    )
+    rhs = _to_block_sharded(
+        rhs_torch, device, grid_x, grid_y, shard_shape, shard_orientation
+    )
+    out = _to_block_sharded(
+        torch.zeros_like(expected),
+        device,
+        grid_x,
+        grid_y,
+        shard_shape,
+        shard_orientation,
+    )
+
+    _make_kernel(
+        "tensor_backed",
+        tile_count=shard_tile_columns,
+        grid_x=grid_x,
+        grid_y=grid_y,
+        tile_rows=shard_tile_rows,
+    )(lhs, rhs, out)
+
+    actual = ttnn.to_torch(out)
+    _assert_dtype_aware_allclose(actual, expected, torch_dtype)
 
 
 @pytest.mark.requires_device
@@ -288,10 +387,7 @@ def test_tensor_backed_dfb_block_count_two(device, torch_dtype):
     tile_count = 1
     tensor_shape = (32, 32 * tile_count * block_count)
     operation = _make_kernel(
-        "tensor_backed",
-        tile_count=tile_count,
-        node_count=1,
-        block_count=block_count,
+        "tensor_backed", tile_count=tile_count, grid_x=1, block_count=block_count
     )
 
     for seed in range(2):
@@ -362,7 +458,7 @@ def test_tensor_backed_dfb_nonzero_byte_offset(device, torch_dtype):
     out = _to_height_sharded(out_torch, device, node_count=1)
     byte_offset = int(lhs.get_tile().get_tile_size(lhs.dtype))
 
-    _make_kernel("tensor_backed", tile_count=1, node_count=1, byte_offset=byte_offset)(
+    _make_kernel("tensor_backed", tile_count=1, grid_x=1, byte_offset=byte_offset)(
         lhs, rhs, out
     )
 
@@ -386,7 +482,7 @@ def test_tensor_backed_dfb_rejects_range_past_shard_boundary(device, torch_dtype
     byte_offset = int(lhs.get_tile().get_tile_size(lhs.dtype))
 
     operation = _make_kernel(
-        "tensor_backed", tile_count=2, node_count=1, byte_offset=byte_offset
+        "tensor_backed", tile_count=2, grid_x=1, byte_offset=byte_offset
     )
     with pytest.raises(ValueError, match="exceeds logical per-shard size"):
         operation(lhs, rhs, out)
