@@ -672,8 +672,18 @@ class _AnchorPlanner:
 
     def _annotate(self, stmt: ast.stmt) -> None:
         if isinstance(stmt, (ast.For, ast.While, ast.If)):
-            for child in list(stmt.body) + list(stmt.orelse):
+            children = list(stmt.body) + list(stmt.orelse)
+            for child in children:
                 self._annotate(child)
+            # Restrict scalar control to the kernels that retain work in the
+            # body. This keeps a kernel-local predicate with its consumers.
+            child_kernels: Set[KernelSelector] = set()
+            for child in children:
+                child_kernels.update(
+                    self._state.anchor_selections.get(id(child), frozenset())
+                )
+            if child_kernels:
+                self._state.select(stmt, child_kernels)
             return
         if isinstance(stmt, ast.With):
             kernels = self._with_kernels(stmt)
@@ -958,11 +968,12 @@ def _prune_statement_list(
 
 
 def _is_external_call_statement(statement: ast.stmt) -> bool:
-    return (
-        isinstance(statement, ast.Expr)
-        and isinstance(statement.value, ast.Call)
-        and _is_external_call(statement.value)
-    )
+    # Each selected kernel receives independent local storage for a direct
+    # scalar result, so the assignment is safe to clone with the external call.
+    if isinstance(statement, (ast.Expr, ast.Assign, ast.AnnAssign)):
+        value = statement.value
+        return isinstance(value, ast.Call) and _is_external_call(value)
+    return False
 
 
 def _assigned_copy_target(stmt: ast.stmt) -> Optional[str]:

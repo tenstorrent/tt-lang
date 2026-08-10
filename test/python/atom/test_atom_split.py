@@ -384,6 +384,51 @@ def test_split_analysis_does_not_mutate_input_ast():
     )
 
 
+def test_external_scalar_result_assignment_is_replicated_with_selected_kernels():
+    writer = _logical_kernel(KernelKind.DATA_MOVEMENT, "writer")
+    fn = _fn(
+        """
+        def k():
+            active = ttl.call_extern_func(
+                "role.hpp",
+                "active",
+                result_type="i64",
+                kernel=(ttl.KernelKind.COMPUTE, ttl.KernelKind.DATA_MOVEMENT),
+            )
+            if active:
+                ttl.call_extern_func(
+                    "work.hpp", "compute", kernel=ttl.KernelKind.COMPUTE
+                )
+                ttl.call_extern_func(
+                    "work.hpp", "data_movement",
+                    kernel=ttl.KernelKind.DATA_MOVEMENT,
+                )
+            ttl.call_extern_func("work.hpp", "writer", kernel=writer)
+        """
+    )
+
+    result = split_function_body(
+        fn,
+        dfb_param_names=set(),
+        logical_kernels={"writer": writer},
+    )
+
+    compute = _kind_src(result, KernelKind.COMPUTE)
+    data_movement = _kind_src(result, KernelKind.DATA_MOVEMENT)
+    for source in (compute, data_movement):
+        assert "active = ttl.call_extern_func" in source
+        assert "if active:" in source
+        assert "kernel=" not in source
+    assert "'compute'" in compute
+    assert "'data_movement'" not in compute
+    assert "'data_movement'" in data_movement
+    assert "'compute'" not in data_movement
+    writer_source = _kernel_src(result, writer)
+    assert "active =" not in writer_source
+    assert "if active:" not in writer_source
+    assert "'writer'" in writer_source
+
+
 def test_unknown_ttl_op_is_rejected():
     fn = _fn(
         """
