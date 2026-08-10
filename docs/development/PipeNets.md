@@ -53,6 +53,75 @@ only within the static producer domain for that DFB index). The
 verifier reads the IR and emits diagnostics; it does not rewrite the
 program.
 
+### Graph PipeNet endpoints
+
+A local PipeNet specifies launch-node endpoints directly:
+
+```python
+net = ttl.PipeNet(
+    pipes=[ttl.Pipe(src=(1, 0), dst=(0, 0))],
+)
+```
+
+The graph-only form applies every logical-device edge to an identity pipe on
+every launch node. It remains available for operations in which the sending
+and receiving worker coordinate is the same:
+
+```python
+net = ttl.PipeNet(graph=graph)
+```
+
+When the source and destination worker coordinates differ, `graph` and
+`pipes` declare both endpoint relations explicitly:
+
+```python
+net = ttl.PipeNet(
+    graph=graph,
+    pipes=[ttl.Pipe(src=(1, 0), dst=(0, 0))],
+)
+```
+
+This declaration denotes the Cartesian product of the graph edges and the
+node pipes. One complete logical transfer is
+
+```text
+(source device, source node) -> (destination device, destination node)
+```
+
+Different node placements for different device relations use an ordered union
+of factorized mappings:
+
+```python
+net = ttl.PipeNet(
+    mappings=[
+        ttl.PipeMapping(graph=clockwise, pipes=[clockwise_pipe]),
+        ttl.PipeMapping(
+            graph=counterclockwise,
+            pipes=[counterclockwise_pipe],
+        ),
+    ],
+)
+```
+
+The declaration determines topology. `if_src` and `if_dst` iterate the
+declared transfers. `is_src`, `is_dst`, `is_active`, and equivalent coordinate
+conditions restrict execution to declared endpoint roles; guards do not add
+connectivity.
+
+The compiler retains each device graph and node-pipe list independently in
+TTL IR. Structured graph callback lowering enumerates only edges incident to
+the current logical device. Persistent IR and generated immutable metadata are
+`O(graph descriptor + node pipes)` and `O(local degree * node pipes)`,
+respectively. Explicit graphs require `O(V + E)` indexed adjacency. Runtime
+work remains proportional to the concrete transfers that execute.
+
+Transfer topology is compile-time information, but this does not require one
+source algorithm per device count. A CCL factory accepts a domain extent and
+constructs the applicable `DeviceDomain` and structured `TransferGraph`. One
+compiled operation instance has fixed logical domain extents; the same source
+factory supports every accepted extent. Physical device placement and route
+selection remain target-binding decisions and are not encoded in the graph.
+
 ## PipeNet callbacks and generated code
 
 A PipeNet record is one `ttl.Pipe` declaration: one source coordinate and one
@@ -64,7 +133,7 @@ each launch node executes that body once for every record in which the node has
 the requested source or destination role. Multiple matching records execute in
 PipeNet construction order.
 
-TTKernel conversion uses two representations:
+TTKernel conversion uses three representations:
 
 - For one to four records, conversion emits one static pipe and one coordinate
   condition per record. This avoids loop and table-lookup overhead for small
@@ -74,13 +143,25 @@ TTKernel conversion uses two representations:
   represents the current record inside the loop. This table-driven form emits
   one callback and transfer protocol body; only the immutable table contents
   grow with the number of records.
+- For graph mappings, conversion emits one loop over the current logical
+  device's incident edges and the mapping's node pipes. Structured graph
+  specializations derive the global, source-local, and destination-local edge
+  ordinals arithmetically. Explicit graphs use compact adjacency tables.
 
 The immutable tables become bit-packed C++ template arguments stored outside
-the kernel stack. Pipe graph analysis still creates one transfer node per
-record. A selected-pipe type identifies whether iteration selected the record
-by its source or destination coordinates; copy operand position determines
-whether that record is used for a send or receive. Launch-domain verification
-proves that the selected callback executes on the required endpoint.
+the kernel stack. A selected-pipe type identifies whether iteration selected
+the record by its source or destination coordinates; copy operand position
+determines whether that record is used for a send or receive. Launch-domain
+verification proves that the selected callback executes on the required
+endpoint.
+
+PipeGraph streams concrete transfers while proving protocol schedules and
+retains one compiler-only transfer node per semantically distinct transfer.
+Address sequences, liveness, and concurrent resource requirements may differ
+per transfer, so this proof state is `O(device edges * node pipes)`. It is
+discarded before code emission. It does not become TTL IR, generated source,
+program-descriptor tables, or device constants. Resource and route projections
+use one graph traversal and produce endpoint-local tables.
 
 Resource planning stores each record's address-table entry and synchronization
 indices in record order, and the loop index selects the corresponding values.
