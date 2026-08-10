@@ -523,42 +523,6 @@ void verifyPipeWaitGuard(WaitOp waitOp, const LaunchNodeDomain &domain,
                    {{netId, PipeRole::Destination}}, state);
 }
 
-/// Verify that every wait-any candidate is a receive on the current node.
-void verifyPipeWaitAnyGuard(WaitAnyOp waitOp, const LaunchNodeDomain &domain,
-                            Operation *unanalyzableOp, ModuleState &state) {
-  for (ArrayRef<Operation *> possiblePosts :
-       state.transfers.getReceivePosts(waitOp)) {
-    for (Operation *post : possiblePosts) {
-      CopyOp copyOp = cast<CopyOp>(post);
-      int64_t netId;
-      LaunchNodeDomain allowedDomain;
-      if (auto pipeType = dyn_cast<PipeType>(copyOp.getSrc().getType())) {
-        netId = pipeType.getPipeNetId();
-        allowedDomain = getPipeDestinationLaunchNodeDomain(
-            pipeType, state.launchDomains.baseDomain);
-      } else {
-        FailureOr<SelectedPipeRecords> selected =
-            getSelectedPipeRecords(copyOp.getSrc());
-        if (failed(selected)) {
-          state.reportInvalidSelectedPipeDefinition(copyOp);
-          return;
-        }
-        netId = selected->records.getPipeNetId();
-        allowedDomain = getPipeRecordsRoleLaunchNodeDomain(
-            selected->records, PipeRole::Destination);
-      }
-      std::string name = state.launchDomains.netName(netId);
-      std::string message;
-      llvm::raw_string_ostream(message)
-          << "this `ttl.wait_any` includes a receive request on launched nodes "
-             "that are not destinations of PipeNet "
-          << name;
-      checkKnownSubset(waitOp, domain, allowedDomain, unanalyzableOp, message,
-                       {{netId, PipeRole::Destination}}, state);
-    }
-  }
-}
-
 // Emit an op error when `current` is not a subset of `allowed`. Attaches an
 // example offending coord, the unanalyzable predicate location (if any), and
 // declaration notes for each named PipeNet role.
@@ -719,9 +683,6 @@ void recordGuardOperation(Operation *op, const LaunchNodeDomain &domain,
           [&](CopyOp copy) { verifyCopy(copy, domain, unanalyzableOp, state); })
       .Case<WaitOp>([&](WaitOp wait) {
         verifyPipeWaitGuard(wait, domain, unanalyzableOp, state);
-      })
-      .Case<WaitAnyOp>([&](WaitAnyOp wait) {
-        verifyPipeWaitAnyGuard(wait, domain, unanalyzableOp, state);
       })
       .Case<CBPushOp>([&](CBPushOp push) {
         FailureOr<int64_t> dfbId =

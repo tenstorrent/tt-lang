@@ -450,6 +450,29 @@ class TestCopyWaitAnalysis:
         ips = analyze_kernel_function(dm).injection_points
         assert ips == ()
 
+    def test_wait_any_tuple_literal_suppresses_copy_wait_injection(self):
+        """wait_any owns completion of every request in its tuple."""
+
+        def dm():
+            request0 = ttl.copy(pipe0, block0)  # noqa: F821
+            request1 = ttl.copy(pipe1, block1)  # noqa: F821
+            ttl.wait_any((request0, request1))
+
+        ips = analyze_kernel_function(dm).injection_points
+        assert ips == ()
+
+    def test_wait_any_tuple_binding_suppresses_copy_wait_injection(self):
+        """A named request tuple has the same completion ownership."""
+
+        def dm():
+            request0 = ttl.copy(pipe0, block0)  # noqa: F821
+            request1 = ttl.copy(pipe1, block1)  # noqa: F821
+            requests = (request0, request1)
+            ttl.wait_any(requests)
+
+        ips = analyze_kernel_function(dm).injection_points
+        assert ips == ()
+
     def test_outer_copy_waited_in_nested_callback_not_detected(self):
         """A transaction waited by a nested callback is explicitly waited."""
 

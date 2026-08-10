@@ -3,6 +3,43 @@
 
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics --pass-pipeline='builtin.module(convert-ttl-to-ttkernel)'
 
+// Every request must originate from a pipe receive copy.
+func.func @request_requires_pipe_receive_origin(
+    %request: !ttl.receive_request) {
+  %start = arith.constant 0 : index
+  // expected-error @below {{requires every request origin to be a pipe receive ttl.copy}}
+  %ready = ttl.wait_any %request start %start
+      : (!ttl.receive_request, index) -> !ttl.ready_receive
+  func.return
+}
+
+// -----
+
+// Distinct candidates cannot refer to the same receive copy.
+func.func @candidates_require_disjoint_receive_origins() {
+  %landing = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+  %dst = ttl.cb_reserve %landing
+      : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %request = ttl.copy %pipe, %dst
+      : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+         tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.receive_request
+  %same_request = builtin.unrealized_conversion_cast %request
+      : !ttl.receive_request to !ttl.receive_request
+  %start = arith.constant 0 : index
+  // expected-error @below {{requires request values with disjoint pipe receive origins}}
+  %ready = ttl.wait_any %request, %same_request start %start
+      : (!ttl.receive_request, !ttl.receive_request, index)
+      -> !ttl.ready_receive
+  func.return
+}
+
+// -----
+
 // A request merged from different PipeNets has no single logical tag.
 module attributes {ttl.launch_grid = array<i64: 1, 1>} {
   func.func @merged_pipenets(%condition: i1)

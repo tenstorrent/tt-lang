@@ -2435,11 +2435,8 @@ collectPipeTransferAllocationUnits(
       for (ArrayRef<Operation *> possiblePosts :
            transferIndex.getWaitAnyCandidatePosts(waitOp)) {
         for (Operation *postOp : possiblePosts) {
-          if (!pipeGraph.hasPipeTransferNodeForProtocolOp(postOp)) {
-            waitOp.emitError()
-                << "candidate receiver post is inactive at its pipe endpoint";
-            return WalkResult::interrupt();
-          }
+          assert(pipeGraph.hasPipeTransferNodeForProtocolOp(postOp) &&
+                 "validated wait-any post must have a transfer graph node");
           waitAnyOpsByPost[postOp].push_back(op);
         }
       }
@@ -2631,22 +2628,23 @@ buildWaitAnyCompletionGroups(ModuleOp module,
                              const PipeTransferIndex &transferIndex) {
   SmallVector<std::size_t> parents(units.size());
   std::iota(parents.begin(), parents.end(), 0);
-  llvm::DenseMap<Operation *, SmallVector<std::size_t>> unitIndicesByPost;
+  using RecordUnit = std::pair<unsigned, std::size_t>;
+  llvm::DenseMap<Operation *, SmallVector<RecordUnit>> unitsByPostRecord;
   for (auto indexedUnit : llvm::enumerate(units)) {
-    auto recordPost = [&](Operation *operation) {
-      if (isa<PipeTransferPostOp>(operation) &&
-          !llvm::is_contained(unitIndicesByPost[operation],
-                              indexedUnit.index())) {
-        unitIndicesByPost[operation].push_back(indexedUnit.index());
-      }
-    };
-    for (Operation *operation : indexedUnit.value().protocolOps) {
-      recordPost(operation);
-    }
+    llvm::SmallPtrSet<Operation *, 4> selectedPosts;
     for (auto [operation, recordIndex] :
          indexedUnit.value().selectedProtocolRecords) {
-      (void)recordIndex;
-      recordPost(operation);
+      if (isa<PipeTransferPostOp>(operation)) {
+        unitsByPostRecord[operation].push_back(
+            {recordIndex, indexedUnit.index()});
+        selectedPosts.insert(operation);
+      }
+    }
+    for (Operation *operation : indexedUnit.value().protocolOps) {
+      if (isa<PipeTransferPostOp>(operation) &&
+          !selectedPosts.contains(operation)) {
+        unitsByPostRecord[operation].push_back({0, indexedUnit.index()});
+      }
     }
   }
 
@@ -2659,35 +2657,37 @@ buildWaitAnyCompletionGroups(ModuleOp module,
           transferIndex.getTransferCreate(firstPost);
       std::optional<int64_t> commonDFBIndex = getCBIndex(
           getAttachedCB(cast<PipeTransferPostOp>(firstPost).getDst()));
-      auto firstUnitsIt = unitIndicesByPost.find(firstPost);
-      if (!commonDFBIndex || firstUnitsIt == unitIndicesByPost.end()) {
-        waitOp.emitError()
-            << "candidate receiver post has no destination DFB stream or "
-               "active transfer unit";
-        return WalkResult::interrupt();
-      }
-      ArrayRef<std::size_t> commonUnitIndices = firstUnitsIt->second;
+      auto firstUnitsIt = unitsByPostRecord.find(firstPost);
+      assert(commonDFBIndex && firstUnitsIt != unitsByPostRecord.end() &&
+             "active wait-any post must have a destination DFB and unit");
+      ArrayRef<RecordUnit> commonRecordUnits = firstUnitsIt->second;
       for (Operation *post : possiblePosts.drop_front()) {
         std::optional<int64_t> dfbIndex =
             getCBIndex(getAttachedCB(cast<PipeTransferPostOp>(post).getDst()));
-        auto unitsIt = unitIndicesByPost.find(post);
+        auto unitsIt = unitsByPostRecord.find(post);
         if (transferIndex.getTransferCreate(post) != commonCreate ||
-            dfbIndex != commonDFBIndex || unitsIt == unitIndicesByPost.end() ||
-            unitsIt->second.size() != commonUnitIndices.size()) {
+            dfbIndex != commonDFBIndex || unitsIt == unitsByPostRecord.end() ||
+            unitsIt->second.size() != commonRecordUnits.size()) {
           waitOp.emitError()
               << "requires each candidate's possible posts to use one logical "
                  "receive channel and destination DFB stream";
           return WalkResult::interrupt();
         }
-        for (auto [commonUnitIndex, unitIndex] :
-             llvm::zip_equal(commonUnitIndices, unitsIt->second)) {
-          if (!(units[commonUnitIndex].pipe == units[unitIndex].pipe)) {
+        for (const RecordUnit &commonRecordUnit : commonRecordUnits) {
+          unsigned recordIndex = commonRecordUnit.first;
+          std::size_t commonUnitIndex = commonRecordUnit.second;
+          auto matchingUnit =
+              llvm::find_if(unitsIt->second, [&](const RecordUnit &recordUnit) {
+                return recordUnit.first == recordIndex;
+              });
+          if (matchingUnit == unitsIt->second.end() ||
+              units[commonUnitIndex].pipe != units[matchingUnit->second].pipe) {
             waitOp.emitError()
-                << "requires each candidate's possible posts to use the same "
-                   "logical record index";
+                << "requires each candidate's possible posts to use one "
+                   "logical receive channel and destination DFB stream";
             return WalkResult::interrupt();
           }
-          mergeCompletionGroups(parents, commonUnitIndex, unitIndex);
+          mergeCompletionGroups(parents, commonUnitIndex, matchingUnit->second);
         }
       }
     }

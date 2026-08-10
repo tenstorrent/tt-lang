@@ -465,31 +465,14 @@ static bool hasMatchingReceiveWaitBeforePush(
                                           analysisState)) {
       continue;
     }
-    Operation *current = pushOp.getOperation();
-    while (Block *block = current->getBlock()) {
-      auto ifOp = dyn_cast_or_null<scf::IfOp>(block->getParentOp());
-      if (ifOp) {
-        std::optional<ReadyReceiveSelection> selection =
-            getReadyReceiveSelection(ifOp.getCondition());
-        bool inSelectedRegion =
-            selection && ((selection->selectedWhenTrue &&
-                           block->getParent() == &ifOp.getThenRegion()) ||
-                          (!selection->selectedWhenTrue &&
-                           block->getParent() == &ifOp.getElseRegion()));
-        if (inSelectedRegion &&
-            selection->candidateIndex ==
-                static_cast<int64_t>(use.candidateIndex) &&
-            selection->waitAny == use.wait.getOperation() &&
-            isBeforeInReceiverControlContext(use.wait, ifOp.getOperation(),
-                                             receiver, analysisState)) {
-          return true;
-        }
-      }
-      Operation *parent = block->getParentOp();
-      if (!parent || parent == use.wait.getOperation()) {
-        break;
-      }
-      current = parent;
+    auto isOrderedBefore = [&](Operation *before, Operation *after) {
+      return isBeforeInReceiverControlContext(before, after, receiver,
+                                              analysisState);
+    };
+    if (isInReadyReceiveSelectionRegion(
+            pushOp, use.wait, static_cast<int64_t>(use.candidateIndex),
+            isOrderedBefore)) {
+      return true;
     }
   }
   return false;

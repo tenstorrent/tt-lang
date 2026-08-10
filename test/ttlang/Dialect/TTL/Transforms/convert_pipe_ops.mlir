@@ -1732,3 +1732,51 @@ func.func @zero_trip_transfer()
   }
   func.return
 }
+
+// -----
+
+// Mutually exclusive publications consume one collective receive post once.
+// CHECK-LABEL: func.func @mutually_exclusive_receiver_publications
+// CHECK: scf.if
+// CHECK: ttkernel.cb_push_back
+// CHECK: } else {
+// CHECK: ttkernel.cb_push_back
+module attributes {ttl.launch_grid = array<i64: 2, 2>} {
+  func.func @mutually_exclusive_receiver_publications(%condition: i1)
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %landing = ttl.bind_cb {cb_index = 0, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 1) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 1) net 0>
+    %block = ttl.cb_reserve %landing
+        : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %request = ttl.copy %pipe, %block
+        : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 1) net 0>,
+           tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.receive_request
+    ttl.wait %request : !ttl.receive_request
+    scf.if %condition {
+      ttl.cb_push %landing
+          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    } else {
+      ttl.cb_push %landing
+          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    }
+    func.return
+  }
+
+  func.func @mutually_exclusive_receiver_publications_sender()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %source = ttl.bind_cb {cb_index = 1, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 1) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 1) net 0>
+    %send = ttl.copy %source, %pipe
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+           !ttl.pipe<src(0, 0) dst(1, 0) to(1, 1) net 0>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send : !ttl.transfer_handle<write>
+    func.return
+  }
+}

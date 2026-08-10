@@ -23,6 +23,65 @@ func.func @pipe_receive_without_reserve(%t: tensor<32x32xf32>) {
 
 // -----
 
+// Test: pipe receive result is a receive request.
+func.func @pipe_receive_requires_request() {
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  %block = ttl.cb_reserve %cb
+      : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+      -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+  // expected-error @below {{'ttl.copy' op pipe receive requires !ttl.receive_request result}}
+  %request = ttl.copy %pipe, %block
+      : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+         tensor<1x1x!ttcore.tile<32x32, f32>>)
+      -> !ttl.transfer_handle<read>
+  func.return
+}
+
+// -----
+
+// Test: pipe send result is a write transfer handle.
+func.func @pipe_send_requires_write_handle() {
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+  // expected-error @below {{'ttl.copy' op pipe send requires !ttl.transfer_handle<write> result}}
+  %send = ttl.copy %cb, %pipe
+      : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+         !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+      -> !ttl.receive_request
+  func.return
+}
+
+// -----
+
+// Test: a non-pipe copy result records its transfer direction.
+func.func @non_pipe_copy_requires_direction(
+    %input: tensor<1x1x!ttcore.tile<32x32, f32>>) {
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+  // expected-error @below {{'ttl.copy' op non-pipe copy requires a direction-typed transfer handle result}}
+  %transfer = ttl.copy %input, %cb
+      : (tensor<1x1x!ttcore.tile<32x32, f32>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>)
+      -> !ttl.transfer_handle
+  func.return
+}
+
+// -----
+
+// Test: wait accepts only transfer and receive completion values.
+func.func @wait_requires_completion_value(%value: i32) {
+  // expected-error @below {{'ttl.wait' op expects transfer handle or receive request, got 'i32'}}
+  ttl.wait %value : i32
+  func.return
+}
+
+// -----
+
 // Test: an internal pipe transfer must deliver at least one original DFB block.
 func.func @pipe_transfer_block_span_positive() {
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>

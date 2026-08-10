@@ -96,6 +96,8 @@ struct PipeKey {
            pipeNetId == other.pipeNetId;
   }
 
+  bool operator!=(const PipeKey &other) const { return !(*this == other); }
+
   bool hasSingleReceiver() const {
     return dstStartX == dstEndX && dstStartY == dstEndY;
   }

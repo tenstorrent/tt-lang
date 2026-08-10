@@ -24,6 +24,7 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/IR/Dominance.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -44,6 +45,7 @@ struct WaitAnyCandidate {
 
 struct ConditionalReceiveReleasePlan {
   DenseSet<Operation *> reserves;
+  SmallVector<Operation *> reserveOrder;
   DenseMap<Operation *, SmallVector<WaitAnyCandidate>> candidatesByReserve;
   DenseMap<Operation *, SmallVector<WaitOp>> exactWaitsByReserve;
 };
@@ -98,13 +100,11 @@ buildConditionalReceiveReleasePlan(func::FuncOp func,
       }
       for (CopyOp receiveCopy : *receiveCopies) {
         CBReserveOp reserve = findCBReserveForPipeReceive(receiveCopy.getDst());
-        if (!reserve) {
-          receiveCopy.emitOpError()
-              << "requires a cb_reserve destination for wait-any";
-          return WalkResult::interrupt();
-        }
+        assert(reserve && "pipe receive verifier requires a DFB reservation");
         Operation *reserveOperation = reserve.getOperation();
-        plan.reserves.insert(reserveOperation);
+        if (plan.reserves.insert(reserveOperation).second) {
+          plan.reserveOrder.push_back(reserveOperation);
+        }
         plan.candidatesByReserve[reserveOperation].push_back(
             WaitAnyCandidate{waitAny, static_cast<unsigned>(candidateIndex)});
       }
@@ -141,69 +141,80 @@ buildConditionalReceiveReleasePlan(func::FuncOp func,
   return plan;
 }
 
-static bool executesBefore(Operation *before, Operation *after) {
-  if (before->getBlock() == after->getBlock()) {
-    return before->isBeforeInBlock(after);
-  }
-  Operation *afterAncestor = before->getBlock()->findAncestorOpInBlock(*after);
-  return afterAncestor && before->isBeforeInBlock(afterAncestor);
-}
-
-static bool isSelectedCandidateRelease(Operation *release,
-                                       WaitAnyCandidate candidate) {
-  Operation *current = release;
-  while (Block *block = current->getBlock()) {
-    auto ifOp = dyn_cast_or_null<scf::IfOp>(block->getParentOp());
-    if (ifOp) {
-      std::optional<ReadyReceiveSelection> selection =
-          getReadyReceiveSelection(ifOp.getCondition());
-      bool inSelectedRegion =
-          selection && ((selection->selectedWhenTrue &&
-                         block->getParent() == &ifOp.getThenRegion()) ||
-                        (!selection->selectedWhenTrue &&
-                         block->getParent() == &ifOp.getElseRegion()));
-      if (inSelectedRegion &&
-          selection->candidateIndex ==
-              static_cast<int64_t>(candidate.candidateIndex) &&
-          selection->waitAny == candidate.waitAny.getOperation() &&
-          executesBefore(candidate.waitAny, ifOp)) {
-        return true;
+static LogicalResult
+validateConditionalReceiveReleases(ArrayRef<Operation *> pushes,
+                                   const ConditionalReceiveReleasePlan &plan,
+                                   const DFBAcquireReleaseIndex &lifecycles,
+                                   const DominanceInfo &dominanceInfo) {
+  DenseSet<Operation *> publishedReserves;
+  auto isOrderedBefore = [&](Operation *before, Operation *after) {
+    return dominanceInfo.properlyDominates(before, after);
+  };
+  for (Operation *push : pushes) {
+    for (Operation *reserve : plan.reserveOrder) {
+      auto candidates = plan.candidatesByReserve.find(reserve);
+      assert(candidates != plan.candidatesByReserve.end() &&
+             "planned wait-any reserve must have a candidate");
+      Value dfb = getDFBAcquireDFB(reserve);
+      if (getDFBReleaseDFB(push) != dfb) {
+        continue;
+      }
+      for (WaitAnyCandidate candidate : candidates->second) {
+        bool sharesStream =
+            llvm::any_of(plan.reserveOrder, [&](Operation *otherReserve) {
+              if (otherReserve == reserve ||
+                  getDFBAcquireDFB(otherReserve) != dfb) {
+                return false;
+              }
+              auto otherCandidates =
+                  plan.candidatesByReserve.find(otherReserve);
+              assert(otherCandidates != plan.candidatesByReserve.end() &&
+                     "planned wait-any reserve must have a candidate");
+              return llvm::any_of(
+                  otherCandidates->second, [&](WaitAnyCandidate other) {
+                    return other.waitAny == candidate.waitAny &&
+                           other.candidateIndex != candidate.candidateIndex;
+                  });
+            });
+        if (sharesStream && isInReadyReceiveSelectionRegion(
+                                push, candidate.waitAny,
+                                static_cast<int64_t>(candidate.candidateIndex),
+                                isOrderedBefore)) {
+          push->emitError(
+              "wait-any candidates published according to selection must use "
+              "separate destination dataflow buffer streams");
+          return failure();
+        }
       }
     }
-    Operation *parent = block->getParentOp();
-    if (!parent || parent == candidate.waitAny.getOperation()) {
-      break;
-    }
-    current = parent;
-  }
-  return false;
-}
 
-static LogicalResult
-validateConditionalReceiveReleases(ArrayRef<Operation *> reserves,
-                                   ArrayRef<Operation *> pushes,
-                                   const ConditionalReceiveReleasePlan &plan) {
-  for (Operation *reserve : reserves) {
-    if (!plan.reserves.contains(reserve)) {
-      continue;
+    const DFBReleaseOwnership &ownership = lifecycles.getReleaseOwnership(push);
+    ArrayRef<Operation *> owners = ownership.candidateOwners;
+    if (ownership.ownership == DFBReleaseOwnershipKind::Unresolved) {
+      ArrayRef<Operation *> intervalOwners =
+          lifecycles.getReleaseIntervalOwners(push);
+      if (!intervalOwners.empty()) {
+        owners = intervalOwners;
+      }
     }
-    DFBAcquireInterval interval = makeDFBAcquireInterval(reserve, reserves);
-    Operation *last = findLastDFBAcquireOwnedUse(interval);
-    DFBReleaseSearch releaseSearch =
-        findOwnedDFBReleases(interval, last, pushes);
-    SmallVector<Operation *> ownedPushes = releaseSearch.sameLevelReleases;
-    llvm::append_range(ownedPushes, releaseSearch.nestedReleases);
-    for (Operation *push : ownedPushes) {
+    for (Operation *reserve : owners) {
+      if (!plan.reserves.contains(reserve)) {
+        continue;
+      }
+      publishedReserves.insert(reserve);
       auto exactWaits = plan.exactWaitsByReserve.find(reserve);
       bool hasExactWait = exactWaits != plan.exactWaitsByReserve.end() &&
                           llvm::any_of(exactWaits->second, [&](WaitOp wait) {
-                            return executesBefore(wait, push);
+                            return isOrderedBefore(wait, push);
                           });
       auto candidates = plan.candidatesByReserve.find(reserve);
       bool hasSelectedCandidate =
           candidates != plan.candidatesByReserve.end() &&
           llvm::any_of(candidates->second, [&](WaitAnyCandidate candidate) {
-            return isSelectedCandidateRelease(push, candidate);
+            return isInReadyReceiveSelectionRegion(
+                push, candidate.waitAny,
+                static_cast<int64_t>(candidate.candidateIndex),
+                isOrderedBefore);
           });
       if (!hasExactWait && !hasSelectedCandidate) {
         push->emitError(
@@ -212,6 +223,13 @@ validateConditionalReceiveReleases(ArrayRef<Operation *> reserves,
         return failure();
       }
     }
+  }
+  for (Operation *reserve : plan.reserveOrder) {
+    if (publishedReserves.contains(reserve)) {
+      continue;
+    }
+    reserve->emitError("wait-any receive reservation is never published");
+    return failure();
   }
   return success();
 }
@@ -230,10 +248,26 @@ struct TTLInsertCBSyncPass
     }
 
     DFBAcquireReleaseOperations operations = collectDFBAcquireReleaseOps(func);
-    if (failed(validateConditionalReceiveReleases(
-            operations.reserves, operations.pushes, *conditionalReleasePlan))) {
-      signalPassFailure();
-      return;
+    if (!conditionalReleasePlan->reserves.empty()) {
+      PlanningResult<std::unique_ptr<DFBAcquireReleaseIndex>> lifecycleResult =
+          DFBAcquireReleaseIndex::create(func);
+      if (lifecycleResult.isInvalidIR()) {
+        const PlanningDiagnostic &diagnostic = lifecycleResult.getInvalidIR();
+        diagnostic.operation->emitError(diagnostic.message);
+        signalPassFailure();
+        return;
+      }
+      assert(lifecycleResult.isPlanned() &&
+             "DFB lifecycle indexing has no recoverable rejection");
+      std::unique_ptr<DFBAcquireReleaseIndex> lifecycles =
+          std::move(lifecycleResult).takePlan();
+      DominanceInfo dominanceInfo(func);
+      if (failed(validateConditionalReceiveReleases(
+              operations.pushes, *conditionalReleasePlan, *lifecycles,
+              dominanceInfo))) {
+        signalPassFailure();
+        return;
+      }
     }
 
     OpBuilder builder(func.getContext());

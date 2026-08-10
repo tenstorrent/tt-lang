@@ -427,6 +427,51 @@ func.func @wait_any_requires_explicit_push(%condition: i1)
 
 // -----
 
+// Two receives into one DFB publish in reservation order after exact waits.
+
+// CHECK-LABEL: func.func @wait_any_shared_dfb_in_order
+// CHECK: ttl.wait_any
+// CHECK: ttl.wait
+// CHECK-NEXT: ttl.cb_push
+// CHECK: ttl.wait
+// CHECK-NEXT: ttl.cb_push
+// CHECK-NOT: ttl.cb_push
+// CHECK: return
+func.func @wait_any_shared_dfb_in_order()
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %landing = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %pipe0 = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+  %pipe1 = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 1
+      : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>
+  %block0 = ttl.cb_reserve %landing
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %request0 = ttl.copy %pipe0, %block0
+      : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+         tensor<1x1x!ttcore.tile<32x32, bf16>>) -> !ttl.receive_request
+  %block1 = ttl.cb_reserve %landing
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %request1 = ttl.copy %pipe1, %block1
+      : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>,
+         tensor<1x1x!ttcore.tile<32x32, bf16>>) -> !ttl.receive_request
+  %start = arith.constant 0 : index
+  %ready = ttl.wait_any %request0, %request1 start %start
+      : (!ttl.receive_request, !ttl.receive_request, index)
+      -> !ttl.ready_receive
+  ttl.wait %request0 : !ttl.receive_request
+  ttl.cb_push %landing
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  ttl.wait %request1 : !ttl.receive_request
+  ttl.cb_push %landing
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  func.return
+}
+
+// -----
+
 // Test 15: scf.if nested inside scf.for, pop inside if branch.
 // Pop hoisted out of if, stays inside the for body.
 

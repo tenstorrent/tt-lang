@@ -136,22 +136,23 @@ struct PipeTransferExpansionPlan {
 /// Return whether the selected expansion mode includes `pipe`.
 static bool
 shouldExpandPipeValue(Value pipe, PipeTransferExpansionMode mode,
-                      const llvm::DenseSet<PipeKey> &selectedPipeKeys) {
+                      const llvm::DenseSet<PipeKey> &deferredStaticPipeKeys) {
   if (mode == PipeTransferExpansionMode::All) {
     return true;
   }
   auto pipeType =
       mlir::dyn_cast<PipeType>(traceUnrealizedCasts(pipe).getType());
-  return pipeType && !selectedPipeKeys.contains(getPipeKey(pipeType));
+  return pipeType && !deferredStaticPipeKeys.contains(getPipeKey(pipeType));
 }
 
-/// Return the static pipe relations that also occur in selected callbacks.
+/// Return static pipe relations that must remain with selected transfers.
 ///
-/// Partially expanding either endpoint would expose an incomplete transfer to
-/// PipeGraph while its corresponding selected endpoint remains high-level IR.
+/// A wait-any operation and its candidate receives are expanded together.
+/// Static candidates therefore remain unexpanded when any candidate uses a
+/// selected pipe.
 static FailureOr<llvm::DenseSet<PipeKey>>
-collectSelectedPipeKeys(ModuleOp module) {
-  llvm::DenseSet<PipeKey> selectedPipeKeys;
+collectDeferredStaticPipeKeys(ModuleOp module, ValueOriginAnalysis &analysis) {
+  llvm::DenseSet<PipeKey> deferredStaticPipeKeys;
   LogicalResult result = success();
   module.walk([&](CopyOp copyOp) {
     Value pipe;
@@ -173,14 +174,54 @@ collectSelectedPipeKeys(ModuleOp module) {
       return;
     }
     for (PipeRecordAttr record : maybeRecords->records.getPipes()) {
-      selectedPipeKeys.insert(
+      deferredStaticPipeKeys.insert(
           getPipeKey(record, maybeRecords->records.getPipeNetId()));
     }
   });
   if (failed(result)) {
     return failure();
   }
-  return selectedPipeKeys;
+
+  bool changed;
+  do {
+    changed = false;
+    module.walk([&](WaitAnyOp waitOp) {
+      SmallVector<PipeKey> candidateStaticPipes;
+      bool containsDeferredCandidate = false;
+      for (Value request : waitOp.getRequests()) {
+        FailureOr<SmallVector<CopyOp>> maybeCopyOps =
+            findPipeReceiveCopies(analysis, request);
+        if (failed(maybeCopyOps)) {
+          waitOp.emitError()
+              << "requires every request origin to be a pipe receive ttl.copy";
+          result = failure();
+          return;
+        }
+        for (CopyOp copyOp : *maybeCopyOps) {
+          Type pipeType = traceUnrealizedCasts(copyOp.getSrc()).getType();
+          if (mlir::isa<SelectedPipeSrcType, SelectedPipeDstType>(pipeType)) {
+            containsDeferredCandidate = true;
+            continue;
+          }
+          auto staticPipeType = mlir::dyn_cast<PipeType>(pipeType);
+          assert(staticPipeType && "verified pipe receive has a pipe source");
+          PipeKey pipeKey = getPipeKey(staticPipeType);
+          candidateStaticPipes.push_back(pipeKey);
+          containsDeferredCandidate |= deferredStaticPipeKeys.contains(pipeKey);
+        }
+      }
+      if (!containsDeferredCandidate) {
+        return;
+      }
+      for (const PipeKey &pipeKey : candidateStaticPipes) {
+        changed |= deferredStaticPipeKeys.insert(pipeKey).second;
+      }
+    });
+  } while (succeeded(result) && changed);
+  if (failed(result)) {
+    return failure();
+  }
+  return deferredStaticPipeKeys;
 }
 
 /// Collect every replacement before expansion invalidates origin analysis.
@@ -188,18 +229,19 @@ static FailureOr<PipeTransferExpansionPlan>
 buildPipeTransferExpansionPlan(ModuleOp module, ValueOriginAnalysis &analysis,
                                PipeTransferExpansionMode mode) {
   PipeTransferExpansionPlan plan;
-  FailureOr<llvm::DenseSet<PipeKey>> maybeSelectedPipeKeys =
-      collectSelectedPipeKeys(module);
-  if (failed(maybeSelectedPipeKeys)) {
+  FailureOr<llvm::DenseSet<PipeKey>> maybeDeferredStaticPipeKeys =
+      collectDeferredStaticPipeKeys(module, analysis);
+  if (failed(maybeDeferredStaticPipeKeys)) {
     return failure();
   }
-  const llvm::DenseSet<PipeKey> &selectedPipeKeys = *maybeSelectedPipeKeys;
+  const llvm::DenseSet<PipeKey> &deferredStaticPipeKeys =
+      *maybeDeferredStaticPipeKeys;
   module.walk([&](CreatePipeOp op) { plan.createPipes.push_back(op); });
 
   LogicalResult result = success();
   module.walk([&](CopyOp op) {
     if (isPipeReceiveCopy(op)) {
-      if (!shouldExpandPipeValue(op.getSrc(), mode, selectedPipeKeys)) {
+      if (!shouldExpandPipeValue(op.getSrc(), mode, deferredStaticPipeKeys)) {
         return;
       }
       FailureOr<PipeTransferContract> contract =
@@ -221,7 +263,7 @@ buildPipeTransferExpansionPlan(ModuleOp module, ValueOriginAnalysis &analysis,
       return;
     }
     if (isPipeSendCopy(op)) {
-      if (!shouldExpandPipeValue(op.getDst(), mode, selectedPipeKeys)) {
+      if (!shouldExpandPipeValue(op.getDst(), mode, deferredStaticPipeKeys)) {
         return;
       }
       FailureOr<PipeTransferContract> contract =
@@ -259,7 +301,7 @@ buildPipeTransferExpansionPlan(ModuleOp module, ValueOriginAnalysis &analysis,
       return;
     }
     CopyOp copyOp = **maybeCopyOp;
-    if (!shouldExpandPipeValue(copyOp.getSrc(), mode, selectedPipeKeys)) {
+    if (!shouldExpandPipeValue(copyOp.getSrc(), mode, deferredStaticPipeKeys)) {
       return;
     }
     FailureOr<int64_t> pipeNetId =
@@ -291,7 +333,8 @@ buildPipeTransferExpansionPlan(ModuleOp module, ValueOriginAnalysis &analysis,
           result = failure();
           return;
         }
-        if (!shouldExpandPipeValue(copyOp.getSrc(), mode, selectedPipeKeys)) {
+        if (!shouldExpandPipeValue(copyOp.getSrc(), mode,
+                                   deferredStaticPipeKeys)) {
           return;
         }
         FailureOr<int64_t> pipeNetId =

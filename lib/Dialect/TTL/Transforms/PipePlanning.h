@@ -200,11 +200,6 @@ public:
   }
 
 private:
-  friend FailureOr<PipeModulePlan>
-  buildPipeModulePlan(ModuleOp, ValueOriginAnalysis &,
-                      const PipeTransferIndex &, const PipeGraph &,
-                      const PipePlanningOptions &);
-
   PipeReference pipeReference;
   Resources resources;
 };
