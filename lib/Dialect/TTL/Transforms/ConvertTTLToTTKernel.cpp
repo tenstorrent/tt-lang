@@ -457,7 +457,7 @@ static Value buildTensorAccessor(Location loc,
                                  ConversionPatternRewriter &rewriter,
                                  int32_t baseCTA, int32_t globalTensorIdx,
                                  int32_t crtaIndex, Value bankBase,
-                                 Value pageSize) {
+                                 Value pageSizeOverride) {
   std::string ctaExpr =
       "tensor_accessor::detail::get_tensor_accessor_args_cta_offset<" +
       std::to_string(globalTensorIdx) + ", " + std::to_string(baseCTA) + ">()";
@@ -470,7 +470,7 @@ static Value buildTensorAccessor(Location loc,
       /*prev_args=*/Value(), rewriter.getStringAttr(ctaExpr),
       /*crta_expr=*/nullptr);
   auto accessor = ttk::TensorAccessorOp::create(rewriter, loc, args.getResult(),
-                                                bankBase, pageSize);
+                                                bankBase, pageSizeOverride);
   return accessor.getResult();
 }
 
@@ -1083,8 +1083,11 @@ getBaseCTAAndGlobalTensorIdx(unsigned argIdx, Operation *op) {
   return std::make_pair(baseCTA, globalTensorIdx);
 }
 
-/// Validate TTLLayoutAttr encoding on a tensor and return the page size.
-static FailureOr<int64_t> getValidatedPageSize(Value tensor, Operation *op) {
+/// Validate TTLLayoutAttr encoding and return a static page-size override when
+/// tiled storage defines one. Row-major accessors use the backing tensor's
+/// aligned page size encoded in TensorAccessorArgs.
+static FailureOr<std::optional<int64_t>>
+getValidatedStaticPageSize(Value tensor, Operation *op) {
   auto tensorTy = llvm::dyn_cast<RankedTensorType>(tensor.getType());
   if (!tensorTy) {
     return op->emitError("expected RankedTensorType for tensor accessor");
@@ -1098,27 +1101,34 @@ static FailureOr<int64_t> getValidatedPageSize(Value tensor, Operation *op) {
         "materialization; Python layer should reject tensors without layout");
   }
 
-  // TTL layouts are always tiled. Compute page size from tile element type.
-  auto tileType =
-      mlir::dyn_cast<tt::ttcore::TileType>(layoutAttr.getElementType());
-  if (!tileType) {
-    return op->emitError("layout element type must be a TileType");
+  Type elementType = layoutAttr.getElementType();
+  if (auto tileType = mlir::dyn_cast<tt::ttcore::TileType>(elementType)) {
+    return std::optional<int64_t>(tileType.getSizeBytes());
   }
 
-  return tileType.getSizeBytes();
+  if (!mlir::isa<mlir::BFloat16Type, mlir::Float32Type>(elementType)) {
+    return op->emitError(
+        "row-major TensorAccessor supports only bf16 and f32 elements");
+  }
+  if (layoutAttr.getMemoryLayout() != TensorMemoryLayout::Interleaved) {
+    return op->emitError(
+        "row-major TensorAccessor currently requires interleaved memory");
+  }
+  return std::optional<int64_t>();
 }
 
 struct TensorAccessorInfo {
   unsigned argIdx = 0;
   int32_t baseCTA = 0;
   int32_t globalTensorIdx = 0;
-  int64_t pageSizeBytes = 0;
+  std::optional<int64_t> pageSizeBytes;
 };
 
 static FailureOr<TensorAccessorInfo>
 getTensorAccessorInfo(Value tensor, Operation *op,
                       ConversionPatternRewriter &rewriter) {
-  FailureOr<int64_t> pageSizeBytes = getValidatedPageSize(tensor, op);
+  FailureOr<std::optional<int64_t>> pageSizeBytes =
+      getValidatedStaticPageSize(tensor, op);
   if (failed(pageSizeBytes)) {
     return failure();
   }
@@ -1142,12 +1152,15 @@ static Value materializeTensorAccessor(Value tensor, Value bankBase,
                                        ConversionPatternRewriter &rewriter) {
   auto loc = tensor.getLoc();
 
-  auto pageSize =
-      arith::ConstantIntOp::create(rewriter, loc, info.pageSizeBytes, 32);
+  Value pageSizeOverride;
+  if (info.pageSizeBytes) {
+    pageSizeOverride =
+        arith::ConstantIntOp::create(rewriter, loc, *info.pageSizeBytes, 32);
+  }
 
   return buildTensorAccessor(loc, rewriter, info.baseCTA, info.globalTensorIdx,
                              static_cast<int32_t>(info.argIdx), bankBase,
-                             pageSize);
+                             pageSizeOverride);
 }
 
 /// Extract tile grid shape from a Value with a static ranked tensor type.
@@ -1235,6 +1248,10 @@ static LogicalResult lowerTensorCBCopy(
   if (failed(accessorInfo)) {
     return failure();
   }
+  if (!accessorInfo->pageSizeBytes) {
+    return rewriter.notifyMatchFailure(
+        op, "native tensor copies require tiled tensor storage");
+  }
 
   FailureOr<CircularBufferType> maybeDFBType =
       utils::getTTLCircularBufferType(cb);
@@ -1310,7 +1327,7 @@ static LogicalResult lowerTensorCBCopy(
     cbPtrIdx = arith::IndexCastOp::create(rewriter, loc, indexTy, cbPtr);
   }
   auto pageSizeIdx = arith::ConstantIndexOp::create(
-      rewriter, loc, accessorInfo->pageSizeBytes);
+      rewriter, loc, *accessorInfo->pageSizeBytes);
   auto i32Ty = rewriter.getI32Type();
   int64_t nocIndex = getNocIndex(op);
   Value nocVal = arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),

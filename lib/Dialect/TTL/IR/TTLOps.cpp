@@ -2980,13 +2980,22 @@ mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
                          "slices/views are not supported");
     }
     auto layout = mlir::cast<tt::ttl::LayoutAttr>(tensorType.getEncoding());
-    auto tileType =
-        mlir::dyn_cast<tt::ttcore::TileType>(layout.getElementType());
-    if (!tileType ||
-        (tileType.getDataType() != tt::ttcore::DataType::BFloat16 &&
-         tileType.getDataType() != tt::ttcore::DataType::Float32)) {
+    Type elementType = layout.getElementType();
+    auto tileType = mlir::dyn_cast<tt::ttcore::TileType>(elementType);
+    bool supportedTile =
+        tileType && (tileType.getDataType() == tt::ttcore::DataType::BFloat16 ||
+                     tileType.getDataType() == tt::ttcore::DataType::Float32);
+    bool supportedRowMajor =
+        mlir::isa<mlir::BFloat16Type, mlir::Float32Type>(elementType);
+    if (!supportedTile && !supportedRowMajor) {
       return emitOpError(
-          "TensorAccessor operands support only bf16 and f32 tile types");
+          "TensorAccessor operands support only tiled or row-major bf16 and "
+          "f32 types");
+    }
+    if (supportedRowMajor &&
+        layout.getMemoryLayout() != TensorMemoryLayout::Interleaved) {
+      return emitOpError(
+          "row-major TensorAccessor operands require interleaved memory");
     }
   }
   std::optional<ArrayAttr> templateArgs = getTemplateArgs();

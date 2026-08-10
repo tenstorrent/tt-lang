@@ -98,6 +98,35 @@ func.func @call_with_tensor_func_arg(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>,
 
 // -----
 
+#layout = #ttl.layout<shape = [64, 7168], element_type = bf16,
+                      buffer = dram, grid = [1, 1], memory = interleaved>
+
+// Row-major accessors use the backing tensor's aligned page size from
+// TensorAccessorArgs rather than a compiler-embedded alignment.
+// CHECK-LABEL: func.func @call_with_row_major_tensor_func_arg
+// CHECK-DAG: %[[ACC:.*]] = ttkernel.TensorAccessor({{.*}}, {{.*}}) : (!ttkernel.TensorAccessorArgs, i32) -> !ttkernel.TensorAccessor
+// CHECK: ttkernel.opaque_call "use_tensor"(%[[ACC]]) {header = "use_tensor.hpp"} : (!ttkernel.TensorAccessor) -> ()
+func.func @call_with_row_major_tensor_func_arg(%arg0: tensor<64x7168xbf16, #layout>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
+  ttl.opaque_call "use_tensor" (%arg0) {header = "use_tensor.hpp"} : (tensor<64x7168xbf16, #layout>) -> ()
+  return
+}
+
+// -----
+
+#layout = #ttl.layout<shape = [4, 33], element_type = f32,
+                      buffer = l1, grid = [1, 1], memory = interleaved>
+
+// Unaligned row widths also defer alignment to the runtime tensor metadata.
+// CHECK-LABEL: func.func @call_with_unaligned_row_major_tensor_func_arg
+// CHECK-DAG: %[[ACC:.*]] = ttkernel.TensorAccessor({{.*}}, {{.*}}) : (!ttkernel.TensorAccessorArgs, i32) -> !ttkernel.TensorAccessor
+// CHECK: ttkernel.opaque_call "use_tensor"(%[[ACC]]) {header = "use_tensor.hpp"} : (!ttkernel.TensorAccessor) -> ()
+func.func @call_with_unaligned_row_major_tensor_func_arg(%arg0: tensor<4x33xf32, #layout>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
+  ttl.opaque_call "use_tensor" (%arg0) {header = "use_tensor.hpp"} : (tensor<4x33xf32, #layout>) -> ()
+  return
+}
+
+// -----
+
 #layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
                       buffer = dram, grid = [1, 1], memory = interleaved>
 

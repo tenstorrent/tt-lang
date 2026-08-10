@@ -14,6 +14,7 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 import ttl
 from ttlang_test_utils import to_dram, to_l1, to_l1_sharded
+from ttl.dtype_utils import torch_dtype_to_ttnn_datatype
 from utils.correctness import assert_allclose
 
 
@@ -91,6 +92,12 @@ def _make_multitile_tensor_accessor_copy(data_format):
 
 BF16_MULTITILE_TENSOR_ACCESSOR_COPY = _make_multitile_tensor_accessor_copy("bf16")
 F32_MULTITILE_TENSOR_ACCESSOR_COPY = _make_multitile_tensor_accessor_copy("float32")
+
+
+ROW_MAJOR_MEMORY_CONFIGS = [
+    pytest.param(ttnn.DRAM_MEMORY_CONFIG, to_dram, id="dram-interleaved"),
+    pytest.param(ttnn.L1_MEMORY_CONFIG, to_l1, id="l1-interleaved"),
+]
 
 
 def _make_tensor_accessor_pair_copy(data_format):
@@ -180,6 +187,44 @@ def test_external_tensor_accessor_multitile(device, operation, dtype, to_device)
 
     actual = ttnn.to_torch(out).float()
     expected = host[32:64, 32:64].float()
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, expected, rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("operation", "dtype"),
+    [
+        (BF16_MULTITILE_TENSOR_ACCESSOR_COPY, torch.bfloat16),
+        (F32_MULTITILE_TENSOR_ACCESSOR_COPY, torch.float32),
+    ],
+    ids=["bf16", "f32"],
+)
+@pytest.mark.parametrize(
+    ("input_memory_config", "output_to_device"), ROW_MAJOR_MEMORY_CONFIGS
+)
+def test_external_tensor_accessor_row_major(
+    device, operation, dtype, input_memory_config, output_to_device
+):
+    """A row-major TensorAccessor page ID selects one complete tensor row."""
+
+    row_values = torch.arange(4, dtype=torch.float32).reshape(4, 1)
+    host = row_values.expand(4, 1024).to(dtype)
+    inp = ttnn.from_torch(
+        host,
+        dtype=torch_dtype_to_ttnn_datatype(dtype),
+        layout=ttnn.ROW_MAJOR_LAYOUT,
+        device=device,
+        memory_config=input_memory_config,
+    )
+    output_host = torch.zeros((32, 32), dtype=dtype)
+    out = output_to_device(output_host, device)
+
+    operation(inp, out)
+
+    actual = ttnn.to_torch(out).float()
+    expected = torch.full((32, 32), 3.0)
     if dtype == torch.bfloat16:
         assert_allclose(actual, expected, rtol=0.05, atol=1.0)
     else:

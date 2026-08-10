@@ -4797,14 +4797,18 @@ def TTKernel_TensorAccessorArgsOp : TTKernel_Op<"TensorAccessorArgs",
 def TTKernel_TensorAccessorOp : TTKernel_Op<"TensorAccessor", [Pure]> {
   let summary = "MakeTensorAccessorFromArgs";
   let description = [{
-    TensorAccessor constructor.
+    Constructs a TensorAccessor from its compile-time metadata and runtime base
+    address. When `page_size_in` is absent, the constructor uses the aligned
+    page size encoded by TensorAccessorArgs. An explicit page size overrides
+    that metadata.
   }];
 
-  let arguments = (ins TTKernel_TensorAccessorArgs:$args, I32:$bank_base_address_in, I32:$page_size_in);
+  let arguments = (ins TTKernel_TensorAccessorArgs:$args, I32:$bank_base_address_in,
+                       Optional<I32>:$page_size_in);
   let results = (outs TTKernel_TensorAccessor:$result);
 
   let assemblyFormat = [{
-    `(` $args `,` $bank_base_address_in `,` $page_size_in `)` attr-dict `:` functional-type(operands, results)
+    `(` $args `,` $bank_base_address_in (`,` $page_size_in^)? `)` attr-dict `:` functional-type(operands, results)
   }];
 }
 
