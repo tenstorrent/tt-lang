@@ -35,7 +35,7 @@ cd /path/to/tt-lang
 pre-commit install
 ```
 
-This configures git to automatically run pre-commit checks before each commit.
+This configures checks for staged changes, commit messages, and pushes.
 
 #### What Gets Checked
 
@@ -48,10 +48,11 @@ The pre-commit hooks automatically run the following checks:
 - **Large files check** - Prevents accidentally committing large files
 - **YAML/TOML syntax** - Validates configuration files
 - **Copyright headers** - Verifies proper SPDX copyright notices
+- **Public content** - Rejects restricted content in branch names, commit messages, filenames, and diffs
 
 #### Running Pre-commit
 
-Once installed, pre-commit runs automatically on `git commit`. You can also run it manually:
+Once installed, the hooks run automatically on `git commit` and `git push`. You can also run pre-commit checks manually:
 
 ```bash
 # Run on all files
@@ -69,6 +70,22 @@ git commit -m "Your commit message"
 ```
 
 For more information, visit the [pre-commit website](https://pre-commit.com/).
+
+#### Updating Restricted Public Content
+
+The default signatures in `.github/scripts/check-public-content.py` map lowercase ASCII byte lengths to SHA-256 digests. Generate a signature privately without adding the restricted text to repository files:
+
+```bash
+python3 -c 'import hashlib, sys; content = sys.argv[1].lower().encode("ascii"); print(f"{len(content)}:{hashlib.sha256(content).hexdigest()}")' 'private-reference'
+```
+
+Add the digest to the existing `_DEFAULT_SIGNATURES` entry for that byte length, or add a new entry when the length is not present. Tests must use a generic term supplied through `TTLANG_PUBLIC_CONTENT_SIGNATURES`; restricted source text must not appear in test data.
+
+Before publication, privately verify lowercase, uppercase, and embedded occurrences against the updated checker. Temporary local signatures use a comma-separated list:
+
+```bash
+TTLANG_PUBLIC_CONTENT_SIGNATURES='<length>:<sha256>,<length>:<sha256>' pre-commit run public-content-change
+```
 
 ## PR Guidelines
 
