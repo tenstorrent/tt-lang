@@ -59,7 +59,9 @@ kernels that retain work in its regions. Composition preserves captured
 A unified `@ttl.operation` assigns an external call to one or more logical
 kernels with `kernel=`. `KernelKind.COMPUTE` and
 `KernelKind.DATA_MOVEMENT` select the compiler-owned canonical kernel of that
-kind.
+kind. `PIPE_SOURCE_KERNEL` selects the compiler-owned data-movement kernel
+that executes PipeNet source callbacks. External transport work and its typed
+runtime resources use this selector when they must share that kernel.
 
 ```python
 @ttl.operation(grid=(1, 1))
@@ -79,6 +81,17 @@ ttl.call_extern_func(
     HEADER,
     "shared_entry",
     kernel=ttl.KernelKind.COMPUTE | ttl.KernelKind.DATA_MOVEMENT,
+)
+```
+
+Select the compiler-owned PipeNet source kernel when external transport work
+must execute with generated source callbacks:
+
+```python
+ttl.call_extern_func(
+    HEADER,
+    "transport_entry",
+    kernel=ttl.PIPE_SOURCE_KERNEL,
 )
 ```
 

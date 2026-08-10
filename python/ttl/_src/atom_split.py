@@ -24,8 +24,8 @@ from ttl.kernel import (
     Kernel,
     KernelKind,
     KernelSelector,
+    PIPE_SOURCE_KERNEL,
     _DFB_RELEASE_METHODS,
-    _PIPE_SOURCE_KERNEL_ROLE,
     _format_kernel_capacity_error,
     _format_selector,
     _selector_kind,
@@ -35,10 +35,6 @@ from ttl.kernel import (
 _EXTERNAL_CALL_NAME = "call_extern_func"
 _KERNEL_KEYWORD = "kernel"
 _DFB_RESET_KEYWORD = "dfb_reset"
-_PIPE_SOURCE_KERNEL = Kernel._implicit(
-    KernelKind.DATA_MOVEMENT,
-    _PIPE_SOURCE_KERNEL_ROLE,
-)
 
 
 class _Placement(Enum):
@@ -108,7 +104,7 @@ _TTL_NAMESPACES: Dict[str, KernelKind] = {
 
 # Pipe source and destination callbacks have distinct logical affinities.
 _PIPENET_METHODS: Dict[str, KernelSelector] = {
-    "if_src": _PIPE_SOURCE_KERNEL,
+    "if_src": PIPE_SOURCE_KERNEL,
     "if_dst": KernelKind.DATA_MOVEMENT,
 }
 
@@ -179,6 +175,7 @@ def _flatten_kernel_kind_union(node: ast.expr) -> List[ast.expr]:
 
 class _DefaultTTLSelectorNamespace:
     KernelKind = KernelKind
+    PIPE_SOURCE_KERNEL = PIPE_SOURCE_KERNEL
 
 
 _DEFAULT_TTL_SELECTOR_NAMESPACE = _DefaultTTLSelectorNamespace()
@@ -334,8 +331,9 @@ class _KernelSelectorResolver:
         value = self._resolve_reference(node)
         if isinstance(value, KernelKind):
             return value
-        if isinstance(value, Kernel) and any(
-            value is kernel for kernel in self.logical_kernels.values()
+        if isinstance(value, Kernel) and (
+            value is PIPE_SOURCE_KERNEL
+            or any(value is kernel for kernel in self.logical_kernels.values())
         ):
             return value
         if isinstance(node, ast.Attribute):
