@@ -354,6 +354,12 @@ void LaunchNodeDomainState::recordPipeNet(PipeType pipeType, Location loc,
   }
 }
 
+void LaunchNodeDomainState::recordDeviceDomain(DeviceDomainAttr domain) {
+  if (domain && !llvm::is_contained(deviceDomains, domain)) {
+    deviceDomains.push_back(domain);
+  }
+}
+
 void LaunchNodeDomainState::recordPipeNetRecords(PipeNetRecordsAttr records,
                                                  Location loc) {
   std::optional<StringRef> name;
@@ -362,6 +368,9 @@ void LaunchNodeDomainState::recordPipeNetRecords(PipeNetRecordsAttr records,
   }
   int64_t pipeNetId = records.getPipeNetId();
   forEachNodePipeRecord(records, [&](PipeRecordAttr record) {
+    if (DeviceTransferAttr transfer = record.getDeviceTransfer()) {
+      recordDeviceDomain(transfer.getDomain());
+    }
     PipeType pipeType =
         PipeType::get(records.getContext(), record.getSrcX(), record.getSrcY(),
                       record.getDstStartX(), record.getDstStartY(),
@@ -422,11 +431,6 @@ void LaunchNodeDomainState::initialize(ModuleOp module) {
   module.walk([&](SelectPipeDstOp op) {
     recordPipeNetRecords(op.getRecords(), op.getLoc());
   });
-  auto recordDeviceDomain = [&](DeviceDomainAttr domain) {
-    if (domain && !llvm::is_contained(deviceDomains, domain)) {
-      deviceDomains.push_back(domain);
-    }
-  };
   module.walk([&](IsDeviceOp op) { recordDeviceDomain(op.getDomain()); });
   module.walk(
       [&](IsDeviceInRangeOp op) { recordDeviceDomain(op.getDomain()); });
