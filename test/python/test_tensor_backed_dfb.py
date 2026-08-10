@@ -15,7 +15,7 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 import ttl  # noqa: E402
 from conftest import temp_kernel_files
 from ttlang_test_utils import to_dram
-from utils.correctness import assert_allclose, assert_pcc
+from utils.correctness import assert_allclose
 
 
 KERNEL_TEMPLATES = {
@@ -284,7 +284,7 @@ def test_dfb_storage_eltwise_mul(
     _make_kernel(storage_kind, tile_count, node_count)(lhs, rhs, out)
 
     actual = ttnn.to_torch(out)
-    assert_pcc(expected.float(), actual.float(), threshold=0.999)
+    _assert_dtype_aware_allclose(actual, expected, torch_dtype)
 
 
 @pytest.mark.requires_device
@@ -402,7 +402,7 @@ def test_tensor_backed_dfb_block_count_two(device, torch_dtype):
         operation(lhs, rhs, out)
 
         actual = ttnn.to_torch(out)
-        assert_pcc(expected.float(), actual.float(), threshold=0.999)
+        _assert_dtype_aware_allclose(actual, expected, torch_dtype)
 
 
 @pytest.mark.requires_device
@@ -462,11 +462,8 @@ def test_tensor_backed_dfb_nonzero_byte_offset(device, torch_dtype):
         lhs, rhs, out
     )
 
-    actual = ttnn.to_torch(out).float()
-    if torch_dtype == torch.bfloat16:
-        assert_allclose(actual, expected.float(), rtol=0.05, atol=1.0)
-    else:
-        assert_allclose(actual, expected.float(), rtol=5e-3, atol=1e-4)
+    actual = ttnn.to_torch(out)
+    _assert_dtype_aware_allclose(actual, expected, torch_dtype)
 
 
 @pytest.mark.requires_device
