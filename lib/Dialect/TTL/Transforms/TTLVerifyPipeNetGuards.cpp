@@ -12,7 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "DFBVerification.h"
-
+#include "PipeGraph.h"
 #include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Analysis/DataFlowFramework.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -104,7 +104,7 @@ struct PipeEvent {
   Operation *receivePost = nullptr;
   Operation *selectedForeachOp = nullptr;
   int64_t selectedRecordIndex = -1;
-  SmallVector<PipeWaitAnyAlternative> waitAnyAlternatives;
+  SmallVector<PipeWaitAnyAlternative> waitAnyAlternatives = {};
 };
 
 struct ModuleState;
@@ -181,23 +181,15 @@ struct ModuleState {
     PipeRole role =
         kind == PipeEventKind::Send ? PipeRole::Source : PipeRole::Destination;
     for (auto [recordIndex, record] : llvm::enumerate(records.getPipes())) {
-      PipeType pipeType = PipeType::get(
-          records.getContext(), record.getSrcX(), record.getSrcY(),
-          record.getDstStartX(), record.getDstStartY(), record.getDstEndX(),
-          record.getDstEndY(), records.getPipeNetId());
+      PipeType pipeType = getPipeTypeFromRecord(records.getContext(), record,
+                                                records.getPipeNetId());
       LaunchNodeDomain roleDomain =
           role == PipeRole::Source
               ? getPipeRecordSourceLaunchNodeDomain(record)
               : getPipeRecordDestinationLaunchNodeDomain(record);
-      events.push_back(PipeEvent{op,
-                                 pipeType,
-                                 kind,
-                                 domain.intersectWith(roleDomain),
-                                 unanalyzableOp,
-                                 receivePost,
-                                 foreachOp,
-                                 static_cast<int64_t>(recordIndex),
-                                 {}});
+      events.push_back(PipeEvent{
+          op, pipeType, kind, domain.intersectWith(roleDomain), unanalyzableOp,
+          receivePost, foreachOp, static_cast<int64_t>(recordIndex)});
     }
   }
 
@@ -209,15 +201,9 @@ struct ModuleState {
     Operation *op = copyOp.getOperation();
     if (auto pipeType = mlir::dyn_cast<PipeType>(copyOp.getDst().getType())) {
       events.push_back(PipeEvent{
-          op,
-          pipeType,
-          PipeEventKind::Send,
+          op, pipeType, PipeEventKind::Send,
           domain.intersectWith(getPipeSourceLaunchNodeDomain(pipeType)),
-          unanalyzableOp,
-          nullptr,
-          nullptr,
-          -1,
-          {}});
+          unanalyzableOp, nullptr, nullptr, -1});
       return events;
     }
     FailureOr<SelectedPipeRecords> selectedDst =
@@ -236,16 +222,10 @@ struct ModuleState {
     if (auto pipeType = mlir::dyn_cast<PipeType>(copyOp.getSrc().getType())) {
       if (isPipeReceiveCopy(copyOp)) {
         events.push_back(
-            PipeEvent{op,
-                      pipeType,
-                      PipeEventKind::ReceivePost,
+            PipeEvent{op, pipeType, PipeEventKind::ReceivePost,
                       domain.intersectWith(getPipeDestinationLaunchNodeDomain(
                           pipeType, launchDomains.baseDomain)),
-                      unanalyzableOp,
-                      nullptr,
-                      nullptr,
-                      -1,
-                      {}});
+                      unanalyzableOp, nullptr, nullptr, -1});
       }
       return events;
     }
@@ -284,16 +264,10 @@ struct ModuleState {
     Operation *op = waitOp.getOperation();
     if (auto pipeType = mlir::dyn_cast<PipeType>(copyOp.getSrc().getType())) {
       events.push_back(
-          PipeEvent{op,
-                    pipeType,
-                    PipeEventKind::ReceiveWait,
+          PipeEvent{op, pipeType, PipeEventKind::ReceiveWait,
                     domain.intersectWith(getPipeDestinationLaunchNodeDomain(
                         pipeType, launchDomains.baseDomain)),
-                    unanalyzableOp,
-                    copyOp.getOperation(),
-                    nullptr,
-                    -1,
-                    {}});
+                    unanalyzableOp, copyOp.getOperation(), nullptr, -1});
     } else {
       FailureOr<SelectedPipeRecords> selected =
           getSelectedPipeRecords(copyOp.getSrc());
@@ -338,11 +312,8 @@ struct ModuleState {
                 selected->records, PipeRole::Destination));
         for (PipeRecordAttr record : selected->records.getPipes()) {
           alternatives.push_back(
-              {PipeType::get(selected->records.getContext(), record.getSrcX(),
-                             record.getSrcY(), record.getDstStartX(),
-                             record.getDstStartY(), record.getDstEndX(),
-                             record.getDstEndY(),
-                             selected->records.getPipeNetId()),
+              {getPipeTypeFromRecord(selected->records.getContext(), record,
+                                     selected->records.getPipeNetId()),
                post});
         }
       }
