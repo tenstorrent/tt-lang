@@ -24,6 +24,7 @@ and the teardown waits from firing. Killing the process and resetting the device
 are the caller's calls to make.
 """
 
+import inspect
 import json
 import os
 import select
@@ -311,12 +312,14 @@ def sample_pcs(
     the signal is checked first and a core without one is reported rather than
     silently halted: a halt on Blackhole costs the device.
     """
-    from ttexalens._lib_helpers import convert_coordinate
+    from ttexalens.coordinate import OnChipCoordinate
 
     pcs = {}
     for x, y in cores:
         try:
-            coordinate = convert_coordinate(f"{x},{y}", device_id, context)
+            coordinate = OnChipCoordinate.create(
+                f"{x},{y}", context.find_device_by_id(device_id)
+            )
         except Exception as error:
             report.fail(f"coordinate {x},{y} on device {device_id}", error)
             continue
@@ -371,7 +374,12 @@ def collect_stacks(
             continue
         later = second.get((x, y, risc_name), (None, None, None))[1]
         motion = "STATIONARY" if later == pc else f"ADVANCING (then 0x{later:08x})"
-        lines.append(f"{label}: pc=0x{pc:08x} {motion}")
+        offset_text = (
+            ""
+            if kernel_load_offset is None
+            else f" kernel_load_offset=0x{kernel_load_offset:08x}"
+        )
+        lines.append(f"{label}: pc=0x{pc:08x} {motion}{offset_text}")
         lines.extend(
             symbolize(
                 context,
@@ -417,13 +425,10 @@ def symbolize(
             else None
             for path in candidates
         ]
-        frames = top_callstack(
-            pc,
-            candidates,
-            offsets,
-            context=context,
-            extract_variables=False,
-        )
+        kwargs = {"context": context}
+        if "extract_variables" in inspect.signature(top_callstack).parameters:
+            kwargs["extract_variables"] = False
+        frames = top_callstack(pc, candidates, offsets, **kwargs)
         lines.extend(f"    {frame_text(frame)}" for frame in frames)
         if not frames:
             lines.append("    (PC did not resolve in any candidate ELF)")
@@ -677,11 +682,15 @@ def park() -> None:
         if hung_pid is None:
             while True:
                 time.sleep(3600)
-        with os.fdopen(os.pidfd_open(hung_pid)) as pidfd:
-            poller = select.poll()
-            poller.register(pidfd, select.POLLIN)
-            while not poller.poll(3_600_000):
-                pass
+        if hasattr(os, "pidfd_open"):
+            with os.fdopen(os.pidfd_open(hung_pid)) as pidfd:
+                poller = select.poll()
+                poller.register(pidfd, select.POLLIN)
+                while not poller.poll(3_600_000):
+                    pass
+        else:
+            while Path(f"/proc/{hung_pid}").exists():
+                time.sleep(1)
         print("tt-lang: hung process exited; releasing collector resources.")
         sys.stdout.flush()
     except KeyboardInterrupt:

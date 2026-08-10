@@ -217,8 +217,13 @@ def test_blackhole_xip_kernel_load_offsets_use_active_launch():
 def test_symbolize_passes_xip_offset_only_for_kernel_elf(monkeypatch):
     calls = {}
 
-    def top_callstack(pc, elfs, offsets, **kwargs):
-        calls.update(pc=pc, elfs=elfs, offsets=offsets, kwargs=kwargs)
+    def top_callstack(pc, elfs, offsets, extract_variables=None, **kwargs):
+        calls.update(
+            pc=pc,
+            elfs=elfs,
+            offsets=offsets,
+            kwargs={"extract_variables": extract_variables, **kwargs},
+        )
         return []
 
     fake_module = SimpleNamespace(top_callstack=top_callstack)
@@ -238,6 +243,34 @@ def test_symbolize_passes_xip_offset_only_for_kernel_elf(monkeypatch):
     assert calls["pc"] == 0x123456
     assert calls["offsets"] == [0x100000, None]
     assert calls["kwargs"]["extract_variables"] is False
+    assert not report.failures
+
+
+def test_symbolize_supports_top_callstack_without_extract_variables(monkeypatch):
+    calls = {}
+
+    def top_callstack(pc, elfs, offsets, context=None):
+        calls.update(pc=pc, elfs=elfs, offsets=offsets, context=context)
+        return []
+
+    fake_module = SimpleNamespace(top_callstack=top_callstack)
+    monkeypatch.setitem(sys.modules, "ttexalens.tt_exalens_lib", fake_module)
+    report = hang_collect.Report()
+
+    hang_collect.symbolize(
+        object(),
+        0,
+        0,
+        "brisc",
+        0x123456,
+        {"brisc": ["/cache/build/kernels/generated/hash/brisc/brisc.elf"]},
+        report,
+        0x100000,
+    )
+
+    assert calls["pc"] == 0x123456
+    assert calls["offsets"] == [0x100000]
+    assert calls["context"] is not None
     assert not report.failures
 
 
