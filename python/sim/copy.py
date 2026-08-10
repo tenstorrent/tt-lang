@@ -272,7 +272,7 @@ class _ReceiveSelection:
 
 
 def wait_any(requests: tuple[ReceiveRequest, ...], start: int = 0) -> ReadyReceive:
-    """Wait for the first ready receive in rotating tuple order."""
+    """Select the first completed receive in cyclic order from start."""
     if not isinstance(requests, tuple):
         raise TypeError("ttl.wait_any() requires a tuple of receive requests")
     if not requests:

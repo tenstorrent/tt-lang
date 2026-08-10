@@ -54,6 +54,7 @@
 | 0.18 | 06/16/2026 | Add `ttl.raw_element_read` and `ttl.raw_element_write` |
 | 0.19 | 06/15/2026 | Unified-body `ttl.operation` with thread assignment and composition; add multi-kernel operation with explicit kernels |
 | 0.20 | 06/23/2026 | Add `ttl.exp` hardware flags and scaled exponential canonicalization |
+| 0.21 | 08/09/2026 | Add selection across completed PipeNet receives |
 
 
 ## Introduction
@@ -318,7 +319,20 @@ A *tensor slice* is a view into a TT-NN tensor defined in terms of a dimension s
 
 ## Copy
 
-The `ttl.copy` function expresses a variety of data movements that always have two arguments: source and destination. `ttl.copy` returns a *transfer handle* object. A transfer handle has a `wait` function that serves as a barrier. When the `wait` returns the transfer is complete and data in the destination is safe to use.  The `ttl.copy` is executed on a data movement thread.
+The `ttl.copy` function expresses a variety of data movements that always have two arguments: source and destination. Copies between blocks and tensor slices, or from a block to a pipe, return a *transfer handle*. A transfer handle has a `wait` function that serves as a barrier. When the `wait` returns the transfer is complete and data in the destination is safe to use. A copy from a pipe to a block posts a receive and returns a *receive request*. The `ttl.copy` is executed on a data movement thread.
+
+
+### Selecting among completed receives
+
+A receiver may service several producers whose transfers complete independently. Waiting on one particular receive can block the receiver even when another receive has completed and could be processed. Posting every receive before waiting allows `ttl.wait_any` to wait until at least one candidate completes and select one without imposing a fixed blocking order.
+
+The caller supplies a nonempty ordered tuple of distinct receive requests and a starting index. The starting index is normalized modulo the tuple length. Candidates are inspected in cyclic tuple order beginning at that index, and the first completed candidate in that order is selected. If no candidate has completed, `ttl.wait_any` blocks and repeats the inspection. `ReadyReceive.index()` returns the selected tuple index.
+
+The returned value establishes completion only for the selected request. Nonselected requests remain pending with their destination dataflow buffer reservations and may be included in a later `ttl.wait_any` call or awaited directly. The selected branch may publish and consume its destination block. A caller can provide rotating priority by starting the next selection at the index after the previous selection. PipeNet completion resources remain compiler-owned and are not observable through the source language.
+
+#### Receive selection example
+
+<!-- @spec:example pipe/wait_any_receive.py -->
 
 
 ### Group transfer
@@ -331,8 +345,12 @@ When `ttl.copy` function is called multiple times, instead of waiting on each tr
 
 | Function | Description |
 | :---- | :---- |
-| `ttl.copy(src: ttl.Block, dst: ttl.TensorSlice) -> ttl.Transfer`<br><br>`ttl.copy(src: ttl.TensorSlice, dst: ttl.Block) -> ttl.Transfer`<br><br>`ttl.copy(src: ttl.Block, dst: ttl.PipeIdentity) -> ttl.Transfer`<br><br>`ttl.copy(src: ttl.PipeIdentity, dst: ttl.Block) -> ttl.Transfer` | Copy data between a block, a tensor slice, or a pipe. **This function is non-blocking.** The compiler statically checks if the shape of block and tensor slice are compatible and if the shape of block sent to a pipe is compatible with the shape of block received from the same pipe. When a pipe is used as a destination there must be a corresponding `ttl.copy` where the same pipe is used as source. Furthermore, `ttl.copy` with pipe must be guarded by the pipe net's `if_src` where this pipe is the source, and by `if_dst` where this pipe is the destination. |
+| `ttl.copy(src: ttl.Block, dst: ttl.TensorSlice) -> ttl.Transfer`<br><br>`ttl.copy(src: ttl.TensorSlice, dst: ttl.Block) -> ttl.Transfer`<br><br>`ttl.copy(src: ttl.Block, dst: ttl.PipeIdentity) -> ttl.Transfer` | Copy data between a block and a tensor slice, or send a block through a pipe. **This function is non-blocking.** The compiler statically checks if the shape of block and tensor slice are compatible and if the shape of block sent to a pipe is compatible with the shape of block received from the same pipe. When a pipe is used as a destination there must be a corresponding `ttl.copy` where the same pipe is used as source. Furthermore, `ttl.copy` with pipe must be guarded by the pipe net's `if_src` where this pipe is the source. |
+| `ttl.copy(src: ttl.PipeIdentity, dst: ttl.Block) -> ttl.ReceiveRequest` | Post a receive from a pipe into a reserved destination block. **This function is non-blocking.** There must be a corresponding pipe send, and the receive must be guarded by the pipe net's `if_dst` where this pipe is the destination. |
 | `ttl.Transfer.wait()` | Wait for data transfer to complete. Transfer handle cannot be used after this function is called.  **This function is blocking.** |
+| `ttl.ReceiveRequest.wait()` | Wait for this receive to complete. The destination block is safe to publish or use when the function returns. **This function is blocking.** |
+| `ttl.wait_any(requests: Tuple[ttl.ReceiveRequest, ...], start: ttl.Index = 0) -> ttl.ReadyReceive` | Wait until at least one request completes, then select the first completed request in cyclic tuple order beginning at `start`. The tuple must be nonempty and contain distinct requests. **This function is blocking.** |
+| `ttl.ReadyReceive.index() -> ttl.Index` | Return the tuple index selected by `ttl.wait_any`. |
 | `ttl.GroupTransfer.add(xf: ttl.Transfer)` | Add transfer handle to a group. This function cannot be called after `ttl.GroupTransfer.wait_all` was called. |
 | `ttl.GroupTransfer.wait_all()` | Wait for all data transfers in group to complete. Group transfer cannot be used after this function is called. **This function is blocking.** |
 
@@ -430,6 +448,8 @@ TT-Lang includes ability to print information to the standard output for debuggi
 | *Pipe net’s condition body function* | A Python function passed to be executed conditionally if the current node is a source, a destination, or both in the given pipe net. A condition function can be called multiple times sequentially if the current node participates in multiple pipes. |
 | *Tensor slice* | A Python slice expression used with TT-NN tensor to specify a view to be used as a source or a destination in a copy operation. |
 | *Transfer handle* | A handle to an asynchronous copy operation. A transfer handle is used as a barrier to ensure that operation is finished and the corresponding source or destination block is safe to use. |
+| *Receive request* | A typed handle for one PipeNet receive posted into a reserved destination block. It can be awaited directly or included in `ttl.wait_any`. |
+| *Ready receive* | The result of selecting a completed receive request with `ttl.wait_any`. It identifies the selected request by its tuple index. |
 | *Semaphore* | A communication primitive for general synchronization between data movement threads on different nodes. |
 | *Semaphore value* | A 32-bit unsigned integer value associated with a semaphore on each node. This value can be set or incremented by a data movement thread on the local or a remote node. |
 
@@ -575,6 +595,7 @@ number of SFPU lane iterations and defaults to 8.
 | Dataflow buffer | Snake case with `dfb` suffix. Example `attention_mask_dfb`, `bias_dfb2` |
 | Block | Snake case with `blk` suffix. Example `attention_mask_blk`, `bias_blk2` |
 | Transfer handle | Snake case with `xf` suffix. Example `attention_mask_xf`, `bias_xf2` |
+| Receive request | Snake case with `request` suffix. Example `activation_request`, `weight_request2` |
 | Pipe net | Snake case with `net` suffix. Example `mcast_attention_mask_net`, `bias_net2` |
 
 
@@ -593,6 +614,7 @@ number of SFPU lane iterations and defaults to 8.
 | `ttl.Block.store` | 0.1.7 | 0.1.7 |
 | Overwriting and accumulation through summation (`+=`) for block expressions | 0.1.7 | 1.0.0 |
 | `ttl.copy` and `ttl.Transfer` | 0.1.7 | 0.1.7 |
+| `ttl.ReceiveRequest`, `ttl.ReadyReceive`, and `ttl.wait_any` | 1.0.0 | 1.0.0 |
 | `ttl.GroupTransfer` | 1.0.0 | N/S |
 | `ttl.Semaphore` on 2D grid | N/S | N/S |
 | `ttl.Semaphore` on 4D grid | N/S | N/S |
